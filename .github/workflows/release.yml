@@ -17,7 +17,10 @@
 #
 # The release binary is the same non-optimized build every test and CI run exercises — on a
 # beta compiler, shipping the binary everybody tested beats shipping a -prod profile nothing
-# ever ran. Revisit when CI itself builds -prod.
+# ever ran. Revisit when CI itself builds -prod — and read the FIRST entry in
+# docs/known_issues.md before you do: -prod plus a Boehm GC mode makes every call out of a frame
+# holding a pointerful array by value cost O(len), which took a 1.23M-frame replay from real
+# time to ~100x slower. Nothing here builds -prod today, which is the only reason we are clear.
 name: release
 
 on:

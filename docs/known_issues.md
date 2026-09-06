@@ -13,6 +13,39 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## V language / compiler / tooling
 
+- 🔴 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
+  VALUE.** With `-prod` **and** a Boehm GC mode, V emits a "deep GC scope pin" around **every
+  call** in a function whose scope holds a by-value aggregate containing pointers
+  (`cgen.v: scope_gc_pin_pregen`, guarded by `if !g.pref.is_prod`). The pin walks **every
+  element** of that aggregate to snapshot its interior pointers, and past 32 of them it also
+  `calloc`s, `GC_add_roots`, `GC_remove_roots` and `free`s per call. So a replay loop sitting in
+  a frame that holds a million-frame `[]canlog.LogEntry` pays a million-element walk **per
+  frame sent**. Measured here on a 1.23 M-frame `.mf4`: `cmd/restbus` sent **562 frames in ten
+  minutes** instead of 1.07 M in sixty seconds — a ~9 ms cost on every call out of that frame,
+  where the same call costs 1 ns. The discriminator is the ELEMENT TYPE and the by-value-ness,
+  nothing else: `&[]LogEntry` is free, `[]u64` (pointer-free elements) is free, and removing the
+  call removes the cost.
+
+  **We are not affected today, and this is the reason to keep it that way.** Nothing in this
+  repo builds `-prod` — `release.yml` ships "the same non-optimized build every test and CI run
+  exercises" — and the unmodified `cmd/restbus` replays all 1,069,214 frames of that recording
+  in 67 s. So this is filed against the "Revisit when CI itself builds `-prod`" note in
+  `release.yml`: **turning `-prod` on without fixing this first would take replay from real time
+  to ~100× slower**, silently, on exactly the large real recordings nobody replays in CI. The
+  fix when that day comes is per-frame, not global: pass big recordings/plans by reference
+  (`&mf4.Recording`) and keep the transmit loop in a frame that holds nothing big by value —
+  verified to restore full speed. `-gc none` also removes it, but leaks.
+
+  Standalone repro (80 lines, no modules, no data): a `[]Item{name string, data []u8}` of 1 M
+  elements held by value while calling an empty function — `v -prod` 4.75 ms/call, plain `v`
+  2 ns/call, `v -prod -gc none` 1 ns/call, and linear in between (1 k → 921 ns, 10 k → 8.3 µs,
+  100 k → 223 µs). Upstream, with that repro and the generated C:
+  [vlang/v#28418](https://github.com/vlang/v/issues/28418) (V 0.5.1; not retested on master).
+
+  It hides well, which is the other reason it is written down: nothing profiles as hot, the
+  cost is attributed to whichever tiny function the loop happens to call, `GC_get_gc_no()` never
+  advances and `GC_disable()` changes nothing — so it does not look like the GC even though it
+  is emitted by the GC path.
 - 🟡 **`v test` needs `-cc gcc` on Windows, or it looks like it cannot run at all.**
   `v -enable-globals test modules/` on native Windows (MSYS2/mingw) fails before running a
   single test with
