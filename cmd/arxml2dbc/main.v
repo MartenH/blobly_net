@@ -132,12 +132,20 @@ fn main() {
 	// — the one file this tool exists to leave alone — with its own output, and two outputs on
 	// one path leave only the second after reporting both written (codex on #273 round 22).
 	// Compared as real paths, so `./x.arxml` and `x.arxml` are one file.
-	for out in [dbc_out, toml_out] {
-		if out != '' && out != '-' && canon(out) == canon(src) {
+	// RESOLVED ONCE (round 52): the path validated here is the path locked, staged and published
+	// below — resolved again at each step, a link retargeted between the check and the write
+	// could aim the publication at the source these checks refused
+	dbc_dst := if dbc_out != '' && dbc_out != '-' { canon(dbc_out) } else { '' }
+	toml_dst := if toml_out != '' && toml_out != '-' { canon(toml_out) } else { '' }
+	src_real := canon(src)
+	outs := [dbc_out, toml_out]
+	dsts := [dbc_dst, toml_dst]
+	for k, out in outs {
+		if dsts[k] != '' && dsts[k] == src_real {
 			eprintln('arxml2dbc: ${out} is the input ARXML; refusing to overwrite the source')
 			exit(2)
 		}
-		if out != '' && out != '-' && os.is_dir(out) {
+		if dsts[k] != '' && os.is_dir(dsts[k]) {
 			// publication renames the destination aside and moves a file in: a DIRECTORY named by
 			// mistake would be renamed away and replaced by a file (codex on #273 round 43)
 			eprintln('arxml2dbc: ${out} is a directory; name the file to write')
@@ -151,7 +159,7 @@ fn main() {
 		}
 	}
 	both_files := dbc_out != '' && dbc_out != '-' && toml_out != '' && toml_out != '-'
-	if both_files && canon(dbc_out) == canon(toml_out) {
+	if both_files && dbc_dst == toml_dst {
 		eprintln('arxml2dbc: --dbc and --toml name the same file (${dbc_out}); only one would survive')
 		exit(2)
 	}
@@ -188,10 +196,10 @@ fn main() {
 	// replaced the fragment. Sorted, so two exports of one pair cannot deadlock on each other
 	mut dests := []string{}
 	if dbc_to_file {
-		dests << canon(dbc_out)
+		dests << dbc_dst
 	}
 	if toml_out != '' && !toml_to_stdout {
-		dests << canon(toml_out)
+		dests << toml_dst
 	}
 	dests.sort()
 	mut locks := []string{}
@@ -214,11 +222,11 @@ fn main() {
 	mut staged := [][]string{} // [temporary, destination, what was written]
 	// exit() does not run the defer above, so every failing path unlocks by hand (round 37)
 	if dbc_to_file {
-		staged << stage(canon(dbc_out), dbc, staged) or { unlock_and_exit(locks, 1) }
+		staged << stage(dbc_dst, dbc, staged) or { unlock_and_exit(locks, 1) }
 		staged[staged.len - 1] << '${dbc_out} (${c.db.messages.len} messages)'
 	}
 	if toml_out != '' && !toml_to_stdout {
-		staged << stage(canon(toml_out), frag, staged) or { unlock_and_exit(locks, 1) }
+		staged << stage(toml_dst, frag, staged) or { unlock_and_exit(locks, 1) }
 		staged[staged.len - 1] << toml_out
 	}
 	// TO THE CANONICAL PATH (round 44), the one the locks name: a destination that is a SYMLINK
