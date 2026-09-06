@@ -1097,6 +1097,16 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert side.report.notes.any(it.contains('/ECUs/E/Conn/P_Out: COMMUNICATION-DIRECTION "SIDEWAYS" is neither OUT nor IN; the port is not read'))
 	assert 'R' in sig(ec.db.messages[0], 'V').receivers
 	assert 'E' in ec.db.nodes && 'R' in ec.db.nodes
+	// an IN port on a triggering whose I-PDU-REF this file cannot resolve listened to THAT PDU:
+	// it is not widened into a receiver of the whole frame (round 49)
+	dangling := parse_arxml(arxml_head + cl.replace('/PDUs/P</I-PDU-REF>', '/PDUs/Missing</I-PDU-REF>') + offset_pdu_xml + ecus + arxml_tail) or {
+		panic(err)
+	}
+	dc := dangling.cluster('') or { panic(err) }
+	assert dc.db.messages[0].sender == 'E'
+	assert 'R' !in sig(dc.db.messages[0], 'V').receivers
+	assert 'R' in dc.db.nodes
+	assert dangling.report.unresolved.any(it.contains('/PDUs/Missing')), dangling.report.unresolved.str()
 	// an ECU that bears the DBC placeholder name is renamed, or senders() would normalise it
 	// away and it would simulate nothing (round 27)
 	ph := parse_arxml(arxml_head + cl.replace('/ECUs/E/Conn/P_Out', '/ECUs/Vector__XXX/Conn/P_Out') + offset_pdu_xml + ecus.replace('<SHORT-NAME>E</SHORT-NAME>', '<SHORT-NAME>Vector__XXX</SHORT-NAME>') + arxml_tail) or {

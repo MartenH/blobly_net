@@ -959,9 +959,12 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		for tref in descendants(ft, 'PDU-TRIGGERING-REF') {
 			trig, trig_path := r.deref_node(tref, ft_path) or { continue }
 			mut ipdu_path := ''
+			mut ipdu_unresolved := false
 			if iref := child(trig, 'I-PDU-REF') {
 				if _, ip := r.deref_node(iref, trig_path) {
 					ipdu_path = ip
+				} else {
+					ipdu_unresolved = true // the dereference recorded it
 				}
 			}
 			for pref in descendants(trig, 'I-PDU-PORT-REF') {
@@ -975,6 +978,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				note_node(mut nodes, ecu)
 				if dir == 'OUT' {
 					ports.tx(ecu)
+				} else if ipdu_unresolved {
+					// the port listened to a PDU this file cannot resolve: NOT the frame's
+					// receiver, which would claim every other mapped PDU's signals for it
+					// (round 49). The ECU is still a node; the unresolved list says the rest
+					continue
 				} else if ipdu_path == '' {
 					ports.rx(ecu) // no PDU to scope it to: the frame's
 				} else if ecu !in pdu_port_rx[ipdu_path] {
