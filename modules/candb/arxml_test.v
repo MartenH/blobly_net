@@ -624,7 +624,7 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	// and said, never exported with the 0 the lenient parser read (round 39)
 	for bad in [['<DATA-ID>7</DATA-ID>', '<DATA-ID>invalid</DATA-ID>', 'DATA-ID "invalid" is not an integer'],
 		['<CRC-OFFSET>16</CRC-OFFSET>', '<CRC-OFFSET>x</CRC-OFFSET>', 'CRC-OFFSET "x" is not an integer'],
-		['<COUNTER-OFFSET>24</COUNTER-OFFSET>', '<COUNTER-OFFSET>-8</COUNTER-OFFSET>', 'COUNTER-OFFSET -8 is outside 0..512']] {
+		['<COUNTER-OFFSET>24</COUNTER-OFFSET>', '<COUNTER-OFFSET>-8</COUNTER-OFFSET>', 'COUNTER-OFFSET -8 is outside 0..1048576']] {
 		mb := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace(bad[0], bad[1]) + arxml_tail) or {
 			panic(err)
 		}
@@ -1417,24 +1417,25 @@ fn test_frame_lengths_are_bounded() {
 		panic(err)
 	}
 	assert (big.cluster('') or { panic(err) }).db.messages.len == 0
-	assert big.report.notes.any(it.contains('frame F has FRAME-LENGTH 72 is outside 0..64; not read'))
+	assert big.report.notes.any(it.contains('FRAME-LENGTH 72 is outside 0..64; not read')), big.report.notes.str()
+	assert big.report.notes.any(it.contains('frame F is not read: its FRAME-LENGTH was refused')), big.report.notes.str()
 	none_ := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '') + arxml_tail) or {
 		panic(err)
 	}
 	assert (none_.cluster('') or { panic(err) }).db.messages.len == 0
-	assert none_.report.notes.any(it.contains('frame F has no FRAME-LENGTH; not read'))
+	assert none_.report.notes.any(it.contains('frame F is not read: no FRAME-LENGTH')), none_.report.notes.str()
 	// …and a FRAME-LENGTH that is not an integer is refused rather than read as 0 (round 38)
 	nan := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>eight</FRAME-LENGTH>') + arxml_tail) or {
 		panic(err)
 	}
 	assert (nan.cluster('') or { panic(err) }).db.messages.len == 0
-	assert nan.report.notes.any(it.contains('frame F has FRAME-LENGTH "eight" is not an integer; not read'))
+	assert nan.report.notes.any(it.contains('FRAME-LENGTH "eight" is not an integer; not read')), nan.report.notes.str()
 	// …and one that overflows the parser is refused too, not read as 0 (round 39)
 	huge := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>0x10000000000000000</FRAME-LENGTH>') + arxml_tail) or {
 		panic(err)
 	}
 	assert (huge.cluster('') or { panic(err) }).db.messages.len == 0
-	assert huge.report.notes.any(it.contains('frame F has FRAME-LENGTH 0x10000000000000000 is outside 0..64; not read'))
+	assert huge.report.notes.any(it.contains('FRAME-LENGTH 0x10000000000000000 is outside 0..64; not read')), huge.report.notes.str()
 	// classic CAN carries 8 bytes: a 12-byte frame not declared CAN-FD is not read (round 35)
 	classic12 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail) or {
 		panic(err)
@@ -1470,7 +1471,7 @@ fn test_frame_lengths_are_bounded() {
 		panic(err)
 	}
 	assert (ovp.cluster('') or { panic(err) }).db.messages[0].signals.len == 0
-	assert ovp.report.notes.any(it.contains('PDU-TO-FRAME-MAPPING/START-POSITION 0x10000000000000000 is outside 0..512; not read')), ovp.report.notes.str()
+	assert ovp.report.notes.any(it.contains('PDU-TO-FRAME-MAPPING/START-POSITION 0x10000000000000000 is outside 0..1048576; not read')), ovp.report.notes.str()
 	// an IDENTIFIER that is missing, negative or too wide for its addressing mode is not read
 	for bad in ['<IDENTIFIER>2048</IDENTIFIER>', '<IDENTIFIER>-1</IDENTIFIER>', '',
 		'<IDENTIFIER>invalid</IDENTIFIER>', '<IDENTIFIER>1.5</IDENTIFIER>', '<IDENTIFIER>+-256</IDENTIFIER>'] {
@@ -1485,7 +1486,7 @@ fn test_frame_lengths_are_bounded() {
 		panic(err)
 	}
 	assert !(neg.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
-	assert neg.report.notes.any(it.contains('I-SIGNAL-TO-I-PDU-MAPPING/START-POSITION -16 is outside 0..512; not read')), neg.report.notes.str()
+	assert neg.report.notes.any(it.contains('I-SIGNAL-TO-I-PDU-MAPPING/START-POSITION -16 is outside 0..1048576; not read')), neg.report.notes.str()
 	// a START-POSITION missing or not an integer is not read (round 37)
 	for bad in ['<START-POSITION>x</START-POSITION>', ''] {
 		bp := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', bad + '</I-SIGNAL-TO-I-PDU-MAPPING>') + arxml_tail) or {
@@ -1647,10 +1648,6 @@ fn test_canonical_database_ref_keeps_the_fragment() {
 }
 
 fn test_number_forms() {
-	assert parse_int('256') == 256
-	assert parse_int('0x100') == 256
-	assert parse_int('8.0') == 8
-	assert parse_int('') == 0
 	assert seconds_to_ms('0.1') == 100
 	assert seconds_to_ms('1.0E-2') == 10
 	assert seconds_to_ms('0.02') == 20
@@ -1906,7 +1903,7 @@ fn test_a_mapping_without_a_byte_order_is_not_invented() {
 // one is added as a row rather than as a guard.
 fn test_every_leaf_rule_refuses_bad_values_once() {
 	for l in arxml_leaves {
-		parent := if l.at == leaf_any { 'SOME-PARENT' } else { l.at }
+		parent := if l.at == leaf_any { 'SOME-PARENT' } else { l.at.split('|')[0] }
 		mut bads := []string{}
 		mut good := ''
 		match l.kind {
@@ -1940,7 +1937,10 @@ fn test_every_leaf_rule_refuses_bad_values_once() {
 	}
 	// a parent-specific row wins over the any-parent one, and a tag with no row is nobody's business
 	assert (leaf_rule('I-SIGNAL', 'LENGTH') or { panic('no rule') }).hi == 1 << 20
-	assert (leaf_rule('I-SIGNAL-I-PDU', 'LENGTH') or { panic('no rule') }).hi == 64
+	assert (leaf_rule('I-SIGNAL-I-PDU', 'LENGTH') or { panic('no rule') }).hi == 65535 // bytes, bus-agnostic; the frame is the relation
+	assert (leaf_rule('MULTIPLEXED-I-PDU', 'LENGTH') or { panic('no rule') }).hi == 65535
+	assert leaf_refuses(leaf_rule('SOME-PARENT', 'CAN-ADDRESSING-MODE') or { panic('no rule') }, '')
+	assert !leaf_refuses(leaf_rule('SOME-PARENT', 'CAN-ADDRESSING-MODE') or { panic('no rule') }, 'STANDARD')
 	assert leaf_rule('SOMETHING', 'LENGTH') == none
 	assert leaf_rule('ANY', 'SHORT-NAME') == none
 	// an INFINITE interval bound may be empty: the attribute is the value
@@ -1979,8 +1979,9 @@ fn test_relations_the_table_cannot_state_are_said() {
 		panic(err)
 	}
 	assert (unk.cluster('') or { panic(err) }).db.messages.len == 0
-	assert unk.report.notes.any(it.contains('CAN-FRAME-TX/RX-BEHAVIOR "CAN-XL" is not one of CAN-20, CAN-FD; not read')), unk.report.notes.str()
+	assert unk.report.notes.any(it.contains('frame F is not read: its CAN-FRAME-TX-BEHAVIOR was refused')), unk.report.notes.str()
 	assert unk.report.notes.any(it.contains('/CAN-FRAME-TX-BEHAVIOR "CAN-XL" is not one of CAN-20, CAN-FD; not read')), unk.report.notes.str()
+	assert unk.report.notes.filter(it.contains('CAN-XL')).len == 1, unk.report.notes.str()
 	// a STANDARD frame's id must fit 11 bits, which is a relation between two leaves
 	wide := parse_arxml(arxml_head + cluster_xml('Bus', 4096, '/Frames/F') + offset_pdu_xml + arxml_tail) or {
 		panic(err)
@@ -2001,7 +2002,7 @@ fn test_relations_the_table_cannot_state_are_said() {
 	zero := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace('<DATA-LENGTH>32</DATA-LENGTH><DATA-OFFSET>0</DATA-OFFSET>', '<DATA-LENGTH>0</DATA-LENGTH><DATA-OFFSET>0</DATA-OFFSET>') + arxml_tail) or {
 		panic(err)
 	}
-	assert zero.report.notes.any(it.contains('DATA-LENGTH 0 is outside 1..512')), zero.report.notes.str()
+	assert zero.report.notes.any(it.contains('DATA-LENGTH 0 is outside 1..1048576')), zero.report.notes.str()
 	// two scales on one raw key with two labels: the first is kept and the clash is said
 	dup := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>1</LOWER-LIMIT><UPPER-LIMIT>1</UPPER-LIMIT><COMPU-CONST><VT>One</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>1</LOWER-LIMIT><UPPER-LIMIT>1</UPPER-LIMIT><COMPU-CONST><VT>Uno</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>2</LOWER-LIMIT><UPPER-LIMIT>2</UPPER-LIMIT><COMPU-CONST><VT>Two</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>' + arxml_tail) or {
 		panic(err)
@@ -2059,4 +2060,79 @@ fn test_declared_schema_is_recorded_and_judged() {
 		cluster: c.bus
 	}, a.report)
 	assert text.contains('schema=AUTOSAR_4-2-2 dropped='), text
+}
+
+// What the self-review of #280 found: the pass sees only what is PRESENT, so an absence and the
+// schema's own non-number spellings are the extractor's to say; the pass walks every bus, so its
+// bounds must not be CAN-sized; and an empty enumeration is refused by both sides alike.
+fn test_self_review_of_the_leaf_table() {
+	// a port with no COMMUNICATION-DIRECTION at all is said, not skipped in silence
+	ecus := '<AR-PACKAGE><SHORT-NAME>ECUs</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>E</SHORT-NAME><CONNECTORS><CAN-COMMUNICATION-CONNECTOR><SHORT-NAME>Conn</SHORT-NAME><ECU-COMM-PORT-INSTANCES><FRAME-PORT><SHORT-NAME>P_Out</SHORT-NAME></FRAME-PORT></ECU-COMM-PORT-INSTANCES></CAN-COMMUNICATION-CONNECTOR></CONNECTORS></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>'
+	ft_port := '<IDENTIFIER>256</IDENTIFIER><FRAME-PORT-REFS><FRAME-PORT-REF DEST="FRAME-PORT">/ECUs/E/Conn/P_Out</FRAME-PORT-REF></FRAME-PORT-REFS></CAN-FRAME-TRIGGERING>'
+	nodir := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER></CAN-FRAME-TRIGGERING>', ft_port) + offset_pdu_xml + ecus + arxml_tail) or {
+		panic(err)
+	}
+	assert (nodir.cluster('') or { panic(err) }).db.messages[0].sender == ''
+	assert nodir.report.notes.any(it.contains('/ECUs/E/Conn/P_Out: no COMMUNICATION-DIRECTION; the port is not read')), nodir.report.notes.str()
+	// an INFINITE bound with no value, and INF as a value: the range is not read, and said
+	dc := '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><DATA-CONSTR-REF DEST="DATA-CONSTR">/DC/D</DATA-CONSTR-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE><AR-PACKAGE><SHORT-NAME>DC</SHORT-NAME><ELEMENTS><DATA-CONSTR><SHORT-NAME>D</SHORT-NAME><DATA-CONSTR-RULES><DATA-CONSTR-RULE><PHYS-CONSTRS>@BOUNDS@</PHYS-CONSTRS></DATA-CONSTR-RULE></DATA-CONSTR-RULES></DATA-CONSTR></ELEMENTS></AR-PACKAGE>'
+	linked := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>')
+	inf := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + linked + dc.replace('@BOUNDS@', '<LOWER-LIMIT INTERVAL-TYPE="INFINITE"></LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT>') + arxml_tail) or {
+		panic(err)
+	}
+	assert sig((inf.cluster('') or { panic(err) }).db.messages[0], 'V').maximum == 0
+	assert inf.report.notes.any(it.contains('LOWER-LIMIT has no value (INTERVAL-TYPE INFINITE); not read')), inf.report.notes.str()
+	lit := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + linked + dc.replace('@BOUNDS@', '<LOWER-LIMIT>-INF</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT>') + arxml_tail) or {
+		panic(err)
+	}
+	assert lit.report.notes.any(it.contains('LOWER-LIMIT -INF is not a finite bound; not read')), lit.report.notes.str()
+	assert !lit.report.notes.any(it.contains('is not a number')), lit.report.notes.str()
+	// a scale with one bound and not the other: no domain, said
+	poly := '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/L</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>L</SHORT-NAME><CATEGORY>LINEAR</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>0</LOWER-LIMIT><COMPU-RATIONAL-COEFFS><COMPU-NUMERATOR><V>0</V><V>1</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR></COMPU-RATIONAL-COEFFS></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	half := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + linked + poly + arxml_tail) or {
+		panic(err)
+	}
+	assert half.report.notes.any(it.contains('/CM/L: a scale with a LOWER-LIMIT and no UPPER-LIMIT; the domain is not read')), half.report.notes.str()
+	// an EMPTY enumeration element is refused by the extractor too, not read as the default
+	empty_mode := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE>', '<CAN-ADDRESSING-MODE></CAN-ADDRESSING-MODE>') + offset_pdu_xml + arxml_tail) or {
+		panic(err)
+	}
+	assert (empty_mode.cluster('') or { panic(err) }).db.messages.len == 0
+	assert empty_mode.report.notes.any(it.contains('frame F is not read: its CAN-ADDRESSING-MODE was refused')), empty_mode.report.notes.str()
+	assert empty_mode.report.notes.filter(it.contains('CAN-ADDRESSING-MODE')).len == 2, empty_mode.report.notes.str()
+	// a missing IDENTIFIER is the extractor's to say, in the frame line
+	noid := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>', '') + offset_pdu_xml + arxml_tail) or {
+		panic(err)
+	}
+	assert noid.report.notes.any(it.contains('frame F is not read: no IDENTIFIER')), noid.report.notes.str()
+	// the pass walks every bus: an Ethernet PDU of 1400 bytes and a FlexRay mapping at bit 1600
+	// beside the CAN cluster are valid, and file nothing
+	eth := '<AR-PACKAGE><SHORT-NAME>Eth</SHORT-NAME><ELEMENTS><ETHERNET-CLUSTER><SHORT-NAME>E</SHORT-NAME></ETHERNET-CLUSTER><I-SIGNAL-I-PDU><SHORT-NAME>Big</SHORT-NAME><LENGTH>1400</LENGTH></I-SIGNAL-I-PDU><FLEXRAY-FRAME><SHORT-NAME>FrF</SHORT-NAME><FRAME-LENGTH>254</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME><START-POSITION>1600</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></FLEXRAY-FRAME></ELEMENTS></AR-PACKAGE>'
+	multi := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + eth + arxml_tail) or {
+		panic(err)
+	}
+	assert !multi.report.notes.any(it.starts_with('/Eth/')), multi.report.notes.str()
+	assert (multi.cluster('') or { panic(err) }).db.messages.len == 1
+	// a SecOC payload that is not an I-SIGNAL-I-PDU still has a LENGTH the table knows
+	mux := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(4).replace('<I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</I-PDU-REF>', '<I-PDU-REF DEST="MULTIPLEXED-I-PDU">/PDUs/P</I-PDU-REF>').replace('<I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL-I-PDU>', '<MULTIPLEXED-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH></MULTIPLEXED-I-PDU>') + arxml_tail) or {
+		panic(err)
+	}
+	assert !mux.report.notes.any(it.contains('no rule')), mux.report.notes.str()
+	assert ((mux.cluster('') or { panic(err) }).frame_of((mux.cluster('') or { panic(err) }).db.messages[0]) or { panic('no frame') }).secoc != none
+	// one exponent grammar: `10e+-1` is not an integer to int_text either
+	assert int_text('X', '10e+-1', 0, 100) or { -1 } == -1
+	assert integral_literal('1e+-0') == false
+	assert (int_text('X', '1E+2', 0, 1000) or { -1 }) == 100
+	// the schema variants AUTOSAR ships beside every release are 4.x too
+	assert schema_is_4x('AUTOSAR_4-2-2_STRICT')
+	assert schema_is_4x('AUTOSAR_00046_COMPACT')
+	assert schema_is_4x('AUTOSAR_4-3-0_STRICT_COMPACT')
+	assert !schema_is_4x('AUTOSAR_3-2-3_STRICT')
+	// a refused DATA-ID-MODE refuses the export, as its note says it is not read
+	mode_bad := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET><DATA-ID-MODE>SOMETIMES</DATA-ID-MODE>') + arxml_tail) or {
+		panic(err)
+	}
+	assert mode_bad.report.notes.any(it.contains('DATA-ID-MODE "SOMETIMES" is not one of')), mode_bad.report.notes.str()
+	mc := mode_bad.cluster('') or { panic(err) }
+	assert mc.e2e_signals(mc.db.messages[0]) == none
 }

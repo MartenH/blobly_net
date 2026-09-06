@@ -28,7 +28,8 @@ enum LeafKind {
 	choice
 }
 
-// Leaf is one rule: what the element `tag` may hold when its parent is `at` ('*' for any).
+// Leaf is one rule: what the element `tag` may hold when its parent is `at` — one parent, several
+// separated by `|`, or '*' for any.
 struct Leaf {
 	at      string
 	tag     string
@@ -40,28 +41,40 @@ struct Leaf {
 
 const leaf_any = '*'
 
+// The PDU kinds a LENGTH in bytes belongs to — every one a frame may carry, since a SecOC
+// payload may be any of them and the extent rule asks each.
+const pdu_kinds = 'I-SIGNAL-I-PDU|SECURED-I-PDU|MULTIPLEXED-I-PDU|CONTAINER-I-PDU|N-PDU|NM-PDU|DCM-I-PDU|USER-DEFINED-I-PDU|USER-DEFINED-PDU|GENERAL-PURPOSE-I-PDU|GENERAL-PURPOSE-PDU|XCP-PDU|J-1939-DCM-I-PDU'
+
+// The schema's own spellings of a bound that is not a number (the Limit type): accepted by the
+// table, and read by the extractor as "no finite bound", said.
+const non_finite_limits = ['INF', '-INF', 'NaN']
+
 // The table. A row per leaf the extractor reads; the parent narrows a tag that means different
 // things in different places (LENGTH of a signal is bits and may be wide, LENGTH of a PDU is
-// bytes and at most a frame). Bounds are inclusive.
+// bytes). Bounds are inclusive — and BUS-AGNOSTIC where the element is: the pass walks the whole
+// file, and a gateway ECU's description carries Ethernet PDUs of 1400 bytes and FlexRay mappings
+// at bit 1600 beside the CAN cluster this reader extracts. The CAN limits are RELATIONS on the
+// frame (a PDU past its frame, a signal past its PDU, a frame over 64 bytes), stated where the
+// frame is known — only the elements that are CAN by name (CAN-FRAME, CAN-FRAME-TRIGGERING)
+// carry CAN bounds here.
 const arxml_leaves = [
 	// widths, positions, counts — integers
 	Leaf{'I-SIGNAL', 'LENGTH', .integer, 1, 1 << 20, []}, // bits; the 64-bit scalar limit is the extractor's, said there
-	Leaf{'I-SIGNAL-I-PDU', 'LENGTH', .integer, 0, 64, []}, // bytes, at most a CAN-FD frame
-	Leaf{'SECURED-I-PDU', 'LENGTH', .integer, 0, 64, []},
+	Leaf{pdu_kinds, 'LENGTH', .integer, 0, 65535, []}, // bytes; the frame it must fit is a relation
 	Leaf{'CAN-FRAME', 'FRAME-LENGTH', .integer, 0, 64, []},
 	Leaf{'CAN-FRAME-TRIGGERING', 'IDENTIFIER', .integer, 0, 0x1FFFFFFF, []}, // 29 bits; the 11-bit STANDARD bound is relational, in frame_admission
-	Leaf{'PDU-TO-FRAME-MAPPING', 'START-POSITION', .integer, 0, 512, []},
-	Leaf{'I-SIGNAL-TO-I-PDU-MAPPING', 'START-POSITION', .integer, 0, 512, []},
-	Leaf{'I-SIGNAL-TO-I-PDU-MAPPING', 'UPDATE-BIT-POSITION', .integer, 0, 512, []},
-	Leaf{leaf_any, 'CRC-OFFSET', .integer, 0, 512, []},
-	Leaf{leaf_any, 'COUNTER-OFFSET', .integer, 0, 512, []},
-	Leaf{'END-TO-END-PROFILE', 'OFFSET', .integer, 0, 512, []},
-	Leaf{leaf_any, 'DATA-OFFSET', .integer, 0, 512, []},
-	Leaf{leaf_any, 'DATA-LENGTH', .integer, 1, 512, []}, // a zero-length protected window disabled the in-window check (#280)
+	Leaf{'PDU-TO-FRAME-MAPPING', 'START-POSITION', .integer, 0, 1 << 20, []}, // bits; the frame bounds it
+	Leaf{'I-SIGNAL-TO-I-PDU-MAPPING', 'START-POSITION', .integer, 0, 1 << 20, []}, // bits; the PDU bounds it
+	Leaf{'I-SIGNAL-TO-I-PDU-MAPPING', 'UPDATE-BIT-POSITION', .integer, 0, 1 << 20, []},
+	Leaf{leaf_any, 'CRC-OFFSET', .integer, 0, 1 << 20, []},
+	Leaf{leaf_any, 'COUNTER-OFFSET', .integer, 0, 1 << 20, []},
+	Leaf{'END-TO-END-PROFILE', 'OFFSET', .integer, 0, 1 << 20, []},
+	Leaf{leaf_any, 'DATA-OFFSET', .integer, 0, 1 << 20, []},
+	Leaf{leaf_any, 'DATA-LENGTH', .integer, 1, 1 << 20, []}, // a zero-length protected window disabled the in-window check (#280)
 	Leaf{leaf_any, 'DATA-ID', .integer, 0, 0xFFFFFFFF, []},
-	Leaf{'SECURE-COMMUNICATION-PROPS', 'FRESHNESS-VALUE-TX-LENGTH', .integer, 0, 512, []},
-	Leaf{'SECURE-COMMUNICATION-PROPS', 'AUTH-INFO-TX-LENGTH', .integer, 0, 512, []},
-	Leaf{'SECURE-COMMUNICATION-PROPS', 'FRESHNESS-VALUE-LENGTH', .integer, 0, 512, []},
+	Leaf{'SECURE-COMMUNICATION-PROPS', 'FRESHNESS-VALUE-TX-LENGTH', .integer, 0, 4096, []},
+	Leaf{'SECURE-COMMUNICATION-PROPS', 'AUTH-INFO-TX-LENGTH', .integer, 0, 4096, []},
+	Leaf{'SECURE-COMMUNICATION-PROPS', 'FRESHNESS-VALUE-LENGTH', .integer, 0, 4096, []},
 	Leaf{leaf_any, 'BAUDRATE', .integer, 0, 100000000, []},
 	Leaf{leaf_any, 'CAN-FD-BAUDRATE', .integer, 0, 100000000, []},
 	Leaf{leaf_any, 'NUMBER-OF-REPETITIONS', .integer, 0, 1000, []},
@@ -111,7 +124,7 @@ const arxml_leaves = [
 // any-parent one. None means the reader has no opinion about that element.
 fn leaf_rule(parent string, tag string) ?Leaf {
 	for l in arxml_leaves {
-		if l.tag == tag && l.at == parent {
+		if l.tag == tag && l.at != leaf_any && parent in l.at.split('|') {
 			return l
 		}
 	}
@@ -132,7 +145,9 @@ fn leaf_reason(l Leaf, text string) ?string {
 			int_text(l.tag, s, l.lo, l.hi) or { return err.msg() }
 		}
 		.number {
-			if num_text(s) == none {
+			// INF, -INF and NaN are the schema's own spellings of a bound that is not a number;
+			// the extractor says what it does with one
+			if !is_number(s) && s !in non_finite_limits {
 				return '${l.tag} "${s}" is not a number'
 			}
 		}
@@ -143,6 +158,13 @@ fn leaf_reason(l Leaf, text string) ?string {
 		}
 	}
 	return none
+}
+
+// leaf_refuses is leaf_reason as a yes/no — spelled as a function because `leaf_reason(..) != none`
+// on a call did not read as refused on this V, while the unwrapping `if` form does.
+fn leaf_refuses(l Leaf, text string) bool {
+	leaf_reason(l, text) or { return false }
+	return true
 }
 
 // leaf_int reads `text` by an integer rule, or says why not — `int_text` with the bounds looked
@@ -159,10 +181,7 @@ fn leaf_int(parent string, tag string, text string) !i64 {
 // whose text is not a value it accepts, at the path of the nearest identifiable ancestor. The
 // extractor's own readers skip such a field silently afterwards: the note is here, once.
 fn (mut r ArxmlReader) check_leaves(n xml.XMLNode, parent_tag string, parent_path string) {
-	mut path := parent_path
-	if sn := child(n, 'SHORT-NAME') {
-		path = '${parent_path}/${el_text(sn)}'
-	}
+	path := r.path_of(n, parent_path)
 	tag := lname(n)
 	if l := leaf_rule(parent_tag, tag) {
 		if !n.children.any(it is xml.XMLNode) {
@@ -198,7 +217,7 @@ fn (mut r ArxmlReader) note_schema(root xml.XMLNode) {
 		r.report.schema = 'unstated'
 		return
 	}
-	xsd := loc.trim_space().fields().last().all_after_last('/')
+	xsd := loc.trim_space().fields().last().all_after_last('/').all_after_last('\\')
 	name := if xsd.ends_with('.xsd') { xsd[..xsd.len - 4] } else { xsd }
 	r.report.schema = name
 	if !schema_is_4x(name) {
@@ -206,8 +225,17 @@ fn (mut r ArxmlReader) note_schema(root xml.XMLNode) {
 	}
 }
 
-// schema_is_4x: AUTOSAR_4-<d>-<d>, or the release-numbered AUTOSAR_000<dd> of R19-11 onwards.
-fn schema_is_4x(name string) bool {
+// schema_is_4x: AUTOSAR_4-<d>-<d>, or the release-numbered AUTOSAR_000<dd> of R19-11 onwards —
+// each also in the _STRICT, _COMPACT and _STRICT_COMPACT variants AUTOSAR ships beside every
+// release and tool exports routinely declare.
+fn schema_is_4x(full string) bool {
+	mut name := full
+	for suffix in ['_STRICT_COMPACT', '_STRICT', '_COMPACT'] {
+		if name.ends_with(suffix) {
+			name = name[..name.len - suffix.len]
+			break
+		}
+	}
 	if name.starts_with('AUTOSAR_4-') {
 		rest := name['AUTOSAR_4-'.len..]
 		return rest.len == 3 && rest[0].is_digit() && rest[1] == `-` && rest[2].is_digit()
