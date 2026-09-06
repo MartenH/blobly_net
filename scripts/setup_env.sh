@@ -28,9 +28,18 @@ if [ ! -x "$HOME/v/v" ]; then
 	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
 	git -C "$HOME/v" checkout -q FETCH_HEAD
 	make -C "$HOME/v"
-elif [ "$(git -C "$HOME/v" rev-parse HEAD 2>/dev/null || true)" != "$V_PIN" ]; then
-	echo "  note: $HOME/v is not at the pinned commit ${V_PIN:0:12} (.v-version); CI builds with that one."
-	echo "        to match it: git -C $HOME/v fetch origin $V_PIN && git -C $HOME/v checkout $V_PIN && make -C $HOME/v"
+elif ! git -C "$HOME/v" rev-parse --git-dir >/dev/null 2>&1; then
+	echo "  $HOME/v is not a git checkout of vlang/v, so it cannot be moved to the pinned commit ${V_PIN:0:12}; remove it (or move it aside) and re-run" >&2
+	exit 1
+elif [ "$(git -C "$HOME/v" rev-parse HEAD)" != "$V_PIN" ]; then
+	# an existing checkout at another commit is MOVED to the pin, not reported (codex on #282
+	# round 3): left where it was, a bench that had built V3-only master went straight on to
+	# fail the app build with it, and a pin bump never reached anyone who had run this before.
+	# Local edits in ~/v stop the checkout, and this script with it, rather than being lost
+	echo "  $HOME/v is at $(git -C "$HOME/v" rev-parse --short HEAD), not the pinned ${V_PIN:0:12} (.v-version); moving it there"
+	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
+	git -C "$HOME/v" checkout -q "$V_PIN"
+	make -C "$HOME/v"
 fi
 mkdir -p "$HOME/.local/bin"
 ln -sf "$HOME/v/v" "$HOME/.local/bin/v"
