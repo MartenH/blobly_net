@@ -151,6 +151,13 @@ fn main() {
 			eprintln('arxml2dbc: ${out} is a directory; name the file to write')
 			exit(2)
 		}
+		if dsts[k] != '' && os.exists(dsts[k]) && !os.is_file(dsts[k]) {
+			// and the same for anything else that is not a regular file — a FIFO, a socket, a
+			// device: `--dbc /dev/null` run as root would have renamed the device aside, put a
+			// file in its place and deleted the device at cleanup (round 53). `-` is stdout
+			eprintln('arxml2dbc: ${out} exists and is not a regular file; name a file to write, or - for stdout')
+			exit(2)
+		}
 		if out != '' && out != '-' && os.is_link(out) && !os.exists(out) {
 			// a link to nothing: `canon` would publish onto the LINK (its target does not exist to
 			// resolve to), replacing it with a file, and nothing says where the user meant
