@@ -471,7 +471,29 @@ def has_review_marker(text: str, sha: str) -> bool:
 
 
 def body_has_finding(text: str, sha: str) -> bool:
-    return bool(re.search(r"!\[P[0-9] Badge\]", text)) or f"/blob/{sha}" in text or f"/blob/{sha[:10]}" in text
+    return bool(re.search(r"!\[P[0-9] Badge\]", text)) or links_head(text, sha)
+
+
+def links_head(text: str, sha: str) -> bool:
+    return f"/blob/{sha[:10]}" in text
+
+
+def review_is_for(item: dict[str, Any], sha: str) -> bool:
+    """Is this review object codex's verdict on `sha`?
+
+    GitHub records the reviewed commit on the review itself (`commit_id`), so that is the
+    identity, and a review carrying one for ANOTHER commit is not this head's verdict whatever
+    its text says. The body's `**Reviewed commit:**` marker and its `/blob/<sha>/file#L..` links
+    are consulted only for a payload without the field. Body text alone was not enough: a
+    body-only review may carry links and no marker (CLAUDE.md, polling). Reviews only — a CLEAN
+    verdict on the issue-comments channel has no commit_id and no file to link, so it is
+    matched by its marker.
+    """
+    commit_id = str(item.get("commit_id") or "")
+    if commit_id:
+        return commit_id.startswith(sha[:10])
+    text = body(item)
+    return has_review_marker(text, sha) or links_head(text, sha)
 
 
 def has_exact_request_marker(item: dict[str, Any], sha: str, requester: str) -> bool:
@@ -501,7 +523,7 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
         for item in reviews
         if actor(item) == config.actor
         and is_fresh(item, config.baseline_review_id, config.requested_at, "submitted_at")
-        and has_review_marker(body(item), config.sha)
+        and review_is_for(item, config.sha)
     ]
     review = max(matching_reviews, key=item_id, default=None)
     if review:
