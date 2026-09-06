@@ -145,6 +145,40 @@ fn test_referenced_nodes_are_declared() {
 	assert again.nodes == ['A', 'R', 'S', 'T']
 }
 
+// Deleting a node means deleting it everywhere the file names it, or the writer — which
+// declares every referenced node — puts it straight back (#273 round 50).
+fn test_removing_a_node_removes_every_reference_to_it() {
+	mut db := Database{
+		nodes:    ['A', 'R', 'S']
+		messages: [
+			Message{
+				name:     'M'
+				id:       0x100
+				dlc:      8
+				sender:   'S'
+				tx_nodes: ['R']
+				signals:  [
+					Signal{
+						name:      'V'
+						length:    8
+						receivers: ['A', 'R']
+					},
+				]
+			},
+		]
+	}
+	db.remove_node('R')
+	text := db.to_dbc()
+	assert text.contains('BU_: A S\n'), text
+	assert text.contains(' SG_ V : 0|8@1+ (1,0) [0|0] "" A\n'), text
+	assert !text.contains('BO_TX_BU_'), text
+	again := parse_dbc(text) or { panic(err) }
+	assert again.nodes == ['A', 'S']
+	// removing the sender leaves the message with none, which the format spells as the placeholder
+	db.remove_node('S')
+	assert db.to_dbc().contains('BO_ 256 M: 8 Vector__XXX\n'), db.to_dbc()
+}
+
 fn test_canonical_form_is_a_fixpoint() {
 	db := full_db()
 	once := db.to_dbc()

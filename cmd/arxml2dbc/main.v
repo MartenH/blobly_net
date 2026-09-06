@@ -28,6 +28,16 @@ import v.vmod
 
 #include <fcntl.h>
 
+$if windows {
+	#include <io.h>
+} $else {
+	#include <unistd.h>
+}
+
+fn C.fsync(fd int) int
+
+fn C._commit(fd int) int
+
 fn main() {
 	args := os.args[1..].clone()
 	mut src := ''
@@ -304,7 +314,18 @@ fn stage(dst string, text string, earlier [][]string) ![]string {
 		unstage(earlier)
 		return err
 	}
-	C.close(fd)
+	// COMMITTED before it is a candidate for publication (round 50): a filesystem that reports a
+	// write failure late — at flush or at close, as networked and quota-bound ones do — would
+	// otherwise have its staging file renamed into place and announced as written
+	synced := sync_fd(fd) == 0
+	closed := C.close(fd) == 0
+	if !synced || !closed {
+		os.rm(tmp) or {}
+		why := if !synced { 'flush' } else { 'close' }
+		eprintln('arxml2dbc: ${dst}: the write did not commit (${why} failed)')
+		unstage(earlier)
+		return error('cannot commit ${tmp}')
+	}
 	if os.exists(dst) {
 		// the replacement keeps the mode of what it replaces (round 47): a 0600 database
 		// regenerated under a 022 umask came back world-readable. A new file takes the default
@@ -326,6 +347,15 @@ fn excl_create_flags() i32 {
 		return i32(0x0001 | 0x0100 | 0x0400 | 0x8000)
 	} $else {
 		return i32(C.O_WRONLY | C.O_CREAT | C.O_EXCL)
+	}
+}
+
+// sync_fd asks the OS to commit a descriptor's data before the file is judged written.
+fn sync_fd(fd i32) int {
+	$if windows {
+		return C._commit(fd)
+	} $else {
+		return C.fsync(fd)
 	}
 }
 

@@ -521,7 +521,8 @@ fn draw_dbc_editor(mut app App) {
 				vgui.same_line()
 				if !ro && vgui.small_button('-##delnode_${ni}') {
 					app.mu.lock()
-					app.dbs[di].nodes.delete(ni)
+					// everywhere the file names it, or the writer declares it again (candb.remove_node)
+					app.dbs[di].remove_node(nname)
 					app.mu.unlock()
 					app.mark_dirty(di)
 				}

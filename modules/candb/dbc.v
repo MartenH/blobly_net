@@ -81,6 +81,26 @@ pub fn (db Database) messages_from(node string) []Message {
 	return db.messages.filter(node in it.senders())
 }
 
+// remove_node forgets an ECU everywhere the database names it: the node list, and every
+// message it sends (sender or additional transmitter) or receives. The writer declares in BU_
+// every node the file REFERENCES (not only the node list, since #273 round 39: a file whose SG_
+// names an undeclared receiver is one other tools refuse), so a deletion that touched the list
+// alone came back on the next Save — the editor showed the node gone and the file kept it
+// (codex on #273 round 50). One rule here, so the editor and a script agree on what deleting
+// a node means.
+pub fn (mut db Database) remove_node(name string) {
+	db.nodes = db.nodes.filter(it != name)
+	for mut m in db.messages {
+		if m.sender == name {
+			m.sender = ''
+		}
+		m.tx_nodes = m.tx_nodes.filter(it != name)
+		for mut s in m.signals {
+			s.receivers = s.receivers.filter(it != name)
+		}
+	}
+}
+
 // load_dbc_file reads and parses a .dbc file from disk.
 pub fn load_dbc_file(path string) !Database {
 	return parse_dbc(os.read_file(path)!)!
