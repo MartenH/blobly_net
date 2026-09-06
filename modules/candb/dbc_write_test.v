@@ -110,6 +110,75 @@ fn test_write_parse_roundtrip_preserves_the_model() {
 	assert volt.factor == 0.1
 }
 
+// A node the file references — as a sender or as a signal receiver — is declared in BU_ even if
+// the node list lost it (the editor removes a node, the receivers still name it): a file whose
+// SG_ names an undeclared receiver is one other tools refuse (#273 round 39).
+fn test_referenced_nodes_are_declared() {
+	db := Database{
+		nodes:    ['A']
+		messages: [
+			Message{
+				name:     'M'
+				id:       0x100
+				dlc:      8
+				sender:   'S'
+				tx_nodes: ['T', '', 'T']
+				signals:  [
+					Signal{
+						name:      'V'
+						length:    8
+						receivers: ['R', 'A', 'R', '', 'Vector__XXX']
+					},
+				]
+			},
+		]
+	}
+	text := db.to_dbc()
+	assert text.contains('BU_: A R S T\n'), text
+	// and the SG_ list is written as the parser reads it: no placeholder beside a real receiver,
+	// no empty name, no repeat (round 44)
+	assert text.contains(' SG_ V : 0|8@1+ (1,0) [0|0] "" A,R\n'), text
+	// the additional transmitters too (round 46)
+	assert text.contains('BO_TX_BU_ 256 : T;\n'), text
+	// and it stays a fixpoint: parsing the written file yields the same nodes
+	again := parse_dbc(text) or { panic(err) }
+	assert again.nodes == ['A', 'R', 'S', 'T']
+}
+
+// Deleting a node means deleting it everywhere the file names it, or the writer — which
+// declares every referenced node — puts it straight back (#273 round 50).
+fn test_removing_a_node_removes_every_reference_to_it() {
+	mut db := Database{
+		nodes:    ['A', 'R', 'S']
+		messages: [
+			Message{
+				name:     'M'
+				id:       0x100
+				dlc:      8
+				sender:   'S'
+				tx_nodes: ['R']
+				signals:  [
+					Signal{
+						name:      'V'
+						length:    8
+						receivers: ['A', 'R']
+					},
+				]
+			},
+		]
+	}
+	db.remove_node('R')
+	text := db.to_dbc()
+	assert text.contains('BU_: A S\n'), text
+	assert text.contains(' SG_ V : 0|8@1+ (1,0) [0|0] "" A\n'), text
+	assert !text.contains('BO_TX_BU_'), text
+	again := parse_dbc(text) or { panic(err) }
+	assert again.nodes == ['A', 'S']
+	// removing the sender leaves the message with none, which the format spells as the placeholder
+	db.remove_node('S')
+	assert db.to_dbc().contains('BO_ 256 M: 8 Vector__XXX\n'), db.to_dbc()
+}
+
 fn test_canonical_form_is_a_fixpoint() {
 	db := full_db()
 	once := db.to_dbc()

@@ -3,6 +3,10 @@
 > Status: P1 SHIPPED (2026-07-20): the candb serializer (net#50) and the
 > editor panel (this PR). System viewer/wizards are roadmap (§ below),
 > deliberately NOT editors.
+>
+> An **ARXML-backed** database (a `databases:` entry ending in `.arxml`, #272) opens in the
+> editor **read-only**: Save serialises DBC text to the selected path, and that path is the
+> customer's system description. Export with `cmd/arxml2dbc` and edit the DBC it produces.
 
 ## The one idea
 

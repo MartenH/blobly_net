@@ -324,7 +324,13 @@ fn load_channel_db(ch project.Channel, proj_dir string) candb.Database {
 	// the repository root before running, so a project kept anywhere else had its relative
 	// `databases:` entries opened as written — the load failed, the database came back empty,
 	// and the simulation transmitted nothing with no error anywhere.
-	return candb.merge_files(ch.databases.map(project.resolve_asset(proj_dir, it)))
+	db, notes := candb.merge_files_report(ch.databases.map(project.resolve_asset(proj_dir, it)))
+	// what could not be opened, and what the ARXML reader had to skip: on stderr, because a
+	// refused database otherwise surfaces as failing tests with no line saying why
+	for n in notes {
+		eprintln('${ch.name}: ${n}')
+	}
+	return db
 }
 
 // sim_loop runs the channel's simulated ECUs on a dedicated in-process bus
