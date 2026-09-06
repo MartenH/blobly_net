@@ -29,11 +29,16 @@
 // DEST names the target kind), so the reader first indexes every identifiable element (one
 // with a SHORT-NAME) by its path and then follows references through that index.
 //
-// Read only; no schema validation. Two honesty rules instead, both in `ArxmlReport`:
+// Read only; no schema validation beyond arxml_leaves.v — a table of the LEAF elements this
+// reader depends on and what each may hold, checked once over the whole tree before extraction
+// (#280: the class behind fifteen review rounds of one lenient parse at a time). Three honesty
+// rules, all in `ArxmlReport`:
 //   1. a reference that does not resolve is REPORTED, by referrer and target — a dangling REF
 //      is how an extract silently yields a frame with no signals;
 //   2. what was ignored is COUNTED by element kind (container PDUs, LIN clusters, ...) — an
-//      importer that quietly drops a PDU is worse than one that refuses.
+//      importer that quietly drops a PDU is worse than one that refuses;
+//   3. a leaf value the table refuses is REPORTED, once, and the field is then not read — a
+//      lenient parser hands back 0, and 0 is a legitimate value in every field it guards.
 // `load_arxml_file` caches the parse per file content: a real file is tens of MB and seconds
 // to parse, and a project opens each channel's databases several times per Start.
 //
@@ -46,6 +51,7 @@ module candb
 
 import crypto.sha256
 import encoding.xml
+import math
 import os
 import sync
 import time
@@ -159,6 +165,7 @@ pub mut:
 	unresolved []string // "<referrer> <TAG> -> <target> (<DEST>)"
 	ignored    map[string]int // element kind -> how many were seen and not extracted
 	notes      []string // things extracted PARTIALLY, one line each
+	schema     string // the XSD the file declares (AUTOSAR_4-2-2, AUTOSAR_00046), or 'unstated'
 }
 
 // lines renders the findings for a terminal or a log, one line each.
@@ -304,30 +311,63 @@ struct FrameAdmission {
 // transport that cannot carry it; and a classic frame over 8 bytes would simulate three ways —
 // the software buses carry it, SocketCAN clamps it, the vendor backends refuse it (rounds 34–36).
 fn frame_admission(ft xml.XMLNode, frame xml.XMLNode, fname string) FrameAdmission {
+	// The values themselves are the table's business (arxml_leaves.v) and check_leaves has said
+	// what was wrong with them; the refusals here say that the FRAME is dropped for it, which
+	// is the consequence worth its own line — and add the relations the table cannot state
 	mode := child_text(ft, 'CAN-ADDRESSING-MODE').trim_space()
-	if mode !in ['', 'STANDARD', 'EXTENDED'] {
-		// read as STANDARD, an extended frame whose id fits 11 bits went out in the wrong format
-		// and could claim a standard triggering's key (round 40)
-		return FrameAdmission{
-			refusal: 'CAN-ADDRESSING-MODE "${mode}" is neither STANDARD nor EXTENDED; not read'
+	if mode != '' {
+		if l := leaf_rule('CAN-FRAME-TRIGGERING', 'CAN-ADDRESSING-MODE') {
+			if why := leaf_reason(l, mode) {
+				// read as STANDARD, an extended frame whose id fits 11 bits went out in the wrong
+				// format and could claim a standard triggering's key (round 40)
+				return FrameAdmission{
+					refusal: '${why}; not read'
+				}
+			}
 		}
 	}
 	ext := mode == 'EXTENDED'
 	// an id read as 0 for want of a number would claim the real id-0 frame; an oversized one
 	// reaches the simulator and is refused there (rounds 35–36)
-	raw_id := int_in(ft, 'IDENTIFIER', 0, if ext { i64(0x1FFFFFFF) } else { i64(0x7FF) }) or {
+	raw_id := int_in(ft, 'IDENTIFIER') or {
 		return FrameAdmission{
 			refusal: '${err.msg()}; not read'
 		}
 	}
+	if !ext && raw_id > 0x7FF {
+		return FrameAdmission{
+			refusal: 'IDENTIFIER ${raw_id} is outside 0..2047 for a STANDARD frame; not read'
+		}
+	}
 	// a simulated sender allocates its payload from the length, so a negative one panicked and
 	// one over 64 went to a transport that cannot carry it (rounds 34, 38–39)
-	dlc := int(int_in(frame, 'FRAME-LENGTH', 0, 64) or {
+	dlc := int(int_in(frame, 'FRAME-LENGTH') or {
 		return FrameAdmission{
 			refusal: 'frame ${fname} has ${err.msg()}; not read'
 		}
 	})
-	fd := child_text(ft, 'CAN-FRAME-TX-BEHAVIOR') == 'CAN-FD' || child_text(ft, 'CAN-FRAME-RX-BEHAVIOR') == 'CAN-FD'
+	// FD is what BOTH behaviours say: an unknown spelling read as classic, and TX and RX
+	// disagreeing made the frame one thing on the wire and another in the file (#280)
+	tx_b := child_text(ft, 'CAN-FRAME-TX-BEHAVIOR').trim_space()
+	rx_b := child_text(ft, 'CAN-FRAME-RX-BEHAVIOR').trim_space()
+	for b in [tx_b, rx_b] {
+		if b == '' {
+			continue
+		}
+		if l := leaf_rule('CAN-FRAME-TRIGGERING', 'CAN-FRAME-TX-BEHAVIOR') {
+			if why := leaf_reason(l, b) {
+				return FrameAdmission{
+					refusal: 'frame ${fname}: ${why.replace('CAN-FRAME-TX-BEHAVIOR', 'CAN-FRAME-TX/RX-BEHAVIOR')}; not read'
+				}
+			}
+		}
+	}
+	if tx_b != '' && rx_b != '' && tx_b != rx_b {
+		return FrameAdmission{
+			refusal: 'frame ${fname}: CAN-FRAME-TX-BEHAVIOR ${tx_b} and CAN-FRAME-RX-BEHAVIOR ${rx_b} disagree; not read'
+		}
+	}
+	fd := tx_b == 'CAN-FD' || rx_b == 'CAN-FD'
 	if !fd && dlc > 8 {
 		// a classic frame cannot carry it: the software buses would, SocketCAN clamps and the
 		// vendor backends refuse, so the same file would simulate three ways (round 35)
@@ -486,6 +526,8 @@ pub fn parse_arxml(text string) !Arxml {
 	}
 	mut r := &ArxmlReader{}
 	r.index_node(doc.root, '')
+	r.note_schema(doc.root)
+	r.check_leaves(doc.root, '', '') // every leaf the table names, once, before anything reads it
 	r.count_ignored()
 	r.name_ecus()
 	r.load_e2e()
@@ -719,7 +761,7 @@ fn (mut r ArxmlReader) load_e2e() {
 			mut ids := []u32{}
 			mut malformed := ''
 			for d in descendants(profile, 'DATA-ID') {
-				v := int_text('DATA-ID', el_text(d), 0, 0xFFFFFFFF) or {
+				v := leaf_int('DATA-IDS', 'DATA-ID', el_text(d)) or {
 					malformed = 'its ${err.msg()}'
 					continue
 				}
@@ -732,7 +774,7 @@ fn (mut r ArxmlReader) load_e2e() {
 				if child(profile, off) == none {
 					continue
 				}
-				v := int_in(profile, off, 0, 512) or {
+				v := int_in(profile, off) or {
 					malformed = 'its ${err.msg()}'
 					continue
 				}
@@ -765,7 +807,11 @@ fn (mut r ArxmlReader) load_e2e() {
 				offset: hdr_off
 			}
 			for tgt in descendants(prot, 'END-TO-END-PROTECTION-I-SIGNAL-I-PDU') {
-				ref := child(tgt, 'I-SIGNAL-I-PDU-REF') or { continue }
+				ref := child(tgt, 'I-SIGNAL-I-PDU-REF') or {
+					// a target with no reference is a contract that protects nothing, silently (#280)
+					r.report.notes << '${prot_path}: END-TO-END-PROTECTION-I-SIGNAL-I-PDU without an I-SIGNAL-I-PDU-REF; it protects nothing'
+					continue
+				}
 				_, pdu_path := r.deref_node(ref, prot_path) or { continue }
 				if pdu_path in r.e2e {
 					r.report.notes << '${pdu_path}: protected by more than one END-TO-END-PROTECTION, the first is kept'
@@ -777,13 +823,13 @@ fn (mut r ArxmlReader) load_e2e() {
 				mut d_off := 0
 				mut d_len := 0
 				if child(tgt, 'DATA-OFFSET') != none {
-					d_off = int(int_in(tgt, 'DATA-OFFSET', 0, 512) or {
+					d_off = int(int_in(tgt, 'DATA-OFFSET') or {
 						window_bad = 'its ${err.msg()}'
 						0
 					})
 				}
 				if child(tgt, 'DATA-LENGTH') != none {
-					d_len = int(int_in(tgt, 'DATA-LENGTH', 0, 512) or {
+					d_len = int(int_in(tgt, 'DATA-LENGTH') or {
 						window_bad = 'its ${err.msg()}'
 						0
 					})
@@ -845,9 +891,9 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		conds := descendants(variants, 'CAN-CLUSTER-CONDITIONAL')
 		if conds.len > 0 {
 			scope = conds[0]
-			baud = int(r.int_of(scope, 'BAUDRATE', path, 0, 100000000) or { 0 })
+			baud = int(r.int_of(scope, 'BAUDRATE', path) or { 0 })
 			if child(scope, 'CAN-FD-BAUDRATE') != none {
-				fd_baud = int(r.int_of(scope, 'CAN-FD-BAUDRATE', path, 0, 100000000) or { 0 })
+				fd_baud = int(r.int_of(scope, 'CAN-FD-BAUDRATE', path) or { 0 })
 			}
 		}
 		if conds.len > 1 {
@@ -939,7 +985,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			dir := child_text(port, 'COMMUNICATION-DIRECTION').trim_space()
 			if dir !in ['OUT', 'IN'] {
 				// read as IN, a malformed sender port left the frame with no transmitter (round 42)
-				r.report.notes << '${port_path}: COMMUNICATION-DIRECTION "${dir}" is neither OUT nor IN; the port is not read'
+				// which value it was, check_leaves said
 				continue
 			}
 			note_node(mut nodes, ecu)
@@ -972,7 +1018,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				ecu := r.ecu_of(port_path) or { continue }
 				dir := child_text(port, 'COMMUNICATION-DIRECTION').trim_space()
 				if dir !in ['OUT', 'IN'] {
-					r.report.notes << '${port_path}: COMMUNICATION-DIRECTION "${dir}" is neither OUT nor IN; the port is not read'
+					// which value it was, check_leaves said
 					continue
 				}
 				note_node(mut nodes, ecu)
@@ -1018,10 +1064,20 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			// VALIDATED BEFORE the byte normalisation below, bounded: -1 rounded to byte 0, -8 with
 			// a signal at 16 came out at frame bit 8, a missing or non-numeric position read as 0
 			// shifted every signal of the PDU, and an overflowing one did the same (rounds 38–40)
-			pdu_pos := int(r.int_of(pm, 'START-POSITION', '${ft_path}: PDU ${child_text(pdu, 'SHORT-NAME')}', 0, 512) or {
+			pdu_pos := int(r.int_of(pm, 'START-POSITION', '${ft_path}: PDU ${child_text(pdu, 'SHORT-NAME')}') or {
 				continue
 			})
 			pdu_off := (pdu_pos / 8) * 8
+			// the WHOLE PDU inside the frame, not only its first byte: an 8-byte PDU at byte 4 of
+			// an 8-byte frame imported its first four bytes of signals and lost the rest (#280)
+			if lname(pdu) in ['I-SIGNAL-I-PDU', 'SECURED-I-PDU'] {
+				if plen := int_in(pdu, 'LENGTH') {
+					if pdu_off + int(plen) * 8 > dlc * 8 {
+						r.report.notes << '${ft_path}: PDU ${child_text(pdu, 'SHORT-NAME')} (${plen} bytes) at byte ${pdu_off / 8} runs past the ${dlc}-byte frame ${fname}; not read'
+						continue
+					}
+				}
+			}
 			if pdu_pos % 8 != 0 && pdu_pos % 8 != 7 {
 				r.report.notes << '${ft_path}: PDU ${child_text(pdu, 'SHORT-NAME')} starts at bit ${pdu_pos} of frame ${fname}, not on a byte; read from byte ${pdu_pos / 8}'
 			}
@@ -1052,8 +1108,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				if first_pdu {
 					// no layout at all from an unreadable authentic length: computed from a zero-byte
 					// payload it advertised freshness and MAC positions at the wrong offsets (round 41)
-					if authentic := r.int_of(sig_pdu, 'LENGTH', sig_pdu_path, 0, 64) {
-						info.secoc = r.load_secoc(pdu, pdu_path, int(authentic), pdu_off)
+					if authentic := r.int_of(sig_pdu, 'LENGTH', sig_pdu_path) {
+						info.secoc = r.load_secoc(pdu, pdu_path, int(authentic), pdu_off, dlc)
 					}
 					if info.secoc != none {
 						// CARRIED, NOT APPLIED, like E2E below — and with less behind it: the
@@ -1082,10 +1138,15 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				}
 			}
 			ubp := child_text(sig_pdu, 'UNUSED-BIT-PATTERN').trim_space()
-			if ubp != '' && (!integral_literal(ubp) || parse_int(ubp) != 0) {
+			if ubp != '' {
 				// the fill of every bit no signal maps; the simulated ECUs fill with 0, and a
-				// checksum over the completed payload sees that 0 (codex on #273 round 15)
-				r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not modelled; the simulated ECUs fill unmapped bits with 0, which any checksum over the payload also sees'
+				// checksum over the completed payload sees that 0 (codex on #273 round 15). Read
+				// by its table row: an overflowing pattern was 0 to parse_int, so "modelled" (#280)
+				if ubp_v := int_in(sig_pdu, 'UNUSED-BIT-PATTERN') {
+					if ubp_v != 0 {
+						r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not modelled; the simulated ECUs fill unmapped bits with 0, which any checksum over the payload also sees'
+					}
+				}
 			}
 			mut pdu_rx := frame_rx.clone()
 			for ecu in r.pdu_in[sig_pdu_path] {
@@ -1296,7 +1357,7 @@ fn (mut r ArxmlReader) load_timing(pdu xml.XMLNode, pdu_path string) ArxmlTiming
 	if ev := first(tt, 'EVENT-CONTROLLED-TIMING') {
 		mode = if mode == 'cyclic' { 'mixed' } else { 'event' }
 		if child(ev, 'NUMBER-OF-REPETITIONS') != none {
-			reps = int(r.int_of(ev, 'NUMBER-OF-REPETITIONS', pdu_path, 0, 1000) or { 0 })
+			reps = int(r.int_of(ev, 'NUMBER-OF-REPETITIONS', pdu_path) or { 0 })
 		}
 		if rp := first(ev, 'REPETITION-PERIOD') {
 			rep_ms = r.timing_ms(first_text(rp, 'VALUE'), pdu_path, 'REPETITION-PERIOD')
@@ -1322,8 +1383,8 @@ fn (mut r ArxmlReader) timing_ms(s string, at string, what string) int {
 	}
 	if !is_number(s) {
 		// read as 0 through the lenient float parser, a `TIME-PERIOD` of `x` left a cyclic
-		// frame with no cycle and the simulation sending nothing, without a word (round 40)
-		r.report.notes << '${at}: ${what} "${s.trim_space()}" is not a number; read as none'
+		// frame with no cycle and the simulation sending nothing, without a word (round 40);
+		// which value it was, check_leaves said
 		return 0
 	}
 	secs := parse_num(s)
@@ -1345,17 +1406,17 @@ fn (mut r ArxmlReader) timing_ms(s string, at string, what string) int {
 // load_secoc reads a SECURED-I-PDU's layout; `authentic` is the payload PDU's length in bytes
 // (the caller has already followed PAYLOAD-REF, so a dangling one is reported once) and
 // `pdu_off` where the secured PDU sits in its frame, so the positions are frame-relative.
-fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic int, pdu_off int) ?ArxmlSecOc {
+fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic int, pdu_off int, dlc int) ?ArxmlSecOc {
 	props := first(pdu, 'SECURE-COMMUNICATION-PROPS') or {
 		r.report.notes << '${pdu_path}: SECURED-I-PDU without SECURE-COMMUNICATION-PROPS, layout unknown'
 		return none
 	}
 	// every length bounded and fallible: read as 0 or negative, the modulo checks below still
 	// called the layout byte-aligned and the fragment showed `mac_len = 0` (round 40)
-	fresh_tx := int(r.int_of(props, 'FRESHNESS-VALUE-TX-LENGTH', pdu_path, 0, 512) or { return none })
-	auth_tx := int(r.int_of(props, 'AUTH-INFO-TX-LENGTH', pdu_path, 0, 512) or { return none })
-	fresh_len := int(r.int_of(props, 'FRESHNESS-VALUE-LENGTH', pdu_path, 0, 512) or { return none })
-	sec_id := u32(r.int_of(props, 'DATA-ID', pdu_path, 0, 0xFFFFFFFF) or { return none })
+	fresh_tx := int(r.int_of(props, 'FRESHNESS-VALUE-TX-LENGTH', pdu_path) or { return none })
+	auth_tx := int(r.int_of(props, 'AUTH-INFO-TX-LENGTH', pdu_path) or { return none })
+	fresh_len := int(r.int_of(props, 'FRESHNESS-VALUE-LENGTH', pdu_path) or { return none })
+	sec_id := u32(r.int_of(props, 'DATA-ID', pdu_path) or { return none })
 	payload_freshness := child(props, 'AUTH-DATA-FRESHNESS-START-POSITION') != none
 	if payload_freshness {
 		r.report.notes << '${pdu_path}: AUTH-DATA-FRESHNESS (freshness taken from the payload) is not modelled; no byte layout is given'
@@ -1373,9 +1434,15 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 	}
 	// and the whole layout inside the SECURED PDU: authentic bytes, then freshness, then MAC —
 	// positions past its LENGTH were advertised as a usable byte layout (round 42)
-	secured_len := int(r.int_of(pdu, 'LENGTH', pdu_path, 0, 64) or { return none })
+	secured_len := int(r.int_of(pdu, 'LENGTH', pdu_path) or { return none })
 	if authentic * 8 + fresh_tx + auth_tx > secured_len * 8 {
 		r.report.notes << '${pdu_path}: ${authentic} authentic bytes + ${fresh_tx}-bit freshness + ${auth_tx}-bit MAC exceed the ${secured_len}-byte secured PDU; no byte layout is given'
+		return none
+	}
+	// and inside the FRAME: a secured PDU mapped 4 bytes into an 8-byte frame advertised
+	// freshness and MAC positions past the frame (#280)
+	if pdu_off + authentic * 8 + fresh_tx + auth_tx > dlc * 8 {
+		r.report.notes << '${pdu_path}: the secured layout at byte ${pdu_off / 8} runs past the ${dlc}-byte frame; no byte layout is given'
 		return none
 	}
 	return ArxmlSecOc{
@@ -1403,15 +1470,22 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 	// the PDU's own length bounds its signals: the frame check alone let a 16-bit signal of a
 	// one-byte PDU run into the PDU behind it (round 41). Unreadable, said and NO signals: a
 	// bound that cannot be applied is not one that may be skipped (round 42)
-	pdu_len := int(r.int_of(pdu, 'LENGTH', pdu_path, 0, 64) or { return out, paths })
+	pdu_len := int(r.int_of(pdu, 'LENGTH', pdu_path) or { return out, paths })
 	for m in descendants(pdu, 'I-SIGNAL-TO-I-PDU-MAPPING') {
-		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually
+		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually — and
+		// a mapping with NEITHER reference maps nothing, which is said rather than skipped (#280)
+		if child(m, 'I-SIGNAL-REF') == none {
+			if child(m, 'I-SIGNAL-GROUP-REF') == none {
+				r.report.notes << '${r.path_of(m, pdu_path)}: I-SIGNAL-TO-I-PDU-MAPPING with neither I-SIGNAL-REF nor I-SIGNAL-GROUP-REF; not read'
+			}
+			continue
+		}
 		isig, isig_path := r.deref(m, 'I-SIGNAL-REF', r.path_of(m, pdu_path)) or { continue }
 		mut name := child_text(isig, 'SHORT-NAME')
 		// missing, zero or malformed: no width to decode at, and `1 << (length - 1)` below it
 		// would be a negative shift. Reported and left out, before its name is claimed (rounds
 		// 33, 40); wider than 64 has its own line below
-		length := int(r.int_of(isig, 'LENGTH', isig_path, 1, 1 << 20) or { continue })
+		length := int(r.int_of(isig, 'LENGTH', isig_path) or { continue })
 		if length > 64 {
 			// the model decodes into a u64 and the DBC writer assumes a width-sized scalar:
 			// a wider signal would lose its top bits in silence. Reported and left out — BEFORE
@@ -1422,12 +1496,12 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		}
 		// read as 0 for want of a number, the signal landed at the PDU's first bit over whatever
 		// sits there; negative, it indexed below the payload (rounds 35, 37, 40)
-		in_pdu := int(r.int_of(m, 'START-POSITION', isig_path, 0, 512) or { continue })
+		in_pdu := int(r.int_of(m, 'START-POSITION', isig_path) or { continue })
 		start := in_pdu + pdu_off
 		if child(m, 'UPDATE-BIT-POSITION') != none {
 			// a receiver may treat the signal as not updated while the bit is clear, and a
 			// simulated frame leaves every unlisted bit clear — said, since nothing sets it
-			if ubit := int_in(m, 'UPDATE-BIT-POSITION', 0, 512) {
+			if ubit := int_in(m, 'UPDATE-BIT-POSITION') {
 				r.report.notes << '${isig_path}: declares an update bit at bit ${ubit + pdu_off}; not modelled, a simulated frame leaves it clear'
 			} else {
 				r.report.notes << '${isig_path}: ${err.msg()}; the update bit is not modelled either way'
@@ -1443,8 +1517,8 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			continue
 		}
 		if packing !in ['', 'MOST-SIGNIFICANT-BYTE-FIRST', 'MOST-SIGNIFICANT-BYTE-LAST', 'OPAQUE'] {
-			// read as little-endian, a typo in a big-endian mapping changed every value (round 41)
-			r.report.notes << '${isig_path}: PACKING-BYTE-ORDER "${packing}" is not MOST-SIGNIFICANT-BYTE-FIRST, -LAST or OPAQUE; not read'
+			// read as little-endian, a typo in a big-endian mapping changed every value (round 41);
+			// which value it was, check_leaves said
 			continue
 		}
 		order := if packing == 'MOST-SIGNIFICANT-BYTE-FIRST' {
@@ -1471,8 +1545,12 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			// about the simulated outcome of a signal the model does not carry
 			if num := child(iv, 'NUMERICAL-VALUE-SPECIFICATION') {
 				ivt := child_text(num, 'VALUE').trim_space()
-				if parse_num(ivt) != 0 {
-					r.report.notes << '${isig_path}: declares an initial value of ${ivt}; not modelled, the simulated ECUs start it at raw 0'
+				// by the fallible reader: a VALUE that was not a number read as the supported 0
+				// (#280); one that is not, check_leaves said
+				if iv_v := num_text(ivt) {
+					if iv_v != 0 {
+						r.report.notes << '${isig_path}: declares an initial value of ${ivt}; not modelled, the simulated ECUs start it at raw 0'
+					}
 				}
 			} else {
 				r.report.notes << '${isig_path}: declares an initial value in a form not read (not a NUMERICAL-VALUE-SPECIFICATION); not modelled, the simulated ECUs start it at raw 0'
@@ -1781,7 +1859,12 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				neg_lo := lo.trim_space().starts_with('-') && k_lo != 0
 				neg_hi := hi.trim_space().starts_with('-') && k_hi != 0
 				if singleton && neg_lo == neg_hi && k_lo == k_hi {
-					if neg_lo {
+					// one label per raw value: a second scale on the same key kept whichever came
+					// LAST, so the table depended on document order in silence (#280)
+					prev := if neg_lo { neg_values[k_lo] or { '' } } else { values[k_lo] or { '' } }
+					if prev != '' && prev != label {
+						r.report.notes << '${cm_path}: raw ${lo.trim_space()} is labelled both "${prev}" and "${label}"; the first is kept'
+					} else if neg_lo {
 						neg_values[k_lo] = label
 					} else {
 						values[k_lo] = label
@@ -1794,14 +1877,12 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 			if rc := first(s, 'COMPU-RATIONAL-COEFFS') {
 				mut num := []f64{}
 				mut den := []f64{}
-				mut bad := false // separate from the text: an EMPTY <V/> is not a number either,
-				// and as the sentinel it read as "none bad" and became a coefficient of 0 (round 55)
-				mut bad_coeff := ''
+				mut bad := false // a flag, not the text: an EMPTY <V/> is not a number either, and
+				// as the sentinel it read as "none bad" and became a coefficient of 0 (round 55)
 				if nn := first(rc, 'COMPU-NUMERATOR') {
 					for v in descendants(nn, 'V') {
 						if !is_number(el_text(v)) {
 							bad = true
-							bad_coeff = el_text(v).trim_space()
 						}
 						num << parse_num(el_text(v))
 					}
@@ -1810,14 +1891,13 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 					for v in descendants(dd, 'V') {
 						if !is_number(el_text(v)) {
 							bad = true
-							bad_coeff = el_text(v).trim_space()
 						}
 						den << parse_num(el_text(v))
 					}
 				}
 				if bad {
-					// read as 0, a malformed coefficient invented an offset or a factor (round 41)
-					r.report.notes << '${cm_path}: rational coefficient "${bad_coeff}" is not a number; the scale is not read'
+					// read as 0, a malformed coefficient invented an offset or a factor (round 41);
+					// which one, check_leaves said
 					continue
 				}
 				if num.len == 0 {
@@ -1867,10 +1947,9 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				lo_n := num_text(lo)
 				hi_n := num_text(hi)
 				if (lo != '' || hi != '') && (lo_n == none || hi_n == none) {
-					// a bound that is PRESENT and not a number: the domain is not read, and
-					// said — silently false, the signal took the unspecified [0|0] range and
-					// the provenance called the read complete (round 44)
-					r.report.notes << '${cm_path}: scale bounds LOWER-LIMIT "${lo.trim_space()}" and UPPER-LIMIT "${hi.trim_space()}" are not both numbers; the domain is not read'
+					// a bound that is PRESENT and not a number: the domain is not read —
+					// silently false, the signal took the unspecified [0|0] range and the
+					// provenance called the read complete (round 44); check_leaves said which
 				} else if lo_n != none && hi_n != none {
 					has_domain = true
 					lower = lo_n
@@ -2148,33 +2227,47 @@ fn one_sign(t string) ?string {
 	return body
 }
 
-// num_of is num_text over a child element, with the report: a bound that cannot be read is said
-// and leaves the range where it was (0, 0: unspecified) rather than inventing one (round 42).
+// num_of is num_text over a child element by its table row: a MISSING element is said here (the
+// table checks what is present); a present one that is not a number was said by check_leaves,
+// so it is skipped in silence — one note per defect (round 42, then #280).
 fn (mut r ArxmlReader) num_of(n xml.XMLNode, tag string, path string) ?f64 {
+	l := leaf_rule(lname(n), tag) or {
+		r.report.notes << '${path}: the reader has no rule for ${lname(n)}/${tag}; not read'
+		return none
+	}
+	if l.kind != .number {
+		r.report.notes << '${path}: the reader has no number rule for ${lname(n)}/${tag}; not read'
+		return none
+	}
 	c := child(n, tag) or {
-		r.report.notes << '${path}: no ${tag}; the range is not read'
+		r.report.notes << '${path}: no ${tag}; not read'
 		return none
 	}
-	v := num_text(el_text(c)) or {
-		r.report.notes << '${path}: ${tag} "${el_text(c).trim_space()}" is not a number; the range is not read'
-		return none
-	}
-	return v
+	return num_text(el_text(c)) or { return none }
 }
 
-// int_in is int_text over a child element, refusing a missing one too.
-fn int_in(n xml.XMLNode, tag string, lo i64, hi i64) !i64 {
+// int_in is int_text over a child element with the bounds the table gives it, refusing a missing
+// element and an element the table has no row for — a field read without a rule is a defect of
+// the reader, and it says so rather than inventing bounds.
+fn int_in(n xml.XMLNode, tag string) !i64 {
+	l := leaf_rule(lname(n), tag) or { return error('the reader has no rule for ${lname(n)}/${tag}') }
+	if l.kind != .integer {
+		return error('the reader has no integer rule for ${lname(n)}/${tag}')
+	}
 	c := child(n, tag) or { return error('no ${tag}') }
-	return int_text(tag, el_text(c), lo, hi)
+	return int_text(tag, el_text(c), l.lo, l.hi)
 }
 
-// int_of is int_in with the report: the refusal becomes a note at `path`, and none says "skip".
-fn (mut r ArxmlReader) int_of(n xml.XMLNode, tag string, path string, lo i64, hi i64) ?i64 {
-	v := int_in(n, tag, lo, hi) or {
-		r.report.notes << '${path}: ${err.msg()}; not read'
-		return none
+// int_of is int_in with the report, and none says "skip": a missing element (or a missing rule)
+// is said here; text the rule refuses was said by check_leaves and is skipped in silence.
+fn (mut r ArxmlReader) int_of(n xml.XMLNode, tag string, path string) ?i64 {
+	if child(n, tag) == none || leaf_rule(lname(n), tag) == none {
+		int_in(n, tag) or {
+			r.report.notes << '${path}: ${err.msg()}; not read'
+			return none
+		}
 	}
-	return v
+	return int_in(n, tag) or { return none }
 }
 
 // num_text reads a number in every form parse_num accepts — decimal, with a fraction or an
@@ -2188,7 +2281,9 @@ fn num_text(t string) ?f64 {
 		if !integral_literal(body) {
 			return none
 		}
-		return parse_num(s)
+		// past 64 bits: parse_num's fallback read `0x10000000000000000` as 0 (#280)
+		mag := body[2..].parse_uint(16, 64) or { return none }
+		return if s.starts_with('-') { -f64(mag) } else { f64(mag) }
 	}
 	if body.len == 0 || !body.bytes().any(it >= `0` && it <= `9`) {
 		return none
@@ -2205,7 +2300,23 @@ fn num_text(t string) ?f64 {
 			return none
 		}
 	}
-	return parse_num(s)
+	if body.contains_any('eE') {
+		// digits on BOTH sides of the exponent: `1e`, `1e+` and `1e.2` had a digit and only
+		// allowed characters, and read as 1 (#280)
+		e_at := body.index_any('eE')
+		exp := body[e_at + 1..].trim_left('+-')
+		if exp.len == 0 || !exp.bytes().all(it >= `0` && it <= `9`) {
+			return none
+		}
+		if !body[..e_at].bytes().any(it >= `0` && it <= `9`) {
+			return none
+		}
+	}
+	v := parse_num(s)
+	if math.is_inf(v, 0) || math.is_nan(v) {
+		return none // `1e309`: complete syntax, no finite value (#280)
+	}
+	return v
 }
 
 fn is_number(t string) bool {
