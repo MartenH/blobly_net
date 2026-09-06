@@ -14,9 +14,31 @@ sudo apt-get install -y \
 	can-utils \
 	mesa-utils xdotool imagemagick x11-utils   # diagnostics + screenshot verification
 
-echo "==> 2/5 V compiler (built from source)"
+echo "==> 2/5 V compiler (built from source, at the commit .v-version pins)"
+# The SAME commit CI builds with (.v-version), not master: V master is V3-only since 2026-09-05
+# and this repo does not build under V3, so a fresh machine that cloned master got a compiler
+# that fails on the first `-old-compiler`. GitHub serves a fetch by full SHA, so one commit
+# comes down and nothing else (codex on #282).
+V_PIN=$(tr -d '[:space:]' < .v-version)
 if [ ! -x "$HOME/v/v" ]; then
-	git clone --depth=1 https://github.com/vlang/v "$HOME/v"
+	# re-runnable: a fetch that failed once leaves the init behind, and `remote add` on it fails
+	git init -q "$HOME/v"
+	git -C "$HOME/v" remote add origin https://github.com/vlang/v 2>/dev/null \
+		|| git -C "$HOME/v" remote set-url origin https://github.com/vlang/v
+	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
+	git -C "$HOME/v" checkout -q FETCH_HEAD
+	make -C "$HOME/v"
+elif ! git -C "$HOME/v" rev-parse --git-dir >/dev/null 2>&1; then
+	echo "  $HOME/v is not a git checkout of vlang/v, so it cannot be moved to the pinned commit ${V_PIN:0:12}; remove it (or move it aside) and re-run" >&2
+	exit 1
+elif [ "$(git -C "$HOME/v" rev-parse HEAD)" != "$V_PIN" ]; then
+	# an existing checkout at another commit is MOVED to the pin, not reported (codex on #282
+	# round 3): left where it was, a bench that had built V3-only master went straight on to
+	# fail the app build with it, and a pin bump never reached anyone who had run this before.
+	# Local edits in ~/v stop the checkout, and this script with it, rather than being lost
+	echo "  $HOME/v is at $(git -C "$HOME/v" rev-parse --short HEAD), not the pinned ${V_PIN:0:12} (.v-version); moving it there"
+	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
+	git -C "$HOME/v" checkout -q "$V_PIN"
 	make -C "$HOME/v"
 fi
 mkdir -p "$HOME/.local/bin"

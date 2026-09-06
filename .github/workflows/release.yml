@@ -61,9 +61,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # the same pin as ci.yml, for the same reason (V master is V3-only): a release built with
+      # master would fail at `make` before producing its artifact (codex on #282)
       - uses: vlang/setup-v@v1.4
         with:
-          check-latest: true
+          version-file: .v-version
       # same deps as ci.yml's GUI job — the build IS scripts/run_gui.sh, the command devs
       # run, so the release binary is the binary everyone has been testing
       - name: Native deps (apt)
