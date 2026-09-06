@@ -1434,6 +1434,14 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			}
 		}
 		packing := child_text(m, 'PACKING-BYTE-ORDER').trim_space()
+		if packing == '' && length != 1 {
+			// no order declared: a multi-bit signal's START-POSITION means its LSB in one order
+			// and its MSB in the other, and its bytes read in two significances — so there is
+			// nothing to read it by, and little-endian was an invention (round 51). A one-bit
+			// signal has one bit in either reading
+			r.report.notes << '${isig_path}: no PACKING-BYTE-ORDER; a ${length}-bit signal has no byte order to be read by, not read'
+			continue
+		}
 		if packing !in ['', 'MOST-SIGNIFICANT-BYTE-FIRST', 'MOST-SIGNIFICANT-BYTE-LAST', 'OPAQUE'] {
 			// read as little-endian, a typo in a big-endian mapping changed every value (round 41)
 			r.report.notes << '${isig_path}: PACKING-BYTE-ORDER "${packing}" is not MOST-SIGNIFICANT-BYTE-FIRST, -LAST or OPAQUE; not read'

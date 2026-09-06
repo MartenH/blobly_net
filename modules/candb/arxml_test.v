@@ -1865,3 +1865,20 @@ fn test_load_database_dispatches_on_extension() {
 	assert (m.lookup(0x100) or { panic('no 0x100') }).name == 'Powertrain'
 	assert (m.lookup(0x1ABCDE) or { panic('no Wide') }).name == 'Wide'
 }
+
+// A mapping with no PACKING-BYTE-ORDER names no reading for a multi-bit signal (its start
+// position and its byte significance both depend on the order), so the signal is not read and
+// the note says why; a one-bit signal reads the same either way (round 51).
+fn test_a_mapping_without_a_byte_order_is_not_invented() {
+	mv := '<I-SIGNAL-REF DEST="I-SIGNAL">/Sig/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER>'
+	mn := '<I-SIGNAL-REF DEST="I-SIGNAL">/Sig/Ctr</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER>'
+	bare := offset_pdu_xml.replace(mv, '<I-SIGNAL-REF DEST="I-SIGNAL">/Sig/V</I-SIGNAL-REF>').replace(mn, '<I-SIGNAL-REF DEST="I-SIGNAL">/Sig/Ctr</I-SIGNAL-REF>').replace('<SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH>', '<SHORT-NAME>Ctr</SHORT-NAME><LENGTH>1</LENGTH>')
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + bare + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	names := c.db.messages[0].signals.map(it.name)
+	assert 'V' !in names, names.str()
+	assert 'Ctr' in names, names.str()
+	assert 'Crc' in names, names.str()
+	assert a.report.notes.any(it.contains('/Sig/V: no PACKING-BYTE-ORDER; a 16-bit signal has no byte order to be read by, not read')), a.report.notes.str()
+	assert !a.report.notes.any(it.contains('/Sig/Ctr: no PACKING-BYTE-ORDER')), a.report.notes.str()
+}
