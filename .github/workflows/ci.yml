@@ -92,19 +92,14 @@ jobs:
       - name: Install V (pinned — .v-version + .vc-version)
         run: |
           set -eux
+          # ONE definition of how the pinned toolchain is installed, shared with
+          # scripts/setup_env.sh and tested by scripts/v_toolchain_test.sh. Inline here it was
+          # the same incantation in three workflow steps, which is how the two halves of a pin
+          # come to disagree.
+          . scripts/v_toolchain.sh
           V_PIN=$(tr -d '[:space:]' < .v-version)
           VC_PIN=$(tr -d '[:space:]' < .vc-version)
-          git clone --filter=blob:none --quiet https://github.com/vlang/v "$RUNNER_TEMP/v"
-          git -C "$RUNNER_TEMP/v" checkout --quiet "$V_PIN"
-          git clone --filter=blob:none --quiet https://github.com/vlang/vc "$RUNNER_TEMP/v/vc"
-          git -C "$RUNNER_TEMP/v/vc" checkout --quiet "$VC_PIN"
-          # tcc FIRST and WITHOUT local=1, because local=1 disables latest_tcc as well and
-          # V keeps its bundled libgc.a inside thirdparty/tcc/lib -- without it the build
-          # gets all the way to `v run cmd/tools/detect_tcc.v` and fails to link libgc.
-          # tcc stays floating, exactly as it was before this change: it is a prebuilt C
-          # compiler bundle, it is not what broke us, and pinning it is a separate question.
-          make -C "$RUNNER_TEMP/v" latest_tcc
-          make -C "$RUNNER_TEMP/v" local=1
+          v_toolchain_install "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN"
           echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
 
       - name: V version
@@ -198,19 +193,14 @@ jobs:
       - name: Install V (pinned — .v-version + .vc-version)
         run: |
           set -eux
+          # ONE definition of how the pinned toolchain is installed, shared with
+          # scripts/setup_env.sh and tested by scripts/v_toolchain_test.sh. Inline here it was
+          # the same incantation in three workflow steps, which is how the two halves of a pin
+          # come to disagree.
+          . scripts/v_toolchain.sh
           V_PIN=$(tr -d '[:space:]' < .v-version)
           VC_PIN=$(tr -d '[:space:]' < .vc-version)
-          git clone --filter=blob:none --quiet https://github.com/vlang/v "$RUNNER_TEMP/v"
-          git -C "$RUNNER_TEMP/v" checkout --quiet "$V_PIN"
-          git clone --filter=blob:none --quiet https://github.com/vlang/vc "$RUNNER_TEMP/v/vc"
-          git -C "$RUNNER_TEMP/v/vc" checkout --quiet "$VC_PIN"
-          # tcc FIRST and WITHOUT local=1, because local=1 disables latest_tcc as well and
-          # V keeps its bundled libgc.a inside thirdparty/tcc/lib -- without it the build
-          # gets all the way to `v run cmd/tools/detect_tcc.v` and fails to link libgc.
-          # tcc stays floating, exactly as it was before this change: it is a prebuilt C
-          # compiler bundle, it is not what broke us, and pinning it is a separate question.
-          make -C "$RUNNER_TEMP/v" latest_tcc
-          make -C "$RUNNER_TEMP/v" local=1
+          v_toolchain_install "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN"
           echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
 
       # cmd/blobly_net links against the imgui C deps: g++ builds them, GLFW is the
