@@ -38,16 +38,15 @@ pin_vc() {
 	git -C "$HOME/v/vc" fetch -q --depth=1 origin "$VC_PIN"
 	git -C "$HOME/v/vc" checkout -q FETCH_HEAD
 }
+# ONE question, asked about BOTH pins: is $HOME/v already the compiler these files name?
+# "an executable exists and the V checkout is at V_PIN" stopped being sufficient the moment
+# the bootstrap became a pin too. A run whose `make` failed leaves the tree AT V_PIN with the
+# PREVIOUS $HOME/v/v still in place, so both of those tests pass and the pinned-vc build would
+# never be applied -- which is exactly the state anyone re-running this after the vc incident
+# is in (codex on #285).
+build_needed=0
 if [ ! -x "$HOME/v/v" ]; then
-	# re-runnable: a fetch that failed once leaves the init behind, and `remote add` on it fails
-	git init -q "$HOME/v"
-	git -C "$HOME/v" remote add origin https://github.com/vlang/v 2>/dev/null \
-		|| git -C "$HOME/v" remote set-url origin https://github.com/vlang/v
-	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
-	git -C "$HOME/v" checkout -q FETCH_HEAD
-	pin_vc
-	make -C "$HOME/v" latest_tcc
-	make -C "$HOME/v" local=1
+	build_needed=1
 elif ! git -C "$HOME/v" rev-parse --git-dir >/dev/null 2>&1; then
 	echo "  $HOME/v is not a git checkout of vlang/v, so it cannot be moved to the pinned commit ${V_PIN:0:12}; remove it (or move it aside) and re-run" >&2
 	exit 1
@@ -57,9 +56,25 @@ elif [ "$(git -C "$HOME/v" rev-parse HEAD)" != "$V_PIN" ]; then
 	# fail the app build with it, and a pin bump never reached anyone who had run this before.
 	# Local edits in ~/v stop the checkout, and this script with it, rather than being lost
 	echo "  $HOME/v is at $(git -C "$HOME/v" rev-parse --short HEAD), not the pinned ${V_PIN:0:12} (.v-version); moving it there"
+	build_needed=1
+elif [ "$(git -C "$HOME/v/vc" rev-parse HEAD 2>/dev/null || true)" != "$VC_PIN" ]; then
+	echo "  $HOME/v is at the pin but its bootstrap ($HOME/v/vc) is not ${VC_PIN:0:12} (.vc-version); rebuilding"
+	build_needed=1
+fi
+
+if [ "$build_needed" = 1 ]; then
+	# re-runnable: a fetch that failed once leaves the init behind, and `remote add` on it fails
+	if [ ! -e "$HOME/v/.git" ]; then
+		git init -q "$HOME/v"
+	fi
+	git -C "$HOME/v" remote add origin https://github.com/vlang/v 2>/dev/null \
+		|| git -C "$HOME/v" remote set-url origin https://github.com/vlang/v
 	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
-	git -C "$HOME/v" checkout -q "$V_PIN"
+	git -C "$HOME/v" checkout -q FETCH_HEAD
 	pin_vc
+	# tcc first and WITHOUT local=1: that flag turns off latest_tcc too, and V keeps its
+	# bundled libgc.a in thirdparty/tcc/lib -- without it the build finishes and then fails
+	# linking libgc in `v run cmd/tools/detect_tcc.v`.
 	make -C "$HOME/v" latest_tcc
 	make -C "$HOME/v" local=1
 fi
