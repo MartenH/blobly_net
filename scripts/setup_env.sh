@@ -14,12 +14,30 @@ sudo apt-get install -y \
 	can-utils \
 	mesa-utils xdotool imagemagick x11-utils   # diagnostics + screenshot verification
 
-echo "==> 2/5 V compiler (built from source, at the commit .v-version pins)"
+echo "==> 2/5 V compiler (built from source, at the commits .v-version + .vc-version pin)"
 # The SAME commit CI builds with (.v-version), not master: V master is V3-only since 2026-09-05
 # and this repo does not build under V3, so a fresh machine that cloned master got a compiler
 # that fails on the first `-old-compiler`. GitHub serves a fetch by full SHA, so one commit
 # comes down and nothing else (codex on #282).
+#
+# And the BOOTSTRAP is pinned too (.vc-version), because pinning only the source is not a pin:
+# `make` clones vlang/vc with no ref, and `latest_vc` then does `git clean -xf && git pull` on
+# it. That floated to V3 master on 2026-09-07 and broke every build with `./v2: No such file or
+# directory` -- a V3 bootstrap cannot build pre-V3 source under -old-compiler. `local=1` is what
+# holds the pin: it turns latest_vc/latest_tcc/latest_legacy into no-ops (`ifndef local` in V's
+# GNUmakefile), so nothing is pulled out from under us mid-build.
 V_PIN=$(tr -d '[:space:]' < .v-version)
+VC_PIN=$(tr -d '[:space:]' < .vc-version)
+
+# vc, at the commit generated FROM $V_PIN, placed where make expects it before make runs
+pin_vc() {
+	if [ ! -d "$HOME/v/vc/.git" ]; then
+		git init -q "$HOME/v/vc"
+		git -C "$HOME/v/vc" remote add origin https://github.com/vlang/vc 2>/dev/null 			|| git -C "$HOME/v/vc" remote set-url origin https://github.com/vlang/vc
+	fi
+	git -C "$HOME/v/vc" fetch -q --depth=1 origin "$VC_PIN"
+	git -C "$HOME/v/vc" checkout -q FETCH_HEAD
+}
 if [ ! -x "$HOME/v/v" ]; then
 	# re-runnable: a fetch that failed once leaves the init behind, and `remote add` on it fails
 	git init -q "$HOME/v"
@@ -27,7 +45,8 @@ if [ ! -x "$HOME/v/v" ]; then
 		|| git -C "$HOME/v" remote set-url origin https://github.com/vlang/v
 	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
 	git -C "$HOME/v" checkout -q FETCH_HEAD
-	make -C "$HOME/v"
+	pin_vc
+	make -C "$HOME/v" local=1
 elif ! git -C "$HOME/v" rev-parse --git-dir >/dev/null 2>&1; then
 	echo "  $HOME/v is not a git checkout of vlang/v, so it cannot be moved to the pinned commit ${V_PIN:0:12}; remove it (or move it aside) and re-run" >&2
 	exit 1
@@ -39,7 +58,8 @@ elif [ "$(git -C "$HOME/v" rev-parse HEAD)" != "$V_PIN" ]; then
 	echo "  $HOME/v is at $(git -C "$HOME/v" rev-parse --short HEAD), not the pinned ${V_PIN:0:12} (.v-version); moving it there"
 	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
 	git -C "$HOME/v" checkout -q "$V_PIN"
-	make -C "$HOME/v"
+	pin_vc
+	make -C "$HOME/v" local=1
 fi
 mkdir -p "$HOME/.local/bin"
 ln -sf "$HOME/v/v" "$HOME/.local/bin/v"

@@ -63,9 +63,34 @@ jobs:
       - uses: actions/checkout@v4
       # the same pin as ci.yml, for the same reason (V master is V3-only): a release built with
       # master would fail at `make` before producing its artifact (codex on #282)
-      - uses: vlang/setup-v@v1.4
-        with:
-          version-file: .v-version
+      # The V SOURCE is pinned by .v-version, but `make` bootstraps V by cloning vlang/vc
+      # with NO ref — so the bootstrap floated to whatever that repo's default branch held.
+      # That is not a theoretical hole: vc sat on the C generated from our exact pin from
+      # 2026-09-05 20:06 until 2026-09-07 05:31, which is the only reason the pin ever looked
+      # like one. When vc regenerated from V3 master, every Linux job on every branch failed
+      # in `make` with `./v2: No such file or directory` — a V3 bootstrap cannot build pre-V3
+      # source under -old-compiler, so v2 was never produced. Nothing in the repo had changed.
+      #
+      # So the bootstrap is pinned too (.vc-version), and `local=1` is what stops make from
+      # dragging it back: `latest_vc`, `latest_tcc` and `latest_legacy` are ALL guarded by
+      # `ifndef local` in V's GNUmakefile, and the first of them does `git clean -xf && git
+      # pull --rebase` on vc. Pre-cloning at a pin without local=1 would be undone by that
+      # pull. Done by hand rather than through vlang/setup-v because that action runs `make`
+      # itself, leaving nowhere to place the pinned clone.
+      #
+      # .vc-version must be the vc commit GENERATED FROM .v-version — its message is
+      # `[v:master] <the .v-version sha> - ...`. Bump the two together, or not at all.
+      - name: Install V (pinned — .v-version + .vc-version)
+        run: |
+          set -eux
+          V_PIN=$(tr -d '[:space:]' < .v-version)
+          VC_PIN=$(tr -d '[:space:]' < .vc-version)
+          git clone --filter=blob:none --quiet https://github.com/vlang/v "$RUNNER_TEMP/v"
+          git -C "$RUNNER_TEMP/v" checkout --quiet "$V_PIN"
+          git clone --filter=blob:none --quiet https://github.com/vlang/vc "$RUNNER_TEMP/v/vc"
+          git -C "$RUNNER_TEMP/v/vc" checkout --quiet "$VC_PIN"
+          make -C "$RUNNER_TEMP/v" local=1
+          echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
       # same deps as ci.yml's GUI job — the build IS scripts/run_gui.sh, the command devs
       # run, so the release binary is the binary everyone has been testing
       - name: Native deps (apt)
