@@ -135,6 +135,35 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## CI (GitHub Actions)
 
+- 🟢 **Pinning `.v-version` alone was never a pin — the BOOTSTRAP floated, and one morning it
+  took every branch down.** V is built from source, and `make` bootstraps it by cloning
+  **vlang/vc** (the generated C) with **no ref**, then `latest_vc` runs `git clean -xf && git
+  pull --rebase` on it. So the compiler that builds our pinned source was whatever that repo's
+  default branch happened to hold. It looked like a pin only by coincidence: vc sat on
+  `718daf02` — the C generated from our exact `.v-version` — from 2026-09-05 20:06 until
+  2026-09-07 05:31. When vc regenerated from V3 master, `make` began dying with
+  `./v2: No such file or directory` (`GNUmakefile:217`), because a V3 bootstrap will not build
+  pre-V3 source under `-old-compiler`, so `v2` was never produced.
+  **The symptom is maximally misleading**: nothing in the repo changed, the failure is in
+  *Install V* before a line of our code is touched, and the error names a file rather than a
+  version. What settled it was re-running the LAST GREEN RUN ON `main` unchanged — commit
+  `5b61858`, success at 2026-09-06 14:15Z, failure at 2026-09-07 06:33Z, same everything. If a
+  build ever fails in a way the diff cannot explain, re-run a known-green run before believing
+  anything else.
+  Fixed by pinning the bootstrap too (`.vc-version`) and building with **`make local=1`**, V's
+  own flag: `latest_vc`, `latest_tcc` and `latest_legacy` are all under `ifndef local`, so
+  nothing is pulled out from under the build. Pre-cloning at a pin WITHOUT `local=1` does not
+  work — the pull undoes it. The install step is hand-rolled rather than `vlang/setup-v`
+  because that action runs `make` itself, leaving nowhere to place the pinned clone.
+  **`make latest_tcc` runs FIRST, without `local=1`**, because that same flag also disables the
+  tcc fetch and V keeps its bundled **`libgc.a` inside `thirdparty/tcc/lib`** — with `local=1`
+  alone the bootstrap completes, `v` is built, and then the very next step (`v run
+  cmd/tools/detect_tcc.v`) fails to link libgc. tcc is left FLOATING on purpose: that is
+  exactly what it was before any of this, it is a prebuilt C compiler bundle rather than our
+  own source compiled to C, and it is not what broke us. If it ever does, pin it the same way
+  from `vlang/tccbin`, branch `thirdparty-<os>-<arch>`.
+  **`.vc-version` must be the vc commit generated from `.v-version`** — its message is
+  `[v:master] <the .v-version sha> - …`. Bump the two together or not at all.
 - 🟡 **V 0.5.2 tries its experimental V3 compiler first, and CI paid for it twice.** Every
   build attempts V3 and falls back to the established compiler when V3 cannot build the
   program — 65 of the 72 test programs on the Linux runner, each compiled twice: the test
@@ -155,11 +184,14 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   with no established compiler in it, so with the env above every Linux job on every branch
   died at toolchain setup: `` `-old-compiler` is not available: this V executable contains
   only the V3 compiler ``. This repo does not build under V3 yet, so `ci.yml` no longer takes
-  master: `vlang/setup-v` reads `.v-version`, which names the last master commit a green run
-  built (`5d34e477`, 2026-09-05 06:06 UTC) — and so do `release.yml`'s Linux job and
+  master: it builds V from source at `.v-version`, which names the last master commit a green
+  run built (`5d34e477`, 2026-09-05 06:06 UTC) — and so do `release.yml`'s Linux job and
   `scripts/setup_env.sh`, or a tagged release and a fresh bench would each build the master this
   pin exists to avoid. Bump that file to move; drop `VFLAGS=-old-compiler` in the same change,
   and expect the V3 fallback behaviour described above to be what you meet.
+  **`vlang/setup-v` is no longer how any of them install it**, and `.v-version` is no longer the
+  only pin: the bootstrap needs `.vc-version` beside it, which is what the entry above this one
+  is about. Read that one before touching either file.
 - 🟡 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**
   `makev.bat` hangs at `Compiling v_stage.exe`, independent of bootstrap compiler, final compiler,
   disk and Defender (every combination timed out at up to 90 min; the same build is ~100 s

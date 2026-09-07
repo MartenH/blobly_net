@@ -134,7 +134,11 @@ rounds on before it had a test (#278)), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
-available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged). `windows.yml`
+available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged) and
+`scripts/v_toolchain_test.sh` (when the pinned V toolchain is REBUILT, and what counts as
+evidence that it was built — a stamp naming both pins, written only after `make` succeeds;
+#285 found the same shape three rounds running, a check on the state of the inputs standing
+in for a successful build). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
 release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks — and runs
 `v test modules/isotp/` plus the cmd sweep there. Both Linux jobs set `VFLAGS=-old-compiler`
@@ -142,7 +146,18 @@ and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level (#232; why, and why an e
 than a flag in the scripts, is in `docs/known_issues.md`), and install the V named in
 **`.v-version`** — pinned, not master, since V master went V3-only on 2026-09-05 and a V3-only
 `v` refuses `-old-compiler`; `release.yml`'s Linux job and `scripts/setup_env.sh` read the same
-file. Bump it to move, together with that flag.
+file. Bump it to move, together with that flag. **TWO pins, and they move together**: V is built
+from source and `make` bootstraps it by cloning **vlang/vc**, which the makefile does with NO
+ref — so `.vc-version` pins that too, at the vc commit GENERATED FROM `.v-version` (its message
+is `[v:master] <the .v-version sha> - …`). Pinning only the source is not a pin: it merely
+worked while vc's default branch happened to hold our bootstrap, and the morning vc regenerated
+from V3 master (2026-09-07) the identical commit that had been green on `main` sixteen hours
+earlier failed in `make` with `./v2: No such file or directory` — re-running the old run
+reproduced it exactly, with nothing in the repo changed. `make local=1` is what holds the pin:
+`latest_vc`, `latest_tcc` and `latest_legacy` are all guarded by `ifndef local`, and the first
+does `git clean -xf && git pull --rebase` on vc, undoing a pinned clone mid-build. That is also
+why the install step is hand-rolled rather than `vlang/setup-v`, which runs `make` itself and
+leaves nowhere to put the pinned bootstrap.
 
 ## Conventions
 

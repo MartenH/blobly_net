@@ -14,33 +14,44 @@ sudo apt-get install -y \
 	can-utils \
 	mesa-utils xdotool imagemagick x11-utils   # diagnostics + screenshot verification
 
-echo "==> 2/5 V compiler (built from source, at the commit .v-version pins)"
+echo "==> 2/5 V compiler (built from source, at the commits .v-version + .vc-version pin)"
 # The SAME commit CI builds with (.v-version), not master: V master is V3-only since 2026-09-05
 # and this repo does not build under V3, so a fresh machine that cloned master got a compiler
 # that fails on the first `-old-compiler`. GitHub serves a fetch by full SHA, so one commit
 # comes down and nothing else (codex on #282).
+#
+# And the BOOTSTRAP is pinned too (.vc-version), because pinning only the source is not a pin:
+# `make` clones vlang/vc with no ref, and `latest_vc` then does `git clean -xf && git pull` on
+# it. That floated to V3 master on 2026-09-07 and broke every build with `./v2: No such file or
+# directory` -- a V3 bootstrap cannot build pre-V3 source under -old-compiler. `local=1` is what
+# holds the pin: it turns latest_vc/latest_tcc/latest_legacy into no-ops (`ifndef local` in V's
+# GNUmakefile), so nothing is pulled out from under us mid-build.
 V_PIN=$(tr -d '[:space:]' < .v-version)
-if [ ! -x "$HOME/v/v" ]; then
-	# re-runnable: a fetch that failed once leaves the init behind, and `remote add` on it fails
-	git init -q "$HOME/v"
-	git -C "$HOME/v" remote add origin https://github.com/vlang/v 2>/dev/null \
-		|| git -C "$HOME/v" remote set-url origin https://github.com/vlang/v
-	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
-	git -C "$HOME/v" checkout -q FETCH_HEAD
-	make -C "$HOME/v"
-elif ! git -C "$HOME/v" rev-parse --git-dir >/dev/null 2>&1; then
-	echo "  $HOME/v is not a git checkout of vlang/v, so it cannot be moved to the pinned commit ${V_PIN:0:12}; remove it (or move it aside) and re-run" >&2
-	exit 1
-elif [ "$(git -C "$HOME/v" rev-parse HEAD)" != "$V_PIN" ]; then
-	# an existing checkout at another commit is MOVED to the pin, not reported (codex on #282
-	# round 3): left where it was, a bench that had built V3-only master went straight on to
-	# fail the app build with it, and a pin bump never reached anyone who had run this before.
-	# Local edits in ~/v stop the checkout, and this script with it, rather than being lost
-	echo "  $HOME/v is at $(git -C "$HOME/v" rev-parse --short HEAD), not the pinned ${V_PIN:0:12} (.v-version); moving it there"
-	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
-	git -C "$HOME/v" checkout -q "$V_PIN"
-	make -C "$HOME/v"
-fi
+VC_PIN=$(tr -d '[:space:]' < .vc-version)
+
+# The decision and the build both live in scripts/v_toolchain.sh, tested by
+# scripts/v_toolchain_test.sh -- #285 found the same shape three rounds running (a check on
+# the state of the INPUTS standing in for "this was successfully built"), and CLAUDE.md's
+# rule for that is to cover the path rather than keep patching cases.
+. scripts/v_toolchain.sh
+
+case "$(v_toolchain_build_reason "$HOME/v" "$V_PIN" "$VC_PIN")" in
+	notgit)
+		echo "  $HOME/v is not a git checkout of vlang/v, so it cannot be moved to the pinned commit ${V_PIN:0:12}; remove it (or move it aside) and re-run" >&2
+		exit 1
+		;;
+	missing)
+		v_toolchain_install "$HOME/v" "$V_PIN" "$VC_PIN"
+		;;
+	stale)
+		# an existing checkout is MOVED to the pins, not reported (codex on #282 round 3): left
+		# where it was, a bench that had built V3-only master went straight on to fail the app
+		# build with it, and a pin bump never reached anyone who had run this before. Local
+		# edits in ~/v stop the checkout, and this script with it, rather than being lost.
+		echo "  $HOME/v was not built from ${V_PIN:0:12} + ${VC_PIN:0:12} (.v-version + .vc-version); building it"
+		v_toolchain_install "$HOME/v" "$V_PIN" "$VC_PIN"
+		;;
+esac
 mkdir -p "$HOME/.local/bin"
 ln -sf "$HOME/v/v" "$HOME/.local/bin/v"
 export PATH="$HOME/.local/bin:$PATH"
