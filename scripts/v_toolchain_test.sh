@@ -23,6 +23,14 @@ cd "$(dirname "$0")/.."
 . scripts/v_toolchain.sh
 
 pass=0; fail=0
+
+# Fixture commits carry their OWN identity. A GitHub runner -- and a clean developer account --
+# has no global user.name/user.email, so `git commit` there dies with "Author identity unknown",
+# which is how this suite turned the very CI job it was added to protect red (codex round 4 on
+# #285). Nothing here is ever pushed; the identity exists only so `git commit` will run.
+tgit() {
+	git -c user.name=blobly-test -c user.email=fixture@blobly.invalid "$@"
+}
 ok() { if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1"; echo "  want: $3"; echo "  got:  $2"; fi; }
 
 work=$(mktemp -d)
@@ -36,8 +44,8 @@ make_vdir() {
 	d=$1
 	mkdir -p "$d/vc"
 	printf '#!/bin/sh\necho fake v\n' > "$d/v"; chmod +x "$d/v"
-	git init -q "$d"; git -C "$d" commit -q --allow-empty -m v1
-	git init -q "$d/vc"; git -C "$d/vc" commit -q --allow-empty -m vc1
+	git init -q "$d"; tgit -C "$d" commit -q --allow-empty -m v1
+	git init -q "$d/vc"; tgit -C "$d/vc" commit -q --allow-empty -m vc1
 	if [ $# -ge 2 ]; then printf '%s\n' "$2" > "$d/.blobly_built_from"; fi
 	printf '%s %s\n' "$(git -C "$d" rev-parse HEAD)" "$(git -C "$d/vc" rev-parse HEAD)"
 }
@@ -61,12 +69,12 @@ ok "trees at the pins AND stamp names them -> no build" "$(v_toolchain_build_rea
 # a build of a tree that is no longer there.
 d="$work/vmoved"; read -r VH VCH <<<"$(make_vdir "$d")"
 printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
-git -C "$d" commit -q --allow-empty -m moved
+tgit -C "$d" commit -q --allow-empty -m moved
 ok "stamp intact but V tree moved by hand -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 d="$work/vcmoved"; read -r VH VCH <<<"$(make_vdir "$d")"
 printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
-git -C "$d/vc" commit -q --allow-empty -m moved
+tgit -C "$d/vc" commit -q --allow-empty -m moved
 ok "stamp intact but vc tree moved by hand -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 # A pin bump must reach a bench that already built the OLD pins — the point of the stamp naming
