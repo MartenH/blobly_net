@@ -134,7 +134,11 @@ rounds on before it had a test (#278)), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
-available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged). `windows.yml`
+available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged) and
+`scripts/v_toolchain_test.sh` (when the pinned V toolchain is REBUILT, and what counts as
+evidence that it was built — a stamp naming both pins, written only after `make` succeeds;
+#285 found the same shape three rounds running, a check on the state of the inputs standing
+in for a successful build). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
 release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks — and runs
 `v test modules/isotp/` plus the cmd sweep there. Both Linux jobs set `VFLAGS=-old-compiler`

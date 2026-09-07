@@ -137,6 +137,16 @@ jobs:
           chmod +x scripts/vcan_common_test.sh
           ./scripts/vcan_common_test.sh
 
+      # When the pinned V toolchain is rebuilt, and what counts as evidence it WAS built. Same
+      # reason as the suite above: #285 found one shape three rounds running — a check on the
+      # state of the inputs standing in for "this was successfully built" — and the regression
+      # it pins is `make fails -> the next run must still rebuild`, which every earlier version
+      # of that predicate got wrong. Stubbed git/make, so it runs anywhere.
+      - name: V toolchain pin tests (scripts/v_toolchain_test.sh)
+        run: |
+          chmod +x scripts/v_toolchain_test.sh
+          ./scripts/v_toolchain_test.sh
+
       # The @codex review watcher has to read GitHub JSON from every verdict channel, match by
       # reviewed SHA, and preserve gh API failures instead of reporting "nothing waiting". The
       # fixtures pin those behaviours so future review rounds do not depend on hand polling.
