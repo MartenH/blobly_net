@@ -17,7 +17,13 @@
 #
 # The release binary is the same non-optimized build every test and CI run exercises — on a
 # beta compiler, shipping the binary everybody tested beats shipping a -prod profile nothing
-# ever ran. Revisit when CI itself builds -prod.
+# ever ran. Revisit when CI itself builds -prod — and read the FIRST entry in
+# docs/known_issues.md before you do: -prod plus a Boehm GC mode makes every call out of a frame
+# holding a pointerful array by value cost O(len), which took a 1.23M-frame replay from real
+# time to about thirteen days (~17,000x). Nothing here builds -prod today, which is the only
+# reason we are clear; cmd/restbus is fixed, the GUI's replay_group is not. Upstream fixed the
+# compiler in vlang/v#28426, but on V3 master, which .v-version pins away from — so that fix is
+# not reachable until the toolchain moves.
 name: release
 
 on:
