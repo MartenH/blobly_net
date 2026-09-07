@@ -155,6 +155,13 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   nothing is pulled out from under the build. Pre-cloning at a pin WITHOUT `local=1` does not
   work — the pull undoes it. The install step is hand-rolled rather than `vlang/setup-v`
   because that action runs `make` itself, leaving nowhere to place the pinned clone.
+  **`make latest_tcc` runs FIRST, without `local=1`**, because that same flag also disables the
+  tcc fetch and V keeps its bundled **`libgc.a` inside `thirdparty/tcc/lib`** — with `local=1`
+  alone the bootstrap completes, `v` is built, and then the very next step (`v run
+  cmd/tools/detect_tcc.v`) fails to link libgc. tcc is left FLOATING on purpose: that is
+  exactly what it was before any of this, it is a prebuilt C compiler bundle rather than our
+  own source compiled to C, and it is not what broke us. If it ever does, pin it the same way
+  from `vlang/tccbin`, branch `thirdparty-<os>-<arch>`.
   **`.vc-version` must be the vc commit generated from `.v-version`** — its message is
   `[v:master] <the .v-version sha> - …`. Bump the two together or not at all.
 - 🟡 **V 0.5.2 tries its experimental V3 compiler first, and CI paid for it twice.** Every

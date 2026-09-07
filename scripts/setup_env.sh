@@ -46,6 +46,7 @@ if [ ! -x "$HOME/v/v" ]; then
 	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
 	git -C "$HOME/v" checkout -q FETCH_HEAD
 	pin_vc
+	make -C "$HOME/v" latest_tcc
 	make -C "$HOME/v" local=1
 elif ! git -C "$HOME/v" rev-parse --git-dir >/dev/null 2>&1; then
 	echo "  $HOME/v is not a git checkout of vlang/v, so it cannot be moved to the pinned commit ${V_PIN:0:12}; remove it (or move it aside) and re-run" >&2
@@ -59,6 +60,7 @@ elif [ "$(git -C "$HOME/v" rev-parse HEAD)" != "$V_PIN" ]; then
 	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
 	git -C "$HOME/v" checkout -q "$V_PIN"
 	pin_vc
+	make -C "$HOME/v" latest_tcc
 	make -C "$HOME/v" local=1
 fi
 mkdir -p "$HOME/.local/bin"

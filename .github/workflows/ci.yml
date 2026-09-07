@@ -98,6 +98,12 @@ jobs:
           git -C "$RUNNER_TEMP/v" checkout --quiet "$V_PIN"
           git clone --filter=blob:none --quiet https://github.com/vlang/vc "$RUNNER_TEMP/v/vc"
           git -C "$RUNNER_TEMP/v/vc" checkout --quiet "$VC_PIN"
+          # tcc FIRST and WITHOUT local=1, because local=1 disables latest_tcc as well and
+          # V keeps its bundled libgc.a inside thirdparty/tcc/lib -- without it the build
+          # gets all the way to `v run cmd/tools/detect_tcc.v` and fails to link libgc.
+          # tcc stays floating, exactly as it was before this change: it is a prebuilt C
+          # compiler bundle, it is not what broke us, and pinning it is a separate question.
+          make -C "$RUNNER_TEMP/v" latest_tcc
           make -C "$RUNNER_TEMP/v" local=1
           echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
 
@@ -188,6 +194,12 @@ jobs:
           git -C "$RUNNER_TEMP/v" checkout --quiet "$V_PIN"
           git clone --filter=blob:none --quiet https://github.com/vlang/vc "$RUNNER_TEMP/v/vc"
           git -C "$RUNNER_TEMP/v/vc" checkout --quiet "$VC_PIN"
+          # tcc FIRST and WITHOUT local=1, because local=1 disables latest_tcc as well and
+          # V keeps its bundled libgc.a inside thirdparty/tcc/lib -- without it the build
+          # gets all the way to `v run cmd/tools/detect_tcc.v` and fails to link libgc.
+          # tcc stays floating, exactly as it was before this change: it is a prebuilt C
+          # compiler bundle, it is not what broke us, and pinning it is a separate question.
+          make -C "$RUNNER_TEMP/v" latest_tcc
           make -C "$RUNNER_TEMP/v" local=1
           echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
 
