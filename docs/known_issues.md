@@ -48,6 +48,16 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   100 k → 223 µs). Upstream, with that repro and the generated C:
   [vlang/v#28418](https://github.com/vlang/v/issues/28418) (V 0.5.1).
 
+  **Measured on a V that is NOT the pinned one, and here is how far that carries.** Every number
+  above came from a local `v` reporting 0.5.1, not from `.v-version`'s `5d34e477` — so the tie to
+  our own toolchain is a SOURCE comparison, not a second measurement. It holds where it matters:
+  at `5d34e477` `scope_gc_pin_pregen` (which decides when a pin is emitted, and carries the
+  `!g.pref.is_prod` guard) is byte-identical to the one measured, and so is the `.array` branch
+  of `boehm_collect_keep_alive_helper_name` — the `for … _v_keep_i < it->len` walk that makes the
+  cost O(len). The two compilers do differ (688 lines of `cgen.v`, and the helper's naming and
+  caching), so if this ever needs to be exact rather than sound, build the pin and re-run the
+  repro. Nobody has.
+
   **Upstream fixed it in a day** — [vlang/v#28426](https://github.com/vlang/v/pull/28426),
   merged to master as `f174e71` on 2026-09-07 — by rooting a pointerful array through its
   Boehm-scanned backing allocation instead of walking every element around every call
