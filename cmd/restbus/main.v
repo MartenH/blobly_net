@@ -67,7 +67,7 @@ fn main() {
 		return
 	}
 	if o.maps.len > 0 {
-		run_multi(o, rec)
+		run_multi(o, &rec)
 		return
 	}
 	iface := resolve_bus(rec.buses, o.bus) or {
@@ -151,6 +151,33 @@ fn main() {
 	// shorten the loop or move its origin.
 	mut p := player.new_player_over(kept, o.speed, o.loop, on_bus[0].t_s,
 		on_bus[on_bus.len - 1].t_s)
+	// Keyed by the label these entries actually CARRY, not by the destination string. They were
+	// never relabelled — that is build_multi's job, and only the --map path does it — so they
+	// still carry the recording's own bus label, which is the one `player.on_bus` filtered on
+	// just above. Keying it this way is what lets `pump` have a single routing rule ("send each
+	// frame to the bus its label names") instead of a mode flag that would silently reroute
+	// every frame if it were ever passed wrong.
+	mut buses := map[string]transport.Bus{}
+	buses[iface] = bus
+	sent, failed, first_err := pump(mut p, mut buses, 500)
+	report_pump(sent, failed, first_err)
+}
+
+// pump is the transmit loop for both paths, and it is a FUNCTION rather than inline code for a
+// reason that is not style: under `-prod` a frame holding a pointerful array BY VALUE pays an
+// O(len) GC scope pin on EVERY call it makes (docs/known_issues.md, first entry;
+// vlang/v#28418). Inline in `main`/`run_multi` this loop shared a frame with the recording and
+// the plan — a million-element walk per frame sent, measured at ~9 ms against 1 ns. Here `p` and
+// `buses` are `mut` params, so V passes them as pointers and nothing big is held by value.
+//
+// KEEP IT THAT WAY: do not add a `[]canlog.LogEntry`, an `mf4.Recording` or a `player.MultiPlan`
+// local to this function, and do not inline it back into a caller that holds one.
+//
+// ONE routing rule: every frame goes to the bus its own `iface` label names. Both callers key
+// `buses` by the label their entries carry — the --map path because build_multi relabelled them
+// to the destination, the single-bus path because it never relabelled them at all.
+// `attempts` differs per path on purpose — see the call sites.
+fn pump(mut p player.Player, mut buses map[string]transport.Bus, attempts int) (u64, u64, string) {
 	// A StopWatch, NOT time.ticks(): ticks() is whole milliseconds (and GetTickCount, ~15.6 ms,
 	// on Windows) off the wall clock. Quantising to 1 ms would defeat the sleep-until-due
 	// scheduling entirely — these recordings repeat frames every 0.18 ms — and a wall clock can
@@ -164,15 +191,24 @@ fn main() {
 	for {
 		now := f64(i64(sw.elapsed())) / 1e6 // ns -> ms, fractional
 		for e in p.due(now) {
+			mut bus := buses[e.iface] or { continue }
 			// The waiting for a full vendor queue is transport.send_waiting_for_room, which
 			// also decides that only "still busy" is worth another go — this loop used to
 			// catch every retry error and report a disconnected adapter as back-pressure.
-			transport.send_waiting_for_room(mut bus, e.frame, 500, fn () bool {
+			transport.send_waiting_for_room(mut bus, e.frame, attempts, fn () bool {
 				return false
 			}) or {
 				failed++
 				if first_err == '' {
-					first_err = err.msg() // one example beats a bare count on a bench
+					// One example beats a bare count on a bench. Named by bus only when there
+					// is more than one — with a single destination there is nothing to
+					// disambiguate, and the label would be the RECORDING's, not the interface
+					// the operator typed, which reads as the wrong bus entirely.
+					first_err = if buses.len > 1 {
+						'${e.iface}: ${err.msg()}'
+					} else {
+						err.msg()
+					}
 				}
 				continue
 			}
@@ -194,6 +230,11 @@ fn main() {
 			eprint('\r  ${sent} sent, ${p.progress(el) * 100:.0f}%  ')
 		}
 	}
+	return sent, failed, first_err
+}
+
+// report_pump is the shared tail: both paths say the same thing and exit the same way.
+fn report_pump(sent u64, failed u64, first_err string) {
 	println('\ndone: ${sent} frames sent${if failed > 0 { ', ${failed} failed' } else { '' }}')
 	if failed > 0 {
 		eprintln('first failure: ${first_err}')
@@ -204,7 +245,10 @@ fn main() {
 // run_multi replays several recorded buses at once: one stream, one clock, one open bus per
 // destination. See modules/player/multibus.v for why the buses must not each get their own
 // player — a gateway ECU polices the timing BETWEEN them.
-fn run_multi(o Opts, rec mf4.Recording) {
+// `rec` by REFERENCE, not by value: it carries the whole recording's `[]canlog.LogEntry`, and
+// under `-prod` a by-value copy in this frame would make every call this function makes cost
+// O(frames) — see `pump` and docs/known_issues.md.
+fn run_multi(o Opts, rec &mf4.Recording) {
 	mut specs := []player.BusSpec{}
 	mut unknown_on := map[string][]string{}
 	for m in o.maps {
@@ -359,55 +403,18 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	println('transmitting on ${dsts} at ${o.speed}x${if o.loop { ', looping' } else { '' }} — ctrl-C to stop')
 
 	mut p := player.new_player_over(plan.entries, o.speed, o.loop, plan.t0_s, plan.end_s)
-	mut sw := time.new_stopwatch()
-	p.play(0.0)
-	mut sent := u64(0)
-	mut failed := u64(0)
-	mut first_err := ''
-	mut last_report := 0.0
-	for {
-		now := f64(i64(sw.elapsed())) / 1e6
-		for e in p.due(now) {
-			mut bus := buses[e.iface] or { continue }
-			// THE SAME HELPER main() uses. Applying the queue-full wait to the single-bus path
-			// and not this one dropped a frame per full queue on a saturated destination —
-			// corrupting a multi-bus replay exactly where the traffic was densest, which is
-			// where the cross-bus timing this feature exists for is hardest.
-			// SHORT HERE, because this loop serves EVERY destination. A five-hundred millisecond
-			// wait for one full queue held back the due frames of buses that had room —
-			// including, on a gateway capture, the other side of the exchange being measured. A
-			// few milliseconds absorbs an ordinary burst; a destination that stays full is a bus
-			// that cannot keep up, and saying so beats stalling its neighbours.
-			transport.send_waiting_for_room(mut bus, e.frame, 5, fn () bool {
-				return false
-			}) or {
-				failed++
-				if first_err == '' {
-					first_err = '${e.iface}: ${err.msg()}'
-				}
-				continue
-			}
-			sent++
-		}
-		if p.finished() {
-			break
-		}
-		nd := p.next_due_ms() or { break }
-		wait := nd - f64(i64(sw.elapsed())) / 1e6
-		if wait > 0 {
-			time.sleep(i64(wait * 1_000_000) * time.nanosecond)
-		}
-		el := f64(i64(sw.elapsed())) / 1e6
-		if el - last_report >= 1000.0 {
-			last_report = el
-			eprint('\r  ${sent} sent, ${p.progress(el) * 100:.0f}%  ')
-		}
-	}
-	println('\ndone: ${sent} frames sent${if failed > 0 { ', ${failed} failed' } else { '' }}')
-	if failed > 0 {
-		eprintln('first failure: ${first_err}')
-		exit(1)
-	}
+	// `buses` is keyed by destination and build_multi relabelled every entry to its destination,
+	// so `pump`'s one routing rule lands each frame on the right wire.
+	//
+	// The retry budget is SHORT here, where the single-bus path uses 500, because this loop
+	// serves EVERY destination. A five-hundred millisecond wait for one full queue held back
+	// the due frames of buses that had room — including, on a gateway capture, the other side
+	// of the exchange being measured. A few milliseconds absorbs an ordinary burst; a
+	// destination that stays full is a bus that cannot keep up, and saying so beats stalling
+	// its neighbours. (Applying the wait to one path and not the other dropped a frame per full
+	// queue on a saturated destination, which is why both paths share `pump` at all.)
+	sent, failed, first_err := pump(mut p, mut buses, 5)
+	report_pump(sent, failed, first_err)
 }
 
 // resolve_bus asks modules/player, which owns the rule — see the note there on why this is not

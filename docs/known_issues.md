@@ -13,6 +13,90 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## V language / compiler / tooling
 
+- 🟡 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
+  VALUE.** **Fixed upstream, and we cannot have it yet** — see the end of this entry: the fix is
+  on V3 master and this repo pins a pre-V3 `v` with `-old-compiler` on purpose. Everything below
+  still describes the compiler we build with today.
+
+  With `-prod` **and** a Boehm GC mode, V emits a "deep GC scope pin" around **every
+  call** in a function whose scope holds a by-value aggregate containing pointers
+  (`cgen.v: scope_gc_pin_pregen`, guarded by `if !g.pref.is_prod`). The pin walks **every
+  element** of that aggregate to snapshot its interior pointers, and past 32 of them it also
+  `calloc`s, `GC_add_roots`, `GC_remove_roots` and `free`s per call. So a replay loop sitting in
+  a frame that holds a million-frame `[]canlog.LogEntry` pays a million-element walk **per
+  frame sent**. Measured here on a 1.23 M-frame `.mf4`: `cmd/restbus` sent **562 frames in ten
+  minutes** instead of 1.07 M in sixty seconds — a ~9 ms cost on every call out of that frame,
+  where the same call costs 1 ns. The discriminator is the ELEMENT TYPE and the by-value-ness,
+  nothing else: `&[]LogEntry` is free, `[]u64` (pointer-free elements) is free, and removing the
+  call removes the cost.
+
+  **We are not affected today, and this is the reason to keep it that way.** Nothing in this
+  repo builds `-prod` — `release.yml` ships "the same non-optimized build every test and CI run
+  exercises" — and the unmodified `cmd/restbus` replays all 1,069,214 frames of that recording
+  in 67 s. So this is filed against the "Revisit when CI itself builds `-prod`" note in
+  `release.yml`: **turning `-prod` on without fixing this first would have taken that replay
+  from real time to roughly thirteen days** — 0.94 frames/s against 16,200, about 17,000×, the
+  ~9 ms landing on each of the ~100 calls a frame makes out of the pinned frame — silently, on
+  exactly the large real recordings nobody replays in CI. The
+  fix when that day comes is per-frame, not global: pass big recordings/plans by reference
+  (`&mf4.Recording`) and keep the transmit loop in a frame that holds nothing big by value —
+  verified to restore full speed. `-gc none` also removes it, but leaks.
+
+  Standalone repro (80 lines, no modules, no data): a `[]Item{name string, data []u8}` of 1 M
+  elements held by value while calling an empty function — `v -prod` 4.75 ms/call, plain `v`
+  2 ns/call, `v -prod -gc none` 1 ns/call, and linear in between (1 k → 921 ns, 10 k → 8.3 µs,
+  100 k → 223 µs). Upstream, with that repro and the generated C:
+  [vlang/v#28418](https://github.com/vlang/v/issues/28418) (V 0.5.1).
+
+  **Measured on a V that is NOT the pinned one, and here is how far that carries.** Every number
+  above came from a local `v` reporting 0.5.1, not from `.v-version`'s `5d34e477` — so the tie to
+  our own toolchain is a SOURCE comparison, not a second measurement. It holds where it matters:
+  at `5d34e477` `scope_gc_pin_pregen` (which decides when a pin is emitted, and carries the
+  `!g.pref.is_prod` guard) is byte-identical to the one measured, and so is the `.array` branch
+  of `boehm_collect_keep_alive_helper_name` — the `for … _v_keep_i < it->len` walk that makes the
+  cost O(len). The two compilers do differ (688 lines of `cgen.v`, and the helper's naming and
+  caching), so if this ever needs to be exact rather than sound, build the pin and re-run the
+  repro. Nobody has.
+
+  **Upstream fixed it in a day** — [vlang/v#28426](https://github.com/vlang/v/pull/28426),
+  merged to master as `f174e71` on 2026-09-07 — by rooting a pointerful array through its
+  Boehm-scanned backing allocation instead of walking every element around every call
+  (recursive rooting stays for pointerful *structs*). Their measurement on the repro: about
+  2,000,000 ns → about 1 ns per call at a million elements.
+  **It is on V3 master, so it is not ours to take.** `.v-version` pins a pre-V3 `v` and both
+  Linux jobs set `VFLAGS=-old-compiler`, because a V3-only `v` refuses that flag — and the fix's
+  own author notes V3 master still fails unrelated fixtures (`assign_fn_addr.vv`, parser
+  diagnostics). So this entry stays until the toolchain moves, which is a project of its own and
+  not a `.v-version` bump. When it does move: re-run the repro first, and if it is clean, the
+  `pump()` split in `cmd/restbus` stops being load-bearing — keep it anyway, it removed a
+  duplicated transmit loop on its own merits.
+
+  It hides well, which is the other reason it is written down: nothing profiles as hot, the
+  cost is attributed to whichever tiny function the loop happens to call, `GC_get_gc_no()` never
+  advances and `GC_disable()` changes nothing — so it does not look like the GC even though it
+  is emitted by the GC path.
+
+  **How to find them without guessing.** The pins are visible in the generated C, so the metric
+  is objective: `v -enable-globals -prod -path "@vlib|@vmodules|modules" -o out.c cmd/<tool>`,
+  then count `collect_keepalive` per function. `cmd/restbus` before this was written down:
+  `main__run_multi` 591, `main__main` 531, `player__build_multi` **0** — and build_multi holds
+  a million-entry array by value too, so the count, not the shape, is what to trust.
+  `cmd/restbus`'s transmit loop now lives in `pump()`, which measures **3**, and under `-prod`
+  it replays 1,069,214 frames in 66 s where the inline version managed 562 in ten minutes.
+  The rest of the app is measured but NOT changed, because none of it is a per-frame loop and
+  none of it is exercised by a test: `main__draw_dbc_editor` 1959, `main__replay_group` 1014,
+  `main__draw_buses` 636, `main__draw_replay_config` 549. `replay_group` is the one that would
+  matter on the day `-prod` is switched on — it is the GUI's per-frame transmit loop, holding
+  the recording, the plan and the `player.Player` by value in the frame that sends.
+- 🟡 **The GUI does not build with `-prod` without one edit.** `unused variable` is a warning in
+  a normal build and an **error** under `-prod`, so `cmd/blobly_net/panel_gen.v`'s dead `pw` was
+  enough to stop the whole `-prod` build — nothing catches it because nothing builds `-prod`.
+  Removed here. Expect the same class again the next time `-prod` is tried: fix them before
+  concluding anything about `-prod`, since the build fails before any measurement is possible.
+  (Unrelated: on a bare Windows bench `v ... -o gui.exe cmd/blobly_net` fails at LINK time
+  — `ld returned 1` — for want of the native GL/FreeType libraries; that reproduces on an
+  untouched `main` and is an environment matter, not a code one. `-check` and `-o out.c` both
+  work, which is enough to verify a change compiles.)
 - 🟡 **`v test` needs `-cc gcc` on Windows, or it looks like it cannot run at all.**
   `v -enable-globals test modules/` on native Windows (MSYS2/mingw) fails before running a
   single test with
