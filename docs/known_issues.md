@@ -13,8 +13,12 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## V language / compiler / tooling
 
-- 🔴 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
-  VALUE.** With `-prod` **and** a Boehm GC mode, V emits a "deep GC scope pin" around **every
+- 🟡 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
+  VALUE.** **Fixed upstream, and we cannot have it yet** — see the end of this entry: the fix is
+  on V3 master and this repo pins a pre-V3 `v` with `-old-compiler` on purpose. Everything below
+  still describes the compiler we build with today.
+
+  With `-prod` **and** a Boehm GC mode, V emits a "deep GC scope pin" around **every
   call** in a function whose scope holds a by-value aggregate containing pointers
   (`cgen.v: scope_gc_pin_pregen`, guarded by `if !g.pref.is_prod`). The pin walks **every
   element** of that aggregate to snapshot its interior pointers, and past 32 of them it also
@@ -42,7 +46,20 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   elements held by value while calling an empty function — `v -prod` 4.75 ms/call, plain `v`
   2 ns/call, `v -prod -gc none` 1 ns/call, and linear in between (1 k → 921 ns, 10 k → 8.3 µs,
   100 k → 223 µs). Upstream, with that repro and the generated C:
-  [vlang/v#28418](https://github.com/vlang/v/issues/28418) (V 0.5.1; not retested on master).
+  [vlang/v#28418](https://github.com/vlang/v/issues/28418) (V 0.5.1).
+
+  **Upstream fixed it in a day** — [vlang/v#28426](https://github.com/vlang/v/pull/28426),
+  merged to master as `f174e71` on 2026-09-07 — by rooting a pointerful array through its
+  Boehm-scanned backing allocation instead of walking every element around every call
+  (recursive rooting stays for pointerful *structs*). Their measurement on the repro: about
+  2,000,000 ns → about 1 ns per call at a million elements.
+  **It is on V3 master, so it is not ours to take.** `.v-version` pins a pre-V3 `v` and both
+  Linux jobs set `VFLAGS=-old-compiler`, because a V3-only `v` refuses that flag — and the fix's
+  own author notes V3 master still fails unrelated fixtures (`assign_fn_addr.vv`, parser
+  diagnostics). So this entry stays until the toolchain moves, which is a project of its own and
+  not a `.v-version` bump. When it does move: re-run the repro first, and if it is clean, the
+  `pump()` split in `cmd/restbus` stops being load-bearing — keep it anyway, it removed a
+  duplicated transmit loop on its own merits.
 
   It hides well, which is the other reason it is written down: nothing profiles as hot, the
   cost is attributed to whichever tiny function the loop happens to call, `GC_get_gc_no()` never
