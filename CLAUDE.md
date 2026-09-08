@@ -126,8 +126,40 @@ and when a bus-load interval closes and what a spawning or unread row does with 
 progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`, the trace's
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
-never averaged into a cadence (#266) — kept in GUI-free sub-modules so they run
-without ImGui; and `cmd/vectorcheck/restorerule/`, the borrow-and-restore ledger — who restores a
+never averaged into a cadence (#266); and `cmd/blobly_net/drainrule/`, when the runtime view
+(`app.chans`/`dbs`/`sims`/`senders`) may be REPLACED. **`rebuild_from_proj` WAITS for the run's
+workers** (`wait_for_run_workers`, bounded at `drain_budget_ms` = 1500, measured at ~200 ms and
+nearly all of it `rx_loop`'s own `recv(200)`) — which is the whole fix, because until then
+`stop()` cleared the flag, closed the buses and RETURNED while **nine** workers on sim-demo were
+still reading, so `!app.running` — what every caller asks before rebuilding — was true for that
+whole window. #107 and the second half of #125 are that window. Draining it means none of those
+callers had to learn a new question. The wait is in the REBUILD and not in `stop()` on purpose:
+this is the operation the drain exists for, and waiting in `stop()` puts it on the GUI thread for
+every Stop, where an `rx_loop` stuck in `open_transport` against an absent CANsub freezes the
+window exactly the way Start did before #257. Measured after that move: Stop 0–1 ms, a project
+switch 11–202 ms, absorbed into an operation that already loads a file.
+**Two other designs were tried and taken apart by `/code-review high` first**, and the pattern is
+worth keeping: gating each affordance that leads to a rebuild missed four of them (the
+Configuration panel's own body, the File tab's apply, the file picker's confirm, `save_as`'s
+rollback) and gave Save a way to go silently stale; DEFERRING the rebuild then created its own
+window — `app.proj` new, `app.chans` old — which breaks the index alignment the Buses tick and
+`start()` both rely on. Both kept the window and taught more code about it instead of closing it.
+The census is in two buckets, because the drain covers one and must never cover the other:
+`run_workers` (rx, sim, gen, the diagnostic and UDS node servers, a replay group and the DoIP
+watcher — every one RESERVED BY THE SPAWNER and released in the worker's own defer, because a
+worker inside a slow open — a CANsub open is seconds — has registered nothing of its own) and
+`tool_readers`, what the OPERATOR starts and a run does not own: a Lua script, a flash, a
+diagnostic, a shell command, a trace dump. Those read the same arrays, mostly through
+`bitrate_iface` which walks `app.chans` unlocked, and none is ended by Stop — a script outlives it
+by design and can run for minutes — so waiting for one would hang on the operator's own tool.
+`runtime_census()` reads both counters under one lock and `runtime_busy()` is its words; that is
+what the DBC editor and the System panel gate on. **Three review rounds each found another worker
+nobody was counting** — first `diag_server_loop`/`uds_node_loop`/`replay_group`, then the four
+tool workers, then `doip_watch`, which reaches `app.chans` through a helper and so survived every
+grep for `.chans` in its own body. If you add a worker that outlives its spawn, give it a bucket;
+grep the helpers it calls, not just the function. It was `dbc_readers`, counting rx loops only, from after
+their open, and those two panels had each written their own copy of the check — kept in GUI-free sub-modules so
+they run without ImGui; and `cmd/vectorcheck/restorerule/`, the borrow-and-restore ledger — who restores a
 channel when the deferred cleanup and the Ctrl-C handler race, what an empty claim means, and what
 an exit may claim (clean / failed / unknown-because-in-flight), the path #197's fix took four codex
 rounds on before it had a test (#278)), `scripts/runtests.sh`,

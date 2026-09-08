@@ -992,6 +992,7 @@ fn draw_shell(mut app App) {
 				spawn shell_worker_eth(app, line, vgui.buf_str(app.eth_target_buf).trim_space(),
 					app.eth_someip, app.eth_method)
 			} else {
+				app.reserve_tool_reader()
 				spawn shell_worker(app, line)
 			}
 		}
@@ -1114,6 +1115,7 @@ fn draw_flash(mut app App) {
 		if path == '' {
 			app.flash_append('(pick an image first)')
 		} else {
+			app.reserve_tool_reader()
 			spawn flash_worker(app, path, base, req, rsp, ver)
 		}
 	}
@@ -1173,14 +1175,17 @@ fn draw_diag(mut app App) {
 	}
 	vgui.separator()
 	if vgui.button('Session') && !busy {
+		app.reserve_tool_reader()
 		spawn diag_worker(app, 'session', u16(0), app.diag_sel_key)
 	}
 	vgui.same_line()
 	if vgui.button('Read VIN') && !busy {
+		app.reserve_tool_reader()
 		spawn diag_worker(app, 'vin', u16(0), app.diag_sel_key)
 	}
 	vgui.same_line()
 	if vgui.button('Tester Present') && !busy {
+		app.reserve_tool_reader()
 		spawn diag_worker(app, 'tp', u16(0), app.diag_sel_key)
 	}
 	vgui.set_next_item_width(70)
@@ -1188,6 +1193,7 @@ fn draw_diag(mut app App) {
 	vgui.same_line()
 	if vgui.button('Read DID') && !busy {
 		did := u16(('0x' + vgui.buf_str(app.diag_did_buf)).u64())
+		app.reserve_tool_reader()
 		spawn diag_worker(app, 'did', did, app.diag_sel_key)
 	}
 	if busy {
@@ -1233,12 +1239,13 @@ fn draw_script(mut app App) {
 	vgui.input_text('.lua', mut app.script_path_buf)
 	vgui.same_line()
 	if vgui.button('Run') && !busy {
-		// reserve the dbs-reader slot HERE, before the spawn: a worker that
-		// hasn't been scheduled yet hasn't registered, and an edit could slip
-		// into that gap (the worker releases it in its defer)
-		app.mu.lock()
-		app.dbc_readers++
-		app.mu.unlock()
+		// reserve the slot HERE, before the spawn: a worker that hasn't been scheduled yet
+		// hasn't registered, and an edit could slip into that gap (the worker releases it in its
+		// defer). This site had the rule right first and the run workers were brought to it.
+		// Its OWN counter, not run_workers: a script is not part of a run, may outlive Stop and
+		// may run for minutes, and stop() waiting for one would hang on the operator's own
+		// script (see App.run_workers).
+		app.reserve_tool_reader()
 		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
 	}
 	if busy {

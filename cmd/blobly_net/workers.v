@@ -28,6 +28,12 @@ import vgui
 // the "offline" ECU went on answering. Serving happens in doip_serve(); close() from here
 // interrupts it, which is what makes switching an ECU off actually take effect.
 fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen u64) {
+	// A RUN WORKER, though it takes longer to see than the others: it reads app.chans through
+	// doip_should_host -> chan_index_locked rather than touching the array by name, which is why
+	// it survived a grep for `.chans` in this function and was the last one counted.
+	defer {
+		release_run_worker(app)
+	}
 	mut a := unsafe { app }
 	host, port := pch.doip_endpoint()
 	cfg := ent.cfg // built by sim.doip_entity, so the GUI announces exactly as headless does
@@ -184,6 +190,13 @@ fn notify_gen(app &App, gen u64, msg string) {
 // sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
 // request/response rules. Driver-free on inproc:, real on vcan0/can0.
 fn sim_loop(app &App, sc SimCfg, gen u64) {
+	// This loop resolves its tap through open_tap_on, whose bitrate_iface walks app.chans
+	// UNLOCKED — the thing open_tap_phys's comment (bus.v) forbids a worker from doing — so it
+	// holds a census slot like every rx_loop does. (The still-on check further down is under
+	// a.mu and is not the reason.) It held none, and a rebuild could replace the array under it.
+	defer {
+		release_run_worker(app)
+	}
 	a := unsafe { app }
 	mut bus := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
 		mut al := unsafe { app }
@@ -277,6 +290,10 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 
 // gen_loop fires cyclic senders at their cycle_ms while the measurement runs.
 fn gen_loop(app &App) {
+	// Reads app.senders and app.chans lock-free every pass, and rebuild_from_proj replaces both.
+	defer {
+		release_run_worker(app)
+	}
 	mut a := unsafe { app }
 	mut last := map[int]i64{}
 	for a.running {
@@ -383,6 +400,12 @@ fn consumer_expected(mut app App, iface string, gen u64) {
 }
 
 fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, srv uds.Server, gen u64) {
+	// A RUN WORKER LIKE ANY OTHER. It resolves its tap with open_tap_on, whose bitrate_iface
+	// walks app.chans unlocked — the exact thing open_tap_phys's comment (bus.v) forbids a
+	// worker from doing — so a rebuild after Stop could replace that array under it.
+	defer {
+		release_run_worker(app)
+	}
 	a := unsafe { app }
 	mut s := srv
 	key := sim_key(pch, name)
@@ -459,6 +482,11 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 }
 
 fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
+	// Same as uds_node_loop above: open_tap_on resolves through bitrate_iface, which walks
+	// app.chans, so this loop holds a census slot for as long as it is in the run.
+	defer {
+		release_run_worker(app)
+	}
 	a := unsafe { app }
 	// its OWN channel: two channels can share a wire, and resolving the name from the interface
 	// picks whichever is listed first — so a default server created for the second one had every
@@ -565,6 +593,13 @@ fn (a &App) row_is_mine_locked(ci int, iface string, gen u64) bool {
 }
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {
+	// THE CENSUS SLOT WAS RESERVED BY THE SPAWNING THREAD; this side only releases it, and from
+	// the first line, so the open-failure return below is covered like every other exit. It used
+	// to be taken here, after a successful open — which left an rx_loop inside `open_transport`
+	// counted by nobody, and a CANsub open is seconds (#125). See App.run_workers.
+	defer {
+		release_run_worker(app)
+	}
 	mut bus := app.open_transport(iface) or {
 		mut al := unsafe { app }
 		al.elog('rx ${iface}: ${err}')
@@ -619,7 +654,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// `running` promises to note_emit's "is anyone watching?" check.
 	a.chans[ci].running = true
 	a.chans[ci].spawning = false
-	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
 	// SAID FOR EVERY ROW, under the same take of the lock as `running`. The failure two
 	// screens up has narrated itself since 2026-08-21; success never did, so a DoIP row
 	// announced its entity while a CAN row came up in silence and "started" — the button's
@@ -646,11 +680,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 	}
 	a.mu.unlock()
-	defer {
-		a.mu.lock()
-		a.dbc_readers--
-		a.mu.unlock()
-	}
 	chname := a.chans[ci].name
 	// Built from the SAME `protect:` entries the simulation stamps with, so a project describes
 	// each protected message once and both directions follow it. A separate "check this on
@@ -1002,6 +1031,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					a.chans[ci].load_carry_bits = 0
 					a.chans[ci].load_carry_ms = 0
 					a.chans[cj].spawning = true
+					a.reserve_run_worker_locked() // released by the loop's own defer
 					spawn rx_loop(app, cj, other.iface, gen)
 					break
 				}
@@ -1014,6 +1044,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// after the reopen (codex #263 r13).
 			a.carry_load_locked(ci)
 			a.chans[ci].spawning = true
+			a.reserve_run_worker_locked() // released by the loop's own defer
 			spawn rx_loop(app, ci, iface, gen)
 		}
 		// Whatever we emitted while this loop was the observer can no longer be answered by it.
@@ -1029,6 +1060,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 }
 
 fn diag_worker(app &App, kind string, did u16, want_key string) {
+	// A TOOL READER: reads app.chans through bitrate_iface to reach its ISO-TP channel, unlocked. Not ended by Stop, so the
+	// wait must not include it — see App.tool_readers.
+	defer {
+		release_tool_reader(app)
+	}
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.diag_busy {
@@ -1138,6 +1174,11 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 // on 0x7E6) and decoding the records into app.trecs for the swimlane. Mirrors diag_worker: a
 // single-flight busy flag, a short-lived spawn, a blocking transfer, results under mu + wake.
 fn trace_dump_worker(app &App, core_mask u16) {
+	// A TOOL READER: reads app.chans and app.manifest to find the trace endpoint, unlocked. Not ended by Stop, so the
+	// wait must not include it — see App.tool_readers.
+	defer {
+		release_tool_reader(app)
+	}
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.trace_busy {
@@ -1283,6 +1324,11 @@ fn trace_dump_worker(app &App, core_mask u16) {
 // a single-flight busy flag, a short-lived spawn, a blocking ISO-TP recv, results under mu +
 // wake. The shell ids come from the manifest's `# shell frames` section (or loom2v defaults).
 fn shell_worker(app &App, line string) {
+	// A TOOL READER: reads app.chans through bitrate_iface for the target bus, unlocked. Not ended by Stop, so the
+	// wait must not include it — see App.tool_readers.
+	defer {
+		release_tool_reader(app)
+	}
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.shell_busy {
@@ -1342,6 +1388,11 @@ fn shell_worker(app &App, line string) {
 // panel's "enter boot" button gets it there (the app's shell `boot` command;
 // no reply, the reset is the ack).
 fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32) {
+	// A TOOL READER: reads app.chans through bitrate_iface for the bus it flashes over, unlocked. Not ended by Stop, so the
+	// wait must not include it — see App.tool_readers.
+	defer {
+		release_tool_reader(app)
+	}
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.flash_busy {
@@ -1400,7 +1451,8 @@ fn script_worker(app &App, path string) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.script_busy {
-		a.dbc_readers-- // release the spawn-side reservation: we never read
+		// _locked: this branch is inside the take of app.mu above, and app.mu is not reentrant.
+		release_tool_reader_locked(mut a) // release the spawn-side reservation: we never read
 		a.mu.unlock()
 		return
 	}
@@ -1411,9 +1463,7 @@ fn script_worker(app &App, path string) {
 	// the reader slot was reserved by the SPAWNING thread (TOCTOU: this
 	// worker may not schedule before an edit) — this side only releases it
 	defer {
-		a.mu.lock()
-		a.dbc_readers--
-		a.mu.unlock()
+		release_tool_reader(app)
 	}
 	mut chans := []script.ChanInfo{}
 	for ch in a.chans {
