@@ -6,8 +6,13 @@
 // vendor driver that has no kernel ISO-TP. Cross-platform (unsuffixed file). It
 // implements the same `Channel` interface, so UDS rides on it unchanged.
 //
-// Scope: classic addressing, single + multi-frame, 8-byte padded frames, flow
-// control sent/honoured minimally (block size + STmin ignored — fine in-process).
+// Scope: classic addressing, single + multi-frame, 8-byte padded frames. Flow control is
+// HONOURED on the send side — CTS/WAIT/OVERFLOW, block size and STmin (#226) — because
+// `isotp.open` routes here on every non-Linux host, so this is what flash, the shell, scripts
+// and the GUI's diagnostics use against real ECUs on Windows; "fine in-process" stopped being
+// the whole story when that landed. What this channel SENDS as a receiver is still the
+// permissive answer (CTS, block size 0, STmin 0): it asks for no pacing, which is the one thing
+// a receiver may always do, and the read side is bounded by recv's own deadline instead.
 module isotp
 
 import time
@@ -30,6 +35,16 @@ mut:
 	// makes: the bound must cover the whole receive, or a stream of stale Consecutive Frames on
 	// our own id restarts the count each time (codex round 17 on #225). Reset at each recv.
 	scanned int
+	// A segmented send ended badly and the peer may still be sending Flow Control for it. The
+	// NEXT segmented send must not read those as answers to its own First Frame — a leftover
+	// WAIT would spend the new transfer's budget, and a leftover CTS would authorise Consecutive
+	// Frames before the receiver had accepted anything (codex on #226). recv() skipping orphan
+	// FCs does not cover this: the usual retry calls send(), not recv().
+	//
+	// A FLAG RATHER THAN AN UNCONDITIONAL DRAIN, because draining before every segmented send
+	// would also discard a reply the caller has not read yet — a legitimate thing to have
+	// queued, and nothing to do with this.
+	fc_dirty bool
 }
 
 // open_software wraps a freshly opened bus on `iface` as an ISO-TP channel that
@@ -70,46 +85,138 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 		sf << data
 		return c.tx(sf)
 	}
+	// BEFORE THE FIRST FRAME, so nothing this drops can be an answer to it: whatever arrives
+	// until it goes out belongs to the send that ended badly (see fc_dirty).
+	//
+	// A QUIET WINDOW, not a snapshot of what is queued right now. The first cut read what had
+	// already arrived and went straight on, so a stale Flow Control still in flight — the peer
+	// was mid-burst when N_WFTmax gave up — landed after the drain and was consumed by the new
+	// transfer's wait, authorising Consecutive Frames the receiver had not asked for. The test
+	// written for it slept 30 ms before retrying, which is the tell: it avoided the race rather
+	// than covering it (codex on #226).
+	//
+	// AND IT IS A MITIGATION, NOT A PROOF, which is worth saying plainly: an ISO-TP Flow Control
+	// carries no transfer identity, so one arriving after the window is indistinguishable from
+	// this transfer's own. Nothing in the protocol can separate them; the window makes the case
+	// unlikely and bounded, and there is no version of this that makes it impossible.
+	if c.fc_dirty {
+		c.flush_rx()
+		c.fc_dirty = false
+	}
 	// First Frame: PCI 0x1<len_hi><len_lo> + first 6 bytes.
 	mut ff := [u8(0x10 | u8((data.len >> 8) & 0x0F)), u8(data.len & 0xFF)]
 	ff << data[..6]
 	c.tx(ff)!
-	// Await Flow Control (0x3x). We ignore block size / STmin and send all CFs.
-	// STALE CONSECUTIVE FRAMES ARE SKIPPED HERE TOO: a transfer this channel abandoned on its
-	// deadline can still be arriving when the caller sends the next request, and the first frame
-	// met while waiting for Flow Control was one of them — "expected Flow Control" for a peer
-	// that had not answered yet (codex round 11 on #225). Bounded by the same one second.
-	fc_deadline := time.ticks() + 1000
-	mut fc := []u8{}
-	for {
-		rem := int(fc_deadline - time.ticks())
-		if rem <= 0 {
-			return error('timeout')
-		}
-		fc = c.rx_raw(rem)!
-		if fc.len >= 1 && (fc[0] & 0xF0) == 0x20 {
-			continue
-		}
-		break
+	// From here the peer is answering us, so every exit owes the next send a clean slate.
+	c.send_segmented(data) or {
+		c.fc_dirty = true
+		return err
 	}
-	if fc.len < 1 {
-		// Split from the PCI check below: it formatted fc[0] for an EMPTY frame, an
-		// out-of-bounds panic where an ISO-TP error was owed (codex round 3 on #225).
-		return error('ISO-TP: expected Flow Control, got an empty frame')
-	}
-	if (fc[0] & 0xF0) != 0x30 {
-		return error('ISO-TP: expected Flow Control, got 0x${fc[0]:02X}')
-	}
+}
+
+// send_segmented is everything after the First Frame: the Flow Control conversation and the
+// Consecutive Frames it authorises. Split out so `send` can mark the channel dirty on ANY exit
+// from it — there is no path out of here that leaves the peer with nothing more to say.
+fn (mut c SoftChannel) send_segmented(data []u8) ! {
+	mut fc := c.await_flow_control()!
 	mut sn := u8(1)
 	mut off := 6
+	// When the last Consecutive Frame went out, in monotonic NANOSECONDS. Zero until the first.
+	//
+	// MEASURED FROM THE FRAME, NOT COUNTED WITHIN A BLOCK. The first cut slept only when it had
+	// already sent one in this block, on the reasoning that the Flow Control opening a block is
+	// itself the separation — which sounded right and is not: ISO 15765-2 exempts nothing at a
+	// block boundary, and with BS=1 EVERY frame is the first of its block, so a receiver asking
+	// for 20 ms got frames as fast as it could answer, around ten times its rate. The clock also
+	// pays for the round trip: what the receiver asked for is a gap between frames on the wire,
+	// so time already spent waiting for its Flow Control counts towards it.
+	//
+	// Nanoseconds because STmin has a sub-millisecond scale (0xF1..0xF9 is 100..900 us) that a
+	// millisecond tick cannot measure at all.
+	mut last_cf_ns := u64(0)
 	for off < data.len {
-		n := if data.len - off > 7 { 7 } else { data.len - off }
-		mut cf := [u8(0x20 | (sn & 0x0F))]
-		cf << data[off..off + n]
-		c.tx(cf)!
-		sn = (sn + 1) & 0x0F
-		off += n
+		// One BLOCK: `block_size` Consecutive Frames, or the whole remainder when it is 0.
+		mut in_block := 0
+		for off < data.len {
+			if last_cf_ns != 0 && fc.stmin_us > 0 {
+				elapsed_us := i64((time.sys_mono_now() - last_cf_ns) / 1_000)
+				remain_us := i64(fc.stmin_us) - elapsed_us
+				if remain_us > 0 {
+					// Through pacing_sleep_us: a sub-millisecond wait is not one on Windows,
+					// which is the platform this state machine is for.
+					time.sleep(pacing_sleep_us(int(remain_us)) * time.microsecond)
+				}
+			}
+			n := if data.len - off > 7 { 7 } else { data.len - off }
+			mut cf := [u8(0x20 | (sn & 0x0F))]
+			cf << data[off..off + n]
+			c.tx(cf)!
+			last_cf_ns = time.sys_mono_now()
+			sn = (sn + 1) & 0x0F
+			off += n
+			in_block++
+			if fc.block_size > 0 && in_block >= int(fc.block_size) {
+				break
+			}
+		}
+		if off < data.len {
+			// The block is full and there is more: the receiver owes another Flow Control.
+			fc = c.await_flow_control()!
+		}
 	}
+}
+
+
+// await_flow_control waits for one usable Flow Control and returns what it asked for.
+//
+// WAIT IS THE REASON THIS IS A LOOP. A receiver that is not ready answers 0x31 and another FC
+// follows, so each one re-arms the window rather than eating into the first — which is also why
+// it must be counted: a peer answering every request with WAIT never trips a timeout, because a
+// frame keeps arriving, and without n_wft_max `send` would block for as long as it kept doing it.
+//
+// STALE CONSECUTIVE FRAMES ARE SKIPPED: a transfer this channel abandoned on its deadline can
+// still be arriving when the caller sends the next request, and the first frame met while waiting
+// for Flow Control was one of them — "expected Flow Control" for a peer that had not answered yet
+// (codex round 11 on #225).
+fn (mut c SoftChannel) await_flow_control() !FlowControl {
+	// COUNTED PER WAIT, not per transfer, which is what ISO's N_WFTmax bounds: a receiver that
+	// asks to wait, is given time, then accepts a block, has done nothing wrong — and a counter
+	// carried across blocks would abort a long, legitimately paced transfer partway through.
+	mut waits := 0
+	for {
+		deadline := time.ticks() + fc_timeout_ms
+		mut raw := []u8{}
+		for {
+			rem := int(deadline - time.ticks())
+			if rem <= 0 {
+				return error('timeout')
+			}
+			raw = c.rx_raw(rem)!
+			if raw.len >= 1 && (raw[0] & 0xF0) == 0x20 {
+				continue
+			}
+			break
+		}
+		fc := parse_flow_control(raw)!
+		match fc.status {
+			.cts {
+				return fc
+			}
+			.overflow {
+				// The receiver cannot take this PDU at all — it said so rather than dropping it,
+				// and retrying the same transfer would get the same answer. Reported as the peer's
+				// refusal, not as a timeout, because the two want different things from the caller.
+				return error('ISO-TP: receiver reported overflow — the PDU does not fit its buffer')
+			}
+			.wait {
+				waits++
+				if waits > n_wft_max {
+					return error('ISO-TP: receiver asked to wait ${waits} times (N_WFTmax ${n_wft_max}) — giving up')
+				}
+			}
+		}
+	}
+	return error('unreachable')
 }
 
 // recv reassembles one ISO-TP PDU (SF directly; FF → send FC → collect CFs).
@@ -150,7 +257,16 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		// that did not know. A flush at abort time cannot catch frames that have not arrived
 		// yet, so they are dropped HERE, where the next reply is awaited (codex round 4 on
 		// #225; the first cut flushed and the test proved it insufficient).
-		if (first[0] & 0xF0) == 0x20 {
+		//
+		// AND SO IS AN ORPHAN FLOW CONTROL, for the same reason and by the same remedy (#226).
+		// This side never expects one — it SENDS Flow Control as a receiver and reads it only
+		// while segmenting — so a 0x3x arriving where a First or Single Frame is awaited is
+		// left over from a send that ended without consuming it: the peer's second WAIT after
+		// N_WFTmax gave up, or the frames queued behind an OVERFLOW. Those aborts are new, so
+		// this leftover is new: the old send accepted the first 0x3x it saw and there was never
+		// a second one to strand. Read as a message it surfaced as `unexpected PCI 0x31` in
+		// place of the next reply (codex on #226).
+		if (first[0] & 0xF0) == 0x20 || (first[0] & 0xF0) == 0x30 {
 			continue
 		}
 		break
@@ -309,11 +425,17 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	return error('timeout')
 }
 
-// flush_rx drains any rx-id frames still queued after a failed reassembly, so a REUSED channel
-// (e.g. a persistent UDS/script connection) starts the next recv() clean on the next message's
-// First Frame rather than a stale Consecutive Frame left over from the aborted transfer — which
-// would otherwise re-desync the channel with the same "unexpected PCI" the SN check just caught.
-// Bounded: stops after a quiet window (no frame within flush_quiet_ms) or the frame cap.
+// flush_rx drains rx-id frames until the bus has been quiet on that id, so a REUSED channel
+// (a persistent UDS or script connection) starts clean rather than on a stale frame from an
+// aborted transfer. Bounded: stops after a quiet window (no frame within flush_quiet_ms) or the
+// frame cap.
+//
+// Its caller is the SEND side (#226): a segmented send that aborted leaves the peer's Flow
+// Control frames in flight, and the retry's own First Frame must not be answered by one of them.
+// A quiet window rather than a snapshot, because the last of a burst may not have arrived yet.
+// The receive side does not call it — a flush there waits its window per frame and a slow peer
+// renews it indefinitely past the deadline (codex round 5 on #225), so stale frames are dropped
+// where the next reply is awaited instead. Before a send there is no deadline to overrun.
 fn (mut c SoftChannel) flush_rx() {
 	for _ in 0 .. flush_max_frames {
 		c.rx_raw(flush_quiet_ms) or { return } // nothing more queued within the quiet window

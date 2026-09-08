@@ -458,3 +458,376 @@ fn test_a_zero_timeout_poll_is_bounded_across_stale_cfs() {
 	ch.close()
 	peer.close()
 }
+
+// read_tx returns the next frame the channel under test put on its tx id, skipping the peer's
+// own traffic (the in-process bus delivers to every subscriber, this test's injections included).
+fn read_tx(mut peer transport.Bus, tx_id u32, timeout_ms int) ?transport.CanFrame {
+	deadline := time.ticks() + i64(timeout_ms)
+	for {
+		rem := int(deadline - time.ticks())
+		if rem <= 0 {
+			return none
+		}
+		f := peer.recv(rem) or { return none }
+		if f.id == tx_id {
+			return f
+		}
+	}
+	return none
+}
+
+// BLOCK SIZE IS AN INSTRUCTION, NOT A HINT (#226). BS=2 means two Consecutive Frames and then
+// silence until the next Flow Control; the old sender read the PCI nibble and pushed the whole
+// remainder, which a paced bootloader answers by dropping the transfer.
+fn test_block_size_stops_the_sender_until_the_next_flow_control() {
+	mut peer := transport.open('inproc:isotp-bs') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-bs', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	done := chan string{cap: 1}
+	// 34 bytes = 6 in the First Frame + four Consecutive Frames of 7.
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 34, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	ff := read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'no First Frame'
+		return
+	}
+	assert (ff.data[0] & 0xF0) == 0x10, 'expected a First Frame'
+
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 2, 0] }) or { assert false, err.msg() }
+	for i in 0 .. 2 {
+		cf := read_tx(mut peer, 0x7E0, 500) or {
+			assert false, 'Consecutive Frame ${i + 1} of the first block did not arrive'
+			return
+		}
+		assert (cf.data[0] & 0xF0) == 0x20
+	}
+	// THE BLOCK IS FULL. Nothing more may go out until another Flow Control does.
+	if extra := read_tx(mut peer, 0x7E0, 250) {
+		assert false, 'sent past the block size: 0x${extra.data[0]:02X}'
+	}
+
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
+	for i in 0 .. 2 {
+		cf := read_tx(mut peer, 0x7E0, 500) or {
+			assert false, 'Consecutive Frame ${i + 3} did not arrive after the second Flow Control'
+			return
+		}
+		assert (cf.data[0] & 0xF0) == 0x20
+	}
+	msg := <-done
+	assert msg == 'sent', msg
+	ch.close()
+	peer.close()
+}
+
+// WAIT re-arms the wait and the transfer then completes. A receiver that is not ready says so;
+// read as CTS — which masking the nibble did — the sender transmits into a peer that just told
+// it not to.
+fn test_a_wait_is_honoured_and_the_transfer_resumes() {
+	mut peer := transport.open('inproc:isotp-wait') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-wait', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'no First Frame'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or { assert false, err.msg() }
+	// Still waiting: a WAIT is not a licence to send.
+	if extra := read_tx(mut peer, 0x7E0, 250) {
+		assert false, 'sent on a WAIT: 0x${extra.data[0]:02X}'
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
+	msg := <-done
+	assert msg == 'sent', msg
+	ch.close()
+	peer.close()
+}
+
+// OVERFLOW is the receiver saying the PDU will not fit. It is a refusal, not a timeout, and the
+// caller wants to know which: retrying the same transfer gets the same answer.
+fn test_an_overflow_aborts_the_transfer_with_the_reason() {
+	mut peer := transport.open('inproc:isotp-ovflw') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-ovflw', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'no First Frame'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x32), 0, 0] }) or { assert false, err.msg() }
+	msg := <-done
+	assert msg.contains('overflow'), msg
+	// and nothing went out after it
+	if extra := read_tx(mut peer, 0x7E0, 200) {
+		assert false, 'sent after an OVERFLOW: 0x${extra.data[0]:02X}'
+	}
+	ch.close()
+	peer.close()
+}
+
+// A PEER THAT ONLY EVER WAITS NEVER TRIPS A TIMEOUT, because a frame keeps arriving — which is
+// exactly why N_WFTmax exists. Without the count `send` blocks for as long as the ECU stalls it.
+fn test_endless_waits_are_given_up_on() {
+	mut peer := transport.open('inproc:isotp-wft') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-wft', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'no First Frame'
+		return
+	}
+	for _ in 0 .. n_wft_max + 1 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
+			assert false, err.msg()
+		}
+	}
+	msg := <-done
+	assert msg.contains('N_WFTmax'), msg
+	ch.close()
+	peer.close()
+}
+
+// STmin PACES THE CONSECUTIVE FRAMES. Measured rather than asserted structurally, because the
+// only thing that makes a bootloader accept the block is the SEPARATION on the wire.
+fn test_stmin_separates_consecutive_frames() {
+	mut peer := transport.open('inproc:isotp-stmin') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-stmin', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	done := chan string{cap: 1}
+	// 27 bytes = 6 + three Consecutive Frames, so STmin is paid twice.
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 27, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'no First Frame'
+		return
+	}
+	t0 := time.ticks()
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 30] }) or { assert false, err.msg() }
+	msg := <-done
+	elapsed := time.ticks() - t0
+	assert msg == 'sent', msg
+	// two separations of 30 ms; a lower bound only, since a sleep may overshoot and the bus adds
+	// its own time
+	assert elapsed >= 50, 'three Consecutive Frames at STmin 30 ms took ${elapsed} ms — not paced'
+	ch.close()
+	peer.close()
+}
+
+// STmin DOES NOT LAPSE AT A BLOCK BOUNDARY. With BS=1 every Consecutive Frame is the first of
+// its block, so a sender that pays the separation only "between frames within a block" pays it
+// never — a receiver asking for 30 ms gets frames as fast as it can answer. The first cut did
+// exactly that, on the reasoning that the Flow Control opening a block is itself the separation;
+// ISO 15765-2 exempts nothing there, and the argument was never measured (codex on #226).
+fn test_stmin_holds_across_block_boundaries() {
+	mut peer := transport.open('inproc:isotp-stmin-bs') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-stmin-bs', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	done := chan string{cap: 1}
+	// 27 bytes = 6 + three Consecutive Frames, so two separations are owed.
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 27, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'no First Frame'
+		return
+	}
+	t0 := time.ticks()
+	// ONE frame per block, so the sender must ask again for each — and must still pace.
+	for _ in 0 .. 3 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
+			assert false, err.msg()
+		}
+		read_tx(mut peer, 0x7E0, 1000) or {
+			assert false, 'a Consecutive Frame did not arrive'
+			return
+		}
+	}
+	msg := <-done
+	elapsed := time.ticks() - t0
+	assert msg == 'sent', msg
+	assert elapsed >= 50, 'three single-frame blocks at STmin 30 ms took ${elapsed} ms — the separation lapsed at the boundary'
+	ch.close()
+	peer.close()
+}
+
+// AN ORPHAN FLOW CONTROL IS NOT A MESSAGE. The aborts this change added (N_WFTmax, OVERFLOW) end
+// a send with the peer's later Flow Control frames still queued, and this side never expects one
+// — it SENDS flow control as a receiver. Read as a message it surfaced as `unexpected PCI 0x31`
+// in place of the next reply: a desync that could not happen before, because the old send took
+// the first 0x3x it saw and there was never a second to strand (codex on #226).
+fn test_a_leftover_flow_control_does_not_desync_the_next_receive() {
+	mut peer := transport.open('inproc:isotp-orphan-fc') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-orphan-fc', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'no First Frame'
+		return
+	}
+	// Enough WAITs to abort, and two more behind them that nothing will consume.
+	for _ in 0 .. n_wft_max + 3 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
+			assert false, err.msg()
+		}
+	}
+	msg := <-done
+	assert msg.contains('N_WFTmax'), msg
+
+	// The channel is reused, as a persistent UDS or script connection is. The next reply must be
+	// the reply, not whatever the aborted send left behind.
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x02), 0x50, 0x01, 0, 0, 0, 0, 0] }) or {
+		assert false, err.msg()
+	}
+	reply := ch.recv(800) or {
+		assert false, 'the next reply was lost behind an orphan Flow Control: ${err}'
+		return
+	}
+	assert reply == [u8(0x50), 0x01], '${reply}'
+	ch.close()
+	peer.close()
+}
+
+// A SEND THAT ABORTED LEAVES FLOW CONTROL BEHIND, AND THE USUAL NEXT MOVE IS ANOTHER SEND. The
+// recv() skip does not cover that path: a leftover WAIT would spend the retry's budget, and a
+// leftover CTS would authorise Consecutive Frames before the receiver had accepted anything
+// (codex on #226).
+fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
+	mut peer := transport.open('inproc:isotp-retry') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-retry', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	first := chan string{cap: 1}
+	spawn fn [mut ch, first] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			first <- err.msg()
+			return
+		}
+		first <- 'sent'
+	}()
+	read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'no First Frame'
+		return
+	}
+	// Abort it, and leave a CTS stranded behind the waits.
+	for _ in 0 .. n_wft_max + 1 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
+			assert false, err.msg()
+		}
+	}
+	assert (<-first).contains('N_WFTmax')
+	// THE STALE CTS ARRIVES LATE — after the retry has begun, which is the case a snapshot drain
+	// cannot see: the peer was mid-burst when N_WFTmax gave up, so the last of it is still in
+	// flight. The first cut read what was already queued and went straight on, and the test
+	// written for it slept here before retrying, which avoided the race instead of covering it
+	// (codex on #226). The quiet window is what absorbs this.
+	spawn fn [mut peer] () {
+		time.sleep(8 * time.millisecond)
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or {}
+	}()
+
+	// THE RETRY. The stranded CTS must not authorise anything: this transfer has had no answer.
+	second := chan string{cap: 1}
+	spawn fn [mut ch, second] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			second <- err.msg()
+			return
+		}
+		second <- 'sent'
+	}()
+	ff := read_tx(mut peer, 0x7E0, 500) or {
+		assert false, 'the retry sent no First Frame'
+		return
+	}
+	assert (ff.data[0] & 0xF0) == 0x10, 'expected the retry First Frame'
+	if extra := read_tx(mut peer, 0x7E0, 250) {
+		assert false, 'the retry sent 0x${extra.data[0]:02X} on the PREVIOUS transfer\'s Flow Control'
+	}
+	// and it completes normally once THIS transfer is answered
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
+	msg := <-second
+	assert msg == 'sent', msg
+	ch.close()
+	peer.close()
+}
