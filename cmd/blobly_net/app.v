@@ -138,8 +138,41 @@ mut:
 	running           bool
 	dbs               []candb.Database // all loaded DBCs (union; trace/symbol decode)
 	dbs_paths         []string         // resolved file path per dbs entry (editor save target)
-	dbc_readers       int              // live workers reading app.dbs lock-free (rx loops);
-	// the editor stays read-only until 0 — app.running clears BEFORE workers exit
+	// Live run workers reading the RUNTIME VIEW lock-free — app.dbs, and app.chans / app.senders
+	// beside it. Those arrays are replaced wholesale by rebuild_from_proj, so this count is the
+	// answer to "may the runtime view be replaced now?". app.running is NOT that answer: stop()
+	// clears the flag, closes the buses and returns while its workers are still on their way out
+	// — inside a 200 ms recv, a driver close, or a last batch. The rule is stated and tested in
+	// cmd/blobly_net/drainrule.
+	//
+	// RESERVED BY THE SPAWNING THREAD, released by the worker in a defer. A worker that has not
+	// been scheduled yet, or is inside a slow open — a CANsub open is seconds — has registered
+	// nothing of its own, so a census the workers keep for themselves is blind to exactly the
+	// ones a project switch is most likely to race (#125).
+	//
+	// It was `dbc_readers`, and counted rx loops only, from AFTER their open. The DBC editor and
+	// the System panel already gated on it: both were right about the hazard and short by two
+	// workers, since sim_loop and gen_loop read app.chans and app.senders the same way.
+	// SPLIT IN TWO, because the drain covers one of them and must never cover the other.
+	//
+	// run_workers are the workers a RUN owns — rx_loop, sim_loop, gen_loop, the diagnostic and
+	// UDS node servers, a replay group and the DoIP watcher. stop() ENDS them but does not wait;
+	// rebuild_from_proj waits, because that is the operation that replaces what they read, and
+	// waiting in stop() would put ~200 ms — or seconds, against an adapter that has gone — on
+	// the GUI thread for every Stop. So `!app.running` is not on its own a licence to replace
+	// the runtime view: going through rebuild_from_proj is.
+	//
+	// tool_readers are the workers the OPERATOR starts and a run does not own: a Lua script, a
+	// flash, a diagnostic request, a shell command, a trace dump. Every one of them reads the
+	// same arrays — most through bitrate_iface, which walks app.chans unlocked — and none is
+	// ended by Stop: a script is explicitly allowed to outlive it and can run for minutes. So
+	// they are counted for the "may the runtime view be replaced" question and excluded from
+	// the wait, because waiting for one would hang on the operator's own tool. The DBC editor
+	// and the System panel have gated on exactly this since long before #107, under the name
+	// dbc_readers; what is new is that the bucket is COMPLETE rather than being the script
+	// alone — three review rounds each found another worker nobody was counting.
+	run_workers  int
+	tool_readers int
 	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
 	has_manifest bool
@@ -822,6 +855,44 @@ fn (mut app App) reset_gen_state() {
 }
 
 fn (mut app App) rebuild_from_proj() {
+	// THE PRECONDITION ABOVE IS NOW TRUE, AND SAYS SO IF IT IS NOT. Every caller here has always
+	// asked `app.running` before rebuilding, and until #107 that flag was false for the whole
+	// window in which stop()'s workers were still leaving — so "stopped" meant "still being
+	// read" for ~200 ms after every Stop. This function waits for those workers now, which makes
+	// every caller's `!running` check lead somewhere safe, rather than teaching each one a new
+	// question. NOT stop(), which would pay that wait on the GUI thread for every Stop.
+	//
+	// It REPORTS rather than refuses or defers. Refusing would leave app.proj holding a project
+	// the runtime never adopted; deferring was tried and the deferral's own window — app.proj
+	// new, app.chans old — broke the index alignment that the Buses tick and start() both rely
+	// on. What can still hold a slot here is a Lua script, which is not part of a run and which
+	// the DBC editor and System panel have gated on all along; that is unchanged by this and is
+	// worth a line in the log rather than a silent race.
+	// THE DRAIN, HERE AND NOT IN stop(). This is the function that replaces the arrays, so this
+	// is where "has everybody finished reading them" has to be true. stop() has already ended
+	// the run's workers; this waits for them to actually go — ~200 ms measured, bounded, and on
+	// the GUI thread only for a project switch or a Save, never for a plain Stop.
+	app.wait_for_run_workers()
+	// THROUGH THE RULE, not a fourth open-coded copy of it: drainrule is the tested statement of
+	// when this is safe, and a rule production code never calls is a rule that can drift from
+	// the code it describes. ONE Census answers both halves — the verdict, and the words for it —
+	// because asking twice can straddle a worker exiting and print a refusal whose reason is the
+	// empty string.
+	census := app.runtime_census()
+	if !census.may_rebuild() {
+		// notify(), not elog(): elog goes to stderr and the session log, and on the Windows
+		// GUI-subsystem exe stderr goes nowhere — the same trap #256 recorded for a failed open.
+		// This one is addressed to the operator, because the thing to do about it (stop the
+		// script) is theirs.
+		// why() is phrased for the panels that print it on its own — an instruction ("stop the
+		// measurement first") or a bare phrase — so splicing it into a sentence here read as
+		// nonsense in both branches. The count is what this message needs.
+		app.notify('the project was changed while ${census.readers} worker(s) were still using it${if census.running {
+			' and a measurement was running'
+		} else {
+			''
+		}} — if a simulated ECU or a script behaves oddly, stop it and reload the project')
+	}
 	app.reset_gen_state()
 	app.replay_view_gen++ // the grouping the stopped Replay panel caches is derived from what
 	// this function rebuilds

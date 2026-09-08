@@ -272,6 +272,15 @@ fn (mut app App) load_recording(path string) {
 // Channels replaying DIFFERENT files get their own group and their own clock, because timestamps
 // from two recordings are not comparable — nothing would be synchronised by pretending they are.
 fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
+	// A replay is part of its run, and this loop opens its taps through open_tap_full, whose
+	// bitrate_iface walks app.chans unlocked. So it holds a census slot, and the next REBUILD
+	// waits for it — Stop itself does not wait, for anything. That matters here more than
+	// anywhere else: a large .mf4 decodes for seconds and the decode is not interruptible, so a
+	// project switch made straight after a Stop pressed during one waits out drain_budget_ms and
+	// then says so, rather than replacing the arrays under a worker still walking them.
+	defer {
+		release_run_worker(app)
+	}
 	mut a := unsafe { app }
 	a.mu.lock()
 	mut chans := []Chan{}
@@ -998,6 +1007,7 @@ fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 			app.notify(n)
 		}
 		if it.source != '' {
+			app.reserve_run_worker() // released by the worker's own defer
 			spawn replay_group(app, it.source, it.cis, it.gen, it.token)
 		}
 	}

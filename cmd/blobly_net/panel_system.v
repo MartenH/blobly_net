@@ -206,11 +206,9 @@ fn draw_system(mut app App) {
 			// stop() clears app.running BEFORE those workers exit, so !running alone leaves a
 			// window where the rebuild frees what a live worker is reading (codex #65 r4). Use
 			// the same gate the DBC editor uses.
-			app.mu.lock()
-			rb_readers := app.dbc_readers
-			app.mu.unlock()
-			if app.running || rb_readers > 0 {
-				vgui.text_dim('Simulate the rest — stop to configure (workers drain briefly after Stop)')
+			rb_busy := app.runtime_busy()
+			if rb_busy != '' {
+				vgui.text_dim('Simulate the rest — ${rb_busy}')
 			} else if vgui.small_button('Simulate the rest##restbus') {
 				n, c := app.restbus_from_system(en.name)
 				if c > 0 {

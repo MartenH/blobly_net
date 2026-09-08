@@ -224,24 +224,39 @@ fn draw_discover_dialog(mut app App) {
 		app.refresh_discovery()
 		app.start_cansub_browse()
 	}
-	vgui.same_line()
-	if vgui.button('+ vcan') {
-		app.add_bus_spec('vcan', app.next_free_vcan())
-		app.refresh_discovery()
-	}
-	vgui.same_line()
-	if vgui.button('+ Sim net') {
-		app.add_bus_spec('virtual', app.unique_bus_name('SIM'))
-		app.refresh_discovery()
-	}
-	vgui.same_line()
-	if vgui.button('+ Add ticked') {
-		for k, d in app.disc_list {
-			if k < app.disc_tick.len && app.disc_tick[k] && !d.added {
-				app.add_bus_spec(d.adapter, d.address)
-			}
+	// LOOKING IS FINE WHILE RUNNING; ADDING A BUS IS NOT. The three buttons in THIS group each
+	// add one, which rebuilds the runtime view — app.chans emptied and re-appended — under the
+	// readers of a live run. Refresh above only re-reads the drivers, so it stays. The same rule
+	// the Configuration editor has always had, in the one dialog that could still reach a rebuild
+	// mid-measurement (the drain in rebuild_from_proj cannot help here: these workers are not
+	// leaving, they belong to the run that is still on).
+	//
+	// SCOPED TO THESE THREE, and said so rather than "every button below": the per-row Assign
+	// further down writes VECTOR DRIVER state, not this app's, and is a different question with
+	// a different answer — see #288.
+	if app.running {
+		vgui.same_line()
+		vgui.text_dim('(stop the measurement to add buses)')
+	} else {
+		vgui.same_line()
+		if vgui.button('+ vcan') {
+			app.add_bus_spec('vcan', app.next_free_vcan())
+			app.refresh_discovery()
 		}
-		app.refresh_discovery()
+		vgui.same_line()
+		if vgui.button('+ Sim net') {
+			app.add_bus_spec('virtual', app.unique_bus_name('SIM'))
+			app.refresh_discovery()
+		}
+		vgui.same_line()
+		if vgui.button('+ Add ticked') {
+			for k, d in app.disc_list {
+				if k < app.disc_tick.len && app.disc_tick[k] && !d.added {
+					app.add_bus_spec(d.adapter, d.address)
+				}
+			}
+			app.refresh_discovery()
+		}
 	}
 	vgui.separator()
 	if app.disc_list.len == 0 {
