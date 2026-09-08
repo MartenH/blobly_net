@@ -47,6 +47,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		}
 		vgui.same_line()
 		if vgui.button('Dump##trace') {
+			app.reserve_tool_reader()
 			spawn trace_dump_worker(app, app.trace_core_mask())
 		}
 		vgui.same_line()

@@ -491,6 +491,7 @@ fn draw_buses(mut app App, chans []Chan) {
 						// #231). Kept, the successor sees the same counts and says nothing;
 						// on a wire that WAS reopened it sees them fall and says so.
 						app.chans[i].spawning = true
+						app.reserve_run_worker_locked() // released by the loop's own defer
 						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 					} else {
 						// A sibling already reads this wire, so no reader is spawned and the

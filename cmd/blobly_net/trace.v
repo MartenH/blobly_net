@@ -177,7 +177,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// would make the emission look two seconds old the instant it is registered, expiring it
 	// before the frame has even been sent.
 	t_ms := app.since_ms()
-	// Under the lock, not before it. The dbc_readers drain covers the RX loops, which register
+	// Under the lock, not before it. The run_workers drain covers the RX loops, which register
 	// as lock-free readers; a tapped emitter — a simulated ECU, a diagnostic or flash worker
 	// still draining after Stop — is not in that lifecycle, so resolving a name outside the
 	// mutex could read app.dbs while a configuration edit replaces it.

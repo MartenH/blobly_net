@@ -1,6 +1,7 @@
 module main
 
 import os
+import drainrule
 import taprule
 import sync
 import time
@@ -174,11 +175,152 @@ fn (app &App) runtime_rows() []project.Channel {
 //
 // _locked: it reads app.chans, so the caller holds app.mu -- and must, or a republish could
 // interleave with the mutation it is meant to describe. EVERY path that writes chans[].enabled
-// calls it: the Buses panel toggle, the stopped Replay tick (config.v) and rx_loop retiring a
-// dead destination (workers.v). It was three of four, and the one it missed could leave a script
-// that outlived Stop transmitting on a wire the operator had ticked silent (codex #164 r2).
+// calls it: the Buses panel toggle, the stopped Replay tick (config.v), rx_loop retiring a dead
+// destination (workers.v), and BOTH of start()'s restores of `enabled` from the project (#125 --
+// one before the destination checks, which read the enabled rows, and one after run_gen has moved
+// so a straggler cannot undo it). It was three of four once, and the one it missed could leave a
+// script that outlived Stop transmitting on a wire the operator had ticked silent (codex #164 r2)
+// -- which is why this list is worth keeping exact rather than saying "every writer" and hoping.
 fn (app &App) push_listen_only_locked() {
 	project.apply_listen_only(app.runtime_rows())
+}
+
+// reserve_run_worker_locked takes a census slot for a worker that is ABOUT to be spawned;
+// the worker releases it in a defer on its own first line. Every run worker that reads the
+// runtime view lock-free is paired this way, and the pairing is named rather than written as a
+// bare ++ so that a spawn without a release is one grep away — a slot that leaks does not crash,
+// it makes stop() wait out its whole budget on every Stop for the rest of the session.
+// See App.run_workers for why the SPAWNER takes it and not the worker.
+fn (mut app App) reserve_run_worker_locked() {
+	app.run_workers++
+}
+
+// reserve_run_worker is the same, for the spawn sites that do not already hold app.mu.
+fn (mut app App) reserve_run_worker() {
+	app.mu.lock()
+	app.run_workers++
+	app.mu.unlock()
+}
+
+// release_run_worker is what every one of those workers defers. It is a function rather than
+// four copies of the same three lines so the pair reads as a pair.
+fn release_run_worker(app &App) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	a.run_workers--
+	a.mu.unlock()
+}
+
+// reserve_tool_reader / release_tool_reader are the same pairing for the operator's own
+// workers — a script, a flash, a diagnostic, a shell command, a trace dump. Reserved by the
+// spawning thread for the same reason (a worker not yet scheduled has registered nothing), and
+// counted apart because the wait must never include them. See App.tool_readers.
+fn (mut app App) reserve_tool_reader() {
+	app.mu.lock()
+	app.tool_readers++
+	app.mu.unlock()
+}
+
+fn release_tool_reader(app &App) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	a.tool_readers--
+	a.mu.unlock()
+}
+
+// release_tool_reader_locked is for the one caller that is already inside app.mu — script_worker's
+// "another script is running" return, which checks that flag under the lock it took to read it.
+// app.mu is not reentrant, so calling the locking form there deadlocks the worker on its own
+// first statement; that is the #259 shape, and it is why the two forms are named apart rather
+// than left to whoever edits the site next to notice.
+fn release_tool_reader_locked(mut app App) {
+	app.tool_readers--
+}
+
+// drain_budget_ms bounds the wait. Measured on sim-demo the drain is ~200 ms, almost all of it
+// rx_loop's own `bus.recv(200)`, so this is seven times the observed cost — enough for a driver
+// close on real hardware, and short enough that the worst case is a pause rather than a freeze.
+//
+// THE WORST CASE IS REAL AND IS WHY THIS IS NOT LARGER. The wait is reached from a project
+// switch, from Save, and — when an edit is pending — from Start, which is a button people press
+// twice in a row. An rx_loop wedged in `open_transport` against a CANsub that has gone is
+// seconds, and it holds its slot the whole time, by design: the spawner reserves it precisely so
+// a worker inside a slow open is not invisible (#125). So the budget is what separates "a pause
+// you barely notice" from "the window stopped responding", and when it expires the rebuild says
+// so and goes ahead rather than waiting on a device that is not coming back.
+const drain_budget_ms = 1500
+
+// wait_for_run_workers is the fix: a rebuild does not proceed until the run's workers have gone.
+// `running` goes false while every one of them is still inside a recv, a close or a last batch —
+// and since that is the flag every caller reads before replacing app.chans / app.dbs, "stopped"
+// meant "still being read" for ~200 ms after every Stop, which is #107 and the second half of
+// #125. CALLED FROM rebuild_from_proj AND NOWHERE ELSE, in particular not from stop(): see the
+// note there for why the wait belongs to the operation that needs it rather than to every Stop.
+//
+// NOT under app.mu, and it must not be: the workers take that lock to release their slots.
+// Bounded, and it says so if the budget runs out rather than waiting for ever — a driver wedged
+// in a close is a real possibility on a bench, and a Stop button that never returns is worse
+// than a rebuild that races.
+fn (mut app App) wait_for_run_workers() {
+	// NOTHING TO WAIT FOR WHILE THE RUN IS ON. These workers exit when their run ends, so waiting
+	// here would spin the whole budget on the GUI thread and then report the CURRENT run's
+	// healthy workers as stragglers from a previous one — a 1.5 s freeze explained by a sentence
+	// about hardware that is fine. A rebuild reached while running is a caller bug, and
+	// rebuild_from_proj says so on the line after this returns.
+	app.mu.lock()
+	live := app.running
+	app.mu.unlock()
+	if live {
+		return
+	}
+	t0 := time.ticks()
+	for {
+		app.mu.lock()
+		n := app.run_workers
+		app.mu.unlock()
+		// `<= 0` like drainrule's own verdict: every reservation is paired, so a negative count
+		// means a bug elsewhere — and the way it would present here is every later project
+		// switch and Save burning the whole budget and then logging absent hardware as the
+		// cause, which is a false trail rather than a symptom.
+		if n <= 0 {
+			return
+		}
+		if time.ticks() - t0 > drain_budget_ms {
+			// The count is all this knows — not which workers, and so not why. An adapter that
+			// has gone and a replay still decoding a large recording both land here, and naming
+			// either as "the usual cause" sends somebody to check hardware that is fine.
+			app.elog('runtime rebuild: ${n} worker(s) from the previous run were still going after ${drain_budget_ms} ms, so this rebuild did not wait for them. Anything slow to finish does it — an adapter that has stopped answering, or a replay still reading a large recording.')
+			return
+		}
+		time.sleep(2 * time.millisecond)
+	}
+}
+
+// runtime_census reads the two counters and the run flag under ONE take of app.mu, so a caller
+// that wants both the verdict and the words for it asks the same Census for both. Two reads
+// could straddle a worker exiting, and the shape that produces is a refusal printed with an
+// empty reason after it — a message that says nothing was in the way, as the explanation for
+// why something was.
+fn (mut app App) runtime_census() drainrule.Census {
+	app.mu.lock()
+	c := drainrule.Census{
+		running: app.running
+		readers: app.run_workers + app.tool_readers
+	}
+	app.mu.unlock()
+	return c
+}
+
+// runtime_busy answers drainrule for this app: '' when the runtime view may be replaced,
+// otherwise the reason, worded for the operator.
+//
+// AFTER stop() THE RUN'S OWN WORKERS ARE GONE — that is what the drain is for — so in practice
+// this is answering about a Lua script, which reads the same arrays, is not part of a run and is
+// allowed to outlive Stop. That is the case the DBC editor and the System panel have gated on
+// since long before #107, under the name dbc_readers; it is asked in one place now instead of in
+// two private copies that were each short by two worker kinds.
+fn (mut app App) runtime_busy() string {
+	return app.runtime_census().why()
 }
 
 // destination_conflict asks project.destination_conflicts about the rows as they stand.
@@ -519,6 +661,32 @@ fn (mut app App) start() {
 		app.show_config = true
 		return
 	}
+	// THE PROJECT SAYS WHICH BUSES EXIST; A RUN ONLY BORROWS THE ANSWER. rx_loop retires every
+	// alias on a wire whose adapter stopped answering (workers.v) so the rest of the measurement
+	// does not hammer a port that has gone -- deliberately writing app.chans and NOT app.proj,
+	// because that retirement belongs to its run. Nothing then put it back: Start does not rebuild
+	// unless an edit is pending, so the next run silently skipped a bus the project enables and
+	// reported a measurement without it, recoverable only by reloading the project (#125).
+	//
+	// Restored from the model rather than remembered, because the model is the one authority: the
+	// Buses tick is itself a project edit (panel_buses.v writes proj.channels[i].enabled beside
+	// chans[i]), so a row unticked by the operator reads false here and stays off. The only writer
+	// this undoes is the run-scoped one, which is exactly what "until somebody says otherwise"
+	// meant. Indices are aligned by construction -- rebuild_from_proj appends one Chan per
+	// proj.channels entry, in order -- and buses cannot be added or removed mid-run.
+	//
+	// UNDER app.mu AND REPUBLISHED, the rule every writer of chans[].enabled follows: the
+	// listen-only/framing table is derived from the enabled rows and consulted per send, so a wire
+	// coming back into the run without a republish is one whose policy still describes the run
+	// that retired it.
+	app.mu.lock()
+	for ci in 0 .. app.chans.len {
+		if ci < app.proj.channels.len {
+			app.chans[ci].enabled = app.proj.channels[ci].enabled
+		}
+	}
+	app.push_listen_only_locked()
+	app.mu.unlock()
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
 	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
 	// hands every monitor and transmit open the same string, so the Vector layer's own
@@ -670,12 +838,30 @@ fn (mut app App) start() {
 	// the class is every target). Closed at the state change, once, instead of teaching each
 	// confirm about app.running.
 	app.fb_open = false
+	// AND THE DISCOVER DIALOG, for exactly the same reason and missed for exactly as long: its
+	// "+ vcan", "+ Sim net" and "+ Add ticked" all reach rebuild_from_proj, which empties and
+	// re-appends app.chans while this run's readers are walking it. The picker was closed here
+	// and this was not, so a dialog left floating across Start was a live rebuild one click away.
+	app.disc_open = false
 	// the epoch the time-based generator sources are evaluated from (sine/sawtooth/stepmod), so a
 	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
 	// UNDER app.mu: fire_index reads gen_send_n/gen_state_epoch under it, and a cyclic fire that
 	// survived the previous run can be in flight right here — replacing the map unlocked is an
 	// unsafe concurrent map write and the epoch a plain data race (codex #269).
 	app.mu.lock()
+	// AND AGAIN, now that run_gen has moved. The restore above had to happen before
+	// check_destinations, which reads the enabled rows — placed after it, a conflict involving a
+	// row this brings back would go unexamined. But rx_loop's retirement (workers.v) is gated on
+	// run_gen ALONE, and Stop does not move it, so between the restore above and this line a
+	// straggler from the previous run can still retire the very rows just restored — and the new
+	// run would skip the bus again, which is the whole of #125's first bug. From here the
+	// generation has moved and no straggler can write these fields at all.
+	for ci in 0 .. app.chans.len {
+		if ci < app.proj.channels.len {
+			app.chans[ci].enabled = app.proj.channels[ci].enabled
+		}
+	}
+	app.push_listen_only_locked()
 	app.wave_t0_ns = time.sys_mono_now()
 	app.gen_send_n = map[u64]int{} // a new run starts the per-send sequences at 0
 	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
@@ -721,6 +907,11 @@ fn (mut app App) start() {
 		} else {
 			monitored[rx_key] = true
 			app.chans[ci].spawning = true
+			// NOT the _locked variant: start() writes the chans[] flags around here as the run's
+			// single writer, but app.mu is not held — and the census is NOT single-writer even
+			// here, because an rx_loop spawned two iterations ago can already have failed its
+			// open and be running its release defer while this loop is still spawning.
+			app.reserve_run_worker() // released by the loop's own defer
 			spawn rx_loop(app, ci, ch.iface, app.run_gen)
 		}
 		if app.send_iface == '' {
@@ -774,6 +965,7 @@ fn (mut app App) start() {
 		}
 		if sc.nodes.len > 0 {
 			consumer_expected(mut app, sc.iface, start_gen)
+			app.reserve_run_worker()
 			spawn sim_loop(app, sc, start_gen) // a verify-only channel has nothing to transmit
 		}
 	}
@@ -835,6 +1027,7 @@ fn (mut app App) start() {
 		mut diag_nodes := sim.uds_nodes(peers)
 		if diag_nodes.len == 0 {
 			consumer_expected(mut app, sc.iface, start_gen)
+			app.reserve_run_worker() // released by the loop's own defer
 			spawn diag_server_loop(app, sc.iface, sc.pch.name, start_gen) // the built-in default for this bus
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
@@ -851,6 +1044,7 @@ fn (mut app App) start() {
 		for mut u in diag_nodes {
 			own := if u.src >= 0 && u.src < owners.len { owners[u.src] } else { sc.pch }
 			consumer_expected(mut app, sc.iface, start_gen)
+			app.reserve_run_worker() // released by the loop's own defer
 			spawn uds_node_loop(app, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.server, start_gen)
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
@@ -868,6 +1062,7 @@ fn (mut app App) start() {
 	// above appends to the same array without the lock. Finishing that construction first is
 	// what makes the unlocked appends safe, rather than adding a lock to every one of them.
 	app.start_doip_hosts()
+	app.reserve_run_worker()
 	spawn gen_loop(app) // cyclic senders
 	// The players go LAST -- after the monitors, and after every in-process consumer has been
 	// spawned. Two separate reasons, and only the first was handled before:
@@ -930,6 +1125,7 @@ fn (mut app App) start_doip_hosts() {
 		// built-in server and returns an empty node name — keying enablement on that alone
 		// meant unticking SUT in the shipped demos did nothing at all.
 		key := if ent.node != '' { ent.node } else { nodes[0].name }
+		app.reserve_run_worker() // released by the watcher's own defer
 		spawn doip_watch(app, c, ent, key, app.run_gen)
 	}
 }
@@ -1171,4 +1367,15 @@ fn (mut app App) stop() {
 		b.close()
 	}
 	app.send_iface = ''
+	// NO WAIT HERE, deliberately. Everything above ends the workers; waiting for them to go is
+	// rebuild_from_proj's job, because that is the operation the drain exists for. Waiting here
+	// would put it on the GUI thread for EVERY Stop — and an rx_loop stuck in `open_transport`
+	// against an absent CANsub is seconds, so Stop would freeze the way Start did before #257
+	// moved the tap opens onto a worker.
+	//
+	// That does not make the wait unreachable from a button, and it is worth being exact rather
+	// than claiming more than the move buys: a Stop is free, but the next project switch, Save,
+	// or a Start with an edit pending will each rebuild and pay it. What the move buys is that a
+	// plain Stop — the common case, and the one pressed reflexively — costs nothing, and that
+	// what remains lands on operations already doing visible work.
 }

@@ -371,9 +371,10 @@ fn draw_dbc_editor(mut app App) {
 	// app.dbs lock-free, and the save path rebuilds runtime state — both are
 	// only safe stopped. (Editing a stopped capture still re-decodes it live:
 	// the trace decodes signal values at draw time.)
-	app.mu.lock()
-	live_readers := app.dbc_readers
-	app.mu.unlock()
+	// The shared predicate, not a private copy of it: this panel and the System panel each had
+	// their own, and both counted rx loops only — sim_loop and gen_loop read app.chans and
+	// app.senders the same way and were invisible to it (#125).
+	busy := app.runtime_busy()
 	// the selection is settled BEFORE anything reads it, so the read-only answer below is
 	// the one every control on this frame sees
 	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
@@ -384,10 +385,9 @@ fn draw_dbc_editor(mut app App) {
 	// cmd/arxml2dbc and edit the DBC that produces. ONE gate — the rule is candb's
 	// (is_arxml_ref, tested there), this is the only place the editor asks it.
 	arxml := candb.is_arxml_ref(app.db_path(app.dbc_ed.db))
-	ro := app.running || live_readers > 0 || arxml
-	if app.running || live_readers > 0 {
-		vgui.text_colored(230, 170, 70,
-			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
+	ro := busy != '' || arxml
+	if busy != '' {
+		vgui.text_colored(230, 170, 70, 'read-only: ${busy}')
 	} else if arxml {
 		vgui.text_colored(230, 170, 70,
 			'read-only: an AUTOSAR system description — export a DBC with cmd/arxml2dbc to edit')

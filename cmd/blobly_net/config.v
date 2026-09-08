@@ -988,6 +988,10 @@ fn (mut app App) save_project() {
 		}
 	}
 	if !app.running {
+		// `!running` decides whether the runtime half happens at all; whether it is SAFE is
+		// rebuild_from_proj's own business — it waits for the run's workers before it touches
+		// anything, so a Save straight after a Stop pays that wait rather than racing them
+		// (#107 / #125).
 		app.rebuild_from_proj() // the runtime-rebuild half of apply_edits, now that the guard has passed
 	}
 	// THE SAME REFUSAL AS START'S, and Save needs it more: writing the file would persist the
