@@ -226,6 +226,37 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	if cycle.values.len > 0 {
 		attrs << cycle
 	}
+	// VFrameFormat, from the model — so a DBC-editor Save does not silently drop a J1939
+	// declaration the parser now reads and the `verify:` self-sent notice now depends on
+	// (codex on #289). Emitted only for the frames that carry it, like GenMsgCycleTime.
+	//
+	// NOT WHEN THE CALLER SUPPLIES ITS OWN. arxml_export passes a richer VFrameFormat as an
+	// extra — it distinguishes the CAN-FD entries, which this model has no field for — and two
+	// emitters of one attribute would write two BA_DEF_ lines for it.
+	if !x.attrs.any(it.name == 'VFrameFormat') {
+		mut fmt := DbcAttr{
+			name:    'VFrameFormat'
+			typ:     vframe_format_enum
+			default: '"StandardCAN"' // an ENUM's default is the quoted choice; its values are indices
+		}
+		// EVERY EXTENDED FRAME, not only the J1939 ones. The definition's default is
+		// "StandardCAN", so emitting an override for the J1939 frames alone leaves an ordinary
+		// 29-bit message inheriting a format that contradicts its own BO_ id — the ARXML exporter
+		// states a value for every frame for exactly this reason (codex on #289). A standard
+		// frame needs no override: the default is already what it is.
+		for m in msgs {
+			if m.j1939 {
+				fmt.values << DbcAttrValue{m.id, m.ext, '3'} // J1939PG
+			} else if m.ext {
+				fmt.values << DbcAttrValue{m.id, m.ext, '1'} // ExtendedCAN
+			}
+		}
+		// Only when something actually needs saying: a purely standard-CAN database has every
+		// frame at the default and gains nothing from the definition.
+		if fmt.values.len > 0 {
+			attrs << fmt
+		}
+	}
 	attrs << x.attrs
 	for a in attrs {
 		b << 'BA_DEF_ BO_ "${a.name}" ${a.typ};'
