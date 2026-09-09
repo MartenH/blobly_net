@@ -134,6 +134,38 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 	}
 }
 
+// sender_bus_value is what to WRITE in `bus:` so a generator nested under `own` transmits on
+// `target` — or none when this project cannot express that at all.
+//
+// THE WRITER'S SIDE OF resolve_sender_bus, and it exists because guessing a spelling and hoping
+// is how the picker kept being wrong. It tried the name, then fell back to the interface for an
+// unnamed row — and where that interface is also ANOTHER channel's name, the name-first rule sent
+// the generator to that other channel, on another wire (codex round 3 on #97). Every such
+// collision is the same defect, so the candidate is CHECKED rather than reasoned about: it is
+// accepted only if resolving it lands on the target's own interface and names either the target
+// or nobody. "Nobody" is the pre-existing shared-wire state, which transmits and is warned about;
+// naming somebody ELSE never is.
+//
+// NONE MEANS THE PROJECT CANNOT SAY IT. An unnamed row whose interface is another channel's name
+// has no spelling in this format: the caller must refuse and say so, rather than storing a value
+// that goes somewhere the operator did not pick. Naming the row fixes it, which is what to tell
+// them.
+pub fn sender_bus_value(target Channel, own Channel, chs []Channel) ?string {
+	if target.name == own.name && target.iface == own.iface {
+		return '' // its own channel — the one value that needs no spelling
+	}
+	for cand in [target.name, target.iface] {
+		if cand == '' {
+			continue
+		}
+		r := resolve_sender_bus(cand, own, chs)
+		if r.iface == target.iface && (r.chan == target.name || r.chan == '') {
+			return cand
+		}
+	}
+	return none
+}
+
 // sender_bus_needs_v4 reports whether a build released before #97 would send this generator
 // somewhere ELSE. That is the only question the schema label is about, and asking it directly is
 // what keeps the label honest.

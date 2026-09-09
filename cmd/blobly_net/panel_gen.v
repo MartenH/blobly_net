@@ -192,22 +192,39 @@ fn draw_gen(mut app App) {
 						c.iface == cur
 					}
 					if vgui.toggle_button('${c.name}##b${i}_${ci}', sel, 0) {
-						// THE NAME, which is what `bus:` means since #97 — and the whole point:
-						// picking the second channel on a shared wire used to store '' (its
-						// interface equalled the generator's own), so a Save/reload restored
-						// ownership from the first and the selection silently reverted. '' still
-						// means the generator's own channel, compared by NAME and interface
-						// together, since either alone can match a sibling on the same wire.
-						//
-						// A CHANNEL WITH NO NAME FALLS BACK TO ITS INTERFACE. The name editor
-						// accepts and saves an empty one, and storing that would write `bus: ''`
-						// — which the resolver reserves for the generator's OWN channel, so the
-						// click would silently leave it where it was. The interface form still
-						// addresses such a row; it cannot distinguish two of them on one wire,
-						// which is what sender_bus_warnings then says (codex round 1 on #97).
-						same := c.name == sr.own && c.iface == sr.iface
-						pick := if c.name != '' { c.name } else { c.iface }
-						app.set_sender_bus(i, if same { '' } else { pick }, c.name)
+						// ASKED, NOT GUESSED. `bus:` is a channel NAME since #97, an interface
+						// for the files written before it, and '' for the generator's own
+						// channel — and every attempt here to pick between those by reasoning
+						// was wrong for some arrangement the format allows. Storing the name
+						// alone reverted the selection on a shared wire (the whole of #97);
+						// falling back to the interface for an unnamed row sent the generator to
+						// a DIFFERENT channel where that interface is another row's name (codex
+						// rounds 1 and 3). So project.sender_bus_value is asked for a spelling
+						// that resolves BACK to the row that was clicked, and there is nothing
+						// left here to get wrong.
+						mut rows := []project.Channel{cap: app.chans.len}
+						for rc in app.chans {
+							rows << project.Channel{
+								name:  rc.name
+								iface: rc.iface
+							}
+						}
+						target := project.Channel{
+							name:  c.name
+							iface: c.iface
+						}
+						own := project.Channel{
+							name:  sr.own
+							iface: sr.iface
+						}
+						if v := project.sender_bus_value(target, own, rows) {
+							app.set_sender_bus(i, v, c.name)
+						} else {
+							// No spelling reaches it: an unnamed row whose interface is another
+							// channel's name. Refused rather than stored, because the value that
+							// would go in the file points somewhere else.
+							app.notify('${c.iface}: this bus has no name, and \'${c.iface}\' is already another channel\'s name — give it a name in Configuration ▸ Buses to target it')
+						}
 					}
 				}
 			}

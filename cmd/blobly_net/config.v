@@ -539,9 +539,14 @@ fn (mut app App) remove_bus(i int) {
 			name:  app.senders[si].own
 			iface: app.senders[si].iface
 		}
-		was_r := project.resolve_sender_bus(b, own, before)
-		now_r := project.resolve_sender_bus(b, own, after)
-		if was_r.iface != now_r.iface || was_r.chan != now_r.chan {
+		// THE WIRE IS WHAT THE OVERRIDE CHOSE, so that is what has to be unchanged. Comparing the
+		// OWNER too cleared an override whose destination had not moved at all: with two channels
+		// of one name on one wire, `bus:` is deliberately ambiguous (iface known, owner not), and
+		// deleting one duplicate leaves the survivor unambiguous — same wire, owner now
+		// resolvable. That is the ambiguity RESOLVING, which is the outcome the operator wanted,
+		// and it was being treated as a retarget (codex round 3 on #97).
+		if project.resolve_sender_bus(b, own, before).iface != project.resolve_sender_bus(b,
+			own, after).iface {
 			app.senders[si].sender.bus = ''
 		}
 	}

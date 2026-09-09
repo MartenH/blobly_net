@@ -339,3 +339,98 @@ fn test_the_interface_form_round_trips_and_stays_v2() {
 	assert r.kind == .iface
 	assert r.chan == 'Body'
 }
+
+// ==== the WRITER's side: what spells a target =========================================
+fn test_bus_value_is_empty_for_the_generators_own_channel() {
+	chs := shared_wire()
+	v := sender_bus_value(chs[1], chs[1], chs) or {
+		assert false, 'own channel must be expressible'
+		return
+	}
+	assert v == ''
+}
+
+fn test_bus_value_is_the_name_where_a_name_exists() {
+	chs := shared_wire()
+	v := sender_bus_value(chs[1], chs[0], chs) or {
+		assert false, 'a named channel is always expressible'
+		return
+	}
+	assert v == 'Chassis'
+	// …and it round-trips: the value written resolves back to the row that was picked.
+	r := resolve_sender_bus(v, chs[0], chs)
+	assert r.chan == 'Chassis'
+	assert r.iface == chs[1].iface
+}
+
+// An unnamed row is addressed by its interface, which is what the picker relies on.
+fn test_bus_value_falls_back_to_the_interface_for_an_unnamed_row() {
+	chs := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: ''
+			iface: 'inproc:CAN2'
+		},
+	]
+	v := sender_bus_value(chs[1], chs[0], chs) or {
+		assert false, 'an unnamed row on its own wire is expressible'
+		return
+	}
+	assert v == 'inproc:CAN2'
+}
+
+// THE COLLISION THE FALLBACK GOT WRONG: the unnamed row's interface is ANOTHER channel's name, so
+// writing it would resolve name-first to that other channel, on another wire. There is no
+// spelling for this row, and saying so is the only correct answer.
+fn test_bus_value_refuses_an_unnamed_row_whose_interface_is_another_channels_name() {
+	chs := [
+		Channel{
+			name: 'inproc:CAN2' // a channel NAMED like the other one's wire
+			iface: 'inproc:CAN9'
+		},
+		Channel{
+			name: ''
+			iface: 'inproc:CAN2'
+		},
+	]
+	// the value the old fallback would have written goes somewhere else entirely
+	wrong := resolve_sender_bus('inproc:CAN2', chs[0], chs)
+	assert wrong.iface == 'inproc:CAN9', 'name-first sends it to the namesake channel'
+	if v := sender_bus_value(chs[1], chs[0], chs) {
+		assert false, 'expected no spelling, got "${v}"'
+	}
+}
+
+// Every value this returns must resolve back to the row it was asked about — the property the
+// picker relies on, asserted over every ordered pair of a project that mixes the difficult cases.
+fn test_every_spelling_round_trips() {
+	chs := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'Chassis'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'vcan0'
+			iface: 'vcan0'
+		},
+		Channel{
+			name: ''
+			iface: 'inproc:CAN2'
+		},
+	]
+	for own in chs {
+		for target in chs {
+			v := sender_bus_value(target, own, chs) or { continue }
+			r := resolve_sender_bus(v, own, chs)
+			assert r.iface == target.iface, 'spelling "${v}" for ${target.name}/${target.iface} opened ${r.iface}'
+			assert r.chan == target.name || r.chan == '', 'spelling "${v}" named ${r.chan}'
+		}
+	}
+}
