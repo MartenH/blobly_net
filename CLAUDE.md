@@ -316,6 +316,12 @@ leaves nowhere to put the pinned bootstrap.
   to codex and is expected of you. READING codex's 👍 as the verdict is what cannot be made to
   work — the payload carries no reviewed SHA, and GitHub will not re-create an identical
   reaction, so it can never look fresh. Write them; never read them.
+- **Line endings are settled by `.gitattributes`, not by your `core.autocrlf`** (#207): `* text=auto eol=lf`,
+  with `*.sh`/`*.v` spelled out and `*.png`/`*.mf4` binary. Nothing here needs CRLF. Before it existed a
+  file's blob held whatever the machine that last touched it produced and kept drifting — the four files
+  #207 measured as CRLF had become LF by the time it was fixed, and one LF file had become CRLF. If a
+  whole-file diff appears in history, it is that, not a bad merge — the renormalising commit touched
+  nothing but line endings, verified blob-by-blob.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
