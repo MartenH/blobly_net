@@ -646,15 +646,6 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			a.mu.unlock()
 			return
 		}
-		// Whether anybody else is telling this wire's story now. Read here, under the same lock
-		// that hands over the bus, so the answer belongs to the handle.
-		mut owned := false
-		for c in a.chans {
-			if c.monitorable() && (c.running || c.spawning) && transport.wire_key(c.iface) == wire {
-				owned = true
-				break
-			}
-		}
 		a.mu.unlock()
 		// AT THE WIRE'S OWN RATE. The same 200 ms rx_loop uses, which is also what bounds how long
 		// a Stop waits for this worker — measured at ~201 ms for the whole drain, unchanged by
@@ -676,6 +667,15 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			// treated as an adapter that has gone.
 			a.mu.lock()
 			still := if _ := a.first_tap_on_locked(iface) { true } else { false }
+			// And whether anybody else is narrating this wire, on the same footing as the
+			// periodic sample below: RUNNING, not merely spawning.
+			mut held_by_reader := false
+			for c in a.chans {
+				if c.monitorable() && c.running && transport.wire_key(c.iface) == wire {
+					held_by_reader = true
+					break
+				}
+			}
 			a.mu.unlock()
 			if !still {
 				return
@@ -683,7 +683,7 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			// ONE LAST SAMPLE, for rx_loop's reason: the counts are polled before the receive, and
 			// a receive that fails can have counted first.
 			final := b.diagnostics()
-			if final != last_diag && !owned {
+			if final != last_diag && !held_by_reader {
 				a.mu.lock()
 				if a.running && a.run_gen == gen {
 					a.log_append_locked(diag_msg(iface, last_diag, final))
@@ -709,6 +709,23 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		if time.ticks() < next {
 			continue
 		}
+		// IS ANYBODY ELSE TELLING THIS WIRE'S STORY? Asked AFTER the receive, because the answer
+		// can change during those 200 ms, and asked about a reader that is actually RUNNING rather
+		// than one that is merely SPAWNING. A spawning row has not opened its socket yet, so during
+		// that window nobody else can see anything — handing the narration over then meant an error
+		// frame arriving in it was consumed here and reported by no one, and the new socket starts
+		// from `hstate == .unknown` and cannot recover an event it was not open for (codex round 5
+		// on #142). The SUPERVISOR still counts a spawning row as a reader, which is a different
+		// question: whether to start a watcher at all, not who narrates once one exists.
+		a.mu.lock()
+		mut owned := false
+		for c in a.chans {
+			if c.monitorable() && c.running && transport.wire_key(c.iface) == wire {
+				owned = true
+				break
+			}
+		}
+		a.mu.unlock()
 		next = time.ticks() + 1000
 		// WHAT IS NEITHER A FRAME NOR A RUNG (#213) — dropped frames, controller errors,
 		// undecodable records. On a transmit-only wire THIS reader is the only receiver, so these
@@ -726,18 +743,25 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			}
 			a.mu.unlock()
 			vgui.wake()
-		} else {
-			last_diag = d
 		}
+		// …and when it is not reported it is not recorded either, for the reason the health
+		// sample states. These are counts SINCE OPEN rather than a ladder, so a suppressed one is
+		// not lost the same way — but reading it here and saying nothing would still make the next
+		// narration a delta from a baseline nobody was told.
 		h := b.health()
 		if h == .unknown || h == last {
 			continue
 		}
+		if owned {
+			// NOT RECORDED, because it was not reported. Advancing `last` here consumed the
+			// transition: if ownership moved back — or was never really taken, the row having only
+			// been spawning — nothing would ever say it, since a driver's ladder holds the CURRENT
+			// state and a rung that has already been read is gone. Leaving it pending costs one
+			// comparison a second and means the next reader to be responsible still has it.
+			continue
+		}
 		prev := last
 		last = h
-		if owned {
-			continue // rx_loop owns the narration for this wire; the drain above is harmless
-		}
 		a.mu.lock()
 		if a.running && a.run_gen == gen {
 			a.log_append_locked(health_msg(iface, prev, h))
