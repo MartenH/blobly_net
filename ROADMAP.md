@@ -10,6 +10,17 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Next
 
+- ⏭️ **Replay cadence — the residual after the wiretap fix.** A 13-bus replay now completes with
+  no frame over a second late, but ~25 collections a minute of 100–330 ms remain, and each is a
+  stop-the-world across every thread. The LENGTH is the live set: the whole recording is
+  materialised and held for the run (~900 MB, millions of small objects for the collector to
+  trace). Two things, measured with `cmd/blobly_net/probe.v` before and after: (1) the recording
+  in an arena — pointer-free rows plus one payload pool, so a collection has almost nothing to
+  walk, and a plan that indexes rather than copies; (2) an allocation-free hot loop (`due()` into a
+  caller buffer, `wire_policy` without string temporaries, the tap without per-frame clones), so
+  the replay thread never triggers a collection itself. And `timeBeginPeriod(1)` at startup: the
+  16 ms Windows timer quantum is a floor under every sleep the player takes.
+
 - ⏭️ **A `-prod` build**, once CI exercises one. Releases themselves are routine since
   `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md).
   **There is now a known blocker, measured:** `-prod` plus a Boehm GC mode makes every call out

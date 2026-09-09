@@ -782,6 +782,11 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			if gone {
 				break
 			}
+			if probe_active {
+				// cadence: playback position now, against where this frame sits in the recording
+				now_p := f64(i64(sw.elapsed())) / 1e6
+				probe_note_late((p.position_s(now_p) - (e.t_s - plan.t0_s)) * 1000.0)
+			}
 			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {
 				// The tap refuses once the run is over, so a rejection here is usually Stop

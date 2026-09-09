@@ -199,7 +199,9 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	}
 	if t.guard_gen != 0 {
 		mut a := unsafe { t.app }
+		pt := probe_lock_begin()
 		a.mu.lock()
+		probe_lock_end(pt)
 		stale := !a.running || a.run_gen != t.guard_gen
 		a.mu.unlock()
 		if stale {

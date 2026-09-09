@@ -105,7 +105,7 @@ mut:
 // settled: every monitor that could have seen this emission has accounted for it, so no future
 // frame can match it. Nothing is lost by dropping it, which makes it the first thing to give up
 // when the ring is full.
-fn (p Pending) settled() bool {
+fn (p &Pending) settled() bool {
 	if p.allowed.len == 0 {
 		return false // nobody named: any monitor may still claim it (see `allowed`)
 	}
@@ -177,47 +177,44 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		// startup window depends on that) would go while a settled record it precedes survives.
 		// Cost order: settled (nothing can ever ask again) → verdictless (never claimable, never
 		// reportable) → oldest.
+		// IN PLACE, one victim at a time. Rebuilding the array to evict ONE record -- a map of
+		// indices, three passes and a fresh cap-sized copy -- ran on EVERY note() once the ring was
+		// full, which at replay rates is thousands of times a second: ~150 KB of garbage per emitted
+		// frame, measured at ~600 MB/s inside the GUI, and the reason its heap collected every second
+		// (the once-a-second replay stutter). A delete shifts the tail down and allocates nothing.
+		// The priority is unchanged: the first settled record, else the first verdictless one, else
+		// the oldest -- and only an oldest-class victim can be unresolved, so the report rule below
+		// is the same one the three passes applied.
 		mut need := r.items.len - r.cap
-		mut drop := map[int]bool{}
-		for i, pd in r.items {
-			if need == 0 {
-				break
+		for need > 0 && r.items.len > 0 {
+			v := r.victim_index()
+			pd := r.items[v]
+			if pd.claimed.len == 0 && pd.allowed.len > 0 && !pd.watched_gone {
+				evicted << pd.seq // oldest and unresolved: reported, never dropped in silence
 			}
-			if pd.settled() {
-				drop[i] = true
-				need--
-			}
+			r.items.delete(v)
+			need--
 		}
-		for i, pd in r.items {
-			if need == 0 {
-				break
-			}
-			// verdictless: nobody was ever named, or the watchers left. Neither can be reported
-			// missing, so neither costs anything to drop — unlike a watched record, whose
-			// eviction accuses a bus that may be perfectly healthy.
-			if i !in drop && (pd.allowed.len == 0 || pd.watched_gone) {
-				drop[i] = true
-				need--
-			}
-		}
-		mut keep := []Pending{cap: r.items.len}
-		for i, pd in r.items {
-			if i in drop {
-				continue
-			}
-			if need > 0 {
-				// oldest, and reported unless nothing could ever have answered for it
-				need--
-				if pd.claimed.len == 0 && pd.allowed.len > 0 && !pd.watched_gone {
-					evicted << pd.seq
-				}
-				continue
-			}
-			keep << pd
-		}
-		r.items = keep
 	}
 	return evicted
+}
+
+// victim_index is which record eviction gives up next: a settled one (nothing can ever ask about
+// it again), else a verdictless one (never claimable, never reportable), else the oldest. By index
+// and by reference -- copying each Pending to ask it a question is the ~200us/frame this module's
+// claim path already learned not to pay.
+fn (r &Ring) victim_index() int {
+	for i in 0 .. r.items.len {
+		if r.items[i].settled() {
+			return i
+		}
+	}
+	for i in 0 .. r.items.len {
+		if r.items[i].allowed.len == 0 || r.items[i].watched_gone {
+			return i
+		}
+	}
+	return 0
 }
 
 // frame_key is a cheap discriminator over everything the exact comparison checks: the interface,

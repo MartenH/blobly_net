@@ -113,6 +113,13 @@ fn main() {
 	app.load_project(proj_path)
 	println('blobly_net: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
+	// Replay stutter probe (probe.v): inert unless BLOBLY_PROBE_LOG is set. Diagnostic only.
+	if os.getenv('BLOBLY_PROBE_LOG') != '' {
+		probe_init()
+		spawn probe_hiccup_loop()
+		spawn probe_driver(app, os.getenv('BLOBLY_PROBE_SECONDS').int())
+	}
+
 	// Headless self-test of the Configuration editor: drive the real methods (New → add bus →
 	// edit fields → add DBC → Save As) and assert the written .blobnet round-trips. Exits after.
 	// The editor's widgets can't be clicked under WSLg, so this smoke covers the logic instead.

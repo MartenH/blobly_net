@@ -55,3 +55,42 @@ fn test_claim_cost_when_the_ring_is_full() {
 		assert worst_us < 20.0, 'claim is too slow to keep up with a saturated bus: ${worst_us}us'
 	}
 }
+
+fn C.GC_get_total_bytes() usize
+
+// How much does note() ALLOCATE when the ring is full? Every emitted frame lands here, and at
+// replay rates that is thousands of times a second -- so bytes per note is the number that
+// decides whether the GUI's collector runs every minute or every second. Measured in BYTES
+// rather than time, because allocation is deterministic where the scheduler is not.
+//
+// This is the class that produced the once-a-second replay stutter: eviction rebuilt the whole
+// ring (a map of indices, three passes, a fresh cap-sized copy) to make room for ONE record,
+// ~150 KB of garbage per frame, ~600 MB/s inside the GUI. In-place eviction allocates only the
+// record itself. The bound is loose on purpose: it has to catch a rebuild, never a field.
+fn test_note_cost_when_the_ring_is_full() {
+	$if !gcboehm ? {
+		return // the counter is Boehm's
+	}
+	mut r := Ring{}
+	f := fn (id u32, b u8) transport.CanFrame {
+		return transport.CanFrame{
+			id:   id
+			data: [b, 0, 0, 0, 0, 0, 0, 0]
+		}
+	}
+	for i in 0 .. default_cap {
+		r.note(u64(i), 'vcan0', f(u32(0x100 + (i % 0x400)), u8(i % 256)), 0, [0], '', false)
+	}
+	assert r.outstanding() == default_cap
+	// steady state: the ring is full and every note must evict one record to stay so
+	n := 2000
+	before := u64(C.GC_get_total_bytes())
+	for i in 0 .. n {
+		r.note(u64(default_cap + i), 'vcan0', f(u32(0x100 + (i % 0x400)), u8(i % 256)), 0, [0], '', false)
+	}
+	after := u64(C.GC_get_total_bytes())
+	assert r.outstanding() == default_cap
+	per := f64(after - before) / f64(n)
+	println('note cost @ ${default_cap} pending: ${per:.0f} bytes allocated per note')
+	assert per < 4096, 'note() at cap allocates ${per:.0f} bytes each -- the ring is being rebuilt per record'
+}
