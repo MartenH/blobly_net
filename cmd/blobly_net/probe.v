@@ -91,10 +91,10 @@ fn probe_init() {
 // window creation, the GL context, font loading, the settle frames — is startup, and a
 // slow one would otherwise read as replay stalls and a pre-run heap in the summary. The heap
 // extremes start from one real sample here rather than a sentinel. CALLED BY THE GATE that
-// starts the run, on the same thread, before start() returns to the frame loop: start()
-// sets app.running and then spawns the replay workers, so a driver polling `running` from
-// another thread could open the measurement after the first frames had been scored, and
-// every counter is gated on the flag this sets (codex on #299, rounds 1 and 2).
+// starts the run, on the same thread, BEFORE start(): start() spawns the replay workers
+// inside itself, so any boundary drawn after it — a driver polling `running`, or the gate
+// after the call returned — could miss the first frames they score. Every counter is gated
+// on the flag this sets (codex on #299, rounds 1 to 3).
 fn probe_begin() {
 	h := heap_mb()
 	probe_heap_min_mb = h

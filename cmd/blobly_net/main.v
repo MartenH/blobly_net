@@ -208,17 +208,22 @@ fn main() {
 			vgui.wake()
 		}
 		if autostart_frame > 0 && frame == autostart_frame {
-			app.start()
-			// The probe's measurement opens HERE, on the thread that started the run, before
-			// the workers it spawned can score a frame; and a Start the project refused (an
-			// invalid edit, a destination conflict, a pinned Vector clash) never sets
-			// running, so the refusal is signalled, or an unattended probe would wait forever.
+			// The probe's measurement opens BEFORE start(), on this thread: start() spawns the
+			// replay workers inside itself and a small cached recording on an in-process bus
+			// can dispatch before it returns, so a boundary drawn after it missed those frames
+			// (codex on #299, round 3). What Start does — opening the wires, the workers
+			// loading their recordings — is therefore inside the measurement, which is right:
+			// it is part of the run. A Start the project refused (an invalid edit, a
+			// destination conflict, a pinned Vector clash) never sets running, so the
+			// measurement is taken back and the refusal signalled, or an unattended probe
+			// would measure nothing for 70 s and call it a run.
 			if probe_active {
-				if app.running {
-					probe_begin()
-				} else {
-					probe_start_refused = true
-				}
+				probe_begin()
+			}
+			app.start()
+			if probe_active && !app.running {
+				probe_measuring = false
+				probe_start_refused = true
 			}
 		}
 		last := max_frames > 0 && frame >= max_frames
