@@ -36,3 +36,60 @@ fn test_no_collisions_across_awkward_inputs() {
 	}
 	assert seen.len == parts.len * parts.len
 }
+
+fn test_decompose_is_the_inverse_of_compose() {
+	cases := [
+		['A', 'x'],
+		['', ''],
+		['A|x', 'y'],
+		['A', 'x|y'],
+		['1:2', '3:4'],
+		['', 'vcan0'],
+		['Powertrain', 'pcan:PCAN_USBBUS1@250000'],
+	]
+	for c in cases {
+		k := compose_key(...c)
+		got := decompose_key(k) or {
+			assert false, 'compose_key(${c}) = "${k}" did not decompose'
+			return
+		}
+		assert got == c, '${c} -> "${k}" -> ${got}'
+	}
+}
+
+// THE PROPERTY THE KEY EXISTS FOR, from the other side: two different splittings of the same
+// characters compose to different keys, so decomposing each returns its own parts.
+fn test_a_separator_inside_a_part_round_trips() {
+	a := compose_key('A|x', 'y')
+	b := compose_key('A', 'x|y')
+	assert a != b
+	da := decompose_key(a) or {
+		assert false, 'a did not decompose'
+		return
+	}
+	db := decompose_key(b) or {
+		assert false, 'b did not decompose'
+		return
+	}
+	assert da == ['A|x', 'y']
+	assert db == ['A', 'x|y']
+}
+
+fn test_decompose_refuses_what_compose_never_wrote() {
+	// `2147483640:x` is the overflow case: added to `start` it wraps negative, so a bounds test
+	// written as `start + n > key.len` passes and the slice panics instead of refusing.
+	for bad in ['x', '3:ab', 'a:bc', '2:ab!3:cde', '-1:x', '2:ab|', '|2:ab', '2147483640:x',
+		'2147483647:x', '9999999999:x'] {
+		if got := decompose_key(bad) {
+			assert false, '"${bad}" decomposed to ${got}'
+		}
+	}
+}
+
+fn test_decompose_of_empty_is_no_parts() {
+	got := decompose_key('') or {
+		assert false, 'the empty key is what compose_key() with no parts writes'
+		return
+	}
+	assert got == []
+}

@@ -126,7 +126,25 @@ and when a bus-load interval closes and what a spawning or unread row does with 
 progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`, the trace's
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
-never averaged into a cadence (#266); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
+never averaged into a cadence (#266); and `cmd/blobly_net/txhealth/`, WHICH WIRES A RUN TRANSMITS ON WITHOUT EVER READING (#142). Health is
+not a value every driver keeps for the asking: on SocketCAN it is decoded from kernel ERROR FRAMES
+inside `recv` (`hstate`) and on Vector from the chip state riding each read, so on those two it is
+silent on a wire with no reader WHATEVER polls it — #142 names both halves, and fixing only the
+polling one leaves a watcher that looks like a feature and is inert on the two backends a Linux
+bench can exercise. So the watcher READS, discarding what it gets: those wires have no row, so
+there is no trace to file a frame against, and nothing else loses them (a SocketCAN open is its
+own socket, and a shared vendor wire gives each opener its own cursor, #221). ONE watcher per run
+asks the set difference each pass rather than a list fixed at Start, because both halves move
+while a run goes (a tap opens on a worker when a generator is retargeted, #257; a reader is
+retired when its adapter fails). Its reader census is `monitorable() && (running || spawning)`,
+not `enabled && running`: a DoIP row is marked running and keeps the default `vcan0` interface, so
+the looser test counted it as reading a CAN wire it never touches, and a row still SPAWNING is
+about to read — counted as unread, both loops narrate the same transition. It wakes ten times a
+second to do one second's work, measured because it is a run worker and `rebuild_from_proj` waits
+for those: sim-demo's drain is 202 ms with it and 202 ms without, where sleeping the whole second
+in one call made it 765 ms. The verdict lands in the LOG ONLY — a wire no row mentions has no row
+to colour, and `read_destinations` folds only `enabled && running` rows, so writing a verdict onto
+an unmonitored row would be state no panel reads. And `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
 inverse, the one place a value is ever written, which refuses rather than emit a spelling that

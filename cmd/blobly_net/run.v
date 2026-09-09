@@ -1057,6 +1057,10 @@ fn (mut app App) start() {
 	app.tap_failed = map[string]bool{}
 	app.mu.unlock()
 	spawn open_taps_for_run(app, plan, start_gen)
+	// AND SOMEBODY TO ASK THE WIRES NOBODY READS (#142). After the taps are on their way, since
+	// that is what it watches; it re-asks each pass, so it does not matter that none are open yet.
+	app.reserve_run_worker() // released by the watcher's own defer
+	spawn tx_health_loop(app, start_gen)
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
