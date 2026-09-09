@@ -90,7 +90,11 @@ fn probe_init() {
 // probe_begin marks the measurement boundary: the run is up. Everything sampled before it —
 // window creation, the GL context, font loading, the settle frames — is startup, and a
 // slow one would otherwise read as replay stalls and a pre-run heap in the summary. The heap
-// extremes start from one real sample here rather than a sentinel.
+// extremes start from one real sample here rather than a sentinel. CALLED BY THE GATE that
+// starts the run, on the same thread, before start() returns to the frame loop: start()
+// sets app.running and then spawns the replay workers, so a driver polling `running` from
+// another thread could open the measurement after the first frames had been scored, and
+// every counter is gated on the flag this sets (codex on #299, rounds 1 and 2).
 fn probe_begin() {
 	h := heap_mb()
 	probe_heap_min_mb = h
@@ -105,7 +109,7 @@ fn probe_begin() {
 // the player's base is the new pass's. Those frames are counted, not scored — scoring them
 // against the new base would file the ones a stall delayed as on-time.
 fn probe_note_late(ms f64) {
-	if !probe_active {
+	if !probe_measuring {
 		return
 	}
 	if ms < -1.0 {
@@ -121,7 +125,7 @@ fn probe_note_late(ms f64) {
 }
 
 fn probe_lock_begin() i64 {
-	if !probe_active {
+	if !probe_measuring {
 		return 0
 	}
 	return time.sys_mono_now()
@@ -191,22 +195,17 @@ fn probe_summary() string {
 	return s
 }
 
-// probe_driver waits for the autostart gate to start the run, opens the measurement at that
-// boundary (probe_begin), lets it play for `secs`, then
+// probe_driver waits for the gate to open the measurement, lets the run play for `secs`, then
 // writes the summary and leaves. The OS reclaims the rest; a probe does not need a tidy shutdown.
 // A summary that cannot be written goes to stderr and the exit status says so — a 70 s run that
 // exits 0 with no file would read as a run that never happened.
-fn probe_driver(app &App, secs int) {
-	mut a := unsafe { app }
+fn probe_driver(secs int) {
 	// Bounded: the gate fires after its settle frames, which a cold GL start can stretch to
 	// seconds but not to a minute; and a refused Start is reported by the gate itself. An
 	// unattended probe that waits forever on either is a run nobody can account for.
 	deadline := time.sys_mono_now() + 60 * u64(time.second)
 	for {
-		a.mu.lock()
-		running := a.running
-		a.mu.unlock()
-		if running {
+		if probe_measuring {
 			break
 		}
 		if probe_start_refused {
@@ -219,7 +218,6 @@ fn probe_driver(app &App, secs int) {
 		}
 		time.sleep(20 * time.millisecond)
 	}
-	probe_begin()
 	run_s := if secs > 0 { secs } else { 70 }
 	probe_run_s = run_s
 	time.sleep(run_s * time.second)

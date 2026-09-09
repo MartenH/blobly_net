@@ -117,7 +117,7 @@ fn main() {
 	if os.getenv('BLOBLY_PROBE_LOG') != '' {
 		probe_init()
 		spawn probe_hiccup_loop()
-		spawn probe_driver(app, os.getenv('BLOBLY_PROBE_SECONDS').int())
+		spawn probe_driver(os.getenv('BLOBLY_PROBE_SECONDS').int())
 	}
 
 	// Headless self-test of the Configuration editor: drive the real methods (New → add bus →
@@ -209,11 +209,16 @@ fn main() {
 		}
 		if autostart_frame > 0 && frame == autostart_frame {
 			app.start()
-			// The probe's driver waits on app.running, and a Start the project refused (an
-			// invalid edit, a destination conflict, a pinned Vector clash) never sets it —
-			// so the refusal is signalled, or an unattended probe would wait forever.
-			if probe_active && !app.running {
-				probe_start_refused = true
+			// The probe's measurement opens HERE, on the thread that started the run, before
+			// the workers it spawned can score a frame; and a Start the project refused (an
+			// invalid edit, a destination conflict, a pinned Vector clash) never sets
+			// running, so the refusal is signalled, or an unattended probe would wait forever.
+			if probe_active {
+				if app.running {
+					probe_begin()
+				} else {
+					probe_start_refused = true
+				}
 			}
 		}
 		last := max_frames > 0 && frame >= max_frames

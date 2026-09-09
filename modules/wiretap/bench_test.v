@@ -143,3 +143,37 @@ fn test_cost_when_records_age_out() {
 	println('age-out cost @ ${held} pending: ${per:.0f} bytes allocated per step (expire + claim + note)')
 	assert per < 4096, 'aging out one record allocates ${per:.0f} bytes -- the ring is being copied to drop a prefix'
 }
+
+// And the RECEIVE side of aging out on its own: the test above runs `expire` before every
+// `claim`, so `drop_expired` (the claim path's own prefix drop) always finds nothing aged and
+// its allocation-sensitive branch is never entered — reverting only that branch to slice-and-
+// clone left the test green (codex on #299 round 2). Here nothing calls `expire`: each step's
+// claim is what ages a record out.
+fn test_claim_cost_when_records_age_out() {
+	$if !gcboehm ? {
+		println('claim age-out cost: skipped, no Boehm allocation counter in this build')
+		return
+	}
+	mut r := Ring{}
+	held := 800
+	for i in 0 .. held {
+		r.note(u64(i), 'vcan0', bench_frame(u32(0x100 + (i % 0x400)), u8(i % 256)), f64(i), [
+			0,
+		], '', false)
+	}
+	n := 2000
+	before := allocated_bytes()
+	for i in 0 .. n {
+		t := f64(r.window_ms) + 1.0 + f64(i)
+		if _ := r.claim(0, 'vcan0', bench_frame(0x7FF, u8(i % 256)), t) {
+			assert false, 'nothing on this bench is claimable'
+		}
+		assert r.outstanding() == held - 1, 'the claim at step ${i} should have dropped exactly one aged record'
+		r.note(u64(held + i), 'vcan0', bench_frame(u32(0x100 + (i % 0x400)), u8(i % 256)), f64(
+			held + i), [0], '', false)
+	}
+	after := allocated_bytes()
+	per := f64(after - before) / f64(n)
+	println('claim age-out cost @ ${held} pending: ${per:.0f} bytes allocated per step (claim + note)')
+	assert per < 4096, 'dropping one aged record on the claim path allocates ${per:.0f} bytes -- the ring is being copied to drop a prefix'
+}
