@@ -354,6 +354,14 @@ mut:
 	// generator loop reads: a sender waiting for its own tap falls back to the wire's shared
 	// one once its own is known not to come (codex round 6 on #257). Cleared at Start.
 	tap_failed map[string]bool
+	// Which transmit-only wires already have a health reader (#142), keyed by wire_key. SHARED
+	// rather than kept by the supervisor, because only the READER knows when its entry stops being
+	// true: it exits when its tap goes, and a marker the supervisor could not clear meant a wire
+	// whose tap came back — a generator retargeted away and then back inside one run — was skipped
+	// for the rest of that run and never watched again (codex round 2 on #142). Set before the
+	// spawn and cleared by the reader's own defer, both under app.mu, so there is no window in
+	// which a second reader can be started for a wire that already has one.
+	tx_health_wires map[string]bool
 	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
 	// drawn, for the reason given there.
 	save_requested bool

@@ -551,7 +551,6 @@ fn tx_health_loop(app &App, gen u64) {
 		release_run_worker(app)
 	}
 	mut a := unsafe { app }
-	mut spawned := map[string]bool{}
 	for a.running && a.run_gen == gen {
 		// SLICED, NOT SLEPT. This is a RUN WORKER, and rebuild_from_proj waits for those before it
 		// replaces the runtime view (#286) — bounded at drain_budget_ms = 1500, of which a Stop
@@ -594,12 +593,12 @@ fn tx_health_loop(app &App, gen u64) {
 		}
 		mut starts := []string{}
 		for wk in txhealth.watched(keys, reading) {
-			if wk in spawned {
+			if a.tx_health_wires[wk] or { false } {
 				continue
 			}
 			iface := iface_of[wk] or { continue }
 			if _ := a.first_tap_on_locked(iface) {
-				spawned[wk] = true
+				a.tx_health_wires[wk] = true
 				starts << iface
 			}
 		}
@@ -616,12 +615,25 @@ fn tx_health_loop(app &App, gen u64) {
 // tx_health_reader drains one transmit-only wire so its health ladder advances, and narrates what
 // it finds. See tx_health_loop for why this reads rather than polls.
 fn tx_health_reader(app &App, iface string, gen u64) {
-	defer {
-		release_run_worker(app)
-	}
 	mut a := unsafe { app }
 	wire := transport.wire_key(iface)
+	// Set by the fatal branch below. The marker is what stops the supervisor starting another
+	// reader, so a CLEAN exit clears it (the tap went; if it comes back the wire is watched
+	// again) and a FATAL one does not: an adapter that has gone would otherwise be reopened once
+	// a second for the rest of the run, with a notify each time. That is rx_loop's rule stated
+	// for a worker with no row — "a channel whose adapter has gone stops being part of the run
+	// until somebody says otherwise", and here the next Start is what says otherwise.
+	mut fatal := false
+	defer {
+		if !fatal {
+			a.mu.lock()
+			a.tx_health_wires.delete(wire)
+			a.mu.unlock()
+		}
+		release_run_worker(app)
+	}
 	mut last := transport.BusHealth.unknown
+	mut last_diag := transport.BusDiagnostics{}
 	mut next := time.ticks()
 	for a.running && a.run_gen == gen {
 		a.mu.lock()
@@ -641,13 +653,57 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		}
 		a.mu.unlock()
 		// AT THE WIRE'S OWN RATE. The same 200 ms rx_loop uses, which is also what bounds how long
-		// a Stop waits for this worker — measured at ~202 ms for the whole drain, unchanged by
+		// a Stop waits for this worker — measured at ~201 ms for the whole drain, unchanged by
 		// these readers because rx_loop already sets that floor.
-		b.recv(200) or {}
+		b.recv(200) or {
+			// A TIMEOUT IS THE NORMAL ANSWER; anything else is the adapter in trouble, and
+			// swallowing both retried the failing call as fast as it could return — a core spun on
+			// an unplugged adapter while nothing advanced at all. The same rule rx_loop applies,
+			// and it has to be applied here too: this reader has no row to be retired with
+			// (codex round 2 on #142).
+			if err.msg().contains('timeout') {
+				continue
+			}
+			// ONE LAST SAMPLE, for rx_loop's reason: the counts are polled before the receive, and
+			// a receive that fails can have counted first.
+			final := b.diagnostics()
+			if final != last_diag && !owned {
+				a.mu.lock()
+				if a.running && a.run_gen == gen {
+					a.log_append_locked(diag_msg(iface, last_diag, final))
+				}
+				a.mu.unlock()
+			}
+			a.notify('${iface}: receive failed — ${err}; this wire is no longer watched for bus health')
+			// EXITS AND STAYS EXITED. There is no row to disable here, so the marker is what
+			// retires the wire: left set, the supervisor starts no replacement. Retrying would be
+			// the same spin one open slower, which is the lesson rx_loop already paid for.
+			fatal = true
+			return
+		}
 		if time.ticks() < next {
 			continue
 		}
 		next = time.ticks() + 1000
+		// WHAT IS NEITHER A FRAME NOR A RUNG (#213) — dropped frames, controller errors,
+		// undecodable records. On a transmit-only wire THIS reader is the only receiver, so these
+		// counters move because of the reads above and nothing else would ever narrate them: there
+		// is no rx_loop for this wire and no Buses row to carry a chip. Faults the reader itself
+		// consumes would otherwise be invisible, which is the same argument as #142's own (codex
+		// round 2).
+		d := b.diagnostics()
+		if d != last_diag && !owned {
+			prev_diag := last_diag
+			last_diag = d
+			a.mu.lock()
+			if a.running && a.run_gen == gen {
+				a.log_append_locked(diag_msg(iface, prev_diag, d))
+			}
+			a.mu.unlock()
+			vgui.wake()
+		} else {
+			last_diag = d
+		}
 		h := b.health()
 		if h == .unknown || h == last {
 			continue
