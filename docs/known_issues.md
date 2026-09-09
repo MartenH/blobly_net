@@ -304,8 +304,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   array, and replaced the ring — a full rebuild per frame to evict one record, ~150 KB each. The
   render loop's per-frame clone of the trace ring was the other suspect and turned out secondary
   (switching it off changed little once the ring was fixed); `app.mu` is not a contention problem
-  (every acquisition a send makes, four per frame: avg 1.5 µs, 4% of the replay thread's time;
-  the maximum, 179 ms, coincides with a collection, which stops the lock holder like everyone
+  (every acquisition a send makes, five per frame: avg 1.3 µs, 4% of the replay thread's time;
+  the maximum, 183 ms, coincides with a collection, which stops the lock holder like everyone
   else). Eviction is in place now — same priority, same verdicts, 356 bytes per
   note against 180,996 — and `test_note_cost_when_the_ring_is_full` pins the class. The
   self-review of that fix found the SIBLING: below ~500 frames/s the ring never fills, records
