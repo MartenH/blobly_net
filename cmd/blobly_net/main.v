@@ -221,9 +221,18 @@ fn main() {
 				probe_begin()
 			}
 			app.start()
-			if probe_active && !app.running {
-				probe_measuring = false
-				probe_start_refused = true
+			// Two flags, because the driver polls: armed (probe_measuring) is what the
+			// counters read and goes up before start(); started is what the driver waits for
+			// and is set only once the run is KNOWN to be up — a driver that saw the armed
+			// flag's transient on a refused Start left its wait and measured nothing for 70 s
+			// (codex on #299 round 5).
+			if probe_active {
+				if app.running {
+					probe_started = true
+				} else {
+					probe_measuring = false
+					probe_start_refused = true
+				}
 			}
 		}
 		last := max_frames > 0 && frame >= max_frames

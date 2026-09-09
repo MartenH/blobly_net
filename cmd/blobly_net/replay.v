@@ -232,18 +232,18 @@ fn (mut app App) load_recording(path string) {
 		}
 		name := app.lookup_name(f.id, f.extended)
 		app.push_row_locked(TraceRow{
-			t_ms:   (e.t_s - t0) * 1000.0
-			ch:     e.iface
-			origin: org_rep
-			id:     f.id
-			ext:    f.extended
-			fd:     f.fd
-			brs:    f.brs
-			esi:    f.esi
-			rtr:    f.rtr
-			name:   name
-			data:   f.data.clone()
-			e2e:    viol
+			t_ms:     (e.t_s - t0) * 1000.0
+			ch:       e.iface
+			origin:   org_rep
+			id:       f.id
+			ext:      f.extended
+			fd:       f.fd
+			brs:      f.brs
+			esi:      f.esi
+			rtr:      f.rtr
+			name:     name
+			data:     f.data.clone()
+			e2e:      viol
 			imported: true
 		})
 	}
@@ -790,8 +790,16 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			if probe_active {
 				// cadence: dispatch time against the player's own schedule for this frame,
 				// re-sampled per frame — after a stall due() hands back everything owed, and
-				// the later frames of that batch really do go out later
-				probe_note_late(f64(i64(sw.elapsed())) / 1e6 - p.due_at_ms(e))
+				// the later frames of that batch really do go out later. A batch that crossed
+				// a loop wrap carries the previous pass's tail, whose schedule is one pass
+				// earlier than the base the player has moved on to — the player never releases
+				// early, so a negative answer IS that case, and one pass is put back; a stall
+				// longer than a whole pass stays unscored, counted (codex on #299 round 5).
+				mut late := f64(i64(sw.elapsed())) / 1e6 - p.due_at_ms(e)
+				if late < -1.0 {
+					late += p.duration_s() * 1000.0 / p.speed
+				}
+				probe_note_late(late)
 			}
 			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {
@@ -1080,7 +1088,8 @@ fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
 fn replay_db(app &App, ch Chan) candb.Database {
 	mut a := unsafe { app }
 	a.mu.lock()
-	db := merge_dbs_from(app.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(app.resolve_asset(it)))))
+	db :=
+		merge_dbs_from(app.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(app.resolve_asset(it)))))
 	a.mu.unlock()
 	return db
 }

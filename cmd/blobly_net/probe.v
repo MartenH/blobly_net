@@ -39,7 +39,8 @@ fn C.GC_get_gc_no() u32
 
 __global (
 	probe_active        bool
-	probe_measuring     bool // the run is up: counters record from here, not from process start
+	probe_measuring     bool // counters record: armed by the gate before start(), taken back on a refusal
+	probe_started       bool // start() returned with the run up — what the driver waits for, never a transient
 	probe_start_refused bool // the autostart gate called start() and the project refused it
 	probe_out           string
 	probe_late          [5]u64 // by late_edges_ms
@@ -144,24 +145,38 @@ fn probe_lock_end(t0 i64) {
 }
 
 // probe_hiccup_loop is the stall detector: it asks for 1 ms and records what it got.
+// The interval is WAKE TO WAKE, and the collection counter is read at each wake: a gap
+// measured only across the sleep left the loop's own work between two sleeps — the counter
+// updates, the heap sample — outside every window, and a collection landing there was in no
+// bucket and in no `hic_with_gc` (codex on #299 round 5). Now every instant of the
+// measurement is inside exactly one interval.
 fn probe_hiccup_loop() {
 	mut last_heap := time.sys_mono_now()
+	mut prev := u64(0)
+	mut gprev := u32(0)
 	for {
 		if !probe_measuring {
+			prev = 0
 			time.sleep(20 * time.millisecond)
 			continue
 		}
-		g0 := gc_count()
-		t := time.sys_mono_now()
+		if prev == 0 {
+			prev = time.sys_mono_now()
+			gprev = gc_count()
+			last_heap = prev
+		}
 		time.sleep(time.millisecond)
 		now := time.sys_mono_now()
-		ms := f64(now - t) / 1e6
+		gnow := gc_count()
+		ms := f64(now - prev) / 1e6
 		b := bucket(ms, hic_edges_ms)
 		probe_hic[b]++
 		probe_hic_n++
-		if b > 0 && gc_count() != g0 {
+		if b > 0 && gnow != gprev {
 			probe_hic_gc++
 		}
+		prev = now
+		gprev = gnow
 		if u64(ms) > probe_hic_max_ms {
 			probe_hic_max_ms = u64(ms)
 		}
@@ -205,7 +220,7 @@ fn probe_driver(secs int) {
 	// unattended probe that waits forever on either is a run nobody can account for.
 	deadline := time.sys_mono_now() + 60 * u64(time.second)
 	for {
-		if probe_measuring {
+		if probe_started {
 			break
 		}
 		if probe_start_refused {
@@ -221,6 +236,12 @@ fn probe_driver(secs int) {
 	run_s := if secs > 0 { secs } else { 70 }
 	probe_run_s = run_s
 	time.sleep(run_s * time.second)
+	// Sampling STOPS before the summary is read: with the flag still up, the workers and
+	// the hiccup thread went on changing the counters while probe_summary() read them, so
+	// its fields described different intervals and a histogram need not sum to its total
+	// (codex on #299 round 5). A moment for the samples already in flight, then the read.
+	probe_measuring = false
+	time.sleep(50 * time.millisecond)
 	probe_bytes_end = u64(gc_heap_usage().total_bytes)
 	summary := probe_summary()
 	os.write_file(probe_out, summary) or {
