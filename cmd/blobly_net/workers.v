@@ -655,14 +655,27 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		// AT THE WIRE'S OWN RATE. The same 200 ms rx_loop uses, which is also what bounds how long
 		// a Stop waits for this worker — measured at ~201 ms for the whole drain, unchanged by
 		// these readers because rx_loop already sets that floor.
+		// A TIMEOUT IS THE NORMAL ANSWER; anything else is the adapter in trouble, and swallowing
+		// both retried the failing call as fast as it could return — a core spun on an unplugged
+		// adapter while nothing advanced at all (codex round 2). The same rule rx_loop applies.
+		mut hard := ''
 		b.recv(200) or {
-			// A TIMEOUT IS THE NORMAL ANSWER; anything else is the adapter in trouble, and
-			// swallowing both retried the failing call as fast as it could return — a core spun on
-			// an unplugged adapter while nothing advanced at all. The same rule rx_loop applies,
-			// and it has to be applied here too: this reader has no row to be retired with
-			// (codex round 2 on #142).
-			if err.msg().contains('timeout') {
-				continue
+			if !err.msg().contains('timeout') {
+				hard = err.msg()
+			}
+		}
+		if hard != '' {
+			// IS THE ADAPTER GONE, OR IS THE TAP? drop_unwanted_taps can close this handle the
+			// moment after it was taken — the lock is released before the recv — and that close
+			// arrives here as a non-timeout error. Read as a failure it retired the wire for the
+			// whole run, so retargeting a generator back to it was never watched again, which is
+			// the LIFECYCLE event the clean exit already handles (codex round 3 on #142). Asking
+			// again separates them: a tap that is gone is a wire this run no longer transmits on.
+			a.mu.lock()
+			still := if _ := a.first_tap_on_locked(iface) { true } else { false }
+			a.mu.unlock()
+			if !still {
+				return // clean: the marker clears and the wire can be watched again
 			}
 			// ONE LAST SAMPLE, for rx_loop's reason: the counts are polled before the receive, and
 			// a receive that fails can have counted first.
@@ -674,13 +687,23 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 				}
 				a.mu.unlock()
 			}
-			a.notify('${iface}: receive failed — ${err}; this wire is no longer watched for bus health')
-			// EXITS AND STAYS EXITED. There is no row to disable here, so the marker is what
-			// retires the wire: left set, the supervisor starts no replacement. Retrying would be
-			// the same spin one open slower, which is the lesson rx_loop already paid for.
+			// GENERATION-GATED, like every other worker's late word: Stop closes these taps while
+			// the readers are still exiting, so an ungated notice reported an intentional shutdown
+			// as a failure — and a reader descheduled past the next Start would have appended the
+			// previous run's failure to the replacement run's Log (codex round 3).
+			notify_gen(app, gen, '${iface}: receive failed — ${hard}; this wire is no longer watched for bus health')
+			// EXITS AND STAYS EXITED for this run. There is no row to disable here, so the marker is
+			// what retires the wire: left set, the supervisor starts no replacement. Retrying would
+			// be the same spin one open slower, which is the lesson rx_loop already paid for.
 			fatal = true
 			return
 		}
+		// THE PERIODIC SAMPLE RUNS ON A TIMEOUT TOO, and that is the whole point rather than a
+		// tidy-up: PCAN and Kvaser answer health through an explicit status call and Vector's
+		// health() issues the chip-state request itself, so the sample does not need a frame — and
+		// a BUS-OFF controller produces no frames at all. Skipping the sample whenever the receive
+		// timed out meant the one condition this reader exists to report was the one it could never
+		// reach (codex round 3 on #142). rx_loop polls on the same footing.
 		if time.ticks() < next {
 			continue
 		}
