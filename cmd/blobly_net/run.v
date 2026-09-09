@@ -623,17 +623,65 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 	// emptied map, sit there through the next Start (has_tap sees it and opens no
 	// replacement) and refuse every send with "run ended" (codex round 1 on #257).
 	keep := taprule.file_decision(app.taprule_run_locked(), gen, key in app.tx_buses)
+	mut watch := ''
 	if keep {
 		app.tx_buses[key] = b
 		// A tap that lands is not failed, whatever an earlier attempt said: a later worker —
 		// a generator added or retargeted — can succeed where Start's did not, and the sender
 		// must go back to its own tap (codex round 7 on #257).
 		app.tap_failed.delete(key)
+		// AND THE HEALTH READER IS CLAIMED HERE, not a second later by the supervisor's next pass
+		// (#142). Filing a tap is the moment transmit becomes possible on this wire — gen_loop can
+		// fire as soon as it sees one — and a shorted or wrong-rate controller can go BUS-OFF
+		// immediately. The error frame for that transition is queued only on sockets already open,
+		// and a bus-off controller then sends nothing further, so a reader that opens even a second
+		// late starts at `unknown` and can never learn what it missed: the fault is permanently
+		// unreported (codex round 7 on #142).
+		//
+		// The reader is SPAWNED, not waited for, so filing a tap is not delayed by a driver open —
+		// on a CANsub that is seconds, and making every generator's first send wait for a health
+		// handle would trade a rare missed fault for a guaranteed delay. The window therefore
+		// shrinks to the reader's own open rather than closing: sub-millisecond for a SocketCAN
+		// socket, which is the case this finding is about, and seconds on a cold vendor device.
+		if _, iface := split_tap_key(key) {
+			wk := transport.wire_key(iface)
+			mut read := false
+			for c in app.chans {
+				if c.monitorable() && (c.running || c.spawning)
+					&& transport.wire_key(c.iface) == wk {
+					read = true
+					break
+				}
+			}
+			// may_claim_now, not may_claim: this path exists to catch the FIRST moment a wire
+			// becomes transmittable, and a RETRY after a failed reader belongs to the supervisor's
+			// once-a-second pass — otherwise several taps filed on one wire could each restart a
+			// fast-failing reader and burn the three-failure budget in a few hundred milliseconds
+			// (codex round 8 on #142).
+			if !read && app.tx_health.may_claim_now(wk, gen) {
+				app.tx_health.claim(wk, gen)
+				app.reserve_run_worker_locked() // released by the reader's own defer
+				watch = iface
+			}
+		}
 	}
 	app.mu.unlock()
+	if watch != '' {
+		spawn tx_health_reader(app, watch, gen)
+	}
 	if !keep {
 		b.close() // the run ended, or somebody inserted first — the loser must not leak
 	}
+}
+
+// split_tap_key reads a tap key back into its channel name and interface, or none when it is not
+// one this app wrote. The keys are project.compose_key pairs; see project.decompose_key.
+fn split_tap_key(key string) ?(string, string) {
+	parts := project.decompose_key(key) or { return none }
+	if parts.len != 2 || parts[1] == '' {
+		return none
+	}
+	return parts[0], parts[1]
 }
 
 fn (mut app App) start() {
@@ -1057,6 +1105,10 @@ fn (mut app App) start() {
 	app.tap_failed = map[string]bool{}
 	app.mu.unlock()
 	spawn open_taps_for_run(app, plan, start_gen)
+	// AND SOMEBODY TO ASK THE WIRES NOBODY READS (#142). After the taps are on their way, since
+	// that is what it watches; it re-asks each pass, so it does not matter that none are open yet.
+	app.reserve_run_worker() // released by the watcher's own defer
+	spawn tx_health_loop(app, start_gen)
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),

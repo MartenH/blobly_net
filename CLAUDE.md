@@ -126,7 +126,49 @@ and when a bus-load interval closes and what a spawning or unread row does with 
 progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`, the trace's
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
-never averaged into a cadence (#266); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
+never averaged into a cadence (#266); and `cmd/blobly_net/txhealth/`, WHICH WIRES A RUN TRANSMITS ON WITHOUT EVER READING (#142). Health is
+not a value every driver keeps for the asking: on SocketCAN it is decoded from kernel ERROR FRAMES
+inside `recv` (`hstate`) and on Vector from the chip state riding each read, so on those two it is
+silent on a wire with no reader WHATEVER polls it — #142 names both halves, and fixing only the
+polling one leaves a watcher that looks like a feature and is inert on the two backends a Linux
+bench can exercise. So it spawns a READER per such wire, WITH ITS OWN RECEIVE HANDLE, discarding what
+it gets: those wires have no row, so there is no trace to file a frame against, and nothing else
+loses them (a SocketCAN open is its own socket, and a shared vendor wire gives each opener its own
+cursor over one ingress ring, #221). Its own handle and not a borrowed transmit tap, which was
+three defects in one mistake — a TX tap nobody drains has a queue accumulating since the run
+began, so attaching mid-run at bus rate leaves the reader permanently behind or the error frame
+already dropped; which tap you get is arbitrary, so a restarted reader inherits a different one;
+and a baseline belongs to a handle, so switching handles invents transitions. Opening its own
+makes `unknown` health and zero counters the TRUE baseline rather than a guess about somebody
+else's, and it is what rx_loop does for a monitored wire — this is that worker with the row
+bookkeeping removed. A READER and
+not a quota — draining a fixed budget once a second falls further behind on every pass on a wire a
+generator is blasting into, the receive queue fills, and the error frame this exists to see is
+dropped before anyone looks: the feature defeated by exactly the traffic it was added for. Only
+reading at the wire's own rate keeps up, which is what `rx_loop` does. A reader lives for the run
+and stops NARRATING (not draining) if its wire gains a real one, which avoids a lifecycle the
+supervisor could race. The supervisor re-asks the set difference each second rather than fixing a
+list at Start, because both halves move while a run goes (a tap opens on a worker when a generator
+is retargeted, #257; a reader is retired when its adapter fails), and the census is keyed by
+`wire_key` — NOT `destination_key`, which carries the bitrate, so a row on `pcan:PCAN_USBBUS1` and
+a legal bare target of `pcan:PCAN_USBBUS1@250000` are one physical bus that otherwise got two keys
+and two narrations of every transition. Its reader census is `monitorable() && (running ||
+spawning)`, not `enabled && running`: a DoIP row is marked running and keeps the default `vcan0`
+interface, so the looser test counted it as reading a CAN wire it never touches, and a row still
+SPAWNING is about to read. WHO OWNS A READER, and when a wire stops being retried, is
+`cmd/blobly_net/txclaim` — tested, because three consecutive review rounds each found a defect in
+the previous round's fix and every one of them was in that bookkeeping rather than in the reading:
+a marker only the supervisor could clear, a first hard error mistaken for a dead adapter, markers
+outliving the run they described, and then a departing reader erasing its successor's claim. The
+GENERATION is part of the claim, which is what makes a Start reset unnecessary rather than merely
+correct, and a release counts only from the run that made the claim. A hard receive error is
+COUNTED rather than acted on — a wire may carry several taps, so the one a reader holds can be
+closed while others stay live, and no single error tells that from an adapter that has gone; three
+in a run retire the wire, said once. Measured, because these are run workers and `rebuild_from_proj` waits
+for those: with a generator aimed at a bare wire the drain is 201 ms and the census empties, where
+the supervisor sleeping a whole second in one call made it 765 ms. The verdict lands in the LOG ONLY — a wire no row mentions has no row
+to colour, and `read_destinations` folds only `enabled && running` rows, so writing a verdict onto
+an unmonitored row would be state no panel reads. And `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
 inverse, the one place a value is ever written, which refuses rather than emit a spelling that

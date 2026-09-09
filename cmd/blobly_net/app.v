@@ -5,6 +5,7 @@ import sync
 import time
 import runtime
 import project
+import txclaim
 import logfile
 import loadrule
 import transport
@@ -354,6 +355,11 @@ mut:
 	// generator loop reads: a sender waiting for its own tap falls back to the wire's shared
 	// one once its own is known not to come (codex round 6 on #257). Cleared at Start.
 	tap_failed map[string]bool
+	// WHO OWNS THE HEALTH READER FOR EACH TRANSMIT-ONLY WIRE (#142), keyed by wire_key. The rules
+	// are ../blobly_net/txclaim, tested: three review rounds each found a defect in the previous
+	// round's fix, every one of them in this bookkeeping rather than in the reading, so it stopped
+	// being written inline. Guarded by app.mu like every other shared map here.
+	tx_health txclaim.Ledger
 	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
 	// drawn, for the reason given there.
 	save_requested bool
