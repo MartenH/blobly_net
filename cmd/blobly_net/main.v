@@ -209,6 +209,12 @@ fn main() {
 		}
 		if autostart_frame > 0 && frame == autostart_frame {
 			app.start()
+			// The probe's driver waits on app.running, and a Start the project refused (an
+			// invalid edit, a destination conflict, a pinned Vector clash) never sets it —
+			// so the refusal is signalled, or an unattended probe would wait forever.
+			if probe_active && !app.running {
+				probe_start_refused = true
+			}
 		}
 		last := max_frames > 0 && frame >= max_frames
 		if last && shot != '' {

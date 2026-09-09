@@ -39,6 +39,8 @@ fn C.GC_get_gc_no() u32
 
 __global (
 	probe_active        bool
+	probe_measuring     bool // the run is up: counters record from here, not from process start
+	probe_start_refused bool // the autostart gate called start() and the project refused it
 	probe_out           string
 	probe_late          [5]u64 // by late_edges_ms
 	probe_late_max_us   u64
@@ -83,11 +85,18 @@ fn gc_count() u32 {
 fn probe_init() {
 	probe_out = os.getenv('BLOBLY_PROBE_LOG')
 	probe_active = probe_out != ''
-	// One real sample rather than a sentinel: a run that ends before the first periodic sample
-	// still reports a heap size, not a 1<<62.
+}
+
+// probe_begin marks the measurement boundary: the run is up. Everything sampled before it —
+// window creation, the GL context, font loading, the settle frames — is startup, and a
+// slow one would otherwise read as replay stalls and a pre-run heap in the summary. The heap
+// extremes start from one real sample here rather than a sentinel.
+fn probe_begin() {
 	h := heap_mb()
 	probe_heap_min_mb = h
 	probe_heap_max_mb = h
+	probe_bytes_start = u64(gc_heap_usage().total_bytes)
+	probe_measuring = true
 }
 
 // probe_note_late records one replayed frame's lateness in playback-clock ms. The player never
@@ -134,6 +143,10 @@ fn probe_lock_end(t0 i64) {
 fn probe_hiccup_loop() {
 	mut last_heap := time.sys_mono_now()
 	for {
+		if !probe_measuring {
+			time.sleep(20 * time.millisecond)
+			continue
+		}
 		g0 := gc_count()
 		t := time.sys_mono_now()
 		time.sleep(time.millisecond)
@@ -178,12 +191,17 @@ fn probe_summary() string {
 	return s
 }
 
-// probe_driver waits for the autostart gate to start the run, lets it play for `secs`, then
+// probe_driver waits for the autostart gate to start the run, opens the measurement at that
+// boundary (probe_begin), lets it play for `secs`, then
 // writes the summary and leaves. The OS reclaims the rest; a probe does not need a tidy shutdown.
 // A summary that cannot be written goes to stderr and the exit status says so — a 70 s run that
 // exits 0 with no file would read as a run that never happened.
 fn probe_driver(app &App, secs int) {
 	mut a := unsafe { app }
+	// Bounded: the gate fires after its settle frames, which a cold GL start can stretch to
+	// seconds but not to a minute; and a refused Start is reported by the gate itself. An
+	// unattended probe that waits forever on either is a run nobody can account for.
+	deadline := time.sys_mono_now() + 60 * u64(time.second)
 	for {
 		a.mu.lock()
 		running := a.running
@@ -191,9 +209,17 @@ fn probe_driver(app &App, secs int) {
 		if running {
 			break
 		}
+		if probe_start_refused {
+			eprintln('probe: the project refused to start; nothing to measure')
+			exit(2)
+		}
+		if time.sys_mono_now() > deadline {
+			eprintln('probe: the run did not start within 60 s; nothing to measure')
+			exit(2)
+		}
 		time.sleep(20 * time.millisecond)
 	}
-	probe_bytes_start = u64(gc_heap_usage().total_bytes)
+	probe_begin()
 	run_s := if secs > 0 { secs } else { 70 }
 	probe_run_s = run_s
 	time.sleep(run_s * time.second)

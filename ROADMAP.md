@@ -24,9 +24,11 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   healthy bus the ring sits at its 1024 cap and every note at cap moves ~180 KB under `app.mu`
   to retire one — deleting it at the claim that settles it leaves tens of records, and the one
   test in the way (`wiretap_test.v`, "still held for a second monitor") asserts a record no
-  monitor may claim (the self-review's altitude finding on #299). And the cheap experiment
-  FIRST, with the probe: a `-gc boehm_incr_opt` build, since incremental marking is aimed at
-  exactly pause length and costs one flag to try.
+  monitor may claim (the self-review's altitude finding on #299). The cheap experiment has been
+  run and is NOT a lever: a `-gc boehm_incr_opt` build, same probe, same project — the same
+  number of pauses at or above 50 ms (28 against 29), a worse maximum (352 ms against 282) and a
+  77 ms lock wait the full collector never showed. Boehm's incremental mode does not shorten
+  these on Windows; the live set has to shrink.
 
 - ⏭️ **A `-prod` build**, once CI exercises one. Releases themselves are routine since
   `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md).
