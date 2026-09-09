@@ -492,17 +492,38 @@ mut:
 	// removal shifted the rest onto each other's entries — a fire in flight then wrote its count
 	// onto a different generator, or cleared a flag that had come to mean another one. An index is
 	// a position, not an identity; this is the identity.
-	uid   u64
-	iface string // the bus this generator fires on (a channel iface); rebound if the iface changes
-	chan  string // the CHANNEL that owns it — two channels can share one iface, and only the
-	// name says which of them a generator's frames belong to
+	uid u64
+	// WHERE IT LIVES: the channel this generator is nested under in the project file. Both facts
+	// are kept because neither is an identity on its own (#97) — on a shared wire the interface
+	// cannot say which of two channels the generator was written under, and the name cannot say
+	// what to open. `iface` is the target when `bus:` is empty, and is rebound when the channel's
+	// address is edited.
+	//
+	// `own_idx` is the one that carries a generator home on Save, because a NAME cannot either:
+	// nothing enforces unique channel names, so two indistinguishable rows would see the first
+	// absorb the second's generators and the second lose them on reload. Channels are only ever
+	// appended to or deleted from (add_bus / remove_bus — there is no reordering), and remove_bus
+	// restacks these, so the index stays the identity it looks like. `own` is kept beside it as
+	// the answer when the index cannot be trusted, and as what the file actually reads.
+	own     string
+	own_idx int
+	iface   string
+	// WHERE IT SENDS, RESOLVED from `sender.bus` against the channels — see
+	// project.resolve_sender_bus. Recomputed by resolve_sender_targets_locked whenever the bus
+	// value or the channel set changes, and never derived at a call site: `bus:` now has two
+	// accepted forms, and two call sites deriving the answer separately is precisely how the
+	// picker and the save path came to disagree in the first place. It is also read by the
+	// generator loop every 8 ms with app.mu held, where re-resolving per pass would allocate a
+	// channel list per sender per tick (codex round 1 on #261).
+	tgt  string // the interface to transmit on ('' = nothing resolved; the generator is skipped)
+	chan string // the channel whose frames these are ('' = no single channel owns the target)
 	sender project.Sender
 }
 
-// target is the bus (channel iface) this generator transmits on: an explicit `bus:`
-// override if set, else the sender's own channel.
+// target is the interface this generator transmits on — the RESOLVED answer, not a re-derivation
+// of `bus:`. Empty when nothing could be resolved, which every caller already treats as "no bus".
 fn (sr SenderRT) target() string {
-	return if sr.sender.bus != '' { sr.sender.bus } else { sr.iface }
+	return sr.tgt
 }
 
 // GenBuf holds a generator's editable text fields (parallel to App.senders).
@@ -762,6 +783,13 @@ fn (mut app App) load_project(path string) {
 		app.elog('${path}: ${note}')
 		app.notify('${note} — saving from here would drop them')
 	}
+	// What reading the file had to say — the pre-v4 `bus:` migration (#97). Said on the Open path
+	// for the same reason the version gate is: a value whose meaning this build had to convert, or
+	// could not, is exactly what an operator needs told BEFORE a Save writes the result back.
+	for n in proj.notes {
+		app.elog('${path}: ${n}')
+		app.notify(n)
+	}
 	app.set_project(proj, path)
 	// Convenience: if a system.toml sits next to the project (the system_full layout),
 	// load it into the System panel and open it — so the per-ECU dashboard is one click
@@ -966,7 +994,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.manifest = telem.Manifest{}
 	app.sel_id = -1
 	app.mu.unlock()
-	for ch in proj.channels {
+	for ci, ch in proj.channels {
 		app.chans << Chan{
 			name:           ch.name
 			network:        ch.network
@@ -1044,33 +1072,18 @@ fn (mut app App) rebuild_from_proj() {
 			}
 		}
 		for s in ch.senders {
-			// A persisted `bus:` override points at another INTERFACE, and the generator then
-			// transmits there — so its rows belong to that bus's channel, not to the one the
-			// sender is nested under. Resolved only when that interface has exactly one channel;
-			// with several sharing it there is nothing in the file to say which (see #97).
-			mut owner := ch.name
-			if s.bus != '' && s.bus != ch.iface {
-				mut hits := []string{}
-				for c2 in app.proj.channels {
-					if c2.iface == s.bus {
-						hits << c2.name
-					}
-				}
-				owner = if hits.len == 1 {
-					hits[0]
-				} else {
-					// 0 or several channels on that wire: `ch.name` belongs to a DIFFERENT bus,
-					// so it would be a worse answer than none. Empty means "derive at emit from
-					// the interface", which is what the tap did before this ownership existed.
-					''
-				}
-			}
+			// `tgt` and `chan` are filled by resolve_sender_targets_locked once every channel has
+			// been built — not here. A `bus:` may name a channel that appears LATER in the file,
+			// and the hand-rolled scan this replaces resolved against app.proj.channels while
+			// app.chans was still being assembled, which is two views of the project answering one
+			// question (#97).
 			app.gen_next_uid++
 			app.senders << SenderRT{
-				uid:    app.gen_next_uid
-				iface:  ch.iface
-				chan:   owner
-				sender: s
+				uid:     app.gen_next_uid
+				own:     ch.name
+				own_idx: ci
+				iface:   ch.iface
+				sender:  s
 			}
 			app.gen_bufs << GenBuf{
 				name_buf: mkbuf(s.name, 48)
@@ -1127,8 +1140,63 @@ fn (mut app App) rebuild_from_proj() {
 	// op (add bus, add DBC) reaches this function without going near one, and a listen-only tick
 	// that only took effect on the next reload is a tick that lies until then.
 	app.mu.lock()
+	app.resolve_sender_targets_locked()
 	app.push_listen_only_locked()
 	app.mu.unlock()
+}
+
+// resolve_sender_targets_locked answers every generator's `bus:` against the channels as they
+// now stand — which interface it transmits on, and which channel owns its frames.
+//
+// HERE, at the end of the rebuild, because this is the one funnel every project change goes
+// through: an added or removed bus, an edited address, a renamed channel, a file loaded, a text
+// buffer applied. A generator's target depends on the whole channel set (a `bus:` naming a
+// channel is only unambiguous relative to the others), so it cannot be settled while that set is
+// still being built. Caller holds app.mu.
+fn (mut app App) resolve_sender_targets_locked() {
+	// NOT runtime_rows(): that attributes each generator to a row by reading SenderRT.chan and
+	// .target(), which are the fields this function exists to fill — asking it here would resolve
+	// against a view derived from the previous answer. resolve_sender_bus wants nothing but the
+	// name and the interface of each channel, so that is what it is given.
+	rows := app.sender_rows_locked()
+	for i in 0 .. app.senders.len {
+		app.resolve_one_sender_locked(i, rows)
+	}
+}
+
+// resolve_one_sender_locked answers ONE generator's `bus:` against `rows`. Caller holds app.mu.
+//
+// It exists so a live edit writes only the entry it edited. Recomputing all of them on
+// set_sender_bus rewrote `tgt` and `chan` for every generator including ones nobody touched,
+// which is a data race against the cyclic fire path (codex round 2 on #97, P1): fire_index
+// snapshots its sender under the lock and used to read `.target()` and `.chan` after releasing
+// it, so an unrelated generator's send could observe a destination mid-assignment. Both halves
+// were fixed — the write is narrowed here, and fire_index now takes its target and owner in the
+// same snapshot as the rest.
+fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
+	if i < 0 || i >= app.senders.len {
+		return
+	}
+	own := project.Channel{
+		name:  app.senders[i].own
+		iface: app.senders[i].iface
+	}
+	r := project.resolve_sender_bus(app.senders[i].sender.bus, own, rows)
+	app.senders[i].tgt = r.iface
+	app.senders[i].chan = r.chan
+}
+
+// sender_rows_locked is the channel list the resolver is asked against — name and interface only,
+// which is all it reads. Caller holds app.mu.
+fn (app &App) sender_rows_locked() []project.Channel {
+	mut rows := []project.Channel{cap: app.chans.len}
+	for c in app.chans {
+		rows << project.Channel{
+			name:  c.name
+			iface: c.iface
+		}
+	}
+	return rows
 }
 
 // LogCache holds one output buffer joined into a single string, for the panels that render

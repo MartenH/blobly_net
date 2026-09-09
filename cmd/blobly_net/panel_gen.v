@@ -1,6 +1,7 @@
 module main
 
 import math
+import genhome
 import project
 import sim
 import time
@@ -191,8 +192,39 @@ fn draw_gen(mut app App) {
 						c.iface == cur
 					}
 					if vgui.toggle_button('${c.name}##b${i}_${ci}', sel, 0) {
-						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface },
-							c.name)
+						// ASKED, NOT GUESSED. `bus:` is a channel NAME since #97, an interface
+						// for the files written before it, and '' for the generator's own
+						// channel — and every attempt here to pick between those by reasoning
+						// was wrong for some arrangement the format allows. Storing the name
+						// alone reverted the selection on a shared wire (the whole of #97);
+						// falling back to the interface for an unnamed row sent the generator to
+						// a DIFFERENT channel where that interface is another row's name (codex
+						// rounds 1 and 3). So project.sender_bus_value is asked for a spelling
+						// that resolves BACK to the row that was clicked, and there is nothing
+						// left here to get wrong.
+						mut rows := []project.Channel{cap: app.chans.len}
+						for rc in app.chans {
+							rows << project.Channel{
+								name:  rc.name
+								iface: rc.iface
+							}
+						}
+						target := project.Channel{
+							name:  c.name
+							iface: c.iface
+						}
+						own := project.Channel{
+							name:  sr.own
+							iface: sr.iface
+						}
+						if v := project.sender_bus_value(target, own, rows) {
+							app.set_sender_bus(i, v, c.name)
+						} else {
+							// No spelling reaches it: an unnamed row whose interface is another
+							// channel's name. Refused rather than stored, because the value that
+							// would go in the file points somewhere else.
+							app.notify('${c.iface}: this bus has no name, and \'${c.iface}\' is already another channel\'s name — give it a name in Configuration ▸ Buses to target it')
+						}
 					}
 				}
 			}
@@ -261,10 +293,15 @@ fn (mut app App) add_generator() {
 	app.mu.lock()
 	app.gen_next_uid++
 	app.senders << SenderRT{
-		uid:    app.gen_next_uid
-		iface:  iface
-		chan:   cname
-		sender: project.Sender{
+		uid:     app.gen_next_uid
+		own:     cname
+		own_idx: 0 // add_generator targets the first channel, which is where cname came from
+		iface:   iface
+		// Its own channel, so the resolved answer is that channel and needs no lookup. The next
+		// rebuild recomputes it like every other generator's.
+		tgt:     iface
+		chan:    cname
+		sender:  project.Sender{
 			name:    'New generator'
 			id:      0x100
 			trigger: 'manual'
@@ -311,10 +348,30 @@ fn (mut app App) sync_senders_into_proj() {
 		}
 	}
 	mut p := app.proj
+	// WHERE EACH GENERATOR IS WRITTEN BACK is `genhome.homes`, which is tested — five defects
+	// landed in this one decision across two review rounds of #97, the last of them introduced by
+	// the previous round's fix, so the rule moved somewhere it could be covered rather than being
+	// repaired a sixth time. genhome.v names all five.
+	mut gens := []genhome.Gen{cap: app.senders.len}
+	for sr in app.senders {
+		gens << genhome.Gen{
+			own:     sr.own
+			own_idx: sr.own_idx
+			iface:   sr.iface
+		}
+	}
+	mut rows := []genhome.Row{cap: p.channels.len}
+	for c in p.channels {
+		rows << genhome.Row{
+			name:  c.name
+			iface: c.iface
+		}
+	}
+	home := genhome.homes(gens, rows)
 	for ci in 0 .. p.channels.len {
 		mut ss := []project.Sender{}
-		for sr in app.senders {
-			if sr.iface == p.channels[ci].iface {
+		for si, sr in app.senders {
+			if si < home.len && home[si] == ci {
 				ss << sr.sender
 			}
 		}
@@ -661,10 +718,13 @@ fn (mut app App) set_cycle(i int, ms int) {
 
 // set_sender_bus points generator `i` at a target bus ('' = its own channel). A newly
 // targeted bus is opened if the measurement is running and it isn't open yet.
-// `bus` is an INTERFACE (project.Sender.bus is documented as one, and '' means the sender's own
-// channel); `chan_name` is the channel the user actually picked. They are different facts, and
-// only the second one survives two channels sharing a wire — an interface cannot say which of
-// them the generator now belongs to.
+//
+// `bus` is a channel NAME since #97 — what the picker shows, and the only form that survives two
+// channels sharing a wire. `chan_name` is redundant with it for a picked channel and is kept
+// because '' (the generator's own channel) still names an owner the value itself cannot.
+//
+// The resolved target is recomputed rather than taken from the argument: `bus:` has two accepted
+// forms, and project.resolve_sender_bus is the one place that decides between them.
 fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 	// a failure found while app.mu is held is said AFTER the unlock — notify re-takes the
 	// non-reentrant mutex, and an inline call here would deadlock the GUI thread
@@ -673,8 +733,14 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
+		// ONLY THIS ENTRY. Resolving all of them here rewrote `tgt` and `chan` for generators
+		// nobody edited, racing the cyclic fire path (codex round 2 on #97).
+		app.resolve_one_sender_locked(i, app.sender_rows_locked())
 		tgt := app.senders[i].target()
-		if chan_name != '' {
+		if chan_name != '' && app.senders[i].chan == '' {
+			// The resolver could not name one — an ambiguous reference — and the operator just
+			// pointed at a specific row, which is a better answer than none for the trace's `ch=`
+			// column. It does not survive a reload; the warning at Start says why.
 			app.senders[i].chan = chan_name
 		}
 		own := app.senders[i].chan
@@ -769,6 +835,14 @@ fn (mut app App) fire_index(i int) {
 		...app.senders[i].sender
 		signals: app.senders[i].sender.signals.clone()
 	}
+	// THE DESTINATION IN THE SAME SNAPSHOT AS THE FRAME. These were read after the unlock, from
+	// app.senders[i], while an edit on ANOTHER generator could be rewriting them — and a V string
+	// assignment is not atomic, so a send could observe a mixed destination. Taken here, one
+	// generator's frame and the bus it goes to are decided from one consistent view, which is also
+	// what makes them agree: read separately, the DBC lookup below and the send could use two
+	// different targets (codex round 2 on #97, P1).
+	tgt := app.senders[i].tgt
+	own := app.senders[i].chan
 	n := app.gen_send_n[uid] or { 0 }
 	epoch := app.gen_state_epoch
 	wt0 := app.wave_t0_ns
@@ -784,7 +858,7 @@ fn (mut app App) fire_index(i int) {
 	if s.message != '' {
 		mut found := false
 		// resolve the message on the generator's own target bus (not globally)
-		for db in app.dbs_for(app.senders[i].target()) {
+		for db in app.dbs_for(tgt) {
 			for m in db.messages {
 				if m.name != s.message {
 					continue
@@ -819,7 +893,7 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	if app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
+	if app.tx_on_chan(own, tgt, transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data

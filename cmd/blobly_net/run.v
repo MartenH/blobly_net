@@ -144,7 +144,13 @@ fn (app &App) runtime_rows() []project.Channel {
 			// when a saved sender names an interface several channels share (the file cannot say
 			// which one owns it), and such a generator still transmits through the shared tap —
 			// filtering on the name alone left it in no row, so its warnings went unsaid.
-			if sr.chan == c.name || (sr.chan == '' && sr.target() == c.iface) {
+			// …AND ONE THAT RESOLVED TO NOTHING AT ALL belongs to the row it is nested under.
+			// Such a generator has chan == '' and target() == '' — a `bus:` two rows answer to on
+			// different wires (#97) — so neither test above can place it, and it landed in no row:
+			// the warning announcing that it has nowhere to send could never be reached, which is
+			// the one case the warning exists for.
+			if sr.chan == c.name || (sr.chan == '' && sr.target() == c.iface)
+				|| (sr.chan == '' && sr.target() == '' && sr.own == c.name && sr.iface == c.iface) {
 				snd << sr.sender
 			}
 		}
@@ -772,6 +778,15 @@ fn (mut app App) start() {
 	// A generator whose value source cannot be evaluated (unknown type, zero divisor) sends its
 	// static value instead — said at Start rather than silently transmitting the wrong thing.
 	for w in project.generator_source_warnings(app.runtime_rows()) {
+		app.notify(w)
+	}
+	// A generator whose `bus:` names something the project cannot settle — two channels sharing
+	// the interface it gives, or two channels answering to the name (#97). It still transmits
+	// where the wire is not in doubt, so this is a warning and not a refusal, but the trace cannot
+	// say whose the frames are and a Save cannot restore the choice. Said here for the same reason
+	// the two above are: a run that quietly attributes frames to the wrong channel is a misleading
+	// experiment, not a failed one.
+	for w in project.sender_bus_warnings(app.runtime_rows()) {
 		app.notify(w)
 	}
 	// AND WHICH ROWS THE ALIAS CHECK COULD NOT COVER (#194). Same reasoning as the line above and
