@@ -232,18 +232,18 @@ fn (mut app App) load_recording(path string) {
 		}
 		name := app.lookup_name(f.id, f.extended)
 		app.push_row_locked(TraceRow{
-			t_ms:   (e.t_s - t0) * 1000.0
-			ch:     e.iface
-			origin: org_rep
-			id:     f.id
-			ext:    f.extended
-			fd:     f.fd
-			brs:    f.brs
-			esi:    f.esi
-			rtr:    f.rtr
-			name:   name
-			data:   f.data.clone()
-			e2e:    viol
+			t_ms:     (e.t_s - t0) * 1000.0
+			ch:       e.iface
+			origin:   org_rep
+			id:       f.id
+			ext:      f.extended
+			fd:       f.fd
+			brs:      f.brs
+			esi:      f.esi
+			rtr:      f.rtr
+			name:     name
+			data:     f.data.clone()
+			e2e:      viol
 			imported: true
 		})
 	}
@@ -272,6 +272,17 @@ fn (mut app App) load_recording(path string) {
 // Channels replaying DIFFERENT files get their own group and their own clock, because timestamps
 // from two recordings are not comparable — nothing would be synchronised by pretending they are.
 fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
+	// A group that returns before it has dispatched a frame failed to run, whichever of its
+	// refusals it took — the wires that never came up, a bus that would not resolve, a
+	// conflict, an empty plan, a bus that would not open, rows disagreeing about speed —
+	// and the probe counts that ONCE here rather than at each exit, because the exits kept
+	// being found one at a time (codex on #299 rounds 10 and 11).
+	mut dispatching := false
+	defer {
+		if !dispatching {
+			probe_group_failed()
+		}
+	}
 	// A replay is part of its run, and this loop opens its taps through open_tap_full, whose
 	// bitrate_iface walks app.chans unlocked. So it holds a census slot, and the next REBUILD
 	// waits for it — Stop itself does not wait, for anything. That matters here more than
@@ -678,8 +689,11 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			return
 		}
 	}
+	dispatching = true
 	mut p := player.new_player_over(plan.entries, speed, repeat, plan.t0_s, plan.end_s)
 	mut sw := time.new_stopwatch()
+	mut batch := []canlog.LogEntry{cap: 256}
+	mut dues := []f64{cap: 256}
 	mut sent := u64(0)
 	mut failed := u64(0)
 	mut first_err := ''
@@ -765,7 +779,17 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// frames belong to that run and keep counting. Restart begins a run; seek scrubs one.
 			announced = false
 		}
-		for e in p.due(now) {
+		// The schedule beside the batch only when a probe will score it: without one the plain
+		// release builds no second array per batch (codex on #299 round 9).
+		// Into buffers the worker keeps: a fresh batch per tick was an allocation on the
+		// thread whose collections are the stutter, and a probe that allocated its own schedule
+		// beside it was adding garbage to the very rate it measures (codex on #299 round 10).
+		if probe_active {
+			p.due_into_scheduled(now, mut batch, mut dues)
+		} else {
+			p.due_into(now, mut batch)
+		}
+		for bi, e in batch {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
 			// returns everything owed at once, and stop was checked before the batch — so a
 			// Stop/Start during a long one left the PREDECESSOR dispatching into the new run,
@@ -776,11 +800,25 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// at how much stale traffic is acceptable, and the answer is none. An uncontended
 			// lock costs tens of nanoseconds against a send, and the batch is short whenever
 			// the cost would matter.
+			// Counted with the others: the GUI holding app.mu stalls every frame HERE first, and
+			// a cadence figure that includes the stall while the wait figure omits it says the
+			// mutex is not a factor with no evidence (codex on #299 round 4).
+			pt := probe_lock_begin()
 			a.mu.lock()
+			probe_lock_end(pt)
 			gone := !a.running || a.run_gen != gen
 			a.mu.unlock()
 			if gone {
 				break
+			}
+			if probe_active {
+				// cadence: dispatch time against the schedule this frame was RELEASED on,
+				// which the player hands back beside the batch — re-sampled per frame, since
+				// after a stall the batch is everything owed and its later frames really do go
+				// out later; and per entry, since a batch can cross one or several loop wraps
+				// and the player's base has moved on by the time it is read (codex on #299
+				// rounds 5 and 7).
+				probe_note_late(f64(i64(sw.elapsed())) / 1e6 - dues[bi])
 			}
 			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {
@@ -1069,7 +1107,8 @@ fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
 fn replay_db(app &App, ch Chan) candb.Database {
 	mut a := unsafe { app }
 	a.mu.lock()
-	db := merge_dbs_from(app.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(app.resolve_asset(it)))))
+	db :=
+		merge_dbs_from(app.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(app.resolve_asset(it)))))
 	a.mu.unlock()
 	return db
 }

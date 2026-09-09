@@ -17,6 +17,7 @@ module main
 
 import os
 import time
+import sync.stdatomic
 import vgui
 
 // load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
@@ -113,6 +114,13 @@ fn main() {
 	app.load_project(proj_path)
 	println('blobly_net: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
+	// Replay stutter probe (probe.v): inert unless BLOBLY_PROBE_LOG is set. Diagnostic only.
+	if os.getenv('BLOBLY_PROBE_LOG') != '' {
+		probe_init()
+		spawn probe_hiccup_loop()
+		spawn probe_driver(os.getenv('BLOBLY_PROBE_SECONDS').int())
+	}
+
 	// Headless self-test of the Configuration editor: drive the real methods (New → add bus →
 	// edit fields → add DBC → Save As) and assert the written .blobnet round-trips. Exits after.
 	// The editor's widgets can't be clicked under WSLg, so this smoke covers the logic instead.
@@ -177,7 +185,9 @@ fn main() {
 	// after ~`autostart_frame` presented frames clears the race. A human pressing Start is always
 	// well past this, so it only matters for BLOBLY_AUTOSTART / automated runs. Override with
 	// BLOBLY_AUTOSTART_FRAME.
-	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' {
+	// BLOBLY_PROBE_LOG (probe.v) implies it: the probe must not start the run from a worker
+	// thread on a wall-clock guess, which is the trigger this gate exists to remove.
+	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' || os.getenv('BLOBLY_PROBE_LOG') != '' {
 		n := os.getenv('BLOBLY_AUTOSTART_FRAME').int()
 		if n > 0 {
 			n
@@ -199,7 +209,32 @@ fn main() {
 			vgui.wake()
 		}
 		if autostart_frame > 0 && frame == autostart_frame {
+			// The probe's measurement opens BEFORE start(), on this thread: start() spawns the
+			// replay workers inside itself and a small cached recording on an in-process bus
+			// can dispatch before it returns, so a boundary drawn after it missed those frames
+			// (codex on #299, round 3). What Start does — opening the wires, the workers
+			// loading their recordings — is therefore inside the measurement, which is right:
+			// it is part of the run. A Start the project refused (an invalid edit, a
+			// destination conflict, a pinned Vector clash) never sets running, so the
+			// measurement is taken back and the refusal signalled, or an unattended probe
+			// would measure nothing for 70 s and call it a run.
+			if probe_active {
+				probe_begin()
+			}
 			app.start()
+			// Two words, because the driver polls: the gate (probe_gate) is what the
+			// counters read and goes up before start(); started is what the driver waits for
+			// and is set only once the run is KNOWN to be up — a driver that saw the armed
+			// flag's transient on a refused Start left its wait and measured nothing for 70 s
+			// (codex on #299 round 5).
+			if probe_active {
+				if app.running {
+					stdatomic.store_u64(&probe_start_state, 1)
+				} else {
+					stdatomic.store_u64(&probe_gate, 0)
+					stdatomic.store_u64(&probe_start_state, 2)
+				}
+			}
 		}
 		last := max_frames > 0 && frame >= max_frames
 		if last && shot != '' {

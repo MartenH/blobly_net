@@ -289,6 +289,47 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## Our code (blobly_net)
 
+- 🟢 **Replay stuttered once a second and fell behind — the wiretap ring rebuilt itself on every
+  emitted frame.** Seen first on a 2-bus project as "memory sits at 1 GB, stutter every second,
+  then `Fatal error in GC: Too many heap sections`". Measured from inside the real GUI on Windows
+  (`cmd/blobly_net/probe.v`: `BLOBLY_PROBE_LOG=<file> BLOBLY_PROBE_SECONDS=70 blobly_net
+  <project>` writes a one-page summary and exits; inert without the variable), 13 buses replaying
+  one 1.07 M-frame `.mf4`: **1,140 MB/s allocated**, 194 stop-the-world pauses ≥50 ms in 70 s
+  (max 726 ms), 96% of frames more than a second late, the replay 11.6 s behind by the end.
+  Boehm plateaus the heap near 1 GB by collecting whenever it fills; at that allocation rate it
+  fills about once a second, and a collection over ~1 GB is a 100–700 ms freeze of every thread.
+  That is the stutter, and the plateau is why memory looked stable.
+  **The source was `wiretap.Ring.note()`**: once the ring was at its 1024 cap, every note found
+  itself one over, allocated a `map[int]bool`, ran three passes and a fresh 1024-entry `keep`
+  array, and replaced the ring — a full rebuild per frame to evict one record, ~150 KB each. The
+  render loop's per-frame clone of the trace ring was the other suspect and turned out secondary
+  (switching it off changed little once the ring was fixed); `app.mu` is not a contention problem
+  (every acquisition a send makes, five per frame: avg 1.3 µs, 4% of the replay thread's time;
+  the maximum, 183 ms, coincides with a collection, which stops the lock holder like everyone
+  else). Eviction is in place now — same priority, same verdicts, 356 bytes per
+  note against 180,996 — and `test_note_cost_when_the_ring_is_full` pins the class. The
+  self-review of that fix found the SIBLING: below ~500 frames/s the ring never fills, records
+  age out instead, and `expire` (every emitted frame) and `drop_expired` (every received one)
+  copied the whole remaining ring to drop a prefix — ~400 KB a step, on the RX thread, under
+  `app.mu`, at exactly the rates the first probe run could not show. In place too now, and
+  `test_cost_when_records_age_out` pins it (256 bytes a step against 422,160).
+  After the fix, same probe: ~140 MB/s, **0 frames over a second late**, worst 182 ms, 70% within
+  1 ms, the replay completes.
+  **What remains is 🔴 and is the next piece of work**: one pause every 1–2 s, most of them
+  50–300 ms (the probe's `hic_with_gc` counter says which gaps a collection spans — 35 of the 97
+  over 20 ms in a 70 s run, and every long one), visible as a stutter every second or two,
+  because the LIVE heap is still ~900 MB — a replay materialises the entire recording (878 k
+  frames to replay 87 k on a 2-bus project; all of it on 13) and holds it for the run, and a
+  collection over that many objects is that long. Frequency fell 7×; length did not move. That
+  wants the recording in an arena (pointer-free rows, one payload pool) so a collection has
+  almost nothing to trace, plus an allocation-free hot loop. Separately, `timeBeginPeriod` is
+  called nowhere, so every sleep on Windows rounds to 15.6 ms — a floor under cadence, visible as
+  a 16 ms worst case headless.
+  **How it was found is the part to keep**: three earlier diagnoses were wrong (the collector
+  itself, the `-prod` scope pin, "confine the recording to a helper"), each plausible from
+  reading. The probe's allocation-rate counter and a knob to switch a suspect off settled it in
+  two runs. Measure the real app before believing a theory about it.
+
 - 🟢 **`candb.encode` rounding.** `i64(x + 0.5)` truncated negatives toward zero (`-4.5 → -4`), so
   `encode(-5.0)` produced `-4`. Fixed with `math.round` (half away from zero) and pinned by
   `candb_test.v::test_signed_negative`. The lesson stands: test module logic in isolation.

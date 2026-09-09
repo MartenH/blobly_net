@@ -199,7 +199,9 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	}
 	if t.guard_gen != 0 {
 		mut a := unsafe { t.app }
+		pt := probe_lock_begin()
 		a.mu.lock()
+		probe_lock_end(pt)
 		stale := !a.running || a.run_gen != t.guard_gen
 		a.mu.unlock()
 		if stale {
@@ -236,7 +238,11 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 			return false
 		}
 		mut a := unsafe { app_ref }
+		// Counted like the others: on a saturated queue this runs before each of up to 200
+		// retries, and it was the one acquisition a send makes that the wait figure left out.
+		pt := probe_lock_begin()
 		a.mu.lock()
+		probe_lock_end(pt)
 		over := !a.running || a.run_gen != gen_now
 		a.mu.unlock()
 		return over
@@ -440,7 +446,8 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 		// carries no channel identity and the trace files it under the first channel on the
 		// wire (codex round 8 on #257). Same rule as gen_loop's. A Quick Send or a diagnostic
 		// path has no owning channel and takes the shared tap as before.
-		match taprule.fallback(app.taprule_taps_locked(), named, tx_bus_key('', iface), chan_name != '') {
+		match taprule.fallback(app.taprule_taps_locked(), named, tx_bus_key('', iface),
+			chan_name != '') {
 			.wait {
 				app.mu.unlock()
 				app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
@@ -567,7 +574,11 @@ struct DiscoveredIface {
 // another's wire is a legitimate edit (swapping compute and edge), and hiding them made the
 // list look like the device had lost a channel.
 fn pick_items(list []DiscoveredIface) []string {
-	placeholder := if list.len == 0 { '(no detected interfaces — click ↻)' } else { 'pick a detected interface…' }
+	placeholder := if list.len == 0 {
+		'(no detected interfaces — click ↻)'
+	} else {
+		'pick a detected interface…'
+	}
 	mut items := [placeholder]
 	for d in list {
 		tag := if d.added { '  [in project]' } else { '' }

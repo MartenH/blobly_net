@@ -223,7 +223,16 @@ pub fn (p Player) next_due_ms() ?f64 {
 		// a tail gap that has not ended yet.
 		return p.base_ms + p.duration_s() * 1000.0 / p.speed
 	}
-	return p.base_ms + (p.entries[p.idx].t_s - p.t0_s()) * 1000.0 / p.speed
+	return p.due_at_ms(p.entries[p.idx])
+}
+
+// due_at_ms is the playback-clock time at which `e` plays: the ONE spelling of the schedule.
+// due() releases an entry on it, next_due_ms() sleeps until it, and the GUI's cadence probe
+// measures a frame's lateness against it. It had a second spelling in the GUI (position_s minus
+// the entry's recorded offset), which scales by speed and clamps to the pass — at 2x it read
+// half the true lateness, and a frame due near the end of a pass had its lateness clipped.
+pub fn (p Player) due_at_ms(e canlog.LogEntry) f64 {
+	return p.base_ms + (e.t_s - p.t0_s()) * 1000.0 / p.speed
 }
 
 // due returns every entry whose recorded offset has elapsed by playback-clock
@@ -233,14 +242,49 @@ pub fn (p Player) next_due_ms() ?f64 {
 // emitted exactly once per pass regardless of tick granularity.
 pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 	mut out := []canlog.LogEntry{}
+	p.due_into(now_ms, mut out)
+	return out
+}
+
+// due_into is due() into the caller's buffer, cleared first: a worker that asks a thousand
+// times a second keeps one and allocates nothing per tick. The batch is consumed before the
+// next call; it is not kept.
+pub fn (mut p Player) due_into(now_ms f64, mut out []canlog.LogEntry) {
+	mut none_wanted := []f64{}
+	p.release(now_ms, mut out, mut none_wanted, false)
+}
+
+// due_into_scheduled is due_with_schedule into the caller's two buffers — what a probe that
+// must not add garbage to the rate it measures asks for.
+pub fn (mut p Player) due_into_scheduled(now_ms f64, mut out []canlog.LogEntry, mut due []f64) {
+	p.release(now_ms, mut out, mut due, true)
+}
+
+// due_with_schedule is due() with the playback-clock time each entry was due at, side by
+// side. The batch a stalled caller receives can cross one or several loop wraps, and by the
+// time it reads the batch the player's base is the last pass's — so a caller scoring
+// lateness (the GUI's cadence probe) needs the schedule each entry was RELEASED on, which
+// only this function knows (codex on #299 rounds 5 and 7).
+pub fn (mut p Player) due_with_schedule(now_ms f64) ([]canlog.LogEntry, []f64) {
+	mut out := []canlog.LogEntry{}
+	mut due := []f64{}
+	p.release(now_ms, mut out, mut due, true)
+	return out, due
+}
+
+// release is the ONE body behind due and due_with_schedule: the schedule is appended only
+// when asked for, so a caller that does not score lateness (cmd/restbus) builds no second
+// array per batch (codex on #299 round 8).
+fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, with_due bool) {
+	out.clear()
+	due.clear()
 	if p.st != .playing {
-		return out
+		return
 	}
 	if p.entries.len == 0 {
 		p.st = .finished
-		return out
+		return
 	}
-	t0 := p.t0_s()
 	for {
 		if p.idx >= p.entries.len {
 			// The pass is not over when the last RETAINED entry goes out -- it is over when the
@@ -277,14 +321,16 @@ pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 			break
 		}
 		e := p.entries[p.idx]
-		due_at := p.base_ms + (e.t_s - t0) * 1000.0 / p.speed
+		due_at := p.due_at_ms(e)
 		if due_at > now_ms + time_eps_ms {
 			break
 		}
 		out << e
+		if with_due {
+			due << due_at
+		}
 		p.idx++
 	}
-	return out
 }
 
 // state returns the transport state.
