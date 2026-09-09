@@ -1528,7 +1528,14 @@ fn test_close_wakes_an_infinite_receive_on_that_handle() {
 		message := <-result {
 			assert message.contains('bus is closed'), message
 		}
-		500 * time.millisecond {
+		// 2000 like every other wait-for-an-event in this file, not 500. The deadline on an
+		// event that MUST happen is a hang-breaker, and it can only ever fire on a CORRECT
+		// implementation -- here, when the runner does not schedule the spawned waiter in time.
+		// This suite runs 28 test programs in parallel while V compiles; half a second of that
+		// is nothing. It failed on main's Windows job that way, in a PR touching no transport
+		// code. The two SHORT waits in this file are the opposite kind -- they assert something
+		// does NOT happen, where being late only ever passes -- and they stay short.
+		2000 * time.millisecond {
 			assert false, 'close did not wake recv(-1)'
 		}
 	}
@@ -1624,7 +1631,7 @@ fn test_reopen_waits_until_the_previous_physical_close_finishes() {
 	hub_fake.close_release <- true
 	select {
 		_ := <-hub_fake_opened {}
-		1000 * time.millisecond {
+		2000 * time.millisecond {
 			assert false, 'new generation did not open after close completed'
 		}
 	}
