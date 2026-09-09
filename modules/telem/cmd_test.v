@@ -33,4 +33,9 @@ fn test_decode_trace_rsp() {
 	assert t.state == state_frozen
 	assert t.cause == freeze_trigger
 	assert t.core == 1
+	// cause 3 = full: a oneshot that completed on its own (emb docs/telemetry.md, emb#271) —
+	// the protocol vector for the value the target puts on the wire
+	f := decode_trace_rsp([op_status, 0, state_full | (freeze_full << 4), 32, 0, 32, 0, 0])
+	assert f.state == state_full
+	assert f.cause == freeze_full
 }
