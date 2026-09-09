@@ -700,11 +700,10 @@ fn (mut app App) follow_channel_edits_locked(before []project.Channel, row_map [
 		// none, and `.own` cannot occur here because an empty `bus:` was skipped above.
 		mut k := -1
 		if was_r.kind == .named || was_r.kind == .iface {
-			for j, c in before {
-				if c.name == was_r.chan && c.iface == was_r.iface {
-					k = if k >= 0 { -2 } else { j }
-				}
-			}
+			// project.only_row_named, not a scan written here: the inline version of this had a
+			// sentinel the next match overwrote, so an odd number of identical rows resolved to the
+			// last one instead of to "several" (codex round 8 on #97).
+			k = project.only_row_named(before, was_r.chan, was_r.iface) or { -1 }
 		}
 		dst := if k >= 0 && k < row_map.len { row_map[k] } else { -1 }
 		if dst < 0 || dst >= after.len {
@@ -1166,6 +1165,15 @@ fn (mut app App) apply_parsed_text(txt string) bool {
 	app.mu.unlock()
 	app.cfg_bufs = [] // re-derived from the new channel list on the next Buses render
 	app.cfg_invalid = [] // …and the rejections describing them go with them
+	// WHAT READING THE TEXT HAD TO SAY, on this path too. The File tab parses a project exactly
+	// as Open does, so a v2 buffer applied here gets the same pre-v4 `bus:` migration — including
+	// the case it can only REPORT, where a legacy value now resolves elsewhere and nothing later
+	// says so (Start sees an ordinary `.named` target and has nothing to warn about). Dropped
+	// here, saving v2 text through Configuration ▸ File activated a misrouted generator in
+	// silence (codex round 8 on #97).
+	for n in p.notes {
+		app.notify(n)
+	}
 	app.rebuild_from_proj()
 	return true
 }

@@ -653,7 +653,7 @@ buses:
 		return
 	}
 	assert p.notes.len == 1, '${p.notes}'
-	assert p.notes[0].contains('no value can say the wire'), p.notes[0]
+	assert p.notes[0].contains('no single configured channel answers to it'), p.notes[0]
 }
 
 // A uniquely configured UNNAMED row resolves to `.iface` with an EMPTY owner — one row, which
@@ -688,4 +688,90 @@ fn test_a_unique_unnamed_row_is_one_row_with_an_empty_owner() {
 	])
 	assert amb.kind == .ambiguous
 	assert amb.chan == '', 'the same empty owner, meaning something completely different'
+}
+
+// ==== "the one row that matches" ======================================================
+
+// The inline version of this marked "several" with a negative sentinel that the NEXT match
+// overwrote, so an ODD number of sharers came out as the last one. Three is the smallest case
+// that shows it, which is why it is the one asserted.
+fn test_only_row_stays_ambiguous_past_a_third_match() {
+	three := [
+		Channel{
+			name: 'A'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'B'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'C'
+			iface: 'inproc:X'
+		},
+	]
+	if k := only_row_on_iface(three, 'inproc:X') {
+		assert false, 'three rows share it; got row ${k}'
+	}
+	// two and one still answer as they should
+	if _ := only_row_on_iface(three[..2], 'inproc:X') {
+		assert false, 'two rows share it'
+	}
+	k1 := only_row_on_iface(three[..1], 'inproc:X') or {
+		assert false, 'one row has it'
+		return
+	}
+	assert k1 == 0
+	if _ := only_row_on_iface(three, 'inproc:NOPE') {
+		assert false, 'no row has it'
+	}
+}
+
+fn test_only_row_named_takes_both_halves_of_the_identity() {
+	chs := [
+		Channel{
+			name: 'A'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'A'
+			iface: 'inproc:Y'
+		},
+	]
+	k := only_row_named(chs, 'A', 'inproc:Y') or {
+		assert false, 'name and interface together identify one'
+		return
+	}
+	assert k == 1
+	if _ := only_row_named(chs, 'A', 'inproc:Z') {
+		assert false, 'no row is that pair'
+	}
+}
+
+// A file that states NO version predates v4 — the first version that changes what an existing key
+// MEANS — so it cannot have been written under v4 semantics and must be migrated. Project.version
+// cannot answer this: parse defaults an absent key to the newest schema.
+fn test_a_file_with_no_declared_version_is_migrated() {
+	text := "project:
+  name: ancient
+buses:
+" + "  - name: Powertrain
+    adapter: virtual
+    address: CAN1
+" + "  - name: inproc:CAN1
+    adapter: virtual
+    address: CAN9
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: inproc:CAN1
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.version == schema_version, 'an absent key still reads as current everywhere else'
+	assert p.channels[1].senders[0].bus == 'Powertrain', 'but it was written interface-first'
+	assert p.notes.len == 1, '${p.notes}'
+	assert p.notes[0].contains('no declared version'), p.notes[0]
 }

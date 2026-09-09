@@ -156,9 +156,15 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 // A value it cannot express is REPORTED rather than rewritten: a bare wire shadowed by a channel
 // name has no spelling in this format, and neither does a wire several rows share when one of
 // them is named like it. Those are the format's limits, and saying so beats a silent guess.
-pub fn migrate_legacy_sender_buses(mut p Project) []string {
+// `declared` is the version the FILE stated, or 0 when it stated none. A file that states none
+// PREDATES v4 and its `bus:` values are interface-first, so it is migrated — `Project.version`
+// cannot answer this, because parse defaults an absent key to the newest schema and that default
+// was harmless only while every version differed from the last by ADDING keys. v4 is the first
+// that changes what an existing key MEANS, so "assume current" became "assume semantics that did
+// not exist when this file could have been written" (codex round 8 on #97).
+pub fn migrate_legacy_sender_buses(mut p Project, declared int) []string {
 	mut notes := []string{}
-	if p.version >= 4 {
+	if declared >= 4 {
 		return notes
 	}
 	chs := p.channels.clone()
@@ -170,25 +176,62 @@ pub fn migrate_legacy_sender_buses(mut p Project) []string {
 			}
 			name := p.channels[ci].senders[si].name
 			// The wire the old rule opened is `b` itself. Which configured row owns it?
-			mut k := -1
-			for j, c in chs {
-				if c.iface == b {
-					k = if k >= 0 { -2 } else { j }
-				}
-			}
-			if k < 0 {
-				notes << 'generator ${name}: `bus: ${b}` was written as an interface, and ${b} is now a channel NAME — it targets that channel instead of the wire ${b}; no value can say the wire here'
+			k := only_row_on_iface(chs, b) or {
+				notes << 'generator ${name}: `bus: ${b}` was written as an interface, and no single configured channel answers to it now — it targets something else; name the channel you mean'
 				continue
 			}
 			if v := sender_bus_value(chs[k], chs[ci], chs) {
 				p.channels[ci].senders[si].bus = v
-				notes << 'generator ${name}: `bus: ${b}` meant the interface ${b} in a v${p.version} file; written as `bus: ${v}`'
+				said_v := if declared > 0 {
+					'a v${declared} file'
+				} else {
+					'a file with no declared version'
+				}
+				notes << 'generator ${name}: `bus: ${b}` meant the interface ${b} in ${said_v}; written as `bus: ${v}`'
 			} else {
 				notes << "generator ${name}: `bus: ${b}` meant the channel on ${b}, which has no name and whose interface is already another channel's name — it cannot be spelled; name that channel"
 			}
 		}
 	}
 	return notes
+}
+
+// only_row is the index of the ONE channel a predicate matches, or none when no row does or
+// several do.
+//
+// WRITTEN TWICE BEFORE THIS, AND WRONG THE SAME WAY BOTH TIMES. The inline version marked
+// "several" with a negative sentinel that the NEXT match then overwrote — `k = if k >= 0 { -2 }
+// else { j }` reads -2 as "not yet set" — so an ODD number of sharers came out as the last one,
+// and a target three rows share was migrated onto whichever happened to be listed last (codex
+// round 8 on #97). A counter cannot be got wrong that way, and the answer is stated once.
+fn only_row(chs []Channel, match_row fn(Channel) bool) ?int {
+	mut found := -1
+	mut n := 0
+	for j, c in chs {
+		if match_row(c) {
+			n++
+			if n > 1 {
+				return none
+			}
+			found = j
+		}
+	}
+	return if found >= 0 { found } else { none }
+}
+
+// only_row_on_iface is the index of the ONE channel on this interface, or none.
+pub fn only_row_on_iface(chs []Channel, iface string) ?int {
+	return only_row(chs, fn [iface] (c Channel) bool {
+		return c.iface == iface
+	})
+}
+
+// only_row_named is the index of the ONE channel with this name AND interface, or none. Both,
+// because neither identifies a row on its own — the lesson this whole change is about.
+pub fn only_row_named(chs []Channel, name string, iface string) ?int {
+	return only_row(chs, fn [name, iface] (c Channel) bool {
+		return c.name == name && c.iface == iface
+	})
 }
 
 // sender_target_moved reports whether an edit to the channel set changed WHERE a `bus:` override

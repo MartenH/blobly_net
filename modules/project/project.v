@@ -716,7 +716,12 @@ pub fn parse(text string) !Project {
 	mut p := Project{}
 	pj := doc.value('project')
 	p.name = pj.value('name').default_to('untitled').string()
-	p.version = pj.value('version').default_to(i64(schema_version)).int()
+	// WHAT THE FILE SAID, kept apart from what this build assumes. An absent key still reads as the
+	// newest schema for every other purpose (is_supported, version_note — unchanged), but the `bus:`
+	// migration has to know the difference: v4 is the first version that changes what an existing
+	// key MEANS, so a file that never declared one cannot have been written under it (#97).
+	declared := if v := pj.value_opt('version') { v.int() } else { 0 }
+	p.version = if declared > 0 { declared } else { schema_version }
 	// v2 uses `buses:`; v1 used `channels:`. Accept either (buses wins if both present).
 	chs := doc.value_opt('buses') or { doc.value_opt('channels') or { yaml.Any(yaml.Null{}) } }
 	if chs !is yaml.Null {
@@ -729,7 +734,7 @@ pub fn parse(text string) !Project {
 	}
 	// A pre-v4 file's `bus:` values were written under interface-first semantics; convert them
 	// once, here, so nothing downstream has to know there was ever another rule (#97).
-	p.notes = migrate_legacy_sender_buses(mut p)
+	p.notes = migrate_legacy_sender_buses(mut p, declared)
 	return p
 }
 
