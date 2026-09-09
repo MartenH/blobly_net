@@ -1,0 +1,20 @@
+# Revisions `git blame` should look through rather than at: commits that changed how every line
+# is spelled without changing what any line says.
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# sets it as the default for this repo; `git blame --ignore-revs-file .git-blame-ignore-revs`
+# does it once. A SHA can only be added here AFTER it lands on main — this repo squash-merges, so
+# the commit on the branch is never the commit in history.
+
+# Settle line endings: .gitattributes, and one renormalising commit (#207) (#292)
+# Ten files converted CRLF -> LF. Verified whitespace-only blob by blob: each file's content is
+# identical once CRLF is folded to LF, and no CR remained anywhere in the tree afterwards.
+#
+# NOT a purely whitespace COMMIT, and blame ignores commits rather than paths: the squash merge
+# folded a new .gitattributes and a CLAUDE.md paragraph in beside the ten. .gitattributes is
+# unaffected -- the commit created it, so there is no earlier commit for blame to fall through
+# to -- and the CLAUDE.md paragraph was rewritten by the commit that added THIS file, so it now
+# blames there. Both were checked with `git blame --ignore-revs-file` before this line was
+# written; without that rewrite the paragraph blamed to ec796ce, which never contained it.
+48a05ea45266edab955710c93fd0ecf618f5ca60

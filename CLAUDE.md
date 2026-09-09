@@ -328,12 +328,23 @@ leaves nowhere to put the pinned bootstrap.
   to codex and is expected of you. READING codex's 👍 as the verdict is what cannot be made to
   work — the payload carries no reviewed SHA, and GitHub will not re-create an identical
   reaction, so it can never look fresh. Write them; never read them.
-- **Line endings are settled by `.gitattributes`, not by your `core.autocrlf`** (#207): `* text=auto eol=lf`,
-  with `*.sh`/`*.v` spelled out and `*.png`/`*.mf4` binary. Nothing here needs CRLF. Before it existed a
-  file's blob held whatever the machine that last touched it produced and kept drifting — the four files
-  #207 measured as CRLF had become LF by the time it was fixed, and one LF file had become CRLF. If a
-  whole-file diff appears in history, it is that, not a bad merge — the renormalising commit touched
-  nothing but line endings, verified blob-by-blob.
+- **Line endings are settled by `.gitattributes`** (#207): `* text=auto eol=lf`, with `*.sh`/`*.v`
+  spelled out and `*.png`/`*.mf4` binary. Attributes OVERRIDE `core.autocrlf`, so there is nothing
+  to configure per machine and `git add` needs no special handling from anywhere. Nothing in this
+  repo needs CRLF. Before the file existed a blob held whatever the machine that last touched it
+  produced, and it drifted: the four files #207 measured as CRLF were LF by the time it was fixed,
+  and one LF file had gone the other way, with nobody doing any of it deliberately. If a
+  whole-file diff appears in history, it is that, not a bad merge. `git config blame.ignoreRevsFile
+  .git-blame-ignore-revs` once, and `git blame` looks through it.
+  **The renormalising commit is not purely whitespace, though the ten renormalised FILES are.**
+  This repo squash-merges, so the whole of #292 is one commit: ten files converted CRLF→LF, plus
+  a new `.gitattributes` and this bullet. Blame ignores per COMMIT, not per path, so those two
+  files pay for the other ten — measured on `origin/main`, ignoring it takes `cmd/script/run.v`
+  from 482 lines attributed to it down to 23 and `modules/transport/cansub_http.v` from 792 to
+  45, at the cost of six lines here. This paragraph is the six lines, rewritten by the commit
+  that added the ignore file, so blame now names THAT one and the cost is paid off. Anything
+  else the ignore file ever hides is a real defect in the entry, not a rounding error: an entry
+  belongs there only if every line the commit touched is one nobody would blame.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
