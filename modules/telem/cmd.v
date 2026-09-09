@@ -27,6 +27,9 @@ pub const state_frozen = u8(3)
 pub const freeze_none = u8(0)
 pub const freeze_stop = u8(1)
 pub const freeze_trigger = u8(2)
+// A oneshot that completed on its own (emb docs/telemetry.md; emb#271) — distinct from a host
+// stop, which is what lets the target give a stop priority over an overrun racing it.
+pub const freeze_full = u8(3)
 
 // encode_trace_cmd builds the 8-byte TraceCmd payload:
 // b0 opcode | b1 arg0 | b2-3 period_ms | b4-5 handler_filter | b6-7 core_mask (all LE).
@@ -53,7 +56,7 @@ pub:
 	opcode_echo  u8
 	result       u8 // 0 = ok
 	state        u8
-	cause        u8 // freeze cause (freeze_none/_stop/_trigger)
+	cause        u8 // freeze cause (freeze_none/_stop/_trigger/_full)
 	records_used u16
 	capacity     u16
 	core         u8
