@@ -58,7 +58,14 @@ __global (
 	probe_heap_max_mb   u64
 	probe_bytes_start   u64
 	probe_bytes_end     u64
-	probe_run_s         int
+	// The measured interval: from the boundary to the endpoint, as it actually ran. The
+	// requested N seconds is a target for the deadline, never the divisor.
+	probe_begin_ns      u64
+	probe_run_s         f64
+	// Writers that passed the gate and have not finished: a lock waiter that entered before
+	// the flag dropped still adds its wait when the lock comes, which can be after any fixed
+	// grace. The driver waits for this to reach zero before it reads a counter.
+	probe_inflight      u64
 )
 
 fn bucket(x f64, edges [4]f64) int {
@@ -101,6 +108,7 @@ fn probe_begin() {
 	probe_heap_min_mb = h
 	probe_heap_max_mb = h
 	probe_bytes_start = u64(gc_heap_usage().total_bytes)
+	probe_begin_ns = time.sys_mono_now()
 	probe_measuring = true
 }
 
@@ -129,6 +137,7 @@ fn probe_lock_begin() i64 {
 	if !probe_measuring {
 		return 0
 	}
+	stdatomic.add_u64(&probe_inflight, 1)
 	return time.sys_mono_now()
 }
 
@@ -142,6 +151,7 @@ fn probe_lock_end(t0 i64) {
 	if us > probe_lock_max_us {
 		probe_lock_max_us = us
 	}
+	stdatomic.sub_u64(&probe_inflight, 1)
 }
 
 // probe_hiccup_loop is the stall detector: it asks for 1 ms and records what it got.
@@ -166,6 +176,11 @@ fn probe_hiccup_loop() {
 			last_heap = prev
 		}
 		time.sleep(time.millisecond)
+		if !probe_measuring {
+			prev = 0
+			continue // the measurement closed during the sleep: this interval is not its
+		}
+		stdatomic.add_u64(&probe_inflight, 1)
 		now := time.sys_mono_now()
 		gnow := gc_count()
 		ms := f64(now - prev) / 1e6
@@ -177,6 +192,7 @@ fn probe_hiccup_loop() {
 		}
 		prev = now
 		gprev = gnow
+		stdatomic.sub_u64(&probe_inflight, 1)
 		if u64(ms) > probe_hic_max_ms {
 			probe_hic_max_ms = u64(ms)
 		}
@@ -199,13 +215,13 @@ fn probe_summary() string {
 	lock_max := f64(probe_lock_max_us) / 1000.0
 	lock_total := f64(probe_lock_us) / 1000.0
 	alloc := f64(probe_bytes_end - probe_bytes_start) / 1048576.0
-	rate := if probe_run_s > 0 { alloc / f64(probe_run_s) } else { 0.0 }
+	rate := if probe_run_s > 0 { alloc / probe_run_s } else { 0.0 }
 	mut s := ''
 	s += 'replay_frames=${probe_late_n} late_unscored_wrap=${probe_late_unscored}\n'
 	s += 'late_lt1ms=${probe_late[0]} late_1_10ms=${probe_late[1]} late_10_100ms=${probe_late[2]} late_100_1000ms=${probe_late[3]} late_gt1000ms=${probe_late[4]} late_max_ms=${late_max:.1f}\n'
 	s += 'lockwait_n=${probe_lock_n} lockwait_avg_us=${lock_avg:.1f} lockwait_max_ms=${lock_max:.1f} lockwait_total_ms=${lock_total:.0f}\n'
 	s += 'hiccup_samples=${probe_hic_n} hic_lt20ms=${probe_hic[0]} hic_20_50=${probe_hic[1]} hic_50_200=${probe_hic[2]} hic_200_1000=${probe_hic[3]} hic_gt1000=${probe_hic[4]} hic_max_ms=${probe_hic_max_ms} hic_with_gc=${probe_hic_gc}\n'
-	s += 'alloc_mb=${alloc:.0f} alloc_mb_per_s=${rate:.1f}\n'
+	s += 'measured_s=${probe_run_s:.2f} alloc_mb=${alloc:.0f} alloc_mb_per_s=${rate:.1f}\n'
 	s += 'heap_min_mb=${probe_heap_min_mb} heap_max_mb=${probe_heap_max_mb}\n'
 	return s
 }
@@ -233,16 +249,27 @@ fn probe_driver(secs int) {
 		}
 		time.sleep(20 * time.millisecond)
 	}
-	run_s := if secs > 0 { secs } else { 70 }
-	probe_run_s = run_s
-	time.sleep(run_s * time.second)
+	want_s := if secs > 0 { secs } else { 70 }
+	// The deadline is N seconds after the BOUNDARY, not after this thread noticed the run:
+	// start() had already run under the measurement for as long as it took, and a rate
+	// divided by N over an interval of N plus that is not comparable between projects
+	// (codex on #299 round 6). And the divisor is the interval as measured.
+	end_ns := probe_begin_ns + u64(want_s) * u64(time.second)
+	for time.sys_mono_now() < end_ns {
+		time.sleep(20 * time.millisecond)
+	}
 	// Sampling STOPS before the summary is read: with the flag still up, the workers and
 	// the hiccup thread went on changing the counters while probe_summary() read them, so
 	// its fields described different intervals and a histogram need not sum to its total
-	// (codex on #299 round 5). A moment for the samples already in flight, then the read.
+	// (round 5). Then every writer that passed the gate is waited for — a lock waiter that
+	// entered before the flag dropped adds its wait when the lock comes, which a fixed grace
+	// cannot bound (round 6) — and only then is anything read.
 	probe_measuring = false
-	time.sleep(50 * time.millisecond)
+	for stdatomic.load_u64(&probe_inflight) > 0 {
+		time.sleep(time.millisecond)
+	}
 	probe_bytes_end = u64(gc_heap_usage().total_bytes)
+	probe_run_s = f64(time.sys_mono_now() - probe_begin_ns) / 1e9
 	summary := probe_summary()
 	os.write_file(probe_out, summary) or {
 		eprintln('probe: cannot write ${probe_out}: ${err}')
