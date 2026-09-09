@@ -19,7 +19,14 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   walk, and a plan that indexes rather than copies; (2) an allocation-free hot loop (`due()` into a
   caller buffer, `wire_policy` without string temporaries, the tap without per-frame clones), so
   the replay thread never triggers a collection itself. And `timeBeginPeriod(1)` at startup: the
-  16 ms Windows timer quantum is a floor under every sleep the player takes.
+  16 ms Windows timer quantum is a floor under every sleep the player takes. (3) `wiretap` holding
+  only IN-FLIGHT records: a settled record is kept until it ages out or is evicted, so on a
+  healthy bus the ring sits at its 1024 cap and every note at cap moves ~180 KB under `app.mu`
+  to retire one — deleting it at the claim that settles it leaves tens of records, and the one
+  test in the way (`wiretap_test.v`, "still held for a second monitor") asserts a record no
+  monitor may claim (the self-review's altitude finding on #299). And the cheap experiment
+  FIRST, with the probe: a `-gc boehm_incr_opt` build, since incremental marking is aimed at
+  exactly pause length and costs one flag to try.
 
 - ⏭️ **A `-prod` build**, once CI exercises one. Releases themselves are routine since
   `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md).

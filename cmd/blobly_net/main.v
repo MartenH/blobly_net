@@ -184,7 +184,9 @@ fn main() {
 	// after ~`autostart_frame` presented frames clears the race. A human pressing Start is always
 	// well past this, so it only matters for BLOBLY_AUTOSTART / automated runs. Override with
 	// BLOBLY_AUTOSTART_FRAME.
-	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' {
+	// BLOBLY_PROBE_LOG (probe.v) implies it: the probe must not start the run from a worker
+	// thread on a wall-clock guess, which is the trigger this gate exists to remove.
+	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' || os.getenv('BLOBLY_PROBE_LOG') != '' {
 		n := os.getenv('BLOBLY_AUTOSTART_FRAME').int()
 		if n > 0 {
 			n

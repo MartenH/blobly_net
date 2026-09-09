@@ -783,9 +783,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				break
 			}
 			if probe_active {
-				// cadence: playback position now, against where this frame sits in the recording
-				now_p := f64(i64(sw.elapsed())) / 1e6
-				probe_note_late((p.position_s(now_p) - (e.t_s - plan.t0_s)) * 1000.0)
+				// cadence: dispatch time against the player's own schedule for this frame,
+				// re-sampled per frame — after a stall due() hands back everything owed, and
+				// the later frames of that batch really do go out later
+				probe_note_late(f64(i64(sw.elapsed())) / 1e6 - p.due_at_ms(e))
 			}
 			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {

@@ -223,7 +223,16 @@ pub fn (p Player) next_due_ms() ?f64 {
 		// a tail gap that has not ended yet.
 		return p.base_ms + p.duration_s() * 1000.0 / p.speed
 	}
-	return p.base_ms + (p.entries[p.idx].t_s - p.t0_s()) * 1000.0 / p.speed
+	return p.due_at_ms(p.entries[p.idx])
+}
+
+// due_at_ms is the playback-clock time at which `e` plays: the ONE spelling of the schedule.
+// due() releases an entry on it, next_due_ms() sleeps until it, and the GUI's cadence probe
+// measures a frame's lateness against it. It had a second spelling in the GUI (position_s minus
+// the entry's recorded offset), which scales by speed and clamps to the pass — at 2x it read
+// half the true lateness, and a frame due near the end of a pass had its lateness clipped.
+pub fn (p Player) due_at_ms(e canlog.LogEntry) f64 {
+	return p.base_ms + (e.t_s - p.t0_s()) * 1000.0 / p.speed
 }
 
 // due returns every entry whose recorded offset has elapsed by playback-clock
@@ -240,7 +249,6 @@ pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 		p.st = .finished
 		return out
 	}
-	t0 := p.t0_s()
 	for {
 		if p.idx >= p.entries.len {
 			// The pass is not over when the last RETAINED entry goes out -- it is over when the
@@ -277,7 +285,7 @@ pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 			break
 		}
 		e := p.entries[p.idx]
-		due_at := p.base_ms + (e.t_s - t0) * 1000.0 / p.speed
+		due_at := p.due_at_ms(e)
 		if due_at > now_ms + time_eps_ms {
 			break
 		}

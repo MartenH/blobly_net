@@ -57,17 +57,17 @@ pub:
 // Pending is one emission still waiting for its echo. `seq` is the caller's row identity,
 // returned when the echo arrives so the caller can mark the right row.
 struct Pending {
-	seq   u64
+	seq u64
 	// Cheap discriminator, computed once at note(). The scan walks every outstanding record for
 	// each received frame, and comparing an interface STRING plus a payload ARRAY 1024 times cost
 	// ~200us per frame — three times the gap between frames on a saturated 1 Mbit bus. Comparing
 	// a u64 first turns that into a rounding error; the exact comparison still runs on a match,
 	// so a hash collision cannot attribute somebody else's frame to us.
-	key   u64
-	tag   string // caller-owned label, returned with the claim (see Claim.tag)
+	key u64
+	tag string // caller-owned label, returned with the claim (see Claim.tag)
 	// The caller already accounted for this emission itself (wrote it to a recording, say), so
 	// whoever claims the echo must not do it again.
-	done bool
+	done  bool
 	iface string
 	id    u32
 	ext   bool
@@ -117,6 +117,14 @@ fn (p &Pending) settled() bool {
 	return true
 }
 
+// reportable: dropping this record without its echo is a verdict somebody must hear — it was
+// watched, nobody has answered for it, and the watchers are still there. The ONE spelling for
+// both eviction paths (cap in note(), age in expire()): two spellings would let one path accuse a
+// bus the other exonerates.
+fn (p &Pending) reportable() bool {
+	return p.claimed.len == 0 && p.allowed.len > 0 && !p.watched_gone
+}
+
 // Ring holds the emissions not yet accounted for. Not thread-safe: the caller serialises it
 // (the GUI already holds one mutex over the trace this indexes into).
 pub struct Ring {
@@ -157,40 +165,28 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		done:    done
 		allowed: monitors.clone()
 		iface:   wire
-		id:    f.id
-		ext:   f.extended
-		rtr:   f.rtr
-		fd:    f.fd
-		brs:   f.brs
-		data:  f.data.clone()
-		t_ms:  t_ms
+		id:      f.id
+		ext:     f.extended
+		rtr:     f.rtr
+		fd:      f.fd
+		brs:     f.brs
+		data:    f.data.clone()
+		t_ms:    t_ms
 	}
 	mut evicted := []u64{}
 	if r.cap > 0 && r.items.len > r.cap {
-		// SETTLED FIRST. A record every allowed monitor has already accounted for is finished —
-		// nothing will ever ask about it again — so it is the right thing to drop for room.
-		// Dropping in plain arrival order instead threw away records a SECOND monitor had not
-		// reached yet (two channels on one wire, one draining slower), and its copy of our own
-		// frame then arrived with nothing to match and was filed as the device under test's.
-		// THREE passes, not one. In a single pass an older cheap-to-drop entry is given up before
-		// a later free-to-drop one is even seen — an unwatched record (still claimable, and the
-		// startup window depends on that) would go while a settled record it precedes survives.
-		// Cost order: settled (nothing can ever ask again) → verdictless (never claimable, never
-		// reportable) → oldest.
-		// IN PLACE, one victim at a time. Rebuilding the array to evict ONE record -- a map of
-		// indices, three passes and a fresh cap-sized copy -- ran on EVERY note() once the ring was
+		// One victim at a time, IN PLACE. Rebuilding the array to evict ONE record — a map of
+		// indices, three passes and a fresh cap-sized copy — ran on EVERY note() once the ring was
 		// full, which at replay rates is thousands of times a second: ~150 KB of garbage per emitted
-		// frame, measured at ~600 MB/s inside the GUI, and the reason its heap collected every second
+		// frame, measured at ~1 GB/s inside the GUI, and the reason its heap collected every second
 		// (the once-a-second replay stutter). A delete shifts the tail down and allocates nothing.
-		// The priority is unchanged: the first settled record, else the first verdictless one, else
-		// the oldest -- and only an oldest-class victim can be unresolved, so the report rule below
-		// is the same one the three passes applied.
+		// Which record goes is victim_index's question; whether dropping it is a verdict is
+		// reportable()'s — the same two answers the old passes gave, each now in one place.
 		mut need := r.items.len - r.cap
 		for need > 0 && r.items.len > 0 {
 			v := r.victim_index()
-			pd := r.items[v]
-			if pd.claimed.len == 0 && pd.allowed.len > 0 && !pd.watched_gone {
-				evicted << pd.seq // oldest and unresolved: reported, never dropped in silence
+			if r.items[v].reportable() {
+				evicted << r.items[v].seq
 			}
 			r.items.delete(v)
 			need--
@@ -199,20 +195,27 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 	return evicted
 }
 
-// victim_index is which record eviction gives up next: a settled one (nothing can ever ask about
-// it again), else a verdictless one (never claimable, never reportable), else the oldest. By index
-// and by reference -- copying each Pending to ask it a question is the ~200us/frame this module's
-// claim path already learned not to pay.
+// victim_index is which record eviction gives up next. Cost order, not arrival order: a settled
+// record (every allowed monitor has answered — nothing can ever ask about it again) goes first,
+// else a verdictless one (never claimable, never reportable), else the oldest. Plain arrival
+// order would drop an unwatched record — still claimable, and the startup window depends on
+// that — before a settled one it happens to precede, and a watched record before a verdictless
+// one, accusing a healthy bus of a miss. ONE pass: the first settled record wins outright, the
+// first verdictless one is remembered in case none is settled. By index and by reference —
+// copying each Pending to ask it a question is the ~200us/frame the claim path already learned
+// not to pay.
 fn (r &Ring) victim_index() int {
+	mut verdictless := -1
 	for i in 0 .. r.items.len {
 		if r.items[i].settled() {
 			return i
 		}
-	}
-	for i in 0 .. r.items.len {
-		if r.items[i].allowed.len == 0 || r.items[i].watched_gone {
-			return i
+		if verdictless < 0 && (r.items[i].allowed.len == 0 || r.items[i].watched_gone) {
+			verdictless = i
 		}
+	}
+	if verdictless >= 0 {
+		return verdictless
 	}
 	return 0
 }
@@ -280,8 +283,8 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 		// happens to share the low 11 bits, an RTR request is not the echo of the data frame
 		// answering it, and a CAN-FD frame is not the echo of a classic one carrying the same
 		// eight bytes — every shortcut here attributes a real ECU's frame to us.
-		if p.iface == wire && p.id == f.id && p.ext == f.extended && p.rtr == f.rtr
-			&& p.fd == f.fd && p.brs == f.brs && p.data == f.data {
+		if p.iface == wire && p.id == f.id && p.ext == f.extended && p.rtr == f.rtr && p.fd == f.fd
+			&& p.brs == f.brs && p.data == f.data {
 			first := p.claimed.len == 0
 			r.items[i].claimed << monitor
 			return Claim{
@@ -310,19 +313,19 @@ pub fn (mut r Ring) expire(now_ms f64) []u64 {
 	if cut == 0 {
 		return missed
 	}
+	// Only what NO monitor ever saw, and only where one COULD have: a record kept for a second
+	// monitor has already been accounted for once (reporting it again would accuse a bus that
+	// carried the frame perfectly well), and an emission made while nothing was watching has no
+	// evidence either way — silence is not a fault.
 	for i in 0 .. cut {
-		p := r.items[i]
-		{
-		// Only what NO monitor ever saw, and only where one COULD have: a record kept for a
-		// second monitor has already been accounted for once (reporting it again would accuse a
-		// bus that carried the frame perfectly well), and an emission made while nothing was
-		// watching has no evidence either way — silence is not a fault.
-		if p.claimed.len == 0 && p.allowed.len > 0 && !p.watched_gone {
-			missed << p.seq
-		}
+		if r.items[i].reportable() {
+			missed << r.items[i].seq
 		}
 	}
-	r.items = r.items[cut..].clone()
+	// IN PLACE, like note()'s eviction: `r.items[cut..].clone()` copied the whole remaining ring
+	// to drop a prefix, on every emitted frame that found one record aged — ~100 KB each at a
+	// steady trickle, the rate at which the ring never fills and the cap path never runs.
+	r.items.delete_many(0, cut)
 	return missed
 }
 
@@ -373,7 +376,11 @@ fn (mut r Ring) drop_expired(now_ms f64) {
 		cut++
 	}
 	if cut > 0 {
-		r.items = r.items[cut..].clone()
+		// A prefix, dropped IN PLACE (one memmove, nothing allocated). The slice-and-clone this
+		// replaced kept the prefix property and still copied every surviving record, so at a
+		// trickle — one record aging per received frame — it was the rebuild-per-frame class
+		// note() had, on the RX thread, under the app lock. bench_test.v pins it in bytes.
+		r.items.delete_many(0, cut)
 	}
 }
 

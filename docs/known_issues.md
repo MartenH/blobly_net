@@ -305,10 +305,17 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   render loop's per-frame clone of the trace ring was the other suspect and turned out secondary
   (switching it off changed little once the ring was fixed); `app.mu` waits were never a factor
   (avg 1–3 µs, max 2 ms). Eviction is in place now — same priority, same verdicts, 356 bytes per
-  note against 180,996 — and `test_note_cost_when_the_ring_is_full` pins the class.
-  After the fix, same probe: 139 MB/s, **0 frames over a second late**, worst 219 ms, 70% within
+  note against 180,996 — and `test_note_cost_when_the_ring_is_full` pins the class. The
+  self-review of that fix found the SIBLING: below ~500 frames/s the ring never fills, records
+  age out instead, and `expire` (every emitted frame) and `drop_expired` (every received one)
+  copied the whole remaining ring to drop a prefix — ~400 KB a step, on the RX thread, under
+  `app.mu`, at exactly the rates the first probe run could not show. In place too now, and
+  `test_cost_when_records_age_out` pins it (256 bytes a step against 422,160).
+  After the fix, same probe: ~140 MB/s, **0 frames over a second late**, worst 182 ms, 70% within
   1 ms, the replay completes.
-  **What remains is 🔴 and is the next piece of work**: ~25 pauses of 100–330 ms per minute,
+  **What remains is 🔴 and is the next piece of work**: one pause every 1–2 s, most of them
+  50–300 ms (the probe's `hic_with_gc` counter says which gaps a collection spans — 35 of the 97
+  over 20 ms in a 70 s run, and every long one), visible as a stutter every second or two,
   because the LIVE heap is still ~900 MB — a replay materialises the entire recording (878 k
   frames to replay 87 k on a 2-bus project; all of it on 13) and holds it for the run, and a
   collection over that many objects is that long. Frequency fell 7×; length did not move. That
