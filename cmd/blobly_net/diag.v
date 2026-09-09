@@ -165,6 +165,7 @@ fn trace_rsp_status(r telem.TraceRsp) string {
 	cause := match r.cause {
 		telem.freeze_trigger { ' by trigger' }
 		telem.freeze_stop { ' by stop' }
+		telem.freeze_full { ' by fill' } // a oneshot that completed on its own (emb#271)
 		else { '' }
 	}
 
