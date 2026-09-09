@@ -184,6 +184,24 @@ mut:
 	t0_ns     u64
 	wake_ms   i64
 	last_wake i64
+	// CLEARED BY rebuild_from_proj, not only rewritten at Start: a different project has
+	// different `verify:` entries, and a Lua script's surviving bus can send on the same wire
+	// after a Stop and a load. Judged against the old coverage it named a message the current
+	// project does not list (codex on #289).
+	//
+	// Messages already reported as self-sent (#95), keyed by destination and message so each
+	// wire says it once and two wires each say their own. On the APP and not on the VerifySet
+	// that decides it: a set is built per rx_loop, so a reader handoff or a mid-run channel
+	// toggle would rebuild it and repeat a line that claims to be once per run — the same reason
+	// the teardown carries health, cadence, diagnostics and load to the successor. Guarded by
+	// app.mu; reset at Start with the other per-run state.
+	verify_said map[string]bool
+	// What each wire's `verify:` describes, INDEXED — built by start() from every SimCfg on the
+	// destination, before a single emitter is released, and only read afterwards. Asked by
+	// note_self_sent on each successful send, which is why it is an index and not a walk: the
+	// predicate it replaced scanned every message of every database on the wire, under this
+	// mutex, for every frame. Keyed by transport.destination_key.
+	verify_cover map[string]sim.Coverage
 	proj_path string
 	proj_name string
 	dark      bool = true // theme
@@ -893,6 +911,12 @@ fn (mut app App) rebuild_from_proj() {
 			''
 		}} — if a simulated ECU or a script behaves oddly, stop it and reload the project')
 	}
+	// The self-sent coverage describes the project being replaced (#95): a script's surviving bus
+	// must not be judged against it, and Start republishes for whatever is loaded now.
+	app.mu.lock()
+	app.verify_cover = map[string]sim.Coverage{}
+	app.verify_said = map[string]bool{}
+	app.mu.unlock()
 	app.reset_gen_state()
 	app.replay_view_gen++ // the grouping the stopped Replay panel caches is derived from what
 	// this function rebuilds

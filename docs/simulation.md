@@ -551,6 +551,27 @@ unrecognised profile, a multiplexed counter or checksum (frames on other branche
 unchecked), and a malformed `id`/`data_id`. A check that silently does nothing is worse than
 none, because it is trusted.
 
+**And one that only the running measurement can see.** `verify:` describes the ECU under test, so
+a message *this project transmits* does not belong in it — but whether we transmit one is not
+something the configuration settles: it depends on the simulated nodes that are ticked on, the
+generators that are firing, and a replay channel's recording. Our own frames are never verified
+(the trace knows whose each frame is), so such an entry does not report false failures — it goes
+quiet, checking only what somebody else sends, and nothing at all if we are the only sender. When
+a frame we sent carries a message `verify:` lists, the Log says so once per message:
+
+```
+vcan0: verify: a frame this app sent carried EngineData (0x100), which `verify:` lists —
+our own frames are never verified, so that entry checks only frames somebody else sends
+```
+
+It reports the frame, not a verdict on the project: a single Quick Send or one `can.send` from a
+script is equally ours and says nothing about how the project is configured. Usually it means a
+node was added to `simulate:` later without the `verify:` line being revisited.
+
+The line names the **wire**, not a channel row, because that is what the notice is about: `verify:`
+coverage is gathered per destination and said once per message per wire, so on a bus two rows
+share there is no one row to name.
+
 Violations appear beside the message name in the trace:
 
 ```

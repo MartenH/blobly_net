@@ -137,7 +137,12 @@ mut:
 	sender   string
 	tx_nodes []string // additional transmitters from BO_TX_BU_
 	cycle_ms int
-	sigs     []SigBuilder
+	j1939    bool
+	// whether a per-message BA_ record was seen at all: a file may default to J1939PG and
+	// override single frames back to StandardCAN, and "stated, and not J1939" must beat the
+	// default rather than reading like silence.
+	j1939_stated bool
+	sigs         []SigBuilder
 }
 
 // CAN_EFF_FLAG marks an extended (29-bit) id in a DBC BO_ record.
@@ -148,6 +153,12 @@ const can_eff_mask = u32(0x1FFF_FFFF)
 // unit-testable. Returns an error only on a structurally broken BO_/SG_ line.
 pub fn parse_dbc(text string) !Database {
 	mut msgs := []MsgBuilder{}
+	// VFrameFormat is resolved AFTER the whole file has been read, because a value cannot be
+	// judged until the enum it indexes is known and a DBC does not promise the order of its
+	// records. Collected raw here; interpreted below.
+	mut fmt_choices := []string{}
+	mut fmt_lines := []string{} // per-message `BA_` records
+	mut fmt_default := '' // the `BA_DEF_DEF_` record
 	// keyed by the RAW DBC id (EFF bit intact): auxiliary records (VAL_/CM_/
 	// BA_) carry the same raw id as their BO_, and a standard and an extended
 	// frame may share the numeric id — stripping here would attach one
@@ -180,8 +191,29 @@ pub fn parse_dbc(text string) !Database {
 			nodes = line[4..].fields()
 		} else if line.starts_with('BA_ "GenMsgCycleTime"') {
 			apply_cycle_time(mut msgs, by_id, line)
+		} else if line.starts_with('BA_ "VFrameFormat"') {
+			fmt_lines << line
+		} else if line.starts_with('BA_DEF_DEF_ "VFrameFormat"') {
+			// THE FILE-WIDE DEFAULT IS A DECLARATION TOO. A DBC states an attribute's default
+			// once and then overrides only the exceptions, so a J1939 database can declare
+			// J1939PG here and carry no per-message BA_ at all — read as "no declaration", every
+			// frame in it came back not-J1939, which is the same explicit-file-answered-wrongly
+			// case the both-spellings rule exists to prevent (codex on #289).
+			fmt_default = line
+		} else if line.starts_with('BA_DEF_ BO_ "VFrameFormat"') {
+			fmt_choices = frame_format_choices(line)
 		}
 		// other records (BA_DEF_, blank, …) are ignored.
+	}
+
+	// VFrameFormat, now that the file's own enum ordering is known
+	default_j1939 := if fmt_default != '' {
+		frame_format_is_j1939(fmt_default, 2, fmt_choices)
+	} else {
+		false
+	}
+	for line in fmt_lines {
+		apply_frame_format(mut msgs, by_id, line, fmt_choices)
 	}
 
 	// emit immutable model
@@ -216,6 +248,8 @@ pub fn parse_dbc(text string) !Database {
 			sender:   mb.sender
 			tx_nodes: mb.tx_nodes.clone()
 			cycle_ms: mb.cycle_ms
+			// the per-message record wins; the file-wide default fills the rest
+			j1939:    mb.j1939 || (default_j1939 && !mb.j1939_stated)
 			signals:  sigs
 		}
 	}
@@ -254,6 +288,80 @@ fn apply_cycle_time(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	if idx := by_id[id] {
 		msgs[idx].cycle_ms = f[4].int()
 	}
+}
+
+// apply_frame_format parses `BA_ "VFrameFormat" BO_ <id> <value>;` and records whether the file
+// DECLARED the frame J1939.
+//
+// Only that one fact is kept. The attribute's other values distinguish standard from extended
+// and classic from CAN-FD, which this model already carries (`ext`) or has never carried (FD is
+// a property of the transport here, not of a DBC message), so reading them would be inventing a
+// field nothing consumes.
+//
+// BOTH SPELLINGS. An ENUM attribute's value in a `BA_` record is the enum INDEX — 3 is J1939PG
+// in Vector's ordering, which is what this repo's own ARXML export emits — but tools do write
+// the quoted choice, and a reader that took only one of them would answer "not J1939" for a
+// perfectly explicit file. The index list is Vector's and is duplicated nowhere: `vframe_format_enum`
+// in arxml_export.v is the definition this reads back.
+fn apply_frame_format(mut msgs []MsgBuilder, by_id map[u32]int, line string, choices []string) {
+	f := line.replace(';', '').fields()
+	// f: BA_ "VFrameFormat" BO_ <id> <value>
+	if f.len < 5 || f[2] != 'BO_' {
+		return
+	}
+	id := u32(f[3].u64()) // raw: by_id keys keep the EFF bit
+	idx := by_id[id] or { return }
+	msgs[idx].j1939 = frame_format_is_j1939(line, 4, choices)
+	msgs[idx].j1939_stated = true
+}
+
+// vframe_j1939_fallback is the J1939PG index in VECTOR's ordering, used only when a file gives
+// a numeric value without defining the enum it indexes. That combination is malformed DBC — an
+// attribute's values are meaningless without its `BA_DEF_` — so this is a convention applied to
+// a broken file, not an assumption about a well-formed one.
+const vframe_j1939_fallback = 3
+
+// frame_format_choices reads the ordering out of `BA_DEF_ BO_ "VFrameFormat" ENUM "a","b",…;`.
+//
+// THE FILE DECIDES WHAT ITS INDICES MEAN. A `BA_` record carries the enum INDEX, and a DBC that
+// declares `ENUM "StandardCAN","ExtendedCAN","J1939PG"` means 2 by J1939PG — read against
+// Vector's ordering it is "reserved", so an explicitly J1939 file was silently undeclared, while
+// that file's own index 3 (if it had one) would have been read AS J1939 (codex on #289).
+fn frame_format_choices(line string) []string {
+	i := line.index('ENUM') or { return [] }
+	mut out := []string{}
+	for part in line[i + 4..].replace(';', '').split(',') {
+		out << part.trim_space().trim('"')
+	}
+	return out
+}
+
+// frame_format_is_j1939 reads field `at` of a VFrameFormat record against `choices`, the file's
+// own enum ordering. Shared by the per-message `BA_` and the file-wide `BA_DEF_DEF_`, so the two
+// cannot disagree about what a value means.
+fn frame_format_is_j1939(line string, at int, choices []string) bool {
+	f := line.replace(';', '').fields()
+	if f.len <= at {
+		return false
+	}
+	v := f[at].trim('"')
+	if v == '' {
+		return false
+	}
+	// The quoted choice needs no ordering at all, and is what a BA_DEF_DEF_ usually carries.
+	if v == 'J1939PG' {
+		return true
+	}
+	if !v[0].is_digit() {
+		return false
+	}
+	if choices.len > 0 {
+		// The file defined its enum: an index means J1939 only if THIS file put J1939PG there,
+		// and if it never lists J1939PG at all then no index can mean it.
+		idx := choices.index('J1939PG')
+		return idx >= 0 && v.int() == idx
+	}
+	return v.int() == vframe_j1939_fallback
 }
 
 // parse_bo parses:  BO_ <id> <Name>: <dlc> <transmitter>

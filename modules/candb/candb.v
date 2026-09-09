@@ -74,7 +74,17 @@ pub mut:
 	// this?" must consult both — see senders(). Empty for the overwhelming majority of messages.
 	tx_nodes []string
 	cycle_ms int    // GenMsgCycleTime attribute if present (0 = not cyclic / unknown)
-	signals  []Signal
+	// DECLARED J1939, from `BA_ "VFrameFormat" … J1939PG`. False means "the file did not say
+	// so", never "this is not J1939" — most J1939 DBCs carry no such attribute at all.
+	//
+	// It exists because a 29-bit id ALONE is not evidence. `j1939_pgn` will compute a PGN for
+	// any extended id, and lookup_frame's fallback matches on it, so two unrelated messages —
+	// a UDS request and its response, say — can share one. Anything that would make a CLAIM
+	// about a frame from a PGN match needs the file to have said the bus is J1939; anything
+	// merely choosing how to decode a frame it already has may use the fallback and accept the
+	// ambiguity (#95).
+	j1939   bool
+	signals []Signal
 }
 
 // raw_value extracts the unsigned raw bits of the signal from `data`. Handles

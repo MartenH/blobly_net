@@ -826,6 +826,53 @@ fn (mut app App) start() {
 		app.chans[ci].load_carry_bits = 0
 		app.chans[ci].load_carry_ms = 0
 	}
+	// WHAT EACH WIRE'S `verify:` DESCRIBES, published HERE — under app.mu and, more to the
+	// point, while the transmit mutexes below are STILL HELD (#95). Two earlier placements were
+	// both too late: rx_loop published it once it had opened, which tied it to the MONITOR, and
+	// then a later take of app.mu still sat after these locks were released. A guardless tap
+	// kept by a Lua tool — explicitly allowed to outlive Stop — can complete a one-shot send in
+	// either window, and note_self_sent would read the previous run's coverage and latch, or an
+	// empty one, and the notice would be lost for good (codex on #289).
+	//
+	// Only the PROVENANCE half of each set: which keys `verify:` describes, and under what name.
+	// Not the verifiers — those carry per-message counter state rx_loop mutates on its own
+	// thread, and V's maps are references, so publishing whole sets would hand the send path a
+	// live view of another thread's state.
+	//
+	// Indexed, not stored raw: it is asked on every successful send.
+	app.verify_said = map[string]bool{} // a new run may be of a corrected project; say it again
+	mut names_by_dest := map[string]map[string]sim.VerifyOrigin{}
+	// One real interface per destination, kept because dbs_for_dest derives the key from an
+	// INTERFACE — handing it a key already derived would rely on that derivation being
+	// idempotent, which is not something this needs to depend on.
+	mut iface_of_dest := map[string]string{}
+	for sc in app.sims {
+		d := transport.destination_key(sc.iface)
+		if d !in names_by_dest {
+			names_by_dest[d] = map[string]sim.VerifyOrigin{}
+			iface_of_dest[d] = sc.iface
+		}
+		// NO NODES. Only the `verify:` loop fills from_verify, so passing sc.nodes builds every
+		// simulated node's `protect:` verifiers — messages_from copies whole Messages and
+		// allocates a senders() array per message — for a map they cannot contribute to. This
+		// runs under app.mu with every transmit mutex held, so on a large database it stalls the
+		// GUI and every emitter at Start. replay.v has passed `[]` here all along.
+		for k, n in sim.verifiers_for(sc.db, [], sc.verify).from_verify {
+			// FIRST WINS, like by_key does. Last-wins here made the notice's name depend on the
+			// order of app.sims while the verifier that actually runs is the first one.
+			if k !in names_by_dest[d] {
+				names_by_dest[d][k] = n
+			}
+		}
+	}
+	mut cover := map[string]sim.Coverage{}
+	for d, names in names_by_dest {
+		if names.len == 0 {
+			continue // nothing on this wire is somebody else's to check
+		}
+		cover[d] = sim.build_coverage(app.dbs_for_dest(iface_of_dest[d] or { '' }), names)
+	}
+	app.verify_cover = cover.move()
 	app.mu.unlock()
 	for m in held {
 		m.unlock()

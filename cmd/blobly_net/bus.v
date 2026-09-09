@@ -249,6 +249,11 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	}
 	// The driver has it: it is on the wire, and the wire's load.
 	t.app.count_tx_load(t.iface, wire)
+	// …and only now is it a frame we PUT on the wire, which is what the `verify:` self-send
+	// notice is about (#95). Above the retract path on purpose: a refused send must not warn
+	// about a frame that never went out, nor consume the once-per-run latch that the real
+	// transmission would need.
+	t.app.note_self_sent(t.iface, wire)
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {

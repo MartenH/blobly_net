@@ -7,6 +7,7 @@ import wiretap
 import telem
 import canlog
 import project
+import sim
 import vgui
 
 struct TraceRow {
@@ -593,4 +594,49 @@ fn (mut app App) toggle_record() {
 		app.mu.unlock()
 		app.notify('recording -> ${path}')
 	}
+}
+
+// note_self_sent says, once per message per wire per run, that a frame this app HAS PUT on the
+// wire carries a message the project's `verify:` lists (#95).
+//
+// CALLED FROM THE SEND'S SUCCESS PATH, not from note_emit. note_emit runs BEFORE the driver has
+// the frame — deliberately, so a monitor cannot see an echo the record does not yet cover — and
+// a send that is then refused (a listen-only wire, a frame the backend rejects, a transmit queue
+// that stays full) retracts its row. Latched from there, a refusal produced a warning about a
+// frame that never existed AND consumed the once-per-run latch, so the real transmission later
+// in the same run could no longer report (codex on #289).
+//
+// Takes app.mu itself: the caller is inside TapBus.send, which must not hold it (note_emit would
+// deadlock).
+//
+// Cheap first: most projects publish no `verify:` at all for a wire, and this runs on every
+// emission — so the empty-set case costs one map lookup and nothing else. The database walk
+// behind verify_covers is what recognises a live J1939 id, whose priority and source address the
+// DBC does not carry, and it is reached only for a wire that has entries to match against.
+fn (mut app App) note_self_sent(iface string, f transport.CanFrame) {
+	if f.rtr {
+		return // an RTR request carries no payload and is not the traffic `verify:` is about
+	}
+	dest := transport.destination_key(iface)
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	cover := app.verify_cover[dest] or { return }
+	if cover.names.len == 0 {
+		return
+	}
+	// THREE MAP LOOKUPS AT WORST, which is the point of the index: this runs on every successful
+	// transmission, including high-rate simulation, generator and replay traffic that has
+	// nothing to do with the verified message, and it runs under app.mu.
+	hit := cover.covers(f.id, f.extended) or { return }
+	// Latched on the MESSAGE `verify:` names, not on the id off the wire: a J1939 message arrives
+	// under as many wire ids as there are source addresses, so keying on the id would say a
+	// once-per-message line once per address.
+	said_key := '${dest}|${hit}'
+	if said_key in app.verify_said {
+		return
+	}
+	app.verify_said[said_key] = true
+	app.log_append_locked('${iface}: ${sim.self_sent_warning(cover.name_of(hit), f.id, f.extended)}')
 }
