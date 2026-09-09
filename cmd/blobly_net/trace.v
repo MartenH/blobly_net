@@ -310,7 +310,9 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 fn (mut app App) rec_append_locked(e canlog.LogEntry) u64 {
 	id := app.rec_seq
 	app.rec_seq++
-	app.rec << e
+	// Its OWN payload: a frame received off an in-process bus during a replay is a view into
+	// the recording's arena, and this list outlives the run that held it.
+	app.rec << e.owned()
 	app.rec_ids << id
 	if app.rec.len > 200000 {
 		drop := app.rec.len - 200000

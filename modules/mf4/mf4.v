@@ -17,8 +17,8 @@
 // extended to the end of the file. **Unsorted** data groups (several channel
 // groups interleaved in one DT, each record prefixed by its record id — how
 // CANedge mixes CAN_DataFrame with error/remote-frame groups) are demuxed
-// before decoding; VLSD channel groups inside an unsorted DT are skipped while
-// stepping (classic-CAN payloads are inline).
+// before decoding, and a VLSD channel group inside an unsorted DT is carried along as
+// the byte stream its data records point into (`vlsd_streams`).
 //
 // GUI-free + pure V (see CLAUDE.md module convention). Returns canlog.LogEntry so
 // it plugs straight into the existing log/replay path. Validated frame-for-frame
@@ -74,8 +74,7 @@ fn dlc_bytes(dlc u64, fd bool) ?u64 {
 // sorted by timestamp (each bus group is internally time-sorted; merging many
 // groups needs the final sort). Errors on I/O or a non-MDF file.
 pub fn load_file(path string) ![]canlog.LogEntry {
-	buf := os.read_bytes(path)!
-	return parse(buf)!
+	return load_recording(path)!.log.entries()
 }
 
 // BusInfo is one bus of a recording: the label its frames actually carry, and the name the FILE
@@ -95,8 +94,8 @@ pub:
 // Recording is a parsed file: its frames, and what buses they came from.
 pub struct Recording {
 pub:
-	entries []canlog.LogEntry
-	buses   []BusInfo
+	log   canlog.Log
+	buses []BusInfo
 }
 
 // load_recording parses a file and also reports its buses. Same work as load_file — the bus
@@ -109,22 +108,42 @@ pub fn load_recording(path string) !Recording {
 // parse reads an in-memory MDF4 image. Split out from load_file so callers/tests
 // can feed bytes directly.
 pub fn parse(buf []u8) ![]canlog.LogEntry {
-	return parse_recording(buf)!.entries
+	return parse_recording(buf)!.log.entries()
+}
+
+// parse_log is parse into the arena: what a replay loads.
+pub fn parse_log(buf []u8) !canlog.Log {
+	return parse_recording(buf)!.log
+}
+
+// load_log is load_file into the arena.
+pub fn load_log(path string) !canlog.Log {
+	return load_recording(path)!.log
 }
 
 // tally_buses attributes a slice of freshly decoded entries to their bus labels, carrying the
 // channel group's acquisition name along. A group that produced SEVERAL labels (records carrying
 // their own BusChannel) keeps the name only where it is unambiguous: one name covering two buses
 // would be a label pretending to be an identity.
-fn tally_buses(entries []canlog.LogEntry, acq string, mut names map[string]string, mut counts map[string]int) {
-	for e in entries {
-		counts[e.iface]++
-		if existing := names[e.iface] {
+fn tally_buses(log &canlog.Log, start int, acq string, mut names map[string]string, mut counts map[string]int) {
+	// By bus INDEX over the rows, one array increment each; the label is resolved once per
+	// bus the range touched, not once per record.
+	mut per := []int{len: log.labels.len}
+	for i in start .. log.rows.len {
+		per[log.rows[i].bus]++
+	}
+	for b, n in per {
+		if n == 0 {
+			continue
+		}
+		lbl := log.labels[b]
+		counts[lbl] += n
+		if existing := names[lbl] {
 			if existing != acq {
-				names[e.iface] = '' // two different names for one label: trust neither
+				names[lbl] = '' // two different names for one label: trust neither
 			}
 		} else {
-			names[e.iface] = acq
+			names[lbl] = acq
 		}
 	}
 }
@@ -138,7 +157,7 @@ fn parse_recording(buf []u8) !Recording {
 	if !magic.starts_with('MDF') && !unfin {
 		return error('not an MDF file (bad id block)')
 	}
-	mut out := []canlog.LogEntry{}
+	mut log := canlog.Log{}
 	// Tie-break key, one per entry, on ONE monotone scale across the whole file: the position of
 	// the record that produced it. Sorting by timestamp alone reorders frames that share one,
 	// and that order is real — a SORTED data group still carries several buses when its records
@@ -162,18 +181,18 @@ fn parse_recording(buf []u8) !Recording {
 		data_link := if dgl.len > 2 { dgl[2] } else { u64(0) }
 		if cg_first != 0 {
 			raw := read_data_block(buf, data_link, unfin)!
-			start := out.len
+			start := log.rows.len
 			if rec_id_size == 0 {
 				// Sorted: one CG per DG, the data block is its record stream.
-				before := out.len
+				before := log.rows.len
 				// The record indices are not needed here: a SORTED group's ordinal is a running
 				// counter over the entries that EXIST, so a refused record simply never gets one
 				// and the sequence stays ascending. Only the unsorted path indexes ordinals by
 				// record, and only that one breaks when a record produces no entry.
 				mut idxs := []int{}
-				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut idxs, mut out)!
+				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut idxs, mut log)!
 				// One entry per ENTRY, in record order, so the counter IS the sequence position.
-				for _ in before .. out.len {
+				for _ in before .. log.rows.len {
 					order << seq
 					seq++
 				}
@@ -182,17 +201,17 @@ fn parse_recording(buf []u8) !Recording {
 				// produced, so the name follows the frames rather than being guessed at.
 				cgl := block_links(buf, cg_first)
 				acq := read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) })
-				tally_buses(out[start..], acq, mut bus_names, mut bus_counts)
+				tally_buses(&log, start, acq, mut bus_names, mut bus_counts)
 			} else {
 				// Tallied per channel group inside, since each has its own acquisition name.
 				base := seq
-				before := out.len
-				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut out, mut
+				before := log.rows.len
+				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut log, mut
 					bus_names, mut bus_counts, mut order)!
 				// demux appends this group's INTERLEAVED record ordinals; lift them onto the
 				// file-wide scale so ties never compare a per-group ordinal against a global one.
 				mut top := base
-				for k in before .. out.len {
+				for k in before .. log.rows.len {
 					if order[k] != max_int {
 						order[k] += base
 						if order[k] >= top {
@@ -210,12 +229,16 @@ fn parse_recording(buf []u8) !Recording {
 		}
 		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }
 	}
-	// Sorted as PAIRS so the tie-break survives: sorting `out` alone would leave `order`
-	// pointing at the wrong entries, which is worse than not having it.
-	mut idx := []int{len: out.len, init: index}
-	idx.sort_with_compare(fn [out, order] (a &int, b &int) int {
-		ta := out[*a].t_s
-		tb := out[*b].t_s
+	// Sorted as PAIRS so the tie-break survives: sorting the rows alone would leave `order`
+	// pointing at the wrong entries, which is worse than not having it. The INDEX is sorted
+	// (the comparator reads two f64s out of a pointer-free block) and the rows are permuted IN
+	// PLACE, so the recording is never held twice — a second block was a second 98 MB the
+	// collector could find on the worker's stack for the rest of the run.
+	rows := log.rows
+	mut idx := []int{len: rows.len, init: index}
+	idx.sort_with_compare(fn [rows, order] (a &int, b &int) int {
+		ta := rows[*a].t_s
+		tb := rows[*b].t_s
 		if ta != tb {
 			return if ta < tb { -1 } else { 1 }
 		}
@@ -226,11 +249,7 @@ fn parse_recording(buf []u8) !Recording {
 		}
 		return 0
 	})
-	mut sorted := []canlog.LogEntry{cap: out.len}
-	for i in idx {
-		sorted << out[i]
-	}
-	out = sorted.clone()
+	permute_rows(mut log.rows, idx)
 	// A name that covers SEVERAL labels is not a name for any of them. One channel group whose
 	// records carry their own BusChannel produces two buses under one acquisition name, and
 	// handing that name to both would let a caller ask for a bus the file cannot single out —
@@ -252,8 +271,8 @@ fn parse_recording(buf []u8) !Recording {
 	}
 	buses.sort(a.iface < b.iface)
 	return Recording{
-		entries: out
-		buses:   buses
+		log:   log
+		buses: buses
 	}
 }
 
@@ -274,7 +293,7 @@ struct CgInfo {
 // CANedge stores classic-CAN DataBytes).
 // Returns the next free group ordinal, so numbering stays unique across data groups.
 fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
-	mut out []canlog.LogEntry, mut names map[string]string, mut counts map[string]int, mut order []int) !int {
+	mut log canlog.Log, mut names map[string]string, mut counts map[string]int, mut order []int) !int {
 	mut cgs := []CgInfo{}
 	mut cgi := cg_first
 	for cgi != 0 {
@@ -335,10 +354,10 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 	mut g := group
 	for c in cgs {
 		if !c.vlsd {
-			start := out.len
+			start := log.rows.len
 			mut idxs := []int{}
 			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
-				idxs, mut out)!
+				idxs, mut log)!
 			// BY RECORD INDEX, not by position in `out`. A record the decoder refused — an
 			// undefined id, a remote frame whose requested length is unknown — produces no
 			// entry, so the two lists stop lining up at the first skip and everything after it
@@ -346,7 +365,7 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 			// ordinals are what restore the INTERLEAVED order of several channel groups sharing
 			// one record stream, and a wrong one reorders equal-timestamp frames across buses.
 			ords := ordinals[c.rec_id] or { []int{} }
-			for k in start .. out.len {
+			for k in start .. log.rows.len {
 				ri := idxs[k - start]
 				order << if ri < ords.len { ords[ri] } else { max_int }
 			}
@@ -354,7 +373,7 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 			// Each channel group here has its OWN cg_tx_acq_name — sharing a record stream is a
 			// storage detail, not a reason to leave every bus in the file unnamed.
 			cgl := block_links(buf, c.link)
-			tally_buses(out[start..], read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
+			tally_buses(&log, start, read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
 				names, mut counts)
 		}
 	}
@@ -390,7 +409,7 @@ struct Chan {
 // cross-bus sequence the recording never had, which is the one property multibus replay exists
 // to preserve (codex #175 r3).
 fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int, mut rec_idx []int,
-	mut out []canlog.LogEntry) ! {
+	mut log canlog.Log) ! {
 	mut labels := new_labels(group)
 	cgl := block_links(buf, cg)
 	cg_d := data_off(buf, cg)
@@ -630,7 +649,7 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 				// branch refuses the identical doubt; these two must not disagree.
 				agrees := if want := expect { n == want } else { false }
 				if n <= max_can_payload && end <= u64(vlsd.len) && agrees {
-					data = vlsd[int(off) + 4..int(end)].clone()
+					data = vlsd[int(off) + 4..int(end)] // copied into the row below, never kept
 				}
 			}
 		} else {
@@ -666,7 +685,7 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			// payload fits by construction. Inventing bytes is worse than reporting none,
 			// because only one of the two is visible downstream.
 			if usable && n <= max_can_payload && dstart <= limit && n <= limit - dstart {
-				data = raw[int(dstart)..int(dstart + n)].clone()
+				data = raw[int(dstart)..int(dstart + n)] // copied into the row below, never kept
 			}
 		}
 		bus_no := if c_bus.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_bus) {
@@ -699,20 +718,47 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		esi := is_fd && c_esi.bit_count > 0
 			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_esi)
 			&& read_uint(raw, base + c_esi.byte_off, int(c_esi.bit_off), int(c_esi.bit_count)) == 1
+		// The bus BEFORE the record index: a record whose bus the Log cannot name is dropped
+		// here, and a dropped record must leave no ordinal behind (the note on rec_idx).
+		bus := labels.label(bus_no, mut log) or { continue }
 		rec_idx << int(k) // which record this entry came from — see the note on the parameter
-		out << canlog.LogEntry{
+		// Into the ARENA (canlog.Log): a pointer-free row per frame, the payload copied into
+		// the row rather than cloned beside it, the bus named by index. This is where the
+		// recording's memory is decided, and where a collection's LENGTH was decided with it.
+		mut row := canlog.Row{
 			t_s:   ts
-			dir:   dir
-			iface: labels.label(bus_no)
-			frame: transport.CanFrame{
-				id:       u32(rid) & 0x1FFFFFFF
-				extended: ide
-				rtr:      remote
-				fd:       is_fd
-				brs:      brs
-				esi:      esi
-				data:     data
+			id:    u32(rid) & 0x1FFFFFFF
+			len:   u8(data.len)
+			flags: canlog.pack_flags(ide, remote, is_fd, brs, esi, dir)
+			bus:   bus
+		}
+		if data.len > 0 {
+			unsafe { vmemcpy(&row.data[0], data.data, data.len) }
+		}
+		log.rows << row
+	}
+}
+
+// permute_rows applies a sorted index in place: position j receives rows[idx[j]], cycle by
+// cycle with one row of scratch, so the block is never duplicated.
+fn permute_rows(mut rows []canlog.Row, idx []int) {
+	mut done := []bool{len: rows.len}
+	for i in 0 .. rows.len {
+		if done[i] || idx[i] == i {
+			done[i] = true
+			continue
+		}
+		tmp := rows[i]
+		mut j := i
+		for {
+			k := idx[j]
+			done[j] = true
+			if k == i {
+				rows[j] = tmp
+				break
 			}
+			rows[j] = rows[k]
+			j = k
 		}
 	}
 }
@@ -745,25 +791,34 @@ fn bus_iface(bus_no int, group int) string {
 // mark on every pass, for as long as the replay held the recording (#299's follow-up). Keyed on
 // what bus_iface keys on, so the text is the same; only the identity is shared.
 struct Labels {
-	group string // the label a record without its own BusChannel gets: one per parse_cg
+	group_no int
 mut:
-	by_bus map[int]string
+	group  int = -1 // the label a record without its own BusChannel gets, interned on first use
+	by_bus map[int]u16
 }
 
 fn new_labels(group int) Labels {
 	return Labels{
-		group: bus_iface(-1, group)
+		group_no: group
 	}
 }
 
-fn (mut l Labels) label(bus_no int) string {
+// label is the Log's index for a record's bus — interned ON FIRST USE and cached here, so a
+// million records cost a million map lookups and a dozen interns, and a label exists in the
+// Log only if a row carries it: the group label interned eagerly named a bus for every channel
+// group, signal and error-frame groups included, and a one-bus file read as four (self-review
+// of the arena). None when the Log can name no more buses; the caller drops the record.
+fn (mut l Labels) label(bus_no int, mut log canlog.Log) ?u16 {
 	if bus_no < 0 {
-		return l.group
+		if l.group < 0 {
+			l.group = int(log.intern(bus_iface(-1, l.group_no)) or { return none })
+		}
+		return u16(l.group)
 	}
 	return l.by_bus[bus_no] or {
-		s := bus_iface(bus_no, -1)
-		l.by_bus[bus_no] = s
-		s
+		b := log.intern(bus_iface(bus_no, -1)) or { return none }
+		l.by_bus[bus_no] = b
+		b
 	}
 }
 

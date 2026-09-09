@@ -35,7 +35,11 @@ pub mut:
 	speed  f64 = 1.0 // playback rate (1.0 = recorded cadence); must be > 0
 	repeat bool // loop back to the start at the end of the recording
 mut:
-	entries []canlog.LogEntry // time-sorted
+	// The recording, and which of its rows this player plays, in play order. The Log is
+	// the arena (canlog.Log) — shared with the plan that selected from it, never copied —
+	// and sel is the time-sorted selection; every entry the player hands out is a view.
+	log canlog.Log
+	sel []u32
 	// The SOURCE recording's span, which is not the same as the span of what is left after
 	// filtering. Drop the SUT's messages and the first and last surviving frames may sit well
 	// inside the original window — a loop built on those plays a shorter recording, starts its
@@ -55,12 +59,30 @@ mut:
 // defensively (canlog/mf4 already produce sorted streams). A speed <= 0 is
 // coerced to 1.0.
 pub fn new_player(entries []canlog.LogEntry, speed f64, repeat bool) Player {
-	mut es := entries.clone()
-	es.sort(a.t_s < b.t_s)
+	log := canlog.from_entries(entries)
+	// By time, with the INDEX as the tie-break: stable where the old `sort(a.t_s < b.t_s)`
+	// was not, which is only ever a difference on equal timestamps.
+	rows := log.rows
+	mut sel := log.all()
+	sel.sort_with_compare(fn [rows] (a &u32, b &u32) int {
+		ta := rows[*a].t_s
+		tb := rows[*b].t_s
+		if ta != tb {
+			return if ta < tb { -1 } else { 1 }
+		}
+		return if *a < *b {
+			-1
+		} else if *a > *b {
+			1
+		} else {
+			0
+		}
+	})
 	return Player{
-		entries: es
-		speed:   if speed > 0 { speed } else { 1.0 }
-		repeat:  repeat
+		log:    log
+		sel:    sel
+		speed:  if speed > 0 { speed } else { 1.0 }
+		repeat: repeat
 	}
 }
 
@@ -74,10 +96,18 @@ pub fn new_player_over(entries []canlog.LogEntry, speed f64, repeat bool, t0_s f
 	// preserve. A plan built by build_multi is already in recorded order across every bus, and
 	// re-sorting it here would undo the fix in mf4's demux and the one-pass walk both, at the
 	// last step before transmission.
+	log := canlog.from_entries(entries)
+	return new_player_log(log, log.all(), speed, repeat, t0_s, end_s)
+}
+
+// new_player_log is new_player_over straight from the arena: the Log a loader or a plan built
+// and the selection to play, in play order, already sorted. Nothing is copied.
+pub fn new_player_log(log canlog.Log, sel []u32, speed f64, repeat bool, t0_s f64, end_s f64) Player {
 	mut p := Player{
-		entries: entries.clone()
-		speed:   if speed > 0 { speed } else { 1.0 }
-		repeat:  repeat
+		log:    log
+		sel:    sel
+		speed:  if speed > 0 { speed } else { 1.0 }
+		repeat: repeat
 	}
 	if end_s >= t0_s {
 		p.span_t0 = t0_s
@@ -85,6 +115,26 @@ pub fn new_player_over(entries []canlog.LogEntry, speed f64, repeat bool, t0_s f
 		p.has_span = true
 	}
 	return p
+}
+
+// entry_t is the timestamp of the i-th entry in play order — a row read, no view.
+fn (p &Player) entry_t(i int) f64 {
+	return p.log.rows[p.sel[i]].t_s
+}
+
+// entry is the i-th entry in play order, as a view.
+fn (p &Player) entry(i int) canlog.LogEntry {
+	return p.log.at(int(p.sel[i]))
+}
+
+// due_at_idx is due_at_ms for the i-th entry in play order, without building the view.
+fn (p &Player) due_at_idx(i int) f64 {
+	return p.due_at_t(p.entry_t(i))
+}
+
+// due_at_t is the schedule itself — the ONE spelling: when a frame recorded at t_s plays.
+fn (p &Player) due_at_t(t_s f64) f64 {
+	return p.base_ms + (t_s - p.t0_s()) * 1000.0 / p.speed
 }
 
 // play starts (or resumes) playback at playback-clock now_ms. From .finished
@@ -180,10 +230,10 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 	// slider calls it per drag on recordings of millions of entries, and an O(n) walk on the
 	// worker thread stalls playback for the duration and then bursts the owed frames.
 	mut lo := 0
-	mut hi := p.entries.len
+	mut hi := p.sel.len
 	for lo < hi {
 		mid := lo + (hi - lo) / 2
-		if p.entries[mid].t_s - t0 < pos {
+		if p.entry_t(mid) - t0 < pos {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -208,10 +258,10 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 // and idle between. `due` stays tick-agnostic and correct at any rate; this makes it possible
 // to be FAITHFUL as well, without picking a constant that is wrong for the next recording.
 pub fn (p Player) next_due_ms() ?f64 {
-	if p.st != .playing || p.entries.len == 0 {
+	if p.st != .playing || p.sel.len == 0 {
 		return none
 	}
-	if p.idx >= p.entries.len {
+	if p.idx >= p.sel.len {
 		if p.duration_s() <= 0 {
 			return none
 		}
@@ -223,7 +273,7 @@ pub fn (p Player) next_due_ms() ?f64 {
 		// a tail gap that has not ended yet.
 		return p.base_ms + p.duration_s() * 1000.0 / p.speed
 	}
-	return p.due_at_ms(p.entries[p.idx])
+	return p.due_at_idx(p.idx)
 }
 
 // due_at_ms is the playback-clock time at which `e` plays: the ONE spelling of the schedule.
@@ -232,7 +282,7 @@ pub fn (p Player) next_due_ms() ?f64 {
 // the entry's recorded offset), which scales by speed and clamps to the pass — at 2x it read
 // half the true lateness, and a frame due near the end of a pass had its lateness clipped.
 pub fn (p Player) due_at_ms(e canlog.LogEntry) f64 {
-	return p.base_ms + (e.t_s - p.t0_s()) * 1000.0 / p.speed
+	return p.due_at_t(e.t_s)
 }
 
 // due returns every entry whose recorded offset has elapsed by playback-clock
@@ -281,12 +331,12 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 	if p.st != .playing {
 		return
 	}
-	if p.entries.len == 0 {
+	if p.sel.len == 0 {
 		p.st = .finished
 		return
 	}
 	for {
-		if p.idx >= p.entries.len {
+		if p.idx >= p.sel.len {
 			// The pass is not over when the last RETAINED entry goes out -- it is over when the
 			// SOURCE SPAN ends. new_player_over exists precisely because those differ: a
 			// subtracted capture keeps the lap of the recording it came from, not of what
@@ -320,12 +370,11 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 			p.elapsed_ms = p.duration_s() * 1000.0 / p.speed
 			break
 		}
-		e := p.entries[p.idx]
-		due_at := p.due_at_ms(e)
+		due_at := p.due_at_idx(p.idx)
 		if due_at > now_ms + time_eps_ms {
 			break
 		}
-		out << e
+		out << p.entry(p.idx)
 		if with_due {
 			due << due_at
 		}
@@ -345,7 +394,7 @@ pub fn (p Player) finished() bool {
 
 // len returns the number of frames in the recording.
 pub fn (p Player) len() int {
-	return p.entries.len
+	return p.sel.len
 }
 
 // sent returns how many frames of the current pass have been emitted.
@@ -365,10 +414,10 @@ fn (p Player) t0_s() f64 {
 	if p.has_span {
 		return p.span_t0
 	}
-	if p.entries.len == 0 {
+	if p.sel.len == 0 {
 		return 0
 	}
-	return p.entries[0].t_s
+	return p.entry_t(0)
 }
 
 // duration_s is the recording's length in seconds (first to last frame).
@@ -376,10 +425,10 @@ pub fn (p Player) duration_s() f64 {
 	if p.has_span {
 		return p.span_end - p.span_t0
 	}
-	if p.entries.len < 2 {
+	if p.sel.len < 2 {
 		return 0
 	}
-	return p.entries.last().t_s - p.entries[0].t_s
+	return p.entry_t(p.sel.len - 1) - p.entry_t(0)
 }
 
 // position_s is the current recording position in seconds.
