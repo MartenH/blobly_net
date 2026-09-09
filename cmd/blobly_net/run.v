@@ -323,32 +323,13 @@ fn (mut app App) runtime_busy() string {
 	return app.runtime_census().why()
 }
 
-// destination_conflict asks project.destination_conflicts about the rows as they stand.
-//
-// ONE POLICY, and this is its third home: the GUI had its own mode check and its own rate check,
-// the headless runner had neither, and when the shared rule was tightened — a mode disagreement
-// is invalid whether or not a row LOOKS like a transmitter, because Quick Send, the shell, a
-// script and the diagnostic panel can all make one talk — the GUI kept the old reading and the
-// two front ends disagreed about the same project again. There is nothing here left to drift.
-fn (app &App) destination_conflict() ?string {
-	problems := app.destination_check().problems
-	if problems.len == 0 {
-		return none
-	}
-	return problems[0]
-}
-
-// destination_check is the whole answer — refusals AND the rows the alias check could not see —
-// from one driver sweep.
-//
-// A CALLER THAT ONLY WANTS THE FIRST REFUSAL THROWS THE WARNING AWAY, which is what the live-enable
-// path was doing: it asks this prospectively with the row switched on, and that is the only place
-// the whole-project answer for the new arrangement exists. A row-only check cannot replace it —
-// the unreadable row may be an ALREADY-ENABLED one sharing the transceiver with the row joining,
-// and asking about the newcomer alone says nothing about that (codex #199 r2).
-fn (app &App) destination_check() project.DestinationCheck {
-	return project.check_destinations(app.runtime_rows())
-}
+// ONE POLICY, and the GUI no longer keeps a wrapper around it. destination_check() and
+// destination_conflict() lived here so the live-enable path could ask the whole-project question
+// PROSPECTIVELY — with the row it was about to tick switched on — and that path is gone (#120):
+// the only arrangement a run has is the one Start opens. start() asks project.check_destinations
+// directly, which is where the rule itself has always lived, so the wrappers went with their
+// caller. (destination_conflict had already lost its own last caller before this; the two are
+// removed together because the second existed only to serve the first.)
 
 fn (app &App) bitrate_iface(iface string) string {
 	// SILENCE WINS across every channel on this wire, not just the first one listed. Two channel
@@ -511,6 +492,29 @@ fn (app &App) phys_for_locked(iface string) string {
 		return iface
 	}
 	return app.bitrate_iface(iface)
+}
+
+// tap_plan_locked is WHICH TRANSMIT TAPS A RUN OPENS: one per enabled non-DoIP row — an
+// `off`-mode row too, which is why this is not monitorable() — plus one per generator target,
+// which may be a wire no row mentions. ONE statement of it, because two callers ask: the pin
+// check at the top of start(), which must be about the ports that will actually be opened, and
+// the plan handed to open_taps_for_run. Written out twice, the check would have gone stale the
+// first time a tap was added for a new reason. Caller holds app.mu (phys_for_locked walks
+// app.chans).
+fn (app &App) tap_plan_locked() []TapWant {
+	mut plan := []TapWant{}
+	for ch in app.chans {
+		if ch.enabled && !ch.doip {
+			plan << TapWant{ch.name, ch.iface, app.phys_for_locked(ch.iface)}
+		}
+	}
+	for sr in app.senders {
+		tgt := sr.target()
+		if tgt != '' {
+			plan << TapWant{sr.chan, tgt, app.phys_for_locked(tgt)}
+		}
+	}
+	return plan
 }
 
 // THE ADAPTERS TO taprule: what the GUI holds, in the plain shape the rules read. Each is
@@ -703,6 +707,53 @@ fn (mut app App) start() {
 	// readings of the SAME driver answers, and asking twice lets them disagree about one row: a
 	// lookup that fails for the comparison and succeeds for the warning leaves a row neither
 	// checked nor reported, which is the gap the warning exists to close (codex #199 r1).
+	// WHAT THE OPEN PORTS ALREADY FIXED, asked here because this is now where topology is
+	// decided (#120). A Vector channel's mode, bitrate and protocol belong to the PORTS open on
+	// it, so an address that contradicts them is refused by the driver (-1004/-1005/-1011/-1012)
+	// — and the case it exists for is a DISABLED row, whose transmit taps stay open on purpose
+	// and so hold a channel no enabled row mentions (#165).
+	//
+	// This ask used to live in the Buses tick, which was the only caller. Removing the mid-run
+	// half of that tick would have removed the ask with it and left the clash to surface as a
+	// driver refusal at open time — a check silently deleted by a change that had no business
+	// touching it. It moved rather than went.
+	// ASKED ABOUT THE PORTS THIS START WILL ACTUALLY OPEN, which is not the same set as the
+	// monitorable rows. Start opens a MONITOR for each of those (rx_loop, at bitrate_iface), and a
+	// TRANSMIT TAP for every enabled non-DoIP row — an `off`-mode row included, which is
+	// monitorable() == false — and for every generator target, which may be a wire no row
+	// mentions at all and which keeps its own `@rate` verbatim (phys_for_locked). Checking the
+	// monitorable rows alone left exactly the ports #165 is about unasked: a generator on
+	// `vector:1@250000` beside an enabled `vector:1@500000` passed, and the clash then surfaced as
+	// a driver refusal whose only symptom is `no open bus`. tap_plan_locked() is the one statement
+	// of what gets a tap, so this cannot drift from what open_taps_for_run is handed.
+	//
+	// Deduped by the STRING that will be opened — that is what the driver compares — keeping the
+	// first row to ask for it, since the monitor rows go in first and name the channel an operator
+	// would look for. Collected under the lock and asked outside it: wire_pin_clash is a driver
+	// sweep, and notify() takes app.mu and is not reentrant.
+	app.mu.lock()
+	mut pin_wants := map[string]string{}
+	for ch in app.chans {
+		if ch.monitorable() {
+			want := app.bitrate_iface(ch.iface)
+			if want !in pin_wants {
+				pin_wants[want] = ch.name
+			}
+		}
+	}
+	for w in app.tap_plan_locked() {
+		if w.phys !in pin_wants {
+			pin_wants[w.phys] = if w.chan_name != '' { w.chan_name } else { w.iface }
+		}
+	}
+	app.mu.unlock()
+	for want, who in pin_wants {
+		pin := transport.wire_pin_clash(want)
+		if pin != '' {
+			app.notify('${who} ${pin} — the configuration belongs to the ports open on this channel, not to the rows; close what holds them, or change this row to match')
+			return
+		}
+	}
 	dest := project.check_destinations(app.runtime_rows())
 	if dest.problems.len > 0 {
 		// Not "one wire, one mode and one rate" any more: #167 added a third kind this check
@@ -987,18 +1038,7 @@ fn (mut app App) start() {
 	// The plan is snapshotted UNDER the lock: the readers spawned above write these rows under
 	// it, and a fast backend's reader is already doing so (codex round 5 on #257).
 	app.mu.lock()
-	mut plan := []TapWant{}
-	for ch in app.chans {
-		if ch.enabled && !ch.doip {
-			plan << TapWant{ch.name, ch.iface, app.phys_for_locked(ch.iface)}
-		}
-	}
-	for sr in app.senders {
-		tgt := sr.target()
-		if tgt != '' {
-			plan << TapWant{sr.chan, tgt, app.phys_for_locked(tgt)}
-		}
-	}
+	plan := app.tap_plan_locked()
 	app.tap_failed = map[string]bool{}
 	app.mu.unlock()
 	spawn open_taps_for_run(app, plan, start_gen)
