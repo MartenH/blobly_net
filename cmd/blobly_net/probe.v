@@ -55,8 +55,10 @@ __global (
 	// are every instrumented acquisition, not the replay's alone — can be read against them.
 	probe_emit_n        u64
 	probe_groups_failed u64
-	probe_started       bool // start() returned with the run up — what the driver waits for, never a transient
-	probe_start_refused bool // the autostart gate called start() and the project refused it
+	// What start() came to, published for the driver's poll on another thread: 0 not yet,
+	// 1 the run is up, 2 the project refused. One atomic word, not two plain bools, so the
+	// driver's read is ordered after the gate's write (codex on #299 round 11).
+	probe_start_state   u64
 	probe_out           string
 	probe_late          [5]u64 // by late_edges_ms
 	probe_late_max_us   u64
@@ -303,10 +305,11 @@ fn probe_driver(secs int) {
 	// unattended probe that waits forever on either is a run nobody can account for.
 	deadline := time.sys_mono_now() + 60 * u64(time.second)
 	for {
-		if probe_started {
+		st := stdatomic.load_u64(&probe_start_state)
+		if st == 1 {
 			break
 		}
-		if probe_start_refused {
+		if st == 2 {
 			eprintln('probe: the project refused to start; nothing to measure')
 			exit(2)
 		}

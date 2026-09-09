@@ -272,6 +272,17 @@ fn (mut app App) load_recording(path string) {
 // Channels replaying DIFFERENT files get their own group and their own clock, because timestamps
 // from two recordings are not comparable — nothing would be synchronised by pretending they are.
 fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
+	// A group that returns before it has dispatched a frame failed to run, whichever of its
+	// refusals it took — the wires that never came up, a bus that would not resolve, a
+	// conflict, an empty plan, a bus that would not open, rows disagreeing about speed —
+	// and the probe counts that ONCE here rather than at each exit, because the exits kept
+	// being found one at a time (codex on #299 rounds 10 and 11).
+	mut dispatching := false
+	defer {
+		if !dispatching {
+			probe_group_failed()
+		}
+	}
 	// A replay is part of its run, and this loop opens its taps through open_tap_full, whose
 	// bitrate_iface walks app.chans unlocked. So it holds a census slot, and the next REBUILD
 	// waits for it — Stop itself does not wait, for anything. That matters here more than
@@ -392,7 +403,6 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 		if subs_bad {
 			a.notify('replay ${label}: a simulated node on this bus could not open it — not starting')
-			probe_group_failed()
 			return
 		}
 		if all_in {
@@ -452,13 +462,11 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	a.mu.unlock()
 	if not_up.len > 0 {
 		a.notify('replay ${label}: ${not_up.join(', ')} never came up — not starting')
-		probe_group_failed()
 		return
 	}
 
 	// Decoded ONCE for the whole group, however many channels read from it.
 	all, buses := load_recording_for_replay(source) or {
-		probe_group_failed()
 		a.notify('replay ${label}: ${err}')
 		return
 	}
@@ -469,7 +477,6 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// partial plan, which is the same incomplete cross-bus picture as a destination that
 			// failed to open — convincing, and missing a wire.
 			a.notify('replay ${label}: ${ch.name}: ${err} — not starting')
-			probe_group_failed()
 			return
 		}
 		db := replay_db(a, ch)
@@ -486,7 +493,6 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 	}
 	if specs.len == 0 {
-		probe_group_failed()
 		return
 	}
 	// One verdict for the whole group, from the rule both front ends share.
@@ -502,7 +508,6 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		nowhere := player.unknown_everywhere(all_dbs, all_ex)
 		if nowhere.len > 0 {
 			a.notify('replay ${label}: no mapped database declares ${nowhere.join(', ')} — not starting')
-			probe_group_failed()
 			return
 		}
 	}
@@ -684,6 +689,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			return
 		}
 	}
+	dispatching = true
 	mut p := player.new_player_over(plan.entries, speed, repeat, plan.t0_s, plan.end_s)
 	mut sw := time.new_stopwatch()
 	mut batch := []canlog.LogEntry{cap: 256}

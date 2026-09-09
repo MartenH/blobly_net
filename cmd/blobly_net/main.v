@@ -222,17 +222,17 @@ fn main() {
 				probe_begin()
 			}
 			app.start()
-			// Two flags, because the driver polls: the gate (probe_gate) is what the
+			// Two words, because the driver polls: the gate (probe_gate) is what the
 			// counters read and goes up before start(); started is what the driver waits for
 			// and is set only once the run is KNOWN to be up — a driver that saw the armed
 			// flag's transient on a refused Start left its wait and measured nothing for 70 s
 			// (codex on #299 round 5).
 			if probe_active {
 				if app.running {
-					probe_started = true
+					stdatomic.store_u64(&probe_start_state, 1)
 				} else {
 					stdatomic.store_u64(&probe_gate, 0)
-					probe_start_refused = true
+					stdatomic.store_u64(&probe_start_state, 2)
 				}
 			}
 		}
