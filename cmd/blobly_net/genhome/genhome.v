@@ -117,30 +117,32 @@ pub fn restack(gens []Gen, removed int) []int {
 	return out
 }
 
-// renames maps each old channel name to the value that now ADDRESSES that row, for the renames a
-// commit can be TRUSTED about. `was[i]` is what row i was called before the buffers were flushed;
-// `now` is the rows as they stand after.
+// renames maps each old channel name to the INDEX of the row it named, for the renames a commit
+// can be TRUSTED about. `was[i]` is what row i was called before the buffers were flushed; `now`
+// is the rows as they stand after.
+//
+// WHICH ROW, NOT WHICH SPELLING. It used to answer with the new name, or the row's interface when
+// the commit cleared the name — and a raw spelling is exactly what must not be invented here: a
+// row renamed to nothing whose interface is ANOTHER channel's name would have had every `bus:`
+// pointing at it rewritten to that namesake, on another wire, and renaming a row to a name
+// something else already answers to makes a unique target ambiguous. How a row is spelled is
+// project.sender_bus_value's question, which checks that the value resolves back to the row; this
+// one is about identity through a commit, which is all it can see (codex round 4 on #97).
 //
 // IN ONE PASS OVER THE WHOLE COMMIT, keyed by INDEX, because names are neither unique nor stable
 // through it: applied one at a time and matched by name, a commit renaming A -> B and B -> C
 // skipped the second — B was still held, by the row that had just become B — and that row's
 // generators then answered to a name belonging to somebody else.
 //
-// TO THE ROW'S INTERFACE WHEN THE NEW NAME IS EMPTY. The name editor accepts an empty name, and
-// an unnamed row is addressed by its interface everywhere else (the generator picker does the
-// same). Skipping such a rename left the OLD name in `bus:`, where the name-first resolver no
-// longer finds it and reads it as a bare interface instead — so the generator opened some other
-// device, or nothing, rather than staying on the row the operator had merely relabelled.
-//
 // AND ONLY WHERE THE OLD NAME IDENTIFIED ONE ROW. Where two rows shared it, no rename can say
 // which a `bus:` override meant, so it is left alone for the warnings to report rather than
 // silently retargeted.
-pub fn renames(was []string, now []Row) map[string]string {
+pub fn renames(was []string, now []Row) map[string]int {
 	mut count := map[string]int{}
 	for o in was {
 		count[o]++
 	}
-	mut out := map[string]string{}
+	mut out := map[string]int{}
 	for i, o in was {
 		if i >= now.len {
 			break
@@ -148,9 +150,8 @@ pub fn renames(was []string, now []Row) map[string]string {
 		if o == '' || count[o] != 1 {
 			continue
 		}
-		addr := if now[i].name != '' { now[i].name } else { now[i].iface }
-		if addr != '' && addr != o {
-			out[o] = addr
+		if now[i].name != o {
+			out[o] = i
 		}
 	}
 	return out

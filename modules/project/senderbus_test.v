@@ -424,6 +424,17 @@ fn test_every_spelling_round_trips() {
 			name: ''
 			iface: 'inproc:CAN2'
 		},
+		// …and the arrangement round 4 named: an unnamed row whose interface is another
+		// channel's NAME, which is unaddressable and must be answered with none rather than
+		// with a spelling that goes somewhere else.
+		Channel{
+			name: ''
+			iface: 'inproc:CAN3'
+		},
+		Channel{
+			name: 'inproc:CAN3'
+			iface: 'inproc:CAN7'
+		},
 	]
 	for own in chs {
 		for target in chs {

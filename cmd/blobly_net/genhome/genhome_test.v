@@ -157,10 +157,13 @@ fn named(names []string) []Row {
 	return out
 }
 
+// FINDING 4: renames applied one at a time and matched by name skipped the second of A -> B,
+// B -> C, because B was still held — by the row that had just become B — and that row's
+// generators then answered to a name belonging to somebody else.
 fn test_a_swap_chain_renames_every_row() {
 	r := renames(['A', 'B'], named(['B', 'C']))
-	assert r['A'] == 'B'
-	assert r['B'] == 'C', 'the second rename was skipped when they were applied one at a time'
+	assert r['A'] == 0, '${r}'
+	assert r['B'] == 1, 'the second rename was skipped when they were applied one at a time'
 	assert r.len == 2
 }
 
@@ -175,17 +178,17 @@ fn test_an_unchanged_name_is_not_a_rename() {
 	assert r.len == 0, '${r}'
 }
 
-// CLEARING a name is a rename to the row's INTERFACE, which is how an unnamed row is addressed
-// everywhere else (the generator picker does the same). Skipped, the OLD name stayed in `bus:`,
-// where the name-first resolver no longer finds it and reads it as a bare interface instead — so
-// the generator opened some other device, or nothing, rather than staying on the row the operator
-// had merely relabelled.
-fn test_clearing_a_name_retargets_to_the_rows_interface() {
+// CLEARING a name is still a rename — the row is the same row, and its generators must follow it.
+// What it is now SPELLED as is deliberately NOT decided here: answering with a raw interface sent
+// every `bus: A` to a channel NAMED that interface, on another wire, so the spelling is
+// project.sender_bus_value's question and this one returns the row (codex round 4).
+fn test_clearing_a_name_is_a_rename_of_that_row() {
 	r := renames(['Powertrain'], [Row{
 		name: ''
 		iface: 'inproc:CAN1'
 	}])
-	assert r['Powertrain'] == 'inproc:CAN1', '${r}'
+	assert r['Powertrain'] == 0, '${r}'
+	assert r.len == 1
 }
 
 // …and a row that had no name to begin with cannot be the source of a rename: there is nothing
@@ -195,12 +198,10 @@ fn test_a_row_that_was_unnamed_maps_nothing() {
 	assert r.len == 0, '${r}'
 }
 
-// A row with neither a name nor an interface cannot be addressed at all, so it maps to nothing
-// rather than to the empty string.
-fn test_a_row_with_no_address_maps_nothing() {
-	r := renames(['Powertrain'], [Row{
-		name: ''
-		iface: ''
-	}])
-	assert r.len == 0, '${r}'
+// Renaming a row TO a name something else already answers to is still this row's rename. It is
+// the spelling that becomes ambiguous, which is the writer's problem and is checked there.
+fn test_renaming_onto_an_existing_name_still_identifies_the_row() {
+	r := renames(['A', 'B'], named(['C', 'C']))
+	assert r['A'] == 0, '${r}'
+	assert r['B'] == 1, '${r}'
 }

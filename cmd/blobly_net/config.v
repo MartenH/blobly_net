@@ -650,6 +650,33 @@ fn (mut app App) rebuild_preserving_senders() {
 // by the channel it is nested under, so a stale SenderRT.iface would drop all of a renamed bus's
 // generators on the next Save/Start. Also follows explicit per-sender bus overrides written in
 // the legacy interface form.
+// retarget_bus_locked writes the `bus:` of generator `si` so it goes on transmitting on `target`,
+// and reports what could not be said. Caller holds app.mu.
+//
+// EVERY WRITE OF `bus:` GOES THROUGH project.sender_bus_value — that is the point of it. It was
+// introduced for the picker in round 3 and left the other two writers spelling values themselves
+// (an address edit wrote the raw new interface, a rename wrote the raw new name), so the same
+// class of misroute survived in the places the picker no longer had: a value that happens to be
+// another channel's NAME resolves to that channel, on another wire. A policy in two places is the
+// drift this repo keeps paying for; now there is one (codex round 4 on #97).
+//
+// WHERE THE TARGET HAS NO SPELLING the override is cleared rather than left pointing elsewhere:
+// falling back to the generator's own channel is well defined and visible, and a value that
+// silently addresses a different bus is not. The caller says so after the unlock.
+fn (mut app App) retarget_bus_locked(si int, target project.Channel, rows []project.Channel) ?string {
+	own := project.Channel{
+		name:  app.senders[si].own
+		iface: app.senders[si].iface
+	}
+	if v := project.sender_bus_value(target, own, rows) {
+		app.senders[si].sender.bus = v
+		return none
+	}
+	was := app.senders[si].sender.bus
+	app.senders[si].sender.bus = ''
+	return '${app.senders[si].sender.name}: `bus: ${was}` can no longer be written — that bus has no name and its interface is already another channel\'s name; the generator falls back to ${app.senders[si].own}'
+}
+
 // rebind_senders carries row `row`'s generators to its new interface when its address is edited,
 // so the edit does not orphan them.
 //
@@ -678,30 +705,47 @@ fn (mut app App) rebind_senders(row int, old_iface string, new_iface string) {
 	if old_iface == new_iface || old_iface == '' {
 		return
 	}
+	mut said := []string{}
 	app.mu.lock()
-	defer {
-		app.mu.unlock()
-	}
-	mut rows := []project.Channel{cap: app.proj.channels.len}
+	// The rows BEFORE the edit, to ask what an override means today, and the rows AFTER it, to ask
+	// how the edited row will be spelled. Both are needed and they are different questions.
+	mut before := []project.Channel{cap: app.proj.channels.len}
 	for c in app.proj.channels {
-		rows << project.Channel{
+		before << project.Channel{
 			name:  c.name
 			iface: c.iface
 		}
 	}
+	mut after := before.clone()
+	if row >= 0 && row < after.len {
+		after[row] = project.Channel{
+			name:  after[row].name
+			iface: new_iface
+		}
+	}
 	for si in 0 .. app.senders.len {
-		if app.senders[si].sender.bus == old_iface {
+		if app.senders[si].sender.bus == old_iface && row >= 0 && row < after.len {
 			own := project.Channel{
 				name:  app.senders[si].own
 				iface: app.senders[si].iface
 			}
-			if project.resolve_sender_bus(old_iface, own, rows).kind == .iface {
-				app.senders[si].sender.bus = new_iface
+			if project.resolve_sender_bus(old_iface, own, before).kind == .iface {
+				// THE VALIDATED SPELLING of the row as it will be, not the raw new interface:
+				// writing that verbatim retargeted the generator whenever the new interface is
+				// also another channel's NAME (codex round 4 on #97).
+				if why := app.retarget_bus_locked(si, after[row], after) {
+					said << why
+				}
 			}
 		}
 		if genhome.moves_with_row(genhome.Gen{ own_idx: app.senders[si].own_idx }, row) {
 			app.senders[si].iface = new_iface
 		}
+	}
+	app.mu.unlock()
+	// notify re-takes the non-reentrant mutex, so nothing here is said before the unlock.
+	for w in said {
+		app.notify(w)
 	}
 }
 
@@ -719,19 +763,23 @@ fn (mut app App) rebind_senders(row int, old_iface string, new_iface string) {
 // it, no rename can say which the override meant, and it is left for sender_bus_warnings to
 // report rather than silently retargeted.
 fn (mut app App) rebind_sender_renames(was []string) {
+	mut said := []string{}
 	app.mu.lock()
-	defer {
-		app.mu.unlock()
-	}
 	mut now := []genhome.Row{cap: app.proj.channels.len}
+	mut rows := []project.Channel{cap: app.proj.channels.len}
 	for c in app.proj.channels {
 		now << genhome.Row{
 			name:  c.name
 			iface: c.iface
 		}
+		rows << project.Channel{
+			name:  c.name
+			iface: c.iface
+		}
 	}
-	// old name -> whatever now ADDRESSES that row: its new name, or its interface when the commit
-	// cleared the name (codex round 2 on #97).
+	// old name -> the INDEX of the row it named. What now SPELLS that row is asked of
+	// project.sender_bus_value, through retarget_bus_locked, so this write obeys the same rule as
+	// every other one (codex round 4 on #97).
 	renamed := genhome.renames(was, now)
 	for si in 0 .. app.senders.len {
 		idx := app.senders[si].own_idx
@@ -739,9 +787,17 @@ fn (mut app App) rebind_sender_renames(was []string) {
 			&& app.senders[si].own == was[idx] {
 			app.senders[si].own = app.proj.channels[idx].name
 		}
-		if b := renamed[app.senders[si].sender.bus] {
-			app.senders[si].sender.bus = b
+		if ri := renamed[app.senders[si].sender.bus] {
+			if ri >= 0 && ri < rows.len {
+				if why := app.retarget_bus_locked(si, rows[ri], rows) {
+					said << why
+				}
+			}
 		}
+	}
+	app.mu.unlock()
+	for w in said {
+		app.notify(w)
 	}
 }
 
