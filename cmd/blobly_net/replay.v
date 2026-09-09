@@ -765,7 +765,15 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// frames belong to that run and keep counting. Restart begins a run; seek scrubs one.
 			announced = false
 		}
-		batch, dues := p.due_with_schedule(now)
+		// The schedule beside the batch only when a probe will score it: without one the plain
+		// release builds no second array per batch (codex on #299 round 9).
+		mut batch := []canlog.LogEntry{}
+		mut dues := []f64{}
+		if probe_active {
+			batch, dues = p.due_with_schedule(now)
+		} else {
+			batch = p.due(now)
+		}
 		for bi, e in batch {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
 			// returns everything owed at once, and stop was checked before the batch — so a
