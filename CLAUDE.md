@@ -147,7 +147,16 @@ a legal bare target of `pcan:PCAN_USBBUS1@250000` are one physical bus that othe
 and two narrations of every transition. Its reader census is `monitorable() && (running ||
 spawning)`, not `enabled && running`: a DoIP row is marked running and keeps the default `vcan0`
 interface, so the looser test counted it as reading a CAN wire it never touches, and a row still
-SPAWNING is about to read. Measured, because these are run workers and `rebuild_from_proj` waits
+SPAWNING is about to read. WHO OWNS A READER, and when a wire stops being retried, is
+`cmd/blobly_net/txclaim` — tested, because three consecutive review rounds each found a defect in
+the previous round's fix and every one of them was in that bookkeeping rather than in the reading:
+a marker only the supervisor could clear, a first hard error mistaken for a dead adapter, markers
+outliving the run they described, and then a departing reader erasing its successor's claim. The
+GENERATION is part of the claim, which is what makes a Start reset unnecessary rather than merely
+correct, and a release counts only from the run that made the claim. A hard receive error is
+COUNTED rather than acted on — a wire may carry several taps, so the one a reader holds can be
+closed while others stay live, and no single error tells that from an adapter that has gone; three
+in a run retire the wire, said once. Measured, because these are run workers and `rebuild_from_proj` waits
 for those: with a generator aimed at a bare wire the drain is 201 ms and the census empties, where
 the supervisor sleeping a whole second in one call made it 765 ms. The verdict lands in the LOG ONLY — a wire no row mentions has no row
 to colour, and `read_destinations` folds only `enabled && running` rows, so writing a verdict onto

@@ -3,6 +3,7 @@ module main
 import os
 import time
 import project
+import txclaim
 import txhealth
 import candb
 import transport
@@ -593,12 +594,12 @@ fn tx_health_loop(app &App, gen u64) {
 		}
 		mut starts := []string{}
 		for wk in txhealth.watched(keys, reading) {
-			if a.tx_health_wires[wk] or { false } {
+			if !a.tx_health.may_claim(wk, gen) {
 				continue
 			}
 			iface := iface_of[wk] or { continue }
 			if _ := a.first_tap_on_locked(iface) {
-				a.tx_health_wires[wk] = true
+				a.tx_health.claim(wk, gen)
 				starts << iface
 			}
 		}
@@ -617,18 +618,21 @@ fn tx_health_loop(app &App, gen u64) {
 fn tx_health_reader(app &App, iface string, gen u64) {
 	mut a := unsafe { app }
 	wire := transport.wire_key(iface)
-	// Set by the fatal branch below. The marker is what stops the supervisor starting another
-	// reader, so a CLEAN exit clears it (the tap went; if it comes back the wire is watched
-	// again) and a FATAL one does not: an adapter that has gone would otherwise be reopened once
-	// a second for the rest of the run, with a notify each time. That is rx_loop's rule stated
-	// for a worker with no row — "a channel whose adapter has gone stops being part of the run
-	// until somebody says otherwise", and here the next Start is what says otherwise.
-	mut fatal := false
+	// Set by the hard-error branch below. What it means is txclaim's to decide: one failure is
+	// counted rather than acted on, because a wire may carry several taps and the one this reader
+	// holds can be closed while others stay live — a lifecycle event no single error can be told
+	// apart from a dead adapter. Three within a run retire the wire, which is rx_loop's rule
+	// ("a channel whose adapter has gone stops being part of the run") stated for a worker that
+	// has no row to be retired with.
+	mut failed := false
 	defer {
-		if !fatal {
-			a.mu.lock()
-			a.tx_health_wires.delete(wire)
-			a.mu.unlock()
+		a.mu.lock()
+		a.tx_health.release(wire, gen, failed)
+		retired := a.tx_health.retired(wire, gen)
+		a.mu.unlock()
+		if retired {
+			// SAID ONCE, on the failure that reaches the limit, rather than never or every second.
+			notify_gen(app, gen, '${iface}: no longer watched for bus health — ${txclaim.max_failures} receive failures this run')
 		}
 		release_run_worker(app)
 	}
@@ -665,17 +669,16 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			}
 		}
 		if hard != '' {
-			// IS THE ADAPTER GONE, OR IS THE TAP? drop_unwanted_taps can close this handle the
-			// moment after it was taken — the lock is released before the recv — and that close
-			// arrives here as a non-timeout error. Read as a failure it retired the wire for the
-			// whole run, so retargeting a generator back to it was never watched again, which is
-			// the LIFECYCLE event the clean exit already handles (codex round 3 on #142). Asking
-			// again separates them: a tap that is gone is a wire this run no longer transmits on.
+			// NO TAP AT ALL IS NOT A FAILURE: the wire is simply one this run no longer transmits
+			// on, and that is the ordinary end. A tap that SURVIVES proves nothing either way — a
+			// wire may carry several, so the one this reader held can have been closed while others
+			// stay live (codex round 4 on #142) — which is why what follows is counted rather than
+			// treated as an adapter that has gone.
 			a.mu.lock()
 			still := if _ := a.first_tap_on_locked(iface) { true } else { false }
 			a.mu.unlock()
 			if !still {
-				return // clean: the marker clears and the wire can be watched again
+				return
 			}
 			// ONE LAST SAMPLE, for rx_loop's reason: the counts are polled before the receive, and
 			// a receive that fails can have counted first.
@@ -691,11 +694,10 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			// the readers are still exiting, so an ungated notice reported an intentional shutdown
 			// as a failure — and a reader descheduled past the next Start would have appended the
 			// previous run's failure to the replacement run's Log (codex round 3).
-			notify_gen(app, gen, '${iface}: receive failed — ${hard}; this wire is no longer watched for bus health')
-			// EXITS AND STAYS EXITED for this run. There is no row to disable here, so the marker is
-			// what retires the wire: left set, the supervisor starts no replacement. Retrying would
-			// be the same spin one open slower, which is the lesson rx_loop already paid for.
-			fatal = true
+			notify_gen(app, gen, '${iface}: receive failed — ${hard}')
+			// EXITS, and the ledger decides whether anything starts again. Retrying the wire that
+			// just failed, here, would be the spin this branch exists to end.
+			failed = true
 			return
 		}
 		// THE PERIODIC SAMPLE RUNS ON A TIMEOUT TOO, and that is the whole point rather than a

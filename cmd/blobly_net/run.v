@@ -1055,12 +1055,6 @@ fn (mut app App) start() {
 	app.mu.lock()
 	plan := app.tap_plan_locked()
 	app.tap_failed = map[string]bool{}
-	// AND THE WIRES A HEALTH READER HAS CLAIMED OR GIVEN UP ON (#142). A reader that met a dead
-	// adapter leaves its marker set so the supervisor starts no replacement for the rest of THAT
-	// run — which is right, and which made the map outlive the run it described: the operator
-	// repaired the adapter, pressed Stop and Start, and the new supervisor still found the wire
-	// marked and skipped it for every run afterwards (codex round 3 on #142).
-	app.tx_health_wires = map[string]bool{}
 	app.mu.unlock()
 	spawn open_taps_for_run(app, plan, start_gen)
 	// AND SOMEBODY TO ASK THE WIRES NOBODY READS (#142). After the taps are on their way, since
