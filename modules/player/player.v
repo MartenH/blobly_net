@@ -242,9 +242,22 @@ pub fn (p Player) due_at_ms(e canlog.LogEntry) f64 {
 // emitted exactly once per pass regardless of tick granularity.
 pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 	mut out := []canlog.LogEntry{}
+	p.due_into(now_ms, mut out)
+	return out
+}
+
+// due_into is due() into the caller's buffer, cleared first: a worker that asks a thousand
+// times a second keeps one and allocates nothing per tick. The batch is consumed before the
+// next call; it is not kept.
+pub fn (mut p Player) due_into(now_ms f64, mut out []canlog.LogEntry) {
 	mut none_wanted := []f64{}
 	p.release(now_ms, mut out, mut none_wanted, false)
-	return out
+}
+
+// due_into_scheduled is due_with_schedule into the caller's two buffers — what a probe that
+// must not add garbage to the rate it measures asks for.
+pub fn (mut p Player) due_into_scheduled(now_ms f64, mut out []canlog.LogEntry, mut due []f64) {
+	p.release(now_ms, mut out, mut due, true)
 }
 
 // due_with_schedule is due() with the playback-clock time each entry was due at, side by
@@ -263,6 +276,8 @@ pub fn (mut p Player) due_with_schedule(now_ms f64) ([]canlog.LogEntry, []f64) {
 // when asked for, so a caller that does not score lateness (cmd/restbus) builds no second
 // array per batch (codex on #299 round 8).
 fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, with_due bool) {
+	out.clear()
+	due.clear()
 	if p.st != .playing {
 		return
 	}

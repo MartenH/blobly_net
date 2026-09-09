@@ -39,7 +39,22 @@ fn C.GC_get_gc_no() u32
 
 __global (
 	probe_active        bool
-	probe_measuring     bool // counters record: armed by the gate before start(), taken back on a refusal
+	// The GATE: 1 while counters record, armed by the gate before start(), taken back on a
+	// refusal, dropped by the driver at the deadline. An atomic word and not a bool, because
+	// the close is Dekker's problem: the driver stores "closed" and then loads the in-flight
+	// count while a writer increments the count and then loads the gate — with a plain store
+	// the driver's could sit in its store buffer past its load, and both would proceed
+	// (codex on #299 round 10). Sequentially consistent atomics on both sides close it.
+	probe_gate          u64
+	// Where the hiccup sampler's first interval begins: the boundary, set by probe_begin,
+	// so a collection during start() — inside the measurement on purpose — is in a bucket
+	// even though the sampler was asleep in its idle poll when the gate opened.
+	probe_hic_prev_ns   u64
+	probe_hic_gprev     u32
+	// Emissions counted through note_emit by EVERY emitter, so the lock-wait totals — which
+	// are every instrumented acquisition, not the replay's alone — can be read against them.
+	probe_emit_n        u64
+	probe_groups_failed u64
 	probe_started       bool // start() returned with the run up — what the driver waits for, never a transient
 	probe_start_refused bool // the autostart gate called start() and the project refused it
 	probe_out           string
@@ -109,7 +124,9 @@ fn probe_begin() {
 	probe_heap_max_mb = h
 	probe_bytes_start = u64(gc_heap_usage().total_bytes)
 	probe_begin_ns = time.sys_mono_now()
-	probe_measuring = true
+	probe_hic_prev_ns = probe_begin_ns
+	probe_hic_gprev = gc_count()
+	stdatomic.store_u64(&probe_gate, 1)
 }
 
 // probe_admit is how every counter writer enters: counted in-flight FIRST, then the
@@ -125,11 +142,28 @@ fn probe_admit() bool {
 		return false
 	}
 	stdatomic.add_u64(&probe_inflight, 1)
-	if probe_measuring {
+	if stdatomic.load_u64(&probe_gate) == 1 {
 		return true
 	}
 	stdatomic.sub_u64(&probe_inflight, 1)
 	return false
+}
+
+// probe_note_emit counts one emission through note_emit, whoever emitted it.
+fn probe_note_emit() {
+	if !probe_admit() {
+		return
+	}
+	stdatomic.add_u64(&probe_emit_n, 1)
+	probe_leave()
+}
+
+// probe_group_failed records a replay group that ended without running.
+fn probe_group_failed() {
+	if !probe_active {
+		return
+	}
+	stdatomic.add_u64(&probe_groups_failed, 1)
 }
 
 fn probe_leave() {
@@ -190,14 +224,17 @@ fn probe_hiccup_loop() {
 	mut prev := u64(0)
 	mut gprev := u32(0)
 	for {
-		if !probe_measuring {
+		if stdatomic.load_u64(&probe_gate) == 0 {
 			prev = 0
-			time.sleep(20 * time.millisecond)
+			time.sleep(5 * time.millisecond)
 			continue
 		}
 		if prev == 0 {
-			prev = time.sys_mono_now()
-			gprev = gc_count()
+			// From the BOUNDARY, not from this wake: the gate opened while this thread was
+			// in its idle poll, and start() ran meanwhile — inside the measurement, so a
+			// collection there belongs in a bucket (codex on #299 round 10).
+			prev = probe_hic_prev_ns
+			gprev = probe_hic_gprev
 			last_heap = prev
 		}
 		time.sleep(time.millisecond)
@@ -246,7 +283,10 @@ fn probe_summary() string {
 	mut s := ''
 	s += 'replay_frames=${probe_late_n} late_negative=${probe_late_unscored}\n'
 	s += 'late_lt1ms=${probe_late[0]} late_1_10ms=${probe_late[1]} late_10_100ms=${probe_late[2]} late_100_1000ms=${probe_late[3]} late_gt1000ms=${probe_late[4]} late_max_ms=${late_max:.1f}\n'
-	s += 'lockwait_n=${probe_lock_n} lockwait_avg_us=${lock_avg:.1f} lockwait_max_ms=${lock_max:.1f} lockwait_total_ms=${lock_total:.0f}\n'
+	// lockwait covers EVERY instrumented acquisition — every emitter's sends, not the replay's
+	// alone — so the emit count is printed beside it; on a project whose only emitter is
+	// the replay, emit_n equals replay_frames and lockwait_n is five per frame.
+	s += 'lockwait_n=${probe_lock_n} lockwait_avg_us=${lock_avg:.1f} lockwait_max_ms=${lock_max:.1f} lockwait_total_ms=${lock_total:.0f} emit_n=${probe_emit_n} (all emitters)\n'
 	s += 'hiccup_samples=${probe_hic_n} hic_lt20ms=${probe_hic[0]} hic_20_50=${probe_hic[1]} hic_50_200=${probe_hic[2]} hic_200_1000=${probe_hic[3]} hic_gt1000=${probe_hic[4]} hic_max_ms=${probe_hic_max_ms} hic_with_gc=${probe_hic_gc}\n'
 	s += 'measured_s=${probe_run_s:.2f} alloc_mb=${alloc:.0f} alloc_mb_per_s=${rate:.1f}\n'
 	s += 'heap_min_mb=${probe_heap_min_mb} heap_max_mb=${probe_heap_max_mb}\n'
@@ -291,7 +331,7 @@ fn probe_driver(secs int) {
 	// (round 5). Then every writer that passed the gate is waited for — a lock waiter that
 	// entered before the flag dropped adds its wait when the lock comes, which a fixed grace
 	// cannot bound (round 6) — and only then is anything read.
-	probe_measuring = false
+	stdatomic.store_u64(&probe_gate, 0)
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
 	}
@@ -304,6 +344,13 @@ fn probe_driver(secs int) {
 	// #299 round 7).
 	if probe_late_n == 0 {
 		eprintln('probe: the run replayed no frames in ${probe_run_s:.1f} s; nothing to measure (see the Log)')
+		exit(3)
+	}
+	// And a replay GROUP that failed after start() — its recording would not decode, no
+	// reader came up, its plan kept nothing — while another played: a summary of the
+	// survivors is not the measurement that was asked for (round 10).
+	if probe_groups_failed > 0 {
+		eprintln('probe: ${probe_groups_failed} replay group(s) failed to run; the summary would describe the rest (see the Log)')
 		exit(3)
 	}
 	summary := probe_summary()

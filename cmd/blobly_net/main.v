@@ -17,6 +17,7 @@ module main
 
 import os
 import time
+import sync.stdatomic
 import vgui
 
 // load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
@@ -221,7 +222,7 @@ fn main() {
 				probe_begin()
 			}
 			app.start()
-			// Two flags, because the driver polls: armed (probe_measuring) is what the
+			// Two flags, because the driver polls: the gate (probe_gate) is what the
 			// counters read and goes up before start(); started is what the driver waits for
 			// and is set only once the run is KNOWN to be up — a driver that saw the armed
 			// flag's transient on a refused Start left its wait and measured nothing for 70 s
@@ -230,7 +231,7 @@ fn main() {
 				if app.running {
 					probe_started = true
 				} else {
-					probe_measuring = false
+					stdatomic.store_u64(&probe_gate, 0)
 					probe_start_refused = true
 				}
 			}

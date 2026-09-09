@@ -392,6 +392,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 		if subs_bad {
 			a.notify('replay ${label}: a simulated node on this bus could not open it — not starting')
+			probe_group_failed()
 			return
 		}
 		if all_in {
@@ -451,11 +452,13 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	a.mu.unlock()
 	if not_up.len > 0 {
 		a.notify('replay ${label}: ${not_up.join(', ')} never came up — not starting')
+		probe_group_failed()
 		return
 	}
 
 	// Decoded ONCE for the whole group, however many channels read from it.
 	all, buses := load_recording_for_replay(source) or {
+		probe_group_failed()
 		a.notify('replay ${label}: ${err}')
 		return
 	}
@@ -466,6 +469,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// partial plan, which is the same incomplete cross-bus picture as a destination that
 			// failed to open — convincing, and missing a wire.
 			a.notify('replay ${label}: ${ch.name}: ${err} — not starting')
+			probe_group_failed()
 			return
 		}
 		db := replay_db(a, ch)
@@ -482,6 +486,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 	}
 	if specs.len == 0 {
+		probe_group_failed()
 		return
 	}
 	// One verdict for the whole group, from the rule both front ends share.
@@ -497,6 +502,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		nowhere := player.unknown_everywhere(all_dbs, all_ex)
 		if nowhere.len > 0 {
 			a.notify('replay ${label}: no mapped database declares ${nowhere.join(', ')} — not starting')
+			probe_group_failed()
 			return
 		}
 	}
@@ -680,6 +686,8 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 	mut p := player.new_player_over(plan.entries, speed, repeat, plan.t0_s, plan.end_s)
 	mut sw := time.new_stopwatch()
+	mut batch := []canlog.LogEntry{cap: 256}
+	mut dues := []f64{cap: 256}
 	mut sent := u64(0)
 	mut failed := u64(0)
 	mut first_err := ''
@@ -767,12 +775,13 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 		// The schedule beside the batch only when a probe will score it: without one the plain
 		// release builds no second array per batch (codex on #299 round 9).
-		mut batch := []canlog.LogEntry{}
-		mut dues := []f64{}
+		// Into buffers the worker keeps: a fresh batch per tick was an allocation on the
+		// thread whose collections are the stutter, and a probe that allocated its own schedule
+		// beside it was adding garbage to the very rate it measures (codex on #299 round 10).
 		if probe_active {
-			batch, dues = p.due_with_schedule(now)
+			p.due_into_scheduled(now, mut batch, mut dues)
 		} else {
-			batch = p.due(now)
+			p.due_into(now, mut batch)
 		}
 		for bi, e in batch {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()

@@ -175,6 +175,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// The wait a send pays for the lock, on the emit path: this is the acquisition the
 	// trace, the wiretap and the expiry run under, so a lock-wait figure that measured only
 	// the guard's brief lock in TapBus.send said nothing about it (codex on #299 round 2).
+	probe_note_emit()
 	pt := probe_lock_begin()
 	app.mu.lock()
 	probe_lock_end(pt)
