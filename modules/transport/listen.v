@@ -73,7 +73,10 @@ __global listen_tbl = &ListenTable{}
 // open on THIS machine, and `@` is a bitrate suffix only on a vendor address: `inproc:bench@A`
 // is a bus NAME, and cutting it there names a different hub than the one the operator marked.
 pub fn wire_key(iface string) string {
-	if vendor_iface(iface.trim_space()) {
+	// trimmed(), not trim_space(): this is the identity every send and receive resolves, and
+	// a copy here was most of its cost — trimmed hands the string back when there is nothing
+	// to trim, which is every interface a project file writes.
+	if vendor_iface(trimmed(iface)) {
 		return vendor_destination_key(iface).all_before('@')
 	}
 	// UNTRIMMED on this path, deliberately. canonical_iface does not trim either, and says why:

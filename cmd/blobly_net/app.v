@@ -50,6 +50,18 @@ mut:
 	mu    sync.Mutex
 	chans []Chan
 	trace []TraceRow
+	// The render loop's per-frame snapshot of the three above, taken under app.mu and read
+	// for the rest of the frame without it. GUI thread only. Kept, not cloned, so a frame
+	// allocates nothing to draw the trace (main.v).
+	snap_rows  []TraceRow
+	snap_trecs []TRec
+	snap_chans []Chan
+	// The grouped Trace view's aggregate and its sorted rows, kept between frames so that a
+	// repaint clears and refills them rather than building a map of ~400-byte values and
+	// copying it out, thirty times a second (panel_trace.v). GUI thread only.
+	gagg    map[string]GAgg
+	ggroups []GAgg
+	glabels map[string]GLabel
 	// The menu-bar wordmark: GL texture id + width/height ratio, 0 until load_logo ran.
 	logo_tex    u32
 	logo_aspect f32
@@ -202,13 +214,13 @@ mut:
 	// predicate it replaced scanned every message of every database on the wire, under this
 	// mutex, for every frame. Keyed by transport.destination_key.
 	verify_cover map[string]sim.Coverage
-	proj_path string
-	proj_name string
-	dark      bool = true // theme
-	ui_scale  f32  = 1.0
-	paused    bool
-	recording bool
-	rec       []canlog.LogEntry // captured while recording; written on stop
+	proj_path    string
+	proj_name    string
+	dark         bool = true // theme
+	ui_scale     f32  = 1.0
+	paused       bool
+	recording    bool
+	rec          []canlog.LogEntry // captured while recording; written on stop
 	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
 	// the simulation's are different facts, and one merged number re-collapses them in the one
 	// place a user looks first. Counted at the tap (note_emit), so every emitter counts —
@@ -515,8 +527,8 @@ mut:
 	// picker and the save path came to disagree in the first place. It is also read by the
 	// generator loop every 8 ms with app.mu held, where re-resolving per pass would allocate a
 	// channel list per sender per tick (codex round 1 on #261).
-	tgt  string // the interface to transmit on ('' = nothing resolved; the generator is skipped)
-	chan string // the channel whose frames these are ('' = no single channel owns the target)
+	tgt    string // the interface to transmit on ('' = nothing resolved; the generator is skipped)
+	chan   string // the channel whose frames these are ('' = no single channel owns the target)
 	sender project.Sender
 }
 

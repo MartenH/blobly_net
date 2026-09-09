@@ -25,9 +25,10 @@ import sync.stdatomic
 
 // Histogram edges, beside the counters they describe. Five buckets each: below the first edge,
 // between each pair, above the last. The hiccup ladder starts at 20 ms because the detector's
-// resolution is the OS scheduler quantum — on Windows Sleep(1) returns after ~16 ms unless
-// somebody has called timeBeginPeriod, and nothing in this app does — so a gap below that is
-// the platform, not a stall, and the sample count is what the platform allowed.
+// resolution is the OS scheduler quantum: 1 ms on Windows once the process has asked for it
+// (player.raise_timer_resolution, at startup — #300), 15.6 ms when it has not, or when Windows
+// 11 drops the request for a minimised window. Below 20 ms is therefore the platform, not a
+// stall, on every configuration this runs in; the sample count says what the platform allowed.
 const late_edges_ms = [1.0, 10.0, 100.0, 1000.0]!
 const hic_edges_ms = [20.0, 50.0, 200.0, 1000.0]!
 
@@ -73,6 +74,13 @@ __global (
 	probe_hic_n         u64
 	probe_heap_min_mb   u64
 	probe_heap_max_mb   u64
+	// The LIVE set: heap minus free, sampled right after a collection, which is when free
+	// bytes say what survived. That number is what a pause's LENGTH is proportional to, where
+	// the heap size is what its FREQUENCY is. Sampled from 10 s into the measurement, since
+	// the measurement opens before Start and the recording is loaded by the run.
+	probe_live_min_mb   u64
+	probe_live_max_mb   u64
+	probe_live_n        u64
 	probe_bytes_start   u64
 	probe_bytes_end     u64
 	// The measured interval: from the boundary to the endpoint, as it actually ran. The
@@ -83,7 +91,27 @@ __global (
 	// the flag dropped still adds its wait when the lock comes, which can be after any fixed
 	// grace. The driver waits for this to reach zero before it reads a counter.
 	probe_inflight      u64
+	// WHERE the bytes go: allocation attributed to a section of the per-frame path, as the
+	// difference in Boehm's total across it. Other threads allocate inside the window too, so
+	// a single sample is noise; the MEAN over hundreds of thousands is the section's own
+	// cost plus the others' rate times the section's duration, which for microsecond
+	// sections is negligible. Indexed by ProbeSec.
+	probe_sec_n         [8]u64
+	probe_sec_sum       [8]u64
 )
+
+// ProbeSec names a section of the per-frame path. The enum is the index into the two arrays
+// above and the name in the summary, so a section cannot be added to one and not the other.
+enum ProbeSec {
+	send
+	emit
+	inner
+	after
+	rx_handle
+	rx_recv
+	tick
+	render
+}
 
 fn bucket(x f64, edges [4]f64) int {
 	for i in 0 .. 4 {
@@ -98,6 +126,11 @@ fn heap_mb() u64 {
 	return u64(gc_heap_usage().heap_size) / 1048576
 }
 
+fn live_mb() u64 {
+	u := gc_heap_usage()
+	return u64(u.heap_size - u.free_bytes) / 1048576
+}
+
 // gc_count is Boehm's collection counter, or 0 where there is no Boehm to ask — inside the
 // comptime guard so a `-gc none` build links, which a bare C declaration would not.
 fn gc_count() u32 {
@@ -105,6 +138,42 @@ fn gc_count() u32 {
 		return C.GC_get_gc_no()
 	}
 	return 0
+}
+
+// alloc_total is Boehm's monotonic allocation counter, or 0 without Boehm.
+fn alloc_total() u64 {
+	return u64(gc_heap_usage().total_bytes)
+}
+
+// probe_alloc_mark opens an attribution window; probe_alloc_note closes it onto a section.
+// probe_alloc_mark opens an attribution window. It only READS the gate: a mark is not always
+// followed by its note — an RX timeout and a paused replay both `continue` past theirs — so
+// a mark that counted itself in-flight left the driver waiting forever (codex on #300).
+// The note is the writer, and it admits and leaves around its own write.
+fn probe_alloc_mark() u64 {
+	if !probe_active || stdatomic.load_u64(&probe_gate) == 0 {
+		return 0
+	}
+	return alloc_total()
+}
+
+fn probe_alloc_note(sec ProbeSec, b0 u64) {
+	if b0 == 0 {
+		return
+	}
+	if !probe_admit() {
+		return
+	}
+	mut d := alloc_total() - b0
+	// The atomic add takes an int: a window that spans more than 2 GiB of allocation (a
+	// recording loaded from the menu inside one render frame) would otherwise go in as a
+	// negative and wrap the total.
+	if d > u64(max_int) {
+		d = u64(max_int)
+	}
+	stdatomic.add_u64(&probe_sec_n[int(sec)], 1)
+	stdatomic.add_u64(&probe_sec_sum[int(sec)], int(d))
+	probe_leave()
 }
 
 fn probe_init() {
@@ -124,7 +193,7 @@ fn probe_begin() {
 	h := heap_mb()
 	probe_heap_min_mb = h
 	probe_heap_max_mb = h
-	probe_bytes_start = u64(gc_heap_usage().total_bytes)
+	probe_bytes_start = alloc_total()
 	probe_begin_ns = time.sys_mono_now()
 	probe_hic_prev_ns = probe_begin_ns
 	probe_hic_gprev = gc_count()
@@ -253,6 +322,16 @@ fn probe_hiccup_loop() {
 		if b > 0 && gnow != gprev {
 			probe_hic_gc++
 		}
+		if gnow != gprev && now - probe_begin_ns > 10 * u64(time.second) {
+			l := live_mb()
+			if probe_live_n == 0 || l < probe_live_min_mb {
+				probe_live_min_mb = l
+			}
+			if l > probe_live_max_mb {
+				probe_live_max_mb = l
+			}
+			probe_live_n++
+		}
 		prev = now
 		gprev = gnow
 		if u64(ms) > probe_hic_max_ms {
@@ -291,7 +370,20 @@ fn probe_summary() string {
 	s += 'lockwait_n=${probe_lock_n} lockwait_avg_us=${lock_avg:.1f} lockwait_max_ms=${lock_max:.1f} lockwait_total_ms=${lock_total:.0f} emit_n=${probe_emit_n} (all emitters)\n'
 	s += 'hiccup_samples=${probe_hic_n} hic_lt20ms=${probe_hic[0]} hic_20_50=${probe_hic[1]} hic_50_200=${probe_hic[2]} hic_200_1000=${probe_hic[3]} hic_gt1000=${probe_hic[4]} hic_max_ms=${probe_hic_max_ms} hic_with_gc=${probe_hic_gc}\n'
 	s += 'measured_s=${probe_run_s:.2f} alloc_mb=${alloc:.0f} alloc_mb_per_s=${rate:.1f}\n'
-	s += 'heap_min_mb=${probe_heap_min_mb} heap_max_mb=${probe_heap_max_mb}\n'
+	s += 'heap_min_mb=${probe_heap_min_mb} heap_max_mb=${probe_heap_max_mb} live_after_gc_min_mb=${probe_live_min_mb} live_after_gc_max_mb=${probe_live_max_mb} collections_sampled=${probe_live_n}\n'
+	for sec in [ProbeSec.send, .emit, .inner, .after, .rx_handle, .rx_recv, .tick, .render] {
+		i := int(sec)
+		if probe_sec_n[i] == 0 {
+			continue
+		}
+		mean := f64(probe_sec_sum[i]) / f64(probe_sec_n[i])
+		mbs := if probe_run_s > 0 {
+			f64(probe_sec_sum[i]) / 1048576.0 / probe_run_s
+		} else {
+			0.0
+		}
+		s += 'sec_${sec}: n=${probe_sec_n[i]} mean_bytes=${mean:.0f} mb_per_s=${mbs:.1f}\n'
+	}
 	return s
 }
 
@@ -338,7 +430,7 @@ fn probe_driver(secs int) {
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
 	}
-	probe_bytes_end = u64(gc_heap_usage().total_bytes)
+	probe_bytes_end = alloc_total()
 	probe_run_s = f64(time.sys_mono_now() - probe_begin_ns) / 1e9
 	// A run that replayed NOTHING is not a measurement, whatever start() said: a replay
 	// worker refuses after start() has returned — a reader that never came up, a recording

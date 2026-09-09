@@ -103,23 +103,23 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	} else {
 		frame
 	}
-	mut targets := []&InprocBus{}
+	// UNDER the registry's read lock, and through try_push: a non-blocking push either lands
+	// the frame or reports the queue full, so nothing here can wait while holding the lock —
+	// which is what lets the fan-out skip the target list a send used to build first. That
+	// list, and the `select` per target it was walked with (V builds its case arrays per
+	// statement), were ~1.2 KB of garbage per frame, on the thread whose collections are the
+	// replay stutter (#299's follow-up). Same outcome per subscriber: delivered, or dropped and
+	// counted for the one that fell behind (codex round 10 on #231).
 	rlock inproc_reg {
 		if hub := inproc_reg.hubs[b.name] {
 			for s in hub.subs {
-				if s.id != b.id {
-					targets << s
+				if s.id == b.id {
+					continue
 				}
-			}
-		}
-	}
-	for mut t in targets {
-		select {
-			t.queue <- f {}
-			else {
-				// queue full → drop (overflow), like a real bus under overload; counted for
-				// the subscriber that fell behind (codex round 10 on #231)
-				stdatomic.add_u64(&t.dropped, 1)
+				mut t := unsafe { s }
+				if t.queue.try_push(f) != .success {
+					stdatomic.add_u64(&t.dropped, 1)
+				}
 			}
 		}
 	}

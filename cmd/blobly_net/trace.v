@@ -38,6 +38,11 @@ struct TraceRow {
 	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
 	e2e string
+	// The row's group identity (gkey_fmt), formatted ONCE at push — the producer formats it
+	// anyway to count the frame, and the grouped view formatted it again for every row on
+	// every render, 2000 strings a frame (#299's follow-up). Empty on a row built without
+	// one, which gkey() formats on demand.
+	key string
 	// From a loaded recording: stamped on the FILE's clock, not the app's. A live row appended
 	// behind imported ones (Resume, no Start) is on another clock, and the cycle window has
 	// to know where one clock ends and the other begins (cyclerule; codex on #266).
@@ -96,6 +101,10 @@ struct TRec {
 // reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
 fn (mut app App) reset_trace_locked() {
 	app.trace = []
+	// The grouped view's label cache is keyed by group and only ever grows, so it is reset
+	// with the trace — Start, Clear and Load all come through here, on the GUI thread, and
+	// every key it holds describes rows that are gone.
+	app.glabels.clear()
 	app.gcount = map[string]u64{}
 	app.viewing_rec = '' // whatever replaces the rows, the view is no longer that recording
 	app.trace_run_base = app.trace_seq // idx restarts at 0 for the new measurement's rows
@@ -135,7 +144,10 @@ fn (mut app App) push_row_locked(row TraceRow) u64 {
 	// to the cap makes the copying amortised O(1) per row; the visible window is unchanged.
 	if app.trace.len > trace_cap + trace_cap / 2 {
 		drop := app.trace.len - trace_cap
-		app.trace = app.trace[drop..].clone()
+		// IN PLACE: the slice-and-clone this replaced copied the surviving 2000 rows into a
+		// fresh array every 1000 pushes, and let the ring's capacity oscillate, which the
+		// render loop's snapshot then paid for on every frame (#299's follow-up).
+		app.trace.delete_many(0, drop)
 		app.trace_base += u64(drop)
 	}
 	return seq
@@ -172,6 +184,10 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // echoes also records at emit whenever no monitor is running) and must not search for it either:
 // a scan can be outrun by traffic on a busy bus.
 fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, u64, u64) {
+	pe := probe_alloc_mark()
+	defer {
+		probe_alloc_note(.emit, pe)
+	}
 	// The wait a send pays for the lock, on the emit path: this is the acquisition the
 	// trace, the wiretap and the expiry run under, so a lock-wait figure that measured only
 	// the guard's brief lock in TapBus.send said nothing about it (codex on #299 round 2).
@@ -197,6 +213,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	mut seq := ghost_base + app.ghost_seq
 	app.ghost_seq++
 	if !app.paused {
+		k := gkey_frame(origin, chn, f)
 		seq = app.push_row_locked(TraceRow{
 			t_ms:   t_ms
 			ch:     chn
@@ -209,8 +226,9 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			rtr:    f.rtr
 			name:   name
 			data:   f.data.clone()
+			key:    k
 		})
-		app.gcount[gkey_frame(origin, chn, f)]++
+		app.gcount[k]++
 	}
 	// Counted whether or not the trace is paused, and whether or not a row was written: pausing
 	// freezes the table, it does not stop the bus.
@@ -238,7 +256,11 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// duplicate the frame and put a fast responder's answer ahead of its request.
 	//
 	// Not gated on `paused`: pausing freezes the TABLE, not the recording.
-	watching := transport.echoes_own_sends(iface) && app.monitors_locked(iface).len > 0
+	// ONCE each, under the lock they are valid under: the two were asked twice per emit, and
+	// monitors_locked resolves the wire identity of every channel each time it is asked.
+	echoes := transport.echoes_own_sends(iface)
+	watchers := if echoes { app.monitors_locked(iface) } else { []int{} }
+	watching := echoes && watchers.len > 0
 	mut recorded_here := false
 	mut rec_id := u64(0)
 	if app.recording && !watching {
@@ -251,8 +273,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		})
 		recorded_here = true
 	}
-	if transport.echoes_own_sends(iface) {
-		watchers := app.monitors_locked(iface)
+	if echoes {
 		// `recorded_here` travels with the emission: a monitor whose bus is OPEN but which has
 		// not published readiness yet is invisible to the check above, so we record at emit and
 		// its echo would then record the same frame again.

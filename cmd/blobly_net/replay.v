@@ -226,7 +226,8 @@ fn (mut app App) load_recording(path string) {
 		// REP, not BUS: these frames were never on this bench's wire. A candump log carries no
 		// origin at all, so we cannot say whether a given line was the recorder's tester, its
 		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
-		app.gcount[gkey_frame(org_rep, e.iface, f)]++
+		rep_key := gkey_frame(org_rep, e.iface, f)
+		app.gcount[rep_key]++
 		if i < first_row {
 			continue // trimmed before it could ever be drawn
 		}
@@ -235,6 +236,7 @@ fn (mut app App) load_recording(path string) {
 			t_ms:     (e.t_s - t0) * 1000.0
 			ch:       e.iface
 			origin:   org_rep
+			key:      rep_key
 			id:       f.id
 			ext:      f.extended
 			fd:       f.fd
@@ -722,6 +724,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// a dense capture at 4x meant ~20k extra takes of the app-wide mutex per second, each
 		// a chance to queue behind the GUI's per-frame ring clone, to feed a panel that
 		// repaints ~30 times a second.
+		pt := probe_alloc_mark()
 		mut now := f64(i64(sw.elapsed())) / 1e6
 		a.mu.lock()
 		stop := !a.running || a.run_gen != gen
@@ -803,9 +806,9 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// Counted with the others: the GUI holding app.mu stalls every frame HERE first, and
 			// a cadence figure that includes the stall while the wait figure omits it says the
 			// mutex is not a factor with no evidence (codex on #299 round 4).
-			pt := probe_lock_begin()
+			pl := probe_lock_begin()
 			a.mu.lock()
-			probe_lock_end(pt)
+			probe_lock_end(pl)
 			gone := !a.running || a.run_gen != gen
 			a.mu.unlock()
 			if gone {
@@ -866,13 +869,21 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			time.sleep(50 * time.millisecond)
 			continue
 		}
+		probe_alloc_note(.tick, pt)
 		nd := p.next_due_ms() or { break }
-		mut wait := nd - f64(i64(sw.elapsed())) / 1e6
+		sampled := f64(i64(sw.elapsed())) / 1e6
+		mut wait := nd - sampled
 		if wait > 50 {
 			wait = 50 // so a stopped measurement is noticed promptly
 		}
 		if wait > 0 {
-			time.sleep(i64(wait * 1_000_000) * time.nanosecond)
+			// The CAPPED deadline, not nd: handed the frame's own due time, the wait would sit
+			// out a long gap in the recording without ever checking whether the run had ended
+			// (self-review of #300).
+			// The ABSOLUTE deadline from the one sample the wait was computed from — re-sampling
+			// the clock here would add any interruption between the two reads to the wait a
+			// second time (codex on #300).
+			player.wait_until_ms(mut sw, sampled + wait)
 		}
 	}
 	// `sent`, not p.sent(): the player counts what it handed over. An FD capture on a classic

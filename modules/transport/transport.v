@@ -134,12 +134,66 @@ mut:
 // vendor_iface reports the Windows vendor backends, whose address may carry an `@<bitrate>`
 // suffix. Nothing else uses `@` as syntax — `inproc:bench@A` is a perfectly good bus NAME, and
 // treating the suffix as universal sent the emitters to a different hub than the monitor.
+// The identity predicates below are asked PER SEND and PER RECEIVE, on every wire in the
+// process: note_emit asks which rows monitor a wire by comparing wire_key over every channel,
+// the load accounting asks destination_key over every channel, the listen-only table asks
+// wire_key once more, and wiretap once per note and per claim — about 150 times per replayed
+// frame on a 13-bus project. Spelled with trim_space() and to_lower() each answer allocated a
+// throwaway string or three, ~16 MB/s of garbage inside the GUI at replay rates and a share of
+// its collector's schedule (#299's follow-up). So they are answered in place: a prefix compared
+// case-insensitively at an offset, and a string handed back UNCHANGED when there is nothing to
+// trim. Same answers, pinned by iface_prefix_test.v against the spellings they replace.
+
+// is_space is what trim_space strips, spelled once.
+fn is_space(c u8) bool {
+	return c == ` ` || c == `\n` || c == `\t` || c == `\v` || c == `\f` || c == `\r`
+}
+
+// lead_space is where trim_space would start: the index of the first byte it would keep.
+fn lead_space(s string) int {
+	mut i := 0
+	for i < s.len && is_space(s[i]) {
+		i++
+	}
+	return i
+}
+
+// prefix_fold reports whether s, read from `start`, begins with the ASCII prefix p, case folded
+// — `s[start..].to_lower().starts_with(p)` without either string.
+fn prefix_fold(s string, start int, p string) bool {
+	if s.len - start < p.len {
+		return false
+	}
+	for i in 0 .. p.len {
+		mut c := s[start + i]
+		if c >= `A` && c <= `Z` {
+			c += 32
+		}
+		if c != p[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// trimmed is trim_space() that returns its input, not a copy, when there is nothing to trim —
+// which is every interface string a project file ever writes.
+fn trimmed(s string) string {
+	if s.len == 0 {
+		return s
+	}
+	if lead_space(s) == 0 && !is_space(s[s.len - 1]) {
+		return s
+	}
+	return s.trim_space()
+}
+
 pub fn vendor_iface(iface string) bool {
 	// `cansub:` FIRST, and outside the platform guard below, because it is the one hardware
 	// backend that is not a vendor DLL: the device is an HTTP server on the end of a USB cable
 	// and the same code reaches it from Linux and Windows alike. The guard below exists because
 	// `pcan:bench` on Linux is an ordinary SocketCAN name; `cansub:` means one thing everywhere.
-	if iface.to_lower().starts_with('cansub:') {
+	if prefix_fold(iface, 0, 'cansub:') {
 		return true
 	}
 	// PLATFORM-DEPENDENT, because the dispatchers are: only open_windows.v routes `pcan:`,
@@ -148,14 +202,15 @@ pub fn vendor_iface(iface string) bool {
 	// `pcan:bench` there is an ordinary SocketCAN name, and treating it as a vendor backend
 	// would leave its frames untracked and its echoes filed as the device under test's.
 	$if windows {
-		i := iface.to_lower()
-		return i.starts_with('pcan:') || i.starts_with('kvaser:') || i.starts_with('vector:')
+		return prefix_fold(iface, 0, 'pcan:') || prefix_fold(iface, 0, 'kvaser:')
+			|| prefix_fold(iface, 0, 'vector:')
 	} $else {
 		return false
 	}
 }
 
 pub fn echoes_own_sends(iface string) bool {
+	start := lead_space(iface)
 	// VECTOR DOES, and treating the three vendor backends as one class was the bug (#139). We
 	// open SEPARATE PORTS on one XL channel — the monitor's rx_loop is not the port a replay,
 	// generator or tester transmits on — and XL delivers a frame from one port to the others on
@@ -170,7 +225,7 @@ pub fn echoes_own_sends(iface string) bool {
 	// interface string), which is what keeps a SECOND Vector channel on the same physical bus
 	// reporting the frame as RX — from there it is genuinely bus traffic somebody else's port
 	// put on the wire.
-	if iface.trim_space().to_lower().starts_with('vector:') {
+	if prefix_fold(iface, start, 'vector:') {
 		return true
 	}
 	// KVASER DOES, THE VECTOR WAY. canlib delivers a frame written on one handle to every other
@@ -183,7 +238,7 @@ pub fn echoes_own_sends(iface string) bool {
 	// also how a frame another PROCESS sends on this channel reaches us, and how canlib's
 	// virtual channels deliver at all — so it stays on, and wiretap claims what matches our
 	// own recent sends, as it does for Vector (codex round 1 on #255).
-	if iface.trim_space().to_lower().starts_with('kvaser:') {
+	if prefix_fold(iface, start, 'kvaser:') {
 		return true
 	}
 	// A CANsub does too, by a different mechanism and for the same reason. It acknowledges every
@@ -192,7 +247,7 @@ pub fn echoes_own_sends(iface string) bool {
 	// better than the send site's guess, so they are delivered rather than dropped. Answered
 	// `false`, note_emit would never register the emission and every frame this tester transmits
 	// would be filed a second time as the ECU's.
-	if iface.trim_space().to_lower().starts_with('cansub:') {
+	if prefix_fold(iface, 0, 'cansub:') {
 		return true
 	}
 	// PCAN and Kvaser do not. Matched by DISPATCHER prefix, separator included: on Linux
@@ -268,7 +323,7 @@ pub fn same_destination(a string, b string) bool {
 // — the same channel, since PCAN_USBBUS1 IS 0x51 — keyed as `81`, so two mappings onto one
 // physical bus still looked different. Whatever the backend will open is the identity.
 pub fn destination_key(iface string) string {
-	i := iface.trim_space()
+	i := trimmed(iface)
 	if !vendor_iface(i) {
 		return canonical_iface(i)
 	}
@@ -279,7 +334,7 @@ pub fn destination_key(iface string) string {
 // Callers that are opening a bus want destination_key; callers reading a project written
 // elsewhere want this.
 pub fn vendor_destination_key(iface string) string {
-	i := iface.trim_space()
+	i := trimmed(iface)
 	body := i.all_before('@')
 	kind := body.all_before(':').to_lower()
 	ch := body.all_after(':').trim_space()
