@@ -1,0 +1,20 @@
+# Line endings are settled HERE, once, rather than by whatever `core.autocrlf` each checkout
+# happens to have (#207). Without this the answer depends on the machine that last touched a
+# file, and it drifts: when #207 was filed `project.v`, `transport.v` and `CLAUDE.md` were CRLF
+# blobs and `ci.yml` was mixed within itself; by the time it was fixed all four had become LF
+# and `kvaser_shim.h` had gone the other way. Nobody did that deliberately — that is the point.
+#
+# LF, because that is what everything downstream already wants: CI is Linux, the scripts must run
+# there (a CRLF `#!/usr/bin/env bash` fails with `bash\r: No such file or directory`), `v fmt`
+# writes LF unconditionally, and MSYS2 on the Windows job reads LF fine.
+* text=auto eol=lf
+
+# Spelled out for the two that break loudly rather than quietly when they are wrong. The hooks in
+# .githooks/ are shell scripts with no extension and are covered by the `text=auto` line above — a
+# script can never trip the binary heuristic, so `auto` reaches the same answer for them.
+*.sh text eol=lf
+*.v  text eol=lf
+
+# Never touched: a CR inside these is data, not a line ending.
+*.png binary
+*.mf4 binary
