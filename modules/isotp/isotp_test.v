@@ -142,6 +142,13 @@ fn test_the_receive_deadline_covers_the_whole_pdu() {
 		assert err.msg() == 'timeout', err.msg()
 	}
 	took := time.ticks() - t0
+	// THE MARGIN HERE IS ~300 ms AND IT IS A DELIBERATE TIMING ASSERTION, unlike the read
+	// budgets above: correct is ~300 (the recv budget), renewed-per-frame is ~800 (four CFs
+	// at 200 ms), and 600 splits them. That means a runner stall over ~300 ms fails this on a
+	// CORRECT implementation -- the same class as the read deadlines, but it cannot simply be
+	// made generous, because the number IS the property. Widening it wants a slower peer (a
+	// longer CF interval moves 'broken' further out), not a bigger constant. Left as it is,
+	// and written down so the next failure here is recognised rather than re-diagnosed.
 	assert took < 600, 'recv(300) took ${took} ms: the deadline was renewed per frame'
 	time.sleep(700 * time.millisecond) // the peer finishes its abandoned transfer meanwhile
 	// AND THE CHANNEL IS REUSABLE: the abandoned transfer's late CFs must not be taken for the
@@ -461,6 +468,35 @@ fn test_a_zero_timeout_poll_is_bounded_across_stale_cfs() {
 
 // read_tx returns the next frame the channel under test put on its tx id, skipping the peer's
 // own traffic (the in-process bus delivers to every subscriber, this test's injections included).
+// THE DEADLINE ON A READ IS NOT A MEASUREMENT, and which kind of read it is decides its budget.
+//
+// A read that MUST produce a frame can only be failed by its deadline if the implementation was
+// CORRECT and something else was slow -- so that budget is a hang-breaker and nothing more, and
+// it is generous. A runner compiling V in parallel stalls a thread for hundreds of milliseconds
+// routinely, which is what took `test_block_size_stops_the_sender_until_the_next_flow_control`
+// down on `main` at a 500 ms budget: "Consecutive Frame 4 did not arrive". #291 removed the same
+// class of fragility from two sibling tests (and could not reproduce the flake either); this was
+// the third instance, so the budget stops being a per-call-site guess.
+//
+// A read that must produce NOTHING is the opposite. A stall there makes it pass when it should
+// have failed, so its budget stays SHORT: late is the safe direction, and a long one only costs
+// suite time while hiding bugs.
+//
+// Neither helper takes a timeout from its call site, which is what stops the two being confused
+// again -- the name says which promise is being tested.
+const tx_arrive_ms = 5000 // hang-breaker for a frame the implementation owes us
+const tx_silence_ms = 250 // how long "nothing may be sent" is actually observed
+
+// must_read_tx: the implementation is required to send this. Returns none only if it never did.
+fn must_read_tx(mut peer transport.Bus, tx_id u32) ?transport.CanFrame {
+	return read_tx(mut peer, tx_id, tx_arrive_ms)
+}
+
+// no_read_tx: nothing may be sent. A frame coming back IS the failure.
+fn no_read_tx(mut peer transport.Bus, tx_id u32) ?transport.CanFrame {
+	return read_tx(mut peer, tx_id, tx_silence_ms)
+}
+
 fn read_tx(mut peer transport.Bus, tx_id u32, timeout_ms int) ?transport.CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
@@ -497,7 +533,7 @@ fn test_block_size_stops_the_sender_until_the_next_flow_control() {
 		}
 		done <- 'sent'
 	}()
-	ff := read_tx(mut peer, 0x7E0, 500) or {
+	ff := must_read_tx(mut peer, 0x7E0) or {
 		assert false, 'no First Frame'
 		return
 	}
@@ -505,20 +541,20 @@ fn test_block_size_stops_the_sender_until_the_next_flow_control() {
 
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 2, 0] }) or { assert false, err.msg() }
 	for i in 0 .. 2 {
-		cf := read_tx(mut peer, 0x7E0, 500) or {
+		cf := must_read_tx(mut peer, 0x7E0) or {
 			assert false, 'Consecutive Frame ${i + 1} of the first block did not arrive'
 			return
 		}
 		assert (cf.data[0] & 0xF0) == 0x20
 	}
 	// THE BLOCK IS FULL. Nothing more may go out until another Flow Control does.
-	if extra := read_tx(mut peer, 0x7E0, 250) {
+	if extra := no_read_tx(mut peer, 0x7E0) {
 		assert false, 'sent past the block size: 0x${extra.data[0]:02X}'
 	}
 
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
 	for i in 0 .. 2 {
-		cf := read_tx(mut peer, 0x7E0, 500) or {
+		cf := must_read_tx(mut peer, 0x7E0) or {
 			assert false, 'Consecutive Frame ${i + 3} did not arrive after the second Flow Control'
 			return
 		}
@@ -550,13 +586,13 @@ fn test_a_wait_is_honoured_and_the_transfer_resumes() {
 		}
 		done <- 'sent'
 	}()
-	read_tx(mut peer, 0x7E0, 500) or {
+	must_read_tx(mut peer, 0x7E0) or {
 		assert false, 'no First Frame'
 		return
 	}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or { assert false, err.msg() }
 	// Still waiting: a WAIT is not a licence to send.
-	if extra := read_tx(mut peer, 0x7E0, 250) {
+	if extra := no_read_tx(mut peer, 0x7E0) {
 		assert false, 'sent on a WAIT: 0x${extra.data[0]:02X}'
 	}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
@@ -585,7 +621,7 @@ fn test_an_overflow_aborts_the_transfer_with_the_reason() {
 		}
 		done <- 'sent'
 	}()
-	read_tx(mut peer, 0x7E0, 500) or {
+	must_read_tx(mut peer, 0x7E0) or {
 		assert false, 'no First Frame'
 		return
 	}
@@ -593,7 +629,7 @@ fn test_an_overflow_aborts_the_transfer_with_the_reason() {
 	msg := <-done
 	assert msg.contains('overflow'), msg
 	// and nothing went out after it
-	if extra := read_tx(mut peer, 0x7E0, 200) {
+	if extra := no_read_tx(mut peer, 0x7E0) {
 		assert false, 'sent after an OVERFLOW: 0x${extra.data[0]:02X}'
 	}
 	ch.close()
@@ -660,7 +696,7 @@ fn test_stmin_separates_consecutive_frames() {
 		}
 		done <- 'sent'
 	}()
-	read_tx(mut peer, 0x7E0, 500) or {
+	must_read_tx(mut peer, 0x7E0) or {
 		assert false, 'no First Frame'
 		return
 	}
@@ -699,7 +735,7 @@ fn test_stmin_holds_across_block_boundaries() {
 		}
 		done <- 'sent'
 	}()
-	read_tx(mut peer, 0x7E0, 500) or {
+	must_read_tx(mut peer, 0x7E0) or {
 		assert false, 'no First Frame'
 		return
 	}
@@ -709,7 +745,7 @@ fn test_stmin_holds_across_block_boundaries() {
 		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
 			assert false, err.msg()
 		}
-		read_tx(mut peer, 0x7E0, 1000) or {
+		must_read_tx(mut peer, 0x7E0) or {
 			assert false, 'a Consecutive Frame did not arrive'
 			return
 		}
@@ -744,7 +780,7 @@ fn test_a_leftover_flow_control_does_not_desync_the_next_receive() {
 		}
 		done <- 'sent'
 	}()
-	read_tx(mut peer, 0x7E0, 500) or {
+	must_read_tx(mut peer, 0x7E0) or {
 		assert false, 'no First Frame'
 		return
 	}
@@ -792,7 +828,7 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 		}
 		first <- 'sent'
 	}()
-	read_tx(mut peer, 0x7E0, 500) or {
+	must_read_tx(mut peer, 0x7E0) or {
 		assert false, 'no First Frame'
 		return
 	}
@@ -827,12 +863,12 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 		}
 		second <- 'sent'
 	}()
-	ff := read_tx(mut peer, 0x7E0, 500) or {
+	ff := must_read_tx(mut peer, 0x7E0) or {
 		assert false, 'the retry sent no First Frame'
 		return
 	}
 	assert (ff.data[0] & 0xF0) == 0x10, 'expected the retry First Frame'
-	if extra := read_tx(mut peer, 0x7E0, 250) {
+	if extra := no_read_tx(mut peer, 0x7E0) {
 		assert false, 'the retry sent 0x${extra.data[0]:02X} on the PREVIOUS transfer\'s Flow Control'
 	}
 	// and it completes normally once THIS transfer is answered
