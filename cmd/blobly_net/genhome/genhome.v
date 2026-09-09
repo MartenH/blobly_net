@@ -117,18 +117,25 @@ pub fn restack(gens []Gen, removed int) []int {
 	return out
 }
 
-// renames maps each old channel name to its new one, for the renames a commit can be TRUSTED
-// about. `was[i]` is what row i was called before the buffers were flushed.
+// renames maps each old channel name to the value that now ADDRESSES that row, for the renames a
+// commit can be TRUSTED about. `was[i]` is what row i was called before the buffers were flushed;
+// `now` is the rows as they stand after.
 //
 // IN ONE PASS OVER THE WHOLE COMMIT, keyed by INDEX, because names are neither unique nor stable
 // through it: applied one at a time and matched by name, a commit renaming A -> B and B -> C
 // skipped the second — B was still held, by the row that had just become B — and that row's
 // generators then answered to a name belonging to somebody else.
 //
+// TO THE ROW'S INTERFACE WHEN THE NEW NAME IS EMPTY. The name editor accepts an empty name, and
+// an unnamed row is addressed by its interface everywhere else (the generator picker does the
+// same). Skipping such a rename left the OLD name in `bus:`, where the name-first resolver no
+// longer finds it and reads it as a bare interface instead — so the generator opened some other
+// device, or nothing, rather than staying on the row the operator had merely relabelled.
+//
 // AND ONLY WHERE THE OLD NAME IDENTIFIED ONE ROW. Where two rows shared it, no rename can say
 // which a `bus:` override meant, so it is left alone for the warnings to report rather than
 // silently retargeted.
-pub fn renames(was []string, now []string) map[string]string {
+pub fn renames(was []string, now []Row) map[string]string {
 	mut count := map[string]int{}
 	for o in was {
 		count[o]++
@@ -138,8 +145,12 @@ pub fn renames(was []string, now []string) map[string]string {
 		if i >= now.len {
 			break
 		}
-		if o != '' && now[i] != '' && o != now[i] && count[o] == 1 {
-			out[o] = now[i]
+		if o == '' || count[o] != 1 {
+			continue
+		}
+		addr := if now[i].name != '' { now[i].name } else { now[i].iface }
+		if addr != '' && addr != o {
+			out[o] = addr
 		}
 	}
 	return out

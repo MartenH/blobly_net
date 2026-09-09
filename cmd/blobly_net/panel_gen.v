@@ -716,7 +716,9 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
-		app.resolve_sender_targets_locked()
+		// ONLY THIS ENTRY. Resolving all of them here rewrote `tgt` and `chan` for generators
+		// nobody edited, racing the cyclic fire path (codex round 2 on #97).
+		app.resolve_one_sender_locked(i, app.sender_rows_locked())
 		tgt := app.senders[i].target()
 		if chan_name != '' && app.senders[i].chan == '' {
 			// The resolver could not name one — an ambiguous reference — and the operator just
@@ -816,6 +818,14 @@ fn (mut app App) fire_index(i int) {
 		...app.senders[i].sender
 		signals: app.senders[i].sender.signals.clone()
 	}
+	// THE DESTINATION IN THE SAME SNAPSHOT AS THE FRAME. These were read after the unlock, from
+	// app.senders[i], while an edit on ANOTHER generator could be rewriting them — and a V string
+	// assignment is not atomic, so a send could observe a mixed destination. Taken here, one
+	// generator's frame and the bus it goes to are decided from one consistent view, which is also
+	// what makes them agree: read separately, the DBC lookup below and the send could use two
+	// different targets (codex round 2 on #97, P1).
+	tgt := app.senders[i].tgt
+	own := app.senders[i].chan
 	n := app.gen_send_n[uid] or { 0 }
 	epoch := app.gen_state_epoch
 	wt0 := app.wave_t0_ns
@@ -831,7 +841,7 @@ fn (mut app App) fire_index(i int) {
 	if s.message != '' {
 		mut found := false
 		// resolve the message on the generator's own target bus (not globally)
-		for db in app.dbs_for(app.senders[i].target()) {
+		for db in app.dbs_for(tgt) {
 			for m in db.messages {
 				if m.name != s.message {
 					continue
@@ -866,7 +876,7 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	if app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
+	if app.tx_on_chan(own, tgt, transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data

@@ -1151,6 +1151,37 @@ fn (mut app App) resolve_sender_targets_locked() {
 	// .target(), which are the fields this function exists to fill — asking it here would resolve
 	// against a view derived from the previous answer. resolve_sender_bus wants nothing but the
 	// name and the interface of each channel, so that is what it is given.
+	rows := app.sender_rows_locked()
+	for i in 0 .. app.senders.len {
+		app.resolve_one_sender_locked(i, rows)
+	}
+}
+
+// resolve_one_sender_locked answers ONE generator's `bus:` against `rows`. Caller holds app.mu.
+//
+// It exists so a live edit writes only the entry it edited. Recomputing all of them on
+// set_sender_bus rewrote `tgt` and `chan` for every generator including ones nobody touched,
+// which is a data race against the cyclic fire path (codex round 2 on #97, P1): fire_index
+// snapshots its sender under the lock and used to read `.target()` and `.chan` after releasing
+// it, so an unrelated generator's send could observe a destination mid-assignment. Both halves
+// were fixed — the write is narrowed here, and fire_index now takes its target and owner in the
+// same snapshot as the rest.
+fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
+	if i < 0 || i >= app.senders.len {
+		return
+	}
+	own := project.Channel{
+		name:  app.senders[i].own
+		iface: app.senders[i].iface
+	}
+	r := project.resolve_sender_bus(app.senders[i].sender.bus, own, rows)
+	app.senders[i].tgt = r.iface
+	app.senders[i].chan = r.chan
+}
+
+// sender_rows_locked is the channel list the resolver is asked against — name and interface only,
+// which is all it reads. Caller holds app.mu.
+fn (app &App) sender_rows_locked() []project.Channel {
 	mut rows := []project.Channel{cap: app.chans.len}
 	for c in app.chans {
 		rows << project.Channel{
@@ -1158,15 +1189,7 @@ fn (mut app App) resolve_sender_targets_locked() {
 			iface: c.iface
 		}
 	}
-	for i in 0 .. app.senders.len {
-		own := project.Channel{
-			name:  app.senders[i].own
-			iface: app.senders[i].iface
-		}
-		r := project.resolve_sender_bus(app.senders[i].sender.bus, own, rows)
-		app.senders[i].tgt = r.iface
-		app.senders[i].chan = r.chan
-	}
+	return rows
 }
 
 // LogCache holds one output buffer joined into a single string, for the panels that render

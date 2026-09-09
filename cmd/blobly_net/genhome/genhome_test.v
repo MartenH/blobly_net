@@ -146,8 +146,19 @@ fn test_removing_a_row_takes_its_generators_and_restacks_the_rest() {
 // FINDING 4: renames applied one at a time and matched by name skipped the second of A -> B,
 // B -> C, because B was still held — by the row that had just become B — and that row's
 // generators then answered to a name belonging to somebody else.
+fn named(names []string) []Row {
+	mut out := []Row{}
+	for i, n in names {
+		out << Row{
+			name: n
+			iface: 'inproc:R${i}'
+		}
+	}
+	return out
+}
+
 fn test_a_swap_chain_renames_every_row() {
-	r := renames(['A', 'B'], ['B', 'C'])
+	r := renames(['A', 'B'], named(['B', 'C']))
 	assert r['A'] == 'B'
 	assert r['B'] == 'C', 'the second rename was skipped when they were applied one at a time'
 	assert r.len == 2
@@ -155,11 +166,41 @@ fn test_a_swap_chain_renames_every_row() {
 
 fn test_an_ambiguous_old_name_is_left_alone() {
 	// Both rows were called CAN; no rename can say which a `bus: CAN` override meant.
-	r := renames(['CAN', 'CAN'], ['Powertrain', 'Chassis'])
+	r := renames(['CAN', 'CAN'], named(['Powertrain', 'Chassis']))
 	assert r.len == 0
 }
 
-fn test_unchanged_and_empty_names_are_not_renames() {
-	r := renames(['A', '', 'C'], ['A', 'B', ''])
+fn test_an_unchanged_name_is_not_a_rename() {
+	r := renames(['A', 'B'], named(['A', 'B']))
+	assert r.len == 0, '${r}'
+}
+
+// CLEARING a name is a rename to the row's INTERFACE, which is how an unnamed row is addressed
+// everywhere else (the generator picker does the same). Skipped, the OLD name stayed in `bus:`,
+// where the name-first resolver no longer finds it and reads it as a bare interface instead — so
+// the generator opened some other device, or nothing, rather than staying on the row the operator
+// had merely relabelled.
+fn test_clearing_a_name_retargets_to_the_rows_interface() {
+	r := renames(['Powertrain'], [Row{
+		name: ''
+		iface: 'inproc:CAN1'
+	}])
+	assert r['Powertrain'] == 'inproc:CAN1', '${r}'
+}
+
+// …and a row that had no name to begin with cannot be the source of a rename: there is nothing
+// for an override to have been spelling.
+fn test_a_row_that_was_unnamed_maps_nothing() {
+	r := renames([''], named(['Powertrain']))
+	assert r.len == 0, '${r}'
+}
+
+// A row with neither a name nor an interface cannot be addressed at all, so it maps to nothing
+// rather than to the empty string.
+fn test_a_row_with_no_address_maps_nothing() {
+	r := renames(['Powertrain'], [Row{
+		name: ''
+		iface: ''
+	}])
 	assert r.len == 0, '${r}'
 }

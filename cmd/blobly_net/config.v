@@ -474,8 +474,9 @@ fn (mut app App) remove_bus(i int) {
 	}
 	app.drop_index_bound_ui()
 	app.commit_cfg()
-	removed_iface := app.proj.channels[i].iface
-	removed_name := app.proj.channels[i].name
+	// The rows as they stand BEFORE the deletion: what an override means is a question about the
+	// whole set, so it cannot be asked once the set has changed.
+	rows_before := app.proj.channels.clone()
 	app.proj.channels.delete(i)
 	app.mu.lock()
 	// THE REMOVED ROW'S OWN GENERATORS GO WITH IT, and the indices behind it restack —
@@ -505,19 +506,42 @@ fn (mut app App) remove_bus(i int) {
 		}
 		app.senders[si].own_idx = stacked[si]
 	}
-	// Drop generator bus-overrides that pointed at the removed bus, so start() won't reopen and
-	// transmit on a channel that is no longer configured (they fall back to their own channel).
-	// BOTH FORMS, because `bus:` may hold either since #97 — and only when nothing else answers
-	// to the value: another row may still be named the same or sit on the same wire, in which case
-	// the override is still meaningful and clearing it would silently retarget the generator.
-	mut still := map[string]bool{}
+	// Drop generator bus-overrides the deletion changed the MEANING of, so start() won't reopen
+	// and transmit somewhere the operator never chose (they fall back to their own channel).
+	//
+	// ASKED AS "does this still mean what it meant", not "does this spelling still appear
+	// anywhere". A raw survivor check gets it backwards where the deleted channel was NAMED X and
+	// a surviving one has the INTERFACE X: `bus: X` meant the deleted channel by the name-first
+	// rule, X is still present as an interface, so the override was kept — and resolution then
+	// fell through from name to interface and silently retargeted the generator onto the survivor
+	// (codex round 2 on #97). Resolving before and after answers the real question and needs no
+	// special case for either form.
+	mut before := []project.Channel{cap: rows_before.len}
+	for c in rows_before {
+		before << project.Channel{
+			name:  c.name
+			iface: c.iface
+		}
+	}
+	mut after := []project.Channel{cap: app.proj.channels.len}
 	for c in app.proj.channels {
-		still[c.name] = true
-		still[c.iface] = true
+		after << project.Channel{
+			name:  c.name
+			iface: c.iface
+		}
 	}
 	for si in 0 .. app.senders.len {
 		b := app.senders[si].sender.bus
-		if b != '' && (b == removed_iface || b == removed_name) && b !in still {
+		if b == '' {
+			continue
+		}
+		own := project.Channel{
+			name:  app.senders[si].own
+			iface: app.senders[si].iface
+		}
+		was_r := project.resolve_sender_bus(b, own, before)
+		now_r := project.resolve_sender_bus(b, own, after)
+		if was_r.iface != now_r.iface || was_r.chan != now_r.chan {
 			app.senders[si].sender.bus = ''
 		}
 	}
@@ -694,11 +718,16 @@ fn (mut app App) rebind_sender_renames(was []string) {
 	defer {
 		app.mu.unlock()
 	}
-	mut now := []string{cap: app.proj.channels.len}
+	mut now := []genhome.Row{cap: app.proj.channels.len}
 	for c in app.proj.channels {
-		now << c.name
+		now << genhome.Row{
+			name:  c.name
+			iface: c.iface
+		}
 	}
-	renamed := genhome.renames(was, now) // old name -> new, only where the old named ONE row
+	// old name -> whatever now ADDRESSES that row: its new name, or its interface when the commit
+	// cleared the name (codex round 2 on #97).
+	renamed := genhome.renames(was, now)
 	for si in 0 .. app.senders.len {
 		idx := app.senders[si].own_idx
 		if idx >= 0 && idx < app.proj.channels.len && idx < was.len
