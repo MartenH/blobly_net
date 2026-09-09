@@ -711,10 +711,11 @@ fn (mut app App) set_replay_exclude(ci int, exclude []string) {
 
 // set_chan_enabled_stopped is the Replay panel's enable tick: a PROJECT edit (dirty — Save
 // persists it) that also moves the runtime row, so Start needs no intervening apply. The Buses
-// panel's tick is a project edit too since #249 (it moves the runtime row first, mid-run
-// included, and then the model — panel_buses.v), and the Configure header's edits the model
-// alone and reaches the runtime through apply_edits. Three surfaces, one intent: the tick you
-// see is the tick that is saved; what differs is when the runtime learns of it.
+// panel's tick is a project edit too since #249, and since #120 it is stopped-only like this one
+// (panel_buses.v refuses while running rather than reconfiguring a live run), and the Configure
+// header's edits the model alone and reaches the runtime through apply_edits. Three surfaces, one
+// intent: the tick you see is the tick that is saved; what differs is when the runtime learns of
+// it.
 fn (mut app App) set_chan_enabled_stopped(ci int, en bool) {
 	if ci < 0 || ci >= app.proj.channels.len {
 		return
