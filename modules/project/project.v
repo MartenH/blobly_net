@@ -481,6 +481,10 @@ pub mut:
 	name     string = 'untitled'
 	version  int    = 1
 	channels []Channel
+	// What reading the file had to say about it — currently the pre-v4 `bus:` migration (#97).
+	// NOT serialised: it describes this read, not the project, and `to_yaml` names its fields
+	// explicitly so nothing here reaches the file.
+	notes []string
 }
 
 // iface_with_bitrate is the interface string a transport should actually be opened with.
@@ -723,6 +727,9 @@ pub fn parse(text string) !Project {
 			p.channels << parse_channel(c)!
 		}
 	}
+	// A pre-v4 file's `bus:` values were written under interface-first semantics; convert them
+	// once, here, so nothing downstream has to know there was ever another rule (#97).
+	p.notes = migrate_legacy_sender_buses(mut p)
 	return p
 }
 

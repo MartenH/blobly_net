@@ -134,6 +134,63 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 	}
 }
 
+// migrate_legacy_sender_buses converts a pre-v4 project's `bus:` values to what they MEANT when
+// they were written, and reports what it could not convert.
+//
+// A file older than v4 was written under the rule `bus:` IS the interface, whatever any channel is
+// called. Read name-first, such a value changes destination the moment an unrelated channel
+// happens to be NAMED like the wire it points at — silently, on load, with nothing having been
+// edited (codex round 7 on #97). The interface form is understood for exactly these files, so it
+// has to be understood as they meant it.
+//
+// MIGRATED, NOT INTERPRETED. The alternative is to carry the version into the resolver and answer
+// two ways, and this whole change is an argument against a rule with two homes: the migration
+// happens once, at the boundary where the file becomes a Project, and everything after it works
+// with one meaning. What the migration writes is the ordinary validated spelling, so the file that
+// comes back out says plainly what it now means.
+//
+// THE TEST IS sender_bus_needs_v4, which is the same question asked from the other side: the old
+// rule opened the wire `bus` verbatim, so a value whose resolved interface is no longer `bus` is
+// exactly one whose meaning the new rule changed.
+//
+// A value it cannot express is REPORTED rather than rewritten: a bare wire shadowed by a channel
+// name has no spelling in this format, and neither does a wire several rows share when one of
+// them is named like it. Those are the format's limits, and saying so beats a silent guess.
+pub fn migrate_legacy_sender_buses(mut p Project) []string {
+	mut notes := []string{}
+	if p.version >= 4 {
+		return notes
+	}
+	chs := p.channels.clone()
+	for ci in 0 .. p.channels.len {
+		for si in 0 .. p.channels[ci].senders.len {
+			b := p.channels[ci].senders[si].bus
+			if b == '' || !sender_bus_needs_v4(b, chs[ci], chs) {
+				continue
+			}
+			name := p.channels[ci].senders[si].name
+			// The wire the old rule opened is `b` itself. Which configured row owns it?
+			mut k := -1
+			for j, c in chs {
+				if c.iface == b {
+					k = if k >= 0 { -2 } else { j }
+				}
+			}
+			if k < 0 {
+				notes << 'generator ${name}: `bus: ${b}` was written as an interface, and ${b} is now a channel NAME — it targets that channel instead of the wire ${b}; no value can say the wire here'
+				continue
+			}
+			if v := sender_bus_value(chs[k], chs[ci], chs) {
+				p.channels[ci].senders[si].bus = v
+				notes << 'generator ${name}: `bus: ${b}` meant the interface ${b} in a v${p.version} file; written as `bus: ${v}`'
+			} else {
+				notes << "generator ${name}: `bus: ${b}` meant the channel on ${b}, which has no name and whose interface is already another channel's name — it cannot be spelled; name that channel"
+			}
+		}
+	}
+	return notes
+}
+
 // sender_target_moved reports whether an edit to the channel set changed WHERE a `bus:` override
 // sends — given what it resolved to before the edit and what it resolves to after.
 //

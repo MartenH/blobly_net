@@ -78,11 +78,16 @@ fn main() {
 		proj_path = chosen
 	}
 
+	// The pre-v4 `bus:` migration says what it converted; stderr here, as the database reader's
+	// notes are (#97).
 	proj := project.load(proj_path) or {
 		eprintln('cannot load project ${proj_path}: ${err}')
 		exit(2)
 	}
 	println('project: ${proj.name}  (${proj_path})')
+	for n in proj.notes {
+		eprintln('${proj_path}: ${n}')
+	}
 
 	// Build per-channel DBC catalogs + bring the simulation up on every enabled
 	// channel that hosts simulated ECUs (exactly like the GUI's Start).

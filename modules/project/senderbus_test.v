@@ -546,3 +546,146 @@ fn test_a_target_that_pointed_nowhere_never_moves() {
 	assert !sender_target_moved(sb(.ambiguous, '', ''), sb(.named, 'A', 'inproc:X'))
 	assert !sender_target_moved(sb(.ambiguous, '', ''), sb(.ambiguous, '', ''))
 }
+
+// ==== the pre-v4 migration ============================================================
+
+// A v2 file wrote `bus:` as an INTERFACE. Read name-first, a value pointing at the wire `X`
+// changes destination the moment an unrelated channel happens to be NAMED X — silently, on load,
+// with nothing having been edited. So it is converted to what it meant, once, at the boundary.
+fn test_a_legacy_interface_value_shadowed_by_a_name_is_migrated() {
+	text := "project:
+  name: legacy
+  version: 2
+buses:
+" + "  - name: Powertrain
+    adapter: virtual
+    address: CAN1
+" + "  - name: inproc:CAN1
+    adapter: virtual
+    address: CAN9
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: inproc:CAN1
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.channels[0].iface == 'inproc:CAN1'
+	assert p.channels[1].name == 'inproc:CAN1'
+	g := p.channels[1].senders[0]
+	assert g.bus == 'Powertrain', 'it meant the WIRE inproc:CAN1, which Powertrain owns; got `${g.bus}`'
+	r := resolve_sender_bus(g.bus, p.channels[1], p.channels)
+	assert r.iface == 'inproc:CAN1', 'and it still opens that wire'
+	assert p.notes.len == 1, '${p.notes}'
+	assert p.notes[0].contains('was written as an interface') || p.notes[0].contains('meant the interface'), p.notes[0]
+}
+
+// An ordinary legacy value that nothing shadows is left exactly as it was: the migration must not
+// churn files it has no reason to touch.
+fn test_an_unshadowed_legacy_value_is_untouched() {
+	text := "project:
+  name: legacy
+  version: 2
+buses:
+" + "  - name: Powertrain
+    adapter: virtual
+    address: CAN1
+" + "  - name: Body
+    adapter: virtual
+    address: CAN2
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: inproc:CAN1
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.channels[1].senders[0].bus == 'inproc:CAN1'
+	assert p.notes.len == 0, '${p.notes}'
+}
+
+// A v4 file already means what it says, so nothing is converted.
+fn test_a_v4_file_is_not_migrated() {
+	text := "project:
+  name: current
+  version: 4
+buses:
+" + "  - name: Powertrain
+    adapter: virtual
+    address: CAN1
+" + "  - name: inproc:CAN1
+    adapter: virtual
+    address: CAN9
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: inproc:CAN1
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.channels[1].senders[0].bus == 'inproc:CAN1', 'v4 means the NAME, and it says so'
+	assert p.notes.len == 0, '${p.notes}'
+}
+
+// What the format cannot express is REPORTED, not guessed: the old value named a bare wire, and a
+// channel is now named that, so no value can say the wire.
+fn test_a_legacy_bare_wire_shadowed_by_a_name_is_reported() {
+	text := "project:
+  name: legacy
+  version: 2
+buses:
+" + "  - name: vcan7
+    adapter: virtual
+    address: CAN9
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: vcan7
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.notes.len == 1, '${p.notes}'
+	assert p.notes[0].contains('no value can say the wire'), p.notes[0]
+}
+
+// A uniquely configured UNNAMED row resolves to `.iface` with an EMPTY owner — one row, which
+// simply has no name. Anything deciding "was a single row meant" must read the KIND: a guard on
+// the owner being non-empty treats this as "no single target", and the GUI then cleared such an
+// override instead of following the row when its address was edited (codex round 7 on #97).
+fn test_a_unique_unnamed_row_is_one_row_with_an_empty_owner() {
+	chs := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: ''
+			iface: 'inproc:CAN2'
+		},
+	]
+	r := resolve_sender_bus('inproc:CAN2', chs[0], chs)
+	assert r.kind == .iface, 'one row answers to it'
+	assert r.chan == '', 'and that row has no name — which is not the same as no row'
+	assert r.iface == 'inproc:CAN2'
+	// the distinction the guard has to make
+	amb := resolve_sender_bus('inproc:CAN1', chs[1], [
+		Channel{
+			name: 'A'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'B'
+			iface: 'inproc:CAN1'
+		},
+	])
+	assert amb.kind == .ambiguous
+	assert amb.chan == '', 'the same empty owner, meaning something completely different'
+}

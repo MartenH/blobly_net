@@ -690,8 +690,16 @@ fn (mut app App) follow_channel_edits_locked(before []project.Channel, row_map [
 		if !project.sender_target_moved(was_r, now_r) {
 			continue
 		}
+		// WHICH ROW DID IT MEAN? By the resolution's KIND, because that is what says whether one
+		// row was meant — not whether the owner has a NAME. Guarding on a non-empty owner treated a
+		// uniquely configured UNNAMED row as "no single target", so editing that row's address
+		// cleared the override instead of following it: the one case round 6 taught this function
+		// to detect, and then could not act on (codex round 7 on #97).
+		//
+		// `.named` and `.iface` are one row by construction; `.ambiguous` is several, `.bare` is
+		// none, and `.own` cannot occur here because an empty `bus:` was skipped above.
 		mut k := -1
-		if was_r.chan != '' {
+		if was_r.kind == .named || was_r.kind == .iface {
 			for j, c in before {
 				if c.name == was_r.chan && c.iface == was_r.iface {
 					k = if k >= 0 { -2 } else { j }

@@ -783,6 +783,13 @@ fn (mut app App) load_project(path string) {
 		app.elog('${path}: ${note}')
 		app.notify('${note} — saving from here would drop them')
 	}
+	// What reading the file had to say — the pre-v4 `bus:` migration (#97). Said on the Open path
+	// for the same reason the version gate is: a value whose meaning this build had to convert, or
+	// could not, is exactly what an operator needs told BEFORE a Save writes the result back.
+	for n in proj.notes {
+		app.elog('${path}: ${n}')
+		app.notify(n)
+	}
 	app.set_project(proj, path)
 	// Convenience: if a system.toml sits next to the project (the system_full layout),
 	// load it into the System panel and open it — so the per-ECU dashboard is one click
