@@ -134,6 +134,39 @@ pub fn resolve_sender_bus(bus string, own Channel, chs []Channel) SenderBus {
 	}
 }
 
+// sender_target_moved reports whether an edit to the channel set changed WHERE a `bus:` override
+// sends — given what it resolved to before the edit and what it resolves to after.
+//
+// THE ONE COMPARISON EVERY EDIT PATH ASKS, and it lives here because three review rounds landed on
+// it and each wanted a different answer for a case the others had not considered. Written inline
+// in the GUI it could not be tested; written here every one of those cases is a line in
+// senderbus_test.v.
+//
+// The rule is that an override chose A WIRE, AND that a configured row owns it:
+//
+//   - a different wire is a move, whatever the spelling did
+//   - the SAME wire is a move only if it has LOST its configured row (`.bare`), because the
+//     string outlives the row: deleting `name: vcan1, iface: vcan1` leaves `bus: vcan1`
+//     resolving to the same characters as a bare wire, and Start would reopen the bus the
+//     operator just removed; an unnamed row addressed by its interface, then re-addressed,
+//     leaves the value on the wire the row abandoned
+//   - GAINING an owner is not a move: the same wire still carries the same frames, and a newly
+//     added row that comes to own it is no reason to break a working override
+//   - a change of OWNER on one wire is not a move either — two same-named rows collapsing to one
+//     leaves the destination exactly where it was, and that is the ambiguity resolving rather
+//     than a retarget
+//   - and a value that pointed NOWHERE (`.ambiguous` across two wires) is never "moved": it had
+//     no destination to preserve, so anything that happens to it is an improvement
+pub fn sender_target_moved(was SenderBus, now SenderBus) bool {
+	if was.iface == '' {
+		return false
+	}
+	if was.iface != now.iface {
+		return true
+	}
+	return was.kind != .bare && now.kind == .bare
+}
+
 // sender_bus_value is what to WRITE in `bus:` so a generator nested under `own` transmits on
 // `target` — or none when this project cannot express that at all.
 //

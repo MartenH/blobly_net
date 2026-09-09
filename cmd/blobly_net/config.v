@@ -205,6 +205,21 @@ fn (mut app App) add_bus() {
 // dialog's Add-ticked, and the quick-add buttons). The name defaults to the address.
 fn (mut app App) add_bus_spec(adapter string, address string) {
 	app.commit_cfg()
+	// APPENDING A ROW IS AN EDIT TO THE NAMESPACE, so the same reconciliation the other edits get
+	// applies here (codex round 6 on #97). `unique_bus_name` keeps the new name clear of existing
+	// NAMES, and nothing kept it clear of existing INTERFACES: add a virtual row defaulting to
+	// `CAN2` beside a socketcan row already on `CAN2`, and every legacy `bus: CAN2` moved from the
+	// SocketCAN wire to `inproc:CAN2` — by the name-first rule, with no writer involved. Captured
+	// before the append; commit_cfg's own reconciliation has already run and cannot see this.
+	mut before := []project.Channel{cap: app.proj.channels.len}
+	mut row_map := []int{cap: app.proj.channels.len}
+	for j, c in app.proj.channels {
+		before << project.Channel{
+			name:  c.name
+			iface: c.iface
+		}
+		row_map << j // the new row goes on the end; no existing row moves
+	}
 	base := if address != '' { address } else { adapter }
 	app.proj.channels << project.Channel{
 		name:    app.unique_bus_name(base)
@@ -216,6 +231,12 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 		// Normal unless the adapter rule says otherwise — project.adapter_starts_silent, which
 		// answers false for every adapter since 2026-08-29 and says why.
 		listen_only: project.adapter_starts_silent(adapter)
+	}
+	app.mu.lock()
+	said := app.follow_channel_edits_locked(before, row_map)
+	app.mu.unlock()
+	for w in said {
+		app.notify(w)
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
@@ -662,8 +683,12 @@ fn (mut app App) follow_channel_edits_locked(before []project.Channel, row_map [
 			iface: app.senders[si].iface
 		}
 		was_r := project.resolve_sender_bus(b, own, before)
-		if was_r.iface == project.resolve_sender_bus(b, own, after).iface {
-			continue // the wire did not move; the value still means what it meant
+		now_r := project.resolve_sender_bus(b, own, after)
+		// project.sender_target_moved is the comparison, tested there: three review rounds each
+		// wanted a different answer for a case the others had not considered, so it is stated once
+		// where every one of them is a line in a test.
+		if !project.sender_target_moved(was_r, now_r) {
+			continue
 		}
 		mut k := -1
 		if was_r.chan != '' {

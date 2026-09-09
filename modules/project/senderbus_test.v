@@ -491,3 +491,58 @@ fn test_a_rename_can_shadow_an_untouched_interface_reference() {
 	assert v == 'Powertrain'
 	assert resolve_sender_bus(v, after[1], after).iface == 'inproc:CAN1'
 }
+
+// ==== did an edit move where an override sends? =======================================
+//
+// One line per case that a review round argued about, because each round wanted a different
+// answer for a case the others had not considered.
+// `owner`, not `chan`: `chan` is a V keyword, so a parameter of that name is a parse error where
+// the identically named STRUCT FIELD is fine. Same trap as the `shared()` helper in
+// cmd/blobly_net/genhome.
+fn sb(kind SenderBusKind, owner string, iface string) SenderBus {
+	return SenderBus{
+		kind: kind
+		chan: owner
+		iface: iface
+	}
+}
+
+fn test_an_unchanged_target_has_not_moved() {
+	assert !sender_target_moved(sb(.named, 'A', 'inproc:X'), sb(.named, 'A', 'inproc:X'))
+}
+
+fn test_a_different_wire_is_a_move() {
+	assert sender_target_moved(sb(.iface, 'A', 'inproc:X'), sb(.named, 'B', 'inproc:Y'))
+}
+
+// ROUND 3: two same-named rows on one wire collapse to one when a duplicate is deleted. The
+// destination is exactly where it was; the ambiguity merely resolved.
+fn test_ownership_becoming_resolvable_is_not_a_move() {
+	assert !sender_target_moved(sb(.ambiguous, '', 'inproc:X'), sb(.named, 'A', 'inproc:X'))
+}
+
+// ROUND 6: deleting `name: vcan1, iface: vcan1` — the ordinary SocketCAN shape — leaves
+// `bus: vcan1` resolving to the same characters as a BARE wire. Same string, and Start would
+// reopen the bus the operator just removed.
+fn test_a_wire_that_lost_its_row_is_a_move_even_at_the_same_spelling() {
+	assert sender_target_moved(sb(.named, 'vcan1', 'vcan1'), sb(.bare, '', 'vcan1'))
+}
+
+// ROUND 6: an unnamed row addressed by its unique interface, whose address is then edited. The
+// value still names that wire — the wire the row abandoned.
+fn test_an_abandoned_wire_is_a_move() {
+	assert sender_target_moved(sb(.iface, 'Unnamed', 'inproc:X'), sb(.bare, '', 'inproc:X'))
+}
+
+// …and the other direction is NOT: a bare target a newly added row comes to own is the same wire
+// carrying the same frames, and breaking a working override for that would be gratuitous.
+fn test_gaining_an_owner_is_not_a_move() {
+	assert !sender_target_moved(sb(.bare, '', 'inproc:X'), sb(.named, 'New', 'inproc:X'))
+}
+
+// A value that pointed nowhere had no destination to preserve, so nothing that happens to it is
+// a move — including it becoming valid.
+fn test_a_target_that_pointed_nowhere_never_moves() {
+	assert !sender_target_moved(sb(.ambiguous, '', ''), sb(.named, 'A', 'inproc:X'))
+	assert !sender_target_moved(sb(.ambiguous, '', ''), sb(.ambiguous, '', ''))
+}
