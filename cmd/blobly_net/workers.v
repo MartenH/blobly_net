@@ -552,6 +552,7 @@ fn tx_health_loop(app &App, gen u64) {
 		release_run_worker(app)
 	}
 	mut a := unsafe { app }
+	mut next_census := time.ticks()
 	for a.running && a.run_gen == gen {
 		// SLICED, NOT SLEPT. This is a RUN WORKER, and rebuild_from_proj waits for those before it
 		// replaces the runtime view (#286) — bounded at drain_budget_ms = 1500, of which a Stop
@@ -561,6 +562,14 @@ fn tx_health_loop(app &App, gen u64) {
 		if !a.running || a.run_gen != gen {
 			break
 		}
+		// ONE CENSUS A SECOND, not one per wake-up. The slicing above is for a prompt Stop, and
+		// running the census on it too meant a reader that failed immediately was restarted every
+		// 100 ms — so three failures retired a briefly unavailable adapter in 200-300 ms rather
+		// than over the three seconds the counting is meant to observe (codex round 6 on #142).
+		if time.ticks() < next_census {
+			continue
+		}
+		next_census = time.ticks() + 1000
 		a.mu.lock()
 		mut keys := []string{}
 		mut iface_of := map[string]string{}
@@ -597,11 +606,11 @@ fn tx_health_loop(app &App, gen u64) {
 			if !a.tx_health.may_claim(wk, gen) {
 				continue
 			}
+			// `keys` came from tx_buses, so a wire that reached here has a tap by construction;
+			// asking a second time was a leftover from when the reader borrowed one.
 			iface := iface_of[wk] or { continue }
-			if _ := a.first_tap_on_locked(iface) {
-				a.tx_health.claim(wk, gen)
-				starts << iface
-			}
+			a.tx_health.claim(wk, gen)
+			starts << iface
 		}
 		for _ in starts {
 			a.reserve_run_worker_locked() // released by the reader's own defer
@@ -613,17 +622,32 @@ fn tx_health_loop(app &App, gen u64) {
 	}
 }
 
-// tx_health_reader drains one transmit-only wire so its health ladder advances, and narrates what
-// it finds. See tx_health_loop for why this reads rather than polls.
+// tx_health_reader watches one transmit-only wire: it opens ITS OWN receive handle, drains it so
+// the health ladder advances, and narrates what it finds. See tx_health_loop for why this reads
+// rather than polls.
+//
+// ITS OWN HANDLE, NOT A BORROWED TAP. Three separate defects came from reading through whichever
+// transmit tap happened to be on the wire (codex round 6 on #142), and they are all the same
+// mistake: a TRANSMIT tap is not a receive handle. Nobody drains it, so its queue has been
+// accumulating since the run began — attach to one mid-run at bus rate and the reader is
+// permanently behind, or the error frame it wants was dropped long ago. Which tap you get is
+// arbitrary, so a reader restarted after a failure could inherit a different one. And the
+// baselines a reader compares against belong to a handle, so switching handles invents
+// transitions that never happened.
+//
+// Opening here fixes all three at the root: the queue starts empty at a moment this reader
+// chose, the handle is stable for its whole life, and `unknown` health with zero counters is then
+// the TRUE baseline for it rather than a guess about somebody else's. That is also what rx_loop
+// does for a monitored wire, which is the model — this is the same worker with the row
+// bookkeeping removed. A second handle on the wire is what the transport layer already expects:
+// `shared_open` gives a second opener its own receive cursor over one ingress ring (#221), and
+// SocketCAN, Vector and Kvaser fan out natively.
 fn tx_health_reader(app &App, iface string, gen u64) {
 	mut a := unsafe { app }
 	wire := transport.wire_key(iface)
-	// Set by the hard-error branch below. What it means is txclaim's to decide: one failure is
-	// counted rather than acted on, because a wire may carry several taps and the one this reader
-	// holds can be closed while others stay live — a lifecycle event no single error can be told
-	// apart from a dead adapter. Three within a run retire the wire, which is rx_loop's rule
-	// ("a channel whose adapter has gone stops being part of the run") stated for a worker that
-	// has no row to be retired with.
+	// Set below when a receive or the open fails hard. What it MEANS is txclaim's to decide: one
+	// failure is counted rather than acted on, because it cannot be told from an adapter that is
+	// resetting; three within a run retire the wire.
 	mut failed := false
 	defer {
 		a.mu.lock()
@@ -632,26 +656,42 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		a.mu.unlock()
 		if retired {
 			// SAID ONCE, on the failure that reaches the limit, rather than never or every second.
-			notify_gen(app, gen, '${iface}: no longer watched for bus health — ${txclaim.max_failures} receive failures this run')
+			notify_gen(app, gen, '${iface}: no longer watched for bus health \u2014 ${txclaim.max_failures} receive failures this run')
 		}
 		release_run_worker(app)
 	}
+	a.mu.lock()
+	phys := a.phys_for_locked(iface)
+	a.mu.unlock()
+	mut b := transport.open(phys) or {
+		// Counted like a receive failure, so a wire that cannot be opened at all is retried twice
+		// and then left alone rather than reopened once a second for the rest of the run.
+		failed = true
+		notify_gen(app, gen, '${iface}: cannot watch bus health \u2014 ${err}')
+		return
+	}
 	mut last := transport.BusHealth.unknown
 	mut last_diag := transport.BusDiagnostics{}
+	defer {
+		// THE LAST SAMPLE, ON EVERY EXIT INCLUDING A CLEAN STOP. rx_loop takes one for a reason
+		// that applies harder here: this wire has no Buses row and no other reader, so counters
+		// moved since the previous poll are otherwise absent from the Log AND the UI \u2014 gone with
+		// the handle (codex round 6). Registered after the open, so it runs before the release
+		// above and only when there is a handle to ask.
+		final := b.diagnostics()
+		if final != last_diag {
+			a.mu.lock()
+			if a.run_gen == gen {
+				a.log_append_locked(diag_msg(iface, last_diag, final))
+			}
+			a.mu.unlock()
+		}
+		b.close()
+	}
 	mut next := time.ticks()
 	for a.running && a.run_gen == gen {
-		a.mu.lock()
-		mut b := a.first_tap_on_locked(iface) or {
-			// The tap has gone: the wire is no longer one this run transmits on.
-			a.mu.unlock()
-			return
-		}
-		a.mu.unlock()
-		// AT THE WIRE'S OWN RATE. The same 200 ms rx_loop uses, which is also what bounds how long
-		// a Stop waits for this worker — measured at ~201 ms for the whole drain, unchanged by
-		// these readers because rx_loop already sets that floor.
 		// A TIMEOUT IS THE NORMAL ANSWER; anything else is the adapter in trouble, and swallowing
-		// both retried the failing call as fast as it could return — a core spun on an unplugged
+		// both retried the failing call as fast as it could return \u2014 a core spun on an unplugged
 		// adapter while nothing advanced at all (codex round 2). The same rule rx_loop applies.
 		mut hard := ''
 		b.recv(200) or {
@@ -660,63 +700,32 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			}
 		}
 		if hard != '' {
-			// NO TAP AT ALL IS NOT A FAILURE: the wire is simply one this run no longer transmits
-			// on, and that is the ordinary end. A tap that SURVIVES proves nothing either way — a
-			// wire may carry several, so the one this reader held can have been closed while others
-			// stay live (codex round 4 on #142) — which is why what follows is counted rather than
-			// treated as an adapter that has gone.
-			a.mu.lock()
-			still := if _ := a.first_tap_on_locked(iface) { true } else { false }
-			// And whether anybody else is narrating this wire, on the same footing as the
-			// periodic sample below: RUNNING, not merely spawning.
-			mut held_by_reader := false
-			for c in a.chans {
-				if c.monitorable() && c.running && transport.wire_key(c.iface) == wire {
-					held_by_reader = true
-					break
-				}
-			}
-			a.mu.unlock()
-			if !still {
-				return
-			}
-			// ONE LAST SAMPLE, for rx_loop's reason: the counts are polled before the receive, and
-			// a receive that fails can have counted first.
-			final := b.diagnostics()
-			if final != last_diag && !held_by_reader {
-				a.mu.lock()
-				if a.running && a.run_gen == gen {
-					a.log_append_locked(diag_msg(iface, last_diag, final))
-				}
-				a.mu.unlock()
-			}
-			// GENERATION-GATED, like every other worker's late word: Stop closes these taps while
-			// the readers are still exiting, so an ungated notice reported an intentional shutdown
-			// as a failure — and a reader descheduled past the next Start would have appended the
+			// GENERATION-GATED, like every other worker's late word: Stop closes things while the
+			// readers are still exiting, so an ungated notice reported an intentional shutdown as a
+			// failure \u2014 and a reader descheduled past the next Start would have appended the
 			// previous run's failure to the replacement run's Log (codex round 3).
-			notify_gen(app, gen, '${iface}: receive failed — ${hard}')
-			// EXITS, and the ledger decides whether anything starts again. Retrying the wire that
-			// just failed, here, would be the spin this branch exists to end.
+			notify_gen(app, gen, '${iface}: receive failed \u2014 ${hard}')
 			failed = true
 			return
 		}
 		// THE PERIODIC SAMPLE RUNS ON A TIMEOUT TOO, and that is the whole point rather than a
 		// tidy-up: PCAN and Kvaser answer health through an explicit status call and Vector's
-		// health() issues the chip-state request itself, so the sample does not need a frame — and
+		// health() issues the chip-state request itself, so the sample does not need a frame \u2014 and
 		// a BUS-OFF controller produces no frames at all. Skipping the sample whenever the receive
 		// timed out meant the one condition this reader exists to report was the one it could never
-		// reach (codex round 3 on #142). rx_loop polls on the same footing.
+		// reach (codex round 3). rx_loop polls on the same footing.
 		if time.ticks() < next {
 			continue
 		}
+		next = time.ticks() + 1000
 		// IS ANYBODY ELSE TELLING THIS WIRE'S STORY? Asked AFTER the receive, because the answer
 		// can change during those 200 ms, and asked about a reader that is actually RUNNING rather
 		// than one that is merely SPAWNING. A spawning row has not opened its socket yet, so during
-		// that window nobody else can see anything — handing the narration over then meant an error
+		// that window nobody else can see anything \u2014 handing the narration over then meant an error
 		// frame arriving in it was consumed here and reported by no one, and the new socket starts
-		// from `hstate == .unknown` and cannot recover an event it was not open for (codex round 5
-		// on #142). The SUPERVISOR still counts a spawning row as a reader, which is a different
-		// question: whether to start a watcher at all, not who narrates once one exists.
+		// from `hstate == .unknown` and cannot recover an event it was not open for (codex round 5).
+		// The SUPERVISOR still counts a spawning row as a reader, which is a different question:
+		// whether to start a watcher at all, not who narrates once one exists.
 		a.mu.lock()
 		mut owned := false
 		for c in a.chans {
@@ -726,13 +735,9 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			}
 		}
 		a.mu.unlock()
-		next = time.ticks() + 1000
-		// WHAT IS NEITHER A FRAME NOR A RUNG (#213) — dropped frames, controller errors,
+		// WHAT IS NEITHER A FRAME NOR A RUNG (#213) \u2014 dropped frames, controller errors,
 		// undecodable records. On a transmit-only wire THIS reader is the only receiver, so these
-		// counters move because of the reads above and nothing else would ever narrate them: there
-		// is no rx_loop for this wire and no Buses row to carry a chip. Faults the reader itself
-		// consumes would otherwise be invisible, which is the same argument as #142's own (codex
-		// round 2).
+		// counters move because of the reads above and nothing else would ever narrate them.
 		d := b.diagnostics()
 		if d != last_diag && !owned {
 			prev_diag := last_diag
@@ -744,20 +749,15 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			a.mu.unlock()
 			vgui.wake()
 		}
-		// …and when it is not reported it is not recorded either, for the reason the health
-		// sample states. These are counts SINCE OPEN rather than a ladder, so a suppressed one is
-		// not lost the same way — but reading it here and saying nothing would still make the next
-		// narration a delta from a baseline nobody was told.
 		h := b.health()
 		if h == .unknown || h == last {
 			continue
 		}
 		if owned {
 			// NOT RECORDED, because it was not reported. Advancing `last` here consumed the
-			// transition: if ownership moved back — or was never really taken, the row having only
-			// been spawning — nothing would ever say it, since a driver's ladder holds the CURRENT
-			// state and a rung that has already been read is gone. Leaving it pending costs one
-			// comparison a second and means the next reader to be responsible still has it.
+			// transition: if ownership moved back \u2014 or was never really taken, the row having only
+			// been spawning \u2014 nothing would ever say it, since a driver's ladder holds the CURRENT
+			// state and a rung that has already been read is gone (codex round 5).
 			continue
 		}
 		prev := last
@@ -769,23 +769,6 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		a.mu.unlock()
 		vgui.wake()
 	}
-}
-
-// first_tap_on_locked is any open tap for this wire. The wire, not the destination: a tap opened
-// at one bitrate and a row configured at another are the same physical bus (#142). Caller holds
-// app.mu.
-fn (app &App) first_tap_on_locked(iface string) ?transport.Bus {
-	want := transport.wire_key(iface)
-	for k, b in app.tx_buses {
-		parts := project.decompose_key(k) or { continue }
-		if parts.len != 2 {
-			continue
-		}
-		if parts[1] != '' && transport.wire_key(parts[1]) == want {
-			return b
-		}
-	}
-	return none
 }
 
 fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) string {

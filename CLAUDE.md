@@ -131,9 +131,17 @@ not a value every driver keeps for the asking: on SocketCAN it is decoded from k
 inside `recv` (`hstate`) and on Vector from the chip state riding each read, so on those two it is
 silent on a wire with no reader WHATEVER polls it — #142 names both halves, and fixing only the
 polling one leaves a watcher that looks like a feature and is inert on the two backends a Linux
-bench can exercise. So it spawns a READER per such wire, discarding what it gets: those wires have no
-row, so there is no trace to file a frame against, and nothing else loses them (a SocketCAN open
-is its own socket, and a shared vendor wire gives each opener its own cursor, #221). A READER and
+bench can exercise. So it spawns a READER per such wire, WITH ITS OWN RECEIVE HANDLE, discarding what
+it gets: those wires have no row, so there is no trace to file a frame against, and nothing else
+loses them (a SocketCAN open is its own socket, and a shared vendor wire gives each opener its own
+cursor over one ingress ring, #221). Its own handle and not a borrowed transmit tap, which was
+three defects in one mistake — a TX tap nobody drains has a queue accumulating since the run
+began, so attaching mid-run at bus rate leaves the reader permanently behind or the error frame
+already dropped; which tap you get is arbitrary, so a restarted reader inherits a different one;
+and a baseline belongs to a handle, so switching handles invents transitions. Opening its own
+makes `unknown` health and zero counters the TRUE baseline rather than a guess about somebody
+else's, and it is what rx_loop does for a monitored wire — this is that worker with the row
+bookkeeping removed. A READER and
 not a quota — draining a fixed budget once a second falls further behind on every pass on a wire a
 generator is blasting into, the receive queue fills, and the error frame this exists to see is
 dropped before anyone looks: the feature defeated by exactly the traffic it was added for. Only
