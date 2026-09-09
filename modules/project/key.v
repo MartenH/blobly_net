@@ -46,6 +46,13 @@ pub fn decompose_key(key string) ?[]string {
 			return none
 		}
 		n := digits.int()
+		// AND THE DIGITS MUST BE WHAT THAT NUMBER LOOKS LIKE. `.int()` wraps rather than failing, so
+		// `4294967296:` read as a length of ZERO and the rest of the key then parsed happily — a
+		// value compose_key could never have written, accepted (codex round 9 on #142). The round
+		// trip rejects that and a leading zero in one rule, since compose_key writes neither.
+		if n.str() != digits {
+			return none
+		}
 		start := colon + 1
 		// BOUNDED BEFORE IT IS ADDED. `start + n` is i32 arithmetic, so a length prefix near the
 		// top of the range — `2147483640:x` — wraps NEGATIVE and slips past a `start + n > key.len`

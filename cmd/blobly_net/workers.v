@@ -661,8 +661,17 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		release_run_worker(app)
 	}
 	a.mu.lock()
+	// THE RUN IS STILL ASKED FOR, checked under the same lock that resolves the address. A reader
+	// is spawned by file_tap or the supervisor and then scheduled, and Stop can land in between:
+	// opening here regardless would create a physical connection for a run that has ended — on a
+	// shared CANsub or PCAN wire a fresh one, which a quick Start then waits on or joins, and on a
+	// cold device that keeps the previous run's worker alive for seconds (codex round 9 on #142).
+	live := a.running && a.run_gen == gen
 	phys := a.phys_for_locked(iface)
 	a.mu.unlock()
+	if !live {
+		return
+	}
 	mut b := transport.open(phys) or {
 		// Counted like a receive failure, so a wire that cannot be opened at all is retried twice
 		// and then left alone rather than reopened once a second for the rest of the run.
@@ -704,6 +713,26 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 	}
 	mut next := time.ticks()
 	for a.running && a.run_gen == gen {
+		// AND ONLY WHILE THE WORKLOAD STILL TRANSMITS HERE. A generator retargeted away from its
+		// last tap on this wire ends the reason for watching it, and drop_unwanted_taps closes the
+		// transmit handles — but this handle is the reader's own, so nothing closed it and it lived
+		// to Stop. That is not merely untidy: on CANsub it holds the device's single-client
+		// connection open and defeats the tap cleanup, and on real CAN a reader is a receiver whose
+		// controller ACKNOWLEDGES, so an abandoned one goes on acknowledging traffic on a wire the
+		// workload has left — changing the bench it should have got out of (codex round 9 on #142).
+		a.mu.lock()
+		mut still_tx := false
+		for k, _ in a.tx_buses {
+			parts := project.decompose_key(k) or { continue }
+			if parts.len == 2 && parts[1] != '' && transport.wire_key(parts[1]) == wire {
+				still_tx = true
+				break
+			}
+		}
+		a.mu.unlock()
+		if !still_tx {
+			return // a clean end: the claim is released and the wire can be watched again
+		}
 		// A TIMEOUT IS THE NORMAL ANSWER; anything else is the adapter in trouble, and swallowing
 		// both retried the failing call as fast as it could return — a core spun on an unplugged
 		// adapter while nothing advanced at all (codex round 2). The same rule rx_loop applies.

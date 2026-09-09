@@ -79,7 +79,10 @@ fn test_decompose_refuses_what_compose_never_wrote() {
 	// `2147483640:x` is the overflow case: added to `start` it wraps negative, so a bounds test
 	// written as `start + n > key.len` passes and the slice panics instead of refusing.
 	for bad in ['x', '3:ab', 'a:bc', '2:ab!3:cde', '-1:x', '2:ab|', '|2:ab', '2147483640:x',
-		'2147483647:x', '9999999999:x'] {
+		'2147483647:x', '9999999999:x',
+		// An overflowing prefix followed straight by a separator: `.int()` wraps to 0 and the
+		// rest parses happily, so this read as ['', 'x'] — a value compose_key never wrote.
+		'4294967296:|1:x', '01:x', '1:x|007:abcdefg'] {
 		if got := decompose_key(bad) {
 			assert false, '"${bad}" decomposed to ${got}'
 		}
