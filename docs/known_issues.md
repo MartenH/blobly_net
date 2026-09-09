@@ -315,16 +315,23 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   `test_cost_when_records_age_out` pins it (256 bytes a step against 422,160).
   After the fix, same probe: ~140 MB/s, **0 frames over a second late**, worst 182 ms, 70% within
   1 ms, the replay completes.
-  **What remains is 🔴 and is the next piece of work**: one pause every 1–2 s, most of them
-  50–300 ms (the probe's `hic_with_gc` counter says which gaps a collection spans — 35 of the 97
-  over 20 ms in a 70 s run, and every long one), visible as a stutter every second or two,
-  because the LIVE heap is still ~900 MB — a replay materialises the entire recording (878 k
-  frames to replay 87 k on a 2-bus project; all of it on 13) and holds it for the run, and a
-  collection over that many objects is that long. Frequency fell 7×; length did not move. That
-  wants the recording in an arena (pointer-free rows, one payload pool) so a collection has
-  almost nothing to trace, plus an allocation-free hot loop. Separately, `timeBeginPeriod` is
-  called nowhere, so every sleep on Windows rounds to 15.6 ms — a floor under cadence, visible as
-  a 16 ms worst case headless.
+  **Then #300 took the rest of the rate**: 146 → 28.5 MB/s, pauses ≥50 ms in 70 s 28 → 7, frames
+  within 1 ms 70% → 99%. Found by the probe's per-section attribution (`sec_*`) and switch-off runs
+  rather than by reading: the identity predicates (~150 string temporaries per frame), the render
+  loop's per-frame clones, the grouped view's per-repaint rebuild, the inproc `select` per
+  subscriber, a closure per send whose trampoline V never frees, a bus label string per MF4
+  record — and the worker SPINNING: on Windows a sub-millisecond `time.sleep` is `Sleep(0)`, so it
+  ran 80 M ticks in 70 s taking `app.mu` on each, and a longer sleep rounded up to the 15.6 ms
+  quantum nothing had shortened. `modules/player/pace_windows.v` sleeps whole milliseconds and waits out the last on the
+  stopwatch and asks for the 1 ms period (`pace_nix.v` is one accurate nanosleep).
+  **What remains is 🔴 and is the next piece of work**: the collection's LENGTH. One every ~10 s,
+  150–370 ms, each a stop-the-world across every thread. The probe samples the live set right after
+  each collection: **454 MB from a 17 MB file** — the loader builds 1.23 M entries that each point
+  at a cloned payload, so the collector marks millions of objects per pass, and the per-bus split
+  and the player copy the entries again (+140 MB, measured). That wants the recording in an arena:
+  pointer-free rows in one block (which V allocates no-scan), one label table, entries handed out
+  as views, and a plan that indexes rather than copies. A `-gc boehm_incr_opt` build was tried and
+  does not help.
   **How it was found is the part to keep**: three earlier diagnoses were wrong (the collector
   itself, the `-prod` scope pin, "confine the recording to a helper"), each plausible from
   reading. The probe's allocation-rate counter and a knob to switch a suspect off settled it in
