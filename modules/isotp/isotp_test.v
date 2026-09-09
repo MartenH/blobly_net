@@ -611,6 +611,21 @@ fn test_endless_waits_are_given_up_on() {
 		assert false, 'software channel: ${err}'
 		return
 	}
+	// QUEUED BEFORE THE SENDER CAN READ THEM, deliberately. The sender needs all n_wft_max + 1
+	// of these to reach the count, and each read is bounded by fc_timeout_ms; waiting for the
+	// First Frame and only then sending them made the test depend on seventeen SEQUENTIAL reads
+	// completing inside a one-second window each. On a CI runner compiling V in parallel a
+	// thread can stall past a second, and the send then failed with `timeout` instead of the
+	// abort this asserts — which is what it did on the Windows job while passing 30/30 locally.
+	//
+	// Ordering does not matter to the sender: rx_raw filters to its rx id, so its own First
+	// Frame is not in this queue, and the frames simply wait until it looks. Every read is then
+	// immediate and nothing is timed.
+	for _ in 0 .. n_wft_max + 1 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
+			assert false, err.msg()
+		}
+	}
 	done := chan string{cap: 1}
 	spawn fn [mut ch, done] () {
 		ch.send([]u8{len: 20, init: u8(index)}) or {
@@ -619,15 +634,6 @@ fn test_endless_waits_are_given_up_on() {
 		}
 		done <- 'sent'
 	}()
-	read_tx(mut peer, 0x7E0, 500) or {
-		assert false, 'no First Frame'
-		return
-	}
-	for _ in 0 .. n_wft_max + 1 {
-		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
-			assert false, err.msg()
-		}
-	}
 	msg := <-done
 	assert msg.contains('N_WFTmax'), msg
 	ch.close()
@@ -790,13 +796,18 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 		assert false, 'no First Frame'
 		return
 	}
-	// Abort it, and leave a CTS stranded behind the waits.
-	for _ in 0 .. n_wft_max + 1 {
-		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
-			assert false, err.msg()
-		}
-	}
-	assert (<-first).contains('N_WFTmax')
+	// ABORTED WITH ONE FRAME. What this test is about is the RETRY, not how the first send
+	// ended — and OVERFLOW ends it on a single Flow Control, where n_wft_max + 1 WAITs made it
+	// depend on seventeen sequential reads each bounded by fc_timeout_ms. That is what flaked on
+	// the Windows job (the abort came back as `timeout`), and it was testing the wrong thing
+	// here anyway: the wait count has its own test.
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x32), 0, 0] }) or { assert false, err.msg() }
+	// The message is carried into the assertion deliberately: when this failed on the Windows
+	// job it printed only the expression, so what the send ACTUALLY returned — the one fact that
+	// would have identified the cause — was not in the log. Every assert here that reads a
+	// worker's result names it now.
+	aborted := <-first
+	assert aborted.contains('overflow'), aborted
 	// THE STALE CTS ARRIVES LATE — after the retry has begun, which is the case a snapshot drain
 	// cannot see: the peer was mid-burst when N_WFTmax gave up, so the last of it is still in
 	// flight. The first cut read what was already queued and went straight on, and the test
