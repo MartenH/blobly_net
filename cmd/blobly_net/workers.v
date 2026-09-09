@@ -517,59 +517,50 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 
 // health_msg words a fault-ladder transition for the Log. BUS-OFF carries the diagnosis
 // hints: it is the state a bench actually hits, and the naked word helps nobody at 2am.
-// tx_health_loop is the READER the wires nobody reads never had (#142).
+// tx_health_loop spawns a reader for every wire this run transmits on and never reads (#142).
 //
-// Bus health is not a value a driver keeps for the asking on every backend — on SocketCAN it is
-// decoded from kernel ERROR FRAMES inside `recv` (`hstate`), and on Vector from the chip state
-// riding each read (`last_chip`). Both are therefore silent on a wire with no reader, whatever
-// polls them. `rx_loop` exists only for a MONITORABLE row, so a generator aimed at a bare wire
-// — `bus: pcan:…@250000`, which #97 keeps legal precisely because it names a wire no row
-// mentions — could blast into a shorted bus and nothing in the app would know.
+// Bus health is not a value every driver keeps for the asking. On SocketCAN it is decoded from
+// kernel ERROR FRAMES inside `recv` (`hstate`); on Vector it is the chip state riding each read
+// (`last_chip`). Both are therefore silent on a wire with no reader, whatever polls them. And
+// `rx_loop` — the only thing that polls — exists only for a MONITORABLE row, so a generator aimed
+// at a bare wire (`bus: pcan:…@250000`, which #97 keeps legal precisely because it names a wire no
+// row mentions) could blast into a shorted bus and nothing in the app would know. That is the case
+// where the verdict matters most: no traffic comes back to look wrong, so silence is the only
+// other symptom.
 //
-// SO IT READS, and that is the point rather than an implementation detail. #142 names both halves
-// ("hstate advances only inside recv, AND health() is polled only by rx_loop"), and polling alone
-// fixes the second while leaving the first: the watcher would have been inert on exactly the two
-// backends a Linux bench can exercise, and only PCAN, Kvaser and CANsub — which answer from a
-// driver call — would ever have reported anything. That is worth stating because it looks like a
-// working feature from the outside.
+// A READER, NOT A POLL, AND NOT A QUOTA. Two rounds of review walked to that. Polling alone was
+// inert on the two backends a Linux bench can exercise, because nothing advanced the state
+// machine. Draining a fixed budget once a second then looked like enough and is not: a wire a
+// generator is blasting into carries thousands of frames a second, so a 64-frame ration falls
+// further behind on every pass, the receive queue fills, and the error frame this exists to see is
+// dropped before anyone looks at it — the feature defeated by exactly the traffic it was added for
+// (codex round 1 on #142). Only reading at the wire's own rate keeps up, which is what rx_loop
+// does and what these do.
 //
-// WHAT IT READS IS DISCARDED. These wires have no row, so there is no trace to file a frame
-// against and no cadence to keep; the read exists to turn the crank on the health state machine.
-// Nothing else loses those frames: a SocketCAN open is its own socket and the kernel copies to
-// each, and a shared vendor wire hands each opener its own receive cursor over one ingress ring
-// (#221), so draining here takes nothing from a reader that arrives later.
+// ONE PER WIRE, and it lives for the run. A reader that exited when its wire gained a real reader
+// would need a lifecycle the supervisor could race; instead it keeps draining and simply STOPS
+// NARRATING, leaving the story to rx_loop. Nothing is lost by the extra drain — a SocketCAN open
+// is its own socket and the kernel copies to each, and a shared vendor wire gives each opener its
+// own receive cursor over one ingress ring (#221).
 //
-// ONE WATCHER FOR THE RUN, not one per wire, and it asks the set difference each pass rather than
-// a list fixed at Start. Both halves move while a run goes: a tap opens on a worker when a
-// generator is added or retargeted (#257), and a reader is RETIRED when its adapter fails. So a
-// wire can become unread long after Start, which is exactly when nothing else is narrating it.
+// The supervisor re-asks each second because both halves of the census move while a run goes: a
+// tap opens on a worker when a generator is retargeted (#257), and a reader is RETIRED when its
+// adapter fails.
 fn tx_health_loop(app &App, gen u64) {
 	defer {
 		release_run_worker(app)
 	}
 	mut a := unsafe { app }
-	// BY DESTINATION KEY, like the census that produced it. Keyed by interface SPELLING, a wire
-	// reachable as `vector:1` and `vector:ch1` kept two verdicts for one transceiver and narrated
-	// an unchanged state again whenever the tap the census happened to pick changed (self-review).
-	mut last := map[string]transport.BusHealth{}
-	mut next := time.ticks()
+	mut spawned := map[string]bool{}
 	for a.running && a.run_gen == gen {
 		// SLICED, NOT SLEPT. This is a RUN WORKER, and rebuild_from_proj waits for those before it
 		// replaces the runtime view (#286) — bounded at drain_budget_ms = 1500, of which a Stop
-		// today spends 0-1 ms. Measured on sim-demo: sliced, the drain stays at 202 ms; sleeping
-		// the whole second in one call made it 765 ms, turning the fastest path in that design
-		// into its slowest.
+		// today spends 0-1 ms. Measured on sim-demo: sliced, the drain stays at ~202 ms; sleeping
+		// a whole second in one call made it 765 ms.
 		time.sleep(100 * time.millisecond)
 		if !a.running || a.run_gen != gen {
 			break
 		}
-		if time.ticks() < next {
-			continue
-		}
-		next = time.ticks() + 1000
-		// The census and the handles under ONE lock, so a tap closed between deciding and asking
-		// cannot be asked. The reads and the health calls happen after the unlock: both are driver
-		// calls, and holding app.mu across one would put every rx_loop's per-frame lock behind it.
 		a.mu.lock()
 		mut keys := []string{}
 		mut iface_of := map[string]string{}
@@ -578,10 +569,15 @@ fn tx_health_loop(app &App, gen u64) {
 			if parts.len != 2 || parts[1] == '' {
 				continue
 			}
-			dk := transport.destination_key(parts[1])
-			keys << dk
-			if dk !in iface_of {
-				iface_of[dk] = parts[1]
+			// BY WIRE, not by destination: destination_key carries the BITRATE, so a row on
+			// `pcan:PCAN_USBBUS1` (implicit 500k) and a legal bare target of
+			// `pcan:PCAN_USBBUS1@250000` are one physical bus with two keys — and the census then
+			// read a monitored wire as unread and narrated every transition twice, once here and
+			// once in rx_loop (codex round 1 on #142).
+			wk := transport.wire_key(parts[1])
+			keys << wk
+			if wk !in iface_of {
+				iface_of[wk] = parts[1]
 			}
 		}
 		mut reading := []string{}
@@ -593,71 +589,94 @@ fn tx_health_loop(app &App, gen u64) {
 			// cold CANsub — is about to read: counted as unread, both loops narrate the same
 			// transition, since rx_loop starts from `.unknown` and repeats what was already said.
 			if c.monitorable() && (c.running || c.spawning) {
-				reading << transport.destination_key(c.iface)
+				reading << transport.wire_key(c.iface)
 			}
 		}
-		want := txhealth.watched(keys, reading)
-		mut buses := []transport.Bus{}
-		mut wires := []string{}
-		mut ifaces := []string{}
-		for dk in want {
-			iface := iface_of[dk] or { continue }
-			if mut b := a.tx_buses[tx_bus_key('', iface)] {
-				buses << b
-				wires << dk
-				ifaces << iface
-			} else if mut nb := a.first_tap_on_locked(iface) {
-				buses << nb
-				wires << dk
-				ifaces << iface
+		mut starts := []string{}
+		for wk in txhealth.watched(keys, reading) {
+			if wk in spawned {
+				continue
 			}
+			iface := iface_of[wk] or { continue }
+			if _ := a.first_tap_on_locked(iface) {
+				spawned[wk] = true
+				starts << iface
+			}
+		}
+		for _ in starts {
+			a.reserve_run_worker_locked() // released by the reader's own defer
 		}
 		a.mu.unlock()
-		// A wire that has gone is a wire with nothing to remember: drop its verdict so a later
-		// reopen narrates from scratch rather than comparing against a run that has ended.
-		for k in last.keys() {
-			if k !in wires {
-				last.delete(k)
-			}
-		}
-		for i, mut b in buses {
-			// TURN THE CRANK FIRST. Bounded so one busy wire cannot hold the pass: what matters is
-			// that the ladder advances, not that the queue is empty, and anything left is still
-			// there next second. A non-blocking look, so a quiet wire costs nothing.
-			for _ in 0 .. 64 {
-				b.recv(0) or { break }
-			}
-			h := b.health()
-			if h == .unknown {
-				continue
-			}
-			wire := wires[i]
-			prev := last[wire] or { transport.BusHealth.unknown }
-			if h == prev {
-				continue
-			}
-			last[wire] = h
-			a.mu.lock()
-			if a.running && a.run_gen == gen {
-				a.log_append_locked(health_msg(ifaces[i], prev, h))
-			}
-			a.mu.unlock()
-			vgui.wake()
+		for iface in starts {
+			spawn tx_health_reader(app, iface, gen)
 		}
 	}
 }
 
-// first_tap_on_locked is any open tap for this wire — the anonymous one is preferred by the
-// caller, and this covers a wire that only ever got a NAMED tap (a generator with a channel, on a
-// bus no row reads). Caller holds app.mu.
+// tx_health_reader drains one transmit-only wire so its health ladder advances, and narrates what
+// it finds. See tx_health_loop for why this reads rather than polls.
+fn tx_health_reader(app &App, iface string, gen u64) {
+	defer {
+		release_run_worker(app)
+	}
+	mut a := unsafe { app }
+	wire := transport.wire_key(iface)
+	mut last := transport.BusHealth.unknown
+	mut next := time.ticks()
+	for a.running && a.run_gen == gen {
+		a.mu.lock()
+		mut b := a.first_tap_on_locked(iface) or {
+			// The tap has gone: the wire is no longer one this run transmits on.
+			a.mu.unlock()
+			return
+		}
+		// Whether anybody else is telling this wire's story now. Read here, under the same lock
+		// that hands over the bus, so the answer belongs to the handle.
+		mut owned := false
+		for c in a.chans {
+			if c.monitorable() && (c.running || c.spawning) && transport.wire_key(c.iface) == wire {
+				owned = true
+				break
+			}
+		}
+		a.mu.unlock()
+		// AT THE WIRE'S OWN RATE. The same 200 ms rx_loop uses, which is also what bounds how long
+		// a Stop waits for this worker — measured at ~202 ms for the whole drain, unchanged by
+		// these readers because rx_loop already sets that floor.
+		b.recv(200) or {}
+		if time.ticks() < next {
+			continue
+		}
+		next = time.ticks() + 1000
+		h := b.health()
+		if h == .unknown || h == last {
+			continue
+		}
+		prev := last
+		last = h
+		if owned {
+			continue // rx_loop owns the narration for this wire; the drain above is harmless
+		}
+		a.mu.lock()
+		if a.running && a.run_gen == gen {
+			a.log_append_locked(health_msg(iface, prev, h))
+		}
+		a.mu.unlock()
+		vgui.wake()
+	}
+}
+
+// first_tap_on_locked is any open tap for this wire. The wire, not the destination: a tap opened
+// at one bitrate and a row configured at another are the same physical bus (#142). Caller holds
+// app.mu.
 fn (app &App) first_tap_on_locked(iface string) ?transport.Bus {
-	want := transport.destination_key(iface)
+	want := transport.wire_key(iface)
 	for k, b in app.tx_buses {
 		parts := project.decompose_key(k) or { continue }
 		if parts.len != 2 {
 			continue
 		}
-		if parts[1] != '' && transport.destination_key(parts[1]) == want {
+		if parts[1] != '' && transport.wire_key(parts[1]) == want {
 			return b
 		}
 	}

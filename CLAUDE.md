@@ -131,18 +131,25 @@ not a value every driver keeps for the asking: on SocketCAN it is decoded from k
 inside `recv` (`hstate`) and on Vector from the chip state riding each read, so on those two it is
 silent on a wire with no reader WHATEVER polls it — #142 names both halves, and fixing only the
 polling one leaves a watcher that looks like a feature and is inert on the two backends a Linux
-bench can exercise. So the watcher READS, discarding what it gets: those wires have no row, so
-there is no trace to file a frame against, and nothing else loses them (a SocketCAN open is its
-own socket, and a shared vendor wire gives each opener its own cursor, #221). ONE watcher per run
-asks the set difference each pass rather than a list fixed at Start, because both halves move
-while a run goes (a tap opens on a worker when a generator is retargeted, #257; a reader is
-retired when its adapter fails). Its reader census is `monitorable() && (running || spawning)`,
-not `enabled && running`: a DoIP row is marked running and keeps the default `vcan0` interface, so
-the looser test counted it as reading a CAN wire it never touches, and a row still SPAWNING is
-about to read — counted as unread, both loops narrate the same transition. It wakes ten times a
-second to do one second's work, measured because it is a run worker and `rebuild_from_proj` waits
-for those: sim-demo's drain is 202 ms with it and 202 ms without, where sleeping the whole second
-in one call made it 765 ms. The verdict lands in the LOG ONLY — a wire no row mentions has no row
+bench can exercise. So it spawns a READER per such wire, discarding what it gets: those wires have no
+row, so there is no trace to file a frame against, and nothing else loses them (a SocketCAN open
+is its own socket, and a shared vendor wire gives each opener its own cursor, #221). A READER and
+not a quota — draining a fixed budget once a second falls further behind on every pass on a wire a
+generator is blasting into, the receive queue fills, and the error frame this exists to see is
+dropped before anyone looks: the feature defeated by exactly the traffic it was added for. Only
+reading at the wire's own rate keeps up, which is what `rx_loop` does. A reader lives for the run
+and stops NARRATING (not draining) if its wire gains a real one, which avoids a lifecycle the
+supervisor could race. The supervisor re-asks the set difference each second rather than fixing a
+list at Start, because both halves move while a run goes (a tap opens on a worker when a generator
+is retargeted, #257; a reader is retired when its adapter fails), and the census is keyed by
+`wire_key` — NOT `destination_key`, which carries the bitrate, so a row on `pcan:PCAN_USBBUS1` and
+a legal bare target of `pcan:PCAN_USBBUS1@250000` are one physical bus that otherwise got two keys
+and two narrations of every transition. Its reader census is `monitorable() && (running ||
+spawning)`, not `enabled && running`: a DoIP row is marked running and keeps the default `vcan0`
+interface, so the looser test counted it as reading a CAN wire it never touches, and a row still
+SPAWNING is about to read. Measured, because these are run workers and `rebuild_from_proj` waits
+for those: with a generator aimed at a bare wire the drain is 201 ms and the census empties, where
+the supervisor sleeping a whole second in one call made it 765 ms. The verdict lands in the LOG ONLY — a wire no row mentions has no row
 to colour, and `read_destinations` folds only `enabled && running` rows, so writing a verdict onto
 an unmonitored row would be state no panel reads. And `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
