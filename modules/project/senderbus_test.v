@@ -445,3 +445,49 @@ fn test_every_spelling_round_trips() {
 		}
 	}
 }
+
+// THE HAZARD ROUND 5 FOUND, stated where it can be pinned: a value nobody rewrites can change
+// meaning because the NAMESPACE moved under it. A legacy `bus: X` targets the channel whose
+// INTERFACE is X; rename an unrelated row TO X and the name-first rule answers with that row
+// instead, on another wire.
+//
+// This is why the GUI compares each override's resolution BEFORE and AFTER any edit to the
+// channel set rather than tracking which values it rewrote: no rewrite happens here at all.
+fn test_a_rename_can_shadow_an_untouched_interface_reference() {
+	before := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'Other'
+			iface: 'inproc:CAN9'
+		},
+	]
+	was := resolve_sender_bus('inproc:CAN1', before[1], before)
+	assert was.kind == .iface
+	assert was.iface == 'inproc:CAN1'
+	assert was.chan == 'Powertrain'
+	// the operator renames the UNRELATED row to the spelling of the first row's wire
+	after := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'inproc:CAN1'
+			iface: 'inproc:CAN9'
+		},
+	]
+	now := resolve_sender_bus('inproc:CAN1', after[1], after)
+	assert now.kind == .named
+	assert now.iface == 'inproc:CAN9', 'the same value, a different wire, and nothing rewrote it'
+	assert was.iface != now.iface, 'which is exactly what the GUI keys on'
+	// …and the row it MEANT is still spellable, so the override is preserved rather than lost.
+	v := sender_bus_value(after[0], after[1], after) or {
+		assert false, 'Powertrain is named, so it has a spelling'
+		return
+	}
+	assert v == 'Powertrain'
+	assert resolve_sender_bus(v, after[1], after).iface == 'inproc:CAN1'
+}

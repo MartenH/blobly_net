@@ -126,9 +126,14 @@ and when a bus-load interval closes and what a spawning or unread row does with 
 progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`, the trace's
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
-never averaged into a cadence (#266); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, what a
-row deletion and an address edit do to that, and which renames a commit can be trusted about
-(#97). Extracted rather than repaired a sixth time: five defects landed in that one decision
+never averaged into a cadence (#266); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
+what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
+home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
+inverse, the one place a value is ever written, which refuses rather than emit a spelling that
+resolves to another row. And no edit path tracks which overrides it rewrote —
+`follow_channel_edits_locked` compares what every value MEANT against what it means now, because a
+value nobody touches can change meaning when the namespace moves under it (rename an unrelated row
+to the spelling of another row's interface, and a legacy `bus:` follows the name). Extracted rather than repaired a sixth time: five defects landed in that one decision
 across two review rounds, and the last of them was introduced by the previous round's fix, which
 is the signal this guide names for covering a path instead of patching it. All five old
 implementations are pinned by the test — grouping by interface (which DUPLICATED a shared wire's

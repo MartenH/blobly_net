@@ -92,15 +92,18 @@ fn (mut app App) commit_cfg() {
 	// REBUILT WHOLESALE each time, not appended to: a field corrected since the last commit must
 	// stop blocking Start, and a stale entry would wedge the run forever.
 	app.cfg_invalid = []
-	// Captured BEFORE the buffers overwrite them: a rename has to be followed into the generators
-	// that name this channel, and once the model holds the new name there is nothing left to
-	// match the old one against (#97).
-	mut was_named := []string{}
+	// Captured BEFORE the buffers overwrite them, NAME AND INTERFACE both, because a commit can
+	// change either and what an override means depends on both. Once the model holds the new
+	// values there is nothing left to ask the old question of (#97).
+	mut was_rows := []project.Channel{cap: app.proj.channels.len}
 	for c in app.proj.channels {
-		was_named << c.name
+		was_rows << project.Channel{
+			name:  c.name
+			iface: c.iface
+		}
 	}
 	defer {
-		app.rebind_sender_renames(was_named)
+		app.rebind_sender_commit(was_rows)
 	}
 	for i in 0 .. app.proj.channels.len {
 		b := app.cfg_bufs[i]
@@ -506,51 +509,23 @@ fn (mut app App) remove_bus(i int) {
 		}
 		app.senders[si].own_idx = stacked[si]
 	}
-	// Drop generator bus-overrides the deletion changed the MEANING of, so start() won't reopen
-	// and transmit somewhere the operator never chose (they fall back to their own channel).
-	//
-	// ASKED AS "does this still mean what it meant", not "does this spelling still appear
-	// anywhere". A raw survivor check gets it backwards where the deleted channel was NAMED X and
-	// a surviving one has the INTERFACE X: `bus: X` meant the deleted channel by the name-first
-	// rule, X is still present as an interface, so the override was kept — and resolution then
-	// fell through from name to interface and silently retargeted the generator onto the survivor
-	// (codex round 2 on #97). Resolving before and after answers the real question and needs no
-	// special case for either form.
+	// And what the deletion did to every override, through the one rule: a value that named the
+	// deleted row is cleared, one that named a survivor is re-spelled if the deletion changed how
+	// that row is spelled, and one whose wire did not move is left alone.
 	mut before := []project.Channel{cap: rows_before.len}
-	for c in rows_before {
+	mut row_map := []int{cap: rows_before.len}
+	for j, c in rows_before {
 		before << project.Channel{
 			name:  c.name
 			iface: c.iface
 		}
+		row_map << if j == i { -1 } else if j > i { j - 1 } else { j }
 	}
-	mut after := []project.Channel{cap: app.proj.channels.len}
-	for c in app.proj.channels {
-		after << project.Channel{
-			name:  c.name
-			iface: c.iface
-		}
-	}
-	for si in 0 .. app.senders.len {
-		b := app.senders[si].sender.bus
-		if b == '' {
-			continue
-		}
-		own := project.Channel{
-			name:  app.senders[si].own
-			iface: app.senders[si].iface
-		}
-		// THE WIRE IS WHAT THE OVERRIDE CHOSE, so that is what has to be unchanged. Comparing the
-		// OWNER too cleared an override whose destination had not moved at all: with two channels
-		// of one name on one wire, `bus:` is deliberately ambiguous (iface known, owner not), and
-		// deleting one duplicate leaves the survivor unambiguous — same wire, owner now
-		// resolvable. That is the ambiguity RESOLVING, which is the outcome the operator wanted,
-		// and it was being treated as a retarget (codex round 3 on #97).
-		if project.resolve_sender_bus(b, own, before).iface != project.resolve_sender_bus(b,
-			own, after).iface {
-			app.senders[si].sender.bus = ''
-		}
-	}
+	said := app.follow_channel_edits_locked(before, row_map)
 	app.mu.unlock()
+	for w in said {
+		app.notify(w)
+	}
 	app.dirty = true
 	app.sync_cfg_bufs()
 	app.rebuild_preserving_senders()
@@ -606,10 +581,9 @@ fn (mut app App) set_adapter(i int, a string) {
 	} else if app.proj.channels[i].typ == 'doip' {
 		app.proj.channels[i].typ = 'can'
 	}
-	new_iface := project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
-	// BEFORE the assignment: rebind_senders resolves `bus:` against the project as it stands.
-	app.rebind_senders(i, old_iface, new_iface) // keep this bus's generators bound
-	app.proj.channels[i].iface = new_iface
+	// rebind_senders makes the assignment itself: it has to see the rows both before and after to
+	// tell whether an override's destination moved (codex round 5 on #97).
+	app.rebind_senders(i, old_iface, project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf)))
 	app.dirty = true
 	app.rebuild_preserving_senders()
 }
@@ -630,9 +604,8 @@ fn (mut app App) retarget_bus(i int, adapter string, address string) {
 	old_iface := app.proj.channels[i].iface
 	app.cfg_bufs[i].address_buf = mkbuf(address, 64)
 	app.proj.channels[i].address = address
-	// BEFORE the assignment, for the reason rebind_senders states.
+	// rebind_senders makes the assignment itself, for the reason it states.
 	app.rebind_senders(i, old_iface, project.compose_iface(adapter, address))
-	app.proj.channels[i].iface = project.compose_iface(adapter, address)
 	app.dirty = true
 }
 
@@ -650,6 +623,69 @@ fn (mut app App) rebuild_preserving_senders() {
 // by the channel it is nested under, so a stale SenderRT.iface would drop all of a renamed bus's
 // generators on the next Save/Start. Also follows explicit per-sender bus overrides written in
 // the legacy interface form.
+// follow_channel_edits_locked keeps every generator transmitting where it was, across an edit to
+// the channel set. `before` is the rows as they stood; `row_map[j]` is where before-row j has
+// ended up (-1 if it is gone). Returns what has to be said after the unlock; caller holds app.mu.
+//
+// THE RULE IS RESOLUTION, NOT REWRITING. Three rounds of review walked to this one: each edit path
+// had its own idea of which overrides to touch, and each was wrong about a value it did not think
+// it had changed. The last one is the clearest — a legacy `bus: X` targeting the channel whose
+// INTERFACE is X, and an unrelated row renamed TO X: no writer touched that override, the
+// name-first resolver simply started answering differently, and the generator moved to another
+// wire in silence (codex round 5 on #97).
+//
+// So nothing here asks "did I rewrite this". It asks what the value MEANT before and what it
+// means now, and acts only where the WIRE moved — which covers a renamed target, a retargeted
+// address, a deleted row, and a namespace shadowed by an unrelated edit, without any of them
+// being a case. Ownership becoming more or less resolvable is not a move; the wire is what the
+// override chose.
+//
+// ONLY A VALUE THAT NAMED ONE ROW CAN BE PRESERVED. An ambiguous reference meant no single row,
+// so there is nothing to follow and sender_bus_warnings already reports it; a bare wire has no
+// row at all and is unaffected by anything done to the rows.
+fn (mut app App) follow_channel_edits_locked(before []project.Channel, row_map []int) []string {
+	mut said := []string{}
+	mut after := []project.Channel{cap: app.proj.channels.len}
+	for c in app.proj.channels {
+		after << project.Channel{
+			name:  c.name
+			iface: c.iface
+		}
+	}
+	for si in 0 .. app.senders.len {
+		b := app.senders[si].sender.bus
+		if b == '' {
+			continue
+		}
+		own := project.Channel{
+			name:  app.senders[si].own
+			iface: app.senders[si].iface
+		}
+		was_r := project.resolve_sender_bus(b, own, before)
+		if was_r.iface == project.resolve_sender_bus(b, own, after).iface {
+			continue // the wire did not move; the value still means what it meant
+		}
+		mut k := -1
+		if was_r.chan != '' {
+			for j, c in before {
+				if c.name == was_r.chan && c.iface == was_r.iface {
+					k = if k >= 0 { -2 } else { j }
+				}
+			}
+		}
+		dst := if k >= 0 && k < row_map.len { row_map[k] } else { -1 }
+		if dst < 0 || dst >= after.len {
+			app.senders[si].sender.bus = ''
+			said << '${app.senders[si].sender.name}: the bus it targeted (`${b}`) is gone — the generator falls back to ${app.senders[si].own}'
+			continue
+		}
+		if why := app.retarget_bus_locked(si, after[dst], after) {
+			said << why
+		}
+	}
+	return said
+}
+
 // retarget_bus_locked writes the `bus:` of generator `si` so it goes on transmitting on `target`,
 // and reports what could not be said. Caller holds app.mu.
 //
@@ -705,43 +741,30 @@ fn (mut app App) rebind_senders(row int, old_iface string, new_iface string) {
 	if old_iface == new_iface || old_iface == '' {
 		return
 	}
-	mut said := []string{}
 	app.mu.lock()
-	// The rows BEFORE the edit, to ask what an override means today, and the rows AFTER it, to ask
-	// how the edited row will be spelled. Both are needed and they are different questions.
+	// The rows as they stand BEFORE the edit. What an override means is a question about the whole
+	// set, so it cannot be asked once the set has changed — and this function is called before the
+	// caller writes the new interface, for exactly that reason.
 	mut before := []project.Channel{cap: app.proj.channels.len}
-	for c in app.proj.channels {
+	mut row_map := []int{cap: app.proj.channels.len}
+	for j, c in app.proj.channels {
 		before << project.Channel{
 			name:  c.name
 			iface: c.iface
 		}
+		row_map << j // an address edit moves no row
 	}
-	mut after := before.clone()
-	if row >= 0 && row < after.len {
-		after[row] = project.Channel{
-			name:  after[row].name
-			iface: new_iface
-		}
+	if row >= 0 && row < app.proj.channels.len {
+		app.proj.channels[row].iface = new_iface
 	}
 	for si in 0 .. app.senders.len {
-		if app.senders[si].sender.bus == old_iface && row >= 0 && row < after.len {
-			own := project.Channel{
-				name:  app.senders[si].own
-				iface: app.senders[si].iface
-			}
-			if project.resolve_sender_bus(old_iface, own, before).kind == .iface {
-				// THE VALIDATED SPELLING of the row as it will be, not the raw new interface:
-				// writing that verbatim retargeted the generator whenever the new interface is
-				// also another channel's NAME (codex round 4 on #97).
-				if why := app.retarget_bus_locked(si, after[row], after) {
-					said << why
-				}
-			}
-		}
+		// The generator's own row carries it home on Save, so it follows its channel's address.
+		// This is identity, not targeting; the `bus:` half is follow_channel_edits_locked's.
 		if genhome.moves_with_row(genhome.Gen{ own_idx: app.senders[si].own_idx }, row) {
 			app.senders[si].iface = new_iface
 		}
 	}
+	said := app.follow_channel_edits_locked(before, row_map)
 	app.mu.unlock()
 	// notify re-takes the non-reentrant mutex, so nothing here is said before the unlock.
 	for w in said {
@@ -749,52 +772,35 @@ fn (mut app App) rebind_senders(row int, old_iface string, new_iface string) {
 	}
 }
 
-// rebind_sender_renames follows a commit's RENAMES into the generators, which `bus:` now holds
-// (#97). Two things have to move or an edit that only relabelled a row orphans them: the `own`
-// that carries a generator home on Save, and any override naming that channel.
+// rebind_sender_commit follows a commit's edits into the generators. `before` is the rows as they
+// stood when commit_cfg was entered, name and interface both, since a commit can change either.
 //
-// BY INDEX, in ONE pass over the whole commit, because names are neither unique nor stable
-// through it. Applied one rename at a time and matched by name, a commit that renames A -> B and
-// B -> C skipped the second (B was still held — by the row that had just become B), and that
-// row's generators then answered to a name belonging to somebody else. `was[i]` is what row i was
-// called before the buffers were flushed, so the mapping is total and order cannot affect it.
+// TWO SEPARATE JOBS, and only one of them is about renames. The `own` a generator carries home on
+// Save is IDENTITY — row i is still row i however it was relabelled — so it is followed by index,
+// in one pass over the whole commit: applied one rename at a time and matched by name, a commit
+// renaming A -> B and B -> C skipped the second (B was still held, by the row that had just
+// become B) and that row's generators answered to a name belonging to somebody else.
 //
-// A `bus:` override is followed only when the OLD name identified one row: where two rows shared
-// it, no rename can say which the override meant, and it is left for sender_bus_warnings to
-// report rather than silently retargeted.
-fn (mut app App) rebind_sender_renames(was []string) {
-	mut said := []string{}
+// Where its `bus:` now POINTS is not a rename question at all, and treating it as one is what
+// left the last gap: a legacy `bus: X` targeting the channel whose interface is X was moved to
+// another wire by renaming an unrelated row TO X — an override no rename map contains, because no
+// rename touched it (codex round 5 on #97). follow_channel_edits_locked asks what every value
+// MEANT and what it means now, which covers that without knowing it is a rename at all.
+fn (mut app App) rebind_sender_commit(before []project.Channel) {
 	app.mu.lock()
-	mut now := []genhome.Row{cap: app.proj.channels.len}
-	mut rows := []project.Channel{cap: app.proj.channels.len}
-	for c in app.proj.channels {
-		now << genhome.Row{
-			name:  c.name
-			iface: c.iface
-		}
-		rows << project.Channel{
-			name:  c.name
-			iface: c.iface
-		}
-	}
-	// old name -> the INDEX of the row it named. What now SPELLS that row is asked of
-	// project.sender_bus_value, through retarget_bus_locked, so this write obeys the same rule as
-	// every other one (codex round 4 on #97).
-	renamed := genhome.renames(was, now)
 	for si in 0 .. app.senders.len {
 		idx := app.senders[si].own_idx
-		if idx >= 0 && idx < app.proj.channels.len && idx < was.len
-			&& app.senders[si].own == was[idx] {
+		if idx >= 0 && idx < app.proj.channels.len && idx < before.len
+			&& app.senders[si].own == before[idx].name {
 			app.senders[si].own = app.proj.channels[idx].name
-		}
-		if ri := renamed[app.senders[si].sender.bus] {
-			if ri >= 0 && ri < rows.len {
-				if why := app.retarget_bus_locked(si, rows[ri], rows) {
-					said << why
-				}
-			}
+			app.senders[si].iface = app.proj.channels[idx].iface
 		}
 	}
+	mut row_map := []int{cap: before.len}
+	for j in 0 .. before.len {
+		row_map << j // a commit relabels and re-addresses rows; it moves none
+	}
+	said := app.follow_channel_edits_locked(before, row_map)
 	app.mu.unlock()
 	for w in said {
 		app.notify(w)
