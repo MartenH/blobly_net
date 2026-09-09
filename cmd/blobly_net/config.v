@@ -91,6 +91,16 @@ fn (mut app App) commit_cfg() {
 	// REBUILT WHOLESALE each time, not appended to: a field corrected since the last commit must
 	// stop blocking Start, and a stale entry would wedge the run forever.
 	app.cfg_invalid = []
+	// Captured BEFORE the buffers overwrite them: a rename has to be followed into the generators
+	// that name this channel, and once the model holds the new name there is nothing left to
+	// match the old one against (#97).
+	mut was_named := []string{}
+	for c in app.proj.channels {
+		was_named << c.name
+	}
+	defer {
+		app.rebind_sender_renames(was_named)
+	}
 	for i in 0 .. app.proj.channels.len {
 		b := app.cfg_bufs[i]
 		mut ch := &app.proj.channels[i]
@@ -464,14 +474,43 @@ fn (mut app App) remove_bus(i int) {
 	app.drop_index_bound_ui()
 	app.commit_cfg()
 	removed_iface := app.proj.channels[i].iface
+	removed_name := app.proj.channels[i].name
 	app.proj.channels.delete(i)
-	// drop generator bus-overrides that pointed at the removed bus, so start() won't reopen and
-	// transmit on an interface that's no longer configured (they fall back to their own channel).
+	app.mu.lock()
+	// THE REMOVED ROW'S OWN GENERATORS GO WITH IT, and the indices behind it restack. Deleting a
+	// bus has always taken its generators — they simply matched no channel on the next Save — and
+	// saying it here rather than leaving it to fall out of a lookup is what lets sync_senders_into_proj
+	// treat "matched nothing" as the bookkeeping slip it now is (#97). Backwards, so the earlier
+	// deletions cannot shift the indices of the ones not yet examined.
+	for si := app.senders.len - 1; si >= 0; si-- {
+		if app.senders[si].own_idx == i {
+			app.senders.delete(si)
+			if si < app.gen_bufs.len {
+				app.gen_bufs.delete(si)
+			}
+			continue
+		}
+		if app.senders[si].own_idx > i {
+			app.senders[si].own_idx--
+		}
+	}
+	// Drop generator bus-overrides that pointed at the removed bus, so start() won't reopen and
+	// transmit on a channel that is no longer configured (they fall back to their own channel).
+	// BOTH FORMS, because `bus:` may hold either since #97 — and only when nothing else answers
+	// to the value: another row may still be named the same or sit on the same wire, in which case
+	// the override is still meaningful and clearing it would silently retarget the generator.
+	mut still := map[string]bool{}
+	for c in app.proj.channels {
+		still[c.name] = true
+		still[c.iface] = true
+	}
 	for si in 0 .. app.senders.len {
-		if app.senders[si].sender.bus == removed_iface {
+		b := app.senders[si].sender.bus
+		if b != '' && (b == removed_iface || b == removed_name) && b !in still {
 			app.senders[si].sender.bus = ''
 		}
 	}
+	app.mu.unlock()
 	app.dirty = true
 	app.sync_cfg_bufs()
 	app.rebuild_preserving_senders()
@@ -564,19 +603,69 @@ fn (mut app App) rebuild_preserving_senders() {
 }
 
 // rebind_senders repoints a channel's flattened generators from an old iface to a new one, so
-// editing a bus address doesn't orphan them: sync_senders_into_proj groups senders by iface
-// (and firing opens tx_buses[iface]), so a stale SenderRT.iface would drop all of a renamed
-// bus's generators on the next Save/Start. Also follows explicit per-sender bus overrides.
+// editing a bus address doesn't orphan them: sync_senders_into_proj carries each generator home
+// by the channel it is nested under, so a stale SenderRT.iface would drop all of a renamed bus's
+// generators on the next Save/Start. Also follows explicit per-sender bus overrides written in
+// the legacy interface form.
+// UNDER app.mu, like every other writer of app.senders: gen_loop copies these same strings under
+// the lock every 8 ms, and a V string assignment is not atomic. The lock is taken here rather
+// than by the callers because both of these run from GUI edit handlers that hold nothing.
 fn (mut app App) rebind_senders(old_iface string, new_iface string) {
 	if old_iface == new_iface || old_iface == '' {
 		return
 	}
+	app.mu.lock()
 	for si in 0 .. app.senders.len {
 		if app.senders[si].iface == old_iface {
 			app.senders[si].iface = new_iface
 		}
 		if app.senders[si].sender.bus == old_iface {
 			app.senders[si].sender.bus = new_iface
+		}
+	}
+	app.mu.unlock()
+}
+
+// rebind_sender_renames follows a commit's RENAMES into the generators, which `bus:` now holds
+// (#97). Two things have to move or an edit that only relabelled a row orphans them: the `own`
+// that carries a generator home on Save, and any override naming that channel.
+//
+// BY INDEX, in ONE pass over the whole commit, because names are neither unique nor stable
+// through it. Applied one rename at a time and matched by name, a commit that renames A -> B and
+// B -> C skipped the second (B was still held — by the row that had just become B), and that
+// row's generators then answered to a name belonging to somebody else. `was[i]` is what row i was
+// called before the buffers were flushed, so the mapping is total and order cannot affect it.
+//
+// A `bus:` override is followed only when the OLD name identified one row: where two rows shared
+// it, no rename can say which the override meant, and it is left for sender_bus_warnings to
+// report rather than silently retargeted.
+fn (mut app App) rebind_sender_renames(was []string) {
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	mut renamed := map[string]string{} // old name -> new, only where the old named ONE row
+	mut old_count := map[string]int{}
+	for o in was {
+		old_count[o]++
+	}
+	for i, o in was {
+		if i >= app.proj.channels.len {
+			break
+		}
+		n := app.proj.channels[i].name
+		if o != '' && n != '' && o != n && old_count[o] == 1 {
+			renamed[o] = n
+		}
+	}
+	for si in 0 .. app.senders.len {
+		idx := app.senders[si].own_idx
+		if idx >= 0 && idx < app.proj.channels.len && idx < was.len
+			&& app.senders[si].own == was[idx] {
+			app.senders[si].own = app.proj.channels[idx].name
+		}
+		if b := renamed[app.senders[si].sender.bus] {
+			app.senders[si].sender.bus = b
 		}
 	}
 }

@@ -25,9 +25,10 @@ import doip
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 3
+pub const schema_version = 4
 
-// version_for is the version a PARTICULAR project must declare. Generator value sources (v3) are
+// version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
+// uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
 // written as extra keys an older parser reads as unknown-key no-ops — it would treat the signal as
 // its static value, and a structured Save there would drop the waveform for good. So a project
 // that uses one says v3 while everything else keeps saying v2 and stays openable by older builds
@@ -38,6 +39,22 @@ pub const schema_version = 3
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v4 — a generator's `bus:` that an older build would resolve DIFFERENTLY (#97). Such a build
+	// reads the key as an interface and hands a channel name to the transport as a device name,
+	// where it fails to open: the generator goes silent with a driver error and nothing says why.
+	// Asked as that question (sender_bus_needs_v4) rather than as "is this the new form", because
+	// the two forms overlap — a socketcan row named after its own address is both — and a file
+	// that means the same thing to every build must not be labelled as if it did not.
+	//
+	// Checked before v3, because the version is the HIGHEST a project needs and a generator can
+	// easily have both.
+	for c in p.channels {
+		for s in c.senders {
+			if sender_bus_needs_v4(s.bus, c, p.channels) {
+				return 4
+			}
+		}
+	}
 	for c in p.channels {
 		for s in c.senders {
 			for sg in s.signals {
@@ -250,7 +267,11 @@ pub mut:
 	ext      bool   // 29-bit extended id
 	data     []u8   // explicit raw payload (optional; overrides the zero/dlc default)
 	signals  []SenderSig
-	bus      string // target bus to transmit on (a channel iface); '' = the sender's own channel
+	// The CHANNEL to transmit on, by NAME — '' = the generator's own channel (#97). An interface
+	// string is still understood, both for files written to the older documentation and because it
+	// is the only way to name a wire that is not a configured channel at all. resolve_sender_bus
+	// is the one place that decides which; nothing else may read this field raw.
+	bus      string
 	trigger  string = 'manual' // manual | key | cyclic
 	cycle_ms int // cyclic period (ms); only used when trigger == cyclic
 }

@@ -191,8 +191,14 @@ fn draw_gen(mut app App) {
 						c.iface == cur
 					}
 					if vgui.toggle_button('${c.name}##b${i}_${ci}', sel, 0) {
-						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface },
-							c.name)
+						// THE NAME, which is what `bus:` means since #97 — and the whole point:
+						// picking the second channel on a shared wire used to store '' (its
+						// interface equalled the generator's own), so a Save/reload restored
+						// ownership from the first and the selection silently reverted. '' still
+						// means the generator's own channel, compared by NAME and interface
+						// together, since either alone can match a sibling on the same wire.
+						same := c.name == sr.own && c.iface == sr.iface
+						app.set_sender_bus(i, if same { '' } else { c.name }, c.name)
 					}
 				}
 			}
@@ -261,10 +267,15 @@ fn (mut app App) add_generator() {
 	app.mu.lock()
 	app.gen_next_uid++
 	app.senders << SenderRT{
-		uid:    app.gen_next_uid
-		iface:  iface
-		chan:   cname
-		sender: project.Sender{
+		uid:     app.gen_next_uid
+		own:     cname
+		own_idx: 0 // add_generator targets the first channel, which is where cname came from
+		iface:   iface
+		// Its own channel, so the resolved answer is that channel and needs no lookup. The next
+		// rebuild recomputes it like every other generator's.
+		tgt:     iface
+		chan:    cname
+		sender:  project.Sender{
 			name:    'New generator'
 			id:      0x100
 			trigger: 'manual'
@@ -311,14 +322,53 @@ fn (mut app App) sync_senders_into_proj() {
 		}
 	}
 	mut p := app.proj
+	// BY THE CHANNEL EACH GENERATOR IS NESTED UNDER, and by its INDEX (#97).
+	//
+	// Grouping by interface — what this did before — put every generator on a shared wire into
+	// BOTH channels' lists: the loop asks each channel for the senders whose iface matches, and two
+	// channels with one iface both match every one of them, so a Save DUPLICATED them and the next
+	// load came back with two of each.
+	//
+	// Grouping by NAME has the same defect one step removed, because nothing enforces unique
+	// channel names either: two rows agreeing on name and interface are indistinguishable, the
+	// first absorbs the second's generators, and the second loses them on reload. The index is the
+	// only thing that separates them, and it is a real identity here — channels are appended and
+	// deleted, never reordered, and remove_bus restacks the generators' copies.
+	//
+	// The name and interface are asked only as a CONSISTENCY CHECK, so a stale index cannot hand a
+	// generator to an unrelated row; when they disagree the generator falls back to the row that
+	// does match, and when nothing matches it is dropped — which is what happens to a generator
+	// whose channel has been deleted, and is the behaviour that predates #97. Re-homing it onto the
+	// first channel instead would take a cyclic generator from a deleted `inproc:` row and start it
+	// transmitting on whatever real bus happens to be listed first, with nothing on screen saying
+	// it moved.
+	mut taken := []bool{len: app.senders.len}
 	for ci in 0 .. p.channels.len {
 		mut ss := []project.Sender{}
-		for sr in app.senders {
-			if sr.iface == p.channels[ci].iface {
+		for si, sr in app.senders {
+			if taken[si] || sr.own_idx != ci {
+				continue
+			}
+			if sr.own == p.channels[ci].name && sr.iface == p.channels[ci].iface {
+				taken[si] = true
 				ss << sr.sender
 			}
 		}
 		p.channels[ci].senders = ss
+	}
+	// The index disagreed with the row it points at — a structural edit this function was not told
+	// about. Fall back to the row that does match by name and interface, in order, rather than
+	// losing the generator to a bookkeeping slip.
+	for ci in 0 .. p.channels.len {
+		for si, sr in app.senders {
+			if taken[si] {
+				continue
+			}
+			if sr.own == p.channels[ci].name && sr.iface == p.channels[ci].iface {
+				taken[si] = true
+				p.channels[ci].senders << sr.sender
+			}
+		}
 	}
 	app.proj = p
 }
@@ -661,10 +711,13 @@ fn (mut app App) set_cycle(i int, ms int) {
 
 // set_sender_bus points generator `i` at a target bus ('' = its own channel). A newly
 // targeted bus is opened if the measurement is running and it isn't open yet.
-// `bus` is an INTERFACE (project.Sender.bus is documented as one, and '' means the sender's own
-// channel); `chan_name` is the channel the user actually picked. They are different facts, and
-// only the second one survives two channels sharing a wire — an interface cannot say which of
-// them the generator now belongs to.
+//
+// `bus` is a channel NAME since #97 — what the picker shows, and the only form that survives two
+// channels sharing a wire. `chan_name` is redundant with it for a picked channel and is kept
+// because '' (the generator's own channel) still names an owner the value itself cannot.
+//
+// The resolved target is recomputed rather than taken from the argument: `bus:` has two accepted
+// forms, and project.resolve_sender_bus is the one place that decides between them.
 fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 	// a failure found while app.mu is held is said AFTER the unlock — notify re-takes the
 	// non-reentrant mutex, and an inline call here would deadlock the GUI thread
@@ -673,8 +726,12 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
+		app.resolve_sender_targets_locked()
 		tgt := app.senders[i].target()
-		if chan_name != '' {
+		if chan_name != '' && app.senders[i].chan == '' {
+			// The resolver could not name one — an ambiguous reference — and the operator just
+			// pointed at a specific row, which is a better answer than none for the trace's `ch=`
+			// column. It does not survive a reload; the warning at Start says why.
 			app.senders[i].chan = chan_name
 		}
 		own := app.senders[i].chan
