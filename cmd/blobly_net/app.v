@@ -191,8 +191,8 @@ mut:
 	//
 	// Messages already reported as self-sent (#95), keyed by destination and message so each
 	// wire says it once and two wires each say their own. On the APP and not on the VerifySet
-	// that decides it: a set is built per rx_loop, so a reader handoff or a mid-run channel
-	// toggle would rebuild it and repeat a line that claims to be once per run — the same reason
+	// that decides it: a set is built per rx_loop, so a reader handoff would rebuild it and repeat
+	// a line that claims to be once per run — the same reason
 	// the teardown carries health, cadence, diagnostics and load to the successor. Guarded by
 	// app.mu; reset at Start with the other per-run state.
 	verify_said map[string]bool

@@ -461,8 +461,9 @@ fn draw_replay_config(mut app App) {
 			nen := vgui.checkbox('${ch.name}##rpen${ci}', en)
 			if nen != en {
 				// a PROJECT edit that also moves the runtime row — set_chan_enabled_stopped
-				// names the intent (NOT the Buses tick, which is runtime-only and does not
-				// survive Save)
+				// names the intent. The Buses tick means the same thing (a project edit since
+				// #249, stopped-only since #120); the two differ only in how they refuse while
+				// running — see panel_buses.v.
 				app.set_chan_enabled_stopped(ci, nen)
 			}
 			if g.src != '' && src_i != g.src {

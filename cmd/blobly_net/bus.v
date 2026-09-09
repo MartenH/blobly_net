@@ -424,9 +424,10 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 }
 
 fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame) bool {
-	// The LOOKUP is under app.mu; the send is not. Enabling a channel mid-run inserts into
-	// tx_buses while a cyclic generator may be reading it from gen_loop, and a V map is not safe
-	// for a concurrent read and write — this used to be safe only because every insertion
+	// The LOOKUP is under app.mu; the send is not. Taps are opened ON A WORKER and filed as they
+	// land (#257, file_tap) — for a generator added or retargeted mid-run, long after Start — so
+	// tx_buses is written while a cyclic generator may be reading it from gen_loop, and a V map is
+	// not safe for a concurrent read and write. This used to be safe only because every insertion
 	// happened at Start, before any worker existed. The Bus reference is taken and the lock
 	// released before sending: b.send takes the interface's send lock and then app.mu inside
 	// note_emit, so holding app.mu across it would deadlock.

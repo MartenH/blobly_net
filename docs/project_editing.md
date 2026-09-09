@@ -264,7 +264,10 @@ Configuration dialog).
 
 - **Buses panel** = always-on read-only view; shows live state when running. (The separate
   read-only *Bus Config* panel this line used to name is gone — its content is the
-  Configuration window's Buses tab, which can also edit.)
+  Configuration window's Buses tab, which can also edit.) The one control on it is the
+  **enable tick**, and since **#120** that is stopped-only too: which buses a measurement
+  opens is fixed at Start, and ticking a row while running refuses with a line naming the
+  row. Everything else the panel shows — health, load, silence, diagnostics — is live.
 - **Configuration editor** = opened from File → Configure… (or a toolbar button), enabled
   only when `!app.running`. Add/edit/remove buses, pick adapters, attach DBCs; **Close**
   returns to the view (unsaved edits are folded into the model). Not an always-editable
