@@ -1,0 +1,777 @@
+module project
+
+// The shape #97 is about: two configured channels on ONE wire. An interface picks the wire; only
+// a name picks the owner.
+fn shared_wire() []Channel {
+	return [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'Chassis'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'Body'
+			iface: 'inproc:CAN2'
+		},
+	]
+}
+
+fn test_empty_bus_is_the_generators_own_channel() {
+	chs := shared_wire()
+	r := resolve_sender_bus('', chs[1], chs)
+	assert r.kind == .own
+	assert r.chan == 'Chassis'
+	assert r.iface == 'inproc:CAN1'
+	assert r.note == ''
+}
+
+// THE FIX. Under the old rule this value would have been handed to the transport as a device
+// name; under the new one it is the second channel on the shared wire, which is the selection
+// that used to revert on save/reload.
+fn test_a_name_picks_the_channel_an_interface_cannot() {
+	chs := shared_wire()
+	r := resolve_sender_bus('Chassis', chs[0], chs)
+	assert r.kind == .named
+	assert r.chan == 'Chassis'
+	assert r.iface == 'inproc:CAN1'
+	assert r.note == ''
+	// …and its sibling on the SAME wire resolves to the other owner. This is the assertion the
+	// interface form cannot satisfy at all: both would be 'inproc:CAN1' and indistinguishable.
+	r2 := resolve_sender_bus('Powertrain', chs[1], chs)
+	assert r2.chan == 'Powertrain'
+	assert r2.iface == r.iface
+}
+
+// The migration: every project written to the old documentation still resolves, and to the right
+// owner when the wire has exactly one channel.
+fn test_an_interface_naming_one_channel_still_resolves() {
+	chs := shared_wire()
+	r := resolve_sender_bus('inproc:CAN2', chs[0], chs)
+	assert r.kind == .iface
+	assert r.chan == 'Body'
+	assert r.iface == 'inproc:CAN2'
+	assert r.note == '', 'a file written to the old documentation is not a problem to announce'
+}
+
+// The old form on a SHARED wire is the ambiguity #97 reports. It still transmits — that is
+// today's behaviour and removing it would break working projects — but it says so instead of
+// silently attributing the frames to whichever channel came first.
+fn test_an_interface_two_channels_share_is_ambiguous_but_still_transmits() {
+	chs := shared_wire()
+	r := resolve_sender_bus('inproc:CAN1', chs[2], chs)
+	assert r.kind == .ambiguous
+	assert r.iface == 'inproc:CAN1', 'the wire is not in doubt, only the owner'
+	assert r.chan == '', 'no single channel owns it, and guessing is what #97 is about'
+	assert r.note.contains('Powertrain'), r.note
+	assert r.note.contains('Chassis'), r.note
+}
+
+// A name is not an identity either — nothing enforces unique channel names — so the same verdict
+// has to cover a duplicated NAME. It shares the wire, so it can still send.
+fn test_a_duplicated_channel_name_is_ambiguous_on_a_shared_wire() {
+	chs := [
+		Channel{
+			name: 'CAN'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'CAN'
+			iface: 'inproc:X'
+		},
+	]
+	r := resolve_sender_bus('CAN', chs[0], chs)
+	assert r.kind == .ambiguous
+	assert r.iface == 'inproc:X'
+	assert r.chan == ''
+	assert r.note.contains('2 channels'), r.note
+}
+
+// …and when the duplicates are on DIFFERENT wires there is nothing to open, which is a stronger
+// statement than "no owner" and must not be reported as if the send still went somewhere.
+fn test_a_duplicated_channel_name_on_different_wires_has_nowhere_to_send() {
+	chs := [
+		Channel{
+			name: 'CAN'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'CAN'
+			iface: 'inproc:Y'
+		},
+	]
+	r := resolve_sender_bus('CAN', chs[0], chs)
+	assert r.kind == .ambiguous
+	assert r.iface == '', 'two wires, no way to choose'
+	assert r.note.contains('different interfaces'), r.note
+}
+
+// The capability the name form cannot express, and the reason an interface stays legal: a wire
+// that is not a configured channel, carrying its own rate. Start opens a tap for it on purpose.
+fn test_an_interface_no_channel_has_is_a_bare_wire_not_an_error() {
+	chs := shared_wire()
+	r := resolve_sender_bus('pcan:PCAN_USBBUS1@250000', chs[0], chs)
+	assert r.kind == .bare
+	assert r.iface == 'pcan:PCAN_USBBUS1@250000', 'passed through verbatim, rate and all'
+	assert r.chan == ''
+	assert r.note == '', 'deliberate, not a misconfiguration'
+}
+
+// The tie-break, stated as a test because it is the one case where the two forms could collide:
+// a channel NAMED like a wire. The name wins, because that is what the key means.
+fn test_a_name_wins_over_an_interface_of_the_same_spelling() {
+	chs := [
+		Channel{
+			name: 'vcan0'
+			iface: 'inproc:CAN9'
+		},
+		Channel{
+			name: 'Other'
+			iface: 'vcan0'
+		},
+	]
+	r := resolve_sender_bus('vcan0', chs[1], chs)
+	assert r.kind == .named
+	assert r.chan == 'vcan0'
+	assert r.iface == 'inproc:CAN9', 'the channel named vcan0, not the wire spelled vcan0'
+}
+
+// v4 asks whether an OLDER build would send the generator somewhere ELSE — not which form the
+// value happens to be written in.
+fn test_needs_v4_is_about_a_changed_destination_not_a_changed_spelling() {
+	chs := shared_wire()
+	assert sender_bus_needs_v4('Chassis', chs[0], chs), 'an old build opens a device called Chassis'
+	assert !sender_bus_needs_v4('inproc:CAN1', chs[0], chs), 'the legacy form opens the same wire'
+	assert !sender_bus_needs_v4('', chs[0], chs), 'an empty bus is the own channel either way'
+	assert !sender_bus_needs_v4('pcan:PCAN_USBBUS1@250000', chs[0], chs), 'a bare wire is unchanged'
+	// Two rows answering to one name on DIFFERENT wires: this build sends nowhere, an older one
+	// opens a device by that name. Different behaviour, so the file must say so.
+	dup := [
+		Channel{
+			name: 'CAN'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'CAN'
+			iface: 'inproc:Y'
+		},
+	]
+	assert sender_bus_needs_v4('CAN', dup[0], dup)
+}
+
+// THE OVERLAP THE WHICH-FORM TEST GOT WRONG. For socketcan a row's name defaults to its address
+// and compose_iface returns that address bare, so a channel NAMED `vcan1` sits on the INTERFACE
+// `vcan1` and the legacy `bus: vcan1` is both forms at once. It resolves to the same wire either
+// way, so it is not a v4 file — labelling it one makes every older build warn about a project
+// whose meaning has not changed.
+fn test_a_row_named_after_its_own_address_is_not_a_v4_file() {
+	chs := [
+		Channel{
+			name: 'vcan0'
+			iface: 'vcan0'
+		},
+		Channel{
+			name: 'vcan1'
+			iface: 'vcan1'
+		},
+	]
+	r := resolve_sender_bus('vcan1', chs[0], chs)
+	assert r.kind == .named, 'the name is still what answers first'
+	assert r.iface == 'vcan1', 'and it is the same wire the old rule would have opened'
+	assert !sender_bus_needs_v4('vcan1', chs[0], chs)
+	mut p := Project{
+		channels: chs
+	}
+	p.channels[0].senders = [
+		Sender{
+			name: 'to vcan1'
+			bus: 'vcan1'
+		},
+	]
+	assert version_for(p) == 2
+}
+
+fn test_warnings_name_only_what_cannot_be_settled() {
+	mut chs := shared_wire()
+	// one of each: own, a name, the legacy interface form, a bare wire — none of them a warning
+	chs[0].senders = [
+		Sender{
+			name: 'own'
+			bus: ''
+		},
+		Sender{
+			name: 'byname'
+			bus: 'Chassis'
+		},
+		Sender{
+			name: 'legacy'
+			bus: 'inproc:CAN2'
+		},
+		Sender{
+			name: 'bare'
+			bus: 'pcan:PCAN_USBBUS1@250000'
+		},
+	]
+	assert sender_bus_warnings(chs).len == 0, '${sender_bus_warnings(chs)}'
+	// and the one that cannot be settled
+	chs[2].senders = [
+		Sender{
+			name: 'shared'
+			bus: 'inproc:CAN1'
+		},
+	]
+	w := sender_bus_warnings(chs)
+	assert w.len == 1, '${w}'
+	assert w[0].starts_with('generator shared:'), w[0]
+	assert w[0].contains('inproc:CAN1'), w[0]
+}
+
+// The GUI attributes an unowned generator to EVERY channel on the wire it targets — it has to,
+// or its other warnings go unsaid — so the same generator arrives here once per sharer. One
+// warning, not one per row.
+fn test_an_unowned_generator_warns_once_not_once_per_sharer() {
+	mut chs := shared_wire()
+	g := Sender{
+		name: 'shared'
+		bus: 'inproc:CAN1'
+	}
+	chs[0].senders = [g]
+	chs[1].senders = [g]
+	w := sender_bus_warnings(chs)
+	assert w.len == 1, '${w}'
+}
+
+// A project that uses the NAME form must say so in `version:`: a build released before #97 reads
+// `bus:` as an interface and hands the name to the transport as a device name, which fails to
+// open. Everything else keeps declaring the version it declared, so ordinary projects stay
+// openable by older builds with no note.
+fn test_version_for_named_bus() {
+	mut p := Project{
+		channels: shared_wire()
+	}
+	p.channels[0].senders = [
+		Sender{
+			name: 'legacy'
+			bus: 'inproc:CAN2'
+		},
+	]
+	assert version_for(p) == 2, 'the interface form is what every older build already expects'
+	p.channels[0].senders = [
+		Sender{
+			name: 'bare'
+			bus: 'pcan:PCAN_USBBUS1@250000'
+		},
+	]
+	assert version_for(p) == 2, 'a bare wire is an interface too'
+	p.channels[0].senders = [
+		Sender{
+			name: 'byname'
+			bus: 'Chassis'
+		},
+	]
+	assert version_for(p) == 4
+}
+
+// THE REPORTED SYMPTOM, end to end: a generator owned by the SECOND channel of a shared wire
+// survives a save and a reload. Under the old rule the picker had nothing to store — that
+// channel's interface equals the first's, so `bus:` came out empty — and the reload restored
+// ownership from the first channel, silently reverting the selection.
+//
+// Through the real writer and the real parser, not a struct copy: the value has to survive being
+// spelled into YAML and read back, which is where a format decision actually lives.
+fn test_a_generator_on_the_second_channel_of_a_shared_wire_survives_a_round_trip() {
+	mut orig := Project{
+		name: 'shared'
+		channels: shared_wire()
+	}
+	// nested under the FIRST channel of the wire, but owned by the SECOND
+	orig.channels[0].senders = [
+		Sender{
+			name: 'Chassis torque'
+			id: 0x100
+			bus: 'Chassis'
+			trigger: 'cyclic'
+			cycle_ms: 100
+		},
+	]
+	text := orig.to_yaml()
+	assert text.contains('bus: Chassis'), text
+	rp := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert rp.version == 4, 'the name form is not readable by a build released before #97'
+	assert rp.channels[0].senders.len == 1
+	assert rp.channels[1].senders.len == 0, 'it belongs to the channel it is nested under'
+	g := rp.channels[0].senders[0]
+	assert g.bus == 'Chassis'
+	// …and it still resolves to the second channel, which is the whole point.
+	r := resolve_sender_bus(g.bus, rp.channels[0], rp.channels)
+	assert r.kind == .named
+	assert r.chan == 'Chassis', 'the selection reverted to the first channel before #97'
+	assert r.iface == 'inproc:CAN1'
+}
+
+// And the migration in the same shape: a file written to the OLD documentation round-trips
+// unchanged and keeps declaring the version it always did.
+fn test_the_interface_form_round_trips_and_stays_v2() {
+	mut orig := Project{
+		name: 'legacy'
+		channels: shared_wire()
+	}
+	orig.channels[0].senders = [
+		Sender{
+			name: 'to Body'
+			id: 0x200
+			bus: 'inproc:CAN2'
+		},
+	]
+	rp := parse(orig.to_yaml()) or {
+		assert false, err.msg()
+		return
+	}
+	assert rp.version == 2, 'an older build reads this exactly as it always has'
+	g := rp.channels[0].senders[0]
+	assert g.bus == 'inproc:CAN2'
+	r := resolve_sender_bus(g.bus, rp.channels[0], rp.channels)
+	assert r.kind == .iface
+	assert r.chan == 'Body'
+}
+
+// ==== the WRITER's side: what spells a target =========================================
+fn test_bus_value_is_empty_for_the_generators_own_channel() {
+	chs := shared_wire()
+	v := sender_bus_value(chs[1], chs[1], chs) or {
+		assert false, 'own channel must be expressible'
+		return
+	}
+	assert v == ''
+}
+
+fn test_bus_value_is_the_name_where_a_name_exists() {
+	chs := shared_wire()
+	v := sender_bus_value(chs[1], chs[0], chs) or {
+		assert false, 'a named channel is always expressible'
+		return
+	}
+	assert v == 'Chassis'
+	// …and it round-trips: the value written resolves back to the row that was picked.
+	r := resolve_sender_bus(v, chs[0], chs)
+	assert r.chan == 'Chassis'
+	assert r.iface == chs[1].iface
+}
+
+// An unnamed row is addressed by its interface, which is what the picker relies on.
+fn test_bus_value_falls_back_to_the_interface_for_an_unnamed_row() {
+	chs := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: ''
+			iface: 'inproc:CAN2'
+		},
+	]
+	v := sender_bus_value(chs[1], chs[0], chs) or {
+		assert false, 'an unnamed row on its own wire is expressible'
+		return
+	}
+	assert v == 'inproc:CAN2'
+}
+
+// THE COLLISION THE FALLBACK GOT WRONG: the unnamed row's interface is ANOTHER channel's name, so
+// writing it would resolve name-first to that other channel, on another wire. There is no
+// spelling for this row, and saying so is the only correct answer.
+fn test_bus_value_refuses_an_unnamed_row_whose_interface_is_another_channels_name() {
+	chs := [
+		Channel{
+			name: 'inproc:CAN2' // a channel NAMED like the other one's wire
+			iface: 'inproc:CAN9'
+		},
+		Channel{
+			name: ''
+			iface: 'inproc:CAN2'
+		},
+	]
+	// the value the old fallback would have written goes somewhere else entirely
+	wrong := resolve_sender_bus('inproc:CAN2', chs[0], chs)
+	assert wrong.iface == 'inproc:CAN9', 'name-first sends it to the namesake channel'
+	if v := sender_bus_value(chs[1], chs[0], chs) {
+		assert false, 'expected no spelling, got "${v}"'
+	}
+}
+
+// Every value this returns must resolve back to the row it was asked about — the property the
+// picker relies on, asserted over every ordered pair of a project that mixes the difficult cases.
+fn test_every_spelling_round_trips() {
+	chs := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'Chassis'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'vcan0'
+			iface: 'vcan0'
+		},
+		Channel{
+			name: ''
+			iface: 'inproc:CAN2'
+		},
+		// …and the arrangement round 4 named: an unnamed row whose interface is another
+		// channel's NAME, which is unaddressable and must be answered with none rather than
+		// with a spelling that goes somewhere else.
+		Channel{
+			name: ''
+			iface: 'inproc:CAN3'
+		},
+		Channel{
+			name: 'inproc:CAN3'
+			iface: 'inproc:CAN7'
+		},
+	]
+	for own in chs {
+		for target in chs {
+			v := sender_bus_value(target, own, chs) or { continue }
+			r := resolve_sender_bus(v, own, chs)
+			assert r.iface == target.iface, 'spelling "${v}" for ${target.name}/${target.iface} opened ${r.iface}'
+			assert r.chan == target.name || r.chan == '', 'spelling "${v}" named ${r.chan}'
+		}
+	}
+}
+
+// THE HAZARD ROUND 5 FOUND, stated where it can be pinned: a value nobody rewrites can change
+// meaning because the NAMESPACE moved under it. A legacy `bus: X` targets the channel whose
+// INTERFACE is X; rename an unrelated row TO X and the name-first rule answers with that row
+// instead, on another wire.
+//
+// This is why the GUI compares each override's resolution BEFORE and AFTER any edit to the
+// channel set rather than tracking which values it rewrote: no rewrite happens here at all.
+fn test_a_rename_can_shadow_an_untouched_interface_reference() {
+	before := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'Other'
+			iface: 'inproc:CAN9'
+		},
+	]
+	was := resolve_sender_bus('inproc:CAN1', before[1], before)
+	assert was.kind == .iface
+	assert was.iface == 'inproc:CAN1'
+	assert was.chan == 'Powertrain'
+	// the operator renames the UNRELATED row to the spelling of the first row's wire
+	after := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'inproc:CAN1'
+			iface: 'inproc:CAN9'
+		},
+	]
+	now := resolve_sender_bus('inproc:CAN1', after[1], after)
+	assert now.kind == .named
+	assert now.iface == 'inproc:CAN9', 'the same value, a different wire, and nothing rewrote it'
+	assert was.iface != now.iface, 'which is exactly what the GUI keys on'
+	// …and the row it MEANT is still spellable, so the override is preserved rather than lost.
+	v := sender_bus_value(after[0], after[1], after) or {
+		assert false, 'Powertrain is named, so it has a spelling'
+		return
+	}
+	assert v == 'Powertrain'
+	assert resolve_sender_bus(v, after[1], after).iface == 'inproc:CAN1'
+}
+
+// ==== did an edit move where an override sends? =======================================
+//
+// One line per case that a review round argued about, because each round wanted a different
+// answer for a case the others had not considered.
+// `owner`, not `chan`: `chan` is a V keyword, so a parameter of that name is a parse error where
+// the identically named STRUCT FIELD is fine. Same trap as the `shared()` helper in
+// cmd/blobly_net/genhome.
+fn sb(kind SenderBusKind, owner string, iface string) SenderBus {
+	return SenderBus{
+		kind: kind
+		chan: owner
+		iface: iface
+	}
+}
+
+fn test_an_unchanged_target_has_not_moved() {
+	assert !sender_target_moved(sb(.named, 'A', 'inproc:X'), sb(.named, 'A', 'inproc:X'))
+}
+
+fn test_a_different_wire_is_a_move() {
+	assert sender_target_moved(sb(.iface, 'A', 'inproc:X'), sb(.named, 'B', 'inproc:Y'))
+}
+
+// ROUND 3: two same-named rows on one wire collapse to one when a duplicate is deleted. The
+// destination is exactly where it was; the ambiguity merely resolved.
+fn test_ownership_becoming_resolvable_is_not_a_move() {
+	assert !sender_target_moved(sb(.ambiguous, '', 'inproc:X'), sb(.named, 'A', 'inproc:X'))
+}
+
+// ROUND 6: deleting `name: vcan1, iface: vcan1` — the ordinary SocketCAN shape — leaves
+// `bus: vcan1` resolving to the same characters as a BARE wire. Same string, and Start would
+// reopen the bus the operator just removed.
+fn test_a_wire_that_lost_its_row_is_a_move_even_at_the_same_spelling() {
+	assert sender_target_moved(sb(.named, 'vcan1', 'vcan1'), sb(.bare, '', 'vcan1'))
+}
+
+// ROUND 6: an unnamed row addressed by its unique interface, whose address is then edited. The
+// value still names that wire — the wire the row abandoned.
+fn test_an_abandoned_wire_is_a_move() {
+	assert sender_target_moved(sb(.iface, 'Unnamed', 'inproc:X'), sb(.bare, '', 'inproc:X'))
+}
+
+// …and the other direction is NOT: a bare target a newly added row comes to own is the same wire
+// carrying the same frames, and breaking a working override for that would be gratuitous.
+fn test_gaining_an_owner_is_not_a_move() {
+	assert !sender_target_moved(sb(.bare, '', 'inproc:X'), sb(.named, 'New', 'inproc:X'))
+}
+
+// A value that pointed nowhere had no destination to preserve, so nothing that happens to it is
+// a move — including it becoming valid.
+fn test_a_target_that_pointed_nowhere_never_moves() {
+	assert !sender_target_moved(sb(.ambiguous, '', ''), sb(.named, 'A', 'inproc:X'))
+	assert !sender_target_moved(sb(.ambiguous, '', ''), sb(.ambiguous, '', ''))
+}
+
+// ==== the pre-v4 migration ============================================================
+
+// A v2 file wrote `bus:` as an INTERFACE. Read name-first, a value pointing at the wire `X`
+// changes destination the moment an unrelated channel happens to be NAMED X — silently, on load,
+// with nothing having been edited. So it is converted to what it meant, once, at the boundary.
+fn test_a_legacy_interface_value_shadowed_by_a_name_is_migrated() {
+	text := "project:
+  name: legacy
+  version: 2
+buses:
+" + "  - name: Powertrain
+    adapter: virtual
+    address: CAN1
+" + "  - name: inproc:CAN1
+    adapter: virtual
+    address: CAN9
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: inproc:CAN1
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.channels[0].iface == 'inproc:CAN1'
+	assert p.channels[1].name == 'inproc:CAN1'
+	g := p.channels[1].senders[0]
+	assert g.bus == 'Powertrain', 'it meant the WIRE inproc:CAN1, which Powertrain owns; got `${g.bus}`'
+	r := resolve_sender_bus(g.bus, p.channels[1], p.channels)
+	assert r.iface == 'inproc:CAN1', 'and it still opens that wire'
+	assert p.notes.len == 1, '${p.notes}'
+	assert p.notes[0].contains('was written as an interface') || p.notes[0].contains('meant the interface'), p.notes[0]
+}
+
+// An ordinary legacy value that nothing shadows is left exactly as it was: the migration must not
+// churn files it has no reason to touch.
+fn test_an_unshadowed_legacy_value_is_untouched() {
+	text := "project:
+  name: legacy
+  version: 2
+buses:
+" + "  - name: Powertrain
+    adapter: virtual
+    address: CAN1
+" + "  - name: Body
+    adapter: virtual
+    address: CAN2
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: inproc:CAN1
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.channels[1].senders[0].bus == 'inproc:CAN1'
+	assert p.notes.len == 0, '${p.notes}'
+}
+
+// A v4 file already means what it says, so nothing is converted.
+fn test_a_v4_file_is_not_migrated() {
+	text := "project:
+  name: current
+  version: 4
+buses:
+" + "  - name: Powertrain
+    adapter: virtual
+    address: CAN1
+" + "  - name: inproc:CAN1
+    adapter: virtual
+    address: CAN9
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: inproc:CAN1
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.channels[1].senders[0].bus == 'inproc:CAN1', 'v4 means the NAME, and it says so'
+	assert p.notes.len == 0, '${p.notes}'
+}
+
+// What the format cannot express is REPORTED, not guessed: the old value named a bare wire, and a
+// channel is now named that, so no value can say the wire.
+fn test_a_legacy_bare_wire_shadowed_by_a_name_is_reported() {
+	text := "project:
+  name: legacy
+  version: 2
+buses:
+" + "  - name: vcan7
+    adapter: virtual
+    address: CAN9
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: vcan7
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.notes.len == 1, '${p.notes}'
+	assert p.notes[0].contains('no single configured channel answers to it'), p.notes[0]
+}
+
+// A uniquely configured UNNAMED row resolves to `.iface` with an EMPTY owner — one row, which
+// simply has no name. Anything deciding "was a single row meant" must read the KIND: a guard on
+// the owner being non-empty treats this as "no single target", and the GUI then cleared such an
+// override instead of following the row when its address was edited (codex round 7 on #97).
+fn test_a_unique_unnamed_row_is_one_row_with_an_empty_owner() {
+	chs := [
+		Channel{
+			name: 'Powertrain'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: ''
+			iface: 'inproc:CAN2'
+		},
+	]
+	r := resolve_sender_bus('inproc:CAN2', chs[0], chs)
+	assert r.kind == .iface, 'one row answers to it'
+	assert r.chan == '', 'and that row has no name — which is not the same as no row'
+	assert r.iface == 'inproc:CAN2'
+	// the distinction the guard has to make
+	amb := resolve_sender_bus('inproc:CAN1', chs[1], [
+		Channel{
+			name: 'A'
+			iface: 'inproc:CAN1'
+		},
+		Channel{
+			name: 'B'
+			iface: 'inproc:CAN1'
+		},
+	])
+	assert amb.kind == .ambiguous
+	assert amb.chan == '', 'the same empty owner, meaning something completely different'
+}
+
+// ==== "the one row that matches" ======================================================
+
+// The inline version of this marked "several" with a negative sentinel that the NEXT match
+// overwrote, so an ODD number of sharers came out as the last one. Three is the smallest case
+// that shows it, which is why it is the one asserted.
+fn test_only_row_stays_ambiguous_past_a_third_match() {
+	three := [
+		Channel{
+			name: 'A'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'B'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'C'
+			iface: 'inproc:X'
+		},
+	]
+	if k := only_row_on_iface(three, 'inproc:X') {
+		assert false, 'three rows share it; got row ${k}'
+	}
+	// two and one still answer as they should
+	if _ := only_row_on_iface(three[..2], 'inproc:X') {
+		assert false, 'two rows share it'
+	}
+	k1 := only_row_on_iface(three[..1], 'inproc:X') or {
+		assert false, 'one row has it'
+		return
+	}
+	assert k1 == 0
+	if _ := only_row_on_iface(three, 'inproc:NOPE') {
+		assert false, 'no row has it'
+	}
+}
+
+fn test_only_row_named_takes_both_halves_of_the_identity() {
+	chs := [
+		Channel{
+			name: 'A'
+			iface: 'inproc:X'
+		},
+		Channel{
+			name: 'A'
+			iface: 'inproc:Y'
+		},
+	]
+	k := only_row_named(chs, 'A', 'inproc:Y') or {
+		assert false, 'name and interface together identify one'
+		return
+	}
+	assert k == 1
+	if _ := only_row_named(chs, 'A', 'inproc:Z') {
+		assert false, 'no row is that pair'
+	}
+}
+
+// A file that states NO version predates v4 — the first version that changes what an existing key
+// MEANS — so it cannot have been written under v4 semantics and must be migrated. Project.version
+// cannot answer this: parse defaults an absent key to the newest schema.
+fn test_a_file_with_no_declared_version_is_migrated() {
+	text := "project:
+  name: ancient
+buses:
+" + "  - name: Powertrain
+    adapter: virtual
+    address: CAN1
+" + "  - name: inproc:CAN1
+    adapter: virtual
+    address: CAN9
+" + "    senders:
+      - name: g
+        id: 0x100
+        bus: inproc:CAN1
+"
+	p := parse(text) or {
+		assert false, err.msg()
+		return
+	}
+	assert p.version == schema_version, 'an absent key still reads as current everywhere else'
+	assert p.channels[1].senders[0].bus == 'Powertrain', 'but it was written interface-first'
+	assert p.notes.len == 1, '${p.notes}'
+	assert p.notes[0].contains('no declared version'), p.notes[0]
+}

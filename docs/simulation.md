@@ -656,9 +656,28 @@ focus) or `cyclic` (sent automatically while the measurement runs).
 `data:` is parsed as a string of hex bytes (`01 00`, `0102FF`). A YAML sequence such as
 `[0x01, 0x00]` is *not* interpreted as bytes — it is stringified and misread.
 
-`bus:` sends on a different bus, and it takes the **interface string**, not the channel's name:
-`bus: inproc:CAN2`, not `bus: CAN2`. The value is passed straight to the transport, so a
-channel name lands there as a device name and fails to open.
+`bus:` sends on a different bus, and it takes the **channel's name** — `bus: CAN2` (#97). Leave
+it out and the generator sends on the channel it is nested under.
+
+**A name, because an interface cannot say which channel.** Two configured channels may share one
+wire deliberately, so an interface picks the wire and not the owner — which is why picking the
+second channel of a shared wire in the Generators panel used to revert on the next save/reload,
+and why the trace could not say whose the frames were.
+
+**An interface string is still understood**, so every project written before this keeps working,
+and it remains the only way to name a wire that is **not a configured channel at all**:
+
+```yaml
+        bus: pcan:PCAN_USBBUS1@250000   # a wire with no channel row, at its own rate
+```
+
+A name is tried first, so a channel *named* like a wire resolves to the channel. If a value
+answers to two channels — an interface they share, or a name they share — the generator still
+transmits where the wire is not in doubt, and the Log says at Start that no channel owns its
+frames.
+
+A project that uses the name form declares `version: 4`, because a build released before #97
+reads `bus:` as an interface and would hand the name to the transport as a device name.
 
 ## Replay — playing a recording onto a bus
 
