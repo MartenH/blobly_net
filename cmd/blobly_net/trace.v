@@ -172,7 +172,13 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // echoes also records at emit whenever no monitor is running) and must not search for it either:
 // a scan can be outrun by traffic on a busy bus.
 fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, u64, u64) {
+	// The wait a send pays for the lock, on the emit path: this is the acquisition the
+	// trace, the wiretap and the expiry run under, so a lock-wait figure that measured only
+	// the guard's brief lock in TapBus.send said nothing about it (codex on #299 round 2).
+	probe_note_emit()
+	pt := probe_lock_begin()
 	app.mu.lock()
+	probe_lock_end(pt)
 	// Sampled AFTER the lock. Another operation can hold app.mu for longer than the echo window
 	// — opening a large recording during a measurement, say — and a time taken before blocking
 	// would make the emission look two seconds old the instant it is registered, expiring it
@@ -353,7 +359,9 @@ fn (app &App) tx_counts_locked() string {
 // alias's frames would otherwise land on a row the panel and the toolbar skip (r1).
 fn (mut app App) count_tx_load(iface string, f transport.CanFrame) {
 	key := transport.destination_key(iface)
+	pt := probe_lock_begin()
 	app.mu.lock()
+	probe_lock_end(pt)
 	defer {
 		app.mu.unlock()
 	}
@@ -432,7 +440,11 @@ fn (mut app App) wire_rates_locked(i int) (int, int) {
 		}
 	}
 	if nominal == 0 {
-		nominal = if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
+		nominal = if app.chans[i].bitrate > 0 {
+			app.chans[i].bitrate
+		} else {
+			project.default_bitrate
+		}
 	}
 	app.chans[i].load_nominal = nominal
 	app.chans[i].load_data = data
@@ -615,10 +627,12 @@ fn (mut app App) toggle_record() {
 // DBC does not carry, and it is reached only for a wire that has entries to match against.
 fn (mut app App) note_self_sent(iface string, f transport.CanFrame) {
 	if f.rtr {
-		return // an RTR request carries no payload and is not the traffic `verify:` is about
+		return
 	}
 	dest := transport.destination_key(iface)
+	pt := probe_lock_begin()
 	app.mu.lock()
+	probe_lock_end(pt)
 	defer {
 		app.mu.unlock()
 	}
