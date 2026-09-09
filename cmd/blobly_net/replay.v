@@ -765,7 +765,8 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// frames belong to that run and keep counting. Restart begins a run; seek scrubs one.
 			announced = false
 		}
-		for e in p.due(now) {
+		batch, dues := p.due_with_schedule(now)
+		for bi, e in batch {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
 			// returns everything owed at once, and stop was checked before the batch — so a
 			// Stop/Start during a long one left the PREDECESSOR dispatching into the new run,
@@ -788,18 +789,13 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				break
 			}
 			if probe_active {
-				// cadence: dispatch time against the player's own schedule for this frame,
-				// re-sampled per frame — after a stall due() hands back everything owed, and
-				// the later frames of that batch really do go out later. A batch that crossed
-				// a loop wrap carries the previous pass's tail, whose schedule is one pass
-				// earlier than the base the player has moved on to — the player never releases
-				// early, so a negative answer IS that case, and one pass is put back; a stall
-				// longer than a whole pass stays unscored, counted (codex on #299 round 5).
-				mut late := f64(i64(sw.elapsed())) / 1e6 - p.due_at_ms(e)
-				if late < -1.0 {
-					late += p.duration_s() * 1000.0 / p.speed
-				}
-				probe_note_late(late)
+				// cadence: dispatch time against the schedule this frame was RELEASED on,
+				// which the player hands back beside the batch — re-sampled per frame, since
+				// after a stall the batch is everything owed and its later frames really do go
+				// out later; and per entry, since a batch can cross one or several loop wraps
+				// and the player's base has moved on by the time it is read (codex on #299
+				// rounds 5 and 7).
+				probe_note_late(f64(i64(sw.elapsed())) / 1e6 - dues[bi])
 			}
 			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {

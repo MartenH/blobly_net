@@ -46,7 +46,7 @@ __global (
 	probe_late          [5]u64 // by late_edges_ms
 	probe_late_max_us   u64
 	probe_late_n        u64
-	probe_late_unscored u64 // released across a loop wrap: the schedule had moved on
+	probe_late_unscored u64 // a negative lateness: the instrument's defect, never the run's
 	probe_lock_n        u64
 	probe_lock_us       u64
 	probe_lock_max_us   u64
@@ -112,14 +112,35 @@ fn probe_begin() {
 	probe_measuring = true
 }
 
-// probe_note_late records one replayed frame's lateness in playback-clock ms. The player never
-// releases a frame early, so a negative value means the schedule moved under it: a batch that
-// straddles a loop wrap carries pass N's tail beside pass N+1's head, and by the time this runs
-// the player's base is the new pass's. Those frames are counted, not scored — scoring them
-// against the new base would file the ones a stall delayed as on-time.
+// probe_admit is how every counter writer enters: counted in-flight FIRST, then the
+// measurement asked whether it is open. Asked first and counted second, a writer that read
+// the flag just before the driver dropped it was invisible to the driver's wait and wrote
+// after the summary had been read (codex on #299 round 7). Now the driver drops the flag and
+// waits for zero, and a writer counted before the drop is waited for, one counted after it
+// sees the flag down and leaves; there is no order of the two in which a write escapes.
+fn probe_admit() bool {
+	stdatomic.add_u64(&probe_inflight, 1)
+	if probe_measuring {
+		return true
+	}
+	stdatomic.sub_u64(&probe_inflight, 1)
+	return false
+}
+
+fn probe_leave() {
+	stdatomic.sub_u64(&probe_inflight, 1)
+}
+
+// probe_note_late records one replayed frame's lateness in playback-clock ms against the
+// schedule the player released it on — a per-entry due time, so a batch that crossed one or
+// several loop wraps scores exactly. The player never releases early; a negative value is
+// counted as a defect of the instrument, not scored.
 fn probe_note_late(ms f64) {
-	if !probe_measuring {
+	if !probe_admit() {
 		return
+	}
+	defer {
+		probe_leave()
 	}
 	if ms < -1.0 {
 		stdatomic.add_u64(&probe_late_unscored, 1)
@@ -134,10 +155,9 @@ fn probe_note_late(ms f64) {
 }
 
 fn probe_lock_begin() i64 {
-	if !probe_measuring {
+	if !probe_admit() {
 		return 0
 	}
-	stdatomic.add_u64(&probe_inflight, 1)
 	return time.sys_mono_now()
 }
 
@@ -151,7 +171,7 @@ fn probe_lock_end(t0 i64) {
 	if us > probe_lock_max_us {
 		probe_lock_max_us = us
 	}
-	stdatomic.sub_u64(&probe_inflight, 1)
+	probe_leave()
 }
 
 // probe_hiccup_loop is the stall detector: it asks for 1 ms and records what it got.
@@ -176,11 +196,10 @@ fn probe_hiccup_loop() {
 			last_heap = prev
 		}
 		time.sleep(time.millisecond)
-		if !probe_measuring {
+		if !probe_admit() {
 			prev = 0
 			continue // the measurement closed during the sleep: this interval is not its
 		}
-		stdatomic.add_u64(&probe_inflight, 1)
 		now := time.sys_mono_now()
 		gnow := gc_count()
 		ms := f64(now - prev) / 1e6
@@ -192,7 +211,7 @@ fn probe_hiccup_loop() {
 		}
 		prev = now
 		gprev = gnow
-		stdatomic.sub_u64(&probe_inflight, 1)
+		probe_leave()
 		if u64(ms) > probe_hic_max_ms {
 			probe_hic_max_ms = u64(ms)
 		}
@@ -217,7 +236,7 @@ fn probe_summary() string {
 	alloc := f64(probe_bytes_end - probe_bytes_start) / 1048576.0
 	rate := if probe_run_s > 0 { alloc / probe_run_s } else { 0.0 }
 	mut s := ''
-	s += 'replay_frames=${probe_late_n} late_unscored_wrap=${probe_late_unscored}\n'
+	s += 'replay_frames=${probe_late_n} late_negative=${probe_late_unscored}\n'
 	s += 'late_lt1ms=${probe_late[0]} late_1_10ms=${probe_late[1]} late_10_100ms=${probe_late[2]} late_100_1000ms=${probe_late[3]} late_gt1000ms=${probe_late[4]} late_max_ms=${late_max:.1f}\n'
 	s += 'lockwait_n=${probe_lock_n} lockwait_avg_us=${lock_avg:.1f} lockwait_max_ms=${lock_max:.1f} lockwait_total_ms=${lock_total:.0f}\n'
 	s += 'hiccup_samples=${probe_hic_n} hic_lt20ms=${probe_hic[0]} hic_20_50=${probe_hic[1]} hic_50_200=${probe_hic[2]} hic_200_1000=${probe_hic[3]} hic_gt1000=${probe_hic[4]} hic_max_ms=${probe_hic_max_ms} hic_with_gc=${probe_hic_gc}\n'
@@ -270,6 +289,15 @@ fn probe_driver(secs int) {
 	}
 	probe_bytes_end = u64(gc_heap_usage().total_bytes)
 	probe_run_s = f64(time.sys_mono_now() - probe_begin_ns) / 1e9
+	// A run that replayed NOTHING is not a measurement, whatever start() said: a replay
+	// worker refuses after start() has returned — a reader that never came up, a recording
+	// that would not decode, a plan that kept no frames — and its refusal reaches the Log,
+	// not this thread. Zero frames scored is that outcome, and it exits as one (codex on
+	// #299 round 7).
+	if probe_late_n == 0 {
+		eprintln('probe: the run replayed no frames in ${probe_run_s:.1f} s; nothing to measure (see the Log)')
+		exit(3)
+	}
 	summary := probe_summary()
 	os.write_file(probe_out, summary) or {
 		eprintln('probe: cannot write ${probe_out}: ${err}')

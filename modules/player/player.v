@@ -241,13 +241,24 @@ pub fn (p Player) due_at_ms(e canlog.LogEntry) f64 {
 // to .finished. Call it at whatever tick rate suits the sink; every frame is
 // emitted exactly once per pass regardless of tick granularity.
 pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
+	es, _ := p.due_with_schedule(now_ms)
+	return es
+}
+
+// due_with_schedule is due() with the playback-clock time each entry was due at, side by
+// side. The batch a stalled caller receives can cross one or several loop wraps, and by the
+// time it reads the batch the player's base is the last pass's — so a caller scoring
+// lateness (the GUI's cadence probe) needs the schedule each entry was RELEASED on, which
+// only this function knows (codex on #299 rounds 5 and 7).
+pub fn (mut p Player) due_with_schedule(now_ms f64) ([]canlog.LogEntry, []f64) {
 	mut out := []canlog.LogEntry{}
+	mut due := []f64{}
 	if p.st != .playing {
-		return out
+		return out, due
 	}
 	if p.entries.len == 0 {
 		p.st = .finished
-		return out
+		return out, due
 	}
 	for {
 		if p.idx >= p.entries.len {
@@ -290,9 +301,10 @@ pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 			break
 		}
 		out << e
+		due << due_at
 		p.idx++
 	}
-	return out
+	return out, due
 }
 
 // state returns the transport state.
