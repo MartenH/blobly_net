@@ -776,7 +776,12 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// at how much stale traffic is acceptable, and the answer is none. An uncontended
 			// lock costs tens of nanoseconds against a send, and the batch is short whenever
 			// the cost would matter.
+			// Counted with the others: the GUI holding app.mu stalls every frame HERE first, and
+			// a cadence figure that includes the stall while the wait figure omits it says the
+			// mutex is not a factor with no evidence (codex on #299 round 4).
+			pt := probe_lock_begin()
 			a.mu.lock()
+			probe_lock_end(pt)
 			gone := !a.running || a.run_gen != gen
 			a.mu.unlock()
 			if gone {
