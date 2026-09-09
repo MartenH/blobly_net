@@ -10,16 +10,21 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Next
 
-- ⏭️ **Replay cadence — the residual after the wiretap fix.** A 13-bus replay now completes with
-  no frame over a second late, but ~25 collections a minute of 100–330 ms remain, and each is a
-  stop-the-world across every thread. The LENGTH is the live set: the whole recording is
-  materialised and held for the run (~900 MB, millions of small objects for the collector to
-  trace). Two things, measured with `cmd/blobly_net/probe.v` before and after: (1) the recording
-  in an arena — pointer-free rows plus one payload pool, so a collection has almost nothing to
-  walk, and a plan that indexes rather than copies; (2) an allocation-free hot loop (`due()` into a
-  caller buffer, `wire_policy` without string temporaries, the tap without per-frame clones), so
-  the replay thread never triggers a collection itself. And `timeBeginPeriod(1)` at startup: the
-  16 ms Windows timer quantum is a floor under every sleep the player takes. (3) `wiretap` holding
+- ⏭️ **Replay cadence — the residual after #299 and #300.** A 13-bus replay completes with 99% of
+  its frames within 1 ms and 28.5 MB/s of garbage; what remains is the collection's LENGTH — one
+  every ~10 s, 150–370 ms, each a stop-the-world across every thread. It is proportional to the live
+  set, which `cmd/blobly_net/probe.v` now samples right after each collection: **454 MB from a 17 MB
+  file**. The loader (`mf4.parse_cg`) builds 1.23 M `LogEntry`s, each 80 bytes with a pointer to its
+  own cloned payload, and the per-bus split and the player copy them again (+140 MB, measured). The
+  fix is the ARENA, measured with the probe before and after: pointer-free rows (`t_s`, id, flags, a
+  bus index, `[64]u8`) in one block V allocates no-scan, one label table, entries handed out as
+  VIEWS whose payload is a slice into the block, and a plan that indexes rather than copies — so a
+  collection has almost nothing to walk. Beside it, two follow-ups #300's review named: the
+  wire identity resolved ONCE per channel and per tap at open (`wire`/`dest` on `Chan` and
+  `TapBus`), since on a vendor wire `wire_key` still allocates ~8 strings per call and is asked
+  ~30 times per frame; and a per-group index for the grouped Trace view in place of its
+  string-keyed map, which still copies a ~400-byte aggregate out and back per row per repaint
+  and regrows its hash index on every `clear()`. Also `wiretap` holding
   only IN-FLIGHT records: a settled record is kept until it ages out or is evicted, so on a
   healthy bus the ring sits at its 1024 cap and every note at cap moves ~180 KB under `app.mu`
   to retire one — deleting it at the claim that settles it leaves tens of records, and the one

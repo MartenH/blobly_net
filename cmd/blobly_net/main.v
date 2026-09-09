@@ -16,6 +16,7 @@
 module main
 
 import os
+import player
 import time
 import sync.stdatomic
 import vgui
@@ -187,7 +188,7 @@ fn main() {
 	// BLOBLY_AUTOSTART_FRAME.
 	// BLOBLY_PROBE_LOG (probe.v) implies it: the probe must not start the run from a worker
 	// thread on a wall-clock guess, which is the trigger this gate exists to remove.
-	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' || os.getenv('BLOBLY_PROBE_LOG') != '' {
+	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' || probe_active {
 		n := os.getenv('BLOBLY_AUTOSTART_FRAME').int()
 		if n > 0 {
 			n
@@ -200,6 +201,9 @@ fn main() {
 	// BLOBLY_FOCUS=PanelName brings that panel's tab to the front once at startup (test/dev aid).
 	focus_panel := os.getenv('BLOBLY_FOCUS')
 
+	// Before anything paces itself: the platform's timer resolution is what every sleep
+	// below a quantum rounds up to (pace.v).
+	player.raise_timer_resolution()
 	mut frame := 0
 	for vgui.running() {
 		frame++
@@ -245,12 +249,26 @@ fn main() {
 		app.roll_bus_load_locked()
 		rx := app.rx
 		txs := app.tx_counts_locked()
-		rows := app.trace.clone()
+		// Into buffers the GUI thread keeps, not fresh clones: the copies are shallow either
+		// way (rows share their strings and payloads with the ring), and a clone per frame of
+		// a 2000-row ring was the render loop's whole contribution to the collector's schedule
+		// — ~450 KB a frame, more while the ring's capacity had just doubled (#299's follow-up).
+		// The map stays a clone — ~50-100 KB a frame at a thousand groups, and its keys are
+		// deep-copied by V's map.clone(); a per-group index in place of the string-keyed
+		// map is the deeper change, on the ROADMAP.
+		app.snap_rows.clear()
+		app.snap_rows << app.trace
+		app.snap_trecs.clear()
+		app.snap_trecs << app.trecs
+		app.snap_chans.clear()
+		app.snap_chans << app.chans
+		rows := app.snap_rows
 		gcount := app.gcount.clone()
-		trecs := app.trecs.clone()
-		chans := app.chans.clone()
+		trecs := app.snap_trecs
+		chans := app.snap_chans
 		app.mu.unlock()
 
+		pf := probe_alloc_mark()
 		vgui.frame_begin()
 		if focus_panel != '' && frame == 3 {
 			vgui.set_window_focus(focus_panel)
@@ -344,6 +362,7 @@ fn main() {
 		app.poll_shortcuts()
 
 		vgui.frame_end()
+		probe_alloc_note(.render, pf)
 		if last {
 			app.elog('rendered ${frame} frames; RX ${rx}')
 			break

@@ -48,6 +48,9 @@ struct Opts {
 }
 
 fn main() {
+	// Before anything paces itself: on Windows every sleep rounds up to the scheduler quantum
+	// until the process asks for the 1 ms one (modules/player/pace_windows.v).
+	player.raise_timer_resolution()
 	o := parse_args() or {
 		eprintln('restbus: ${err}')
 		eprintln('usage: restbus --source <file.mf4> --bus <name|iface> --dbc <file.dbc> --exclude <NODE> --iface <iface>')
@@ -222,7 +225,9 @@ fn pump(mut p player.Player, mut buses map[string]transport.Bus, attempts int) (
 		nd := p.next_due_ms() or { break }
 		wait := nd - f64(i64(sw.elapsed())) / 1e6
 		if wait > 0 {
-			time.sleep(i64(wait * 1_000_000) * time.nanosecond)
+			// Through the player's own pacing: a plain sleep spins below a millisecond on Windows
+			// and rounds up to the quantum above it (#300).
+			player.wait_until_ms(mut sw, nd) // the absolute due time, not a re-sampled remainder
 		}
 		el := f64(i64(sw.elapsed())) / 1e6
 		if el - last_report >= 1000.0 {

@@ -187,8 +187,8 @@ fn parse_recording(buf []u8) !Recording {
 				// Tallied per channel group inside, since each has its own acquisition name.
 				base := seq
 				before := out.len
-				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut
-					out, mut bus_names, mut bus_counts, mut order)!
+				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut out, mut
+					bus_names, mut bus_counts, mut order)!
 				// demux appends this group's INTERLEAVED record ordinals; lift them onto the
 				// file-wide scale so ties never compare a per-group ordinal against a global one.
 				mut top := base
@@ -364,13 +364,13 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 // chan holds the record-layout facts we need for one leaf channel.
 struct Chan {
 	name      string
-	cn_type   u8    // 0=fixed, 1=VLSD, 2=master, 5=MLSD (max-length inline)
-	data_type u8    // 0/1=uint LE/BE, 2/3=int, 4/5=float LE/BE
-	byte_off  int   // offset of the field within a record
-	bit_off   u8    // bit offset within that byte (CANedge bit-packs channels)
+	cn_type   u8  // 0=fixed, 1=VLSD, 2=master, 5=MLSD (max-length inline)
+	data_type u8  // 0/1=uint LE/BE, 2/3=int, 4/5=float LE/BE
+	byte_off  int // offset of the field within a record
+	bit_off   u8  // bit offset within that byte (CANedge bit-packs channels)
 	bit_count u32
-	data_link u64   // cn_data: VLSD signal-data block (type 1) or length channel (type 5)
-	cc_link   u64   // cn_cc_conversion (CCBLOCK), for the master-time scale
+	data_link u64 // cn_data: VLSD signal-data block (type 1) or length channel (type 5)
+	cc_link   u64 // cn_cc_conversion (CCBLOCK), for the master-time scale
 	// cn_flags bit 0 = EVERY sample of this channel is invalid; bit 1 = it has a per-record
 	// invalidation bit, whose position in the record's invalidation area is cn_inval_bit_pos.
 	// Either way the raw bits are undefined where the flag applies — reading them anyway
@@ -391,6 +391,7 @@ struct Chan {
 // to preserve (codex #175 r3).
 fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int, mut rec_idx []int,
 	mut out []canlog.LogEntry) ! {
+	mut labels := new_labels(group)
 	cgl := block_links(buf, cg)
 	cg_d := data_off(buf, cg)
 	declared := binary.little_endian_u64_at(buf, cg_d + 8)
@@ -585,7 +586,8 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			if chan_invalid(raw, base, data_bytes, inval_bytes, c_len) {
 				continue
 			}
-			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
+			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off),
+				int(c_len.bit_count))
 			// Whichever channel was chosen above: a DataLength states bytes outright, a DLC is a
 			// code to decode. Deciding by name rather than assuming DLC keeps the fallback honest
 			// for a writer that records only DataLength.
@@ -618,8 +620,8 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 				expect := if len_is_bytes {
 					?u64(stated)
 				} else {
-					fd := c_edl.bit_count > 0 && read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off),
-						int(c_edl.bit_count)) == 1
+					fd := c_edl.bit_count > 0
+						&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1
 					dlc_bytes(stated, fd)
 				}
 				// `none` is NOT permission. It means the record states no resolvable length —
@@ -632,12 +634,14 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 				}
 			}
 		} else {
-			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
+			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off),
+				int(c_len.bit_count))
 			// A DLC is a CODE. Without decoding it, a classic frame carrying DLC 9..15 (legal,
 			// and meaning 8 bytes) reads as a length of 9..15, overruns the record's DataBytes
 			// field and yields NO payload — a regression the byte-count path never sees because
 			// DataLength already states bytes.
-			fd_here := c_edl.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_edl)
+			fd_here := c_edl.bit_count > 0
+				&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_edl)
 				&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1
 			// A DLC the format cannot resolve (out of range in a damaged record) means the
 			// length is UNKNOWN. Falling back to 8 accepted the first eight bytes of the field
@@ -699,7 +703,7 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		out << canlog.LogEntry{
 			t_s:   ts
 			dir:   dir
-			iface: bus_iface(bus_no, group)
+			iface: labels.label(bus_no)
 			frame: transport.CanFrame{
 				id:       u32(rid) & 0x1FFFFFFF
 				extended: ide
@@ -734,6 +738,33 @@ fn bus_iface(bus_no int, group int) string {
 		return 'mf4:bus${bus_no}'
 	}
 	return 'mf4:group${group}'
+}
+
+// Labels hands out ONE string per bus, not one per record: a recording of a million frames
+// otherwise carried a million copies of a dozen labels — a million objects for the collector to
+// mark on every pass, for as long as the replay held the recording (#299's follow-up). Keyed on
+// what bus_iface keys on, so the text is the same; only the identity is shared.
+struct Labels {
+	group string // the label a record without its own BusChannel gets: one per parse_cg
+mut:
+	by_bus map[int]string
+}
+
+fn new_labels(group int) Labels {
+	return Labels{
+		group: bus_iface(-1, group)
+	}
+}
+
+fn (mut l Labels) label(bus_no int) string {
+	if bus_no < 0 {
+		return l.group
+	}
+	return l.by_bus[bus_no] or {
+		s := bus_iface(bus_no, -1)
+		l.by_bus[bus_no] = s
+		s
+	}
 }
 
 // collect_channels walks a cn_next chain, recursing into struct compositions
