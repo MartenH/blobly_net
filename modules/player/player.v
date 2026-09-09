@@ -241,8 +241,10 @@ pub fn (p Player) due_at_ms(e canlog.LogEntry) f64 {
 // to .finished. Call it at whatever tick rate suits the sink; every frame is
 // emitted exactly once per pass regardless of tick granularity.
 pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
-	es, _ := p.due_with_schedule(now_ms)
-	return es
+	mut out := []canlog.LogEntry{}
+	mut none_wanted := []f64{}
+	p.release(now_ms, mut out, mut none_wanted, false)
+	return out
 }
 
 // due_with_schedule is due() with the playback-clock time each entry was due at, side by
@@ -253,12 +255,20 @@ pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 pub fn (mut p Player) due_with_schedule(now_ms f64) ([]canlog.LogEntry, []f64) {
 	mut out := []canlog.LogEntry{}
 	mut due := []f64{}
+	p.release(now_ms, mut out, mut due, true)
+	return out, due
+}
+
+// release is the ONE body behind due and due_with_schedule: the schedule is appended only
+// when asked for, so a caller that does not score lateness (cmd/restbus) builds no second
+// array per batch (codex on #299 round 8).
+fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, with_due bool) {
 	if p.st != .playing {
-		return out, due
+		return
 	}
 	if p.entries.len == 0 {
 		p.st = .finished
-		return out, due
+		return
 	}
 	for {
 		if p.idx >= p.entries.len {
@@ -301,10 +311,11 @@ pub fn (mut p Player) due_with_schedule(now_ms f64) ([]canlog.LogEntry, []f64) {
 			break
 		}
 		out << e
-		due << due_at
+		if with_due {
+			due << due_at
+		}
 		p.idx++
 	}
-	return out, due
 }
 
 // state returns the transport state.

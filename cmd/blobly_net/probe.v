@@ -119,6 +119,11 @@ fn probe_begin() {
 // waits for zero, and a writer counted before the drop is waited for, one counted after it
 // sees the flag down and leaves; there is no order of the two in which a write escapes.
 fn probe_admit() bool {
+	// A plain bool first: with no probe configured this is the hot path's whole cost, and an
+	// atomic pair per lock take on every send is not "inert" (codex on #299 round 8).
+	if !probe_active {
+		return false
+	}
 	stdatomic.add_u64(&probe_inflight, 1)
 	if probe_measuring {
 		return true
@@ -211,7 +216,6 @@ fn probe_hiccup_loop() {
 		}
 		prev = now
 		gprev = gnow
-		probe_leave()
 		if u64(ms) > probe_hic_max_ms {
 			probe_hic_max_ms = u64(ms)
 		}
@@ -225,6 +229,10 @@ fn probe_hiccup_loop() {
 				probe_heap_max_mb = h
 			}
 		}
+		// Admitted through the LAST write of the sample: left earlier, the driver could read
+		// the summary while the maximum and the heap extremes were still being written
+		// (codex on #299 round 8).
+		probe_leave()
 	}
 }
 
