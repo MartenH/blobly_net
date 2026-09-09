@@ -653,7 +653,12 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 					break
 				}
 			}
-			if !read && app.tx_health.may_claim(wk, gen) {
+			// may_claim_now, not may_claim: this path exists to catch the FIRST moment a wire
+			// becomes transmittable, and a RETRY after a failed reader belongs to the supervisor's
+			// once-a-second pass — otherwise several taps filed on one wire could each restart a
+			// fast-failing reader and burn the three-failure budget in a few hundred milliseconds
+			// (codex round 8 on #142).
+			if !read && app.tx_health.may_claim_now(wk, gen) {
 				app.tx_health.claim(wk, gen)
 				app.reserve_run_worker_locked() // released by the reader's own defer
 				watch = iface

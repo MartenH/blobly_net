@@ -60,6 +60,25 @@ pub fn (l Ledger) may_claim(wire string, gen u64) bool {
 	return !e.held && !e.retired
 }
 
+// may_claim_now reports whether this wire may be claimed OUTSIDE the supervisor's once-a-second
+// pass — that is, whether this is the first time in this run that anybody has watched it.
+//
+// THE FIRST CLAIM IS URGENT AND A RETRY IS NOT. A wire becomes watchable the instant its transmit
+// tap is filed, because that is when a generator can start firing into a controller that may go
+// bus-off immediately, and waiting up to a second for the next census can lose that transition
+// permanently. But once a reader has run and failed, restarting it immediately buys nothing and
+// costs the observation window: with several taps filed on one wire, each could claim the wire a
+// failing reader had just released, exhausting the three-failure retirement in a few hundred
+// milliseconds during a transient controller reset (codex round 8 on #142). Retries stay on the
+// supervisor's clock.
+pub fn (l Ledger) may_claim_now(wire string, gen u64) bool {
+	e := l.wires[wire] or { return true }
+	if e.gen != gen {
+		return true // nobody has watched it in THIS run
+	}
+	return false
+}
+
 // claim records that a reader is being started. A wire carried over from an earlier run starts
 // with a clean count: the failures belonged to that run's adapter, not to this one's.
 pub fn (mut l Ledger) claim(wire string, gen u64) {
