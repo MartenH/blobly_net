@@ -1,6 +1,7 @@
 module main
 
 import math
+import genhome
 import project
 import sim
 import time
@@ -197,8 +198,16 @@ fn draw_gen(mut app App) {
 						// ownership from the first and the selection silently reverted. '' still
 						// means the generator's own channel, compared by NAME and interface
 						// together, since either alone can match a sibling on the same wire.
+						//
+						// A CHANNEL WITH NO NAME FALLS BACK TO ITS INTERFACE. The name editor
+						// accepts and saves an empty one, and storing that would write `bus: ''`
+						// — which the resolver reserves for the generator's OWN channel, so the
+						// click would silently leave it where it was. The interface form still
+						// addresses such a row; it cannot distinguish two of them on one wire,
+						// which is what sender_bus_warnings then says (codex round 1 on #97).
 						same := c.name == sr.own && c.iface == sr.iface
-						app.set_sender_bus(i, if same { '' } else { c.name }, c.name)
+						pick := if c.name != '' { c.name } else { c.iface }
+						app.set_sender_bus(i, if same { '' } else { pick }, c.name)
 					}
 				}
 			}
@@ -322,53 +331,34 @@ fn (mut app App) sync_senders_into_proj() {
 		}
 	}
 	mut p := app.proj
-	// BY THE CHANNEL EACH GENERATOR IS NESTED UNDER, and by its INDEX (#97).
-	//
-	// Grouping by interface — what this did before — put every generator on a shared wire into
-	// BOTH channels' lists: the loop asks each channel for the senders whose iface matches, and two
-	// channels with one iface both match every one of them, so a Save DUPLICATED them and the next
-	// load came back with two of each.
-	//
-	// Grouping by NAME has the same defect one step removed, because nothing enforces unique
-	// channel names either: two rows agreeing on name and interface are indistinguishable, the
-	// first absorbs the second's generators, and the second loses them on reload. The index is the
-	// only thing that separates them, and it is a real identity here — channels are appended and
-	// deleted, never reordered, and remove_bus restacks the generators' copies.
-	//
-	// The name and interface are asked only as a CONSISTENCY CHECK, so a stale index cannot hand a
-	// generator to an unrelated row; when they disagree the generator falls back to the row that
-	// does match, and when nothing matches it is dropped — which is what happens to a generator
-	// whose channel has been deleted, and is the behaviour that predates #97. Re-homing it onto the
-	// first channel instead would take a cyclic generator from a deleted `inproc:` row and start it
-	// transmitting on whatever real bus happens to be listed first, with nothing on screen saying
-	// it moved.
-	mut taken := []bool{len: app.senders.len}
+	// WHERE EACH GENERATOR IS WRITTEN BACK is `genhome.homes`, which is tested — five defects
+	// landed in this one decision across two review rounds of #97, the last of them introduced by
+	// the previous round's fix, so the rule moved somewhere it could be covered rather than being
+	// repaired a sixth time. genhome.v names all five.
+	mut gens := []genhome.Gen{cap: app.senders.len}
+	for sr in app.senders {
+		gens << genhome.Gen{
+			own:     sr.own
+			own_idx: sr.own_idx
+			iface:   sr.iface
+		}
+	}
+	mut rows := []genhome.Row{cap: p.channels.len}
+	for c in p.channels {
+		rows << genhome.Row{
+			name:  c.name
+			iface: c.iface
+		}
+	}
+	home := genhome.homes(gens, rows)
 	for ci in 0 .. p.channels.len {
 		mut ss := []project.Sender{}
 		for si, sr in app.senders {
-			if taken[si] || sr.own_idx != ci {
-				continue
-			}
-			if sr.own == p.channels[ci].name && sr.iface == p.channels[ci].iface {
-				taken[si] = true
+			if si < home.len && home[si] == ci {
 				ss << sr.sender
 			}
 		}
 		p.channels[ci].senders = ss
-	}
-	// The index disagreed with the row it points at — a structural edit this function was not told
-	// about. Fall back to the row that does match by name and interface, in order, rather than
-	// losing the generator to a bookkeeping slip.
-	for ci in 0 .. p.channels.len {
-		for si, sr in app.senders {
-			if taken[si] {
-				continue
-			}
-			if sr.own == p.channels[ci].name && sr.iface == p.channels[ci].iface {
-				taken[si] = true
-				p.channels[ci].senders << sr.sender
-			}
-		}
 	}
 	app.proj = p
 }

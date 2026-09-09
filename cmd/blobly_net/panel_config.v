@@ -550,8 +550,11 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			}
 		}
 		app.proj.channels[i].address = typed
-		app.proj.channels[i].iface = project.compose_iface(ch.adapter, app.proj.channels[i].address)
-		app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
+		new_iface := project.compose_iface(ch.adapter, app.proj.channels[i].address)
+		// BEFORE the assignment: rebind_senders resolves `bus:` against the project as it stands,
+		// and moves only THIS row's generators (codex round 1 on #97).
+		app.rebind_senders(i, old_iface, new_iface) // keep this bus's generators bound
+		app.proj.channels[i].iface = new_iface
 		app.dirty = true
 	}
 	vgui.same_line()

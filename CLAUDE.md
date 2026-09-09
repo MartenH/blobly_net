@@ -126,7 +126,17 @@ and when a bus-load interval closes and what a spawning or unread row does with 
 progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`, the trace's
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
-never averaged into a cadence (#266); and `cmd/blobly_net/drainrule/`, when the runtime view
+never averaged into a cadence (#266); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, what a
+row deletion and an address edit do to that, and which renames a commit can be trusted about
+(#97). Extracted rather than repaired a sixth time: five defects landed in that one decision
+across two review rounds, and the last of them was introduced by the previous round's fix, which
+is the signal this guide names for covering a path instead of patching it. All five old
+implementations are pinned by the test — grouping by interface (which DUPLICATED a shared wire's
+generators into both rows), grouping by name (which let one of two indistinguishable rows absorb
+the other's), re-homing an orphan onto row 0 (which could start a deleted `inproc:` row's cyclic
+generator transmitting on the first REAL bus listed), rebinding by interface (which deleted a
+sibling alias's generators when one alias was retargeted — a P1) and renaming one row at a time
+(which skipped the second of A->B, B->C); and `cmd/blobly_net/drainrule/`, when the runtime view
 (`app.chans`/`dbs`/`sims`/`senders`) may be REPLACED. **`rebuild_from_proj` WAITS for the run's
 workers** (`wait_for_run_workers`, bounded at `drain_budget_ms` = 1500, measured at ~200 ms and
 nearly all of it `rx_loop`'s own `recv(200)`) — which is the whole fix, because until then

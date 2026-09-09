@@ -3,6 +3,7 @@ module main
 import candb
 import os
 import time
+import genhome
 import project
 import saverule
 import transport
@@ -477,22 +478,32 @@ fn (mut app App) remove_bus(i int) {
 	removed_name := app.proj.channels[i].name
 	app.proj.channels.delete(i)
 	app.mu.lock()
-	// THE REMOVED ROW'S OWN GENERATORS GO WITH IT, and the indices behind it restack. Deleting a
-	// bus has always taken its generators — they simply matched no channel on the next Save — and
-	// saying it here rather than leaving it to fall out of a lookup is what lets sync_senders_into_proj
-	// treat "matched nothing" as the bookkeeping slip it now is (#97). Backwards, so the earlier
-	// deletions cannot shift the indices of the ones not yet examined.
+	// THE REMOVED ROW'S OWN GENERATORS GO WITH IT, and the indices behind it restack —
+	// `genhome.restack`, tested. Deleting a bus has always taken its generators (they simply
+	// matched no channel on the next Save); doing it explicitly is what lets genhome.homes treat
+	// "matched nothing" as the bookkeeping slip it now is. Applied BACKWARDS so the deletions
+	// cannot shift the indices of the entries not yet reached.
+	mut gens := []genhome.Gen{cap: app.senders.len}
+	for sr in app.senders {
+		gens << genhome.Gen{
+			own:     sr.own
+			own_idx: sr.own_idx
+			iface:   sr.iface
+		}
+	}
+	stacked := genhome.restack(gens, i)
 	for si := app.senders.len - 1; si >= 0; si-- {
-		if app.senders[si].own_idx == i {
+		if si >= stacked.len {
+			continue
+		}
+		if stacked[si] == genhome.dropped {
 			app.senders.delete(si)
 			if si < app.gen_bufs.len {
 				app.gen_bufs.delete(si)
 			}
 			continue
 		}
-		if app.senders[si].own_idx > i {
-			app.senders[si].own_idx--
-		}
+		app.senders[si].own_idx = stacked[si]
 	}
 	// Drop generator bus-overrides that pointed at the removed bus, so start() won't reopen and
 	// transmit on a channel that is no longer configured (they fall back to their own channel).
@@ -566,8 +577,10 @@ fn (mut app App) set_adapter(i int, a string) {
 	} else if app.proj.channels[i].typ == 'doip' {
 		app.proj.channels[i].typ = 'can'
 	}
-	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
-	app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
+	new_iface := project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
+	// BEFORE the assignment: rebind_senders resolves `bus:` against the project as it stands.
+	app.rebind_senders(i, old_iface, new_iface) // keep this bus's generators bound
+	app.proj.channels[i].iface = new_iface
 	app.dirty = true
 	app.rebuild_preserving_senders()
 }
@@ -588,8 +601,9 @@ fn (mut app App) retarget_bus(i int, adapter string, address string) {
 	old_iface := app.proj.channels[i].iface
 	app.cfg_bufs[i].address_buf = mkbuf(address, 64)
 	app.proj.channels[i].address = address
+	// BEFORE the assignment, for the reason rebind_senders states.
+	app.rebind_senders(i, old_iface, project.compose_iface(adapter, address))
 	app.proj.channels[i].iface = project.compose_iface(adapter, address)
-	app.rebind_senders(old_iface, app.proj.channels[i].iface)
 	app.dirty = true
 }
 
@@ -607,23 +621,59 @@ fn (mut app App) rebuild_preserving_senders() {
 // by the channel it is nested under, so a stale SenderRT.iface would drop all of a renamed bus's
 // generators on the next Save/Start. Also follows explicit per-sender bus overrides written in
 // the legacy interface form.
+// rebind_senders carries row `row`'s generators to its new interface when its address is edited,
+// so the edit does not orphan them.
+//
+// CALLED BEFORE THE MODEL IS CHANGED. It has to resolve `bus:` overrides against the project as
+// it still stands, and once `channels[row].iface` holds the new value there is nothing left to
+// ask the old question of.
+//
+// BY ROW, not by interface. Matching on the old interface alone moved the generators of EVERY
+// channel on that wire — two rows may share one deliberately — so retargeting one alias left the
+// other's generators carrying an interface their own row does not have. They then failed the
+// name-and-interface check in sync_senders_into_proj, failed its fallback too, and were DELETED
+// from the project on the next Save: an edit to one row silently destroying another's work
+// (codex round 1 on #97, P1).
+//
+// AN OVERRIDE FOLLOWS ONLY IF IT REALLY POINTED HERE. `bus:` is a channel NAME since #97 and an
+// interface only when no channel answers to the value, so a value that spells this row's old
+// interface may well belong to a channel NAMED that — a collision the name-first rule explicitly
+// supports — and rewriting it would silently retarget that generator to this row's new address.
+// The resolver is asked; only `.iface` follows. `.ambiguous` does not either: on a shared wire the
+// value still names the sibling's wire after this row leaves it.
+//
 // UNDER app.mu, like every other writer of app.senders: gen_loop copies these same strings under
 // the lock every 8 ms, and a V string assignment is not atomic. The lock is taken here rather
-// than by the callers because both of these run from GUI edit handlers that hold nothing.
-fn (mut app App) rebind_senders(old_iface string, new_iface string) {
+// than by the callers, which run from GUI edit handlers that hold nothing.
+fn (mut app App) rebind_senders(row int, old_iface string, new_iface string) {
 	if old_iface == new_iface || old_iface == '' {
 		return
 	}
 	app.mu.lock()
-	for si in 0 .. app.senders.len {
-		if app.senders[si].iface == old_iface {
-			app.senders[si].iface = new_iface
-		}
-		if app.senders[si].sender.bus == old_iface {
-			app.senders[si].sender.bus = new_iface
+	defer {
+		app.mu.unlock()
+	}
+	mut rows := []project.Channel{cap: app.proj.channels.len}
+	for c in app.proj.channels {
+		rows << project.Channel{
+			name:  c.name
+			iface: c.iface
 		}
 	}
-	app.mu.unlock()
+	for si in 0 .. app.senders.len {
+		if app.senders[si].sender.bus == old_iface {
+			own := project.Channel{
+				name:  app.senders[si].own
+				iface: app.senders[si].iface
+			}
+			if project.resolve_sender_bus(old_iface, own, rows).kind == .iface {
+				app.senders[si].sender.bus = new_iface
+			}
+		}
+		if genhome.moves_with_row(genhome.Gen{ own_idx: app.senders[si].own_idx }, row) {
+			app.senders[si].iface = new_iface
+		}
+	}
 }
 
 // rebind_sender_renames follows a commit's RENAMES into the generators, which `bus:` now holds
@@ -644,20 +694,11 @@ fn (mut app App) rebind_sender_renames(was []string) {
 	defer {
 		app.mu.unlock()
 	}
-	mut renamed := map[string]string{} // old name -> new, only where the old named ONE row
-	mut old_count := map[string]int{}
-	for o in was {
-		old_count[o]++
+	mut now := []string{cap: app.proj.channels.len}
+	for c in app.proj.channels {
+		now << c.name
 	}
-	for i, o in was {
-		if i >= app.proj.channels.len {
-			break
-		}
-		n := app.proj.channels[i].name
-		if o != '' && n != '' && o != n && old_count[o] == 1 {
-			renamed[o] = n
-		}
-	}
+	renamed := genhome.renames(was, now) // old name -> new, only where the old named ONE row
 	for si in 0 .. app.senders.len {
 		idx := app.senders[si].own_idx
 		if idx >= 0 && idx < app.proj.channels.len && idx < was.len
