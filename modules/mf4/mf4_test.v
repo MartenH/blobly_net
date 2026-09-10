@@ -159,7 +159,8 @@ fn test_a_recorded_bus_and_a_fallback_ordinal_cannot_collide() {
 
 // And neither can be mistaken for a project interface.
 fn test_an_imported_label_is_not_a_project_interface() {
-	for label in [bus_iface(0, 0), bus_iface(3, 0), bus_iface(-1, 0), bus_iface(-1, 2)] {
+	for label in [bus_iface(0, 0), bus_iface(3, 0), bus_iface(-1, 0),
+		bus_iface(-1, 2)] {
 		assert label.starts_with('mf4:'), '${label} could match a project channel by that name'
 	}
 }
@@ -425,8 +426,11 @@ fn test_vlsd_payloads_are_read_from_the_sd_block() {
 		[u8(0xAA), 0xBB, 0xCC],
 		[u8(1), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
 	]
-	img := build_vlsd_sd_file(payloads, [u32(0x123), 0x1ABCDEF, 0x456], [false, true, false],
-		[0.001, 0.002, 0.003])
+	img := build_vlsd_sd_file(payloads, [u32(0x123), 0x1ABCDEF, 0x456], [false, true, false], [
+		0.001,
+		0.002,
+		0.003,
+	])
 	entries := parse(img) or {
 		assert false, 'parse failed: ${err}'
 		return
@@ -463,7 +467,10 @@ fn find_block(buf []u8, id string) int {
 // end of the file and the trailing filler is decoded as records.
 fn test_a_corrupt_vlsd_offset_costs_one_frame_not_the_process() {
 	payloads := [[u8(1), 2, 3, 4], [u8(5), 6]]
-	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002])
+	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [
+		0.001,
+		0.002,
+	])
 	dt := find_block(img, '##DT')
 	assert dt > 0, 'fixture has no DT block'
 	rec1 := dt + 24 + 18 // past the common header (no links) and the first 18-byte record
@@ -483,7 +490,10 @@ fn test_a_corrupt_vlsd_offset_costs_one_frame_not_the_process() {
 // `off + 4 + n` negative, so the end-bounds test passes and the slice ends before it starts.
 fn test_a_corrupt_vlsd_length_prefix_costs_one_frame_not_the_process() {
 	payloads := [[u8(1), 2, 3, 4], [u8(5), 6]]
-	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002])
+	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [
+		0.001,
+		0.002,
+	])
 	sd := find_block(img, '##SD')
 	assert sd > 0, 'fixture has no SD block'
 	for k, x in le_bytes(0xFFFFFFF8, 4) {
@@ -509,8 +519,8 @@ fn build_mlsd_file(payloads [][]u8, ids []u32, lengths []u32) []u8 {
 // one CAN_DataFrame group whose records each name their bus. `buses` and `times` are per record,
 // so a caller can put two buses at one timestamp in a chosen order.
 fn build_mlsd_multibus(payloads [][]u8, ids []u32, buses []u32, times []f64) []u8 {
-	return build_mlsd_file_x(payloads, ids, []u32{len: payloads.len, init: u32(payloads[index].len)},
-		false, buses, times)
+	return build_mlsd_file_x(payloads, ids,
+		[]u32{len: payloads.len, init: u32(payloads[index].len)}, false, buses, times)
 }
 
 // dlc_mode names the length channel DLC rather than DataLength, so it carries a CODE that has to
@@ -562,8 +572,7 @@ fn build_mlsd_file_x(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool, b
 
 	mut recs := []u8{}
 	for i, p in payloads {
-		recs << le_bytes(math.f64_bits(if times.len > i { times[i] } else { 0.001 * f64(i + 1) }),
-			8)
+		recs << le_bytes(math.f64_bits(if times.len > i { times[i] } else { 0.001 * f64(i + 1) }), 8)
 		recs << le_bytes(u64(ids[i]), 4)
 		recs << u8(0)
 		recs << le_bytes(u64(lengths[i]), 4) // stated length, which need not match the bytes
@@ -616,8 +625,10 @@ fn test_the_inline_layout_still_reads_its_payload() {
 // The payload is REFUSED, not clamped — trimming it to the record boundary would return the
 // DataBytes field's padding, or the channel stored after it, as though a frame had carried it.
 fn test_a_corrupt_inline_length_costs_one_frame_not_the_process() {
-	img := build_mlsd_file([[u8(1), 2, 3, 4], [u8(5), 6, 7, 8]], [u32(0x100), 0x101],
-		[u32(0xFFFFFFF0), 4])
+	img := build_mlsd_file([[u8(1), 2, 3, 4], [u8(5), 6, 7, 8]], [u32(0x100), 0x101], [
+		u32(0xFFFFFFF0),
+		4,
+	])
 	entries := parse(img) or {
 		assert false, 'a malformed length must be skipped, not fail the file: ${err}'
 		return
@@ -639,8 +650,10 @@ fn test_a_corrupt_inline_length_costs_one_frame_not_the_process() {
 // must hold either way — the file parses, and the bad record yields no payload.
 fn test_a_64_bit_vlsd_offset_cannot_overflow_its_bounds_check() {
 	payloads := [[u8(1), 2, 3, 4], [u8(5), 6]]
-	mut img := build_vlsd_sd_file_w(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002],
-		64)
+	mut img := build_vlsd_sd_file_w(payloads, [u32(0x100), 0x101], [false, false], [
+		0.001,
+		0.002,
+	], 64)
 	dt := find_block(img, '##DT')
 	assert dt > 0, 'fixture has no DT block'
 	rec1 := dt + 24 + (14 + 8) // past the header and the first record
@@ -662,7 +675,10 @@ fn test_a_64_bit_vlsd_offset_cannot_overflow_its_bounds_check() {
 // happened. The record's own DataLength says what the length must be, so it is checked.
 fn test_an_sd_prefix_that_contradicts_the_record_is_refused() {
 	payloads := [[u8(1), 2, 3, 4], [u8(9), 9, 9, 9]]
-	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002])
+	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [
+		0.001,
+		0.002,
+	])
 	sd := find_block(img, '##SD')
 	assert sd > 0, 'fixture has no SD block'
 	// 4 -> 8 stays inside the block, and would swallow the next entry's prefix and its bytes
@@ -684,7 +700,10 @@ fn test_an_sd_block_is_a_data_block() {
 	mut b := Mdf4Builder{}
 	b.buf << []u8{len: 64} // stand-in id block; read_data_block is reached by offset, not magic
 	sd := b.block('##SD', 0, [u8(4), 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF])
-	got := read_data_block(b.buf, sd, false) or {
+	mut sd_src := MemSource{
+		buf: b.buf
+	}
+	got := read_data_block(mut sd_src, sd, false) or {
 		assert false, 'read_data_block rejected an SD block: ${err}'
 		return
 	}
@@ -860,8 +879,7 @@ fn build_remote_frame_file(ids []u32, ides []bool, dlcs []u32, times []f64) []u8
 
 	mut recs := []u8{}
 	for i, id in ids {
-		recs << le_bytes(math.f64_bits(if times.len > i { times[i] } else { 0.001 * f64(i + 1) }),
-			8)
+		recs << le_bytes(math.f64_bits(if times.len > i { times[i] } else { 0.001 * f64(i + 1) }), 8)
 		recs << le_bytes(u64(id), 4)
 		recs << u8(if ides.len > i && ides[i] { 1 } else { 0 })
 		recs << u8(dlcs[i])
@@ -889,8 +907,10 @@ fn build_remote_frame_file(ids []u32, ides []bool, dlcs []u32, times []f64) []u8
 // returned without a word — so identical traffic showed rtr rows when imported from a candump
 // and nothing at all from an .mf4 (#131).
 fn test_remote_frames_are_imported_not_skipped() {
-	buf := build_remote_frame_file([u32(0x123), 0x1ABCDEF], [false, true], [u32(8), 3],
-		[0.001, 0.002])
+	buf := build_remote_frame_file([u32(0x123), 0x1ABCDEF], [false, true], [u32(8), 3], [
+		0.001,
+		0.002,
+	])
 	es := parse(buf) or {
 		assert false, 'a CAN_RemoteFrame group must parse: ${err}'
 		return
@@ -1037,7 +1057,13 @@ fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, inval str
 		recs << u8(0)
 		recs << u8(dlcs[i])
 		recs << le_bytes(u64(datalens[i]), 4)
-		recs << u8(if dlc_invalid { 0x01 } else if id_invalid { 0x02 } else { 0x00 }) // invalidation area
+		recs << u8(if dlc_invalid {
+			0x01
+		} else if id_invalid {
+			0x02
+		} else {
+			0x00
+		}) // invalidation area
 	}
 	dt := b.block('##DT', 0, recs)
 
@@ -1065,8 +1091,7 @@ fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, inval str
 // request for eight bytes turned into a request for none, which an ECU answers differently or
 // not at all (codex #175 r1).
 fn test_a_remote_frame_prefers_its_dlc_over_a_zero_datalength() {
-	buf := build_remote_frame_file_both([u32(0x400), 0x401], [u32(8), 3], [u32(0), 0],
-		'')
+	buf := build_remote_frame_file_both([u32(0x400), 0x401], [u32(8), 3], [u32(0), 0], '')
 	es := parse(buf) or {
 		assert false, '${err}'
 		return
