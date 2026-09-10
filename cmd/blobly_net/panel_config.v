@@ -6,6 +6,7 @@ import project
 import transport
 import vgui
 import mf4
+import pickrule
 import player
 
 // is_recording_target: does this picker action open a recording? ONE predicate — the ext
@@ -21,6 +22,7 @@ fn is_recording_target(t string) bool {
 //   'saveas'        — Save As (.blobnet, filename input)
 //   'dbc:<ci>'      — attach a DBC to bus ci (.dbc)
 //   'manifest:<ci>' — attach a telemetry manifest to bus ci (.csv)
+//   'script'        — the Script panel's .lua (#270)
 fn (mut app App) open_browser(target string) {
 	app.fb_target = target
 	app.fb_save = target == 'saveas'
@@ -34,6 +36,8 @@ fn (mut app App) open_browser(target string) {
 		['.toml']
 	} else if target == 'flash' {
 		['.img', '.bin'] // wrapped .img preferred, raw .bin allowed
+	} else if target == 'script' {
+		['.lua']
 	} else if is_recording_target(target) {
 		['.log', '.mf4'] // recordings come in both formats; one picker shows both
 	} else {
@@ -42,6 +46,8 @@ fn (mut app App) open_browser(target string) {
 	// For recordings, START WHERE RECORD WRITES — one function decides both sides.
 	mut dir := if target == 'recording' {
 		app.recordings_dir()
+	} else if target == 'script' {
+		app.script_dir()
 	} else if app.proj_path != '' {
 		os.dir(app.proj_path)
 	} else {
@@ -50,10 +56,100 @@ fn (mut app App) open_browser(target string) {
 	if !os.is_dir(dir) {
 		dir = '.'
 	}
-	app.fb_dir = os.abs_path(dir)
+	app.fb_enter(os.abs_path(dir))
 	initname := if app.fb_save && app.proj_path != '' { os.file_name(app.proj_path) } else { '' }
 	app.fb_name_buf = mkbuf(initname, 128)
 	app.fb_open = true
+}
+
+// script_dir is where the Script picker starts: beside the script the panel names, else the
+// repo's tests/, else beside the project — the places a suite lives, in the order a hand looks.
+fn (app &App) script_dir() string {
+	cur := vgui.buf_str(app.script_path_buf).trim_space()
+	if cur != '' {
+		d := os.dir(cur)
+		if os.is_dir(d) {
+			return d
+		}
+	}
+	if os.is_dir('tests') {
+		return 'tests'
+	}
+	if app.proj_path != '' {
+		return os.dir(app.proj_path)
+	}
+	return '.'
+}
+
+// fb_enter moves the browser to `dir` — a folder, or pickrule.drives for the list of drive
+// roots. The selection goes with the listing it belonged to, the path field follows, and the
+// listing is read ONCE here (fb_refresh), not per frame.
+fn (mut app App) fb_enter(dir string) {
+	app.fb_dir = dir
+	app.fb_sel = ''
+	app.fb_path_buf = mkbuf(dir, 512)
+	app.fb_refresh()
+}
+
+// fb_refresh reads the listing: the drive roots at pickrule.drives, else the folder's
+// sub-folders and the files the filter passes. On entering a folder and on the ↻ button —
+// not per frame, because os.ls plus one is_dir per entry is a syscall per row per frame, and
+// on a folder that answers slowly (a disconnected network drive, which the drives view now
+// lists) it is the whole GUI thread stalled for as long as the picker is open.
+fn (mut app App) fb_refresh() {
+	app.fb_dirs = []
+	app.fb_files = []
+	if app.fb_dir == pickrule.drives {
+		app.fb_dirs = fs_roots()
+		return
+	}
+	entries := os.ls(app.fb_dir) or { []string{} }
+	for e in entries {
+		full := os.join_path(app.fb_dir, e)
+		if os.is_dir(full) {
+			app.fb_dirs << e
+		} else if app.match_ext(e) {
+			app.fb_files << e
+		}
+	}
+	app.fb_dirs.sort()
+	app.fb_files.sort()
+}
+
+// fb_go is the typed path: a folder is entered; a file that passes the filter is selected in
+// the folder it lives in (and, in save mode, becomes the name); anything else is said rather
+// than ignored — a file the filter rejects included, or the picker would advertise `(*.dbc)`
+// and hand over something else.
+fn (mut app App) fb_go(typed string) {
+	if typed == '' {
+		return
+	}
+	// `C:` alone is "the current directory on C" to the OS and abs_path glues it onto the CWD;
+	// the root a hand means is `C:` plus the separator.
+	p := if pickrule.is_drive_root(typed) && typed.len == 2 {
+		typed + os.path_separator
+	} else {
+		typed
+	}
+	if os.is_dir(p) {
+		app.fb_enter(os.abs_path(p))
+		return
+	}
+	if os.is_file(p) {
+		ap := os.abs_path(p)
+		name := os.file_name(ap)
+		if !app.match_ext(name) {
+			app.notify('${name} is not one of ${app.fb_ext.join(' ')}')
+			return
+		}
+		app.fb_enter(os.dir(ap))
+		app.fb_sel = name
+		if app.fb_save {
+			app.fb_name_buf = mkbuf(name, 128)
+		}
+		return
+	}
+	app.notify('no such folder or file: ${typed}')
 }
 
 // browser_confirm runs the pending target action with the chosen path, then closes.
@@ -72,6 +168,8 @@ fn (mut app App) browser_confirm(path string) {
 		app.load_system(path)
 	} else if t == 'flash' {
 		app.flash_img_buf = mkbuf(path, 256)
+	} else if t == 'script' {
+		app.script_path_buf = mkbuf(path, 256)
 	} else if t == 'recording' {
 		app.load_recording(path)
 	} else if t.starts_with('replaysrc:') {
@@ -80,8 +178,13 @@ fn (mut app App) browser_confirm(path string) {
 }
 
 // draw_filebrowser is a small self-contained file picker (no native dialog — imgui has
-// none, and WSL isn't the primary target). Lists the current directory, navigates on click,
-// filters by extension, and (save mode) takes a filename.
+// none, and WSL isn't the primary target). Lists the current directory, filters by
+// extension, and (save mode) takes a filename. What a row does is the native picker's
+// grammar (pickrule.activate): a click SELECTS, a double click ENTERS a folder or ACCEPTS a
+// file, and Enter / Open act on the selection the same way. Entering on a single click was
+// #270: the hand that double-clicks landed its second click on a row of the folder it had
+// just entered. Above a Windows drive root the list is the drives (pickrule.drives, fs_roots),
+// so `D:` is reachable from `C:`; the path field takes a typed folder or file too.
 fn draw_filebrowser(mut app App) {
 	title := if app.fb_target == 'open' {
 		'Open Project'
@@ -95,6 +198,8 @@ fn draw_filebrowser(mut app App) {
 		'Open Recording'
 	} else if app.fb_target.starts_with('replaysrc:') {
 		'Replay Recording'
+	} else if app.fb_target == 'script' {
+		'Run Script'
 	} else if app.fb_target == 'flash' {
 		// fell through to 'Attach Manifest' before — the firmware picker wore another
 		// feature's title, which is what an else-catchall does the day a target is added
@@ -102,20 +207,31 @@ fn draw_filebrowser(mut app App) {
 	} else {
 		'Attach Manifest'
 	}
-	vgui.set_next_window(260, 140, 560, 520)
+	sc := app.ui_scale
+	vgui.set_next_window(260, 140, 640, 560)
 	if !vgui.begin('${title}##filebrowser') {
 		vgui.end()
 		return
 	}
-	vgui.text('dir: ${app.fb_dir}')
+	// The folder, typed: Enter SUBMITS it (input_text_enter — not "deactivated after edit",
+	// which fires on a click aimed at the list and would navigate under it), or Go.
+	vgui.set_next_item_width(vgui.content_avail_w() - 48 * sc)
+	mut jump := vgui.input_text_enter('##fbpath', mut app.fb_path_buf)
+	vgui.same_line()
+	if vgui.small_button('Go') {
+		jump = true
+	}
+	if jump {
+		app.fb_go(vgui.buf_str(app.fb_path_buf).trim_space())
+	}
 	if vgui.small_button('.. up') {
-		app.fb_dir = os.dir(app.fb_dir)
+		app.fb_enter(pickrule.parent(app.fb_dir, drive_roots))
 	}
 	vgui.same_line()
 	if vgui.small_button('projects/') {
 		p := os.abs_path('projects')
 		if os.is_dir(p) {
-			app.fb_dir = p
+			app.fb_enter(p)
 		}
 	}
 	// The shipped demo capture lives in samples/ — the old Trace path field defaulted to it,
@@ -124,54 +240,80 @@ fn draw_filebrowser(mut app App) {
 	if is_recording_target(app.fb_target) && os.is_dir('samples') {
 		vgui.same_line()
 		if vgui.small_button('samples/') {
-			app.fb_dir = os.abs_path('samples')
+			app.fb_enter(os.abs_path('samples'))
 		}
+	}
+	vgui.same_line()
+	if vgui.small_button('↻') {
+		app.fb_refresh() // the listing is read on entering a folder, not per frame
 	}
 	filt := if app.fb_ext.len > 0 { '(' + app.fb_ext.map('*' + it).join(' ') + ')' } else { '' }
 	vgui.same_line()
 	vgui.text_dim(filt)
 	vgui.separator()
 
-	entries := os.ls(app.fb_dir) or { []string{} }
-	mut dirs := []string{}
-	mut files := []string{}
-	for e in entries {
-		full := os.join_path(app.fb_dir, e)
-		if os.is_dir(full) {
-			dirs << e
-		} else if app.match_ext(e) {
-			files << e
+	at_drives := app.fb_dir == pickrule.drives
+	// What was double-clicked this frame, applied AFTER end() so the imgui stack stays balanced.
+	mut on := ''
+	mut on_kind := pickrule.Entry.file
+	// The list keeps its distance from the button row: its frame, the separator and their
+	// spacing. Reserve the row alone and the buttons sit a spacing below the window's edge,
+	// with a scrollbar to reach them.
+	vgui.child_begin('fb_list', -(vgui.frame_height() + vgui.line_height()))
+	for d in app.fb_dirs {
+		lbl := if at_drives { '[drive] ${d}' } else { '[dir]  ${d}' }
+		if vgui.selectable(lbl, app.fb_sel == d) {
+			app.fb_sel = d
+		}
+		if vgui.is_item_double_clicked() {
+			on = d
+			on_kind = .dir
 		}
 	}
-	dirs.sort()
-	files.sort()
-	mut nav := ''
-	mut chosen := ''
-	vgui.child_begin('fb_list', 300)
-	for d in dirs {
-		if vgui.selectable('[dir]  ${d}', false) {
-			nav = os.join_path(app.fb_dir, d)
-		}
-	}
-	for f in files {
-		if vgui.selectable('      ${f}', false) {
+	for f in app.fb_files {
+		if vgui.selectable('      ${f}', app.fb_sel == f) {
+			app.fb_sel = f
 			if app.fb_save {
 				app.fb_name_buf = mkbuf(f, 128)
-			} else {
-				chosen = os.join_path(app.fb_dir, f)
 			}
+		}
+		if vgui.is_item_double_clicked() {
+			on = f
+			on_kind = .file
 		}
 	}
 	vgui.child_end()
+	// Enter on the selection: only with this window focused (the key is read globally), only
+	// when no field owns it, and not on the frame the path field was submitted — ImGui drops
+	// the field's active state inside that submit, so "no item active" is already true here.
+	mut activate := !jump && vgui.window_focused() && !vgui.any_item_active()
+		&& vgui.key_enter_pressed()
+	mut chosen := '' // save mode: the named path
 	vgui.separator()
 	if app.fb_save {
-		vgui.set_next_item_width(300)
-		vgui.input_text('name', mut app.fb_name_buf)
+		vgui.set_next_item_width(300 * sc)
+		mut save := vgui.input_text_enter('name', mut app.fb_name_buf) // Enter in the name saves
 		vgui.same_line()
 		if vgui.button('Save') {
+			save = true
+		}
+		if save {
 			name := vgui.buf_str(app.fb_name_buf)
-			if name != '' {
+			if at_drives {
+				// join_path('', name) is a path relative to the process working directory —
+				// a file written somewhere the dialog does not show.
+				app.notify('pick a drive first')
+			} else if name != '' {
 				chosen = os.join_path(app.fb_dir, name)
+			}
+		}
+		vgui.same_line()
+	} else {
+		if vgui.button('Open') {
+			if app.fb_sel == '' {
+				app.notify('select a folder or a file first')
+			} else {
+				activate = true
 			}
 		}
 		vgui.same_line()
@@ -180,9 +322,28 @@ fn draw_filebrowser(mut app App) {
 		app.fb_open = false
 	}
 	vgui.end()
-	// apply navigation / selection after end() so the imgui stack stays balanced
-	if nav != '' {
-		app.fb_dir = nav
+	if activate && on == '' && app.fb_sel != '' {
+		// The selection is a row of the listing, or nothing: a name that is in neither list
+		// (typed and then rejected, or gone since the listing was read) is not acted on.
+		if app.fb_dirs.contains(app.fb_sel) {
+			on = app.fb_sel
+			on_kind = .dir
+		} else if app.fb_files.contains(app.fb_sel) {
+			on = app.fb_sel
+			on_kind = .file
+		}
+	}
+	if on != '' {
+		match pickrule.activate(on_kind, app.fb_save) {
+			.enter {
+				// a drive root is a whole path already; joined onto the empty view it would be relative
+				app.fb_enter(if at_drives { on } else { os.join_path(app.fb_dir, on) })
+			}
+			.accept {
+				chosen = os.join_path(app.fb_dir, on)
+			}
+			.select {}
+		}
 	}
 	if chosen != '' {
 		app.browser_confirm(chosen)
@@ -208,7 +369,8 @@ fn (app &App) match_ext(name string) bool {
 // every detected transport — real CAN hardware (with product/state), vcan, a UDP bus, an
 // in-process sim net — with tick boxes and + Add ticked, plus + vcan / + Sim net quick-adds.
 fn draw_discover_dialog(mut app App) {
-	vgui.set_next_window(200, 130, 640, 460)
+	// A list with a hardware section under it: sized for both (#270 item 6).
+	vgui.set_next_window(160, 90, 960, 640)
 	vis, op := vgui.begin_closable('Discover interfaces', app.disc_open)
 	app.disc_open = op
 	if !vis {
@@ -269,18 +431,35 @@ fn draw_discover_dialog(mut app App) {
 		// attached: said, not blanked (#192).
 		vgui.text_colored(u8(240), u8(150), u8(60), note)
 	}
-	for k, d in app.disc_list {
-		if d.added {
-			vgui.text_dim('   [added]   ${d.address}   ${d.adapter} · ${d.desc}')
-			continue
+	// One column per fact, so the rows line up (#270 item 6). Content-sized: a scrolling table
+	// with no height would take the whole dialog and push the Vector section below out of reach.
+	sc := app.ui_scale
+	if app.disc_list.len > 0 && vgui.table_begin_flat('##disc_ifaces', 4) {
+		vgui.table_setup_col('add', 52 * sc)
+		vgui.table_setup_col('address', 240 * sc)
+		vgui.table_setup_col('adapter', 90 * sc)
+		vgui.table_setup_col('description', 0)
+		vgui.table_headers()
+		for k, d in app.disc_list {
+			vgui.table_row()
+			vgui.table_next_col()
+			if d.added {
+				vgui.text_dim('added')
+				vgui.table_cell_dim(d.address)
+				vgui.table_cell_dim(d.adapter)
+				vgui.table_cell_dim(d.desc)
+				continue
+			}
+			t := if k < app.disc_tick.len { app.disc_tick[k] } else { false }
+			nt := vgui.checkbox('##dt${k}', t)
+			if nt != t && k < app.disc_tick.len {
+				app.disc_tick[k] = nt
+			}
+			vgui.table_cell(d.address)
+			vgui.table_cell(d.adapter)
+			vgui.table_cell(d.desc)
 		}
-		t := if k < app.disc_tick.len { app.disc_tick[k] } else { false }
-		nt := vgui.checkbox('##dt${k}', t)
-		if nt != t && k < app.disc_tick.len {
-			app.disc_tick[k] = nt
-		}
-		vgui.same_line()
-		vgui.text('${d.address}   ${d.adapter} · ${d.desc}')
+		vgui.table_end()
 	}
 	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
 	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those
@@ -323,57 +502,73 @@ fn draw_discover_dialog(mut app App) {
 		if !app.disc_vector_app_seen {
 			vgui.text_dim('   no application channels could be read for "blobly_net" — assigning below creates the mapping (and the application, if it is not there)')
 		}
-		for vm in app.disc_vector {
-			// THE TRANSCEIVER'S OWN VERDICT on CAN-FD, from the driver rather than its part
-			// number (#187). Blank for a channel that carries none — a D/A IO card, say.
-			fd := vm.hw.fd_note()
-			rate := if vm.hw.bitrate > 0 { '${vm.hw.bitrate}' } else { '-' }
-			detail := '${vm.hw.transceiver} · ${rate}${if fd == '' {
-				''
-			} else {
-				' · CAN-FD ${fd}'
-			}}'
-			if vm.app > 0 {
-				// Already ours: name the address, because that is what a Buses row will carry.
-				vgui.text_dim('   vector:${vm.app}   ${vm.hw.name}   ${detail}')
-				continue
-			}
-			// NOT EVERY CHANNEL IS A CAN CHANNEL. A VN1630A reports its D/A IO channel here
-			// alongside the four CAN ones, and everything this dialog assigns is addressed as
-			// CAN — so an Assign button on that row could only produce a mapping that fails to
-			// open as the interface it was offered as. Listed, because it is real hardware and
-			// its absence would read as a missing channel; not offered (codex #192 r1).
-			if !vm.hw.can_capable {
-				vgui.text_dim('   (not a CAN channel)  ${vm.hw.name}   ${vm.hw.transceiver}')
-				continue
-			}
-			// UNOWNED, OR MERELY NOT SEEN TO BE OWNED? An application channel that would not answer
-			// may be pointing at this very row, so offering Assign here would invite the operator to
-			// create the #167 alias — two application channels on one physical wire. Shown, because
-			// the hardware is real and hiding it reads as a missing channel; not offered, and the
-			// row says which of the two it is (codex #192 r6).
-			if !vm.owner_known {
-				vgui.text_dim('   (owner unknown)  ${vm.hw.name}   ${detail}')
-				vgui.same_line()
-				vgui.help_marker('The driver did not answer for every application channel, so this hardware may already be assigned to one of the channels it would not describe. Refresh to ask again.')
-				continue
-			}
-			// UNMAPPED. The button is the only path that writes; see assign_vector_hw. The channel
-			// number comes from the field above — NOTHING PROPOSES ONE. Four rounds of review went
-			// into inferring which application channels were free, and the fourth pair of findings
-			// contradicted each other, because vxlapi cannot separate "outside the application's
-			// channel list" from "failed this time". The operator knows which number they want;
-			// asking is both safer and shorter than any inference (#192, option 3).
-			if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
-				n := vgui.buf_str(app.disc_vector_ch_buf).trim_space()
-				if n == '' || !project.is_all_digits(n) {
-					app.notify('type the Vector application channel to assign (1-64) before pressing Assign')
+		// The same shape as the interface list above: one column per fact (#270 item 6). One row
+		// body: the first column says the channel's state, the other two are the hardware.
+		if vgui.table_begin_flat('##disc_vector', 3) {
+			vgui.table_setup_col('channel', 170 * sc)
+			vgui.table_setup_col('hardware', 230 * sc)
+			vgui.table_setup_col('transceiver · bitrate · CAN-FD', 0)
+			vgui.table_headers()
+			for vm in app.disc_vector {
+				// THE TRANSCEIVER'S OWN VERDICT on CAN-FD, from the driver rather than its part
+				// number (#187). Blank for a channel that carries none — a D/A IO card, say.
+				fd := vm.hw.fd_note()
+				rate := if vm.hw.bitrate > 0 { '${vm.hw.bitrate}' } else { '-' }
+				detail := '${vm.hw.transceiver} · ${rate}${if fd == '' {
+					''
 				} else {
-					app.assign_vector_hw(vm.hw, n.int())
+					' · CAN-FD ${fd}'
+				}}'
+				// Offered — an Assign button — only when unmapped, CAN, and KNOWN to be unowned:
+				offered := vm.app == 0 && vm.hw.can_capable && vm.owner_known
+				vgui.table_row()
+				vgui.table_next_col()
+				if vm.app > 0 {
+					// Already ours: name the address, because that is what a Buses row will carry.
+					vgui.text_dim('vector:${vm.app}')
+				} else if !vm.hw.can_capable {
+					// NOT EVERY CHANNEL IS A CAN CHANNEL. A VN1630A reports its D/A IO channel here
+					// alongside the four CAN ones, and everything this dialog assigns is addressed as
+					// CAN — so an Assign button on that row could only produce a mapping that fails to
+					// open as the interface it was offered as. Listed, because it is real hardware and
+					// its absence would read as a missing channel; not offered (codex #192 r1).
+					vgui.text_dim('(not a CAN channel)')
+				} else if !vm.owner_known {
+					// UNOWNED, OR MERELY NOT SEEN TO BE OWNED? An application channel that would not
+					// answer may be pointing at this very row, so offering Assign here would invite the
+					// operator to create the #167 alias — two application channels on one physical
+					// wire. Shown, because the hardware is real and hiding it reads as a missing
+					// channel; not offered, and the row says which of the two it is (codex #192 r6).
+					vgui.text_dim('(owner unknown)')
+					vgui.same_line()
+					vgui.help_marker('The driver did not answer for every application channel, so this hardware may already be assigned to one of the channels it would not describe. Refresh to ask again.')
+				} else {
+					// UNMAPPED. The button is the only path that writes; see assign_vector_hw. The
+					// channel number comes from the field above — NOTHING PROPOSES ONE. Four rounds of
+					// review went into inferring which application channels were free, and the fourth
+					// pair of findings contradicted each other, because vxlapi cannot separate "outside
+					// the application's channel list" from "failed this time". The operator knows
+					// which number they want; asking is both safer and shorter than any inference
+					// (#192, option 3).
+					if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
+						n := vgui.buf_str(app.disc_vector_ch_buf).trim_space()
+						if n == '' || !project.is_all_digits(n) {
+							app.notify('type the Vector application channel to assign (1-64) before pressing Assign')
+						} else {
+							app.assign_vector_hw(vm.hw, n.int())
+						}
+					}
+					vgui.same_line()
+					vgui.text_dim('(unassigned)')
 				}
+				if offered {
+					vgui.table_cell(vm.hw.name)
+				} else {
+					vgui.table_cell_dim(vm.hw.name)
+				}
+				vgui.table_cell_dim(if vm.hw.can_capable { detail } else { vm.hw.transceiver })
 			}
-			vgui.same_line()
-			vgui.text_dim('(unassigned)  ${vm.hw.name}   ${detail}')
+			vgui.table_end()
 		}
 	}
 	vgui.separator()
@@ -442,7 +637,7 @@ fn draw_config(mut app App) {
 			app.apply_edits() // fold unsaved edits into the model + runtime view on close
 		}
 	}
-	if app.dirty || app.cfg_text_dirty {
+	if app.dirty || app.cfg_file.dirty {
 		vgui.same_line()
 		vgui.text_colored(230, 170, 70, '● modified')
 	}
@@ -766,7 +961,7 @@ fn (mut app App) draw_config_text() {
 		// action below overwrites one side, so say which is at risk before offering it.
 		vgui.text_colored(230, 170, 70,
 			'● unsaved edits in the model (buses/generators) are not in this text')
-		if app.cfg_text_dirty {
+		if app.cfg_file.dirty {
 			// Both sides modified: writing the model would overwrite the typing, so that
 			// action is withheld rather than offered and silently destructive.
 			vgui.text_colored(230, 120, 120,
@@ -791,39 +986,23 @@ fn (mut app App) draw_config_text() {
 		vgui.separator()
 	}
 	// Gated, not merely ignored on click: os.write_file('') fails, and Save As serialises the
-	// MODEL, which would throw away the text the user is looking at.
-	can_save := app.cfg_err == '' && app.proj_path != ''
-	if can_save {
-		// This one stays, and says what it writes: the TEXT, which is not the same save as
-		// Ctrl+S on any other tab (save_what_is_being_edited).
-		if vgui.button('Save text') {
+	// MODEL, which would throw away the text the user is looking at. The button says what it
+	// writes: the TEXT, which is not the same save as Ctrl+S on any other tab
+	// (save_what_is_being_edited).
+	can_save := app.cfg_file.err == '' && app.proj_path != ''
+	shown := if app.proj_path == '' { '(unsaved project)' } else { app.proj_path }
+	match draw_textfile_strip(app.cfg_file, 'cfg', 'Save text', can_save, shown) {
+		.save {
 			app.save_cfg_text()
 		}
-	} else {
-		vgui.text_dim('[ Save ]')
+		.reload {
+			app.cfg_invalidate()
+			app.load_cfg_text()
+		}
+		.none {}
 	}
-	vgui.same_line()
-	if vgui.button('Reload') {
-		// invalidate, not just un-dirty: load_cfg_text returns early while cfg_loaded still
-		// matches the path, so the edited buffer would stay on screen with its marker cleared
-		// and a later Save would write text the user believed was discarded
-		app.cfg_invalidate()
-		app.load_cfg_text()
-	}
-	if app.cfg_text_dirty {
-		vgui.same_line()
-		vgui.text_colored(230, 170, 70, '● modified')
-	}
-	vgui.same_line()
-	vgui.text_dim(if app.proj_path == '' { '(unsaved project)' } else { app.proj_path })
-	used := vgui.buf_str(app.cfg_text).len
-	if used > app.cfg_text.len - 1024 {
-		vgui.text_colored(230, 120, 120,
-			'buffer nearly full (${used}/${app.cfg_text.len}) — Save, then Reload for more room')
-	}
-	if app.cfg_err != '' {
-		vgui.text_colored(230, 120, 120, app.cfg_err)
-	} else {
+
+	if app.cfg_file.err == '' {
 		// The channel count, not just "OK": an empty file parses perfectly and yields zero
 		// channels, so "OK" alone would reassure someone whose edit had emptied the project.
 		// Cached — recomputing it per frame reparsed the whole document at frame rate, and a
@@ -836,11 +1015,11 @@ fn (mut app App) draw_config_text() {
 			vgui.text_dim('YAML well-formed · ${n} channel(s) — syntax only, not a config check')
 		}
 	}
-	if vgui.text_edit('##cfgtext', mut app.cfg_text, 460) {
+	if vgui.text_edit('##cfgtext', mut app.cfg_file.buf, 460) {
 		// Validate as you type, so a mistake is visible where it was made rather than at Save.
-		app.cfg_text_dirty = true
-		t := vgui.buf_str(app.cfg_text)
-		app.cfg_err = cfg_text_error(t)
+		app.cfg_file.dirty = true
+		t := vgui.buf_str(app.cfg_file.buf)
+		app.cfg_file.err = cfg_text_error(t)
 		app.cfg_chans = cfg_text_channels(t)
 	}
 }

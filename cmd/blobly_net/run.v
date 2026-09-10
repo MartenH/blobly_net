@@ -796,7 +796,7 @@ fn (mut app App) start() {
 	for w in dest.warnings {
 		app.notify(w)
 	}
-	if app.cfg_text_dirty {
+	if app.cfg_file.dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything
 		// the structured editor cannot express, and guessing that a half-typed YAML buffer
 		// should become the running configuration is the wrong default. Say so instead.

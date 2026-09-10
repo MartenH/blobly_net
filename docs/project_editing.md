@@ -295,9 +295,18 @@ Generalize `gen_dirty` → `app.dirty`. Title/toolbar shows `name ●` while dir
 
 imgui has no native dialog and WSL isn't the primary target, so there is a small
 self-contained imgui browser (`draw_filebrowser`, `cmd/blobly_net/panel_config.v`): a plain
-window — not a modal; no vgui glue was needed — listing `os.ls(dir)` (parent, dirs, then
-files), `*.blobnet` (+ `*.yml`/`*.yaml`) filter in open mode, a filename input in save mode,
-Cancel/OK. Starts in the current project's dir, else `projects/`.
+window — not a modal — listing `os.ls(dir)` (dirs, then files), `*.blobnet` (+ `*.yml`/`*.yaml`)
+filter in open mode, a filename input in save mode, Open/Save and Cancel. Starts in the current
+project's dir, else `projects/`.
+
+Its grammar is the native picker's, and it is a tested rule (`cmd/blobly_net/pickrule/`, #270):
+a click **selects** a row, a double click **enters** a folder or **accepts** a file, and Enter
+or the Open button act on the selection the same way. (It used to enter on a single click, so a
+hand that double-clicked landed its second click in the folder it had just entered.) The path
+field at the top takes a typed folder or file — Enter or Go. `.. up` from a Windows drive root
+shows the **drives** (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
+`roots_windows.v` / `roots_nix.v`), which is how a file on another drive is reached; on Linux
+`/` is its own parent and that level never appears.
 
 ## Configuration editor — the Bus fields
 

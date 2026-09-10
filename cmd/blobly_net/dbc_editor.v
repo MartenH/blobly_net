@@ -1078,10 +1078,12 @@ fn draw_dbc_editor(mut app App) {
 			}
 		}
 		cell := 21 * sc
-		// scrollable: a large dlc (up to 64 bytes) shouldn't stretch the whole panel — show
-		// ~10 byte rows and scroll for the rest.
-		vis_rows := if msg.dlc < 10 { msg.dlc } else { 10 }
-		vgui.child_begin('##bitmatrix', f32(vis_rows) * (cell + 4 * sc) + 6 * sc)
+		// The grid draws straight into the properties region (##dbced_props), whose height the
+		// divider below it sets: the divider decides how much is on screen and the region
+		// scrolls what does not fit — ONE owner of the height (#270 item 2). A scroller of its
+		// own, fixed at ten rows, left the room a dragged divider added blank below a grid that
+		// went on scrolling; and sizing it to "what is left" inside a scrolling region follows
+		// the scroll offset, so the grid grew under the scrollbar being dragged.
 		for byte_i in 0 .. msg.dlc {
 			vgui.text_dim('B${byte_i}')
 			for bit_i := 7; bit_i >= 0; bit_i-- {
@@ -1137,7 +1139,6 @@ fn draw_dbc_editor(mut app App) {
 				}
 			}
 		}
-		vgui.child_end()
 		mut over := 0
 		for g in 0 .. nbits {
 			if conflict[g] {

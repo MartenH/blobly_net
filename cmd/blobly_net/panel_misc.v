@@ -326,11 +326,11 @@ fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 	vgui.same_line()
 	// Unsaved FILE-tab text counts as modified too. It lives in its own buffer, so without this
 	// the toolbar read clean while an edit sat waiting in a closed window.
-	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
+	dirtymark := if app.dirty || app.cfg_file.dirty { ' ●' } else { '' }
 	vgui.text('· RX ${rx}  ${txs}  ·  ${app.proj_name}${dirtymark}   ')
 	// The answer to Ctrl+S, where the eye is: the dot goes out and "saved" stands in for a few
 	// seconds. The Log has the path; this is only the acknowledgement (#247).
-	if app.saved_at > 0 && time.ticks() - app.saved_at < 3000 && !app.dirty && !app.cfg_text_dirty {
+	if app.saved_at > 0 && time.ticks() - app.saved_at < 3000 && !app.dirty && !app.cfg_file.dirty {
 		vgui.same_line()
 		// ASCII: the UI atlas carries no U+2713, and a missing-glyph box is not an
 		// acknowledgement (codex round 5 on #250).
@@ -1210,6 +1210,13 @@ fn (mut app App) script_push(line string) {
 	app.mu.lock()
 	app.script_log << line
 	app.script_gen++
+	// Capped, like diag_push: every line the script emits lands here since #270, and the panel
+	// re-joins the whole log on each change — a suite logging per received frame would be
+	// unbounded, and O(N²) over its run. Larger than the diagnostics cap because a suite's
+	// worth of lines is what this box is for.
+	if app.script_log.len > 2000 {
+		app.script_log = app.script_log[app.script_log.len - 2000..].clone()
+	}
 	app.mu.unlock()
 }
 
@@ -1235,10 +1242,26 @@ fn draw_script(mut app App) {
 	if sgen != app.script_cache.gen {
 		app.script_cache.refresh(sgen, ssrc)
 	}
-	vgui.set_next_item_width(240)
-	vgui.input_text('.lua', mut app.script_path_buf)
+	sc := app.ui_scale
+	vgui.set_next_item_width(240 * sc)
+	vgui.input_text('##scriptpath', mut app.script_path_buf)
 	vgui.same_line()
-	if vgui.button('Run') && !busy {
+	if vgui.small_button('Browse…##script') {
+		app.open_browser('script')
+	}
+	vgui.same_line()
+	// Run executes the FILE; an editor holding unsaved edits would run the version on disk
+	// while showing another, and report on a test the operator is not looking at (codex #305
+	// r1). Withheld while ANY edit is unsaved — comparing the field's spelling with the loaded
+	// path let `./tests/a.lua` run the disk copy of the `tests/a.lua` being edited (r2), and
+	// two spellings of one file are not a question this panel can settle — and said, naming
+	// the file, since vgui has no disabled scope.
+	if app.script_file.dirty {
+		vgui.text_dim('[ Run ]')
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70,
+			'save ${app.script_file.loaded} first — Run executes the file')
+	} else if vgui.button('Run') && !busy {
 		// reserve the slot HERE, before the spawn: a worker that hasn't been scheduled yet
 		// hasn't registered, and an edit could slip into that gap (the worker releases it in its
 		// defer). This site had the rule right first and the run workers were brought to it.
@@ -1248,11 +1271,63 @@ fn draw_script(mut app App) {
 		app.reserve_tool_reader()
 		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
 	}
+	vgui.same_line()
+	if vgui.small_button(if app.script_edit { 'Close editor' } else { 'Edit' }) {
+		app.script_edit = !app.script_edit
+	}
 	if busy {
 		vgui.same_line()
 		vgui.text_dim('running…')
 	}
+	if !app.running {
+		// A suite run from here talks to the simulated ECUs the RUN hosts. Stopped, nothing
+		// answers, and every diagnostic test reports a timeout with nothing on screen to say why.
+		vgui.text_dim('measurement stopped — simulated ECUs are not hosted until Start, so a diagnostic suite times out')
+	}
+	if app.script_edit {
+		draw_script_editor(mut app)
+	}
 	vgui.separator_text('output')
 	draw_copyable_log(mut app, '##script', app.script_cache)
 	vgui.end()
+}
+
+// draw_script_editor is the Configuration File tab's edit box, over the script (#270): the same
+// TextFile — loaded once per path, never over unsaved edits, Save writes back to the file that
+// was loaded, Reload discards. No syntax check here — Lua reports its own errors, with a line
+// number, at Run.
+fn draw_script_editor(mut app App) {
+	path := vgui.buf_str(app.script_path_buf).trim_space()
+	if path == '' {
+		vgui.text_dim('type a script path, or Browse… for one')
+		return
+	}
+	app.script_file.load(path)
+	// The path field moved on while the buffer holds unsaved edits to the old file: the
+	// buffer stays, and says whose it is, rather than being replaced under the typist.
+	shown := if app.script_file.dirty && app.script_file.loaded != path {
+		'editing ${app.script_file.loaded} — Save or Reload before switching to ${path}'
+	} else {
+		app.script_file.loaded
+	}
+	match draw_textfile_strip(app.script_file, 'script', 'Save script', app.script_file.dirty,
+		shown) {
+		.save {
+			app.script_file.write() or {
+				app.script_file.err = 'save failed: ${err}'
+				app.notify('script not saved: ${err}')
+				return
+			}
+			app.notify('saved -> ${app.script_file.loaded}')
+		}
+		.reload {
+			app.script_file.invalidate()
+			app.script_file.load(path)
+		}
+		.none {}
+	}
+
+	if vgui.text_edit_code('##scripttext', mut app.script_file.buf, 260 * app.ui_scale) {
+		app.script_file.dirty = true
+	}
 }

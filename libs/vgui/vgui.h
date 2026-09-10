@@ -73,6 +73,7 @@ void vgui_child_end(void);
 int  vgui_input_text(const char* label, char* buf, int bufsize);
 int  vgui_console_input(const char* label, char* buf, int bufsize);
 int  vgui_text_edit(const char* id, char* buf, int cap, float h);
+int  vgui_text_edit_code(const char* id, char* buf, int cap, float h);
 void vgui_scroll_bottom(void);
 int  vgui_scroll_at_bottom(void);
 void vgui_console_text(const char* id, const char* text, int len, int nlines);
@@ -130,6 +131,14 @@ int  vgui_any_item_active(void);
 int  vgui_key_ctrl(void);
 int  vgui_key_ctrl_only(void);
 int  vgui_key_pressed(int ch);
+int  vgui_is_item_double_clicked(void);
+int  vgui_key_enter_pressed(void);
+float vgui_line_height(void);
+float vgui_frame_height(void);
+int  vgui_table_begin_flat(const char* id, int cols);
+void vgui_table_cell_dim(const char* s);
+int  vgui_input_text_enter(const char* label, char* buf, int bufsize);
+int  vgui_window_focused(void);
 int  vgui_combo(const char* label, const char** items, int n, int current);
 #ifdef __cplusplus
 }

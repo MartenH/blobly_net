@@ -1526,6 +1526,13 @@ fn script_worker(app &App, path string) {
 		a.script_done()
 		return
 	}
+	// EVERY line the script emits — log(), print(), each test's ok/FAIL — into the panel. The
+	// engine's default sink is stdout, and left unset it stayed that way: the lines went to the
+	// console the app was started from and the panel showed only the summary pushed below (#270).
+	env.on_output = fn [a] (s string) {
+		mut ap := unsafe { a }
+		ap.script_push(s)
+	}
 	// A script IS the tester. Left on the default opener it would be the one emitter the trace
 	// could not account for, and its frames would come back labelled as the device under test's.
 	env.opener = fn [a] (iface string, chan_name string) !transport.Bus {
