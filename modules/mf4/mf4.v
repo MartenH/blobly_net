@@ -101,19 +101,28 @@ pub:
 // load_recording parses a file and also reports its buses. Same work as load_file — the bus
 // list is a by-product of the one walk, not a second pass, so the two cannot disagree.
 pub fn load_recording(path string) !Recording {
-	buf := os.read_bytes(path)!
-	return parse_recording(buf)!
+	mut src := open_source(path)!
+	defer {
+		src.close()
+	}
+	return parse_recording(mut src)!
 }
 
 // parse reads an in-memory MDF4 image. Split out from load_file so callers/tests
 // can feed bytes directly.
 pub fn parse(buf []u8) ![]canlog.LogEntry {
-	return parse_recording(buf)!.log.entries()
+	mut src := MemSource{
+		buf: buf
+	}
+	return parse_recording(mut src)!.log.entries()
 }
 
 // parse_log is parse into the arena: what a replay loads.
 pub fn parse_log(buf []u8) !canlog.Log {
-	return parse_recording(buf)!.log
+	mut src := MemSource{
+		buf: buf
+	}
+	return parse_recording(mut src)!.log
 }
 
 // load_log is load_file into the arena.
@@ -148,11 +157,11 @@ fn tally_buses(log &canlog.Log, start int, acq string, mut names map[string]stri
 	}
 }
 
-fn parse_recording(buf []u8) !Recording {
-	if buf.len < 64 {
+fn parse_recording(mut src ByteSource) !Recording {
+	if src.size() < 64 {
 		return error('not an MDF file (bad id block)')
 	}
-	magic := buf[0..8].bytestr()
+	magic := bytes_at(mut src, 0, 8).bytestr()
 	unfin := magic.starts_with('UnFinMF')
 	if !magic.starts_with('MDF') && !unfin {
 		return error('not an MDF file (bad id block)')
@@ -168,19 +177,19 @@ fn parse_recording(buf []u8) !Recording {
 	mut order := []int{}
 	mut seq := 0
 	// HDBLOCK is at the fixed offset 64; its first link is the first DGBLOCK.
-	hd := block_links(buf, 64)
+	hd := block_links(mut src, 64)
 	mut dg := if hd.len > 0 { hd[0] } else { u64(0) }
 	mut group := 0 // ordinal of the CAN_DataFrame group, for files without a BusChannel
 	mut bus_names := map[string]string{}
 	mut bus_counts := map[string]int{}
 	for dg != 0 {
-		dgl := block_links(buf, dg)
-		dg_data_off := data_off(buf, dg)
-		rec_id_size := buf[dg_data_off]
+		dgl := block_links(mut src, dg)
+		dg_data_off := data_off(mut src, dg)
+		rec_id_size := u8_at(mut src, dg_data_off)
 		cg_first := if dgl.len > 1 { dgl[1] } else { u64(0) }
 		data_link := if dgl.len > 2 { dgl[2] } else { u64(0) }
 		if cg_first != 0 {
-			raw := read_data_block(buf, data_link, unfin)!
+			raw := read_data_block(mut src, data_link, unfin)!
 			start := log.rows.len
 			if rec_id_size == 0 {
 				// Sorted: one CG per DG, the data block is its record stream.
@@ -190,7 +199,7 @@ fn parse_recording(buf []u8) !Recording {
 				// and the sequence stays ascending. Only the unsorted path indexes ordinals by
 				// record, and only that one breaks when a record produces no entry.
 				mut idxs := []int{}
-				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut idxs, mut log)!
+				parse_cg(mut src, cg_first, raw, unfin, map[u64][]u8{}, group, mut idxs, mut log)!
 				// One entry per ENTRY, in record order, so the counter IS the sequence position.
 				for _ in before .. log.rows.len {
 					order << seq
@@ -199,15 +208,15 @@ fn parse_recording(buf []u8) !Recording {
 				group++
 				// cg_tx_acq_name is link 2. Read AFTER the decode and only over the entries it
 				// produced, so the name follows the frames rather than being guessed at.
-				cgl := block_links(buf, cg_first)
-				acq := read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) })
+				cgl := block_links(mut src, cg_first)
+				acq := read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) })
 				tally_buses(&log, start, acq, mut bus_names, mut bus_counts)
 			} else {
 				// Tallied per channel group inside, since each has its own acquisition name.
 				base := seq
 				before := log.rows.len
-				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut log, mut
-					bus_names, mut bus_counts, mut order)!
+				group = demux_unsorted(mut src, cg_first, raw, int(rec_id_size), unfin, group, mut
+					log, mut bus_names, mut bus_counts, mut order)!
 				// demux appends this group's INTERLEAVED record ordinals; lift them onto the
 				// file-wide scale so ties never compare a per-group ordinal against a global one.
 				mut top := base
@@ -292,20 +301,19 @@ struct CgInfo {
 // concatenation, and their cn_data link names the VLSD CG block (this is how
 // CANedge stores classic-CAN DataBytes).
 // Returns the next free group ordinal, so numbering stays unique across data groups.
-fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
+fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
 	mut log canlog.Log, mut names map[string]string, mut counts map[string]int, mut order []int) !int {
 	mut cgs := []CgInfo{}
 	mut cgi := cg_first
 	for cgi != 0 {
-		cgd := data_off(buf, cgi)
+		cgd := data_off(mut src, cgi)
 		cgs << CgInfo{
 			link:   cgi
-			rec_id: binary.little_endian_u64_at(buf, cgd)
-			vlsd:   binary.little_endian_u16_at(buf, cgd + 16) & 1 == 1
-			size:   int(binary.little_endian_u32_at(buf, cgd + 24)) +
-				int(binary.little_endian_u32_at(buf, cgd + 28))
+			rec_id: u64_at(mut src, cgd)
+			vlsd:   u16_at(mut src, cgd + 16) & 1 == 1
+			size:   int(u32_at(mut src, cgd + 24)) + int(u32_at(mut src, cgd + 28))
 		}
-		l := block_links(buf, cgi)
+		l := block_links(mut src, cgi)
 		cgi = if l.len > 0 { l[0] } else { u64(0) }
 	}
 	mut streams := map[u64][]u8{} // fixed-length CGs, keyed by record id
@@ -356,7 +364,7 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 		if !c.vlsd {
 			start := log.rows.len
 			mut idxs := []int{}
-			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
+			parse_cg(mut src, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
 				idxs, mut log)!
 			// BY RECORD INDEX, not by position in `out`. A record the decoder refused — an
 			// undefined id, a remote frame whose requested length is unknown — produces no
@@ -372,8 +380,8 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 			g++
 			// Each channel group here has its OWN cg_tx_acq_name — sharing a record stream is a
 			// storage detail, not a reason to leave every bus in the file unnamed.
-			cgl := block_links(buf, c.link)
-			tally_buses(&log, start, read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
+			cgl := block_links(mut src, c.link)
+			tally_buses(&log, start, read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
 				names, mut counts)
 		}
 	}
@@ -408,19 +416,19 @@ struct Chan {
 // frames from another channel group would then sort into the wrong order and replay in a
 // cross-bus sequence the recording never had, which is the one property multibus replay exists
 // to preserve (codex #175 r3).
-fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int, mut rec_idx []int,
+fn parse_cg(mut src ByteSource, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int, mut rec_idx []int,
 	mut log canlog.Log) ! {
 	mut labels := new_labels(group)
-	cgl := block_links(buf, cg)
-	cg_d := data_off(buf, cg)
-	declared := binary.little_endian_u64_at(buf, cg_d + 8)
-	data_bytes := int(binary.little_endian_u32_at(buf, cg_d + 24))
-	inval_bytes := int(binary.little_endian_u32_at(buf, cg_d + 28))
+	cgl := block_links(mut src, cg)
+	cg_d := data_off(mut src, cg)
+	declared := u64_at(mut src, cg_d + 8)
+	data_bytes := int(u32_at(mut src, cg_d + 24))
+	inval_bytes := int(u32_at(mut src, cg_d + 28))
 	cn_first := if cgl.len > 1 { cgl[1] } else { u64(0) }
 
 	// Collect leaf channels (recursing struct compositions like CAN_DataFrame).
 	mut chans := []Chan{}
-	collect_channels(buf, cn_first, mut chans)
+	collect_channels(mut src, cn_first, mut chans)
 	// WHICH KIND of group. A recording carries CAN_RemoteFrame groups beside its CAN_DataFrame
 	// ones, and every channel in them is named under that prefix instead — so the DataFrame
 	// lookups all missed and the group was skipped in silence, taking its frames with it (#131).
@@ -521,11 +529,11 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 	} else if c_db.data_link in vlsd_streams {
 		vlsd_streams[c_db.data_link] or { []u8{} }
 	} else {
-		read_data_block(buf, c_db.data_link, unfin)!
+		read_data_block(mut src, c_db.data_link, unfin)!
 	}
 	// Master-time scale: raw value (usually integer nanoseconds) -> seconds via a
 	// linear CCBLOCK (t = off + factor*raw); identity if no conversion.
-	t_off, t_factor := cc_linear(buf, c_t.cc_link)
+	t_off, t_factor := cc_linear(mut src, c_t.cc_link)
 	raw := recs
 	for k := u64(0); k < cycles; k++ {
 		base := int(k) * stride
@@ -824,27 +832,27 @@ fn (mut l Labels) label(bus_no int, mut log canlog.Log) ?u16 {
 
 // collect_channels walks a cn_next chain, recursing into struct compositions
 // (cn_composition), accumulating every leaf channel's record-layout facts.
-fn collect_channels(buf []u8, cn_first u64, mut chans []Chan) {
+fn collect_channels(mut src ByteSource, cn_first u64, mut chans []Chan) {
 	mut cn := cn_first
 	for cn != 0 {
-		cnl := block_links(buf, cn)
-		d := data_off(buf, cn)
-		name := read_tx(buf, if cnl.len > 2 { cnl[2] } else { u64(0) })
+		cnl := block_links(mut src, cn)
+		d := data_off(mut src, cn)
+		name := read_tx(mut src, if cnl.len > 2 { cnl[2] } else { u64(0) })
 		chans << Chan{
 			name:      name
-			cn_type:   buf[d + 0]
-			data_type: buf[d + 2]
-			bit_off:   buf[d + 3] // cn_bit_offset
-			byte_off:  int(binary.little_endian_u32_at(buf, d + 4))
-			bit_count: binary.little_endian_u32_at(buf, d + 8)
+			cn_type:   u8_at(mut src, d + 0)
+			data_type: u8_at(mut src, d + 2)
+			bit_off:   u8_at(mut src, d + 3) // cn_bit_offset
+			byte_off:  int(u32_at(mut src, d + 4))
+			bit_count: u32_at(mut src, d + 8)
 			data_link: if cnl.len > 5 { cnl[5] } else { u64(0) }
 			cc_link:   if cnl.len > 4 { cnl[4] } else { u64(0) }
-			flags:     binary.little_endian_u32_at(buf, d + 12)
-			inval_bit: binary.little_endian_u32_at(buf, d + 16)
+			flags:     u32_at(mut src, d + 12)
+			inval_bit: u32_at(mut src, d + 16)
 		}
 		comp := if cnl.len > 1 { cnl[1] } else { u64(0) }
-		if comp != 0 && block_id(buf, comp) == '##CN' {
-			collect_channels(buf, comp, mut chans)
+		if comp != 0 && block_id(mut src, comp) == '##CN' {
+			collect_channels(mut src, comp, mut chans)
 		}
 		cn = if cnl.len > 0 { cnl[0] } else { u64(0) }
 	}
@@ -871,18 +879,18 @@ fn chan_invalid(raw []u8, base int, data_bytes int, inval_bytes int, c Chan) boo
 // cc_linear returns (offset, factor) of a linear CCBLOCK (cc_type 1), so that
 // physical = offset + factor*raw. Defaults to (0, 1) when there is no conversion
 // or it isn't linear (the master time channel here is linear ns->s).
-fn cc_linear(buf []u8, cc u64) (f64, f64) {
-	if cc == 0 || block_id(buf, cc) != '##CC' {
+fn cc_linear(mut src ByteSource, cc u64) (f64, f64) {
+	if cc == 0 || block_id(mut src, cc) != '##CC' {
 		return 0.0, 1.0
 	}
-	d := data_off(buf, cc)
-	cc_type := buf[d + 0]
-	val_count := int(binary.little_endian_u16_at(buf, d + 6))
+	d := data_off(mut src, cc)
+	cc_type := u8_at(mut src, d + 0)
+	val_count := int(u16_at(mut src, d + 6))
 	if cc_type != 1 || val_count < 2 {
 		return 0.0, 1.0
 	}
-	off := math.f64_from_bits(binary.little_endian_u64_at(buf, d + 24))
-	factor := math.f64_from_bits(binary.little_endian_u64_at(buf, d + 24 + 8))
+	off := math.f64_from_bits(u64_at(mut src, d + 24))
+	factor := math.f64_from_bits(u64_at(mut src, d + 24 + 8))
 	return off, factor
 }
 
@@ -923,41 +931,61 @@ fn read_uint(b []u8, off int, bit_off int, bits int) u64 {
 
 // ---- block helpers ----
 
-fn block_id(buf []u8, off u64) string {
-	return buf[off..off + 4].bytestr()
+fn block_id(mut src ByteSource, off u64) string {
+	return bytes_at(mut src, int(off), 4).bytestr()
 }
 
 // block_links returns a block's link array (N u64 links after the common header).
-fn block_links(buf []u8, off u64) []u64 {
-	n := int(binary.little_endian_u64_at(buf, int(off) + 16))
+fn block_links(mut src ByteSource, off u64) []u64 {
+	n := int(u64_at(mut src, int(off) + 16))
 	mut links := []u64{cap: n}
 	for i := 0; i < n; i++ {
-		links << binary.little_endian_u64_at(buf, int(off) + 24 + 8 * i)
+		links << u64_at(mut src, int(off) + 24 + 8 * i)
 	}
 	return links
 }
 
 // data_off returns the byte offset of a block's type-specific data section.
-fn data_off(buf []u8, off u64) int {
-	n := int(binary.little_endian_u64_at(buf, int(off) + 16))
+fn data_off(mut src ByteSource, off u64) int {
+	n := int(u64_at(mut src, int(off) + 16))
 	return int(off) + 24 + 8 * n
 }
 
 // read_tx returns the UTF-8 text of a TX/MD block (null-terminated), or '' .
-fn read_tx(buf []u8, link u64) string {
+fn read_tx(mut src ByteSource, link u64) string {
 	if link == 0 {
 		return ''
 	}
-	id := block_id(buf, link)
+	id := block_id(mut src, link)
 	if id != '##TX' && id != '##MD' {
 		return ''
 	}
-	d := data_off(buf, link)
-	mut e := d
-	for e < buf.len && buf[e] != 0 {
-		e++
+	d := data_off(mut src, link)
+	// The text runs to its NUL; read it in pieces rather than the whole file's remainder.
+	mut out := []u8{}
+	mut at := d
+	for {
+		piece := bytes_at(mut src, at, 256)
+		got := int(src.size()) - at
+		n := if got < 256 { got } else { 256 }
+		if n <= 0 {
+			break
+		}
+		mut end := -1
+		for i in 0 .. n {
+			if piece[i] == 0 {
+				end = i
+				break
+			}
+		}
+		if end >= 0 {
+			out << piece[..end]
+			break
+		}
+		out << piece[..n]
+		at += n
 	}
-	return buf[d..e].bytestr()
+	return out.bytestr()
 }
 
 // read_data_block resolves a DGBLOCK data link to its raw record bytes, handling
@@ -965,48 +993,48 @@ fn read_tx(buf []u8, link u64) string {
 // unfinalized file the LAST DT block's declared length is stale (the logger
 // died before updating it) — when nothing but file-end follows the declared
 // end, the block really extends to the end of the file.
-fn read_data_block(buf []u8, link u64, unfin bool) ![]u8 {
+fn read_data_block(mut src ByteSource, link u64, unfin bool) ![]u8 {
 	if link == 0 {
 		return []u8{}
 	}
-	id := block_id(buf, link)
+	id := block_id(mut src, link)
 	match id {
 		'##DT', '##DV', '##DI', '##RD', '##SD' {
-			length := binary.little_endian_u64_at(buf, int(link) + 8)
-			d := data_off(buf, link)
+			length := u64_at(mut src, int(link) + 8)
+			d := data_off(mut src, link)
 			mut end := int(link) + int(length)
 			if unfin {
-				if end > buf.len {
-					end = buf.len
+				if end > int(src.size()) {
+					end = int(src.size())
 				} else {
 					// MDF blocks are 8-byte aligned: if no '##' block header sits
 					// where the next block would start, the length is stale and
 					// the data runs to the end of the file.
 					ae := (end + 7) / 8 * 8
-					if ae + 4 > buf.len || buf[ae] != `#` || buf[ae + 1] != `#` {
-						end = buf.len
+					if ae + 4 > int(src.size()) || bytes_at(mut src, ae, 2) != [u8(`#`), `#`] {
+						end = int(src.size())
 					}
 				}
 			}
-			if end > buf.len {
-				end = buf.len
+			if end > int(src.size()) {
+				end = int(src.size())
 			}
 			if d >= end {
 				return []u8{}
 			}
-			return buf[d..end].clone()
+			return bytes_at(mut src, d, end - d)
 		}
 		'##DZ' {
-			return dz_decompress(buf, link)!
+			return dz_decompress(mut src, link)!
 		}
 		'##DL' {
 			mut out := []u8{}
 			mut dl := link
 			for dl != 0 {
-				dll := block_links(buf, dl)
+				dll := block_links(mut src, dl)
 				for i := 1; i < dll.len; i++ {
 					if dll[i] != 0 {
-						out << read_data_block(buf, dll[i], unfin)!
+						out << read_data_block(mut src, dll[i], unfin)!
 					}
 				}
 				dl = if dll.len > 0 { dll[0] } else { u64(0) }
@@ -1014,8 +1042,8 @@ fn read_data_block(buf []u8, link u64, unfin bool) ![]u8 {
 			return out
 		}
 		'##HL' {
-			hll := block_links(buf, link)
-			return read_data_block(buf, if hll.len > 0 { hll[0] } else { u64(0) }, unfin)!
+			hll := block_links(mut src, link)
+			return read_data_block(mut src, if hll.len > 0 { hll[0] } else { u64(0) }, unfin)!
 		}
 		else {
 			return error('unknown data block ${id}')
@@ -1025,13 +1053,13 @@ fn read_data_block(buf []u8, link u64, unfin bool) ![]u8 {
 
 // dz_decompress inflates a DZBLOCK and, for zip_type 1, reverses the byte-column
 // transposition MDF applies before deflate to improve compression of records.
-fn dz_decompress(buf []u8, off u64) ![]u8 {
-	d := data_off(buf, off)
-	zip_type := buf[d + 2]
-	zip_param := int(binary.little_endian_u32_at(buf, d + 4))
-	org_len := int(binary.little_endian_u64_at(buf, d + 8))
-	data_len := int(binary.little_endian_u64_at(buf, d + 16))
-	comp := buf[d + 24..d + 24 + data_len]
+fn dz_decompress(mut src ByteSource, off u64) ![]u8 {
+	d := data_off(mut src, off)
+	zip_type := u8_at(mut src, d + 2)
+	zip_param := int(u32_at(mut src, d + 4))
+	org_len := int(u64_at(mut src, d + 8))
+	data_len := int(u64_at(mut src, d + 16))
+	comp := bytes_at(mut src, d + 24, data_len)
 	raw := zlib.decompress(comp)!
 	if raw.len != org_len {
 		return error('DZ length mismatch: got ${raw.len}, want ${org_len}')
