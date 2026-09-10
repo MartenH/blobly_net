@@ -1078,10 +1078,37 @@ fn draw_dbc_editor(mut app App) {
 			}
 		}
 		cell := 21 * sc
-		// scrollable: a large dlc (up to 64 bytes) shouldn't stretch the whole panel — show
-		// ~10 byte rows and scroll for the rest.
-		vis_rows := if msg.dlc < 10 { msg.dlc } else { 10 }
-		vgui.child_begin('##bitmatrix', f32(vis_rows) * (cell + 4 * sc) + 6 * sc)
+		// The grid takes the height the divider above this region gives it, less the lines the
+		// verdicts under it need, and scrolls only when the message does not fit (#270 item 2).
+		// Fixed at ten rows, it left the room a dragged divider added as blank space below a grid
+		// that went on scrolling — the splitter and the scroller disagreeing about who owns it.
+		mut verdicts := 0
+		for g in 0 .. nbits {
+			if conflict[g] {
+				verdicts = 1
+				break
+			}
+		}
+		for sg in msg.signals {
+			for g in dbc_signal_bits(sg) {
+				if g >= nbits || g < 0 {
+					verdicts++
+					break
+				}
+			}
+		}
+		row_h := cell + 4 * sc
+		full_h := f32(msg.dlc) * row_h + 6 * sc
+		room := vgui.content_avail_h() - f32(verdicts + 1) * vgui.line_height()
+		min_h := 3 * row_h + 6 * sc
+		grid_h := if full_h <= room {
+			full_h
+		} else if room > min_h {
+			room
+		} else {
+			min_h
+		}
+		vgui.child_begin('##bitmatrix', grid_h)
 		for byte_i in 0 .. msg.dlc {
 			vgui.text_dim('B${byte_i}')
 			for bit_i := 7; bit_i >= 0; bit_i-- {

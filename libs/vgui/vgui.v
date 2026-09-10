@@ -168,6 +168,11 @@ fn C.vgui_fps() f32
 fn C.vgui_want_text_input() int
 fn C.vgui_any_item_active() int
 fn C.vgui_key_pressed(int) int
+fn C.vgui_is_item_double_clicked() int
+fn C.vgui_key_enter_pressed() int
+fn C.vgui_line_height() f32
+fn C.vgui_frame_height() f32
+fn C.vgui_table_begin_sized(&char, int, f32) int
 fn C.vgui_key_ctrl() int
 fn C.vgui_key_ctrl_only() int
 fn C.vgui_combo(&char, &&char, int, int) int
@@ -752,6 +757,17 @@ pub fn content_avail_h() f32 {
 	return C.vgui_content_avail_h()
 }
 
+// line_height is one text line plus the spacing below it; frame_height one widget row (a
+// button, an input) plus its spacing. Reserve N of them under a child you size to what is left,
+// rather than a hand-typed pixel count that drifts from the font.
+pub fn line_height() f32 {
+	return C.vgui_line_height()
+}
+
+pub fn frame_height() f32 {
+	return C.vgui_frame_height()
+}
+
 // is_item_deactivated_after_edit reports whether the PREVIOUS item stopped being edited this
 // frame with a changed value — i.e. the edit is finished, not in progress.
 //
@@ -786,6 +802,14 @@ pub fn separator_text(s string) {
 // table: begin -> col×N -> headers -> (row -> cell×N)… -> end
 pub fn table_begin(id string, cols int) bool {
 	return C.vgui_table_begin(id.str, cols) == 1
+}
+
+// table_begin_sized is table_begin with the height said: h > 0 scrolls within h pixels; h == 0
+// is sized to its rows and leaves the scrolling to the window or child around it. Use it for
+// any table that has something BELOW it — table_begin's scrolling table with no height fills
+// whatever is left in the window, and the sibling under it lands out of reach (#270).
+pub fn table_begin_sized(id string, cols int, h f32) bool {
+	return C.vgui_table_begin_sized(id.str, cols, h) == 1
 }
 
 pub fn table_col(name string) {
@@ -828,6 +852,19 @@ pub fn tree_node_table(label string) bool {
 // is_item_clicked reports whether the last-submitted item was clicked this frame.
 pub fn is_item_clicked() bool {
 	return C.vgui_is_item_clicked() == 1
+}
+
+// is_item_double_clicked reports whether the last-submitted item was double-clicked this frame.
+// The first click of the pair still reports through selectable/is_item_clicked, so a caller
+// that selects on click and acts on double-click sees both, in that order.
+pub fn is_item_double_clicked() bool {
+	return C.vgui_is_item_double_clicked() == 1
+}
+
+// key_enter_pressed reports whether Enter (main or keypad) went down this frame, no repeat.
+// Check any_item_active first: a focused text field is the one that owns its Enter.
+pub fn key_enter_pressed() bool {
+	return C.vgui_key_enter_pressed() == 1
 }
 
 // is_item_clicked_right reports whether the last-submitted item was RIGHT-clicked this frame.

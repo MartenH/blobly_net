@@ -130,6 +130,11 @@ int  vgui_any_item_active(void);
 int  vgui_key_ctrl(void);
 int  vgui_key_ctrl_only(void);
 int  vgui_key_pressed(int ch);
+int  vgui_is_item_double_clicked(void);
+int  vgui_key_enter_pressed(void);
+float vgui_line_height(void);
+float vgui_frame_height(void);
+int  vgui_table_begin_sized(const char* id, int cols, float h);
 int  vgui_combo(const char* label, const char** items, int n, int current);
 #ifdef __cplusplus
 }

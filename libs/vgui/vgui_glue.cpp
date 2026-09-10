@@ -825,6 +825,17 @@ int  vgui_table_begin(const char* id, int cols) {
     return ImGui::BeginTable(id, cols,
         ImGuiTableFlags_Borders|ImGuiTableFlags_ScrollY|ImGuiTableFlags_Resizable) ? 1 : 0;
 }
+// vgui_table_begin_sized: a table of an explicit height. h > 0 scrolls inside that many pixels;
+// h == 0 asks for NO scrolling, so the table is as tall as its rows and the window or child
+// around it scrolls. The plain vgui_table_begin cannot do the second: its ScrollY flag with no
+// outer height makes ImGui size the table to everything LEFT in the window (CalcItemSize with
+// a zero height takes the remaining region), so a table followed by anything pushed that
+// sibling below the visible area -- the System panel's id allocation under its matrix (#270).
+int  vgui_table_begin_sized(const char* id, int cols, float h) {
+    ImGuiTableFlags flags = ImGuiTableFlags_Borders|ImGuiTableFlags_Resizable;
+    if (h > 0.0f) flags |= ImGuiTableFlags_ScrollY;
+    return ImGui::BeginTable(id, cols, flags, ImVec2(0.0f, h > 0.0f ? h : 0.0f)) ? 1 : 0;
+}
 // tree node inside a table cell (spans all columns for the click/arrow). Returns open.
 int vgui_tree_node_table(const char* label) {
     return ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_SpanAllColumns) ? 1 : 0;
@@ -892,6 +903,27 @@ int vgui_key_pressed(int ch) {
     else return 0;
     return ImGui::IsKeyPressed(k, false) ? 1 : 0;
 }
+
+// vgui_is_item_double_clicked: the last-submitted item was double-clicked (left button) this
+// frame. ImGui has no per-item double-click query -- IsItemClicked answers the first click of a
+// pair too -- so this pairs the hover test with the mouse's double-click state, the way ImGui's
+// own examples do. A list that ENTERS on a single click sends a hand that double-clicks (every
+// native picker) into the next folder's listing, where the second click lands on whatever row
+// is under the mouse (#270).
+int vgui_is_item_double_clicked() {
+    return (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) ? 1 : 0;
+}
+// vgui_key_enter_pressed: Enter or keypad Enter went down THIS frame (no auto-repeat). The
+// caller decides whether a focused text field owns it (vgui_any_item_active).
+int vgui_key_enter_pressed() {
+    return (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) ? 1 : 0;
+}
+
+// vgui_line_height / vgui_frame_height: one text line, one widget row, each WITH the spacing
+// below it. What a caller needs to reserve room for N lines or N button rows beneath a child
+// it is about to size -- a hand-typed 18*scale drifts from the font the moment the style does.
+float vgui_line_height()  { return ImGui::GetTextLineHeightWithSpacing(); }
+float vgui_frame_height() { return ImGui::GetFrameHeightWithSpacing(); }
 
 // snap_to_edge magnetically pulls a marker time `t` to the nearest bar edge (start or end) when
 // it's within `px` screen pixels — so measurements land on exact interval boundaries. Returns `t`

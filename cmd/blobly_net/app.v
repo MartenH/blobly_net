@@ -439,30 +439,38 @@ mut:
 	fb_save     bool   // true = save mode (filename input), false = open mode
 	fb_dir      string // current directory
 	fb_name_buf []u8   // filename (save mode)
+	fb_sel      string // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
+	fb_path_buf []u8   // the folder, typed — Enter or Go navigates; a file path selects it where it lives
 	// ACCEPTED extensions, plural — the caption the browser shows and the match it applies both
 	// derive from this one list, so a picker can no longer advertise '(*.log)' while listing
 	// .mf4, which is what the single-string version with per-case aliases did. Empty = any.
 	fb_ext    []string
 	fb_target string // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>' |
-	// 'system' | 'flash' | 'recording' — keep this list in step with the four dispatch
+	// 'system' | 'flash' | 'recording' | 'script' — keep this list in step with the four dispatch
 	// sites in panel_config.v (open_browser, browser_confirm, the title, match_ext)
 	sims        []SimCfg        // per-channel in-process simulation workloads
 	sim_enabled map[string]bool // sim_key(channel, node) -> enabled (Simulation panel)
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
-	diag_log        []string
-	diag_gen        u64 // cache key for the Diagnostics panel's joined text
-	diag_busy       bool
-	script_log      []string
-	script_gen      u64 // cache key for the Script panel's joined text
-	script_busy     bool
-	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
-	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
-	trace_status    string // last dump status line, shown by the Trace Chart
-	trace_freeze    string // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
-	cursor_a        f64    // Trace Chart measurement markers A/B (µs); the swimlane drags them
-	cursor_b        f64
-	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
+	diag_log    []string
+	diag_gen    u64 // cache key for the Diagnostics panel's joined text
+	diag_busy   bool
+	script_log  []string
+	script_gen  u64 // cache key for the Script panel's joined text
+	script_busy bool
+	// The Script panel's editor (#270): the Configuration File tab's edit box, over the script.
+	script_edit       bool   // editor shown
+	script_text       []u8   // the file's text, edited in place
+	script_loaded     string // which path script_text holds ('' = nothing loaded)
+	script_text_dirty bool
+	script_err        string
+	trace_busy        bool   // a trace-dump transfer is in flight (single-flight guard)
+	trace_recording   bool   // Record toggle: the target's capture is armed (optimistic)
+	trace_status      string // last dump status line, shown by the Trace Chart
+	trace_freeze      string // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
+	cursor_a          f64    // Trace Chart measurement markers A/B (µs); the swimlane drags them
+	cursor_b          f64
+	cursor_span       f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
 	// Shell (the target's CAN command line; one worker spawn per submitted line)
 	show_shell        bool
 	show_dbc          bool
@@ -472,6 +480,7 @@ mut:
 	sys               sysview.System
 	sys_loaded        bool
 	sel_ecu           string // selected node in the System panel's ECU master-detail
+	sys_ecu_h         f32    // height of the System panel's ECU panes; the splitter below them drags it (#270)
 	shell_buf         []u8   // the input line (persistent; edited in place by console_input)
 	eth_target_buf    []u8   // the eth shell's board ip (session-only; manifest carries the port)
 	eth_shell_session u16    // persists across commands: a fresh client restarting at session 1

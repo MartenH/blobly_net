@@ -1235,8 +1235,13 @@ fn draw_script(mut app App) {
 	if sgen != app.script_cache.gen {
 		app.script_cache.refresh(sgen, ssrc)
 	}
-	vgui.set_next_item_width(240)
-	vgui.input_text('.lua', mut app.script_path_buf)
+	sc := app.ui_scale
+	vgui.set_next_item_width(240 * sc)
+	vgui.input_text('##scriptpath', mut app.script_path_buf)
+	vgui.same_line()
+	if vgui.small_button('Browse…##script') {
+		app.open_browser('script')
+	}
 	vgui.same_line()
 	if vgui.button('Run') && !busy {
 		// reserve the slot HERE, before the spawn: a worker that hasn't been scheduled yet
@@ -1248,11 +1253,115 @@ fn draw_script(mut app App) {
 		app.reserve_tool_reader()
 		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
 	}
+	vgui.same_line()
+	if vgui.small_button(if app.script_edit { 'Close editor' } else { 'Edit' }) {
+		app.script_edit = !app.script_edit
+	}
 	if busy {
 		vgui.same_line()
 		vgui.text_dim('running…')
 	}
+	if !app.running {
+		// A suite run from here talks to the simulated ECUs the RUN hosts. Stopped, nothing
+		// answers, and every diagnostic test reports a timeout with nothing on screen to say why.
+		vgui.text_dim('measurement stopped — simulated ECUs are not hosted until Start, so a diagnostic suite times out')
+	}
+	if app.script_edit {
+		draw_script_editor(mut app)
+	}
 	vgui.separator_text('output')
 	draw_copyable_log(mut app, '##script', app.script_cache)
 	vgui.end()
+}
+
+// draw_script_editor is the Configuration File tab's edit box, over the script (#270): the text
+// is loaded once per path and edited in place, Save writes it back, Reload discards. No syntax
+// check here — Lua reports its own errors, with a line number, at Run.
+fn draw_script_editor(mut app App) {
+	path := vgui.buf_str(app.script_path_buf).trim_space()
+	app.load_script_text(path)
+	if app.script_text_dirty {
+		if vgui.button('Save script') {
+			app.save_script_text()
+		}
+	} else {
+		vgui.text_dim('[ Save ]')
+	}
+	vgui.same_line()
+	if vgui.button('Reload##script') {
+		// invalidate, not just un-dirty: load_script_text keeps a buffer whose path still matches
+		app.script_loaded = ''
+		app.script_text_dirty = false
+		app.load_script_text(path)
+	}
+	if app.script_text_dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
+	}
+	vgui.same_line()
+	vgui.text_dim(if app.script_loaded == '' { '(no file)' } else { app.script_loaded })
+	if app.script_text_dirty && app.script_loaded != path {
+		// The path field moved on while the buffer holds unsaved edits to the old file: the
+		// buffer stays, and says whose it is, rather than being replaced under the typist.
+		vgui.text_colored(230, 170, 70,
+			'editing ${app.script_loaded} — Save or Reload before switching to ${path}')
+	}
+	used := vgui.buf_str(app.script_text).len
+	if used > app.script_text.len - 1024 {
+		vgui.text_colored(230, 120, 120,
+			'buffer nearly full (${used}/${app.script_text.len}) — Save, then Reload for more room')
+	}
+	if app.script_err != '' {
+		vgui.text_colored(230, 120, 120, app.script_err)
+	}
+	if vgui.text_edit('##scripttext', mut app.script_text, 260 * app.ui_scale) {
+		app.script_text_dirty = true
+	}
+}
+
+// load_script_text reads `path` into the editor buffer — once per path (the panel calls this
+// every frame), and never over unsaved edits: a buffer that is dirty keeps its file until Save
+// or Reload, whatever the path field says now.
+fn (mut app App) load_script_text(path string) {
+	if app.script_loaded == path || (app.script_text_dirty && app.script_loaded != '') {
+		return
+	}
+	if path == '' {
+		app.script_text =
+			mkbuf('', 4096) // the box is drawn regardless; ImGui cannot take an empty buffer
+		app.script_loaded = ''
+		app.script_text_dirty = false
+		app.script_err = 'type a script path, or Browse… for one'
+		return
+	}
+	txt := os.read_file(path) or {
+		app.script_text = mkbuf('', 4096)
+		app.script_loaded = path // marked loaded so a missing file is not re-read at frame rate; Reload retries
+		app.script_text_dirty = false
+		app.script_err = 'cannot read ${path}: ${err}'
+		return
+	}
+	// Room to type: ImGui writes into this buffer and cannot grow it (the File tab's rule).
+	cap := if txt.len * 3 > 65536 { txt.len * 3 } else { 65536 }
+	app.script_text = mkbuf(txt, cap)
+	app.script_loaded = path
+	app.script_text_dirty = false
+	app.script_err = ''
+}
+
+// save_script_text writes the editor buffer back to the file it was loaded from — that one,
+// not whatever the path field says now (see load_script_text).
+fn (mut app App) save_script_text() {
+	path := app.script_loaded
+	if path == '' {
+		return
+	}
+	os.write_file(path, vgui.buf_str(app.script_text)) or {
+		app.script_err = 'save failed: ${err}'
+		app.notify('script not saved: ${err}')
+		return
+	}
+	app.script_text_dirty = false
+	app.script_err = ''
+	app.notify('saved -> ${path}')
 }
