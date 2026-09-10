@@ -49,7 +49,16 @@ fn test_a_bare_relative_name_is_its_own_parent() {
 	assert parent('projects', true) == 'projects'
 }
 
-fn test_a_unc_share_is_walked_like_a_folder() {
+fn test_a_unc_share_root_is_its_own_parent() {
+	assert parent('\\\\srv\\share\\x\\y', true) == '\\\\srv\\share\\x'
 	assert parent('\\\\srv\\share\\x', true) == '\\\\srv\\share'
-	assert parent('\\\\srv\\share', true) == '\\\\srv'
+	assert parent('\\\\srv\\share', true) == '\\\\srv\\share'
+	assert parent('//srv/share/', true) == '//srv/share'
+	assert parent('\\\\srv', true) == '\\\\srv'
+	for r in ['\\\\srv\\share', '//srv/share', '\\\\srv'] {
+		assert is_unc_root(r), r
+	}
+	for x in ['\\\\srv\\share\\x', '\\\\\\share', '\\\\srv\\\\x', '\\srv\\share', 'C:\\', '\\\\'] {
+		assert !is_unc_root(x), x
+	}
 }

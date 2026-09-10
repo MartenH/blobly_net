@@ -35,13 +35,13 @@ pub fn activate(e Entry, save bool) Act {
 }
 
 // drives is the folder value that means "list the drive roots" — the level ABOVE a Windows
-// drive root. Windows has no single root: `C:\\` and `D:\\` are siblings with no parent, so the
+// drive root. Windows has no single root: `C:\` and `D:\` are siblings with no parent, so the
 // picker gives them one. On Linux `/` is its own parent and this level is never reached.
 pub const drives = ''
 
-// is_drive_root reports whether `dir` spells a Windows drive root: `C:`, `C:\\` or `C:/`, any
-// letter, either case. Nothing else counts — `C:\\x` is a folder, `\\server\\share` is not a
-// drive (and is walked like a folder: its parent is itself).
+// is_drive_root reports whether `dir` spells a Windows drive root: `C:`, `C:\` or `C:/`, any
+// letter, either case. Nothing else counts — `C:\x` is a folder, and a UNC share is not a
+// drive (is_unc_root).
 pub fn is_drive_root(dir string) bool {
 	if dir.len < 2 || dir.len > 3 || dir[1] != `:` {
 		return false
@@ -54,12 +54,42 @@ pub fn is_drive_root(dir string) bool {
 	return dir.len == 2 || dir[2] == `\\` || dir[2] == `/`
 }
 
+// is_unc_root reports whether `dir` is a UNC share root — `\\server\share` (either separator),
+// or the bare `\\server` — the shape a Windows share is reached by. Its parent is not a place
+// a file picker can list, so it is its own (codex #305 r1).
+pub fn is_unc_root(dir string) bool {
+	if dir.len < 3 {
+		return false
+	}
+	sep := fn (c u8) bool {
+		return c == `\\` || c == `/`
+	}
+	if !sep(dir[0]) || !sep(dir[1]) {
+		return false
+	}
+	mut parts := 0
+	mut in_part := false
+	for i := 2; i < dir.len; i++ {
+		if sep(dir[i]) {
+			if !in_part {
+				return false // an empty component: not a share root
+			}
+			in_part = false
+		} else if !in_part {
+			in_part = true
+			parts++
+		}
+	}
+	return in_part && parts <= 2
+}
+
 // parent is where ".. up" goes from `dir`. On Windows a drive root goes to `drives`; a folder
-// directly under a root goes to the root spelled `X:\\` (not the bare `X:`, which the OS reads
+// directly under a root goes to the root spelled `X:\` (not the bare `X:`, which the OS reads
 // as "the current directory on X", a different place); `drives` stays where it is. On Linux `/`
-// stays `/`. A path with no separator at all — a bare relative name — is its own parent, so a
+// stays `/`. A UNC share root (`\\server\share`, is_unc_root) is its own parent: the level above
+// a share is not a folder this picker can list. A path with no separator at all — a bare relative name — is its own parent, so a
 // picker opened on `projects` cannot climb out of what it was given by `..`; the typed path is
-// the way there. Trailing separators are ignored (`D:\\ems2\\` is `D:\\ems2`).
+// the way there. Trailing separators are ignored (`D:\ems2\` is `D:\ems2`).
 pub fn parent(dir string, windows bool) string {
 	mut d := dir
 	for d.len > 1 && (d[d.len - 1] == `\\` || d[d.len - 1] == `/`) {
@@ -67,6 +97,9 @@ pub fn parent(dir string, windows bool) string {
 	}
 	if windows && is_drive_root(d) {
 		return drives
+	}
+	if windows && is_unc_root(d) {
+		return d
 	}
 	mut cut := -1
 	for i := d.len - 1; i >= 0; i-- {

@@ -123,6 +123,7 @@ fn C.vgui_scroll_bottom()
 fn C.vgui_scroll_at_bottom() int
 fn C.vgui_console_text(&char, &char, int, int)
 fn C.vgui_text_edit(&char, &char, int, f32) int
+fn C.vgui_text_edit_code(&char, &char, int, f32) int
 fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_input_int(&char, &int) int
 fn C.vgui_progress(f32, &char)
@@ -596,6 +597,16 @@ pub fn text_edit(id string, mut buf []u8, h f32) bool {
 		return false
 	}
 	return C.vgui_text_edit(id.str, &char(buf.data), buf.len, h) == 1
+}
+
+// text_edit_code is text_edit for a language where Tab is indentation (Lua): it inserts a tab
+// rather than moving focus. text_edit keeps Tab as focus on purpose — its YAML caller rejects
+// a literal tab outright.
+pub fn text_edit_code(id string, mut buf []u8, h f32) bool {
+	if buf.len == 0 {
+		return false
+	}
+	return C.vgui_text_edit_code(id.str, &char(buf.data), buf.len, h) == 1
 }
 
 // console_text renders s as read-only but SELECTABLE console text (native mouse marking,

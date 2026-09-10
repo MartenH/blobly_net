@@ -646,6 +646,11 @@ int vgui_text_edit(const char* id, char* buf, int cap, float h) {
     // very error the editor reports. Tab keeps its normal focus behaviour.
     return ImGui::InputTextMultiline(id, buf, (size_t)cap, ImVec2(-FLT_MIN, h)) ? 1 : 0;
 }
+// vgui_text_edit_code: vgui_text_edit for a language where a tab is indentation (Lua, the
+// Script panel's editor): Tab inserts one rather than moving focus.
+int vgui_text_edit_code(const char* id, char* buf, int cap, float h) {
+    return ImGui::InputTextMultiline(id, buf, (size_t)cap, ImVec2(-FLT_MIN, h), ImGuiInputTextFlags_AllowTabInput) ? 1 : 0;
+}
 // pin the current child's scroll to the bottom (call after emitting console output lines).
 void vgui_scroll_bottom(void) { ImGui::SetScrollHereY(1.0f); }
 // vgui_scroll_at_bottom: whether the current child is scrolled to (within a line of) its end —

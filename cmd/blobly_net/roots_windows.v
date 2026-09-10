@@ -8,8 +8,8 @@ fn C.GetLogicalDrives() u32
 const drive_roots = true
 
 // fs_roots is what the picker lists at the level above a drive root (pickrule.drives): every
-// drive the OS reports, spelled `X:\\`. From GetLogicalDrives' bitmask — bit n is letter n — and
-// NOT from probing `A:\\`..`Z:\\` with is_dir, which on a removable drive with no medium raises the
+// drive the OS reports, spelled `X:\`. From GetLogicalDrives' bitmask — bit n is letter n — and
+// NOT from probing `A:\`..`Z:\` with is_dir, which on a removable drive with no medium raises the
 // system's "no disk" box in the middle of a file picker.
 fn fs_roots() []string {
 	mask := C.GetLogicalDrives()

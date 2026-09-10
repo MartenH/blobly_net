@@ -61,6 +61,10 @@ fn (mut tf TextFile) load(path string) LoadOutcome {
 fn (mut tf TextFile) invalidate() {
 	tf.loaded = ''
 	tf.dirty = false
+	// And the text: with `loaded` at '' a retained buffer reads as the empty path, loaded and
+	// clean — File ▸ New after an open project showed the old project's YAML that way, with
+	// Reload agreeing (codex #305 r1).
+	tf.buf = []u8{}
 }
 
 // text is what the box holds now.
