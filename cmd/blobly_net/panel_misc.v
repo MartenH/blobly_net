@@ -1323,7 +1323,10 @@ fn draw_script_editor(mut app App) {
 // every frame), and never over unsaved edits: a buffer that is dirty keeps its file until Save
 // or Reload, whatever the path field says now.
 fn (mut app App) load_script_text(path string) {
-	if app.script_loaded == path || (app.script_text_dirty && app.script_loaded != '') {
+	// `len > 0`: a buffer never allocated is not one that holds the empty path — text_edit
+	// draws nothing for it, so the box would be missing with nothing on screen to say why.
+	if (app.script_loaded == path && app.script_text.len > 0)
+		|| (app.script_text_dirty && app.script_loaded != '') {
 		return
 	}
 	if path == '' {
