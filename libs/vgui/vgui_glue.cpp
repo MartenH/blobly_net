@@ -646,6 +646,11 @@ int vgui_text_edit(const char* id, char* buf, int cap, float h) {
     // very error the editor reports. Tab keeps its normal focus behaviour.
     return ImGui::InputTextMultiline(id, buf, (size_t)cap, ImVec2(-FLT_MIN, h)) ? 1 : 0;
 }
+// vgui_text_edit_code: vgui_text_edit for a language where a tab is indentation (Lua, the
+// Script panel's editor): Tab inserts one rather than moving focus.
+int vgui_text_edit_code(const char* id, char* buf, int cap, float h) {
+    return ImGui::InputTextMultiline(id, buf, (size_t)cap, ImVec2(-FLT_MIN, h), ImGuiInputTextFlags_AllowTabInput) ? 1 : 0;
+}
 // pin the current child's scroll to the bottom (call after emitting console output lines).
 void vgui_scroll_bottom(void) { ImGui::SetScrollHereY(1.0f); }
 // vgui_scroll_at_bottom: whether the current child is scrolled to (within a line of) its end —
@@ -825,6 +830,20 @@ int  vgui_table_begin(const char* id, int cols) {
     return ImGui::BeginTable(id, cols,
         ImGuiTableFlags_Borders|ImGuiTableFlags_ScrollY|ImGuiTableFlags_Resizable) ? 1 : 0;
 }
+// vgui_table_begin_flat: a table sized to its rows, with NO scrolling of its own -- the window
+// or child around it scrolls. The plain vgui_table_begin cannot do that: its ScrollY flag with
+// no outer height makes ImGui size the table to everything LEFT in the window (CalcItemSize
+// with a zero height takes the remaining region), so a table followed by anything pushed that
+// sibling below the visible area -- the System panel's id allocation under its matrix (#270).
+int  vgui_table_begin_flat(const char* id, int cols) {
+    return ImGui::BeginTable(id, cols, ImGuiTableFlags_Borders|ImGuiTableFlags_Resizable) ? 1 : 0;
+}
+// vgui_table_cell_dim: the next cell, dim text -- vgui_table_cell's twin for a row that is
+// listed but not offered.
+void vgui_table_cell_dim(const char* s) {
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("%s", s);
+}
 // tree node inside a table cell (spans all columns for the click/arrow). Returns open.
 int vgui_tree_node_table(const char* label) {
     return ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_SpanAllColumns) ? 1 : 0;
@@ -891,6 +910,42 @@ int vgui_key_pressed(int ch) {
     else if (ch >= '0' && ch <= '9') k = (ImGuiKey)(ImGuiKey_0 + (ch - '0'));
     else return 0;
     return ImGui::IsKeyPressed(k, false) ? 1 : 0;
+}
+
+// vgui_is_item_double_clicked: the last-submitted item was double-clicked (left button) this
+// frame. ImGui has no per-item double-click query -- IsItemClicked answers the first click of a
+// pair too -- so this pairs the hover test with the mouse's double-click state, the way ImGui's
+// own examples do. A list that ENTERS on a single click sends a hand that double-clicks (every
+// native picker) into the next folder's listing, where the second click lands on whatever row
+// is under the mouse (#270).
+int vgui_is_item_double_clicked() {
+    return (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) ? 1 : 0;
+}
+// vgui_key_enter_pressed: Enter or keypad Enter went down THIS frame (no auto-repeat). The
+// caller decides whether a focused text field owns it (vgui_any_item_active).
+int vgui_key_enter_pressed() {
+    return (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) ? 1 : 0;
+}
+
+// vgui_line_height / vgui_frame_height: one text line, one widget row, each WITH the spacing
+// below it. What a caller needs to reserve room for N lines or N button rows beneath a child
+// it is about to size -- a hand-typed 18*scale drifts from the font the moment the style does.
+float vgui_line_height()  { return ImGui::GetTextLineHeightWithSpacing(); }
+float vgui_frame_height() { return ImGui::GetFrameHeightWithSpacing(); }
+
+// vgui_input_text_enter: a single-line field that reports 1 on the frame ENTER submits it (and
+// only then), leaving the text as typed. What a path field wants -- vgui_input_text reports
+// every keystroke, and "deactivated after edit" fires on any loss of focus (Tab, a click on a
+// row), which would navigate under a click aimed at the list (#270). The head of
+// vgui_console_input, without the history and the refocus.
+int vgui_input_text_enter(const char* label, char* buf, int bufsize) {
+    return ImGui::InputText(label, buf, (size_t)bufsize, ImGuiInputTextFlags_EnterReturnsTrue) ? 1 : 0;
+}
+// vgui_window_focused: the current window, or one of its children, has keyboard focus. A key
+// read with IsKeyPressed is global; a window that acts on Enter asks this first, or Enter
+// pressed anywhere in the app lands in it.
+int vgui_window_focused() {
+    return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ? 1 : 0;
 }
 
 // snap_to_edge magnetically pulls a marker time `t` to the nearest bar edge (start or end) when

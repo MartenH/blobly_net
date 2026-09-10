@@ -123,6 +123,7 @@ fn C.vgui_scroll_bottom()
 fn C.vgui_scroll_at_bottom() int
 fn C.vgui_console_text(&char, &char, int, int)
 fn C.vgui_text_edit(&char, &char, int, f32) int
+fn C.vgui_text_edit_code(&char, &char, int, f32) int
 fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_input_int(&char, &int) int
 fn C.vgui_progress(f32, &char)
@@ -168,6 +169,14 @@ fn C.vgui_fps() f32
 fn C.vgui_want_text_input() int
 fn C.vgui_any_item_active() int
 fn C.vgui_key_pressed(int) int
+fn C.vgui_is_item_double_clicked() int
+fn C.vgui_key_enter_pressed() int
+fn C.vgui_line_height() f32
+fn C.vgui_frame_height() f32
+fn C.vgui_table_begin_flat(&char, int) int
+fn C.vgui_table_cell_dim(&char)
+fn C.vgui_input_text_enter(&char, &char, int) int
+fn C.vgui_window_focused() int
 fn C.vgui_key_ctrl() int
 fn C.vgui_key_ctrl_only() int
 fn C.vgui_combo(&char, &&char, int, int) int
@@ -590,6 +599,16 @@ pub fn text_edit(id string, mut buf []u8, h f32) bool {
 	return C.vgui_text_edit(id.str, &char(buf.data), buf.len, h) == 1
 }
 
+// text_edit_code is text_edit for a language where Tab is indentation (Lua): it inserts a tab
+// rather than moving focus. text_edit keeps Tab as focus on purpose — its YAML caller rejects
+// a literal tab outright.
+pub fn text_edit_code(id string, mut buf []u8, h f32) bool {
+	if buf.len == 0 {
+		return false
+	}
+	return C.vgui_text_edit_code(id.str, &char(buf.data), buf.len, h) == 1
+}
+
 // console_text renders s as read-only but SELECTABLE console text (native mouse marking,
 // Ctrl+A/Ctrl+C), sized to content so the enclosing child scrolls it. nlines = line count.
 pub fn console_text(id string, s string, nlines int) {
@@ -606,6 +625,35 @@ pub fn scroll_bottom() {
 // scrolled up to read is not to be yanked down by the next line.
 pub fn scroll_at_bottom() bool {
 	return C.vgui_scroll_at_bottom() != 0
+}
+
+// input_text_enter is a single-line field that returns true on the frame Enter SUBMITS it, and
+// only then — input_text reports every keystroke, and is_item_deactivated_after_edit fires on
+// any loss of focus (Tab, a click elsewhere), which is not a submit. The path field of the file
+// picker; a field whose Enter means "go".
+pub fn input_text_enter(label string, mut buf []u8) bool {
+	if buf.len == 0 {
+		return false // ImGui cannot be handed a zero-capacity buffer (see input_text)
+	}
+	return C.vgui_input_text_enter(label.str, &char(buf.data), buf.len) == 1
+}
+
+// window_focused reports whether the current window (or a child of it) holds keyboard focus.
+// A key read through key_pressed / key_enter_pressed is global: a window acting on one asks this
+// first, or the key pressed anywhere in the app lands in it.
+pub fn window_focused() bool {
+	return C.vgui_window_focused() == 1
+}
+
+// buf_len is the length of the text in a NUL-terminated buffer, without buf_str's copy of it —
+// for a fill-level check drawn every frame.
+pub fn buf_len(buf []u8) int {
+	for i, b in buf {
+		if b == 0 {
+			return i
+		}
+	}
+	return buf.len
 }
 
 // input_double edits *v in place (numeric input, e.g. a signal value). Returns true on change.
@@ -752,6 +800,17 @@ pub fn content_avail_h() f32 {
 	return C.vgui_content_avail_h()
 }
 
+// line_height is one text line plus the spacing below it; frame_height one widget row (a
+// button, an input) plus its spacing. Reserve N of them under a child you size to what is left,
+// rather than a hand-typed pixel count that drifts from the font.
+pub fn line_height() f32 {
+	return C.vgui_line_height()
+}
+
+pub fn frame_height() f32 {
+	return C.vgui_frame_height()
+}
+
 // is_item_deactivated_after_edit reports whether the PREVIOUS item stopped being edited this
 // frame with a changed value — i.e. the edit is finished, not in progress.
 //
@@ -786,6 +845,19 @@ pub fn separator_text(s string) {
 // table: begin -> col×N -> headers -> (row -> cell×N)… -> end
 pub fn table_begin(id string, cols int) bool {
 	return C.vgui_table_begin(id.str, cols) == 1
+}
+
+// table_begin_flat is a table sized to its rows that leaves the scrolling to the window or
+// child around it. Use it for any table that has something BELOW it — table_begin's scrolling
+// table with no height fills whatever is left in the window, and the sibling under it lands out
+// of reach (#270). table_begin is for a table that is the last thing in its region.
+pub fn table_begin_flat(id string, cols int) bool {
+	return C.vgui_table_begin_flat(id.str, cols) == 1
+}
+
+// table_cell_dim is table_cell in dim text: a row that is listed but not offered.
+pub fn table_cell_dim(s string) {
+	C.vgui_table_cell_dim(s.str)
 }
 
 pub fn table_col(name string) {
@@ -828,6 +900,19 @@ pub fn tree_node_table(label string) bool {
 // is_item_clicked reports whether the last-submitted item was clicked this frame.
 pub fn is_item_clicked() bool {
 	return C.vgui_is_item_clicked() == 1
+}
+
+// is_item_double_clicked reports whether the last-submitted item was double-clicked this frame.
+// The first click of the pair still reports through selectable/is_item_clicked, so a caller
+// that selects on click and acts on double-click sees both, in that order.
+pub fn is_item_double_clicked() bool {
+	return C.vgui_is_item_double_clicked() == 1
+}
+
+// key_enter_pressed reports whether Enter (main or keypad) went down this frame, no repeat.
+// Check any_item_active first: a focused text field is the one that owns its Enter.
+pub fn key_enter_pressed() bool {
+	return C.vgui_key_enter_pressed() == 1
 }
 
 // is_item_clicked_right reports whether the last-submitted item was RIGHT-clicked this frame.

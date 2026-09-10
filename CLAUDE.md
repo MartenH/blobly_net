@@ -126,7 +126,10 @@ and when a bus-load interval closes and what a spawning or unread row does with 
 progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`, the trace's
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
-never averaged into a cadence (#266); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
+never averaged into a cadence (#266); and `cmd/blobly_net/pickrule/`, the file picker's
+grammar — a click selects, a double click enters or accepts, Enter and Open act on the
+selection the same way — and where `..` goes from a Windows drive root (the drives view, so `D:`
+is reachable from `C:`; #270); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
 inverse, the one place a value is ever written, which refuses rather than emit a spelling that
@@ -457,12 +460,18 @@ response shape changes.
 categorised list (V / GUI / environment / CI). Two that bite newcomers:
 
 - **WSLg + GL:** hardware GL works on Ubuntu 24.04 + Mesa 25.x; older Mesa crashed the GPU path.
+- **A `vgui.table_begin` table fills everything below it.** It asks ImGui for a scrolling table
+  with no height, and ImGui sizes that to the whole remaining region — so anything drawn after
+  it in the same window or child is below the visible area with no way to scroll to it. That was
+  #270 item 1 (the System panel's id allocation under its matrix). A table with a sibling below
+  it is `table_begin_flat(id, cols)` — sized to its rows, the window or child around it scrolls.
 - **Native Windows** is a separate toolchain (MSYS2/mingw). `.github/workflows/windows.yml` is
   the reproducible recipe — it builds the shipped bundle on every push; there is no hand-written
   walkthrough to drift from it.
 - **Working from Windows, type-check the OTHER platform before you push:**
   `v -os linux -enable-globals -path "@vlib|@vmodules|modules|libs" -check cmd/blobly_net`.
-  The per-platform backends (`vector_windows.v` / `vector_linux.v`, and the `discover_*` pair)
+  The per-platform backends (`vector_windows.v` / `vector_linux.v`, the `discover_*` pair, and
+  the GUI's `roots_windows.v` / `roots_nix.v` — the picker's drive roots)
   are two files that must offer the SAME symbols, and a Windows bench compiles only one of them —
   so a helper added beside the driver and called from the cross-platform GUI builds perfectly
   here and fails the Linux job ten minutes later. That is a ~10-minute round trip for something
