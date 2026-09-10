@@ -167,7 +167,19 @@ fn draw_system(mut app App) {
 	if app.sys_ecu_h <= 0 {
 		app.sys_ecu_h = 160
 	}
-	ecu_h := app.sys_ecu_h * sc // kept unscaled, so a UI-scale change keeps the proportion
+	// The height the panes get this frame, clamped BEFORE they are drawn: a dock shorter than
+	// the stored height has to reclaim the room from the panes now, not after they have taken
+	// it, or the section below is left the few pixels that remain (codex #305 r2). The stored
+	// value is unscaled, so a UI-scale change keeps the proportion; a DRAG persists, the clamp
+	// does not — written straight back, one frame in a short slot collapsed the panes for good.
+	sys_min := 60 * sc
+	sys_max := vgui.content_avail_h() - 100 * sc // 100*sc keeps the tree's header and a row or two
+	want := app.sys_ecu_h * sc
+	ecu_h := if want > sys_max {
+		if sys_max > sys_min { sys_max } else { sys_min }
+	} else {
+		want
+	}
 	vgui.child_wh('##ecu_list', 130 * sc, ecu_h)
 	for n in app.sys.nodes {
 		lbl := if n.ecu_err != '' { '${n.name}  (!)' } else { n.name }
@@ -235,14 +247,9 @@ fn draw_system(mut app App) {
 	vgui.child_end()
 
 	// The divider between the ECU panes and the section below (#270 item 1): drag to trade
-	// height. 100*sc keeps the tree's header and a row or two; the splitter floors max at min.
-	// A DRAG persists; the clamp of a short dock does not — written straight back, one frame
-	// in a short slot collapsed the panes to the minimum for good.
-	sys_min := 60 * sc
-	sys_max := ecu_h + vgui.content_avail_h() - 100 * sc
-	shown := if ecu_h > sys_max { sys_max } else { ecu_h }
-	moved := vgui.splitter_h('##sys_split', shown, sys_min, sys_max)
-	if moved != shown {
+	// height, within the clamp computed above the panes (the splitter floors max at min).
+	moved := vgui.splitter_h('##sys_split', ecu_h, sys_min, sys_max)
+	if moved != ecu_h {
 		app.sys_ecu_h = moved / sc
 	}
 	// buses matrix + id allocation: useful but long, so fold it (closed by default) —

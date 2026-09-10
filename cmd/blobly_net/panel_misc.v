@@ -1250,15 +1250,17 @@ fn draw_script(mut app App) {
 		app.open_browser('script')
 	}
 	vgui.same_line()
-	// Run executes the FILE; an editor holding unsaved edits to that file would run the version
-	// on disk while showing another, and report on a test the operator is not looking at
-	// (codex #305 r1). Withheld — vgui has no disabled scope — and said.
-	path_now := vgui.buf_str(app.script_path_buf).trim_space()
-	unsaved := app.script_file.dirty && app.script_file.loaded == path_now
-	if unsaved {
+	// Run executes the FILE; an editor holding unsaved edits would run the version on disk
+	// while showing another, and report on a test the operator is not looking at (codex #305
+	// r1). Withheld while ANY edit is unsaved — comparing the field's spelling with the loaded
+	// path let `./tests/a.lua` run the disk copy of the `tests/a.lua` being edited (r2), and
+	// two spellings of one file are not a question this panel can settle — and said, naming
+	// the file, since vgui has no disabled scope.
+	if app.script_file.dirty {
 		vgui.text_dim('[ Run ]')
 		vgui.same_line()
-		vgui.text_colored(230, 170, 70, 'save the script first — Run executes the file')
+		vgui.text_colored(230, 170, 70,
+			'save ${app.script_file.loaded} first — Run executes the file')
 	} else if vgui.button('Run') && !busy {
 		// reserve the slot HERE, before the spawn: a worker that hasn't been scheduled yet
 		// hasn't registered, and an edit could slip into that gap (the worker releases it in its
