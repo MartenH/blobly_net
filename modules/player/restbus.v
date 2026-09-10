@@ -171,6 +171,19 @@ pub fn on_bus(entries []canlog.LogEntry, iface string) []canlog.LogEntry {
 	return entries.filter(it.iface == iface)
 }
 
+// sel_on_bus is on_bus over the arena: the rows recorded on one bus, in recorded order.
+pub fn sel_on_bus(log &canlog.Log, iface string) []u32 {
+	mut sel := []u32{}
+	bus := log.index_of(iface) or { return sel }
+	// By index, reading one u16 per row: `for r in log.rows` copies eighty bytes a row.
+	for i in 0 .. log.rows.len {
+		if int(log.rows[i].bus) == bus {
+			sel << u32(i)
+		}
+	}
+	return sel
+}
+
 // without_senders removes every frame whose message the database attributes to one of `exclude`.
 //
 // `replay_unattributed` decides the messages the database defines but does not attribute. There
@@ -182,12 +195,21 @@ pub fn on_bus(entries []canlog.LogEntry, iface string) []canlog.LogEntry {
 // recording proves the frame was on the wire, and dropping everything the database omits would
 // silently gut a rest bus wherever the database is incomplete — which is the common case.
 pub fn without_senders(entries []canlog.LogEntry, db candb.Database, exclude []string, replay_unattributed bool) ([]canlog.LogEntry, Subtraction) {
+	log := canlog.from_entries(entries)
+	kept, rep := subtract(&log, log.all(), db, exclude, replay_unattributed)
+	return log.entries_of(kept), rep
+}
+
+// subtract is without_senders over the arena: which of `sel` survive, and the report. The
+// ONE body — without_senders is this over a Log built from its entries.
+pub fn subtract(log &canlog.Log, sel []u32, db candb.Database, exclude []string, replay_unattributed bool) ([]u32, Subtraction) {
 	d := new_decider(db, exclude, replay_unattributed)
-	mut kept := []canlog.LogEntry{cap: entries.len}
+	mut kept := []u32{cap: sel.len}
 	mut acc := Tally{}
-	for e in entries {
-		if acc.add(d.verdict(e.frame), e.frame) {
-			kept << e
+	for i in sel {
+		f := log.frame(int(i))
+		if acc.add(d.verdict(f), f) {
+			kept << i
 		}
 	}
 	return kept, acc.done(kept.len)
@@ -359,23 +381,31 @@ pub:
 
 // census tallies one bus's entries — filter with on_bus first, for the reason on_bus states.
 pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
+	log := canlog.from_entries(entries)
+	return census_sel(&log, log.all(), db)
+}
+
+// census_sel is census over the arena — the ONE body; census is this over a Log built from
+// its entries.
+pub fn census_sel(log &canlog.Log, sel []u32, db candb.Database) NodeCensus {
 	d := new_decider(db, [], true)
 	mut nodes := map[string]int{}
 	mut unattributed := 0
 	mut unknown := 0
 	mut remote := 0
-	for e in entries {
+	for si in sel {
+		f := log.frame(int(si))
 		// REMOTE FIRST, in the same order `verdict` uses, because this census is the PREVIEW of
 		// what that will decide. Asking `defined` first put a remote frame on an undefined id into
 		// `unknown` -- which the editor labels "replays regardless" -- while the replay drops every
 		// remote frame before it looks at the database. The preview promised the opposite of what
 		// Start does, and with no DBC attached, where `defined` is empty, it did so for every one
 		// of them (codex on #216).
-		if e.frame.rtr {
+		if f.rtr {
 			remote++
 			continue
 		}
-		k := key(e.frame.id, e.frame.extended)
+		k := key(f.id, f.extended)
 		if k !in d.defined {
 			unknown++
 			continue
@@ -394,6 +424,6 @@ pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
 		unattributed: unattributed
 		unknown:      unknown
 		remote:       remote
-		total:        entries.len
+		total:        sel.len
 	}
 }

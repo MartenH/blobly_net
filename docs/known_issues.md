@@ -86,8 +86,9 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   The rest of the app is measured but NOT changed, because none of it is a per-frame loop and
   none of it is exercised by a test: `main__draw_dbc_editor` 1959, `main__replay_group` 1014,
   `main__draw_buses` 636, `main__draw_replay_config` 549. `replay_group` is the one that would
-  matter on the day `-prod` is switched on — it is the GUI's per-frame transmit loop, holding
-  the recording, the plan and the `player.Player` by value in the frame that sends.
+  matter on the day `-prod` is switched on — it is the GUI's per-frame transmit loop. Since the
+  arena (#303) the recording it holds is pointer-free rows, which the pin does not walk; what
+  is left in that frame is the batch buffer and the small label and bus lists.
 - 🟡 **The GUI does not build with `-prod` without one edit.** `unused variable` is a warning in
   a normal build and an **error** under `-prod`, so `cmd/blobly_net/panel_gen.v`'s dead `pw` was
   enough to stop the whole `-prod` build — nothing catches it because nothing builds `-prod`.
@@ -324,14 +325,14 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   ran 80 M ticks in 70 s taking `app.mu` on each, and a longer sleep rounded up to the 15.6 ms
   quantum nothing had shortened. `modules/player/pace_windows.v` sleeps whole milliseconds and waits out the last on the
   stopwatch and asks for the 1 ms period (`pace_nix.v` is one accurate nanosleep).
-  **What remains is 🔴 and is the next piece of work**: the collection's LENGTH. One every ~10 s,
-  150–370 ms, each a stop-the-world across every thread. The probe samples the live set right after
-  each collection: **454 MB from a 17 MB file** — the loader builds 1.23 M entries that each point
-  at a cloned payload, so the collector marks millions of objects per pass, and the per-bus split
-  and the player copy the entries again (+140 MB, measured). That wants the recording in an arena:
-  pointer-free rows in one block (which V allocates no-scan), one label table, entries handed out
-  as views, and a plan that indexes rather than copies. A `-gc boehm_incr_opt` build was tried and
-  does not help.
+  **Then the arena (#303) took the collection's LENGTH**: a loaded recording is pointer-free rows in
+  one block the collector never walks (`canlog.Log`, the `canlog` row of CLAUDE.md), played through
+  views. Same probe, same project: live set after a collection 454 → 257 MB, collections in 70 s
+  10 → 4, heap peak 757 → 463 MB, 99.4% of frames within 1 ms, worst 21 ms.
+  **What remains is 🟡**: a pause every ~15 s of 150–350 ms, from the ~210 MB of live set that is
+  not the rows — a second load of the file by the Replay panel's census scan — and, for recordings
+  that do not fit in memory at all, a bounded window of rows filled from disk:
+  `docs/streaming_replay.md`. A `-gc boehm_incr_opt` build was tried and does not help.
   **How it was found is the part to keep**: three earlier diagnoses were wrong (the collector
   itself, the `-prod` scope pin, "confine the recording to a helper"), each plausible from
   reading. The probe's allocation-rate counter and a knob to switch a suspect off settled it in

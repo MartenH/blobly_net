@@ -24,6 +24,9 @@ pub mut:
 	esi bool
 	// 0..8 payload bytes for a classic frame; 0..64 for an FD one, and only the lengths a DLC
 	// can encode (0..8, 12, 16, 20, 24, 32, 48, 64) — anything else is padded on the way out.
+	// A payload RECEIVED off a software bus may be BORROWED: the in-process bus hands every
+	// subscriber the sender's own header, and a replay sends views into its recording — so a
+	// receiver that keeps a payload past the call clones it, and none writes through it.
 	data []u8
 }
 

@@ -97,6 +97,9 @@ pub fn parse_line(line string) ?LogEntry {
 		}
 	} else {
 		data = hex_bytes(datahex) or { return none }
+		if data.len > max_row_payload {
+			return none // longer than any CAN frame: a corrupt or hand-edited line, refused whole
+		}
 	}
 	return LogEntry{
 		t_s:   t_s
@@ -125,6 +128,24 @@ pub fn parse(text string) []LogEntry {
 }
 
 // load_file reads and parses a candump `.log` file.
+// parse_log is parse straight into the arena: a row per line, no entry array in between.
+// Malformed lines are skipped as parse does; a line whose bus cannot be named (max_labels)
+// is skipped too.
+pub fn parse_log(text string) Log {
+	mut l := Log{}
+	for line in text.split_into_lines() {
+		if e := parse_line(line) {
+			l.push(e)
+		}
+	}
+	return l
+}
+
+// load_log is load_file into the arena: what a replay loads.
+pub fn load_log(path string) !Log {
+	return parse_log(os.read_file(path)!)
+}
+
 pub fn load_file(path string) ![]LogEntry {
 	return parse(os.read_file(path)!)
 }

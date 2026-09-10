@@ -10,30 +10,17 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Next
 
-- ⏭️ **Replay cadence — the residual after #299 and #300.** A 13-bus replay completes with 99% of
-  its frames within 1 ms and 28.5 MB/s of garbage; what remains is the collection's LENGTH — one
-  every ~10 s, 150–370 ms, each a stop-the-world across every thread. It is proportional to the live
-  set, which `cmd/blobly_net/probe.v` now samples right after each collection: **454 MB from a 17 MB
-  file**. The loader (`mf4.parse_cg`) builds 1.23 M `LogEntry`s, each 80 bytes with a pointer to its
-  own cloned payload, and the per-bus split and the player copy them again (+140 MB, measured). The
-  fix is the ARENA, measured with the probe before and after: pointer-free rows (`t_s`, id, flags, a
-  bus index, `[64]u8`) in one block V allocates no-scan, one label table, entries handed out as
-  VIEWS whose payload is a slice into the block, and a plan that indexes rather than copies — so a
-  collection has almost nothing to walk. Beside it, two follow-ups #300's review named: the
-  wire identity resolved ONCE per channel and per tap at open (`wire`/`dest` on `Chan` and
-  `TapBus`), since on a vendor wire `wire_key` still allocates ~8 strings per call and is asked
-  ~30 times per frame; and a per-group index for the grouped Trace view in place of its
-  string-keyed map, which still copies a ~400-byte aggregate out and back per row per repaint
-  and regrows its hash index on every `clear()`. Also `wiretap` holding
-  only IN-FLIGHT records: a settled record is kept until it ages out or is evicted, so on a
-  healthy bus the ring sits at its 1024 cap and every note at cap moves ~180 KB under `app.mu`
-  to retire one — deleting it at the claim that settles it leaves tens of records, and the one
-  test in the way (`wiretap_test.v`, "still held for a second monitor") asserts a record no
-  monitor may claim (the self-review's altitude finding on #299). The cheap experiment has been
-  run and is NOT a lever: a `-gc boehm_incr_opt` build, same probe, same project — the same
-  number of pauses at or above 50 ms (28 against 29), a worse maximum (352 ms against 282) and a
-  77 ms lock wait the full collector never showed. Boehm's incremental mode does not shorten
-  these on Windows; the live set has to shrink.
+- ⏭️ **Replay of recordings that do not fit in memory — streaming.** #299, #300 and the arena (#303)
+  took a 13-bus replay from one 700 ms freeze a second to four collections a minute and 99.7% of
+  frames within 1 ms, on a file that fits. A tens-of-GB recording does not, and the loader reads the
+  whole file. The design is `docs/streaming_replay.md`: a cursor per data group merged by time,
+  reproducing the in-memory order exactly (golden test), a survey pass for labels, span and a seek
+  index, a bounded FIFO window of arena rows filled by a decoder thread and drained by the player,
+  per-row bus mapping and subtraction at decode time, and a file-size switch between the two paths.
+  Six PR-sized steps, each measured with `cmd/blobly_net/probe.v`. Beside it, the smaller items the
+  reviews named: the wire identity resolved once per channel and tap at open; a per-group index for
+  the grouped Trace view; `wiretap` holding only in-flight records; the Replay panel's census not
+  loading the file a second time.
 
 - ⏭️ **A `-prod` build**, once CI exercises one. Releases themselves are routine since
   `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md).

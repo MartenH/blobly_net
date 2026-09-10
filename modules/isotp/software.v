@@ -166,7 +166,6 @@ fn (mut c SoftChannel) send_segmented(data []u8) ! {
 	}
 }
 
-
 // await_flow_control waits for one usable Flow Control and returns what it asked for.
 //
 // WAIT IS THE REASON THIS IS A LOOP. A receiver that is not ready answers 0x31 and another FC
@@ -399,7 +398,7 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 		for {
 			f := c.bus.recv(-1)!
 			if f.id == c.rx_id && f.extended == c.ext && !f.rtr {
-				return f.data
+				return f.data.clone() // a received payload may be borrowed (transport.CanFrame)
 			}
 		}
 	}
@@ -419,7 +418,7 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 		c.scanned++
 		f := c.bus.recv(int(if rem < 0 { i64(0) } else { rem }))!
 		if f.id == c.rx_id && f.extended == c.ext && !f.rtr {
-			return f.data
+			return f.data.clone() // a received payload may be borrowed (transport.CanFrame)
 		}
 	}
 	return error('timeout')

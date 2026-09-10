@@ -72,18 +72,20 @@ fn (mut app App) load_recording(path string) {
 	// recording's own BusChannel numbering; a candump line names an interface the user actually
 	// configured. That distinction decides whether the alias table applies at all — see below.
 	from_mf4 := path.to_lower().ends_with('.mf4')
-	entries := if from_mf4 {
-		mf4.load_file(path) or {
+	// Into the arena (canlog.Log): a million-frame import is a pointer-free block the
+	// collector never walks, and each row below is read through a view, never copied.
+	log := if from_mf4 {
+		mf4.load_log(path) or {
 			app.notify('mf4 ${path}: ${err}')
 			return
 		}
 	} else {
-		canlog.load_file(path) or {
+		canlog.load_log(path) or {
 			app.notify('log ${path}: ${err}')
 			return
 		}
 	}
-	t0 := if entries.len > 0 { entries[0].t_s } else { 0.0 }
+	t0 := if log.len() > 0 { log.t_s(0) } else { 0.0 }
 	// Verify while building the rows. Entries arrive in time order and the project already
 	// supplies the protection configuration, so a recording can be checked exactly as live
 	// traffic is — otherwise a violation visible during a run vanished the moment it was saved
@@ -164,11 +166,11 @@ fn (mut app App) load_recording(path string) {
 	// different source buses, which is a fabricated verdict either way it lands. The recording's
 	// own distinct labels are the file saying it spans several buses — believe it.
 	mut rec_buses := map[string]bool{}
-	for e in entries {
-		rec_buses[e.iface] = true
+	for lbl in log.labels {
+		rec_buses[lbl] = true
 	}
 	mf4_only := if can_buses.len == 1 && rec_buses.len == 1 { only } else { '' }
-	first_row := if entries.len > trace_cap { entries.len - trace_cap } else { 0 }
+	first_row := if log.len() > trace_cap { log.len() - trace_cap } else { 0 }
 	app.mu.lock()
 	app.reset_trace_locked()
 	// Claim the view HERE, inside the same locked region that reset it, and PAUSE the capture:
@@ -195,7 +197,8 @@ fn (mut app App) load_recording(path string) {
 	// Verification still runs over EVERY frame: an E2E counter/CRC verdict depends on the frames
 	// before it, so skipping any would invent verdicts for the ones shown. Likewise the grouped
 	// view's totals, which exist precisely to outlive trimming.
-	for i, e in entries {
+	for i in 0 .. log.len() {
+		e := log.at(i)
 		f := e.frame
 		mut viol := ''
 		if !f.rtr {
@@ -250,11 +253,11 @@ fn (mut app App) load_recording(path string) {
 		})
 	}
 	app.mu.unlock()
-	shown := entries.len - first_row
+	shown := log.len() - first_row
 	if first_row > 0 {
-		app.notify('loaded ${entries.len} frames from ${os.base(path)} — showing the last ${shown}')
+		app.notify('loaded ${log.len()} frames from ${os.base(path)} — showing the last ${shown}')
 	} else {
-		app.notify('loaded ${entries.len} frames from ${os.base(path)}')
+		app.notify('loaded ${log.len()} frames from ${os.base(path)}')
 	}
 }
 
@@ -468,7 +471,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 
 	// Decoded ONCE for the whole group, however many channels read from it.
-	all, buses := load_recording_for_replay(source) or {
+	log, buses := load_recording_for_replay(source) or {
 		a.notify('replay ${label}: ${err}')
 		return
 	}
@@ -534,7 +537,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		a.notify('replay: ${c}')
 		return
 	}
-	plan := player.build_multi(all, specs)
+	plan := player.build_multi_log(log, specs)
 	mut total := 0
 	for i, b in plan.buses {
 		total += b.report.kept
@@ -692,7 +695,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 	}
 	dispatching = true
-	mut p := player.new_player_over(plan.entries, speed, repeat, plan.t0_s, plan.end_s)
+	mut p := player.new_player_log(plan.log, plan.sel, speed, repeat, plan.t0_s, plan.end_s)
 	mut sw := time.new_stopwatch()
 	mut batch := []canlog.LogEntry{cap: 256}
 	mut dues := []f64{cap: 256}
@@ -1067,21 +1070,21 @@ fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 // from the interface names its lines carry — in the loader and nowhere else, so Start's
 // resolver and the Configure row's Scan match against ONE list by construction (they briefly
 // each derived their own; self-review of the Scan work).
-fn load_recording_for_replay(source string) !([]canlog.LogEntry, []mf4.BusInfo) {
+fn load_recording_for_replay(source string) !(canlog.Log, []mf4.BusInfo) {
 	if source.to_lower().ends_with('.mf4') {
 		rec := mf4.load_recording(source)!
-		if rec.entries.len == 0 {
+		if rec.log.len() == 0 {
 			return error('${os.base(source)} holds no frames')
 		}
-		return rec.entries.clone(), rec.buses.clone()
+		return rec.log, rec.buses.clone()
 	}
-	es := canlog.load_file(source)!
-	if es.len == 0 {
+	log := canlog.load_log(source)!
+	if log.len() == 0 {
 		return error('${os.base(source)} holds no frames')
 	}
 	mut counts := map[string]int{}
-	for e in es {
-		counts[e.iface]++
+	for i in 0 .. log.len() {
+		counts[log.iface(i)]++
 	}
 	mut ifs := counts.keys()
 	ifs.sort()
@@ -1092,7 +1095,7 @@ fn load_recording_for_replay(source string) !([]canlog.LogEntry, []mf4.BusInfo) 
 			frames: counts[name]
 		}
 	}
-	return es.clone(), buses
+	return log, buses
 }
 
 // resolve_replay_bus asks modules/player, which owns the rule. The GUI and cmd/restbus each had
@@ -1150,7 +1153,7 @@ mut:
 // the newer result. Same ownership rule as ReplayState.token, same reason.
 fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &ReplayScan) {
 	mut a := unsafe { app }
-	entries, buses := load_recording_for_replay(path) or {
+	log, buses := load_recording_for_replay(path) or {
 		a.mu.lock()
 		if sc := a.replay_scans[ci] {
 			if voidptr(sc) == voidptr(mine) {
@@ -1167,7 +1170,7 @@ fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &Re
 	}
 	mut cens := map[string]player.NodeCensus{}
 	for b in buses {
-		cens[b.iface] = player.census(player.on_bus(entries, b.iface), db)
+		cens[b.iface] = player.census_sel(&log, player.sel_on_bus(&log, b.iface), db)
 	}
 	a.mu.lock()
 	if sc := a.replay_scans[ci] {
