@@ -2,30 +2,14 @@ module pickrule
 
 // #270 items 4 and 5, as a table.
 
-fn test_a_single_click_selects_whatever_the_row_is() {
-	for save in [false, true] {
-		assert action(.dir, false, save) == .select
-		assert action(.file, false, save) == .select
-	}
-}
-
-fn test_a_double_click_enters_a_folder_and_accepts_a_file() {
-	assert action(.dir, true, false) == .enter
-	assert action(.file, true, false) == .accept
+fn test_go_enters_a_folder_and_accepts_a_file() {
+	assert activate(.dir, false) == .enter
+	assert activate(.file, false) == .accept
 }
 
 fn test_in_save_mode_a_file_is_named_never_accepted_without_the_save_button() {
-	assert action(.dir, true, true) == .enter
-	assert action(.file, true, true) == .select
+	assert activate(.dir, true) == .enter
 	assert activate(.file, true) == .select
-}
-
-fn test_enter_and_open_act_on_the_selection_like_a_double_click() {
-	for save in [false, true] {
-		for e in [Entry.dir, Entry.file] {
-			assert activate(e, save) == action(e, true, save)
-		}
-	}
 }
 
 fn test_a_windows_drive_root_is_spelled_three_ways_and_only_those() {

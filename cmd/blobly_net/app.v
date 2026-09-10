@@ -306,16 +306,14 @@ mut:
 	// Text and not a re-serialisation, because `to_yaml()` does not preserve comments and this
 	// file is where a bench setup is explained to the next person. Saving re-writes exactly
 	// what is in the box; `parse()` is used only to refuse a file that would not load.
-	cfg_tab      int // 0 = buses, 1 = file
-	cfg_text     []u8
-	cfg_text_len int    // bytes loaded, to notice when the box is nearly full
-	cfg_err      string // parse error holding back a save ('' = the text parses)
-	cfg_loaded   string // which path cfg_text holds ('' = nothing loaded)
-	// Whether the text has been TYPED IN since it was loaded. Without it there was no way to
-	// tell "showing the file" from "showing edits", so every staleness question had the wrong
-	// answer: a project switch or a structured Save left old YAML on screen that Save would
-	// then write over the new file.
-	cfg_text_dirty bool
+	cfg_tab int // 0 = buses, 1 = file
+	// The file's text (TextFile: which path the buffer holds, whether it has been TYPED IN since
+	// — without that there was no way to tell "showing the file" from "showing edits", so every
+	// staleness question had the wrong answer: a project switch or a structured Save left old
+	// YAML on screen that Save would then write over the new file — and the parse error holding
+	// a save back, in .err).
+	cfg_file     TextFile
+	cfg_text_len int // bytes loaded, to notice when the box is nearly full
 	// per-generator send count, for the value sources that step per send (counter/stepmod).
 	// Keyed by SenderRT.uid, so a removal cannot shift one generator's count onto another and an
 	// in-flight fire always writes back onto the generator it read. Cleared for a new project /
@@ -435,12 +433,14 @@ mut:
 	// rather than a setting left on from last time (codex #192 r9).
 	disc_vector_create bool
 	// File browser (Open / Save As / attach DBC / attach manifest)
-	fb_open     bool   // browser window shown
-	fb_save     bool   // true = save mode (filename input), false = open mode
-	fb_dir      string // current directory
-	fb_name_buf []u8   // filename (save mode)
-	fb_sel      string // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
-	fb_path_buf []u8   // the folder, typed — Enter or Go navigates; a file path selects it where it lives
+	fb_open     bool     // browser window shown
+	fb_save     bool     // true = save mode (filename input), false = open mode
+	fb_dir      string   // current directory
+	fb_name_buf []u8     // filename (save mode)
+	fb_sel      string   // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
+	fb_dirs     []string // the listing, filled by fb_refresh — not read from disk per frame
+	fb_files    []string
+	fb_path_buf []u8 // the folder, typed — Enter or Go navigates; a file path selects it where it lives
 	// ACCEPTED extensions, plural — the caption the browser shows and the match it applies both
 	// derive from this one list, so a picker can no longer advertise '(*.log)' while listing
 	// .mf4, which is what the single-string version with per-case aliases did. Empty = any.
@@ -459,18 +459,15 @@ mut:
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool
 	// The Script panel's editor (#270): the Configuration File tab's edit box, over the script.
-	script_edit       bool   // editor shown
-	script_text       []u8   // the file's text, edited in place
-	script_loaded     string // which path script_text holds ('' = nothing loaded)
-	script_text_dirty bool
-	script_err        string
-	trace_busy        bool   // a trace-dump transfer is in flight (single-flight guard)
-	trace_recording   bool   // Record toggle: the target's capture is armed (optimistic)
-	trace_status      string // last dump status line, shown by the Trace Chart
-	trace_freeze      string // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
-	cursor_a          f64    // Trace Chart measurement markers A/B (µs); the swimlane drags them
-	cursor_b          f64
-	cursor_span       f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
+	script_edit     bool     // editor shown
+	script_file     TextFile // the script's text, edited in place
+	trace_busy      bool     // a trace-dump transfer is in flight (single-flight guard)
+	trace_recording bool     // Record toggle: the target's capture is armed (optimistic)
+	trace_status    string   // last dump status line, shown by the Trace Chart
+	trace_freeze    string   // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
+	cursor_a        f64      // Trace Chart measurement markers A/B (µs); the swimlane drags them
+	cursor_b        f64
+	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
 	// Shell (the target's CAN command line; one worker spawn per submitted line)
 	show_shell        bool
 	show_dbc          bool
@@ -480,7 +477,7 @@ mut:
 	sys               sysview.System
 	sys_loaded        bool
 	sel_ecu           string // selected node in the System panel's ECU master-detail
-	sys_ecu_h         f32    // height of the System panel's ECU panes; the splitter below them drags it (#270)
+	sys_ecu_h         f32    // height of the System panel's ECU panes in UNSCALED px (a UI-scale change keeps the proportion); the splitter below them drags it (#270)
 	shell_buf         []u8   // the input line (persistent; edited in place by console_input)
 	eth_target_buf    []u8   // the eth shell's board ip (session-only; manifest carries the port)
 	eth_shell_session u16    // persists across commands: a fresh client restarting at session 1
@@ -859,7 +856,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// (via cfg_invalidate below), so every caller is covered — File ▸ New bypassed a warning
 	// placed in load_project — and load_project's error path returns before reaching this, so
 	// the log no longer claims text was discarded by a load that then failed.
-	if app.cfg_text_dirty {
+	if app.cfg_file.dirty {
 		app.notify('discarded unsaved Configuration ▸ File text from ${os.base(app.proj_path)}')
 	}
 	// A fault armed against the OLD project must not survive into a new one. Keys carry the

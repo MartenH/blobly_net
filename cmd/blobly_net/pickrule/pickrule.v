@@ -20,21 +20,13 @@ pub enum Act {
 	accept // hand the file to the pending action
 }
 
-// action decides a click on a row of kind `e`: a single click SELECTS, whatever the row is; a
-// double click ENTERS a folder or ACCEPTS a file. The Open button and the Enter key act on the
-// selected row the way a double click does — `activate` below — so the three spellings of
-// "go" agree by construction. In SAVE mode a file is never accepted this way: the picker has
-// no "replace?" prompt, so a double click that overwrote would be the one destructive act in
-// the app with no confirmation; the click selects, the name field takes the name, and only the
-// Save button writes.
-pub fn action(e Entry, double bool, save bool) Act {
-	if !double {
-		return .select
-	}
-	return activate(e, save)
-}
-
-// activate is Enter / Open on a row of kind `e`.
+// activate is what a double click, the Enter key and the Open button do to a row of kind `e`
+// — one rule, so the three spellings of "go" agree by construction: a folder is ENTERED, a
+// file ACCEPTED. A single click only ever selects, and is not a question this module answers.
+// In SAVE mode a file is never accepted this way: the picker has no "replace?" prompt, so a
+// double click that overwrote would be the one destructive act in the app with no
+// confirmation; the row selects, the name field takes the name, and only the Save button
+// (or Enter in the name field) writes.
 pub fn activate(e Entry, save bool) Act {
 	if e == .dir {
 		return .enter
@@ -69,12 +61,6 @@ pub fn is_drive_root(dir string) bool {
 // picker opened on `projects` cannot climb out of what it was given by `..`; the typed path is
 // the way there. Trailing separators are ignored (`D:\\ems2\\` is `D:\\ems2`).
 pub fn parent(dir string, windows bool) string {
-	if dir == drives {
-		return drives
-	}
-	if windows && is_drive_root(dir) {
-		return drives
-	}
 	mut d := dir
 	for d.len > 1 && (d[d.len - 1] == `\\` || d[d.len - 1] == `/`) {
 		d = d[..d.len - 1]

@@ -172,7 +172,10 @@ fn C.vgui_is_item_double_clicked() int
 fn C.vgui_key_enter_pressed() int
 fn C.vgui_line_height() f32
 fn C.vgui_frame_height() f32
-fn C.vgui_table_begin_sized(&char, int, f32) int
+fn C.vgui_table_begin_flat(&char, int) int
+fn C.vgui_table_cell_dim(&char)
+fn C.vgui_input_text_enter(&char, &char, int) int
+fn C.vgui_window_focused() int
 fn C.vgui_key_ctrl() int
 fn C.vgui_key_ctrl_only() int
 fn C.vgui_combo(&char, &&char, int, int) int
@@ -613,6 +616,35 @@ pub fn scroll_at_bottom() bool {
 	return C.vgui_scroll_at_bottom() != 0
 }
 
+// input_text_enter is a single-line field that returns true on the frame Enter SUBMITS it, and
+// only then — input_text reports every keystroke, and is_item_deactivated_after_edit fires on
+// any loss of focus (Tab, a click elsewhere), which is not a submit. The path field of the file
+// picker; a field whose Enter means "go".
+pub fn input_text_enter(label string, mut buf []u8) bool {
+	if buf.len == 0 {
+		return false // ImGui cannot be handed a zero-capacity buffer (see input_text)
+	}
+	return C.vgui_input_text_enter(label.str, &char(buf.data), buf.len) == 1
+}
+
+// window_focused reports whether the current window (or a child of it) holds keyboard focus.
+// A key read through key_pressed / key_enter_pressed is global: a window acting on one asks this
+// first, or the key pressed anywhere in the app lands in it.
+pub fn window_focused() bool {
+	return C.vgui_window_focused() == 1
+}
+
+// buf_len is the length of the text in a NUL-terminated buffer, without buf_str's copy of it —
+// for a fill-level check drawn every frame.
+pub fn buf_len(buf []u8) int {
+	for i, b in buf {
+		if b == 0 {
+			return i
+		}
+	}
+	return buf.len
+}
+
 // input_double edits *v in place (numeric input, e.g. a signal value). Returns true on change.
 pub fn input_double(label string, v &f64) bool {
 	return C.vgui_input_double(label.str, v) == 1
@@ -804,12 +836,17 @@ pub fn table_begin(id string, cols int) bool {
 	return C.vgui_table_begin(id.str, cols) == 1
 }
 
-// table_begin_sized is table_begin with the height said: h > 0 scrolls within h pixels; h == 0
-// is sized to its rows and leaves the scrolling to the window or child around it. Use it for
-// any table that has something BELOW it — table_begin's scrolling table with no height fills
-// whatever is left in the window, and the sibling under it lands out of reach (#270).
-pub fn table_begin_sized(id string, cols int, h f32) bool {
-	return C.vgui_table_begin_sized(id.str, cols, h) == 1
+// table_begin_flat is a table sized to its rows that leaves the scrolling to the window or
+// child around it. Use it for any table that has something BELOW it — table_begin's scrolling
+// table with no height fills whatever is left in the window, and the sibling under it lands out
+// of reach (#270). table_begin is for a table that is the last thing in its region.
+pub fn table_begin_flat(id string, cols int) bool {
+	return C.vgui_table_begin_flat(id.str, cols) == 1
+}
+
+// table_cell_dim is table_cell in dim text: a row that is listed but not offered.
+pub fn table_cell_dim(s string) {
+	C.vgui_table_cell_dim(s.str)
 }
 
 pub fn table_col(name string) {

@@ -540,7 +540,13 @@ fn (mut app App) remove_bus(i int) {
 			name:  c.name
 			iface: c.iface
 		}
-		row_map << if j == i { -1 } else if j > i { j - 1 } else { j }
+		row_map << if j == i {
+			-1
+		} else if j > i {
+			j - 1
+		} else {
+			j
+		}
 	}
 	said := app.follow_channel_edits_locked(before, row_map)
 	app.mu.unlock()
@@ -604,7 +610,8 @@ fn (mut app App) set_adapter(i int, a string) {
 	}
 	// rebind_senders makes the assignment itself: it has to see the rows both before and after to
 	// tell whether an override's destination moved (codex round 5 on #97).
-	app.rebind_senders(i, old_iface, project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf)))
+	app.rebind_senders(i, old_iface, project.compose_iface(a,
+		vgui.buf_str(app.cfg_bufs[i].address_buf)))
 	app.dirty = true
 	app.rebuild_preserving_senders()
 }
@@ -993,51 +1000,31 @@ fn (mut app App) set_chan_enabled_stopped(ci int, en bool) {
 
 // save_project writes the whole project to its file (config + generators). An unsaved
 // project (no path) routes to Save As. Reformats the .blobnet — comments are not preserved.
-// load_cfg_text reads the project file into the edit buffer.
-//
-// Only when the buffer does not already hold this path: re-reading on every frame — or every
-// tab switch — would throw away whatever the user had typed.
+// load_cfg_text reads the project file into the edit buffer (TextFile.load: once per path,
+// never over unsaved edits, an unreadable file marked loaded so it is not retried at frame
+// rate — freshness is cfg_invalidate() at every path that rewrites or replaces the project) and
+// validates what was just READ. Assuming a file on disk is well-formed made the status claim
+// "YAML well-formed · -1 channel(s)" for a file the very next Save would reject — the tool
+// disagreeing with itself about the bytes on screen.
 fn (mut app App) load_cfg_text() {
-	// Cached. The File tab calls this every render, so re-reading whenever the buffer was
-	// clean meant a synchronous file read and a 64 KiB allocation at frame rate. Freshness
-	// comes from EXPLICIT invalidation instead — cfg_invalidate() at every path that rewrites
-	// or replaces the project — which is also the only way to be right about a file changed
-	// by something other than us.
-	if app.cfg_loaded == app.proj_path && app.proj_path != '' {
-		return
-	}
 	if app.proj_path == '' {
-		app.cfg_text = mkbuf('', 4096)
-		app.cfg_loaded = ''
-		app.cfg_text_dirty = false
-		app.cfg_err = 'no file yet — save the project once (File ▸ Save As), then edit it here'
+		if app.cfg_file.load('') != .cached {
+			app.cfg_file.err = 'no file yet — save the project once (File ▸ Save As), then edit it here'
+		}
 		return
 	}
-	txt := os.read_file(app.proj_path) or {
-		// Still allocate: draw_config_text renders the box regardless, and ImGui cannot be
-		// handed a zero-capacity buffer.
-		app.cfg_text = mkbuf('', 4096)
-		// Mark it LOADED even though it failed: the tab calls this every frame, and leaving the
-		// marker empty meant re-attempting the read and reallocating the buffer at frame rate
-		// for as long as the file stayed missing. Reload and invalidation still retry.
-		app.cfg_loaded = app.proj_path
-		app.cfg_text_dirty = false
-		app.cfg_chans = -1
-		app.cfg_err = 'cannot read ${app.proj_path}: ${err}'
-		return
+	match app.cfg_file.load(app.proj_path) {
+		.cached {}
+		.failed {
+			app.cfg_chans = -1
+		}
+		.read {
+			txt := app.cfg_file.text()
+			app.cfg_text_len = txt.len
+			app.cfg_file.err = cfg_text_error(txt)
+			app.cfg_chans = cfg_text_channels(txt)
+		}
 	}
-	// Generous headroom: ImGui writes into this buffer and cannot grow it, so the room to type
-	// has to be reserved up front. The fill level is shown once it gets close.
-	cap := if txt.len * 3 > 65536 { txt.len * 3 } else { 65536 }
-	app.cfg_text = mkbuf(txt, cap)
-	app.cfg_text_len = txt.len
-	app.cfg_loaded = app.proj_path
-	app.cfg_text_dirty = false
-	// Validate what was just READ. Assuming a file on disk is well-formed made the status claim
-	// "YAML well-formed · -1 channel(s)" for a file the very next Save would reject — the tool
-	// disagreeing with itself about the bytes on screen.
-	app.cfg_err = cfg_text_error(txt)
-	app.cfg_chans = cfg_text_channels(txt)
 }
 
 // set_config_open is the ONE way the Configuration window is shown or hidden.
@@ -1064,8 +1051,7 @@ fn (mut app App) set_config_open(open bool) {
 // cfg_invalidate drops the cached project text, so the File tab re-reads it next render.
 // Called wherever the file or the active project changes underneath the editor.
 fn (mut app App) cfg_invalidate() {
-	app.cfg_loaded = ''
-	app.cfg_text_dirty = false
+	app.cfg_file.invalidate()
 }
 
 // cfg_text_error returns why this text would not load, or '' if it parses.
@@ -1101,20 +1087,20 @@ fn (mut app App) save_cfg_text() {
 	// unapplied and warns; Ctrl+S mid-run must not finish what Start declined (codex round 2
 	// on #250).
 	if app.running {
-		app.cfg_err = 'not saved while running — the text is applied to the model on save; Stop first'
-		app.notify('not saved — the File tab\'s text is applied on save, and the model is not rebuilt while running; Stop first')
+		app.cfg_file.err = 'not saved while running — the text is applied to the model on save; Stop first'
+		app.notify("not saved — the File tab's text is applied on save, and the model is not rebuilt while running; Stop first")
 		return
 	}
 	if app.dirty {
 		// The mirror of the guard in save_project: applying this text would replace a model
 		// that holds unsaved bus or generator edits.
-		app.cfg_err = 'unsaved bus edits would be lost — save or discard them above first'
+		app.cfg_file.err = 'unsaved bus edits would be lost — save or discard them above first'
 		app.notify('not saved — resolve the unsaved bus edits first')
 		return
 	}
-	txt := vgui.buf_str(app.cfg_text)
+	txt := app.cfg_file.text()
 	if e := non_empty(cfg_text_error(txt)) {
-		app.cfg_err = e
+		app.cfg_file.err = e
 		app.notify('not saved — ${e}')
 		return
 	}
@@ -1122,7 +1108,7 @@ fn (mut app App) save_cfg_text() {
 	// channels at all, over a project that had some. Almost always a truncated buffer or a
 	// mangled top level, never a thing anyone means to save.
 	if cfg_text_channels(txt) == 0 && app.proj.channels.len > 0 {
-		app.cfg_err = 'refused: this text yields no channels, which would empty the project — use Reload to get the file back'
+		app.cfg_file.err = 'refused: this text yields no channels, which would empty the project — use Reload to get the file back'
 		app.notify('not saved — it would empty the project')
 		return
 	}
@@ -1133,7 +1119,7 @@ fn (mut app App) save_cfg_text() {
 	}
 	app.notify('saved -> ${path}')
 	app.dirty = false
-	app.cfg_text_dirty = false
+	app.cfg_file.dirty = false
 	app.reserialize_confirm = '' // a File save persists the comments; a later Buses Save must re-warn (codex #268)
 	app.saved_at = time.ticks()
 	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
@@ -1213,7 +1199,7 @@ fn (mut app App) save_project() {
 	// over the other loses work. Only one may be modified at a time, and that is enforced HERE
 	// rather than in the File tab alone — the Buses Save button and File ▸ Save reach this
 	// function without passing through any of that tab's controls.
-	if app.cfg_text_dirty {
+	if app.cfg_file.dirty {
 		app.notify('not saved — the Configuration ▸ File tab has unsaved text; save or revert it there first')
 		app.show_config = true
 		app.cfg_tab = 1
@@ -1302,19 +1288,23 @@ fn (mut app App) save_what_is_being_edited() {
 	// review rounds on #250 each moved it; each fix was checked by reading, because the GUI has
 	// no tests. Now the table is in saverule/save_rule_test.v and this is a switch.
 	state := saverule.SaveState{
-		text_dirty:   app.cfg_text_dirty
+		text_dirty:   app.cfg_file.dirty
 		file_visible: app.cfg_file_visible
 		picker_open:  app.fb_open
 		running:      app.running
 	}
 	match saverule.save_target(state) {
 		.nothing {
-			if app.running && app.cfg_text_dirty && app.cfg_file_visible {
-				app.notify('not saved — the File tab\'s text is applied on save, and the model is not rebuilt while running; Stop first')
+			if app.running && app.cfg_file.dirty && app.cfg_file_visible {
+				app.notify("not saved — the File tab's text is applied on save, and the model is not rebuilt while running; Stop first")
 			}
 		}
-		.text { app.save_cfg_text() }
-		.model { app.save_project() }
+		.text {
+			app.save_cfg_text()
+		}
+		.model {
+			app.save_project()
+		}
 	}
 }
 
@@ -1352,7 +1342,7 @@ fn (mut app App) save_as(path string) {
 	// then proj_path already names the new destination — so the next File render sees a cache
 	// miss and replaces the unsaved buffer with that file's contents, or an empty error buffer
 	// for a file that does not exist yet.
-	if app.cfg_text_dirty {
+	if app.cfg_file.dirty {
 		app.notify('not saved — the Configuration ▸ File tab has unsaved text; save or revert it there first')
 		app.show_config = true
 		app.cfg_tab = 1

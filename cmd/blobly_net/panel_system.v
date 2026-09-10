@@ -165,9 +165,9 @@ fn draw_system(mut app App) {
 	// vertical space, and ImGui advances the parent past the taller same-line child — pushing
 	// the 'buses & id allocation' tree below the visible region (codex #65).
 	if app.sys_ecu_h <= 0 {
-		app.sys_ecu_h = 160 * sc
+		app.sys_ecu_h = 160
 	}
-	ecu_h := app.sys_ecu_h
+	ecu_h := app.sys_ecu_h * sc // kept unscaled, so a UI-scale change keeps the proportion
 	vgui.child_wh('##ecu_list', 130 * sc, ecu_h)
 	for n in app.sys.nodes {
 		lbl := if n.ecu_err != '' { '${n.name}  (!)' } else { n.name }
@@ -236,8 +236,15 @@ fn draw_system(mut app App) {
 
 	// The divider between the ECU panes and the section below (#270 item 1): drag to trade
 	// height. 100*sc keeps the tree's header and a row or two; the splitter floors max at min.
-	sys_max := app.sys_ecu_h + vgui.content_avail_h() - 100 * sc
-	app.sys_ecu_h = vgui.splitter_h('##sys_split', app.sys_ecu_h, 60 * sc, sys_max)
+	// A DRAG persists; the clamp of a short dock does not — written straight back, one frame
+	// in a short slot collapsed the panes to the minimum for good.
+	sys_min := 60 * sc
+	sys_max := ecu_h + vgui.content_avail_h() - 100 * sc
+	shown := if ecu_h > sys_max { sys_max } else { ecu_h }
+	moved := vgui.splitter_h('##sys_split', shown, sys_min, sys_max)
+	if moved != shown {
+		app.sys_ecu_h = moved / sc
+	}
 	// buses matrix + id allocation: useful but long, so fold it (closed by default) —
 	// keeps the panel focused on the nodes/ECU detail above. In its own scrolling child, so
 	// what the splitter leaves is what it scrolls in; and its tables are CONTENT-SIZED
@@ -262,7 +269,7 @@ fn draw_system(mut app App) {
 			// explicit break below ends the zero-node case
 			for {
 				n1 := if n0 + chunk < app.sys.nodes.len { n0 + chunk } else { app.sys.nodes.len }
-				if vgui.table_begin_sized('##sysmx_${b.name}_${n0}', 3 + (n1 - n0), 0) {
+				if vgui.table_begin_flat('##sysmx_${b.name}_${n0}', 3 + (n1 - n0)) {
 					vgui.table_setup_col('signal', 140 * sc)
 					vgui.table_setup_col('frame', 130 * sc)
 					vgui.table_setup_col('cycle', 50 * sc)
@@ -306,7 +313,7 @@ fn draw_system(mut app App) {
 			if ncols > 0 {
 				vgui.text_colored(205, 60, 60, '${ncols} id collision(s) on ${b.name}')
 			}
-			if vgui.table_begin_sized('##sysid_${b.name}', 3, 0) {
+			if vgui.table_begin_flat('##sysid_${b.name}', 3) {
 				vgui.table_setup_col('id', 90 * sc)
 				vgui.table_setup_col('kind', 80 * sc)
 				vgui.table_setup_col('owner', 160 * sc)

@@ -825,16 +825,19 @@ int  vgui_table_begin(const char* id, int cols) {
     return ImGui::BeginTable(id, cols,
         ImGuiTableFlags_Borders|ImGuiTableFlags_ScrollY|ImGuiTableFlags_Resizable) ? 1 : 0;
 }
-// vgui_table_begin_sized: a table of an explicit height. h > 0 scrolls inside that many pixels;
-// h == 0 asks for NO scrolling, so the table is as tall as its rows and the window or child
-// around it scrolls. The plain vgui_table_begin cannot do the second: its ScrollY flag with no
-// outer height makes ImGui size the table to everything LEFT in the window (CalcItemSize with
-// a zero height takes the remaining region), so a table followed by anything pushed that
+// vgui_table_begin_flat: a table sized to its rows, with NO scrolling of its own -- the window
+// or child around it scrolls. The plain vgui_table_begin cannot do that: its ScrollY flag with
+// no outer height makes ImGui size the table to everything LEFT in the window (CalcItemSize
+// with a zero height takes the remaining region), so a table followed by anything pushed that
 // sibling below the visible area -- the System panel's id allocation under its matrix (#270).
-int  vgui_table_begin_sized(const char* id, int cols, float h) {
-    ImGuiTableFlags flags = ImGuiTableFlags_Borders|ImGuiTableFlags_Resizable;
-    if (h > 0.0f) flags |= ImGuiTableFlags_ScrollY;
-    return ImGui::BeginTable(id, cols, flags, ImVec2(0.0f, h > 0.0f ? h : 0.0f)) ? 1 : 0;
+int  vgui_table_begin_flat(const char* id, int cols) {
+    return ImGui::BeginTable(id, cols, ImGuiTableFlags_Borders|ImGuiTableFlags_Resizable) ? 1 : 0;
+}
+// vgui_table_cell_dim: the next cell, dim text -- vgui_table_cell's twin for a row that is
+// listed but not offered.
+void vgui_table_cell_dim(const char* s) {
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("%s", s);
 }
 // tree node inside a table cell (spans all columns for the click/arrow). Returns open.
 int vgui_tree_node_table(const char* label) {
@@ -924,6 +927,21 @@ int vgui_key_enter_pressed() {
 // it is about to size -- a hand-typed 18*scale drifts from the font the moment the style does.
 float vgui_line_height()  { return ImGui::GetTextLineHeightWithSpacing(); }
 float vgui_frame_height() { return ImGui::GetFrameHeightWithSpacing(); }
+
+// vgui_input_text_enter: a single-line field that reports 1 on the frame ENTER submits it (and
+// only then), leaving the text as typed. What a path field wants -- vgui_input_text reports
+// every keystroke, and "deactivated after edit" fires on any loss of focus (Tab, a click on a
+// row), which would navigate under a click aimed at the list (#270). The head of
+// vgui_console_input, without the history and the refocus.
+int vgui_input_text_enter(const char* label, char* buf, int bufsize) {
+    return ImGui::InputText(label, buf, (size_t)bufsize, ImGuiInputTextFlags_EnterReturnsTrue) ? 1 : 0;
+}
+// vgui_window_focused: the current window, or one of its children, has keyboard focus. A key
+// read with IsKeyPressed is global; a window that acts on Enter asks this first, or Enter
+// pressed anywhere in the app lands in it.
+int vgui_window_focused() {
+    return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ? 1 : 0;
+}
 
 // snap_to_edge magnetically pulls a marker time `t` to the nearest bar edge (start or end) when
 // it's within `px` screen pixels — so measurements land on exact interval boundaries. Returns `t`

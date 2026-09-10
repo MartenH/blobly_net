@@ -464,13 +464,14 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   with no height, and ImGui sizes that to the whole remaining region — so anything drawn after
   it in the same window or child is below the visible area with no way to scroll to it. That was
   #270 item 1 (the System panel's id allocation under its matrix). A table with a sibling below
-  it is `table_begin_sized(id, cols, 0)` — content-sized, the window scrolls — or given a height.
+  it is `table_begin_flat(id, cols)` — sized to its rows, the window or child around it scrolls.
 - **Native Windows** is a separate toolchain (MSYS2/mingw). `.github/workflows/windows.yml` is
   the reproducible recipe — it builds the shipped bundle on every push; there is no hand-written
   walkthrough to drift from it.
 - **Working from Windows, type-check the OTHER platform before you push:**
   `v -os linux -enable-globals -path "@vlib|@vmodules|modules|libs" -check cmd/blobly_net`.
-  The per-platform backends (`vector_windows.v` / `vector_linux.v`, and the `discover_*` pair)
+  The per-platform backends (`vector_windows.v` / `vector_linux.v`, the `discover_*` pair, and
+  the GUI's `roots_windows.v` / `roots_nix.v` — the picker's drive roots)
   are two files that must offer the SAME symbols, and a Windows bench compiles only one of them —
   so a helper added beside the driver and called from the cross-platform GUI builds perfectly
   here and fails the Linux job ten minutes later. That is a ~10-minute round trip for something
