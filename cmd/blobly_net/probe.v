@@ -502,43 +502,31 @@ fn probe_driver(secs int) {
 	// created; corrupting the primary output to tidy a rounding error is the wrong trade, and
 	// further rounds on the sub-millisecond fuzziness of an endpoint that cannot be atomic will
 	// be answered with this comment.
-	// ONE SNAPSHOT OF THE ENDPOINT, and the ORDER WITHIN IT is what makes each field's error
-	// harmless. Everything the summary attributes to the measurement is read here, before the
-	// drain: an admitted writer finishing late — a lock waiter, seconds after the close — must
-	// not let post-endpoint allocation into `alloc_mb`, or a later live set be attributed to the
-	// collection counted in the final interval (codex round 4 on #302).
+	// THE ENDPOINT: the collection count, the live set and the clock, then the gate — four
+	// adjacent reads, no loop and no cross-validation. What #302 asked for is the interval the
+	// sampler cannot record and the collection counter across it; the live set comes with the
+	// collection because counting one without sampling it makes the summary disagree with itself
+	// (codex round 3).
 	//
-	// THE HEAP TOTALS COME FIRST, then the clock, then the gate:
+	// TWO IMPERFECTIONS ARE ACCEPTED HERE, DELIBERATELY, and they are written down rather than
+	// chased — seven review rounds on this seam produced thirteen findings, every fix creating
+	// the next, which is the shape this guide names for stopping (#315 carries the analysis):
 	//
-	//   bytes/live before the clock — the gate does not govern allocation, which continues
-	//     whatever it says, so these can only be read EARLY relative to closed_ns, never late.
-	//     `alloc_mb` therefore cannot contain allocation the divisor excludes; it can only miss
-	//     a few microseconds of it. Read after the clock they could be arbitrarily later, which
-	//     is dividing one interval's allocation by another's duration (round 6).
-	//   the clock adjacent to the gate — the two cannot be made atomic, and preemption between
-	//     them costs one of two things: the clock AFTER puts a post-run scheduling delay inside
-	//     the final hiccup interval, a false entry in the histogram whose job is finding stalls;
-	//     the clock BEFORE lets a few events be counted past the declared endpoint, a rate off
-	//     by a rounding error. The second is the one to take, and it is only tolerable while the
-	//     two are ADJACENT — round 5 put two heap queries and up to eight retries between them,
-	//     which is what made this order indefensible rather than merely imperfect (round 6).
+	//   * a clock read and a store are not atomic. Preempted between them, a few events are
+	//     counted past the declared endpoint — a rate off by a rounding error. The other order
+	//     puts a post-run scheduling delay INSIDE the final hiccup interval, a false entry in the
+	//     histogram whose whole job is finding stalls, which is the worse error of the two.
+	//   * a collection completing during these four reads splits them, and the attribution for
+	//     the final interval can be off by one collection. Validating against a second read moves
+	//     the split rather than closing it, as rounds 5-7 each demonstrated in turn.
 	//
-	// AND ONE RETRY, AFTER ADMISSION IS CLOSED. A collection completing during the reads above
-	// splits the snapshot — some fields from before the pause, some after — so if the count moved
-	// it is taken again, now with nothing else being admitted. Once, not eight times: the retry
-	// exists to repair a split snapshot, and a second split is no likelier to resolve on the
-	// ninth try than the second.
-	mut closed_gc := gc_count()
-	mut closed_bytes := alloc_total()
-	mut closed_live := live_mb()
-	mut closed_ns := time.sys_mono_now()
+	// Both are bounded by one scheduling quantum at the very end of a run, in a dev instrument
+	// whose output is a one-page summary. Neither was better before this PR: the interval was not
+	// recorded at all.
+	closed_gc := gc_count()
+	closed_live := live_mb()
+	closed_ns := time.sys_mono_now()
 	stdatomic.store_u64(&probe_gate, 0)
-	if gc_count() != closed_gc {
-		closed_gc = gc_count()
-		closed_bytes = alloc_total()
-		closed_live = live_mb()
-		closed_ns = time.sys_mono_now()
-	}
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
 	}
@@ -550,12 +538,14 @@ fn probe_driver(secs int) {
 	// read, where this thread is the only one left. Bucketed to the ENDPOINT, not to now: the
 	// part after it was not measured.
 	close_final_hiccup_interval(closed_ns, closed_gc, closed_live)
-	probe_bytes_end = closed_bytes
-	// TO THE SAME ENDPOINT THE HISTOGRAM CLOSES AT. Measured after the drain, an admitted writer
-	// finishing late — a lock waiter, seconds after the close — stretched the divisor while the
-	// coverage ended at closed_ns, so the summary reported a longer run than it had measured and
-	// understated every rate computed from it (codex round 3 on #302).
-	probe_run_s = f64(closed_ns - probe_begin_ns) / 1e9
+	probe_bytes_end = alloc_total()
+	// AFTER THE DRAIN, as before this PR. Tying it to closed_ns instead was scope I added in
+	// round 3 answering a finding of my own making, and it dragged the allocation total in after
+	// it (round 4), then the ordering of the two (rounds 6-7). The divisor and the histogram do
+	// describe slightly different intervals — the drain sits between them — which is a real
+	// inconsistency, and an OLD one that #302 did not ask about. Filed as #315 with the analysis
+	// rather than fixed by a PR that has already changed its mind three times about it.
+	probe_run_s = f64(time.sys_mono_now() - probe_begin_ns) / 1e9
 	// A run that replayed NOTHING is not a measurement, whatever start() said: a replay
 	// worker refuses after start() has returned — a reader that never came up, a recording
 	// that would not decode, a plan that kept no frames — and its refusal reaches the Log,
