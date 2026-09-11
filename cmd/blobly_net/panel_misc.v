@@ -659,7 +659,8 @@ fn build_layout() {
 	// surface fight small monitoring panels for one dock node's space.
 	vgui.dock_window('System', midnode)
 	vgui.dock_window('Flash', midnode)
-	vgui.dock_window('DoIP Discovery', midnode)
+	// DoIP Discovery is a dialog (begin_dialog) and is not placed: a dock assignment persisted
+	// in the layout would dock it despite the NoDocking flag (codex #307 r9).
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
 	vgui.dock_window('Replay', bottom)

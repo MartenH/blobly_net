@@ -83,8 +83,12 @@ pub fn parse(text string) !Prefs {
 }
 
 // clamp_scale keeps a UI scale inside the range the Settings menu offers (75%..175%), with room
-// either side for a hand-edited file — and never 0, which a missing value reads as through f64.
+// either side for a hand-edited file — never 0, which a missing value reads as through f64, and
+// never NaN, which TOML can spell.
 pub fn clamp_scale(s f32) f32 {
+	if s != s {
+		return 1.0 // NaN, which a hand-edited file may say and no comparison catches (codex #307 r9)
+	}
 	if s < 0.5 {
 		return 0.5
 	}
@@ -95,7 +99,8 @@ pub fn clamp_scale(s f32) f32 {
 }
 
 // merge is what a save writes: `base` (the file as it is now) with the fields `ch` names taken
-// from `mine`. A file that is not there is the defaults, so `base` may be Prefs{}.
+// from `mine` — the panes per key. A file that is not there is the defaults, so `base` may be
+// Prefs{}.
 pub fn merge(base Prefs, mine Prefs, ch Changed) Prefs {
 	mut out := base
 	if ch.editor {
@@ -104,8 +109,16 @@ pub fn merge(base Prefs, mine Prefs, ch Changed) Prefs {
 	if ch.scale {
 		out.ui_scale = mine.ui_scale
 	}
+	// a V map is a reference: `out := base` shares base's map, so the per-key writes below
+	// would reach the caller's copy without this
+	out.panes = base.panes.clone()
 	if ch.panes {
-		out.panes = mine.panes.clone()
+		// per KEY, over the file's map: `mine.panes` carries the panes this instance dragged
+		// (main.v hands it the ones that differ from what it loaded), and the rest stay as
+		// whoever dragged them last left them (codex #307 r9)
+		for k, v in mine.panes {
+			out.panes[k] = v
+		}
 	}
 	return out
 }

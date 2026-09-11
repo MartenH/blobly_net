@@ -202,6 +202,8 @@ fn main() {
 	} else {
 		app.apply_ui_scale(app.prefs.ui_scale)
 	}
+	app.panes_loaded =
+		app.prefs.panes.clone() // what this instance started from, to know what it dragged
 	app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
 	app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
 	app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
@@ -410,14 +412,24 @@ fn main() {
 		}
 	}
 	app.stop()
-	// What a session dragged, for the next one (prefs.panes); a broken file is not overwritten.
-	app.prefs.panes['system_ecu'] = app.sys_ecu_h
-	app.prefs.panes['discover_list'] = app.disc_list_h
-	app.prefs.panes['script_editor'] = app.script_ed_h
-	app.prefs.panes['dbc_left'] = app.dbc_ed.left_w
-	app.prefs.panes['dbc_msgs'] = app.dbc_ed.msgs_h
-	app.prefs.panes['dbc_props'] = app.dbc_ed.props_h
-	if !headless {
+	// What THIS session dragged, for the next one: only the panes that differ from what it
+	// loaded, so an instance that dragged nothing writes no pane over another's (codex #307
+	// r9). A broken or foreign file is not overwritten.
+	now := {
+		'system_ecu':    app.sys_ecu_h
+		'discover_list': app.disc_list_h
+		'script_editor': app.script_ed_h
+		'dbc_left':      app.dbc_ed.left_w
+		'dbc_msgs':      app.dbc_ed.msgs_h
+		'dbc_props':     app.dbc_ed.props_h
+	}
+	app.prefs.panes = map[string]f32{}
+	for k, v in now {
+		if v > 0 && v != (app.panes_loaded[k] or { 0 }) {
+			app.prefs.panes[k] = v
+		}
+	}
+	if !headless && app.prefs.panes.len > 0 {
 		app.save_prefs(prefs.Changed{ panes: true }, false)
 	}
 	vgui.shutdown()

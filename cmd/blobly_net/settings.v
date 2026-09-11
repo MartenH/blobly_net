@@ -45,19 +45,20 @@ fn (mut app App) load_prefs() {
 // dialog, for a file that will not parse, cannot be read, or carries keys this build does not
 // know: the dialog's Save replaces such a file whole, and says so. A refused or failed save
 // keeps its flags PENDING, so the scale picked while the file was foreign is still in the
-// dialog's Save later (r7). A failure to write is said, not fatal.
-fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
+// dialog's Save later (r7). A failure to write is said, not fatal; the return says whether the
+// file was written.
+fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 	want := app.prefs_pending.plus(ch)
 	app.prefs_pending = want
 	if app.prefs_broken && !from_dialog {
-		return
+		return false
 	}
 	// The directory first: the lock is a directory INSIDE it, and on a fresh profile every
 	// save was refused as if another instance held a lock nothing could create (codex #307 r8).
 	os.mkdir_all(os.dir(app.prefs_file)) or {}
 	if !prefs_lock(app.prefs_file) {
 		app.notify('settings not saved: another instance holds ${app.prefs_file}.lock')
-		return
+		return false
 	}
 	defer {
 		prefs_unlock(app.prefs_file)
@@ -70,24 +71,33 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
 				// the dialog can say what its Save would drop (codex #307 r8).
 				app.prefs.foreign = now.foreign
 				if !from_dialog {
-					return
+					return false
 				}
 			}
 			base = now
-		} else if !from_dialog {
-			return
+		} else {
+			// Broken since start: recorded, so the dialog warns before its Save replaces it
+			// (codex #307 r9).
+			app.prefs_broken = true
+			if !from_dialog {
+				return false
+			}
 		}
-	} else if os.exists(app.prefs_file) && !from_dialog {
-		return
+	} else if os.exists(app.prefs_file) {
+		app.prefs_broken = true
+		if !from_dialog {
+			return false
+		}
 	}
 	merged := prefs.merge(base, app.prefs, want)
 	os.write_file(app.prefs_file, merged.serialize()) or {
 		app.notify('settings not saved (${app.prefs_file}): ${err.msg()}')
-		return
+		return false
 	}
 	app.prefs_broken = false
 	app.prefs.foreign = []
 	app.prefs_pending = prefs.Changed{}
+	return true
 }
 
 // prefs_lock takes `<file>.lock`, a directory, which mkdir creates for ONE caller — the shape
@@ -193,8 +203,9 @@ fn draw_prefs(mut app App) {
 	vgui.separator()
 	if vgui.button('Save') {
 		app.prefs.editor = vgui.buf_str(app.prefs_editor_buf).trim_space()
-		app.save_prefs(prefs.Changed{ editor: true }, true)
-		app.notify('preferences saved')
+		if app.save_prefs(prefs.Changed{ editor: true }, true) {
+			app.notify('preferences saved')
+		}
 	}
 	vgui.same_line()
 	if vgui.button('Close') {

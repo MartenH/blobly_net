@@ -1,5 +1,7 @@
 module prefs
 
+import math
+
 fn test_no_file_and_an_empty_file_are_the_defaults() {
 	p := parse('')!
 	assert p.editor == ''
@@ -78,12 +80,20 @@ fn test_a_save_writes_only_what_this_instance_changed_over_the_file_as_it_is() {
 		editor:   'vi'
 		ui_scale: 1.0 // B's stale snapshot
 	}
-	b.panes['x'] = 300 // what B dragged
+	b.panes['x'] = 300 // what B dragged — and ONLY that: a pane B never touched is not in its map
 	on_disk := parse(a.serialize())!
 	written := merge(on_disk, b, Changed{ panes: true })
 	assert written.ui_scale == 1.5 // A's scale survives B's exit
 	assert written.editor == 'vi'
 	assert written.panes['x'] == 300
+	// a pane A dragged and B did not stays A's
+	mut a2 := a
+	a2.panes['y'] = 55
+	mut b2 := Prefs{}
+	b2.panes['x'] = 300
+	kept := merge(parse(a2.serialize())!, b2, Changed{ panes: true })
+	assert kept.panes['y'] == 55
+	assert kept.panes['x'] == 300
 	// and a change of the scale writes the scale alone
 	scaled := merge(on_disk, Prefs{ ui_scale: 0.75 }, Changed{
 		scale: true
@@ -117,4 +127,13 @@ fn test_pending_changes_add_up() {
 		scale: true
 	}.plus(Changed{ editor: true })
 	assert c.scale && c.editor && !c.panes
+}
+
+fn test_a_nan_scale_is_the_default() {
+	// vlib's toml reads `nan` as 0 (clamped to the floor); the guard is for the value itself
+	assert clamp_scale(f32(math.nan())) == 1.0
+	p := parse('ui_scale = nan\n')!
+	assert p.ui_scale == p.ui_scale // whatever the parser made of it, it is a number
+	q := parse('ui_scale = inf\n')!
+	assert q.ui_scale == 3.0
 }
