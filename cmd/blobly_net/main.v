@@ -424,25 +424,9 @@ fn main() {
 		}
 	}
 	app.stop()
-	// What THIS session DRAGGED, folded OVER the panes it loaded (pane_moved): a pane merely
-	// shown at its seeded default is not a drag and must not bake today's default into the file,
-	// and one this session never touched keeps whatever the file said (codex #307 r9, r10). The
-	// whole file is then written — last writer wins (#309) — unless it is broken or foreign.
-	now := {
-		'system_ecu':    app.sys_ecu_h
-		'discover_list': app.disc_list_h
-		'script_editor': app.script_ed_h
-		'dbc_left':      app.dbc_ed.left_w
-		'dbc_msgs':      app.dbc_ed.msgs_h
-		'dbc_props':     app.dbc_ed.props_h
-	}
-	mut dragged := map[string]f32{}
-	for k, v in now {
-		if v > 0 && (app.panes_dragged[k] or { false }) {
-			dragged[k] = v
-		}
-	}
-	app.prefs.keep_panes(dragged)
+	// The whole file, from what this session holds — last writer wins (#309) — unless it is
+	// broken or foreign. The panes it dragged are collected by the save itself (collect_panes),
+	// so this is every preference the session changed and has not written since.
 	if !headless && app.prefs_dirty {
 		app.save_prefs(false)
 	}

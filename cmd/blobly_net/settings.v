@@ -59,12 +59,20 @@ fn (mut app App) save_prefs(from_dialog bool) bool {
 	if !from_dialog && (app.prefs_broken || app.prefs.foreign.len > 0) {
 		return false
 	}
+	app.collect_panes()
 	// The directory first: on a fresh profile there is none yet (codex #307 r8).
 	os.mkdir_all(os.dir(app.prefs_file)) or {
 		app.notify('settings not saved: cannot create ${os.dir(app.prefs_file)} (${err.msg()})')
 		return false
 	}
-	tmp := app.prefs_file + '.tmp'
+	// A temp name THIS process owns. The lock that serialised writers is gone, so a shared
+	// `<file>.tmp` would let two instances interleave into one temp — or let one rename it into
+	// place while the other is still writing it, which is the truncated file the temp exists to
+	// prevent — and the failure path below would delete the other's. Last writer wins is a lost
+	// FIELD, never a corrupt file. A crash BETWEEN the write and the rename leaves one such
+	// file behind; that is not swept, deliberately — scanning the config directory to tidy
+	// after other processes is how the version this replaces reached 310 lines.
+	tmp := '${app.prefs_file}.${os.getpid()}.tmp'
 	os.write_file(tmp, app.prefs.serialize()) or {
 		app.notify('settings not saved (${tmp}): ${err.msg()}')
 		return false
@@ -92,6 +100,30 @@ fn (mut app App) pane_moved(key string, stored f32, drawn_px f32, moved f32, sc 
 		app.prefs_dirty = true
 	}
 	return v
+}
+
+// collect_panes folds what THIS session dragged over the panes it loaded, into what a save
+// writes. Every save, not just the exit one: a drag followed by a scale change used to leave
+// the divider unwritten, because the successful mid-session save cleared what the exit save
+// asks about. A pane merely shown at its seeded default is not a drag (pane_moved) and must not
+// bake today's default into the file; one this session never touched keeps whatever the file
+// said (codex #307 r9, r10).
+fn (mut app App) collect_panes() {
+	live := {
+		'system_ecu':    app.sys_ecu_h
+		'discover_list': app.disc_list_h
+		'script_editor': app.script_ed_h
+		'dbc_left':      app.dbc_ed.left_w
+		'dbc_msgs':      app.dbc_ed.msgs_h
+		'dbc_props':     app.dbc_ed.props_h
+	}
+	mut dragged := map[string]f32{}
+	for k, v in live {
+		if v > 0 && (app.panes_dragged[k] or { false }) {
+			dragged[k] = v
+		}
+	}
+	app.prefs.keep_panes(dragged)
 }
 
 // apply_ui_scale is the ONE writer of the scale: the value the panels read and the font scale
@@ -182,8 +214,10 @@ fn draw_prefs(mut app App) {
 	vgui.separator()
 	if vgui.button('Save') {
 		app.prefs.editor = vgui.buf_str(app.prefs_editor_buf).trim_space()
-		// owed before it is attempted, so a save that FAILS to write is retried at exit rather
-		// than losing the command the operator typed
+		// owed before it is attempted, so a save that fails to WRITE is retried at exit rather
+		// than losing the command the operator typed. A file that is broken or foreign is not
+		// retried — only the dialog may replace one, and the exit save refuses above — so that
+		// failure is the notify below and nothing more, as it was before the lock came out.
 		app.prefs_dirty = true
 		if app.save_prefs(true) {
 			app.notify('preferences saved')
