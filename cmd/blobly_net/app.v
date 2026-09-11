@@ -404,10 +404,8 @@ mut:
 	prefs_editor_buf   []u8
 	prefs_file         string        // resolved once at load
 	prefs_caption      string        // the dialog's fixed line, built at open
-	prefs_broken       bool          // the file did not parse: never overwritten except from the dialog
-	prefs_pending      prefs.Changed // what a refused or failed save still owes the file
-	prefs_seen_broken  bool          // the file state the Preferences dialog last showed: what its Save may replace
-	prefs_seen_foreign []string
+	prefs_broken       bool // the file did not parse: never overwritten except from the dialog
+	prefs_dirty        bool // this session changed a preference the file does not have yet
 	panes_dragged      map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
 	cfg_bufs           []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)

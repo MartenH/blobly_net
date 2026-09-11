@@ -88,39 +88,35 @@ fn test_a_pane_name_outside_the_bare_key_grammar_is_written_quoted() {
 	assert q.panes['plain'] == 10
 }
 
-// TWO INSTANCES: A changes the scale and saves; B, still open with the old snapshot, exits and
-// saves its panes. B's save writes only what B changed, over the file as A left it.
-fn test_a_save_writes_only_what_this_instance_changed_over_the_file_as_it_is() {
-	mut a := Prefs{
+// A save writes the WHOLE file from what this instance holds (#309), so what it holds must
+// include the panes it loaded and never touched — otherwise a session that dragged one divider
+// would erase the other five.
+fn test_a_session_keeps_the_panes_it_did_not_drag() {
+	mut on_disk := parse(Prefs{
 		editor:   'vi'
 		ui_scale: 1.5
-	}
-	a.panes['x'] = 100
-	mut b := Prefs{
-		editor:   'vi'
-		ui_scale: 1.0 // B's stale snapshot
-	}
-	b.panes['x'] = 300 // what B dragged — and ONLY that: a pane B never touched is not in its map
-	on_disk := parse(a.serialize())!
-	written := merge(on_disk, b, Changed{ panes: true })
-	assert written.ui_scale == 1.5 // A's scale survives B's exit
-	assert written.editor == 'vi'
-	assert written.panes['x'] == 300
-	// a pane A dragged and B did not stays A's
-	mut a2 := a
-	a2.panes['y'] = 55
-	mut b2 := Prefs{}
-	b2.panes['x'] = 300
-	kept := merge(parse(a2.serialize())!, b2, Changed{ panes: true })
-	assert kept.panes['y'] == 55
-	assert kept.panes['x'] == 300
-	// and a change of the scale writes the scale alone
-	scaled := merge(on_disk, Prefs{ ui_scale: 0.75 }, Changed{
-		scale: true
+		panes:    {
+			'x': f32(100)
+			'y': 55
+		}
+	}.serialize())!
+	// this session dragged x and nothing else: y is not in the map, and stays as the session
+	// that dragged it left it
+	on_disk.keep_panes({
+		'x': f32(300)
 	})
-	assert scaled.ui_scale == 0.75
-	assert scaled.editor == 'vi'
-	assert scaled.panes['x'] == 100
+	assert on_disk.panes['x'] == 300
+	assert on_disk.panes['y'] == 55
+	// what is written is the whole file, from what this instance holds: last writer wins (#309)
+	back := parse(on_disk.serialize())!
+	assert back.ui_scale == 1.5
+	assert back.editor == 'vi'
+	assert back.panes['x'] == 300
+	assert back.panes['y'] == 55
+	// a session that dragged nothing writes the panes it loaded, unchanged
+	mut none_dragged := parse(on_disk.serialize())!
+	none_dragged.keep_panes(map[string]f32{})
+	assert none_dragged.panes == on_disk.panes
 }
 
 fn test_the_editor_command_is_split_with_quotes_and_the_file_substituted() {
@@ -140,13 +136,6 @@ fn test_the_editor_command_is_split_with_quotes_and_the_file_substituted() {
 	assert editor_argv('ed "" %s', '/t/a.lua') == ['ed', '/t/a.lua']
 	assert editor_argv('  ', 'x') == []
 	assert editor_argv('', 'x') == []
-}
-
-fn test_pending_changes_add_up() {
-	c := Changed{
-		scale: true
-	}.plus(Changed{ editor: true })
-	assert c.scale && c.editor && !c.panes
 }
 
 fn test_a_nan_scale_is_the_default() {

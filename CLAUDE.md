@@ -506,9 +506,14 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   cannot be docked; a panel keeps the title-bar X alone. A symbol the main font lacks is drawn from
   the merged fallback face (`merge_symbol_font`: Segoe UI Symbol / DejaVu Sans), which is what
   made `↻` and `⚠` draw as `?` before. **Settings** (`settings.v`, `prefs`): one per-user home —
-  `settings.toml` (editor command, UI scale, dragged panes) and ImGui's `imgui.ini` beside it —
-  (the layout file is ImGui's own, written unlocked — two instances of one user are
-  last-writer-wins on it, #308) and every save is a read-merge-write of the fields THIS instance changed; a file that will not
+  `settings.toml` (editor command, UI scale, dragged panes) and ImGui's `imgui.ini` beside it.
+  **Both are last-writer-wins between two instances of one user** (#308, #309): a save writes the
+  whole file from what that instance holds — through a temp file and `replace_file`, so a write
+  that fails part-way never truncates the file it replaces. `settings.toml` had a field-by-field
+  merge under a hand-rolled lock directory instead, 310 lines and 27 review rounds for three
+  preferences, while the larger file beside it had the cheap policy all along. The exit save
+  folds this session's DRAGGED panes over the ones it loaded (`prefs.keep_panes`), which is what
+  keeps a one-divider session from erasing the other five. A file that will not
   parse, cannot be read, or carries keys this build does not know is never rewritten by an
   automatic save — the Preferences dialog's Save is the one that may, and it says what it drops
   (a textual scan that preserved such keys through a rewrite took five review rounds, one TOML

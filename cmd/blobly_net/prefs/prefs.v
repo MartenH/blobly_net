@@ -9,14 +9,17 @@ import toml
 // the GUI cannot be.
 //
 // The file is SHARED: by every checkout and bundle of this user, and by every build they run.
-// Two rules follow, and both are here rather than in the GUI. A file carrying keys this build
-// does not know (`foreign`) is never rewritten by an automatic save — five review rounds went
-// into a textual scan that preserved such keys through a rewrite, each round a TOML form the
-// scan misread (quoted keys, quoted headers, dotted keys, multi-line strings, delimiters in
-// comments), which is the signal to stop scanning: the Preferences dialog's Save is the one
-// writer that may replace such a file, and it says what it drops. And a save MERGES: the file
-// is read again and only the fields THIS instance changed are written over it, so a second
-// instance closing later does not put back the scale the first one had just changed.
+// One rule follows, and it is here rather than in the GUI — a file carrying keys this build does
+// not know (`foreign`) is never rewritten by an automatic save: five review rounds went into a
+// textual scan that preserved such keys through a rewrite, each round a TOML form the scan
+// misread (quoted keys, quoted headers, dotted keys, multi-line strings, delimiters in
+// comments), which is the signal to stop scanning. The Preferences dialog's Save is the one
+// writer that may replace such a file, and it says what it drops.
+//
+// Between two INSTANCES of one user, last writer wins (#309): a save writes the whole file from
+// what that instance holds. It is the policy ImGui's layout file beside it has always had
+// (#308), and the field-by-field merge under a lock that settings.toml had instead cost 310
+// lines for three preferences.
 
 // Prefs is the settings file, as values. A field's zero value is the default, so a file that
 // names neither key is the same as no file.
@@ -28,29 +31,13 @@ pub mut:
 	editor   string
 	ui_scale f32 = 1.0
 	// Dragged dividers, by pane name, unscaled px (panerule): what a session set, the next
-	// finds. Written at exit, since a drag is many frames and the file is one write.
+	// finds. Written at exit, since a drag is many frames and the file is one write — the
+	// session's own drags folded over the ones it loaded, so a pane nobody touched keeps what
+	// the file said (main.v).
 	panes map[string]f32
 	// The file names keys or tables this build does not read — a newer build's — and so must
 	// not be rewritten by an automatic save. Set by parse, from the parsed document.
 	foreign []string
-}
-
-// Changed says which fields a save may write: the ones this instance changed. Anything else
-// stays as the file has it now, whoever wrote that.
-pub struct Changed {
-pub:
-	editor bool
-	scale  bool
-	panes  bool
-}
-
-// plus is both sets of changes: what a refused save left pending, and what is asked now.
-pub fn (a Changed) plus(b Changed) Changed {
-	return Changed{
-		editor: a.editor || b.editor
-		scale:  a.scale || b.scale
-		panes:  a.panes || b.panes
-	}
 }
 
 // parse reads the settings file's text. A scale outside what the Settings menu offers is
@@ -118,29 +105,14 @@ pub fn clamp_scale(s f32) f32 {
 	return s
 }
 
-// merge is what a save writes: `base` (the file as it is now) with the fields `ch` names taken
-// from `mine` — the panes per key. A file that is not there is the defaults, so `base` may be
-// Prefs{}.
-pub fn merge(base Prefs, mine Prefs, ch Changed) Prefs {
-	mut out := base
-	if ch.editor {
-		out.editor = mine.editor
+// keep_panes folds this session's dragged panes over the ones the file had: a pane it never
+// touched keeps whatever the last session that DID drag it left, and a pane merely shown at its
+// seeded default is not a drag and so is not in `dragged` at all (panerule, codex #307 r9, r10).
+// The caller decides which of its live values were dragged; this decides what the file keeps.
+pub fn (mut p Prefs) keep_panes(dragged map[string]f32) {
+	for k, v in dragged {
+		p.panes[k] = v
 	}
-	if ch.scale {
-		out.ui_scale = mine.ui_scale
-	}
-	// a V map is a reference: `out := base` shares base's map, so the per-key writes below
-	// would reach the caller's copy without this
-	out.panes = base.panes.clone()
-	if ch.panes {
-		// per KEY, over the file's map: `mine.panes` carries the panes this instance dragged
-		// (main.v hands it the ones that differ from what it loaded), and the rest stay as
-		// whoever dragged them last left them (codex #307 r9)
-		for k, v in mine.panes {
-			out.panes[k] = v
-		}
-	}
-	return out
 }
 
 // serialize is the file's text: one line per key, a TOML basic string for the editor (a
