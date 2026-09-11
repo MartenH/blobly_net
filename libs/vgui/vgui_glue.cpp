@@ -400,14 +400,31 @@ int vgui_add_font_merge(const char* path, float size_px) {
 // vgui_set_ini_path: where ImGui keeps window rects and the dock tree. Default is imgui.ini in
 // the working directory, i.e. per checkout or bundle; the app points it at the same per-user
 // directory its settings live in, so the layout and the preferences have ONE home (#306).
-// Before the first frame: ImGui reads the file at the first NewFrame.
+//
+// The APP owns the write (#308). IniFilename stays null -- ImGui's own writer is fopen, write,
+// fclose over the live path, so an overlapping write from a second instance of one user could
+// leave a half-written file, and ImGui answers an unreadable layout by silently falling back to
+// the default one. Read here (before the first frame, which is when NewFrame would have done
+// it), and written by the app through the temp-and-rename every other per-user file here goes
+// through. What is NOT bought back is coordination: two instances still race, and the last
+// writer still wins, exactly as for settings.toml (#309).
 static std::string g_ini_path;
 // An empty path disables the file both ways: nothing is read, nothing is written -- a headless
 // render must not depend on a layout an earlier run left in the working directory.
 void vgui_set_ini_path(const char* path) {
     g_ini_path = path;
-    ImGui::GetIO().IniFilename = g_ini_path.empty() ? nullptr : g_ini_path.c_str();
+    ImGui::GetIO().IniFilename = nullptr;
+    if (!g_ini_path.empty()) ImGui::LoadIniSettingsFromDisk(g_ini_path.c_str());
 }
+// vgui_ini_dirty: ImGui raises this when the layout has changed and has settled -- at most once
+// every io.IniSavingRate (5 s), so asking every frame is not a write every frame.
+int vgui_ini_dirty(void) { return ImGui::GetIO().WantSaveIniSettings ? 1 : 0; }
+// vgui_ini_data: the layout as ImGui would have written it. The pointer is ImGui's own buffer,
+// valid until the next call -- copy it before the next frame.
+const char* vgui_ini_data(void) { return ImGui::SaveIniSettingsToMemory(NULL); }
+// vgui_ini_saved: the app has dealt with it. Cleared by the app whatever the write did, so a
+// failing disk raises one warning rather than one per settling period.
+void vgui_ini_saved(void) { ImGui::GetIO().WantSaveIniSettings = false; }
 // vgui_wake posts an empty event to unblock glfwWaitEvents from ANOTHER thread — the
 // event-driven equivalent of gui's queue_command. glfwPostEmptyEvent is one of the few
 // thread-safe GLFW calls, so an RX/sim thread can call this to request a repaint.
