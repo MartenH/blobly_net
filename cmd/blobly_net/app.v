@@ -346,6 +346,11 @@ mut:
 	// if the model is byte-identical — so any structured edit, load or revert since the warning
 	// re-warns rather than silently confirming (codex #268). '' = no pending confirmation.
 	reserialize_confirm string
+	// The project file's bytes as this app last read or wrote them, and the on-disk version an
+	// external-change warning was raised for: a model Save over a file another editor changed
+	// since is refused once, then overwrites that version (codex #307 r21).
+	proj_disk        string
+	external_confirm string
 	// When the project (or the File tab's text) was last written, in time.ticks(): the toolbar
 	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
 	// the screen the user is looking at and not only in the Log (#247).
@@ -808,6 +813,8 @@ fn (mut app App) load_project(path string) {
 		app.notify('load failed: ${err}')
 		return
 	}
+	app.proj_disk = os.read_file(path) or { '' } // the version a model Save may overwrite
+	app.external_confirm = ''
 	// THE VERSION GATE ON THE NORMAL OPEN PATH TOO. It existed only where the Configuration text
 	// is applied, so File ▸ Open read a future-format file in silence — and a structured Save then
 	// wrote back what this build understood, dropping whatever it had ignored. Said, not refused:

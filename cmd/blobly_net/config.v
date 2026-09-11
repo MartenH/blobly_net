@@ -1122,6 +1122,8 @@ fn (mut app App) save_cfg_text() {
 	app.notify('saved -> ${path}')
 	app.dirty = false
 	app.cfg_file.dirty = false
+	app.proj_disk = txt
+	app.external_confirm = ''
 	app.reserialize_confirm = '' // a File save persists the comments; a later Buses Save must re-warn (codex #268)
 	app.saved_at = time.ticks()
 	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
@@ -1173,6 +1175,8 @@ fn (mut app App) revert_proj_from_disk() {
 		app.notify('cannot re-read ${app.proj_path}: ${err}')
 		return
 	}
+	app.proj_disk = txt
+	app.external_confirm = ''
 	// Clear the flags only if the file actually replaced the model. Clearing them regardless
 	// left the edited model live and looking clean, so a later save would persist changes the
 	// user had been told were discarded.
@@ -1229,6 +1233,14 @@ fn (mut app App) save_project() {
 			app.notify('not saved — could not read ${app.proj_path} to check for comments this Save would drop (${err}); resolve the read error first')
 			return
 		}
+		// An EXTERNAL change first: the file is not what this app last read or wrote (Open in
+		// editor, a checkout), so the model is stale and its Save would erase the edit. Refused
+		// once, for that version of the file; a repeated Save overwrites it (codex #307 r21).
+		if app.proj_disk != '' && on_disk != app.proj_disk && app.external_confirm != on_disk {
+			app.external_confirm = on_disk
+			app.notify('not saved yet — ${app.proj_path} changed on disk since it was loaded (an external editor?). Configuration ▸ File ▸ Reload, or File ▸ Revert, takes the file; repeat the Save to overwrite it.')
+			return
+		}
 		if saverule.reserialize_drops_comments(on_disk) {
 			// key the confirmation on the DESTINATION path AND the model: a snapshot alone would let
 			// a Save As to a different commented file (or the original) match a prior warning's
@@ -1275,6 +1287,8 @@ fn (mut app App) save_project() {
 	app.dirty = false
 	app.saved_at = time.ticks()
 	app.reserialize_confirm = '' // the file was just rewritten (comments gone); re-warn if reopened
+	app.proj_disk = os.read_file(path) or { '' } // what a later Save compares the file against
+	app.external_confirm = ''
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
 }

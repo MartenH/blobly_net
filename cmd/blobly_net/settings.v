@@ -140,8 +140,8 @@ fn prefs_lock(file string) bool {
 		os.mkdir(dir) or {
 			if os.exists(dir) {
 				age := time.now().unix() - os.file_last_mod_unix(dir)
-				owner := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int()
-				if age > 10 && (owner == 0 || !process_alive(owner)) {
+				owner, live := lock_owner(dir)
+				if age > 10 && (owner == 0 || !live) {
 					// Reclaimed by RENAMING it aside first — one atomic step, so a holder that
 					// publishes its pid late writes into a directory that is no longer the lock
 					// (its write or read-back fails and it does not take the lock), and a
@@ -150,7 +150,8 @@ fn prefs_lock(file string) bool {
 					// publishing.
 					if owner == 0 {
 						time.sleep(200 * time.millisecond)
-						if (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int() != 0 {
+						owner2, _ := lock_owner(dir)
+						if owner2 != 0 {
 							continue
 						}
 					}
@@ -173,12 +174,15 @@ fn prefs_lock(file string) bool {
 		// own publication (codex #307 r18, r20).
 		pidfile := os.join_path(dir, 'pid')
 		mine := os.join_path(dir, 'pid.' + me.str())
-		os.write_file(mine, me.str()) or { continue }
+		// pid AND the process's start token: a pid the OS reuses after a crash would otherwise
+		// read as a live holder for as long as the unrelated process lived (codex #307 r21)
+		os.write_file(mine, me.str() + ' ' + process_token(me)) or { continue }
 		if !claim_file(mine, pidfile) {
 			os.rm(mine) or {}
 			continue
 		}
-		if (os.read_file(pidfile) or { '' }).trim_space().int() != me {
+		back, _ := lock_owner(dir)
+		if back != me {
 			continue
 		}
 		return true
@@ -186,9 +190,24 @@ fn prefs_lock(file string) bool {
 	return false
 }
 
+// lock_owner reads `<lock>/pid` — `<pid> <token>` — and says whose the lock is and whether that
+// process is still the one that took it: alive, and started when the token says (a token the
+// platform cannot give is ''). (0, false) for an ownerless lock.
+fn lock_owner(dir string) (int, bool) {
+	line := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space()
+	parts := line.split(' ')
+	pid := parts[0].int()
+	if pid == 0 {
+		return 0, false
+	}
+	token := if parts.len > 1 { parts[1] } else { '' }
+	alive := process_alive(pid) && (token == '' || process_token(pid) == token)
+	return pid, alive
+}
+
 fn prefs_unlock(file string) {
 	dir := file + '.lock'
-	owner := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int()
+	owner, _ := lock_owner(dir)
 	if owner != os.getpid() {
 		return
 	}

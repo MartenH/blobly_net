@@ -149,3 +149,18 @@ fn claim_file(src string, dst string) bool {
 	os.rm(src) or {}
 	return true
 }
+
+// process_token is what tells one incarnation of a pid from the next: the process's start
+// time in clock ticks since boot (field 22 of /proc/<pid>/stat), or '' where /proc is not
+// there (which makes the pid the whole identity, as before).
+fn process_token(pid int) string {
+	stat := os.read_file('/proc/${pid}/stat') or { return '' }
+	// the command name in field 2 is parenthesised and may hold spaces: split after its close
+	rest := stat.all_after_last(') ')
+	fields := rest.split(' ')
+	// state is field 3, so starttime (field 22) is index 19 here
+	if fields.len < 20 {
+		return ''
+	}
+	return fields[19]
+}

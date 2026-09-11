@@ -76,7 +76,7 @@ fn (mut tf TextFile) load(path string) LoadOutcome {
 }
 
 // stale reports whether the loaded file has changed on disk since it was read — asked at most
-// once a second, since a stat per frame is a syscall per frame for every open editor.
+// once a second, since a read per frame is a syscall and a copy per frame for every open editor.
 fn (mut tf TextFile) stale() bool {
 	if tf.loaded == '' {
 		return false
@@ -86,7 +86,10 @@ fn (mut tf TextFile) stale() bool {
 		return false
 	}
 	tf.seen = now
-	return os.file_last_mod_unix(tf.loaded) != tf.mtime
+	// by CONTENT, like write: a rewrite inside the same second keeps the stamp (codex #307
+	// r21); a file that cannot be read is stale too, and load says why
+	now_txt := os.read_file(tf.loaded) or { return true }
+	return now_txt != tf.orig
 }
 
 // invalidate drops the cached text, so the next load re-reads it. Called wherever the file or

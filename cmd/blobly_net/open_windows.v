@@ -9,6 +9,7 @@ import os
 fn C.ShellExecuteW(hwnd voidptr, op &u16, file &u16, params &u16, dir &u16, show int) voidptr
 fn C.MoveFileExW(src &u16, dst &u16, flags u32) int
 fn C.OpenProcess(access u32, inherit int, pid u32) voidptr
+fn C.GetProcessTimes(h voidptr, creation voidptr, exit voidptr, kernel voidptr, user voidptr) int
 
 // system_open opens `path` with whatever the desktop associates with it — ShellExecute's
 // "open", with its verdict CHECKED: a return above 32 is a launch, anything else is why not.
@@ -110,4 +111,24 @@ fn process_alive(pid int) bool {
 // ownership is published by (settings.v).
 fn claim_file(src string, dst string) bool {
 	return C.MoveFileExW(src.to_wide(), dst.to_wide(), u32(8)) != 0 // MOVEFILE_WRITE_THROUGH only
+}
+
+// process_token is what tells one incarnation of a pid from the next: the process's creation
+// time (a FILETIME, as one number), or '' when it cannot be read.
+fn process_token(pid int) string {
+	h := C.OpenProcess(u32(0x1000), 0, u32(pid))
+	if h == unsafe { nil } {
+		return ''
+	}
+	defer {
+		C.CloseHandle(h)
+	}
+	mut c := [2]u32{}
+	mut e := [2]u32{}
+	mut k := [2]u32{}
+	mut u := [2]u32{}
+	if C.GetProcessTimes(h, &c[0], &e[0], &k[0], &u[0]) == 0 {
+		return ''
+	}
+	return (u64(c[1]) << 32 | u64(c[0])).str()
 }
