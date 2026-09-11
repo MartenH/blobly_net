@@ -59,7 +59,8 @@ fn (mut app App) open_browser(target string) {
 	}
 	app.fb_roots = fs_roots()
 	app.fb_roots << wsl_roots()
-	app.fb_root_lbl = app.fb_roots.map(root_label(it) + '##root' + it) // once, not per frame
+	app.fb_root_lbl = ['drive…'] // the dropdown's items, built once: a placeholder, then the roots
+	app.fb_root_lbl << app.fb_roots.map(root_label(it))
 	app.fb_enter(os.abs_path(dir))
 	initname := if app.fb_save && app.proj_path != '' { os.file_name(app.proj_path) } else { '' }
 	app.fb_name_buf = mkbuf(initname, 128)
@@ -231,7 +232,8 @@ fn draw_filebrowser(mut app App) {
 	}
 	// The folder, typed: Enter SUBMITS it (input_text_enter — not "deactivated after edit",
 	// which fires on a click aimed at the list and would navigate under it), or Go.
-	vgui.set_next_item_width(vgui.content_avail_w() - 48 * sc)
+	// the field takes what the button beside it leaves: 'Open path' plus its padding
+	vgui.set_next_item_width(vgui.content_avail_w() - 96 * sc)
 	mut jump := vgui.input_text_enter('##fbpath', mut app.fb_path_buf)
 	vgui.same_line()
 	if vgui.small_button('Open path') {
@@ -267,15 +269,23 @@ fn draw_filebrowser(mut app App) {
 	filt := if app.fb_ext.len > 0 { '(' + app.fb_ext.map('*' + it).join(' ') + ')' } else { '' }
 	vgui.same_line()
 	vgui.text_dim(filt)
-	// The drive row (#306): a drive, or a WSL distribution, from the start — not `..` until the
-	// root and then once more. Read at open (fb_roots); only where roots are drives.
+	// The drive dropdown (#306): a drive, or a WSL distribution, from the start — not `..` until
+	// the root and then once more. Read at open (fb_roots); only where roots are drives. It shows
+	// the root the folder is under, and picking another enters it.
 	if drive_roots && app.fb_roots.len > 0 {
-		vgui.text_dim('drives:')
+		mut cur := 0 // item 0 is the placeholder: no listed root holds this folder
+		low := app.fb_dir.to_lower()
 		for i, r in app.fb_roots {
-			vgui.same_line()
-			if vgui.small_button(app.fb_root_lbl[i]) {
-				app.fb_enter(r)
+			if low.starts_with(r.to_lower()) {
+				cur = i + 1
+				break
 			}
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(200 * sc)
+		pick := vgui.combo('##fb_root', app.fb_root_lbl, cur)
+		if pick != cur && pick > 0 {
+			app.fb_enter(app.fb_roots[pick - 1])
 		}
 	}
 	vgui.separator()

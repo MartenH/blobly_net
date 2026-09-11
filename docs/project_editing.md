@@ -304,7 +304,7 @@ a click **selects** a row, a double click **enters** a folder or **accepts** a f
 or the Open button act on the selection the same way. (It used to enter on a single click, so a
 hand that double-clicked landed its second click in the folder it had just entered.) The path
 field at the top takes a typed folder or file — Enter or **Open path**. On Windows a **drive
-row** offers every drive (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
+dropdown** offers every drive (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
 `roots_windows.v` / `roots_nix.v`) and every WSL distribution (`wsl: Ubuntu`, entering
 `\\wsl.localhost\Ubuntu\`; the names come from the registry, `wsl_roots`) from the start
 (#306); `.. up` from a drive root shows the same list as a view. Paths under a share are joined
