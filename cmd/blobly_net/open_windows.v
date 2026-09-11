@@ -48,13 +48,30 @@ fn shell_execute(op &u16, file string, params string) int {
 }
 
 // quote_arg spells one argument the way CommandLineToArgv reads it back: quoted when it has a
-// space, an inner quote escaped.
+// space or a quote, with the rule that a run of backslashes BEFORE a quote (an inner one, or
+// the closing one) is doubled, and a backslash elsewhere left alone — `C:\Editor Data\` must
+// not end in a backslash that escapes its own closing quote (codex #307 r3).
 fn quote_arg(a string) string {
 	if a == '' {
 		return '""'
 	}
-	if !a.contains(' ') && !a.contains('"') {
+	if !a.contains(' ') && !a.contains('"') && !a.contains('\t') {
 		return a
 	}
-	return '"' + a.replace('"', '\\"') + '"'
+	mut out := '"'
+	mut bs := 0
+	for c in a {
+		if c == `\\` {
+			bs++
+			continue
+		}
+		if c == `"` {
+			out += '\\'.repeat(bs * 2 + 1) + '"'
+		} else {
+			out += '\\'.repeat(bs) + c.ascii_str()
+		}
+		bs = 0
+	}
+	out += '\\'.repeat(bs * 2) + '"'
+	return out
 }

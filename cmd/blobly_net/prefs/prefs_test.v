@@ -72,3 +72,12 @@ fn test_a_newer_builds_settings_survive_an_older_builds_save() {
 	// a top-level line this build owns is NOT kept twice
 	assert p.serialize().count('ui_scale') == 1
 }
+
+fn test_a_quoted_spelling_of_a_known_key_is_not_kept_as_unknown() {
+	p := parse('"editor" = "vi"\n\'ui_scale\' = 1.5\n')!
+	assert p.editor == 'vi'
+	assert p.ui_scale == 1.5
+	assert p.unknown == []
+	// and so the rewrite has each key once
+	assert p.serialize().count('editor') == 1
+}

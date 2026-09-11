@@ -74,7 +74,8 @@ fn unknown_lines(text string) []string {
 			if line == '' || line.starts_with('#') {
 				continue
 			}
-			key := line.all_before('=').trim_space()
+			// the parsed identity, not the raw spelling: `"editor" = …` is editor (codex #307 r3)
+			key := line.all_before('=').trim_space().trim('"\'')
 			if key !in known {
 				out << raw
 			}

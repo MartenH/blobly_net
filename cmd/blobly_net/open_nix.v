@@ -2,6 +2,15 @@ module main
 
 import os
 
+#include <unistd.h>
+#include <sys/wait.h>
+
+fn C.fork() int
+fn C.execv(path &char, argv &&char) int
+fn C._exit(code int)
+fn C.waitpid(pid int, status &int, options int) int
+fn C.close(fd int) int
+
 // is_wsl reports whether we're under WSL, where no Linux browser or editor is around and the
 // Windows side has to open the file.
 fn is_wsl() bool {
@@ -40,28 +49,49 @@ fn system_open(path string, report fn (string)) (bool, string) {
 	return true, 'opened ${path} (xdg-open)'
 }
 
-// launch_detached runs `argv` without waiting for it. The executable is resolved FIRST, so a
+// launch_detached runs `argv` without waiting for it. Its own fork/exec rather than
+// os.new_process, for two things vlib's does not do: the executable is resolved FIRST, so a
 // command that does not exist is an error here and not an exec failure in a forked child
-// (which vlib reports by printing in the child and exiting it — the parent's Process never
-// learns). The child is reaped on its own thread: wait() is where a zombie ends and the exit
-// code becomes known, and a nonzero one reaches `report`. What this cannot do: the child
-// inherits every descriptor the GUI holds (fork, no close-on-exec anywhere in vlib's sockets),
-// so an editor left open across Stop keeps a copy of the run's sockets — a CANsub channel,
-// which admits one client, is refused to the next Start until the editor exits.
+// (which vlib reports by printing in the child and exiting it — the parent never learns); and
+// the child CLOSES every descriptor above stderr before exec — vlib's sockets are not
+// close-on-exec, so an editor left open across Stop would otherwise keep a copy of the run's
+// sockets, and a CANsub channel, which admits one client, would refuse the next Start until
+// the editor exited (codex #307 r3). The child is reaped on its own thread: waitpid is where a
+// zombie ends and the exit code becomes known, and a nonzero one reaches `report`.
 fn launch_detached(argv []string, report fn (string)) ! {
 	exe := os.find_abs_path_of_executable(argv[0]) or {
 		return error('${argv[0]}: not found on PATH — set the command in Settings ▸ Preferences…')
 	}
-	mut p := os.new_process(exe)
-	p.set_args(argv[1..])
-	p.run()
-	spawn reap(mut p, argv[0], report)
+	mut cargs := []&char{cap: argv.len + 1}
+	cargs << exe.str
+	for a in argv[1..] {
+		cargs << a.str
+	}
+	cargs << &char(unsafe { nil })
+	pid := C.fork()
+	if pid < 0 {
+		return error('fork failed: ${os.posix_get_error_msg(C.errno)}')
+	}
+	if pid == 0 {
+		// The child: only async-signal-safe calls between fork and exec — no allocation, no
+		// locks (the GUI's other threads hold them at this instant, and the child has copies).
+		for fd := 3; fd < 1024; fd++ {
+			C.close(fd)
+		}
+		C.execv(exe.str, unsafe { &&char(cargs.data) })
+		C._exit(127)
+	}
+	spawn reap(pid, argv[0], report)
 }
 
-fn reap(mut p os.Process, name string, report fn (string)) {
-	p.wait()
-	if p.code != 0 {
-		report('${name} exited with ${p.code}')
+fn reap(pid int, name string, report fn (string)) {
+	mut status := 0
+	if C.waitpid(pid, &status, 0) < 0 {
+		return
 	}
-	p.close()
+	// WEXITSTATUS without the macro: the exit code sits in bits 8..15 of a normal exit.
+	code := (status >> 8) & 0xff
+	if code != 0 {
+		report('${name} exited with ${code}')
+	}
 }

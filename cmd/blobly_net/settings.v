@@ -78,7 +78,10 @@ fn (mut app App) open_prefs() {
 	if app.show_prefs {
 		return
 	}
-	app.prefs_editor_buf = mkbuf(app.prefs.editor, 256)
+	// room for the command it holds plus editing, not a fixed size that a long one is cut to
+	// and then saved back cut (codex #307 r3)
+	cap := if app.prefs.editor.len * 2 > 256 { app.prefs.editor.len * 2 } else { 256 }
+	app.prefs_editor_buf = mkbuf(app.prefs.editor, cap)
 	app.prefs_caption = 'UI scale ${int(app.prefs.ui_scale * 100 + 0.5)}% (Settings menu) · file: ${app.prefs_file}'
 	app.show_prefs = true
 }
