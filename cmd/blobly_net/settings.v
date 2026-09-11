@@ -52,6 +52,9 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
 	if app.prefs_broken && !from_dialog {
 		return
 	}
+	// The directory first: the lock is a directory INSIDE it, and on a fresh profile every
+	// save was refused as if another instance held a lock nothing could create (codex #307 r8).
+	os.mkdir_all(os.dir(app.prefs_file)) or {}
 	if !prefs_lock(app.prefs_file) {
 		app.notify('settings not saved: another instance holds ${app.prefs_file}.lock')
 		return
@@ -62,8 +65,13 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
 	mut base := prefs.Prefs{}
 	if txt := os.read_file(app.prefs_file) {
 		if now := prefs.parse(txt) {
-			if now.foreign.len > 0 && !from_dialog {
-				return
+			if now.foreign.len > 0 {
+				// Discovered at save — added by a newer instance or by hand since start: kept, so
+				// the dialog can say what its Save would drop (codex #307 r8).
+				app.prefs.foreign = now.foreign
+				if !from_dialog {
+					return
+				}
 			}
 			base = now
 		} else if !from_dialog {
@@ -73,7 +81,6 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
 		return
 	}
 	merged := prefs.merge(base, app.prefs, want)
-	os.mkdir_all(os.dir(app.prefs_file)) or {}
 	os.write_file(app.prefs_file, merged.serialize()) or {
 		app.notify('settings not saved (${app.prefs_file}): ${err.msg()}')
 		return

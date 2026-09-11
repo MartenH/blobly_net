@@ -676,6 +676,15 @@ fn draw_config(mut app App) {
 		app.cfg_tab = 1
 		app.load_cfg_text()
 	}
+	// Close on the tab row, so BOTH tabs carry it — a dialog's Close is not the X alone (#306);
+	// on the Buses tab it also folds unsaved bus edits into the model, as the X does.
+	vgui.same_line()
+	if vgui.button('Close') {
+		app.show_config = false
+		if app.dirty {
+			app.apply_edits() // fold unsaved edits into the model + runtime view on close
+		}
+	}
 	vgui.separator()
 	if app.cfg_tab == 1 {
 		app.cfg_file_visible = true // drawn this frame — see save_what_is_being_edited
@@ -692,13 +701,6 @@ fn draw_config(mut app App) {
 		app.refresh_discovery()
 		app.start_cansub_browse()
 		app.disc_open = true
-	}
-	vgui.same_line()
-	if vgui.button('Close') {
-		app.show_config = false
-		if app.dirty {
-			app.apply_edits() // fold unsaved edits into the model + runtime view on close
-		}
 	}
 	if app.dirty || app.cfg_file.dirty {
 		vgui.same_line()
