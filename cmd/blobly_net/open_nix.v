@@ -30,7 +30,23 @@ fn is_wsl() bool {
 fn system_open(path string, report fn (string)) (bool, string) {
 	if is_wsl() {
 		if exe := os.find_abs_path_of_executable('wslview') {
-			launch_detached([exe, path], report) or { return false, err.msg() }
+			// wslview's verdict comes from the reaper thread; a failure there falls back to
+			// explorer.exe from that thread (codex #307 r18), so a broken wslu is not the end.
+			fallback := fn [path, report] (msg string) {
+				if exe2 := os.find_abs_path_of_executable('explorer.exe') {
+					win := os.execute('wslpath -w ' + os.quoted_path(path))
+					if win.exit_code == 0 {
+						launch_detached([exe2, win.output.trim_space()], report) or {
+							report('${msg}; explorer.exe: ${err.msg()}')
+							return
+						}
+						report('${msg}; opened through explorer.exe instead')
+						return
+					}
+				}
+				report(msg)
+			}
+			launch_detached([exe, path], fallback) or { return false, err.msg() }
 			return true, 'opened ${path} on the Windows side (wslview)'
 		}
 		if exe := os.find_abs_path_of_executable('explorer.exe') {

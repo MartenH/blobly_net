@@ -134,7 +134,15 @@ fn prefs_lock(file string) bool {
 			if os.exists(dir) {
 				age := time.now().unix() - os.file_last_mod_unix(dir)
 				owner := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int()
+				// an OWNERLESS old lock is taken only after a further look, since the holder may
+				// be between mkdir and publishing its pid; a dead owner's at once
 				if age > 10 && (owner == 0 || !process_alive(owner)) {
+					if owner == 0 {
+						time.sleep(200 * time.millisecond)
+						if (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int() != 0 {
+							continue
+						}
+					}
 					os.rm(os.join_path(dir, 'pid')) or {}
 					os.rmdir(dir) or {}
 					continue
@@ -143,7 +151,18 @@ fn prefs_lock(file string) bool {
 			time.sleep(20 * time.millisecond)
 			continue
 		}
-		os.write_file(os.join_path(dir, 'pid'), me.str()) or {}
+		// Ownership is PUBLISHED and read back: a taker that found this lock ownerless (the
+		// holder suspended between mkdir and here for ten seconds) may have removed it and
+		// published its own pid in a lock of the same name — then this process does not hold
+		// it, whatever its mkdir said (codex #307 r18).
+		pidfile := os.join_path(dir, 'pid')
+		if os.exists(pidfile) {
+			continue
+		}
+		os.write_file(pidfile, me.str()) or { continue }
+		if (os.read_file(pidfile) or { '' }).trim_space().int() != me {
+			continue
+		}
 		return true
 	}
 	return false

@@ -107,9 +107,15 @@ fn (mut tf TextFile) write() ! {
 	// inside that second would be overwritten unseen (codex #307 r15). Refused once — the strip
 	// has the warning by the next frame — and a Save pressed with the warning showing overwrites.
 	// By CONTENT, not by the second-resolution mtime: an external save inside the same second
-	// as the load is invisible to the stamp (codex #307 r16). A file that cannot be read now is
-	// not a change this can judge; the write proceeds.
-	now_txt := os.read_file(tf.loaded) or { tf.orig }
+	// as the load is invisible to the stamp (codex #307 r16). A file that cannot be read now —
+	// moved, deleted, locked — is a change too, said once; a second Save recreates it (r18).
+	now_txt := os.read_file(tf.loaded) or {
+		if !tf.disk_changed {
+			tf.disk_changed = true
+			return error('${tf.loaded} cannot be read now (moved or deleted?) — Save again recreates it')
+		}
+		tf.orig
+	}
 	if !tf.disk_changed && now_txt != tf.orig {
 		tf.disk_changed = true
 		return error('changed on disk since it was loaded — Discard edits takes the file, Save again overwrites it')
