@@ -398,9 +398,11 @@ int vgui_add_font_merge(const char* path, float size_px) {
 // directory its settings live in, so the layout and the preferences have ONE home (#306).
 // Before the first frame: ImGui reads the file at the first NewFrame.
 static std::string g_ini_path;
+// An empty path disables the file both ways: nothing is read, nothing is written -- a headless
+// render must not depend on a layout an earlier run left in the working directory.
 void vgui_set_ini_path(const char* path) {
     g_ini_path = path;
-    ImGui::GetIO().IniFilename = g_ini_path.c_str();
+    ImGui::GetIO().IniFilename = g_ini_path.empty() ? nullptr : g_ini_path.c_str();
 }
 // vgui_wake posts an empty event to unblock glfwWaitEvents from ANOTHER thread — the
 // event-driven equivalent of gui's queue_command. glfwPostEmptyEvent is one of the few

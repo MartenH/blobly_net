@@ -59,8 +59,21 @@ fn unknown_lines(text string) []string {
 	mut out := []string{}
 	mut in_ours := true // the top level, until a table header
 	mut keep_table := false
+	mut keep_line := false // inside a multi-line string: the line goes where its opener went
+	mut in_ml := false
 	for raw in text.split_into_lines() {
 		line := raw.trim_space()
+		if in_ml {
+			// A `[section]` inside `"""…"""` is text, not a header (codex #307 r5). The
+			// delimiter count is what closes it; an odd count on a line toggles.
+			if keep_line {
+				out << raw
+			}
+			if ml_toggles(line) {
+				in_ml = false
+			}
+			continue
+		}
 		if line.starts_with('[') {
 			// the parsed identity: `["panes"]` is [panes] (codex #307 r4)
 			name := line.all_after('[').all_before(']').trim_space().trim('"\'')
@@ -71,22 +84,48 @@ fn unknown_lines(text string) []string {
 			}
 			continue
 		}
+		mut kept := false
 		if in_ours {
-			if line == '' || line.starts_with('#') {
-				continue
+			if line != '' && !line.starts_with('#') {
+				// the parsed identity, not the raw spelling: `"editor" = …` is editor (codex #307 r3)
+				key := line.all_before('=').trim_space().trim('"\'')
+				if key !in known {
+					out << raw
+					kept = true
+				}
 			}
-			// the parsed identity, not the raw spelling: `"editor" = …` is editor (codex #307 r3)
-			key := line.all_before('=').trim_space().trim('"\'')
-			if key !in known {
-				out << raw
-			}
-			continue
-		}
-		if keep_table {
+		} else if keep_table {
 			out << raw
+			kept = true
+		}
+		if ml_toggles(line) {
+			in_ml = true
+			keep_line = kept
 		}
 	}
 	return out
+}
+
+// first_header is the index of the first table header among `lines` — one outside a
+// multi-line string, which is the same reading unknown_lines gave them — or lines.len.
+fn first_header(lines []string) int {
+	mut in_ml := false
+	for i, raw in lines {
+		line := raw.trim_space()
+		if !in_ml && line.starts_with('[') {
+			return i
+		}
+		if ml_toggles(line) {
+			in_ml = !in_ml
+		}
+	}
+	return lines.len
+}
+
+// ml_toggles reports whether `line` opens or closes a multi-line string: an odd number of
+// triple-double-quote or triple-single-quote delimiters on it.
+fn ml_toggles(line string) bool {
+	return (line.count('"""') + line.count("'" + "''")) % 2 == 1
 }
 
 // clamp_scale keeps a UI scale inside the range the Settings menu offers (75%..175%), with room
@@ -108,13 +147,7 @@ pub fn (p Prefs) serialize() string {
 	mut out := 'editor = "${toml_escape(p.editor)}"\nui_scale = ${p.ui_scale:.2f}\n'
 	// Unknown TOP-LEVEL lines go before any table, or they would land inside [panes]; unknown
 	// tables go after it. The list is in file order, and a top-level line cannot follow a header.
-	mut first_table := p.unknown.len
-	for i, l in p.unknown {
-		if l.trim_space().starts_with('[') {
-			first_table = i
-			break
-		}
-	}
+	first_table := first_header(p.unknown)
 	for l in p.unknown[..first_table] {
 		out += l + '\n'
 	}

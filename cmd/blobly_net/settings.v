@@ -18,7 +18,15 @@ fn prefs_path() string {
 // (self-review on #307); the Preferences dialog's Save is the one that may.
 fn (mut app App) load_prefs() {
 	app.prefs_file = prefs_path()
-	txt := os.read_file(app.prefs_file) or { return }
+	txt := os.read_file(app.prefs_file) or {
+		if os.exists(app.prefs_file) {
+			// There, and unreadable: not the same as absent. Marked broken, so the exit save
+			// cannot open it for writing and truncate what it holds (codex #307 r5).
+			app.elog('settings: ${app.prefs_file}: ${err.msg()} — using defaults; not overwritten')
+			app.prefs_broken = true
+		}
+		return
+	}
 	app.prefs = prefs.parse(txt) or {
 		app.elog('settings: ${app.prefs_file}: ${err.msg()} — using defaults; fix or delete the file, or Save from Settings ▸ Preferences… to replace it')
 		app.prefs_broken = true

@@ -93,3 +93,15 @@ fn test_a_quoted_panes_header_and_a_quoted_pane_name_round_trip() {
 	q := parse(out)!
 	assert q.panes['DBC editor'] == 240
 }
+
+fn test_a_bracket_inside_a_multiline_string_is_not_a_header() {
+	src := 'future = """\n[section]\nx = 1\n"""\nui_scale = 1.5\n\n[panes]\np = 9\n'
+	p := parse(src)!
+	assert p.ui_scale == 1.5
+	assert p.panes['p'] == 9
+	assert p.unknown == ['future = """', '[section]', 'x = 1', '"""']
+	// written back, the string is whole and [panes] is outside it
+	q := parse(p.serialize())!
+	assert q.unknown == p.unknown
+	assert q.panes['p'] == 9
+}

@@ -765,7 +765,7 @@ pub fn add_font_merge(path string, size_px f32) bool {
 }
 
 // set_ini_path is where ImGui keeps window rects and the dock tree (default: imgui.ini in the
-// working directory). Call right after init, before the first frame.
+// working directory); '' disables the file both ways. Call right after init, before the first frame.
 pub fn set_ini_path(path string) {
 	C.vgui_set_ini_path(path.str)
 }
