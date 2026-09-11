@@ -126,6 +126,56 @@ fn (mut app App) reclassify_prefs_file() bool {
 	return now.foreign.len > 0
 }
 
+// save_layout writes ImGui's layout file, which the APP owns rather than ImGui (#308): with
+// ImGui's own writer disabled (vgui.set_ini_path) nothing else opens the file, so it goes out
+// through the same temp-and-rename settings.toml uses and a half-written layout can never be
+// what the next start reads — ImGui answers an unreadable one by falling back to the default
+// layout, silently, which is the failure this closes. `force` is the exit save: ImGui raises its
+// flag at most every 5 s, so a change in the last seconds of a run has not asked yet.
+//
+// Coordination is NOT bought back. Two instances of one user still race and the last writer
+// still wins, as for settings.toml (#309) — a lost LAYOUT, never a corrupt file.
+fn (mut app App) save_layout(force bool) {
+	if app.layout_file == '' || !(force || vgui.ini_dirty()) {
+		return
+	}
+	data := vgui.ini_data()
+	// cleared whatever happens below: a disk that refuses must raise one warning, not one every
+	// settling period for the rest of the run
+	vgui.ini_saved()
+	tmp := '${app.layout_file}.${os.getpid()}.tmp'
+	os.write_file(tmp, data) or {
+		app.warn_layout('${tmp}: ${err.msg()}')
+		return
+	}
+	replace_file(tmp, app.layout_file) or {
+		os.rm(tmp) or {}
+		app.warn_layout('${app.layout_file}: ${err.msg()}')
+	}
+}
+
+// warn_layout says a layout write failed, ONCE per run, through BOTH sinks — they do not
+// overlap, and this message needs each for a different moment. `notify` is the in-app Log, the
+// only one an operator sees while the window is up; `elog` is stderr and the session file, the
+// only one left at the EXIT save, which runs after the last frame — a notification posted there
+// is never drawn, so on its own it would be exactly the silent loss this warns about (codex
+// round 1 on #308).
+//
+// Once, because the flag settles every few seconds: a config directory that is full or
+// read-only would otherwise put a line in the Log every settling period for the rest of the run,
+// and the first says everything the later ones would. A run whose periodic saves worked and
+// whose exit save fails is the case the pairing is for, and it is not latched shut by anything
+// before it.
+fn (mut app App) warn_layout(what string) {
+	if app.layout_warned {
+		return
+	}
+	app.layout_warned = true
+	msg := 'layout not saved (${what}) — the window arrangement will not carry to the next start'
+	app.notify(msg)
+	app.elog(msg)
+}
+
 // collect_panes folds what THIS session dragged over the panes it loaded, into what a save
 // writes. Every save, not just the exit one: a drag followed by a scale change used to leave
 // the divider unwritten, because the successful mid-session save cleared what the exit save

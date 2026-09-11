@@ -507,11 +507,16 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   the merged fallback face (`merge_symbol_font`: Segoe UI Symbol / DejaVu Sans), which is what
   made `↻` and `⚠` draw as `?` before. **Settings** (`settings.v`, `prefs`): one per-user home —
   `settings.toml` (editor command, UI scale, dragged panes) and ImGui's `imgui.ini` beside it.
-  **Both are last-writer-wins between two instances of one user** (#308, #309): a save writes the
-  whole file from what that instance holds — through a temp file and `replace_file`, so a write
-  that fails part-way never truncates the file it replaces. `settings.toml` had a field-by-field
-  merge under a hand-rolled lock directory instead, 310 lines and 27 review rounds for three
-  preferences, while the larger file beside it had the cheap policy all along. The exit save
+  **Both are last-writer-wins between two instances of one user** (#308, #309), and **the app
+  writes both**: `save_prefs` and `save_layout` put the whole file out through a temp file and
+  `replace_file`, so a write that fails part-way never truncates the file it replaces. ImGui's
+  own writer is left disabled (`IniFilename` null; `set_ini_path` loads, `vgui.ini_dirty` /
+  `ini_data` / `ini_saved` are the save hook) — it is fopen-write-fclose over the live path, and
+  ImGui answers an unreadable layout by silently falling back to the default one, so a torn file
+  costs an arrangement with nothing said. Losing one to the last writer is the POLICY; losing one
+  to a torn file was the defect. `settings.toml` had a field-by-field merge under a hand-rolled
+  lock directory instead, 310 lines and 27 review rounds for three preferences, while the larger
+  file beside it had no protection at all. The exit save
   folds this session's DRAGGED panes over the ones it loaded (`prefs.keep_panes`), which is what
   keeps a one-divider session from erasing the other five. A file that will not
   parse, cannot be read, or carries keys this build does not know is never rewritten by an
