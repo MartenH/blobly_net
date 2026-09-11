@@ -299,8 +299,8 @@ fn probe_lock_end(t0 i64) {
 // whole time because the gate is still open — those are already in the histogram. Closing to the
 // nominal endpoint would therefore be closing to an instant the histogram has passed: `prev` is
 // normally GREATER than it, and the interval would be silently skipped every single run. It was,
-// until an instrumented run printed nothing (#302). probe_run_s is measured from the same side
-// of the close, so the divisor and the coverage agree.
+// until an instrumented run printed nothing (#302). probe_run_s is measured to this same
+// instant, so the divisor and the coverage describe one interval.
 fn close_final_hiccup_interval(closed_ns u64, closed_gc u32) {
 	prev := probe_hic_prev_ns
 	// A sampler admitted just before the close can publish just after it; that interval is
@@ -316,6 +316,21 @@ fn close_final_hiccup_interval(closed_ns u64, closed_gc u32) {
 	// since a collection during the inflight drain is outside this interval.
 	if b > 0 && closed_gc != probe_hic_gprev {
 		probe_hic_gc++
+	}
+	// AND THE LIVE SET WITH IT, as the sampler does for every other interval. Without this a run
+	// whose only observed collection is the endpoint one reports `hic_with_gc=1` beside
+	// `collections_sampled=0` and no live-after-GC figures at all — a summary disagreeing with
+	// itself about whether a collection happened (codex round 3 on #302). Past the same ten
+	// seconds the sampler waits, so a startup collection is still not sampled.
+	if closed_gc != probe_hic_gprev && closed_ns - probe_begin_ns > 10 * u64(time.second) {
+		l := live_mb()
+		if probe_live_n == 0 || l < probe_live_min_mb {
+			probe_live_min_mb = l
+		}
+		if l > probe_live_max_mb {
+			probe_live_max_mb = l
+		}
+		probe_live_n++
 	}
 	if u64(ms) > probe_hic_max_ms {
 		probe_hic_max_ms = u64(ms)
@@ -489,17 +504,25 @@ fn probe_driver(secs int) {
 	// (round 5). Then every writer that passed the gate is waited for — a lock waiter that
 	// entered before the flag dropped adds its wait when the lock comes, which a fixed grace
 	// cannot bound (round 6) — and only then is anything read.
-	// THE GATE IS THE ENDPOINT, and there is no second word saying so. Publishing a close
-	// timestamp BEFORE the gate was the first attempt, and it declared an endpoint that
-	// admission did not yet honour: preempted between the two stores, the driver let replay,
-	// emission, lock-wait and allocation events in after the instant it had already called the
-	// end (codex round 2 on #302). Taken immediately AFTER, every admitted event is before it by
-	// construction, and every writer keeps asking the one question it always asked.
-	stdatomic.store_u64(&probe_gate, 0)
-	closed_ns := time.sys_mono_now()
-	// The collection count with it, not after the drain: draining an admitted writer takes time,
-	// and a collection in that window is outside the interval about to be bucketed (round 1).
+	// THE ENDPOINT IS READ IMMEDIATELY BEFORE THE GATE CLOSES, and that ORDER IS A DECISION, not
+	// an oversight. A clock read and a store cannot be made atomic, so one of two errors is
+	// unavoidable if the driver is preempted between them, and they are not the same size:
+	//
+	//   read AFTER the store  -> the delay lands INSIDE the final hiccup interval, and a
+	//                            scheduling stall that happened after the run is reported as a
+	//                            stall during it. A false entry in the histogram whose entire
+	//                            job is to find stalls.
+	//   read BEFORE the store -> a handful of events admitted in that window are counted after
+	//                            the declared endpoint. A rate off by a rounding error.
+	//
+	// The second is the one to take. This was ordered the other way for one round (codex round 2
+	// on #302, correctly describing the admission window) and round 3 found the larger error it
+	// created; corrupting the primary output to tidy a rounding error is the wrong trade, and
+	// further rounds on the sub-millisecond fuzziness of an endpoint that cannot be atomic will
+	// be answered with this comment.
 	closed_gc := gc_count()
+	closed_ns := time.sys_mono_now()
+	stdatomic.store_u64(&probe_gate, 0)
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
 	}
@@ -512,7 +535,11 @@ fn probe_driver(secs int) {
 	// part after it was not measured.
 	close_final_hiccup_interval(closed_ns, closed_gc)
 	probe_bytes_end = alloc_total()
-	probe_run_s = f64(time.sys_mono_now() - probe_begin_ns) / 1e9
+	// TO THE SAME ENDPOINT THE HISTOGRAM CLOSES AT. Measured after the drain, an admitted writer
+	// finishing late — a lock waiter, seconds after the close — stretched the divisor while the
+	// coverage ended at closed_ns, so the summary reported a longer run than it had measured and
+	// understated every rate computed from it (codex round 3 on #302).
+	probe_run_s = f64(closed_ns - probe_begin_ns) / 1e9
 	// A run that replayed NOTHING is not a measurement, whatever start() said: a replay
 	// worker refuses after start() has returned — a reader that never came up, a recording
 	// that would not decode, a plan that kept no frames — and its refusal reaches the Log,
