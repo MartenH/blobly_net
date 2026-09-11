@@ -111,3 +111,10 @@ fn test_the_editor_command_is_split_with_quotes_and_the_file_substituted() {
 	assert editor_argv('  ', 'x') == []
 	assert editor_argv('', 'x') == []
 }
+
+fn test_pending_changes_add_up() {
+	c := Changed{
+		scale: true
+	}.plus(Changed{ editor: true })
+	assert c.scale && c.editor && !c.panes
+}

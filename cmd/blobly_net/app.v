@@ -395,9 +395,10 @@ mut:
 	show_prefs       bool
 	prefs            prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
 	prefs_editor_buf []u8
-	prefs_file       string // resolved once at load
-	prefs_caption    string // the dialog's fixed line, built at open
-	prefs_broken     bool   // the file did not parse: never overwritten except from the dialog
+	prefs_file       string        // resolved once at load
+	prefs_caption    string        // the dialog's fixed line, built at open
+	prefs_broken     bool          // the file did not parse: never overwritten except from the dialog
+	prefs_pending    prefs.Changed // what a refused or failed save still owes the file
 	cfg_bufs         []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)
 	disc_open   bool
@@ -1012,7 +1013,13 @@ fn (mut app App) rebuild_from_proj() {
 	app.dbs = []
 	app.dbs_paths = []
 	app.dbs_by_iface = map[string][]candb.Database{}
-	app.dbc_ed = DbcEd{} // selection indices go stale across a rebuild
+	// selection indices go stale across a rebuild; the dragged dividers are the operator's and
+	// stay (they are remembered across runs too, codex #307 r7)
+	app.dbc_ed = DbcEd{
+		left_w:  app.dbc_ed.left_w
+		msgs_h:  app.dbc_ed.msgs_h
+		props_h: app.dbc_ed.props_h
+	}
 	app.dbc_ed.dirty = keep_dirty.clone()
 	app.sims = []
 	app.senders = []

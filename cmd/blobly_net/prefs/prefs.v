@@ -44,6 +44,15 @@ pub:
 	panes  bool
 }
 
+// plus is both sets of changes: what a refused save left pending, and what is asked now.
+pub fn (a Changed) plus(b Changed) Changed {
+	return Changed{
+		editor: a.editor || b.editor
+		scale:  a.scale || b.scale
+		panes:  a.panes || b.panes
+	}
+}
+
 // parse reads the settings file's text. A scale outside what the Settings menu offers is
 // clamped, since a file saying 0 would hide the whole UI. Keys this build does not know are
 // listed in `foreign` — from the parsed document, so a quoted, dotted or multi-line spelling is

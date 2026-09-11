@@ -1,6 +1,7 @@
 module main
 
 import os
+import time
 import prefs
 import vgui
 
@@ -39,13 +40,24 @@ fn (mut app App) load_prefs() {
 }
 
 // save_prefs writes the fields `ch` names — the ones this instance changed — over the file AS
-// IT IS NOW (read again, merged), so a second instance closing later does not put back what the
-// first one changed (codex #307 r6). Refused, unless from the dialog, for a file that will not
-// parse, cannot be read, or carries keys this build does not know: the dialog's Save replaces
-// such a file whole, and says so. A failure to write is said, not fatal.
+// IT IS NOW (read again, merged, under the lock below), so a second instance closing later
+// does not put back what the first one changed (codex #307 r6). Refused, unless from the
+// dialog, for a file that will not parse, cannot be read, or carries keys this build does not
+// know: the dialog's Save replaces such a file whole, and says so. A refused or failed save
+// keeps its flags PENDING, so the scale picked while the file was foreign is still in the
+// dialog's Save later (r7). A failure to write is said, not fatal.
 fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
+	want := app.prefs_pending.plus(ch)
+	app.prefs_pending = want
 	if app.prefs_broken && !from_dialog {
 		return
+	}
+	if !prefs_lock(app.prefs_file) {
+		app.notify('settings not saved: another instance holds ${app.prefs_file}.lock')
+		return
+	}
+	defer {
+		prefs_unlock(app.prefs_file)
 	}
 	mut base := prefs.Prefs{}
 	if txt := os.read_file(app.prefs_file) {
@@ -60,7 +72,7 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
 	} else if os.exists(app.prefs_file) && !from_dialog {
 		return
 	}
-	merged := prefs.merge(base, app.prefs, ch)
+	merged := prefs.merge(base, app.prefs, want)
 	os.mkdir_all(os.dir(app.prefs_file)) or {}
 	os.write_file(app.prefs_file, merged.serialize()) or {
 		app.notify('settings not saved (${app.prefs_file}): ${err.msg()}')
@@ -68,6 +80,34 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
 	}
 	app.prefs_broken = false
 	app.prefs.foreign = []
+	app.prefs_pending = prefs.Changed{}
+}
+
+// prefs_lock takes `<file>.lock`, a directory, which mkdir creates for ONE caller — the shape
+// cmd/arxml2dbc publishes under. It serialises the read-merge-write across instances: two
+// saving at once could each read the same snapshot and the second write drop the first's
+// field (codex #307 r7). A lock older than ten seconds is a crashed holder's, and is taken.
+fn prefs_lock(file string) bool {
+	dir := file + '.lock'
+	for _ in 0 .. 50 {
+		os.mkdir(dir) or {
+			if os.exists(dir) {
+				age := time.now().unix() - os.file_last_mod_unix(dir)
+				if age > 10 {
+					os.rmdir(dir) or {}
+					continue
+				}
+			}
+			time.sleep(20 * time.millisecond)
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+fn prefs_unlock(file string) {
+	os.rmdir(file + '.lock') or {}
 }
 
 // apply_ui_scale is the ONE writer of the scale: the value the panels read and the font scale
