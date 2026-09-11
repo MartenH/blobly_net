@@ -405,7 +405,9 @@ mut:
 	prefs_file         string        // resolved once at load
 	prefs_caption      string        // the dialog's fixed line, built at open
 	prefs_broken       bool // the file did not parse: never overwritten except from the dialog
-	prefs_dirty        bool // this session changed a preference the file does not have yet
+	prefs_dirty        bool   // this session changed a preference the file does not have yet
+	layout_file        string // ImGui's imgui.ini, which the app writes itself (#308); '' headless
+	layout_warned      bool   // a failed layout write is said once, not every settling period
 	panes_dragged      map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
 	cfg_bufs           []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)

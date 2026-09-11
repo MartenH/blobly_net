@@ -142,6 +142,9 @@ fn C.vgui_begin_closable(&char, &int) int
 fn C.vgui_begin_dialog(&char, &int) int
 fn C.vgui_add_font_merge(&char, f32) int
 fn C.vgui_set_ini_path(&char)
+fn C.vgui_ini_dirty() int
+fn C.vgui_ini_data() &char
+fn C.vgui_ini_saved()
 fn C.vgui_set_item_tooltip(&char)
 fn C.vgui_help_marker(&char)
 fn C.vgui_end()
@@ -765,9 +768,28 @@ pub fn add_font_merge(path string, size_px f32) bool {
 }
 
 // set_ini_path is where ImGui keeps window rects and the dock tree (default: imgui.ini in the
-// working directory); '' disables the file both ways. Call right after init, before the first frame.
+// working directory); '' disables the file both ways. Call right after init, before the first
+// frame — it READS the file. The APP writes it (#308): ImGui's own writer is left disabled, so
+// ask ini_dirty each frame and write ini_data through a temp and a rename, then ini_saved.
 pub fn set_ini_path(path string) {
 	C.vgui_set_ini_path(path.str)
+}
+
+// ini_dirty reports that the layout changed and has settled — at most once every 5 s
+// (io.IniSavingRate), so asking every frame is not a write every frame.
+pub fn ini_dirty() bool {
+	return C.vgui_ini_dirty() == 1
+}
+
+// ini_data is the layout as ImGui would have written it, copied out of ImGui's own buffer.
+pub fn ini_data() string {
+	return unsafe { cstring_to_vstring(C.vgui_ini_data()) }
+}
+
+// ini_saved tells ImGui the app has dealt with the change. Call it whatever the write did, or a
+// failing disk asks again every settling period.
+pub fn ini_saved() {
+	C.vgui_ini_saved()
 }
 
 pub fn end() {
