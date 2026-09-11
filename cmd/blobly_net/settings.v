@@ -19,7 +19,8 @@ fn prefs_path() string {
 // the Preferences dialog's Save is the one that may. A file that is there but cannot be read is
 // broken too, not absent (codex #307 r5). A file that parses but carries keys this build does
 // not know (prefs.Prefs.foreign) is protected the same way, and the dialog says what its Save
-// would drop. This verdict is the only one there is: a save does not read the file again.
+// would drop. This verdict is the STARTUP one, for the Log; an automatic save classifies the
+// file again for itself (reclassify_prefs_file), since both conditions can arrive later.
 fn (mut app App) load_prefs() {
 	app.prefs_file = prefs_path()
 	txt := os.read_file(app.prefs_file) or {
@@ -50,13 +51,14 @@ fn (mut app App) load_prefs() {
 // #307 r11). The move is replace_file, which on Windows is MoveFileEx with REPLACE_EXISTING —
 // _wrename refuses an existing target.
 //
-// Refused, unless from the dialog, for a file that did not parse, could not be read, or carries
-// keys this build does not know (prefs.Prefs.foreign) — the verdict the LOAD reached, since
-// nothing re-reads the file now. The dialog's Save is the one writer that may replace such a
-// file, and it says what it drops. A failure to write is said, not fatal; the return says
-// whether the file was written.
+// Refused, unless from the dialog, for a file that does not parse, cannot be read, or carries
+// keys this build does not know (prefs.Prefs.foreign) — classified from the file AS IT IS, not
+// from the load's verdict: a newer build can write its key, and an operator can be halfway
+// through editing the file by hand, long after this instance started. The dialog's Save is the
+// one writer that may replace such a file, and it says what it drops. A failure to write is
+// said, not fatal; the return says whether the file was written.
 fn (mut app App) save_prefs(from_dialog bool) bool {
-	if !from_dialog && (app.prefs_broken || app.prefs.foreign.len > 0) {
+	if !from_dialog && app.reclassify_prefs_file() {
 		return false
 	}
 	app.collect_panes()
@@ -100,6 +102,28 @@ fn (mut app App) pane_moved(key string, stored f32, drawn_px f32, moved f32, sc 
 		app.prefs_dirty = true
 	}
 	return v
+}
+
+// reclassify_prefs_file re-reads the file and says whether an AUTOMATIC save must leave it
+// alone. It is a read, not the read-merge-write this replaced (#309): it decides refuse or
+// proceed and nothing else, so it needs no lock — a file that changes in the moment after it is
+// classified is the lost field last-writer-wins already accepts. What it protects is CONTENT,
+// which is a different question: a newer build's settings, and a hand edit in progress. It also
+// clears a startup verdict the operator has since repaired (codex #307 r26), and refreshes what
+// the dialog warns about.
+fn (mut app App) reclassify_prefs_file() bool {
+	txt := os.read_file(app.prefs_file) or {
+		// absent is not protected — a save creates it; unreadable is, like unparseable
+		app.prefs_broken = os.exists(app.prefs_file)
+		return app.prefs_broken
+	}
+	now := prefs.parse(txt) or {
+		app.prefs_broken = true
+		return true
+	}
+	app.prefs_broken = false
+	app.prefs.foreign = now.foreign.clone()
+	return now.foreign.len > 0
 }
 
 // collect_panes folds what THIS session dragged over the panes it loaded, into what a save
@@ -181,6 +205,9 @@ fn (mut app App) open_prefs() {
 	cap := if app.prefs.editor.len * 2 > 256 { app.prefs.editor.len * 2 } else { 256 }
 	app.prefs_editor_buf = mkbuf(app.prefs.editor, cap)
 	app.prefs_caption = 'UI scale ${int(app.prefs.ui_scale * 100 + 0.5)}% (Settings menu) · file: ${app.prefs_file}'
+	// the warning below the field is about the file the operator is about to replace, so it is
+	// classified when the dialog OPENS rather than carried from startup
+	app.reclassify_prefs_file()
 	app.show_prefs = true
 }
 
