@@ -1,0 +1,341 @@
+module main
+
+import os
+import time
+import prefs
+import panerule
+import vgui
+
+// prefs_path is where the settings live: the user's config directory, so every project and
+// every checkout shares one file (%AppData%\blobly_net\settings.toml on Windows,
+// ~/.config/blobly_net/settings.toml on Linux).
+fn prefs_path() string {
+	dir := os.config_dir() or { os.home_dir() }
+	return os.join_path(dir, 'blobly_net', 'settings.toml')
+}
+
+// load_prefs reads the file at startup. No file is the defaults; a broken one is logged, the
+// defaults stand — a settings file must never keep the app from starting — and it is REMEMBERED
+// as broken, so an automatic save does not overwrite the hand-edited file with the defaults;
+// the Preferences dialog's Save is the one that may. A file that is there but cannot be read is
+// broken too, not absent (codex #307 r5). A file that parses but carries keys this build does
+// not know (prefs.Prefs.foreign) is protected the same way, and the dialog says what its Save
+// would drop.
+fn (mut app App) load_prefs() {
+	app.prefs_file = prefs_path()
+	txt := os.read_file(app.prefs_file) or {
+		if os.exists(app.prefs_file) {
+			app.elog('settings: ${app.prefs_file}: ${err.msg()} — using defaults; not overwritten')
+			app.prefs_broken = true
+		}
+		return
+	}
+	app.prefs = prefs.parse(txt) or {
+		app.elog('settings: ${app.prefs_file}: ${err.msg()} — using defaults; fix or delete the file, or Save from Settings ▸ Preferences… to replace it')
+		app.prefs_broken = true
+		return
+	}
+	if app.prefs.foreign.len > 0 {
+		app.elog('settings: ${app.prefs_file} carries settings this build does not know (${app.prefs.foreign.join(', ')}); it is not rewritten automatically')
+	}
+}
+
+// save_prefs writes the fields `ch` names — the ones this instance changed — over the file AS
+// IT IS NOW (read again, merged, under the lock below), so a second instance closing later
+// does not put back what the first one changed (codex #307 r6). A refused or failed save
+// keeps its flags PENDING, so a scale picked while the file was foreign is still in the
+// dialog's Save later (r7). Refused, unless from the dialog, for a file that will not parse,
+// cannot be read, or carries keys this build does not know. The dialog's Save is the one
+// writer that may replace such a file, on ONE condition: the file's state it is about to
+// replace is the state the dialog has SHOWN (prefs_seen_*, set by draw_prefs) — a file that
+// became broken, or gained or changed its foreign keys, since the dialog last drew is
+// recorded and refused once, so the warning is seen before a second Save drops anything
+// (r8, r12, r13). Over a broken file the dialog writes what this instance knows — the last
+// loaded preferences plus its own changes — not the defaults (r13). A failure to write is
+// said, not fatal; the return says whether the file was written.
+fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
+	want := app.prefs_pending.plus(ch)
+	app.prefs_pending = want
+	// No early refusal on the verdict from startup: the file is read again below, under the
+	// lock, so one repaired since is saved to (codex #307 r26). The directory first: the lock is
+	// a directory INSIDE it, and on a fresh profile every save was refused as if another instance
+	// held a lock nothing could create (r8); a directory that cannot be made is said as such.
+	os.mkdir_all(os.dir(app.prefs_file)) or {
+		app.notify('settings not saved: cannot create ${os.dir(app.prefs_file)} (${err.msg()})')
+		return false
+	}
+	if !prefs_lock(app.prefs_file) {
+		app.notify('settings not saved: another instance holds ${app.prefs_file}.lock')
+		return false
+	}
+	defer {
+		prefs_unlock(app.prefs_file)
+	}
+	// The file as it is now: readable and parsed (`now`), broken, or absent.
+	mut broken_now := false
+	mut now := prefs.Prefs{}
+	mut present := false
+	if txt := os.read_file(app.prefs_file) {
+		present = true
+		now = prefs.parse(txt) or {
+			broken_now = true
+			prefs.Prefs{}
+		}
+	} else if os.exists(app.prefs_file) {
+		present = true
+		broken_now = true
+	}
+	// Recorded, so the dialog warns; and the dialog's own Save stops once when what it showed
+	// is not what is there.
+	app.prefs_broken = broken_now
+	app.prefs.foreign = now.foreign
+	if !from_dialog && (broken_now || now.foreign.len > 0) {
+		return false
+	}
+	if from_dialog && (broken_now != app.prefs_seen_broken || now.foreign != app.prefs_seen_foreign) {
+		app.prefs_seen_broken = broken_now
+		app.prefs_seen_foreign = now.foreign.clone()
+		app.notify('the settings file changed under the dialog — see its note, then Save again to replace it')
+		return false
+	}
+	// Over a broken file the base is what this instance KNOWS (the last load plus its own
+	// changes); over a readable one, the file; over an ABSENT one — deleted since start, which
+	// is a reset — the defaults, so a save recreates only what this instance changed (r20).
+	base := if broken_now {
+		app.prefs
+	} else if !present {
+		prefs.Prefs{}
+	} else {
+		now
+	}
+	merged := prefs.merge(base, app.prefs, want)
+	// Written beside and moved into place: a write that fails part-way (a full disk) must not
+	// leave the file it was replacing truncated (codex #307 r11). The move is replace_file,
+	// which on Windows is MoveFileEx with REPLACE_EXISTING — _wrename refuses an existing target.
+	tmp := app.prefs_file + '.tmp'
+	os.write_file(tmp, merged.serialize()) or {
+		app.notify('settings not saved (${tmp}): ${err.msg()}')
+		return false
+	}
+	replace_file(tmp, app.prefs_file) or {
+		os.rm(tmp) or {}
+		app.notify('settings not saved (${app.prefs_file}): ${err.msg()}')
+		return false
+	}
+	app.prefs_broken = false
+	app.prefs.foreign = []
+	app.prefs_pending = prefs.Changed{}
+	return true
+}
+
+// prefs_lock takes `<file>.lock`, a directory, which mkdir creates for ONE caller — the shape
+// cmd/arxml2dbc publishes under. It serialises the read-merge-write across instances: two
+// saving at once could each read the same snapshot and the second write drop the first's
+// field (codex #307 r7). The holder writes its pid inside; a lock older than ten seconds is
+// taken only when that pid is DEAD (process_alive) — age alone is not proof of a crash, and a
+// writer merely suspended would come back and write its stale snapshot over the taker's
+// (r17). Unlock removes only a lock this process owns.
+fn prefs_lock(file string) bool {
+	dir := file + '.lock'
+	me := os.getpid()
+	for _ in 0 .. 50 {
+		os.mkdir(dir) or {
+			if os.exists(dir) {
+				age := time.now().unix() - os.file_last_mod_unix(dir)
+				owner, live := lock_owner(dir)
+				if age > 10 && (owner == 0 || !live) {
+					// Reclaimed by RENAMING it aside first — one atomic step, so a holder that
+					// publishes its pid late writes into a directory that is no longer the lock
+					// (its write or read-back fails and it does not take the lock), and a
+					// check-then-delete cannot race that publication (codex #307 r19). An ownerless
+					// lock gets a further 200 ms look first, since a holder may be between mkdir and
+					// publishing.
+					if owner == 0 {
+						time.sleep(200 * time.millisecond)
+						owner2, _ := lock_owner(dir)
+						if owner2 != 0 {
+							continue
+						}
+					}
+					// a unique aside name, and EVERY entry removed (a crashed publisher leaves its
+					// `pid.<pid>`), or a later reclaim by this instance would rename onto a directory
+					// still there and fail every time (codex #307 r27)
+					aside := dir + '.stale.' + me.str() + '.' + time.ticks().str()
+					os.rename(dir, aside) or { continue }
+					for e in os.ls(aside) or { []string{} } {
+						os.rm(os.join_path(aside, e)) or {}
+					}
+					os.rmdir(aside) or {}
+					continue
+				}
+			}
+			time.sleep(20 * time.millisecond)
+			continue
+		}
+		// Ownership is PUBLISHED by an EXCLUSIVE step: the pid is written beside and then claimed
+		// as `pid` through claim_file, which fails when a `pid` already exists (link on Unix,
+		// MoveFileEx without replace on Windows) — so of two processes publishing into one
+		// directory, one wins and the other does not hold the lock, whatever its mkdir said. A
+		// taker that found this lock ownerless may have renamed it aside and created a
+		// replacement of the same name in the meantime; a plain write into it raced the taker's
+		// own publication (codex #307 r18, r20).
+		pidfile := os.join_path(dir, 'pid')
+		mine := os.join_path(dir, 'pid.' + me.str())
+		// pid AND the process's start token: a pid the OS reuses after a crash would otherwise
+		// read as a live holder for as long as the unrelated process lived (codex #307 r21)
+		os.write_file(mine, me.str() + ' ' + process_token(me)) or { continue }
+		if !claim_file(mine, pidfile) {
+			os.rm(mine) or {}
+			continue
+		}
+		back, _ := lock_owner(dir)
+		if back != me {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// lock_owner reads `<lock>/pid` — `<pid> <token>` — and says whose the lock is and whether that
+// process is still the one that took it: alive, and started when the token says (a token the
+// platform cannot give is ''). (0, false) for an ownerless lock.
+fn lock_owner(dir string) (int, bool) {
+	line := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space()
+	parts := line.split(' ')
+	pid := parts[0].int()
+	if pid == 0 {
+		return 0, false
+	}
+	token := if parts.len > 1 { parts[1] } else { '' }
+	alive := process_alive(pid) && (token == '' || process_token(pid) == token)
+	return pid, alive
+}
+
+fn prefs_unlock(file string) {
+	dir := file + '.lock'
+	owner, _ := lock_owner(dir)
+	if owner != os.getpid() {
+		return
+	}
+	os.rm(os.join_path(dir, 'pid')) or {}
+	os.rmdir(dir) or {}
+}
+
+// pane_moved is the one caller shape for a persisted divider's splitter result: the stored
+// value after the drag, and the DRAG recorded by pane name — what the exit save writes is the
+// panes this instance dragged, not the ones it merely showed at their seeded default (codex
+// #307 r10).
+fn (mut app App) pane_moved(key string, stored f32, drawn_px f32, moved f32, sc f32) f32 {
+	v, was_drag := panerule.dragged(stored, drawn_px, moved, sc)
+	if was_drag {
+		app.panes_dragged[key] = true
+	}
+	return v
+}
+
+// apply_ui_scale is the ONE writer of the scale: the value the panels read and the font scale
+// move together, and the preference is what the next start reads.
+fn (mut app App) apply_ui_scale(s f32) {
+	app.prefs.ui_scale = prefs.clamp_scale(s)
+	vgui.set_font_scale(app.prefs.ui_scale)
+}
+
+// open_in_editor opens `path` with the configured editor, or with the system's own "open" when
+// none is configured — DETACHED either way (open_windows.v / open_nix.v): the GUI never waits
+// for an editor, and a command that cannot start is a notification, not an exit.
+fn (mut app App) open_in_editor(path string) {
+	if path == '' {
+		app.notify('nothing to open yet')
+		return
+	}
+	a := app
+	report := fn [a] (s string) {
+		mut ap := unsafe { a }
+		ap.notify(s)
+	}
+	argv := prefs.editor_argv(app.prefs.editor, path)
+	if argv.len == 0 {
+		ok, note := system_open(path, report)
+		app.notify(if ok { note } else { note })
+		return
+	}
+	// A Windows editor reached through WSL interop (`notepad++.exe %s`) cannot read a Linux
+	// path: the file argument goes through wslpath, as the explorer.exe route does (r26).
+	mut args := argv.clone()
+	if argv[0].to_lower().ends_with('.exe') {
+		if win := wsl_windows_path(path) {
+			for i, arg in args {
+				if arg.contains(path) {
+					args[i] = arg.replace(path, win)
+				}
+			}
+		}
+	}
+	launch_detached(args, report) or {
+		app.notify('editor: ${err.msg()}')
+		return
+	}
+	app.notify('opened ${path} in ${argv[0]}')
+}
+
+// open_prefs seeds the dialog's field from the preference and shows it.
+fn (mut app App) open_prefs() {
+	if app.show_prefs {
+		return
+	}
+	// room for the command it holds plus editing, not a fixed size that a long one is cut to
+	// and then saved back cut (codex #307 r3)
+	cap := if app.prefs.editor.len * 2 > 256 { app.prefs.editor.len * 2 } else { 256 }
+	app.prefs_editor_buf = mkbuf(app.prefs.editor, cap)
+	app.prefs_caption = 'UI scale ${int(app.prefs.ui_scale * 100 + 0.5)}% (Settings menu) · file: ${app.prefs_file}'
+	app.show_prefs = true
+}
+
+// draw_prefs is Settings ▸ Preferences…: the editor command, and what the file holds.
+fn draw_prefs(mut app App) {
+	vgui.set_next_window(300, 200, 560, 200)
+	vis, op := vgui.begin_dialog('Preferences', app.show_prefs)
+	app.show_prefs = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	vgui.text('Editor command')
+	vgui.same_line()
+	vgui.help_marker('What "Open in editor" runs. %s is the file (inside quotes or a longer argument too); without it the file is appended. Quote a path with a space. Empty = the system\'s own open, as a double click in a file manager. Examples: code -g %s · gvim %s · "C:\\Program Files\\Notepad++\\notepad++.exe" %s')
+	vgui.set_next_item_width(vgui.content_avail_w())
+	vgui.input_text('##prefs_editor', mut app.prefs_editor_buf)
+	vgui.text_dim(if app.prefs.editor == '' {
+		'now: the system open'
+	} else {
+		'now: ' + app.prefs.editor
+	})
+	vgui.text_dim(app.prefs_caption)
+	// What the dialog SHOWS is what its Save may replace: recorded here, compared at save.
+	app.prefs_seen_broken = app.prefs_broken
+	app.prefs_seen_foreign = app.prefs.foreign.clone()
+	if app.prefs_broken {
+		vgui.text_colored(230, 120, 120,
+			'the file could not be read (see the Log); Save here replaces it with what this session holds')
+	} else if app.prefs.foreign.len > 0 {
+		vgui.text_colored(230, 170, 70,
+			'the file carries settings this build does not know (${app.prefs.foreign.join(', ')}); Save here drops them')
+	}
+	vgui.separator()
+	if vgui.button('Save') {
+		typed := vgui.buf_str(app.prefs_editor_buf).trim_space()
+		// the editor counts as changed only when it was: a Save pressed to retry a pending scale
+		// or to confirm a warning must not carry a stale command over another instance's (r12)
+		edited := typed != app.prefs.editor
+		app.prefs.editor = typed
+		if app.save_prefs(prefs.Changed{ editor: edited }, true) {
+			app.notify('preferences saved')
+		}
+	}
+	vgui.same_line()
+	if vgui.button('Close') {
+		app.show_prefs = false
+	}
+	vgui.end()
+}

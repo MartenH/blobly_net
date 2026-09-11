@@ -3,6 +3,7 @@ module main
 import os
 import sysview
 import vgui
+import panerule
 
 // load_system loads a blobly_emb system.toml into the read-only System view.
 // restbus_from_system configures the REST BUS for one ECU under test: every OTHER node that
@@ -111,7 +112,7 @@ fn draw_system(mut app App) {
 		vgui.end()
 		return
 	}
-	sc := app.ui_scale
+	sc := app.prefs.ui_scale
 	if app.sys_path_buf.len == 0 {
 		// smart default: the project's own dir usually holds the system.toml (a .blobnet lives
 		// next to it), so Load works out of the box instead of starting on an empty box.
@@ -167,19 +168,12 @@ fn draw_system(mut app App) {
 	if app.sys_ecu_h <= 0 {
 		app.sys_ecu_h = 160
 	}
-	// The height the panes get this frame, clamped BEFORE they are drawn: a dock shorter than
-	// the stored height has to reclaim the room from the panes now, not after they have taken
-	// it, or the section below is left the few pixels that remain (codex #305 r2). The stored
-	// value is unscaled, so a UI-scale change keeps the proportion; a DRAG persists, the clamp
-	// does not — written straight back, one frame in a short slot collapsed the panes for good.
+	// The panes' height this frame: panerule — clamped BEFORE they are drawn, so a short dock
+	// reclaims the room now; a drag persists, the clamp does not; stored unscaled (#305 r2).
 	sys_min := 60 * sc
 	sys_max := vgui.content_avail_h() - 100 * sc // 100*sc keeps the tree's header and a row or two
-	want := app.sys_ecu_h * sc
-	ecu_h := if want > sys_max {
-		if sys_max > sys_min { sys_max } else { sys_min }
-	} else {
-		want
-	}
+	ecu_h, sys_kept := panerule.drawn(app.sys_ecu_h, 160, sc, sys_min, sys_max)
+	app.sys_ecu_h = sys_kept
 	vgui.child_wh('##ecu_list', 130 * sc, ecu_h)
 	for n in app.sys.nodes {
 		lbl := if n.ecu_err != '' { '${n.name}  (!)' } else { n.name }
@@ -249,9 +243,7 @@ fn draw_system(mut app App) {
 	// The divider between the ECU panes and the section below (#270 item 1): drag to trade
 	// height, within the clamp computed above the panes (the splitter floors max at min).
 	moved := vgui.splitter_h('##sys_split', ecu_h, sys_min, sys_max)
-	if moved != ecu_h {
-		app.sys_ecu_h = moved / sc
-	}
+	app.sys_ecu_h = app.pane_moved('system_ecu', app.sys_ecu_h, ecu_h, moved, sc)
 	// buses matrix + id allocation: useful but long, so fold it (closed by default) —
 	// keeps the panel focused on the nodes/ECU detail above. In its own scrolling child, so
 	// what the splitter leaves is what it scrolls in; and its tables are CONTENT-SIZED

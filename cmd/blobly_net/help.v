@@ -221,45 +221,10 @@ fn (mut app App) open_help_in_browser() {
 		app.notify('Help: could not write ${path} (${err})')
 		return
 	}
-	ok, note := open_uri_in_browser(path)
-	app.notify(if ok { note } else { 'Help written to ${path} — ${note}' })
-}
-
-// is_wsl reports whether we're under WSL, where os.open_uri finds no Linux browser.
-fn is_wsl() bool {
-	if os.getenv('WSL_DISTRO_NAME') != '' || os.getenv('WSL_INTEROP') != '' {
-		return true
-	}
-	rel := os.read_file('/proc/sys/kernel/osrelease') or { return false }
-	low := rel.to_lower()
-	return low.contains('microsoft') || low.contains('wsl')
-}
-
-// open_uri_in_browser opens `path` in the system browser. Under WSL, os.open_uri finds no Linux
-// browser, so route to the Windows browser via wslview (wslu) or explorer.exe with a wslpath UNC.
-fn open_uri_in_browser(path string) (bool, string) {
-	if is_wsl() {
-		if exe := os.find_abs_path_of_executable('wslview') {
-			mut p := os.new_process(exe)
-			p.set_args([path])
-			p.run()
-			p.wait()
-			if p.code == 0 {
-				return true, 'opened Help in the Windows browser'
-			}
-		}
-		if exe := os.find_abs_path_of_executable('explorer.exe') {
-			win := os.execute('wslpath -w ' + os.quoted_path(path))
-			if win.exit_code == 0 {
-				mut p := os.new_process(exe)
-				p.set_args([win.output.trim_space()])
-				p.run()
-				p.wait()
-				return true, 'opening Help in the Windows browser'
-			}
-		}
-		return false, 'open it manually (install wslu for wslview)'
-	}
-	os.open_uri(path) or { return false, 'open it manually (${err.msg()})' }
-	return true, 'opened Help in browser'
+	a := app
+	ok, note := system_open(path, fn [a] (m string) {
+		mut ap := unsafe { a }
+		ap.notify(m)
+	})
+	app.notify(if ok { 'Help: ${note}' } else { 'Help written to ${path} — ${note}' })
 }

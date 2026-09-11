@@ -139,6 +139,9 @@ fn C.vgui_dock_reset()
 fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char) int
 fn C.vgui_begin_closable(&char, &int) int
+fn C.vgui_begin_dialog(&char, &int) int
+fn C.vgui_add_font_merge(&char, f32) int
+fn C.vgui_set_ini_path(&char)
 fn C.vgui_set_item_tooltip(&char)
 fn C.vgui_help_marker(&char)
 fn C.vgui_end()
@@ -741,6 +744,30 @@ pub fn begin_closable(title string, open bool) (bool, bool) {
 	mut o := if open { 1 } else { 0 }
 	vis := C.vgui_begin_closable(title.str, &o) == 1
 	return vis, o != 0
+}
+
+// begin_dialog is begin_closable for a DIALOG: a window opened for a moment's task — a picker,
+// a discovery, a preferences sheet, the project editor — which must not be docked (#306). A
+// dialog carries a Close (or Cancel) button; a panel (begin_closable) keeps the title-bar X
+// alone, as dock tabs do. THIS COMMENT IS THE RULE; the callers are the list. The DBC editor is
+// a panel on purpose: it is used beside the trace for as long as a database is being read, and
+// docking it there is the point. Same contract: (visible, open), and ALWAYS call end().
+pub fn begin_dialog(title string, open bool) (bool, bool) {
+	mut o := if open { 1 } else { 0 }
+	vis := C.vgui_begin_dialog(title.str, &o) == 1
+	return vis, o != 0
+}
+
+// add_font_merge merges a fallback face into the default font, for the glyphs it lacks. After
+// add_font, before the loop. Returns false when the file cannot be read.
+pub fn add_font_merge(path string, size_px f32) bool {
+	return C.vgui_add_font_merge(path.str, size_px) == 1
+}
+
+// set_ini_path is where ImGui keeps window rects and the dock tree (default: imgui.ini in the
+// working directory); '' disables the file both ways. Call right after init, before the first frame.
+pub fn set_ini_path(path string) {
+	C.vgui_set_ini_path(path.str)
 }
 
 pub fn end() {

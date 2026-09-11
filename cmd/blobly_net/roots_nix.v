@@ -11,3 +11,13 @@ const drive_roots = false
 fn fs_roots() []string {
 	return ['/']
 }
+
+// wsl_roots: WSL is reached from Windows; here there is nothing to list.
+fn wsl_roots() []string {
+	return []
+}
+
+// root_label is the drive row's button text for a root; the row is never shown here.
+fn root_label(r string) string {
+	return r
+}

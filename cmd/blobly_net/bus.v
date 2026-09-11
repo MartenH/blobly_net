@@ -589,7 +589,7 @@ struct DiscoveredIface {
 // list look like the device had lost a channel.
 fn pick_items(list []DiscoveredIface) []string {
 	placeholder := if list.len == 0 {
-		'(no detected interfaces — click ↻)'
+		'(no detected interfaces — click rescan)'
 	} else {
 		'pick a detected interface…'
 	}

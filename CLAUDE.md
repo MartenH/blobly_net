@@ -129,7 +129,13 @@ identity and at a gap out of proportion to the cadence, so a Stop's or a dropout
 never averaged into a cadence (#266); and `cmd/blobly_net/pickrule/`, the file picker's
 grammar — a click selects, a double click enters or accepts, Enter and Open act on the
 selection the same way — and where `..` goes from a Windows drive root (the drives view, so `D:`
-is reachable from `C:`; #270); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
+is reachable from `C:`; #270); and `cmd/blobly_net/prefs/`, what the app remembers ACROSS
+runs — the settings file's grammar (`%AppData%\blobly_net\settings.toml`, `~/.config/blobly_net/settings.toml`:
+the external editor command and the UI scale) and how an editor command becomes an argv (#306); and `cmd/blobly_net/panerule/`, the persisted
+divider — how tall a dragged pane is THIS frame (clamped before it is drawn, from what the container
+has now) and what a drag changes (a drag persists, a clamp does not; stored unscaled) — one rule
+for the six panes that had it written per pane in two shapes (#305 r2, #306);
+and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
 inverse, the one place a value is ever written, which refuses rather than emit a spelling that
@@ -495,6 +501,20 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   stamped (so the receiver reaches its range handling instead of rejecting a CRC error) and
   `bad_crc` after. One process-wide table (`sim.inject`), keyed by interface+node+message, so
   the panel and scripts cannot disagree. A fault that cannot take effect is refused loudly.
+- **Dialogs do not dock** (`vgui.begin_dialog`, #306; the rule is that function's doc comment,
+  the callers are the list): a window opened for a moment's task carries a Close (or Cancel) and
+  cannot be docked; a panel keeps the title-bar X alone. A symbol the main font lacks is drawn from
+  the merged fallback face (`merge_symbol_font`: Segoe UI Symbol / DejaVu Sans), which is what
+  made `↻` and `⚠` draw as `?` before. **Settings** (`settings.v`, `prefs`): one per-user home —
+  `settings.toml` (editor command, UI scale, dragged panes) and ImGui's `imgui.ini` beside it —
+  (the layout file is ImGui's own, written unlocked — two instances of one user are
+  last-writer-wins on it, #308) and every save is a read-merge-write of the fields THIS instance changed; a file that will not
+  parse, cannot be read, or carries keys this build does not know is never rewritten by an
+  automatic save — the Preferences dialog's Save is the one that may, and it says what it drops
+  (a textual scan that preserved such keys through a rewrite took five review rounds, one TOML
+  spelling at a time, before it was deleted). An
+  editor is launched DETACHED through `open_windows.v` / `open_nix.v`, never `os.new_process` on
+  Windows, where vlib exits the whole process when a command cannot start.
 - **Silence** (`cmd/blobly_net/stale.v`): CAN has no link detection, so a *receiver* cannot tell
   a disconnected bus from an idle one — on any vendor. The only honest signal is that traffic
   which was arriving has stopped — so each wire reports `last RX 45s` (dim, in the toolbar and on

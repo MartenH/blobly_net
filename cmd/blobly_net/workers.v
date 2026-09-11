@@ -1307,7 +1307,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	sync_note := if ncores < 2 {
 		''
 	} else if skew_bounds.len == 0 {
-		' · ⚠ cores NOT time-correlated (each on its own clock)'
+		' · (!) cores NOT time-correlated (each on its own clock)'
 	} else {
 		mut worst := u16(0)
 		for _, b in skew_bounds {
