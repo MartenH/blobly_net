@@ -1205,7 +1205,10 @@ fn (mut app App) project_changed_externally() bool {
 	}
 	on_disk := os.read_file(app.proj_path) or {
 		if os.exists(app.proj_path) {
-			return false // present but unreadable: the comment guard says so and refuses
+			// present but unreadable: a change this cannot judge is not "no change" — refused,
+			// on the final check too, where the comment guard is behind us (codex #307 r25)
+			app.notify('not saved — could not read ${app.proj_path} to check for changes since it was loaded (${err}); resolve the read error first')
+			return true
 		}
 		if app.external_confirm != absent_marker {
 			app.external_confirm = absent_marker

@@ -384,6 +384,10 @@ int vgui_add_font(const char* path, float size_px) {
 // vgui_add_font_merge merges a second face INTO the current default font: glyphs the main face
 // lacks are taken from this one. The class fix for a symbol drawn as `?` (#306: Consolas has no
 // ↻ or ⚠) — one fallback face with the symbols, rather than a label rule enforced by nothing.
+// NO GLYPH RANGES, on purpose: this is ImGui 1.92, where ImFontConfig::GlyphRanges is marked
+// *LEGACY* (imgui.h) and glyphs are loaded on demand from every source of a font — the main
+// face already draws U+2014 with no ranges, and the merged face is another source of the same
+// font. Three review rounds asked for ranges; the header is the answer.
 int vgui_add_font_merge(const char* path, float size_px) {
     ImGuiIO& io = ImGui::GetIO();
     ImFontConfig cfg;
