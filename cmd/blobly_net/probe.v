@@ -522,42 +522,43 @@ fn probe_driver(secs int) {
 	// created; corrupting the primary output to tidy a rounding error is the wrong trade, and
 	// further rounds on the sub-millisecond fuzziness of an endpoint that cannot be atomic will
 	// be answered with this comment.
-	// ONE SNAPSHOT OF THE ENDPOINT, taken together: the collection count, the clock, the live set
-	// and the allocation total. Everything the summary attributes to the measurement is read
-	// HERE, before the drain — an admitted writer finishing late (a lock waiter, seconds after
-	// the close) must not let post-endpoint allocation into `alloc_mb`, or a later live set be
-	// attributed to the collection counted in the final interval (codex round 4 on #302). The
-	// divisor already ends here; the numerators have to end here with it.
+	// ONE SNAPSHOT OF THE ENDPOINT, and the ORDER WITHIN IT is what makes each field's error
+	// harmless. Everything the summary attributes to the measurement is read here, before the
+	// drain: an admitted writer finishing late — a lock waiter, seconds after the close — must
+	// not let post-endpoint allocation into `alloc_mb`, or a later live set be attributed to the
+	// collection counted in the final interval (codex round 4 on #302).
 	//
-	// THE WHOLE SNAPSHOT IS BRACKETED, not just the count and the clock. A collection completing
-	// anywhere inside it suspends this thread and splits it in two: some fields describing the
-	// endpoint before the pause and some the state after, with the final interval containing the
-	// pause and the attribution belonging to whichever half was read first. Round 4 bracketed the
-	// count and the clock and left the live set and the byte total outside, which just moved the
-	// seam (round 5).
+	// THE HEAP TOTALS COME FIRST, then the clock, then the gate:
 	//
-	// Re-read until the collection count is unchanged ACROSS EVERY READ: then no collection
-	// happened during the snapshot, so its fields describe one instant by construction rather
-	// than by argument. Unlike the gate ordering below — a store and a clock read cannot be made
-	// atomic, and either order loses something — this one CAN be made consistent, so it is.
+	//   bytes/live before the clock — the gate does not govern allocation, which continues
+	//     whatever it says, so these can only be read EARLY relative to closed_ns, never late.
+	//     `alloc_mb` therefore cannot contain allocation the divisor excludes; it can only miss
+	//     a few microseconds of it. Read after the clock they could be arbitrarily later, which
+	//     is dividing one interval's allocation by another's duration (round 6).
+	//   the clock adjacent to the gate — the two cannot be made atomic, and preemption between
+	//     them costs one of two things: the clock AFTER puts a post-run scheduling delay inside
+	//     the final hiccup interval, a false entry in the histogram whose job is finding stalls;
+	//     the clock BEFORE lets a few events be counted past the declared endpoint, a rate off
+	//     by a rounding error. The second is the one to take, and it is only tolerable while the
+	//     two are ADJACENT — round 5 put two heap queries and up to eight retries between them,
+	//     which is what made this order indefensible rather than merely imperfect (round 6).
 	//
-	// Bounded, because a machine collecting continuously would otherwise spin here: eight tries
-	// and then the last reading, which is no worse than not bracketing at all.
+	// AND ONE RETRY, AFTER ADMISSION IS CLOSED. A collection completing during the reads above
+	// splits the snapshot — some fields from before the pause, some after — so if the count moved
+	// it is taken again, now with nothing else being admitted. Once, not eight times: the retry
+	// exists to repair a split snapshot, and a second split is no likelier to resolve on the
+	// ninth try than the second.
 	mut closed_gc := gc_count()
-	mut closed_ns := time.sys_mono_now()
-	mut closed_live := live_mb()
 	mut closed_bytes := alloc_total()
-	for _ in 0 .. 8 {
-		g := gc_count()
-		if g == closed_gc {
-			break
-		}
-		closed_gc = g
-		closed_ns = time.sys_mono_now()
-		closed_live = live_mb()
-		closed_bytes = alloc_total()
-	}
+	mut closed_live := live_mb()
+	mut closed_ns := time.sys_mono_now()
 	stdatomic.store_u64(&probe_gate, 0)
+	if gc_count() != closed_gc {
+		closed_gc = gc_count()
+		closed_bytes = alloc_total()
+		closed_live = live_mb()
+		closed_ns = time.sys_mono_now()
+	}
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
 	}
