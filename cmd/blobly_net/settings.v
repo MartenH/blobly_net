@@ -154,15 +154,18 @@ fn (mut app App) save_layout(force bool) {
 	}
 }
 
-// warn_layout says a layout write failed, ONCE per run. It is not worth a notification each
-// time — the layout is incidental state and the run is still good — but a silent loss is how an
-// operator learns at the next start that their arrangement is gone.
+// warn_layout says a layout write failed, ONCE per run — through notify, which is the Log the
+// operator can actually SEE: a warning about a silent loss that reaches only stderr and the
+// session file is itself a silent loss, and save_prefs says the same class of failure the same
+// way. Once, because the flag settles every few seconds: a config directory that is full or
+// read-only would otherwise put a line in the Log every settling period for the rest of the run,
+// and the first says everything the later ones would.
 fn (mut app App) warn_layout(what string) {
 	if app.layout_warned {
 		return
 	}
 	app.layout_warned = true
-	app.elog('layout not saved (${what}) — the window arrangement will not carry to the next start')
+	app.notify('layout not saved (${what}) — the window arrangement will not carry to the next start')
 }
 
 // collect_panes folds what THIS session dragged over the panes it loaded, into what a save

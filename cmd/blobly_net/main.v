@@ -149,6 +149,11 @@ fn main() {
 			app.elog('vgui.init failed')
 			return
 		}
+		// The one path that never said where the layout lives, so ImGui's default writer put an
+		// imgui.ini in the WORKING directory — the per-checkout file #306 moved away from, and
+		// since #308 the only place anything but save_layout opens one. '' is what the other
+		// headless render uses: a selftest must not read a layout or leave one.
+		vgui.set_ini_path('')
 		for frame in 0 .. 10 {
 			vgui.frame_begin()
 			if app.dbs.len > 0 {
