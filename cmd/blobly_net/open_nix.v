@@ -112,3 +112,12 @@ fn reap(pid int, name string, report fn (string)) {
 fn replace_file(tmp string, dst string) ! {
 	os.rename(tmp, dst)!
 }
+
+// process_alive reports whether `pid` is a running process: kill(pid, 0) sends nothing and
+// answers whether it could have (EPERM is "alive, not ours").
+fn process_alive(pid int) bool {
+	if C.kill(pid, 0) == 0 {
+		return true
+	}
+	return C.errno == 1 // EPERM
+}

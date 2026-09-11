@@ -122,14 +122,20 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 // prefs_lock takes `<file>.lock`, a directory, which mkdir creates for ONE caller — the shape
 // cmd/arxml2dbc publishes under. It serialises the read-merge-write across instances: two
 // saving at once could each read the same snapshot and the second write drop the first's
-// field (codex #307 r7). A lock older than ten seconds is a crashed holder's, and is taken.
+// field (codex #307 r7). The holder writes its pid inside; a lock older than ten seconds is
+// taken only when that pid is DEAD (process_alive) — age alone is not proof of a crash, and a
+// writer merely suspended would come back and write its stale snapshot over the taker's
+// (r17). Unlock removes only a lock this process owns.
 fn prefs_lock(file string) bool {
 	dir := file + '.lock'
+	me := os.getpid()
 	for _ in 0 .. 50 {
 		os.mkdir(dir) or {
 			if os.exists(dir) {
 				age := time.now().unix() - os.file_last_mod_unix(dir)
-				if age > 10 {
+				owner := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int()
+				if age > 10 && (owner == 0 || !process_alive(owner)) {
+					os.rm(os.join_path(dir, 'pid')) or {}
 					os.rmdir(dir) or {}
 					continue
 				}
@@ -137,13 +143,20 @@ fn prefs_lock(file string) bool {
 			time.sleep(20 * time.millisecond)
 			continue
 		}
+		os.write_file(os.join_path(dir, 'pid'), me.str()) or {}
 		return true
 	}
 	return false
 }
 
 fn prefs_unlock(file string) {
-	os.rmdir(file + '.lock') or {}
+	dir := file + '.lock'
+	owner := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int()
+	if owner != os.getpid() {
+		return
+	}
+	os.rm(os.join_path(dir, 'pid')) or {}
+	os.rmdir(dir) or {}
 }
 
 // pane_moved is the one caller shape for a persisted divider's splitter result: the stored
