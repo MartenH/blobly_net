@@ -75,7 +75,13 @@ fn launch_detached(argv []string, report fn (string)) ! {
 	if pid == 0 {
 		// The child: only async-signal-safe calls between fork and exec — no allocation, no
 		// locks (the GUI's other threads hold them at this instant, and the child has copies).
-		for fd := 3; fd < 1024; fd++ {
+		// up to the process limit, not a fixed 1024: a descriptor above it would be inherited
+		// (codex #307 r15). sysconf is async-signal-safe on glibc and musl.
+		mut top := int(C.sysconf(C._SC_OPEN_MAX))
+		if top < 1024 {
+			top = 1024
+		}
+		for fd := 3; fd < top; fd++ {
 			C.close(fd)
 		}
 		C.execv(exe.str, unsafe { &&char(cargs.data) })
@@ -89,7 +95,13 @@ fn reap(pid int, name string, report fn (string)) {
 	if C.waitpid(pid, &status, 0) < 0 {
 		return
 	}
-	// WEXITSTATUS without the macro: the exit code sits in bits 8..15 of a normal exit.
+	// WIFSIGNALED / WEXITSTATUS without the macros: a signal sits in the low 7 bits, a normal
+	// exit's code in bits 8..15. A crash is a failure to report too (codex #307 r15).
+	sig := status & 0x7f
+	if sig != 0 {
+		report('${name} was killed by signal ${sig}')
+		return
+	}
 	code := (status >> 8) & 0xff
 	if code != 0 {
 		report('${name} exited with ${code}')

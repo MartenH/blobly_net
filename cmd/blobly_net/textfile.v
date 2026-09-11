@@ -101,6 +101,13 @@ fn (tf &TextFile) text() string {
 // write puts the buffer back into the file it was LOADED from — that one, not whatever a path
 // field says now — and marks it clean.
 fn (mut tf TextFile) write() ! {
+	// The file is checked NOW, not on the once-a-second cadence the strip uses: an external save
+	// inside that second would be overwritten unseen (codex #307 r15). Refused once — the strip
+	// has the warning by the next frame — and a Save pressed with the warning showing overwrites.
+	if !tf.disk_changed && os.file_last_mod_unix(tf.loaded) != tf.mtime {
+		tf.disk_changed = true
+		return error('changed on disk since it was loaded — Discard edits takes the file, Save again overwrites it')
+	}
 	os.write_file(tf.loaded, tf.text())!
 	tf.dirty = false
 	tf.err = ''

@@ -60,11 +60,21 @@ pub fn (a Changed) plus(b Changed) Changed {
 pub fn parse(text string) !Prefs {
 	doc := toml.parse_text(text)!
 	mut p := Prefs{}
+	// A known key of a type this build cannot read (`ui_scale = "system"`, a newer build's) is
+	// foreign like an unknown key: not read, and not rewritten automatically (codex #307 r15).
 	if v := doc.value_opt('editor') {
-		p.editor = v.string()
+		if v is string {
+			p.editor = v
+		} else {
+			p.foreign << 'editor'
+		}
 	}
 	if v := doc.value_opt('ui_scale') {
-		p.ui_scale = clamp_scale(f32(v.f64()))
+		if v is f64 || v is i64 || v is int || v is u64 {
+			p.ui_scale = clamp_scale(f32(v.f64()))
+		} else {
+			p.foreign << 'ui_scale'
+		}
 	}
 	if v := doc.value_opt('panes') {
 		for k, x in v.as_map() {

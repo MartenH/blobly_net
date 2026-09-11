@@ -1113,8 +1113,10 @@ fn (mut app App) save_cfg_text() {
 		return
 	}
 	path := app.proj_path
-	os.write_file(path, txt) or {
-		app.notify('save failed: ${err}')
+	// through TextFile.write, which refuses once when the file changed on disk since it was
+	// loaded (the buffer holds proj_path: load_cfg_text loaded it there)
+	app.cfg_file.write() or {
+		app.notify('not saved — ${err.msg()}')
 		return
 	}
 	app.notify('saved -> ${path}')
