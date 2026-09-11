@@ -20,7 +20,6 @@ import player
 import time
 import sync.stdatomic
 import vgui
-import prefs
 
 // load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
 // if set, else the first available system monospace (DejaVu Sans Mono / Consolas). Keeping
@@ -425,28 +424,11 @@ fn main() {
 		}
 	}
 	app.stop()
-	// What THIS session DRAGGED, for the next one (pane_moved): an instance that dragged nothing
-	// writes no pane over another's, and a pane merely shown at its seeded default is not a
-	// drag (codex #307 r9, r10). A broken or foreign file is not overwritten.
-	now := {
-		'system_ecu':    app.sys_ecu_h
-		'discover_list': app.disc_list_h
-		'script_editor': app.script_ed_h
-		'dbc_left':      app.dbc_ed.left_w
-		'dbc_msgs':      app.dbc_ed.msgs_h
-		'dbc_props':     app.dbc_ed.props_h
-	}
-	app.prefs.panes = map[string]f32{}
-	for k, v in now {
-		if v > 0 && (app.panes_dragged[k] or { false }) {
-			app.prefs.panes[k] = v
-		}
-	}
-	// and whatever an earlier save left pending (a scale picked while another instance held
-	// the lock), which save_prefs folds in — so the save runs when anything is owed (r16)
-	pend := app.prefs_pending
-	if !headless && (app.prefs.panes.len > 0 || pend.editor || pend.scale || pend.panes) {
-		app.save_prefs(prefs.Changed{ panes: app.prefs.panes.len > 0 }, false)
+	// The whole file, from what this session holds — last writer wins (#309) — unless it is
+	// broken or foreign. The panes it dragged are collected by the save itself (collect_panes),
+	// so this is every preference the session changed and has not written since.
+	if !headless && app.prefs_dirty {
+		app.save_prefs(false)
 	}
 	vgui.shutdown()
 }

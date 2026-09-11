@@ -10,7 +10,6 @@ fn C.execv(path &char, argv &&char) int
 fn C._exit(code int)
 fn C.waitpid(pid int, status &int, options int) int
 fn C.close(fd int) int
-fn C.link(oldpath &char, newpath &char) int
 
 // is_wsl reports whether we're under WSL, where no Linux browser or editor is around and the
 // Windows side has to open the file.
@@ -128,41 +127,6 @@ fn reap(pid int, name string, report fn (string)) {
 // replace_file moves `tmp` over `dst` in one step: rename(2) replaces atomically here.
 fn replace_file(tmp string, dst string) ! {
 	os.rename(tmp, dst)!
-}
-
-// process_alive reports whether `pid` is a running process: kill(pid, 0) sends nothing and
-// answers whether it could have (EPERM is "alive, not ours").
-fn process_alive(pid int) bool {
-	if C.kill(pid, 0) == 0 {
-		return true
-	}
-	return C.errno == 1 // EPERM
-}
-
-// claim_file links `src` as `dst` only if `dst` does not exist — link(2) fails with EEXIST,
-// atomically — and drops the source name; the exclusive step lock ownership is published by
-// (settings.v).
-fn claim_file(src string, dst string) bool {
-	if C.link(&char(src.str), &char(dst.str)) != 0 {
-		return false
-	}
-	os.rm(src) or {}
-	return true
-}
-
-// process_token is what tells one incarnation of a pid from the next: the process's start
-// time in clock ticks since boot (field 22 of /proc/<pid>/stat), or '' where /proc is not
-// there (which makes the pid the whole identity, as before).
-fn process_token(pid int) string {
-	stat := os.read_file('/proc/${pid}/stat') or { return '' }
-	// the command name in field 2 is parenthesised and may hold spaces: split after its close
-	rest := stat.all_after_last(') ')
-	fields := rest.split(' ')
-	// state is field 3, so starttime (field 22) is index 19 here
-	if fields.len < 20 {
-		return ''
-	}
-	return fields[19]
 }
 
 // wsl_windows_path is the Windows spelling of a Linux path under WSL (`\\wsl.localhost\...` or
