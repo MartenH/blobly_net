@@ -104,6 +104,18 @@ pub fn clamp_scale(s f32) f32 {
 // toml.encode quotes a string without escaping anything), then the dragged panes.
 pub fn (p Prefs) serialize() string {
 	mut out := 'editor = "${toml_escape(p.editor)}"\nui_scale = ${p.ui_scale:.2f}\n'
+	// Unknown TOP-LEVEL lines go before any table, or they would land inside [panes]; unknown
+	// tables go after it. The list is in file order, and a top-level line cannot follow a header.
+	mut first_table := p.unknown.len
+	for i, l in p.unknown {
+		if l.trim_space().starts_with('[') {
+			first_table = i
+			break
+		}
+	}
+	for l in p.unknown[..first_table] {
+		out += l + '\n'
+	}
 	if p.panes.len > 0 {
 		out += '\n[panes]\n'
 		mut keys := p.panes.keys()
@@ -112,8 +124,8 @@ pub fn (p Prefs) serialize() string {
 			out += '${k} = ${p.panes[k]:.1f}\n'
 		}
 	}
-	if p.unknown.len > 0 {
-		out += '\n' + p.unknown.join('\n') + '\n'
+	if first_table < p.unknown.len {
+		out += '\n' + p.unknown[first_table..].join('\n') + '\n'
 	}
 	return out
 }
