@@ -808,12 +808,19 @@ fn (mut app App) log_append_locked(msg string) {
 fn (mut app App) load_project(path string) {
 	app.stop()
 	app.drop_index_bound_ui() // pending pickers and Scan results index the OLD channel set
-	proj := project.load(path) or {
+	// ONE read: the bytes parsed are the bytes kept as the version a model Save may
+	// overwrite — a second read could see a file replaced in between (codex #307 r22).
+	disk := os.read_file(path) or {
 		app.elog('load ${path}: ${err}')
 		app.notify('load failed: ${err}')
 		return
 	}
-	app.proj_disk = os.read_file(path) or { '' } // the version a model Save may overwrite
+	proj := project.parse(disk) or {
+		app.elog('load ${path}: ${err}')
+		app.notify('load failed: ${err}')
+		return
+	}
+	app.proj_disk = disk
 	app.external_confirm = ''
 	// THE VERSION GATE ON THE NORMAL OPEN PATH TOO. It existed only where the Configuration text
 	// is applied, so File ▸ Open read a future-format file in silence — and a structured Save then

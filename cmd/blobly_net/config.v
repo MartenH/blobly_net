@@ -1226,6 +1226,13 @@ fn (mut app App) save_project() {
 	// keep its comments — only File ▸ Save writes the buffer verbatim. Warn on the FIRST such Save
 	// and remember (path, model); a second Save proceeds only if both are unchanged, so any edit /
 	// load / revert / different target re-warns rather than counting as the confirmation.
+	// A project file GONE since it was loaded is an external change as much as an edited one:
+	// recreating it from the model would undo a deletion nobody confirmed (codex #307 r22).
+	if app.proj_disk != '' && !os.exists(app.proj_path) && app.external_confirm != absent_marker {
+		app.external_confirm = absent_marker
+		app.notify('not saved yet — ${app.proj_path} is gone from disk since it was loaded; repeat the Save to recreate it')
+		return
+	}
 	if os.exists(app.proj_path) {
 		on_disk := os.read_file(app.proj_path) or {
 			// present but unreadable: os.write_file may still truncate it and we cannot tell

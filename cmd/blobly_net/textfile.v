@@ -23,9 +23,11 @@ mut:
 	seen         i64    // when stale last looked, ms — once a second, not per frame
 }
 
-// unreadable_marker stands for a file that could not be read, as a version of it: a NUL
-// followed by text, which no file this app writes contains.
+// unreadable_marker stands for a file that could not be read, as a version of it, and
+// absent_marker for one that is not there: a NUL followed by text, which no file this app
+// writes contains.
 const unreadable_marker = '\x00<unreadable>'
+const absent_marker = '\x00<absent>'
 
 // LoadOutcome is what load did: nothing (cached, or unsaved edits kept), a read, or a failure.
 enum LoadOutcome {
@@ -58,6 +60,9 @@ fn (mut tf TextFile) load(path string) LoadOutcome {
 		tf.loaded = path
 		tf.dirty = false
 		tf.err = 'cannot read ${path}: ${err}'
+		// the baseline is "unreadable", so stale() re-reads once the file is back — with
+		// the old text kept, a file restored with the same content stayed at this error (r22)
+		tf.orig = unreadable_marker
 		return .failed
 	}
 	// Generous headroom: ImGui writes into this buffer and cannot grow it, so the room to type
@@ -88,7 +93,7 @@ fn (mut tf TextFile) stale() bool {
 	tf.seen = now
 	// by CONTENT, like write: a rewrite inside the same second keeps the stamp (codex #307
 	// r21); a file that cannot be read is stale too, and load says why
-	now_txt := os.read_file(tf.loaded) or { return true }
+	now_txt := os.read_file(tf.loaded) or { unreadable_marker }
 	return now_txt != tf.orig
 }
 
