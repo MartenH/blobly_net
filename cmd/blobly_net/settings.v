@@ -157,9 +157,14 @@ fn prefs_lock(file string) bool {
 							continue
 						}
 					}
-					aside := dir + '.stale.' + me.str()
+					// a unique aside name, and EVERY entry removed (a crashed publisher leaves its
+					// `pid.<pid>`), or a later reclaim by this instance would rename onto a directory
+					// still there and fail every time (codex #307 r27)
+					aside := dir + '.stale.' + me.str() + '.' + time.ticks().str()
 					os.rename(dir, aside) or { continue }
-					os.rm(os.join_path(aside, 'pid')) or {}
+					for e in os.ls(aside) or { []string{} } {
+						os.rm(os.join_path(aside, e)) or {}
+					}
 					os.rmdir(aside) or {}
 					continue
 				}

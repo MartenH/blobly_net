@@ -287,7 +287,9 @@ fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 	} else {
 		if vgui.button_big('Start', 45, 150, 90, bw, bh) {
 			app.start()
-			app.notify('started')
+			if app.running { // start() refuses for several reasons, each said; not 'started' then (r27)
+				app.notify('started')
+			}
 		}
 	}
 	vgui.same_line()

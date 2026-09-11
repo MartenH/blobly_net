@@ -1204,15 +1204,15 @@ fn (mut app App) revert_proj_from_disk() {
 // Start asks it: a run of the model over a file another editor changed would run the old
 // configuration while the File tab shows the new one (codex #307 r26).
 fn (app &App) project_stale_on_disk() bool {
-	if app.proj_disk_path != app.proj_path {
-		return false
+	if app.proj_path == '' || app.proj_disk_path != app.proj_path {
+		return false // an unsaved project has no file to have changed (r27)
 	}
 	on_disk := os.read_file(app.proj_path) or { return true }
 	return on_disk != app.proj_disk
 }
 
 fn (mut app App) project_changed_externally() bool {
-	if app.proj_disk_path != app.proj_path {
+	if app.proj_path == '' || app.proj_disk_path != app.proj_path {
 		return false
 	}
 	on_disk := os.read_file(app.proj_path) or {
@@ -1319,18 +1319,19 @@ fn (mut app App) save_project() {
 		app.show_config = true
 		return
 	}
-	// Asked AGAIN here: rebuild_from_proj above waits for the run's workers, up to 1.5 s, and
-	// an external save inside that wait must not be overwritten unseen (codex #307 r24).
-	if app.project_changed_externally() {
-		return
-	}
 	app.mu.lock()
 	p := app.proj
 	path := app.proj_path
 	app.mu.unlock()
 	// The bytes WRITTEN are the baseline, not a re-read that could see a file replaced in
 	// between (codex #307 r23); Project.save is os.write_file of to_yaml, done here for that.
+	// Serialised BEFORE the final check, so only the check-to-write window remains (r27).
 	written := p.to_yaml()
+	// Asked AGAIN here: rebuild_from_proj above waits for the run's workers, up to 1.5 s, and
+	// an external save inside that wait must not be overwritten unseen (codex #307 r24).
+	if app.project_changed_externally() {
+		return
+	}
 	os.write_file(path, written) or {
 		app.notify('save failed: ${err}')
 		return

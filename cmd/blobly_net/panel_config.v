@@ -1069,6 +1069,20 @@ fn (mut app App) draw_config_text() {
 			app.save_cfg_text()
 		}
 		.reload {
+			// Reload TAKES the file: when it changed on disk since the model was loaded, the model
+			// is rebased on it too (revert_proj_from_disk) — the external-change warning names this
+			// action, and a text-only reload left the stale model to overwrite the file on the next
+			// Save (codex #307 r27). A model rebuild is stopped-only, and unsaved model edits are
+			// not discarded unasked.
+			if app.project_stale_on_disk() {
+				if app.running {
+					app.notify('the file changed on disk — Stop, then Reload, to take it into the model')
+				} else if app.dirty {
+					app.notify('the file changed on disk, and the model has unsaved edits — Save or discard those (Buses tab) before Reload takes the file')
+				} else {
+					app.revert_proj_from_disk()
+				}
+			}
 			app.cfg_invalidate()
 			app.load_cfg_text()
 		}
