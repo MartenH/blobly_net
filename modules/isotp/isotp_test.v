@@ -763,6 +763,44 @@ fn test_stmin_holds_across_block_boundaries() {
 // — it SENDS flow control as a receiver. Read as a message it surfaced as `unexpected PCI 0x31`
 // in place of the next reply: a desync that could not happen before, because the old send took
 // the first 0x3x it saw and there was never a second to strand (codex on #226).
+// #296: skipping an orphan Flow Control is right, but it turned a diagnosable peer into a bare
+// `timeout` — the one answer that says nothing about what is on the wire.
+fn test_a_timeout_behind_orphan_flow_control_says_so() {
+	mut peer := transport.open('inproc:isotp-orphan-says') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-orphan-says', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	// a peer that keeps answering a transfer that ended, and nothing else
+	for _ in 0 .. 3 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
+			assert false, err.msg()
+		}
+	}
+	if _ := ch.recv(300) {
+		assert false, 'a channel carrying only orphan Flow Control cannot produce a message'
+	} else {
+		assert err.msg().contains('orphan flow control'), err.msg()
+		assert err.msg().contains('0x31'), err.msg()
+	}
+	// and a quiet channel still times out plainly: the diagnostic is about what was SEEN
+	mut quiet := open_software('inproc:isotp-orphan-quiet', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	if _ := quiet.recv(100) {
+		assert false, 'nothing was sent'
+	} else {
+		assert err.msg() == 'timeout', err.msg()
+	}
+	quiet.close()
+	ch.close()
+	peer.close()
+}
+
 fn test_a_leftover_flow_control_does_not_desync_the_next_receive() {
 	mut peer := transport.open('inproc:isotp-orphan-fc') or {
 		assert false, 'in-process bus: ${err}'

@@ -44,6 +44,13 @@ mut:
 	// A FLAG RATHER THAN AN UNCONDITIONAL DRAIN, because draining before every segmented send
 	// would also discard a reply the caller has not read yet — a legitimate thing to have
 	// queued, and nothing to do with this.
+	//
+	// SET by a segmented send that ended badly, CLEARED by the drain it causes — or by a
+	// successful recv(), which means a message got through and the orphans ahead of it were
+	// skipped, so the abort is no longer the most recent thing that happened here (#296).
+	// Without that second exit the flag outlived its abort: a failed transfer, a short exchange
+	// the caller read a reply to, and then a segmented send whose drain discarded a LATER reply,
+	// which is exactly what the flag exists to avoid.
 	fc_dirty bool
 }
 
@@ -83,6 +90,12 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	if data.len <= 7 {
 		mut sf := [u8(data.len)] // SF: PCI 0x0<len>
 		sf << data
+		// NO DRAIN ON THIS PATH. A Single Frame leaves the peer with nothing more to say, so
+		// there is no Flow Control conversation to protect — and draining here would block for a
+		// quiet window and DISCARD whatever is queued on rx_id, on a path that was immediate and
+		// non-destructive. On uds.Server.serve that is a client's retransmitted request, and a
+		// run worker parked past the 1500 ms drain budget. The window is ended by a successful
+		// recv instead; see fc_dirty.
 		return c.tx(sf)
 	}
 	// BEFORE THE FIRST FRAME, so nothing this drops can be an answer to it: whatever arrives
@@ -99,6 +112,7 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	// carries no transfer identity, so one arriving after the window is indistinguishable from
 	// this transfer's own. Nothing in the protocol can separate them; the window makes the case
 	// unlikely and bounded, and there is no version of this that makes it impossible.
+	//
 	if c.fc_dirty {
 		c.flush_rx()
 		c.fc_dirty = false
@@ -233,6 +247,12 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	deadline := time.ticks() + i64(timeout_ms)
 	c.scanned = 0
 	mut first := []u8{}
+	// What the skip below swallowed, so a timeout can say so (#296). Read as a message, an
+	// orphan Flow Control used to surface as `unexpected PCI 0x31`; skipping it is right, but it
+	// turned a diagnosable peer into a bare `timeout` — the one answer that says nothing about
+	// what is on the wire. The frames are still dropped; only the SILENCE is explained.
+	mut orphan_fc := 0
+	mut orphan_pci := u8(0)
 	for {
 		mut rem := timeout_ms
 		if timeout_ms >= 0 {
@@ -241,13 +261,16 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			// when rx_raw reports the bus empty, not after the first frame it had to drop (codex
 			// round 13 on #225). A positive timeout expires by the clock.
 			if rem <= 0 && timeout_ms > 0 {
-				return error('timeout')
+				return error(orphan_note('timeout', orphan_fc, orphan_pci))
 			}
 			if rem < 0 {
 				rem = 0
 			}
 		}
-		first = c.rx_raw(rem)!
+		// THE TIMEOUT USUALLY COMES FROM HERE, not from the deadline check above: a caller with
+		// time left blocks inside rx_raw and that call is what expires. Decorating only the
+		// check left the diagnostic unreachable on the ordinary path (#296).
+		first = c.rx_raw(rem) or { return error(orphan_note(err.msg(), orphan_fc, orphan_pci)) }
 		if first.len < 1 {
 			return error('ISO-TP: empty frame')
 		}
@@ -266,6 +289,10 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		// a second one to strand. Read as a message it surfaced as `unexpected PCI 0x31` in
 		// place of the next reply (codex on #226).
 		if (first[0] & 0xF0) == 0x20 || (first[0] & 0xF0) == 0x30 {
+			if (first[0] & 0xF0) == 0x30 {
+				orphan_fc++
+				orphan_pci = first[0]
+			}
 			continue
 		}
 		break
@@ -286,6 +313,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		if 1 + len > first.len {
 			return error('ISO-TP SF length ${len} exceeds frame')
 		}
+		c.fc_dirty = false // a message got through: see recv_succeeded
 		return first[1..1 + len].clone()
 	}
 	if pci == 0x10 {
@@ -352,6 +380,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			sn = (sn + 1) & 0x0F
 			out << cf[1..]
 		}
+		c.fc_dirty = false // a message got through: see recv_succeeded
 		return out[..total].clone()
 	}
 	return error('ISO-TP: unexpected PCI 0x${first[0]:02X}')
@@ -424,13 +453,47 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	return error('timeout')
 }
 
+// recv_succeeded is the rule the two success returns above spell: A MESSAGE READ IS THE ABORT NO
+// LONGER BEING THE MOST RECENT THING ON THIS CHANNEL (#296). Every orphan Flow Control queued
+// ahead of that message was skipped by the loop that read it, so the next segmented send has
+// nothing to drain — and must not drain, or it discards a reply the caller has not read, which is
+// the harm a flag was chosen over an unconditional drain to avoid.
+//
+// ON SUCCESS ONLY, and at the returns rather than where the frame is first recognised: a recv
+// that then fails — an invalid Single Frame, a First Frame whose reassembly times out — has not
+// got a message through, and an old Flow Control arriving after it would meet a send that
+// skipped its drain (codex round 1 on #296).
+//
+// Not at the next send of any shape either: a send cannot know whether what is queued is stale,
+// and a drain in front of a Single Frame blocks for a quiet window and discards queued rx on a
+// path that is neither slow nor destructive.
+//
+// It trades one protection for another, deliberately: an orphan arriving AFTER a successful recv
+// is no longer caught by a later drain. The window was always a mitigation and not a proof — an
+// ISO-TP Flow Control carries no transfer identity — and an abort three exchanges old is not what
+// it was written for.
+
+// orphan_note explains a silence the orphan-Flow-Control skip is responsible for. Read as a
+// message an orphan FC surfaced as `unexpected PCI 0x31`; skipping it is right — this side never
+// expects one — but it turned a diagnosable peer into a bare `timeout`, the one answer that says
+// nothing about what is on the wire (#296). The original error is kept and the context added, so
+// a real bus failure still reads as itself.
+fn orphan_note(msg string, n int, pci u8) string {
+	if n == 0 {
+		return msg
+	}
+	return '${msg} — after ${n} orphan flow control frame(s), last PCI 0x${pci:02X}: the peer is still answering a transfer that ended'
+}
+
 // flush_rx drains rx-id frames until the bus has been quiet on that id, so a REUSED channel
 // (a persistent UDS or script connection) starts clean rather than on a stale frame from an
 // aborted transfer. Bounded: stops after a quiet window (no frame within flush_quiet_ms) or the
 // frame cap.
 //
 // Its caller is the SEND side (#226): a segmented send that aborted leaves the peer's Flow
-// Control frames in flight, and the retry's own First Frame must not be answered by one of them.
+// Control frames in flight, and the next segmented send's own First Frame must not be answered
+// by one of them. Not called before a Single Frame, and not needed after a successful recv —
+// see fc_dirty for which exits end that window and why.
 // A quiet window rather than a snapshot, because the last of a burst may not have arrived yet.
 // The receive side does not call it — a flush there waits its window per frame and a slow peer
 // renews it indefinitely past the deadline (codex round 5 on #225), so stale frames are dropped
