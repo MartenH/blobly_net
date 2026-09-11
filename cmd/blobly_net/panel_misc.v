@@ -603,6 +603,7 @@ fn (mut app App) reset_layout() {
 	app.show_gen = false
 	app.show_script = false
 	app.show_doip = false
+	app.show_prefs = false // a dialog like the others; left open it hovered over the reset workspace (codex #307 r1)
 	app.show_network = false
 	app.show_stats = false
 	app.show_shell = false

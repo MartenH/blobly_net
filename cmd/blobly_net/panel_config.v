@@ -281,6 +281,9 @@ fn draw_filebrowser(mut app App) {
 				break
 			}
 		}
+		// Its own row: appended to the button row it was clipped past the dialog's edge at
+		// 150% and above (codex #307 r1).
+		vgui.text_dim('drive:')
 		vgui.same_line()
 		vgui.set_next_item_width(200 * sc)
 		pick := vgui.combo('##fb_root', app.fb_root_lbl, cur)

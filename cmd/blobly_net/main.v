@@ -194,10 +194,12 @@ fn main() {
 	app.load_prefs()
 	if headless {
 		// A headless run's output must not depend on the machine (the comment above): the
-		// developer's own scale stays out of a screenshot.
-		app.prefs.ui_scale = 1.0
+		// developer's own scale stays out of a screenshot — applied to the renderer only, so the
+		// preference is not overwritten (codex #307 r1); nothing is saved at a headless exit.
+		vgui.set_font_scale(1.0)
+	} else {
+		app.apply_ui_scale(app.prefs.ui_scale)
 	}
-	app.apply_ui_scale(app.prefs.ui_scale)
 	app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
 	app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
 	app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
@@ -407,6 +409,8 @@ fn main() {
 	app.prefs.panes['system_ecu'] = app.sys_ecu_h
 	app.prefs.panes['discover_list'] = app.disc_list_h
 	app.prefs.panes['script_editor'] = app.script_ed_h
-	app.save_prefs(false)
+	if !headless {
+		app.save_prefs(false)
+	}
 	vgui.shutdown()
 }
