@@ -307,7 +307,8 @@ field at the top takes a typed folder or file — Enter or **Open path**. On Win
 row** offers every drive (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
 `roots_windows.v` / `roots_nix.v`) and every WSL distribution (`wsl: Ubuntu`, entering
 `\\wsl.localhost\Ubuntu\`; the names come from the registry, `wsl_roots`) from the start
-(#306); `.. up` from a drive root shows the same list as a view. On Linux `/` is its own parent
+(#306); `.. up` from a drive root shows the same list as a view. Paths under a share are joined
+by hand (`fb_join`): `os.join_path` collapses a UNC prefix. On Linux `/` is its own parent
 and neither appears. The picker is a dialog: it cannot be docked, and its title-bar X is Cancel.
 
 ## Configuration editor — the Bus fields

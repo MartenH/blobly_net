@@ -93,6 +93,8 @@ void vgui_dock_reset(void);
 int  vgui_begin(const char* title);
 int  vgui_begin_closable(const char* title, int* p_open);
 int  vgui_begin_dialog(const char* title, int* p_open);
+int  vgui_add_font_merge(const char* path, float size_px);
+void vgui_set_ini_path(const char* path);
 void vgui_end(void);
 void vgui_set_item_tooltip(const char* text);
 void vgui_help_marker(const char* text);

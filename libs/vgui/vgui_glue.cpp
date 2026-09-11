@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 
 extern "C" {
 
@@ -379,6 +380,27 @@ int vgui_add_font(const char* path, float size_px) {
     io.FontDefault = f;
     ImGui_ImplOpenGL3_DestroyDeviceObjects(); // force the font texture to rebuild next frame
     return 1;
+}
+// vgui_add_font_merge merges a second face INTO the current default font: glyphs the main face
+// lacks are taken from this one. The class fix for a symbol drawn as `?` (#306: Consolas has no
+// ↻ or ⚠) — one fallback face with the symbols, rather than a label rule enforced by nothing.
+int vgui_add_font_merge(const char* path, float size_px) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    ImFont* f = io.Fonts->AddFontFromFileTTF(path, size_px, &cfg);
+    if (!f) return 0;
+    ImGui_ImplOpenGL3_DestroyDeviceObjects();
+    return 1;
+}
+// vgui_set_ini_path: where ImGui keeps window rects and the dock tree. Default is imgui.ini in
+// the working directory, i.e. per checkout or bundle; the app points it at the same per-user
+// directory its settings live in, so the layout and the preferences have ONE home (#306).
+// Before the first frame: ImGui reads the file at the first NewFrame.
+static std::string g_ini_path;
+void vgui_set_ini_path(const char* path) {
+    g_ini_path = path;
+    ImGui::GetIO().IniFilename = g_ini_path.c_str();
 }
 // vgui_wake posts an empty event to unblock glfwWaitEvents from ANOTHER thread — the
 // event-driven equivalent of gui's queue_command. glfwPostEmptyEvent is one of the few

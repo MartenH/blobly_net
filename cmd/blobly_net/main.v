@@ -42,8 +42,21 @@ fn load_ui_font() {
 	for f in candidates {
 		if f != '' && os.exists(f) {
 			if vgui.add_font(f, size) {
+				merge_symbol_font(f, size)
 				return
 			}
+		}
+	}
+}
+
+// merge_symbol_font adds a face with the symbols the UI draws (▸ ● ↻ ⚠ …) behind the main one,
+// so a label is never a `?` because the main face lacks a glyph (#306: Consolas has no ↻).
+// Skipped when the main face IS the fallback.
+fn merge_symbol_font(main_face string, size f32) {
+	for f in ['C:/Windows/Fonts/seguisym.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+		'/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf'] {
+		if f != main_face && os.exists(f) && vgui.add_font_merge(f, size) {
+			return
 		}
 	}
 }
@@ -167,17 +180,27 @@ fn main() {
 		app.elog('vgui.init failed')
 		return
 	}
+	// The layout (window rects, the dock tree) lives beside the settings, per user, rather
+	// than in the working directory per checkout or bundle: one home (#306). Before the first
+	// frame, which is when ImGui reads it.
+	if !headless {
+		vgui.set_ini_path(os.join_path(os.dir(prefs_path()), 'imgui.ini'))
+	}
 	set_app_icon() // the B-on-blue window/taskbar icon (procedural placeholder as fallback)
 	app.load_logo() // the menu-bar wordmark (needs the GL context, so after init)
 	load_ui_font()
 	// What the last session set (#306): the UI scale, which the Settings menu changed and the
 	// next start forgot, and the editor command. After the font, since the scale is a font scale.
 	app.load_prefs()
-	app.prefs_editor_buf = mkbuf(app.prefs.editor, 256)
-	if app.prefs.ui_scale != 1.0 {
-		app.ui_scale = app.prefs.ui_scale
-		vgui.set_font_scale(app.ui_scale)
+	if headless {
+		// A headless run's output must not depend on the machine (the comment above): the
+		// developer's own scale stays out of a screenshot.
+		app.prefs.ui_scale = 1.0
 	}
+	app.apply_ui_scale(app.prefs.ui_scale)
+	app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
+	app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
+	app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false
 		vgui.set_theme(false)
@@ -380,5 +403,10 @@ fn main() {
 		}
 	}
 	app.stop()
+	// What a session dragged, for the next one (prefs.panes); a broken file is not overwritten.
+	app.prefs.panes['system_ecu'] = app.sys_ecu_h
+	app.prefs.panes['discover_list'] = app.disc_list_h
+	app.prefs.panes['script_editor'] = app.script_ed_h
+	app.save_prefs(false)
 	vgui.shutdown()
 }

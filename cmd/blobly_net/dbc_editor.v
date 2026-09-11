@@ -2,6 +2,7 @@ module main
 
 import os
 import candb
+import panerule
 import vgui
 
 // ---- DBC Editor (docs/dbc_editor.md P1) -------------------------------------
@@ -21,7 +22,7 @@ mut:
 	dirty map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
 	// the messages box height, dragged via the horizontal splitter under it (the signals box
 	// fills whatever remains). Same lifetime as left_w: survives frames, resets with DbcEd.
-	msgs_h f32
+	msgs_h f32 // unscaled px (panerule)
 	// the right pane's upper region (message properties + bit grid) height, dragged via the
 	// splitter above the Signal Inspector; the inspector fills what remains. Same lifetime.
 	props_h        f32
@@ -37,7 +38,7 @@ mut:
 	val_name_buf   []u8
 	node_buf       []u8
 	view_tree      bool = true // toggle between Tree view and Table view
-	left_w         f32 // draggable width (px) of the messages&signals pane; 0 = use the default
+	left_w         f32 // draggable width of the messages&signals pane, unscaled px (panerule); 0 = the default
 	// An in-progress bit-endpoint edit. An input field commits on EVERY keystroke, so a handler
 	// that derives the width from the opposite endpoint would measure each keystroke against an
 	// anchor the previous one already moved — typing a higher start collapsed the span to one
@@ -401,7 +402,7 @@ fn draw_dbc_editor(mut app App) {
 			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
 		}
 	}
-	sc := app.ui_scale
+	sc := app.prefs.ui_scale
 
 	// ---- TOP CONTROL BAR: Database selector, Save / Revert, ECU Nodes ----
 	mut names := []string{cap: app.dbs.len}
@@ -556,10 +557,17 @@ fn draw_dbc_editor(mut app App) {
 
 	// ---- MAIN SPLIT PANES: Left (Navigation) vs Right (Inspector & Layout) ----
 	// draggable divider (splitter_v below); width persists in dbc_ed.left_w
-	if app.dbc_ed.left_w <= 0 {
-		app.dbc_ed.left_w = 340 * sc
+	// The left pane's width this frame: panerule. The right pane keeps 200*sc of the panel
+	// (#68); asked BEFORE the pane is drawn, from the panel's whole width, which is what
+	// content_avail_w reports here — after the pane it reports only what is beside it, and a
+	// clamp derived from that dragged the divider back a frame later (#69).
+	left_min := 200 * sc
+	mut left_max := 760 * sc
+	if vgui.content_avail_w() - 200 * sc < left_max {
+		left_max = vgui.content_avail_w() - 200 * sc
 	}
-	left_w := app.dbc_ed.left_w
+	left_w, left_kept := panerule.drawn(app.dbc_ed.left_w, 340, sc, left_min, left_max)
+	app.dbc_ed.left_w = left_kept
 	vgui.child_wh('##dbced_left_pane', left_w, 0)
 
 	// --- LEFT PANE: Messages & Signals Browser ---
@@ -572,10 +580,15 @@ fn draw_dbc_editor(mut app App) {
 
 	// Messages tree/list child — height is DRAGGABLE (splitter_h below); the signals box takes
 	// what remains, so the two trade space instead of both being frozen at a guess.
-	if app.dbc_ed.msgs_h <= 0 {
-		app.dbc_ed.msgs_h = 220 * sc
-	}
-	vgui.child_begin('##dbcmsgbox', app.dbc_ed.msgs_h)
+	// 160*sc is the reserve kept below the divider: the message-button row, the signals
+	// separator + filter row, a minimum useful signals height, and the signal button row.
+	// panerule: clamped before the box is drawn, so a short pane keeps that reserve (the old
+	// clamp ran after the box had taken the room — the shape #305 r2 fixed in the System panel).
+	msgs_min := 80 * sc
+	msgs_max := vgui.content_avail_h() - 160 * sc
+	msgs_h, msgs_kept := panerule.drawn(app.dbc_ed.msgs_h, 220, sc, msgs_min, msgs_max)
+	app.dbc_ed.msgs_h = msgs_kept
+	vgui.child_begin('##dbcmsgbox', msgs_h)
 	if app.dbc_ed.view_tree {
 		for i, m in app.dbs[di].messages {
 			idtxt := if m.ext { '0x${m.id.hex()}x' } else { '0x${m.id.hex()}' }
@@ -638,13 +651,9 @@ fn draw_dbc_editor(mut app App) {
 	}
 	vgui.child_end()
 	// drag to trade height between the messages box above and the signals region below (which
-	// fills the remainder). 160*sc is the reserve kept below the divider: the message-button
-	// row, the signals separator + filter row, a minimum useful signals height, and the signal
-	// button row. If the pane is shorter than that, the splitter itself floors max at min —
-	// the guarantee lives in the widget, not here (the first cut re-derived the sibling
-	// splitter's clamp and dropped exactly that floor).
-	msgs_max := app.dbc_ed.msgs_h + vgui.content_avail_h() - 160 * sc
-	app.dbc_ed.msgs_h = vgui.splitter_h('##dbced_hsplit', app.dbc_ed.msgs_h, 80 * sc, msgs_max)
+	// fills the remainder)
+	moved_m := vgui.splitter_h('##dbced_hsplit', msgs_h, msgs_min, msgs_max)
+	app.dbc_ed.msgs_h = panerule.dragged(app.dbc_ed.msgs_h, msgs_h, moved_m, sc)
 
 	// Message Action Buttons
 	if !ro && vgui.small_button('+ message') {
@@ -829,26 +838,8 @@ fn draw_dbc_editor(mut app App) {
 
 	// draggable divider: grow/shrink the left (messages & signals) pane vs the right (inspector)
 	vgui.same_line()
-	// Clamp the persisted width against what the panel has NOW: left_w survives docking and
-	// resizing, so a divider dragged wide in a large window could otherwise consume a narrower
-	// one entirely and leave the inspector unreachable (#68). The right pane keeps 200*sc.
-	// content_avail_w() is called AFTER the left child and same_line(), so it reports only the
-	// space to the RIGHT of the left pane. Treating that as the panel total made max_left shrink
-	// as the user widened the pane, dragging the divider back on the next frame (#69). The panel
-	// total is the left pane plus what remains beside it.
-	avail := vgui.content_avail_w()
-	total_w := app.dbc_ed.left_w + avail
-	mut max_left := 760 * sc
-	if total_w > 0 && total_w - 200 * sc < max_left {
-		max_left = total_w - 200 * sc
-	}
-	if max_left < 200 * sc {
-		max_left = 200 * sc
-	}
-	if app.dbc_ed.left_w > max_left {
-		app.dbc_ed.left_w = max_left
-	}
-	app.dbc_ed.left_w = vgui.splitter_v('##dbced_split', app.dbc_ed.left_w, 200 * sc, max_left)
+	moved_w := vgui.splitter_v('##dbced_split', left_w, left_min, left_max)
+	app.dbc_ed.left_w = panerule.dragged(app.dbc_ed.left_w, left_w, moved_w, sc)
 	vgui.same_line()
 
 	// --- RIGHT PANE: Message Properties, Bit Layout Grid, Signal Inspector ---
@@ -868,10 +859,12 @@ fn draw_dbc_editor(mut app App) {
 	// Properties + bit grid live in their OWN scrolling child of draggable height, so the
 	// Signal Inspector below keeps its room no matter how many grid rows the message has —
 	// before this, a wide message pushed the inspector off the bottom of the pane.
-	if app.dbc_ed.props_h <= 0 {
-		app.dbc_ed.props_h = 380 * sc
-	}
-	vgui.child_begin('##dbced_props', app.dbc_ed.props_h)
+	// 220*sc reserves a useful inspector below; panerule, as above.
+	props_min := 120 * sc
+	props_max := vgui.content_avail_h() - 220 * sc
+	props_h, props_kept := panerule.drawn(app.dbc_ed.props_h, 380, sc, props_min, props_max)
+	app.dbc_ed.props_h = props_kept
+	vgui.child_begin('##dbced_props', props_h)
 	vgui.separator_text('Message Properties: ${msg.name} (${id_hex_str})')
 	app.dbc_ed_load_bufs()
 
@@ -1160,11 +1153,9 @@ fn draw_dbc_editor(mut app App) {
 
 	vgui.child_end() // end properties + bit grid region
 	// the slider above the Signal Inspector: drag to trade height between the properties/grid
-	// region above and the inspector below. 220*sc reserves a useful inspector; the splitter
-	// itself floors max at min, so a short pane degrades gracefully instead of inverting.
-	props_max := app.dbc_ed.props_h + vgui.content_avail_h() - 220 * sc
-	app.dbc_ed.props_h = vgui.splitter_h('##dbced_props_split', app.dbc_ed.props_h, 120 * sc,
-		props_max)
+	// region above and the inspector below
+	moved_p := vgui.splitter_h('##dbced_props_split', props_h, props_min, props_max)
+	app.dbc_ed.props_h = panerule.dragged(app.dbc_ed.props_h, props_h, moved_p, sc)
 
 	// 3. Signal Inspector Form (for selected signal)
 	si := app.dbc_ed.sig

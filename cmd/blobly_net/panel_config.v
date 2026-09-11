@@ -7,6 +7,7 @@ import transport
 import vgui
 import mf4
 import pickrule
+import panerule
 import player
 
 // is_recording_target: does this picker action open a recording? ONE predicate — the ext
@@ -58,6 +59,7 @@ fn (mut app App) open_browser(target string) {
 	}
 	app.fb_roots = fs_roots()
 	app.fb_roots << wsl_roots()
+	app.fb_root_lbl = app.fb_roots.map(root_label(it) + '##root' + it) // once, not per frame
 	app.fb_enter(os.abs_path(dir))
 	initname := if app.fb_save && app.proj_path != '' { os.file_name(app.proj_path) } else { '' }
 	app.fb_name_buf = mkbuf(initname, 128)
@@ -94,7 +96,7 @@ fn (mut app App) fb_enter(dir string) {
 }
 
 // fb_refresh reads the listing: the drive roots at pickrule.drives, else the folder's
-// sub-folders and the files the filter passes. On entering a folder and on the ↻ button —
+// sub-folders and the files the filter passes. On entering a folder and on the Refresh button —
 // not per frame, because os.ls plus one is_dir per entry is a syscall per row per frame, and
 // on a folder that answers slowly (a disconnected network drive, which the drives view now
 // lists) it is the whole GUI thread stalled for as long as the picker is open.
@@ -102,12 +104,12 @@ fn (mut app App) fb_refresh() {
 	app.fb_dirs = []
 	app.fb_files = []
 	if app.fb_dir == pickrule.drives {
-		app.fb_dirs = fs_roots()
+		app.fb_dirs = app.fb_roots.clone() // the same list as the drive row: drives and WSL
 		return
 	}
 	entries := os.ls(app.fb_dir) or { []string{} }
 	for e in entries {
-		full := os.join_path(app.fb_dir, e)
+		full := fb_join(app.fb_dir, e)
 		if os.is_dir(full) {
 			app.fb_dirs << e
 		} else if app.match_ext(e) {
@@ -116,6 +118,16 @@ fn (mut app App) fb_refresh() {
 	}
 	app.fb_dirs.sort()
 	app.fb_files.sort()
+}
+
+// fb_join is `dir` + separator + `name`, and nothing else: os.join_path normalises, and its
+// normalisation collapses the `\\` a UNC path starts with, so every folder under
+// `\\wsl.localhost\Ubuntu\` was filed under a path that does not exist (self-review on #307).
+fn fb_join(dir string, name string) string {
+	if dir.ends_with(os.path_separator) || dir.ends_with('/') {
+		return dir + name
+	}
+	return dir + os.path_separator + name
 }
 
 // fb_go is the typed path: a folder is entered; a file that passes the filter is selected in
@@ -209,7 +221,7 @@ fn draw_filebrowser(mut app App) {
 	} else {
 		'Attach Manifest'
 	}
-	sc := app.ui_scale
+	sc := app.prefs.ui_scale
 	vgui.set_next_window(260, 140, 640, 560)
 	vis, op := vgui.begin_dialog('${title}##filebrowser', app.fb_open) // the X is Cancel
 	app.fb_open = op
@@ -259,14 +271,9 @@ fn draw_filebrowser(mut app App) {
 	// root and then once more. Read at open (fb_roots); only where roots are drives.
 	if drive_roots && app.fb_roots.len > 0 {
 		vgui.text_dim('drives:')
-		for r in app.fb_roots {
+		for i, r in app.fb_roots {
 			vgui.same_line()
-			lbl := if r.starts_with('\\\\wsl.localhost\\') {
-				'wsl: ' + r.all_after('\\\\wsl.localhost\\').trim_right('\\')
-			} else {
-				r
-			}
-			if vgui.small_button('${lbl}##root${r}') {
+			if vgui.small_button(app.fb_root_lbl[i]) {
 				app.fb_enter(r)
 			}
 		}
@@ -325,7 +332,7 @@ fn draw_filebrowser(mut app App) {
 				// a file written somewhere the dialog does not show.
 				app.notify('pick a drive first')
 			} else if name != '' {
-				chosen = os.join_path(app.fb_dir, name)
+				chosen = fb_join(app.fb_dir, name)
 			}
 		}
 		vgui.same_line()
@@ -358,10 +365,10 @@ fn draw_filebrowser(mut app App) {
 		match pickrule.activate(on_kind, app.fb_save) {
 			.enter {
 				// a drive root is a whole path already; joined onto the empty view it would be relative
-				app.fb_enter(if at_drives { on } else { os.join_path(app.fb_dir, on) })
+				app.fb_enter(if at_drives { on } else { fb_join(app.fb_dir, on) })
 			}
 			.accept {
-				chosen = os.join_path(app.fb_dir, on)
+				chosen = fb_join(app.fb_dir, on)
 			}
 			.select {}
 		}
@@ -456,21 +463,15 @@ fn draw_discover_dialog(mut app App) {
 	// with no height would take the whole dialog and push the Vector section below out of reach.
 	// With a hardware section under it the list sits in a child of draggable height (#306): the
 	// clamp before the child is drawn, a drag persists, unscaled like the other dividers.
-	sc := app.ui_scale
+	sc := app.prefs.ui_scale
 	boxed := app.disc_vector.len > 0 && app.disc_list.len > 0
 	mut box_h := f32(0)
 	box_min := 60 * sc
 	box_max := vgui.content_avail_h() - 200 * sc // the hardware section, the tip and Close keep room
 	if boxed {
-		if app.disc_list_h <= 0 {
-			app.disc_list_h = 160
-		}
-		want := app.disc_list_h * sc
-		box_h = if want > box_max {
-			if box_max > box_min { box_max } else { box_min }
-		} else {
-			want
-		}
+		mut kept := f32(0)
+		box_h, kept = panerule.drawn(app.disc_list_h, 160, sc, box_min, box_max)
+		app.disc_list_h = kept
 		vgui.child_begin('##disc_list_box', box_h)
 	}
 	if app.disc_list.len > 0 && vgui.table_begin_flat('##disc_ifaces', 4) {
@@ -503,9 +504,7 @@ fn draw_discover_dialog(mut app App) {
 	if boxed {
 		vgui.child_end()
 		moved := vgui.splitter_h('##disc_split', box_h, box_min, box_max)
-		if moved != box_h {
-			app.disc_list_h = moved / sc
-		}
+		app.disc_list_h = panerule.dragged(app.disc_list_h, box_h, moved, sc)
 	}
 	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
 	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those

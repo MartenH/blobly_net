@@ -16,6 +16,9 @@ pub mut:
 	// is appended as the last argument. Quoted with double quotes where a path has a space.
 	editor   string
 	ui_scale f32 = 1.0
+	// Dragged dividers, by pane name, unscaled px (panerule): what a session set, the next
+	// finds. Written at exit, since a drag is many frames and the file is one write.
+	panes map[string]f32
 }
 
 // parse reads the settings file's text. Unknown keys are ignored (a newer build's file opens
@@ -29,6 +32,14 @@ pub fn parse(text string) !Prefs {
 	}
 	if v := doc.value_opt('ui_scale') {
 		p.ui_scale = clamp_scale(f32(v.f64()))
+	}
+	if v := doc.value_opt('panes') {
+		for k, x in v.as_map() {
+			h := f32(x.f64())
+			if h > 0 {
+				p.panes[k] = h
+			}
+		}
 	}
 	return p
 }
@@ -46,9 +57,19 @@ pub fn clamp_scale(s f32) f32 {
 }
 
 // serialize is the file's text: one line per key, a TOML basic string for the editor (a
-// Windows path carries backslashes, which the basic string escapes).
+// Windows path carries backslashes, which the basic string escapes — by hand, because vlib's
+// toml.encode quotes a string without escaping anything), then the dragged panes.
 pub fn (p Prefs) serialize() string {
-	return 'editor = "${toml_escape(p.editor)}"\nui_scale = ${p.ui_scale:.2f}\n'
+	mut out := 'editor = "${toml_escape(p.editor)}"\nui_scale = ${p.ui_scale:.2f}\n'
+	if p.panes.len > 0 {
+		out += '\n[panes]\n'
+		mut keys := p.panes.keys()
+		keys.sort()
+		for k in keys {
+			out += '${k} = ${p.panes[k]:.1f}\n'
+		}
+	}
+	return out
 }
 
 fn toml_escape(s string) string {
@@ -57,12 +78,13 @@ fn toml_escape(s string) string {
 
 // editor_argv is the argv that opens `path` with the editor command `cmd`: the command split
 // on whitespace with double quotes grouping (`"C:\Program Files\X\x.exe" -g %s`), every `%s`
-// token replaced by the path, and the path appended when the command names none. An empty
-// command yields an empty argv — the caller's cue to use the system's own open.
+// replaced by the path — inside a token too, so `"%s"` (quoted, as a shell tutorial would) and
+// `--file=%s` both work — and the path appended when the command names none. Quotes only
+// group; they add nothing to the argv, and an empty quoted token is dropped. An empty command
+// yields an empty argv — the caller's cue to use the system's own open.
 pub fn editor_argv(cmd string, path string) []string {
 	mut out := []string{}
 	mut cur := ''
-	mut in_word := false
 	mut quoted := false
 	for c in cmd {
 		if quoted {
@@ -75,21 +97,18 @@ pub fn editor_argv(cmd string, path string) []string {
 		}
 		if c == `"` {
 			quoted = true
-			in_word = true
 			continue
 		}
 		if c == ` ` || c == `\t` {
-			if in_word {
+			if cur != '' {
 				out << cur
 				cur = ''
-				in_word = false
 			}
 			continue
 		}
 		cur += c.ascii_str()
-		in_word = true
 	}
-	if in_word {
+	if cur != '' {
 		out << cur
 	}
 	if out.len == 0 {
@@ -97,8 +116,8 @@ pub fn editor_argv(cmd string, path string) []string {
 	}
 	mut named := false
 	for i, a in out {
-		if a == '%s' {
-			out[i] = path
+		if a.contains('%s') {
+			out[i] = a.replace('%s', path)
 			named = true
 		}
 	}

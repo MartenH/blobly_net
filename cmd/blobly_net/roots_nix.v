@@ -16,3 +16,8 @@ fn fs_roots() []string {
 fn wsl_roots() []string {
 	return []
 }
+
+// root_label is the drive row's button text for a root; the row is never shown here.
+fn root_label(r string) string {
+	return r
+}

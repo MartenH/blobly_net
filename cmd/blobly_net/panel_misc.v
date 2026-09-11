@@ -7,6 +7,7 @@ import logfile
 import transport
 import candb
 import vgui
+import panerule
 
 // examples lists the shipped projects for the File > Open Example menu.
 const examples = [
@@ -25,9 +26,9 @@ fn draw_activity_bar(mut app App) {
 	// fixed dark strip (same in light + dark themes, like VS Code) with a tight inner
 	// padding so the 3-char labels aren't clipped
 	vgui.activity_style_push()
-	vgui.push_window_padding(4 * app.ui_scale, 6 * app.ui_scale)
-	vgui.child_wh('##activity', 60 * app.ui_scale, 0)
-	vgui.push_frame_padding(4 * app.ui_scale, 6 * app.ui_scale)
+	vgui.push_window_padding(4 * app.prefs.ui_scale, 6 * app.prefs.ui_scale)
+	vgui.child_wh('##activity', 60 * app.prefs.ui_scale, 0)
+	vgui.push_frame_padding(4 * app.prefs.ui_scale, 6 * app.prefs.ui_scale)
 	// Grouped into logical sections separated by a rule, alphabetical within each group:
 	// setup · trace · filtered-trace (its own) · signal views · send · diagnostics · tools ·
 	// blobly_emb target (LAST — those panels only work against a blobly_emb SUT, which is not
@@ -235,16 +236,13 @@ fn draw_menubar(mut app App, rx u64) {
 			// cheaper than closing one.
 			for s in [75, 100, 125, 150, 175] {
 				if vgui.menu_item('${s}%') {
-					app.ui_scale = f32(s) / 100.0
-					vgui.set_font_scale(app.ui_scale)
-					app.prefs.ui_scale = app.ui_scale // remembered across runs (#306)
-					app.save_prefs()
+					app.apply_ui_scale(f32(s) / 100.0)
+					app.save_prefs(false) // remembered across runs (#306)
 				}
 			}
 			vgui.separator()
 			if vgui.menu_item('Preferences…') {
-				app.prefs_editor_buf = mkbuf(app.prefs.editor, 256)
-				app.show_prefs = true
+				app.open_prefs()
 			}
 			vgui.menu_end()
 		}
@@ -275,11 +273,11 @@ fn draw_menubar(mut app App, rx u64) {
 // the live array here raced them for a verdict this strip then displays.
 fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 	// breathing room below the menu bar + inset from the left edge (host has zero padding)
-	vgui.indent_y(7 * app.ui_scale)
-	vgui.indent_x(8 * app.ui_scale)
+	vgui.indent_y(7 * app.prefs.ui_scale)
+	vgui.indent_x(8 * app.prefs.ui_scale)
 	// primary action — big and colour-coded (started/stopped a lot): green Start / red Stop
-	bw := 110 * app.ui_scale
-	bh := 40 * app.ui_scale
+	bw := 110 * app.prefs.ui_scale
+	bh := 40 * app.prefs.ui_scale
 	if app.running {
 		if vgui.button_big('Stop', 190, 70, 70, bw, bh) {
 			app.stop()
@@ -968,19 +966,19 @@ fn draw_shell(mut app App) {
 	// the scrollback fills the panel minus one input row at the bottom (negative child height);
 	// the text inside is a read-only InputTextMultiline — real mouse selection + Ctrl+A/Ctrl+C
 	// (the input line below has the same native clipboard handling out of the box).
-	vgui.child_begin('##shellout', -30 * app.ui_scale)
+	vgui.child_begin('##shellout', -30 * app.prefs.ui_scale)
 	vgui.console_text('##shelltext', lines.join('\n'), lines.len)
 	if follow {
 		vgui.scroll_bottom()
 	}
 	vgui.child_end()
 	if eth {
-		vgui.set_next_item_width(130 * app.ui_scale)
+		vgui.set_next_item_width(130 * app.prefs.ui_scale)
 		vgui.input_text('##ethtarget', mut app.eth_target_buf)
 		vgui.same_line()
 		vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
 	}
-	vgui.set_next_item_width(-40 * app.ui_scale)
+	vgui.set_next_item_width(-40 * app.prefs.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
 		line := vgui.buf_str(app.shell_buf).trim_space()
 		app.shell_buf[0] = 0
@@ -1249,7 +1247,7 @@ fn draw_script(mut app App) {
 	if sgen != app.script_cache.gen {
 		app.script_cache.refresh(sgen, ssrc)
 	}
-	sc := app.ui_scale
+	sc := app.prefs.ui_scale
 	vgui.set_next_item_width(240 * sc)
 	vgui.input_text('##scriptpath', mut app.script_path_buf)
 	vgui.same_line()
@@ -1277,21 +1275,20 @@ fn draw_script(mut app App) {
 		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
 	}
 	vgui.same_line()
+	// Closing keeps a dirty buffer (TextFile: load returns .cached while dirty), Run stays
+	// withheld and the note below says so — so closing is not refused: a refusal protected
+	// nothing and cost a click (self-review on #307).
 	if vgui.small_button(if app.script_edit { 'Close editor' } else { 'Edit' }) {
-		if app.script_edit && app.script_file.dirty {
-			// Closing over unsaved edits would hide them while Run stays withheld for them.
-			app.notify('save or discard the edits first')
-		} else {
-			app.script_edit = !app.script_edit
-		}
+		app.script_edit = !app.script_edit
 	}
 	if busy {
 		vgui.same_line()
 		vgui.text_dim('running…')
 	}
 	if app.script_file.dirty {
+		how := if app.script_edit { '' } else { ' (Edit to save or discard)' }
 		vgui.text_colored(230, 170, 70,
-			'save ${app.script_file.loaded} first — Run executes the file')
+			'save ${app.script_file.loaded} first — Run executes the file${how}')
 	}
 	if !app.running {
 		// A suite run from here talks to the simulated ECUs the RUN hosts. Stopped, nothing
@@ -1312,15 +1309,24 @@ fn draw_script(mut app App) {
 // number, at Run.
 fn draw_script_editor(mut app App) {
 	path := vgui.buf_str(app.script_path_buf).trim_space()
-	if path == '' {
+	// An empty field with nothing at stake: the hint. With unsaved edits the strip stays, or
+	// Save and Discard would both vanish with the path (self-review on #307).
+	if path == '' && !app.script_file.dirty {
 		vgui.text_dim('type a script path, or Browse… for one')
 		return
 	}
-	app.script_file.load(path)
+	if path != '' {
+		app.script_file.load(path)
+	}
 	// The path field moved on while the buffer holds unsaved edits to the old file: the
-	// buffer stays, and says whose it is, rather than being replaced under the typist.
+	// buffer stays, and says whose it is, rather than being replaced under the typist. The
+	// buttons it names are the strip's: Discard edits re-reads the field's file, i.e. switches.
 	shown := if app.script_file.dirty && app.script_file.loaded != path {
-		'editing ${app.script_file.loaded} — Save or Reload before switching to ${path}'
+		if path == '' {
+			'editing ${app.script_file.loaded} — the path field is empty: Save, or Discard edits'
+		} else {
+			'editing ${app.script_file.loaded} — Save it, or Discard edits to switch to ${path}'
+		}
 	} else {
 		app.script_file.loaded
 	}
@@ -1339,31 +1345,23 @@ fn draw_script_editor(mut app App) {
 		}
 		.reload {
 			app.script_file.invalidate()
-			app.script_file.load(path)
+			if path != '' {
+				app.script_file.load(path)
+			}
 		}
 		.none {}
 	}
 
-	// The divider between the editor and the output (#306): the box takes the stored height,
-	// clamped BEFORE it is drawn so a short panel reclaims the room in this frame; a drag
-	// persists, the clamp does not; unscaled, so a UI-scale change keeps the proportion.
-	sc := app.ui_scale
-	if app.script_ed_h <= 0 {
-		app.script_ed_h = 260
-	}
+	// The divider between the editor and the output (#306): panerule — clamped before the box is
+	// drawn, a drag persists, the clamp does not, stored unscaled.
+	sc := app.prefs.ui_scale
 	ed_min := 80 * sc
 	ed_max := vgui.content_avail_h() - 120 * sc // the output keeps a few lines
-	want := app.script_ed_h * sc
-	ed_h := if want > ed_max {
-		if ed_max > ed_min { ed_max } else { ed_min }
-	} else {
-		want
-	}
+	ed_h, kept := panerule.drawn(app.script_ed_h, 260, sc, ed_min, ed_max)
+	app.script_ed_h = kept
 	if vgui.text_edit_code('##scripttext', mut app.script_file.buf, ed_h) {
 		app.script_file.dirty = true
 	}
 	moved := vgui.splitter_h('##script_split', ed_h, ed_min, ed_max)
-	if moved != ed_h {
-		app.script_ed_h = moved / sc
-	}
+	app.script_ed_h = panerule.dragged(app.script_ed_h, ed_h, moved, sc)
 }

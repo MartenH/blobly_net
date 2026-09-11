@@ -1,14 +1,12 @@
 module main
 
 #include <windows.h>
-#flag windows -ladvapi32
 
 fn C.GetLogicalDrives() u32
 
-fn C.RegOpenKeyExA(hkey voidptr, sub &char, opts u32, sam u32, out &voidptr) int
-fn C.RegEnumKeyExA(hkey voidptr, idx u32, name &char, len &u32, r voidptr, cls &char, clen &u32, ft voidptr) int
-fn C.RegQueryValueExA(hkey voidptr, name &char, r voidptr, typ &u32, data &u8, len &u32) int
-fn C.RegCloseKey(hkey voidptr) int
+// The registry, through the W entry points vlib already declares (builtin/cfns.c.v) plus the
+// one it does not; advapi32 is on the link line already (vgui.v).
+fn C.RegEnumKeyExW(hkey voidptr, idx u32, name &u16, len &u32, r voidptr, cls &u16, clen &u32, ft voidptr) int
 
 // drive_roots: this platform's roots are drives (pickrule.parent's `windows`).
 const drive_roots = true
@@ -34,12 +32,9 @@ fn fs_roots() []string {
 // (HKCU\...\Lxss\<guid>\DistributionName), not from `wsl.exe -l`, which is a console process a
 // GUI would flash a window for. Empty where WSL is not installed.
 fn wsl_roots() []string {
-	// HKEY_CURRENT_USER is (HKEY)(ULONG_PTR)(LONG)0x80000001 — sign-extended on 64-bit.
-	hkcu := unsafe { voidptr(usize(0xFFFFFFFF80000001)) }
-	key_read := u32(0x20019) // KEY_READ
 	mut lxss := unsafe { nil }
-	if C.RegOpenKeyExA(hkcu, c'Software\\Microsoft\\Windows\\CurrentVersion\\Lxss', 0, key_read,
-		&lxss) != 0 {
+	if C.RegOpenKeyExW(C.HKEY_CURRENT_USER,
+		'Software\\Microsoft\\Windows\\CurrentVersion\\Lxss'.to_wide(), 0, u32(C.KEY_READ), &lxss) != 0 {
 		return []
 	}
 	defer {
@@ -47,28 +42,42 @@ fn wsl_roots() []string {
 	}
 	mut out := []string{}
 	for i := u32(0); i < 64; i++ {
-		mut name := [256]u8{}
+		mut name := [256]u16{}
 		mut nlen := u32(255)
-		if C.RegEnumKeyExA(lxss, i, &char(&name[0]), &nlen, unsafe { nil }, unsafe { nil },
+		if C.RegEnumKeyExW(lxss, i, &name[0], &nlen, unsafe { nil }, unsafe { nil },
 			unsafe { nil }, unsafe { nil }) != 0 {
 			break
 		}
 		mut sub := unsafe { nil }
-		if C.RegOpenKeyExA(lxss, &char(&name[0]), 0, key_read, &sub) != 0 {
+		if C.RegOpenKeyExW(lxss, &name[0], 0, u32(C.KEY_READ), &sub) != 0 {
 			continue
 		}
-		mut data := [512]u8{}
-		mut dlen := u32(511)
+		mut data := [512]u16{}
+		mut dlen := u32(1022) // bytes
 		mut typ := u32(0)
-		if C.RegQueryValueExA(sub, c'DistributionName', unsafe { nil }, &typ, &data[0], &dlen) == 0
+		if C.RegQueryValueExW(sub, 'DistributionName'.to_wide(), unsafe { nil }, &typ, &u8(&data[0]), &dlen) == 0
 			&& typ == 1 {
-			distro := unsafe { cstring_to_vstring(&char(&data[0])) }
+			distro := unsafe { string_from_wide(&data[0]) }
 			if distro != '' {
-				out << '\\\\wsl.localhost\\' + distro + '\\'
+				out << wsl_prefix + distro + '\\'
 			}
 		}
 		C.RegCloseKey(sub)
 	}
 	out.sort()
 	return out
+}
+
+// wsl_prefix is how Windows reaches a distribution's files. Windows 10 before 21H2 served
+// `\\wsl$\` only; both name the same place on a current Windows, and this is the one wsl_roots
+// emits — root_label reads it, so the spelling is stated once.
+const wsl_prefix = '\\\\wsl.localhost\\'
+
+// root_label is the drive row's button text for a root: the drive as is, a WSL distribution
+// by name.
+fn root_label(r string) string {
+	if r.starts_with(wsl_prefix) {
+		return 'wsl: ' + r.all_after(wsl_prefix).trim_right('\\')
+	}
+	return r
 }

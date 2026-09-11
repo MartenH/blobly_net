@@ -34,12 +34,28 @@ fn test_the_editor_command_is_split_with_quotes_and_the_file_substituted() {
 	assert editor_argv('code -g %s', 'D:\\x\\a.lua') == ['code', '-g', 'D:\\x\\a.lua']
 	// no %s: appended
 	assert editor_argv('gvim', '/tmp/a.lua') == ['gvim', '/tmp/a.lua']
-	// a quoted executable path with a space, and %s inside a quoted token is NOT substituted
+	// a quoted executable path with a space
 	assert editor_argv('"C:\\Program Files\\E\\e.exe" --wait %s', 'C:\\a b\\s.lua') == [
 		'C:\\Program Files\\E\\e.exe',
 		'--wait',
 		'C:\\a b\\s.lua',
 	]
+	// %s quoted (the shell habit) and %s inside a token both mean the file; nothing is appended
+	assert editor_argv('code -g "%s"', '/t/a b.lua') == ['code', '-g', '/t/a b.lua']
+	assert editor_argv('ed --file=%s', '/t/a.lua') == ['ed', '--file=/t/a.lua']
+	// quotes only group: an empty quoted token is dropped
+	assert editor_argv('ed "" %s', '/t/a.lua') == ['ed', '/t/a.lua']
 	assert editor_argv('  ', 'x') == []
 	assert editor_argv('', 'x') == []
+}
+
+fn test_dragged_panes_round_trip_and_a_zero_is_dropped() {
+	mut p := Prefs{}
+	p.panes['script_editor'] = 300
+	p.panes['system_ecu'] = 160.5
+	q := parse(p.serialize())!
+	assert q.panes['script_editor'] == 300
+	assert q.panes['system_ecu'] == 160.5
+	r := parse('[panes]\nx = 0\ny = -5\n')!
+	assert r.panes.len == 0
 }

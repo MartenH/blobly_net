@@ -218,7 +218,6 @@ mut:
 	proj_path    string
 	proj_name    string
 	dark         bool = true // theme
-	ui_scale     f32  = 1.0
 	paused       bool
 	recording    bool
 	rec          []canlog.LogEntry // captured while recording; written on stop
@@ -394,8 +393,11 @@ mut:
 	show_config bool
 	// Settings ▸ Preferences… (#306): what the app remembers across runs, see settings.v
 	show_prefs       bool
-	prefs            prefs.Prefs
+	prefs            prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
 	prefs_editor_buf []u8
+	prefs_file       string // resolved once at load
+	prefs_caption    string // the dialog's fixed line, built at open
+	prefs_broken     bool   // the file did not parse: never overwritten except from the dialog
 	cfg_bufs         []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)
 	disc_open   bool
@@ -446,6 +448,7 @@ mut:
 	fb_sel      string   // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
 	fb_dirs     []string // the listing, filled by fb_refresh — not read from disk per frame
 	fb_roots    []string // the drive row: drives and WSL distributions, read at open (#306)
+	fb_root_lbl []string // their button labels, built once beside them
 	fb_files    []string
 	fb_path_buf []u8 // the folder, typed — Enter or Go navigates; a file path selects it where it lives
 	// ACCEPTED extensions, plural — the caption the browser shows and the match it applies both
