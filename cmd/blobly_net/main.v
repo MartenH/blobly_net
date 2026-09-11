@@ -183,7 +183,8 @@ fn main() {
 	}
 	// The layout (window rects, the dock tree) lives beside the settings, per user, rather
 	// than in the working directory per checkout or bundle: one home (#306). Before the first
-	// frame, which is when ImGui reads it.
+	// frame, which is when ImGui reads it. ImGui writes it itself, unlocked: two instances of
+	// one user are last-writer-wins on the layout (#308).
 	// A headless render has NO layout file: one left in the working directory by an earlier run
 	// would decide its dock splits (codex #307 r5).
 	if !headless {
@@ -435,8 +436,11 @@ fn main() {
 			app.prefs.panes[k] = v
 		}
 	}
-	if !headless && app.prefs.panes.len > 0 {
-		app.save_prefs(prefs.Changed{ panes: true }, false)
+	// and whatever an earlier save left pending (a scale picked while another instance held
+	// the lock), which save_prefs folds in — so the save runs when anything is owed (r16)
+	pend := app.prefs_pending
+	if !headless && (app.prefs.panes.len > 0 || pend.editor || pend.scale || pend.panes) {
+		app.save_prefs(prefs.Changed{ panes: app.prefs.panes.len > 0 }, false)
 	}
 	vgui.shutdown()
 }

@@ -17,6 +17,7 @@ mut:
 	dirty        bool   // typed in since it was loaded
 	err          string // what holds a save back, or what a read said ('' = nothing)
 	mtime        i64    // the file's modification time when it was loaded (stale)
+	orig         string // the text as loaded: what write compares the file against, byte for byte
 	disk_changed bool   // stale() answered yes while dirty: said until a load or a write
 	seen         i64    // when stale last looked, ms — once a second, not per frame
 }
@@ -62,6 +63,7 @@ fn (mut tf TextFile) load(path string) LoadOutcome {
 	tf.dirty = false
 	tf.err = ''
 	tf.mtime = os.file_last_mod_unix(path)
+	tf.orig = txt
 	tf.seen = time.ticks()
 	tf.disk_changed = false
 	return .read
@@ -104,7 +106,11 @@ fn (mut tf TextFile) write() ! {
 	// The file is checked NOW, not on the once-a-second cadence the strip uses: an external save
 	// inside that second would be overwritten unseen (codex #307 r15). Refused once — the strip
 	// has the warning by the next frame — and a Save pressed with the warning showing overwrites.
-	if !tf.disk_changed && os.file_last_mod_unix(tf.loaded) != tf.mtime {
+	// By CONTENT, not by the second-resolution mtime: an external save inside the same second
+	// as the load is invisible to the stamp (codex #307 r16). A file that cannot be read now is
+	// not a change this can judge; the write proceeds.
+	now_txt := os.read_file(tf.loaded) or { tf.orig }
+	if !tf.disk_changed && now_txt != tf.orig {
 		tf.disk_changed = true
 		return error('changed on disk since it was loaded — Discard edits takes the file, Save again overwrites it')
 	}
@@ -112,6 +118,7 @@ fn (mut tf TextFile) write() ! {
 	tf.dirty = false
 	tf.err = ''
 	tf.mtime = os.file_last_mod_unix(tf.loaded)
+	tf.orig = tf.text()
 	tf.disk_changed = false
 }
 

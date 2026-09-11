@@ -45,6 +45,9 @@ fn test_keys_this_build_does_not_know_are_foreign_whatever_their_spelling() {
 	assert p.ui_scale == 1.25
 	assert p.panes['x'] == 200
 	assert p.foreign == ['recent_limit', 'quoted key', 'future', 'colors']
+	// and [panes] itself as something other than a table
+	nt := parse('panes = "auto"\n')!
+	assert nt.foreign == ['panes']
 	// a known key of a type this build cannot read
 	t := parse('ui_scale = "system"\neditor = 3\n')!
 	assert t.ui_scale == 1.0

@@ -77,17 +77,21 @@ pub fn parse(text string) !Prefs {
 		}
 	}
 	if v := doc.value_opt('panes') {
-		for k, x in v.as_map() {
-			// a pane is a number; anything else under [panes] is a newer build's and foreign,
-			// like an unknown top-level key (codex #307 r14)
-			if x is f64 || x is i64 || x is int || x is u64 {
-				h := f32(x.f64())
-				if h > 0 {
-					p.panes[k] = h
+		if v is map[string]toml.Any {
+			for k, x in v {
+				// a pane is a number; anything else under [panes] is a newer build's and
+				// foreign, like an unknown top-level key (codex #307 r14)
+				if x is f64 || x is i64 || x is int || x is u64 {
+					h := f32(x.f64())
+					if h > 0 {
+						p.panes[k] = h
+					}
+				} else {
+					p.foreign << 'panes.' + k
 				}
-			} else {
-				p.foreign << 'panes.' + k
 			}
+		} else {
+			p.foreign << 'panes' // `panes = "auto"`: a newer build's, foreign like the rest (r16)
 		}
 	}
 	for k, _ in doc.to_any().as_map() {
