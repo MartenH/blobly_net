@@ -260,9 +260,9 @@ fn (mut app App) open_in_editor(path string) {
 	mut args := argv.clone()
 	if argv[0].to_lower().ends_with('.exe') {
 		if win := wsl_windows_path(path) {
-			for i, a in args {
-				if a.contains(path) {
-					args[i] = a.replace(path, win)
+			for i, arg in args {
+				if arg.contains(path) {
+					args[i] = arg.replace(path, win)
 				}
 			}
 		}
