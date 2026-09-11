@@ -154,18 +154,26 @@ fn (mut app App) save_layout(force bool) {
 	}
 }
 
-// warn_layout says a layout write failed, ONCE per run — through notify, which is the Log the
-// operator can actually SEE: a warning about a silent loss that reaches only stderr and the
-// session file is itself a silent loss, and save_prefs says the same class of failure the same
-// way. Once, because the flag settles every few seconds: a config directory that is full or
+// warn_layout says a layout write failed, ONCE per run, through BOTH sinks — they do not
+// overlap, and this message needs each for a different moment. `notify` is the in-app Log, the
+// only one an operator sees while the window is up; `elog` is stderr and the session file, the
+// only one left at the EXIT save, which runs after the last frame — a notification posted there
+// is never drawn, so on its own it would be exactly the silent loss this warns about (codex
+// round 1 on #308).
+//
+// Once, because the flag settles every few seconds: a config directory that is full or
 // read-only would otherwise put a line in the Log every settling period for the rest of the run,
-// and the first says everything the later ones would.
+// and the first says everything the later ones would. A run whose periodic saves worked and
+// whose exit save fails is the case the pairing is for, and it is not latched shut by anything
+// before it.
 fn (mut app App) warn_layout(what string) {
 	if app.layout_warned {
 		return
 	}
 	app.layout_warned = true
-	app.notify('layout not saved (${what}) — the window arrangement will not carry to the next start')
+	msg := 'layout not saved (${what}) — the window arrangement will not carry to the next start'
+	app.notify(msg)
+	app.elog(msg)
 }
 
 // collect_panes folds what THIS session dragged over the panes it loaded, into what a save
