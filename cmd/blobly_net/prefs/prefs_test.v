@@ -136,3 +136,10 @@ fn test_a_nan_scale_is_the_default() {
 	assert p.ui_scale == p.ui_scale // whatever the parser made of it, it is a number
 	assert clamp_scale(f32(math.inf(1))) == 3.0 // and inf, which the parser also reads as 0
 }
+
+fn test_control_characters_in_the_editor_command_survive_a_rewrite() {
+	p := parse('editor = "a\\nb\\tc\\u0001d"\n')!
+	assert p.editor == 'a\nb\tc\x01d'
+	q := parse(p.serialize())!
+	assert q.editor == p.editor
+}

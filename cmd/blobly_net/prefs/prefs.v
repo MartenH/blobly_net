@@ -154,8 +154,44 @@ fn toml_key(k string) string {
 	return if bare { k } else { '"' + toml_escape(k) + '"' }
 }
 
+// toml_escape spells `s` inside a basic string: backslash and quote escaped, and every control
+// character too — a hand-edited `"foo\nbar"` parses to a real newline, which written back raw
+// splits the line and breaks the file (codex #307 r10).
 fn toml_escape(s string) string {
-	return s.replace('\\', '\\\\').replace('"', '\\"')
+	mut out := ''
+	for c in s {
+		match c {
+			`\\` {
+				out += '\\\\'
+			}
+			`"` {
+				out += '\\"'
+			}
+			`\n` {
+				out += '\\n'
+			}
+			`\r` {
+				out += '\\r'
+			}
+			`\t` {
+				out += '\\t'
+			}
+			8 {
+				out += '\\b'
+			}
+			12 {
+				out += '\\f'
+			}
+			else {
+				if c < 0x20 || c == 0x7f {
+					out += '\\u00' + c.hex().to_upper()
+				} else {
+					out += c.ascii_str()
+				}
+			}
+		}
+	}
+	return out
 }
 
 // editor_argv is the argv that opens `path` with the editor command `cmd`: the command split

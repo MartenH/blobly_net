@@ -202,8 +202,6 @@ fn main() {
 	} else {
 		app.apply_ui_scale(app.prefs.ui_scale)
 	}
-	app.panes_loaded =
-		app.prefs.panes.clone() // what this instance started from, to know what it dragged
 	app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
 	app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
 	app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
@@ -412,9 +410,9 @@ fn main() {
 		}
 	}
 	app.stop()
-	// What THIS session dragged, for the next one: only the panes that differ from what it
-	// loaded, so an instance that dragged nothing writes no pane over another's (codex #307
-	// r9). A broken or foreign file is not overwritten.
+	// What THIS session DRAGGED, for the next one (pane_moved): an instance that dragged nothing
+	// writes no pane over another's, and a pane merely shown at its seeded default is not a
+	// drag (codex #307 r9, r10). A broken or foreign file is not overwritten.
 	now := {
 		'system_ecu':    app.sys_ecu_h
 		'discover_list': app.disc_list_h
@@ -425,7 +423,7 @@ fn main() {
 	}
 	app.prefs.panes = map[string]f32{}
 	for k, v in now {
-		if v > 0 && v != (app.panes_loaded[k] or { 0 }) {
+		if v > 0 && (app.panes_dragged[k] or { false }) {
 			app.prefs.panes[k] = v
 		}
 	}

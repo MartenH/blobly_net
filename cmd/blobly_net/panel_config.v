@@ -519,7 +519,7 @@ fn draw_discover_dialog(mut app App) {
 	if boxed {
 		vgui.child_end()
 		moved := vgui.splitter_h('##disc_split', box_h, box_min, box_max)
-		app.disc_list_h = panerule.dragged(app.disc_list_h, box_h, moved, sc)
+		app.disc_list_h = app.pane_moved('discover_list', app.disc_list_h, box_h, moved, sc)
 	}
 	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
 	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those

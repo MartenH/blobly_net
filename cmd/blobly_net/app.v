@@ -395,11 +395,11 @@ mut:
 	show_prefs       bool
 	prefs            prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
 	prefs_editor_buf []u8
-	prefs_file       string         // resolved once at load
-	prefs_caption    string         // the dialog's fixed line, built at open
-	prefs_broken     bool           // the file did not parse: never overwritten except from the dialog
-	prefs_pending    prefs.Changed  // what a refused or failed save still owes the file
-	panes_loaded     map[string]f32 // the dragged panes as loaded, to tell what this instance changed
+	prefs_file       string          // resolved once at load
+	prefs_caption    string          // the dialog's fixed line, built at open
+	prefs_broken     bool            // the file did not parse: never overwritten except from the dialog
+	prefs_pending    prefs.Changed   // what a refused or failed save still owes the file
+	panes_dragged    map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
 	cfg_bufs         []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)
 	disc_open   bool

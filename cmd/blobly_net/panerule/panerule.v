@@ -34,10 +34,11 @@ pub fn drawn(stored f32, dflt f32, sc f32, min_px f32, max_px f32) (f32, f32) {
 // dragged is the stored value after the splitter answered `moved` for a pane drawn at
 // `drawn_px`: a DRAG (moved differs from what was drawn) persists, unscaled; anything else —
 // including every frame a short dock clamps the pane below what is stored — keeps what the
-// operator last chose, so the pane comes back when the room does.
-pub fn dragged(stored f32, drawn_px f32, moved f32, sc f32) f32 {
+// operator last chose, so the pane comes back when the room does. The bool is whether it WAS
+// a drag — what a settings save needs to know, since a seeded default is not one (#307 r10).
+pub fn dragged(stored f32, drawn_px f32, moved f32, sc f32) (f32, bool) {
 	if moved != drawn_px {
-		return moved / sc
+		return moved / sc, true
 	}
-	return stored
+	return stored, false
 }

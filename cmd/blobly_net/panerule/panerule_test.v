@@ -14,7 +14,9 @@ fn test_a_short_dock_clamps_the_frame_and_not_the_stored_value() {
 	assert h == 250
 	assert stored == 400
 	// the splitter hands back the clamped value: nothing was dragged, nothing is persisted
-	assert dragged(stored, h, 250, 1.0) == 400
+	kept, was_drag := dragged(stored, h, 250, 1.0)
+	assert kept == 400
+	assert !was_drag
 	// and when the room comes back, so does the pane
 	h2, _ := drawn(stored, 160, 1.0, 60, 1000)
 	assert h2 == 400
@@ -23,8 +25,9 @@ fn test_a_short_dock_clamps_the_frame_and_not_the_stored_value() {
 fn test_a_drag_persists_unscaled() {
 	h, stored := drawn(160, 160, 2.0, 60, 1000)
 	assert h == 320
-	after := dragged(stored, h, 500, 2.0) // dragged to 500 device px at 200%
+	after, was_drag := dragged(stored, h, 500, 2.0) // dragged to 500 device px at 200%
 	assert after == 250
+	assert was_drag
 	h2, _ := drawn(after, 160, 1.0, 60, 1000)
 	assert h2 == 250 // at 100% the same proportion
 }

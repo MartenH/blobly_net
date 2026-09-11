@@ -243,7 +243,7 @@ fn draw_system(mut app App) {
 	// The divider between the ECU panes and the section below (#270 item 1): drag to trade
 	// height, within the clamp computed above the panes (the splitter floors max at min).
 	moved := vgui.splitter_h('##sys_split', ecu_h, sys_min, sys_max)
-	app.sys_ecu_h = panerule.dragged(app.sys_ecu_h, ecu_h, moved, sc)
+	app.sys_ecu_h = app.pane_moved('system_ecu', app.sys_ecu_h, ecu_h, moved, sc)
 	// buses matrix + id allocation: useful but long, so fold it (closed by default) —
 	// keeps the panel focused on the nodes/ECU detail above. In its own scrolling child, so
 	// what the splitter leaves is what it scrolls in; and its tables are CONTENT-SIZED

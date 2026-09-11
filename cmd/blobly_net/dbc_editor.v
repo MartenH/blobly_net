@@ -653,7 +653,7 @@ fn draw_dbc_editor(mut app App) {
 	// drag to trade height between the messages box above and the signals region below (which
 	// fills the remainder)
 	moved_m := vgui.splitter_h('##dbced_hsplit', msgs_h, msgs_min, msgs_max)
-	app.dbc_ed.msgs_h = panerule.dragged(app.dbc_ed.msgs_h, msgs_h, moved_m, sc)
+	app.dbc_ed.msgs_h = app.pane_moved('dbc_msgs', app.dbc_ed.msgs_h, msgs_h, moved_m, sc)
 
 	// Message Action Buttons
 	if !ro && vgui.small_button('+ message') {
@@ -839,7 +839,7 @@ fn draw_dbc_editor(mut app App) {
 	// draggable divider: grow/shrink the left (messages & signals) pane vs the right (inspector)
 	vgui.same_line()
 	moved_w := vgui.splitter_v('##dbced_split', left_w, left_min, left_max)
-	app.dbc_ed.left_w = panerule.dragged(app.dbc_ed.left_w, left_w, moved_w, sc)
+	app.dbc_ed.left_w = app.pane_moved('dbc_left', app.dbc_ed.left_w, left_w, moved_w, sc)
 	vgui.same_line()
 
 	// --- RIGHT PANE: Message Properties, Bit Layout Grid, Signal Inspector ---
@@ -1155,7 +1155,7 @@ fn draw_dbc_editor(mut app App) {
 	// the slider above the Signal Inspector: drag to trade height between the properties/grid
 	// region above and the inspector below
 	moved_p := vgui.splitter_h('##dbced_props_split', props_h, props_min, props_max)
-	app.dbc_ed.props_h = panerule.dragged(app.dbc_ed.props_h, props_h, moved_p, sc)
+	app.dbc_ed.props_h = app.pane_moved('dbc_props', app.dbc_ed.props_h, props_h, moved_p, sc)
 
 	// 3. Signal Inspector Form (for selected signal)
 	si := app.dbc_ed.sig

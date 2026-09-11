@@ -3,6 +3,7 @@ module main
 import os
 import time
 import prefs
+import panerule
 import vgui
 
 // prefs_path is where the settings live: the user's config directory, so every project and
@@ -125,6 +126,18 @@ fn prefs_lock(file string) bool {
 
 fn prefs_unlock(file string) {
 	os.rmdir(file + '.lock') or {}
+}
+
+// pane_moved is the one caller shape for a persisted divider's splitter result: the stored
+// value after the drag, and the DRAG recorded by pane name — what the exit save writes is the
+// panes this instance dragged, not the ones it merely showed at their seeded default (codex
+// #307 r10).
+fn (mut app App) pane_moved(key string, stored f32, drawn_px f32, moved f32, sc f32) f32 {
+	v, was_drag := panerule.dragged(stored, drawn_px, moved, sc)
+	if was_drag {
+		app.panes_dragged[key] = true
+	}
+	return v
 }
 
 // apply_ui_scale is the ONE writer of the scale: the value the panels read and the font scale

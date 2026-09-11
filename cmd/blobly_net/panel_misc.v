@@ -1366,5 +1366,5 @@ fn draw_script_editor(mut app App) {
 		app.script_file.dirty = true
 	}
 	moved := vgui.splitter_h('##script_split', ed_h, ed_min, ed_max)
-	app.script_ed_h = panerule.dragged(app.script_ed_h, ed_h, moved, sc)
+	app.script_ed_h = app.pane_moved('script_editor', app.script_ed_h, ed_h, moved, sc)
 }
