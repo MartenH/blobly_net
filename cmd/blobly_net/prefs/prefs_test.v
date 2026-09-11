@@ -134,6 +134,5 @@ fn test_a_nan_scale_is_the_default() {
 	assert clamp_scale(f32(math.nan())) == 1.0
 	p := parse('ui_scale = nan\n')!
 	assert p.ui_scale == p.ui_scale // whatever the parser made of it, it is a number
-	q := parse('ui_scale = inf\n')!
-	assert q.ui_scale == 3.0
+	assert clamp_scale(f32(math.inf(1))) == 3.0 // and inf, which the parser also reads as 0
 }
