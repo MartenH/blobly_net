@@ -8,6 +8,7 @@ import transport
 import candb
 import vgui
 import panerule
+import prefs
 
 // examples lists the shipped projects for the File > Open Example menu.
 const examples = [
@@ -237,7 +238,7 @@ fn draw_menubar(mut app App, rx u64) {
 			for s in [75, 100, 125, 150, 175] {
 				if vgui.menu_item('${s}%') {
 					app.apply_ui_scale(f32(s) / 100.0)
-					app.save_prefs(false) // remembered across runs (#306)
+					app.save_prefs(prefs.Changed{ scale: true }, false) // remembered across runs (#306)
 				}
 			}
 			vgui.separator()

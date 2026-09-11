@@ -20,6 +20,7 @@ import player
 import time
 import sync.stdatomic
 import vgui
+import prefs
 
 // load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
 // if set, else the first available system monospace (DejaVu Sans Mono / Consolas). Keeping
@@ -411,7 +412,7 @@ fn main() {
 	app.prefs.panes['discover_list'] = app.disc_list_h
 	app.prefs.panes['script_editor'] = app.script_ed_h
 	if !headless {
-		app.save_prefs(false)
+		app.save_prefs(prefs.Changed{ panes: true }, false)
 	}
 	vgui.shutdown()
 }

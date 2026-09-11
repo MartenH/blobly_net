@@ -3,9 +3,20 @@ module prefs
 import toml
 
 // WHAT THE APP REMEMBERS ACROSS RUNS — as opposed to what a project says (a .blobnet) and what
-// a run measures. Two things today (#306): the external editor, and the UI scale, which the
-// Settings menu set and the next start forgot. A GUI-free module in the shape ../saverule set,
-// so the file's grammar and the editor command's are tested where the GUI cannot be.
+// a run measures. Three things today (#306): the external editor, the UI scale, which the
+// Settings menu set and the next start forgot, and the dragged dividers. A GUI-free module in
+// the shape ../saverule set, so the file's grammar and the editor command's are tested where
+// the GUI cannot be.
+//
+// The file is SHARED: by every checkout and bundle of this user, and by every build they run.
+// Two rules follow, and both are here rather than in the GUI. A file carrying keys this build
+// does not know (`foreign`) is never rewritten by an automatic save — five review rounds went
+// into a textual scan that preserved such keys through a rewrite, each round a TOML form the
+// scan misread (quoted keys, quoted headers, dotted keys, multi-line strings, delimiters in
+// comments), which is the signal to stop scanning: the Preferences dialog's Save is the one
+// writer that may replace such a file, and it says what it drops. And a save MERGES: the file
+// is read again and only the fields THIS instance changed are written over it, so a second
+// instance closing later does not put back the scale the first one had just changed.
 
 // Prefs is the settings file, as values. A field's zero value is the default, so a file that
 // names neither key is the same as no file.
@@ -19,15 +30,24 @@ pub mut:
 	// Dragged dividers, by pane name, unscaled px (panerule): what a session set, the next
 	// finds. Written at exit, since a drag is many frames and the file is one write.
 	panes map[string]f32
-	// What this build does not know, kept as the lines it came in — a newer build's keys and
-	// tables — so an older build's exit does not erase them from the shared file (codex #307
-	// r2). Written back after the known keys.
-	unknown []string
+	// The file names keys or tables this build does not read — a newer build's — and so must
+	// not be rewritten by an automatic save. Set by parse, from the parsed document.
+	foreign []string
 }
 
-// parse reads the settings file's text. Unknown keys are ignored (a newer build's file opens
-// in an older one); a scale outside what the Settings menu offers is clamped, since a file
-// saying 0 would hide the whole UI.
+// Changed says which fields a save may write: the ones this instance changed. Anything else
+// stays as the file has it now, whoever wrote that.
+pub struct Changed {
+pub:
+	editor bool
+	scale  bool
+	panes  bool
+}
+
+// parse reads the settings file's text. A scale outside what the Settings menu offers is
+// clamped, since a file saying 0 would hide the whole UI. Keys this build does not know are
+// listed in `foreign` — from the parsed document, so a quoted, dotted or multi-line spelling is
+// whatever TOML says it is.
 pub fn parse(text string) !Prefs {
 	doc := toml.parse_text(text)!
 	mut p := Prefs{}
@@ -45,87 +65,12 @@ pub fn parse(text string) !Prefs {
 			}
 		}
 	}
-	p.unknown = unknown_lines(text)
+	for k, _ in doc.to_any().as_map() {
+		if k !in ['editor', 'ui_scale', 'panes'] {
+			p.foreign << k
+		}
+	}
 	return p
-}
-
-// unknown_lines is every line of the file this build does not read: a top-level `key = …`
-// whose key is not one of ours, and every table but [panes] with its lines. Kept verbatim —
-// the value's own grammar is not parsed back — and re-emitted by serialize, so a newer build's
-// settings survive an older build's save. Blank lines and comments go with the section they
-// are in; ours are dropped, since serialize rewrites those sections.
-fn unknown_lines(text string) []string {
-	known := ['editor', 'ui_scale']
-	mut out := []string{}
-	mut in_ours := true // the top level, until a table header
-	mut keep_table := false
-	mut keep_line := false // inside a multi-line string: the line goes where its opener went
-	mut in_ml := false
-	for raw in text.split_into_lines() {
-		line := raw.trim_space()
-		if in_ml {
-			// A `[section]` inside `"""…"""` is text, not a header (codex #307 r5). The
-			// delimiter count is what closes it; an odd count on a line toggles.
-			if keep_line {
-				out << raw
-			}
-			if ml_toggles(line) {
-				in_ml = false
-			}
-			continue
-		}
-		if line.starts_with('[') {
-			// the parsed identity: `["panes"]` is [panes] (codex #307 r4)
-			name := line.all_after('[').all_before(']').trim_space().trim('"\'')
-			keep_table = name != 'panes'
-			in_ours = false
-			if keep_table {
-				out << raw
-			}
-			continue
-		}
-		mut kept := false
-		if in_ours {
-			if line != '' && !line.starts_with('#') {
-				// the parsed identity, not the raw spelling: `"editor" = …` is editor (codex #307 r3)
-				key := line.all_before('=').trim_space().trim('"\'')
-				if key !in known {
-					out << raw
-					kept = true
-				}
-			}
-		} else if keep_table {
-			out << raw
-			kept = true
-		}
-		if ml_toggles(line) {
-			in_ml = true
-			keep_line = kept
-		}
-	}
-	return out
-}
-
-// first_header is the index of the first table header among `lines` — one outside a
-// multi-line string, which is the same reading unknown_lines gave them — or lines.len.
-fn first_header(lines []string) int {
-	mut in_ml := false
-	for i, raw in lines {
-		line := raw.trim_space()
-		if !in_ml && line.starts_with('[') {
-			return i
-		}
-		if ml_toggles(line) {
-			in_ml = !in_ml
-		}
-	}
-	return lines.len
-}
-
-// ml_toggles reports whether `line` opens or closes a multi-line string: an odd number of
-// triple-double-quote or triple-single-quote delimiters on it.
-fn ml_toggles(line string) bool {
-	return (line.count('"""') + line.count("'" + "''")) % 2 == 1
 }
 
 // clamp_scale keeps a UI scale inside the range the Settings menu offers (75%..175%), with room
@@ -140,17 +85,28 @@ pub fn clamp_scale(s f32) f32 {
 	return s
 }
 
+// merge is what a save writes: `base` (the file as it is now) with the fields `ch` names taken
+// from `mine`. A file that is not there is the defaults, so `base` may be Prefs{}.
+pub fn merge(base Prefs, mine Prefs, ch Changed) Prefs {
+	mut out := base
+	if ch.editor {
+		out.editor = mine.editor
+	}
+	if ch.scale {
+		out.ui_scale = mine.ui_scale
+	}
+	if ch.panes {
+		out.panes = mine.panes.clone()
+	}
+	return out
+}
+
 // serialize is the file's text: one line per key, a TOML basic string for the editor (a
 // Windows path carries backslashes, which the basic string escapes — by hand, because vlib's
-// toml.encode quotes a string without escaping anything), then the dragged panes.
+// toml.encode quotes a string without escaping anything), then the dragged panes. What the
+// build does not know is not here: see `foreign`.
 pub fn (p Prefs) serialize() string {
 	mut out := 'editor = "${toml_escape(p.editor)}"\nui_scale = ${p.ui_scale:.2f}\n'
-	// Unknown TOP-LEVEL lines go before any table, or they would land inside [panes]; unknown
-	// tables go after it. The list is in file order, and a top-level line cannot follow a header.
-	first_table := first_header(p.unknown)
-	for l in p.unknown[..first_table] {
-		out += l + '\n'
-	}
 	if p.panes.len > 0 {
 		out += '\n[panes]\n'
 		mut keys := p.panes.keys()
@@ -159,15 +115,11 @@ pub fn (p Prefs) serialize() string {
 			out += '${toml_key(k)} = ${p.panes[k]:.1f}\n'
 		}
 	}
-	if first_table < p.unknown.len {
-		out += '\n' + p.unknown[first_table..].join('\n') + '\n'
-	}
 	return out
 }
 
 // toml_key spells a map key as a TOML key: bare when it is one (letters, digits, `_`, `-`),
-// quoted otherwise — a pane a newer build names with a space is still a valid file after this
-// build rewrites it (codex #307 r4).
+// quoted otherwise — a pane named with a space is still a valid file.
 fn toml_key(k string) string {
 	mut bare := k.len > 0
 	for c in k {

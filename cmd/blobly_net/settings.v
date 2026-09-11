@@ -14,14 +14,15 @@ fn prefs_path() string {
 
 // load_prefs reads the file at startup. No file is the defaults; a broken one is logged, the
 // defaults stand — a settings file must never keep the app from starting — and it is REMEMBERED
-// as broken, so a later save does not overwrite the hand-edited file with the defaults
-// (self-review on #307); the Preferences dialog's Save is the one that may.
+// as broken, so an automatic save does not overwrite the hand-edited file with the defaults;
+// the Preferences dialog's Save is the one that may. A file that is there but cannot be read is
+// broken too, not absent (codex #307 r5). A file that parses but carries keys this build does
+// not know (prefs.Prefs.foreign) is protected the same way, and the dialog says what its Save
+// would drop.
 fn (mut app App) load_prefs() {
 	app.prefs_file = prefs_path()
 	txt := os.read_file(app.prefs_file) or {
 		if os.exists(app.prefs_file) {
-			// There, and unreadable: not the same as absent. Marked broken, so the exit save
-			// cannot open it for writing and truncate what it holds (codex #307 r5).
 			app.elog('settings: ${app.prefs_file}: ${err.msg()} — using defaults; not overwritten')
 			app.prefs_broken = true
 		}
@@ -32,20 +33,41 @@ fn (mut app App) load_prefs() {
 		app.prefs_broken = true
 		return
 	}
+	if app.prefs.foreign.len > 0 {
+		app.elog('settings: ${app.prefs_file} carries settings this build does not know (${app.prefs.foreign.join(', ')}); it is not rewritten automatically')
+	}
 }
 
-// save_prefs writes the file — at a scale pick, at exit (the dragged panes), and from the
-// Preferences dialog, which is the only writer allowed to replace a file that would not parse.
-fn (mut app App) save_prefs(from_dialog bool) {
+// save_prefs writes the fields `ch` names — the ones this instance changed — over the file AS
+// IT IS NOW (read again, merged), so a second instance closing later does not put back what the
+// first one changed (codex #307 r6). Refused, unless from the dialog, for a file that will not
+// parse, cannot be read, or carries keys this build does not know: the dialog's Save replaces
+// such a file whole, and says so. A failure to write is said, not fatal.
+fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) {
 	if app.prefs_broken && !from_dialog {
 		return
 	}
+	mut base := prefs.Prefs{}
+	if txt := os.read_file(app.prefs_file) {
+		if now := prefs.parse(txt) {
+			if now.foreign.len > 0 && !from_dialog {
+				return
+			}
+			base = now
+		} else if !from_dialog {
+			return
+		}
+	} else if os.exists(app.prefs_file) && !from_dialog {
+		return
+	}
+	merged := prefs.merge(base, app.prefs, ch)
 	os.mkdir_all(os.dir(app.prefs_file)) or {}
-	os.write_file(app.prefs_file, app.prefs.serialize()) or {
+	os.write_file(app.prefs_file, merged.serialize()) or {
 		app.notify('settings not saved (${app.prefs_file}): ${err.msg()}')
 		return
 	}
 	app.prefs_broken = false
+	app.prefs.foreign = []
 }
 
 // apply_ui_scale is the ONE writer of the scale: the value the panels read and the font scale
@@ -116,12 +138,15 @@ fn draw_prefs(mut app App) {
 	vgui.text_dim(app.prefs_caption)
 	if app.prefs_broken {
 		vgui.text_colored(230, 120, 120,
-			'the file did not parse (see the Log); Save here replaces it')
+			'the file could not be read (see the Log); Save here replaces it')
+	} else if app.prefs.foreign.len > 0 {
+		vgui.text_colored(230, 170, 70,
+			'the file carries settings this build does not know (${app.prefs.foreign.join(', ')}); Save here drops them')
 	}
 	vgui.separator()
 	if vgui.button('Save') {
 		app.prefs.editor = vgui.buf_str(app.prefs_editor_buf).trim_space()
-		app.save_prefs(true)
+		app.save_prefs(prefs.Changed{ editor: true }, true)
 		app.notify('preferences saved')
 	}
 	vgui.same_line()

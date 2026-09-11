@@ -507,7 +507,11 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   the merged fallback face (`merge_symbol_font`: Segoe UI Symbol / DejaVu Sans), which is what
   made `↻` and `⚠` draw as `?` before. **Settings** (`settings.v`, `prefs`): one per-user home —
   `settings.toml` (editor command, UI scale, dragged panes) and ImGui's `imgui.ini` beside it —
-  and a file that will not parse is never overwritten except from the Preferences dialog. An
+  and every save is a read-merge-write of the fields THIS instance changed; a file that will not
+  parse, cannot be read, or carries keys this build does not know is never rewritten by an
+  automatic save — the Preferences dialog's Save is the one that may, and it says what it drops
+  (a textual scan that preserved such keys through a rewrite took five review rounds, one TOML
+  spelling at a time, before it was deleted). An
   editor is launched DETACHED through `open_windows.v` / `open_nix.v`, never `os.new_process` on
   Windows, where vlib exits the whole process when a command cannot start.
 - **Silence** (`cmd/blobly_net/stale.v`): CAN has no link detection, so a *receiver* cannot tell
