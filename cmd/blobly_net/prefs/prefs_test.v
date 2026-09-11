@@ -20,6 +20,14 @@ fn test_the_file_round_trips_including_a_windows_editor_path() {
 	assert q.foreign == []
 }
 
+fn test_an_unchanged_scale_keeps_its_precision_through_a_save() {
+	p := parse('ui_scale = 1.125\n')!
+	assert p.ui_scale == 1.125
+	q := parse(p.serialize())!
+	assert q.ui_scale == 1.125
+	assert parse(Prefs{ ui_scale: 1.0 }.serialize())!.ui_scale == 1.0
+}
+
 fn test_a_wild_scale_is_clamped() {
 	p := parse('editor = "vi"\nui_scale = 0\n')!
 	assert p.editor == 'vi'

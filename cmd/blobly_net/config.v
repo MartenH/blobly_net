@@ -1123,6 +1123,7 @@ fn (mut app App) save_cfg_text() {
 	app.dirty = false
 	app.cfg_file.dirty = false
 	app.proj_disk = txt
+	app.proj_disk_path = path
 	app.external_confirm = ''
 	app.reserialize_confirm = '' // a File save persists the comments; a later Buses Save must re-warn (codex #268)
 	app.saved_at = time.ticks()
@@ -1176,6 +1177,7 @@ fn (mut app App) revert_proj_from_disk() {
 		return
 	}
 	app.proj_disk = txt
+	app.proj_disk_path = app.proj_path
 	app.external_confirm = ''
 	// Clear the flags only if the file actually replaced the model. Clearing them regardless
 	// left the edited model live and looking clean, so a later save would persist changes the
@@ -1228,7 +1230,8 @@ fn (mut app App) save_project() {
 	// load / revert / different target re-warns rather than counting as the confirmation.
 	// A project file GONE since it was loaded is an external change as much as an edited one:
 	// recreating it from the model would undo a deletion nobody confirmed (codex #307 r22).
-	if app.proj_disk != '' && !os.exists(app.proj_path) && app.external_confirm != absent_marker {
+	baseline := app.proj_disk_path == app.proj_path // Save As to a new destination has none
+	if baseline && !os.exists(app.proj_path) && app.external_confirm != absent_marker {
 		app.external_confirm = absent_marker
 		app.notify('not saved yet — ${app.proj_path} is gone from disk since it was loaded; repeat the Save to recreate it')
 		return
@@ -1243,7 +1246,7 @@ fn (mut app App) save_project() {
 		// An EXTERNAL change first: the file is not what this app last read or wrote (Open in
 		// editor, a checkout), so the model is stale and its Save would erase the edit. Refused
 		// once, for that version of the file; a repeated Save overwrites it (codex #307 r21).
-		if app.proj_disk != '' && on_disk != app.proj_disk && app.external_confirm != on_disk {
+		if baseline && on_disk != app.proj_disk && app.external_confirm != on_disk {
 			app.external_confirm = on_disk
 			app.notify('not saved yet — ${app.proj_path} changed on disk since it was loaded (an external editor?). Configuration ▸ File ▸ Reload, or File ▸ Revert, takes the file; repeat the Save to overwrite it.')
 			return
@@ -1287,14 +1290,18 @@ fn (mut app App) save_project() {
 	p := app.proj
 	path := app.proj_path
 	app.mu.unlock()
-	p.save(path) or {
+	// The bytes WRITTEN are the baseline, not a re-read that could see a file replaced in
+	// between (codex #307 r23); Project.save is os.write_file of to_yaml, done here for that.
+	written := p.to_yaml()
+	os.write_file(path, written) or {
 		app.notify('save failed: ${err}')
 		return
 	}
 	app.dirty = false
 	app.saved_at = time.ticks()
 	app.reserialize_confirm = '' // the file was just rewritten (comments gone); re-warn if reopened
-	app.proj_disk = os.read_file(path) or { '' } // what a later Save compares the file against
+	app.proj_disk = written // what a later Save compares the file against
+	app.proj_disk_path = path
 	app.external_confirm = ''
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')

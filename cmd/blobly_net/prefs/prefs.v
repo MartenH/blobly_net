@@ -148,7 +148,9 @@ pub fn merge(base Prefs, mine Prefs, ch Changed) Prefs {
 // toml.encode quotes a string without escaping anything), then the dragged panes. What the
 // build does not know is not here: see `foreign`.
 pub fn (p Prefs) serialize() string {
-	mut out := 'editor = "${toml_escape(p.editor)}"\nui_scale = ${p.ui_scale:.2f}\n'
+	// the scale as it is, not rounded to two places: an unchanged 1.125 must come back 1.125
+	// through an unrelated save (codex #307 r23)
+	mut out := 'editor = "${toml_escape(p.editor)}"\nui_scale = ${p.ui_scale}\n'
 	if p.panes.len > 0 {
 		out += '\n[panes]\n'
 		mut keys := p.panes.keys()

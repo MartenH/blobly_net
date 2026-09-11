@@ -349,7 +349,9 @@ mut:
 	// The project file's bytes as this app last read or wrote them, and the on-disk version an
 	// external-change warning was raised for: a model Save over a file another editor changed
 	// since is refused once, then overwrites that version (codex #307 r21).
-	proj_disk        string
+	proj_disk      string
+	proj_disk_path string // which file proj_disk is the bytes of: the baseline is valid only for THAT path (Save As
+	// to a new destination has none), and an empty file is a valid baseline (codex #307 r23)
 	external_confirm string
 	// When the project (or the File tab's text) was last written, in time.ticks(): the toolbar
 	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
@@ -821,6 +823,7 @@ fn (mut app App) load_project(path string) {
 		return
 	}
 	app.proj_disk = disk
+	app.proj_disk_path = path
 	app.external_confirm = ''
 	// THE VERSION GATE ON THE NORMAL OPEN PATH TOO. It existed only where the Configuration text
 	// is applied, so File ▸ Open read a future-format file in silence — and a structured Save then
