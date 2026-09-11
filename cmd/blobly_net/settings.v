@@ -134,17 +134,23 @@ fn prefs_lock(file string) bool {
 			if os.exists(dir) {
 				age := time.now().unix() - os.file_last_mod_unix(dir)
 				owner := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int()
-				// an OWNERLESS old lock is taken only after a further look, since the holder may
-				// be between mkdir and publishing its pid; a dead owner's at once
 				if age > 10 && (owner == 0 || !process_alive(owner)) {
+					// Reclaimed by RENAMING it aside first — one atomic step, so a holder that
+					// publishes its pid late writes into a directory that is no longer the lock
+					// (its write or read-back fails and it does not take the lock), and a
+					// check-then-delete cannot race that publication (codex #307 r19). An ownerless
+					// lock gets a further 200 ms look first, since a holder may be between mkdir and
+					// publishing.
 					if owner == 0 {
 						time.sleep(200 * time.millisecond)
 						if (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space().int() != 0 {
 							continue
 						}
 					}
-					os.rm(os.join_path(dir, 'pid')) or {}
-					os.rmdir(dir) or {}
+					aside := dir + '.stale.' + me.str()
+					os.rename(dir, aside) or { continue }
+					os.rm(os.join_path(aside, 'pid')) or {}
+					os.rmdir(aside) or {}
 					continue
 				}
 			}

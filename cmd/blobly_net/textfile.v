@@ -19,8 +19,13 @@ mut:
 	mtime        i64    // the file's modification time when it was loaded (stale)
 	orig         string // the text as loaded: what write compares the file against, byte for byte
 	disk_changed bool   // stale() answered yes while dirty: said until a load or a write
+	disclosed    string // the on-disk bytes the warning was for: a newer version warns again
 	seen         i64    // when stale last looked, ms — once a second, not per frame
 }
+
+// unreadable_marker stands for a file that could not be read, as a version of it: a NUL
+// followed by text, which no file this app writes contains.
+const unreadable_marker = '\x00<unreadable>'
 
 // LoadOutcome is what load did: nothing (cached, or unsaved edits kept), a read, or a failure.
 enum LoadOutcome {
@@ -66,6 +71,7 @@ fn (mut tf TextFile) load(path string) LoadOutcome {
 	tf.orig = txt
 	tf.seen = time.ticks()
 	tf.disk_changed = false
+	tf.disclosed = ''
 	return .read
 }
 
@@ -109,15 +115,16 @@ fn (mut tf TextFile) write() ! {
 	// By CONTENT, not by the second-resolution mtime: an external save inside the same second
 	// as the load is invisible to the stamp (codex #307 r16). A file that cannot be read now —
 	// moved, deleted, locked — is a change too, said once; a second Save recreates it (r18).
-	now_txt := os.read_file(tf.loaded) or {
-		if !tf.disk_changed {
-			tf.disk_changed = true
+	// The warning is for a VERSION of the file (`disclosed`): a Save with the warning showing
+	// overwrites that version, and only that one — an external save after the warning is a new
+	// version and warns again (codex #307 r19).
+	now_txt := os.read_file(tf.loaded) or { unreadable_marker }
+	if now_txt != tf.orig && now_txt != tf.disclosed {
+		tf.disclosed = now_txt
+		tf.disk_changed = true
+		if now_txt == unreadable_marker {
 			return error('${tf.loaded} cannot be read now (moved or deleted?) — Save again recreates it')
 		}
-		tf.orig
-	}
-	if !tf.disk_changed && now_txt != tf.orig {
-		tf.disk_changed = true
 		return error('changed on disk since it was loaded — Discard edits takes the file, Save again overwrites it')
 	}
 	os.write_file(tf.loaded, tf.text())!
@@ -126,6 +133,7 @@ fn (mut tf TextFile) write() ! {
 	tf.mtime = os.file_last_mod_unix(tf.loaded)
 	tf.orig = tf.text()
 	tf.disk_changed = false
+	tf.disclosed = ''
 }
 
 // TextFileAct is what the strip's buttons asked for this frame.
