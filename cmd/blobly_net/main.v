@@ -182,16 +182,18 @@ fn main() {
 	}
 	// The layout (window rects, the dock tree) lives beside the settings, per user, rather
 	// than in the working directory per checkout or bundle: one home (#306). Before the first
-	// frame, which is when ImGui reads it. ImGui writes it itself, unlocked: two instances of
-	// one user are last-writer-wins on the layout (#308).
+	// frame, which is when set_ini_path reads it. The APP writes it (save_layout, #308), so two
+	// instances of one user are last-writer-wins on the layout without being able to leave each
+	// other a half-written file.
 	// A headless render has NO layout file: one left in the working directory by an earlier run
 	// would decide its dock splits (codex #307 r5).
 	if !headless {
-		// ImGui's writer creates no directories: on a fresh profile the layout was silently not
+		// The writer creates no directories: on a fresh profile the layout was silently not
 		// saved until a preference save had made the directory (codex #307 r11).
 		os.mkdir_all(os.dir(prefs_path())) or {}
+		app.layout_file = os.join_path(os.dir(prefs_path()), 'imgui.ini')
 	}
-	vgui.set_ini_path(if headless { '' } else { os.join_path(os.dir(prefs_path()), 'imgui.ini') })
+	vgui.set_ini_path(app.layout_file)
 	set_app_icon() // the B-on-blue window/taskbar icon (procedural placeholder as fallback)
 	app.load_logo() // the menu-bar wordmark (needs the GL context, so after init)
 	load_ui_font()
@@ -417,6 +419,8 @@ fn main() {
 		app.poll_shortcuts()
 
 		vgui.frame_end()
+		// After the frame, because that is where ImGui decides the layout has settled.
+		app.save_layout(false)
 		probe_alloc_note(.render, pf)
 		if last {
 			app.elog('rendered ${frame} frames; RX ${rx}')
@@ -430,5 +434,8 @@ fn main() {
 	if !headless && app.prefs_dirty {
 		app.save_prefs(false)
 	}
+	// Unconditional: ImGui asks at most every 5 s, so a rearrangement in the last seconds of a
+	// run has not raised its flag yet and would be the one thing a Quit loses.
+	app.save_layout(true)
 	vgui.shutdown()
 }

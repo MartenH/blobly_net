@@ -126,6 +126,45 @@ fn (mut app App) reclassify_prefs_file() bool {
 	return now.foreign.len > 0
 }
 
+// save_layout writes ImGui's layout file, which the APP owns rather than ImGui (#308): with
+// ImGui's own writer disabled (vgui.set_ini_path) nothing else opens the file, so it goes out
+// through the same temp-and-rename settings.toml uses and a half-written layout can never be
+// what the next start reads — ImGui answers an unreadable one by falling back to the default
+// layout, silently, which is the failure this closes. `force` is the exit save: ImGui raises its
+// flag at most every 5 s, so a change in the last seconds of a run has not asked yet.
+//
+// Coordination is NOT bought back. Two instances of one user still race and the last writer
+// still wins, as for settings.toml (#309) — a lost LAYOUT, never a corrupt file.
+fn (mut app App) save_layout(force bool) {
+	if app.layout_file == '' || !(force || vgui.ini_dirty()) {
+		return
+	}
+	data := vgui.ini_data()
+	// cleared whatever happens below: a disk that refuses must raise one warning, not one every
+	// settling period for the rest of the run
+	vgui.ini_saved()
+	tmp := '${app.layout_file}.${os.getpid()}.tmp'
+	os.write_file(tmp, data) or {
+		app.warn_layout('${tmp}: ${err.msg()}')
+		return
+	}
+	replace_file(tmp, app.layout_file) or {
+		os.rm(tmp) or {}
+		app.warn_layout('${app.layout_file}: ${err.msg()}')
+	}
+}
+
+// warn_layout says a layout write failed, ONCE per run. It is not worth a notification each
+// time — the layout is incidental state and the run is still good — but a silent loss is how an
+// operator learns at the next start that their arrangement is gone.
+fn (mut app App) warn_layout(what string) {
+	if app.layout_warned {
+		return
+	}
+	app.layout_warned = true
+	app.elog('layout not saved (${what}) — the window arrangement will not carry to the next start')
+}
+
 // collect_panes folds what THIS session dragged over the panes it loaded, into what a save
 // writes. Every save, not just the exit one: a drag followed by a scale change used to leave
 // the divider unwritten, because the successful mid-session save cleared what the exit save
