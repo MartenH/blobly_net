@@ -132,3 +132,8 @@ fn process_token(pid int) string {
 	}
 	return (u64(c[1]) << 32 | u64(c[0])).str()
 }
+
+// wsl_windows_path: a path here is already a Windows path.
+fn wsl_windows_path(p string) ?string {
+	return none
+}

@@ -164,3 +164,16 @@ fn process_token(pid int) string {
 	}
 	return fields[19]
 }
+
+// wsl_windows_path is the Windows spelling of a Linux path under WSL (`\\wsl.localhost\...` or
+// `C:\...` for /mnt/c), through wslpath; none elsewhere, or when wslpath cannot say.
+fn wsl_windows_path(p string) ?string {
+	if !is_wsl() {
+		return none
+	}
+	win := os.execute('wslpath -w ' + os.quoted_path(p))
+	if win.exit_code != 0 {
+		return none
+	}
+	return win.output.trim_space()
+}

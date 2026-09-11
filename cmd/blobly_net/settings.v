@@ -56,12 +56,14 @@ fn (mut app App) load_prefs() {
 fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 	want := app.prefs_pending.plus(ch)
 	app.prefs_pending = want
-	if app.prefs_broken && !from_dialog {
+	// No early refusal on the verdict from startup: the file is read again below, under the
+	// lock, so one repaired since is saved to (codex #307 r26). The directory first: the lock is
+	// a directory INSIDE it, and on a fresh profile every save was refused as if another instance
+	// held a lock nothing could create (r8); a directory that cannot be made is said as such.
+	os.mkdir_all(os.dir(app.prefs_file)) or {
+		app.notify('settings not saved: cannot create ${os.dir(app.prefs_file)} (${err.msg()})')
 		return false
 	}
-	// The directory first: the lock is a directory INSIDE it, and on a fresh profile every
-	// save was refused as if another instance held a lock nothing could create (codex #307 r8).
-	os.mkdir_all(os.dir(app.prefs_file)) or {}
 	if !prefs_lock(app.prefs_file) {
 		app.notify('settings not saved: another instance holds ${app.prefs_file}.lock')
 		return false
@@ -253,7 +255,19 @@ fn (mut app App) open_in_editor(path string) {
 		app.notify(if ok { note } else { note })
 		return
 	}
-	launch_detached(argv, report) or {
+	// A Windows editor reached through WSL interop (`notepad++.exe %s`) cannot read a Linux
+	// path: the file argument goes through wslpath, as the explorer.exe route does (r26).
+	mut args := argv.clone()
+	if argv[0].to_lower().ends_with('.exe') {
+		if win := wsl_windows_path(path) {
+			for i, a in args {
+				if a.contains(path) {
+					args[i] = a.replace(path, win)
+				}
+			}
+		}
+	}
+	launch_detached(args, report) or {
 		app.notify('editor: ${err.msg()}')
 		return
 	}

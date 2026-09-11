@@ -1199,6 +1199,18 @@ fn (mut app App) revert_proj_from_disk() {
 // stale and its Save would erase the edit, or undo a deletion nobody confirmed. Refused ONCE,
 // for that version of the file (`external_confirm`); a repeated Save overwrites it. Only when
 // the baseline is this path's: Save As to a new destination has none (codex #307 r21–r24).
+// project_stale_on_disk is the pure half of that question: the file this app loaded is not
+// what is on disk now (changed, gone, or unreadable), for the path the baseline belongs to.
+// Start asks it: a run of the model over a file another editor changed would run the old
+// configuration while the File tab shows the new one (codex #307 r26).
+fn (app &App) project_stale_on_disk() bool {
+	if app.proj_disk_path != app.proj_path {
+		return false
+	}
+	on_disk := os.read_file(app.proj_path) or { return true }
+	return on_disk != app.proj_disk
+}
+
 fn (mut app App) project_changed_externally() bool {
 	if app.proj_disk_path != app.proj_path {
 		return false
