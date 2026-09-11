@@ -529,13 +529,24 @@ fn probe_driver(secs int) {
 	// attributed to the collection counted in the final interval (codex round 4 on #302). The
 	// divisor already ends here; the numerators have to end here with it.
 	//
-	// THE COUNT AND THE CLOCK ARE BRACKETED. A collection beginning between them suspends this
-	// thread, so the clock lands after the pause while the count still reads from before it: the
-	// final interval would contain the pause with neither the `hic_with_gc` attribution nor the
-	// live-set sample for it (round 4). Re-reading until the count is stable pairs them — unlike
-	// the gate ordering below, this one CAN be made consistent, so it is.
+	// THE WHOLE SNAPSHOT IS BRACKETED, not just the count and the clock. A collection completing
+	// anywhere inside it suspends this thread and splits it in two: some fields describing the
+	// endpoint before the pause and some the state after, with the final interval containing the
+	// pause and the attribution belonging to whichever half was read first. Round 4 bracketed the
+	// count and the clock and left the live set and the byte total outside, which just moved the
+	// seam (round 5).
+	//
+	// Re-read until the collection count is unchanged ACROSS EVERY READ: then no collection
+	// happened during the snapshot, so its fields describe one instant by construction rather
+	// than by argument. Unlike the gate ordering below — a store and a clock read cannot be made
+	// atomic, and either order loses something — this one CAN be made consistent, so it is.
+	//
+	// Bounded, because a machine collecting continuously would otherwise spin here: eight tries
+	// and then the last reading, which is no worse than not bracketing at all.
 	mut closed_gc := gc_count()
 	mut closed_ns := time.sys_mono_now()
+	mut closed_live := live_mb()
+	mut closed_bytes := alloc_total()
 	for _ in 0 .. 8 {
 		g := gc_count()
 		if g == closed_gc {
@@ -543,9 +554,9 @@ fn probe_driver(secs int) {
 		}
 		closed_gc = g
 		closed_ns = time.sys_mono_now()
+		closed_live = live_mb()
+		closed_bytes = alloc_total()
 	}
-	closed_live := live_mb()
-	closed_bytes := alloc_total()
 	stdatomic.store_u64(&probe_gate, 0)
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
