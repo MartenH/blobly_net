@@ -95,3 +95,8 @@ fn reap(pid int, name string, report fn (string)) {
 		report('${name} exited with ${code}')
 	}
 }
+
+// replace_file moves `tmp` over `dst` in one step: rename(2) replaces atomically here.
+fn replace_file(tmp string, dst string) ! {
+	os.rename(tmp, dst)!
+}

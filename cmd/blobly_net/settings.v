@@ -91,7 +91,16 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 		}
 	}
 	merged := prefs.merge(base, app.prefs, want)
-	os.write_file(app.prefs_file, merged.serialize()) or {
+	// Written beside and moved into place: a write that fails part-way (a full disk) must not
+	// leave the file it was replacing truncated (codex #307 r11). The move is replace_file,
+	// which on Windows is MoveFileEx with REPLACE_EXISTING — _wrename refuses an existing target.
+	tmp := app.prefs_file + '.tmp'
+	os.write_file(tmp, merged.serialize()) or {
+		app.notify('settings not saved (${tmp}): ${err.msg()}')
+		return false
+	}
+	replace_file(tmp, app.prefs_file) or {
+		os.rm(tmp) or {}
 		app.notify('settings not saved (${app.prefs_file}): ${err.msg()}')
 		return false
 	}

@@ -186,6 +186,11 @@ fn main() {
 	// frame, which is when ImGui reads it.
 	// A headless render has NO layout file: one left in the working directory by an earlier run
 	// would decide its dock splits (codex #307 r5).
+	if !headless {
+		// ImGui's writer creates no directories: on a fresh profile the layout was silently not
+		// saved until a preference save had made the directory (codex #307 r11).
+		os.mkdir_all(os.dir(prefs_path())) or {}
+	}
 	vgui.set_ini_path(if headless { '' } else { os.join_path(os.dir(prefs_path()), 'imgui.ini') })
 	set_app_icon() // the B-on-blue window/taskbar icon (procedural placeholder as fallback)
 	app.load_logo() // the menu-bar wordmark (needs the GL context, so after init)

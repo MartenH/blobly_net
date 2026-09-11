@@ -7,6 +7,7 @@ import os
 #flag windows -lshell32
 
 fn C.ShellExecuteW(hwnd voidptr, op &u16, file &u16, params &u16, dir &u16, show int) voidptr
+fn C.MoveFileExW(src &u16, dst &u16, flags u32) int
 
 // system_open opens `path` with whatever the desktop associates with it — ShellExecute's
 // "open", with its verdict CHECKED: a return above 32 is a launch, anything else is why not.
@@ -74,4 +75,14 @@ fn quote_arg(a string) string {
 	}
 	out += '\\'.repeat(bs * 2) + '"'
 	return out
+}
+
+// replace_file moves `tmp` over `dst` in one step: MoveFileEx with REPLACE_EXISTING (and
+// WRITE_THROUGH), since _wrename — what os.rename is here — refuses a target that exists, and
+// os.mv then falls back to a copy, which is the truncate-then-write this exists to avoid.
+fn replace_file(tmp string, dst string) ! {
+	// MOVEFILE_REPLACE_EXISTING = 1, MOVEFILE_WRITE_THROUGH = 8
+	if C.MoveFileExW(tmp.to_wide(), dst.to_wide(), u32(1 | 8)) == 0 {
+		return error('could not replace ${dst} (MoveFileEx ${C.GetLastError()})')
+	}
 }
