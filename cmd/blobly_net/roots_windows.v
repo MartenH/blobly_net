@@ -68,10 +68,35 @@ fn wsl_roots() []string {
 	return out
 }
 
-// wsl_prefix is how Windows reaches a distribution's files. Windows 10 before 21H2 served
-// `\\wsl$\` only; both name the same place on a current Windows, and this is the one wsl_roots
-// emits — root_label reads it, so the spelling is stated once.
-const wsl_prefix = '\\\\wsl.localhost\\'
+// wsl_prefix is how Windows reaches a distribution's files: `\\wsl.localhost\` since Windows 10
+// 21H2 (build 19044), `\\wsl$\` before — chosen by the build number, not by probing the share,
+// which starts the distribution's VM (codex #307 r12). Stated once; root_label reads it.
+const wsl_prefix = wsl_prefix_for_build(windows_build())
+
+fn wsl_prefix_for_build(build int) string {
+	return if build >= 19044 { '\\\\wsl.localhost\\' } else { '\\\\wsl$\\' }
+}
+
+// windows_build is HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\CurrentBuildNumber, or 0
+// when it cannot be read — which selects the newer spelling, the one a current Windows serves.
+fn windows_build() int {
+	mut key := unsafe { nil }
+	if C.RegOpenKeyExW(C.HKEY_LOCAL_MACHINE,
+		'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'.to_wide(), 0, u32(C.KEY_READ), &key) != 0 {
+		return 0
+	}
+	defer {
+		C.RegCloseKey(key)
+	}
+	mut data := [64]u16{}
+	mut dlen := u32(126)
+	mut typ := u32(0)
+	if C.RegQueryValueExW(key, 'CurrentBuildNumber'.to_wide(), unsafe { nil }, &typ, &u8(&data[0]), &dlen) != 0
+		|| typ != 1 {
+		return 0
+	}
+	return unsafe { string_from_wide(&data[0]) }.int()
+}
 
 // root_label is the drive row's button text for a root: the drive as is, a WSL distribution
 // by name.

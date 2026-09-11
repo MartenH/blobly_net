@@ -69,9 +69,15 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 		if now := prefs.parse(txt) {
 			if now.foreign.len > 0 {
 				// Discovered at save — added by a newer instance or by hand since start: kept, so
-				// the dialog can say what its Save would drop (codex #307 r8).
+				// the dialog can say what its Save would drop (codex #307 r8). NEWLY discovered,
+				// the dialog's own Save stops too, once: the warning has to be seen before a
+				// second Save may drop them (r12).
+				newly := app.prefs.foreign.len == 0
 				app.prefs.foreign = now.foreign
-				if !from_dialog {
+				if !from_dialog || newly {
+					if from_dialog {
+						app.notify('the settings file gained settings this build does not know (${now.foreign.join(', ')}); Save again to replace it')
+					}
 					return false
 				}
 			}
@@ -224,8 +230,12 @@ fn draw_prefs(mut app App) {
 	}
 	vgui.separator()
 	if vgui.button('Save') {
-		app.prefs.editor = vgui.buf_str(app.prefs_editor_buf).trim_space()
-		if app.save_prefs(prefs.Changed{ editor: true }, true) {
+		typed := vgui.buf_str(app.prefs_editor_buf).trim_space()
+		// the editor counts as changed only when it was: a Save pressed to retry a pending scale
+		// or to confirm a warning must not carry a stale command over another instance's (r12)
+		edited := typed != app.prefs.editor
+		app.prefs.editor = typed
+		if app.save_prefs(prefs.Changed{ editor: edited }, true) {
 			app.notify('preferences saved')
 		}
 	}
