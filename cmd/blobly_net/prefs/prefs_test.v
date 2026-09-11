@@ -81,3 +81,15 @@ fn test_a_quoted_spelling_of_a_known_key_is_not_kept_as_unknown() {
 	// and so the rewrite has each key once
 	assert p.serialize().count('editor') == 1
 }
+
+fn test_a_quoted_panes_header_and_a_quoted_pane_name_round_trip() {
+	p := parse('["panes"]\n"DBC editor" = 240\nplain = 10\n')!
+	assert p.panes['DBC editor'] == 240
+	assert p.panes['plain'] == 10
+	assert p.unknown == []
+	out := p.serialize()
+	assert out.count('panes]') == 1
+	assert out.contains('"DBC editor" = 240.0')
+	q := parse(out)!
+	assert q.panes['DBC editor'] == 240
+}

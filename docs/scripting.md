@@ -287,8 +287,8 @@ runs scripts against the **live measurement**:
    press **Run**. **Edit** opens the script in the same edit box the Configuration panel's File
    tab uses: the file's name above it, **Save script**, **Discard edits** (or **Reload** when
    clean), **Open in editor** (the command from Settings ▸ Preferences…, else the system's
-   own open; the editor is launched detached, and on Linux it inherits the run's sockets, so
-   close it before the next Start on a CANsub), and a divider under the box to trade height
+   own open; the editor is launched detached and shares nothing with the run), and a divider
+   under the box to trade height
    with the output. Run is withheld while edits are unsaved; closing the editor keeps them,
    and the note under the toolbar says so. Every line the script
    emits — `log()`, `print()`, each test's verdict — lands in the panel's output; it is

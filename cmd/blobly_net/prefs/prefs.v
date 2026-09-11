@@ -62,7 +62,8 @@ fn unknown_lines(text string) []string {
 	for raw in text.split_into_lines() {
 		line := raw.trim_space()
 		if line.starts_with('[') {
-			name := line.all_after('[').all_before(']').trim_space()
+			// the parsed identity: `["panes"]` is [panes] (codex #307 r4)
+			name := line.all_after('[').all_before(']').trim_space().trim('"\'')
 			keep_table = name != 'panes'
 			in_ours = false
 			if keep_table {
@@ -122,13 +123,28 @@ pub fn (p Prefs) serialize() string {
 		mut keys := p.panes.keys()
 		keys.sort()
 		for k in keys {
-			out += '${k} = ${p.panes[k]:.1f}\n'
+			out += '${toml_key(k)} = ${p.panes[k]:.1f}\n'
 		}
 	}
 	if first_table < p.unknown.len {
 		out += '\n' + p.unknown[first_table..].join('\n') + '\n'
 	}
 	return out
+}
+
+// toml_key spells a map key as a TOML key: bare when it is one (letters, digits, `_`, `-`),
+// quoted otherwise — a pane a newer build names with a space is still a valid file after this
+// build rewrites it (codex #307 r4).
+fn toml_key(k string) string {
+	mut bare := k.len > 0
+	for c in k {
+		if !((c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`)
+			|| (c >= `0` && c <= `9`) || c == `_` || c == `-`) {
+			bare = false
+			break
+		}
+	}
+	return if bare { k } else { '"' + toml_escape(k) + '"' }
 }
 
 fn toml_escape(s string) string {
