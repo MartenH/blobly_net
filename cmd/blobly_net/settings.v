@@ -42,12 +42,17 @@ fn (mut app App) load_prefs() {
 
 // save_prefs writes the fields `ch` names — the ones this instance changed — over the file AS
 // IT IS NOW (read again, merged, under the lock below), so a second instance closing later
-// does not put back what the first one changed (codex #307 r6). Refused, unless from the
-// dialog, for a file that will not parse, cannot be read, or carries keys this build does not
-// know: the dialog's Save replaces such a file whole, and says so. A refused or failed save
-// keeps its flags PENDING, so the scale picked while the file was foreign is still in the
-// dialog's Save later (r7). A failure to write is said, not fatal; the return says whether the
-// file was written.
+// does not put back what the first one changed (codex #307 r6). A refused or failed save
+// keeps its flags PENDING, so a scale picked while the file was foreign is still in the
+// dialog's Save later (r7). Refused, unless from the dialog, for a file that will not parse,
+// cannot be read, or carries keys this build does not know. The dialog's Save is the one
+// writer that may replace such a file, on ONE condition: the file's state it is about to
+// replace is the state the dialog has SHOWN (prefs_seen_*, set by draw_prefs) — a file that
+// became broken, or gained or changed its foreign keys, since the dialog last drew is
+// recorded and refused once, so the warning is seen before a second Save drops anything
+// (r8, r12, r13). Over a broken file the dialog writes what this instance knows — the last
+// loaded preferences plus its own changes — not the defaults (r13). A failure to write is
+// said, not fatal; the return says whether the file was written.
 fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 	want := app.prefs_pending.plus(ch)
 	app.prefs_pending = want
@@ -64,38 +69,36 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 	defer {
 		prefs_unlock(app.prefs_file)
 	}
-	mut base := prefs.Prefs{}
+	// The file as it is now: readable and parsed (`now`), broken, or absent.
+	mut broken_now := false
+	mut now := prefs.Prefs{}
+	mut present := false
 	if txt := os.read_file(app.prefs_file) {
-		if now := prefs.parse(txt) {
-			if now.foreign.len > 0 {
-				// Discovered at save — added by a newer instance or by hand since start: kept, so
-				// the dialog can say what its Save would drop (codex #307 r8). NEWLY discovered,
-				// the dialog's own Save stops too, once: the warning has to be seen before a
-				// second Save may drop them (r12).
-				newly := app.prefs.foreign.len == 0
-				app.prefs.foreign = now.foreign
-				if !from_dialog || newly {
-					if from_dialog {
-						app.notify('the settings file gained settings this build does not know (${now.foreign.join(', ')}); Save again to replace it')
-					}
-					return false
-				}
-			}
-			base = now
-		} else {
-			// Broken since start: recorded, so the dialog warns before its Save replaces it
-			// (codex #307 r9).
-			app.prefs_broken = true
-			if !from_dialog {
-				return false
-			}
+		present = true
+		now = prefs.parse(txt) or {
+			broken_now = true
+			prefs.Prefs{}
 		}
 	} else if os.exists(app.prefs_file) {
-		app.prefs_broken = true
-		if !from_dialog {
-			return false
-		}
+		present = true
+		broken_now = true
 	}
+	// Recorded, so the dialog warns; and the dialog's own Save stops once when what it showed
+	// is not what is there.
+	app.prefs_broken = broken_now
+	app.prefs.foreign = now.foreign
+	if !from_dialog && (broken_now || now.foreign.len > 0) {
+		return false
+	}
+	if from_dialog && (broken_now != app.prefs_seen_broken || now.foreign != app.prefs_seen_foreign) {
+		app.prefs_seen_broken = broken_now
+		app.prefs_seen_foreign = now.foreign.clone()
+		app.notify('the settings file changed under the dialog — see its note, then Save again to replace it')
+		return false
+	}
+	// Over a broken file the base is what this instance KNOWS (the last load plus its own
+	// changes), never the defaults; over a readable one, the file itself.
+	base := if broken_now || !present { app.prefs } else { now }
 	merged := prefs.merge(base, app.prefs, want)
 	// Written beside and moved into place: a write that fails part-way (a full disk) must not
 	// leave the file it was replacing truncated (codex #307 r11). The move is replace_file,
@@ -221,9 +224,12 @@ fn draw_prefs(mut app App) {
 		'now: ' + app.prefs.editor
 	})
 	vgui.text_dim(app.prefs_caption)
+	// What the dialog SHOWS is what its Save may replace: recorded here, compared at save.
+	app.prefs_seen_broken = app.prefs_broken
+	app.prefs_seen_foreign = app.prefs.foreign.clone()
 	if app.prefs_broken {
 		vgui.text_colored(230, 120, 120,
-			'the file could not be read (see the Log); Save here replaces it')
+			'the file could not be read (see the Log); Save here replaces it with what this session holds')
 	} else if app.prefs.foreign.len > 0 {
 		vgui.text_colored(230, 170, 70,
 			'the file carries settings this build does not know (${app.prefs.foreign.join(', ')}); Save here drops them')

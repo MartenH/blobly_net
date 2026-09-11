@@ -207,12 +207,15 @@ fn main() {
 	} else {
 		app.apply_ui_scale(app.prefs.ui_scale)
 	}
-	app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
-	app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
-	app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
-	app.dbc_ed.left_w = app.prefs.panes['dbc_left'] or { 0 }
-	app.dbc_ed.msgs_h = app.prefs.panes['dbc_msgs'] or { 0 }
-	app.dbc_ed.props_h = app.prefs.panes['dbc_props'] or { 0 }
+	if !headless {
+		// the dragged panes are per-user state too: a headless render keeps the defaults (r13)
+		app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
+		app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
+		app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
+		app.dbc_ed.left_w = app.prefs.panes['dbc_left'] or { 0 }
+		app.dbc_ed.msgs_h = app.prefs.panes['dbc_msgs'] or { 0 }
+		app.dbc_ed.props_h = app.prefs.panes['dbc_props'] or { 0 }
+	}
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false
 		vgui.set_theme(false)
