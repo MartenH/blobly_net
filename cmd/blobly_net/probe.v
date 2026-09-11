@@ -86,9 +86,6 @@ __global (
 	// The measured interval: from the boundary to the endpoint, as it actually ran. The
 	// requested N seconds is a target for the deadline, never the divisor.
 	probe_begin_ns      u64
-	// When the gate came down, published BEFORE it so a sampler that resumes after the close can
-	// see it and clamp; 0 while the measurement runs. See probe_hiccup_loop and #302.
-	probe_closed_ns     u64
 	probe_run_s         f64
 	// Writers that passed the gate and have not finished: a lock waiter that entered before
 	// the flag dropped still adds its wait when the lock comes, which can be after any fixed
@@ -357,20 +354,21 @@ fn probe_hiccup_loop() {
 			prev = 0
 			continue
 		}
-		mut now := time.sys_mono_now()
+		now := time.sys_mono_now()
 		gnow := gc_count()
-		// CLAMPED TO THE CLOSE. This thread passed the gate while it was open and may then have
-		// been descheduled past the endpoint; the part of its interval after the close was not
-		// measured, and left in it an arbitrary scheduling delay is reported as an in-run stall
-		// (codex round 1 on #302). Clamping also makes the published `prev` land exactly on the
-		// close, which is what tells close_final_hiccup_interval there is nothing left to do.
-		cl := stdatomic.load_u64(&probe_closed_ns)
-		if cl != 0 && now > cl {
-			now = cl
-		}
-		if now <= prev {
-			// The whole interval lies after the close: already accounted, nothing to bucket, and
-			// `prev` is left where it is so the published boundary never moves backwards.
+		// ADMITTED IS NOT THE SAME AS IN-RUN. This thread passed the gate while it was open and
+		// may then have been descheduled past the endpoint: the interval it is holding runs off
+		// the end of the measurement, and bucketing it reports an arbitrary scheduling delay
+		// AFTER the run as an in-run stall — in the histogram whose whole job is to find stalls
+		// (codex round 1 on #302). Its `gnow` is equally post-close, so a collection outside the
+		// measurement would be attributed to an interval inside it (round 2).
+		//
+		// So it does not bucket, and does not publish. The in-run part of exactly this interval
+		// is closed by the driver at the endpoint (close_final_hiccup_interval), from the
+		// boundary the last COMPLETE sample published — which covers it once, and only the part
+		// that was measured. Clamping a sample to a published close was the first answer and
+		// needed a second word for the endpoint; this needs none.
+		if stdatomic.load_u64(&probe_gate) == 0 {
 			probe_leave()
 			continue
 		}
@@ -491,16 +489,16 @@ fn probe_driver(secs int) {
 	// (round 5). Then every writer that passed the gate is waited for — a lock waiter that
 	// entered before the flag dropped adds its wait when the lock comes, which a fixed grace
 	// cannot bound (round 6) — and only then is anything read.
-	// PUBLISHED BEFORE THE GATE DROPS, so a sampler already admitted and descheduled can still
-	// find it and clamp its sample to it (codex round 1 on #302). The other order leaves a window
-	// where such a sampler reads 0 and records an interval running past the measurement.
-	closed_ns := time.sys_mono_now()
-	stdatomic.store_u64(&probe_closed_ns, closed_ns)
+	// THE GATE IS THE ENDPOINT, and there is no second word saying so. Publishing a close
+	// timestamp BEFORE the gate was the first attempt, and it declared an endpoint that
+	// admission did not yet honour: preempted between the two stores, the driver let replay,
+	// emission, lock-wait and allocation events in after the instant it had already called the
+	// end (codex round 2 on #302). Taken immediately AFTER, every admitted event is before it by
+	// construction, and every writer keeps asking the one question it always asked.
 	stdatomic.store_u64(&probe_gate, 0)
-	// AND THE COLLECTION COUNT WITH IT, not after the drain: draining an admitted writer takes
-	// time, and a collection in that window is outside the interval about to be bucketed —
-	// attributing it would mark the endpoint interval `hic_with_gc` for something that happened
-	// after the endpoint (codex round 1 on #302).
+	closed_ns := time.sys_mono_now()
+	// The collection count with it, not after the drain: draining an admitted writer takes time,
+	// and a collection in that window is outside the interval about to be bucketed (round 1).
 	closed_gc := gc_count()
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
