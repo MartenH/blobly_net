@@ -1,7 +1,6 @@
 module main
 
 import os
-import time
 import prefs
 import panerule
 import vgui
@@ -20,7 +19,7 @@ fn prefs_path() string {
 // the Preferences dialog's Save is the one that may. A file that is there but cannot be read is
 // broken too, not absent (codex #307 r5). A file that parses but carries keys this build does
 // not know (prefs.Prefs.foreign) is protected the same way, and the dialog says what its Save
-// would drop.
+// would drop. This verdict is the only one there is: a save does not read the file again.
 fn (mut app App) load_prefs() {
 	app.prefs_file = prefs_path()
 	txt := os.read_file(app.prefs_file) or {
@@ -40,80 +39,33 @@ fn (mut app App) load_prefs() {
 	}
 }
 
-// save_prefs writes the fields `ch` names — the ones this instance changed — over the file AS
-// IT IS NOW (read again, merged, under the lock below), so a second instance closing later
-// does not put back what the first one changed (codex #307 r6). A refused or failed save
-// keeps its flags PENDING, so a scale picked while the file was foreign is still in the
-// dialog's Save later (r7). Refused, unless from the dialog, for a file that will not parse,
-// cannot be read, or carries keys this build does not know. The dialog's Save is the one
-// writer that may replace such a file, on ONE condition: the file's state it is about to
-// replace is the state the dialog has SHOWN (prefs_seen_*, set by draw_prefs) — a file that
-// became broken, or gained or changed its foreign keys, since the dialog last drew is
-// recorded and refused once, so the warning is seen before a second Save drops anything
-// (r8, r12, r13). Over a broken file the dialog writes what this instance knows — the last
-// loaded preferences plus its own changes — not the defaults (r13). A failure to write is
-// said, not fatal; the return says whether the file was written.
-fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
-	want := app.prefs_pending.plus(ch)
-	app.prefs_pending = want
-	// No early refusal on the verdict from startup: the file is read again below, under the
-	// lock, so one repaired since is saved to (codex #307 r26). The directory first: the lock is
-	// a directory INSIDE it, and on a fresh profile every save was refused as if another instance
-	// held a lock nothing could create (r8); a directory that cannot be made is said as such.
+// save_prefs writes the whole file from what this instance holds: last writer wins, which is
+// the policy ImGui's layout file beside it has always had (#308). The coordination that a
+// read-merge-write under a lock directory bought cost 310 lines for three preferences, and what
+// it protected against is two instances of one user changing a setting in the same window —
+// while the dock layout, the larger loss of the two, was decided that way from the start (#309).
+//
+// Integrity is a different question and stays: written beside and moved into place, so a write
+// that fails part-way (a full disk) does not leave the file it was replacing truncated (codex
+// #307 r11). The move is replace_file, which on Windows is MoveFileEx with REPLACE_EXISTING —
+// _wrename refuses an existing target.
+//
+// Refused, unless from the dialog, for a file that did not parse, could not be read, or carries
+// keys this build does not know (prefs.Prefs.foreign) — the verdict the LOAD reached, since
+// nothing re-reads the file now. The dialog's Save is the one writer that may replace such a
+// file, and it says what it drops. A failure to write is said, not fatal; the return says
+// whether the file was written.
+fn (mut app App) save_prefs(from_dialog bool) bool {
+	if !from_dialog && (app.prefs_broken || app.prefs.foreign.len > 0) {
+		return false
+	}
+	// The directory first: on a fresh profile there is none yet (codex #307 r8).
 	os.mkdir_all(os.dir(app.prefs_file)) or {
 		app.notify('settings not saved: cannot create ${os.dir(app.prefs_file)} (${err.msg()})')
 		return false
 	}
-	if !prefs_lock(app.prefs_file) {
-		app.notify('settings not saved: another instance holds ${app.prefs_file}.lock')
-		return false
-	}
-	defer {
-		prefs_unlock(app.prefs_file)
-	}
-	// The file as it is now: readable and parsed (`now`), broken, or absent.
-	mut broken_now := false
-	mut now := prefs.Prefs{}
-	mut present := false
-	if txt := os.read_file(app.prefs_file) {
-		present = true
-		now = prefs.parse(txt) or {
-			broken_now = true
-			prefs.Prefs{}
-		}
-	} else if os.exists(app.prefs_file) {
-		present = true
-		broken_now = true
-	}
-	// Recorded, so the dialog warns; and the dialog's own Save stops once when what it showed
-	// is not what is there.
-	app.prefs_broken = broken_now
-	app.prefs.foreign = now.foreign
-	if !from_dialog && (broken_now || now.foreign.len > 0) {
-		return false
-	}
-	if from_dialog && (broken_now != app.prefs_seen_broken || now.foreign != app.prefs_seen_foreign) {
-		app.prefs_seen_broken = broken_now
-		app.prefs_seen_foreign = now.foreign.clone()
-		app.notify('the settings file changed under the dialog — see its note, then Save again to replace it')
-		return false
-	}
-	// Over a broken file the base is what this instance KNOWS (the last load plus its own
-	// changes); over a readable one, the file; over an ABSENT one — deleted since start, which
-	// is a reset — the defaults, so a save recreates only what this instance changed (r20).
-	base := if broken_now {
-		app.prefs
-	} else if !present {
-		prefs.Prefs{}
-	} else {
-		now
-	}
-	merged := prefs.merge(base, app.prefs, want)
-	// Written beside and moved into place: a write that fails part-way (a full disk) must not
-	// leave the file it was replacing truncated (codex #307 r11). The move is replace_file,
-	// which on Windows is MoveFileEx with REPLACE_EXISTING — _wrename refuses an existing target.
 	tmp := app.prefs_file + '.tmp'
-	os.write_file(tmp, merged.serialize()) or {
+	os.write_file(tmp, app.prefs.serialize()) or {
 		app.notify('settings not saved (${tmp}): ${err.msg()}')
 		return false
 	}
@@ -122,104 +74,11 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 		app.notify('settings not saved (${app.prefs_file}): ${err.msg()}')
 		return false
 	}
+	// Whatever the file held is gone now: it is this instance's.
 	app.prefs_broken = false
 	app.prefs.foreign = []
-	app.prefs_pending = prefs.Changed{}
+	app.prefs_dirty = false
 	return true
-}
-
-// prefs_lock takes `<file>.lock`, a directory, which mkdir creates for ONE caller — the shape
-// cmd/arxml2dbc publishes under. It serialises the read-merge-write across instances: two
-// saving at once could each read the same snapshot and the second write drop the first's
-// field (codex #307 r7). The holder writes its pid inside; a lock older than ten seconds is
-// taken only when that pid is DEAD (process_alive) — age alone is not proof of a crash, and a
-// writer merely suspended would come back and write its stale snapshot over the taker's
-// (r17). Unlock removes only a lock this process owns.
-fn prefs_lock(file string) bool {
-	dir := file + '.lock'
-	me := os.getpid()
-	for _ in 0 .. 50 {
-		os.mkdir(dir) or {
-			if os.exists(dir) {
-				age := time.now().unix() - os.file_last_mod_unix(dir)
-				owner, live := lock_owner(dir)
-				if age > 10 && (owner == 0 || !live) {
-					// Reclaimed by RENAMING it aside first — one atomic step, so a holder that
-					// publishes its pid late writes into a directory that is no longer the lock
-					// (its write or read-back fails and it does not take the lock), and a
-					// check-then-delete cannot race that publication (codex #307 r19). An ownerless
-					// lock gets a further 200 ms look first, since a holder may be between mkdir and
-					// publishing.
-					if owner == 0 {
-						time.sleep(200 * time.millisecond)
-						owner2, _ := lock_owner(dir)
-						if owner2 != 0 {
-							continue
-						}
-					}
-					// a unique aside name, and EVERY entry removed (a crashed publisher leaves its
-					// `pid.<pid>`), or a later reclaim by this instance would rename onto a directory
-					// still there and fail every time (codex #307 r27)
-					aside := dir + '.stale.' + me.str() + '.' + time.ticks().str()
-					os.rename(dir, aside) or { continue }
-					for e in os.ls(aside) or { []string{} } {
-						os.rm(os.join_path(aside, e)) or {}
-					}
-					os.rmdir(aside) or {}
-					continue
-				}
-			}
-			time.sleep(20 * time.millisecond)
-			continue
-		}
-		// Ownership is PUBLISHED by an EXCLUSIVE step: the pid is written beside and then claimed
-		// as `pid` through claim_file, which fails when a `pid` already exists (link on Unix,
-		// MoveFileEx without replace on Windows) — so of two processes publishing into one
-		// directory, one wins and the other does not hold the lock, whatever its mkdir said. A
-		// taker that found this lock ownerless may have renamed it aside and created a
-		// replacement of the same name in the meantime; a plain write into it raced the taker's
-		// own publication (codex #307 r18, r20).
-		pidfile := os.join_path(dir, 'pid')
-		mine := os.join_path(dir, 'pid.' + me.str())
-		// pid AND the process's start token: a pid the OS reuses after a crash would otherwise
-		// read as a live holder for as long as the unrelated process lived (codex #307 r21)
-		os.write_file(mine, me.str() + ' ' + process_token(me)) or { continue }
-		if !claim_file(mine, pidfile) {
-			os.rm(mine) or {}
-			continue
-		}
-		back, _ := lock_owner(dir)
-		if back != me {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-// lock_owner reads `<lock>/pid` — `<pid> <token>` — and says whose the lock is and whether that
-// process is still the one that took it: alive, and started when the token says (a token the
-// platform cannot give is ''). (0, false) for an ownerless lock.
-fn lock_owner(dir string) (int, bool) {
-	line := (os.read_file(os.join_path(dir, 'pid')) or { '' }).trim_space()
-	parts := line.split(' ')
-	pid := parts[0].int()
-	if pid == 0 {
-		return 0, false
-	}
-	token := if parts.len > 1 { parts[1] } else { '' }
-	alive := process_alive(pid) && (token == '' || process_token(pid) == token)
-	return pid, alive
-}
-
-fn prefs_unlock(file string) {
-	dir := file + '.lock'
-	owner, _ := lock_owner(dir)
-	if owner != os.getpid() {
-		return
-	}
-	os.rm(os.join_path(dir, 'pid')) or {}
-	os.rmdir(dir) or {}
 }
 
 // pane_moved is the one caller shape for a persisted divider's splitter result: the stored
@@ -230,6 +89,7 @@ fn (mut app App) pane_moved(key string, stored f32, drawn_px f32, moved f32, sc 
 	v, was_drag := panerule.dragged(stored, drawn_px, moved, sc)
 	if was_drag {
 		app.panes_dragged[key] = true
+		app.prefs_dirty = true
 	}
 	return v
 }
@@ -312,9 +172,6 @@ fn draw_prefs(mut app App) {
 		'now: ' + app.prefs.editor
 	})
 	vgui.text_dim(app.prefs_caption)
-	// What the dialog SHOWS is what its Save may replace: recorded here, compared at save.
-	app.prefs_seen_broken = app.prefs_broken
-	app.prefs_seen_foreign = app.prefs.foreign.clone()
 	if app.prefs_broken {
 		vgui.text_colored(230, 120, 120,
 			'the file could not be read (see the Log); Save here replaces it with what this session holds')
@@ -324,12 +181,11 @@ fn draw_prefs(mut app App) {
 	}
 	vgui.separator()
 	if vgui.button('Save') {
-		typed := vgui.buf_str(app.prefs_editor_buf).trim_space()
-		// the editor counts as changed only when it was: a Save pressed to retry a pending scale
-		// or to confirm a warning must not carry a stale command over another instance's (r12)
-		edited := typed != app.prefs.editor
-		app.prefs.editor = typed
-		if app.save_prefs(prefs.Changed{ editor: edited }, true) {
+		app.prefs.editor = vgui.buf_str(app.prefs_editor_buf).trim_space()
+		// owed before it is attempted, so a save that FAILS to write is retried at exit rather
+		// than losing the command the operator typed
+		app.prefs_dirty = true
+		if app.save_prefs(true) {
 			app.notify('preferences saved')
 		}
 	}
