@@ -59,3 +59,16 @@ fn test_dragged_panes_round_trip_and_a_zero_is_dropped() {
 	r := parse('[panes]\nx = 0\ny = -5\n')!
 	assert r.panes.len == 0
 }
+
+fn test_a_newer_builds_settings_survive_an_older_builds_save() {
+	newer := 'editor = "vi"\nrecent_limit = 12\nui_scale = 1.25\n\n[panes]\nx = 200\n\n[colors]\ntheme = "dark"\n# a comment in it\n'
+	p := parse(newer)!
+	assert p.editor == 'vi'
+	assert p.unknown == ['recent_limit = 12', '[colors]', 'theme = "dark"', '# a comment in it']
+	// what this build writes still carries them, and reads back the same
+	q := parse(p.serialize())!
+	assert q.unknown == p.unknown
+	assert q.panes['x'] == 200
+	// a top-level line this build owns is NOT kept twice
+	assert p.serialize().count('ui_scale') == 1
+}

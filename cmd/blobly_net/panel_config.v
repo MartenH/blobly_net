@@ -57,10 +57,6 @@ fn (mut app App) open_browser(target string) {
 	if !os.is_dir(dir) {
 		dir = '.'
 	}
-	app.fb_roots = fs_roots()
-	app.fb_roots << wsl_roots()
-	app.fb_root_lbl = ['drive…'] // the dropdown's items, built once: a placeholder, then the roots
-	app.fb_root_lbl << app.fb_roots.map(root_label(it))
 	app.fb_enter(os.abs_path(dir))
 	initname := if app.fb_save && app.proj_path != '' { os.file_name(app.proj_path) } else { '' }
 	app.fb_name_buf = mkbuf(initname, 128)
@@ -102,6 +98,12 @@ fn (mut app App) fb_enter(dir string) {
 // on a folder that answers slowly (a disconnected network drive, which the drives view now
 // lists) it is the whole GUI thread stalled for as long as the picker is open.
 fn (mut app App) fb_refresh() {
+	// The roots too — a drive attached or a distribution registered while the picker is open
+	// (codex #307 r2). GetLogicalDrives and a registry walk, not a probe of each root.
+	app.fb_roots = fs_roots()
+	app.fb_roots << wsl_roots()
+	app.fb_root_lbl = ['drive…'] // the dropdown's items: a placeholder, then the roots
+	app.fb_root_lbl << app.fb_roots.map(root_label(it))
 	app.fb_dirs = []
 	app.fb_files = []
 	if app.fb_dir == pickrule.drives {

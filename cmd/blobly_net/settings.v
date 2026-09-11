@@ -75,6 +75,9 @@ fn (mut app App) open_in_editor(path string) {
 
 // open_prefs seeds the dialog's field from the preference and shows it.
 fn (mut app App) open_prefs() {
+	if app.show_prefs {
+		return
+	}
 	app.prefs_editor_buf = mkbuf(app.prefs.editor, 256)
 	app.prefs_caption = 'UI scale ${int(app.prefs.ui_scale * 100 + 0.5)}% (Settings menu) · file: ${app.prefs_file}'
 	app.show_prefs = true

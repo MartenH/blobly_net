@@ -447,7 +447,7 @@ mut:
 	fb_name_buf []u8     // filename (save mode)
 	fb_sel      string   // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
 	fb_dirs     []string // the listing, filled by fb_refresh — not read from disk per frame
-	fb_roots    []string // the drive row: drives and WSL distributions, read at open (#306)
+	fb_roots    []string // the drive dropdown: drives and WSL distributions, read with the listing (#306)
 	fb_root_lbl []string // the drive dropdown's items: a placeholder, then one label per root
 	fb_files    []string
 	fb_path_buf []u8 // the folder, typed — Enter or Go navigates; a file path selects it where it lives

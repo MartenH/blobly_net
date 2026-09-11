@@ -195,8 +195,9 @@ fn main() {
 	if headless {
 		// A headless run's output must not depend on the machine (the comment above): the
 		// developer's own scale stays out of a screenshot — applied to the renderer only, so the
-		// preference is not overwritten (codex #307 r1); nothing is saved at a headless exit.
-		vgui.set_font_scale(1.0)
+		// preference is not overwritten on disk (codex #307 r1) — nothing is saved at a headless
+		// exit — but the in-memory scale every layout dimension reads must be 1 too (r2).
+		app.apply_ui_scale(1.0)
 	} else {
 		app.apply_ui_scale(app.prefs.ui_scale)
 	}

@@ -19,6 +19,10 @@ pub mut:
 	// Dragged dividers, by pane name, unscaled px (panerule): what a session set, the next
 	// finds. Written at exit, since a drag is many frames and the file is one write.
 	panes map[string]f32
+	// What this build does not know, kept as the lines it came in — a newer build's keys and
+	// tables — so an older build's exit does not erase them from the shared file (codex #307
+	// r2). Written back after the known keys.
+	unknown []string
 }
 
 // parse reads the settings file's text. Unknown keys are ignored (a newer build's file opens
@@ -41,7 +45,46 @@ pub fn parse(text string) !Prefs {
 			}
 		}
 	}
+	p.unknown = unknown_lines(text)
 	return p
+}
+
+// unknown_lines is every line of the file this build does not read: a top-level `key = …`
+// whose key is not one of ours, and every table but [panes] with its lines. Kept verbatim —
+// the value's own grammar is not parsed back — and re-emitted by serialize, so a newer build's
+// settings survive an older build's save. Blank lines and comments go with the section they
+// are in; ours are dropped, since serialize rewrites those sections.
+fn unknown_lines(text string) []string {
+	known := ['editor', 'ui_scale']
+	mut out := []string{}
+	mut in_ours := true // the top level, until a table header
+	mut keep_table := false
+	for raw in text.split_into_lines() {
+		line := raw.trim_space()
+		if line.starts_with('[') {
+			name := line.all_after('[').all_before(']').trim_space()
+			keep_table = name != 'panes'
+			in_ours = false
+			if keep_table {
+				out << raw
+			}
+			continue
+		}
+		if in_ours {
+			if line == '' || line.starts_with('#') {
+				continue
+			}
+			key := line.all_before('=').trim_space()
+			if key !in known {
+				out << raw
+			}
+			continue
+		}
+		if keep_table {
+			out << raw
+		}
+	}
+	return out
 }
 
 // clamp_scale keeps a UI scale inside the range the Settings menu offers (75%..175%), with room
@@ -68,6 +111,9 @@ pub fn (p Prefs) serialize() string {
 		for k in keys {
 			out += '${k} = ${p.panes[k]:.1f}\n'
 		}
+	}
+	if p.unknown.len > 0 {
+		out += '\n' + p.unknown.join('\n') + '\n'
 	}
 	return out
 }
