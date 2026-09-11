@@ -22,6 +22,7 @@ module main
 import os
 import time
 import sync.stdatomic
+import endrule
 
 // Histogram edges, beside the counters they describe. Five buckets each: below the first edge,
 // between each pair, above the last. The hiccup ladder starts at 20 ms because the detector's
@@ -284,58 +285,37 @@ fn probe_lock_end(t0 i64) {
 	probe_leave()
 }
 
-// close_final_hiccup_interval buckets the last stretch of the measurement: from where the
-// sampler's last completed interval ended, to the instant the gate came down. Called by the
-// driver AFTER the gate is down and every admitted writer has left, so it is the only thread
-// touching these counters.
+// close_final_hiccup_interval records the stretch from where the sampler's last COMPLETE
+// interval ended to the endpoint. Called by the driver AFTER the gate is down and every admitted
+// writer has left, so it is the only thread touching these counters.
 //
-// Without it a run's final wake-to-wake gap is discarded whenever the gate closes during it,
-// which is exactly when a long one is most interesting. With it, every instant between
-// probe_begin_ns and the close is inside exactly one interval — the property the hiccup
-// histogram has claimed since #299 round 5.
-//
-// THE ENDPOINT IS THE GATE CLOSE, NOT probe_begin_ns + N s. The driver's wait loop polls every
-// 20 ms, so it leaves up to 20 ms LATE, and the sampler goes on recording intervals for that
-// whole time because the gate is still open — those are already in the histogram. Closing to the
-// nominal endpoint would therefore be closing to an instant the histogram has passed: `prev` is
-// normally GREATER than it, and the interval would be silently skipped every single run. It was,
-// until an instrumented run printed nothing (#302). probe_run_s is measured to this same
-// instant, so the divisor and the coverage describe one interval.
+// The DECISION is endrule's (extracted after six repairs in one review, #302); this applies it
+// to the counters and the bucket table, which is all that has to live in the main package.
 fn close_final_hiccup_interval(closed_ns u64, closed_gc u32, closed_live u64) {
-	prev := probe_hic_prev_ns
-	// A sampler admitted just before the close can publish just after it; that interval is
-	// already counted, and there is nothing left to close.
-	if prev == 0 || closed_ns <= prev {
+	c := endrule.final_interval(probe_hic_prev_ns, closed_ns, probe_begin_ns, probe_hic_gprev,
+		closed_gc)
+	if !c.record {
 		return
 	}
-	ms := f64(closed_ns - prev) / 1e6
-	b := bucket(ms, hic_edges_ms)
+	b := bucket(c.ms, hic_edges_ms)
 	probe_hic[b]++
 	probe_hic_n++
-	// Read across the interval like every other one — from the count SNAPSHOTTED at the close,
-	// since a collection during the inflight drain is outside this interval.
-	if b > 0 && closed_gc != probe_hic_gprev {
+	// b > 0 because a collection inside a sub-20ms interval is not what the attribution is for:
+	// the question `hic_with_gc` answers is how many of the SLOW intervals had one.
+	if b > 0 && c.collected {
 		probe_hic_gc++
 	}
-	// AND THE LIVE SET WITH IT, as the sampler does for every other interval — the one read at
-	// the endpoint, not one read now: this runs after the drain, where a late writer's
-	// allocations, or another collection entirely, would be what it saw (codex round 4 on #302). Without this a run
-	// whose only observed collection is the endpoint one reports `hic_with_gc=1` beside
-	// `collections_sampled=0` and no live-after-GC figures at all — a summary disagreeing with
-	// itself about whether a collection happened (codex round 3 on #302). Past the same ten
-	// seconds the sampler waits, so a startup collection is still not sampled.
-	if closed_gc != probe_hic_gprev && closed_ns - probe_begin_ns > 10 * u64(time.second) {
-		l := closed_live
-		if probe_live_n == 0 || l < probe_live_min_mb {
-			probe_live_min_mb = l
+	if c.sample_live {
+		if probe_live_n == 0 || closed_live < probe_live_min_mb {
+			probe_live_min_mb = closed_live
 		}
-		if l > probe_live_max_mb {
-			probe_live_max_mb = l
+		if closed_live > probe_live_max_mb {
+			probe_live_max_mb = closed_live
 		}
 		probe_live_n++
 	}
-	if u64(ms) > probe_hic_max_ms {
-		probe_hic_max_ms = u64(ms)
+	if u64(c.ms) > probe_hic_max_ms {
+		probe_hic_max_ms = u64(c.ms)
 	}
 }
 

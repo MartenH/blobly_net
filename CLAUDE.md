@@ -134,7 +134,17 @@ runs — the settings file's grammar (`%AppData%\blobly_net\settings.toml`, `~/.
 the external editor command and the UI scale) and how an editor command becomes an argv (#306); and `cmd/blobly_net/panerule/`, the persisted
 divider — how tall a dragged pane is THIS frame (clamped before it is drawn, from what the container
 has now) and what a drag changes (a drag persists, a clamp does not; stored unscaled) — one rule
-for the six panes that had it written per pane in two shapes (#305 r2, #306);
+for the six panes that had it written per pane in two shapes (#305 r2, #306); and
+`cmd/blobly_net/endrule/`, THE END OF A MEASUREMENT — what the probe records for the stretch
+between the sampler's last complete interval and the endpoint, which the sampler itself cannot
+record (waking to a closed gate it may not write, the race #299 round 5 closed). Extracted after
+being repaired SIX times in one review (#302): closing to an endpoint the histogram had already
+passed so it never fired at all, a sampler's interval running past the close, a collection
+counted without its live set, a live set read after the drain, a snapshot split by a collection,
+and the order of the reads making up that snapshot. Every one was a question about what to do
+with the numbers, and none could be asked of it directly while it read and wrote globals inside
+the main package — the signal this guide already names for covering a path instead of patching
+it;
 and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
