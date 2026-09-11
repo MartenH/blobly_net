@@ -104,3 +104,10 @@ fn process_alive(pid int) bool {
 	C.GetExitCodeProcess(h, &code)
 	return code == 259
 }
+
+// claim_file moves `src` to `dst` only if `dst` does not exist: MoveFileEx WITHOUT
+// REPLACE_EXISTING fails on an existing target, atomically — the exclusive step lock
+// ownership is published by (settings.v).
+fn claim_file(src string, dst string) bool {
+	return C.MoveFileExW(src.to_wide(), dst.to_wide(), u32(8)) != 0 // MOVEFILE_WRITE_THROUGH only
+}

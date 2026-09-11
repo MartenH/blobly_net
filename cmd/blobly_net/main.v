@@ -198,7 +198,13 @@ fn main() {
 	load_ui_font()
 	// What the last session set (#306): the UI scale, which the Settings menu changed and the
 	// next start forgot, and the editor command. After the font, since the scale is a font scale.
-	app.load_prefs()
+	if headless {
+		// a headless render reads no profile at all: a broken or foreign settings file would
+		// put a line in the Log the screenshot then carries (codex #307 r20)
+		app.prefs_file = prefs_path()
+	} else {
+		app.load_prefs()
+	}
 	if headless {
 		// A headless run's output must not depend on the machine (the comment above): the
 		// developer's own scale stays out of a screenshot — applied to the renderer only, so the

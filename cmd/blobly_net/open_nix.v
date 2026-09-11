@@ -10,6 +10,7 @@ fn C.execv(path &char, argv &&char) int
 fn C._exit(code int)
 fn C.waitpid(pid int, status &int, options int) int
 fn C.close(fd int) int
+fn C.link(oldpath &char, newpath &char) int
 
 // is_wsl reports whether we're under WSL, where no Linux browser or editor is around and the
 // Windows side has to open the file.
@@ -136,4 +137,15 @@ fn process_alive(pid int) bool {
 		return true
 	}
 	return C.errno == 1 // EPERM
+}
+
+// claim_file links `src` as `dst` only if `dst` does not exist — link(2) fails with EEXIST,
+// atomically — and drops the source name; the exclusive step lock ownership is published by
+// (settings.v).
+fn claim_file(src string, dst string) bool {
+	if C.link(&char(src.str), &char(dst.str)) != 0 {
+		return false
+	}
+	os.rm(src) or {}
+	return true
 }

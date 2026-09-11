@@ -97,8 +97,15 @@ fn (mut app App) save_prefs(ch prefs.Changed, from_dialog bool) bool {
 		return false
 	}
 	// Over a broken file the base is what this instance KNOWS (the last load plus its own
-	// changes), never the defaults; over a readable one, the file itself.
-	base := if broken_now || !present { app.prefs } else { now }
+	// changes); over a readable one, the file; over an ABSENT one — deleted since start, which
+	// is a reset — the defaults, so a save recreates only what this instance changed (r20).
+	base := if broken_now {
+		app.prefs
+	} else if !present {
+		prefs.Prefs{}
+	} else {
+		now
+	}
 	merged := prefs.merge(base, app.prefs, want)
 	// Written beside and moved into place: a write that fails part-way (a full disk) must not
 	// leave the file it was replacing truncated (codex #307 r11). The move is replace_file,
@@ -157,15 +164,20 @@ fn prefs_lock(file string) bool {
 			time.sleep(20 * time.millisecond)
 			continue
 		}
-		// Ownership is PUBLISHED and read back: a taker that found this lock ownerless (the
-		// holder suspended between mkdir and here for ten seconds) may have removed it and
-		// published its own pid in a lock of the same name — then this process does not hold
-		// it, whatever its mkdir said (codex #307 r18).
+		// Ownership is PUBLISHED by an EXCLUSIVE step: the pid is written beside and then claimed
+		// as `pid` through claim_file, which fails when a `pid` already exists (link on Unix,
+		// MoveFileEx without replace on Windows) — so of two processes publishing into one
+		// directory, one wins and the other does not hold the lock, whatever its mkdir said. A
+		// taker that found this lock ownerless may have renamed it aside and created a
+		// replacement of the same name in the meantime; a plain write into it raced the taker's
+		// own publication (codex #307 r18, r20).
 		pidfile := os.join_path(dir, 'pid')
-		if os.exists(pidfile) {
+		mine := os.join_path(dir, 'pid.' + me.str())
+		os.write_file(mine, me.str()) or { continue }
+		if !claim_file(mine, pidfile) {
+			os.rm(mine) or {}
 			continue
 		}
-		os.write_file(pidfile, me.str()) or { continue }
 		if (os.read_file(pidfile) or { '' }).trim_space().int() != me {
 			continue
 		}
