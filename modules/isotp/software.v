@@ -297,19 +297,6 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		}
 		break
 	}
-	// THE ABORT IS NO LONGER THE MOST RECENT THING ON THIS CHANNEL (#296). A message read here
-	// means every orphan Flow Control queued ahead of it has been skipped by the loop above, so
-	// the next segmented send has nothing to drain — and must not drain, or it discards a reply
-	// the caller has not read, which is the harm a flag was chosen over an unconditional drain
-	// to avoid. Cleared HERE and not at the next send of any shape: a send cannot know whether
-	// what is queued is stale, and a drain in front of a Single Frame is destructive on a path
-	// that was neither slow nor destructive.
-	//
-	// It trades one protection for another, deliberately: an orphan arriving AFTER this recv is
-	// no longer caught by a later drain. The window was already a mitigation and not a proof —
-	// an ISO-TP Flow Control carries no transfer identity — and an abort three exchanges old is
-	// not what it was written for.
-	c.fc_dirty = false
 	pci := first[0] & 0xF0
 	if pci == 0x00 {
 		len := int(first[0] & 0x0F)
@@ -326,6 +313,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		if 1 + len > first.len {
 			return error('ISO-TP SF length ${len} exceeds frame')
 		}
+		c.fc_dirty = false // a message got through: see recv_succeeded
 		return first[1..1 + len].clone()
 	}
 	if pci == 0x10 {
@@ -392,6 +380,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			sn = (sn + 1) & 0x0F
 			out << cf[1..]
 		}
+		c.fc_dirty = false // a message got through: see recv_succeeded
 		return out[..total].clone()
 	}
 	return error('ISO-TP: unexpected PCI 0x${first[0]:02X}')
@@ -463,6 +452,26 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	}
 	return error('timeout')
 }
+
+// recv_succeeded is the rule the two success returns above spell: A MESSAGE READ IS THE ABORT NO
+// LONGER BEING THE MOST RECENT THING ON THIS CHANNEL (#296). Every orphan Flow Control queued
+// ahead of that message was skipped by the loop that read it, so the next segmented send has
+// nothing to drain — and must not drain, or it discards a reply the caller has not read, which is
+// the harm a flag was chosen over an unconditional drain to avoid.
+//
+// ON SUCCESS ONLY, and at the returns rather than where the frame is first recognised: a recv
+// that then fails — an invalid Single Frame, a First Frame whose reassembly times out — has not
+// got a message through, and an old Flow Control arriving after it would meet a send that
+// skipped its drain (codex round 1 on #296).
+//
+// Not at the next send of any shape either: a send cannot know whether what is queued is stale,
+// and a drain in front of a Single Frame blocks for a quiet window and discards queued rx on a
+// path that is neither slow nor destructive.
+//
+// It trades one protection for another, deliberately: an orphan arriving AFTER a successful recv
+// is no longer caught by a later drain. The window was always a mitigation and not a proof — an
+// ISO-TP Flow Control carries no transfer identity — and an abort three exchanges old is not what
+// it was written for.
 
 // orphan_note explains a silence the orphan-Flow-Control skip is responsible for. Read as a
 // message an orphan FC surfaced as `unexpected PCI 0x31`; skipping it is right — this side never
