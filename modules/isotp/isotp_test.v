@@ -700,14 +700,24 @@ fn test_stmin_separates_consecutive_frames() {
 		assert false, 'no First Frame'
 		return
 	}
-	t0 := time.ticks()
+	// A MONOTONIC NANOSECOND CLOCK, NOT time.ticks(). On Windows `ticks()` is GetTickCount, whose
+	// granularity is ~15.6 ms, and this assertion's margin is 10 ms — correct is ~60 (two 30 ms
+	// separations), the bound is 50. Two GetTickCount reads of a true 60 ms interval land on
+	// either 3 or 4 tick boundaries depending on phase, so the measurement itself reads 46.8 or
+	// 62.4, and the 46.8 case FAILS a correct implementation. Seen on main's Windows job at
+	// exactly `took 47 ms`. sys_mono_now is QueryPerformanceCounter there, sub-microsecond.
+	//
+	// The other timing assertions in this file keep `ticks()`: their margins are hundreds of
+	// milliseconds, where 15 ms of granularity is nothing. It is the RATIO of margin to
+	// granularity that matters, not the clock.
+	t0 := time.sys_mono_now()
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 30] }) or { assert false, err.msg() }
 	msg := <-done
-	elapsed := time.ticks() - t0
+	elapsed := f64(time.sys_mono_now() - t0) / 1e6
 	assert msg == 'sent', msg
 	// two separations of 30 ms; a lower bound only, since a sleep may overshoot and the bus adds
 	// its own time
-	assert elapsed >= 50, 'three Consecutive Frames at STmin 30 ms took ${elapsed} ms — not paced'
+	assert elapsed >= 50, 'three Consecutive Frames at STmin 30 ms took ${elapsed:.1f} ms — not paced'
 	ch.close()
 	peer.close()
 }
