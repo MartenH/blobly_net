@@ -7,6 +7,7 @@ import transport
 import vgui
 import mf4
 import pickrule
+import panerule
 import player
 
 // is_recording_target: does this picker action open a recording? ONE predicate — the ext
@@ -92,20 +93,26 @@ fn (mut app App) fb_enter(dir string) {
 }
 
 // fb_refresh reads the listing: the drive roots at pickrule.drives, else the folder's
-// sub-folders and the files the filter passes. On entering a folder and on the ↻ button —
+// sub-folders and the files the filter passes. On entering a folder and on the Refresh button —
 // not per frame, because os.ls plus one is_dir per entry is a syscall per row per frame, and
 // on a folder that answers slowly (a disconnected network drive, which the drives view now
 // lists) it is the whole GUI thread stalled for as long as the picker is open.
 fn (mut app App) fb_refresh() {
+	// The roots too — a drive attached or a distribution registered while the picker is open
+	// (codex #307 r2). GetLogicalDrives and a registry walk, not a probe of each root.
+	app.fb_roots = fs_roots()
+	app.fb_roots << wsl_roots()
+	app.fb_root_lbl = ['drive…'] // the dropdown's items: a placeholder, then the roots
+	app.fb_root_lbl << app.fb_roots.map(root_label(it))
 	app.fb_dirs = []
 	app.fb_files = []
 	if app.fb_dir == pickrule.drives {
-		app.fb_dirs = fs_roots()
+		app.fb_dirs = app.fb_roots.clone() // the same list as the drive row: drives and WSL
 		return
 	}
 	entries := os.ls(app.fb_dir) or { []string{} }
 	for e in entries {
-		full := os.join_path(app.fb_dir, e)
+		full := fb_join(app.fb_dir, e)
 		if os.is_dir(full) {
 			app.fb_dirs << e
 		} else if app.match_ext(e) {
@@ -114,6 +121,16 @@ fn (mut app App) fb_refresh() {
 	}
 	app.fb_dirs.sort()
 	app.fb_files.sort()
+}
+
+// fb_join is `dir` + separator + `name`, and nothing else: os.join_path normalises, and its
+// normalisation collapses the `\\` a UNC path starts with, so every folder under
+// `\\wsl.localhost\Ubuntu\` was filed under a path that does not exist (self-review on #307).
+fn fb_join(dir string, name string) string {
+	if dir.ends_with(os.path_separator) || dir.ends_with('/') {
+		return dir + name
+	}
+	return dir + os.path_separator + name
 }
 
 // fb_go is the typed path: a folder is entered; a file that passes the filter is selected in
@@ -207,20 +224,24 @@ fn draw_filebrowser(mut app App) {
 	} else {
 		'Attach Manifest'
 	}
-	sc := app.ui_scale
+	sc := app.prefs.ui_scale
 	vgui.set_next_window(260, 140, 640, 560)
-	if !vgui.begin('${title}##filebrowser') {
+	vis, op := vgui.begin_dialog('${title}##filebrowser', app.fb_open) // the X is Cancel
+	app.fb_open = op
+	if !vis {
 		vgui.end()
 		return
 	}
 	// The folder, typed: Enter SUBMITS it (input_text_enter — not "deactivated after edit",
 	// which fires on a click aimed at the list and would navigate under it), or Go.
-	vgui.set_next_item_width(vgui.content_avail_w() - 48 * sc)
+	// the field takes what the button beside it leaves: 'Open path' plus its padding
+	vgui.set_next_item_width(vgui.content_avail_w() - 96 * sc)
 	mut jump := vgui.input_text_enter('##fbpath', mut app.fb_path_buf)
 	vgui.same_line()
-	if vgui.small_button('Go') {
+	if vgui.small_button('Open path') {
 		jump = true
 	}
+	vgui.set_item_tooltip('Go to the typed path: a folder is entered, a file is selected where it lives. Enter in the field does the same.')
 	if jump {
 		app.fb_go(vgui.buf_str(app.fb_path_buf).trim_space())
 	}
@@ -244,12 +265,34 @@ fn draw_filebrowser(mut app App) {
 		}
 	}
 	vgui.same_line()
-	if vgui.small_button('↻') {
+	if vgui.small_button('Refresh') {
 		app.fb_refresh() // the listing is read on entering a folder, not per frame
 	}
 	filt := if app.fb_ext.len > 0 { '(' + app.fb_ext.map('*' + it).join(' ') + ')' } else { '' }
 	vgui.same_line()
 	vgui.text_dim(filt)
+	// The drive dropdown (#306): a drive, or a WSL distribution, from the start — not `..` until
+	// the root and then once more. Read at open (fb_roots); only where roots are drives. It shows
+	// the root the folder is under, and picking another enters it.
+	if drive_roots && app.fb_roots.len > 0 {
+		mut cur := 0 // item 0 is the placeholder: no listed root holds this folder
+		low := app.fb_dir.to_lower()
+		for i, r in app.fb_roots {
+			if low.starts_with(r.to_lower()) {
+				cur = i + 1
+				break
+			}
+		}
+		// Its own row: appended to the button row it was clipped past the dialog's edge at
+		// 150% and above (codex #307 r1).
+		vgui.text_dim('drive:')
+		vgui.same_line()
+		vgui.set_next_item_width(200 * sc)
+		pick := vgui.combo('##fb_root', app.fb_root_lbl, cur)
+		if pick != cur && pick > 0 {
+			app.fb_enter(app.fb_roots[pick - 1])
+		}
+	}
 	vgui.separator()
 
 	at_drives := app.fb_dir == pickrule.drives
@@ -304,7 +347,7 @@ fn draw_filebrowser(mut app App) {
 				// a file written somewhere the dialog does not show.
 				app.notify('pick a drive first')
 			} else if name != '' {
-				chosen = os.join_path(app.fb_dir, name)
+				chosen = fb_join(app.fb_dir, name)
 			}
 		}
 		vgui.same_line()
@@ -337,10 +380,10 @@ fn draw_filebrowser(mut app App) {
 		match pickrule.activate(on_kind, app.fb_save) {
 			.enter {
 				// a drive root is a whole path already; joined onto the empty view it would be relative
-				app.fb_enter(if at_drives { on } else { os.join_path(app.fb_dir, on) })
+				app.fb_enter(if at_drives { on } else { fb_join(app.fb_dir, on) })
 			}
 			.accept {
-				chosen = os.join_path(app.fb_dir, on)
+				chosen = fb_join(app.fb_dir, on)
 			}
 			.select {}
 		}
@@ -371,7 +414,7 @@ fn (app &App) match_ext(name string) bool {
 fn draw_discover_dialog(mut app App) {
 	// A list with a hardware section under it: sized for both (#270 item 6).
 	vgui.set_next_window(160, 90, 960, 640)
-	vis, op := vgui.begin_closable('Discover interfaces', app.disc_open)
+	vis, op := vgui.begin_dialog('Discover interfaces', app.disc_open)
 	app.disc_open = op
 	if !vis {
 		vgui.end()
@@ -433,7 +476,19 @@ fn draw_discover_dialog(mut app App) {
 	}
 	// One column per fact, so the rows line up (#270 item 6). Content-sized: a scrolling table
 	// with no height would take the whole dialog and push the Vector section below out of reach.
-	sc := app.ui_scale
+	// With a hardware section under it the list sits in a child of draggable height (#306): the
+	// clamp before the child is drawn, a drag persists, unscaled like the other dividers.
+	sc := app.prefs.ui_scale
+	boxed := app.disc_vector.len > 0 && app.disc_list.len > 0
+	mut box_h := f32(0)
+	box_min := 60 * sc
+	box_max := vgui.content_avail_h() - 200 * sc // the hardware section, the tip and Close keep room
+	if boxed {
+		mut kept := f32(0)
+		box_h, kept = panerule.drawn(app.disc_list_h, 160, sc, box_min, box_max)
+		app.disc_list_h = kept
+		vgui.child_begin('##disc_list_box', box_h)
+	}
 	if app.disc_list.len > 0 && vgui.table_begin_flat('##disc_ifaces', 4) {
 		vgui.table_setup_col('add', 52 * sc)
 		vgui.table_setup_col('address', 240 * sc)
@@ -460,6 +515,11 @@ fn draw_discover_dialog(mut app App) {
 			vgui.table_cell(d.desc)
 		}
 		vgui.table_end()
+	}
+	if boxed {
+		vgui.child_end()
+		moved := vgui.splitter_h('##disc_split', box_h, box_min, box_max)
+		app.disc_list_h = app.pane_moved('discover_list', app.disc_list_h, box_h, moved, sc)
 	}
 	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
 	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those
@@ -573,6 +633,9 @@ fn draw_discover_dialog(mut app App) {
 	}
 	vgui.separator()
 	vgui.text_dim('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
+	if vgui.button('Close##disc') {
+		app.disc_open = false
+	}
 	vgui.end()
 }
 
@@ -581,7 +644,7 @@ fn draw_discover_dialog(mut app App) {
 fn draw_config(mut app App) {
 	vgui.set_next_window(120, 90, 720, 620)
 	was_open := app.show_config
-	vis, op := vgui.begin_closable('Configuration', app.show_config)
+	vis, op := vgui.begin_dialog('Configuration', app.show_config)
 	app.show_config = op
 	if was_open && !op && !app.running && app.dirty {
 		app.apply_edits() // closed via the [X] with unsaved edits — fold them into model + runtime
@@ -613,6 +676,15 @@ fn draw_config(mut app App) {
 		app.cfg_tab = 1
 		app.load_cfg_text()
 	}
+	// Close on the tab row, so BOTH tabs carry it — a dialog's Close is not the X alone (#306);
+	// on the Buses tab it also folds unsaved bus edits into the model, as the X does.
+	vgui.same_line()
+	if vgui.button('Close') {
+		app.show_config = false
+		if app.dirty {
+			app.apply_edits() // fold unsaved edits into the model + runtime view on close
+		}
+	}
 	vgui.separator()
 	if app.cfg_tab == 1 {
 		app.cfg_file_visible = true // drawn this frame — see save_what_is_being_edited
@@ -629,13 +701,6 @@ fn draw_config(mut app App) {
 		app.refresh_discovery()
 		app.start_cansub_browse()
 		app.disc_open = true
-	}
-	vgui.same_line()
-	if vgui.button('Close') {
-		app.show_config = false
-		if app.dirty {
-			app.apply_edits() // fold unsaved edits into the model + runtime view on close
-		}
 	}
 	if app.dirty || app.cfg_file.dirty {
 		vgui.same_line()
@@ -760,7 +825,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	if landed {
 		app.rebuild_discover_list()
 	}
-	if vgui.small_button('↻##pk${i}') {
+	if vgui.small_button('rescan##pk${i}') { // a word: the font has no ↻ (#306)
 		app.refresh_discovery()
 		app.start_cansub_browse()
 	}
@@ -926,7 +991,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 }
 
 fn draw_doip(mut app App) {
-	vis, op := vgui.begin_closable('DoIP Discovery', app.show_doip)
+	vis, op := vgui.begin_dialog('DoIP Discovery', app.show_doip)
 	app.show_doip = op
 	if !vis {
 		vgui.end()
@@ -950,6 +1015,10 @@ fn draw_doip(mut app App) {
 	}
 	for e in ents {
 		vgui.text('VIN ${e.vin}   logical 0x${e.logical_address:04X}')
+	}
+	vgui.separator()
+	if vgui.button('Close##doip') {
+		app.show_doip = false
 	}
 	vgui.end()
 }
@@ -991,11 +1060,29 @@ fn (mut app App) draw_config_text() {
 	// (save_what_is_being_edited).
 	can_save := app.cfg_file.err == '' && app.proj_path != ''
 	shown := if app.proj_path == '' { '(unsaved project)' } else { app.proj_path }
-	match draw_textfile_strip(app.cfg_file, 'cfg', 'Save text', can_save, shown) {
+	match draw_textfile_strip(mut app.cfg_file, 'cfg', 'Save text', can_save, shown,
+		app.proj_path != '') {
+		.external {
+			app.open_in_editor(app.proj_path)
+		}
 		.save {
 			app.save_cfg_text()
 		}
 		.reload {
+			// Reload TAKES the file: when it changed on disk since the model was loaded, the model
+			// is rebased on it too (revert_proj_from_disk) — the external-change warning names this
+			// action, and a text-only reload left the stale model to overwrite the file on the next
+			// Save (codex #307 r27). A model rebuild is stopped-only, and unsaved model edits are
+			// not discarded unasked.
+			if app.project_stale_on_disk() {
+				if app.running {
+					app.notify('the file changed on disk — Stop, then Reload, to take it into the model')
+				} else if app.dirty {
+					app.notify('the file changed on disk, and the model has unsaved edits — Save or discard those (Buses tab) before Reload takes the file')
+				} else {
+					app.revert_proj_from_disk()
+				}
+			}
 			app.cfg_invalidate()
 			app.load_cfg_text()
 		}

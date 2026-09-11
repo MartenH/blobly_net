@@ -10,6 +10,7 @@ import loadrule
 import transport
 import wiretap
 import candb
+import prefs
 import sysview
 import telem
 import sim
@@ -217,7 +218,6 @@ mut:
 	proj_path    string
 	proj_name    string
 	dark         bool = true // theme
-	ui_scale     f32  = 1.0
 	paused       bool
 	recording    bool
 	rec          []canlog.LogEntry // captured while recording; written on stop
@@ -346,6 +346,13 @@ mut:
 	// if the model is byte-identical — so any structured edit, load or revert since the warning
 	// re-warns rather than silently confirming (codex #268). '' = no pending confirmation.
 	reserialize_confirm string
+	// The project file's bytes as this app last read or wrote them, and the on-disk version an
+	// external-change warning was raised for: a model Save over a file another editor changed
+	// since is refused once, then overwrites that version (codex #307 r21).
+	proj_disk      string
+	proj_disk_path string // which file proj_disk is the bytes of: the baseline is valid only for THAT path (Save As
+	// to a new destination has none), and an empty file is a valid baseline (codex #307 r23)
+	external_confirm string
 	// When the project (or the File tab's text) was last written, in time.ticks(): the toolbar
 	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
 	// the screen the user is looking at and not only in the Log (#247).
@@ -391,11 +398,23 @@ mut:
 	proj            project.Project // the loaded project, kept so Save can persist edits
 	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
 	show_config bool
-	cfg_bufs    []CfgBuf
+	// Settings ▸ Preferences… (#306): what the app remembers across runs, see settings.v
+	show_prefs         bool
+	prefs              prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
+	prefs_editor_buf   []u8
+	prefs_file         string        // resolved once at load
+	prefs_caption      string        // the dialog's fixed line, built at open
+	prefs_broken       bool          // the file did not parse: never overwritten except from the dialog
+	prefs_pending      prefs.Changed // what a refused or failed save still owes the file
+	prefs_seen_broken  bool          // the file state the Preferences dialog last showed: what its Save may replace
+	prefs_seen_foreign []string
+	panes_dragged      map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
+	cfg_bufs           []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)
-	disc_open bool
-	disc_list []DiscoveredIface
-	disc_tick []bool // parallel to disc_list
+	disc_open   bool
+	disc_list_h f32 // the interface list's height in Discover, unscaled px (#306)
+	disc_list   []DiscoveredIface
+	disc_tick   []bool // parallel to disc_list
 	// The local scan (sys CAN + list_interfaces), cached so a landing browse merges into it
 	// rather than running it again on the render thread.
 	disc_scan []DiscoveredIface
@@ -439,6 +458,8 @@ mut:
 	fb_name_buf []u8     // filename (save mode)
 	fb_sel      string   // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
 	fb_dirs     []string // the listing, filled by fb_refresh — not read from disk per frame
+	fb_roots    []string // the drive dropdown: drives and WSL distributions, read with the listing (#306)
+	fb_root_lbl []string // the drive dropdown's items: a placeholder, then one label per root
 	fb_files    []string
 	fb_path_buf []u8 // the folder, typed — Enter or Go navigates; a file path selects it where it lives
 	// ACCEPTED extensions, plural — the caption the browser shows and the match it applies both
@@ -460,6 +481,7 @@ mut:
 	script_busy bool
 	// The Script panel's editor (#270): the Configuration File tab's edit box, over the script.
 	script_edit     bool     // editor shown
+	script_ed_h     f32      // the editor's height, unscaled px; the divider under it drags it (#306)
 	script_file     TextFile // the script's text, edited in place
 	trace_busy      bool     // a trace-dump transfer is in flight (single-flight guard)
 	trace_recording bool     // Record toggle: the target's capture is armed (optimistic)
@@ -788,11 +810,21 @@ fn (mut app App) log_append_locked(msg string) {
 fn (mut app App) load_project(path string) {
 	app.stop()
 	app.drop_index_bound_ui() // pending pickers and Scan results index the OLD channel set
-	proj := project.load(path) or {
+	// ONE read: the bytes parsed are the bytes kept as the version a model Save may
+	// overwrite — a second read could see a file replaced in between (codex #307 r22).
+	disk := os.read_file(path) or {
 		app.elog('load ${path}: ${err}')
 		app.notify('load failed: ${err}')
 		return
 	}
+	proj := project.parse(disk) or {
+		app.elog('load ${path}: ${err}')
+		app.notify('load failed: ${err}')
+		return
+	}
+	app.proj_disk = disk
+	app.proj_disk_path = path
+	app.external_confirm = ''
 	// THE VERSION GATE ON THE NORMAL OPEN PATH TOO. It existed only where the Configuration text
 	// is applied, so File ▸ Open read a future-format file in silence — and a structured Save then
 	// wrote back what this build understood, dropping whatever it had ignored. Said, not refused:
@@ -1001,7 +1033,13 @@ fn (mut app App) rebuild_from_proj() {
 	app.dbs = []
 	app.dbs_paths = []
 	app.dbs_by_iface = map[string][]candb.Database{}
-	app.dbc_ed = DbcEd{} // selection indices go stale across a rebuild
+	// selection indices go stale across a rebuild; the dragged dividers are the operator's and
+	// stay (they are remembered across runs too, codex #307 r7)
+	app.dbc_ed = DbcEd{
+		left_w:  app.dbc_ed.left_w
+		msgs_h:  app.dbc_ed.msgs_h
+		props_h: app.dbc_ed.props_h
+	}
 	app.dbc_ed.dirty = keep_dirty.clone()
 	app.sims = []
 	app.senders = []

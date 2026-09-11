@@ -285,7 +285,12 @@ runs scripts against the **live measurement**:
 1. Press **▶ Start** first (the script talks to the running buses/sims).
 2. The path field starts at `tests/diag_basic.lua`; type a path or **Browse…** for one, and
    press **Run**. **Edit** opens the script in the same edit box the Configuration panel's File
-   tab uses (Save writes the file that was loaded, Reload discards). Every line the script
+   tab uses: the file's name above it, **Save script**, **Discard edits** (or **Reload** when
+   clean), **Open in editor** (the command from Settings ▸ Preferences…, else the system's
+   own open; the editor is launched detached and shares nothing with the run), and a divider
+   under the box to trade height
+   with the output. Run is withheld while edits are unsaved; closing the editor keeps them,
+   and the note under the toolbar says so. Every line the script
    emits — `log()`, `print()`, each test's verdict — lands in the panel's output; it is
    replaced per run, capped at the last 2000 lines, and **Copy all** copies it. What the
    script's own buses and connections counted (dropped, controller-error, undecodable records)

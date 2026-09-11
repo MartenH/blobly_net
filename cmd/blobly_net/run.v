@@ -665,6 +665,15 @@ fn (mut app App) start() {
 	// not start. The cost is that an untidy row blocks Start — but the message names the row and
 	// the field, and clearing the field is one keystroke, so it is a visible cost with an obvious
 	// remedy rather than a silent open at a rate nobody chose.
+	// THE FILE CHANGED UNDER THE MODEL: an external editor's save (Open in editor, a checkout)
+	// is not in app.proj, and running it would run the old configuration while the File tab
+	// shows the new one. Refused until the file is taken or overwritten (codex #307 r26).
+	if app.project_stale_on_disk() {
+		app.notify('not starting — ${app.proj_path} changed on disk since it was loaded. Configuration ▸ File ▸ Reload, or File ▸ Revert, takes the file; a Save overwrites it.')
+		app.show_config = true
+		app.cfg_tab = 1
+		return
+	}
 	blocking := app.cfg_invalid.map('${it.name}: ${it.why}')
 	if blocking.len > 0 {
 		app.notify('not starting — ${blocking.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')

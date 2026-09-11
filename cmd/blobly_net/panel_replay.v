@@ -457,7 +457,7 @@ fn draw_replay_config(mut app App) {
 				vgui.text_dim('   ${if en { '[x]' } else { '[ ]' }} ${ch.name}  ${arrow}')
 				continue
 			}
-			vgui.indent_x(14 * app.ui_scale)
+			vgui.indent_x(14 * app.prefs.ui_scale)
 			nen := vgui.checkbox('${ch.name}##rpen${ci}', en)
 			if nen != en {
 				// a PROJECT edit that also moves the runtime row — set_chan_enabled_stopped
@@ -502,7 +502,7 @@ fn draw_replay_config(mut app App) {
 			if vgui.small_button('Browse##rpsrc${ci}') {
 				app.open_browser('replaysrc:${ci}')
 			}
-			vgui.indent_x(14 * app.ui_scale)
+			vgui.indent_x(14 * app.prefs.ui_scale)
 			pspd := pending_replay_speed(app, ci, rp0.speed)
 			vgui.text_dim('   speed ${pspd:.2}x${if rp0.repeat { ' · loop' } else { '' }} — press Start to play (speed/loop: Configure)')
 		}

@@ -20,6 +20,7 @@ import player
 import time
 import sync.stdatomic
 import vgui
+import prefs
 
 // load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
 // if set, else the first available system monospace (DejaVu Sans Mono / Consolas). Keeping
@@ -42,8 +43,21 @@ fn load_ui_font() {
 	for f in candidates {
 		if f != '' && os.exists(f) {
 			if vgui.add_font(f, size) {
+				merge_symbol_font(f, size)
 				return
 			}
+		}
+	}
+}
+
+// merge_symbol_font adds a face with the symbols the UI draws (▸ ● ↻ ⚠ …) behind the main one,
+// so a label is never a `?` because the main face lacks a glyph (#306: Consolas has no ↻).
+// Skipped when the main face IS the fallback.
+fn merge_symbol_font(main_face string, size f32) {
+	for f in ['C:/Windows/Fonts/seguisym.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+		'/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf'] {
+		if f != main_face && os.exists(f) && vgui.add_font_merge(f, size) {
+			return
 		}
 	}
 }
@@ -167,9 +181,48 @@ fn main() {
 		app.elog('vgui.init failed')
 		return
 	}
+	// The layout (window rects, the dock tree) lives beside the settings, per user, rather
+	// than in the working directory per checkout or bundle: one home (#306). Before the first
+	// frame, which is when ImGui reads it. ImGui writes it itself, unlocked: two instances of
+	// one user are last-writer-wins on the layout (#308).
+	// A headless render has NO layout file: one left in the working directory by an earlier run
+	// would decide its dock splits (codex #307 r5).
+	if !headless {
+		// ImGui's writer creates no directories: on a fresh profile the layout was silently not
+		// saved until a preference save had made the directory (codex #307 r11).
+		os.mkdir_all(os.dir(prefs_path())) or {}
+	}
+	vgui.set_ini_path(if headless { '' } else { os.join_path(os.dir(prefs_path()), 'imgui.ini') })
 	set_app_icon() // the B-on-blue window/taskbar icon (procedural placeholder as fallback)
 	app.load_logo() // the menu-bar wordmark (needs the GL context, so after init)
 	load_ui_font()
+	// What the last session set (#306): the UI scale, which the Settings menu changed and the
+	// next start forgot, and the editor command. After the font, since the scale is a font scale.
+	if headless {
+		// a headless render reads no profile at all: a broken or foreign settings file would
+		// put a line in the Log the screenshot then carries (codex #307 r20)
+		app.prefs_file = prefs_path()
+	} else {
+		app.load_prefs()
+	}
+	if headless {
+		// A headless run's output must not depend on the machine (the comment above): the
+		// developer's own scale stays out of a screenshot — applied to the renderer only, so the
+		// preference is not overwritten on disk (codex #307 r1) — nothing is saved at a headless
+		// exit — but the in-memory scale every layout dimension reads must be 1 too (r2).
+		app.apply_ui_scale(1.0)
+	} else {
+		app.apply_ui_scale(app.prefs.ui_scale)
+	}
+	if !headless {
+		// the dragged panes are per-user state too: a headless render keeps the defaults (r13)
+		app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
+		app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
+		app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
+		app.dbc_ed.left_w = app.prefs.panes['dbc_left'] or { 0 }
+		app.dbc_ed.msgs_h = app.prefs.panes['dbc_msgs'] or { 0 }
+		app.dbc_ed.props_h = app.prefs.panes['dbc_props'] or { 0 }
+	}
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false
 		vgui.set_theme(false)
@@ -352,6 +405,9 @@ fn main() {
 		if app.disc_open {
 			draw_discover_dialog(mut app)
 		}
+		if app.show_prefs {
+			draw_prefs(mut app)
+		}
 		if app.fb_open {
 			draw_filebrowser(mut app)
 		}
@@ -369,5 +425,28 @@ fn main() {
 		}
 	}
 	app.stop()
+	// What THIS session DRAGGED, for the next one (pane_moved): an instance that dragged nothing
+	// writes no pane over another's, and a pane merely shown at its seeded default is not a
+	// drag (codex #307 r9, r10). A broken or foreign file is not overwritten.
+	now := {
+		'system_ecu':    app.sys_ecu_h
+		'discover_list': app.disc_list_h
+		'script_editor': app.script_ed_h
+		'dbc_left':      app.dbc_ed.left_w
+		'dbc_msgs':      app.dbc_ed.msgs_h
+		'dbc_props':     app.dbc_ed.props_h
+	}
+	app.prefs.panes = map[string]f32{}
+	for k, v in now {
+		if v > 0 && (app.panes_dragged[k] or { false }) {
+			app.prefs.panes[k] = v
+		}
+	}
+	// and whatever an earlier save left pending (a scale picked while another instance held
+	// the lock), which save_prefs folds in — so the save runs when anything is owed (r16)
+	pend := app.prefs_pending
+	if !headless && (app.prefs.panes.len > 0 || pend.editor || pend.scale || pend.panes) {
+		app.save_prefs(prefs.Changed{ panes: app.prefs.panes.len > 0 }, false)
+	}
 	vgui.shutdown()
 }

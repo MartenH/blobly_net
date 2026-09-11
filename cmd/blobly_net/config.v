@@ -1113,13 +1113,18 @@ fn (mut app App) save_cfg_text() {
 		return
 	}
 	path := app.proj_path
-	os.write_file(path, txt) or {
-		app.notify('save failed: ${err}')
+	// through TextFile.write, which refuses once when the file changed on disk since it was
+	// loaded (the buffer holds proj_path: load_cfg_text loaded it there)
+	app.cfg_file.write() or {
+		app.notify('not saved — ${err.msg()}')
 		return
 	}
 	app.notify('saved -> ${path}')
 	app.dirty = false
 	app.cfg_file.dirty = false
+	app.proj_disk = txt
+	app.proj_disk_path = path
+	app.external_confirm = ''
 	app.reserialize_confirm = '' // a File save persists the comments; a later Buses Save must re-warn (codex #268)
 	app.saved_at = time.ticks()
 	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
@@ -1173,16 +1178,63 @@ fn (mut app App) revert_proj_from_disk() {
 	}
 	// Clear the flags only if the file actually replaced the model. Clearing them regardless
 	// left the edited model live and looking clean, so a later save would persist changes the
-	// user had been told were discarded.
+	// user had been told were discarded. The baseline too: bytes that did not become the model
+	// are not what the model was read from, and a later Save must still warn (codex #307 r24).
 	if !app.apply_parsed_text(txt) {
 		app.notify('nothing discarded — ${app.proj_path} does not parse; fix it on the File tab')
 		return
 	}
+	app.proj_disk = txt
+	app.proj_disk_path = app.proj_path
+	app.external_confirm = ''
 	app.dirty = false
 	app.reserialize_confirm = '' // revert replaced the model; drop any pending confirmation (codex #268)
 	app.cfg_invalidate()
 	app.load_cfg_text()
 	app.notify('unsaved model edits discarded (buses + generators)')
+}
+
+// project_changed_externally is the ONE external-change guard for a model Save: the file is not
+// what this app last read or wrote (Open in editor, a checkout), or is gone — so the model is
+// stale and its Save would erase the edit, or undo a deletion nobody confirmed. Refused ONCE,
+// for that version of the file (`external_confirm`); a repeated Save overwrites it. Only when
+// the baseline is this path's: Save As to a new destination has none (codex #307 r21–r24).
+// project_stale_on_disk is the pure half of that question: the file this app loaded is not
+// what is on disk now (changed, gone, or unreadable), for the path the baseline belongs to.
+// Start asks it: a run of the model over a file another editor changed would run the old
+// configuration while the File tab shows the new one (codex #307 r26).
+fn (app &App) project_stale_on_disk() bool {
+	if app.proj_path == '' || app.proj_disk_path != app.proj_path {
+		return false // an unsaved project has no file to have changed (r27)
+	}
+	on_disk := os.read_file(app.proj_path) or { return true }
+	return on_disk != app.proj_disk
+}
+
+fn (mut app App) project_changed_externally() bool {
+	if app.proj_path == '' || app.proj_disk_path != app.proj_path {
+		return false
+	}
+	on_disk := os.read_file(app.proj_path) or {
+		if os.exists(app.proj_path) {
+			// present but unreadable: a change this cannot judge is not "no change" — refused,
+			// on the final check too, where the comment guard is behind us (codex #307 r25)
+			app.notify('not saved — could not read ${app.proj_path} to check for changes since it was loaded (${err}); resolve the read error first')
+			return true
+		}
+		if app.external_confirm != absent_marker {
+			app.external_confirm = absent_marker
+			app.notify('not saved yet — ${app.proj_path} is gone from disk since it was loaded; repeat the Save to recreate it')
+			return true
+		}
+		return false
+	}
+	if on_disk != app.proj_disk && app.external_confirm != on_disk {
+		app.external_confirm = on_disk
+		app.notify('not saved yet — ${app.proj_path} changed on disk since it was loaded (an external editor?). Configuration ▸ File ▸ Reload, or File ▸ Revert, takes the file; repeat the Save to overwrite it.')
+		return true
+	}
+	return false
 }
 
 // non_empty is `?string` sugar: Some(s) when s is not empty.
@@ -1220,6 +1272,11 @@ fn (mut app App) save_project() {
 	// keep its comments — only File ▸ Save writes the buffer verbatim. Warn on the FIRST such Save
 	// and remember (path, model); a second Save proceeds only if both are unchanged, so any edit /
 	// load / revert / different target re-warns rather than counting as the confirmation.
+	// A project file GONE since it was loaded is an external change as much as an edited one:
+	// recreating it from the model would undo a deletion nobody confirmed (codex #307 r22).
+	if app.project_changed_externally() {
+		return
+	}
 	if os.exists(app.proj_path) {
 		on_disk := os.read_file(app.proj_path) or {
 			// present but unreadable: os.write_file may still truncate it and we cannot tell
@@ -1266,13 +1323,25 @@ fn (mut app App) save_project() {
 	p := app.proj
 	path := app.proj_path
 	app.mu.unlock()
-	p.save(path) or {
+	// The bytes WRITTEN are the baseline, not a re-read that could see a file replaced in
+	// between (codex #307 r23); Project.save is os.write_file of to_yaml, done here for that.
+	// Serialised BEFORE the final check, so only the check-to-write window remains (r27).
+	written := p.to_yaml()
+	// Asked AGAIN here: rebuild_from_proj above waits for the run's workers, up to 1.5 s, and
+	// an external save inside that wait must not be overwritten unseen (codex #307 r24).
+	if app.project_changed_externally() {
+		return
+	}
+	os.write_file(path, written) or {
 		app.notify('save failed: ${err}')
 		return
 	}
 	app.dirty = false
 	app.saved_at = time.ticks()
 	app.reserialize_confirm = '' // the file was just rewritten (comments gone); re-warn if reopened
+	app.proj_disk = written // what a later Save compares the file against
+	app.proj_disk_path = path
+	app.external_confirm = ''
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
 }

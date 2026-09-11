@@ -303,10 +303,13 @@ Its grammar is the native picker's, and it is a tested rule (`cmd/blobly_net/pic
 a click **selects** a row, a double click **enters** a folder or **accepts** a file, and Enter
 or the Open button act on the selection the same way. (It used to enter on a single click, so a
 hand that double-clicked landed its second click in the folder it had just entered.) The path
-field at the top takes a typed folder or file — Enter or Go. `.. up` from a Windows drive root
-shows the **drives** (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
-`roots_windows.v` / `roots_nix.v`), which is how a file on another drive is reached; on Linux
-`/` is its own parent and that level never appears.
+field at the top takes a typed folder or file — Enter or **Open path**. On Windows a **drive
+dropdown** offers every drive (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
+`roots_windows.v` / `roots_nix.v`) and every WSL distribution (`wsl: Ubuntu`, entering
+`\\wsl.localhost\Ubuntu\`; the names come from the registry, `wsl_roots`) from the start
+(#306); `.. up` from a drive root shows the same list as a view. Paths under a share are joined
+by hand (`fb_join`): `os.join_path` collapses a UNC prefix. On Linux `/` is its own parent
+and neither appears. The picker is a dialog: it cannot be docked, and its title-bar X is Cancel.
 
 ## Configuration editor — the Bus fields
 
