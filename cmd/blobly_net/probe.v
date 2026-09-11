@@ -301,7 +301,7 @@ fn probe_lock_end(t0 i64) {
 // normally GREATER than it, and the interval would be silently skipped every single run. It was,
 // until an instrumented run printed nothing (#302). probe_run_s is measured to this same
 // instant, so the divisor and the coverage describe one interval.
-fn close_final_hiccup_interval(closed_ns u64, closed_gc u32) {
+fn close_final_hiccup_interval(closed_ns u64, closed_gc u32, closed_live u64) {
 	prev := probe_hic_prev_ns
 	// A sampler admitted just before the close can publish just after it; that interval is
 	// already counted, and there is nothing left to close.
@@ -317,13 +317,15 @@ fn close_final_hiccup_interval(closed_ns u64, closed_gc u32) {
 	if b > 0 && closed_gc != probe_hic_gprev {
 		probe_hic_gc++
 	}
-	// AND THE LIVE SET WITH IT, as the sampler does for every other interval. Without this a run
+	// AND THE LIVE SET WITH IT, as the sampler does for every other interval — the one read at
+	// the endpoint, not one read now: this runs after the drain, where a late writer's
+	// allocations, or another collection entirely, would be what it saw (codex round 4 on #302). Without this a run
 	// whose only observed collection is the endpoint one reports `hic_with_gc=1` beside
 	// `collections_sampled=0` and no live-after-GC figures at all — a summary disagreeing with
 	// itself about whether a collection happened (codex round 3 on #302). Past the same ten
 	// seconds the sampler waits, so a startup collection is still not sampled.
 	if closed_gc != probe_hic_gprev && closed_ns - probe_begin_ns > 10 * u64(time.second) {
-		l := live_mb()
+		l := closed_live
 		if probe_live_n == 0 || l < probe_live_min_mb {
 			probe_live_min_mb = l
 		}
@@ -520,8 +522,30 @@ fn probe_driver(secs int) {
 	// created; corrupting the primary output to tidy a rounding error is the wrong trade, and
 	// further rounds on the sub-millisecond fuzziness of an endpoint that cannot be atomic will
 	// be answered with this comment.
-	closed_gc := gc_count()
-	closed_ns := time.sys_mono_now()
+	// ONE SNAPSHOT OF THE ENDPOINT, taken together: the collection count, the clock, the live set
+	// and the allocation total. Everything the summary attributes to the measurement is read
+	// HERE, before the drain — an admitted writer finishing late (a lock waiter, seconds after
+	// the close) must not let post-endpoint allocation into `alloc_mb`, or a later live set be
+	// attributed to the collection counted in the final interval (codex round 4 on #302). The
+	// divisor already ends here; the numerators have to end here with it.
+	//
+	// THE COUNT AND THE CLOCK ARE BRACKETED. A collection beginning between them suspends this
+	// thread, so the clock lands after the pause while the count still reads from before it: the
+	// final interval would contain the pause with neither the `hic_with_gc` attribution nor the
+	// live-set sample for it (round 4). Re-reading until the count is stable pairs them — unlike
+	// the gate ordering below, this one CAN be made consistent, so it is.
+	mut closed_gc := gc_count()
+	mut closed_ns := time.sys_mono_now()
+	for _ in 0 .. 8 {
+		g := gc_count()
+		if g == closed_gc {
+			break
+		}
+		closed_gc = g
+		closed_ns = time.sys_mono_now()
+	}
+	closed_live := live_mb()
+	closed_bytes := alloc_total()
 	stdatomic.store_u64(&probe_gate, 0)
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
@@ -533,8 +557,8 @@ fn probe_driver(secs int) {
 	// write — so the interval is closed here instead, between the inflight drain and the first
 	// read, where this thread is the only one left. Bucketed to the ENDPOINT, not to now: the
 	// part after it was not measured.
-	close_final_hiccup_interval(closed_ns, closed_gc)
-	probe_bytes_end = alloc_total()
+	close_final_hiccup_interval(closed_ns, closed_gc, closed_live)
+	probe_bytes_end = closed_bytes
 	// TO THE SAME ENDPOINT THE HISTOGRAM CLOSES AT. Measured after the drain, an admitted writer
 	// finishing late — a lock waiter, seconds after the close — stretched the divisor while the
 	// coverage ended at closed_ns, so the summary reported a longer run than it had measured and
