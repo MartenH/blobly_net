@@ -86,6 +86,9 @@ __global (
 	// The measured interval: from the boundary to the endpoint, as it actually ran. The
 	// requested N seconds is a target for the deadline, never the divisor.
 	probe_begin_ns      u64
+	// When the gate came down, published BEFORE it so a sampler that resumes after the close can
+	// see it and clamp; 0 while the measurement runs. See probe_hiccup_loop and #302.
+	probe_closed_ns     u64
 	probe_run_s         f64
 	// Writers that passed the gate and have not finished: a lock waiter that entered before
 	// the flag dropped still adds its wait when the lock comes, which can be after any fixed
@@ -301,7 +304,7 @@ fn probe_lock_end(t0 i64) {
 // normally GREATER than it, and the interval would be silently skipped every single run. It was,
 // until an instrumented run printed nothing (#302). probe_run_s is measured from the same side
 // of the close, so the divisor and the coverage agree.
-fn close_final_hiccup_interval(closed_ns u64) {
+fn close_final_hiccup_interval(closed_ns u64, closed_gc u32) {
 	prev := probe_hic_prev_ns
 	// A sampler admitted just before the close can publish just after it; that interval is
 	// already counted, and there is nothing left to close.
@@ -312,9 +315,9 @@ fn close_final_hiccup_interval(closed_ns u64) {
 	b := bucket(ms, hic_edges_ms)
 	probe_hic[b]++
 	probe_hic_n++
-	// Read across the interval like every other one: a collection inside it is what makes the
-	// gap worth attributing.
-	if b > 0 && gc_count() != probe_hic_gprev {
+	// Read across the interval like every other one — from the count SNAPSHOTTED at the close,
+	// since a collection during the inflight drain is outside this interval.
+	if b > 0 && closed_gc != probe_hic_gprev {
 		probe_hic_gc++
 	}
 	if u64(ms) > probe_hic_max_ms {
@@ -354,8 +357,23 @@ fn probe_hiccup_loop() {
 			prev = 0
 			continue
 		}
-		now := time.sys_mono_now()
+		mut now := time.sys_mono_now()
 		gnow := gc_count()
+		// CLAMPED TO THE CLOSE. This thread passed the gate while it was open and may then have
+		// been descheduled past the endpoint; the part of its interval after the close was not
+		// measured, and left in it an arbitrary scheduling delay is reported as an in-run stall
+		// (codex round 1 on #302). Clamping also makes the published `prev` land exactly on the
+		// close, which is what tells close_final_hiccup_interval there is nothing left to do.
+		cl := stdatomic.load_u64(&probe_closed_ns)
+		if cl != 0 && now > cl {
+			now = cl
+		}
+		if now <= prev {
+			// The whole interval lies after the close: already accounted, nothing to bucket, and
+			// `prev` is left where it is so the published boundary never moves backwards.
+			probe_leave()
+			continue
+		}
 		ms := f64(now - prev) / 1e6
 		b := bucket(ms, hic_edges_ms)
 		probe_hic[b]++
@@ -473,8 +491,17 @@ fn probe_driver(secs int) {
 	// (round 5). Then every writer that passed the gate is waited for — a lock waiter that
 	// entered before the flag dropped adds its wait when the lock comes, which a fixed grace
 	// cannot bound (round 6) — and only then is anything read.
-	stdatomic.store_u64(&probe_gate, 0)
+	// PUBLISHED BEFORE THE GATE DROPS, so a sampler already admitted and descheduled can still
+	// find it and clamp its sample to it (codex round 1 on #302). The other order leaves a window
+	// where such a sampler reads 0 and records an interval running past the measurement.
 	closed_ns := time.sys_mono_now()
+	stdatomic.store_u64(&probe_closed_ns, closed_ns)
+	stdatomic.store_u64(&probe_gate, 0)
+	// AND THE COLLECTION COUNT WITH IT, not after the drain: draining an admitted writer takes
+	// time, and a collection in that window is outside the interval about to be bucketed —
+	// attributing it would mark the endpoint interval `hic_with_gc` for something that happened
+	// after the endpoint (codex round 1 on #302).
+	closed_gc := gc_count()
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
 	}
@@ -485,7 +512,7 @@ fn probe_driver(secs int) {
 	// write — so the interval is closed here instead, between the inflight drain and the first
 	// read, where this thread is the only one left. Bucketed to the ENDPOINT, not to now: the
 	// part after it was not measured.
-	close_final_hiccup_interval(closed_ns)
+	close_final_hiccup_interval(closed_ns, closed_gc)
 	probe_bytes_end = alloc_total()
 	probe_run_s = f64(time.sys_mono_now() - probe_begin_ns) / 1e9
 	// A run that replayed NOTHING is not a measurement, whatever start() said: a replay
