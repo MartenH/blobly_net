@@ -45,6 +45,10 @@ fn test_keys_this_build_does_not_know_are_foreign_whatever_their_spelling() {
 	assert p.ui_scale == 1.25
 	assert p.panes['x'] == 200
 	assert p.foreign == ['recent_limit', 'quoted key', 'future', 'colors']
+	// and a value under [panes] that is not a number
+	f := parse('[panes]\nx = 200\nfuture_layout = "auto"\n')!
+	assert f.panes['x'] == 200
+	assert f.foreign == ['panes.future_layout']
 	// our keys spelled quoted, and the panes table spelled dotted and quoted, are ours
 	q := parse('"editor" = "vi"\n\'ui_scale\' = 1.5\npanes.script_editor = 200\n')!
 	assert q.editor == 'vi'

@@ -1,6 +1,7 @@
 module main
 
 import os
+import time
 import vgui
 
 // TextFile is a file edited in place in an ImGui text box: the Configuration File tab's project
@@ -11,10 +12,13 @@ import vgui
 // rules here were each a review finding on the File tab once; a fix lands once now.
 struct TextFile {
 mut:
-	buf    []u8   // the text, NUL-terminated, with room to type — ImGui writes into it and cannot grow it
-	loaded string // which path buf holds ('' = nothing loaded)
-	dirty  bool   // typed in since it was loaded
-	err    string // what holds a save back, or what a read said ('' = nothing)
+	buf          []u8   // the text, NUL-terminated, with room to type — ImGui writes into it and cannot grow it
+	loaded       string // which path buf holds ('' = nothing loaded)
+	dirty        bool   // typed in since it was loaded
+	err          string // what holds a save back, or what a read said ('' = nothing)
+	mtime        i64    // the file's modification time when it was loaded (stale)
+	disk_changed bool   // stale() answered yes while dirty: said until a load or a write
+	seen         i64    // when stale last looked, ms — once a second, not per frame
 }
 
 // LoadOutcome is what load did: nothing (cached, or unsaved edits kept), a read, or a failure.
@@ -33,6 +37,11 @@ enum LoadOutcome {
 fn (mut tf TextFile) load(path string) LoadOutcome {
 	// `buf.len > 0`: a buffer never allocated is not the loaded empty path — the box draws
 	// nothing for it, with nothing on screen to say why.
+	// A clean buffer whose file changed on disk — Open in editor, a checkout — is re-read; a
+	// dirty one is kept and the strip says so (codex #307 r14).
+	if tf.loaded == path && !tf.dirty && tf.buf.len > 0 && tf.stale() {
+		tf.invalidate()
+	}
 	if (tf.loaded == path && tf.buf.len > 0) || tf.dirty {
 		return .cached
 	}
@@ -52,7 +61,24 @@ fn (mut tf TextFile) load(path string) LoadOutcome {
 	tf.loaded = path
 	tf.dirty = false
 	tf.err = ''
+	tf.mtime = os.file_last_mod_unix(path)
+	tf.seen = time.ticks()
+	tf.disk_changed = false
 	return .read
+}
+
+// stale reports whether the loaded file has changed on disk since it was read — asked at most
+// once a second, since a stat per frame is a syscall per frame for every open editor.
+fn (mut tf TextFile) stale() bool {
+	if tf.loaded == '' {
+		return false
+	}
+	now := time.ticks()
+	if now - tf.seen < 1000 {
+		return false
+	}
+	tf.seen = now
+	return os.file_last_mod_unix(tf.loaded) != tf.mtime
 }
 
 // invalidate drops the cached text, so the next load re-reads it. Called wherever the file or
@@ -78,6 +104,8 @@ fn (mut tf TextFile) write() ! {
 	os.write_file(tf.loaded, tf.text())!
 	tf.dirty = false
 	tf.err = ''
+	tf.mtime = os.file_last_mod_unix(tf.loaded)
+	tf.disk_changed = false
 }
 
 // TextFileAct is what the strip's buttons asked for this frame.
@@ -95,8 +123,15 @@ enum TextFileAct {
 // placeholder); "Discard edits" while dirty, "Reload" when clean — one action, re-read the
 // file, named for what it does now; and, when `external`, "Open in editor". Then the fill
 // level once the buffer is nearly full, and the file's error. The caller acts on the result.
-fn draw_textfile_strip(tf &TextFile, id string, save_label string, can_save bool, shown string, external bool) TextFileAct {
+fn draw_textfile_strip(mut tf TextFile, id string, save_label string, can_save bool, shown string, external bool) TextFileAct {
 	mut act := TextFileAct.none
+	if tf.dirty && tf.stale() {
+		tf.disk_changed = true // its own line below, not `err`: the File tab's Save is gated on err
+	}
+	if tf.disk_changed {
+		vgui.text_colored(230, 170, 70,
+			'changed on disk since it was loaded — Discard edits takes the file, Save overwrites it')
+	}
 	vgui.text_dim('file:')
 	vgui.same_line()
 	vgui.text(shown)

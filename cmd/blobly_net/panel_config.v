@@ -1060,7 +1060,7 @@ fn (mut app App) draw_config_text() {
 	// (save_what_is_being_edited).
 	can_save := app.cfg_file.err == '' && app.proj_path != ''
 	shown := if app.proj_path == '' { '(unsaved project)' } else { app.proj_path }
-	match draw_textfile_strip(app.cfg_file, 'cfg', 'Save text', can_save, shown,
+	match draw_textfile_strip(mut app.cfg_file, 'cfg', 'Save text', can_save, shown,
 		app.proj_path != '') {
 		.external {
 			app.open_in_editor(app.proj_path)

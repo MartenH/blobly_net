@@ -1333,7 +1333,7 @@ fn draw_script_editor(mut app App) {
 	} else {
 		app.script_file.loaded
 	}
-	match draw_textfile_strip(app.script_file, 'script', 'Save script', app.script_file.dirty,
+	match draw_textfile_strip(mut app.script_file, 'script', 'Save script', app.script_file.dirty,
 		shown, app.script_file.loaded != '') {
 		.external {
 			app.open_in_editor(app.script_file.loaded)
