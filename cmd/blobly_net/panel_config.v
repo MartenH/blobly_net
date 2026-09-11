@@ -56,6 +56,8 @@ fn (mut app App) open_browser(target string) {
 	if !os.is_dir(dir) {
 		dir = '.'
 	}
+	app.fb_roots = fs_roots()
+	app.fb_roots << wsl_roots()
 	app.fb_enter(os.abs_path(dir))
 	initname := if app.fb_save && app.proj_path != '' { os.file_name(app.proj_path) } else { '' }
 	app.fb_name_buf = mkbuf(initname, 128)
@@ -209,7 +211,9 @@ fn draw_filebrowser(mut app App) {
 	}
 	sc := app.ui_scale
 	vgui.set_next_window(260, 140, 640, 560)
-	if !vgui.begin('${title}##filebrowser') {
+	vis, op := vgui.begin_dialog('${title}##filebrowser', app.fb_open) // the X is Cancel
+	app.fb_open = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -218,9 +222,10 @@ fn draw_filebrowser(mut app App) {
 	vgui.set_next_item_width(vgui.content_avail_w() - 48 * sc)
 	mut jump := vgui.input_text_enter('##fbpath', mut app.fb_path_buf)
 	vgui.same_line()
-	if vgui.small_button('Go') {
+	if vgui.small_button('Open path') {
 		jump = true
 	}
+	vgui.set_item_tooltip('Go to the typed path: a folder is entered, a file is selected where it lives. Enter in the field does the same.')
 	if jump {
 		app.fb_go(vgui.buf_str(app.fb_path_buf).trim_space())
 	}
@@ -244,12 +249,28 @@ fn draw_filebrowser(mut app App) {
 		}
 	}
 	vgui.same_line()
-	if vgui.small_button('↻') {
+	if vgui.small_button('Refresh') {
 		app.fb_refresh() // the listing is read on entering a folder, not per frame
 	}
 	filt := if app.fb_ext.len > 0 { '(' + app.fb_ext.map('*' + it).join(' ') + ')' } else { '' }
 	vgui.same_line()
 	vgui.text_dim(filt)
+	// The drive row (#306): a drive, or a WSL distribution, from the start — not `..` until the
+	// root and then once more. Read at open (fb_roots); only where roots are drives.
+	if drive_roots && app.fb_roots.len > 0 {
+		vgui.text_dim('drives:')
+		for r in app.fb_roots {
+			vgui.same_line()
+			lbl := if r.starts_with('\\\\wsl.localhost\\') {
+				'wsl: ' + r.all_after('\\\\wsl.localhost\\').trim_right('\\')
+			} else {
+				r
+			}
+			if vgui.small_button('${lbl}##root${r}') {
+				app.fb_enter(r)
+			}
+		}
+	}
 	vgui.separator()
 
 	at_drives := app.fb_dir == pickrule.drives
@@ -371,7 +392,7 @@ fn (app &App) match_ext(name string) bool {
 fn draw_discover_dialog(mut app App) {
 	// A list with a hardware section under it: sized for both (#270 item 6).
 	vgui.set_next_window(160, 90, 960, 640)
-	vis, op := vgui.begin_closable('Discover interfaces', app.disc_open)
+	vis, op := vgui.begin_dialog('Discover interfaces', app.disc_open)
 	app.disc_open = op
 	if !vis {
 		vgui.end()
@@ -433,7 +454,25 @@ fn draw_discover_dialog(mut app App) {
 	}
 	// One column per fact, so the rows line up (#270 item 6). Content-sized: a scrolling table
 	// with no height would take the whole dialog and push the Vector section below out of reach.
+	// With a hardware section under it the list sits in a child of draggable height (#306): the
+	// clamp before the child is drawn, a drag persists, unscaled like the other dividers.
 	sc := app.ui_scale
+	boxed := app.disc_vector.len > 0 && app.disc_list.len > 0
+	mut box_h := f32(0)
+	box_min := 60 * sc
+	box_max := vgui.content_avail_h() - 200 * sc // the hardware section, the tip and Close keep room
+	if boxed {
+		if app.disc_list_h <= 0 {
+			app.disc_list_h = 160
+		}
+		want := app.disc_list_h * sc
+		box_h = if want > box_max {
+			if box_max > box_min { box_max } else { box_min }
+		} else {
+			want
+		}
+		vgui.child_begin('##disc_list_box', box_h)
+	}
 	if app.disc_list.len > 0 && vgui.table_begin_flat('##disc_ifaces', 4) {
 		vgui.table_setup_col('add', 52 * sc)
 		vgui.table_setup_col('address', 240 * sc)
@@ -460,6 +499,13 @@ fn draw_discover_dialog(mut app App) {
 			vgui.table_cell(d.desc)
 		}
 		vgui.table_end()
+	}
+	if boxed {
+		vgui.child_end()
+		moved := vgui.splitter_h('##disc_split', box_h, box_min, box_max)
+		if moved != box_h {
+			app.disc_list_h = moved / sc
+		}
 	}
 	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
 	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those
@@ -573,6 +619,9 @@ fn draw_discover_dialog(mut app App) {
 	}
 	vgui.separator()
 	vgui.text_dim('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
+	if vgui.button('Close##disc') {
+		app.disc_open = false
+	}
 	vgui.end()
 }
 
@@ -581,7 +630,7 @@ fn draw_discover_dialog(mut app App) {
 fn draw_config(mut app App) {
 	vgui.set_next_window(120, 90, 720, 620)
 	was_open := app.show_config
-	vis, op := vgui.begin_closable('Configuration', app.show_config)
+	vis, op := vgui.begin_dialog('Configuration', app.show_config)
 	app.show_config = op
 	if was_open && !op && !app.running && app.dirty {
 		app.apply_edits() // closed via the [X] with unsaved edits — fold them into model + runtime
@@ -760,7 +809,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	if landed {
 		app.rebuild_discover_list()
 	}
-	if vgui.small_button('↻##pk${i}') {
+	if vgui.small_button('rescan##pk${i}') { // a word: the font has no ↻ (#306)
 		app.refresh_discovery()
 		app.start_cansub_browse()
 	}
@@ -926,7 +975,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 }
 
 fn draw_doip(mut app App) {
-	vis, op := vgui.begin_closable('DoIP Discovery', app.show_doip)
+	vis, op := vgui.begin_dialog('DoIP Discovery', app.show_doip)
 	app.show_doip = op
 	if !vis {
 		vgui.end()
@@ -950,6 +999,10 @@ fn draw_doip(mut app App) {
 	}
 	for e in ents {
 		vgui.text('VIN ${e.vin}   logical 0x${e.logical_address:04X}')
+	}
+	vgui.separator()
+	if vgui.button('Close##doip') {
+		app.show_doip = false
 	}
 	vgui.end()
 }
@@ -991,7 +1044,11 @@ fn (mut app App) draw_config_text() {
 	// (save_what_is_being_edited).
 	can_save := app.cfg_file.err == '' && app.proj_path != ''
 	shown := if app.proj_path == '' { '(unsaved project)' } else { app.proj_path }
-	match draw_textfile_strip(app.cfg_file, 'cfg', 'Save text', can_save, shown) {
+	match draw_textfile_strip(app.cfg_file, 'cfg', 'Save text', can_save, shown,
+		app.proj_path != '') {
+		.external {
+			app.open_in_editor(app.proj_path)
+		}
 		.save {
 			app.save_cfg_text()
 		}

@@ -129,7 +129,10 @@ identity and at a gap out of proportion to the cadence, so a Stop's or a dropout
 never averaged into a cadence (#266); and `cmd/blobly_net/pickrule/`, the file picker's
 grammar — a click selects, a double click enters or accepts, Enter and Open act on the
 selection the same way — and where `..` goes from a Windows drive root (the drives view, so `D:`
-is reachable from `C:`; #270); and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
+is reachable from `C:`; #270); and `cmd/blobly_net/prefs/`, what the app remembers ACROSS
+runs — the settings file's grammar (`%AppData%\blobly_net\settings.toml`, `~/.config/blobly_net/settings.toml`:
+the external editor command and the UI scale) and how an editor command becomes an argv (#306);
+and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
 inverse, the one place a value is ever written, which refuses rather than emit a spelling that
@@ -495,6 +498,10 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   stamped (so the receiver reaches its range handling instead of rejecting a CRC error) and
   `bad_crc` after. One process-wide table (`sim.inject`), keyed by interface+node+message, so
   the panel and scripts cannot disagree. A fault that cannot take effect is refused loudly.
+- **Dialogs do not dock** (`vgui.begin_dialog`, #306): the file picker, Discover, DoIP Discovery,
+  Configuration and Preferences open with `ImGuiWindowFlags_NoDocking` and carry a Close (or
+  Cancel) button; docked panels keep only the title-bar X, as dock tabs do. A label is a WORD,
+  not a symbol the font may lack: Consolas has `▸ ● … — ·` and not `↻ ⚠`, which drew as `?`.
 - **Silence** (`cmd/blobly_net/stale.v`): CAN has no link detection, so a *receiver* cannot tell
   a disconnected bus from an idle one — on any vendor. The only honest signal is that traffic
   which was arriving has stopped — so each wire reports `last RX 45s` (dim, in the toolbar and on

@@ -139,6 +139,7 @@ fn C.vgui_dock_reset()
 fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char) int
 fn C.vgui_begin_closable(&char, &int) int
+fn C.vgui_begin_dialog(&char, &int) int
 fn C.vgui_set_item_tooltip(&char)
 fn C.vgui_help_marker(&char)
 fn C.vgui_end()
@@ -740,6 +741,15 @@ pub fn begin(title string) bool {
 pub fn begin_closable(title string, open bool) (bool, bool) {
 	mut o := if open { 1 } else { 0 }
 	vis := C.vgui_begin_closable(title.str, &o) == 1
+	return vis, o != 0
+}
+
+// begin_dialog is begin_closable for a dialog — a window that must not be docked (#306): the
+// file picker, Discover, DoIP Discovery, Configuration, Preferences. Same contract: (visible,
+// open), and ALWAYS call end().
+pub fn begin_dialog(title string, open bool) (bool, bool) {
+	mut o := if open { 1 } else { 0 }
+	vis := C.vgui_begin_dialog(title.str, &o) == 1
 	return vis, o != 0
 }
 

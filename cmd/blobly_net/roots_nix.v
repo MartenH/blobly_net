@@ -11,3 +11,8 @@ const drive_roots = false
 fn fs_roots() []string {
 	return ['/']
 }
+
+// wsl_roots: WSL is reached from Windows; here there is nothing to list.
+fn wsl_roots() []string {
+	return []
+}

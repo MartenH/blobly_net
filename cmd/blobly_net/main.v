@@ -170,6 +170,14 @@ fn main() {
 	set_app_icon() // the B-on-blue window/taskbar icon (procedural placeholder as fallback)
 	app.load_logo() // the menu-bar wordmark (needs the GL context, so after init)
 	load_ui_font()
+	// What the last session set (#306): the UI scale, which the Settings menu changed and the
+	// next start forgot, and the editor command. After the font, since the scale is a font scale.
+	app.load_prefs()
+	app.prefs_editor_buf = mkbuf(app.prefs.editor, 256)
+	if app.prefs.ui_scale != 1.0 {
+		app.ui_scale = app.prefs.ui_scale
+		vgui.set_font_scale(app.ui_scale)
+	}
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false
 		vgui.set_theme(false)
@@ -351,6 +359,9 @@ fn main() {
 		}
 		if app.disc_open {
 			draw_discover_dialog(mut app)
+		}
+		if app.show_prefs {
+			draw_prefs(mut app)
 		}
 		if app.fb_open {
 			draw_filebrowser(mut app)

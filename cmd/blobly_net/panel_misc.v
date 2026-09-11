@@ -237,7 +237,14 @@ fn draw_menubar(mut app App, rx u64) {
 				if vgui.menu_item('${s}%') {
 					app.ui_scale = f32(s) / 100.0
 					vgui.set_font_scale(app.ui_scale)
+					app.prefs.ui_scale = app.ui_scale // remembered across runs (#306)
+					app.save_prefs()
 				}
+			}
+			vgui.separator()
+			if vgui.menu_item('Preferences…') {
+				app.prefs_editor_buf = mkbuf(app.prefs.editor, 256)
+				app.show_prefs = true
 			}
 			vgui.menu_end()
 		}
@@ -1255,12 +1262,10 @@ fn draw_script(mut app App) {
 	// r1). Withheld while ANY edit is unsaved — comparing the field's spelling with the loaded
 	// path let `./tests/a.lua` run the disk copy of the `tests/a.lua` being edited (r2), and
 	// two spellings of one file are not a question this panel can settle — and said, naming
-	// the file, since vgui has no disabled scope.
+	// the file, since vgui has no disabled scope. The note goes on its own line: on this one it
+	// pushed the Edit button off the right edge (#306).
 	if app.script_file.dirty {
 		vgui.text_dim('[ Run ]')
-		vgui.same_line()
-		vgui.text_colored(230, 170, 70,
-			'save ${app.script_file.loaded} first — Run executes the file')
 	} else if vgui.button('Run') && !busy {
 		// reserve the slot HERE, before the spawn: a worker that hasn't been scheduled yet
 		// hasn't registered, and an edit could slip into that gap (the worker releases it in its
@@ -1273,11 +1278,20 @@ fn draw_script(mut app App) {
 	}
 	vgui.same_line()
 	if vgui.small_button(if app.script_edit { 'Close editor' } else { 'Edit' }) {
-		app.script_edit = !app.script_edit
+		if app.script_edit && app.script_file.dirty {
+			// Closing over unsaved edits would hide them while Run stays withheld for them.
+			app.notify('save or discard the edits first')
+		} else {
+			app.script_edit = !app.script_edit
+		}
 	}
 	if busy {
 		vgui.same_line()
 		vgui.text_dim('running…')
+	}
+	if app.script_file.dirty {
+		vgui.text_colored(230, 170, 70,
+			'save ${app.script_file.loaded} first — Run executes the file')
 	}
 	if !app.running {
 		// A suite run from here talks to the simulated ECUs the RUN hosts. Stopped, nothing
@@ -1311,7 +1325,10 @@ fn draw_script_editor(mut app App) {
 		app.script_file.loaded
 	}
 	match draw_textfile_strip(app.script_file, 'script', 'Save script', app.script_file.dirty,
-		shown) {
+		shown, app.script_file.loaded != '') {
+		.external {
+			app.open_in_editor(app.script_file.loaded)
+		}
 		.save {
 			app.script_file.write() or {
 				app.script_file.err = 'save failed: ${err}'
@@ -1327,7 +1344,26 @@ fn draw_script_editor(mut app App) {
 		.none {}
 	}
 
-	if vgui.text_edit_code('##scripttext', mut app.script_file.buf, 260 * app.ui_scale) {
+	// The divider between the editor and the output (#306): the box takes the stored height,
+	// clamped BEFORE it is drawn so a short panel reclaims the room in this frame; a drag
+	// persists, the clamp does not; unscaled, so a UI-scale change keeps the proportion.
+	sc := app.ui_scale
+	if app.script_ed_h <= 0 {
+		app.script_ed_h = 260
+	}
+	ed_min := 80 * sc
+	ed_max := vgui.content_avail_h() - 120 * sc // the output keeps a few lines
+	want := app.script_ed_h * sc
+	ed_h := if want > ed_max {
+		if ed_max > ed_min { ed_max } else { ed_min }
+	} else {
+		want
+	}
+	if vgui.text_edit_code('##scripttext', mut app.script_file.buf, ed_h) {
 		app.script_file.dirty = true
+	}
+	moved := vgui.splitter_h('##script_split', ed_h, ed_min, ed_max)
+	if moved != ed_h {
+		app.script_ed_h = moved / sc
 	}
 }

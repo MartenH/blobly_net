@@ -790,6 +790,16 @@ int vgui_begin_closable(const char* title, int* p_open) {
     *p_open = open ? 1 : 0;
     return vis ? 1 : 0;
 }
+// vgui_begin_dialog: vgui_begin_closable for a DIALOG -- a picker, a discovery, an editor of
+// something other than the measurement -- which must not be docked: dropped into the dock as
+// a tab it outlives the moment it was opened for, and a picker docked beside the trace is a
+// mistake nobody made on purpose (#306).
+int vgui_begin_dialog(const char* title, int* p_open) {
+    bool open = *p_open != 0;
+    bool vis = ImGui::Begin(title, &open, ImGuiWindowFlags_NoDocking);
+    *p_open = open ? 1 : 0;
+    return vis ? 1 : 0;
+}
 void vgui_end() { ImGui::End(); }
 // set_item_tooltip attaches a hover tooltip to the PREVIOUS item (call right after it).
 void vgui_set_item_tooltip(const char* text) {

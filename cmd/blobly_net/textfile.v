@@ -85,14 +85,25 @@ enum TextFileAct {
 	none
 	save
 	reload
+	external
 }
 
-// draw_textfile_strip is the row above an edit box: Save (offered only when `can_save` — vgui
-// has no disabled scope, so a withheld action is a dim placeholder) and Reload, the modified
-// mark, `shown` (the file, or why the editor is on something else), the fill level once the
-// buffer is nearly full, and the file's error. The caller acts on what it returns.
-fn draw_textfile_strip(tf &TextFile, id string, save_label string, can_save bool, shown string) TextFileAct {
+// draw_textfile_strip is the two rows above an edit box. First the FILE — `shown`, which is
+// the path or why the editor is on something else, and the modified mark — on its own line,
+// where a dim path after the buttons was easy to lose (#306). Then the buttons: Save (offered
+// only when `can_save` — vgui has no disabled scope, so a withheld action is a dim
+// placeholder); "Discard edits" while dirty, "Reload" when clean — one action, re-read the
+// file, named for what it does now; and, when `external`, "Open in editor". Then the fill
+// level once the buffer is nearly full, and the file's error. The caller acts on the result.
+fn draw_textfile_strip(tf &TextFile, id string, save_label string, can_save bool, shown string, external bool) TextFileAct {
 	mut act := TextFileAct.none
+	vgui.text_dim('file:')
+	vgui.same_line()
+	vgui.text(shown)
+	if tf.dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
+	}
 	if can_save {
 		if vgui.button('${save_label}##${id}') {
 			act = .save
@@ -101,15 +112,15 @@ fn draw_textfile_strip(tf &TextFile, id string, save_label string, can_save bool
 		vgui.text_dim('[ Save ]')
 	}
 	vgui.same_line()
-	if vgui.button('Reload##${id}') {
+	if vgui.button(if tf.dirty { 'Discard edits##${id}' } else { 'Reload##${id}' }) {
 		act = .reload
 	}
-	if tf.dirty {
+	if external {
 		vgui.same_line()
-		vgui.text_colored(230, 170, 70, '● modified')
+		if vgui.button('Open in editor##${id}') {
+			act = .external
+		}
 	}
-	vgui.same_line()
-	vgui.text_dim(shown)
 	// buf_len, not buf_str: a copy of the whole text every frame to learn its length.
 	used := vgui.buf_len(tf.buf)
 	if used > tf.buf.len - 1024 {
