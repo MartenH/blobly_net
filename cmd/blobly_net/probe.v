@@ -22,6 +22,7 @@ module main
 import os
 import time
 import sync.stdatomic
+import endrule
 
 // Histogram edges, beside the counters they describe. Five buckets each: below the first edge,
 // between each pair, above the last. The hiccup ladder starts at 20 ms because the detector's
@@ -284,6 +285,40 @@ fn probe_lock_end(t0 i64) {
 	probe_leave()
 }
 
+// close_final_hiccup_interval records the stretch from where the sampler's last COMPLETE
+// interval ended to the endpoint. Called by the driver AFTER the gate is down and every admitted
+// writer has left, so it is the only thread touching these counters.
+//
+// The DECISION is endrule's (extracted after six repairs in one review, #302); this applies it
+// to the counters and the bucket table, which is all that has to live in the main package.
+fn close_final_hiccup_interval(closed_ns u64, closed_gc u32, closed_live u64) {
+	c := endrule.final_interval(probe_hic_prev_ns, closed_ns, probe_begin_ns, probe_hic_gprev,
+		closed_gc)
+	if !c.record {
+		return
+	}
+	b := bucket(c.ms, hic_edges_ms)
+	probe_hic[b]++
+	probe_hic_n++
+	// b > 0 because a collection inside a sub-20ms interval is not what the attribution is for:
+	// the question `hic_with_gc` answers is how many of the SLOW intervals had one.
+	if b > 0 && c.collected {
+		probe_hic_gc++
+	}
+	if c.sample_live {
+		if probe_live_n == 0 || closed_live < probe_live_min_mb {
+			probe_live_min_mb = closed_live
+		}
+		if closed_live > probe_live_max_mb {
+			probe_live_max_mb = closed_live
+		}
+		probe_live_n++
+	}
+	if u64(c.ms) > probe_hic_max_ms {
+		probe_hic_max_ms = u64(c.ms)
+	}
+}
+
 // probe_hiccup_loop is the stall detector: it asks for 1 ms and records what it got.
 // The interval is WAKE TO WAKE, and the collection counter is read at each wake: a gap
 // measured only across the sleep left the loop's own work between two sleeps — the counter
@@ -310,11 +345,30 @@ fn probe_hiccup_loop() {
 		}
 		time.sleep(time.millisecond)
 		if !probe_admit() {
+			// The measurement closed during the sleep. This interval is NOT dropped — the part
+			// of it inside the run is closed by the driver at the endpoint, from what this loop
+			// published above; see close_final_hiccup_interval.
 			prev = 0
-			continue // the measurement closed during the sleep: this interval is not its
+			continue
 		}
 		now := time.sys_mono_now()
 		gnow := gc_count()
+		// ADMITTED IS NOT THE SAME AS IN-RUN. This thread passed the gate while it was open and
+		// may then have been descheduled past the endpoint: the interval it is holding runs off
+		// the end of the measurement, and bucketing it reports an arbitrary scheduling delay
+		// AFTER the run as an in-run stall — in the histogram whose whole job is to find stalls
+		// (codex round 1 on #302). Its `gnow` is equally post-close, so a collection outside the
+		// measurement would be attributed to an interval inside it (round 2).
+		//
+		// So it does not bucket, and does not publish. The in-run part of exactly this interval
+		// is closed by the driver at the endpoint (close_final_hiccup_interval), from the
+		// boundary the last COMPLETE sample published — which covers it once, and only the part
+		// that was measured. Clamping a sample to a published close was the first answer and
+		// needed a second word for the endpoint; this needs none.
+		if stdatomic.load_u64(&probe_gate) == 0 {
+			probe_leave()
+			continue
+		}
 		ms := f64(now - prev) / 1e6
 		b := bucket(ms, hic_edges_ms)
 		probe_hic[b]++
@@ -334,6 +388,12 @@ fn probe_hiccup_loop() {
 		}
 		prev = now
 		gprev = gnow
+		// PUBLISHED, so the endpoint interval can be closed by the driver after this thread has
+		// stopped (#302). It cannot be closed HERE: the branch that would do it runs with the
+		// gate already down, outside probe_inflight, and writing a bucket there is the very race
+		// round 5 closed — probe_summary() reading counters a sampler is still changing.
+		probe_hic_prev_ns = now
+		probe_hic_gprev = gnow
 		if u64(ms) > probe_hic_max_ms {
 			probe_hic_max_ms = u64(ms)
 		}
@@ -426,11 +486,65 @@ fn probe_driver(secs int) {
 	// (round 5). Then every writer that passed the gate is waited for — a lock waiter that
 	// entered before the flag dropped adds its wait when the lock comes, which a fixed grace
 	// cannot bound (round 6) — and only then is anything read.
+	// THE ENDPOINT IS READ IMMEDIATELY BEFORE THE GATE CLOSES, and that ORDER IS A DECISION, not
+	// an oversight. A clock read and a store cannot be made atomic, so one of two errors is
+	// unavoidable if the driver is preempted between them, and they are not the same size:
+	//
+	//   read AFTER the store  -> the delay lands INSIDE the final hiccup interval, and a
+	//                            scheduling stall that happened after the run is reported as a
+	//                            stall during it. A false entry in the histogram whose entire
+	//                            job is to find stalls.
+	//   read BEFORE the store -> a handful of events admitted in that window are counted after
+	//                            the declared endpoint. A rate off by a rounding error.
+	//
+	// The second is the one to take. This was ordered the other way for one round (codex round 2
+	// on #302, correctly describing the admission window) and round 3 found the larger error it
+	// created; corrupting the primary output to tidy a rounding error is the wrong trade, and
+	// further rounds on the sub-millisecond fuzziness of an endpoint that cannot be atomic will
+	// be answered with this comment.
+	// THE ENDPOINT: the collection count, the live set and the clock, then the gate — four
+	// adjacent reads, no loop and no cross-validation. What #302 asked for is the interval the
+	// sampler cannot record and the collection counter across it; the live set comes with the
+	// collection because counting one without sampling it makes the summary disagree with itself
+	// (codex round 3).
+	//
+	// TWO IMPERFECTIONS ARE ACCEPTED HERE, DELIBERATELY, and they are written down rather than
+	// chased — seven review rounds on this seam produced thirteen findings, every fix creating
+	// the next, which is the shape this guide names for stopping (#315 carries the analysis):
+	//
+	//   * a clock read and a store are not atomic. Preempted between them, a few events are
+	//     counted past the declared endpoint — a rate off by a rounding error. The other order
+	//     puts a post-run scheduling delay INSIDE the final hiccup interval, a false entry in the
+	//     histogram whose whole job is finding stalls, which is the worse error of the two.
+	//   * a collection completing during these four reads splits them, and the attribution for
+	//     the final interval can be off by one collection. Validating against a second read moves
+	//     the split rather than closing it, as rounds 5-7 each demonstrated in turn.
+	//
+	// Both are bounded by one scheduling quantum at the very end of a run, in a dev instrument
+	// whose output is a one-page summary. Neither was better before this PR: the interval was not
+	// recorded at all.
+	closed_gc := gc_count()
+	closed_live := live_mb()
+	closed_ns := time.sys_mono_now()
 	stdatomic.store_u64(&probe_gate, 0)
 	for stdatomic.load_u64(&probe_inflight) > 0 {
 		time.sleep(time.millisecond)
 	}
+	// THE INTERVAL THAT CROSSES THE ENDPOINT BELONGS TO THE MEASUREMENT (#302). A
+	// stop-the-world beginning inside the run and ending after it is exactly the stall this
+	// probe exists to record, and it is most likely at the end, where a large run has the most
+	// to collect. The sampler could only see it by waking to a closed gate, where it may not
+	// write — so the interval is closed here instead, between the inflight drain and the first
+	// read, where this thread is the only one left. Bucketed to the ENDPOINT, not to now: the
+	// part after it was not measured.
+	close_final_hiccup_interval(closed_ns, closed_gc, closed_live)
 	probe_bytes_end = alloc_total()
+	// AFTER THE DRAIN, as before this PR. Tying it to closed_ns instead was scope I added in
+	// round 3 answering a finding of my own making, and it dragged the allocation total in after
+	// it (round 4), then the ordering of the two (rounds 6-7). The divisor and the histogram do
+	// describe slightly different intervals — the drain sits between them — which is a real
+	// inconsistency, and an OLD one that #302 did not ask about. Filed as #315 with the analysis
+	// rather than fixed by a PR that has already changed its mind three times about it.
 	probe_run_s = f64(time.sys_mono_now() - probe_begin_ns) / 1e9
 	// A run that replayed NOTHING is not a measurement, whatever start() said: a replay
 	// worker refuses after start() has returned — a reader that never came up, a recording
@@ -444,8 +558,13 @@ fn probe_driver(secs int) {
 	// And a replay GROUP that failed after start() — its recording would not decode, no
 	// reader came up, its plan kept nothing — while another played: a summary of the
 	// survivors is not the measurement that was asked for (round 10).
-	if probe_groups_failed > 0 {
-		eprintln('probe: ${probe_groups_failed} replay group(s) failed to run; the summary would describe the rest (see the Log)')
+	// LOADED, not read: the workers add to it with stdatomic.add_u64, and a plain read of a
+	// word another thread is adding to is not defined to see either value (codex round 12 on
+	// #299). The inflight drain above has already happened, so this is not a race in practice —
+	// it is the one counter in this function still spelled as if it could be.
+	groups_failed := stdatomic.load_u64(&probe_groups_failed)
+	if groups_failed > 0 {
+		eprintln('probe: ${groups_failed} replay group(s) failed to run; the summary would describe the rest (see the Log)')
 		exit(3)
 	}
 	summary := probe_summary()
