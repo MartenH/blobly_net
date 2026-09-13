@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Blobly Net
+GenericName=Automotive bus tester
+Comment=Exercise a CAN or automotive-Ethernet SUT: diagnostics, scripted tests, simulated ECUs
+Exec=blobly_net %f
+Icon=blobly_net
+Terminal=false
+Categories=Development;Engineering;
+MimeType=application/x-blobnet;

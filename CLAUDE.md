@@ -106,9 +106,14 @@ v -enable-globals test modules/             # unit tests — the reliable backbo
 
 Releases: push a `v0.1.0`-style tag matching the version in `v.mod` (the ONE version
 statement — the binary decodes it for `--version` and the title bar) on a commit reachable
-from `main`; `release.yml` verifies both, then publishes the Linux tar.gz and the Windows zip
-(via `windows.yml`, which publishes for a tag only when called with `publish_bundle=true` from
-behind that guard). Bundle payload list: `scripts/stage_bundle.sh`, once, for both. Notes =
+from `main`; `release.yml` verifies both, then publishes THREE assets: the Linux AppImage, the
+Linux tar.gz, and the Windows zip (via `windows.yml`, which publishes for a tag only when called
+with `publish_bundle=true` from behind that guard). Bundle payload list:
+`scripts/stage_bundle.sh`, once, for all three — the AppImage wraps that same payload
+(`scripts/build_appimage.sh`, #322), which is why a Linux user does not have to `apt install`
+GLFW before a downloaded release will start. Its Linux job is pinned to **ubuntu-22.04**, not
+`ubuntu-latest`: an AppImage does not bundle glibc, so the build host sets the oldest system it
+runs on, and a floating label raises that floor silently. Notes =
 `packaging/RELEASE_NOTES_HEADER.md` + generated changelog. Never bundle a vendor CAN DLL
 (ROADMAP has the list and the reason). The maintainer walkthrough is
 [docs/releasing.md](docs/releasing.md).
