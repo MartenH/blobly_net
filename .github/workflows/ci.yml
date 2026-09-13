@@ -230,14 +230,39 @@ jobs:
       #
       # ON main ONLY, the gate windows.yml already uses and for its reason: handing out an
       # executable nobody reviewed is what that gate exists to prevent (codex net#62/#63). A
-      # branch build stays a compile check. It is the app binary alone, not a bundle — a release
-      # is still the only thing that ships projects, DBCs, docs and the notices beside it.
+      # branch build stays a compile check.
+      #
+      # TARRED, AND WITH THE NOTICES, for two reasons that both bite the person downloading it:
+      #
+      #   * upload-artifact rewrites every file it stores to mode 0644 (its own README documents
+      #     this and recommends an archive). Uploaded bare, the binary this job advertises fails
+      #     with "Permission denied" the moment someone runs ./blobly_net. A tar carries the
+      #     mode through, and GitHub's zip wrapper around it does not touch what is inside.
+      #   * AN ACTIONS ARTIFACT ON A PUBLIC REPO IS A DISTRIBUTION. The app statically carries
+      #     vendored Lua and markdown, whose MIT terms require the copyright and permission
+      #     notices to travel with copies (packaging/THIRD-PARTY-NOTICES.txt). The release
+      #     tarball has always included them; a binary handed out without them is the same
+      #     distribution minus the one file that makes it lawful.
+      #
+      # This is NOT the release bundle: no projects, DBCs, samples or docs. Just the executable
+      # and the notices it may not travel without.
+      - name: Stage the Linux binary + notices (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p dist-ci
+          cp build/blobly_net dist-ci/
+          cp LICENSE dist-ci/LICENSE.txt
+          cp packaging/THIRD-PARTY-NOTICES.txt dist-ci/
+          tar -C dist-ci -czf blobly_net-linux-x64.tar.gz .
+          tar -tvzf blobly_net-linux-x64.tar.gz | grep -q 'rwx.*blobly_net' \
+            || { echo 'the binary lost its executable bit'; exit 1; }
+
       - name: Upload the Linux binary (main only)
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: blobly_net-linux-x64
-          path: build/blobly_net
+          path: blobly_net-linux-x64.tar.gz
           if-no-files-found: error
 
       # libs/vgui is a standalone module, and this is what proves it: trace_chart imports only
