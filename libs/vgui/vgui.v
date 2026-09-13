@@ -23,16 +23,31 @@ module vgui
 // DLLs (deps end up: kernel32/user32/gdi32/shell32/opengl32/msvcrt only). Multi-viewport
 // is native Win32 (no X11). Verified: mingw-w64 gcc 16.1.0, self-contained exe, GL 4.6.
 // FreeType (crisp text): needs `pacman -S mingw-w64-x86_64-freetype`. mingw's libfreetype.a
-// is built WITH HarfBuzz, so a *static* link drags in the full transitive chain — the libs
-// below are `pkg-config --static --libs freetype2` verbatim (harfbuzz→glib/dwrite/usp10/
-// pcre2/intl/graphite2, png→z, brotli, bz2). HarfBuzz + graphite2 are C++, so `-lstdc++`
-// MUST come LAST (after them) or you get `undefined reference to __cxa_*`. If your toolchain
-// differs, regenerate the middle chain with `pkg-config --static --libs freetype2`.
+// is built WITH HarfBuzz, so the chain below is `pkg-config --static --libs freetype2`
+// verbatim (harfbuzz→glib/dwrite/usp10/pcre2/intl/graphite2, png→z, brotli, bz2). HarfBuzz +
+// graphite2 are C++, so `-lstdc++` MUST come LAST (after them) or you get `undefined
+// reference to __cxa_*`. If your toolchain differs, regenerate the middle chain with
+// `pkg-config --static --libs freetype2`.
+//
+// NO BARE `-static`, DELIBERATELY (#318). With it, that whole chain is absorbed into the exe —
+// including GLib, which HarfBuzz pulls in and which is LGPL-2.1+. Statically incorporating an
+// LGPL library into a distributed binary asks the distributor for relink materials or a written
+// offer (LGPL-2.1 §6); a link to the upstream project is not that. It also made
+// THIRD-PARTY-NOTICES.txt untrue, which says the Windows components are "DYNAMICALLY linked, so
+// the LGPL components remain replaceable by the recipient" — while the published bundle
+// contained no DLLs at all, so nothing was replaceable. Verified by downloading it: the exe's
+// imports were Windows system DLLs only, and `g_malloc`/`g_free` were inside it.
+//
+// Without it the chain resolves to import libraries, scripts/bundle_dlls.sh copies what ldd
+// reports next to the exe, and the zip stays self-contained in the sense that matters: it runs
+// from any shell without MSYS2 on PATH. `-l:libglfw3.a` still names GLFW's static archive by
+// path — zlib/libpng licence, permissive, one fewer DLL — and -static-libstdc++ /
+// -static-libgcc stay, so the GCC runtime does not travel either.
 // -mwindows: link as a GUI-subsystem exe so Windows does NOT spawn a console window
 // alongside the app (mingw defaults to the console subsystem; the old MSVC build used the
 // equivalent /SUBSYSTEM:WINDOWS). V's main() is still the entry point (that's -municode, not
 // -mwindows). startup prints just have no console to land in — fine for a shipped GUI app.
-#flag windows -mwindows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -lstdc++ -l:libgdi32.a
+#flag windows -mwindows -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -lstdc++ -l:libgdi32.a
 #include "vgui.h"
 
 // Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout).

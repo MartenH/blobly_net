@@ -134,10 +134,11 @@ jobs:
           ver="$(sed -n "s/^\s*version: '\(.*\)'\s*$/\1/p" v.mod)"
           sh scripts/stage_bundle.sh dist "$ver"
           cp build/blobly_net.exe dist/blobly_net.exe
-          # ZERO DLLs is a legitimate outcome, not a missing file: the link is -static (see
-          # libs/vgui's windows flags), and the ldd sweep above copies only what remains
-          # dynamic — possibly nothing. A bare `cp build/*.dll` fails the whole release on
-          # exactly the healthiest build (codex #137 r2, P1); find tolerates no matches.
+          # The bare -static is gone (#318), so the freetype chain resolves to DLLs and the ldd
+          # sweep above copies them here. `find` rather than `cp build/*.dll` is still right:
+          # GLFW and the GCC runtime stay static by explicit flag, so the set is small and could
+          # in principle be empty, and a bare glob fails the whole release when it matches
+          # nothing (codex #137 r2, P1).
           find build -maxdepth 1 -name '*.dll' -exec cp {} dist/ \;
           # register_blobnet_win.ps1 resolves the exe "next to THIS script" first, and
           # says the bundle stages it alongside — it once did not, so .blobnet association
