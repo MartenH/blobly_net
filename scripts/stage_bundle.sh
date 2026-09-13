@@ -51,13 +51,29 @@ cp "$vroot/LICENSE"                          "$dest/licenses/v-stdlib-LICENSE.tx
 # pass `-gc none` — and its terms are notice-retention ("provided the above notices are retained
 # on all copies"). Like md4c, the notice is the source header (codex round 2 on #318).
 header_notice "$vroot/thirdparty/libgc/gc.c" "$dest/licenses/boehm-gc-LICENSE.txt"
-# GLFW is linked STATICALLY on Windows (-l:libglfw3.a), so its text has to travel too; on Linux
-# it is the distro's shared library and does not. Staged when the MSYS2 package that provides it
-# is present, which is exactly the case where the static link happened (codex round 1).
-for g in /mingw64/share/licenses/glfw/LICENSE.md /mingw64/share/licenses/glfw/LICENSE \
-         /mingw64/share/doc/glfw/LICENSE.md; do
-  [ -f "$g" ] && { cp "$g" "$dest/licenses/glfw-LICENSE.txt"; break; }
+# WHAT THE WINDOWS LINK PULLS IN STATICALLY, by explicit flag rather than the blanket -static:
+# GLFW (-l:libglfw3.a) and the GCC runtime (-static-libgcc, -l:libstdc++.a). Both are compiled
+# into the exe there, so both texts travel; on Linux they are the distro's shared libraries and
+# neither is. Staged from the MSYS2 tree when it is present, which is exactly the case where the
+# static link happened (codex round 1, and round 1 on the release PR for the GCC half — which
+# this branch created by making libstdc++ static in the first place).
+for d in glfw gcc-libs gcc; do
+  for base in /mingw64/share/licenses/$d /mingw64/share/doc/$d; do
+    [ -d "$base" ] || continue
+    mkdir -p "$dest/licenses/$d"
+    cp -r "$base/." "$dest/licenses/$d/"
+    break
+  done
 done
+# ON WINDOWS THOSE ARE NOT OPTIONAL. The loop skips what is absent, which is right on Linux where
+# both are the distro's shared libraries — and would be a silent miss on Windows if MSYS2 ever
+# moved the paths. An mingw64 tree present means the static link happened, so the texts must be
+# here. Fail rather than ship the claim without the files behind it.
+if [ -d /mingw64 ]; then
+  [ -d "$dest/licenses/glfw" ] || { echo "stage_bundle: no GLFW licence, but -l:libglfw3.a links it" >&2; exit 1; }
+  [ -d "$dest/licenses/gcc-libs" ] || [ -d "$dest/licenses/gcc" ] \
+    || { echo "stage_bundle: no GCC runtime licence, but -static-libgcc/-l:libstdc++.a link it" >&2; exit 1; }
+fi
 for f in lua vlang-markdown md4c boehm-gc dear-imgui cimgui implot cimplot v-stdlib; do
   [ -s "$dest/licenses/$f-LICENSE.txt" ] || { echo "licence text missing: $f" >&2; exit 1; }
 done
