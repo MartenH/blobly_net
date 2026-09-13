@@ -111,6 +111,17 @@ done
 # not a .so under usr/lib, so the sweep above cannot see it; its text is vendored beside the
 # desktop file, where it is in-repo and auditable rather than fetched at build time.
 cp "$root/packaging/appimage/appimage-runtime-LICENSE.txt" "$lic/appimage-runtime-LICENSE.txt"
+# AND WHAT THE RUNTIME ITSELF STATICALLY CONTAINS. AppImageKit's own licence says in its second
+# sentence that it "does not necessarily apply for all dependencies", and the runtime links
+# squashfuse (BSD-2) plus the compressors it needs to read the image without host libraries —
+# confirmed by their strings being in the prepended bytes (codex round 3 on #322).
+#
+# libfuse is NOT among them: the type-2 runtime dlopens it from the host, which is exactly why a
+# user needs libfuse2 installed. That requirement is the evidence it is not bundled, so there is
+# no LGPL obligation here.
+for f in "$root"/packaging/appimage/runtime-deps/*-LICENSE.txt; do
+	cp "$f" "$lic/appimage-runtime-$(basename "$f")"
+done
 # PACKAGES, NOT LIBRARIES. Several sonames can come from one package — libbrotlicommon and
 # libbrotlidec are both libbrotli1 — so the file count is lower than the library count and
 # comparing the two is comparing different things. The invariant that matters is that what was
@@ -137,7 +148,8 @@ ex="$work/verify"
 rm -rf "$ex"
 mkdir -p "$ex"
 ( cd "$ex" && "$out" --appimage-extract >/dev/null )
-for f in lua-LICENSE.txt v-stdlib-LICENSE.txt boehm-gc-LICENSE.txt appimage-runtime-LICENSE.txt; do
+for f in lua-LICENSE.txt v-stdlib-LICENSE.txt boehm-gc-LICENSE.txt appimage-runtime-LICENSE.txt \
+         appimage-runtime-squashfuse-LICENSE.txt; do
 	[ -s "$ex/squashfs-root/usr/bin/licenses/$f" ] \
 		|| { echo "build_appimage: $f is not inside the image" >&2; exit 1; }
 done
