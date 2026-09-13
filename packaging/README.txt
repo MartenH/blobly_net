@@ -7,6 +7,10 @@ Run it
   Linux:    ./blobly_net   (needs the distro's GLFW/FreeType/GL runtime:
             Debian/Ubuntu:  sudo apt install libglfw3 libfreetype6 libgl1)
 
+            If you would rather install nothing, the release page also has a
+            .AppImage — one file, chmod +x, run it. It carries GLFW and the
+            rest; only OpenGL comes from your graphics driver, as it must.
+
   1. It opens with the driver-free SIMULATION (projects/sim-demo.blobnet).
      Press  > Start  (top-left) — the Trace fills with decoded CAN frames.
   2. Explore more examples in projects/: simulation, replay, DoIP
