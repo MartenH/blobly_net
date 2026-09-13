@@ -22,6 +22,11 @@ What's in this folder
 ---------------------
   blobly_net[.exe]  the application
   *.dll             (Windows) runtime libraries — keep them next to the .exe
+  LICENSE.txt       Blobly Net's own licence (MIT)
+  THIRD-PARTY-NOTICES.txt  what is compiled in and what is bundled beside it
+  licenses/         the full licence text of every third-party component —
+                    one file per component compiled into the executable, and
+                    one directory per bundled Windows DLL
   projects/         example .blobnet projects (bus setup + simulation)
   dbc/              CAN databases the examples decode against
   manifests/        telemetry handler manifests (Trace Chart, e.g. trace-demo)
