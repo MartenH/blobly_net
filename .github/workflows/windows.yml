@@ -132,7 +132,7 @@ jobs:
         run: |
           mkdir -p dist
           ver="$(sed -n "s/^\s*version: '\(.*\)'\s*$/\1/p" v.mod)"
-          sh scripts/stage_bundle.sh dist "$ver"
+          V=/c/v-ct/v.exe sh scripts/stage_bundle.sh dist "$ver"
           cp build/blobly_net.exe dist/blobly_net.exe
           # The bare -static is gone (#318), so the freetype chain resolves to DLLs and the ldd
           # sweep above copies them here. `find` rather than `cp build/*.dll` is still right:
