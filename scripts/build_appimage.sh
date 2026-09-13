@@ -166,6 +166,40 @@ inside=$(ls "$ex/squashfs-root/usr/bin/licenses/"*-copyright.txt 2>/dev/null | w
 [ -s "$ex/squashfs-root/usr/bin/projects/sim-demo.blobnet" ] \
 	|| { echo "build_appimage: the payload is not inside the image" >&2; exit 1; }
 
+# WHAT THE HOST MUST STILL PROVIDE, DERIVED. The excludelist is linuxdeploy's, not ours, so the
+# set changes when it does — and a hand-written list in the README goes stale silently, which it
+# did three times in review (OpenGL, then FreeType, then X11). Printed here so the documentation
+# can be checked against the build instead of against memory.
+host=$(comm -23 \
+	"$(ldd "$work/AppDir/usr/bin/blobly_net" 2>/dev/null | awk '{print $1}' | grep '^lib' | sort -u > "$work/.need"; echo "$work/.need")" \
+	"$(ls "$work/AppDir/usr/lib" 2>/dev/null | sort -u > "$work/.have"; echo "$work/.have")" \
+	| grep -vE '^(libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s)\.so' | tr '\n' ' ')
+echo "host libraries still required: $host"
+
+# AND THE DOCUMENTED LISTS MUST MATCH IT. Deriving the set only helps if something compares it to
+# what users are told; printing it into a build log that nobody reads is how the README drifted
+# three times in review (codex round 4). The comparison is set EQUALITY against the names inside
+# the one passage of each README that promises what the host must provide — the passage is
+# delimited by its own two fixed sentences, so a user-facing text file needs no build markers.
+# A substring search over the whole file is not enough (codex round 5): the tarball's apt line
+# would keep `libfreetype` satisfied through `libfreetype6`, and the build instructions through
+# `libfreetype-dev`, after the AppImage passage stopped mentioning it. Equality also fails the
+# other way — a name still documented after the image starts bundling it — and fails loudly when
+# a delimiter sentence is edited away, because the passage then reads as empty.
+documented() {
+	sed -n '/The rest still comes from/,/Every desktop has those/p' "$1" \
+		| grep -oE '\blib[A-Za-z0-9]+\b' | LC_ALL=C sort -u | tr '\n' ' '
+}
+want=$(for so in $host; do echo "${so%%.so*}"; done | LC_ALL=C sort -u | tr '\n' ' ')
+for doc in README.md packaging/README.txt; do
+	got=$(documented "$root/$doc")
+	[ "$got" = "$want" ] || {
+		echo "build_appimage: $doc promises host libraries '$got' but the image needs '$want'" >&2
+		exit 1
+	}
+done
+echo "both READMEs account for exactly the $(echo "$host" | wc -w) host libraries"
+
 # AND IT RUNS. A built file that cannot start is the failure this whole change exists to prevent.
 got="$("$out" --version 2>&1 | head -1)" || {
 	echo "build_appimage: the AppImage does not run: $got" >&2

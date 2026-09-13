@@ -7,6 +7,21 @@ Run it
   Linux:    ./blobly_net   (needs the distro's GLFW/FreeType/GL runtime:
             Debian/Ubuntu:  sudo apt install libglfw3 libfreetype6 libgl1)
 
+            Or take the .AppImage from the release page — one file, chmod +x,
+            run it. It carries GLFW, which is the one that is usually missing.
+            The rest still comes from your system, on purpose: the graphics
+            driver (libGL, libGLX, libGLdispatch — it must match your GPU),
+            X11 (libX11, libxcb), FreeType (libfreetype) and zlib (libz).
+            Every desktop has those;
+            bundling the driver would be wrong and bundling FreeType breaks
+            the host's fonts. It also mounts itself, so it needs FUSE 2 —
+            present on
+            almost every desktop, but Ubuntu 24.04 renamed the package. If it
+            will not start there:
+                sudo apt install libfuse2t64
+            or run it without mounting:
+                ./blobly_net-*.AppImage --appimage-extract-and-run
+
   1. It opens with the driver-free SIMULATION (projects/sim-demo.blobnet).
      Press  > Start  (top-left) — the Trace fills with decoded CAN frames.
   2. Explore more examples in projects/: simulation, replay, DoIP
