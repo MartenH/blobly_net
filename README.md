@@ -59,7 +59,7 @@ and a `VERSION.txt`. The tar.gz and the zip put them under one top-level folder 
 files open in the app). On Linux take the **AppImage** — one file, `chmod +x`, run it; it carries GLFW, which is the
 dependency that is actually missing on a normal machine. The rest still comes from the host, on
 purpose: the **graphics driver** (`libGL`, `libGLX`, `libGLdispatch` — it has to match the GPU),
-**X11** (`libX11`, `libxcb`), **FreeType** and **zlib**. Every desktop has those; bundling the
+**X11** (`libX11`, `libxcb`), **FreeType** (`libfreetype`) and **zlib** (`libz`). Every desktop has those; bundling the
 driver would be wrong and bundling FreeType breaks the host's fonts. `scripts/build_appimage.sh`
 prints that list at build time, derived from the image, so it cannot quietly drift. An AppImage mounts itself and
 so needs FUSE 2, which almost every desktop has; **Ubuntu 24.04 dropped the old package name**, so

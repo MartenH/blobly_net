@@ -176,6 +176,22 @@ host=$(comm -23 \
 	| grep -vE '^(libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s)\.so' | tr '\n' ' ')
 echo "host libraries still required: $host"
 
+# AND THE DOCUMENTED LISTS MUST MATCH IT. Deriving the set only helps if something compares it to
+# what users are told; printing it into a build log that nobody reads is how the README drifted
+# three times in review (codex round 4). Each soname's base name has to appear in both files that
+# promise what the AppImage needs — so a dependency appearing or an exclusion changing fails the
+# build here rather than surfacing as a bug report.
+for so in $host; do
+	tok=${so%%.so*}
+	for doc in "$root/README.md" "$root/packaging/README.txt"; do
+		grep -q -- "$tok" "$doc" || {
+			echo "build_appimage: $tok is a host dependency and $(basename "$doc") does not mention it" >&2
+			exit 1
+		}
+	done
+done
+echo "both READMEs account for all $(echo "$host" | wc -w) host libraries"
+
 # AND IT RUNS. A built file that cannot start is the failure this whole change exists to prevent.
 got="$("$out" --version 2>&1 | head -1)" || {
 	echo "build_appimage: the AppImage does not run: $got" >&2

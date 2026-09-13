@@ -11,7 +11,8 @@ Run it
             run it. It carries GLFW, which is the one that is usually missing.
             The rest still comes from your system, on purpose: the graphics
             driver (libGL, libGLX, libGLdispatch — it must match your GPU),
-            X11 (libX11, libxcb), FreeType and zlib. Every desktop has those;
+            X11 (libX11, libxcb), FreeType (libfreetype) and zlib (libz).
+            Every desktop has those;
             bundling the driver would be wrong and bundling FreeType breaks
             the host's fonts. It also mounts itself, so it needs FUSE 2 —
             present on
