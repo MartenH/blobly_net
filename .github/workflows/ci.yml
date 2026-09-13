@@ -249,10 +249,23 @@ jobs:
       - name: Stage the Linux binary + notices (main only)
         if: github.ref == 'refs/heads/main'
         run: |
-          mkdir -p dist-ci
+          mkdir -p dist-ci/licenses
           cp build/blobly_net dist-ci/
           cp LICENSE dist-ci/LICENSE.txt
           cp packaging/THIRD-PARTY-NOTICES.txt dist-ci/
+          # THE NOTICES FILE IS AN INDEX, NOT THE NOTICES. It lists components and links and
+          # says so itself ("full licence texts are available from each project"), while MIT
+          # requires the copyright and permission notices to accompany copies of what is
+          # statically incorporated (codex round 3). These are the texts this build can prove
+          # it has; see #318 for the complete audit, which is a maintainer call because it
+          # turns on static-vs-dynamic linking per platform.
+          cp thirdparty/lua/LICENSE          dist-ci/licenses/lua-LICENSE.txt
+          cp libs/markdown/LICENSE           dist-ci/licenses/vlang-markdown-LICENSE.txt
+          cp libs/vgui/build/cimgui/imgui/LICENSE.txt dist-ci/licenses/dear-imgui-LICENSE.txt
+          cp libs/vgui/build/cimgui/LICENSE  dist-ci/licenses/cimgui-LICENSE.txt
+          cp libs/vgui/build/cimplot/implot/LICENSE dist-ci/licenses/implot-LICENSE.txt
+          cp libs/vgui/build/cimplot/LICENSE dist-ci/licenses/cimplot-LICENSE.txt
+          test -s dist-ci/licenses/lua-LICENSE.txt || { echo 'licence texts missing'; exit 1; }
           tar -C dist-ci -czf blobly_net-linux-x64.tar.gz .
           tar -tvzf blobly_net-linux-x64.tar.gz | grep -q 'rwx.*blobly_net' \
             || { echo 'the binary lost its executable bit'; exit 1; }
