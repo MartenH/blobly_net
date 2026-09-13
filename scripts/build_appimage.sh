@@ -18,6 +18,12 @@
 #
 #   usage: scripts/build_appimage.sh <staged-bundle-dir> <version>
 set -e
+# NO FUSE ANYWHERE. linuxdeploy and appimagetool are themselves AppImages, and mounting one needs
+# libfuse2 — which ubuntu-24.04 runners do not have under that name, and which a container may not
+# allow at all. Extract-and-run unpacks to a temp dir instead. It also applies to the image we
+# build below, so the smoke test at the end needs no FUSE either.
+export APPIMAGE_EXTRACT_AND_RUN=1
+
 src="$1"
 ver="$2"
 [ -n "$src" ] && [ -n "$ver" ] || { echo "usage: build_appimage.sh <staged-bundle-dir> <version>" >&2; exit 2; }
@@ -83,10 +89,20 @@ done
 echo "staged licences for $(ls "$work"/AppDir/usr/lib/*.so* 2>/dev/null | wc -l) bundled librar(y|ies)"
 
 # THE POINT OF THE EXERCISE, ASSERTED. If libglfw is not inside, this AppImage fails on exactly
-# the system the issue was reported from and we would not know until a user told us again.
-"$ld" --appimage-extract-and-run --version >/dev/null 2>&1 || true
+# the system the issue was reported from, and we would not find out until a user said so again.
 if ! find "$work/AppDir" -name 'libglfw.so.*' | grep -q .; then
 	echo "build_appimage: libglfw is not bundled — the AppImage would fail like the tarball" >&2
 	exit 1
 fi
-echo "built $out"
+
+# AND IT RUNS. A built file that cannot start is the failure this whole change exists to prevent,
+# so the build does not claim success without executing the thing it just made.
+got="$("$root/$out" --version 2>&1 | head -1)" || {
+	echo "build_appimage: the AppImage does not run: $got" >&2
+	exit 1
+}
+[ "$got" = "blobly_net $ver" ] || {
+	echo "build_appimage: expected 'blobly_net $ver', got '$got'" >&2
+	exit 1
+}
+echo "built $out — runs, says '$got'"

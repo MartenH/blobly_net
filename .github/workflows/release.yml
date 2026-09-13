@@ -105,10 +105,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
-          # For the AppImage: FUSE so linuxdeploy's own AppImage runs, and the runtime .so files
-          # it bundles (the -dev packages above provide headers and symlinks, not the sonames the
-          # binary loads).
-          sudo apt-get install -y --no-install-recommends libfuse2 libglfw3
+          # For the AppImage: the runtime .so files it bundles. The -dev packages above provide
+          # headers and the linker symlink, not the soname the binary actually loads. No FUSE —
+          # build_appimage.sh sets APPIMAGE_EXTRACT_AND_RUN, because libfuse2 is not installable
+          # under that name on ubuntu-24.04 runners.
+          sudo apt-get install -y --no-install-recommends libglfw3
       - name: Build GUI app
         run: RUN=0 bash scripts/run_gui.sh
       - name: Sanity — the binary answers with the tagged version
