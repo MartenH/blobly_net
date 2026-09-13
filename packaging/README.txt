@@ -9,10 +9,12 @@ Run it
 
             Or take the .AppImage from the release page — one file, chmod +x,
             run it. It carries GLFW, which is the one that is usually missing.
-            Two things still come from your system, on purpose: OpenGL, which
-            is your graphics driver and must match your GPU, and FreeType,
-            which is on any desktop and clashes with the host's font stack if
-            bundled. It also mounts itself, so it needs FUSE 2 — present on
+            The rest still comes from your system, on purpose: the graphics
+            driver (libGL, libGLX, libGLdispatch — it must match your GPU),
+            X11 (libX11, libxcb), FreeType and zlib. Every desktop has those;
+            bundling the driver would be wrong and bundling FreeType breaks
+            the host's fonts. It also mounts itself, so it needs FUSE 2 —
+            present on
             almost every desktop, but Ubuntu 24.04 renamed the package. If it
             will not start there:
                 sudo apt install libfuse2t64
