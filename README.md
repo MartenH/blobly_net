@@ -55,7 +55,10 @@ Help panel renders, a `README.txt` and a `VERSION.txt`. The **Windows zip is sel
 (mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
 files open in the app). On Linux take the **AppImage** — one file, `chmod +x`, run it; it carries GLFW and the rest, so
 there is nothing to install. (OpenGL comes from your graphics driver and is deliberately not
-bundled — a copy shipped here would be the wrong one for your GPU.) The **tar.gz** is the same
+bundled — a copy shipped here would be the wrong one for your GPU.) An AppImage mounts itself and
+so needs FUSE 2, which almost every desktop has; **Ubuntu 24.04 dropped the old package name**, so
+if it refuses to start there either `sudo apt install libfuse2t64` or run it without mounting:
+`./blobly_net-*.AppImage --appimage-extract-and-run`. The **tar.gz** is the same
 application with the payload unpacked, and *that* one needs the distro runtime:
 `sudo apt install libglfw3 libfreetype6 libgl1`. Which version you have: `VERSION.txt`, the
 window title, or `./blobly_net --version` — on Windows the exe is a GUI-subsystem program, so

@@ -19,6 +19,10 @@ Watch the **release** workflow run. When it finishes, the release is on the
 
 - `blobly_net-vX.Y.Z-x86_64.AppImage` — one file, `chmod +x`, runs. Carries GLFW and its
   dependencies; OpenGL comes from the host's driver, as it must. **The one to point people at.**
+  It mounts itself, so it needs FUSE 2 — `libfuse2t64` on Ubuntu 24.04, where the old package name
+  went away — or `--appimage-extract-and-run` for a host without it. The build itself needs no
+  FUSE (`APPIMAGE_EXTRACT_AND_RUN` in `scripts/build_appimage.sh`), which is a different thing and
+  was worth separating: the runner has no libfuse2 either.
 - `blobly_net-vX.Y.Z-linux-x64.tar.gz` — the same application unpacked, for anyone who wants the
   payload on disk. Needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`)
 - `blobly_net-vX.Y.Z-windows-x64.zip` — self-contained
