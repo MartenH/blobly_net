@@ -3,7 +3,11 @@ Blobly Net — third-party notices
 
 Blobly Net is distributed with third-party components. The application's own
 licence is in LICENSE (shipped alongside this file). The components below retain
-their respective licences; full licence texts are available from each project.
+their respective licences.
+
+The full licence text of every component COMPILED INTO the executable is shipped
+in the `licenses/` directory beside this file. This file is the index; that
+directory is the notices themselves.
 
 Compiled into the executable
 ----------------------------
@@ -11,12 +15,14 @@ Compiled into the executable
   ImPlot             MIT            https://github.com/epezent/implot
   cimgui             MIT            https://github.com/cimgui/cimgui   (C ABI for Dear ImGui)
   cimplot            MIT            https://github.com/cimgui/cimplot  (C ABI for ImPlot)
-  GLFW 3.3.10        zlib/libpng    https://www.glfw.org/              (statically linked)
+  GLFW 3.3.10        zlib/libpng    https://www.glfw.org/              (static on Windows)
   FreeType           FTL / GPL-2    https://freetype.org/              (imgui_freetype rasterizer)
   Lua 5.4            MIT            https://www.lua.org/               (vendored in thirdparty/lua)
   vlang/markdown     MIT            https://github.com/vlang/markdown  (Help panel)
-  md4c               MIT            https://github.com/mity/md4c       (via vlang/markdown)
+  md4c               MIT            https://github.com/mity/md4c       (vendored in libs/markdown)
   V standard library MIT            https://github.com/vlang/v
+  Boehm-Demers-Weiser GC            https://github.com/ivmai/bdwgc   (V's default collector)
+                     notice-retention, see licenses/boehm-gc-LICENSE.txt
 
 The exact upstream revisions are pinned in libs/vgui/build_deps.sh.
 
@@ -24,7 +30,13 @@ Bundled runtime libraries (the *.dll files next to the executable)
 ------------------------------------------------------------------
 The Windows bundle carries the mingw-w64 DLLs the executable links at runtime.
 They are DYNAMICALLY linked, so the LGPL components remain replaceable by the
-recipient. The authoritative list is whatever ldd resolves at build time (see
+recipient — the build deliberately does NOT pass a bare `-static` for exactly
+that reason (libs/vgui/vgui.v, #318): mingw's FreeType is built with HarfBuzz,
+which pulls in GLib, and absorbing an LGPL-2.1+ library into the executable
+would ask far more of the distributor than shipping it beside one. GLFW and the
+GCC runtime are the exceptions, static by explicit flag and both permissive.
+
+The authoritative list is whatever ldd resolves at build time (see
 .github/workflows/windows.yml); the packages installed for that build are:
 
   FreeType           FTL / GPL-2    https://freetype.org/
@@ -35,6 +47,11 @@ recipient. The authoritative list is whatever ldd resolves at build time (see
   libpng             PNG/zlib       http://www.libpng.org/             (via FreeType)
   zlib               zlib           https://zlib.net/                  (via FreeType/libpng)
   mingw-w64 runtime  ZPL / MIT-like https://www.mingw-w64.org/         (libgcc/libstdc++/libwinpthread)
+
+The licence text of every bundled DLL is in licenses/<package>/, copied from the
+package that provides it rather than from a list maintained here — so this
+section cannot drift from what actually ships. That is where GLib's and
+FriBidi's LGPL-2.1 text is.
 
 To obtain the source for any LGPL/GPL component bundled here, see the upstream
 project link above, or contact the distributor.
