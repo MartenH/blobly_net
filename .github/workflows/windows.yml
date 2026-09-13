@@ -127,7 +127,8 @@ jobs:
       # file instead of shipping thin). Only the platform extras stage here: the exe, its
       # mingw runtime DLLs, and the file-association script.
       - name: Stage bundle
-      # msys2 shell so the SAME sh script serves both platforms
+      # msys2 shell so the SAME sh script serves both platforms. bash rather than sh: the DLL
+      # licence sweep below uses an array and nullglob.
         shell: msys2 {0}
         run: |
           mkdir -p dist
@@ -140,6 +141,32 @@ jobs:
           # in principle be empty, and a bare glob fails the whole release when it matches
           # nothing (codex #137 r2, P1).
           find build -maxdepth 1 -name '*.dll' -exec cp {} dist/ \;
+          # THE BUNDLED DLLs' OWN LICENCES, DERIVED FROM WHAT IS ACTUALLY THERE (#318). Every
+          # missing notice this branch found was found one at a time, against a list somebody
+          # maintained by hand — so this one is not a list. It asks pacman which package owns
+          # each DLL that ldd put here and copies that package's licence directory, which is
+          # where GLib's and FriBidi's LGPL-2.1 text comes from: bundling an LGPL library
+          # requires its licence to accompany the distribution, and that text is nowhere in
+          # this repo.
+          #
+          # FAILS LOUD. A DLL whose licence cannot be resolved stops the build rather than
+          # shipping unlicensed, which is the lesson of the V-licence bug on this same branch:
+          # a check that falls back to something plausible is worse than no check.
+          shopt -s nullglob
+          dlls=(dist/*.dll)
+          [ "${#dlls[@]}" -gt 0 ] || { echo "no DLLs bundled — the freetype chain linked statically after all, see libs/vgui/vgui.v"; exit 1; }
+          mkdir -p dist/licenses
+          for dll in "${dlls[@]}"; do
+            base="$(basename "$dll")"
+            pkg="$(pacman -Qoq "/mingw64/bin/$base" 2>/dev/null || true)"
+            [ -n "$pkg" ] || { echo "no owning package for $base"; exit 1; }
+            lic="/mingw64/share/licenses/${pkg#mingw-w64-x86_64-}"
+            [ -d "$lic" ] || { echo "no licence directory for $pkg ($base)"; exit 1; }
+            mkdir -p "dist/licenses/${pkg#mingw-w64-x86_64-}"
+            cp -r "$lic/." "dist/licenses/${pkg#mingw-w64-x86_64-}/"
+          done
+          echo "staged licences for ${#dlls[@]} bundled DLL(s)"
+
           # register_blobnet_win.ps1 resolves the exe "next to THIS script" first, and
           # says the bundle stages it alongside — it once did not, so .blobnet association
           # was unreachable for exactly the users it was written for. Stage it.

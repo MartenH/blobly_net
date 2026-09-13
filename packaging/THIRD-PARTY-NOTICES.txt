@@ -48,5 +48,10 @@ The authoritative list is whatever ldd resolves at build time (see
   zlib               zlib           https://zlib.net/                  (via FreeType/libpng)
   mingw-w64 runtime  ZPL / MIT-like https://www.mingw-w64.org/         (libgcc/libstdc++/libwinpthread)
 
+The licence text of every bundled DLL is in licenses/<package>/, copied from the
+package that provides it rather than from a list maintained here — so this
+section cannot drift from what actually ships. That is where GLib's and
+FriBidi's LGPL-2.1 text is.
+
 To obtain the source for any LGPL/GPL component bundled here, see the upstream
 project link above, or contact the distributor.
