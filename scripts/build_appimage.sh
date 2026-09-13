@@ -20,9 +20,14 @@
 set -e
 
 # NO FUSE FOR THE BUILD. linuxdeploy and appimagetool are themselves AppImages, and mounting one
-# needs libfuse2 — not installable under that name on ubuntu-24.04 runners, where release.yml
-# runs. Extract-and-run unpacks to a temp directory instead. NOTE this covers the BUILD only; what
-# a user needs to run the emitted image is a separate question, answered in the README.
+# needs libfuse2. The release job is pinned to ubuntu-22.04 (where that package still exists under
+# its old name) and deliberately does NOT install it: extract-and-run unpacks to a temp directory,
+# so the build depends on no FUSE at all and cannot break when the pin moves to a runner where the
+# package was renamed — ubuntu-24.04 being exactly that. Depending on a package we do not install,
+# on a host we chose for a different reason, is a coupling worth not having.
+#
+# THIS COVERS THE BUILD ONLY. What a user needs to run the emitted image is a separate question
+# with a different answer, in the README: the type-2 runtime dlopens libfuse from their host.
 export APPIMAGE_EXTRACT_AND_RUN=1
 
 src="$1"
