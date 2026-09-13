@@ -53,7 +53,10 @@ one top-level folder — no GitHub sign-in, no expiry. (Ignore the `v-toolchain`
 CI's prebuilt compiler; releases from `v0.1.0` onward are the product.) Both bundle the demo projects, DBCs, sample logs, the docs the
 Help panel renders, a `README.txt` and a `VERSION.txt`. The **Windows zip is self-contained**
 (mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
-files open in the app). The **Linux tar.gz needs the distro runtime**:
+files open in the app). On Linux take the **AppImage** — one file, `chmod +x`, run it; it carries GLFW and the rest, so
+there is nothing to install. (OpenGL comes from your graphics driver and is deliberately not
+bundled — a copy shipped here would be the wrong one for your GPU.) The **tar.gz** is the same
+application with the payload unpacked, and *that* one needs the distro runtime:
 `sudo apt install libglfw3 libfreetype6 libgl1`. Which version you have: `VERSION.txt`, the
 window title, or `./blobly_net --version` — on Windows the exe is a GUI-subsystem program, so
 pipe it (`blobly_net.exe --version | more`).

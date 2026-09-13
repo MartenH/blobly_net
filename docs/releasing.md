@@ -17,8 +17,10 @@ git push origin vX.Y.Z
 Watch the **release** workflow run. When it finishes, the release is on the
 [Releases page](../../../releases) with two assets:
 
-- `blobly_net-vX.Y.Z-linux-x64.tar.gz` — needs the distro runtime
-  (`sudo apt install libglfw3 libfreetype6 libgl1`)
+- `blobly_net-vX.Y.Z-x86_64.AppImage` — one file, `chmod +x`, runs. Carries GLFW and its
+  dependencies; OpenGL comes from the host's driver, as it must. **The one to point people at.**
+- `blobly_net-vX.Y.Z-linux-x64.tar.gz` — the same application unpacked, for anyone who wants the
+  payload on disk. Needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`)
 - `blobly_net-vX.Y.Z-windows-x64.zip` — self-contained
 
 Both carry the demo projects, DBCs, samples, docs, `README.txt`, `VERSION.txt`, LICENSE and

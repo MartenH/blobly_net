@@ -105,6 +105,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
+          # For the AppImage: FUSE so linuxdeploy's own AppImage runs, and the runtime .so files
+          # it bundles (the -dev packages above provide headers and symlinks, not the sonames the
+          # binary loads).
+          sudo apt-get install -y --no-install-recommends libfuse2 libglfw3
       - name: Build GUI app
         run: RUN=0 bash scripts/run_gui.sh
       - name: Sanity — the binary answers with the tagged version
@@ -117,10 +121,20 @@ jobs:
           sh scripts/stage_bundle.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
           cp build/blobly_net dist/blobly_net/
           tar -C dist -czf "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" blobly_net
+
+      # THE ONE FILE A LINUX USER CAN ACTUALLY RUN (#322). The tarball is dynamically linked, so
+      # a user who downloads it and runs ./blobly_net gets "error while loading shared libraries:
+      # libglfw.so.3" from the dynamic linker, before main(), with the remedy in a README they had
+      # no reason to open. The AppImage carries the libraries instead of asking for them. Both
+      # ship: the tarball is still the right thing for anyone who wants the payload unpacked.
+      - name: Build the AppImage
+        run: sh scripts/build_appimage.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-tarball
-          path: blobly_net-*.tar.gz
+          path: |
+            blobly_net-*.tar.gz
+            blobly_net-*.AppImage
           if-no-files-found: error
 
   publish:
@@ -221,4 +235,5 @@ jobs:
             --verify-tag \
             --notes-file notes.md \
             "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" \
+            "blobly_net-${GITHUB_REF_NAME}-x86_64.AppImage" \
             "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip"
