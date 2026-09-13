@@ -56,9 +56,12 @@ and a `VERSION.txt`. The tar.gz and the zip put them under one top-level folder 
 `README.txt`; the AppImage is a single file and carries them inside it, without the `README.txt`
 — which tells a tarball user to unpack and `cd`, and is noise in a file you just run. The **Windows zip is self-contained**
 (mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
-files open in the app). On Linux take the **AppImage** — one file, `chmod +x`, run it; it carries GLFW and the rest, so
-there is nothing to install. (OpenGL comes from your graphics driver and is deliberately not
-bundled — a copy shipped here would be the wrong one for your GPU.) An AppImage mounts itself and
+files open in the app). On Linux take the **AppImage** — one file, `chmod +x`, run it; it carries GLFW, which is the
+dependency that is actually missing on a normal machine. The rest still comes from the host, on
+purpose: the **graphics driver** (`libGL`, `libGLX`, `libGLdispatch` — it has to match the GPU),
+**X11** (`libX11`, `libxcb`), **FreeType** (`libfreetype`) and **zlib** (`libz`). Every desktop has those; bundling the
+driver would be wrong and bundling FreeType breaks the host's fonts. `scripts/build_appimage.sh`
+prints that list at build time, derived from the image, so it cannot quietly drift. An AppImage mounts itself and
 so needs FUSE 2, which almost every desktop has; **Ubuntu 24.04 dropped the old package name**, so
 if it refuses to start there either `sudo apt install libfuse2t64` or run it without mounting:
 `./blobly_net-*.AppImage --appimage-extract-and-run`. The **tar.gz** is the same
