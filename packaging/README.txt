@@ -24,9 +24,10 @@ What's in this folder
   *.dll             (Windows) runtime libraries — keep them next to the .exe
   LICENSE.txt       Blobly Net's own licence (MIT)
   THIRD-PARTY-NOTICES.txt  what is compiled in and what is bundled beside it
-  licenses/         the full licence text of every third-party component —
-                    one file per component compiled into the executable, and
-                    one directory per bundled Windows DLL
+  licenses/         third-party licence texts — one file per component compiled
+                    into the executable, plus (Windows) one directory per
+                    package that supplies a bundled DLL or a statically linked
+                    library; a package providing several DLLs has one directory
   projects/         example .blobnet projects (bus setup + simulation)
   dbc/              CAN databases the examples decode against
   manifests/        telemetry handler manifests (Trace Chart, e.g. trace-demo)
