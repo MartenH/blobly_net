@@ -48,10 +48,13 @@ on one timeline.*
 
 ## Get it
 
-**[Releases](../../releases)** carry a Windows zip and a Linux tar.gz per version, each under
-one top-level folder — no GitHub sign-in, no expiry. (Ignore the `v-toolchain` entry — that is
-CI's prebuilt compiler; releases from `v0.1.0` onward are the product.) Both bundle the demo projects, DBCs, sample logs, the docs the
-Help panel renders, a `README.txt` and a `VERSION.txt`. The **Windows zip is self-contained**
+**[Releases](../../releases)** carry three assets per version — a Linux **AppImage**, a Linux
+**tar.gz** and a Windows **zip** — with no GitHub sign-in and no expiry. (Ignore the
+`v-toolchain` entry — that is CI's prebuilt compiler; releases from `v0.1.0` onward are the
+product.) All three bundle the demo projects, DBCs, sample logs, the docs the Help panel renders
+and a `VERSION.txt`. The tar.gz and the zip put them under one top-level folder beside a
+`README.txt`; the AppImage is a single file and carries them inside it, without the `README.txt`
+— which tells a tarball user to unpack and `cd`, and is noise in a file you just run. The **Windows zip is self-contained**
 (mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
 files open in the app). On Linux take the **AppImage** — one file, `chmod +x`, run it; it carries GLFW and the rest, so
 there is nothing to install. (OpenGL comes from your graphics driver and is deliberately not
