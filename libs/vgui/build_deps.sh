@@ -34,13 +34,20 @@ INC="-I$CIMGUI -I$IMGUI -I$IMGUI/backends -I$CIMPLOT -I$CIMPLOT/implot -I$HERE"
 # dep for vglyph) and imgui's misc/freetype/imgui_freetype.cpp compiled in.
 FT_CFLAGS="$(pkg-config --cflags freetype2 2>/dev/null || echo -I/usr/include/freetype2)"
 
+# GLFW headers — on Linux (apt's libglfw3-dev) these land on the system include path, so
+# nothing extra was needed. On macOS (Homebrew, /opt/homebrew) they don't: neither clang nor
+# g++ searches /opt/homebrew/include by default, so imgui_impl_glfw.cpp's `#include
+# <GLFW/glfw3.h>` fails without this. pkg-config finds it either way; the fallback keeps a
+# machine with neither pkg-config nor glfw3.pc failing the same way it always did.
+GLFW_CFLAGS="$(pkg-config --cflags glfw3 2>/dev/null || true)"
+
 # CRITICAL: every TU must share the SAME imgui config, or sizeof(ImGuiIO) differs across
 # objects and imgui aborts at startup ("Mismatched struct layout!"). Keep this flag set
 # identical for core, backends, cimplot, AND the glue.
 # NOTE: define BOTH freetype AND stb_truetype — defining FREETYPE alone undefines
 # STB_TRUETYPE (imgui_internal.h), which removes the stb loader symbol cimgui.cpp still
 # references (compile error). Keeping both compiles clean; FreeType is the default loader.
-CFG="-O2 -fno-threadsafe-statics -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_DEFINE_MATH_OPERATORS -DIMGUI_ENABLE_FREETYPE -DIMGUI_ENABLE_STB_TRUETYPE $FT_CFLAGS $INC"
+CFG="-O2 -fno-threadsafe-statics -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_DEFINE_MATH_OPERATORS -DIMGUI_ENABLE_FREETYPE -DIMGUI_ENABLE_STB_TRUETYPE $FT_CFLAGS $GLFW_CFLAGS $INC"
 
 echo "compiling imgui core + cimgui + cimplot + backends + freetype + glue ..."
 cd "$BLD"

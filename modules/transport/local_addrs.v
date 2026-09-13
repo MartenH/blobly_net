@@ -4,9 +4,9 @@ import json
 
 // The IPv4 addresses this host has, for a multicast query that must leave through every
 // interface (cansub_mdns.v). The enumeration is per platform -- `ip -j addr` on Linux,
-// `ipconfig` on Windows -- but the PARSING is here, pure and tested, because a text format a
-// distro or a locale can vary is exactly the kind of input that fails silently inside a
-// platform file CI never runs (the `*_names.v` precedent).
+// `ipconfig` on Windows, `ifconfig` on macOS -- but the PARSING is here, pure and tested,
+// because a text format a distro or a locale can vary is exactly the kind of input that fails
+// silently inside a platform file CI never runs (the `*_names.v` precedent).
 
 struct IpAddrInfo {
 	family string
@@ -48,6 +48,30 @@ pub fn ipv4_addrs_from_ipconfig(text string) []string {
 		mut v := line.all_after_last(':').trim_space()
 		// `(Preferred)` and its translations trail the address on some Windows versions.
 		v = v.all_before('(').trim_space()
+		if is_dotted_quad(v) && !v.starts_with('127.') && v !in out {
+			out << v
+		}
+	}
+	return out
+}
+
+// ipv4_addrs_from_ifconfig reads BSD/macOS `ifconfig` output: an `inet ` line (not `inet6`) on
+// any interface, second whitespace-separated token, loopback (127.x) excluded — same filter as
+// the ipconfig parser above, and simpler than tracking interface names into `lo0`, since a
+// routable 127.x address is not a thing this parser needs to special-case for (unlike WSL2's
+// mirrored `lo` above, macOS has no analogous quirk to guard against).
+pub fn ipv4_addrs_from_ifconfig(text string) []string {
+	mut out := []string{}
+	for raw in text.split_into_lines() {
+		line := raw.trim_space()
+		if !line.starts_with('inet ') {
+			continue
+		}
+		parts := line.split(' ').filter(it != '')
+		if parts.len < 2 {
+			continue
+		}
+		v := parts[1]
 		if is_dotted_quad(v) && !v.starts_with('127.') && v !in out {
 			out << v
 		}
