@@ -70,6 +70,13 @@ reviewed `main`). Take it from **[Actions](../../actions/workflows/windows.yml)*
 Two caveats: downloading an artifact requires being signed in to GitHub, and artifacts expire
 (~90 days), so use a recent run.
 
+**Between releases (Linux)** — the `ci` workflow builds the app on every push to `main` and
+keeps the binary: **[Actions](../../actions/workflows/ci.yml)** → the latest `ci` run **on
+`main`** → the **`blobly_net-linux-x64`** artifact. The same signed-in and ~90-day caveats apply,
+and unlike the Windows bundle it is the **binary alone** — no projects, DBCs or docs beside it,
+and it needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`). For everything
+in one folder, take a release.
+
 **Linux / WSL2 from source** — it's two commands, see [Build & run](#build--run) below.
 
 **macOS** — not built or tested.

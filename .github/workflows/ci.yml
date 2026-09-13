@@ -222,6 +222,24 @@ jobs:
           RUN=0 sh scripts/run_gui.sh
           test -x build/blobly_net && echo "BUILD OK -> build/blobly_net"
 
+      # THE BINARY THIS JOB ALREADY BUILT, kept instead of discarded. windows.yml has published
+      # its bundle on every main push for a long time while the Linux job built the same app and
+      # threw it away, so the only Linux binary anyone could download came from cutting a tag —
+      # which is a poor answer for "I want to try what just landed", and a worse one for anyone
+      # whose local V cannot link the GUI (the pin in .v-version is not always what a dev has).
+      #
+      # ON main ONLY, the gate windows.yml already uses and for its reason: handing out an
+      # executable nobody reviewed is what that gate exists to prevent (codex net#62/#63). A
+      # branch build stays a compile check. It is the app binary alone, not a bundle — a release
+      # is still the only thing that ships projects, DBCs, docs and the notices beside it.
+      - name: Upload the Linux binary (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: blobly_net-linux-x64
+          path: build/blobly_net
+          if-no-files-found: error
+
       # libs/vgui is a standalone module, and this is what proves it: trace_chart imports only
       # `os` + `vgui`, so it compiles WITHOUT modules/ on the path. If the binding ever grows a
       # dependency on app code, this breaks and the app build does not. Reuses libvgui_c.a from
