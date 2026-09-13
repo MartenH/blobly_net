@@ -257,12 +257,17 @@ jobs:
           tar -tvzf blobly_net-linux-x64.tar.gz | grep -q 'rwx.*blobly_net' \
             || { echo 'the binary lost its executable bit'; exit 1; }
 
-      - name: Upload the Linux binary (main only)
+      # HANDED TO THE PUBLISH JOB, not published from here. This job compiles; it does not know
+      # whether the engine tests passed, because `test` runs beside it. Uploading the advertised
+      # name here attaches a downloadable application to a run whose tests may have failed
+      # (codex round 2). The name below says what it is, and it expires in a day.
+      - name: Hand the archive to the publish job (main only)
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: blobly_net-linux-x64
+          name: linux-build-unvalidated
           path: blobly_net-linux-x64.tar.gz
+          retention-days: 1
           if-no-files-found: error
 
       # libs/vgui is a standalone module, and this is what proves it: trace_chart imports only
@@ -274,3 +279,29 @@ jobs:
           v -cc gcc -path "@vlib|@vmodules|libs" -o /tmp/vgui_standalone \
             libs/vgui/examples/trace_chart/trace_chart.v
           test -x /tmp/vgui_standalone && echo "OK — vgui has no app dependency"
+
+  # THE ONE STEP THAT HANDS SOMEBODY A BINARY, and the only one gated on the WHOLE verdict:
+  # `needs` both jobs, so a main push whose engine tests failed publishes nothing. It exists as
+  # a third job rather than a `needs: test` on gui-build because that would serialise every PR —
+  # ~5 minutes on each — to gate an artifact only main pushes ever produce. Re-uploading a
+  # staged archive costs seconds and leaves the two builds parallel.
+  #
+  # Residual, stated rather than hidden: `linux-build-unvalidated` from the job above is
+  # attached to a failed run too. It is named for what it is and expires in a day; the
+  # advertised name, the one the README sends people to, only ever appears on a green run.
+  publish-linux:
+    name: linux • publish binary (main only)
+    if: github.ref == 'refs/heads/main'
+    needs: [test, gui-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-build-unvalidated
+
+      - name: Upload the Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: blobly_net-linux-x64
+          path: blobly_net-linux-x64.tar.gz
+          if-no-files-found: error
