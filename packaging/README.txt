@@ -8,10 +8,13 @@ Run it
             Debian/Ubuntu:  sudo apt install libglfw3 libfreetype6 libgl1)
 
             Or take the .AppImage from the release page — one file, chmod +x,
-            run it. It carries GLFW and the rest; OpenGL comes from your
-            graphics driver, as it must, and it mounts itself so it needs FUSE
-            2 — present on almost every desktop, but Ubuntu 24.04 renamed the
-            package. If it will not start there:
+            run it. It carries GLFW, which is the one that is usually missing.
+            Two things still come from your system, on purpose: OpenGL, which
+            is your graphics driver and must match your GPU, and FreeType,
+            which is on any desktop and clashes with the host's font stack if
+            bundled. It also mounts itself, so it needs FUSE 2 — present on
+            almost every desktop, but Ubuntu 24.04 renamed the package. If it
+            will not start there:
                 sudo apt install libfuse2t64
             or run it without mounting:
                 ./blobly_net-*.AppImage --appimage-extract-and-run
