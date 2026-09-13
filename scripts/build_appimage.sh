@@ -178,19 +178,27 @@ echo "host libraries still required: $host"
 
 # AND THE DOCUMENTED LISTS MUST MATCH IT. Deriving the set only helps if something compares it to
 # what users are told; printing it into a build log that nobody reads is how the README drifted
-# three times in review (codex round 4). Each soname's base name has to appear in both files that
-# promise what the AppImage needs — so a dependency appearing or an exclusion changing fails the
-# build here rather than surfacing as a bug report.
-for so in $host; do
-	tok=${so%%.so*}
-	for doc in "$root/README.md" "$root/packaging/README.txt"; do
-		grep -q -- "$tok" "$doc" || {
-			echo "build_appimage: $tok is a host dependency and $(basename "$doc") does not mention it" >&2
-			exit 1
-		}
-	done
+# three times in review (codex round 4). The comparison is set EQUALITY against the names inside
+# the one passage of each README that promises what the host must provide — the passage is
+# delimited by its own two fixed sentences, so a user-facing text file needs no build markers.
+# A substring search over the whole file is not enough (codex round 5): the tarball's apt line
+# would keep `libfreetype` satisfied through `libfreetype6`, and the build instructions through
+# `libfreetype-dev`, after the AppImage passage stopped mentioning it. Equality also fails the
+# other way — a name still documented after the image starts bundling it — and fails loudly when
+# a delimiter sentence is edited away, because the passage then reads as empty.
+documented() {
+	sed -n '/The rest still comes from/,/Every desktop has those/p' "$1" \
+		| grep -oE '\blib[A-Za-z0-9]+\b' | LC_ALL=C sort -u | tr '\n' ' '
+}
+want=$(for so in $host; do echo "${so%%.so*}"; done | LC_ALL=C sort -u | tr '\n' ' ')
+for doc in README.md packaging/README.txt; do
+	got=$(documented "$root/$doc")
+	[ "$got" = "$want" ] || {
+		echo "build_appimage: $doc promises host libraries '$got' but the image needs '$want'" >&2
+		exit 1
+	}
 done
-echo "both READMEs account for all $(echo "$host" | wc -w) host libraries"
+echo "both READMEs account for exactly the $(echo "$host" | wc -w) host libraries"
 
 # AND IT RUNS. A built file that cannot start is the failure this whole change exists to prevent.
 got="$("$out" --version 2>&1 | head -1)" || {
