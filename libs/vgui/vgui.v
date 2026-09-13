@@ -41,13 +41,20 @@ module vgui
 // Without it the chain resolves to import libraries, scripts/bundle_dlls.sh copies what ldd
 // reports next to the exe, and the zip stays self-contained in the sense that matters: it runs
 // from any shell without MSYS2 on PATH. `-l:libglfw3.a` still names GLFW's static archive by
-// path — zlib/libpng licence, permissive, one fewer DLL.
+// path — zlib/libpng licence, permissive, and genuinely one fewer DLL: no glfw3.dll is bundled.
 //
 // `-l:libstdc++.a` BY PATH, not `-lstdc++`: with the C driver (`-cc gcc`) `-static-libstdc++`
 // does NOT make an explicit `-lstdc++` static — gcc passes it through as a plain `-lstdc++` and
 // the linker takes the import library if one is there. Under the old bare `-static` that did not
 // matter, because everything after it was static anyway; removing `-static` is what exposed it
-// (codex round 2 on #318). Naming the archive says what the comment above claims.
+// (codex round 2 on #318).
+//
+// THAT DOES NOT KEEP THE GCC RUNTIME OUT OF THE BUNDLE, and an earlier version of this comment
+// claimed it did. The EXE carries its own copy, but HarfBuzz and graphite2 are C++ and their DLLs
+// need libstdc++-6.dll and libgcc_s_seh-1.dll, so ldd pulls both in and bundle_dlls.sh ships
+// them — verified in the published v2026.09.00 zip. The licences travel with them (gcc-libs),
+// which is the part that matters; what the flag buys is that the exe does not ALSO depend on
+// them, so it is not an extra failure mode, just not the saving the comment described.
 // -mwindows: link as a GUI-subsystem exe so Windows does NOT spawn a console window
 // alongside the app (mingw defaults to the console subsystem; the old MSVC build used the
 // equivalent /SUBSYSTEM:WINDOWS). V's main() is still the entry point (that's -municode, not
