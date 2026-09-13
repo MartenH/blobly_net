@@ -105,6 +105,12 @@ for so in "$work"/AppDir/usr/lib/*.so*; do
 	n=$((n + 1))
 done
 [ "$n" -gt 0 ] || { echo "build_appimage: no libraries were bundled at all" >&2; exit 1; }
+# AND THE RUNTIME ITSELF. appimagetool PREPENDS the AppImage type-2 runtime to the SquashFS — the
+# published file begins with an ELF header and the `AI\x02` magic — so the artifact distributes
+# that third-party executable as surely as it distributes libglfw (codex round 2 on #322). It is
+# not a .so under usr/lib, so the sweep above cannot see it; its text is vendored beside the
+# desktop file, where it is in-repo and auditable rather than fetched at build time.
+cp "$root/packaging/appimage/appimage-runtime-LICENSE.txt" "$lic/appimage-runtime-LICENSE.txt"
 # PACKAGES, NOT LIBRARIES. Several sonames can come from one package — libbrotlicommon and
 # libbrotlidec are both libbrotli1 — so the file count is lower than the library count and
 # comparing the two is comparing different things. The invariant that matters is that what was
@@ -131,7 +137,7 @@ ex="$work/verify"
 rm -rf "$ex"
 mkdir -p "$ex"
 ( cd "$ex" && "$out" --appimage-extract >/dev/null )
-for f in lua-LICENSE.txt v-stdlib-LICENSE.txt boehm-gc-LICENSE.txt; do
+for f in lua-LICENSE.txt v-stdlib-LICENSE.txt boehm-gc-LICENSE.txt appimage-runtime-LICENSE.txt; do
 	[ -s "$ex/squashfs-root/usr/bin/licenses/$f" ] \
 		|| { echo "build_appimage: $f is not inside the image" >&2; exit 1; }
 done

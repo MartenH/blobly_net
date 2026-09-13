@@ -15,7 +15,7 @@ git push origin vX.Y.Z
 ```
 
 Watch the **release** workflow run. When it finishes, the release is on the
-[Releases page](../../../releases) with two assets:
+[Releases page](../../../releases) with three assets:
 
 - `blobly_net-vX.Y.Z-x86_64.AppImage` — one file, `chmod +x`, runs. Carries GLFW and its
   dependencies; OpenGL comes from the host's driver, as it must. **The one to point people at.**
@@ -27,8 +27,10 @@ Watch the **release** workflow run. When it finishes, the release is on the
   payload on disk. Needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`)
 - `blobly_net-vX.Y.Z-windows-x64.zip` — self-contained
 
-Both carry the demo projects, DBCs, samples, docs, `README.txt`, `VERSION.txt`, LICENSE and
-third-party notices, under one top-level folder. **No vendor CAN DLL is ever included** —
+The tarball and the zip carry the demo projects, DBCs, samples, docs, `README.txt`,
+`VERSION.txt`, LICENSE and third-party notices under one top-level folder. The AppImage carries
+the same payload INSIDE the image, minus `README.txt` — which tells a tarball user to unpack and
+`cd`, and is noise in a single file. **No vendor CAN DLL is ever included** —
 `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll` come with the vendor's driver installs, and
 the Vector XL terms forbid redistributing theirs.
 

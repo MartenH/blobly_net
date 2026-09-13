@@ -64,7 +64,11 @@ jobs:
 
   linux:
     needs: guard
-    runs-on: ubuntu-latest
+    # PINNED, NOT FLOATING, and the AppImage is why. An AppImage does not bundle glibc, so it runs
+    # on hosts at least as new as the machine that built it; `ubuntu-latest` advancing would
+    # silently raise that floor for every user (codex round 2 on #322). The oldest supported
+    # runner is the widest compatibility. The tarball is built here too and gets the same benefit.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       # the same pin as ci.yml, for the same reason (V master is V3-only): a release built with
