@@ -21,6 +21,8 @@ Compiled into the executable
   vlang/markdown     MIT            https://github.com/vlang/markdown  (Help panel)
   md4c               MIT            https://github.com/mity/md4c       (vendored in libs/markdown)
   V standard library MIT            https://github.com/vlang/v
+  Boehm-Demers-Weiser GC            https://github.com/ivmai/bdwgc   (V's default collector)
+                     notice-retention, see licenses/boehm-gc-LICENSE.txt
 
 The exact upstream revisions are pinned in libs/vgui/build_deps.sh.
 

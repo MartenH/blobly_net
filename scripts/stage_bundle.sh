@@ -27,10 +27,12 @@ cp packaging/THIRD-PARTY-NOTICES.txt "$dest/"
 mkdir -p "$dest/licenses"
 cp thirdparty/lua/LICENSE                    "$dest/licenses/lua-LICENSE.txt"
 cp libs/markdown/LICENSE                     "$dest/licenses/vlang-markdown-LICENSE.txt"
-# md4c is vendored inside libs/markdown and is a DIFFERENT copyright holder, so markdown's own
-# notice does not cover it; its permission notice lives in the source header.
-awk '/^ \*\//{exit} {sub(/^\/\*/,""); sub(/^ \* ?/,""); print}' \
-  libs/markdown/thirdparty/md4c/md4c.c > "$dest/licenses/md4c-LICENSE.txt"
+# Two components keep their notice in a SOURCE HEADER rather than a LICENSE file, so it is
+# extracted: everything up to the first close-comment, with the comment marks stripped.
+header_notice() { awk '/^ \*\//{exit} {sub(/^\/\*/,""); sub(/^ \* ?/,""); print}' "$1" > "$2"; }
+# md4c is vendored inside libs/markdown under a DIFFERENT copyright holder, so markdown's own
+# notice does not cover it.
+header_notice libs/markdown/thirdparty/md4c/md4c.c "$dest/licenses/md4c-LICENSE.txt"
 cp libs/vgui/build/cimgui/imgui/LICENSE.txt  "$dest/licenses/dear-imgui-LICENSE.txt"
 cp libs/vgui/build/cimgui/LICENSE            "$dest/licenses/cimgui-LICENSE.txt"
 cp libs/vgui/build/cimplot/implot/LICENSE    "$dest/licenses/implot-LICENSE.txt"
@@ -45,6 +47,10 @@ vbin="${V:-$(command -v v || true)}"
 vroot="$(dirname "$(readlink -f "$vbin")")"
 [ -s "$vroot/LICENSE" ] || { echo "stage_bundle: no LICENSE beside $vbin" >&2; exit 1; }
 cp "$vroot/LICENSE"                          "$dest/licenses/v-stdlib-LICENSE.txt"
+# Boehm GC: V's DEFAULT collector, so it is linked into every build here — run_gui.sh does not
+# pass `-gc none` — and its terms are notice-retention ("provided the above notices are retained
+# on all copies"). Like md4c, the notice is the source header (codex round 2 on #318).
+header_notice "$vroot/thirdparty/libgc/gc.c" "$dest/licenses/boehm-gc-LICENSE.txt"
 # GLFW is linked STATICALLY on Windows (-l:libglfw3.a), so its text has to travel too; on Linux
 # it is the distro's shared library and does not. Staged when the MSYS2 package that provides it
 # is present, which is exactly the case where the static link happened (codex round 1).
@@ -52,7 +58,7 @@ for g in /mingw64/share/licenses/glfw/LICENSE.md /mingw64/share/licenses/glfw/LI
          /mingw64/share/doc/glfw/LICENSE.md; do
   [ -f "$g" ] && { cp "$g" "$dest/licenses/glfw-LICENSE.txt"; break; }
 done
-for f in lua vlang-markdown md4c dear-imgui cimgui implot cimplot v-stdlib; do
+for f in lua vlang-markdown md4c boehm-gc dear-imgui cimgui implot cimplot v-stdlib; do
   [ -s "$dest/licenses/$f-LICENSE.txt" ] || { echo "licence text missing: $f" >&2; exit 1; }
 done
 # NON-EMPTY IS NOT THE SAME AS RIGHT. The V lookup above failed open once and produced a
@@ -62,6 +68,8 @@ grep -qi 'Alexander Medvednikov' "$dest/licenses/v-stdlib-LICENSE.txt" \
   || { echo "stage_bundle: v-stdlib-LICENSE.txt is not V's licence" >&2; exit 1; }
 grep -qi 'Martin Mitas' "$dest/licenses/md4c-LICENSE.txt" \
   || { echo "stage_bundle: md4c-LICENSE.txt is not md4c's notice" >&2; exit 1; }
+grep -qi 'Xerox Corporation' "$dest/licenses/boehm-gc-LICENSE.txt" \
+  || { echo "stage_bundle: boehm-gc-LICENSE.txt is not the collector's notice" >&2; exit 1; }
 cp packaging/README.txt "$dest/README.txt"
 printf 'blobly_net %s\n' "$ver" > "$dest/VERSION.txt"
 echo "staged bundle payload -> $dest (version $ver)"

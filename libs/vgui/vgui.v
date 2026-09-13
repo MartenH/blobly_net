@@ -41,13 +41,18 @@ module vgui
 // Without it the chain resolves to import libraries, scripts/bundle_dlls.sh copies what ldd
 // reports next to the exe, and the zip stays self-contained in the sense that matters: it runs
 // from any shell without MSYS2 on PATH. `-l:libglfw3.a` still names GLFW's static archive by
-// path — zlib/libpng licence, permissive, one fewer DLL — and -static-libstdc++ /
-// -static-libgcc stay, so the GCC runtime does not travel either.
+// path — zlib/libpng licence, permissive, one fewer DLL.
+//
+// `-l:libstdc++.a` BY PATH, not `-lstdc++`: with the C driver (`-cc gcc`) `-static-libstdc++`
+// does NOT make an explicit `-lstdc++` static — gcc passes it through as a plain `-lstdc++` and
+// the linker takes the import library if one is there. Under the old bare `-static` that did not
+// matter, because everything after it was static anyway; removing `-static` is what exposed it
+// (codex round 2 on #318). Naming the archive says what the comment above claims.
 // -mwindows: link as a GUI-subsystem exe so Windows does NOT spawn a console window
 // alongside the app (mingw defaults to the console subsystem; the old MSVC build used the
 // equivalent /SUBSYSTEM:WINDOWS). V's main() is still the entry point (that's -municode, not
 // -mwindows). startup prints just have no console to land in — fine for a shipped GUI app.
-#flag windows -mwindows -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -lstdc++ -l:libgdi32.a
+#flag windows -mwindows -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -l:libstdc++.a -l:libgdi32.a
 #include "vgui.h"
 
 // Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout).
