@@ -77,7 +77,8 @@ downloaded zip is a `.tar.gz` — GitHub zips every artifact and strips the exec
 it, so unpack the tar rather than the binary:
 
 ```sh
-unzip blobly_net-linux-x64.zip && tar -xzf blobly_net-linux-x64.tar.gz && ./blobly_net
+unzip blobly_net-linux-x64.zip && tar -xzf blobly_net-linux-x64.tar.gz
+./blobly_net-linux-x64/blobly_net
 ```
 
 It is the **executable plus the licence texts** (`licenses/`), not a bundle: no projects, DBCs, samples or
