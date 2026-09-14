@@ -1,39 +1,39 @@
 # Contributing
 
-**Issues: yes, please. Pull requests: not yet.**
+**Issues and pull requests are both welcome.** Fork the repo, branch from `main`, open a PR.
 
-This project is still in its **design phase** — the architecture, the config format and the
-wire formats are all still moving, so a patch written against today's code is likely to be
-overtaken before it can land. That is the reason for the policy, not a lack of interest.
+This is a young project with one maintainer, so it runs the way most public repositories do:
 
-So: bug reports, questions and feature ideas are genuinely welcome —
-[open an issue](../../issues). Pull requests are closed automatically, including ones that
-would otherwise be fine; please don't spend the effort on a patch yet. If an issue needs a
-code change, the maintainer makes it.
-
-This will be revisited once the design settles. `main` is the only long-lived branch, and
-only the maintainer can merge to it.
+- **CI does not start until the maintainer approves the run.** That is GitHub's own gate for
+  workflows from a fork, not a judgement on your patch — expect a short wait on a first PR.
+- **The maintainer merges.** `main` is the only long-lived branch; every change reaches it by
+  squash-merge of a reviewed PR, so a PR is one topic, and its description says what and why.
+- **An automated review runs first.** The maintainer requests a Codex review on the PR; it
+  posts findings inline, and you may be asked to address them before the human review.
+- **Talk before a large change.** [Open an issue](../../issues) for anything beyond a fix, so
+  the direction is agreed before the work is done. See [CLAUDE.md](CLAUDE.md) for the
+  architecture rule (every module GUI-free and unit-tested) and the build.
 
 ## Commit identity
 
-Commits on `main` must be authored by **marten.hildell@gmail.com**. Anything else — in
-particular a work address — is rejected by CI (`.github/workflows/guard.yml`). This is
-enforced rather than trusted because the wrong address has ended up in this history before
-and had to be rewritten out of every commit.
-
-To set it locally for this repo only:
+Every commit must be **authored** by your **GitHub noreply address** —
+`<id>+<login>@users.noreply.github.com`, which github.com → Settings → Emails shows you.
+Set it for this repo only:
 
 ```sh
-git config user.email marten.hildell@gmail.com
-git config user.name  "Marten Hildell"
+git config user.email <id>+<login>@users.noreply.github.com
 ```
+
+This is checked by CI ([`.github/workflows/guard.yml`](.github/workflows/guard.yml)) on the PR
+and again when it lands, and it is enforced rather than trusted because a work address once
+reached this history and had to be rewritten out of every commit. The noreply form can never be
+one, and it still names you. (The maintainer's own personal address is the one exception.)
 
 ## Commit messages
 
-The same rule applies to what a message **says**, not just who wrote it: a message body may
-not contain an email address other than the maintainer's or a bot trailer
-(`Co-Authored-By: … <noreply@anthropic.com>`). Describe the address instead — "rejects a
-non-maintainer work address". This is enforced for the same reason: a message is permanent,
+The same rule applies to what a message **says**: a message body may not contain an email
+address other than the allowed authors or a bot trailer (`Co-Authored-By: … <noreply@anthropic.com>`).
+Describe an address instead — "rejects a non-maintainer work address". A message is permanent:
 it survives branch deletion, and removing one costs a rewrite of every branch that carries it.
 
 To catch both before they reach CI, install the local hooks:
