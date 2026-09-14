@@ -6,17 +6,27 @@
 #
 # SCOPE. This guards against a MISCONFIGURED laptop, not against a hostile local user: anyone
 # with a shell in this checkout can skip any hook with --no-verify. So it is built to be
-# correct for the honest case and cheap, not to resist evasion.
+# correct for the honest case and cheap, not to resist evasion. A contributor who shares the
+# surname trips it too — the heuristic's price; --no-verify is the override for that known case.
 set -euo pipefail
 
+remote="${1:-origin}"
 zero='0000000000000000000000000000000000000000'
+have=()   # what the destination holds RIGHT NOW — asked once, on first need (one round trip)
 while read -r _local_ref local_sha _remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue                      # branch deletion
 	if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-		# New branch, or an old tip never fetched here. No local baseline is trustworthy for
-		# that (a tracking ref can be stale after a server-side delete), so scan everything
-		# reachable: this history is clean, and a full walk of it is milliseconds.
-		range=("$local_sha")
+		# New branch, or an old tip never fetched here. No LOCAL baseline is trustworthy for
+		# that (a tracking ref can be stale after a server-side delete), and no baseline at all
+		# rescans history the destination already holds — which, with contributors free to use
+		# any identity, is not durably clean (codex #327 r8, r9). So the baseline is the
+		# destination's current refs: exactly the commits this push does not introduce.
+		if [ ${#have[@]} -eq 0 ]; then
+			while read -r sha _ref; do
+				git cat-file -e "$sha^{commit}" 2>/dev/null && have+=("^$sha")
+			done < <(git ls-remote --heads --tags "$remote" 2>/dev/null || true)
+		fi
+		range=("$local_sha" "${have[@]}")                        # unreachable remote: scan everything
 	else
 		range=("$remote_sha..$local_sha")
 	fi
