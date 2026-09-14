@@ -286,6 +286,9 @@ leaves nowhere to put the pinned bootstrap.
   a fork's CI until the maintainer approves the run; the guard's identity check is the exception —
   it runs as `pull_request_target` on the base branch's own scanner, reading the PR's commits as
   git metadata only, so it reports before approval and a PR cannot loosen the rule it is judged by.
+  **Merge an outside PR with `gh pr merge --rebase`, never `--squash`:** GitHub authors a squash
+  commit from the PR creator's account email, which no check can see before the merge exists;
+  rebase lands exactly the authors the guard scanned. Your own PRs may be squashed.
 - **Work in a worktree, never the main checkout.** `git worktree add .claude/worktrees/<name> -b
   <branch> origin/main` — **fetch first** (`git fetch -q origin`): naming a remote-tracking ref
   does not contact the remote, so a checkout that has not fetched since `main` advanced branches

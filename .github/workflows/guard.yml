@@ -132,6 +132,14 @@ jobs:
             done <<< "$hits"
           done
 
+          # THE SQUASH AUTHOR IS NOT CHECKABLE HERE, so outside PRs are not squash-merged. GitHub
+          # authors a squash commit from the PR creator's ACCOUNT identity — even for a one-commit
+          # PR — and no API exposes which address that will be before the merge exists (codex
+          # #326 r3). "Rebase and merge" preserves the authors this job scanned, so that is the
+          # merge method for a PR not opened by the maintainer (CONTRIBUTING.md); the push leg
+          # below is the backstop if the wrong button is pressed. The maintainer's own PRs may
+          # still be squashed: the account address is the allowed one.
+          #
           # THE SQUASH SUBJECT. A squash-merge takes its subject from the PR TITLE when the PR
           # has more than one commit (squash_merge_commit_title = COMMIT_OR_PR_TITLE), so a clean
           # commit range with an address in the title would still land one on main — and the

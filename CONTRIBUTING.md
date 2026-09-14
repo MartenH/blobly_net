@@ -6,8 +6,11 @@ This is a young project with one maintainer, so it runs the way most public repo
 
 - **CI does not start until the maintainer approves the run.** That is GitHub's own gate for
   workflows from a fork, not a judgement on your patch — expect a short wait on a first PR.
-- **The maintainer merges.** `main` is the only long-lived branch; every change reaches it by
-  squash-merge of a reviewed PR, so a PR is one topic, and its description says what and why.
+- **The maintainer merges, by rebase.** `main` is the only long-lived branch. An outside PR is
+  merged with "Rebase and merge", so **the commits you push are the commits that land** — keep
+  them tidy (squash your own fixups before review), and each one is checked as below. This is
+  deliberate: a squash-merge would be authored by GitHub from your account's email, which the
+  identity check cannot see before the merge exists.
 - **An automated review runs first.** The maintainer requests a Codex review on the PR; it
   posts findings inline, and you may be asked to address them before the human review.
 - **Talk before a large change.** [Open an issue](../../issues) for anything beyond a fix, so
@@ -35,7 +38,7 @@ The same rule applies to what a message **says**: a message body may not contain
 address other than the allowed authors or a bot trailer (`Co-Authored-By: … <noreply@anthropic.com>`).
 Describe an address instead — "rejects a non-maintainer work address". A message is permanent:
 it survives branch deletion, and removing one costs a rewrite of every branch that carries it.
-The **PR title** is held to the same rule, because it becomes the squash commit's subject.
+The **PR title** is held to the same rule, so that it is safe as a squash subject too.
 
 To catch both before they reach CI, install the local hooks:
 
