@@ -5,11 +5,16 @@
 # nothing parsed out of prose. Enable with:  git config core.hooksPath .githooks
 set -euo pipefail
 
+remote="${1:-origin}"
 zero='0000000000000000000000000000000000000000'
 while read -r _local_ref local_sha _remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue                      # branch deletion
 	if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-		range="$local_sha --not --remotes"                       # new branch / unknown old tip: everything not already remote
+		# New branch, or an old tip never fetched here: everything not already on THIS remote.
+		# Only this remote — a commit that lives on some other remote is still new here, and
+		# --not --remotes would have skipped it (codex #327 r7). A URL push has no tracking
+		# refs, so the baseline is empty and everything is scanned: the safe direction.
+		range="$local_sha --not --remotes=$remote"
 	else
 		range="$remote_sha..$local_sha"
 	fi
