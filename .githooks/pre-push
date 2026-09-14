@@ -10,7 +10,8 @@
 # surname trips it too — the heuristic's price; --no-verify is the override for that known case.
 set -euo pipefail
 
-remote="${1:-origin}"
+# $2 is the destination LOCATION, which is not $1 when a remote has a separate pushurl.
+dest="${2:-${1:-origin}}"
 zero='0000000000000000000000000000000000000000'
 have=()   # what the destination holds RIGHT NOW — asked once, on first need (one round trip)
 while read -r _local_ref local_sha _remote_ref remote_sha; do
@@ -24,7 +25,7 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
 		if [ ${#have[@]} -eq 0 ]; then
 			while read -r sha _ref; do
 				git cat-file -e "$sha^{commit}" 2>/dev/null && have+=("^$sha")
-			done < <(git ls-remote --heads --tags "$remote" 2>/dev/null || true)
+			done < <(git ls-remote "$dest" 2>/dev/null || true)   # every advertised ref, custom namespaces included
 		fi
 		range=("$local_sha" "${have[@]}")                        # unreachable remote: scan everything
 	else
