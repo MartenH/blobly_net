@@ -8,10 +8,18 @@
 #
 # The rule is in .githooks/_email_scan.sh (allowed_author / allowed_committer), shared with the
 # local hooks so the gates cannot drift apart.
+#
+# TRUST. On a PR this runs as pull_request_target, NOT pull_request: pull_request checks out
+# the proposed merge tree, so the scanner it sources — and the workflow itself — would be the
+# contributor's, and a PR could loosen the predicate it is being judged by (codex #326).
+# pull_request_target runs the BASE branch's workflow on the BASE branch's checkout; the PR's
+# head is fetched as git objects and only its commit METADATA is read — no file of it is ever
+# executed, which is what makes pull_request_target safe here. The same property means the
+# check does not wait for the maintainer's workflow approval: it is trusted code.
 name: guard
 
 on:
-  pull_request:
+  pull_request_target:
   push:
     # branches only: a v* tag push (release.yml's trigger) points at a commit this guard
     # already scanned when it landed on main — release.yml requires exactly that — so a tag
@@ -45,9 +53,11 @@ jobs:
           # ON A PULL REQUEST: exactly the commits the PR would merge. A fork's push never
           # reaches this repository's push event, so without this the first time a fork's
           # author is checked would be the push that lands it on main — a red guard on main,
-          # after the fact, with the commit already permanent.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            range='${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}'
+          # after the fact, with the commit already permanent. The head is fetched as objects
+          # into a remote-tracking ref and never checked out (see TRUST above).
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/pr/head"
+            range='${{ github.event.pull_request.base.sha }}..refs/remotes/pr/head'
           else
           # The commits this push introduces. On a branch's FIRST push `before` is all-zeroes, and
           # checking only the tip there would be a real hole: a branch pushed with several commits

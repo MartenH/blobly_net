@@ -14,7 +14,9 @@
 # real address private, so it can never be a work address, it still names the person, and every
 # contributor already has one — which is why outside contributions need no per-person allowlist.
 # Shared by pre-commit, pre-push and guard.yml so the three gates cannot drift apart.
-NOREPLY_RE='^[A-Za-z0-9._+-]+@users\.noreply\.github\.com$'
+# The local part is anything but '@' and whitespace: GitHub's own bots carry brackets
+# (49699333+dependabot[bot]@users.noreply.github.com). The domain is what the rule is about.
+NOREPLY_RE='^[^@[:space:]]+@users\.noreply\.github\.com$'
 allowed_author() {
 	[ "$1" = "marten.hildell@gmail.com" ] || [[ "$1" =~ $NOREPLY_RE ]]
 }
@@ -31,7 +33,7 @@ explain_identity() {
 }
 
 # Addresses a commit MESSAGE may contain: the allowed authors above, plus bot trailers.
-ALLOWED_RE='^(marten\.hildell@gmail\.com|[A-Za-z0-9._+-]+@users\.noreply\.github\.com|noreply@anthropic\.com|noreply@github\.com|codex@openai\.com)$'
+ALLOWED_RE='^(marten\.hildell@gmail\.com|[^@[:space:]]+@users\.noreply\.github\.com|noreply@anthropic\.com|noreply@github\.com|codex@openai\.com)$'
 
 # DOCUMENTATION addresses are allowed too. RFC 2606 reserves example.com/.net/.org and the
 # .test / .example / .invalid / .localhost TLDs, and RFC 5737 reserves 192.0.2.0/24,

@@ -282,8 +282,10 @@ leaves nowhere to put the pinned bootstrap.
 > Unreachable **and** the check is green → artifact, drop it. Reachable, or the check is
 > failing, pending or absent → a real merge blocker, report it: that is precisely the case
 > the guard exists for, and this note must never talk you out of it.
-- **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
-  same workflow posts a comment pointing at issues. Nothing to do by hand.
+- **Pull requests from forks are open** (see [`CONTRIBUTING.md`](CONTRIBUTING.md)). GitHub holds
+  a fork's CI until the maintainer approves the run; the guard's identity check is the exception —
+  it runs as `pull_request_target` on the base branch's own scanner, reading the PR's commits as
+  git metadata only, so it reports before approval and a PR cannot loosen the rule it is judged by.
 - **Work in a worktree, never the main checkout.** `git worktree add .claude/worktrees/<name> -b
   <branch> origin/main` — **fetch first** (`git fetch -q origin`): naming a remote-tracking ref
   does not contact the remote, so a checkout that has not fetched since `main` advanced branches

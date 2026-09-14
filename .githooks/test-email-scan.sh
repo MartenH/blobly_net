@@ -60,6 +60,7 @@ expect clean "maintainer address"          'body: marten.hildell@gmail.com'
 # a contributor's GitHub noreply address is allowed; a domain that merely STARTS with it is not
 expect clean "GitHub noreply address"      'body: 12345+alice@users.noreply.github.com'
 expect hit  "noreply lookalike domain"     'body: alice@users.noreply.github.com.somecompany.com'
+expect clean "GitHub bot noreply address"  'body: 49699333+dependabot[bot]@users.noreply.github.com'
 expect clean "bot trailer"                 'Co-Authored-By: Claude <noreply@anthropic.com>'
 expect clean "allowlisted in backticks"    'body: `marten.hildell@gmail.com`'
 expect clean "allowlisted in brackets"     'body: [noreply@anthropic.com]'
@@ -84,7 +85,7 @@ diff --git a/x b/x
 +auth = "someone@somecompany.com"' template
 
 # --- the author predicate the three identity gates share ------------------------------
-for a in marten.hildell@gmail.com 12345+alice@users.noreply.github.com; do
+for a in marten.hildell@gmail.com 12345+alice@users.noreply.github.com '49699333+dependabot[bot]@users.noreply.github.com'; do
 	allowed_author "$a" && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "FAIL [author allowed] $a"; }
 done
 for a in real.person@somecompany.com 'alice@users.noreply.github.com.somecompany.com' 'x@y@users.noreply.github.com' ''; do
