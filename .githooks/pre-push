@@ -12,10 +12,6 @@ set -euo pipefail
 
 . "$(dirname "$0")/_email_scan.sh"
 
-# Same allowlists as .github/workflows/guard.yml.
-ALLOWED_AUTHORS="marten.hildell@gmail.com"
-ALLOWED_COMMITTERS="marten.hildell@gmail.com noreply@github.com"
-
 remote_name="${1:-origin}"
 zero='0000000000000000000000000000000000000000'
 tmp=$(mktemp)
@@ -57,14 +53,10 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
 		# identity — the cherry-pick path skips pre-commit too
 		ae=$(git log -1 --format='%ae' "$sha")
 		ce=$(git log -1 --format='%ce' "$sha")
-		case " $ALLOWED_AUTHORS " in
-			*" $ae "*) ;;
-			*) echo "pre-push: $(git log -1 --format='%h' "$sha") author not allowed ($(redact "$ae"))" >&2; bad=1 ;;
-		esac
-		case " $ALLOWED_COMMITTERS " in
-			*" $ce "*) ;;
-			*) echo "pre-push: $(git log -1 --format='%h' "$sha") committer not allowed ($(redact "$ce"))" >&2; bad=1 ;;
-		esac
+		allowed_author "$ae" \
+			|| { echo "pre-push: $(git log -1 --format='%h' "$sha") author not allowed ($(redact "$ae"))" >&2; bad=1; }
+		allowed_committer "$ce" \
+			|| { echo "pre-push: $(git log -1 --format='%h' "$sha") committer not allowed ($(redact "$ce"))" >&2; bad=1; }
 		# message body
 		git log -1 --format='%B' "$sha" > "$tmp"
 		found=$(scan_message_text "$tmp" stored)
@@ -82,6 +74,7 @@ done
 if [ "$bad" -ne 0 ]; then
 	echo "" >&2
 	echo "pre-push: refusing to push." >&2
+	explain_identity
 	explain_rejection
 	echo "  Rewrite the offending commit (git rebase -i / git commit --amend) and retry." >&2
 	exit 1

@@ -9,7 +9,31 @@
 # and code search index it, and removing it costs a rewrite of every branch that carries
 # it (and GitHub's PR refs keep it even then).
 
-ALLOWED_RE='^(marten\.hildell@gmail\.com|noreply@anthropic\.com|noreply@github\.com|codex@openai\.com)$'
+# WHO MAY AUTHOR A COMMIT: the maintainer's personal address, or a GitHub noreply address
+# (<id>+<login>@users.noreply.github.com). The noreply form is what GitHub hands out to keep a
+# real address private, so it can never be a work address, it still names the person, and every
+# contributor already has one — which is why outside contributions need no per-person allowlist.
+# Shared by pre-commit, pre-push and guard.yml so the three gates cannot drift apart.
+# The local part is anything but '@' and whitespace: GitHub's own bots carry brackets
+# (49699333+dependabot[bot]@users.noreply.github.com). The domain is what the rule is about.
+NOREPLY_RE='^[^@[:space:]]+@users\.noreply\.github\.com$'
+allowed_author() {
+	[ "$1" = "marten.hildell@gmail.com" ] || [[ "$1" =~ $NOREPLY_RE ]]
+}
+# WHO MAY COMMIT IT: any allowed author, plus GitHub itself — a web squash-merge rewrites the
+# committer to noreply@github.com, so it must pass or every merge fails the gate.
+allowed_committer() {
+	[ "$1" = "noreply@github.com" ] || allowed_author "$1"
+}
+# How a rejected author fixes it. One message for all three gates.
+explain_identity() {
+	echo "  Allowed authors: the maintainer's address, or your GitHub noreply address:" >&2
+	echo "    git config user.email <id>+<login>@users.noreply.github.com" >&2
+	echo "  (github.com -> Settings -> Emails shows yours.) Then amend or rebase." >&2
+}
+
+# Addresses a commit MESSAGE may contain: the allowed authors above, plus bot trailers.
+ALLOWED_RE='^(marten\.hildell@gmail\.com|[^@[:space:]]+@users\.noreply\.github\.com|noreply@anthropic\.com|noreply@github\.com|codex@openai\.com)$'
 
 # DOCUMENTATION addresses are allowed too. RFC 2606 reserves example.com/.net/.org and the
 # .test / .example / .invalid / .localhost TLDs, and RFC 5737 reserves 192.0.2.0/24,

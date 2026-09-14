@@ -249,16 +249,20 @@ leaves nowhere to put the pinned bootstrap.
   format *means* belongs in `modules/`, not in a front end. If the GUI and a CLI tool would each
   have to interpret the same bytes, the interpretation is in the wrong place.
 - **Commit identity is enforced, not trusted.** Every commit must be **authored** by
-  `marten.hildell@gmail.com`; the committer may also be `noreply@github.com` (GitHub rewrites it
-  when you squash-merge in the web UI). CI checks this in
-  [`.github/workflows/guard.yml`](.github/workflows/guard.yml) and **fails the build** otherwise —
-  a work address once reached this history and had to be rewritten out of every commit. Install
+  `marten.hildell@gmail.com` or a GitHub noreply address (`<id>+<login>@users.noreply.github.com`
+  — how an outside contributor passes without the repo keeping a list of people); the committer
+  may also be `noreply@github.com` (GitHub rewrites it when you squash-merge in the web UI). The
+  rule lives in `.githooks/_email_scan.sh` (`allowed_author`), and CI checks it in
+  [`.github/workflows/guard.yml`](.github/workflows/guard.yml) on every PR and push, **failing
+  the build** otherwise — a work address once reached this history and had to be rewritten out
+  of every commit. Pull requests are open to anyone (fork model: GitHub holds a fork's CI until
+  the maintainer approves the run; only the maintainer merges) — see `CONTRIBUTING.md`. Install
   the local hook so it fails in a second instead of after a push:
   `git config core.hooksPath .githooks`.
 - **Commit MESSAGES may not carry email addresses either.** The identity rule above covers
   who commits; the message body is checked separately, because an address written into one is
   permanent — it survives branch deletion and removing it costs a rewrite of every branch that
-  carries it. Only the maintainer address and bot trailers (`Co-Authored-By: … <noreply@
+  carries it. Only the allowed authors and bot trailers (`Co-Authored-By: … <noreply@
   anthropic.com>`, `noreply@github.com`) are allowed; anything else fails the same guard
   workflow. Describe an address instead of quoting it ("a non-maintainer work address"). The
   local hooks cover both the ordinary commit path (`commit-msg`) and cherry-pick/rebase
@@ -278,8 +282,13 @@ leaves nowhere to put the pinned bootstrap.
 > Unreachable **and** the check is green → artifact, drop it. Reachable, or the check is
 > failing, pending or absent → a real merge blocker, report it: that is precisely the case
 > the guard exists for, and this note must never talk you out of it.
-- **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
-  same workflow posts a comment pointing at issues. Nothing to do by hand.
+- **Pull requests from forks are open** (see [`CONTRIBUTING.md`](CONTRIBUTING.md)). GitHub holds
+  a fork's CI until the maintainer approves the run; the guard's identity check is the exception —
+  it runs as `pull_request_target` on the base branch's own scanner, reading the PR's commits as
+  git metadata only, so it reports before approval and a PR cannot loosen the rule it is judged by.
+  **Merge an outside PR with `gh pr merge --rebase`, never `--squash`:** GitHub authors a squash
+  commit from the PR creator's account email, which no check can see before the merge exists;
+  rebase lands exactly the authors the guard scanned. Your own PRs may be squashed.
 - **Work in a worktree, never the main checkout.** `git worktree add .claude/worktrees/<name> -b
   <branch> origin/main` — **fetch first** (`git fetch -q origin`): naming a remote-tracking ref
   does not contact the remote, so a checkout that has not fetched since `main` advanced branches
