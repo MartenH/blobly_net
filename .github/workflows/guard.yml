@@ -1,16 +1,28 @@
-# Repository guard: who may contribute, and under which identity.
+# Repository guard: under which identity a commit may land.
 #
-# GitHub has NO setting that disables pull requests on a public repo — anyone can fork and
-# open one. So the policy is enforced here instead: external PRs are closed with a pointer to
-# issues, and every commit's author/committer email is checked against the allowlist.
+# Pull requests are open to anyone (fork model — see CONTRIBUTING.md): GitHub holds a fork's
+# workflow run until the maintainer approves it, and only the maintainer can merge. What that
+# setting does not express is WHO a commit says it is from, so this workflow checks every
+# commit's author and committer address and the message body, on the PR before it can merge
+# and again on the push that lands it.
 #
-# This does not (and cannot) replace branch protection. It is the layer that catches what
-# protection rules don't express; see CONTRIBUTING.md.
+# The rule is in .githooks/_email_scan.sh (allowed_author / allowed_committer), shared with the
+# local hooks so the gates cannot drift apart.
+#
+# TRUST. On a PR this runs as pull_request_target, NOT pull_request: pull_request checks out
+# the proposed merge tree, so the scanner it sources — and the workflow itself — would be the
+# contributor's, and a PR could loosen the predicate it is being judged by (codex #326).
+# pull_request_target runs the BASE branch's workflow on the BASE branch's checkout; the PR's
+# head is fetched as git objects and only its commit METADATA is read — no file of it is ever
+# executed, which is what makes pull_request_target safe here. The same property means the
+# check does not wait for the maintainer's workflow approval: it is trusted code.
 name: guard
 
 on:
   pull_request_target:
-    types: [opened, reopened]
+    # `edited` too: the PR TITLE is scanned (it becomes the squash subject, see below), and a
+    # title can change after the last push.
+    types: [opened, synchronize, reopened, edited]
   push:
     # branches only: a v* tag push (release.yml's trigger) points at a commit this guard
     # already scanned when it landed on main — release.yml requires exactly that — so a tag
@@ -22,48 +34,12 @@ permissions:
   contents: read
 
 jobs:
-  # Close PRs from anyone but the owner. pull_request_target runs in the BASE repo's context,
-  # so it has the token needed to close a fork's PR — and this job never checks out or runs
-  # the PR's code, which is what makes that safe.
-  reject-external-prs:
-    if: github.event_name == 'pull_request_target' && github.event.pull_request.user.login != github.repository_owner
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            const n = context.payload.pull_request.number
-            // Absolute URLs, not the "../../" form used inside repo FILES. A comment is rendered
-            // at /owner/repo/pull/<n>, where "../../issues" resolves to /owner/issues — outside
-            // the repository. Every rejected contributor would get broken links.
-            const repo = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`
-            await github.rest.issues.createComment({
-              ...context.repo, issue_number: n,
-              body: [
-                "Thanks for taking the time to write this — but this project is not accepting pull requests yet.",
-                "",
-                "It is still in its design phase (architecture, config and wire formats all still moving),",
-                "so a patch is likely to be overtaken before it can land.",
-                "",
-                `Please [open an issue](${repo}/issues) instead — those are very welcome.`,
-                `See [CONTRIBUTING.md](${repo}/blob/main/CONTRIBUTING.md).`,
-              ].join("\n"),
-            })
-            await github.rest.pulls.update({ ...context.repo, pull_number: n, state: "closed" })
-
-  # Every commit must carry the maintainer's personal address. A work address in this history
-  # previously had to be rewritten out of all 383 commits; this is the guard against a repeat.
+  # Every commit must be authored by the maintainer's personal address or a GitHub noreply
+  # address. A work address in this history previously had to be rewritten out of all 383
+  # commits; this is the guard against a repeat, and the noreply form is how an outside
+  # contributor satisfies it without the repo keeping a list of people.
   commit-identity:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    env:
-      # AUTHOR — who wrote the commit. Strictly the maintainer's personal address.
-      ALLOWED_AUTHORS: marten.hildell@gmail.com
-      # COMMITTER — who applied it. Squash-merging a PR in the GitHub web UI rewrites the
-      # committer to GitHub's own address, so it must be allowed or every merge fails the gate.
-      ALLOWED_COMMITTERS: marten.hildell@gmail.com noreply@github.com
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,8 +50,29 @@ jobs:
         run: .githooks/test-email-scan.sh
 
       - name: Check author and committer emails
+        env:
+          # Through the environment, never interpolated into the script: a title is
+          # contributor-controlled text, and in env it is data, not shell.
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
+          . .githooks/_email_scan.sh
+          # ON A PULL REQUEST: exactly the commits the PR would merge. A fork's push never
+          # reaches this repository's push event, so without this the first time a fork's
+          # author is checked would be the push that lands it on main — a red guard on main,
+          # after the fact, with the commit already permanent. The head is fetched as objects
+          # into a remote-tracking ref and never checked out (see TRUST above). The range ends
+          # at the EVENT's head sha, not at the ref: refs/pull/N/head is mutable, and a run
+          # queued behind a second push would otherwise scan the later head and attach that
+          # verdict to the earlier revision (codex #326 r4). If the event's head is no longer
+          # reachable (force-pushed away), this run fails and the newer event's run judges it.
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            head='${{ github.event.pull_request.head.sha }}'
+            git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/pr/head"
+            git cat-file -e "$head^{commit}" 2>/dev/null \
+              || { echo "::error::the PR head this run is attached to ($head) is no longer on the PR — superseded by a later push; see that run"; exit 1; }
+            range="${{ github.event.pull_request.base.sha }}..$head"
+          else
           # The commits this push introduces. On a branch's FIRST push `before` is all-zeroes, and
           # checking only the tip there would be a real hole: a branch pushed with several commits
           # would have every commit but the last go unchecked, and with a merge workflow those
@@ -98,19 +95,16 @@ jobs:
           else
             range='${{ github.sha }}'                 # first push of the default branch itself
           fi
+          fi
           echo "checking range: $range"
 
           bad=0
           while IFS='|' read -r sha ae ce; do
             [ -z "$sha" ] && continue
-            case " $ALLOWED_AUTHORS " in
-              *" $ae "*) ;;
-              *) echo "::error::$sha author '$ae' not allowed (allowed: $ALLOWED_AUTHORS)"; bad=1 ;;
-            esac
-            case " $ALLOWED_COMMITTERS " in
-              *" $ce "*) ;;
-              *) echo "::error::$sha committer '$ce' not allowed (allowed: $ALLOWED_COMMITTERS)"; bad=1 ;;
-            esac
+            # Redacted, like the message scan below: a CI annotation on a public repo is a
+            # permanent copy, and a rejected author address is exactly what must not get one.
+            allowed_author "$ae" || { echo "::error::$sha author not allowed ($(redact "$ae"))"; bad=1; }
+            allowed_committer "$ce" || { echo "::error::$sha committer not allowed ($(redact "$ce"))"; bad=1; }
           done < <(git log --format='%H|%ae|%ce' $range)
 
           # MESSAGE BODIES, not just identities. The gate above says WHO made the commit; it
@@ -127,7 +121,6 @@ jobs:
           # section, then scans the rest (comment lines included, since --cleanup=verbatim
           # keeps them), and matches internationalized domains and domain literals, not
           # just ASCII.
-          . .githooks/_email_scan.sh
           msg=$(mktemp)
           for sha in $(git log --format='%H' $range); do
             git log -1 --format='%B' "$sha" > "$msg"
@@ -146,8 +139,30 @@ jobs:
             done <<< "$hits"
           done
 
+          # THE SQUASH AUTHOR IS NOT CHECKABLE HERE, so outside PRs are not squash-merged. GitHub
+          # authors a squash commit from the PR creator's ACCOUNT identity — even for a one-commit
+          # PR — and no API exposes which address that will be before the merge exists (codex
+          # #326 r3). "Rebase and merge" preserves the authors this job scanned, so that is the
+          # merge method for a PR not opened by the maintainer (CONTRIBUTING.md); the push leg
+          # below is the backstop if the wrong button is pressed. The maintainer's own PRs may
+          # still be squashed: the account address is the allowed one.
+          #
+          # THE SQUASH SUBJECT. A squash-merge takes its subject from the PR TITLE when the PR
+          # has more than one commit (squash_merge_commit_title = COMMIT_OR_PR_TITLE), so a clean
+          # commit range with an address in the title would still land one on main — and the
+          # push run would catch it only after it is permanent (codex #326 r2).
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            printf '%s\n' "$PR_TITLE" > "$msg"
+            hits=$(scan_message_text "$msg" stored)
+            while IFS= read -r h; do
+              [ -z "$h" ] && continue
+              echo "::error::the PR title contains a non-allowlisted email address ($(redact "$h")) — it becomes the squash commit's subject; edit the title"
+              bad=1
+            done <<< "$hits"
+          fi
+
           if [ "$bad" -ne 0 ]; then
-            echo "Identity: git config user.email marten.hildell@gmail.com, then amend or rebase."
+            echo "Identity:"; explain_identity 2>&1
             echo "Message:  describe the address instead of quoting it (e.g. 'a non-maintainer"
             echo "          work address'), then amend or rebase."
             echo "Install both gates locally with: git config core.hooksPath .githooks"
