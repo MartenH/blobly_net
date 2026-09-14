@@ -3,26 +3,31 @@
 # cherry-pick, so a replayed commit under a work identity would reach the remote unseen. This
 # re-checks the author and committer of every commit about to be pushed — git's own fields,
 # nothing parsed out of prose. Enable with:  git config core.hooksPath .githooks
+#
+# SCOPE. This guards against a MISCONFIGURED laptop, not against a hostile local user: anyone
+# with a shell in this checkout can skip any hook with --no-verify. So it is built to be
+# correct for the honest case and cheap, not to resist evasion.
 set -euo pipefail
 
-remote="${1:-origin}"
 zero='0000000000000000000000000000000000000000'
 while read -r _local_ref local_sha _remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue                      # branch deletion
 	if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-		# New branch, or an old tip never fetched here: everything not already on THIS remote.
-		# Only this remote — a commit that lives on some other remote is still new here, and
-		# --not --remotes would have skipped it (codex #327 r7). A URL push has no tracking
-		# refs, so the baseline is empty and everything is scanned: the safe direction.
-		range="$local_sha --not --remotes=$remote"
+		# New branch, or an old tip never fetched here. No local baseline is trustworthy for
+		# that (a tracking ref can be stale after a server-side delete), so scan everything
+		# reachable: this history is clean, and a full walk of it is milliseconds.
+		range=("$local_sha")
 	else
-		range="$remote_sha..$local_sha"
+		range=("$remote_sha..$local_sha")
 	fi
-	# one line per identity, "Name <address>"; a name cannot contain a newline
-	bad=$(git log --format='%an <%ae>%n%cn <%ce>' $range | grep -i hildell | grep -vi '<marten\.hildell@gmail\.com>$' || true)
+	# --no-replace-objects: judge the objects that will be sent, not a local replacement.
+	# One line per identity, "Name <address>"; a name cannot contain a newline.
+	idents=$(git --no-replace-objects log --format='%an <%ae>%n%cn <%ce>' "${range[@]}") \
+		|| { echo "pre-push: cannot list the commits to check; refusing to push unchecked." >&2; exit 1; }
+	bad=$(printf '%s\n' "$idents" | grep -i hildell | grep -vi '<marten\.hildell@gmail\.com>$' || true)
 	if [ -n "$bad" ]; then
 		echo "pre-push: a commit about to be pushed looks like the maintainer under the wrong address:" >&2
-		printf '%s\n' "$bad" | sed 's/<[^>]*>/<…>/' >&2                # only the name: the address is the thing not to print
+		printf '%s\n' "$bad" | sed 's/<[^>]*>/<…>/' | sort -u >&2   # only the name: the address is the thing not to print
 		echo "            fix the identity (git rebase -i / git commit --amend) and retry." >&2
 		exit 1
 	fi
