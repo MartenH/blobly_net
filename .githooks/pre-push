@@ -13,24 +13,20 @@ set -euo pipefail
 # $2 is the destination LOCATION, which is not $1 when a remote has a separate pushurl.
 dest="${2:-${1:-origin}}"
 zero='0000000000000000000000000000000000000000'
-have=()   # what the destination holds RIGHT NOW — asked once, on first need (one round trip)
+have=()   # what the destination holds RIGHT NOW — asked once (one round trip)
 while read -r _local_ref local_sha _remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue                      # branch deletion
-	if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-		# New branch, or an old tip never fetched here. No LOCAL baseline is trustworthy for
-		# that (a tracking ref can be stale after a server-side delete), and no baseline at all
-		# rescans history the destination already holds — which, with contributors free to use
-		# any identity, is not durably clean (codex #327 r8, r9). So the baseline is the
-		# destination's current refs: exactly the commits this push does not introduce.
-		if [ ${#have[@]} -eq 0 ]; then
-			while read -r sha _ref; do
-				git cat-file -e "$sha^{commit}" 2>/dev/null && have+=("^$sha")
-			done < <(git ls-remote "$dest" 2>/dev/null || true)   # every advertised ref, custom namespaces included
-		fi
-		range=("$local_sha" "${have[@]}")                        # unreachable remote: scan everything
-	else
-		range=("$remote_sha..$local_sha")
+	# The baseline is the destination's current refs: exactly the commits this push does not
+	# introduce. Not the local tracking refs (stale after a server-side delete), not nothing
+	# (rescans history that, with contributors free to use any identity, is not durably clean),
+	# and not only the ref being updated (old..new misses a commit the destination already holds
+	# under another ref) — codex #327 r8-r11. Every advertised ref of $2; unreachable → scan all.
+	if [ ${#have[@]} -eq 0 ]; then
+		while read -r sha _ref; do
+			git cat-file -e "$sha^{commit}" 2>/dev/null && have+=("^$sha")
+		done < <(git ls-remote "$dest" 2>/dev/null || true)
 	fi
+	range=("$local_sha" "${have[@]}")
 	# --no-replace-objects: judge the objects that will be sent, not a local replacement.
 	# One line per identity, "Name <address>"; a name cannot contain a newline.
 	idents=$(git --no-replace-objects log --format='%an <%ae>%n%cn <%ce>' "${range[@]}") \
