@@ -61,10 +61,17 @@ jobs:
           # reaches this repository's push event, so without this the first time a fork's
           # author is checked would be the push that lands it on main — a red guard on main,
           # after the fact, with the commit already permanent. The head is fetched as objects
-          # into a remote-tracking ref and never checked out (see TRUST above).
+          # into a remote-tracking ref and never checked out (see TRUST above). The range ends
+          # at the EVENT's head sha, not at the ref: refs/pull/N/head is mutable, and a run
+          # queued behind a second push would otherwise scan the later head and attach that
+          # verdict to the earlier revision (codex #326 r4). If the event's head is no longer
+          # reachable (force-pushed away), this run fails and the newer event's run judges it.
           if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            head='${{ github.event.pull_request.head.sha }}'
             git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/pr/head"
-            range='${{ github.event.pull_request.base.sha }}..refs/remotes/pr/head'
+            git cat-file -e "$head^{commit}" 2>/dev/null \
+              || { echo "::error::the PR head this run is attached to ($head) is no longer on the PR — superseded by a later push; see that run"; exit 1; }
+            range="${{ github.event.pull_request.base.sha }}..$head"
           else
           # The commits this push introduces. On a branch's FIRST push `before` is all-zeroes, and
           # checking only the tip there would be a real hole: a branch pushed with several commits

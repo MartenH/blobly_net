@@ -5,7 +5,9 @@
 This is a young project with one maintainer, so it runs the way most public repositories do:
 
 - **CI does not start until the maintainer approves the run.** That is GitHub's own gate for
-  workflows from a fork, not a judgement on your patch — expect a short wait on a first PR.
+  workflows from a fork, not a judgement on your patch — expect a short wait on a first PR. One
+  check runs at once: the commit-identity guard below, which executes only this repository's
+  own code and so needs no approval.
 - **The maintainer merges, by rebase.** `main` is the only long-lived branch. An outside PR is
   merged with "Rebase and merge", so **the commits you push are the commits that land** — keep
   them tidy (squash your own fixups before review), and each one is checked as below. This is
