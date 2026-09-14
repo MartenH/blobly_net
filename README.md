@@ -353,7 +353,7 @@ above is manual, so a regression there is caught only when someone next runs it.
 **Project**
 - [CLAUDE.md](CLAUDE.md) — architecture & decisions (the guide for coding agents)
 - [ROADMAP.md](ROADMAP.md) — what's next, planned, and out of scope
-- [CONTRIBUTING.md](CONTRIBUTING.md) — issues and PRs welcome; the commit-identity rule
+- [CONTRIBUTING.md](CONTRIBUTING.md) — issues and PRs welcome, and how a PR lands
 
 ## License
 
