@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# The other half of the seatbelt (see pre-commit): git runs no commit hook for a rebase or a
+# cherry-pick, so a replayed commit under a work identity would reach the remote unseen. This
+# re-checks the author and committer of every commit about to be pushed — git's own fields,
+# nothing parsed out of prose. Enable with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+zero='0000000000000000000000000000000000000000'
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+	[ "$local_sha" = "$zero" ] && continue                      # branch deletion
+	if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+		range="$local_sha --not --remotes"                       # new branch / unknown old tip: everything not already remote
+	else
+		range="$remote_sha..$local_sha"
+	fi
+	# one line per identity, "Name <address>"; a name cannot contain a newline
+	bad=$(git log --format='%an <%ae>%n%cn <%ce>' $range | grep -i hildell | grep -vi '<marten\.hildell@gmail\.com>$' || true)
+	if [ -n "$bad" ]; then
+		echo "pre-push: a commit about to be pushed looks like the maintainer under the wrong address:" >&2
+		printf '%s\n' "$bad" | sed 's/<[^>]*>/<…>/' >&2                # only the name: the address is the thing not to print
+		echo "            fix the identity (git rebase -i / git commit --amend) and retry." >&2
+		exit 1
+	fi
+done

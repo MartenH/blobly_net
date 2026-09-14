@@ -253,8 +253,10 @@ leaves nowhere to put the pinned bootstrap.
   maintainer merges, by squash) — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributors commit
   under whatever identity they like, as on vlang/v. The one thing kept from the old guard is
   local and opt-in: `.githooks/pre-commit` refuses a commit that looks like the maintainer under
-  any address but the personal one, because a work address once reached this history and had to
-  be rewritten out of every commit. Enable it on your own machine with
+  any address but the personal one (author or committer), and `.githooks/pre-push` re-checks
+  the commits about to leave the machine, since git runs no commit hook for a rebase or
+  cherry-pick — a work address once reached this history and had to be rewritten out of every
+  commit. Git's own identity fields only, nothing parsed out of prose. Enable on your machine with
   `git config core.hooksPath .githooks`. (The CI guard, the message scanner and its hooks were
   cut in #327 after five codex rounds of free-text parsing edge cases; a regex over commit prose
   has no last edge, and outsiders being free made the scan guard only text the maintainer writes.)

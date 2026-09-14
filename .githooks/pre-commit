@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# The maintainer's seatbelt, opt-in and local: refuse a commit from the maintainer under any
-# address but the personal one. A work address once reached this history and had to be
-# rewritten out of every commit; this is what keeps a work-laptop git config from doing it
+# The maintainer's seatbelt, opt-in and local: refuse a commit that looks like the maintainer
+# under any address but the personal one. A work address once reached this history and had to
+# be rewritten out of every commit; this is what keeps a work-laptop git config from doing it
 # again. It is not CI and not policy — contributors commit under whatever they like.
 # Enable on your own machine with:  git config core.hooksPath .githooks
+#
+# Both idents: on a work laptop the COMMITTER carries the work address even when the author is
+# somebody else (`git commit --author=…`). Git does not run this hook for a rebase or
+# cherry-pick; .githooks/pre-push re-checks those before they leave the machine.
 set -euo pipefail
 
-# Ask git for the EFFECTIVE author (config, GIT_AUTHOR_EMAIL, --author=, a replayed commit).
-ident="$(git var GIT_AUTHOR_IDENT)"
-email="$(printf '%s' "$ident" | sed -n 's/.*<\(.*\)>.*/\1/p')"
-
-case "${ident,,}" in
-	*hildell*)
-		[ "${email,,}" = "marten.hildell@gmail.com" ] || {
-			echo "pre-commit: this looks like the maintainer under the wrong address." >&2
-			echo "            git config user.email marten.hildell@gmail.com" >&2
-			exit 1
-		} ;;
-esac
+for ident in "$(git var GIT_AUTHOR_IDENT)" "$(git var GIT_COMMITTER_IDENT)"; do
+	case "${ident,,}" in
+		*hildell*)
+			email="$(printf '%s' "$ident" | sed -n 's/.*<\(.*\)>.*/\1/p')"
+			[ "${email,,}" = "marten.hildell@gmail.com" ] || {
+				echo "pre-commit: this looks like the maintainer under the wrong address." >&2
+				echo "            git config user.email marten.hildell@gmail.com" >&2
+				exit 1
+			} ;;
+	esac
+done
