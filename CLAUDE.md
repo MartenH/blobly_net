@@ -248,47 +248,25 @@ leaves nowhere to put the pinned bootstrap.
   This is the one architectural rule, and it cuts both ways: anything that decides what a wire
   format *means* belongs in `modules/`, not in a front end. If the GUI and a CLI tool would each
   have to interpret the same bytes, the interpretation is in the wrong place.
-- **Commit identity is enforced, not trusted.** Every commit must be **authored** by
-  `marten.hildell@gmail.com` or a GitHub noreply address (`<id>+<login>@users.noreply.github.com`
-  — how an outside contributor passes without the repo keeping a list of people); the committer
-  may also be `noreply@github.com` (GitHub rewrites it when you squash-merge in the web UI). The
-  rule lives in `.githooks/_email_scan.sh` (`allowed_author`), and CI checks it in
-  [`.github/workflows/guard.yml`](.github/workflows/guard.yml) on every PR and push, **failing
-  the build** otherwise — a work address once reached this history and had to be rewritten out
-  of every commit. Pull requests are open to anyone (fork model: GitHub holds a fork's CI until
-  the maintainer approves the run; only the maintainer merges) — see `CONTRIBUTING.md`. Install
-  the local hook so it fails in a second instead of after a push:
-  `git config core.hooksPath .githooks`.
-- **Commit MESSAGES may not carry email addresses either.** The identity rule above covers
-  who commits; the message body is checked separately, because an address written into one is
-  permanent — it survives branch deletion and removing it costs a rewrite of every branch that
-  carries it. Only the allowed authors and bot trailers (`Co-Authored-By: … <noreply@
-  anthropic.com>`, `noreply@github.com`) are allowed; anything else fails the same guard
-  workflow. Describe an address instead of quoting it ("a non-maintainer work address"). The
-  local hooks cover both the ordinary commit path (`commit-msg`) and cherry-pick/rebase
-  (`pre-push`), which git does not route through `commit-msg`.
+- **Contributions run the standard way, with no identity guard.** Pull requests are open to
+  anyone (fork model: GitHub holds a fork's CI until the maintainer approves the run; only the
+  maintainer merges, by squash) — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributors commit
+  under whatever identity they like, as on vlang/v. The one thing kept from the old guard is
+  local and opt-in: `.githooks/pre-commit` refuses a commit that looks like the maintainer under
+  any address but the personal one, because a work address once reached this history and had to
+  be rewritten out of every commit. Enable it on your own machine with
+  `git config core.hooksPath .githooks`. (The CI guard, the message scanner and its hooks were
+  cut in #327 after five codex rounds of free-text parsing edge cases; a regex over commit prose
+  has no last edge, and outsiders being free made the scan guard only text the maintainer writes.)
 
 > **Known non-finding — commit author identity.** A review-tool identity (`codex@openai.com`
 > and the like) shows up as the author of a *synthetic* commit that some analysis checkouts
-> create locally; it is not in this repository's history. Before reporting one, run both tests:
->
-> 1. **Is it real?** `git merge-base --is-ancestor <sha> origin/<branch>` — reachability from
->    the authoritative remote ref, not `git cat-file -e`. Object *existence* proves nothing:
->    in the very checkout that fabricated the commit, `cat-file` succeeds by construction, so
->    that test would confirm the artifact instead of exposing it.
-> 2. **What does the guard say?** The `commit-identity` job scans every introduced commit on
->    the real push.
->
-> Unreachable **and** the check is green → artifact, drop it. Reachable, or the check is
-> failing, pending or absent → a real merge blocker, report it: that is precisely the case
-> the guard exists for, and this note must never talk you out of it.
-- **Pull requests from forks are open** (see [`CONTRIBUTING.md`](CONTRIBUTING.md)). GitHub holds
-  a fork's CI until the maintainer approves the run; the guard's identity check is the exception —
-  it runs as `pull_request_target` on the base branch's own scanner, reading the PR's commits as
-  git metadata only, so it reports before approval and a PR cannot loosen the rule it is judged by.
-  **Merge an outside PR with `gh pr merge --rebase`, never `--squash`:** GitHub authors a squash
-  commit from the PR creator's account email, which no check can see before the merge exists;
-  rebase lands exactly the authors the guard scanned. Your own PRs may be squashed.
+> create locally; it is not in this repository's history. Before reporting one, test whether it
+> is real: `git merge-base --is-ancestor <sha> origin/<branch>` — reachability from the
+> authoritative remote ref, not `git cat-file -e`. Object *existence* proves nothing: in the
+> very checkout that fabricated the commit, `cat-file` succeeds by construction, so that test
+> would confirm the artifact instead of exposing it. Unreachable → artifact, drop it.
+> Reachable → report it.
 - **Work in a worktree, never the main checkout.** `git worktree add .claude/worktrees/<name> -b
   <branch> origin/main` — **fetch first** (`git fetch -q origin`): naming a remote-tracking ref
   does not contact the remote, so a checkout that has not fetched since `main` advanced branches
@@ -363,7 +341,7 @@ leaves nowhere to put the pinned bootstrap.
   | real, but the suggested **fix** is wrong or too narrow | 👍 | fix it your way and say why the shape differs |
   | real, and caused by **your own previous round's fix** | 👍 | the strongest signal you get — see the repeat rule above, and go after the class |
   | a claim you **checked and it does not hold** | 👎 | one line of evidence; never a silent dismissal |
-  | an artifact of the review's own checkout (see the commit-identity note above) | 👎 | run both of that note's tests first |
+  | an artifact of the review's own checkout (see the commit-identity note above) | 👎 | run that note's reachability test first |
   | style with no defect behind it | 👎 | say so plainly |
   | something you **cannot yet tell** | *wait* | investigate, then react — a reaction you have to take back is worse than a late one |
 
