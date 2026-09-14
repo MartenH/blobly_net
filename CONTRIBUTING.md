@@ -35,6 +35,7 @@ The same rule applies to what a message **says**: a message body may not contain
 address other than the allowed authors or a bot trailer (`Co-Authored-By: … <noreply@anthropic.com>`).
 Describe an address instead — "rejects a non-maintainer work address". A message is permanent:
 it survives branch deletion, and removing one costs a rewrite of every branch that carries it.
+The **PR title** is held to the same rule, because it becomes the squash commit's subject.
 
 To catch both before they reach CI, install the local hooks:
 

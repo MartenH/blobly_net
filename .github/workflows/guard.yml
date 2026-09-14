@@ -20,6 +20,9 @@ name: guard
 
 on:
   pull_request_target:
+    # `edited` too: the PR TITLE is scanned (it becomes the squash subject, see below), and a
+    # title can change after the last push.
+    types: [opened, synchronize, reopened, edited]
   push:
     # branches only: a v* tag push (release.yml's trigger) points at a commit this guard
     # already scanned when it landed on main — release.yml requires exactly that — so a tag
@@ -47,6 +50,10 @@ jobs:
         run: .githooks/test-email-scan.sh
 
       - name: Check author and committer emails
+        env:
+          # Through the environment, never interpolated into the script: a title is
+          # contributor-controlled text, and in env it is data, not shell.
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
           . .githooks/_email_scan.sh
@@ -124,6 +131,20 @@ jobs:
               bad=1
             done <<< "$hits"
           done
+
+          # THE SQUASH SUBJECT. A squash-merge takes its subject from the PR TITLE when the PR
+          # has more than one commit (squash_merge_commit_title = COMMIT_OR_PR_TITLE), so a clean
+          # commit range with an address in the title would still land one on main — and the
+          # push run would catch it only after it is permanent (codex #326 r2).
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            printf '%s\n' "$PR_TITLE" > "$msg"
+            hits=$(scan_message_text "$msg" stored)
+            while IFS= read -r h; do
+              [ -z "$h" ] && continue
+              echo "::error::the PR title contains a non-allowlisted email address ($(redact "$h")) — it becomes the squash commit's subject; edit the title"
+              bad=1
+            done <<< "$hits"
+          fi
 
           if [ "$bad" -ne 0 ]; then
             echo "Identity:"; explain_identity 2>&1
