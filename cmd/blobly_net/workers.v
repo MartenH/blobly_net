@@ -219,7 +219,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	mut local_gen := u64(0) // rebuild when a.sim_gen changes (ECU enable/disable)
 	mut built := false
 	t0 := time.ticks()
-	for a.running {
+	for a.running && a.run_gen == gen {
 		// A CHANNEL THAT HAS LEFT THE RUN takes its simulation with it. rx_loop disables a
 		// channel whose adapter failed, and this loop only watched `a.running` — so a simulated
 		// ECU went on transmitting into a port that had gone, discarding every failure.
@@ -235,6 +235,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 				break
 			}
 		}
+		ready := a.transmit_ready_locked(transport.wire_key(sc.iface))
 		a.mu.unlock()
 		if !still_on {
 			// PARKED, not finished. Leaving outright stopped the transmission — which was the
@@ -254,6 +255,10 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 			}
 			time.sleep(20 * time.millisecond)
 			continue
+		}
+		if !ready {
+			time.sleep(time.millisecond)
+			continue // no due_frames/on_frame: their counters belong to actual attempts
 		}
 		if !built || a.sim_gen != local_gen {
 			built = true
@@ -635,11 +640,11 @@ fn tx_health_loop(app &App, gen u64) {
 // baselines a reader compares against belong to a handle, so switching handles invents
 // transitions that never happened.
 //
-// Opening here fixes all three at the root: the queue starts empty at a moment this reader
-// chose, the handle is stable for its whole life, and `unknown` health with zero counters is then
-// the TRUE baseline for it rather than a guess about somebody else's. That is also what rx_loop
-// does for a monitored wire, which is the model — this is the same worker with the row
-// bookkeeping removed. A second handle on the wire is what the transport layer already expects:
+// Opening here gives the reader its own queue and a stable handle for its whole life.
+// Shared driver counters retain their physical-open identity across logical handles;
+// append_diagnostics_locked keeps their narration baseline across retries and runs.
+// This follows rx_loop's receive ownership with the row bookkeeping removed.
+// A second handle on the wire is what the transport layer already expects:
 // `shared_open` gives a second opener its own receive cursor over one ingress ring (#221), and
 // SocketCAN, Vector and Kvaser fan out natively.
 fn tx_health_reader(app &App, iface string, gen u64) {
@@ -666,7 +671,7 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 	// opening here regardless would create a physical connection for a run that has ended — on a
 	// shared CANsub or PCAN wire a fresh one, which a quick Start then waits on or joins, and on a
 	// cold device that keeps the previous run's worker alive for seconds (codex round 9 on #142).
-	live := a.running && a.run_gen == gen
+	live := a.running && a.run_gen == gen && a.wire_has_tx_tap_locked(iface)
 	phys := a.phys_for_locked(iface)
 	a.mu.unlock()
 	if !live {
@@ -679,15 +684,10 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		notify_gen(app, gen, '${iface}: cannot watch bus health — ${err}')
 		return
 	}
-	// Publish readiness only after the receive handle exists, and only into the run
-	// that opened it. file_tap claims the wire under the same mutex that publishes
-	// its taps; TapBus.send refuses while this claim is still opening.
-	a.mu.lock()
-	if a.running && a.run_gen == gen {
-		a.tx_health.opened(wire, gen)
+	if !a.admit_tx_health_reader(mut b, iface, gen) {
+		return
 	}
-	a.mu.unlock()
-	mut last := TxHealthSample{}
+	mut last := TxHealthSample{ source: transport.diagnostics_epoch(b) }
 	defer {
 		a.finish_tx_health(mut b, iface, gen, last)
 	}
@@ -701,14 +701,7 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		// controller ACKNOWLEDGES, so an abandoned one goes on acknowledging traffic on a wire the
 		// workload has left — changing the bench it should have got out of (codex round 9 on #142).
 		a.mu.lock()
-		mut still_tx := false
-		for k, _ in a.tx_buses {
-			parts := project.decompose_key(k) or { continue }
-			if parts.len == 2 && parts[1] != '' && transport.wire_key(parts[1]) == wire {
-				still_tx = true
-				break
-			}
-		}
+		still_tx := a.wire_has_tx_tap_locked(iface)
 		a.mu.unlock()
 		if !still_tx {
 			return // a clean end: the claim is released and the wire can be watched again
@@ -749,7 +742,27 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 	}
 }
 
+fn (mut app App) admit_tx_health_reader(mut bus transport.Bus, iface string, gen u64) bool {
+	app.mu.lock()
+	live := app.running && app.run_gen == gen && app.wire_has_tx_tap_locked(iface)
+	if live { app.tx_health.opened(transport.wire_key(iface), gen) }
+	app.mu.unlock()
+	if !live { bus.close() }
+	return live
+}
+
+fn (app &App) wire_has_tx_tap_locked(iface string) bool {
+	wire := transport.wire_key(iface)
+	for key, _ in app.tx_buses {
+		if _, target := split_tap_key(key) {
+			if transport.wire_key(target) == wire { return true }
+		}
+	}
+	return false
+}
+
 struct TxHealthSample {
+	source u64
 mut:
 	health transport.BusHealth
 	diagnostics transport.BusDiagnostics
@@ -773,9 +786,8 @@ fn (mut app App) report_tx_health_sample(iface string, gen u64, observed TxHealt
 		changed = true
 	}
 	if observed.diagnostics != last.diagnostics {
-		app.log_append_locked(prefix + diag_msg(iface, last.diagnostics, observed.diagnostics))
+		changed = app.append_diagnostics_locked(iface, last.source, last.diagnostics, observed.diagnostics, prefix) || changed
 		last.diagnostics = observed.diagnostics
-		changed = true
 	}
 	return changed
 }
@@ -786,17 +798,28 @@ fn (mut app App) report_tx_health_sample(iface string, gen u64, observed TxHealt
 // writing them into the replacement run's channel state.
 fn (mut app App) finish_tx_health(mut bus transport.Bus, iface string, gen u64, last TxHealthSample) {
 	app.begin_tx_health_close(iface, gen)
-	final_h := bus.health()
+	mut health_error := ''
+	final_h := transport.final_health(mut bus) or {
+		health_error = err.msg()
+		transport.BusHealth.unknown
+	}
 	bus.close()
 	final_diag := bus.diagnostics()
 	app.mu.lock()
-	defer { app.mu.unlock() }
+	mut changed := false
+	if health_error != '' {
+		app.log_append_locked('run ${gen} final: ${iface}: bus health unavailable — ${health_error}')
+		changed = true
+	}
 	if final_h != .unknown && final_h != last.health {
+		changed = true
 		app.log_append_locked('run ${gen} final: ${health_msg(iface, last.health, final_h)}')
 	}
 	if final_diag != last.diagnostics {
-		app.log_append_locked('run ${gen} final: ${diag_msg(iface, last.diagnostics, final_diag)}')
+		changed = app.append_diagnostics_locked(iface, last.source, last.diagnostics, final_diag, 'run ${gen} final: ') || changed
 	}
+	app.mu.unlock()
+	if changed { vgui.wake() }
 }
 
 fn (mut app App) begin_tx_health_close(iface string, gen u64) {
@@ -830,6 +853,24 @@ fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) st
 			'${iface}: bus state changed'
 		}
 	}
+}
+
+// Shared counters are cumulative across logical reader retries and may survive
+// Stop/Start through a tool handle. Narrate each increment once per physical
+// counter epoch. Independent handles retain their worker-local baseline.
+fn (mut app App) append_diagnostics_locked(iface string, source u64, from transport.BusDiagnostics, observed transport.BusDiagnostics, prefix string) bool {
+	mut before := from
+	mut after := observed
+	if source != 0 {
+		before = app.diag_reported[source] or { transport.BusDiagnostics{} }
+		// An older reader can report a snapshot taken before a newer one. Shared
+		// counters never fall within one physical epoch; ignore stale components.
+		after = before.plus(observed.minus(before))
+		app.diag_reported[source] = after
+	}
+	if after == before { return false }
+	app.log_append_locked(prefix + diag_msg(iface, before, after))
+	return true
 }
 
 // diag_msg words a change in a wire's diagnostics for the Log: what is new since the last line
@@ -879,6 +920,29 @@ fn (a &App) script_db(ch Chan) candb.Database {
 // the generation — a wire that failed to open is news whether or not its row still exists.
 fn (a &App) row_is_mine_locked(ci int, iface string, gen u64) bool {
 	return a.run_gen == gen && ci < a.chans.len && a.chans[ci].iface == iface
+}
+
+// Revoke the receive promise before a failed monitor samples or logs anything.
+fn (mut app App) retire_failed_monitor(ci int, iface string, gen u64) {
+	app.mu.lock()
+	if app.row_is_mine_locked(ci, iface, gen) {
+		app.chans[ci].running = false
+		app.chans[ci].spawning = false
+		// EVERY ALIAS ON THIS WIRE. Disabling only the reader-owning row let the
+		// teardown hand the reader to a sibling, which opens the same failed adapter and
+		// fails the same way — a relay race around a port that has gone.
+		dead := transport.destination_key(app.chans[ci].iface)
+		for cj, other in app.chans {
+			if transport.destination_key(other.iface) == dead {
+				app.chans[cj].enabled = false
+			}
+		}
+		// Same rule as every other writer of chans[].enabled: republish the wire list
+		// before releasing the lock, or a row retired here keeps silencing a wire that
+		// something else is enabled onto later.
+		app.push_listen_only_locked()
+	}
+	app.mu.unlock()
 }
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {
@@ -997,11 +1061,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// local last-state means no unlocked read of shared state, and the write is generation
 	// -guarded like every other flag this loop owns
 	mut last_health := transport.BusHealth.unknown
-	// Seeded from the row, which a handoff has filled with the retiring reader's last reading:
-	// a successor on a shared wire sees the same driver counters and must not narrate them
-	// again as new. At Start the row was reset, so this is empty there (#213).
+	diag_source := transport.diagnostics_epoch(bus)
+	// Shared counters use the physical epoch's narration baseline, not a row that
+	// might still display an older physical open with coincidentally equal counts.
 	a.mu.lock()
-	mut last_diag := if ci < a.chans.len { a.chans[ci].diag } else { transport.BusDiagnostics{} }
+	mut last_diag := if diag_source != 0 {
+		a.diag_reported[diag_source] or { transport.BusDiagnostics{} }
+	} else if ci < a.chans.len { a.chans[ci].diag } else { transport.BusDiagnostics{} }
 	a.mu.unlock()
 	mut next_health := i64(0)
 	// ASK OFTEN UNTIL THE WIRE HAS ANSWERED ONCE, and only briefly. A driver's first health
@@ -1042,7 +1108,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				if a.running && a.row_is_mine_locked(ci, iface, gen) {
 					a.chans[ci].diag = d
 					a.chans[ci].diag_at = time.ticks()
-					a.log_append_locked(diag_msg(iface, last_diag, d))
+					a.append_diagnostics_locked(iface, diag_source, last_diag, d, '')
 				}
 				a.mu.unlock()
 				vgui.wake()
@@ -1066,6 +1132,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			if err.msg().contains('timeout') {
 				continue
 			}
+			a.retire_failed_monitor(ci, iface, gen)
 			// ONE LAST SAMPLE. The counts are polled before the receive, and a receive that
 			// fails can have counted first -- PCAN books an overrun verdict and then meets a
 			// failed one in the same call -- so what the wire knew at its death was the sample
@@ -1076,33 +1143,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				if a.running && a.row_is_mine_locked(ci, iface, gen) {
 					a.chans[ci].diag = final
 					a.chans[ci].diag_at = time.ticks()
-					a.log_append_locked(diag_msg(iface, last_diag, final))
+					a.append_diagnostics_locked(iface, diag_source, last_diag, final, '')
 				}
 				a.mu.unlock()
 				last_diag = final
 			}
-			a.notify('${iface}: receive failed — ${err}')
-			// DISABLED, not merely broken out of. The teardown below respawns rx_loop whenever
-			// the channel is still enabled, so breaking alone reopened the failed adapter and
-			// repeated the failure — the same spin, one open slower. A channel whose adapter has
-			// gone stops being part of the run until somebody says otherwise.
-			a.mu.lock()
-			if a.row_is_mine_locked(ci, iface, gen) {
-				// EVERY ALIAS ON THIS WIRE. Disabling only the reader-owning row let the
-				// teardown hand the reader to a sibling, which opens the same failed adapter and
-				// fails the same way — a relay race around a port that has gone.
-				dead := transport.destination_key(a.chans[ci].iface)
-				for cj, other in a.chans {
-					if transport.destination_key(other.iface) == dead {
-						a.chans[cj].enabled = false
-					}
-				}
-				// Same rule as every other writer of chans[].enabled: republish the wire list
-				// before releasing the lock, or a row retired here keeps silencing a wire that
-				// something else is enabled onto later.
-				a.push_listen_only_locked()
-			}
-			a.mu.unlock()
+			notify_gen(app, gen, '${iface}: receive failed — ${err}')
+
 			break
 		}
 		probe_alloc_note(.rx_recv, pr)
@@ -1263,7 +1310,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				a.chans[ci].diag = final
 				a.chans[ci].diag_at = time.ticks()
 			}
-			a.log_append_locked(diag_msg(iface, last_diag, final))
+			a.append_diagnostics_locked(iface, diag_source, last_diag, final, '')
 		}
 		a.mu.unlock()
 		last_diag = final

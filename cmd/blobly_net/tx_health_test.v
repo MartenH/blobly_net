@@ -2,6 +2,8 @@ module main
 
 import transport
 import time
+import candb
+import project
 
 // Models a backend whose health needs a live handle and whose subscriber loss
 // is finalized only at close, as on the shared PCAN/CANsub transport.
@@ -9,8 +11,10 @@ struct FinalHealthBus {
 	closing_app  &App = unsafe { nil }
 	closing_wire string
 mut:
-	closed bool
-	hstate transport.BusHealth = .bus_off
+	closed           bool
+	hstate           transport.BusHealth = .bus_off
+	health_reads     int
+	diagnostic_reads int
 }
 
 fn (mut b FinalHealthBus) send(frame transport.CanFrame) ! {}
@@ -25,13 +29,123 @@ fn (mut b FinalHealthBus) close() {
 }
 
 fn (mut b FinalHealthBus) health() transport.BusHealth {
+	b.health_reads++
 	b.assert_readiness_revoked()
 	return if b.closed { .unknown } else { b.hstate }
 }
 
 fn (mut b FinalHealthBus) diagnostics() transport.BusDiagnostics {
+	b.diagnostic_reads++
 	b.assert_readiness_revoked()
 	return transport.BusDiagnostics{ dropped: if b.closed { u64(7) } else { 0 } }
+}
+
+fn test_a_failed_monitor_immediately_stops_covering_the_send_gate() {
+	iface := 'inproc:failed-monitor'
+	mut app := &App{
+		running: true
+		run_gen: 1
+		chans: [Chan{ iface: iface, mode: 'normal', enabled: true, running: true }]
+	}
+	app.tx_health.expect(transport.wire_key(iface), 1)
+	assert app.transmit_ready_locked(transport.wire_key(iface))
+	app.retire_failed_monitor(0, iface, 1)
+	assert !app.transmit_ready_locked(transport.wire_key(iface))
+	app.run_gen = 2
+	app.chans[0].enabled = true
+	app.chans[0].running = true
+	app.retire_failed_monitor(0, iface, 1)
+	assert app.chans[0].receive_ready(), 'an old monitor cannot retire its replacement'
+}
+
+fn test_a_late_health_open_closes_without_sampling_the_ended_run() {
+	for restarted in [false, true] {
+		mut app := &App{ running: restarted, run_gen: if restarted { u64(2) } else { 1 } }
+		mut raw := &FinalHealthBus{}
+		mut bus := transport.Bus(raw)
+		assert !app.admit_tx_health_reader(mut bus, 'inproc:late-open', 1)
+		assert raw.closed
+		assert raw.health_reads == 0 && raw.diagnostic_reads == 0
+		assert app.logs.len == 0
+	}
+}
+
+fn test_shared_diagnostics_do_not_repeat_across_readers_runs_or_stale_samples() {
+	mut app := &App{}
+	zero := transport.BusDiagnostics{}
+	seven := transport.BusDiagnostics{ dropped: 7 }
+	nine := transport.BusDiagnostics{ dropped: 9 }
+	assert app.append_diagnostics_locked('pcan:test', 1, zero, seven, '')
+	assert !app.append_diagnostics_locked('pcan:test', 1, zero, seven, '')
+	app.run_gen++
+	assert !app.append_diagnostics_locked('pcan:test', 1, zero, seven, '')
+	assert app.append_diagnostics_locked('pcan:test', 1, zero, nine, '')
+	assert app.logs.last().contains('+2 dropped')
+	assert !app.append_diagnostics_locked('pcan:test', 1, zero, seven, 'old run: ')
+	assert app.append_diagnostics_locked('pcan:test', 2, zero, seven, '')
+	assert app.logs.last().contains('+7 dropped'), 'a new physical open has independent counts'
+	assert app.logs.len == 3
+}
+
+fn test_simulation_keeps_its_first_long_period_cycle_while_receive_is_pending() {
+	iface := 'inproc:sim-readiness'
+	mut app := &App{
+		running: true
+		run_gen: 1
+		chans: [
+			Chan{ name: 'BUS', iface: iface, mode: 'normal', enabled: true, spawning: true },
+		]
+	}
+	app.tx_health.expect(transport.wire_key(iface), 1)
+	mut peer := transport.open(iface) or { panic(err) }
+	defer { peer.close() }
+	sc := SimCfg{
+		iface: iface
+		pch: project.Channel{ name: 'BUS', iface: iface }
+		db: candb.Database{
+			messages: [candb.Message{
+				name: 'Cycle'
+				id: 0x123
+				dlc: 1
+				sender: 'ECU'
+				cycle_ms: 1000000
+				signals: [candb.Signal{ name: 'Count', length: 8 }]
+			}]
+		}
+		nodes: [project.NodeCfg{
+			name: 'ECU'
+			signals: [
+				project.GenCfg{ signal: 'Count', typ: 'counter', start: 42, step: 1 },
+			]
+		}]
+	}
+	app.reserve_run_worker()
+	spawn sim_loop(app, sc, 1)
+	deadline := time.ticks() + 5000
+	mut attached := false
+	for time.ticks() < deadline {
+		app.mu.lock()
+		attached = app.consumers_ready[transport.destination_key(iface)] == 1
+		app.mu.unlock()
+		if attached {
+			break
+		}
+		time.sleep(time.millisecond)
+	}
+	assert attached
+	if _ := peer.recv(100) {
+		assert false, 'no simulated frame may precede receive readiness'
+	}
+	app.mu.lock()
+	app.chans[0].running = true
+	app.chans[0].spawning = false
+	app.mu.unlock()
+	got := peer.recv(2000) or { panic(err) }
+	app.mu.lock()
+	app.running = false
+	app.mu.unlock()
+	app.wait_for_run_workers()
+	assert got.id == 0x123 && got.data == [u8(42)], 'the first cycle and send index must survive the wait'
 }
 
 fn (mut b FinalHealthBus) reconcile_silence(want bool) ! {}

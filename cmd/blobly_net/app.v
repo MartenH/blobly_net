@@ -377,6 +377,9 @@ mut:
 	// round's fix, every one of them in this bookkeeping rather than in the reading, so it stopped
 	// being written inline. Guarded by app.mu like every other shared map here.
 	tx_health txclaim.Ledger
+	// Shared diagnostic totals already narrated during this application session,
+	// keyed by the physical driver's counter epoch rather than run or reader.
+	diag_reported map[u64]transport.BusDiagnostics
 	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
 	// drawn, for the reason given there.
 	save_requested bool

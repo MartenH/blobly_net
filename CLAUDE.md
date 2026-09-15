@@ -99,7 +99,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 ```sh
 ./scripts/run_gui.sh                       # GUI
 v -enable-globals -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v   # any other target
-v -enable-globals test modules/             # unit tests — the reliable backbone (88/88)
+v -enable-globals test modules/             # unit tests — the reliable backbone (89/89)
 ./scripts/runtests.sh                       # ALL headless Lua suites (in-process sim) — CI's command
 ./scripts/runtests.sh tests/diag_basic.lua  # or name them: one invocation, one environment
 ```
@@ -158,9 +158,14 @@ its last transmit tap disappears. A supervisor retries failures once per second,
 per run. Claims include the run generation so a departing worker cannot erase its successor.
 Readiness is revoked before a failed reader reports or finalizes; its closing claim keeps
 ownership until teardown finishes, so a retry cannot overlap it.
-Final health is sampled before close; diagnostics follow close so shared-reader cursor gaps
-are included. Final samples carry their run number in the session Log and survive an immediate
-restart, without changing the new run's channel state.
+Final health is sampled before close; Vector requests and drains its terminal chip-state reply
+through the ordinary decoder within a one-second budget, reporting an unavailable sample if it
+cannot obtain one. Diagnostics follow close so shared-reader cursor gaps are included. Shared
+counter epochs identify physical opens; their narration baseline survives reader retries and
+Stop/Start while a tool keeps that physical connection alive. Final samples carry their run
+number in the session Log, wake the GUI, and survive an immediate restart without changing the
+new run's channel state. An open that returns after its run or final tap has left closes without
+sampling a run it never observed. A failed monitor revokes readiness before diagnostics or notices.
 **Transmit readiness requires an open receive handle on every planned transmit wire**.
 Start prepares those expectations and publishes the new run while holding the transmit locks,
 so a surviving tool tap cannot send before the new run files its taps.
@@ -170,7 +175,7 @@ once its receive handle is open (`Chan.receive_ready`); spawning is insufficient
 already opening keeps the wire waiting; a failed open lets the supervisor start a fallback.
 `file_tap` claims wires with no scheduled monitor under the publication lock, the health reader publishes
 readiness after `transport.open`, and `TapBus.send` checks before recording or sending. Cyclic
-generators wait without consuming their first cycle. The open runs on a worker, so only that
+generators and simulated ECUs wait without consuming their first cycle. The open runs on a worker, so only that
 wire waits; the GUI and unrelated wires remain responsive. A failed health reader leaves the
 wire waiting unless an open monitor covers it. Dropping the final tap on a wire the run no longer
 plans releases its send gate, preserving the retry budget if that wire is added again.

@@ -688,6 +688,20 @@ pub fn (mut b VectorBus) health() BusHealth {
 	return h
 }
 
+// No data consumer remains at finalization. Request once and drain through
+// recv, preserving its error counters and using the last reply in the queue.
+// Clear the cache first so a missing terminal reply is reported as unavailable.
+fn (mut b VectorBus) final_health() !BusHealth {
+	b.last_chip = -1
+	st := C.ct_vector_reqchip(b.port, b.mask)
+	if st != 0 { return error('Vector final chip-state request failed (${st})') }
+	drain_health_reply(mut b, 1000) or {
+		if b.last_chip < 0 { return err }
+	}
+	if b.last_chip < 0 { return error('Vector did not return a final chip-state reply') }
+	return xl_chipstat_health(u8(b.last_chip))
+}
+
 // diagnostics: the error records this port's queue carried (#213). Per port, where
 // vector_error_frames() is the process-wide total the bench tools read.
 pub fn (mut b VectorBus) diagnostics() BusDiagnostics {

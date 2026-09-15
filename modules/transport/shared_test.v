@@ -397,6 +397,21 @@ fn test_second_open_does_not_reach_the_driver() {
 	b.close()
 }
 
+fn test_diagnostic_epoch_follows_the_physical_open_not_the_subscriber() {
+	reset_fakes()
+	mut a := shared_open('diagnostic-epoch', 'fake:1', fake_make)!
+	mut b := shared_open('diagnostic-epoch', 'fake:1', fake_make)!
+	epoch := diagnostics_epoch(a)
+	assert epoch != 0 && diagnostics_epoch(b) == epoch
+	assert diagnostics_epoch(silenced('fake:1', a)) == epoch
+	a.close()
+	assert diagnostics_epoch(a) == epoch, 'close-time totals retain their counter identity'
+	b.close()
+	mut c := shared_open('diagnostic-epoch', 'fake:1', fake_make)!
+	assert diagnostics_epoch(c) > epoch, 'a new physical open has a new counter baseline'
+	c.close()
+}
+
 fn test_driver_is_released_only_when_the_last_handle_closes() {
 	reset_fakes()
 	mut a := shared_open('k2', 'fake:1', fake_make)!
