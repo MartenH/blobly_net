@@ -39,7 +39,7 @@ fn test_start_and_restart_prepare_the_real_transmit_plan() {
 	}
 }
 
-fn test_spawning_monitor_needs_a_health_claim_until_a_receiver_opens() {
+fn test_spawning_monitor_blocks_sends_then_failed_open_gets_a_health_reader() {
 	iface := 'inproc:tx-health-spawning'
 	wire := transport.wire_key(iface)
 	mut app := &App{
@@ -52,13 +52,34 @@ fn test_spawning_monitor_needs_a_health_claim_until_a_receiver_opens() {
 	mut tap := app.open_tap_phys(iface, iface, org_tx, '', 1, false) or { panic(err) }
 	app.file_tap(tx_bus_key('', iface), mut tap, 1)
 	app.mu.lock()
-	claimed := !app.tx_health.may_claim_now(wire, 1)
+	assert app.tx_health.may_claim_now(wire, 1), 'do not race a scheduled monitor with a second reader'
+	assert !app.transmit_ready_locked(wire), 'scheduling a monitor must not permit sends'
+	app.reserve_run_worker_locked()
+	app.mu.unlock()
+	spawn tx_health_loop(app, 1)
+	// The monitor's open-failure path clears spawning. The existing tap must
+	// get a fallback from the real supervisor without being filed again.
+	app.mu.lock()
+	app.chans[0].spawning = false
+	app.mu.unlock()
+	deadline := time.ticks() + 5000
+	mut ready := false
+	for time.ticks() < deadline {
+		app.mu.lock()
+		ready = app.tx_health.send_ready(wire, 1)
+		app.mu.unlock()
+		if ready {
+			break
+		}
+		time.sleep(time.millisecond)
+	}
+	app.mu.lock()
 	app.chans[0].enabled = false
 	app.running = false
 	app.mu.unlock()
 	app.drop_unwanted_taps('', iface)
-	assert claimed, 'spawning must not suppress the first health-reader claim'
 	app.wait_for_run_workers()
+	assert ready, 'a failed monitor must get a health reader before sends resume'
 }
 
 fn test_surviving_tool_waits_before_new_run_taps_are_filed() {

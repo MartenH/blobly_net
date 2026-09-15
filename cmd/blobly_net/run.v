@@ -633,6 +633,15 @@ fn (app &App) wire_has_open_receiver_locked(wire string) bool {
 	return false
 }
 
+fn (app &App) wire_has_scheduled_receiver_locked(wire string) bool {
+	for c in app.chans {
+		if c.receive_scheduled() && transport.wire_key(c.iface) == wire {
+			return true
+		}
+	}
+	return false
+}
+
 fn (app &App) transmit_ready_locked(wire string) bool {
 	return !app.running || app.tx_health.send_ready(wire, app.run_gen)
 		|| app.wire_has_open_receiver_locked(wire)
@@ -659,7 +668,10 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 		// spending its first cycle. Other wires and the GUI remain free to run.
 		if _, iface := split_tap_key(key) {
 			wk := transport.wire_key(iface)
-			read := app.wire_has_open_receiver_locked(wk)
+			// Start's expectation keeps sends blocked while a monitor is opening.
+			// Do not race it with a second receiver: the first could see a fault
+			// before the monitor opens, then hand narration to a queue that missed it.
+			read := app.wire_has_scheduled_receiver_locked(wk)
 			// may_claim_now, not may_claim: this path exists to catch the FIRST moment a wire
 			// becomes transmittable, and a RETRY after a failed reader belongs to the supervisor's
 			// once-a-second pass — otherwise several taps filed on one wire could each restart a

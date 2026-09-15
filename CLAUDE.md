@@ -159,8 +159,9 @@ per run. Claims include the run generation so a departing worker cannot erase it
 **Transmit readiness requires an open receive handle on every planned transmit wire**.
 Start prepares those expectations and publishes the new run while holding the transmit locks,
 so a surviving tool tap cannot send before the new run files its taps. A monitor counts only
-once its receive handle is open (`Chan.receive_ready`); spawning is insufficient. `file_tap`
-claims any wire without an open monitor under the publication lock, the health reader publishes
+once its receive handle is open (`Chan.receive_ready`); spawning is insufficient. A monitor
+already opening keeps the wire waiting; a failed open lets the supervisor start a fallback.
+`file_tap` claims wires with no scheduled monitor under the publication lock, the health reader publishes
 readiness after `transport.open`, and `TapBus.send` checks before recording or sending. Cyclic
 generators wait without consuming their first cycle. The open runs on a worker, so only that
 wire waits; the GUI and unrelated wires remain responsive. A failed health reader leaves the

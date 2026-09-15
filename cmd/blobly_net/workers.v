@@ -594,9 +594,10 @@ fn tx_health_loop(app &App, gen u64) {
 		}
 		mut reading := []string{}
 		for c in a.chans {
-			// Only an open receive handle covers the wire. A monitor still opening
-			// cannot consume controller events, even if it eventually succeeds.
-			if c.receive_ready() {
+			// Wait for a scheduled monitor's result before opening a fallback.
+			// This is a scheduling decision; transmit readiness still requires
+			// an open handle. A failed monitor clears spawning and is retried here.
+			if c.receive_scheduled() {
 				reading << transport.wire_key(c.iface)
 			}
 		}

@@ -91,6 +91,11 @@ fn (c Chan) receive_ready() bool {
 	return c.monitorable() && c.running
 }
 
+// A scheduled monitor avoids a competing health open, but cannot permit sends.
+fn (c Chan) receive_scheduled() bool {
+	return c.receive_ready() || (c.monitorable() && c.spawning)
+}
+
 // replay_blocker names the reason a replay-mode channel will not play — '' when nothing
 // blocks it. THE one statement of the disqualifiers: replaying() is defined by it and the
 // Replay panel prints it, so a clause added here reaches both — the panel hand-copying the
