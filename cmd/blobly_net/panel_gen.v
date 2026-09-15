@@ -835,6 +835,12 @@ fn sender_value(ss project.SenderSig, n int, el f64) f64 {
 
 
 fn (mut app App) fire_index(i int) {
+	if app.try_fire_index(i) == .pending {
+		app.notify('generator: waiting for its transmit or receive path')
+	}
+}
+
+fn (mut app App) try_fire_index(i int) TxAttempt {
 	// ONE FIRE AT A TIME PER GENERATOR, start to finish: reserving an index and rolling it back
 	// could not keep the count equal to DELIVERED frames when two fires finished out of order.
 	// A flag rather than a held lock, because the send must not be inside one — a generator
@@ -844,12 +850,12 @@ fn (mut app App) fire_index(i int) {
 	app.mu.lock()
 	if i < 0 || i >= app.senders.len {
 		app.mu.unlock()
-		return
+		return .failed
 	}
 	uid := app.senders[i].uid
 	if app.gen_firing[uid] {
 		app.mu.unlock()
-		return
+		return .failed
 	}
 	app.gen_firing[uid] = true
 	defer {
@@ -913,17 +919,18 @@ fn (mut app App) fire_index(i int) {
 		}
 		if !found {
 			app.notify('generator: message "${s.message}" not in any DBC')
-			return
+			return .failed
 		}
 	} else if i < app.gen_bufs.len {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	if app.tx_on_chan(own, tgt, transport.CanFrame{
+	outcome := app.try_tx_on_chan(own, tgt, transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data
-	}) {
+	})
+	if outcome == .sent {
 		// delivered frames only — a fire refused while the tap is still opening put nothing on
 		// the bus, and counting it would make the sequence lie about what was transmitted.
 		// ...and only onto the generator set this fire was snapshotted from: a removal or a new
@@ -937,4 +944,5 @@ fn (mut app App) fire_index(i int) {
 		}
 		app.mu.unlock()
 	}
+	return outcome
 }

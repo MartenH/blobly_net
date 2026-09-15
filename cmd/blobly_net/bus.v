@@ -477,6 +477,18 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 }
 
 fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame) bool {
+	outcome := app.try_tx_on_chan(chan_name, iface, f)
+	if outcome == .pending { app.notify('TX not sent: ${iface} is waiting for its transmit or receive path') }
+	return outcome == .sent
+}
+
+enum TxAttempt {
+	sent
+	failed
+	pending // no producer cycle or state was consumed
+}
+
+fn (mut app App) try_tx_on_chan(chan_name string, iface string, f transport.CanFrame) TxAttempt {
 	// The LOOKUP is under app.mu; the send is not. Taps are opened ON A WORKER and filed as they
 	// land (#257, file_tap) — for a generator added or retargeted mid-run, long after Start — so
 	// tx_buses is written while a cyclic generator may be reading it from gen_loop, and a V map is
@@ -497,19 +509,18 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 			chan_name != '') {
 			.wait {
 				app.mu.unlock()
-				app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
-				return false
+				return .pending
 			}
 			.none_open {
 				app.mu.unlock()
 				app.notify('TX failed: no open bus for ${iface}')
-				return false
+				return .failed
 			}
 			.via_wire {
 				app.tx_buses[tx_bus_key('', iface)] or {
 					app.mu.unlock()
 					app.notify('TX failed: no open bus for ${iface}')
-					return false
+					return .failed
 				}
 			}
 		}
@@ -518,12 +529,13 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 	// The row, the recording and the pending echo are the tap's job (open_tap), so they happen
 	// for every emitter rather than only for the ones that remember to log.
 	b.send(f) or {
+		if err is TxHealthPending { return .pending }
 		app.notify('TX failed: ${err}')
-		return false
+		return .failed
 	}
 	// The count is the tap's job (note_emit), like the row and the recording — a generator that
 	// bypasses tx_on still transmits, and used to be invisible here.
-	return true
+	return .sent
 }
 
 // available_adapters is the adapter-picker list for THIS platform — only backends that

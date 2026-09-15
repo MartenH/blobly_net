@@ -4,6 +4,8 @@ import transport
 import time
 import candb
 import sim
+import player
+import os
 import project
 
 // Models a backend whose health needs a live handle and whose subscriber loss
@@ -13,6 +15,7 @@ struct FinalHealthBus {
 	closing_wire string
 mut:
 	send_failure     string
+	pending_sends    int
 	send_calls       int
 	closed           bool
 	hstate           transport.BusHealth = .bus_off
@@ -22,6 +25,10 @@ mut:
 
 fn (mut b FinalHealthBus) send(frame transport.CanFrame) ! {
 	b.send_calls++
+	if b.pending_sends > 0 {
+		b.pending_sends--
+		return TxHealthPending{ iface: 'test' }
+	}
 	if b.send_failure != '' {
 		return error(b.send_failure)
 	}
@@ -319,6 +326,128 @@ fn test_simulator_does_not_retry_driver_errors_even_with_similar_text() {
 	mut bus := transport.Bus(raw)
 	send_sim_frames(mut bus, [transport.CanFrame{ id: 1 }, transport.CanFrame{ id: 2 }], app, iface, 'BUS', 1, 0)
 	assert raw.send_calls == 2, 'each frame is attempted once; only the typed gate refusal is retried'
+}
+
+fn test_replay_final_batch_can_pause_resume_and_seek_while_pending() {
+	mut pending := ReplayPending{}
+	mut pause := player.Commands{ state: .paused }
+	pending.commands(mut pause, 2, .finished)
+	assert pending.paused && pending.visible_state(2, .finished) == .paused
+	mut resume := player.Commands{ state: .playing }
+	pending.commands(mut resume, 2, .finished)
+	assert !pending.paused && resume.state == .stopped, 'resume must not restart the released final pass'
+	assert pending.visible_state(2, .finished) == .playing
+	pending.next = 1
+	mut seek := player.Commands{ seek: 0.25 }
+	pending.commands(mut seek, 2, .finished)
+	assert pending.next == 2 && !pending.paused, 'seek replaces the pending batch'
+	assert pending.visible_state(2, .finished) == .finished
+}
+
+fn test_cyclic_generator_retries_a_refused_cycle_without_waiting_its_period() {
+	iface := 'inproc:generator-pending-cycle'
+	mut raw := &FinalHealthBus{ pending_sends: 1 }
+	mut app := &App{
+		running: true
+		run_gen: 1
+		senders: [SenderRT{
+			uid: 1
+			iface: iface
+			tgt: iface
+			sender: project.Sender{ id: 0x123, trigger: 'cyclic', cycle_ms: 1000000 }
+		}]
+		tx_buses: {
+			tx_bus_key('', iface): transport.Bus(raw)
+		}
+	}
+	app.reserve_run_worker()
+	spawn gen_loop(app)
+	deadline := time.ticks() + 3000
+	mut count := 0
+	for time.ticks() < deadline {
+		app.mu.lock()
+		count = app.gen_send_n[1]
+		app.mu.unlock()
+		if count > 0 {
+			break
+		}
+		time.sleep(time.millisecond)
+	}
+	app.mu.lock()
+	app.running = false
+	app.mu.unlock()
+	app.wait_for_run_workers()
+	assert count == 1 && raw.send_calls == 2, 'the refused first attempt must not consume the long cycle'
+}
+
+fn test_replay_retries_the_unsent_suffix_after_health_recovers() {
+	iface := 'inproc:replay-health-retry'
+	wire := transport.wire_key(iface)
+	source := os.join_path(os.temp_dir(), 'blobly-replay-health-${os.getpid()}.log')
+	os.write_file(source, '(1.000000) can0 123#11\n(1.250000) can0 123#22\n(1.300000) can0 123#33\n') or { panic(err) }
+	defer { os.rm(source) or {} }
+	mut app := &App{
+		running: true
+		run_gen: 1
+		chans: [Chan{
+			name: 'BUS'
+			iface: iface
+			adapter: 'virtual'
+			mode: 'replay'
+			enabled: true
+			running: true
+			replay_src: source
+			replay_bus: 'can0'
+		}]
+	}
+	app.replay_state[source] = ReplayState{ gen: 1, live: true, token: 1 }
+	app.tx_health.expect(wire, 1)
+	mut peer := transport.open(iface) or { panic(err) }
+	defer { peer.close() }
+	app.reserve_run_worker()
+	spawn replay_group(app, source, [0], 1, 1)
+	first := peer.recv(3000) or { panic(err) }
+	assert first.data == [u8(0x11)]
+	app.mu.lock()
+	app.chans[0].running = false
+	app.mu.unlock()
+	if _ := peer.recv(400) {
+		assert false, 'the remaining replay frames must wait'
+	}
+	app.mu.lock()
+	mut ctl := app.replay_ctls[1] or { panic('replay worker disappeared') }
+	assert ctl.failed == 0
+	assert ctl.state == .playing, 'a pending final frame is not finished'
+	ctl.cmds.state = .paused
+	app.mu.unlock()
+	pause_deadline := time.ticks() + 3000
+	mut paused := false
+	for time.ticks() < pause_deadline {
+		app.mu.lock()
+		paused = ctl.state == .paused
+		app.mu.unlock()
+		if paused {
+			break
+		}
+		time.sleep(time.millisecond)
+	}
+	assert paused
+	app.mu.lock()
+	app.chans[0].running = true
+	app.mu.unlock()
+	if _ := peer.recv(100) {
+		assert false, 'health recovery must respect Pause'
+	}
+	app.mu.lock()
+	ctl.cmds.state = .playing
+	app.mu.unlock()
+	second := peer.recv(1000) or { panic(err) }
+	third := peer.recv(1000) or { panic(err) }
+	assert second.data == [u8(0x22)] && third.data == [u8(0x33)]
+	app.mu.lock()
+	app.running = false
+	app.mu.unlock()
+	app.wait_for_run_workers()
 }
 
 fn (mut b FinalHealthBus) reconcile_silence(want bool) ! {}

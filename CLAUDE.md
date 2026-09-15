@@ -189,6 +189,11 @@ If readiness is revoked after a simulator has prepared a cyclic or response batc
 retains the exact frames and retries only the typed pre-driver receive-gate refusal. Engine
 state does not advance again during that wait; Stop, channel disable or an ECU edit cancels the
 pending batch. Driver failures keep their existing semantics and are not retried by this helper.
+Cyclic generators commit their cycle time only when a send is accepted or fails at the driver;
+a pending receive gate leaves the cycle due without blocking other generators. Their counter
+still advances only on success. Replay retains the unsent batch suffix on the same refusal,
+keeps pause/resume/seek commands responsive, and reports completion only after the final batch
+settles. A seek replaces that suffix; Stop discards it with the run.
 Health verdicts are Log-only on wires with no monitored
 row; they do not contribute a Buses-row or toolbar state. These workers participate in the
 runtime census and the rebuild drain. The Linux GUI CI job also runs

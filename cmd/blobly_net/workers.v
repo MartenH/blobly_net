@@ -371,14 +371,15 @@ fn gen_loop(app &App) {
 				}
 				lf := last[i] or { i64(0) }
 				if now - lf >= i64(sr.sender.cycle_ms) {
-					last[i] = now
 					fire << i
 				}
 			}
 		}
 		a.mu.unlock()
 		for i in fire {
-			a.fire_index(i)
+			if a.try_fire_index(i) != .pending {
+				last[i] = now
+			}
 		}
 		// Resolve emissions whose echo never came. Expiry is otherwise driven only by the next
 		// emission or the next received frame, so on a bus that falls silent — a disconnected
