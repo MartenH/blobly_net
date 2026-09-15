@@ -18,8 +18,8 @@ clone_pin() { # url rev dir
 	if [ ! -d "$3/.git" ]; then
 		git clone --recursive "$1" "$3"
 	fi
-	git -C "$3" fetch --recurse-submodules origin "$2" 2>/dev/null || true
-	git -C "$3" checkout "$2" 2>/dev/null || true
+	git -C "$3" fetch --recurse-submodules origin "$2"
+	git -C "$3" checkout "$2"
 	git -C "$3" submodule update --init --recursive
 }
 clone_pin "$CIMGUI_REPO"  "$CIMGUI_REV"  "$BLD/cimgui"

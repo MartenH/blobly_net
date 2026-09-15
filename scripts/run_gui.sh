@@ -13,9 +13,7 @@
 # On Linux/WSL just run it directly.
 #
 #   scripts/run_gui.sh                       # build + run (driver-free sim by default)
-#   DEPS=1 scripts/run_gui.sh                # rebuild libvgui_c.a FIRST — REQUIRED after any
-#                                             #   libs/vgui/{vgui.h,vgui_glue.cpp} change, else
-#                                             #   the link fails with 'undefined reference to vgui_*'
+#   DEPS=1 scripts/run_gui.sh                # force a rebuild of libvgui_c.a
 #   RUN=0 scripts/run_gui.sh                 # build only -> build/blobly_net[.exe]
 #   DBG=1 RUN=0 scripts/run_gui.sh           # build with -g (asserts on) for gdb
 #   NO_PARALLEL=1 scripts/run_gui.sh         # serialise the C compile (V's -no-parallel), which
@@ -106,6 +104,8 @@ fi
 
 # 1.5 the C++ glue is linked as a PREBUILT archive — V won't notice when the .cpp changes, and a
 #     stale archive against a changed call signature is an instant segfault. Rebuild when newer.
+#     CI's gui-deps action checks source content + native toolchain versions before restoring,
+#     then refreshes the archive's mtime so a fresh checkout does not invalidate a valid cache.
 if [ libs/vgui/vgui_glue.cpp -nt libs/vgui/libvgui_c.a ] || [ libs/vgui/vgui.h -nt libs/vgui/libvgui_c.a ]; then
 	echo "vgui_glue.cpp/vgui.h newer than libvgui_c.a — rebuilding the archive"
 	bash libs/vgui/build_deps.sh

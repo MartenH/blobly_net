@@ -76,11 +76,10 @@ jobs:
             mingw-w64-x86_64-fribidi
             mingw-w64-x86_64-fontconfig
 
-      # imgui + ImPlot + GLFW + FreeType C deps -> libs/vgui/libvgui_c.a (g++). build_deps.sh
-      # runs unmodified on MSYS2 (git + g++). It's gitignored, so always built fresh.
-      - name: Build imgui C deps (libs/vgui/libvgui_c.a)
-        shell: msys2 {0}
-        run: sh libs/vgui/build_deps.sh
+      - name: Build GUI dependencies (cached)
+        uses: ./.github/actions/gui-deps
+        with:
+          shell: msys2 {0}
 
       # Build cmd/blobly_net through scripts/run_gui.sh — the SAME script developers run and the
       # Linux job (ci.yml) already calls, so this recipe cannot drift from theirs. It once did:

@@ -1,0 +1,52 @@
+name: Set up pinned V
+description: Cache the complete V toolchain, including its pinned bootstrap and build stamp.
+runs:
+  using: composite
+  steps:
+    - name: Identify the runner toolchain
+      id: environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        key=$({
+          printf '%s\n' "${ImageOS:?}" "${ImageVersion:?}"
+          gcc --version
+          dpkg-query -W
+        } | sha256sum | cut -d ' ' -f 1)
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+
+    - name: Restore V
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/v
+        key: v-1-${{ runner.os }}-${{ runner.arch }}-${{ steps.environment.outputs.key }}-${{ hashFiles('.v-version', '.vc-version', 'scripts/v_toolchain.sh', '.github/actions/setup-v/action.yml') }}
+
+    # The cache includes BOTH git trees and the successful-build stamp. Validate them even
+    # on a hit: executable existence alone does not prove that a previous build succeeded.
+    - name: Install or validate V
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        VFLAGS: -old-compiler
+        V_C_ERROR_BUG_REPORT_DISABLED: '1'
+      run: |
+        set -euo pipefail
+        . scripts/v_toolchain.sh
+        V_PIN=$(tr -d '[:space:]' < .v-version)
+        VC_PIN=$(tr -d '[:space:]' < .vc-version)
+        reason=$(v_toolchain_build_reason "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN")
+        if [ "$CACHE_HIT" != true ] || [ -n "$reason" ]; then
+          echo "Building pinned V (${reason:-cache miss})"
+          v_toolchain_install "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN"
+        fi
+        "$RUNNER_TEMP/v/v" version
+        echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
+
+    # Save before repo tests/builds use the compiler, so they cannot add their outputs to it.
+    - name: Save V
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/v
+        key: ${{ steps.cache.outputs.cache-primary-key }}
