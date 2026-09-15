@@ -227,14 +227,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		// BY NAME AND WIRE. A hand-edited project can carry the same channel name on two buses,
 		// and matching on the name alone let an unrelated enabled row keep this simulation alive
 		// after its own channel was switched off — transmitting onto a bus nobody had asked for.
-		mut still_on := false
-		sim_dest := transport.destination_key(sc.iface)
-		for c in a.chans {
-			if c.enabled && c.name == sc.pch.name && transport.destination_key(c.iface) == sim_dest {
-				still_on = true
-				break
-			}
-		}
+		still_on := a.sim_channel_enabled_locked(sc.iface, sc.pch.name)
 		ready := a.transmit_ready_locked(transport.wire_key(sc.iface))
 		a.mu.unlock()
 		if !still_on {
@@ -283,16 +276,47 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		// from the Script panel reported success and changed nothing on the bus.
 		sim.apply_injected(sc.iface, mut engine)
 		now_ms := f64(time.ticks() - t0)
-		for f in engine.due_frames(now_ms) {
-			bus.send(f) or {}
-		}
+		send_sim_frames(mut bus, engine.due_frames(now_ms), app, sc.iface, sc.pch.name, gen, local_gen)
 		if frame := bus.recv(5) {
-			for resp in engine.on_frame(frame) {
-				bus.send(resp) or {}
-			}
+			send_sim_frames(mut bus, engine.on_frame(frame), app, sc.iface, sc.pch.name, gen, local_gen)
 		}
 	}
 	bus.close()
+}
+
+fn (app &App) sim_channel_enabled_locked(iface string, name string) bool {
+	dest := transport.destination_key(iface)
+	for c in app.chans {
+		if c.enabled && c.name == name && transport.destination_key(c.iface) == dest {
+			return true
+		}
+	}
+	return false
+}
+
+// due_frames/on_frame have already advanced the engine. A receive gate that
+// closes after the outer readiness snapshot must retain these exact frames,
+// including counters and protection bytes, until admission returns. Retry only
+// the typed pre-driver refusal; a driver error may describe a frame already sent.
+fn send_sim_frames(mut bus transport.Bus, frames []transport.CanFrame, app &App, iface string, name string, gen u64, engine_gen u64) {
+	a := unsafe { app }
+	for frame in frames {
+		for {
+			a.mu.lock()
+			live := a.running && a.run_gen == gen && a.sim_gen == engine_gen
+				&& a.sim_channel_enabled_locked(iface, name)
+			a.mu.unlock()
+			if !live { return } // Stop or a configuration edit cancels this prepared batch
+			bus.send(frame) or {
+				if err is TxHealthPending {
+					time.sleep(time.millisecond)
+					continue
+				}
+				break
+			}
+			break
+		}
+	}
 }
 
 // gen_loop fires cyclic senders at their cycle_ms while the measurement runs.

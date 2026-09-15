@@ -205,6 +205,17 @@ fn run_cancel(gen u64, app &App) fn () bool {
 	}
 }
 
+// This refusal happens before recording or entering the driver. A stateful
+// producer may safely retain the prepared frame and offer it again.
+struct TxHealthPending {
+	Error
+	iface string
+}
+
+fn (e TxHealthPending) msg() string {
+	return '${e.iface}: transmit waiting for the bus-health reader'
+}
+
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	pa := probe_alloc_mark()
 	defer {
@@ -250,7 +261,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	health_ready := a.transmit_ready_locked(t.health_wire)
 	a.mu.unlock()
 	if !health_ready {
-		return error('${t.iface}: transmit waiting for the bus-health reader')
+		return TxHealthPending{ iface: t.iface }
 	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.

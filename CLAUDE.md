@@ -185,6 +185,10 @@ wire waiting unless an open monitor covers it. Dropping the final tap on a wire 
 plans releases its send gate, preserving the retry budget if that wire is added again.
 Live retargeting and removal also release gates for departed wires whose opens are still pending.
 Stopped generator edits take no send barrier, so surviving tools cannot stall those edits.
+If readiness is revoked after a simulator has prepared a cyclic or response batch, its worker
+retains the exact frames and retries only the typed pre-driver receive-gate refusal. Engine
+state does not advance again during that wait; Stop, channel disable or an ECU edit cancels the
+pending batch. Driver failures keep their existing semantics and are not retried by this helper.
 Health verdicts are Log-only on wires with no monitored
 row; they do not contribute a Buses-row or toolbar state. These workers participate in the
 runtime census and the rebuild drain. The Linux GUI CI job also runs

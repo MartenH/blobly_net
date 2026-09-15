@@ -3,6 +3,7 @@ module main
 import transport
 import time
 import candb
+import sim
 import project
 
 // Models a backend whose health needs a live handle and whose subscriber loss
@@ -11,13 +12,20 @@ struct FinalHealthBus {
 	closing_app  &App = unsafe { nil }
 	closing_wire string
 mut:
+	send_failure     string
+	send_calls       int
 	closed           bool
 	hstate           transport.BusHealth = .bus_off
 	health_reads     int
 	diagnostic_reads int
 }
 
-fn (mut b FinalHealthBus) send(frame transport.CanFrame) ! {}
+fn (mut b FinalHealthBus) send(frame transport.CanFrame) ! {
+	b.send_calls++
+	if b.send_failure != '' {
+		return error(b.send_failure)
+	}
+}
 
 fn (mut b FinalHealthBus) recv(timeout_ms int) !transport.CanFrame {
 	return error('timeout')
@@ -220,6 +228,97 @@ fn test_simulation_keeps_its_first_long_period_cycle_while_receive_is_pending() 
 	app.mu.unlock()
 	app.wait_for_run_workers()
 	assert got.id == 0x123 && got.data == [u8(42)], 'the first cycle and send index must survive the wait'
+}
+
+fn test_simulator_retains_prepared_frames_when_readiness_is_revoked() {
+	for outcome in ['recover', 'stop', 'edit', 'disable'] {
+		iface := 'inproc:sim-prepared-${outcome}'
+		wire := transport.wire_key(iface)
+		mut app := &App{
+			running: true
+			run_gen: 1
+			chans: [Chan{ name: 'BUS', iface: iface, enabled: true, mode: 'off' }]
+		}
+		mut peer := transport.open(iface) or { panic(err) }
+		mut tap := app.open_tap_phys(iface, iface, org_tx_sim, 'BUS', 1, false) or { panic(err) }
+		db := candb.Database{
+			messages: [candb.Message{
+				name: 'Cycle'
+				id: 0x123
+				dlc: 1
+				sender: 'ECU'
+				cycle_ms: 1000000
+				signals: [candb.Signal{ name: 'Count', length: 8 }]
+			}]
+		}
+		node := project.NodeCfg{
+			name: 'ECU'
+			signals: [project.GenCfg{
+				signal: 'Count'
+				typ: 'counter'
+				start: 42
+				step: 1
+			}]
+		}
+		mut engine := sim.Engine{ ecus: [build_node(db, node)] }
+		app.tx_health.claim(wire, 1)
+		app.tx_health.opened(wire, 1)
+		assert app.transmit_ready_locked(wire)
+		frames := engine.due_frames(0)
+		assert frames.len == 1 && frames[0].data == [u8(42)]
+		// The exact race: preparation succeeded, then receive readiness disappeared.
+		app.tx_health.begin_close(wire, 1)
+		done := chan bool{ cap: 1 }
+		spawn fn [mut tap, app, iface, frames, done] () {
+			send_sim_frames(mut tap, frames, app, iface, 'BUS', 1, 0)
+			tap.close()
+			done <- true
+		}()
+		if _ := peer.recv(50) {
+			assert false, 'the receive gate must refuse the prepared frame'
+		}
+		app.mu.lock()
+		match outcome {
+			'recover' {
+				app.tx_health.release(wire, 1, true)
+				app.tx_health.claim(wire, 1)
+				app.tx_health.opened(wire, 1)
+			}
+			'stop' {
+				app.running = false
+			}
+			'edit' { app.sim_gen++ }
+			else {
+				app.chans[0].enabled = false
+			}
+		}
+		app.mu.unlock()
+		_ := <-done
+		if outcome == 'recover' {
+			got := peer.recv(1000) or { panic(err) }
+			assert got.data == frames[0].data, 'retry the exact prepared frame'
+			next := engine.due_frames(1000000)
+			assert next.len == 1 && next[0].data == [u8(43)], 'one cycle advances the counter once'
+		} else {
+			if _ := peer.recv(20) {
+				assert false, 'cancellation must discard the pending batch'
+			}
+		}
+		peer.close()
+	}
+}
+
+fn test_simulator_does_not_retry_driver_errors_even_with_similar_text() {
+	iface := 'inproc:sim-driver-error'
+	app := &App{
+		running: true
+		run_gen: 1
+		chans: [Chan{ name: 'BUS', iface: iface, enabled: true }]
+	}
+	mut raw := &FinalHealthBus{ send_failure: TxHealthPending{ iface: iface }.msg() }
+	mut bus := transport.Bus(raw)
+	send_sim_frames(mut bus, [transport.CanFrame{ id: 1 }, transport.CanFrame{ id: 2 }], app, iface, 'BUS', 1, 0)
+	assert raw.send_calls == 2, 'each frame is attempted once; only the typed gate refusal is retried'
 }
 
 fn (mut b FinalHealthBus) reconcile_silence(want bool) ! {}
