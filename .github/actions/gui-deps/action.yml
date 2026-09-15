@@ -1,0 +1,67 @@
+name: Build GUI dependencies
+description: Cache the pinned ImGui/ImPlot sources, licences and compiled archive per native toolchain.
+inputs:
+  shell:
+    description: Bash on Linux, or the configured MSYS2 shell on Windows.
+    default: bash
+runs:
+  using: composite
+  steps:
+    # Native packages can update independently of the runner image (apt / MSYS2 update).
+    # Include their installed versions, not just the workflow's list of package names.
+    - name: Identify the native toolchain
+      id: environment
+      shell: ${{ inputs.shell }}
+      run: |
+        set -euo pipefail
+        key=$({
+          printf '%s\n' "${ImageOS:?}" "${ImageVersion:?}"
+          g++ --version
+          g++ -dumpmachine
+          pkg-config --modversion freetype2 glfw3
+          pkg-config --cflags freetype2 glfw3
+          if command -v pacman >/dev/null 2>&1; then
+            pacman -Q
+          else
+            dpkg-query -W
+          fi
+        } | sha256sum | cut -d ' ' -f 1)
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+
+    # Keep headers AND licence texts with the archive: compilation and bundle staging need
+    # both. No restore-keys: a compiled archive from different inputs is never reusable.
+    - name: Restore GUI dependencies
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          libs/vgui/build/cimgui
+          libs/vgui/build/cimplot
+          libs/vgui/libvgui_c.a
+        key: gui-deps-1-${{ runner.os }}-${{ runner.arch }}-${{ steps.environment.outputs.key }}-${{ hashFiles('libs/vgui/build_deps.sh', 'libs/vgui/*.cpp', 'libs/vgui/*.h', '.github/actions/gui-deps/action.yml') }}
+
+    - name: Build or validate GUI dependencies
+      shell: ${{ inputs.shell }}
+      env:
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        if [ "$CACHE_HIT" != true ]; then
+          sh libs/vgui/build_deps.sh
+        else
+          test -s libs/vgui/libvgui_c.a
+          # An exact content/toolchain match is stronger evidence than mtimes. checkout
+          # gives unchanged glue/headers fresh timestamps; make the validated archive newer
+          # so run_gui.sh's local freshness check does not rebuild it on every cache hit.
+          touch libs/vgui/libvgui_c.a
+        fi
+
+    - name: Save GUI dependencies
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          libs/vgui/build/cimgui
+          libs/vgui/build/cimplot
+          libs/vgui/libvgui_c.a
+        key: ${{ steps.cache.outputs.cache-primary-key }}

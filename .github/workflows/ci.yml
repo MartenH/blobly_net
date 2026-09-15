@@ -72,35 +72,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The V SOURCE is pinned by .v-version, but `make` bootstraps V by cloning vlang/vc
-      # with NO ref — so the bootstrap floated to whatever that repo's default branch held.
-      # That is not a theoretical hole: vc sat on the C generated from our exact pin from
-      # 2026-09-05 20:06 until 2026-09-07 05:31, which is the only reason the pin ever looked
-      # like one. When vc regenerated from V3 master, every Linux job on every branch failed
-      # in `make` with `./v2: No such file or directory` — a V3 bootstrap cannot build pre-V3
-      # source under -old-compiler, so v2 was never produced. Nothing in the repo had changed.
-      #
-      # So the bootstrap is pinned too (.vc-version), and `local=1` is what stops make from
-      # dragging it back: `latest_vc`, `latest_tcc` and `latest_legacy` are ALL guarded by
-      # `ifndef local` in V's GNUmakefile, and the first of them does `git clean -xf && git
-      # pull --rebase` on vc. Pre-cloning at a pin without local=1 would be undone by that
-      # pull. Done by hand rather than through vlang/setup-v because that action runs `make`
-      # itself, leaving nowhere to place the pinned clone.
-      #
-      # .vc-version must be the vc commit GENERATED FROM .v-version — its message is
-      # `[v:master] <the .v-version sha> - ...`. Bump the two together, or not at all.
-      - name: Install V (pinned — .v-version + .vc-version)
-        run: |
-          set -eux
-          # ONE definition of how the pinned toolchain is installed, shared with
-          # scripts/setup_env.sh and tested by scripts/v_toolchain_test.sh. Inline here it was
-          # the same incantation in three workflow steps, which is how the two halves of a pin
-          # come to disagree.
-          . scripts/v_toolchain.sh
-          V_PIN=$(tr -d '[:space:]' < .v-version)
-          VC_PIN=$(tr -d '[:space:]' < .vc-version)
-          v_toolchain_install "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN"
-          echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
+      - name: Set up pinned V (cached)
+        uses: ./.github/actions/setup-v
 
       - name: V version
         run: v version
@@ -173,35 +146,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The V SOURCE is pinned by .v-version, but `make` bootstraps V by cloning vlang/vc
-      # with NO ref — so the bootstrap floated to whatever that repo's default branch held.
-      # That is not a theoretical hole: vc sat on the C generated from our exact pin from
-      # 2026-09-05 20:06 until 2026-09-07 05:31, which is the only reason the pin ever looked
-      # like one. When vc regenerated from V3 master, every Linux job on every branch failed
-      # in `make` with `./v2: No such file or directory` — a V3 bootstrap cannot build pre-V3
-      # source under -old-compiler, so v2 was never produced. Nothing in the repo had changed.
-      #
-      # So the bootstrap is pinned too (.vc-version), and `local=1` is what stops make from
-      # dragging it back: `latest_vc`, `latest_tcc` and `latest_legacy` are ALL guarded by
-      # `ifndef local` in V's GNUmakefile, and the first of them does `git clean -xf && git
-      # pull --rebase` on vc. Pre-cloning at a pin without local=1 would be undone by that
-      # pull. Done by hand rather than through vlang/setup-v because that action runs `make`
-      # itself, leaving nowhere to place the pinned clone.
-      #
-      # .vc-version must be the vc commit GENERATED FROM .v-version — its message is
-      # `[v:master] <the .v-version sha> - ...`. Bump the two together, or not at all.
-      - name: Install V (pinned — .v-version + .vc-version)
-        run: |
-          set -eux
-          # ONE definition of how the pinned toolchain is installed, shared with
-          # scripts/setup_env.sh and tested by scripts/v_toolchain_test.sh. Inline here it was
-          # the same incantation in three workflow steps, which is how the two halves of a pin
-          # come to disagree.
-          . scripts/v_toolchain.sh
-          V_PIN=$(tr -d '[:space:]' < .v-version)
-          VC_PIN=$(tr -d '[:space:]' < .vc-version)
-          v_toolchain_install "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN"
-          echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
+      - name: Set up pinned V (cached)
+        uses: ./.github/actions/setup-v
 
       # cmd/blobly_net links against the imgui C deps: g++ builds them, GLFW is the
       # windowing backend (its X11 deps come in transitively), FreeType is the glyph
@@ -213,8 +159,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
 
-      # scripts/run_gui.sh (RUN=0 = build only) builds libs/vgui/libvgui_c.a from the
-      # pinned cimgui/cimplot (gitignored, so always built fresh) and then compiles
+      - name: Build GUI dependencies (cached)
+        uses: ./.github/actions/gui-deps
+
+      # scripts/run_gui.sh (RUN=0 = build only) reuses the validated libvgui_c.a and compiles
       # cmd/blobly_net with the right flags (-cc gcc -enable-globals -path …|libs). Using
       # the same script devs use keeps CI and local builds identical.
       - name: Build GUI app (RUN=0 scripts/run_gui.sh)
