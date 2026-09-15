@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 
 extern "C" {
 
@@ -380,6 +381,50 @@ int vgui_add_font(const char* path, float size_px) {
     ImGui_ImplOpenGL3_DestroyDeviceObjects(); // force the font texture to rebuild next frame
     return 1;
 }
+// vgui_add_font_merge merges a second face INTO the current default font: glyphs the main face
+// lacks are taken from this one. The class fix for a symbol drawn as `?` (#306: Consolas has no
+// ↻ or ⚠) — one fallback face with the symbols, rather than a label rule enforced by nothing.
+// NO GLYPH RANGES, on purpose: this is ImGui 1.92, where ImFontConfig::GlyphRanges is marked
+// *LEGACY* (imgui.h) and glyphs are loaded on demand from every source of a font — the main
+// face already draws U+2014 with no ranges, and the merged face is another source of the same
+// font. Three review rounds asked for ranges; the header is the answer.
+int vgui_add_font_merge(const char* path, float size_px) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    ImFont* f = io.Fonts->AddFontFromFileTTF(path, size_px, &cfg);
+    if (!f) return 0;
+    ImGui_ImplOpenGL3_DestroyDeviceObjects();
+    return 1;
+}
+// vgui_set_ini_path: where ImGui keeps window rects and the dock tree. Default is imgui.ini in
+// the working directory, i.e. per checkout or bundle; the app points it at the same per-user
+// directory its settings live in, so the layout and the preferences have ONE home (#306).
+//
+// The APP owns the write (#308). IniFilename stays null -- ImGui's own writer is fopen, write,
+// fclose over the live path, so an overlapping write from a second instance of one user could
+// leave a half-written file, and ImGui answers an unreadable layout by silently falling back to
+// the default one. Read here (before the first frame, which is when NewFrame would have done
+// it), and written by the app through the temp-and-rename every other per-user file here goes
+// through. What is NOT bought back is coordination: two instances still race, and the last
+// writer still wins, exactly as for settings.toml (#309).
+static std::string g_ini_path;
+// An empty path disables the file both ways: nothing is read, nothing is written -- a headless
+// render must not depend on a layout an earlier run left in the working directory.
+void vgui_set_ini_path(const char* path) {
+    g_ini_path = path;
+    ImGui::GetIO().IniFilename = nullptr;
+    if (!g_ini_path.empty()) ImGui::LoadIniSettingsFromDisk(g_ini_path.c_str());
+}
+// vgui_ini_dirty: ImGui raises this when the layout has changed and has settled -- at most once
+// every io.IniSavingRate (5 s), so asking every frame is not a write every frame.
+int vgui_ini_dirty(void) { return ImGui::GetIO().WantSaveIniSettings ? 1 : 0; }
+// vgui_ini_data: the layout as ImGui would have written it. The pointer is ImGui's own buffer,
+// valid until the next call -- copy it before the next frame.
+const char* vgui_ini_data(void) { return ImGui::SaveIniSettingsToMemory(NULL); }
+// vgui_ini_saved: the app has dealt with it. Cleared by the app whatever the write did, so a
+// failing disk raises one warning rather than one per settling period.
+void vgui_ini_saved(void) { ImGui::GetIO().WantSaveIniSettings = false; }
 // vgui_wake posts an empty event to unblock glfwWaitEvents from ANOTHER thread — the
 // event-driven equivalent of gui's queue_command. glfwPostEmptyEvent is one of the few
 // thread-safe GLFW calls, so an RX/sim thread can call this to request a repaint.
@@ -646,6 +691,11 @@ int vgui_text_edit(const char* id, char* buf, int cap, float h) {
     // very error the editor reports. Tab keeps its normal focus behaviour.
     return ImGui::InputTextMultiline(id, buf, (size_t)cap, ImVec2(-FLT_MIN, h)) ? 1 : 0;
 }
+// vgui_text_edit_code: vgui_text_edit for a language where a tab is indentation (Lua, the
+// Script panel's editor): Tab inserts one rather than moving focus.
+int vgui_text_edit_code(const char* id, char* buf, int cap, float h) {
+    return ImGui::InputTextMultiline(id, buf, (size_t)cap, ImVec2(-FLT_MIN, h), ImGuiInputTextFlags_AllowTabInput) ? 1 : 0;
+}
 // pin the current child's scroll to the bottom (call after emitting console output lines).
 void vgui_scroll_bottom(void) { ImGui::SetScrollHereY(1.0f); }
 // vgui_scroll_at_bottom: whether the current child is scrolled to (within a line of) its end —
@@ -785,6 +835,16 @@ int vgui_begin_closable(const char* title, int* p_open) {
     *p_open = open ? 1 : 0;
     return vis ? 1 : 0;
 }
+// vgui_begin_dialog: vgui_begin_closable for a DIALOG -- a picker, a discovery, an editor of
+// something other than the measurement -- which must not be docked: dropped into the dock as
+// a tab it outlives the moment it was opened for, and a picker docked beside the trace is a
+// mistake nobody made on purpose (#306).
+int vgui_begin_dialog(const char* title, int* p_open) {
+    bool open = *p_open != 0;
+    bool vis = ImGui::Begin(title, &open, ImGuiWindowFlags_NoDocking);
+    *p_open = open ? 1 : 0;
+    return vis ? 1 : 0;
+}
 void vgui_end() { ImGui::End(); }
 // set_item_tooltip attaches a hover tooltip to the PREVIOUS item (call right after it).
 void vgui_set_item_tooltip(const char* text) {
@@ -824,6 +884,20 @@ int  vgui_table_begin(const char* id, int cols) {
     // no RowBg (no zebra striping) — borders + scroll + resizable columns only.
     return ImGui::BeginTable(id, cols,
         ImGuiTableFlags_Borders|ImGuiTableFlags_ScrollY|ImGuiTableFlags_Resizable) ? 1 : 0;
+}
+// vgui_table_begin_flat: a table sized to its rows, with NO scrolling of its own -- the window
+// or child around it scrolls. The plain vgui_table_begin cannot do that: its ScrollY flag with
+// no outer height makes ImGui size the table to everything LEFT in the window (CalcItemSize
+// with a zero height takes the remaining region), so a table followed by anything pushed that
+// sibling below the visible area -- the System panel's id allocation under its matrix (#270).
+int  vgui_table_begin_flat(const char* id, int cols) {
+    return ImGui::BeginTable(id, cols, ImGuiTableFlags_Borders|ImGuiTableFlags_Resizable) ? 1 : 0;
+}
+// vgui_table_cell_dim: the next cell, dim text -- vgui_table_cell's twin for a row that is
+// listed but not offered.
+void vgui_table_cell_dim(const char* s) {
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("%s", s);
 }
 // tree node inside a table cell (spans all columns for the click/arrow). Returns open.
 int vgui_tree_node_table(const char* label) {
@@ -891,6 +965,42 @@ int vgui_key_pressed(int ch) {
     else if (ch >= '0' && ch <= '9') k = (ImGuiKey)(ImGuiKey_0 + (ch - '0'));
     else return 0;
     return ImGui::IsKeyPressed(k, false) ? 1 : 0;
+}
+
+// vgui_is_item_double_clicked: the last-submitted item was double-clicked (left button) this
+// frame. ImGui has no per-item double-click query -- IsItemClicked answers the first click of a
+// pair too -- so this pairs the hover test with the mouse's double-click state, the way ImGui's
+// own examples do. A list that ENTERS on a single click sends a hand that double-clicks (every
+// native picker) into the next folder's listing, where the second click lands on whatever row
+// is under the mouse (#270).
+int vgui_is_item_double_clicked() {
+    return (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) ? 1 : 0;
+}
+// vgui_key_enter_pressed: Enter or keypad Enter went down THIS frame (no auto-repeat). The
+// caller decides whether a focused text field owns it (vgui_any_item_active).
+int vgui_key_enter_pressed() {
+    return (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) ? 1 : 0;
+}
+
+// vgui_line_height / vgui_frame_height: one text line, one widget row, each WITH the spacing
+// below it. What a caller needs to reserve room for N lines or N button rows beneath a child
+// it is about to size -- a hand-typed 18*scale drifts from the font the moment the style does.
+float vgui_line_height()  { return ImGui::GetTextLineHeightWithSpacing(); }
+float vgui_frame_height() { return ImGui::GetFrameHeightWithSpacing(); }
+
+// vgui_input_text_enter: a single-line field that reports 1 on the frame ENTER submits it (and
+// only then), leaving the text as typed. What a path field wants -- vgui_input_text reports
+// every keystroke, and "deactivated after edit" fires on any loss of focus (Tab, a click on a
+// row), which would navigate under a click aimed at the list (#270). The head of
+// vgui_console_input, without the history and the refocus.
+int vgui_input_text_enter(const char* label, char* buf, int bufsize) {
+    return ImGui::InputText(label, buf, (size_t)bufsize, ImGuiInputTextFlags_EnterReturnsTrue) ? 1 : 0;
+}
+// vgui_window_focused: the current window, or one of its children, has keyboard focus. A key
+// read with IsKeyPressed is global; a window that acts on Enter asks this first, or Enter
+// pressed anywhere in the app lands in it.
+int vgui_window_focused() {
+    return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ? 1 : 0;
 }
 
 // snap_to_edge magnetically pulls a marker time `t` to the nearest bar edge (start or end) when

@@ -10,6 +10,18 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Next
 
+- ⏭️ **Replay of recordings that do not fit in memory — streaming.** #299, #300 and the arena (#303)
+  took a 13-bus replay from one 700 ms freeze a second to four collections a minute and 99.7% of
+  frames within 1 ms, on a file that fits. A tens-of-GB recording does not, and the loader reads the
+  whole file. The design is `docs/streaming_replay.md`: a cursor per data group merged by time,
+  reproducing the in-memory order exactly (golden test), a survey pass for labels, span and a seek
+  index, a bounded FIFO window of arena rows filled by a decoder thread and drained by the player,
+  per-row bus mapping and subtraction at decode time, and a file-size switch between the two paths.
+  Six PR-sized steps, each measured with `cmd/blobly_net/probe.v`. Beside it, the smaller items the
+  reviews named: the wire identity resolved once per channel and tap at open; a per-group index for
+  the grouped Trace view; `wiretap` holding only in-flight records; the Replay panel's census not
+  loading the file a second time.
+
 - ⏭️ **A `-prod` build**, once CI exercises one. Releases themselves are routine since
   `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md).
   **There is now a known blocker, measured:** `-prod` plus a Boehm GC mode makes every call out

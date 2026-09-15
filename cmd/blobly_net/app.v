@@ -11,6 +11,7 @@ import loadrule
 import transport
 import wiretap
 import candb
+import prefs
 import sysview
 import telem
 import sim
@@ -51,6 +52,18 @@ mut:
 	mu    sync.Mutex
 	chans []Chan
 	trace []TraceRow
+	// The render loop's per-frame snapshot of the three above, taken under app.mu and read
+	// for the rest of the frame without it. GUI thread only. Kept, not cloned, so a frame
+	// allocates nothing to draw the trace (main.v).
+	snap_rows  []TraceRow
+	snap_trecs []TRec
+	snap_chans []Chan
+	// The grouped Trace view's aggregate and its sorted rows, kept between frames so that a
+	// repaint clears and refills them rather than building a map of ~400-byte values and
+	// copying it out, thirty times a second (panel_trace.v). GUI thread only.
+	gagg    map[string]GAgg
+	ggroups []GAgg
+	glabels map[string]GLabel
 	// The menu-bar wordmark: GL texture id + width/height ratio, 0 until load_logo ran.
 	logo_tex    u32
 	logo_aspect f32
@@ -203,13 +216,12 @@ mut:
 	// predicate it replaced scanned every message of every database on the wire, under this
 	// mutex, for every frame. Keyed by transport.destination_key.
 	verify_cover map[string]sim.Coverage
-	proj_path string
-	proj_name string
-	dark      bool = true // theme
-	ui_scale  f32  = 1.0
-	paused    bool
-	recording bool
-	rec       []canlog.LogEntry // captured while recording; written on stop
+	proj_path    string
+	proj_name    string
+	dark         bool = true // theme
+	paused       bool
+	recording    bool
+	rec          []canlog.LogEntry // captured while recording; written on stop
 	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
 	// the simulation's are different facts, and one merged number re-collapses them in the one
 	// place a user looks first. Counted at the tap (note_emit), so every emitter counts —
@@ -295,16 +307,14 @@ mut:
 	// Text and not a re-serialisation, because `to_yaml()` does not preserve comments and this
 	// file is where a bench setup is explained to the next person. Saving re-writes exactly
 	// what is in the box; `parse()` is used only to refuse a file that would not load.
-	cfg_tab      int // 0 = buses, 1 = file
-	cfg_text     []u8
-	cfg_text_len int    // bytes loaded, to notice when the box is nearly full
-	cfg_err      string // parse error holding back a save ('' = the text parses)
-	cfg_loaded   string // which path cfg_text holds ('' = nothing loaded)
-	// Whether the text has been TYPED IN since it was loaded. Without it there was no way to
-	// tell "showing the file" from "showing edits", so every staleness question had the wrong
-	// answer: a project switch or a structured Save left old YAML on screen that Save would
-	// then write over the new file.
-	cfg_text_dirty bool
+	cfg_tab int // 0 = buses, 1 = file
+	// The file's text (TextFile: which path the buffer holds, whether it has been TYPED IN since
+	// — without that there was no way to tell "showing the file" from "showing edits", so every
+	// staleness question had the wrong answer: a project switch or a structured Save left old
+	// YAML on screen that Save would then write over the new file — and the parse error holding
+	// a save back, in .err).
+	cfg_file     TextFile
+	cfg_text_len int // bytes loaded, to notice when the box is nearly full
 	// per-generator send count, for the value sources that step per send (counter/stepmod).
 	// Keyed by SenderRT.uid, so a removal cannot shift one generator's count onto another and an
 	// in-flight fire always writes back onto the generator it read. Cleared for a new project /
@@ -337,6 +347,13 @@ mut:
 	// if the model is byte-identical — so any structured edit, load or revert since the warning
 	// re-warns rather than silently confirming (codex #268). '' = no pending confirmation.
 	reserialize_confirm string
+	// The project file's bytes as this app last read or wrote them, and the on-disk version an
+	// external-change warning was raised for: a model Save over a file another editor changed
+	// since is refused once, then overwrites that version (codex #307 r21).
+	proj_disk      string
+	proj_disk_path string // which file proj_disk is the bytes of: the baseline is valid only for THAT path (Save As
+	// to a new destination has none), and an empty file is a valid baseline (codex #307 r23)
+	external_confirm string
 	// When the project (or the File tab's text) was last written, in time.ticks(): the toolbar
 	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
 	// the screen the user is looking at and not only in the Log (#247).
@@ -387,11 +404,23 @@ mut:
 	proj            project.Project // the loaded project, kept so Save can persist edits
 	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
 	show_config bool
-	cfg_bufs    []CfgBuf
+	// Settings ▸ Preferences… (#306): what the app remembers across runs, see settings.v
+	show_prefs         bool
+	prefs              prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
+	prefs_editor_buf   []u8
+	prefs_file         string        // resolved once at load
+	prefs_caption      string        // the dialog's fixed line, built at open
+	prefs_broken       bool // the file did not parse: never overwritten except from the dialog
+	prefs_dirty        bool   // this session changed a preference the file does not have yet
+	layout_file        string // ImGui's imgui.ini, which the app writes itself (#308); '' headless
+	layout_warned      bool   // a failed layout write is said once, not every settling period
+	panes_dragged      map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
+	cfg_bufs           []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)
-	disc_open bool
-	disc_list []DiscoveredIface
-	disc_tick []bool // parallel to disc_list
+	disc_open   bool
+	disc_list_h f32 // the interface list's height in Discover, unscaled px (#306)
+	disc_list   []DiscoveredIface
+	disc_tick   []bool // parallel to disc_list
 	// The local scan (sys CAN + list_interfaces), cached so a landing browse merges into it
 	// rather than running it again on the render thread.
 	disc_scan []DiscoveredIface
@@ -429,32 +458,42 @@ mut:
 	// rather than a setting left on from last time (codex #192 r9).
 	disc_vector_create bool
 	// File browser (Open / Save As / attach DBC / attach manifest)
-	fb_open     bool   // browser window shown
-	fb_save     bool   // true = save mode (filename input), false = open mode
-	fb_dir      string // current directory
-	fb_name_buf []u8   // filename (save mode)
+	fb_open     bool     // browser window shown
+	fb_save     bool     // true = save mode (filename input), false = open mode
+	fb_dir      string   // current directory
+	fb_name_buf []u8     // filename (save mode)
+	fb_sel      string   // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
+	fb_dirs     []string // the listing, filled by fb_refresh — not read from disk per frame
+	fb_roots    []string // the drive dropdown: drives and WSL distributions, read with the listing (#306)
+	fb_root_lbl []string // the drive dropdown's items: a placeholder, then one label per root
+	fb_files    []string
+	fb_path_buf []u8 // the folder, typed — Enter or Go navigates; a file path selects it where it lives
 	// ACCEPTED extensions, plural — the caption the browser shows and the match it applies both
 	// derive from this one list, so a picker can no longer advertise '(*.log)' while listing
 	// .mf4, which is what the single-string version with per-case aliases did. Empty = any.
 	fb_ext    []string
 	fb_target string // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>' |
-	// 'system' | 'flash' | 'recording' — keep this list in step with the four dispatch
+	// 'system' | 'flash' | 'recording' | 'script' — keep this list in step with the four dispatch
 	// sites in panel_config.v (open_browser, browser_confirm, the title, match_ext)
 	sims        []SimCfg        // per-channel in-process simulation workloads
 	sim_enabled map[string]bool // sim_key(channel, node) -> enabled (Simulation panel)
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
-	diag_log        []string
-	diag_gen        u64 // cache key for the Diagnostics panel's joined text
-	diag_busy       bool
-	script_log      []string
-	script_gen      u64 // cache key for the Script panel's joined text
-	script_busy     bool
-	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
-	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
-	trace_status    string // last dump status line, shown by the Trace Chart
-	trace_freeze    string // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
-	cursor_a        f64    // Trace Chart measurement markers A/B (µs); the swimlane drags them
+	diag_log    []string
+	diag_gen    u64 // cache key for the Diagnostics panel's joined text
+	diag_busy   bool
+	script_log  []string
+	script_gen  u64 // cache key for the Script panel's joined text
+	script_busy bool
+	// The Script panel's editor (#270): the Configuration File tab's edit box, over the script.
+	script_edit     bool     // editor shown
+	script_ed_h     f32      // the editor's height, unscaled px; the divider under it drags it (#306)
+	script_file     TextFile // the script's text, edited in place
+	trace_busy      bool     // a trace-dump transfer is in flight (single-flight guard)
+	trace_recording bool     // Record toggle: the target's capture is armed (optimistic)
+	trace_status    string   // last dump status line, shown by the Trace Chart
+	trace_freeze    string   // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
+	cursor_a        f64      // Trace Chart measurement markers A/B (µs); the swimlane drags them
 	cursor_b        f64
 	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
 	// Shell (the target's CAN command line; one worker spawn per submitted line)
@@ -466,6 +505,7 @@ mut:
 	sys               sysview.System
 	sys_loaded        bool
 	sel_ecu           string // selected node in the System panel's ECU master-detail
+	sys_ecu_h         f32    // height of the System panel's ECU panes in UNSCALED px (a UI-scale change keeps the proportion); the splitter below them drags it (#270)
 	shell_buf         []u8   // the input line (persistent; edited in place by console_input)
 	eth_target_buf    []u8   // the eth shell's board ip (session-only; manifest carries the port)
 	eth_shell_session u16    // persists across commands: a fresh client restarting at session 1
@@ -521,8 +561,8 @@ mut:
 	// picker and the save path came to disagree in the first place. It is also read by the
 	// generator loop every 8 ms with app.mu held, where re-resolving per pass would allocate a
 	// channel list per sender per tick (codex round 1 on #261).
-	tgt  string // the interface to transmit on ('' = nothing resolved; the generator is skipped)
-	chan string // the channel whose frames these are ('' = no single channel owns the target)
+	tgt    string // the interface to transmit on ('' = nothing resolved; the generator is skipped)
+	chan   string // the channel whose frames these are ('' = no single channel owns the target)
 	sender project.Sender
 }
 
@@ -776,11 +816,21 @@ fn (mut app App) log_append_locked(msg string) {
 fn (mut app App) load_project(path string) {
 	app.stop()
 	app.drop_index_bound_ui() // pending pickers and Scan results index the OLD channel set
-	proj := project.load(path) or {
+	// ONE read: the bytes parsed are the bytes kept as the version a model Save may
+	// overwrite — a second read could see a file replaced in between (codex #307 r22).
+	disk := os.read_file(path) or {
 		app.elog('load ${path}: ${err}')
 		app.notify('load failed: ${err}')
 		return
 	}
+	proj := project.parse(disk) or {
+		app.elog('load ${path}: ${err}')
+		app.notify('load failed: ${err}')
+		return
+	}
+	app.proj_disk = disk
+	app.proj_disk_path = path
+	app.external_confirm = ''
 	// THE VERSION GATE ON THE NORMAL OPEN PATH TOO. It existed only where the Configuration text
 	// is applied, so File ▸ Open read a future-format file in silence — and a structured Save then
 	// wrote back what this build understood, dropping whatever it had ignored. Said, not refused:
@@ -844,7 +894,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// (via cfg_invalidate below), so every caller is covered — File ▸ New bypassed a warning
 	// placed in load_project — and load_project's error path returns before reaching this, so
 	// the log no longer claims text was discarded by a load that then failed.
-	if app.cfg_text_dirty {
+	if app.cfg_file.dirty {
 		app.notify('discarded unsaved Configuration ▸ File text from ${os.base(app.proj_path)}')
 	}
 	// A fault armed against the OLD project must not survive into a new one. Keys carry the
@@ -989,7 +1039,13 @@ fn (mut app App) rebuild_from_proj() {
 	app.dbs = []
 	app.dbs_paths = []
 	app.dbs_by_iface = map[string][]candb.Database{}
-	app.dbc_ed = DbcEd{} // selection indices go stale across a rebuild
+	// selection indices go stale across a rebuild; the dragged dividers are the operator's and
+	// stay (they are remembered across runs too, codex #307 r7)
+	app.dbc_ed = DbcEd{
+		left_w:  app.dbc_ed.left_w
+		msgs_h:  app.dbc_ed.msgs_h
+		props_h: app.dbc_ed.props_h
+	}
 	app.dbc_ed.dirty = keep_dirty.clone()
 	app.sims = []
 	app.senders = []

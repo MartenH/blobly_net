@@ -18,8 +18,8 @@ module txhealth
 //
 // DEDUPED BY WIRE, not by tap. A wire carries a NAMED tap per channel and a shared anonymous one,
 // so the same bus arrives here several times and a naive walk would narrate one transition once
-// per tap. And the key is the DESTINATION key, not the interface spelling: `vector:1` and
-// `vector:ch1` are one transceiver, so a reader on either covers both.
+// per tap. The caller supplies wire_key, which also removes the configured bitrate:
+// `vector:1` and `vector:ch1` are one transceiver, so a reader on either covers both.
 
 // watched returns the wires to poll: the distinct entries of `taps` that no reader in `read`
 // covers, in first-seen order.

@@ -86,8 +86,9 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   The rest of the app is measured but NOT changed, because none of it is a per-frame loop and
   none of it is exercised by a test: `main__draw_dbc_editor` 1959, `main__replay_group` 1014,
   `main__draw_buses` 636, `main__draw_replay_config` 549. `replay_group` is the one that would
-  matter on the day `-prod` is switched on — it is the GUI's per-frame transmit loop, holding
-  the recording, the plan and the `player.Player` by value in the frame that sends.
+  matter on the day `-prod` is switched on — it is the GUI's per-frame transmit loop. Since the
+  arena (#303) the recording it holds is pointer-free rows, which the pin does not walk; what
+  is left in that frame is the batch buffer and the small label and bus lists.
 - 🟡 **The GUI does not build with `-prod` without one edit.** `unused variable` is a warning in
   a normal build and an **error** under `-prod`, so `cmd/blobly_net/panel_gen.v`'s dead `pw` was
   enough to stop the whole `-prod` build — nothing catches it because nothing builds `-prod`.
@@ -288,6 +289,54 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   step name containing `: `. (Bitten twice.)
 
 ## Our code (blobly_net)
+
+- 🟢 **Replay stuttered once a second and fell behind — the wiretap ring rebuilt itself on every
+  emitted frame.** Seen first on a 2-bus project as "memory sits at 1 GB, stutter every second,
+  then `Fatal error in GC: Too many heap sections`". Measured from inside the real GUI on Windows
+  (`cmd/blobly_net/probe.v`: `BLOBLY_PROBE_LOG=<file> BLOBLY_PROBE_SECONDS=70 blobly_net
+  <project>` writes a one-page summary and exits; inert without the variable), 13 buses replaying
+  one 1.07 M-frame `.mf4`: **1,140 MB/s allocated**, 194 stop-the-world pauses ≥50 ms in 70 s
+  (max 726 ms), 96% of frames more than a second late, the replay 11.6 s behind by the end.
+  Boehm plateaus the heap near 1 GB by collecting whenever it fills; at that allocation rate it
+  fills about once a second, and a collection over ~1 GB is a 100–700 ms freeze of every thread.
+  That is the stutter, and the plateau is why memory looked stable.
+  **The source was `wiretap.Ring.note()`**: once the ring was at its 1024 cap, every note found
+  itself one over, allocated a `map[int]bool`, ran three passes and a fresh 1024-entry `keep`
+  array, and replaced the ring — a full rebuild per frame to evict one record, ~150 KB each. The
+  render loop's per-frame clone of the trace ring was the other suspect and turned out secondary
+  (switching it off changed little once the ring was fixed); `app.mu` is not a contention problem
+  (every acquisition a send makes, five per frame: avg 1.3 µs, 4% of the replay thread's time;
+  the maximum, 183 ms, coincides with a collection, which stops the lock holder like everyone
+  else). Eviction is in place now — same priority, same verdicts, 356 bytes per
+  note against 180,996 — and `test_note_cost_when_the_ring_is_full` pins the class. The
+  self-review of that fix found the SIBLING: below ~500 frames/s the ring never fills, records
+  age out instead, and `expire` (every emitted frame) and `drop_expired` (every received one)
+  copied the whole remaining ring to drop a prefix — ~400 KB a step, on the RX thread, under
+  `app.mu`, at exactly the rates the first probe run could not show. In place too now, and
+  `test_cost_when_records_age_out` pins it (256 bytes a step against 422,160).
+  After the fix, same probe: ~140 MB/s, **0 frames over a second late**, worst 182 ms, 70% within
+  1 ms, the replay completes.
+  **Then #300 took the rest of the rate**: 146 → 28.5 MB/s, pauses ≥50 ms in 70 s 28 → 7, frames
+  within 1 ms 70% → 99%. Found by the probe's per-section attribution (`sec_*`) and switch-off runs
+  rather than by reading: the identity predicates (~150 string temporaries per frame), the render
+  loop's per-frame clones, the grouped view's per-repaint rebuild, the inproc `select` per
+  subscriber, a closure per send whose trampoline V never frees, a bus label string per MF4
+  record — and the worker SPINNING: on Windows a sub-millisecond `time.sleep` is `Sleep(0)`, so it
+  ran 80 M ticks in 70 s taking `app.mu` on each, and a longer sleep rounded up to the 15.6 ms
+  quantum nothing had shortened. `modules/player/pace_windows.v` sleeps whole milliseconds and waits out the last on the
+  stopwatch and asks for the 1 ms period (`pace_nix.v` is one accurate nanosleep).
+  **Then the arena (#303) took the collection's LENGTH**: a loaded recording is pointer-free rows in
+  one block the collector never walks (`canlog.Log`, the `canlog` row of CLAUDE.md), played through
+  views. Same probe, same project: live set after a collection 454 → 257 MB, collections in 70 s
+  10 → 4, heap peak 757 → 463 MB, 99.4% of frames within 1 ms, worst 21 ms.
+  **What remains is 🟡**: a pause every ~15 s of 150–350 ms, from the ~210 MB of live set that is
+  not the rows — a second load of the file by the Replay panel's census scan — and, for recordings
+  that do not fit in memory at all, a bounded window of rows filled from disk:
+  `docs/streaming_replay.md`. A `-gc boehm_incr_opt` build was tried and does not help.
+  **How it was found is the part to keep**: three earlier diagnoses were wrong (the collector
+  itself, the `-prod` scope pin, "confine the recording to a helper"), each plausible from
+  reading. The probe's allocation-rate counter and a knob to switch a suspect off settled it in
+  two runs. Measure the real app before believing a theory about it.
 
 - 🟢 **`candb.encode` rounding.** `i64(x + 0.5)` truncated negatives toward zero (`-4.5 → -4`), so
   `encode(-5.0)` produced `-4`. Fixed with `math.round` (half away from zero) and pinned by

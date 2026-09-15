@@ -64,40 +64,17 @@ jobs:
 
   linux:
     needs: guard
-    runs-on: ubuntu-latest
+    # PINNED, NOT FLOATING, and the AppImage is why. An AppImage does not bundle glibc, so it runs
+    # on hosts at least as new as the machine that built it; `ubuntu-latest` advancing would
+    # silently raise that floor for every user (codex round 2 on #322). The oldest supported
+    # runner is the widest compatibility. The tarball is built here too and gets the same benefit.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       # the same pin as ci.yml, for the same reason (V master is V3-only): a release built with
       # master would fail at `make` before producing its artifact (codex on #282)
-      # The V SOURCE is pinned by .v-version, but `make` bootstraps V by cloning vlang/vc
-      # with NO ref — so the bootstrap floated to whatever that repo's default branch held.
-      # That is not a theoretical hole: vc sat on the C generated from our exact pin from
-      # 2026-09-05 20:06 until 2026-09-07 05:31, which is the only reason the pin ever looked
-      # like one. When vc regenerated from V3 master, every Linux job on every branch failed
-      # in `make` with `./v2: No such file or directory` — a V3 bootstrap cannot build pre-V3
-      # source under -old-compiler, so v2 was never produced. Nothing in the repo had changed.
-      #
-      # So the bootstrap is pinned too (.vc-version), and `local=1` is what stops make from
-      # dragging it back: `latest_vc`, `latest_tcc` and `latest_legacy` are ALL guarded by
-      # `ifndef local` in V's GNUmakefile, and the first of them does `git clean -xf && git
-      # pull --rebase` on vc. Pre-cloning at a pin without local=1 would be undone by that
-      # pull. Done by hand rather than through vlang/setup-v because that action runs `make`
-      # itself, leaving nowhere to place the pinned clone.
-      #
-      # .vc-version must be the vc commit GENERATED FROM .v-version — its message is
-      # `[v:master] <the .v-version sha> - ...`. Bump the two together, or not at all.
-      - name: Install V (pinned — .v-version + .vc-version)
-        run: |
-          set -eux
-          # ONE definition of how the pinned toolchain is installed, shared with
-          # scripts/setup_env.sh and tested by scripts/v_toolchain_test.sh. Inline here it was
-          # the same incantation in three workflow steps, which is how the two halves of a pin
-          # come to disagree.
-          . scripts/v_toolchain.sh
-          V_PIN=$(tr -d '[:space:]' < .v-version)
-          VC_PIN=$(tr -d '[:space:]' < .vc-version)
-          v_toolchain_install "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN"
-          echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
+      - name: Set up pinned V (cached)
+        uses: ./.github/actions/setup-v
       # same deps as ci.yml's GUI job — the build IS scripts/run_gui.sh, the command devs
       # run, so the release binary is the binary everyone has been testing
       - name: Native deps (apt)
@@ -105,6 +82,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
+          # For the AppImage: the runtime .so files it bundles. The -dev packages above provide
+          # headers and the linker symlink, not the soname the binary actually loads. No FUSE —
+          # build_appimage.sh sets APPIMAGE_EXTRACT_AND_RUN, because libfuse2 is not installable
+          # under that name on ubuntu-24.04 runners.
+          sudo apt-get install -y --no-install-recommends libglfw3
+      - name: Build GUI dependencies (cached)
+        uses: ./.github/actions/gui-deps
       - name: Build GUI app
         run: RUN=0 bash scripts/run_gui.sh
       - name: Sanity — the binary answers with the tagged version
@@ -117,10 +101,20 @@ jobs:
           sh scripts/stage_bundle.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
           cp build/blobly_net dist/blobly_net/
           tar -C dist -czf "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" blobly_net
+
+      # THE ONE FILE A LINUX USER CAN ACTUALLY RUN (#322). The tarball is dynamically linked, so
+      # a user who downloads it and runs ./blobly_net gets "error while loading shared libraries:
+      # libglfw.so.3" from the dynamic linker, before main(), with the remedy in a README they had
+      # no reason to open. The AppImage carries the libraries instead of asking for them. Both
+      # ship: the tarball is still the right thing for anyone who wants the payload unpacked.
+      - name: Build the AppImage
+        run: sh scripts/build_appimage.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-tarball
-          path: blobly_net-*.tar.gz
+          path: |
+            blobly_net-*.tar.gz
+            blobly_net-*.AppImage
           if-no-files-found: error
 
   publish:
@@ -221,4 +215,5 @@ jobs:
             --verify-tag \
             --notes-file notes.md \
             "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" \
+            "blobly_net-${GITHUB_REF_NAME}-x86_64.AppImage" \
             "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip"

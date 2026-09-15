@@ -1486,7 +1486,11 @@ mut:
 	bus Bus
 }
 
-fn (mut box SharedTestBusBox) wait_for_recv_error(result chan string) {
+// wait_for_recv_error announces that it is about to block, then blocks. The announcement is the
+// handshake: the test closes the handle only once this thread has actually been SCHEDULED, so
+// scheduling and the wake-up stop sharing one budget (#304).
+fn (mut box SharedTestBusBox) wait_for_recv_error(started chan bool, result chan string) {
+	started <- true
 	box.bus.recv(-1) or {
 		result <- err.msg()
 		return
@@ -1517,18 +1521,49 @@ fn test_close_wakes_an_infinite_receive_on_that_handle() {
 	reset_hub_fakes()
 	mut a := shared_open_events('hub:close-wake', 'fake:close-wake', hub_fake_make)!
 	mut keeper := shared_open_events('hub:close-wake', 'fake:close-wake', hub_fake_make)!
+	started := chan bool{cap: 1}
 	result := chan string{cap: 1}
 	mut waiter := &SharedTestBusBox{
 		bus: a
 	}
-	spawn waiter.wait_for_recv_error(result)
-	time.sleep(10 * time.millisecond)
+	spawn waiter.wait_for_recv_error(started, result)
+	// A HANDSHAKE, NOT A CHOSEN NUMBER OF MILLISECONDS (#304) -- and the point is the SIZE of the
+	// two deadlines, not merely that there are two. The 10 ms sleep that stood here gave one
+	// budget to two events that deserve very different ones: the runner scheduling the spawned
+	// thread, and the close waking it. Their sum was ~2010 ms, almost all of it belonging to the
+	// second, so a thread this suite had not scheduled yet -- 28 test programs in parallel while
+	// V compiles -- spent the whole allowance on the first and was reported as a failure of the
+	// second, naming a mechanism that had never been exercised.
+	//
+	// Scheduling is not what this test measures. It MUST happen, it is entirely the runner's to
+	// decide, and a deadline on it can only ever fire on a correct implementation -- so it is a
+	// hang-breaker and is generous, the rule #298 set for exactly this shape. The wake-up below
+	// is the mechanism under test and keeps the 2000 ms that measures it.
+	//
+	// This says the thread has STARTED, not that it is already inside recv(-1); a close landing
+	// in that gap is answered by recv's own closed-check on its first pass, with the same error.
+	// The assertion is on the outcome either way, and a sleep did not prove more.
+	select {
+		_ := <-started {
+			// scheduled: the wake-up below is now the only thing being measured
+		}
+		10000 * time.millisecond {
+			assert false, 'the waiter thread was never scheduled'
+		}
+	}
 	a.close()
 	select {
 		message := <-result {
 			assert message.contains('bus is closed'), message
 		}
-		500 * time.millisecond {
+		// 2000 like every other wait-for-an-event in this file, not 500. The deadline on an
+		// event that MUST happen is a hang-breaker, and it can only ever fire on a CORRECT
+		// implementation -- here, when the runner does not schedule the spawned waiter in time.
+		// This suite runs 28 test programs in parallel while V compiles; half a second of that
+		// is nothing. It failed on main's Windows job that way, in a PR touching no transport
+		// code. The two SHORT waits in this file are the opposite kind -- they assert something
+		// does NOT happen, where being late only ever passes -- and they stay short.
+		2000 * time.millisecond {
 			assert false, 'close did not wake recv(-1)'
 		}
 	}
@@ -1624,7 +1659,7 @@ fn test_reopen_waits_until_the_previous_physical_close_finishes() {
 	hub_fake.close_release <- true
 	select {
 		_ := <-hub_fake_opened {}
-		1000 * time.millisecond {
+		2000 * time.millisecond {
 			assert false, 'new generation did not open after close completed'
 		}
 	}

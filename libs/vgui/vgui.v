@@ -23,16 +23,43 @@ module vgui
 // DLLs (deps end up: kernel32/user32/gdi32/shell32/opengl32/msvcrt only). Multi-viewport
 // is native Win32 (no X11). Verified: mingw-w64 gcc 16.1.0, self-contained exe, GL 4.6.
 // FreeType (crisp text): needs `pacman -S mingw-w64-x86_64-freetype`. mingw's libfreetype.a
-// is built WITH HarfBuzz, so a *static* link drags in the full transitive chain — the libs
-// below are `pkg-config --static --libs freetype2` verbatim (harfbuzz→glib/dwrite/usp10/
-// pcre2/intl/graphite2, png→z, brotli, bz2). HarfBuzz + graphite2 are C++, so `-lstdc++`
-// MUST come LAST (after them) or you get `undefined reference to __cxa_*`. If your toolchain
-// differs, regenerate the middle chain with `pkg-config --static --libs freetype2`.
+// is built WITH HarfBuzz, so the chain below is `pkg-config --static --libs freetype2`
+// verbatim (harfbuzz→glib/dwrite/usp10/pcre2/intl/graphite2, png→z, brotli, bz2). HarfBuzz +
+// graphite2 are C++, so `-lstdc++` MUST come LAST (after them) or you get `undefined
+// reference to __cxa_*`. If your toolchain differs, regenerate the middle chain with
+// `pkg-config --static --libs freetype2`.
+//
+// NO BARE `-static`, DELIBERATELY (#318). With it, that whole chain is absorbed into the exe —
+// including GLib, which HarfBuzz pulls in and which is LGPL-2.1+. Statically incorporating an
+// LGPL library into a distributed binary asks the distributor for relink materials or a written
+// offer (LGPL-2.1 §6); a link to the upstream project is not that. It also made
+// THIRD-PARTY-NOTICES.txt untrue, which says the Windows components are "DYNAMICALLY linked, so
+// the LGPL components remain replaceable by the recipient" — while the published bundle
+// contained no DLLs at all, so nothing was replaceable. Verified by downloading it: the exe's
+// imports were Windows system DLLs only, and `g_malloc`/`g_free` were inside it.
+//
+// Without it the chain resolves to import libraries, scripts/bundle_dlls.sh copies what ldd
+// reports next to the exe, and the zip stays self-contained in the sense that matters: it runs
+// from any shell without MSYS2 on PATH. `-l:libglfw3.a` still names GLFW's static archive by
+// path — zlib/libpng licence, permissive, and genuinely one fewer DLL: no glfw3.dll is bundled.
+//
+// `-l:libstdc++.a` BY PATH, not `-lstdc++`: with the C driver (`-cc gcc`) `-static-libstdc++`
+// does NOT make an explicit `-lstdc++` static — gcc passes it through as a plain `-lstdc++` and
+// the linker takes the import library if one is there. Under the old bare `-static` that did not
+// matter, because everything after it was static anyway; removing `-static` is what exposed it
+// (codex round 2 on #318).
+//
+// THAT DOES NOT KEEP THE GCC RUNTIME OUT OF THE BUNDLE, and an earlier version of this comment
+// claimed it did. The EXE carries its own copy, but HarfBuzz and graphite2 are C++ and their DLLs
+// need libstdc++-6.dll and libgcc_s_seh-1.dll, so ldd pulls both in and bundle_dlls.sh ships
+// them — verified in the published v2026.09.00 zip. The licences travel with them (gcc-libs),
+// which is the part that matters; what the flag buys is that the exe does not ALSO depend on
+// them, so it is not an extra failure mode, just not the saving the comment described.
 // -mwindows: link as a GUI-subsystem exe so Windows does NOT spawn a console window
 // alongside the app (mingw defaults to the console subsystem; the old MSVC build used the
 // equivalent /SUBSYSTEM:WINDOWS). V's main() is still the entry point (that's -municode, not
 // -mwindows). startup prints just have no console to land in — fine for a shipped GUI app.
-#flag windows -mwindows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -lstdc++ -l:libgdi32.a
+#flag windows -mwindows -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -l:libstdc++.a -l:libgdi32.a
 #include "vgui.h"
 
 // Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout).
@@ -123,6 +150,7 @@ fn C.vgui_scroll_bottom()
 fn C.vgui_scroll_at_bottom() int
 fn C.vgui_console_text(&char, &char, int, int)
 fn C.vgui_text_edit(&char, &char, int, f32) int
+fn C.vgui_text_edit_code(&char, &char, int, f32) int
 fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_input_int(&char, &int) int
 fn C.vgui_progress(f32, &char)
@@ -138,6 +166,12 @@ fn C.vgui_dock_reset()
 fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char) int
 fn C.vgui_begin_closable(&char, &int) int
+fn C.vgui_begin_dialog(&char, &int) int
+fn C.vgui_add_font_merge(&char, f32) int
+fn C.vgui_set_ini_path(&char)
+fn C.vgui_ini_dirty() int
+fn C.vgui_ini_data() &char
+fn C.vgui_ini_saved()
 fn C.vgui_set_item_tooltip(&char)
 fn C.vgui_help_marker(&char)
 fn C.vgui_end()
@@ -168,6 +202,14 @@ fn C.vgui_fps() f32
 fn C.vgui_want_text_input() int
 fn C.vgui_any_item_active() int
 fn C.vgui_key_pressed(int) int
+fn C.vgui_is_item_double_clicked() int
+fn C.vgui_key_enter_pressed() int
+fn C.vgui_line_height() f32
+fn C.vgui_frame_height() f32
+fn C.vgui_table_begin_flat(&char, int) int
+fn C.vgui_table_cell_dim(&char)
+fn C.vgui_input_text_enter(&char, &char, int) int
+fn C.vgui_window_focused() int
 fn C.vgui_key_ctrl() int
 fn C.vgui_key_ctrl_only() int
 fn C.vgui_combo(&char, &&char, int, int) int
@@ -590,6 +632,16 @@ pub fn text_edit(id string, mut buf []u8, h f32) bool {
 	return C.vgui_text_edit(id.str, &char(buf.data), buf.len, h) == 1
 }
 
+// text_edit_code is text_edit for a language where Tab is indentation (Lua): it inserts a tab
+// rather than moving focus. text_edit keeps Tab as focus on purpose — its YAML caller rejects
+// a literal tab outright.
+pub fn text_edit_code(id string, mut buf []u8, h f32) bool {
+	if buf.len == 0 {
+		return false
+	}
+	return C.vgui_text_edit_code(id.str, &char(buf.data), buf.len, h) == 1
+}
+
 // console_text renders s as read-only but SELECTABLE console text (native mouse marking,
 // Ctrl+A/Ctrl+C), sized to content so the enclosing child scrolls it. nlines = line count.
 pub fn console_text(id string, s string, nlines int) {
@@ -606,6 +658,35 @@ pub fn scroll_bottom() {
 // scrolled up to read is not to be yanked down by the next line.
 pub fn scroll_at_bottom() bool {
 	return C.vgui_scroll_at_bottom() != 0
+}
+
+// input_text_enter is a single-line field that returns true on the frame Enter SUBMITS it, and
+// only then — input_text reports every keystroke, and is_item_deactivated_after_edit fires on
+// any loss of focus (Tab, a click elsewhere), which is not a submit. The path field of the file
+// picker; a field whose Enter means "go".
+pub fn input_text_enter(label string, mut buf []u8) bool {
+	if buf.len == 0 {
+		return false // ImGui cannot be handed a zero-capacity buffer (see input_text)
+	}
+	return C.vgui_input_text_enter(label.str, &char(buf.data), buf.len) == 1
+}
+
+// window_focused reports whether the current window (or a child of it) holds keyboard focus.
+// A key read through key_pressed / key_enter_pressed is global: a window acting on one asks this
+// first, or the key pressed anywhere in the app lands in it.
+pub fn window_focused() bool {
+	return C.vgui_window_focused() == 1
+}
+
+// buf_len is the length of the text in a NUL-terminated buffer, without buf_str's copy of it —
+// for a fill-level check drawn every frame.
+pub fn buf_len(buf []u8) int {
+	for i, b in buf {
+		if b == 0 {
+			return i
+		}
+	}
+	return buf.len
 }
 
 // input_double edits *v in place (numeric input, e.g. a signal value). Returns true on change.
@@ -695,6 +776,49 @@ pub fn begin_closable(title string, open bool) (bool, bool) {
 	return vis, o != 0
 }
 
+// begin_dialog is begin_closable for a DIALOG: a window opened for a moment's task — a picker,
+// a discovery, a preferences sheet, the project editor — which must not be docked (#306). A
+// dialog carries a Close (or Cancel) button; a panel (begin_closable) keeps the title-bar X
+// alone, as dock tabs do. THIS COMMENT IS THE RULE; the callers are the list. The DBC editor is
+// a panel on purpose: it is used beside the trace for as long as a database is being read, and
+// docking it there is the point. Same contract: (visible, open), and ALWAYS call end().
+pub fn begin_dialog(title string, open bool) (bool, bool) {
+	mut o := if open { 1 } else { 0 }
+	vis := C.vgui_begin_dialog(title.str, &o) == 1
+	return vis, o != 0
+}
+
+// add_font_merge merges a fallback face into the default font, for the glyphs it lacks. After
+// add_font, before the loop. Returns false when the file cannot be read.
+pub fn add_font_merge(path string, size_px f32) bool {
+	return C.vgui_add_font_merge(path.str, size_px) == 1
+}
+
+// set_ini_path is where ImGui keeps window rects and the dock tree (default: imgui.ini in the
+// working directory); '' disables the file both ways. Call right after init, before the first
+// frame — it READS the file. The APP writes it (#308): ImGui's own writer is left disabled, so
+// ask ini_dirty each frame and write ini_data through a temp and a rename, then ini_saved.
+pub fn set_ini_path(path string) {
+	C.vgui_set_ini_path(path.str)
+}
+
+// ini_dirty reports that the layout changed and has settled — at most once every 5 s
+// (io.IniSavingRate), so asking every frame is not a write every frame.
+pub fn ini_dirty() bool {
+	return C.vgui_ini_dirty() == 1
+}
+
+// ini_data is the layout as ImGui would have written it, copied out of ImGui's own buffer.
+pub fn ini_data() string {
+	return unsafe { cstring_to_vstring(C.vgui_ini_data()) }
+}
+
+// ini_saved tells ImGui the app has dealt with the change. Call it whatever the write did, or a
+// failing disk asks again every settling period.
+pub fn ini_saved() {
+	C.vgui_ini_saved()
+}
+
 pub fn end() {
 	C.vgui_end()
 }
@@ -752,6 +876,17 @@ pub fn content_avail_h() f32 {
 	return C.vgui_content_avail_h()
 }
 
+// line_height is one text line plus the spacing below it; frame_height one widget row (a
+// button, an input) plus its spacing. Reserve N of them under a child you size to what is left,
+// rather than a hand-typed pixel count that drifts from the font.
+pub fn line_height() f32 {
+	return C.vgui_line_height()
+}
+
+pub fn frame_height() f32 {
+	return C.vgui_frame_height()
+}
+
 // is_item_deactivated_after_edit reports whether the PREVIOUS item stopped being edited this
 // frame with a changed value — i.e. the edit is finished, not in progress.
 //
@@ -786,6 +921,19 @@ pub fn separator_text(s string) {
 // table: begin -> col×N -> headers -> (row -> cell×N)… -> end
 pub fn table_begin(id string, cols int) bool {
 	return C.vgui_table_begin(id.str, cols) == 1
+}
+
+// table_begin_flat is a table sized to its rows that leaves the scrolling to the window or
+// child around it. Use it for any table that has something BELOW it — table_begin's scrolling
+// table with no height fills whatever is left in the window, and the sibling under it lands out
+// of reach (#270). table_begin is for a table that is the last thing in its region.
+pub fn table_begin_flat(id string, cols int) bool {
+	return C.vgui_table_begin_flat(id.str, cols) == 1
+}
+
+// table_cell_dim is table_cell in dim text: a row that is listed but not offered.
+pub fn table_cell_dim(s string) {
+	C.vgui_table_cell_dim(s.str)
 }
 
 pub fn table_col(name string) {
@@ -828,6 +976,19 @@ pub fn tree_node_table(label string) bool {
 // is_item_clicked reports whether the last-submitted item was clicked this frame.
 pub fn is_item_clicked() bool {
 	return C.vgui_is_item_clicked() == 1
+}
+
+// is_item_double_clicked reports whether the last-submitted item was double-clicked this frame.
+// The first click of the pair still reports through selectable/is_item_clicked, so a caller
+// that selects on click and acts on double-click sees both, in that order.
+pub fn is_item_double_clicked() bool {
+	return C.vgui_is_item_double_clicked() == 1
+}
+
+// key_enter_pressed reports whether Enter (main or keypad) went down this frame, no repeat.
+// Check any_item_active first: a focused text field is the one that owns its Enter.
+pub fn key_enter_pressed() bool {
+	return C.vgui_key_enter_pressed() == 1
 }
 
 // is_item_clicked_right reports whether the last-submitted item was RIGHT-clicked this frame.

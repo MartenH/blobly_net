@@ -630,19 +630,10 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 		// a generator added or retargeted — can succeed where Start's did not, and the sender
 		// must go back to its own tap (codex round 7 on #257).
 		app.tap_failed.delete(key)
-		// AND THE HEALTH READER IS CLAIMED HERE, not a second later by the supervisor's next pass
-		// (#142). Filing a tap is the moment transmit becomes possible on this wire — gen_loop can
-		// fire as soon as it sees one — and a shorted or wrong-rate controller can go BUS-OFF
-		// immediately. The error frame for that transition is queued only on sockets already open,
-		// and a bus-off controller then sends nothing further, so a reader that opens even a second
-		// late starts at `unknown` and can never learn what it missed: the fault is permanently
-		// unreported (codex round 7 on #142).
-		//
-		// The reader is SPAWNED, not waited for, so filing a tap is not delayed by a driver open —
-		// on a CANsub that is seconds, and making every generator's first send wait for a health
-		// handle would trade a rare missed fault for a guaranteed delay. The window therefore
-		// shrinks to the reader's own open rather than closing: sub-millisecond for a SocketCAN
-		// socket, which is the case this finding is about, and seconds on a cold vendor device.
+		// Claim under the publication lock: every send through this tap sees either
+		// no tap or a claim whose receive handle must open first. The worker opens
+		// asynchronously; TapBus.send enforces readiness and gen_loop waits without
+		// spending its first cycle. Other wires and the GUI remain free to run.
 		if _, iface := split_tap_key(key) {
 			wk := transport.wire_key(iface)
 			mut read := false
@@ -713,6 +704,15 @@ fn (mut app App) start() {
 	// not start. The cost is that an untidy row blocks Start — but the message names the row and
 	// the field, and clearing the field is one keystroke, so it is a visible cost with an obvious
 	// remedy rather than a silent open at a rate nobody chose.
+	// THE FILE CHANGED UNDER THE MODEL: an external editor's save (Open in editor, a checkout)
+	// is not in app.proj, and running it would run the old configuration while the File tab
+	// shows the new one. Refused until the file is taken or overwritten (codex #307 r26).
+	if app.project_stale_on_disk() {
+		app.notify('not starting — ${app.proj_path} changed on disk since it was loaded. Configuration ▸ File ▸ Reload, or File ▸ Revert, takes the file; a Save overwrites it.')
+		app.show_config = true
+		app.cfg_tab = 1
+		return
+	}
 	blocking := app.cfg_invalid.map('${it.name}: ${it.why}')
 	if blocking.len > 0 {
 		app.notify('not starting — ${blocking.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
@@ -844,7 +844,7 @@ fn (mut app App) start() {
 	for w in dest.warnings {
 		app.notify(w)
 	}
-	if app.cfg_text_dirty {
+	if app.cfg_file.dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything
 		// the structured editor cannot express, and guessing that a half-typed YAML buffer
 		// should become the running configuration is the wrong default. Say so instead.

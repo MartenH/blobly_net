@@ -44,8 +44,11 @@ pub:
 // MultiPlan is the whole replay: one stream, and what each bus contributed to it.
 pub struct MultiPlan {
 pub:
-	entries []canlog.LogEntry // time-sorted, relabelled to destination interfaces
-	buses   []BusPlan
+	// The recording's rows, SHARED with the source Log, under labels that name the destination
+	// interfaces; and which rows play, in recorded order. Nothing is copied to plan a replay.
+	log   canlog.Log
+	sel   []u32
+	buses []BusPlan
 	// The SOURCE span across every selected bus — not the span of what survived. Filtering must
 	// not shorten a lap or move its origin, and with several buses in one stream a per-bus span
 	// would be meaningless anyway.
@@ -53,17 +56,34 @@ pub:
 	end_s f64
 }
 
-// build_multi selects, subtracts and merges. Order of `specs` does not matter; the result is
-// sorted by recorded time, so the buses interleave exactly as they did in the car.
+// entries is the plan in the old shape — every payload cloned, O(n). For tests.
+pub fn (p &MultiPlan) entries() []canlog.LogEntry {
+	return p.log.entries_of(p.sel)
+}
+
+// build_multi is build_multi_log over entries: the tests' door.
 pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
+	return build_multi_log(canlog.from_entries(entries), specs)
+}
+
+// build_multi_log selects, subtracts and merges. Order of `specs` does not matter; the
+// result is in recorded time, so the buses interleave exactly as they did in the car.
+pub fn build_multi_log(log canlog.Log, specs []BusSpec) MultiPlan {
 	// ONE pass over the recording, in recorded order. Filtering bus by bus and sorting the
 	// concatenation by timestamp afterwards loses the order of frames that share a timestamp —
 	// and simultaneous cross-bus stimuli are exactly what a gateway is watching. Their order
 	// would then be decided by --map order or by the sort's tie behaviour, which is the skew
 	// this whole feature exists to avoid.
-	mut idx_of := map[string]int{} // src label -> index into specs
+	// By BUS INDEX: the row names its bus by index into the Log's labels, so the spec for a
+	// row is one array read, and the relabelling to the destination is a second label table
+	// over the same rows (relabelled) rather than a copy of every entry.
+	mut spec_of := []int{len: log.labels.len, init: -1}
+	mut dst := log.labels.clone()
 	for i, sp in specs {
-		idx_of[sp.src] = i
+		if j := log.index_of(sp.src) {
+			spec_of[j] = i
+			dst[j] = sp.dst
+		}
 	}
 	mut deciders := []Decider{}
 	mut tallies := []Tally{}
@@ -73,35 +93,34 @@ pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
 		tallies << Tally{}
 		sources << 0
 	}
-	mut out := []canlog.LogEntry{}
+	mut sel := []u32{}
 	mut t0 := 0.0
 	mut end := 0.0
 	mut seen_any := false
-	for e in entries {
-		i := idx_of[e.iface] or { continue }
+	for ri, r in log.rows {
+		i := spec_of[r.bus]
+		if i < 0 {
+			continue
+		}
 		sources[i]++
 		// The span comes from the SOURCE frames, before subtraction, across every mapped bus.
 		if !seen_any {
-			t0 = e.t_s
-			end = e.t_s
+			t0 = r.t_s
+			end = r.t_s
 			seen_any = true
 		} else {
-			if e.t_s < t0 {
-				t0 = e.t_s
+			if r.t_s < t0 {
+				t0 = r.t_s
 			}
-			if e.t_s > end {
-				end = e.t_s
+			if r.t_s > end {
+				end = r.t_s
 			}
 		}
-		if tallies[i].add(deciders[i].verdict(e.frame), e.frame) {
-			// Relabelled to the DESTINATION, so the sender is a map lookup and the player never
-			// learns that a mapping happened.
-			out << canlog.LogEntry{
-				t_s:   e.t_s
-				dir:   e.dir
-				iface: specs[i].dst
-				frame: e.frame
-			}
+		f := log.frame(ri) // a view: the verdict reads id, width, RTR and length
+		if tallies[i].add(deciders[i].verdict(f), f) {
+			// Relabelled to the DESTINATION through the plan's label table, so the sender is a
+			// map lookup and the player never learns that a mapping happened.
+			sel << u32(ri)
 		}
 	}
 	mut plans := []BusPlan{}
@@ -143,10 +162,11 @@ pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
 		}
 	}
 	return MultiPlan{
-		entries: out
-		buses:   fixed
-		t0_s:    t0
-		end_s:   end
+		log:   log.relabelled(dst)
+		sel:   sel
+		buses: fixed
+		t0_s:  t0
+		end_s: end
 	}
 }
 

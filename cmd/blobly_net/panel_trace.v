@@ -194,6 +194,44 @@ fn (app &App) filter_bus(rows []TraceRow, bus string) []TraceRow {
 	return rows.filter(it.ch in aliases)
 }
 
+// Allocation-free spellings for the cells every group row draws on every repaint: a payload
+// byte and a payload length. Built once. A '${b:02X}' per byte was eight strings per row per
+// frame, at hundreds of group rows thirty times a second (#299's follow-up).
+const hex2 = build_hex2()
+const small_dec = build_small_dec()
+
+fn build_hex2() []string {
+	mut a := []string{cap: 256}
+	for i in 0 .. 256 {
+		a << '${i:02X}'
+	}
+	return a
+}
+
+fn build_small_dec() []string {
+	mut a := []string{cap: 65}
+	for i in 0 .. 65 {
+		a << '${i}'
+	}
+	return a
+}
+
+fn len_str(n int) string {
+	if n >= 0 && n < small_dec.len {
+		return small_dec[n]
+	}
+	return '${n}'
+}
+
+// GLabel is what a group row's tree label and context-menu id were formatted from, kept with
+// the result: both are pure functions of the group's identity and its name-with-verdict, and
+// formatting them per group per repaint was most of what the grouped view still allocated.
+struct GLabel {
+	name  string
+	label string
+	ctx   string
+}
+
 fn idstr(id u32, ext bool) string {
 	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
@@ -367,7 +405,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
 			origin_cell(r.origin, origin_mark(r))
-			vgui.table_cell('${r.data.len}')
+			vgui.table_cell(len_str(r.data.len))
 			vgui.table_cell(flags_str(r))
 			// the FD/BRS suffix moved out of this cell into the flags column — payload only here
 			vgui.table_cell(if r.rtr { '' } else { hex(r.data) })
@@ -425,6 +463,9 @@ fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr b
 
 // gkey: the row's own group identity.
 fn (r TraceRow) gkey() string {
+	if r.key.len > 0 {
+		return r.key
+	}
 	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr)
 }
 
@@ -465,7 +506,12 @@ const gcol_name = 3
 const gcol_data = 7
 
 fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
-	mut agg := map[string]GAgg{}
+	// The aggregate is app.gagg, cleared and refilled. map.clear() keeps the key and value
+	// storage but resets the hash index to its initial size, so a repaint regrows the index —
+	// measured at ~40 KB a repaint at 400 groups, ~1 MB/s — where a fresh map per frame was
+	// ~1 MB a frame. The rest of it (the ~400-byte value copied out and back per row, the
+	// string hashing) is the per-group index the ROADMAP names as the deeper change.
+	app.gagg.clear()
 	// The run boundary is row IDENTITY, not a stamp: every row carries the measurement it
 	// was pushed into (TraceRow.run — the base Start, Clear and Load each move, frozen at
 	// push, because the live base remembers only the newest boundary and a group silent
@@ -481,14 +527,14 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// Grouping by ORIGIN as well as id means our simulated 0x120 and a real ECU's 0x120 are
 		// two rows, not one row with a count that quietly adds them together.
 		k := r.gkey()
-		mut g := agg[k] or {
+		mut g := app.gagg[k] or {
 			GAgg{
-				origin:  r.origin
-				ch:      r.ch
-				id:      r.id
-				ext:     r.ext
-				fd:      r.fd
-				brs:     r.brs
+				origin: r.origin
+				ch:     r.ch
+				id:     r.id
+				ext:    r.ext
+				fd:     r.fd
+				brs:    r.brs
 				rtr:    r.rtr
 				last:   r
 			}
@@ -502,7 +548,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// wire, and counting it into count/cycle showed a bus-off group still cycling
 			// while the header said TX 0 (codex #143 r2). last/prev stay too — the
 			// newest-data cells must show what the wire carried, not what it refused.
-			agg[k] = g
+			app.gagg[k] = g
 			continue
 		}
 		if g.count > 0 {
@@ -515,10 +561,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		g.cyc = cyclerule.step(g.cyc, r.t_ms, new_run)
 		g.count++
 		g.last = r
-		agg[k] = g
+		app.gagg[k] = g
 	}
-	mut groups := agg.values()
-	groups.sort_with_compare(fn (a &GAgg, b &GAgg) int {
+	app.ggroups.clear()
+	for _, g in app.gagg {
+		app.ggroups << g
+	}
+	app.ggroups.sort_with_compare(fn (a &GAgg, b &GAgg) int {
 		if a.id != b.id {
 			return if a.id < b.id { -1 } else { 1 }
 		}
@@ -568,7 +617,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		vgui.table_setup_col('cycle (ms)', 78)
 		vgui.table_freeze_top()
 		vgui.table_headers()
-		for g in groups {
+		for g in app.ggroups {
 			r := g.last
 			// ONE key per rendered group. g.last carries the group's identity by construction
 			// (it is a member), and three separately spelled 7-argument calls per row is how a
@@ -581,15 +630,24 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_cell(g.ch)
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
-			open :=
-				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_refused(r, g.refused)}###${k}')
+			name_now := trace_name_refused(r, g.refused)
+			mut lb := app.glabels[k] or { GLabel{} }
+			if lb.label.len == 0 || lb.name != name_now {
+				lb = GLabel{
+					name:  name_now
+					label: '${idstr(g.id, g.ext)}  ${name_now}###${k}'
+					ctx:   'rowctx##${k}'
+				}
+				app.glabels[k] = lb
+			}
+			open := vgui.tree_node_table(lb.label)
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}
 			// right-click a row → context menu (plot its signals / add to filter)
-			if vgui.begin_popup_context_item('rowctx##${k}') {
+			if vgui.begin_popup_context_item(lb.ctx) {
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
@@ -604,7 +662,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				vgui.end_popup()
 			}
 			origin_cell(g.origin, verdict_mark(g.refused, g.missed))
-			vgui.table_cell('${r.data.len}')
+			vgui.table_cell(len_str(r.data.len))
 			vgui.table_cell(flags_str(r))
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
 			// ones that changed (conventional change highlight). Compared against the actual prior
@@ -620,7 +678,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 					if i > 0 {
 						vgui.same_line()
 					}
-					tok := '${b:02X}'
+					tok := hex2[b]
 					if i >= prev.len || prev[i] != b {
 						vgui.text(tok) // changed → normal colour
 					} else {

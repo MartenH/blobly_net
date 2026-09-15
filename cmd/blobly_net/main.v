@@ -16,7 +16,9 @@
 module main
 
 import os
+import player
 import time
+import sync.stdatomic
 import vgui
 
 // load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
@@ -40,8 +42,21 @@ fn load_ui_font() {
 	for f in candidates {
 		if f != '' && os.exists(f) {
 			if vgui.add_font(f, size) {
+				merge_symbol_font(f, size)
 				return
 			}
+		}
+	}
+}
+
+// merge_symbol_font adds a face with the symbols the UI draws (▸ ● ↻ ⚠ …) behind the main one,
+// so a label is never a `?` because the main face lacks a glyph (#306: Consolas has no ↻).
+// Skipped when the main face IS the fallback.
+fn merge_symbol_font(main_face string, size f32) {
+	for f in ['C:/Windows/Fonts/seguisym.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+		'/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf'] {
+		if f != main_face && os.exists(f) && vgui.add_font_merge(f, size) {
+			return
 		}
 	}
 }
@@ -113,6 +128,13 @@ fn main() {
 	app.load_project(proj_path)
 	println('blobly_net: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
+	// Replay stutter probe (probe.v): inert unless BLOBLY_PROBE_LOG is set. Diagnostic only.
+	if os.getenv('BLOBLY_PROBE_LOG') != '' {
+		probe_init()
+		spawn probe_hiccup_loop()
+		spawn probe_driver(os.getenv('BLOBLY_PROBE_SECONDS').int())
+	}
+
 	// Headless self-test of the Configuration editor: drive the real methods (New → add bus →
 	// edit fields → add DBC → Save As) and assert the written .blobnet round-trips. Exits after.
 	// The editor's widgets can't be clicked under WSLg, so this smoke covers the logic instead.
@@ -127,6 +149,11 @@ fn main() {
 			app.elog('vgui.init failed')
 			return
 		}
+		// The one path that never said where the layout lives, so ImGui's default writer put an
+		// imgui.ini in the WORKING directory — the per-checkout file #306 moved away from, and
+		// since #308 the only place anything but save_layout opens one. '' is what the other
+		// headless render uses: a selftest must not read a layout or leave one.
+		vgui.set_ini_path('')
 		for frame in 0 .. 10 {
 			vgui.frame_begin()
 			if app.dbs.len > 0 {
@@ -158,9 +185,50 @@ fn main() {
 		app.elog('vgui.init failed')
 		return
 	}
+	// The layout (window rects, the dock tree) lives beside the settings, per user, rather
+	// than in the working directory per checkout or bundle: one home (#306). Before the first
+	// frame, which is when set_ini_path reads it. The APP writes it (save_layout, #308), so two
+	// instances of one user are last-writer-wins on the layout without being able to leave each
+	// other a half-written file.
+	// A headless render has NO layout file: one left in the working directory by an earlier run
+	// would decide its dock splits (codex #307 r5).
+	if !headless {
+		// The writer creates no directories: on a fresh profile the layout was silently not
+		// saved until a preference save had made the directory (codex #307 r11).
+		os.mkdir_all(os.dir(prefs_path())) or {}
+		app.layout_file = os.join_path(os.dir(prefs_path()), 'imgui.ini')
+	}
+	vgui.set_ini_path(app.layout_file)
 	set_app_icon() // the B-on-blue window/taskbar icon (procedural placeholder as fallback)
 	app.load_logo() // the menu-bar wordmark (needs the GL context, so after init)
 	load_ui_font()
+	// What the last session set (#306): the UI scale, which the Settings menu changed and the
+	// next start forgot, and the editor command. After the font, since the scale is a font scale.
+	if headless {
+		// a headless render reads no profile at all: a broken or foreign settings file would
+		// put a line in the Log the screenshot then carries (codex #307 r20)
+		app.prefs_file = prefs_path()
+	} else {
+		app.load_prefs()
+	}
+	if headless {
+		// A headless run's output must not depend on the machine (the comment above): the
+		// developer's own scale stays out of a screenshot — applied to the renderer only, so the
+		// preference is not overwritten on disk (codex #307 r1) — nothing is saved at a headless
+		// exit — but the in-memory scale every layout dimension reads must be 1 too (r2).
+		app.apply_ui_scale(1.0)
+	} else {
+		app.apply_ui_scale(app.prefs.ui_scale)
+	}
+	if !headless {
+		// the dragged panes are per-user state too: a headless render keeps the defaults (r13)
+		app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
+		app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
+		app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
+		app.dbc_ed.left_w = app.prefs.panes['dbc_left'] or { 0 }
+		app.dbc_ed.msgs_h = app.prefs.panes['dbc_msgs'] or { 0 }
+		app.dbc_ed.props_h = app.prefs.panes['dbc_props'] or { 0 }
+	}
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false
 		vgui.set_theme(false)
@@ -177,7 +245,9 @@ fn main() {
 	// after ~`autostart_frame` presented frames clears the race. A human pressing Start is always
 	// well past this, so it only matters for BLOBLY_AUTOSTART / automated runs. Override with
 	// BLOBLY_AUTOSTART_FRAME.
-	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' {
+	// BLOBLY_PROBE_LOG (probe.v) implies it: the probe must not start the run from a worker
+	// thread on a wall-clock guess, which is the trigger this gate exists to remove.
+	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' || probe_active {
 		n := os.getenv('BLOBLY_AUTOSTART_FRAME').int()
 		if n > 0 {
 			n
@@ -190,6 +260,9 @@ fn main() {
 	// BLOBLY_FOCUS=PanelName brings that panel's tab to the front once at startup (test/dev aid).
 	focus_panel := os.getenv('BLOBLY_FOCUS')
 
+	// Before anything paces itself: the platform's timer resolution is what every sleep
+	// below a quantum rounds up to (pace.v).
+	player.raise_timer_resolution()
 	mut frame := 0
 	for vgui.running() {
 		frame++
@@ -199,7 +272,32 @@ fn main() {
 			vgui.wake()
 		}
 		if autostart_frame > 0 && frame == autostart_frame {
+			// The probe's measurement opens BEFORE start(), on this thread: start() spawns the
+			// replay workers inside itself and a small cached recording on an in-process bus
+			// can dispatch before it returns, so a boundary drawn after it missed those frames
+			// (codex on #299, round 3). What Start does — opening the wires, the workers
+			// loading their recordings — is therefore inside the measurement, which is right:
+			// it is part of the run. A Start the project refused (an invalid edit, a
+			// destination conflict, a pinned Vector clash) never sets running, so the
+			// measurement is taken back and the refusal signalled, or an unattended probe
+			// would measure nothing for 70 s and call it a run.
+			if probe_active {
+				probe_begin()
+			}
 			app.start()
+			// Two words, because the driver polls: the gate (probe_gate) is what the
+			// counters read and goes up before start(); started is what the driver waits for
+			// and is set only once the run is KNOWN to be up — a driver that saw the armed
+			// flag's transient on a refused Start left its wait and measured nothing for 70 s
+			// (codex on #299 round 5).
+			if probe_active {
+				if app.running {
+					stdatomic.store_u64(&probe_start_state, 1)
+				} else {
+					stdatomic.store_u64(&probe_gate, 0)
+					stdatomic.store_u64(&probe_start_state, 2)
+				}
+			}
 		}
 		last := max_frames > 0 && frame >= max_frames
 		if last && shot != '' {
@@ -210,12 +308,26 @@ fn main() {
 		app.roll_bus_load_locked()
 		rx := app.rx
 		txs := app.tx_counts_locked()
-		rows := app.trace.clone()
+		// Into buffers the GUI thread keeps, not fresh clones: the copies are shallow either
+		// way (rows share their strings and payloads with the ring), and a clone per frame of
+		// a 2000-row ring was the render loop's whole contribution to the collector's schedule
+		// — ~450 KB a frame, more while the ring's capacity had just doubled (#299's follow-up).
+		// The map stays a clone — ~50-100 KB a frame at a thousand groups, and its keys are
+		// deep-copied by V's map.clone(); a per-group index in place of the string-keyed
+		// map is the deeper change, on the ROADMAP.
+		app.snap_rows.clear()
+		app.snap_rows << app.trace
+		app.snap_trecs.clear()
+		app.snap_trecs << app.trecs
+		app.snap_chans.clear()
+		app.snap_chans << app.chans
+		rows := app.snap_rows
 		gcount := app.gcount.clone()
-		trecs := app.trecs.clone()
-		chans := app.chans.clone()
+		trecs := app.snap_trecs
+		chans := app.snap_chans
 		app.mu.unlock()
 
+		pf := probe_alloc_mark()
 		vgui.frame_begin()
 		if focus_panel != '' && frame == 3 {
 			vgui.set_window_focus(focus_panel)
@@ -299,6 +411,9 @@ fn main() {
 		if app.disc_open {
 			draw_discover_dialog(mut app)
 		}
+		if app.show_prefs {
+			draw_prefs(mut app)
+		}
 		if app.fb_open {
 			draw_filebrowser(mut app)
 		}
@@ -309,11 +424,23 @@ fn main() {
 		app.poll_shortcuts()
 
 		vgui.frame_end()
+		// After the frame, because that is where ImGui decides the layout has settled.
+		app.save_layout(false)
+		probe_alloc_note(.render, pf)
 		if last {
 			app.elog('rendered ${frame} frames; RX ${rx}')
 			break
 		}
 	}
 	app.stop()
+	// The whole file, from what this session holds — last writer wins (#309) — unless it is
+	// broken or foreign. The panes it dragged are collected by the save itself (collect_panes),
+	// so this is every preference the session changed and has not written since.
+	if !headless && app.prefs_dirty {
+		app.save_prefs(false)
+	}
+	// Unconditional: ImGui asks at most every 5 s, so a rearrangement in the last seconds of a
+	// run has not raised its flag yet and would be the one thing a Quit loses.
+	app.save_layout(true)
 	vgui.shutdown()
 }

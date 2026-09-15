@@ -52,4 +52,4 @@ VAL_ 2018 opcode 1 "arm" 2 "start" 3 "stop" 4 "reset" 5 "set_push" 6 "dump" 7 "s
 VAL_ 2019 opcode_echo 1 "arm" 2 "start" 3 "stop" 4 "reset" 5 "set_push" 6 "dump" 7 "status" ;
 VAL_ 2019 result 0 "ok" 1 "bad_opcode" 2 "unsupported" 3 "not_ready" 4 "busy" ;
 VAL_ 2019 state 0 "idle" 1 "capturing" 2 "full" 3 "frozen" ;
-VAL_ 2019 cause 0 "none" 1 "stop" 2 "trigger" ;
+VAL_ 2019 cause 0 "none" 1 "stop" 2 "trigger" 3 "full" ;

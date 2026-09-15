@@ -98,9 +98,8 @@ mut:
 	buses map[string]transport.Bus
 pub mut:
 	// How every bus this engine touches is opened. See BusOpener.
-	opener BusOpener = default_opener
+	opener    BusOpener = default_opener
 	results   []TestResult
-	log_lines []string // every emitted line, buffered (the GUI reads this post-run)
 	on_output fn (string) = fn (s string) {
 		println(s)
 	}
@@ -190,8 +189,10 @@ pub fn (mut env Env) close() {
 	_ = env.close_reporting()
 }
 
+// emit is every line the script produces — log(), print(), a test's verdict — handed to the
+// host's sink: stdout by default (the headless runner), the Script panel in the GUI. Nothing
+// is buffered here; a host that wants the lines keeps them itself.
 fn (mut env Env) emit(s string) {
-	env.log_lines << s
 	env.on_output(s)
 }
 
@@ -321,6 +322,7 @@ fn l_sim_fault(l lua.State) int {
 		'out_of_range' { sim.FaultKind.out_of_range }
 		else { return l.fail('unknown fault kind "${kind}"') }
 	}
+
 	// Reject a target nothing will ever read. A misspelled node or message stored under a key
 	// no engine looks at reports success and changes no traffic — which in an automated fault
 	// experiment is indistinguishable from a fault that was armed and had no effect.
@@ -344,7 +346,9 @@ fn l_sim_fault(l lua.State) int {
 						continue
 					}
 					for cand in m.signals {
-						if sim.can_force_out_of_range(m, cand.name, prot_of(env.chans[ci].nodes, node, msg)) {
+						if sim.can_force_out_of_range(m, cand.name, prot_of(env.chans[ci].nodes,
+							node, msg))
+						{
 							sg = cand.name
 							break
 						}
@@ -361,7 +365,8 @@ fn l_sim_fault(l lua.State) int {
 			// rest of this validation exists to prevent.
 			mut usable := false
 			for m in env.chans[ci].db.messages_from(node) {
-				if m.name == msg && sim.can_force_out_of_range(m, sg, prot_of(env.chans[ci].nodes, node, msg)) {
+				if m.name == msg
+					&& sim.can_force_out_of_range(m, sg, prot_of(env.chans[ci].nodes, node, msg)) {
 					usable = true
 				}
 			}
@@ -378,7 +383,8 @@ fn l_sim_fault(l lua.State) int {
 		if k == .bad_crc && !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'crc') {
 			return l.fail('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing')
 		}
-		if k == .freeze_ctr && !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'counter') {
+		if k == .freeze_ctr
+			&& !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'counter') {
 			// The E2E counter is what freezes; a `counter` GENERATOR is an ordinary signal and
 			// keeps running by design. Without protection there is nothing to stall, and
 			// arming it would report success and change nothing.
@@ -543,9 +549,7 @@ fn l_uds_open(l lua.State) int {
 		ext := ctx > 0x7FF || crx > 0x7FF
 		isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
 			return l.fail('isotp open failed on ${name}: ${err}')
-		}, info.iface, ctx, crx, ext) or {
-			return l.fail('isotp open failed on ${name}: ${err}')
-		})
+		}, info.iface, ctx, crx, ext) or { return l.fail('isotp open failed on ${name}: ${err}') })
 	}
 	env.conns << UdsConn{
 		ch:   ch
@@ -691,7 +695,9 @@ fn l_uds_raw(l lua.State) int {
 fn l_uds_write_did(l lua.State) int {
 	mut env := env_of(l)
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
-	c.cli.write_data_by_identifier(u16(l.arg_int(2)), l.arg_bytes(3)) or { return l.fail(err.msg()) }
+	c.cli.write_data_by_identifier(u16(l.arg_int(2)), l.arg_bytes(3)) or {
+		return l.fail(err.msg())
+	}
 	return 0
 }
 

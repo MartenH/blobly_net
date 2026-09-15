@@ -33,4 +33,12 @@ fn test_decode_trace_rsp() {
 	assert t.state == state_frozen
 	assert t.cause == freeze_trigger
 	assert t.core == 1
+	// cause 3 = full: a oneshot that completed on its own (emb docs/telemetry.md, emb#271).
+	// A LITERAL wire byte, not the constant: derived from freeze_full, a renumbering moves
+	// both sides of the assertion together while emb and the DBC keep sending 3 — this is
+	// the cross-repository golden vector (codex #301 r2).
+	f := decode_trace_rsp([op_status, 0, 0x32, 32, 0, 32, 0, 0])
+	assert f.state == state_full
+	assert f.cause == freeze_full
+	assert f.cause == 3
 }

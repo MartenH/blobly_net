@@ -41,6 +41,7 @@ pub struct Claim {
 pub:
 	gen      u64 // the run that made it; an entry from another run is not a claim on this one
 	held     bool // a reader is running for this wire right now
+	opened   bool // its receive handle is open; only then may this wire transmit
 	failures int // hard receive errors this run, not counting lifecycle closes it cannot see
 	retired  bool // failures reached the limit: no more readers for this run
 }
@@ -88,6 +89,26 @@ pub fn (mut l Ledger) claim(wire string, gen u64) {
 		held: true
 		failures: if prev.gen == gen { prev.failures } else { 0 }
 	}
+}
+
+// opened publishes receive readiness after the driver has installed its receive queue.
+// Merely reserving or spawning a worker cannot capture the first bus-off event.
+pub fn (mut l Ledger) opened(wire string, gen u64) {
+	e := l.wires[wire] or { return }
+	if e.gen == gen && e.held {
+		l.wires[wire] = Claim{
+			...e
+			opened: true
+		}
+	}
+}
+
+// send_ready gates only wires claimed for this run. Monitored wires and sends outside
+// a measurement do not acquire a health-reader dependency. A retry must open again;
+// a failed or retired reader is never evidence that a receive queue exists.
+pub fn (l Ledger) send_ready(wire string, gen u64) bool {
+	e := l.wires[wire] or { return true }
+	return e.gen != gen || (e.held && e.opened)
 }
 
 // release records that a reader has stopped. `failed` means a hard receive error rather than an

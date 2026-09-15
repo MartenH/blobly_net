@@ -32,7 +32,7 @@ fn draw_quick_send(mut app App) {
 		for c in app.chans {
 			names << c.name
 		}
-		vgui.set_next_item_width(120 * app.ui_scale)
+		vgui.set_next_item_width(120 * app.prefs.ui_scale)
 		nsel := vgui.combo('bus##qsbus', names, cur)
 		if nsel != cur && nsel >= 0 && nsel < app.chans.len {
 			app.qs_iface = app.chans[nsel].iface
@@ -50,11 +50,11 @@ fn draw_quick_send(mut app App) {
 	// existed only while running, so a stopped panel showed a field to type into and nothing
 	// to press, with "start to send" as the only hint (2026-08-29). Now the button is drawn
 	// either way and greyed when stopped, the way the File tab greys its Save.
-	vgui.set_next_item_width(90 * app.ui_scale)
+	vgui.set_next_item_width(90 * app.prefs.ui_scale)
 	vgui.input_text('id (hex)', mut app.send_id_buf)
 	// A fixed width with the label AFTER it, as ImGui draws labels: the full remaining width
 	// pushed "data (hex)" off the panel edge (codex round 1 on #256).
-	vgui.set_next_item_width(260 * app.ui_scale)
+	vgui.set_next_item_width(260 * app.prefs.ui_scale)
 	vgui.input_text('data (hex)', mut app.send_data_buf)
 	if app.running {
 		if vgui.button('Send##quicksend') {
@@ -129,12 +129,12 @@ fn draw_gen(mut app App) {
 		nm := if s.name != '' { s.name } else { '(unnamed)' }
 		// ### keys the node on the index only, so editing the visible name doesn't collapse it.
 		if vgui.tree_node('${nm}   ·   ${trig}###gennode${i}') {
-			vgui.set_next_item_width(200 * app.ui_scale)
+			vgui.set_next_item_width(200 * app.prefs.ui_scale)
 			if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
 				app.dirty = true
 			}
 			vgui.same_line()
-			vgui.set_next_item_width(36 * app.ui_scale)
+			vgui.set_next_item_width(36 * app.prefs.ui_scale)
 			if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
 				app.dirty = true
 			}
@@ -243,7 +243,7 @@ fn draw_gen(mut app App) {
 					}
 				}
 			}
-			vgui.set_next_item_width(220 * app.ui_scale)
+			vgui.set_next_item_width(220 * app.prefs.ui_scale)
 			nsel := vgui.combo('message##msg${i}', msg_opts, cur_msg)
 			if nsel != cur_msg {
 				app.set_sender_message(i, if nsel <= 0 { '' } else { msg_opts[nsel] })
@@ -266,12 +266,12 @@ fn draw_gen(mut app App) {
 					app.signal_input(i, j, sig, have)
 				}
 			} else {
-				vgui.set_next_item_width(70 * app.ui_scale)
+				vgui.set_next_item_width(70 * app.prefs.ui_scale)
 				if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
 					app.dirty = true
 				}
 				vgui.same_line()
-				vgui.set_next_item_width(260 * app.ui_scale)
+				vgui.set_next_item_width(260 * app.prefs.ui_scale)
 				if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
 					app.dirty = true
 				}
@@ -486,7 +486,7 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 	unit := if have && sig.unit != '' { ' [${sig.unit}]' } else { '' }
 	lbl := '${ss.name}${unit}##sig${i}_${j}'
 	pv := unsafe { &app.senders[i].sender.signals[j].value }
-	vgui.set_next_item_width(170 * app.ui_scale)
+	vgui.set_next_item_width(170 * app.prefs.ui_scale)
 	if have && sig.values.len > 0 {
 		// enum: dropdown of "value — name" states. VAL_ keys are stored two's-complement for
 		// signed signals, so map key<->physical through the signal (phys_from_raw / raw_from_phys)
@@ -567,7 +567,7 @@ fn wave_sel_of(typ string) int {
 fn (mut app App) signal_source(i int, j int) {
 	w := app.senders[i].sender.signals[j].wave
 	vgui.same_line()
-	vgui.set_next_item_width(110 * app.ui_scale)
+	vgui.set_next_item_width(110 * app.prefs.ui_scale)
 	sel := vgui.combo('##src${i}_${j}', wave_kinds_ui(), wave_sel_of(w.typ))
 	if sel != wave_sel_of(w.typ) {
 		app.set_wave_typ(i, j, wave_typ_of(sel))
@@ -593,7 +593,7 @@ fn (mut app App) signal_source(i int, j int) {
 		if k % 2 == 1 {
 			vgui.same_line()
 		}
-		vgui.set_next_item_width(70 * app.ui_scale)
+		vgui.set_next_item_width(70 * app.prefs.ui_scale)
 		// A COPY, written back through a locked setter. Writing through a pointer into the live
 		// sender raced the fire path's snapshot (the GUI thread edits while gen_loop clones), and
 		// left a value the Start-time check could never see — these fields stay editable during a

@@ -333,8 +333,11 @@ fn gen_loop(app &App) {
 				// it is for a manual send (codex round 6 on #257).
 				// An existing named tap wins outright; the shared one only stands in while the
 				// named one is known to have failed (codex round 7 on #257).
-				if tgt != '' && !taprule.ready(taps, tx_bus_key(sr.chan, tgt),
-					tx_bus_key('', tgt), sr.chan != '') {
+				if tgt != ''
+					&& !taprule.ready(taps, tx_bus_key(sr.chan, tgt), tx_bus_key('', tgt), sr.chan != '') {
+					continue
+				}
+				if tgt != '' && !a.tx_health.send_ready(transport.wire_key(tgt), a.run_gen) {
 					continue
 				}
 				lf := last[i] or { i64(0) }
@@ -679,6 +682,14 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		notify_gen(app, gen, '${iface}: cannot watch bus health — ${err}')
 		return
 	}
+	// Publish readiness only after the receive handle exists, and only into the run
+	// that opened it. file_tap claims the wire under the same mutex that publishes
+	// its taps; TapBus.send refuses while this claim is still opening.
+	a.mu.lock()
+	if a.running && a.run_gen == gen {
+		a.tx_health.opened(wire, gen)
+	}
+	a.mu.unlock()
 	mut last := transport.BusHealth.unknown
 	mut last_diag := transport.BusDiagnostics{}
 	defer {
@@ -1067,6 +1078,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.mu.unlock()
 			vgui.wake()
 		}
+		pr := probe_alloc_mark()
 		f := bus.recv(200) or {
 			// A TIMEOUT IS THE NORMAL ANSWER; anything else is the adapter in trouble, and
 			// continuing repeated the failing call as fast as it could return — a core spun on
@@ -1113,6 +1125,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.mu.unlock()
 			break
 		}
+		probe_alloc_note(.rx_recv, pr)
+		ph := probe_alloc_mark()
 		// A blocked recv can be woken by the previous run's echo after Start has already reset
 		// the ring: this loop would then find no record and file that frame as the CURRENT
 		// run's bus traffic — into the trace, the recording and the verifier.
@@ -1191,6 +1205,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			break
 		}
 		if !a.paused && !ours {
+			rx_key := gkey_frame(org_rx, chname, f)
 			a.push_row_locked(TraceRow{
 				t_ms:   t_ms
 				ch:     chname
@@ -1204,8 +1219,9 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				name:   name
 				data:   f.data.clone()
 				e2e:    viol
+				key:    rx_key
 			})
-			a.gcount[gkey_frame(org_rx, chname, f)]++
+			a.gcount[rx_key]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
@@ -1228,7 +1244,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// here left the header claiming hundreds of RX frames above a table with no RX row in it
 		// (#105). What this counts now is what the bus brought us: everything nobody here sent.
 		// Every frame on the wire is load, ours included (ours counted once the driver took them,
-	// count_tx_load), so the echo must not count twice.
+		// count_tx_load), so the echo must not count twice.
 		if !ours {
 			nominal, data := a.wire_rates_locked(ci)
 			a.chans[ci].load_bits += transport.frame_bits(f, nominal, data)
@@ -1249,6 +1265,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.last_wake = now
 			vgui.wake()
 		}
+		probe_alloc_note(.rx_handle, ph)
 	}
 	// ONE LAST SAMPLE ON THE WAY OUT, whatever ended the loop: a Stop inside the poll interval
 	// left up to a second of counts unread, and the retained chip is the operator's post-run
@@ -1599,7 +1616,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	sync_note := if ncores < 2 {
 		''
 	} else if skew_bounds.len == 0 {
-		' · ⚠ cores NOT time-correlated (each on its own clock)'
+		' · (!) cores NOT time-correlated (each on its own clock)'
 	} else {
 		mut worst := u16(0)
 		for _, b in skew_bounds {
@@ -1817,6 +1834,13 @@ fn script_worker(app &App, path string) {
 		a.script_push('env init: ${err}')
 		a.script_done()
 		return
+	}
+	// EVERY line the script emits — log(), print(), each test's ok/FAIL — into the panel. The
+	// engine's default sink is stdout, and left unset it stayed that way: the lines went to the
+	// console the app was started from and the panel showed only the summary pushed below (#270).
+	env.on_output = fn [a] (s string) {
+		mut ap := unsafe { a }
+		ap.script_push(s)
 	}
 	// A script IS the tester. Left on the default opener it would be the one emitter the trace
 	// could not account for, and its frames would come back labelled as the device under test's.

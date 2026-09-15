@@ -72,35 +72,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The V SOURCE is pinned by .v-version, but `make` bootstraps V by cloning vlang/vc
-      # with NO ref — so the bootstrap floated to whatever that repo's default branch held.
-      # That is not a theoretical hole: vc sat on the C generated from our exact pin from
-      # 2026-09-05 20:06 until 2026-09-07 05:31, which is the only reason the pin ever looked
-      # like one. When vc regenerated from V3 master, every Linux job on every branch failed
-      # in `make` with `./v2: No such file or directory` — a V3 bootstrap cannot build pre-V3
-      # source under -old-compiler, so v2 was never produced. Nothing in the repo had changed.
-      #
-      # So the bootstrap is pinned too (.vc-version), and `local=1` is what stops make from
-      # dragging it back: `latest_vc`, `latest_tcc` and `latest_legacy` are ALL guarded by
-      # `ifndef local` in V's GNUmakefile, and the first of them does `git clean -xf && git
-      # pull --rebase` on vc. Pre-cloning at a pin without local=1 would be undone by that
-      # pull. Done by hand rather than through vlang/setup-v because that action runs `make`
-      # itself, leaving nowhere to place the pinned clone.
-      #
-      # .vc-version must be the vc commit GENERATED FROM .v-version — its message is
-      # `[v:master] <the .v-version sha> - ...`. Bump the two together, or not at all.
-      - name: Install V (pinned — .v-version + .vc-version)
-        run: |
-          set -eux
-          # ONE definition of how the pinned toolchain is installed, shared with
-          # scripts/setup_env.sh and tested by scripts/v_toolchain_test.sh. Inline here it was
-          # the same incantation in three workflow steps, which is how the two halves of a pin
-          # come to disagree.
-          . scripts/v_toolchain.sh
-          V_PIN=$(tr -d '[:space:]' < .v-version)
-          VC_PIN=$(tr -d '[:space:]' < .vc-version)
-          v_toolchain_install "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN"
-          echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
+      - name: Set up pinned V (cached)
+        uses: ./.github/actions/setup-v
 
       - name: V version
         run: v version
@@ -112,7 +85,7 @@ jobs:
         run: v -enable-globals test modules/
       - name: GUI-local rules (v test cmd/blobly_net/saverule/)
         # GUI policy with a test: pure V, no ImGui, so it runs where the GUI cannot.
-        run: v -enable-globals test cmd/blobly_net/saverule/ cmd/blobly_net/logfile/ cmd/blobly_net/taprule/ cmd/blobly_net/loadrule/ cmd/blobly_net/cyclerule/ cmd/blobly_net/drainrule/ cmd/blobly_net/genhome/ cmd/blobly_net/txhealth/ cmd/blobly_net/txclaim/ cmd/vectorcheck/restorerule/
+        run: v -enable-globals test cmd/blobly_net/saverule/ cmd/blobly_net/logfile/ cmd/blobly_net/taprule/ cmd/blobly_net/loadrule/ cmd/blobly_net/cyclerule/ cmd/blobly_net/drainrule/ cmd/blobly_net/genhome/ cmd/blobly_net/pickrule/ cmd/blobly_net/prefs/ cmd/blobly_net/panerule/ cmd/blobly_net/endrule/ cmd/blobly_net/txhealth/ cmd/blobly_net/txclaim/ cmd/vectorcheck/restorerule/
 
       # EVERY cmd/ tool type-checks, for both OS targets. Nothing else here compiles a CLI
       # tool, so a rename in modules/ could break any of them and the build stayed green: #217
@@ -173,35 +146,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The V SOURCE is pinned by .v-version, but `make` bootstraps V by cloning vlang/vc
-      # with NO ref — so the bootstrap floated to whatever that repo's default branch held.
-      # That is not a theoretical hole: vc sat on the C generated from our exact pin from
-      # 2026-09-05 20:06 until 2026-09-07 05:31, which is the only reason the pin ever looked
-      # like one. When vc regenerated from V3 master, every Linux job on every branch failed
-      # in `make` with `./v2: No such file or directory` — a V3 bootstrap cannot build pre-V3
-      # source under -old-compiler, so v2 was never produced. Nothing in the repo had changed.
-      #
-      # So the bootstrap is pinned too (.vc-version), and `local=1` is what stops make from
-      # dragging it back: `latest_vc`, `latest_tcc` and `latest_legacy` are ALL guarded by
-      # `ifndef local` in V's GNUmakefile, and the first of them does `git clean -xf && git
-      # pull --rebase` on vc. Pre-cloning at a pin without local=1 would be undone by that
-      # pull. Done by hand rather than through vlang/setup-v because that action runs `make`
-      # itself, leaving nowhere to place the pinned clone.
-      #
-      # .vc-version must be the vc commit GENERATED FROM .v-version — its message is
-      # `[v:master] <the .v-version sha> - ...`. Bump the two together, or not at all.
-      - name: Install V (pinned — .v-version + .vc-version)
-        run: |
-          set -eux
-          # ONE definition of how the pinned toolchain is installed, shared with
-          # scripts/setup_env.sh and tested by scripts/v_toolchain_test.sh. Inline here it was
-          # the same incantation in three workflow steps, which is how the two halves of a pin
-          # come to disagree.
-          . scripts/v_toolchain.sh
-          V_PIN=$(tr -d '[:space:]' < .v-version)
-          VC_PIN=$(tr -d '[:space:]' < .vc-version)
-          v_toolchain_install "$RUNNER_TEMP/v" "$V_PIN" "$VC_PIN"
-          echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
+      - name: Set up pinned V (cached)
+        uses: ./.github/actions/setup-v
 
       # cmd/blobly_net links against the imgui C deps: g++ builds them, GLFW is the
       # windowing backend (its X11 deps come in transitively), FreeType is the glyph
@@ -213,14 +159,95 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
 
-      # scripts/run_gui.sh (RUN=0 = build only) builds libs/vgui/libvgui_c.a from the
-      # pinned cimgui/cimplot (gitignored, so always built fresh) and then compiles
+      - name: Build GUI dependencies (cached)
+        uses: ./.github/actions/gui-deps
+
+      # scripts/run_gui.sh (RUN=0 = build only) reuses the validated libvgui_c.a and compiles
       # cmd/blobly_net with the right flags (-cc gcc -enable-globals -path …|libs). Using
       # the same script devs use keeps CI and local builds identical.
       - name: Build GUI app (RUN=0 scripts/run_gui.sh)
         run: |
           RUN=0 sh scripts/run_gui.sh
           test -x build/blobly_net && echo "BUILD OK -> build/blobly_net"
+
+      - name: Transmit health readiness at the app send boundary
+        # Include the app in -path so test-mode lookup uses modules/script and
+        # modules/flash before the sibling cmd/ entry points of the same names.
+        run: v -cc gcc -enable-globals -path 'modules|libs|cmd/blobly_net|@vlib|@vmodules' cmd/blobly_net/tx_health_test.v
+
+      # THE BINARY THIS JOB ALREADY BUILT, kept instead of discarded. windows.yml has published
+      # its bundle on every main push for a long time while the Linux job built the same app and
+      # threw it away, so the only Linux binary anyone could download came from cutting a tag —
+      # which is a poor answer for "I want to try what just landed", and a worse one for anyone
+      # whose local V cannot link the GUI (the pin in .v-version is not always what a dev has).
+      #
+      # ON main ONLY, the gate windows.yml already uses and for its reason: handing out an
+      # executable nobody reviewed is what that gate exists to prevent (codex net#62/#63). A
+      # branch build stays a compile check.
+      #
+      # TARRED, AND WITH THE NOTICES, for two reasons that both bite the person downloading it:
+      #
+      #   * upload-artifact rewrites every file it stores to mode 0644 (its own README documents
+      #     this and recommends an archive). Uploaded bare, the binary this job advertises fails
+      #     with "Permission denied" the moment someone runs ./blobly_net. A tar carries the
+      #     mode through, and GitHub's zip wrapper around it does not touch what is inside.
+      #   * AN ACTIONS ARTIFACT ON A PUBLIC REPO IS A DISTRIBUTION. The app statically carries
+      #     vendored Lua and markdown, whose MIT terms require the copyright and permission
+      #     notices to travel with copies (packaging/THIRD-PARTY-NOTICES.txt). The release
+      #     tarball has always included them; a binary handed out without them is the same
+      #     distribution minus the one file that makes it lawful.
+      #
+      # This is NOT the release bundle: no projects, DBCs, samples or docs. Just the executable
+      # and the notices it may not travel without.
+      - name: Stage the Linux binary + notices (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # A TOP-LEVEL DIRECTORY, as the release tarball has. Unpacked from a populated
+          # directory — Downloads, which is where this lands — a tar of `.` spills the binary,
+          # LICENSE.txt and licenses/ loose into it and can overwrite an unrelated LICENSE.txt
+          # already sitting there (codex round 4).
+          top=blobly_net-linux-x64
+          mkdir -p "dist-ci/$top/licenses"
+          cp build/blobly_net "dist-ci/$top/"
+          cp LICENSE "dist-ci/$top/LICENSE.txt"
+          cp packaging/THIRD-PARTY-NOTICES.txt "dist-ci/$top/"
+          # THE NOTICES FILE IS AN INDEX, NOT THE NOTICES. It lists components and links and
+          # says so itself ("full licence texts are available from each project"), while MIT
+          # requires the copyright and permission notices to accompany copies of what is
+          # statically incorporated (codex round 3). These are the texts this build can prove
+          # it has; see #318 for the complete audit, which is a maintainer call because it
+          # turns on static-vs-dynamic linking per platform.
+          lic="dist-ci/$top/licenses"
+          cp thirdparty/lua/LICENSE          "$lic/lua-LICENSE.txt"
+          cp libs/markdown/LICENSE           "$lic/vlang-markdown-LICENSE.txt"
+          cp libs/vgui/build/cimgui/imgui/LICENSE.txt "$lic/dear-imgui-LICENSE.txt"
+          cp libs/vgui/build/cimgui/LICENSE  "$lic/cimgui-LICENSE.txt"
+          cp libs/vgui/build/cimplot/implot/LICENSE "$lic/implot-LICENSE.txt"
+          cp libs/vgui/build/cimplot/LICENSE "$lic/cimplot-LICENSE.txt"
+          # V's standard library is MIT and compiled in, and its text is NOT in this repo — it
+          # comes from the toolchain this job installed, which is the only place a build can
+          # honestly get it (codex round 4).
+          vroot="$(dirname "$(readlink -f "$(command -v v)")")"
+          cp "$vroot/LICENSE" "$lic/v-stdlib-LICENSE.txt"
+          for f in lua vlang-markdown dear-imgui cimgui implot cimplot v-stdlib; do
+            test -s "$lic/$f-LICENSE.txt" || { echo "licence text missing: $f"; exit 1; }
+          done
+          tar -C dist-ci -czf blobly_net-linux-x64.tar.gz "$top"
+          tar -tvzf blobly_net-linux-x64.tar.gz | grep -q "rwx.*$top/blobly_net\$" \
+            || { echo 'the binary lost its executable bit'; exit 1; }
+
+      # HANDED TO THE PUBLISH JOB, not published from here. This job compiles; it does not know
+      # whether the engine tests passed, because `test` runs beside it. Uploading the advertised
+      # name here attaches a downloadable application to a run whose tests may have failed
+      # (codex round 2). The name below says what it is, and it expires in a day.
+      - name: Hand the archive to the publish job (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build-unvalidated
+          path: blobly_net-linux-x64.tar.gz
+          retention-days: 1
+          if-no-files-found: error
 
       # libs/vgui is a standalone module, and this is what proves it: trace_chart imports only
       # `os` + `vgui`, so it compiles WITHOUT modules/ on the path. If the binding ever grows a
@@ -231,3 +258,29 @@ jobs:
           v -cc gcc -path "@vlib|@vmodules|libs" -o /tmp/vgui_standalone \
             libs/vgui/examples/trace_chart/trace_chart.v
           test -x /tmp/vgui_standalone && echo "OK — vgui has no app dependency"
+
+  # THE ONE STEP THAT HANDS SOMEBODY A BINARY, and the only one gated on the WHOLE verdict:
+  # `needs` both jobs, so a main push whose engine tests failed publishes nothing. It exists as
+  # a third job rather than a `needs: test` on gui-build because that would serialise every PR —
+  # ~5 minutes on each — to gate an artifact only main pushes ever produce. Re-uploading a
+  # staged archive costs seconds and leaves the two builds parallel.
+  #
+  # Residual, stated rather than hidden: `linux-build-unvalidated` from the job above is
+  # attached to a failed run too. It is named for what it is and expires in a day; the
+  # advertised name, the one the README sends people to, only ever appears on a green run.
+  publish-linux:
+    name: linux • publish binary (main only)
+    if: github.ref == 'refs/heads/main'
+    needs: [test, gui-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-build-unvalidated
+
+      - name: Upload the Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: blobly_net-linux-x64
+          path: blobly_net-linux-x64.tar.gz
+          if-no-files-found: error

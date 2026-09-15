@@ -3,6 +3,7 @@ module main
 import os
 import sysview
 import vgui
+import panerule
 
 // load_system loads a blobly_emb system.toml into the read-only System view.
 // restbus_from_system configures the REST BUS for one ECU under test: every OTHER node that
@@ -111,7 +112,7 @@ fn draw_system(mut app App) {
 		vgui.end()
 		return
 	}
-	sc := app.ui_scale
+	sc := app.prefs.ui_scale
 	if app.sys_path_buf.len == 0 {
 		// smart default: the project's own dir usually holds the system.toml (a .blobnet lives
 		// next to it), so Load works out of the box instead of starting on an empty box.
@@ -164,7 +165,15 @@ fn draw_system(mut app App) {
 	// BOTH panes get the SAME fixed height: a child_fill detail pane would eat all remaining
 	// vertical space, and ImGui advances the parent past the taller same-line child — pushing
 	// the 'buses & id allocation' tree below the visible region (codex #65).
-	ecu_h := 160 * sc
+	if app.sys_ecu_h <= 0 {
+		app.sys_ecu_h = 160
+	}
+	// The panes' height this frame: panerule — clamped BEFORE they are drawn, so a short dock
+	// reclaims the room now; a drag persists, the clamp does not; stored unscaled (#305 r2).
+	sys_min := 60 * sc
+	sys_max := vgui.content_avail_h() - 100 * sc // 100*sc keeps the tree's header and a row or two
+	ecu_h, sys_kept := panerule.drawn(app.sys_ecu_h, 160, sc, sys_min, sys_max)
+	app.sys_ecu_h = sys_kept
 	vgui.child_wh('##ecu_list', 130 * sc, ecu_h)
 	for n in app.sys.nodes {
 		lbl := if n.ecu_err != '' { '${n.name}  (!)' } else { n.name }
@@ -231,8 +240,17 @@ fn draw_system(mut app App) {
 	}
 	vgui.child_end()
 
+	// The divider between the ECU panes and the section below (#270 item 1): drag to trade
+	// height, within the clamp computed above the panes (the splitter floors max at min).
+	moved := vgui.splitter_h('##sys_split', ecu_h, sys_min, sys_max)
+	app.sys_ecu_h = app.pane_moved('system_ecu', app.sys_ecu_h, ecu_h, moved, sc)
 	// buses matrix + id allocation: useful but long, so fold it (closed by default) —
-	// keeps the panel focused on the nodes/ECU detail above.
+	// keeps the panel focused on the nodes/ECU detail above. In its own scrolling child, so
+	// what the splitter leaves is what it scrolls in; and its tables are CONTENT-SIZED
+	// (table_begin_sized with no height), because a scrolling table with no height takes
+	// everything left in the window — each bus's matrix did, and the id allocation under it,
+	// and every bus after the first, were below the visible area with no way to reach them.
+	vgui.child_fill('##sysbusid_body')
 	if vgui.tree_node('buses & id allocation###sysbusid') {
 		for b in app.sys.buses {
 			vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
@@ -250,7 +268,7 @@ fn draw_system(mut app App) {
 			// explicit break below ends the zero-node case
 			for {
 				n1 := if n0 + chunk < app.sys.nodes.len { n0 + chunk } else { app.sys.nodes.len }
-				if vgui.table_begin('##sysmx_${b.name}_${n0}', 3 + (n1 - n0)) {
+				if vgui.table_begin_flat('##sysmx_${b.name}_${n0}', 3 + (n1 - n0)) {
 					vgui.table_setup_col('signal', 140 * sc)
 					vgui.table_setup_col('frame', 130 * sc)
 					vgui.table_setup_col('cycle', 50 * sc)
@@ -294,7 +312,7 @@ fn draw_system(mut app App) {
 			if ncols > 0 {
 				vgui.text_colored(205, 60, 60, '${ncols} id collision(s) on ${b.name}')
 			}
-			if vgui.table_begin('##sysid_${b.name}', 3) {
+			if vgui.table_begin_flat('##sysid_${b.name}', 3) {
 				vgui.table_setup_col('id', 90 * sc)
 				vgui.table_setup_col('kind', 80 * sc)
 				vgui.table_setup_col('owner', 160 * sc)
@@ -316,5 +334,6 @@ fn draw_system(mut app App) {
 		}
 		vgui.tree_pop()
 	}
+	vgui.child_end()
 	vgui.end()
 }

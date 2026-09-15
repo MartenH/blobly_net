@@ -75,21 +75,21 @@ fn mb_specs() []BusSpec {
 // were replayed by separate players the interleaving below would be whatever the scheduler chose.
 fn test_buses_merge_into_one_time_ordered_stream() {
 	p := build_multi(mb_sample(), mb_specs())
-	assert p.entries.len == 3, 'got ${p.entries.len}'
+	assert p.entries().len == 3, 'got ${p.entries().len}'
 	mut prev := -1.0
-	for e in p.entries {
+	for e in p.entries() {
 		assert e.t_s >= prev, 'stream is not time-ordered'
 		prev = e.t_s
 	}
-	assert p.entries[0].iface == 'vcan0' && p.entries[0].t_s == 0.00
-	assert p.entries[1].iface == 'vcan1' && p.entries[1].t_s == 0.01
-	assert p.entries[2].iface == 'vcan0' && p.entries[2].t_s == 0.04
+	assert p.entries()[0].iface == 'vcan0' && p.entries()[0].t_s == 0.00
+	assert p.entries()[1].iface == 'vcan1' && p.entries()[1].t_s == 0.01
+	assert p.entries()[2].iface == 'vcan0' && p.entries()[2].t_s == 0.04
 }
 
 // The SUT is subtracted on every mapped bus, not just the first.
 fn test_the_sut_is_subtracted_on_every_bus() {
 	p := build_multi(mb_sample(), mb_specs())
-	for e in p.entries {
+	for e in p.entries() {
 		assert e.frame.id != 0x101, 'SUT_ECU survived on bus A'
 		assert e.frame.id != 0x201, 'SUT_ECU survived on bus B'
 	}
@@ -102,7 +102,7 @@ fn test_the_sut_is_subtracted_on_every_bus() {
 // An unmapped bus contributes nothing — a recording holds buses this bench does not have.
 fn test_an_unmapped_bus_is_left_out() {
 	p := build_multi(mb_sample(), mb_specs())
-	for e in p.entries {
+	for e in p.entries() {
 		assert e.frame.id != 0x300, 'a bus nobody mapped reached the wire'
 	}
 }
@@ -143,7 +143,7 @@ fn test_a_mapped_bus_with_no_frames_is_still_reported() {
 		},
 	]
 	p := build_multi(mb_sample(), specs)
-	assert p.entries.len == 0
+	assert p.entries().len == 0
 	assert p.buses.len == 1
 	assert p.buses[0].source == 0
 }
@@ -193,10 +193,10 @@ fn test_simultaneous_cross_bus_frames_keep_their_recorded_order() {
 		mb_entry('mf4:group2', 0x200, 1.0),
 	]
 	p := build_multi(src, mb_specs())
-	assert p.entries.len == 3
-	assert p.entries[0].iface == 'vcan1', 'the bus recorded FIRST must go out first'
-	assert p.entries[1].iface == 'vcan0'
-	assert p.entries[2].iface == 'vcan1'
+	assert p.entries().len == 3
+	assert p.entries()[0].iface == 'vcan1', 'the bus recorded FIRST must go out first'
+	assert p.entries()[1].iface == 'vcan0'
+	assert p.entries()[2].iface == 'vcan1'
 }
 
 // Two spellings of one software bus are one destination. transport.canonical_iface exists so an
@@ -301,7 +301,7 @@ fn test_a_remote_frame_leaves_both_the_stream_and_the_kept_count() {
 	assert a.report.remote == 1, 'the request is counted'
 	assert a.source == a.report.kept + a.report.withheld_excluded + a.report.withheld_unattributed +
 		a.report.remote, 'recorded = withheld + replay'
-	for e in p.entries {
+	for e in p.entries() {
 		assert !e.frame.rtr, 'and it does not reach the wire'
 	}
 }

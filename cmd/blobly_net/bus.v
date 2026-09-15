@@ -155,6 +155,7 @@ mut:
 	inner     transport.Bus
 	app       &App
 	iface     string
+	health_wire string // rate-independent identity, computed once when the tap opens
 	chan_name string // logical channel, '' = derive from the interface
 	origin    string
 	// Whether this tap REPRODUCES frames somebody else already decided the format of, rather than
@@ -168,9 +169,37 @@ mut:
 	// trace, and the frame then lands in a measurement that had already begun. tx_mu is the lock
 	// Start drains, so a decision made while holding it is a decision Start cannot overtake.
 	guard_gen u64
+	// Whether the run this tap belongs to has ended — what send_waiting_for_room asks between
+	// retries. Built ONCE here: as a closure literal inside send it was rebuilt per frame, and
+	// V's closures bump-allocate a trampoline slot the runtime never frees, so a replay leaked
+	// one per emitted frame for as long as it ran (#299's follow-up).
+	cancel fn () bool
+}
+
+// run_cancel is the cancellation TapBus.send hands to the retry helper: true once the run the
+// tap belongs to is over; never, for a tap that outlives runs (guard_gen 0).
+fn run_cancel(gen u64, app &App) fn () bool {
+	return fn [gen, app] () bool {
+		if gen == 0 {
+			return false
+		}
+		mut a := unsafe { app }
+		// Counted like the others: on a saturated queue this runs before each of up to 200
+		// retries, and it was the one acquisition a send makes that the wait figure left out.
+		pt := probe_lock_begin()
+		a.mu.lock()
+		probe_lock_end(pt)
+		over := !a.running || a.run_gen != gen
+		a.mu.unlock()
+		return over
+	}
 }
 
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
+	pa := probe_alloc_mark()
+	defer {
+		probe_alloc_note(.send, pa)
+	}
 	// What the WIRE will carry, not what the caller asked for: classic CAN takes 8 bytes and the
 	// backends truncate silently, so a 12-byte Quick Send would be recorded whole, never match
 	// its own 8-byte echo, and show up as a false RX row plus an unconfirmed TX one.
@@ -197,14 +226,21 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	defer {
 		t.tx_mu.unlock()
 	}
-	if t.guard_gen != 0 {
-		mut a := unsafe { t.app }
-		a.mu.lock()
-		stale := !a.running || a.run_gen != t.guard_gen
-		a.mu.unlock()
-		if stale {
-			return error('run ended')
-		}
+	// ONE spelling of "the run this tap belongs to is over": the same predicate the retry
+	// helper asks between attempts, built once per tap (run_cancel). Inline here it was a
+	// second copy, edited in step with the first.
+	if t.cancel() {
+		return error('run ended')
+	}
+	// A newly filed transmit-only tap is usable only once its health receive queue
+	// exists. Enforce this before recording or sending, including manual sends that
+	// do not use the generator's readiness check.
+	mut a := unsafe { t.app }
+	a.mu.lock()
+	health_ready := !a.running || a.tx_health.send_ready(t.health_wire, a.run_gen)
+	a.mu.unlock()
+	if !health_ready {
+		return error('${t.iface}: transmit waiting for the bus-health reader')
 	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
@@ -229,24 +265,17 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// the hot path that wants its own change, not a corner of this one.
 	// The wait ends when the RUN does. t.guard_gen is the run this tap belongs to; without this
 	// the worker sat out its whole retry budget after Stop, with its own taps closing underneath.
-	gen_now := t.guard_gen
-	app_ref := t.app
-	transport.send_waiting_for_room(mut t.inner, wire, 200, fn [gen_now, app_ref] () bool {
-		if gen_now == 0 {
-			return false
-		}
-		mut a := unsafe { app_ref }
-		a.mu.lock()
-		over := !a.running || a.run_gen != gen_now
-		a.mu.unlock()
-		return over
-	}) or {
+	pb := probe_alloc_mark()
+	transport.send_waiting_for_room(mut t.inner, wire, 200, t.cancel) or {
+		probe_alloc_note(.inner, pb)
 		t.app.retract_emit(seq, t.origin, epoch)
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
 		// from the backend
 		t.app.unrecord(rec_id)
 		return err
 	}
+	probe_alloc_note(.inner, pb)
+	pc := probe_alloc_mark()
 	// The driver has it: it is on the wire, and the wire's load.
 	t.app.count_tx_load(t.iface, wire)
 	// …and only now is it a frame we PUT on the wire, which is what the `verify:` self-send
@@ -254,6 +283,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// about a frame that never went out, nor consume the once-per-run latch that the real
 	// transmission would need.
 	t.app.note_self_sent(t.iface, wire)
+	probe_alloc_note(.after, pc)
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {
@@ -334,10 +364,12 @@ fn (app &App) open_tap_phys(iface string, phys string, origin string, chan_name 
 		inner:      inner
 		app:        unsafe { app }
 		iface:      logical
+		health_wire: transport.wire_key(logical)
 		chan_name:  chan_name
 		origin:     origin
 		reproduces: reproduces
 		guard_gen:  gen
+		cancel:     run_cancel(gen, app)
 	}
 }
 
@@ -440,7 +472,8 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 		// carries no channel identity and the trace files it under the first channel on the
 		// wire (codex round 8 on #257). Same rule as gen_loop's. A Quick Send or a diagnostic
 		// path has no owning channel and takes the shared tap as before.
-		match taprule.fallback(app.taprule_taps_locked(), named, tx_bus_key('', iface), chan_name != '') {
+		match taprule.fallback(app.taprule_taps_locked(), named, tx_bus_key('', iface),
+			chan_name != '') {
 			.wait {
 				app.mu.unlock()
 				app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
@@ -567,7 +600,11 @@ struct DiscoveredIface {
 // another's wire is a legitimate edit (swapping compute and edge), and hiding them made the
 // list look like the device had lost a channel.
 fn pick_items(list []DiscoveredIface) []string {
-	placeholder := if list.len == 0 { '(no detected interfaces — click ↻)' } else { 'pick a detected interface…' }
+	placeholder := if list.len == 0 {
+		'(no detected interfaces — click rescan)'
+	} else {
+		'pick a detected interface…'
+	}
 	mut items := [placeholder]
 	for d in list {
 		tag := if d.added { '  [in project]' } else { '' }

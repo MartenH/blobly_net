@@ -72,18 +72,20 @@ fn (mut app App) load_recording(path string) {
 	// recording's own BusChannel numbering; a candump line names an interface the user actually
 	// configured. That distinction decides whether the alias table applies at all — see below.
 	from_mf4 := path.to_lower().ends_with('.mf4')
-	entries := if from_mf4 {
-		mf4.load_file(path) or {
+	// Into the arena (canlog.Log): a million-frame import is a pointer-free block the
+	// collector never walks, and each row below is read through a view, never copied.
+	log := if from_mf4 {
+		mf4.load_log(path) or {
 			app.notify('mf4 ${path}: ${err}')
 			return
 		}
 	} else {
-		canlog.load_file(path) or {
+		canlog.load_log(path) or {
 			app.notify('log ${path}: ${err}')
 			return
 		}
 	}
-	t0 := if entries.len > 0 { entries[0].t_s } else { 0.0 }
+	t0 := if log.len() > 0 { log.t_s(0) } else { 0.0 }
 	// Verify while building the rows. Entries arrive in time order and the project already
 	// supplies the protection configuration, so a recording can be checked exactly as live
 	// traffic is — otherwise a violation visible during a run vanished the moment it was saved
@@ -164,11 +166,11 @@ fn (mut app App) load_recording(path string) {
 	// different source buses, which is a fabricated verdict either way it lands. The recording's
 	// own distinct labels are the file saying it spans several buses — believe it.
 	mut rec_buses := map[string]bool{}
-	for e in entries {
-		rec_buses[e.iface] = true
+	for lbl in log.labels {
+		rec_buses[lbl] = true
 	}
 	mf4_only := if can_buses.len == 1 && rec_buses.len == 1 { only } else { '' }
-	first_row := if entries.len > trace_cap { entries.len - trace_cap } else { 0 }
+	first_row := if log.len() > trace_cap { log.len() - trace_cap } else { 0 }
 	app.mu.lock()
 	app.reset_trace_locked()
 	// Claim the view HERE, inside the same locked region that reset it, and PAUSE the capture:
@@ -195,7 +197,8 @@ fn (mut app App) load_recording(path string) {
 	// Verification still runs over EVERY frame: an E2E counter/CRC verdict depends on the frames
 	// before it, so skipping any would invent verdicts for the ones shown. Likewise the grouped
 	// view's totals, which exist precisely to outlive trimming.
-	for i, e in entries {
+	for i in 0 .. log.len() {
+		e := log.at(i)
 		f := e.frame
 		mut viol := ''
 		if !f.rtr {
@@ -226,33 +229,35 @@ fn (mut app App) load_recording(path string) {
 		// REP, not BUS: these frames were never on this bench's wire. A candump log carries no
 		// origin at all, so we cannot say whether a given line was the recorder's tester, its
 		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
-		app.gcount[gkey_frame(org_rep, e.iface, f)]++
+		rep_key := gkey_frame(org_rep, e.iface, f)
+		app.gcount[rep_key]++
 		if i < first_row {
 			continue // trimmed before it could ever be drawn
 		}
 		name := app.lookup_name(f.id, f.extended)
 		app.push_row_locked(TraceRow{
-			t_ms:   (e.t_s - t0) * 1000.0
-			ch:     e.iface
-			origin: org_rep
-			id:     f.id
-			ext:    f.extended
-			fd:     f.fd
-			brs:    f.brs
-			esi:    f.esi
-			rtr:    f.rtr
-			name:   name
-			data:   f.data.clone()
-			e2e:    viol
+			t_ms:     (e.t_s - t0) * 1000.0
+			ch:       e.iface
+			origin:   org_rep
+			key:      rep_key
+			id:       f.id
+			ext:      f.extended
+			fd:       f.fd
+			brs:      f.brs
+			esi:      f.esi
+			rtr:      f.rtr
+			name:     name
+			data:     f.data.clone()
+			e2e:      viol
 			imported: true
 		})
 	}
 	app.mu.unlock()
-	shown := entries.len - first_row
+	shown := log.len() - first_row
 	if first_row > 0 {
-		app.notify('loaded ${entries.len} frames from ${os.base(path)} — showing the last ${shown}')
+		app.notify('loaded ${log.len()} frames from ${os.base(path)} — showing the last ${shown}')
 	} else {
-		app.notify('loaded ${entries.len} frames from ${os.base(path)}')
+		app.notify('loaded ${log.len()} frames from ${os.base(path)}')
 	}
 }
 
@@ -272,6 +277,17 @@ fn (mut app App) load_recording(path string) {
 // Channels replaying DIFFERENT files get their own group and their own clock, because timestamps
 // from two recordings are not comparable — nothing would be synchronised by pretending they are.
 fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
+	// A group that returns before it has dispatched a frame failed to run, whichever of its
+	// refusals it took — the wires that never came up, a bus that would not resolve, a
+	// conflict, an empty plan, a bus that would not open, rows disagreeing about speed —
+	// and the probe counts that ONCE here rather than at each exit, because the exits kept
+	// being found one at a time (codex on #299 rounds 10 and 11).
+	mut dispatching := false
+	defer {
+		if !dispatching {
+			probe_group_failed()
+		}
+	}
 	// A replay is part of its run, and this loop opens its taps through open_tap_full, whose
 	// bitrate_iface walks app.chans unlocked. So it holds a census slot, and the next REBUILD
 	// waits for it — Stop itself does not wait, for anything. That matters here more than
@@ -455,7 +471,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 
 	// Decoded ONCE for the whole group, however many channels read from it.
-	all, buses := load_recording_for_replay(source) or {
+	log, buses := load_recording_for_replay(source) or {
 		a.notify('replay ${label}: ${err}')
 		return
 	}
@@ -521,7 +537,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		a.notify('replay: ${c}')
 		return
 	}
-	plan := player.build_multi(all, specs)
+	plan := player.build_multi_log(log, specs)
 	mut total := 0
 	for i, b in plan.buses {
 		total += b.report.kept
@@ -678,8 +694,11 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			return
 		}
 	}
-	mut p := player.new_player_over(plan.entries, speed, repeat, plan.t0_s, plan.end_s)
+	dispatching = true
+	mut p := player.new_player_log(plan.log, plan.sel, speed, repeat, plan.t0_s, plan.end_s)
 	mut sw := time.new_stopwatch()
+	mut batch := []canlog.LogEntry{cap: 256}
+	mut dues := []f64{cap: 256}
 	mut sent := u64(0)
 	mut failed := u64(0)
 	mut first_err := ''
@@ -708,6 +727,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// a dense capture at 4x meant ~20k extra takes of the app-wide mutex per second, each
 		// a chance to queue behind the GUI's per-frame ring clone, to feed a panel that
 		// repaints ~30 times a second.
+		pt := probe_alloc_mark()
 		mut now := f64(i64(sw.elapsed())) / 1e6
 		a.mu.lock()
 		stop := !a.running || a.run_gen != gen
@@ -765,7 +785,17 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// frames belong to that run and keep counting. Restart begins a run; seek scrubs one.
 			announced = false
 		}
-		for e in p.due(now) {
+		// The schedule beside the batch only when a probe will score it: without one the plain
+		// release builds no second array per batch (codex on #299 round 9).
+		// Into buffers the worker keeps: a fresh batch per tick was an allocation on the
+		// thread whose collections are the stutter, and a probe that allocated its own schedule
+		// beside it was adding garbage to the very rate it measures (codex on #299 round 10).
+		if probe_active {
+			p.due_into_scheduled(now, mut batch, mut dues)
+		} else {
+			p.due_into(now, mut batch)
+		}
+		for bi, e in batch {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
 			// returns everything owed at once, and stop was checked before the batch — so a
 			// Stop/Start during a long one left the PREDECESSOR dispatching into the new run,
@@ -776,11 +806,25 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			// at how much stale traffic is acceptable, and the answer is none. An uncontended
 			// lock costs tens of nanoseconds against a send, and the batch is short whenever
 			// the cost would matter.
+			// Counted with the others: the GUI holding app.mu stalls every frame HERE first, and
+			// a cadence figure that includes the stall while the wait figure omits it says the
+			// mutex is not a factor with no evidence (codex on #299 round 4).
+			pl := probe_lock_begin()
 			a.mu.lock()
+			probe_lock_end(pl)
 			gone := !a.running || a.run_gen != gen
 			a.mu.unlock()
 			if gone {
 				break
+			}
+			if probe_active {
+				// cadence: dispatch time against the schedule this frame was RELEASED on,
+				// which the player hands back beside the batch — re-sampled per frame, since
+				// after a stall the batch is everything owed and its later frames really do go
+				// out later; and per entry, since a batch can cross one or several loop wraps
+				// and the player's base has moved on by the time it is read (codex on #299
+				// rounds 5 and 7).
+				probe_note_late(f64(i64(sw.elapsed())) / 1e6 - dues[bi])
 			}
 			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {
@@ -828,13 +872,21 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			time.sleep(50 * time.millisecond)
 			continue
 		}
+		probe_alloc_note(.tick, pt)
 		nd := p.next_due_ms() or { break }
-		mut wait := nd - f64(i64(sw.elapsed())) / 1e6
+		sampled := f64(i64(sw.elapsed())) / 1e6
+		mut wait := nd - sampled
 		if wait > 50 {
 			wait = 50 // so a stopped measurement is noticed promptly
 		}
 		if wait > 0 {
-			time.sleep(i64(wait * 1_000_000) * time.nanosecond)
+			// The CAPPED deadline, not nd: handed the frame's own due time, the wait would sit
+			// out a long gap in the recording without ever checking whether the run had ended
+			// (self-review of #300).
+			// The ABSOLUTE deadline from the one sample the wait was computed from — re-sampling
+			// the clock here would add any interruption between the two reads to the wait a
+			// second time (codex on #300).
+			player.wait_until_ms(mut sw, sampled + wait)
 		}
 	}
 	// `sent`, not p.sent(): the player counts what it handed over. An FD capture on a classic
@@ -1018,21 +1070,21 @@ fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 // from the interface names its lines carry — in the loader and nowhere else, so Start's
 // resolver and the Configure row's Scan match against ONE list by construction (they briefly
 // each derived their own; self-review of the Scan work).
-fn load_recording_for_replay(source string) !([]canlog.LogEntry, []mf4.BusInfo) {
+fn load_recording_for_replay(source string) !(canlog.Log, []mf4.BusInfo) {
 	if source.to_lower().ends_with('.mf4') {
 		rec := mf4.load_recording(source)!
-		if rec.entries.len == 0 {
+		if rec.log.len() == 0 {
 			return error('${os.base(source)} holds no frames')
 		}
-		return rec.entries.clone(), rec.buses.clone()
+		return rec.log, rec.buses.clone()
 	}
-	es := canlog.load_file(source)!
-	if es.len == 0 {
+	log := canlog.load_log(source)!
+	if log.len() == 0 {
 		return error('${os.base(source)} holds no frames')
 	}
 	mut counts := map[string]int{}
-	for e in es {
-		counts[e.iface]++
+	for i in 0 .. log.len() {
+		counts[log.iface(i)]++
 	}
 	mut ifs := counts.keys()
 	ifs.sort()
@@ -1043,7 +1095,7 @@ fn load_recording_for_replay(source string) !([]canlog.LogEntry, []mf4.BusInfo) 
 			frames: counts[name]
 		}
 	}
-	return es.clone(), buses
+	return log, buses
 }
 
 // resolve_replay_bus asks modules/player, which owns the rule. The GUI and cmd/restbus each had
@@ -1069,7 +1121,8 @@ fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
 fn replay_db(app &App, ch Chan) candb.Database {
 	mut a := unsafe { app }
 	a.mu.lock()
-	db := merge_dbs_from(app.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(app.resolve_asset(it)))))
+	db :=
+		merge_dbs_from(app.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(app.resolve_asset(it)))))
 	a.mu.unlock()
 	return db
 }
@@ -1100,7 +1153,7 @@ mut:
 // the newer result. Same ownership rule as ReplayState.token, same reason.
 fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &ReplayScan) {
 	mut a := unsafe { app }
-	entries, buses := load_recording_for_replay(path) or {
+	log, buses := load_recording_for_replay(path) or {
 		a.mu.lock()
 		if sc := a.replay_scans[ci] {
 			if voidptr(sc) == voidptr(mine) {
@@ -1117,7 +1170,7 @@ fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &Re
 	}
 	mut cens := map[string]player.NodeCensus{}
 	for b in buses {
-		cens[b.iface] = player.census(player.on_bus(entries, b.iface), db)
+		cens[b.iface] = player.census_sel(&log, player.sel_on_bus(&log, b.iface), db)
 	}
 	a.mu.lock()
 	if sc := a.replay_scans[ci] {

@@ -48,6 +48,9 @@ struct Opts {
 }
 
 fn main() {
+	// Before anything paces itself: on Windows every sleep rounds up to the scheduler quantum
+	// until the process asks for the 1 ms one (modules/player/pace_windows.v).
+	player.raise_timer_resolution()
 	o := parse_args() or {
 		eprintln('restbus: ${err}')
 		eprintln('usage: restbus --source <file.mf4> --bus <name|iface> --dbc <file.dbc> --exclude <NODE> --iface <iface>')
@@ -59,7 +62,7 @@ fn main() {
 		exit(1)
 	}
 	if o.list {
-		println('${o.source}: ${rec.entries.len} frames')
+		println('${o.source}: ${rec.log.len()} frames')
 		println('${'bus':-14} ${'label':-16} frames')
 		for b in rec.buses {
 			println('${b.name:-14} ${b.iface:-16} ${b.frames}')
@@ -90,13 +93,13 @@ fn main() {
 		exit(1)
 	}
 
-	on_bus := player.on_bus(rec.entries, iface)
+	on_bus := player.sel_on_bus(&rec.log, iface)
 	if on_bus.len == 0 {
 		eprintln('restbus: no frames on ${iface}')
 		exit(1)
 	}
-	kept, rep := player.without_senders(on_bus, db, o.exclude, o.replay_unattr)
-	span := on_bus[on_bus.len - 1].t_s - on_bus[0].t_s
+	kept, rep := player.subtract(&rec.log, on_bus, db, o.exclude, o.replay_unattr)
+	span := rec.log.t_s(int(on_bus.last())) - rec.log.t_s(int(on_bus[0]))
 
 	println('source   ${o.source}')
 	println('bus      ${o.bus} -> ${iface}: ${on_bus.len} frames over ${span:.2f}s')
@@ -125,7 +128,7 @@ fn main() {
 	fd_n := rep.fd // the plan's own count, the one the GUI states too (#184)
 	if fd_n > 0 {
 		pct := 100.0 * f64(fd_n) / f64(kept.len)
-		big := kept.filter(it.frame.data.len > 8).len
+		big := kept.count(rec.log.rows[it].len > 8)
 		println('  CAN-FD:  ${fd_n} frames (${pct:.1f}%), ${big} with payloads over 8 bytes')
 		println('           the destination interface must be CAN-FD capable and up')
 	}
@@ -149,8 +152,8 @@ fn main() {
 
 	// Over the SOURCE bus's span, not the filtered subset's: removing the SUT's frames must not
 	// shorten the loop or move its origin.
-	mut p := player.new_player_over(kept, o.speed, o.loop, on_bus[0].t_s,
-		on_bus[on_bus.len - 1].t_s)
+	mut p := player.new_player_log(rec.log, kept, o.speed, o.loop, rec.log.t_s(int(on_bus[0])),
+		rec.log.t_s(int(on_bus.last())))
 	// Keyed by the label these entries actually CARRY, not by the destination string. They were
 	// never relabelled — that is build_multi's job, and only the --map path does it — so they
 	// still carry the recording's own bus label, which is the one `player.on_bus` filtered on
@@ -222,7 +225,9 @@ fn pump(mut p player.Player, mut buses map[string]transport.Bus, attempts int) (
 		nd := p.next_due_ms() or { break }
 		wait := nd - f64(i64(sw.elapsed())) / 1e6
 		if wait > 0 {
-			time.sleep(i64(wait * 1_000_000) * time.nanosecond)
+			// Through the player's own pacing: a plain sleep spins below a millisecond on Windows
+			// and rounds up to the quantum above it (#300).
+			player.wait_until_ms(mut sw, nd) // the absolute due time, not a re-sampled remainder
 		}
 		el := f64(i64(sw.elapsed())) / 1e6
 		if el - last_report >= 1000.0 {
@@ -312,7 +317,7 @@ fn run_multi(o Opts, rec &mf4.Recording) {
 		exit(1)
 	}
 
-	plan := player.build_multi(rec.entries, specs)
+	plan := player.build_multi_log(rec.log, specs)
 	mut name_of := map[string]string{}
 	for b in rec.buses {
 		name_of[b.iface] = if b.name != '' { b.name } else { b.iface }
@@ -402,7 +407,7 @@ fn run_multi(o Opts, rec &mf4.Recording) {
 	dsts := specs.map(it.dst).join(', ')
 	println('transmitting on ${dsts} at ${o.speed}x${if o.loop { ', looping' } else { '' }} — ctrl-C to stop')
 
-	mut p := player.new_player_over(plan.entries, o.speed, o.loop, plan.t0_s, plan.end_s)
+	mut p := player.new_player_log(plan.log, plan.sel, o.speed, o.loop, plan.t0_s, plan.end_s)
 	// `buses` is keyed by destination and build_multi relabelled every entry to its destination,
 	// so `pump`'s one routing rule lands each frame on the right wire.
 	//
