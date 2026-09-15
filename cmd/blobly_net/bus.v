@@ -86,6 +86,11 @@ fn (c Chan) monitorable() bool {
 	return c.enabled && c.mode in ['normal', 'replay'] && !c.doip
 }
 
+// Spawning reserves a worker; running means its receive handle is actually open.
+fn (c Chan) receive_ready() bool {
+	return c.monitorable() && c.running
+}
+
 // replay_blocker names the reason a replay-mode channel will not play — '' when nothing
 // blocks it. THE one statement of the disqualifiers: replaying() is defined by it and the
 // Replay panel prints it, so a clause added here reaches both — the panel hand-copying the
@@ -237,7 +242,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// do not use the generator's readiness check.
 	mut a := unsafe { t.app }
 	a.mu.lock()
-	health_ready := !a.running || a.tx_health.send_ready(t.health_wire, a.run_gen)
+	health_ready := a.transmit_ready_locked(t.health_wire)
 	a.mu.unlock()
 	if !health_ready {
 		return error('${t.iface}: transmit waiting for the bus-health reader')

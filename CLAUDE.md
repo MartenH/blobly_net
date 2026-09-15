@@ -156,12 +156,15 @@ SocketCAN error frames and Vector chip-state replies advance health inside `recv
 reports health and diagnostics in the Log, including a final sample at Stop, and closes when
 its last transmit tap disappears. A supervisor retries failures once per second, up to three
 per run. Claims include the run generation so a departing worker cannot erase its successor.
-**Transmit readiness requires an open receive handle**: `file_tap` claims under the tap-publication
-lock, the reader publishes readiness after `transport.open`, and `TapBus.send` refuses until then,
-before recording or sending. Cyclic generators wait without consuming their first cycle. The
-open runs on a worker, so only that wire waits; the GUI and unrelated wires remain responsive.
-A failed or retired reader stops transmission on its claimed wire until a reader opens again
-or the next Start resets the generation. Health verdicts are Log-only on wires with no monitored
+**Transmit readiness requires an open receive handle on every planned transmit wire**.
+Start prepares those expectations and publishes the new run while holding the transmit locks,
+so a surviving tool tap cannot send before the new run files its taps. A monitor counts only
+once its receive handle is open (`Chan.receive_ready`); spawning is insufficient. `file_tap`
+claims any wire without an open monitor under the publication lock, the health reader publishes
+readiness after `transport.open`, and `TapBus.send` checks before recording or sending. Cyclic
+generators wait without consuming their first cycle. The open runs on a worker, so only that
+wire waits; the GUI and unrelated wires remain responsive. A failed health reader leaves the
+wire waiting unless an open monitor covers it. Health verdicts are Log-only on wires with no monitored
 row; they do not contribute a Buses-row or toolbar state. These workers participate in the
 runtime census and the rebuild drain. The Linux GUI CI job also runs
 `cmd/blobly_net/tx_health_test.v` against the actual tap send path over an in-process bus

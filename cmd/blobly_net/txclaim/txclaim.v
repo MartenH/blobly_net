@@ -36,14 +36,20 @@ module txclaim
 // max_failures is how many hard receive errors on one wire, within one run, retire it.
 pub const max_failures = 3
 
+enum ReaderState {
+	expected // this run plans to use the wire; no reader has been started yet
+	opening
+	reading
+	idle
+	retired
+}
+
 // Claim is what the ledger knows about one wire.
 pub struct Claim {
 pub:
-	gen      u64 // the run that made it; an entry from another run is not a claim on this one
-	held     bool // a reader is running for this wire right now
-	opened   bool // its receive handle is open; only then may this wire transmit
-	failures int // hard receive errors this run, not counting lifecycle closes it cannot see
-	retired  bool // failures reached the limit: no more readers for this run
+	gen      u64
+	failures int
+	state    ReaderState
 }
 
 // Ledger is the shared state. The caller holds ONE lock around every call.
@@ -52,13 +58,24 @@ pub mut:
 	wires map[string]Claim
 }
 
+// expect reserves readiness before Start releases the send locks. A tool may
+// still hold a tap from the previous run, before this run files any of its own.
+pub fn (mut l Ledger) expect(wire string, gen u64) {
+	if e := l.wires[wire] {
+		if e.gen == gen {
+			return
+		}
+	}
+	l.wires[wire] = Claim{ gen: gen, state: .expected }
+}
+
 // may_claim reports whether a supervisor of run `gen` should start a reader for this wire.
 pub fn (l Ledger) may_claim(wire string, gen u64) bool {
 	e := l.wires[wire] or { return true }
 	if e.gen != gen {
 		return true // a previous run's entry says nothing about this one
 	}
-	return !e.held && !e.retired
+	return e.state in [.expected, .idle]
 }
 
 // may_claim_now reports whether this wire may be claimed OUTSIDE the supervisor's once-a-second
@@ -77,7 +94,7 @@ pub fn (l Ledger) may_claim_now(wire string, gen u64) bool {
 	if e.gen != gen {
 		return true // nobody has watched it in THIS run
 	}
-	return false
+	return e.state == .expected
 }
 
 // claim records that a reader is being started. A wire carried over from an earlier run starts
@@ -86,7 +103,7 @@ pub fn (mut l Ledger) claim(wire string, gen u64) {
 	prev := l.wires[wire] or { Claim{} }
 	l.wires[wire] = Claim{
 		gen: gen
-		held: true
+		state: .opening
 		failures: if prev.gen == gen { prev.failures } else { 0 }
 	}
 }
@@ -95,20 +112,22 @@ pub fn (mut l Ledger) claim(wire string, gen u64) {
 // Merely reserving or spawning a worker cannot capture the first bus-off event.
 pub fn (mut l Ledger) opened(wire string, gen u64) {
 	e := l.wires[wire] or { return }
-	if e.gen == gen && e.held {
+	if e.gen == gen && e.state == .opening {
 		l.wires[wire] = Claim{
 			...e
-			opened: true
+			state: .reading
 		}
 	}
 }
 
-// send_ready gates only wires claimed for this run. Monitored wires and sends outside
-// a measurement do not acquire a health-reader dependency. A retry must open again;
-// a failed or retired reader is never evidence that a receive queue exists.
+// send_ready is this ledger's readiness for a wire. Start expects every planned
+// transmit wire before publishing the run, including wires a surviving tool tap
+// can use before file_tap. The app also accepts an actually open monitor. Wires
+// outside this run's plan keep their existing tool behavior; an old claim does
+// not silently add them to a new measurement.
 pub fn (l Ledger) send_ready(wire string, gen u64) bool {
 	e := l.wires[wire] or { return true }
-	return e.gen != gen || (e.held && e.opened)
+	return e.gen != gen || e.state == .reading
 }
 
 // release records that a reader has stopped. `failed` means a hard receive error rather than an
@@ -119,15 +138,14 @@ pub fn (l Ledger) send_ready(wire string, gen u64) bool {
 // delete there hands out a second reader for one tap.
 pub fn (mut l Ledger) release(wire string, gen u64, failed bool) {
 	e := l.wires[wire] or { return }
-	if e.gen != gen || !e.held {
+	if e.gen != gen || e.state !in [.opening, .reading] {
 		return
 	}
 	f := if failed { e.failures + 1 } else { e.failures }
 	l.wires[wire] = Claim{
 		gen: gen
-		held: false
 		failures: f
-		retired: f >= max_failures
+		state: if f >= max_failures { .retired } else { .idle }
 	}
 }
 
@@ -136,5 +154,5 @@ pub fn (mut l Ledger) release(wire string, gen u64, failed bool) {
 // watched rather than being told nothing or told every second.
 pub fn (l Ledger) retired(wire string, gen u64) bool {
 	e := l.wires[wire] or { return false }
-	return e.gen == gen && e.retired
+	return e.gen == gen && e.state == .retired
 }

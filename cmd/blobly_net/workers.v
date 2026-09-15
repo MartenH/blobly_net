@@ -337,7 +337,7 @@ fn gen_loop(app &App) {
 					&& !taprule.ready(taps, tx_bus_key(sr.chan, tgt), tx_bus_key('', tgt), sr.chan != '') {
 					continue
 				}
-				if tgt != '' && !a.tx_health.send_ready(transport.wire_key(tgt), a.run_gen) {
+				if tgt != '' && !a.transmit_ready_locked(transport.wire_key(tgt)) {
 					continue
 				}
 				lf := last[i] or { i64(0) }
@@ -594,13 +594,9 @@ fn tx_health_loop(app &App, gen u64) {
 		}
 		mut reading := []string{}
 		for c in a.chans {
-			// THE RULE rx_loop IS SPAWNED UNDER, plus the row that is still opening. A DoIP row is
-			// marked `running` when its entity binds and keeps the default `vcan0` interface, so
-			// `enabled && running` counted it as a reader of a CAN wire it has never read and
-			// suppressed the watch on it. And a row whose reader is still SPAWNING — seconds, on a
-			// cold CANsub — is about to read: counted as unread, both loops narrate the same
-			// transition, since rx_loop starts from `.unknown` and repeats what was already said.
-			if c.monitorable() && (c.running || c.spawning) {
+			// Only an open receive handle covers the wire. A monitor still opening
+			// cannot consume controller events, even if it eventually succeeds.
+			if c.receive_ready() {
 				reading << transport.wire_key(c.iface)
 			}
 		}
@@ -778,12 +774,10 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		// that window nobody else can see anything — handing the narration over then meant an error
 		// frame arriving in it was consumed here and reported by no one, and the new socket starts
 		// from `hstate == .unknown` and cannot recover an event it was not open for (codex round 5).
-		// The SUPERVISOR still counts a spawning row as a reader, which is a different question:
-		// whether to start a watcher at all, not who narrates once one exists.
 		a.mu.lock()
 		mut owned := false
 		for c in a.chans {
-			if c.monitorable() && c.running && transport.wire_key(c.iface) == wire {
+			if c.receive_ready() && transport.wire_key(c.iface) == wire {
 				owned = true
 				break
 			}
