@@ -50,6 +50,7 @@ pub:
 	gen      u64
 	failures int
 	state    ReaderState
+	needed   bool = true // run plan or a filed transmit tap still uses this wire
 }
 
 // Ledger is the shared state. The caller holds ONE lock around every call.
@@ -63,10 +64,22 @@ pub mut:
 pub fn (mut l Ledger) expect(wire string, gen u64) {
 	if e := l.wires[wire] {
 		if e.gen == gen {
+			l.wires[wire] = Claim{ ...e, needed: true }
 			return
 		}
 	}
 	l.wires[wire] = Claim{ gen: gen, state: .expected }
+}
+
+// retain_needed releases send gates for wires the run has left. Reader ownership
+// and failure counts survive: cleanup can finish, and re-adding a failed wire
+// must not reset its retry budget. Caller includes planned and still-filed wires.
+pub fn (mut l Ledger) retain_needed(wires []string, gen u64) {
+	for wire, e in l.wires {
+		if e.gen == gen {
+			l.wires[wire] = Claim{ ...e, needed: wire in wires }
+		}
+	}
 }
 
 // may_claim reports whether a supervisor of run `gen` should start a reader for this wire.
@@ -127,7 +140,7 @@ pub fn (mut l Ledger) opened(wire string, gen u64) {
 // not silently add them to a new measurement.
 pub fn (l Ledger) send_ready(wire string, gen u64) bool {
 	e := l.wires[wire] or { return true }
-	return e.gen != gen || e.state == .reading
+	return e.gen != gen || !e.needed || e.state == .reading
 }
 
 // release records that a reader has stopped. `failed` means a hard receive error rather than an
@@ -143,7 +156,7 @@ pub fn (mut l Ledger) release(wire string, gen u64, failed bool) {
 	}
 	f := if failed { e.failures + 1 } else { e.failures }
 	l.wires[wire] = Claim{
-		gen: gen
+		...e
 		failures: f
 		state: if f >= max_failures { .retired } else { .idle }
 	}

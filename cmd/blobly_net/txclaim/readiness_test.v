@@ -2,6 +2,35 @@ module txclaim
 
 const w = 'inproc:READINESS'
 
+fn test_departure_releases_the_send_gate_without_erasing_retry_history() {
+	mut l := Ledger{}
+	l.claim(w, 1)
+	l.opened(w, 1)
+	l.retain_needed([], 1)
+	l.release(w, 1, false)
+	assert l.send_ready(w, 1), 'a departed wire no longer constrains tool sends'
+	l.expect(w, 1)
+	assert !l.send_ready(w, 1), 'a returning wire needs an open reader again'
+	for _ in 0 .. max_failures {
+		l.claim(w, 1)
+		l.release(w, 1, true)
+	}
+	l.retain_needed([], 1)
+	assert l.send_ready(w, 1)
+	l.expect(w, 1)
+	assert !l.send_ready(w, 1)
+	assert l.retired(w, 1), 'retargeting must not reset the failure budget'
+}
+
+fn test_retain_keeps_planned_pending_wires_and_ignores_old_runs() {
+	mut l := Ledger{}
+	l.expect(w, 2)
+	l.retain_needed([w], 2)
+	assert !l.send_ready(w, 2), 'a planned wire must wait even before its tap is filed'
+	l.retain_needed([], 1)
+	assert !l.send_ready(w, 2)
+}
+
 fn test_expected_wire_waits_before_any_tap_is_filed() {
 	mut l := Ledger{}
 	l.expect(w, 1)

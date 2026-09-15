@@ -165,7 +165,9 @@ already opening keeps the wire waiting; a failed open lets the supervisor start 
 readiness after `transport.open`, and `TapBus.send` checks before recording or sending. Cyclic
 generators wait without consuming their first cycle. The open runs on a worker, so only that
 wire waits; the GUI and unrelated wires remain responsive. A failed health reader leaves the
-wire waiting unless an open monitor covers it. Health verdicts are Log-only on wires with no monitored
+wire waiting unless an open monitor covers it. Dropping the final tap on a wire the run no longer
+plans releases its send gate, preserving the retry budget if that wire is added again.
+Health verdicts are Log-only on wires with no monitored
 row; they do not contribute a Buses-row or toolbar state. These workers participate in the
 runtime census and the rebuild drain. The Linux GUI CI job also runs
 `cmd/blobly_net/tx_health_test.v` against the actual tap send path over an in-process bus

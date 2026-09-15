@@ -483,6 +483,19 @@ fn (mut app App) drop_unwanted_taps(chan_name string, iface string) {
 			app.tx_buses.delete(tx_bus_key('', iface))
 		}
 	}
+	// A departing wire must not leave a surviving tool waiting for a reader the
+	// supervisor can no longer start. Keep planned wires gated even if their tap
+	// is still opening, and filed wires gated until their last tap is removed.
+	mut needed := []string{}
+	for w in app.tap_plan_locked() {
+		needed << transport.wire_key(w.iface)
+	}
+	for k, _ in app.tx_buses {
+		if _, fi := split_tap_key(k) {
+			needed << transport.wire_key(fi)
+		}
+	}
+	app.tx_health.retain_needed(needed, app.run_gen)
 	app.mu.unlock()
 	for mut b in doomed {
 		b.close()
@@ -668,6 +681,7 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 		// spending its first cycle. Other wires and the GUI remain free to run.
 		if _, iface := split_tap_key(key) {
 			wk := transport.wire_key(iface)
+			app.tx_health.expect(wk, gen)
 			// Start's expectation keeps sends blocked while a monitor is opening.
 			// Do not race it with a second receiver: the first could see a fault
 			// before the monitor opens, then hand narration to a queue that missed it.

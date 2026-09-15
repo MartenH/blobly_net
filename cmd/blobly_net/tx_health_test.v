@@ -56,9 +56,10 @@ fn test_spawning_monitor_blocks_sends_then_failed_open_gets_a_health_reader() {
 	assert !app.transmit_ready_locked(wire), 'scheduling a monitor must not permit sends'
 	app.reserve_run_worker_locked()
 	app.mu.unlock()
-	spawn tx_health_loop(app, 1)
+
 	// The monitor's open-failure path clears spawning. The existing tap must
 	// get a fallback from the real supervisor without being filed again.
+	spawn tx_health_loop(app, 1)
 	app.mu.lock()
 	app.chans[0].spawning = false
 	app.mu.unlock()
@@ -169,6 +170,10 @@ fn test_filed_tap_gets_a_reader_that_leaves_when_the_tap_does() {
 		running: true
 		run_gen: 1
 	}
+	mut peer := transport.open(iface) or { panic(err) }
+	defer { peer.close() }
+	mut tool := app.open_tap_phys(iface, iface, org_tx, '', 0, false) or { panic(err) }
+	defer { tool.close() }
 	mut tap := app.open_tap_phys(iface, iface, org_tx, '', 1, false) or { panic(err) }
 	app.file_tap(tx_bus_key('', iface), mut tap, 1)
 	// A generous hang-breaker, not a claim about how quickly the scheduler runs.
@@ -197,6 +202,9 @@ fn test_filed_tap_gets_a_reader_that_leaves_when_the_tap_does() {
 		time.sleep(time.millisecond)
 	}
 	assert drained, 'removing the last tap must close its reader and release the worker'
+	tool.send(transport.CanFrame{ id: 0x123, data: [u8(1)] }) or { panic(err) }
+	got := peer.recv(1000) or { panic(err) }
+	assert got.id == 0x123, 'the departed wire must not leave a tool permanently blocked'
 	app.mu.lock()
 	assert app.tx_health.may_claim(transport.wire_key(iface), 1)
 	app.running = false
