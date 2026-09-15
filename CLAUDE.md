@@ -156,6 +156,8 @@ SocketCAN error frames and Vector chip-state replies advance health inside `recv
 reports health and diagnostics in the Log, including a final sample at Stop, and closes when
 its last transmit tap disappears. A supervisor retries failures once per second, up to three
 per run. Claims include the run generation so a departing worker cannot erase its successor.
+Readiness is revoked before a failed reader reports or finalizes; its closing claim keeps
+ownership until teardown finishes, so a retry cannot overlap it.
 Final health is sampled before close; diagnostics follow close so shared-reader cursor gaps
 are included. Final samples carry their run number in the session Log and survive an immediate
 restart, without changing the new run's channel state.
@@ -172,6 +174,8 @@ generators wait without consuming their first cycle. The open runs on a worker, 
 wire waits; the GUI and unrelated wires remain responsive. A failed health reader leaves the
 wire waiting unless an open monitor covers it. Dropping the final tap on a wire the run no longer
 plans releases its send gate, preserving the retry budget if that wire is added again.
+Live retargeting and removal also release gates for departed wires whose opens are still pending.
+Stopped generator edits take no send barrier, so surviving tools cannot stall those edits.
 Health verdicts are Log-only on wires with no monitored
 row; they do not contribute a Buses-row or toolbar state. These workers participate in the
 runtime census and the rebuild drain. The Linux GUI CI job also runs

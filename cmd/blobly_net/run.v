@@ -483,6 +483,16 @@ fn (mut app App) drop_unwanted_taps(chan_name string, iface string) {
 			app.tx_buses.delete(tx_bus_key('', iface))
 		}
 	}
+	app.reconcile_tx_health_locked()
+	app.mu.unlock()
+	for mut b in doomed {
+		b.close()
+	}
+}
+
+// Reconcile send gates with the current plan and filed taps. Caller holds app.mu;
+// a mutation that adds a wire also holds that wire's send mutex.
+fn (mut app App) reconcile_tx_health_locked() {
 	// A departing wire must not leave a surviving tool waiting for a reader the
 	// supervisor can no longer start. Keep planned wires gated even if their tap
 	// is still opening, and filed wires gated until their last tap is removed.
@@ -496,10 +506,6 @@ fn (mut app App) drop_unwanted_taps(chan_name string, iface string) {
 		}
 	}
 	app.tx_health.retain_needed(needed, app.run_gen)
-	app.mu.unlock()
-	for mut b in doomed {
-		b.close()
-	}
 }
 
 // phys_for_locked is the physical interface to open for `iface`, decided under app.mu. A target

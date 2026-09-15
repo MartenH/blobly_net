@@ -40,6 +40,7 @@ enum ReaderState {
 	expected // this run plans to use the wire; no reader has been started yet
 	opening
 	reading
+	closing // no sends or replacement reader until final sampling and close finish
 	idle
 	retired
 }
@@ -133,6 +134,15 @@ pub fn (mut l Ledger) opened(wire string, gen u64) {
 	}
 }
 
+// Revoke send readiness before notification, final sampling, or a blocking close.
+// Ownership stays held until release, so the supervisor cannot overlap a retry.
+pub fn (mut l Ledger) begin_close(wire string, gen u64) {
+	e := l.wires[wire] or { return }
+	if e.gen == gen && e.state in [.opening, .reading] {
+		l.wires[wire] = Claim{ ...e, state: .closing }
+	}
+}
+
 // send_ready is this ledger's readiness for a wire. Start expects every planned
 // transmit wire before publishing the run, including wires a surviving tool tap
 // can use before file_tap. The app also accepts an actually open monitor. Wires
@@ -151,7 +161,7 @@ pub fn (l Ledger) send_ready(wire string, gen u64) bool {
 // delete there hands out a second reader for one tap.
 pub fn (mut l Ledger) release(wire string, gen u64, failed bool) {
 	e := l.wires[wire] or { return }
-	if e.gen != gen || e.state !in [.opening, .reading] {
+	if e.gen != gen || e.state !in [.opening, .reading, .closing] {
 		return
 	}
 	f := if failed { e.failures + 1 } else { e.failures }

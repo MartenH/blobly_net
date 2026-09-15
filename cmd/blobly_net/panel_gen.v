@@ -294,10 +294,13 @@ fn (mut app App) add_generator() {
 
 // The new entry and its send gate are published before the tap opener starts.
 fn (mut app App) plan_add_generator() TapWant {
+	app.mu.lock()
+	live := app.running
 	iface := if app.chans.len > 0 { app.chans[0].iface } else { '' }
 	cname := if app.chans.len > 0 { app.chans[0].name } else { '' }
+	app.mu.unlock()
 	m := app.tx_mutex(iface)
-	m.lock()
+	if live { m.lock() }
 	app.mu.lock()
 	if app.running && iface != '' {
 		app.tx_health.expect(transport.wire_key(iface), app.run_gen)
@@ -326,7 +329,7 @@ fn (mut app App) plan_add_generator() TapWant {
 	}
 	app.dirty = true
 	app.mu.unlock()
-	m.unlock()
+	if live { m.unlock() }
 	return TapWant{ chan_name: cname, iface: iface }
 }
 
@@ -342,6 +345,7 @@ fn (mut app App) remove_generator(i int) {
 		// cannot hand one generator's count or in-flight flag to another, and a fire still in
 		// flight for the removed generator writes back onto its own (now unused) entry
 		app.dirty = true
+		if app.running { app.reconcile_tx_health_locked() }
 	}
 	app.mu.unlock()
 }
@@ -751,11 +755,12 @@ fn (mut app App) plan_sender_bus(i int, bus string, chan_name string) ?TapWant {
 		app.mu.unlock()
 		return none
 	}
+	live := app.running
 	uid := app.senders[i].uid
 	r := app.senders[i].resolve_bus(bus, app.sender_rows_locked())
 	app.mu.unlock()
 	m := app.tx_mutex(r.iface)
-	m.lock()
+	if live { m.lock() }
 	app.mu.lock()
 	mut want := false
 	mut own := ''
@@ -769,9 +774,10 @@ fn (mut app App) plan_sender_bus(i int, bus string, chan_name string) ?TapWant {
 			app.tx_health.expect(transport.wire_key(r.iface), app.run_gen)
 			want = tx_bus_key(own, r.iface) !in app.tx_buses
 		}
+		if app.running { app.reconcile_tx_health_locked() }
 	}
 	app.mu.unlock()
-	m.unlock()
+	if live { m.unlock() }
 	if !want {
 		return none
 	}

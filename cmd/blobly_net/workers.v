@@ -723,6 +723,7 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			}
 		}
 		if hard != '' {
+			a.begin_tx_health_close(iface, gen)
 			// GENERATION-GATED, like every other worker's late word: Stop closes things while the
 			// readers are still exiting, so an ungated notice reported an intentional shutdown as a
 			// failure — and a reader descheduled past the next Start would have appended the
@@ -784,6 +785,7 @@ fn (mut app App) report_tx_health_sample(iface string, gen u64, observed TxHealt
 // retain late results there with their run identity instead of dropping them or
 // writing them into the replacement run's channel state.
 fn (mut app App) finish_tx_health(mut bus transport.Bus, iface string, gen u64, last TxHealthSample) {
+	app.begin_tx_health_close(iface, gen)
 	final_h := bus.health()
 	bus.close()
 	final_diag := bus.diagnostics()
@@ -795,6 +797,12 @@ fn (mut app App) finish_tx_health(mut bus transport.Bus, iface string, gen u64, 
 	if final_diag != last.diagnostics {
 		app.log_append_locked('run ${gen} final: ${diag_msg(iface, last.diagnostics, final_diag)}')
 	}
+}
+
+fn (mut app App) begin_tx_health_close(iface string, gen u64) {
+	app.mu.lock()
+	app.tx_health.begin_close(transport.wire_key(iface), gen)
+	app.mu.unlock()
 }
 
 fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) string {

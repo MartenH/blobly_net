@@ -6,6 +6,8 @@ import time
 // Models a backend whose health needs a live handle and whose subscriber loss
 // is finalized only at close, as on the shared PCAN/CANsub transport.
 struct FinalHealthBus {
+	closing_app  &App = unsafe { nil }
+	closing_wire string
 mut:
 	closed bool
 	hstate transport.BusHealth = .bus_off
@@ -18,18 +20,110 @@ fn (mut b FinalHealthBus) recv(timeout_ms int) !transport.CanFrame {
 }
 
 fn (mut b FinalHealthBus) close() {
+	b.assert_readiness_revoked()
 	b.closed = true
 }
 
 fn (mut b FinalHealthBus) health() transport.BusHealth {
+	b.assert_readiness_revoked()
 	return if b.closed { .unknown } else { b.hstate }
 }
 
 fn (mut b FinalHealthBus) diagnostics() transport.BusDiagnostics {
+	b.assert_readiness_revoked()
 	return transport.BusDiagnostics{ dropped: if b.closed { u64(7) } else { 0 } }
 }
 
 fn (mut b FinalHealthBus) reconcile_silence(want bool) ! {}
+
+fn (b &FinalHealthBus) assert_readiness_revoked() {
+	if b.closing_wire == '' {
+		return
+	}
+	mut a := unsafe { b.closing_app }
+	a.mu.lock()
+	assert !a.tx_health.send_ready(b.closing_wire, 1)
+	assert !a.tx_health.may_claim(b.closing_wire, 1), 'a replacement cannot overlap finalization'
+	a.mu.unlock()
+}
+
+fn test_readiness_is_revoked_throughout_finalization_without_releasing_ownership() {
+	iface := 'inproc:tx-health-closing'
+	wire := transport.wire_key(iface)
+	mut app := &App{ running: true, run_gen: 1 }
+	app.tx_health.claim(wire, 1)
+	app.tx_health.opened(wire, 1)
+	mut bus := transport.Bus(&FinalHealthBus{ closing_app: app, closing_wire: wire })
+	app.finish_tx_health(mut bus, iface, 1, TxHealthSample{})
+	assert !app.tx_health.send_ready(wire, 1)
+	assert !app.tx_health.may_claim(wire, 1)
+	app.tx_health.release(wire, 1, true)
+	assert app.tx_health.may_claim(wire, 1)
+	assert app.tx_health.wires[wire].failures == 1
+}
+
+fn test_stopped_generator_edits_do_not_wait_on_a_tools_send_mutex() {
+	iface := 'inproc:tx-health-stopped-edit'
+	mut app := &App{
+		chans: [Chan{ name: 'FIRST', iface: iface }]
+		senders: [SenderRT{ uid: 1, iface: iface, tgt: iface }]
+	}
+	m := app.tx_mutex(iface)
+	m.lock() // stand in for a tool whose driver send is stalled
+	done := chan bool{ cap: 1 }
+	spawn fn (app &App, iface string, done chan bool) {
+		mut a := unsafe { app }
+		a.plan_sender_bus(0, iface, '') or {}
+		a.plan_add_generator()
+		done <- true
+	}(app, iface, done)
+	deadline := time.ticks() + 5000
+	mut finished := false
+	for time.ticks() < deadline {
+		select {
+			_ := <-done {
+				finished = true
+			}
+			else {
+			}
+		}
+		if finished {
+			break
+		}
+		time.sleep(time.millisecond)
+	}
+	m.unlock()
+	if !finished {
+		_ := <-done
+	} // drain a failing implementation before the assertion
+	assert finished, 'stopped edits must finish while the send mutex remains held'
+	assert app.senders.len == 2
+	assert app.tx_health.wires.len == 0
+}
+
+fn test_retarget_and_removal_release_wires_before_pending_opens_complete() {
+	b := 'inproc:tx-health-pending-b'
+	c := 'inproc:tx-health-pending-c'
+	mut app := &App{
+		running: true
+		run_gen: 1
+		senders: [SenderRT{ uid: 1, tgt: 'inproc:old' }]
+	}
+	mut tool := app.open_tap_phys(b, b, org_tx, '', 0, false) or { panic(err) }
+	defer { tool.close() }
+	mut peer := transport.open(b) or { panic(err) }
+	defer { peer.close() }
+	app.plan_sender_bus(0, b, '') or { panic('expected B open') }
+	assert !app.tx_health.send_ready(transport.wire_key(b), 1)
+	app.plan_sender_bus(0, c, '') or { panic('expected C open') }
+	assert app.tx_buses.len == 0, 'neither pending opener has returned'
+	tool.send(transport.CanFrame{ id: 0x123 }) or { panic(err) }
+	got := peer.recv(1000) or { panic(err) }
+	assert got.id == 0x123
+	assert !app.tx_health.send_ready(transport.wire_key(c), 1)
+	app.remove_generator(0)
+	assert app.tx_health.send_ready(transport.wire_key(c), 1)
+}
 
 fn test_final_samples_survive_restart_without_changing_the_new_run() {
 	mut app := &App{

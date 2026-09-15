@@ -2,6 +2,23 @@ module txclaim
 
 const w = 'inproc:READINESS'
 
+fn test_closing_revokes_sends_and_keeps_ownership_until_release() {
+	mut l := Ledger{}
+	l.claim(w, 1)
+	l.opened(w, 1)
+	l.begin_close(w, 1)
+	l.opened(w, 1)
+	assert !l.send_ready(w, 1)
+	assert !l.may_claim(w, 1)
+	l.release(w, 1, true)
+	assert l.may_claim(w, 1)
+	assert l.wires[w].failures == 1
+	l.claim(w, 2)
+	l.opened(w, 2)
+	l.begin_close(w, 1)
+	assert l.send_ready(w, 2), 'old finalization cannot revoke the replacement reader'
+}
+
 fn test_departure_releases_the_send_gate_without_erasing_retry_history() {
 	mut l := Ledger{}
 	l.claim(w, 1)
