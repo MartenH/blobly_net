@@ -698,7 +698,6 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut p := player.new_player_log(plan.log, plan.sel, speed, repeat, plan.t0_s, plan.end_s)
 	mut sw := time.new_stopwatch()
 	mut batch := []canlog.LogEntry{cap: 256}
-	mut pending := ReplayPending{}
 	mut dues := []f64{cap: 256}
 	mut sent := u64(0)
 	mut failed := u64(0)
@@ -734,8 +733,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		stop := !a.running || a.run_gen != gen
 		// Read and clear together, so a command cannot be applied twice or lost between the
 		// two -- see player.Commands.take.
-		mut cmd := ctl.cmds.take()
-		pending.commands(mut cmd, batch.len, p.state())
+		cmd := ctl.cmds.take()
 		// APPLY-BEFORE-PUBLISH, and the two lines must stay adjacent and in this order. Loop is
 		// the only command applied inside the lock: it touches no clock, so it has nothing to
 		// gain from waiting for the re-sampled `now` below and one thing to lose -- the status
@@ -748,7 +746,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// test_the_published_status_includes_a_loop_command_taken_in_the_same_tick.
 		p.apply_latched(cmd)
 		st := p.status(now)
-		ctl.state = pending.visible_state(batch.len, st.state)
+		ctl.state = st.state
 		ctl.pos_s = st.pos_s
 		ctl.speed = st.speed
 		ctl.loops = st.loops
@@ -792,17 +790,12 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// Into buffers the worker keeps: a fresh batch per tick was an allocation on the
 		// thread whose collections are the stutter, and a probe that allocated its own schedule
 		// beside it was adding garbage to the very rate it measures (codex on #299 round 10).
-		if pending.next >= batch.len {
-			if probe_active {
-				p.due_into_scheduled(now, mut batch, mut dues)
-			} else {
-				p.due_into(now, mut batch)
-			}
-			pending.next = 0
+		if probe_active {
+			p.due_into_scheduled(now, mut batch, mut dues)
+		} else {
+			p.due_into(now, mut batch)
 		}
-		for pending.next < batch.len && !pending.paused && p.state() != .paused {
-			bi := pending.next
-			e := batch[bi]
+		for bi, e in batch {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
 			// returns everything owed at once, and stop was checked before the batch — so a
 			// Stop/Start during a long one left the PREDECESSOR dispatching into the new run,
@@ -824,18 +817,17 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			if gone {
 				break
 			}
-			// Keep the pre-send dispatch time, but score it only after the receive
-			// gate accepted this attempt. Pending retries are not extra emissions.
-			dispatched_ms := if probe_active { f64(i64(sw.elapsed())) / 1e6 } else { 0.0 }
-			mut bus := buses_out[e.iface] or {
-				pending.next++
-				continue
+			if probe_active {
+				// cadence: dispatch time against the schedule this frame was RELEASED on,
+				// which the player hands back beside the batch — re-sampled per frame, since
+				// after a stall the batch is everything owed and its later frames really do go
+				// out later; and per entry, since a batch can cross one or several loop wraps
+				// and the player's base has moved on by the time it is read (codex on #299
+				// rounds 5 and 7).
+				probe_note_late(f64(i64(sw.elapsed())) / 1e6 - dues[bi])
 			}
-			mut failure := ''
+			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {
-				if err is TxHealthPending {
-					break // keep this entry and the batch suffix; commands still run next tick
-				}
 				// The tap refuses once the run is over, so a rejection here is usually Stop
 				// arriving mid-batch rather than a bus problem. Ask, and leave quietly if so —
 				// counting it would report a replay that FAILED when it was simply stopped.
@@ -845,23 +837,16 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				if over {
 					break
 				}
-				failure = err.msg()
-			}
-			if probe_active { probe_note_late(dispatched_ms - dues[bi]) }
-			if failure != '' {
+				// The waiting for a full transmit queue happens in TapBus.send, beneath the
+				// trace record — retrying here re-entered it and painted a failed row per
+				// attempt. Anything that reaches this point has genuinely failed.
 				failed++
 				if first_err == '' {
-					first_err = '${e.iface}: ${failure}'
+					first_err = '${e.iface}: ${err.msg()}'
 				}
-			} else {
-				sent++
+				continue
 			}
-			pending.next++
-		}
-		if pending.next < batch.len {
-			probe_alloc_note(.tick, pt)
-			time.sleep(if pending.paused || p.state() == .paused { 50 * time.millisecond } else { time.millisecond })
-			continue // no new release or finish announcement before this batch is settled
+			sent++
 		}
 		// A paused OR FINISHED group idles instead of exiting. next_due_ms returns none in
 		// both states, and breaking on it killed the worker the moment the panel paused it —

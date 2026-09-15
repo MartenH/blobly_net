@@ -288,23 +288,9 @@ fn draw_gen(mut app App) {
 // add_generator appends a new raw generator to the session, targeting the first channel.
 // Session-only until Save writes it to the project.
 fn (mut app App) add_generator() {
-	w := app.plan_add_generator()
-	app.spawn_tap_for(w.chan_name, w.iface)
-}
-
-// The new entry and its send gate are published before the tap opener starts.
-fn (mut app App) plan_add_generator() TapWant {
-	app.mu.lock()
-	live := app.running
 	iface := if app.chans.len > 0 { app.chans[0].iface } else { '' }
 	cname := if app.chans.len > 0 { app.chans[0].name } else { '' }
-	app.mu.unlock()
-	m := app.tx_mutex(iface)
-	if live { m.lock() }
 	app.mu.lock()
-	if app.running && iface != '' {
-		app.tx_health.expect(transport.wire_key(iface), app.run_gen)
-	}
 	app.gen_next_uid++
 	app.senders << SenderRT{
 		uid:     app.gen_next_uid
@@ -329,8 +315,9 @@ fn (mut app App) plan_add_generator() TapWant {
 	}
 	app.dirty = true
 	app.mu.unlock()
-	if live { m.unlock() }
-	return TapWant{ chan_name: cname, iface: iface }
+	// The tap for a generator added mid-run opens on a worker (spawn_tap_for): opened here it
+	// ran on the GUI thread, and read tx_buses without the lock (codex round 4 on #257).
+	app.spawn_tap_for(cname, iface)
 }
 
 // remove_generator drops generator `i` from the session.
@@ -345,7 +332,6 @@ fn (mut app App) remove_generator(i int) {
 		// cannot hand one generator's count or in-flight flag to another, and a fire still in
 		// flight for the removed generator writes back onto its own (now unused) entry
 		app.dirty = true
-		if app.running { app.reconcile_tx_health_locked() }
 	}
 	app.mu.unlock()
 }
@@ -740,48 +726,36 @@ fn (mut app App) set_cycle(i int, ms int) {
 // The resolved target is recomputed rather than taken from the argument: `bus:` has two accepted
 // forms, and project.resolve_sender_bus is the one place that decides between them.
 fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
-	if w := app.plan_sender_bus(i, bus, chan_name) {
-		app.spawn_tap_for(w.chan_name, w.iface)
-	}
-}
-
-// Publish the live target and its receive expectation in one send barrier,
-// before any asynchronous open. The GUI is the sole editor of sender identity
-// and channel addresses, so this resolution stays valid while its wire drains.
-// The uid check also protects against an entry removed before the second lock.
-fn (mut app App) plan_sender_bus(i int, bus string, chan_name string) ?TapWant {
+	// a failure found while app.mu is held is said AFTER the unlock — notify re-takes the
+	// non-reentrant mutex, and an inline call here would deadlock the GUI thread
+	mut want_tgt := ''
+	mut want_own := ''
 	app.mu.lock()
-	if i < 0 || i >= app.senders.len {
-		app.mu.unlock()
-		return none
-	}
-	live := app.running
-	uid := app.senders[i].uid
-	r := app.senders[i].resolve_bus(bus, app.sender_rows_locked())
-	app.mu.unlock()
-	m := app.tx_mutex(r.iface)
-	if live { m.lock() }
-	app.mu.lock()
-	mut want := false
-	mut own := ''
-	if i < app.senders.len && app.senders[i].uid == uid {
+	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
-		app.senders[i].tgt = r.iface
-		// A specific picker row can settle an otherwise ambiguous owner.
-		app.senders[i].chan = if r.chan == '' { chan_name } else { r.chan }
-		own = app.senders[i].chan
-		if app.running && r.iface != '' {
-			app.tx_health.expect(transport.wire_key(r.iface), app.run_gen)
-			want = tx_bus_key(own, r.iface) !in app.tx_buses
+		// ONLY THIS ENTRY. Resolving all of them here rewrote `tgt` and `chan` for generators
+		// nobody edited, racing the cyclic fire path (codex round 2 on #97).
+		app.resolve_one_sender_locked(i, app.sender_rows_locked())
+		tgt := app.senders[i].target()
+		if chan_name != '' && app.senders[i].chan == '' {
+			// The resolver could not name one — an ambiguous reference — and the operator just
+			// pointed at a specific row, which is a better answer than none for the trace's `ch=`
+			// column. It does not survive a reload; the warning at Start says why.
+			app.senders[i].chan = chan_name
 		}
-		if app.running { app.reconcile_tx_health_locked() }
+		own := app.senders[i].chan
+		if app.running && tgt != '' && tx_bus_key(own, tgt) !in app.tx_buses {
+			// NOT HERE: this is the GUI thread with app.mu held, and a CANsub tap open is
+			// seconds. Opened on a worker and filed under the lock when it comes up — the
+			// same rule as Start's (open_taps_for_run), for the same freeze (2026-08-29).
+			want_tgt = tgt
+			want_own = own
+		}
 	}
 	app.mu.unlock()
-	if live { m.unlock() }
-	if !want {
-		return none
+	if want_tgt != '' {
+		app.spawn_tap_for(want_own, want_tgt)
 	}
-	return TapWant{ chan_name: own, iface: r.iface }
 }
 
 // fire_index sends generator `i`'s CURRENT (edited) frame once. DBC-message generators
@@ -835,12 +809,6 @@ fn sender_value(ss project.SenderSig, n int, el f64) f64 {
 
 
 fn (mut app App) fire_index(i int) {
-	if app.try_fire_index(i) == .pending {
-		app.notify('generator: waiting for its transmit or receive path')
-	}
-}
-
-fn (mut app App) try_fire_index(i int) TxAttempt {
 	// ONE FIRE AT A TIME PER GENERATOR, start to finish: reserving an index and rolling it back
 	// could not keep the count equal to DELIVERED frames when two fires finished out of order.
 	// A flag rather than a held lock, because the send must not be inside one — a generator
@@ -850,12 +818,12 @@ fn (mut app App) try_fire_index(i int) TxAttempt {
 	app.mu.lock()
 	if i < 0 || i >= app.senders.len {
 		app.mu.unlock()
-		return .failed
+		return
 	}
 	uid := app.senders[i].uid
 	if app.gen_firing[uid] {
 		app.mu.unlock()
-		return .failed
+		return
 	}
 	app.gen_firing[uid] = true
 	defer {
@@ -919,18 +887,17 @@ fn (mut app App) try_fire_index(i int) TxAttempt {
 		}
 		if !found {
 			app.notify('generator: message "${s.message}" not in any DBC')
-			return .failed
+			return
 		}
 	} else if i < app.gen_bufs.len {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	outcome := app.try_tx_on_chan(own, tgt, transport.CanFrame{
+	if app.tx_on_chan(own, tgt, transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data
-	})
-	if outcome == .sent {
+	}) {
 		// delivered frames only — a fire refused while the tap is still opening put nothing on
 		// the bus, and counting it would make the sequence lie about what was transmitted.
 		// ...and only onto the generator set this fire was snapshotted from: a removal or a new
@@ -944,5 +911,4 @@ fn (mut app App) try_fire_index(i int) TxAttempt {
 		}
 		app.mu.unlock()
 	}
-	return outcome
 }

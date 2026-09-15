@@ -5,7 +5,6 @@ import sync
 import time
 import runtime
 import project
-import txclaim
 import logfile
 import loadrule
 import transport
@@ -268,6 +267,7 @@ mut:
 	// TX buses — one open bus per channel iface, created at Start. Generators fire on their
 	// own target bus (its channel, or a `bus:` override); the Send panel defaults to
 	// send_iface (the first monitor channel).
+	tx_health_watches map[string]TxHealthWatch // receive-only observers, under mu
 	tx_buses          map[string]transport.Bus
 	send_iface        string
 	qs_iface          string // Quick send target bus (a channel iface); '' = send_iface default
@@ -372,14 +372,6 @@ mut:
 	// generator loop reads: a sender waiting for its own tap falls back to the wire's shared
 	// one once its own is known not to come (codex round 6 on #257). Cleared at Start.
 	tap_failed map[string]bool
-	// WHO OWNS THE HEALTH READER FOR EACH TRANSMIT-ONLY WIRE (#142), keyed by wire_key. The rules
-	// are ../blobly_net/txclaim, tested: three review rounds each found a defect in the previous
-	// round's fix, every one of them in this bookkeeping rather than in the reading, so it stopped
-	// being written inline. Guarded by app.mu like every other shared map here.
-	tx_health txclaim.Ledger
-	// Shared diagnostic totals already narrated during this application session,
-	// keyed by the physical driver's counter epoch rather than run or reader.
-	diag_reported map[u64]transport.BusDiagnostics
 	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
 	// drawn, for the reason given there.
 	save_requested bool
@@ -1242,14 +1234,13 @@ fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
 	if i < 0 || i >= app.senders.len {
 		return
 	}
-	r := app.senders[i].resolve_bus(app.senders[i].sender.bus, rows)
+	own := project.Channel{
+		name:  app.senders[i].own
+		iface: app.senders[i].iface
+	}
+	r := project.resolve_sender_bus(app.senders[i].sender.bus, own, rows)
 	app.senders[i].tgt = r.iface
 	app.senders[i].chan = r.chan
-}
-
-fn (sr SenderRT) resolve_bus(bus string, rows []project.Channel) project.SenderBus {
-	own := project.Channel{ name: sr.own, iface: sr.iface }
-	return project.resolve_sender_bus(bus, own, rows)
 }
 
 // sender_rows_locked is the channel list the resolver is asked against — name and interface only,

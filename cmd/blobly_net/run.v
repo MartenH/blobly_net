@@ -483,29 +483,10 @@ fn (mut app App) drop_unwanted_taps(chan_name string, iface string) {
 			app.tx_buses.delete(tx_bus_key('', iface))
 		}
 	}
-	app.reconcile_tx_health_locked()
 	app.mu.unlock()
 	for mut b in doomed {
 		b.close()
 	}
-}
-
-// Reconcile send gates with the current plan and filed taps. Caller holds app.mu;
-// a mutation that adds a wire also holds that wire's send mutex.
-fn (mut app App) reconcile_tx_health_locked() {
-	// A departing wire must not leave a surviving tool waiting for a reader the
-	// supervisor can no longer start. Keep planned wires gated even if their tap
-	// is still opening, and filed wires gated until their last tap is removed.
-	mut needed := []string{}
-	for w in app.tap_plan_locked() {
-		needed << transport.wire_key(w.iface)
-	}
-	for k, _ in app.tx_buses {
-		if _, fi := split_tap_key(k) {
-			needed << transport.wire_key(fi)
-		}
-	}
-	app.tx_health.retain_needed(needed, app.run_gen)
 }
 
 // phys_for_locked is the physical interface to open for `iface`, decided under app.mu. A target
@@ -634,38 +615,6 @@ fn (mut app App) has_tap(key string) bool {
 	return key in app.tx_buses
 }
 
-// The tap plan is also the readiness plan. Called during Start's generation
-// transition, under app.mu and every existing tap's send mutex.
-fn (mut app App) expect_tx_health_locked(gen u64) {
-	for w in app.tap_plan_locked() {
-		app.tx_health.expect(transport.wire_key(w.iface), gen)
-	}
-}
-
-// A monitor can cover a pending health claim only once its handle is open.
-fn (app &App) wire_has_open_receiver_locked(wire string) bool {
-	for c in app.chans {
-		if c.receive_ready() && transport.wire_key(c.iface) == wire {
-			return true
-		}
-	}
-	return false
-}
-
-fn (app &App) wire_has_scheduled_receiver_locked(wire string) bool {
-	for c in app.chans {
-		if c.receive_scheduled() && transport.wire_key(c.iface) == wire {
-			return true
-		}
-	}
-	return false
-}
-
-fn (app &App) transmit_ready_locked(wire string) bool {
-	return !app.running || app.tx_health.send_ready(wire, app.run_gen)
-		|| app.wire_has_open_receiver_locked(wire)
-}
-
 // file_tap inserts an opened tap under the lock, into the run it belongs to — or closes it.
 fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 	app.mu.lock()
@@ -674,53 +623,17 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 	// emptied map, sit there through the next Start (has_tap sees it and opens no
 	// replacement) and refuse every send with "run ended" (codex round 1 on #257).
 	keep := taprule.file_decision(app.taprule_run_locked(), gen, key in app.tx_buses)
-	mut watch := ''
 	if keep {
 		app.tx_buses[key] = b
 		// A tap that lands is not failed, whatever an earlier attempt said: a later worker —
 		// a generator added or retargeted — can succeed where Start's did not, and the sender
 		// must go back to its own tap (codex round 7 on #257).
 		app.tap_failed.delete(key)
-		// Claim under the publication lock: every send through this tap sees either
-		// no tap or a claim whose receive handle must open first. The worker opens
-		// asynchronously; TapBus.send enforces readiness and gen_loop waits without
-		// spending its first cycle. Other wires and the GUI remain free to run.
-		if _, iface := split_tap_key(key) {
-			wk := transport.wire_key(iface)
-			app.tx_health.expect(wk, gen)
-			// Start's expectation keeps sends blocked while a monitor is opening.
-			// Do not race it with a second receiver: the first could see a fault
-			// before the monitor opens, then hand narration to a queue that missed it.
-			read := app.wire_has_scheduled_receiver_locked(wk)
-			// may_claim_now, not may_claim: this path exists to catch the FIRST moment a wire
-			// becomes transmittable, and a RETRY after a failed reader belongs to the supervisor's
-			// once-a-second pass — otherwise several taps filed on one wire could each restart a
-			// fast-failing reader and burn the three-failure budget in a few hundred milliseconds
-			// (codex round 8 on #142).
-			if !read && app.tx_health.may_claim_now(wk, gen) {
-				app.tx_health.claim(wk, gen)
-				app.reserve_run_worker_locked() // released by the reader's own defer
-				watch = iface
-			}
-		}
 	}
 	app.mu.unlock()
-	if watch != '' {
-		spawn tx_health_reader(app, watch, gen)
-	}
 	if !keep {
 		b.close() // the run ended, or somebody inserted first — the loser must not leak
 	}
-}
-
-// split_tap_key reads a tap key back into its channel name and interface, or none when it is not
-// one this app wrote. The keys are project.compose_key pairs; see project.decompose_key.
-fn split_tap_key(key string) ?(string, string) {
-	parts := project.decompose_key(key) or { return none }
-	if parts.len != 2 || parts[1] == '' {
-		return none
-	}
-	return parts[0], parts[1]
 }
 
 fn (mut app App) start() {
@@ -1035,36 +948,6 @@ fn (mut app App) start() {
 		cover[d] = sim.build_coverage(app.dbs_for_dest(iface_of_dest[d] or { '' }), names)
 	}
 	app.verify_cover = cover.move()
-	// the epoch the time-based generator sources are evaluated from (sine/sawtooth/stepmod), so a
-	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
-	// UNDER app.mu: fire_index reads gen_send_n/gen_state_epoch under it, and a cyclic fire that
-	// survived the previous run can be in flight right here — replacing the map unlocked is an
-	// unsafe concurrent map write and the epoch a plain data race (codex #269).
-	// AND AGAIN, now that run_gen has moved. The restore above had to happen before
-	// check_destinations, which reads the enabled rows — placed after it, a conflict involving a
-	// row this brings back would go unexamined. But rx_loop's retirement (workers.v) is gated on
-	// run_gen ALONE, and Stop does not move it, so between the restore above and this line a
-	// straggler from the previous run can still retire the very rows just restored — and the new
-	// run would skip the bus again, which is the whole of #125's first bug. From here the
-	// generation has moved and no straggler can write these fields at all.
-	for ci in 0 .. app.chans.len {
-		if ci < app.proj.channels.len {
-			app.chans[ci].enabled = app.proj.channels[ci].enabled
-		}
-	}
-	app.push_listen_only_locked()
-	app.wave_t0_ns = time.sys_mono_now()
-	app.gen_send_n = map[u64]int{} // a new run starts the per-send sequences at 0
-	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
-	// No receiver from the preceding generation can satisfy this run's readiness.
-	for ci in 0 .. app.chans.len {
-		app.chans[ci].running = false
-		app.chans[ci].spawning = false
-	}
-	app.expect_tx_health_locked(start_gen)
-	// Publish the run while every transmit mutex is still held: a guardless tool
-	// tap cannot straddle this boundary on a stale readiness decision.
-	app.running = true
 	app.mu.unlock()
 	for m in held {
 		m.unlock()
@@ -1082,6 +965,30 @@ fn (mut app App) start() {
 	// re-appends app.chans while this run's readers are walking it. The picker was closed here
 	// and this was not, so a dialog left floating across Start was a live rebuild one click away.
 	app.disc_open = false
+	// the epoch the time-based generator sources are evaluated from (sine/sawtooth/stepmod), so a
+	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
+	// UNDER app.mu: fire_index reads gen_send_n/gen_state_epoch under it, and a cyclic fire that
+	// survived the previous run can be in flight right here — replacing the map unlocked is an
+	// unsafe concurrent map write and the epoch a plain data race (codex #269).
+	app.mu.lock()
+	// AND AGAIN, now that run_gen has moved. The restore above had to happen before
+	// check_destinations, which reads the enabled rows — placed after it, a conflict involving a
+	// row this brings back would go unexamined. But rx_loop's retirement (workers.v) is gated on
+	// run_gen ALONE, and Stop does not move it, so between the restore above and this line a
+	// straggler from the previous run can still retire the very rows just restored — and the new
+	// run would skip the bus again, which is the whole of #125's first bug. From here the
+	// generation has moved and no straggler can write these fields at all.
+	for ci in 0 .. app.chans.len {
+		if ci < app.proj.channels.len {
+			app.chans[ci].enabled = app.proj.channels[ci].enabled
+		}
+	}
+	app.push_listen_only_locked()
+	app.wave_t0_ns = time.sys_mono_now()
+	app.gen_send_n = map[u64]int{} // a new run starts the per-send sequences at 0
+	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
+	app.mu.unlock()
+	app.running = true
 	// The quiet-bus verdict measures THIS run. Carrying a previous run's first/last across a
 	// Stop would have every wire reading "quiet for 4 minutes" the instant Start is pressed —
 	// an alarm about the interval the operator spent not measuring.
@@ -1159,10 +1066,6 @@ fn (mut app App) start() {
 	app.tap_failed = map[string]bool{}
 	app.mu.unlock()
 	spawn open_taps_for_run(app, plan, start_gen)
-	// AND SOMEBODY TO ASK THE WIRES NOBODY READS (#142). After the taps are on their way, since
-	// that is what it watches; it re-asks each pass, so it does not matter that none are open yet.
-	app.reserve_run_worker() // released by the watcher's own defer
-	spawn tx_health_loop(app, start_gen)
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
@@ -1272,6 +1175,8 @@ fn (mut app App) start() {
 	app.start_doip_hosts()
 	app.reserve_run_worker()
 	spawn gen_loop(app) // cyclic senders
+	app.reserve_run_worker()
+	spawn tx_health_loop(app, start_gen)
 	// The players go LAST -- after the monitors, and after every in-process consumer has been
 	// spawned. Two separate reasons, and only the first was handled before:
 	//

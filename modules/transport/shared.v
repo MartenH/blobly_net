@@ -193,7 +193,6 @@ fn (mut d SharedNoDriver) reports_tx_ack() bool {
 // touches the per-frame path. `send_mu` preserves the raw-write order used to correlate CANsub's untagged TX
 // acknowledgements.
 struct SharedEntry {
-	diagnostic_epoch u64 // identity of these cumulative counters, shared by all subscribers
 	key  string
 	spec string
 	done chan bool
@@ -281,7 +280,6 @@ mut:
 struct SharedRegistry {
 mut:
 	entries map[string]&SharedEntry
-	next_diagnostic_epoch u64
 }
 
 __global (
@@ -535,9 +533,7 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 				}
 				e.mu.unlock()
 			} else {
-				shared_reg.next_diagnostic_epoch++
 				mut e := &SharedEntry{
-					diagnostic_epoch: shared_reg.next_diagnostic_epoch
 					key:      key
 					spec:     spec
 					done:     chan bool{cap: 1}

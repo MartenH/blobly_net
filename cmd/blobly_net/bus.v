@@ -86,16 +86,6 @@ fn (c Chan) monitorable() bool {
 	return c.enabled && c.mode in ['normal', 'replay'] && !c.doip
 }
 
-// Spawning reserves a worker; running means its receive handle is actually open.
-fn (c Chan) receive_ready() bool {
-	return c.monitorable() && c.running
-}
-
-// A scheduled monitor avoids a competing health open, but cannot permit sends.
-fn (c Chan) receive_scheduled() bool {
-	return c.receive_ready() || (c.monitorable() && c.spawning)
-}
-
 // replay_blocker names the reason a replay-mode channel will not play — '' when nothing
 // blocks it. THE one statement of the disqualifiers: replaying() is defined by it and the
 // Replay panel prints it, so a clause added here reaches both — the panel hand-copying the
@@ -165,7 +155,6 @@ mut:
 	inner     transport.Bus
 	app       &App
 	iface     string
-	health_wire string // rate-independent identity, computed once when the tap opens
 	chan_name string // logical channel, '' = derive from the interface
 	origin    string
 	// Whether this tap REPRODUCES frames somebody else already decided the format of, rather than
@@ -205,17 +194,6 @@ fn run_cancel(gen u64, app &App) fn () bool {
 	}
 }
 
-// This refusal happens before recording or entering the driver. A stateful
-// producer may safely retain the prepared frame and offer it again.
-struct TxHealthPending {
-	Error
-	iface string
-}
-
-fn (e TxHealthPending) msg() string {
-	return '${e.iface}: transmit waiting for the bus-health reader'
-}
-
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	pa := probe_alloc_mark()
 	defer {
@@ -252,16 +230,6 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// second copy, edited in step with the first.
 	if t.cancel() {
 		return error('run ended')
-	}
-	// A newly filed transmit-only tap is usable only once its health receive queue
-	// exists. Enforce this before recording or sending, including manual sends that
-	// do not use the generator's readiness check.
-	mut a := unsafe { t.app }
-	a.mu.lock()
-	health_ready := a.transmit_ready_locked(t.health_wire)
-	a.mu.unlock()
-	if !health_ready {
-		return TxHealthPending{ iface: t.iface }
 	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
@@ -385,7 +353,6 @@ fn (app &App) open_tap_phys(iface string, phys string, origin string, chan_name 
 		inner:      inner
 		app:        unsafe { app }
 		iface:      logical
-		health_wire: transport.wire_key(logical)
 		chan_name:  chan_name
 		origin:     origin
 		reproduces: reproduces
@@ -477,18 +444,6 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 }
 
 fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame) bool {
-	outcome := app.try_tx_on_chan(chan_name, iface, f)
-	if outcome == .pending { app.notify('TX not sent: ${iface} is waiting for its transmit or receive path') }
-	return outcome == .sent
-}
-
-enum TxAttempt {
-	sent
-	failed
-	pending // no producer cycle or state was consumed
-}
-
-fn (mut app App) try_tx_on_chan(chan_name string, iface string, f transport.CanFrame) TxAttempt {
 	// The LOOKUP is under app.mu; the send is not. Taps are opened ON A WORKER and filed as they
 	// land (#257, file_tap) — for a generator added or retargeted mid-run, long after Start — so
 	// tx_buses is written while a cyclic generator may be reading it from gen_loop, and a V map is
@@ -509,18 +464,19 @@ fn (mut app App) try_tx_on_chan(chan_name string, iface string, f transport.CanF
 			chan_name != '') {
 			.wait {
 				app.mu.unlock()
-				return .pending
+				app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
+				return false
 			}
 			.none_open {
 				app.mu.unlock()
 				app.notify('TX failed: no open bus for ${iface}')
-				return .failed
+				return false
 			}
 			.via_wire {
 				app.tx_buses[tx_bus_key('', iface)] or {
 					app.mu.unlock()
 					app.notify('TX failed: no open bus for ${iface}')
-					return .failed
+					return false
 				}
 			}
 		}
@@ -529,13 +485,12 @@ fn (mut app App) try_tx_on_chan(chan_name string, iface string, f transport.CanF
 	// The row, the recording and the pending echo are the tap's job (open_tap), so they happen
 	// for every emitter rather than only for the ones that remember to log.
 	b.send(f) or {
-		if err is TxHealthPending { return .pending }
 		app.notify('TX failed: ${err}')
-		return .failed
+		return false
 	}
 	// The count is the tap's job (note_emit), like the row and the recording — a generator that
 	// bypasses tx_on still transmits, and used to be invisible here.
-	return .sent
+	return true
 }
 
 // available_adapters is the adapter-picker list for THIS platform — only backends that
