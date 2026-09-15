@@ -242,6 +242,16 @@ does `git clean -xf && git pull --rebase` on vc, undoing a pinned clone mid-buil
 why the install step is hand-rolled rather than `vlang/setup-v`, which runs `make` itself and
 leaves nowhere to put the pinned bootstrap.
 
+**CI build caches.** `.github/actions/setup-v` reuses the complete Linux V toolchain,
+keyed by both pins, the installer/action and the runner/compiler/package environment. It still
+checks both git HEADs and the successful-build stamp on restore. `.github/actions/gui-deps`
+reuses the ImGui/ImPlot archive plus sources (headers and licence texts) on Linux and Windows,
+keyed by the pinned build script, C++ glue/headers, action and native toolchain/package versions.
+Both use exact keys, rebuild on a miss and save only after a successful dependency build.
+A valid GUI restore refreshes the archive timestamp: checkout timestamps alone would otherwise
+make `run_gui.sh` rebuild unchanged glue. The app and every test still build/run each time.
+The Linux release uses the same actions, with separate caches for its Ubuntu 22.04 environment.
+
 ## Conventions
 
 - **Every module GUI-free and unit-tested.** New protocol work starts in `modules/` with tests.
