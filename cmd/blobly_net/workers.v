@@ -826,6 +826,17 @@ fn (mut app App) begin_tx_health_close(iface string, gen u64) {
 	app.mu.lock()
 	app.tx_health.begin_close(transport.wire_key(iface), gen)
 	app.mu.unlock()
+	app.drain_admitted_sends(iface)
+}
+
+// Revoke readiness under app.mu FIRST, then wait for a sender that already
+// passed the gate. TapBus holds this mutex through note_emit and the driver
+// send; keeping the receive handle open until it leaves closes that gap.
+// Never wait here while holding app.mu: the admitted sender may need it.
+fn (app &App) drain_admitted_sends(iface string) {
+	m := app.tx_mutex(iface)
+	m.lock()
+	m.unlock()
 }
 
 fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) string {
@@ -943,6 +954,19 @@ fn (mut app App) retire_failed_monitor(ci int, iface string, gen u64) {
 		app.push_listen_only_locked()
 	}
 	app.mu.unlock()
+	app.drain_admitted_sends(iface)
+}
+
+// The row displays current totals even when the session Log has already
+// narrated them through an earlier subscriber or run on this physical open.
+fn (mut app App) report_monitor_diagnostics(ci int, iface string, gen u64, source u64, from transport.BusDiagnostics, observed transport.BusDiagnostics) bool {
+	app.mu.lock()
+	defer { app.mu.unlock() }
+	if !app.running || !app.row_is_mine_locked(ci, iface, gen) { return false }
+	changed := app.chans[ci].diag != observed
+	app.chans[ci].diag = observed
+	app.chans[ci].diag_at = time.ticks()
+	return app.append_diagnostics_locked(iface, source, from, observed, '') || changed
 }
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {
@@ -1103,17 +1127,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// narrated when the counts CHANGE — once a second at most, so a wire dropping
 			// steadily is one line a second, not one per record — and shown on the row.
 			d := bus.diagnostics()
-			if d != last_diag {
-				a.mu.lock()
-				if a.running && a.row_is_mine_locked(ci, iface, gen) {
-					a.chans[ci].diag = d
-					a.chans[ci].diag_at = time.ticks()
-					a.append_diagnostics_locked(iface, diag_source, last_diag, d, '')
-				}
-				a.mu.unlock()
+			if a.report_monitor_diagnostics(ci, iface, gen, diag_source, last_diag, d) {
 				vgui.wake()
-				last_diag = d
 			}
+			last_diag = d
 		}
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
 		// and flips to green the moment the user brings it up (ip link set … up).

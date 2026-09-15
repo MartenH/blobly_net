@@ -158,11 +158,15 @@ its last transmit tap disappears. A supervisor retries failures once per second,
 per run. Claims include the run generation so a departing worker cannot erase its successor.
 Readiness is revoked before a failed reader reports or finalizes; its closing claim keeps
 ownership until teardown finishes, so a retry cannot overlap it.
+After revocation, reader teardown waits for any send already admitted through the wire's send
+mutex before sampling or closing the receive handle; it waits without holding the app mutex.
 Final health is sampled before close; Vector requests and drains its terminal chip-state reply
 through the ordinary decoder within a one-second budget, reporting an unavailable sample if it
 cannot obtain one. Diagnostics follow close so shared-reader cursor gaps are included. Shared
 counter epochs identify physical opens; their narration baseline survives reader retries and
-Stop/Start while a tool keeps that physical connection alive. Final samples carry their run
+Stop/Start while a tool keeps that physical connection alive. Monitor polls independently publish
+current totals to the Buses chip,
+even when those totals were already narrated by an earlier run. Final samples carry their run
 number in the session Log, wake the GUI, and survive an immediate restart without changing the
 new run's channel state. An open that returns after its run or final tap has left closes without
 sampling a run it never observed. A failed monitor revokes readiness before diagnostics or notices.

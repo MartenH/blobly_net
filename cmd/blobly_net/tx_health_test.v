@@ -58,6 +58,80 @@ fn test_a_failed_monitor_immediately_stops_covering_the_send_gate() {
 	assert app.chans[0].receive_ready(), 'an old monitor cannot retire its replacement'
 }
 
+fn test_reader_retirement_waits_for_an_already_admitted_send() {
+	for monitor in [false, true] {
+		iface := 'inproc:admitted-send-${monitor}'
+		wire := transport.wire_key(iface)
+		mut app := &App{ running: true, run_gen: 1 }
+		if monitor {
+			app.chans = [
+				Chan{ iface: iface, mode: 'normal', enabled: true, running: true },
+			]
+			app.tx_health.expect(wire, 1)
+		} else {
+			app.tx_health.claim(wire, 1)
+			app.tx_health.opened(wire, 1)
+		}
+		m := app.tx_mutex(iface)
+		m.lock() // a TapBus send between its readiness check and physical completion
+		done := chan bool{ cap: 1 }
+		spawn fn (app &App, iface string, monitor bool, done chan bool) {
+			mut a := unsafe { app }
+			if monitor {
+				a.retire_failed_monitor(0, iface, 1)
+			} else {
+				a.begin_tx_health_close(iface, 1)
+			}
+			done <- true
+		}(app, iface, monitor, done)
+		deadline := time.ticks() + 5000
+		mut revoked := false
+		for time.ticks() < deadline {
+			app.mu.lock()
+			revoked = !app.transmit_ready_locked(wire)
+			app.mu.unlock()
+			if revoked {
+				break
+			}
+			time.sleep(time.millisecond)
+		}
+		mut early := false
+		select {
+			_ := <-done {
+				early = true
+			}
+			50 * time.millisecond {
+			}
+		}
+		m.unlock()
+		if !early {
+			_ := <-done
+		}
+		assert revoked, 'new sends must be refused while the admitted send finishes'
+		assert !early, 'the receive handle must remain open until the admitted send finishes'
+	}
+}
+
+fn test_monitor_restores_the_diagnostic_chip_without_repeating_the_log() {
+	iface := 'inproc:retained-diagnostics'
+	seven := transport.BusDiagnostics{ dropped: 7 }
+	mut app := &App{
+		running: true
+		run_gen: 2
+		chans: [Chan{ iface: iface }]
+		diag_reported: {
+			u64(1): seven
+		}
+	}
+	assert app.report_monitor_diagnostics(0, iface, 2, 1, seven, seven)
+	assert app.chans[0].diag == seven
+	assert app.chans[0].diag_at > 0
+	assert app.logs.len == 0
+	assert !app.report_monitor_diagnostics(0, iface, 2, 1, seven, seven)
+	assert !app.report_monitor_diagnostics(0, iface, 1, 1, seven, transport.BusDiagnostics{})
+	assert app.chans[0].diag == seven, 'an older run cannot overwrite the new chip'
+}
+
 fn test_a_late_health_open_closes_without_sampling_the_ended_run() {
 	for restarted in [false, true] {
 		mut app := &App{ running: restarted, run_gen: if restarted { u64(2) } else { 1 } }
