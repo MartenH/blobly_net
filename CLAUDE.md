@@ -156,9 +156,14 @@ SocketCAN error frames and Vector chip-state replies advance health inside `recv
 reports health and diagnostics in the Log, including a final sample at Stop, and closes when
 its last transmit tap disappears. A supervisor retries failures once per second, up to three
 per run. Claims include the run generation so a departing worker cannot erase its successor.
+Final health is sampled before close; diagnostics follow close so shared-reader cursor gaps
+are included. Final samples carry their run number in the session Log and survive an immediate
+restart, without changing the new run's channel state.
 **Transmit readiness requires an open receive handle on every planned transmit wire**.
 Start prepares those expectations and publishes the new run while holding the transmit locks,
-so a surviving tool tap cannot send before the new run files its taps. A monitor counts only
+so a surviving tool tap cannot send before the new run files its taps.
+Live generator additions and retargets publish their expectations
+under the destination's send lock before starting the asynchronous tap open. A monitor counts only
 once its receive handle is open (`Chan.receive_ready`); spawning is insufficient. A monitor
 already opening keeps the wire waiting; a failed open lets the supervisor start a fallback.
 `file_tap` claims wires with no scheduled monitor under the publication lock, the health reader publishes

@@ -1239,13 +1239,14 @@ fn (mut app App) resolve_one_sender_locked(i int, rows []project.Channel) {
 	if i < 0 || i >= app.senders.len {
 		return
 	}
-	own := project.Channel{
-		name:  app.senders[i].own
-		iface: app.senders[i].iface
-	}
-	r := project.resolve_sender_bus(app.senders[i].sender.bus, own, rows)
+	r := app.senders[i].resolve_bus(app.senders[i].sender.bus, rows)
 	app.senders[i].tgt = r.iface
 	app.senders[i].chan = r.chan
+}
+
+fn (sr SenderRT) resolve_bus(bus string, rows []project.Channel) project.SenderBus {
+	own := project.Channel{ name: sr.own, iface: sr.iface }
+	return project.resolve_sender_bus(bus, own, rows)
 }
 
 // sender_rows_locked is the channel list the resolver is asked against — name and interface only,

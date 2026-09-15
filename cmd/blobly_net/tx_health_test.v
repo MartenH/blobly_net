@@ -3,6 +3,135 @@ module main
 import transport
 import time
 
+// Models a backend whose health needs a live handle and whose subscriber loss
+// is finalized only at close, as on the shared PCAN/CANsub transport.
+struct FinalHealthBus {
+mut:
+	closed bool
+	hstate transport.BusHealth = .bus_off
+}
+
+fn (mut b FinalHealthBus) send(frame transport.CanFrame) ! {}
+
+fn (mut b FinalHealthBus) recv(timeout_ms int) !transport.CanFrame {
+	return error('timeout')
+}
+
+fn (mut b FinalHealthBus) close() {
+	b.closed = true
+}
+
+fn (mut b FinalHealthBus) health() transport.BusHealth {
+	return if b.closed { .unknown } else { b.hstate }
+}
+
+fn (mut b FinalHealthBus) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{ dropped: if b.closed { u64(7) } else { 0 } }
+}
+
+fn (mut b FinalHealthBus) reconcile_silence(want bool) ! {}
+
+fn test_final_samples_survive_restart_without_changing_the_new_run() {
+	mut app := &App{
+		running: true
+		run_gen: 2
+		chans: [Chan{ iface: 'inproc:final', health: .ok }]
+	}
+	app.tx_health.expect('inproc:final', 2)
+	mut bus := transport.Bus(&FinalHealthBus{})
+	app.finish_tx_health(mut bus, 'inproc:final', 1, TxHealthSample{})
+	assert app.logs.len == 2
+	assert app.logs[0].contains('run 1 final:') && app.logs[0].contains('BUS-OFF')
+	assert app.logs[1].contains('run 1 final:') && app.logs[1].contains('+7 drop')
+	assert app.chans[0].health == .ok
+	assert app.chans[0].diag == transport.BusDiagnostics{}
+	assert !app.tx_health.send_ready('inproc:final', 2)
+}
+
+fn test_late_observation_is_retained_even_if_the_old_backend_recovers_before_close() {
+	mut app := &App{ running: true, run_gen: 2 }
+	mut last := TxHealthSample{}
+	assert app.report_tx_health_sample('inproc:late', 1, TxHealthSample{
+		health: .bus_off
+	}, mut last)
+	mut bus := transport.Bus(&FinalHealthBus{ hstate: .ok })
+	app.finish_tx_health(mut bus, 'inproc:late', 1, last)
+	assert app.logs.len == 3
+	assert app.logs[0].contains('run 1 final:') && app.logs[0].contains('BUS-OFF')
+	assert app.logs[1].contains('run 1 final:') && app.logs[1].contains('recovered')
+	assert app.logs[2].contains('run 1 final:') && app.logs[2].contains('+7 drop')
+}
+
+fn test_reported_samples_are_not_repeated_at_close() {
+	mut app := &App{ running: true, run_gen: 1 }
+	mut last := TxHealthSample{}
+	assert app.report_tx_health_sample('inproc:reported', 1, TxHealthSample{
+		health: .bus_off
+		diagnostics: transport.BusDiagnostics{ dropped: 7 }
+	}, mut last)
+	assert app.logs.len == 2
+	mut bus := transport.Bus(&FinalHealthBus{})
+	app.finish_tx_health(mut bus, 'inproc:reported', 1, last)
+	assert app.logs.len == 2
+}
+
+fn test_live_retarget_blocks_tools_before_the_tap_open_is_started() {
+	for returning in [false, true] {
+		iface := 'inproc:tx-health-retarget-${returning}'
+		wire := transport.wire_key(iface)
+		mut app := &App{
+			running: true
+			run_gen: 1
+			senders: [SenderRT{ uid: 1, iface: 'inproc:old', tgt: 'inproc:old' }]
+		}
+		mut tool := app.open_tap_phys(iface, iface, org_tx, '', 0, false) or { panic(err) }
+		mut peer := transport.open(iface) or { panic(err) }
+		if returning {
+			app.tx_health.claim(wire, 1)
+			app.tx_health.release(wire, 1, false)
+			app.tx_health.retain_needed([], 1)
+		}
+		// This is the real mutation used by set_sender_bus, before its opener
+		// is spawned. Both a first target and a previously departed one wait.
+		want := app.plan_sender_bus(0, iface, '') or { panic('expected a tap open') }
+		assert want.iface == iface
+		assert app.senders[0].target() == iface
+		assert app.tx_buses.len == 0
+		if _ := tool.send(transport.CanFrame{ id: 0x123 }) {
+			assert false, 'a live retarget must gate a tool before its async open'
+		}
+		if _ := peer.recv(0) {
+			assert false, 'the early frame must not reach the wire'
+		}
+		assert app.tx_count == 0
+		tool.close()
+		peer.close()
+	}
+}
+
+fn test_live_generator_addition_gates_an_unmonitored_first_channel() {
+	iface := 'inproc:tx-health-add'
+	mut app := &App{
+		running: true
+		run_gen: 1
+		chans: [Chan{ name: 'FIRST', iface: iface, mode: 'normal', enabled: false }]
+	}
+	mut tool := app.open_tap_phys(iface, iface, org_tx, '', 0, false) or { panic(err) }
+	defer { tool.close() }
+	mut peer := transport.open(iface) or { panic(err) }
+	defer { peer.close() }
+	want := app.plan_add_generator()
+	assert want.iface == iface && want.chan_name == 'FIRST'
+	assert app.senders.len == 1 && app.senders[0].target() == iface
+	assert app.tx_buses.len == 0
+	if _ := tool.send(transport.CanFrame{ id: 0x123 }) {
+		assert false, 'adding a generator must gate the wire before its async open'
+	}
+	if _ := peer.recv(0) {
+		assert false, 'the early frame must not reach the wire'
+	}
+}
+
 fn test_start_and_restart_prepare_the_real_transmit_plan() {
 	iface := 'inproc:tx-health-start'
 	wire := transport.wire_key(iface)

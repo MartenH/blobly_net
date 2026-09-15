@@ -687,37 +687,9 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 		a.tx_health.opened(wire, gen)
 	}
 	a.mu.unlock()
-	mut last := transport.BusHealth.unknown
-	mut last_diag := transport.BusDiagnostics{}
+	mut last := TxHealthSample{}
 	defer {
-		// THE LAST SAMPLE, ON EVERY EXIT INCLUDING A CLEAN STOP. rx_loop takes one for a reason
-		// that applies harder here: this wire has no Buses row and no other reader, so counters
-		// moved since the previous poll are otherwise absent from the Log AND the UI — gone with
-		// the handle (codex round 6). Registered after the open, so it runs before the release
-		// above and only when there is a handle to ask.
-		//
-		// HEALTH AS WELL AS THE COUNTERS. A Stop landing after `recv` consumed a bus-off error
-		// frame but before the next one-second sample left the new state in the backend and
-		// nowhere else — and a transmit-only wire has no row to carry it, so the completed run's
-		// Log simply omitted the fault (codex round 8 on #142). The ladder is the whole point of
-		// this worker; it cannot be the one thing the teardown drops.
-		final_h := b.health()
-		if final_h != .unknown && final_h != last {
-			a.mu.lock()
-			if a.run_gen == gen {
-				a.log_append_locked(health_msg(iface, last, final_h))
-			}
-			a.mu.unlock()
-		}
-		final := b.diagnostics()
-		if final != last_diag {
-			a.mu.lock()
-			if a.run_gen == gen {
-				a.log_append_locked(diag_msg(iface, last_diag, final))
-			}
-			a.mu.unlock()
-		}
-		b.close()
+		a.finish_tx_health(mut b, iface, gen, last)
 	}
 	mut next := time.ticks()
 	for a.running && a.run_gen == gen {
@@ -769,54 +741,59 @@ fn tx_health_reader(app &App, iface string, gen u64) {
 			continue
 		}
 		next = time.ticks() + 1000
-		// IS ANYBODY ELSE TELLING THIS WIRE'S STORY? Asked AFTER the receive, because the answer
-		// can change during those 200 ms, and asked about a reader that is actually RUNNING rather
-		// than one that is merely SPAWNING. A spawning row has not opened its socket yet, so during
-		// that window nobody else can see anything — handing the narration over then meant an error
-		// frame arriving in it was consumed here and reported by no one, and the new socket starts
-		// from `hstate == .unknown` and cannot recover an event it was not open for (codex round 5).
-		a.mu.lock()
-		mut owned := false
-		for c in a.chans {
-			if c.receive_ready() && transport.wire_key(c.iface) == wire {
-				owned = true
-				break
-			}
-		}
-		a.mu.unlock()
-		// WHAT IS NEITHER A FRAME NOR A RUNG (#213) — dropped frames, controller errors,
-		// undecodable records. On a transmit-only wire THIS reader is the only receiver, so these
-		// counters move because of the reads above and nothing else would ever narrate them.
-		d := b.diagnostics()
-		if d != last_diag && !owned {
-			prev_diag := last_diag
-			last_diag = d
-			a.mu.lock()
-			if a.running && a.run_gen == gen {
-				a.log_append_locked(diag_msg(iface, prev_diag, d))
-			}
-			a.mu.unlock()
+		observed := TxHealthSample{ health: b.health(), diagnostics: b.diagnostics() }
+		if a.report_tx_health_sample(iface, gen, observed, mut last) {
 			vgui.wake()
 		}
-		h := b.health()
-		if h == .unknown || h == last {
-			continue
-		}
-		if owned {
-			// NOT RECORDED, because it was not reported. Advancing `last` here consumed the
-			// transition: if ownership moved back — or was never really taken, the row having only
-			// been spawning — nothing would ever say it, since a driver's ladder holds the CURRENT
-			// state and a rung that has already been read is gone (codex round 5).
-			continue
-		}
-		prev := last
-		last = h
-		a.mu.lock()
-		if a.running && a.run_gen == gen {
-			a.log_append_locked(health_msg(iface, prev, h))
-		}
-		a.mu.unlock()
-		vgui.wake()
+	}
+}
+
+struct TxHealthSample {
+mut:
+	health transport.BusHealth
+	diagnostics transport.BusDiagnostics
+}
+
+// The baseline is what reached the Log. Stop/Start can happen after recv and
+// before this lock: keep that observation with its original run identity,
+// even if the backend recovers again before the final sample.
+fn (mut app App) report_tx_health_sample(iface string, gen u64, observed TxHealthSample, mut last TxHealthSample) bool {
+	app.mu.lock()
+	defer { app.mu.unlock() }
+	current := app.running && app.run_gen == gen
+	if current && app.wire_has_open_receiver_locked(transport.wire_key(iface)) {
+		return false
+	}
+	prefix := if current { '' } else { 'run ${gen} final: ' }
+	mut changed := false
+	if observed.health != .unknown && observed.health != last.health {
+		app.log_append_locked(prefix + health_msg(iface, last.health, observed.health))
+		last.health = observed.health
+		changed = true
+	}
+	if observed.diagnostics != last.diagnostics {
+		app.log_append_locked(prefix + diag_msg(iface, last.diagnostics, observed.diagnostics))
+		last.diagnostics = observed.diagnostics
+		changed = true
+	}
+	return changed
+}
+
+// Final health must be sampled while the handle is live; shared diagnostics can
+// gain their last cursor gap during close. The session Log outlives each run, so
+// retain late results there with their run identity instead of dropping them or
+// writing them into the replacement run's channel state.
+fn (mut app App) finish_tx_health(mut bus transport.Bus, iface string, gen u64, last TxHealthSample) {
+	final_h := bus.health()
+	bus.close()
+	final_diag := bus.diagnostics()
+	app.mu.lock()
+	defer { app.mu.unlock() }
+	if final_h != .unknown && final_h != last.health {
+		app.log_append_locked('run ${gen} final: ${health_msg(iface, last.health, final_h)}')
+	}
+	if final_diag != last.diagnostics {
+		app.log_append_locked('run ${gen} final: ${diag_msg(iface, last.diagnostics, final_diag)}')
 	}
 }
 
