@@ -287,6 +287,13 @@ fn test_transfers_follow_roles_and_complete_on_the_last_sequence_number() {
 	q := packets(0x0B, addr_global, msg)
 	assert t.step(q[2]).done // packet 3 of 3, whatever came before
 	assert t.open() == 0
+	// a sequence number past the count is the sender's frame and not the end
+	t.step(bam(0x0B, msg.len, dm1))
+	bad := t.step(dt(0x0B, addr_global, 9, message(7)))
+	assert bad.role == .packet && !bad.done
+	assert t.open() == 1
+	assert t.step(q[2]).done
+	assert t.open() == 0
 }
 
 fn test_transfers_refuse_what_the_reassembler_refuses() {

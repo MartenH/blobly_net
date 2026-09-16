@@ -211,6 +211,12 @@ fn (mut app App) load_recording(path string) {
 		}
 	}
 	gate_only := if can_buses.len == 1 { can_buses.keys()[0] } else { '' }
+	// An MF4's labels are the file's own numbering and name no project wire, so its buses take
+	// the one CAN wire's gate only when the file has ONE bus too — the verifiers' rule above; a
+	// multi-bus file against a one-wire project falls back to the project-wide default like
+	// any label the project cannot place, rather than reading every bus as that wire (codex on
+	// #329). With one wire the two answers coincide; the rule is stated once either way.
+	mf4_gate := if can_buses.len == 1 && rec_buses.len == 1 { gate_only } else { '' }
 	first_row := if log.len() > trace_cap { log.len() - trace_cap } else { 0 }
 	app.mu.lock()
 	app.reset_trace_locked()
@@ -285,7 +291,7 @@ fn (mut app App) load_recording(path string) {
 			nk
 		}
 		gate := if from_mf4 {
-			gate_only
+			mf4_gate
 		} else if e.iface in gate_clash {
 			''
 		} else {

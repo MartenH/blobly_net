@@ -214,11 +214,14 @@ pub fn (mut t Transfers) step(f transport.CanFrame) Step {
 		seq := if f.data.len > 0 { f.data[0] } else { u8(0) }
 		// Whatever the sequence says, a data frame on an open transfer's pair is its
 		// originator's: a duplicate is the sender again, a gap is a frame the capture lost.
-		// The transfer ends on its last sequence number.
+		// The transfer ends on EXACTLY its last sequence number — a corrupted number past the
+		// count is the sender's frame too, but not the end, or the real last packet would come
+		// after the transfer and belong to nobody (codex on #329). A transfer whose last packet
+		// the capture lost stays open until the pair's next announcement replaces it.
 		if seq >= s.next {
 			s.next = seq + 1
 		}
-		done := int(seq) >= s.packets
+		done := int(seq) == s.packets
 		if done {
 			t.open.delete(k)
 		} else {

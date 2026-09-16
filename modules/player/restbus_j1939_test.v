@@ -338,6 +338,33 @@ fn test_a_duplicate_packet_does_not_end_the_transfer_and_malformed_announcements
 	assert rep.unknown == 2
 }
 
+// On a database that declares no J1939, TP-shaped frames are frames like any other: a
+// proprietary 29-bit message whose id spells the composed announcement is not a transfer.
+fn test_transfers_are_followed_only_on_a_declared_database() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'Proprietary'
+				id:     0x1CFECA00 // what a BAM from 0x00 carrying 0xFECA would compose to
+				ext:    true
+				sender: 'Engine'
+				j1939:  false
+			},
+		]
+	}
+	rec := [
+		tp_cm(0x00, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.00),
+		tp_dt(0x00, 0xFF, 1, 0.01),
+		tp_dt(0x00, 0xFF, 2, 0.02),
+		tp_dt(0x00, 0xFF, 3, 0.03),
+	]
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	assert kept.len == 4 // nothing followed, nothing attributed
+	assert rep.tp_attributed == 0
+	assert rep.withheld_excluded == 0
+	assert rep.unknown == 4
+}
+
 // Two spellings of one transmitter pair agree about the sender, whatever their order.
 fn test_transmitter_sets_compare_without_order() {
 	db := candb.Database{

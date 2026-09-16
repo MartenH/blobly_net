@@ -177,6 +177,12 @@ fn (mut app App) j1939_note_locked(mut obs J1939Obs, ch string, gate string, key
 		return []
 	}
 	if !f.extended || f.rtr {
+		// Not a frame the listener reads, but a frame that says time passed: on a mixed wire
+		// with continuous standard traffic the poll never times out and no extended frame need
+		// come, so a stalled session would otherwise wait forever for either (codex on #329).
+		if obs.tp.open() > 0 {
+			app.j1939_expire_locked(mut obs, ch, gate, t_ms)
+		}
 		return []
 	}
 	id := j1939.decompose(f.id)

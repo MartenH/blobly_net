@@ -152,6 +152,12 @@ fn same_set(a []string, b []string) bool {
 // of them wrong in one review round (codex on #329).
 pub struct Walker {
 	d Decider
+	// Whether the database declared J1939 at all. Without it the walker follows no transfers:
+	// a proprietary 29-bit bus can carry ids whose PGN computes to the transport protocol's
+	// with payloads that pass as announcements, and its later frames would then inherit a
+	// decision made for a parameter group nobody declared — the rule that a 29-bit id alone is
+	// not J1939, applied to the transport protocol too (codex on #329).
+	j1939 bool
 mut:
 	tp       j1939.Transfers
 	verdicts map[u16]Decision // the announcement's decision, by (originator, destination)
@@ -159,7 +165,8 @@ mut:
 
 pub fn new_walker(db candb.Database, exclude []string, replay_unattributed bool) Walker {
 	return Walker{
-		d: new_decider(db, exclude, replay_unattributed)
+		d:     new_decider(db, exclude, replay_unattributed)
+		j1939: db.j1939_declared()
 	}
 }
 
@@ -170,6 +177,9 @@ fn tkey(sa u8, da u8) u16 {
 // decide is Decider.decide with the transfers followed. Standard frames, remote frames and
 // everything that is not TP go straight through.
 pub fn (mut w Walker) decide(f transport.CanFrame) Decision {
+	if !w.j1939 {
+		return w.d.decide(f)
+	}
 	st := w.tp.step(f)
 	match st.role {
 		.announce {
