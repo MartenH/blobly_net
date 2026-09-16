@@ -183,12 +183,9 @@ pub fn (mut w Walker) decide(f transport.CanFrame) Decision {
 	st := w.tp.step(f)
 	match st.role {
 		.announce {
-			// The announcement is judged by the parameter group it announces, as a single frame
-			// of that group from this sender to this destination would be.
-			base := w.d.decide(transport.CanFrame{
-				id:       j1939.compose(st.priority, st.pgn, st.da, st.sa)
-				extended: true
-			})
+			// The announcement is judged by the parameter group it announces — through the
+			// declared-PGN index, the only thing it carries about the message (decide_pgn).
+			base := w.d.decide_pgn(st.pgn)
 			dec := Decision{
 				...base
 				tp: true
@@ -355,6 +352,28 @@ pub fn (d Decider) decide(f transport.CanFrame) Decision {
 		}
 		by_pgn = true
 	}
+	return d.judged(senders, by_pgn)
+}
+
+// decide_pgn decides a parameter group announced by a transport-protocol frame: through the
+// DECLARED-PGN index only, never an exact id. The announcement carries the PGN and nothing else
+// of the application message — the priority and destination it would have carried are the
+// announcement's — so an id composed from them can only accidentally equal a defined `BO_`, and
+// an undeclared one at that id would then decide for the whole transfer past every declaration
+// safeguard (codex on #329).
+pub fn (d Decider) decide_pgn(pgn u32) Decision {
+	senders := d.pgn_senders[pgn] or {
+		return Decision{
+			verdict:  .keep_unknown
+			pgn_hint: pgn in d.pgn_hint
+		}
+	}
+	return d.judged(senders, true)
+}
+
+// judged is the verdict once the transmitters are known: nobody named, an excluded node, or
+// somebody else. The one tail for the exact-id path, the PGN path and an announcement.
+fn (d Decider) judged(senders []string, by_pgn bool) Decision {
 	if senders.len == 0 {
 		return Decision{
 			verdict: if d.replay_unattributed {

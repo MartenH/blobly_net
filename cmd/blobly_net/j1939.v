@@ -57,11 +57,28 @@ mut:
 // database declares it, the best answer for a bus the project cannot place). Caller holds app.mu.
 fn (app &App) j1939_on_locked(gate string) bool {
 	return match app.j1939_override {
-		.on { true }
-		.off { false }
-		.follow { app.j1939_dbs[gate] or { app.j1939_any } }
+		.on {
+			true
+		}
+		.off {
+			false
+		}
+		.follow {
+			if gate == j1939_gate_undecidable {
+				false
+			} else {
+				app.j1939_dbs[gate] or { app.j1939_any }
+			}
+		}
 	}
 }
+
+// j1939_gate_undecidable is the gate of a recorded bus whose label two configured wires answer
+// to: in auto it reads as NOT J1939 — the project-wide default would read it as whichever wire
+// declares it, which is a guess about a bus that may have come from the other one (codex on
+// #329) — while on / off still override it like any wire. Distinct from '' (a label no wire
+// answers to, which takes the project-wide default).
+const j1939_gate_undecidable = '(undecidable)'
 
 // j1939_display_locked is the row's NAME cell on a J1939 wire: the database's name and the
 // reading — `EEC1  PGN 0xF004 SA 0x00 Engine` — or the reading alone where the database has no
@@ -194,7 +211,10 @@ fn (mut app App) j1939_note_locked(mut obs J1939Obs, ch string, gate string, key
 			app.j1939_labels.delete(key)
 			app.log_append_locked('${ch}: J1939 ${c.str()}')
 		}
-		return []
+		// and FALL THROUGH to the reassembler, which reads nothing from a claim but expires
+		// the stalled: a wire carrying claims every 100 ms neither times the poll out nor
+		// need carry any other extended frame (codex on #329, the third early return of this
+		// kind — every frame this function sees now reaches expiry)
 	}
 	ev := obs.tp.feed(f, t_ms)
 	for fl in ev.faults {

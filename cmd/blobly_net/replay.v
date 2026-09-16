@@ -293,7 +293,7 @@ fn (mut app App) load_recording(path string) {
 		gate := if from_mf4 {
 			mf4_gate
 		} else if e.iface in gate_clash {
-			''
+			j1939_gate_undecidable
 		} else {
 			gate_of[e.iface] or { gate_only }
 		}

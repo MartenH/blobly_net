@@ -365,6 +365,40 @@ fn test_transfers_are_followed_only_on_a_declared_database() {
 	assert rep.unknown == 4
 }
 
+// An announcement carries a PGN, not an id: a defined-but-undeclared message whose id happens
+// to equal what the announcement would compose to decides nothing about the transfer.
+fn test_an_announcement_is_judged_by_pgn_never_by_a_composed_id() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'EEC1'
+				id:     0x0CF004FE
+				ext:    true
+				sender: 'Engine'
+				j1939:  true // declared, so transfers are followed
+			},
+			candb.Message{
+				name:   'Trap'
+				id:     0x1CFECA00 // exactly what a priority-7 BAM from 0x00 carrying 0xFECA composes to
+				ext:    true
+				sender: 'Engine'
+				j1939:  false // but not declared J1939
+			},
+		]
+	}
+	rec := [
+		tp_cm(0x00, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.00),
+		tp_dt(0x00, 0xFF, 1, 0.01),
+		tp_dt(0x00, 0xFF, 2, 0.02),
+		tp_dt(0x00, 0xFF, 3, 0.03),
+	]
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	assert kept.len == 4
+	assert rep.withheld_excluded == 0
+	assert rep.tp_attributed == 4 // followed, and judged unknown with the hint
+	assert rep.pgn_hint == 4
+}
+
 // Two spellings of one transmitter pair agree about the sender, whatever their order.
 fn test_transmitter_sets_compare_without_order() {
 	db := candb.Database{

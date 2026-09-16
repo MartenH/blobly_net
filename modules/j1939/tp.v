@@ -191,7 +191,27 @@ pub fn (mut t Transfers) step(f transport.CanFrame) Step {
 					role: .stray
 				}
 			}
-			cm_cts, cm_eom_ack {
+			cm_eom_ack {
+				// The receiver says the transfer keyed the other way round is complete. A
+				// capture that lost the last packet still has this, and a transfer left open
+				// there would lend its verdict to the pair's next packets (codex on #329).
+				rk := skey(id.da(), id.sa)
+				mut done := false
+				if s := t.open[rk] {
+					if s.pgn == cm.pgn {
+						t.open.delete(rk)
+						done = true
+					}
+				}
+				return Step{
+					role: .receiver
+					pgn:  cm.pgn
+					sa:   id.da()
+					da:   id.sa
+					done: done
+				}
+			}
+			cm_cts {
 				return Step{
 					role: .receiver
 					pgn:  cm.pgn
@@ -514,8 +534,19 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			}
 		}
 		cm_eom_ack {
-			// The receiver's acknowledgement of a message that completed on its last data frame,
-			// acknowledged or not. Nothing to do.
+			// The receiver's acknowledgement of a message that completed on its last data frame
+			// — which this listener has already delivered, so ordinarily there is no session to
+			// find. One still open under that PGN means the receiver saw a packet this listener
+			// did not: the message cannot be rejoined, and that is said here rather than as a
+			// timeout a second later (codex on #329).
+			k := skey(id.da(), id.sa)
+			if s := r.sessions[k] {
+				if s.pgn == carried {
+					ev.faults << s.fault(.sequence,
+						'acknowledged complete by SA 0x${id.sa:02X} after ${s.progress()}; the rest never reached this listener; dropped')
+					r.sessions.delete(k)
+				}
+			}
 		}
 		cm_abort {
 			// From the originator (session keyed sa->da) or from the receiver (keyed da->sa);

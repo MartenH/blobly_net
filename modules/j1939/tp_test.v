@@ -326,6 +326,46 @@ fn test_transfers_abort_by_pgn_and_the_receiver_side() {
 	assert t.open() == 0
 	// an abort naming nothing open
 	assert t.step(abort(0x00, 0x17, 3, 0xFEE5)).role == .stray
+	// the receiver's end-of-message ack closes the transfer it names — a capture that lost the
+	// last packet still carries the ack
+	t.step(rts(0x17, 0x00, 20, 0xFED8))
+	eom_other := transport.CanFrame{
+		id:       compose(7, pgn_tp_cm, 0x17, 0x00)
+		extended: true
+		data:     [cm_eom_ack, 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00] // for DM1: not this transfer
+	}
+	assert !t.step(eom_other).done
+	assert t.open() == 1
+	eom := transport.CanFrame{
+		id:       compose(7, pgn_tp_cm, 0x17, 0x00)
+		extended: true
+		data:     [cm_eom_ack, 20, 0, 3, 0xFF, 0xD8, 0xFE, 0x00]
+	}
+	ack := t.step(eom)
+	assert ack.role == .receiver && ack.done
+	assert t.open() == 0
+}
+
+// An end-of-message ack for a session this listener still has open means a packet went past
+// unseen: said as a lost packet, not left to time out.
+fn test_eom_ack_for_an_open_session_is_a_lost_packet() {
+	mut r := Reassembler{}
+	msg := message(20)
+	r.feed(rts(0x17, 0x00, msg.len, 0xFED8), 0)
+	p := packets(0x17, 0x00, msg)
+	r.feed(p[0], 1)
+	r.feed(p[1], 2)
+	// packet 3 never reaches us; the receiver acknowledges anyway
+	eom := transport.CanFrame{
+		id:       compose(7, pgn_tp_cm, 0x17, 0x00)
+		extended: true
+		data:     [cm_eom_ack, 20, 0, 3, 0xFF, 0xD8, 0xFE, 0x00]
+	}
+	ev := r.feed(eom, 3)
+	assert ev.faults.len == 1
+	assert ev.faults[0].kind == .sequence
+	assert ev.faults[0].detail.contains('acknowledged complete by SA 0x00 after packet 2 of 3')
+	assert r.open() == 0
 }
 
 fn test_parse_cm() {
