@@ -181,8 +181,16 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 		match cm.ctrl {
 			cm_rts, cm_bam {
 				if _ := cm.admission(id) {
+					// A refused announcement still says the pair started over: the previous
+					// transfer, if any, is gone, or the replacement's packets would be filed
+					// as the old announcement's (codex on #329). `done` tells the walker.
+					had := k in t.open
+					t.open.delete(k)
 					return Step{
 						role: .stray
+						sa:   id.sa
+						da:   id.da()
+						done: had
 					}
 				}
 				t.open[k] = Open{
@@ -548,6 +556,15 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 		cm_bam, cm_rts {
 			bam := ctrl == cm_bam
 			if why := cm.admission(id) {
+				// and whatever this pair had in progress is over — the sender started again,
+				// however badly — or the replacement's first packet would land in the old
+				// session as the old PGN (codex on #329)
+				k := skey(id.sa, id.da())
+				if old := r.sessions[k] {
+					ev.faults << old.fault(.restarted,
+						'a new announcement arrived after ${old.progress()}; the unfinished message is dropped')
+					r.sessions.delete(k)
+				}
 				ev.faults << id.fault(.malformed, carried, why)
 				return
 			}

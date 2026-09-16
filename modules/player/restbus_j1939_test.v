@@ -435,6 +435,48 @@ fn test_stale_transfer_decisions_expire_and_hints_name_the_announced_group() {
 	assert rep.unknown == 4
 }
 
+// A database that defines the transport protocol's own PGN as a message does not make a CTS
+// the transmitter's frame: the receiver's side is unknown by construction.
+fn test_receiver_controls_are_unknown_even_when_the_dbc_defines_tp_cm() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'TP_CM'
+				id:     0x1CECFFFE
+				ext:    true
+				sender: 'Engine'
+				j1939:  true
+			},
+			candb.Message{
+				name:   'DM1'
+				id:     0x18FECAFE
+				ext:    true
+				sender: 'Engine'
+				j1939:  true
+			},
+		]
+	}
+	cts := canlog.LogEntry{
+		t_s:   0.01
+		iface: 'can'
+		frame: transport.CanFrame{
+			id:       j1939.compose(7, j1939.pgn_tp_cm, 0x00, 0x17) // 0x17 (the receiver) to the engine
+			extended: true
+			data:     [j1939.cm_cts, 0xFF, 1, 0xFF, 0xFF, 0xCA, 0xFE, 0x00]
+		}
+	}
+	rec := [
+		tp_cm(0x00, 0x17, j1939.cm_rts, 20, 0xFECA, 0.00), // the engine's announcement: withheld
+		cts, // the receiver's answer: replayed, unknown — though TP_CM is "the engine's" in this DBC
+		tp_dt(0x00, 0x17, 1, 0.02),
+	]
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	assert kept.len == 1
+	assert kept[0].frame.id == cts.frame.id
+	assert rep.withheld_excluded == 2
+	assert rep.unknown == 1
+}
+
 // Two spellings of one transmitter pair agree about the sender, whatever their order.
 fn test_transmitter_sets_compare_without_order() {
 	db := candb.Database{

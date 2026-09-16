@@ -207,15 +207,22 @@ pub fn (mut w Walker) decide(f transport.CanFrame, t_s f64) Decision {
 			}
 			return dec
 		}
-		.receiver {
-			// The receiver's frames are nobody the database can name — see
-			// Subtraction.tp_attributed; the transfer it may have ended forgets its decision.
+		.receiver, .stray {
+			// The receiver's frames are nobody the database can name, and a TP frame no
+			// announcement accounts for is attributable through nothing — see
+			// Subtraction.tp_attributed. UNKNOWN by construction, not through the decider: a
+			// database that happens to define TP.CM as a message would otherwise PGN-match a
+			// CTS to that definition's transmitter and withhold the receiver's own frame on the
+			// excluded node's account (codex on #329). A transfer this frame ended forgets its
+			// decision.
 			if st.done {
 				w.verdicts.delete(tkey(st.sa, st.da))
 			}
-			return w.d.decide(f)
+			return Decision{
+				verdict: .keep_unknown
+			}
 		}
-		.stray, .not_tp {
+		.not_tp {
 			return w.d.decide(f)
 		}
 	}

@@ -329,6 +329,23 @@ fn test_transfers_expire_on_the_callers_clock() {
 	assert u.open() == 1
 }
 
+// A refused announcement ends whatever the pair had in progress, in both trackers.
+fn test_a_refused_announcement_drops_the_pairs_transfer() {
+	mut t := Transfers{}
+	t.step(bam(0x00, 20, dm1))
+	bad := t.step(cm(0x00, addr_global, cm_bam, 20, 2, dm1)) // count disagrees
+	assert bad.role == .stray && bad.done && bad.sa == 0x00
+	assert t.open() == 0
+	assert t.step(dt(0x00, addr_global, 1, message(7))).role == .stray
+	mut r := Reassembler{}
+	r.feed(bam(0x00, 20, dm1), 0)
+	ev := r.feed(cm(0x00, addr_global, cm_bam, 20, 2, dm1), 1)
+	assert ev.faults.len == 2
+	assert ev.faults[0].kind == .restarted
+	assert ev.faults[1].kind == .malformed
+	assert r.open() == 0
+}
+
 fn test_transfers_refuse_what_the_reassembler_refuses() {
 	mut t := Transfers{}
 	assert t.step(cm(0x00, addr_global, cm_bam, 20, 2, dm1)).role == .stray // count disagrees

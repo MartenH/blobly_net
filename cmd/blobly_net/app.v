@@ -283,6 +283,7 @@ mut:
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
+	sel_tp        bool    // the selection is a rejoined TP message, not a frame (see Watch.tp)
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
 	plot_multi    bool = true // Graphics Y: per-signal real axes (up to 3) vs one shared axis
@@ -670,36 +671,50 @@ struct Watch {
 	id  u32
 	ext bool
 	sig string
+	// A rejoined J1939 transport-protocol message rather than a frame — part of the identity,
+	// as it is of the trace's group key: one PGN can arrive both short and over TP, and a
+	// series that matched on id alone mixed the two payload shapes (codex on #329).
+	tp bool
 }
 
-fn (app &App) is_watched(id u32, ext bool, sig string) bool {
+fn (app &App) is_watched(id u32, ext bool, tp bool, sig string) bool {
 	for w in app.watch {
-		if w.id == id && w.ext == ext && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
 			return true
 		}
 	}
 	return false
 }
 
-fn (mut app App) toggle_watch(id u32, ext bool, sig string) {
+fn (mut app App) toggle_watch(id u32, ext bool, tp bool, sig string) {
 	for i, w in app.watch {
-		if w.id == id && w.ext == ext && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
 			app.watch.delete(i)
 			return
 		}
 	}
-	app.watch << Watch{id, ext, sig}
+	app.watch << Watch{
+		id:  id
+		ext: ext
+		sig: sig
+		tp:  tp
+	}
 }
 
 // add_watch plots a signal (idempotent — no-op if already plotted). Used by the Trace
 // right-click, which adds without removing an already-plotted signal.
-fn (mut app App) add_watch(id u32, ext bool, sig string) {
+fn (mut app App) add_watch(id u32, ext bool, tp bool, sig string) {
 	for w in app.watch {
-		if w.id == id && w.ext == ext && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
 			return
 		}
 	}
-	app.watch << Watch{id, ext, sig}
+	app.watch << Watch{
+		id:  id
+		ext: ext
+		sig: sig
+		tp:  tp
+	}
 }
 
 // app_icon renders a 32×32 RGBA window/taskbar icon: an accent-blue rounded square with
@@ -1218,6 +1233,7 @@ fn (mut app App) rebuild_from_proj() {
 		if db.messages.len > 0 {
 			app.sel_id = int(db.messages[0].id)
 			app.sel_ext = db.messages[0].ext
+			app.sel_tp = false
 			break
 		}
 	}

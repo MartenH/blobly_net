@@ -102,8 +102,8 @@ fn (mut app App) load_recording(path string) {
 	// under the recording's labels (they are the file's buses, not this project's wires); the
 	// per-wire J1939 gate is asked through the label's resolution to a project wire (`ifc`).
 	mut j1939_obs := map[string]J1939Obs{}
-	// The FILE's directories and name caches live under `rec:<label>`, never under the label
-	// itself: a candump line is labelled with the interface it was recorded on, which can be the
+	// The FILE's directories and name caches live under a NUL-prefixed `rec:<label>`, never under
+	// the label itself: a candump line is labelled with the interface it was recorded on, which can be the
 	// live wire's own key (`vcan0`), and loading a recording pauses the run without stopping it —
 	// so filed under the bare label, the file's claims named live frames the moment the operator
 	// resumed (codex on #329). One key per label, built once.
@@ -297,7 +297,7 @@ fn (mut app App) load_recording(path string) {
 		// the shown window began in the trimmed one, and a claim names its sender from its own
 		// row on.
 		rk := rec_keys[e.iface] or {
-			nk := 'rec:${e.iface}'
+			nk := '\x00rec:${e.iface}' // a NUL: no live destination key can spell this (codex on #329)
 			rec_keys[e.iface] = nk
 			nk
 		}

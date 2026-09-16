@@ -254,7 +254,7 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 		// the protocol's own name for the few PGNs it has one for, else nothing: the reading in
 		// the same cell says PGN and sender either way.
 		mut name := ''
-		if m := app.find_pgn_message(a.pgn) {
+		if m := find_pgn_message_in(app.dbs_for_gate(gate), a.pgn) {
 			name = m.name
 		} else {
 			name = j1939.pgn_name(a.pgn) or { '' }
@@ -289,18 +289,17 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 	return n
 }
 
-// find_pgn_message is the message a J1939 parameter group decodes against, across the loaded
+// find_pgn_message_in is the message a J1939 parameter group decodes against, over the given
 // databases: declared first (candb.lookup_pgn), the first database with either winning.
-// NOTE concurrency: like find_message — app.dbs is mutated only while stopped.
-fn (app &App) find_pgn_message(pgn u32) ?candb.Message {
-	for db in app.dbs {
+fn find_pgn_message_in(dbs []candb.Database, pgn u32) ?candb.Message {
+	for db in dbs {
 		if m := db.lookup_pgn(pgn) {
 			if m.j1939 {
 				return m
 			}
 		}
 	}
-	for db in app.dbs {
+	for db in dbs {
 		if m := db.lookup_pgn(pgn) {
 			return m
 		}
@@ -308,14 +307,51 @@ fn (app &App) find_pgn_message(pgn u32) ?candb.Message {
 	return none
 }
 
-// group_message is the message a trace row decodes against: by PGN for a rejoined
-// transport-protocol message (its id is composed, and an exact `BO_` there may be another
-// message), by id like every frame otherwise.
-fn (app &App) group_message(r TraceRow) ?candb.Message {
-	if r.tp {
-		return app.find_pgn_message(j1939.pgn(r.id))
+// dbs_for_gate is the databases of the wire a gate names (every row on it, by the adapter-aware
+// destination key), and all of them for a gate no wire answers to — an import's undecidable or
+// unplaced bus. Two J1939 wires may define one PGN with two layouts, so a rejoined message is
+// named and decoded against ITS wire's databases (codex on #329).
+// NOTE concurrency: like dbs_for_dest — app.chans is read unlocked, as every panel reads it.
+fn (app &App) dbs_for_gate(gate string) []candb.Database {
+	mut out := []candb.Database{}
+	mut seen := map[string]bool{}
+	for c in app.chans {
+		if c.doip || c.iface in seen {
+			continue
+		}
+		if transport.destination_key_for(c.adapter, c.iface) == gate {
+			seen[c.iface] = true
+			out << app.dbs_for(c.iface)
+		}
 	}
-	return app.find_message(r.id, r.ext)
+	if out.len == 0 {
+		return app.dbs
+	}
+	return out
+}
+
+// message_for is the message a trace identity decodes against: by PGN for a rejoined
+// transport-protocol message (its id is composed, and an exact `BO_` there may be another
+// message), by id like every frame otherwise; over `dbs`.
+fn (app &App) message_for(id u32, ext bool, tp bool, dbs []candb.Database) ?candb.Message {
+	if tp {
+		return find_pgn_message_in(dbs, j1939.pgn(id))
+	}
+	return app.find_message(id, ext)
+}
+
+// group_message is message_for a trace row, against the databases of the channel the row was
+// filed under where that is a configured one (a live row's), and all of them for an import's.
+fn (app &App) group_message(r TraceRow) ?candb.Message {
+	if !r.tp {
+		return app.find_message(r.id, r.ext)
+	}
+	for c in app.chans {
+		if c.name == r.ch && !c.doip {
+			return app.message_for(r.id, r.ext, true, app.dbs_for_dest(c.iface))
+		}
+	}
+	return app.message_for(r.id, r.ext, true, app.dbs)
 }
 
 // j1939_narrate_locked puts one fault in the Log, within the budget. Caller holds app.mu.
