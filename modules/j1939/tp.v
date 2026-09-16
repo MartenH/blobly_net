@@ -77,6 +77,16 @@ pub fn (c Cm) admission(id Id) ?string {
 	if c.packets != packets_for(c.total) {
 		return 'announces ${c.total} bytes in ${c.packets} packets; ${c.total} bytes take ${packets_for(c.total)}'
 	}
+	// The PGN it carries must be one: 18 bits, and for a PDU1 group (PF below 0xF0) a zero low
+	// byte, since that byte is a destination there and not part of any PGN. Followed anyway,
+	// compose() would silently drop the bits and present the transfer as a DIFFERENT, valid
+	// parameter group (codex on #329).
+	if c.pgn > 0x3FFFF {
+		return 'carries PGN 0x${c.pgn:X}, which is wider than 18 bits'
+	}
+	if ((c.pgn >> 8) & 0xFF) < 0xF0 && (c.pgn & 0xFF) != 0 {
+		return 'carries PGN 0x${c.pgn:05X}, a PDU1 group with a nonzero low byte'
+	}
 	return none
 }
 

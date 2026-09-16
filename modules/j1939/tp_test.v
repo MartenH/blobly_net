@@ -303,7 +303,11 @@ fn test_transfers_refuse_what_the_reassembler_refuses() {
 	assert t.step(cm(0x00, addr_global, cm_rts, 20, 3, dm1)).role == .stray // an RTS to everyone
 	assert t.step(cm(0x00, addr_global, cm_bam, 8, 2, dm1)).role == .stray // too small
 	assert t.step(cm(0x00, addr_global, 99, 20, 3, dm1)).role == .stray // unknown control byte
+	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0x4FECA)).role == .stray // 19-bit "PGN"
+	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0xEA12)).role == .stray // PDU1 with a low byte
 	assert t.open() == 0
+	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0xEA00)).role == .announce // PDU1, well formed
+	assert t.open() == 1
 	// and the rule is one: the reassembler's reasons come from the same function
 	c := parse_cm(cm(0x00, 0x17, cm_bam, 20, 3, dm1).data)?
 	assert c.admission(decompose(compose(7, pgn_tp_cm, 0x17, 0x00)))? == 'BAM addressed to 0x17; a BAM is broadcast'

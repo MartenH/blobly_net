@@ -132,6 +132,7 @@ fn test_is_address_claim_needs_the_global_destination() {
 	assert is_address_claim(decompose(0x18EEFFFE)) // Cannot Claim
 	assert !is_address_claim(decompose(0x18EE0000)) // PF 0xEE to one node: not a claim
 	assert !is_address_claim(decompose(0x18EAFF00)) // a Request
+	assert !is_address_claim(decompose(0x18EEFFFF)) // from the global address: nobody
 }
 
 fn test_nodes_are_listed_by_address() {

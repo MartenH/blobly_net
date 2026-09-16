@@ -77,8 +77,10 @@ fn (app &App) j1939_on_locked(gate string) bool {
 // to: in auto it reads as NOT J1939 — the project-wide default would read it as whichever wire
 // declares it, which is a guess about a bus that may have come from the other one (codex on
 // #329) — while on / off still override it like any wire. Distinct from '' (a label no wire
-// answers to, which takes the project-wide default).
-const j1939_gate_undecidable = '(undecidable)'
+// answers to, which takes the project-wide default). Spelled with a NUL byte, which no
+// destination key can carry — every one is derived from an interface string that reaches a C
+// API — so a wire cannot be named into it (codex on #329, on a readable spelling).
+const j1939_gate_undecidable = '\x00undecidable'
 
 // j1939_display_locked is the row's NAME cell on a J1939 wire: the database's name and the
 // reading — `EEC1  PGN 0xF004 SA 0x00 Engine` — or the reading alone where the database has no

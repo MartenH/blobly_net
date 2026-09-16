@@ -134,7 +134,9 @@ pub fn (n Name) describe() string {
 // rename a source address (codex on #329). The ONE predicate, for the directory's feed and for
 // the trace's reading of the frame.
 pub fn is_address_claim(i Id) bool {
-	return i.pgn() == pgn_address_claimed && i.da() == addr_global
+	// And not FROM the global address: no node is 0xFF, so a NAME filed there would label
+	// malformed traffic as a real ECU (codex on #329). The null address stays: Cannot Claim.
+	return i.pgn() == pgn_address_claimed && i.da() == addr_global && i.sa != addr_global
 }
 
 // Node is one address and the NAME that holds it.

@@ -210,13 +210,17 @@ fn (mut app App) load_recording(path string) {
 			}
 		}
 	}
-	gate_only := if can_buses.len == 1 { can_buses.keys()[0] } else { '' }
+	// The sole-wire fallback needs ONE recorded bus as well as one configured wire, for an MF4
+	// and a candump alike: several unrecognised labels are the file saying it spans several
+	// buses, and reading them all as the one wire would read a diagnostic bus beside a truck bus
+	// as J1939 (codex on #329, twice — once per file kind).
+	gate_only := if can_buses.len == 1 && rec_buses.len == 1 { can_buses.keys()[0] } else { '' }
 	// An MF4's labels are the file's own numbering and name no project wire, so its buses take
 	// the one CAN wire's gate only when the file has ONE bus too — the verifiers' rule above; a
 	// multi-bus file against a one-wire project falls back to the project-wide default like
 	// any label the project cannot place, rather than reading every bus as that wire (codex on
 	// #329). With one wire the two answers coincide; the rule is stated once either way.
-	mf4_gate := if can_buses.len == 1 && rec_buses.len == 1 { gate_only } else { '' }
+	mf4_gate := gate_only
 	first_row := if log.len() > trace_cap { log.len() - trace_cap } else { 0 }
 	app.mu.lock()
 	app.reset_trace_locked()

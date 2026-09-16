@@ -919,6 +919,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// there this stays what the bus brought us — said in docs/j1939.md.
 		mut tp_done := []j1939.Assembled{}
 		mut tp_origin := org_rx
+		mut tp_ch := chname
 		if !ours {
 			mut obs := a.j1939_obs_locked(want_dest)
 			tp_done = a.j1939_note_locked(mut obs, chname, want_dest, want_dest, f, t_ms)
@@ -933,7 +934,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				tp_origin = org_tx
 				ri := a.row_index_locked(c.seq)
 				if ri >= 0 {
+					// and its CHANNEL: two rows share this wire, and a transfer emitted through
+					// the one that is not the reader belongs with its own packets, not in the
+					// reader row's groups (codex on #329)
 					tp_origin = a.trace[ri].origin
+					tp_ch = a.trace[ri].ch
 				}
 			}
 		}
@@ -962,7 +967,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// A message this frame completed gets its row AFTER the frame's own, and is counted
 		// like a frame: not while paused.
 		if tp_done.len > 0 {
-			a.j1939_push_tp_locked(tp_done, chname, want_dest, want_dest, t_ms, tp_origin, false,
+			a.j1939_push_tp_locked(tp_done, tp_ch, want_dest, want_dest, t_ms, tp_origin, false,
 				!a.paused, !a.paused)
 		}
 		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
