@@ -365,10 +365,8 @@ fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
 	// An UNSPELLED address falls to the PGN alone — and only where the PGN's definitions agree
 	// about the layout: source-specific variants with different signals would make the first
 	// an arbitrary schema shown as values (codex on #329).
-	for db in dbs {
-		if !db.pgn_layouts_agree(pgn) {
-			return none
-		}
+	if !candb.pgn_layouts_agree_in(dbs, pgn) {
+		return none
 	}
 	for db in dbs {
 		if m := db.lookup_pgn(pgn) {

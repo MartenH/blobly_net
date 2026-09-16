@@ -74,6 +74,9 @@ pub fn (c Cm) admission(id Id) ?string {
 	if !bam && id.da() == addr_global {
 		return 'RTS to the global address; a connection has one destination'
 	}
+	if !bam && id.da() == addr_null {
+		return 'RTS to the null address, which no node holds'
+	}
 	if c.total < tp_min_size || c.total > tp_max_size {
 		return 'announces ${c.total} bytes; a multi-packet message is ${tp_min_size}..${tp_max_size}'
 	}

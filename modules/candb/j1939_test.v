@@ -129,6 +129,39 @@ BO_ 2566834699 DM1_Brakes: 8 Vector__XXX
 	}
 	assert !diff.pgn_layouts_agree(0xFECA)
 	assert diff.lookup_pgn_sa(0xFECA, 0x0B)?.name == 'DM1_Brakes' // a spelled address still decodes
+	// the same geometry with another value table or unit is another layout too
+	lbl := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1_Engine: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BO_ 2566834699 DM1_Brakes: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+VAL_ 2566834699 Lamp 1 "On" 0 "Off" ;
+') or {
+		panic(err)
+	}
+	assert !lbl.pgn_layouts_agree(0xFECA)
+	// and across two databases each defining the PGN once
+	a := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+') or {
+		panic(err)
+	}
+	b := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834699 DM1: 8 Vector__XXX
+ SG_ Lamp : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+') or {
+		panic(err)
+	}
+	assert a.pgn_layouts_agree(0xFECA) && b.pgn_layouts_agree(0xFECA)
+	assert !pgn_layouts_agree_in([a, b], 0xFECA)
+	assert pgn_layouts_agree_in([a, a], 0xFECA)
 }
 
 fn test_lookup_frame_no_false_positives() {

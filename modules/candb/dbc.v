@@ -153,15 +153,43 @@ pub fn (db Database) pgn_layouts_agree(pgn u32) bool {
 }
 
 // layout_key spells a message's signal layout — every field that decides how a byte becomes a
-// value — so two definitions can be compared for it; the names are included, since a differently
-// named signal is a different reading of the same bits.
+// value AND how the value is shown: the names (a differently named signal is a different
+// reading of the same bits), the unit, and the value table, since a label or a unit shown from
+// the wrong definition is as wrong as a number (codex on #329).
 pub fn (m Message) layout_key() string {
 	mut parts := []string{cap: m.signals.len + 1}
 	parts << '${m.dlc}'
 	for s in m.signals {
-		parts << '${s.name}|${s.start_bit}|${s.length}|${s.byte_order}|${s.factor}|${s.offset}|${s.is_signed}|${s.is_multiplexor}|${s.is_multiplexed}|${s.multiplexor_value}'
+		mut keys := s.values.keys()
+		keys.sort()
+		mut vals := []string{cap: keys.len}
+		for k in keys {
+			vals << '${k}=${s.values[k]}'
+		}
+		parts << '${s.name}|${s.start_bit}|${s.length}|${s.byte_order}|${s.factor}|${s.offset}|${s.is_signed}|${s.is_multiplexor}|${s.is_multiplexed}|${s.multiplexor_value}|${s.unit}|${vals.join(',')}'
 	}
 	return parts.join(';')
+}
+
+// pgn_layouts_agree_in is pgn_layouts_agree over SEVERAL databases at once: a wire may carry
+// two files each defining the PGN once, differently, and per-file agreement says nothing about
+// that (codex on #329).
+pub fn pgn_layouts_agree_in(dbs []Database, pgn u32) bool {
+	mut first := ''
+	for db in dbs {
+		for m in db.messages {
+			if !m.ext || j1939_pgn(m.id) != pgn {
+				continue
+			}
+			l := m.layout_key()
+			if first == '' {
+				first = l
+			} else if l != first {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
