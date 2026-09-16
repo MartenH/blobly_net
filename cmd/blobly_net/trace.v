@@ -8,6 +8,7 @@ import telem
 import canlog
 import project
 import sim
+import j1939
 import vgui
 
 struct TraceRow {
@@ -47,6 +48,13 @@ struct TraceRow {
 	// behind imported ones (Resume, no Start) is on another clock, and the cycle window has
 	// to know where one clock ends and the other begins (cyclerule; codex on #266).
 	imported bool
+	// J1939 (#171). On a wire read as J1939, `name` carries the reading beside the database's
+	// name — `EEC1  PGN 0xF004 SA 0x00 Engine` — stamped at push from what the listener knew
+	// then (j1939_display_locked, cached per wire and id so the RX path formats nothing per
+	// frame). `tp` marks a row that is not a frame: a transport-protocol message rejoined from
+	// its BAM/RTS packets, carrying the WHOLE parameter group as data and the id a single frame
+	// of that PGN would have carried, so the database decodes it like one.
+	tp bool
 mut:
 	// An outbound row is written at emit, so it states intent; `missed` says its echo window
 	// closed with the frame never coming back off the wire. Those disagree in every bench
@@ -107,6 +115,11 @@ fn (mut app App) reset_trace_locked() {
 	app.glabels.clear()
 	app.gcount = map[string]u64{}
 	app.viewing_rec = '' // whatever replaces the rows, the view is no longer that recording
+	// The address directory goes with the rows (and Start empties it too, run.v): a claim from
+	// the previous measurement, or from a loaded file, is not evidence about this one. Nodes
+	// answer a Request for Address Claimed, so a bench that wants the names back asks.
+	app.j1939_nodes = map[string]j1939.Directory{}
+	app.j1939_labels = map[string]&LabelCache{}
 	app.trace_run_base = app.trace_seq // idx restarts at 0 for the new measurement's rows
 	// The pending records STAY. An echo already in flight is still ours, and dropping the record
 	// would turn the next few of our own frames into RX rows, recording entries and verifier
@@ -205,7 +218,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// still draining after Stop — is not in that lifecycle, so resolving a name outside the
 	// mutex could read app.dbs while a configuration edit replaces it.
 	chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
-	name := app.lookup_name(f.id, f.extended)
+	name := app.j1939_display_iface_locked(iface, f, app.lookup_name(f.id, f.extended))
 	app.expire_pending_locked(t_ms)
 	// Paused: the emission is STILL tracked so its echo is recognised as ours — otherwise a
 	// paused trace would feed our own frames to the E2E verifier as the ECU's and log them to

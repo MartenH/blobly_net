@@ -56,6 +56,33 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 		app.trace_grouped = !app.trace_grouped
 	}
 	vgui.same_line()
+	// J1939 is a READING the operator chooses, not a fact the app infers: a 29-bit id alone
+	// does not say what protocol it belongs to (UDS on 29-bit ids is PDU1-shaped). Three
+	// states, because a bool has no value spare for "follow the databases": auto reads each
+	// wire as its own databases declare, on and off override every wire. Written under the
+	// lock the RX loops read it under, like `paused`; the cached name cells carry the old
+	// reading and go with it.
+	gate_label := match app.j1939_override {
+		.follow { 'J1939: auto' }
+		.on { 'J1939: on' }
+		.off { 'J1939: off' }
+	}
+
+	if vgui.small_button(gate_label) {
+		next := match app.j1939_override {
+			.follow { J1939Gate.on }
+			.on { J1939Gate.off }
+			.off { J1939Gate.follow }
+		}
+
+		app.mu.lock()
+		app.j1939_override = next
+		app.j1939_labels = map[string]&LabelCache{}
+		app.mu.unlock()
+	}
+	vgui.same_line()
+	vgui.help_marker("Read 29-bit ids as PGN and source address (in the name column), rejoin transport-protocol messages (BAM, RTS/CTS) into rows of their own (flags: TP) and follow address claims, so a source address gets its node's name. auto: per wire, on where one of its databases declares J1939 (VFrameFormat); on / off override every wire until the next project load. Read-only — nothing is answered or claimed.")
+	vgui.same_line()
 	vgui.text('RX ${rx} · ${vgui.fps():.0}fps')
 	vgui.same_line()
 	vgui.set_next_item_width(200)
@@ -236,6 +263,20 @@ fn idstr(id u32, ext bool) string {
 	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
 
+// How many payload bytes a trace cell shows before it says how many more there are. A frame is
+// at most 64 bytes and is always shown whole; a rejoined J1939 transport-protocol message is up
+// to 1785, and a row that wide is a table nobody can read (and, in the grouped view, 1785 text
+// widgets per repaint for one row). The filter searches the same bytes the cell shows.
+const trace_data_shown = 64
+
+// hex_shown is hex() over the first trace_data_shown bytes, saying what it left out.
+fn hex_shown(b []u8) string {
+	if b.len <= trace_data_shown {
+		return hex(b)
+	}
+	return '${hex(b[..trace_data_shown])} … +${b.len - trace_data_shown} bytes'
+}
+
 // kind_mark labels a frame whose KIND is not classic CAN. A 64-byte payload is obvious from the
 // data column, but an FD frame carrying eight bytes or fewer looks exactly like a classic one,
 // and BRS never shows at all — so the trace would claim a frame that was never on the bus.
@@ -247,6 +288,9 @@ fn idstr(id u32, ext bool) string {
 fn flags_str(r TraceRow) string {
 	if r.rtr {
 		return 'RTR'
+	}
+	if r.tp {
+		return 'TP' // a J1939 transport-protocol message rejoined from its packets, not a frame
 	}
 	if !r.fd {
 		return ''
@@ -297,8 +341,11 @@ fn trace_pass(r TraceRow, filt string) bool {
 	if origin_filter != '' {
 		return r.origin.to_lower() == origin_filter.to_lower()
 	}
+	// The payload as the table SHOWS it (hex_shown): a rejoined J1939 message is up to 1785
+	// bytes, and formatting all of them for every row on every repaint while a filter is typed
+	// is the per-repaint allocation #299 removed, 28 times over.
 	hay :=
-		'${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
+		'${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex_shown(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -354,6 +401,9 @@ fn trace_name_cell(r TraceRow) string {
 // NOT SENT for 200 frames that went out fine (self-review). Mark and text now share one
 // source per view.
 fn trace_name_refused(r TraceRow, refused bool) string {
+	// On a J1939 wire `name` already carries the reading after the database's name —
+	// `EEC1  PGN 0xF004 SA 0x00 Engine` — stamped at push (TraceRow.tp's comment), so this
+	// stays allocation-free for the common row and the grouped view's label cache holds.
 	base := if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
 	// NOT SENT rides the name cell like a violation does: it is rare, the origin column is
 	// too narrow to spell it, and a mark alone ('x') must never be the only statement that
@@ -408,7 +458,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_cell(len_str(r.data.len))
 			vgui.table_cell(flags_str(r))
 			// the FD/BRS suffix moved out of this cell into the flags column — payload only here
-			vgui.table_cell(if r.rtr { '' } else { hex(r.data) })
+			vgui.table_cell(if r.rtr { '' } else { hex_shown(r.data) })
 		}
 		vgui.table_end()
 	}
@@ -423,6 +473,7 @@ mut:
 	fd     bool
 	brs    bool
 	rtr    bool
+	tp     bool // a rejoined J1939 transport-protocol message, not a frame — in the key, so here
 	count  int
 	// The `cycle (ms)` measurement: the accepted frames it averages over. The ring holds 2000
 	// rows, so this is the cadence over the window the reader is looking at, not over all
@@ -457,8 +508,11 @@ mut:
 // arguments (four adjacent bools) at seven call sites is the transposition trap the compiler
 // cannot catch, and a mismatch between a gcount writer and the lookup is silently absorbed by
 // its window-count fallback.
-fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool) string {
-	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}'
+fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool, tp bool) string {
+	// `tp` is in the key because a rejoined transport-protocol message and a single frame can
+	// share an id — a node may send a short form of the same PGN — and one group holding both
+	// would show a 1785-byte payload's delta against an 8-byte one.
+	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}'
 }
 
 // gkey: the row's own group identity.
@@ -466,13 +520,13 @@ fn (r TraceRow) gkey() string {
 	if r.key.len > 0 {
 		return r.key
 	}
-	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr)
+	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr, r.tp)
 }
 
 // gkey_frame: the producer-side identity, for the paths that count a frame without holding
 // its TraceRow (the push sites' gcount writes, and an import's trimmed fast path).
 fn gkey_frame(origin string, ch string, f transport.CanFrame) string {
-	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr)
+	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr, false)
 }
 
 // origin_mark renders the wire verdict for a frame we emitted. Two distinct failures, two
@@ -536,6 +590,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				fd:     r.fd
 				brs:    r.brs
 				rtr:    r.rtr
+				tp:     r.tp
 				last:   r
 			}
 		}
@@ -594,6 +649,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// the payload-carrying row (the one most readers scan for) first
 		if a.rtr != b.rtr {
 			return if !a.rtr { -1 } else { 1 }
+		}
+		// the frame before the message rejoined from frames like it (a node may send one PGN
+		// both short and over TP) — in the key since #171, so here
+		if a.tp != b.tp {
+			return if !a.tp { -1 } else { 1 }
 		}
 		return 0
 	})
@@ -677,6 +737,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				for i, b in r.data {
 					if i > 0 {
 						vgui.same_line()
+					}
+					if i >= trace_data_shown {
+						// a rejoined transport-protocol message: the rest is in the flat view's
+						// cell (truncated the same way) and in the signals below
+						vgui.text_dim('… +${r.data.len - trace_data_shown} bytes')
+						break
 					}
 					tok := hex2[b]
 					if i >= prev.len || prev[i] != b {

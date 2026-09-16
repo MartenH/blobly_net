@@ -16,6 +16,7 @@ import telem
 import sim
 import canlog
 import doip
+import j1939
 import vgui
 
 const diag_tx_id = u32(0x7E0)
@@ -219,8 +220,31 @@ mut:
 	proj_name    string
 	dark         bool = true // theme
 	paused       bool
-	recording    bool
-	rec          []canlog.LogEntry // captured while recording; written on stop
+	// J1939 (#171): read 29-bit ids as priority/PGN/source-address, rejoin transport-protocol
+	// messages, follow address claims — PER WIRE, and chosen rather than inferred from the ids
+	// (cmd/blobly_net/j1939.v says why). `j1939_dbs` is what the databases on each wire
+	// declare (keyed by transport.destination_key; recomputed by every rebuild), `j1939_any`
+	// whether any loaded database does (the answer for a wire the map cannot place), and
+	// `j1939_override` the Trace panel's tri-state tick, which only a project load clears —
+	// a bool here was overwritten by every Save (self-review of #171). All read by the RX
+	// loops under app.mu at every push, written by the GUI thread under it.
+	j1939_dbs      map[string]bool
+	j1939_any      bool
+	j1939_override J1939Gate
+	// Who holds which J1939 address, per wire (keyed by transport.destination_key for a live
+	// bus, by the recording's own label for an import). Filled from Address Claimed frames by
+	// whichever reader saw them; read at every push for the row's reading. Reset with the trace
+	// and at Start, so a directory learned from a FILE never labels live frames.
+	j1939_nodes map[string]j1939.Directory
+	// The name cell per wire and id on a J1939 wire — `EEC1  PGN 0xF004 SA 0x00 Engine` — so the
+	// RX path formats each once (j1939_display_locked). Dropped per wire when its directory
+	// changes, wholly when the databases or the override do.
+	j1939_labels map[string]&LabelCache
+	// transport.destination_key per interface, for the emit path (dest_cached_locked). Reset with
+	// the runtime view.
+	dest_cache map[string]string
+	recording  bool
+	rec        []canlog.LogEntry // captured while recording; written on stop
 	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
 	// the simulation's are different facts, and one merged number re-collapses them in the one
 	// place a user looks first. Counted at the tap (note_emit), so every emitter counts —
@@ -399,17 +423,17 @@ mut:
 	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
 	show_config bool
 	// Settings ▸ Preferences… (#306): what the app remembers across runs, see settings.v
-	show_prefs         bool
-	prefs              prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
-	prefs_editor_buf   []u8
-	prefs_file         string        // resolved once at load
-	prefs_caption      string        // the dialog's fixed line, built at open
-	prefs_broken       bool // the file did not parse: never overwritten except from the dialog
-	prefs_dirty        bool   // this session changed a preference the file does not have yet
-	layout_file        string // ImGui's imgui.ini, which the app writes itself (#308); '' headless
-	layout_warned      bool   // a failed layout write is said once, not every settling period
-	panes_dragged      map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
-	cfg_bufs           []CfgBuf
+	show_prefs       bool
+	prefs            prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
+	prefs_editor_buf []u8
+	prefs_file       string          // resolved once at load
+	prefs_caption    string          // the dialog's fixed line, built at open
+	prefs_broken     bool            // the file did not parse: never overwritten except from the dialog
+	prefs_dirty      bool            // this session changed a preference the file does not have yet
+	layout_file      string          // ImGui's imgui.ini, which the app writes itself (#308); '' headless
+	layout_warned    bool            // a failed layout write is said once, not every settling period
+	panes_dragged    map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
+	cfg_bufs         []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)
 	disc_open   bool
 	disc_list_h f32 // the interface list's height in Discover, unscaled px (#306)
@@ -899,6 +923,8 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.cfg_invalidate() // a different project: the File tab must not keep the old one's text
 	app.mu.lock()
 	app.reset_trace_locked()
+	// A different project: what the operator said about the old one's buses does not carry.
+	app.j1939_override = .follow
 	app.trecs = []
 	app.diag_log = []
 	app.diag_gen++ // a clear moves the buffer as surely as an append -- invalidate with it
@@ -1198,6 +1224,22 @@ fn (mut app App) rebuild_from_proj() {
 	app.mu.lock()
 	app.resolve_sender_targets_locked()
 	app.push_listen_only_locked()
+	// What the databases say about J1939, PER WIRE: a truck bus and a 29-bit diagnostic bus in
+	// one project get their own answers. The operator's override (j1939_override) is NOT
+	// touched here — this runs on every Save and Configuration edit, and a tick that a Save
+	// silently reverted was the first thing the self-review of #171 found.
+	app.j1939_dbs = map[string]bool{}
+	for c in app.chans {
+		if c.doip {
+			continue
+		}
+		app.j1939_dbs[transport.destination_key_for(c.adapter, c.iface)] =
+			app.dbs_for_dest(c.iface).any(it.j1939_declared())
+	}
+	app.j1939_any = app.dbs.any(it.j1939_declared())
+	// the databases may have changed under every cached name and key
+	app.j1939_labels = map[string]&LabelCache{}
+	app.dest_cache = map[string]string{}
 	app.mu.unlock()
 }
 

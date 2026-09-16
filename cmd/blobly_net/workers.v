@@ -16,6 +16,7 @@ import script
 import canlog
 import doip
 import someip
+import j1939
 import net as vnet
 import vgui
 
@@ -688,6 +689,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// diagnostics setup already handles that — and stopping at the first meant later entries'
 	// protected messages were never checked, or were checked against the wrong layout.
 	mut verifiers := sim.VerifySet{}
+	// The J1939 listener state for this wire: transport-protocol sessions in progress and how
+	// many faults have been narrated. Per reader, like the verifiers, because a session is a
+	// property of the wire this loop reads and dies with the loop.
+	mut j1939_obs := J1939Obs{}
 	// BY DESTINATION. Two rows spelling one wire differently (`vector:1`, `vector:ch1`) each
 	// observe the same traffic, and comparing the strings meant each port checked only its own
 	// row's protected messages — so a frame arriving on the wire was verified against half the
@@ -895,6 +900,14 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.mu.unlock()
 			break
 		}
+		// J1939 FIRST, of what the bus brought us: an Address Claimed frame names its sender from
+		// this frame on, so its own row — and a takeover's — is stamped from the directory AFTER
+		// it. Our own transport-protocol sends are ours to know about; this side listens. Fed
+		// while paused too: pausing freezes the table, not the sessions or the directory.
+		mut tp_done := []j1939.Assembled{}
+		if !ours {
+			tp_done = a.j1939_note_locked(mut j1939_obs, chname, want_dest, want_dest, f, t_ms)
+		}
 		if !a.paused && !ours {
 			rx_key := gkey_frame(org_rx, chname, f)
 			a.push_row_locked(TraceRow{
@@ -907,7 +920,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				brs:    f.brs
 				esi:    f.esi
 				rtr:    f.rtr
-				name:   name
+				name:   a.j1939_display_locked(want_dest, want_dest, f.id, f.extended, name)
 				data:   f.data.clone()
 				e2e:    viol
 				key:    rx_key
@@ -916,6 +929,12 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
+		}
+		// A message this frame completed gets its row AFTER the frame's own, and is counted
+		// like a frame: not while paused.
+		if !ours && tp_done.len > 0 {
+			a.j1939_push_tp_locked(tp_done, chname, want_dest, want_dest, t_ms, org_rx, false,
+				!a.paused, !a.paused)
 		}
 		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
 		// trigger-frozen dump from a manual stop. Update it even while the table is paused: the

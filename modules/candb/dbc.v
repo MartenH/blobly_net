@@ -14,6 +14,7 @@
 // records (BU_, BA_, network attrs, …) are ignored.
 module candb
 
+import j1939
 import os
 
 // Database is a parsed set of CAN messages with id lookup.
@@ -33,18 +34,12 @@ pub fn (db Database) lookup(id u32) ?Message {
 	return none
 }
 
-// j1939_pgn extracts the Parameter Group Number from a 29-bit J1939 id.
-// Layout (MSB→LSB): priority(3) | EDP(1) | DP(1) | PF(8) | PS(8) | SA(8).
-// For PDU1 (PF < 0xF0) the PS byte is a destination address and is NOT part
-// of the PGN; for PDU2 (PF >= 0xF0) it is. Priority and source address are
-// never part of the PGN.
+// j1939_pgn extracts the Parameter Group Number from a 29-bit J1939 id. The layout and the
+// PDU1/PDU2 rule live in `modules/j1939` (`j1939.Id`); this is that answer under the name candb
+// has always given it, so the database's PGN-fallback lookup and the trace's reading of an id
+// cannot disagree about which bits are the PGN.
 pub fn j1939_pgn(id u32) u32 {
-	pf := (id >> 16) & 0xFF
-	mut pgn := (id >> 8) & 0x3FFFF // EDP+DP+PF+PS
-	if pf < 0xF0 {
-		pgn &= 0x3FF00 // PDU1: drop the destination-address byte
-	}
-	return pgn
+	return j1939.pgn(id)
 }
 
 // lookup_frame resolves a received frame to a message: exact id first, then —
@@ -71,6 +66,14 @@ pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
 		}
 	}
 	return none
+}
+
+// j1939_declared says whether the file declared ANY message J1939 (`BA_ "VFrameFormat" …
+// J1939PG`, per message or as the file-wide default). The one question a front end asks before
+// reading 29-bit ids as priority/PGN/source-address: the declaration is the database's, never
+// inferred from the ids (see Message.j1939).
+pub fn (db Database) j1939_declared() bool {
+	return db.messages.any(it.j1939)
 }
 
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
@@ -249,8 +252,8 @@ pub fn parse_dbc(text string) !Database {
 			tx_nodes: mb.tx_nodes.clone()
 			cycle_ms: mb.cycle_ms
 			// the per-message record wins; the file-wide default fills the rest
-			j1939:    mb.j1939 || (default_j1939 && !mb.j1939_stated)
-			signals:  sigs
+			j1939:   mb.j1939 || (default_j1939 && !mb.j1939_stated)
+			signals: sigs
 		}
 	}
 	return Database{

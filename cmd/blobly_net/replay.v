@@ -95,6 +95,14 @@ fn (mut app App) load_recording(path string) {
 	// string. Keying the sets by iface alone therefore matched nothing and every imported frame
 	// came back with an empty verdict, which is what the previous attempt at this did.
 	mut verifiers := map[string]sim.VerifySet{}
+	// J1939 over the file: sessions rejoined and claims followed on the recording's own clock.
+	// ONE LISTENER PER RECORDED BUS — sessions are keyed by (source, destination), and two buses
+	// can carry the same pair (a gateway forwarding a BAM does exactly that; the self-review of
+	// #171 caught one shared listener filing the collision as faults on neither wire). Filed
+	// under the recording's labels (they are the file's buses, not this project's wires); the
+	// per-wire J1939 gate is asked through the label's resolution to a project wire (`ifc`).
+	mut j1939_obs := map[string]J1939Obs{}
+	mut tp_rows := 0
 	mut alias := map[string]string{} // recorded label -> destination key
 	// destination key -> EVERY raw interface on it. Remembering only the first lost the later
 	// alias's databases, so a verifier that came from `vector:ch1` was resolved against
@@ -186,7 +194,9 @@ fn (mut app App) load_recording(path string) {
 	// the file the toast just named, and that changes if the same file is reopened after more
 	// rows were captured. Advancing seq AND base together keeps the positional invariant
 	// (trace[i].seq == trace_base + i) intact; run_base stays at the reset point, so
-	// idx = seq - run_base = the entry's index in the file.
+	// idx = seq - run_base = the entry's index in the file — until the first J1939
+	// transport-protocol message is rejoined, whose row takes a number of its own and shifts the
+	// frames after it by one each (the J1939 tick, off unless a database declares it).
 	app.trace_seq += u64(first_row)
 	app.trace_base += u64(first_row)
 	// Only the LAST trace_cap rows can survive the ring, so only those are built. A 600k-frame
@@ -201,13 +211,13 @@ fn (mut app App) load_recording(path string) {
 		e := log.at(i)
 		f := e.frame
 		mut viol := ''
+		// An imported MF4 label NEVER goes through the alias table. `mf4:` makes an accidental
+		// match unlikely, but a project channel may be named anything at all — including
+		// `mf4:bus1` — and a convention is not a guarantee. Structurally: these labels are
+		// not in this project's namespace, so the only resolution they may take is the
+		// single-bus fallback, where there is nothing to get wrong.
+		ifc := if from_mf4 { mf4_only } else { alias[e.iface] or { only } }
 		if !f.rtr {
-			// An imported MF4 label NEVER goes through the alias table. `mf4:` makes an accidental
-			// match unlikely, but a project channel may be named anything at all — including
-			// `mf4:bus1` — and a convention is not a guarantee. Structurally: these labels are
-			// not in this project's namespace, so the only resolution they may take is the
-			// single-bus fallback, where there is nothing to get wrong.
-			ifc := if from_mf4 { mf4_only } else { alias[e.iface] or { only } }
 			if mut vs := verifiers[ifc] {
 				// THE RAW INTERFACE for the databases. dbs_by_iface is keyed by what the
 				// channel is called, and `ifc` is now a destination key — so looking the DBCs
@@ -231,33 +241,53 @@ fn (mut app App) load_recording(path string) {
 		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
 		rep_key := gkey_frame(org_rep, e.iface, f)
 		app.gcount[rep_key]++
-		if i < first_row {
-			continue // trimmed before it could ever be drawn
+		t_row := (e.t_s - t0) * 1000.0
+		// J1939 over EVERY frame like verification, and BEFORE the row: a message rejoined in
+		// the shown window began in the trimmed one, and a claim names its sender from its own
+		// row on.
+		mut obs := j1939_obs[e.iface] or { J1939Obs{} }
+		tp_done := app.j1939_note_locked(mut obs, e.iface, ifc, e.iface, f, t_row)
+		j1939_obs[e.iface] = obs
+		visible := i >= first_row // trimmed rows are never drawn, so they are not built
+		if visible {
+			name := app.lookup_name(f.id, f.extended)
+			app.push_row_locked(TraceRow{
+				t_ms:     t_row
+				ch:       e.iface
+				origin:   org_rep
+				key:      rep_key
+				id:       f.id
+				ext:      f.extended
+				fd:       f.fd
+				brs:      f.brs
+				esi:      f.esi
+				rtr:      f.rtr
+				name:     app.j1939_display_locked(ifc, e.iface, f.id, f.extended, name)
+				data:     f.data.clone()
+				e2e:      viol
+				imported: true
+			})
 		}
-		name := app.lookup_name(f.id, f.extended)
-		app.push_row_locked(TraceRow{
-			t_ms:     (e.t_s - t0) * 1000.0
-			ch:       e.iface
-			origin:   org_rep
-			key:      rep_key
-			id:       f.id
-			ext:      f.extended
-			fd:       f.fd
-			brs:      f.brs
-			esi:      f.esi
-			rtr:      f.rtr
-			name:     name
-			data:     f.data.clone()
-			e2e:      viol
-			imported: true
-		})
+		// Counted over the whole file like the frames' groups are; a row only in the window.
+		tp_rows += app.j1939_push_tp_locked(tp_done, e.iface, ifc, e.iface, t_row, org_rep, true,
+			visible, true)
+	}
+	// What the ring actually holds, counted rather than assumed: rejoined J1939 rows share it
+	// with the frames, and past its cap the OLDEST rows go — so with enough of them the last
+	// `trace_cap` frames the loop pushed are no longer all there, and a toast claiming they
+	// were would be the file's frame count standing in for the table's.
+	mut frames_kept := 0
+	for r in app.trace {
+		if !r.tp {
+			frames_kept++
+		}
 	}
 	app.mu.unlock()
-	shown := log.len() - first_row
-	if first_row > 0 {
-		app.notify('loaded ${log.len()} frames from ${os.base(path)} — showing the last ${shown}')
+	rejoined := if tp_rows > 0 { ' and ${tp_rows} rejoined J1939 message(s)' } else { '' }
+	if frames_kept < log.len() {
+		app.notify('loaded ${log.len()} frames from ${os.base(path)} — showing the last ${frames_kept}${rejoined}')
 	} else {
-		app.notify('loaded ${log.len()} frames from ${os.base(path)}')
+		app.notify('loaded ${log.len()} frames from ${os.base(path)}${rejoined}')
 	}
 }
 
@@ -561,6 +591,16 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// classic half is real. plan.buses is in specs order, which is chans order.
 		if b.report.fd > 0 && i < chans.len && chans[i].for_open().refuses_fd_frames() {
 			why += '; ${b.report.fd} CAN-FD frame(s) on a classic ${chans[i].adapter} channel — each will be refused and counted as failed'
+		}
+		// J1939, said where the CLI says it (#171): frames the DBC's placeholder source address
+		// would have missed, decided by PGN; and the ones it COULD not decide, which are the
+		// SUT's own frames going back at it if this is its bus and the database never declared
+		// J1939 — the one number an operator on that bench must not have to find in a CLI.
+		if b.report.pgn_matched > 0 {
+			why += '; ${b.report.pgn_matched} matched by J1939 PGN'
+		}
+		if b.report.pgn_hint > 0 {
+			why += '; ${b.report.pgn_hint} unknown frame(s) share a PGN the DBC defines but cannot decide by (not declared J1939, or several transmitters) — replayed'
 		}
 		if b.report.kept == 0 {
 			a.notify('replay ${b.dst}: nothing to replay, ${why}')

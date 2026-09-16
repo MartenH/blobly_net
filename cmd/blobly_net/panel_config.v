@@ -1255,6 +1255,16 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 			return true
 		}
 	}
+	// J1939 (#171), before the summary of what the DBCs cannot place: frames the PGN placed are
+	// in the node counts above and this says so; frames it could not place are in `unknown`
+	// below, and on the bus this preview matters most for they are the SUT's own — said here,
+	// with the remedy, because Start will replay them back at it.
+	if cn.pgn_matched > 0 {
+		vgui.text_dim('   ${cn.pgn_matched} attributed by J1939 PGN (the DBC spells another source address)')
+	}
+	if cn.pgn_hint > 0 {
+		vgui.text_dim('   ${cn.pgn_hint} share a PGN with a defined message the DBC cannot decide by — not declared J1939 (VFrameFormat), or several transmitters')
+	}
 	if cn.unattributed > 0 || cn.unknown > 0 || cn.remote > 0 {
 		// The remote count is its own clause rather than folded into the first: those frames ASK
 		// for an id instead of sending it, so the DBC attributes the id perfectly well and simply
