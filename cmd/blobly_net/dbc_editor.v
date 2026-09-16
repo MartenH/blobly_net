@@ -947,6 +947,7 @@ fn draw_dbc_editor(mut app App) {
 						id:  u32(cl)
 						ext: w.ext
 						sig: w.sig
+						tp:  w.tp
 					}
 				}
 			}
@@ -997,6 +998,7 @@ fn draw_dbc_editor(mut app App) {
 						id:  nid
 						ext: next
 						sig: w.sig
+						tp:  w.tp
 					}
 				}
 			}
@@ -1223,6 +1225,7 @@ fn draw_dbc_editor(mut app App) {
 						id:  w.id
 						ext: w.ext
 						sig: nv
+						tp:  w.tp
 					}
 				}
 			}

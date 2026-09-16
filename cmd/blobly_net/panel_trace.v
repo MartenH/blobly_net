@@ -488,7 +488,8 @@ mut:
 	fd     bool
 	brs    bool
 	rtr    bool
-	tp     bool // a rejoined J1939 transport-protocol message, not a frame — in the key, so here
+	tp     bool   // a rejoined J1939 transport-protocol message, not a frame — in the key, so here
+	wire   string // a TP group's wire — in its key, so here
 	count  int
 	// The `cycle (ms)` measurement: the accepted frames it averages over. The ring holds 2000
 	// rows, so this is the cadence over the window the reader is looking at, not over all
@@ -523,10 +524,16 @@ mut:
 // arguments (four adjacent bools) at seven call sites is the transposition trap the compiler
 // cannot catch, and a mismatch between a gcount writer and the lookup is silently absorbed by
 // its window-count fallback.
-fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool, tp bool) string {
+fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool, tp bool, wire string) string {
 	// `tp` is in the key because a rejoined transport-protocol message and a single frame can
 	// share an id — a node may send a short form of the same PGN — and one group holding both
-	// would show a 1785-byte payload's delta against an 8-byte one.
+	// would show a 1785-byte payload's delta against an 8-byte one. And a TP group is keyed by
+	// its WIRE too, since two channels of one name on two wires may define the PGN two ways
+	// and the group decodes through its newest row's wire (codex on #329); a frame's key is
+	// unchanged, `wire` being read only for a TP row.
+	if tp {
+		return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}|${wire}'
+	}
 	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}'
 }
 
@@ -535,13 +542,13 @@ fn (r TraceRow) gkey() string {
 	if r.key.len > 0 {
 		return r.key
 	}
-	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr, r.tp)
+	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr, r.tp, r.wire)
 }
 
 // gkey_frame: the producer-side identity, for the paths that count a frame without holding
 // its TraceRow (the push sites' gcount writes, and an import's trimmed fast path).
 fn gkey_frame(origin string, ch string, f transport.CanFrame) string {
-	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr, false)
+	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr, false, '')
 }
 
 // origin_mark renders the wire verdict for a frame we emitted. Two distinct failures, two
@@ -606,6 +613,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				brs:    r.brs
 				rtr:    r.rtr
 				tp:     r.tp
+				wire:   r.wire
 				last:   r
 			}
 		}
@@ -669,6 +677,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// both short and over TP) — in the key since #171, so here
 		if a.tp != b.tp {
 			return if !a.tp { -1 } else { 1 }
+		}
+		if a.wire != b.wire {
+			return if a.wire < b.wire { -1 } else { 1 }
 		}
 		return 0
 	})

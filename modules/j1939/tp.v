@@ -177,10 +177,26 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 	id := decompose(f.id)
 	pgn := id.pgn()
 	if pgn == pgn_tp_cm {
-		cm := parse_cm(f.data) or { return Step{
-			role: .stray
-		} }
 		k := skey(id.sa, id.da())
+		cm := parse_cm(f.data) or {
+			// Not a frame this module reads — but its control byte, if it has one, still says
+			// whether the pair started over: a mis-sized RTS or BAM ends the previous transfer
+			// like a refused one does, or the replacement's first packet lands in the old
+			// session (codex on #329).
+			if f.data.len > 0 && (f.data[0] == cm_rts || f.data[0] == cm_bam) {
+				had := k in t.open
+				t.open.delete(k)
+				return Step{
+					role: .stray
+					sa:   id.sa
+					da:   id.da()
+					done: had
+				}
+			}
+			return Step{
+				role: .stray
+			}
+		}
 		match cm.ctrl {
 			cm_rts, cm_bam {
 				if _ := cm.admission(id) {
@@ -555,6 +571,15 @@ pub fn (mut r Reassembler) expire(now_ms f64) []Fault {
 
 fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 	cm := parse_cm(data) or {
+		// and a mis-sized RTS or BAM still starts the pair over — see Transfers.step_at
+		if data.len > 0 && (data[0] == cm_rts || data[0] == cm_bam) {
+			k := skey(id.sa, id.da())
+			if old := r.sessions[k] {
+				ev.faults << old.fault(.restarted,
+					'a new announcement arrived after ${old.progress()}; the unfinished message is dropped')
+				r.sessions.delete(k)
+			}
+		}
 		ev.faults << id.fault(.malformed, 0,
 			'TP.CM of ${data.len} bytes; a transport-protocol frame carries exactly 8')
 		return

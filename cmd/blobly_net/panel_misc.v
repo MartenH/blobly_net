@@ -880,7 +880,9 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			val := value_at(xs, ys, xr)
 			// display "name = value"; the ###id keeps the ImPlot series identity/colour stable
 			// even though the shown value changes each frame.
-			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.id}_${w.ext}_${w.sig}'
+			// `tp` in the identity too: the direct and the rejoined form of one signal are two
+			// series, and ImPlot keeps legend, colour and visibility per identity (codex on #329)
+			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.id}_${w.ext}_${w.tp}_${w.sig}'
 			axis := if app.plot_multi { imin(i, 2) } else { 0 } // signal 0/1/2 → Y1/Y2/Y3
 			vgui.plot_line_axis(label, xs, ys, axis)
 		}

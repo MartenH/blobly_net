@@ -174,8 +174,9 @@ fn (mut app App) j1939_iface_locked(iface string, f transport.CanFrame, name str
 		return name, ''
 	}
 	dest := app.dest_cached_locked(iface)
-	return app.j1939_display_locked(dest, dest, f.id, true, name), app.j1939_reading_locked(dest,
-		dest, f.id, true)
+	// through the FRAME path, so an Address Claimed frame this host sends or replays names its
+	// claimant from its payload like a received one does (codex on #329)
+	return app.j1939_frame_locked(dest, dest, f, name)
 }
 
 // dest_cached_locked is transport.destination_key(iface), remembered per interface: the answer

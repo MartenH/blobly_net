@@ -344,6 +344,30 @@ fn test_a_refused_announcement_drops_the_pairs_transfer() {
 	assert ev.faults[0].kind == .restarted
 	assert ev.faults[1].kind == .malformed
 	assert r.open() == 0
+	// and one too short (or too long) to parse, whose control byte still says BAM
+	short_bam := transport.CanFrame{
+		id:       compose(7, pgn_tp_cm, addr_global, 0x00)
+		extended: true
+		data:     [u8(cm_bam), 20, 0]
+	}
+	r.feed(bam(0x00, 20, dm1), 2)
+	ev2 := r.feed(short_bam, 3)
+	assert ev2.faults.len == 2 && ev2.faults[0].kind == .restarted
+	assert r.open() == 0
+	mut t2 := Transfers{}
+	t2.step(bam(0x00, 20, dm1))
+	st := t2.step(short_bam)
+	assert st.role == .stray && st.done
+	assert t2.open() == 0
+	// a mis-sized frame with some other control byte ends nothing
+	t2.step(bam(0x00, 20, dm1))
+	short_cts := transport.CanFrame{
+		id:       compose(7, pgn_tp_cm, addr_global, 0x00)
+		extended: true
+		data:     [u8(cm_cts), 1, 1]
+	}
+	assert !t2.step(short_cts).done
+	assert t2.open() == 1
 }
 
 fn test_transfers_refuse_what_the_reassembler_refuses() {
