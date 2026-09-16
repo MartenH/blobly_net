@@ -379,6 +379,8 @@ fn test_transfers_refuse_what_the_reassembler_refuses() {
 	assert t.step(cm(0x00, addr_global, 99, 20, 3, dm1)).role == .stray // unknown control byte
 	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0x4FECA)).role == .stray // 19-bit "PGN"
 	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0xEA12)).role == .stray // PDU1 with a low byte
+	assert t.step(cm(addr_null, addr_global, cm_bam, 20, 3, dm1)).role == .stray // from the null address
+	assert t.step(cm(addr_global, 0x17, cm_rts, 20, 3, dm1)).role == .stray // from the global address
 	assert t.open() == 0
 	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0xEA00)).role == .announce // PDU1, well formed
 	assert t.open() == 1

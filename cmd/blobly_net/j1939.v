@@ -342,6 +342,14 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 // PGN at several addresses with several layouts — codex on #329), then by PGN alone; declared
 // before undeclared at each step, the first database with a match winning.
 fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
+	// A (PGN, SA) the databases define twice — two priorities with two layouts — decodes
+	// NOTHING: the announcement carries neither, and the first definition would be an
+	// arbitrary schema shown as signal values (codex on #329). The row keeps its reading.
+	for db in dbs {
+		if db.pgn_sa_contested(pgn, sa) {
+			return none
+		}
+	}
 	for db in dbs {
 		if m := db.lookup_pgn_sa(pgn, sa) {
 			if m.j1939 {

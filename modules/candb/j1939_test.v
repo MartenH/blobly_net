@@ -101,6 +101,19 @@ BO_ 2566834699 DM1_Brakes: 8 Vector__XXX
 	assert two.lookup_pgn_sa(0xFECA, 0x00)?.name == 'DM1_Engine'
 	assert two.lookup_pgn_sa(0xFECA, 0x17) == none // not spelled: the caller falls back to lookup_pgn
 	assert two.lookup_pgn(0xFECA)?.name == 'DM1_Engine'
+	assert !two.pgn_sa_contested(0xFECA, 0x00)
+	// two definitions at one (PGN, SA) — two priorities — cannot be told apart by a transfer
+	con := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1_p6: 8 Vector__XXX
+BO_ 2633943552 DM1_p7: 8 Vector__XXX
+') or {
+		panic(err)
+	}
+	// 2566834688 = 0x98FECA00, 2633943552 = 0x9CFECA00
+	assert con.pgn_sa_contested(0xFECA, 0x00)
+	assert !con.pgn_sa_contested(0xFECA, 0x0B)
 }
 
 fn test_lookup_frame_no_false_positives() {

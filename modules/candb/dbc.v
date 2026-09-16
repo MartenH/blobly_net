@@ -113,6 +113,23 @@ pub fn (db Database) lookup_pgn_sa(pgn u32, sa u8) ?Message {
 	return none
 }
 
+// pgn_sa_contested says whether the database defines MORE THAN ONE message at a (PGN, SA) — two
+// priorities, say — so that a transfer's payload, whose announcement carries neither, cannot be
+// told which layout it has. A consumer that would decode it should decode nothing instead of
+// the first definition (codex on #329).
+pub fn (db Database) pgn_sa_contested(pgn u32, sa u8) bool {
+	mut n := 0
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
+			n++
+			if n > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
 // named `node` is responsible for sending. Through senders(), so a node declared only as an
 // ADDITIONAL transmitter (a DBC BO_TX_BU_, an ARXML frame two ECUs send) gets its frames too;

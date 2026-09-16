@@ -90,6 +90,12 @@ pub fn (c Cm) admission(id Id) ?string {
 	if ((c.pgn >> 8) & 0xFF) < 0xF0 && (c.pgn & 0xFF) != 0 {
 		return 'carries PGN 0x${c.pgn:05X}, a PDU1 group with a nonzero low byte'
 	}
+	// And it must come from a node: the null address (a Cannot Claim's source) and the global
+	// address originate nothing, so a transfer "from" either is a frame of some other making and
+	// must not become a message or an attribution (codex on #329).
+	if id.sa == addr_null || id.sa == addr_global {
+		return 'announced from 0x${id.sa:02X}, which is not a node address'
+	}
 	return none
 }
 
