@@ -87,6 +87,22 @@ BA_ "VFrameFormat" BO_ 2566834942 3;
 	assert trap.lookup_frame(0x1CFECA00, true)?.name == 'Trap'
 }
 
+fn test_lookup_pgn_sa_takes_the_spelled_address_first() {
+	two := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1_Engine: 8 Vector__XXX
+BO_ 2566834699 DM1_Brakes: 8 Vector__XXX
+') or {
+		panic(err)
+	}
+	// 2566834688 = 0x98FECA00, 2566834699 = 0x98FECA0B
+	assert two.lookup_pgn_sa(0xFECA, 0x0B)?.name == 'DM1_Brakes'
+	assert two.lookup_pgn_sa(0xFECA, 0x00)?.name == 'DM1_Engine'
+	assert two.lookup_pgn_sa(0xFECA, 0x17) == none // not spelled: the caller falls back to lookup_pgn
+	assert two.lookup_pgn(0xFECA)?.name == 'DM1_Engine'
+}
+
 fn test_lookup_frame_no_false_positives() {
 	db := j1939_db()
 	// Standard-id frames never PGN-match (ext=false).

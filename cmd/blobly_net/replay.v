@@ -108,6 +108,8 @@ fn (mut app App) load_recording(path string) {
 	// so filed under the bare label, the file's claims named live frames the moment the operator
 	// resumed (codex on #329). One key per label, built once.
 	mut rec_keys := map[string]string{}
+	mut rec_gates := map[string]string{} // each label's gate, for expiring its listener while another bus talks
+	mut t_last := 0.0
 	mut alias := map[string]string{} // recorded label -> destination key
 	// destination key -> EVERY raw interface on it. Remembering only the first lost the later
 	// alias's databases, so a verifier that came from `vector:ch1` was resolved against
@@ -311,6 +313,21 @@ fn (mut app App) load_recording(path string) {
 		mut obs := j1939_obs[e.iface] or { J1939Obs{} }
 		tp_done := app.j1939_note_locked(mut obs, e.iface, gate, rk, f, t_row)
 		j1939_obs[e.iface] = obs
+		rec_gates[e.iface] = gate
+		t_last = t_row
+		// The OTHER buses' listeners see this frame's time too: a transfer on a bus that went
+		// quiet while another kept talking would otherwise never reach its timeout, since
+		// nothing of its own feeds it (codex on #329). Only listeners with a session open pay.
+		if j1939_obs.len > 1 {
+			for lbl in j1939_obs.keys() {
+				if lbl == e.iface || j1939_obs[lbl].tp.open() == 0 {
+					continue
+				}
+				mut other := j1939_obs[lbl]
+				app.j1939_expire_locked(mut other, lbl, rec_gates[lbl] or { '' }, t_row)
+				j1939_obs[lbl] = other
+			}
+		}
 		visible := i >= first_row // trimmed rows are never drawn, so they are not built
 		if visible {
 			name, reading := app.j1939_frame_locked(gate, rk, f, app.lookup_name(f.id, f.extended))
@@ -334,6 +351,16 @@ fn (mut app App) load_recording(path string) {
 		}
 		// Counted over the whole file like the frames' groups are; a row only in the window.
 		app.j1939_push_tp_locked(tp_done, e.iface, gate, rk, t_row, org_rep, true, visible, true)
+	}
+	// And once more at the file's end: a transfer still open then waited at least as long as
+	// the recording went on after its last frame, and where that is past its limit it is said.
+	for lbl in j1939_obs.keys() {
+		if j1939_obs[lbl].tp.open() == 0 {
+			continue
+		}
+		mut other := j1939_obs[lbl]
+		app.j1939_expire_locked(mut other, lbl, rec_gates[lbl] or { '' }, t_last)
+		j1939_obs[lbl] = other
 	}
 	// What the ring actually holds, counted rather than assumed — frames and rejoined rows
 	// alike: the rows share the ring, and past its cap the OLDEST go, so with enough rejoined

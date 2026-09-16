@@ -94,6 +94,25 @@ pub fn (db Database) lookup_pgn(pgn u32) ?Message {
 	return none
 }
 
+// lookup_pgn_sa resolves a J1939 parameter group FROM A KNOWN SOURCE ADDRESS to the message the
+// database spells at exactly that address — declared first, then any extended message — and
+// none where it spells none for that address (the caller then falls back to lookup_pgn). A
+// database may define one PGN at several addresses with different layouts, and a transfer's
+// announcement names its originator (codex on #329).
+pub fn (db Database) lookup_pgn_sa(pgn u32, sa u8) ?Message {
+	for m in db.messages {
+		if m.ext && m.j1939 && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
+			return m
+		}
+	}
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
+			return m
+		}
+	}
+	return none
+}
+
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
 // named `node` is responsible for sending. Through senders(), so a node declared only as an
 // ADDITIONAL transmitter (a DBC BO_TX_BU_, an ARXML frame two ECUs send) gets its frames too;

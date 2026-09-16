@@ -36,8 +36,9 @@ fn test_decode_name_fields() {
 	assert n.label() == 'Engine #2.1'
 	assert n.describe().contains('On-Highway')
 	assert n.describe().contains('manufacturer 512')
-	// too short to be a NAME
+	// too short to be a NAME, and too long (an FD frame at the claim's PGN)
 	assert decode_name([u8(1), 2, 3]) == none
+	assert decode_name([u8(1), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) == none
 }
 
 fn test_name_labels() {

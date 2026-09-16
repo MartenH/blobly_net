@@ -513,6 +513,38 @@ fn test_an_announcement_from_a_spelled_address_takes_that_entry() {
 	assert rep.tp_attributed == 6
 }
 
+// Two declared messages at one (PGN, SA) with different transmitters — two priorities — leave
+// an announcement from that address to the PGN rule; so does an undeclared message at the pair.
+fn test_a_contested_pgn_sa_pair_decides_nothing() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'DM1_p6'
+				id:     0x18FECA00
+				ext:    true
+				sender: 'Engine'
+				j1939:  true
+			},
+			candb.Message{
+				name:   'DM1_p7'
+				id:     0x1CFECA00 // same PGN, same address, another priority, another transmitter
+				ext:    true
+				sender: 'Gateway'
+				j1939:  true
+			},
+		]
+	}
+	rec := [
+		tp_cm(0x00, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.00),
+		tp_dt(0x00, 0xFF, 1, 0.01),
+	]
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	// the pair is contested and the PGN itself is contested (two transmitters): unknown, hinted
+	assert kept.len == 2
+	assert rep.pgn_hint == 2
+	assert rep.withheld_excluded == 0
+}
+
 // Two spellings of one transmitter pair agree about the sender, whatever their order.
 fn test_transmitter_sets_compare_without_order() {
 	db := candb.Database{

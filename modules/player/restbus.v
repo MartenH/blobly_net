@@ -272,6 +272,7 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 	mut pgn_ambiguous := map[u32]bool{}
 	mut pgn_hint := map[u32]bool{}
 	mut pgn_sa_senders := map[u32][]string{}
+	mut pgn_sa_ambiguous := map[u32]bool{}
 	for m in db.messages {
 		k := key(m.id, m.ext)
 		senders_of[k] = m.senders()
@@ -280,9 +281,21 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 			continue
 		}
 		pgn := j1939.pgn(m.id)
-		if m.j1939 {
-			sk := (pgn << 8) | u32(m.id & 0xFF)
-			if sk !in pgn_sa_senders {
+		// The (PGN, SA) index follows the PGN index's rule: two messages at one pair (two
+		// priorities, say — an announcement carries none) with different transmitters, or an
+		// undeclared message at the pair, make it undecidable rather than the first's (codex
+		// on #329).
+		sk := (pgn << 8) | u32(m.id & 0xFF)
+		if sk !in pgn_sa_ambiguous {
+			if !m.j1939 {
+				pgn_sa_senders.delete(sk)
+				pgn_sa_ambiguous[sk] = true
+			} else if prev := pgn_sa_senders[sk] {
+				if !same_set(prev, m.senders()) {
+					pgn_sa_senders.delete(sk)
+					pgn_sa_ambiguous[sk] = true
+				}
+			} else {
 				pgn_sa_senders[sk] = m.senders()
 			}
 		}

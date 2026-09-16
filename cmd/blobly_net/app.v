@@ -1253,6 +1253,8 @@ fn (mut app App) rebuild_from_proj() {
 	// on the wire, so two spellings of one wire (`vector:1`, `vector:ch1`) with the declaration
 	// on one of them read the wire as J1939 from either — dbs_for_dest groups by the
 	// platform-dependent destination_key, which off Windows tells those two apart (codex on #329).
+	old_dbs := app.j1939_dbs.clone()
+	old_any := app.j1939_any
 	app.j1939_dbs = map[string]bool{}
 	for c in app.chans {
 		if c.doip {
@@ -1266,7 +1268,38 @@ fn (mut app App) rebuild_from_proj() {
 	// the databases may have changed under every cached name and key
 	app.j1939_labels = map[string]&LabelCache{}
 	app.dest_cache = map[string]string{}
+	// A recording on screen was stamped and rejoined under the reading in force when it was
+	// loaded; in auto that reading just moved with the databases (a J1939 DBC attached or
+	// removed), so the file is re-imported under the new one, as the J1939 button does when
+	// the override moves (codex on #329). A project load never gets here with a recording on
+	// screen: it resets the trace first.
+	gate_moved := old_any != app.j1939_any || !same_gates(old_dbs, app.j1939_dbs)
+	reload := if gate_moved && app.j1939_override == .follow && app.viewing_rec != '' {
+		app.viewing_rec_path
+	} else {
+		''
+	}
 	app.mu.unlock()
+	if reload != '' {
+		app.load_recording(reload)
+	}
+}
+
+// same_gates says whether two per-wire J1939 declarations agree everywhere.
+fn same_gates(a map[string]bool, b map[string]bool) bool {
+	if a.len != b.len {
+		return false
+	}
+	for k, v in a {
+		if bv := b[k] {
+			if bv != v {
+				return false
+			}
+		} else {
+			return false
+		}
+	}
+	return true
 }
 
 // resolve_sender_targets_locked answers every generator's `bus:` against the channels as they

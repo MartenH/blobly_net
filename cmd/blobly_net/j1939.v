@@ -190,7 +190,7 @@ fn (mut app App) dest_cached_locked(iface string) string {
 // the lower one — would otherwise wear the winner's name (codex on #329). Uncached: claims are
 // rare. Caller holds app.mu.
 fn (mut app App) j1939_frame_locked(gate string, key string, f transport.CanFrame, name string) (string, string) {
-	if f.extended && !f.rtr && f.data.len >= 8 && app.j1939_on_locked(gate) {
+	if f.extended && !f.rtr && f.data.len == 8 && app.j1939_on_locked(gate) {
 		i := j1939.decompose(f.id)
 		if j1939.is_address_claim(i) {
 			if n := j1939.decode_name(f.data) {
@@ -291,7 +291,7 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 		// the protocol's own name for the few PGNs it has one for, else nothing: the reading in
 		// the same cell says PGN and sender either way.
 		mut name := ''
-		if m := find_pgn_message_in(app.dbs_for_gate(gate), a.pgn) {
+		if m := find_pgn_message_in(app.dbs_for_gate(gate), a.pgn, a.sa) {
 			name = m.name
 		} else {
 			name = j1939.pgn_name(a.pgn) or { '' }
@@ -328,9 +328,23 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 	return n
 }
 
-// find_pgn_message_in is the message a J1939 parameter group decodes against, over the given
-// databases: declared first (candb.lookup_pgn), the first database with either winning.
-fn find_pgn_message_in(dbs []candb.Database, pgn u32) ?candb.Message {
+// find_pgn_message_in is the message a J1939 parameter group FROM `sa` decodes against, over
+// the given databases: one spelled at exactly that address first (a database may define one
+// PGN at several addresses with several layouts — codex on #329), then by PGN alone; declared
+// before undeclared at each step, the first database with a match winning.
+fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
+	for db in dbs {
+		if m := db.lookup_pgn_sa(pgn, sa) {
+			if m.j1939 {
+				return m
+			}
+		}
+	}
+	for db in dbs {
+		if m := db.lookup_pgn_sa(pgn, sa) {
+			return m
+		}
+	}
 	for db in dbs {
 		if m := db.lookup_pgn(pgn) {
 			if m.j1939 {
@@ -374,7 +388,7 @@ fn (app &App) dbs_for_gate(gate string) []candb.Database {
 // message), by id like every frame otherwise; over `dbs`.
 fn (app &App) message_for(id u32, ext bool, tp bool, dbs []candb.Database) ?candb.Message {
 	if tp {
-		return find_pgn_message_in(dbs, j1939.pgn(id))
+		return find_pgn_message_in(dbs, j1939.pgn(id), u8(id & 0xFF))
 	}
 	return app.find_message(id, ext)
 }

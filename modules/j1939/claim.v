@@ -32,9 +32,11 @@ pub:
 }
 
 // decode_name reads a NAME from its eight little-endian data bytes (byte 0 holds the identity's
-// low bits). Fewer than eight bytes is not a NAME.
+// low bits). Anything but exactly eight bytes is not a NAME: an FD-sized frame at the claim's
+// PGN is some other protocol's, and its first eight bytes must not rename an address (codex on
+// #329), as a transport frame must be exactly eight for parse_cm.
 pub fn decode_name(data []u8) ?Name {
-	if data.len < 8 {
+	if data.len != 8 {
 		return none
 	}
 	return name_from_raw(binary.little_endian_u64(data))
