@@ -477,6 +477,42 @@ fn test_receiver_controls_are_unknown_even_when_the_dbc_defines_tp_cm() {
 	assert rep.unknown == 1
 }
 
+// Two declared entries for one PGN at two spelled addresses with two transmitters: an
+// announcement from a spelled address is that entry's; one from a third is either's.
+fn test_an_announcement_from_a_spelled_address_takes_that_entry() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'DM1_Engine'
+				id:     0x18FECA00
+				ext:    true
+				sender: 'Engine'
+				j1939:  true
+			},
+			candb.Message{
+				name:   'DM1_Brakes'
+				id:     0x18FECA0B
+				ext:    true
+				sender: 'Brakes'
+				j1939:  true
+			},
+		]
+	}
+	rec := [
+		tp_cm(0x00, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.00), // the engine's: withheld
+		tp_dt(0x00, 0xFF, 1, 0.01),
+		tp_cm(0x0B, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.02), // the brakes': kept
+		tp_dt(0x0B, 0xFF, 1, 0.03),
+		tp_cm(0x17, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.04), // a third address: either's, unknown
+		tp_dt(0x17, 0xFF, 1, 0.05),
+	]
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	assert kept.len == 4
+	assert rep.withheld_excluded == 2
+	assert rep.pgn_hint == 2
+	assert rep.tp_attributed == 6
+}
+
 // Two spellings of one transmitter pair agree about the sender, whatever their order.
 fn test_transmitter_sets_compare_without_order() {
 	db := candb.Database{

@@ -50,7 +50,20 @@ const j1939_fault_budget = 20
 // writes into it in place: V does not copy a map out of a map and back.
 struct LabelCache {
 mut:
-	by_id map[u32]string
+	by_id   map[u32]string // the display name: the database's name and the reading
+	reading map[u32]string // the reading alone
+}
+
+// j1939_join is the ONE spelling of a name cell: the database's name, two spaces, the reading;
+// either alone when the other is empty.
+fn j1939_join(name string, reading string) string {
+	if reading == '' {
+		return name
+	}
+	if name == '' {
+		return reading
+	}
+	return '${name}  ${reading}'
 }
 
 // j1939_on_locked says whether the J1939 reading applies to a wire, by the key its databases
@@ -102,15 +115,8 @@ fn (mut app App) j1939_display_locked(gate string, key string, id u32, ext bool,
 			return s
 		}
 	}
-	i := j1939.decompose(id)
-	mut reading := i.label()
-	if d := app.j1939_nodes[key] {
-		n := d.label(i.sa)
-		if n != '' {
-			reading += ' ${n}'
-		}
-	}
-	disp := if name == '' { reading } else { '${name}  ${reading}' }
+	reading := app.j1939_reading_locked(gate, key, id, ext)
+	disp := j1939_join(name, reading)
 	mut c := app.j1939_labels[key] or {
 		nc := &LabelCache{}
 		app.j1939_labels[key] = nc
@@ -120,19 +126,49 @@ fn (mut app App) j1939_display_locked(gate string, key string, id u32, ext bool,
 	return disp
 }
 
-// j1939_display_iface_locked is the display name for an EMITTED frame, whose caller holds the
-// wire's interface and not its key. Everything that can say "no" is asked before the key is
-// derived, and the key comes from a cache, because this is the emit path: a string built per
-// frame for a reading nobody asked for is exactly what #300 removed from it. Caller holds app.mu.
-fn (mut app App) j1939_display_iface_locked(iface string, f transport.CanFrame, name string) string {
+// j1939_reading_locked is the reading alone — `PGN 0xF004 SA 0x00 Engine` — cached like the
+// display name, '' where the reading is off or the frame is not extended. Caller holds app.mu.
+fn (mut app App) j1939_reading_locked(gate string, key string, id u32, ext bool) string {
+	if !ext || !app.j1939_on_locked(gate) {
+		return ''
+	}
+	if c := app.j1939_labels[key] {
+		if s := c.reading[id] {
+			return s
+		}
+	}
+	i := j1939.decompose(id)
+	mut reading := i.label()
+	if d := app.j1939_nodes[key] {
+		n := d.label(i.sa)
+		if n != '' {
+			reading += ' ${n}'
+		}
+	}
+	mut c := app.j1939_labels[key] or {
+		nc := &LabelCache{}
+		app.j1939_labels[key] = nc
+		nc
+	}
+	c.reading[id] = reading
+	return reading
+}
+
+// j1939_iface_locked is the display name and the reading for an EMITTED frame, whose caller
+// holds the wire's interface and not its key. Everything that can say "no" is asked before the
+// key is derived, and the key comes from a cache, because this is the emit path: a string built
+// per frame for a reading nobody asked for is exactly what #300 removed from it. Caller holds
+// app.mu.
+fn (mut app App) j1939_iface_locked(iface string, f transport.CanFrame, name string) (string, string) {
 	if !f.extended || app.j1939_override == .off {
-		return name
+		return name, ''
 	}
 	if app.j1939_override == .follow && !app.j1939_any {
-		return name
+		return name, ''
 	}
 	dest := app.dest_cached_locked(iface)
-	return app.j1939_display_locked(dest, dest, f.id, true, name)
+	return app.j1939_display_locked(dest, dest, f.id, true, name), app.j1939_reading_locked(dest,
+		dest, f.id, true)
 }
 
 // dest_cached_locked is transport.destination_key(iface), remembered per interface: the answer
@@ -148,22 +184,23 @@ fn (mut app App) dest_cached_locked(iface string) string {
 	return d
 }
 
-// j1939_display_frame_locked is j1939_display_locked for a FRAME, with the one case the
-// directory cannot answer: an Address Claimed frame names its own sender in its payload, and
-// a claim that LOST — a higher NAME contesting an address the directory keeps for the lower
-// one — would otherwise wear the winner's name (codex on #329). Uncached: claims are rare.
-// Caller holds app.mu.
-fn (mut app App) j1939_display_frame_locked(gate string, key string, f transport.CanFrame, name string) string {
+// j1939_frame_locked is the display name and the reading for a RECEIVED frame, with the one
+// case the directory cannot answer: an Address Claimed frame names its own sender in its
+// payload, and a claim that LOST — a higher NAME contesting an address the directory keeps for
+// the lower one — would otherwise wear the winner's name (codex on #329). Uncached: claims are
+// rare. Caller holds app.mu.
+fn (mut app App) j1939_frame_locked(gate string, key string, f transport.CanFrame, name string) (string, string) {
 	if f.extended && !f.rtr && f.data.len >= 8 && app.j1939_on_locked(gate) {
 		i := j1939.decompose(f.id)
 		if j1939.is_address_claim(i) {
 			if n := j1939.decode_name(f.data) {
 				reading := '${i.label()} ${n.label()}'
-				return if name == '' { reading } else { '${name}  ${reading}' }
+				return j1939_join(name, reading), reading
 			}
 		}
 	}
-	return app.j1939_display_locked(gate, key, f.id, f.extended, name)
+	return app.j1939_display_locked(gate, key, f.id, f.extended, name), app.j1939_reading_locked(gate,
+		key, f.id, f.extended)
 }
 
 // j1939_obs_locked is the listener for a wire, created on first use. ON THE APP, by wire, not
@@ -260,13 +297,15 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 			name = j1939.pgn_name(a.pgn) or { '' }
 		}
 		how := if a.bam { 'BAM' } else { 'RTS/CTS' }
+		reading := '${app.j1939_reading_locked(gate, key, id, true)} · ${a.packets()} packets ${how}'
 		row := TraceRow{
 			t_ms:     t_ms
 			ch:       ch
 			origin:   origin
 			id:       id
 			ext:      true
-			name:     '${app.j1939_display_locked(gate, key, id, true, name)} · ${a.packets()} packets ${how}'
+			name:     j1939_join(name, reading)
+			reading:  reading
 			data:     a.data
 			imported: imported
 			tp:       true

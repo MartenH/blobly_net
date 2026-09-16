@@ -39,9 +39,12 @@ pub:
 	pgn     u32 // the parameter group the frame is about (bytes 5..7)
 }
 
-// parse_cm reads a TP.CM payload; none when it is too short to be one.
+// parse_cm reads a TP.CM payload; none unless it is EXACTLY the eight bytes a J1939-21
+// transport frame carries. Longer is not "eight and some": on an FD-capable wire a J1939-22 or
+// proprietary frame whose id computes to TP.CM would otherwise be read as an announcement by its
+// first eight bytes and the rest invented into a message (codex on #329).
 pub fn parse_cm(data []u8) ?Cm {
-	if data.len < 8 {
+	if data.len != 8 {
 		return none
 	}
 	return Cm{
@@ -292,7 +295,13 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 		mut s := t.open[k] or { return Step{
 			role: .stray
 		} }
-		seq := if f.data.len > 0 { f.data[0] } else { u8(0) }
+		if f.data.len != 8 {
+			// not a J1939-21 data frame (see parse_cm); it neither advances nor ends the transfer
+			return Step{
+				role: .stray
+			}
+		}
+		seq := f.data[0]
 		// Whatever the sequence says, a data frame on an open transfer's pair is its
 		// originator's: a duplicate is the sender again, a gap is a frame the capture lost.
 		// The transfer ends on EXACTLY its last sequence number — a corrupted number past the
@@ -547,7 +556,7 @@ pub fn (mut r Reassembler) expire(now_ms f64) []Fault {
 fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 	cm := parse_cm(data) or {
 		ev.faults << id.fault(.malformed, 0,
-			'TP.CM of ${data.len} bytes; a control frame carries 8')
+			'TP.CM of ${data.len} bytes; a transport-protocol frame carries exactly 8')
 		return
 	}
 	ctrl := cm.ctrl
@@ -661,8 +670,13 @@ fn (mut r Reassembler) on_dt(id Id, data []u8, now_ms f64, late bool, mut ev Eve
 		}
 		return
 	}
-	if data.len < 1 {
-		ev.faults << s.fault(.malformed, 'empty data frame; dropped')
+	// A data frame is EXACTLY eight bytes on the wire, the last one padded with 0xFF: shorter
+	// would have to be filled from the next frame — a shifted message returned as valid, as
+	// isotp refuses a short Consecutive Frame — and longer is a frame of some other protocol on
+	// an FD wire whose tail would be silently dropped (codex on #329).
+	if data.len != 8 {
+		ev.faults << s.fault(.malformed,
+			'data frame of ${data.len} bytes; a transport-protocol frame carries exactly 8; dropped')
 		r.sessions.delete(k)
 		return
 	}
@@ -676,16 +690,6 @@ fn (mut r Reassembler) on_dt(id Id, data []u8, now_ms f64, late bool, mut ev Eve
 	}
 	need := s.total - s.data.len
 	take := if need < 7 { need } else { 7 }
-	// A data frame is always 8 bytes on the wire, the last one padded with 0xFF. Anything
-	// short of what this packet must carry would have to be filled from the next frame, which
-	// is a shifted message returned as valid — refused, as isotp refuses a short Consecutive
-	// Frame with more to come.
-	if data.len - 1 < take {
-		ev.faults << s.fault(.malformed,
-			'data frame ${seq} carries ${data.len - 1} bytes where ${take} were due; dropped')
-		r.sessions.delete(k)
-		return
-	}
 	s.data << data[1..1 + take]
 	s.next++
 	s.t_last_ms = now_ms

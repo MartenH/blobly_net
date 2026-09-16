@@ -426,6 +426,37 @@ fn test_parse_cm() {
 	c := parse_cm([u8(cm_bam), 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00])?
 	assert c.ctrl == cm_bam && c.total == 20 && c.packets == 3 && c.pgn == dm1
 	assert parse_cm([u8(cm_bam), 20, 0]) == none
+	assert parse_cm([u8(cm_bam), 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00, 0, 0, 0, 0]) == none // an FD frame
+}
+
+// A transport-protocol frame is exactly eight bytes: a twelve-byte FD frame on TP.CM's or TP.DT's
+// id is some other protocol's, in both trackers.
+fn test_fd_sized_frames_are_not_tp_frames() {
+	mut r := Reassembler{}
+	fd_cm := transport.CanFrame{
+		id:       compose(7, pgn_tp_cm, addr_global, 0x00)
+		extended: true
+		fd:       true
+		data:     [u8(cm_bam), 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00, 1, 2, 3, 4]
+	}
+	ev := r.feed(fd_cm, 0)
+	assert ev.faults.len == 1 && ev.faults[0].kind == .malformed
+	assert r.open() == 0
+	r.feed(bam(0x00, 20, dm1), 1)
+	fd_dt := transport.CanFrame{
+		id:       compose(7, pgn_tp_dt, addr_global, 0x00)
+		extended: true
+		fd:       true
+		data:     [u8(1), 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+	}
+	ev2 := r.feed(fd_dt, 2)
+	assert ev2.faults.len == 1 && ev2.faults[0].detail.contains('data frame of 12 bytes')
+	assert r.open() == 0
+	mut t := Transfers{}
+	assert t.step(fd_cm).role == .stray
+	t.step(bam(0x00, 20, dm1))
+	assert t.step(fd_dt).role == .stray
+	assert t.open() == 1 // the transfer is neither advanced nor ended by a frame that is not its
 }
 
 // The packet that arrives just past the limit is the one the timeout is about, not an orphan.
@@ -518,7 +549,7 @@ fn test_short_data_frame_with_more_due_is_refused() {
 	}
 	ev := r.feed(f, 1)
 	assert ev.faults.len == 1 && ev.faults[0].kind == .malformed
-	assert ev.faults[0].detail.contains('carries 3 bytes where 7 were due')
+	assert ev.faults[0].detail.contains('data frame of 4 bytes')
 	assert r.open() == 0
 }
 

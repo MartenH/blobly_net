@@ -128,6 +128,10 @@ pub struct Decider {
 	// The PGNs a miss can only HINT about: defined by an undeclared extended message, or by
 	// several declared ones with different transmitters (see Subtraction.pgn_hint).
 	pgn_hint map[u32]bool
+	// By (PGN, source address), for the declared messages that spell one: an announcement
+	// carries its originator, so a transfer from an address the database spells is that
+	// entry's, whatever the PGN alone can decide (codex on #329). Keyed pgn << 8 | sa.
+	pgn_sa_senders map[u32][]string
 }
 
 // same_set says whether two transmitter lists name the same nodes, whatever their order.
@@ -186,7 +190,7 @@ pub fn (mut w Walker) decide(f transport.CanFrame, t_s f64) Decision {
 		.announce {
 			// The announcement is judged by the parameter group it announces — through the
 			// declared-PGN index, the only thing it carries about the message (decide_pgn).
-			base := w.d.decide_pgn(st.pgn)
+			base := w.d.decide_pgn_from(st.pgn, st.sa)
 			dec := Decision{
 				...base
 				tp:      true
@@ -267,6 +271,7 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 	mut pgn_senders := map[u32][]string{}
 	mut pgn_ambiguous := map[u32]bool{}
 	mut pgn_hint := map[u32]bool{}
+	mut pgn_sa_senders := map[u32][]string{}
 	for m in db.messages {
 		k := key(m.id, m.ext)
 		senders_of[k] = m.senders()
@@ -275,6 +280,12 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 			continue
 		}
 		pgn := j1939.pgn(m.id)
+		if m.j1939 {
+			sk := (pgn << 8) | u32(m.id & 0xFF)
+			if sk !in pgn_sa_senders {
+				pgn_sa_senders[sk] = m.senders()
+			}
+		}
 		if !m.j1939 {
 			// The file did not say this message is J1939, so a frame that differs from it in the
 			// low byte is not "the same parameter group from another address" — and a DECLARED
@@ -312,6 +323,7 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 		replay_unattributed: replay_unattributed
 		pgn_senders:         pgn_senders.clone()
 		pgn_hint:            pgn_hint.clone()
+		pgn_sa_senders:      pgn_sa_senders.clone()
 	}
 }
 
@@ -386,6 +398,17 @@ pub fn (d Decider) decide_pgn(pgn u32) Decision {
 		}
 	}
 	return d.judged(senders, true)
+}
+
+// decide_pgn_from is decide_pgn for a parameter group whose ORIGINATOR is known — a
+// transport-protocol announcement names its source address — so a declared entry spelling that
+// very (PGN, SA) decides first, and only an address the database does not spell falls to the
+// PGN index and its ambiguity rule. Still never an exact composed id (see decide_pgn).
+pub fn (d Decider) decide_pgn_from(pgn u32, sa u8) Decision {
+	if senders := d.pgn_sa_senders[(pgn << 8) | u32(sa)] {
+		return d.judged(senders, true)
+	}
+	return d.decide_pgn(pgn)
 }
 
 // judged is the verdict once the transmitters are known: nobody named, an excluded node, or

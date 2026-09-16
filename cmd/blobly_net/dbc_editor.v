@@ -4,6 +4,7 @@ import os
 import candb
 import panerule
 import vgui
+import j1939
 
 // ---- DBC Editor (docs/dbc_editor.md P1) -------------------------------------
 // Edits the IN-MEMORY app.dbs — the same databases the Trace panel decodes
@@ -300,8 +301,22 @@ fn (mut app App) dbc_refresh_if_all_clean() {
 // arrival and would otherwise display the stale identity.
 fn (mut app App) dbc_refresh_trace_names() {
 	app.mu.lock()
+	// The database's part of every name changed; the J1939 reading each row carries did not
+	// (`TraceRow.reading`), so the cell is rebuilt from both rather than from the name alone,
+	// which erased the PGN/SA/node reading and a rejoined message's packet count on every
+	// editor selection (codex on #329). The cached cells carry the old names and go too.
+	app.j1939_labels = map[string]&LabelCache{}
 	for i, r in app.trace {
-		nn := app.lookup_name(r.id, r.ext)
+		base := if r.tp {
+			if m := app.group_message(r) {
+				m.name
+			} else {
+				j1939.pgn_name(j1939.pgn(r.id)) or { '' }
+			}
+		} else {
+			app.lookup_name(r.id, r.ext)
+		}
+		nn := j1939_join(base, r.reading)
 		if nn != r.name {
 			app.trace[i] = TraceRow{
 				...r

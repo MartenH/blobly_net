@@ -944,20 +944,22 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 		if !a.paused && !ours {
 			rx_key := gkey_frame(org_rx, chname, f)
+			disp, reading := a.j1939_frame_locked(want_dest, want_dest, f, name)
 			a.push_row_locked(TraceRow{
-				t_ms:   t_ms
-				ch:     chname
-				origin: org_rx
-				id:     f.id
-				ext:    f.extended
-				fd:     f.fd
-				brs:    f.brs
-				esi:    f.esi
-				rtr:    f.rtr
-				name:   a.j1939_display_frame_locked(want_dest, want_dest, f, name)
-				data:   f.data.clone()
-				e2e:    viol
-				key:    rx_key
+				t_ms:    t_ms
+				ch:      chname
+				origin:  org_rx
+				id:      f.id
+				ext:     f.extended
+				fd:      f.fd
+				brs:     f.brs
+				esi:     f.esi
+				rtr:     f.rtr
+				name:    disp
+				reading: reading
+				data:    f.data.clone()
+				e2e:     viol
+				key:     rx_key
 			})
 			a.gcount[rx_key]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record

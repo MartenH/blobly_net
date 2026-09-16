@@ -51,10 +51,13 @@ struct TraceRow {
 	// J1939 (#171). On a wire read as J1939, `name` carries the reading beside the database's
 	// name — `EEC1  PGN 0xF004 SA 0x00 Engine` — stamped at push from what the listener knew
 	// then (j1939_display_locked, cached per wire and id so the RX path formats nothing per
-	// frame). `tp` marks a row that is not a frame: a transport-protocol message rejoined from
-	// its BAM/RTS packets, carrying the WHOLE parameter group as data and the id a single frame
-	// of that PGN would have carried, so the database decodes it like one.
-	tp bool
+	// frame), and `reading` is that reading ALONE, so a database rename can rebuild `name`
+	// (dbc_refresh_trace_names) without losing what the wire said (codex on #329). `tp` marks a
+	// row that is not a frame: a transport-protocol message rejoined from its BAM/RTS packets,
+	// carrying the WHOLE parameter group as data and the id a single frame of that PGN would
+	// have carried, so the database decodes it like one; its reading carries the packet count.
+	reading string
+	tp      bool
 mut:
 	// An outbound row is written at emit, so it states intent; `missed` says its echo window
 	// closed with the frame never coming back off the wire. Those disagree in every bench
@@ -219,7 +222,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// still draining after Stop — is not in that lifecycle, so resolving a name outside the
 	// mutex could read app.dbs while a configuration edit replaces it.
 	chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
-	name := app.j1939_display_iface_locked(iface, f, app.lookup_name(f.id, f.extended))
+	name, reading := app.j1939_iface_locked(iface, f, app.lookup_name(f.id, f.extended))
 	app.expire_pending_locked(t_ms)
 	// Paused: the emission is STILL tracked so its echo is recognised as ours — otherwise a
 	// paused trace would feed our own frames to the E2E verifier as the ECU's and log them to
@@ -229,18 +232,19 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	if !app.paused {
 		k := gkey_frame(origin, chn, f)
 		seq = app.push_row_locked(TraceRow{
-			t_ms:   t_ms
-			ch:     chn
-			origin: origin
-			id:     f.id
-			ext:    f.extended
-			fd:     f.fd
-			brs:    f.brs
-			esi:    f.esi
-			rtr:    f.rtr
-			name:   name
-			data:   f.data.clone()
-			key:    k
+			t_ms:    t_ms
+			ch:      chn
+			origin:  origin
+			id:      f.id
+			ext:     f.extended
+			fd:      f.fd
+			brs:     f.brs
+			esi:     f.esi
+			rtr:     f.rtr
+			name:    name
+			reading: reading
+			data:    f.data.clone()
+			key:     k
 		})
 		app.gcount[k]++
 	}

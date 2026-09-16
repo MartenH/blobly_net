@@ -313,7 +313,7 @@ fn (mut app App) load_recording(path string) {
 		j1939_obs[e.iface] = obs
 		visible := i >= first_row // trimmed rows are never drawn, so they are not built
 		if visible {
-			name := app.lookup_name(f.id, f.extended)
+			name, reading := app.j1939_frame_locked(gate, rk, f, app.lookup_name(f.id, f.extended))
 			app.push_row_locked(TraceRow{
 				t_ms:     t_row
 				ch:       e.iface
@@ -325,7 +325,8 @@ fn (mut app App) load_recording(path string) {
 				brs:      f.brs
 				esi:      f.esi
 				rtr:      f.rtr
-				name:     app.j1939_display_frame_locked(gate, rk, f, name)
+				name:     name
+				reading:  reading
 				data:     f.data.clone()
 				e2e:      viol
 				imported: true
