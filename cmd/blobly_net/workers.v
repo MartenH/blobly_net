@@ -780,6 +780,18 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// continuing repeated the failing call as fast as it could return — a core spun on
 			// an unplugged VN while the panel still showed the channel running.
 			if err.msg().contains('timeout') {
+				// A quiet bus is where a stalled transport-protocol session is noticed: the
+				// reassembler expires sessions when it is fed, and nothing feeds it while nothing
+				// arrives, so a sender that stopped mid-BAM on an otherwise silent wire was never
+				// timed out (codex on #329). `open()` is asked unlocked — the listener is this
+				// loop's own — and the narration takes the lock it needs.
+				if j1939_obs.tp.open() > 0 {
+					a.mu.lock()
+					if a.run_gen == gen {
+						a.j1939_expire_locked(mut j1939_obs, chname, a.since_ms())
+					}
+					a.mu.unlock()
+				}
 				continue
 			}
 			// ONE LAST SAMPLE. The counts are polled before the receive, and a receive that

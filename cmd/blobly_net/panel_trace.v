@@ -78,7 +78,16 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 		app.mu.lock()
 		app.j1939_override = next
 		app.j1939_labels = map[string]&LabelCache{}
+		reload := app.viewing_rec_path
+		viewing := app.viewing_rec != ''
 		app.mu.unlock()
+		// A LOADED RECORDING IS RE-IMPORTED under the new reading: its rows were stamped and its
+		// transport-protocol messages rejoined at import, so on a static file the override would
+		// otherwise apply only if chosen BEFORE loading (codex on #329). Live rows keep what they
+		// were stamped with; the next frames wear the new reading.
+		if viewing && reload != '' {
+			app.load_recording(reload)
+		}
 	}
 	vgui.same_line()
 	vgui.help_marker("Read 29-bit ids as PGN and source address (in the name column), rejoin transport-protocol messages (BAM, RTS/CTS) into rows of their own (flags: TP) and follow address claims, so a source address gets its node's name. auto: per wire, on where one of its databases declares J1939 (VFrameFormat); on / off override every wire until the next project load. Read-only — nothing is answered or claimed.")

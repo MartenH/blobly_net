@@ -102,7 +102,12 @@ fn (mut app App) load_recording(path string) {
 	// under the recording's labels (they are the file's buses, not this project's wires); the
 	// per-wire J1939 gate is asked through the label's resolution to a project wire (`ifc`).
 	mut j1939_obs := map[string]J1939Obs{}
-	mut tp_rows := 0
+	// The FILE's directories and name caches live under `rec:<label>`, never under the label
+	// itself: a candump line is labelled with the interface it was recorded on, which can be the
+	// live wire's own key (`vcan0`), and loading a recording pauses the run without stopping it —
+	// so filed under the bare label, the file's claims named live frames the moment the operator
+	// resumed (codex on #329). One key per label, built once.
+	mut rec_keys := map[string]string{}
 	mut alias := map[string]string{} // recorded label -> destination key
 	// destination key -> EVERY raw interface on it. Remembering only the first lost the later
 	// alias's databases, so a verifier that came from `vector:ch1` was resolved against
@@ -187,6 +192,7 @@ fn (mut app App) load_recording(path string) {
 	// file and live counts into one meaningless total. Paused, the ring holds exactly the file;
 	// 'resume live' (or Start) hands the view back.
 	app.viewing_rec = os.base(path)
+	app.viewing_rec_path = path // for the J1939 gate, which re-imports what it changes the reading of
 	app.paused = true
 	// A TRIMMED import keeps the FILE's frame numbers. Only the last trace_cap entries are
 	// pushed (first_row below — one computation, used for both the skip and this), and without
@@ -245,8 +251,13 @@ fn (mut app App) load_recording(path string) {
 		// J1939 over EVERY frame like verification, and BEFORE the row: a message rejoined in
 		// the shown window began in the trimmed one, and a claim names its sender from its own
 		// row on.
+		rk := rec_keys[e.iface] or {
+			nk := 'rec:${e.iface}'
+			rec_keys[e.iface] = nk
+			nk
+		}
 		mut obs := j1939_obs[e.iface] or { J1939Obs{} }
-		tp_done := app.j1939_note_locked(mut obs, e.iface, ifc, e.iface, f, t_row)
+		tp_done := app.j1939_note_locked(mut obs, e.iface, ifc, rk, f, t_row)
 		j1939_obs[e.iface] = obs
 		visible := i >= first_row // trimmed rows are never drawn, so they are not built
 		if visible {
@@ -262,28 +273,30 @@ fn (mut app App) load_recording(path string) {
 				brs:      f.brs
 				esi:      f.esi
 				rtr:      f.rtr
-				name:     app.j1939_display_locked(ifc, e.iface, f.id, f.extended, name)
+				name:     app.j1939_display_locked(ifc, rk, f.id, f.extended, name)
 				data:     f.data.clone()
 				e2e:      viol
 				imported: true
 			})
 		}
 		// Counted over the whole file like the frames' groups are; a row only in the window.
-		tp_rows += app.j1939_push_tp_locked(tp_done, e.iface, ifc, e.iface, t_row, org_rep, true,
-			visible, true)
+		app.j1939_push_tp_locked(tp_done, e.iface, ifc, rk, t_row, org_rep, true, visible, true)
 	}
-	// What the ring actually holds, counted rather than assumed: rejoined J1939 rows share it
-	// with the frames, and past its cap the OLDEST rows go — so with enough of them the last
-	// `trace_cap` frames the loop pushed are no longer all there, and a toast claiming they
-	// were would be the file's frame count standing in for the table's.
+	// What the ring actually holds, counted rather than assumed — frames and rejoined rows
+	// alike: the rows share the ring, and past its cap the OLDEST go, so with enough rejoined
+	// ones the last `trace_cap` frames the loop pushed are no longer all there, and a toast
+	// claiming they were would be the file's frame count standing in for the table's.
 	mut frames_kept := 0
+	mut tp_kept := 0
 	for r in app.trace {
-		if !r.tp {
+		if r.tp {
+			tp_kept++
+		} else {
 			frames_kept++
 		}
 	}
 	app.mu.unlock()
-	rejoined := if tp_rows > 0 { ' and ${tp_rows} rejoined J1939 message(s)' } else { '' }
+	rejoined := if tp_kept > 0 { ' and ${tp_kept} rejoined J1939 message(s)' } else { '' }
 	if frames_kept < log.len() {
 		app.notify('loaded ${log.len()} frames from ${os.base(path)} — showing the last ${frames_kept}${rejoined}')
 	} else {

@@ -210,6 +210,25 @@ fn test_abort_from_either_side_ends_the_session() {
 	assert r.feed(abort(0x17, 0x00, 2, 0xFED8), 4).faults.len == 0
 }
 
+// Two nodes mid-transfer in both directions: an abort names its PGN, and ends that transfer only.
+fn test_abort_ends_only_the_transfer_it_names() {
+	mut r := Reassembler{}
+	r.feed(rts(0x17, 0x00, 20, 0xFED8), 0) // 0x17 -> 0x00, Commanded Address
+	r.feed(rts(0x00, 0x17, 30, dm1), 1) // 0x00 -> 0x17, DM1
+	assert r.open() == 2
+	// 0x00 aborts the DM1 it is sending; the transfer it is RECEIVING carries on
+	ev := r.feed(abort(0x00, 0x17, 2, dm1), 2)
+	assert ev.faults.len == 1
+	assert ev.faults[0].pgn == dm1
+	assert ev.faults[0].sa == 0x00 && ev.faults[0].da == 0x17
+	assert r.open() == 1
+	done := r.feed(dt(0x17, 0x00, 1, message(7)), 3)
+	assert done.faults.len == 0
+	// an abort naming a PGN neither session carries touches nothing
+	assert r.feed(abort(0x00, 0x17, 2, 0xFEE5), 4).faults.len == 0
+	assert r.open() == 1
+}
+
 fn test_timeout_expires_a_stalled_session() {
 	mut r := Reassembler{}
 	msg := message(20)

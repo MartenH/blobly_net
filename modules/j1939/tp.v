@@ -317,12 +317,17 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 		}
 		cm_abort {
 			// From the originator (session keyed sa->da) or from the receiver (keyed da->sa);
-			// the frame does not say which, so both are tried. Neither open: nothing this
-			// listener tracked, and an abort about a session it never saw is not a fault of
-			// anything it can name.
+			// the frame does not say which, so both are tried — and the PGN it names decides,
+			// because two nodes can be mid-transfer in BOTH directions at once and an abort of
+			// one is not an abort of the other (codex on #329). Neither open, or neither
+			// carrying that PGN: nothing this listener tracked, and an abort about a session it
+			// never saw is not a fault of anything it can name.
 			reason := data[1]
 			for k in [skey(id.sa, id.da()), skey(id.da(), id.sa)] {
 				if s := r.sessions[k] {
+					if s.pgn != carried {
+						continue
+					}
 					ev.faults << s.fault(.aborted,
 						'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(reason)}')
 					r.sessions.delete(k)

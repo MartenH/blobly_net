@@ -75,9 +75,10 @@ pub:
 	// failure in another coat.
 	pgn_matched int
 	// Frames the database does NOT define whose PGN a message it defines does share, where that
-	// PGN could not decide: the message is not declared J1939, or several declared messages
-	// define the PGN with DIFFERENT transmitters (two engines spelled out at two source
-	// addresses; a third address is genuinely either). Not acted on, but said, because the
+	// PGN could not decide: a message on it is not declared J1939 (declared or not, another
+	// message sharing the PGN cannot then decide for it), or several declared messages define
+	// the PGN with DIFFERENT transmitters (two engines spelled out at two source addresses; a
+	// third address is genuinely either). Not acted on, but said, because the
 	// alternative is a rest bus that quietly replays the SUT's frames while the report reads
 	// "not in the DBC" about ids that differ from the DBC's by one byte.
 	pgn_hint     int
@@ -163,7 +164,14 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 		}
 		pgn := j1939.pgn(m.id)
 		if !m.j1939 {
+			// The file did not say this message is J1939, so a frame that differs from it in the
+			// low byte is not "the same parameter group from another address" — and a DECLARED
+			// message on the same PGN may not decide for it either: the frame is equally this
+			// one's neighbour, and attributing it to the declared sender would withhold it on the
+			// SUT's account on a guess (codex on #329). The PGN is undecidable either way.
 			pgn_hint[pgn] = true
+			pgn_ambiguous[pgn] = true
+			pgn_senders.delete(pgn)
 			continue
 		}
 		if pgn in pgn_ambiguous {

@@ -157,6 +157,14 @@ fn (mut app App) j1939_note_locked(mut obs J1939Obs, ch string, gate string, key
 	return ev.done
 }
 
+// j1939_expire_locked times out the wire's stalled sessions when nothing has been received to
+// feed them — the RX loop's poll timeout — and narrates them like any fault. Caller holds app.mu.
+fn (mut app App) j1939_expire_locked(mut obs J1939Obs, ch string, t_ms f64) {
+	for fl in obs.tp.expire(t_ms) {
+		app.j1939_narrate_locked(mut obs, ch, fl)
+	}
+}
+
 // j1939_push_tp_locked gives each completed message a row of its own — the channel and origin
 // of the frame that completed it, the whole parameter group as data, flags TP, and the id a
 // single frame of the PGN would carry so the database decodes it like one. `push` says whether

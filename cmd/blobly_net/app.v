@@ -305,8 +305,11 @@ mut:
 	// the label alone let live frames keep pouring into the same ring, trimming the file's rows
 	// away within seconds on a busy bus while the chip still named the file, and summing file
 	// and live counts into one gcount total. Cleared by reset_trace_locked and by Start.
-	viewing_rec   string
-	doip_host_buf []u8 // DoIP manual discover host[:port]
+	viewing_rec string
+	// Its full path, so the J1939 gate can re-import the file it changes the reading of
+	// (meaningful only while viewing_rec is set).
+	viewing_rec_path string
+	doip_host_buf    []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses (index into the CURRENT list)

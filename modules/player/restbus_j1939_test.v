@@ -186,6 +186,38 @@ fn test_declared_messages_disagreeing_about_a_pgns_sender_make_it_ambiguous() {
 	assert dec2.by_pgn
 }
 
+// A declared message and an undeclared extended message on one PGN: the declared one may not
+// decide for a frame the undeclared one could equally be a neighbour of.
+fn test_an_undeclared_message_on_a_declared_pgn_makes_it_ambiguous() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'EEC1'
+				id:     0x0CF004FE
+				ext:    true
+				sender: 'Engine'
+				j1939:  true
+			},
+			candb.Message{
+				name:   'Legacy'
+				id:     0x0CF00411 // same PGN, not declared J1939
+				ext:    true
+				sender: 'Other'
+				j1939:  false
+			},
+		]
+	}
+	d := new_decider(db, ['Engine'], true)
+	// the spelled ids still decide exactly
+	assert d.decide(ext('can', 0x0CF004FE, 0.0).frame).verdict == .drop_excluded
+	assert d.decide(ext('can', 0x0CF00411, 0.0).frame).verdict == .keep
+	// a third address: undecidable, said
+	dec := d.decide(ext('can', 0x0CF00400, 0.0).frame)
+	assert dec.verdict == .keep_unknown
+	assert !dec.by_pgn
+	assert dec.pgn_hint
+}
+
 // The Configuration panel's preview is the subtraction's own decision, so on a J1939 bus it
 // offers the SUT for exclusion and says what the PGN did.
 fn test_census_attributes_by_pgn_like_the_subtraction() {
