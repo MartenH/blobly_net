@@ -58,6 +58,10 @@ struct TraceRow {
 	// have carried, so the database decodes it like one; its reading carries the packet count.
 	reading string
 	tp      bool
+	// The wire's gate — its destination key live, the resolved wire (or none) for an import —
+	// so a rejoined message is decoded against ITS wire's databases: the channel name is not
+	// unique and cannot stand for it (codex on #329). Only a TP row reads it.
+	wire string
 mut:
 	// An outbound row is written at emit, so it states intent; `missed` says its echo window
 	// closed with the frame never coming back off the wire. Those disagree in every bench

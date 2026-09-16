@@ -545,6 +545,38 @@ fn test_a_contested_pgn_sa_pair_decides_nothing() {
 	assert rep.withheld_excluded == 0
 }
 
+// A direct frame from a spelled address whose priority differs from the BO_'s placeholder is
+// still that entry's, where the PGN alone is contested.
+fn test_a_direct_frame_from_a_spelled_address_takes_that_entry() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'DM1_Engine'
+				id:     0x18FECA00
+				ext:    true
+				sender: 'Engine'
+				j1939:  true
+			},
+			candb.Message{
+				name:   'DM1_Brakes'
+				id:     0x18FECA0B
+				ext:    true
+				sender: 'Brakes'
+				j1939:  true
+			},
+		]
+	}
+	d := new_decider(db, ['Engine'], true)
+	// priority 7 where the DBC spells 6: no exact hit; the (PGN, SA) entry decides
+	dec := d.decide(ext('can', 0x1CFECA00, 0.0).frame)
+	assert dec.verdict == .drop_excluded
+	assert dec.by_pgn
+	assert d.decide(ext('can', 0x1CFECA0B, 0.0).frame).verdict == .keep
+	// an unspelled address: the PGN is contested, so unknown and hinted
+	third := d.decide(ext('can', 0x1CFECA17, 0.0).frame)
+	assert third.verdict == .keep_unknown && third.pgn_hint
+}
+
 // Two spellings of one transmitter pair agree about the sender, whatever their order.
 fn test_transmitter_sets_compare_without_order() {
 	db := candb.Database{

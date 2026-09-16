@@ -385,11 +385,18 @@ pub fn (d Decider) decide(f transport.CanFrame) Decision {
 		// decides for it, because the difference is the source address the DBC could not
 		// know. Undeclared, or defined by declared messages that disagree about the sender, the
 		// miss stays a miss and the PGN coincidence is reported.
+		// Through the (PGN, SA) index first, like an announcement: a frame from an address the
+		// database spells whose priority or destination differs from the BO_'s placeholder is
+		// still that entry's (codex on #329), and only an unspelled address falls to the PGN
+		// index and its ambiguity rule.
 		pgn := j1939.pgn(f.id)
-		senders = d.pgn_senders[pgn] or {
-			return Decision{
-				verdict:  .keep_unknown
-				pgn_hint: pgn in d.pgn_hint
+		sa := u8(f.id & 0xFF)
+		senders = d.pgn_sa_senders[(pgn << 8) | u32(sa)] or {
+			d.pgn_senders[pgn] or {
+				return Decision{
+					verdict:  .keep_unknown
+					pgn_hint: pgn in d.pgn_hint
+				}
 			}
 		}
 		by_pgn = true

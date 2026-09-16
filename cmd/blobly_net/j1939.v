@@ -80,8 +80,15 @@ fn (app &App) j1939_on_locked(gate string) bool {
 		.follow {
 			if gate == j1939_gate_undecidable {
 				false
+			} else if gate == '' {
+				// the one gate that means "a recorded bus the project could not place": the
+				// project-wide default is the best answer for a file whose buses name no wire
+				app.j1939_any
 			} else {
-				app.j1939_dbs[gate] or { app.j1939_any }
+				// a live wire the project did not configure — a generator's `bus:` aimed at a
+				// bare interface — declares nothing and reads as nothing, whatever an unrelated
+				// configured wire declares (codex on #329)
+				app.j1939_dbs[gate] or { false }
 			}
 		}
 	}
@@ -309,6 +316,7 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 			data:     a.data
 			imported: imported
 			tp:       true
+			wire:     gate
 		}
 		// The key from the row's own fields (gkey formats it when `key` is empty), never a
 		// positional list of flags: one transposed bool there is absorbed silently by the
@@ -399,12 +407,9 @@ fn (app &App) group_message(r TraceRow) ?candb.Message {
 	if !r.tp {
 		return app.find_message(r.id, r.ext)
 	}
-	for c in app.chans {
-		if c.name == r.ch && !c.doip {
-			return app.message_for(r.id, r.ext, true, app.dbs_for_dest(c.iface))
-		}
-	}
-	return app.message_for(r.id, r.ext, true, app.dbs)
+	// by the WIRE the row carries, never by its channel name: names are not unique, and two
+	// channels of one name on two wires may define the PGN two ways (codex on #329)
+	return app.message_for(r.id, r.ext, true, app.dbs_for_gate(r.wire))
 }
 
 // j1939_narrate_locked puts one fault in the Log, within the budget. Caller holds app.mu.
