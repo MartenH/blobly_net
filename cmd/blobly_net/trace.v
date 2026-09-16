@@ -119,6 +119,7 @@ fn (mut app App) reset_trace_locked() {
 	// the previous measurement, or from a loaded file, is not evidence about this one. Nodes
 	// answer a Request for Address Claimed, so a bench that wants the names back asks.
 	app.j1939_nodes = map[string]j1939.Directory{}
+	app.j1939_obs = map[string]&J1939Obs{}
 	app.j1939_labels = map[string]&LabelCache{}
 	app.trace_run_base = app.trace_seq // idx restarts at 0 for the new measurement's rows
 	// The pending records STAY. An echo already in flight is still ours, and dropping the record

@@ -689,10 +689,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// diagnostics setup already handles that — and stopping at the first meant later entries'
 	// protected messages were never checked, or were checked against the wrong layout.
 	mut verifiers := sim.VerifySet{}
-	// The J1939 listener state for this wire: transport-protocol sessions in progress and how
-	// many faults have been narrated. Per reader, like the verifiers, because a session is a
-	// property of the wire this loop reads and dies with the loop.
-	mut j1939_obs := J1939Obs{}
 	// BY DESTINATION. Two rows spelling one wire differently (`vector:1`, `vector:ch1`) each
 	// observe the same traffic, and comparing the strings meant each port checked only its own
 	// row's protected messages — so a frame arriving on the wire was verified against half the
@@ -785,13 +781,14 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// arrives, so a sender that stopped mid-BAM on an otherwise silent wire was never
 				// timed out (codex on #329). `open()` is asked unlocked — the listener is this
 				// loop's own — and the narration takes the lock it needs.
-				if j1939_obs.tp.open() > 0 {
-					a.mu.lock()
-					if a.run_gen == gen {
-						a.j1939_expire_locked(mut j1939_obs, chname, a.since_ms())
+				a.mu.lock()
+				if a.run_gen == gen {
+					mut obs := a.j1939_obs_locked(want_dest)
+					if obs.tp.open() > 0 {
+						a.j1939_expire_locked(mut obs, chname, want_dest, a.since_ms())
 					}
-					a.mu.unlock()
 				}
+				a.mu.unlock()
 				continue
 			}
 			// ONE LAST SAMPLE. The counts are polled before the receive, and a receive that
@@ -916,9 +913,21 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// this frame on, so its own row — and a takeover's — is stamped from the directory AFTER
 		// it. Our own transport-protocol sends are ours to know about; this side listens. Fed
 		// while paused too: pausing freezes the table, not the sessions or the directory.
+		// AND OF WHAT WE PUT THERE, once, off its first echo: a replayed BAM or an address
+		// claim of our own is on the wire like anyone's, and a listener that skipped it showed
+		// the packets and never the message (codex on #329). PCAN and Kvaser echo nothing, so
+		// there this stays what the bus brought us — said in docs/j1939.md.
 		mut tp_done := []j1939.Assembled{}
+		mut tp_origin := org_rx
 		if !ours {
-			tp_done = a.j1939_note_locked(mut j1939_obs, chname, want_dest, want_dest, f, t_ms)
+			mut obs := a.j1939_obs_locked(want_dest)
+			tp_done = a.j1939_note_locked(mut obs, chname, want_dest, want_dest, f, t_ms)
+		} else if c := claimed {
+			if c.first {
+				mut obs := a.j1939_obs_locked(want_dest)
+				tp_done = a.j1939_note_locked(mut obs, chname, want_dest, want_dest, f, t_ms)
+				tp_origin = org_tx // ours; which of ours, the emit row beside it says
+			}
 		}
 		if !a.paused && !ours {
 			rx_key := gkey_frame(org_rx, chname, f)
@@ -932,7 +941,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				brs:    f.brs
 				esi:    f.esi
 				rtr:    f.rtr
-				name:   a.j1939_display_locked(want_dest, want_dest, f.id, f.extended, name)
+				name:   a.j1939_display_frame_locked(want_dest, want_dest, f, name)
 				data:   f.data.clone()
 				e2e:    viol
 				key:    rx_key
@@ -944,8 +953,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 		// A message this frame completed gets its row AFTER the frame's own, and is counted
 		// like a frame: not while paused.
-		if !ours && tp_done.len > 0 {
-			a.j1939_push_tp_locked(tp_done, chname, want_dest, want_dest, t_ms, org_rx, false,
+		if tp_done.len > 0 {
+			a.j1939_push_tp_locked(tp_done, chname, want_dest, want_dest, t_ms, tp_origin, false,
 				!a.paused, !a.paused)
 		}
 		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a

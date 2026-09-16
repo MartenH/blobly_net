@@ -892,6 +892,7 @@ fn (mut app App) start() {
 	// names; from here the wire's own claims name it, and a bench that wants them back asks
 	// the bus (Request for Address Claimed).
 	app.j1939_nodes = map[string]j1939.Directory{}
+	app.j1939_obs = map[string]&J1939Obs{}
 	app.j1939_labels = map[string]&LabelCache{}
 	// The load starts over HERE, under app.mu and before the transmit locks below are
 	// released: a guardless tap a script kept from the previous run may send the instant

@@ -83,6 +83,14 @@ pub:
 	// "not in the DBC" about ids that differ from the DBC's by one byte.
 	pgn_hint     int
 	pgn_hint_ids []string
+	// Frames of J1939 multi-packet transfers — the TP.CM announcement and its TP.DT packets —
+	// judged by the parameter group the announcement carries, since the frames' own PGNs (the
+	// transport protocol's) say nothing about who sent them and the DBC does not attribute
+	// them. An excluded node's 20-byte DM1 is three such frames, and keyed on their own ids
+	// every one of them was replayed back at it (codex on #329). The receiver's side of a
+	// connection (CTS, end-of-message ack, an abort from the receiver) is nobody the database
+	// can name and stays unknown.
+	tp_attributed int
 }
 
 // id_label formats one identifier the way a trace does, so its WIDTH is visible: three hex digits
@@ -122,6 +130,106 @@ pub struct Decider {
 	pgn_hint map[u32]bool
 }
 
+// same_set says whether two transmitter lists name the same nodes, whatever their order.
+fn same_set(a []string, b []string) bool {
+	if a.len != b.len {
+		return false
+	}
+	mut x := a.clone()
+	mut y := b.clone()
+	x.sort()
+	y.sort()
+	return x == y
+}
+
+// Walker is the subtraction applied to a recording IN ORDER: the Decider's stateless answer plus
+// the one piece of state a J1939 recording needs — which transport-protocol transfers are in
+// progress, so a TP.DT frame takes the decision its TP.CM announcement took. Every walk over a
+// recording goes through one (subtract, the multi-bus plan, the census preview), or the preview
+// and Start would drift apart on exactly these frames.
+pub struct Walker {
+	d Decider
+mut:
+	tp map[u16]TpVerdict // by (source, destination), as the reassembler keys sessions
+}
+
+struct TpVerdict {
+mut:
+	dec  Decision
+	left int // packets still to come
+}
+
+pub fn new_walker(db candb.Database, exclude []string, replay_unattributed bool) Walker {
+	return Walker{
+		d: new_decider(db, exclude, replay_unattributed)
+	}
+}
+
+// decide is Decider.decide with the transfers followed. Standard frames, remote frames and
+// everything that is not TP go straight through.
+pub fn (mut w Walker) decide(f transport.CanFrame) Decision {
+	if !f.extended || f.rtr {
+		return w.d.decide(f)
+	}
+	id := j1939.decompose(f.id)
+	pgn := id.pgn()
+	if pgn == j1939.pgn_tp_cm {
+		cm := j1939.parse_cm(f.data) or { return w.d.decide(f) }
+		k := (u16(id.sa) << 8) | u16(id.da())
+		match cm.ctrl {
+			j1939.cm_rts, j1939.cm_bam {
+				// The announcement is judged by the parameter group it announces, as a single
+				// frame of that group from this sender to this destination would be.
+				base := w.d.decide(transport.CanFrame{
+					id:       j1939.compose(id.priority, cm.pgn, id.da(), id.sa)
+					extended: true
+				})
+				dec := Decision{
+					...base
+					tp: true
+				}
+				w.tp[k] = TpVerdict{
+					dec:  dec
+					left: j1939.packets_for(cm.total)
+				}
+				return dec
+			}
+			j1939.cm_abort {
+				// From the originator: its transfer's decision, and the transfer is over. From
+				// the receiver: the receiver's frame, whom the database cannot name — the
+				// transfer it ends is keyed the other way round.
+				if s := w.tp[k] {
+					if s.dec.tp && s.left > 0 {
+						w.tp.delete(k)
+						return s.dec
+					}
+				}
+				w.tp.delete((u16(id.da()) << 8) | u16(id.sa))
+				return w.d.decide(f)
+			}
+			else {
+				// CTS and end-of-message ack: the receiver's frames. See Subtraction.tp_attributed.
+				return w.d.decide(f)
+			}
+		}
+	}
+	if pgn == j1939.pgn_tp_dt {
+		k := (u16(id.sa) << 8) | u16(id.da())
+		if mut s := w.tp[k] {
+			s.left--
+			if s.left <= 0 {
+				w.tp.delete(k)
+			} else {
+				w.tp[k] = s
+			}
+			return s.dec
+		}
+		// a packet with no announcement: a transfer already in progress when the recording
+		// began, and nothing to attribute it by
+	}
+	return w.d.decide(f)
+}
+
 // Decision is a verdict and how it was reached, for the report and the census: `senders` is who
 // the frame was attributed to (empty for an unknown or unattributed one); `by_pgn` says the
 // exact id was not in the database and a DECLARED J1939 message with its PGN decided it;
@@ -133,6 +241,8 @@ pub:
 	senders  []string
 	by_pgn   bool
 	pgn_hint bool
+	// The frame is part of a transport-protocol transfer and took its announcement's decision.
+	tp bool
 }
 
 // Verdict says what happened to one frame, so a caller can count without re-deriving the reason.
@@ -179,10 +289,12 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 		}
 		if prev := pgn_senders[pgn] {
 			// Two BO_ entries for one PGN — two source addresses spelled out — are one parameter
-			// group when they agree about who sends it. When they do NOT (two engines, each its
-			// own node), a frame from a third address is either's, and picking the first would
-			// subtract or replay the SUT's frames on a coin toss: the PGN hints and decides nothing.
-			if prev != m.senders() {
+			// group when they agree about who sends it (as a SET: `BO_` names one transmitter
+			// first and `BO_TX_BU_` the rest, and two spellings of one pair are one pair). When
+			// they do NOT (two engines, each its own node), a frame from a third address is
+			// either's, and picking the first would subtract or replay the SUT's frames on a
+			// coin toss: the PGN hints and decides nothing.
+			if !same_set(prev, m.senders()) {
 				pgn_senders.delete(pgn)
 				pgn_ambiguous[pgn] = true
 				pgn_hint[pgn] = true
@@ -318,12 +430,12 @@ pub fn without_senders(entries []canlog.LogEntry, db candb.Database, exclude []s
 // subtract is without_senders over the arena: which of `sel` survive, and the report. The
 // ONE body — without_senders is this over a Log built from its entries.
 pub fn subtract(log &canlog.Log, sel []u32, db candb.Database, exclude []string, replay_unattributed bool) ([]u32, Subtraction) {
-	d := new_decider(db, exclude, replay_unattributed)
+	mut w := new_walker(db, exclude, replay_unattributed)
 	mut kept := []u32{cap: sel.len}
 	mut acc := Tally{}
 	for i in sel {
 		f := log.frame(int(i))
-		if acc.add_decision(d.decide(f), f) {
+		if acc.add_decision(w.decide(f), f) {
 			kept << i
 		}
 	}
@@ -347,6 +459,7 @@ mut:
 	pgn_matched int
 	pgn_hint_n  int
 	pgn_hint    map[u64]bool
+	tp_n        int
 }
 
 // add records one verdict and reports whether the frame survives.
@@ -373,6 +486,9 @@ pub fn (mut t Tally) add_decision(dec Decision, f transport.CanFrame) bool {
 	if dec.pgn_hint {
 		t.pgn_hint_n++
 		t.pgn_hint[id] = true
+	}
+	if dec.tp {
+		t.tp_n++
 	}
 	return keep
 }
@@ -427,6 +543,7 @@ pub fn (t Tally) done(kept int) Subtraction {
 		pgn_matched:           t.pgn_matched
 		pgn_hint:              t.pgn_hint_n
 		pgn_hint_ids:          labels_of(t.pgn_hint)
+		tp_attributed:         t.tp_n
 	}
 }
 
@@ -519,6 +636,8 @@ pub:
 	// subtraction and those are the frames #171 is about.
 	pgn_matched int
 	pgn_hint    int
+	// Frames of multi-packet transfers judged by their announcement (Subtraction.tp_attributed).
+	tp_attributed int
 }
 
 // census tallies one bus's entries — filter with on_bus first, for the reason on_bus states.
@@ -530,13 +649,14 @@ pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
 // census_sel is census over the arena — the ONE body; census is this over a Log built from
 // its entries.
 pub fn census_sel(log &canlog.Log, sel []u32, db candb.Database) NodeCensus {
-	d := new_decider(db, [], true)
+	mut w := new_walker(db, [], true)
 	mut nodes := map[string]int{}
 	mut unattributed := 0
 	mut unknown := 0
 	mut remote := 0
 	mut pgn_matched := 0
 	mut pgn_hint := 0
+	mut tp_n := 0
 	for si in sel {
 		f := log.frame(int(si))
 		// THROUGH THE DECIDER, because this census is the PREVIEW of what the subtraction will
@@ -546,12 +666,15 @@ pub fn census_sel(log &canlog.Log, sel []u32, db candb.Database) NodeCensus {
 		// and asking the exact key alone, after the decider learned to match a declared J1939
 		// message by PGN, told the operator there was nothing to exclude on the very bus where
 		// Start would have subtracted by PGN (self-review of #171). One body, no third drift.
-		dec := d.decide(f)
+		dec := w.decide(f)
 		if dec.by_pgn {
 			pgn_matched++
 		}
 		if dec.pgn_hint {
 			pgn_hint++
+		}
+		if dec.tp {
+			tp_n++
 		}
 		match dec.verdict {
 			.drop_remote {
@@ -571,12 +694,13 @@ pub fn census_sel(log &canlog.Log, sel []u32, db candb.Database) NodeCensus {
 		}
 	}
 	return NodeCensus{
-		nodes:        nodes.clone()
-		unattributed: unattributed
-		unknown:      unknown
-		remote:       remote
-		total:        sel.len
-		pgn_matched:  pgn_matched
-		pgn_hint:     pgn_hint
+		nodes:         nodes.clone()
+		unattributed:  unattributed
+		unknown:       unknown
+		remote:        remote
+		total:         sel.len
+		pgn_matched:   pgn_matched
+		pgn_hint:      pgn_hint
+		tp_attributed: tp_n
 	}
 }

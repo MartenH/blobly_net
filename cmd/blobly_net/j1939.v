@@ -128,15 +128,55 @@ fn (mut app App) dest_cached_locked(iface string) string {
 	return d
 }
 
-// j1939_note_locked feeds one RECEIVED frame to the wire's listener and returns the
+// j1939_display_frame_locked is j1939_display_locked for a FRAME, with the one case the
+// directory cannot answer: an Address Claimed frame names its own sender in its payload, and
+// a claim that LOST — a higher NAME contesting an address the directory keeps for the lower
+// one — would otherwise wear the winner's name (codex on #329). Uncached: claims are rare.
+// Caller holds app.mu.
+fn (mut app App) j1939_display_frame_locked(gate string, key string, f transport.CanFrame, name string) string {
+	if f.extended && !f.rtr && f.data.len >= 8 && app.j1939_on_locked(gate) {
+		i := j1939.decompose(f.id)
+		if i.pgn() == j1939.pgn_address_claimed {
+			if n := j1939.decode_name(f.data) {
+				reading := '${i.label()} ${n.label()}'
+				return if name == '' { reading } else { '${name}  ${reading}' }
+			}
+		}
+	}
+	return app.j1939_display_locked(gate, key, f.id, f.extended, name)
+}
+
+// j1939_obs_locked is the listener for a wire, created on first use. ON THE APP, by wire, not
+// in the reader: an aliased wire's reader is handed to a sibling row when its own is disabled,
+// and a listener local to the loop went with it — a transfer announced before the handoff had
+// no session after it, and its packets were orphans (codex on #329). Reset with the directory.
+// Caller holds app.mu.
+fn (mut app App) j1939_obs_locked(key string) &J1939Obs {
+	if o := app.j1939_obs[key] {
+		return o
+	}
+	o := &J1939Obs{}
+	app.j1939_obs[key] = o
+	return o
+}
+
+// j1939_note_locked feeds one frame OFF THE WIRE to the wire's listener and returns the
 // transport-protocol messages it completed. An Address Claimed frame moves the directory and is
 // narrated; every other extended frame goes to the reassembler, which advances its sessions and
 // expires the stalled ones — fed every frame, not only TP ones, or a sender that stopped
 // mid-transfer on a bus with no other TP traffic would never be timed out. Faults are narrated
 // here, within the budget. Called BEFORE the frame's own row is pushed, so a claim names its
-// sender from its own row on. Caller holds app.mu.
+// sender from its own row on. With the reading OFF for the wire the listener's state is dropped
+// rather than kept: a session that outlived an off interval would fault, or complete out of
+// nothing, when the reading came back (codex on #329). Caller holds app.mu.
 fn (mut app App) j1939_note_locked(mut obs J1939Obs, ch string, gate string, key string, f transport.CanFrame, t_ms f64) []j1939.Assembled {
-	if !f.extended || f.rtr || !app.j1939_on_locked(gate) {
+	if !app.j1939_on_locked(gate) {
+		if obs.tp.open() > 0 {
+			obs.tp = j1939.Reassembler{}
+		}
+		return []
+	}
+	if !f.extended || f.rtr {
 		return []
 	}
 	id := j1939.decompose(f.id)
@@ -158,8 +198,13 @@ fn (mut app App) j1939_note_locked(mut obs J1939Obs, ch string, gate string, key
 }
 
 // j1939_expire_locked times out the wire's stalled sessions when nothing has been received to
-// feed them — the RX loop's poll timeout — and narrates them like any fault. Caller holds app.mu.
-fn (mut app App) j1939_expire_locked(mut obs J1939Obs, ch string, t_ms f64) {
+// feed them — the RX loop's poll timeout — and narrates them like any fault; with the reading
+// off for the wire it drops them instead, as j1939_note_locked does. Caller holds app.mu.
+fn (mut app App) j1939_expire_locked(mut obs J1939Obs, ch string, gate string, t_ms f64) {
+	if !app.j1939_on_locked(gate) {
+		obs.tp = j1939.Reassembler{}
+		return
+	}
 	for fl in obs.tp.expire(t_ms) {
 		app.j1939_narrate_locked(mut obs, ch, fl)
 	}

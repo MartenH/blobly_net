@@ -85,11 +85,11 @@ pub fn build_multi_log(log canlog.Log, specs []BusSpec) MultiPlan {
 			dst[j] = sp.dst
 		}
 	}
-	mut deciders := []Decider{}
+	mut walkers := []Walker{}
 	mut tallies := []Tally{}
 	mut sources := []int{}
 	for sp in specs {
-		deciders << new_decider(sp.db, sp.exclude, sp.replay_unattributed)
+		walkers << new_walker(sp.db, sp.exclude, sp.replay_unattributed)
 		tallies << Tally{}
 		sources << 0
 	}
@@ -117,7 +117,7 @@ pub fn build_multi_log(log canlog.Log, specs []BusSpec) MultiPlan {
 			}
 		}
 		f := log.frame(ri) // a view: the verdict reads id, width, RTR and length
-		if tallies[i].add_decision(deciders[i].decide(f), f) {
+		if tallies[i].add_decision(walkers[i].decide(f), f) {
 			// Relabelled to the DESTINATION through the plan's label table, so the sender is a
 			// map lookup and the player never learns that a mapping happened.
 			sel << u32(ri)

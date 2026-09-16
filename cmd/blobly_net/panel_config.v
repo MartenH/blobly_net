@@ -1265,6 +1265,9 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 	if cn.pgn_hint > 0 {
 		vgui.text_dim('   ${cn.pgn_hint} share a PGN with a defined message the DBC cannot decide by — not declared J1939 (VFrameFormat), or several transmitters')
 	}
+	if cn.tp_attributed > 0 {
+		vgui.text_dim('   ${cn.tp_attributed} frames of J1939 multi-packet transfers judged by their announcement (TP.CM)')
+	}
 	if cn.unattributed > 0 || cn.unknown > 0 || cn.remote > 0 {
 		// The remote count is its own clause rather than folded into the first: those frames ASK
 		// for an id instead of sending it, so the DBC attributes the id perfectly well and simply

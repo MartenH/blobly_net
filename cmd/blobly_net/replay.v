@@ -183,6 +183,24 @@ fn (mut app App) load_recording(path string) {
 		rec_buses[lbl] = true
 	}
 	mf4_only := if can_buses.len == 1 && rec_buses.len == 1 { only } else { '' }
+	// The J1939 gate for a recorded bus is asked of the project WIRE its label names — from
+	// EVERY configured CAN channel, not the `alias` table above, which knows only the channels
+	// with simulation or `verify:` entries; a plain DBC-backed diagnostic channel was not in it,
+	// so a candump of that wire fell back to the project-wide answer and a 29-bit UDS bus
+	// beside a truck bus was read as J1939 (codex on #329). A label no channel answers to falls
+	// back to the single CAN wire when the project has exactly one, else to '' — the
+	// project-wide default.
+	mut gate_of := map[string]string{}
+	for c in app.chans {
+		if c.doip {
+			continue
+		}
+		dest := transport.destination_key_for(c.adapter, c.iface)
+		gate_of[c.name] = dest
+		gate_of[c.iface] = dest
+		gate_of[dest] = dest
+	}
+	gate_only := if can_buses.len == 1 { can_buses.keys()[0] } else { '' }
 	first_row := if log.len() > trace_cap { log.len() - trace_cap } else { 0 }
 	app.mu.lock()
 	app.reset_trace_locked()
@@ -256,8 +274,9 @@ fn (mut app App) load_recording(path string) {
 			rec_keys[e.iface] = nk
 			nk
 		}
+		gate := if from_mf4 { gate_only } else { gate_of[e.iface] or { gate_only } }
 		mut obs := j1939_obs[e.iface] or { J1939Obs{} }
-		tp_done := app.j1939_note_locked(mut obs, e.iface, ifc, rk, f, t_row)
+		tp_done := app.j1939_note_locked(mut obs, e.iface, gate, rk, f, t_row)
 		j1939_obs[e.iface] = obs
 		visible := i >= first_row // trimmed rows are never drawn, so they are not built
 		if visible {
@@ -273,14 +292,14 @@ fn (mut app App) load_recording(path string) {
 				brs:      f.brs
 				esi:      f.esi
 				rtr:      f.rtr
-				name:     app.j1939_display_locked(ifc, rk, f.id, f.extended, name)
+				name:     app.j1939_display_frame_locked(gate, rk, f, name)
 				data:     f.data.clone()
 				e2e:      viol
 				imported: true
 			})
 		}
 		// Counted over the whole file like the frames' groups are; a row only in the window.
-		app.j1939_push_tp_locked(tp_done, e.iface, ifc, rk, t_row, org_rep, true, visible, true)
+		app.j1939_push_tp_locked(tp_done, e.iface, gate, rk, t_row, org_rep, true, visible, true)
 	}
 	// What the ring actually holds, counted rather than assumed — frames and rejoined rows
 	// alike: the rows share the ring, and past its cap the OLDEST go, so with enough rejoined
@@ -611,6 +630,9 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// J1939 — the one number an operator on that bench must not have to find in a CLI.
 		if b.report.pgn_matched > 0 {
 			why += '; ${b.report.pgn_matched} matched by J1939 PGN'
+		}
+		if b.report.tp_attributed > 0 {
+			why += '; ${b.report.tp_attributed} frame(s) of multi-packet transfers judged by their announcement'
 		}
 		if b.report.pgn_hint > 0 {
 			why += '; ${b.report.pgn_hint} unknown frame(s) share a PGN the DBC defines but cannot decide by (not declared J1939, or several transmitters) — replayed'

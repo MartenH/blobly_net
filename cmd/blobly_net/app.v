@@ -236,6 +236,8 @@ mut:
 	// whichever reader saw them; read at every push for the row's reading. Reset with the trace
 	// and at Start, so a directory learned from a FILE never labels live frames.
 	j1939_nodes map[string]j1939.Directory
+	// The transport-protocol listener per wire (j1939_obs_locked), reset with the directory.
+	j1939_obs map[string]&J1939Obs
 	// The name cell per wire and id on a J1939 wire — `EEC1  PGN 0xF004 SA 0x00 Engine` — so the
 	// RX path formats each once (j1939_display_locked). Dropped per wire when its directory
 	// changes, wholly when the databases or the override do.

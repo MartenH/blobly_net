@@ -122,6 +122,9 @@ fn main() {
 	if rep.pgn_matched > 0 {
 		println('  note: ${rep.pgn_matched} frames matched a J1939 message by PGN (the DBC spells another source address)')
 	}
+	if rep.tp_attributed > 0 {
+		println('  note: ${rep.tp_attributed} frames of J1939 multi-packet transfers were judged by their announcement (TP.CM); the receiver side of a connection (CTS, acks) is replayed as unknown')
+	}
 	if rep.pgn_hint > 0 {
 		println('  note: ${rep.pgn_hint} of the unknown frames, on ${rep.pgn_hint_ids.len} id(s), share a PGN with a message the DBC defines but')
 		println('        cannot decide by it: not declared J1939 (BA_ "VFrameFormat" J1939PG), or declared by several messages')

@@ -2,6 +2,7 @@ module player
 
 import canlog
 import candb
+import j1939
 import transport
 
 // A J1939 database the way the CSS/Vector ones are written: one BO_ per PGN, the source address
@@ -216,6 +217,123 @@ fn test_an_undeclared_message_on_a_declared_pgn_makes_it_ambiguous() {
 	assert dec.verdict == .keep_unknown
 	assert !dec.by_pgn
 	assert dec.pgn_hint
+}
+
+// TP.CM / TP.DT frames as a J1939 node puts them on the wire, for the walker.
+fn tp_cm(sa u8, da u8, ctrl u8, total int, pgn u32, t f64) canlog.LogEntry {
+	return canlog.LogEntry{
+		t_s:   t
+		iface: 'can'
+		frame: transport.CanFrame{
+			id:       j1939.compose(7, j1939.pgn_tp_cm, da, sa)
+			extended: true
+			data:     [ctrl, u8(total & 0xFF), u8(total >> 8), u8((total + 6) / 7), 0xFF,
+				u8(pgn & 0xFF), u8((pgn >> 8) & 0xFF), u8((pgn >> 16) & 0xFF)]
+		}
+	}
+}
+
+fn tp_dt(sa u8, da u8, seq u8, t f64) canlog.LogEntry {
+	return canlog.LogEntry{
+		t_s:   t
+		iface: 'can'
+		frame: transport.CanFrame{
+			id:       j1939.compose(7, j1939.pgn_tp_dt, da, sa)
+			extended: true
+			data:     [seq, 1, 2, 3, 4, 5, 6, 7]
+		}
+	}
+}
+
+// The excluded engine's 20-byte DM1 is a BAM: an announcement and three packets whose own PGNs
+// are the transport protocol's. Judged by the announcement, all four are the engine's.
+fn test_a_transfer_takes_its_announcements_decision() {
+	rec := [
+		tp_cm(0x00, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.00), // engine announces DM1
+		tp_dt(0x00, 0xFF, 1, 0.01),
+		tp_cm(0x0B, 0xFF, j1939.cm_bam, 9, 0xF001, 0.02), // the brakes announce an EBC1 of their own, interleaved
+		tp_dt(0x00, 0xFF, 2, 0.03),
+		tp_dt(0x0B, 0xFF, 1, 0.04),
+		tp_dt(0x00, 0xFF, 3, 0.05),
+		tp_dt(0x0B, 0xFF, 2, 0.06),
+		tp_dt(0x00, 0xFF, 4, 0.07), // a packet AFTER the transfer completed: nothing to attribute it by
+	]
+	// DM1 has no transmitter in j1939_db; give it one for this test
+	mut db := j1939_db(true)
+	db.messages[2].sender = 'Engine'
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	mut ids := []u32{}
+	for e in kept {
+		ids << e.frame.id
+	}
+	// the brakes' announcement and two packets, and the stray packet
+	assert ids == [u32(0x1CECFF0B), 0x1CEBFF0B, 0x1CEBFF0B, 0x1CEBFF00]
+	assert rep.withheld_excluded == 4
+	assert rep.tp_attributed == 7 // both transfers, every frame the announcement covered
+	assert rep.unknown == 1 // the stray
+	assert rep.pgn_matched == 7 // the announcements matched by PGN (the DBC spells SA 0xFE), and every packet took that decision
+	// the census says the same
+	cn := census(rec, db)
+	assert cn.nodes['Engine'] == 4
+	assert cn.nodes['Brakes'] == 3 // EBC1 is theirs, announcement and packets alike
+	assert cn.unattributed == 0
+	assert cn.tp_attributed == 7
+}
+
+// The receiver's side of a connection is nobody the database can name; an abort from the
+// originator ends the transfer with its decision.
+fn test_receiver_frames_stay_unknown_and_an_abort_ends_the_transfer() {
+	mut db := j1939_db(true)
+	db.messages[2].sender = 'Engine'
+	cts := canlog.LogEntry{
+		t_s:   0.01
+		iface: 'can'
+		frame: transport.CanFrame{
+			id:       j1939.compose(7, j1939.pgn_tp_cm, 0x00, 0x17)
+			extended: true
+			data:     [j1939.cm_cts, 0xFF, 1, 0xFF, 0xFF, 0xCA, 0xFE, 0x00]
+		}
+	}
+	rec := [
+		tp_cm(0x00, 0x17, j1939.cm_rts, 20, 0xFECA, 0.00), // engine -> 0x17
+		cts,
+		tp_dt(0x00, 0x17, 1, 0.02),
+		tp_cm(0x00, 0x17, j1939.cm_abort, 0, 0xFECA, 0.03), // the engine gives up
+		tp_dt(0x00, 0x17, 2, 0.04), // after the abort: no transfer to belong to
+	]
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	assert kept.len == 2 // the CTS and the stray packet
+	assert rep.withheld_excluded == 3 // RTS, packet 1, the abort
+	assert rep.tp_attributed == 3
+	assert rep.unknown == 2
+}
+
+// Two spellings of one transmitter pair agree about the sender, whatever their order.
+fn test_transmitter_sets_compare_without_order() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:     'EEC1_a'
+				id:       0x0CF00400
+				ext:      true
+				sender:   'Engine'
+				tx_nodes: ['Engine2']
+				j1939:    true
+			},
+			candb.Message{
+				name:     'EEC1_b'
+				id:       0x0CF00401
+				ext:      true
+				sender:   'Engine2'
+				tx_nodes: ['Engine']
+				j1939:    true
+			},
+		]
+	}
+	d := new_decider(db, ['Engine'], true)
+	dec := d.decide(ext('can', 0x0CF00402, 0.0).frame)
+	assert dec.by_pgn
+	assert dec.verdict == .drop_excluded
 }
 
 // The Configuration panel's preview is the subtraction's own decision, so on a J1939 bus it

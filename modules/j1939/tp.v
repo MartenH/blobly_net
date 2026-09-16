@@ -21,12 +21,36 @@ module j1939
 import encoding.binary
 import transport
 
-// TP.CM control bytes (data[0]).
-const cm_rts = u8(16)
-const cm_cts = u8(17)
-const cm_eom_ack = u8(19)
-const cm_bam = u8(32)
-const cm_abort = u8(255)
+// TP.CM control bytes (data[0]). Public because the rest-bus subtraction reads announcements
+// too: an excluded node's multi-packet message is TP.CM and TP.DT frames on the wire, and only
+// the announcement says which parameter group they carry.
+pub const cm_rts = u8(16)
+pub const cm_cts = u8(17)
+pub const cm_eom_ack = u8(19)
+pub const cm_bam = u8(32)
+pub const cm_abort = u8(255)
+
+// Cm is a TP.CM frame's fields, read once (`parse_cm`) for every consumer of them.
+pub struct Cm {
+pub:
+	ctrl    u8
+	total   int // bytes announced (RTS, BAM); the abort reason sits in the same byte for an abort
+	packets int // packets announced (RTS, BAM)
+	pgn     u32 // the parameter group the frame is about (bytes 5..7)
+}
+
+// parse_cm reads a TP.CM payload; none when it is too short to be one.
+pub fn parse_cm(data []u8) ?Cm {
+	if data.len < 8 {
+		return none
+	}
+	return Cm{
+		ctrl:    data[0]
+		total:   int(binary.little_endian_u16_at(data, 1))
+		packets: int(data[3])
+		pgn:     u32(data[5]) | (u32(data[6]) << 8) | (u32(data[7]) << 16)
+	}
+}
 
 // A multi-packet message is at least 9 bytes (anything shorter fits one frame and is sent as
 // one) and at most 255 packets of 7: 1785 bytes.
@@ -245,13 +269,13 @@ pub fn (mut r Reassembler) expire(now_ms f64) []Fault {
 }
 
 fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
-	if data.len < 8 {
+	cm := parse_cm(data) or {
 		ev.faults << id.fault(.malformed, 0,
 			'TP.CM of ${data.len} bytes; a control frame carries 8')
 		return
 	}
-	ctrl := data[0]
-	carried := u32(data[5]) | (u32(data[6]) << 8) | (u32(data[7]) << 16)
+	ctrl := cm.ctrl
+	carried := cm.pgn
 	match ctrl {
 		cm_bam, cm_rts {
 			bam := ctrl == cm_bam
@@ -268,8 +292,8 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 					'RTS to the global address; a connection has one destination')
 				return
 			}
-			total := int(binary.little_endian_u16_at(data, 1))
-			packets := int(data[3])
+			total := cm.total
+			packets := cm.packets
 			if total < tp_min_size || total > tp_max_size {
 				ev.faults << id.fault(.malformed, carried,
 					'announces ${total} bytes; a multi-packet message is ${tp_min_size}..${tp_max_size}')
@@ -305,10 +329,14 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			// originator (its DA), so the session it keeps alive is keyed the other way round. It
 			// changes nothing about the bytes going past — the message completes on its last data
 			// frame — but it is the session talking, and the timeout is measured from it.
+			// And it names the PGN it is about: a CTS for another transfer between the same two
+			// nodes — delayed, or malformed — must not keep a stalled one open (codex on #329).
 			k := skey(id.da(), id.sa)
 			if mut s := r.sessions[k] {
-				s.t_last_ms = now_ms
-				r.sessions[k] = s
+				if s.pgn == carried {
+					s.t_last_ms = now_ms
+					r.sessions[k] = s
+				}
 			}
 		}
 		cm_eom_ack {

@@ -248,6 +248,22 @@ fn test_timeout_expires_a_stalled_session() {
 	assert r.open() == 0
 }
 
+// A CTS names the transfer it is about; one for another PGN does not keep a stalled one alive.
+fn test_cts_for_another_pgn_does_not_refresh_the_session() {
+	mut r := Reassembler{}
+	r.feed(rts(0x17, 0x00, 20, 0xFED8), 0)
+	assert r.feed(cts(0x00, 0x17, dm1), 1000).faults.len == 0 // another PGN: not this session's
+	ev := r.feed(cts(0x00, 0x17, dm1), 1300) // 1300 ms after the RTS with nothing of its own
+	assert ev.faults.len == 1 && ev.faults[0].kind == .timeout
+	assert r.open() == 0
+}
+
+fn test_parse_cm() {
+	c := parse_cm([u8(cm_bam), 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00])?
+	assert c.ctrl == cm_bam && c.total == 20 && c.packets == 3 && c.pgn == dm1
+	assert parse_cm([u8(cm_bam), 20, 0]) == none
+}
+
 // The packet that arrives just past the limit is the one the timeout is about, not an orphan.
 fn test_a_late_packet_is_the_timeout_not_an_orphan_too() {
 	mut r := Reassembler{}
