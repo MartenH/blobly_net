@@ -146,17 +146,15 @@ fn same_set(a []string, b []string) bool {
 // the one piece of state a J1939 recording needs — which transport-protocol transfers are in
 // progress, so a TP.DT frame takes the decision its TP.CM announcement took. Every walk over a
 // recording goes through one (subtract, the multi-bus plan, the census preview), or the preview
-// and Start would drift apart on exactly these frames.
+// and Start would drift apart on exactly these frames. The protocol itself — what announces a
+// transfer, what refuses one, which packet ends it, whose an abort is — is `j1939.Transfers`,
+// shared with the reassembler; a first cut wrote those rules here a second time and got three
+// of them wrong in one review round (codex on #329).
 pub struct Walker {
 	d Decider
 mut:
-	tp map[u16]TpVerdict // by (source, destination), as the reassembler keys sessions
-}
-
-struct TpVerdict {
-mut:
-	dec  Decision
-	left int // packets still to come
+	tp       j1939.Transfers
+	verdicts map[u16]Decision // the announcement's decision, by (originator, destination)
 }
 
 pub fn new_walker(db candb.Database, exclude []string, replay_unattributed bool) Walker {
@@ -165,69 +163,49 @@ pub fn new_walker(db candb.Database, exclude []string, replay_unattributed bool)
 	}
 }
 
+fn tkey(sa u8, da u8) u16 {
+	return (u16(sa) << 8) | u16(da)
+}
+
 // decide is Decider.decide with the transfers followed. Standard frames, remote frames and
 // everything that is not TP go straight through.
 pub fn (mut w Walker) decide(f transport.CanFrame) Decision {
-	if !f.extended || f.rtr {
-		return w.d.decide(f)
-	}
-	id := j1939.decompose(f.id)
-	pgn := id.pgn()
-	if pgn == j1939.pgn_tp_cm {
-		cm := j1939.parse_cm(f.data) or { return w.d.decide(f) }
-		k := (u16(id.sa) << 8) | u16(id.da())
-		match cm.ctrl {
-			j1939.cm_rts, j1939.cm_bam {
-				// The announcement is judged by the parameter group it announces, as a single
-				// frame of that group from this sender to this destination would be.
-				base := w.d.decide(transport.CanFrame{
-					id:       j1939.compose(id.priority, cm.pgn, id.da(), id.sa)
-					extended: true
-				})
-				dec := Decision{
-					...base
-					tp: true
-				}
-				w.tp[k] = TpVerdict{
-					dec:  dec
-					left: j1939.packets_for(cm.total)
-				}
-				return dec
+	st := w.tp.step(f)
+	match st.role {
+		.announce {
+			// The announcement is judged by the parameter group it announces, as a single frame
+			// of that group from this sender to this destination would be.
+			base := w.d.decide(transport.CanFrame{
+				id:       j1939.compose(st.priority, st.pgn, st.da, st.sa)
+				extended: true
+			})
+			dec := Decision{
+				...base
+				tp: true
 			}
-			j1939.cm_abort {
-				// From the originator: its transfer's decision, and the transfer is over. From
-				// the receiver: the receiver's frame, whom the database cannot name — the
-				// transfer it ends is keyed the other way round.
-				if s := w.tp[k] {
-					if s.dec.tp && s.left > 0 {
-						w.tp.delete(k)
-						return s.dec
-					}
-				}
-				w.tp.delete((u16(id.da()) << 8) | u16(id.sa))
-				return w.d.decide(f)
+			w.verdicts[tkey(st.sa, st.da)] = dec
+			return dec
+		}
+		.packet, .sender_abort {
+			k := tkey(st.sa, st.da)
+			dec := w.verdicts[k] or { w.d.decide(f) }
+			if st.done {
+				w.verdicts.delete(k)
 			}
-			else {
-				// CTS and end-of-message ack: the receiver's frames. See Subtraction.tp_attributed.
-				return w.d.decide(f)
+			return dec
+		}
+		.receiver {
+			// The receiver's frames are nobody the database can name — see
+			// Subtraction.tp_attributed; the transfer it may have ended forgets its decision.
+			if st.done {
+				w.verdicts.delete(tkey(st.sa, st.da))
 			}
+			return w.d.decide(f)
+		}
+		.stray, .not_tp {
+			return w.d.decide(f)
 		}
 	}
-	if pgn == j1939.pgn_tp_dt {
-		k := (u16(id.sa) << 8) | u16(id.da())
-		if mut s := w.tp[k] {
-			s.left--
-			if s.left <= 0 {
-				w.tp.delete(k)
-			} else {
-				w.tp[k] = s
-			}
-			return s.dec
-		}
-		// a packet with no announcement: a transfer already in progress when the recording
-		// began, and nothing to attribute it by
-	}
-	return w.d.decide(f)
 }
 
 // Decision is a verdict and how it was reached, for the report and the census: `senders` is who

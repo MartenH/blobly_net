@@ -128,6 +128,15 @@ pub fn (n Name) describe() string {
 	return 'NAME 0x${n.raw:016X}: ${n.label()}, ${industry_group_name(n.industry_group)}, vehicle system ${n.vehicle_system}.${n.vehicle_system_instance}, manufacturer ${n.manufacturer}, identity ${n.identity}${aac}'
 }
 
+// is_address_claim says whether an id is an Address Claimed (or Cannot Claim) frame's: PGN
+// 0xEE00 to the GLOBAL address. The PGN alone is not enough — PF 0xEE with any destination
+// byte computes to it — and a destination-specific frame there is not a claim and must not
+// rename a source address (codex on #329). The ONE predicate, for the directory's feed and for
+// the trace's reading of the frame.
+pub fn is_address_claim(i Id) bool {
+	return i.pgn() == pgn_address_claimed && i.da() == addr_global
+}
+
 // Node is one address and the NAME that holds it.
 pub struct Node {
 pub:

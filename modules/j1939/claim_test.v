@@ -127,6 +127,13 @@ fn test_losing_a_contested_claim_still_releases_the_old_address() {
 	assert d.len() == 1
 }
 
+fn test_is_address_claim_needs_the_global_destination() {
+	assert is_address_claim(decompose(0x18EEFF00)) // Address Claimed from 0x00
+	assert is_address_claim(decompose(0x18EEFFFE)) // Cannot Claim
+	assert !is_address_claim(decompose(0x18EE0000)) // PF 0xEE to one node: not a claim
+	assert !is_address_claim(decompose(0x18EAFF00)) // a Request
+}
+
 fn test_nodes_are_listed_by_address() {
 	mut d := Directory{}
 	d.observe(0x0B, build(1, 1, 0, 0, 9, 0, 0, 1, false), 1.0)

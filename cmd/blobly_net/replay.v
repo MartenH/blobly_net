@@ -190,15 +190,25 @@ fn (mut app App) load_recording(path string) {
 	// beside a truck bus was read as J1939 (codex on #329). A label no channel answers to falls
 	// back to the single CAN wire when the project has exactly one, else to '' — the
 	// project-wide default.
+	// A label two channels on DIFFERENT wires answer to (the project model does not make names
+	// unique, and a name may spell another row's interface) decides nothing — the project-wide
+	// default, not whichever row came last (codex on #329).
 	mut gate_of := map[string]string{}
+	mut gate_clash := map[string]bool{}
 	for c in app.chans {
 		if c.doip {
 			continue
 		}
 		dest := transport.destination_key_for(c.adapter, c.iface)
-		gate_of[c.name] = dest
-		gate_of[c.iface] = dest
-		gate_of[dest] = dest
+		for label in [c.name, c.iface, dest] {
+			if prev := gate_of[label] {
+				if prev != dest {
+					gate_clash[label] = true
+				}
+			} else {
+				gate_of[label] = dest
+			}
+		}
 	}
 	gate_only := if can_buses.len == 1 { can_buses.keys()[0] } else { '' }
 	first_row := if log.len() > trace_cap { log.len() - trace_cap } else { 0 }
@@ -274,7 +284,13 @@ fn (mut app App) load_recording(path string) {
 			rec_keys[e.iface] = nk
 			nk
 		}
-		gate := if from_mf4 { gate_only } else { gate_of[e.iface] or { gate_only } }
+		gate := if from_mf4 {
+			gate_only
+		} else if e.iface in gate_clash {
+			''
+		} else {
+			gate_of[e.iface] or { gate_only }
+		}
 		mut obs := j1939_obs[e.iface] or { J1939Obs{} }
 		tp_done := app.j1939_note_locked(mut obs, e.iface, gate, rk, f, t_row)
 		j1939_obs[e.iface] = obs

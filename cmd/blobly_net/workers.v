@@ -926,7 +926,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			if c.first {
 				mut obs := a.j1939_obs_locked(want_dest)
 				tp_done = a.j1939_note_locked(mut obs, chname, want_dest, want_dest, f, t_ms)
-				tp_origin = org_tx // ours; which of ours, the emit row beside it says
+				// Ours — and WHICH of ours the emit row says: the claim carries the row's
+				// identity, so a replayed or simulated transfer's message is TX-S like its
+				// packets, not the tester's (codex on #329). A row already trimmed, or an
+				// emission made while paused (no row), reads as the tester's.
+				tp_origin = org_tx
+				ri := a.row_index_locked(c.seq)
+				if ri >= 0 {
+					tp_origin = a.trace[ri].origin
+				}
 			}
 		}
 		if !a.paused && !ours {

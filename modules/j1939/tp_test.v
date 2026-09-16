@@ -258,6 +258,69 @@ fn test_cts_for_another_pgn_does_not_refresh_the_session() {
 	assert r.open() == 0
 }
 
+// The tracker the subtraction walks with: roles, admission shared with the reassembler,
+// completion by sequence number, aborts by PGN.
+fn test_transfers_follow_roles_and_complete_on_the_last_sequence_number() {
+	mut t := Transfers{}
+	msg := message(20)
+	a := t.step(bam(0x00, msg.len, dm1))
+	assert a.role == .announce && a.pgn == dm1 && a.sa == 0x00 && a.da == addr_global && !a.done
+	assert t.open() == 1
+	p := packets(0x00, addr_global, msg)
+	assert t.step(p[0]).role == .packet
+	dup := t.step(p[0]) // retransmitted: still the sender's, and the transfer is not over
+	assert dup.role == .packet && !dup.done
+	assert t.step(p[1]).role == .packet
+	last := t.step(p[2])
+	assert last.role == .packet && last.done && last.pgn == dm1
+	assert t.open() == 0
+	// a packet with nothing open, and a frame that is not TP
+	assert t.step(p[1]).role == .stray
+	eec1 := transport.CanFrame{
+		id:       0x0CF00400
+		extended: true
+		data:     [u8(0), 0, 0, 0, 0, 0, 0, 0]
+	}
+	assert t.step(eec1).role == .not_tp
+	// a gap: the frame is the sender's and the transfer resyncs to it
+	t.step(bam(0x0B, msg.len, dm1))
+	q := packets(0x0B, addr_global, msg)
+	assert t.step(q[2]).done // packet 3 of 3, whatever came before
+	assert t.open() == 0
+}
+
+fn test_transfers_refuse_what_the_reassembler_refuses() {
+	mut t := Transfers{}
+	assert t.step(cm(0x00, addr_global, cm_bam, 20, 2, dm1)).role == .stray // count disagrees
+	assert t.step(cm(0x00, 0x17, cm_bam, 20, 3, dm1)).role == .stray // a BAM to one node
+	assert t.step(cm(0x00, addr_global, cm_rts, 20, 3, dm1)).role == .stray // an RTS to everyone
+	assert t.step(cm(0x00, addr_global, cm_bam, 8, 2, dm1)).role == .stray // too small
+	assert t.step(cm(0x00, addr_global, 99, 20, 3, dm1)).role == .stray // unknown control byte
+	assert t.open() == 0
+	// and the rule is one: the reassembler's reasons come from the same function
+	c := parse_cm(cm(0x00, 0x17, cm_bam, 20, 3, dm1).data)?
+	assert c.admission(decompose(compose(7, pgn_tp_cm, 0x17, 0x00)))? == 'BAM addressed to 0x17; a BAM is broadcast'
+	ok := parse_cm(bam(0x00, 20, dm1).data)?
+	assert ok.admission(decompose(compose(7, pgn_tp_cm, addr_global, 0x00))) == none
+}
+
+fn test_transfers_abort_by_pgn_and_the_receiver_side() {
+	mut t := Transfers{}
+	t.step(rts(0x17, 0x00, 20, 0xFED8)) // 0x17 -> 0x00
+	t.step(rts(0x00, 0x17, 30, dm1)) // 0x00 -> 0x17
+	assert t.step(cts(0x00, 0x17, 0xFED8)).role == .receiver
+	// 0x00 aborts the DM1 it is SENDING: its own transfer, by PGN
+	ab := t.step(abort(0x00, 0x17, 2, dm1))
+	assert ab.role == .sender_abort && ab.pgn == dm1 && ab.sa == 0x00 && ab.done
+	assert t.open() == 1
+	// 0x00 aborts the transfer it is RECEIVING: the receiver's frame, and that transfer ends
+	rc := t.step(abort(0x00, 0x17, 3, 0xFED8))
+	assert rc.role == .receiver && rc.done && rc.sa == 0x17
+	assert t.open() == 0
+	// an abort naming nothing open
+	assert t.step(abort(0x00, 0x17, 3, 0xFEE5)).role == .stray
+}
+
 fn test_parse_cm() {
 	c := parse_cm([u8(cm_bam), 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00])?
 	assert c.ctrl == cm_bam && c.total == 20 && c.packets == 3 && c.pgn == dm1

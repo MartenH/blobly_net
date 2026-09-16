@@ -3,6 +3,7 @@ module main
 import cyclerule
 import transport
 import candb
+import j1939
 import vgui
 
 // trace_capture_chips renders the latched capture states — recording destination, and the
@@ -77,7 +78,12 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 
 		app.mu.lock()
 		app.j1939_override = next
+		// EVERYTHING the reading built goes with it, now and not at the next frame: the listener
+		// (a session that spanned an off interval would complete out of nothing), the directory
+		// (a claim missed while off would leave a stale name), the cached cells (codex on #329).
 		app.j1939_labels = map[string]&LabelCache{}
+		app.j1939_obs = map[string]&J1939Obs{}
+		app.j1939_nodes = map[string]j1939.Directory{}
 		reload := app.viewing_rec_path
 		viewing := app.viewing_rec != ''
 		app.mu.unlock()

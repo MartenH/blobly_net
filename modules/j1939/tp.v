@@ -52,6 +52,197 @@ pub fn parse_cm(data []u8) ?Cm {
 	}
 }
 
+// admission is THE rule for whether a TP.CM frame announces a transfer this module will follow,
+// and why not when it does not — for the reassembler, which narrates the reason, and for
+// Transfers, which attributes frames and must refuse exactly the same announcements, or the two
+// walk the same recording and disagree about which frames belong to whom (codex on #329, three
+// findings in one round, each a rule written twice). `id` is the frame's own identifier.
+pub fn (c Cm) admission(id Id) ?string {
+	bam := c.ctrl == cm_bam
+	if !bam && c.ctrl != cm_rts {
+		return 'TP.CM control byte ${c.ctrl} is not an announcement'
+	}
+	// A BAM is broadcast by definition and an RTS opens a connection with ONE node: a BAM
+	// addressed to a node, or an RTS to everyone, is not a frame J1939 describes, and following
+	// it would model something that cannot happen.
+	if bam && id.da() != addr_global {
+		return 'BAM addressed to 0x${id.da():02X}; a BAM is broadcast'
+	}
+	if !bam && id.da() == addr_global {
+		return 'RTS to the global address; a connection has one destination'
+	}
+	if c.total < tp_min_size || c.total > tp_max_size {
+		return 'announces ${c.total} bytes; a multi-packet message is ${tp_min_size}..${tp_max_size}'
+	}
+	if c.packets != packets_for(c.total) {
+		return 'announces ${c.total} bytes in ${c.packets} packets; ${c.total} bytes take ${packets_for(c.total)}'
+	}
+	return none
+}
+
+// Role is what a frame IS to the transport protocol, for a consumer that needs to know WHOSE
+// frame it is rather than what it carries — the rest-bus subtraction, which must withhold an
+// excluded node's announcement and packets and has no use for the bytes.
+pub enum Role {
+	not_tp       // not a transport-protocol frame at all
+	announce     // an admitted BAM or RTS: the first frame of a transfer, from its originator
+	packet       // a data frame of a transfer in progress — the originator's, duplicate or gap included
+	sender_abort // an abort from the originator of a transfer in progress
+	receiver     // the receiver's side of a connection: CTS, end-of-message ack, an abort from the receiver
+	stray        // a TP frame nothing accounts for: a refused announcement, a packet or abort with no transfer
+}
+
+// Step is one frame's role, with the transfer it belongs to where it has one.
+pub struct Step {
+pub:
+	role     Role
+	pgn      u32  // the parameter group the transfer carries
+	priority u8   // the announcement's
+	sa       u8   // the transfer's originator
+	da       u8   // its destination (addr_global for a BAM)
+	done     bool // this frame ended the transfer (its last packet, or an abort)
+}
+
+struct Open {
+	pgn      u32
+	priority u8
+	packets  int
+mut:
+	next u8 // the sequence number expected next
+}
+
+// Transfers follows which transport-protocol transfers are in progress, by (originator,
+// destination), and says what each frame is to them. No data, no clock: a recording is walked
+// in its own order, and the question is attribution, not content. Admission is `Cm.admission`,
+// the reassembler's rule; a transfer completes on its LAST SEQUENCE NUMBER, not after a count of
+// frames, so a retransmitted packet in a capture does not end it early and leave the real last
+// packet unaccounted for (codex on #329).
+pub struct Transfers {
+mut:
+	open map[u16]Open
+}
+
+// step classifies one frame and advances the transfers it touches.
+pub fn (mut t Transfers) step(f transport.CanFrame) Step {
+	if !f.extended || f.rtr {
+		return Step{
+			role: .not_tp
+		}
+	}
+	id := decompose(f.id)
+	pgn := id.pgn()
+	if pgn == pgn_tp_cm {
+		cm := parse_cm(f.data) or { return Step{
+			role: .stray
+		} }
+		k := skey(id.sa, id.da())
+		match cm.ctrl {
+			cm_rts, cm_bam {
+				if _ := cm.admission(id) {
+					return Step{
+						role: .stray
+					}
+				}
+				t.open[k] = Open{
+					pgn:      cm.pgn
+					priority: id.priority
+					packets:  cm.packets
+					next:     1
+				}
+				return Step{
+					role:     .announce
+					pgn:      cm.pgn
+					priority: id.priority
+					sa:       id.sa
+					da:       id.da()
+				}
+			}
+			cm_abort {
+				// The abort names its PGN; from the originator it ends the transfer keyed this
+				// way, from the receiver the one keyed the other way — and neither if it names
+				// a transfer neither is (two nodes can be mid-transfer in both directions).
+				if s := t.open[k] {
+					if s.pgn == cm.pgn {
+						t.open.delete(k)
+						return Step{
+							role:     .sender_abort
+							pgn:      s.pgn
+							priority: s.priority
+							sa:       id.sa
+							da:       id.da()
+							done:     true
+						}
+					}
+				}
+				rk := skey(id.da(), id.sa)
+				if s := t.open[rk] {
+					if s.pgn == cm.pgn {
+						t.open.delete(rk)
+						return Step{
+							role: .receiver
+							pgn:  s.pgn
+							sa:   id.da()
+							da:   id.sa
+							done: true
+						}
+					}
+				}
+				return Step{
+					role: .stray
+				}
+			}
+			cm_cts, cm_eom_ack {
+				return Step{
+					role: .receiver
+					pgn:  cm.pgn
+					sa:   id.da()
+					da:   id.sa
+				}
+			}
+			else {
+				return Step{
+					role: .stray
+				}
+			}
+		}
+	}
+	if pgn == pgn_tp_dt {
+		k := skey(id.sa, id.da())
+		mut s := t.open[k] or { return Step{
+			role: .stray
+		} }
+		seq := if f.data.len > 0 { f.data[0] } else { u8(0) }
+		// Whatever the sequence says, a data frame on an open transfer's pair is its
+		// originator's: a duplicate is the sender again, a gap is a frame the capture lost.
+		// The transfer ends on its last sequence number.
+		if seq >= s.next {
+			s.next = seq + 1
+		}
+		done := int(seq) >= s.packets
+		if done {
+			t.open.delete(k)
+		} else {
+			t.open[k] = s
+		}
+		return Step{
+			role:     .packet
+			pgn:      s.pgn
+			priority: s.priority
+			sa:       id.sa
+			da:       id.da()
+			done:     done
+		}
+	}
+	return Step{
+		role: .not_tp
+	}
+}
+
+// open is how many transfers are in progress.
+pub fn (t Transfers) open() int {
+	return t.open.len
+}
+
 // A multi-packet message is at least 9 bytes (anything shorter fits one frame and is sent as
 // one) and at most 255 packets of 7: 1785 bytes.
 pub const tp_min_size = 9
@@ -279,31 +470,11 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 	match ctrl {
 		cm_bam, cm_rts {
 			bam := ctrl == cm_bam
-			// A BAM is broadcast by definition and an RTS opens a connection with ONE node:
-			// a BAM addressed to a node, or an RTS to everyone, is not a frame J1939 describes,
-			// and rejoining it would model something that cannot happen.
-			if bam && id.da() != addr_global {
-				ev.faults << id.fault(.malformed, carried,
-					'BAM addressed to 0x${id.da():02X}; a BAM is broadcast')
-				return
-			}
-			if !bam && id.da() == addr_global {
-				ev.faults << id.fault(.malformed, carried,
-					'RTS to the global address; a connection has one destination')
+			if why := cm.admission(id) {
+				ev.faults << id.fault(.malformed, carried, why)
 				return
 			}
 			total := cm.total
-			packets := cm.packets
-			if total < tp_min_size || total > tp_max_size {
-				ev.faults << id.fault(.malformed, carried,
-					'announces ${total} bytes; a multi-packet message is ${tp_min_size}..${tp_max_size}')
-				return
-			}
-			if packets != packets_for(total) {
-				ev.faults << id.fault(.malformed, carried,
-					'announces ${total} bytes in ${packets} packets; ${total} bytes take ${packets_for(total)}')
-				return
-			}
 			k := skey(id.sa, id.da())
 			if old := r.sessions[k] {
 				kind := if bam { 'BAM' } else { 'RTS' }

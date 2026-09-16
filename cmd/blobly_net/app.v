@@ -1233,13 +1233,18 @@ fn (mut app App) rebuild_from_proj() {
 	// one project get their own answers. The operator's override (j1939_override) is NOT
 	// touched here — this runs on every Save and Configuration edit, and a tick that a Save
 	// silently reverted was the first thing the self-review of #171 found.
+	// Aggregated under the SAME adapter-aware identity the readers key by: ORed over every row
+	// on the wire, so two spellings of one wire (`vector:1`, `vector:ch1`) with the declaration
+	// on one of them read the wire as J1939 from either — dbs_for_dest groups by the
+	// platform-dependent destination_key, which off Windows tells those two apart (codex on #329).
 	app.j1939_dbs = map[string]bool{}
 	for c in app.chans {
 		if c.doip {
 			continue
 		}
-		app.j1939_dbs[transport.destination_key_for(c.adapter, c.iface)] =
-			app.dbs_for_dest(c.iface).any(it.j1939_declared())
+		dk := transport.destination_key_for(c.adapter, c.iface)
+		was := app.j1939_dbs[dk] or { false }
+		app.j1939_dbs[dk] = was || app.dbs_for(c.iface).any(it.j1939_declared())
 	}
 	app.j1939_any = app.dbs.any(it.j1939_declared())
 	// the databases may have changed under every cached name and key

@@ -136,7 +136,7 @@ fn (mut app App) dest_cached_locked(iface string) string {
 fn (mut app App) j1939_display_frame_locked(gate string, key string, f transport.CanFrame, name string) string {
 	if f.extended && !f.rtr && f.data.len >= 8 && app.j1939_on_locked(gate) {
 		i := j1939.decompose(f.id)
-		if i.pgn() == j1939.pgn_address_claimed {
+		if j1939.is_address_claim(i) {
 			if n := j1939.decode_name(f.data) {
 				reading := '${i.label()} ${n.label()}'
 				return if name == '' { reading } else { '${name}  ${reading}' }
@@ -180,7 +180,7 @@ fn (mut app App) j1939_note_locked(mut obs J1939Obs, ch string, gate string, key
 		return []
 	}
 	id := j1939.decompose(f.id)
-	if id.pgn() == j1939.pgn_address_claimed {
+	if j1939.is_address_claim(id) {
 		mut dir := app.j1939_nodes[key] or { j1939.Directory{} }
 		if c := dir.observe(id.sa, f.data, t_ms) {
 			app.j1939_nodes[key] = dir

@@ -308,6 +308,36 @@ fn test_receiver_frames_stay_unknown_and_an_abort_ends_the_transfer() {
 	assert rep.unknown == 2
 }
 
+// A retransmitted packet does not end the transfer early: the real last packet is still the
+// sender's. And an announcement the reassembler refuses is nothing the walker follows either.
+fn test_a_duplicate_packet_does_not_end_the_transfer_and_malformed_announcements_are_not_followed() {
+	mut db := j1939_db(true)
+	db.messages[2].sender = 'Engine'
+	rec := [
+		tp_cm(0x00, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.00),
+		tp_dt(0x00, 0xFF, 1, 0.01),
+		tp_dt(0x00, 0xFF, 1, 0.02), // retransmitted
+		tp_dt(0x00, 0xFF, 2, 0.03),
+		tp_dt(0x00, 0xFF, 3, 0.04), // the real last packet
+		// a BAM addressed to one node is not an announcement; its "packets" belong to nobody
+		canlog.LogEntry{
+			t_s:   0.05
+			iface: 'can'
+			frame: transport.CanFrame{
+				id:       j1939.compose(7, j1939.pgn_tp_cm, 0x17, 0x00)
+				extended: true
+				data:     [j1939.cm_bam, 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00]
+			}
+		},
+		tp_dt(0x00, 0x17, 1, 0.06),
+	]
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	assert rep.withheld_excluded == 5 // announcement and four packets, the duplicate included
+	assert rep.tp_attributed == 5
+	assert kept.len == 2 // the refused announcement and its packet, unknown
+	assert rep.unknown == 2
+}
+
 // Two spellings of one transmitter pair agree about the sender, whatever their order.
 fn test_transmitter_sets_compare_without_order() {
 	db := candb.Database{
