@@ -76,6 +76,24 @@ pub fn (db Database) j1939_declared() bool {
 	return db.messages.any(it.j1939)
 }
 
+// lookup_pgn resolves a J1939 parameter group to its message: a DECLARED J1939 message with the
+// PGN first, else any extended message with it. For a caller that holds a PGN and not a frame —
+// a transport-protocol transfer announces one — and must not go through an exact id it would
+// have to compose, since an unrelated extended `BO_` can sit at exactly that id (codex on #329).
+pub fn (db Database) lookup_pgn(pgn u32) ?Message {
+	for m in db.messages {
+		if m.ext && m.j1939 && j1939_pgn(m.id) == pgn {
+			return m
+		}
+	}
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn {
+			return m
+		}
+	}
+	return none
+}
+
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
 // named `node` is responsible for sending. Through senders(), so a node declared only as an
 // ADDITIONAL transmitter (a DBC BO_TX_BU_, an ARXML frame two ECUs send) gets its frames too;

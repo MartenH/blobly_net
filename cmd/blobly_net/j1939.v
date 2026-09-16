@@ -1,6 +1,7 @@
 module main
 
 import transport
+import candb
 import j1939
 
 // J1939 in the trace (#171): what a 29-bit id MEANS, a multi-packet message as one row, and a
@@ -248,11 +249,14 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 	mut n := 0
 	for a in done {
 		id := a.id()
-		// The database's name by PGN (lookup_frame's fallback matches a J1939 DBC's BO_ whatever
-		// source address it spelled), else the protocol's own name for the few PGNs it has one
-		// for, else nothing: the reading in the same cell says PGN and sender either way.
-		mut name := app.lookup_name(id, true)
-		if name == '' {
+		// The database's name BY PGN — what the announcement carried, never the id composed
+		// from it, which an unrelated extended `BO_` can sit at exactly (codex on #329) — else
+		// the protocol's own name for the few PGNs it has one for, else nothing: the reading in
+		// the same cell says PGN and sender either way.
+		mut name := ''
+		if m := app.find_pgn_message(a.pgn) {
+			name = m.name
+		} else {
 			name = j1939.pgn_name(a.pgn) or { '' }
 		}
 		how := if a.bam { 'BAM' } else { 'RTS/CTS' }
@@ -283,6 +287,35 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 		}
 	}
 	return n
+}
+
+// find_pgn_message is the message a J1939 parameter group decodes against, across the loaded
+// databases: declared first (candb.lookup_pgn), the first database with either winning.
+// NOTE concurrency: like find_message — app.dbs is mutated only while stopped.
+fn (app &App) find_pgn_message(pgn u32) ?candb.Message {
+	for db in app.dbs {
+		if m := db.lookup_pgn(pgn) {
+			if m.j1939 {
+				return m
+			}
+		}
+	}
+	for db in app.dbs {
+		if m := db.lookup_pgn(pgn) {
+			return m
+		}
+	}
+	return none
+}
+
+// group_message is the message a trace row decodes against: by PGN for a rejoined
+// transport-protocol message (its id is composed, and an exact `BO_` there may be another
+// message), by id like every frame otherwise.
+fn (app &App) group_message(r TraceRow) ?candb.Message {
+	if r.tp {
+		return app.find_pgn_message(j1939.pgn(r.id))
+	}
+	return app.find_message(r.id, r.ext)
 }
 
 // j1939_narrate_locked puts one fault in the Log, within the budget. Caller holds app.mu.

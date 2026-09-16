@@ -117,8 +117,10 @@ struct Open {
 	pgn      u32
 	priority u8
 	packets  int
+	bam      bool
 mut:
-	next u8 // the sequence number expected next
+	next   u8  // the sequence number expected next
+	last_s f64 // the transfer's last frame in either direction, on the caller's clock
 }
 
 // Transfers follows which transport-protocol transfers are in progress, by (originator,
@@ -129,11 +131,41 @@ mut:
 // packet unaccounted for (codex on #329).
 pub struct Transfers {
 mut:
-	open map[u16]Open
+	open   map[u16]Open
+	last_s f64 // the clock's last reading, for a caller without one
+pub mut:
+	// The same waits the reassembler applies, in the caller's SECONDS (a recording's clock):
+	// T1 between a BAM's packets, T3 for a connection from its last frame in either direction.
+	// A transfer whose last packet the capture lost would otherwise stay open for the rest of
+	// the file, and a packet on the same pair minutes later — after the address changed hands,
+	// say — would inherit its decision (codex on #329).
+	t1_s f64 = 0.75
+	t3_s f64 = 1.25
 }
 
-// step classifies one frame and advances the transfers it touches.
+// step classifies one frame for a caller with NO clock: nothing expires, transfers end on their
+// last packet, an abort or an ack, or when the pair announces again. The tests and any consumer
+// that walks frames without timestamps.
 pub fn (mut t Transfers) step(f transport.CanFrame) Step {
+	return t.step_at(f, t.last_s)
+}
+
+// step_at classifies one frame at `t_s` on the caller's clock, expiring first the transfers that
+// have waited past their limit, then advancing the ones this frame touches.
+pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
+	t.last_s = t_s
+	if t.open.len > 0 {
+		mut stale := []u16{}
+		for k, o in t.open {
+			limit := if o.bam { t.t1_s } else { t.t3_s }
+			if t_s - o.last_s > limit {
+				stale << k
+			}
+		}
+		for k in stale {
+			t.open.delete(k)
+		}
+	}
 	if !f.extended || f.rtr {
 		return Step{
 			role: .not_tp
@@ -157,7 +189,9 @@ pub fn (mut t Transfers) step(f transport.CanFrame) Step {
 					pgn:      cm.pgn
 					priority: id.priority
 					packets:  cm.packets
+					bam:      cm.ctrl == cm_bam
 					next:     1
+					last_s:   t_s
 				}
 				return Step{
 					role:     .announce
@@ -222,6 +256,15 @@ pub fn (mut t Transfers) step(f transport.CanFrame) Step {
 				}
 			}
 			cm_cts {
+				// the receiver talking keeps the connection it names alive, as it does for the
+				// reassembler
+				rk := skey(id.da(), id.sa)
+				if mut s := t.open[rk] {
+					if s.pgn == cm.pgn {
+						s.last_s = t_s
+						t.open[rk] = s
+					}
+				}
 				return Step{
 					role: .receiver
 					pgn:  cm.pgn
@@ -251,6 +294,7 @@ pub fn (mut t Transfers) step(f transport.CanFrame) Step {
 		if seq >= s.next {
 			s.next = seq + 1
 		}
+		s.last_s = t_s
 		done := int(seq) == s.packets
 		if done {
 			t.open.delete(k)
@@ -566,6 +610,9 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			// carrying that PGN: nothing this listener tracked, and an abort about a session it
 			// never saw is not a fault of anything it can name.
 			reason := data[1]
+			// ONE session, the originator's direction first: two nodes mid-transfer towards each
+			// other with the SAME PGN would otherwise both lose to one abort (codex on #329) —
+			// and Transfers makes the same choice, so the walker and the trace agree.
 			for k in [skey(id.sa, id.da()), skey(id.da(), id.sa)] {
 				if s := r.sessions[k] {
 					if s.pgn != carried {
@@ -574,6 +621,7 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 					ev.faults << s.fault(.aborted,
 						'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(reason)}')
 					r.sessions.delete(k)
+					break
 				}
 			}
 		}

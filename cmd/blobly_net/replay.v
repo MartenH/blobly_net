@@ -213,8 +213,15 @@ fn (mut app App) load_recording(path string) {
 	// The sole-wire fallback needs ONE recorded bus as well as one configured wire, for an MF4
 	// and a candump alike: several unrecognised labels are the file saying it spans several
 	// buses, and reading them all as the one wire would read a diagnostic bus beside a truck bus
-	// as J1939 (codex on #329, twice — once per file kind).
-	gate_only := if can_buses.len == 1 && rec_buses.len == 1 { can_buses.keys()[0] } else { '' }
+	// as J1939 (codex on #329, twice — once per file kind). Otherwise a bus the project cannot
+	// place is UNDECIDABLE — not J1939 in auto, on / off still override — rather than the
+	// project-wide default, which for a one-wire J1939 project is the same guess by another
+	// route (codex on #329, a third time). Force `on` to read such a file.
+	gate_only := if can_buses.len == 1 && rec_buses.len == 1 {
+		can_buses.keys()[0]
+	} else {
+		j1939_gate_undecidable
+	}
 	// An MF4's labels are the file's own numbering and name no project wire, so its buses take
 	// the one CAN wire's gate only when the file has ONE bus too — the verifiers' rule above; a
 	// multi-bus file against a one-wire project falls back to the project-wide default like

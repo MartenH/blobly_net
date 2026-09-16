@@ -174,13 +174,14 @@ fn tkey(sa u8, da u8) u16 {
 	return (u16(sa) << 8) | u16(da)
 }
 
-// decide is Decider.decide with the transfers followed. Standard frames, remote frames and
-// everything that is not TP go straight through.
-pub fn (mut w Walker) decide(f transport.CanFrame) Decision {
+// decide is Decider.decide with the transfers followed, at `t_s` on the recording's clock (the
+// transfers expire on it). Standard frames, remote frames and everything that is not TP go
+// straight through.
+pub fn (mut w Walker) decide(f transport.CanFrame, t_s f64) Decision {
 	if !w.j1939 {
 		return w.d.decide(f)
 	}
-	st := w.tp.step(f)
+	st := w.tp.step_at(f, t_s)
 	match st.role {
 		.announce {
 			// The announcement is judged by the parameter group it announces — through the
@@ -188,7 +189,12 @@ pub fn (mut w Walker) decide(f transport.CanFrame) Decision {
 			base := w.d.decide_pgn(st.pgn)
 			dec := Decision{
 				...base
-				tp: true
+				tp:      true
+				hint_id: if base.pgn_hint {
+					?u32(j1939.compose(st.priority, st.pgn, st.da, st.sa))
+				} else {
+					none
+				}
 			}
 			w.verdicts[tkey(st.sa, st.da)] = dec
 			return dec
@@ -228,6 +234,10 @@ pub:
 	pgn_hint bool
 	// The frame is part of a transport-protocol transfer and took its announcement's decision.
 	tp bool
+	// For a hint on a transfer's frames: the identity the hint is ABOUT — the application id the
+	// announcement stands for — where the frame's own id is the transport protocol's and says
+	// nothing about which PGN wants declaring (codex on #329). None for an ordinary frame.
+	hint_id ?u32
 }
 
 // Verdict says what happened to one frame, so a caller can count without re-deriving the reason.
@@ -442,7 +452,7 @@ pub fn subtract(log &canlog.Log, sel []u32, db candb.Database, exclude []string,
 	mut acc := Tally{}
 	for i in sel {
 		f := log.frame(int(i))
-		if acc.add_decision(w.decide(f), f) {
+		if acc.add_decision(w.decide(f, log.t_s(int(i))), f) {
 			kept << i
 		}
 	}
@@ -492,7 +502,14 @@ pub fn (mut t Tally) add_decision(dec Decision, f transport.CanFrame) bool {
 	}
 	if dec.pgn_hint {
 		t.pgn_hint_n++
-		t.pgn_hint[id] = true
+		// filed under what the hint is about: a transfer's frames carry the transport
+		// protocol's ids, and the PGN that wants declaring is the announced one
+
+		t.pgn_hint[if h := dec.hint_id {
+			key(h, true)
+		} else {
+			id
+		}] = true
 	}
 	if dec.tp {
 		t.tp_n++
@@ -673,7 +690,7 @@ pub fn census_sel(log &canlog.Log, sel []u32, db candb.Database) NodeCensus {
 		// and asking the exact key alone, after the decider learned to match a declared J1939
 		// message by PGN, told the operator there was nothing to exclude on the very bus where
 		// Start would have subtracted by PGN (self-review of #171). One body, no third drift.
-		dec := w.decide(f)
+		dec := w.decide(f, log.t_s(int(si)))
 		if dec.by_pgn {
 			pgn_matched++
 		}

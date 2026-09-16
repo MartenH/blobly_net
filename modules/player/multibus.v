@@ -117,7 +117,7 @@ pub fn build_multi_log(log canlog.Log, specs []BusSpec) MultiPlan {
 			}
 		}
 		f := log.frame(ri) // a view: the verdict reads id, width, RTR and length
-		if tallies[i].add_decision(walkers[i].decide(f), f) {
+		if tallies[i].add_decision(walkers[i].decide(f, r.t_s), f) {
 			// Relabelled to the DESTINATION through the plan's label table, so the sender is a
 			// map lookup and the player never learns that a mapping happened.
 			sel << u32(ri)

@@ -227,6 +227,14 @@ fn test_abort_ends_only_the_transfer_it_names() {
 	// an abort naming a PGN neither session carries touches nothing
 	assert r.feed(abort(0x00, 0x17, 2, 0xFEE5), 4).faults.len == 0
 	assert r.open() == 1
+	// both directions carrying the SAME PGN: an abort ends the aborting node's own transfer only
+	mut r2 := Reassembler{}
+	r2.feed(rts(0x17, 0x00, 20, dm1), 0)
+	r2.feed(rts(0x00, 0x17, 30, dm1), 1)
+	ev2 := r2.feed(abort(0x00, 0x17, 2, dm1), 2)
+	assert ev2.faults.len == 1 && ev2.faults[0].sa == 0x00
+	assert r2.open() == 1
+	assert r2.feed(dt(0x17, 0x00, 1, message(7)), 3).faults.len == 0
 }
 
 fn test_timeout_expires_a_stalled_session() {
@@ -294,6 +302,31 @@ fn test_transfers_follow_roles_and_complete_on_the_last_sequence_number() {
 	assert t.open() == 1
 	assert t.step(q[2]).done
 	assert t.open() == 0
+}
+
+// With a clock, a transfer whose last packet the capture lost is gone after its wait, and a
+// packet on the pair long after belongs to nobody — the reassembler's T1/T3, in seconds.
+fn test_transfers_expire_on_the_callers_clock() {
+	mut t := Transfers{}
+	msg := message(20)
+	t.step_at(bam(0x00, msg.len, dm1), 0.0)
+	p := packets(0x00, addr_global, msg)
+	assert t.step_at(p[0], 0.05).role == .packet
+	assert t.step_at(p[1], 0.10).role == .packet
+	// the last packet is lost from the capture; two seconds later the same pair sends again
+	stray := t.step_at(p[0], 2.10)
+	assert stray.role == .stray
+	assert t.open() == 0
+	// a connection lives on its receiver's CTS, and gets T3
+	t.step_at(rts(0x17, 0x00, msg.len, 0xFED8), 10.0)
+	assert t.step_at(cts(0x00, 0x17, 0xFED8), 11.0).role == .receiver
+	assert t.step_at(dt(0x17, 0x00, 1, message(7)), 12.0).role == .packet // 1.0 s after the CTS: alive
+	assert t.step_at(dt(0x17, 0x00, 2, message(7)), 13.5).role == .stray // 1.5 s: expired
+	// the clockless step expires nothing
+	mut u := Transfers{}
+	u.step(bam(0x00, msg.len, dm1))
+	assert u.step(p[0]).role == .packet
+	assert u.open() == 1
 }
 
 fn test_transfers_refuse_what_the_reassembler_refuses() {

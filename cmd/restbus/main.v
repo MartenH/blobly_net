@@ -380,6 +380,9 @@ fn run_multi(o Opts, rec &mf4.Recording) {
 		if r.pgn_hint > 0 {
 			notes << '${r.pgn_hint} unknown share a PGN the DBC defines but cannot decide by'
 		}
+		if r.tp_attributed > 0 {
+			notes << '${r.tp_attributed} TP frames judged by their announcement'
+		}
 		if r.unattributed > 0 && r.withheld_unattributed == 0 {
 			notes << '${r.unattributed} unattributed, replayed'
 		}

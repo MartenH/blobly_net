@@ -399,6 +399,42 @@ fn test_an_announcement_is_judged_by_pgn_never_by_a_composed_id() {
 	assert rep.pgn_hint == 4
 }
 
+// A transfer whose last packet the capture lost does not lend its decision to a packet on the
+// same pair long after; and a hinted transfer is reported under the application id it stands
+// for, not under the transport protocol's ids.
+fn test_stale_transfer_decisions_expire_and_hints_name_the_announced_group() {
+	db := candb.Database{
+		messages: [
+			candb.Message{
+				name:   'EEC1'
+				id:     0x0CF004FE
+				ext:    true
+				sender: 'Engine'
+				j1939:  true
+			},
+			candb.Message{
+				name:   'DM1'
+				id:     0x18FECAFE
+				ext:    true
+				sender: 'Engine'
+				j1939:  false // defined, not declared: a hint
+			},
+		]
+	}
+	rec := [
+		tp_cm(0x00, 0xFF, j1939.cm_bam, 20, 0xFECA, 0.00),
+		tp_dt(0x00, 0xFF, 1, 0.05),
+		tp_dt(0x00, 0xFF, 2, 0.10), // packet 3 is lost from the capture
+		tp_dt(0x00, 0xFF, 1, 5.00), // five seconds on: a new transfer's packet, announcement unseen
+	]
+	kept, rep := without_senders(rec, db, ['Engine'], true)
+	assert kept.len == 4
+	assert rep.tp_attributed == 3 // the announcement and its two packets; the late one is nobody's
+	assert rep.pgn_hint == 3
+	assert rep.pgn_hint_ids == ['0x1CFECA00'] // DM1 from 0x00, as the announcement stands for it
+	assert rep.unknown == 4
+}
+
 // Two spellings of one transmitter pair agree about the sender, whatever their order.
 fn test_transmitter_sets_compare_without_order() {
 	db := candb.Database{

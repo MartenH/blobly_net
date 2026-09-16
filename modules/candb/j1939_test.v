@@ -68,6 +68,25 @@ fn test_lookup_frame_exact_still_wins() {
 	assert m.name == 'Plain'
 }
 
+fn test_lookup_pgn_prefers_a_declared_message() {
+	db := j1939_db()
+	assert db.lookup_pgn(0xF004)?.name == 'EEC1'
+	assert db.lookup_pgn(0xEA00)?.name == 'RQST'
+	assert db.lookup_pgn(0xF005) == none
+	// an undeclared extended message at the composed id does not outrank a declared one
+	trap := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BO_ 2633943552 Trap: 8 Vector__XXX
+BO_ 2566834942 DM1: 8 Vector__XXX
+BA_ "VFrameFormat" BO_ 2566834942 3;
+') or {
+		panic(err)
+	}
+	assert trap.lookup_pgn(0xFECA)?.name == 'DM1'
+	// 2633943552 = 0x9CFECA00: the exact id a priority-7 BAM from 0x00 carrying DM1 composes to
+	assert trap.lookup_frame(0x1CFECA00, true)?.name == 'Trap'
+}
+
 fn test_lookup_frame_no_false_positives() {
 	db := j1939_db()
 	// Standard-id frames never PGN-match (ext=false).
