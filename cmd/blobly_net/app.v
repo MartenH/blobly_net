@@ -16,6 +16,7 @@ import telem
 import sim
 import canlog
 import doip
+import j1939
 import vgui
 
 const diag_tx_id = u32(0x7E0)
@@ -219,8 +220,33 @@ mut:
 	proj_name    string
 	dark         bool = true // theme
 	paused       bool
-	recording    bool
-	rec          []canlog.LogEntry // captured while recording; written on stop
+	// J1939 (#171): read 29-bit ids as priority/PGN/source-address, rejoin transport-protocol
+	// messages, follow address claims — PER WIRE, and chosen rather than inferred from the ids
+	// (cmd/blobly_net/j1939.v says why). `j1939_dbs` is what the databases on each wire
+	// declare (keyed by transport.destination_key; recomputed by every rebuild), `j1939_any`
+	// whether any loaded database does (the answer for a wire the map cannot place), and
+	// `j1939_override` the Trace panel's tri-state tick, which only a project load clears —
+	// a bool here was overwritten by every Save (self-review of #171). All read by the RX
+	// loops under app.mu at every push, written by the GUI thread under it.
+	j1939_dbs      map[string]bool
+	j1939_any      bool
+	j1939_override J1939Gate
+	// Who holds which J1939 address, per wire (keyed by transport.destination_key for a live
+	// bus, by the recording's own label for an import). Filled from Address Claimed frames by
+	// whichever reader saw them; read at every push for the row's reading. Reset with the trace
+	// and at Start, so a directory learned from a FILE never labels live frames.
+	j1939_nodes map[string]j1939.Directory
+	// The transport-protocol listener per wire (j1939_obs_locked), reset with the directory.
+	j1939_obs map[string]&J1939Obs
+	// The name cell per wire and id on a J1939 wire — `EEC1  PGN 0xF004 SA 0x00 Engine` — so the
+	// RX path formats each once (j1939_display_locked). Dropped per wire when its directory
+	// changes, wholly when the databases or the override do.
+	j1939_labels map[string]&LabelCache
+	// transport.destination_key per interface, for the emit path (dest_cached_locked). Reset with
+	// the runtime view.
+	dest_cache map[string]string
+	recording  bool
+	rec        []canlog.LogEntry // captured while recording; written on stop
 	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
 	// the simulation's are different facts, and one merged number re-collapses them in the one
 	// place a user looks first. Counted at the tap (note_emit), so every emitter counts —
@@ -257,6 +283,7 @@ mut:
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
+	sel_tp        bool    // the selection is a rejoined TP message, not a frame (see Watch.tp)
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
 	plot_multi    bool = true // Graphics Y: per-signal real axes (up to 3) vs one shared axis
@@ -281,8 +308,11 @@ mut:
 	// the label alone let live frames keep pouring into the same ring, trimming the file's rows
 	// away within seconds on a busy bus while the chip still named the file, and summing file
 	// and live counts into one gcount total. Cleared by reset_trace_locked and by Start.
-	viewing_rec   string
-	doip_host_buf []u8 // DoIP manual discover host[:port]
+	viewing_rec string
+	// Its full path, so the J1939 gate can re-import the file it changes the reading of
+	// (meaningful only while viewing_rec is set).
+	viewing_rec_path string
+	doip_host_buf    []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses (index into the CURRENT list)
@@ -399,17 +429,17 @@ mut:
 	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
 	show_config bool
 	// Settings ▸ Preferences… (#306): what the app remembers across runs, see settings.v
-	show_prefs         bool
-	prefs              prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
-	prefs_editor_buf   []u8
-	prefs_file         string        // resolved once at load
-	prefs_caption      string        // the dialog's fixed line, built at open
-	prefs_broken       bool // the file did not parse: never overwritten except from the dialog
-	prefs_dirty        bool   // this session changed a preference the file does not have yet
-	layout_file        string // ImGui's imgui.ini, which the app writes itself (#308); '' headless
-	layout_warned      bool   // a failed layout write is said once, not every settling period
-	panes_dragged      map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
-	cfg_bufs           []CfgBuf
+	show_prefs       bool
+	prefs            prefs.Prefs // ui_scale lives HERE: the one field every panel reads (apply_ui_scale)
+	prefs_editor_buf []u8
+	prefs_file       string          // resolved once at load
+	prefs_caption    string          // the dialog's fixed line, built at open
+	prefs_broken     bool            // the file did not parse: never overwritten except from the dialog
+	prefs_dirty      bool            // this session changed a preference the file does not have yet
+	layout_file      string          // ImGui's imgui.ini, which the app writes itself (#308); '' headless
+	layout_warned    bool            // a failed layout write is said once, not every settling period
+	panes_dragged    map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
+	cfg_bufs         []CfgBuf
 	// Discover-interfaces dialog (add buses from detected transports)
 	disc_open   bool
 	disc_list_h f32 // the interface list's height in Discover, unscaled px (#306)
@@ -641,36 +671,50 @@ struct Watch {
 	id  u32
 	ext bool
 	sig string
+	// A rejoined J1939 transport-protocol message rather than a frame — part of the identity,
+	// as it is of the trace's group key: one PGN can arrive both short and over TP, and a
+	// series that matched on id alone mixed the two payload shapes (codex on #329).
+	tp bool
 }
 
-fn (app &App) is_watched(id u32, ext bool, sig string) bool {
+fn (app &App) is_watched(id u32, ext bool, tp bool, sig string) bool {
 	for w in app.watch {
-		if w.id == id && w.ext == ext && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
 			return true
 		}
 	}
 	return false
 }
 
-fn (mut app App) toggle_watch(id u32, ext bool, sig string) {
+fn (mut app App) toggle_watch(id u32, ext bool, tp bool, sig string) {
 	for i, w in app.watch {
-		if w.id == id && w.ext == ext && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
 			app.watch.delete(i)
 			return
 		}
 	}
-	app.watch << Watch{id, ext, sig}
+	app.watch << Watch{
+		id:  id
+		ext: ext
+		sig: sig
+		tp:  tp
+	}
 }
 
 // add_watch plots a signal (idempotent — no-op if already plotted). Used by the Trace
 // right-click, which adds without removing an already-plotted signal.
-fn (mut app App) add_watch(id u32, ext bool, sig string) {
+fn (mut app App) add_watch(id u32, ext bool, tp bool, sig string) {
 	for w in app.watch {
-		if w.id == id && w.ext == ext && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
 			return
 		}
 	}
-	app.watch << Watch{id, ext, sig}
+	app.watch << Watch{
+		id:  id
+		ext: ext
+		sig: sig
+		tp:  tp
+	}
 }
 
 // app_icon renders a 32×32 RGBA window/taskbar icon: an accent-blue rounded square with
@@ -899,6 +943,8 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.cfg_invalidate() // a different project: the File tab must not keep the old one's text
 	app.mu.lock()
 	app.reset_trace_locked()
+	// A different project: what the operator said about the old one's buses does not carry.
+	app.j1939_override = .follow
 	app.trecs = []
 	app.diag_log = []
 	app.diag_gen++ // a clear moves the buffer as surely as an append -- invalidate with it
@@ -1187,6 +1233,7 @@ fn (mut app App) rebuild_from_proj() {
 		if db.messages.len > 0 {
 			app.sel_id = int(db.messages[0].id)
 			app.sel_ext = db.messages[0].ext
+			app.sel_tp = false
 			break
 		}
 	}
@@ -1198,7 +1245,61 @@ fn (mut app App) rebuild_from_proj() {
 	app.mu.lock()
 	app.resolve_sender_targets_locked()
 	app.push_listen_only_locked()
+	// What the databases say about J1939, PER WIRE: a truck bus and a 29-bit diagnostic bus in
+	// one project get their own answers. The operator's override (j1939_override) is NOT
+	// touched here — this runs on every Save and Configuration edit, and a tick that a Save
+	// silently reverted was the first thing the self-review of #171 found.
+	// Aggregated under the SAME adapter-aware identity the readers key by: ORed over every row
+	// on the wire, so two spellings of one wire (`vector:1`, `vector:ch1`) with the declaration
+	// on one of them read the wire as J1939 from either — dbs_for_dest groups by the
+	// platform-dependent destination_key, which off Windows tells those two apart (codex on #329).
+	old_dbs := app.j1939_dbs.clone()
+	old_any := app.j1939_any
+	app.j1939_dbs = map[string]bool{}
+	for c in app.chans {
+		if c.doip {
+			continue
+		}
+		dk := transport.destination_key_for(c.adapter, c.iface)
+		was := app.j1939_dbs[dk] or { false }
+		app.j1939_dbs[dk] = was || app.dbs_for(c.iface).any(it.j1939_declared())
+	}
+	app.j1939_any = app.dbs.any(it.j1939_declared())
+	// the databases may have changed under every cached name and key
+	app.j1939_labels = map[string]&LabelCache{}
+	app.dest_cache = map[string]string{}
+	// A recording on screen was stamped and rejoined under the reading in force when it was
+	// loaded; in auto that reading just moved with the databases (a J1939 DBC attached or
+	// removed), so the file is re-imported under the new one, as the J1939 button does when
+	// the override moves (codex on #329). A project load never gets here with a recording on
+	// screen: it resets the trace first.
+	gate_moved := old_any != app.j1939_any || !same_gates(old_dbs, app.j1939_dbs)
+	reload := if gate_moved && app.j1939_override == .follow && app.viewing_rec != '' {
+		app.viewing_rec_path
+	} else {
+		''
+	}
 	app.mu.unlock()
+	if reload != '' {
+		app.load_recording(reload)
+	}
+}
+
+// same_gates says whether two per-wire J1939 declarations agree everywhere.
+fn same_gates(a map[string]bool, b map[string]bool) bool {
+	if a.len != b.len {
+		return false
+	}
+	for k, v in a {
+		if bv := b[k] {
+			if bv != v {
+				return false
+			}
+		} else {
+			return false
+		}
+	}
+	return true
 }
 
 // resolve_sender_targets_locked answers every generator's `bus:` against the channels as they

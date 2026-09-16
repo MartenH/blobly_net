@@ -68,6 +68,102 @@ fn test_lookup_frame_exact_still_wins() {
 	assert m.name == 'Plain'
 }
 
+fn test_lookup_pgn_prefers_a_declared_message() {
+	db := j1939_db()
+	assert db.lookup_pgn(0xF004)?.name == 'EEC1'
+	assert db.lookup_pgn(0xEA00)?.name == 'RQST'
+	assert db.lookup_pgn(0xF005) == none
+	// an undeclared extended message at the composed id does not outrank a declared one
+	trap := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BO_ 2633943552 Trap: 8 Vector__XXX
+BO_ 2566834942 DM1: 8 Vector__XXX
+BA_ "VFrameFormat" BO_ 2566834942 3;
+') or {
+		panic(err)
+	}
+	assert trap.lookup_pgn(0xFECA)?.name == 'DM1'
+	// 2633943552 = 0x9CFECA00: the exact id a priority-7 BAM from 0x00 carrying DM1 composes to
+	assert trap.lookup_frame(0x1CFECA00, true)?.name == 'Trap'
+}
+
+fn test_lookup_pgn_sa_takes_the_spelled_address_first() {
+	two := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1_Engine: 8 Vector__XXX
+BO_ 2566834699 DM1_Brakes: 8 Vector__XXX
+') or {
+		panic(err)
+	}
+	// 2566834688 = 0x98FECA00, 2566834699 = 0x98FECA0B
+	assert two.lookup_pgn_sa(0xFECA, 0x0B)?.name == 'DM1_Brakes'
+	assert two.lookup_pgn_sa(0xFECA, 0x00)?.name == 'DM1_Engine'
+	assert two.lookup_pgn_sa(0xFECA, 0x17) == none // not spelled: the caller falls back to lookup_pgn
+	assert two.lookup_pgn(0xFECA)?.name == 'DM1_Engine'
+	assert !two.pgn_sa_contested(0xFECA, 0x00)
+	// two definitions at one (PGN, SA) — two priorities — cannot be told apart by a transfer
+	con := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1_p6: 8 Vector__XXX
+BO_ 2633943552 DM1_p7: 8 Vector__XXX
+') or {
+		panic(err)
+	}
+	// 2566834688 = 0x98FECA00, 2633943552 = 0x9CFECA00
+	assert con.pgn_sa_contested(0xFECA, 0x00)
+	assert !con.pgn_sa_contested(0xFECA, 0x0B)
+	// the same PGN at two addresses with ONE layout agrees; with two layouts it does not
+	assert two.pgn_layouts_agree(0xFECA)
+	assert two.pgn_layouts_agree(0xF005) // undefined: nothing to disagree
+	diff := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1_Engine: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BO_ 2566834699 DM1_Brakes: 8 Vector__XXX
+ SG_ Lamp : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+') or {
+		panic(err)
+	}
+	assert !diff.pgn_layouts_agree(0xFECA)
+	assert diff.lookup_pgn_sa(0xFECA, 0x0B)?.name == 'DM1_Brakes' // a spelled address still decodes
+	// the same geometry with another value table or unit is another layout too
+	lbl := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1_Engine: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BO_ 2566834699 DM1_Brakes: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+VAL_ 2566834699 Lamp 1 "On" 0 "Off" ;
+') or {
+		panic(err)
+	}
+	assert !lbl.pgn_layouts_agree(0xFECA)
+	// and across two databases each defining the PGN once
+	a := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+') or {
+		panic(err)
+	}
+	b := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834699 DM1: 8 Vector__XXX
+ SG_ Lamp : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+') or {
+		panic(err)
+	}
+	assert a.pgn_layouts_agree(0xFECA) && b.pgn_layouts_agree(0xFECA)
+	assert !pgn_layouts_agree_in([a, b], 0xFECA)
+	assert pgn_layouts_agree_in([a, a], 0xFECA)
+}
+
 fn test_lookup_frame_no_false_positives() {
 	db := j1939_db()
 	// Standard-id frames never PGN-match (ext=false).

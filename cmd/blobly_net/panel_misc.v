@@ -673,12 +673,12 @@ fn build_layout() {
 }
 
 // latest_data returns the payload of the newest trace row matching (id, ext), or [].
-fn latest_data(rows []TraceRow, id u32, ext bool) []u8 {
+fn latest_data(rows []TraceRow, id u32, ext bool, tp bool) []u8 {
 	mut i := rows.len - 1
 	for i >= 0 {
 		// has_payload: an RTR row matching this id would return its zero-filled DLC
 		// placeholder as the "latest value" of every signal
-		if rows[i].id == id && rows[i].ext == ext && rows[i].has_payload() {
+		if rows[i].id == id && rows[i].ext == ext && rows[i].tp == tp && rows[i].has_payload() {
 			return rows[i].data
 		}
 		i--
@@ -710,6 +710,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 			if vgui.selectable(lbl, is_sel) {
 				app.sel_id = int(m.id)
 				app.sel_ext = m.ext
+				app.sel_tp = false
 			}
 		}
 	}
@@ -720,12 +721,12 @@ fn draw_signals(mut app App, rows []TraceRow) {
 		vgui.end()
 		return
 	}
-	m := app.find_message(u32(app.sel_id), app.sel_ext) or {
+	m := app.message_for(u32(app.sel_id), app.sel_ext, app.sel_tp, app.dbs) or {
 		vgui.text_dim('message not in DBC')
 		vgui.end()
 		return
 	}
-	data := latest_data(rows, u32(app.sel_id), app.sel_ext)
+	data := latest_data(rows, u32(app.sel_id), app.sel_ext, app.sel_tp)
 	if data.len == 0 {
 		vgui.text('${m.name}: no frame received yet')
 		vgui.end()
@@ -741,10 +742,10 @@ fn draw_signals(mut app App, rows []TraceRow) {
 		for s in m.active_signals(data) {
 			vgui.table_row()
 			vgui.table_next_col()
-			watched := app.is_watched(u32(app.sel_id), app.sel_ext, s.name)
+			watched := app.is_watched(u32(app.sel_id), app.sel_ext, app.sel_tp, s.name)
 			nw := vgui.checkbox('##w_${m.id}_${s.name}', watched)
 			if nw != watched {
-				app.toggle_watch(u32(app.sel_id), app.sel_ext, s.name)
+				app.toggle_watch(u32(app.sel_id), app.sel_ext, app.sel_tp, s.name)
 			}
 			vgui.table_cell(s.name)
 			lbl := s.label(data)
@@ -763,7 +764,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 
 // build_series decodes the watched signal across the trace history -> (time ms, value).
 fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
-	m := app.find_message(w.id, w.ext) or { return []f32{}, []f32{} }
+	m := app.message_for(w.id, w.ext, w.tp, app.dbs) or { return []f32{}, []f32{} }
 	mut sig := candb.Signal{}
 	mut found := false
 	for s in m.signals {
@@ -781,7 +782,7 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	for r in rows {
 		// has_payload, not data.len: an imported `200#R8` between real 0x200 frames would
 		// inject a zero sample into the middle of the series
-		if r.id == w.id && r.ext == w.ext && r.has_payload() {
+		if r.id == w.id && r.ext == w.ext && r.tp == w.tp && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}
@@ -879,7 +880,9 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			val := value_at(xs, ys, xr)
 			// display "name = value"; the ###id keeps the ImPlot series identity/colour stable
 			// even though the shown value changes each frame.
-			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.id}_${w.ext}_${w.sig}'
+			// `tp` in the identity too: the direct and the rejoined form of one signal are two
+			// series, and ImPlot keeps legend, colour and visibility per identity (codex on #329)
+			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.id}_${w.ext}_${w.tp}_${w.sig}'
 			axis := if app.plot_multi { imin(i, 2) } else { 0 } // signal 0/1/2 → Y1/Y2/Y3
 			vgui.plot_line_axis(label, xs, ys, axis)
 		}
