@@ -130,6 +130,40 @@ pub fn (db Database) pgn_sa_contested(pgn u32, sa u8) bool {
 	return false
 }
 
+// pgn_layouts_agree says whether every extended message defining `pgn` carries the SAME signal
+// layout. A J1939 DBC repeats one parameter group per source address, and those repeats
+// normally share the layout — then any of them decodes a frame from an unspelled address. Where
+// they do NOT (source-specific variants with different signals), a consumer decoding by PGN
+// alone cannot know which applies and should decode nothing (codex on #329). True for a PGN
+// defined once or not at all.
+pub fn (db Database) pgn_layouts_agree(pgn u32) bool {
+	mut first := ''
+	for m in db.messages {
+		if !m.ext || j1939_pgn(m.id) != pgn {
+			continue
+		}
+		l := m.layout_key()
+		if first == '' {
+			first = l
+		} else if l != first {
+			return false
+		}
+	}
+	return true
+}
+
+// layout_key spells a message's signal layout — every field that decides how a byte becomes a
+// value — so two definitions can be compared for it; the names are included, since a differently
+// named signal is a different reading of the same bits.
+pub fn (m Message) layout_key() string {
+	mut parts := []string{cap: m.signals.len + 1}
+	parts << '${m.dlc}'
+	for s in m.signals {
+		parts << '${s.name}|${s.start_bit}|${s.length}|${s.byte_order}|${s.factor}|${s.offset}|${s.is_signed}|${s.is_multiplexor}|${s.is_multiplexed}|${s.multiplexor_value}'
+	}
+	return parts.join(';')
+}
+
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
 // named `node` is responsible for sending. Through senders(), so a node declared only as an
 // ADDITIONAL transmitter (a DBC BO_TX_BU_, an ARXML frame two ECUs send) gets its frames too;

@@ -114,6 +114,21 @@ BO_ 2633943552 DM1_p7: 8 Vector__XXX
 	// 2566834688 = 0x98FECA00, 2633943552 = 0x9CFECA00
 	assert con.pgn_sa_contested(0xFECA, 0x00)
 	assert !con.pgn_sa_contested(0xFECA, 0x0B)
+	// the same PGN at two addresses with ONE layout agrees; with two layouts it does not
+	assert two.pgn_layouts_agree(0xFECA)
+	assert two.pgn_layouts_agree(0xF005) // undefined: nothing to disagree
+	diff := parse_dbc('
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1_Engine: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BO_ 2566834699 DM1_Brakes: 8 Vector__XXX
+ SG_ Lamp : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+') or {
+		panic(err)
+	}
+	assert !diff.pgn_layouts_agree(0xFECA)
+	assert diff.lookup_pgn_sa(0xFECA, 0x0B)?.name == 'DM1_Brakes' // a spelled address still decodes
 }
 
 fn test_lookup_frame_no_false_positives() {
