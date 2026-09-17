@@ -114,7 +114,7 @@ everything in one folder, take a release.
   still refuses an FD frame rather than truncating it.
 - **Software buses** for driver-free tests — in-process (`inproc:`) and UDP multicast, so the
   whole test suite runs with no hardware and no drivers.
-- **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client), over ordinary
+- **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (an RPC client and a passive listener), over ordinary
   TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
 - **LIN** — 🧭 [planned](ROADMAP.md), not implemented yet
 

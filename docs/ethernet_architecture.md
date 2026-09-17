@@ -144,15 +144,46 @@ structural), and the server takes a plain callback. This keeps the dependency ar
   per-connection handler state on top of the threading change. Deferred until
   multi-tester concurrency is actually required (Codex PR #1 finding, by design).
 
-## SOME-IP (phase E3, deferred)
+## SOME/IP — what this tester does, and what it leaves alone
 
-A separate `modules/someip/`: 16-byte SOME-IP header (message/request id, length, protocol/interface
-version, message type, return code), request/response RPC, and **SOME-IP-SD** service discovery
-(offer/find/subscribe) over UDP multicast. It does not reuse the UDS stack; it's new middleware with
-its own sim service + oracle. Scoped once DoIP is in the app.
+Agreed 2026-09-17, after the codec, the RPC client and the passive listener had landed. The
+two repos split one protocol: **blobly_emb is the SOME/IP server half** (a wire format, not a
+middleware — static endpoints, no SD, no SOME/IP-TP, layouts fixed at build time; its
+`docs/someip.md` has the NOT list), and **this repo is the tester half**. Everything below is
+tester-side, and none of it is mirrored into emb.
+
+**What it does**
+
+| | Status |
+|---|---|
+| Header codec + envelope validation, golden vectors shared with emb | ✅ `modules/someip` |
+| RPC **client** — one request in flight, deadline, session liveness, drain | ✅ `rpc_client.v`, the GUI's Shell over Ethernet |
+| **Listen** — sit on a port (and a multicast group), report every message decoded to its header, payload raw; malformed datagrams counted, several messages per datagram split; the window itself is `transport.udp_window`, shared with DoIP's announcement collector | ✅ `listen.v`, Lua `someip.listen` |
+| **Decode SD passively** — read the offer/subscribe entries a discovering SUT multicasts, so a foreign service's ids and endpoints can be listed without asking | 🧭 next: a small extension of Listen, still bounded |
+| **Decode and produce events for an emb node from its config** — the derived layouts `system.toml` implies, so the tester node a system declares (emb's `system_full/nodes/tester`) is real on its SOME/IP bus, not only on CAN | 🧭 |
+
+**What it does not do, and why**
+
+- **No SD client.** Sending find/subscribe so a vsomeip-style service delivers its events to
+  us is the first real step into middleware: eventgroup state, TTLs, a reboot flag, a
+  multicast/unicast negotiation. Listen hears what the network already carries — an emb node's
+  events to its peer, events a service publishes to a group, SD offers (each of the last two by
+  joining the group) — and that is where the
+  line sits until a concrete SUT needs the other side. If that comes, it is tester-only.
+- **No generic payload serializer.** No ARXML-driven types, no strings, arrays, TLV or dynamic
+  lengths. A payload is a static layout: derived from config for an emb node, hand-written in
+  the project file for a foreign SUT at most. `sut/arxml_oracle.py` is an oracle for reading a
+  customer artifact, not a runtime type system.
+- **No SOME/IP-TP, no simulated SOME/IP service.** emb is the server oracle; a second server
+  here would be a second implementation of a design that has one. The "sim service" stays
+  deferred.
+- **Nothing tester-shaped goes into emb.** An application-initiated request on the ECU is an
+  application feature and lives in emb's roadmap; it is not this tester.
 
 **Status:** the codec/validation core — `modules/someip/` (16-byte header encode/decode +
 envelope validation, hermetic golden-vector tests), the host-side oracle for blobly_emb's
-eth-bus design (its `docs/someip.md`) — plus an RPC **client** (`rpc_client.v`: one request in
+eth-bus design (its `docs/someip.md`) — plus the RPC **client** (`rpc_client.v`: one request in
 flight, a deadline, session-id liveness, stale-datagram drain; hermetic and networked tests),
-used by the GUI's Shell over Ethernet. SOME-IP-SD and the sim service remain deferred.
+used by the GUI's Shell over Ethernet, plus the passive **listener** (`listen.v`: verified live
+against emb's `examples/host_someip` on loopback — three event ids at their cadence, zero
+malformed). SOME/IP-SD and the sim service remain deferred, as above.

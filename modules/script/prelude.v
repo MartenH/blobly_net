@@ -133,6 +133,51 @@ function doip.listen(window_ms, opts)
   return out
 end
 
+-- ============================ observation (SOME/IP) ============================
+someip = {}
+
+-- someip.listen(window_ms [, opts]) -> messages, malformed
+--
+-- Sit on a port for a window and report every SOME/IP message that arrived, decoded to its
+-- header; the payload is raw bytes (the layout belongs to the deployment, not to the tester).
+-- Nothing is sent and nothing is subscribed to: what you hear is what the network already
+-- carries -- events a blobly_emb node sends its peer (bind the peer port), events a service
+-- publishes to a multicast group, SD offers (join the SD group with `group`; multicast is not
+-- heard by a plain bind). An event a service sends only to subscribers is not among them; see
+-- docs/scripting.md and docs/ethernet_architecture.md.
+--
+-- opts = { port = 30490, group = "239.x.x.x" }. `group` joins that multicast group on the port.
+-- Each message: { at_ms=, from="host:port", service=, method=, event=bool, type="notification"|
+-- "request"|"response"|"error"|0xNN, iface=, client=, session=, rc=, payload=<bytes> }.
+-- `malformed` counts datagrams that could not be read to the end -- reported, never hidden.
+local someip_types = { [0x00] = "request", [0x02] = "notification",
+                       [0x80] = "response", [0x81] = "error" }
+function someip.listen(window_ms, opts)
+  opts = opts or {}
+  if opts.group ~= nil and (type(opts.group) ~= "string" or opts.group == "") then
+    error("someip.listen: group must be a multicast address (a non-empty string), got " ..
+          (type(opts.group) == "string" and "an empty string" or type(opts.group)), 2)
+  end
+  local raw, malformed = __someip_listen(opts.port or 0, window_ms or 1000, opts.group or "")
+  local out = {}
+  for line in tostring(raw):gmatch("[^\n]+") do
+    local at, from, svc, mth, iface, mtype, client, session, rc, hex =
+      line:match("^(%d+)|([^|]+)|(%x+)|(%x+)|(%x+)|(%x+)|(%x+)|(%x+)|(%x+)|(%x*)$")
+    if at then
+      local method = tonumber(mth, 16)
+      local t = tonumber(mtype, 16)
+      out[#out+1] = {
+        at_ms = tonumber(at), from = from,
+        service = tonumber(svc, 16), method = method, event = method >= 0x8000,
+        type = someip_types[t] or t, iface = tonumber(iface, 16),
+        client = tonumber(client, 16), session = tonumber(session, 16), rc = tonumber(rc, 16),
+        payload = fromhex(hex),
+      }
+    end
+  end
+  return out, malformed
+end
+
 -- ============================ diagnostics (UDS) ============================
 uds = {}
 function uds.open(channel, opts)

@@ -1,6 +1,10 @@
 module script
 
 import candb
+import net
+import someip
+import testports
+import time
 
 // a tiny synthetic DBC: Powertrain 0x100 with a 16-bit EngineSpeed @ 0.25 rpm/bit.
 fn sample_db() candb.Database {
@@ -142,4 +146,58 @@ fn test_nrc_assertion_helper() {
 	')!
 	assert env.passed() == 1
 	assert env.failed() == 1
+}
+
+// send_someip_after writes datagrams to the listener once its window has opened; the window
+// blocks the Lua thread, so the SUT stand-in is this thread.
+fn send_someip_after(to string, delay time.Duration, datagrams [][]u8) {
+	time.sleep(delay)
+	mut s := net.dial_udp(to) or { return }
+	defer {
+		s.close() or {}
+	}
+	for d in datagrams {
+		s.write(d) or { return }
+	}
+}
+
+// someip.listen shapes what the host heard into fields a suite can assert on, byte-clean payload
+// included, and hands the malformed count back beside them rather than folding it away.
+fn test_someip_listen_shapes_messages_and_reports_malformed() {
+	port := testports.someip.slot(2, 0)
+	mut packed := someip.notification(0x0100, 0x8001, 1, [u8(0x11), 0x22, 0x33])
+	packed << someip.request(0x0100, 0x0042, 0x00A5, 0x0001, 1, [u8(0xCA), 0xFE])
+	mut env := quiet_env()
+	defer { env.close() }
+	// Spawned AFTER the env exists (a Lua state, the prelude, an inproc bus) so the delay covers
+	// only the run_source compile before the listener binds; UDP to an unbound port is dropped,
+	// so a sender that fires early makes the test fail as "heard nothing" on a loaded runner.
+	t := spawn send_someip_after('127.0.0.1:${port}', 300 * time.millisecond, [
+		packed,
+		packed[..10], // a header fragment
+	])
+	env.run_source('
+		test("a listening tester hears events and requests, decoded", function()
+			local seen, malformed = someip.listen(1200, { port = ${port} })
+			check.equal(malformed, 1)
+			check.equal(#seen, 2)
+			local ev, rq = seen[1], seen[2]
+			check.equal(ev.service, 0x0100); check.equal(ev.method, 0x8001)
+			check.truthy(ev.event, "an id with bit 15 set is an event")
+			check.equal(ev.type, "notification"); check.equal(ev.iface, 1); check.equal(ev.rc, 0)
+			check.equal(tohex(ev.payload), "11 22 33")
+			check.truthy(ev.from:match("^127%.0%.0%.1:%d+$"), "lost the sender: " .. tostring(ev.from))
+			check.truthy(ev.at_ms >= 0 and ev.at_ms <= 1200, "at_ms out of the window")
+			check.equal(rq.type, "request"); check.truthy(not rq.event)
+			check.equal(rq.client, 0x00A5); check.equal(rq.session, 1)
+			check.equal(tohex(rq.payload), "CA FE")
+		end)
+		test("a group that is not an address is refused by the prelude", function()
+			local ok, err = pcall(someip.listen, 10, { group = true })
+			check.truthy(not ok and tostring(err):find("group must be", 1, true), tostring(err))
+		end)
+	')!
+	t.wait()
+	assert env.total() == 2
+	assert env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
 }

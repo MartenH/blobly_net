@@ -59,60 +59,31 @@ pub:
 // collect_announcements listens for unsolicited announcements for `window_ms`.
 //
 // Binds the IPv6 wildcard when asked for v6 (`ip6: true`), which on a dual-stack host also
-// receives IPv4 senders; an IPv4-only bind cannot see IPv6 announcements at all.
+// receives IPv4 senders; an IPv4-only bind cannot see IPv6 announcements at all. And JOINS the
+// group: binding the wildcard receives unicast, but an entity announcing to the derived ff02::1
+// is multicast — without a join this socket never sees it and the window simply times out.
+// "0" = any interface: V parses the IPv6 argument as a numeric INDEX, not an address, so '::'
+// failed with "must be a numeric interface index". The window itself — what ends it, a failed
+// join returned rather than waited out — is transport.udp_window, shared with someip's listener.
 pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcement {
 	addr := if ip6 { '[::]:${port_}' } else { '0.0.0.0:${port_}' }
-	mut c := net.listen_udp(addr) or {
-		return error('cannot listen for announcements on ${addr}: ${err}')
+	group := if ip6 { 'ff02::1' } else { '' }
+	got := transport.udp_window(addr, group, '0', window_ms) or {
+		return error('cannot listen for announcements: ${err}')
 	}
-	// BEFORE the join: an early return past this point leaks the descriptor and holds the port,
-	// and doip.listen is called in a loop by suites that retry.
-	defer {
-		c.close() or {}
-	}
-	if ip6 {
-		// JOIN the group. Binding the wildcard receives unicast, but an entity announcing to
-		// the derived ff02::1 is multicast — without a join this socket never sees it and the
-		// window simply times out. modules/transport/udpbus.v does the same after its bind.
-		// The failure is RETURNED, not dropped: a join that fails (no suitable IPv6 interface)
-		// would otherwise wait out the window and return an empty success — indistinguishable
-		// from an entity that legitimately stayed silent, which is what this API is asked.
-		// "0" = any interface: V parses the IPv6 argument as a numeric INDEX, not an address,
-		// so '::' failed with "must be a numeric interface index". With the error dropped that
-		// failure was invisible and IPv6 collection could never have worked.
-		c.join_multicast_group('ff02::1', '0') or {
-			return error('cannot join ff02::1 on ${addr}: ${err}')
-		}
-	}
-	return collect_on(mut c, window_ms)
-}
-
-// collect_on reads announcements from an already-bound socket for window_ms.
-fn collect_on(mut c net.UdpConn, window_ms int) ![]Announcement {
 	mut out := []Announcement{}
-	// MONOTONIC. A wall-clock deadline moves under NTP or a VM time correction, which either
-	// ends the window early and loses announcements or stretches the next socket timeout far
-	// past window_ms. The rest of this module uses ticks() for the same reason.
-	deadline := time.ticks() + i64(window_ms)
-	for {
-		left := deadline - time.ticks()
-		if left <= 0 {
-			break
-		}
-		c.set_read_timeout(left * time.millisecond)
-		mut buf := []u8{len: 128}
-		n, peer := c.read(mut buf) or { break } // timeout ends the window
-		if n < header_len {
+	for d in got {
+		if d.data.len < header_len {
 			continue
 		}
-		msg := parse(buf[..n]) or { continue }
+		msg := parse(d.data) or { continue }
 		if msg.payload_type != pt_vehicle_announcement {
 			continue
 		}
 		info := parse_vehicle_announcement(msg.payload) or { continue }
 		out << Announcement{
 			info: info
-			from: peer.str()
+			from: d.from
 		}
 	}
 	return out
