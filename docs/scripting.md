@@ -253,6 +253,7 @@ Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 | `sim.clear_fault(channel, node, message)` | lift it |
 | `doip.discover(channel)` | one identification request to the channel's configured endpoint |
 | `doip.listen(window_ms [, {port=, ip6=, from=}])` | collect vehicle announcements for a window; each entry names the sender's endpoint. `from=` names a channel and listens on that channel's own port; a `port=` that contradicts it is an error |
+| `someip.listen(window_ms [, {port=, group=}])` | hear every SOME/IP message on a port for a window, decoded to its header (`service`, `method`, `event`, `type`, `iface`, `client`, `session`, `rc`), the payload raw, the sender in `from`; returns the list and a count of malformed datagrams. `group=` joins that multicast group, which is what hearing a service's multicast events or a SUT's SD offers takes (a plain bind hears unicast only). Port defaults to 30490. Nothing is sent or subscribed to: an event a service delivers only to subscribers is not heard (docs/ethernet_architecture.md) |
 
 `uds.open` validates its ids (negative or above `0x1FFFFFFF` is an error) and uses 29-bit
 addressing for any id above `0x7FF`. The handle it returns exposes `handle` and `channel`.

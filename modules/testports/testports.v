@@ -74,7 +74,7 @@ pub const doip = Band{
 }
 
 pub const someip = Band{
-	name:  'someip/rpc_client_net_test.v'
+	name:  'someip/rpc_client_net_test.v, someip/listen_net_test.v, script/script_test.v'
 	base:  23000
 	count: 3000
 	tries: 64
