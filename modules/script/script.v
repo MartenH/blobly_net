@@ -15,6 +15,7 @@ import lua
 import transport
 import isotp
 import doip
+import someip
 import sim
 import uds
 import candb
@@ -244,6 +245,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__doip_listen', l_doip_listen)
+	env.st.register('__someip_listen', l_someip_listen)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -675,6 +677,28 @@ fn l_doip_listen(l lua.State) int {
 	}
 	l.push_str(out.join('\n'))
 	return 1
+}
+
+// l_someip_listen hears whatever SOME/IP the port (and a joined group) already carries — the
+// passive tester, no channel and no subscription. Returns one line per message plus the count
+// of malformed datagrams; the prelude shapes the lines. The payload travels as hex: the line
+// format is delimited text, and a payload byte can be anything.
+fn l_someip_listen(l lua.State) int {
+	port := int(l.arg_int(1))
+	window := int(l.arg_int(2))
+	group := l.arg_str(3)
+	use_port := if port == 0 { someip.default_port } else { port }
+	cap := someip.collect(use_port, window, group) or {
+		return l.fail('someip.listen(${use_port}): ${err}')
+	}
+	mut out := []string{}
+	for m in cap.messages {
+		h := m.header
+		out << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${h.msg_type:02X}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
+	}
+	l.push_str(out.join('\n'))
+	l.push_int(i64(cap.malformed))
+	return 2
 }
 
 fn l_uds_tester_present(l lua.State) int {
