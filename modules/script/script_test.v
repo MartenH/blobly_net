@@ -260,6 +260,10 @@ fn test_someip_listen_from_resolves_or_refuses() {
 			local ok, err = pcall(someip.listen, 10, { from = "LIVE" })
 			check.truthy(not ok and tostring(err):find("SPLIT", 1, true), tostring(err))
 		end)
+		test("naming the live port directly is refused too, not just naming the channel", function()
+			local ok, err = pcall(someip.listen, 10, { port = ${port + 7} })
+			check.truthy(not ok and tostring(err):find("SPLIT", 1, true), tostring(err))
+		end)
 		test("from takes the channel port", function()
 			local seen = someip.listen(1200, { from = "ETH1" })
 			check.equal(#seen, 1)
@@ -267,6 +271,6 @@ fn test_someip_listen_from_resolves_or_refuses() {
 		end)
 	')!
 	t.wait()
-	assert env.total() == 6
-	assert env.passed() == 6, env.results.filter(!it.ok).map(it.msg).str()
+	assert env.total() == 7
+	assert env.passed() == 7, env.results.filter(!it.ok).map(it.msg).str()
 }

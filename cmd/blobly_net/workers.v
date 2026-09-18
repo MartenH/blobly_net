@@ -1701,7 +1701,12 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if !a.row_is_mine_locked(ci, iface, gen) {
-		a.chans[ci].spawning = false
+		// NOTHING TOUCHED. `row_is_mine_locked` is false when `ci` is out of RANGE as well as
+		// when the row moved — a Stop that replaced app.chans with a shorter list while this
+		// worker was still resolving or binding — so clearing the row's flag here (which an
+		// earlier round of this change did) indexes exactly the array the predicate just refused
+		// to vouch for, and panics the app. Stop clears `spawning` for every row itself, which
+		// is what makes this safe to leave alone; rx_loop leaves it alone for the same reason.
 		a.mu.unlock()
 		return
 	}
@@ -1729,8 +1734,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	}
 	a.mu.lock()
 	if !a.row_is_mine_locked(ci, iface, gen) {
-		a.chans[ci].spawning = false
-		a.mu.unlock()
+		a.mu.unlock() // see above: the predicate also guards the INDEX
 		sock.close() or {}
 		return
 	}

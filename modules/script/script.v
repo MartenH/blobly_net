@@ -667,9 +667,33 @@ fn (env &Env) someip_chan(name string) !ChanInfo {
 		return error('"${name}" is not a SOME/IP channel')
 	}
 	if info.live {
-		return error('"${name}" is already being listened to by this run — a second socket on that port would SPLIT the stream, not share it (each datagram reaches only one of them). Stop the run, or read the trace instead of listening from a script')
+		return error(live_endpoint_refusal(name))
 	}
 	return info
+}
+
+// live_endpoint_refusal is the one wording for "this run already reads that endpoint".
+fn live_endpoint_refusal(name string) string {
+	return '"${name}" is already being listened to by this run — a second socket on that port would SPLIT the stream, not share it (each datagram reaches only one of them). Stop the run, or read the trace instead of listening from a script'
+}
+
+// live_someip_on names a live channel whose listener would collide with binding `host`:`port`,
+// or none. ASKED OF THE ENDPOINT, not of the channel name: `from = "ETH1"` is only one way to
+// reach a port, and a script that simply passes `port = 30491` was splitting the very stream the
+// `from` refusal exists to protect. Overlap is the kernel's rule — same port, and either side
+// bound to the wildcard (which covers every address) or to the same address.
+fn (env &Env) live_someip_on(host string, port int) ?string {
+	for c in env.chans {
+		if !c.live || !c.carrier.someip || c.carrier.port != port {
+			continue
+		}
+		a := if host == '' { '0.0.0.0' } else { host }
+		b := if c.carrier.host == '' { '0.0.0.0' } else { c.carrier.host }
+		if a == b || a == '0.0.0.0' || b == '0.0.0.0' {
+			return c.name
+		}
+	}
+	return none
 }
 
 fn l_doip_discover(l lua.State) int {
@@ -769,6 +793,11 @@ fn l_someip_listen(l lua.State) int {
 	}
 	use_port := listen_port(port, from, from_port, someip.default_port, 'listener') or {
 		return l.fail('someip.listen: ${err}')
+	}
+	// The endpoint, however the script named it. The `from` path is refused by someip_chan above
+	// before it resolves; this catches the bare `port =` form, which reaches the same socket.
+	if live := env_of(l).live_someip_on(host, use_port) {
+		return l.fail('someip.listen: ${live_endpoint_refusal(live)}')
 	}
 	cap := someip.collect(host, use_port, window, group) or {
 		return l.fail('someip.listen(${use_port}): ${err}')

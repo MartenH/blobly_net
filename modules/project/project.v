@@ -25,7 +25,7 @@ import doip
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 4
+pub const schema_version = 5
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -39,6 +39,16 @@ pub const schema_version = 4
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v5 — a SOME/IP channel. An older build does not merely drop the unknown `group:` key on its
+	// next structured save: `someip` is not in its `adapters`, so compose_iface falls through to
+	// "the address IS the interface name", the row becomes an ordinary CAN channel on an
+	// interface called `0.0.0.0:30491`, and Start tries to OPEN it as one. A passive listener
+	// silently turning into a failing CAN bus is exactly the loss this label exists to announce.
+	for c in p.channels {
+		if c.is_someip() {
+			return 5
+		}
+	}
 	// v4 — a generator's `bus:` that an older build would resolve DIFFERENTLY (#97). Such a build
 	// reads the key as an interface and hands a channel name to the transport as a device name,
 	// where it fails to open: the generator goes silent with a driver error and nothing says why.
@@ -2034,19 +2044,43 @@ pub fn (c Channel) address_config_error() ?string {
 // endpoint" here is a bind address, not a wire.
 pub fn someip_endpoint_warnings(chs []Channel) []string {
 	mut out := []string{}
-	mut seen := map[string][]string{}
+	// KEYED ON THE PORT, not on the rendered address. Two rows overlap when the kernel could
+	// deliver one datagram to either, and a wildcard bind covers every address on its port: so
+	// `0.0.0.0:30491` and `127.0.0.1:30491` overlap although their strings differ, and comparing
+	// the strings reported nothing for the very pair most likely to be written by hand.
+	mut by_port := map[int][]Channel{}
 	for c in chs {
 		// ENABLED ROWS ONLY, the rule every check here follows.
 		if !c.enabled || !c.is_someip() {
 			continue
 		}
-		host, port := c.someip_endpoint()
-		seen['${host}:${port}'] << c.name
+		_, port := c.someip_endpoint()
+		by_port[port] << c
 	}
-	for ep, names in seen {
-		if names.len > 1 {
-			out << '${names.join(' and ')} both listen on ${ep}; UDP lets both bind, then each datagram reaches only ONE of them — give them different ports, or keep one'
+	for port, rows in by_port {
+		if rows.len < 2 {
+			continue
 		}
+		mut any_wildcard := false
+		mut hosts := map[string]bool{}
+		mut dup_host := false
+		for c in rows {
+			host, _ := c.someip_endpoint()
+			if host == '' || host == '0.0.0.0' || host == '::' {
+				any_wildcard = true
+			}
+			if host in hosts {
+				dup_host = true
+			}
+			hosts[host] = true
+		}
+		// Different specific addresses on one port do NOT overlap — two NICs, two listeners, a
+		// legitimate setup. Only a wildcard (which covers them all) or the same address twice.
+		if !any_wildcard && !dup_host {
+			continue
+		}
+		names := rows.map(it.name)
+		out << '${names.join(' and ')} all listen on port ${port}; UDP lets every one of them bind, then each datagram reaches only ONE — give them different ports, or keep one'
 	}
 	return out
 }

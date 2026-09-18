@@ -158,7 +158,7 @@ fn main() {
 			// someip.listen({ from = name }), which binds it for the window it asks for.
 			host, port := ch.someip_endpoint()
 			grp := if ch.group != '' { ', group ${ch.group}' } else { '' }
-			println('channel ${ch.name} (someip:${host}:${port}${grp}): SOME/IP listener — someip.listen({ from = "${ch.name}" })')
+			println('channel ${ch.name} (someip:${host}:${port}${grp}): SOME/IP listener — someip.listen(1500, { from = "${ch.name}" })')
 			continue
 		}
 		if ch.is_doip() {

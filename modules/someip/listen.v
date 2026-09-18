@@ -102,6 +102,13 @@ pub fn bind_addr(host string, port int) string {
 // address receives only what is addressed to it, so the kernel drops group-addressed datagrams
 // after a perfectly successful IP_ADD_MEMBERSHIP: the listener would sit green and silent. The
 // refusal names the fix rather than quietly rewriting the address the operator configured.
+// KNOWN LIMITATION, stated where the rule is made: the join itself goes to the default-route
+// interface (udp_bind is passed the wildcard), and this refusal closes the only other lever a
+// project had — selecting a NIC through the bind address — without opening a replacement. On a
+// multi-homed host (a bench NIC beside a WSL or VPN interface) a group offered on the other NIC
+// is therefore not heard, and the row sits green. It is a limitation rather than a regression,
+// since neither lever ever worked: a socket bound to a unicast address receives no multicast at
+// all. A per-channel multicast-interface setting is the fix, tracked separately.
 pub fn check_group_bind(host string, group string) ! {
 	if group == '' || host == '' || host == '0.0.0.0' || host == '::' || host == '[::]' {
 		return

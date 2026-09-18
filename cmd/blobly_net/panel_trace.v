@@ -617,6 +617,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.rtr != b.rtr {
 			return if !a.rtr { -1 } else { 1 }
 		}
+		// The KIND, last and for the same reason as the rest: it is part of the group key, so two
+		// groups that differ only by it are distinct rows, and a comparator that called them
+		// equal would let them swap places between redraws (the groups come from a map).
+		if a.someip != b.someip {
+			return if !a.someip { -1 } else { 1 }
+		}
 		return 0
 	})
 	if vgui.table_begin('gtrace10', 10) {

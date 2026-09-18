@@ -78,6 +78,13 @@ service's multicast events or a SUT's SD offers takes; empty hears unicast to th
 No protocol, bitrate or listen-only tick: nothing is sent on this row, and it is not a CAN wire.
 On ▶ Start the row goes green when its socket is bound.
 
+**Which interface a group is joined on.** The join goes to the host's default-route interface,
+and a group needs the wildcard bind address, so on a machine with more than one interface (a
+bench NIC beside a WSL or VPN one) a service offering on the other NIC is not heard and the row
+sits green and empty. Binding the specific address instead does not help and is refused: a socket
+bound to one address receives no multicast at all. Selecting the interface per channel is not
+built yet.
+
 **A bound UDP port is not an owned one.** This V sets `SO_REUSEADDR` on every UDP socket before
 it binds, and nothing in its public API turns that off, so a second listener on the same port
 binds successfully and the kernel then delivers each unicast datagram to exactly ONE of the two
