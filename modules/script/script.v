@@ -755,8 +755,17 @@ fn l_someip_listen(l lua.State) int {
 		info := env_of(l).someip_chan(from) or { return l.fail('someip.listen: ${err}') }
 		from_port = info.carrier.port
 		host = info.carrier.host
-		if group != '' && info.carrier.group != '' && group != info.carrier.group {
-			return l.fail('someip.listen: group ${group} contradicts from = "${from}", whose listener joins ${info.carrier.group}; give one or the other')
+		// EMPTY IS AN ANSWER, not an absence. A channel with no `group:` is configured as a
+		// unicast listener, and accepting a script's group there silently turned it into a
+		// multicast one — the prelude promises `from` takes the channel's group and refuses a
+		// differing one, and "differing from nothing" is differing.
+		if group != '' && group != info.carrier.group {
+			joins := if info.carrier.group == '' {
+				'joins no multicast group'
+			} else {
+				'joins ${info.carrier.group}'
+			}
+			return l.fail('someip.listen: group ${group} contradicts from = "${from}", whose listener ${joins}; give one or the other')
 		}
 		if group == '' {
 			group = info.carrier.group

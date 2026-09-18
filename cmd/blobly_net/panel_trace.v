@@ -415,10 +415,16 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
 			origin_cell(r.origin, origin_mark(r))
-			vgui.table_cell(len_str(r.data.len))
+			vgui.table_cell(len_str(r.full_len()))
 			vgui.table_cell(flags_str(r))
 			// the FD/BRS suffix moved out of this cell into the flags column — payload only here
-			vgui.table_cell(if r.rtr { '' } else { hex(r.data) })
+			vgui.table_cell(if r.rtr {
+				''
+			} else if r.truncated() {
+				'${hex(r.data)} … +${r.full_len() - r.data.len}'
+			} else {
+				hex(r.data)
+			})
 		}
 		vgui.table_end()
 	}
@@ -697,7 +703,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				vgui.end_popup()
 			}
 			origin_cell(g.origin, verdict_mark(g.refused, g.missed))
-			vgui.table_cell(len_str(r.data.len))
+			vgui.table_cell(len_str(r.full_len()))
 			vgui.table_cell(flags_str(r))
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
 			// ones that changed (conventional change highlight). Compared against the actual prior

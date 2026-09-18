@@ -53,19 +53,23 @@ fn wildcard_host(h string) bool {
 // and the same socket, so comparing the strings accepted both claims and let the kernel split
 // the stream between them: the registry would have been defeated by a synonym.
 //
-// Resolved through the same call `net.listen_udp` uses, so the answer cannot disagree with the
-// bind. A name that does not resolve falls back to its lowercased spelling: the bind is about to
-// fail anyway and will say so, and a claim is never the right place to report a bad address.
-// The wildcard is answered without resolving — it is the one host whose meaning is a rule rather
-// than an address.
+// THE SAME CALL, AND THE SAME ELEMENT, as `net.listen_udp`: it resolves with
+// `resolve_addrs_fuzzy` and binds `addrs[0]`, so canonicalising any other way would produce an
+// authority that disagrees with the bind it is supposed to describe. That distinction is not
+// academic — `localhost` is 127.0.0.1 on one machine and ::1 on another (the CI runner is the
+// second), and on the second it genuinely IS a different socket from 127.0.0.1, so folding the
+// two by name would invent a collision that the kernel does not have. Asking the resolver gets
+// both machines right for the same reason: it is the question the bind asks.
+//
+// A name that does not resolve keeps its lowercased spelling — the bind is about to fail and
+// will say so, and a claim is never the right place to diagnose an address. The wildcard is
+// answered without resolving, being the one host whose meaning is a rule rather than an address.
 fn canonical_host(host string) string {
 	if wildcard_host(host) {
 		return '0.0.0.0'
 	}
 	h := host.trim_space().trim('[]')
-	addrs := net.resolve_addrs(bind_addr(h, 1), .unspec, .udp) or {
-		return h.to_lower()
-	}
+	addrs := net.resolve_addrs_fuzzy(bind_addr(h, 1), .udp) or { return h.to_lower() }
 	if addrs.len == 0 {
 		return h.to_lower()
 	}

@@ -40,19 +40,33 @@ fn test_release_of_an_unheld_claim_is_a_noop() {
 
 // Two spellings of one address are one endpoint. Comparing the strings accepted both claims and
 // let the kernel split the stream between them — a synonym defeating the whole registry.
+//
+// ASKED OF THIS MACHINE, not of a hardcoded pair: `localhost` is 127.0.0.1 on most hosts and ::1
+// on some (the CI runner is one), and on those it is genuinely a different socket from
+// 127.0.0.1. So the test claims whatever `localhost` actually resolves to and requires THAT to
+// collide, which is the property the registry owes on every machine. A hardcoded pair asserted
+// the resolver's configuration instead, and failed on the first host that differed.
 fn test_a_synonym_is_not_a_second_endpoint() {
-	claim_endpoint('127.0.0.1', 39010, 'channel ETH1')!
-	for spelling in ['localhost', 'LOCALHOST', '127.0.0.1'] {
+	real := canonical_host('localhost')
+	claim_endpoint(real, 39010, 'channel ETH1')!
+	for spelling in ['localhost', 'LOCALHOST', 'localhost '] {
 		if _ := claim_endpoint(spelling, 39010, 'a script') {
 			release_endpoint(spelling, 39010, 'a script')
-			assert false, '"${spelling}" was accepted beside 127.0.0.1'
+			assert false, '"${spelling}" was accepted beside ${real}'
 		} else {
 			assert err.msg().contains('channel ETH1'), err.msg()
 		}
 	}
 	release_endpoint('LOCALHOST', 39010, 'channel ETH1') // released by any spelling of it
 	claim_endpoint('localhost', 39010, 'a script')!
-	release_endpoint('127.0.0.1', 39010, 'a script')
+	release_endpoint(real, 39010, 'a script')
+}
+
+// Case and surrounding space are never a second endpoint, on any machine.
+fn test_case_and_space_fold() {
+	assert canonical_host('LOCALHOST') == canonical_host('localhost')
+	assert canonical_host(' localhost ') == canonical_host('localhost')
+	assert canonical_host('[::1]') == canonical_host('::1')
 }
 
 fn test_canonical_host_answers_the_wildcard_without_resolving() {

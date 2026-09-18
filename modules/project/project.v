@@ -400,15 +400,29 @@ pub mut:
 // endpoint rather than a CAN bus. Recognised via `type: doip` or an interface of
 // `doip` (bare shorthand) / `doip:<host>[:<port>]`.
 pub fn (ch Channel) is_doip() bool {
-	t := ch.iface.trim_space()
-	return ch.typ == 'doip' || t == 'doip' || t.starts_with('doip:')
+	return ch.typ == 'doip' || iface_scheme_is(ch.iface, 'doip')
+}
+
+// iface_scheme_is reports whether an interface string carries EXACTLY this scheme: the bare
+// name, or the name followed by its colon. Not a prefix test — `someip0` and `doip1` are legal
+// SocketCAN device names, and reading them as Ethernet would refuse every transmit path on a
+// real CAN wire.
+fn iface_scheme_is(iface string, scheme string) bool {
+	t := iface.trim_space()
+	return t == scheme || t.starts_with('${scheme}:')
+}
+
+// iface_is_eth reports whether an interface string names an Ethernet endpoint of either kind.
+// Public because the runtime asks it of a DESTINATION — a generator names where it sends, not
+// which row it is — and that answer must be the same rule the model uses for a channel.
+pub fn iface_is_eth(iface string) bool {
+	return iface_scheme_is(iface, 'someip') || iface_scheme_is(iface, 'doip')
 }
 
 // is_someip reports whether this channel is a SOME/IP listener rather than a CAN bus.
 // Recognised via `type: someip` or an interface of `someip` / `someip:<host>[:<port>]`.
 pub fn (ch Channel) is_someip() bool {
-	t := ch.iface.trim_space()
-	return ch.typ == 'someip' || t == 'someip' || t.starts_with('someip:')
+	return ch.typ == 'someip' || iface_scheme_is(ch.iface, 'someip')
 }
 
 // is_eth reports whether this channel is an Ethernet endpoint of either kind — the ONE rule for
@@ -2052,7 +2066,14 @@ pub fn (c Channel) address_config_error() ?string {
 fn normalised_bind_host(host string) string {
 	h := host.trim_space().trim('[]').to_lower()
 	return match h {
-		'', '0.0.0.0', '::', 'localhost', '127.0.0.1', '::1' { '0.0.0.0' }
+		// the wildcard, which covers every address on its port
+		'', '0.0.0.0', '::' { '0.0.0.0' }
+		// the loopback, which does NOT: folded to one spelling rather than into the wildcard, or
+		// a `localhost` row would be reported as colliding with a bench-NIC row it cannot reach.
+		// `localhost` is 127.0.0.1 on most machines and ::1 on some, and on the latter this
+		// over-reports by one pair — a cheap wrong answer in the direction of saying something,
+		// where the claim registry (which resolves) gives the exact one at bind time.
+		'localhost', '127.0.0.1' { '127.0.0.1' }
 		else { h }
 	}
 }

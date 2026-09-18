@@ -41,6 +41,13 @@ struct TraceRow {
 	// whatever DBC frame happens to carry that id. So the row says what it is and those
 	// consumers ask (panel_trace.v).
 	someip bool
+	// The payload's TRUE length, when `data` holds only its head. A SOME/IP message may carry
+	// ~64 KiB where a CAN frame carries 64, and the grouped view renders one widget PER BYTE —
+	// a loop whose bound was CAN's maximum. One valid datagram would rebuild tens of thousands
+	// of widgets every frame, and a ring of them would retain over a hundred megabytes. So the
+	// row keeps a bounded head and states what it cut; the full payload still reaches a Lua
+	// capture, which is where a whole payload belongs. 0 = nothing was cut.
+	data_len int
 	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
 	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
@@ -96,6 +103,22 @@ mut:
 // instead of rediscovering it (codex #127 r2).
 fn (r TraceRow) has_payload() bool {
 	return !r.rtr && r.data.len > 0
+}
+
+// trace_payload_max bounds the bytes a single row keeps for the live view. Four times CAN-FD's
+// maximum: enough that an ordinary SOME/IP event is whole, small enough that a hostile or merely
+// large one cannot make the renderer or the ring the problem.
+const trace_payload_max = 256
+
+// full_len is the payload's length on the wire, which is what the len column must show — a row
+// that displays its truncated length would under-report the traffic it is a record of.
+fn (r TraceRow) full_len() int {
+	return if r.data_len > r.data.len { r.data_len } else { r.data.len }
+}
+
+// truncated reports whether this row kept only the head of its payload.
+fn (r TraceRow) truncated() bool {
+	return r.data_len > r.data.len
 }
 
 struct TRec {

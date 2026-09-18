@@ -521,7 +521,7 @@ fn (app &App) tap_plan_locked() []TapWant {
 		// that resolves there — an adapter change carries generators across) still planned a CAN
 		// transmit tap on `someip:0.0.0.0:30490`. Start then opens that string as a device name
 		// and reports a driver failure for a row the UI calls passive.
-		if tgt != '' && !iface_is_eth(tgt) {
+		if tgt != '' && !project.iface_is_eth(tgt) {
 			plan << TapWant{sr.chan, tgt, app.phys_for_locked(tgt)}
 		}
 	}

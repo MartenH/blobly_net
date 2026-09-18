@@ -1708,11 +1708,32 @@ fn test_endpoint_warning_folds_written_spellings() {
 			enabled: true
 		}
 	}
-	// localhost and 127.0.0.1 are one socket, however they are spelled
+	// the loopback spellings a person writes fold together
 	assert someip_endpoint_warnings([mk('A', 'localhost'), mk('B', '127.0.0.1')]).len == 1
 	assert someip_endpoint_warnings([mk('A', 'LOCALHOST'), mk('B', '127.0.0.1')]).len == 1
-	// and the wildcard still covers a specific one
+	// the wildcard covers a specific address
 	assert someip_endpoint_warnings([mk('A', '0.0.0.0'), mk('B', '192.168.0.5')]).len == 1
+	// but the loopback is NOT the wildcard: it cannot reach a bench NIC, so this is not a clash
+	assert someip_endpoint_warnings([mk('A', 'localhost'), mk('B', '192.168.0.5')]).len == 0
 	// two real NICs remain two listeners
 	assert someip_endpoint_warnings([mk('A', '192.168.0.5'), mk('B', '10.0.0.5')]).len == 0
+}
+
+// The Ethernet scheme is matched exactly, never as a prefix: `someip0` and `doip1` are legal
+// SocketCAN device names, and reading them as Ethernet would refuse every transmit path on a
+// real CAN wire.
+fn test_iface_is_eth_matches_the_scheme_not_a_prefix() {
+	for yes in ['someip', 'someip:0.0.0.0:30491', 'doip', 'doip:127.0.0.1:13400'] {
+		assert iface_is_eth(yes), yes
+	}
+	for no in ['someip0', 'doip1', 'someipx', 'vcan0', 'can0', 'udp:239.0.0.1:5000', ''] {
+		assert !iface_is_eth(no), no
+	}
+	// and a channel follows the same rule, so the model and the runtime cannot disagree
+	assert !Channel{
+		iface: 'someip0'
+	}.is_someip()
+	assert Channel{
+		iface: 'someip:0.0.0.0:1'
+	}.is_someip()
 }

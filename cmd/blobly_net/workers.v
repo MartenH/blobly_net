@@ -1725,9 +1725,32 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	// only thing that CAN refuse a second listener: the bind itself always succeeds (claims.v).
 	// Symmetric with the Lua window, so the refusal lands on whichever of the two started second.
 	owner := 'channel ${chname}'
-	someip.claim_endpoint(host, port, owner) or {
-		someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
-		return
+	// RETRIED BRIEFLY, because the previous run's listener may still hold this claim. It notices
+	// a generation change only when its 200 ms read returns, so a Start pressed inside that
+	// window met a claim held by a worker already on its way out — and the new row failed
+	// permanently, with no listener for the whole run and nothing to retry it. The claim was my
+	// own addition, and a hand-off it could not express was the hole in it.
+	//
+	// Bounded by the same budget the runtime rebuild waits for its workers with, and abandoned
+	// at once if this run is no longer current. A holder that is NOT going away — a script's
+	// window, another row — outlives the budget and is reported by name, as before.
+	mut claimed := false
+	for t0 := time.ticks(); time.ticks() - t0 <= drain_budget_ms; {
+		if !a.running || a.run_gen != gen {
+			return
+		}
+		someip.claim_endpoint(host, port, owner) or {
+			time.sleep(25 * time.millisecond)
+			continue
+		}
+		claimed = true
+		break
+	}
+	if !claimed {
+		someip.claim_endpoint(host, port, owner) or {
+			someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
+			return
+		}
 	}
 	defer {
 		someip.release_endpoint(host, port, owner)
@@ -1798,15 +1821,23 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 			for m in cap.messages {
 				id := m.header.message_id()
 				key := gkey_someip(chname, id)
+				// BOUNDED HERE, where the row is made, and only here: the capture above still
+				// holds the whole payload for anything that wants it. See TraceRow.data_len.
+				head := if m.payload.len > trace_payload_max {
+					m.payload[..trace_payload_max].clone()
+				} else {
+					m.payload
+				}
 				a.push_row_locked(TraceRow{
-					t_ms:   t_ms
-					ch:     chname
-					origin: org_rx
-					id:     id
-					someip: true
-					name:   someip_row_name(m.header)
-					data:   m.payload
-					key:    key
+					t_ms:     t_ms
+					ch:       chname
+					origin:   org_rx
+					id:       id
+					someip:   true
+					name:     someip_row_name(m.header)
+					data:     head
+					data_len: m.payload.len
+					key:      key
 				})
 				a.gcount[key]++
 			}

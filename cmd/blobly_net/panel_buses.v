@@ -158,7 +158,12 @@ fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 	if !c.enabled {
 		return u8(140), u8(140), u8(145), 'off '
 	}
-	if c.running || wire.read {
+	// `wire.read` is the CAN alias rule: several rows spelling one wire share its single reader,
+	// so a row that spawned none is still being monitored. An Ethernet row is explicitly ONE
+	// reader per row — two rows on one endpoint are a conflict, not a sharing — so inheriting a
+	// sibling's state would paint a row green whose own listener was refused and whose failure
+	// the Log is reporting at that moment.
+	if c.running || (wire.read && !c.eth()) {
 		if c.link_down || wire.down {
 			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
 		}

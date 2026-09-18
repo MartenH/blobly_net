@@ -333,22 +333,13 @@ fn (app &App) open_tap_full(iface string, origin string, chan_name string, gen u
 // open_tap_phys is open_tap_full with the PHYSICAL interface already resolved — by a caller
 // that did so under app.mu. bitrate_iface walks app.chans, which the readers write under the
 // lock, so a worker opening a tap must not resolve it unlocked (codex round 6 on #257).
-// iface_is_eth: is this interface an Ethernet endpoint rather than a CAN wire? Decided by the
-// SCHEME, because a row's iface is always composed from its adapter, and because a target that
-// is no longer a row of this project must be refused too rather than handed to the transport.
-// Pure, so every caller may ask without a lock.
-fn iface_is_eth(iface string) bool {
-	t := iface.trim_space()
-	return t.starts_with('someip') || t.starts_with('doip')
-}
-
 fn (app &App) open_tap_phys(iface string, phys string, origin string, chan_name string, gen u64, reproduces bool) !transport.Bus {
 	// THE ONE FUNNEL, so the refusal is stated once. Every transmit tap opens here — the startup
 	// plan, a generator added or retargeted mid-run, a manual fire, Quick Send — and guarding
 	// only the startup plan (where this began) left the CAN transport reachable from all the
 	// others: `transport.open('someip:0.0.0.0:30490')` falls through to SocketCAN and reports a
 	// device error for a row the UI calls passive.
-	if iface_is_eth(iface) {
+	if project.iface_is_eth(iface) {
 		return error('${iface} is an Ethernet endpoint, not a CAN bus — nothing can be transmitted on it')
 	}
 	// The bitrate suffix is an OPEN-time detail of the VENDOR backends, not part of a bus's
