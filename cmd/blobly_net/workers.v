@@ -1725,41 +1725,45 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	// only thing that CAN refuse a second listener: the bind itself always succeeds (claims.v).
 	// Symmetric with the Lua window, so the refusal lands on whichever of the two started second.
 	owner := 'channel ${chname}'
-	// RETRIED BRIEFLY, because the previous run's listener may still hold this claim. It notices
-	// a generation change only when its 200 ms read returns, so a Start pressed inside that
-	// window met a claim held by a worker already on its way out — and the new row failed
-	// permanently, with no listener for the whole run and nothing to retry it. The claim was my
-	// own addition, and a hand-off it could not express was the hole in it.
+	// WHO holds it decides whether waiting is honest. A previous run's row claim is about to be
+	// released — its worker notices the generation change only when its 200 ms read returns — so
+	// a Start inside that window is a hand-off, and refusing it left the whole run with no
+	// listener and nothing to retry. A SCRIPT's claim is the opposite: its window is a
+	// measurement already under way, and waiting it out would start the row mid-measurement with
+	// the messages received during the wait existing only in the script's result and missing
+	// from the trace, silently. So one is waited for and the other is refused at once.
 	//
-	// Bounded by the same budget the runtime rebuild waits for its workers with, and abandoned
-	// at once if this run is no longer current. A holder that is NOT going away — a script's
-	// window, another row — outlives the budget and is reported by name, as before.
-	mut claimed := false
-	for t0 := time.ticks(); time.ticks() - t0 <= drain_budget_ms; {
+	// The wait is bounded by the same budget a runtime rebuild waits for its workers with, so
+	// the two agree on how long a departing worker may take, and is abandoned the moment this
+	// run stops being current.
+	mut canon := ''
+	for t0 := time.ticks(); true; {
 		if !a.running || a.run_gen != gen {
 			return
 		}
-		someip.claim_endpoint(host, port, owner) or {
+		canon = someip.claim_endpoint(host, port, owner, .row) or {
+			if err is someip.ClaimHeld {
+				if err.kind == .script || time.ticks() - t0 > drain_budget_ms {
+					someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err.msg()}')
+					return
+				}
+			} else {
+				someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
+				return
+			}
 			time.sleep(25 * time.millisecond)
 			continue
 		}
-		claimed = true
 		break
 	}
-	if !claimed {
-		someip.claim_endpoint(host, port, owner) or {
-			someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
-			return
-		}
-	}
 	defer {
-		someip.release_endpoint(host, port, owner)
+		someip.release_endpoint(canon, port, owner)
 	}
 	// The bind and the join, with the row told about either failure: a listener that could not
 	// bind must show idle and say why. NOTE a successful bind does not mean sole ownership —
 	// this V forces SO_REUSEADDR, so another holder of the port splits the stream with us
 	// (transport.udp_bind says so in full); that is why nothing here claims exclusivity.
-	mut sock := transport.udp_bind(addr, group, '0.0.0.0') or {
+	mut sock := transport.udp_bind(someip.bind_addr(canon, port), group, '0.0.0.0') or {
 		someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
 		return
 	}

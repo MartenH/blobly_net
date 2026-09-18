@@ -124,11 +124,13 @@ pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	// Claimed for the life of the window, so a GUI row cannot be started onto this endpoint
 	// underneath it and split the stream — and so this window is refused if a row already holds
 	// it. See claims.v for why a successful bind cannot answer that question.
-	claim_endpoint(host, port, 'a script')!
+	canon := claim_endpoint(host, port, 'a script', .script)!
 	defer {
-		release_endpoint(host, port, 'a script')
+		release_endpoint(canon, port, 'a script')
 	}
-	got := transport.udp_window(bind_addr(host, port), group, '0.0.0.0', window_ms)!
+	// BOUND ON WHAT WAS CLAIMED, not on the spelling: the registry resolved once, and binding the
+	// name again could land on a different address than the one it is holding.
+	got := transport.udp_window(bind_addr(canon, port), group, '0.0.0.0', window_ms)!
 	mut cap := Capture{}
 	for d in got {
 		cap.ingest(d)
