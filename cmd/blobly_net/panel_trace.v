@@ -142,7 +142,13 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 	}
 	trace_capture_chips(mut app)
 	// restrict to watched frames + optional bus, then apply the optional text find
-	frows := app.filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
+	// `!it.someip` as well as the watch: the filter's identity is (id, ext) with no kind, so a
+	// SOME/IP message id that happens to equal a watched CAN id would otherwise be pulled into
+	// this view — and from here into Signals and Graphics, which decode whatever they find.
+	// Gating the grouped row's menu (where this started) covered making a watch, not matching
+	// one; a row can be watched by an id that was added from a real CAN frame.
+	frows := app.filter_bus(rows.filter(!it.someip && app.is_fwatched(it.id, it.ext)),
+		app.ftrace_bus)
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
 	if app.trace_grouped2 {
 		draw_trace_grouped(mut app, frows, gcount, filt)

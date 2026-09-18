@@ -347,6 +347,15 @@ fn l_sim_fault(l lua.State) int {
 	ms := l.arg_int(5)
 	signal := l.arg_str(6)
 	ci := env.find_chan(chan_name) or { return l.fail('unknown channel "${chan_name}"') }
+	// A PASSIVE CHANNEL HAS NOTHING TO INJECT INTO. Faults are consumed by the simulation loop,
+	// and no simulation runs on an Ethernet row — the runner skips it, the GUI never plans one.
+	// Without this the fault was STORED and reported as armed whenever the channel happened to
+	// carry a DBC naming the message, so a fault test could pass while the traffic it claims to
+	// have corrupted was never touched. Refusing a fault that cannot take effect is the rule
+	// ChanInfo.nodes already exists to enforce for the CAN case.
+	if k := env.chans[ci].carrier.eth_kind() {
+		return l.fail('"${chan_name}" is a ${k} channel — nothing simulates on it, so a fault there could never take effect')
+	}
 	iface := env.chans[ci].fault_iface()
 	k := match kind {
 		'none', 'clear', '' { sim.FaultKind.none_ }

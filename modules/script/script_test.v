@@ -248,6 +248,10 @@ fn test_someip_listen_from_resolves_or_refuses() {
 		test("a port that contradicts the channel is refused, not overruled", function()
 			refused("contradicts", 10, { from = "ETH1", port = ${port + 1} })
 		end)
+		test("a fault on a SOME/IP channel is refused, not armed into nothing", function()
+			local ok, err = pcall(sim.fault, "ETH1", "SUT", "Powertrain", "drop", 100)
+			check.truthy(not ok and tostring(err):find("could never take effect", 1, true), tostring(err))
+		end)
 		test("uds.open on a SOME/IP channel is refused as not a diagnostics carrier", function()
 			local ok, err = pcall(uds.open, "ETH1")
 			check.truthy(not ok and tostring(err):find("not a diagnostics carrier", 1, true), tostring(err))
@@ -267,6 +271,6 @@ fn test_someip_listen_from_resolves_or_refuses() {
 		end)
 	')!
 	t.wait()
-	assert env.total() == 6
-	assert env.passed() == 6, env.results.filter(!it.ok).map(it.msg).str()
+	assert env.total() == 7
+	assert env.passed() == 7, env.results.filter(!it.ok).map(it.msg).str()
 }

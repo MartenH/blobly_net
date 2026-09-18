@@ -673,12 +673,18 @@ fn build_layout() {
 }
 
 // latest_data returns the payload of the newest trace row matching (id, ext), or [].
+//
+// NOT A SOME/IP ROW. This is asked with a CAN (id, ext) and its answer is decoded with a DBC
+// signal layout, so a SOME/IP payload that shares the number would be read as that frame and
+// shown as real signal values. The kind is part of a row's identity (TraceRow.someip), and
+// everything that looks a row up by number has to say so — gating where a watch is CREATED, as
+// this change first did, does not cover matching one that a real CAN frame added.
 fn latest_data(rows []TraceRow, id u32, ext bool) []u8 {
 	mut i := rows.len - 1
 	for i >= 0 {
 		// has_payload: an RTR row matching this id would return its zero-filled DLC
 		// placeholder as the "latest value" of every signal
-		if rows[i].id == id && rows[i].ext == ext && rows[i].has_payload() {
+		if !rows[i].someip && rows[i].id == id && rows[i].ext == ext && rows[i].has_payload() {
 			return rows[i].data
 		}
 		i--
@@ -781,7 +787,9 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	for r in rows {
 		// has_payload, not data.len: an imported `200#R8` between real 0x200 frames would
 		// inject a zero sample into the middle of the series
-		if r.id == w.id && r.ext == w.ext && r.has_payload() {
+		// `!r.someip`, for latest_data's reason: a plotted series must not take its points from a
+		// payload that no DBC signal describes.
+		if !r.someip && r.id == w.id && r.ext == w.ext && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}

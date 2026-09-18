@@ -125,9 +125,11 @@ fn main() {
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
-	for w in project.someip_endpoint_warnings(proj.channels) {
-		eprintln('warning: ${w}')
-	}
+	// NOT someip_endpoint_warnings HERE. That warning is about rows this front end BINDS, and
+	// the headless runner binds none: a SOME/IP row is a declaration a suite may listen on by
+	// name, one window at a time, and the claim registry refuses a second. Emitting it here told
+	// a suite that uses one row — or neither — to go and change a configuration that is correct
+	// for the way it runs. The GUI, which does start every row, still warns.
 	// Which wires may transmit, through the same call the GUI makes. The runner honoured
 	// listen-only nowhere before #117: `bus.send` from a script reached the wire whatever the
 	// project said, and a simulated node on a silenced row transmitted at its own cadence.
