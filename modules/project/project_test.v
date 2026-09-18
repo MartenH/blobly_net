@@ -1737,3 +1737,31 @@ fn test_iface_is_eth_matches_the_scheme_not_a_prefix() {
 		iface: 'someip:0.0.0.0:1'
 	}.is_someip()
 }
+
+// The Start-time warning and the claim registry must not disagree: a v4 wildcard and a v6
+// address are a valid dual-stack pair, and reporting them as a clash sends the operator to
+// change a configuration that is correct.
+fn test_endpoint_warning_keeps_address_families() {
+	mk := fn (name string, host string) Channel {
+		return Channel{
+			name:    name
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:${host}:30491'
+			enabled: true
+		}
+	}
+	// BRACKETED, as the endpoint grammar requires of a v6 literal that carries a port: a bare
+	// `::` before `:30491` is ambiguous and is kept whole as the host, which would make these
+	// assertions pass for the wrong reason.
+	assert someip_endpoint_warnings([mk('A', '0.0.0.0'), mk('B', '[::1]')]).len == 0
+	assert someip_endpoint_warnings([mk('A', '0.0.0.0'), mk('B', '127.0.0.1')]).len == 1
+	// the v6 wildcard is dual-stack in this V, so it DOES cover a v4 address
+	assert someip_endpoint_warnings([mk('A', '[::]'), mk('B', '127.0.0.1')]).len == 1
+	assert someip_endpoint_warnings([mk('A', '[::]'), mk('B', '[::1]')]).len == 1
+	// and the grammar itself: a bracketed v6 host keeps its port, a bare one does not
+	h, pnum := Channel{
+		iface: 'someip:[::1]:30491'
+	}.someip_endpoint()
+	assert h == '::1' && pnum == 30491
+}

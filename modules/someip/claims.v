@@ -79,7 +79,13 @@ fn is_v6(h string) bool {
 	return h.contains(':')
 }
 
-// covers reports whether a socket bound to `a` receives what is addressed to `b`.
+// addr_covers reports whether a socket bound to `a` receives what is addressed to `b`.
+//
+// PUBLIC because two callers need the same answer from different starting points: this registry,
+// which resolves at bind time, and project.someip_endpoint_warnings, which folds what a person
+// wrote without resolving (a config check that performs DNS answers differently depending on the
+// network it is asked on). How they canonicalise differs on purpose; what "overlaps" means must
+// not, or a Start-time warning contradicts the refusal that follows it.
 //
 // THE FAMILIES ARE NOT ONE WILDCARD. `0.0.0.0` is the IPv4 wildcard and receives nothing sent to
 // an IPv6 address, so a row on it and a row on `[::1]` are two disjoint listeners that Linux is
@@ -87,7 +93,7 @@ fn is_v6(h string) bool {
 // idle row. `::` is the exception in the other direction: this V enables dual-stack on every
 // IPv6 socket it makes (new_udp_socket → set_dualstack(true)), so a bind there does receive IPv4
 // as well, and it covers both families.
-fn covers(a string, b string) bool {
+pub fn addr_covers(a string, b string) bool {
 	if a == b {
 		return true
 	}
@@ -140,7 +146,7 @@ fn overlaps(ha string, pa int, hb string, pb int) bool {
 	if pa != pb {
 		return false
 	}
-	return covers(ha, hb) || covers(hb, ha)
+	return addr_covers(ha, hb) || addr_covers(hb, ha)
 }
 
 // claim_endpoint registers `owner` as the listener on host:port, or fails naming who already is.

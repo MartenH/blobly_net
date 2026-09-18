@@ -16,6 +16,7 @@ import transport
 import os
 import yaml
 import doip
+import someip
 
 // schema_version is the newest project-file format version this build understands. Bump it when
 // the `.yml` schema grows something an older build would not preserve. Files carry `version:`,
@@ -2066,8 +2067,10 @@ pub fn (c Channel) address_config_error() ?string {
 fn normalised_bind_host(host string) string {
 	h := host.trim_space().trim('[]').to_lower()
 	return match h {
-		// the wildcard, which covers every address on its port
-		'', '0.0.0.0', '::' { '0.0.0.0' }
+		// the IPv4 wildcard. NOT `::` — that is the v6 wildcard and covers a different set
+		// (both families, this V enabling dual-stack on its v6 sockets), which someip.addr_covers
+		// knows; folding them together here reported a valid dual-stack pair as a clash.
+		'', '0.0.0.0' { '0.0.0.0' }
 		// the loopback, which does NOT: folded to one spelling rather than into the wildcard, or
 		// a `localhost` row would be reported as colliding with a bench-NIC row it cannot reach.
 		// `localhost` is 127.0.0.1 on most machines and ::1 on some, and on the latter this
@@ -2080,44 +2083,32 @@ fn normalised_bind_host(host string) string {
 
 pub fn someip_endpoint_warnings(chs []Channel) []string {
 	mut out := []string{}
-	// KEYED ON THE PORT, not on the rendered address. Two rows overlap when the kernel could
-	// deliver one datagram to either, and a wildcard bind covers every address on its port: so
-	// `0.0.0.0:30491` and `127.0.0.1:30491` overlap although their strings differ, and comparing
-	// the strings reported nothing for the very pair most likely to be written by hand.
-	mut by_port := map[int][]Channel{}
+	// PAIRWISE, on someip.addr_covers — the same rule the claim registry refuses by, so a
+	// Start-time warning cannot contradict the refusal that follows it. Two rows overlap when the
+	// kernel could deliver one datagram to either: the same address twice, or a wildcard that
+	// covers the other WITHIN ITS FAMILY. `0.0.0.0` and `[::1]` are a valid dual-stack pair and
+	// are not reported; `0.0.0.0` and `127.0.0.1` are one socket and are.
+	mut rows := []Channel{}
 	for c in chs {
 		// ENABLED ROWS ONLY, the rule every check here follows.
-		if !c.enabled || !c.is_someip() {
-			continue
+		if c.enabled && c.is_someip() {
+			rows << c
 		}
-		_, port := c.someip_endpoint()
-		by_port[port] << c
 	}
-	for port, rows in by_port {
-		if rows.len < 2 {
-			continue
-		}
-		mut any_wildcard := false
-		mut hosts := map[string]bool{}
-		mut dup_host := false
-		for c in rows {
-			host, _ := c.someip_endpoint()
-			h := normalised_bind_host(host)
-			if h == '0.0.0.0' {
-				any_wildcard = true
+	for i, a in rows {
+		ha, pa := a.someip_endpoint()
+		for b in rows[i + 1..] {
+			hb, pb := b.someip_endpoint()
+			if pa != pb {
+				continue
 			}
-			if h in hosts {
-				dup_host = true
+			na := normalised_bind_host(ha)
+			nb := normalised_bind_host(hb)
+			if !someip.addr_covers(na, nb) && !someip.addr_covers(nb, na) {
+				continue
 			}
-			hosts[h] = true
+			out << '${a.name} and ${b.name} both listen on port ${pa}; UDP lets both bind, then each datagram reaches only ONE of them — give them different ports, or keep one'
 		}
-		// Different specific addresses on one port do NOT overlap — two NICs, two listeners, a
-		// legitimate setup. Only a wildcard (which covers them all) or the same address twice.
-		if !any_wildcard && !dup_host {
-			continue
-		}
-		names := rows.map(it.name)
-		out << '${names.join(' and ')} all listen on port ${port}; UDP lets every one of them bind, then each datagram reaches only ONE — give them different ports, or keep one'
 	}
 	return out
 }
