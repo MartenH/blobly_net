@@ -1696,3 +1696,23 @@ fn test_two_someip_rows_on_one_endpoint_warn() {
 	off[1].enabled = false
 	assert someip_endpoint_warnings(off).len == 0
 }
+
+// The spellings a person writes fold together; the claim registry resolves the rest.
+fn test_endpoint_warning_folds_written_spellings() {
+	mk := fn (name string, host string) Channel {
+		return Channel{
+			name:    name
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:${host}:30491'
+			enabled: true
+		}
+	}
+	// localhost and 127.0.0.1 are one socket, however they are spelled
+	assert someip_endpoint_warnings([mk('A', 'localhost'), mk('B', '127.0.0.1')]).len == 1
+	assert someip_endpoint_warnings([mk('A', 'LOCALHOST'), mk('B', '127.0.0.1')]).len == 1
+	// and the wildcard still covers a specific one
+	assert someip_endpoint_warnings([mk('A', '0.0.0.0'), mk('B', '192.168.0.5')]).len == 1
+	// two real NICs remain two listeners
+	assert someip_endpoint_warnings([mk('A', '192.168.0.5'), mk('B', '10.0.0.5')]).len == 0
+}

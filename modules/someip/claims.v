@@ -24,6 +24,8 @@
 // already does.
 module someip
 
+import net
+
 // Claim is one live listener: where it binds, and who to name in a refusal.
 struct Claim {
 	host  string
@@ -45,6 +47,33 @@ fn wildcard_host(h string) bool {
 	return h == '' || h == '0.0.0.0' || h == '::' || h == '[::]'
 }
 
+// canonical_host is the address a bind on `host` will ACTUALLY use, which is what two claims
+// have to be compared on. Two spellings of one address — `localhost` and `127.0.0.1`,
+// `LOCALHOST` and `localhost`, a hostname and the address it resolves to — are different strings
+// and the same socket, so comparing the strings accepted both claims and let the kernel split
+// the stream between them: the registry would have been defeated by a synonym.
+//
+// Resolved through the same call `net.listen_udp` uses, so the answer cannot disagree with the
+// bind. A name that does not resolve falls back to its lowercased spelling: the bind is about to
+// fail anyway and will say so, and a claim is never the right place to report a bad address.
+// The wildcard is answered without resolving — it is the one host whose meaning is a rule rather
+// than an address.
+fn canonical_host(host string) string {
+	if wildcard_host(host) {
+		return '0.0.0.0'
+	}
+	h := host.trim_space().trim('[]')
+	addrs := net.resolve_addrs(bind_addr(h, 1), .unspec, .udp) or {
+		return h.to_lower()
+	}
+	if addrs.len == 0 {
+		return h.to_lower()
+	}
+	// the address without the port we passed only to make it resolvable
+	s := addrs[0].str()
+	return if i := s.last_index(':') { s[..i].trim('[]') } else { s }
+}
+
 // overlaps: could one datagram be delivered to either of these two binds?
 fn overlaps(ha string, pa int, hb string, pb int) bool {
 	if pa != pb {
@@ -60,17 +89,18 @@ fn overlaps(ha string, pa int, hb string, pb int) bool {
 // Every listener in this process calls it before binding, and calls release_endpoint when it
 // closes — the GUI row for the life of its run, a Lua window for the life of its window.
 pub fn claim_endpoint(host string, port int, owner string) ! {
+	canon := canonical_host(host)
 	mut held := ''
 	lock someip_claims {
 		for c in someip_claims.live {
-			if overlaps(host, port, c.host, c.port) {
+			if overlaps(canon, port, c.host, c.port) {
 				held = c.owner
 				break
 			}
 		}
 		if held == '' {
 			someip_claims.live << Claim{
-				host:  host
+				host:  canon
 				port:  port
 				owner: owner
 			}
@@ -84,9 +114,10 @@ pub fn claim_endpoint(host string, port int, owner string) ! {
 // release_endpoint drops the claim `owner` holds on host:port. Safe to call when none is held,
 // so a caller may release unconditionally on its way out.
 pub fn release_endpoint(host string, port int, owner string) {
+	canon := canonical_host(host)
 	lock someip_claims {
 		for i, c in someip_claims.live {
-			if c.owner == owner && c.host == host && c.port == port {
+			if c.owner == owner && c.host == canon && c.port == port {
 				someip_claims.live.delete(i)
 				return
 			}

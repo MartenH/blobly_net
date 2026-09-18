@@ -37,3 +37,28 @@ fn test_release_of_an_unheld_claim_is_a_noop() {
 	}
 	release_endpoint('0.0.0.0', 39003, 'channel ETH9')
 }
+
+// Two spellings of one address are one endpoint. Comparing the strings accepted both claims and
+// let the kernel split the stream between them — a synonym defeating the whole registry.
+fn test_a_synonym_is_not_a_second_endpoint() {
+	claim_endpoint('127.0.0.1', 39010, 'channel ETH1')!
+	for spelling in ['localhost', 'LOCALHOST', '127.0.0.1'] {
+		if _ := claim_endpoint(spelling, 39010, 'a script') {
+			release_endpoint(spelling, 39010, 'a script')
+			assert false, '"${spelling}" was accepted beside 127.0.0.1'
+		} else {
+			assert err.msg().contains('channel ETH1'), err.msg()
+		}
+	}
+	release_endpoint('LOCALHOST', 39010, 'channel ETH1') // released by any spelling of it
+	claim_endpoint('localhost', 39010, 'a script')!
+	release_endpoint('127.0.0.1', 39010, 'a script')
+}
+
+fn test_canonical_host_answers_the_wildcard_without_resolving() {
+	assert canonical_host('') == '0.0.0.0'
+	assert canonical_host('0.0.0.0') == '0.0.0.0'
+	assert canonical_host('::') == '0.0.0.0'
+	// a name that cannot resolve keeps its spelling: the bind reports it, not the claim
+	assert canonical_host('no-such-host.invalid') == 'no-such-host.invalid'
+}

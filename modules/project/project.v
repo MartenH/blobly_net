@@ -2042,6 +2042,21 @@ pub fn (c Channel) address_config_error() ?string {
 // each shows part of the stream, and neither is told why it is missing messages. The CAN side has
 // `check_destinations` for the same class of mistake; a listener needs its own because "the same
 // endpoint" here is a bind address, not a wire.
+// normalised_bind_host folds the spellings of one bind address that a person actually writes:
+// case, brackets, and the loopback names. It does NOT resolve — this runs on every Start and per
+// row in the Buses panel, and a validator that performs DNS answers differently depending on the
+// network it is asked on, which is the last thing a config check should do. The authority for
+// "these two are the same socket" is someip.claim_endpoint, which resolves because it runs once,
+// at the moment of binding, and must not disagree with the bind. This is the cheap half: it
+// catches what someone types, and the claim catches the rest.
+fn normalised_bind_host(host string) string {
+	h := host.trim_space().trim('[]').to_lower()
+	return match h {
+		'', '0.0.0.0', '::', 'localhost', '127.0.0.1', '::1' { '0.0.0.0' }
+		else { h }
+	}
+}
+
 pub fn someip_endpoint_warnings(chs []Channel) []string {
 	mut out := []string{}
 	// KEYED ON THE PORT, not on the rendered address. Two rows overlap when the kernel could
@@ -2066,13 +2081,14 @@ pub fn someip_endpoint_warnings(chs []Channel) []string {
 		mut dup_host := false
 		for c in rows {
 			host, _ := c.someip_endpoint()
-			if host == '' || host == '0.0.0.0' || host == '::' {
+			h := normalised_bind_host(host)
+			if h == '0.0.0.0' {
 				any_wildcard = true
 			}
-			if host in hosts {
+			if h in hosts {
 				dup_host = true
 			}
-			hosts[host] = true
+			hosts[h] = true
 		}
 		// Different specific addresses on one port do NOT overlap — two NICs, two listeners, a
 		// legitimate setup. Only a wildcard (which covers them all) or the same address twice.

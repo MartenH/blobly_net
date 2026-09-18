@@ -507,20 +507,6 @@ fn (app &App) phys_for_locked(iface string) string {
 // the plan handed to open_taps_for_run. Written out twice, the check would have gone stale the
 // first time a tap was added for a new reason. Caller holds app.mu (phys_for_locked walks
 // app.chans).
-// iface_is_eth_locked: does this interface string belong to an Ethernet row? Asked of the
-// interface rather than the row because a generator names a destination, not an index.
-// Caller holds app.mu.
-fn (app &App) iface_is_eth_locked(iface string) bool {
-	for c in app.chans {
-		if c.iface == iface {
-			return c.eth()
-		}
-	}
-	// Not a row of this project: decided by the scheme, so a stale or hand-written target is
-	// still refused rather than handed to the CAN transport.
-	return iface.starts_with('someip') || iface.starts_with('doip')
-}
-
 fn (app &App) tap_plan_locked() []TapWant {
 	mut plan := []TapWant{}
 	for ch in app.chans {
@@ -535,7 +521,7 @@ fn (app &App) tap_plan_locked() []TapWant {
 		// that resolves there — an adapter change carries generators across) still planned a CAN
 		// transmit tap on `someip:0.0.0.0:30490`. Start then opens that string as a device name
 		// and reports a driver failure for a row the UI calls passive.
-		if tgt != '' && !app.iface_is_eth_locked(tgt) {
+		if tgt != '' && !iface_is_eth(tgt) {
 			plan << TapWant{sr.chan, tgt, app.phys_for_locked(tgt)}
 		}
 	}
