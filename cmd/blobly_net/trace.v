@@ -34,6 +34,13 @@ struct TraceRow {
 	esi  bool
 	name string
 	data []u8
+	// A SOME/IP message, not a CAN frame — a KIND, for the same reason `fd` is one above: `id`
+	// here is a 32-bit service:method, and every CAN consumer of (id, ext) would otherwise read
+	// it as a 29-bit arbitration id. The filter would match a real CAN frame of the same number,
+	// the row click would offer it to Send, and the context menu would decode its payload with
+	// whatever DBC frame happens to carry that id. So the row says what it is and those
+	// consumers ask (panel_trace.v).
+	someip bool
 	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
 	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
@@ -407,7 +414,7 @@ fn (app &App) load_owner_locked(key string) int {
 	mut spawning := -1
 	mut enabled := -1
 	for i, c in app.chans {
-		if c.doip || transport.destination_key(c.iface) != key {
+		if c.eth() || transport.destination_key(c.iface) != key {
 			continue
 		}
 		if c.running {
@@ -450,7 +457,7 @@ fn (mut app App) wire_rates_locked(i int) (int, int) {
 	mut nominal := 0
 	mut data := 0
 	for c in app.chans {
-		if c.doip || !c.monitorable() || transport.destination_key(c.iface) != key {
+		if c.eth() || !c.monitorable() || transport.destination_key(c.iface) != key {
 			continue
 		}
 		if nominal == 0 {

@@ -117,13 +117,13 @@ fn test_doip_listen_from_resolves_or_refuses() {
 // The port rule itself, every branch, without a VM in between.
 fn test_listen_port_rule() {
 	// no `from`: the request, or the DoIP default
-	assert listen_port(0, '', 0)! == 13400
-	assert listen_port(13555, '', 0)! == 13555
+	assert listen_port(0, '', 0, 13400, 'entity')! == 13400
+	assert listen_port(13555, '', 0, 13400, 'entity')! == 13555
 	// `from`: the channel's port, and a request that agrees is not a contradiction
-	assert listen_port(0, 'Alt', 13555)! == 13555
-	assert listen_port(13555, 'Alt', 13555)! == 13555
+	assert listen_port(0, 'Alt', 13555, 13400, 'entity')! == 13555
+	assert listen_port(13555, 'Alt', 13555, 13400, 'entity')! == 13555
 	// a request that disagrees is refused, naming both
-	if p := listen_port(13400, 'Alt', 13555) {
+	if p := listen_port(13400, 'Alt', 13555, 13400, 'entity') {
 		assert false, 'accepted a contradicting port: ${p}'
 	} else {
 		assert err.msg().contains('contradicts')
@@ -200,4 +200,73 @@ fn test_someip_listen_shapes_messages_and_reports_malformed() {
 	t.wait()
 	assert env.total() == 2
 	assert env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
+}
+
+// someip.listen's `from` names a channel and takes its port and group; what it cannot resolve
+// or what contradicts it is refused. The success path binds the channel's own port.
+fn test_someip_listen_from_resolves_or_refuses() {
+	port := testports.someip.slot(2, 1)
+	mut env := new_env([
+		ChanInfo{
+			name:  'CAN1'
+			iface: 'inproc:UT'
+			db:    sample_db()
+		},
+		ChanInfo{
+			name:    'ETH1'
+			iface:   'someip:0.0.0.0:${port}'
+			carrier: Carrier{
+				someip: true
+				host:   '0.0.0.0'
+				port:   port
+			}
+		},
+		ChanInfo{
+			name:    'LIVE'
+			iface:   'someip:0.0.0.0:${port + 7}'
+			live:    true
+			carrier: Carrier{
+				someip: true
+				host:   '0.0.0.0'
+				port:   port + 7
+			}
+		},
+	]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	t := spawn send_someip_after('127.0.0.1:${port}', 300 * time.millisecond, [
+		someip.notification(0x0100, 0x8001, 1, [u8(0x11), 0x22, 0x33]),
+	])
+	env.run_source('
+		local function refused(needle, ...)
+			local ok, err = pcall(someip.listen, ...)
+			check.truthy(not ok, "accepted: " .. tostring(needle))
+			check.truthy(string.find(tostring(err), needle, 1, true), "wrong refusal: " .. tostring(err))
+		end
+		test("an unknown channel is refused by name", function()
+			refused(\'unknown channel "Nope"\', 10, { from = "Nope" })
+		end)
+		test("a CAN channel has no SOME/IP port to listen on", function()
+			refused("is not a SOME/IP channel", 10, { from = "CAN1" })
+		end)
+		test("a port that contradicts the channel is refused, not overruled", function()
+			refused("contradicts", 10, { from = "ETH1", port = ${port + 1} })
+		end)
+		test("uds.open on a SOME/IP channel is refused as not a diagnostics carrier", function()
+			local ok, err = pcall(uds.open, "ETH1")
+			check.truthy(not ok and tostring(err):find("not a diagnostics carrier", 1, true), tostring(err))
+		end)
+		test("a channel this run is already reading is refused, not split", function()
+			local ok, err = pcall(someip.listen, 10, { from = "LIVE" })
+			check.truthy(not ok and tostring(err):find("SPLIT", 1, true), tostring(err))
+		end)
+		test("from takes the channel port", function()
+			local seen = someip.listen(1200, { from = "ETH1" })
+			check.equal(#seen, 1)
+			check.equal(seen[1].method, 0x8001)
+		end)
+	')!
+	t.wait()
+	assert env.total() == 6
+	assert env.passed() == 6, env.results.filter(!it.ok).map(it.msg).str()
 }

@@ -236,6 +236,16 @@ fn idstr(id u32, ext bool) string {
 	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
 
+// idstr_row renders the row's id AS ITS KIND reads it: a SOME/IP message id is a service and a
+// method, which is how a dissector, the standard and blobly_emb's config all spell it, and
+// rendering it as one 32-bit number invites reading it as a CAN id.
+fn idstr_row(id u32, ext bool, someip bool) string {
+	if someip {
+		return '0x${u16(id >> 16):04X}:${u16(id):04X}'
+	}
+	return idstr(id, ext)
+}
+
 // kind_mark labels a frame whose KIND is not classic CAN. A 64-byte payload is obvious from the
 // data column, but an FD frame carrying eight bytes or fewer looks exactly like a classic one,
 // and BRS never shows at all — so the trace would claim a frame that was never on the bus.
@@ -298,7 +308,7 @@ fn trace_pass(r TraceRow, filt string) bool {
 		return r.origin.to_lower() == origin_filter.to_lower()
 	}
 	hay :=
-		'${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
+		'${idstr_row(r.id, r.ext, r.someip)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -400,7 +410,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_row()
 			trace_idx_t_cells(r)
 			vgui.table_cell(r.ch)
-			vgui.table_cell(idstr(r.id, r.ext))
+			vgui.table_cell(idstr_row(r.id, r.ext, r.someip))
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
@@ -420,6 +430,7 @@ mut:
 	ch     string
 	id     u32
 	ext    bool
+	someip bool // the row's kind, carried so the CAN consumers below can refuse it
 	fd     bool
 	brs    bool
 	rtr    bool
@@ -461,8 +472,18 @@ fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr b
 	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}'
 }
 
+// gkey_someip: a SOME/IP message's group identity. Prefixed so it can never collide with a CAN
+// group of the same number on the same channel — the kind is part of the identity, not a
+// decoration on it.
+fn gkey_someip(ch string, id u32) string {
+	return 'S|${org_rx}|${ch.len}:${ch}|${id}'
+}
+
 // gkey: the row's own group identity.
 fn (r TraceRow) gkey() string {
+	if r.someip && r.key.len == 0 {
+		return gkey_someip(r.ch, r.id)
+	}
 	if r.key.len > 0 {
 		return r.key
 	}
@@ -533,6 +554,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				ch:     r.ch
 				id:     r.id
 				ext:    r.ext
+				someip: r.someip
 				fd:     r.fd
 				brs:    r.brs
 				rtr:    r.rtr
@@ -635,19 +657,26 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			if lb.label.len == 0 || lb.name != name_now {
 				lb = GLabel{
 					name:  name_now
-					label: '${idstr(g.id, g.ext)}  ${name_now}###${k}'
+					label: '${idstr_row(g.id, g.ext, g.someip)}  ${name_now}###${k}'
 					ctx:   'rowctx##${k}'
 				}
 				app.glabels[k] = lb
 			}
 			open := vgui.tree_node_table(lb.label)
-			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
-			if vgui.is_item_clicked() {
+			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter").
+			// NOT a SOME/IP row: `sel_id`/`sel_ext` are a CAN arbitration id and feed the Send
+			// panel, so selecting a service:method there would offer to transmit it as a 29-bit
+			// CAN frame on whatever bus Send is pointed at.
+			if vgui.is_item_clicked() && !g.someip {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}
-			// right-click a row → context menu (plot its signals / add to filter)
-			if vgui.begin_popup_context_item(lb.ctx) {
+			// right-click a row → context menu (plot its signals / add to filter). Both entries
+			// are CAN-only for the same reason: `find_message` looks the number up in the loaded
+			// DBCs, so a SOME/IP id that happens to equal an extended CAN id would offer to
+			// decode a service payload with that frame's signal layout; and the filter is keyed
+			// on (id, ext) with no kind, so watching one would also match the CAN frame.
+			if !g.someip && vgui.begin_popup_context_item(lb.ctx) {
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
@@ -712,8 +741,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			}
 			if open {
 				// an expanded RTR group decodes nothing: its newest frame has no payload,
-				// only a DLC placeholder (see TraceRow.has_payload)
-				if m := app.find_message(g.id, g.ext) {
+				// only a DLC placeholder (see TraceRow.has_payload); and an expanded SOME/IP
+				// group decodes nothing because its payload layout is the deployment's, not a
+				// DBC's (decoding it from an emb node's config is the next rung).
+				if m := app.find_message_kind(g.id, g.ext, g.someip) {
 					for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 						lbl := s.label(r.data)
 						extra := if lbl != '' { ' (${lbl})' } else { '' }

@@ -75,6 +75,7 @@ fn (mut app App) sync_cfg_bufs() {
 			manifest_buf:     mkbuf(ch.manifest, 128)
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
+			group_buf:        mkbuf(ch.group, 48)
 			ecu_buf:          mkbuf('0x${ch.ecu_addr:X}', 12)
 			vin_buf:          mkbuf(ch.vin, 20)
 			replay_src_buf:   mkbuf(rsrc, 128)
@@ -169,6 +170,9 @@ fn (mut app App) commit_cfg() {
 				name: ch.name
 				why:  why
 			}
+		}
+		if ch.adapter == 'someip' {
+			ch.group = vgui.buf_str(b.group_buf).trim_space()
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
@@ -572,7 +576,7 @@ fn (mut app App) set_adapter(i int, a string) {
 	// for a DoIP adapter — so every Start warned that a DoIP channel was configured as CAN-FD, a
 	// configuration error the editor itself had created and the operator could not undo. Save
 	// persisted `fd: true` beside `type: doip` as well (codex #183 r2).
-	if a == 'doip' {
+	if a == 'doip' || a == 'someip' {
 		app.proj.channels[i].fd = false
 		app.proj.channels[i].data_bitrate = 0
 	}
@@ -603,9 +607,9 @@ fn (mut app App) set_adapter(i int, a string) {
 		can_silence := project.adapters.filter(project.adapter_silences_transceiver(it))
 		app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (${can_silence.join(' and ')} can)')
 	}
-	if a == 'doip' {
-		app.proj.channels[i].typ = 'doip'
-	} else if app.proj.channels[i].typ == 'doip' {
+	if a == 'doip' || a == 'someip' {
+		app.proj.channels[i].typ = a
+	} else if app.proj.channels[i].typ in ['doip', 'someip'] {
 		app.proj.channels[i].typ = 'can'
 	}
 	// rebind_senders makes the assignment itself: it has to see the rows both before and after to

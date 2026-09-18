@@ -1130,7 +1130,7 @@ fn test_fd_disagreement_is_per_wire() {
 fn test_an_fd_row_on_a_backend_that_refuses_fd_warns() {
 	mut examined := 0
 	for a in adapters {
-		if transport.adapter_carries_fd(a) || a == 'doip' {
+		if transport.adapter_carries_fd(a) || a in ['doip', 'someip'] {
 			continue
 		}
 		row := Channel{
@@ -1578,4 +1578,121 @@ fn test_mode_off_loads_as_a_disabled_row() {
 	}
 	assert q.channels[0].mode == .normal
 	assert !q.channels[0].enabled
+}
+
+// A SOME/IP channel: a listener endpoint, not a CAN bus and not a diagnostics carrier.
+fn test_someip_channel() {
+	p := parse('project:\n  name: s\nchannels:\n  - name: ETH1\n    adapter: someip\n    address: "0.0.0.0:30491"\n    group: 239.1.2.3\n') or {
+		panic(err)
+	}
+	c := p.channels[0]
+	assert c.is_someip()
+	assert c.is_eth()
+	assert !c.is_doip()
+	assert c.typ == 'someip'
+	assert c.iface == 'someip:0.0.0.0:30491'
+	assert c.group == '239.1.2.3'
+	host, port := c.someip_endpoint()
+	assert host == '0.0.0.0'
+	assert port == 30491
+}
+
+// The endpoint grammar is ONE grammar (eth_endpoint), so what DoIP refuses SOME/IP refuses:
+// trailing garbage, a letter-for-digit typo and a zero port keep the whole string as the host
+// and fail loudly at bind, instead of silently listening somewhere the operator did not name.
+fn test_someip_endpoint_refuses_a_bad_port_loudly() {
+	for bad in ['0.0.0.0:30491x', '0.0.0.0:3O491', '0.0.0.0:0', '0.0.0.0:abc', '0.0.0.0:99999'] {
+		h, p := Channel{
+			iface: 'someip:${bad}'
+		}.someip_endpoint()
+		assert h == bad, 'someip:${bad} silently split into ${h}:${p}'
+		assert p == 30490
+	}
+	// and the bracketed-IPv6 rule DoIP already had
+	h6, p6 := Channel{
+		iface: 'someip:[::1]:30491'
+	}.someip_endpoint()
+	assert h6 == '::1' && p6 == 30491
+	hb, pb := Channel{
+		iface: 'someip:[::1]'
+	}.someip_endpoint()
+	assert hb == '::1' && pb == 30490
+}
+
+fn test_someip_endpoint_defaults() {
+	// The wildcard, not localhost: a listener wants every interface, and a multicast join
+	// needs it. `type: someip` with no interface inherits vcan0, which is not a host.
+	h0, p0 := Channel{
+		typ: 'someip'
+	}.someip_endpoint()
+	assert h0 == '0.0.0.0' && p0 == 30490
+	h1, p1 := Channel{
+		iface: 'someip:192.168.0.5'
+	}.someip_endpoint()
+	assert h1 == '192.168.0.5' && p1 == 30490
+	h2, p2 := Channel{
+		iface: 'someip::30491'
+	}.someip_endpoint()
+	assert h2 == '0.0.0.0' && p2 == 30491
+}
+
+// Save writes what parse reads: adapter, address and group, and no CAN protocol/bitrate lines.
+fn test_someip_round_trip() {
+	orig := Project{
+		name:     'net'
+		channels: [
+			Channel{
+				name:    'ETH1'
+				adapter: 'someip'
+				address: '0.0.0.0:30491'
+				typ:     'someip'
+				iface:   'someip:0.0.0.0:30491'
+				group:   '239.1.2.3'
+			},
+		]
+	}
+	y := orig.to_yaml()
+	assert !y.contains('protocol:'), y
+	assert !y.contains('bitrate:'), y
+	back := parse(y) or { panic(err) }
+	c := back.channels[0]
+	assert c.is_someip()
+	assert c.iface == 'someip:0.0.0.0:30491'
+	assert c.group == '239.1.2.3'
+}
+
+// Two enabled listeners on one endpoint is a config mistake nothing else reports: UDP lets both
+// bind (SO_REUSEADDR) and then splits the stream between them.
+fn test_two_someip_rows_on_one_endpoint_warn() {
+	rows := [
+		Channel{
+			name:    'ETH1'
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:0.0.0.0:30491'
+			enabled: true
+		},
+		Channel{
+			name:    'ETH2'
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:0.0.0.0:30491'
+			enabled: true
+		},
+		Channel{
+			name:    'ETH3'
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:0.0.0.0:30492'
+			enabled: true
+		},
+	]
+	w := someip_endpoint_warnings(rows)
+	assert w.len == 1, w.str()
+	assert w[0].contains('ETH1') && w[0].contains('ETH2') && w[0].contains('30491'), w[0]
+	assert !w[0].contains('ETH3'), w[0]
+	// a row switched off states nothing about the run
+	mut off := rows.clone()
+	off[1].enabled = false
+	assert someip_endpoint_warnings(off).len == 0
 }

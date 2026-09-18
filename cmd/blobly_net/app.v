@@ -610,6 +610,7 @@ mut:
 	dbc_buf      []u8 // "+ Add DBC" typed-path fallback
 	// DoIP
 	tester_buf []u8
+	group_buf  []u8 // someip: the multicast group to join
 	ecu_buf    []u8
 	vin_buf    []u8
 	// Replay
@@ -721,6 +722,15 @@ fn app_icon() []u8 {
 struct FrameId {
 	id  u32
 	ext bool
+}
+
+// find_message_kind is find_message with the row's KIND: a SOME/IP payload has no DBC frame
+// behind it, so the lookup is refused rather than allowed to match a CAN id of the same number.
+fn (app &App) find_message_kind(id u32, ext bool, someip bool) ?candb.Message {
+	if someip {
+		return none
+	}
+	return app.find_message(id, ext)
 }
 
 fn (app &App) is_fwatched(id u32, ext bool) bool {
@@ -1066,6 +1076,8 @@ fn (mut app App) rebuild_from_proj() {
 			databases:      ch.databases.clone()
 			manifest:       ch.manifest
 			doip:           ch.is_doip()
+			someip:         ch.is_someip()
+			group:          ch.group
 			enabled:        ch.enabled
 			replay_src:     if r := ch.replay { app.resolve_asset(r.source) } else { '' }
 			replay_bus:     if r := ch.replay { r.bus } else { '' }
@@ -1370,7 +1382,7 @@ fn (app &App) worst_bus_load_locked() (f32, bool) {
 	mut worst := f32(0)
 	mut any := false
 	for c in app.chans {
-		if c.running && !c.doip && c.load_hist.len > 0 {
+		if c.running && !c.eth() && c.load_hist.len > 0 {
 			any = true
 			if c.load_pct > worst {
 				worst = c.load_pct

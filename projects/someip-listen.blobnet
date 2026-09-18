@@ -1,0 +1,17 @@
+# A SOME/IP listener beside a blobly_emb node. Run emb's examples/host_someip (it publishes
+# its events to 127.0.0.1:30491) and Start: every event is a trace row on ETH1 — service:method,
+# its type, the raw payload. Nothing is sent.
+#
+# From a script, INSTEAD of Start rather than beside it:
+#   someip.listen(1500, { from = "ETH1" })
+# Two sockets on one UDP port split the stream rather than share it, so that call is refused
+# while the run holds the port (docs/bus_config_dialog.md). Headless it is the whole story:
+#   scripts/runtests.sh --project projects/someip-listen.blobnet your_suite.lua
+project:
+  name: SOME/IP listener — blobly_emb host_someip
+channels:
+  - name: ETH1
+    adapter: someip
+    address: "0.0.0.0:30491"
+    mode: normal
+    enabled: true

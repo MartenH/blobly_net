@@ -52,7 +52,7 @@ fn test_collect_hears_unicast_and_counts_the_malformed() {
 		packed,
 		ev()[..10],
 	])
-	cap := collect(port, 700, '')!
+	cap := collect('', port, 700, '')!
 	t.wait()
 	assert cap.malformed == 1
 	assert cap.messages.len == 3, 'heard ${cap.messages.len}'
@@ -70,7 +70,7 @@ fn test_collect_hears_a_multicast_group_it_joined() {
 	port := uniq_port(1)
 	group := testports.group()
 	t := spawn send_after('${group}:${port}', 200 * time.millisecond, [ev()])
-	cap := collect(port, 800, group) or {
+	cap := collect('', port, 800, group) or {
 		eprintln('skip: no multicast here: ${err}')
 		t.wait()
 		return

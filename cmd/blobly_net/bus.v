@@ -27,6 +27,8 @@ struct Chan {
 	databases    []string
 	manifest     string
 	doip         bool
+	someip       bool   // a SOME/IP listener row (bus.v eth(): the one "not a CAN wire" rule)
+	group        string // multicast group the listener joins ('' = unicast only)
 	// Replay configuration, when mode == 'replay'. Held on the channel because the worker needs
 	// it after Start, and the project may have been edited since.
 	replay_src     string
@@ -83,7 +85,15 @@ mut:
 }
 
 fn (c Chan) monitorable() bool {
-	return c.enabled && c.mode in ['normal', 'replay'] && !c.doip
+	return c.enabled && c.mode in ['normal', 'replay'] && !c.eth()
+}
+
+// eth: an Ethernet row of either kind — DoIP (a diagnostics endpoint) or SOME/IP (a listener).
+// Every site that asks "is this a CAN wire?" (taps, load, replay, the sim loop, the trace's
+// wire ownership) asks this, not `doip`, so the second kind is not missed the way the first
+// one's name-by-name checks would have missed it (project.Channel.is_eth is the model twin).
+fn (c Chan) eth() bool {
+	return c.doip || c.someip
 }
 
 // replay_blocker names the reason a replay-mode channel will not play — '' when nothing
@@ -93,7 +103,7 @@ fn (c Chan) monitorable() bool {
 // grouped panel: its copy tested `typ == 'doip'`, narrower than the is_doip() rule behind
 // c.doip, and an `interface: doip:<host>` row rendered as playable).
 fn (c Chan) replay_blocker() string {
-	return replay_blocker(c.doip, c.listen_only, c.replay_src)
+	return replay_blocker(c.eth(), c.listen_only, c.replay_src)
 }
 
 // The free form exists for the Replay panel's preview, which must judge the MODEL
@@ -101,9 +111,9 @@ fn (c Chan) replay_blocker() string {
 // Configure's checkboxes until apply_edits, and Start folds the model first, so a preview
 // read from Chan showed "(one clock)" over a channel Start was about to drop (codex #136
 // r1). One rule, two adapters; the clauses live only here.
-fn replay_blocker(doip bool, listen_only bool, src string) string {
-	if doip {
-		return 'DoIP channel — replay does not apply'
+fn replay_blocker(eth bool, listen_only bool, src string) string {
+	if eth {
+		return 'Ethernet channel — replay does not apply'
 	}
 	if listen_only {
 		// listen_only means NEVER TRANSMIT, which is what the editor promises and what a
@@ -526,6 +536,7 @@ fn adapter_tip(a string) string {
 		'vector' { 'Vector hardware (Windows). The address is an APPLICATION channel number as Vector Hardware Manager numbers them (1, 2…) — the rates belong in the bitrate fields below, not here. Needs vxlapi64.dll, which is a separate download from the drivers.' }
 		'cansub' { 'CSS Electronics CANsub.4 (any platform). The address is the device id and channel, e.g. 1A2B3C4D/1 — nothing else: the rates belong in the bitrate fields below, and an @rate typed here is appended twice and refused. Channels are numbered 1 to 4. Reached over USB-Ethernet by device id through mDNS, so there is no driver to install and no IP to write down.' }
 		'doip' { 'Diagnostics over Ethernet (ISO 13400) — NOT a CAN bus. The address is host:port (default 127.0.0.1:13400); set the tester/ECU logical addresses below.' }
+		'someip' { 'SOME/IP listener — NOT a CAN bus, and nothing is sent. The address is the bind host:port (default 0.0.0.0:30490); a multicast group below is joined on it. Every message heard becomes a trace row: the 32-bit message id, its type, the raw payload.' }
 		else { '' }
 	}
 }
@@ -766,6 +777,7 @@ fn adapter_hint(a string) string {
 		'kvaser' { '0 — Kvaser channel index' }
 		'vector' { '1 — Vector application channel (see Vector Hardware Manager)' }
 		'doip' { '127.0.0.1:13400 — host:port' }
+		'someip' { '0.0.0.0:30490 — bind host:port' }
 		'cansub' { '1A2B3C4D/1 — device id / channel' }
 		else { '' }
 	}

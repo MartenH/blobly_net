@@ -125,6 +125,9 @@ fn main() {
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
+	for w in project.someip_endpoint_warnings(proj.channels) {
+		eprintln('warning: ${w}')
+	}
 	// Which wires may transmit, through the same call the GUI makes. The runner honoured
 	// listen-only nowhere before #117: `bus.send` from a script reached the wire whatever the
 	// project said, and a simulated node on a silenced row transmitted at its own cadence.
@@ -150,6 +153,14 @@ fn main() {
 		// so a `type: doip` channel printed "+ UDS server" while spawning a CAN responder on an
 		// interface no CAN transport can open — the project documented an entity that was never
 		// listening. Start the real thing here.
+		if ch.is_someip() {
+			// A listener endpoint: no bus to open, no entity to host. Scripts reach it through
+			// someip.listen({ from = name }), which binds it for the window it asks for.
+			host, port := ch.someip_endpoint()
+			grp := if ch.group != '' { ', group ${ch.group}' } else { '' }
+			println('channel ${ch.name} (someip:${host}:${port}${grp}): SOME/IP listener — someip.listen({ from = "${ch.name}" })')
+			continue
+		}
 		if ch.is_doip() {
 			if nodes.len == 0 {
 				println('channel ${ch.name} (${ch.iface}): DoIP tester only (no simulated entity)')

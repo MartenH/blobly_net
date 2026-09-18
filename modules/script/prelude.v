@@ -146,30 +146,36 @@ someip = {}
 -- heard by a plain bind). An event a service sends only to subscribers is not among them; see
 -- docs/scripting.md and docs/ethernet_architecture.md.
 --
--- opts = { port = 30490, group = "239.x.x.x" }. `group` joins that multicast group on the port.
+-- opts = { port = 30490, group = "239.x.x.x", from = "ETH1" }. `group` joins that multicast group
+-- on the port, and is refused on a unicast bind host (the kernel would drop the group traffic).
+-- `from` names a someip channel of the project and takes its bind host, port and group (a port,
+-- or a group differing from the channel own, is an error, not overruled) -- and is refused while
+-- the GUI is reading that channel, because two sockets on one UDP port SPLIT the stream.
 -- Each message: { at_ms=, from="host:port", service=, method=, event=bool, type="notification"|
--- "request"|"response"|"error"|0xNN, iface=, client=, session=, rc=, payload=<bytes> }.
+-- "request"|"response"|"error"|"type nn", iface=, client=, session=, rc=, payload=<bytes> }.
 -- `malformed` counts datagrams that could not be read to the end -- reported, never hidden.
-local someip_types = { [0x00] = "request", [0x02] = "notification",
-                       [0x80] = "response", [0x81] = "error" }
 function someip.listen(window_ms, opts)
   opts = opts or {}
   if opts.group ~= nil and (type(opts.group) ~= "string" or opts.group == "") then
     error("someip.listen: group must be a multicast address (a non-empty string), got " ..
           (type(opts.group) == "string" and "an empty string" or type(opts.group)), 2)
   end
-  local raw, malformed = __someip_listen(opts.port or 0, window_ms or 1000, opts.group or "")
+  if opts.from ~= nil and (type(opts.from) ~= "string" or opts.from == "") then
+    error("someip.listen: from must be a channel name (a non-empty string), got " ..
+          (type(opts.from) == "string" and "an empty string" or type(opts.from)), 2)
+  end
+  local raw, malformed = __someip_listen(opts.port or 0, window_ms or 1000, opts.group or "",
+                                         opts.from or "")
   local out = {}
   for line in tostring(raw):gmatch("[^\n]+") do
     local at, from, svc, mth, iface, mtype, client, session, rc, hex =
-      line:match("^(%d+)|([^|]+)|(%x+)|(%x+)|(%x+)|(%x+)|(%x+)|(%x+)|(%x+)|(%x*)$")
+      line:match("^(%d+)|([^|]+)|(%x+)|(%x+)|(%x+)|([%w ]+)|(%x+)|(%x+)|(%x+)|(%x*)$")
     if at then
       local method = tonumber(mth, 16)
-      local t = tonumber(mtype, 16)
       out[#out+1] = {
         at_ms = tonumber(at), from = from,
         service = tonumber(svc, 16), method = method, event = method >= 0x8000,
-        type = someip_types[t] or t, iface = tonumber(iface, 16),
+        type = mtype:lower(), iface = tonumber(iface, 16),
         client = tonumber(client, 16), session = tonumber(session, 16), rc = tonumber(rc, 16),
         payload = fromhex(hex),
       }

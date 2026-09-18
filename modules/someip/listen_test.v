@@ -59,3 +59,24 @@ fn test_split_empty_datagram_is_whole_and_empty() {
 	assert whole
 	assert msgs.len == 0
 }
+
+// A multicast group on a unicast bind is refused by name. The kernel drops group-addressed
+// datagrams on a socket bound to one address however well the join succeeded, so the listener
+// would sit there green and silent — the one outcome this whole module exists to prevent.
+fn test_a_group_on_a_unicast_bind_is_refused() {
+	check_group_bind('0.0.0.0', '239.1.2.3')!
+	check_group_bind('', '239.1.2.3')!
+	check_group_bind('192.168.0.5', '')! // no group, no rule
+	if _ := check_group_bind('192.168.0.5', '239.1.2.3') {
+		assert false, 'a group on a unicast bind was accepted'
+	} else {
+		assert err.msg().contains('wildcard'), err.msg()
+	}
+}
+
+fn test_bind_addr_brackets_an_ipv6_literal() {
+	assert bind_addr('', 30490) == '0.0.0.0:30490'
+	assert bind_addr('127.0.0.1', 30491) == '127.0.0.1:30491'
+	assert bind_addr('::1', 30491) == '[::1]:30491'
+	assert bind_addr('[::1]', 30491) == '[::1]:30491'
+}

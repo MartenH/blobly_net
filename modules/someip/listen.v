@@ -65,29 +65,59 @@ pub fn split(buf []u8) ([]Message, bool) {
 	return out, true
 }
 
-// collect listens on `port` for `window_ms` and returns what arrived. `group` non-empty joins
-// that IPv4 multicast group on the bound socket; a join that fails is an error, not a quiet
-// empty window (transport.udp_window's rule).
-pub fn collect(port int, window_ms int, group string) !Capture {
-	got := transport.udp_window('0.0.0.0:${port}', group, '0.0.0.0', window_ms)!
+// ingest reads ONE datagram into the capture — the malformed rule, in one place, for every
+// caller (the one-shot window below and the GUI channel's continuous reader). A datagram that
+// is not SOME/IP to its end counts once: empty, truncated, a Length under the minimum, or a
+// trailing fragment. The messages that parsed before the fault are kept.
+pub fn (mut cap Capture) ingest(d transport.Datagram) {
+	if d.data.len == 0 {
+		cap.malformed++ // an empty datagram is on the wire and is not a message
+		return
+	}
+	msgs, whole := split(d.data)
+	if !whole {
+		cap.malformed++
+	}
+	for m in msgs {
+		cap.messages << Observed{
+			at_ms:   d.at_ms
+			from:    d.from
+			header:  m.header
+			payload: m.payload
+		}
+	}
+}
+
+// bind_addr is the address a listener binds for `host`:`port` — the wildcard when no host is
+// named. IPv6 literals are bracketed here so a caller may pass a bare `::1`.
+pub fn bind_addr(host string, port int) string {
+	h := if host == '' { '0.0.0.0' } else { host }
+	if h.contains(':') && !h.starts_with('[') {
+		return '[${h}]:${port}'
+	}
+	return '${h}:${port}'
+}
+
+// check_group_bind refuses a multicast group on a UNICAST bind address. A socket bound to one
+// address receives only what is addressed to it, so the kernel drops group-addressed datagrams
+// after a perfectly successful IP_ADD_MEMBERSHIP: the listener would sit green and silent. The
+// refusal names the fix rather than quietly rewriting the address the operator configured.
+pub fn check_group_bind(host string, group string) ! {
+	if group == '' || host == '' || host == '0.0.0.0' || host == '::' || host == '[::]' {
+		return
+	}
+	return error('cannot join ${group} while bound to ${host}: a multicast join needs the wildcard address (leave the host empty, or use 0.0.0.0)')
+}
+
+// collect listens on `host`:`port` for `window_ms` and returns what arrived. `group` non-empty
+// joins that IPv4 multicast group on the bound socket; a join that fails is an error, not a
+// quiet empty window (transport.udp_bind's rule).
+pub fn collect(host string, port int, window_ms int, group string) !Capture {
+	check_group_bind(host, group)!
+	got := transport.udp_window(bind_addr(host, port), group, '0.0.0.0', window_ms)!
 	mut cap := Capture{}
 	for d in got {
-		if d.data.len == 0 {
-			cap.malformed++ // an empty datagram is on the wire and is not a message
-			continue
-		}
-		msgs, whole := split(d.data)
-		if !whole {
-			cap.malformed++
-		}
-		for m in msgs {
-			cap.messages << Observed{
-				at_ms:   d.at_ms
-				from:    d.from
-				header:  m.header
-				payload: m.payload
-			}
-		}
+		cap.ingest(d)
 	}
 	return cap
 }
