@@ -221,17 +221,13 @@ fn test_someip_listen_from_resolves_or_refuses() {
 				port:   port
 			}
 		},
-		ChanInfo{
-			name:    'LIVE'
-			iface:   'someip:0.0.0.0:${port + 7}'
-			live:    true
-			carrier: Carrier{
-				someip: true
-				host:   '0.0.0.0'
-				port:   port + 7
-			}
-		},
 	]) or { panic(err) }
+	// A GUI row's claim, made the way someip_rx_loop makes it, so the Lua path meets the real
+	// registry rather than a stand-in for it.
+	someip.claim_endpoint('0.0.0.0', port + 7, 'channel ETH9') or { panic(err) }
+	defer {
+		someip.release_endpoint('0.0.0.0', port + 7, 'channel ETH9')
+	}
 	env.on_output = fn (s string) {}
 	defer { env.close() }
 	t := spawn send_someip_after('127.0.0.1:${port}', 300 * time.millisecond, [
@@ -256,13 +252,13 @@ fn test_someip_listen_from_resolves_or_refuses() {
 			local ok, err = pcall(uds.open, "ETH1")
 			check.truthy(not ok and tostring(err):find("not a diagnostics carrier", 1, true), tostring(err))
 		end)
-		test("a channel this run is already reading is refused, not split", function()
-			local ok, err = pcall(someip.listen, 10, { from = "LIVE" })
-			check.truthy(not ok and tostring(err):find("SPLIT", 1, true), tostring(err))
-		end)
-		test("naming the live port directly is refused too, not just naming the channel", function()
+		test("an endpoint another listener in this process holds is refused, not split", function()
+			-- claimed below as a GUI row would claim it; the refusal must name the holder
+			-- whichever of the two started first (someip/claims.v owns that rule and its tests)
 			local ok, err = pcall(someip.listen, 10, { port = ${port + 7} })
-			check.truthy(not ok and tostring(err):find("SPLIT", 1, true), tostring(err))
+			check.truthy(not ok, "an overlapping window was accepted")
+			check.truthy(tostring(err):find("SPLIT", 1, true), tostring(err))
+			check.truthy(tostring(err):find("channel ETH9", 1, true), tostring(err))
 		end)
 		test("from takes the channel port", function()
 			local seen = someip.listen(1200, { from = "ETH1" })
@@ -271,6 +267,6 @@ fn test_someip_listen_from_resolves_or_refuses() {
 		end)
 	')!
 	t.wait()
-	assert env.total() == 7
-	assert env.passed() == 7, env.results.filter(!it.ok).map(it.msg).str()
+	assert env.total() == 6
+	assert env.passed() == 6, env.results.filter(!it.ok).map(it.msg).str()
 }

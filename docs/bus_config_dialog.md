@@ -93,7 +93,11 @@ reader". If a second blobly_net, a vsomeip tool or another copy of this project 
 port, each sees part of the stream and neither is told. The DoIP entity's "cannot bind" rule
 does not carry over: that one listens on TCP, where a second listener really is refused.
 
-Two consequences worth knowing. A script must not listen on a port a running row already holds —
-`someip.listen({ from = … })` refuses that by name while the run is on, because splitting the
-stream silently is worse than saying no. And messages on this row are shown in the trace but are
-**not recorded**: a recording holds CAN frames, so the Log says so once when Record is on.
+Within one blobly_net, though, it IS settled: every listener claims its endpoint first, so a
+script window and a channel row cannot end up on the same port whichever of the two starts
+first. The second one is refused and told which holds it — the Log names the script, or the
+script's error names the channel. Across processes nothing can do that, which is what the
+paragraph above is about.
+
+And messages on this row are shown in the trace but are **not recorded**: a recording holds CAN
+frames, so the Log says so once when Record is on.

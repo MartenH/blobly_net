@@ -121,6 +121,13 @@ pub fn check_group_bind(host string, group string) ! {
 // quiet empty window (transport.udp_bind's rule).
 pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	check_group_bind(host, group)!
+	// Claimed for the life of the window, so a GUI row cannot be started onto this endpoint
+	// underneath it and split the stream — and so this window is refused if a row already holds
+	// it. See claims.v for why a successful bind cannot answer that question.
+	claim_endpoint(host, port, 'a script')!
+	defer {
+		release_endpoint(host, port, 'a script')
+	}
 	got := transport.udp_window(bind_addr(host, port), group, '0.0.0.0', window_ms)!
 	mut cap := Capture{}
 	for d in got {

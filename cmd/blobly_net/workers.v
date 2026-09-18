@@ -1519,9 +1519,6 @@ fn script_worker(app &App, path string) {
 			db:      a.script_db(ch)
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
 			carrier: script.carrier_of(pch)
-			// This run already holds that endpoint (see ChanInfo.live). Read from the snapshot
-			// the reader slot above makes safe, like every other field here.
-			live: ch.someip && (ch.running || ch.spawning)
 		}
 	}
 	mut env := script.new_env(chans) or {
@@ -1723,6 +1720,17 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	someip.check_group_bind(host, group) or {
 		someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
 		return
+	}
+	// Claimed before the bind, released when this reader closes. Within this process that is the
+	// only thing that CAN refuse a second listener: the bind itself always succeeds (claims.v).
+	// Symmetric with the Lua window, so the refusal lands on whichever of the two started second.
+	owner := 'channel ${chname}'
+	someip.claim_endpoint(host, port, owner) or {
+		someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
+		return
+	}
+	defer {
+		someip.release_endpoint(host, port, owner)
 	}
 	// The bind and the join, with the row told about either failure: a listener that could not
 	// bind must show idle and say why. NOTE a successful bind does not mean sole ownership —

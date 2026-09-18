@@ -37,13 +37,6 @@ pub:
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
 	nodes []project.NodeCfg
-	// Is a reader of THIS PROCESS already on this channel's endpoint? Only the GUI sets it (the
-	// headless runner spawns no readers). It exists for one refusal: this V forces SO_REUSEADDR
-	// on every UDP socket, so a script that binds a port the running row already holds does not
-	// fail — it SPLITS the stream, and each unicast datagram then reaches exactly one of the
-	// two. Either the script reports an empty window or the trace goes quiet, with nothing said.
-	// Refusing is the only honest answer available, since the bind cannot be made exclusive.
-	live bool
 	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
 	// channel whatever its type, so a DoIP channel failed with "No such device" from the CAN
 	// layer: the tool could simulate a DoIP ECU it could not then test.
@@ -666,34 +659,12 @@ fn (env &Env) someip_chan(name string) !ChanInfo {
 	if !info.carrier.someip {
 		return error('"${name}" is not a SOME/IP channel')
 	}
-	if info.live {
-		return error(live_endpoint_refusal(name))
-	}
+	// WHO holds this endpoint is not asked here. It was, through a `live` flag the GUI filled in
+	// when it built the environment, and a snapshot can only answer one ordering: a script that
+	// began while the GUI was stopped carried `live = false` for its whole window, and a Start
+	// during it spawned the row onto the same port. someip.claim_endpoint answers both orderings
+	// from one registry, at the moment either side actually binds (someip/claims.v).
 	return info
-}
-
-// live_endpoint_refusal is the one wording for "this run already reads that endpoint".
-fn live_endpoint_refusal(name string) string {
-	return '"${name}" is already being listened to by this run — a second socket on that port would SPLIT the stream, not share it (each datagram reaches only one of them). Stop the run, or read the trace instead of listening from a script'
-}
-
-// live_someip_on names a live channel whose listener would collide with binding `host`:`port`,
-// or none. ASKED OF THE ENDPOINT, not of the channel name: `from = "ETH1"` is only one way to
-// reach a port, and a script that simply passes `port = 30491` was splitting the very stream the
-// `from` refusal exists to protect. Overlap is the kernel's rule — same port, and either side
-// bound to the wildcard (which covers every address) or to the same address.
-fn (env &Env) live_someip_on(host string, port int) ?string {
-	for c in env.chans {
-		if !c.live || !c.carrier.someip || c.carrier.port != port {
-			continue
-		}
-		a := if host == '' { '0.0.0.0' } else { host }
-		b := if c.carrier.host == '' { '0.0.0.0' } else { c.carrier.host }
-		if a == b || a == '0.0.0.0' || b == '0.0.0.0' {
-			return c.name
-		}
-	}
-	return none
 }
 
 fn l_doip_discover(l lua.State) int {
@@ -794,11 +765,8 @@ fn l_someip_listen(l lua.State) int {
 	use_port := listen_port(port, from, from_port, someip.default_port, 'listener') or {
 		return l.fail('someip.listen: ${err}')
 	}
-	// The endpoint, however the script named it. The `from` path is refused by someip_chan above
-	// before it resolves; this catches the bare `port =` form, which reaches the same socket.
-	if live := env_of(l).live_someip_on(host, use_port) {
-		return l.fail('someip.listen: ${live_endpoint_refusal(live)}')
-	}
+	// The claim inside collect() refuses an endpoint another listener in this process holds,
+	// however the script named it — by channel or by bare port, both reach the same socket.
 	cap := someip.collect(host, use_port, window, group) or {
 		return l.fail('someip.listen(${use_port}): ${err}')
 	}

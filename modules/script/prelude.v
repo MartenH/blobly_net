@@ -149,8 +149,9 @@ someip = {}
 -- opts = { port = 30490, group = "239.x.x.x", from = "ETH1" }. `group` joins that multicast group
 -- on the port, and is refused on a unicast bind host (the kernel would drop the group traffic).
 -- `from` names a someip channel of the project and takes its bind host, port and group (a port,
--- or a group differing from the channel own, is an error, not overruled) -- and is refused while
--- the GUI is reading that channel, because two sockets on one UDP port SPLIT the stream.
+-- or a group differing from the channel own, is an error, not overruled). An endpoint another
+-- listener in this process holds is refused and names it, however this call spelled the endpoint:
+-- two sockets on one UDP port SPLIT the stream rather than share it.
 -- Each message: { at_ms=, from="host:port", service=, method=, event=bool, type="notification"|
 -- "request"|"response"|"error"|"type nn", iface=, client=, session=, rc=, payload=<bytes> }.
 -- `malformed` counts datagrams that could not be read to the end -- reported, never hidden.
