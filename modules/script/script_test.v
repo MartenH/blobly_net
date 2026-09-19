@@ -274,3 +274,45 @@ fn test_someip_listen_from_resolves_or_refuses() {
 	assert env.total() == 7
 	assert env.passed() == 7, env.results.filter(!it.ok).map(it.msg).str()
 }
+
+// Nothing makes channel names unique, and the lookup used to take the first match — so a
+// primitive acted on whichever row was written first, and a per-carrier refusal could reject a
+// perfectly good row for not being one. Refused by name now, for every primitive.
+fn test_a_duplicated_channel_name_is_refused_not_guessed() {
+	port := testports.someip.slot(2, 1)
+	mut env := new_env([
+		ChanInfo{
+			name:  'ETH'
+			iface: 'inproc:UT'
+			db:    sample_db()
+		},
+		ChanInfo{
+			name:    'ETH'
+			iface:   'someip:0.0.0.0:${port}'
+			carrier: Carrier{
+				someip: true
+				host:   '0.0.0.0'
+				port:   port
+			}
+		},
+	]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer { env.close() }
+	env.run_source('
+		local function refused(fn_, ...)
+			local ok, err = pcall(fn_, ...)
+			check.truthy(not ok, "an ambiguous name was accepted")
+			check.truthy(string.find(tostring(err), "names more than one channel", 1, true),
+				"wrong refusal: " .. tostring(err))
+		end
+		test("someip.listen refuses an ambiguous name rather than taking the first row", function()
+			refused(someip.listen, 10, { from = "ETH" })
+		end)
+		test("and so does every other primitive that names a channel", function()
+			refused(uds.open, "ETH")
+			refused(sim.fault, "ETH", "SUT", "Powertrain", "drop", 10)
+		end)
+	')!
+	assert env.total() == 2
+	assert env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
+}
