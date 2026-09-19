@@ -311,11 +311,13 @@ mode it only selects: the picker has no "replace?" prompt, so only the Save butt
 Enter or the Open button act on the selection the same way. #270 had made a click select only,
 because a hand that double-clicks a folder lands its second click in the folder the first one
 entered; that click is now recognised as the second of a double and ignored, so one click per
-folder is back. The price: a click within ImGui's double-click window of one that changed the
-listing — 300 ms, and within 6 px of it — does nothing, whatever changed the listing (a row,
-the drive dropdown, `.. up`, a typed path), so a hand descending a tree by the top row faster
-than that loses every second click; wait a beat, or move the mouse. The path field at the top
-takes a typed folder or file — Enter or **Open path**. On Windows a **drive
+folder is back. The price: a click ON A ROW within ImGui's double-click window of one that
+changed the listing — 300 ms, and within 6 px of it — does nothing, whatever changed the
+listing (a row, the drive dropdown, `.. up`, a typed path), so a hand descending a tree by the
+top row faster than that loses every second click; wait a beat, or move the mouse. The guard
+is for the rows, which move under the pointer; the buttons stay where they are and behave as
+buttons, so a double click on `.. up` is two ups. The path field at the top takes a typed
+folder or file — Enter or **Open path**. On Windows a **drive
 dropdown** offers every drive (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
 `roots_windows.v` / `roots_nix.v`) and every WSL distribution (`wsl: Ubuntu`, entering
 `\\wsl.localhost\Ubuntu\`; the names come from the registry, `wsl_roots`) from the start
