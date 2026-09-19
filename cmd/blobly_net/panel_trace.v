@@ -732,6 +732,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						vgui.text_dim(tok) // unchanged → dimmed
 					}
 				}
+				// THE SAME MARKER THE CHRONOLOGICAL VIEW SHOWS, and this is the DEFAULT view:
+				// without it the bytes read as the whole message, and the missing tail is only
+				// inferable by comparing them against the len column by hand.
+				if r.truncated() {
+					vgui.same_line()
+					vgui.text_dim('… +${r.full_len() - r.data.len}')
+				}
 			}
 			// all-time total (survives the ring trim); fall back to the window count.
 			total := gcount[k] or { u64(g.count) }

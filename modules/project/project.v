@@ -992,8 +992,9 @@ fn parse_channel(c yaml.Any) !Channel {
 	if ch.adapter == 'doip' || proto == 'doip' {
 		ch.typ = 'doip'
 		if ch.adapter != 'doip' {
-			// v1 `type: doip` — the interface may already carry `doip:<endpoint>`.
-			if ch.iface.starts_with('doip') {
+			// v1 `type: doip` — the interface may already carry `doip:<endpoint>`. Matched as a
+			// SCHEME for its sibling's reason below.
+			if iface_scheme_is(ch.iface, 'doip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)
 			} else {
 				ch.adapter = 'doip'
@@ -1004,7 +1005,14 @@ fn parse_channel(c yaml.Any) !Channel {
 	} else if ch.adapter == 'someip' || proto == 'someip' {
 		ch.typ = 'someip'
 		if ch.adapter != 'someip' {
-			if ch.iface.starts_with('someip') {
+			// THE SCHEME, not a prefix (iface_scheme_is, the rule the rest of this file uses).
+			// `type: someip` beside a raw `someip0` or a malformed `someipx:30491` was read as a
+			// scheme, handed to decompose_iface — which correctly calls it SocketCAN — and the
+			// row came out `typ: someip` on a CAN adapter: someip_endpoint then fell back to
+			// 0.0.0.0:30490 silently, and a structured save omitted the protocol (is_someip() is
+			// true) so the file reloaded as ordinary CAN. A bad spelling must fail, not bind
+			// somewhere nobody named and change type on the way out.
+			if iface_scheme_is(ch.iface, 'someip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)
 			} else {
 				ch.adapter = 'someip'

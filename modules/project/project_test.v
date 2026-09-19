@@ -1765,3 +1765,23 @@ fn test_endpoint_warning_keeps_address_families() {
 	}.someip_endpoint()
 	assert h == '::1' && pnum == 30491
 }
+
+// A v1-style row whose `type:` says Ethernet but whose interface is a raw CAN name must not be
+// read as a scheme: it used to come out `typ: someip` on a SocketCAN adapter, bind the default
+// endpoint nobody named, and lose its protocol on the next structured save.
+fn test_a_bad_eth_spelling_is_not_read_as_a_scheme() {
+	for raw in ['someip0', 'someipx:30491'] {
+		p := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "${raw}"\n') or {
+			panic(err)
+		}
+		c := p.channels[0]
+		assert c.adapter == 'someip', '${raw}: adapter=${c.adapter}'
+		assert c.iface == 'someip', '${raw}: iface=${c.iface}'
+	}
+	// the real scheme still migrates
+	ok := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "someip:0.0.0.0:30491"\n') or {
+		panic(err)
+	}
+	assert ok.channels[0].adapter == 'someip'
+	assert ok.channels[0].address == '0.0.0.0:30491'
+}

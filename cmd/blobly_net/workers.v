@@ -1673,7 +1673,12 @@ fn (mut a App) carry_load_locked(ci int) {
 fn someip_row_name(h someip.Header) string {
 	kind := someip.msg_type_name(h.msg_type)
 	if h.msg_type == someip.mt_notification {
-		return kind
+		// A notification's request id is always zero, so there is no correlation to show — but a
+		// NONZERO RETURN CODE is, because the wire contract says a notification carries none
+		// (someip.check_fixed_fields) and this row is the only place it could ever appear. The
+		// listener parses structurally and does not apply the envelope gate, so a row that
+		// dropped this rendered an invalid header as a perfectly ordinary one.
+		return if h.return_code != 0 { '${kind} rc=${h.return_code:02X}' } else { kind }
 	}
 	mut s := '${kind} ${h.client:04X}:${h.session:04X}'
 	if h.return_code != 0 {
