@@ -81,7 +81,7 @@ Two things enter the same trace from somewhere other than a wire:
 
 ## Where to read next
 
-- **CAN backends and the shared hub:** [one_reader_per_wire.md](one_reader_per_wire.md) · [can_hardware.md](can_hardware.md) · windows_[can_hardware.md](can_hardware.md)
+- **CAN backends and the shared hub:** [one_reader_per_wire.md](one_reader_per_wire.md) · [can_hardware.md](can_hardware.md) · [windows_can_hardware.md](windows_can_hardware.md)
 - **Ethernet:** [ethernet_architecture.md](ethernet_architecture.md) (why DoIP first, then SOME/IP; the tester/SUT split with
   blobly_emb) · [doip.md](doip.md) · [bus_config_dialog.md](bus_config_dialog.md) (the `someip` row, and what a UDP bind cannot promise)
 - **Simulation and the network model:** [simulation_architecture.md](simulation_architecture.md) · [simulation.md](simulation.md)
