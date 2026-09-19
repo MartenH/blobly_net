@@ -957,3 +957,32 @@ fn test_what_is_remembered_about_finished_transfers_does_not_grow_without_end() 
 	// the table has been swept rather than holding one entry per pair that ever completed
 	assert r.settled.len <= max_sessions + 1, 'settled holds ${r.settled.len}'
 }
+
+// A clear-to-send for a transfer this side has already finished is the receiver asking for a
+// packet again, so the window in which its retransmission is recognised runs from THAT frame.
+// Timed from the original completion alone, a CTS late in the handshake could be answered
+// after the memory of the transfer had gone stale.
+fn test_a_clear_to_send_renews_a_finished_transfer_before_its_retransmission() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
+	for seq in 1 .. 4 {
+		r.observe(dt_id(0x00, 0x03), true, false, false, dt(seq, p), f64(seq * 10))
+	}
+	assert r.pending() == 0
+	// the receiver asks again, near the end of its own window
+	r.observe(cm_id(0x03, 0x00), true, false, false, cts(1, 2, data_pgn), 1200)
+	// and the packet arrives after the ORIGINAL completion would have gone stale
+	late := r.observe(dt_id(0x00, 0x03), true, false, false, dt(2, p), 2000)
+	assert late.done.len == 0 && late.aborted.len == 0
+	assert r.counts().orphan_dt == 0
+	// a clear-to-send naming ANOTHER group renews nothing
+	mut o := Reassembler{}
+	o.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
+	for seq in 1 .. 4 {
+		o.observe(dt_id(0x00, 0x03), true, false, false, dt(seq, p), f64(seq * 10))
+	}
+	o.observe(cm_id(0x03, 0x00), true, false, false, cts(1, 2, 0x00FEF1), 1200)
+	o.observe(dt_id(0x00, 0x03), true, false, false, dt(2, p), 2000)
+	assert o.counts().orphan_dt == 1
+}

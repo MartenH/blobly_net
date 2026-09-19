@@ -845,7 +845,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// DBCs, so a SOME/IP id that happens to equal an extended CAN id would offer to
 			// decode a service payload with that frame's signal layout; and the filter is keyed
 			// on (id, ext) with no kind, so watching one would also match the CAN frame.
-			if !g.someip && vgui.begin_popup_context_item(lb.ctx) {
+			// The same exclusion as the click above, and for the same two reasons: a rebuilt
+			// row's identifier was never on the wire, and it cannot be told from a sibling
+			// transfer to another receiver by (id, ext) — which is what a watch and a filter
+			// are both keyed on. Gating the CLICK alone left both menus doing exactly what the
+			// click was stopped from doing (codex).
+			if !g.someip && !g.tp.rebuilt() && vgui.begin_popup_context_item(lb.ctx) {
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
@@ -945,7 +950,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						vgui.table_set_col(gcol_name)
 						// selectable spans the cell so the whole row is a right-click target
 						vgui.selectable('    ${s.name}##sigrow${g.id}_${g.ext}_${s.name}', false)
-						if vgui.begin_popup_context_item('sigctx##${g.id}_${g.ext}_${s.name}') {
+						// Not on a rebuilt row: a watch is keyed on (id, ext), which cannot
+						// separate two transfers of one broadcast group to different
+						// receivers — the same reason its parent row is not selectable.
+						if !g.tp.rebuilt()
+							&& vgui.begin_popup_context_item('sigctx##${g.id}_${g.ext}_${s.name}') {
 							if vgui.menu_item('Add ${s.name} to Graphics') {
 								app.add_watch(g.id, g.ext, s.name)
 								app.show_graphics = true

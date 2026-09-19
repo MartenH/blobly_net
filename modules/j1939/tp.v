@@ -44,6 +44,14 @@ pub const tp_max_size = 255 * tp_bytes_per_packet // 1785
 // with a reason beats evicting a transfer that is halfway through.
 pub const max_sessions = 64
 
+// Settled is a transfer this side COMPLETED: when, and which group it carried, so a later
+// control frame naming that group can be recognised as belonging to it.
+struct Settled {
+	pgn u32
+mut:
+	at f64
+}
+
 // max_holds bounds how many consecutive HOLD clear-to-sends keep one transfer alive.
 //
 // A CTS offering zero packets is the receiver saying "not yet" — J1939-21's hold — and a
@@ -178,7 +186,7 @@ mut:
 	// asked to have sent again is recognised rather than counted as a transfer nobody
 	// announced. The sender is entitled to retransmit: this observer finished early, the
 	// intended receiver did not (codex).
-	settled     map[u64]f64
+	settled     map[u64]Settled
 	tail_orphan bool // the last observe() saw an orphan packet: see orphan_seen()
 }
 
@@ -257,8 +265,8 @@ pub fn tp_frame(id u32, ext bool, rtr bool, fd bool, len int) bool {
 // what a retransmitted packet belongs to. Ages its own entries as it goes, so a long
 // measurement does not accumulate one per transfer.
 fn (mut r Reassembler) recently_settled(k u64, now f64) bool {
-	at := r.settled[k] or { return false }
-	if now - at <= settled_ms {
+	e := r.settled[k] or { return false }
+	if now - e.at <= settled_ms {
 		return true
 	}
 	r.settled.delete(k)
@@ -275,8 +283,8 @@ fn (mut r Reassembler) prune_settled(now f64) {
 		return
 	}
 	mut stale := []u64{}
-	for k, at in r.settled {
-		if now - at > settled_ms {
+	for k, e in r.settled {
+		if now - e.at > settled_ms {
 			stale << k
 		}
 	}
@@ -595,7 +603,21 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// frame's own addresses. Read only to keep the session alive: packets are placed by
 		// their sequence numbers, so which one the receiver asks for next changes nothing
 		// about where they land.
-		k := r.session_named(pgn, [key_of(iid.ps, iid.sa)]) or { return }
+		k := r.session_named(pgn, [key_of(iid.ps, iid.sa)]) or {
+			// No OPEN transfer — but this side may have finished one the receiver has not: a
+			// clear-to-send naming that group is the receiver asking for a packet again, so
+			// the window in which its retransmission is recognised runs from HERE. Without
+			// this, a CTS late in the handshake could be answered after the original
+			// completion had already gone stale (codex, on the previous round's own fix).
+			e := r.settled[key_of(iid.ps, iid.sa)] or { return }
+			if e.pgn == pgn {
+				r.settled[key_of(iid.ps, iid.sa)] = Settled{
+					pgn: e.pgn
+					at: t_ms
+				}
+			}
+			return
+		}
 		mut s := r.sessions[k]
 		next := int(data[2])
 		n := int(data[1])
@@ -704,7 +726,10 @@ fn (mut r Reassembler) packet(iid Id, data []u8, t_ms f64, swept []u64, mut done
 		r.sessions.delete(k)
 		if s.kind == .cm {
 			// Only connection mode: a BAM has no receiver that could ask for a packet again.
-			r.settled[k] = t_ms
+			r.settled[k] = Settled{
+				pgn: s.pgn
+				at: t_ms
+			}
 		}
 		done << TpMessage{
 			priority: s.priority
