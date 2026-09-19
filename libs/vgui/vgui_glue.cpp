@@ -845,6 +845,35 @@ int vgui_begin_dialog(const char* title, int* p_open) {
     *p_open = open ? 1 : 0;
     return vis ? 1 : 0;
 }
+// vgui_pin_next_window_within: the NEXT window CANNOT LEAVE THE MAIN WINDOW, as VS Code's
+// dialogs cannot (ours since the single-click revisit of #270; every vgui_begin_dialog since
+// the same review). Called before the dialog's Begin. Two things keep it there. It is PINNED
+// to the main viewport, so ImGui never gives it an OS window of its own when it is dragged
+// past the edge -- multi-viewport is on, and every other floating window becomes one out
+// there -- and its position is CLAMPED to the viewport's work area, since ImGui's own clamp
+// keeps only a corner visible (DisplayWindowPadding), whereas a drag past the edge should park
+// it at the edge. The clamp is asked BEFORE Begin, from the size the window had last frame:
+// clamped after Begin, the title bar would draw where the mouse put it and the body where the
+// clamp did, for every frame of a drag past the edge. The FIRST frame of a session has no
+// window to read, so it is not clamped: a position imgui.ini remembers from a session where
+// the picker floated on another monitor draws it off-screen -- clipped, invisible -- for that
+// one frame, and the second frame parks it. Its size is bounded by the work area first, or a
+// window wider than the main window could satisfy neither edge; the same bound is what a
+// main-window resize shrinks it by.
+void vgui_pin_next_window_within(const char* title) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), vp->WorkSize);
+    if (ImGuiWindow* w = ImGui::FindWindowByName(title)) {
+        float hx = vp->WorkPos.x + vp->WorkSize.x - w->Size.x;
+        float hy = vp->WorkPos.y + vp->WorkSize.y - w->Size.y;
+        if (hx < vp->WorkPos.x) hx = vp->WorkPos.x; // larger than the area: pin the near edge
+        if (hy < vp->WorkPos.y) hy = vp->WorkPos.y;
+        ImVec2 want(w->Pos.x < vp->WorkPos.x ? vp->WorkPos.x : (w->Pos.x > hx ? hx : w->Pos.x),
+                    w->Pos.y < vp->WorkPos.y ? vp->WorkPos.y : (w->Pos.y > hy ? hy : w->Pos.y));
+        if (want.x != w->Pos.x || want.y != w->Pos.y) ImGui::SetNextWindowPos(want, ImGuiCond_Always);
+    }
+}
 void vgui_end() { ImGui::End(); }
 // set_item_tooltip attaches a hover tooltip to the PREVIOUS item (call right after it).
 void vgui_set_item_tooltip(const char* text) {
@@ -975,6 +1004,15 @@ int vgui_key_pressed(int ch) {
 // is under the mouse (#270).
 int vgui_is_item_double_clicked() {
     return (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) ? 1 : 0;
+}
+// vgui_mouse_press_count: how many presses the left button's CURRENT burst has made, on the
+// frame it went down -- 1 for a lone click, 2 for a double -- and 0 on every other frame. A
+// burst is what ImGui says it is: presses within MouseDoubleClickTime and MouseDoubleClickMaxDist
+// of the last. A selectable fires on the RELEASE, where IsMouseDoubleClicked (the press frame
+// only) is already false, so a list that must tell the second click of a double from a click
+// of its own keeps the last count it was told (pickrule.Burst) rather than asking per frame.
+int vgui_mouse_press_count() {
+    return ImGui::GetMouseClickedCount(ImGuiMouseButton_Left);
 }
 // vgui_key_enter_pressed: Enter or keypad Enter went down THIS frame (no auto-repeat). The
 // caller decides whether a focused text field owns it (vgui_any_item_active).

@@ -7,6 +7,7 @@ import runtime
 import project
 import logfile
 import loadrule
+import pickrule
 import transport
 import wiretap
 import candb
@@ -456,7 +457,8 @@ mut:
 	fb_save     bool     // true = save mode (filename input), false = open mode
 	fb_dir      string   // current directory
 	fb_name_buf []u8     // filename (save mode)
-	fb_sel      string   // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
+	fb_sel      string   // the highlighted row: a FILE name in fb_dir (a click enters a folder; #270)
+	fb_burst    pickrule.Burst // the click burst, and whether the listing moved under it (#270)
 	fb_dirs     []string // the listing, filled by fb_refresh — not read from disk per frame
 	fb_roots    []string // the drive dropdown: drives and WSL distributions, read with the listing (#306)
 	fb_root_lbl []string // the drive dropdown's items: a placeholder, then one label per root
