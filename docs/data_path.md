@@ -14,9 +14,11 @@ CAN  vcan/socketcan      open()  →  a Bus per OPENER: the RX loop,       CanFr
      inproc / udp:        handle behind per-Bus cursors                                       Lua opener → Bus
                           (one_reader_per_wire.md); the rest fan out
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
-Eth  doip:<host:port>    DoipClient / DoipServer  (TCP + UDP)          UDS bytes            uds.Client over isotp.Channel
+Eth  doip:<host:port>    TCP: DoipClient / DoipServer                  UDS bytes            uds.Client over isotp.Channel
                           — NOT a Bus: it carries diagnostics,          (no frames)          Diagnostics panel, Lua uds.open
                           so it plugs in one level up, at isotp.Channel                      a hosted entity (sim.doip_entity)
+                          UDP: discovery — doip.discover asks,          announcements        DoIP Discovery dialog,
+                          collect_announcements listens                 (VIN, address, from) Lua doip.discover / doip.listen
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
 Eth  someip:<host:port>  udp_bind + udp_read (transport/udpwindow)      someip.Message       someip_rx_loop → TraceRow (RX, kind=someip)
      [+ group]            Capture.ingest splits datagrams                                   Lua someip.listen → Capture
@@ -73,11 +75,11 @@ Two things enter the same trace from somewhere other than a wire:
 |---|---|---|
 | Trace, Trace (filter), grouped view | `app.trace` rows | groups by row identity — CAN: origin, channel, id, `ext`, `fd`, `brs`, `rtr` (a classic and an FD 0x120 are two rows); SOME/IP: origin, channel, id, message type, both versions, sender, header validity |
 | Signals, Graphics | rows, matched by CAN (id, ext) | kind-gated: never a SOME/IP payload |
-| Record | every CAN frame seen on the wire, our own echoes included → `canlog` (candump `.log`) | **CAN only** — a SOME/IP row is shown, not recorded, and the Log says so once |
+| Record | received CAN frames, plus our own sends as accepted by the driver (`note_emit` appends at emit; an echo, where the backend gives one, confirms it rather than creating it) → `canlog` (candump `.log`) | **not an independent bus capture**: a host-accepted send is in the file whether or not it was seen on the wire. **CAN only** — a SOME/IP row is shown, not recorded, and the Log says so once |
 | Diagnostics | an `isotp.Channel` | over a CAN tap (`isotp.on_bus`) or a `DoipClient` — the same `uds.Client` either way |
 | Lua (`cmd/script`, the Script panel) | `bus.recv`/`bus.send` over a Bus from `env.opener`; `uds.open`; `someip.listen` | the runner opens buses directly; the GUI hands the script a tap, so its sends are `TX` rows |
 | Simulation | sends `TX-S` through a tap, stamped per each simulated node's `protect:` | `modules/sim`, [simulation_architecture.md](simulation_architecture.md) |
-| Verification | checks `RX` frames against the channel's **`verify:`** entries | a DUT is not a simulated node, so its messages can never sit under a `protect:`; `verify:` exists for exactly that ECU (`sim.verifiers_for`) |
+| Verification | checks frames against the channel's **`verify:`** entries — live `RX` in `rx_loop`, and every frame of an opened recording in `load_recording`, whose verdict sits on the `REP` row | a DUT is not a simulated node, so its messages can never sit under a `protect:`; `verify:` exists for exactly that ECU (`sim.verifiers_for`) |
 
 ## Where to read next
 
