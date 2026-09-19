@@ -4,6 +4,9 @@ Agreed 2026-06-29. The plan for bringing **automotive Ethernet protocols** into 
 **DoIP** (diagnostics over IP, ISO 13400) and deferring **SOME-IP** (service-oriented middleware).
 This mirrors `docs/simulation_architecture.md` — design captured before building, oracle-first.
 
+> **Where this sits:** [`data_path.md`](data_path.md) is the one-page map of every carrier — CAN, DoIP,
+> SOME/IP — from the wire to the panels, the scripts and the files. This page is the Ethernet design record.
+>
 > **Looking for how to use DoIP?** This is the design record — why DoIP came before SOME/IP,
 > how the modules are laid out, and how they are verified. For ports, the message flow, what
 > is and is not broadcast, and how to point the app at an ECU, see
