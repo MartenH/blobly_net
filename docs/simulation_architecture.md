@@ -111,6 +111,10 @@ only at the **Network descriptor** (type + database + backend) and the
 protocol-agnostically; encode/decode is per-database. This mirrors the existing
 clean `*_linux.v` / interface split.
 
+Landed against this rule so far (2026-09-19): SOME/IP as its own message type and its own trace row
+*kind*, never a `CanFrame` — see [`data_path.md`](data_path.md) for how the three carriers reach the
+trace, the scripts and the files. LIN remains planned.
+
 ## Project schema growth (`.yml`)
 
 ```yaml
