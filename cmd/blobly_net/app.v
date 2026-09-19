@@ -1063,6 +1063,7 @@ fn (mut app App) rebuild_from_proj() {
 	for ci, ch in proj.channels {
 		app.chans << Chan{
 			proj_idx:       ci // this row's identity; see Chan.proj_idx
+			senders_modelled: !ch.is_someip() // see Chan.senders_modelled
 			name:           ch.name
 			network:        ch.network
 			adapter:        ch.adapter

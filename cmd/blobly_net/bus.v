@@ -35,6 +35,12 @@ struct Chan {
 	// row entirely (a disabled `ETH` before an enabled `ETH`: the script env drops the disabled
 	// one, so nothing looks ambiguous, and the survivor gets the wrong endpoint).
 	proj_idx int = -1
+	// Did the runtime model this row's generators when `app.senders` was built? `sync_senders_into_proj`
+	// asks THIS rather than the row's current kind, because an adapter change rewrites the kind
+	// BEFORE the sync runs — so the kind describes where the row is going while `app.senders`
+	// still describes where it came from, and using it got both transitions wrong in opposite
+	// directions (see the sync).
+	senders_modelled bool = true
 	// Replay configuration, when mode == 'replay'. Held on the channel because the worker needs
 	// it after Start, and the project may have been edited since.
 	replay_src     string

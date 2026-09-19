@@ -1593,7 +1593,11 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 	defer {
 		transport.release_endpoint(shell_canon, bind_port, 'the eth shell')
 	}
-	mut sock := vnet.listen_udp(':${bind_port}') or {
+	// BOUND ON WHAT WAS CLAIMED, the contract every other registered listener keeps: `:<port>`
+	// lets the resolver choose, and it may choose the IPv6 wildcard while the claim reserved the
+	// IPv4 one — so the registry would permit a SOME/IP listener on a v6 address and the split
+	// this claim exists to prevent would be back.
+	mut sock := vnet.listen_udp(someip.bind_addr(shell_canon, bind_port)) or {
 		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
 		return
 	}
