@@ -167,6 +167,7 @@ fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char) int
 fn C.vgui_begin_closable(&char, &int) int
 fn C.vgui_begin_dialog(&char, &int) int
+fn C.vgui_pin_next_window_within(&char)
 fn C.vgui_add_font_merge(&char, f32) int
 fn C.vgui_set_ini_path(&char)
 fn C.vgui_ini_dirty() int
@@ -203,6 +204,7 @@ fn C.vgui_want_text_input() int
 fn C.vgui_any_item_active() int
 fn C.vgui_key_pressed(int) int
 fn C.vgui_is_item_double_clicked() int
+fn C.vgui_mouse_press_count() int
 fn C.vgui_key_enter_pressed() int
 fn C.vgui_line_height() f32
 fn C.vgui_frame_height() f32
@@ -777,12 +779,17 @@ pub fn begin_closable(title string, open bool) (bool, bool) {
 }
 
 // begin_dialog is begin_closable for a DIALOG: a window opened for a moment's task — a picker,
-// a discovery, a preferences sheet, the project editor — which must not be docked (#306). A
-// dialog carries a Close (or Cancel) button; a panel (begin_closable) keeps the title-bar X
-// alone, as dock tabs do. THIS COMMENT IS THE RULE; the callers are the list. The DBC editor is
-// a panel on purpose: it is used beside the trace for as long as a database is being read, and
-// docking it there is the point. Same contract: (visible, open), and ALWAYS call end().
+// a discovery, a preferences sheet, the project editor — which must not be docked (#306) and
+// CANNOT LEAVE THE MAIN WINDOW, the way VS Code's dialogs cannot: pinned to the main viewport,
+// so a drag past the edge never spawns an OS window of its own, and parked at the edge it was
+// dragged past, sized no larger than the main window (vgui_pin_next_window_within). A dialog
+// carries a Close (or Cancel) button; a panel (begin_closable) keeps the title-bar X alone, as
+// dock tabs do, and a panel torn off onto another monitor is the point of multi-viewport. THIS
+// COMMENT IS THE RULE; the callers are the list. The DBC editor is a panel on purpose: it is
+// used beside the trace for as long as a database is being read, and docking it there is the
+// point. Same contract: (visible, open), and ALWAYS call end().
 pub fn begin_dialog(title string, open bool) (bool, bool) {
+	C.vgui_pin_next_window_within(title.str)
 	mut o := if open { 1 } else { 0 }
 	vis := C.vgui_begin_dialog(title.str, &o) == 1
 	return vis, o != 0
@@ -983,6 +990,15 @@ pub fn is_item_clicked() bool {
 // that selects on click and acts on double-click sees both, in that order.
 pub fn is_item_double_clicked() bool {
 	return C.vgui_is_item_double_clicked() == 1
+}
+
+// mouse_press_count is how many presses the left button's current burst has made, ON THE FRAME
+// IT WENT DOWN — 1 for a lone click, 2 for a double — and 0 on any other frame. A selectable
+// fires on the release, so a list that must tell the second click of a double from a click of
+// its own keeps the count it was last told (pickrule.Burst); is_item_double_clicked answers on
+// the press frame only.
+pub fn mouse_press_count() int {
+	return C.vgui_mouse_press_count()
 }
 
 // key_enter_pressed reports whether Enter (main or keypad) went down this frame, no repeat.

@@ -132,9 +132,14 @@ progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`,
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
 never averaged into a cadence (#266); and `cmd/blobly_net/pickrule/`, the file picker's
-grammar — a click selects, a double click enters or accepts, Enter and Open act on the
-selection the same way — and where `..` goes from a Windows drive root (the drives view, so `D:`
-is reachable from `C:`; #270); and `cmd/blobly_net/prefs/`, what the app remembers ACROSS
+grammar — a click enters a folder and selects a file, a double click accepts a file, Enter and
+Open act on the selection the same way, and the second click of a double ON A ROW whose first
+click changed the listing is ignored (#270's hazard, answered by recognising the click —
+`pickrule.Burst` keeps ImGui's press count, `vgui.mouse_press_count`, and is told in `fb_enter`,
+the ONE place the listing changes, whichever control changed it — instead of by taking the
+single click away; the buttons are not guarded, since they do not move under the pointer, so a
+double click on `.. up` is two ups) — and where `..`
+goes from a Windows drive root (the drives view, so `D:` is reachable from `C:`; #270); and `cmd/blobly_net/prefs/`, what the app remembers ACROSS
 runs — the settings file's grammar (`%AppData%\blobly_net\settings.toml`, `~/.config/blobly_net/settings.toml`:
 the external editor command and the UI scale) and how an editor command becomes an argv (#306); and `cmd/blobly_net/panerule/`, the persisted
 divider — how tall a dragged pane is THIS frame (clamped before it is drawn, from what the container
@@ -517,7 +522,13 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   the panel and scripts cannot disagree. A fault that cannot take effect is refused loudly.
 - **Dialogs do not dock** (`vgui.begin_dialog`, #306; the rule is that function's doc comment,
   the callers are the list): a window opened for a moment's task carries a Close (or Cancel) and
-  cannot be docked; a panel keeps the title-bar X alone. A symbol the main font lacks is drawn from
+  cannot be docked; a panel keeps the title-bar X alone. **And a dialog cannot leave the main
+  window** (`vgui_pin_next_window_within`, inside `begin_dialog`; #338): pinned to the main
+  viewport, so a drag past the edge parks it at the edge instead of spawning an OS window —
+  ImGui's own clamp keeps one corner visible, so the position is clamped before Begin from last
+  frame's size, since a clamp after Begin draws the title bar where the mouse put it and the
+  body where the clamp did. A panel torn off onto another monitor is the point of
+  multi-viewport, so panels are not pinned. A symbol the main font lacks is drawn from
   the merged fallback face (`merge_symbol_font`: Segoe UI Symbol / DejaVu Sans), which is what
   made `↻` and `⚠` draw as `?` before. **Settings** (`settings.v`, `prefs`): one per-user home —
   `settings.toml` (editor command, UI scale, dragged panes) and ImGui's `imgui.ini` beside it.

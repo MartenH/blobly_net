@@ -1,11 +1,16 @@
 module pickrule
 
-// THE FILE PICKER'S TWO DECISIONS, AS RULES. What a click on a row does, and where "up" goes
-// from a folder — the two places #270 found the picker wrong: it ENTERED a folder on a single
-// click, so the hand that double-clicks (every native picker's habit) landed its second click
-// on a row of the folder it had just entered; and above a Windows drive root it had nowhere to
-// go, so `D:` could not be reached from `C:` at all. Pure functions over strings and flags, in
-// the shape ../saverule and ../taprule set: the GUI calls them, and the scenarios are the test.
+// THE FILE PICKER'S THREE DECISIONS, AS RULES. What a click on a row does, what a double click,
+// Enter and Open do, and where "up" goes from a folder. Pure functions over strings and flags,
+// in the shape ../saverule and ../taprule set: the GUI calls them, and the scenarios are the
+// test. #270 found the picker wrong twice: it ENTERED a folder on a single click, so the hand
+// that double-clicks (every native picker's habit) landed its second click on a row of the
+// folder it had just entered; and above a Windows drive root it had nowhere to go, so `D:`
+// could not be reached from `C:` at all. #270 answered the first by making a click SELECT
+// only. The single click is BACK — it is how VS Code's picker moves, and one click per folder
+// is what a hand navigating a tree wants — and the hazard is answered where it lives instead:
+// the second click of a double is recognised as one (`click`), and ignored when the first
+// click entered a folder.
 
 // Entry is what kind of row was acted on.
 pub enum Entry {
@@ -18,20 +23,74 @@ pub enum Act {
 	select // highlight the row; nothing else moves
 	enter  // navigate into the folder
 	accept // hand the file to the pending action
+	ignore // a click the hand did not aim: the second of a double, after the first entered a folder
 }
 
 // activate is what a double click, the Enter key and the Open button do to a row of kind `e`
 // — one rule, so the three spellings of "go" agree by construction: a folder is ENTERED, a
-// file ACCEPTED. A single click only ever selects, and is not a question this module answers.
-// In SAVE mode a file is never accepted this way: the picker has no "replace?" prompt, so a
-// double click that overwrote would be the one destructive act in the app with no
-// confirmation; the row selects, the name field takes the name, and only the Save button
+// file ACCEPTED. In SAVE mode a file is never accepted this way: the picker has no "replace?"
+// prompt, so a double click that overwrote would be the one destructive act in the app with
+// no confirmation; the row selects, the name field takes the name, and only the Save button
 // (or Enter in the name field) writes.
 pub fn activate(e Entry, save bool) Act {
 	if e == .dir {
 		return .enter
 	}
 	return if save { Act.select } else { Act.accept }
+}
+
+// Burst is the click-burst state the click rule needs: whether the LISTING WAS REPLACED since
+// the burst began. ImGui counts presses within its double-click time and distance (300 ms and
+// 6 px by default) as one burst, `press` is told every press with its number in the burst
+// (1 for a lone click, 2 for the second of a double), and `listing_replaced` is told every
+// replacement of the listing — by a row, the drive dropdown, `.. up`, a typed path or the menu
+// that opened the picker under the pointer; the GUI says it in the ONE place the listing is
+// replaced, so no entry path can be missed. A selectable reports on the RELEASE, when the
+// burst's last press still names it, which is why the count is kept rather than asked.
+pub struct Burst {
+pub mut:
+	count    int  // presses in the current burst, as of its last press
+	replaced bool // the listing was replaced since this burst's first press
+}
+
+// press is every frame's answer to "how many presses is this one?" — 0 on a frame with no
+// press (ImGui's GetMouseClickedCount), which changes nothing. The first press of a burst
+// begins it: what an earlier burst replaced is not this one's doing.
+pub fn (mut b Burst) press(n int) {
+	if n <= 0 {
+		return
+	}
+	b.count = n
+	if n == 1 {
+		b.replaced = false
+	}
+}
+
+// listing_replaced is what the picker says whenever the rows change under the pointer.
+pub fn (mut b Burst) listing_replaced() {
+	b.replaced = true
+}
+
+// click is what ONE CLICK on a row of kind `e` does. A lone click ENTERS a folder and SELECTS
+// a file. The second or later click of a burst whose listing was replaced is #270's hand: it
+// double-clicked a folder, the first click entered it, and the second lands on whatever row of
+// the new listing sits under the mouse. It is IGNORED whatever that row is — a folder there
+// would be entered, a file there opened, and neither was aimed at. A second click whose burst
+// replaced nothing is a real double click and does what Enter and Open do (activate: accept,
+// or select in save mode). The price is stated in the manual: a click on the same spot within
+// the burst window of one that entered a folder does nothing, so a hand descending a tree by
+// the top row faster than that loses every second click.
+pub fn (b Burst) click(e Entry, save bool) Act {
+	if b.count >= 2 {
+		if b.replaced {
+			return .ignore
+		}
+		return activate(e, save)
+	}
+	if e == .dir {
+		return .enter
+	}
+	return .select
 }
 
 // drives is the folder value that means "list the drive roots" — the level ABOVE a Windows
