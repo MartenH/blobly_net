@@ -363,6 +363,11 @@ pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, fd bool, data []u
 	// session open for as long as they kept coming — reported at EOF as merely unfinished
 	// (codex).
 	mut aborted := r.expire(t_ms)
+	// Which sessions the sweep JUST retired, so the frame that triggered it is not then
+	// reported as belonging to a transfer nobody announced: a data packet arriving past its
+	// own deadline produced the timeout AND the claim that the measurement began mid-transfer,
+	// which is the opposite of what happened (codex).
+	swept := aborted.map(key_of(it.sa, it.da))
 	// The SHAPE, by the one predicate the callers use (`tp_frame`): classic, not remote, eight
 	// bytes. A frame at a transport identifier that is none of those is COUNTED rather than
 	// read, because reading it would mean guessing which field was cut off, or which bytes of
@@ -379,7 +384,7 @@ pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, fd bool, data []u
 	if iid.pf == 0xEC {
 		r.control(iid, data, t_ms, mut aborted)
 	} else {
-		r.packet(iid, data, t_ms, mut done, mut aborted)
+		r.packet(iid, data, t_ms, swept, mut done, mut aborted)
 	}
 	return TpEvents{
 		done: done
@@ -532,6 +537,15 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// about where they land.
 		k := r.session_named(pgn, [key_of(iid.ps, iid.sa)]) or { return }
 		mut s := r.sessions[k]
+		// It also names WHICH packet to send next and HOW MANY, and both must lie inside the
+		// transfer it refers to. An impossible CTS repeated indefinitely would otherwise hold a
+		// stalled transfer open and deny it the timeout it has earned (codex) — the same shape
+		// as the stale-CTS hole the PGN match closed, in the fields beside it.
+		next := int(data[2])
+		n := int(data[1])
+		if next < 1 || next > s.packets || n < 1 || next + n - 1 > s.packets {
+			return
+		}
 		s.last_ms = t_ms
 		s.deadline = t_ms + cm_gap_ms
 		r.sessions[k] = s
@@ -577,13 +591,17 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 }
 
 // packet handles TP.DT: one sequence byte and seven data bytes.
-fn (mut r Reassembler) packet(iid Id, data []u8, t_ms f64, mut done []TpMessage, mut aborted []TpAbort) {
+fn (mut r Reassembler) packet(iid Id, data []u8, t_ms f64, swept []u64, mut done []TpMessage, mut aborted []TpAbort) {
 	k := key_of(iid.sa, iid.ps)
 	mut s := r.sessions[k] or {
 		// No announcement seen: the measurement started mid-transfer, or the announcement was
-		// missed. Counted, not reported -- see the note on the counters.
-		r.orphan_dt++
-		r.tail_orphan = true
+		// missed. Counted, not reported -- see the note on the counters. But NOT when this
+		// call's own sweep just retired that very session: the timeout above has already said
+		// what happened to it, and counting it again would say the opposite.
+		if k !in swept {
+			r.orphan_dt++
+			r.tail_orphan = true
+		}
 		return
 	}
 	seq := int(data[0])

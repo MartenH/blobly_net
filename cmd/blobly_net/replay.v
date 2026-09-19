@@ -221,12 +221,12 @@ fn (mut app App) load_recording(path string) {
 	mut tps := map[string]j1939.Reassembler{}
 	// Narrated after the rows are in, so the Log reads in one piece rather than interleaved
 	// with a 600k-frame import.
-	mut tp_notes := []string{}
-	// Counted SEPARATELY from `tp_notes.len`, which also holds the end-of-file lines: mixing
-	// them made "51 abandonments plus one unfinished-session note" read as nothing omitted, and
-	// made the aggregate overstate how many details were above it (codex).
-	mut tp_aborts := 0
-	mut tp_abort_lines := 0
+	// ONE bounded collector for every abandonment an import narrates, rather than a cap at each
+	// site: capping the per-frame path and not the end-of-file one left a corrupted recording
+	// able to allocate a line per unfinished session anyway (codex, on the fix that added the
+	// first cap). It counts what it keeps and what it could not keep, so the aggregate below
+	// cannot disagree with the details above it either.
+	mut tp_notes := BoundedNotes{}
 	for i in 0 .. log.len() {
 		e := log.at(i)
 		f := e.frame
@@ -296,13 +296,9 @@ fn (mut app App) load_recording(path string) {
 				// appended into a log that keeps 500 — is memory and lock time spent on
 				// something nobody can read (codex). The first `tp_notes_max` say what is
 				// wrong; the count says how much of it there is.
-				if tp_abort_lines < tp_notes_max {
-					tp_abort_lines++
-					// `tp_abort_line` already opens with the bus name, so only the FILE is
-					// added here — naming the bus twice is what reading the session log showed.
-					tp_notes << '${os.base(path)}: ${tp_abort_line(e.iface, ab)}'
-				}
-				tp_aborts++
+				// `tp_abort_line` already opens with the bus name, so only the FILE is added
+				// here — naming the bus twice is what reading the session log showed.
+				tp_notes.add('${os.base(path)}: ${tp_abort_line(e.iface, ab)}')
 			}
 		}
 		// COUNTED for the whole file, like the frame counts above: a rebuilt message before
@@ -354,21 +350,23 @@ fn (mut app App) load_recording(path string) {
 	for ifc in tps.keys() {
 		mut rr := tps[ifc] or { continue }
 		for ab in rr.close(0) {
-			tp_notes << '${os.base(path)}: ${ifc}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} — the recording ends with ${ab.got} of ${ab.packets} packets'
+			tp_notes.add('${os.base(path)}: ${ifc}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} — the recording ends with ${ab.got} of ${ab.packets} packets')
 		}
 		// What was counted rather than reported, said once for the file. A capture that starts
 		// mid-transfer is the ordinary case, and without this line the packets simply produced
 		// no message and nothing said why (codex).
 		c := rr.counts()
 		if c.orphan_dt > 0 || c.malformed > 0 {
-			tp_notes << '${os.base(path)}: ${ifc}: J1939 ${tp_counts_line(c)}'
+			// The per-bus summary is never dropped: it is one line and it is the one that says
+			// why packets produced no message.
+			app.log_append_locked('${os.base(path)}: ${ifc}: J1939 ${tp_counts_line(c)}')
 		}
 	}
-	for n in tp_notes {
+	for n in tp_notes.kept {
 		app.log_append_locked(n)
 	}
-	if tp_aborts > tp_abort_lines {
-		app.log_append_locked('${os.base(path)}: J1939 — ${tp_aborts} abandoned transfers in this recording, of which the first ${tp_abort_lines} are above')
+	if tp_notes.dropped > 0 {
+		app.log_append_locked('${os.base(path)}: J1939 — ${tp_notes.total()} abandoned transfers in this recording, of which the first ${tp_notes.kept.len} are above')
 	}
 	app.mu.unlock()
 	shown := log.len() - first_row
@@ -377,6 +375,31 @@ fn (mut app App) load_recording(path string) {
 	} else {
 		app.notify('loaded ${log.len()} frames from ${os.base(path)}')
 	}
+}
+
+// BoundedNotes collects narration with a ceiling and remembers what it could not keep.
+//
+// One collector rather than a cap per site: the Log keeps 500 lines, so a corrupted capture
+// that abandons a transfer per announcement is memory and lock time spent on something nobody
+// can read — and capping ONE of the two places that add to it left the other able to do exactly
+// that (codex). Counting is part of the collector for the same reason: the aggregate line and
+// the details above it must come from one place, or they contradict each other.
+struct BoundedNotes {
+mut:
+	kept    []string
+	dropped int
+}
+
+fn (mut b BoundedNotes) add(line string) {
+	if b.kept.len < tp_notes_max {
+		b.kept << line
+		return
+	}
+	b.dropped++
+}
+
+fn (b BoundedNotes) total() int {
+	return b.kept.len + b.dropped
 }
 
 // `gen` is the measurement run this loop belongs to. Without it, a Stop→Start inside the 200 ms

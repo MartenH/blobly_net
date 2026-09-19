@@ -502,9 +502,12 @@ mut:
 	id     u32
 	ext    bool
 	someip bool // the row's kind, carried so the CAN consumers below can refuse it
-	// Which part of a J1939 transport session this group is, because `gkey_tp` separates them
-	// and the comparator must separate whatever the key does.
+	// Which part of a J1939 transport session this group is, for the ORDER; the comparator's
+	// last test is the key itself, so nothing here is load-bearing for correctness.
 	tp j1939.Part
+	// The group's key, carried so the comparator can be total. Set where the aggregate is
+	// built, from the row that opened the group.
+	key string
 	someip_type  u8 // its message type: part of the group identity, so part of the order
 	someip_iface u8 // its interface version, for the same reason
 	someip_proto u8 // and its protocol version: an invalid one must not merge into valid traffic
@@ -662,6 +665,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				id:     r.id
 				ext:         r.ext
 				tp:           r.tp
+				key:          r.gkey()
 				someip:       r.someip
 				someip_type:  r.someip_type
 				someip_iface:     r.someip_iface
@@ -742,6 +746,16 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// them equal let the rows swap between redraws (codex).
 		if a.tp != b.tp {
 			return if int(a.tp) < int(b.tp) { -1 } else { 1 }
+		}
+		// AND THE KEY ITSELF, last. Everything above orders the groups the way a reader wants
+		// to see them; this makes the comparator TOTAL by construction, because the key is what
+		// separated them into two groups in the first place. Written as a list of fields it was
+		// wrong twice — the row kind, then a rebuilt message's destination — each time a field
+		// entered the key and not the comparator, and each time two groups compared equal and
+		// swapped between redraws because the aggregates come from a map. A field can still be
+		// added here for ORDER; it no longer has to be added for correctness.
+		if a.key != b.key {
+			return if a.key < b.key { -1 } else { 1 }
 		}
 		// and the message type, for the same reason: it is part of the key, so two groups that
 		// differ only by it are distinct rows and must not compare equal.

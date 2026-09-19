@@ -796,3 +796,44 @@ fn test_a_connection_announcement_must_offer_packets() {
 	assert r.pending() == 0
 	assert !announces_session(cm_id(0x00, 0x03), true, false, false, bad)
 }
+
+// A data packet arriving past its own deadline produced BOTH the timeout and the claim that
+// the measurement began mid-transfer — the opposite of what happened (codex).
+fn test_a_packet_that_is_merely_late_is_not_called_an_unseen_transfer() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, addr_global), true, false, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, false, dt(1, p), 10)
+	ev := r.observe(dt_id(0x00, addr_global), true, false, false, dt(2, p), 1000)
+	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('750 ms')
+	assert r.counts().orphan_dt == 0, 'the timeout already said what became of it'
+	assert !r.orphan_seen()
+	// and a packet for a transfer this side never saw IS still counted
+	r.observe(dt_id(0x21, addr_global), true, false, false, dt(1, p), 1100)
+	assert r.counts().orphan_dt == 1
+	assert r.orphan_seen()
+}
+
+// A clear-to-send names which packet to send next and how many: both must lie inside the
+// transfer it refers to, or an impossible one repeated forever holds a stalled transfer open.
+fn test_a_clear_to_send_must_name_packets_the_transfer_has() {
+	p := payload(20) // 3 packets
+	for bad in [[u8(3), 0], [u8(3), 4], [u8(0), 1], [u8(3), 2]] {
+		mut r := Reassembler{}
+		r.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
+		r.observe(dt_id(0x00, 0x03), true, false, false, dt(1, p), 10)
+		// repeated well past the deadline, and it must not hold the transfer open
+		for t in [f64(600), 1100, 1249] {
+			r.observe(cm_id(0x03, 0x00), true, false, false, cts(bad[0], bad[1], data_pgn), t)
+		}
+		ev := r.observe(cm_id(0x03, 0x00), true, false, false, cts(bad[0], bad[1], data_pgn), 1300)
+		assert ev.aborted.len == 1, '${bad}'
+		assert r.pending() == 0, '${bad}'
+	}
+	// a CTS that names packets the transfer HAS still extends it
+	mut ok := Reassembler{}
+	ok.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
+	ok.observe(cm_id(0x03, 0x00), true, false, false, cts(2, 2, data_pgn), 1000)
+	assert ok.observe(dt_id(0x00, 0x03), true, false, false, dt(2, p), 2000).aborted.len == 0
+	assert ok.pending() == 1
+}
