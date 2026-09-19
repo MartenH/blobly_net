@@ -44,6 +44,15 @@ pub const tp_max_size = 255 * tp_bytes_per_packet // 1785
 // with a reason beats evicting a transfer that is halfway through.
 pub const max_sessions = 64
 
+// max_holds bounds how many consecutive HOLD clear-to-sends keep one transfer alive.
+//
+// A CTS offering zero packets is the receiver saying "not yet" — J1939-21's hold — and a
+// passive observer must honour it, or a legitimately paused transfer is reported abandoned
+// (codex). But a peer that only ever holds never trips a timeout, because a frame keeps
+// arriving: exactly the argument `isotp.n_wft_max` makes about WAIT, and the same answer.
+// Reset by any real progress.
+pub const max_holds = 16
+
 // Abandonment deadlines. J1939-21's T1 (750 ms between data packets) and T2/T3/T4 (1250 ms
 // around the handshake) are timers for the PARTICIPANTS; here they are the point at which a
 // watcher concludes a session it is following has stopped. Broadcast gets the tighter one
@@ -113,6 +122,7 @@ mut:
 	n_got    int
 	last_ms  f64 // the last frame of this session, of any kind: what the deadline runs from
 	deadline f64
+	holds    int // consecutive zero-window clear-to-sends; see max_holds
 }
 
 fn (s Session) abort(reason string, t_ms f64) TpAbort {
@@ -537,15 +547,29 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// about where they land.
 		k := r.session_named(pgn, [key_of(iid.ps, iid.sa)]) or { return }
 		mut s := r.sessions[k]
-		// It also names WHICH packet to send next and HOW MANY, and both must lie inside the
-		// transfer it refers to. An impossible CTS repeated indefinitely would otherwise hold a
-		// stalled transfer open and deny it the timeout it has earned (codex) — the same shape
-		// as the stale-CTS hole the PGN match closed, in the fields beside it.
 		next := int(data[2])
 		n := int(data[1])
-		if next < 1 || next > s.packets || n < 1 || next + n - 1 > s.packets {
+		if n == 0 {
+			// A HOLD: the receiver is not ready. It keeps the transfer alive, which is the
+			// whole point of sending one — but only so many in a row, or a peer that does
+			// nothing else holds it open for as long as it cares to (max_holds).
+			if s.holds >= max_holds {
+				return
+			}
+			s.holds++
+			s.last_ms = t_ms
+			s.deadline = t_ms + cm_gap_ms
+			r.sessions[k] = s
 			return
 		}
+		// Otherwise it names WHICH packet to send next and HOW MANY, and both must lie inside
+		// the transfer it refers to. An impossible CTS repeated indefinitely would otherwise
+		// hold a stalled transfer open and deny it the timeout it has earned (codex) — the same
+		// shape as the stale-CTS hole the PGN match closed, in the fields beside it.
+		if next < 1 || next > s.packets || next + n - 1 > s.packets {
+			return
+		}
+		s.holds = 0 // a window offered is progress; the run of holds is over
 		s.last_ms = t_ms
 		s.deadline = t_ms + cm_gap_ms
 		r.sessions[k] = s
@@ -623,6 +647,7 @@ fn (mut r Reassembler) packet(iid Id, data []u8, t_ms f64, swept []u64, mut done
 		s.got[seq - 1] = true
 		s.n_got++
 	}
+	s.holds = 0 // a packet is progress
 	s.last_ms = t_ms
 	s.deadline = t_ms + if s.kind == .bam { bam_gap_ms } else { cm_gap_ms }
 	if s.n_got == s.packets {

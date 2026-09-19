@@ -357,16 +357,20 @@ fn (mut app App) load_recording(path string) {
 		// no message and nothing said why (codex).
 		c := rr.counts()
 		if c.orphan_dt > 0 || c.malformed > 0 {
-			// The per-bus summary is never dropped: it is one line and it is the one that says
-			// why packets produced no message.
-			app.log_append_locked('${os.base(path)}: ${ifc}: J1939 ${tp_counts_line(c)}')
+			// Through the collector like everything else. Exempting this one because "it is
+			// one line" was right about a bench recording and wrong about a malformed file:
+			// the labels come from the RECORDS, so a corrupted capture can invent thousands of
+			// buses and this was a direct append per bus, each cloning a 500-line log under
+			// app.mu (codex). A cap somewhere and not everywhere is the shape this collector
+			// exists to end.
+			tp_notes.add('${os.base(path)}: ${ifc}: J1939 ${tp_counts_line(c)}')
 		}
 	}
 	for n in tp_notes.kept {
 		app.log_append_locked(n)
 	}
 	if tp_notes.dropped > 0 {
-		app.log_append_locked('${os.base(path)}: J1939 — ${tp_notes.total()} abandoned transfers in this recording, of which the first ${tp_notes.kept.len} are above')
+		app.log_append_locked('${os.base(path)}: J1939 — ${tp_notes.total()} lines about abandoned or unreadable transfers in this recording, of which the first ${tp_notes.kept.len} are above')
 	}
 	app.mu.unlock()
 	shown := log.len() - first_row

@@ -747,16 +747,6 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.tp != b.tp {
 			return if int(a.tp) < int(b.tp) { -1 } else { 1 }
 		}
-		// AND THE KEY ITSELF, last. Everything above orders the groups the way a reader wants
-		// to see them; this makes the comparator TOTAL by construction, because the key is what
-		// separated them into two groups in the first place. Written as a list of fields it was
-		// wrong twice — the row kind, then a rebuilt message's destination — each time a field
-		// entered the key and not the comparator, and each time two groups compared equal and
-		// swapped between redraws because the aggregates come from a map. A field can still be
-		// added here for ORDER; it no longer has to be added for correctness.
-		if a.key != b.key {
-			return if a.key < b.key { -1 } else { 1 }
-		}
 		// and the message type, for the same reason: it is part of the key, so two groups that
 		// differ only by it are distinct rows and must not compare equal.
 		if a.someip_type != b.someip_type {
@@ -773,6 +763,21 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if a.someip_bad_fixed != b.someip_bad_fixed {
 			return if !a.someip_bad_fixed { -1 } else { 1 }
+		}
+		// AND THE KEY ITSELF, AFTER EVERYTHING ELSE. Every test above orders the groups the way
+		// a reader wants to see them — numerically, by field; this one only makes the comparator
+		// TOTAL, because distinct groups have distinct keys by construction. Written as a list
+		// of fields alone it was wrong twice (the row kind, then a rebuilt message's
+		// destination): each time a field entered the key and not this list, two groups compared
+		// equal and their rows swapped between redraws, since the aggregates come from a map.
+		//
+		// LAST, and the first attempt had it in the middle, which returned before the SOME/IP
+		// tests below could run and ordered those groups by the decimal text inside the key —
+		// message type 128 before type 2 (codex). A tie-break that outranks the ordering is not
+		// a tie-break. A field still belongs above for ORDER; it no longer has to be there for
+		// correctness.
+		if a.key != b.key {
+			return if a.key < b.key { -1 } else { 1 }
 		}
 		return 0
 	})
@@ -914,13 +919,14 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				// group decodes nothing because its payload layout is the deployment's, not a
 				// DBC's (decoding it from an emb node's config is the next rung).
 				if r.truncated() {
-					// Said, rather than silently decoding nothing: the row shows a length the
-					// signals below it would not account for.
+					// Said INSTEAD of decoding, not above it. `active_signals` on an empty
+					// payload still returns every signal of a non-multiplexed message, and
+					// `physical` reads the missing bytes as zero — so the warning was printed
+					// and then fabricated numbers were listed underneath it (codex).
 					vgui.table_row()
 					vgui.table_set_col(gcol_name)
 					vgui.text_dim('    ${r.full_len() - r.data.len} more bytes than this view keeps — no signals decoded')
-				}
-				if m := app.find_message_kind(g.id, g.ext, g.someip) {
+				} else if m := app.find_message_kind(g.id, g.ext, g.someip) {
 					for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 						lbl := s.label(r.data)
 						extra := if lbl != '' { ' (${lbl})' } else { '' }

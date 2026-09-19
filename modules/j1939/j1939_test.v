@@ -818,7 +818,8 @@ fn test_a_packet_that_is_merely_late_is_not_called_an_unseen_transfer() {
 // transfer it refers to, or an impossible one repeated forever holds a stalled transfer open.
 fn test_a_clear_to_send_must_name_packets_the_transfer_has() {
 	p := payload(20) // 3 packets
-	for bad in [[u8(3), 0], [u8(3), 4], [u8(0), 1], [u8(3), 2]] {
+	// n=0 is not in this list: that is a HOLD, and it has its own test below.
+	for bad in [[u8(3), 0], [u8(3), 4], [u8(3), 2]] {
 		mut r := Reassembler{}
 		r.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
 		r.observe(dt_id(0x00, 0x03), true, false, false, dt(1, p), 10)
@@ -836,4 +837,60 @@ fn test_a_clear_to_send_must_name_packets_the_transfer_has() {
 	ok.observe(cm_id(0x03, 0x00), true, false, false, cts(2, 2, data_pgn), 1000)
 	assert ok.observe(dt_id(0x00, 0x03), true, false, false, dt(2, p), 2000).aborted.len == 0
 	assert ok.pending() == 1
+}
+
+// A clear-to-send offering ZERO packets is the receiver saying "not yet", and a passive
+// observer must honour it or a paused transfer is reported abandoned. But a peer that only
+// ever holds never trips a timeout, because a frame keeps arriving — the argument
+// `isotp.n_wft_max` makes about WAIT, and the same answer.
+fn test_a_hold_keeps_a_transfer_alive_but_not_forever() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, 0x03), true, false, false, dt(1, p), 10)
+	// held well past the deadline an unheld transfer would have
+	mut t := f64(1000)
+	for _ in 0 .. max_holds {
+		assert r.observe(cm_id(0x03, 0x00), true, false, false, cts(0, 2, data_pgn), t).aborted.len == 0
+		t += 1000
+	}
+	assert r.pending() == 1
+	// and the transfer resumes where it left off
+	assert r.observe(dt_id(0x00, 0x03), true, false, false, dt(2, p), t).aborted.len == 0
+	done := r.observe(dt_id(0x00, 0x03), true, false, false, dt(3, p), t + 10).done
+	assert done.len == 1 && done[0].data == p
+	// a peer that ONLY holds runs out: the hold past the bound no longer refreshes
+	mut h := Reassembler{}
+	h.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
+	mut u := f64(1000)
+	for _ in 0 .. max_holds {
+		h.observe(cm_id(0x03, 0x00), true, false, false, cts(0, 1, data_pgn), u)
+		u += 1000
+	}
+	// past the deadline the LAST accepted hold set: this one does not refresh, so the sweep
+	// that rides it finds the transfer expired
+	ev := h.observe(cm_id(0x03, 0x00), true, false, false, cts(0, 1, data_pgn), u + cm_gap_ms + 1)
+	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('1250 ms')
+	assert h.pending() == 0
+}
+
+// Progress clears the run of holds, so a transfer that is held, moves, and is held again is
+// not counted towards the bound as one long stall.
+fn test_progress_clears_the_run_of_holds() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
+	mut t := f64(0)
+	for _ in 0 .. 3 {
+		for _ in 0 .. max_holds - 1 {
+			t += 1000
+			r.observe(cm_id(0x03, 0x00), true, false, false, cts(0, 1, data_pgn), t)
+		}
+		t += 1000
+		r.observe(cm_id(0x03, 0x00), true, false, false, cts(3, 1, data_pgn), t) // a real window
+	}
+	assert r.pending() == 1
+	t += 1000
+	assert r.observe(dt_id(0x00, 0x03), true, false, false, dt(1, p), t).aborted.len == 0
+	assert r.pending() == 1
 }
