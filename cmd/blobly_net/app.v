@@ -1140,7 +1140,14 @@ fn (mut app App) rebuild_from_proj() {
 				app.elog('manifest ${ch.manifest}: ${err}')
 			}
 		}
-		for s in ch.senders {
+		// NOT ON A PASSIVE ROW, for the reason its simulation nodes are skipped below: a generator
+		// here would appear in the Generators panel with its controls armed and could never fire —
+		// `tap_plan_locked` omits its transmit tap, so a cyclic one is skipped forever and a manual
+		// fire answers `no open bus`. Converting a CAN row to `someip` carries its generators
+		// across, which is how a project reaches this without editing YAML, so the runtime drops
+		// them rather than displaying what it will not do.
+		row_senders := if ch.is_someip() { []project.Sender{} } else { ch.senders }
+		for s in row_senders {
 			// `tgt` and `chan` are filled by resolve_sender_targets_locked once every channel has
 			// been built — not here. A `bus:` may name a channel that appears LATER in the file,
 			// and the hand-rolled scan this replaces resolved against app.proj.channels while

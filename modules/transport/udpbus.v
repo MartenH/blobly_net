@@ -70,11 +70,20 @@ mut:
 }
 
 // open_udp joins the localhost multicast bus `group:port`.
-// udp_bus_medium names the shared medium these buses belong to: several on one group and port
-// is this backend's design (its own tests open two on purpose), so they tolerate each other —
-// while an exclusive reader there, or a sharer of ANOTHER medium such as a DoIP entity, is
-// refused rather than left to eat these frames in silence. See transport/udpclaims.v.
-const udp_bus_medium = 'udp-bus'
+// udp_bus_medium names the shared medium a bus belongs to: its GROUP, not merely "a UDP bus".
+// Several buses on one group and port is this backend's design and they tolerate each other;
+// two on DIFFERENT groups at one port do not, however much it looks as if multicast should keep
+// them apart.
+//
+// Measured, after assuming otherwise: two wildcard sockets on one port, joined to 239.63.99.1
+// and 239.63.99.2, BOTH received a datagram addressed only to the first. A wildcard bind makes
+// group membership a property of the host rather than of the socket, so the groups leak — and
+// this backend's frame carries no group identity, so the second bus accepts the first bus's
+// traffic as its own. Two virtual CAN buses quietly becoming one is exactly what a registry is
+// for, so the key is per group and a second group on that port is refused.
+fn udp_bus_medium(group string) string {
+	return 'udp-bus:${group}'
+}
 
 pub fn open_udp(group string, port int) !&UdpBus {
 	owner := 'the ${group} software bus'
@@ -98,7 +107,7 @@ pub fn open_udp(group string, port int) !&UdpBus {
 		}
 	}
 	tx.set_multicast_loop(true)! // same-host peers (and we) receive; we filter own
-	canon = claim_endpoint('', port, owner, .shared, udp_bus_medium)!
+	canon = claim_endpoint('', port, owner, .shared, udp_bus_medium(group))!
 	rx = net.listen_udp('0.0.0.0:${port}')!
 	rx.join_multicast_group(group, '0.0.0.0')!
 	ok = true

@@ -160,3 +160,21 @@ fn test_sharers_tolerate_only_their_own_medium() {
 	c := claim_endpoint('', 39040, 'channel ETH1', .row, '')!
 	release_endpoint(c, 39040, 'channel ETH1')
 }
+
+// A sharer's medium is the virtual WIRE, not the backend. Two software buses on one group
+// tolerate each other; two on different groups at one port do not, because a wildcard bind makes
+// multicast membership a property of the host rather than of the socket — measured, not assumed
+// — and this backend's frame carries no group identity to tell them apart afterwards.
+fn test_two_groups_on_one_port_are_not_one_medium() {
+	a := claim_endpoint('', 39050, 'bus A', .shared, 'udp-bus:239.0.0.1')!
+	b := claim_endpoint('', 39050, 'bus A again', .shared, 'udp-bus:239.0.0.1')!
+	if _ := claim_endpoint('', 39050, 'bus B', .shared, 'udp-bus:239.0.0.2') {
+		assert false, 'a second multicast group on one port was accepted'
+	} else {
+		assert err.msg().contains('bus A'), err.msg()
+	}
+	release_endpoint(a, 39050, 'bus A')
+	release_endpoint(b, 39050, 'bus A again')
+	c := claim_endpoint('', 39050, 'bus B', .shared, 'udp-bus:239.0.0.2')!
+	release_endpoint(c, 39050, 'bus B')
+}
