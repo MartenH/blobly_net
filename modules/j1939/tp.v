@@ -53,6 +53,11 @@ pub const max_sessions = 64
 // Reset by any real progress.
 pub const max_holds = 16
 
+// settled_ms is how long a COMPLETED transfer stays recognisable, so the retransmission its
+// receiver may still ask for is not read as a packet belonging to nothing. One connection-mode
+// timeout, which is as long as the peers themselves will keep the connection.
+pub const settled_ms = cm_gap_ms
+
 // Abandonment deadlines. J1939-21's T1 (750 ms between data packets) and T2/T3/T4 (1250 ms
 // around the handshake) are timers for the PARTICIPANTS; here they are the point at which a
 // watcher concludes a session it is following has stopped. Broadcast gets the tighter one
@@ -166,9 +171,14 @@ mut:
 	// Counters, not events. A wire this tool joined mid-transfer delivers data packets for a
 	// session whose announcement was never seen, and a bench that started the measurement
 	// late would otherwise be told about it once per packet, forever.
-	orphan_dt   int
-	malformed   int
-	refused     int
+	orphan_dt int
+	malformed int
+	refused   int
+	// Transfers this side COMPLETED, kept by key for `settled_ms` so a packet the receiver
+	// asked to have sent again is recognised rather than counted as a transfer nobody
+	// announced. The sender is entitled to retransmit: this observer finished early, the
+	// intended receiver did not (codex).
+	settled     map[u64]f64
 	tail_orphan bool // the last observe() saw an orphan packet: see orphan_seen()
 }
 
@@ -180,6 +190,13 @@ pub:
 	malformed int // a TP frame this could not read at all
 	refused   int // announcements refused: impossible sizes, or too many sessions at once
 	open      int // sessions being followed right now
+}
+
+// said reports whether these counts have anything to tell an operator. ONE predicate, so a
+// caller cannot check two of the three fields — which is how a wire whose announcements were
+// ALL rejected ended a measurement with no total at all (codex).
+pub fn (c Counts) said() bool {
+	return c.orphan_dt > 0 || c.malformed > 0 || c.refused > 0
 }
 
 pub fn (r &Reassembler) counts() Counts {
@@ -234,6 +251,18 @@ pub fn is_tp(id u32, ext bool) bool {
 // importer and the reassembler all ask it, and they must not answer differently.
 pub fn tp_frame(id u32, ext bool, rtr bool, fd bool, len int) bool {
 	return is_tp(id, ext) && !rtr && !fd && len == 8
+}
+
+// recently_settled reports whether a transfer at this key COMPLETED here a moment ago, which is
+// what a retransmitted packet belongs to. Ages its own entries as it goes, so a long
+// measurement does not accumulate one per transfer.
+fn (mut r Reassembler) recently_settled(k u64, now f64) bool {
+	at := r.settled[k] or { return false }
+	if now - at <= settled_ms {
+		return true
+	}
+	r.settled.delete(k)
+	return false
 }
 
 fn key_of(sa u8, da u8) u64 {
@@ -622,7 +651,7 @@ fn (mut r Reassembler) packet(iid Id, data []u8, t_ms f64, swept []u64, mut done
 		// missed. Counted, not reported -- see the note on the counters. But NOT when this
 		// call's own sweep just retired that very session: the timeout above has already said
 		// what happened to it, and counting it again would say the opposite.
-		if k !in swept {
+		if k !in swept && !r.recently_settled(k, t_ms) {
 			r.orphan_dt++
 			r.tail_orphan = true
 		}
@@ -652,6 +681,10 @@ fn (mut r Reassembler) packet(iid Id, data []u8, t_ms f64, swept []u64, mut done
 	s.deadline = t_ms + if s.kind == .bam { bam_gap_ms } else { cm_gap_ms }
 	if s.n_got == s.packets {
 		r.sessions.delete(k)
+		if s.kind == .cm {
+			// Only connection mode: a BAM has no receiver that could ask for a packet again.
+			r.settled[k] = t_ms
+		}
 		done << TpMessage{
 			priority: s.priority
 			pgn: s.pgn

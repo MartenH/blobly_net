@@ -1103,7 +1103,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		for ab in left {
 			a.log_append_locked(tp_abort_line(chname, ab))
 		}
-		if tp_counts.orphan_dt > 0 || tp_counts.malformed > 0 {
+		// ANY of them: `tp_counts_line` renders refusals too, and a wire whose announcements
+		// were ALL rejected produced no orphan and no unreadable frame, so the total nobody
+		// could otherwise reconstruct — the details having been trimmed out of a 500-line Log —
+		// was the one never printed (codex).
+		if tp_counts.said() {
 			a.log_append_locked('${chname}: J1939 ${tp_counts_line(tp_counts)}')
 		}
 	}

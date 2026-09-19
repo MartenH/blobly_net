@@ -894,3 +894,45 @@ fn test_progress_clears_the_run_of_holds() {
 	assert r.observe(dt_id(0x00, 0x03), true, false, false, dt(1, p), t).aborted.len == 0
 	assert r.pending() == 1
 }
+
+// This observer can finish a transfer before its intended receiver does: the receiver asks for
+// the packet it missed, the sender sends it again, and that packet belongs to a transfer this
+// side has already completed. Counting it as one nobody announced was the opposite of true.
+fn test_a_retransmission_after_completion_is_not_an_unseen_transfer() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, 0x03), true, false, false, dt(1, p), 10)
+	r.observe(dt_id(0x00, 0x03), true, false, false, dt(2, p), 20)
+	assert r.observe(dt_id(0x00, 0x03), true, false, false, dt(3, p), 30).done.len == 1
+	assert r.pending() == 0
+	// the receiver missed packet 2 and the sender obliges
+	ev := r.observe(dt_id(0x00, 0x03), true, false, false, dt(2, p), 100)
+	assert ev.done.len == 0 && ev.aborted.len == 0
+	assert r.counts().orphan_dt == 0
+	assert !r.orphan_seen()
+	// but only for as long as the peers themselves would keep the connection
+	late := r.observe(dt_id(0x00, 0x03), true, false, false, dt(2, p), 30 + settled_ms + 1)
+	assert late.done.len == 0
+	assert r.counts().orphan_dt == 1
+	// and a BROADCAST has no receiver to ask, so nothing is kept for one
+	mut b := Reassembler{}
+	b.observe(cm_id(0x00, addr_global), true, false, false, bam(20, 3, data_pgn), 0)
+	for seq in 1 .. 4 {
+		b.observe(dt_id(0x00, addr_global), true, false, false, dt(seq, p), f64(seq * 10))
+	}
+	b.observe(dt_id(0x00, addr_global), true, false, false, dt(2, p), 100)
+	assert b.counts().orphan_dt == 1
+}
+
+// One predicate for "have these counts anything to say", because checking two of the three
+// fields is how a wire whose announcements were ALL rejected ended with no total at all.
+fn test_counts_say_something_when_any_of_them_is_set() {
+	assert !Counts{}.said()
+	assert Counts{ orphan_dt: 1 }.said()
+	assert Counts{ malformed: 1 }.said()
+	assert Counts{ refused: 1 }.said()
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, addr_global), true, false, false, bam(8, 2, data_pgn), 0)
+	assert r.counts().said(), 'a wire that only ever refused announcements still has a total'
+}

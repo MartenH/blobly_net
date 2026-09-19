@@ -829,7 +829,14 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// NOT a SOME/IP row: `sel_id`/`sel_ext` are a CAN arbitration id and feed the Send
 			// panel, so selecting a service:method there would offer to transmit it as a 29-bit
 			// CAN frame on whatever bus Send is pointed at.
-			if vgui.is_item_clicked() && !g.someip {
+			// NOR A REBUILT J1939 MESSAGE, for both of those reasons at once: its identifier is
+			// SYNTHESISED and was never on the wire, so offering it to Send would offer to
+			// transmit something this bus never carried — and a connection-mode transfer of a
+			// broadcast group cannot be told from a sibling to another receiver by (id, ext) at
+			// all, so Signals and Graphics would show one receiver's bytes under the other's
+			// row (codex). The expanded row still decodes it, where the row's own payload is
+			// what is being read.
+			if vgui.is_item_clicked() && !g.someip && !g.tp.rebuilt() {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}

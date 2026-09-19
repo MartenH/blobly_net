@@ -286,6 +286,11 @@ It is a **passive observer**. blobly never sends a CTS, never acknowledges and n
 anybody; it watches the two parameter groups go past and rebuilds what they carried. The
 session frames themselves stay in the trace, flagged `TP`.
 
+A rebuilt row cannot be **selected** into Signals or Graphics, for the reason a SOME/IP row
+cannot: its identifier was never on the wire, so offering it to Send would offer to transmit
+something the bus never carried, and a connection-mode transfer of a broadcast group cannot be
+told from a sibling to another receiver by identifier alone. Expanding the row still decodes it.
+
 A rebuilt row's identifier is **synthesised** — its packets carried the transport group's
 identifier, not the data's — from the group the announcement named, the sender, the
 destination, and the priority the *session* ran at. Nothing on the wire says what the group's

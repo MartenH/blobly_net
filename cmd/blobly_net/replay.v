@@ -356,7 +356,7 @@ fn (mut app App) load_recording(path string) {
 		// mid-transfer is the ordinary case, and without this line the packets simply produced
 		// no message and nothing said why (codex).
 		c := rr.counts()
-		if c.orphan_dt > 0 || c.malformed > 0 {
+		if c.said() {
 			// Through the collector like everything else. Exempting this one because "it is
 			// one line" was right about a bench recording and wrong about a malformed file:
 			// the labels come from the RECORDS, so a corrupted capture can invent thousands of
