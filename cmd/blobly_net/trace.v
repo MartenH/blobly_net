@@ -280,7 +280,13 @@ fn (mut app App) push_row_locked(row TraceRow) u64 {
 	// message became a row of its own — each one consumed a number and pushed every later
 	// row's off the file by one more (codex). Everything else is still numbered by arithmetic.
 	if r.imported {
-		// A rebuilt message is not a frame of the file, so it takes no number from it.
+		// A rebuilt message is not a frame OF THE FILE, so it takes no number from it: an
+		// imported row's idx means "position in the recording", and this row's position is the
+		// one it borrows from the packet that completed it.
+		//
+		// A LIVE rebuilt row does consume one, and that asymmetry is the point rather than an
+		// oversight: in a measurement idx means "row number", every row has one, and there is
+		// no outside document for it to disagree with.
 		if r.tp.rebuilt() {
 			app.trace_synth++
 		}
