@@ -56,6 +56,17 @@ struct TraceRow {
 	// — the row said it and the view then unsaid it, with the counts and payload comparison
 	// mixing a message that is not SOME/IP into ones that are.
 	someip_proto u8
+	// WHO SENT IT. A wildcard or multicast listener hears every instance on the wire, and two
+	// instances of one service share their service, method, type and versions — so without this
+	// their rows are indistinguishable and the grouped view merges their counts, cadence and
+	// payload comparison into one apparent producer. Part of the identity, not decoration.
+	someip_from string
+	// Its header broke one of the wire's FIXED-FIELD rules (someip.check_fixed_fields): a
+	// notification carrying a request id or a return code, a request carrying a return code.
+	// Part of the identity for the same reason the protocol version is — the grouped view names
+	// a group after its newest row, so an anomaly sharing a key with valid traffic is announced
+	// and then silently unannounced by the next good message.
+	someip_bad_fixed bool
 	// The payload's TRUE length, when `data` holds only its head. A SOME/IP message may carry
 	// ~64 KiB where a CAN frame carries 64, and the grouped view renders one widget PER BYTE —
 	// a loop whose bound was CAN's maximum. One valid datagram would rebuild tens of thousands

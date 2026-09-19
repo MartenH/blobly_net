@@ -369,6 +369,14 @@ fn (mut app App) sync_senders_into_proj() {
 	}
 	home := genhome.homes(gens, rows)
 	for ci in 0 .. p.channels.len {
+		// A PASSIVE ROW IS NOT MODELLED AT RUNTIME, so its configured generators must not be
+		// rebuilt FROM the runtime: `app.senders` deliberately holds none for it (nothing there
+		// can transmit), and rewriting its list from that emptiness deleted them from the
+		// project on the next structured Save — so converting the row back to CAN lost work that
+		// was only ever hidden. Left exactly as the file has them.
+		if p.channels[ci].is_someip() {
+			continue
+		}
 		mut ss := []project.Sender{}
 		for si, sr in app.senders {
 			if si < home.len && home[si] == ci {

@@ -446,6 +446,8 @@ mut:
 	someip_type  u8 // its message type: part of the group identity, so part of the order
 	someip_iface u8 // its interface version, for the same reason
 	someip_proto u8 // and its protocol version: an invalid one must not merge into valid traffic
+	someip_from  string // its producer: two instances of one service are two rows
+	someip_bad_fixed bool // its header broke a fixed-field rule; must not merge with valid ones
 	fd     bool
 	brs    bool
 	rtr    bool
@@ -495,14 +497,19 @@ fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr b
 // RESPONSE share a service and method, so a key without the type collapsed an RPC exchange into
 // one row whose count, cycle time and byte-change highlighting treated a question and its answer
 // as repetitions of one message.
-fn gkey_someip(ch string, id u32, msg_type u8, iface_version u8, proto_version u8) string {
-	return 'S|${org_rx}|${ch.len}:${ch}|${id}|${msg_type}|${iface_version}|${proto_version}'
+// `from` is in the key because two instances of one service are two producers; `bad_fixed` is,
+// because an invalid header must not be merged into valid traffic and then relabelled by it —
+// the grouped view takes its name from the newest row of a group, so an anomaly that shares a
+// key with valid messages is announced and then silently unannounced.
+fn gkey_someip(ch string, id u32, msg_type u8, iface_version u8, proto_version u8, from string, bad_fixed bool) string {
+	return 'S|${org_rx}|${ch.len}:${ch}|${id}|${msg_type}|${iface_version}|${proto_version}|${from}|${bad_fixed}'
 }
 
 // gkey: the row's own group identity.
 fn (r TraceRow) gkey() string {
 	if r.someip && r.key.len == 0 {
-		return gkey_someip(r.ch, r.id, r.someip_type, r.someip_iface, r.someip_proto)
+		return gkey_someip(r.ch, r.id, r.someip_type, r.someip_iface, r.someip_proto, r.someip_from,
+			r.someip_bad_fixed)
 	}
 	if r.key.len > 0 {
 		return r.key
@@ -576,8 +583,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				ext:         r.ext
 				someip:       r.someip
 				someip_type:  r.someip_type
-				someip_iface: r.someip_iface
-				someip_proto: r.someip_proto
+				someip_iface:     r.someip_iface
+				someip_proto:     r.someip_proto
+				someip_from:      r.someip_from
+				someip_bad_fixed: r.someip_bad_fixed
 				fd:     r.fd
 				brs:    r.brs
 				rtr:    r.rtr
@@ -656,6 +665,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if a.someip_proto != b.someip_proto {
 			return if a.someip_proto < b.someip_proto { -1 } else { 1 }
+		}
+		if a.someip_from != b.someip_from {
+			return if a.someip_from < b.someip_from { -1 } else { 1 }
+		}
+		if a.someip_bad_fixed != b.someip_bad_fixed {
+			return if !a.someip_bad_fixed { -1 } else { 1 }
 		}
 		return 0
 	})

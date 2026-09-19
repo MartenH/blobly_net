@@ -1681,7 +1681,7 @@ fn (mut a App) carry_load_locked(ci int) {
 // but a notification the request id (client:session) that correlates it, plus a nonzero return
 // code. The id column carries the 32-bit message id; the payload is the data column, raw —
 // decoding it from an emb node's config is the next rung (docs/ethernet_architecture.md).
-fn someip_row_name(h someip.Header) string {
+fn someip_row_name(h someip.Header, from string) string {
 	kind := someip.msg_type_name(h.msg_type)
 	// The PROTOCOL version, when it is not the one the standard defines. `Capture.ingest` parses
 	// structurally and applies no envelope gate, so a message with a wrong protocol version
@@ -1709,13 +1709,20 @@ fn someip_row_name(h someip.Header) string {
 		if h.return_code != 0 {
 			extra += ' rc=${h.return_code:02X}'
 		}
-		return '${bad_proto}${kind} v${h.interface_version}${extra}'
+		return '${bad_proto}${kind} v${h.interface_version}${extra}${someip_from_suffix(from)}'
 	}
 	mut s := '${bad_proto}${kind} v${h.interface_version} ${h.client:04X}:${h.session:04X}'
 	if h.return_code != 0 {
 		s += ' rc=${h.return_code:02X}'
 	}
-	return s
+	return s + someip_from_suffix(from)
+}
+
+// someip_from_suffix names the producer on the row. Shown because the identity now separates
+// two instances of one service into two rows, and a reader looking at them needs to be told
+// which is which rather than left to infer it from the order they appeared in.
+fn someip_from_suffix(from string) string {
+	return if from == '' { '' } else { ' from ${from}' }
 }
 
 // someip_rx_loop is a SOME/IP row's reader for one run: bind the row's endpoint, join its group,
@@ -1872,8 +1879,9 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		if !a.paused {
 			for m in cap.messages {
 				id := m.header.message_id()
+				bad_fixed := if _ := someip.check_fixed_fields(m.header) { false } else { true }
 				key := gkey_someip(chname, id, m.header.msg_type, m.header.interface_version,
-					m.header.protocol_version)
+					m.header.protocol_version, m.from, bad_fixed)
 				// BOUNDED HERE, where the row is made, and only here: the capture above still
 				// holds the whole payload for anything that wants it. See TraceRow.data_len.
 				head := if m.payload.len > trace_payload_max {
@@ -1888,9 +1896,11 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 					id:          id
 					someip:       true
 					someip_type:  m.header.msg_type
-					someip_iface: m.header.interface_version
-					someip_proto: m.header.protocol_version
-					name:     someip_row_name(m.header)
+					someip_iface:     m.header.interface_version
+					someip_proto:     m.header.protocol_version
+					someip_from:      m.from
+					someip_bad_fixed: bad_fixed
+					name:     someip_row_name(m.header, m.from)
 					data:     head
 					data_len: m.payload.len
 					key:      key
