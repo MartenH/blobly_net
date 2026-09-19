@@ -295,12 +295,20 @@ A transfer that does not finish is reported in the **Log**, not drawn as a row: 
 frame, and a row with no payload would say less than the sentence. What it says depends on why:
 
 - no packet for 750 ms (broadcast) or 1250 ms (connection) — the transfer stopped
-- an announcement replaced by a new one from the same sender
+- an announcement replaced by a new one from the same sender, readable or not
 - an abort from either end, with the reason code the sender gave
 - **the receiver acknowledged the whole message while blobly was still missing packets** —
   which means the frames were dropped *here*, not on the bus, and is the one worth knowing
-- an announcement refused: a size that is not a transport message, one past the 1785 bytes a
-  session can carry, or a packet count that does not follow from the size
+- an announcement refused, with what was wrong: a size that is not a transport message or is
+  past the 1785 bytes a session carries, a packet count that does not follow from the size, a
+  group number that is not one a parameter group has, a broadcast addressed to one node or a
+  connection addressed to everybody, a broadcast's reserved byte, or a connection offering no
+  packets per clear-to-send
+
+A receiver may **hold** a connection — a clear-to-send offering no packets means "not yet" —
+and that keeps the transfer alive, up to sixteen holds in a row. A peer that only ever holds
+would otherwise never time out, because a frame keeps arriving; the same bound, for the same
+reason, as the one blobly's ISO-TP sender puts on WAIT.
 
 Packets for a transfer whose announcement was never seen — a measurement started in the middle
 of one — are counted rather than reported, or joining a busy bus would print a line per packet.
