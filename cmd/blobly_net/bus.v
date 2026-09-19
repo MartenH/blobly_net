@@ -29,6 +29,12 @@ struct Chan {
 	doip         bool
 	someip       bool   // a SOME/IP listener row (bus.v eth(): the one "not a CAN wire" rule)
 	group        string // multicast group the listener joins ('' = unicast only)
+	// WHICH project row this is, by index. app.chans is built 1:1 from proj.channels, so the
+	// index IS the identity — and a name is not: nothing makes channel names unique, and the one
+	// place that looked the project row up BY NAME could hand a row the carrier of a different
+	// row entirely (a disabled `ETH` before an enabled `ETH`: the script env drops the disabled
+	// one, so nothing looks ambiguous, and the survivor gets the wrong endpoint).
+	proj_idx int = -1
 	// Replay configuration, when mode == 'replay'. Held on the channel because the worker needs
 	// it after Start, and the project may have been edited since.
 	replay_src     string

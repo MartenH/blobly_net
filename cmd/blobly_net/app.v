@@ -1062,6 +1062,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.mu.unlock()
 	for ci, ch in proj.channels {
 		app.chans << Chan{
+			proj_idx:       ci // this row's identity; see Chan.proj_idx
 			name:           ch.name
 			network:        ch.network
 			adapter:        ch.adapter

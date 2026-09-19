@@ -1494,15 +1494,16 @@ fn script_worker(app &App, path string) {
 				sim_nodes << sc.nodes
 			}
 		}
-		// The carrier comes from the PROJECT channel: the runtime Chan above carries a `doip`
-		// flag but not the logical addresses, and a DoIP open needs both. Matched by name, the
-		// same key the rest of the config editor uses.
+		// The carrier comes from the PROJECT channel: the runtime Chan above carries a `someip`
+		// flag but not the endpoint, and a `doip` flag but not the logical addresses. Taken BY
+		// INDEX (Chan.proj_idx), because this loop skips rows — disabled ones, a DoIP row whose
+		// host failed — and a by-name lookup over the unfiltered project then handed the
+		// survivor the FIRST same-named row's carrier. With a disabled `ETH` before an enabled
+		// one, nothing downstream looks ambiguous (the script env holds a single `ETH`) and the
+		// listener would have bound the disabled row's endpoint.
 		mut pch := project.Channel{}
-		for c in a.proj.channels {
-			if c.name == ch.name {
-				pch = c
-				break
-			}
+		if ch.proj_idx >= 0 && ch.proj_idx < a.proj.channels.len {
+			pch = a.proj.channels[ch.proj_idx]
 		}
 		chans << script.ChanInfo{
 			name:      ch.name
