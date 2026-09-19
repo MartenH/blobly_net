@@ -608,6 +608,11 @@ fn tp_abort_line(chname string, ab j1939.TpAbort) string {
 // It exists because counting something nothing reads is not reporting it: the operator is left
 // with packets that produced no message and no way to tell why (codex; #213 made the same point
 // about the bus diagnostics).
+// tp_notes_max bounds how many abandoned transfers an IMPORT narrates one by one. The Log keeps
+// 500 lines, so more than this says nothing a reader can reach, and a corrupted capture can
+// abandon a transfer per announcement.
+const tp_notes_max = 50
+
 fn tp_counts_line(c j1939.Counts) string {
 	mut parts := []string{}
 	if c.orphan_dt > 0 {
@@ -954,8 +959,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// two comparisons per frame and allocates nothing.
 		// `!f.rtr` like the protection check above: a remote frame carries no payload, and a
 		// backend handing back a placeholder buffer delivered one as sequence 0 (codex).
-		tp_part := reads_j1939 && !ours && j1939.tp_frame(f.id, f.extended, f.rtr, f.fd, f.data.len)
-		tp_ev := if tp_part {
+		// Handed over on the IDENTIFIER alone, and the module says what the frame was. Gating
+		// the call on the shape meant the frames it exists to refuse never reached it, so
+		// nothing counted them (codex, on the previous round's own fix).
+		tp_ev := if reads_j1939 && !ours && j1939.is_tp(f.id, f.extended) {
 			tp.observe(f.id, f.extended, f.rtr, f.fd, f.data, t_ms)
 		} else if reads_j1939 && tp.pending() > 0 {
 			// A session that stopped is noticed on the wire's ORDINARY traffic too, not only
@@ -993,7 +1000,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				e2e:    viol
 				key:    rx_key
 				j1939:  reads_j1939 && f.extended
-				tp:     if tp_part { j1939.Part.packet } else { j1939.Part.plain }
+				tp:     if tp_ev.part { j1939.Part.packet } else { j1939.Part.plain }
 			})
 			a.gcount[rx_key]++
 			// A rebuilt message goes in right BEHIND the packet that completed it, which is

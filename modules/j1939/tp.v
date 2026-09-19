@@ -135,6 +135,14 @@ pub struct TpEvents {
 pub:
 	done    []TpMessage
 	aborted []TpAbort
+	// This frame WAS a readable frame of a session — the answer a caller marks its row with.
+	//
+	// Returned rather than asked again outside, because asking twice is how the two answers
+	// drift: the callers gated `observe` on their own copy of the shape test, which meant the
+	// frames the module exists to REFUSE never reached it and `Counts.malformed` could not
+	// count them (codex, on the previous round's own fix). Callers now hand over anything whose
+	// IDENTIFIER is a transport group (`is_tp`) and let this say what it was.
+	part bool
 }
 
 // Reassembler follows every session on ONE wire. Sessions are keyed by the address pair, which
@@ -277,7 +285,16 @@ pub fn canonical_pgn(pgn u32) bool {
 // One rule, because it is asked twice for different purposes: the reassembler refuses a session
 // with it, and `announces_session` treats passing it as EVIDENCE that a recording is J1939. A
 // looser evidence test than the acceptance test would claim a bus this cannot then read.
-pub fn announcement_refusal(ctrl u8, da u8, pgn u32, size int, packets int) string {
+pub fn announcement_refusal(ctrl u8, da u8, reserved u8, pgn u32, size int, packets int) string {
+	// Byte 4 is RESERVED IN A BAM and J1939-21 fixes it at 0xFF, so a frame that puts something
+	// else there is not a broadcast announcement — and taking it for one both classified a
+	// recording as J1939 and opened a session that could go on to produce a rebuilt message
+	// (codex). In an RTS the same byte is a real field (how many packets the sender may send
+	// in answer to one CTS), which a passive observer does not act on, so it is not checked;
+	// applying the rule to both is what this file's own test caught.
+	if ctrl == cm_bam && reserved != 0xFF {
+		return 'reserved byte 0x${reserved:02X} where a broadcast announcement has 0xFF'
+	}
 	if !canonical_pgn(pgn) {
 		return 'announced group number 0x${pgn:06X}, which is not one a parameter group has'
 	}
@@ -323,7 +340,7 @@ pub fn announces_session(id u32, ext bool, rtr bool, fd bool, data []u8) bool {
 	if data[0] != cm_bam && data[0] != cm_rts {
 		return false
 	}
-	return announcement_refusal(data[0], iid.ps, le24(data, 5), le16(data, 1), int(data[3])) == ''
+	return announcement_refusal(data[0], iid.ps, data[4], le24(data, 5), le16(data, 1), int(data[3])) == ''
 }
 
 // observe feeds one received frame and returns whatever it settled. A frame that is not part of
@@ -351,6 +368,7 @@ pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, fd bool, data []u
 			aborted: aborted
 		}
 	}
+	part := true
 	mut done := []TpMessage{}
 	iid := decode_id(id)
 	if iid.pf == 0xEC {
@@ -361,6 +379,7 @@ pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, fd bool, data []u
 	return TpEvents{
 		done: done
 		aborted: aborted
+		part: part
 	}
 }
 
@@ -451,12 +470,21 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// The announcement is where a session is refused, since everything after it is read
 		// against these numbers. One rule (`announcement_refusal`), so what this accepts and
 		// what `announces_session` calls evidence of a J1939 bus cannot drift apart.
-		mut why := announcement_refusal(ctrl, iid.ps, pgn, size, packets)
+		mut why := announcement_refusal(ctrl, iid.ps, data[4], pgn, size, packets)
 		if why == '' && r.sessions.len >= max_sessions && k !in r.sessions {
 			why = '${max_sessions} sessions already open on this wire'
 		}
 		if why != '' {
 			r.refused++
+			// The transfer this announcement was REPLACING is over either way. The sender has
+			// moved on — that is what a second announcement between one pair means — and
+			// leaving the old session open applied the rejected transfer's data packets to it,
+			// which fabricated a message under the OLD group number with the NEW payload
+			// (codex). A refusal refuses the new session; it does not preserve the old one.
+			if old := r.sessions[k] {
+				r.sessions.delete(k)
+				aborted << old.abort('replaced by an announcement that could not be read: ${why}', t_ms)
+			}
 			aborted << TpAbort{
 				priority: iid.priority
 				pgn: pgn

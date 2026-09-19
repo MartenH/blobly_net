@@ -482,8 +482,8 @@ fn test_evidence_is_exactly_what_the_reassembler_would_accept() {
 		accepted := r.observe(0x1CECFF00, true, false, false, f, 0).aborted.len == 0
 		assert announces_session(0x1CECFF00, true, false, false, f) == accepted, '${size} bytes in ${packets}'
 	}
-	assert announcement_refusal(cm_bam, addr_global, data_pgn, 20, 3) == ''
-	assert announcement_refusal(cm_bam, addr_global, data_pgn, 8, 2) != ''
+	assert announcement_refusal(cm_bam, addr_global, 0xFF, data_pgn, 20, 3) == ''
+	assert announcement_refusal(cm_bam, addr_global, 0xFF, data_pgn, 8, 2) != ''
 }
 
 fn test_the_page_bits_are_part_of_the_group_so_another_page_is_another_group() {
@@ -734,4 +734,54 @@ fn test_an_acknowledgement_names_its_transfer_by_size_too() {
 	ev := r.observe(cm_id(0x03, 0x00), true, false, false, eoma(20, 3, data_pgn), 22)
 	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('reached this tool')
 	assert r.pending() == 0
+}
+
+// A second announcement between one pair means the sender has moved on, so the transfer it
+// replaces is over EVEN IF the new one cannot be read. Left open, the rejected transfer's data
+// packets were applied to it and fabricated a message under the old group with the new payload.
+fn test_an_unreadable_announcement_still_retires_the_one_it_replaces() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, addr_global), true, false, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, false, dt(1, p), 10)
+	assert r.pending() == 1
+	// a second announcement from the same sender, with a size and count that disagree
+	ev := r.observe(cm_id(0x00, addr_global), true, false, false, bam(20, 4, 0x00FEF1), 20)
+	assert ev.aborted.len == 2 // the old transfer, and the refusal of the new one
+	assert ev.aborted.any(it.pgn == data_pgn && it.reason.contains('replaced by an announcement'))
+	assert ev.aborted.any(it.pgn == 0x00FEF1 && it.reason.contains('do not agree'))
+	assert r.pending() == 0
+	// and the rejected transfer's packets now belong to nothing rather than to the old session
+	assert r.observe(dt_id(0x00, addr_global), true, false, false, dt(2, p), 30).done.len == 0
+	assert r.counts().orphan_dt == 1
+}
+
+// Byte 4 is reserved IN A BAM at 0xFF. In an RTS the same byte is a real field — how many
+// packets the sender may send per CTS — which a passive observer does not act on.
+fn test_a_broadcast_announcement_has_its_reserved_byte() {
+	mut bad := bam(20, 3, data_pgn)
+	bad[4] = 0x03
+	mut r := Reassembler{}
+	ev := r.observe(cm_id(0x00, addr_global), true, false, false, bad, 0)
+	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('reserved byte')
+	assert r.pending() == 0
+	assert !announces_session(cm_id(0x00, addr_global), true, false, false, bad)
+	// an RTS carries its own number there and is accepted
+	assert announces_session(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn))
+	assert r.observe(cm_id(0x00, 0x03), true, false, false, rts(20, 3, data_pgn), 0).aborted.len == 0
+	assert r.pending() == 1
+}
+
+// The module says whether a frame WAS a session frame, so a caller cannot answer it differently
+// — which is how the frames it exists to refuse stopped reaching it at all.
+fn test_the_module_says_what_the_frame_was() {
+	mut r := Reassembler{}
+	assert !r.observe(0x0CF00400, true, false, false, [u8(1), 2, 3, 4, 5, 6, 7, 8], 0).part
+	assert r.observe(cm_id(0x00, addr_global), true, false, false, bam(20, 3, data_pgn), 0).part
+	assert r.observe(dt_id(0x00, addr_global), true, false, false, dt(1, payload(20)), 1).part
+	// a shape it refuses is NOT a session frame, and is counted
+	assert !r.observe(cm_id(0x00, addr_global), true, false, true, bam(20, 3, data_pgn), 2).part
+	assert !r.observe(dt_id(0x00, addr_global), true, true, false, []u8{len: 8}, 3).part
+	assert !r.observe(cm_id(0x00, addr_global), true, false, false, [u8(0x20), 1], 4).part
+	assert r.counts().malformed == 3
 }

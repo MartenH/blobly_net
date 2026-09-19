@@ -222,6 +222,7 @@ fn (mut app App) load_recording(path string) {
 	// Narrated after the rows are in, so the Log reads in one piece rather than interleaved
 	// with a 600k-frame import.
 	mut tp_notes := []string{}
+	mut tp_dropped := 0
 	for i in 0 .. log.len() {
 		e := log.at(i)
 		f := e.frame
@@ -258,7 +259,9 @@ fn (mut app App) load_recording(path string) {
 		app.gcount[rep_key]++
 		is_j1939 := j1939_buses[e.iface]
 		t_row := (e.t_s - t0) * 1000.0
-		tp_part := is_j1939 && j1939.tp_frame(f.id, f.extended, f.rtr, f.fd, f.data.len)
+		// The IDENTIFIER decides whether the module sees the frame; the module decides what it
+		// was (`TpEvents.part`). See the live reader — one answer, not two.
+		tp_part := is_j1939 && j1939.is_tp(f.id, f.extended)
 		// The reassembler is fed EVERY frame, including the ones trimmed away below: a
 		// transfer straddling the trim boundary would otherwise leave its visible packets
 		// flagged TP with no message behind them, and the announcement this side never saw
@@ -268,6 +271,7 @@ fn (mut app App) load_recording(path string) {
 		// transfer ended — timed out, replaced, aborted, acknowledged with packets missing —
 		// and the session was gone, so the close below could not report it either (codex).
 		mut rebuilt := []j1939.TpMessage{}
+		mut is_part := false
 		if is_j1939 {
 			mut rr := tps[e.iface] or { j1939.Reassembler{} }
 			ev := if tp_part {
@@ -280,11 +284,20 @@ fn (mut app App) load_recording(path string) {
 				j1939.TpEvents{}
 			}
 			tps[e.iface] = rr
+			is_part = ev.part
 			rebuilt = ev.done.clone()
 			for ab in ev.aborted {
-				// `tp_abort_line` already opens with the bus name, so only the FILE is added
-				// here — naming the bus twice is what reading the session log showed.
-				tp_notes << '${os.base(path)}: ${tp_abort_line(e.iface, ab)}'
+				// BOUNDED. A corrupted million-frame capture can abandon a transfer per
+				// announcement, and one allocated line each — held until the scan ends, then
+				// appended into a log that keeps 500 — is memory and lock time spent on
+				// something nobody can read (codex). The first `tp_notes_max` say what is
+				// wrong; the count says how much of it there is.
+				if tp_notes.len < tp_notes_max {
+					// `tp_abort_line` already opens with the bus name, so only the FILE is
+					// added here — naming the bus twice is what reading the session log showed.
+					tp_notes << '${os.base(path)}: ${tp_abort_line(e.iface, ab)}'
+				}
+				tp_dropped++
 			}
 		}
 		// COUNTED for the whole file, like the frame counts above: a rebuilt message before
@@ -316,7 +329,7 @@ fn (mut app App) load_recording(path string) {
 			e2e:      viol
 			imported: true
 			j1939:    is_j1939 && f.extended
-			tp:       if tp_part { j1939.Part.packet } else { j1939.Part.plain }
+			tp:       if is_part { j1939.Part.packet } else { j1939.Part.plain }
 		})
 		for m in rebuilt {
 			// REP like the packets it came from, and `imported` for the same reason: these
@@ -344,6 +357,9 @@ fn (mut app App) load_recording(path string) {
 	}
 	for n in tp_notes {
 		app.log_append_locked(n)
+	}
+	if tp_dropped > tp_notes.len {
+		app.log_append_locked('${os.base(path)}: J1939 — ${tp_dropped} abandoned transfers in this recording, of which the first ${tp_notes.len} are above')
 	}
 	app.mu.unlock()
 	shown := log.len() - first_row

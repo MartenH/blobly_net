@@ -103,6 +103,11 @@ mut:
 	// after a trimmed import starts at 0 instead of the file's frame count. Distinct from
 	// trace_base, which additionally advances on every ring trim.
 	trace_run_base u64
+	// Rows that are not FRAMES: a J1939 message rebuilt out of an imported recording (#171).
+	// Each consumes a sequence number like any row, and a live row's `idx` is derived from the
+	// sequence — so without discounting them the first LIVE row after Resume was numbered
+	// `log.len() + rebuilt` and the gap read as dropped frames (codex). Reset with the trace.
+	trace_synth u64
 	ghost_seq      u64                    // identities for emissions made while paused (see ghost_base)
 	tx_mutexes     map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the

@@ -238,6 +238,7 @@ fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, 
 
 // reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
 fn (mut app App) reset_trace_locked() {
+	app.trace_synth = 0
 	app.trace = []
 	// The grouped view's label cache is keyed by group and only ever grows, so it is reset
 	// with the trace — Start, Clear and Load all come through here, on the GUI thread, and
@@ -278,8 +279,15 @@ fn (mut app App) push_row_locked(row TraceRow) u64 {
 	// row stood for exactly one file frame, which stopped being true when a rebuilt J1939
 	// message became a row of its own — each one consumed a number and pushed every later
 	// row's off the file by one more (codex). Everything else is still numbered by arithmetic.
-	if !r.imported {
-		r.idx = seq - app.trace_run_base // frozen here — see the field
+	if r.imported {
+		// A rebuilt message is not a frame of the file, so it takes no number from it.
+		if r.tp.rebuilt() {
+			app.trace_synth++
+		}
+	} else {
+		// LESS the synthetic rows, so a live row resumed after an import continues the file's
+		// numbering instead of jumping by however many messages were rebuilt out of it.
+		r.idx = seq - app.trace_run_base - app.trace_synth // frozen here — see the field
 	}
 	r.run = app.trace_run_base
 	app.trace << r
