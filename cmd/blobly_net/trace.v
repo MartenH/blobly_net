@@ -144,8 +144,14 @@ mut:
 // so decoding those bytes fabricates all-zero signal values from a frame that has NO payload.
 // One predicate rather than a `!r.rtr` at each site, so the next decoder greps into the rule
 // instead of rediscovering it (codex #127 r2).
+//
+// A TRUNCATED row has no payload for this purpose either. The row keeps a bounded head and
+// states the true length, which is right for the len and data columns — but a signal decoded
+// from a head reads the missing bytes as zero and prints a NUMBER, with nothing to say it was
+// made up. Until #171 nothing truncated could be decoded (a SOME/IP row has no DBC message),
+// and a rebuilt J1939 message can carry 1785 bytes where the head is 256 (codex).
 fn (r TraceRow) has_payload() bool {
-	return !r.rtr && r.data.len > 0
+	return !r.rtr && !r.truncated() && r.data.len > 0
 }
 
 // trace_payload_max bounds the bytes a single row keeps for the live view. Four times CAN-FD's
@@ -215,9 +221,9 @@ fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, 
 		j1939:    true
 		tp:       kind
 		tp_n:     m.packets
-		key:      gkey_tp(chname, id, kind)
+		key:      gkey_tp(origin, chname, id, kind)
 	})
-	app.gcount[gkey_tp(chname, id, kind)]++
+	app.gcount[gkey_tp(origin, chname, id, kind)]++
 }
 
 // reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.

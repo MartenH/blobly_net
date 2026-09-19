@@ -560,7 +560,7 @@ fn (r TraceRow) gkey() string {
 			r.someip_bad_fixed)
 	}
 	if r.tp.rebuilt() && r.key.len == 0 {
-		return gkey_tp(r.ch, r.id, r.tp)
+		return gkey_tp(r.origin, r.ch, r.id, r.tp)
 	}
 	if r.key.len > 0 {
 		return r.key
@@ -576,8 +576,8 @@ fn (r TraceRow) gkey() string {
 // parameter group sent to everybody and the same one sent over a connection to one address are
 // two producers, and a grouped view that merged them would name the pair after whichever
 // arrived last.
-fn gkey_tp(ch string, id u32, kind j1939.Part) string {
-	return 'J|${org_rx}|${ch.len}:${ch}|${id}|${kind}'
+fn gkey_tp(origin string, ch string, id u32, kind j1939.Part) string {
+	return 'J|${origin}|${ch.len}:${ch}|${id}|${kind}'
 }
 
 // gkey_frame: the producer-side identity, for the paths that count a frame without holding
@@ -869,6 +869,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				// only a DLC placeholder (see TraceRow.has_payload); and an expanded SOME/IP
 				// group decodes nothing because its payload layout is the deployment's, not a
 				// DBC's (decoding it from an emb node's config is the next rung).
+				if r.truncated() {
+					// Said, rather than silently decoding nothing: the row shows a length the
+					// signals below it would not account for.
+					vgui.table_row()
+					vgui.table_set_col(gcol_name)
+					vgui.text_dim('    ${r.full_len() - r.data.len} more bytes than this view keeps — no signals decoded')
+				}
 				if m := app.find_message_kind(g.id, g.ext, g.someip) {
 					for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 						lbl := s.label(r.data)

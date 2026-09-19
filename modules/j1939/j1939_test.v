@@ -151,11 +151,11 @@ fn payload(n int) []u8 {
 fn test_a_broadcast_transfer_is_rebuilt_from_its_packets() {
 	p := payload(20)
 	mut r := Reassembler{}
-	assert r.observe(cm_id(0x00, addr_global), true, bam(20, 3, data_pgn), 0).done.len == 0
+	assert r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0).done.len == 0
 	assert r.pending() == 1
-	assert r.observe(dt_id(0x00, addr_global), true, dt(1, p), 50).done.len == 0
-	assert r.observe(dt_id(0x00, addr_global), true, dt(2, p), 100).done.len == 0
-	ev := r.observe(dt_id(0x00, addr_global), true, dt(3, p), 150)
+	assert r.observe(dt_id(0x00, addr_global), true, false, dt(1, p), 50).done.len == 0
+	assert r.observe(dt_id(0x00, addr_global), true, false, dt(2, p), 100).done.len == 0
+	ev := r.observe(dt_id(0x00, addr_global), true, false, dt(3, p), 150)
 	assert ev.aborted.len == 0
 	assert ev.done.len == 1
 	m := ev.done[0]
@@ -179,8 +179,8 @@ fn test_a_broadcast_transfer_is_rebuilt_from_its_packets() {
 fn test_a_broadcast_that_stops_halfway_is_abandoned_and_said() {
 	p := payload(20)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, addr_global), true, bam(20, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, addr_global), true, dt(1, p), 50)
+	r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(1, p), 50)
 	// Nothing for longer than a broadcast transfer is allowed to pause.
 	assert r.tick(700).len == 0 // not yet
 	
@@ -198,9 +198,9 @@ fn test_a_broadcast_that_stops_halfway_is_abandoned_and_said() {
 fn test_a_second_announcement_from_one_sender_replaces_the_first() {
 	p := payload(20)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, addr_global), true, bam(20, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, addr_global), true, dt(1, p), 50)
-	ev := r.observe(cm_id(0x00, addr_global), true, bam(14, 2, 0x00FEF1), 100)
+	r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(1, p), 50)
+	ev := r.observe(cm_id(0x00, addr_global), true, false, bam(14, 2, 0x00FEF1), 100)
 	assert ev.aborted.len == 1
 	assert ev.aborted[0].pgn == data_pgn // the OLD one is what was abandoned
 	
@@ -214,15 +214,15 @@ fn test_a_second_announcement_from_one_sender_replaces_the_first() {
 fn test_a_connection_mode_transfer_is_rebuilt_and_the_handshake_keeps_it_alive() {
 	p := payload(16) // 3 packets
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, 0x03), true, rts(16, 3, data_pgn), 0)
+	r.observe(cm_id(0x00, 0x03), true, false, rts(16, 3, data_pgn), 0)
 	// The receiver answers. It is sent the OTHER way round -- from 0x03 to 0x00 -- and must
 	// still be recognised as this session, or the transfer times out during its own handshake.
-	assert r.observe(cm_id(0x03, 0x00), true, cts(3, 1, data_pgn), 1000).aborted.len == 0
+	assert r.observe(cm_id(0x03, 0x00), true, false, cts(3, 1, data_pgn), 1000).aborted.len == 0
 	assert r.pending() == 1
 	// Past the deadline the RTS alone would have set, but the CTS moved it.
-	assert r.observe(dt_id(0x00, 0x03), true, dt(1, p), 2000).done.len == 0
-	r.observe(dt_id(0x00, 0x03), true, dt(2, p), 2050)
-	ev := r.observe(dt_id(0x00, 0x03), true, dt(3, p), 2100)
+	assert r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 2000).done.len == 0
+	r.observe(dt_id(0x00, 0x03), true, false, dt(2, p), 2050)
+	ev := r.observe(dt_id(0x00, 0x03), true, false, dt(3, p), 2100)
 	assert ev.done.len == 1
 	assert ev.done[0].data == p
 	assert ev.done[0].kind == .cm
@@ -232,12 +232,12 @@ fn test_a_connection_mode_transfer_is_rebuilt_and_the_handshake_keeps_it_alive()
 fn test_a_packet_sent_again_lands_where_it_belongs() {
 	p := payload(20)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, 0x03), true, rts(20, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, 0x03), true, dt(1, p), 10)
-	r.observe(dt_id(0x00, 0x03), true, dt(3, p), 20) // out of order, as a CTS may ask
-	r.observe(dt_id(0x00, 0x03), true, dt(1, p), 30) // and again
+	r.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 10)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(3, p), 20) // out of order, as a CTS may ask
+	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 30) // and again
 	assert r.pending() == 1
-	ev := r.observe(dt_id(0x00, 0x03), true, dt(2, p), 40)
+	ev := r.observe(dt_id(0x00, 0x03), true, false, dt(2, p), 40)
 	assert ev.done.len == 1
 	assert ev.done[0].data == p
 	assert ev.done[0].packets == 3
@@ -246,11 +246,11 @@ fn test_a_packet_sent_again_lands_where_it_belongs() {
 fn test_an_acknowledgement_for_a_transfer_this_tool_did_not_finish_says_so() {
 	p := payload(20)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, 0x03), true, rts(20, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, 0x03), true, dt(1, p), 10)
-	r.observe(dt_id(0x00, 0x03), true, dt(2, p), 20)
+	r.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 10)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(2, p), 20)
 	// The receiver says it got the whole thing -- so the missing packet is one WE dropped.
-	ev := r.observe(cm_id(0x03, 0x00), true, eoma(20, 3, data_pgn), 30)
+	ev := r.observe(cm_id(0x03, 0x00), true, false, eoma(20, 3, data_pgn), 30)
 	assert ev.done.len == 0
 	assert ev.aborted.len == 1
 	assert ev.aborted[0].got == 2
@@ -262,11 +262,11 @@ fn test_an_acknowledgement_for_a_transfer_this_tool_did_not_finish_says_so() {
 fn test_an_acknowledgement_for_a_transfer_already_complete_settles_nothing() {
 	p := payload(16)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, 0x03), true, rts(16, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, 0x03), true, dt(1, p), 10)
-	r.observe(dt_id(0x00, 0x03), true, dt(2, p), 20)
-	assert r.observe(dt_id(0x00, 0x03), true, dt(3, p), 30).done.len == 1
-	ev := r.observe(cm_id(0x03, 0x00), true, eoma(16, 3, data_pgn), 40)
+	r.observe(cm_id(0x00, 0x03), true, false, rts(16, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 10)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(2, p), 20)
+	assert r.observe(dt_id(0x00, 0x03), true, false, dt(3, p), 30).done.len == 1
+	ev := r.observe(cm_id(0x03, 0x00), true, false, eoma(16, 3, data_pgn), 40)
 	assert ev.done.len == 0 && ev.aborted.len == 0
 }
 
@@ -274,18 +274,18 @@ fn test_either_end_may_abort_and_the_reason_is_carried() {
 	p := payload(20)
 	// The sender gives up.
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, 0x03), true, rts(20, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, 0x03), true, dt(1, p), 10)
-	ev := r.observe(cm_id(0x00, 0x03), true, abort_frame(3, data_pgn), 20)
+	r.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 10)
+	ev := r.observe(cm_id(0x00, 0x03), true, false, abort_frame(3, data_pgn), 20)
 	assert ev.aborted.len == 1
 	assert ev.aborted[0].reason.contains('aborted by 00')
 	assert ev.aborted[0].reason.contains('a timeout occurred')
 	assert r.pending() == 0
 	// The receiver gives up: the frame's own addresses are the other way round.
 	mut r2 := Reassembler{}
-	r2.observe(cm_id(0x00, 0x03), true, rts(20, 3, data_pgn), 0)
-	r2.observe(dt_id(0x00, 0x03), true, dt(1, p), 10)
-	ev2 := r2.observe(cm_id(0x03, 0x00), true, abort_frame(1, data_pgn), 20)
+	r2.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
+	r2.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 10)
+	ev2 := r2.observe(cm_id(0x03, 0x00), true, false, abort_frame(1, data_pgn), 20)
 	assert ev2.aborted.len == 1
 	assert ev2.aborted[0].reason.contains('aborted by 03')
 	assert ev2.aborted[0].reason.contains('already in a connection-managed session')
@@ -302,13 +302,13 @@ fn test_an_unnamed_abort_code_is_reported_as_its_number() {
 fn test_an_announcement_that_does_not_describe_a_transport_message_is_refused() {
 	mut r := Reassembler{}
 	// Eight bytes or fewer would simply have been sent as a frame.
-	a := r.observe(cm_id(0x00, addr_global), true, bam(8, 2, data_pgn), 0).aborted
+	a := r.observe(cm_id(0x00, addr_global), true, false, bam(8, 2, data_pgn), 0).aborted
 	assert a.len == 1 && a[0].reason.contains('not a transport message')
 	// More than 255 packets can carry.
-	b := r.observe(cm_id(0x00, addr_global), true, bam(2000, 255, data_pgn), 0).aborted
+	b := r.observe(cm_id(0x00, addr_global), true, false, bam(2000, 255, data_pgn), 0).aborted
 	assert b.len == 1 && b[0].reason.contains('past the 1785')
 	// A packet count that does not follow from the size: 20 bytes is 3 packets, never 4.
-	c := r.observe(cm_id(0x00, addr_global), true, bam(20, 4, data_pgn), 0).aborted
+	c := r.observe(cm_id(0x00, addr_global), true, false, bam(20, 4, data_pgn), 0).aborted
 	assert c.len == 1 && c[0].reason.contains('do not agree')
 	assert r.pending() == 0
 	assert r.counts().refused == 3
@@ -317,20 +317,20 @@ fn test_an_announcement_that_does_not_describe_a_transport_message_is_refused() 
 fn test_a_packet_outside_the_announced_run_ends_the_transfer() {
 	p := payload(20)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, addr_global), true, bam(20, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, addr_global), true, dt(1, p), 10)
+	r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(1, p), 10)
 	mut bad := dt(2, p)
 	bad[0] = 9
-	ev := r.observe(dt_id(0x00, addr_global), true, bad, 20)
+	ev := r.observe(dt_id(0x00, addr_global), true, false, bad, 20)
 	assert ev.aborted.len == 1
 	assert ev.aborted[0].reason.contains('outside the announced 1..3')
 	assert r.pending() == 0
 	// Sequence 0 is not a packet number either.
 	mut r2 := Reassembler{}
-	r2.observe(cm_id(0x00, addr_global), true, bam(20, 3, data_pgn), 0)
+	r2.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
 	mut zero := dt(1, p)
 	zero[0] = 0
-	assert r2.observe(dt_id(0x00, addr_global), true, zero, 10).aborted.len == 1
+	assert r2.observe(dt_id(0x00, addr_global), true, false, zero, 10).aborted.len == 1
 }
 
 fn test_packets_for_a_transfer_that_was_never_announced_are_counted_not_reported() {
@@ -338,7 +338,7 @@ fn test_packets_for_a_transfer_that_was_never_announced_are_counted_not_reported
 	mut r := Reassembler{}
 	// A measurement started in the middle of somebody's transfer.
 	for seq in 1 .. 4 {
-		ev := r.observe(dt_id(0x00, addr_global), true, dt(seq, p), f64(seq * 10))
+		ev := r.observe(dt_id(0x00, addr_global), true, false, dt(seq, p), f64(seq * 10))
 		assert ev.done.len == 0 && ev.aborted.len == 0
 	}
 	assert r.counts().orphan_dt == 3
@@ -348,9 +348,9 @@ fn test_packets_for_a_transfer_that_was_never_announced_are_counted_not_reported
 fn test_a_transport_frame_this_cannot_read_is_counted() {
 	mut r := Reassembler{}
 	// Short: the protocol pads to eight, so a shorter one has a field cut off.
-	assert r.observe(cm_id(0x00, addr_global), true, [u8(0x20), 20, 0], 0).done.len == 0
+	assert r.observe(cm_id(0x00, addr_global), true, false, [u8(0x20), 20, 0], 0).done.len == 0
 	// A control byte with no meaning here.
-	r.observe(cm_id(0x00, addr_global), true, [u8(0x42), 0, 0, 0, 0, 0, 0, 0], 0)
+	r.observe(cm_id(0x00, addr_global), true, false, [u8(0x42), 0, 0, 0, 0, 0, 0, 0], 0)
 	assert r.counts().malformed == 2
 	assert r.counts().refused == 0 // a frame it could not read is not an announcement it refused
 	
@@ -359,15 +359,15 @@ fn test_a_transport_frame_this_cannot_read_is_counted() {
 fn test_one_wire_follows_only_so_many_transfers_at_once() {
 	mut r := Reassembler{}
 	for sa in 0 .. max_sessions {
-		r.observe(cm_id(u8(sa), addr_global), true, bam(20, 3, data_pgn), 0)
+		r.observe(cm_id(u8(sa), addr_global), true, false, bam(20, 3, data_pgn), 0)
 	}
 	assert r.pending() == max_sessions
-	ev := r.observe(cm_id(u8(max_sessions), addr_global), true, bam(20, 3, data_pgn), 0)
+	ev := r.observe(cm_id(u8(max_sessions), addr_global), true, false, bam(20, 3, data_pgn), 0)
 	assert ev.aborted.len == 1
 	assert ev.aborted[0].reason.contains('already open')
 	assert r.pending() == max_sessions
 	// But a sender whose session is already open may still replace its own.
-	ev2 := r.observe(cm_id(0, addr_global), true, bam(20, 3, data_pgn), 0)
+	ev2 := r.observe(cm_id(0, addr_global), true, false, bam(20, 3, data_pgn), 0)
 	assert ev2.aborted.len == 1 && ev2.aborted[0].reason.contains('replaced')
 	assert r.pending() == max_sessions
 }
@@ -380,18 +380,18 @@ fn test_two_senders_interleaved_do_not_mix() {
 		b[i] = u8(0x80 + i)
 	}
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, addr_global), true, bam(20, 3, data_pgn), 0)
-	r.observe(cm_id(0x21, addr_global), true, bam(20, 3, 0x00FEF1), 1)
+	r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(cm_id(0x21, addr_global), true, false, bam(20, 3, 0x00FEF1), 1)
 	assert r.pending() == 2
-	r.observe(dt_id(0x00, addr_global), true, dt(1, a), 10)
-	r.observe(dt_id(0x21, addr_global), true, dt(1, b), 11)
-	r.observe(dt_id(0x21, addr_global), true, dt(2, b), 12)
-	r.observe(dt_id(0x00, addr_global), true, dt(2, a), 13)
-	first := r.observe(dt_id(0x21, addr_global), true, dt(3, b), 14)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(1, a), 10)
+	r.observe(dt_id(0x21, addr_global), true, false, dt(1, b), 11)
+	r.observe(dt_id(0x21, addr_global), true, false, dt(2, b), 12)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(2, a), 13)
+	first := r.observe(dt_id(0x21, addr_global), true, false, dt(3, b), 14)
 	assert first.done.len == 1
 	assert first.done[0].sa == 0x21
 	assert first.done[0].data == b
-	second := r.observe(dt_id(0x00, addr_global), true, dt(3, a), 15)
+	second := r.observe(dt_id(0x00, addr_global), true, false, dt(3, a), 15)
 	assert second.done.len == 1
 	assert second.done[0].sa == 0x00
 	assert second.done[0].data == a
@@ -403,12 +403,12 @@ fn test_one_sender_may_broadcast_and_address_at_the_same_time() {
 	// are two transfers, not one replacing the other.
 	p := payload(16)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, addr_global), true, bam(16, 3, data_pgn), 0)
-	r.observe(cm_id(0x00, 0x03), true, rts(16, 3, 0x00FEF1), 1)
+	r.observe(cm_id(0x00, addr_global), true, false, bam(16, 3, data_pgn), 0)
+	r.observe(cm_id(0x00, 0x03), true, false, rts(16, 3, 0x00FEF1), 1)
 	assert r.pending() == 2
-	r.observe(dt_id(0x00, 0x03), true, dt(1, p), 2)
-	r.observe(dt_id(0x00, 0x03), true, dt(2, p), 3)
-	ev := r.observe(dt_id(0x00, 0x03), true, dt(3, p), 4)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 2)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(2, p), 3)
+	ev := r.observe(dt_id(0x00, 0x03), true, false, dt(3, p), 4)
 	assert ev.done.len == 1
 	assert ev.done[0].da == 0x03
 	assert r.pending() == 1 // the broadcast is still going
@@ -418,9 +418,9 @@ fn test_one_sender_may_broadcast_and_address_at_the_same_time() {
 fn test_the_end_of_a_measurement_names_what_was_still_in_flight() {
 	p := payload(20)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, addr_global), true, bam(20, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, addr_global), true, dt(1, p), 10)
-	r.observe(cm_id(0x21, 0x03), true, rts(20, 3, data_pgn), 11)
+	r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(1, p), 10)
+	r.observe(cm_id(0x21, 0x03), true, false, rts(20, 3, data_pgn), 11)
 	left := r.close(20)
 	assert left.len == 2
 	assert r.pending() == 0
@@ -431,19 +431,19 @@ fn test_the_end_of_a_measurement_names_what_was_still_in_flight() {
 fn test_a_sweep_reports_every_transfer_that_stopped() {
 	p := payload(20)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, addr_global), true, bam(20, 3, data_pgn), 0)
-	r.observe(cm_id(0x21, addr_global), true, bam(20, 3, data_pgn), 0)
-	r.observe(dt_id(0x00, addr_global), true, dt(1, p), 10)
+	r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(cm_id(0x21, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(1, p), 10)
 	// The sweep rides the next transport frame, not only the idle path: a third sender
 	// announcing at t=1000 is where the first two are noticed to have stopped.
-	ev := r.observe(cm_id(0x42, addr_global), true, bam(20, 3, data_pgn), 1000)
+	ev := r.observe(cm_id(0x42, addr_global), true, false, bam(20, 3, data_pgn), 1000)
 	assert ev.aborted.len == 2
 	assert r.pending() == 1
 }
 
 fn test_a_frame_that_is_not_transport_settles_nothing_and_opens_nothing() {
 	mut r := Reassembler{}
-	ev := r.observe(0x0CF00400, true, [u8(1), 2, 3, 4, 5, 6, 7, 8], 0)
+	ev := r.observe(0x0CF00400, true, false, [u8(1), 2, 3, 4, 5, 6, 7, 8], 0)
 	assert ev.done.len == 0 && ev.aborted.len == 0
 	assert r.pending() == 0
 	assert r.counts() == Counts{}
@@ -454,22 +454,22 @@ fn test_a_frame_that_is_not_transport_settles_nothing_and_opens_nothing() {
 fn test_a_well_formed_announcement_is_evidence_of_a_j1939_recording() {
 	// A live wire has an owner to ask; a file somebody sends you has nobody, so the bytes
 	// answer. Both spellings of an announcement count.
-	assert announces_session(0x1CECFF00, true, bam(20, 3, data_pgn))
-	assert announces_session(0x18EC0300, true, rts(20, 3, data_pgn))
+	assert announces_session(0x1CECFF00, true, false, bam(20, 3, data_pgn))
+	assert announces_session(0x18EC0300, true, false, rts(20, 3, data_pgn))
 }
 
 fn test_nothing_else_in_a_recording_is_taken_as_evidence() {
 	// Not a session frame at all, and not a standard-id frame that happens to share the number.
-	assert !announces_session(0x0CF00400, true, [u8(1), 2, 3, 4, 5, 6, 7, 8])
-	assert !announces_session(0x1CECFF00, false, bam(20, 3, data_pgn))
+	assert !announces_session(0x0CF00400, true, false, [u8(1), 2, 3, 4, 5, 6, 7, 8])
+	assert !announces_session(0x1CECFF00, false, false, bam(20, 3, data_pgn))
 	// A data packet is not an announcement: it says nothing about how long the message is.
-	assert !announces_session(0x1CEBFF00, true, dt(1, payload(20)))
+	assert !announces_session(0x1CEBFF00, true, false, dt(1, payload(20)))
 	// The handshake frames are not announcements either — only the two that open a transfer.
-	assert !announces_session(0x18EC0003, true, cts(3, 1, data_pgn))
-	assert !announces_session(0x18EC0003, true, eoma(20, 3, data_pgn))
-	assert !announces_session(0x18EC0300, true, abort_frame(3, data_pgn))
+	assert !announces_session(0x18EC0003, true, false, cts(3, 1, data_pgn))
+	assert !announces_session(0x18EC0003, true, false, eoma(20, 3, data_pgn))
+	assert !announces_session(0x18EC0300, true, false, abort_frame(3, data_pgn))
 	// Short, so the numbers cannot be read at all.
-	assert !announces_session(0x1CECFF00, true, [u8(0x20), 20, 0])
+	assert !announces_session(0x1CECFF00, true, false, [u8(0x20), 20, 0])
 }
 
 // The evidence test and the acceptance test are ONE rule: a looser evidence test would claim a
@@ -479,11 +479,11 @@ fn test_evidence_is_exactly_what_the_reassembler_would_accept() {
 		size, packets := spec[0], spec[1]
 		f := bam(size, packets, data_pgn)
 		mut r := Reassembler{}
-		accepted := r.observe(0x1CECFF00, true, f, 0).aborted.len == 0
-		assert announces_session(0x1CECFF00, true, f) == accepted, '${size} bytes in ${packets}'
+		accepted := r.observe(0x1CECFF00, true, false, f, 0).aborted.len == 0
+		assert announces_session(0x1CECFF00, true, false, f) == accepted, '${size} bytes in ${packets}'
 	}
-	assert announcement_refusal(20, 3) == ''
-	assert announcement_refusal(8, 2) != ''
+	assert announcement_refusal(cm_bam, addr_global, 20, 3) == ''
+	assert announcement_refusal(cm_bam, addr_global, 8, 2) != ''
 }
 
 fn test_the_page_bits_are_part_of_the_group_so_another_page_is_another_group() {
@@ -491,9 +491,9 @@ fn test_the_page_bits_are_part_of_the_group_so_another_page_is_another_group() {
 	// one be taken apart as an announcement (codex).
 	assert !is_tp(0x19ECFF00, true) // DP set
 	assert !is_tp(0x1BEBFF00, true) // EDP set
-	assert !announces_session(0x19ECFF00, true, bam(20, 3, data_pgn))
+	assert !announces_session(0x19ECFF00, true, false, bam(20, 3, data_pgn))
 	mut r := Reassembler{}
-	assert r.observe(0x19ECFF00, true, bam(20, 3, data_pgn), 0).aborted.len == 0
+	assert r.observe(0x19ECFF00, true, false, bam(20, 3, data_pgn), 0).aborted.len == 0
 	assert r.pending() == 0
 }
 
@@ -504,31 +504,88 @@ fn test_an_abort_ends_the_transfer_its_pgn_names_not_the_nearest_one() {
 	other_pgn := u32(0x00FEF1)
 	p := payload(20)
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, 0x03), true, rts(20, 3, data_pgn), 0) // 00 -> 03, sending
-	r.observe(cm_id(0x03, 0x00), true, rts(20, 3, other_pgn), 1) // 03 -> 00, the other way
-	r.observe(dt_id(0x00, 0x03), true, dt(1, p), 2)
+	r.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0) // 00 -> 03, sending
+	r.observe(cm_id(0x03, 0x00), true, false, rts(20, 3, other_pgn), 1) // 03 -> 00, the other way
+	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 2)
 	assert r.pending() == 2
 	// 03 abandons the transfer IT is sending, naming that transfer's group.
-	ev := r.observe(cm_id(0x03, 0x00), true, abort_frame(3, other_pgn), 3)
+	ev := r.observe(cm_id(0x03, 0x00), true, false, abort_frame(3, other_pgn), 3)
 	assert ev.aborted.len == 1
 	assert ev.aborted[0].pgn == other_pgn
 	assert ev.aborted[0].sa == 0x03
 	assert r.pending() == 1
 	// and the one 00 is sending is untouched, so its last packets still complete it
-	r.observe(dt_id(0x00, 0x03), true, dt(2, p), 4)
-	done := r.observe(dt_id(0x00, 0x03), true, dt(3, p), 5).done
+	r.observe(dt_id(0x00, 0x03), true, false, dt(2, p), 4)
+	done := r.observe(dt_id(0x00, 0x03), true, false, dt(3, p), 5).done
 	assert done.len == 1 && done[0].pgn == data_pgn
 }
 
 fn test_an_abort_naming_no_open_transfer_settles_nothing() {
 	mut r := Reassembler{}
-	r.observe(cm_id(0x00, 0x03), true, rts(20, 3, data_pgn), 0)
+	r.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
 	// An abort for a peer this side is not following at all.
-	assert r.observe(cm_id(0x11, 0x12), true, abort_frame(3, data_pgn), 1).aborted.len == 0
+	assert r.observe(cm_id(0x11, 0x12), true, false, abort_frame(3, data_pgn), 1).aborted.len == 0
 	assert r.pending() == 1
 	// One naming a group nobody here is carrying still ends the session it is addressed to,
 	// since the peers agree the connection is over whatever this side made of the numbers.
-	ev := r.observe(cm_id(0x03, 0x00), true, abort_frame(3, 0x00FFFF), 2)
+	ev := r.observe(cm_id(0x03, 0x00), true, false, abort_frame(3, 0x00FFFF), 2)
 	assert ev.aborted.len == 1 && ev.aborted[0].pgn == data_pgn
 	assert r.pending() == 0
+}
+
+// A BAM is announced to everybody and an RTS opens a connection to one node: the mode and the
+// destination are one statement. Left unchecked, an addressed BAM was proof enough to read a
+// whole recording as J1939 and to complete a session that cannot exist (codex).
+fn test_an_announcement_must_agree_with_its_own_destination() {
+	mut r := Reassembler{}
+	addressed_bam := r.observe(cm_id(0x00, 0x03), true, false, bam(20, 3, data_pgn), 0).aborted
+	assert addressed_bam.len == 1 && addressed_bam[0].reason.contains('addressed to 03')
+	global_rts := r.observe(cm_id(0x00, addr_global), true, false, rts(20, 3, data_pgn), 0).aborted
+	assert global_rts.len == 1 && global_rts[0].reason.contains('addressed to everybody')
+	assert r.pending() == 0
+	assert !announces_session(cm_id(0x00, 0x03), true, false, bam(20, 3, data_pgn))
+	assert !announces_session(cm_id(0x00, addr_global), true, false, rts(20, 3, data_pgn))
+	// and the two well-formed pairings are still accepted, by both questions
+	assert announces_session(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn))
+	assert announces_session(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn))
+}
+
+// A remote frame ASKS for a payload and carries none; a backend that hands back a buffer of the
+// requested length anyway delivered one here as sequence 0, which tore down a live transfer.
+fn test_a_remote_frame_is_never_part_of_a_session() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(1, p), 10)
+	// a remote frame at a TP.DT identifier, with a driver's zero-filled placeholder payload
+	ev := r.observe(dt_id(0x00, addr_global), true, true, []u8{len: 8}, 20)
+	assert ev.aborted.len == 0 && ev.done.len == 0
+	assert r.pending() == 1 // the transfer is untouched
+	assert r.counts().malformed == 1
+	// and it completes as if the remote frame had never happened
+	r.observe(dt_id(0x00, addr_global), true, false, dt(2, p), 30)
+	done := r.observe(dt_id(0x00, addr_global), true, false, dt(3, p), 40).done
+	assert done.len == 1 && done[0].data == p
+	// a remote frame is not evidence of a J1939 recording either
+	assert !announces_session(cm_id(0x00, addr_global), true, true, bam(20, 3, data_pgn))
+}
+
+// Counting something nothing reads is not reporting it (#213's lesson, one layer over), so the
+// counters have to be reachable: `orphan_seen` is the moment, `counts` the total.
+fn test_what_is_counted_can_be_read_back() {
+	p := payload(20)
+	mut r := Reassembler{}
+	assert !r.orphan_seen()
+	r.observe(dt_id(0x00, addr_global), true, false, dt(2, p), 0) // joined mid-transfer
+	assert r.orphan_seen()
+	assert r.counts().orphan_dt == 1
+	// and it is the LAST frame's answer, not a latch of its own: the caller latches.
+	r.observe(0x0CF00400, true, false, [u8(1), 2, 3, 4, 5, 6, 7, 8], 1)
+	assert !r.orphan_seen()
+	assert r.counts().orphan_dt == 1
+	r.observe(cm_id(0x00, addr_global), true, false, [u8(0x42), 0, 0, 0, 0, 0, 0, 0], 2)
+	assert r.counts() == Counts{
+		orphan_dt: 1
+		malformed: 1
+	}
 }

@@ -600,6 +600,28 @@ fn tp_abort_line(chname string, ab j1939.TpAbort) string {
 	return '${chname}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} to ${j1939.addr_str(ab.da)} — ${ab.reason} (${ab.got}/${ab.packets} packets)'
 }
 
+// tp_counts_line says what the reassembler COUNTED rather than reported: data packets for a
+// transfer whose announcement was never seen (a measurement or a capture that began in the
+// middle of one — the ordinary case, and the reason those are counted instead of producing a
+// line per packet), and frames at a transport identifier it could not read at all.
+//
+// It exists because counting something nothing reads is not reporting it: the operator is left
+// with packets that produced no message and no way to tell why (codex; #213 made the same point
+// about the bus diagnostics).
+fn tp_counts_line(c j1939.Counts) string {
+	mut parts := []string{}
+	if c.orphan_dt > 0 {
+		parts << '${c.orphan_dt} data packet(s) for a transfer whose announcement was never seen'
+	}
+	if c.malformed > 0 {
+		parts << '${c.malformed} unreadable transport frame(s)'
+	}
+	if c.refused > 0 {
+		parts << '${c.refused} refused announcement(s)'
+	}
+	return parts.join('; ')
+}
+
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// THE CENSUS SLOT WAS RESERVED BY THE SPAWNING THREAD; this side only releases it, and from
 	// the first line, so the open-failure return below is covered like every other exit. It used
@@ -697,6 +719,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// session is scoped to the wire, and this is the one thread that sees the wire's frames
 	// (docs/one_reader_per_wire.md). Nothing locks it because nothing else can reach it.
 	mut tp := j1939.Reassembler{}
+	mut said_orphan := false
 	// Built from the SAME `protect:` entries the simulation stamps with, so a project describes
 	// each protected message once and both directions follow it. A separate "check this on
 	// receive" declaration would let the two drift, and the drift would read as an ECU fault.
@@ -924,9 +947,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// state machine is this reader's own, and a memcpy under the global mutex is a memcpy
 		// every other thread waits for. `is_tp` first, so a wire that carries no session pays
 		// two comparisons per frame and allocates nothing.
-		tp_part := reads_j1939 && !ours && j1939.is_tp(f.id, f.extended)
+		// `!f.rtr` like the protection check above: a remote frame carries no payload, and a
+		// backend handing back a placeholder buffer delivered one as sequence 0 (codex).
+		tp_part := reads_j1939 && !ours && !f.rtr && j1939.is_tp(f.id, f.extended)
 		tp_ev := if tp_part {
-			tp.observe(f.id, f.extended, f.data, t_ms)
+			tp.observe(f.id, f.extended, f.rtr, f.data, t_ms)
 		} else if reads_j1939 && tp.pending() > 0 {
 			// A session that stopped is noticed on the wire's ORDINARY traffic too, not only
 			// when the next transport frame happens along: a sender that dies mid-transfer
@@ -981,6 +1006,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// that fell apart while it was frozen is exactly what the operator unpauses to find.
 		for ab in tp_ev.aborted {
 			a.log_append_locked(tp_abort_line(chname, ab))
+		}
+		// The FIRST packet of a transfer this measurement never saw announced, said once. It
+		// means the measurement started in the middle of one — ordinary, and the answer to
+		// "why did those packets produce no message" — but one line per packet would be a
+		// flood, which is why the module counts them. The latch is the reader's own, like the
+		// reassembler beside it.
+		if tp.orphan_seen() && !said_orphan {
+			said_orphan = true
+			a.log_append_locked('${chname}: J1939 packets for a transfer whose announcement was not seen — the measurement began mid-transfer; the total is reported at Stop')
 		}
 		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
 		// trigger-frozen dump from a manual stop. Update it even while the table is paused: the
@@ -1048,9 +1082,18 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// nothing else would ever say what became of it -- and a reader that hands its wire on
 	// hands no sessions with it, since the packets it already saw are gone with it.
 	left := tp.close(a.since_ms())
+	tp_counts := tp.counts()
 	a.mu.lock()
-	for ab in left {
-		a.log_append_locked(tp_abort_line(chname, ab))
+	// GUARDED like the state cleanup below it: a Stop→Start can move the generation on while
+	// this reader is still on its way out, and an unguarded line put a dead measurement's
+	// J1939 failure into the new run's Log looking fresh (codex).
+	if a.row_is_mine_locked(ci, iface, gen) {
+		for ab in left {
+			a.log_append_locked(tp_abort_line(chname, ab))
+		}
+		if tp_counts.orphan_dt > 0 || tp_counts.malformed > 0 {
+			a.log_append_locked('${chname}: J1939 ${tp_counts_line(tp_counts)}')
+		}
 	}
 	// Only if this run is still the current one. A loop that exited because the generation moved
 	// on would otherwise clear a flag the NEW loop just set, and every emission after that would

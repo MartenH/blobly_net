@@ -151,7 +151,7 @@ mut:
 	orphan_dt   int
 	malformed   int
 	refused     int
-	tail_orphan bool // the last observe() saw an orphan packet: for a caller that marks the row
+	tail_orphan bool // the last observe() saw an orphan packet: see orphan_seen()
 }
 
 // Counts is what the reassembler saw and did not turn into a message, since open, in the shape
@@ -171,6 +171,14 @@ pub fn (r &Reassembler) counts() Counts {
 		refused: r.refused
 		open: r.sessions.len
 	}
+}
+
+// orphan_seen reports whether the LAST observe met a data packet for a transfer it never saw
+// announced. For a caller that wants to say so once — a measurement or a capture that began in
+// the middle of a transfer is the ordinary reason, and saying it per packet would be a flood,
+// which is why the count exists at all.
+pub fn (r &Reassembler) orphan_seen() bool {
+	return r.tail_orphan
 }
 
 // pending is how many sessions are open -- the one question a caller asks on its idle path
@@ -236,7 +244,17 @@ pub fn abort_reason(code u8) string {
 // One rule, because it is asked twice for different purposes: the reassembler refuses a session
 // with it, and `announces_session` treats passing it as EVIDENCE that a recording is J1939. A
 // looser evidence test than the acceptance test would claim a bus this cannot then read.
-pub fn announcement_refusal(size int, packets int) string {
+pub fn announcement_refusal(ctrl u8, da u8, size int, packets int) string {
+	// The MODE and the destination are one statement, not two: a BAM is announced to everybody
+	// and an RTS opens a connection to one node, so an addressed BAM or a global RTS is a frame
+	// no J1939 stack produces. Left out, an addressed BAM was proof enough to read a whole
+	// recording as J1939 and to complete a session that cannot exist (codex).
+	if ctrl == cm_bam && da != addr_global {
+		return 'a broadcast announcement addressed to ${addr_str(da)}'
+	}
+	if ctrl == cm_rts && da == addr_global {
+		return 'a connection announcement addressed to everybody'
+	}
 	if size < tp_min_size {
 		return 'announced ${size} bytes, which is not a transport message'
 	}
@@ -258,24 +276,34 @@ pub fn announcement_refusal(size int, packets int) string {
 // 0x20 or 0x10 on PGN 0xEC00, carrying a byte count and a packet count that agree, is not
 // something a bus that is not J1939 produces by accident. A J1939 recording with no multi-packet
 // transfer in it is not recognised, which is a missing reading and never a wrong one.
-pub fn announces_session(id u32, ext bool, data []u8) bool {
-	if !is_tp(id, ext) || data.len < 8 {
+pub fn announces_session(id u32, ext bool, rtr bool, data []u8) bool {
+	if !is_tp(id, ext) || rtr || data.len < 8 {
 		return false
 	}
-	if decode_id(id).pf != 0xEC {
+	iid := decode_id(id)
+	if iid.pf != 0xEC {
 		return false
 	}
 	if data[0] != cm_bam && data[0] != cm_rts {
 		return false
 	}
-	return announcement_refusal(le16(data, 1), int(data[3])) == ''
+	return announcement_refusal(data[0], iid.ps, le16(data, 1), int(data[3])) == ''
 }
 
 // observe feeds one received frame and returns whatever it settled. A frame that is not part of
 // a session settles nothing and costs one `is_tp` call.
-pub fn (mut r Reassembler) observe(id u32, ext bool, data []u8, t_ms f64) TpEvents {
+pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, data []u8, t_ms f64) TpEvents {
 	r.tail_orphan = false
 	if !is_tp(id, ext) {
+		return TpEvents{}
+	}
+	// A REMOTE frame carries no payload — it asks for one. Some backends hand back a buffer of
+	// the requested length anyway, so a remote frame at a TP.DT identifier arrived here as
+	// sequence 0 and tore down a legitimate transfer (codex). Refused in the module rather than
+	// at each caller, because the two callers are the live reader and the importer and this is
+	// one rule.
+	if rtr {
+		r.malformed++
 		return TpEvents{}
 	}
 	// Every transport frame is 8 bytes; the protocol pads with 0xFF rather than shortening.
@@ -355,7 +383,7 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// The announcement is where a session is refused, since everything after it is read
 		// against these numbers. One rule (`announcement_refusal`), so what this accepts and
 		// what `announces_session` calls evidence of a J1939 bus cannot drift apart.
-		mut why := announcement_refusal(size, packets)
+		mut why := announcement_refusal(ctrl, iid.ps, size, packets)
 		if why == '' && r.sessions.len >= max_sessions && k !in r.sessions {
 			why = '${max_sessions} sessions already open on this wire'
 		}

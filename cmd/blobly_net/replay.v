@@ -208,7 +208,7 @@ fn (mut app App) load_recording(path string) {
 	mut j1939_buses := map[string]bool{}
 	for i in 0 .. log.len() {
 		e := log.at(i)
-		if j1939.announces_session(e.frame.id, e.frame.extended, e.frame.data) {
+		if j1939.announces_session(e.frame.id, e.frame.extended, e.frame.rtr, e.frame.data) {
 			j1939_buses[e.iface] = true
 		}
 	}
@@ -218,6 +218,9 @@ fn (mut app App) load_recording(path string) {
 	// a key it does not hold rather than taking the `or` branch, which segfaults on the first
 	// transfer in the file (measured, not reasoned).
 	mut tps := map[string]j1939.Reassembler{}
+	// Narrated after the rows are in, so the Log reads in one piece rather than interleaved
+	// with a 600k-frame import.
+	mut tp_notes := []string{}
 	for i in 0 .. log.len() {
 		e := log.at(i)
 		f := e.frame
@@ -254,18 +257,32 @@ fn (mut app App) load_recording(path string) {
 		app.gcount[rep_key]++
 		is_j1939 := j1939_buses[e.iface]
 		t_row := (e.t_s - t0) * 1000.0
-		tp_part := is_j1939 && j1939.is_tp(f.id, f.extended)
+		tp_part := is_j1939 && !f.rtr && j1939.is_tp(f.id, f.extended)
 		// The reassembler is fed EVERY frame, including the ones trimmed away below: a
 		// transfer straddling the trim boundary would otherwise leave its visible packets
 		// flagged TP with no message behind them, and the announcement this side never saw
 		// counted as an orphan (codex). Rows are what the trim drops, not state.
-		rebuilt := if tp_part {
+		// Both lists, and a sweep on the file's own clock for a bus whose transfer stalled and
+		// whose traffic then went on without it: keeping only `done` threw away every reason a
+		// transfer ended — timed out, replaced, aborted, acknowledged with packets missing —
+		// and the session was gone, so the close below could not report it either (codex).
+		mut rebuilt := []j1939.TpMessage{}
+		if is_j1939 {
 			mut rr := tps[e.iface] or { j1939.Reassembler{} }
-			ev := rr.observe(f.id, f.extended, f.data, t_row)
+			ev := if tp_part {
+				rr.observe(f.id, f.extended, f.rtr, f.data, t_row)
+			} else if rr.pending() > 0 {
+				j1939.TpEvents{
+					aborted: rr.tick(t_row)
+				}
+			} else {
+				j1939.TpEvents{}
+			}
 			tps[e.iface] = rr
-			ev.done
-		} else {
-			[]j1939.TpMessage{}
+			rebuilt = ev.done.clone()
+			for ab in ev.aborted {
+				tp_notes << '${os.base(path)}: ${e.iface}: ${tp_abort_line(e.iface, ab)}'
+			}
 		}
 		if i < first_row {
 			continue // trimmed before it could ever be drawn
@@ -304,8 +321,18 @@ fn (mut app App) load_recording(path string) {
 	for ifc in tps.keys() {
 		mut rr := tps[ifc] or { continue }
 		for ab in rr.close(0) {
-			app.log_append_locked('${os.base(path)}: ${ifc}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} — the recording ends with ${ab.got} of ${ab.packets} packets')
+			tp_notes << '${os.base(path)}: ${ifc}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} — the recording ends with ${ab.got} of ${ab.packets} packets'
 		}
+		// What was counted rather than reported, said once for the file. A capture that starts
+		// mid-transfer is the ordinary case, and without this line the packets simply produced
+		// no message and nothing said why (codex).
+		c := rr.counts()
+		if c.orphan_dt > 0 || c.malformed > 0 {
+			tp_notes << '${os.base(path)}: ${ifc}: J1939 ${tp_counts_line(c)}'
+		}
+	}
+	for n in tp_notes {
+		app.log_append_locked(n)
 	}
 	app.mu.unlock()
 	shown := log.len() - first_row
