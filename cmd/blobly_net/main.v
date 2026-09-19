@@ -238,6 +238,15 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_CONFIG') != '' {
 		app.show_config = true
 	}
+	// Open a recording at startup, the way the file picker would. For the screenshot harness
+	// above all: the picker cannot be driven from a headless run, so without this there is no
+	// way to check what an imported capture LOOKS like, and the J1939 reading of one (#171) is
+	// exactly the kind of thing only a picture settles. Same shape as BLOBLY_AUTOSTART.
+	if rec := os.getenv_opt('BLOBLY_OPEN_REC') {
+		if rec != '' {
+			app.load_recording(rec)
+		}
+	}
 	// Autostart defers the measurement start until the GL context has SETTLED. On Windows the
 	// GPU driver maps/unmaps its own DLL data sections during the first presented frames; if a
 	// worker thread triggers a Boehm GC collection inside that window, the collector faults

@@ -82,7 +82,7 @@ The picker is platform-filtered (`project.windows_adapters` / `linux_adapters`):
 `someip` on both.
 
 The two Ethernet adapters are not CAN buses, so the editor hides `protocol`, `bitrate`, `mode`,
-`listen_only` and replay for them; `someip` offers a `group` instead (the multicast group to
+`listen_only`, `j1939` and replay for them; `someip` offers a `group` instead (the multicast group to
 join) and `doip` its logical addresses.
 
 The transport layer is untouched: parse composes `adapter`+`address` into the existing
@@ -343,6 +343,7 @@ Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
 | mode | toggle `off | monitor | replay` | CAN only |
 | bitrate, data_bitrate | int input | data_bitrate only for canfd; hidden for doip |
 | listen_only | `checkbox` | CAN only |
+| j1939 | `checkbox` | CAN only — read this wire as SAE J1939 (`docs/simulation.md`) |
 | **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc`) | `bus.databases` |
 | manifest | `input_text` + **…** | telemetry CSV |
 | DoIP: tester/ecu addr, vin, eid | `input_text` | doip adapter only |

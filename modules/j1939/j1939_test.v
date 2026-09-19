@@ -167,6 +167,10 @@ fn test_a_broadcast_transfer_is_rebuilt_from_its_packets() {
 	assert m.data == p // the padding of the last packet is not part of the message
 	
 	assert m.t_ms == 150 // when it FINISHED arriving
+	// The SESSION's priority, which is all the wire ever said about this message's. It is what
+	// a caller synthesising an identifier for the rebuilt message has to use, and a screenshot
+	// of the trace is what caught it reading 0 when the transfer ran at 7.
+	assert m.priority == 7
 	
 	assert r.pending() == 0
 	assert r.counts().orphan_dt == 0
@@ -187,6 +191,7 @@ fn test_a_broadcast_that_stops_halfway_is_abandoned_and_said() {
 	assert ab[0].pgn == data_pgn
 	assert ab[0].kind == .bam
 	assert ab[0].reason.contains('750 ms')
+	assert ab[0].priority == 7 // an abandoned transfer names its session the same way
 	assert r.pending() == 0
 }
 
@@ -442,4 +447,41 @@ fn test_a_frame_that_is_not_transport_settles_nothing_and_opens_nothing() {
 	assert ev.done.len == 0 && ev.aborted.len == 0
 	assert r.pending() == 0
 	assert r.counts() == Counts{}
+}
+
+// ---------------------------------------------------------------- a recording answering for itself
+
+fn test_a_well_formed_announcement_is_evidence_of_a_j1939_recording() {
+	// A live wire has an owner to ask; a file somebody sends you has nobody, so the bytes
+	// answer. Both spellings of an announcement count.
+	assert announces_session(0x1CECFF00, true, bam(20, 3, data_pgn))
+	assert announces_session(0x18EC0300, true, rts(20, 3, data_pgn))
+}
+
+fn test_nothing_else_in_a_recording_is_taken_as_evidence() {
+	// Not a session frame at all, and not a standard-id frame that happens to share the number.
+	assert !announces_session(0x0CF00400, true, [u8(1), 2, 3, 4, 5, 6, 7, 8])
+	assert !announces_session(0x1CECFF00, false, bam(20, 3, data_pgn))
+	// A data packet is not an announcement: it says nothing about how long the message is.
+	assert !announces_session(0x1CEBFF00, true, dt(1, payload(20)))
+	// The handshake frames are not announcements either — only the two that open a transfer.
+	assert !announces_session(0x18EC0003, true, cts(3, 1, data_pgn))
+	assert !announces_session(0x18EC0003, true, eoma(20, 3, data_pgn))
+	assert !announces_session(0x18EC0300, true, abort_frame(3, data_pgn))
+	// Short, so the numbers cannot be read at all.
+	assert !announces_session(0x1CECFF00, true, [u8(0x20), 20, 0])
+}
+
+// The evidence test and the acceptance test are ONE rule: a looser evidence test would claim a
+// bus this reassembler then refuses to read.
+fn test_evidence_is_exactly_what_the_reassembler_would_accept() {
+	for spec in [[8, 2], [2000, 255], [20, 4], [9, 2], [0, 0]] {
+		size, packets := spec[0], spec[1]
+		f := bam(size, packets, data_pgn)
+		mut r := Reassembler{}
+		accepted := r.observe(0x1CECFF00, true, f, 0).aborted.len == 0
+		assert announces_session(0x1CECFF00, true, f) == accepted, '${size} bytes in ${packets}'
+	}
+	assert announcement_refusal(20, 3) == ''
+	assert announcement_refusal(8, 2) != ''
 }

@@ -125,6 +125,7 @@ fn (s Session) abort(reason string, t_ms f64) TpAbort {
 		got: s.n_got
 		packets: s.packets
 		t_ms: t_ms
+		priority: s.priority
 	}
 }
 
@@ -222,6 +223,48 @@ pub fn abort_reason(code u8) string {
 	}
 }
 
+// announcement_refusal is why an announcement does not describe a transport message, or '' when
+// it does: a size that would not need a session at all (8 bytes or fewer would simply have been
+// sent), one past what 255 packets carry, or a packet count that does not follow from the size.
+//
+// One rule, because it is asked twice for different purposes: the reassembler refuses a session
+// with it, and `announces_session` treats passing it as EVIDENCE that a recording is J1939. A
+// looser evidence test than the acceptance test would claim a bus this cannot then read.
+pub fn announcement_refusal(size int, packets int) string {
+	if size < tp_min_size {
+		return 'announced ${size} bytes, which is not a transport message'
+	}
+	if size > tp_max_size {
+		return 'announced ${size} bytes, past the ${tp_max_size} a session can carry'
+	}
+	if packets != (size + tp_bytes_per_packet - 1) / tp_bytes_per_packet {
+		return 'announced ${size} bytes in ${packets} packets, which do not agree'
+	}
+	return ''
+}
+
+// announces_session reports whether this frame is a WELL-FORMED transport announcement — a BAM
+// or an RTS whose size and packet count agree.
+//
+// It exists so a RECORDING can answer for itself. A live wire has an owner to ask, and is asked
+// (`project.Channel.j1939`); a file somebody sends you has nobody, so the honest question is
+// whether the bytes in it prove what they are. This is proof and not a guess: a control byte of
+// 0x20 or 0x10 on PGN 0xEC00, carrying a byte count and a packet count that agree, is not
+// something a bus that is not J1939 produces by accident. A J1939 recording with no multi-packet
+// transfer in it is not recognised, which is a missing reading and never a wrong one.
+pub fn announces_session(id u32, ext bool, data []u8) bool {
+	if !is_tp(id, ext) || data.len < 8 {
+		return false
+	}
+	if decode_id(id).pf != 0xEC {
+		return false
+	}
+	if data[0] != cm_bam && data[0] != cm_rts {
+		return false
+	}
+	return announcement_refusal(le16(data, 1), int(data[3])) == ''
+}
+
 // observe feeds one received frame and returns whatever it settled. A frame that is not part of
 // a session settles nothing and costs one `is_tp` call.
 pub fn (mut r Reassembler) observe(id u32, ext bool, data []u8, t_ms f64) TpEvents {
@@ -304,21 +347,16 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		kind := if ctrl == cm_bam { TpKind.bam } else { TpKind.cm }
 		k := key_of(iid.sa, iid.ps)
 		// The announcement is where a session is refused, since everything after it is read
-		// against these numbers: a size that would not need a session at all, one no session
-		// can carry, or a packet count that disagrees with the size.
-		mut why := ''
-		if size < tp_min_size {
-			why = 'announced ${size} bytes, which is not a transport message'
-		} else if size > tp_max_size {
-			why = 'announced ${size} bytes, past the ${tp_max_size} a session can carry'
-		} else if packets != (size + tp_bytes_per_packet - 1) / tp_bytes_per_packet {
-			why = 'announced ${size} bytes in ${packets} packets, which do not agree'
-		} else if r.sessions.len >= max_sessions && k !in r.sessions {
+		// against these numbers. One rule (`announcement_refusal`), so what this accepts and
+		// what `announces_session` calls evidence of a J1939 bus cannot drift apart.
+		mut why := announcement_refusal(size, packets)
+		if why == '' && r.sessions.len >= max_sessions && k !in r.sessions {
 			why = '${max_sessions} sessions already open on this wire'
 		}
 		if why != '' {
 			r.refused++
 			aborted << TpAbort{
+				priority: iid.priority
 				pgn: pgn
 				sa: iid.sa
 				da: iid.ps
@@ -337,6 +375,7 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 			aborted << old.abort('replaced by a new announcement from the same sender', t_ms)
 		}
 		r.sessions[k] = Session{
+			priority: iid.priority
 			pgn: pgn
 			sa: iid.sa
 			da: iid.ps
@@ -426,6 +465,7 @@ fn (mut r Reassembler) packet(iid Id, data []u8, t_ms f64, mut done []TpMessage,
 	if s.n_got == s.packets {
 		r.sessions.delete(k)
 		done << TpMessage{
+			priority: s.priority
 			pgn: s.pgn
 			sa: s.sa
 			da: s.da

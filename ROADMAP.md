@@ -182,6 +182,17 @@ a wire-visible feature, the matching host support usually lands here in the same
 
 ## Already shipped
 
+- ✅ **J1939, read** (#171) — a channel ticked **J1939** (or a database declaring parameter
+  groups) makes the trace read the 29-bit identifier as what it is: the `name` column names the
+  parameter group and its SENDER (`EEC1 [00]`, `TSC1 [00>03]`), the hover carries the whole
+  split, and `pgn:`/`sa:` filter on the decomposition. **Multi-packet transfers are rebuilt** —
+  BAM and TP.CM/TP.DT, followed as a passive observer and filed as a message of their own,
+  decoded through the database — so the payloads a truck bus actually carries stop being a burst
+  of unrelated frames. Every abandoned transfer is narrated with its reason, including the one
+  that means blobly itself dropped the packets. `modules/j1939`, 40+ tests.
+  **Not shipped with it, deliberately:** address claiming (a source address stays a number),
+  transmitting a transport session, and any SAE name table — names come from the database.
+
 - ✅ **Vector (XL family) CAN backend** — `vector:<channel>[@<bitrate>][,silent]` on Windows,
   addressed by APPLICATION channel as Vector Hardware Manager numbers them. `vxlapi64.dll` is
   loaded at runtime and found in the XL Driver Library's own install directory, because it does

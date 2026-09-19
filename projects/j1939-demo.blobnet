@@ -1,0 +1,43 @@
+# Blobly Net project — J1939 demo (#171), zero drivers, no hardware.
+#
+# Replays samples/j1939-bam.log onto an in-process bus and WATCHES the same wire, so the
+# trace shows what a truck bus looks like read as J1939 rather than as 29-bit numbers:
+#
+#   BLOBLY_PROJECT=projects/j1939-demo.blobnet ./scripts/run_gui.sh
+#   → press ▶ Start. In the Trace panel:
+#       EEC1-shaped groups name their SENDER            PGN F004 [00] and PGN F004 [21]
+#       the transfer's own frames are flagged TP        TP.CM BAM [00], TP.DT #1 [00] …
+#       and the message they add up to is a row of its own, flagged BAM:
+#                                                       PGN FEE5 [00] — 3 packets
+#     Hover the id column for the whole split; type `pgn:fee5` or `sa:21` in the filter.
+#
+# Why the tick: `j1939: true` on the WATCH row. No frame can say it for itself — every
+# 29-bit identifier splits into a plausible group number and a plausible source address
+# whether or not anybody meant it to. Attach a database that declares parameter groups and
+# the tick is unnecessary.
+#
+# The recording has no database, on purpose: this is what the trace can say about a bus
+# NOBODY has a DBC for, which is the state a bench is usually in on the first day.
+project:
+  name: j1939-demo
+  version: 2
+
+channels:
+  - name: J1939
+    type: can
+    interface: inproc:J1939
+    bitrate: 250000          # the J1939 rate; nothing in-process enforces it
+    mode: normal
+    enabled: true
+    j1939: true
+
+  - name: PLAYER
+    type: can
+    interface: inproc:J1939  # the same wire, so the row above watches what this one plays
+    bitrate: 250000
+    mode: replay
+    enabled: true
+    replay:
+      source: samples/j1939-bam.log
+      speed: 1.0
+      loop: true

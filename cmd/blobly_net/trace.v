@@ -185,13 +185,27 @@ struct TRec {
 //
 // Caller holds app.mu.
 fn (mut app App) push_j1939_row_locked(chname string, m j1939.TpMessage) {
+	app.push_tp_row_locked(chname, m, app.since_ms(), org_rx, false)
+}
+
+// push_j1939_rep_row_locked is the same row for a message rebuilt out of an IMPORTED recording:
+// on the FILE's clock and marked `imported`, with origin REP because these bytes were never on
+// this bench's wire — a candump line does not say who sent it, and the packets it came from are
+// REP for that same reason. Caller holds app.mu.
+fn (mut app App) push_j1939_rep_row_locked(ch string, m j1939.TpMessage) {
+	app.push_tp_row_locked(ch, m, m.t_ms, org_rep, true)
+}
+
+// push_tp_row_locked is the row those two share. Caller holds app.mu.
+fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, origin string, imported bool) {
 	id := j1939.id_for(m.pgn, m.sa, m.da, m.priority)
 	head := if m.data.len > trace_payload_max { m.data[..trace_payload_max] } else { m.data }
 	kind := if m.kind == .bam { j1939.Part.bam } else { j1939.Part.cm }
 	app.push_row_locked(TraceRow{
-		t_ms:     app.since_ms()
+		t_ms:     t_ms
 		ch:       chname
-		origin:   org_rx
+		origin:   origin
+		imported: imported
 		id:       id
 		ext:      true
 		name:     app.lookup_name(id, true)

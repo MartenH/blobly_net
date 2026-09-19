@@ -434,7 +434,10 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
 		vgui.table_setup_col('id', 82)
-		vgui.table_setup_col('name', 150)
+		// 190, not 150: a J1939 name carries its sender (`EngineHours [00] — 3 packets`) and
+		// the old width cut it mid-address, which a screenshot found (#171). Wider helps a long
+		// DBC message name too; the column is draggable from here either way.
+		vgui.table_setup_col('name', 190)
 		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('len', 34)
 		vgui.table_setup_col('flags', 58)
@@ -738,7 +741,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		vgui.table_setup_col('idx', 60)
 		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
-		vgui.table_setup_col('id / name', 210)
+		vgui.table_setup_col('id / name', 310) // see the flat view's `name`: a J1939 name is longer
 		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('len', 34)
 		vgui.table_setup_col('flags', 58)

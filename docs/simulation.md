@@ -215,6 +215,123 @@ All of these, plus unknown message/signal names and unrecognised profiles, are *
 under the node in the Simulation panel, and on stderr from the headless runner. Protection that
 matches nothing would otherwise apply nowhere while the panel still displayed its count.
 
+## J1939
+
+A truck or off-highway bus is J1939, and J1939 spends the 29-bit CAN identifier on structure
+rather than on a number: priority, a parameter group number (PGN) and the sender's source
+address. Tick **J1939** on the channel (or write `j1939: true` on it in the project file) and
+the trace reads it.
+
+```yaml
+channels:
+  - name: CAN1
+    interface: can0
+    j1939: true
+```
+
+A database attached to the row that *declares* its frames to be parameter groups
+(`BA_ "VFrameFormat" ... J1939PG`) turns it on by itself, so a project with one needs no tick.
+Most real J1939 databases declare nothing — `VFrameFormat` is a Vector attribute they were
+written without — which is why the tick exists.
+
+**It must be declared, and cannot be guessed.** Every 29-bit identifier splits into a
+plausible-looking group number and a plausible-looking source address whether or not anybody
+meant it to: a UDS response on an extended id would read as a parameter group sent by whoever
+its low byte happened to name. So blobly asks the wire's owner rather than the frame.
+
+### What the trace shows
+
+The `id` column keeps the raw 29-bit value — it is what sorts, filters, copies and groups. The
+`name` column gains the sender, because one parameter group arrives from several addresses and
+the name alone cannot tell them apart:
+
+| the row | the name column |
+|---|---|
+| a broadcast group the database names | `EEC1 [00]` |
+| a group addressed to one node | `TSC1 [00>03]` |
+| a group the database does not name | `PGN F004 [00]` |
+| a frame of a multi-packet transfer | `TP.DT #3 [00]`, `TP.CM RTS [00>03]` |
+| a message blobly rebuilt from one | `EngineHours [00] — 3 packets` |
+
+Brackets rather than an arrow, so the text types into the filter box. A destination appears
+only where the identifier has a field for one: a broadcast group has none, and `>all` on most
+of the rows of a J1939 bus would be noise for the ordinary case. Reserved addresses are named
+(`[none]` is the null address, before an ECU has claimed one).
+
+**Hover the id** for the whole split: PGN in hex and decimal, the addressing form, both
+addresses, priority, and the page and format bytes.
+
+**Two filter words**: `pgn:f004` and `sa:00`, read as hex and matched against the
+decomposition, so they survive a rename in the database and cannot be satisfied by a message
+whose name happens to contain the digits.
+
+![The trace reading a J1939 capture](gui_validation/j1939_trace.png)
+
+*`samples/j1939-bam.log` opened in the viewer, with no database loaded at all: one parameter
+group from two senders, an addressed request, the transfer's own frames flagged `TP`, and the
+message they add up to on the last row, flagged `BAM`, 20 bytes.*
+
+### Multi-packet transfers
+
+Anything over 8 bytes travels as a transport session — an announcement on PGN 0xEC00 (TP.CM)
+and a run of 7-byte packets on 0xEB00 (TP.DT) — so the payloads people actually care about used
+to arrive as a burst of unrelated frames. blobly now follows both forms, **BAM** (broadcast) and
+**CM/DT** (a connection between two addresses), and files the rebuilt message as a row of its
+own right behind the packet that completed it, flagged `BAM` or `CM`, decoded through the
+database like any other frame.
+
+It is a **passive observer**. blobly never sends a CTS, never acknowledges and never aborts
+anybody; it watches the two parameter groups go past and rebuilds what they carried. The
+session frames themselves stay in the trace, flagged `TP`.
+
+A rebuilt row's identifier is **synthesised** — its packets carried the transport group's
+identifier, not the data's — from the group the announcement named, the sender, the
+destination, and the priority the *session* ran at. Nothing on the wire says what the group's
+own priority would have been had it fitted in one frame, and the hover says so.
+
+A transfer that does not finish is reported in the **Log**, not drawn as a row: it is not a
+frame, and a row with no payload would say less than the sentence. What it says depends on why:
+
+- no packet for 750 ms (broadcast) or 1250 ms (connection) — the transfer stopped
+- an announcement replaced by a new one from the same sender
+- an abort from either end, with the reason code the sender gave
+- **the receiver acknowledged the whole message while blobly was still missing packets** —
+  which means the frames were dropped *here*, not on the bus, and is the one worth knowing
+- an announcement refused: a size that is not a transport message, one past the 1785 bytes a
+  session can carry, or a packet count that does not follow from the size
+
+Packets for a transfer whose announcement was never seen — a measurement started in the middle
+of one — are counted rather than reported, or joining a busy bus would print a line per packet.
+
+### Opening a recording
+
+A capture somebody sends you is read the same way, and **answers for itself**: a recording is
+read as J1939 when it contains a well-formed transport announcement. A live wire has an owner to
+ask — the channel's tick — and a file has nobody, so the only honest question is whether the
+bytes in it prove what they are, and a BAM or RTS whose byte count and packet count agree is
+proof. A J1939 recording with no multi-packet transfer in it is not recognised: a missing
+reading, never a wrong one. Try it with the shipped sample, no hardware and no project:
+
+```sh
+BLOBLY_PROJECT=projects/j1939-demo.blobnet ./scripts/run_gui.sh
+# Trace ▸ Open Recording ▸ samples/j1939-bam.log
+```
+
+What a recording **cannot** be read for is the traffic blobly itself replays onto a bus: those
+frames are ours, and reassembly is of what this tool RECEIVES. That line is where it is because
+a backend decides it — PCAN does not echo our own sends at all, so a promise to rebuild them
+could not be kept on the adapter it would matter most for.
+
+### What is not there yet
+
+- **No address claiming.** The source address stays a number; blobly does not track PGN 0x00EE00
+  and so cannot name a node by its NAME.
+- **Nothing transmits a transport session.** Simulated ECUs send single-frame parameter groups
+  through the database as usual; multi-packet transmission is not implemented.
+- **No SAE parameter-group name table.** Names come from the database, as everywhere else.
+- **Replay is unaffected**: a recording's session frames go back onto the wire exactly as
+  recorded, and reassembly is a reader of the trace on top of that.
+
 ## Whose frame is this? The trace's `origin` column
 
 The moment you simulate, three parties transmit on one bus: **you as tester**, **you as the
@@ -851,5 +968,7 @@ See [scripting.md](scripting.md) for the test API.
 - **One logical address per DoIP channel.** An entity answers for itself; several ECUs over
   Ethernet means several channels.
 - **No LIN.** CAN, CAN-FD and DoIP; LIN is on the roadmap.
+- **J1939 is read, never sent.** The trace reads parameter groups and rebuilds multi-packet
+  transfers (above); no simulated ECU transmits one, and address claiming is not tracked.
 - **Generators are open-loop.** A signal's value follows its formula and cannot react to what
   the ECU under test sends. Closed-loop behaviour belongs in a Lua script.

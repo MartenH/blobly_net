@@ -6,6 +6,7 @@ import transport
 import candb
 import sim
 import canlog
+import j1939
 import mf4
 import player
 import vgui
@@ -197,6 +198,26 @@ fn (mut app App) load_recording(path string) {
 	// Verification still runs over EVERY frame: an E2E counter/CRC verdict depends on the frames
 	// before it, so skipping any would invent verdicts for the ones shown. Likewise the grouped
 	// view's totals, which exist precisely to outlive trimming.
+	// WHICH RECORDED BUSES ARE J1939, decided by the file itself in one pass before any row is
+	// pushed (#171). A live wire has an owner to ask and is asked — `j1939:` on the channel —
+	// but a recording somebody sends you has nobody, so the only honest question is whether the
+	// bytes in it prove what they are: a well-formed transport announcement is proof
+	// (`j1939.announces_session`), and nothing else counts. A pass FIRST rather than a mark that
+	// turns on partway through, or the frames before the first transfer would read one way and
+	// the frames after it another, in one file, with nothing to say why.
+	mut j1939_buses := map[string]bool{}
+	for i in 0 .. log.len() {
+		e := log.at(i)
+		if j1939.announces_session(e.frame.id, e.frame.extended, e.frame.data) {
+			j1939_buses[e.iface] = true
+		}
+	}
+	// One reassembler per RECORDED BUS: a transport session is scoped to its wire, and a
+	// multi-bus recording may well carry two senders at one address. A VALUE map written back
+	// after each frame, the shape `verifiers` above uses — a map of pointers reads back nil for
+	// a key it does not hold rather than taking the `or` branch, which segfaults on the first
+	// transfer in the file (measured, not reasoned).
+	mut tps := map[string]j1939.Reassembler{}
 	for i in 0 .. log.len() {
 		e := log.at(i)
 		f := e.frame
@@ -235,8 +256,11 @@ fn (mut app App) load_recording(path string) {
 			continue // trimmed before it could ever be drawn
 		}
 		name := app.lookup_name(f.id, f.extended)
+		is_j1939 := j1939_buses[e.iface]
+		t_row := (e.t_s - t0) * 1000.0
+		tp_part := is_j1939 && j1939.is_tp(f.id, f.extended)
 		app.push_row_locked(TraceRow{
-			t_ms:     (e.t_s - t0) * 1000.0
+			t_ms:     t_row
 			ch:       e.iface
 			origin:   org_rep
 			key:      rep_key
@@ -250,7 +274,29 @@ fn (mut app App) load_recording(path string) {
 			data:     f.data.clone()
 			e2e:      viol
 			imported: true
+			j1939:    is_j1939 && f.extended
+			tp:       if tp_part { j1939.Part.packet } else { j1939.Part.plain }
 		})
+		if !tp_part {
+			continue
+		}
+		mut rr := tps[e.iface] or { j1939.Reassembler{} }
+		ev := rr.observe(f.id, f.extended, f.data, t_row)
+		tps[e.iface] = rr
+		for m in ev.done {
+			// REP like the packets it came from, and `imported` for the same reason: these
+			// bytes were never on this bench's wire, and the row is on the FILE's clock.
+			app.push_j1939_rep_row_locked(e.iface, m)
+		}
+	}
+	// What the file leaves unfinished is worth a line: a capture cut short mid-transfer is the
+	// ordinary way this happens, and saying nothing would leave the trace looking as though the
+	// bus simply stopped.
+	for ifc in tps.keys() {
+		mut rr := tps[ifc] or { continue }
+		for ab in rr.close(0) {
+			app.log_append_locked('${os.base(path)}: ${ifc}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} — the recording ends with ${ab.got} of ${ab.packets} packets')
+		}
 	}
 	app.mu.unlock()
 	shown := log.len() - first_row
