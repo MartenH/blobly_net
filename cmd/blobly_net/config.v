@@ -75,6 +75,7 @@ fn (mut app App) sync_cfg_bufs() {
 			manifest_buf:     mkbuf(ch.manifest, 128)
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
+			group_buf:        mkbuf(ch.group, 48)
 			ecu_buf:          mkbuf('0x${ch.ecu_addr:X}', 12)
 			vin_buf:          mkbuf(ch.vin, 20)
 			replay_src_buf:   mkbuf(rsrc, 128)
@@ -169,6 +170,9 @@ fn (mut app App) commit_cfg() {
 				name: ch.name
 				why:  why
 			}
+		}
+		if ch.adapter == 'someip' {
+			ch.group = vgui.buf_str(b.group_buf).trim_space()
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
@@ -572,9 +576,15 @@ fn (mut app App) set_adapter(i int, a string) {
 	// for a DoIP adapter — so every Start warned that a DoIP channel was configured as CAN-FD, a
 	// configuration error the editor itself had created and the operator could not undo. Save
 	// persisted `fd: true` beside `type: doip` as well (codex #183 r2).
-	if a == 'doip' {
+	if a == 'doip' || a == 'someip' {
 		app.proj.channels[i].fd = false
 		app.proj.channels[i].data_bitrate = 0
+		// AND THE MODE. Replay does not apply to an Ethernet row — replay_blocker says so, the
+		// editor hides the control, and Start ignores it and opens the listener anyway — so a
+		// row converted from a replay CAN row kept a mode that nothing honoured, that the Buses
+		// and Replay panels went on reporting, that the editor could no longer change, and that
+		// Save then persisted. Cleared with the rest of what stopped applying.
+		app.proj.channels[i].mode = .normal
 	}
 	// SILENT BY DEFAULT when a bus BECOMES one of the adapters that starts silent, for the same
 	// reason a discovered channel does: hardware that may already be wired to a running vehicle,
@@ -603,9 +613,9 @@ fn (mut app App) set_adapter(i int, a string) {
 		can_silence := project.adapters.filter(project.adapter_silences_transceiver(it))
 		app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (${can_silence.join(' and ')} can)')
 	}
-	if a == 'doip' {
-		app.proj.channels[i].typ = 'doip'
-	} else if app.proj.channels[i].typ == 'doip' {
+	if a == 'doip' || a == 'someip' {
+		app.proj.channels[i].typ = a
+	} else if app.proj.channels[i].typ in ['doip', 'someip'] {
 		app.proj.channels[i].typ = 'can'
 	}
 	// rebind_senders makes the assignment itself: it has to see the rows both before and after to
@@ -720,6 +730,57 @@ fn (mut app App) follow_channel_edits_locked(before []project.Channel, row_map [
 		}
 		if why := app.retarget_bus_locked(si, after[dst], after) {
 			said << why
+		}
+	}
+	said << app.follow_edits_for_hidden_locked(before, after, row_map)
+	return said
+}
+
+// follow_edits_for_hidden_locked does the same for generators the RUNTIME does not hold.
+//
+// A passive row contributes no senders to `app.senders` (nothing there can transmit) and keeps
+// them in the project instead — so the loop above, which walks the runtime, cannot see them, and
+// a `bus:` override left behind went stale while its target was renamed, retargeted or deleted.
+// Converting the row back to CAN would then have sent on the wrong wire, or fallen back with no
+// explanation. Hidden is not the same as gone: the configuration still has to follow the edits
+// made around it.
+fn (mut app App) follow_edits_for_hidden_locked(before []project.Channel, after []project.Channel, row_map []int) []string {
+	mut said := []string{}
+	for ci in 0 .. app.proj.channels.len {
+		if !app.proj.channels[ci].is_someip() {
+			continue // its senders are in app.senders, handled above
+		}
+		own := project.Channel{
+			name:  app.proj.channels[ci].name
+			iface: app.proj.channels[ci].iface
+		}
+		for si in 0 .. app.proj.channels[ci].senders.len {
+			b := app.proj.channels[ci].senders[si].bus
+			if b == '' {
+				continue
+			}
+			was_r := project.resolve_sender_bus(b, own, before)
+			now_r := project.resolve_sender_bus(b, own, after)
+			if !project.sender_target_moved(was_r, now_r) {
+				continue
+			}
+			mut k := -1
+			if was_r.kind == .named || was_r.kind == .iface {
+				k = project.only_row_named(before, was_r.chan, was_r.iface) or { -1 }
+			}
+			dst := if k >= 0 && k < row_map.len { row_map[k] } else { -1 }
+			nm := app.proj.channels[ci].senders[si].name
+			if dst < 0 || dst >= after.len {
+				app.proj.channels[ci].senders[si].bus = ''
+				said << '${nm} (hidden on ${own.name}): the bus it targeted (`${b}`) is gone — it falls back to ${own.name}'
+				continue
+			}
+			if v := project.sender_bus_value(after[dst], own, after) {
+				app.proj.channels[ci].senders[si].bus = v
+			} else {
+				app.proj.channels[ci].senders[si].bus = ''
+				said << '${nm} (hidden on ${own.name}): `bus: ${b}` can no longer be written — it falls back to ${own.name}'
+			}
 		}
 	}
 	return said

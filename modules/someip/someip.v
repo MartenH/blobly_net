@@ -45,6 +45,20 @@ pub const mt_notification = u8(0x02)
 pub const mt_response = u8(0x80)
 pub const mt_error = u8(0x81)
 
+// msg_type_name is the human name of a message type — ONE table, for every surface that shows
+// one (the GUI trace row, the Lua listener's records). Two tables in two languages drifted on
+// arrival: one lowercase with a numeric fallback, one uppercase with a hex one, and neither knew
+// a type the other did. An unknown type keeps its number rather than pretending.
+pub fn msg_type_name(t u8) string {
+	return match t {
+		mt_request { 'REQUEST' }
+		mt_notification { 'NOTIFICATION' }
+		mt_response { 'RESPONSE' }
+		mt_error { 'ERROR' }
+		else { 'TYPE ${t:02X}' }
+	}
+}
+
 // Return codes (the standard set, R19-11 PRS_SOMEIP_00191).
 pub const rc_ok = u8(0x00)
 pub const rc_not_ok = u8(0x01)

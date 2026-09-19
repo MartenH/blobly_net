@@ -25,7 +25,7 @@ import doip
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 4
+pub const schema_version = 5
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -39,6 +39,16 @@ pub const schema_version = 4
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v5 — a SOME/IP channel. An older build does not merely drop the unknown `group:` key on its
+	// next structured save: `someip` is not in its `adapters`, so compose_iface falls through to
+	// "the address IS the interface name", the row becomes an ordinary CAN channel on an
+	// interface called `0.0.0.0:30491`, and Start tries to OPEN it as one. A passive listener
+	// silently turning into a failing CAN bus is exactly the loss this label exists to announce.
+	for c in p.channels {
+		if c.is_someip() {
+			return 5
+		}
+	}
 	// v4 — a generator's `bus:` that an older build would resolve DIFFERENTLY (#97). Such a build
 	// reads the key as an interface and hands a channel name to the transport as a device name,
 	// where it fails to open: the generator goes silent with a driver error and nothing says why.
@@ -379,30 +389,84 @@ pub mut:
 	announce_count    int = doip.announce_num_default
 	announce_interval int = doip.announce_interval_default
 	announce_to       string // '' = derive from the entity's own address
+	// SOME/IP (type: someip) — a passive listener on a UDP endpoint, NOT a CAN bus and not a
+	// diagnostics carrier. `iface` carries `someip:<bind-host>:<port>`; `group` is a multicast
+	// group joined on that socket ('' = unicast only). What arrives is shown as trace rows
+	// (message id, type, raw payload); nothing is sent. See docs/ethernet_architecture.md.
+	group string
 }
 
 // is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
 // endpoint rather than a CAN bus. Recognised via `type: doip` or an interface of
 // `doip` (bare shorthand) / `doip:<host>[:<port>]`.
 pub fn (ch Channel) is_doip() bool {
-	t := ch.iface.trim_space()
-	return ch.typ == 'doip' || t == 'doip' || t.starts_with('doip:')
+	return ch.typ == 'doip' || iface_scheme_is(ch.iface, 'doip')
 }
 
-// doip_endpoint parses `iface` ("doip:host:port" / "doip:host" / "doip") into a
-// host + port, defaulting to 127.0.0.1:13400. Only meaningful when is_doip().
-pub fn (ch Channel) doip_endpoint() (string, int) {
-	// Only an explicit `doip[:host[:port]]` interface carries an endpoint. A
-	// `type: doip` channel that omits `interface` inherits the CAN default
-	// (`vcan0`), which is NOT a host — fall back to localhost rather than dialing
-	// "vcan0:13400".
-	trimmed := ch.iface.trim_space()
-	if !trimmed.starts_with('doip') {
-		return '127.0.0.1', 13400
+// iface_scheme_is reports whether an interface string carries EXACTLY this scheme: the bare
+// name, or the name followed by its colon. Not a prefix test — `someip0` and `doip1` are legal
+// SocketCAN device names, and reading them as Ethernet would refuse every transmit path on a
+// real CAN wire.
+fn iface_scheme_is(iface string, scheme string) bool {
+	t := iface.trim_space()
+	return t == scheme || t.starts_with('${scheme}:')
+}
+
+// iface_is_eth reports whether an interface string names an Ethernet endpoint of either kind.
+// Public because the runtime asks it of a DESTINATION — a generator names where it sends, not
+// which row it is — and that answer must be the same rule the model uses for a channel.
+pub fn iface_is_eth(iface string) bool {
+	return iface_scheme_is(iface, 'someip') || iface_scheme_is(iface, 'doip')
+}
+
+// is_someip reports whether this channel is a SOME/IP listener rather than a CAN bus.
+// Recognised via `type: someip` or an interface of `someip` / `someip:<host>[:<port>]`.
+pub fn (ch Channel) is_someip() bool {
+	return ch.typ == 'someip' || iface_scheme_is(ch.iface, 'someip')
+}
+
+// is_eth reports whether this channel is an Ethernet endpoint of either kind — the ONE rule for
+// every site whose question is "is this a CAN wire?" (listen-only, framing, replay, the sim
+// loop), where each kind was previously tested by name and the second kind was missed.
+pub fn (ch Channel) is_eth() bool {
+	return ch.is_doip() || ch.is_someip()
+}
+
+// someip_endpoint parses `iface` ("someip:host:port" / "someip:host" / "someip") into the
+// bind host + port, defaulting to 0.0.0.0:30490 — the wildcard, because a listener wants every
+// interface (a multicast join needs it), where a DoIP client wants one peer. Only meaningful
+// when is_someip().
+pub fn (ch Channel) someip_endpoint() (string, int) {
+	return eth_endpoint(ch.iface, 'someip', '0.0.0.0', 30490)
+}
+
+// eth_endpoint is THE host:port grammar for an Ethernet interface string, for both kinds. It
+// was doip_endpoint's body: bracketed IPv6, a single-colon split, and `valid_port` — a port that
+// is not all-digits in 1..65535 keeps the whole string as the host so it fails loudly on
+// bind/connect instead of silently jumping to the default. someip_endpoint had a second, lesser
+// grammar for one release-candidate: `last_index(':')` + `.int()` accepted `:30491x` as 30491,
+// read `:3O491` (letter O) as 3, and split `[::1]` inside the brackets. Two grammars for two
+// `type:` values in one project file is one grammar too many — every fix to the bracket rule
+// (itself a codex round on DoIP) would have to be re-found for the other kind.
+fn eth_endpoint(iface string, prefix string, dflt_host string, dflt_port int) (string, int) {
+	// Only an explicit `<prefix>[:host[:port]]` carries an endpoint. A `type:` channel that
+	// omits `interface` inherits the CAN default (`vcan0`), which is NOT a host.
+	trimmed := iface.trim_space()
+	if !trimmed.starts_with(prefix) {
+		// Not ours at all — an interface inherited from the CAN default, say. The bare default
+		// endpoint is the right answer, as the note above says.
+		return dflt_host, dflt_port
 	}
-	rest := if trimmed.starts_with('doip:') { trimmed['doip:'.len..] } else { '' }
+	if !iface_scheme_is(trimmed, prefix) {
+		// OURS BY ITS LETTERS BUT NOT BY ITS FORM: `someip0`, `someipx:30491`. Kept whole as the
+		// host, so the bind fails naming what was actually written. Returning the default here
+		// would listen on an endpoint nobody asked for and report success — the same silent
+		// substitution this grammar refuses for a bad port.
+		return trimmed, dflt_port
+	}
+	rest := if trimmed.starts_with('${prefix}:') { trimmed['${prefix}:'.len..] } else { '' }
 	if rest == '' {
-		return '127.0.0.1', 13400
+		return dflt_host, dflt_port
 	}
 	// Bracketed IPv6: `[host]` or `[host]:port`.
 	if rest.starts_with('[') {
@@ -410,32 +474,36 @@ pub fn (ch Channel) doip_endpoint() (string, int) {
 			host := rest[1..end]
 			after := rest[end + 1..]
 			if after == '' {
-				return host, 13400 // bare [host]
+				return host, dflt_port // bare [host]
 			}
 			if after.starts_with(':') {
 				if p := valid_port(after[1..]) {
 					return host, p
 				}
 			}
-			// malformed suffix ([host]:badport or [host]junk) → keep the whole
-			// string as the host so it fails loudly on connect, matching the
-			// non-bracketed path, rather than silently defaulting the port.
-			return rest, 13400
+			// malformed suffix ([host]:badport or [host]junk) → keep the whole string as the
+			// host so it fails loudly, matching the non-bracketed path.
+			return rest, dflt_port
 		}
-		return rest, 13400 // no closing bracket; let the caller's dial/listen surface it
+		return rest, dflt_port // no closing bracket; let the caller's bind/dial surface it
 	}
-	// Split host:port only on a SINGLE colon whose suffix is a valid port. An
-	// unbracketed IPv6 literal (multiple colons) or a typo'd port is kept whole as
-	// the host with the default port, so a bad value surfaces as a connect/listen
-	// error rather than silently mangling the address or jumping to 13400.
+	// Split host:port only on a SINGLE colon whose suffix is a valid port. An unbracketed IPv6
+	// literal (multiple colons) or a typo'd port is kept whole as the host with the default
+	// port, so a bad value surfaces as a bind/connect error rather than silently mangling it.
 	if rest.count(':') == 1 {
 		i := rest.index(':') or { -1 }
 		host := rest[..i]
 		if p := valid_port(rest[i + 1..]) {
-			return if host == '' { '127.0.0.1' } else { host }, p
+			return if host == '' { dflt_host } else { host }, p
 		}
 	}
-	return rest, 13400
+	return rest, dflt_port
+}
+
+// doip_endpoint parses `iface` ("doip:host:port" / "doip:host" / "doip") into a
+// host + port, defaulting to 127.0.0.1:13400. Only meaningful when is_doip().
+pub fn (ch Channel) doip_endpoint() (string, int) {
+	return eth_endpoint(ch.iface, 'doip', '127.0.0.1', 13400)
 }
 
 // valid_port parses a TCP/UDP port: all-digits, 1..65535. Returns none otherwise
@@ -579,7 +647,7 @@ pub fn apply_listen_only(chs []Channel) {
 		// endpoint, not a wire that can be held quiet, and its editor never draws the tick — so
 		// a flag left behind by an adapter change would silence an address no CAN bus opens and
 		// could not be cleared from the UI that set it.
-		if !c.enabled || !c.listen_only || c.is_doip() {
+		if !c.enabled || !c.listen_only || c.is_eth() {
 			continue
 		}
 		quiet << c.iface_with_bitrate()
@@ -608,7 +676,7 @@ pub fn wire_framings(chs []Channel) map[string]transport.Framing {
 	mut out := map[string]transport.Framing{}
 	mut disputed := map[string]bool{}
 	for c in chs {
-		if !c.enabled || c.is_doip() {
+		if !c.enabled || c.is_eth() {
 			continue
 		}
 		k := transport.wire_key(c.iface_with_bitrate())
@@ -932,13 +1000,50 @@ fn parse_channel(c yaml.Any) !Channel {
 	if ch.adapter == 'doip' || proto == 'doip' {
 		ch.typ = 'doip'
 		if ch.adapter != 'doip' {
-			// v1 `type: doip` — the interface may already carry `doip:<endpoint>`.
-			if ch.iface.starts_with('doip') {
+			// An interface that was GIVEN but is not this scheme is kept verbatim (see below);
+			// only an ABSENT one becomes the bare scheme.
+			given := if _ := c.value_opt('interface') { true } else { false }
+			// v1 `type: doip` — the interface may already carry `doip:<endpoint>`. Matched as a
+			// SCHEME for its sibling's reason below.
+			if iface_scheme_is(ch.iface, 'doip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)
+			} else if given {
+				// see its sibling below for why this is a refusal rather than a preserved value
+				return error('channel "${ch.name}": type is doip but interface "${ch.iface}" is not a doip endpoint (expected "doip" or "doip:<host>[:<port>]")')
 			} else {
 				ch.adapter = 'doip'
 				ch.address = ''
 				ch.iface = 'doip'
+			}
+		}
+	} else if ch.adapter == 'someip' || proto == 'someip' {
+		ch.typ = 'someip'
+		if ch.adapter != 'someip' {
+			// An interface that was GIVEN but is not this scheme is kept verbatim (see below);
+			// only an ABSENT one becomes the bare scheme.
+			given := if _ := c.value_opt('interface') { true } else { false }
+			// THE SCHEME, not a prefix (iface_scheme_is, the rule the rest of this file uses).
+			// `type: someip` beside a raw `someip0` or a malformed `someipx:30491` was read as a
+			// scheme, handed to decompose_iface — which correctly calls it SocketCAN — and the
+			// row came out `typ: someip` on a CAN adapter: someip_endpoint then fell back to
+			// 0.0.0.0:30490 silently, and a structured save omitted the protocol (is_someip() is
+			// true) so the file reloaded as ordinary CAN. A bad spelling must fail, not bind
+			// somewhere nobody named and change type on the way out.
+			if iface_scheme_is(ch.iface, 'someip') {
+				ch.adapter, ch.address = decompose_iface(ch.iface)
+			} else if given {
+				// REFUSED, not carried. Round 11 preserved the typo so the bind would name it,
+				// and that value could not survive a save: the writer emits `adapter: someip` +
+				// `address: <the typo>`, which reloads composed as `someip:someipx:30491` — a
+				// valid-looking endpoint that may even resolve. A value that mutates into a
+				// different configuration the next time the file is written is worse than a
+				// refusal, and this shape cannot have been written by this app: a v1 `type:`
+				// beside an interface that is not that type is a hand-edit with a mistake in it.
+				return error('channel "${ch.name}": type is someip but interface "${ch.iface}" is not a someip endpoint (expected "someip" or "someip:<host>:<port>")')
+			} else {
+				ch.adapter = 'someip'
+				ch.address = ''
+				ch.iface = 'someip'
 			}
 		}
 	} else {
@@ -967,6 +1072,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		ch.announce_interval = int(checked_int(v.str(), 'announce_interval_ms', 0, 60000)!)
 	}
 	ch.announce_to = c.value('announce_to').default_to('').string()
+	ch.group = c.value('group').default_to('').string().trim_space()
 	if v := c.value_opt('tester_address') {
 		ch.tester_addr = parse_addr16(v.str()) or { return error('tester_address: ${err.msg()}') }
 	}
@@ -1494,7 +1600,7 @@ fn parse_id(s string) u32 {
 // Order = the picker order. `virtual`/`vcan`/`socketcan`/`udp` are cross-platform or
 // Linux; `pcan`/`kvaser` are Windows CAN hardware; `doip` is an Ethernet diag endpoint.
 pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'cansub',
-	'doip']
+	'doip', 'someip']
 
 // WHICH ADAPTERS A PLATFORM MAY OFFER. `adapters` above is every name a project FILE may carry —
 // these two are what an editor may put in front of somebody, and they live here, next to the
@@ -1510,9 +1616,10 @@ pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', '
 // Split by platform because most backends are: SocketCAN and vcan are Linux kernel interfaces,
 // PCAN/Kvaser/Vector are Windows vendor DLLs. CANsub is on BOTH — it is a network device the
 // host reaches over USB-Ethernet, so there is no driver to be missing.
-pub const windows_adapters = ['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'cansub', 'doip']
+pub const windows_adapters = ['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'cansub', 'doip',
+	'someip']
 
-pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'doip']
+pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'doip', 'someip']
 
 // adapter_silences_transceiver reports whether this app can put the adapter's CONTROLLER into
 // listen-only — the half of the promise software cannot keep for itself, because an ACK is
@@ -1653,6 +1760,13 @@ pub fn compose_iface(adapter string, address string) string {
 				'doip:${a}'
 			}
 		}
+		'someip' {
+			if a == '' {
+				'someip'
+			} else {
+				'someip:${a}'
+			}
+		}
 		// vcan / socketcan / unknown: the address IS the raw interface name.
 		else {
 			a
@@ -1712,6 +1826,12 @@ pub fn decompose_iface(iface string) (string, string) {
 	}
 	if s.starts_with('doip:') {
 		return 'doip', s['doip:'.len..]
+	}
+	if s == 'someip' {
+		return 'someip', ''
+	}
+	if s.starts_with('someip:') {
+		return 'someip', s['someip:'.len..]
 	}
 	if s.starts_with('vcan') {
 		return 'vcan', s
@@ -1965,6 +2085,73 @@ pub fn (c Channel) address_config_error() ?string {
 // NOT a destination_conflicts entry, for that reason: everything in there refuses the project.
 // This is one row being wrong about its own hardware rather than two rows contradicting each
 // other on one wire.
+// someip_endpoint_warnings names two enabled SOME/IP rows that bind ONE endpoint. Nothing else
+// will report it: this V forces SO_REUSEADDR on every UDP socket, so the second bind succeeds and
+// the kernel then hands each unicast datagram to exactly one of the two rows — both show green,
+// each shows part of the stream, and neither is told why it is missing messages. The CAN side has
+// `check_destinations` for the same class of mistake; a listener needs its own because "the same
+// endpoint" here is a bind address, not a wire.
+// normalised_bind_host folds the spellings of one bind address that a person actually writes:
+// case, brackets, and the loopback names. It does NOT resolve — this runs on every Start and per
+// row in the Buses panel, and a validator that performs DNS answers differently depending on the
+// network it is asked on, which is the last thing a config check should do. The authority for
+// "these two are the same socket" is transport.claim_endpoint, which resolves because it runs once,
+// at the moment of binding, and must not disagree with the bind. This is the cheap half: it
+// catches what someone types, and the claim catches the rest.
+fn normalised_bind_host(host string) string {
+	// A MATCHING PAIR ONLY (transport.unbracket), the same rule the claim registry uses. An
+	// unmatched bracket is a malformed address that eth_endpoint keeps whole so the bind fails
+	// naming it; trimming it here repaired it into a valid one, so this warning reported a row
+	// that cannot bind at all as splitting a stream with a row that can, and offered a port
+	// change as the remedy.
+	h := transport.unbracket(host.trim_space()).to_lower()
+	return match h {
+		// the IPv4 wildcard. NOT `::` — that is the v6 wildcard and covers a different set
+		// (both families, this V enabling dual-stack on its v6 sockets), which transport.addr_covers
+		// knows; folding them together here reported a valid dual-stack pair as a clash.
+		'', '0.0.0.0' { '0.0.0.0' }
+		// the loopback, which does NOT: folded to one spelling rather than into the wildcard, or
+		// a `localhost` row would be reported as colliding with a bench-NIC row it cannot reach.
+		// `localhost` is 127.0.0.1 on most machines and ::1 on some, and on the latter this
+		// over-reports by one pair — a cheap wrong answer in the direction of saying something,
+		// where the claim registry (which resolves) gives the exact one at bind time.
+		'localhost', '127.0.0.1' { '127.0.0.1' }
+		else { h }
+	}
+}
+
+pub fn someip_endpoint_warnings(chs []Channel) []string {
+	mut out := []string{}
+	// PAIRWISE, on transport.addr_covers — the same rule the claim registry refuses by, so a
+	// Start-time warning cannot contradict the refusal that follows it. Two rows overlap when the
+	// kernel could deliver one datagram to either: the same address twice, or a wildcard that
+	// covers the other WITHIN ITS FAMILY. `0.0.0.0` and `[::1]` are a valid dual-stack pair and
+	// are not reported; `0.0.0.0` and `127.0.0.1` are one socket and are.
+	mut rows := []Channel{}
+	for c in chs {
+		// ENABLED ROWS ONLY, the rule every check here follows.
+		if c.enabled && c.is_someip() {
+			rows << c
+		}
+	}
+	for i, a in rows {
+		ha, pa := a.someip_endpoint()
+		for b in rows[i + 1..] {
+			hb, pb := b.someip_endpoint()
+			if pa != pb {
+				continue
+			}
+			na := normalised_bind_host(ha)
+			nb := normalised_bind_host(hb)
+			if !transport.addr_covers(na, nb) && !transport.addr_covers(nb, na) {
+				continue
+			}
+			out << '${a.name} and ${b.name} both listen on port ${pa}; UDP lets both bind, then each datagram reaches only ONE of them — give them different ports, or keep one'
+		}
+	}
+	return out
+}
+
 pub fn fd_capability_warnings(chs []Channel) []string {
 	mut out := []string{}
 	for c in chs {
@@ -1976,11 +2163,12 @@ pub fn fd_capability_warnings(chs []Channel) []string {
 		if c.can_carry_fd() {
 			continue
 		}
-		if c.is_doip() {
-			// A `doip:` row with `type: canfd` is a different mistake — an Ethernet channel
-			// carrying a CAN protocol flag — and naming CAN-FD support would answer a question
-			// nobody asked. Said as what it is.
-			out << '${c.name} is a DoIP channel configured as CAN-FD; the protocol flag does not apply to it and is ignored'
+		if c.is_eth() {
+			// A `doip:`/`someip:` row with `type: canfd` is a different mistake — an Ethernet
+			// channel carrying a CAN protocol flag — and naming CAN-FD support would answer a
+			// question nobody asked. Said as what it is.
+			kind := if c.is_doip() { 'DoIP' } else { 'SOME/IP' }
+			out << '${c.name} is a ${kind} channel configured as CAN-FD; the protocol flag does not apply to it and is ignored'
 			continue
 		}
 		out << '${c.name} is configured as CAN-FD on ${c.adapter}, whose backend refuses CAN-FD frames — its classic traffic will run and every FD frame will be counted as failed'
@@ -2033,7 +2221,7 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 		// Keyed on what the bus will be OPENED with, so this groups rows exactly as the
 		// transport table does — a mark filed under one spelling and looked up under another
 		// finds nothing, and would report agreement between rows that will not agree at run time.
-		if c.listen_only && !c.is_doip() {
+		if c.listen_only && !c.is_eth() {
 			quiet[conflict_wire_key(c)] = c.name
 		}
 		if !transport.adapter_configures_bitrate(c.adapter) {

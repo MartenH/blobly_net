@@ -38,6 +38,11 @@ pub const diag_nack_invalid_source = u8(0x02)
 pub const diag_nack_unknown_target = u8(0x03)
 
 // header_len is the fixed generic-header size.
+// doip_discovery_medium names the shared UDP medium ISO 13400 gives to an entity and every
+// tester at once (transport.ClaimKind.shared): they tolerate each other on the discovery port
+// and nothing else, so a listener of another protocol there is still refused.
+pub const doip_discovery_medium = 'doip-discovery'
+
 pub const header_len = 8
 
 // max_payload_len caps the advertised payload length we will accept before

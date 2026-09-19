@@ -48,7 +48,7 @@ pub fn vendor_bitrate(tok string, default_rate int) !int {
 // and a second copy of it would be the pair of them disagreeing about the same project.
 pub fn adapter_carries_fd(adapter string) bool {
 	return match adapter.trim_space().to_lower() {
-		'doip' { false } // not a CAN bus
+		'doip', 'someip' { false } // not a CAN bus
 		else { true } // every CAN backend now, PCAN included
 	}
 }

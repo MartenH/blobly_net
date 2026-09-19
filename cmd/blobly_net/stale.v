@@ -63,6 +63,14 @@ fn (app &App) quietest_wire(chans []Chan) (string, f64) {
 		if !c.enabled || !c.running {
 			continue
 		}
+		// A CAN wire that has gone quiet is a fault to report — a wrong bitrate, a pulled cable,
+		// a node that stopped. A passive SOME/IP listener that has gone quiet is usually a
+		// service that had nothing to publish, and calling it the "quietest wire" beside real
+		// buses reads as a dead link. Its rx count and last-seen stay on the Buses row, which is
+		// where "has this endpoint said anything?" belongs for a listener.
+		if c.eth() {
+			continue
+		}
 		st := dests[transport.destination_key(c.iface)] or { continue }
 		q := app.silent_ms(st)
 		if q > worst {

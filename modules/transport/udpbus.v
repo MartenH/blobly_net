@@ -56,6 +56,10 @@ mut:
 	tx  &net.UdpConn = unsafe { nil } // dialed to group:port — sends
 	rx  &net.UdpConn = unsafe { nil } // bound to port + joined group — receives
 	src u32 // our source id; frames with this src are our own echoes
+	// The endpoint claim this bus holds, released with its sockets (transport/udpclaims.v).
+	claim_host  string
+	claim_port  int
+	claim_owner string
 	// Datagrams this bus could not read as a frame: shorter than the header, or declaring
 	// more payload than arrived (#213). Read on the receiving thread, where it is counted.
 	decode_errors u64
@@ -66,15 +70,54 @@ mut:
 }
 
 // open_udp joins the localhost multicast bus `group:port`.
+// udp_bus_medium names the shared medium a bus belongs to: its GROUP, not merely "a UDP bus".
+// Several buses on one group and port is this backend's design and they tolerate each other;
+// two on DIFFERENT groups at one port do not, however much it looks as if multicast should keep
+// them apart.
+//
+// Measured, after assuming otherwise: two wildcard sockets on one port, joined to 239.63.99.1
+// and 239.63.99.2, BOTH received a datagram addressed only to the first. A wildcard bind makes
+// group membership a property of the host rather than of the socket, so the groups leak — and
+// this backend's frame carries no group identity, so the second bus accepts the first bus's
+// traffic as its own. Two virtual CAN buses quietly becoming one is exactly what a registry is
+// for, so the key is per group and a second group on that port is refused.
+fn udp_bus_medium(group string) string {
+	return 'udp-bus:${group}'
+}
+
 pub fn open_udp(group string, port int) !&UdpBus {
+	owner := 'the ${group} software bus'
+	// EVERY FAILURE PATH UNDOES EVERYTHING THIS ONE TOOK. The first version released the claim
+	// on one path and closed `rx` on another and never closed `tx` at all, so a repeated start
+	// against a bad group leaked a descriptor per attempt. Tracked as it is acquired instead,
+	// and released in one place.
 	mut tx := net.dial_udp('${group}:${port}')!
+	mut rx := &net.UdpConn(unsafe { nil })
+	mut canon := ''
+	mut ok := false
+	defer {
+		if !ok {
+			if !isnil(rx) {
+				rx.close() or {}
+			}
+			tx.close() or {}
+			if canon != '' {
+				release_endpoint(canon, port, owner)
+			}
+		}
+	}
 	tx.set_multicast_loop(true)! // same-host peers (and we) receive; we filter own
-	mut rx := net.listen_udp('0.0.0.0:${port}')!
+	canon = claim_endpoint('', port, owner, .shared, udp_bus_medium(group))!
+	rx = net.listen_udp('0.0.0.0:${port}')!
 	rx.join_multicast_group(group, '0.0.0.0')!
+	ok = true
 	return &UdpBus{
-		tx:  tx
-		rx:  rx
-		src: rand.u32()
+		tx:         tx
+		rx:         rx
+		src:        rand.u32()
+		claim_host: canon
+		claim_port: port
+		claim_owner: owner
 	}
 }
 
@@ -209,6 +252,13 @@ pub fn (mut b UdpBus) close() {
 	stdatomic.store_i64(&b.closed_flag, 1)
 	b.tx.close() or {}
 	b.rx.close() or {}
+	// RELEASED WITH THE SOCKETS. A claim left behind reports the endpoint as occupied for the
+	// rest of the process, so a SOME/IP row started after a Stop would be refused by a bus that
+	// no longer exists — and nothing would ever clear it.
+	if b.claim_host != '' {
+		release_endpoint(b.claim_host, b.claim_port, b.claim_owner)
+		b.claim_host = ''
+	}
 }
 
 fn put_u32_le(mut b []u8, v u32) {

@@ -75,9 +75,15 @@ replaces the overloaded "channel".
 | Vector | `vector` | `1` | `vector:1` |
 | CANsub | `cansub` | `e5a16adf/1` | `cansub:e5a16adf/1` |
 | DoIP (Ethernet diag) | `doip` | `127.0.0.1:13400` | `doip:127.0.0.1:13400` |
+| SOME/IP (Ethernet listen) | `someip` | `0.0.0.0:30490` | `someip:0.0.0.0:30490` |
 
 The picker is platform-filtered (`project.windows_adapters` / `linux_adapters`): `vcan`,
-`socketcan` on Linux only, `pcan`/`kvaser`/`vector` on Windows only, `cansub` on both.
+`socketcan` on Linux only, `pcan`/`kvaser`/`vector` on Windows only, `cansub`, `doip` and
+`someip` on both.
+
+The two Ethernet adapters are not CAN buses, so the editor hides `protocol`, `bitrate`, `mode`,
+`listen_only` and replay for them; `someip` offers a `group` instead (the multicast group to
+join) and `doip` its logical addresses.
 
 The transport layer is untouched: parse composes `adapter`+`address` into the existing
 `iface` scheme string that `transport.open()` already consumes.

@@ -67,3 +67,37 @@ the GUI-free core (`modules/sim` generators + the `Iface`/`channels_yaml` seam).
 Shipped as a floating Dear ImGui window through `libs/vgui`, which exposes `table_*` rather
 than a grid widget and has no modal wrapper — the old `vlang/gui` "data_grid / modal overlay"
 question this section used to ask is settled.
+
+## SOME/IP listener rows
+
+Pick the `someip` adapter and put the **bind** `host:port` in the address field — `0.0.0.0:30491`
+to hear an emb node that publishes to port 30491 on this host, or the port a foreign service
+publishes on. The wildcard is the default because a listener wants every interface. Beside it,
+Configure offers a **group**: a multicast address joined on that socket, which is what hearing a
+service's multicast events or a SUT's SD offers takes; empty hears unicast to the address only.
+No protocol, bitrate or listen-only tick: nothing is sent on this row, and it is not a CAN wire.
+On ▶ Start the row goes green when its socket is bound.
+
+**Which interface a group is joined on.** The join goes to the host's default-route interface,
+and a group needs the wildcard bind address, so on a machine with more than one interface (a
+bench NIC beside a WSL or VPN one) a service offering on the other NIC is not heard and the row
+sits green and empty. Binding the specific address instead does not help and is refused: a socket
+bound to one address receives no multicast at all. Selecting the interface per channel is not
+built yet.
+
+**A bound UDP port is not an owned one.** This V sets `SO_REUSEADDR` on every UDP socket before
+it binds, and nothing in its public API turns that off, so a second listener on the same port
+binds successfully and the kernel then delivers each unicast datagram to exactly ONE of the two
+sockets. A green row therefore means "we are reading this endpoint", not "we are the only
+reader". If a second blobly_net, a vsomeip tool or another copy of this project holds the same
+port, each sees part of the stream and neither is told. The DoIP entity's "cannot bind" rule
+does not carry over: that one listens on TCP, where a second listener really is refused.
+
+Within one blobly_net, though, it IS settled: every listener claims its endpoint first, so a
+script window and a channel row cannot end up on the same port whichever of the two starts
+first. The second one is refused and told which holds it — the Log names the script, or the
+script's error names the channel. Across processes nothing can do that, which is what the
+paragraph above is about.
+
+And messages on this row are shown in the trace but are **not recorded**: a recording holds CAN
+frames, so the Log says so once when Record is on.

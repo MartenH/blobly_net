@@ -68,6 +68,16 @@ pub:
 pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcement {
 	addr := if ip6 { '[::]:${port_}' } else { '0.0.0.0:${port_}' }
 	group := if ip6 { 'ff02::1' } else { '' }
+	// CLAIMED AS A SHARER, not as an exclusive reader. ISO 13400 puts the entity and every
+	// tester on one discovery port (13400), so several readers there is the protocol's design
+	// rather than a mistake — this repo's own entity tests listen on the port an entity is bound
+	// to. What the claim buys is the other direction: an EXCLUSIVE reader (a SOME/IP row) on
+	// that port would split the announcements in silence, and it is now refused.
+	owner := 'a DoIP announcement listener'
+	canon := transport.claim_endpoint(if ip6 { '::' } else { '' }, port_, owner, .shared, doip_discovery_medium)!
+	defer {
+		transport.release_endpoint(canon, port_, owner)
+	}
 	got := transport.udp_window(addr, group, '0', window_ms) or {
 		return error('cannot listen for announcements: ${err}')
 	}

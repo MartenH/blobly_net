@@ -285,7 +285,8 @@ a wire-visible feature, the matching host support usually lands here in the same
 **Ethernet services**
 - ✅ **SOME/IP** — 16-byte header codec, envelope validation, golden vectors, an **RPC client**
   (with the eth shell in the GUI) cross-checked against blobly_emb by an oracle, and a **passive
-  listener** (Lua `someip.listen`: any port or multicast group, header-decoded, payload raw).
+  listener** (Lua `someip.listen`: any port or multicast group, header-decoded, payload raw) — also
+  as a **`someip` channel** in a project, so the GUI trace shows the stream.
   What the tester does and does not do on SOME/IP is fixed in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md)
 

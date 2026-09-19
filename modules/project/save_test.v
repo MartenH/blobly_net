@@ -410,6 +410,29 @@ fn test_generator_source_warnings() {
 
 // A project is labelled with the version it actually needs: v3 only once a generator carries a
 // value source, so an older build is flagged instead of silently dropping the waveform on save.
+// A SOME/IP project is labelled v5: an older build would read the row as a CAN bus on an
+// interface named after its bind address, and try to open it.
+fn test_version_for_someip() {
+	p := Project{
+		name:     'n'
+		channels: [
+			Channel{
+				name:    'ETH1'
+				adapter: 'someip'
+				typ:     'someip'
+				iface:   'someip:0.0.0.0:30491'
+			},
+		]
+	}
+	assert version_for(p) == 5
+	assert version_for(Project{
+		name:     'n'
+		channels: [Channel{
+			name: 'CAN1'
+		}]
+	}) == 2
+}
+
 fn test_version_for_wave() {
 	mut p := Project{
 		name:     'v'

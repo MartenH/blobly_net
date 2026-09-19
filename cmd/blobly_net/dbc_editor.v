@@ -301,6 +301,13 @@ fn (mut app App) dbc_refresh_if_all_clean() {
 fn (mut app App) dbc_refresh_trace_names() {
 	app.mu.lock()
 	for i, r in app.trace {
+		// NOT a SOME/IP row: its name is its message type, not a DBC lookup, and `lookup_name`
+		// is keyed on (id, ext) alone — so editing an unrelated DBC would rename NOTIFICATION to
+		// whatever CAN frame happens to share the number, or to `unknown`, corrupting a capture
+		// that is already taken.
+		if r.someip {
+			continue
+		}
 		nn := app.lookup_name(r.id, r.ext)
 		if nn != r.name {
 			app.trace[i] = TraceRow{
