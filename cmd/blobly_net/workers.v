@@ -1872,7 +1872,8 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		if !a.paused {
 			for m in cap.messages {
 				id := m.header.message_id()
-				key := gkey_someip(chname, id, m.header.msg_type, m.header.interface_version)
+				key := gkey_someip(chname, id, m.header.msg_type, m.header.interface_version,
+					m.header.protocol_version)
 				// BOUNDED HERE, where the row is made, and only here: the capture above still
 				// holds the whole payload for anything that wants it. See TraceRow.data_len.
 				head := if m.payload.len > trace_payload_max {
@@ -1888,6 +1889,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 					someip:       true
 					someip_type:  m.header.msg_type
 					someip_iface: m.header.interface_version
+					someip_proto: m.header.protocol_version
 					name:     someip_row_name(m.header)
 					data:     head
 					data_len: m.payload.len

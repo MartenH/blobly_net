@@ -9,6 +9,10 @@
 #   scripts/runtests.sh --project projects/someip-listen.blobnet your_suite.lua
 project:
   name: SOME/IP listener — blobly_emb host_someip
+  # v5 = this file uses the `someip` adapter. A build that predates it does not merely ignore
+  # the row: it reads `0.0.0.0:30491` as an ordinary CAN interface and tries to open it. The
+  # version is what makes such a build say so instead (project.version_for / version_note).
+  version: 5
 channels:
   - name: ETH1
     adapter: someip

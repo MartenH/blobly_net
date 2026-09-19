@@ -50,6 +50,12 @@ struct TraceRow {
 	// versions are on the wire under one service and method, and a key without this compared
 	// two incompatible schemas byte by byte as repetitions of one message.
 	someip_iface u8
+	// The PROTOCOL version. Part of the identity too, and for a sharper reason than the others:
+	// the grouped view takes its label from the newest row of a group, so an anomalous header
+	// merged with valid traffic had its `PROTO xx!` marker overwritten by the next good message
+	// — the row said it and the view then unsaid it, with the counts and payload comparison
+	// mixing a message that is not SOME/IP into ones that are.
+	someip_proto u8
 	// The payload's TRUE length, when `data` holds only its head. A SOME/IP message may carry
 	// ~64 KiB where a CAN frame carries 64, and the grouped view renders one widget PER BYTE —
 	// a loop whose bound was CAN's maximum. One valid datagram would rebuild tens of thousands

@@ -1174,6 +1174,15 @@ fn (mut app App) rebuild_from_proj() {
 		// empty one made `verifiers.len == 1` false, and an unlabelled MF4 import stopped
 		// resolving to the single simulated bus.
 		keep_for_panel := ch.is_doip() && nodes.len > 0 && !ch.enabled
+		// NOT A SOME/IP ROW. A SimCfg is what the Simulation panel draws enable/fault controls
+		// from and what the Network panel lists ECUs and Diagnostics under — and nothing
+		// simulates on a passive listener: `start()` skips sim_loop for it and the diagnostics
+		// seeding skips it too. So a converted row carrying nodes offered a set of live-looking
+		// controls that could not affect a single datagram. Its `verify:` entries are skipped
+		// for the same reason: there is no CAN frame here to check a counter or a CRC on.
+		if ch.is_someip() {
+			continue
+		}
 		if (ch.enabled || keep_for_panel) && (nodes.len > 0 || ch.verify.len > 0) {
 			// resolve_asset like the database list above: raw paths here re-based the
 			// simulator's DBCs onto the launch/bundle cwd, so an external project's
