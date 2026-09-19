@@ -322,8 +322,9 @@ dropdown** offers every drive (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_ro
 (#306); `.. up` from a drive root shows the same list as a view. Paths under a share are joined
 by hand (`fb_join`): `os.join_path` collapses a UNC prefix. On Linux `/` is its own parent
 and neither appears. The picker is a dialog: it cannot be docked, its title-bar X is Cancel,
-and it cannot leave the main window — dragged past an edge it parks there, and it is never
-given an OS window of its own the way a floating panel is (`vgui.begin_dialog_within`).
+and — like every dialog (Configuration, Discover, DoIP Discovery, Preferences) — it cannot
+leave the main window: dragged past an edge it parks there, and it is never given an OS
+window of its own the way a torn-off panel is (`vgui.begin_dialog`).
 
 ## Configuration editor — the Bus fields
 

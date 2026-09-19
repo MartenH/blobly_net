@@ -845,9 +845,9 @@ int vgui_begin_dialog(const char* title, int* p_open) {
     *p_open = open ? 1 : 0;
     return vis ? 1 : 0;
 }
-// vgui_pin_next_window_within: the NEXT window CANNOT LEAVE THE MAIN WINDOW (VS Code's file
-// picker; ours since the single-click revisit of #270). Called before the dialog's Begin, so
-// the two dialog kinds share one Begin and its flags. Two things keep it there. It is PINNED
+// vgui_pin_next_window_within: the NEXT window CANNOT LEAVE THE MAIN WINDOW, as VS Code's
+// dialogs cannot (ours since the single-click revisit of #270; every vgui_begin_dialog since
+// the same review). Called before the dialog's Begin. Two things keep it there. It is PINNED
 // to the main viewport, so ImGui never gives it an OS window of its own when it is dragged
 // past the edge -- multi-viewport is on, and every other floating window becomes one out
 // there -- and its position is CLAMPED to the viewport's work area, since ImGui's own clamp

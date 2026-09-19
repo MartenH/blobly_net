@@ -205,7 +205,7 @@ fn (mut app App) browser_confirm(path string) {
 // ImGui keeps, vgui.mouse_press_count, fed to pickrule.Burst, which fb_enter tells whenever
 // the listing changes) and ignored instead. Above a Windows drive root the list is the drives
 // (pickrule.drives, fs_roots), so `D:` is reachable from `C:`; the path field takes a typed
-// folder or file too. The dialog cannot leave the main window (vgui.begin_dialog_within), as
+// folder or file too. The dialog cannot leave the main window (every vgui.begin_dialog), as
 // VS Code's cannot.
 fn draw_filebrowser(mut app App) {
 	title := if app.fb_target == 'open' {
@@ -231,7 +231,7 @@ fn draw_filebrowser(mut app App) {
 	}
 	sc := app.prefs.ui_scale
 	vgui.set_next_window(260, 140, 640, 560)
-	vis, op := vgui.begin_dialog_within('${title}##filebrowser', app.fb_open) // the X is Cancel
+	vis, op := vgui.begin_dialog('${title}##filebrowser', app.fb_open) // the X is Cancel
 	app.fb_open = op
 	if !vis {
 		vgui.end()

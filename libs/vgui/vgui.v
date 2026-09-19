@@ -779,25 +779,20 @@ pub fn begin_closable(title string, open bool) (bool, bool) {
 }
 
 // begin_dialog is begin_closable for a DIALOG: a window opened for a moment's task — a picker,
-// a discovery, a preferences sheet, the project editor — which must not be docked (#306). A
-// dialog carries a Close (or Cancel) button; a panel (begin_closable) keeps the title-bar X
-// alone, as dock tabs do. THIS COMMENT IS THE RULE; the callers are the list. The DBC editor is
-// a panel on purpose: it is used beside the trace for as long as a database is being read, and
-// docking it there is the point. Same contract: (visible, open), and ALWAYS call end().
+// a discovery, a preferences sheet, the project editor — which must not be docked (#306) and
+// CANNOT LEAVE THE MAIN WINDOW, the way VS Code's dialogs cannot: pinned to the main viewport,
+// so a drag past the edge never spawns an OS window of its own, and parked at the edge it was
+// dragged past, sized no larger than the main window (vgui_pin_next_window_within). A dialog
+// carries a Close (or Cancel) button; a panel (begin_closable) keeps the title-bar X alone, as
+// dock tabs do, and a panel torn off onto another monitor is the point of multi-viewport. THIS
+// COMMENT IS THE RULE; the callers are the list. The DBC editor is a panel on purpose: it is
+// used beside the trace for as long as a database is being read, and docking it there is the
+// point. Same contract: (visible, open), and ALWAYS call end().
 pub fn begin_dialog(title string, open bool) (bool, bool) {
+	C.vgui_pin_next_window_within(title.str)
 	mut o := if open { 1 } else { 0 }
 	vis := C.vgui_begin_dialog(title.str, &o) == 1
 	return vis, o != 0
-}
-
-// begin_dialog_within is begin_dialog for a dialog that CANNOT LEAVE THE MAIN WINDOW, the way
-// VS Code's file picker cannot: pinned to the main viewport (so a drag past the edge never
-// spawns an OS window of its own) and parked at the edge it was dragged past, sized no larger
-// than the main window. For a dialog whose whole life is one pick; a dialog somebody works IN
-// for a while (Configuration) keeps begin_dialog and may live on a second monitor.
-pub fn begin_dialog_within(title string, open bool) (bool, bool) {
-	C.vgui_pin_next_window_within(title.str) // the two dialog kinds share one Begin (begin_dialog)
-	return begin_dialog(title, open)
 }
 
 // add_font_merge merges a fallback face into the default font, for the glyphs it lacks. After

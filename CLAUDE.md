@@ -520,11 +520,13 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   the panel and scripts cannot disagree. A fault that cannot take effect is refused loudly.
 - **Dialogs do not dock** (`vgui.begin_dialog`, #306; the rule is that function's doc comment,
   the callers are the list): a window opened for a moment's task carries a Close (or Cancel) and
-  cannot be docked; a panel keeps the title-bar X alone. **The file picker cannot leave the main
-  window either** (`vgui.begin_dialog_within`): pinned to the main viewport, so a drag past the
-  edge parks it at the edge instead of spawning an OS window — ImGui's own clamp keeps one
-  corner visible, so the position is clamped before Begin from last frame's size, since a clamp
-  after Begin draws the title bar where the mouse put it and the body where the clamp did. A symbol the main font lacks is drawn from
+  cannot be docked; a panel keeps the title-bar X alone. **And a dialog cannot leave the main
+  window** (`vgui_pin_next_window_within`, inside `begin_dialog`; #338): pinned to the main
+  viewport, so a drag past the edge parks it at the edge instead of spawning an OS window —
+  ImGui's own clamp keeps one corner visible, so the position is clamped before Begin from last
+  frame's size, since a clamp after Begin draws the title bar where the mouse put it and the
+  body where the clamp did. A panel torn off onto another monitor is the point of
+  multi-viewport, so panels are not pinned. A symbol the main font lacks is drawn from
   the merged fallback face (`merge_symbol_font`: Segoe UI Symbol / DejaVu Sans), which is what
   made `↻` and `⚠` draw as `?` before. **Settings** (`settings.v`, `prefs`): one per-user home —
   `settings.toml` (editor command, UI scale, dragged panes) and ImGui's `imgui.ini` beside it.
