@@ -281,7 +281,9 @@ fn (mut app App) load_recording(path string) {
 			tps[e.iface] = rr
 			rebuilt = ev.done.clone()
 			for ab in ev.aborted {
-				tp_notes << '${os.base(path)}: ${e.iface}: ${tp_abort_line(e.iface, ab)}'
+				// `tp_abort_line` already opens with the bus name, so only the FILE is added
+				// here — naming the bus twice is what reading the session log showed.
+				tp_notes << '${os.base(path)}: ${tp_abort_line(e.iface, ab)}'
 			}
 		}
 		if i < first_row {
