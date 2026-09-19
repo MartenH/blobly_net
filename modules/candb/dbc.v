@@ -71,6 +71,20 @@ pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
 	return none
 }
 
+// declares_j1939 reports whether any message in this database was DECLARED a J1939 parameter
+// group (`BA_ "VFrameFormat" ... J1939PG`, parsed above for #289). It is the database's half of
+// "is this bus J1939" -- the channel's own `j1939:` key is the other -- and it is asked of the
+// DECLARATION rather than of the identifiers, because every 29-bit id decomposes into a
+// plausible-looking group number and a plausible-looking source address.
+pub fn (db Database) declares_j1939() bool {
+	for m in db.messages {
+		if m.j1939 {
+			return true
+		}
+	}
+	return false
+}
+
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
 // named `node` is responsible for sending. Through senders(), so a node declared only as an
 // ADDITIONAL transmitter (a DBC BO_TX_BU_, an ARXML frame two ECUs send) gets its frames too;

@@ -484,3 +484,28 @@ fn test_sender_const_source_folds_to_value() {
 	assert out.contains('{ name: A, value: 5 }'), out
 	assert version_for(p) == 2
 }
+
+// `j1939:` marks a wire whose traffic is SAE J1939 (#171). It survives a save, it defaults to
+// off, and it does NOT raise the schema version — an older build reads it as an unknown key and
+// goes on showing the raw identifier, which is what every build did before the key existed.
+fn test_j1939_channel_key_round_trips_without_raising_the_version() {
+	y := 'project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    j1939: true
+  - name: CAN2
+    interface: vcan1
+'
+	p := parse(y)!
+	assert p.channels[0].j1939
+	assert !p.channels[1].j1939 // default, and not caught from a sibling row
+	assert version_for(p) == 2, 'a display declaration is not a behaviour an older build gets wrong'
+	back := parse(p.to_yaml())!
+	assert back.channels[0].j1939
+	assert !back.channels[1].j1939
+	assert p.to_yaml().contains('    j1939: true')
+	// and a row that does not declare it writes nothing at all
+	assert p.to_yaml().count('j1939') == 1
+}

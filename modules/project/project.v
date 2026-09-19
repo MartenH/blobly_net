@@ -360,6 +360,21 @@ pub mut:
 	timing       Timing
 	mode         Mode = .normal
 	listen_only  bool
+	// j1939 says the traffic on this wire is SAE J1939, which is a thing no CAN frame can say
+	// for itself: every extended identifier decomposes into a priority, a group number and a
+	// source address whether or not it was ever meant to, so a UDS response on a 29-bit id
+	// would read as a parameter group from whoever its low byte happened to name. The same
+	// point #289 made about the verifier's PGN matching. It turns on the trace's PGN reading
+	// and the transport-session reassembly (`modules/j1939`); a database on this channel that
+	// DECLARES J1939 frames (`VFrameFormat`) says the same thing and needs no key here.
+	//
+	// It does NOT raise the schema version. An older build reads it as an unknown key and goes
+	// on showing the raw identifier -- exactly what every build did before #171 -- so nothing
+	// it does is wrong, and a structured Save there costs one tick to put back. The versions
+	// this file does declare each announce a behaviour that CHANGES: a waveform transmitted as
+	// a constant (v3), a generator that goes silent (v4), a listener that becomes a failing
+	// CAN row (v5).
+	j1939        bool
 	enabled      bool = true
 	databases    []string
 	manifest     string // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
@@ -840,6 +855,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		sample_point: c.value('sample_point').default_to(f64(0)).f64()
 		mode:         mode_from(c.value('mode').default_to('normal').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
+		j1939:        c.value('j1939').default_to(false).bool()
 		enabled:      c.value('enabled').default_to(true).bool() && !was_off
 	}
 	// protocol/type: v2 `protocol:` (can|canfd), falling back to v1 `type:` (can|canfd|doip).

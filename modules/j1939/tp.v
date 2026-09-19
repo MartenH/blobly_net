@@ -34,6 +34,7 @@ pub const cm_abort = u8(0xFF)
 // malformed, since the parameter group would simply have been sent.
 pub const tp_bytes_per_packet = 7 // 8, less the sequence byte
 
+
 pub const tp_min_size = 9
 pub const tp_max_size = 255 * tp_bytes_per_packet // 1785
 
@@ -71,6 +72,13 @@ pub:
 	packets int
 	data    []u8
 	t_ms    f64 // the LAST packet's timestamp: when the message finished arriving
+	// The priority the SESSION ran at, carried because a rebuilt message has no identifier of
+	// its own -- its packets carried the transport group's, not the data's -- and a caller
+	// that synthesises one (`id_for`, for the trace row and the database lookup) would
+	// otherwise have to invent this field. It is an observed number, not the priority the
+	// parameter group would have had if it had fitted in one frame; nothing on the wire says
+	// what that would have been.
+	priority u8
 }
 
 // TpAbort is a session this side stopped following, and why. It is reported rather than
@@ -78,25 +86,27 @@ pub:
 // silently vanishes from the trace is indistinguishable from one that never happened.
 pub struct TpAbort {
 pub:
-	pgn     u32
-	sa      u8
-	da      u8
-	kind    TpKind
-	reason  string
-	got     int // packets seen
-	packets int // packets the announcement promised
-	t_ms    f64
+	pgn      u32
+	sa       u8
+	da       u8
+	kind     TpKind
+	reason   string
+	got      int // packets seen
+	packets  int // packets the announcement promised
+	t_ms     f64
+	priority u8 // the session's, as TpMessage carries it
 }
 
 // Session is one transfer being followed.
 struct Session {
-	pgn     u32
-	sa      u8
-	da      u8
-	kind    TpKind
-	size    int
-	packets int
-	started f64
+	pgn      u32
+	sa       u8
+	da       u8
+	kind     TpKind
+	size     int
+	packets  int
+	started  f64
+	priority u8
 mut:
 	data     []u8
 	got      []bool

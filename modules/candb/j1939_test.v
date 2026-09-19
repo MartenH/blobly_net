@@ -85,3 +85,34 @@ fn test_decode_via_pgn_match() {
 	assert s.name == 'EngineSpeed'
 	assert s.physical(data) == 836.0
 }
+
+// declares_j1939 is the DATABASE's half of "is this bus J1939" (#171): asked of what the file
+// declared, never of the identifiers, because every 29-bit id decomposes into a plausible group
+// number and a plausible source address whether or not anybody meant it to.
+fn test_declares_j1939_reads_the_declaration_not_the_identifiers() {
+	// The fixture above is a REAL J1939 database's shape and declares nothing: `VFrameFormat`
+	// is a Vector attribute most J1939 files were written without, which is why the channel's
+	// own `j1939:` key is the primary answer and this predicate only ever adds to it.
+	assert !j1939_db().declares_j1939()
+	declared := parse_dbc(j1939_dbc + '\nBA_DEF_ BO_  "VFrameFormat" ENUM  "StandardCAN","ExtendedCAN","reserved","J1939PG";\nBA_ "VFrameFormat" BO_ 2364540158 3;\n') or {
+		panic('parse: ${err}')
+	}
+	assert declared.declares_j1939()
+	// Extended frames, no declaration: a UDS pair on 29-bit ids is not a J1939 bus.
+	uds := Database{
+		messages: [
+			Message{
+				name: 'DiagReq'
+				id:   0x18DA10F1
+				ext:  true
+			},
+			Message{
+				name: 'DiagRsp'
+				id:   0x18DAF110
+				ext:  true
+			},
+		]
+	}
+	assert !uds.declares_j1939()
+	assert Database{}.declares_j1939() == false
+}
