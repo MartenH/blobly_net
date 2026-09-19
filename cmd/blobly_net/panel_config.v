@@ -196,12 +196,15 @@ fn (mut app App) browser_confirm(path string) {
 
 // draw_filebrowser is a small self-contained file picker (no native dialog — imgui has
 // none, and WSL isn't the primary target). Lists the current directory, filters by
-// extension, and (save mode) takes a filename. What a row does is the native picker's
-// grammar (pickrule.activate): a click SELECTS, a double click ENTERS a folder or ACCEPTS a
-// file, and Enter / Open act on the selection the same way. Entering on a single click was
-// #270: the hand that double-clicks landed its second click on a row of the folder it had
-// just entered. Above a Windows drive root the list is the drives (pickrule.drives, fs_roots),
-// so `D:` is reachable from `C:`; the path field takes a typed folder or file too.
+// extension, and (save mode) takes a filename. What a row does is VS Code's picker's grammar
+// (pickrule.click): a click ENTERS a folder and SELECTS a file, a double click ACCEPTS a file,
+// and Enter / Open act on the selection the same way (pickrule.activate). #270 had made the
+// click select only, because the hand that double-clicks a folder lands its second click on
+// a row of the folder the first one entered; that click is now recognised (the burst count
+// ImGui keeps, vgui.mouse_click_count) and ignored instead. Above a Windows drive root the
+// list is the drives (pickrule.drives, fs_roots), so `D:` is reachable from `C:`; the path
+// field takes a typed folder or file too. The dialog cannot leave the main window
+// (vgui.begin_dialog_within), as VS Code's cannot.
 fn draw_filebrowser(mut app App) {
 	title := if app.fb_target == 'open' {
 		'Open Project'
@@ -226,7 +229,7 @@ fn draw_filebrowser(mut app App) {
 	}
 	sc := app.prefs.ui_scale
 	vgui.set_next_window(260, 140, 640, 560)
-	vis, op := vgui.begin_dialog('${title}##filebrowser', app.fb_open) // the X is Cancel
+	vis, op := vgui.begin_dialog_within('${title}##filebrowser', app.fb_open) // the X is Cancel
 	app.fb_open = op
 	if !vis {
 		vgui.end()
@@ -296,33 +299,57 @@ fn draw_filebrowser(mut app App) {
 	vgui.separator()
 
 	at_drives := app.fb_dir == pickrule.drives
-	// What was double-clicked this frame, applied AFTER end() so the imgui stack stays balanced.
+	// What a click asked to enter or accept this frame, applied AFTER end() so the imgui stack
+	// stays balanced (fb_enter replaces the listing being walked).
 	mut on := ''
 	mut on_kind := pickrule.Entry.file
+	// A row reports twice per double click — the press (is_item_double_clicked) and its
+	// release (selectable) — and both are the burst's second click, which the count says.
+	repeat := vgui.mouse_click_count() >= 2
 	// The list keeps its distance from the button row: its frame, the separator and their
 	// spacing. Reserve the row alone and the buttons sit a spacing below the window's edge,
 	// with a scrollbar to reach them.
 	vgui.child_begin('fb_list', -(vgui.frame_height() + vgui.line_height()))
 	for d in app.fb_dirs {
 		lbl := if at_drives { '[drive] ${d}' } else { '[dir]  ${d}' }
-		if vgui.selectable(lbl, app.fb_sel == d) {
-			app.fb_sel = d
+		hit := vgui.selectable(lbl, app.fb_sel == d) || vgui.is_item_double_clicked()
+		if !hit {
+			continue
 		}
-		if vgui.is_item_double_clicked() {
-			on = d
-			on_kind = .dir
+		act := pickrule.click(.dir, app.fb_save, repeat, app.fb_burst_entered)
+		if !repeat {
+			app.fb_burst_entered = act == .enter
+		}
+		match act {
+			.enter {
+				on = d
+				on_kind = .dir
+			}
+			.select { app.fb_sel = d }
+			.accept, .ignore {}
 		}
 	}
 	for f in app.fb_files {
-		if vgui.selectable('      ${f}', app.fb_sel == f) {
-			app.fb_sel = f
-			if app.fb_save {
-				app.fb_name_buf = mkbuf(f, 128)
-			}
+		hit := vgui.selectable('      ${f}', app.fb_sel == f) || vgui.is_item_double_clicked()
+		if !hit {
+			continue
 		}
-		if vgui.is_item_double_clicked() {
-			on = f
-			on_kind = .file
+		act := pickrule.click(.file, app.fb_save, repeat, app.fb_burst_entered)
+		if !repeat {
+			app.fb_burst_entered = act == .enter
+		}
+		match act {
+			.select {
+				app.fb_sel = f
+				if app.fb_save {
+					app.fb_name_buf = mkbuf(f, 128)
+				}
+			}
+			.accept {
+				on = f
+				on_kind = .file
+			}
+			.enter, .ignore {}
 		}
 	}
 	vgui.child_end()
@@ -385,7 +412,7 @@ fn draw_filebrowser(mut app App) {
 			.accept {
 				chosen = fb_join(app.fb_dir, on)
 			}
-			.select {}
+			.select, .ignore {}
 		}
 	}
 	if chosen != '' {

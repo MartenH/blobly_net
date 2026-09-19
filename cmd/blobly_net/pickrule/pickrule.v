@@ -1,11 +1,16 @@
 module pickrule
 
-// THE FILE PICKER'S TWO DECISIONS, AS RULES. What a click on a row does, and where "up" goes
-// from a folder — the two places #270 found the picker wrong: it ENTERED a folder on a single
-// click, so the hand that double-clicks (every native picker's habit) landed its second click
-// on a row of the folder it had just entered; and above a Windows drive root it had nowhere to
-// go, so `D:` could not be reached from `C:` at all. Pure functions over strings and flags, in
-// the shape ../saverule and ../taprule set: the GUI calls them, and the scenarios are the test.
+// THE FILE PICKER'S THREE DECISIONS, AS RULES. What a click on a row does, what a double click,
+// Enter and Open do, and where "up" goes from a folder. Pure functions over strings and flags,
+// in the shape ../saverule and ../taprule set: the GUI calls them, and the scenarios are the
+// test. #270 found the picker wrong twice: it ENTERED a folder on a single click, so the hand
+// that double-clicks (every native picker's habit) landed its second click on a row of the
+// folder it had just entered; and above a Windows drive root it had nowhere to go, so `D:`
+// could not be reached from `C:` at all. #270 answered the first by making a click SELECT
+// only. The single click is BACK — it is how VS Code's picker moves, and one click per folder
+// is what a hand navigating a tree wants — and the hazard is answered where it lives instead:
+// the second click of a double is recognised as one (`click`), and ignored when the first
+// click entered a folder.
 
 // Entry is what kind of row was acted on.
 pub enum Entry {
@@ -18,20 +23,42 @@ pub enum Act {
 	select // highlight the row; nothing else moves
 	enter  // navigate into the folder
 	accept // hand the file to the pending action
+	ignore // a click the hand did not aim: the second of a double, after the first entered a folder
 }
 
 // activate is what a double click, the Enter key and the Open button do to a row of kind `e`
 // — one rule, so the three spellings of "go" agree by construction: a folder is ENTERED, a
-// file ACCEPTED. A single click only ever selects, and is not a question this module answers.
-// In SAVE mode a file is never accepted this way: the picker has no "replace?" prompt, so a
-// double click that overwrote would be the one destructive act in the app with no
-// confirmation; the row selects, the name field takes the name, and only the Save button
+// file ACCEPTED. In SAVE mode a file is never accepted this way: the picker has no "replace?"
+// prompt, so a double click that overwrote would be the one destructive act in the app with
+// no confirmation; the row selects, the name field takes the name, and only the Save button
 // (or Enter in the name field) writes.
 pub fn activate(e Entry, save bool) Act {
 	if e == .dir {
 		return .enter
 	}
 	return if save { Act.select } else { Act.accept }
+}
+
+// click is what ONE CLICK on a row of kind `e` does. A lone click ENTERS a folder and SELECTS
+// a file. `repeat` is ImGui's word for a press that is the second or later of one burst
+// (within its double-click time and distance of the last), and the release of that press —
+// a selectable reports on the release — and `burst_entered` says the burst's FIRST click
+// entered a folder. That pair is #270's hand: it double-clicked a folder, the first click
+// entered it, and the second landed on whatever row of the new listing sits under the mouse.
+// It is IGNORED whatever that row is — a folder there would be entered, a file there opened,
+// and neither was aimed at. A repeat whose burst began on a file is a real double click and
+// does what Enter and Open do (activate: accept, or select in save mode).
+pub fn click(e Entry, save bool, repeat bool, burst_entered bool) Act {
+	if repeat {
+		if burst_entered {
+			return .ignore
+		}
+		return activate(e, save)
+	}
+	if e == .dir {
+		return .enter
+	}
+	return .select
 }
 
 // drives is the folder value that means "list the drive roots" — the level ABOVE a Windows

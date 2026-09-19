@@ -12,6 +12,30 @@ fn test_in_save_mode_a_file_is_named_never_accepted_without_the_save_button() {
 	assert activate(.file, true) == .select
 }
 
+fn test_a_lone_click_enters_a_folder_and_selects_a_file() {
+	for save in [false, true] {
+		assert click(.dir, save, false, false) == .enter
+		assert click(.dir, save, false, true) == .enter // a burst that ended; the flag is stale
+		assert click(.file, save, false, false) == .select
+		assert click(.file, save, false, true) == .select
+	}
+}
+
+fn test_a_double_click_that_began_on_a_file_is_what_enter_and_open_do() {
+	assert click(.file, false, true, false) == .accept
+	assert click(.file, true, true, false) == .select // save mode: never an unconfirmed overwrite
+	assert click(.dir, false, true, false) == .enter
+}
+
+// #270's hand: the first click of the double entered a folder, and the second lands on a row
+// of the folder it entered. Whatever that row is, in either mode, nothing happens.
+fn test_the_second_click_of_a_double_whose_first_entered_a_folder_is_ignored() {
+	for save in [false, true] {
+		assert click(.dir, save, true, true) == .ignore
+		assert click(.file, save, true, true) == .ignore
+	}
+}
+
 fn test_a_windows_drive_root_is_spelled_three_ways_and_only_those() {
 	for r in ['C:', 'C:\\', 'C:/', 'd:', 'd:\\', 'Z:/'] {
 		assert is_drive_root(r), r

@@ -457,6 +457,7 @@ mut:
 	fb_dir      string   // current directory
 	fb_name_buf []u8     // filename (save mode)
 	fb_sel      string   // the highlighted row: a name in fb_dir, or a root at pickrule.drives (#270)
+	fb_burst_entered bool // the current click burst began by ENTERING a folder (pickrule.click)
 	fb_dirs     []string // the listing, filled by fb_refresh — not read from disk per frame
 	fb_roots    []string // the drive dropdown: drives and WSL distributions, read with the listing (#306)
 	fb_root_lbl []string // the drive dropdown's items: a placeholder, then one label per root

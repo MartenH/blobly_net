@@ -305,17 +305,21 @@ window — not a modal — listing `os.ls(dir)` (dirs, then files), `*.blobnet` 
 filter in open mode, a filename input in save mode, Open/Save and Cancel. Starts in the current
 project's dir, else `projects/`.
 
-Its grammar is the native picker's, and it is a tested rule (`cmd/blobly_net/pickrule/`, #270):
-a click **selects** a row, a double click **enters** a folder or **accepts** a file, and Enter
-or the Open button act on the selection the same way. (It used to enter on a single click, so a
-hand that double-clicked landed its second click in the folder it had just entered.) The path
-field at the top takes a typed folder or file — Enter or **Open path**. On Windows a **drive
+Its grammar is VS Code's picker's, and it is a tested rule (`cmd/blobly_net/pickrule/`, #270):
+a click **enters** a folder and **selects** a file, a double click **accepts** a file, and Enter
+or the Open button act on the selection the same way. (#270 had made a click select only,
+because a hand that double-clicks a folder lands its second click in the folder the first one
+entered; that click is now recognised as the second of a double and ignored, so one click per
+folder is back.) The path field at the top takes a typed folder or file — Enter or **Open
+path**. On Windows a **drive
 dropdown** offers every drive (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
 `roots_windows.v` / `roots_nix.v`) and every WSL distribution (`wsl: Ubuntu`, entering
 `\\wsl.localhost\Ubuntu\`; the names come from the registry, `wsl_roots`) from the start
 (#306); `.. up` from a drive root shows the same list as a view. Paths under a share are joined
 by hand (`fb_join`): `os.join_path` collapses a UNC prefix. On Linux `/` is its own parent
-and neither appears. The picker is a dialog: it cannot be docked, and its title-bar X is Cancel.
+and neither appears. The picker is a dialog: it cannot be docked, its title-bar X is Cancel,
+and it cannot leave the main window — dragged past an edge it parks there, and it is never
+given an OS window of its own the way a floating panel is (`vgui.begin_dialog_within`).
 
 ## Configuration editor — the Bus fields
 
