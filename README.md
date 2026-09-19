@@ -341,6 +341,7 @@ above is manual, so a regression there is caught only when someone next runs it.
 - [bus_config_dialog.md](docs/bus_config_dialog.md) — bus/hardware configuration
 
 **Design**
+- [data_path.md](docs/data_path.md) — the map: every carrier from the wire to the panels, scripts and files
 - [ethernet_architecture.md](docs/ethernet_architecture.md) — DoIP / SOME/IP
 - [simulation_architecture.md](docs/simulation_architecture.md) — simulated ECUs
 - [blobly_emb_synergies.md](docs/blobly_emb_synergies.md) — the SUT-side companion project
