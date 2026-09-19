@@ -590,33 +590,88 @@ fn test_what_is_counted_can_be_read_back() {
 	}
 }
 
-// The announced group number is an 18-bit field in three bytes. The session kept all 24 while
-// `id_for` drops the top six, so a rebuilt row showed and DECODED a different group (codex).
-fn test_a_group_number_that_does_not_fit_its_field_is_refused() {
-	mut r := Reassembler{}
-	ev := r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, 0xFFFEE5), 0)
-	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('18 bits')
-	assert r.pending() == 0
-	assert !announces_session(cm_id(0x00, addr_global), true, false, bam(20, 3, 0xFFFEE5))
-	// the widest group number that does fit is accepted, and survives the round trip
-	assert announces_session(cm_id(0x00, addr_global), true, false, bam(20, 3, 0x3FFFF))
-	assert decode_id(id_for(0x3FFFF, 0x00, addr_global, 7)).pgn() == 0x3FFFF
+// THE CLASS, not the instance. Two rounds found this one half at a time — a value past the
+// 18-bit field, then a PDU1 value whose destination byte was not zero — and both mattered for
+// the same reason: the session carries the announced bytes, `id_for` rebuilds the identifier by
+// the encoding rules, and any bit the encoding does not keep is a bit on which the rebuilt row
+// names a different group from the one announced.
+fn test_only_a_canonical_group_number_is_announced() {
+	for good in [u32(0xF004), 0xFEE5, 0xEF00, 0xEC00, 0x1F004, 0x3FFFF, 0x0000, 0x3FF00] {
+		assert canonical_pgn(good), '0x${good:06X}'
+		// and the identifier built from it decomposes back to it, which is the whole point
+		assert decode_id(id_for(good, 0x21, 0x03, 6)).pgn() == good, '0x${good:06X}'
+	}
+	// past the field, or a PDU1 group carrying a destination byte
+	for bad in [u32(0x40000), 0xFFFEE5, 0xEF12, 0xEC03, 0x1EF01, 0x00FF] {
+		assert !canonical_pgn(bad), '0x${bad:06X}'
+	}
+	// and every one of them is refused as an announcement, and is not evidence of a J1939 bus
+	for bad in [u32(0x40000), 0xFFFEE5, 0xEF12, 0xEC03, 0x00FF] {
+		mut r := Reassembler{}
+		ev := r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, bad), 0)
+		assert ev.aborted.len == 1, '0x${bad:06X}'
+		assert ev.aborted[0].reason.contains('parameter group'), '0x${bad:06X}'
+		assert r.pending() == 0
+		assert !announces_session(cm_id(0x00, addr_global), true, false, bam(20, 3, bad))
+	}
 }
 
-// A stale acknowledgement naming another group closed the transfer that WAS open between the
-// two addresses and reported its packets as dropped here.
-fn test_an_acknowledgement_names_the_transfer_it_ends() {
+// THE OTHER CLASS. Three rounds found this one control frame at a time — the abort, then the
+// acknowledgement, then the clear-to-send — each matched by address alone, so a stale or
+// malformed frame reached whatever transfer happened to be open between those two nodes. One
+// table over all three, so a fourth control frame cannot repeat it.
+fn test_a_control_frame_only_ever_reaches_the_transfer_it_names() {
+	other := u32(0x00FEF1)
+	p := payload(20)
+	for kind in ['cts', 'eoma', 'abort'] {
+		mut r := Reassembler{}
+		r.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
+		r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 10)
+		assert r.pending() == 1, kind
+		// the frame, naming ANOTHER group, travelling between the same two addresses
+		stale := match kind {
+			'cts' { cts(3, 1, other) }
+			'eoma' { eoma(20, 3, other) }
+			else { abort_frame(3, other) }
+		}
+		ev := r.observe(cm_id(0x03, 0x00), true, false, stale, 20)
+		if kind == 'abort' {
+			// the one exception, deliberate: an abort ENDS the transfer it is addressed to
+			// even when it names no group this side is following, because the peers have
+			// agreed the connection is over.
+			assert ev.aborted.len == 1, kind
+			assert r.pending() == 0, kind
+			continue
+		}
+		assert ev.aborted.len == 0, kind
+		assert r.pending() == 1, kind
+		// and the transfer is untouched: its own packets still complete it
+		r.observe(dt_id(0x00, 0x03), true, false, dt(2, p), 30)
+		done := r.observe(dt_id(0x00, 0x03), true, false, dt(3, p), 40).done
+		assert done.len == 1 && done[0].data == p, kind
+	}
+}
+
+// The deadline is the other half of "reaches": a stream of stale clear-to-sends held an
+// unrelated transfer open instead of letting it be abandoned.
+fn test_a_stale_clear_to_send_does_not_hold_another_transfer_open() {
 	p := payload(20)
 	mut r := Reassembler{}
 	r.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
 	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 10)
-	stale := r.observe(cm_id(0x03, 0x00), true, false, eoma(20, 3, 0x00FEF1), 20)
-	assert stale.aborted.len == 0, 'stale ack closed: ${stale.aborted.map(it.reason)}' 
-	assert r.pending() == 1
-	// and the right one still closes it
-	ev := r.observe(cm_id(0x03, 0x00), true, false, eoma(20, 3, data_pgn), 30)
-	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('reached this tool')
+	for t in [f64(500), 1000, 1200] {
+		assert r.observe(cm_id(0x03, 0x00), true, false, cts(3, 2, 0x00FEF1), t).aborted.len == 0
+	}
+	// past the deadline the last real frame set, which no stale one has moved
+	ev := r.observe(cm_id(0x03, 0x00), true, false, cts(3, 2, 0x00FEF1), 1300)
+	assert ev.aborted.len == 1 && ev.aborted[0].pgn == data_pgn
 	assert r.pending() == 0
+	// while the RIGHT one does move it
+	mut r2 := Reassembler{}
+	r2.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
+	r2.observe(cm_id(0x03, 0x00), true, false, cts(3, 1, data_pgn), 1000)
+	assert r2.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 2000).aborted.len == 0
+	assert r2.pending() == 1
 }
 
 // A stream of frames this cannot read is still a stream of transport frames: skipping the sweep

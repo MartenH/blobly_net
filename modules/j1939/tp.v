@@ -237,6 +237,25 @@ pub fn abort_reason(code u8) string {
 	}
 }
 
+// canonical_pgn reports whether a value is a parameter group number AS J1939 ENCODES ONE, which
+// is narrower than "three bytes" in two ways.
+//
+// ONE predicate rather than a check per round: two consecutive reviews found the same class in
+// different halves of it -- a value past the 18-bit field, then a PDU1 value whose destination
+// byte was not zero -- and both mattered for the same reason. The announcement's three bytes are
+// carried into the session, but `id_for` builds the rebuilt row's identifier by the encoding
+// rules, so any bit the encoding does not keep is a bit on which the row DISPLAYS and DECODES a
+// different group from the one announced. Refusing here is refusing to rebuild a message whose
+// name this tool would then get wrong.
+pub fn canonical_pgn(pgn u32) bool {
+	if pgn > 0x3FFFF {
+		return false // the field is 18 bits: two page bits, the format byte, one more byte
+	}
+	// PDU1 (format byte below 0xF0) spends that last byte on the DESTINATION in an identifier,
+	// so it is not part of the group, and a group number carrying one is not canonical.
+	return (pgn >> 8) & 0xFF >= 0xF0 || pgn & 0xFF == 0
+}
+
 // announcement_refusal is why an announcement does not describe a transport message, or '' when
 // it does: a size that would not need a session at all (8 bytes or fewer would simply have been
 // sent), one past what 255 packets carry, or a packet count that does not follow from the size.
@@ -245,12 +264,8 @@ pub fn abort_reason(code u8) string {
 // with it, and `announces_session` treats passing it as EVIDENCE that a recording is J1939. A
 // looser evidence test than the acceptance test would claim a bus this cannot then read.
 pub fn announcement_refusal(ctrl u8, da u8, pgn u32, size int, packets int) string {
-	// The announced group number is an 18-BIT field carried in three bytes, so anything in the
-	// reserved top six bits is not a parameter group. It mattered beyond tidiness: the session
-	// kept the whole 24-bit value while `id_for` drops those bits, so a rebuilt row displayed
-	// and DECODED a different group from the one announced (codex).
-	if pgn > 0x3FFFF {
-		return 'announced group number 0x${pgn:06X}, which does not fit the 18 bits one has'
+	if !canonical_pgn(pgn) {
+		return 'announced group number 0x${pgn:06X}, which is not one a parameter group has'
 	}
 	// The MODE and the destination are one statement, not two: a BAM is announced to everybody
 	// and an RTS opens a connection to one node, so an addressed BAM or a global RTS is a frame
@@ -380,6 +395,38 @@ fn (mut r Reassembler) expire(now_ms f64) []TpAbort {
 	return out
 }
 
+// session_named is WHICH OPEN TRANSFER A CONTROL FRAME REFERS TO: among the address pairs its
+// own direction makes candidates, the one carrying the parameter group it names.
+//
+// ONE lookup, because three consecutive reviews found the same defect in the three control
+// frames one at a time -- the abort, then the acknowledgement, then the clear-to-send -- and
+// each was the same sentence: matched by address alone, a stale or malformed frame reached
+// whatever transfer happened to be open between those two nodes. A node may be sending one
+// transfer and receiving another to the same peer, and a delayed frame from a transfer that has
+// finished looks exactly like a current one until its PGN is read. Every control frame's bytes
+// are parsed already; this is only the rule that they must be used.
+fn (r &Reassembler) session_named(pgn u32, keys []u64) ?u64 {
+	for k in keys {
+		if s := r.sessions[k] {
+			if s.pgn == pgn {
+				return k
+			}
+		}
+	}
+	return none
+}
+
+// any_session is the same question with the PGN ignored -- for the ONE frame that ends a
+// transfer it cannot name (see the abort), and nowhere else.
+fn (r &Reassembler) any_session(keys []u64) ?u64 {
+	for k in keys {
+		if _ := r.sessions[k] {
+			return k
+		}
+	}
+	return none
+}
+
 // control handles TP.CM, which never COMPLETES a message -- only the last data packet does --
 // so it settles abandonments alone: an announcement replacing an unfinished session, an
 // EndOfMsgAck for one this side did not finish, an abort from either end.
@@ -440,64 +487,37 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// frame's own addresses. Read only to keep the session alive: packets are placed by
 		// their sequence numbers, so which one the receiver asks for next changes nothing
 		// about where they land.
-		k := key_of(iid.ps, iid.sa)
-		if mut s := r.sessions[k] {
-			s.last_ms = t_ms
-			s.deadline = t_ms + cm_gap_ms
-			r.sessions[k] = s
-		}
+		k := r.session_named(pgn, [key_of(iid.ps, iid.sa)]) or { return }
+		mut s := r.sessions[k]
+		s.last_ms = t_ms
+		s.deadline = t_ms + cm_gap_ms
+		r.sessions[k] = s
 		return
 	}
 	if ctrl == cm_eoma {
-		// Also from the receiver, and it means the transfer SUCCEEDED. So if this side is
-		// still missing packets, the gap is in what this tool captured rather than on the
-		// bus, and that is the useful thing to say.
-		// By PGN as well as by address, for the reason the abort below is: a stale or malformed
-		// acknowledgement naming another group would otherwise close the transfer that IS open
-		// between these two and report its packets as dropped here (codex).
-		k := key_of(iid.ps, iid.sa)
-		if s := r.sessions[k] {
-			if s.pgn == pgn {
-				r.sessions.delete(k)
-				aborted << s.abort('the receiver acknowledged the whole message; ${s.n_got} of ${s.packets} packets reached this tool', t_ms)
-			}
-		}
+		// Also from the receiver, and it means the transfer SUCCEEDED. So if this side is still
+		// missing packets, the gap is in what this tool captured rather than on the bus, and
+		// that is the useful thing to say.
+		k := r.session_named(pgn, [key_of(iid.ps, iid.sa)]) or { return }
+		s := r.sessions[k]
+		r.sessions.delete(k)
+		aborted << s.abort('the receiver acknowledged the whole message; ${s.n_got} of ${s.packets} packets reached this tool', t_ms)
 		return
 	}
 	if ctrl == cm_abort {
-		// Either end may abort, so the session is looked up both ways round -- and the PGN in
-		// bytes 5..7 is what says WHICH way. A node that both sends and receives a transfer to
-		// the same peer has two sessions here, and taking the sender-side key first tore down
-		// its OUTGOING transfer when it abandoned the one it was receiving (codex). The PGN
-		// picks; only if neither side's PGN matches does the abort fall back to the direction
-		// the frame's own addresses suggest, since an abort that names nothing this side is
-		// following settles nothing either way.
+		// Either end may abort, so both directions are candidates and the PGN picks between
+		// them. Unlike the two above, an abort naming no transfer this side is following still
+		// ENDS the one it is addressed to: the peers have agreed the connection is over,
+		// whatever this side made of the numbers.
 		why := abort_reason(data[1])
 		out := key_of(iid.sa, iid.ps)
 		incoming := key_of(iid.ps, iid.sa)
-		mut hit := u64(0)
-		mut found := false
-		for k in [out, incoming] {
-			if s := r.sessions[k] {
-				if s.pgn == pgn {
-					hit, found = k, true
-					break
-				}
-			}
+		k := r.session_named(pgn, [out, incoming]) or {
+			r.any_session([out, incoming]) or { return }
 		}
-		if !found {
-			for k in [out, incoming] {
-				if _ := r.sessions[k] {
-					hit, found = k, true
-					break
-				}
-			}
-		}
-		if found {
-			s := r.sessions[hit]
-			r.sessions.delete(hit)
-			aborted << s.abort('aborted by ${addr_str(iid.sa)}: ${why}', t_ms)
-		}
+		s := r.sessions[k]
+		r.sessions.delete(k)
+		aborted << s.abort('aborted by ${addr_str(iid.sa)}: ${why}', t_ms)
 		return
 	}
 	// A control byte this does not know. Counted rather than guessed at: the remaining bytes
