@@ -180,3 +180,35 @@ fn test_the_filter_reads_its_number_as_hex() {
 
 	assert field('eec1', 'pgn:') == none
 }
+
+// A connection-mode transfer of a BROADCAST group goes to one node, and the identifier
+// synthesised for the rebuilt message has no field to say so — so the caller says it. Without
+// this the row read as a broadcast, and two transfers from one sender to different receivers
+// were one producer (codex).
+fn test_a_rebuilt_message_names_a_destination_its_identifier_cannot_carry() {
+	id := id_for(0xFEE5, 0x00, 0x03, 7) // PDU2: the destination is nowhere in this number
+	assert decode_id(id).da() == none
+	r := Reading{
+		id:       id
+		declared: true
+		part:     .cm
+		packets:  3
+		to:       0x03
+	}
+	assert name_cell(r) == 'PGN FEE5 [00>03] — 3 packets'
+	assert tooltip(r).contains('to 03')
+	// a broadcast rebuild says nothing about a destination, because it really has none
+	b := Reading{
+		id:       id
+		declared: true
+		part:     .bam
+		packets:  3
+	}
+	assert name_cell(b) == 'PGN FEE5 [00] — 3 packets'
+	assert tooltip(b).contains('no field for one')
+	// and `to` never overrides an identifier that CAN carry one
+	assert addr_pair_to(0x18EF0321, -1) == '[21>03]'
+	assert addr_pair_to(0x0CF00421, -1) == '[21]'
+	// including the global address, which is a broadcast in the other spelling
+	assert addr_pair_to(id, int(addr_global)) == '[00]'
+}

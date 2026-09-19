@@ -425,6 +425,7 @@ fn j1939_reading(r TraceRow) j1939.Reading {
 		name:     r.name
 		part:     r.tp
 		packets:  r.tp_n
+		to:       r.tp_to
 		head:     r.data
 	}
 }
@@ -573,7 +574,7 @@ fn (r TraceRow) gkey() string {
 			r.someip_bad_fixed)
 	}
 	if r.tp.rebuilt() && r.key.len == 0 {
-		return gkey_tp(r.origin, r.ch, r.id, r.tp)
+		return gkey_tp(r.origin, r.ch, r.id, r.tp, r.tp_to)
 	}
 	if r.key.len > 0 {
 		return r.key
@@ -589,8 +590,11 @@ fn (r TraceRow) gkey() string {
 // parameter group sent to everybody and the same one sent over a connection to one address are
 // two producers, and a grouped view that merged them would name the pair after whichever
 // arrived last.
-fn gkey_tp(origin string, ch string, id u32, kind j1939.Part) string {
-	return 'J|${origin}|${ch.len}:${ch}|${id}|${kind}'
+// `to` is the destination the identifier cannot carry (see TraceRow.tp_to): two connection-mode
+// transfers of one BROADCAST group from a sender to different receivers are two producers, and
+// a key built from the synthesised identifier alone merged them (codex).
+fn gkey_tp(origin string, ch string, id u32, kind j1939.Part, to int) string {
+	return 'J|${origin}|${ch.len}:${ch}|${id}|${kind}|${to}'
 }
 
 // gkey_frame: the producer-side identity, for the paths that count a frame without holding

@@ -222,7 +222,11 @@ fn (mut app App) load_recording(path string) {
 	// Narrated after the rows are in, so the Log reads in one piece rather than interleaved
 	// with a 600k-frame import.
 	mut tp_notes := []string{}
-	mut tp_dropped := 0
+	// Counted SEPARATELY from `tp_notes.len`, which also holds the end-of-file lines: mixing
+	// them made "51 abandonments plus one unfinished-session note" read as nothing omitted, and
+	// made the aggregate overstate how many details were above it (codex).
+	mut tp_aborts := 0
+	mut tp_abort_lines := 0
 	for i in 0 .. log.len() {
 		e := log.at(i)
 		f := e.frame
@@ -292,12 +296,13 @@ fn (mut app App) load_recording(path string) {
 				// appended into a log that keeps 500 — is memory and lock time spent on
 				// something nobody can read (codex). The first `tp_notes_max` say what is
 				// wrong; the count says how much of it there is.
-				if tp_notes.len < tp_notes_max {
+				if tp_abort_lines < tp_notes_max {
+					tp_abort_lines++
 					// `tp_abort_line` already opens with the bus name, so only the FILE is
 					// added here — naming the bus twice is what reading the session log showed.
 					tp_notes << '${os.base(path)}: ${tp_abort_line(e.iface, ab)}'
 				}
-				tp_dropped++
+				tp_aborts++
 			}
 		}
 		// COUNTED for the whole file, like the frame counts above: a rebuilt message before
@@ -306,7 +311,11 @@ fn (mut app App) load_recording(path string) {
 		// counted the whole recording (codex).
 		for m in rebuilt {
 			app.gcount[gkey_tp(org_rep, e.iface, j1939.id_for(m.pgn, m.sa, m.da, m.priority),
-				if m.kind == .bam { j1939.Part.bam } else { j1939.Part.cm })]++
+				if m.kind == .bam { j1939.Part.bam } else { j1939.Part.cm }, if m.kind == .cm {
+				int(m.da)
+			} else {
+				-1
+			})]++
 		}
 		if i < first_row {
 			continue // trimmed before it could ever be drawn
@@ -358,8 +367,8 @@ fn (mut app App) load_recording(path string) {
 	for n in tp_notes {
 		app.log_append_locked(n)
 	}
-	if tp_dropped > tp_notes.len {
-		app.log_append_locked('${os.base(path)}: J1939 — ${tp_dropped} abandoned transfers in this recording, of which the first ${tp_notes.len} are above')
+	if tp_aborts > tp_abort_lines {
+		app.log_append_locked('${os.base(path)}: J1939 — ${tp_aborts} abandoned transfers in this recording, of which the first ${tp_abort_lines} are above')
 	}
 	app.mu.unlock()
 	shown := log.len() - first_row

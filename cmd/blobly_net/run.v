@@ -917,7 +917,7 @@ fn (mut app App) start() {
 	// 600k-frame import numbered the first live frame ~600000 — the documented phantom-loss
 	// symptom trace_run_base exists to prevent, reintroduced through the import's seq advance
 	// (codex #130 pre-review). Rows already in the ring keep their frozen idx.
-	app.trace_run_base = app.trace_seq
+	app.rebase_idx_locked()
 	// The load starts over HERE, under app.mu and before the transmit locks below are
 	// released: a guardless tap a script kept from the previous run may send the instant
 	// they are, and count_tx_load writes these fields under the lock this reset would

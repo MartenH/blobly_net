@@ -295,6 +295,11 @@ pub fn announcement_refusal(ctrl u8, da u8, reserved u8, pgn u32, size int, pack
 	if ctrl == cm_bam && reserved != 0xFF {
 		return 'reserved byte 0x${reserved:02X} where a broadcast announcement has 0xFF'
 	}
+	// In an RTS the same byte is how many packets the sender may send in answer to one CTS.
+	// Zero says it may send none, which is not a connection anybody could complete (codex).
+	if ctrl == cm_rts && reserved == 0 {
+		return 'a connection announcement offering no packets per clear-to-send'
+	}
 	if !canonical_pgn(pgn) {
 		return 'announced group number 0x${pgn:06X}, which is not one a parameter group has'
 	}

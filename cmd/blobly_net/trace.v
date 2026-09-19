@@ -100,6 +100,12 @@ struct TraceRow {
 	tp j1939.Part
 	// The packets a rebuilt message came from; 0 on every other row.
 	tp_n int
+	// The destination a REBUILT message was sent to, where its synthesised identifier cannot
+	// carry one — a connection-mode transfer of a broadcast group goes to ONE node, and the
+	// identifier has no field for that. Without it two such transfers from one sender to
+	// different receivers were one producer, and both read as broadcasts (codex). -1 on every
+	// other row: "ask the identifier".
+	tp_to int = -1
 	// From a loaded recording: stamped on the FILE's clock, not the app's. A live row appended
 	// behind imported ones (Resume, no Start) is on another clock, and the cycle window has
 	// to know where one clock ends and the other begins (cyclerule; codex on #266).
@@ -215,6 +221,9 @@ fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, 
 	id := j1939.id_for(m.pgn, m.sa, m.da, m.priority)
 	head := if m.data.len > trace_payload_max { m.data[..trace_payload_max] } else { m.data }
 	kind := if m.kind == .bam { j1939.Part.bam } else { j1939.Part.cm }
+	// Only where the identifier cannot say it: a BAM IS a broadcast, so naming its destination
+	// would add `>all` to every rebuilt broadcast row.
+	to := if m.kind == .cm { int(m.da) } else { -1 }
 	app.push_row_locked(TraceRow{
 		idx:      idx // ignored unless `imported`; see push_row_locked
 		t_ms:     t_ms
@@ -229,16 +238,16 @@ fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, 
 		j1939:    true
 		tp:       kind
 		tp_n:     m.packets
-		key:      gkey_tp(origin, chname, id, kind)
+		tp_to:    to
+		key:      gkey_tp(origin, chname, id, kind, to)
 	})
 	if count {
-		app.gcount[gkey_tp(origin, chname, id, kind)]++
+		app.gcount[gkey_tp(origin, chname, id, kind, to)]++
 	}
 }
 
 // reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
 fn (mut app App) reset_trace_locked() {
-	app.trace_synth = 0
 	app.trace = []
 	// The grouped view's label cache is keyed by group and only ever grows, so it is reset
 	// with the trace — Start, Clear and Load all come through here, on the GUI thread, and
@@ -246,7 +255,7 @@ fn (mut app App) reset_trace_locked() {
 	app.glabels.clear()
 	app.gcount = map[string]u64{}
 	app.viewing_rec = '' // whatever replaces the rows, the view is no longer that recording
-	app.trace_run_base = app.trace_seq // idx restarts at 0 for the new measurement's rows
+	app.rebase_idx_locked() // idx restarts at 0 for the new measurement's rows
 	// The pending records STAY. An echo already in flight is still ours, and dropping the record
 	// would turn the next few of our own frames into RX rows, recording entries and verifier
 	// input. Row identities are monotonic and trace_base makes the old ones unresolvable, so a
@@ -266,6 +275,19 @@ fn (app &App) since_ms() f64 {
 // A sibling rather than four copies of `/ 1000.0`, for the same reason since_ms exists at all.
 fn (app &App) since_s() f64 {
 	return app.since_ms() / 1000.0
+}
+
+// rebase_idx_locked is THE ONE MOVE of the row numbering's origin: `idx` is
+// `seq - trace_run_base - trace_synth`, so the base and the offset beside it are one decision
+// and must move together.
+//
+// Together, because they did not: `trace_synth` was left behind when Start rebased, and the
+// first live row of the new run evaluated `0 - trace_synth` in u64 and displayed an index near
+// 1.8e19 (codex, on the previous round's own fix). Two call sites, two chances to forget, one
+// of them taken. Caller holds app.mu.
+fn (mut app App) rebase_idx_locked() {
+	app.trace_run_base = app.trace_seq
+	app.trace_synth = 0
 }
 
 // push_row_locked appends a row, stamps its identity and trims the ring. Caller holds app.mu.

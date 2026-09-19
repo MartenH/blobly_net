@@ -785,3 +785,14 @@ fn test_the_module_says_what_the_frame_was() {
 	assert !r.observe(cm_id(0x00, addr_global), true, false, false, [u8(0x20), 1], 4).part
 	assert r.counts().malformed == 3
 }
+
+// Zero packets per clear-to-send is a connection nobody could complete.
+fn test_a_connection_announcement_must_offer_packets() {
+	mut bad := rts(20, 3, data_pgn)
+	bad[4] = 0
+	mut r := Reassembler{}
+	ev := r.observe(cm_id(0x00, 0x03), true, false, false, bad, 0)
+	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('no packets per clear-to-send')
+	assert r.pending() == 0
+	assert !announces_session(cm_id(0x00, 0x03), true, false, false, bad)
+}

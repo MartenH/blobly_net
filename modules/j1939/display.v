@@ -54,6 +54,11 @@ pub:
 	part     Part
 	packets  int // the packets a rebuilt message came from
 	head     []u8 // the payload's first bytes; two of them label a session frame
+	// The destination of a REBUILT message, where the identifier cannot carry one: a broadcast
+	// group has no field for it, so a connection-mode transfer of such a group to one node is
+	// indistinguishable from a broadcast once its identifier is synthesised. -1 means "ask the
+	// identifier", which is every other row.
+	to int = -1
 }
 
 // name_cell is the name column's text.
@@ -72,7 +77,7 @@ pub fn name_cell(r Reading) string {
 	}
 	who := if r.name != '' { r.name } else { 'PGN ${decode_id(r.id).pgn():04X}' }
 	if r.part.rebuilt() {
-		return '${who} ${addr_pair(r.id)} — ${r.packets} packets'
+		return '${who} ${addr_pair_to(r.id, r.to)} — ${r.packets} packets'
 	}
 	return '${who} ${addr_pair(r.id)}'
 }
@@ -84,10 +89,19 @@ pub fn name_cell(r Reading) string {
 // would print `>all` on most of the rows on a J1939 bus, which is four characters of noise per
 // row to say the ordinary thing.
 pub fn addr_pair(id u32) string {
+	return addr_pair_to(id, -1)
+}
+
+// addr_pair_to is addr_pair with a destination the CALLER knows and the identifier cannot say.
+// A connection-mode transfer of a broadcast group is sent to one node, but the identifier
+// synthesised for the rebuilt message has no field for that, so without this the row read as a
+// broadcast and two transfers to different receivers were one producer (codex).
+pub fn addr_pair_to(id u32, to int) string {
 	d := decode_id(id)
-	if da := d.da() {
-		if da != addr_global {
-			return '[${addr_str(d.sa)}>${addr_str(da)}]'
+	da := if to >= 0 { ?u8(u8(to)) } else { d.da() }
+	if v := da {
+		if v != addr_global {
+			return '[${addr_str(d.sa)}>${addr_str(v)}]'
 		}
 	}
 	return '[${addr_str(d.sa)}]'
@@ -130,7 +144,13 @@ pub fn packet_label(id u32, head []u8) string {
 pub fn tooltip(r Reading) string {
 	d := decode_id(r.id)
 	form := if d.pdu1() { 'PDU1, addressed' } else { 'PDU2, broadcast' }
-	dst := if da := d.da() { addr_str(da) } else { '— (the form has no field for one)' }
+	dst := if r.to >= 0 {
+		addr_str(u8(r.to))
+	} else if da := d.da() {
+		addr_str(da)
+	} else {
+		'— (the form has no field for one)'
+	}
 	mut t := 'J1939  PGN ${d.pgn():04X} (${d.pgn()})\n${form}\nfrom ${addr_str(d.sa)}  to ${dst}\npriority ${d.priority}  EDP ${d.edp}  DP ${d.dp}  PF ${d.pf:02X}  PS ${d.ps:02X}'
 	if r.part.rebuilt() {
 		t += '\n\nRebuilt here from ${r.packets} packets of a ${r.part.mark()} session. This identifier was never on the wire: it is the group the announcement named, from the sender, at the priority the SESSION ran at, since nothing states what this group would have used had it fitted in one frame.'
