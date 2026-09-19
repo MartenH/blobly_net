@@ -1678,7 +1678,17 @@ fn someip_row_name(h someip.Header) string {
 		// (someip.check_fixed_fields) and this row is the only place it could ever appear. The
 		// listener parses structurally and does not apply the envelope gate, so a row that
 		// dropped this rendered an invalid header as a perfectly ordinary one.
-		return if h.return_code != 0 { '${kind} rc=${h.return_code:02X}' } else { kind }
+		// The WHOLE anomaly, not half of it: check_fixed_fields requires a notification's request
+		// id to be zero as well as its return code, and the trace keeps only the payload — so
+		// anything this line omits is gone for good. Appending the rc alone hid the other half.
+		mut extra := ''
+		if h.request_id() != 0 {
+			extra += ' req=${h.client:04X}:${h.session:04X}'
+		}
+		if h.return_code != 0 {
+			extra += ' rc=${h.return_code:02X}'
+		}
+		return '${kind}${extra}'
 	}
 	mut s := '${kind} ${h.client:04X}:${h.session:04X}'
 	if h.return_code != 0 {

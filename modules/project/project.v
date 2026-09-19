@@ -454,7 +454,16 @@ fn eth_endpoint(iface string, prefix string, dflt_host string, dflt_port int) (s
 	// omits `interface` inherits the CAN default (`vcan0`), which is NOT a host.
 	trimmed := iface.trim_space()
 	if !trimmed.starts_with(prefix) {
+		// Not ours at all — an interface inherited from the CAN default, say. The bare default
+		// endpoint is the right answer, as the note above says.
 		return dflt_host, dflt_port
+	}
+	if !iface_scheme_is(trimmed, prefix) {
+		// OURS BY ITS LETTERS BUT NOT BY ITS FORM: `someip0`, `someipx:30491`. Kept whole as the
+		// host, so the bind fails naming what was actually written. Returning the default here
+		// would listen on an endpoint nobody asked for and report success — the same silent
+		// substitution this grammar refuses for a bad port.
+		return trimmed, dflt_port
 	}
 	rest := if trimmed.starts_with('${prefix}:') { trimmed['${prefix}:'.len..] } else { '' }
 	if rest == '' {
@@ -992,10 +1001,16 @@ fn parse_channel(c yaml.Any) !Channel {
 	if ch.adapter == 'doip' || proto == 'doip' {
 		ch.typ = 'doip'
 		if ch.adapter != 'doip' {
+			// An interface that was GIVEN but is not this scheme is kept verbatim (see below);
+			// only an ABSENT one becomes the bare scheme.
+			given := if _ := c.value_opt('interface') { true } else { false }
 			// v1 `type: doip` — the interface may already carry `doip:<endpoint>`. Matched as a
 			// SCHEME for its sibling's reason below.
 			if iface_scheme_is(ch.iface, 'doip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)
+			} else if given {
+				ch.adapter = 'doip' // see its sibling below: a typo is kept, not replaced
+				ch.address = ch.iface
 			} else {
 				ch.adapter = 'doip'
 				ch.address = ''
@@ -1005,6 +1020,9 @@ fn parse_channel(c yaml.Any) !Channel {
 	} else if ch.adapter == 'someip' || proto == 'someip' {
 		ch.typ = 'someip'
 		if ch.adapter != 'someip' {
+			// An interface that was GIVEN but is not this scheme is kept verbatim (see below);
+			// only an ABSENT one becomes the bare scheme.
+			given := if _ := c.value_opt('interface') { true } else { false }
 			// THE SCHEME, not a prefix (iface_scheme_is, the rule the rest of this file uses).
 			// `type: someip` beside a raw `someip0` or a malformed `someipx:30491` was read as a
 			// scheme, handed to decompose_iface — which correctly calls it SocketCAN — and the
@@ -1014,6 +1032,12 @@ fn parse_channel(c yaml.Any) !Channel {
 			// somewhere nobody named and change type on the way out.
 			if iface_scheme_is(ch.iface, 'someip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)
+			} else if given {
+				// KEEP THE TYPO. Replacing it with the bare scheme made the row listen on the
+				// default wildcard port and report success, which is the silent substitution the
+				// exact-scheme check was added to stop — moved one line along, not removed.
+				ch.adapter = 'someip'
+				ch.address = ch.iface
 			} else {
 				ch.adapter = 'someip'
 				ch.address = ''

@@ -1776,8 +1776,20 @@ fn test_a_bad_eth_spelling_is_not_read_as_a_scheme() {
 		}
 		c := p.channels[0]
 		assert c.adapter == 'someip', '${raw}: adapter=${c.adapter}'
-		assert c.iface == 'someip', '${raw}: iface=${c.iface}'
+		// KEPT VERBATIM. Replacing a typo with the bare scheme made the row listen on the
+		// default wildcard port and report success — the same silent substitution one line on.
+		assert c.iface == raw, '${raw}: iface=${c.iface}'
+		h, pt := c.someip_endpoint()
+		assert h == raw, '${raw}: host=${h}'
+		assert pt == 30490
 	}
+	// an ABSENT interface is not a typo: it becomes the bare scheme and the default endpoint
+	none_given := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n') or {
+		panic(err)
+	}
+	assert none_given.channels[0].iface == 'someip'
+	dh, dp := none_given.channels[0].someip_endpoint()
+	assert dh == '0.0.0.0' && dp == 30490
 	// the real scheme still migrates
 	ok := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "someip:0.0.0.0:30491"\n') or {
 		panic(err)
