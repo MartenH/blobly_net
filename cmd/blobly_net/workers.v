@@ -1895,6 +1895,13 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	}
 	sock.close() or {}
 	a.mu.lock()
+	// THE LAST COUNT, before anything else. Malformed datagrams make no trace row and are held
+	// nowhere else, so any that arrived inside the one-second throttle before the run stopped
+	// were never reported at all — the session log under-reported the wire faults of exactly the
+	// moment a measurement was cut short.
+	if bad != bad_said && a.row_is_mine_locked(ci, iface, gen) {
+		a.log_append_locked('${chname}: ${bad} datagram(s) not SOME/IP (empty, truncated or a bad Length)')
+	}
 	if a.row_is_mine_locked(ci, iface, gen) {
 		a.chans[ci].running = false
 		a.chans[ci].spawning = false

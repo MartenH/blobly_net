@@ -865,7 +865,10 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		xmax = app.since_s()
 	} else {
 		for r in rows {
-			if app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
+			// `!r.someip` here as well as in the series: this picks the window's right-hand edge,
+			// so a SOME/IP row sharing a watched CAN id would drag a fixed 1/5/10/30 s window
+			// past the series it is meant to frame and leave the plot looking empty.
+			if !r.someip && app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
 				xmax = f64(r.t_ms) / 1000.0
 			}
 		}

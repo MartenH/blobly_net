@@ -118,24 +118,28 @@ pub fn (s &DoipServer) is_stopping() bool {
 pub fn (mut s DoipServer) listen(host string, port int) ! {
 	s.bound_host = host
 	s.bound_port = port
-	addr := join_host_port(host, port)
-	s.listener = net.listen_tcp(addr_family(host), addr)!
-	// CLAIMED like every other exclusive UDP reader in this process (transport.claim_endpoint):
-	// a SOME/IP row configured on this port would otherwise bind it too — both sockets get
-	// SO_REUSEADDR — and the kernel would hand each discovery datagram to one of them, so an
-	// identification request could be answered by neither.
-	s.udp_owner = 'the DoIP entity on ${addr}'
+	// RESOLVED ONCE, AND BOTH SOCKETS USE IT. A hostname with several answers — or `localhost` on
+	// a machine where the two lookups prefer different families — would otherwise put the TCP
+	// listener on one address and the UDP listener on another: the entity would announce itself
+	// from B while accepting diagnostic connections only on A, so a tester that followed the
+	// discovery sender could not connect. Claiming FIRST is what makes one answer available to
+	// both, since the claim resolves (transport.claim_endpoint) and hands back what it reserved.
+	//
+	// The claim itself is why this is here at all: a SOME/IP row configured on this port would
+	// bind it too — both sockets get SO_REUSEADDR — and the kernel would give each discovery
+	// datagram to one of them, so an identification request could be answered by neither.
+	requested := join_host_port(host, port)
+	s.udp_owner = 'the DoIP entity on ${requested}'
 	s.udp_canon = transport.claim_endpoint(host, port, s.udp_owner, .tool) or {
-		s.listener.close() or {}
-		s.listener = unsafe { nil }
-		return error('${addr}: ${err}')
+		return error('${requested}: ${err}')
 	}
 	s.udp_port = port
-	// BOUND ON WHAT THE CLAIM RETURNED, which is claim_endpoint's contract: it resolved the host
-	// once, and binding the name again could land on a different address than the one the
-	// registry is holding — a SOME/IP listener on that other address would then be accepted and
-	// split discovery traffic. (The TCP listener above keeps `addr`: a second TCP listener on a
-	// held port is refused by the OS, so it has no split to prevent.)
+	addr := transport.udp_bind_addr(s.udp_canon, port)
+	s.listener = net.listen_tcp(addr_family(s.udp_canon), addr) or {
+		transport.release_endpoint(s.udp_canon, port, s.udp_owner)
+		s.udp_canon = ''
+		return err
+	}
 	s.udp = net.listen_udp(transport.udp_bind_addr(s.udp_canon, port)) or {
 		s.listener.close() or {}
 		s.listener = unsafe { nil }

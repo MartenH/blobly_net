@@ -115,11 +115,17 @@ pub fn check_group_bind(host string, group string) ! {
 // joins that IPv4 multicast group on the bound socket; a join that fails is an error, not a
 // quiet empty window (transport.udp_bind's rule).
 pub fn collect(host string, port int, window_ms int, group string) !Capture {
-	check_group_bind(host, group)!
+	// THE WILDCARD HAS A FAMILY. With no host named and an IPv6 group, canonicalising '' to
+	// `0.0.0.0` creates an IPv4 socket, and no choice of interface selector can make an IPv4
+	// socket join an IPv6 group — the previous round fixed the selector and left the socket.
+	// `::` is dual-stack in this V, so it is the right wildcard whenever a v6 group is asked for
+	// and the caller has not pinned an address.
+	bind_host := if host == '' && group.contains(':') { '::' } else { host }
+	check_group_bind(bind_host, group)!
 	// Claimed for the life of the window, so a GUI row cannot be started onto this endpoint
 	// underneath it and split the stream — and so this window is refused if a row already holds
 	// it. See transport/udpclaims.v for why a successful bind cannot answer that question.
-	canon := transport.claim_endpoint(host, port, 'a script', .tool)!
+	canon := transport.claim_endpoint(bind_host, port, 'a script', .tool)!
 	defer {
 		transport.release_endpoint(canon, port, 'a script')
 	}
