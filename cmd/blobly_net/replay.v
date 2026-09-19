@@ -252,14 +252,27 @@ fn (mut app App) load_recording(path string) {
 		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
 		rep_key := gkey_frame(org_rep, e.iface, f)
 		app.gcount[rep_key]++
+		is_j1939 := j1939_buses[e.iface]
+		t_row := (e.t_s - t0) * 1000.0
+		tp_part := is_j1939 && j1939.is_tp(f.id, f.extended)
+		// The reassembler is fed EVERY frame, including the ones trimmed away below: a
+		// transfer straddling the trim boundary would otherwise leave its visible packets
+		// flagged TP with no message behind them, and the announcement this side never saw
+		// counted as an orphan (codex). Rows are what the trim drops, not state.
+		rebuilt := if tp_part {
+			mut rr := tps[e.iface] or { j1939.Reassembler{} }
+			ev := rr.observe(f.id, f.extended, f.data, t_row)
+			tps[e.iface] = rr
+			ev.done
+		} else {
+			[]j1939.TpMessage{}
+		}
 		if i < first_row {
 			continue // trimmed before it could ever be drawn
 		}
 		name := app.lookup_name(f.id, f.extended)
-		is_j1939 := j1939_buses[e.iface]
-		t_row := (e.t_s - t0) * 1000.0
-		tp_part := is_j1939 && j1939.is_tp(f.id, f.extended)
 		app.push_row_locked(TraceRow{
+			idx:      u64(i) // this frame's place in the FILE; see push_row_locked
 			t_ms:     t_row
 			ch:       e.iface
 			origin:   org_rep
@@ -277,16 +290,12 @@ fn (mut app App) load_recording(path string) {
 			j1939:    is_j1939 && f.extended
 			tp:       if tp_part { j1939.Part.packet } else { j1939.Part.plain }
 		})
-		if !tp_part {
-			continue
-		}
-		mut rr := tps[e.iface] or { j1939.Reassembler{} }
-		ev := rr.observe(f.id, f.extended, f.data, t_row)
-		tps[e.iface] = rr
-		for m in ev.done {
+		for m in rebuilt {
 			// REP like the packets it came from, and `imported` for the same reason: these
-			// bytes were never on this bench's wire, and the row is on the FILE's clock.
-			app.push_j1939_rep_row_locked(e.iface, m)
+			// bytes were never on this bench's wire, and the row is on the FILE's clock. It
+			// takes the NUMBER of the packet that completed it, which is the frame in the file
+			// this row is the answer to.
+			app.push_j1939_rep_row_locked(e.iface, m, u64(i))
 		}
 	}
 	// What the file leaves unfinished is worth a line: a capture cut short mid-transfer is the

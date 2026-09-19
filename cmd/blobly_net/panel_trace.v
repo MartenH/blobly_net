@@ -267,21 +267,26 @@ fn flags_str(r TraceRow) string {
 	// made a multi-packet parameter group unreadable in the first place (#171). The rebuilt
 	// message is marked too, because it is not a frame and the trace must not let that pass
 	// unsaid.
-	if r.tp != .plain {
+	// A rebuilt message is not a frame, so it has no frame flags to carry — only what it is.
+	if r.tp.rebuilt() {
 		return r.tp.mark()
 	}
+	mut m := ''
 	if r.rtr {
-		return 'RTR'
+		m = 'RTR'
+	} else if r.fd {
+		m = 'FD'
+		if r.brs {
+			m += '-BRS'
+		}
+		if r.esi {
+			m += '-ESI' // the transmitter was error-passive: the reason this bit is kept at all
+		}
 	}
-	if !r.fd {
-		return ''
-	}
-	mut m := 'FD'
-	if r.brs {
-		m += '-BRS'
-	}
-	if r.esi {
-		m += '-ESI' // the transmitter was error-passive: the reason this bit is kept at all
+	// APPENDED, never instead of: a session packet is still a frame, and an early return here
+	// dropped RTR and the FD flags from every one of them (codex).
+	if r.tp == .packet {
+		return if m == '' { 'TP' } else { '${m} TP' }
 	}
 	return m
 }
@@ -414,7 +419,7 @@ fn j1939_reading(r TraceRow) j1939.Reading {
 	}
 }
 
-// verdict_mark is the ONE mark ladder// verdict_mark is the ONE mark ladder — flat rows and grouped aggregates render through it,
+// verdict_mark is the ONE mark ladder — flat rows and grouped aggregates render through it,
 // or a wording change updates one view and not the other.
 fn verdict_mark(refused bool, missed bool) string {
 	if refused {

@@ -593,6 +593,13 @@ fn (a &App) row_is_mine_locked(ci int, iface string, gen u64) bool {
 	return a.run_gen == gen && ci < a.chans.len && a.chans[ci].iface == iface
 }
 
+// tp_abort_line narrates an abandoned J1939 transfer, in ONE spelling: the reader says it at
+// three moments — on a transport frame, on a quiet wire, and when the reader itself goes — and
+// three copies of the sentence is how the three drift.
+fn tp_abort_line(chname string, ab j1939.TpAbort) string {
+	return '${chname}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} to ${j1939.addr_str(ab.da)} — ${ab.reason} (${ab.got}/${ab.packets} packets)'
+}
+
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// THE CENSUS SLOT WAS RESERVED BY THE SPAWNING THREAD; this side only releases it, and from
 	// the first line, so the open-failure return below is covered like every other exit. It used
@@ -784,6 +791,23 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// continuing repeated the failing call as fast as it could return — a core spun on
 			// an unplugged VN while the panel still showed the channel running.
 			if err.msg().contains('timeout') {
+				// A QUIET WIRE is where a transfer's abandonment actually shows: the sender
+				// died and took its own transport frames with it, so waiting for the next one
+				// to sweep (`observe` does that too) waits forever, and the comment there
+				// claimed a case nothing reached (codex). `pending()` first, so a wire with no
+				// transfer open pays one integer compare per timeout.
+				if tp.pending() > 0 {
+					gone := tp.tick(a.since_ms())
+					if gone.len > 0 {
+						a.mu.lock()
+						if a.row_is_mine_locked(ci, iface, gen) {
+							for ab in gone {
+								a.log_append_locked(tp_abort_line(chname, ab))
+							}
+						}
+						a.mu.unlock()
+					}
+				}
 				continue
 			}
 			// ONE LAST SAMPLE. The counts are polled before the receive, and a receive that
@@ -956,7 +980,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// the paused branch on purpose — pausing the table freezes the VIEW, and a transfer
 		// that fell apart while it was frozen is exactly what the operator unpauses to find.
 		for ab in tp_ev.aborted {
-			a.log_append_locked('${chname}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} to ${j1939.addr_str(ab.da)} — ${ab.reason} (${ab.got}/${ab.packets} packets)')
+			a.log_append_locked(tp_abort_line(chname, ab))
 		}
 		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
 		// trigger-frozen dump from a manual stop. Update it even while the table is paused: the
@@ -1026,7 +1050,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	left := tp.close(a.since_ms())
 	a.mu.lock()
 	for ab in left {
-		a.log_append_locked('${chname}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} to ${j1939.addr_str(ab.da)} — ${ab.reason} (${ab.got}/${ab.packets} packets)')
+		a.log_append_locked(tp_abort_line(chname, ab))
 	}
 	// Only if this run is still the current one. A loop that exited because the generation moved
 	// on would otherwise clear a flag the NEW loop just set, and every emission after that would

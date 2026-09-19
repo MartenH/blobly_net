@@ -317,6 +317,9 @@ BLOBLY_PROJECT=projects/j1939-demo.blobnet ./scripts/run_gui.sh
 # Trace ▸ Open Recording ▸ samples/j1939-bam.log
 ```
 
+The demo project has no replay row, deliberately: playing the recording onto the bus would make
+those frames *ours*, and reassembly is of what blobly receives.
+
 What a recording **cannot** be read for is the traffic blobly itself replays onto a bus: those
 frames are ours, and reassembly is of what this tool RECEIVES. That line is where it is because
 a backend decides it — PCAN does not echo our own sends at all, so a promise to rebuild them

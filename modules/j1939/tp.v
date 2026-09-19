@@ -186,6 +186,12 @@ pub fn is_tp(id u32, ext bool) bool {
 	if !ext {
 		return false
 	}
+	// The PAGE BITS are part of the group number, so 0x1EC00 and 0x1EB00 are different
+	// parameter groups from 0xEC00 and 0xEB00 and carry no session of ours. Reading the format
+	// byte alone let one be taken apart as an announcement (codex).
+	if (id >> 24) & 0x3 != 0 {
+		return false
+	}
 	pf := (id >> 16) & 0xFF
 	return pf == 0xEC || pf == 0xEB
 }
@@ -415,14 +421,38 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		return
 	}
 	if ctrl == cm_abort {
-		// Either end may abort, so the session is looked up both ways round.
+		// Either end may abort, so the session is looked up both ways round -- and the PGN in
+		// bytes 5..7 is what says WHICH way. A node that both sends and receives a transfer to
+		// the same peer has two sessions here, and taking the sender-side key first tore down
+		// its OUTGOING transfer when it abandoned the one it was receiving (codex). The PGN
+		// picks; only if neither side's PGN matches does the abort fall back to the direction
+		// the frame's own addresses suggest, since an abort that names nothing this side is
+		// following settles nothing either way.
 		why := abort_reason(data[1])
-		for k in [key_of(iid.sa, iid.ps), key_of(iid.ps, iid.sa)] {
+		out := key_of(iid.sa, iid.ps)
+		incoming := key_of(iid.ps, iid.sa)
+		mut hit := u64(0)
+		mut found := false
+		for k in [out, incoming] {
 			if s := r.sessions[k] {
-				r.sessions.delete(k)
-				aborted << s.abort('aborted by ${addr_str(iid.sa)}: ${why}', t_ms)
-				return
+				if s.pgn == pgn {
+					hit, found = k, true
+					break
+				}
 			}
+		}
+		if !found {
+			for k in [out, incoming] {
+				if _ := r.sessions[k] {
+					hit, found = k, true
+					break
+				}
+			}
+		}
+		if found {
+			s := r.sessions[hit]
+			r.sessions.delete(hit)
+			aborted << s.abort('aborted by ${addr_str(iid.sa)}: ${why}', t_ms)
 		}
 		return
 	}

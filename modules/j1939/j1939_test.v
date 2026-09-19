@@ -485,3 +485,50 @@ fn test_evidence_is_exactly_what_the_reassembler_would_accept() {
 	assert announcement_refusal(20, 3) == ''
 	assert announcement_refusal(8, 2) != ''
 }
+
+fn test_the_page_bits_are_part_of_the_group_so_another_page_is_another_group() {
+	// 0x1EC00 and 0x1EB00 are not this protocol's groups; reading the format byte alone let
+	// one be taken apart as an announcement (codex).
+	assert !is_tp(0x19ECFF00, true) // DP set
+	assert !is_tp(0x1BEBFF00, true) // EDP set
+	assert !announces_session(0x19ECFF00, true, bam(20, 3, data_pgn))
+	mut r := Reassembler{}
+	assert r.observe(0x19ECFF00, true, bam(20, 3, data_pgn), 0).aborted.len == 0
+	assert r.pending() == 0
+}
+
+// A node may be sending one transfer and receiving another to the same peer at once. The PGN in
+// the abort's own bytes is what says which one it means; without it, a node abandoning the
+// transfer it was RECEIVING tore down its outgoing one instead (codex).
+fn test_an_abort_ends_the_transfer_its_pgn_names_not_the_nearest_one() {
+	other_pgn := u32(0x00FEF1)
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, 0x03), true, rts(20, 3, data_pgn), 0) // 00 -> 03, sending
+	r.observe(cm_id(0x03, 0x00), true, rts(20, 3, other_pgn), 1) // 03 -> 00, the other way
+	r.observe(dt_id(0x00, 0x03), true, dt(1, p), 2)
+	assert r.pending() == 2
+	// 03 abandons the transfer IT is sending, naming that transfer's group.
+	ev := r.observe(cm_id(0x03, 0x00), true, abort_frame(3, other_pgn), 3)
+	assert ev.aborted.len == 1
+	assert ev.aborted[0].pgn == other_pgn
+	assert ev.aborted[0].sa == 0x03
+	assert r.pending() == 1
+	// and the one 00 is sending is untouched, so its last packets still complete it
+	r.observe(dt_id(0x00, 0x03), true, dt(2, p), 4)
+	done := r.observe(dt_id(0x00, 0x03), true, dt(3, p), 5).done
+	assert done.len == 1 && done[0].pgn == data_pgn
+}
+
+fn test_an_abort_naming_no_open_transfer_settles_nothing() {
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, 0x03), true, rts(20, 3, data_pgn), 0)
+	// An abort for a peer this side is not following at all.
+	assert r.observe(cm_id(0x11, 0x12), true, abort_frame(3, data_pgn), 1).aborted.len == 0
+	assert r.pending() == 1
+	// One naming a group nobody here is carrying still ends the session it is addressed to,
+	// since the peers agree the connection is over whatever this side made of the numbers.
+	ev := r.observe(cm_id(0x03, 0x00), true, abort_frame(3, 0x00FFFF), 2)
+	assert ev.aborted.len == 1 && ev.aborted[0].pgn == data_pgn
+	assert r.pending() == 0
+}

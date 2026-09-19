@@ -185,23 +185,24 @@ struct TRec {
 //
 // Caller holds app.mu.
 fn (mut app App) push_j1939_row_locked(chname string, m j1939.TpMessage) {
-	app.push_tp_row_locked(chname, m, app.since_ms(), org_rx, false)
+	app.push_tp_row_locked(chname, m, app.since_ms(), org_rx, false, 0)
 }
 
 // push_j1939_rep_row_locked is the same row for a message rebuilt out of an IMPORTED recording:
 // on the FILE's clock and marked `imported`, with origin REP because these bytes were never on
 // this bench's wire — a candump line does not say who sent it, and the packets it came from are
 // REP for that same reason. Caller holds app.mu.
-fn (mut app App) push_j1939_rep_row_locked(ch string, m j1939.TpMessage) {
-	app.push_tp_row_locked(ch, m, m.t_ms, org_rep, true)
+fn (mut app App) push_j1939_rep_row_locked(ch string, m j1939.TpMessage, idx u64) {
+	app.push_tp_row_locked(ch, m, m.t_ms, org_rep, true, idx)
 }
 
 // push_tp_row_locked is the row those two share. Caller holds app.mu.
-fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, origin string, imported bool) {
+fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, origin string, imported bool, idx u64) {
 	id := j1939.id_for(m.pgn, m.sa, m.da, m.priority)
 	head := if m.data.len > trace_payload_max { m.data[..trace_payload_max] } else { m.data }
 	kind := if m.kind == .bam { j1939.Part.bam } else { j1939.Part.cm }
 	app.push_row_locked(TraceRow{
+		idx:      idx // ignored unless `imported`; see push_row_locked
 		t_ms:     t_ms
 		ch:       chname
 		origin:   origin
@@ -219,7 +220,7 @@ fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, 
 	app.gcount[gkey_tp(chname, id, kind)]++
 }
 
-// reset_trace_locked empties the trace// reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
+// reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
 fn (mut app App) reset_trace_locked() {
 	app.trace = []
 	// The grouped view's label cache is keyed by group and only ever grows, so it is reset
@@ -256,7 +257,14 @@ fn (mut app App) push_row_locked(row TraceRow) u64 {
 	app.trace_seq++
 	mut r := row
 	r.seq = seq
-	r.idx = seq - app.trace_run_base // frozen here — see the field
+	// An IMPORTED row carries its own number: it is the frame's position in the FILE, and the
+	// importer is the only thing that knows it. Derived from seq it was right only while every
+	// row stood for exactly one file frame, which stopped being true when a rebuilt J1939
+	// message became a row of its own — each one consumed a number and pushed every later
+	// row's off the file by one more (codex). Everything else is still numbered by arithmetic.
+	if !r.imported {
+		r.idx = seq - app.trace_run_base // frozen here — see the field
+	}
 	r.run = app.trace_run_base
 	app.trace << r
 	// Trimmed in CHUNKS. Reslicing to the cap on every append copies the whole ring each time —
