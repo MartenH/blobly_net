@@ -86,6 +86,7 @@ fn (app &App) script_dir() string {
 // roots. The selection goes with the listing it belonged to, the path field follows, and the
 // listing is read ONCE here (fb_refresh), not per frame.
 fn (mut app App) fb_enter(dir string) {
+	app.fb_burst.listing_replaced() // the ONE place the rows change under the pointer
 	app.fb_dir = dir
 	app.fb_sel = ''
 	app.fb_path_buf = mkbuf(dir, 512)
@@ -201,10 +202,11 @@ fn (mut app App) browser_confirm(path string) {
 // and Enter / Open act on the selection the same way (pickrule.activate). #270 had made the
 // click select only, because the hand that double-clicks a folder lands its second click on
 // a row of the folder the first one entered; that click is now recognised (the burst count
-// ImGui keeps, vgui.mouse_click_count) and ignored instead. Above a Windows drive root the
-// list is the drives (pickrule.drives, fs_roots), so `D:` is reachable from `C:`; the path
-// field takes a typed folder or file too. The dialog cannot leave the main window
-// (vgui.begin_dialog_within), as VS Code's cannot.
+// ImGui keeps, vgui.mouse_press_count, fed to pickrule.Burst, which fb_enter tells whenever
+// the listing changes) and ignored instead. Above a Windows drive root the list is the drives
+// (pickrule.drives, fs_roots), so `D:` is reachable from `C:`; the path field takes a typed
+// folder or file too. The dialog cannot leave the main window (vgui.begin_dialog_within), as
+// VS Code's cannot.
 fn draw_filebrowser(mut app App) {
 	title := if app.fb_target == 'open' {
 		'Open Project'
@@ -304,29 +306,22 @@ fn draw_filebrowser(mut app App) {
 	mut on := ''
 	mut on_kind := pickrule.Entry.file
 	// A row reports twice per double click — the press (is_item_double_clicked) and its
-	// release (selectable) — and both are the burst's second click, which the count says.
-	repeat := vgui.mouse_click_count() >= 2
+	// release (selectable) — and both are the burst's second click, which the burst knows.
+	app.fb_burst.press(vgui.mouse_press_count())
 	// The list keeps its distance from the button row: its frame, the separator and their
 	// spacing. Reserve the row alone and the buttons sit a spacing below the window's edge,
 	// with a scrollbar to reach them.
 	vgui.child_begin('fb_list', -(vgui.frame_height() + vgui.line_height()))
 	for d in app.fb_dirs {
 		lbl := if at_drives { '[drive] ${d}' } else { '[dir]  ${d}' }
-		hit := vgui.selectable(lbl, app.fb_sel == d) || vgui.is_item_double_clicked()
+		// a folder is never the selection: a click enters it, so nothing highlights it
+		hit := vgui.selectable(lbl, false) || vgui.is_item_double_clicked()
 		if !hit {
 			continue
 		}
-		act := pickrule.click(.dir, app.fb_save, repeat, app.fb_burst_entered)
-		if !repeat {
-			app.fb_burst_entered = act == .enter
-		}
-		match act {
-			.enter {
-				on = d
-				on_kind = .dir
-			}
-			.select { app.fb_sel = d }
-			.accept, .ignore {}
+		if app.fb_burst.click(.dir, app.fb_save) == .enter {
+			on = d
+			on_kind = .dir
 		}
 	}
 	for f in app.fb_files {
@@ -334,11 +329,7 @@ fn draw_filebrowser(mut app App) {
 		if !hit {
 			continue
 		}
-		act := pickrule.click(.file, app.fb_save, repeat, app.fb_burst_entered)
-		if !repeat {
-			app.fb_burst_entered = act == .enter
-		}
-		match act {
+		match app.fb_burst.click(.file, app.fb_save) {
 			.select {
 				app.fb_sel = f
 				if app.fb_save {
@@ -381,7 +372,7 @@ fn draw_filebrowser(mut app App) {
 	} else {
 		if vgui.button('Open') {
 			if app.fb_sel == '' {
-				app.notify('select a folder or a file first')
+				app.notify('select a file first (a click enters a folder)')
 			} else {
 				activate = true
 			}
@@ -393,12 +384,10 @@ fn draw_filebrowser(mut app App) {
 	}
 	vgui.end()
 	if activate && on == '' && app.fb_sel != '' {
-		// The selection is a row of the listing, or nothing: a name that is in neither list
-		// (typed and then rejected, or gone since the listing was read) is not acted on.
-		if app.fb_dirs.contains(app.fb_sel) {
-			on = app.fb_sel
-			on_kind = .dir
-		} else if app.fb_files.contains(app.fb_sel) {
+		// The selection is a file of the listing, or nothing: a name that is not in the list
+		// (typed and then rejected, or gone since the listing was read) is not acted on. A
+		// folder is never selected — a click enters it — so only files are looked for.
+		if app.fb_files.contains(app.fb_sel) {
 			on = app.fb_sel
 			on_kind = .file
 		}

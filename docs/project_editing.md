@@ -306,12 +306,16 @@ filter in open mode, a filename input in save mode, Open/Save and Cancel. Starts
 project's dir, else `projects/`.
 
 Its grammar is VS Code's picker's, and it is a tested rule (`cmd/blobly_net/pickrule/`, #270):
-a click **enters** a folder and **selects** a file, a double click **accepts** a file, and Enter
-or the Open button act on the selection the same way. (#270 had made a click select only,
+a click **enters** a folder and **selects** a file, a double click **accepts** a file (in save
+mode it only selects: the picker has no "replace?" prompt, so only the Save button writes), and
+Enter or the Open button act on the selection the same way. #270 had made a click select only,
 because a hand that double-clicks a folder lands its second click in the folder the first one
 entered; that click is now recognised as the second of a double and ignored, so one click per
-folder is back.) The path field at the top takes a typed folder or file — Enter or **Open
-path**. On Windows a **drive
+folder is back. The price: a click within ImGui's double-click window of one that changed the
+listing — 300 ms, and within 6 px of it — does nothing, whatever changed the listing (a row,
+the drive dropdown, `.. up`, a typed path), so a hand descending a tree by the top row faster
+than that loses every second click; wait a beat, or move the mouse. The path field at the top
+takes a typed folder or file — Enter or **Open path**. On Windows a **drive
 dropdown** offers every drive (`C:\`, `D:\`, … from `GetLogicalDrives`; `fs_roots` in
 `roots_windows.v` / `roots_nix.v`) and every WSL distribution (`wsl: Ubuntu`, entering
 `\\wsl.localhost\Ubuntu\`; the names come from the registry, `wsl_roots`) from the start

@@ -39,18 +39,50 @@ pub fn activate(e Entry, save bool) Act {
 	return if save { Act.select } else { Act.accept }
 }
 
+// Burst is the click-burst state the click rule needs: whether the LISTING WAS REPLACED since
+// the burst began. ImGui counts presses within its double-click time and distance (300 ms and
+// 6 px by default) as one burst, `press` is told every press with its number in the burst
+// (1 for a lone click, 2 for the second of a double), and `listing_replaced` is told every
+// replacement of the listing — by a row, the drive dropdown, `.. up`, a typed path or the menu
+// that opened the picker under the pointer; the GUI says it in the ONE place the listing is
+// replaced, so no entry path can be missed. A selectable reports on the RELEASE, when the
+// burst's last press still names it, which is why the count is kept rather than asked.
+pub struct Burst {
+pub mut:
+	count    int  // presses in the current burst, as of its last press
+	replaced bool // the listing was replaced since this burst's first press
+}
+
+// press is every frame's answer to "how many presses is this one?" — 0 on a frame with no
+// press (ImGui's GetMouseClickedCount), which changes nothing. The first press of a burst
+// begins it: what an earlier burst replaced is not this one's doing.
+pub fn (mut b Burst) press(n int) {
+	if n <= 0 {
+		return
+	}
+	b.count = n
+	if n == 1 {
+		b.replaced = false
+	}
+}
+
+// listing_replaced is what the picker says whenever the rows change under the pointer.
+pub fn (mut b Burst) listing_replaced() {
+	b.replaced = true
+}
+
 // click is what ONE CLICK on a row of kind `e` does. A lone click ENTERS a folder and SELECTS
-// a file. `repeat` is ImGui's word for a press that is the second or later of one burst
-// (within its double-click time and distance of the last), and the release of that press —
-// a selectable reports on the release — and `burst_entered` says the burst's FIRST click
-// entered a folder. That pair is #270's hand: it double-clicked a folder, the first click
-// entered it, and the second landed on whatever row of the new listing sits under the mouse.
-// It is IGNORED whatever that row is — a folder there would be entered, a file there opened,
-// and neither was aimed at. A repeat whose burst began on a file is a real double click and
-// does what Enter and Open do (activate: accept, or select in save mode).
-pub fn click(e Entry, save bool, repeat bool, burst_entered bool) Act {
-	if repeat {
-		if burst_entered {
+// a file. The second or later click of a burst whose listing was replaced is #270's hand: it
+// double-clicked a folder, the first click entered it, and the second lands on whatever row of
+// the new listing sits under the mouse. It is IGNORED whatever that row is — a folder there
+// would be entered, a file there opened, and neither was aimed at. A second click whose burst
+// replaced nothing is a real double click and does what Enter and Open do (activate: accept,
+// or select in save mode). The price is stated in the manual: a click on the same spot within
+// the burst window of one that entered a folder does nothing, so a hand descending a tree by
+// the top row faster than that loses every second click.
+pub fn (b Burst) click(e Entry, save bool) Act {
+	if b.count >= 2 {
+		if b.replaced {
 			return .ignore
 		}
 		return activate(e, save)

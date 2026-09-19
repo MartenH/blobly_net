@@ -134,8 +134,9 @@ identity and at a gap out of proportion to the cadence, so a Stop's or a dropout
 never averaged into a cadence (#266); and `cmd/blobly_net/pickrule/`, the file picker's
 grammar — a click enters a folder and selects a file, a double click accepts a file, Enter and
 Open act on the selection the same way, and the second click of a double whose first click
-entered a folder is ignored (#270's hazard, answered by recognising the click — ImGui's burst
-count, `vgui.mouse_click_count` — instead of by taking the single click away) — and where `..`
+entered a folder is ignored (#270's hazard, answered by recognising the click — `pickrule.Burst`
+keeps ImGui's press count, `vgui.mouse_press_count`, and is told in `fb_enter`, the ONE place
+the listing changes, whichever control changed it — instead of by taking the single click away) — and where `..`
 goes from a Windows drive root (the drives view, so `D:` is reachable from `C:`; #270); and `cmd/blobly_net/prefs/`, what the app remembers ACROSS
 runs — the settings file's grammar (`%AppData%\blobly_net\settings.toml`, `~/.config/blobly_net/settings.toml`:
 the external editor command and the UI scale) and how an editor command becomes an argv (#306); and `cmd/blobly_net/panerule/`, the persisted
