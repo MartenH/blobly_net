@@ -258,6 +258,8 @@ only where the identifier has a field for one: a broadcast group has none, and `
 of the rows of a J1939 bus would be noise for the ordinary case. Reserved addresses are named
 (`[none]` is the null address, before an ECU has claimed one).
 
+Our own frames on a declared wire read the same way; only the rebuilding is of received traffic.
+
 **Hover the id** for the whole split: PGN in hex and decimal, the addressing form, both
 addresses, priority, and the page and format bytes.
 

@@ -482,8 +482,8 @@ fn test_evidence_is_exactly_what_the_reassembler_would_accept() {
 		accepted := r.observe(0x1CECFF00, true, false, f, 0).aborted.len == 0
 		assert announces_session(0x1CECFF00, true, false, f) == accepted, '${size} bytes in ${packets}'
 	}
-	assert announcement_refusal(cm_bam, addr_global, 20, 3) == ''
-	assert announcement_refusal(cm_bam, addr_global, 8, 2) != ''
+	assert announcement_refusal(cm_bam, addr_global, data_pgn, 20, 3) == ''
+	assert announcement_refusal(cm_bam, addr_global, data_pgn, 8, 2) != ''
 }
 
 fn test_the_page_bits_are_part_of_the_group_so_another_page_is_another_group() {
@@ -588,4 +588,51 @@ fn test_what_is_counted_can_be_read_back() {
 		orphan_dt: 1
 		malformed: 1
 	}
+}
+
+// The announced group number is an 18-bit field in three bytes. The session kept all 24 while
+// `id_for` drops the top six, so a rebuilt row showed and DECODED a different group (codex).
+fn test_a_group_number_that_does_not_fit_its_field_is_refused() {
+	mut r := Reassembler{}
+	ev := r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, 0xFFFEE5), 0)
+	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('18 bits')
+	assert r.pending() == 0
+	assert !announces_session(cm_id(0x00, addr_global), true, false, bam(20, 3, 0xFFFEE5))
+	// the widest group number that does fit is accepted, and survives the round trip
+	assert announces_session(cm_id(0x00, addr_global), true, false, bam(20, 3, 0x3FFFF))
+	assert decode_id(id_for(0x3FFFF, 0x00, addr_global, 7)).pgn() == 0x3FFFF
+}
+
+// A stale acknowledgement naming another group closed the transfer that WAS open between the
+// two addresses and reported its packets as dropped here.
+fn test_an_acknowledgement_names_the_transfer_it_ends() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, 0x03), true, false, rts(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, 0x03), true, false, dt(1, p), 10)
+	stale := r.observe(cm_id(0x03, 0x00), true, false, eoma(20, 3, 0x00FEF1), 20)
+	assert stale.aborted.len == 0, 'stale ack closed: ${stale.aborted.map(it.reason)}' 
+	assert r.pending() == 1
+	// and the right one still closes it
+	ev := r.observe(cm_id(0x03, 0x00), true, false, eoma(20, 3, data_pgn), 30)
+	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('reached this tool')
+	assert r.pending() == 0
+}
+
+// A stream of frames this cannot read is still a stream of transport frames: skipping the sweep
+// on them held an expired session open for as long as they kept coming (codex).
+fn test_unreadable_frames_do_not_hold_an_expired_transfer_open() {
+	p := payload(20)
+	mut r := Reassembler{}
+	r.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	r.observe(dt_id(0x00, addr_global), true, false, dt(1, p), 10)
+	// short, then remote, both past the deadline
+	ev := r.observe(cm_id(0x00, addr_global), true, false, [u8(0x20), 1, 2], 900)
+	assert ev.aborted.len == 1 && ev.aborted[0].reason.contains('750 ms')
+	assert r.pending() == 0
+	mut r2 := Reassembler{}
+	r2.observe(cm_id(0x00, addr_global), true, false, bam(20, 3, data_pgn), 0)
+	ev2 := r2.observe(dt_id(0x00, addr_global), true, true, []u8{len: 8}, 900)
+	assert ev2.aborted.len == 1
+	assert r2.counts().malformed == 1
 }

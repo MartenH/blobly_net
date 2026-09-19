@@ -244,7 +244,14 @@ pub fn abort_reason(code u8) string {
 // One rule, because it is asked twice for different purposes: the reassembler refuses a session
 // with it, and `announces_session` treats passing it as EVIDENCE that a recording is J1939. A
 // looser evidence test than the acceptance test would claim a bus this cannot then read.
-pub fn announcement_refusal(ctrl u8, da u8, size int, packets int) string {
+pub fn announcement_refusal(ctrl u8, da u8, pgn u32, size int, packets int) string {
+	// The announced group number is an 18-BIT field carried in three bytes, so anything in the
+	// reserved top six bits is not a parameter group. It mattered beyond tidiness: the session
+	// kept the whole 24-bit value while `id_for` drops those bits, so a rebuilt row displayed
+	// and DECODED a different group from the one announced (codex).
+	if pgn > 0x3FFFF {
+		return 'announced group number 0x${pgn:06X}, which does not fit the 18 bits one has'
+	}
 	// The MODE and the destination are one statement, not two: a BAM is announced to everybody
 	// and an RTS opens a connection to one node, so an addressed BAM or a global RTS is a frame
 	// no J1939 stack produces. Left out, an addressed BAM was proof enough to read a whole
@@ -287,7 +294,7 @@ pub fn announces_session(id u32, ext bool, rtr bool, data []u8) bool {
 	if data[0] != cm_bam && data[0] != cm_rts {
 		return false
 	}
-	return announcement_refusal(data[0], iid.ps, le16(data, 1), int(data[3])) == ''
+	return announcement_refusal(data[0], iid.ps, le24(data, 5), le16(data, 1), int(data[3])) == ''
 }
 
 // observe feeds one received frame and returns whatever it settled. A frame that is not part of
@@ -297,24 +304,28 @@ pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, data []u8, t_ms f
 	if !is_tp(id, ext) {
 		return TpEvents{}
 	}
+	// A sweep on every transport frame, not only on the idle path: a session abandoned while
+	// the wire stays busy is abandoned just the same, and this is the moment we are here.
+	//
+	// BEFORE the two refusals below, not after. A stream of frames this cannot read is still a
+	// stream of transport frames, and skipping the sweep on them held an already-expired
+	// session open for as long as they kept coming — reported at EOF as merely unfinished
+	// (codex).
+	mut aborted := r.expire(t_ms)
 	// A REMOTE frame carries no payload — it asks for one. Some backends hand back a buffer of
 	// the requested length anyway, so a remote frame at a TP.DT identifier arrived here as
 	// sequence 0 and tore down a legitimate transfer (codex). Refused in the module rather than
 	// at each caller, because the two callers are the live reader and the importer and this is
 	// one rule.
-	if rtr {
+	//
+	// Every transport frame is 8 bytes besides; the protocol pads with 0xFF rather than
+	// shortening, so a short one cannot be read without guessing which field was cut off.
+	if rtr || data.len < 8 {
 		r.malformed++
-		return TpEvents{}
+		return TpEvents{
+			aborted: aborted
+		}
 	}
-	// Every transport frame is 8 bytes; the protocol pads with 0xFF rather than shortening.
-	// A short one cannot be read without guessing which field was cut off.
-	if data.len < 8 {
-		r.malformed++
-		return TpEvents{}
-	}
-	// A sweep on every transport frame, not only on the idle path: a session abandoned while
-	// the wire stays busy is abandoned just the same, and this is the moment we are here.
-	mut aborted := r.expire(t_ms)
 	mut done := []TpMessage{}
 	iid := decode_id(id)
 	if iid.pf == 0xEC {
@@ -383,7 +394,7 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// The announcement is where a session is refused, since everything after it is read
 		// against these numbers. One rule (`announcement_refusal`), so what this accepts and
 		// what `announces_session` calls evidence of a J1939 bus cannot drift apart.
-		mut why := announcement_refusal(ctrl, iid.ps, size, packets)
+		mut why := announcement_refusal(ctrl, iid.ps, pgn, size, packets)
 		if why == '' && r.sessions.len >= max_sessions && k !in r.sessions {
 			why = '${max_sessions} sessions already open on this wire'
 		}
@@ -441,10 +452,15 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// Also from the receiver, and it means the transfer SUCCEEDED. So if this side is
 		// still missing packets, the gap is in what this tool captured rather than on the
 		// bus, and that is the useful thing to say.
+		// By PGN as well as by address, for the reason the abort below is: a stale or malformed
+		// acknowledgement naming another group would otherwise close the transfer that IS open
+		// between these two and report its packets as dropped here (codex).
 		k := key_of(iid.ps, iid.sa)
 		if s := r.sessions[k] {
-			r.sessions.delete(k)
-			aborted << s.abort('the receiver acknowledged the whole message; ${s.n_got} of ${s.packets} packets reached this tool', t_ms)
+			if s.pgn == pgn {
+				r.sessions.delete(k)
+				aborted << s.abort('the receiver acknowledged the whole message; ${s.n_got} of ${s.packets} packets reached this tool', t_ms)
+			}
 		}
 		return
 	}

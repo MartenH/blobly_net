@@ -24,10 +24,6 @@ struct Chan {
 	fd           bool
 	data_bitrate int
 	listen_only  bool
-	// The wire carries SAE J1939 (project.Channel.j1939, or a database on it that declares
-	// parameter groups — `dest_reads_j1939` folds the two). Turns on the trace's identifier
-	// reading and the transport-session reassembly.
-	j1939        bool
 	databases    []string
 	manifest     string
 	doip         bool
@@ -53,6 +49,12 @@ struct Chan {
 	replay_speed   f64 = 1.0
 	replay_loop    bool
 mut:
+	// The wire carries SAE J1939. Starts as the project row's own tick and is then folded with
+	// the other half of the answer — a database on this WIRE that declares parameter groups —
+	// by `settle_j1939_locked`, once, so the question costs a row scan on the transmit path
+	// instead of a walk over every message of every database (#95's mistake). The project keeps
+	// the tick, so a Save never writes back a database's implication of it.
+	j1939 bool
 	enabled bool
 	rx      u64
 	// BUS LOAD (transport.busload): bit-times seen on this wire since the last roll, rolled

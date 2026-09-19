@@ -80,21 +80,15 @@ fn (c Chan) for_open() project.Channel {
 // anybody meant it to, so a UDS response on a 29-bit id would read as a parameter group from
 // whoever its low byte happened to name (#289's point about the verifier, one layer over).
 //
-// Two sources, folded, because neither covers the case alone: a row's own `j1939: true`, and a
-// database attached to any row on the wire that DECLARES parameter groups. Most real J1939
-// databases declare nothing — `VFrameFormat` is a Vector attribute they were written without —
-// so the key is what carries the feature and the declaration spares a project that has one from
-// saying it twice. Asked once per reader at Start and not per frame: it walks every row and
-// every database on the wire.
+// A SCAN OF THE ROWS, because `settle_j1939_locked` has already folded in the other half — a
+// database on the wire that DECLARES parameter groups. Most real J1939 databases declare
+// nothing (`VFrameFormat` is a Vector attribute they were written without), so the tick is what
+// carries the feature and the declaration spares a project that has one from saying it twice.
+// Cheap on purpose: this is asked on the transmit path, once per emitted frame.
 fn (app &App) dest_reads_j1939(iface string) bool {
 	want := transport.destination_key(iface)
 	for c in app.chans {
-		if transport.destination_key(c.iface) == want && c.j1939 {
-			return true
-		}
-	}
-	for db in app.dbs_for_dest(iface) {
-		if db.declares_j1939() {
+		if c.j1939 && transport.destination_key(c.iface) == want {
 			return true
 		}
 	}

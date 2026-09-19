@@ -554,7 +554,14 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
 - **J1939 in the trace** (#171): the `id` column keeps the RAW 29-bit value — it sorts, filters,
   copies and groups — the `name` column gains the SENDER (`EEC1 [00]`, `TSC1 [00>03]`,
   `PGN F004 [00]`), `flags` marks a session's parts (`TP`, `BAM`, `CM`), and the whole split is
-  in the hover on the id. Four columns would have been four columns of noise on every other bus.
+  in the hover on the id (in BOTH views — the grouped one is what the panel opens on). Four
+  columns would have been four columns of noise on every other bus. **Our own frames on a
+  declared wire read as J1939 too**, because the reading is about the identifier and not about
+  who put it there; only REASSEMBLY is RX-only, and for a different reason — PCAN does not echo
+  our sends, so rebuilding them could not be promised on the adapter it would matter most for.
+  The question is a scan of `app.chans` (`dest_reads_j1939`) because `settle_j1939_locked` folds
+  the database half onto those rows once at build time: asked per emitted frame, the walk over
+  every message of every database is #95's mistake.
   Reassembly runs in `rx_loop`, one `Reassembler` per reader like the verifier set beside it and
   OUTSIDE `app.mu` for the same reason, `is_tp` first so a wire with no session pays two
   comparisons a frame. A rebuilt message is filed behind the packet that completed it under a

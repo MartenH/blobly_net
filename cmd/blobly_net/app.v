@@ -1230,8 +1230,49 @@ fn (mut app App) rebuild_from_proj() {
 	// that only took effect on the next reload is a tick that lies until then.
 	app.mu.lock()
 	app.resolve_sender_targets_locked()
+	app.settle_j1939_locked()
 	app.push_listen_only_locked()
 	app.mu.unlock()
+}
+
+// settle_j1939_locked folds the DATABASE half of "is this wire J1939" onto the runtime rows,
+// once, here — where both halves are finally known: a row's own `j1939:` tick and whether any
+// database attached to any row on its wire DECLARES parameter groups.
+//
+// Once, because the alternative is asking it per frame. The declaration is a walk over every
+// message of every database on the wire, and the question is asked on the TRANSMIT path now
+// (an emitted row reads as J1939 like a received one does), which is exactly the O(frames ×
+// messages) under the global mutex that #95's coverage index exists to avoid. After this, the
+// answer is a scan of a handful of rows.
+//
+// The runtime bit only: `app.proj` keeps what the operator ticked, so a Save writes back the
+// tick and never a database's implication of it.
+fn (mut app App) settle_j1939_locked() {
+	mut wires := map[string]bool{}
+	for c in app.chans {
+		if c.j1939 {
+			wires[transport.destination_key(c.iface)] = true
+		}
+	}
+	for i, c in app.chans {
+		k := transport.destination_key(c.iface)
+		if k !in wires {
+			for db in app.dbs_for(c.iface) {
+				if db.declares_j1939() {
+					wires[k] = true
+					break
+				}
+			}
+		}
+		app.chans[i].j1939 = wires[k] or { false }
+	}
+	// A second pass: a wire proved J1939 by a LATER row's database must reach the rows already
+	// visited, since the rows on one wire share one answer.
+	for i, c in app.chans {
+		if wires[transport.destination_key(c.iface)] or { false } {
+			app.chans[i].j1939 = true
+		}
+	}
 }
 
 // resolve_sender_targets_locked answers every generator's `bus:` against the channels as they

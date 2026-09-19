@@ -585,6 +585,11 @@ fn (mut app App) set_adapter(i int, a string) {
 		// and Replay panels went on reporting, that the editor could no longer change, and that
 		// Save then persisted. Cleared with the rest of what stopped applying.
 		app.proj.channels[i].mode = .normal
+		// AND J1939, for the same reason as the rest: it is a CAN protocol, the editor hides
+		// the tick on an Ethernet row, and left set it was a hidden `j1939: true` that Save
+		// persisted and that silently came back the day the row was converted to CAN again
+		// (codex).
+		app.proj.channels[i].j1939 = false
 	}
 	// SILENT BY DEFAULT when a bus BECOMES one of the adapters that starts silent, for the same
 	// reason a discovered channel does: hardware that may already be wired to a running vehicle,

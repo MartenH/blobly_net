@@ -286,6 +286,14 @@ fn (mut app App) load_recording(path string) {
 				tp_notes << '${os.base(path)}: ${tp_abort_line(e.iface, ab)}'
 			}
 		}
+		// COUNTED for the whole file, like the frame counts above: a rebuilt message before
+		// the trim is reassembled and then dropped, so counting it after the trim check left a
+		// visible group reporting only the completions in the tail while every ordinary group
+		// counted the whole recording (codex).
+		for m in rebuilt {
+			app.gcount[gkey_tp(org_rep, e.iface, j1939.id_for(m.pgn, m.sa, m.da, m.priority),
+				if m.kind == .bam { j1939.Part.bam } else { j1939.Part.cm })]++
+		}
 		if i < first_row {
 			continue // trimmed before it could ever be drawn
 		}

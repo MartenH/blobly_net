@@ -829,6 +829,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 							}
 						}
 						a.mu.unlock()
+						// The wire is quiet by definition here, so nothing else is going to
+						// repaint: without this the only new line sat unseen for the idle
+						// wait, as the health and diagnostics reports beside it already knew
+						// (codex).
+						vgui.wake()
 					}
 				}
 				continue

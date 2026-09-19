@@ -191,19 +191,22 @@ struct TRec {
 //
 // Caller holds app.mu.
 fn (mut app App) push_j1939_row_locked(chname string, m j1939.TpMessage) {
-	app.push_tp_row_locked(chname, m, app.since_ms(), org_rx, false, 0)
+	app.push_tp_row_locked(chname, m, app.since_ms(), org_rx, false, 0, true)
 }
 
 // push_j1939_rep_row_locked is the same row for a message rebuilt out of an IMPORTED recording:
 // on the FILE's clock and marked `imported`, with origin REP because these bytes were never on
 // this bench's wire — a candump line does not say who sent it, and the packets it came from are
 // REP for that same reason. Caller holds app.mu.
+// `count` is false where the CALLER has already counted the message. The importer counts every
+// completion, including the ones the trim then drops, so the group total covers the whole file
+// rather than only the visible tail — and counting again here would double every visible one.
 fn (mut app App) push_j1939_rep_row_locked(ch string, m j1939.TpMessage, idx u64) {
-	app.push_tp_row_locked(ch, m, m.t_ms, org_rep, true, idx)
+	app.push_tp_row_locked(ch, m, m.t_ms, org_rep, true, idx, false)
 }
 
 // push_tp_row_locked is the row those two share. Caller holds app.mu.
-fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, origin string, imported bool, idx u64) {
+fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, origin string, imported bool, idx u64, count bool) {
 	id := j1939.id_for(m.pgn, m.sa, m.da, m.priority)
 	head := if m.data.len > trace_payload_max { m.data[..trace_payload_max] } else { m.data }
 	kind := if m.kind == .bam { j1939.Part.bam } else { j1939.Part.cm }
@@ -223,7 +226,9 @@ fn (mut app App) push_tp_row_locked(chname string, m j1939.TpMessage, t_ms f64, 
 		tp_n:     m.packets
 		key:      gkey_tp(origin, chname, id, kind)
 	})
-	app.gcount[gkey_tp(origin, chname, id, kind)]++
+	if count {
+		app.gcount[gkey_tp(origin, chname, id, kind)]++
+	}
 }
 
 // reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
@@ -341,6 +346,17 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// mutex could read app.dbs while a configuration edit replaces it.
 	chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
 	name := app.lookup_name(f.id, f.extended)
+	// OUR OWN frames on a declared J1939 wire are J1939 frames: the reading is about the
+	// identifier, which does not depend on who put it there, so a TX row without it had no
+	// sender, no hover and no answer to `pgn:` while the RX row beside it had all three
+	// (codex). Reassembly is the part that stays RX-only, and for a different reason — a
+	// backend decides it, since PCAN does not echo our sends at all.
+	//
+	// Asked here per emission rather than carried on the row's producer: `dest_reads_j1939` is
+	// a scan of `app.chans`, which this call already holds the lock for, and the database half
+	// of the answer was folded onto those rows once at build time (`settle_j1939_locked`) —
+	// walking every message of every database per emitted frame is #95's mistake.
+	reads_j1939 := f.extended && app.dest_reads_j1939(iface)
 	app.expire_pending_locked(t_ms)
 	// Paused: the emission is STILL tracked so its echo is recognised as ours — otherwise a
 	// paused trace would feed our own frames to the E2E verifier as the ECU's and log them to
@@ -362,6 +378,12 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			name:   name
 			data:   f.data.clone()
 			key:    k
+			j1939:  reads_j1939
+			tp:     if reads_j1939 && !f.rtr && j1939.is_tp(f.id, f.extended) {
+				j1939.Part.packet
+			} else {
+				j1939.Part.plain
+			}
 		})
 		app.gcount[k]++
 	}

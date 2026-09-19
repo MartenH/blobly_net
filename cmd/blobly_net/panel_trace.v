@@ -491,6 +491,9 @@ mut:
 	id     u32
 	ext    bool
 	someip bool // the row's kind, carried so the CAN consumers below can refuse it
+	// Which part of a J1939 transport session this group is, because `gkey_tp` separates them
+	// and the comparator must separate whatever the key does.
+	tp j1939.Part
 	someip_type  u8 // its message type: part of the group identity, so part of the order
 	someip_iface u8 // its interface version, for the same reason
 	someip_proto u8 // and its protocol version: an invalid one must not merge into valid traffic
@@ -644,6 +647,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				ch:     r.ch
 				id:     r.id
 				ext:         r.ext
+				tp:           r.tp
 				someip:       r.someip
 				someip_type:  r.someip_type
 				someip_iface:     r.someip_iface
@@ -717,6 +721,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// equal would let them swap places between redraws (the groups come from a map).
 		if a.someip != b.someip {
 			return if !a.someip { -1 } else { 1 }
+		}
+		// The TRANSPORT KIND, for exactly that reason: `gkey_tp` separates a broadcast
+		// reconstruction from a connection-mode one, so a sender whose parameter group arrives
+		// both ways is two groups whose other fields are identical, and a comparator calling
+		// them equal let the rows swap between redraws (codex).
+		if a.tp != b.tp {
+			return if int(a.tp) < int(b.tp) { -1 } else { 1 }
 		}
 		// and the message type, for the same reason: it is part of the key, so two groups that
 		// differ only by it are distinct rows and must not compare equal.
@@ -807,6 +818,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 					app.add_fwatch(g.id, g.ext)
 				}
 				vgui.end_popup()
+			}
+			if r.j1939 {
+				// The grouped view is the one the Trace panel opens on, so a decomposition
+				// only the chronological table offered was one most readers never saw (codex).
+				vgui.set_item_tooltip(j1939.tooltip(j1939_reading(r)))
 			}
 			origin_cell(g.origin, verdict_mark(g.refused, g.missed))
 			vgui.table_cell(len_str(r.full_len()))
