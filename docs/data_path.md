@@ -8,10 +8,11 @@
 ```
 wire / medium            backend (modules/transport, doip, someip)     what comes out       who reads it
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
-CAN  vcan/socketcan      open()  →  one Bus per wire                   CanFrame             rx_loop → TraceRow (RX)
-     pcan/kvaser/vector   (pcan, cansub: a shared hub, one ingress,                          sim_loop → tap (TX-S)
-     cansub               many cursors — one_reader_per_wire.md)                             diagnostics → isotp.on_bus(tap)
-     inproc / udp:        (software buses, no driver)                                        Lua opener → Bus
+CAN  vcan/socketcan      open()  →  a Bus per OPENER: the RX loop,       CanFrame             rx_loop → TraceRow (RX)
+     pcan/kvaser/vector   each transmit tap, the sim, diagnostics                              sim_loop → tap (TX-S)
+     cansub               hold their own. pcan/cansub share one                               diagnostics → isotp.on_bus(tap)
+     inproc / udp:        handle behind per-Bus cursors                                       Lua opener → Bus
+                          (one_reader_per_wire.md); the rest fan out
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
 Eth  doip:<host:port>    DoipClient / DoipServer  (TCP + UDP)          UDS bytes            uds.Client over isotp.Channel
                           — NOT a Bus: it carries diagnostics,          (no frames)          Diagnostics panel, Lua uds.open
@@ -26,12 +27,16 @@ LIN                      planned (ROADMAP) — its own LinFrame + bus,   —    
 
 Two things enter the same trace from somewhere other than a wire:
 
-- **Replay** (`modules/player`, `cmd/blobly_net/replay.v`): a recording's lines become `REP` rows on the
-  file's own clock, and are re-sent through a tap so a SUT on the wire sees them as `TX-S`.
-- **Telemetry from a blobly_emb target** (`modules/telem`, the Trace Chart, the Shell): ordinary CAN
-  frames whose ids the manifest names; `rx_loop` decodes the trace response id inline, everything
-  else is a panel reading rows. Over SOME/IP the same events arrive as rows shown raw — decoding
-  them from the node's config is the next rung (ethernet_architecture.md).
+- **A recording, two ways** (`cmd/blobly_net/replay.v`, `modules/player`). *Opening* one for inspection
+  makes `REP` rows on the file's own clock and transmits nothing. *Replaying* one sends its frames
+  through a tap: the SUT sees ordinary CAN frames, and the trace shows them as `TX-S` rows. Two paths,
+  not two steps of one.
+- **Telemetry from a blobly_emb target** (`modules/telem`) mostly does NOT go through rows. The Trace
+  Chart's `trace_dump_worker` and the Shell's `shell_worker` each open their own ISO-TP channel and
+  decode into their own state (`app.trecs`, `shell_lines`); the eth Shell talks `someip.RpcClient`
+  directly. The frames may also appear in the trace, and `rx_loop` decodes one thing inline — the
+  trace status response the manifest names. Over SOME/IP the node's events arrive as rows shown
+  raw; decoding them from its config is the next rung (ethernet_architecture.md).
 
 ## The rules that hold across all of it
 
@@ -42,12 +47,15 @@ Two things enter the same trace from somewhere other than a wire:
 - **Decode is per database, at the consumer.** A backend hands over bytes and an id; the DBC (CAN) or
   the config-derived layout (SOME/IP, next rung) is applied by whoever displays or checks the value.
 - **Every row says where it came from.** `TX` we sent as tester · `TX-S` our simulated rest-of-bus ·
-  `REP` a replayed recording · `RX` anything real on the wire (`modules/wiretap`). Origin is part of
-  a row's identity, so our own echo never lands in the SUT's pile.
-- **One reader per wire.** Several CAN rows spelling one wire share its single reader and its state
-  (health, load, last RX). An Ethernet row is one reader per row, shares nothing, and is refused a
-  second listener on its endpoint rather than silently splitting the stream — see
-  *A bound UDP port is not an owned one* in bus_config_dialog.md and `transport/udpclaims.v`.
+  `REP` a replayed recording · `RX` anything real on the wire (`modules/wiretap`). What keeps our own
+  echo out of the SUT's pile is the wiretap's emit/claim matcher: `rx_loop` asks it before it makes an
+  `RX` row, and an unmatched frame is external. Origin being part of the group identity is a
+  separate fact — it keeps our 0x120 and the ECU's 0x120 as two rows — and does not do that job.
+- **One RX reader per destination.** Several CAN rows spelling one wire share its single GUI reader
+  and its state (health, load, last RX). A SOME/IP row is one reader per row, shares nothing, and is
+  refused a second listener on its endpoint rather than silently splitting the stream — see *A bound
+  UDP port is not an owned one* in bus_config_dialog.md and `transport/udpclaims.v`. A DoIP row has
+  no reader at all: no RX thread, no rows, a client (or a hosted entity) and nothing else.
 - **Is this a CAN wire?** is asked of one predicate — `project.Channel.is_eth()` in the model,
   `Chan.eth()` at runtime — by taps, load, replay, the sim loop, staleness and trace ownership. Not
   by adapter name at each site; that is how the second Ethernet kind was missed once.
@@ -59,12 +67,13 @@ Two things enter the same trace from somewhere other than a wire:
 
 | consumer | reads | notes |
 |---|---|---|
-| Trace, Trace (filter), grouped view | `app.trace` rows | groups by row identity: origin, channel, id, and for SOME/IP the message type, both versions, sender, validity |
+| Trace, Trace (filter), grouped view | `app.trace` rows | groups by row identity — CAN: origin, channel, id, `ext`, `fd`, `brs`, `rtr` (a classic and an FD 0x120 are two rows); SOME/IP: origin, channel, id, message type, both versions, sender, header validity |
 | Signals, Graphics | rows, matched by CAN (id, ext) | kind-gated: never a SOME/IP payload |
 | Record | every CAN frame seen on the wire, our own echoes included → `canlog` (candump `.log`) | **CAN only** — a SOME/IP row is shown, not recorded, and the Log says so once |
 | Diagnostics | an `isotp.Channel` | over a CAN tap (`isotp.on_bus`) or a `DoipClient` — the same `uds.Client` either way |
-| Lua (`cmd/script`, the Script panel) | `bus.recv`/`can.send` over a Bus from `env.opener`; `uds.open`; `someip.listen` | the runner opens buses directly; the GUI hands the script a tap, so its sends are `TX` rows |
-| Simulation | sends `TX-S` through a tap; the verifiers check RX against `protect:` | `modules/sim`, simulation_architecture.md |
+| Lua (`cmd/script`, the Script panel) | `bus.recv`/`bus.send` over a Bus from `env.opener`; `uds.open`; `someip.listen` | the runner opens buses directly; the GUI hands the script a tap, so its sends are `TX` rows |
+| Simulation | sends `TX-S` through a tap, stamped per each simulated node's `protect:` | `modules/sim`, simulation_architecture.md |
+| Verification | checks `RX` frames against the channel's **`verify:`** entries | a DUT is not a simulated node, so its messages can never sit under a `protect:`; `verify:` exists for exactly that ECU (`sim.verifiers_for`) |
 
 ## Where to read next
 
