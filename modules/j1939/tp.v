@@ -265,6 +265,26 @@ fn (mut r Reassembler) recently_settled(k u64, now f64) bool {
 	return false
 }
 
+// prune_settled drops completed transfers nobody came back for. Ageing on LOOKUP alone is not
+// enough: a wire whose transfers all complete and are never retransmitted never looks any of
+// them up again, so the entries would sit there for the length of the measurement — one per
+// address pair that ever finished a transfer. Swept only once the table is larger than the
+// sessions it shadows, so the ordinary case pays one integer compare.
+fn (mut r Reassembler) prune_settled(now f64) {
+	if r.settled.len <= max_sessions {
+		return
+	}
+	mut stale := []u64{}
+	for k, at in r.settled {
+		if now - at > settled_ms {
+			stale << k
+		}
+	}
+	for k in stale {
+		r.settled.delete(k)
+	}
+}
+
 fn key_of(sa u8, da u8) u64 {
 	return (u64(sa) << 8) | u64(da)
 }
@@ -402,6 +422,7 @@ pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, fd bool, data []u
 	// session open for as long as they kept coming — reported at EOF as merely unfinished
 	// (codex).
 	mut aborted := r.expire(t_ms)
+	r.prune_settled(t_ms)
 	// Which sessions the sweep JUST retired, so the frame that triggered it is not then
 	// reported as belonging to a transfer nobody announced: a data packet arriving past its
 	// own deadline produced the timeout AND the claim that the measurement began mid-transfer,

@@ -936,3 +936,24 @@ fn test_counts_say_something_when_any_of_them_is_set() {
 	r.observe(cm_id(0x00, addr_global), true, false, false, bam(8, 2, data_pgn), 0)
 	assert r.counts().said(), 'a wire that only ever refused announcements still has a total'
 }
+
+// What is remembered about COMPLETED transfers is bounded: ageing on lookup alone leaves an
+// entry per address pair that ever finished one, for the length of the measurement.
+fn test_what_is_remembered_about_finished_transfers_does_not_grow_without_end() {
+	p := payload(20)
+	mut r := Reassembler{}
+	mut t := f64(0)
+	for i in 0 .. max_sessions * 2 {
+		sa := u8(i % 200)
+		da := u8(1 + i / 200)
+		r.observe(cm_id(sa, da), true, false, false, rts(20, 3, data_pgn), t)
+		for seq in 1 .. 4 {
+			r.observe(dt_id(sa, da), true, false, false, dt(seq, p), t)
+		}
+		t += settled_ms + 1 // each finishes well after the last is stale
+	}
+	assert r.pending() == 0
+	assert r.counts().orphan_dt == 0
+	// the table has been swept rather than holding one entry per pair that ever completed
+	assert r.settled.len <= max_sessions + 1, 'settled holds ${r.settled.len}'
+}
