@@ -33,6 +33,12 @@ import net
 pub enum ClaimKind {
 	row  // a channel row's reader, owned by a run — a previous run's is about to be released
 	tool // an interactive reader: a Lua window, the eth shell. Never "about to be released"
+	// A participant that EXPECTS company: the multicast software bus, where several readers on
+	// one group and port is the whole design and its own tests open two on purpose. Shared
+	// claims do not conflict with each other — but they do conflict with an exclusive reader,
+	// which is the point of registering them at all: a SOME/IP row that bound the software
+	// bus's port would split its frames in silence, and neither side could see why.
+	shared
 }
 
 // udp_bind_addr is the address a listener binds for `host`:`port` — the wildcard when no host
@@ -138,7 +144,7 @@ pub fn addr_covers(a string, b string) bool {
 // address that eth_endpoint deliberately keeps whole so the bind fails naming it; trimming
 // either end unconditionally repaired it into a valid `::1`, and the listener then bound an
 // endpoint the operator never wrote. Canonicalising must not fix what it is only describing.
-fn unbracket(h string) string {
+pub fn unbracket(h string) string {
 	if h.starts_with('[') && h.ends_with(']') {
 		return h[1..h.len - 1]
 	}
@@ -191,11 +197,17 @@ pub fn claim_endpoint(host string, port int, owner string, kind ClaimKind) !stri
 	mut found := false
 	lock udp_claims {
 		for c in udp_claims.live {
-			if overlaps(canon, port, c.host, c.port) {
-				held = c
-				found = true
-				break
+			if !overlaps(canon, port, c.host, c.port) {
+				continue
 			}
+			// Two SHARED participants are not a conflict — that is what shared means. Anything
+			// else on an overlapping endpoint is.
+			if kind == .shared && c.kind == .shared {
+				continue
+			}
+			held = c
+			found = true
+			break
 		}
 		if !found {
 			udp_claims.live << Claim{

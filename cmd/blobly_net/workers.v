@@ -1737,9 +1737,13 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	chname := a.chans[ci].name
 	group := a.chans[ci].group
 	a.mu.unlock()
-	host, port := project.Channel{
+	cfg_host, port := project.Channel{
 		iface: iface
 	}.someip_endpoint()
+	// The wildcard's family follows the group (someip.bind_host_for): a channel's endpoint has
+	// already materialised an absent host as `0.0.0.0`, so without this an IPv6 group asked for
+	// on a default row created an IPv4 socket and the join could never succeed.
+	host := someip.bind_host_for(cfg_host, group)
 	addr := someip.bind_addr(host, port)
 	// A group on a unicast bind hears nothing: the kernel drops group-addressed datagrams on a
 	// socket bound to one address, however well the join succeeded. Refused by name rather than

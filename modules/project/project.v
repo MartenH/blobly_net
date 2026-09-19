@@ -2099,7 +2099,12 @@ pub fn (c Channel) address_config_error() ?string {
 // at the moment of binding, and must not disagree with the bind. This is the cheap half: it
 // catches what someone types, and the claim catches the rest.
 fn normalised_bind_host(host string) string {
-	h := host.trim_space().trim('[]').to_lower()
+	// A MATCHING PAIR ONLY (transport.unbracket), the same rule the claim registry uses. An
+	// unmatched bracket is a malformed address that eth_endpoint keeps whole so the bind fails
+	// naming it; trimming it here repaired it into a valid one, so this warning reported a row
+	// that cannot bind at all as splitting a stream with a row that can, and offered a port
+	// change as the remedy.
+	h := transport.unbracket(host.trim_space()).to_lower()
 	return match h {
 		// the IPv4 wildcard. NOT `::` — that is the v6 wildcard and covers a different set
 		// (both families, this V enabling dual-stack on its v6 sockets), which transport.addr_covers

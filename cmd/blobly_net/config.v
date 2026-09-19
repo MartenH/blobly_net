@@ -579,6 +579,12 @@ fn (mut app App) set_adapter(i int, a string) {
 	if a == 'doip' || a == 'someip' {
 		app.proj.channels[i].fd = false
 		app.proj.channels[i].data_bitrate = 0
+		// AND THE MODE. Replay does not apply to an Ethernet row — replay_blocker says so, the
+		// editor hides the control, and Start ignores it and opens the listener anyway — so a
+		// row converted from a replay CAN row kept a mode that nothing honoured, that the Buses
+		// and Replay panels went on reporting, that the editor could no longer change, and that
+		// Save then persisted. Cleared with the rest of what stopped applying.
+		app.proj.channels[i].mode = .normal
 	}
 	// SILENT BY DEFAULT when a bus BECOMES one of the adapters that starts silent, for the same
 	// reason a discovered channel does: hardware that may already be wired to a running vehicle,

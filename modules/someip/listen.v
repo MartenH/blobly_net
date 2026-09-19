@@ -114,13 +114,26 @@ pub fn check_group_bind(host string, group string) ! {
 // collect listens on `host`:`port` for `window_ms` and returns what arrived. `group` non-empty
 // joins that IPv4 multicast group on the bound socket; a join that fails is an error, not a
 // quiet empty window (transport.udp_bind's rule).
+// bind_host_for is the address a listener should bind for this configured host and group.
+//
+// THE WILDCARD HAS A FAMILY, and an interface selector cannot change one: an IPv4 socket cannot
+// join an IPv6 group however that argument is spelled. So a v6 group asked for on a wildcard
+// upgrades it to `::`, which is dual-stack in this V and therefore loses nothing. A host the
+// caller actually pinned is never touched — that is a decision, and check_group_bind refuses it
+// with a group rather than quietly rewriting it.
+//
+// Shared because both listeners need it and they arrive at the wildcard differently: a script
+// passes no host at all, while a channel's endpoint has already materialised the absent host as
+// `0.0.0.0`. The rule cannot live at only one of them.
+pub fn bind_host_for(host string, group string) string {
+	if group.contains(':') && (host == '' || host == '0.0.0.0') {
+		return '::'
+	}
+	return host
+}
+
 pub fn collect(host string, port int, window_ms int, group string) !Capture {
-	// THE WILDCARD HAS A FAMILY. With no host named and an IPv6 group, canonicalising '' to
-	// `0.0.0.0` creates an IPv4 socket, and no choice of interface selector can make an IPv4
-	// socket join an IPv6 group — the previous round fixed the selector and left the socket.
-	// `::` is dual-stack in this V, so it is the right wildcard whenever a v6 group is asked for
-	// and the caller has not pinned an address.
-	bind_host := if host == '' && group.contains(':') { '::' } else { host }
+	bind_host := bind_host_for(host, group)
 	check_group_bind(bind_host, group)!
 	// Claimed for the life of the window, so a GUI row cannot be started onto this endpoint
 	// underneath it and split the stream — and so this window is refused if a row already holds

@@ -80,3 +80,19 @@ fn test_bind_addr_brackets_an_ipv6_literal() {
 	assert bind_addr('::1', 30491) == '[::1]:30491'
 	assert bind_addr('[::1]', 30491) == '[::1]:30491'
 }
+
+// A wildcard's FAMILY follows the group, because an interface selector cannot change a socket's
+// family: an IPv4 socket cannot join an IPv6 group however that argument is spelled. Both
+// listeners reach the wildcard differently — a script passes no host, a channel's endpoint has
+// already materialised `0.0.0.0` — so the rule has to cover both spellings of it.
+fn test_the_wildcard_family_follows_the_group() {
+	assert bind_host_for('', 'ff02::1') == '::'
+	assert bind_host_for('0.0.0.0', 'ff02::1') == '::'
+	assert bind_host_for('', '239.1.2.3') == ''
+	assert bind_host_for('0.0.0.0', '239.1.2.3') == '0.0.0.0'
+	assert bind_host_for('', '') == ''
+	// a host the caller PINNED is never rewritten — that is a decision, and check_group_bind
+	// refuses it with a group rather than quietly moving it
+	assert bind_host_for('192.168.0.5', 'ff02::1') == '192.168.0.5'
+	assert bind_host_for('::1', 'ff02::1') == '::1'
+}

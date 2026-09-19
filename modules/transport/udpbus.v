@@ -69,8 +69,20 @@ mut:
 pub fn open_udp(group string, port int) !&UdpBus {
 	mut tx := net.dial_udp('${group}:${port}')!
 	tx.set_multicast_loop(true)! // same-host peers (and we) receive; we filter own
-	mut rx := net.listen_udp('0.0.0.0:${port}')!
-	rx.join_multicast_group(group, '0.0.0.0')!
+	// REGISTERED AS A SHARER. Several buses on one group and port is this backend's design, so
+	// they do not conflict with each other — but an exclusive reader (a SOME/IP row, a DoIP
+	// entity) on the same port would split these frames in silence, and the registry is the only
+	// thing that can say so. See transport/udpclaims.v.
+	canon := claim_endpoint('', port, 'the ${group} software bus', .shared)!
+	mut rx := net.listen_udp('0.0.0.0:${port}') or {
+		release_endpoint(canon, port, 'the ${group} software bus')
+		return err
+	}
+	rx.join_multicast_group(group, '0.0.0.0') or {
+		rx.close() or {}
+		release_endpoint(canon, port, 'the ${group} software bus')
+		return err
+	}
 	return &UdpBus{
 		tx:  tx
 		rx:  rx

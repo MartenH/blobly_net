@@ -130,7 +130,10 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 	// datagram to one of them, so an identification request could be answered by neither.
 	requested := join_host_port(host, port)
 	s.udp_owner = 'the DoIP entity on ${requested}'
-	s.udp_canon = transport.claim_endpoint(host, port, s.udp_owner, .tool) or {
+	// SHARED, for the reason in client.v: an entity and the testers listening for its
+	// announcements all sit on the discovery port, so they must not refuse each other — while an
+	// exclusive reader there (a SOME/IP row) still is refused, which is why this claim exists.
+	s.udp_canon = transport.claim_endpoint(host, port, s.udp_owner, .shared) or {
 		return error('${requested}: ${err}')
 	}
 	s.udp_port = port
