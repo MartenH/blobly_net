@@ -1823,7 +1823,13 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		return
 	}
 	a.mu.lock()
-	if !a.row_is_mine_locked(ci, iface, gen) {
+	// `a.running` TOO, not only the row and the generation. Stop does not advance `run_gen`, so
+	// a worker that bound just as Stop ran would still pass the ownership check and set
+	// `running = true` after Stop had cleared it — and an immediate Start then SKIPPED this row
+	// (its double-click guard sees a running row), while this worker, once it noticed the new
+	// generation, exited without clearing the flag because that path is ownership-gated too.
+	// The result is a green row with no listener behind it, for the life of the run.
+	if !a.running || !a.row_is_mine_locked(ci, iface, gen) {
 		a.mu.unlock() // see above: the predicate also guards the INDEX
 		sock.close() or {}
 		return
@@ -1910,8 +1916,14 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 		a.chans[ci].rx += u64(cap.messages.len)
 		a.rx += u64(cap.messages.len)
-		a.chans[ci].rx_last = t_ms
 		a.chans[ci].rx_seen += u64(cap.messages.len)
+		// ONLY A PARSED MESSAGE IS TRAFFIC. `rx_last` feeds the Buses panel's "last RX" and the
+		// staleness verdict, and advancing it for a malformed or empty datagram let a stream of
+		// garbage keep a dead endpoint looking current indefinitely — while the RX count beside
+		// it, which only counts messages, stood still.
+		if cap.messages.len > 0 {
+			a.chans[ci].rx_last = t_ms
+		}
 		now := time.ticks()
 		mut wake := false
 		// UNDER THE LOCK, unlike rx_loop's older unlocked pair: the lock is already held here,

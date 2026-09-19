@@ -732,6 +732,57 @@ fn (mut app App) follow_channel_edits_locked(before []project.Channel, row_map [
 			said << why
 		}
 	}
+	said << app.follow_edits_for_hidden_locked(before, after, row_map)
+	return said
+}
+
+// follow_edits_for_hidden_locked does the same for generators the RUNTIME does not hold.
+//
+// A passive row contributes no senders to `app.senders` (nothing there can transmit) and keeps
+// them in the project instead — so the loop above, which walks the runtime, cannot see them, and
+// a `bus:` override left behind went stale while its target was renamed, retargeted or deleted.
+// Converting the row back to CAN would then have sent on the wrong wire, or fallen back with no
+// explanation. Hidden is not the same as gone: the configuration still has to follow the edits
+// made around it.
+fn (mut app App) follow_edits_for_hidden_locked(before []project.Channel, after []project.Channel, row_map []int) []string {
+	mut said := []string{}
+	for ci in 0 .. app.proj.channels.len {
+		if !app.proj.channels[ci].is_someip() {
+			continue // its senders are in app.senders, handled above
+		}
+		own := project.Channel{
+			name:  app.proj.channels[ci].name
+			iface: app.proj.channels[ci].iface
+		}
+		for si in 0 .. app.proj.channels[ci].senders.len {
+			b := app.proj.channels[ci].senders[si].bus
+			if b == '' {
+				continue
+			}
+			was_r := project.resolve_sender_bus(b, own, before)
+			now_r := project.resolve_sender_bus(b, own, after)
+			if !project.sender_target_moved(was_r, now_r) {
+				continue
+			}
+			mut k := -1
+			if was_r.kind == .named || was_r.kind == .iface {
+				k = project.only_row_named(before, was_r.chan, was_r.iface) or { -1 }
+			}
+			dst := if k >= 0 && k < row_map.len { row_map[k] } else { -1 }
+			nm := app.proj.channels[ci].senders[si].name
+			if dst < 0 || dst >= after.len {
+				app.proj.channels[ci].senders[si].bus = ''
+				said << '${nm} (hidden on ${own.name}): the bus it targeted (`${b}`) is gone — it falls back to ${own.name}'
+				continue
+			}
+			if v := project.sender_bus_value(after[dst], own, after) {
+				app.proj.channels[ci].senders[si].bus = v
+			} else {
+				app.proj.channels[ci].senders[si].bus = ''
+				said << '${nm} (hidden on ${own.name}): `bus: ${b}` can no longer be written — it falls back to ${own.name}'
+			}
+		}
+	}
 	return said
 }
 
