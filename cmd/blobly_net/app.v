@@ -1077,6 +1077,7 @@ fn (mut app App) rebuild_from_proj() {
 			fd:             ch.fd
 			data_bitrate:   ch.data_bitrate
 			listen_only:    ch.listen_only
+			j1939:          ch.j1939
 			databases:      ch.databases.clone()
 			manifest:       ch.manifest
 			doip:           ch.is_doip()

@@ -8,6 +8,7 @@ import telem
 import canlog
 import project
 import sim
+import j1939
 import vgui
 
 struct TraceRow {
@@ -83,6 +84,22 @@ struct TraceRow {
 	// every render, 2000 strings a frame (#299's follow-up). Empty on a row built without
 	// one, which gkey() formats on demand.
 	key string
+	// J1939 (#171). `j1939` says the CHANNEL declared its traffic to be J1939 -- `j1939: true`
+	// on the row, or a database on it that declares parameter groups -- which is the only thing
+	// that makes the identifier's decomposition mean anything: every extended id splits into a
+	// plausible group number and a plausible source address, so this bool is what separates a
+	// reading from a coincidence. One bool and not the split itself, because the split is six
+	// shifts (`j1939.decode_id`) and the draw does it for the rows on screen rather than the
+	// ring keeping four more fields for every row it holds.
+	j1939 bool
+	// Which part of a transport session this row is, if any: a packet of one, or the message
+	// rebuilt from them. A rebuilt row has no frame behind it -- its identifier is synthesised
+	// (`j1939.id_for`) from the group number the announcement named, the sender, and the
+	// priority the SESSION ran at, since nothing on the wire says what the group's own would
+	// have been.
+	tp j1939.Part
+	// The packets a rebuilt message came from; 0 on every other row.
+	tp_n int
 	// From a loaded recording: stamped on the FILE's clock, not the app's. A live row appended
 	// behind imported ones (Resume, no Start) is on another clock, and the cycle window has
 	// to know where one clock ends and the other begins (cyclerule; codex on #266).
@@ -154,7 +171,41 @@ struct TRec {
 	rec    telem.Record
 }
 
-// reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
+// push_j1939_row_locked files a message this tool REBUILT from a transport session (#171).
+//
+// Such a row was never on the wire in this shape, and every field says so rather than pretending
+// otherwise. Its identifier is SYNTHESISED (`j1939.id_for`) from the group number the
+// announcement named, the sender's address, the destination, and the priority the SESSION ran
+// at — that last one because nothing on the wire says what the group's own priority would have
+// been had it fitted in a frame, and an invented number in the id column is the kind of thing a
+// bench reads as measured. `tp` says which session kind produced it, the group key is prefixed
+// so it can never merge with a real frame carrying that identifier, and the payload is bounded
+// like any other row's: a session carries up to 1785 bytes where the live view keeps 256, and
+// `data_len` states the whole length so the len column reports the traffic rather than the head.
+//
+// Caller holds app.mu.
+fn (mut app App) push_j1939_row_locked(chname string, m j1939.TpMessage) {
+	id := j1939.id_for(m.pgn, m.sa, m.da, m.priority)
+	head := if m.data.len > trace_payload_max { m.data[..trace_payload_max] } else { m.data }
+	kind := if m.kind == .bam { j1939.Part.bam } else { j1939.Part.cm }
+	app.push_row_locked(TraceRow{
+		t_ms:     app.since_ms()
+		ch:       chname
+		origin:   org_rx
+		id:       id
+		ext:      true
+		name:     app.lookup_name(id, true)
+		data:     head.clone()
+		data_len: m.data.len
+		j1939:    true
+		tp:       kind
+		tp_n:     m.packets
+		key:      gkey_tp(chname, id, kind)
+	})
+	app.gcount[gkey_tp(chname, id, kind)]++
+}
+
+// reset_trace_locked empties the trace// reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
 fn (mut app App) reset_trace_locked() {
 	app.trace = []
 	// The grouped view's label cache is keyed by group and only ever grows, so it is reset

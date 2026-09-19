@@ -1,6 +1,7 @@
 module main
 
 import cyclerule
+import j1939
 import transport
 import candb
 import vgui
@@ -261,6 +262,14 @@ fn idstr_row(id u32, ext bool, someip bool) string {
 // neighbouring column teaches the reader to skip both. (This absorbed kind_mark, whose leading
 // space existed only for the data-cell suffix the flags column replaced.)
 fn flags_str(r TraceRow) string {
+	// A J1939 transport session's parts, marked here rather than in the name: forty packets of
+	// one transfer are otherwise forty rows that look like unrelated traffic, which is what
+	// made a multi-packet parameter group unreadable in the first place (#171). The rebuilt
+	// message is marked too, because it is not a frame and the trace must not let that pass
+	// unsaid.
+	if r.tp != .plain {
+		return r.tp.mark()
+	}
 	if r.rtr {
 		return 'RTR'
 	}
@@ -312,6 +321,14 @@ fn trace_pass(r TraceRow, filt string) bool {
 
 	if origin_filter != '' {
 		return r.origin.to_lower() == origin_filter.to_lower()
+	}
+	// `pgn:F004` and `sa:00` match the J1939 DECOMPOSITION rather than the row's text, so a
+	// filter survives a rename in the database and cannot be satisfied by a message whose name
+	// happens to contain the digits. Both are matched on a J1939 row only: on any other wire an
+	// extended identifier decomposes just as willingly and would answer a filter it has no
+	// business answering (#171).
+	if hit := j1939.matches_filter(j1939_reading(r), filt) {
+		return hit
 	}
 	hay :=
 		'${idstr_row(r.id, r.ext, r.someip)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
@@ -370,14 +387,34 @@ fn trace_name_cell(r TraceRow) string {
 // NOT SENT for 200 frames that went out fine (self-review). Mark and text now share one
 // source per view.
 fn trace_name_refused(r TraceRow, refused bool) string {
-	base := if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
+	nm := j1939.name_cell(j1939_reading(r))
+	base := if r.e2e == '' { nm } else { '${nm}  ${r.e2e}' }
 	// NOT SENT rides the name cell like a violation does: it is rare, the origin column is
 	// too narrow to spell it, and a mark alone ('x') must never be the only statement that
 	// nothing reached the wire
 	return if refused { '${base}  NOT SENT — driver refused' } else { base }
 }
 
-// verdict_mark is the ONE mark ladder — flat rows and grouped aggregates render through it,
+// j1939_reading is the trace row as `modules/j1939` needs to see it (#171). The reading itself
+// -- which name, which brackets, which hover text -- lives there with the rest of the
+// identifier's structure and its tests; this is the one place a row is turned into that
+// question, so the two views cannot answer it differently.
+//
+// Built at DRAW time for the rows on screen rather than kept on every row in the ring: the
+// split is six shifts and the ring holds thousands of rows (#299's lesson about what a row
+// carries).
+fn j1939_reading(r TraceRow) j1939.Reading {
+	return j1939.Reading{
+		id:       r.id
+		declared: r.j1939
+		name:     r.name
+		part:     r.tp
+		packets:  r.tp_n
+		head:     r.data
+	}
+}
+
+// verdict_mark is the ONE mark ladder// verdict_mark is the ONE mark ladder — flat rows and grouped aggregates render through it,
 // or a wording change updates one view and not the other.
 fn verdict_mark(refused bool, missed bool) string {
 	if refused {
@@ -417,6 +454,9 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			trace_idx_t_cells(r)
 			vgui.table_cell(r.ch)
 			vgui.table_cell(idstr_row(r.id, r.ext, r.someip))
+			if r.j1939 {
+				vgui.set_item_tooltip(j1939.tooltip(j1939_reading(r)))
+			}
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
@@ -511,10 +551,25 @@ fn (r TraceRow) gkey() string {
 		return gkey_someip(r.ch, r.id, r.someip_type, r.someip_iface, r.someip_proto, r.someip_from,
 			r.someip_bad_fixed)
 	}
+	if r.tp.rebuilt() && r.key.len == 0 {
+		return gkey_tp(r.ch, r.id, r.tp)
+	}
 	if r.key.len > 0 {
 		return r.key
 	}
 	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr)
+}
+
+// gkey_tp: a REBUILT J1939 message's group identity. Prefixed like gkey_someip, and for the
+// same reason that one is: the kind is part of the identity, not decoration on it. Such a row
+// was never on the wire in this shape -- its identifier is synthesised from the group number
+// the announcement named -- so a real frame that happens to carry that identifier is a
+// different producer and must not be merged with it. The SESSION KIND is in the key too: a
+// parameter group sent to everybody and the same one sent over a connection to one address are
+// two producers, and a grouped view that merged them would name the pair after whichever
+// arrived last.
+fn gkey_tp(ch string, id u32, kind j1939.Part) string {
+	return 'J|${org_rx}|${ch.len}:${ch}|${id}|${kind}'
 }
 
 // gkey_frame: the producer-side identity, for the paths that count a frame without holding

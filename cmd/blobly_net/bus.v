@@ -24,6 +24,10 @@ struct Chan {
 	fd           bool
 	data_bitrate int
 	listen_only  bool
+	// The wire carries SAE J1939 (project.Channel.j1939, or a database on it that declares
+	// parameter groups — `dest_reads_j1939` folds the two). Turns on the trace's identifier
+	// reading and the transport-session reassembly.
+	j1939        bool
 	databases    []string
 	manifest     string
 	doip         bool

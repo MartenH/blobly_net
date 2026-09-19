@@ -936,6 +936,18 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			app.dirty = true
 		}
 		vgui.same_line()
+		// Only on a CAN row: J1939 is a CAN protocol, and a tick on a DoIP or SOME/IP row
+		// would be one that can never do anything.
+		if !ch.is_eth() {
+			jb := vgui.checkbox('J1939##j19${i}', ch.j1939)
+			if jb != ch.j1939 {
+				app.proj.channels[i].j1939 = jb
+				app.dirty = true
+			}
+			vgui.same_line()
+			vgui.help_marker('J1939: read this wire as SAE J1939 — the trace names each frame\'s parameter group and sender, and multi-packet transfers (BAM, TP.CM/TP.DT) are rebuilt into a message of their own. No frame can say this for itself: every 29-bit identifier splits into a plausible group number and a plausible source address whether or not anybody meant it to. A database on this row that DECLARES J1939 frames turns it on too, so a project with one needs no tick here.')
+			vgui.same_line()
+		}
 		vgui.help_marker('Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On Vector the transceiver is put in silent mode as well, so it does not even acknowledge; every other adapter still ACKs what it hears.')
 		if ch.mode == .replay {
 			vgui.text('replay:')

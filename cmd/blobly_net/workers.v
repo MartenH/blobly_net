@@ -9,6 +9,7 @@ import loadrule
 import taprule
 import telem
 import isotp
+import j1939
 import uds
 import flash
 import sim
@@ -679,8 +680,16 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			}
 		}
 	}
+	// Asked ONCE, here, while the lock is still held: it walks every row on this wire and every
+	// database attached to them, and the answer cannot change under a run — Start is the one
+	// place topology is decided (#120) and rebuild_from_proj waits for this worker (drainrule).
+	reads_j1939 := a.dest_reads_j1939(iface)
 	a.mu.unlock()
 	chname := a.chans[ci].name
+	// One reassembler per reader, exactly like the verifier set below it: a J1939 transport
+	// session is scoped to the wire, and this is the one thread that sees the wire's frames
+	// (docs/one_reader_per_wire.md). Nothing locks it because nothing else can reach it.
+	mut tp := j1939.Reassembler{}
 	// Built from the SAME `protect:` entries the simulation stamps with, so a project describes
 	// each protected message once and both directions follow it. A separate "check this on
 	// receive" declaration would let the two drift, and the drift would read as an ECU fault.
@@ -887,6 +896,24 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				}
 			}
 		}
+		// J1939 transport sessions, OUTSIDE the lock for the reason the verifier above is: the
+		// state machine is this reader's own, and a memcpy under the global mutex is a memcpy
+		// every other thread waits for. `is_tp` first, so a wire that carries no session pays
+		// two comparisons per frame and allocates nothing.
+		tp_part := reads_j1939 && !ours && j1939.is_tp(f.id, f.extended)
+		tp_ev := if tp_part {
+			tp.observe(f.id, f.extended, f.data, t_ms)
+		} else if reads_j1939 && tp.pending() > 0 {
+			// A session that stopped is noticed on the wire's ORDINARY traffic too, not only
+			// when the next transport frame happens along: a sender that dies mid-transfer
+			// takes its own transport frames with it, and an unfinished transfer would
+			// otherwise sit there unmentioned until the measurement ended.
+			j1939.TpEvents{
+				aborted: tp.tick(t_ms)
+			}
+		} else {
+			j1939.TpEvents{}
+		}
 		a.mu.lock()
 		// The run again: this iteration released the lock after claiming, and a Stop→Start in
 		// that gap resets the ring and moves the generation — publishing here would put the old
@@ -911,11 +938,25 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				data:   f.data.clone()
 				e2e:    viol
 				key:    rx_key
+				j1939:  reads_j1939 && f.extended
+				tp:     if tp_part { j1939.Part.packet } else { j1939.Part.plain }
 			})
 			a.gcount[rx_key]++
+			// A rebuilt message goes in right BEHIND the packet that completed it, which is
+			// where a reader looking at the burst expects to find what it added up to.
+			for m in tp_ev.done {
+				a.push_j1939_row_locked(chname, m)
+			}
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
+		}
+		// An abandoned transfer is narrated, not drawn: it is not a frame, and a row with no
+		// payload and no identifier would be a worse lie than the silence it replaces. Outside
+		// the paused branch on purpose — pausing the table freezes the VIEW, and a transfer
+		// that fell apart while it was frozen is exactly what the operator unpauses to find.
+		for ab in tp_ev.aborted {
+			a.log_append_locked('${chname}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} to ${j1939.addr_str(ab.da)} — ${ab.reason} (${ab.got}/${ab.packets} packets)')
 		}
 		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
 		// trigger-frozen dump from a manual stop. Update it even while the table is paused: the
@@ -979,7 +1020,14 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.mu.unlock()
 		last_diag = final
 	}
+	// A transfer still in flight when the reader goes is neither complete nor timed out, so
+	// nothing else would ever say what became of it -- and a reader that hands its wire on
+	// hands no sessions with it, since the packets it already saw are gone with it.
+	left := tp.close(a.since_ms())
 	a.mu.lock()
+	for ab in left {
+		a.log_append_locked('${chname}: J1939 ${ab.kind} PGN ${ab.pgn:04X} from ${j1939.addr_str(ab.sa)} to ${j1939.addr_str(ab.da)} — ${ab.reason} (${ab.got}/${ab.packets} packets)')
+	}
 	// Only if this run is still the current one. A loop that exited because the generation moved
 	// on would otherwise clear a flag the NEW loop just set, and every emission after that would
 	// see no watcher: its echo classified as the device under test's, recorded twice and fed to

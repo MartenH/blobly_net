@@ -72,6 +72,35 @@ fn (c Chan) for_open() project.Channel {
 	}
 }
 
+// dest_reads_j1939 answers, for a WIRE, whether its traffic is SAE J1939 — the question the
+// trace's identifier reading and the transport-session reassembly both hang on.
+//
+// It is asked of the wire and not of the frame, because no frame can answer it: every extended
+// identifier decomposes into a priority, a group number and a source address whether or not
+// anybody meant it to, so a UDS response on a 29-bit id would read as a parameter group from
+// whoever its low byte happened to name (#289's point about the verifier, one layer over).
+//
+// Two sources, folded, because neither covers the case alone: a row's own `j1939: true`, and a
+// database attached to any row on the wire that DECLARES parameter groups. Most real J1939
+// databases declare nothing — `VFrameFormat` is a Vector attribute they were written without —
+// so the key is what carries the feature and the declaration spares a project that has one from
+// saying it twice. Asked once per reader at Start and not per frame: it walks every row and
+// every database on the wire.
+fn (app &App) dest_reads_j1939(iface string) bool {
+	want := transport.destination_key(iface)
+	for c in app.chans {
+		if transport.destination_key(c.iface) == want && c.j1939 {
+			return true
+		}
+	}
+	for db in app.dbs_for_dest(iface) {
+		if db.declares_j1939() {
+			return true
+		}
+	}
+	return false
+}
+
 // dbs_for_dest merges the databases of EVERY channel row on this wire. The verifier sets are
 // grouped by destination, so resolving one against a single row's DBCs left a verifier that came
 // from the sibling alias unable to adopt a name or a layout from its own database.
