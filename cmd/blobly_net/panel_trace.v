@@ -665,7 +665,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				id:     r.id
 				ext:         r.ext
 				tp:           r.tp
-				key:          r.gkey()
+				key:          k // the map key, not a second call: they must be the same string
 				someip:       r.someip
 				someip_type:  r.someip_type
 				someip_iface:     r.someip_iface
