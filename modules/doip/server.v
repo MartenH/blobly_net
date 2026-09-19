@@ -10,6 +10,7 @@
 module doip
 
 import net
+import transport
 import time
 import sync
 
@@ -70,6 +71,12 @@ mut:
 	vin    string
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
+	// The UDP endpoint this entity claimed, and the port it claimed it on — released on close.
+	// See transport.claim_endpoint: a bind cannot refuse a second reader, so listeners that need
+	// to be the only one say so in one registry.
+	udp_canon string
+	udp_port  int
+	udp_owner string // formed once, so the claim and its release cannot disagree
 	// The host this entity bound to. announce() needs it to choose a destination, and asking
 	// the socket back for it is more indirection than storing the one string.
 	bound_host string
@@ -109,13 +116,47 @@ pub fn (s &DoipServer) is_stopping() bool {
 // closed before returning, so a failed listen() never leaves a socket bound. An
 // IPv6 host literal (one containing ':') is bracketed and bound on the IPv6 family.
 pub fn (mut s DoipServer) listen(host string, port int) ! {
-	s.bound_host = host
 	s.bound_port = port
-	addr := join_host_port(host, port)
-	s.listener = net.listen_tcp(addr_family(host), addr)!
-	s.udp = net.listen_udp(addr) or {
+	// RESOLVED ONCE, AND BOTH SOCKETS USE IT. A hostname with several answers — or `localhost` on
+	// a machine where the two lookups prefer different families — would otherwise put the TCP
+	// listener on one address and the UDP listener on another: the entity would announce itself
+	// from B while accepting diagnostic connections only on A, so a tester that followed the
+	// discovery sender could not connect. Claiming FIRST is what makes one answer available to
+	// both, since the claim resolves (transport.claim_endpoint) and hands back what it reserved.
+	//
+	// The claim itself is why this is here at all: a SOME/IP row configured on this port would
+	// bind it too — both sockets get SO_REUSEADDR — and the kernel would give each discovery
+	// datagram to one of them, so an identification request could be answered by neither.
+	requested := join_host_port(host, port)
+	s.udp_owner = 'the DoIP entity on ${requested}'
+	// SHARED, for the reason in client.v: an entity and the testers listening for its
+	// announcements all sit on the discovery port, so they must not refuse each other — while an
+	// exclusive reader there (a SOME/IP row) still is refused, which is why this claim exists.
+	s.udp_canon = transport.claim_endpoint(host, port, s.udp_owner, .shared, doip_discovery_medium) or {
+		return error('${requested}: ${err}')
+	}
+	s.udp_port = port
+	// THE BOUND HOST IS WHAT WAS BOUND, not what was configured. `announce()` derives both the
+	// default destination and the socket's family from this, so leaving the configured spelling
+	// here — `localhost` on a resolver that answers ::1, say — made it pick the IPv4 loopback
+	// broadcast and try to send it from an IPv6 socket: a hosted entity that never announced
+	// itself. The two sockets already share this address; the announcement path must too.
+	s.bound_host = s.udp_canon
+	addr := transport.udp_bind_addr(s.udp_canon, port)
+	s.listener = net.listen_tcp(addr_family(s.udp_canon), addr) or {
+		transport.release_endpoint(s.udp_canon, port, s.udp_owner)
+		s.udp_canon = ''
+		return err
+	}
+	s.udp = net.listen_udp(transport.udp_bind_addr(s.udp_canon, port)) or {
 		s.listener.close() or {}
 		s.listener = unsafe { nil }
+		// AND THE CLAIM GOES WITH IT. A caller that treats a failed listen() as a finished
+		// attempt — `listen_somewhere` walks ports exactly this way — never calls close(), so a
+		// claim left here would refuse that endpoint to everything for the rest of the process,
+		// as if a live entity owned it.
+		transport.release_endpoint(s.udp_canon, port, s.udp_owner)
+		s.udp_canon = ''
 		return err
 	}
 }
@@ -363,6 +404,12 @@ pub fn (mut s DoipServer) close() {
 	}
 	if !isnil(s.udp) {
 		s.udp.close() or {}
+	}
+	// RELEASED WITH THE SOCKET, so a restarted entity can take its own endpoint back. Keyed on
+	// the canonical value the claim returned, never on the configured spelling.
+	if s.udp_canon != '' {
+		transport.release_endpoint(s.udp_canon, s.udp_port, s.udp_owner)
+		s.udp_canon = ''
 	}
 }
 

@@ -119,7 +119,7 @@ fn test_a_disabled_or_classic_row_publishes_nothing() {
 fn test_an_adapter_that_cannot_carry_fd_is_not_declared_fd() {
 	mut examined := 0
 	for a in adapters {
-		if transport.adapter_carries_fd(a) || a == 'doip' {
+		if transport.adapter_carries_fd(a) || a in ['doip', 'someip'] {
 			continue
 		}
 		rows := [

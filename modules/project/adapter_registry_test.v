@@ -84,7 +84,7 @@ const kernel_adapters = ['vcan', 'socketcan'] // the OS owns the timing
 
 const vendor_adapters = ['pcan', 'kvaser', 'vector', 'cansub'] // the address carries the rate
 
-const non_can_adapters = ['doip'] // not a CAN bus at all
+const non_can_adapters = ['doip', 'someip'] // not a CAN bus at all
 
 // The hardware whose CONTROLLER this app can actually silence — Vector through `,silent` on the
 // port, CANsub through `listen_only` in the PHY object, PCAN through CAN_SetValue with
@@ -133,6 +133,7 @@ fn test_every_adapter_round_trips_through_compose() {
 		'vector':    '1'
 		'cansub':    'e5a16adf/1'
 		'doip':      '127.0.0.1:13400'
+		'someip':    '0.0.0.0:30491'
 	}
 	for a in adapters {
 		addr := samples[a] or {

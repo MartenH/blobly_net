@@ -412,7 +412,19 @@ pub fn cansub_mdns_answer_a(pkt []u8, host string) ?string {
 // rules as the browse: share port 5353 with the host's responder, join the group, send
 // through every interface because the device sits on its own USB subnet. none within
 // `window` means the OS resolver gets its turn (cansub_lookup).
+// mdns_medium names the shared UDP medium these windows belong to. mDNS is multicast and its
+// port is shared by every responder and browser on the host, so two of these tolerate each
+// other — while an EXCLUSIVE reader on 5353 (a SOME/IP row configured there) is refused rather
+// than left to have its unicast datagrams delivered to a browse socket and vanish.
+const mdns_medium = 'mdns'
+
 pub fn cansub_mdns_resolve(host string, window time.Duration) ?string {
+	canon := claim_endpoint('', cansub_mdns_port, 'an mDNS resolve window', .shared, mdns_medium) or {
+		return none
+	}
+	defer {
+		release_endpoint(canon, cansub_mdns_port, 'an mDNS resolve window')
+	}
 	mut conn := net.listen_udp('0.0.0.0:${cansub_mdns_port}') or { return none }
 	defer {
 		conn.close() or {}
@@ -457,6 +469,11 @@ pub fn cansub_mdns_resolve(host string, window time.Duration) ?string {
 }
 
 pub fn cansub_browse(window time.Duration) !CansubBrowse {
+	// See mdns_medium: shared with other mDNS readers, refused to an exclusive one.
+	canon := claim_endpoint('', cansub_mdns_port, 'an mDNS browse window', .shared, mdns_medium)!
+	defer {
+		release_endpoint(canon, cansub_mdns_port, 'an mDNS browse window')
+	}
 	mut conn := net.listen_udp('0.0.0.0:${cansub_mdns_port}') or {
 		return error('mDNS port ${cansub_mdns_port} could not be shared: ${err.msg()}')
 	}

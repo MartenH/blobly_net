@@ -158,7 +158,12 @@ fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 	if !c.enabled {
 		return u8(140), u8(140), u8(145), 'off '
 	}
-	if c.running || wire.read {
+	// `wire.read` is the CAN alias rule: several rows spelling one wire share its single reader,
+	// so a row that spawned none is still being monitored. An Ethernet row is explicitly ONE
+	// reader per row — two rows on one endpoint are a conflict, not a sharing — so inheriting a
+	// sibling's state would paint a row green whose own listener was refused and whose failure
+	// the Log is reporting at that moment.
+	if c.running || (wire.read && !c.eth()) {
 		if c.link_down || wire.down {
 			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
 		}
@@ -307,7 +312,7 @@ fn draw_buses(mut app App, chans []Chan) {
 			// (transport.busload), worst-case stuffing, ours and theirs alike.
 			// The number as soon as one interval has closed; the strip once there are two points
 			// to draw a line between (codex #263 r4).
-			if c.running && !c.doip && c.load_hist.len >= 1 {
+			if c.running && !c.eth() && c.load_hist.len >= 1 {
 				if c.load_hist.len >= 2 {
 					vgui.same_line()
 					vgui.sparkline('##load${c.iface}', c.load_hist, 100, 90 * app.prefs.ui_scale, 16 * app.prefs.ui_scale)
@@ -397,6 +402,7 @@ fn bus_kind(adapter string) string {
 		'kvaser' { 'Kvaser (hardware)' }
 		'udp' { 'UDP software bus' }
 		'doip' { 'DoIP (Ethernet)' }
+		'someip' { 'SOME/IP (Ethernet)' }
 		'' { 'Other' }
 		else { adapter }
 	}
@@ -433,6 +439,13 @@ fn draw_network(mut app App, chans []Chan) {
 			mut tf := []string{}
 			if c.monitorable() {
 				tf << 'Monitor'
+			}
+			// A listener is neither monitorable() nor a Send target, so an expanded running
+			// SOME/IP row read "(nothing attached)" while its own reader filled the trace — the
+			// one place the panel says what a row is doing.
+			if c.someip {
+				grp := if c.group != '' { ' (group ${c.group})' } else { '' }
+				tf << 'Listen${grp}'
 			}
 			if app.send_iface == c.iface {
 				tf << 'Send'

@@ -858,6 +858,13 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		}
 		vgui.same_line()
 		vgui.help_marker('17-character VIN reported by this entity in vehicle announcements (only used when this DoIP bus hosts a simulated entity).')
+	} else if ch.adapter == 'someip' {
+		vgui.set_next_item_width(160)
+		if vgui.input_text('group##cg${i}', mut app.cfg_bufs[i].group_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('Multicast group to join on the bound port (e.g. 239.1.2.3), for events a service publishes to a group or the SD offers on 224.244.224.245. Empty = hear unicast to the address only. Nothing is sent on this channel.')
 	} else {
 		vgui.text('protocol:')
 		for pr in ['can', 'canfd'] {

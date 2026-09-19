@@ -159,6 +159,7 @@ tester-side, and none of it is mirrored into emb.
 | Header codec + envelope validation, golden vectors shared with emb | ✅ `modules/someip` |
 | RPC **client** — one request in flight, deadline, session liveness, drain | ✅ `rpc_client.v`, the GUI's Shell over Ethernet |
 | **Listen** — sit on a port (and a multicast group), report every message decoded to its header, payload raw; malformed datagrams counted, several messages per datagram split; the window itself is `transport.udp_window`, shared with DoIP's announcement collector | ✅ `listen.v`, Lua `someip.listen` |
+| **A `someip` channel** — `adapter: someip`, `address: <bind-host>:<port>`, optional `group:`; ▶ Start binds it and every message heard is a trace row, carrying its kind so no CAN consumer reads a service:method as an arbitration id. Nothing is sent; nothing is recorded (a recording holds CAN frames, and the Log says so). Lua `someip.listen({ from = name })` takes its endpoint; two listeners in one process cannot hold one endpoint, whichever starts first, because a second UDP socket on one port splits the stream rather than sharing it. `projects/someip-listen.blobnet` beside emb's `examples/host_someip` | ✅ `cmd/blobly_net` `someip_rx_loop` |
 | **Decode SD passively** — read the offer/subscribe entries a discovering SUT multicasts, so a foreign service's ids and endpoints can be listed without asking | 🧭 next: a small extension of Listen, still bounded |
 | **Decode and produce events for an emb node from its config** — the derived layouts `system.toml` implies, so the tester node a system declares (emb's `system_full/nodes/tester`) is real on its SOME/IP bus, not only on CAN | 🧭 |
 
@@ -185,5 +186,5 @@ envelope validation, hermetic golden-vector tests), the host-side oracle for blo
 eth-bus design (its `docs/someip.md`) — plus the RPC **client** (`rpc_client.v`: one request in
 flight, a deadline, session-id liveness, stale-datagram drain; hermetic and networked tests),
 used by the GUI's Shell over Ethernet, plus the passive **listener** (`listen.v`: verified live
-against emb's `examples/host_someip` on loopback — three event ids at their cadence, zero
-malformed). SOME/IP-SD and the sim service remain deferred, as above.
+against emb's `examples/host_someip` on loopback) and the **`someip` channel** that puts the same
+stream in the GUI trace. SOME/IP-SD and the sim service remain deferred, as above.

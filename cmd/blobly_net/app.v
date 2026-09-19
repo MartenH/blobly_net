@@ -610,6 +610,7 @@ mut:
 	dbc_buf      []u8 // "+ Add DBC" typed-path fallback
 	// DoIP
 	tester_buf []u8
+	group_buf  []u8 // someip: the multicast group to join
 	ecu_buf    []u8
 	vin_buf    []u8
 	// Replay
@@ -721,6 +722,15 @@ fn app_icon() []u8 {
 struct FrameId {
 	id  u32
 	ext bool
+}
+
+// find_message_kind is find_message with the row's KIND: a SOME/IP payload has no DBC frame
+// behind it, so the lookup is refused rather than allowed to match a CAN id of the same number.
+fn (app &App) find_message_kind(id u32, ext bool, someip bool) ?candb.Message {
+	if someip {
+		return none
+	}
+	return app.find_message(id, ext)
 }
 
 fn (app &App) is_fwatched(id u32, ext bool) bool {
@@ -1052,6 +1062,8 @@ fn (mut app App) rebuild_from_proj() {
 	app.mu.unlock()
 	for ci, ch in proj.channels {
 		app.chans << Chan{
+			proj_idx:       ci // this row's identity; see Chan.proj_idx
+			senders_modelled: !ch.is_someip() // see Chan.senders_modelled
 			name:           ch.name
 			network:        ch.network
 			adapter:        ch.adapter
@@ -1066,6 +1078,8 @@ fn (mut app App) rebuild_from_proj() {
 			databases:      ch.databases.clone()
 			manifest:       ch.manifest
 			doip:           ch.is_doip()
+			someip:         ch.is_someip()
+			group:          ch.group
 			enabled:        ch.enabled
 			replay_src:     if r := ch.replay { app.resolve_asset(r.source) } else { '' }
 			replay_bus:     if r := ch.replay { r.bus } else { '' }
@@ -1127,7 +1141,14 @@ fn (mut app App) rebuild_from_proj() {
 				app.elog('manifest ${ch.manifest}: ${err}')
 			}
 		}
-		for s in ch.senders {
+		// NOT ON A PASSIVE ROW, for the reason its simulation nodes are skipped below: a generator
+		// here would appear in the Generators panel with its controls armed and could never fire —
+		// `tap_plan_locked` omits its transmit tap, so a cyclic one is skipped forever and a manual
+		// fire answers `no open bus`. Converting a CAN row to `someip` carries its generators
+		// across, which is how a project reaches this without editing YAML, so the runtime drops
+		// them rather than displaying what it will not do.
+		row_senders := if ch.is_someip() { []project.Sender{} } else { ch.senders }
+		for s in row_senders {
 			// `tgt` and `chan` are filled by resolve_sender_targets_locked once every channel has
 			// been built — not here. A `bus:` may name a channel that appears LATER in the file,
 			// and the hand-rolled scan this replaces resolved against app.proj.channels while
@@ -1161,6 +1182,15 @@ fn (mut app App) rebuild_from_proj() {
 		// empty one made `verifiers.len == 1` false, and an unlabelled MF4 import stopped
 		// resolving to the single simulated bus.
 		keep_for_panel := ch.is_doip() && nodes.len > 0 && !ch.enabled
+		// NOT A SOME/IP ROW. A SimCfg is what the Simulation panel draws enable/fault controls
+		// from and what the Network panel lists ECUs and Diagnostics under — and nothing
+		// simulates on a passive listener: `start()` skips sim_loop for it and the diagnostics
+		// seeding skips it too. So a converted row carrying nodes offered a set of live-looking
+		// controls that could not affect a single datagram. Its `verify:` entries are skipped
+		// for the same reason: there is no CAN frame here to check a counter or a CRC on.
+		if ch.is_someip() {
+			continue
+		}
 		if (ch.enabled || keep_for_panel) && (nodes.len > 0 || ch.verify.len > 0) {
 			// resolve_asset like the database list above: raw paths here re-based the
 			// simulator's DBCs onto the launch/bundle cwd, so an external project's
@@ -1370,7 +1400,7 @@ fn (app &App) worst_bus_load_locked() (f32, bool) {
 	mut worst := f32(0)
 	mut any := false
 	for c in app.chans {
-		if c.running && !c.doip && c.load_hist.len > 0 {
+		if c.running && !c.eth() && c.load_hist.len > 0 {
 			any = true
 			if c.load_pct > worst {
 				worst = c.load_pct

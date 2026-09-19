@@ -50,6 +50,8 @@ pub:
 pub struct Carrier {
 pub:
 	doip   bool
+	someip bool // a SOME/IP listener endpoint: host/port are where it binds, group what it joins
+	group  string
 	host   string
 	port   int
 	tester u16
@@ -57,7 +59,28 @@ pub:
 }
 
 // carrier_of derives the UDS carrier from a project channel.
+// eth_kind names this carrier's Ethernet kind, or none for a CAN channel. One predicate, so a
+// third kind does not become a third `|| c.someip` in every caller.
+pub fn (c Carrier) eth_kind() ?string {
+	if c.doip {
+		return 'DoIP'
+	}
+	if c.someip {
+		return 'SOME/IP'
+	}
+	return none
+}
+
 pub fn carrier_of(ch project.Channel) Carrier {
+	if ch.is_someip() {
+		host, port := ch.someip_endpoint()
+		return Carrier{
+			someip: true
+			group:  ch.group
+			host:   host
+			port:   port
+		}
+	}
 	if !ch.is_doip() {
 		return Carrier{}
 	}
@@ -197,19 +220,49 @@ fn (mut env Env) emit(s string) {
 	env.on_output(s)
 }
 
-fn (env &Env) find_chan(name string) ?int {
+// find_chan resolves a channel BY NAME — and refuses a name that resolves to more than one.
+//
+// Nothing makes channel names unique: a project may carry two rows called `ETH`, and this
+// returned the FIRST, so every primitive here acted on whichever row happened to be written
+// first. On one kind of row that is a silent substitution (a send goes to the wrong wire); on
+// two kinds it is worse, because the refusals this file makes are per-carrier — `someip.listen`
+// would reject a perfectly good SOME/IP row for not being one, having found the CAN row of the
+// same name, and `uds.open` would open the wrong carrier entirely. The repo already records the
+// same trap for NODE names (cmd/blobly_net/run.v, sim/uds_nodes.v), where it went wrong twice.
+//
+// Refusing is the only answer available: no argument distinguishes the rows, so guessing is all
+// the alternative offers. Pre-existing and shared by all nine callers here, which is why it is
+// fixed HERE rather than inside the one primitive that made it visible.
+fn (env &Env) find_chan(name string) !int {
+	mut found := -1
 	for i, c in env.chans {
-		if c.name == name {
-			return i
+		if c.name != name {
+			continue
 		}
+		if found >= 0 {
+			return error('"${name}" names more than one channel in this project; rename one, because nothing here can tell which you mean')
+		}
+		found = i
 	}
-	return none
+	if found < 0 {
+		return error('unknown channel "${name}"')
+	}
+	return found
 }
 
 // bus_for returns (opening once, lazily) a persistent monitor bus for the named
 // channel, so bus.recv sees traffic from sims/other nodes on the same interface.
 fn (mut env Env) bus_for(name string) !transport.Bus {
-	ci := env.find_chan(name) or { return error('unknown channel "${name}"') }
+	ci := env.find_chan(name) or { return err }
+	// EVERY CAN primitive enters here (can.send, can.recv, the taps), so the "not a CAN wire"
+	// refusal belongs here rather than on each of them. Without it the opener is handed
+	// `someip:0.0.0.0:30490` / `doip:127.0.0.1:13400` as an interface NAME: on Linux that falls
+	// through to SocketCAN and fails with an ioctl error about a device of that spelling, which
+	// tells the author nothing about what they actually did. Guarding uds.open alone (where this
+	// started) left the same mistake reachable through three other doors.
+	if k := env.chans[ci].carrier.eth_kind() {
+		return error('"${name}" is a ${k} channel — not a CAN bus; nothing is transmitted or received as frames on it')
+	}
 	if b := env.buses[name] {
 		return b
 	}
@@ -314,7 +367,16 @@ fn l_sim_fault(l lua.State) int {
 	kind := l.arg_str(4)
 	ms := l.arg_int(5)
 	signal := l.arg_str(6)
-	ci := env.find_chan(chan_name) or { return l.fail('unknown channel "${chan_name}"') }
+	ci := env.find_chan(chan_name) or { return l.fail(err.msg()) }
+	// A PASSIVE CHANNEL HAS NOTHING TO INJECT INTO. Faults are consumed by the simulation loop,
+	// and no simulation runs on an Ethernet row — the runner skips it, the GUI never plans one.
+	// Without this the fault was STORED and reported as armed whenever the channel happened to
+	// carry a DBC naming the message, so a fault test could pass while the traffic it claims to
+	// have corrupted was never touched. Refusing a fault that cannot take effect is the rule
+	// ChanInfo.nodes already exists to enforce for the CAN case.
+	if k := env.chans[ci].carrier.eth_kind() {
+		return l.fail('"${chan_name}" is a ${k} channel — nothing simulates on it, so a fault there could never take effect')
+	}
 	iface := env.chans[ci].fault_iface()
 	k := match kind {
 		'none', 'clear', '' { sim.FaultKind.none_ }
@@ -484,11 +546,17 @@ fn l_uds_open(l lua.State) int {
 	}
 	tx := u32(txi)
 	rx := u32(rxi)
-	ci := env.find_chan(name) or { return l.fail('unknown channel "${name}"') }
+	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	// 29-bit addressing is inferred from the ids, exactly as the server side infers it: an
 	// address above 0x7FF cannot be 11-bit. Opened standard, SocketCAN masks 0x18DA10F1 to
 	// 0x0F1, so a script could not reach a 29-bit server the runner had correctly started.
 	info := env.chans[ci]
+	// Not a diagnostics carrier at all: nothing here to open ISO-TP or DoIP on, and the CAN
+	// default would try to open `someip:…` as a CAN interface and fail on whatever that means
+	// to the platform. Named for what it is.
+	if info.carrier.someip {
+		return l.fail('"${name}" is a SOME/IP channel — not a diagnostics carrier; use someip.listen')
+	}
 	// A DoIP entity serves ONE TCP connection at a time — accept_and_serve stays inside the
 	// accepted connection until the peer disconnects, and nothing here closes a connection
 	// before the session ends. A second uds.open() on the same channel therefore connected and
@@ -592,7 +660,7 @@ fn l_uds_read_did(l lua.State) int {
 // doip_chan resolves a channel a DoIP primitive names, with the two refusals every one of them
 // makes — ONE lookup and one wording, where discover and listen each had their own.
 fn (env &Env) doip_chan(name string) !ChanInfo {
-	ci := env.find_chan(name) or { return error('unknown channel "${name}"') }
+	ci := env.find_chan(name) or { return err }
 	info := env.chans[ci]
 	if !info.carrier.doip {
 		return error('"${name}" is not a DoIP channel')
@@ -604,14 +672,29 @@ fn (env &Env) doip_chan(name string) !ChanInfo {
 // and a `requested` port that disagrees with it is refused rather than overruled — two answers
 // to one question. Without `from`, the request or the DoIP default. Pure, so the three branches
 // are pinned by direct asserts and not only through a Lua VM and an error string.
-fn listen_port(requested int, from string, from_port int) !int {
+fn listen_port(requested int, from string, from_port int, dflt int, what string) !int {
 	if from == '' {
-		return if requested == 0 { 13400 } else { requested }
+		return if requested == 0 { dflt } else { requested }
 	}
 	if requested != 0 && requested != from_port {
-		return error('port ${requested} contradicts from = "${from}", whose entity is on port ${from_port}; give one or the other')
+		return error('port ${requested} contradicts from = "${from}", whose ${what} is on port ${from_port}; give one or the other')
 	}
 	return from_port
+}
+
+// someip_chan resolves a channel a SOME/IP primitive names — doip_chan's twin, one wording.
+fn (env &Env) someip_chan(name string) !ChanInfo {
+	ci := env.find_chan(name) or { return err }
+	info := env.chans[ci]
+	if !info.carrier.someip {
+		return error('"${name}" is not a SOME/IP channel')
+	}
+	// WHO holds this endpoint is not asked here. It was, through a `live` flag the GUI filled in
+	// when it built the environment, and a snapshot can only answer one ordering: a script that
+	// began while the GUI was stopped carried `live = false` for its whole window, and a Start
+	// during it spawned the row onto the same port. transport.claim_endpoint answers both orderings
+	// from one registry, at the moment either side actually binds (transport/udpclaims.v).
+	return info
 }
 
 fn l_doip_discover(l lua.State) int {
@@ -665,7 +748,9 @@ fn l_doip_listen(l lua.State) int {
 		// entity disagree about one channel.
 		use_ip6 = use_ip6 || doip.addr_family(info.carrier.host) == .ip6
 	}
-	use_port := listen_port(port, from, from_port) or { return l.fail('doip.listen: ${err}') }
+	use_port := listen_port(port, from, from_port, 13400, 'entity') or {
+		return l.fail('doip.listen: ${err}')
+	}
 	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
 		return l.fail('doip.listen(${use_port}): ${err}')
 	}
@@ -686,15 +771,48 @@ fn l_doip_listen(l lua.State) int {
 fn l_someip_listen(l lua.State) int {
 	port := int(l.arg_int(1))
 	window := int(l.arg_int(2))
-	group := l.arg_str(3)
-	use_port := if port == 0 { someip.default_port } else { port }
-	cap := someip.collect(use_port, window, group) or {
+	mut group := l.arg_str(3)
+	from := l.arg_str(4)
+	mut from_port := 0
+	// The channel's BIND HOST travels with its port: a row deliberately bound to loopback must
+	// not become a wildcard listener just because a script named it, or the two surfaces report
+	// different traffic for what the project calls one endpoint.
+	mut host := ''
+	if from != '' {
+		// `from` names a someip channel: the listener takes THAT channel's port and group, so a
+		// suite does not repeat what the project already states — doip.listen's rule (#233),
+		// and the same refusal when the two disagree.
+		info := env_of(l).someip_chan(from) or { return l.fail('someip.listen: ${err}') }
+		from_port = info.carrier.port
+		host = info.carrier.host
+		// EMPTY IS AN ANSWER, not an absence. A channel with no `group:` is configured as a
+		// unicast listener, and accepting a script's group there silently turned it into a
+		// multicast one — the prelude promises `from` takes the channel's group and refuses a
+		// differing one, and "differing from nothing" is differing.
+		if group != '' && group != info.carrier.group {
+			joins := if info.carrier.group == '' {
+				'joins no multicast group'
+			} else {
+				'joins ${info.carrier.group}'
+			}
+			return l.fail('someip.listen: group ${group} contradicts from = "${from}", whose listener ${joins}; give one or the other')
+		}
+		if group == '' {
+			group = info.carrier.group
+		}
+	}
+	use_port := listen_port(port, from, from_port, someip.default_port, 'listener') or {
+		return l.fail('someip.listen: ${err}')
+	}
+	// The claim inside collect() refuses an endpoint another listener in this process holds,
+	// however the script named it — by channel or by bare port, both reach the same socket.
+	cap := someip.collect(host, use_port, window, group) or {
 		return l.fail('someip.listen(${use_port}): ${err}')
 	}
 	mut out := []string{}
 	for m in cap.messages {
 		h := m.header
-		out << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${h.msg_type:02X}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
+		out << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${someip.msg_type_name(h.msg_type)}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
 	}
 	l.push_str(out.join('\n'))
 	l.push_int(i64(cap.malformed))
@@ -782,7 +900,7 @@ fn l_bus_recv(l lua.State) int {
 
 fn l_msg_template(l lua.State) int {
 	mut env := env_of(l)
-	ci := env.find_chan(l.arg_str(1)) or { return l.fail('unknown channel "${l.arg_str(1)}"') }
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
 	msg := find_msg(env.chans[ci].db, l.arg_str(2)) or {
 		return l.fail('unknown message "${l.arg_str(2)}"')
 	}
@@ -794,7 +912,7 @@ fn l_msg_template(l lua.State) int {
 
 fn l_encode_signal(l lua.State) int {
 	mut env := env_of(l)
-	ci := env.find_chan(l.arg_str(1)) or { return l.fail('unknown channel "${l.arg_str(1)}"') }
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
 	msg := find_msg(env.chans[ci].db, l.arg_str(2)) or {
 		return l.fail('unknown message "${l.arg_str(2)}"')
 	}
@@ -809,7 +927,7 @@ fn l_encode_signal(l lua.State) int {
 
 fn l_decode(l lua.State) int {
 	mut env := env_of(l)
-	ci := env.find_chan(l.arg_str(1)) or { return l.fail('unknown channel "${l.arg_str(1)}"') }
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
 	data := l.arg_bytes(4)
 	msg := env.chans[ci].db.lookup_frame(u32(l.arg_int(2)), l.arg_bool(3)) or {
 		l.push_nil()
