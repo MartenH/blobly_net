@@ -1766,23 +1766,30 @@ fn test_endpoint_warning_keeps_address_families() {
 	assert h == '::1' && pnum == 30491
 }
 
-// A v1-style row whose `type:` says Ethernet but whose interface is a raw CAN name must not be
-// read as a scheme: it used to come out `typ: someip` on a SocketCAN adapter, bind the default
-// endpoint nobody named, and lose its protocol on the next structured save.
-fn test_a_bad_eth_spelling_is_not_read_as_a_scheme() {
+// A v1-style row whose `type:` says Ethernet but whose interface is not that scheme is REFUSED.
+// Preserving it (which an earlier round did) does not survive a save: the writer emits the value
+// as the adapter's address and the next load composes `someip:<the typo>`, a valid-looking
+// endpoint that may resolve — a configuration that changes itself behind the operator.
+fn test_a_bad_eth_spelling_is_refused_not_carried() {
 	for raw in ['someip0', 'someipx:30491'] {
-		p := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "${raw}"\n') or {
-			panic(err)
+		if _ := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "${raw}"\n') {
+			assert false, '"${raw}" was accepted'
+		} else {
+			assert err.msg().contains('is not a someip endpoint'), err.msg()
+			assert err.msg().contains(raw), err.msg()
 		}
-		c := p.channels[0]
-		assert c.adapter == 'someip', '${raw}: adapter=${c.adapter}'
-		// KEPT VERBATIM. Replacing a typo with the bare scheme made the row listen on the
-		// default wildcard port and report success — the same silent substitution one line on.
-		assert c.iface == raw, '${raw}: iface=${c.iface}'
-		h, pt := c.someip_endpoint()
-		assert h == raw, '${raw}: host=${h}'
-		assert pt == 30490
 	}
+	if _ := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: doip\n    interface: "doip0"\n') {
+		assert false, 'doip0 was accepted'
+	} else {
+		assert err.msg().contains('is not a doip endpoint'), err.msg()
+	}
+	// the real scheme still migrates
+	ok := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "someip:0.0.0.0:30491"\n') or {
+		panic(err)
+	}
+	assert ok.channels[0].adapter == 'someip'
+	assert ok.channels[0].address == '0.0.0.0:30491'
 	// an ABSENT interface is not a typo: it becomes the bare scheme and the default endpoint
 	none_given := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n') or {
 		panic(err)
@@ -1790,10 +1797,6 @@ fn test_a_bad_eth_spelling_is_not_read_as_a_scheme() {
 	assert none_given.channels[0].iface == 'someip'
 	dh, dp := none_given.channels[0].someip_endpoint()
 	assert dh == '0.0.0.0' && dp == 30490
-	// the real scheme still migrates
-	ok := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "someip:0.0.0.0:30491"\n') or {
-		panic(err)
-	}
-	assert ok.channels[0].adapter == 'someip'
-	assert ok.channels[0].address == '0.0.0.0:30491'
 }
+
+

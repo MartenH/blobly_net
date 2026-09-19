@@ -1009,8 +1009,8 @@ fn parse_channel(c yaml.Any) !Channel {
 			if iface_scheme_is(ch.iface, 'doip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)
 			} else if given {
-				ch.adapter = 'doip' // see its sibling below: a typo is kept, not replaced
-				ch.address = ch.iface
+				// see its sibling below for why this is a refusal rather than a preserved value
+				return error('channel "${ch.name}": type is doip but interface "${ch.iface}" is not a doip endpoint (expected "doip" or "doip:<host>[:<port>]")')
 			} else {
 				ch.adapter = 'doip'
 				ch.address = ''
@@ -1033,11 +1033,14 @@ fn parse_channel(c yaml.Any) !Channel {
 			if iface_scheme_is(ch.iface, 'someip') {
 				ch.adapter, ch.address = decompose_iface(ch.iface)
 			} else if given {
-				// KEEP THE TYPO. Replacing it with the bare scheme made the row listen on the
-				// default wildcard port and report success, which is the silent substitution the
-				// exact-scheme check was added to stop — moved one line along, not removed.
-				ch.adapter = 'someip'
-				ch.address = ch.iface
+				// REFUSED, not carried. Round 11 preserved the typo so the bind would name it,
+				// and that value could not survive a save: the writer emits `adapter: someip` +
+				// `address: <the typo>`, which reloads composed as `someip:someipx:30491` — a
+				// valid-looking endpoint that may even resolve. A value that mutates into a
+				// different configuration the next time the file is written is worse than a
+				// refusal, and this shape cannot have been written by this app: a v1 `type:`
+				// beside an interface that is not that type is a hand-edit with a mistake in it.
+				return error('channel "${ch.name}": type is someip but interface "${ch.iface}" is not a someip endpoint (expected "someip" or "someip:<host>:<port>")')
 			} else {
 				ch.adapter = 'someip'
 				ch.address = ''

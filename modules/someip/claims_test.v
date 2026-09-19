@@ -62,7 +62,7 @@ fn test_a_synonym_is_not_a_second_endpoint() {
 	// Released by the value the claim RETURNED, which is the contract: re-resolving a spelling
 	// here is what could strand a claim when an answer changes.
 	release_endpoint(real, 39010, 'channel ETH1')
-	again := claim_endpoint('localhost', 39010, 'a script', .script)!
+	again := claim_endpoint('localhost', 39010, 'a script', .tool)!
 	release_endpoint(again, 39010, 'a script')
 }
 
@@ -97,13 +97,13 @@ fn test_wildcards_keep_their_families() {
 // The refusal says WHO and WHAT SORT, so a caller can wait for a departing row and refuse a
 // live script without parsing a sentence.
 fn test_the_refusal_carries_the_holder() {
-	canon := claim_endpoint('127.0.0.1', 39020, 'a script', .script)!
+	canon := claim_endpoint('127.0.0.1', 39020, 'a script', .tool)!
 	if _ := claim_endpoint('127.0.0.1', 39020, 'channel ETH1', .row) {
 		assert false, 'an overlapping claim was accepted'
 	} else {
 		assert err is ClaimHeld, err.msg()
 		if err is ClaimHeld {
-			assert err.kind == .script
+			assert err.kind == .tool
 			assert err.owner == 'a script'
 		}
 	}
@@ -114,6 +114,16 @@ fn test_the_refusal_carries_the_holder() {
 fn test_released_by_the_canonical_value() {
 	canon := claim_endpoint('localhost', 39021, 'channel ETH1', .row)!
 	release_endpoint(canon, 39021, 'channel ETH1')
-	second := claim_endpoint('localhost', 39021, 'a script', .script)!
+	second := claim_endpoint('localhost', 39021, 'a script', .tool)!
 	release_endpoint(second, 39021, 'a script')
+}
+
+// An unmatched bracket is a malformed address, not one to repair. eth_endpoint keeps it whole so
+// the bind names it; canonicalising must describe that, not fix it into a valid address the
+// operator never wrote.
+fn test_an_unmatched_bracket_is_not_repaired() {
+	assert canonical_host('[::1') == '[::1'
+	assert canonical_host('::1]') == '::1]'
+	// a MATCHING pair is ordinary bracketing and is removed
+	assert canonical_host('[::1]') == canonical_host('::1')
 }

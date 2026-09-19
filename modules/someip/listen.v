@@ -124,7 +124,7 @@ pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	// Claimed for the life of the window, so a GUI row cannot be started onto this endpoint
 	// underneath it and split the stream — and so this window is refused if a row already holds
 	// it. See claims.v for why a successful bind cannot answer that question.
-	canon := claim_endpoint(host, port, 'a script', .script)!
+	canon := claim_endpoint(host, port, 'a script', .tool)!
 	defer {
 		release_endpoint(canon, port, 'a script')
 	}

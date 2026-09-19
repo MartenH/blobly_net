@@ -30,8 +30,8 @@ import net
 // differently: a row's claim from a PREVIOUS run is about to be released and is worth waiting
 // for, while a script's window is a live measurement and must be refused at once.
 pub enum ClaimKind {
-	row    // a channel row's reader, owned by a run
-	script // a Lua listening window
+	row  // a channel row's reader, owned by a run — a previous run's is about to be released
+	tool // an interactive reader: a Lua window, the eth shell. Never "about to be released"
 }
 
 // Claim is one live listener: where it binds, what sort it is, and who to name in a refusal.
@@ -123,8 +123,19 @@ pub fn addr_covers(a string, b string) bool {
 // A name that does not resolve keeps its lowercased spelling — the bind is about to fail and
 // will say so, and a claim is never the right place to diagnose an address. The wildcard is
 // answered without resolving, being the one host whose meaning is a rule rather than an address.
+// unbracket removes a MATCHING pair only. An unmatched bracket (`[::1`, `::1]`) is a malformed
+// address that eth_endpoint deliberately keeps whole so the bind fails naming it; trimming
+// either end unconditionally repaired it into a valid `::1`, and the listener then bound an
+// endpoint the operator never wrote. Canonicalising must not fix what it is only describing.
+fn unbracket(h string) string {
+	if h.starts_with('[') && h.ends_with(']') {
+		return h[1..h.len - 1]
+	}
+	return h
+}
+
 fn canonical_host(host string) string {
-	h0 := host.trim_space().trim('[]')
+	h0 := unbracket(host.trim_space())
 	if h0 == '' || h0 == '0.0.0.0' {
 		return '0.0.0.0'
 	}
@@ -132,13 +143,18 @@ fn canonical_host(host string) string {
 		return '::' // kept distinct: it covers both families where 0.0.0.0 covers one
 	}
 	h := h0
+	// An unmatched bracket cannot resolve, and must not: resolve_addrs_fuzzy would be asked
+	// about a name the operator did not write. Kept as itself, so the bind reports it.
+	if h.contains('[') || h.contains(']') {
+		return h.to_lower()
+	}
 	addrs := net.resolve_addrs_fuzzy(bind_addr(h, 1), .udp) or { return h.to_lower() }
 	if addrs.len == 0 {
 		return h.to_lower()
 	}
 	// the address without the port we passed only to make it resolvable
 	s := addrs[0].str()
-	return if i := s.last_index(':') { s[..i].trim('[]') } else { s }
+	return if i := s.last_index(':') { unbracket(s[..i]) } else { s }
 }
 
 // overlaps: could one datagram be delivered to either of these two binds?

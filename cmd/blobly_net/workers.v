@@ -1582,6 +1582,17 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 	}
 	peer_port := sip.peer.all_after_last(':').int()
 	bind_port := if peer_port > 0 { peer_port } else { 30491 }
+	// CLAIMED LIKE EVERY OTHER LISTENER IN THIS PROCESS. The shell binds the board's peer port,
+	// which an enabled SOME/IP row may also be reading — both sockets get SO_REUSEADDR, so the
+	// board's responses would go to whichever the kernel picked and the shell would time out
+	// intermittently with nothing to point at. Refused by name instead, either order.
+	shell_canon := someip.claim_endpoint('', bind_port, 'the eth shell', .tool) or {
+		a.shell_append('(:${bind_port}: ${err})')
+		return
+	}
+	defer {
+		someip.release_endpoint(shell_canon, bind_port, 'the eth shell')
+	}
 	mut sock := vnet.listen_udp(':${bind_port}') or {
 		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
 		return
@@ -1759,7 +1770,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 		canon = someip.claim_endpoint(host, port, owner, .row) or {
 			if err is someip.ClaimHeld {
-				if err.kind == .script || time.ticks() - t0 > drain_budget_ms {
+				if err.kind == .tool || time.ticks() - t0 > drain_budget_ms {
 					someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err.msg()}')
 					return
 				}
@@ -1840,7 +1851,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		if !a.paused {
 			for m in cap.messages {
 				id := m.header.message_id()
-				key := gkey_someip(chname, id)
+				key := gkey_someip(chname, id, m.header.msg_type)
 				// BOUNDED HERE, where the row is made, and only here: the capture above still
 				// holds the whole payload for anything that wants it. See TraceRow.data_len.
 				head := if m.payload.len > trace_payload_max {
@@ -1852,8 +1863,9 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 					t_ms:     t_ms
 					ch:       chname
 					origin:   org_rx
-					id:       id
-					someip:   true
+					id:          id
+					someip:      true
+					someip_type: m.header.msg_type
 					name:     someip_row_name(m.header)
 					data:     head
 					data_len: m.payload.len

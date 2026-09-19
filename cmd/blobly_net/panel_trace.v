@@ -443,6 +443,7 @@ mut:
 	id     u32
 	ext    bool
 	someip bool // the row's kind, carried so the CAN consumers below can refuse it
+	someip_type u8 // its message type: part of the group identity, so part of the order
 	fd     bool
 	brs    bool
 	rtr    bool
@@ -487,14 +488,19 @@ fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr b
 // gkey_someip: a SOME/IP message's group identity. Prefixed so it can never collide with a CAN
 // group of the same number on the same channel — the kind is part of the identity, not a
 // decoration on it.
-fn gkey_someip(ch string, id u32) string {
-	return 'S|${org_rx}|${ch.len}:${ch}|${id}'
+// gkey_someip: a SOME/IP message's group identity. Prefixed so it can never collide with a CAN
+// group of the same number, and keyed on the MESSAGE TYPE as well as the id — a REQUEST and its
+// RESPONSE share a service and method, so a key without the type collapsed an RPC exchange into
+// one row whose count, cycle time and byte-change highlighting treated a question and its answer
+// as repetitions of one message.
+fn gkey_someip(ch string, id u32, msg_type u8) string {
+	return 'S|${org_rx}|${ch.len}:${ch}|${id}|${msg_type}'
 }
 
 // gkey: the row's own group identity.
 fn (r TraceRow) gkey() string {
 	if r.someip && r.key.len == 0 {
-		return gkey_someip(r.ch, r.id)
+		return gkey_someip(r.ch, r.id, r.someip_type)
 	}
 	if r.key.len > 0 {
 		return r.key
@@ -565,8 +571,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				origin: r.origin
 				ch:     r.ch
 				id:     r.id
-				ext:    r.ext
-				someip: r.someip
+				ext:         r.ext
+				someip:      r.someip
+				someip_type: r.someip_type
 				fd:     r.fd
 				brs:    r.brs
 				rtr:    r.rtr
@@ -634,6 +641,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// equal would let them swap places between redraws (the groups come from a map).
 		if a.someip != b.someip {
 			return if !a.someip { -1 } else { 1 }
+		}
+		// and the message type, for the same reason: it is part of the key, so two groups that
+		// differ only by it are distinct rows and must not compare equal.
+		if a.someip_type != b.someip_type {
+			return if a.someip_type < b.someip_type { -1 } else { 1 }
 		}
 		return 0
 	})

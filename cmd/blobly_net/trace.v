@@ -41,6 +41,10 @@ struct TraceRow {
 	// whatever DBC frame happens to carry that id. So the row says what it is and those
 	// consumers ask (panel_trace.v).
 	someip bool
+	// The SOME/IP message type (REQUEST/RESPONSE/NOTIFICATION/ERROR). Part of the row's group
+	// identity: a request and its response share a service and method id, and a key without this
+	// merged an exchange into one row that counted a question and its answer as one message.
+	someip_type u8
 	// The payload's TRUE length, when `data` holds only its head. A SOME/IP message may carry
 	// ~64 KiB where a CAN frame carries 64, and the grouped view renders one widget PER BYTE —
 	// a loop whose bound was CAN's maximum. One valid datagram would rebuild tens of thousands
