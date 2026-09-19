@@ -45,6 +45,11 @@ struct TraceRow {
 	// identity: a request and its response share a service and method id, and a key without this
 	// merged an exchange into one row that counted a question and its answer as one message.
 	someip_type u8
+	// The SOME/IP INTERFACE version: the deployment-managed version of the payload layout. Part
+	// of the identity for the same reason the message type is — during a breaking upgrade both
+	// versions are on the wire under one service and method, and a key without this compared
+	// two incompatible schemas byte by byte as repetitions of one message.
+	someip_iface u8
 	// The payload's TRUE length, when `data` holds only its head. A SOME/IP message may carry
 	// ~64 KiB where a CAN frame carries 64, and the grouped view renders one widget PER BYTE —
 	// a loop whose bound was CAN's maximum. One valid datagram would rebuild tens of thousands

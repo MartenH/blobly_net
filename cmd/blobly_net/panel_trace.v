@@ -443,7 +443,8 @@ mut:
 	id     u32
 	ext    bool
 	someip bool // the row's kind, carried so the CAN consumers below can refuse it
-	someip_type u8 // its message type: part of the group identity, so part of the order
+	someip_type  u8 // its message type: part of the group identity, so part of the order
+	someip_iface u8 // its interface version, for the same reason
 	fd     bool
 	brs    bool
 	rtr    bool
@@ -493,14 +494,14 @@ fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr b
 // RESPONSE share a service and method, so a key without the type collapsed an RPC exchange into
 // one row whose count, cycle time and byte-change highlighting treated a question and its answer
 // as repetitions of one message.
-fn gkey_someip(ch string, id u32, msg_type u8) string {
-	return 'S|${org_rx}|${ch.len}:${ch}|${id}|${msg_type}'
+fn gkey_someip(ch string, id u32, msg_type u8, iface_version u8) string {
+	return 'S|${org_rx}|${ch.len}:${ch}|${id}|${msg_type}|${iface_version}'
 }
 
 // gkey: the row's own group identity.
 fn (r TraceRow) gkey() string {
 	if r.someip && r.key.len == 0 {
-		return gkey_someip(r.ch, r.id, r.someip_type)
+		return gkey_someip(r.ch, r.id, r.someip_type, r.someip_iface)
 	}
 	if r.key.len > 0 {
 		return r.key
@@ -572,8 +573,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				ch:     r.ch
 				id:     r.id
 				ext:         r.ext
-				someip:      r.someip
-				someip_type: r.someip_type
+				someip:       r.someip
+				someip_type:  r.someip_type
+				someip_iface: r.someip_iface
 				fd:     r.fd
 				brs:    r.brs
 				rtr:    r.rtr
@@ -646,6 +648,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// differ only by it are distinct rows and must not compare equal.
 		if a.someip_type != b.someip_type {
 			return if a.someip_type < b.someip_type { -1 } else { 1 }
+		}
+		if a.someip_iface != b.someip_iface {
+			return if a.someip_iface < b.someip_iface { -1 } else { 1 }
 		}
 		return 0
 	})

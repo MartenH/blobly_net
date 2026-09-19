@@ -116,7 +116,6 @@ pub fn (s &DoipServer) is_stopping() bool {
 // closed before returning, so a failed listen() never leaves a socket bound. An
 // IPv6 host literal (one containing ':') is bracketed and bound on the IPv6 family.
 pub fn (mut s DoipServer) listen(host string, port int) ! {
-	s.bound_host = host
 	s.bound_port = port
 	// RESOLVED ONCE, AND BOTH SOCKETS USE IT. A hostname with several answers — or `localhost` on
 	// a machine where the two lookups prefer different families — would otherwise put the TCP
@@ -137,6 +136,12 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 		return error('${requested}: ${err}')
 	}
 	s.udp_port = port
+	// THE BOUND HOST IS WHAT WAS BOUND, not what was configured. `announce()` derives both the
+	// default destination and the socket's family from this, so leaving the configured spelling
+	// here — `localhost` on a resolver that answers ::1, say — made it pick the IPv4 loopback
+	// broadcast and try to send it from an IPv6 socket: a hosted entity that never announced
+	// itself. The two sockets already share this address; the announcement path must too.
+	s.bound_host = s.udp_canon
 	addr := transport.udp_bind_addr(s.udp_canon, port)
 	s.listener = net.listen_tcp(addr_family(s.udp_canon), addr) or {
 		transport.release_endpoint(s.udp_canon, port, s.udp_owner)

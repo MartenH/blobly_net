@@ -1683,6 +1683,16 @@ fn (mut a App) carry_load_locked(ci int) {
 // decoding it from an emb node's config is the next rung (docs/ethernet_architecture.md).
 fn someip_row_name(h someip.Header) string {
 	kind := someip.msg_type_name(h.msg_type)
+	// The PROTOCOL version, when it is not the one the standard defines. `Capture.ingest` parses
+	// structurally and applies no envelope gate, so a message with a wrong protocol version
+	// reaches the trace looking exactly like a valid one — and the row keeps no header bytes, so
+	// this is the only place it could ever be seen. Prefixed rather than appended: it says the
+	// message should not be read as SOME/IP at all, which belongs before what it claims to be.
+	bad_proto := if h.protocol_version != someip.protocol_version {
+		'PROTO ${h.protocol_version:02X}! '
+	} else {
+		''
+	}
 	if h.msg_type == someip.mt_notification {
 		// A notification's request id is always zero, so there is no correlation to show — but a
 		// NONZERO RETURN CODE is, because the wire contract says a notification carries none
@@ -1699,9 +1709,9 @@ fn someip_row_name(h someip.Header) string {
 		if h.return_code != 0 {
 			extra += ' rc=${h.return_code:02X}'
 		}
-		return '${kind}${extra}'
+		return '${bad_proto}${kind} v${h.interface_version}${extra}'
 	}
-	mut s := '${kind} ${h.client:04X}:${h.session:04X}'
+	mut s := '${bad_proto}${kind} v${h.interface_version} ${h.client:04X}:${h.session:04X}'
 	if h.return_code != 0 {
 		s += ' rc=${h.return_code:02X}'
 	}
@@ -1774,7 +1784,12 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 		canon = transport.claim_endpoint(host, port, owner, .row, '') or {
 			if err is transport.ClaimHeld {
-				if err.kind == .tool || time.ticks() - t0 > drain_budget_ms {
+				// ONLY `.row` IS A HAND-OFF. A previous run's row is about to release; everything
+				// else — a script window, the eth shell, a DoIP entity, a software bus — is a
+				// live holder with no reason to go, so waiting it out either delays the refusal
+				// by the whole drain budget or, worse, starts this row midway through the other
+				// listener's window with the traffic of that gap present only in ITS results.
+				if err.kind != .row || time.ticks() - t0 > drain_budget_ms {
 					someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err.msg()}')
 					return
 				}
@@ -1857,7 +1872,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		if !a.paused {
 			for m in cap.messages {
 				id := m.header.message_id()
-				key := gkey_someip(chname, id, m.header.msg_type)
+				key := gkey_someip(chname, id, m.header.msg_type, m.header.interface_version)
 				// BOUNDED HERE, where the row is made, and only here: the capture above still
 				// holds the whole payload for anything that wants it. See TraceRow.data_len.
 				head := if m.payload.len > trace_payload_max {
@@ -1870,8 +1885,9 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 					ch:       chname
 					origin:   org_rx
 					id:          id
-					someip:      true
-					someip_type: m.header.msg_type
+					someip:       true
+					someip_type:  m.header.msg_type
+					someip_iface: m.header.interface_version
 					name:     someip_row_name(m.header)
 					data:     head
 					data_len: m.payload.len
