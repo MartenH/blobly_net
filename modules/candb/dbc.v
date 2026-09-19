@@ -15,6 +15,7 @@
 module candb
 
 import os
+import j1939
 
 // Database is a parsed set of CAN messages with id lookup.
 pub struct Database {
@@ -34,17 +35,14 @@ pub fn (db Database) lookup(id u32) ?Message {
 }
 
 // j1939_pgn extracts the Parameter Group Number from a 29-bit J1939 id.
-// Layout (MSB→LSB): priority(3) | EDP(1) | DP(1) | PF(8) | PS(8) | SA(8).
-// For PDU1 (PF < 0xF0) the PS byte is a destination address and is NOT part
-// of the PGN; for PDU2 (PF >= 0xF0) it is. Priority and source address are
-// never part of the PGN.
+//
+// ONE definition, in `modules/j1939` with the rest of the identifier's structure (#171); this
+// is the spelling candb's own callers and `modules/sim` already had, kept so the delegation
+// costs nothing and no caller had to move. Priority and source address are never part of a
+// PGN, which is what makes it the stable key for a database whose BO_ ids were written with
+// one particular sender's address in them.
 pub fn j1939_pgn(id u32) u32 {
-	pf := (id >> 16) & 0xFF
-	mut pgn := (id >> 8) & 0x3FFFF // EDP+DP+PF+PS
-	if pf < 0xF0 {
-		pgn &= 0x3FF00 // PDU1: drop the destination-address byte
-	}
-	return pgn
+	return j1939.pgn_of(id)
 }
 
 // lookup_frame resolves a received frame to a message: exact id first, then —
