@@ -1,4 +1,4 @@
-module someip
+module transport
 
 // The overlap rule is the kernel's, not a string comparison.
 fn test_overlap_is_the_kernels_rule() {

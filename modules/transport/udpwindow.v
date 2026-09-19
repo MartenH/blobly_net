@@ -35,7 +35,19 @@ pub:
 pub fn udp_bind(addr string, group string, iface string) !&net.UdpConn {
 	mut c := net.listen_udp(addr) or { return error('cannot listen on ${addr}: ${err}') }
 	if group != '' {
-		c.join_multicast_group(group, iface) or {
+		// THE SELECTOR'S FORM FOLLOWS THE GROUP'S FAMILY. V parses the IPv6 argument as a numeric
+		// interface INDEX, not an address, so `0.0.0.0` fails there with "must be a numeric
+		// interface index" — the DoIP collector already passes `0` for exactly this reason, and
+		// a v6 group joined with the v4 spelling never receives anything. `iface` is honoured
+		// when the caller names one; the default is chosen here.
+		sel := if iface != '' {
+			iface
+		} else if group.contains(':') {
+			'0' // any interface, IPv6 spelling
+		} else {
+			'0.0.0.0' // any interface, IPv4 spelling
+		}
+		c.join_multicast_group(group, sel) or {
 			// close before returning, or the descriptor leaks and holds the port; these are
 			// opened in a loop by suites that retry.
 			c.close() or {}

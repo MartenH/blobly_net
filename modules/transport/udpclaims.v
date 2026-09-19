@@ -1,4 +1,4 @@
-// claims — who in THIS PROCESS is already listening on a SOME/IP endpoint.
+// udpclaims — who in THIS PROCESS is already listening on a UDP endpoint.
 //
 // It exists because the bind cannot answer the question. This V sets SO_REUSEADDR inside its
 // private UDP socket constructor, before the bind, so a second listener on a held port succeeds
@@ -22,9 +22,10 @@
 //
 // Requires `-enable-globals`, V's idiom for process-global state, as transport's inproc registry
 // already does.
-module someip
+module transport
 
 import net
+
 
 // ClaimKind says what sort of listener holds a claim, because a caller has to treat the two
 // differently: a row's claim from a PREVIOUS run is about to be released and is worth waiting
@@ -32,6 +33,16 @@ import net
 pub enum ClaimKind {
 	row  // a channel row's reader, owned by a run — a previous run's is about to be released
 	tool // an interactive reader: a Lua window, the eth shell. Never "about to be released"
+}
+
+// udp_bind_addr is the address a listener binds for `host`:`port` — the wildcard when no host
+// is named. An IPv6 literal is bracketed here so a caller may pass a bare `::1`.
+pub fn udp_bind_addr(host string, port int) string {
+	h := if host == '' { '0.0.0.0' } else { host }
+	if h.contains(':') && !h.starts_with('[') {
+		return '[${h}]:${port}'
+	}
+	return '${h}:${port}'
 }
 
 // Claim is one live listener: where it binds, what sort it is, and who to name in a refusal.
@@ -64,7 +75,7 @@ mut:
 }
 
 __global (
-	someip_claims shared Claims
+	udp_claims shared Claims
 )
 
 // wildcard_host reports whether this bind address is a wildcard at all — for the group rule,
@@ -148,7 +159,7 @@ fn canonical_host(host string) string {
 	if h.contains('[') || h.contains(']') {
 		return h.to_lower()
 	}
-	addrs := net.resolve_addrs_fuzzy(bind_addr(h, 1), .udp) or { return h.to_lower() }
+	addrs := net.resolve_addrs_fuzzy(udp_bind_addr(h, 1), .udp) or { return h.to_lower() }
 	if addrs.len == 0 {
 		return h.to_lower()
 	}
@@ -178,8 +189,8 @@ pub fn claim_endpoint(host string, port int, owner string, kind ClaimKind) !stri
 	canon := canonical_host(host)
 	mut held := Claim{}
 	mut found := false
-	lock someip_claims {
-		for c in someip_claims.live {
+	lock udp_claims {
+		for c in udp_claims.live {
 			if overlaps(canon, port, c.host, c.port) {
 				held = c
 				found = true
@@ -187,7 +198,7 @@ pub fn claim_endpoint(host string, port int, owner string, kind ClaimKind) !stri
 			}
 		}
 		if !found {
-			someip_claims.live << Claim{
+			udp_claims.live << Claim{
 				host:  canon
 				port:  port
 				owner: owner
@@ -209,10 +220,10 @@ pub fn claim_endpoint(host string, port int, owner string, kind ClaimKind) !stri
 // `canon_host` is the value claim_endpoint RETURNED, not the configured spelling: re-resolving
 // here would strand the claim whenever the answer had changed since.
 pub fn release_endpoint(canon_host string, port int, owner string) {
-	lock someip_claims {
-		for i, c in someip_claims.live {
+	lock udp_claims {
+		for i, c in udp_claims.live {
 			if c.owner == owner && c.host == canon_host && c.port == port {
-				someip_claims.live.delete(i)
+				udp_claims.live.delete(i)
 				return
 			}
 		}

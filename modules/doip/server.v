@@ -10,6 +10,7 @@
 module doip
 
 import net
+import transport
 import time
 import sync
 
@@ -70,6 +71,11 @@ mut:
 	vin    string
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
+	// The UDP endpoint this entity claimed, and the port it claimed it on — released on close.
+	// See transport.claim_endpoint: a bind cannot refuse a second reader, so listeners that need
+	// to be the only one say so in one registry.
+	udp_canon string
+	udp_port  int
 	// The host this entity bound to. announce() needs it to choose a destination, and asking
 	// the socket back for it is more indirection than storing the one string.
 	bound_host string
@@ -113,6 +119,16 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 	s.bound_port = port
 	addr := join_host_port(host, port)
 	s.listener = net.listen_tcp(addr_family(host), addr)!
+	// CLAIMED like every other exclusive UDP reader in this process (transport.claim_endpoint):
+	// a SOME/IP row configured on this port would otherwise bind it too — both sockets get
+	// SO_REUSEADDR — and the kernel would hand each discovery datagram to one of them, so an
+	// identification request could be answered by neither.
+	s.udp_canon = transport.claim_endpoint(host, port, 'the DoIP entity on ${addr}', .tool) or {
+		s.listener.close() or {}
+		s.listener = unsafe { nil }
+		return error('${addr}: ${err}')
+	}
+	s.udp_port = port
 	s.udp = net.listen_udp(addr) or {
 		s.listener.close() or {}
 		s.listener = unsafe { nil }
@@ -363,6 +379,13 @@ pub fn (mut s DoipServer) close() {
 	}
 	if !isnil(s.udp) {
 		s.udp.close() or {}
+	}
+	// RELEASED WITH THE SOCKET, so a restarted entity can take its own endpoint back. Keyed on
+	// the canonical value the claim returned, never on the configured spelling.
+	if s.udp_canon != '' {
+		transport.release_endpoint(s.udp_canon, s.udp_port, 'the DoIP entity on ${join_host_port(s.bound_host,
+			s.bound_port)}')
+		s.udp_canon = ''
 	}
 }
 

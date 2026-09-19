@@ -88,14 +88,9 @@ pub fn (mut cap Capture) ingest(d transport.Datagram) {
 	}
 }
 
-// bind_addr is the address a listener binds for `host`:`port` — the wildcard when no host is
-// named. IPv6 literals are bracketed here so a caller may pass a bare `::1`.
+// bind_addr is transport.udp_bind_addr under this module's name: the address a listener binds.
 pub fn bind_addr(host string, port int) string {
-	h := if host == '' { '0.0.0.0' } else { host }
-	if h.contains(':') && !h.starts_with('[') {
-		return '[${h}]:${port}'
-	}
-	return '${h}:${port}'
+	return transport.udp_bind_addr(host, port)
 }
 
 // check_group_bind refuses a multicast group on a UNICAST bind address. A socket bound to one
@@ -123,10 +118,10 @@ pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	check_group_bind(host, group)!
 	// Claimed for the life of the window, so a GUI row cannot be started onto this endpoint
 	// underneath it and split the stream — and so this window is refused if a row already holds
-	// it. See claims.v for why a successful bind cannot answer that question.
-	canon := claim_endpoint(host, port, 'a script', .tool)!
+	// it. See transport/udpclaims.v for why a successful bind cannot answer that question.
+	canon := transport.claim_endpoint(host, port, 'a script', .tool)!
 	defer {
-		release_endpoint(canon, port, 'a script')
+		transport.release_endpoint(canon, port, 'a script')
 	}
 	// BOUND ON WHAT WAS CLAIMED, not on the spelling: the registry resolved once, and binding the
 	// name again could land on a different address than the one it is holding.

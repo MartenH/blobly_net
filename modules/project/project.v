@@ -16,7 +16,6 @@ import transport
 import os
 import yaml
 import doip
-import someip
 
 // schema_version is the newest project-file format version this build understands. Bump it when
 // the `.yml` schema grows something an older build would not preserve. Files carry `version:`,
@@ -2096,14 +2095,14 @@ pub fn (c Channel) address_config_error() ?string {
 // case, brackets, and the loopback names. It does NOT resolve — this runs on every Start and per
 // row in the Buses panel, and a validator that performs DNS answers differently depending on the
 // network it is asked on, which is the last thing a config check should do. The authority for
-// "these two are the same socket" is someip.claim_endpoint, which resolves because it runs once,
+// "these two are the same socket" is transport.claim_endpoint, which resolves because it runs once,
 // at the moment of binding, and must not disagree with the bind. This is the cheap half: it
 // catches what someone types, and the claim catches the rest.
 fn normalised_bind_host(host string) string {
 	h := host.trim_space().trim('[]').to_lower()
 	return match h {
 		// the IPv4 wildcard. NOT `::` — that is the v6 wildcard and covers a different set
-		// (both families, this V enabling dual-stack on its v6 sockets), which someip.addr_covers
+		// (both families, this V enabling dual-stack on its v6 sockets), which transport.addr_covers
 		// knows; folding them together here reported a valid dual-stack pair as a clash.
 		'', '0.0.0.0' { '0.0.0.0' }
 		// the loopback, which does NOT: folded to one spelling rather than into the wildcard, or
@@ -2118,7 +2117,7 @@ fn normalised_bind_host(host string) string {
 
 pub fn someip_endpoint_warnings(chs []Channel) []string {
 	mut out := []string{}
-	// PAIRWISE, on someip.addr_covers — the same rule the claim registry refuses by, so a
+	// PAIRWISE, on transport.addr_covers — the same rule the claim registry refuses by, so a
 	// Start-time warning cannot contradict the refusal that follows it. Two rows overlap when the
 	// kernel could deliver one datagram to either: the same address twice, or a wildcard that
 	// covers the other WITHIN ITS FAMILY. `0.0.0.0` and `[::1]` are a valid dual-stack pair and
@@ -2139,7 +2138,7 @@ pub fn someip_endpoint_warnings(chs []Channel) []string {
 			}
 			na := normalised_bind_host(ha)
 			nb := normalised_bind_host(hb)
-			if !someip.addr_covers(na, nb) && !someip.addr_covers(nb, na) {
+			if !transport.addr_covers(na, nb) && !transport.addr_covers(nb, na) {
 				continue
 			}
 			out << '${a.name} and ${b.name} both listen on port ${pa}; UDP lets both bind, then each datagram reaches only ONE of them — give them different ports, or keep one'

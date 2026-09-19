@@ -3,6 +3,7 @@ module script
 import candb
 import net
 import someip
+import transport
 import testports
 import time
 
@@ -224,9 +225,9 @@ fn test_someip_listen_from_resolves_or_refuses() {
 	]) or { panic(err) }
 	// A GUI row's claim, made the way someip_rx_loop makes it, so the Lua path meets the real
 	// registry rather than a stand-in for it.
-	held := someip.claim_endpoint('0.0.0.0', port + 7, 'channel ETH9', .row) or { panic(err) }
+	held := transport.claim_endpoint('0.0.0.0', port + 7, 'channel ETH9', .row) or { panic(err) }
 	defer {
-		someip.release_endpoint(held, port + 7, 'channel ETH9')
+		transport.release_endpoint(held, port + 7, 'channel ETH9')
 	}
 	env.on_output = fn (s string) {}
 	defer { env.close() }
@@ -258,7 +259,7 @@ fn test_someip_listen_from_resolves_or_refuses() {
 		end)
 		test("an endpoint another listener in this process holds is refused, not split", function()
 			-- claimed below as a GUI row would claim it; the refusal must name the holder
-			-- whichever of the two started first (someip/claims.v owns that rule and its tests)
+			-- whichever of the two started first (transport/udpclaims.v owns that rule and its tests)
 			local ok, err = pcall(someip.listen, 10, { port = ${port + 7} })
 			check.truthy(not ok, "an overlapping window was accepted")
 			check.truthy(tostring(err):find("SPLIT", 1, true), tostring(err))

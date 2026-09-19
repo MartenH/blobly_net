@@ -1586,12 +1586,12 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 	// which an enabled SOME/IP row may also be reading — both sockets get SO_REUSEADDR, so the
 	// board's responses would go to whichever the kernel picked and the shell would time out
 	// intermittently with nothing to point at. Refused by name instead, either order.
-	shell_canon := someip.claim_endpoint('', bind_port, 'the eth shell', .tool) or {
+	shell_canon := transport.claim_endpoint('', bind_port, 'the eth shell', .tool) or {
 		a.shell_append('(:${bind_port}: ${err})')
 		return
 	}
 	defer {
-		someip.release_endpoint(shell_canon, bind_port, 'the eth shell')
+		transport.release_endpoint(shell_canon, bind_port, 'the eth shell')
 	}
 	mut sock := vnet.listen_udp(':${bind_port}') or {
 		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
@@ -1749,7 +1749,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		return
 	}
 	// Claimed before the bind, released when this reader closes. Within this process that is the
-	// only thing that CAN refuse a second listener: the bind itself always succeeds (claims.v).
+	// only thing that CAN refuse a second listener: the bind itself always succeeds (transport/udpclaims.v).
 	// Symmetric with the Lua window, so the refusal lands on whichever of the two started second.
 	owner := 'channel ${chname}'
 	// WHO holds it decides whether waiting is honest. A previous run's row claim is about to be
@@ -1768,8 +1768,8 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		if !a.running || a.run_gen != gen {
 			return
 		}
-		canon = someip.claim_endpoint(host, port, owner, .row) or {
-			if err is someip.ClaimHeld {
+		canon = transport.claim_endpoint(host, port, owner, .row) or {
+			if err is transport.ClaimHeld {
 				if err.kind == .tool || time.ticks() - t0 > drain_budget_ms {
 					someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err.msg()}')
 					return
@@ -1784,7 +1784,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		break
 	}
 	defer {
-		someip.release_endpoint(canon, port, owner)
+		transport.release_endpoint(canon, port, owner)
 	}
 	// The bind and the join, with the row told about either failure: a listener that could not
 	// bind must show idle and say why. NOTE a successful bind does not mean sole ownership —

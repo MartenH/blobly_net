@@ -692,8 +692,8 @@ fn (env &Env) someip_chan(name string) !ChanInfo {
 	// WHO holds this endpoint is not asked here. It was, through a `live` flag the GUI filled in
 	// when it built the environment, and a snapshot can only answer one ordering: a script that
 	// began while the GUI was stopped carried `live = false` for its whole window, and a Start
-	// during it spawned the row onto the same port. someip.claim_endpoint answers both orderings
-	// from one registry, at the moment either side actually binds (someip/claims.v).
+	// during it spawned the row onto the same port. transport.claim_endpoint answers both orderings
+	// from one registry, at the moment either side actually binds (transport/udpclaims.v).
 	return info
 }
 
