@@ -1586,7 +1586,7 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 	// which an enabled SOME/IP row may also be reading — both sockets get SO_REUSEADDR, so the
 	// board's responses would go to whichever the kernel picked and the shell would time out
 	// intermittently with nothing to point at. Refused by name instead, either order.
-	shell_canon := transport.claim_endpoint('', bind_port, 'the eth shell', .tool) or {
+	shell_canon := transport.claim_endpoint('', bind_port, 'the eth shell', .tool, '') or {
 		a.shell_append('(:${bind_port}: ${err})')
 		return
 	}
@@ -1772,7 +1772,7 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 		if !a.running || a.run_gen != gen {
 			return
 		}
-		canon = transport.claim_endpoint(host, port, owner, .row) or {
+		canon = transport.claim_endpoint(host, port, owner, .row, '') or {
 			if err is transport.ClaimHeld {
 				if err.kind == .tool || time.ticks() - t0 > drain_budget_ms {
 					someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err.msg()}')

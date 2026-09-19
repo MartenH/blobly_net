@@ -13,18 +13,18 @@ fn test_overlap_is_the_kernels_rule() {
 
 // A claim refuses the second listener and names the first, whichever order they arrive in.
 fn test_a_claim_refuses_the_second_and_names_the_first() {
-	_ := claim_endpoint('0.0.0.0', 39001, 'channel ETH1', .row)!
-	if _ := claim_endpoint('127.0.0.1', 39001, 'a script', .row) {
+	_ := claim_endpoint('0.0.0.0', 39001, 'channel ETH1', .row, '')!
+	if _ := claim_endpoint('127.0.0.1', 39001, 'a script', .row, '') {
 		assert false, 'an overlapping claim was accepted'
 	} else {
 		assert err.msg().contains('channel ETH1'), err.msg()
 		assert err.msg().contains('SPLIT'), err.msg()
 	}
 	// a different port is free
-	_ := claim_endpoint('0.0.0.0', 39002, 'a script', .row)!
+	_ := claim_endpoint('0.0.0.0', 39002, 'a script', .row, '')!
 	release_endpoint('0.0.0.0', 39001, 'channel ETH1')
 	// and once released, the endpoint is claimable again — the reverse ordering
-	_ := claim_endpoint('127.0.0.1', 39001, 'a script', .row)!
+	_ := claim_endpoint('127.0.0.1', 39001, 'a script', .row, '')!
 	release_endpoint('127.0.0.1', 39001, 'a script')
 	release_endpoint('0.0.0.0', 39002, 'a script')
 }
@@ -32,9 +32,9 @@ fn test_a_claim_refuses_the_second_and_names_the_first() {
 // Releasing something never claimed is a no-op, so a caller may release on every exit path.
 fn test_release_of_an_unheld_claim_is_a_noop() {
 	release_endpoint('0.0.0.0', 39003, 'nobody')
-	_ := claim_endpoint('0.0.0.0', 39003, 'channel ETH9', .row)!
+	_ := claim_endpoint('0.0.0.0', 39003, 'channel ETH9', .row, '')!
 	release_endpoint('0.0.0.0', 39003, 'someone else') // wrong owner: leaves it held
-	if _ := claim_endpoint('0.0.0.0', 39003, 'a script', .row) {
+	if _ := claim_endpoint('0.0.0.0', 39003, 'a script', .row, '') {
 		assert false, 'a wrong-owner release dropped the claim'
 	}
 	release_endpoint('0.0.0.0', 39003, 'channel ETH9')
@@ -50,9 +50,9 @@ fn test_release_of_an_unheld_claim_is_a_noop() {
 // the resolver's configuration instead, and failed on the first host that differed.
 fn test_a_synonym_is_not_a_second_endpoint() {
 	real := canonical_host('localhost')
-	_ := claim_endpoint(real, 39010, 'channel ETH1', .row)!
+	_ := claim_endpoint(real, 39010, 'channel ETH1', .row, '')!
 	for spelling in ['localhost', 'LOCALHOST', 'localhost '] {
-		if _ := claim_endpoint(spelling, 39010, 'a script', .row) {
+		if _ := claim_endpoint(spelling, 39010, 'a script', .row, '') {
 			release_endpoint(spelling, 39010, 'a script')
 			assert false, '"${spelling}" was accepted beside ${real}'
 		} else {
@@ -62,7 +62,7 @@ fn test_a_synonym_is_not_a_second_endpoint() {
 	// Released by the value the claim RETURNED, which is the contract: re-resolving a spelling
 	// here is what could strand a claim when an answer changes.
 	release_endpoint(real, 39010, 'channel ETH1')
-	again := claim_endpoint('localhost', 39010, 'a script', .tool)!
+	again := claim_endpoint('localhost', 39010, 'a script', .tool, '')!
 	release_endpoint(again, 39010, 'a script')
 }
 
@@ -97,8 +97,8 @@ fn test_wildcards_keep_their_families() {
 // The refusal says WHO and WHAT SORT, so a caller can wait for a departing row and refuse a
 // live script without parsing a sentence.
 fn test_the_refusal_carries_the_holder() {
-	canon := claim_endpoint('127.0.0.1', 39020, 'a script', .tool)!
-	if _ := claim_endpoint('127.0.0.1', 39020, 'channel ETH1', .row) {
+	canon := claim_endpoint('127.0.0.1', 39020, 'a script', .tool, '')!
+	if _ := claim_endpoint('127.0.0.1', 39020, 'channel ETH1', .row, '') {
 		assert false, 'an overlapping claim was accepted'
 	} else {
 		assert err is ClaimHeld, err.msg()
@@ -112,9 +112,9 @@ fn test_the_refusal_carries_the_holder() {
 
 // A claim is released by the value the claim RETURNED, so a changed DNS answer cannot strand it.
 fn test_released_by_the_canonical_value() {
-	canon := claim_endpoint('localhost', 39021, 'channel ETH1', .row)!
+	canon := claim_endpoint('localhost', 39021, 'channel ETH1', .row, '')!
 	release_endpoint(canon, 39021, 'channel ETH1')
-	second := claim_endpoint('localhost', 39021, 'a script', .tool)!
+	second := claim_endpoint('localhost', 39021, 'a script', .tool, '')!
 	release_endpoint(second, 39021, 'a script')
 }
 
@@ -133,9 +133,30 @@ fn test_an_unmatched_bracket_is_not_repaired() {
 // contract the callers rely on — release takes the value the claim RETURNED, and after it the
 // endpoint is free again.
 fn test_an_endpoint_is_free_again_after_release() {
-	first := claim_endpoint('127.0.0.1', 39030, 'a failed listener', .tool)!
+	first := claim_endpoint('127.0.0.1', 39030, 'a failed listener', .tool, '')!
 	release_endpoint(first, 39030, 'a failed listener')
-	second := claim_endpoint('127.0.0.1', 39030, 'the next attempt', .row)!
+	second := claim_endpoint('127.0.0.1', 39030, 'the next attempt', .row, '')!
 	assert second == first, 'the same endpoint canonicalises the same way'
 	release_endpoint(second, 39030, 'the next attempt')
+}
+
+// Sharing is with SOMEBODY, not with everybody: two participants of one medium tolerate each
+// other, and a sharer of a different medium is refused like any exclusive reader. Without the
+// key, a DoIP entity and a UDP software bus could sit on one port and eat each other's traffic.
+fn test_sharers_tolerate_only_their_own_medium() {
+	a := claim_endpoint('', 39040, 'bus one', .shared, 'udp-bus')!
+	b := claim_endpoint('', 39040, 'bus two', .shared, 'udp-bus')!
+	if _ := claim_endpoint('', 39040, 'a DoIP entity', .shared, 'doip-discovery') {
+		assert false, 'a sharer of another medium was accepted'
+	} else {
+		assert err.msg().contains('bus one'), err.msg()
+	}
+	if _ := claim_endpoint('', 39040, 'channel ETH1', .row, '') {
+		assert false, 'an exclusive reader was accepted beside sharers'
+	}
+	release_endpoint(a, 39040, 'bus one')
+	release_endpoint(b, 39040, 'bus two')
+	// and once every sharer has gone, the endpoint is exclusive again
+	c := claim_endpoint('', 39040, 'channel ETH1', .row, '')!
+	release_endpoint(c, 39040, 'channel ETH1')
 }

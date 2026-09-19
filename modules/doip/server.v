@@ -133,7 +133,7 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 	// SHARED, for the reason in client.v: an entity and the testers listening for its
 	// announcements all sit on the discovery port, so they must not refuse each other — while an
 	// exclusive reader there (a SOME/IP row) still is refused, which is why this claim exists.
-	s.udp_canon = transport.claim_endpoint(host, port, s.udp_owner, .shared) or {
+	s.udp_canon = transport.claim_endpoint(host, port, s.udp_owner, .shared, doip_discovery_medium) or {
 		return error('${requested}: ${err}')
 	}
 	s.udp_port = port

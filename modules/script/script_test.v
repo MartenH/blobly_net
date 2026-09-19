@@ -225,7 +225,7 @@ fn test_someip_listen_from_resolves_or_refuses() {
 	]) or { panic(err) }
 	// A GUI row's claim, made the way someip_rx_loop makes it, so the Lua path meets the real
 	// registry rather than a stand-in for it.
-	held := transport.claim_endpoint('0.0.0.0', port + 7, 'channel ETH9', .row) or { panic(err) }
+	held := transport.claim_endpoint('0.0.0.0', port + 7, 'channel ETH9', .row, '') or { panic(err) }
 	defer {
 		transport.release_endpoint(held, port + 7, 'channel ETH9')
 	}

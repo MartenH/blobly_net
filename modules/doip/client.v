@@ -74,7 +74,7 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 	// to. What the claim buys is the other direction: an EXCLUSIVE reader (a SOME/IP row) on
 	// that port would split the announcements in silence, and it is now refused.
 	owner := 'a DoIP announcement listener'
-	canon := transport.claim_endpoint(if ip6 { '::' } else { '' }, port_, owner, .shared)!
+	canon := transport.claim_endpoint(if ip6 { '::' } else { '' }, port_, owner, .shared, doip_discovery_medium)!
 	defer {
 		transport.release_endpoint(canon, port_, owner)
 	}

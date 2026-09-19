@@ -56,6 +56,10 @@ mut:
 	tx  &net.UdpConn = unsafe { nil } // dialed to group:port — sends
 	rx  &net.UdpConn = unsafe { nil } // bound to port + joined group — receives
 	src u32 // our source id; frames with this src are our own echoes
+	// The endpoint claim this bus holds, released with its sockets (transport/udpclaims.v).
+	claim_host  string
+	claim_port  int
+	claim_owner string
 	// Datagrams this bus could not read as a frame: shorter than the header, or declaring
 	// more payload than arrived (#213). Read on the receiving thread, where it is counted.
 	decode_errors u64
@@ -66,27 +70,45 @@ mut:
 }
 
 // open_udp joins the localhost multicast bus `group:port`.
+// udp_bus_medium names the shared medium these buses belong to: several on one group and port
+// is this backend's design (its own tests open two on purpose), so they tolerate each other —
+// while an exclusive reader there, or a sharer of ANOTHER medium such as a DoIP entity, is
+// refused rather than left to eat these frames in silence. See transport/udpclaims.v.
+const udp_bus_medium = 'udp-bus'
+
 pub fn open_udp(group string, port int) !&UdpBus {
+	owner := 'the ${group} software bus'
+	// EVERY FAILURE PATH UNDOES EVERYTHING THIS ONE TOOK. The first version released the claim
+	// on one path and closed `rx` on another and never closed `tx` at all, so a repeated start
+	// against a bad group leaked a descriptor per attempt. Tracked as it is acquired instead,
+	// and released in one place.
 	mut tx := net.dial_udp('${group}:${port}')!
+	mut rx := &net.UdpConn(unsafe { nil })
+	mut canon := ''
+	mut ok := false
+	defer {
+		if !ok {
+			if !isnil(rx) {
+				rx.close() or {}
+			}
+			tx.close() or {}
+			if canon != '' {
+				release_endpoint(canon, port, owner)
+			}
+		}
+	}
 	tx.set_multicast_loop(true)! // same-host peers (and we) receive; we filter own
-	// REGISTERED AS A SHARER. Several buses on one group and port is this backend's design, so
-	// they do not conflict with each other — but an exclusive reader (a SOME/IP row, a DoIP
-	// entity) on the same port would split these frames in silence, and the registry is the only
-	// thing that can say so. See transport/udpclaims.v.
-	canon := claim_endpoint('', port, 'the ${group} software bus', .shared)!
-	mut rx := net.listen_udp('0.0.0.0:${port}') or {
-		release_endpoint(canon, port, 'the ${group} software bus')
-		return err
-	}
-	rx.join_multicast_group(group, '0.0.0.0') or {
-		rx.close() or {}
-		release_endpoint(canon, port, 'the ${group} software bus')
-		return err
-	}
+	canon = claim_endpoint('', port, owner, .shared, udp_bus_medium)!
+	rx = net.listen_udp('0.0.0.0:${port}')!
+	rx.join_multicast_group(group, '0.0.0.0')!
+	ok = true
 	return &UdpBus{
-		tx:  tx
-		rx:  rx
-		src: rand.u32()
+		tx:         tx
+		rx:         rx
+		src:        rand.u32()
+		claim_host: canon
+		claim_port: port
+		claim_owner: owner
 	}
 }
 
@@ -221,6 +243,13 @@ pub fn (mut b UdpBus) close() {
 	stdatomic.store_i64(&b.closed_flag, 1)
 	b.tx.close() or {}
 	b.rx.close() or {}
+	// RELEASED WITH THE SOCKETS. A claim left behind reports the endpoint as occupied for the
+	// rest of the process, so a SOME/IP row started after a Stop would be refused by a bus that
+	// no longer exists — and nothing would ever clear it.
+	if b.claim_host != '' {
+		release_endpoint(b.claim_host, b.claim_port, b.claim_owner)
+		b.claim_host = ''
+	}
 }
 
 fn put_u32_le(mut b []u8, v u32) {

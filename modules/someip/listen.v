@@ -138,7 +138,7 @@ pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	// Claimed for the life of the window, so a GUI row cannot be started onto this endpoint
 	// underneath it and split the stream — and so this window is refused if a row already holds
 	// it. See transport/udpclaims.v for why a successful bind cannot answer that question.
-	canon := transport.claim_endpoint(bind_host, port, 'a script', .tool)!
+	canon := transport.claim_endpoint(bind_host, port, 'a script', .tool, '')!
 	defer {
 		transport.release_endpoint(canon, port, 'a script')
 	}

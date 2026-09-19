@@ -33,11 +33,12 @@ import net
 pub enum ClaimKind {
 	row  // a channel row's reader, owned by a run — a previous run's is about to be released
 	tool // an interactive reader: a Lua window, the eth shell. Never "about to be released"
-	// A participant that EXPECTS company: the multicast software bus, where several readers on
-	// one group and port is the whole design and its own tests open two on purpose. Shared
-	// claims do not conflict with each other — but they do conflict with an exclusive reader,
-	// which is the point of registering them at all: a SOME/IP row that bound the software
-	// bus's port would split its frames in silence, and neither side could see why.
+	// A participant that EXPECTS company OF ITS OWN SORT: the multicast software bus, where
+	// several readers on one group and port is the whole design; the DoIP discovery port, which
+	// ISO 13400 gives to an entity and every tester at once. Sharers coexist only with sharers
+	// carrying the SAME `share_key` — "shared" with no notion of with-whom let a DoIP entity and
+	// a UDP CAN bus sit on one port and eat each other's datagrams, which is the silent split
+	// the registry exists to prevent. An exclusive reader conflicts with any of them.
 	shared
 }
 
@@ -57,6 +58,9 @@ struct Claim {
 	port  int
 	owner string // 'channel ETH1' / 'a script' — read back verbatim in the refusal
 	kind  ClaimKind
+	// Who this sharer will tolerate: same key, same medium. Empty for an exclusive claim, which
+	// tolerates nobody.
+	share_key string
 }
 
 // ClaimHeld is the refusal, carrying WHO holds the endpoint and what sort they are, so the
@@ -191,7 +195,9 @@ fn overlaps(ha string, pa int, hb string, pb int) bool {
 // while the socket sits on address B — a second listener on B accepted, the stream split, and
 // the registry none the wiser. Releasing takes the same canonical value back, so a changed
 // answer cannot strand a claim either.
-pub fn claim_endpoint(host string, port int, owner string, kind ClaimKind) !string {
+// `share_key` names the medium a `.shared` claimant belongs to ('udp-bus', 'doip-discovery');
+// it is ignored for the exclusive kinds, which tolerate nobody.
+pub fn claim_endpoint(host string, port int, owner string, kind ClaimKind, share_key string) !string {
 	canon := canonical_host(host)
 	mut held := Claim{}
 	mut found := false
@@ -200,9 +206,10 @@ pub fn claim_endpoint(host string, port int, owner string, kind ClaimKind) !stri
 			if !overlaps(canon, port, c.host, c.port) {
 				continue
 			}
-			// Two SHARED participants are not a conflict — that is what shared means. Anything
-			// else on an overlapping endpoint is.
-			if kind == .shared && c.kind == .shared {
+			// Two sharers of the SAME medium are not a conflict — that is what shared means.
+			// Anything else on an overlapping endpoint is, including a sharer of another medium:
+			// a DoIP entity and a UDP CAN bus on one port would consume each other's datagrams.
+			if kind == .shared && c.kind == .shared && share_key != '' && share_key == c.share_key {
 				continue
 			}
 			held = c
@@ -211,10 +218,11 @@ pub fn claim_endpoint(host string, port int, owner string, kind ClaimKind) !stri
 		}
 		if !found {
 			udp_claims.live << Claim{
-				host:  canon
-				port:  port
-				owner: owner
-				kind:  kind
+				host:      canon
+				port:      port
+				owner:     owner
+				kind:      kind
+				share_key: share_key
 			}
 		}
 	}
