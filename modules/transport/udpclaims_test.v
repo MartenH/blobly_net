@@ -127,3 +127,15 @@ fn test_an_unmatched_bracket_is_not_repaired() {
 	// a MATCHING pair is ordinary bracketing and is removed
 	assert canonical_host('[::1]') == canonical_host('::1')
 }
+
+// A claim that outlives a failed bind poisons its endpoint for the rest of the process: a caller
+// walking ports treats a failed listen as a finished attempt and never closes. This pins the
+// contract the callers rely on — release takes the value the claim RETURNED, and after it the
+// endpoint is free again.
+fn test_an_endpoint_is_free_again_after_release() {
+	first := claim_endpoint('127.0.0.1', 39030, 'a failed listener', .tool)!
+	release_endpoint(first, 39030, 'a failed listener')
+	second := claim_endpoint('127.0.0.1', 39030, 'the next attempt', .row)!
+	assert second == first, 'the same endpoint canonicalises the same way'
+	release_endpoint(second, 39030, 'the next attempt')
+}

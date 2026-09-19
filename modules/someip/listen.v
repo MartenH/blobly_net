@@ -125,7 +125,11 @@ pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	}
 	// BOUND ON WHAT WAS CLAIMED, not on the spelling: the registry resolved once, and binding the
 	// name again could land on a different address than the one it is holding.
-	got := transport.udp_window(bind_addr(canon, port), group, '0.0.0.0', window_ms)!
+	// EMPTY SELECTOR, so udp_bind chooses it from the GROUP's family. Passing '0.0.0.0' here
+	// took the explicit-interface branch and handed an IPv4 spelling to an IPv6 join, which is
+	// the very failure the family default was added for — the fix was unreachable from its own
+	// caller. A caller that genuinely wants one interface names it; these do not.
+	got := transport.udp_window(bind_addr(canon, port), group, '', window_ms)!
 	mut cap := Capture{}
 	for d in got {
 		cap.ingest(d)

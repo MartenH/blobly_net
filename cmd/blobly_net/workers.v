@@ -1790,7 +1790,9 @@ fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
 	// bind must show idle and say why. NOTE a successful bind does not mean sole ownership —
 	// this V forces SO_REUSEADDR, so another holder of the port splits the stream with us
 	// (transport.udp_bind says so in full); that is why nothing here claims exclusivity.
-	mut sock := transport.udp_bind(someip.bind_addr(canon, port), group, '0.0.0.0') or {
+	// '' — the selector comes from the group's family (transport.udp_bind); see its twin in
+	// someip.collect for why naming '0.0.0.0' here defeated that.
+	mut sock := transport.udp_bind(someip.bind_addr(canon, port), group, '') or {
 		someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
 		return
 	}

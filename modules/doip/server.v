@@ -76,6 +76,7 @@ mut:
 	// to be the only one say so in one registry.
 	udp_canon string
 	udp_port  int
+	udp_owner string // formed once, so the claim and its release cannot disagree
 	// The host this entity bound to. announce() needs it to choose a destination, and asking
 	// the socket back for it is more indirection than storing the one string.
 	bound_host string
@@ -123,15 +124,27 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 	// a SOME/IP row configured on this port would otherwise bind it too — both sockets get
 	// SO_REUSEADDR — and the kernel would hand each discovery datagram to one of them, so an
 	// identification request could be answered by neither.
-	s.udp_canon = transport.claim_endpoint(host, port, 'the DoIP entity on ${addr}', .tool) or {
+	s.udp_owner = 'the DoIP entity on ${addr}'
+	s.udp_canon = transport.claim_endpoint(host, port, s.udp_owner, .tool) or {
 		s.listener.close() or {}
 		s.listener = unsafe { nil }
 		return error('${addr}: ${err}')
 	}
 	s.udp_port = port
-	s.udp = net.listen_udp(addr) or {
+	// BOUND ON WHAT THE CLAIM RETURNED, which is claim_endpoint's contract: it resolved the host
+	// once, and binding the name again could land on a different address than the one the
+	// registry is holding — a SOME/IP listener on that other address would then be accepted and
+	// split discovery traffic. (The TCP listener above keeps `addr`: a second TCP listener on a
+	// held port is refused by the OS, so it has no split to prevent.)
+	s.udp = net.listen_udp(transport.udp_bind_addr(s.udp_canon, port)) or {
 		s.listener.close() or {}
 		s.listener = unsafe { nil }
+		// AND THE CLAIM GOES WITH IT. A caller that treats a failed listen() as a finished
+		// attempt — `listen_somewhere` walks ports exactly this way — never calls close(), so a
+		// claim left here would refuse that endpoint to everything for the rest of the process,
+		// as if a live entity owned it.
+		transport.release_endpoint(s.udp_canon, port, s.udp_owner)
+		s.udp_canon = ''
 		return err
 	}
 }
@@ -383,8 +396,7 @@ pub fn (mut s DoipServer) close() {
 	// RELEASED WITH THE SOCKET, so a restarted entity can take its own endpoint back. Keyed on
 	// the canonical value the claim returned, never on the configured spelling.
 	if s.udp_canon != '' {
-		transport.release_endpoint(s.udp_canon, s.udp_port, 'the DoIP entity on ${join_host_port(s.bound_host,
-			s.bound_port)}')
+		transport.release_endpoint(s.udp_canon, s.udp_port, s.udp_owner)
 		s.udp_canon = ''
 	}
 }
