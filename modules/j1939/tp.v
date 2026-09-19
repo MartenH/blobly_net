@@ -204,6 +204,20 @@ pub fn is_tp(id u32, ext bool) bool {
 	return pf == 0xEC || pf == 0xEB
 }
 
+// tp_frame is whether a FRAME is part of a transport session: the identifier, and the shape
+// J1939-21 gives every frame of one.
+//
+// A session is CLASSIC CAN, eight bytes, always — the protocol exists BECAUSE a classic frame
+// carries eight, and it pads with 0xFF rather than shortening. So a CAN-FD frame at a transport
+// identifier is not a session frame however plausible its bytes look, and neither is a remote
+// frame, which asks for a payload and carries none (a backend that hands back a buffer of the
+// requested length anyway delivered one as sequence 0, which tore down a live transfer). Both
+// came from review a round apart, which is why the shape is ONE predicate: the live reader, the
+// importer and the reassembler all ask it, and they must not answer differently.
+pub fn tp_frame(id u32, ext bool, rtr bool, fd bool, len int) bool {
+	return is_tp(id, ext) && !rtr && !fd && len == 8
+}
+
 fn key_of(sa u8, da u8) u64 {
 	return (u64(sa) << 8) | u64(da)
 }
@@ -298,8 +312,8 @@ pub fn announcement_refusal(ctrl u8, da u8, pgn u32, size int, packets int) stri
 // 0x20 or 0x10 on PGN 0xEC00, carrying a byte count and a packet count that agree, is not
 // something a bus that is not J1939 produces by accident. A J1939 recording with no multi-packet
 // transfer in it is not recognised, which is a missing reading and never a wrong one.
-pub fn announces_session(id u32, ext bool, rtr bool, data []u8) bool {
-	if !is_tp(id, ext) || rtr || data.len < 8 {
+pub fn announces_session(id u32, ext bool, rtr bool, fd bool, data []u8) bool {
+	if !tp_frame(id, ext, rtr, fd, data.len) {
 		return false
 	}
 	iid := decode_id(id)
@@ -314,7 +328,7 @@ pub fn announces_session(id u32, ext bool, rtr bool, data []u8) bool {
 
 // observe feeds one received frame and returns whatever it settled. A frame that is not part of
 // a session settles nothing and costs one `is_tp` call.
-pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, data []u8, t_ms f64) TpEvents {
+pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, fd bool, data []u8, t_ms f64) TpEvents {
 	r.tail_orphan = false
 	if !is_tp(id, ext) {
 		return TpEvents{}
@@ -327,15 +341,11 @@ pub fn (mut r Reassembler) observe(id u32, ext bool, rtr bool, data []u8, t_ms f
 	// session open for as long as they kept coming — reported at EOF as merely unfinished
 	// (codex).
 	mut aborted := r.expire(t_ms)
-	// A REMOTE frame carries no payload — it asks for one. Some backends hand back a buffer of
-	// the requested length anyway, so a remote frame at a TP.DT identifier arrived here as
-	// sequence 0 and tore down a legitimate transfer (codex). Refused in the module rather than
-	// at each caller, because the two callers are the live reader and the importer and this is
-	// one rule.
-	//
-	// Every transport frame is 8 bytes besides; the protocol pads with 0xFF rather than
-	// shortening, so a short one cannot be read without guessing which field was cut off.
-	if rtr || data.len < 8 {
+	// The SHAPE, by the one predicate the callers use (`tp_frame`): classic, not remote, eight
+	// bytes. A frame at a transport identifier that is none of those is COUNTED rather than
+	// read, because reading it would mean guessing which field was cut off, or which bytes of
+	// an FD payload were the protocol's.
+	if !tp_frame(id, ext, rtr, fd, data.len) {
 		r.malformed++
 		return TpEvents{
 			aborted: aborted
@@ -498,8 +508,16 @@ fn (mut r Reassembler) control(iid Id, data []u8, t_ms f64, mut aborted []TpAbor
 		// Also from the receiver, and it means the transfer SUCCEEDED. So if this side is still
 		// missing packets, the gap is in what this tool captured rather than on the bus, and
 		// that is the useful thing to say.
+		// It names the transfer by SIZE AND PACKET COUNT as well, and both are checked: a
+		// delayed acknowledgement of an earlier transfer between the same two nodes, of the
+		// same group, would otherwise close the one that is open and report its packets as
+		// dropped here. The same class as the PGN match beside it, in the one control frame
+		// that carries more than a PGN (codex).
 		k := r.session_named(pgn, [key_of(iid.ps, iid.sa)]) or { return }
 		s := r.sessions[k]
+		if le16(data, 1) != s.size || int(data[3]) != s.packets {
+			return
+		}
 		r.sessions.delete(k)
 		aborted << s.abort('the receiver acknowledged the whole message; ${s.n_got} of ${s.packets} packets reached this tool', t_ms)
 		return

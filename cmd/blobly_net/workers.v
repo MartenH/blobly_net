@@ -954,9 +954,9 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// two comparisons per frame and allocates nothing.
 		// `!f.rtr` like the protection check above: a remote frame carries no payload, and a
 		// backend handing back a placeholder buffer delivered one as sequence 0 (codex).
-		tp_part := reads_j1939 && !ours && !f.rtr && j1939.is_tp(f.id, f.extended)
+		tp_part := reads_j1939 && !ours && j1939.tp_frame(f.id, f.extended, f.rtr, f.fd, f.data.len)
 		tp_ev := if tp_part {
-			tp.observe(f.id, f.extended, f.rtr, f.data, t_ms)
+			tp.observe(f.id, f.extended, f.rtr, f.fd, f.data, t_ms)
 		} else if reads_j1939 && tp.pending() > 0 {
 			// A session that stopped is noticed on the wire's ORDINARY traffic too, not only
 			// when the next transport frame happens along: a sender that dies mid-transfer

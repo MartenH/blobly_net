@@ -191,7 +191,12 @@ struct TRec {
 //
 // Caller holds app.mu.
 fn (mut app App) push_j1939_row_locked(chname string, m j1939.TpMessage) {
-	app.push_tp_row_locked(chname, m, app.since_ms(), org_rx, false, 0, true)
+	// THE COMPLETING PACKET'S timestamp, not now: the reader observed the session outside
+	// app.mu and may have waited on it — another thread opening a large recording holds it for
+	// a while — and a clock sampled after that wait puts the rebuilt row seconds behind the
+	// packet it is filed next to, and skews the group's cycle history with it (codex). The
+	// import path already used `m.t_ms`, which is what made the two disagree.
+	app.push_tp_row_locked(chname, m, m.t_ms, org_rx, false, 0, true)
 }
 
 // push_j1939_rep_row_locked is the same row for a message rebuilt out of an IMPORTED recording:
@@ -379,7 +384,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			data:   f.data.clone()
 			key:    k
 			j1939:  reads_j1939
-			tp:     if reads_j1939 && !f.rtr && j1939.is_tp(f.id, f.extended) {
+			tp:     if reads_j1939 && j1939.tp_frame(f.id, f.extended, f.rtr, f.fd, f.data.len) {
 				j1939.Part.packet
 			} else {
 				j1939.Part.plain

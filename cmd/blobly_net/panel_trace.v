@@ -335,8 +335,12 @@ fn trace_pass(r TraceRow, filt string) bool {
 	if hit := j1939.matches_filter(j1939_reading(r), filt) {
 		return hit
 	}
+	// THE NAME AS RENDERED, not the database's. On a J1939 row the cell reads `EEC1 [00]`,
+	// `PGN F004 [00]` or `TP.DT #3 [00]`, and searching the raw name meant copying what you
+	// could see into the box HID the row that showed it (codex). `j1939_name_of` is `r.name`
+	// on every other row, so nothing else changes.
 	hay :=
-		'${idstr_row(r.id, r.ext, r.someip)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
+		'${idstr_row(r.id, r.ext, r.someip)} ${j1939_name_of(r)} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -392,7 +396,7 @@ fn trace_name_cell(r TraceRow) string {
 // NOT SENT for 200 frames that went out fine (self-review). Mark and text now share one
 // source per view.
 fn trace_name_refused(r TraceRow, refused bool) string {
-	nm := j1939.name_cell(j1939_reading(r))
+	nm := j1939_name_of(r)
 	base := if r.e2e == '' { nm } else { '${nm}  ${r.e2e}' }
 	// NOT SENT rides the name cell like a violation does: it is rare, the origin column is
 	// too narrow to spell it, and a mark alone ('x') must never be the only statement that
@@ -408,6 +412,12 @@ fn trace_name_refused(r TraceRow, refused bool) string {
 // Built at DRAW time for the rows on screen rather than kept on every row in the ring: the
 // split is six shifts and the ring holds thousands of rows (#299's lesson about what a row
 // carries).
+// j1939_name_of is the name cell's text: the reading on a J1939 row, the database's name on
+// every other. One spelling, so what is drawn and what is searched cannot drift apart.
+fn j1939_name_of(r TraceRow) string {
+	return if r.j1939 { j1939.name_cell(j1939_reading(r)) } else { r.name }
+}
+
 fn j1939_reading(r TraceRow) j1939.Reading {
 	return j1939.Reading{
 		id:       r.id

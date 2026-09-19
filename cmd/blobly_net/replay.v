@@ -208,7 +208,7 @@ fn (mut app App) load_recording(path string) {
 	mut j1939_buses := map[string]bool{}
 	for i in 0 .. log.len() {
 		e := log.at(i)
-		if j1939.announces_session(e.frame.id, e.frame.extended, e.frame.rtr, e.frame.data) {
+		if j1939.announces_session(e.frame.id, e.frame.extended, e.frame.rtr, e.frame.fd, e.frame.data) {
 			j1939_buses[e.iface] = true
 		}
 	}
@@ -257,7 +257,7 @@ fn (mut app App) load_recording(path string) {
 		app.gcount[rep_key]++
 		is_j1939 := j1939_buses[e.iface]
 		t_row := (e.t_s - t0) * 1000.0
-		tp_part := is_j1939 && !f.rtr && j1939.is_tp(f.id, f.extended)
+		tp_part := is_j1939 && j1939.tp_frame(f.id, f.extended, f.rtr, f.fd, f.data.len)
 		// The reassembler is fed EVERY frame, including the ones trimmed away below: a
 		// transfer straddling the trim boundary would otherwise leave its visible packets
 		// flagged TP with no message behind them, and the announcement this side never saw
@@ -270,7 +270,7 @@ fn (mut app App) load_recording(path string) {
 		if is_j1939 {
 			mut rr := tps[e.iface] or { j1939.Reassembler{} }
 			ev := if tp_part {
-				rr.observe(f.id, f.extended, f.rtr, f.data, t_row)
+				rr.observe(f.id, f.extended, f.rtr, f.fd, f.data, t_row)
 			} else if rr.pending() > 0 {
 				j1939.TpEvents{
 					aborted: rr.tick(t_row)
