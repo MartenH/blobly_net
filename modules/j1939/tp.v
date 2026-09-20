@@ -57,6 +57,20 @@ pub fn parse_cm(data []u8) ?Cm {
 	}
 }
 
+// acknowledges is THE rule for whether an EndOfMsgACK names a given open transfer: its group,
+// its byte count and its packet count, all three.
+//
+// One rule for the same reason `admission` below is one: the reassembler and `Transfers` both
+// act on it, and a rule written twice is two rules the moment one is corrected — which is
+// exactly what happened here, the PGN-only check being fixed in the reassembler and left in the
+// walker one round earlier (codex). A stale or malformed acknowledgement of an EARLIER transfer
+// between the same pair, of the same group, otherwise closes the newer one: the reassembler
+// abandons a message it could have rejoined, and the walker forgets the announcement verdict,
+// so the rest of that transfer's packets replay as unknown.
+pub fn (c Cm) acknowledges(pgn u32, total int, packets int) bool {
+	return c.pgn == pgn && c.total == total && c.packets == packets
+}
+
 // admission is THE rule for whether a TP.CM frame announces a transfer this module will follow,
 // and why not when it does not — for the reassembler, which narrates the reason, and for
 // Transfers, which attributes frames and must refuse exactly the same announcements, or the two
@@ -138,6 +152,7 @@ pub:
 struct Open {
 	pgn      u32
 	priority u8
+	total    int // bytes announced; with `packets`, what an acknowledgement must name (acknowledges)
 	packets  int
 	bam      bool
 mut:
@@ -235,6 +250,7 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				t.open[k] = Open{
 					pgn: cm.pgn
 					priority: id.priority
+					total: cm.total
 					packets: cm.packets
 					bam: cm.ctrl == cm_bam
 					next: 1
@@ -289,7 +305,7 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				rk := skey(id.da(), id.sa)
 				mut done := false
 				if s := t.open[rk] {
-					if s.pgn == cm.pgn {
+					if cm.acknowledges(s.pgn, s.total, s.packets) {
 						t.open.delete(rk)
 						done = true
 					}
@@ -656,6 +672,18 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			if mut s := r.sessions[k] {
 				if s.pgn == carried {
 					s.t_last_ms = now_ms
+					// It also names WHICH PACKET to send next, and a receiver that missed one
+					// sends the peer BACK. The retransmission then arrived as a sequence the
+					// listener had already passed, was read as a duplicate, and abandoned a
+					// transfer that was recovering perfectly well (codex). Only backwards, and
+					// only within what was announced: a CTS asking for a packet this listener
+					// has not reached yet would skip bytes it never saw, and one outside the
+					// transfer names nothing.
+					want := data[2]
+					if want >= 1 && want < s.next && int(want) <= s.packets() {
+						s.next = want
+						s.data = s.data[..(int(want) - 1) * 7]
+					}
 					r.sessions[k] = s
 				}
 			}
@@ -673,7 +701,7 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 				// otherwise drop the NEWER session as though the receiver had completed it —
 				// and `Transfers.step_at` would clear its subtraction verdict with it, turning
 				// the rest of its packets into orphans (codex).
-				if s.pgn == carried && cm.total == s.total && cm.packets == s.packets() {
+				if cm.acknowledges(s.pgn, s.total, s.packets()) {
 					ev.faults << s.fault(.sequence, 'acknowledged complete by SA 0x${id.sa:02X} after ${s.progress()}; the rest never reached this listener; dropped')
 					r.sessions.delete(k)
 				}

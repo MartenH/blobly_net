@@ -21,11 +21,14 @@ fn rts(sa u8, da u8, total int, pgn u32) transport.CanFrame {
 	return cm(sa, da, cm_rts, total, (total + 6) / 7, pgn)
 }
 
-fn cts(sa u8, da u8, pgn u32) transport.CanFrame {
+// cts names the packet the receiver wants next, because that field MEANS something: a receiver
+// that missed one sends the sender back to it. `next_pkt` was a hardcoded 1 while the listener
+// ignored the byte, which read as "resume from the beginning" the moment it stopped ignoring it.
+fn cts(sa u8, da u8, pgn u32, next_pkt u8) transport.CanFrame {
 	return transport.CanFrame{
 		id:       compose(7, pgn_tp_cm, da, sa)
 		extended: true
-		data:     [cm_cts, 0xFF, 1, 0xFF, 0xFF, u8(pgn & 0xFF), u8((pgn >> 8) & 0xFF),
+		data:     [cm_cts, 0xFF, next_pkt, 0xFF, 0xFF, u8(pgn & 0xFF), u8((pgn >> 8) & 0xFF),
 			u8((pgn >> 16) & 0xFF)]
 	}
 }
@@ -109,13 +112,14 @@ fn test_rts_cts_session_with_flow_control_interleaved() {
 	mut ev := r.feed(rts(0x17, 0x00, msg.len, 0xFED8), 0)
 	assert ev.faults.len == 0
 	// the receiver's CTS and, at the end, its acknowledgement change nothing
-	assert r.feed(cts(0x00, 0x17, 0xFED8), 1).done.len == 0
+	assert r.feed(cts(0x00, 0x17, 0xFED8, 1), 1).done.len == 0
 	assert r.open() == 1
 	mut done := []Assembled{}
 	mut t := 2.0
 	for i, p in packets(0x17, 0x00, msg) {
 		if i % 16 == 0 {
-			r.feed(cts(0x00, 0x17, 0xFED8), t)
+			// the packet the receiver is actually waiting for, which is this one
+			r.feed(cts(0x00, 0x17, 0xFED8, u8(i + 1)), t)
 		}
 		t += 1
 		ev = r.feed(p, t)
@@ -260,8 +264,8 @@ fn test_timeout_expires_a_stalled_session() {
 fn test_cts_for_another_pgn_does_not_refresh_the_session() {
 	mut r := Reassembler{}
 	r.feed(rts(0x17, 0x00, 20, 0xFED8), 0)
-	assert r.feed(cts(0x00, 0x17, dm1), 1000).faults.len == 0 // another PGN: not this session's
-	ev := r.feed(cts(0x00, 0x17, dm1), 1300) // 1300 ms after the RTS with nothing of its own
+	assert r.feed(cts(0x00, 0x17, dm1, 1), 1000).faults.len == 0 // another PGN: not this session's
+	ev := r.feed(cts(0x00, 0x17, dm1, 1), 1300) // 1300 ms after the RTS with nothing of its own
 	assert ev.faults.len == 1 && ev.faults[0].kind == .timeout
 	assert r.open() == 0
 }
@@ -319,7 +323,7 @@ fn test_transfers_expire_on_the_callers_clock() {
 	assert t.open() == 0
 	// a connection lives on its receiver's CTS, and gets T3
 	t.step_at(rts(0x17, 0x00, msg.len, 0xFED8), 10.0)
-	assert t.step_at(cts(0x00, 0x17, 0xFED8), 11.0).role == .receiver
+	assert t.step_at(cts(0x00, 0x17, 0xFED8, 1), 11.0).role == .receiver
 	assert t.step_at(dt(0x17, 0x00, 1, message(7)), 12.0).role == .packet // 1.0 s after the CTS: alive
 	assert t.step_at(dt(0x17, 0x00, 2, message(7)), 13.5).role == .stray // 1.5 s: expired
 	// the clockless step expires nothing
@@ -396,7 +400,7 @@ fn test_transfers_abort_by_pgn_and_the_receiver_side() {
 	mut t := Transfers{}
 	t.step(rts(0x17, 0x00, 20, 0xFED8)) // 0x17 -> 0x00
 	t.step(rts(0x00, 0x17, 30, dm1)) // 0x00 -> 0x17
-	assert t.step(cts(0x00, 0x17, 0xFED8)).role == .receiver
+	assert t.step(cts(0x00, 0x17, 0xFED8, 1)).role == .receiver
 	// 0x00 aborts the DM1 it is SENDING: its own transfer, by PGN
 	ab := t.step(abort(0x00, 0x17, 2, dm1))
 	assert ab.role == .sender_abort && ab.pgn == dm1 && ab.sa == 0x00 && ab.done
@@ -509,15 +513,15 @@ fn test_cts_keeps_a_connection_alive_and_it_gets_the_longer_wait() {
 	msg := message(20)
 	r.feed(rts(0x17, 0x00, msg.len, 0xFED8), 0)
 	// the receiver takes a second to answer: within T3, and nothing else times it out
-	assert r.feed(cts(0x00, 0x17, 0xFED8), 1000).faults.len == 0
+	assert r.feed(cts(0x00, 0x17, 0xFED8, 1), 1000).faults.len == 0
 	assert r.open() == 1
 	// a hold: CTS again, well past T1 since the last data frame there never was
-	assert r.feed(cts(0x00, 0x17, 0xFED8), 2000).faults.len == 0
+	assert r.feed(cts(0x00, 0x17, 0xFED8, 1), 2000).faults.len == 0
 	assert r.open() == 1
 	p := packets(0x17, 0x00, msg)
 	assert r.feed(p[0], 2100).faults.len == 0
 	// silence past T3 from the last frame of either side is a timeout
-	ev := r.feed(cts(0x00, 0x17, 0xFED8), 3400)
+	ev := r.feed(cts(0x00, 0x17, 0xFED8, 1), 3400)
 	assert ev.faults.len == 1 && ev.faults[0].kind == .timeout
 	assert r.open() == 0
 	// a BAM has no receiver to wait for: T1 applies
@@ -667,4 +671,29 @@ fn test_odd_padding_is_reported_and_the_message_still_arrives() {
 	q.feed(dt(0x00, addr_global, 1, [u8(1), 2, 3, 4, 5, 6, 7]), 10)
 	good := q.feed(dt(0x00, addr_global, 2, [u8(8), 9]), 20)
 	assert good.done.len == 1 && good.faults.len == 0
+}
+
+// A receiver that missed a packet sends the sender BACK to it, and the retransmission that
+// follows is not a duplicate. Ignored, the listener read it as one and abandoned a transfer
+// that was recovering perfectly well (codex).
+fn test_a_clear_to_send_may_ask_for_an_earlier_packet() {
+	msg := message(20) // three packets
+	ps := packets(0x17, 0x00, msg)
+	mut r := Reassembler{}
+	r.feed(rts(0x17, 0x00, msg.len, dm1), 0)
+	r.feed(ps[0], 1)
+	r.feed(ps[1], 2)
+	// the receiver missed packet 2 and asks for it again
+	assert r.feed(cts(0x00, 0x17, dm1, 2), 3).faults.len == 0
+	ev := r.feed(ps[1], 4)
+	assert ev.faults.len == 0, ev.faults.str()
+	done := r.feed(ps[2], 5)
+	assert done.done.len == 1
+	assert done.done[0].data == msg, 'the rewound packet is in its place'
+	// a CTS asking for a packet the listener has NOT reached would skip bytes it never saw
+	mut f := Reassembler{}
+	f.feed(rts(0x17, 0x00, msg.len, dm1), 0)
+	f.feed(ps[0], 1)
+	f.feed(cts(0x00, 0x17, dm1, 3), 2)
+	assert f.feed(ps[1], 3).faults.len == 0, 'still expecting packet 2'
 }
