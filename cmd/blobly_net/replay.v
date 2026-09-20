@@ -101,7 +101,13 @@ fn (mut app App) load_recording(path string) {
 	// #171 caught one shared listener filing the collision as faults on neither wire). Filed
 	// under the recording's labels (they are the file's buses, not this project's wires); the
 	// per-wire J1939 gate is asked through the label's resolution to a project wire (`ifc`).
-	mut j1939_obs := map[string]J1939Obs{}
+	// POINTERS, like the live path's `app.j1939_obs`. A value map deep-copies the listener on
+	// every read AND every write — V's copy semantics for a struct holding maps — so the
+	// per-frame bookkeeping below allocated a listener per bus per frame, and the cross-bus
+	// expiry sweep copied every OTHER bus's listener as well. On the 13-bus, 1.23 M-frame
+	// recording that is tens of millions of allocations, on the import path #299/#300 took the
+	// allocation rate out of (codex).
+	mut j1939_obs := map[string]&J1939Obs{}
 	// The FILE's directories and name caches live under a NUL-prefixed `rec:<label>`, never under
 	// the label itself: a candump line is labelled with the interface it was recorded on, which can be the
 	// live wire's own key (`vcan0`), and loading a recording pauses the run without stopping it —
@@ -310,22 +316,23 @@ fn (mut app App) load_recording(path string) {
 		} else {
 			gate_of[e.iface] or { gate_only }
 		}
-		mut obs := j1939_obs[e.iface] or { J1939Obs{} }
+		mut obs := j1939_obs[e.iface] or {
+			n := &J1939Obs{}
+			j1939_obs[e.iface] = n
+			n
+		}
 		tp_done := app.j1939_note_locked(mut obs, e.iface, gate, rk, f, t_row)
-		j1939_obs[e.iface] = obs
 		rec_gates[e.iface] = gate
 		t_last = t_row
 		// The OTHER buses' listeners see this frame's time too: a transfer on a bus that went
 		// quiet while another kept talking would otherwise never reach its timeout, since
 		// nothing of its own feeds it (codex on #329). Only listeners with a session open pay.
 		if j1939_obs.len > 1 {
-			for lbl in j1939_obs.keys() {
-				if lbl == e.iface || j1939_obs[lbl].tp.open() == 0 {
+			for lbl, mut other in j1939_obs {
+				if lbl == e.iface || other.tp.open() == 0 {
 					continue
 				}
-				mut other := j1939_obs[lbl]
 				app.j1939_expire_locked(mut other, lbl, rec_gates[lbl] or { '' }, t_row)
-				j1939_obs[lbl] = other
 			}
 		}
 		visible := i >= first_row // trimmed rows are never drawn, so they are not built
@@ -354,13 +361,11 @@ fn (mut app App) load_recording(path string) {
 	}
 	// And once more at the file's end: a transfer still open then waited at least as long as
 	// the recording went on after its last frame, and where that is past its limit it is said.
-	for lbl in j1939_obs.keys() {
-		if j1939_obs[lbl].tp.open() == 0 {
+	for lbl, mut other in j1939_obs {
+		if other.tp.open() == 0 {
 			continue
 		}
-		mut other := j1939_obs[lbl]
 		app.j1939_expire_locked(mut other, lbl, rec_gates[lbl] or { '' }, t_last)
-		j1939_obs[lbl] = other
 	}
 	// What the ring actually holds, counted rather than assumed — frames and rejoined rows
 	// alike: the rows share the ring, and past its cap the OLDEST go, so with enough rejoined
