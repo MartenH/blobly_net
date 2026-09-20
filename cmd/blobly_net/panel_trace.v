@@ -513,6 +513,9 @@ mut:
 	id     u32
 	ext    bool
 	someip bool // the row's kind, carried so the CAN consumers below can refuse it
+	// The group's key, so the comparator can be TOTAL: everything above it in that function
+	// gives the reader an order, and this decides what is merely distinct.
+	key string
 	someip_type  u8 // its message type: part of the group identity, so part of the order
 	someip_iface u8 // its interface version, for the same reason
 	someip_proto u8 // and its protocol version: an invalid one must not merge into valid traffic
@@ -661,6 +664,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		k := r.gkey()
 		mut g := app.gagg[k] or {
 			GAgg{
+				key:    k // the map key, not a second gkey() call: the comparator leans on them being one string
 				origin: r.origin
 				ch:     r.ch
 				id:     r.id
@@ -765,6 +769,18 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if a.someip_bad_fixed != b.someip_bad_fixed {
 			return if !a.someip_bad_fixed { -1 } else { 1 }
+		}
+		// AND THE KEY ITSELF, AFTER EVERYTHING ELSE. Every test above orders the groups the way
+		// a reader wants to see them, numerically and by field; this one only makes the
+		// comparator TOTAL, because distinct groups have distinct keys by construction. Written
+		// as a list of fields alone it fell behind the key twice — `ext` once, and now a
+		// rejoined transfer's receiver (`tp_da`) — and each time two groups compared equal and
+		// their rows swapped between redraws, since the aggregates come from a map. LAST, or it
+		// would return before the ordering above it could run and sort those groups by the
+		// decimal text inside the key. A field still belongs above for ORDER; it no longer has
+		// to be there for correctness.
+		if a.key != b.key {
+			return if a.key < b.key { -1 } else { 1 }
 		}
 		return 0
 	})

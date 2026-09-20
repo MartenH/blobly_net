@@ -727,9 +727,14 @@ fn moved_watch(w Watch, new_id u32) Watch {
 	}
 	pgn := j1939.pgn(new_id)
 	mine := j1939.decompose(w.id)
+	// THE RECEIVER THE WATCH CARRIES, not one read back out of its identifier: a PDU2
+	// identifier cannot encode one, so `da()` answers global there and a move from a broadcast
+	// group to an addressed one lost the connection's receiver entirely — which is why the
+	// watch carries it beside the identifier at all (codex).
+	da := if w.da >= 0 { u8(w.da) } else { mine.da() }
 	return Watch{
 		...w.moved_to(pgn)
-		id: j1939.compose(mine.priority, pgn, mine.da(), mine.sa)
+		id: j1939.compose(mine.priority, pgn, da, mine.sa)
 	}
 }
 
@@ -1359,6 +1364,12 @@ fn (mut app App) rebuild_from_proj() {
 	app.j1939_any = app.dbs.any(it.j1939_declared())
 	// the databases may have changed under every cached name and key
 	app.j1939_labels = map[string]&LabelCache{}
+	// AND THE ADDRESS DIRECTORY, for the same reason Start empties it: what it holds was
+	// learned from claims read while the reading was on, and a wire that went off and came back
+	// — a declaration removed and restored — would otherwise label new rows with names claimed
+	// under the old configuration, which the operator has since changed (codex). A claim is
+	// re-learned from the next one on the wire; a stale one names an ECU that may not be there.
+	app.j1939_nodes = map[string]j1939.Directory{}
 	app.dest_cache = map[string]string{}
 	// A recording on screen was stamped and rejoined under the reading in force when it was
 	// loaded; in auto that reading just moved with the databases (a J1939 DBC attached or
