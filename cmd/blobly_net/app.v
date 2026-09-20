@@ -1390,7 +1390,11 @@ fn (mut app App) rebuild_from_proj() {
 	old_any := app.j1939_any
 	app.j1939_dbs = map[string]bool{}
 	for c in app.chans {
-		if c.doip {
+		// NOT AN ETHERNET ROW of either kind. `doip` alone let a SOME/IP channel into the
+		// census, so a database attached to one decided a gate for a UDP destination no CAN
+		// frame is ever read against — and `dbs_for_gate` skips those rows, so the gate said
+		// J1939 about a wire whose databases it would not then look at (codex).
+		if c.doip || c.someip {
 			continue
 		}
 		dk := transport.destination_key_for(c.adapter, c.iface)

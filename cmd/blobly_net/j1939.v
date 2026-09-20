@@ -101,11 +101,14 @@ fn (app &App) j1939_on_locked(gate string) bool {
 // answers to, which takes the project-wide default). Spelled with a NUL byte, which no
 // destination key can carry — every one is derived from an interface string that reaches a C
 // API — so a wire cannot be named into it (codex on #329, on a readable spelling).
-// NO NUL BYTE IN IT. This value ends up on a rejoined row as its wire, and from there inside
-// ImGui identity strings — which are NUL-terminated, so everything after the byte was cut and
-// two groups that differ only by wire collided in the widget tree (codex). The `?` cannot begin
-// a destination key either, and it reads in a log line.
-const j1939_gate_undecidable = '?undecidable'
+// NO NUL BYTE IN IT, and not a string any interface can be called. The value ends up on a
+// rejoined row as its wire, and from there inside ImGui identity strings — which are
+// NUL-terminated, so everything after such a byte was cut and two groups differing only by
+// wire collided in the widget tree (codex). The SPACE is what keeps it impossible: a SocketCAN
+// device name cannot contain one, so no real destination key can equal this (codex again, on
+// the first replacement, which a device literally named `?undecidable` would have collided
+// with). And it reads in a log line, which the NUL never did.
+const j1939_gate_undecidable = '? undecidable'
 
 // j1939_display_locked is the row's NAME cell on a J1939 wire: the database's name and the
 // reading — `EEC1  PGN 0xF004 SA 0x00 Engine` — or the reading alone where the database has no
@@ -360,19 +363,27 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 // as given.
 fn find_pgn_message_idx(dbs []candb.Database, pgn u32, sa u8) ?int {
 	winner := find_pgn_message_in(dbs, pgn, sa) or { return none }
+	// BY DECLARATION AS WELL. The lookup prefers a DECLARED message over an undeclared one of
+	// the same name and id, so matching on identity alone named the earlier, undeclared
+	// database as the winner of a search the later, declared one had actually won (codex).
 	for i, db in dbs {
 		if m := db.lookup_pgn_sa(pgn, sa) {
-			if m.name == winner.name && m.id == winner.id && m.ext == winner.ext {
+			if same_definition(m, winner) {
 				return i
 			}
 		}
 		if m := db.lookup_pgn(pgn) {
-			if m.name == winner.name && m.id == winner.id && m.ext == winner.ext {
+			if same_definition(m, winner) {
 				return i
 			}
 		}
 	}
 	return none
+}
+
+// same_definition compares two candidates the way the lookup that chose between them does.
+fn same_definition(a candb.Message, b candb.Message) bool {
+	return a.name == b.name && a.id == b.id && a.ext == b.ext && a.j1939 == b.j1939
 }
 
 fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
@@ -494,6 +505,17 @@ fn (app &App) group_message_kind(r TraceRow, someip bool) ?candb.Message {
 		return none
 	}
 	return app.group_message(r)
+}
+
+// watch_message is the message a WATCH decodes against — its own wire's databases by PGN for a
+// rejoined message, every loaded database by id for a frame. The same split `group_message`
+// makes for a row, asked of the watch that selects those rows, so the two cannot disagree about
+// whether a plotted signal still exists.
+fn (app &App) watch_message(w Watch) ?candb.Message {
+	if !w.tp {
+		return app.find_message(w.id, w.ext)
+	}
+	return app.message_for(w.id, w.ext, true, app.dbs_for_gate(w.wire))
 }
 
 // j1939_narrate_locked puts one fault in the Log, within the budget. Caller holds app.mu.

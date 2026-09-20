@@ -512,7 +512,12 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_refresh_trace_names()
 			mut kept := []Watch{cap: app.watch.len}
 			for w in app.watch {
-				if m := app.find_message(w.id, w.ext) {
+				// A REJOINED watch is revalidated the way its rows are DECODED: against its own
+				// wire, by PGN. Asked through `find_message` — every loaded database, by exact
+				// id — a revert dropped a watch whose message is defined perfectly well on its
+				// own wire under another source address, which is the lookup that names it
+				// (codex).
+				if m := app.watch_message(w) {
 					mut have := false
 					for sg in m.signals {
 						if sg.name == w.sig {
@@ -1004,9 +1009,23 @@ fn draw_dbc_editor(mut app App) {
 					break
 				}
 				if app.wires_of_db(di).any(w.renamed_by(old_id2, old_ext2, it, j1939.pgn(old_id2))) {
-					app.watch[wi] = Watch{
-						...moved_watch(w, nid)
-						ext: next
+					// A STANDARD frame is never a rejoined J1939 message: the kind goes with
+					// the width, or the watch stays `tp` on an 11-bit id and covers nothing
+					// (codex). Its wire and receiver go with it, being that kind's fields.
+					app.watch[wi] = if next {
+						Watch{
+							...moved_watch(w, nid)
+							ext: next
+						}
+					} else {
+						Watch{
+							...moved_watch(w, nid)
+							ext:  next
+							tp:   false
+							wire: ''
+							da:   -1
+							pgn:  0
+						}
 					}
 				}
 			}
