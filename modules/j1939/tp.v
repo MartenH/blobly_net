@@ -57,6 +57,18 @@ pub fn parse_cm(data []u8) ?Cm {
 	}
 }
 
+// receiver_control says whether a control frame can be THE RECEIVER'S, for a session that is
+// or is not a broadcast.
+//
+// Two halves, stated once because both branches that look a session up the reversed way need
+// them: a BAM has no receiver at all, so nothing answers one; and the global and null addresses
+// originate nothing, so a frame "from" either is of some other making. Without this, a CTS
+// sourced from 0xFF and addressed to a BAM's originator resolved onto the broadcast session and
+// could refresh, rewind or truncate it, and an acknowledgement could close it (codex).
+pub fn receiver_control(id Id, bam bool) bool {
+	return !bam && id.sa != addr_global && id.sa != addr_null
+}
+
 // acknowledges is THE rule for whether an EndOfMsgACK names a given open transfer: its group,
 // its byte count and its packet count, all three.
 //
@@ -305,7 +317,9 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				rk := skey(id.da(), id.sa)
 				mut done := false
 				if s := t.open[rk] {
-					if cm.acknowledges(s.pgn, s.total, s.packets) {
+					// `receiver_control` here too, for the reassembler's reason: a BAM has no
+					// receiver, and the global and null addresses originate nothing.
+					if receiver_control(id, s.bam) && cm.acknowledges(s.pgn, s.total, s.packets) {
 						t.open.delete(rk)
 						done = true
 					}
@@ -320,10 +334,10 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 			}
 			cm_cts {
 				// the receiver talking keeps the connection it names alive, as it does for the
-				// reassembler
+				// reassembler — and only a real receiver of a real connection (receiver_control)
 				rk := skey(id.da(), id.sa)
 				if mut s := t.open[rk] {
-					if s.pgn == cm.pgn {
+					if receiver_control(id, s.bam) && s.pgn == cm.pgn {
 						s.last_s = t_s
 						t.open[rk] = s
 					}
@@ -670,7 +684,12 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			// nodes — delayed, or malformed — must not keep a stalled one open (codex on #329).
 			k := skey(id.da(), id.sa)
 			if mut s := r.sessions[k] {
-				if s.pgn == carried {
+				// NOT A BROADCAST. A BAM has no receiver, so nothing legitimately answers one —
+				// and a CTS sourced from the global address resolves this reversed key straight
+				// onto the broadcast session, where matching its PGN would refresh its timeout
+				// and rewind or truncate what it has assembled (codex). `receiver_control`
+				// states both halves of that once.
+				if receiver_control(id, s.bam) && s.pgn == carried {
 					s.t_last_ms = now_ms
 					// It also names WHICH PACKET to send next, and a receiver that missed one
 					// sends the peer BACK. The retransmission then arrived as a sequence the
@@ -696,12 +715,13 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			// timeout a second later (codex on #329).
 			k := skey(id.da(), id.sa)
 			if s := r.sessions[k] {
+				// Not a broadcast's, and not from a non-node, for the CTS's reason above.
 				// By the SIZE AND PACKET COUNT it names as well as the PGN. An acknowledgement
 				// of an earlier transfer between the same pair, of the same group, would
 				// otherwise drop the NEWER session as though the receiver had completed it —
 				// and `Transfers.step_at` would clear its subtraction verdict with it, turning
 				// the rest of its packets into orphans (codex).
-				if cm.acknowledges(s.pgn, s.total, s.packets()) {
+				if receiver_control(id, s.bam) && cm.acknowledges(s.pgn, s.total, s.packets()) {
 					ev.faults << s.fault(.sequence, 'acknowledged complete by SA 0x${id.sa:02X} after ${s.progress()}; the rest never reached this listener; dropped')
 					r.sessions.delete(k)
 				}

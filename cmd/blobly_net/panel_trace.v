@@ -817,6 +817,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 				app.sel_tp = r.tp
+				app.sel_wire = r.wire
 			}
 			// right-click a row → context menu (plot its signals / add to filter). Both entries
 			// are CAN-only for the same reason: the lookup goes to the loaded DBCs, so a SOME/IP
@@ -829,7 +830,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				if m := app.group_message(r) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
-							app.add_watch(g.id, g.ext, r.tp, s.name)
+							app.add_watch(g.id, g.ext, r.tp, r.wire, s.name)
 						}
 						app.show_graphics = true
 					}
@@ -920,7 +921,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						vgui.selectable('    ${s.name}##sigrow${g.id}_${g.ext}_${s.name}', false)
 						if vgui.begin_popup_context_item('sigctx##${g.id}_${g.ext}_${s.name}') {
 							if vgui.menu_item('Add ${s.name} to Graphics') {
-								app.add_watch(g.id, g.ext, r.tp, s.name)
+								app.add_watch(g.id, g.ext, r.tp, r.wire, s.name)
 								app.show_graphics = true
 							}
 							vgui.end_popup()

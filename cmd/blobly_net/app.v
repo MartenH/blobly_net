@@ -284,6 +284,7 @@ mut:
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
+	sel_wire      string  // the wire the selection came off; scopes a rejoined message's lookup
 	sel_tp        bool    // the selection is a rejoined TP message, not a frame (see Watch.tp)
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
@@ -678,27 +679,36 @@ struct Watch {
 	// as it is of the trace's group key: one PGN can arrive both short and over TP, and a
 	// series that matched on id alone mixed the two payload shapes (codex on #329).
 	tp bool
+	// The WIRE a rejoined message came off, and the wire whose databases decode it. Empty on an
+	// ordinary frame's watch, which stays unscoped — that is #330, for every row.
+	//
+	// Needed HERE because a rejoined message is looked up BY PGN: two wires defining one
+	// (PGN, SA) differently give a plot that merges the buses and decodes one with the other's
+	// layout, which the trace itself does not do — `group_message` scopes the same lookup to
+	// the row's wire (codex).
+	wire string
 }
 
-fn (app &App) is_watched(id u32, ext bool, tp bool, sig string) bool {
+fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) bool {
 	for w in app.watch {
-		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.wire == wire && w.sig == sig {
 			return true
 		}
 	}
 	return false
 }
 
-fn (mut app App) toggle_watch(id u32, ext bool, tp bool, sig string) {
+fn (mut app App) toggle_watch(id u32, ext bool, tp bool, wire string, sig string) {
 	for i, w in app.watch {
-		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.wire == wire && w.sig == sig {
 			app.watch.delete(i)
 			return
 		}
 	}
 	app.watch << Watch{
-		id:  id
-		ext: ext
+		id:   id
+		ext:  ext
+		wire: wire
 		sig: sig
 		tp:  tp
 	}
@@ -706,15 +716,16 @@ fn (mut app App) toggle_watch(id u32, ext bool, tp bool, sig string) {
 
 // add_watch plots a signal (idempotent — no-op if already plotted). Used by the Trace
 // right-click, which adds without removing an already-plotted signal.
-fn (mut app App) add_watch(id u32, ext bool, tp bool, sig string) {
+fn (mut app App) add_watch(id u32, ext bool, tp bool, wire string, sig string) {
 	for w in app.watch {
-		if w.id == id && w.ext == ext && w.tp == tp && w.sig == sig {
+		if w.id == id && w.ext == ext && w.tp == tp && w.wire == wire && w.sig == sig {
 			return
 		}
 	}
 	app.watch << Watch{
-		id:  id
-		ext: ext
+		id:   id
+		ext:  ext
+		wire: wire
 		sig: sig
 		tp:  tp
 	}
@@ -1266,6 +1277,7 @@ fn (mut app App) rebuild_from_proj() {
 			app.sel_id = int(db.messages[0].id)
 			app.sel_ext = db.messages[0].ext
 			app.sel_tp = false
+			app.sel_wire = ''
 			break
 		}
 	}

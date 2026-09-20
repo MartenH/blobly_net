@@ -697,3 +697,39 @@ fn test_a_clear_to_send_may_ask_for_an_earlier_packet() {
 	f.feed(cts(0x00, 0x17, dm1, 3), 2)
 	assert f.feed(ps[1], 3).faults.len == 0, 'still expecting packet 2'
 }
+
+// A BAM has no receiver, and the global and null addresses originate nothing — so a control
+// frame reaching a broadcast session by the reversed key must settle nothing. Without that, a
+// CTS "from" 0xFF refreshed, rewound or truncated an open BAM, and an acknowledgement closed it.
+fn test_a_broadcast_takes_no_receiver_control() {
+	msg := message(20)
+	ps := packets(0x00, addr_global, msg)
+	for ctrl in ['cts', 'eom'] {
+		mut r := Reassembler{}
+		r.feed(bam(0x00, msg.len, dm1), 0)
+		r.feed(ps[0], 1)
+		r.feed(ps[1], 2)
+		// addressed to the BAM's originator, sourced from the address a broadcast goes to
+		f := if ctrl == 'cts' {
+			cts(addr_global, 0x00, dm1, 1)
+		} else {
+			cm(addr_global, 0x00, cm_eom_ack, msg.len, 3, dm1)
+		}
+		ev := r.feed(f, 3)
+		assert ev.faults.len == 0, '${ctrl}: ${ev.faults.str()}'
+		assert r.open() == 1, '${ctrl}: the broadcast is untouched'
+		// and it still completes with everything it had
+		done := r.feed(ps[2], 4)
+		assert done.done.len == 1, ctrl
+		assert done.done[0].data == msg, '${ctrl}: nothing was rewound or truncated'
+	}
+}
+
+// A real connection still answers to its real receiver.
+fn test_a_connection_still_takes_its_receivers_control() {
+	msg := message(20)
+	mut r := Reassembler{}
+	r.feed(rts(0x17, 0x00, msg.len, dm1), 0)
+	assert r.feed(cts(0x00, 0x17, dm1, 1), 1).faults.len == 0
+	assert r.open() == 1
+}

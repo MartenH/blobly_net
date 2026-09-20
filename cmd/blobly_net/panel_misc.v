@@ -681,13 +681,16 @@ fn build_layout() {
 // this change first did, does not cover matching one that a real CAN frame added. `tp` is the
 // same question for the other kind: a rejoined J1939 message and a single frame at that
 // identifier are two producers.
-fn latest_data(rows []TraceRow, id u32, ext bool, tp bool) []u8 {
+fn latest_data(rows []TraceRow, id u32, ext bool, tp bool, wire string) []u8 {
 	mut i := rows.len - 1
 	for i >= 0 {
 		// has_payload: an RTR row matching this id would return its zero-filled DLC
 		// placeholder as the "latest value" of every signal
+		// `wire` only where it distinguishes: a rejoined message is looked up by PGN, and two
+		// wires may define one (PGN, SA) differently. An ordinary frame's watch stays unscoped,
+		// which is #330.
 		if !rows[i].someip && rows[i].id == id && rows[i].ext == ext && rows[i].tp == tp
-			&& rows[i].has_payload() {
+			&& (!tp || rows[i].wire == wire) && rows[i].has_payload() {
 			return rows[i].data
 		}
 		i--
@@ -720,6 +723,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 				app.sel_id = int(m.id)
 				app.sel_ext = m.ext
 				app.sel_tp = false
+				app.sel_wire = ''
 			}
 		}
 	}
@@ -730,12 +734,19 @@ fn draw_signals(mut app App, rows []TraceRow) {
 		vgui.end()
 		return
 	}
-	m := app.message_for(u32(app.sel_id), app.sel_ext, app.sel_tp, app.dbs) or {
+	// The wire's databases for a rejoined message, every loaded one for a frame — the same
+	// scoping the trace's `group_message` uses, so the panel and the row cannot decode one
+	// (PGN, SA) two ways (codex).
+	m := app.message_for(u32(app.sel_id), app.sel_ext, app.sel_tp, if app.sel_tp {
+		app.dbs_for_gate(app.sel_wire)
+	} else {
+		app.dbs
+	}) or {
 		vgui.text_dim('message not in DBC')
 		vgui.end()
 		return
 	}
-	data := latest_data(rows, u32(app.sel_id), app.sel_ext, app.sel_tp)
+	data := latest_data(rows, u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire)
 	if data.len == 0 {
 		vgui.text('${m.name}: no frame received yet')
 		vgui.end()
@@ -751,10 +762,10 @@ fn draw_signals(mut app App, rows []TraceRow) {
 		for s in m.active_signals(data) {
 			vgui.table_row()
 			vgui.table_next_col()
-			watched := app.is_watched(u32(app.sel_id), app.sel_ext, app.sel_tp, s.name)
+			watched := app.is_watched(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, s.name)
 			nw := vgui.checkbox('##w_${m.id}_${s.name}', watched)
 			if nw != watched {
-				app.toggle_watch(u32(app.sel_id), app.sel_ext, app.sel_tp, s.name)
+				app.toggle_watch(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, s.name)
 			}
 			vgui.table_cell(s.name)
 			lbl := s.label(data)
@@ -793,7 +804,8 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 		// inject a zero sample into the middle of the series
 		// `!r.someip`, for latest_data's reason: a plotted series must not take its points from a
 		// payload that no DBC signal describes; `tp` for the other kind, a rejoined message.
-		if !r.someip && r.id == w.id && r.ext == w.ext && r.tp == w.tp && r.has_payload() {
+		if !r.someip && r.id == w.id && r.ext == w.ext && r.tp == w.tp
+			&& (!w.tp || r.wire == w.wire) && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}
