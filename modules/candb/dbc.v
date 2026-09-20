@@ -73,7 +73,12 @@ pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
 // reading 29-bit ids as priority/PGN/source-address: the declaration is the database's, never
 // inferred from the ids (see Message.j1939).
 pub fn (db Database) j1939_declared() bool {
-	return db.messages.any(it.j1939)
+	// AND EXTENDED. A parameter group is a 29-bit identifier by definition, and the DBC editor
+	// can turn a message marked J1939PG into a standard-CAN one without clearing the mark — so
+	// the flag alone declared a database J1939 after that edit, and auto mode then read an
+	// 11-bit bus's frames as parameter groups (codex). The two lookups below already pair the
+	// flag with `ext` for the same reason.
+	return db.messages.any(it.j1939 && it.ext)
 }
 
 // lookup_pgn resolves a J1939 parameter group to its message: a DECLARED J1939 message with the

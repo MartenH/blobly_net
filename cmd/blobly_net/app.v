@@ -706,14 +706,23 @@ fn (app &App) wires_of_db(di int) []string {
 	return out
 }
 
-fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) bool {
-	want := Watch{
+// watch_ident builds a watch's identity, and is the ONE place its parameter group is computed:
+// a rejoined message is matched against a DBC edit by PGN (its own identifier is composed and
+// the database's `BO_` may spell another source address), so a caller that built the struct by
+// hand would have to remember that. None of them do; this does.
+fn watch_ident(id u32, ext bool, tp bool, wire string, sig string) Watch {
+	return Watch{
 		id:   id
 		ext:  ext
 		tp:   tp
 		wire: wire
 		sig:  sig
+		pgn:  if tp { j1939.pgn(id) } else { 0 }
 	}
+}
+
+fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) bool {
+	want := watch_ident(id, ext, tp, wire, sig)
 	for w in app.watch {
 		if w.same(want) {
 			return true
@@ -723,50 +732,26 @@ fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) boo
 }
 
 fn (mut app App) toggle_watch(id u32, ext bool, tp bool, wire string, sig string) {
-	want := Watch{
-		id:   id
-		ext:  ext
-		tp:   tp
-		wire: wire
-		sig:  sig
-	}
+	want := watch_ident(id, ext, tp, wire, sig)
 	for i, w in app.watch {
 		if w.same(want) {
 			app.watch.delete(i)
 			return
 		}
 	}
-	app.watch << Watch{
-		id:   id
-		ext:  ext
-		wire: wire
-		sig: sig
-		tp:  tp
-	}
+	app.watch << want
 }
 
 // add_watch plots a signal (idempotent — no-op if already plotted). Used by the Trace
 // right-click, which adds without removing an already-plotted signal.
 fn (mut app App) add_watch(id u32, ext bool, tp bool, wire string, sig string) {
-	want := Watch{
-		id:   id
-		ext:  ext
-		tp:   tp
-		wire: wire
-		sig:  sig
-	}
+	want := watch_ident(id, ext, tp, wire, sig)
 	for w in app.watch {
 		if w.same(want) {
 			return
 		}
 	}
-	app.watch << Watch{
-		id:   id
-		ext:  ext
-		wire: wire
-		sig: sig
-		tp:  tp
-	}
+	app.watch << want
 }
 
 // app_icon renders a 32×32 RGBA window/taskbar icon: an accent-blue rounded square with

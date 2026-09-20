@@ -40,8 +40,35 @@ pub:
 	pgn      u32 // the parameter group the frame is about (bytes 5..7)
 }
 
+// tp_shaped says whether a frame has the SHAPE a J1939-21 transport frame has: classic CAN,
+// not remote, extended, eight bytes.
+//
+// The FD flag matters beyond the length, and that is the hole this closes: a twelve-byte FD
+// frame was already refused by its length, but an EIGHT-byte one on a mixed FD wire passed
+// straight through and could open a session and produce a message that was never on that wire
+// (codex). J1939-21's transport protocol exists BECAUSE a classic frame carries eight bytes, so
+// an FD frame at a transport identifier is a J1939-22 or proprietary frame whose id happens to
+// compute to TP.CM or TP.DT.
+pub fn tp_shaped(f transport.CanFrame) bool {
+	return f.extended && !f.rtr && !f.fd && f.data.len == 8
+}
+
+// parse_cm_of is parse_cm over a whole FRAME, so the FD flag is part of the question.
+pub fn parse_cm_of(f transport.CanFrame) ?Cm {
+	return parse_cm_shaped(f.data, f.fd)
+}
+
+// parse_cm_shaped is parse_cm with the format the payload cannot show.
+pub fn parse_cm_shaped(data []u8, fd bool) ?Cm {
+	if fd {
+		return none
+	}
+	return parse_cm(data)
+}
+
 // parse_cm reads a TP.CM payload; none unless it is EXACTLY the eight bytes a J1939-21
-// transport frame carries. Longer is not "eight and some": on an FD-capable wire a J1939-22 or
+// transport frame carries. `tp_shaped` is the same rule over a whole frame, including the FD
+// flag a payload length cannot show. Longer is not "eight and some": on an FD-capable wire a J1939-22 or
 // proprietary frame whose id computes to TP.CM would otherwise be read as an announcement by its
 // first eight bytes and the rest invented into a message (codex on #329).
 pub fn parse_cm(data []u8) ?Cm {
@@ -225,7 +252,7 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 	pgn := id.pgn()
 	if pgn == pgn_tp_cm {
 		k := skey(id.sa, id.da())
-		cm := parse_cm(f.data) or {
+		cm := parse_cm_of(f) or {
 			// Not a frame this module reads — but its control byte, if it has one, still says
 			// whether the pair started over: a mis-sized RTS or BAM ends the previous transfer
 			// like a refused one does, or the replacement's first packet lands in the old
@@ -367,8 +394,9 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				role: .stray
 			}
 		}
-		if f.data.len != 8 {
-			// not a J1939-21 data frame (see parse_cm); it neither advances nor ends the transfer
+		if f.data.len != 8 || f.fd {
+			// not a J1939-21 data frame (see tp_shaped: the FD flag counts as well as the
+			// length); it neither advances nor ends the transfer
 			return Step{
 				role: .stray
 			}
@@ -600,11 +628,11 @@ pub fn (mut r Reassembler) feed(f transport.CanFrame, now_ms f64) Events {
 	}
 	match id.pgn() {
 		pgn_tp_cm {
-			r.on_cm(id, f.data, now_ms, mut ev)
+			r.on_cm(id, f.data, f.fd, now_ms, mut ev)
 		}
 		pgn_tp_dt {
 			late := expired.any(it.sa == id.sa && it.da == id.da())
-			r.on_dt(id, f.data, now_ms, late, mut ev)
+			r.on_dt(id, f.data, f.fd, now_ms, late, mut ev)
 		}
 		else {}
 	}
@@ -629,8 +657,8 @@ pub fn (mut r Reassembler) expire(now_ms f64) []Fault {
 	return out
 }
 
-fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
-	cm := parse_cm(data) or {
+fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Events) {
+	cm := parse_cm_shaped(data, fd) or {
 		// and a mis-sized RTS or BAM still starts the pair over — see Transfers.step_at
 		if data.len > 0 && (data[0] == cm_rts || data[0] == cm_bam) {
 			k := skey(id.sa, id.da())
@@ -781,7 +809,7 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 
 // on_dt takes a data frame; `late` says its session expired on this very frame, so it is not an
 // orphan but the packet the timeout was about.
-fn (mut r Reassembler) on_dt(id Id, data []u8, now_ms f64, late bool, mut ev Events) {
+fn (mut r Reassembler) on_dt(id Id, data []u8, fd bool, now_ms f64, late bool, mut ev Events) {
 	k := skey(id.sa, id.da())
 	mut s := r.sessions[k] or {
 		if !late {
@@ -794,8 +822,12 @@ fn (mut r Reassembler) on_dt(id Id, data []u8, now_ms f64, late bool, mut ev Eve
 	// would have to be filled from the next frame — a shifted message returned as valid, as
 	// isotp refuses a short Consecutive Frame — and longer is a frame of some other protocol on
 	// an FD wire whose tail would be silently dropped (codex on #329).
-	if data.len != 8 {
-		ev.faults << s.fault(.malformed, 'data frame of ${data.len} bytes; a transport-protocol frame carries exactly 8; dropped')
+	if data.len != 8 || fd {
+		ev.faults << s.fault(.malformed, 'data frame of ${data.len} bytes${if fd {
+			' on a CAN-FD frame'
+		} else {
+			''
+		}}; a transport-protocol frame carries exactly 8; dropped')
 		r.sessions.delete(k)
 		return
 	}

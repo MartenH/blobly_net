@@ -27,12 +27,18 @@ pub:
 	// is about every row rather than about this one.
 	wire string
 	sig  string
+	// The parameter group a REJOINED message carries, which its identifier does not settle: the
+	// id is composed from the group, the sender and a priority, while the database's `BO_` for
+	// that group may spell another source address entirely — that PGN fallback is the whole
+	// reason such a message resolves at all. So a DBC edit is matched by this, not by the id
+	// (codex). Zero on a frame's watch, which matches by id as it always did.
+	pgn u32
 }
 
 // key is the identity as one string: what a comparison compares, and what ImPlot keys a series
 // by so two of them keep their own legend entry, colour and visibility.
 pub fn (i Ident) key() string {
-	return '${i.id}|${i.ext}|${i.tp}|${i.wire}|${i.sig}'
+	return '${i.id}|${i.ext}|${i.tp}|${i.wire}|${i.pgn}|${i.sig}'
 }
 
 // same reports whether two identities are one signal.
@@ -78,9 +84,16 @@ pub fn (i Ident) covers(r Row) bool {
 // backs: the rewrite loops matched `(id, ext)` alone, so editing the first-loaded DBC moved a
 // rejoined watch belonging to a different wire to the edited id and kind. A frame's watch is
 // unscoped for the reason `covers` leaves it unscoped.
-pub fn (i Ident) rewritten_by(id u32, ext bool, wire string) bool {
-	if i.id != id || i.ext != ext {
+pub fn (i Ident) rewritten_by(id u32, ext bool, wire string, pgn u32) bool {
+	if i.ext != ext {
 		return false
 	}
-	return !i.scoped_by_wire() || i.wire == wire
+	if i.tp {
+		// BY PARAMETER GROUP. A rejoined watch's identifier is composed and the edited
+		// message's `BO_` may carry another source address or priority, so comparing the whole
+		// number missed exactly the case the PGN fallback exists for: renaming that message
+		// left the watch on the old name, plotting nothing (codex).
+		return i.pgn == pgn && i.wire == wire
+	}
+	return i.id == id
 }

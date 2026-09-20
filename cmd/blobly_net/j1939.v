@@ -393,18 +393,28 @@ fn (app &App) dbs_for_gate(gate string) []candb.Database {
 	mut seen := map[string]bool{}
 	mut placed := false
 	for c in app.chans {
-		if c.doip || c.someip || c.iface in seen {
+		if c.doip || c.someip {
 			continue
 		}
 		if transport.destination_key_for(c.adapter, c.iface) == gate {
-			seen[c.iface] = true
+			// Keyed by what is being ADDED, not by the row: two rows can share one raw
+			// interface and attach DIFFERENT databases, and skipping the second by interface
+			// left the wire auto-enabled by a declaration whose message the decode then could
+			// not find (codex). A file listed twice is still added once.
 			placed = true
 			// THE LIVE COPIES, like `loaded_dbs_for` everywhere else: `dbs_by_iface` holds
 			// value copies that refresh on save or reload, so while the DBC editor has unsaved
 			// changes a rejoined message kept the OLD bit layout, scaling and signal names in
 			// the trace, the Signals panel and Graphics — the one place an editor's point is
 			// to see the change (codex).
-			out << app.loaded_dbs_for(c.databases.map(candb.canonical_database_ref(app.resolve_asset(it))))
+			for raw in c.databases {
+				ref := candb.canonical_database_ref(app.resolve_asset(raw))
+				if ref in seen {
+					continue
+				}
+				seen[ref] = true
+				out << app.loaded_dbs_for([ref])
+			}
 		}
 	}
 	// THE FALLBACK IS FOR A GATE THIS PROJECT CANNOT PLACE, not for a wire that simply has no

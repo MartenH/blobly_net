@@ -783,3 +783,33 @@ fn test_a_clear_to_send_naming_no_real_packet_keeps_nothing_alive() {
 	assert ok.feed(cts(0x00, 0x17, dm1, 1), 1200).faults.len == 0
 	assert ok.open() == 1
 }
+
+// An EIGHT-byte FD frame at a transport identifier is the hole a length test cannot see: the
+// protocol exists because a classic frame carries eight, so such a frame is J1939-22's or a
+// proprietary one whose id happens to compute to TP.CM or TP.DT.
+fn test_an_eight_byte_fd_frame_is_not_a_tp_frame() {
+	mut fd_bam := bam(0x00, 20, dm1)
+	fd_bam.fd = true
+	assert fd_bam.data.len == 8, 'the length alone cannot refuse it'
+	assert !tp_shaped(fd_bam)
+	mut r := Reassembler{}
+	ev := r.feed(fd_bam, 0)
+	assert ev.faults.len == 1 && ev.faults[0].kind == .malformed
+	assert r.open() == 0, 'it opened no session'
+	// and the walker refuses it too, or the two disagree about which frames belong to whom
+	mut t := Transfers{}
+	assert t.step_at(fd_bam, 0.0).role != .announce
+	assert t.open() == 0
+	// an FD data frame inside a real transfer is refused the same way
+	mut q := Reassembler{}
+	q.feed(bam(0x00, 20, dm1), 0)
+	mut fd_dt := packets(0x00, addr_global, message(20))[0]
+	fd_dt.fd = true
+	dv := q.feed(fd_dt, 1)
+	assert dv.faults.len == 1 && dv.faults[0].kind == .malformed
+	assert dv.faults[0].detail.contains('CAN-FD')
+	// while the classic frames of that transfer are read as ever
+	mut ok := Reassembler{}
+	ok.feed(bam(0x00, 20, dm1), 0)
+	assert ok.feed(packets(0x00, addr_global, message(20))[0], 1).faults.len == 0
+}
