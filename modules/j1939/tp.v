@@ -295,7 +295,8 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				}
 				rk := skey(id.da(), id.sa)
 				if s := t.open[rk] {
-					if s.pgn == cm.pgn {
+					// the RECEIVER's abort, which a broadcast has none of (receiver_control)
+					if receiver_control(id, s.bam) && s.pgn == cm.pgn {
 						t.open.delete(rk)
 						return Step{
 							role: .receiver
@@ -738,9 +739,23 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			// ONE session, the originator's direction first: two nodes mid-transfer towards each
 			// other with the SAME PGN would otherwise both lose to one abort (codex on #329) —
 			// and Transfers makes the same choice, so the walker and the trace agree.
-			for k in [skey(id.sa, id.da()), skey(id.da(), id.sa)] {
+			// The forward key is the originator aborting its own transfer; the reversed one is
+			// the RECEIVER aborting, which a broadcast has none of and a non-node address
+			// cannot be — `receiver_control`, as the clear-to-send and the acknowledgement ask
+			// it. Without that, an abort "from" 0xFF deleted an open BAM through the reversed
+			// key, and cleared its rest-bus attribution with it (codex).
+			// The forward key is the ORIGINATOR aborting its own transfer; the reversed one is
+			// the RECEIVER aborting, which a broadcast has none of and a non-node address
+			// cannot be — `receiver_control`, as the clear-to-send and the acknowledgement ask
+			// it. Without that an abort "from" 0xFF deleted an open BAM through the reversed
+			// key, and `Transfers` cleared its rest-bus attribution with it (codex).
+			fwd := skey(id.sa, id.da())
+			for k in [fwd, skey(id.da(), id.sa)] {
 				if s := r.sessions[k] {
 					if s.pgn != carried {
+						continue
+					}
+					if k != fwd && !receiver_control(id, s.bam) {
 						continue
 					}
 					ev.faults << s.fault(.aborted, 'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(reason)}')

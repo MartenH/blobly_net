@@ -689,9 +689,27 @@ struct Watch {
 	wire string
 }
 
+// key is a watch's IDENTITY, in one place.
+//
+// Every site that compares, renders or rewrites a watch asks this, because a field added to the
+// identity and applied to only some of them is worse than one not added at all: `wire` arrived
+// for a rejoined message and the comparisons took it while the DBC editor's rewrites dropped it
+// and ImPlot's series id ignored it, so an edited watch matched no row and two wires' plots
+// shared a legend entry (codex, five findings in one round on one incomplete change).
+fn (w Watch) key() string {
+	return '${w.id}|${w.ext}|${w.tp}|${w.wire}|${w.sig}'
+}
+
 fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) bool {
+	want := Watch{
+		id:   id
+		ext:  ext
+		tp:   tp
+		wire: wire
+		sig:  sig
+	}.key()
 	for w in app.watch {
-		if w.id == id && w.ext == ext && w.tp == tp && w.wire == wire && w.sig == sig {
+		if w.key() == want {
 			return true
 		}
 	}
@@ -699,8 +717,15 @@ fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) boo
 }
 
 fn (mut app App) toggle_watch(id u32, ext bool, tp bool, wire string, sig string) {
+	want := Watch{
+		id:   id
+		ext:  ext
+		tp:   tp
+		wire: wire
+		sig:  sig
+	}.key()
 	for i, w in app.watch {
-		if w.id == id && w.ext == ext && w.tp == tp && w.wire == wire && w.sig == sig {
+		if w.key() == want {
 			app.watch.delete(i)
 			return
 		}
@@ -717,8 +742,15 @@ fn (mut app App) toggle_watch(id u32, ext bool, tp bool, wire string, sig string
 // add_watch plots a signal (idempotent — no-op if already plotted). Used by the Trace
 // right-click, which adds without removing an already-plotted signal.
 fn (mut app App) add_watch(id u32, ext bool, tp bool, wire string, sig string) {
+	want := Watch{
+		id:   id
+		ext:  ext
+		tp:   tp
+		wire: wire
+		sig:  sig
+	}.key()
 	for w in app.watch {
-		if w.id == id && w.ext == ext && w.tp == tp && w.wire == wire && w.sig == sig {
+		if w.key() == want {
 			return
 		}
 	}

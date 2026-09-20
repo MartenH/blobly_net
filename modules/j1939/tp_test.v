@@ -733,3 +733,29 @@ fn test_a_connection_still_takes_its_receivers_control() {
 	assert r.feed(cts(0x00, 0x17, dm1, 1), 1).faults.len == 0
 	assert r.open() == 1
 }
+
+// An abort reaches a session the RECEIVER's way round only if there could be a receiver: a
+// broadcast has none, so an abort "from" the global address must not delete an open BAM — nor
+// clear its rest-bus attribution.
+fn test_a_broadcast_takes_no_receiver_abort() {
+	msg := message(20)
+	ps := packets(0x17, addr_global, msg)
+	mut r := Reassembler{}
+	r.feed(bam(0x17, msg.len, dm1), 0)
+	r.feed(ps[0], 1)
+	assert r.feed(abort(addr_global, 0x17, 1, dm1), 2).faults.len == 0
+	assert r.open() == 1, 'the broadcast survives'
+	// the originator's own abort still ends it
+	ev := r.feed(abort(0x17, addr_global, 1, dm1), 3)
+	assert ev.faults.len == 1 && ev.faults[0].kind == .aborted
+	assert r.open() == 0
+	// and the walker agrees, or it attributes frames the trace no longer rejoins
+	// Transfers runs on the CALLER's clock in SECONDS, where the Reassembler above takes
+	// milliseconds — a second between a BAM's packets is past T1 and expires it.
+	mut t := Transfers{}
+	t.step_at(bam(0x17, msg.len, dm1), 0.0)
+	assert t.step_at(ps[0], 0.05).role == .packet
+	t.step_at(abort(addr_global, 0x17, 1, dm1), 0.10)
+	assert t.step_at(ps[1], 0.15).role == .packet, 'still attributed to the transfer'
+	assert t.open() == 1
+}

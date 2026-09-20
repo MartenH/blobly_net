@@ -784,7 +784,14 @@ fn draw_signals(mut app App, rows []TraceRow) {
 
 // build_series decodes the watched signal across the trace history -> (time ms, value).
 fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
-	m := app.message_for(w.id, w.ext, w.tp, app.dbs) or { return []f32{}, []f32{} }
+	// The WATCH'S OWN WIRE decides which databases name it, exactly as the sample filter below
+	// decides which rows are its. Resolving globally while filtering by wire is the worst of
+	// both: the second wire's series, decoded with the first wire's layout (codex).
+	m := app.message_for(w.id, w.ext, w.tp, if w.tp {
+		app.dbs_for_gate(w.wire)
+	} else {
+		app.dbs
+	}) or { return []f32{}, []f32{} }
 	mut sig := candb.Signal{}
 	mut found := false
 	for s in m.signals {
@@ -908,7 +915,11 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			// even though the shown value changes each frame.
 			// `tp` in the identity too: the direct and the rejoined form of one signal are two
 			// series, and ImPlot keeps legend, colour and visibility per identity (codex on #329)
-			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.id}_${w.ext}_${w.tp}_${w.sig}'
+			// THE WATCH'S OWN IDENTITY as the ImPlot id: two wires' rejoined series are two
+			// watches and must be two plots, or they share legend entry, colour and visibility
+			// while their samples are scoped apart (codex). `key()` is that identity, in one
+			// place, so this cannot fall behind it again.
+			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.key()}'
 			axis := if app.plot_multi { imin(i, 2) } else { 0 } // signal 0/1/2 → Y1/Y2/Y3
 			vgui.plot_line_axis(label, xs, ys, axis)
 		}

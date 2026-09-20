@@ -950,11 +950,13 @@ fn draw_dbc_editor(mut app App) {
 					break
 				}
 				if w.id == old_id && w.ext == wext0 {
+					// SPREAD, not a fresh literal: a rewrite changes ONE field and keeps every
+					// other, so a field added to the identity later cannot be silently dropped
+					// here — which is what happened to `wire`, leaving an edited watch matching
+					// no row at all (codex).
 					app.watch[wi] = Watch{
-						id:  u32(cl)
-						ext: w.ext
-						sig: w.sig
-						tp:  w.tp
+						...w
+						id: u32(cl)
 					}
 				}
 			}
@@ -1002,10 +1004,9 @@ fn draw_dbc_editor(mut app App) {
 				}
 				if w.id == old_id2 && w.ext == old_ext2 {
 					app.watch[wi] = Watch{
+						...w
 						id:  nid
 						ext: next
-						sig: w.sig
-						tp:  w.tp
 					}
 				}
 			}
@@ -1229,10 +1230,8 @@ fn draw_dbc_editor(mut app App) {
 				}
 				if w.id == wid && w.ext == wext && w.sig == old_sig {
 					app.watch[wi] = Watch{
-						id:  w.id
-						ext: w.ext
+						...w
 						sig: nv
-						tp:  w.tp
 					}
 				}
 			}

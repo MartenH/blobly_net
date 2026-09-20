@@ -391,14 +391,24 @@ fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
 fn (app &App) dbs_for_gate(gate string) []candb.Database {
 	mut out := []candb.Database{}
 	mut seen := map[string]bool{}
+	mut placed := false
 	for c in app.chans {
-		if c.doip || c.iface in seen {
+		if c.doip || c.someip || c.iface in seen {
 			continue
 		}
 		if transport.destination_key_for(c.adapter, c.iface) == gate {
 			seen[c.iface] = true
+			placed = true
 			out << app.dbs_for(c.iface)
 		}
+	}
+	// THE FALLBACK IS FOR A GATE THIS PROJECT CANNOT PLACE, not for a wire that simply has no
+	// database. A configured wire with no DBC loaded — none attached, or one that failed to
+	// parse — resolved to every database in the project, so a transfer on it was named and
+	// decoded with another wire's layout, which is precisely the mixing this scoping exists to
+	// stop (codex). A wire that IS placed answers with what it has, empty included.
+	if placed || gate == j1939_gate_undecidable {
+		return out
 	}
 	if out.len == 0 {
 		return app.dbs
