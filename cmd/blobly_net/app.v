@@ -731,10 +731,18 @@ fn moved_watch(w Watch, new_id u32) Watch {
 	// identifier cannot encode one, so `da()` answers global there and a move from a broadcast
 	// group to an addressed one lost the connection's receiver entirely — which is why the
 	// watch carries it beside the identifier at all (codex).
-	da := if w.da >= 0 { u8(w.da) } else { mine.da() }
+	addressed := w.da >= 0 || (mine.pdu1() && mine.da() != j1939.addr_global)
+	recv := if w.da >= 0 { u8(w.da) } else { mine.da() }
+	// AND THE STORED FIELD FOLLOWS THE NEW GROUP'S FORM, or the watch covers nothing: it is
+	// there for a receiver the identifier CANNOT hold, so a PDU1 group carries it in the
+	// identifier and stores -1, while a PDU2 group stores it and composes without it. Kept
+	// across the move by the spread, it was -1 on rows that have one and set on rows that do
+	// not (codex, on the previous round's own fix).
+	stored := if addressed && (pgn >> 8) & 0xFF >= 0xF0 { int(recv) } else { -1 }
 	return Watch{
 		...w.moved_to(pgn)
-		id: j1939.compose(mine.priority, pgn, da, mine.sa)
+		id: j1939.compose(mine.priority, pgn, recv, mine.sa)
+		da: stored
 	}
 }
 
@@ -1364,12 +1372,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.j1939_any = app.dbs.any(it.j1939_declared())
 	// the databases may have changed under every cached name and key
 	app.j1939_labels = map[string]&LabelCache{}
-	// AND THE ADDRESS DIRECTORY, for the same reason Start empties it: what it holds was
-	// learned from claims read while the reading was on, and a wire that went off and came back
-	// — a declaration removed and restored — would otherwise label new rows with names claimed
-	// under the old configuration, which the operator has since changed (codex). A claim is
-	// re-learned from the next one on the wire; a stale one names an ECU that may not be there.
-	app.j1939_nodes = map[string]j1939.Directory{}
+
 	app.dest_cache = map[string]string{}
 	// A recording on screen was stamped and rejoined under the reading in force when it was
 	// loaded; in auto that reading just moved with the databases (a J1939 DBC attached or
@@ -1377,6 +1380,17 @@ fn (mut app App) rebuild_from_proj() {
 	// the override moves (codex on #329). A project load never gets here with a recording on
 	// screen: it resets the trace first.
 	gate_moved := old_any != app.j1939_any || !same_gates(old_dbs, app.j1939_dbs)
+	// THE ADDRESS DIRECTORY, only where the reading MOVED. What it holds was learned from
+	// claims read while the reading was on, so a wire that went off and came back — a
+	// declaration removed and restored — would label new rows with names claimed under a
+	// configuration the operator has since changed. Emptied on EVERY rebuild, though, it threw
+	// away the whole directory on an ordinary DBC save: nodes on a real bus claim at startup
+	// and never again, so those names do not come back until the ECUs are power-cycled (codex,
+	// on the previous round's own fix). Start still empties it unconditionally, which is right
+	// there — a new measurement has seen no claims at all.
+	if gate_moved {
+		app.j1939_nodes = map[string]j1939.Directory{}
+	}
 	reload := if gate_moved && app.j1939_override == .follow && app.viewing_rec != '' {
 		app.viewing_rec_path
 	} else {
