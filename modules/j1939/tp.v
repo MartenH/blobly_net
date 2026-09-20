@@ -839,7 +839,10 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 			}
 		}
 		else {
-			ev.faults << id.fault(.malformed, carried, true, 'TP.CM control byte ${ctrl} is not one this module knows')
+			// NOT announced: bytes 5..7 carry a group in an RTS or a BAM, and this frame is
+			// neither — whatever is there has announced nothing, and saying it did was my own
+			// previous fix reaching one branch too far (codex).
+			ev.faults << id.fault(.malformed, 0, false, 'TP.CM control byte ${ctrl} is not one this module knows')
 		}
 	}
 }

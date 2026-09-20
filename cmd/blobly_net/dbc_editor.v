@@ -1216,20 +1216,26 @@ fn draw_dbc_editor(mut app App) {
 			app.mark_dirty(di)
 			wid := msg.id
 			wext := msg.ext
-			mut shadowed := false
+			// SHADOWED BY WIRE, not globally. An earlier-loaded database is only in this one's
+			// way where the two are on the SAME wire: a decode resolves against that wire's
+			// databases, so one on another wire defining the same `(id, ext)` shadows nothing
+			// here — and read as a global flag it broke the loop before the wire-aware
+			// predicate ran, so renaming this database's signal left every watch alone (codex).
+			edit_wires := app.wires_of_db(di)
+			mut shadow_wires := map[string]bool{}
 			for odi in 0 .. di {
 				for om in app.dbs[odi].messages {
 					if om.id == wid && om.ext == wext {
-						shadowed = true
+						for gw in app.wires_of_db(odi) {
+							shadow_wires[gw] = true
+						}
 					}
 				}
 			}
 			for wi, w in app.watch {
-				if shadowed {
-					break
-				}
 				// RENAMED: a signal's name is the database's whichever kind of row carries it.
-				if w.sig == old_sig && app.wires_of_db(di).any(w.renamed_by(wid, wext, it, j1939.pgn(wid))) {
+				if w.sig == old_sig && edit_wires.any(it !in shadow_wires
+					&& w.renamed_by(wid, wext, it, j1939.pgn(wid))) {
 					app.watch[wi] = Watch{
 						...w
 						sig: nv
