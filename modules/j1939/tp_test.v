@@ -858,3 +858,18 @@ fn test_group_zero_is_a_group() {
 	assert !orphan.faults[0].announced
 	assert !orphan.faults[0].str().contains('PGN')
 }
+
+// A REFUSED announcement names the group it carried: the flag is the caller's, because 0x0000
+// is a legitimate group and no number can say whether one was announced.
+fn test_a_refused_announcement_still_names_its_group() {
+	mut r := Reassembler{}
+	ev := r.feed(bam(0x00, 20, dm1), 0) // well-formed: nothing to report
+	assert ev.faults.len == 0
+	bad := cm(0x00, addr_global, cm_bam, 20, 4, dm1) // 20 bytes are 3 packets, never 4
+	ev2 := r.feed(bad, 1)
+	assert ev2.faults.len >= 1
+	refused := ev2.faults.filter(it.kind == .malformed)
+	assert refused.len == 1
+	assert refused[0].announced
+	assert refused[0].str().contains('PGN 0x${dm1:04X}'), refused[0].str()
+}

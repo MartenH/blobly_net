@@ -522,16 +522,18 @@ pub fn (f Fault) str() string {
 
 // fault is a Fault about a frame with no session behind it: the addresses are the frame's own,
 // the PGN whatever the frame announced (0 for a data frame, which announces nothing).
-fn (i Id) fault(kind FaultKind, pgn u32, detail string) Fault {
+// `announced` is the CALLER's, because 0x0000 is a legitimate group and the flag cannot be
+// inferred from the number: a refused announcement names the group it carried, a data frame
+// with nothing behind it names none, and both may say 0. Written as an unconditional `false`
+// it contradicted this very comment, and every refused announcement lost the group from its
+// line (codex).
+fn (i Id) fault(kind FaultKind, pgn u32, announced bool, detail string) Fault {
 	return Fault{
 		kind: kind
 		sa: i.sa
 		da: i.da()
 		pgn: pgn
-		// This shape is for a frame with no session behind it, and the only caller that has a
-		// group to give is one reading it out of an announcement it then refused. A data frame
-		// announces nothing, which is not the same as announcing 0x0000.
-		announced: false
+		announced: announced
 		detail: detail
 	}
 }
@@ -698,7 +700,7 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 				r.sessions.delete(k)
 			}
 		}
-		ev.faults << id.fault(.malformed, 0, 'TP.CM of ${data.len} bytes${if fd {
+		ev.faults << id.fault(.malformed, 0, false, 'TP.CM of ${data.len} bytes${if fd {
 			' on a CAN-FD frame'
 		} else {
 			''
@@ -719,7 +721,7 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 					ev.faults << old.fault(.restarted, 'a new announcement arrived after ${old.progress()}; the unfinished message is dropped')
 					r.sessions.delete(k)
 				}
-				ev.faults << id.fault(.malformed, carried, why)
+				ev.faults << id.fault(.malformed, carried, true, why)
 				return
 			}
 			total := cm.total
@@ -837,7 +839,7 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 			}
 		}
 		else {
-			ev.faults << id.fault(.malformed, carried, 'TP.CM control byte ${ctrl} is not one this module knows')
+			ev.faults << id.fault(.malformed, carried, true, 'TP.CM control byte ${ctrl} is not one this module knows')
 		}
 	}
 }
@@ -849,7 +851,7 @@ fn (mut r Reassembler) on_dt(id Id, data []u8, fd bool, now_ms f64, late bool, m
 	mut s := r.sessions[k] or {
 		if !late {
 			seq := if data.len > 0 { int(data[0]) } else { 0 }
-			ev.faults << id.fault(.orphan, 0, 'data frame ${seq} with no announcement; a transfer already in progress when listening began, or one whose TP.CM was lost')
+			ev.faults << id.fault(.orphan, 0, false, 'data frame ${seq} with no announcement; a transfer already in progress when listening began, or one whose TP.CM was lost')
 		}
 		return
 	}
