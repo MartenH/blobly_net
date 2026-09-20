@@ -511,13 +511,18 @@ fn (app &App) phys_for_locked(iface string) string {
 fn (app &App) tap_plan_locked() []TapWant {
 	mut plan := []TapWant{}
 	for ch in app.chans {
-		if ch.enabled && !ch.doip {
+		if ch.enabled && !ch.eth() {
 			plan << TapWant{ch.name, ch.iface, app.phys_for_locked(ch.iface)}
 		}
 	}
 	for sr in app.senders {
 		tgt := sr.target()
-		if tgt != '' {
+		// AND NOT AN ETHERNET TARGET. The row filter above excludes those rows, but a generator
+		// names its own bus, so one pointed at a SOME/IP or DoIP row (by nesting, or by a `bus:`
+		// that resolves there — an adapter change carries generators across) still planned a CAN
+		// transmit tap on `someip:0.0.0.0:30490`. Start then opens that string as a device name
+		// and reports a driver failure for a row the UI calls passive.
+		if tgt != '' && !project.iface_is_eth(tgt) {
 			plan << TapWant{sr.chan, tgt, app.phys_for_locked(tgt)}
 		}
 	}
@@ -553,7 +558,7 @@ fn (app &App) taprule_wants_locked() taprule.Wants {
 		wires << transport.destination_key(tgt)
 	}
 	for ch in app.chans {
-		if ch.enabled && !ch.doip {
+		if ch.enabled && !ch.eth() {
 			wires << transport.destination_key(ch.iface)
 		}
 	}
@@ -783,6 +788,11 @@ fn (mut app App) start() {
 	// part-classic recording reads as a successful measurement with some of its traffic missing.
 	// A warning rather than a refusal: the classic half of that run is real.
 	for w in project.fd_capability_warnings(app.runtime_rows()) {
+		app.notify(w)
+	}
+	// Two listeners on one endpoint, same place and same reason: said before anything binds,
+	// because afterwards both rows are green and the symptom is only missing messages.
+	for w in project.someip_endpoint_warnings(app.runtime_rows()) {
 		app.notify(w)
 	}
 	// A generator whose value source cannot be evaluated (unknown type, zero divisor) sends its
@@ -1049,8 +1059,18 @@ fn (mut app App) start() {
 			app.send_iface = ch.iface // Send panel default = first monitor channel
 		}
 	}
+	// SOME/IP listeners: one reader per row, no wire sharing to resolve — the endpoint is the
+	// row's own socket. Reserved and spawned exactly as a CAN reader is, so Stop's census counts
+	// it and a double-click cannot start two.
+	for ci, ch in app.chans {
+		if ch.enabled && ch.someip && !ch.running && !ch.spawning {
+			app.chans[ci].spawning = true
+			app.reserve_run_worker() // released by the loop's own defer
+			spawn someip_rx_loop(app, ci, ch.iface, app.run_gen)
+		}
+	}
 	for ch in app.chans {
-		if ch.enabled && ch.mode == 'replay' && !ch.doip {
+		if ch.enabled && ch.mode == 'replay' && !ch.eth() {
 			if ch.replay_src == '' {
 				app.notify('${ch.name}: mode is replay but no recording is configured — monitoring only')
 			} else if ch.listen_only {
@@ -1080,7 +1100,7 @@ fn (mut app App) start() {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
 		// which on Linux falls through to SocketCAN, logs a failure and exits the thread — the
 		// no-hardware demo trying to open its Ethernet endpoint as a CAN interface.
-		if sc.pch.is_doip() {
+		if sc.pch.is_eth() {
 			continue
 		}
 		if sc.nodes.len > 0 {
@@ -1100,8 +1120,9 @@ fn (mut app App) start() {
 		for w in sim.validate_verify(sc.db, sc.verify) {
 			app.notify('${sc.iface}: ${w}')
 		}
-		// DoIP is hosted from the project, not from here — see start_doip_hosts().
-		if sc.pch.is_doip() {
+		// DoIP is hosted from the project, not from here — see start_doip_hosts(); a SOME/IP row
+		// has no nodes to seed.
+		if sc.pch.is_eth() {
 			continue
 		}
 		if sc.nodes.len == 0 {
@@ -1131,7 +1152,7 @@ fn (mut app App) start() {
 			// not CAN peers: a disabled `type: doip` channel with no `interface:` inherits
 			// vcan0, and copied rx/tx on its node would then start a CAN responder for a
 			// channel that is switched off.
-			if other.pch.is_doip() {
+			if other.pch.is_eth() {
 				continue
 			}
 			if transport.destination_key(other.iface) == sc_key {
@@ -1475,6 +1496,12 @@ fn (mut app App) stop() {
 	}
 	for ci in 0 .. app.chans.len {
 		app.chans[ci].running = false
+		// AND `spawning`, which this loop did not clear. A reader whose open is still in flight
+		// leaves its flags alone once the generation has moved (row_is_mine_locked), so a Stop
+		// during a slow bind used to leave `spawning = true` with no worker behind it — and
+		// start()'s double-click guard then skipped that row on every later Start, silently,
+		// until the project was reloaded. Only Stop can clear it, so Stop does.
+		app.chans[ci].spawning = false
 	}
 	// The taps: SNAPSHOT AND RESET UNDER THE LOCK, close outside it. The reset under app.mu is
 	// the other half of the file_tap contract above; the closes stay outside, because a close

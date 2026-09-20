@@ -35,6 +35,46 @@ struct TraceRow {
 	esi  bool
 	name string
 	data []u8
+	// A SOME/IP message, not a CAN frame — a KIND, for the same reason `fd` is one above: `id`
+	// here is a 32-bit service:method, and every CAN consumer of (id, ext) would otherwise read
+	// it as a 29-bit arbitration id. The filter would match a real CAN frame of the same number,
+	// the row click would offer it to Send, and the context menu would decode its payload with
+	// whatever DBC frame happens to carry that id. So the row says what it is and those
+	// consumers ask (panel_trace.v).
+	someip bool
+	// The SOME/IP message type (REQUEST/RESPONSE/NOTIFICATION/ERROR). Part of the row's group
+	// identity: a request and its response share a service and method id, and a key without this
+	// merged an exchange into one row that counted a question and its answer as one message.
+	someip_type u8
+	// The SOME/IP INTERFACE version: the deployment-managed version of the payload layout. Part
+	// of the identity for the same reason the message type is — during a breaking upgrade both
+	// versions are on the wire under one service and method, and a key without this compared
+	// two incompatible schemas byte by byte as repetitions of one message.
+	someip_iface u8
+	// The PROTOCOL version. Part of the identity too, and for a sharper reason than the others:
+	// the grouped view takes its label from the newest row of a group, so an anomalous header
+	// merged with valid traffic had its `PROTO xx!` marker overwritten by the next good message
+	// — the row said it and the view then unsaid it, with the counts and payload comparison
+	// mixing a message that is not SOME/IP into ones that are.
+	someip_proto u8
+	// WHO SENT IT. A wildcard or multicast listener hears every instance on the wire, and two
+	// instances of one service share their service, method, type and versions — so without this
+	// their rows are indistinguishable and the grouped view merges their counts, cadence and
+	// payload comparison into one apparent producer. Part of the identity, not decoration.
+	someip_from string
+	// Its header broke one of the wire's FIXED-FIELD rules (someip.check_fixed_fields): a
+	// notification carrying a request id or a return code, a request carrying a return code.
+	// Part of the identity for the same reason the protocol version is — the grouped view names
+	// a group after its newest row, so an anomaly sharing a key with valid traffic is announced
+	// and then silently unannounced by the next good message.
+	someip_bad_fixed bool
+	// The payload's TRUE length, when `data` holds only its head. A SOME/IP message may carry
+	// ~64 KiB where a CAN frame carries 64, and the grouped view renders one widget PER BYTE —
+	// a loop whose bound was CAN's maximum. One valid datagram would rebuild tens of thousands
+	// of widgets every frame, and a ring of them would retain over a hundred megabytes. So the
+	// row keeps a bounded head and states what it cut; the full payload still reaches a Lua
+	// capture, which is where a whole payload belongs. 0 = nothing was cut.
+	data_len int
 	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
 	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
@@ -104,6 +144,22 @@ mut:
 // instead of rediscovering it (codex #127 r2).
 fn (r TraceRow) has_payload() bool {
 	return !r.rtr && r.data.len > 0
+}
+
+// trace_payload_max bounds the bytes a single row keeps for the live view. Four times CAN-FD's
+// maximum: enough that an ordinary SOME/IP event is whole, small enough that a hostile or merely
+// large one cannot make the renderer or the ring the problem.
+const trace_payload_max = 256
+
+// full_len is the payload's length on the wire, which is what the len column must show — a row
+// that displays its truncated length would under-report the traffic it is a record of.
+fn (r TraceRow) full_len() int {
+	return if r.data_len > r.data.len { r.data_len } else { r.data.len }
+}
+
+// truncated reports whether this row kept only the head of its payload.
+fn (r TraceRow) truncated() bool {
+	return r.data_len > r.data.len
 }
 
 struct TRec {
@@ -429,7 +485,7 @@ fn (app &App) load_owner_locked(key string) int {
 	mut spawning := -1
 	mut enabled := -1
 	for i, c in app.chans {
-		if c.doip || transport.destination_key(c.iface) != key {
+		if c.eth() || transport.destination_key(c.iface) != key {
 			continue
 		}
 		if c.running {
@@ -472,7 +528,7 @@ fn (mut app App) wire_rates_locked(i int) (int, int) {
 	mut nominal := 0
 	mut data := 0
 	for c in app.chans {
-		if c.doip || !c.monitorable() || transport.destination_key(c.iface) != key {
+		if c.eth() || !c.monitorable() || transport.destination_key(c.iface) != key {
 			continue
 		}
 		if nominal == 0 {

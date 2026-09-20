@@ -307,6 +307,13 @@ fn (mut app App) dbc_refresh_trace_names() {
 	// editor selection (codex on #329). The cached cells carry the old names and go too.
 	app.j1939_labels = map[string]&LabelCache{}
 	for i, r in app.trace {
+		// NOT a SOME/IP row: its name is its message type, not a DBC lookup, and `lookup_name`
+		// is keyed on (id, ext) alone — so editing an unrelated DBC would rename NOTIFICATION to
+		// whatever CAN frame happens to share the number, or to `unknown`, corrupting a capture
+		// that is already taken.
+		if r.someip {
+			continue
+		}
 		base := if r.tp {
 			if m := app.group_message(r) {
 				m.name

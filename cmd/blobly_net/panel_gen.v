@@ -369,6 +369,28 @@ fn (mut app App) sync_senders_into_proj() {
 	}
 	home := genhome.homes(gens, rows)
 	for ci in 0 .. p.channels.len {
+		// A PASSIVE ROW IS NOT MODELLED AT RUNTIME, so its configured generators must not be
+		// rebuilt FROM the runtime: `app.senders` deliberately holds none for it (nothing there
+		// can transmit), and rewriting its list from that emptiness deleted them from the
+		// project — so converting the row back to CAN lost work that was only ever hidden.
+		//
+		// ASKED OF THE RUNTIME, NOT OF THE ROW'S CURRENT KIND. An adapter change rewrites the
+		// kind and THEN rebuilds, so at this moment the kind says where the row is going while
+		// `app.senders` still holds where it came from — and reading the kind got both
+		// transitions wrong in opposite directions: SOME/IP→CAN fell through and deleted the
+		// hidden generators, CAN→SOME/IP skipped and discarded the panel edits that had not been
+		// synced yet. `Chan.senders_modelled` records the state app.senders was actually built
+		// in, which is the only thing that describes it.
+		mut modelled := !p.channels[ci].is_someip()
+		for c in app.chans {
+			if c.proj_idx == ci {
+				modelled = c.senders_modelled
+				break
+			}
+		}
+		if !modelled {
+			continue
+		}
 		mut ss := []project.Sender{}
 		for si, sr in app.senders {
 			if si < home.len && home[si] == ci {

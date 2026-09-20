@@ -1130,7 +1130,7 @@ fn test_fd_disagreement_is_per_wire() {
 fn test_an_fd_row_on_a_backend_that_refuses_fd_warns() {
 	mut examined := 0
 	for a in adapters {
-		if transport.adapter_carries_fd(a) || a == 'doip' {
+		if transport.adapter_carries_fd(a) || a in ['doip', 'someip'] {
 			continue
 		}
 		row := Channel{
@@ -1579,3 +1579,224 @@ fn test_mode_off_loads_as_a_disabled_row() {
 	assert q.channels[0].mode == .normal
 	assert !q.channels[0].enabled
 }
+
+// A SOME/IP channel: a listener endpoint, not a CAN bus and not a diagnostics carrier.
+fn test_someip_channel() {
+	p := parse('project:\n  name: s\nchannels:\n  - name: ETH1\n    adapter: someip\n    address: "0.0.0.0:30491"\n    group: 239.1.2.3\n') or {
+		panic(err)
+	}
+	c := p.channels[0]
+	assert c.is_someip()
+	assert c.is_eth()
+	assert !c.is_doip()
+	assert c.typ == 'someip'
+	assert c.iface == 'someip:0.0.0.0:30491'
+	assert c.group == '239.1.2.3'
+	host, port := c.someip_endpoint()
+	assert host == '0.0.0.0'
+	assert port == 30491
+}
+
+// The endpoint grammar is ONE grammar (eth_endpoint), so what DoIP refuses SOME/IP refuses:
+// trailing garbage, a letter-for-digit typo and a zero port keep the whole string as the host
+// and fail loudly at bind, instead of silently listening somewhere the operator did not name.
+fn test_someip_endpoint_refuses_a_bad_port_loudly() {
+	for bad in ['0.0.0.0:30491x', '0.0.0.0:3O491', '0.0.0.0:0', '0.0.0.0:abc', '0.0.0.0:99999'] {
+		h, p := Channel{
+			iface: 'someip:${bad}'
+		}.someip_endpoint()
+		assert h == bad, 'someip:${bad} silently split into ${h}:${p}'
+		assert p == 30490
+	}
+	// and the bracketed-IPv6 rule DoIP already had
+	h6, p6 := Channel{
+		iface: 'someip:[::1]:30491'
+	}.someip_endpoint()
+	assert h6 == '::1' && p6 == 30491
+	hb, pb := Channel{
+		iface: 'someip:[::1]'
+	}.someip_endpoint()
+	assert hb == '::1' && pb == 30490
+}
+
+fn test_someip_endpoint_defaults() {
+	// The wildcard, not localhost: a listener wants every interface, and a multicast join
+	// needs it. `type: someip` with no interface inherits vcan0, which is not a host.
+	h0, p0 := Channel{
+		typ: 'someip'
+	}.someip_endpoint()
+	assert h0 == '0.0.0.0' && p0 == 30490
+	h1, p1 := Channel{
+		iface: 'someip:192.168.0.5'
+	}.someip_endpoint()
+	assert h1 == '192.168.0.5' && p1 == 30490
+	h2, p2 := Channel{
+		iface: 'someip::30491'
+	}.someip_endpoint()
+	assert h2 == '0.0.0.0' && p2 == 30491
+}
+
+// Save writes what parse reads: adapter, address and group, and no CAN protocol/bitrate lines.
+fn test_someip_round_trip() {
+	orig := Project{
+		name:     'net'
+		channels: [
+			Channel{
+				name:    'ETH1'
+				adapter: 'someip'
+				address: '0.0.0.0:30491'
+				typ:     'someip'
+				iface:   'someip:0.0.0.0:30491'
+				group:   '239.1.2.3'
+			},
+		]
+	}
+	y := orig.to_yaml()
+	assert !y.contains('protocol:'), y
+	assert !y.contains('bitrate:'), y
+	back := parse(y) or { panic(err) }
+	c := back.channels[0]
+	assert c.is_someip()
+	assert c.iface == 'someip:0.0.0.0:30491'
+	assert c.group == '239.1.2.3'
+}
+
+// Two enabled listeners on one endpoint is a config mistake nothing else reports: UDP lets both
+// bind (SO_REUSEADDR) and then splits the stream between them.
+fn test_two_someip_rows_on_one_endpoint_warn() {
+	rows := [
+		Channel{
+			name:    'ETH1'
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:0.0.0.0:30491'
+			enabled: true
+		},
+		Channel{
+			name:    'ETH2'
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:0.0.0.0:30491'
+			enabled: true
+		},
+		Channel{
+			name:    'ETH3'
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:0.0.0.0:30492'
+			enabled: true
+		},
+	]
+	w := someip_endpoint_warnings(rows)
+	assert w.len == 1, w.str()
+	assert w[0].contains('ETH1') && w[0].contains('ETH2') && w[0].contains('30491'), w[0]
+	assert !w[0].contains('ETH3'), w[0]
+	// a row switched off states nothing about the run
+	mut off := rows.clone()
+	off[1].enabled = false
+	assert someip_endpoint_warnings(off).len == 0
+}
+
+// The spellings a person writes fold together; the claim registry resolves the rest.
+fn test_endpoint_warning_folds_written_spellings() {
+	mk := fn (name string, host string) Channel {
+		return Channel{
+			name:    name
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:${host}:30491'
+			enabled: true
+		}
+	}
+	// the loopback spellings a person writes fold together
+	assert someip_endpoint_warnings([mk('A', 'localhost'), mk('B', '127.0.0.1')]).len == 1
+	assert someip_endpoint_warnings([mk('A', 'LOCALHOST'), mk('B', '127.0.0.1')]).len == 1
+	// the wildcard covers a specific address
+	assert someip_endpoint_warnings([mk('A', '0.0.0.0'), mk('B', '192.168.0.5')]).len == 1
+	// but the loopback is NOT the wildcard: it cannot reach a bench NIC, so this is not a clash
+	assert someip_endpoint_warnings([mk('A', 'localhost'), mk('B', '192.168.0.5')]).len == 0
+	// two real NICs remain two listeners
+	assert someip_endpoint_warnings([mk('A', '192.168.0.5'), mk('B', '10.0.0.5')]).len == 0
+}
+
+// The Ethernet scheme is matched exactly, never as a prefix: `someip0` and `doip1` are legal
+// SocketCAN device names, and reading them as Ethernet would refuse every transmit path on a
+// real CAN wire.
+fn test_iface_is_eth_matches_the_scheme_not_a_prefix() {
+	for yes in ['someip', 'someip:0.0.0.0:30491', 'doip', 'doip:127.0.0.1:13400'] {
+		assert iface_is_eth(yes), yes
+	}
+	for no in ['someip0', 'doip1', 'someipx', 'vcan0', 'can0', 'udp:239.0.0.1:5000', ''] {
+		assert !iface_is_eth(no), no
+	}
+	// and a channel follows the same rule, so the model and the runtime cannot disagree
+	assert !Channel{
+		iface: 'someip0'
+	}.is_someip()
+	assert Channel{
+		iface: 'someip:0.0.0.0:1'
+	}.is_someip()
+}
+
+// The Start-time warning and the claim registry must not disagree: a v4 wildcard and a v6
+// address are a valid dual-stack pair, and reporting them as a clash sends the operator to
+// change a configuration that is correct.
+fn test_endpoint_warning_keeps_address_families() {
+	mk := fn (name string, host string) Channel {
+		return Channel{
+			name:    name
+			adapter: 'someip'
+			typ:     'someip'
+			iface:   'someip:${host}:30491'
+			enabled: true
+		}
+	}
+	// BRACKETED, as the endpoint grammar requires of a v6 literal that carries a port: a bare
+	// `::` before `:30491` is ambiguous and is kept whole as the host, which would make these
+	// assertions pass for the wrong reason.
+	assert someip_endpoint_warnings([mk('A', '0.0.0.0'), mk('B', '[::1]')]).len == 0
+	assert someip_endpoint_warnings([mk('A', '0.0.0.0'), mk('B', '127.0.0.1')]).len == 1
+	// the v6 wildcard is dual-stack in this V, so it DOES cover a v4 address
+	assert someip_endpoint_warnings([mk('A', '[::]'), mk('B', '127.0.0.1')]).len == 1
+	assert someip_endpoint_warnings([mk('A', '[::]'), mk('B', '[::1]')]).len == 1
+	// and the grammar itself: a bracketed v6 host keeps its port, a bare one does not
+	h, pnum := Channel{
+		iface: 'someip:[::1]:30491'
+	}.someip_endpoint()
+	assert h == '::1' && pnum == 30491
+}
+
+// A v1-style row whose `type:` says Ethernet but whose interface is not that scheme is REFUSED.
+// Preserving it (which an earlier round did) does not survive a save: the writer emits the value
+// as the adapter's address and the next load composes `someip:<the typo>`, a valid-looking
+// endpoint that may resolve — a configuration that changes itself behind the operator.
+fn test_a_bad_eth_spelling_is_refused_not_carried() {
+	for raw in ['someip0', 'someipx:30491'] {
+		if _ := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "${raw}"\n') {
+			assert false, '"${raw}" was accepted'
+		} else {
+			assert err.msg().contains('is not a someip endpoint'), err.msg()
+			assert err.msg().contains(raw), err.msg()
+		}
+	}
+	if _ := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: doip\n    interface: "doip0"\n') {
+		assert false, 'doip0 was accepted'
+	} else {
+		assert err.msg().contains('is not a doip endpoint'), err.msg()
+	}
+	// the real scheme still migrates
+	ok := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n    interface: "someip:0.0.0.0:30491"\n') or {
+		panic(err)
+	}
+	assert ok.channels[0].adapter == 'someip'
+	assert ok.channels[0].address == '0.0.0.0:30491'
+	// an ABSENT interface is not a typo: it becomes the bare scheme and the default endpoint
+	none_given := parse('project:\n  name: d\nchannels:\n  - name: X\n    type: someip\n') or {
+		panic(err)
+	}
+	assert none_given.channels[0].iface == 'someip'
+	dh, dp := none_given.channels[0].someip_endpoint()
+	assert dh == '0.0.0.0' && dp == 30490
+}
+
+

@@ -1549,15 +1549,16 @@ fn script_worker(app &App, path string) {
 				sim_nodes << sc.nodes
 			}
 		}
-		// The carrier comes from the PROJECT channel: the runtime Chan above carries a `doip`
-		// flag but not the logical addresses, and a DoIP open needs both. Matched by name, the
-		// same key the rest of the config editor uses.
+		// The carrier comes from the PROJECT channel: the runtime Chan above carries a `someip`
+		// flag but not the endpoint, and a `doip` flag but not the logical addresses. Taken BY
+		// INDEX (Chan.proj_idx), because this loop skips rows — disabled ones, a DoIP row whose
+		// host failed — and a by-name lookup over the unfiltered project then handed the
+		// survivor the FIRST same-named row's carrier. With a disabled `ETH` before an enabled
+		// one, nothing downstream looks ambiguous (the script env holds a single `ETH`) and the
+		// listener would have bound the disabled row's endpoint.
 		mut pch := project.Channel{}
-		for c in a.proj.channels {
-			if c.name == ch.name {
-				pch = c
-				break
-			}
+		if ch.proj_idx >= 0 && ch.proj_idx < a.proj.channels.len {
+			pch = a.proj.channels[ch.proj_idx]
 		}
 		chans << script.ChanInfo{
 			name:      ch.name
@@ -1636,7 +1637,22 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 	}
 	peer_port := sip.peer.all_after_last(':').int()
 	bind_port := if peer_port > 0 { peer_port } else { 30491 }
-	mut sock := vnet.listen_udp(':${bind_port}') or {
+	// CLAIMED LIKE EVERY OTHER LISTENER IN THIS PROCESS. The shell binds the board's peer port,
+	// which an enabled SOME/IP row may also be reading — both sockets get SO_REUSEADDR, so the
+	// board's responses would go to whichever the kernel picked and the shell would time out
+	// intermittently with nothing to point at. Refused by name instead, either order.
+	shell_canon := transport.claim_endpoint('', bind_port, 'the eth shell', .tool, '') or {
+		a.shell_append('(:${bind_port}: ${err})')
+		return
+	}
+	defer {
+		transport.release_endpoint(shell_canon, bind_port, 'the eth shell')
+	}
+	// BOUND ON WHAT WAS CLAIMED, the contract every other registered listener keeps: `:<port>`
+	// lets the resolver choose, and it may choose the IPv6 wildcard while the claim reserved the
+	// IPv4 one — so the registry would permit a SOME/IP listener on a v6 address and the split
+	// this claim exists to prevent would be back.
+	mut sock := vnet.listen_udp(someip.bind_addr(shell_canon, bind_port)) or {
 		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
 		return
 	}
@@ -1718,4 +1734,295 @@ fn (mut a App) carry_load_locked(ci int) {
 	a.chans[ci].load_at = w.at
 	a.chans[ci].load_carry_bits = w.carry_bits
 	a.chans[ci].load_carry_ms = w.carry_ms
+}
+
+// someip_row_name is the trace's NAME column for a SOME/IP message: the type, and for anything
+// but a notification the request id (client:session) that correlates it, plus a nonzero return
+// code. The id column carries the 32-bit message id; the payload is the data column, raw —
+// decoding it from an emb node's config is the next rung (docs/ethernet_architecture.md).
+fn someip_row_name(h someip.Header, from string) string {
+	kind := someip.msg_type_name(h.msg_type)
+	// The PROTOCOL version, when it is not the one the standard defines. `Capture.ingest` parses
+	// structurally and applies no envelope gate, so a message with a wrong protocol version
+	// reaches the trace looking exactly like a valid one — and the row keeps no header bytes, so
+	// this is the only place it could ever be seen. Prefixed rather than appended: it says the
+	// message should not be read as SOME/IP at all, which belongs before what it claims to be.
+	bad_proto := if h.protocol_version != someip.protocol_version {
+		'PROTO ${h.protocol_version:02X}! '
+	} else {
+		''
+	}
+	if h.msg_type == someip.mt_notification {
+		// A notification's request id is always zero, so there is no correlation to show — but a
+		// NONZERO RETURN CODE is, because the wire contract says a notification carries none
+		// (someip.check_fixed_fields) and this row is the only place it could ever appear. The
+		// listener parses structurally and does not apply the envelope gate, so a row that
+		// dropped this rendered an invalid header as a perfectly ordinary one.
+		// The WHOLE anomaly, not half of it: check_fixed_fields requires a notification's request
+		// id to be zero as well as its return code, and the trace keeps only the payload — so
+		// anything this line omits is gone for good. Appending the rc alone hid the other half.
+		mut extra := ''
+		if h.request_id() != 0 {
+			extra += ' req=${h.client:04X}:${h.session:04X}'
+		}
+		if h.return_code != 0 {
+			extra += ' rc=${h.return_code:02X}'
+		}
+		return '${bad_proto}${kind} v${h.interface_version}${extra}${someip_from_suffix(from)}'
+	}
+	mut s := '${bad_proto}${kind} v${h.interface_version} ${h.client:04X}:${h.session:04X}'
+	if h.return_code != 0 {
+		s += ' rc=${h.return_code:02X}'
+	}
+	return s + someip_from_suffix(from)
+}
+
+// someip_from_suffix names the producer on the row. Shown because the identity now separates
+// two instances of one service into two rows, and a reader looking at them needs to be told
+// which is which rather than left to infer it from the order they appeared in.
+fn someip_from_suffix(from string) string {
+	return if from == '' { '' } else { ' from ${from}' }
+}
+
+// someip_rx_loop is a SOME/IP row's reader for one run: bind the row's endpoint, join its group,
+// and turn every message heard into a trace row until the run ends or the row is unticked.
+// Nothing is sent and nothing is subscribed to (the design line: docs/ethernet_architecture.md).
+//
+// A cousin of rx_loop, not a copy, and the socket half is not written here at all: the bind, the
+// join rule and the read ladder are transport.udp_bind/udp_read_into, shared with DoIP's
+// announcement collector, and the malformed rule is someip.Capture.ingest, shared with the Lua
+// listener. What is left is the row: ownership (row_is_mine_locked, the run generation, the
+// census slot) and the push. There is no bus to share between rows, no echo to claim, no DBC to
+// verify against and no link to poll.
+fn someip_rx_loop(app &App, ci int, iface string, gen u64) {
+	defer {
+		release_run_worker(app)
+	}
+	mut a := unsafe { app }
+	a.mu.lock()
+	if !a.row_is_mine_locked(ci, iface, gen) {
+		// NOTHING TOUCHED. `row_is_mine_locked` is false when `ci` is out of RANGE as well as
+		// when the row moved — a Stop that replaced app.chans with a shorter list while this
+		// worker was still resolving or binding — so clearing the row's flag here (which an
+		// earlier round of this change did) indexes exactly the array the predicate just refused
+		// to vouch for, and panics the app. Stop clears `spawning` for every row itself, which
+		// is what makes this safe to leave alone; rx_loop leaves it alone for the same reason.
+		a.mu.unlock()
+		return
+	}
+	chname := a.chans[ci].name
+	group := a.chans[ci].group
+	a.mu.unlock()
+	cfg_host, port := project.Channel{
+		iface: iface
+	}.someip_endpoint()
+	// The wildcard's family follows the group (someip.bind_host_for): a channel's endpoint has
+	// already materialised an absent host as `0.0.0.0`, so without this an IPv6 group asked for
+	// on a default row created an IPv4 socket and the join could never succeed.
+	host := someip.bind_host_for(cfg_host, group)
+	addr := someip.bind_addr(host, port)
+	// A group on a unicast bind hears nothing: the kernel drops group-addressed datagrams on a
+	// socket bound to one address, however well the join succeeded. Refused by name rather than
+	// left to show a green row beside a silent trace.
+	someip.check_group_bind(host, group) or {
+		someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
+		return
+	}
+	// Claimed before the bind, released when this reader closes. Within this process that is the
+	// only thing that CAN refuse a second listener: the bind itself always succeeds (transport/udpclaims.v).
+	// Symmetric with the Lua window, so the refusal lands on whichever of the two started second.
+	owner := 'channel ${chname}'
+	// WHO holds it decides whether waiting is honest. A previous run's row claim is about to be
+	// released — its worker notices the generation change only when its 200 ms read returns — so
+	// a Start inside that window is a hand-off, and refusing it left the whole run with no
+	// listener and nothing to retry. A SCRIPT's claim is the opposite: its window is a
+	// measurement already under way, and waiting it out would start the row mid-measurement with
+	// the messages received during the wait existing only in the script's result and missing
+	// from the trace, silently. So one is waited for and the other is refused at once.
+	//
+	// The wait is bounded by the same budget a runtime rebuild waits for its workers with, so
+	// the two agree on how long a departing worker may take, and is abandoned the moment this
+	// run stops being current.
+	mut canon := ''
+	for t0 := time.ticks(); true; {
+		if !a.running || a.run_gen != gen {
+			return
+		}
+		canon = transport.claim_endpoint(host, port, owner, .row, '') or {
+			if err is transport.ClaimHeld {
+				// ONLY `.row` IS A HAND-OFF. A previous run's row is about to release; everything
+				// else — a script window, the eth shell, a DoIP entity, a software bus — is a
+				// live holder with no reason to go, so waiting it out either delays the refusal
+				// by the whole drain budget or, worse, starts this row midway through the other
+				// listener's window with the traffic of that gap present only in ITS results.
+				if err.kind != .row || time.ticks() - t0 > drain_budget_ms {
+					someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err.msg()}')
+					return
+				}
+			} else {
+				someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
+				return
+			}
+			time.sleep(25 * time.millisecond)
+			continue
+		}
+		break
+	}
+	defer {
+		transport.release_endpoint(canon, port, owner)
+	}
+	// The bind and the join, with the row told about either failure: a listener that could not
+	// bind must show idle and say why. NOTE a successful bind does not mean sole ownership —
+	// this V forces SO_REUSEADDR, so another holder of the port splits the stream with us
+	// (transport.udp_bind says so in full); that is why nothing here claims exclusivity.
+	// '' — the selector comes from the group's family (transport.udp_bind); see its twin in
+	// someip.collect for why naming '0.0.0.0' here defeated that.
+	mut sock := transport.udp_bind(someip.bind_addr(canon, port), group, '') or {
+		someip_row_failed(mut a, ci, iface, gen, '${chname}: ${err}')
+		return
+	}
+	a.mu.lock()
+	// `a.running` TOO, not only the row and the generation. Stop does not advance `run_gen`, so
+	// a worker that bound just as Stop ran would still pass the ownership check and set
+	// `running = true` after Stop had cleared it — and an immediate Start then SKIPPED this row
+	// (its double-click guard sees a running row), while this worker, once it noticed the new
+	// generation, exited without clearing the flag because that path is ownership-gated too.
+	// The result is a green row with no listener behind it, for the life of the run.
+	if !a.running || !a.row_is_mine_locked(ci, iface, gen) {
+		a.mu.unlock() // see above: the predicate also guards the INDEX
+		sock.close() or {}
+		return
+	}
+	a.chans[ci].running = true
+	a.chans[ci].spawning = false
+	if a.running {
+		grp := if group != '' { ', group ${group}' } else { '' }
+		a.log_append_locked('${chname}: SOME/IP listening on ${addr}${grp}')
+	}
+	a.mu.unlock()
+	vgui.wake()
+	// Datagrams that were not SOME/IP to the end — empty, truncated, a bad Length — counted and
+	// narrated when the count changes, once a second at most: a fact about the wire the operator
+	// should see, not a row per fault.
+	mut bad := 0
+	mut bad_said := 0
+	mut next_say := i64(0)
+	// Said ONCE per run, at the first message that is actually dropped from a recording rather
+	// than at bind: Record can be ticked after Start, and a note that fired only for the
+	// already-recording case would leave exactly the operator who turns it on mid-run — and then
+	// stops, saves, and finds the traffic they watched scroll by simply absent — unwarned. A
+	// recording is CAN frames (canlog.LogEntry); these rows are not.
+	mut said_rec := false
+	mut buf := []u8{len: 65535} // hoisted: one buffer for the run, not one per read
+	for a.running && a.run_gen == gen && a.chans[ci].enabled {
+		if bad != bad_said && time.ticks() >= next_say {
+			a.mu.lock()
+			if a.running && a.row_is_mine_locked(ci, iface, gen) {
+				a.log_append_locked('${chname}: ${bad} datagram(s) not SOME/IP (empty, truncated or a bad Length)')
+			}
+			a.mu.unlock()
+			bad_said = bad
+			next_say = time.ticks() + 1000
+		}
+		d := transport.udp_read_into(mut sock, 200, mut buf) or { continue }
+		if a.run_gen != gen {
+			break
+		}
+		t_ms := a.since_ms()
+		mut cap := someip.Capture{}
+		cap.ingest(d)
+		bad += cap.malformed
+		a.mu.lock()
+		if !a.row_is_mine_locked(ci, iface, gen) {
+			a.mu.unlock()
+			break
+		}
+		if a.recording && !said_rec && cap.messages.len > 0 {
+			a.log_append_locked('${chname}: SOME/IP messages are shown in the trace but NOT recorded — a recording holds CAN frames')
+			said_rec = true
+		}
+		if !a.paused {
+			for m in cap.messages {
+				id := m.header.message_id()
+				bad_fixed := if _ := someip.check_fixed_fields(m.header) { false } else { true }
+				key := gkey_someip(chname, id, m.header.msg_type, m.header.interface_version,
+					m.header.protocol_version, m.from, bad_fixed)
+				// BOUNDED HERE, where the row is made, and only here: the capture above still
+				// holds the whole payload for anything that wants it. See TraceRow.data_len.
+				head := if m.payload.len > trace_payload_max {
+					m.payload[..trace_payload_max].clone()
+				} else {
+					m.payload
+				}
+				a.push_row_locked(TraceRow{
+					t_ms:     t_ms
+					ch:       chname
+					origin:   org_rx
+					id:          id
+					someip:       true
+					someip_type:  m.header.msg_type
+					someip_iface:     m.header.interface_version
+					someip_proto:     m.header.protocol_version
+					someip_from:      m.from
+					someip_bad_fixed: bad_fixed
+					name:     someip_row_name(m.header, m.from)
+					data:     head
+					data_len: m.payload.len
+					key:      key
+				})
+				a.gcount[key]++
+			}
+		}
+		a.chans[ci].rx += u64(cap.messages.len)
+		a.rx += u64(cap.messages.len)
+		a.chans[ci].rx_seen += u64(cap.messages.len)
+		// ONLY A PARSED MESSAGE IS TRAFFIC. `rx_last` feeds the Buses panel's "last RX" and the
+		// staleness verdict, and advancing it for a malformed or empty datagram let a stream of
+		// garbage keep a dead endpoint looking current indefinitely — while the RX count beside
+		// it, which only counts messages, stood still.
+		if cap.messages.len > 0 {
+			a.chans[ci].rx_last = t_ms
+		}
+		now := time.ticks()
+		mut wake := false
+		// UNDER THE LOCK, unlike rx_loop's older unlocked pair: the lock is already held here,
+		// so testing the throttle costs nothing extra and there is no unlocked write to race.
+		if now - a.last_wake >= a.wake_ms {
+			a.last_wake = now
+			wake = true
+		}
+		a.mu.unlock()
+		if wake {
+			vgui.wake()
+		}
+	}
+	sock.close() or {}
+	a.mu.lock()
+	// THE LAST COUNT, before anything else. Malformed datagrams make no trace row and are held
+	// nowhere else, so any that arrived inside the one-second throttle before the run stopped
+	// were never reported at all — the session log under-reported the wire faults of exactly the
+	// moment a measurement was cut short.
+	if bad != bad_said && a.row_is_mine_locked(ci, iface, gen) {
+		a.log_append_locked('${chname}: ${bad} datagram(s) not SOME/IP (empty, truncated or a bad Length)')
+	}
+	if a.row_is_mine_locked(ci, iface, gen) {
+		a.chans[ci].running = false
+		a.chans[ci].spawning = false
+	}
+	a.mu.unlock()
+	vgui.wake()
+}
+
+// someip_row_failed records a listener that never came up: flags cleared so the row shows idle
+// and can be re-enabled, the reason in the Log — under one take of the lock, for the run that
+// spawned it only (a slow failure from a previous run must not narrate the current one).
+fn someip_row_failed(mut a App, ci int, iface string, gen u64, msg string) {
+	a.mu.lock()
+	if a.row_is_mine_locked(ci, iface, gen) {
+		a.chans[ci].running = false
+		a.chans[ci].spawning = false
+		a.log_append_locked(msg)
+	}
+	a.mu.unlock()
+	vgui.wake()
 }

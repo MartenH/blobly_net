@@ -427,6 +427,16 @@ fn (app &App) group_message(r TraceRow) ?candb.Message {
 	return app.message_for(r.id, r.ext, true, app.dbs_for_gate(r.wire))
 }
 
+// group_message_kind is group_message with the row's KIND: a SOME/IP payload has no DBC frame
+// behind it, so it decodes to nothing rather than to whatever CAN message shares its number —
+// `find_message_kind`'s rule, asked where a J1939 row needs the wire-scoped lookup as well.
+fn (app &App) group_message_kind(r TraceRow, someip bool) ?candb.Message {
+	if someip {
+		return none
+	}
+	return app.group_message(r)
+}
+
 // j1939_narrate_locked puts one fault in the Log, within the budget. Caller holds app.mu.
 fn (mut app App) j1939_narrate_locked(mut obs J1939Obs, ch string, fl j1939.Fault) {
 	if fl.kind == .orphan {

@@ -119,7 +119,7 @@ fn (mut app App) load_recording(path string) {
 		// A DoIP entry carries no frames and no `verify:`, so it must not create a verifier set
 		// for its interface: an empty one made `verifiers.len == 1` false and an unlabelled MF4
 		// import stopped resolving to the single simulated bus.
-		if sc.pch.is_doip() {
+		if sc.pch.is_eth() {
 			continue
 		}
 		// Per ENTRY, from the CURRENTLY LOADED databases. Two things have to hold at once: an
@@ -172,7 +172,7 @@ fn (mut app App) load_recording(path string) {
 	// single-bus fallback and an imported one-bus recording was verified against nothing.
 	mut can_buses := map[string]bool{}
 	for c in app.chans {
-		if !c.doip {
+		if !c.eth() {
 			can_buses[transport.destination_key_for(c.adapter, c.iface)] = true
 		}
 	}

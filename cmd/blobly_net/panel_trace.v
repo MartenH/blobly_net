@@ -184,7 +184,13 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 	}
 	trace_capture_chips(mut app)
 	// restrict to watched frames + optional bus, then apply the optional text find
-	frows := app.filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
+	// `!it.someip` as well as the watch: the filter's identity is (id, ext) with no kind, so a
+	// SOME/IP message id that happens to equal a watched CAN id would otherwise be pulled into
+	// this view — and from here into Signals and Graphics, which decode whatever they find.
+	// Gating the grouped row's menu (where this started) covered making a watch, not matching
+	// one; a row can be watched by an id that was added from a real CAN frame.
+	frows := app.filter_bus(rows.filter(!it.someip && app.is_fwatched(it.id, it.ext)),
+		app.ftrace_bus)
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
 	if app.trace_grouped2 {
 		draw_trace_grouped(mut app, frows, gcount, filt)
@@ -292,6 +298,16 @@ fn hex_shown(b []u8) string {
 	return '${hex(b[..trace_data_shown])} … +${b.len - trace_data_shown} bytes'
 }
 
+// idstr_row renders the row's id AS ITS KIND reads it: a SOME/IP message id is a service and a
+// method, which is how a dissector, the standard and blobly_emb's config all spell it, and
+// rendering it as one 32-bit number invites reading it as a CAN id.
+fn idstr_row(id u32, ext bool, someip bool) string {
+	if someip {
+		return '0x${u16(id >> 16):04X}:${u16(id):04X}'
+	}
+	return idstr(id, ext)
+}
+
 // kind_mark labels a frame whose KIND is not classic CAN. A 64-byte payload is obvious from the
 // data column, but an FD frame carrying eight bytes or fewer looks exactly like a classic one,
 // and BRS never shows at all — so the trace would claim a frame that was never on the bus.
@@ -360,7 +376,7 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// bytes, and formatting all of them for every row on every repaint while a filter is typed
 	// is the per-repaint allocation #299 removed, 28 times over.
 	hay :=
-		'${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex_shown(r.data)} ${r.e2e}'.to_lower()
+		'${idstr_row(r.id, r.ext, r.someip)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex_shown(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -465,15 +481,26 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_row()
 			trace_idx_t_cells(r)
 			vgui.table_cell(r.ch)
-			vgui.table_cell(idstr(r.id, r.ext))
+			vgui.table_cell(idstr_row(r.id, r.ext, r.someip))
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
 			origin_cell(r.origin, origin_mark(r))
-			vgui.table_cell(len_str(r.data.len))
+			vgui.table_cell(len_str(r.full_len()))
 			vgui.table_cell(flags_str(r))
 			// the FD/BRS suffix moved out of this cell into the flags column — payload only here
-			vgui.table_cell(if r.rtr { '' } else { hex_shown(r.data) })
+			// Two different "more than is shown" cases meet here: a row whose PAYLOAD was
+			// cut at push (`truncated`, a large SOME/IP message) and a row whose payload is
+			// whole but too wide to draw (`hex_shown`, a rejoined J1939 message up to 1785
+			// bytes). The first states the bytes the row does not HAVE, the second the bytes
+			// the cell does not SHOW.
+			vgui.table_cell(if r.rtr {
+				''
+			} else if r.truncated() {
+				'${hex_shown(r.data)} … +${r.full_len() - r.data.len}'
+			} else {
+				hex_shown(r.data)
+			})
 		}
 		vgui.table_end()
 	}
@@ -485,6 +512,12 @@ mut:
 	ch     string
 	id     u32
 	ext    bool
+	someip bool // the row's kind, carried so the CAN consumers below can refuse it
+	someip_type  u8 // its message type: part of the group identity, so part of the order
+	someip_iface u8 // its interface version, for the same reason
+	someip_proto u8 // and its protocol version: an invalid one must not merge into valid traffic
+	someip_from  string // its producer: two instances of one service are two rows
+	someip_bad_fixed bool // its header broke a fixed-field rule; must not merge with valid ones
 	fd     bool
 	brs    bool
 	rtr    bool
@@ -537,8 +570,28 @@ fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr b
 	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}'
 }
 
+// gkey_someip: a SOME/IP message's group identity. Prefixed so it can never collide with a CAN
+// group of the same number on the same channel — the kind is part of the identity, not a
+// decoration on it.
+// gkey_someip: a SOME/IP message's group identity. Prefixed so it can never collide with a CAN
+// group of the same number, and keyed on the MESSAGE TYPE as well as the id — a REQUEST and its
+// RESPONSE share a service and method, so a key without the type collapsed an RPC exchange into
+// one row whose count, cycle time and byte-change highlighting treated a question and its answer
+// as repetitions of one message.
+// `from` is in the key because two instances of one service are two producers; `bad_fixed` is,
+// because an invalid header must not be merged into valid traffic and then relabelled by it —
+// the grouped view takes its name from the newest row of a group, so an anomaly that shares a
+// key with valid messages is announced and then silently unannounced.
+fn gkey_someip(ch string, id u32, msg_type u8, iface_version u8, proto_version u8, from string, bad_fixed bool) string {
+	return 'S|${org_rx}|${ch.len}:${ch}|${id}|${msg_type}|${iface_version}|${proto_version}|${from}|${bad_fixed}'
+}
+
 // gkey: the row's own group identity.
 fn (r TraceRow) gkey() string {
+	if r.someip && r.key.len == 0 {
+		return gkey_someip(r.ch, r.id, r.someip_type, r.someip_iface, r.someip_proto, r.someip_from,
+			r.someip_bad_fixed)
+	}
 	if r.key.len > 0 {
 		return r.key
 	}
@@ -608,7 +661,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				origin: r.origin
 				ch:     r.ch
 				id:     r.id
-				ext:    r.ext
+				ext:         r.ext
+				someip:       r.someip
+				someip_type:  r.someip_type
+				someip_iface:     r.someip_iface
+				someip_proto:     r.someip_proto
+				someip_from:      r.someip_from
+				someip_bad_fixed: r.someip_bad_fixed
 				fd:     r.fd
 				brs:    r.brs
 				rtr:    r.rtr
@@ -673,6 +732,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.rtr != b.rtr {
 			return if !a.rtr { -1 } else { 1 }
 		}
+		// The KIND, last and for the same reason as the rest: it is part of the group key, so two
+		// groups that differ only by it are distinct rows, and a comparator that called them
+		// equal would let them swap places between redraws (the groups come from a map).
+		if a.someip != b.someip {
+			return if !a.someip { -1 } else { 1 }
+		}
 		// the frame before the message rejoined from frames like it (a node may send one PGN
 		// both short and over TP) — in the key since #171, so here
 		if a.tp != b.tp {
@@ -680,6 +745,23 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if a.wire != b.wire {
 			return if a.wire < b.wire { -1 } else { 1 }
+		}
+		// and the message type, for the same reason: it is part of the key, so two groups that
+		// differ only by it are distinct rows and must not compare equal.
+		if a.someip_type != b.someip_type {
+			return if a.someip_type < b.someip_type { -1 } else { 1 }
+		}
+		if a.someip_iface != b.someip_iface {
+			return if a.someip_iface < b.someip_iface { -1 } else { 1 }
+		}
+		if a.someip_proto != b.someip_proto {
+			return if a.someip_proto < b.someip_proto { -1 } else { 1 }
+		}
+		if a.someip_from != b.someip_from {
+			return if a.someip_from < b.someip_from { -1 } else { 1 }
+		}
+		if a.someip_bad_fixed != b.someip_bad_fixed {
+			return if !a.someip_bad_fixed { -1 } else { 1 }
 		}
 		return 0
 	})
@@ -721,20 +803,29 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			if lb.label.len == 0 || lb.name != name_now {
 				lb = GLabel{
 					name:  name_now
-					label: '${idstr(g.id, g.ext)}  ${name_now}###${k}'
+					label: '${idstr_row(g.id, g.ext, g.someip)}  ${name_now}###${k}'
 					ctx:   'rowctx##${k}'
 				}
 				app.glabels[k] = lb
 			}
 			open := vgui.tree_node_table(lb.label)
-			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
-			if vgui.is_item_clicked() {
+			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter").
+			// NOT a SOME/IP row: `sel_id`/`sel_ext` are a CAN arbitration id and feed the Send
+			// panel, so selecting a service:method there would offer to transmit it as a 29-bit
+			// CAN frame on whatever bus Send is pointed at.
+			if vgui.is_item_clicked() && !g.someip {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 				app.sel_tp = r.tp
 			}
-			// right-click a row → context menu (plot its signals / add to filter)
-			if vgui.begin_popup_context_item(lb.ctx) {
+			// right-click a row → context menu (plot its signals / add to filter). Both entries
+			// are CAN-only for the same reason: the lookup goes to the loaded DBCs, so a SOME/IP
+			// id that happens to equal an extended CAN id would offer to decode a service
+			// payload with that frame's signal layout; and the filter is keyed on the CAN
+			// identity, so watching one would also match the CAN frame.
+			if !g.someip && vgui.begin_popup_context_item(lb.ctx) {
+				// group_message, not find_message: a rejoined J1939 message is looked up by its
+				// PGN against the databases on ITS OWN wire.
 				if m := app.group_message(r) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
@@ -749,7 +840,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				vgui.end_popup()
 			}
 			origin_cell(g.origin, verdict_mark(g.refused, g.missed))
-			vgui.table_cell(len_str(r.data.len))
+			vgui.table_cell(len_str(r.full_len()))
 			vgui.table_cell(flags_str(r))
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
 			// ones that changed (conventional change highlight). Compared against the actual prior
@@ -778,6 +869,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						vgui.text_dim(tok) // unchanged → dimmed
 					}
 				}
+				// THE SAME MARKER THE CHRONOLOGICAL VIEW SHOWS, and this is the DEFAULT view:
+				// without it the bytes read as the whole message, and the missing tail is only
+				// inferable by comparing them against the len column by hand.
+				if r.truncated() {
+					vgui.same_line()
+					vgui.text_dim('… +${r.full_len() - r.data.len}')
+				}
 			}
 			// all-time total (survives the ring trim); fall back to the window count.
 			total := gcount[k] or { u64(g.count) }
@@ -805,8 +903,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			}
 			if open {
 				// an expanded RTR group decodes nothing: its newest frame has no payload,
-				// only a DLC placeholder (see TraceRow.has_payload)
-				if m := app.group_message(r) {
+				// only a DLC placeholder (see TraceRow.has_payload); and an expanded SOME/IP
+				// group decodes nothing because its payload layout is the deployment's, not a
+				// DBC's (decoding it from an emb node's config is the next rung).
+				if m := app.group_message_kind(r, g.someip) {
 					for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 						lbl := s.label(r.data)
 						extra := if lbl != '' { ' (${lbl})' } else { '' }

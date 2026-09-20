@@ -673,12 +673,21 @@ fn build_layout() {
 }
 
 // latest_data returns the payload of the newest trace row matching (id, ext), or [].
+//
+// NOT A SOME/IP ROW. This is asked with a CAN (id, ext) and its answer is decoded with a DBC
+// signal layout, so a SOME/IP payload that shares the number would be read as that frame and
+// shown as real signal values. The kind is part of a row's identity (TraceRow.someip), and
+// everything that looks a row up by number has to say so — gating where a watch is CREATED, as
+// this change first did, does not cover matching one that a real CAN frame added. `tp` is the
+// same question for the other kind: a rejoined J1939 message and a single frame at that
+// identifier are two producers.
 fn latest_data(rows []TraceRow, id u32, ext bool, tp bool) []u8 {
 	mut i := rows.len - 1
 	for i >= 0 {
 		// has_payload: an RTR row matching this id would return its zero-filled DLC
 		// placeholder as the "latest value" of every signal
-		if rows[i].id == id && rows[i].ext == ext && rows[i].tp == tp && rows[i].has_payload() {
+		if !rows[i].someip && rows[i].id == id && rows[i].ext == ext && rows[i].tp == tp
+			&& rows[i].has_payload() {
 			return rows[i].data
 		}
 		i--
@@ -782,7 +791,9 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	for r in rows {
 		// has_payload, not data.len: an imported `200#R8` between real 0x200 frames would
 		// inject a zero sample into the middle of the series
-		if r.id == w.id && r.ext == w.ext && r.tp == w.tp && r.has_payload() {
+		// `!r.someip`, for latest_data's reason: a plotted series must not take its points from a
+		// payload that no DBC signal describes; `tp` for the other kind, a rejoined message.
+		if !r.someip && r.id == w.id && r.ext == w.ext && r.tp == w.tp && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}
@@ -858,7 +869,10 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		xmax = app.since_s()
 	} else {
 		for r in rows {
-			if app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
+			// `!r.someip` here as well as in the series: this picks the window's right-hand edge,
+			// so a SOME/IP row sharing a watched CAN id would drag a fixed 1/5/10/30 s window
+			// past the series it is meant to frame and leave the plot looking empty.
+			if !r.someip && app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
 				xmax = f64(r.t_ms) / 1000.0
 			}
 		}
