@@ -253,6 +253,16 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 	if pgn == pgn_tp_cm {
 		k := skey(id.sa, id.da())
 		cm := parse_cm_of(f) or {
+			// AN FD FRAME RESTARTS NOTHING. The fallback below is about a J1939-21 announcement
+			// this module could not read — a mis-sized RTS or BAM does end the previous
+			// transfer, as a refused one does — but an FD frame at this identifier is another
+			// protocol's entirely, and cancelling a classic transfer on its account is the
+			// opposite of refusing it (codex).
+			if f.fd {
+				return Step{
+					role: .stray
+				}
+			}
 			// Not a frame this module reads — but its control byte, if it has one, still says
 			// whether the pair started over: a mis-sized RTS or BAM ends the previous transfer
 			// like a refused one does, or the replacement's first packet lands in the old
@@ -659,15 +669,19 @@ pub fn (mut r Reassembler) expire(now_ms f64) []Fault {
 
 fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Events) {
 	cm := parse_cm_shaped(data, fd) or {
-		// and a mis-sized RTS or BAM still starts the pair over — see Transfers.step_at
-		if data.len > 0 && (data[0] == cm_rts || data[0] == cm_bam) {
+		// A mis-sized RTS or BAM still starts the pair over — see Transfers.step_at — but an
+		// FD frame does NOT: that fallback is about a J1939-21 announcement this module could
+		// not read, and an FD frame at this identifier is another protocol's entirely, so
+		// cancelling a classic transfer on its account is the opposite of refusing it (codex).
+		// It is still SAID, below, like any frame here that cannot be read.
+		if !fd && data.len > 0 && (data[0] == cm_rts || data[0] == cm_bam) {
 			k := skey(id.sa, id.da())
 			if old := r.sessions[k] {
 				ev.faults << old.fault(.restarted, 'a new announcement arrived after ${old.progress()}; the unfinished message is dropped')
 				r.sessions.delete(k)
 			}
 		}
-		ev.faults << id.fault(.malformed, 0, 'TP.CM of ${data.len} bytes; a transport-protocol frame carries exactly 8')
+		ev.faults << id.fault(.malformed, 0, 'TP.CM of ${data.len} bytes${if fd { ' on a CAN-FD frame' } else { '' }}; a transport-protocol frame carries exactly 8')
 		return
 	}
 	ctrl := cm.ctrl

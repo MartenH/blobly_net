@@ -251,7 +251,8 @@ fn (mut app App) j1939_note_locked(mut obs J1939Obs, ch string, gate string, key
 		return []
 	}
 	id := j1939.decompose(f.id)
-	if j1939.is_address_claim(id) {
+	// the FRAME, not the identifier alone: a NAME is eight bytes of classic CAN
+	if j1939.claim_frame(f, id) {
 		mut dir := app.j1939_nodes[key] or { j1939.Directory{} }
 		if c := dir.observe(id.sa, f.data, t_ms) {
 			app.j1939_nodes[key] = dir

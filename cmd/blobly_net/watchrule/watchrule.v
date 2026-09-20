@@ -78,22 +78,32 @@ pub fn (i Ident) covers(r Row) bool {
 	return !i.scoped_by_wire() || r.wire == i.wire
 }
 
-// rewritten_by reports whether a DBC edit to `(id, ext)` on `wire` should move this watch.
+// renamed_by reports whether a DBC edit to `(id, ext)` on `wire`, whose message carries `pgn`,
+// names THIS watch's message — the question a SIGNAL RENAME asks, since the signal's name is
+// the database's whichever kind of row carries it.
 //
-// Scoped, because an edit to ONE database must not move a watch that another wire's database
-// backs: the rewrite loops matched `(id, ext)` alone, so editing the first-loaded DBC moved a
-// rejoined watch belonging to a different wire to the edited id and kind. A frame's watch is
-// unscoped for the reason `covers` leaves it unscoped.
-pub fn (i Ident) rewritten_by(id u32, ext bool, wire string, pgn u32) bool {
+// A rejoined message is matched by its GROUP: its own identifier is composed from the group,
+// the sender and a priority, while the database's `BO_` for that group commonly spells another
+// source address — which is the whole reason such a message resolves by PGN at all, so
+// comparing the identifier missed exactly the case the fallback exists for. Scoped by wire too:
+// an edit to ONE database must not reach a rejoined watch another wire's database backs.
+pub fn (i Ident) renamed_by(id u32, ext bool, wire string, pgn u32) bool {
 	if i.ext != ext {
 		return false
 	}
 	if i.tp {
-		// BY PARAMETER GROUP. A rejoined watch's identifier is composed and the edited
-		// message's `BO_` may carry another source address or priority, so comparing the whole
-		// number missed exactly the case the PGN fallback exists for: renaming that message
-		// left the watch on the old name, plotting nothing (codex).
 		return i.pgn == pgn && i.wire == wire
 	}
 	return i.id == id
+}
+
+// moved_by reports whether a DBC edit to that message moves this watch's IDENTIFIER.
+//
+// Never for a rejoined message, and that is the point: its identifier comes from the WIRE —
+// `Assembled` composes it from the transfer's group, sender and priority — so editing the
+// database changes what the rows are CALLED and not which rows exist. Moved anyway, the watch
+// pointed at an identifier no row carries and plotted nothing (codex). A frame's watch is the
+// other way round: its rows ARE the database's id, so the edit moves it.
+pub fn (i Ident) moved_by(id u32, ext bool, wire string, pgn u32) bool {
+	return !i.tp && i.renamed_by(id, ext, wire, pgn)
 }

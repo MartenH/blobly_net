@@ -11,6 +11,7 @@
 module j1939
 
 import encoding.binary
+import transport
 
 // Name is a 64-bit J1939 NAME taken apart. Bit ranges, LSB first:
 //
@@ -135,6 +136,14 @@ pub fn (n Name) describe() string {
 // byte computes to it — and a destination-specific frame there is not a claim and must not
 // rename a source address (codex on #329). The ONE predicate, for the directory's feed and for
 // the trace's reading of the frame.
+// claim_frame is whether a FRAME is an address claim: the identifier, and the shape a claim
+// has. A NAME is eight bytes of CLASSIC CAN — `tp_shaped`'s rule, for the reason it exists —
+// so an FD frame at that identifier is another protocol's, and installing its payload as a
+// NAME relabelled every frame from that source address after it (codex).
+pub fn claim_frame(f transport.CanFrame, i Id) bool {
+	return tp_shaped(f) && is_address_claim(i)
+}
+
 pub fn is_address_claim(i Id) bool {
 	// And not FROM the global address: no node is 0xFF, so a NAME filed there would label
 	// malformed traffic as a real ECU (codex on #329). The null address stays: Cannot Claim.

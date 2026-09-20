@@ -1,5 +1,7 @@
 module j1939
 
+import transport
+
 // A NAME built field by field, so the decode is checked against the layout and not against
 // itself.
 fn build(identity u32, manufacturer u16, ecu_inst u8, fn_inst u8, function u8, vsys u8, vsys_inst u8, ig u8, aac bool) []u8 {
@@ -130,10 +132,15 @@ fn test_losing_a_contested_claim_still_releases_the_old_address() {
 
 fn test_is_address_claim_needs_the_global_destination() {
 	assert is_address_claim(decompose(0x18EEFF00)) // Address Claimed from 0x00
+	
 	assert is_address_claim(decompose(0x18EEFFFE)) // Cannot Claim
+	
 	assert !is_address_claim(decompose(0x18EE0000)) // PF 0xEE to one node: not a claim
+	
 	assert !is_address_claim(decompose(0x18EAFF00)) // a Request
+	
 	assert !is_address_claim(decompose(0x18EEFFFF)) // from the global address: nobody
+	
 }
 
 fn test_nodes_are_listed_by_address() {
@@ -145,4 +152,29 @@ fn test_nodes_are_listed_by_address() {
 	assert ns[0].sa == 0x00 && ns[0].name.label() == 'Engine'
 	assert ns[1].sa == 0x0B && ns[1].name.label() == 'Brakes - System Controller'
 	assert d.label(0x55) == ''
+}
+
+// A NAME is eight bytes of CLASSIC CAN. An FD frame at the Address Claimed identifier is
+// another protocol's, and installing its payload as a NAME relabelled every frame from that
+// source address after it.
+fn test_an_fd_frame_claims_no_address() {
+	name := [u8(0x11), 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+	claim := transport.CanFrame{
+		id: compose(6, pgn_address_claimed, addr_global, 0x21)
+		extended: true
+		data: name
+	}
+	id := decompose(claim.id)
+	assert claim_frame(claim, id), 'the classic frame is a claim'
+	mut fd := claim
+	fd.fd = true
+	assert is_address_claim(id), 'the identifier alone still says claim'
+	assert !claim_frame(fd, id), 'the frame does not'
+	// nor does a remote or short one
+	mut rtr := claim
+	rtr.rtr = true
+	assert !claim_frame(rtr, id)
+	mut short := claim
+	short.data = name[..4]
+	assert !claim_frame(short, id)
 }

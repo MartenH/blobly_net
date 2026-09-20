@@ -98,17 +98,31 @@ fn test_the_identity_separates_every_field_it_names() {
 fn test_a_dbc_edit_moves_only_the_watches_that_wire_backs() {
 	a := rejoined('can0', 'EngineSpeed')
 	b := rejoined('can1', 'EngineSpeed')
-	assert a.rewritten_by(eec1, true, 'can0', 0xF004)
-	assert !a.rewritten_by(eec1, true, 'can1', 0xF004)
-	assert !b.rewritten_by(eec1, true, 'can0', 0xF004)
+	assert a.renamed_by(eec1, true, 'can0', 0xF004)
+	assert !a.renamed_by(eec1, true, 'can1', 0xF004)
+	assert !b.renamed_by(eec1, true, 'can0', 0xF004)
 	// BY PARAMETER GROUP for a rejoined watch: the edited message's BO_ commonly spells
 	// another source address, which is the whole reason such a message resolves by PGN at all
-	assert a.rewritten_by(0x0CF004FE, true, 'can0', 0xF004), 'another SA in the BO_ id'
-	assert !a.rewritten_by(eec1, true, 'can0', 0xF005), 'another group'
+	assert a.renamed_by(0x0CF004FE, true, 'can0', 0xF004), 'another SA in the BO_ id'
+	assert !a.renamed_by(eec1, true, 'can0', 0xF005), 'another group'
 	// a frame's watch follows the edit by ID, whatever wire it was made on
 	f := frame('EngineSpeed')
-	assert f.rewritten_by(eec1, true, 'can0', 0)
-	assert f.rewritten_by(eec1, true, 'can1', 0)
-	assert !f.rewritten_by(0x0CF004FE, true, 'can0', 0xF004)
-	assert !f.rewritten_by(eec1, false, 'can0', 0)
+	assert f.renamed_by(eec1, true, 'can0', 0)
+	assert f.renamed_by(eec1, true, 'can1', 0)
+	assert !f.renamed_by(0x0CF004FE, true, 'can0', 0xF004)
+	assert !f.renamed_by(eec1, false, 'can0', 0)
+}
+
+// A DBC edit moves a FRAME watch's identifier, because its rows ARE that identifier. It must
+// never move a REJOINED one: that identifier is composed from the transfer on the wire, so
+// editing the database changes what the rows are called and not which rows exist — moved
+// anyway, the watch pointed at an identifier no row carries (codex).
+fn test_an_id_edit_moves_a_frames_watch_and_never_a_rejoined_one() {
+	f := frame('EngineSpeed')
+	r := rejoined('can0', 'EngineSpeed')
+	assert f.moved_by(eec1, true, 'can0', 0)
+	assert !r.moved_by(eec1, true, 'can0', 0xF004)
+	// but the rejoined one still follows a RENAME, which is the database's to give
+	assert r.renamed_by(eec1, true, 'can0', 0xF004)
+	assert !r.renamed_by(eec1, true, 'can1', 0xF004)
 }
