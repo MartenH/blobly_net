@@ -33,10 +33,11 @@ pub const cm_abort = u8(255)
 // Cm is a TP.CM frame's fields, read once (`parse_cm`) for every consumer of them.
 pub struct Cm {
 pub:
-	ctrl    u8
-	total   int // bytes announced (RTS, BAM); the abort reason sits in the same byte for an abort
-	packets int // packets announced (RTS, BAM)
-	pgn     u32 // the parameter group the frame is about (bytes 5..7)
+	ctrl     u8
+	reserved u8 // byte 4: J1939-21 fixes it at 0xFF in a BAM; in an RTS it is packets-per-CTS
+	total    int // bytes announced (RTS, BAM); the abort reason sits in the same byte for an abort
+	packets  int // packets announced (RTS, BAM)
+	pgn      u32 // the parameter group the frame is about (bytes 5..7)
 }
 
 // parse_cm reads a TP.CM payload; none unless it is EXACTLY the eight bytes a J1939-21
@@ -48,10 +49,11 @@ pub fn parse_cm(data []u8) ?Cm {
 		return none
 	}
 	return Cm{
-		ctrl:    data[0]
-		total:   int(binary.little_endian_u16_at(data, 1))
+		ctrl: data[0]
+		total: int(binary.little_endian_u16_at(data, 1))
 		packets: int(data[3])
-		pgn:     u32(data[5]) | (u32(data[6]) << 8) | (u32(data[7]) << 16)
+		reserved: data[4]
+		pgn: u32(data[5]) | (u32(data[6]) << 8) | (u32(data[7]) << 16)
 	}
 }
 
@@ -93,6 +95,14 @@ pub fn (c Cm) admission(id Id) ?string {
 	if ((c.pgn >> 8) & 0xFF) < 0xF0 && (c.pgn & 0xFF) != 0 {
 		return 'carries PGN 0x${c.pgn:05X}, a PDU1 group with a nonzero low byte'
 	}
+	// Byte 4 is RESERVED IN A BAM and J1939-21 fixes it at 0xFF, so a frame carrying anything
+	// else there is not a broadcast announcement — and admitted as one it becomes a synthetic
+	// message, and something the rest-bus walker attributes and may withhold (codex). In an RTS
+	// the same byte is a real field (packets the sender may send per CTS), which this listener
+	// does not act on, so it is not judged here.
+	if bam && c.reserved != 0xFF {
+		return 'BAM reserved byte 0x${c.reserved:02X}; J1939-21 fixes it at 0xFF'
+	}
 	// And it must come from a node: the null address (a Cannot Claim's source) and the global
 	// address originate nothing, so a transfer "from" either is a frame of some other making and
 	// must not become a message or an attribution (codex on #329).
@@ -106,22 +116,22 @@ pub fn (c Cm) admission(id Id) ?string {
 // frame it is rather than what it carries — the rest-bus subtraction, which must withhold an
 // excluded node's announcement and packets and has no use for the bytes.
 pub enum Role {
-	not_tp       // not a transport-protocol frame at all
-	announce     // an admitted BAM or RTS: the first frame of a transfer, from its originator
-	packet       // a data frame of a transfer in progress — the originator's, duplicate or gap included
+	not_tp // not a transport-protocol frame at all
+	announce // an admitted BAM or RTS: the first frame of a transfer, from its originator
+	packet // a data frame of a transfer in progress — the originator's, duplicate or gap included
 	sender_abort // an abort from the originator of a transfer in progress
-	receiver     // the receiver's side of a connection: CTS, end-of-message ack, an abort from the receiver
-	stray        // a TP frame nothing accounts for: a refused announcement, a packet or abort with no transfer
+	receiver // the receiver's side of a connection: CTS, end-of-message ack, an abort from the receiver
+	stray // a TP frame nothing accounts for: a refused announcement, a packet or abort with no transfer
 }
 
 // Step is one frame's role, with the transfer it belongs to where it has one.
 pub struct Step {
 pub:
 	role     Role
-	pgn      u32  // the parameter group the transfer carries
-	priority u8   // the announcement's
-	sa       u8   // the transfer's originator
-	da       u8   // its destination (addr_global for a BAM)
+	pgn      u32 // the parameter group the transfer carries
+	priority u8 // the announcement's
+	sa       u8 // the transfer's originator
+	da       u8 // its destination (addr_global for a BAM)
 	done     bool // this frame ended the transfer (its last packet, or an abort)
 }
 
@@ -131,7 +141,7 @@ struct Open {
 	packets  int
 	bam      bool
 mut:
-	next   u8  // the sequence number expected next
+	next   u8 // the sequence number expected next
 	last_s f64 // the transfer's last frame in either direction, on the caller's clock
 }
 
@@ -145,12 +155,13 @@ pub struct Transfers {
 mut:
 	open   map[u16]Open
 	last_s f64 // the clock's last reading, for a caller without one
-pub mut:
+
 	// The same waits the reassembler applies, in the caller's SECONDS (a recording's clock):
 	// T1 between a BAM's packets, T3 for a connection from its last frame in either direction.
 	// A transfer whose last packet the capture lost would otherwise stay open for the rest of
 	// the file, and a packet on the same pair minutes later — after the address changed hands,
 	// say — would inherit its decision (codex on #329).
+pub mut:
 	t1_s f64 = 0.75
 	t3_s f64 = 1.25
 }
@@ -197,8 +208,8 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				t.open.delete(k)
 				return Step{
 					role: .stray
-					sa:   id.sa
-					da:   id.da()
+					sa: id.sa
+					da: id.da()
 					done: had
 				}
 			}
@@ -216,25 +227,25 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 					t.open.delete(k)
 					return Step{
 						role: .stray
-						sa:   id.sa
-						da:   id.da()
+						sa: id.sa
+						da: id.da()
 						done: had
 					}
 				}
 				t.open[k] = Open{
-					pgn:      cm.pgn
+					pgn: cm.pgn
 					priority: id.priority
-					packets:  cm.packets
-					bam:      cm.ctrl == cm_bam
-					next:     1
-					last_s:   t_s
+					packets: cm.packets
+					bam: cm.ctrl == cm_bam
+					next: 1
+					last_s: t_s
 				}
 				return Step{
-					role:     .announce
-					pgn:      cm.pgn
+					role: .announce
+					pgn: cm.pgn
 					priority: id.priority
-					sa:       id.sa
-					da:       id.da()
+					sa: id.sa
+					da: id.da()
 				}
 			}
 			cm_abort {
@@ -245,12 +256,12 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 					if s.pgn == cm.pgn {
 						t.open.delete(k)
 						return Step{
-							role:     .sender_abort
-							pgn:      s.pgn
+							role: .sender_abort
+							pgn: s.pgn
 							priority: s.priority
-							sa:       id.sa
-							da:       id.da()
-							done:     true
+							sa: id.sa
+							da: id.da()
+							done: true
 						}
 					}
 				}
@@ -260,9 +271,9 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 						t.open.delete(rk)
 						return Step{
 							role: .receiver
-							pgn:  s.pgn
-							sa:   id.da()
-							da:   id.sa
+							pgn: s.pgn
+							sa: id.da()
+							da: id.sa
 							done: true
 						}
 					}
@@ -285,9 +296,9 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				}
 				return Step{
 					role: .receiver
-					pgn:  cm.pgn
-					sa:   id.da()
-					da:   id.sa
+					pgn: cm.pgn
+					sa: id.da()
+					da: id.sa
 					done: done
 				}
 			}
@@ -303,9 +314,9 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				}
 				return Step{
 					role: .receiver
-					pgn:  cm.pgn
-					sa:   id.da()
-					da:   id.sa
+					pgn: cm.pgn
+					sa: id.da()
+					da: id.sa
 				}
 			}
 			else {
@@ -317,9 +328,11 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 	}
 	if pgn == pgn_tp_dt {
 		k := skey(id.sa, id.da())
-		mut s := t.open[k] or { return Step{
-			role: .stray
-		} }
+		mut s := t.open[k] or {
+			return Step{
+				role: .stray
+			}
+		}
 		if f.data.len != 8 {
 			// not a J1939-21 data frame (see parse_cm); it neither advances nor ends the transfer
 			return Step{
@@ -344,12 +357,12 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 			t.open[k] = s
 		}
 		return Step{
-			role:     .packet
-			pgn:      s.pgn
+			role: .packet
+			pgn: s.pgn
 			priority: s.priority
-			sa:       id.sa
-			da:       id.da()
-			done:     done
+			sa: id.sa
+			da: id.da()
+			done: done
 		}
 	}
 	return Step{
@@ -396,6 +409,10 @@ pub enum FaultKind {
 	malformed
 	// More sessions open than this listener keeps; the stalest was dropped to make room.
 	overflow
+	// The unused bytes of a final data frame are not the 0xFF J1939-21 pads with. REPORTED AND
+	// NOT ABANDONED, alone among these: those bytes lie past the announced length, so the
+	// message is whole and correct and only the wire was wrong.
+	padding
 }
 
 // Fault is one thing that went wrong, about one session.
@@ -423,10 +440,10 @@ pub fn (f Fault) str() string {
 // the PGN whatever the frame announced (0 for a data frame, which announces nothing).
 fn (i Id) fault(kind FaultKind, pgn u32, detail string) Fault {
 	return Fault{
-		kind:   kind
-		sa:     i.sa
-		da:     i.da()
-		pgn:    pgn
+		kind: kind
+		sa: i.sa
+		da: i.da()
+		pgn: pgn
 		detail: detail
 	}
 }
@@ -491,10 +508,10 @@ fn (s Session) progress() string {
 // fault is a Fault about this session.
 fn (s Session) fault(kind FaultKind, detail string) Fault {
 	return Fault{
-		kind:   kind
-		sa:     s.sa
-		da:     s.da
-		pgn:    s.pgn
+		kind: kind
+		sa: s.sa
+		da: s.da
+		pgn: s.pgn
 		detail: detail
 	}
 }
@@ -507,9 +524,10 @@ fn skey(sa u8, da u8) u16 {
 pub struct Reassembler {
 mut:
 	sessions map[u16]Session
-pub mut:
+
 	// The receiver's inter-packet timeout, J1939-21 T1: 750 ms. A BAM session that has seen no
 	// data frame for this long is abandoned the next time anything is fed or `expire` is called.
+pub mut:
 	t1_ms f64 = 750
 	// An RTS/CTS session is paced by its receiver, which may take up to T3 (1250 ms) to answer
 	// an RTS or a completed block with a CTS, and may hold the sender with a CTS for zero
@@ -568,8 +586,7 @@ pub fn (mut r Reassembler) expire(now_ms f64) []Fault {
 		limit := if s.bam { r.t1_ms } else { r.t3_ms }
 		if now_ms - s.t_last_ms > limit {
 			stale << k
-			out << s.fault(.timeout,
-				'nothing for ${now_ms - s.t_last_ms:.0} ms after ${s.progress()}; dropped')
+			out << s.fault(.timeout, 'nothing for ${now_ms - s.t_last_ms:.0} ms after ${s.progress()}; dropped')
 		}
 	}
 	for k in stale {
@@ -584,13 +601,11 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 		if data.len > 0 && (data[0] == cm_rts || data[0] == cm_bam) {
 			k := skey(id.sa, id.da())
 			if old := r.sessions[k] {
-				ev.faults << old.fault(.restarted,
-					'a new announcement arrived after ${old.progress()}; the unfinished message is dropped')
+				ev.faults << old.fault(.restarted, 'a new announcement arrived after ${old.progress()}; the unfinished message is dropped')
 				r.sessions.delete(k)
 			}
 		}
-		ev.faults << id.fault(.malformed, 0,
-			'TP.CM of ${data.len} bytes; a transport-protocol frame carries exactly 8')
+		ev.faults << id.fault(.malformed, 0, 'TP.CM of ${data.len} bytes; a transport-protocol frame carries exactly 8')
 		return
 	}
 	ctrl := cm.ctrl
@@ -604,8 +619,7 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 				// session as the old PGN (codex on #329)
 				k := skey(id.sa, id.da())
 				if old := r.sessions[k] {
-					ev.faults << old.fault(.restarted,
-						'a new announcement arrived after ${old.progress()}; the unfinished message is dropped')
+					ev.faults << old.fault(.restarted, 'a new announcement arrived after ${old.progress()}; the unfinished message is dropped')
 					r.sessions.delete(k)
 				}
 				ev.faults << id.fault(.malformed, carried, why)
@@ -615,21 +629,20 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			k := skey(id.sa, id.da())
 			if old := r.sessions[k] {
 				kind := if bam { 'BAM' } else { 'RTS' }
-				ev.faults << old.fault(.restarted,
-					'a new ${kind} arrived after ${old.progress()}; the unfinished message is dropped')
+				ev.faults << old.fault(.restarted, 'a new ${kind} arrived after ${old.progress()}; the unfinished message is dropped')
 				r.sessions.delete(k)
 			}
 			r.make_room(mut ev)
 			r.sessions[k] = Session{
-				sa:         id.sa
-				da:         id.da()
-				pgn:        carried
-				priority:   id.priority
-				bam:        bam
-				total:      total
-				data:       []u8{cap: total}
+				sa: id.sa
+				da: id.da()
+				pgn: carried
+				priority: id.priority
+				bam: bam
+				total: total
+				data: []u8{cap: total}
 				t_start_ms: now_ms
-				t_last_ms:  now_ms
+				t_last_ms: now_ms
 			}
 		}
 		cm_cts {
@@ -655,9 +668,13 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 			// timeout a second later (codex on #329).
 			k := skey(id.da(), id.sa)
 			if s := r.sessions[k] {
-				if s.pgn == carried {
-					ev.faults << s.fault(.sequence,
-						'acknowledged complete by SA 0x${id.sa:02X} after ${s.progress()}; the rest never reached this listener; dropped')
+				// By the SIZE AND PACKET COUNT it names as well as the PGN. An acknowledgement
+				// of an earlier transfer between the same pair, of the same group, would
+				// otherwise drop the NEWER session as though the receiver had completed it —
+				// and `Transfers.step_at` would clear its subtraction verdict with it, turning
+				// the rest of its packets into orphans (codex).
+				if s.pgn == carried && cm.total == s.total && cm.packets == s.packets() {
+					ev.faults << s.fault(.sequence, 'acknowledged complete by SA 0x${id.sa:02X} after ${s.progress()}; the rest never reached this listener; dropped')
 					r.sessions.delete(k)
 				}
 			}
@@ -678,16 +695,14 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 					if s.pgn != carried {
 						continue
 					}
-					ev.faults << s.fault(.aborted,
-						'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(reason)}')
+					ev.faults << s.fault(.aborted, 'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(reason)}')
 					r.sessions.delete(k)
 					break
 				}
 			}
 		}
 		else {
-			ev.faults << id.fault(.malformed, carried,
-				'TP.CM control byte ${ctrl} is not one this module knows')
+			ev.faults << id.fault(.malformed, carried, 'TP.CM control byte ${ctrl} is not one this module knows')
 		}
 	}
 }
@@ -699,8 +714,7 @@ fn (mut r Reassembler) on_dt(id Id, data []u8, now_ms f64, late bool, mut ev Eve
 	mut s := r.sessions[k] or {
 		if !late {
 			seq := if data.len > 0 { int(data[0]) } else { 0 }
-			ev.faults << id.fault(.orphan, 0,
-				'data frame ${seq} with no announcement; a transfer already in progress when listening began, or one whose TP.CM was lost')
+			ev.faults << id.fault(.orphan, 0, 'data frame ${seq} with no announcement; a transfer already in progress when listening began, or one whose TP.CM was lost')
 		}
 		return
 	}
@@ -709,34 +723,45 @@ fn (mut r Reassembler) on_dt(id Id, data []u8, now_ms f64, late bool, mut ev Eve
 	// isotp refuses a short Consecutive Frame — and longer is a frame of some other protocol on
 	// an FD wire whose tail would be silently dropped (codex on #329).
 	if data.len != 8 {
-		ev.faults << s.fault(.malformed,
-			'data frame of ${data.len} bytes; a transport-protocol frame carries exactly 8; dropped')
+		ev.faults << s.fault(.malformed, 'data frame of ${data.len} bytes; a transport-protocol frame carries exactly 8; dropped')
 		r.sessions.delete(k)
 		return
 	}
 	seq := data[0]
 	if seq != s.next {
 		what := if seq == s.next - 1 { 'duplicate' } else { 'gap' }
-		ev.faults << s.fault(.sequence,
-			'sequence ${what}: got packet ${seq}, expected ${s.next}; dropped')
+		ev.faults << s.fault(.sequence, 'sequence ${what}: got packet ${seq}, expected ${s.next}; dropped')
 		r.sessions.delete(k)
 		return
 	}
 	need := s.total - s.data.len
 	take := if need < 7 { need } else { 7 }
+	// The LAST packet of a message whose length is not a multiple of seven has unused bytes,
+	// and J1939-21 fixes them at 0xFF. Anything else there is a sender not following the
+	// standard, and saying nothing about it leaves a bench tool quiet about the one thing it
+	// is for — but the MESSAGE is whole and correct, since those bytes lie past the announced
+	// length, so this is said WITHOUT dropping the transfer (codex). A fault that abandons and
+	// a fault that merely reports are different things; only the kinds documented as abandoning
+	// delete the session.
+	for i in take .. 7 {
+		if data[1 + i] != 0xFF {
+			ev.faults << s.fault(.padding, 'final packet pads with 0x${data[1 + i]:02X} at byte ${i}; J1939-21 pads with 0xFF')
+			break
+		}
+	}
 	s.data << data[1..1 + take]
 	s.next++
 	s.t_last_ms = now_ms
 	if s.data.len >= s.total {
 		ev.done << Assembled{
-			pgn:        s.pgn
-			sa:         s.sa
-			da:         s.da
-			priority:   s.priority
-			bam:        s.bam
-			data:       s.data
+			pgn: s.pgn
+			sa: s.sa
+			da: s.da
+			priority: s.priority
+			bam: s.bam
+			data: s.data
 			t_start_ms: s.t_start_ms
-			t_end_ms:   now_ms
+			t_end_ms: now_ms
 		}
 		r.sessions.delete(k)
 		return
@@ -758,8 +783,7 @@ fn (mut r Reassembler) make_room(mut ev Events) {
 			}
 		}
 		s := r.sessions[victim]
-		ev.faults << s.fault(.overflow,
-			'${r.max_sessions} sessions open; the stalest (after ${s.progress()}) is dropped')
+		ev.faults << s.fault(.overflow, '${r.max_sessions} sessions open; the stalest (after ${s.progress()}) is dropped')
 		r.sessions.delete(victim)
 	}
 }

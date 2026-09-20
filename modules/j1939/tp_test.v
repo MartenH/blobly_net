@@ -631,3 +631,40 @@ fn test_fault_wording() {
 	}
 	assert g.str() == 'TP SA 0x17 to 0x00: y'
 }
+
+// Byte 4 is reserved in a BAM at 0xFF. Admitted without judging it, a malformed frame becomes a
+// synthetic message — and something the rest-bus walker attributes and may withhold.
+fn test_a_bam_carries_its_reserved_byte() {
+	mut bad := bam(0x00, 20, dm1)
+	bad.data[4] = 0x03
+	mut r := Reassembler{}
+	ev := r.feed(bad, 0)
+	assert ev.faults.len == 1 && ev.faults[0].kind == .malformed
+	assert ev.faults[0].detail.contains('reserved byte')
+	assert r.open() == 0
+	// an RTS carries a real field there — packets per clear-to-send — and is admitted
+	mut ok := Reassembler{}
+	assert ok.feed(rts(0x00, 0x03, 20, dm1), 0).faults.len == 0
+	assert ok.open() == 1
+}
+
+// The unused bytes of a final data frame are J1939-21's 0xFF. Anything else is a sender not
+// following the standard — said, but NOT abandoned: those bytes lie past the announced length,
+// so the message is whole and only the wire was wrong.
+fn test_odd_padding_is_reported_and_the_message_still_arrives() {
+	mut r := Reassembler{}
+	r.feed(bam(0x00, 9, dm1), 0)
+	r.feed(dt(0x00, addr_global, 1, [u8(1), 2, 3, 4, 5, 6, 7]), 10)
+	mut last := dt(0x00, addr_global, 2, [u8(8), 9])
+	last.data[4] = 0x00 // a pad byte that is not 0xFF
+	ev := r.feed(last, 20)
+	assert ev.done.len == 1, 'the message is whole'
+	assert ev.done[0].data == [u8(1), 2, 3, 4, 5, 6, 7, 8, 9]
+	assert ev.faults.len == 1 && ev.faults[0].kind == .padding
+	// and a properly padded final packet says nothing
+	mut q := Reassembler{}
+	q.feed(bam(0x00, 9, dm1), 0)
+	q.feed(dt(0x00, addr_global, 1, [u8(1), 2, 3, 4, 5, 6, 7]), 10)
+	good := q.feed(dt(0x00, addr_global, 2, [u8(8), 9]), 20)
+	assert good.done.len == 1 && good.faults.len == 0
+}

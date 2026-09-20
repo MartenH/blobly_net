@@ -204,7 +204,12 @@ fn (mut app App) load_recording(path string) {
 	mut gate_of := map[string]string{}
 	mut gate_clash := map[string]bool{}
 	for c in app.chans {
-		if c.doip {
+		// NOT AN ETHERNET ROW, either kind. `doip` alone let a SOME/IP channel in, and its UDP
+		// destination is no answer to a recorded CAN bus: sharing a candump label with a real
+		// CAN row it forces `undecidable`, and as the only match it replaces the sole-CAN
+		// fallback with a gate that declares nothing, so a J1939 recording imports unread
+		// (codex). A recorded CAN bus resolves to a CAN wire or to nothing.
+		if c.doip || c.someip {
 			continue
 		}
 		dest := transport.destination_key_for(c.adapter, c.iface)
