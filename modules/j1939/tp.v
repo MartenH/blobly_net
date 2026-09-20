@@ -412,8 +412,13 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 			}
 		}
 		if f.data.len != 8 {
-			// not a J1939-21 data frame (see tp_shaped); it neither advances nor ends the
-			// transfer
+			// A CLASSIC data frame of the wrong length IS this transfer's — the sender put it
+			// on the pair the transfer runs between — and the reassembler drops the session on
+			// it. So must this, or the two disagree about whose the remaining frames are: the
+			// trace stops rejoining while the walker goes on attributing them to the excluded
+			// node (codex; the FD case above is the other way round, being another protocol's
+			// frame entirely).
+			t.open.delete(k)
 			return Step{
 				role: .stray
 			}

@@ -1216,25 +1216,39 @@ fn draw_dbc_editor(mut app App) {
 			app.mark_dirty(di)
 			wid := msg.id
 			wext := msg.ext
-			// SHADOWED BY WIRE, not globally. An earlier-loaded database is only in this one's
-			// way where the two are on the SAME wire: a decode resolves against that wire's
-			// databases, so one on another wire defining the same `(id, ext)` shadows nothing
-			// here — and read as a global flag it broke the loop before the wire-aware
-			// predicate ran, so renaming this database's signal left every watch alone (codex).
+			// SHADOWING FOLLOWS THE WATCH'S OWN SCOPE, because that is what decides which
+			// database a row actually decodes against — and the two kinds differ, which cost a
+			// round in each direction (codex):
+			//
+			//   - A FRAME's watch is unscoped and resolves through every loaded database in
+			//     order, so ANY earlier one defining `(id, ext)` shadows this edit, wherever it
+			//     is attached. Made per-wire, a rename on wire B moved a watch the wire-A
+			//     database still names.
+			//   - A REJOINED message's watch resolves against ITS OWN wire, by PGN. So only an
+			//     earlier database ON THAT WIRE shadows it — and by the same PGN lookup the
+			//     decode makes, since a J1939 file spells a placeholder source address in the
+			//     `BO_` id and an exact-id test misses the very definition that wins.
 			edit_wires := app.wires_of_db(di)
+			mut frame_shadowed := false
 			mut shadow_wires := map[string]bool{}
 			for odi in 0 .. di {
 				for om in app.dbs[odi].messages {
 					if om.id == wid && om.ext == wext {
-						for gw in app.wires_of_db(odi) {
-							shadow_wires[gw] = true
-						}
+						frame_shadowed = true
+					}
+				}
+				if _ := find_pgn_message_in([app.dbs[odi]], j1939.pgn(wid), u8(wid & 0xFF)) {
+					for gw in app.wires_of_db(odi) {
+						shadow_wires[gw] = true
 					}
 				}
 			}
 			for wi, w in app.watch {
+				if w.sig != old_sig || (!w.tp && frame_shadowed) {
+					continue
+				}
 				// RENAMED: a signal's name is the database's whichever kind of row carries it.
-				if w.sig == old_sig && edit_wires.any(it !in shadow_wires
+				if edit_wires.any((!w.tp || it !in shadow_wires)
 					&& w.renamed_by(wid, wext, it, j1939.pgn(wid))) {
 					app.watch[wi] = Watch{
 						...w
