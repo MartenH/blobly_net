@@ -938,8 +938,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						// value in the data column — the same ones the parent row uses
 						vgui.table_set_col(gcol_name)
 						// selectable spans the cell so the whole row is a right-click target
-						vgui.selectable('    ${s.name}##sigrow${g.id}_${g.ext}_${s.name}', false)
-						if vgui.begin_popup_context_item('sigctx##${g.id}_${g.ext}_${s.name}') {
+						// THE GROUP KEY in the widget ids: two expanded groups can share
+						// (id, ext, signal) and differ by wire or by a connection's receiver —
+						// they are different watches, and ImGui keyed on the id alone gave
+						// their rows and popups one identity, so a click in one opened the
+						// other's menu (codex).
+						vgui.selectable('    ${s.name}##sigrow${g.key}_${s.name}', false)
+						if vgui.begin_popup_context_item('sigctx##${g.key}_${s.name}') {
 							if vgui.menu_item('Add ${s.name} to Graphics') {
 								app.add_watch(g.id, g.ext, r.tp, r.wire, r.tp_da, s.name)
 								app.show_graphics = true

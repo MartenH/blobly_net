@@ -1390,6 +1390,12 @@ fn (mut app App) rebuild_from_proj() {
 	// there — a new measurement has seen no claims at all.
 	if gate_moved {
 		app.j1939_nodes = map[string]j1939.Directory{}
+		// AND THE TRANSFER LISTENERS. A wire that went off and came back with no frame in
+		// between keeps its half-assembled sessions, and the next data frame is then folded
+		// into a transfer announced under a reading the operator has since changed — the same
+		// argument as the directory beside it, for the other thing a listener remembers
+		// (codex). Start clears both unconditionally, for the same reason.
+		app.j1939_obs = map[string]&J1939Obs{}
 	}
 	reload := if gate_moved && app.j1939_override == .follow && app.viewing_rec != '' {
 		app.viewing_rec_path

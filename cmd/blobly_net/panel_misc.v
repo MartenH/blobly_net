@@ -725,6 +725,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 				app.sel_ext = m.ext
 				app.sel_tp = false
 				app.sel_wire = ''
+				app.sel_da = -1 // an ordinary frame has no connection receiver
 			}
 		}
 	}
