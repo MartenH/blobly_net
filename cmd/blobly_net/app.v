@@ -710,6 +710,28 @@ fn (app &App) wires_of_db(di int) []string {
 // a rejoined message is matched against a DBC edit by PGN (its own identifier is composed and
 // the database's `BO_` may spell another source address), so a caller that built the struct by
 // hand would have to remember that. None of them do; this does.
+// moved_watch is a watch following its message to a new DBC identifier.
+//
+// A FRAME's watch takes that identifier, because its rows are it. A REJOINED one takes the new
+// GROUP and has its identifier RECOMPOSED from it, keeping the sender and priority its own rows
+// carry — because a rejoined row's identifier comes from the transfer on the wire, so writing
+// the database's raw `BO_` id into it points the watch at a number no row carries, and leaving
+// the group alone leaves it on one the file no longer defines (codex, once in each direction).
+fn moved_watch(w Watch, new_id u32) Watch {
+	if !w.tp {
+		return Watch{
+			...w
+			id: new_id
+		}
+	}
+	pgn := j1939.pgn(new_id)
+	mine := j1939.decompose(w.id)
+	return Watch{
+		...w.moved_to(pgn)
+		id: j1939.compose(mine.priority, pgn, mine.da(), mine.sa)
+	}
+}
+
 fn watch_ident(id u32, ext bool, tp bool, wire string, sig string) Watch {
 	return Watch{
 		id:   id

@@ -404,9 +404,16 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				role: .stray
 			}
 		}
-		if f.data.len != 8 || f.fd {
-			// not a J1939-21 data frame (see tp_shaped: the FD flag counts as well as the
-			// length); it neither advances nor ends the transfer
+		if f.fd {
+			// another protocol's frame at this identifier: not this transfer's, and it ends
+			// nothing — see the reassembler
+			return Step{
+				role: .stray
+			}
+		}
+		if f.data.len != 8 {
+			// not a J1939-21 data frame (see tp_shaped); it neither advances nor ends the
+			// transfer
 			return Step{
 				role: .stray
 			}
@@ -681,7 +688,11 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 				r.sessions.delete(k)
 			}
 		}
-		ev.faults << id.fault(.malformed, 0, 'TP.CM of ${data.len} bytes${if fd { ' on a CAN-FD frame' } else { '' }}; a transport-protocol frame carries exactly 8')
+		ev.faults << id.fault(.malformed, 0, 'TP.CM of ${data.len} bytes${if fd {
+			' on a CAN-FD frame'
+		} else {
+			''
+		}}; a transport-protocol frame carries exactly 8')
 		return
 	}
 	ctrl := cm.ctrl
@@ -836,12 +847,16 @@ fn (mut r Reassembler) on_dt(id Id, data []u8, fd bool, now_ms f64, late bool, m
 	// would have to be filled from the next frame — a shifted message returned as valid, as
 	// isotp refuses a short Consecutive Frame — and longer is a frame of some other protocol on
 	// an FD wire whose tail would be silently dropped (codex on #329).
-	if data.len != 8 || fd {
-		ev.faults << s.fault(.malformed, 'data frame of ${data.len} bytes${if fd {
-			' on a CAN-FD frame'
-		} else {
-			''
-		}}; a transport-protocol frame carries exactly 8; dropped')
+	// AN FD FRAME ENDS NOTHING, for the reason its announcement does not: a mis-sized J1939-21
+	// data frame is this transfer's and kills it, but an FD frame at this identifier is another
+	// protocol's, and dropping a classic transfer on its account turns that transfer's own
+	// later packets into orphans (codex). Said either way; only the classic one is fatal.
+	if fd {
+		ev.faults << s.fault(.malformed, "a CAN-FD frame at TP.DT; a transport-protocol frame is classic CAN — not this transfer's, and ignored")
+		return
+	}
+	if data.len != 8 {
+		ev.faults << s.fault(.malformed, 'data frame of ${data.len} bytes; a transport-protocol frame carries exactly 8; dropped')
 		r.sessions.delete(k)
 		return
 	}

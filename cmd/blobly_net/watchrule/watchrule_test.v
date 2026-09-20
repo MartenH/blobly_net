@@ -113,16 +113,18 @@ fn test_a_dbc_edit_moves_only_the_watches_that_wire_backs() {
 	assert !f.renamed_by(eec1, false, 'can0', 0)
 }
 
-// A DBC edit moves a FRAME watch's identifier, because its rows ARE that identifier. It must
-// never move a REJOINED one: that identifier is composed from the transfer on the wire, so
-// editing the database changes what the rows are called and not which rows exist — moved
-// anyway, the watch pointed at an identifier no row carries (codex).
-fn test_an_id_edit_moves_a_frames_watch_and_never_a_rejoined_one() {
-	f := frame('EngineSpeed')
+// What an edit CHANGES differs by kind: a frame's watch takes the new identifier, a rejoined
+// one takes the new GROUP and has its identifier recomposed from it (the caller does that, with
+// the sender and priority its own rows carry). Writing the database's raw id into a rejoined
+// watch pointed it at a number no row carries; leaving its group alone left it on one the file
+// no longer defines.
+fn test_a_rejoined_watch_moves_by_group_and_keeps_what_its_rows_carry() {
 	r := rejoined('can0', 'EngineSpeed')
-	assert f.moved_by(eec1, true, 'can0', 0)
-	assert !r.moved_by(eec1, true, 'can0', 0xF004)
-	// but the rejoined one still follows a RENAME, which is the database's to give
-	assert r.renamed_by(eec1, true, 'can0', 0xF004)
-	assert !r.renamed_by(eec1, true, 'can1', 0xF004)
+	assert r.renamed_by(eec1, true, 'can0', 0xF004), 'the edit concerns it'
+	moved := r.moved_to(0xF005)
+	assert moved.pgn == 0xF005
+	assert moved.wire == r.wire && moved.sig == r.sig && moved.tp
+	assert !moved.same(r)
+	// its identifier is the caller's to recompose; this package does not invent one
+	assert moved.id == r.id
 }

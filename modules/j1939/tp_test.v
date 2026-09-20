@@ -481,8 +481,13 @@ fn test_fd_sized_frames_are_not_tp_frames() {
 		data:     [u8(1), 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 	}
 	ev2 := r.feed(fd_dt, 2)
-	assert ev2.faults.len == 1 && ev2.faults[0].detail.contains('data frame of 12 bytes')
-	assert r.open() == 0
+	assert ev2.faults.len == 1 && ev2.faults[0].detail.contains('CAN-FD frame at TP.DT')
+	// AND THE TRANSFER SURVIVES IT, as the walker below already required: a frame that is not
+	// this transfer's neither advances nor ends it. The two sides disagreed here — the
+	// reassembler dropped the session, so the classic transfer's own later packets became
+	// orphans — and the walker's assertion was the one that was right (codex).
+	assert r.open() == 1
+	assert r.feed(packets(0x00, addr_global, message(20))[0], 3).faults.len == 0
 	mut t := Transfers{}
 	assert t.step(fd_cm).role == .stray
 	t.step(bam(0x00, 20, dm1))

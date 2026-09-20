@@ -198,9 +198,12 @@ fn (mut app App) dest_cached_locked(iface string) string {
 // the lower one — would otherwise wear the winner's name (codex on #329). Uncached: claims are
 // rare. Caller holds app.mu.
 fn (mut app App) j1939_frame_locked(gate string, key string, f transport.CanFrame, name string) (string, string) {
-	if f.extended && !f.rtr && f.data.len == 8 && app.j1939_on_locked(gate) {
+	if app.j1939_on_locked(gate) {
 		i := j1939.decompose(f.id)
-		if j1939.is_address_claim(i) {
+		// THE WHOLE-FRAME predicate, the one the directory asks: this hand-written shape test
+		// had no FD flag in it, so an eight-byte FD frame was rendered as a valid claimant on
+		// the very row whose NAME the directory had just refused to install (codex).
+		if j1939.claim_frame(f, i) {
 			if n := j1939.decode_name(f.data) {
 				reading := '${i.label()} ${n.label()}'
 				return j1939_join(name, reading), reading

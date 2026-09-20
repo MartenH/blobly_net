@@ -97,13 +97,27 @@ pub fn (i Ident) renamed_by(id u32, ext bool, wire string, pgn u32) bool {
 	return i.id == id
 }
 
-// moved_by reports whether a DBC edit to that message moves this watch's IDENTIFIER.
+// WHAT AN EDIT CHANGES is the caller's, and it differs by kind — which is the whole of what two
+// rounds got wrong in both directions:
 //
-// Never for a rejoined message, and that is the point: its identifier comes from the WIRE —
-// `Assembled` composes it from the transfer's group, sender and priority — so editing the
-// database changes what the rows are CALLED and not which rows exist. Moved anyway, the watch
-// pointed at an identifier no row carries and plotted nothing (codex). A frame's watch is the
-// other way round: its rows ARE the database's id, so the edit moves it.
-pub fn (i Ident) moved_by(id u32, ext bool, wire string, pgn u32) bool {
-	return !i.tp && i.renamed_by(id, ext, wire, pgn)
+//   - A FRAME's watch takes the new IDENTIFIER, because its rows are that identifier.
+//   - A REJOINED message's watch takes the new GROUP (`moved_to`), and its identifier is
+//     RECOMPOSED from it, because that identifier comes from the transfer on the wire — group,
+//     sender, priority — so writing the database's raw `BO_` id into it pointed the watch at a
+//     number no row carries, while leaving the group alone left it on one the file no longer
+//     defines. The caller recomposes because composing an identifier is `modules/j1939`'s to
+//     do, and this package stays dependency-free: CI runs its test with a bare `v test`, which
+//     cannot reach `modules/`.
+//
+// `renamed_by` answers whether the edit concerns this watch at all, for every kind and for
+// every edit — a rename, an id change, a signal rename. There is no second predicate, because
+// there is no second question.
+
+// moved_to is the same watch under another parameter group: what a rejoined watch becomes when
+// an edit moves its message there.
+pub fn (i Ident) moved_to(pgn u32) Ident {
+	return Ident{
+		...i
+		pgn: pgn
+	}
 }
