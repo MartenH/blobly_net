@@ -678,6 +678,34 @@ struct SimCfg {
 // review then found one site at a time.
 type Watch = watchrule.Ident
 
+// db_indices_for_gate is `dbs_for_gate`'s list with each database's index in `app.dbs`, for a
+// caller that must say WHICH of them answered a lookup — two on one wire can define the same
+// message, and the answer alone cannot tell them apart.
+fn (app &App) db_indices_for_gate(gate string) []int {
+	mut out := []int{}
+	mut seen := map[string]bool{}
+	for c in app.chans {
+		if c.doip || c.someip {
+			continue
+		}
+		if transport.destination_key_for(c.adapter, c.iface) != gate {
+			continue
+		}
+		for raw in c.databases {
+			ref := candb.canonical_database_ref(app.resolve_asset(raw))
+			if ref in seen {
+				continue
+			}
+			seen[ref] = true
+			idx := app.dbs_paths.index(ref)
+			if idx >= 0 {
+				out << idx
+			}
+		}
+	}
+	return out
+}
+
 // wires_of_db lists the wires whose databases include the one at `di` — what a DBC edit is an
 // edit TO. A file may be attached to several channels, and a watch belongs to a wire, so the
 // edit reaches a rejoined watch only where that wire is one of these (watchrule.rewritten_by).

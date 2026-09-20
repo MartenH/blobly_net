@@ -101,7 +101,11 @@ fn (app &App) j1939_on_locked(gate string) bool {
 // answers to, which takes the project-wide default). Spelled with a NUL byte, which no
 // destination key can carry — every one is derived from an interface string that reaches a C
 // API — so a wire cannot be named into it (codex on #329, on a readable spelling).
-const j1939_gate_undecidable = '\x00undecidable'
+// NO NUL BYTE IN IT. This value ends up on a rejoined row as its wire, and from there inside
+// ImGui identity strings — which are NUL-terminated, so everything after the byte was cut and
+// two groups that differ only by wire collided in the widget tree (codex). The `?` cannot begin
+// a destination key either, and it reads in a log line.
+const j1939_gate_undecidable = '?undecidable'
 
 // j1939_display_locked is the row's NAME cell on a J1939 wire: the database's name and the
 // reading — `EEC1  PGN 0xF004 SA 0x00 Engine` — or the reading alone where the database has no
@@ -348,6 +352,29 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 // the given databases: one spelled at exactly that address first (a database may define one
 // PGN at several addresses with several layouts — codex on #329), then by PGN alone; declared
 // before undeclared at each step, the first database with a match winning.
+// find_pgn_message_idx is find_pgn_message_in, saying WHICH of the databases answered.
+//
+// For the one caller that cannot tell from the message itself: two databases on a wire may
+// define the same `(id, ext)` with different layouts, so comparing the winner's identity to
+// the edited message's says "this one" about the other one's (codex). The index is into `dbs`
+// as given.
+fn find_pgn_message_idx(dbs []candb.Database, pgn u32, sa u8) ?int {
+	winner := find_pgn_message_in(dbs, pgn, sa) or { return none }
+	for i, db in dbs {
+		if m := db.lookup_pgn_sa(pgn, sa) {
+			if m.name == winner.name && m.id == winner.id && m.ext == winner.ext {
+				return i
+			}
+		}
+		if m := db.lookup_pgn(pgn) {
+			if m.name == winner.name && m.id == winner.id && m.ext == winner.ext {
+				return i
+			}
+		}
+	}
+	return none
+}
+
 fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
 	// A (PGN, SA) the databases define twice — two priorities with two layouts — decodes
 	// NOTHING: the announcement carries neither, and the first definition would be an

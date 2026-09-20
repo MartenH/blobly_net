@@ -1242,8 +1242,16 @@ fn draw_dbc_editor(mut app App) {
 			}
 			mut shadow_wires := map[string]bool{}
 			for gw in edit_wires {
-				if m := find_pgn_message_in(app.dbs_for_gate(gw), j1939.pgn(wid), u8(wid & 0xFF)) {
-					if m.id != wid || m.ext != wext {
+				idxs := app.db_indices_for_gate(gw)
+				mut dbs := []candb.Database{cap: idxs.len}
+				for ix in idxs {
+					dbs << app.dbs[ix]
+				}
+				// WHICH DATABASE wins, not which message: two on one wire can define the same
+				// `(id, ext)` with different layouts, so comparing the winner's identity to the
+				// edited message's says "this one" about the other one's (codex).
+				if k := find_pgn_message_idx(dbs, j1939.pgn(wid), u8(wid & 0xFF)) {
+					if idxs[k] != di {
 						shadow_wires[gw] = true
 					}
 				}
