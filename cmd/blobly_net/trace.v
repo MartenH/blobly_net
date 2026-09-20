@@ -102,6 +102,11 @@ struct TraceRow {
 	// so a rejoined message is decoded against ITS wire's databases: the channel name is not
 	// unique and cannot stand for it (codex on #329). Only a TP row reads it.
 	wire string
+	// The destination of a rejoined CONNECTION-MODE message, where its composed identifier
+	// cannot carry one: a PDU2 group has no destination field, so two transfers of that group
+	// from one sender to different receivers wore the same identifier and became one producer
+	// (codex). -1 on every other row, a broadcast included — that one really has none.
+	tp_da int = -1
 mut:
 	// An outbound row is written at emit, so it states intent; `missed` says its echo window
 	// closed with the frame never coming back off the wire. Those disagree in every bench

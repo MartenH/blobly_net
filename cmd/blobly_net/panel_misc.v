@@ -682,7 +682,7 @@ fn build_layout() {
 // this change first did, does not cover matching one that a real CAN frame added. `tp` is the
 // same question for the other kind: a rejoined J1939 message and a single frame at that
 // identifier are two producers.
-fn latest_data(rows []TraceRow, id u32, ext bool, tp bool, wire string) []u8 {
+fn latest_data(rows []TraceRow, id u32, ext bool, tp bool, wire string, da int) []u8 {
 	mut i := rows.len - 1
 	for i >= 0 {
 		// has_payload: an RTR row matching this id would return its zero-filled DLC
@@ -691,7 +691,7 @@ fn latest_data(rows []TraceRow, id u32, ext bool, tp bool, wire string) []u8 {
 		// wires may define one (PGN, SA) differently. An ordinary frame's watch stays unscoped,
 		// which is #330.
 		if !rows[i].someip && rows[i].id == id && rows[i].ext == ext && rows[i].tp == tp
-			&& (!tp || rows[i].wire == wire) && rows[i].has_payload() {
+			&& (!tp || (rows[i].wire == wire && rows[i].tp_da == da)) && rows[i].has_payload() {
 			return rows[i].data
 		}
 		i--
@@ -747,7 +747,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 		vgui.end()
 		return
 	}
-	data := latest_data(rows, u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire)
+	data := latest_data(rows, u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, app.sel_da)
 	if data.len == 0 {
 		vgui.text('${m.name}: no frame received yet')
 		vgui.end()
@@ -763,10 +763,10 @@ fn draw_signals(mut app App, rows []TraceRow) {
 		for s in m.active_signals(data) {
 			vgui.table_row()
 			vgui.table_next_col()
-			watched := app.is_watched(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, s.name)
+			watched := app.is_watched(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, app.sel_da, s.name)
 			nw := vgui.checkbox('##w_${m.id}_${s.name}', watched)
 			if nw != watched {
-				app.toggle_watch(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, s.name)
+				app.toggle_watch(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, app.sel_da, s.name)
 			}
 			vgui.table_cell(s.name)
 			lbl := s.label(data)
@@ -818,6 +818,7 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 			tp: r.tp
 			wire: r.wire
 			someip: r.someip
+			da: r.tp_da
 		}) && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
@@ -904,6 +905,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 				tp: r.tp
 				wire: r.wire
 				someip: r.someip
+				da: r.tp_da
 			}) && f64(r.t_ms) / 1000.0 > xmax {
 				xmax = f64(r.t_ms) / 1000.0
 			}

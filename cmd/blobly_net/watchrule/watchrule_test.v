@@ -26,6 +26,7 @@ fn row(i Ident) Row {
 		id: i.id
 		ext: i.ext
 		tp: i.tp
+		da: i.da
 		wire: i.wire
 	}
 }
@@ -127,4 +128,21 @@ fn test_a_rejoined_watch_moves_by_group_and_keeps_what_its_rows_carry() {
 	assert !moved.same(r)
 	// its identifier is the caller's to recompose; this package does not invent one
 	assert moved.id == r.id
+}
+
+// A connection-mode transfer of a BROADCAST group goes to one node, and its identifier has no
+// field for that — so two such transfers from one sender to different receivers wore the same
+// number and became one producer, and one series (codex).
+fn test_two_receivers_of_one_group_are_two_signals() {
+	base := rejoined('can0', 'EngineSpeed')
+	a := Ident{ ...base, da: 0x03 }
+	b := Ident{ ...base, da: 0x21 }
+	assert !a.same(b)
+	assert !a.covers(row(b))
+	assert !b.covers(row(a))
+	assert a.covers(row(a))
+	// a broadcast really has no destination, and says so the same way on both sides
+	assert base.da == -1
+	assert base.covers(row(base))
+	assert !base.covers(row(a))
 }

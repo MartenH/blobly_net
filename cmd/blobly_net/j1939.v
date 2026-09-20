@@ -322,6 +322,9 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 			imported: imported
 			tp:       true
 			wire:     gate
+			// only where the identifier cannot say it: a BAM IS a broadcast, and a PDU1 group
+			// carries its destination in the identifier already
+			tp_da:    if !a.bam && a.pgn >> 8 & 0xFF >= 0xF0 { int(a.da) } else { -1 }
 		}
 		// The key from the row's own fields (gkey formats it when `key` is empty), never a
 		// positional list of flags: one transposed bool there is absorbed silently by the

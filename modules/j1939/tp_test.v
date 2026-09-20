@@ -3,12 +3,11 @@ module j1939
 import transport
 
 // Frame builders: what a J1939 node puts on the wire for the transport protocol.
-
 fn cm(sa u8, da u8, ctrl u8, total int, packets int, pgn u32) transport.CanFrame {
 	return transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, da, sa)
+		id: compose(7, pgn_tp_cm, da, sa)
 		extended: true
-		data:     [ctrl, u8(total & 0xFF), u8(total >> 8), u8(packets), 0xFF, u8(pgn & 0xFF),
+		data: [ctrl, u8(total & 0xFF), u8(total >> 8), u8(packets), 0xFF, u8(pgn & 0xFF),
 			u8((pgn >> 8) & 0xFF), u8((pgn >> 16) & 0xFF)]
 	}
 }
@@ -26,18 +25,18 @@ fn rts(sa u8, da u8, total int, pgn u32) transport.CanFrame {
 // ignored the byte, which read as "resume from the beginning" the moment it stopped ignoring it.
 fn cts(sa u8, da u8, pgn u32, next_pkt u8) transport.CanFrame {
 	return transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, da, sa)
+		id: compose(7, pgn_tp_cm, da, sa)
 		extended: true
-		data:     [cm_cts, 0xFF, next_pkt, 0xFF, 0xFF, u8(pgn & 0xFF), u8((pgn >> 8) & 0xFF),
+		data: [cm_cts, 0xFF, next_pkt, 0xFF, 0xFF, u8(pgn & 0xFF), u8((pgn >> 8) & 0xFF),
 			u8((pgn >> 16) & 0xFF)]
 	}
 }
 
 fn abort(sa u8, da u8, reason u8, pgn u32) transport.CanFrame {
 	return transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, da, sa)
+		id: compose(7, pgn_tp_cm, da, sa)
 		extended: true
-		data:     [cm_abort, reason, 0xFF, 0xFF, 0xFF, u8(pgn & 0xFF), u8((pgn >> 8) & 0xFF),
+		data: [cm_abort, reason, 0xFF, 0xFF, 0xFF, u8(pgn & 0xFF), u8((pgn >> 8) & 0xFF),
 			u8((pgn >> 16) & 0xFF)]
 	}
 }
@@ -50,9 +49,9 @@ fn dt(sa u8, da u8, seq u8, payload []u8) transport.CanFrame {
 		d << 0xFF
 	}
 	return transport.CanFrame{
-		id:       compose(7, pgn_tp_dt, da, sa)
+		id: compose(7, pgn_tp_dt, da, sa)
 		extended: true
-		data:     d
+		data: d
 	}
 }
 
@@ -100,7 +99,9 @@ fn test_bam_rejoins_a_broadcast_message() {
 	assert a.bam
 	assert a.packets() == 3
 	assert a.data == msg // the last frame's padding is not part of the message
+	
 	assert a.id() == 0x1CFECA00 // priority 7 (the BAM's), DM1, from 0x00 — what a DBC lookup matches
+	
 	assert a.t_start_ms == 0.0
 	assert a.t_end_ms == 150.0
 	assert r.open() == 0
@@ -134,9 +135,9 @@ fn test_rts_cts_session_with_flow_control_interleaved() {
 	assert done[0].id() == compose(7, 0xFED8, 0x00, 0x17)
 	// EndOfMsgACK after completion is nothing this listener tracks
 	eom := transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, 0x17, 0x00)
+		id: compose(7, pgn_tp_cm, 0x17, 0x00)
 		extended: true
-		data:     [cm_eom_ack, 0xF9, 0x06, 0xFF, 0xFF, 0xD8, 0xFE, 0x00]
+		data: [cm_eom_ack, 0xF9, 0x06, 0xFF, 0xFF, 0xD8, 0xFE, 0x00]
 	}
 	assert r.feed(eom, t + 1).faults.len == 0
 }
@@ -254,6 +255,7 @@ fn test_timeout_expires_a_stalled_session() {
 	assert ev.faults[0].sa == 0x00
 	assert ev.faults[0].detail.contains('after packet 1 of 3')
 	assert r.open() == 1 // the new one
+	
 	// and expire() on its own, for a caller with a clock and no frame
 	assert r.expire(1001).len == 0
 	assert r.expire(2000).len == 1
@@ -265,6 +267,7 @@ fn test_cts_for_another_pgn_does_not_refresh_the_session() {
 	mut r := Reassembler{}
 	r.feed(rts(0x17, 0x00, 20, 0xFED8), 0)
 	assert r.feed(cts(0x00, 0x17, dm1, 1), 1000).faults.len == 0 // another PGN: not this session's
+	
 	ev := r.feed(cts(0x00, 0x17, dm1, 1), 1300) // 1300 ms after the RTS with nothing of its own
 	assert ev.faults.len == 1 && ev.faults[0].kind == .timeout
 	assert r.open() == 0
@@ -289,15 +292,16 @@ fn test_transfers_follow_roles_and_complete_on_the_last_sequence_number() {
 	// a packet with nothing open, and a frame that is not TP
 	assert t.step(p[1]).role == .stray
 	eec1 := transport.CanFrame{
-		id:       0x0CF00400
+		id: 0x0CF00400
 		extended: true
-		data:     [u8(0), 0, 0, 0, 0, 0, 0, 0]
+		data: [u8(0), 0, 0, 0, 0, 0, 0, 0]
 	}
 	assert t.step(eec1).role == .not_tp
 	// a gap: the frame is the sender's and the transfer resyncs to it
 	t.step(bam(0x0B, msg.len, dm1))
 	q := packets(0x0B, addr_global, msg)
 	assert t.step(q[2]).done // packet 3 of 3, whatever came before
+	
 	assert t.open() == 0
 	// a sequence number past the count is the sender's frame and not the end
 	t.step(bam(0x0B, msg.len, dm1))
@@ -325,7 +329,9 @@ fn test_transfers_expire_on_the_callers_clock() {
 	t.step_at(rts(0x17, 0x00, msg.len, 0xFED8), 10.0)
 	assert t.step_at(cts(0x00, 0x17, 0xFED8, 1), 11.0).role == .receiver
 	assert t.step_at(dt(0x17, 0x00, 1, message(7)), 12.0).role == .packet // 1.0 s after the CTS: alive
+	
 	assert t.step_at(dt(0x17, 0x00, 2, message(7)), 13.5).role == .stray // 1.5 s: expired
+	
 	// the clockless step expires nothing
 	mut u := Transfers{}
 	u.step(bam(0x00, msg.len, dm1))
@@ -350,9 +356,9 @@ fn test_a_refused_announcement_drops_the_pairs_transfer() {
 	assert r.open() == 0
 	// and one too short (or too long) to parse, whose control byte still says BAM
 	short_bam := transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, addr_global, 0x00)
+		id: compose(7, pgn_tp_cm, addr_global, 0x00)
 		extended: true
-		data:     [u8(cm_bam), 20, 0]
+		data: [u8(cm_bam), 20, 0]
 	}
 	r.feed(bam(0x00, 20, dm1), 2)
 	ev2 := r.feed(short_bam, 3)
@@ -366,9 +372,9 @@ fn test_a_refused_announcement_drops_the_pairs_transfer() {
 	// a mis-sized frame with some other control byte ends nothing
 	t2.step(bam(0x00, 20, dm1))
 	short_cts := transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, addr_global, 0x00)
+		id: compose(7, pgn_tp_cm, addr_global, 0x00)
 		extended: true
-		data:     [u8(cm_cts), 1, 1]
+		data: [u8(cm_cts), 1, 1]
 	}
 	assert !t2.step(short_cts).done
 	assert t2.open() == 1
@@ -377,17 +383,28 @@ fn test_a_refused_announcement_drops_the_pairs_transfer() {
 fn test_transfers_refuse_what_the_reassembler_refuses() {
 	mut t := Transfers{}
 	assert t.step(cm(0x00, addr_global, cm_bam, 20, 2, dm1)).role == .stray // count disagrees
+	
 	assert t.step(cm(0x00, 0x17, cm_bam, 20, 3, dm1)).role == .stray // a BAM to one node
+	
 	assert t.step(cm(0x00, addr_global, cm_rts, 20, 3, dm1)).role == .stray // an RTS to everyone
+	
 	assert t.step(cm(0x00, addr_global, cm_bam, 8, 2, dm1)).role == .stray // too small
+	
 	assert t.step(cm(0x00, addr_global, 99, 20, 3, dm1)).role == .stray // unknown control byte
+	
 	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0x4FECA)).role == .stray // 19-bit "PGN"
+	
 	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0xEA12)).role == .stray // PDU1 with a low byte
+	
 	assert t.step(cm(addr_null, addr_global, cm_bam, 20, 3, dm1)).role == .stray // from the null address
+	
 	assert t.step(cm(addr_global, 0x17, cm_rts, 20, 3, dm1)).role == .stray // from the global address
+	
 	assert t.step(cm(0x00, addr_null, cm_rts, 20, 3, dm1)).role == .stray // to the null address
+	
 	assert t.open() == 0
 	assert t.step(cm(0x00, addr_global, cm_bam, 20, 3, 0xEA00)).role == .announce // PDU1, well formed
+	
 	assert t.open() == 1
 	// and the rule is one: the reassembler's reasons come from the same function
 	c := parse_cm(cm(0x00, 0x17, cm_bam, 20, 3, dm1).data)?
@@ -415,16 +432,16 @@ fn test_transfers_abort_by_pgn_and_the_receiver_side() {
 	// last packet still carries the ack
 	t.step(rts(0x17, 0x00, 20, 0xFED8))
 	eom_other := transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, 0x17, 0x00)
+		id: compose(7, pgn_tp_cm, 0x17, 0x00)
 		extended: true
-		data:     [cm_eom_ack, 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00] // for DM1: not this transfer
+		data: [cm_eom_ack, 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00] // for DM1: not this transfer
 	}
 	assert !t.step(eom_other).done
 	assert t.open() == 1
 	eom := transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, 0x17, 0x00)
+		id: compose(7, pgn_tp_cm, 0x17, 0x00)
 		extended: true
-		data:     [cm_eom_ack, 20, 0, 3, 0xFF, 0xD8, 0xFE, 0x00]
+		data: [cm_eom_ack, 20, 0, 3, 0xFF, 0xD8, 0xFE, 0x00]
 	}
 	ack := t.step(eom)
 	assert ack.role == .receiver && ack.done
@@ -442,9 +459,9 @@ fn test_eom_ack_for_an_open_session_is_a_lost_packet() {
 	r.feed(p[1], 2)
 	// packet 3 never reaches us; the receiver acknowledges anyway
 	eom := transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, 0x17, 0x00)
+		id: compose(7, pgn_tp_cm, 0x17, 0x00)
 		extended: true
-		data:     [cm_eom_ack, 20, 0, 3, 0xFF, 0xD8, 0xFE, 0x00]
+		data: [cm_eom_ack, 20, 0, 3, 0xFF, 0xD8, 0xFE, 0x00]
 	}
 	ev := r.feed(eom, 3)
 	assert ev.faults.len == 1
@@ -458,6 +475,7 @@ fn test_parse_cm() {
 	assert c.ctrl == cm_bam && c.total == 20 && c.packets == 3 && c.pgn == dm1
 	assert parse_cm([u8(cm_bam), 20, 0]) == none
 	assert parse_cm([u8(cm_bam), 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00, 0, 0, 0, 0]) == none // an FD frame
+	
 }
 
 // A transport-protocol frame is exactly eight bytes: a twelve-byte FD frame on TP.CM's or TP.DT's
@@ -465,20 +483,20 @@ fn test_parse_cm() {
 fn test_fd_sized_frames_are_not_tp_frames() {
 	mut r := Reassembler{}
 	fd_cm := transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, addr_global, 0x00)
+		id: compose(7, pgn_tp_cm, addr_global, 0x00)
 		extended: true
-		fd:       true
-		data:     [u8(cm_bam), 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00, 1, 2, 3, 4]
+		fd: true
+		data: [u8(cm_bam), 20, 0, 3, 0xFF, 0xCA, 0xFE, 0x00, 1, 2, 3, 4]
 	}
 	ev := r.feed(fd_cm, 0)
 	assert ev.faults.len == 1 && ev.faults[0].kind == .malformed
 	assert r.open() == 0
 	r.feed(bam(0x00, 20, dm1), 1)
 	fd_dt := transport.CanFrame{
-		id:       compose(7, pgn_tp_dt, addr_global, 0x00)
+		id: compose(7, pgn_tp_dt, addr_global, 0x00)
 		extended: true
-		fd:       true
-		data:     [u8(1), 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+		fd: true
+		data: [u8(1), 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 	}
 	ev2 := r.feed(fd_dt, 2)
 	assert ev2.faults.len == 1 && ev2.faults[0].detail.contains('CAN-FD frame at TP.DT')
@@ -493,6 +511,7 @@ fn test_fd_sized_frames_are_not_tp_frames() {
 	t.step(bam(0x00, 20, dm1))
 	assert t.step(fd_dt).role == .stray
 	assert t.open() == 1 // the transfer is neither advanced nor ended by a frame that is not its
+	
 }
 
 // The packet that arrives just past the limit is the one the timeout is about, not an orphan.
@@ -543,6 +562,7 @@ fn test_new_announcement_restarts_an_unfinished_session() {
 	assert ev.faults.len == 1
 	assert ev.faults[0].kind == .restarted
 	assert ev.faults[0].pgn == dm1 // the one that was dropped
+	
 	assert r.open() == 1
 	done := r.feed(dt(0x00, addr_global, 1, message(7)), 3).done
 	assert done.len == 0
@@ -565,9 +585,9 @@ fn test_malformed_announcements_are_refused_and_said() {
 	assert r.feed(cm(0x00, addr_global, cm_rts, 20, 3, dm1), 0).faults[0].detail.contains('RTS to the global address')
 	// a control frame too short to read
 	short := transport.CanFrame{
-		id:       compose(7, pgn_tp_cm, addr_global, 0x00)
+		id: compose(7, pgn_tp_cm, addr_global, 0x00)
 		extended: true
-		data:     [cm_bam, 20, 0]
+		data: [cm_bam, 20, 0]
 	}
 	assert r.feed(short, 0).faults[0].kind == .malformed
 	// an unknown control byte
@@ -579,9 +599,9 @@ fn test_short_data_frame_with_more_due_is_refused() {
 	mut r := Reassembler{}
 	r.feed(bam(0x00, 20, dm1), 0)
 	f := transport.CanFrame{
-		id:       compose(7, pgn_tp_dt, addr_global, 0x00)
+		id: compose(7, pgn_tp_dt, addr_global, 0x00)
 		extended: true
-		data:     [u8(1), 1, 2, 3] // three bytes where seven are due
+		data: [u8(1), 1, 2, 3] // three bytes where seven are due
 	}
 	ev := r.feed(f, 1)
 	assert ev.faults.len == 1 && ev.faults[0].kind == .malformed
@@ -592,20 +612,20 @@ fn test_short_data_frame_with_more_due_is_refused() {
 fn test_frames_that_are_not_tp_produce_nothing() {
 	mut r := Reassembler{}
 	std := transport.CanFrame{
-		id:   0x7E0
+		id: 0x7E0
 		data: [u8(0x10), 0x14, 1, 2, 3, 4, 5, 6] // an ISO-TP First Frame is not J1939
 	}
 	assert r.feed(std, 0) == Events{}
 	eec1 := transport.CanFrame{
-		id:       0x0CF00400
+		id: 0x0CF00400
 		extended: true
-		data:     [u8(0), 0, 0, 0, 0, 0, 0, 0]
+		data: [u8(0), 0, 0, 0, 0, 0, 0, 0]
 	}
 	assert r.feed(eec1, 0) == Events{}
 	rtr := transport.CanFrame{
-		id:       compose(7, pgn_tp_dt, addr_global, 0x00)
+		id: compose(7, pgn_tp_dt, addr_global, 0x00)
 		extended: true
-		rtr:      true
+		rtr: true
 	}
 	assert r.feed(rtr, 0) == Events{}
 }
@@ -625,17 +645,18 @@ fn test_overflow_drops_the_stalest_session() {
 
 fn test_fault_wording() {
 	f := Fault{
-		kind:   .sequence
-		sa:     0x00
-		da:     addr_global
-		pgn:    dm1
+		announced: true
+		kind: .sequence
+		sa: 0x00
+		da: addr_global
+		pgn: dm1
 		detail: 'x'
 	}
 	assert f.str() == 'TP SA 0x00 broadcast PGN 0xFECA: x'
 	g := Fault{
-		kind:   .orphan
-		sa:     0x17
-		da:     0x00
+		kind: .orphan
+		sa: 0x17
+		da: 0x00
 		detail: 'y'
 	}
 	assert g.str() == 'TP SA 0x17 to 0x00: y'
@@ -817,4 +838,23 @@ fn test_an_eight_byte_fd_frame_is_not_a_tp_frame() {
 	mut ok := Reassembler{}
 	ok.feed(bam(0x00, 20, dm1), 0)
 	assert ok.feed(packets(0x00, addr_global, message(20))[0], 1).faults.len == 0
+}
+
+// 0x0000 is a legitimate parameter group, so "no group was announced" needs its own answer:
+// read off `pgn != 0`, a transfer carrying it had its group left out of every line about it.
+fn test_group_zero_is_a_group() {
+	msg := message(20)
+	mut r := Reassembler{}
+	r.feed(bam(0x00, msg.len, 0), 0)
+	r.feed(packets(0x00, addr_global, msg)[0], 10)
+	ev := r.feed(bam(0x00, msg.len, 0), 2000) // a restart, so the first is reported
+	assert ev.faults.len >= 1
+	assert ev.faults[0].announced
+	assert ev.faults[0].str().contains('PGN 0x0000'), ev.faults[0].str()
+	// while a data frame with no announcement behind it still says nothing about a group
+	mut o := Reassembler{}
+	orphan := o.feed(packets(0x21, addr_global, msg)[0], 0)
+	assert orphan.faults.len == 1
+	assert !orphan.faults[0].announced
+	assert !orphan.faults[0].str().contains('PGN')
 }

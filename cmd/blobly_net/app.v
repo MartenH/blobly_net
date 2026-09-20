@@ -286,6 +286,7 @@ mut:
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
 	sel_wire      string  // the wire the selection came off; scopes a rejoined message's lookup
+	sel_da        int = -1 // and its receiver, where a PDU2 identifier cannot carry one
 	sel_tp        bool    // the selection is a rejoined TP message, not a frame (see Watch.tp)
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
@@ -732,19 +733,20 @@ fn moved_watch(w Watch, new_id u32) Watch {
 	}
 }
 
-fn watch_ident(id u32, ext bool, tp bool, wire string, sig string) Watch {
+fn watch_ident(id u32, ext bool, tp bool, wire string, da int, sig string) Watch {
 	return Watch{
 		id:   id
 		ext:  ext
 		tp:   tp
 		wire: wire
+		da:   da
 		sig:  sig
 		pgn:  if tp { j1939.pgn(id) } else { 0 }
 	}
 }
 
-fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) bool {
-	want := watch_ident(id, ext, tp, wire, sig)
+fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, da int, sig string) bool {
+	want := watch_ident(id, ext, tp, wire, da, sig)
 	for w in app.watch {
 		if w.same(want) {
 			return true
@@ -753,8 +755,8 @@ fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) boo
 	return false
 }
 
-fn (mut app App) toggle_watch(id u32, ext bool, tp bool, wire string, sig string) {
-	want := watch_ident(id, ext, tp, wire, sig)
+fn (mut app App) toggle_watch(id u32, ext bool, tp bool, wire string, da int, sig string) {
+	want := watch_ident(id, ext, tp, wire, da, sig)
 	for i, w in app.watch {
 		if w.same(want) {
 			app.watch.delete(i)
@@ -766,8 +768,8 @@ fn (mut app App) toggle_watch(id u32, ext bool, tp bool, wire string, sig string
 
 // add_watch plots a signal (idempotent — no-op if already plotted). Used by the Trace
 // right-click, which adds without removing an already-plotted signal.
-fn (mut app App) add_watch(id u32, ext bool, tp bool, wire string, sig string) {
-	want := watch_ident(id, ext, tp, wire, sig)
+fn (mut app App) add_watch(id u32, ext bool, tp bool, wire string, da int, sig string) {
+	want := watch_ident(id, ext, tp, wire, da, sig)
 	for w in app.watch {
 		if w.same(want) {
 			return
@@ -1323,6 +1325,7 @@ fn (mut app App) rebuild_from_proj() {
 			app.sel_ext = db.messages[0].ext
 			app.sel_tp = false
 			app.sel_wire = ''
+			app.sel_da = -1
 			break
 		}
 	}

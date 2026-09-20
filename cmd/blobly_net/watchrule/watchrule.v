@@ -33,12 +33,18 @@ pub:
 	// reason such a message resolves at all. So a DBC edit is matched by this, not by the id
 	// (codex). Zero on a frame's watch, which matches by id as it always did.
 	pgn u32
+	// The destination of a CONNECTION-MODE transfer, where its identifier cannot carry one: a
+	// PDU2 group has no destination field, so `compose` drops it and two transfers of that
+	// group from one sender to different receivers wore the same identifier — one producer in
+	// the trace, one series in a plot (codex). -1 on everything else, including a broadcast,
+	// which really has none.
+	da int = -1
 }
 
 // key is the identity as one string: what a comparison compares, and what ImPlot keys a series
 // by so two of them keep their own legend entry, colour and visibility.
 pub fn (i Ident) key() string {
-	return '${i.id}|${i.ext}|${i.tp}|${i.wire}|${i.pgn}|${i.sig}'
+	return '${i.id}|${i.ext}|${i.tp}|${i.wire}|${i.pgn}|${i.da}|${i.sig}'
 }
 
 // same reports whether two identities are one signal.
@@ -61,6 +67,7 @@ pub:
 	tp     bool
 	wire   string
 	someip bool
+	da     int = -1
 }
 
 // covers reports whether a row is one of this signal's samples.
@@ -75,7 +82,10 @@ pub fn (i Ident) covers(r Row) bool {
 	if r.id != i.id || r.ext != i.ext || r.tp != i.tp {
 		return false
 	}
-	return !i.scoped_by_wire() || r.wire == i.wire
+	if !i.scoped_by_wire() {
+		return true
+	}
+	return r.wire == i.wire && r.da == i.da
 }
 
 // renamed_by reports whether a DBC edit to `(id, ext)` on `wire`, whose message carries `pgn`,

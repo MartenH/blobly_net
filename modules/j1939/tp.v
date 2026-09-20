@@ -497,11 +497,16 @@ pub enum FaultKind {
 // Fault is one thing that went wrong, about one session.
 pub struct Fault {
 pub:
-	kind   FaultKind
-	sa     u8
-	da     u8
-	pgn    u32 // the PGN the session carried; 0 where nothing said (an orphan data frame)
-	detail string
+	kind FaultKind
+	sa   u8
+	da   u8
+	pgn  u32 // the PGN the session carried, meaningful only where `announced`
+	// Whether a parameter group was ANNOUNCED at all. A bare `pgn != 0` cannot say it: 0x0000
+	// is a legitimate group, so a transfer carrying it had its group left out of every line
+	// about it — the same "0 is a real value" mistake the ARXML reader spent five rounds on
+	// (codex).
+	announced bool
+	detail    string
 }
 
 // str is the fault in words, for a log line.
@@ -511,7 +516,7 @@ pub fn (f Fault) str() string {
 	} else {
 		'SA 0x${f.sa:02X} to 0x${f.da:02X}'
 	}
-	what := if f.pgn != 0 { ' PGN 0x${f.pgn:04X}' } else { '' }
+	what := if f.announced { ' PGN 0x${f.pgn:04X}' } else { '' }
 	return 'TP ${who}${what}: ${f.detail}'
 }
 
@@ -523,6 +528,10 @@ fn (i Id) fault(kind FaultKind, pgn u32, detail string) Fault {
 		sa: i.sa
 		da: i.da()
 		pgn: pgn
+		// This shape is for a frame with no session behind it, and the only caller that has a
+		// group to give is one reading it out of an announcement it then refused. A data frame
+		// announces nothing, which is not the same as announcing 0x0000.
+		announced: false
 		detail: detail
 	}
 }
@@ -591,6 +600,7 @@ fn (s Session) fault(kind FaultKind, detail string) Fault {
 		sa: s.sa
 		da: s.da
 		pgn: s.pgn
+		announced: true // a session exists only because an announcement named its group
 		detail: detail
 	}
 }
