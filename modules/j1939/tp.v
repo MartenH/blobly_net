@@ -338,7 +338,10 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				// reassembler — and only a real receiver of a real connection (receiver_control)
 				rk := skey(id.da(), id.sa)
 				if mut s := t.open[rk] {
-					if receiver_control(id, s.bam) && s.pgn == cm.pgn {
+					// the same packet-field test the reassembler makes, so the two agree about
+					// which controls keep a transfer alive
+					want := f.data[2]
+					if receiver_control(id, s.bam) && s.pgn == cm.pgn && want >= 1 && int(want) <= s.packets {
 						s.last_s = t_s
 						t.open[rk] = s
 					}
@@ -690,7 +693,14 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 				// onto the broadcast session, where matching its PGN would refresh its timeout
 				// and rewind or truncate what it has assembled (codex). `receiver_control`
 				// states both halves of that once.
-				if receiver_control(id, s.bam) && s.pgn == carried {
+				// Its packet fields must name packets the transfer HAS before any of it counts:
+				// a same-PGN CTS asking for packet 0, or for one past the announced count, is
+				// not a frame the receiver of THIS transfer sends, and repeating it kept a
+				// stalled transfer alive past the timeout it had earned (codex). The rewind
+				// below is then the subset of those that ask for a packet already passed.
+				want := data[2]
+				ok := want >= 1 && int(want) <= s.packets()
+				if receiver_control(id, s.bam) && s.pgn == carried && ok {
 					s.t_last_ms = now_ms
 					// It also names WHICH PACKET to send next, and a receiver that missed one
 					// sends the peer BACK. The retransmission then arrived as a sequence the
@@ -699,8 +709,7 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, now_ms f64, mut ev Events) {
 					// only within what was announced: a CTS asking for a packet this listener
 					// has not reached yet would skip bytes it never saw, and one outside the
 					// transfer names nothing.
-					want := data[2]
-					if want >= 1 && want < s.next && int(want) <= s.packets() {
+					if want < s.next {
 						s.next = want
 						s.data = s.data[..(int(want) - 1) * 7]
 					}

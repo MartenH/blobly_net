@@ -759,3 +759,27 @@ fn test_a_broadcast_takes_no_receiver_abort() {
 	assert t.step_at(ps[1], 0.15).role == .packet, 'still attributed to the transfer'
 	assert t.open() == 1
 }
+
+// A clear-to-send names packets the transfer HAS. One asking for packet 0, or for one past the
+// announced count, is not a frame this transfer's receiver sends — and repeating it kept a
+// stalled transfer alive past the timeout it had earned.
+fn test_a_clear_to_send_naming_no_real_packet_keeps_nothing_alive() {
+	msg := message(20) // three packets
+	for bad in [u8(0), 4, 255] {
+		mut r := Reassembler{}
+		r.feed(rts(0x17, 0x00, msg.len, dm1), 0)
+		// repeated well past T3, and none of them may refresh it
+		r.feed(cts(0x00, 0x17, dm1, bad), 600)
+		r.feed(cts(0x00, 0x17, dm1, bad), 1200)
+		ev := r.feed(cts(0x00, 0x17, dm1, bad), 1400)
+		assert ev.faults.len == 1, 'packet ${bad}: ${ev.faults.str()}'
+		assert ev.faults[0].kind == .timeout, '${bad}'
+		assert r.open() == 0, '${bad}'
+	}
+	// and one naming a real packet does keep it alive
+	mut ok := Reassembler{}
+	ok.feed(rts(0x17, 0x00, msg.len, dm1), 0)
+	ok.feed(cts(0x00, 0x17, dm1, 1), 600)
+	assert ok.feed(cts(0x00, 0x17, dm1, 1), 1200).faults.len == 0
+	assert ok.open() == 1
+}

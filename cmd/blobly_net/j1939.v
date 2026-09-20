@@ -399,7 +399,12 @@ fn (app &App) dbs_for_gate(gate string) []candb.Database {
 		if transport.destination_key_for(c.adapter, c.iface) == gate {
 			seen[c.iface] = true
 			placed = true
-			out << app.dbs_for(c.iface)
+			// THE LIVE COPIES, like `loaded_dbs_for` everywhere else: `dbs_by_iface` holds
+			// value copies that refresh on save or reload, so while the DBC editor has unsaved
+			// changes a rejoined message kept the OLD bit layout, scaling and signal names in
+			// the trace, the Signals panel and Graphics — the one place an editor's point is
+			// to see the change (codex).
+			out << app.loaded_dbs_for(c.databases.map(candb.canonical_database_ref(app.resolve_asset(it))))
 		}
 	}
 	// THE FALLBACK IS FOR A GATE THIS PROJECT CANNOT PLACE, not for a wire that simply has no

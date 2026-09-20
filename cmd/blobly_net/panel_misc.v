@@ -6,6 +6,7 @@ import project
 import logfile
 import transport
 import candb
+import watchrule
 import vgui
 import panerule
 
@@ -811,8 +812,13 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 		// inject a zero sample into the middle of the series
 		// `!r.someip`, for latest_data's reason: a plotted series must not take its points from a
 		// payload that no DBC signal describes; `tp` for the other kind, a rejoined message.
-		if !r.someip && r.id == w.id && r.ext == w.ext && r.tp == w.tp
-			&& (!w.tp || r.wire == w.wire) && r.has_payload() {
+		if w.covers(watchrule.Row{
+			id: r.id
+			ext: r.ext
+			tp: r.tp
+			wire: r.wire
+			someip: r.someip
+		}) && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}
@@ -888,10 +894,17 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		xmax = app.since_s()
 	} else {
 		for r in rows {
-			// `!r.someip` here as well as in the series: this picks the window's right-hand edge,
-			// so a SOME/IP row sharing a watched CAN id would drag a fixed 1/5/10/30 s window
-			// past the series it is meant to frame and leave the plot looking empty.
-			if !r.someip && app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
+			// The kind and the wire are the rule's business, not a condition written here: a
+			// SOME/IP row sharing a watched CAN id, a direct frame under a rejoined watch, or
+			// another wire's rejoined row would each drag a fixed 1/5/10/30 s window past the
+			// series it is meant to frame and leave the plot looking empty.
+			if app.is_watched_row(watchrule.Row{
+				id: r.id
+				ext: r.ext
+				tp: r.tp
+				wire: r.wire
+				someip: r.someip
+			}) && f64(r.t_ms) / 1000.0 > xmax {
 				xmax = f64(r.t_ms) / 1000.0
 			}
 		}
@@ -956,10 +969,15 @@ fn value_at(xs []f32, ys []f32, x f32) f32 {
 	return ys[n - 1]
 }
 
-// is_watched_frame reports whether any plotted signal comes from this frame id.
-fn (app &App) is_watched_frame(id u32, ext bool) bool {
+// is_watched_row reports whether any plotted signal takes its samples from this row.
+//
+// THROUGH THE SAME RULE the series uses (`watchrule.Ident.covers`), because this picks the
+// plot window's right-hand edge: matching on (id, ext) alone, a later direct row — or a row
+// from another wire — advanced the x-axis past a series whose samples that row is not one of,
+// and left the plot looking empty (codex). One question, one answer.
+fn (app &App) is_watched_row(r watchrule.Row) bool {
 	for w in app.watch {
-		if w.id == id && w.ext == ext {
+		if w.covers(r) {
 			return true
 		}
 	}

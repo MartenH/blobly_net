@@ -132,7 +132,14 @@ and when a bus-load interval closes and what a spawning or unread row does with 
 progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`, the trace's
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
-never averaged into a cadence (#266); and `cmd/blobly_net/pickrule/`, the file picker's
+never averaged into a cadence (#266); and `cmd/blobly_net/watchrule/`, WHAT MAKES TWO PLOTTED SIGNALS DIFFERENT — a watch's identity
+(id, ext, the rejoined-vs-frame kind, and the wire that scopes a rejoined one), the rows it is
+made of, and which DBC edit moves it. Extracted after that answer got narrower twice in one
+review (`tp`, then `wire`) and each time landed in SOME of the places that ask it: review then
+found the rest one site at a time — the comparisons, the editor's three rewrites, ImPlot's
+series id, the series' own database lookup, the plot window's x-axis, the rewrite predicate.
+Six sites, one concept, three rounds, which is this guide's own signal to cover the path; and
+`cmd/blobly_net/pickrule/`, the file picker's
 grammar — a click enters a folder and selects a file, a double click accepts a file, Enter and
 Open act on the selection the same way, and the second click of a double ON A ROW whose first
 click changed the listing is ignored (#270's hazard, answered by recognising the click —

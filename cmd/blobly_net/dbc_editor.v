@@ -945,11 +945,15 @@ fn draw_dbc_editor(mut app App) {
 					}
 				}
 			}
+			edit_wires := app.wires_of_db(di)
 			for wi, w in app.watch {
 				if id_shadowed {
 					break
 				}
-				if w.id == old_id && w.ext == wext0 {
+				// SCOPED to the wires this database backs: matching (id, ext) alone moved a
+				// rejoined watch belonging to ANOTHER wire to the edited id and kind (codex).
+				// `rewritten_by` is the rule, beside the one that decides a watch's rows.
+				if edit_wires.any(w.rewritten_by(old_id, wext0, it)) {
 					// SPREAD, not a fresh literal: a rewrite changes ONE field and keeps every
 					// other, so a field added to the identity later cannot be silently dropped
 					// here — which is what happened to `wire`, leaving an edited watch matching
@@ -1002,7 +1006,7 @@ fn draw_dbc_editor(mut app App) {
 				if kind_shadowed {
 					break
 				}
-				if w.id == old_id2 && w.ext == old_ext2 {
+				if app.wires_of_db(di).any(w.rewritten_by(old_id2, old_ext2, it)) {
 					app.watch[wi] = Watch{
 						...w
 						id:  nid
@@ -1228,7 +1232,7 @@ fn draw_dbc_editor(mut app App) {
 				if shadowed {
 					break
 				}
-				if w.id == wid && w.ext == wext && w.sig == old_sig {
+				if w.sig == old_sig && app.wires_of_db(di).any(w.rewritten_by(wid, wext, it)) {
 					app.watch[wi] = Watch{
 						...w
 						sig: nv

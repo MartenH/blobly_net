@@ -7,6 +7,7 @@ import runtime
 import project
 import logfile
 import loadrule
+import watchrule
 import pickrule
 import transport
 import wiretap
@@ -670,34 +671,39 @@ struct SimCfg {
 	db_paths []string
 }
 
-// Watch identifies one plotted signal.
-struct Watch {
-	id  u32
-	ext bool
-	sig string
-	// A rejoined J1939 transport-protocol message rather than a frame — part of the identity,
-	// as it is of the trace's group key: one PGN can arrive both short and over TP, and a
-	// series that matched on id alone mixed the two payload shapes (codex on #329).
-	tp bool
-	// The WIRE a rejoined message came off, and the wire whose databases decode it. Empty on an
-	// ordinary frame's watch, which stays unscoped — that is #330, for every row.
-	//
-	// Needed HERE because a rejoined message is looked up BY PGN: two wires defining one
-	// (PGN, SA) differently give a plot that merges the buses and decodes one with the other's
-	// layout, which the trace itself does not do — `group_message` scopes the same lookup to
-	// the row's wire (codex).
-	wire string
-}
+// Watch identifies one plotted signal. WHAT MAKES TWO OF THEM DIFFERENT is
+// `cmd/blobly_net/watchrule`, with its test: the answer got narrower twice in one review (`tp`,
+// then `wire`) and each time landed in some of the places that ask it and not others, which
+// review then found one site at a time.
+type Watch = watchrule.Ident
 
-// key is a watch's IDENTITY, in one place.
-//
-// Every site that compares, renders or rewrites a watch asks this, because a field added to the
-// identity and applied to only some of them is worse than one not added at all: `wire` arrived
-// for a rejoined message and the comparisons took it while the DBC editor's rewrites dropped it
-// and ImPlot's series id ignored it, so an edited watch matched no row and two wires' plots
-// shared a legend entry (codex, five findings in one round on one incomplete change).
-fn (w Watch) key() string {
-	return '${w.id}|${w.ext}|${w.tp}|${w.wire}|${w.sig}'
+// wires_of_db lists the wires whose databases include the one at `di` — what a DBC edit is an
+// edit TO. A file may be attached to several channels, and a watch belongs to a wire, so the
+// edit reaches a rejoined watch only where that wire is one of these (watchrule.rewritten_by).
+fn (app &App) wires_of_db(di int) []string {
+	if di < 0 || di >= app.dbs_paths.len {
+		return []
+	}
+	path := app.dbs_paths[di]
+	mut out := []string{}
+	mut seen := map[string]bool{}
+	for c in app.chans {
+		if c.doip || c.someip {
+			continue
+		}
+		gate := transport.destination_key_for(c.adapter, c.iface)
+		if gate in seen {
+			continue
+		}
+		for raw in c.databases {
+			if candb.canonical_database_ref(app.resolve_asset(raw)) == path {
+				seen[gate] = true
+				out << gate
+				break
+			}
+		}
+	}
+	return out
 }
 
 fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) bool {
@@ -707,9 +713,9 @@ fn (app &App) is_watched(id u32, ext bool, tp bool, wire string, sig string) boo
 		tp:   tp
 		wire: wire
 		sig:  sig
-	}.key()
+	}
 	for w in app.watch {
-		if w.key() == want {
+		if w.same(want) {
 			return true
 		}
 	}
@@ -723,9 +729,9 @@ fn (mut app App) toggle_watch(id u32, ext bool, tp bool, wire string, sig string
 		tp:   tp
 		wire: wire
 		sig:  sig
-	}.key()
+	}
 	for i, w in app.watch {
-		if w.key() == want {
+		if w.same(want) {
 			app.watch.delete(i)
 			return
 		}
@@ -748,9 +754,9 @@ fn (mut app App) add_watch(id u32, ext bool, tp bool, wire string, sig string) {
 		tp:   tp
 		wire: wire
 		sig:  sig
-	}.key()
+	}
 	for w in app.watch {
-		if w.key() == want {
+		if w.same(want) {
 			return
 		}
 	}
