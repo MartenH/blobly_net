@@ -1224,21 +1224,26 @@ fn draw_dbc_editor(mut app App) {
 			//     order, so ANY earlier one defining `(id, ext)` shadows this edit, wherever it
 			//     is attached. Made per-wire, a rename on wire B moved a watch the wire-A
 			//     database still names.
-			//   - A REJOINED message's watch resolves against ITS OWN wire, by PGN. So only an
-			//     earlier database ON THAT WIRE shadows it — and by the same PGN lookup the
-			//     decode makes, since a J1939 file spells a placeholder source address in the
-			//     `BO_` id and an exact-id test misses the very definition that wins.
+			//   - A REJOINED message's watch resolves against ITS OWN wire, BY PGN — so the
+			//     question is not "does an earlier database mention this group" but "which
+			//     definition does that wire's whole list actually pick". Asked per database, an
+			//     earlier file naming the group under ANOTHER source address counted as a
+			//     shadow while the real lookup preferred this file's exact `(PGN, SA)` match.
+			//     So the test IS the lookup, over the wire's list, and the edit is shadowed
+			//     exactly where the winner is not the message being edited.
 			edit_wires := app.wires_of_db(di)
 			mut frame_shadowed := false
-			mut shadow_wires := map[string]bool{}
 			for odi in 0 .. di {
 				for om in app.dbs[odi].messages {
 					if om.id == wid && om.ext == wext {
 						frame_shadowed = true
 					}
 				}
-				if _ := find_pgn_message_in([app.dbs[odi]], j1939.pgn(wid), u8(wid & 0xFF)) {
-					for gw in app.wires_of_db(odi) {
+			}
+			mut shadow_wires := map[string]bool{}
+			for gw in edit_wires {
+				if m := find_pgn_message_in(app.dbs_for_gate(gw), j1939.pgn(wid), u8(wid & 0xFF)) {
+					if m.id != wid || m.ext != wext {
 						shadow_wires[gw] = true
 					}
 				}

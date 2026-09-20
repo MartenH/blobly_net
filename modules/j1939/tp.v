@@ -418,9 +418,19 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 			// trace stops rejoining while the walker goes on attributing them to the excluded
 			// node (codex; the FD case above is the other way round, being another protocol's
 			// frame entirely).
+			// ATTRIBUTED, and THEN ended. The frame is this transfer's — its sender put it on
+			// the pair — so it carries the announcement's decision like every other packet;
+			// `.stray` made it unknown, and an excluded node's own frame was replayed back at
+			// it, which is the whole thing the subtraction exists to prevent (codex). `done`
+			// is what ends the transfer, as a last packet does.
 			t.open.delete(k)
 			return Step{
-				role: .stray
+				role: .packet
+				pgn: s.pgn
+				priority: s.priority
+				sa: id.sa
+				da: id.da()
+				done: true
 			}
 		}
 		seq := f.data[0]
