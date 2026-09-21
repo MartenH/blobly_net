@@ -2458,3 +2458,130 @@ fn test_a_dz_block_is_released_once_served() {
 	cs.consume(75)
 	assert (cs.ensure(1) or { panic(err) }) == false
 }
+
+// ---- the stream, round 5 of #342 ----
+
+// build_vlsd_sd_tail_file: a sorted VLSD group whose signal data is a DL of two DZ blocks, every
+// payload in the FIRST and `tail` — bytes no record points into — in the second.
+fn build_vlsd_sd_tail_file(payloads [][]u8, ids []u32, times []f64, tail []u8) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+	hd := b.block('##HD', 6, []u8{len: 32})
+	dg := b.block('##DG', 4, []u8{len: 8})
+	cg, cn_db := vlsd_layout_cg(mut b, payloads.len, 0)
+	mut sd := []u8{}
+	mut offs := []u32{}
+	for p in payloads {
+		offs << u32(sd.len)
+		sd << le_bytes(u64(p.len), 4)
+		sd << p
+	}
+	dz1 := dz_block(mut b, 'SD', sd)
+	dz2 := dz_block(mut b, 'SD', tail)
+	mut dl_d := []u8{len: 8}
+	for i, x in le_bytes(2, 4) {
+		dl_d[4 + i] = x
+	}
+	dl := b.block('##DL', 3, dl_d)
+	b.set_link(dl, 1, dz1)
+	b.set_link(dl, 2, dz2)
+	mut recs := []u8{}
+	for i, p in payloads {
+		recs << vlsd_record(times[i], ids[i], false, p.len, offs[i])
+	}
+	dt := b.block('##DT', 0, recs)
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg)
+	b.set_link(dg, 2, dt)
+	b.set_link(cn_db, 5, dl)
+	return b.buf
+}
+
+fn test_a_signal_data_block_no_payload_points_into_is_still_validated() {
+	p, ids, ts := three()
+	mut img := build_vlsd_sd_tail_file(p, ids, ts, []u8{len: 40})
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 3
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	break_second_dz(mut img)
+	if _ := parse_log(img) {
+		assert false, 'the loader accepted a broken signal-data block'
+	}
+	mut src := MemSource{
+		buf: img
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream never looked at a signal-data block nothing pointed into'
+	}
+	_, s2 := drain(img)
+	assert s2.err.contains('signal data')
+}
+
+fn test_an_unknown_record_id_still_validates_the_rest_of_the_chain() {
+	p, ids, ts := three()
+	mut stream := []u8{}
+	stream << vpay(p[0])
+	stream << vframe(ts[0], ids[0], p[0].len, 0)
+	stream << u8(9) // a record id no group claims: the parse stops here, in both readers
+	stream << []u8{len: 40}
+	stream << vpay(p[1])
+	stream << vframe(ts[1], ids[1], p[1].len, u32(4 + p[0].len))
+	stream << vpay(p[2])
+	stream << vframe(ts[2], ids[2], p[2].len, u32(8 + p[0].len + p[1].len))
+	mut img := build_unsorted_vlsd_raw_x(stream, 3, 0, true) // the cut is past the unknown id
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 1
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	break_second_dz(mut img)
+	if _ := parse_log(img) {
+		assert false, 'the loader accepted a broken block'
+	}
+	mut src := MemSource{
+		buf: img
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream stopped at the unknown id and never saw the broken block'
+	}
+}
+
+fn test_a_text_block_with_links_and_no_terminator_is_bounded_by_its_block() {
+	mut b := Mdf4Builder{}
+	b.buf << []u8{len: 64}
+	tx := b.block('##TX', 1, 'abcdefgh'.bytes()) // one (empty) link, no NUL
+	b.block('##TX', 0, 'zzzz'.bytes())
+	b.buf << 0
+	mut src := MemSource{
+		buf: b.buf
+	}
+	assert read_tx(mut src, tx) == 'abcdefgh' // round 3 read eight bytes past the block, into the next one
+}
+
+fn test_a_duplicate_claimant_is_not_waited_for() {
+	mut recs := []URec{}
+	for i in 0 .. 8300 {
+		recs << URec{0, 0.001 + f64(i) * 0.001, 0x100, [u8(i)]}
+	}
+	mut img := build_unsorted_file(recs)
+	// the second group claims record id 1 too; it owns nothing and can never queue a row
+	first := find_block(img, '##CG')
+	mut second := first + 4
+	for img[second..second + 4].bytestr() != '##CG' {
+		second++
+	}
+	img[second + 24 + 8 * 6] = 1
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 8300
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.forced == 0
+	assert s.err == ''
+}

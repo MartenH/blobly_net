@@ -213,6 +213,12 @@ fn (mut c SortedCursor) drain() {
 	c.recs.skip(c.recs.remaining()) or {
 		c.err = err.msg()
 		c.ok = false
+		return
+	}
+	// and the signal-data chain's blocks no payload pointed into
+	c.vlsd.validate() or {
+		c.err = err.msg()
+		c.ok = false
 	}
 }
 
@@ -392,11 +398,16 @@ fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, re
 				labels: new_labels(g)
 				cap:    u64(-1)
 			}
-			if lay := resolve_layout(mut src, cgi) {
-				u.lay = lay
-				u.ok = true
-				if !unfin && lay.declared > 0 {
-					u.cap = lay.declared
+			// a later claimant of a record id already owned decodes nothing (the loader's
+			// CgInfo.dup) — and so is not `ok`, or the merge would wait forever on a head that
+			// can never come (codex on #342 round 5); it still takes its group ordinal
+			if info.rec_id !in c.by_rid {
+				if lay := resolve_layout(mut src, cgi) {
+					u.lay = lay
+					u.ok = true
+					if !unfin && lay.declared > 0 {
+						u.cap = lay.declared
+					}
 				}
 			}
 			g++
@@ -618,6 +629,29 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 	return true
 }
 
+// finish ends the cursor: nothing more will be decoded — the stream ended, an unknown record id
+// or a corrupt length stopped the parse where the loader's demux stops, or every group is past
+// its count — but the loader inflated the WHOLE chain before it demultiplexed anything, and read
+// every signal-data chain whole, so the rest of the chain is stepped over and every view
+// validated, and a corrupt block there fails the stream as it fails the loader (codex on #342
+// rounds 3 and 5). Not after a read error: that is already the failure.
+fn (mut c UnsortedCursor) finish() {
+	c.ended = true
+	if c.err != '' {
+		return
+	}
+	c.stream.skip(c.stream.remaining()) or {
+		c.err = err.msg()
+		return
+	}
+	for _, mut v in c.views {
+		v.validate() or {
+			c.err = err.msg()
+			return
+		}
+	}
+}
+
 // needs_more says whether some frame group has nothing queued while the stream may still hold
 // its next row — the condition under which emitting would risk the order.
 fn (c &UnsortedCursor) needs_more() bool {
@@ -646,19 +680,16 @@ fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
 			break
 		}
 		if !c.read_record(mut log) {
-			c.ended = true
 			// whatever still waits for a payload gets no more of the stream
 			if c.deferred > 0 {
 				none_ring := &RingVlsd{}
 				c.resolve(none_ring, true, mut log)
 			}
+			c.finish()
 		}
 	}
 	if !c.ended && c.exhausted_all() {
-		// nothing more will be decoded, but the loader reads the whole block: the tail is
-		// stepped over so a corrupt block in it fails the stream as it fails the loader
-		c.stream.skip(c.stream.remaining()) or { c.err = err.msg() }
-		c.ended = true
+		c.finish()
 	}
 	// the earliest queued row, ties by record position — the loader's (t_s, ordinal)
 	mut best := -1

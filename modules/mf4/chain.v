@@ -361,6 +361,30 @@ fn new_chain_view(mut src ByteSource, blocks []ChainBlock) ChainView {
 	}
 }
 
+// validate touches every block of the chain the reads did not: a DZ block is inflated and
+// dropped, a plain block is probed at its last byte. The loader reads a signal-data chain whole,
+// so a corrupt block no payload pointed into fails it — and must fail the stream too, rather
+// than be the difference between the two readers (codex on #342 round 5). Called once, when the
+// cursor over the records has nothing more to decode.
+fn (mut v ChainView) validate() ! {
+	for i, b in v.blocks {
+		if b.dz {
+			if i != v.cached {
+				dz_decompress(mut v.src, b.off) or { return error('signal data: ${err}') }
+			}
+			continue
+		}
+		last := b.off + b.len - 1
+		mut probe := []u8{len: 1}
+		got := v.src.read_at(last, mut probe) or {
+			return error('signal data: read at ${last}: ${err}')
+		}
+		if got < 1 {
+			return error('signal data: short read at ${last}: the block ends before its declared end')
+		}
+	}
+}
+
 // at is n bytes at logical offset off, or none when they are not all inside the chain. The
 // slice is the view's own scratch and is valid until the next call: every caller copies.
 fn (mut v ChainView) at(off u64, n int) ?[]u8 {
@@ -455,6 +479,15 @@ mut:
 	// The first failure a read met, '' while none: a source that cannot answer because the file
 	// is broken says so here, and the cursor reading it stops.
 	failure() string
+	// Whatever the reads left untouched, checked as the loader would have read it (ChainView);
+	// nothing to do for a source that is already whole in memory.
+	validate() !
+}
+
+fn (mut m MemVlsd) validate() ! {
+}
+
+fn (mut r RingVlsd) validate() ! {
 }
 
 fn (v &ChainView) failure() string {

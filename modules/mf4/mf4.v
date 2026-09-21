@@ -699,15 +699,17 @@ fn read_tx(mut src ByteSource, link u64) string {
 	// the file into memory before the first record is read (codex on #342 round 3); the block's
 	// declared length bounds it now, under a cap no name or comment reaches.
 	length := u64_at(mut src, link + 8)
-	mut limit := if length > 24 { length - 24 } else { u64(0) }
-	if limit > max_text_block {
-		limit = max_text_block
-	}
 	if d >= src.size() {
 		return ''
 	}
-	if limit > src.size() - d {
-		limit = src.size() - d
+	// the block's end, clamped to the file before the addition (as chain_walk clamps), and the
+	// text is what lies between the DATA offset and it — the link array is `d`'s to skip, not
+	// the text's to read: `length - 24` read 8 bytes per link past the block (codex on #342
+	// round 5, a defect of round 3's fix)
+	stop := if link > src.size() || length > src.size() - link { src.size() } else { link + length }
+	mut limit := if stop > d { stop - d } else { u64(0) }
+	if limit > max_text_block {
+		limit = max_text_block
 	}
 	mut out := []u8{}
 	mut at := d

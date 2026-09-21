@@ -138,7 +138,11 @@ import (whole-file by design, 2000-row cap).
    to a CG block, failing the whole file. Round 4: the loader's block read is exact (a short read
    was zero-filled into records); a skipped plain span is probed at its last byte; `max_dz_block`
    is 16 MiB — the format's 4 MB rule times four — because it is the memory PER DATA GROUP, and a
-   served DZ block is released at once; record ordinals are u64.
+   served DZ block is released at once; record ordinals are u64. Round 5: the signal-data chain is
+   validated whole when the cursor finishes (`ChainView.validate`), the unsorted cursor finishes
+   the same way after an unknown record id or a corrupt length (`finish`), a duplicate claimant of
+   a record id is not waited for, and the text bound subtracts the link array (a defect of round
+   3's fix).
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,
