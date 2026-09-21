@@ -135,7 +135,10 @@ import (whole-file by design, 2000-row cap).
    a corrupt trailing block fails the stream as it fails the loader (sorted `drain`, unsorted
    `exhausted_all`); a TX/MD text is bounded by its block. And a loader defect the new fixture
    found: an unsorted VLSD group with no records made the frame group's payload link a data link
-   to a CG block, failing the whole file.
+   to a CG block, failing the whole file. Round 4: the loader's block read is exact (a short read
+   was zero-filled into records); a skipped plain span is probed at its last byte; `max_dz_block`
+   is 16 MiB — the format's 4 MB rule times four — because it is the memory PER DATA GROUP, and a
+   served DZ block is released at once; record ordinals are u64.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,

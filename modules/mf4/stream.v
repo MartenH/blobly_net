@@ -307,16 +307,18 @@ fn (u &UCg) exhausted() bool {
 	return !u.ok || (u.seen >= u.cap && u.deferred.len == 0)
 }
 
-// RawRec is a record held back, and its position.
+// RawRec is a record held back, and its position. Positions are u64: a recording of tens of
+// GB has more records than an int counts, and a wrapped ordinal reorders equal-timestamp rows
+// (codex on #342 round 4).
 struct RawRec {
 	raw []u8
-	pos int
+	pos u64
 }
 
 // Pending is a decoded row and the record position it came from.
 struct Pending {
 	row canlog.Row
-	pos int
+	pos u64
 }
 
 // The read-ahead cap over an unsorted group's queues, in rows: eight thousand rows a queue of
@@ -349,7 +351,7 @@ mut:
 	views       map[int]&ChainView
 	stream      ChainStream
 	rec_id_size int
-	rec_n       int // records read so far: the ordinal the loader keys ties by
+	rec_n       u64 // records read so far: the ordinal the loader keys ties by
 	queued      int
 	deferred    int // frames held back across all groups
 	deferred_b  u64 // and their bytes
@@ -456,7 +458,7 @@ fn payload_ready(lay &CgLayout, raw []u8, base int, ring &RingVlsd) bool {
 
 // decode_into decodes one fixed record of group `ci` into its queue, through whatever its
 // payload source is.
-fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, pos int, mut log canlog.Log) {
+fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, pos u64, mut log canlog.Log) {
 	mut u := &c.cgs[ci]
 	row := if mut ring := c.vlsd[u.lay.vlsd_link] {
 		decode_row(&u.lay, raw, base, mut ring, mut u.labels, mut log)

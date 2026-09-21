@@ -2389,3 +2389,72 @@ fn test_deferred_frames_are_bounded_in_bytes_not_only_in_count() {
 	assert s.unresolved == n
 	assert s.err == ''
 }
+
+// ---- the stream, round 4 of #342 ----
+
+fn test_a_short_read_inside_a_plain_block_fails_the_loader_too() {
+	p, ids, _ := three()
+	img := build_mlsd_file(p, ids, [u32(1), 2, 3])
+	dt := find_block(img, '##DT')
+	mut src := ShortSource{
+		buf:   img
+		limit: u64(dt + 24 + 30)
+	}
+	if _ := parse_recording(mut src) {
+		assert false, 'the loader decoded zero-filled bytes as records'
+	}
+}
+
+fn test_a_skip_over_a_truncated_span_is_an_error() {
+	p, ids, ts := three()
+	junk := (1 << 20) + 17
+	mut stream := []u8{}
+	stream << vpay(p[0])
+	stream << vframe(ts[0], ids[0], p[0].len, 0)
+	stream << vjunk(junk)
+	stream << vpay(p[1])
+	stream << vframe(ts[1], ids[1], p[1].len, u32(4 + p[0].len))
+	img := build_unsorted_vlsd_raw_x(stream, 2, junk, false)
+	dt := find_block(img, '##DT')
+	limit := u64(dt + 24 + 1 + 4 + p[0].len + 1 + 18 + 1000) // inside the junk record
+	mut src := ShortSource{
+		buf:   img
+		limit: limit
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'a skip stepped over the truncation'
+	}
+	mut src2 := ShortSource{
+		buf:   img
+		limit: limit
+	}
+	mut s := open_stream(mut src2) or { panic(err) }
+	mut log := canlog.Log{}
+	for {
+		r := s.next(mut log) or { break }
+		log.rows << r
+	}
+	assert s.err.contains('short read')
+	mut src3 := ShortSource{
+		buf:   img
+		limit: limit
+	}
+	if _ := parse_recording(mut src3) {
+		assert false, 'the loader read a truncated block'
+	}
+}
+
+fn test_a_dz_block_is_released_once_served() {
+	p, ids, ts := three()
+	img := build_dz_file(p, ids, ts, 0)
+	mut src := MemSource{
+		buf: img
+	}
+	dz := u64(find_block(img, '##DZ'))
+	blocks := chain_blocks(mut src, dz, false) or { panic(err) }
+	mut cs := new_chain_stream(mut src, blocks)
+	assert cs.ensure(75) or { panic(err) }
+	assert cs.dz_buf.len == 0 // the block was 75 bytes: served whole in one fill, held no longer
+	cs.consume(75)
+	assert (cs.ensure(1) or { panic(err) }) == false
+}

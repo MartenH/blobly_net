@@ -129,13 +129,26 @@ fn block_bytes(mut src ByteSource, b ChainBlock) ![]u8 {
 	if b.len > u64(max_int) {
 		return error('data block of ${b.len} bytes cannot be held in memory whole')
 	}
-	return bytes_at(mut src, b.off, int(b.len))
+	// An EXACT read: `bytes_at` zero-fills what it could not read, which handed the decoder
+	// fabricated records after a truncation or a failed read and called it a recording (codex
+	// on #342 round 4) — the check `fill` makes, made here too, since load_file reads through a
+	// FileSource now rather than one whole-file read.
+	mut out := []u8{len: int(b.len)}
+	got := src.read_at(b.off, mut out) or { return error('read at ${b.off}: ${err}') }
+	if got < out.len {
+		return error('short read at ${b.off}: ${got} of ${out.len} bytes')
+	}
+	return out
 }
 
-// The most a DZ block may inflate to. MDF writers keep data blocks to a few megabytes (the
-// format recommends small blocks for exactly this reason); a block past this is refused rather
-// than inflated, since either reader holds a DZ block whole.
-const max_dz_block = u64(256) << 20
+// The most a DZ block may inflate to. The format says an uncompressed data block should not
+// exceed 4 MB (ASAM MDF 4.1, the DZBLOCK / DLBLOCK rules), and writers keep to it; this is four
+// times that. It is the stream's unit of memory PER DATA GROUP — every cursor may hold one
+// inflated block (and one more in its signal-data view) while its head waits in the merge, so
+// the bound is data groups times this, and a 256 MB cap made that gigabytes for a valid
+// multi-bus file (codex on #342 round 4). A block past it is refused rather than inflated, by
+// either reader.
+const max_dz_block = u64(16) << 20
 
 // The read size of a sequential chunk. Large enough that a 1 Mbit/s bus's second of records is
 // one read; small enough that the buffer is not the memory the window exists to avoid.
@@ -227,6 +240,12 @@ fn (mut s ChainStream) fill() ! {
 			}
 			s.buf << s.dz_buf[int(s.bpos)..int(s.bpos) + want]
 			s.bpos += u64(want)
+			if s.bpos >= b.len {
+				// served whole: released now, not when the next block replaces it, so a cursor
+				// waiting in the merge between blocks holds no inflated block at all
+				s.dz_buf = []u8{}
+				s.dz_for = -1
+			}
 			return
 		}
 		mut chunk := []u8{len: want}
@@ -285,6 +304,23 @@ fn (mut s ChainStream) skip(n u64) ! {
 		}
 		rem := b.len - s.bpos
 		step := if rem < left { rem } else { left }
+		// The span is not read — that is what a skip is for — but its LAST byte is: the walker
+		// clamped every block to the file at open, so a file truncated under the reader ends
+		// inside a span, and the probe fails on it as `fill` would have (codex on #342 round 4).
+		// What this does not see is a device that fails a read in the middle of a span whose end
+		// it serves; reading and discarding the span would, at the cost of reading every byte
+		// of a group this reader does not decode, which is the loader's cost and the one the
+		// stream exists not to pay.
+		last := b.off + s.bpos + step - 1
+		mut probe := []u8{len: 1}
+		got := s.src.read_at(last, mut probe) or {
+			s.eof = true
+			return error('read at ${last}: ${err}')
+		}
+		if got < 1 {
+			s.eof = true
+			return error('short read at ${last}: the block ends before its declared end')
+		}
 		s.bpos += step
 		s.consumed += step
 		left -= step
