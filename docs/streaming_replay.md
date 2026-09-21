@@ -142,7 +142,10 @@ import (whole-file by design, 2000-row cap).
    validated whole when the cursor finishes (`ChainView.validate`), the unsorted cursor finishes
    the same way after an unknown record id or a corrupt length (`finish`), a duplicate claimant of
    a record id is not waited for, and the text bound subtracts the link array (a defect of round
-   3's fix).
+   3's fix). Round 6: nothing deferred is flushed after a read failure; past a deferral cap only
+   the OLDEST frames are evicted (`evict`), not the whole backlog; and a FAILED read in the header
+   walk is the parse's failure (`ByteSource.failure()`), where the zero-filling helpers had read it
+   as an empty recording.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,

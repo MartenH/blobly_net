@@ -2013,6 +2013,10 @@ fn (mut s ShortSource) size() u64 {
 	return u64(s.buf.len)
 }
 
+fn (mut s ShortSource) failure() string {
+	return ''
+}
+
 fn test_a_short_read_inside_a_block_is_an_error_not_the_end() {
 	p, ids, _ := three()
 	img := build_mlsd_file(p, ids, [u32(1), 2, 3])
@@ -2583,5 +2587,109 @@ fn test_a_duplicate_claimant_is_not_waited_for() {
 	log, s := drain(img)
 	assert same_log(log, want)
 	assert s.forced == 0
+	assert s.err == ''
+}
+
+// ---- the stream, round 6 of #342 ----
+
+fn test_a_frame_deferred_before_a_read_failure_is_not_handed_out() {
+	p, ids, ts := three()
+	junk := 21
+	mut stream := []u8{}
+	stream << vframe(ts[0], ids[0], p[0].len, 0) // names a payload not yet written: deferred
+	stream << vjunk(junk) // the DZ cut falls inside this record, so the skip inflates block 2
+	stream << vpay(p[0])
+	mut img := build_unsorted_vlsd_raw_x(stream, 1, junk, true)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 1
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	break_second_dz(mut img)
+	if _ := parse_log(img) {
+		assert false, 'the loader accepted a broken block'
+	}
+	log2, s2 := drain(img)
+	assert log2.len() == 0 // not a payload-less row and THEN the failure
+	assert s2.err != ''
+}
+
+// FailSource claims a whole image but FAILS every read past `limit`, as a disk does — not short
+// (that is ShortSource), failed.
+struct FailSource {
+mut:
+	buf   []u8
+	limit u64
+	err   string
+}
+
+fn (mut s FailSource) read_at(off u64, mut dst []u8) !int {
+	if off + u64(dst.len) > s.limit {
+		if s.err == '' {
+			s.err = 'read at ${off}: input/output error'
+		}
+		return error(s.err)
+	}
+	unsafe { vmemcpy(dst.data, &s.buf[int(off)], dst.len) }
+	return dst.len
+}
+
+fn (mut s FailSource) size() u64 {
+	return u64(s.buf.len)
+}
+
+fn (mut s FailSource) failure() string {
+	return s.err
+}
+
+fn test_a_failed_read_in_the_headers_fails_both_readers() {
+	p, ids, _ := three()
+	img := build_mlsd_file(p, ids, [u32(1), 2, 3])
+	dg := u64(find_block(img, '##DG'))
+	mut src := FailSource{
+		buf:   img
+		limit: dg // the id block and the HD read; the DG does not
+	}
+	if _ := parse_recording(mut src) {
+		assert false, 'the loader read a failed link count as zero and parsed an empty recording'
+	}
+	assert src.failure().contains('input/output')
+	mut src2 := FailSource{
+		buf:   img
+		limit: dg
+	}
+	if _ := open_stream(mut src2) {
+		assert false, 'the stream opened over a failed header read'
+	}
+	assert src2.failure().contains('input/output')
+}
+
+fn test_the_byte_cap_evicts_only_the_oldest_deferred_frames() {
+	stride := 1 << 16
+	n := 130 // 128 fill max_deferred_bytes exactly; the 129th and 130th each tip it over by one
+	mut stream := []u8{}
+	for i in 0 .. n {
+		stream << u8(1)
+		mut rec :=
+			vlsd_record(0.001 * f64(i + 1), 0x100, false, 1, u32(i * 5)) // written after all frames
+		rec << []u8{len: stride - rec.len}
+		stream << rec
+	}
+	for i in 0 .. n {
+		stream << vpay([u8(i)])
+	}
+	img := build_unsorted_vlsd_wide(stream, n, stride)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == n
+	log, s := drain(img)
+	assert log.len() == n
+	assert s.unresolved == 2 // not the whole backlog
+	mut with_payload := 0
+	for i in 0 .. n {
+		if log.at(i).frame.data == want.at(i).frame.data {
+			with_payload++
+		}
+	}
+	assert with_payload == n - 2
 	assert s.err == ''
 }

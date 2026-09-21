@@ -170,6 +170,15 @@ fn read_id_block(mut src ByteSource) !bool {
 }
 
 fn parse_recording(mut src ByteSource) !Recording {
+	rec := parse_recording_unchecked(mut src)!
+	f := src.failure()
+	if f != '' {
+		return error(f)
+	}
+	return rec
+}
+
+fn parse_recording_unchecked(mut src ByteSource) !Recording {
 	unfin := read_id_block(mut src)!
 	mut log := canlog.Log{}
 	// Tie-break key, one per entry, on ONE monotone scale across the whole file: the position of

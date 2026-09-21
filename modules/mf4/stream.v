@@ -97,6 +97,12 @@ pub fn open_stream(mut src ByteSource) !Stream {
 	s.heads = []canlog.Row{len: s.cursors.len}
 	s.has = []bool{len: s.cursors.len}
 	s.done = []bool{len: s.cursors.len}
+	// the header walk read through zero-filling helpers; a read that FAILED in it is this open's
+	// failure, not an empty recording
+	f := src.failure()
+	if f != '' {
+		return error(f)
+	}
 	return s
 }
 
@@ -532,6 +538,39 @@ fn (mut c UnsortedCursor) resolve(ring &RingVlsd, flush bool, mut log canlog.Log
 	}
 }
 
+// evict decodes the OLDEST deferred frames as they are — payload-less, counted — until the
+// backlog is under both caps again, and only as many as that takes: a flush of every waiting
+// frame on every ring turned a valid stream's whole backlog into payload-less rows when one
+// record tipped it over the cap, payloads that were a few records away (codex on #342 round 6).
+// The oldest across groups is the lowest record position among the heads, since each group's
+// list is in record order; evicting a head may leave the next one ready, so its ring's frames
+// are resolved after.
+fn (mut c UnsortedCursor) evict(mut log canlog.Log) {
+	for c.deferred > unsorted_readahead || c.deferred_b > max_deferred_bytes {
+		mut oldest := -1
+		for i, u in c.cgs {
+			if u.deferred.len == 0 {
+				continue
+			}
+			if oldest < 0 || u.deferred[0].pos < c.cgs[oldest].deferred[0].pos {
+				oldest = i
+			}
+		}
+		if oldest < 0 {
+			return
+		}
+		d := c.cgs[oldest].deferred[0]
+		c.cgs[oldest].deferred.delete(0)
+		c.deferred--
+		c.deferred_b -= u64(d.raw.len)
+		c.unresolved++
+		c.decode_into(oldest, d.raw, 0, d.pos, mut log)
+		if own := c.vlsd[c.cgs[oldest].lay.vlsd_link] {
+			c.resolve(own, false, mut log)
+		}
+	}
+}
+
 // read_record consumes one record from the stream into its group's queue (or VLSD ring); false
 // at the end of the stream, at an unknown record id or at a length past the end (a corrupt
 // tail, common in unfinalized files — the loader stops there too).
@@ -617,11 +656,7 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 		}
 		c.deferred++
 		c.deferred_b += u64(size)
-		if c.deferred > unsorted_readahead || c.deferred_b > max_deferred_bytes {
-			if ring := c.vlsd[c.cgs[ci].lay.vlsd_link] {
-				c.resolve(ring, true, mut log)
-			}
-		}
+		c.evict(mut log)
 	} else {
 		c.decode_into(ci, c.stream.buf, base, c.rec_n, mut log)
 	}
@@ -680,8 +715,11 @@ fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
 			break
 		}
 		if !c.read_record(mut log) {
-			// whatever still waits for a payload gets no more of the stream
-			if c.deferred > 0 {
+			// whatever still waits for a payload gets no more of the stream — decoded as it is
+			// and counted, but only at a CLEAN stop: after a read failure the failure is the
+			// answer, and a payload-less row queued ahead of it would be handed out first
+			// (codex on #342 round 6)
+			if c.deferred > 0 && c.err == '' {
 				none_ring := &RingVlsd{}
 				c.resolve(none_ring, true, mut log)
 			}

@@ -13,6 +13,12 @@ pub interface ByteSource {
 mut:
 	read_at(off u64, mut dst []u8) !int
 	size() u64
+	// The first read that FAILED (not one that came up short at the end), '' while none. The
+	// header helpers below read through `bytes_at`, which zero-fills what it did not get — right
+	// for a truncated header, wrong for a failed read, which turned a link count into 0 and a
+	// recording into an empty one that parsed clean (codex on #342 round 6). The two readers
+	// ask this once the headers are walked, so an I/O failure there is the parse's failure.
+	failure() string
 }
 
 // MemSource is a ByteSource over an image already in memory.
@@ -39,11 +45,16 @@ pub fn (mut m MemSource) size() u64 {
 	return u64(m.buf.len)
 }
 
+pub fn (mut m MemSource) failure() string {
+	return ''
+}
+
 // FileSource is a ByteSource over an open file. One per thread: the file has one position.
 pub struct FileSource {
 mut:
-	f  os.File
-	sz u64
+	f   os.File
+	sz  u64
+	err string
 }
 
 pub fn open_source(path string) !FileSource {
@@ -57,13 +68,23 @@ pub fn (mut f FileSource) read_at(off u64, mut dst []u8) !int {
 	if off >= f.sz {
 		return 0
 	}
-	// read_bytes_into swallows a seek failure and answers short at EOF; short means EOF here,
-	// and the helpers treat what was not read as zero.
-	return f.f.read_bytes_into(off, mut dst) or { 0 }
+	// read_bytes_into answers short at EOF; short means EOF here, and the helpers treat what was
+	// not read as zero. A FAILURE is kept and returned: the record readers stop on it, the
+	// header walk asks `failure()` when it is done.
+	return f.f.read_bytes_into(off, mut dst) or {
+		if f.err == '' {
+			f.err = 'read at ${off}: ${err}'
+		}
+		return error('read at ${off}: ${err}')
+	}
 }
 
 pub fn (mut f FileSource) size() u64 {
 	return f.sz
+}
+
+pub fn (mut f FileSource) failure() string {
+	return f.err
 }
 
 pub fn (mut f FileSource) close() {
