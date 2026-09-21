@@ -488,7 +488,7 @@ fn test_sender_const_source_folds_to_value() {
 // `j1939: true` marks a wire whose traffic is SAE J1939, for a bus whose database does not say
 // so. It survives a save, defaults to off, and does NOT raise the schema version — an older
 // build reads an unknown key and goes on showing the raw identifier, as every build did before.
-fn test_j1939_channel_key_round_trips_without_raising_the_version() {
+fn test_j1939_channel_key_round_trips_and_raises_the_version() {
 	y := 'project:
   name: t
 channels:
@@ -501,7 +501,16 @@ channels:
 	p := parse(y)!
 	assert p.channels[0].j1939
 	assert !p.channels[1].j1939 // default, and not caught from a sibling row
-	assert version_for(p) == 2, 'a reading declaration is not a behaviour an older build gets wrong'
+	// v6: a build without the key drops it on its next structured save, so the declaration is
+	// lost on a rewrite rather than ignored on a read (codex on #344).
+	assert version_for(p) == 6, 'an older build would silently drop this key on save'
+	plain := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+')!
+	assert version_for(plain) == 2, 'a project that does not declare it is unchanged'
 	back := parse(p.to_yaml())!
 	assert back.channels[0].j1939
 	assert !back.channels[1].j1939

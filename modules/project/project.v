@@ -25,7 +25,7 @@ import doip
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 5
+pub const schema_version = 6
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -39,6 +39,18 @@ pub const schema_version = 5
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v6 — a channel's own `j1939:` tick (#171). An older build drops the unknown key, and its
+	// STRUCTURED save then writes the file back without it: the declaration is gone, and the
+	// bus that read as PGN and source address reads as a raw 29-bit identifier again, with
+	// nothing said. That is the same loss v3 announces for a generator's value source, which a
+	// build without it transmits as a constant — a setting silently dropped on a rewrite, not
+	// a key harmlessly ignored (codex on #344). Asked first: the version is the HIGHEST a
+	// project needs, and a truck bus may equally carry a SOME/IP row beside it.
+	for c in p.channels {
+		if c.j1939 {
+			return 6
+		}
+	}
 	// v5 — a SOME/IP channel. An older build does not merely drop the unknown `group:` key on its
 	// next structured save: `someip` is not in its `adapters`, so compose_iface falls through to
 	// "the address IS the interface name", the row becomes an ordinary CAN channel on an
@@ -366,10 +378,11 @@ pub mut:
 	// Trace panel's on/off override answers the same question for EVERY wire at once, which is
 	// the wrong shape for a bench carrying one J1939 bus and one ordinary CAN bus.
 	//
-	// It does NOT raise the schema version. An older build reads an unknown key and goes on
-	// showing the raw identifier, which is what every build did before #171; the versions this
-	// file declares each announce a behaviour that CHANGES — a waveform transmitted as a
-	// constant (v3), a generator gone silent (v4), a listener become a failing CAN row (v5).
+	// It RAISES the schema version to v6 (version_for). The first reading of this was that an
+	// older build merely ignores an unknown key and shows the raw identifier, as every build
+	// did before #171 — but such a build's structured save writes the file back WITHOUT the
+	// key, so the declaration is lost on a rewrite rather than ignored on a read, which is the
+	// loss v3 already announces for a generator's value source (codex on #344).
 	j1939        bool
 	enabled      bool = true
 	databases    []string

@@ -3,6 +3,7 @@ module main
 import transport
 import candb
 import j1939
+import gaterule
 
 // J1939 in the trace (#171): what a 29-bit id MEANS, a multi-packet message as one row, and a
 // source address named by the node that claimed it. All of it read-side — the engine is
@@ -108,7 +109,7 @@ fn (app &App) j1939_on_locked(gate string) bool {
 // well-formed transport announcement. It is what a bus the project cannot PLACE gets instead
 // of `undecidable`, because evidence beats a refusal to guess — and, like every gate, the
 // panel's on/off still overrides it. A space for the reason the sentinel below carries one.
-const j1939_gate_evident = '? evident'
+const j1939_gate_evident = gaterule.evident
 
 // j1939_gate_undecidable is the gate of a recorded bus whose label two configured wires answer
 // to: in auto it reads as NOT J1939 — the project-wide default would read it as whichever wire
@@ -124,7 +125,7 @@ const j1939_gate_evident = '? evident'
 // device name cannot contain one, so no real destination key can equal this (codex again, on
 // the first replacement, which a device literally named `?undecidable` would have collided
 // with). And it reads in a log line, which the NUL never did.
-const j1939_gate_undecidable = '? undecidable'
+const j1939_gate_undecidable = gaterule.undecidable
 
 // j1939_display_locked is the row's NAME cell on a J1939 wire: the database's name and the
 // reading — `EEC1  PGN 0xF004 SA 0x00 Engine` — or the reading alone where the database has no
