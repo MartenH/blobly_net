@@ -441,6 +441,13 @@ fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, re
 			c.vlsd[u.lay.vlsd_link] = &RingVlsd{}
 		}
 	}
+	// one byte budget across the rings, not one per ring
+	if c.vlsd.len > 0 {
+		each := ring_budget / c.vlsd.len
+		for _, mut r in c.vlsd {
+			r.cap = each
+		}
+	}
 	// a frame group's VLSD link that names no VLSD group here is a signal-data chain: a view
 	for i in 0 .. c.cgs.len {
 		if !c.cgs[i].ok || !c.cgs[i].lay.is_vlsd || c.cgs[i].lay.vlsd_link in c.vlsd {

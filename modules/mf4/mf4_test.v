@@ -2885,3 +2885,110 @@ fn test_a_data_list_is_walked_without_materializing_its_links() {
 	}
 	assert block_links(mut src, dl).len == 0 // the header reader refuses it
 }
+
+// ---- the stream, round 9 of #342 ----
+
+// build_unsorted_two_frame_groups: two frame groups (record ids 1 and 3), each with its own
+// VLSD payload group (record ids 2 and 4), in one unsorted stream.
+fn build_unsorted_two_frame_groups(stream []u8, cycles int) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+	hd := b.block('##HD', 6, []u8{len: 32})
+	mut dg_d := []u8{len: 8}
+	dg_d[0] = 1
+	dg := b.block('##DG', 4, dg_d)
+	cg_a, cn_a := vlsd_layout_cg(mut b, cycles, 1)
+	mut va_d := []u8{len: 32}
+	va_d[0] = 2
+	va_d[16] = 1
+	cg_va := b.block('##CG', 6, va_d)
+	cg_b, cn_b := vlsd_layout_cg(mut b, cycles, 3)
+	mut vb_d := []u8{len: 32}
+	vb_d[0] = 4
+	vb_d[16] = 1
+	cg_vb := b.block('##CG', 6, vb_d)
+	dt := b.block('##DT', 0, stream)
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg_a)
+	b.set_link(cg_a, 0, cg_va)
+	b.set_link(cg_va, 0, cg_b)
+	b.set_link(cg_b, 0, cg_vb)
+	b.set_link(cn_a, 5, cg_va)
+	b.set_link(cn_b, 5, cg_vb)
+	b.set_link(dg, 2, dt)
+	return b.buf
+}
+
+fn vframe_b(t f64, id u32, len int, off u32) []u8 {
+	mut r := [u8(3)]
+	r << vlsd_record(t, id, false, len, off)
+	return r
+}
+
+fn test_the_ring_budget_is_shared_across_the_rings_of_one_group() {
+	p, ids, ts := three()
+	mut stream := []u8{}
+	mut off := u32(0)
+	for i, x in p {
+		stream << vpay(x)
+		stream << vframe(ts[i], ids[i], x.len, off)
+		stream << vother(x)
+		stream << vframe_b(ts[i] + 0.0005, ids[i] + 1, x.len, off)
+		off += u32(4 + x.len)
+	}
+	img := build_unsorted_two_frame_groups(stream, 3)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 6
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	mut src := MemSource{
+		buf: img
+	}
+	mut st := open_stream(mut src) or { panic(err) }
+	mut c := st.cursors[0]
+	if mut c is UnsortedCursor {
+		assert c.vlsd.len == 2
+		mut total := 0
+		for _, r in c.vlsd {
+			total += r.cap
+		}
+		assert total == ring_budget // not ring_budget per ring
+	} else {
+		assert false, 'not an unsorted cursor'
+	}
+}
+
+fn test_a_drain_that_starts_at_a_block_boundary_advances_to_the_next_block() {
+	// the cycle cap reached exactly where a plain block ends: the finished block is stepped
+	// over (its last byte probed, which exists) and the next one validated
+	p, ids, ts := three()
+	mut img := build_dl_file(p, ids, ts, 25) // one record in the first block
+	cg := find_block(img, '##CG')
+	for i, x in le_bytes(1, 8) {
+		img[cg + 24 + 8 * 6 + 8 + i] = x // cg_cycle_count 1
+	}
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 1
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	// and a truncation inside the second block is still seen from there
+	first := find_block(img, '##DT')
+	mut dt2 := first + 4
+	for img[dt2..dt2 + 4].bytestr() != '##DT' {
+		dt2++
+	}
+	mut short := ShortSource{
+		buf:   img
+		limit: u64(dt2 + 24 + 10)
+	}
+	if _ := stream_log(mut short) {
+		assert false, 'the drain did not reach the second block'
+	}
+}

@@ -536,9 +536,17 @@ struct RingVlsd {
 mut:
 	base    u64 // the logical offset of buf[0]
 	buf     []u8
-	cap     int = 8 << 20
+	cap     int = ring_budget
 	evicted int
 }
+
+// The bytes ALL the rings of one unsorted data group may hold between them: each ring's cap is
+// this over the number of rings, so an unsorted group where every frame group has its own
+// VLSD group is bounded by this and not by 8 MiB times the groups (codex on #342 round 9).
+// CANedge writes the payload record immediately before the frame that names it, so a ring
+// needs a few records' worth, not megabytes; the budget is generous for the skew a writer might
+// have between two groups.
+const ring_budget = 8 << 20
 
 fn (mut r RingVlsd) append(bytes []u8) {
 	r.buf << bytes

@@ -150,7 +150,9 @@ import (whole-file by design, 2000-row cap).
    count is bounded by the block and the file, not a fixed 65,536 (`link_count`); a zero-length DZ
    block is validated at the walk. Round 8: the DL is walked one link at a time, never
    materialized (header blocks keep a bounded array, `max_header_links`); a VLSD group gets a
-   ring only where a decoded frame group reads it.
+   ring only where a decoded frame group reads it. Round 9: the rings of one data group share one
+   byte budget (`ring_budget`); and a claimed underflow in `skip` at a finished plain block did
+   not hold — the probe reads the block's last byte, which exists — pinned by a test.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,
