@@ -158,7 +158,7 @@ import (whole-file by design, 2000-row cap).
    readers, `record_size`). Round 11: a DZ block's header and compressed bytes are read exactly
    (`exact_at`); `FileSource` sizes the handle, not the path; a record id width outside 0/1/2/4/8
    is refused by both readers. The review stopped there by the maintainer's decision, as #329
-   did; the class test is filed for step 2.
+   did; the class test is #345, for step 2.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,
