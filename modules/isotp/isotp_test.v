@@ -749,7 +749,17 @@ fn test_stmin_holds_across_block_boundaries() {
 		assert false, 'no First Frame'
 		return
 	}
-	t0 := time.ticks()
+	// THE FINE CLOCK, for the reason the sibling assertion above spells out at length: this
+	// margin is 10 ms — a true ~60 ms against a bound of 50 — and `ticks()` is GetTickCount on
+	// Windows at ~15.6 ms, so two reads of a correct 60 ms interval land on either 3 or 4 tick
+	// boundaries depending on phase and the measurement itself reads 46.8 or 62.4. #316 moved
+	// that one and left this one, which measures the same interval against the same bound with
+	// the same clock; the Windows job has failed it at `took 46 ms` and at `took 47 ms` (#335).
+	//
+	// The other `ticks()` assertions in this file stay: their margins are hundreds of
+	// milliseconds, where 15 ms of granularity is nothing. It is the RATIO of margin to
+	// granularity that decides, not the clock.
+	t0 := time.sys_mono_now()
 	// ONE frame per block, so the sender must ask again for each — and must still pace.
 	for _ in 0 .. 3 {
 		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
@@ -761,9 +771,9 @@ fn test_stmin_holds_across_block_boundaries() {
 		}
 	}
 	msg := <-done
-	elapsed := time.ticks() - t0
+	elapsed := f64(time.sys_mono_now() - t0) / 1e6
 	assert msg == 'sent', msg
-	assert elapsed >= 50, 'three single-frame blocks at STmin 30 ms took ${elapsed} ms — the separation lapsed at the boundary'
+	assert elapsed >= 50, 'three single-frame blocks at STmin 30 ms took ${elapsed:.1f} ms — the separation lapsed at the boundary'
 	ch.close()
 	peer.close()
 }
