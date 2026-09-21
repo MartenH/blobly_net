@@ -343,6 +343,7 @@ Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
 | mode | toggle `off | monitor | replay` | CAN only |
 | bitrate, data_bitrate | int input | data_bitrate only for canfd; hidden for doip |
 | listen_only | `checkbox` | CAN only |
+| j1939 | `checkbox` | CAN only — read this wire as SAE J1939 ([j1939.md](j1939.md)) |
 | **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc`) | `bus.databases` |
 | manifest | `input_text` + **…** | telemetry CSV |
 | DoIP: tester/ecu addr, vin, eid | `input_text` | doip adapter only |

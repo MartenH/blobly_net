@@ -6,6 +6,8 @@ import transport
 import candb
 import sim
 import canlog
+import j1939
+import gaterule
 import mf4
 import player
 import vgui
@@ -230,18 +232,45 @@ fn (mut app App) load_recording(path string) {
 	// place is UNDECIDABLE — not J1939 in auto, on / off still override — rather than the
 	// project-wide default, which for a one-wire J1939 project is the same guess by another
 	// route (codex on #329, a third time). Force `on` to read such a file.
-	gate_only := if can_buses.len == 1 && rec_buses.len == 1 {
-		can_buses.keys()[0]
-	} else {
-		j1939_gate_undecidable
-	}
 	// An MF4's labels are the file's own numbering and name no project wire, so its buses take
-	// the one CAN wire's gate only when the file has ONE bus too — the verifiers' rule above; a
-	// multi-bus file against a one-wire project falls back to the project-wide default like
-	// any label the project cannot place, rather than reading every bus as that wire (codex on
-	// #329). With one wire the two answers coincide; the rule is stated once either way.
-	mf4_gate := gate_only
+	// this same fallback — the verifiers' rule above; a multi-bus file against a one-wire
+	// project does not read every bus as that wire (codex on #329). `gaterule` holds that and
+	// the rest of the routes.
+	sole := gaterule.Sole{
+		dest: if can_buses.len == 1 { can_buses.keys()[0] } else { '' }
+		ok: can_buses.len == 1 && rec_buses.len == 1
+	}
 	first_row := if log.len() > trace_cap { log.len() - trace_cap } else { 0 }
+	// WHICH RECORDED BUSES THE FILE ITSELF PROVES J1939, in one pass before any row is built.
+	// OUTSIDE app.mu, like the label walk above it: this reads the log and touches nothing
+	// shared, and a 600k-frame capture should not hold the global mutex to decide it. A pass
+	// FIRST rather than a mark that turns on partway through, or the frames before the first
+	// transfer would read one way and the frames after it another, in one file, with nothing
+	// to say why.
+	mut j1939_evident := map[string]bool{}
+	for i in 0 .. log.len() {
+		e := log.at(i)
+		if j1939.announces_session(e.frame) {
+			j1939_evident[e.iface] = true
+		}
+	}
+	// THE READING PER RECORDED BUS, decided once here rather than per frame. `gaterule` is the
+	// one place that knows which of the four routes identified the bus and which merely placed
+	// it, because evidence may overrule a placement and must not overrule an identification —
+	// the distinction two review rounds of #344 each got wrong from a different side.
+	bus_gate := fn [gate_of, gate_clash, j1939_evident, from_mf4, sole] (lbl string) string {
+		return gaterule.gate_for(gaterule.Bus{
+			from_mf4: from_mf4
+			clash: lbl in gate_clash
+			claim: gate_of[lbl] or { '' }
+			claimed: lbl in gate_of
+			evident: lbl in j1939_evident
+		}, sole).gate
+	}
+	mut gate_by_bus := map[string]string{}
+	for lbl, _ in rec_buses {
+		gate_by_bus[lbl] = bus_gate(lbl)
+	}
 	app.mu.lock()
 	app.reset_trace_locked()
 	// Claim the view HERE, inside the same locked region that reset it, and PAUSE the capture:
@@ -314,13 +343,10 @@ fn (mut app App) load_recording(path string) {
 			rec_keys[e.iface] = nk
 			nk
 		}
-		gate := if from_mf4 {
-			mf4_gate
-		} else if e.iface in gate_clash {
-			j1939_gate_undecidable
-		} else {
-			gate_of[e.iface] or { gate_only }
-		}
+		// ONE lookup on the hot path: every route, and the file's own evidence, were folded
+		// into this map above (gaterule). A label the table does not hold is answered by the
+		// same function rather than by a second spelling of the rule.
+		gate := gate_by_bus[e.iface] or { bus_gate(e.iface) }
 		mut obs := j1939_obs[e.iface] or {
 			n := &J1939Obs{}
 			j1939_obs[e.iface] = n

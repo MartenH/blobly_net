@@ -41,6 +41,7 @@ samples/*
 !samples/demo.mf4
 !samples/two_buses.mf4
 !samples/both_dirs.mf4
+!samples/j1939-bam.log
 
 # Python bytecode cache
 __pycache__/

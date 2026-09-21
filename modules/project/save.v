@@ -56,6 +56,9 @@ pub fn (p Project) to_yaml() string {
 		if ch.listen_only {
 			b.writeln('    listen_only: true')
 		}
+		if ch.j1939 {
+			b.writeln('    j1939: true')
+		}
 		b.writeln('    enabled: ${ch.enabled}')
 		if ch.timing.brp != 0 || ch.timing.tseg1 != 0 || ch.timing.tseg2 != 0 {
 			b.writeln('    timing: { brp: ${ch.timing.brp}, tseg1: ${ch.timing.tseg1}, tseg2: ${ch.timing.tseg2}, sjw: ${ch.timing.sjw} }')

@@ -10,6 +10,7 @@ import loadrule
 import watchrule
 import pickrule
 import transport
+import gaterule
 import wiretap
 import candb
 import prefs
@@ -682,13 +683,15 @@ type Watch = watchrule.Ident
 // caller that must say WHICH of them answered a lookup — two on one wire can define the same
 // message, and the answer alone cannot tell them apart.
 fn (app &App) db_indices_for_gate(gate string) []int {
+	// the placement, not the reading — `dbs_for_gate`'s rule, asked here too (gaterule)
+	wire := gaterule.placement(gate)
 	mut out := []int{}
 	mut seen := map[string]bool{}
 	for c in app.chans {
 		if c.doip || c.someip {
 			continue
 		}
-		if transport.destination_key_for(c.adapter, c.iface) != gate {
+		if transport.destination_key_for(c.adapter, c.iface) != wire {
 			continue
 		}
 		for raw in c.databases {
@@ -1222,6 +1225,7 @@ fn (mut app App) rebuild_from_proj() {
 			fd:             ch.fd
 			data_bitrate:   ch.data_bitrate
 			listen_only:    ch.listen_only
+			j1939:          ch.j1939
 			databases:      ch.databases.clone()
 			manifest:       ch.manifest
 			doip:           ch.is_doip()
@@ -1399,9 +1403,17 @@ fn (mut app App) rebuild_from_proj() {
 		}
 		dk := transport.destination_key_for(c.adapter, c.iface)
 		was := app.j1939_dbs[dk] or { false }
-		app.j1939_dbs[dk] = was || app.dbs_for(c.iface).any(it.j1939_declared())
+		// THE ROW'S OWN TICK counts as a declaration, because most J1939 databases carry none:
+		// `VFrameFormat` is a Vector attribute they were written without, and the panel's
+		// on/off override answers for every wire at once — the wrong shape for a bench with one
+		// J1939 bus and one ordinary CAN bus beside it.
+		app.j1939_dbs[dk] = was || c.j1939 || app.dbs_for(c.iface).any(it.j1939_declared())
 	}
+	// THE CHANNEL TICKS COUNT HERE TOO. This is the project-wide "does anything read as J1939",
+	// and a project whose ONLY declaration is a tick answered false — so the fast paths that
+	// ask it skipped a wire the gate beside it had just turned on (codex).
 	app.j1939_any = app.dbs.any(it.j1939_declared())
+		|| app.chans.any(!it.doip && !it.someip && it.j1939)
 	// the databases may have changed under every cached name and key
 	app.j1939_labels = map[string]&LabelCache{}
 

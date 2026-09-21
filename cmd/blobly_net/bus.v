@@ -24,6 +24,9 @@ struct Chan {
 	fd           bool
 	data_bitrate int
 	listen_only  bool
+	// The row declares its wire's traffic to be SAE J1939 (project.Channel.j1939). Folded with
+	// what the wire's databases declare, into `app.j1939_dbs`.
+	j1939        bool
 	databases    []string
 	manifest     string
 	doip         bool

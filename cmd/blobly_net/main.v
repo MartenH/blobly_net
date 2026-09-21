@@ -238,6 +238,17 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_CONFIG') != '' {
 		app.show_config = true
 	}
+	// Open a recording at startup, the way the file picker would. For the screenshot harness
+	// above all (VGUI_FRAMES / VGUI_SHOT): the picker cannot be driven from a headless run, so
+	// without this there is no way to check what an IMPORTED capture looks like — and the
+	// J1939 reading of one is exactly the kind of thing only a picture settles. Three defects
+	// on #340 were found that way and by none of its tests: a rejoined identifier showing
+	// priority 0, a name column cutting mid-address, and a Log line naming its bus twice.
+	if rec := os.getenv_opt('BLOBLY_OPEN_REC') {
+		if rec != '' {
+			app.load_recording(rec)
+		}
+	}
 	// Autostart defers the measurement start until the GL context has SETTLED. On Windows the
 	// GPU driver maps/unmaps its own DLL data sections during the first presented frames; if a
 	// worker thread triggers a Boehm GC collection inside that window, the collector faults

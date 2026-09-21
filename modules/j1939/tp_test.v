@@ -873,3 +873,25 @@ fn test_a_refused_announcement_still_names_its_group() {
 	assert refused[0].announced
 	assert refused[0].str().contains('PGN 0x${dm1:04X}'), refused[0].str()
 }
+
+// A recording has no owner to ask, so the bytes answer. The same rule the reassembler admits
+// by, or a file that answers yes is one it then cannot read.
+fn test_a_recording_answers_for_itself() {
+	assert announces_session(bam(0x00, 20, dm1))
+	assert announces_session(rts(0x00, 0x03, 20, dm1))
+	// and nothing else is taken as proof
+	assert !announces_session(packets(0x00, addr_global, message(20))[0]) // a data frame
+	assert !announces_session(cts(0x00, 0x17, dm1, 1))
+	assert !announces_session(abort(0x00, 0x03, 3, dm1))
+	assert !announces_session(dt(0x00, addr_global, 1, message(7)))
+	// nor anything `admission` refuses: the two answers are one rule
+	assert !announces_session(cm(0x00, addr_global, cm_bam, 20, 4, dm1)) // counts disagree
+	assert !announces_session(cm(0x00, 0x03, cm_bam, 20, 3, dm1)) // a BAM to one node
+	assert !announces_session(cm(0x00, addr_global, cm_rts, 20, 3, dm1)) // an RTS to everyone
+	mut fd := bam(0x00, 20, dm1)
+	fd.fd = true
+	assert !announces_session(fd)
+	mut std := bam(0x00, 20, dm1)
+	std.extended = false
+	assert !announces_session(std)
+}
