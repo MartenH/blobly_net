@@ -392,7 +392,6 @@ fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, re
 			size:   int(u32_at(mut src, cgd + 24)) + int(u32_at(mut src, cgd + 28))
 		}
 		if info.vlsd {
-			c.vlsd[cgi] = &RingVlsd{}
 			c.cgs << UCg{
 				info: info
 			}
@@ -426,6 +425,21 @@ fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, re
 		}
 		l := block_links(mut src, cgi)
 		cgi = if l.len > 0 { l[0] } else { u64(0) }
+	}
+	// A ring for a VLSD group only where a decoded frame group READS it: an unsorted group of a
+	// measurement file carries VLSD channels for signals that are not CAN frames at all, and a
+	// ring for each held up to 8 MiB of bytes nothing would ever decode (codex on #342 round 8).
+	// A VLSD group nobody reads has its records stepped over instead.
+	mut vlsd_cgs := map[u64]bool{}
+	for u in c.cgs {
+		if u.info.vlsd {
+			vlsd_cgs[u.info.link] = true
+		}
+	}
+	for u in c.cgs {
+		if u.ok && u.lay.is_vlsd && u.lay.vlsd_link in vlsd_cgs && u.lay.vlsd_link !in c.vlsd {
+			c.vlsd[u.lay.vlsd_link] = &RingVlsd{}
+		}
 	}
 	// a frame group's VLSD link that names no VLSD group here is a signal-data chain: a view
 	for i in 0 .. c.cgs.len {
@@ -597,7 +611,14 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 		if !c.fits(4 + n) {
 			return false
 		}
-		mut ring := c.vlsd[c.cgs[ci].info.link] or { return false }
+		mut ring := c.vlsd[c.cgs[ci].info.link] or {
+			// a VLSD group no frame group reads: its record is stepped over, never kept
+			c.stream.skip(4 + n) or {
+				c.err = err.msg()
+				return false
+			}
+			return true
+		}
 		if 4 + n > max_vlsd_record {
 			// not a payload: stepped over, never buffered, the ring's offsets kept in step
 			c.stream.skip(4 + n) or {

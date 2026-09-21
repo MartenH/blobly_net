@@ -148,7 +148,9 @@ import (whole-file by design, 2000-row cap).
    as an empty recording. Round 7: the deferred flush moved INTO `finish`, after the validation
    (the round-6 fix had the order right for a read failure and wrong for a clean stop); a link
    count is bounded by the block and the file, not a fixed 65,536 (`link_count`); a zero-length DZ
-   block is validated at the walk.
+   block is validated at the walk. Round 8: the DL is walked one link at a time, never
+   materialized (header blocks keep a bounded array, `max_header_links`); a VLSD group gets a
+   ring only where a decoded frame group reads it.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,

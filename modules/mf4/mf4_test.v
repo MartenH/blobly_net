@@ -2789,3 +2789,99 @@ fn test_a_zero_length_dz_block_is_still_validated() {
 	got := parse_log(none_at_all) or { panic(err) }
 	assert same_log(got, want)
 }
+
+// ---- the stream, round 8 of #342 ----
+
+// build_unsorted_two_vlsd: build_unsorted_vlsd_raw with a second VLSD group (record id 4) that
+// no frame group reads — another signal's variable-length samples in the same stream.
+fn build_unsorted_two_vlsd(stream []u8, cycles int) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+	hd := b.block('##HD', 6, []u8{len: 32})
+	mut dg_d := []u8{len: 8}
+	dg_d[0] = 1
+	dg := b.block('##DG', 4, dg_d)
+	cg_frames, cn_db := vlsd_layout_cg(mut b, cycles, 1)
+	mut vcg_d := []u8{len: 32}
+	vcg_d[0] = 2
+	vcg_d[16] = 1
+	cg_vlsd := b.block('##CG', 6, vcg_d)
+	mut ocg_d := []u8{len: 32}
+	ocg_d[0] = 4
+	ocg_d[16] = 1
+	cg_other := b.block('##CG', 6, ocg_d)
+	dt := b.block('##DT', 0, stream)
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg_frames)
+	b.set_link(cg_frames, 0, cg_vlsd)
+	b.set_link(cg_vlsd, 0, cg_other)
+	b.set_link(cn_db, 5, cg_vlsd)
+	b.set_link(dg, 2, dt)
+	return b.buf
+}
+
+fn vother(p []u8) []u8 {
+	mut r := [u8(4)]
+	r << le_bytes(u64(p.len), 4)
+	r << p
+	return r
+}
+
+fn test_a_vlsd_group_nobody_reads_gets_no_ring() {
+	p, ids, ts := three()
+	mut stream := []u8{}
+	mut off := u32(0)
+	for i, x in p {
+		stream << vother([]u8{len: 300}) // another signal's sample, between every pair
+		stream << vpay(x)
+		stream << vframe(ts[i], ids[i], x.len, off)
+		off += u32(4 + x.len)
+	}
+	img := build_unsorted_two_vlsd(stream, 3)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 3
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	mut src := MemSource{
+		buf: img
+	}
+	mut st := open_stream(mut src) or { panic(err) }
+	mut c := st.cursors[0]
+	if mut c is UnsortedCursor {
+		assert c.vlsd.len == 1 // the frame group's payload ring; none for record id 4
+	} else {
+		assert false, 'not an unsorted cursor'
+	}
+}
+
+fn test_a_data_list_is_walked_without_materializing_its_links() {
+	// a DL whose declared count fits its block but not any allocation this reader should make:
+	// the count is walked one link at a time, and the recording behind link 1 is read
+	p, ids, ts := three()
+	mut b := Mdf4Builder{}
+	_, dg := mlsd_group(mut b, 3, 0)
+	dt := b.block('##DT', 0, mlsd_records(p, ids, ts))
+	n := int(max_header_links) + 5 // past what block_links would materialize
+	mut dl_d := []u8{len: 8}
+	for i, x in le_bytes(u64(n), 4) {
+		dl_d[4 + i] = x
+	}
+	dl := b.block('##DL', n + 1, dl_d)
+	b.set_link(dl, 1, dt)
+	b.set_link(dg, 2, dl)
+	want := parse_log(b.buf) or { panic(err) }
+	assert want.len() == 3
+	log, s := drain(b.buf)
+	assert same_log(log, want)
+	assert s.err == ''
+	mut src := MemSource{
+		buf: b.buf
+	}
+	assert block_links(mut src, dl).len == 0 // the header reader refuses it
+}

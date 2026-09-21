@@ -94,15 +94,21 @@ fn chain_walk(mut src ByteSource, link u64, unfin bool, mut out []ChainBlock, at
 			}
 		}
 		'##DL' {
+			// The one block whose link array is unbounded by the format — a data list names
+			// every data block of a recording, one link each — so it is walked one link at a
+			// time and never materialized: a count that fits a tens-of-GB block is a
+			// tens-of-GB allocation at open, which is the memory the stream exists not to hold
+			// (codex on #342 round 8). The header blocks keep `block_links`, bounded.
 			mut dl := link
 			for dl != 0 {
-				dll := block_links(mut src, dl)
-				for i := 1; i < dll.len; i++ {
-					if dll[i] != 0 {
-						logical = chain_walk(mut src, dll[i], unfin, mut out, logical)!
+				n := link_count(mut src, dl)
+				for i := u64(1); i < n; i++ {
+					l := u64_at(mut src, dl + 24 + 8 * i)
+					if l != 0 {
+						logical = chain_walk(mut src, l, unfin, mut out, logical)!
 					}
 				}
-				dl = if dll.len > 0 { dll[0] } else { u64(0) }
+				dl = if n > 0 { u64_at(mut src, dl + 24) } else { u64(0) }
 			}
 		}
 		'##HL' {

@@ -698,8 +698,16 @@ fn link_count(mut src ByteSource, off u64) u64 {
 	return n
 }
 
+// The most links a HEADER block is read with: the format gives HD, DG, CG, CN, SI and HL a
+// handful each, a CC as many as its value table has entries — hundreds — and only the DL an
+// unbounded array, which chain_walk iterates without this. So the array materialized here is
+// at most half a megabyte, whatever a corrupt count claims; a count past it is a corrupt
+// header, not a large one, and reads as no links.
+const max_header_links = u64(1) << 16
+
 fn block_links(mut src ByteSource, off u64) []u64 {
-	n := int(link_count(mut src, off))
+	n64 := link_count(mut src, off)
+	n := if n64 > max_header_links { 0 } else { int(n64) }
 	mut links := []u64{cap: n}
 	for i := 0; i < n; i++ {
 		links << u64_at(mut src, off + 24 + 8 * u64(i))
