@@ -3,6 +3,7 @@ module main
 import transport
 import candb
 import j1939
+import gaterule
 
 // J1939 in the trace (#171): what a 29-bit id MEANS, a multi-packet message as one row, and a
 // source address named by the node that claimed it. All of it read-side — the engine is
@@ -80,9 +81,19 @@ fn (app &App) j1939_on_locked(gate string) bool {
 		.follow {
 			if gate == j1939_gate_undecidable {
 				false
+			} else if gaterule.is_evident(gate) {
+				// A RECORDED BUS THE FILE ITSELF PROVES. A live wire has an owner to ask; a
+				// capture somebody sends you has nobody, so the honest question is whether the
+				// bytes prove what they are — a well-formed transport announcement does
+				// (`j1939.announces_session`), and nothing else counts.
+				true
 			} else if gate == '' {
-				// the one gate that means "a recorded bus the project could not place": the
-				// project-wide default is the best answer for a file whose buses name no wire
+				// NO GATE AT ALL — a caller with no destination to name, which is not the
+				// same thing as a recorded bus the project cannot place. THAT case is
+				// `j1939_gate_undecidable`, and this comment said otherwise until the P1 of
+				// #344 round 1: `load_recording` had been written to promote `''` on
+				// evidence, so the promotion could never fire. The project-wide default is
+				// the best answer left when there is nothing to ask.
 				app.j1939_any
 			} else {
 				// a live wire the project did not configure — a generator's `bus:` aimed at a
@@ -93,6 +104,12 @@ fn (app &App) j1939_on_locked(gate string) bool {
 		}
 	}
 }
+
+// A bus the FILE proves J1939, by carrying a well-formed transport announcement, is marked by
+// `gaterule.evident_gate` — which DECORATES the placement rather than replacing it, so the
+// databases a rejoined message decodes against are still the placed wire's. `is_evident` is
+// the reading, `placement` the scope; both live in gaterule with the routes they belong to.
+// Like every gate, the panel's on/off still overrides it.
 
 // j1939_gate_undecidable is the gate of a recorded bus whose label two configured wires answer
 // to: in auto it reads as NOT J1939 — the project-wide default would read it as whichever wire
@@ -108,7 +125,7 @@ fn (app &App) j1939_on_locked(gate string) bool {
 // device name cannot contain one, so no real destination key can equal this (codex again, on
 // the first replacement, which a device literally named `?undecidable` would have collided
 // with). And it reads in a log line, which the NUL never did.
-const j1939_gate_undecidable = '? undecidable'
+const j1939_gate_undecidable = gaterule.undecidable
 
 // j1939_display_locked is the row's NAME cell on a J1939 wire: the database's name and the
 // reading — `EEC1  PGN 0xF004 SA 0x00 Engine` — or the reading alone where the database has no
@@ -328,7 +345,7 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 			data:     a.data
 			imported: imported
 			tp:       true
-			wire:     gate
+			wire:     gaterule.placement(gate)
 			// only where the identifier cannot say it: a BAM IS a broadcast, and a PDU1 group
 			// carries its destination in the identifier already
 			tp_da:    if !a.bam && a.pgn >> 8 & 0xFF >= 0xF0 { int(a.da) } else { -1 }
@@ -434,6 +451,10 @@ fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
 // named and decoded against ITS wire's databases (codex on #329).
 // NOTE concurrency: like dbs_for_dest — app.chans is read unlocked, as every panel reads it.
 fn (app &App) dbs_for_gate(gate string) []candb.Database {
+	// THE SCOPE QUESTION, which evidence does not move: a bus the file proved J1939 was still
+	// placed somewhere (or nowhere), and that placement is what its databases come from
+	// (gaterule, codex round 3).
+	wire := gaterule.placement(gate)
 	mut out := []candb.Database{}
 	mut seen := map[string]bool{}
 	mut placed := false
@@ -441,7 +462,7 @@ fn (app &App) dbs_for_gate(gate string) []candb.Database {
 		if c.doip || c.someip {
 			continue
 		}
-		if transport.destination_key_for(c.adapter, c.iface) == gate {
+		if transport.destination_key_for(c.adapter, c.iface) == wire {
 			// Keyed by what is being ADDED, not by the row: two rows can share one raw
 			// interface and attach DIFFERENT databases, and skipping the second by interface
 			// left the wire auto-enabled by a declaration whose message the decode then could
@@ -467,7 +488,7 @@ fn (app &App) dbs_for_gate(gate string) []candb.Database {
 	// parse — resolved to every database in the project, so a transfer on it was named and
 	// decoded with another wire's layout, which is precisely the mixing this scoping exists to
 	// stop (codex). A wire that IS placed answers with what it has, empty included.
-	if placed || gate == j1939_gate_undecidable {
+	if placed || wire == j1939_gate_undecidable {
 		return out
 	}
 	if out.len == 0 {
