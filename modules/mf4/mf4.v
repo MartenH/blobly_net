@@ -676,9 +676,30 @@ fn block_id(mut src ByteSource, off u64) string {
 
 // block_links returns a block's link array (N u64 links after the common header). The count is
 // bounded before it sizes anything: a damaged header claiming 2^60 links must not be believed.
+// link_count is a block's link count, bounded by what the block and the file can hold: the
+// array lies inside the block's declared length and the block inside the file, so a corrupt
+// count sizes nothing. A fixed cap of 65,536 stood here and read a VALID count above it as 0
+// — a DL block listing a large recording's data blocks one by one — which made the chain
+// empty and the recording silently nothing, in both readers (codex on #342 round 7). The array
+// is materialized: 8 bytes a link, and the bound is the block, so a DL of a hundred thousand
+// links is under a megabyte read once.
+fn link_count(mut src ByteSource, off u64) u64 {
+	n := u64_at(mut src, off + 16)
+	length := u64_at(mut src, off + 8)
+	if length < 24 || n > (length - 24) / 8 {
+		return 0
+	}
+	if off > src.size() || src.size() - off < 24 || n > (src.size() - off - 24) / 8 {
+		return 0
+	}
+	if n > u64(max_int) {
+		return 0
+	}
+	return n
+}
+
 fn block_links(mut src ByteSource, off u64) []u64 {
-	n64 := u64_at(mut src, off + 16)
-	n := if n64 > 1 << 16 { 0 } else { int(n64) }
+	n := int(link_count(mut src, off))
 	mut links := []u64{cap: n}
 	for i := 0; i < n; i++ {
 		links << u64_at(mut src, off + 24 + 8 * u64(i))
@@ -688,9 +709,7 @@ fn block_links(mut src ByteSource, off u64) []u64 {
 
 // data_off returns the byte offset of a block's type-specific data section.
 fn data_off(mut src ByteSource, off u64) u64 {
-	n64 := u64_at(mut src, off + 16)
-	n := if n64 > 1 << 16 { u64(0) } else { n64 }
-	return off + 24 + 8 * n
+	return off + 24 + 8 * link_count(mut src, off)
 }
 
 // read_tx returns the UTF-8 text of a TX/MD block (null-terminated), or '' .

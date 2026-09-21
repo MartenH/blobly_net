@@ -85,6 +85,12 @@ fn chain_walk(mut src ByteSource, link u64, unfin bool, mut out []ChainBlock, at
 					logical: logical
 				}
 				logical += org_len
+			} else if u64_at(mut src, d + 16) > 0 {
+				// contributes no bytes, so no reader would ever traverse it: validated HERE,
+				// once, or a corrupt block that happens to declare an empty original is
+				// accepted as empty by both readers (codex on #342 round 7). One with no
+				// compressed bytes either is an empty block and needs no inflating.
+				dz_decompress(mut src, link)!
 			}
 		}
 		'##DL' {

@@ -2693,3 +2693,99 @@ fn test_the_byte_cap_evicts_only_the_oldest_deferred_frames() {
 	assert with_payload == n - 2
 	assert s.err == ''
 }
+
+// ---- the stream, round 7 of #342 ----
+
+fn test_deferred_frames_are_flushed_only_after_the_tail_is_validated() {
+	p, ids, ts := three()
+	mut stream := []u8{}
+	stream << vpay(p[0])
+	stream << vframe(ts[0], ids[0], p[0].len, 0)
+	stream << vframe(ts[1], ids[1], p[1].len, 1000) // a payload never written: deferred
+	stream << u8(9) // unknown record id: a clean stop
+	stream << []u8{len: 200} // the DZ cut falls in here, so the tail is a second block
+	mut img := build_unsorted_vlsd_raw_x(stream, 2, 0, true)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 2
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.unresolved == 1
+	assert s.err == ''
+	break_second_dz(mut img)
+	if _ := parse_log(img) {
+		assert false, 'the loader accepted a broken block'
+	}
+	log2, s2 := drain(img)
+	assert log2.len() == 1 // the frame that was whole; not the payload-less one and THEN the failure
+	assert s2.err != ''
+}
+
+fn test_a_data_list_with_many_links_is_read_not_emptied() {
+	p, ids, ts := three()
+	mut b := Mdf4Builder{}
+	_, dg := mlsd_group(mut b, 3, 0)
+	dt := b.block('##DT', 0, mlsd_records(p, ids, ts))
+	n := 70_000 // past the 65,536 a fixed cap once read as zero
+	mut dl_d := []u8{len: 8}
+	for i, x in le_bytes(u64(n), 4) {
+		dl_d[4 + i] = x
+	}
+	dl := b.block('##DL', n + 1, dl_d) // the next link, then n data links: one real, the rest empty
+	b.set_link(dl, 1, dt)
+	b.set_link(dg, 2, dl)
+	want := parse_log(b.buf) or { panic(err) }
+	assert want.len() == 3
+	log, s := drain(b.buf)
+	assert same_log(log, want)
+	assert s.err == ''
+}
+
+// build_dl_with_empty_dz: an MLSD group whose data list is a zero-length DZ block (its
+// compressed body `body`) followed by the DT with the records.
+fn build_dl_with_empty_dz(payloads [][]u8, ids []u32, times []f64, body []u8) []u8 {
+	mut b := Mdf4Builder{}
+	_, dg := mlsd_group(mut b, payloads.len, 0)
+	mut dz_d := []u8{}
+	dz_d << 'DT'.bytes()
+	dz_d << 0
+	dz_d << 0
+	dz_d << le_bytes(25, 4)
+	dz_d << le_bytes(0, 8) // original length 0
+	dz_d << le_bytes(u64(body.len), 8)
+	dz_d << body
+	dz0 := b.block('##DZ', 0, dz_d)
+	dt := b.block('##DT', 0, mlsd_records(payloads, ids, times))
+	mut dl_d := []u8{len: 8}
+	for i, x in le_bytes(2, 4) {
+		dl_d[4 + i] = x
+	}
+	dl := b.block('##DL', 3, dl_d)
+	b.set_link(dl, 1, dz0)
+	b.set_link(dl, 2, dt)
+	b.set_link(dg, 2, dl)
+	return b.buf
+}
+
+fn test_a_zero_length_dz_block_is_still_validated() {
+	p, ids, ts := three()
+	empty := zlib.compress([]u8{}) or { panic(err) }
+	img := build_dl_with_empty_dz(p, ids, ts, empty)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 3
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	bad := build_dl_with_empty_dz(p, ids, ts, [u8(0xFF), 0xFF, 0xFF, 0xFF])
+	if _ := parse_log(bad) {
+		assert false, 'the loader accepted a corrupt block because it declared no bytes'
+	}
+	mut src := MemSource{
+		buf: bad
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream accepted a corrupt block because it declared no bytes'
+	}
+	none_at_all := build_dl_with_empty_dz(p, ids, ts, []u8{}) // an empty block: nothing to inflate
+	got := parse_log(none_at_all) or { panic(err) }
+	assert same_log(got, want)
+}

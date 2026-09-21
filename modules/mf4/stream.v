@@ -669,8 +669,12 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 // its count — but the loader inflated the WHOLE chain before it demultiplexed anything, and read
 // every signal-data chain whole, so the rest of the chain is stepped over and every view
 // validated, and a corrupt block there fails the stream as it fails the loader (codex on #342
-// rounds 3 and 5). Not after a read error: that is already the failure.
-fn (mut c UnsortedCursor) finish() {
+// rounds 3 and 5). Not after a read error: that is already the failure. And only THEN — the
+// whole chain validated — is whatever still waits for a payload decoded as it is and counted:
+// a payload-less row queued before the validation, or after a read failure, was handed out
+// ahead of the failure it should have been refused by (rounds 6 and 7, the same defect in two
+// orders; this function is the one order now).
+fn (mut c UnsortedCursor) finish(mut log canlog.Log) {
 	c.ended = true
 	if c.err != '' {
 		return
@@ -684,6 +688,10 @@ fn (mut c UnsortedCursor) finish() {
 			c.err = err.msg()
 			return
 		}
+	}
+	if c.deferred > 0 {
+		none_ring := &RingVlsd{}
+		c.resolve(none_ring, true, mut log)
 	}
 }
 
@@ -715,19 +723,11 @@ fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
 			break
 		}
 		if !c.read_record(mut log) {
-			// whatever still waits for a payload gets no more of the stream — decoded as it is
-			// and counted, but only at a CLEAN stop: after a read failure the failure is the
-			// answer, and a payload-less row queued ahead of it would be handed out first
-			// (codex on #342 round 6)
-			if c.deferred > 0 && c.err == '' {
-				none_ring := &RingVlsd{}
-				c.resolve(none_ring, true, mut log)
-			}
-			c.finish()
+			c.finish(mut log)
 		}
 	}
 	if !c.ended && c.exhausted_all() {
-		c.finish()
+		c.finish(mut log)
 	}
 	// the earliest queued row, ties by record position — the loader's (t_s, ordinal)
 	mut best := -1
