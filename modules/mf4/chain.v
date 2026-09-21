@@ -124,6 +124,11 @@ fn block_bytes(mut src ByteSource, b ChainBlock) ![]u8 {
 	return bytes_at(mut src, b.off, int(b.len))
 }
 
+// The most a DZ block may inflate to. MDF writers keep data blocks to a few megabytes (the
+// format recommends small blocks for exactly this reason); a block past this is refused rather
+// than inflated, since either reader holds a DZ block whole.
+const max_dz_block = u64(256) << 20
+
 // The read size of a sequential chunk. Large enough that a 1 Mbit/s bus's second of records is
 // one read; small enough that the buffer is not the memory the window exists to avoid.
 const chain_chunk = 1 << 20
@@ -217,15 +222,17 @@ fn (mut s ChainStream) fill() ! {
 			return
 		}
 		mut chunk := []u8{len: want}
-		got := s.src.read_at(b.off + s.bpos, mut chunk) or { 0 }
-		if got < want {
-			// the file ended inside a block that claimed more: what was read is real, what was
-			// not is the end
-			if got > 0 {
-				s.buf << chunk[..got]
-			}
+		got := s.src.read_at(b.off + s.bpos, mut chunk) or {
 			s.eof = true
-			return
+			return error('read at ${b.off + s.bpos}: ${err}')
+		}
+		if got < want {
+			// The chain walker clamped every block to the file's size, so bytes the block says
+			// it has ARE there unless the file was truncated under the reader or the read
+			// failed — and a reader that called that the end returned a shorter recording as a
+			// clean one (codex on #342).
+			s.eof = true
+			return error('short read at ${b.off + s.bpos}: ${got} of ${want} bytes')
 		}
 		s.buf << chunk
 		s.bpos += u64(want)
@@ -238,6 +245,36 @@ fn (mut s ChainStream) fill() ! {
 fn (mut s ChainStream) consume(n int) {
 	s.pos += n
 	s.consumed += u64(n)
+}
+
+// skip passes over n bytes WITHOUT buffering them: what is buffered is consumed, the rest is
+// stepped over block by block — a DZ block is not even inflated for it. For a record too large
+// to be anything this reader wants (a VLSD record past max_vlsd_record), which `ensure` would
+// otherwise have accumulated whole.
+fn (mut s ChainStream) skip(n u64) {
+	mut left := n
+	for left > 0 {
+		if s.avail() > 0 {
+			take := if u64(s.avail()) < left { s.avail() } else { int(left) }
+			s.consume(take)
+			left -= u64(take)
+			continue
+		}
+		if s.bi >= s.blocks.len {
+			s.eof = true
+			return
+		}
+		b := s.blocks[s.bi]
+		rem := b.len - s.bpos
+		step := if rem < left { rem } else { left }
+		s.bpos += step
+		s.consumed += step
+		left -= step
+		if s.bpos >= b.len {
+			s.bi++
+			s.bpos = 0
+		}
+	}
 }
 
 // ChainView reads a chain at RANDOM: a VLSD group's records name their payload by logical
@@ -254,6 +291,12 @@ mut:
 	cached  int = -1
 	scratch []u8 // the bytes handed out by `at`, valid until the next call
 	last    int  // the block the previous read hit: offsets ascend, so it is usually this or the next
+	// The first failure a read met — a DZ block that would not inflate, a short read — kept
+	// rather than folded into `none`: a payload that is not there because the offset is out of
+	// the chain is a fact about the record, one that is not there because the block is broken
+	// is a fact about the FILE, and a frame emitted without it would be a frame the recording
+	// never stated (codex on #342). The cursor stops on it.
+	err string
 }
 
 fn new_chain_view(mut src ByteSource, blocks []ChainBlock) ChainView {
@@ -316,7 +359,10 @@ fn (mut v ChainView) at(off u64, n int) ?[]u8 {
 		take := if b.len - inner < u64(want) { int(b.len - inner) } else { want }
 		if b.dz {
 			if v.cached != bi {
-				v.cache = dz_decompress(mut v.src, b.off) or { return none }
+				v.cache = dz_decompress(mut v.src, b.off) or {
+					v.err = 'signal data: ${err}'
+					return none
+				}
 				v.cached = bi
 			}
 			if u64(v.cache.len) < inner + u64(take) {
@@ -325,8 +371,12 @@ fn (mut v ChainView) at(off u64, n int) ?[]u8 {
 			v.scratch << v.cache[int(inner)..int(inner) + take]
 		} else {
 			mut piece := []u8{len: take}
-			got := v.src.read_at(b.off + inner, mut piece) or { 0 }
+			got := v.src.read_at(b.off + inner, mut piece) or {
+				v.err = 'signal data: read at ${b.off + inner}: ${err}'
+				return none
+			}
 			if got < take {
+				v.err = 'signal data: short read at ${b.off + inner}: ${got} of ${take} bytes'
 				return none
 			}
 			v.scratch << piece
@@ -348,6 +398,21 @@ fn (mut v ChainView) at(off u64, n int) ?[]u8 {
 interface VlsdBytes {
 mut:
 	at(off u64, n int) ?[]u8
+	// The first failure a read met, '' while none: a source that cannot answer because the file
+	// is broken says so here, and the cursor reading it stops.
+	failure() string
+}
+
+fn (v &ChainView) failure() string {
+	return v.err
+}
+
+fn (m &MemVlsd) failure() string {
+	return ''
+}
+
+fn (r &RingVlsd) failure() string {
+	return ''
 }
 
 // MemVlsd is a VLSD source over bytes in memory.
@@ -387,6 +452,20 @@ fn (mut r RingVlsd) append(bytes []u8) {
 	}
 }
 
+// end is the logical offset just past the last byte appended — what an offset a record names
+// is compared against to know whether its payload has gone past yet.
+fn (r &RingVlsd) end() u64 {
+	return r.base + u64(r.buf.len)
+}
+
+// skip advances the logical position over n bytes that were NOT kept (a record too large to be
+// a payload): what was buffered is released with them, since the offsets after it must stay
+// the writer's and a hole cannot be represented.
+fn (mut r RingVlsd) skip(n u64) {
+	r.base = r.end() + n
+	r.buf.clear()
+}
+
 fn (mut r RingVlsd) at(off u64, n int) ?[]u8 {
 	if off < r.base {
 		r.evicted++
@@ -407,8 +486,12 @@ fn dz_decompress(mut src ByteSource, off u64) ![]u8 {
 	zip_param := int(u32_at(mut src, d + 4))
 	org_len64 := u64_at(mut src, d + 8)
 	data_len64 := u64_at(mut src, d + 16)
-	if org_len64 > u64(max_int) || data_len64 > u64(max_int) {
-		return error('DZ block of ${org_len64} bytes cannot be held in memory whole')
+	// A DZ block is inflated WHOLE — it is the unit of memory for both readers — so its
+	// declared original length is capped by a real number, not by what an int can count:
+	// writers keep blocks to a few MB, and a block claiming more is either not one this reader
+	// should trust or one it must not hold (codex on #342).
+	if org_len64 > max_dz_block || data_len64 > max_dz_block {
+		return error('DZ block of ${org_len64} bytes exceeds the ${max_dz_block / (1 << 20)} MB a block may inflate to')
 	}
 	// Bounded by the FILE before it sizes anything: a corrupt header claiming 2^31 compressed
 	// bytes would otherwise allocate and zero-fill 2 GB before zlib got to refuse it.

@@ -43,7 +43,13 @@ fn main() {
 		}
 		peak = heap_peak(peak)
 		src.close()
-		println('stream: forced ${s.forced}, evicted ${s.evicted}, refused ${s.refused}')
+		if s.err != '' {
+			// a cursor that stopped on a broken block is a parse failure, as the loader's is —
+			// not a shorter recording reported as a clean one
+			eprintln('parse failed: ${s.err}')
+			exit(1)
+		}
+		println('stream: forced ${s.forced}, evicted ${s.evicted}, refused ${s.refused}, out of order ${s.out_of_order}')
 		log.entries()
 	} else {
 		es := mf4.load_file(path) or {

@@ -21,6 +21,10 @@
 // groups sharing a stream). The merge reads ahead until every frame group has a row queued or
 // the stream ends; a cap bounds that read-ahead and a forced emission past it is counted
 // (`forced`), never hidden — the survey (PR 2) will measure the skew so the cap is a number.
+// A frame record may name a payload record that has NOT gone past yet (the loader demuxes the
+// whole stream first and never notices); such a frame is DEFERRED, decoded the moment its
+// bytes arrive, in record order — and at the end of the stream, or past a cap, decoded as it
+// is and counted (`unresolved`).
 //
 // What the loader assumed that the stream cannot: a global sort forgives a group whose time
 // runs backwards; the merge takes each cursor as monotone, so a row earlier than the one before
@@ -51,11 +55,13 @@ mut:
 pub mut:
 	// Counters the design asks to surface rather than hide: forced emissions past the unsorted
 	// read-ahead cap, VLSD payloads already released when a record named them, records refused
-	// by the decoder (the loader refuses the same ones; here they are counted), rows earlier
-	// than the row before them, and the first error a cursor stopped on.
+	// by the decoder (the loader refuses the same ones; here they are counted), frames decoded
+	// without a payload that never arrived, rows earlier than the row before them, and the
+	// first error a cursor stopped on.
 	forced       int
 	evicted      int
 	refused      int
+	unresolved   int
 	out_of_order int
 	err          string
 }
@@ -138,6 +144,7 @@ fn (mut s Stream) tally() {
 	mut forced := 0
 	mut evicted := 0
 	mut refused := 0
+	mut unresolved := 0
 	mut err := ''
 	for mut c in s.cursors {
 		if err == '' {
@@ -146,6 +153,7 @@ fn (mut s Stream) tally() {
 		if mut c is UnsortedCursor {
 			forced += c.forced
 			refused += c.refused
+			unresolved += c.unresolved
 			for _, r in c.vlsd {
 				evicted += r.evicted
 			}
@@ -156,6 +164,7 @@ fn (mut s Stream) tally() {
 	s.forced = forced
 	s.evicted = evicted
 	s.refused = refused
+	s.unresolved = unresolved
 	s.err = err
 }
 
@@ -231,6 +240,14 @@ fn (mut c SortedCursor) next(mut log canlog.Log) ?canlog.Row {
 		}
 		base := c.recs.pos
 		row := decode_row(&c.lay, c.recs.buf, base, mut c.vlsd, mut c.labels, mut log)
+		// a payload source that could not answer because the FILE is broken stops the cursor:
+		// the frame it would have yielded is one the recording never stated
+		f := c.vlsd.failure()
+		if f != '' {
+			c.err = f
+			c.ok = false
+			return none
+		}
 		c.recs.consume(c.lay.stride)
 		c.k++
 		if r := row {
@@ -250,11 +267,20 @@ mut:
 	labels Labels
 	queue  []Pending // decoded rows waiting for the merge, in record order
 	qhead  int
-	// A VLSD channel whose cn_data names a signal-data BLOCK rather than a VLSD channel group —
-	// the format allows it inside an unsorted group too, and the loader reads it — decodes
-	// through a view over that chain.
-	has_view bool
-	view     ChainView
+	// Records to decode: cg_cycle_count when the file is finalized and the count is stated,
+	// as the loader's record_count caps the demuxed stream; every record past it is consumed
+	// and dropped. `seen` counts the group's records as they go past.
+	cap  u64
+	seen u64
+	// Frame records whose payload record had not gone past yet, in record order, decoded the
+	// moment their bytes arrive (see the file comment).
+	deferred []RawRec
+}
+
+// RawRec is a record held back, and its position.
+struct RawRec {
+	raw []u8
+	pos int
 }
 
 // Pending is a decoded row and the record position it came from.
@@ -265,23 +291,36 @@ struct Pending {
 
 // The read-ahead cap over an unsorted group's queues, in rows: eight thousand rows a queue of
 // eighty bytes each is under a megabyte per busy group, and far more than any recorder skews
-// two groups by. Past it the merge emits the earliest queued row anyway and counts it.
+// two groups by. Past it the merge emits the earliest queued row anyway and counts it. The
+// same number bounds how many frames wait for a payload record that has not gone past.
 const unsorted_readahead = 8192
+
+// The most a VLSD record is read for: a CAN payload is 64 bytes and a length prefix, and a
+// record announcing more is some other signal's — or a corrupt length below the chain's
+// remaining bytes but far above any payload, which `ensure` would have buffered whole. Skipped
+// without buffering; the ring's offsets stay the writer's.
+const max_vlsd_record = u64(1) << 20
 
 // UnsortedCursor: several channel groups interleaved in one record stream.
 struct UnsortedCursor {
 mut:
-	cgs         []UCg
-	by_rid      map[u64]int       // record id -> index in cgs
-	vlsd        map[u64]&RingVlsd // VLSD groups' bytes, by CG block address (what cn_data names)
+	cgs    []UCg
+	by_rid map[u64]int       // record id -> index in cgs
+	vlsd   map[u64]&RingVlsd // VLSD groups' bytes, by CG block address (what cn_data names)
+	// A VLSD channel whose cn_data names a signal-data BLOCK rather than a VLSD channel group —
+	// the format allows it inside an unsorted group too, and the loader reads it — decodes
+	// through a view over that chain; by index in cgs.
+	views       map[int]&ChainView
 	stream      ChainStream
 	rec_id_size int
 	rec_n       int // records read so far: the ordinal the loader keys ties by
 	queued      int
+	deferred    int // frames held back across all groups
 	ended       bool
 	next_group  int
 	forced      int
 	refused     int
+	unresolved  int
 	err         string
 	none_vlsd   MemVlsd
 }
@@ -312,10 +351,14 @@ fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, re
 			mut u := UCg{
 				info:   info
 				labels: new_labels(g)
+				cap:    u64(-1)
 			}
 			if lay := resolve_layout(mut src, cgi) {
 				u.lay = lay
 				u.ok = true
+				if !unfin && lay.declared > 0 {
+					u.cap = lay.declared
+				}
 			}
 			g++
 			c.cgs << u
@@ -338,8 +381,8 @@ fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, re
 			c.ended = true
 			continue
 		}
-		c.cgs[i].view = new_chain_view(mut src, sd)
-		c.cgs[i].has_view = true
+		view := new_chain_view(mut src, sd)
+		c.views[i] = &view
 	}
 	c.next_group = g
 	return c
@@ -356,6 +399,81 @@ fn (c &UnsortedCursor) failure() string {
 // file, which is the memory the stream exists not to hold.
 fn (c &UnsortedCursor) fits(n u64) bool {
 	return n <= c.stream.remaining()
+}
+
+// payload_ready says whether the payload a frame record names has gone past: its length
+// prefix and its bytes are within the ring's end. An offset already released is "ready" — the
+// decoder will find nothing and the release is counted there, not here.
+fn payload_ready(lay &CgLayout, raw []u8, base int, ring &RingVlsd) bool {
+	off := read_uint(raw, base + lay.c_db.byte_off, int(lay.c_db.bit_off), int(lay.c_db.bit_count))
+	if off < ring.base {
+		return true
+	}
+	end := ring.end()
+	if off > end || end - off < 4 {
+		return false
+	}
+	n := u64(binary.little_endian_u32_at(ring.buf, int(off - ring.base)))
+	return end - off - 4 >= n
+}
+
+// decode_into decodes one fixed record of group `ci` into its queue, through whatever its
+// payload source is.
+fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, pos int, mut log canlog.Log) {
+	mut u := &c.cgs[ci]
+	row := if mut ring := c.vlsd[u.lay.vlsd_link] {
+		decode_row(&u.lay, raw, base, mut ring, mut u.labels, mut log)
+	} else if mut view := c.views[ci] {
+		r := decode_row(&u.lay, raw, base, mut view, mut u.labels, mut log)
+		f := view.failure()
+		if f != '' {
+			c.err = f
+			c.ended = true
+		}
+		r
+	} else {
+		decode_row(&u.lay, raw, base, mut c.none_vlsd, mut u.labels, mut log)
+	}
+	if r := row {
+		u.queue << Pending{
+			row: r
+			pos: pos
+		}
+		c.queued++
+	} else {
+		c.refused++
+	}
+}
+
+// resolve decodes every deferred frame whose payload has gone past, in record order, for the
+// groups that read from `ring`; `flush` decodes them all regardless (the stream ended, or too
+// many are waiting) and counts the ones still without their bytes.
+fn (mut c UnsortedCursor) resolve(ring &RingVlsd, flush bool, mut log canlog.Log) {
+	for ci in 0 .. c.cgs.len {
+		if !c.cgs[ci].ok || c.cgs[ci].deferred.len == 0 {
+			continue
+		}
+		own := c.vlsd[c.cgs[ci].lay.vlsd_link] or { continue }
+		if own != ring && !flush {
+			continue
+		}
+		mut done := 0
+		for d in c.cgs[ci].deferred {
+			ready := payload_ready(&c.cgs[ci].lay, d.raw, 0, own)
+			if !ready && !flush {
+				break
+			}
+			if !ready {
+				c.unresolved++
+			}
+			c.decode_into(ci, d.raw, 0, d.pos, mut log)
+			done++
+		}
+		if done > 0 {
+			c.cgs[ci].deferred.delete_many(0, done)
+			c.deferred -= done
+		}
+	}
 }
 
 // read_record consumes one record from the stream into its group's queue (or VLSD ring); false
@@ -384,6 +502,13 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 		if !c.fits(4 + n) {
 			return false
 		}
+		mut ring := c.vlsd[c.cgs[ci].info.link] or { return false }
+		if 4 + n > max_vlsd_record {
+			// not a payload: stepped over, never buffered, the ring's offsets kept in step
+			c.stream.skip(4 + n)
+			ring.skip(4 + n)
+			return true
+		}
 		len := int(4 + n)
 		if !(c.stream.ensure(len) or {
 			c.err = err.msg()
@@ -391,10 +516,9 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 		}) {
 			return false
 		}
-		if mut ring := c.vlsd[c.cgs[ci].info.link] {
-			ring.append(c.stream.buf[c.stream.pos..c.stream.pos + len]) // the prefix stays
-		}
+		ring.append(c.stream.buf[c.stream.pos..c.stream.pos + len]) // the prefix stays
 		c.stream.consume(len)
+		c.resolve(ring, false, mut log)
 		return true
 	}
 	size := c.cgs[ci].info.size
@@ -407,26 +531,31 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 	}) {
 		return false
 	}
-	if c.cgs[ci].ok {
-		mut u := &c.cgs[ci]
+	c.cgs[ci].seen++
+	if c.cgs[ci].ok && c.cgs[ci].seen <= c.cgs[ci].cap {
 		base := c.stream.pos
-		// the payload source: the VLSD group cn_data names, as the loader looks it up in
-		// vlsd_streams; a signal-data chain where it names one of those; nothing otherwise
-		row := if mut ring := c.vlsd[u.lay.vlsd_link] {
-			decode_row(&u.lay, c.stream.buf, base, mut ring, mut u.labels, mut log)
-		} else if u.has_view {
-			decode_row(&u.lay, c.stream.buf, base, mut u.view, mut u.labels, mut log)
-		} else {
-			decode_row(&u.lay, c.stream.buf, base, mut c.none_vlsd, mut u.labels, mut log)
+		// Held back while its payload record has not gone past — or while an earlier frame of
+		// its group is held back, so the queue keeps record order. Past the cap the oldest
+		// waiting frame is decoded as it is, and counted.
+		mut wait := c.cgs[ci].deferred.len > 0
+		if !wait {
+			if ring := c.vlsd[c.cgs[ci].lay.vlsd_link] {
+				wait = !payload_ready(&c.cgs[ci].lay, c.stream.buf, base, ring)
+			}
 		}
-		if r := row {
-			u.queue << Pending{
-				row: r
+		if wait {
+			c.cgs[ci].deferred << RawRec{
+				raw: c.stream.buf[base..base + size].clone()
 				pos: c.rec_n
 			}
-			c.queued++
+			c.deferred++
+			if c.deferred > unsorted_readahead {
+				if ring := c.vlsd[c.cgs[ci].lay.vlsd_link] {
+					c.resolve(ring, true, mut log)
+				}
+			}
 		} else {
-			c.refused++
+			c.decode_into(ci, c.stream.buf, base, c.rec_n, mut log)
 		}
 	}
 	c.stream.consume(size)
@@ -452,6 +581,11 @@ fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
 		}
 		if !c.read_record(mut log) {
 			c.ended = true
+			// whatever still waits for a payload gets no more of the stream
+			if c.deferred > 0 {
+				none_ring := &RingVlsd{}
+				c.resolve(none_ring, true, mut log)
+			}
 		}
 	}
 	// the earliest queued row, ties by record position — the loader's (t_s, ordinal)

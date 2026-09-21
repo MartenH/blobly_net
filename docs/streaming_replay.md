@@ -119,6 +119,12 @@ import (whole-file by design, 2000-row cap).
    stream's cursor with the reason (`err`), so a half-played file is never a clean end. A length
    field is checked against the chain's remaining bytes before it sizes a read or a slice — the
    filler an unfinalized file's extended last block decodes as records reads as 0xFFFFFFF0.
+   Codex's first round (#342) added what a demuxing loader never notices: a frame record may name
+   a payload record that has not gone past yet, so it is DEFERRED until the bytes arrive (decoded
+   in record order; at the end, or past the cap, decoded as it is and counted, `unresolved`); a
+   VLSD record past `max_vlsd_record` is stepped over rather than buffered; the finalized
+   `cg_cycle_count` caps an unsorted group too; the payload source's failure stops the cursor
+   (`VlsdBytes.failure()`), a short read is an error and a DZ block has a real inflated-size cap.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,

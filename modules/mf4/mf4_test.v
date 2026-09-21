@@ -1787,3 +1787,216 @@ fn test_a_group_whose_time_runs_backwards_is_counted() {
 	assert log.len() == 3
 	assert s.out_of_order == 1 // 0.030 then 0.010; the loader would have sorted it
 }
+
+// ---- the stream, round 1 of #342: what a loader that demuxes the whole stream never notices ----
+
+// build_unsorted_vlsd_raw is build_unsorted_vlsd_file with the record stream spelled by the
+// caller, so a test can write a payload record AFTER the frame that names it, a record too large
+// to be a payload in the middle, or more frame records than the group declares.
+fn build_unsorted_vlsd_raw(stream []u8, cycles int) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+	hd := b.block('##HD', 6, []u8{len: 32})
+	mut dg_d := []u8{len: 8}
+	dg_d[0] = 1
+	dg := b.block('##DG', 4, dg_d)
+	cg_frames, cn_db := vlsd_layout_cg(mut b, cycles, 1)
+	mut vcg_d := []u8{len: 32}
+	vcg_d[0] = 2
+	vcg_d[16] = 1
+	cg_vlsd := b.block('##CG', 6, vcg_d)
+	dt := b.block('##DT', 0, stream)
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg_frames)
+	b.set_link(cg_frames, 0, cg_vlsd)
+	b.set_link(cn_db, 5, cg_vlsd)
+	b.set_link(dg, 2, dt)
+	return b.buf
+}
+
+// vpay is one VLSD record (record id 2) in that stream; vframe one frame record (record id 1).
+fn vpay(p []u8) []u8 {
+	mut r := [u8(2)]
+	r << le_bytes(u64(p.len), 4)
+	r << p
+	return r
+}
+
+fn vframe(t f64, id u32, len int, off u32) []u8 {
+	mut r := [u8(1)]
+	r << vlsd_record(t, id, false, len, off)
+	return r
+}
+
+fn drain(img []u8) (canlog.Log, Stream) {
+	mut src := MemSource{
+		buf: img
+	}
+	mut s := open_stream(mut src) or { panic(err) }
+	mut log := canlog.Log{}
+	for {
+		r := s.next(mut log) or { break }
+		log.rows << r
+	}
+	return log, s
+}
+
+fn test_a_frame_whose_payload_comes_later_waits_for_it() {
+	p, ids, ts := three()
+	// frames 0 and 1 name payloads written after them; frame 2 names one written before it
+	mut stream := []u8{}
+	stream << vframe(ts[0], ids[0], p[0].len, 0)
+	stream << vframe(ts[1], ids[1], p[1].len, u32(4 + p[0].len))
+	stream << vpay(p[0])
+	stream << vpay(p[1])
+	stream << vpay(p[2])
+	stream << vframe(ts[2], ids[2], p[2].len, u32(8 + p[0].len + p[1].len))
+	img := build_unsorted_vlsd_raw(stream, 3)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 3 // the loader demuxes the whole stream first and has every payload
+	assert want.at(0).frame.data == p[0]
+	assert want.at(1).frame.data == p[1]
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.unresolved == 0
+	assert s.evicted == 0
+	assert s.err == ''
+}
+
+fn test_a_payload_that_never_arrives_is_counted_at_the_end() {
+	p, ids, ts := three()
+	mut stream := []u8{}
+	stream << vpay(p[0])
+	stream << vframe(ts[0], ids[0], p[0].len, 0)
+	stream << vframe(ts[1], ids[1], p[1].len, 1000) // names bytes the stream never carries
+	img := build_unsorted_vlsd_raw(stream, 2)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 2
+	assert want.at(1).frame.data.len == 0 // the loader finds nothing at that offset either
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.unresolved == 1
+	assert s.err == ''
+}
+
+fn test_a_record_too_large_to_be_a_payload_is_stepped_over_not_buffered() {
+	p, ids, ts := three()
+	big := int(max_vlsd_record)
+	mut stream := []u8{}
+	stream << vpay(p[0])
+	stream << vframe(ts[0], ids[0], p[0].len, 0)
+	off1 := u32(4 + p[0].len)
+	stream << vpay([]u8{len: big}) // some other signal's record, in the payload group's stream
+	stream << vframe(ts[1], ids[1], 8, off1) // names it: no CAN payload, in either reader
+	off2 := off1 + u32(4 + big)
+	stream << vpay(p[2])
+	stream << vframe(ts[2], ids[2], p[2].len, off2)
+	img := build_unsorted_vlsd_raw(stream, 3)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 3
+	assert want.at(1).frame.data.len == 0
+	assert want.at(2).frame.data == p[2] // the offsets after the big record are the writer's
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.evicted == 1 // the stream released it instead of holding it; said, not hidden
+	assert s.err == ''
+}
+
+fn test_an_unsorted_group_honours_the_declared_cycle_count_as_the_loader_does() {
+	p, ids, ts := three()
+	mut stream := []u8{}
+	mut off := u32(0)
+	for i, x in p {
+		stream << vpay(x)
+		stream << vframe(ts[i], ids[i], x.len, off)
+		off += u32(4 + x.len)
+	}
+	img := build_unsorted_vlsd_raw(stream, 2) // declares two records, carries three; finalized
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 2
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	// the same stream unfinalized reads every record, in both
+	unfin := unfinalize(img)
+	want2 := parse_log(unfin) or { panic(err) }
+	assert want2.len() == 3
+	log2, _ := drain(unfin)
+	assert same_log(log2, want2)
+}
+
+fn test_a_broken_signal_data_block_stops_the_cursor() {
+	p, ids, ts := three()
+	mut img := build_vlsd_dz_chain_file(p, ids, ts, 5)
+	dz := find_block(img, '##DZ')
+	img[dz + 24 + 24 + 2] = 0xFF
+	img[dz + 24 + 24 + 3] = 0xFF
+	if _ := parse_log(img) {
+		assert false, 'the loader accepted a broken signal-data block'
+	}
+	mut src := MemSource{
+		buf: img
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream accepted a broken signal-data block'
+	}
+	log, s := drain(img)
+	assert log.len() == 0 // the first frame's payload is in the broken block: nothing was stated
+	assert s.err.contains('signal data')
+}
+
+// ShortSource claims a whole image but reads nothing past `limit`: a file truncated under the
+// reader, or a read that failed.
+struct ShortSource {
+mut:
+	buf   []u8
+	limit u64
+}
+
+fn (mut s ShortSource) read_at(off u64, mut dst []u8) !int {
+	if off >= s.limit {
+		return 0
+	}
+	mut n := dst.len
+	if u64(n) > s.limit - off {
+		n = int(s.limit - off)
+	}
+	if n > 0 {
+		unsafe { vmemcpy(dst.data, &s.buf[int(off)], n) }
+	}
+	return n
+}
+
+fn (mut s ShortSource) size() u64 {
+	return u64(s.buf.len)
+}
+
+fn test_a_short_read_inside_a_block_is_an_error_not_the_end() {
+	p, ids, _ := three()
+	img := build_mlsd_file(p, ids, [u32(1), 2, 3])
+	dt := find_block(img, '##DT')
+	mut src := ShortSource{
+		buf:   img
+		limit: u64(dt + 24 + 30) // inside the second record
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'a short read was read as the end of the recording'
+	}
+	mut src2 := ShortSource{
+		buf:   img
+		limit: u64(dt + 24 + 30)
+	}
+	mut s := open_stream(mut src2) or { panic(err) }
+	mut log := canlog.Log{}
+	for {
+		r := s.next(mut log) or { break }
+		log.rows << r
+	}
+	assert log.len() == 0 // the first chunk failed whole; nothing was handed out as read
+	assert s.err.contains('short read')
+}
