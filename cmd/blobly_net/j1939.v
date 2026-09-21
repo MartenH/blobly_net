@@ -87,9 +87,12 @@ fn (app &App) j1939_on_locked(gate string) bool {
 				// (`j1939.announces_session`), and nothing else counts.
 				true
 			} else if gate == '' {
-				// the one gate that means "a recorded bus the project could not place, and
-				// which proves nothing about itself": the project-wide default is the best
-				// answer left for a file whose buses name no wire
+				// NO GATE AT ALL — a caller with no destination to name, which is not the
+				// same thing as a recorded bus the project cannot place. THAT case is
+				// `j1939_gate_undecidable`, and this comment said otherwise until the P1 of
+				// #344 round 1: `load_recording` had been written to promote `''` on
+				// evidence, so the promotion could never fire. The project-wide default is
+				// the best answer left when there is nothing to ask.
 				app.j1939_any
 			} else {
 				// a live wire the project did not configure — a generator's `bus:` aimed at a
