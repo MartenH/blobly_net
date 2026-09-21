@@ -121,7 +121,7 @@ fn resolve_layout(mut src ByteSource, cg u64) ?CgLayout {
 	c_esi := find_chan(chans, 'CAN_DataFrame.ESI') or { Chan{} }
 
 	stride := data_bytes + inval_bytes
-	if stride <= 0 {
+	if stride <= 0 || stride > max_record_stride {
 		return none
 	}
 	// Master-time scale: raw value (usually integer nanoseconds) -> seconds via a
@@ -154,6 +154,12 @@ fn resolve_layout(mut src ByteSource, cg u64) ?CgLayout {
 		t_factor:  t_factor
 	}
 }
+
+// The widest fixed record this reader decodes as a CAN frame. A frame record is under a hundred
+// bytes; a group declaring a stride in the megabytes is another signal's, or a corrupt header —
+// and the stream reads a record whole, so an unbounded stride is an unbounded buffer (codex on
+// #342 round 2). Refused in resolve_layout, so the loader and the stream drop the same groups.
+const max_record_stride = 1 << 16
 
 // record_count is how many records a group's data of `total` bytes holds: the data length is
 // ground truth, and the declared cg_cycle_count is a sanity cap only when the file is finalized

@@ -425,10 +425,13 @@ fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, pos int, mut l
 		decode_row(&u.lay, raw, base, mut ring, mut u.labels, mut log)
 	} else if mut view := c.views[ci] {
 		r := decode_row(&u.lay, raw, base, mut view, mut u.labels, mut log)
+		// a broken signal-data block stops the cursor BEFORE the row it would have altered is
+		// queued — the sorted cursor's rule, missing here in round 1 (codex on #342 round 2)
 		f := view.failure()
 		if f != '' {
 			c.err = f
 			c.ended = true
+			return
 		}
 		r
 	} else {
@@ -505,7 +508,10 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 		mut ring := c.vlsd[c.cgs[ci].info.link] or { return false }
 		if 4 + n > max_vlsd_record {
 			// not a payload: stepped over, never buffered, the ring's offsets kept in step
-			c.stream.skip(4 + n)
+			c.stream.skip(4 + n) or {
+				c.err = err.msg()
+				return false
+			}
 			ring.skip(4 + n)
 			return true
 		}
@@ -525,38 +531,45 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 	if size <= 0 || !c.fits(u64(size)) {
 		return false
 	}
+	c.cgs[ci].seen++
+	if !c.cgs[ci].ok || c.cgs[ci].seen > c.cgs[ci].cap {
+		// a record nobody decodes — another signal's group, or one past the declared count — is
+		// stepped over, never buffered: its stride is bounded by nothing this reader trusts
+		c.stream.skip(u64(size)) or {
+			c.err = err.msg()
+			return false
+		}
+		return true
+	}
 	if !(c.stream.ensure(size) or {
 		c.err = err.msg()
 		false
 	}) {
 		return false
 	}
-	c.cgs[ci].seen++
-	if c.cgs[ci].ok && c.cgs[ci].seen <= c.cgs[ci].cap {
-		base := c.stream.pos
-		// Held back while its payload record has not gone past — or while an earlier frame of
-		// its group is held back, so the queue keeps record order. Past the cap the oldest
-		// waiting frame is decoded as it is, and counted.
-		mut wait := c.cgs[ci].deferred.len > 0
-		if !wait {
+	base := c.stream.pos
+	// Held back while its payload record has not gone past — or while an earlier frame of
+	// its group is held back, so the queue keeps record order. Past the cap the oldest
+	// waiting frame is decoded as it is, and counted.
+	mut wait := c.cgs[ci].deferred.len > 0
+	if !wait {
+		if ring := c.vlsd[c.cgs[ci].lay.vlsd_link] {
+			wait = !payload_ready(&c.cgs[ci].lay, c.stream.buf, base, ring)
+		}
+	}
+	if wait {
+		c.cgs[ci].deferred << RawRec{
+			raw: c.stream.buf[base..base + size].clone()
+			pos: c.rec_n
+		}
+		c.deferred++
+		if c.deferred > unsorted_readahead {
 			if ring := c.vlsd[c.cgs[ci].lay.vlsd_link] {
-				wait = !payload_ready(&c.cgs[ci].lay, c.stream.buf, base, ring)
+				c.resolve(ring, true, mut log)
 			}
 		}
-		if wait {
-			c.cgs[ci].deferred << RawRec{
-				raw: c.stream.buf[base..base + size].clone()
-				pos: c.rec_n
-			}
-			c.deferred++
-			if c.deferred > unsorted_readahead {
-				if ring := c.vlsd[c.cgs[ci].lay.vlsd_link] {
-					c.resolve(ring, true, mut log)
-				}
-			}
-		} else {
-			c.decode_into(ci, c.stream.buf, base, c.rec_n, mut log)
-		}
+	} else {
+		c.decode_into(ci, c.stream.buf, base, c.rec_n, mut log)
 	}
 	c.stream.consume(size)
 	return true

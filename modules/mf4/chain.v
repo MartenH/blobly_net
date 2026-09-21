@@ -43,7 +43,15 @@ fn chain_walk(mut src ByteSource, link u64, unfin bool, mut out []ChainBlock, at
 		'##DT', '##DV', '##DI', '##RD', '##SD' {
 			length := u64_at(mut src, link + 8)
 			d := data_off(mut src, link)
-			mut end := link + length
+			// The block's end, clamped to the file BEFORE the addition: a corrupt length near
+			// 2^64 wrapped `link + length` to a small number, and the block vanished from the
+			// chain instead of running to the end of the file like any other over-long block
+			// (codex on #342). The clamp is the existing rule for a length past the file.
+			mut end := if link > src.size() || length > src.size() - link {
+				src.size()
+			} else {
+				link + length
+			}
 			if unfin {
 				if end > src.size() {
 					end = src.size()
@@ -247,11 +255,14 @@ fn (mut s ChainStream) consume(n int) {
 	s.consumed += u64(n)
 }
 
-// skip passes over n bytes WITHOUT buffering them: what is buffered is consumed, the rest is
-// stepped over block by block — a DZ block is not even inflated for it. For a record too large
-// to be anything this reader wants (a VLSD record past max_vlsd_record), which `ensure` would
-// otherwise have accumulated whole.
-fn (mut s ChainStream) skip(n u64) {
+// skip passes over n bytes WITHOUT accumulating them: what is buffered is consumed, a plain
+// block is stepped over by offset, and a DZ block is inflated and consumed chunk by chunk — never
+// held beyond the one block, but never bypassed either, because the loader inflates every block
+// and a corrupt one it would fail on must fail the stream too (codex on #342 round 2). For a
+// record too large to be anything this reader wants (a VLSD record past max_vlsd_record, a fixed
+// record of a group this reader does not decode), which `ensure` would otherwise have
+// accumulated whole.
+fn (mut s ChainStream) skip(n u64) ! {
 	mut left := n
 	for left > 0 {
 		if s.avail() > 0 {
@@ -265,6 +276,13 @@ fn (mut s ChainStream) skip(n u64) {
 			return
 		}
 		b := s.blocks[s.bi]
+		if b.dz {
+			s.fill()!
+			if s.eof && s.avail() == 0 {
+				return
+			}
+			continue
+		}
 		rem := b.len - s.bpos
 		step := if rem < left { rem } else { left }
 		s.bpos += step

@@ -49,8 +49,12 @@ fn main() {
 			eprintln('parse failed: ${s.err}')
 			exit(1)
 		}
-		println('stream: forced ${s.forced}, evicted ${s.evicted}, refused ${s.refused}, out of order ${s.out_of_order}')
-		log.entries()
+		println('stream: forced ${s.forced}, evicted ${s.evicted}, refused ${s.refused}, unresolved ${s.unresolved}, out of order ${s.out_of_order}')
+		// the loader branch's mark includes the []LogEntry it returns, so this one is taken
+		// after the same conversion or the two numbers do not compare
+		es := log.entries()
+		peak = heap_peak(peak)
+		es
 	} else {
 		es := mf4.load_file(path) or {
 			eprintln('parse failed: ${err}')

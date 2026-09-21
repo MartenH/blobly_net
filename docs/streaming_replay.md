@@ -125,6 +125,11 @@ import (whole-file by design, 2000-row cap).
    VLSD record past `max_vlsd_record` is stepped over rather than buffered; the finalized
    `cg_cycle_count` caps an unsorted group too; the payload source's failure stops the cursor
    (`VlsdBytes.failure()`), a short read is an error and a DZ block has a real inflated-size cap.
+   Round 2: a fixed record nobody decodes is skipped like an oversized VLSD record (and a frame
+   group's stride is capped, `max_record_stride`, in both readers), a skip still inflates every DZ
+   block it crosses, the unsorted view path queues nothing after a failure, a block length that
+   wraps the address space is clamped like any over-long one, and `mf4_dump --stream` prints
+   `unresolved` and samples its heap mark after the same conversion the loader branch includes.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,

@@ -1794,6 +1794,13 @@ fn test_a_group_whose_time_runs_backwards_is_counted() {
 // caller, so a test can write a payload record AFTER the frame that names it, a record too large
 // to be a payload in the middle, or more frame records than the group declares.
 fn build_unsorted_vlsd_raw(stream []u8, cycles int) []u8 {
+	return build_unsorted_vlsd_raw_x(stream, cycles, 0, false)
+}
+
+// build_unsorted_vlsd_raw_x adds a third fixed group (record id 3, `junk` bytes a record, no
+// channels — a group this reader does not decode) when junk > 0, and puts the stream in a DL of
+// two DZ blocks split at its midpoint when dz is set.
+fn build_unsorted_vlsd_raw_x(stream []u8, cycles int, junk int, dz bool) []u8 {
 	mut b := Mdf4Builder{}
 	b.buf << 'MDF     '.bytes()
 	b.buf << '4.10    '.bytes()
@@ -1810,13 +1817,43 @@ fn build_unsorted_vlsd_raw(stream []u8, cycles int) []u8 {
 	vcg_d[0] = 2
 	vcg_d[16] = 1
 	cg_vlsd := b.block('##CG', 6, vcg_d)
-	dt := b.block('##DT', 0, stream)
+	if junk > 0 {
+		mut jcg_d := []u8{len: 32}
+		jcg_d[0] = 3
+		for i, x in le_bytes(u64(junk), 4) {
+			jcg_d[24 + i] = x
+		}
+		jcg := b.block('##CG', 6, jcg_d)
+		b.set_link(cg_vlsd, 0, jcg)
+	}
+	data := if dz {
+		half := stream.len / 2
+		dz1 := dz_block(mut b, 'DT', stream[..half])
+		dz2 := dz_block(mut b, 'DT', stream[half..])
+		mut dl_d := []u8{len: 8}
+		for i, x in le_bytes(2, 4) {
+			dl_d[4 + i] = x
+		}
+		dl := b.block('##DL', 3, dl_d)
+		b.set_link(dl, 1, dz1)
+		b.set_link(dl, 2, dz2)
+		dl
+	} else {
+		b.block('##DT', 0, stream)
+	}
 	b.set_link(hd, 0, dg)
 	b.set_link(dg, 1, cg_frames)
 	b.set_link(cg_frames, 0, cg_vlsd)
 	b.set_link(cn_db, 5, cg_vlsd)
-	b.set_link(dg, 2, dt)
+	b.set_link(dg, 2, data)
 	return b.buf
+}
+
+// vjunk is one record of the third group: id 3 and `n` zero bytes.
+fn vjunk(n int) []u8 {
+	mut r := [u8(3)]
+	r << []u8{len: n}
+	return r
 }
 
 // vpay is one VLSD record (record id 2) in that stream; vframe one frame record (record id 1).
@@ -1999,4 +2036,167 @@ fn test_a_short_read_inside_a_block_is_an_error_not_the_end() {
 	}
 	assert log.len() == 0 // the first chunk failed whole; nothing was handed out as read
 	assert s.err.contains('short read')
+}
+
+// ---- the stream, round 2 of #342 ----
+
+// build_unsorted_vlsd_dz_chain_file: build_vlsd_dz_chain_file as an UNSORTED data group — the
+// frame records prefixed with record id 1, the payloads in a DL-of-DZ signal-data chain the
+// DataBytes channel names directly. The format allows it, the loader reads it, and the stream
+// reads it through a view (UnsortedCursor.views).
+fn build_unsorted_vlsd_dz_chain_file(payloads [][]u8, ids []u32, times []f64, split int) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+	hd := b.block('##HD', 6, []u8{len: 32})
+	mut dg_d := []u8{len: 8}
+	dg_d[0] = 1
+	dg := b.block('##DG', 4, dg_d)
+	cg, cn_db := vlsd_layout_cg(mut b, payloads.len, 1)
+	mut sd := []u8{}
+	mut offs := []u32{}
+	for p in payloads {
+		offs << u32(sd.len)
+		sd << le_bytes(u64(p.len), 4)
+		sd << p
+	}
+	dz1 := dz_block(mut b, 'SD', sd[..split])
+	dz2 := dz_block(mut b, 'SD', sd[split..])
+	mut dl_d := []u8{len: 8}
+	for i, x in le_bytes(2, 4) {
+		dl_d[4 + i] = x
+	}
+	dl := b.block('##DL', 3, dl_d)
+	b.set_link(dl, 1, dz1)
+	b.set_link(dl, 2, dz2)
+	mut recs := []u8{}
+	for i, p in payloads {
+		recs << u8(1)
+		recs << vlsd_record(times[i], ids[i], i % 2 == 1, p.len, offs[i])
+	}
+	dt := b.block('##DT', 0, recs)
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg)
+	b.set_link(dg, 2, dt)
+	b.set_link(cn_db, 5, dl)
+	return b.buf
+}
+
+fn test_an_unsorted_group_reading_a_signal_data_chain_equals_the_loader_and_stops_on_a_broken_block() {
+	p, ids, ts := three()
+	img := build_unsorted_vlsd_dz_chain_file(p, ids, ts, 5)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 3
+	assert want.at(0).frame.data == p[0]
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	// the FIRST block broken: the frame whose payload it holds is never queued — a row this
+	// path queued after recording the failure was round 2's P1
+	mut bad := img.clone()
+	dz := find_block(bad, '##DZ')
+	bad[dz + 24 + 24 + 2] = 0xFF
+	bad[dz + 24 + 24 + 3] = 0xFF
+	if _ := parse_log(bad) {
+		assert false, 'the loader accepted a broken signal-data block'
+	}
+	log2, s2 := drain(bad)
+	assert log2.len() == 0
+	assert s2.err.contains('signal data')
+}
+
+fn test_a_fixed_record_nobody_decodes_is_stepped_over_not_buffered() {
+	p, ids, ts := three()
+	junk := (1 << 20) + 17 // wider than a chunk, and than max_record_stride
+	mut stream := []u8{}
+	stream << vpay(p[0])
+	stream << vframe(ts[0], ids[0], p[0].len, 0)
+	stream << vjunk(junk)
+	stream << vpay(p[1])
+	stream << vframe(ts[1], ids[1], p[1].len, u32(4 + p[0].len))
+	stream << vjunk(junk)
+	stream << vpay(p[2])
+	stream << vframe(ts[2], ids[2], p[2].len, u32(8 + p[0].len + p[1].len))
+	img := build_unsorted_vlsd_raw_x(stream, 3, junk, false)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 3
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+}
+
+fn test_a_frame_group_with_an_absurd_stride_is_dropped_by_both_readers() {
+	p, ids, _ := three()
+	mut img := build_mlsd_file(p, ids, [u32(1), 2, 3])
+	// cg_data_bytes is the u32 at +24 of the CG data section
+	cg := find_block(img, '##CG')
+	for i, x in le_bytes(u64(max_record_stride) + 1, 4) {
+		img[cg + 24 + 8 * 6 + 24 + i] = x
+	}
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 0
+	log, s := drain(img)
+	assert log.len() == 0
+	assert s.err == ''
+}
+
+fn test_skipping_an_oversized_record_still_validates_the_compressed_blocks_it_crosses() {
+	p, ids, ts := three()
+	big := int(max_vlsd_record)
+	mut stream := []u8{}
+	stream << vpay(p[0])
+	stream << vframe(ts[0], ids[0], p[0].len, 0)
+	off1 := u32(4 + p[0].len)
+	stream << vpay([]u8{len: big}) // spans the midpoint, where the DZ chain is cut
+	off2 := off1 + u32(4 + big)
+	stream << vpay(p[2])
+	stream << vframe(ts[2], ids[2], p[2].len, off2)
+	img := build_unsorted_vlsd_raw_x(stream, 2, 0, true)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 2
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	// the second DZ block broken: the loader fails; the stream, which steps over that block
+	// inside the big record, must fail too rather than finish clean
+	mut bad := img.clone()
+	first := find_block(bad, '##DZ')
+	mut second := first + 4
+	for bad[second..second + 4].bytestr() != '##DZ' {
+		second++
+	}
+	bad[second + 24 + 24 + 2] = 0xFF
+	bad[second + 24 + 24 + 3] = 0xFF
+	if _ := parse_log(bad) {
+		assert false, 'the loader accepted a broken DZ block'
+	}
+	mut src := MemSource{
+		buf: bad
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream skipped past a broken DZ block'
+	}
+	_, s2 := drain(bad)
+	assert s2.err != ''
+}
+
+fn test_a_block_length_that_wraps_the_address_space_is_clamped_like_any_over_long_one() {
+	p, ids, _ := three()
+	img := build_mlsd_file(p, ids, [u32(1), 2, 3])
+	want := parse_log(img) or { panic(err) }
+	mut bad := img.clone()
+	dt := find_block(bad, '##DT')
+	for i, x in le_bytes(~u64(0xF), 8) {
+		bad[dt + 8 + i] = x // block length
+	}
+	got := parse_log(bad) or { panic(err) }
+	assert same_log(got, want) // the block runs to the end of the file, as an over-long block does
+	assert got.len() == 3
+	log, s := drain(bad)
+	assert same_log(log, want)
+	assert s.err == ''
 }
