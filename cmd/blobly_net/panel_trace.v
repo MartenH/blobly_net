@@ -3,6 +3,7 @@ module main
 import cyclerule
 import transport
 import candb
+import j1939
 import vgui
 
 // trace_capture_chips renders the latched capture states — recording destination, and the
@@ -55,6 +56,47 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	if vgui.small_button(if app.trace_grouped { 'View: grouped' } else { 'View: all' }) {
 		app.trace_grouped = !app.trace_grouped
 	}
+	vgui.same_line()
+	// J1939 is a READING the operator chooses, not a fact the app infers: a 29-bit id alone
+	// does not say what protocol it belongs to (UDS on 29-bit ids is PDU1-shaped). Three
+	// states, because a bool has no value spare for "follow the databases": auto reads each
+	// wire as its own databases declare, on and off override every wire. Written under the
+	// lock the RX loops read it under, like `paused`; the cached name cells carry the old
+	// reading and go with it.
+	gate_label := match app.j1939_override {
+		.follow { 'J1939: auto' }
+		.on { 'J1939: on' }
+		.off { 'J1939: off' }
+	}
+
+	if vgui.small_button(gate_label) {
+		next := match app.j1939_override {
+			.follow { J1939Gate.on }
+			.on { J1939Gate.off }
+			.off { J1939Gate.follow }
+		}
+
+		app.mu.lock()
+		app.j1939_override = next
+		// EVERYTHING the reading built goes with it, now and not at the next frame: the listener
+		// (a session that spanned an off interval would complete out of nothing), the directory
+		// (a claim missed while off would leave a stale name), the cached cells (codex on #329).
+		app.j1939_labels = map[string]&LabelCache{}
+		app.j1939_obs = map[string]&J1939Obs{}
+		app.j1939_nodes = map[string]j1939.Directory{}
+		reload := app.viewing_rec_path
+		viewing := app.viewing_rec != ''
+		app.mu.unlock()
+		// A LOADED RECORDING IS RE-IMPORTED under the new reading: its rows were stamped and its
+		// transport-protocol messages rejoined at import, so on a static file the override would
+		// otherwise apply only if chosen BEFORE loading (codex on #329). Live rows keep what they
+		// were stamped with; the next frames wear the new reading.
+		if viewing && reload != '' {
+			app.load_recording(reload)
+		}
+	}
+	vgui.same_line()
+	vgui.help_marker("Read 29-bit ids as PGN and source address (in the name column), rejoin transport-protocol messages (BAM, RTS/CTS) into rows of their own (flags: TP) and follow address claims, so a source address gets its node's name. auto: per wire, on where one of its databases declares J1939 (VFrameFormat); on / off override every wire until the next project load. Read-only — nothing is answered or claimed.")
 	vgui.same_line()
 	vgui.text('RX ${rx} · ${vgui.fps():.0}fps')
 	vgui.same_line()
@@ -242,6 +284,20 @@ fn idstr(id u32, ext bool) string {
 	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
 
+// How many payload bytes a trace cell shows before it says how many more there are. A frame is
+// at most 64 bytes and is always shown whole; a rejoined J1939 transport-protocol message is up
+// to 1785, and a row that wide is a table nobody can read (and, in the grouped view, 1785 text
+// widgets per repaint for one row). The filter searches the same bytes the cell shows.
+const trace_data_shown = 64
+
+// hex_shown is hex() over the first trace_data_shown bytes, saying what it left out.
+fn hex_shown(b []u8) string {
+	if b.len <= trace_data_shown {
+		return hex(b)
+	}
+	return '${hex(b[..trace_data_shown])} … +${b.len - trace_data_shown} bytes'
+}
+
 // idstr_row renders the row's id AS ITS KIND reads it: a SOME/IP message id is a service and a
 // method, which is how a dissector, the standard and blobly_emb's config all spell it, and
 // rendering it as one 32-bit number invites reading it as a CAN id.
@@ -263,6 +319,9 @@ fn idstr_row(id u32, ext bool, someip bool) string {
 fn flags_str(r TraceRow) string {
 	if r.rtr {
 		return 'RTR'
+	}
+	if r.tp {
+		return 'TP' // a J1939 transport-protocol message rejoined from its packets, not a frame
 	}
 	if !r.fd {
 		return ''
@@ -313,8 +372,11 @@ fn trace_pass(r TraceRow, filt string) bool {
 	if origin_filter != '' {
 		return r.origin.to_lower() == origin_filter.to_lower()
 	}
+	// The payload as the table SHOWS it (hex_shown): a rejoined J1939 message is up to 1785
+	// bytes, and formatting all of them for every row on every repaint while a filter is typed
+	// is the per-repaint allocation #299 removed, 28 times over.
 	hay :=
-		'${idstr_row(r.id, r.ext, r.someip)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
+		'${idstr_row(r.id, r.ext, r.someip)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex_shown(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -370,6 +432,9 @@ fn trace_name_cell(r TraceRow) string {
 // NOT SENT for 200 frames that went out fine (self-review). Mark and text now share one
 // source per view.
 fn trace_name_refused(r TraceRow, refused bool) string {
+	// On a J1939 wire `name` already carries the reading after the database's name —
+	// `EEC1  PGN 0xF004 SA 0x00 Engine` — stamped at push (TraceRow.tp's comment), so this
+	// stays allocation-free for the common row and the grouped view's label cache holds.
 	base := if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
 	// NOT SENT rides the name cell like a violation does: it is rare, the origin column is
 	// too narrow to spell it, and a mark alone ('x') must never be the only statement that
@@ -424,12 +489,17 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_cell(len_str(r.full_len()))
 			vgui.table_cell(flags_str(r))
 			// the FD/BRS suffix moved out of this cell into the flags column — payload only here
+			// Two different "more than is shown" cases meet here: a row whose PAYLOAD was
+			// cut at push (`truncated`, a large SOME/IP message) and a row whose payload is
+			// whole but too wide to draw (`hex_shown`, a rejoined J1939 message up to 1785
+			// bytes). The first states the bytes the row does not HAVE, the second the bytes
+			// the cell does not SHOW.
 			vgui.table_cell(if r.rtr {
 				''
 			} else if r.truncated() {
-				'${hex(r.data)} … +${r.full_len() - r.data.len}'
+				'${hex_shown(r.data)} … +${r.full_len() - r.data.len}'
 			} else {
-				hex(r.data)
+				hex_shown(r.data)
 			})
 		}
 		vgui.table_end()
@@ -443,6 +513,9 @@ mut:
 	id     u32
 	ext    bool
 	someip bool // the row's kind, carried so the CAN consumers below can refuse it
+	// The group's key, so the comparator can be TOTAL: everything above it in that function
+	// gives the reader an order, and this decides what is merely distinct.
+	key string
 	someip_type  u8 // its message type: part of the group identity, so part of the order
 	someip_iface u8 // its interface version, for the same reason
 	someip_proto u8 // and its protocol version: an invalid one must not merge into valid traffic
@@ -451,6 +524,8 @@ mut:
 	fd     bool
 	brs    bool
 	rtr    bool
+	tp     bool   // a rejoined J1939 transport-protocol message, not a frame — in the key, so here
+	wire   string // a TP group's wire — in its key, so here
 	count  int
 	// The `cycle (ms)` measurement: the accepted frames it averages over. The ring holds 2000
 	// rows, so this is the cadence over the window the reader is looking at, not over all
@@ -485,8 +560,20 @@ mut:
 // arguments (four adjacent bools) at seven call sites is the transposition trap the compiler
 // cannot catch, and a mismatch between a gcount writer and the lookup is silently absorbed by
 // its window-count fallback.
-fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool) string {
-	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}'
+fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool, tp bool, wire string, da int) string {
+	// `tp` is in the key because a rejoined transport-protocol message and a single frame can
+	// share an id — a node may send a short form of the same PGN — and one group holding both
+	// would show a 1785-byte payload's delta against an 8-byte one. And a TP group is keyed by
+	// its WIRE too, since two channels of one name on two wires may define the PGN two ways
+	// and the group decodes through its newest row's wire (codex on #329); a frame's key is
+	// unchanged, `wire` being read only for a TP row.
+	if tp {
+		// AND THE DESTINATION: a connection-mode transfer of a PDU2 group goes to one node and
+		// its composed identifier has no field for that, so two of them from one sender to
+		// different receivers were one group (codex).
+		return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}|${wire}|${da}'
+	}
+	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}'
 }
 
 // gkey_someip: a SOME/IP message's group identity. Prefixed so it can never collide with a CAN
@@ -514,13 +601,13 @@ fn (r TraceRow) gkey() string {
 	if r.key.len > 0 {
 		return r.key
 	}
-	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr)
+	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr, r.tp, r.wire, r.tp_da)
 }
 
 // gkey_frame: the producer-side identity, for the paths that count a frame without holding
 // its TraceRow (the push sites' gcount writes, and an import's trimmed fast path).
 fn gkey_frame(origin string, ch string, f transport.CanFrame) string {
-	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr)
+	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr, false, '', -1)
 }
 
 // origin_mark renders the wire verdict for a frame we emitted. Two distinct failures, two
@@ -577,6 +664,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		k := r.gkey()
 		mut g := app.gagg[k] or {
 			GAgg{
+				key:    k // the map key, not a second gkey() call: the comparator leans on them being one string
 				origin: r.origin
 				ch:     r.ch
 				id:     r.id
@@ -590,6 +678,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				fd:     r.fd
 				brs:    r.brs
 				rtr:    r.rtr
+				tp:     r.tp
+				wire:   r.wire
 				last:   r
 			}
 		}
@@ -655,6 +745,14 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.someip != b.someip {
 			return if !a.someip { -1 } else { 1 }
 		}
+		// the frame before the message rejoined from frames like it (a node may send one PGN
+		// both short and over TP) — in the key since #171, so here
+		if a.tp != b.tp {
+			return if !a.tp { -1 } else { 1 }
+		}
+		if a.wire != b.wire {
+			return if a.wire < b.wire { -1 } else { 1 }
+		}
 		// and the message type, for the same reason: it is part of the key, so two groups that
 		// differ only by it are distinct rows and must not compare equal.
 		if a.someip_type != b.someip_type {
@@ -671,6 +769,18 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if a.someip_bad_fixed != b.someip_bad_fixed {
 			return if !a.someip_bad_fixed { -1 } else { 1 }
+		}
+		// AND THE KEY ITSELF, AFTER EVERYTHING ELSE. Every test above orders the groups the way
+		// a reader wants to see them, numerically and by field; this one only makes the
+		// comparator TOTAL, because distinct groups have distinct keys by construction. Written
+		// as a list of fields alone it fell behind the key twice — `ext` once, and now a
+		// rejoined transfer's receiver (`tp_da`) — and each time two groups compared equal and
+		// their rows swapped between redraws, since the aggregates come from a map. LAST, or it
+		// would return before the ordering above it could run and sort those groups by the
+		// decimal text inside the key. A field still belongs above for ORDER; it no longer has
+		// to be there for correctness.
+		if a.key != b.key {
+			return if a.key < b.key { -1 } else { 1 }
 		}
 		return 0
 	})
@@ -725,17 +835,22 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			if vgui.is_item_clicked() && !g.someip {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
+				app.sel_tp = r.tp
+				app.sel_wire = r.wire
+				app.sel_da = r.tp_da
 			}
 			// right-click a row → context menu (plot its signals / add to filter). Both entries
-			// are CAN-only for the same reason: `find_message` looks the number up in the loaded
-			// DBCs, so a SOME/IP id that happens to equal an extended CAN id would offer to
-			// decode a service payload with that frame's signal layout; and the filter is keyed
-			// on (id, ext) with no kind, so watching one would also match the CAN frame.
+			// are CAN-only for the same reason: the lookup goes to the loaded DBCs, so a SOME/IP
+			// id that happens to equal an extended CAN id would offer to decode a service
+			// payload with that frame's signal layout; and the filter is keyed on the CAN
+			// identity, so watching one would also match the CAN frame.
 			if !g.someip && vgui.begin_popup_context_item(lb.ctx) {
-				if m := app.find_message(g.id, g.ext) {
+				// group_message, not find_message: a rejoined J1939 message is looked up by its
+				// PGN against the databases on ITS OWN wire.
+				if m := app.group_message(r) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
-							app.add_watch(g.id, g.ext, s.name)
+							app.add_watch(g.id, g.ext, r.tp, r.wire, r.tp_da, s.name)
 						}
 						app.show_graphics = true
 					}
@@ -761,6 +876,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				for i, b in r.data {
 					if i > 0 {
 						vgui.same_line()
+					}
+					if i >= trace_data_shown {
+						// a rejoined transport-protocol message: the rest is in the flat view's
+						// cell (truncated the same way) and in the signals below
+						vgui.text_dim('… +${r.data.len - trace_data_shown} bytes')
+						break
 					}
 					tok := hex2[b]
 					if i >= prev.len || prev[i] != b {
@@ -806,7 +927,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				// only a DLC placeholder (see TraceRow.has_payload); and an expanded SOME/IP
 				// group decodes nothing because its payload layout is the deployment's, not a
 				// DBC's (decoding it from an emb node's config is the next rung).
-				if m := app.find_message_kind(g.id, g.ext, g.someip) {
+				if m := app.group_message_kind(r, g.someip) {
 					for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 						lbl := s.label(r.data)
 						extra := if lbl != '' { ' (${lbl})' } else { '' }
@@ -817,10 +938,15 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						// value in the data column — the same ones the parent row uses
 						vgui.table_set_col(gcol_name)
 						// selectable spans the cell so the whole row is a right-click target
-						vgui.selectable('    ${s.name}##sigrow${g.id}_${g.ext}_${s.name}', false)
-						if vgui.begin_popup_context_item('sigctx##${g.id}_${g.ext}_${s.name}') {
+						// THE GROUP KEY in the widget ids: two expanded groups can share
+						// (id, ext, signal) and differ by wire or by a connection's receiver —
+						// they are different watches, and ImGui keyed on the id alone gave
+						// their rows and popups one identity, so a click in one opened the
+						// other's menu (codex).
+						vgui.selectable('    ${s.name}##sigrow${g.key}_${s.name}', false)
+						if vgui.begin_popup_context_item('sigctx##${g.key}_${s.name}') {
 							if vgui.menu_item('Add ${s.name} to Graphics') {
-								app.add_watch(g.id, g.ext, s.name)
+								app.add_watch(g.id, g.ext, r.tp, r.wire, r.tp_da, s.name)
 								app.show_graphics = true
 							}
 							vgui.end_popup()

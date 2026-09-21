@@ -14,6 +14,7 @@
 // records (BU_, BA_, network attrs, …) are ignored.
 module candb
 
+import j1939
 import os
 
 // Database is a parsed set of CAN messages with id lookup.
@@ -33,18 +34,12 @@ pub fn (db Database) lookup(id u32) ?Message {
 	return none
 }
 
-// j1939_pgn extracts the Parameter Group Number from a 29-bit J1939 id.
-// Layout (MSB→LSB): priority(3) | EDP(1) | DP(1) | PF(8) | PS(8) | SA(8).
-// For PDU1 (PF < 0xF0) the PS byte is a destination address and is NOT part
-// of the PGN; for PDU2 (PF >= 0xF0) it is. Priority and source address are
-// never part of the PGN.
+// j1939_pgn extracts the Parameter Group Number from a 29-bit J1939 id. The layout and the
+// PDU1/PDU2 rule live in `modules/j1939` (`j1939.Id`); this is that answer under the name candb
+// has always given it, so the database's PGN-fallback lookup and the trace's reading of an id
+// cannot disagree about which bits are the PGN.
 pub fn j1939_pgn(id u32) u32 {
-	pf := (id >> 16) & 0xFF
-	mut pgn := (id >> 8) & 0x3FFFF // EDP+DP+PF+PS
-	if pf < 0xF0 {
-		pgn &= 0x3FF00 // PDU1: drop the destination-address byte
-	}
-	return pgn
+	return j1939.pgn(id)
 }
 
 // lookup_frame resolves a received frame to a message: exact id first, then —
@@ -71,6 +66,135 @@ pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
 		}
 	}
 	return none
+}
+
+// j1939_declared says whether the file declared ANY message J1939 (`BA_ "VFrameFormat" …
+// J1939PG`, per message or as the file-wide default). The one question a front end asks before
+// reading 29-bit ids as priority/PGN/source-address: the declaration is the database's, never
+// inferred from the ids (see Message.j1939).
+pub fn (db Database) j1939_declared() bool {
+	// AND EXTENDED. A parameter group is a 29-bit identifier by definition, and the DBC editor
+	// can turn a message marked J1939PG into a standard-CAN one without clearing the mark — so
+	// the flag alone declared a database J1939 after that edit, and auto mode then read an
+	// 11-bit bus's frames as parameter groups (codex). The two lookups below already pair the
+	// flag with `ext` for the same reason.
+	return db.messages.any(it.j1939 && it.ext)
+}
+
+// lookup_pgn resolves a J1939 parameter group to its message: a DECLARED J1939 message with the
+// PGN first, else any extended message with it. For a caller that holds a PGN and not a frame —
+// a transport-protocol transfer announces one — and must not go through an exact id it would
+// have to compose, since an unrelated extended `BO_` can sit at exactly that id (codex on #329).
+pub fn (db Database) lookup_pgn(pgn u32) ?Message {
+	for m in db.messages {
+		if m.ext && m.j1939 && j1939_pgn(m.id) == pgn {
+			return m
+		}
+	}
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn {
+			return m
+		}
+	}
+	return none
+}
+
+// lookup_pgn_sa resolves a J1939 parameter group FROM A KNOWN SOURCE ADDRESS to the message the
+// database spells at exactly that address — declared first, then any extended message — and
+// none where it spells none for that address (the caller then falls back to lookup_pgn). A
+// database may define one PGN at several addresses with different layouts, and a transfer's
+// announcement names its originator (codex on #329).
+pub fn (db Database) lookup_pgn_sa(pgn u32, sa u8) ?Message {
+	for m in db.messages {
+		if m.ext && m.j1939 && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
+			return m
+		}
+	}
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
+			return m
+		}
+	}
+	return none
+}
+
+// pgn_sa_contested says whether the database defines MORE THAN ONE message at a (PGN, SA) — two
+// priorities, say — so that a transfer's payload, whose announcement carries neither, cannot be
+// told which layout it has. A consumer that would decode it should decode nothing instead of
+// the first definition (codex on #329).
+pub fn (db Database) pgn_sa_contested(pgn u32, sa u8) bool {
+	mut n := 0
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
+			n++
+			if n > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pgn_layouts_agree says whether every extended message defining `pgn` carries the SAME signal
+// layout. A J1939 DBC repeats one parameter group per source address, and those repeats
+// normally share the layout — then any of them decodes a frame from an unspelled address. Where
+// they do NOT (source-specific variants with different signals), a consumer decoding by PGN
+// alone cannot know which applies and should decode nothing (codex on #329). True for a PGN
+// defined once or not at all.
+pub fn (db Database) pgn_layouts_agree(pgn u32) bool {
+	mut first := ''
+	for m in db.messages {
+		if !m.ext || j1939_pgn(m.id) != pgn {
+			continue
+		}
+		l := m.layout_key()
+		if first == '' {
+			first = l
+		} else if l != first {
+			return false
+		}
+	}
+	return true
+}
+
+// layout_key spells a message's signal layout — every field that decides how a byte becomes a
+// value AND how the value is shown: the names (a differently named signal is a different
+// reading of the same bits), the unit, and the value table, since a label or a unit shown from
+// the wrong definition is as wrong as a number (codex on #329).
+pub fn (m Message) layout_key() string {
+	mut parts := []string{cap: m.signals.len + 1}
+	parts << '${m.dlc}'
+	for s in m.signals {
+		mut keys := s.values.keys()
+		keys.sort()
+		mut vals := []string{cap: keys.len}
+		for k in keys {
+			vals << '${k}=${s.values[k]}'
+		}
+		parts << '${s.name}|${s.start_bit}|${s.length}|${s.byte_order}|${s.factor}|${s.offset}|${s.is_signed}|${s.is_multiplexor}|${s.is_multiplexed}|${s.multiplexor_value}|${s.unit}|${vals.join(',')}'
+	}
+	return parts.join(';')
+}
+
+// pgn_layouts_agree_in is pgn_layouts_agree over SEVERAL databases at once: a wire may carry
+// two files each defining the PGN once, differently, and per-file agreement says nothing about
+// that (codex on #329).
+pub fn pgn_layouts_agree_in(dbs []Database, pgn u32) bool {
+	mut first := ''
+	for db in dbs {
+		for m in db.messages {
+			if !m.ext || j1939_pgn(m.id) != pgn {
+				continue
+			}
+			l := m.layout_key()
+			if first == '' {
+				first = l
+			} else if l != first {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
@@ -249,8 +373,8 @@ pub fn parse_dbc(text string) !Database {
 			tx_nodes: mb.tx_nodes.clone()
 			cycle_ms: mb.cycle_ms
 			// the per-message record wins; the file-wide default fills the rest
-			j1939:    mb.j1939 || (default_j1939 && !mb.j1939_stated)
-			signals:  sigs
+			j1939:   mb.j1939 || (default_j1939 && !mb.j1939_stated)
+			signals: sigs
 		}
 	}
 	return Database{

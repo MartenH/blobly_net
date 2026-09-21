@@ -16,6 +16,7 @@ import script
 import canlog
 import doip
 import someip
+import j1939
 import net as vnet
 import vgui
 
@@ -775,6 +776,19 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// continuing repeated the failing call as fast as it could return — a core spun on
 			// an unplugged VN while the panel still showed the channel running.
 			if err.msg().contains('timeout') {
+				// A quiet bus is where a stalled transport-protocol session is noticed: the
+				// reassembler expires sessions when it is fed, and nothing feeds it while nothing
+				// arrives, so a sender that stopped mid-BAM on an otherwise silent wire was never
+				// timed out (codex on #329). `open()` is asked unlocked — the listener is this
+				// loop's own — and the narration takes the lock it needs.
+				a.mu.lock()
+				if a.run_gen == gen {
+					mut obs := a.j1939_obs_locked(want_dest)
+					if obs.tp.open() > 0 {
+						a.j1939_expire_locked(mut obs, chname, want_dest, a.since_ms())
+					}
+				}
+				a.mu.unlock()
 				continue
 			}
 			// ONE LAST SAMPLE. The counts are polled before the receive, and a receive that
@@ -895,27 +909,68 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.mu.unlock()
 			break
 		}
+		// J1939 FIRST, of what the bus brought us: an Address Claimed frame names its sender from
+		// this frame on, so its own row — and a takeover's — is stamped from the directory AFTER
+		// it. Our own transport-protocol sends are ours to know about; this side listens. Fed
+		// while paused too: pausing freezes the table, not the sessions or the directory.
+		// AND OF WHAT WE PUT THERE, once, off its first echo: a replayed BAM or an address
+		// claim of our own is on the wire like anyone's, and a listener that skipped it showed
+		// the packets and never the message (codex on #329). PCAN and Kvaser echo nothing, so
+		// there this stays what the bus brought us — said in docs/j1939.md.
+		mut tp_done := []j1939.Assembled{}
+		mut tp_origin := org_rx
+		mut tp_ch := chname
+		if !ours {
+			mut obs := a.j1939_obs_locked(want_dest)
+			tp_done = a.j1939_note_locked(mut obs, chname, want_dest, want_dest, f, t_ms)
+		} else if c := claimed {
+			if c.first {
+				mut obs := a.j1939_obs_locked(want_dest)
+				tp_done = a.j1939_note_locked(mut obs, chname, want_dest, want_dest, f, t_ms)
+				// Ours — and WHICH of ours the emit row says: the claim carries the row's
+				// identity, so a replayed or simulated transfer's message is TX-S like its
+				// packets, not the tester's (codex on #329). A row already trimmed, or an
+				// emission made while paused (no row), reads as the tester's.
+				tp_origin = org_tx
+				ri := a.row_index_locked(c.seq)
+				if ri >= 0 {
+					// and its CHANNEL: two rows share this wire, and a transfer emitted through
+					// the one that is not the reader belongs with its own packets, not in the
+					// reader row's groups (codex on #329)
+					tp_origin = a.trace[ri].origin
+					tp_ch = a.trace[ri].ch
+				}
+			}
+		}
 		if !a.paused && !ours {
 			rx_key := gkey_frame(org_rx, chname, f)
+			disp, reading := a.j1939_frame_locked(want_dest, want_dest, f, name)
 			a.push_row_locked(TraceRow{
-				t_ms:   t_ms
-				ch:     chname
-				origin: org_rx
-				id:     f.id
-				ext:    f.extended
-				fd:     f.fd
-				brs:    f.brs
-				esi:    f.esi
-				rtr:    f.rtr
-				name:   name
-				data:   f.data.clone()
-				e2e:    viol
-				key:    rx_key
+				t_ms:    t_ms
+				ch:      chname
+				origin:  org_rx
+				id:      f.id
+				ext:     f.extended
+				fd:      f.fd
+				brs:     f.brs
+				esi:     f.esi
+				rtr:     f.rtr
+				name:    disp
+				reading: reading
+				data:    f.data.clone()
+				e2e:     viol
+				key:     rx_key
 			})
 			a.gcount[rx_key]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
+		}
+		// A message this frame completed gets its row AFTER the frame's own, and is counted
+		// like a frame: not while paused.
+		if tp_done.len > 0 {
+			a.j1939_push_tp_locked(tp_done, tp_ch, want_dest, want_dest, t_ms, tp_origin, false,
+				!a.paused, !a.paused)
 		}
 		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
 		// trigger-frozen dump from a manual stop. Update it even while the table is paused: the

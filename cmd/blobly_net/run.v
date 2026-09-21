@@ -12,6 +12,7 @@ import candb
 import sim
 import script
 import doip
+import j1939
 
 // open_transport opens `iface`, appending the vendor bitrate (`@<rate>`) for pcan/kvaser
 // buses so the driver uses the configured rate. The logical KEY stays the raw iface —
@@ -895,6 +896,14 @@ fn (mut app App) start() {
 	// symptom trace_run_base exists to prevent, reintroduced through the import's seq advance
 	// (codex #130 pre-review). Rows already in the ring keep their frozen idx.
 	app.trace_run_base = app.trace_seq
+	// And the J1939 address directory: a live run must not wear names learned from a FILE (a
+	// candump log of another vehicle's `can0`, loaded before Start on a channel called `can0`,
+	// filed its claims under the very key the live wire reads). The rows keep their frozen
+	// names; from here the wire's own claims name it, and a bench that wants them back asks
+	// the bus (Request for Address Claimed).
+	app.j1939_nodes = map[string]j1939.Directory{}
+	app.j1939_obs = map[string]&J1939Obs{}
+	app.j1939_labels = map[string]&LabelCache{}
 	// The load starts over HERE, under app.mu and before the transmit locks below are
 	// released: a guardless tap a script kept from the previous run may send the instant
 	// they are, and count_tx_load writes these fields under the lock this reset would

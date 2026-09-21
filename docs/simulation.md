@@ -789,6 +789,8 @@ re-decide any of it.
 | message with no transmitter in the DBC (`Vector__XXX`) | replayed; `--drop-unattributed` withholds | no safe default: replaying risks a collision, withholding risks silence. The report counts them and names the ids either way |
 | **remote frame** (a request for an id, not a transmission of it) | never replayed, and counted | this app does not transmit remote frames at all — CAN-FD has none and nothing here asks for one (#215). They are still decoded and shown, so a recording that contains them reads honestly; they are simply not put back on a wire |
 | id absent from the DBC entirely | replayed | the recording proves it was on the wire; the database is one description of the bus, not the bus |
+| **J1939**: id absent, but a message the DBC **declares** J1939 (`VFrameFormat`) shares its PGN | judged by that message's transmitter, and counted as `matched by J1939 PGN` | a J1939 DBC spells one `BO_` per PGN with a placeholder source address; the recorded frame carries the real one, and keyed on the exact id every frame of the SUT read as "absent" and went back at it (#171) |
+| J1939-shaped id absent, sharing a PGN with a message the DBC does **not** declare J1939 | replayed as absent, and the coincidence is reported with its ids | the file has not said the bus is J1939, and 29-bit UDS is PDU1-shaped: a request and its response share a PGN, so matching would subtract the tester's stimulus. Declare the bus (`BA_DEF_DEF_ "VFrameFormat" "J1939PG";`) and they are matched |
 | `--exclude` names a node the DBC does not declare | **refused, exits non-zero** | a typo subtracts nothing and looks exactly like a working rest bus |
 
 Pacing sleeps until each frame is due rather than polling on a tick, because a tick quantises
@@ -819,7 +821,8 @@ both from the file. The subtraction lives in `modules/player` (`restbus.v`: `wit
 `check_nodes`, `census`; `multibus.v` for several recorded buses on one clock), shared with
 `cmd/restbus`. A message the DBC gives no transmitter is always replayed in the GUI (there is no
 switch for it yet) and can be held back with `--drop-unattributed` headless; a remote frame is
-never replayed. The frames go out
+never replayed; a J1939 message the DBC declares as such is matched by PGN, since its id carries
+the real source address and the DBC's a placeholder ([docs/j1939.md](j1939.md)). The frames go out
 as our simulation, `TX-S`, not as `REP`, which means "a file on screen" where nothing was
 transmitted.
 
