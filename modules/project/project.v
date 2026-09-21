@@ -360,6 +360,17 @@ pub mut:
 	timing       Timing
 	mode         Mode = .normal
 	listen_only  bool
+	// j1939 says the traffic on this wire is SAE J1939, for a bus whose DATABASE does not say
+	// so — `VFrameFormat` is a Vector attribute most J1939 files were written without, and the
+	// trace's reading is gated per wire on what the databases declare (`j1939_on_locked`). The
+	// Trace panel's on/off override answers the same question for EVERY wire at once, which is
+	// the wrong shape for a bench carrying one J1939 bus and one ordinary CAN bus.
+	//
+	// It does NOT raise the schema version. An older build reads an unknown key and goes on
+	// showing the raw identifier, which is what every build did before #171; the versions this
+	// file declares each announce a behaviour that CHANGES — a waveform transmitted as a
+	// constant (v3), a generator gone silent (v4), a listener become a failing CAN row (v5).
+	j1939        bool
 	enabled      bool = true
 	databases    []string
 	manifest     string // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
@@ -840,6 +851,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		sample_point: c.value('sample_point').default_to(f64(0)).f64()
 		mode:         mode_from(c.value('mode').default_to('normal').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
+		j1939:        c.value('j1939').default_to(false).bool()
 		enabled:      c.value('enabled').default_to(true).bool() && !was_off
 	}
 	// protocol/type: v2 `protocol:` (can|canfd), falling back to v1 `type:` (can|canfd|doip).

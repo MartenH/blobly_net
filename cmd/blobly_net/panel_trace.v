@@ -462,7 +462,13 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
 		vgui.table_setup_col('id', 82)
-		vgui.table_setup_col('name', 150)
+		// 235, not 150: the widest real reading is an ADDRESSED group's, `PGN 0xEA00 DA 0x03
+		// SA 0x00`, and the old width cut it
+		// mid-address — losing the SENDER, which is the thing the reading exists to show, and
+		// which the trace cannot otherwise tell you. Found by a headless screenshot of the
+		// demo capture, not by a test. A longer DBC message name fits better too; the column
+		// is draggable from here either way.
+		vgui.table_setup_col('name', 235)
 		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('len', 34)
 		vgui.table_setup_col('flags', 58)
@@ -793,7 +799,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		vgui.table_setup_col('idx', 60)
 		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
-		vgui.table_setup_col('id / name', 210)
+		vgui.table_setup_col('id / name', 345) // see the flat view's `name`: a J1939 reading is longer
 		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('len', 34)
 		vgui.table_setup_col('flags', 58)

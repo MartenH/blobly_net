@@ -1222,6 +1222,7 @@ fn (mut app App) rebuild_from_proj() {
 			fd:             ch.fd
 			data_bitrate:   ch.data_bitrate
 			listen_only:    ch.listen_only
+			j1939:          ch.j1939
 			databases:      ch.databases.clone()
 			manifest:       ch.manifest
 			doip:           ch.is_doip()
@@ -1399,7 +1400,11 @@ fn (mut app App) rebuild_from_proj() {
 		}
 		dk := transport.destination_key_for(c.adapter, c.iface)
 		was := app.j1939_dbs[dk] or { false }
-		app.j1939_dbs[dk] = was || app.dbs_for(c.iface).any(it.j1939_declared())
+		// THE ROW'S OWN TICK counts as a declaration, because most J1939 databases carry none:
+		// `VFrameFormat` is a Vector attribute they were written without, and the panel's
+		// on/off override answers for every wire at once — the wrong shape for a bench with one
+		// J1939 bus and one ordinary CAN bus beside it.
+		app.j1939_dbs[dk] = was || c.j1939 || app.dbs_for(c.iface).any(it.j1939_declared())
 	}
 	app.j1939_any = app.dbs.any(it.j1939_declared())
 	// the databases may have changed under every cached name and key

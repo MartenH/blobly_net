@@ -80,9 +80,16 @@ fn (app &App) j1939_on_locked(gate string) bool {
 		.follow {
 			if gate == j1939_gate_undecidable {
 				false
+			} else if gate == j1939_gate_evident {
+				// A RECORDED BUS THE FILE ITSELF PROVES. A live wire has an owner to ask; a
+				// capture somebody sends you has nobody, so the honest question is whether the
+				// bytes prove what they are — a well-formed transport announcement does
+				// (`j1939.announces_session`), and nothing else counts.
+				true
 			} else if gate == '' {
-				// the one gate that means "a recorded bus the project could not place": the
-				// project-wide default is the best answer for a file whose buses name no wire
+				// the one gate that means "a recorded bus the project could not place, and
+				// which proves nothing about itself": the project-wide default is the best
+				// answer left for a file whose buses name no wire
 				app.j1939_any
 			} else {
 				// a live wire the project did not configure — a generator's `bus:` aimed at a
@@ -93,6 +100,12 @@ fn (app &App) j1939_on_locked(gate string) bool {
 		}
 	}
 }
+
+// j1939_gate_evident is the gate of a recorded bus the FILE proves J1939, by carrying a
+// well-formed transport announcement. It outranks the project-wide default for a bus no wire
+// claims, because evidence beats a guess — and, like every gate, the panel's on/off still
+// overrides it. A space for the reason the sentinel below carries one.
+const j1939_gate_evident = '? evident'
 
 // j1939_gate_undecidable is the gate of a recorded bus whose label two configured wires answer
 // to: in auto it reads as NOT J1939 — the project-wide default would read it as whichever wire

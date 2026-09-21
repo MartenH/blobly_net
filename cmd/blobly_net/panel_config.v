@@ -937,6 +937,18 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		}
 		vgui.same_line()
 		vgui.help_marker('Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On Vector the transceiver is put in silent mode as well, so it does not even acknowledge; every other adapter still ACKs what it hears.')
+		// J1939, after listen-only's own marker so each `?` sits beside the control it explains.
+		// CAN only: a tick on a DoIP or SOME/IP row is one that can never do anything.
+		if !ch.is_eth() {
+			vgui.same_line()
+			jb := vgui.checkbox('J1939##j19${i}', ch.j1939)
+			if jb != ch.j1939 {
+				app.proj.channels[i].j1939 = jb
+				app.dirty = true
+			}
+			vgui.same_line()
+			vgui.help_marker('J1939: read THIS wire as SAE J1939 — the trace names each frame\'s parameter group and sender, and multi-packet transfers are rejoined. For a bus whose database does not declare its frames J1939 (`VFrameFormat` is a Vector attribute most J1939 files were written without). A database that DOES declare them turns it on by itself, and the Trace panel\'s J1939 button overrides every wire at once.')
+		}
 		if ch.mode == .replay {
 			vgui.text('replay:')
 			vgui.same_line()

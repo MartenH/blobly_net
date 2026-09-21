@@ -6,6 +6,7 @@ import transport
 import candb
 import sim
 import canlog
+import j1939
 import mf4
 import player
 import vgui
@@ -242,6 +243,19 @@ fn (mut app App) load_recording(path string) {
 	// #329). With one wire the two answers coincide; the rule is stated once either way.
 	mf4_gate := gate_only
 	first_row := if log.len() > trace_cap { log.len() - trace_cap } else { 0 }
+	// WHICH RECORDED BUSES THE FILE ITSELF PROVES J1939, in one pass before any row is built.
+	// OUTSIDE app.mu, like the label walk above it: this reads the log and touches nothing
+	// shared, and a 600k-frame capture should not hold the global mutex to decide it. A pass
+	// FIRST rather than a mark that turns on partway through, or the frames before the first
+	// transfer would read one way and the frames after it another, in one file, with nothing
+	// to say why.
+	mut j1939_evident := map[string]bool{}
+	for i in 0 .. log.len() {
+		e := log.at(i)
+		if j1939.announces_session(e.frame) {
+			j1939_evident[e.iface] = true
+		}
+	}
 	app.mu.lock()
 	app.reset_trace_locked()
 	// Claim the view HERE, inside the same locked region that reset it, and PAUSE the capture:
@@ -314,12 +328,17 @@ fn (mut app App) load_recording(path string) {
 			rec_keys[e.iface] = nk
 			nk
 		}
-		gate := if from_mf4 {
+		mut gate := if from_mf4 {
 			mf4_gate
 		} else if e.iface in gate_clash {
 			j1939_gate_undecidable
 		} else {
 			gate_of[e.iface] or { gate_only }
+		}
+		// A bus NO WIRE CLAIMS, which the file itself proves: evidence beats the project-wide
+		// default, and a capture has no owner to ask (see j1939_gate_evident).
+		if gate == '' && e.iface in j1939_evident {
+			gate = j1939_gate_evident
 		}
 		mut obs := j1939_obs[e.iface] or {
 			n := &J1939Obs{}
