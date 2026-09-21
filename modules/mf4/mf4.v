@@ -203,6 +203,7 @@ fn parse_recording_unchecked(mut src ByteSource) !Recording {
 		cg_first := if dgl.len > 1 { dgl[1] } else { u64(0) }
 		data_link := if dgl.len > 2 { dgl[2] } else { u64(0) }
 		if cg_first != 0 {
+			check_rec_id_size(int(rec_id_size))!
 			raw := read_data_block(mut src, data_link, unfin)!
 			start := log.rows.len
 			if rec_id_size == 0 {
@@ -768,6 +769,16 @@ fn read_tx(mut src ByteSource, link u64) string {
 		at += u64(n)
 	}
 	return out.bytestr()
+}
+
+// check_rec_id_size admits the record id widths the format defines — 0 (sorted), 1, 2, 4 and 8
+// bytes — and refuses the rest: read_uint over more than 64 bits shifts past the word, which is
+// undefined in the C it becomes, so a corrupt width was a platform-dependent record id and a
+// stream misrouted from its first record (codex on #342 round 11). One rule for both readers.
+fn check_rec_id_size(n int) ! {
+	if n !in [0, 1, 2, 4, 8] {
+		return error('data group declares a record id of ${n} bytes; the format allows 1, 2, 4 or 8')
+	}
 }
 
 // record_size is a fixed channel group's record width — cg_data_bytes + cg_invalidation_bytes —

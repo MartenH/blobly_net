@@ -58,9 +58,25 @@ mut:
 }
 
 pub fn open_source(path string) !FileSource {
+	mut f := os.open(path)!
+	// the size of the HANDLE, not of the path: a path replaced between the open and a lookup by
+	// name describes another file, and every offset bound would then be the wrong file's
+	// (codex on #342 round 11)
+	f.seek(0, .end) or {
+		f.close()
+		return err
+	}
+	sz := f.tell() or {
+		f.close()
+		return err
+	}
+	f.seek(0, .start) or {
+		f.close()
+		return err
+	}
 	return FileSource{
-		f:  os.open(path)!
-		sz: os.file_size(path)
+		f:  f
+		sz: u64(sz)
 	}
 }
 
@@ -100,6 +116,21 @@ fn bytes_at(mut src ByteSource, off u64, n int) []u8 {
 		return out
 	}
 	src.read_at(off, mut out) or {}
+	return out
+}
+
+// exact_at is bytes_at that FAILS rather than zero-fills: for a read whose zero would be
+// believed — a DZ block's header and its compressed bytes, read while the records stream and
+// long after the header walk asked `failure()` (codex on #342 round 11).
+fn exact_at(mut src ByteSource, off u64, n int) ![]u8 {
+	mut out := []u8{len: n}
+	if n <= 0 {
+		return out
+	}
+	got := src.read_at(off, mut out) or { return error('read at ${off}: ${err}') }
+	if got < n {
+		return error('short read at ${off}: ${got} of ${n} bytes')
+	}
 	return out
 }
 

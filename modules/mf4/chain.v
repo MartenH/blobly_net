@@ -10,6 +10,7 @@
 // walker for both, so the stream cannot resolve a link the loader resolves differently.
 module mf4
 
+import encoding.binary
 import compress.zlib
 
 // ChainBlock is one block of a chain: where its bytes are and how many.
@@ -595,10 +596,13 @@ fn (mut r RingVlsd) at(off u64, n int) ?[]u8 {
 // transposition MDF applies before deflate to improve compression of records.
 fn dz_decompress(mut src ByteSource, off u64) ![]u8 {
 	d := data_off(mut src, off)
-	zip_type := u8_at(mut src, d + 2)
-	zip_param := int(u32_at(mut src, d + 4))
-	org_len64 := u64_at(mut src, d + 8)
-	data_len64 := u64_at(mut src, d + 16)
+	// the header through an EXACT read: a failed read of a field zero-filled was a block that
+	// inflated to something, or failed for the wrong reason, with nothing asking the source
+	hdr := exact_at(mut src, d, 24)!
+	zip_type := hdr[2]
+	zip_param := int(binary.little_endian_u32_at(hdr, 4))
+	org_len64 := binary.little_endian_u64_at(hdr, 8)
+	data_len64 := binary.little_endian_u64_at(hdr, 16)
 	// A DZ block is inflated WHOLE — it is the unit of memory for both readers — so its
 	// declared original length is capped by a real number, not by what an int can count:
 	// writers keep blocks to a few MB, and a block claiming more is either not one this reader
@@ -613,7 +617,7 @@ fn dz_decompress(mut src ByteSource, off u64) ![]u8 {
 	}
 	org_len := int(org_len64)
 	data_len := int(data_len64)
-	comp := bytes_at(mut src, d + 24, data_len)
+	comp := exact_at(mut src, d + 24, data_len)!
 	raw := zlib.decompress(comp)!
 	if raw.len != org_len {
 		return error('DZ length mismatch: got ${raw.len}, want ${org_len}')

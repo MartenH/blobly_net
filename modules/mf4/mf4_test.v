@@ -3078,3 +3078,97 @@ fn test_a_record_width_past_an_int_is_corrupt_not_negative() {
 	assert record_size(0x7FFF_FFFF, 0) == max_int
 	assert record_size(0, 0) == 0
 }
+
+// ---- the stream, round 11 of #342 ----
+
+fn test_a_failed_read_of_a_dz_header_is_that_failure_not_a_zlib_one() {
+	p, ids, ts := three()
+	img := build_dz_file(p, ids, ts, 0)
+	dz := u64(find_block(img, '##DZ'))
+	// the chain walk reads the header (the open would fail on a limit inside it, and does —
+	// the header walk asks the source); the limit is inside the COMPRESSED bytes, read while
+	// the records stream
+	limit := dz + 24 + 24 + 4
+	mut src := FailSource{
+		buf:   img
+		limit: limit
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'a failed read inflated to something'
+	}
+	mut hdr := FailSource{
+		buf:   img
+		limit: dz + 24 + 12
+	}
+	if _ := open_stream(mut hdr) {
+		assert false, 'the open read a header it could not read'
+	}
+	mut src2 := FailSource{
+		buf:   img
+		limit: limit
+	}
+	mut st := open_stream(mut src2) or { panic(err) }
+	mut log := canlog.Log{}
+	for {
+		r := st.next(mut log) or { break }
+		log.rows << r
+	}
+	assert log.len() == 0
+	assert st.err.contains('input/output') // the read's failure, not zlib refusing zeros
+	mut src3 := FailSource{
+		buf:   img
+		limit: limit
+	}
+	if _ := parse_recording(mut src3) {
+		assert false, 'the loader inflated bytes it could not read'
+	}
+}
+
+fn test_a_record_id_width_the_format_does_not_define_is_refused_by_both_readers() {
+	recs := [
+		URec{0, 0.010, 0x100, [u8(1)]},
+		URec{1, 0.020, 0x200, [u8(2)]},
+	]
+	for bad in [u8(3), 5, 7, 9, 16, 255] {
+		mut img := build_unsorted_file(recs)
+		dg := find_block(img, '##DG')
+		img[dg + 24 + 8 * 4] = bad // dg_rec_id_size
+		if _ := parse_log(img) {
+			assert false, 'the loader read a record id of ${bad} bytes'
+		}
+		mut src := MemSource{
+			buf: img
+		}
+		if _ := open_stream(mut src) {
+			assert false, 'the stream opened a record id of ${bad} bytes'
+		}
+	}
+	for good in [u8(1), 2, 4, 8] {
+		// the fixture writes one-byte ids; a wider declaration reads wrong ids and stops, but is
+		// admitted — the format defines it
+		mut img := build_unsorted_file(recs)
+		dg := find_block(img, '##DG')
+		img[dg + 24 + 8 * 4] = good
+		mut src := MemSource{
+			buf: img
+		}
+		open_stream(mut src) or { assert false, 'a ${good}-byte record id was refused' }
+	}
+}
+
+fn test_a_file_source_sizes_the_handle_it_opened() {
+	path := os.join_path(os.temp_dir(), 'blobly_mf4_size_${os.getpid()}.mf4')
+	p, ids, ts := three()
+	img := build_mlsd_file(p, ids, [u32(1), 2, 3])
+	os.write_file(path, img.bytestr()) or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	mut src := open_source(path) or { panic(err) }
+	assert src.size() == u64(img.len)
+	got := stream_log(mut src) or { panic(err) }
+	src.close()
+	want := parse_log(img) or { panic(err) }
+	assert same_log(got, want)
+	_ = ts
+}

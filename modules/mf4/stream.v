@@ -81,6 +81,7 @@ pub fn open_stream(mut src ByteSource) !Stream {
 		cg_first := if dgl.len > 1 { dgl[1] } else { u64(0) }
 		data_link := if dgl.len > 2 { dgl[2] } else { u64(0) }
 		if cg_first != 0 {
+			check_rec_id_size(rec_id_size)!
 			blocks := chain_blocks(mut src, data_link, unfin)!
 			if rec_id_size == 0 {
 				c := new_sorted_cursor(mut src, cg_first, blocks, unfin, group)
