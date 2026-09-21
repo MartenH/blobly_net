@@ -332,7 +332,7 @@ fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, u
 			link:   cgi
 			rec_id: rid
 			vlsd:   u16_at(mut src, cgd + 16) & 1 == 1
-			size:   int(u32_at(mut src, cgd + 24)) + int(u32_at(mut src, cgd + 28))
+			size:   record_size(u32_at(mut src, cgd + 24), u32_at(mut src, cgd + 28))
 			dup:    rid in claimed
 		}
 		claimed[rid] = true
@@ -382,8 +382,8 @@ fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, u
 				vlsd_streams[c.link] << raw[pos..pos + 4 + n] // keep the length prefix
 				pos += 4 + n
 			} else {
-				if pos + c.size > raw.len {
-					break outer
+				if c.size < 0 || pos + c.size > raw.len {
+					break outer // a corrupt width, or a record past the end
 				}
 				streams[c.rec_id] << raw[pos..pos + c.size]
 				ordinals[c.rec_id] << rec_n
@@ -768,6 +768,18 @@ fn read_tx(mut src ByteSource, link u64) string {
 		at += u64(n)
 	}
 	return out.bytestr()
+}
+
+// record_size is a fixed channel group's record width — cg_data_bytes + cg_invalidation_bytes —
+// or -1 where the two u32s sum past an int: added as ints they went NEGATIVE, and the demux
+// sliced backwards on it. 0 is a legitimate width (a group with no channels; its record is the
+// record id alone) that both readers step over.
+fn record_size(data u32, inval u32) int {
+	total := u64(data) + u64(inval)
+	if total > u64(max_int) {
+		return -1
+	}
+	return int(total)
 }
 
 // The most text a TX/MD block is read for: a channel name or a comment is bytes to kilobytes,

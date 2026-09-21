@@ -132,6 +132,13 @@ pub fn (mut s Stream) next(mut log canlog.Log) ?canlog.Row {
 		}
 	}
 	s.tally()
+	if s.err != '' {
+		// A cursor has failed: the rows its unread tail held may precede every head still
+		// waiting, so nothing more is in order — and a row handed out past the failure is one
+		// the caller would replay before learning the recording is broken (codex on #342
+		// round 10). The heads stay unreturned; `err` is the answer.
+		return none
+	}
 	if best < 0 {
 		return none
 	}
@@ -389,7 +396,7 @@ fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, re
 			link:   cgi
 			rec_id: u64_at(mut src, cgd)
 			vlsd:   u16_at(mut src, cgd + 16) & 1 == 1
-			size:   int(u32_at(mut src, cgd + 24)) + int(u32_at(mut src, cgd + 28))
+			size:   record_size(u32_at(mut src, cgd + 24), u32_at(mut src, cgd + 28))
 		}
 		if info.vlsd {
 			c.cgs << UCg{
@@ -648,10 +655,16 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 		return true
 	}
 	size := c.cgs[ci].info.size
-	if size <= 0 || !c.fits(u64(size)) {
+	if size < 0 || !c.fits(u64(size)) {
 		return false
 	}
 	c.cgs[ci].seen++
+	if size == 0 {
+		// a group with no channels: its record is the record id alone, already consumed, and
+		// the loader steps over it — ending the stream here lost every frame after it (codex on
+		// #342 round 10)
+		return true
+	}
 	if !c.cgs[ci].ok || c.cgs[ci].seen > c.cgs[ci].cap {
 		// a record nobody decodes — another signal's group, or one past the declared count — is
 		// stepped over, never buffered: its stride is bounded by nothing this reader trusts

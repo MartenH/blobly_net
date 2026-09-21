@@ -551,7 +551,13 @@ const ring_budget = 8 << 20
 fn (mut r RingVlsd) append(bytes []u8) {
 	r.buf << bytes
 	if r.buf.len > r.cap {
-		drop := r.buf.len / 2
+		// the front half, or more when half is not enough: a cap under twice the record size
+		// (many rings sharing the budget) was left above its cap by a half drop (codex on #342
+		// round 10)
+		mut drop := r.buf.len / 2
+		if r.buf.len - drop > r.cap {
+			drop = r.buf.len - r.cap
+		}
 		tail := r.buf.len - drop
 		unsafe { vmemmove(r.buf.data, &r.buf[drop], tail) }
 		r.buf.trim(tail)

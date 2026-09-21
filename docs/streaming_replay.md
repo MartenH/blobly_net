@@ -152,7 +152,10 @@ import (whole-file by design, 2000-row cap).
    materialized (header blocks keep a bounded array, `max_header_links`); a VLSD group gets a
    ring only where a decoded frame group reads it. Round 9: the rings of one data group share one
    byte budget (`ring_budget`); and a claimed underflow in `skip` at a finished plain block did
-   not hold — the probe reads the block's last byte, which exists — pinned by a test.
+   not hold — the probe reads the block's last byte, which exists — pinned by a test. Round 10:
+   the merge returns none as soon as any cursor has failed; a ring is trimmed to its cap; a
+   zero-width record is consumed rather than the end (and a width past an int is corrupt in both
+   readers, `record_size`).
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,

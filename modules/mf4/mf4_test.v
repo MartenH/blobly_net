@@ -2716,7 +2716,10 @@ fn test_deferred_frames_are_flushed_only_after_the_tail_is_validated() {
 		assert false, 'the loader accepted a broken block'
 	}
 	log2, s2 := drain(img)
-	assert log2.len() == 1 // the frame that was whole; not the payload-less one and THEN the failure
+	// the whole frame was handed out BEFORE the cursor read as far as the broken block (its group
+	// had a row queued, so the merge did not read on); the payload-less one is never handed out,
+	// and nothing is after the failure (round 10)
+	assert log2.len() == 1
 	assert s2.err != ''
 }
 
@@ -2991,4 +2994,87 @@ fn test_a_drain_that_starts_at_a_block_boundary_advances_to_the_next_block() {
 	if _ := stream_log(mut short) {
 		assert false, 'the drain did not reach the second block'
 	}
+}
+
+// ---- the stream, round 10 of #342 ----
+
+fn test_a_ring_is_trimmed_to_its_cap_however_large_the_record() {
+	mut r := RingVlsd{
+		cap: 100
+	}
+	r.append([]u8{len: 250}) // more than twice the cap: a half drop would leave 125
+	assert r.buf.len <= 100
+	assert r.base == 150
+	r.append([]u8{len: 60})
+	assert r.buf.len <= 100
+}
+
+// build_two_dg_second_dz: two sorted data groups — the first plain, the second one DZ block —
+// so a failure in the second is met while the first has rows waiting in the merge.
+fn build_two_dg_second_dz(p [][]u8, ids []u32, ts_a []f64, ts_b []f64) []u8 {
+	mut b := Mdf4Builder{}
+	_, dg := mlsd_group(mut b, p.len, 0)
+	dt := b.block('##DT', 0, mlsd_records(p, ids, ts_a))
+	b.set_link(dg, 2, dt)
+	dg2 := b.block('##DG', 4, []u8{len: 8})
+	cg2 := mlsd_cg(mut b, p.len, 0)
+	dz := dz_block(mut b, 'DT', mlsd_records(p, ids, ts_b))
+	b.set_link(dg, 0, dg2)
+	b.set_link(dg2, 1, cg2)
+	b.set_link(dg2, 2, dz)
+	return b.buf
+}
+
+fn test_the_merge_hands_out_nothing_once_a_cursor_has_failed() {
+	p, ids, ts := three()
+	mut img := build_two_dg_second_dz(p, ids, ts, [0.001, 0.002, 0.003])
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 6
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	dz := find_block(img, '##DZ')
+	img[dz + 24 + 24 + 2] = 0xFF
+	img[dz + 24 + 24 + 3] = 0xFF
+	if _ := parse_log(img) {
+		assert false, 'the loader accepted a broken block'
+	}
+	log2, s2 := drain(img)
+	assert log2.len() == 0 // the first group's rows are later than the second's unread ones
+	assert s2.err != ''
+}
+
+fn test_a_zero_width_record_is_stepped_over_not_the_end() {
+	p, ids, ts := three()
+	mut stream := []u8{}
+	mut off := u32(0)
+	for i, x in p {
+		stream << vpay(x)
+		stream << vframe(ts[i], ids[i], x.len, off)
+		stream << u8(3) // a record of the third group: the id alone
+		off += u32(4 + x.len)
+	}
+	mut img := build_unsorted_vlsd_raw_x(stream, 3, 1, false)
+	// the third group's width to 0: cg_data_bytes of the third CG
+	mut cg := find_block(img, '##CG')
+	for _ in 0 .. 2 {
+		cg += 4
+		for img[cg..cg + 4].bytestr() != '##CG' {
+			cg++
+		}
+	}
+	for i in 0 .. 4 {
+		img[cg + 24 + 8 * 6 + 24 + i] = 0
+	}
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 3
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+}
+
+fn test_a_record_width_past_an_int_is_corrupt_not_negative() {
+	assert record_size(0xFFFF_FFFF, 0xFFFF_FFFF) == -1
+	assert record_size(0x7FFF_FFFF, 0) == max_int
+	assert record_size(0, 0) == 0
 }
