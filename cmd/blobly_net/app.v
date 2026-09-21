@@ -1406,7 +1406,11 @@ fn (mut app App) rebuild_from_proj() {
 		// J1939 bus and one ordinary CAN bus beside it.
 		app.j1939_dbs[dk] = was || c.j1939 || app.dbs_for(c.iface).any(it.j1939_declared())
 	}
+	// THE CHANNEL TICKS COUNT HERE TOO. This is the project-wide "does anything read as J1939",
+	// and a project whose ONLY declaration is a tick answered false — so the fast paths that
+	// ask it skipped a wire the gate beside it had just turned on (codex).
 	app.j1939_any = app.dbs.any(it.j1939_declared())
+		|| app.chans.any(!it.doip && !it.someip && it.j1939)
 	// the databases may have changed under every cached name and key
 	app.j1939_labels = map[string]&LabelCache{}
 

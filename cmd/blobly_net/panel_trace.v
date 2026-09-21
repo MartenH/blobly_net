@@ -452,7 +452,8 @@ fn verdict_mark(refused bool, missed bool) string {
 }
 
 fn draw_trace_all(id string, rows []TraceRow, filt string) {
-	if vgui.table_begin(id, 9) {
+	// see gtrace11 below: a changed default width needs a changed table id, or imgui.ini wins
+	if vgui.table_begin(id + '2', 9) {
 		// Column order follows the layout every CAN tool's summary view has taught people to
 		// read: index and time lead, then where (ch) and what (id/name), then the frame's shape.
 		vgui.table_setup_col('idx', 60)
@@ -790,7 +791,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		return 0
 	})
-	if vgui.table_begin('gtrace10', 10) {
+	// gtrace11, not gtrace10: ImGui persists column widths per TABLE ID, so a build that has
+	// run before restores the widths saved under the old one and ignores the new default — the
+	// narrow name column stays narrow for exactly the users who already have the problem
+	// (codex). A new id starts clean; the old entry is orphaned, not misapplied.
+	if vgui.table_begin('gtrace11', 10) {
 		// idx and t lead, as in the chronological view and in every summary view readers come
 		// from; the tree (expand) widget rides on the id/name column, wherever that column is.
 		// (Table id carries the column count: imgui persists per-column widths BY INDEX under

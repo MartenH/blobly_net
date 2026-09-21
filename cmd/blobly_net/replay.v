@@ -335,9 +335,15 @@ fn (mut app App) load_recording(path string) {
 		} else {
 			gate_of[e.iface] or { gate_only }
 		}
-		// A bus NO WIRE CLAIMS, which the file itself proves: evidence beats the project-wide
-		// default, and a capture has no owner to ask (see j1939_gate_evident).
-		if gate == '' && e.iface in j1939_evident {
+		// A bus THE PROJECT CANNOT PLACE, which the file itself proves. That case resolves to
+		// `undecidable` — the gate whose comment above says "force `on` to read such a file" —
+		// and evidence is exactly what makes forcing it unnecessary: a capture has no owner to
+		// ask, so the bytes answer (see j1939_gate_evident). A bus that IS placed keeps its
+		// wire's answer, because there the owner has one.
+		//
+		// Written against `''` first, which no bus ever resolves to — `gate_only` is a real
+		// destination or `undecidable` — so the whole feature was inert (codex, P1).
+		if gate == j1939_gate_undecidable && e.iface in j1939_evident {
 			gate = j1939_gate_evident
 		}
 		mut obs := j1939_obs[e.iface] or {

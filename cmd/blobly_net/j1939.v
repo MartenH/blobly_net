@@ -102,9 +102,9 @@ fn (app &App) j1939_on_locked(gate string) bool {
 }
 
 // j1939_gate_evident is the gate of a recorded bus the FILE proves J1939, by carrying a
-// well-formed transport announcement. It outranks the project-wide default for a bus no wire
-// claims, because evidence beats a guess — and, like every gate, the panel's on/off still
-// overrides it. A space for the reason the sentinel below carries one.
+// well-formed transport announcement. It is what a bus the project cannot PLACE gets instead
+// of `undecidable`, because evidence beats a refusal to guess — and, like every gate, the
+// panel's on/off still overrides it. A space for the reason the sentinel below carries one.
 const j1939_gate_evident = '? evident'
 
 // j1939_gate_undecidable is the gate of a recorded bus whose label two configured wires answer
