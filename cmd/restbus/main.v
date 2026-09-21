@@ -119,6 +119,18 @@ fn main() {
 		println('  note: ${rep.unknown} frames on ${rep.unknown_ids.len} id(s) are not in the DBC at all — replayed')
 		println('        ${hex_ids(rep.unknown_ids)}')
 	}
+	if rep.pgn_matched > 0 {
+		println('  note: ${rep.pgn_matched} frames matched a J1939 message by PGN (the DBC spells another source address)')
+	}
+	if rep.tp_attributed > 0 {
+		println('  note: ${rep.tp_attributed} frames of J1939 multi-packet transfers were judged by their announcement (TP.CM); the receiver side of a connection (CTS, acks) is replayed as unknown')
+	}
+	if rep.pgn_hint > 0 {
+		println('  note: ${rep.pgn_hint} of the unknown frames, on ${rep.pgn_hint_ids.len} id(s), share a PGN with a message the DBC defines but')
+		println('        cannot decide by it: not declared J1939 (BA_ "VFrameFormat" J1939PG), or declared by several messages')
+		println('        with different transmitters — replayed as unknown')
+		println('        ${hex_ids(rep.pgn_hint_ids)}')
+	}
 	// Reported apart from the other notes: a remote frame ASKS for an id rather than sending it,
 	// so the DBC's transmitter says nothing about it either way. Never replayed, because this app
 	// does not transmit remote frames at all.
@@ -361,6 +373,15 @@ fn run_multi(o Opts, rec &mf4.Recording) {
 		}
 		if r.unknown > 0 {
 			notes << '${r.unknown} frames on ${r.unknown_ids.len} id(s) not in the DBC'
+		}
+		if r.pgn_matched > 0 {
+			notes << '${r.pgn_matched} matched by J1939 PGN'
+		}
+		if r.pgn_hint > 0 {
+			notes << '${r.pgn_hint} unknown share a PGN the DBC defines but cannot decide by'
+		}
+		if r.tp_attributed > 0 {
+			notes << '${r.tp_attributed} TP frames judged by their announcement'
 		}
 		if r.unattributed > 0 && r.withheld_unattributed == 0 {
 			notes << '${r.unattributed} unattributed, replayed'

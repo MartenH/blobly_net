@@ -182,6 +182,17 @@ a wire-visible feature, the matching host support usually lands here in the same
 
 ## Already shipped
 
+- ✅ **J1939 understood, read-side** (#171, `modules/j1939`, [docs/j1939.md](docs/j1939.md)): the
+  trace's name column reads a 29-bit id as PGN / source (and destination) address, BAM and RTS/CTS
+  transfers are rejoined into rows of their own (flags `TP`, the whole parameter group as data,
+  decoded against the DBC by PGN) with failed transfers said in the Log (twenty per wire per run,
+  orphans once), address claims name the nodes, and rest-bus subtraction matches a DECLARED J1939
+  message by PGN — the placeholder
+  source address in a J1939 DBC's ids had made every frame of the SUT "unknown" and replayed it
+  back at itself. Gated PER WIRE by what its databases declare, with the Trace panel's tri-state
+  tick as the override, because a 29-bit id alone does not say what protocol it belongs to. Nothing is answered or claimed;
+  composing playback with nodes that react (Request, RTS/CTS aimed at a recorded node) is the
+  follow-on the issue's thread describes.
 - ✅ **Vector (XL family) CAN backend** — `vector:<channel>[@<bitrate>][,silent]` on Windows,
   addressed by APPLICATION channel as Vector Hardware Manager numbers them. `vxlapi64.dll` is
   loaded at runtime and found in the XL Driver Library's own install directory, because it does

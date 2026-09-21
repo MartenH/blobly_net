@@ -4,6 +4,7 @@ import os
 import candb
 import panerule
 import vgui
+import j1939
 
 // ---- DBC Editor (docs/dbc_editor.md P1) -------------------------------------
 // Edits the IN-MEMORY app.dbs — the same databases the Trace panel decodes
@@ -300,6 +301,11 @@ fn (mut app App) dbc_refresh_if_all_clean() {
 // arrival and would otherwise display the stale identity.
 fn (mut app App) dbc_refresh_trace_names() {
 	app.mu.lock()
+	// The database's part of every name changed; the J1939 reading each row carries did not
+	// (`TraceRow.reading`), so the cell is rebuilt from both rather than from the name alone,
+	// which erased the PGN/SA/node reading and a rejoined message's packet count on every
+	// editor selection (codex on #329). The cached cells carry the old names and go too.
+	app.j1939_labels = map[string]&LabelCache{}
 	for i, r in app.trace {
 		// NOT a SOME/IP row: its name is its message type, not a DBC lookup, and `lookup_name`
 		// is keyed on (id, ext) alone — so editing an unrelated DBC would rename NOTIFICATION to
@@ -308,7 +314,16 @@ fn (mut app App) dbc_refresh_trace_names() {
 		if r.someip {
 			continue
 		}
-		nn := app.lookup_name(r.id, r.ext)
+		base := if r.tp {
+			if m := app.group_message(r) {
+				m.name
+			} else {
+				j1939.pgn_name(j1939.pgn(r.id)) or { '' }
+			}
+		} else {
+			app.lookup_name(r.id, r.ext)
+		}
+		nn := j1939_join(base, r.reading)
 		if nn != r.name {
 			app.trace[i] = TraceRow{
 				...r
@@ -497,7 +512,12 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_refresh_trace_names()
 			mut kept := []Watch{cap: app.watch.len}
 			for w in app.watch {
-				if m := app.find_message(w.id, w.ext) {
+				// A REJOINED watch is revalidated the way its rows are DECODED: against its own
+				// wire, by PGN. Asked through `find_message` — every loaded database, by exact
+				// id — a revert dropped a watch whose message is defined perfectly well on its
+				// own wire under another source address, which is the lookup that names it
+				// (codex).
+				if m := app.watch_message(w) {
 					mut have := false
 					for sg in m.signals {
 						if sg.name == w.sig {
@@ -930,16 +950,20 @@ fn draw_dbc_editor(mut app App) {
 					}
 				}
 			}
+			edit_wires := app.wires_of_db(di)
 			for wi, w in app.watch {
 				if id_shadowed {
 					break
 				}
-				if w.id == old_id && w.ext == wext0 {
-					app.watch[wi] = Watch{
-						id:  u32(cl)
-						ext: w.ext
-						sig: w.sig
-					}
+				// SCOPED to the wires this database backs: matching (id, ext) alone moved a
+				// rejoined watch belonging to ANOTHER wire to the edited id and kind (codex).
+				// `rewritten_by` is the rule, beside the one that decides a watch's rows.
+				if edit_wires.any(w.renamed_by(old_id, wext0, it, j1939.pgn(old_id))) {
+					// SPREAD, not a fresh literal: a rewrite changes ONE field and keeps every
+					// other, so a field added to the identity later cannot be silently dropped
+					// here — which is what happened to `wire`, leaving an edited watch matching
+					// no row at all (codex).
+					app.watch[wi] = moved_watch(w, u32(cl))
 				}
 			}
 			app.mark_dirty(di)
@@ -984,11 +1008,24 @@ fn draw_dbc_editor(mut app App) {
 				if kind_shadowed {
 					break
 				}
-				if w.id == old_id2 && w.ext == old_ext2 {
-					app.watch[wi] = Watch{
-						id:  nid
-						ext: next
-						sig: w.sig
+				if app.wires_of_db(di).any(w.renamed_by(old_id2, old_ext2, it, j1939.pgn(old_id2))) {
+					// A STANDARD frame is never a rejoined J1939 message: the kind goes with
+					// the width, or the watch stays `tp` on an 11-bit id and covers nothing
+					// (codex). Its wire and receiver go with it, being that kind's fields.
+					app.watch[wi] = if next {
+						Watch{
+							...moved_watch(w, nid)
+							ext: next
+						}
+					} else {
+						Watch{
+							...moved_watch(w, nid)
+							ext:  next
+							tp:   false
+							wire: ''
+							da:   -1
+							pgn:  0
+						}
 					}
 				}
 			}
@@ -1198,22 +1235,55 @@ fn draw_dbc_editor(mut app App) {
 			app.mark_dirty(di)
 			wid := msg.id
 			wext := msg.ext
-			mut shadowed := false
+			// SHADOWING FOLLOWS THE WATCH'S OWN SCOPE, because that is what decides which
+			// database a row actually decodes against — and the two kinds differ, which cost a
+			// round in each direction (codex):
+			//
+			//   - A FRAME's watch is unscoped and resolves through every loaded database in
+			//     order, so ANY earlier one defining `(id, ext)` shadows this edit, wherever it
+			//     is attached. Made per-wire, a rename on wire B moved a watch the wire-A
+			//     database still names.
+			//   - A REJOINED message's watch resolves against ITS OWN wire, BY PGN — so the
+			//     question is not "does an earlier database mention this group" but "which
+			//     definition does that wire's whole list actually pick". Asked per database, an
+			//     earlier file naming the group under ANOTHER source address counted as a
+			//     shadow while the real lookup preferred this file's exact `(PGN, SA)` match.
+			//     So the test IS the lookup, over the wire's list, and the edit is shadowed
+			//     exactly where the winner is not the message being edited.
+			edit_wires := app.wires_of_db(di)
+			mut frame_shadowed := false
 			for odi in 0 .. di {
 				for om in app.dbs[odi].messages {
 					if om.id == wid && om.ext == wext {
-						shadowed = true
+						frame_shadowed = true
+					}
+				}
+			}
+			mut shadow_wires := map[string]bool{}
+			for gw in edit_wires {
+				idxs := app.db_indices_for_gate(gw)
+				mut dbs := []candb.Database{cap: idxs.len}
+				for ix in idxs {
+					dbs << app.dbs[ix]
+				}
+				// WHICH DATABASE wins, not which message: two on one wire can define the same
+				// `(id, ext)` with different layouts, so comparing the winner's identity to the
+				// edited message's says "this one" about the other one's (codex).
+				if k := find_pgn_message_idx(dbs, j1939.pgn(wid), u8(wid & 0xFF)) {
+					if idxs[k] != di {
+						shadow_wires[gw] = true
 					}
 				}
 			}
 			for wi, w in app.watch {
-				if shadowed {
-					break
+				if w.sig != old_sig || (!w.tp && frame_shadowed) {
+					continue
 				}
-				if w.id == wid && w.ext == wext && w.sig == old_sig {
+				// RENAMED: a signal's name is the database's whichever kind of row carries it.
+				if edit_wires.any((!w.tp || it !in shadow_wires)
+					&& w.renamed_by(wid, wext, it, j1939.pgn(wid))) {
 					app.watch[wi] = Watch{
-						id:  w.id
-						ext: w.ext
+						...w
 						sig: nv
 					}
 				}
