@@ -130,6 +130,12 @@ import (whole-file by design, 2000-row cap).
    block it crosses, the unsorted view path queues nothing after a failure, a block length that
    wraps the address space is clamped like any over-long one, and `mf4_dump --stream` prints
    `unresolved` and samples its heap mark after the same conversion the loader branch includes.
+   Round 3: deferred frames are bounded in BYTES too (`max_deferred_bytes`); a group past its
+   declared count is exhausted, not waited for, and the rest of its chain is still stepped over so
+   a corrupt trailing block fails the stream as it fails the loader (sorted `drain`, unsorted
+   `exhausted_all`); a TX/MD text is bounded by its block. And a loader defect the new fixture
+   found: an unsorted VLSD group with no records made the frame group's payload link a data link
+   to a CG block, failing the whole file.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,

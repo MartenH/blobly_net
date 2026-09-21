@@ -338,6 +338,14 @@ fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, u
 	mut ordinals := map[u64][]int{}
 	mut rec_n := 0
 	mut vlsd_streams := map[u64][]u8{} // VLSD CGs, keyed by CG block address
+	for c in cgs {
+		if c.vlsd {
+			// declared here even with no record in the stream: a frame group naming a VLSD group
+			// that wrote nothing is a frame group with no payloads, not a data link to a CG
+			// block — which is what read_data_block was handed, failing the whole file
+			vlsd_streams[c.link] = []u8{}
+		}
+	}
 	mut pos := 0
 	outer: for pos + rec_id_size <= raw.len {
 		rid := read_uint(raw, pos, 0, rec_id_size * 8)
@@ -686,16 +694,27 @@ fn read_tx(mut src ByteSource, link u64) string {
 		return ''
 	}
 	d := data_off(mut src, link)
-	// The text runs to its NUL; read it in pieces rather than the whole file's remainder.
+	// The text runs to its NUL — INSIDE ITS BLOCK. A block missing the terminator used to be
+	// read to the next zero byte in the file, which in a recording of tens of GB is the rest of
+	// the file into memory before the first record is read (codex on #342 round 3); the block's
+	// declared length bounds it now, under a cap no name or comment reaches.
+	length := u64_at(mut src, link + 8)
+	mut limit := if length > 24 { length - 24 } else { u64(0) }
+	if limit > max_text_block {
+		limit = max_text_block
+	}
+	if d >= src.size() {
+		return ''
+	}
+	if limit > src.size() - d {
+		limit = src.size() - d
+	}
 	mut out := []u8{}
 	mut at := d
-	for {
-		piece := bytes_at(mut src, at, 256)
-		if at >= src.size() {
-			break
-		}
-		got := src.size() - at
-		n := if got < 256 { int(got) } else { 256 }
+	for at < d + limit {
+		left := d + limit - at
+		n := if left < 256 { int(left) } else { 256 }
+		piece := bytes_at(mut src, at, n)
 		mut end := -1
 		for i in 0 .. n {
 			if piece[i] == 0 {
@@ -705,13 +724,17 @@ fn read_tx(mut src ByteSource, link u64) string {
 		}
 		if end >= 0 {
 			out << piece[..end]
-			break
+			return out.bytestr()
 		}
 		out << piece[..n]
 		at += u64(n)
 	}
 	return out.bytestr()
 }
+
+// The most text a TX/MD block is read for: a channel name or a comment is bytes to kilobytes,
+// and a block claiming more is not one whose text this reader needs.
+const max_text_block = u64(1) << 20
 
 // read_data_block resolves a DGBLOCK data link to its raw record bytes: the data CHAIN
 // concatenated (chain.v) — uncompressed (DT/DV/DI/RD/SD), compressed (DZ) and list (DL/HL)

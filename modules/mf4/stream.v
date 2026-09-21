@@ -194,8 +194,26 @@ mut:
 	vlsd    VlsdBytes
 	cycles  u64 // records to read: the chain's length in strides, capped by cg_cycle_count when finalized
 	k       u64 // records consumed
+	drained bool
 	refused int
 	err     string
+}
+
+// drain steps over what is left of the chain once nothing more will be decoded from it — a
+// group past its declared cycle count, or one this reader does not decode. The loader reads
+// every data block whole, so a corrupt trailing block fails it; the stream must fail on it too
+// rather than report a clean end (codex on #342 round 3). `skip` inflates the DZ blocks it
+// crosses without keeping them and steps over plain blocks by offset, so the cost is the
+// loader's inflation without the loader's memory.
+fn (mut c SortedCursor) drain() {
+	if c.drained {
+		return
+	}
+	c.drained = true
+	c.recs.skip(c.recs.remaining()) or {
+		c.err = err.msg()
+		c.ok = false
+	}
 }
 
 fn new_sorted_cursor(mut src ByteSource, cg u64, blocks []ChainBlock, unfin bool, group int) &SortedCursor {
@@ -227,6 +245,9 @@ fn (c &SortedCursor) failure() string {
 
 fn (mut c SortedCursor) next(mut log canlog.Log) ?canlog.Row {
 	if !c.ok {
+		if c.err == '' {
+			c.drain()
+		}
 		return none
 	}
 	for c.k < c.cycles {
@@ -255,6 +276,7 @@ fn (mut c SortedCursor) next(mut log canlog.Log) ?canlog.Row {
 		}
 		c.refused++
 	}
+	c.drain()
 	return none
 }
 
@@ -277,6 +299,14 @@ mut:
 	deferred []RawRec
 }
 
+// exhausted says nothing more of this group will ever be queued: it is not decoded at all, or
+// it has seen its declared cycle count and holds nothing back. The merge must not wait for such
+// a group — waiting read the rest of the stream ahead of every emission, and counted the
+// emissions as forced (codex on #342 round 3).
+fn (u &UCg) exhausted() bool {
+	return !u.ok || (u.seen >= u.cap && u.deferred.len == 0)
+}
+
 // RawRec is a record held back, and its position.
 struct RawRec {
 	raw []u8
@@ -294,6 +324,12 @@ struct Pending {
 // two groups by. Past it the merge emits the earliest queued row anyway and counts it. The
 // same number bounds how many frames wait for a payload record that has not gone past.
 const unsorted_readahead = 8192
+
+// The most raw record bytes the deferred frames may hold between them: a frame record is tens
+// of bytes, but a stride up to max_record_stride is admitted, and unsorted_readahead of those
+// is half a gigabyte (codex on #342 round 3). Past it the oldest waiting frames are decoded as
+// they are, and counted, like past the count.
+const max_deferred_bytes = u64(8) << 20
 
 // The most a VLSD record is read for: a CAN payload is 64 bytes and a length prefix, and a
 // record announcing more is some other signal's — or a corrupt length below the chain's
@@ -316,6 +352,7 @@ mut:
 	rec_n       int // records read so far: the ordinal the loader keys ties by
 	queued      int
 	deferred    int // frames held back across all groups
+	deferred_b  u64 // and their bytes
 	ended       bool
 	next_group  int
 	forced      int
@@ -461,6 +498,7 @@ fn (mut c UnsortedCursor) resolve(ring &RingVlsd, flush bool, mut log canlog.Log
 			continue
 		}
 		mut done := 0
+		mut freed := u64(0)
 		for d in c.cgs[ci].deferred {
 			ready := payload_ready(&c.cgs[ci].lay, d.raw, 0, own)
 			if !ready && !flush {
@@ -471,10 +509,12 @@ fn (mut c UnsortedCursor) resolve(ring &RingVlsd, flush bool, mut log canlog.Log
 			}
 			c.decode_into(ci, d.raw, 0, d.pos, mut log)
 			done++
+			freed += u64(d.raw.len)
 		}
 		if done > 0 {
 			c.cgs[ci].deferred.delete_many(0, done)
 			c.deferred -= done
+			c.deferred_b -= freed
 		}
 	}
 }
@@ -563,7 +603,8 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 			pos: c.rec_n
 		}
 		c.deferred++
-		if c.deferred > unsorted_readahead {
+		c.deferred_b += u64(size)
+		if c.deferred > unsorted_readahead || c.deferred_b > max_deferred_bytes {
 			if ring := c.vlsd[c.cgs[ci].lay.vlsd_link] {
 				c.resolve(ring, true, mut log)
 			}
@@ -579,11 +620,21 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 // its next row — the condition under which emitting would risk the order.
 fn (c &UnsortedCursor) needs_more() bool {
 	for u in c.cgs {
-		if u.ok && u.qhead >= u.queue.len {
+		if !u.exhausted() && u.qhead >= u.queue.len {
 			return true
 		}
 	}
 	return false
+}
+
+// exhausted_all says no group will queue anything more, however much stream is left.
+fn (c &UnsortedCursor) exhausted_all() bool {
+	for u in c.cgs {
+		if !u.exhausted() {
+			return false
+		}
+	}
+	return true
 }
 
 fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
@@ -600,6 +651,12 @@ fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
 				c.resolve(none_ring, true, mut log)
 			}
 		}
+	}
+	if !c.ended && c.exhausted_all() {
+		// nothing more will be decoded, but the loader reads the whole block: the tail is
+		// stepped over so a corrupt block in it fails the stream as it fails the loader
+		c.stream.skip(c.stream.remaining()) or { c.err = err.msg() }
+		c.ended = true
 	}
 	// the earliest queued row, ties by record position — the loader's (t_s, ordinal)
 	mut best := -1

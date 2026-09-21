@@ -2200,3 +2200,192 @@ fn test_a_block_length_that_wraps_the_address_space_is_clamped_like_any_over_lon
 	assert same_log(log, want)
 	assert s.err == ''
 }
+
+// ---- the stream, round 3 of #342 ----
+
+fn test_a_text_block_without_a_terminator_is_bounded_by_its_block() {
+	mut b := Mdf4Builder{}
+	b.buf << []u8{len: 64}
+	tx := b.block('##TX', 0, 'abcdefgh'.bytes()) // no NUL inside the block
+	b.block('##TX', 0, 'zzzz'.bytes())
+	b.buf << 0
+	mut src := MemSource{
+		buf: b.buf
+	}
+	assert read_tx(mut src, tx) == 'abcdefgh' // not 'abcdefgh' + the next block's header and text
+}
+
+// build_dl_dz_file: an MLSD group whose records are in a DL of two DZ blocks, cut after
+// `split_rec` records, declaring `cycles` — so a declared count satisfied by the first block
+// leaves the second one untouched by a reader that stops at the count.
+fn build_dl_dz_file(payloads [][]u8, ids []u32, times []f64, split_rec int, cycles int) []u8 {
+	mut b := Mdf4Builder{}
+	_, dg := mlsd_group(mut b, cycles, 0)
+	recs := mlsd_records(payloads, ids, times)
+	dz1 := dz_block(mut b, 'DT', recs[..split_rec * 25])
+	dz2 := dz_block(mut b, 'DT', recs[split_rec * 25..])
+	mut dl_d := []u8{len: 8}
+	for i, x in le_bytes(2, 4) {
+		dl_d[4 + i] = x
+	}
+	dl := b.block('##DL', 3, dl_d)
+	b.set_link(dl, 1, dz1)
+	b.set_link(dl, 2, dz2)
+	b.set_link(dg, 2, dl)
+	return b.buf
+}
+
+fn break_second_dz(mut img []u8) {
+	first := find_block(img, '##DZ')
+	mut second := first + 4
+	for img[second..second + 4].bytestr() != '##DZ' {
+		second++
+	}
+	img[second + 24 + 24 + 2] = 0xFF
+	img[second + 24 + 24 + 3] = 0xFF
+}
+
+fn test_a_sorted_group_past_its_count_still_validates_the_rest_of_its_chain() {
+	p, ids, ts := three()
+	img := build_dl_dz_file(p, ids, ts, 1, 1) // one record declared, three written
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 1
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	mut bad := img.clone()
+	break_second_dz(mut bad)
+	if _ := parse_log(bad) {
+		assert false, 'the loader accepted a broken trailing block'
+	}
+	mut src := MemSource{
+		buf: bad
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream stopped at the count and never saw the broken block'
+	}
+}
+
+fn test_an_undecodable_sorted_group_still_validates_its_chain() {
+	p, ids, ts := three()
+	mut img := build_dl_dz_file(p, ids, ts, 1, 3)
+	// an absurd stride: the group is dropped by both readers, its data still read by the loader
+	cg := find_block(img, '##CG')
+	for i, x in le_bytes(u64(max_record_stride) + 1, 4) {
+		img[cg + 24 + 8 * 6 + 24 + i] = x
+	}
+	log, s := drain(img)
+	assert log.len() == 0
+	assert s.err == ''
+	break_second_dz(mut img)
+	if _ := parse_log(img) {
+		assert false, 'the loader accepted a broken block'
+	}
+	mut src := MemSource{
+		buf: img
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream never looked at a group it does not decode'
+	}
+}
+
+fn test_a_capped_group_is_not_waited_for() {
+	mut recs := []URec{}
+	recs << URec{0, 0.001, 0x100, [u8(1)]}
+	recs << URec{0, 0.002, 0x100, [u8(2)]}
+	for i in 0 .. 8300 {
+		recs << URec{1, 0.003 + f64(i) * 0.001, 0x200, [u8(i)]}
+	}
+	mut img := build_unsorted_file(recs)
+	// group 0 declares ONE record: cg_cycle_count is the u64 at +8 of the first CG's data
+	cg := find_block(img, '##CG')
+	for i, x in le_bytes(1, 8) {
+		img[cg + 24 + 8 * 6 + 8 + i] = x
+	}
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 8301
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.forced == 0 // the exhausted group is not a missing head
+	assert s.err == ''
+}
+
+fn test_an_unsorted_group_past_every_count_still_validates_the_rest_of_the_stream() {
+	p, ids, ts := three()
+	mut stream := []u8{}
+	mut off := u32(0)
+	for i, x in p {
+		stream << vpay(x)
+		stream << vframe(ts[i], ids[i], x.len, off)
+		off += u32(4 + x.len)
+	}
+	mut img :=
+		build_unsorted_vlsd_raw_x(stream, 1, 0, true) // one frame declared; the cut is inside the second pair
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 1
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.err == ''
+	break_second_dz(mut img)
+	if _ := parse_log(img) {
+		assert false, 'the loader accepted a broken block'
+	}
+	mut src := MemSource{
+		buf: img
+	}
+	if _ := stream_log(mut src) {
+		assert false, 'the stream stopped at the count and never saw the broken block'
+	}
+}
+
+// build_unsorted_vlsd_wide is build_unsorted_vlsd_raw with the frame group's records `stride`
+// bytes wide — the 18 decoded bytes first, the rest ancillary — as a recorder with more channels
+// in the group would write them.
+fn build_unsorted_vlsd_wide(stream []u8, cycles int, stride int) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+	hd := b.block('##HD', 6, []u8{len: 32})
+	mut dg_d := []u8{len: 8}
+	dg_d[0] = 1
+	dg := b.block('##DG', 4, dg_d)
+	cg_frames, cn_db := vlsd_layout_cg(mut b, cycles, 1)
+	for i, x in le_bytes(u64(stride), 4) {
+		b.buf[int(cg_frames) + 24 + 8 * 6 + 24 + i] = x
+	}
+	mut vcg_d := []u8{len: 32}
+	vcg_d[0] = 2
+	vcg_d[16] = 1
+	cg_vlsd := b.block('##CG', 6, vcg_d)
+	dt := b.block('##DT', 0, stream)
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg_frames)
+	b.set_link(cg_frames, 0, cg_vlsd)
+	b.set_link(cn_db, 5, cg_vlsd)
+	b.set_link(dg, 2, dt)
+	return b.buf
+}
+
+fn test_deferred_frames_are_bounded_in_bytes_not_only_in_count() {
+	stride := 1 << 16
+	n := 140 // 140 * 64 KiB is past max_deferred_bytes, far below unsorted_readahead
+	mut stream := []u8{}
+	for i in 0 .. n {
+		stream << u8(1)
+		mut rec :=
+			vlsd_record(0.001 * f64(i + 1), 0x100, false, 1, 100_000) // a payload never written
+		rec << []u8{len: stride - rec.len}
+		stream << rec
+	}
+	img := build_unsorted_vlsd_wide(stream, n, stride)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == n
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.unresolved == n
+	assert s.err == ''
+}
