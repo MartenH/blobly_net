@@ -1,10 +1,16 @@
 # Streaming replay — design
 
-> Status: design, not built. The window's cell (`canlog.Row`, the arena) exists; the decoder
-> that fills it from disk does not. Written after #299/#300 took the replay's allocation rate
-> from 1,140 MB/s to ~28 and the arena took the collector's pause length down with it; what
-> remains is a recording that does not fit in memory at all. Each step below is measured with
-> `cmd/blobly_net/probe.v` before and after.
+> Status: step 1 of the PR sequence is built — `mf4.Stream` (`stream.v`, `chain.v`) reproduces
+> `parse_log`'s order from the file a chunk at a time, pinned by the golden test over the images
+> in its golden list (sorted MLSD and VLSD, DLC and DataLength, 32- and 64-bit offsets, remote
+> and invalidated frames, a DL chain with a straddling record, DZ both types, an unsorted group
+> with skew, an unsorted group's VLSD channel group, a DL-of-DZ signal-data chain, UnFinMF) and
+> the tracked samples; `cmd/mf4_dump --stream` reads through it and prints the heap
+> high-water mark of either path. The window's cell (`canlog.Row`, the arena) exists; the window,
+> the decoder thread and the player over a cursor (steps 3–8) do not yet. Written after
+> #299/#300 took the replay's allocation rate from 1,140 MB/s to ~28 and the arena took the
+> collector's pause length down with it; what remains is a recording that does not fit in memory
+> at all. Each step below is measured with `cmd/blobly_net/probe.v` before and after.
 
 ## Why
 
@@ -96,9 +102,23 @@ import (whole-file by design, 2000-row cap).
 
 ## PR sequence
 
-1. `mf4.Stream` reproduces `parse_log` order — cursors, merge, the new test-image builders
-   (unsorted DG with skew, a DL chain with a straddling record, DZ both types, `UnFinMF`),
-   the golden test, `cmd/mf4_dump --stream` printing peak heap for both paths. No GUI change.
+1. **Built.** `mf4.Stream` reproduces `parse_log` order — cursors, merge, the new test-image
+   builders (unsorted DG with skew, a DL chain with a straddling record, DZ both types,
+   `UnFinMF`), the golden test, `cmd/mf4_dump --stream` printing peak heap for both paths. No
+   GUI change. What it settled beyond the design: the header helpers take `u64` offsets end to
+   end (the hazard below), `read_data_block` is the chain concatenated so the loader and the
+   stream resolve a link through ONE walker, `decode_row` reads a VLSD payload through a
+   `VlsdBytes` source (the whole block in memory, a `ChainView` over the signal-data chain, or a
+   bounded `RingVlsd` of an unsorted group's VLSD records — CANedge writes the payload record
+   immediately before the frame that names it, so a bounded tail suffices and a release is
+   counted, `evicted`), and the unsorted merge reads ahead until every frame group has a row
+   queued, capped at `unsorted_readahead` rows with a forced emission counted (`forced`) rather
+   than hidden, until the survey makes the cap a measured number. Two things the loader assumed
+   that a stream cannot: a group whose time runs backwards is sorted right by the loader and
+   COUNTED by the stream (`out_of_order`); a broken block fails the loader whole and stops the
+   stream's cursor with the reason (`err`), so a half-played file is never a clean end. A length
+   field is checked against the chain's remaining bytes before it sizes a read or a slice — the
+   filler an unfinalized file's extended last block decodes as records reads as 0xFFFFFFF0.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,

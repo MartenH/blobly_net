@@ -70,28 +70,30 @@ pub fn (mut f FileSource) close() {
 	f.f.close()
 }
 
-// bytes_at reads n bytes at off; what lies past the end reads as zero.
-fn bytes_at(mut src ByteSource, off int, n int) []u8 {
+// bytes_at reads n bytes at off; what lies past the end reads as zero. Offsets are u64 end to
+// end — a recording of tens of GB keeps its later blocks past 2^31, and an `int` there was the
+// hazard docs/streaming_replay.md names — and only a bounded read's LENGTH is an int.
+fn bytes_at(mut src ByteSource, off u64, n int) []u8 {
 	mut out := []u8{len: n}
-	if n <= 0 || off < 0 {
+	if n <= 0 {
 		return out
 	}
-	src.read_at(u64(off), mut out) or {}
+	src.read_at(off, mut out) or {}
 	return out
 }
 
-fn u8_at(mut src ByteSource, off int) u8 {
+fn u8_at(mut src ByteSource, off u64) u8 {
 	return bytes_at(mut src, off, 1)[0]
 }
 
-fn u16_at(mut src ByteSource, off int) u16 {
+fn u16_at(mut src ByteSource, off u64) u16 {
 	return binary.little_endian_u16(bytes_at(mut src, off, 2))
 }
 
-fn u32_at(mut src ByteSource, off int) u32 {
+fn u32_at(mut src ByteSource, off u64) u32 {
 	return binary.little_endian_u32(bytes_at(mut src, off, 4))
 }
 
-fn u64_at(mut src ByteSource, off int) u64 {
+fn u64_at(mut src ByteSource, off u64) u64 {
 	return binary.little_endian_u64(bytes_at(mut src, off, 8))
 }

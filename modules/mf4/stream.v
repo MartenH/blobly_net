@@ -1,0 +1,486 @@
+// The STREAM: the recording's rows in the order the in-memory loader would hand them out, read
+// from the file a chunk at a time and never held whole (docs/streaming_replay.md, PR 1).
+//
+// The loader's order is `(t_s, order)` where `order` is a record's position on one monotone
+// scale across the whole file: sorted groups count their entries in data-group order, an
+// unsorted group's ordinals are its records' positions in its interleaved stream lifted above
+// everything before it. So the file-wide order is `(t, data-group index, position in the
+// group)`, and a merge over one cursor per data group needs no ordinals at all: the earliest
+// time wins, then the EARLIER data group, and within a group the cursor emits in position order.
+// That order was hardened over several review rounds (equal-timestamp frames across buses, the
+// thing multi-bus replay exists to preserve) and the golden test is that this stream reproduces
+// parse_log exactly, sample files and hand-built images alike.
+//
+// Two cursors. A SORTED group is one channel group over fixed-stride records: a ChainStream
+// over its data chain, one decode_row per stride, a ChainView over the signal-data chain for a
+// VLSD group's payloads. An UNSORTED group interleaves several channel groups' records, each
+// prefixed by its record id, VLSD records inline: one ChainStream, the fixed groups decoded as
+// they go past into per-group queues, the VLSD groups' bytes kept in a bounded RingVlsd the
+// fixed records point into — and a merge over the queues by `(t, record position)`, because an
+// unsorted stream is time-monotone per channel group but not across them (a writer can skew two
+// groups sharing a stream). The merge reads ahead until every frame group has a row queued or
+// the stream ends; a cap bounds that read-ahead and a forced emission past it is counted
+// (`forced`), never hidden — the survey (PR 2) will measure the skew so the cap is a number.
+//
+// What the loader assumed that the stream cannot: a global sort forgives a group whose time
+// runs backwards; the merge takes each cursor as monotone, so a row earlier than the one before
+// it is COUNTED (`out_of_order`). And where the loader fails whole on a broken block, a cursor
+// stops and records WHY (`err`), so a replay that played half a file says so rather than
+// reporting a clean end.
+module mf4
+
+import canlog
+import encoding.binary
+
+// Cursor yields one data group's rows in the loader's order for that group.
+interface Cursor {
+mut:
+	next(mut log canlog.Log) ?canlog.Row
+	failure() string
+}
+
+// Stream is the k-way merge over the file's data groups.
+pub struct Stream {
+mut:
+	cursors   []Cursor
+	heads     []canlog.Row
+	has       []bool
+	done      []bool
+	prev_t    f64
+	have_prev bool
+pub mut:
+	// Counters the design asks to surface rather than hide: forced emissions past the unsorted
+	// read-ahead cap, VLSD payloads already released when a record named them, records refused
+	// by the decoder (the loader refuses the same ones; here they are counted), rows earlier
+	// than the row before them, and the first error a cursor stopped on.
+	forced       int
+	evicted      int
+	refused      int
+	out_of_order int
+	err          string
+}
+
+// open_stream resolves the file's headers and builds one cursor per data group. Nothing of the
+// record data is read yet.
+pub fn open_stream(mut src ByteSource) !Stream {
+	unfin := read_id_block(mut src)!
+	mut s := Stream{}
+	hd := block_links(mut src, 64)
+	mut dg := if hd.len > 0 { hd[0] } else { u64(0) }
+	mut group := 0 // the CAN frame group ordinal, for records with no BusChannel — as the loader counts it
+	for dg != 0 {
+		dgl := block_links(mut src, dg)
+		dg_data_off := data_off(mut src, dg)
+		rec_id_size := int(u8_at(mut src, dg_data_off))
+		cg_first := if dgl.len > 1 { dgl[1] } else { u64(0) }
+		data_link := if dgl.len > 2 { dgl[2] } else { u64(0) }
+		if cg_first != 0 {
+			blocks := chain_blocks(mut src, data_link, unfin)!
+			if rec_id_size == 0 {
+				c := new_sorted_cursor(mut src, cg_first, blocks, unfin, group)
+				group++
+				s.cursors << c
+			} else {
+				mut c := new_unsorted_cursor(mut src, cg_first, blocks, rec_id_size, unfin, group)
+				group = c.next_group
+				s.cursors << c
+			}
+		}
+		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }
+	}
+	s.heads = []canlog.Row{len: s.cursors.len}
+	s.has = []bool{len: s.cursors.len}
+	s.done = []bool{len: s.cursors.len}
+	return s
+}
+
+// next is the next row of the recording in the loader's order, interning its bus label into
+// `log` as the loader would; none at the end. Standard-frame and error groups are not frames
+// and never appear, as with the loader. A cursor that stopped on an error is done; `err` says.
+pub fn (mut s Stream) next(mut log canlog.Log) ?canlog.Row {
+	for i in 0 .. s.cursors.len {
+		if s.has[i] || s.done[i] {
+			continue
+		}
+		if r := s.cursors[i].next(mut log) {
+			s.heads[i] = r
+			s.has[i] = true
+		} else {
+			s.done[i] = true
+		}
+	}
+	mut best := -1
+	for i in 0 .. s.cursors.len {
+		if !s.has[i] {
+			continue
+		}
+		// earliest time, then the EARLIER data group: `order` climbs with the group index
+		if best < 0 || s.heads[i].t_s < s.heads[best].t_s {
+			best = i
+		}
+	}
+	s.tally()
+	if best < 0 {
+		return none
+	}
+	s.has[best] = false
+	row := s.heads[best]
+	if s.have_prev && row.t_s < s.prev_t {
+		s.out_of_order++
+	}
+	s.prev_t = row.t_s
+	s.have_prev = true
+	return row
+}
+
+// tally folds the cursors' counters into the stream's, so a caller reads one place.
+fn (mut s Stream) tally() {
+	mut forced := 0
+	mut evicted := 0
+	mut refused := 0
+	mut err := ''
+	for mut c in s.cursors {
+		if err == '' {
+			err = c.failure()
+		}
+		if mut c is UnsortedCursor {
+			forced += c.forced
+			refused += c.refused
+			for _, r in c.vlsd {
+				evicted += r.evicted
+			}
+		} else if mut c is SortedCursor {
+			refused += c.refused
+		}
+	}
+	s.forced = forced
+	s.evicted = evicted
+	s.refused = refused
+	s.err = err
+}
+
+// stream_log drains a stream into a Log — the whole recording in memory again, which is the
+// point only for tests, small files and the dump tool's comparison; the player will hold a
+// window of it instead. A cursor's error is the call's error, as the loader's would be.
+pub fn stream_log(mut src ByteSource) !canlog.Log {
+	mut s := open_stream(mut src)!
+	mut log := canlog.Log{}
+	for {
+		r := s.next(mut log) or { break }
+		log.rows << r
+	}
+	if s.err != '' {
+		return error(s.err)
+	}
+	return log
+}
+
+// SortedCursor: one channel group, fixed-stride records, read in stride-sized steps.
+struct SortedCursor {
+mut:
+	lay     CgLayout
+	ok      bool // a CAN frame group this reader decodes; false yields nothing, as parse_cg did
+	labels  Labels
+	recs    ChainStream
+	vlsd    VlsdBytes
+	cycles  u64 // records to read: the chain's length in strides, capped by cg_cycle_count when finalized
+	k       u64 // records consumed
+	refused int
+	err     string
+}
+
+fn new_sorted_cursor(mut src ByteSource, cg u64, blocks []ChainBlock, unfin bool, group int) &SortedCursor {
+	mut c := &SortedCursor{
+		labels: new_labels(group)
+		recs:   new_chain_stream(mut src, blocks)
+		vlsd:   MemVlsd{}
+	}
+	lay := resolve_layout(mut src, cg) or { return c }
+	c.lay = lay
+	c.ok = true
+	c.cycles = lay.record_count(chain_len(blocks), unfin)
+	if lay.is_vlsd {
+		// a sorted group's VLSD payloads live in a signal-data chain (an SD, or an HL/DL of DZ
+		// blocks), read at random by offset
+		sd := chain_blocks(mut src, lay.vlsd_link, unfin) or {
+			c.err = 'signal data: ${err}'
+			c.ok = false
+			return c
+		}
+		c.vlsd = new_chain_view(mut src, sd)
+	}
+	return c
+}
+
+fn (c &SortedCursor) failure() string {
+	return c.err
+}
+
+fn (mut c SortedCursor) next(mut log canlog.Log) ?canlog.Row {
+	if !c.ok {
+		return none
+	}
+	for c.k < c.cycles {
+		have := c.recs.ensure(c.lay.stride) or {
+			c.err = err.msg()
+			c.ok = false
+			return none
+		}
+		if !have {
+			return none
+		}
+		base := c.recs.pos
+		row := decode_row(&c.lay, c.recs.buf, base, mut c.vlsd, mut c.labels, mut log)
+		c.recs.consume(c.lay.stride)
+		c.k++
+		if r := row {
+			return r
+		}
+		c.refused++
+	}
+	return none
+}
+
+// UCg is one channel group of an unsorted data group, as the cursor tracks it.
+struct UCg {
+	info CgInfo
+mut:
+	lay    CgLayout
+	ok     bool // a CAN frame group; a fixed group that is not one is consumed and dropped
+	labels Labels
+	queue  []Pending // decoded rows waiting for the merge, in record order
+	qhead  int
+	// A VLSD channel whose cn_data names a signal-data BLOCK rather than a VLSD channel group —
+	// the format allows it inside an unsorted group too, and the loader reads it — decodes
+	// through a view over that chain.
+	has_view bool
+	view     ChainView
+}
+
+// Pending is a decoded row and the record position it came from.
+struct Pending {
+	row canlog.Row
+	pos int
+}
+
+// The read-ahead cap over an unsorted group's queues, in rows: eight thousand rows a queue of
+// eighty bytes each is under a megabyte per busy group, and far more than any recorder skews
+// two groups by. Past it the merge emits the earliest queued row anyway and counts it.
+const unsorted_readahead = 8192
+
+// UnsortedCursor: several channel groups interleaved in one record stream.
+struct UnsortedCursor {
+mut:
+	cgs         []UCg
+	by_rid      map[u64]int       // record id -> index in cgs
+	vlsd        map[u64]&RingVlsd // VLSD groups' bytes, by CG block address (what cn_data names)
+	stream      ChainStream
+	rec_id_size int
+	rec_n       int // records read so far: the ordinal the loader keys ties by
+	queued      int
+	ended       bool
+	next_group  int
+	forced      int
+	refused     int
+	err         string
+	none_vlsd   MemVlsd
+}
+
+fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, rec_id_size int, unfin bool, group int) &UnsortedCursor {
+	mut c := &UnsortedCursor{
+		stream:      new_chain_stream(mut src, blocks)
+		rec_id_size: rec_id_size
+	}
+	mut g := group
+	mut cgi := cg_first
+	for cgi != 0 {
+		cgd := data_off(mut src, cgi)
+		info := CgInfo{
+			link:   cgi
+			rec_id: u64_at(mut src, cgd)
+			vlsd:   u16_at(mut src, cgd + 16) & 1 == 1
+			size:   int(u32_at(mut src, cgd + 24)) + int(u32_at(mut src, cgd + 28))
+		}
+		if info.vlsd {
+			c.vlsd[cgi] = &RingVlsd{}
+			c.cgs << UCg{
+				info: info
+			}
+		} else {
+			// the group ordinal advances for every fixed group, decodable or not, as demux_unsorted
+			// advances it — the labels of a file without BusChannel depend on that count
+			mut u := UCg{
+				info:   info
+				labels: new_labels(g)
+			}
+			if lay := resolve_layout(mut src, cgi) {
+				u.lay = lay
+				u.ok = true
+			}
+			g++
+			c.cgs << u
+		}
+		// the FIRST group declaring a record id owns it, as the loader's demux takes the first
+		// match; a duplicate id is a malformed file, and the two paths must read it the same way
+		if info.rec_id !in c.by_rid {
+			c.by_rid[info.rec_id] = c.cgs.len - 1
+		}
+		l := block_links(mut src, cgi)
+		cgi = if l.len > 0 { l[0] } else { u64(0) }
+	}
+	// a frame group's VLSD link that names no VLSD group here is a signal-data chain: a view
+	for i in 0 .. c.cgs.len {
+		if !c.cgs[i].ok || !c.cgs[i].lay.is_vlsd || c.cgs[i].lay.vlsd_link in c.vlsd {
+			continue
+		}
+		sd := chain_blocks(mut src, c.cgs[i].lay.vlsd_link, unfin) or {
+			c.err = 'signal data: ${err}'
+			c.ended = true
+			continue
+		}
+		c.cgs[i].view = new_chain_view(mut src, sd)
+		c.cgs[i].has_view = true
+	}
+	c.next_group = g
+	return c
+}
+
+fn (c &UnsortedCursor) failure() string {
+	return c.err
+}
+
+// fits says whether n more bytes can still come out of the stream; a length past the end is a
+// corrupt field — the unwritten filler an unfinalized file's extended last block decodes as
+// records reads as 0xFFFFFFF0 — and is refused BEFORE it sizes a read or a slice: as a signed
+// int it went negative and a slice ran backwards, as a huge count it buffered the rest of the
+// file, which is the memory the stream exists not to hold.
+fn (c &UnsortedCursor) fits(n u64) bool {
+	return n <= c.stream.remaining()
+}
+
+// read_record consumes one record from the stream into its group's queue (or VLSD ring); false
+// at the end of the stream, at an unknown record id or at a length past the end (a corrupt
+// tail, common in unfinalized files — the loader stops there too).
+fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
+	have := c.stream.ensure(c.rec_id_size) or {
+		c.err = err.msg()
+		return false
+	}
+	if !have {
+		return false
+	}
+	rid := read_uint(c.stream.buf, c.stream.pos, 0, c.rec_id_size * 8)
+	ci := c.by_rid[rid] or { return false }
+	c.rec_n++
+	c.stream.consume(c.rec_id_size)
+	if c.cgs[ci].info.vlsd {
+		if !c.fits(4) || !(c.stream.ensure(4) or {
+			c.err = err.msg()
+			false
+		}) {
+			return false
+		}
+		n := u64(binary.little_endian_u32_at(c.stream.buf, c.stream.pos))
+		if !c.fits(4 + n) {
+			return false
+		}
+		len := int(4 + n)
+		if !(c.stream.ensure(len) or {
+			c.err = err.msg()
+			false
+		}) {
+			return false
+		}
+		if mut ring := c.vlsd[c.cgs[ci].info.link] {
+			ring.append(c.stream.buf[c.stream.pos..c.stream.pos + len]) // the prefix stays
+		}
+		c.stream.consume(len)
+		return true
+	}
+	size := c.cgs[ci].info.size
+	if size <= 0 || !c.fits(u64(size)) {
+		return false
+	}
+	if !(c.stream.ensure(size) or {
+		c.err = err.msg()
+		false
+	}) {
+		return false
+	}
+	if c.cgs[ci].ok {
+		mut u := &c.cgs[ci]
+		base := c.stream.pos
+		// the payload source: the VLSD group cn_data names, as the loader looks it up in
+		// vlsd_streams; a signal-data chain where it names one of those; nothing otherwise
+		row := if mut ring := c.vlsd[u.lay.vlsd_link] {
+			decode_row(&u.lay, c.stream.buf, base, mut ring, mut u.labels, mut log)
+		} else if u.has_view {
+			decode_row(&u.lay, c.stream.buf, base, mut u.view, mut u.labels, mut log)
+		} else {
+			decode_row(&u.lay, c.stream.buf, base, mut c.none_vlsd, mut u.labels, mut log)
+		}
+		if r := row {
+			u.queue << Pending{
+				row: r
+				pos: c.rec_n
+			}
+			c.queued++
+		} else {
+			c.refused++
+		}
+	}
+	c.stream.consume(size)
+	return true
+}
+
+// needs_more says whether some frame group has nothing queued while the stream may still hold
+// its next row — the condition under which emitting would risk the order.
+fn (c &UnsortedCursor) needs_more() bool {
+	for u in c.cgs {
+		if u.ok && u.qhead >= u.queue.len {
+			return true
+		}
+	}
+	return false
+}
+
+fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
+	for !c.ended && c.needs_more() {
+		if c.queued >= unsorted_readahead {
+			c.forced++
+			break
+		}
+		if !c.read_record(mut log) {
+			c.ended = true
+		}
+	}
+	// the earliest queued row, ties by record position — the loader's (t_s, ordinal)
+	mut best := -1
+	for i, u in c.cgs {
+		if u.qhead >= u.queue.len {
+			continue
+		}
+		h := u.queue[u.qhead]
+		if best < 0 {
+			best = i
+			continue
+		}
+		b := c.cgs[best].queue[c.cgs[best].qhead]
+		if h.row.t_s < b.row.t_s || (h.row.t_s == b.row.t_s && h.pos < b.pos) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return none
+	}
+	mut u := &c.cgs[best]
+	r := u.queue[u.qhead].row
+	u.qhead++
+	c.queued--
+	// release what the merge has passed, in halves, so a queue never grows without bound
+	if u.qhead >= 1024 && u.qhead >= u.queue.len / 2 {
+		u.queue.delete_many(0, u.qhead)
+		u.qhead = 0
+	}
+	return r
+}

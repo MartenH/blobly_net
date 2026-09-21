@@ -155,11 +155,23 @@ fn resolve_layout(mut src ByteSource, cg u64) ?CgLayout {
 	}
 }
 
+// record_count is how many records a group's data of `total` bytes holds: the data length is
+// ground truth, and the declared cg_cycle_count is a sanity cap only when the file is finalized
+// (it is stale in an unfinalized one, and a sorted DT may carry trailing slack that must not be
+// decoded). ONE rule for the loader's parse_cg and the stream's sorted cursor.
+fn (lay &CgLayout) record_count(total u64, unfin bool) u64 {
+	mut cycles := total / u64(lay.stride)
+	if !unfin && lay.declared > 0 && lay.declared < cycles {
+		cycles = lay.declared
+	}
+	return cycles
+}
+
 // decode_row decodes the record at `base` in `raw` into a row, or none for a record this reader
 // refuses (an undefined identity, a length it cannot trust, a bus the Log cannot name). ONE body
 // for the in-memory loader and the stream. `vlsd` is the payload stream a VLSD group's records
 // point into; `labels` and `log` name the bus.
-fn decode_row(lay &CgLayout, raw []u8, base int, vlsd []u8, mut labels Labels, mut log canlog.Log) ?canlog.Row {
+fn decode_row(lay &CgLayout, raw []u8, base int, mut vlsd VlsdBytes, mut labels Labels, mut log canlog.Log) ?canlog.Row {
 	c_id := lay.c_id
 	c_db := lay.c_db
 	c_len := lay.c_len
@@ -263,13 +275,12 @@ fn decode_row(lay &CgLayout, raw []u8, base int, vlsd []u8, mut labels Labels, m
 		data = []u8{len: int(n)}
 	} else if is_vlsd {
 		off := read_uint(raw, base + c_db.byte_off, int(c_db.bit_off), int(c_db.bit_count))
-		// SUBTRACTION, never `off + 4`: the offset field's width is declared by the file, and
-		// a 64-bit one holding 0xFFFF_FFFF_FFFF_FFFF makes `off + 4` wrap to 3. The bounds
-		// test would pass on the wrapped value and int(off) would go negative — the same
-		// abort as reading it signed, arrived at from the other end.
-		if u64(vlsd.len) >= 4 && off <= u64(vlsd.len) - 4 {
-			n := u64(binary.little_endian_u32_at(vlsd, int(off)))
-			end := off + 4 + n // no overflow: off is within the block and n is a u32
+		// The source answers whether four bytes exist at `off` — and later whether the payload
+		// does — so no arithmetic on the offset happens here at all: a 64-bit field holding
+		// 0xFFFF_FFFF_FFFF_FFFF used to make `off + 4` wrap and pass a bounds test, and the
+		// same doubt now lives in one place, VlsdBytes.at.
+		if prefix := vlsd.at(off, 4) {
+			n := u64(binary.little_endian_u32(prefix))
 			// The length prefix is checked against what the RECORD says, not just against
 			// the block's bounds. A damaged prefix that still lands inside the block would
 			// otherwise swallow the next entry's prefix and hand back a frame with bytes
@@ -293,8 +304,10 @@ fn decode_row(lay &CgLayout, raw []u8, base int, vlsd []u8, mut labels Labels, m
 			// payload whose only corroboration is the damaged field itself. The inline
 			// branch refuses the identical doubt; these two must not disagree.
 			agrees := if want := expect { n == want } else { false }
-			if n <= max_can_payload && end <= u64(vlsd.len) && agrees {
-				data = vlsd[int(off) + 4..int(end)] // copied into the row below, never kept
+			if n <= max_can_payload && agrees {
+				if bytes := vlsd.at(off + 4, int(n)) {
+					data = unsafe { bytes } // a view of the source's scratch, copied into the row below
+				}
 			}
 		}
 	} else {

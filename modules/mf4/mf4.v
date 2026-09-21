@@ -29,11 +29,8 @@
 // then N u64 links, then a type-specific data section.
 module mf4
 
-import os
-import compress.zlib
 import encoding.binary
 import math
-import transport
 import canlog
 
 // A CAN or CAN-FD frame carries at most 64 payload bytes, whatever a damaged length field in
@@ -157,7 +154,10 @@ fn tally_buses(log &canlog.Log, start int, acq string, mut names map[string]stri
 	}
 }
 
-fn parse_recording(mut src ByteSource) !Recording {
+// read_id_block checks the 64-byte identification block and says whether the file is
+// UNFINALIZED (`UnFinMF `: a logger that powered off before finalizing, whose counts and last
+// block length are stale). ONE check for the loader and the stream.
+fn read_id_block(mut src ByteSource) !bool {
 	if src.size() < 64 {
 		return error('not an MDF file (bad id block)')
 	}
@@ -166,6 +166,11 @@ fn parse_recording(mut src ByteSource) !Recording {
 	if !magic.starts_with('MDF') && !unfin {
 		return error('not an MDF file (bad id block)')
 	}
+	return unfin
+}
+
+fn parse_recording(mut src ByteSource) !Recording {
+	unfin := read_id_block(mut src)!
 	mut log := canlog.Log{}
 	// Tie-break key, one per entry, on ONE monotone scale across the whole file: the position of
 	// the record that produced it. Sorting by timestamp alone reorders frames that share one,
@@ -291,6 +296,11 @@ struct CgInfo {
 	rec_id u64
 	vlsd   bool // cg_flags bit 0: variable-length records (4-byte size prefix)
 	size   int  // fixed record size (data + invalidation bytes)
+	// A record id an EARLIER group of this data group already declared. The demux hands a record
+	// to the first group claiming its id; a later claimant gets no records at all, rather than
+	// decoding the first group's bytes a second time under its own label (which is what keying
+	// the per-id streams alone did). The stream's cursor makes the same choice.
+	dup bool
 }
 
 // demux_unsorted splits an unsorted DG's record stream (records from several
@@ -304,15 +314,19 @@ struct CgInfo {
 fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
 	mut log canlog.Log, mut names map[string]string, mut counts map[string]int, mut order []int) !int {
 	mut cgs := []CgInfo{}
+	mut claimed := map[u64]bool{}
 	mut cgi := cg_first
 	for cgi != 0 {
 		cgd := data_off(mut src, cgi)
+		rid := u64_at(mut src, cgd)
 		cgs << CgInfo{
 			link:   cgi
-			rec_id: u64_at(mut src, cgd)
+			rec_id: rid
 			vlsd:   u16_at(mut src, cgd + 16) & 1 == 1
 			size:   int(u32_at(mut src, cgd + 24)) + int(u32_at(mut src, cgd + 28))
+			dup:    rid in claimed
 		}
+		claimed[rid] = true
 		l := block_links(mut src, cgi)
 		cgi = if l.len > 0 { l[0] } else { u64(0) }
 	}
@@ -339,10 +353,15 @@ fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, u
 				if pos + 4 > raw.len {
 					break outer
 				}
-				n := int(binary.little_endian_u32_at(raw, pos))
-				if pos + 4 + n > raw.len {
+				// UNSIGNED, and bounded before it slices: the filler an unfinalized file's
+				// extended last block decodes as records reads as 0xFFFFFFF0, which as an int is
+				// negative — the bounds test passed and the slice ran backwards, aborting the
+				// process on one bad record (found by the stream's golden test, #172 step 1).
+				n64 := u64(binary.little_endian_u32_at(raw, pos))
+				if n64 > u64(raw.len - pos - 4) {
 					break outer
 				}
+				n := int(n64)
 				vlsd_streams[c.link] << raw[pos..pos + 4 + n] // keep the length prefix
 				pos += 4 + n
 			} else {
@@ -364,8 +383,9 @@ fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, u
 		if !c.vlsd {
 			start := log.rows.len
 			mut idxs := []int{}
-			parse_cg(mut src, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
-				idxs, mut log)!
+			// a duplicate claimant decodes nothing (see CgInfo.dup) but still counts as a group
+			recs := if c.dup { []u8{} } else { streams[c.rec_id] or { []u8{} } }
+			parse_cg(mut src, c.link, recs, unfin, vlsd_streams, g, mut idxs, mut log)!
 			// BY RECORD INDEX, not by position in `out`. A record the decoder refused — an
 			// undefined id, a remote frame whose requested length is unknown — produces no
 			// entry, so the two lists stop lining up at the first skip and everything after it
@@ -420,22 +440,21 @@ fn parse_cg(mut src ByteSource, cg u64, recs []u8, unfin bool, vlsd_streams map[
 	mut log canlog.Log) ! {
 	mut labels := new_labels(group)
 	lay := resolve_layout(mut src, cg) or { return }
-	// Record count: the data length is ground truth; the declared cg_cycle_count
-	// is a sanity cap only when the file is finalized (it is stale in unfinalized
-	// files, and a sorted DT may carry trailing slack we must not decode).
-	mut cycles := u64(recs.len / lay.stride)
-	if !unfin && lay.declared > 0 && lay.declared < cycles {
-		cycles = lay.declared
-	}
+	cycles := lay.record_count(u64(recs.len), unfin)
 	// VLSD source: in a sorted file cn_data links an SD/DZ block; in an unsorted
 	// one it names the VLSD channel GROUP, whose records were concatenated into
 	// vlsd_streams during demux.
-	vlsd := if !lay.is_vlsd {
-		[]u8{}
-	} else if lay.vlsd_link in vlsd_streams {
-		vlsd_streams[lay.vlsd_link] or { []u8{} }
-	} else {
-		read_data_block(mut src, lay.vlsd_link, unfin)!
+	mut vlsd := VlsdBytes(MemVlsd{})
+	if lay.is_vlsd {
+		vlsd = if lay.vlsd_link in vlsd_streams {
+			MemVlsd{
+				buf: vlsd_streams[lay.vlsd_link] or { []u8{} }
+			}
+		} else {
+			MemVlsd{
+				buf: read_data_block(mut src, lay.vlsd_link, unfin)!
+			}
+		}
 	}
 	for k := u64(0); k < cycles; k++ {
 		base := int(k) * lay.stride
@@ -444,7 +463,7 @@ fn parse_cg(mut src ByteSource, cg u64, recs []u8, unfin bool, vlsd_streams map[
 		}
 		// ONE decoder for this loop and for the stream's cursors (layout.v). A refused record
 		// leaves no ordinal behind: rec_idx is pushed only for a row that was decoded.
-		row := decode_row(&lay, recs, base, vlsd, mut labels, mut log) or { continue }
+		row := decode_row(&lay, recs, base, mut vlsd, mut labels, mut log) or { continue }
 		rec_idx << int(k) // which record this entry came from — see the note on the parameter
 		log.rows << row
 	}
@@ -635,23 +654,26 @@ fn read_uint(b []u8, off int, bit_off int, bits int) u64 {
 // ---- block helpers ----
 
 fn block_id(mut src ByteSource, off u64) string {
-	return bytes_at(mut src, int(off), 4).bytestr()
+	return bytes_at(mut src, off, 4).bytestr()
 }
 
-// block_links returns a block's link array (N u64 links after the common header).
+// block_links returns a block's link array (N u64 links after the common header). The count is
+// bounded before it sizes anything: a damaged header claiming 2^60 links must not be believed.
 fn block_links(mut src ByteSource, off u64) []u64 {
-	n := int(u64_at(mut src, int(off) + 16))
+	n64 := u64_at(mut src, off + 16)
+	n := if n64 > 1 << 16 { 0 } else { int(n64) }
 	mut links := []u64{cap: n}
 	for i := 0; i < n; i++ {
-		links << u64_at(mut src, int(off) + 24 + 8 * i)
+		links << u64_at(mut src, off + 24 + 8 * u64(i))
 	}
 	return links
 }
 
 // data_off returns the byte offset of a block's type-specific data section.
-fn data_off(mut src ByteSource, off u64) int {
-	n := int(u64_at(mut src, int(off) + 16))
-	return int(off) + 24 + 8 * n
+fn data_off(mut src ByteSource, off u64) u64 {
+	n64 := u64_at(mut src, off + 16)
+	n := if n64 > 1 << 16 { u64(0) } else { n64 }
+	return off + 24 + 8 * n
 }
 
 // read_tx returns the UTF-8 text of a TX/MD block (null-terminated), or '' .
@@ -669,11 +691,11 @@ fn read_tx(mut src ByteSource, link u64) string {
 	mut at := d
 	for {
 		piece := bytes_at(mut src, at, 256)
-		got := int(src.size()) - at
-		n := if got < 256 { got } else { 256 }
-		if n <= 0 {
+		if at >= src.size() {
 			break
 		}
+		got := src.size() - at
+		n := if got < 256 { int(got) } else { 256 }
 		mut end := -1
 		for i in 0 .. n {
 			if piece[i] == 0 {
@@ -686,103 +708,25 @@ fn read_tx(mut src ByteSource, link u64) string {
 			break
 		}
 		out << piece[..n]
-		at += n
+		at += u64(n)
 	}
 	return out.bytestr()
 }
 
-// read_data_block resolves a DGBLOCK data link to its raw record bytes, handling
-// uncompressed (DT/DV/DI/RD), compressed (DZ), and list (DL/HL) blocks. In an
-// unfinalized file the LAST DT block's declared length is stale (the logger
-// died before updating it) — when nothing but file-end follows the declared
-// end, the block really extends to the end of the file.
+// read_data_block resolves a DGBLOCK data link to its raw record bytes: the data CHAIN
+// concatenated (chain.v) — uncompressed (DT/DV/DI/RD/SD), compressed (DZ) and list (DL/HL)
+// blocks, an unfinalized file's understated last block extended to the end of the file. The
+// loader and the stream resolve a link through the one walker, so they cannot disagree about
+// which bytes a link names.
 fn read_data_block(mut src ByteSource, link u64, unfin bool) ![]u8 {
-	if link == 0 {
-		return []u8{}
+	blocks := chain_blocks(mut src, link, unfin)!
+	total := chain_len(blocks)
+	if total > u64(max_int) {
+		return error('data of ${total} bytes cannot be held in memory whole; stream it')
 	}
-	id := block_id(mut src, link)
-	match id {
-		'##DT', '##DV', '##DI', '##RD', '##SD' {
-			length := u64_at(mut src, int(link) + 8)
-			d := data_off(mut src, link)
-			mut end := int(link) + int(length)
-			if unfin {
-				if end > int(src.size()) {
-					end = int(src.size())
-				} else {
-					// MDF blocks are 8-byte aligned: if no '##' block header sits
-					// where the next block would start, the length is stale and
-					// the data runs to the end of the file.
-					ae := (end + 7) / 8 * 8
-					if ae + 4 > int(src.size()) || bytes_at(mut src, ae, 2) != [u8(`#`), `#`] {
-						end = int(src.size())
-					}
-				}
-			}
-			if end > int(src.size()) {
-				end = int(src.size())
-			}
-			if d >= end {
-				return []u8{}
-			}
-			return bytes_at(mut src, d, end - d)
-		}
-		'##DZ' {
-			return dz_decompress(mut src, link)!
-		}
-		'##DL' {
-			mut out := []u8{}
-			mut dl := link
-			for dl != 0 {
-				dll := block_links(mut src, dl)
-				for i := 1; i < dll.len; i++ {
-					if dll[i] != 0 {
-						out << read_data_block(mut src, dll[i], unfin)!
-					}
-				}
-				dl = if dll.len > 0 { dll[0] } else { u64(0) }
-			}
-			return out
-		}
-		'##HL' {
-			hll := block_links(mut src, link)
-			return read_data_block(mut src, if hll.len > 0 { hll[0] } else { u64(0) }, unfin)!
-		}
-		else {
-			return error('unknown data block ${id}')
-		}
+	mut out := []u8{cap: int(total)}
+	for b in blocks {
+		out << block_bytes(mut src, b)!
 	}
-}
-
-// dz_decompress inflates a DZBLOCK and, for zip_type 1, reverses the byte-column
-// transposition MDF applies before deflate to improve compression of records.
-fn dz_decompress(mut src ByteSource, off u64) ![]u8 {
-	d := data_off(mut src, off)
-	zip_type := u8_at(mut src, d + 2)
-	zip_param := int(u32_at(mut src, d + 4))
-	org_len := int(u64_at(mut src, d + 8))
-	data_len := int(u64_at(mut src, d + 16))
-	comp := bytes_at(mut src, d + 24, data_len)
-	raw := zlib.decompress(comp)!
-	if raw.len != org_len {
-		return error('DZ length mismatch: got ${raw.len}, want ${org_len}')
-	}
-	if zip_type != 1 {
-		return raw
-	}
-	// zip_type 1: data was stored column-major in `zip_param`-wide rows; undo it.
-	cols := zip_param
-	rows := org_len / cols
-	mut transposed := []u8{len: org_len}
-	for c := 0; c < cols; c++ {
-		col := c * rows
-		for r := 0; r < rows; r++ {
-			transposed[r * cols + c] = raw[col + r]
-		}
-	}
-	// trailing bytes that don't fill a full row are stored as-is at the end.
-	for i := rows * cols; i < org_len; i++ {
-		transposed[i] = raw[i]
-	}
-	return transposed
+	return out
 }
