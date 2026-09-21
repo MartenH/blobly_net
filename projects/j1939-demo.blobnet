@@ -23,7 +23,10 @@
 # itself: a well-formed transport announcement in the file is proof, and nothing else counts.
 project:
   name: j1939-demo
-  version: 2
+  # v6, because `j1939:` below is a key a build that predates it drops on its next structured
+  # save. An older version-aware build warns rather than silently rewriting the declaration
+  # away (project.version_for; codex on #344).
+  version: 6
 
 channels:
   - name: J1939

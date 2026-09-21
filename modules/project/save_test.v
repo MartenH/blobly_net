@@ -1,5 +1,7 @@
 module project
 
+import os
+
 // `simulation:` is parsed identically to the legacy `nodes:` alias.
 fn test_simulation_key_parses() {
 	y := 'project:
@@ -516,4 +518,35 @@ channels:
 	assert !back.channels[1].j1939
 	assert p.to_yaml().contains('    j1939: true')
 	assert p.to_yaml().count('j1939') == 1 // a row that does not declare it writes nothing
+}
+
+// NO SHIPPED PROJECT USES A KEY ITS DECLARED VERSION PREDATES.
+//
+// A `.blobnet` in this repo is written by hand, so its `version:` is a claim nobody checks --
+// and the J1939 demo shipped declaring v2 while using a key that needs v6, which is exactly
+// the silent rewrite the version exists to warn about (codex on #344).
+//
+// ONLY THE FEATURE-GATED VERSIONS, which is v3 and up. v1 and v2 are about the file's LAYOUT
+// (`channels:`/`interface:` against `buses:`/adapter+address), which `parse` reads either way,
+// and `version_for` returns 2 as its floor for every project -- so a legitimate v1 file like
+// the DoIP demo is not under-declared, it is simply older. Demanding the floor here is what
+// the first draft of this test did, and it failed on that file for no defect at all.
+fn test_no_shipped_project_uses_a_key_its_version_predates() {
+	dir := os.join_path(@VMODROOT, 'projects')
+	mut seen := 0
+	for name in os.ls(dir) or { panic('no projects/ to check: ${err}') } {
+		if !name.ends_with('.blobnet') {
+			continue
+		}
+		path := os.join_path(dir, name)
+		text := os.read_file(path) or { panic('unreadable ${name}: ${err}') }
+		p := parse(text) or { panic('unparseable ${name}: ${err}') }
+		need := version_for(p)
+		if need > 2 {
+			assert p.version >= need, '${name} declares v${p.version} but uses a v${need} key'
+		}
+		assert p.version <= schema_version, '${name} declares v${p.version}, newer than this build'
+		seen++
+	}
+	assert seen > 0, 'no shipped projects were checked'
 }

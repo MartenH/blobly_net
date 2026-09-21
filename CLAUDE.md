@@ -159,7 +159,12 @@ file's own evidence may overrule a placement and must not overrule an identifica
 Extracted after two rounds of #344 got that from opposite sides: the promotion was first
 written against a gate value no route produces, so it was dead, and the repair then narrowed
 it to the undecidable fallback and lost the sole-wire one — the ordinary case of one CAN row
-and one recorded bus, where a capture that proves itself imported unread; and
+and one recorded bus, where a capture that proves itself imported unread. Round 3 then found
+the other half: a gate answers TWO questions, and the flat `? evident` sentinel replaced the
+placement, so `dbs_for_gate` / `db_indices_for_gate` / `TraceRow.wire` matched no wire and
+fell through to EVERY database in the project — an evidenced recording naming a transfer
+from an unrelated wire's PGN. Evidence now DECORATES the placement (`evident_gate`), and
+`is_evident` is the reading where `placement` is the scope; and
 `cmd/blobly_net/endrule/`, THE END OF A MEASUREMENT — what the probe records for the stretch
 between the sampler's last complete interval and the endpoint, which the sampler itself cannot
 record (waking to a closed gate it may not write, the race #299 round 5 closed). Extracted after

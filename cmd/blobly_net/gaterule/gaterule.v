@@ -27,7 +27,39 @@ module gaterule
 // The gate sentinels. Here rather than beside the reader because this is where the set is
 // closed: `load_recording` compared against a value outside it and the comparison was dead.
 pub const undecidable = '? undecidable'
-pub const evident = '? evident'
+
+// A GATE ANSWERS TWO QUESTIONS, and evidence moves only one of them. Besides the reading, the
+// gate is what scopes the DATABASES a rejoined message is named and decoded against, and what
+// a watch stores as its wire -- `dbs_for_gate`, `db_indices_for_gate`, `TraceRow.wire`. A flat
+// `? evident` sentinel replaced the placement, so those matched no configured wire and fell
+// through to EVERY database in the project: an evidenced recording could name a transfer from
+// an unrelated wire's first matching PGN, which is precisely the mixing that scoping exists to
+// stop (codex on #344 round 3).
+//
+// So evidence DECORATES the placement rather than replacing it. `placement` takes it back off,
+// and is the one answer to the scope question; `is_evident` is the one answer to the reading
+// question. The space is what keeps the two apart from a real destination key, which cannot
+// contain one.
+pub const evident_prefix = '? evident '
+
+// evident_gate decorates a placement as proven by the file.
+pub fn evident_gate(place string) string {
+	return evident_prefix + place
+}
+
+// is_evident answers the READING question: did the file prove this bus J1939?
+pub fn is_evident(gate string) bool {
+	return gate.starts_with(evident_prefix)
+}
+
+// placement answers the SCOPE question: which wire, if any, this bus was placed on -- the
+// destination key a database lookup and a watch identity compare against, evidence or not.
+pub fn placement(gate string) string {
+	if gate.starts_with(evident_prefix) {
+		return gate[evident_prefix.len..]
+	}
+	return gate
+}
 
 // Bus is one recorded bus, as the four routes see it.
 pub struct Bus {
@@ -107,7 +139,7 @@ pub fn gate_for(b Bus, sole Sole) Gate {
 	g := placed(b, sole)
 	if g.guessed && b.evident {
 		return Gate{
-			gate: evident
+			gate: evident_gate(g.gate)
 			guessed: true
 		}
 	}

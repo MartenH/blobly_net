@@ -47,7 +47,7 @@ fn test_the_sole_wire_fallback_is_a_guess_and_evidence_overrides_it() {
 	proven := Bus{
 		evident: true
 	}
-	assert gate_for(proven, one_wire()).gate == evident
+	assert is_evident(gate_for(proven, one_wire()).gate)
 }
 
 // THE DEFECT ROUND 1 FOUND, from the other side: the promotion must reach `undecidable`, which
@@ -60,7 +60,7 @@ fn test_an_unplaceable_bus_is_undecidable_and_evidence_overrides_it() {
 	proven := Bus{
 		evident: true
 	}
-	assert gate_for(proven, no_wire()).gate == evident
+	assert is_evident(gate_for(proven, no_wire()).gate)
 }
 
 // A label two wires on different destinations answer to identifies nothing. Refusing to guess
@@ -80,7 +80,7 @@ fn test_a_clashing_label_is_a_guess_too() {
 		claimed: true
 		evident: true
 	}
-	assert gate_for(proven, one_wire()).gate == evident
+	assert is_evident(gate_for(proven, one_wire()).gate)
 }
 
 // An MF4's labels are the file's own numbering, so they take the fallback without ever
@@ -101,7 +101,7 @@ fn test_an_mf4_label_never_claims_and_follows_the_fallback() {
 		claimed: true
 		evident: true
 	}
-	assert gate_for(proven, one_wire()).gate == evident
+	assert is_evident(gate_for(proven, one_wire()).gate)
 }
 
 // THE CLASS, stated once: every route but the claim is a guess, and evidence promotes exactly
@@ -132,7 +132,11 @@ fn test_evidence_promotes_every_guessed_route_and_only_those() {
 			}
 			got := gate_for(with_ev, sole)
 			if bare.guessed {
-				assert got.gate == evident
+				assert is_evident(got.gate)
+				// THE SCOPE SURVIVES: the placement is still readable through the
+				// decoration, so a database lookup and a watch identity are unchanged by
+				// evidence (codex round 3).
+				assert placement(got.gate) == bare.gate
 			} else {
 				assert got.gate == bare.gate
 			}
@@ -144,6 +148,26 @@ fn test_evidence_promotes_every_guessed_route_and_only_those() {
 // space, which no interface or destination key does.
 fn test_the_sentinels_cannot_be_mistaken_for_a_destination() {
 	assert undecidable.contains(' ')
-	assert evident.contains(' ')
-	assert undecidable != evident
+	assert evident_prefix.contains(' ')
+	assert !is_evident(undecidable)
+	assert !is_evident(wire)
+	assert placement(undecidable) == undecidable
+	assert placement(wire) == wire
+}
+
+// EVIDENCE MOVES THE READING, NEVER THE SCOPE. A flat sentinel replaced the placement, so the
+// database lookup matched no wire and fell back to every database in the project -- an
+// evidenced recording naming a transfer from an unrelated wire's PGN (codex round 3).
+fn test_evidence_keeps_the_placement_it_decorates() {
+	on_wire := gate_for(Bus{ evident: true }, one_wire()).gate
+	assert is_evident(on_wire)
+	assert placement(on_wire) == wire, 'the sole wire still scopes the databases'
+
+	nowhere := gate_for(Bus{ evident: true }, no_wire()).gate
+	assert is_evident(nowhere)
+	assert placement(nowhere) == undecidable, 'scoped to nothing, as an unplaceable bus is'
+
+	// and a placement is recovered whole, including one that is itself empty
+	assert placement(evident_gate('')) == ''
+	assert placement(evident_gate(other)) == other
 }
