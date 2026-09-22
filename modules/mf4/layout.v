@@ -124,6 +124,17 @@ fn resolve_layout(mut src ByteSource, cg u64) ?CgLayout {
 	if stride <= 0 || stride > max_record_stride {
 		return none
 	}
+	// Every channel the decoder reads lies INSIDE the record, or the group is not one this
+	// reader decodes: a master-time channel declared past the record width (a corrupt header)
+	// was an out-of-bounds read of the record buffer — a process abort — where a refused group
+	// is what the loader does with every other malformed layout (codex on #348). Checked once
+	// here for both readers, not per record; `read_uint` guards itself, the float time read
+	// does not.
+	for ch in [c_t, c_id, c_len, c_db, c_ide, c_bus, c_dir, c_edl, c_brs, c_esi] {
+		if !chan_fits(ch, data_bytes) {
+			return none
+		}
+	}
 	// Master-time scale: raw value (usually integer nanoseconds) -> seconds via a
 	// linear CCBLOCK (t = off + factor*raw); identity if no conversion.
 	t_off, t_factor := cc_linear(mut src, c_t.cc_link)
@@ -161,6 +172,20 @@ fn resolve_layout(mut src ByteSource, cg u64) ?CgLayout {
 // #342 round 2). Refused in resolve_layout, so the loader and the stream drop the same groups.
 const max_record_stride = 1 << 16
 
+// chan_fits says a channel's field lies inside a record's data bytes — an absent channel
+// (bit_count 0, byte_off 0) trivially does; a float channel is eight bytes whatever it declares.
+fn chan_fits(ch Chan, data_bytes int) bool {
+	if ch.bit_count == 0 && ch.byte_off == 0 {
+		return true
+	}
+	width := if ch.data_type == 4 || ch.data_type == 5 {
+		8
+	} else {
+		(int(ch.bit_off) + int(ch.bit_count) + 7) / 8
+	}
+	return ch.byte_off >= 0 && ch.byte_off <= data_bytes && width <= data_bytes - ch.byte_off
+}
+
 // time_at is a record's time in seconds — the master channel's raw value through the linear
 // conversion — the ONE spelling for decode_row and for the unsorted cursor, which reads it at
 // the record's arrival (deferred or not) to place the record in the merge and to measure the
@@ -168,7 +193,11 @@ const max_record_stride = 1 << 16
 fn time_at(lay &CgLayout, raw []u8, base int) f64 {
 	c_t := lay.c_t
 	raw_t := if c_t.data_type == 4 || c_t.data_type == 5 {
-		math.f64_from_bits(binary.little_endian_u64_at(raw, base + c_t.byte_off))
+		if base + c_t.byte_off + 8 > raw.len {
+			0.0
+		} else {
+			math.f64_from_bits(binary.little_endian_u64_at(raw, base + c_t.byte_off))
+		}
 	} else if c_t.bit_count > 0 {
 		f64(read_uint(raw, base + c_t.byte_off, int(c_t.bit_off), int(c_t.bit_count)))
 	} else {

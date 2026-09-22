@@ -3538,3 +3538,82 @@ fn test_disorder_is_measured_against_the_epoch_s_latest_time() {
 	assert (sv.max_disorder_s - 1.5) < 1e-9 && (sv.max_disorder_s - 1.5) > -1e-9
 	assert sv.clock_steps == 0 // within the window: disorder, not a step
 }
+
+// ---- codex round 1 on #348 ----
+
+fn test_a_channel_declared_past_the_record_is_a_refused_group_not_a_crash() {
+	p, ids, ts := three()
+	for which in [0, 1] {
+		mut img := build_mlsd_file(p, ids, [u32(3), 5, 1])
+		// the CN chain starts at the CG's link 1; the first CN is the time channel, the second the
+		// frame parent — patch the first (time, a float: the unguarded read) and, for `which` 1,
+		// the ID channel beneath it
+		cg := find_block(img, '##CG')
+		mut cn := cg + 4
+		for img[cn..cn + 4].bytestr() != '##CN' {
+			cn++
+		}
+		if which == 1 {
+			cn += 4
+			for img[cn..cn + 4].bytestr() != '##CN' {
+				cn++
+			}
+			cn += 4
+			for img[cn..cn + 4].bytestr() != '##CN' {
+				cn++
+			}
+		}
+		// cn_byte_offset is the u32 at +4 of the CN data section (24-byte header, 8 links)
+		for i, x in le_bytes(200, 4) {
+			img[cn + 24 + 8 * 8 + 4 + i] = x
+		}
+		want := parse_log(img) or { panic(err) }
+		assert want.len() == 0, 'channel ${which}: the loader decoded a group whose channel lies outside its records'
+		log, s := drain(img)
+		assert log.len() == 0, 'channel ${which}'
+		assert s.err == ''
+	}
+	_ = ts
+}
+
+fn test_two_heads_at_one_millisecond_are_told_apart_by_position() {
+	// X's frame at 5.000 is deferred (payload later); Y's frame at 5.000 comes AFTER it in the
+	// stream and is queued at once. Whichever group the rescan visits first, the earliest head is
+	// X's — earlier by position — and it is deferred, so the window holds
+	mut stream := []u8{}
+	stream << vframe(5.000, 0x100, 1, 0) // X (group 1), payload at the end
+	stream << vother([u8(7)])
+	stream << vframe_b(5.000, 0x200, 1, 0) // Y (group 3), payload already past
+	mut off := u32(5)
+	for i in 0 .. 2500 {
+		stream << vother([u8(i)])
+		stream << vframe_b(5.001 + 0.001 * f64(i), 0x201, 1, off)
+		off += 5
+	}
+	stream << vpay([u8(9)])
+	img := build_unsorted_two_frame_groups(stream, 3000)
+	want := parse_log(img) or { panic(err) }
+	assert want.at(0).frame.id == 0x100
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.out_of_order == 0
+	// and the other way round: Y first in the stream, queued; X's deferred frame at the same
+	// millisecond comes second and is NOT the head — Y goes out first, as the loader has it
+	mut stream2 := []u8{}
+	stream2 << vother([u8(7)])
+	stream2 << vframe_b(5.000, 0x200, 1, 0)
+	stream2 << vframe(5.000, 0x100, 1, 0)
+	off = 5
+	for i in 0 .. 2500 {
+		stream2 << vother([u8(i)])
+		stream2 << vframe_b(5.001 + 0.001 * f64(i), 0x201, 1, off)
+		off += 5
+	}
+	stream2 << vpay([u8(9)])
+	img2 := build_unsorted_two_frame_groups(stream2, 3000)
+	want2 := parse_log(img2) or { panic(err) }
+	assert want2.at(0).frame.id == 0x200
+	log2, s2 := drain(img2)
+	assert same_log(log2, want2)
+	assert s2.out_of_order == 0
+}

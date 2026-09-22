@@ -474,6 +474,7 @@ mut:
 	// gets its first row (updated in place) and only rise at an emission (recomputed once).
 	head_min      f64
 	head_epoch    int
+	head_pos      u64
 	head_any      bool
 	head_deferred bool // the earliest waiting row is a deferred one, which cannot be emitted yet
 	head_dirty    bool
@@ -607,11 +608,16 @@ fn (mut c UnsortedCursor) note_read(t f64) {
 }
 
 // waiting_head folds a row that has just become the FIRST waiting row of its group into the
-// cached earliest head — earliest by (epoch, time).
-fn (mut c UnsortedCursor) waiting_head(t f64, epoch int, deferred bool) {
-	if !c.head_any || epoch < c.head_epoch || (epoch == c.head_epoch && t < c.head_min) {
+// cached earliest head — earliest by (epoch, time, position), the merge's own key, so two heads
+// at one millisecond are told apart by the record that came first and the DEFERRED flag is the
+// true head's: on time alone, whichever was visited second was ignored, and a queued row could
+// hide an earlier deferred one at the same millisecond (codex on #348).
+fn (mut c UnsortedCursor) waiting_head(t f64, epoch int, pos u64, deferred bool) {
+	if !c.head_any || epoch < c.head_epoch
+		|| (epoch == c.head_epoch && (t < c.head_min || (t == c.head_min && pos < c.head_pos))) {
 		c.head_min = t
 		c.head_epoch = epoch
+		c.head_pos = pos
 		c.head_any = true
 		c.head_deferred = deferred
 	}
@@ -664,7 +670,7 @@ fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, t f64, pos u64
 			c.max_queued = c.queued
 		}
 		if u.qhead == u.queue.len - 1 && u.deferred.len == 0 {
-			c.waiting_head(r.t_s, epoch, false)
+			c.waiting_head(r.t_s, epoch, pos, false)
 		} else if u.deferred.len > 0 {
 			// a deferred row decoded (or a row queued behind one): which row is the earliest
 			// waiting, and whether it is still a deferred one, is recomputed at the next ask —
@@ -842,7 +848,7 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 	}
 	if wait {
 		if c.cgs[ci].deferred.len == 0 && c.cgs[ci].qhead >= c.cgs[ci].queue.len {
-			c.waiting_head(t, c.epoch, true)
+			c.waiting_head(t, c.epoch, c.rec_n, true)
 		}
 		c.cgs[ci].deferred << RawRec{
 			raw:   c.stream.buf[base..base + size].clone()
@@ -942,10 +948,10 @@ fn (mut c UnsortedCursor) rescan_heads() {
 	for u in c.cgs {
 		if u.qhead < u.queue.len {
 			h := u.queue[u.qhead]
-			c.waiting_head(h.row.t_s, h.epoch, false)
+			c.waiting_head(h.row.t_s, h.epoch, h.pos, false)
 		} else if u.deferred.len > 0 {
 			d := u.deferred[0]
-			c.waiting_head(d.t, d.epoch, true)
+			c.waiting_head(d.t, d.epoch, d.pos, true)
 		}
 	}
 }
