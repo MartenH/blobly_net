@@ -8,10 +8,11 @@
 // counts, on every image and every sample.
 //
 // It also measures what the stream's caps were set to by guesswork: the read-ahead an unsorted
-// data group actually needed (`max_queued`, in rows, against `unsorted_readahead`) and the skew
-// between its channel groups (`max_skew_s`, the furthest a row was behind the latest row read
-// when it was emitted). The design says the cap is a number once the survey has measured it;
-// this is where it is measured.
+// data group actually needed (`max_queued` in rows, against `unsorted_readahead`; `max_ahead_s`
+// in seconds) and the WRITER's disorder (`max_disorder_s`: how far a record was behind the one
+// read just before it, what `unsorted_lookahead_s` must cover). The design says the cap is a
+// number once the survey has measured it; this is where it is measured — and where the
+// measurement replaced the rule (see `settled` in stream.v).
 module mf4
 
 import canlog
@@ -24,7 +25,8 @@ pub mut:
 	frames u64
 	// The span: the earliest and the latest time any row carried — the loader's first and last
 	// row, which it sorted; the stream counts a clock that runs backwards rather than sorting
-	// it, so its first row is not always the earliest.
+	// it, so its first row is not always the earliest. Earliest to latest, not the duration
+	// recorded: a clock that stepped back makes the two differ, and `out_of_order` says so.
 	t0     f64
 	end    f64
 	groups int // data groups read, one cursor each
@@ -36,8 +38,9 @@ pub mut:
 	refused        int
 	unresolved     int
 	max_queued     int // the most rows an unsorted group ever had queued ahead of an emission
-	max_skew_s     f64 // the furthest an emitted row was behind the latest row read, in seconds
-	max_disorder_s f64 // the writer's disorder: the furthest a record read was behind one read before it
+	max_ahead_s    f64 // the furthest the reader had run ahead of a row when it emitted it, in seconds
+	max_disorder_s f64 // the writer's disorder: the furthest a record was behind the record read just before it
+	clock_steps    int // times the clock stepped back by more than the window — counted apart from disorder
 }
 
 // survey reads the recording once through the stream. A cursor's failure is the survey's, as
@@ -52,13 +55,12 @@ pub fn survey(mut src ByteSource) !Survey {
 	// tally is.
 	mut log := canlog.Log{}
 	mut counts := []int{}
-	// The acquisition name of every bus, by label index, under tally_buses' rule: the first
-	// name seen is the bus's, and a SECOND, different name for the same label is two names for
-	// one bus, which is no name — trust neither. Kept as three arrays so the per-row cost is a
-	// compare, not a map lookup.
+	// The acquisition name of every bus, filed under the loader's rule (note_bus_name) — asked
+	// only when a bus's name CHANGES from row to row, so the per-row cost is one string compare
+	// and not a map lookup.
+	mut names := map[string]string{}
 	mut acq_of := []string{}
 	mut seen := []bool{}
-	mut mixed := []bool{}
 	for {
 		r := s.next(mut log) or { break }
 		b := int(r.bus)
@@ -66,7 +68,6 @@ pub fn survey(mut src ByteSource) !Survey {
 			counts << 0
 			acq_of << ''
 			seen << false
-			mixed << false
 		}
 		if sv.frames == 0 {
 			sv.t0 = r.t_s
@@ -78,11 +79,10 @@ pub fn survey(mut src ByteSource) !Survey {
 		}
 		sv.frames++
 		counts[b]++
-		if !seen[b] {
+		if !seen[b] || acq_of[b] != s.last_acq {
 			seen[b] = true
 			acq_of[b] = s.last_acq
-		} else if !mixed[b] && acq_of[b] != s.last_acq {
-			mixed[b] = true
+			note_bus_name(mut names, log.labels[b], s.last_acq)
 		}
 	}
 	if s.err != '' {
@@ -94,36 +94,17 @@ pub fn survey(mut src ByteSource) !Survey {
 	sv.refused = s.refused
 	sv.unresolved = s.unresolved
 	sv.max_queued = s.max_queued
-	sv.max_skew_s = s.max_skew_s
+	sv.max_ahead_s = s.max_ahead_s
 	sv.max_disorder_s = s.max_disorder_s
-	// The buses as parse_recording builds them: a name that covers SEVERAL labels is a name for
-	// none of them (one channel group whose records carry their own BusChannel is two buses
-	// under one acquisition name), and the list is sorted by label.
-	mut names := map[string]string{}
-	mut labels_per_name := map[string]int{}
+	sv.clock_steps = s.clock_steps
+	// the buses as parse_recording builds them: the same fold over the same two maps
+	mut by_label := map[string]int{}
 	for b, n in counts {
-		if n == 0 {
-			continue
-		}
-		nm := if mixed[b] { '' } else { acq_of[b] }
-		names[log.labels[b]] = nm
-		if nm != '' {
-			labels_per_name[nm]++
+		if n > 0 {
+			by_label[log.labels[b]] = n
 		}
 	}
-	for b, n in counts {
-		if n == 0 {
-			continue
-		}
-		lbl := log.labels[b]
-		nm := names[lbl]
-		sv.buses << BusInfo{
-			iface:  lbl
-			name:   if labels_per_name[nm] > 1 { '' } else { nm }
-			frames: n
-		}
-	}
-	sv.buses.sort(a.iface < b.iface)
+	sv.buses = fold_buses(names, by_label)
 	return sv
 }
 

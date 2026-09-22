@@ -18,9 +18,14 @@
 // they go past into per-group queues, the VLSD groups' bytes kept in a bounded RingVlsd the
 // fixed records point into — and a merge over the queues by `(t, record position)`, because an
 // unsorted stream is time-monotone per channel group but not across them (a writer can skew two
-// groups sharing a stream). The merge reads ahead until every frame group has a row queued or
-// the stream ends; a cap bounds that read-ahead and a forced emission past it is counted
-// (`forced`), never hidden — the survey (PR 2) will measure the skew so the cap is a number.
+// groups sharing a stream). The merge reads ahead until every frame group has a row queued, or
+// until the earliest queued row is a look-ahead window (`unsorted_lookahead_s`) behind the
+// record read last — whichever comes first — so a SPARSE group does not make it read to that
+// group's next frame; the survey (step 2) measured a CANedge's disorder at 293 ms and set the
+// window at seven times that. A row cap bounds the read-ahead as memory, and an emission
+// forced by it is counted (`forced`), never hidden. The order is the loader's for a writer
+// whose disorder is within the window; `out_of_order` counts the rows the loader would have
+// placed earlier than a row already handed out when it is not.
 // A frame record may name a payload record that has NOT gone past yet (the loader demuxes the
 // whole stream first and never notices); such a frame is DEFERRED, decoded the moment its
 // bytes arrive, in record order — and at the end of the stream, or past a cap, decoded as it
@@ -53,7 +58,7 @@ mut:
 	heads     []canlog.Row
 	has       []bool
 	done      []bool
-	prev_t    f64
+	max_t     f64 // the latest time handed out: a row behind it is one the loader would have placed earlier
 	have_prev bool
 pub mut:
 	// Counters the design asks to surface rather than hide: forced emissions past the unsorted
@@ -71,11 +76,13 @@ pub mut:
 	// most rows ever queued ahead of an emission (the read-ahead `unsorted_readahead` bounds)
 	// and the furthest an emitted row was behind the latest row read, in seconds — the skew
 	// between channel groups sharing one record stream.
-	max_queued int
-	max_skew_s f64
+	max_queued  int
+	max_ahead_s f64
+	clock_steps int // times an unsorted stream's clock stepped back by more than the window
 	// The writer's DISORDER: the furthest a record read from an unsorted stream was behind the
-	// latest one read before it, in seconds. This is what the merge must look ahead to be right;
-	// the read-ahead above is what it did look ahead.
+	// record read just before it, in seconds. This is what the merge must look ahead to be
+	// right; the read-ahead above is what it did look ahead. A clock that steps back shows here
+	// as the size of the step, once.
 	max_disorder_s f64
 	// the acquisition name of the channel group whose row `next` last returned
 	last_acq string
@@ -161,10 +168,15 @@ pub fn (mut s Stream) next(mut log canlog.Log) ?canlog.Row {
 	s.has[best] = false
 	row := s.heads[best]
 	s.last_acq = s.cursors[best].last_acq()
-	if s.have_prev && row.t_s < s.prev_t {
+	// Against the LATEST row handed out, not the previous one: the loader sorts, so every row
+	// behind any row already out is a row it would have placed earlier — a run of one bus
+	// emitted whole ahead of the other counted as one against the previous row and is the whole
+	// run against the latest (self-review of step 2).
+	if s.have_prev && row.t_s < s.max_t {
 		s.out_of_order++
+	} else {
+		s.max_t = row.t_s
 	}
-	s.prev_t = row.t_s
 	s.have_prev = true
 	return row
 }
@@ -176,8 +188,9 @@ fn (mut s Stream) tally() {
 	mut refused := 0
 	mut unresolved := 0
 	mut max_queued := 0
-	mut max_skew := 0.0
+	mut max_ahead := 0.0
 	mut max_disorder := 0.0
+	mut clock_steps := 0
 	mut err := ''
 	for mut c in s.cursors {
 		if err == '' {
@@ -193,12 +206,13 @@ fn (mut s Stream) tally() {
 			if c.max_queued > max_queued {
 				max_queued = c.max_queued
 			}
-			if c.max_skew > max_skew {
-				max_skew = c.max_skew
+			if c.max_ahead > max_ahead {
+				max_ahead = c.max_ahead
 			}
 			if c.max_disorder > max_disorder {
 				max_disorder = c.max_disorder
 			}
+			clock_steps += c.clock_steps
 		} else if mut c is SortedCursor {
 			refused += c.refused
 		}
@@ -208,7 +222,8 @@ fn (mut s Stream) tally() {
 	s.refused = refused
 	s.unresolved = unresolved
 	s.max_queued = max_queued
-	s.max_skew_s = max_skew
+	s.max_ahead_s = max_ahead
+	s.clock_steps = clock_steps
 	s.max_disorder_s = max_disorder
 	s.err = err
 }
@@ -371,14 +386,25 @@ fn (u &UCg) exhausted() bool {
 // GB has more records than an int counts, and a wrapped ordinal reorders equal-timestamp rows
 // (codex on #342 round 4).
 struct RawRec {
-	raw []u8
-	pos u64
+	raw   []u8
+	pos   u64
+	t     f64 // the record's time, decoded at read time: a deferred frame still has a place in the order
+	epoch int
 }
 
-// Pending is a decoded row and the record position it came from.
+// Pending is a decoded row, the record position it came from, and its EPOCH: which stretch of
+// the recording's clock it belongs to. A logger that re-syncs its clock mid-file writes a
+// stream whose time steps back; a per-group queue is then no longer time-monotone, its
+// pre-step head blocks its post-step rows, and a merge by time alone hands out one bus whole
+// before the other for the rest of the file (found by the self-review of step 2). So a step
+// back by more than the look-ahead window opens a new epoch, and rows merge by (epoch, time,
+// position): everything before the step goes out first, in time order, and the rows after it
+// interleave again — the most a stream can do where the loader's global sort would have put
+// the post-step rows first. `clock_steps` counts them.
 struct Pending {
-	row canlog.Row
-	pos u64
+	row   canlog.Row
+	pos   u64
+	epoch int
 }
 
 // How far past the earliest queued row the merge reads before it emits that row, in seconds
@@ -438,11 +464,21 @@ mut:
 	none_vlsd   MemVlsd
 	// what the survey measures the caps against (see Stream)
 	max_queued   int
-	latest_t     f64 // the latest time of any row queued so far
-	has_latest   bool
-	max_skew     f64
+	last_read_t  f64 // the time of the frame record read last — the reference the window is measured from
+	has_read     bool
+	max_ahead    f64
 	max_disorder f64
+	epoch        int // the current stretch of the clock (see Pending)
+	clock_steps  int
 	last         string // the acquisition name of the group whose row `next` last returned
+	// The earliest row waiting — queued, or deferred for its payload — cached between emissions
+	// so `settled` costs nothing per record read: it can only fall when a group that had nothing
+	// gets its first row (updated in place) and only rise at an emission (recomputed once).
+	head_min      f64
+	head_epoch    int
+	head_any      bool
+	head_deferred bool // the earliest waiting row is a deferred one, which cannot be emitted yet
+	head_dirty    bool
 }
 
 fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, rec_id_size int, unfin bool, group int) &UnsortedCursor {
@@ -553,6 +589,35 @@ fn (c &UnsortedCursor) fits(n u64) bool {
 	return n <= c.stream.remaining()
 }
 
+// note_read records the time of a frame record as it is READ — deferred or not — and measures
+// the writer's disorder against the record read just before it. Not at queue time: a deferred
+// frame queued when its payload arrived read as disorder the writer never had.
+fn (mut c UnsortedCursor) note_read(t f64) {
+	if c.has_read && t < c.last_read_t {
+		if c.last_read_t - t > unsorted_lookahead_s {
+			// further back than any writer's disorder: the clock stepped. A new epoch, counted
+			// apart from the disorder, so the disorder stays the writer's
+			c.epoch++
+			c.clock_steps++
+		} else if c.last_read_t - t > c.max_disorder {
+			c.max_disorder = c.last_read_t - t
+		}
+	}
+	c.last_read_t = t
+	c.has_read = true
+}
+
+// waiting_head folds a row that has just become the FIRST waiting row of its group into the
+// cached earliest head — earliest by (epoch, time).
+fn (mut c UnsortedCursor) waiting_head(t f64, epoch int, deferred bool) {
+	if !c.head_any || epoch < c.head_epoch || (epoch == c.head_epoch && t < c.head_min) {
+		c.head_min = t
+		c.head_epoch = epoch
+		c.head_any = true
+		c.head_deferred = deferred
+	}
+}
+
 // payload_ready says whether the payload a frame record names has gone past: its length
 // prefix and its bytes are within the ring's end. An offset already released is "ready" — the
 // decoder will find nothing and the release is counted there, not here.
@@ -571,7 +636,7 @@ fn payload_ready(lay &CgLayout, raw []u8, base int, ring &RingVlsd) bool {
 
 // decode_into decodes one fixed record of group `ci` into its queue, through whatever its
 // payload source is.
-fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, pos u64, mut log canlog.Log) {
+fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, pos u64, epoch int, mut log canlog.Log) {
 	mut u := &c.cgs[ci]
 	row := if mut ring := c.vlsd[u.lay.vlsd_link] {
 		decode_row(&u.lay, raw, base, mut ring, mut u.labels, mut log)
@@ -591,20 +656,18 @@ fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, pos u64, mut l
 	}
 	if r := row {
 		u.queue << Pending{
-			row: r
-			pos: pos
+			row:   r
+			pos:   pos
+			epoch: epoch
 		}
 		c.queued++
 		if c.queued > c.max_queued {
 			c.max_queued = c.queued
 		}
-		if !c.has_latest || r.t_s > c.latest_t {
-			c.latest_t = r.t_s
-			c.has_latest = true
-		} else if c.latest_t - r.t_s > c.max_disorder {
-			// a record behind one read before it: the writer's disorder, what the look-ahead
-			// window has to cover
-			c.max_disorder = c.latest_t - r.t_s
+		if u.qhead == u.queue.len - 1 && u.deferred.len == 0 {
+			c.waiting_head(r.t_s, epoch, false)
+		} else if c.head_any && c.head_deferred && r.t_s == c.head_min && epoch == c.head_epoch {
+			c.head_deferred = false // the deferred head, decoded
 		}
 	} else {
 		c.refused++
@@ -633,7 +696,7 @@ fn (mut c UnsortedCursor) resolve(ring &RingVlsd, flush bool, mut log canlog.Log
 			if !ready {
 				c.unresolved++
 			}
-			c.decode_into(ci, d.raw, 0, d.pos, mut log)
+			c.decode_into(ci, d.raw, 0, d.pos, d.epoch, mut log)
 			done++
 			freed += u64(d.raw.len)
 		}
@@ -671,7 +734,7 @@ fn (mut c UnsortedCursor) evict(mut log canlog.Log) {
 		c.deferred--
 		c.deferred_b -= u64(d.raw.len)
 		c.unresolved++
-		c.decode_into(oldest, d.raw, 0, d.pos, mut log)
+		c.decode_into(oldest, d.raw, 0, d.pos, d.epoch, mut log)
 		if own := c.vlsd[c.cgs[oldest].lay.vlsd_link] {
 			c.resolve(own, false, mut log)
 		}
@@ -760,6 +823,8 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 		return false
 	}
 	base := c.stream.pos
+	t := time_at(&c.cgs[ci].lay, c.stream.buf, base)
+	c.note_read(t)
 	// Held back while its payload record has not gone past — or while an earlier frame of
 	// its group is held back, so the queue keeps record order. Past the cap the oldest
 	// waiting frame is decoded as it is, and counted.
@@ -770,15 +835,20 @@ fn (mut c UnsortedCursor) read_record(mut log canlog.Log) bool {
 		}
 	}
 	if wait {
+		if c.cgs[ci].deferred.len == 0 && c.cgs[ci].qhead >= c.cgs[ci].queue.len {
+			c.waiting_head(t, c.epoch, true)
+		}
 		c.cgs[ci].deferred << RawRec{
-			raw: c.stream.buf[base..base + size].clone()
-			pos: c.rec_n
+			raw:   c.stream.buf[base..base + size].clone()
+			pos:   c.rec_n
+			t:     t
+			epoch: c.epoch
 		}
 		c.deferred++
 		c.deferred_b += u64(size)
 		c.evict(mut log)
 	} else {
-		c.decode_into(ci, c.stream.buf, base, c.rec_n, mut log)
+		c.decode_into(ci, c.stream.buf, base, c.rec_n, c.epoch, mut log)
 	}
 	c.stream.consume(size)
 	return true
@@ -836,26 +906,41 @@ fn (c &UnsortedCursor) exhausted_all() bool {
 	return true
 }
 
-// settled says the earliest queued row is far enough behind the latest row read that no
+// settled says the earliest waiting row is far enough behind the record read LAST that no
 // record still to come can precede it, by the look-ahead window — so the merge may emit it
-// without waiting for the groups that have nothing queued.
-fn (c &UnsortedCursor) settled() bool {
-	if !c.has_latest {
+// without waiting for the groups that have nothing queued. Against the record read last, not
+// the latest time ever read: a clock that steps back (a logger re-syncing its RTC) pinned an
+// all-time maximum for the rest of the file, and the merge stopped reading ahead altogether —
+// every row of one bus before any of the other (self-review of step 2). And never while the
+// earliest waiting row is a DEFERRED one: it cannot go out yet, and emitting the rows behind
+// it would put it out of order when its payload arrives.
+fn (mut c UnsortedCursor) settled() bool {
+	if c.head_dirty {
+		c.rescan_heads()
+	}
+	if !c.has_read || !c.head_any || c.head_deferred {
 		return false
 	}
-	mut earliest := 0.0
-	mut any := false
+	if c.head_epoch < c.epoch {
+		return true // an earlier epoch's row: nothing still to come is filed before it
+	}
+	return c.last_read_t - c.head_min >= unsorted_lookahead_s
+}
+
+// rescan_heads recomputes the cached earliest waiting row; once per emission, not per record.
+fn (mut c UnsortedCursor) rescan_heads() {
+	c.head_any = false
+	c.head_deferred = false
+	c.head_dirty = false
 	for u in c.cgs {
-		if u.qhead >= u.queue.len {
-			continue
-		}
-		h := u.queue[u.qhead].row.t_s
-		if !any || h < earliest {
-			earliest = h
-			any = true
+		if u.qhead < u.queue.len {
+			h := u.queue[u.qhead]
+			c.waiting_head(h.row.t_s, h.epoch, false)
+		} else if u.deferred.len > 0 {
+			d := u.deferred[0]
+			c.waiting_head(d.t, d.epoch, true)
 		}
 	}
-	return any && c.latest_t - earliest >= unsorted_lookahead_s
 }
 
 fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
@@ -883,7 +968,10 @@ fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
 			continue
 		}
 		b := c.cgs[best].queue[c.cgs[best].qhead]
-		if h.row.t_s < b.row.t_s || (h.row.t_s == b.row.t_s && h.pos < b.pos) {
+		if h.epoch < b.epoch {
+			best = i
+		} else if h.epoch == b.epoch
+			&& (h.row.t_s < b.row.t_s || (h.row.t_s == b.row.t_s && h.pos < b.pos)) {
 			best = i
 		}
 	}
@@ -895,10 +983,10 @@ fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
 	u.qhead++
 	c.queued--
 	c.last = u.acq
-	// how far behind the latest row read this one was when it went out: the skew between the
-	// groups sharing this stream, which is what the read-ahead exists to absorb
-	if c.has_latest && c.latest_t - r.t_s > c.max_skew {
-		c.max_skew = c.latest_t - r.t_s
+	c.head_dirty = true
+	// how far the reader had run ahead of this row when it went out
+	if c.has_read && c.last_read_t - r.t_s > c.max_ahead {
+		c.max_ahead = c.last_read_t - r.t_s
 	}
 	// release what the merge has passed, in halves, so a queue never grows without bound
 	if u.qhead >= 1024 && u.qhead >= u.queue.len / 2 {

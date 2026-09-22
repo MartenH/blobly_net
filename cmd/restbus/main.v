@@ -66,12 +66,12 @@ fn main() {
 			eprintln('restbus: ${o.source}: ${err}')
 			exit(1)
 		}
-		println('${o.source}: ${sv.frames} frames over ${sv.end - sv.t0:.2f}s in ${sv.groups} data group(s)')
+		println('${o.source}: ${sv.frames} frames, earliest ${sv.t0:.3f} s to latest ${sv.end:.3f} s, ${sv.groups} data group(s) with channels')
 		println('${'bus':-14} ${'label':-16} frames')
 		for b in sv.buses {
 			println('${b.name:-14} ${b.iface:-16} ${b.frames}')
 		}
-		println('stream: read-ahead high-water ${sv.max_queued} rows / ${sv.max_skew_s * 1000.0:.1f} ms, writer disorder ${sv.max_disorder_s * 1000.0:.1f} ms, forced ${sv.forced}, evicted ${sv.evicted}, refused ${sv.refused}, unresolved ${sv.unresolved}, out of order ${sv.out_of_order}')
+		println('stream: read-ahead high-water ${sv.max_queued} rows / ${sv.max_ahead_s * 1000.0:.1f} ms, writer disorder ${sv.max_disorder_s * 1000.0:.1f} ms, clock steps ${sv.clock_steps}, forced ${sv.forced}, evicted ${sv.evicted}, refused ${sv.refused}, unresolved ${sv.unresolved}, out of order ${sv.out_of_order}')
 		return
 	}
 	rec := mf4.load_recording(o.source) or {

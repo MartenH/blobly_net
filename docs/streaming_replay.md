@@ -39,7 +39,9 @@ played, FIFO. The arena is the cell of that window, not something the window rep
   file-wide order is `(t_s, DG index, stream position)` and a streaming merge needs no
   ordinals: earlier DG wins a tie, then earlier position. This order was hardened over
   several review rounds (cross-bus interleave of equal-timestamp frames); the golden test is
-  that the stream reproduces `parse_log` exactly.
+  that the stream reproduces `parse_log` exactly — for a writer whose disorder is within the
+  merge's look-ahead window (`unsorted_lookahead_s`, step 2); a clock that steps back opens a
+  new EPOCH and is counted, since no stream can put the rows after it ahead of the rows before.
 - **One caveat**: an unsorted DG's interleaved stream is time-monotone per CHANNEL GROUP, not
   necessarily across them (a writer can skew two groups sharing one stream). The global sort
   today puts them in time order; a streaming cursor over an unsorted DG is therefore a
@@ -177,7 +179,18 @@ import (whole-file by design, 2000-row cap).
    `unsorted_lookahead_s` (2 s) behind the latest row read (`settled`), the row cap staying as
    the memory bound: parked reads with 961 rows queued at most, 0 forced, and a measured
    writer disorder of 293 ms (a CANedge flushes its channels' buffers by turns) — the window is
-   seven times that; `out_of_order` says when it is not enough on another recorder. The six
+   seven times that; `out_of_order` (rows behind a row already handed out, which the loader would
+   have placed earlier) says when it is not enough on another recorder. The self-review then
+   took the window's first shape apart: measured from an all-time maximum time, one clock step
+   back pinned it for the rest of the file and the merge stopped reading ahead; it ignored
+   deferred frames; and a deferred frame flushed late read as disorder. So `settled` measures
+   from the record read LAST, never while the earliest waiting row is a deferred one, over a
+   cached earliest head (recomputed once per emission, not per record); disorder is measured
+   at READ time against the record read just before; and a step back by more than the window
+   opens a new EPOCH (`clock_steps`, counted apart from disorder) — rows merge by (epoch, time,
+   position), so everything before the step goes out first and the rows after it interleave
+   again, the most a stream can do where the loader's sort put them first. The bus-name policy
+   is ONE (`note_bus_name`, `fold_buses`) for the loader and the survey. The six
    private multi-bus recordings (13–15 buses, 0.6–1.24 M frames each, ~60 s) are all SORTED
    data groups: disorder 0, nothing queued, every counter 0, and the survey's buses equal
    `load_recording`'s on each. The heap marks of `mf4_dump` are within a megabyte for the two

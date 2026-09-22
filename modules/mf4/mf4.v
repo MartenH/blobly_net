@@ -144,14 +144,46 @@ fn tally_buses(log &canlog.Log, start int, acq string, mut names map[string]stri
 		}
 		lbl := log.labels[b]
 		counts[lbl] += n
-		if existing := names[lbl] {
-			if existing != acq {
-				names[lbl] = '' // two different names for one label: trust neither
-			}
-		} else {
-			names[lbl] = acq
+		note_bus_name(mut names, lbl, acq)
+	}
+}
+
+// note_bus_name files an acquisition name for a label: the first name a label is seen under is
+// its name, and a SECOND, different one is two names for one bus, which is no name — trust
+// neither. The one rule for the loader's tally and the survey's.
+fn note_bus_name(mut names map[string]string, lbl string, acq string) {
+	if existing := names[lbl] {
+		if existing != acq {
+			names[lbl] = ''
+		}
+	} else {
+		names[lbl] = acq
+	}
+}
+
+// fold_buses is the bus list both readers report from the names and counts they tallied. A
+// name that covers SEVERAL labels is not a name for any of them: one channel group whose
+// records carry their own BusChannel produces two buses under one acquisition name, and handing
+// that name to both would let a caller ask for a bus the file cannot single out — the label
+// pretending to be an identity, which is the thing bus_iface exists to prevent. Sorted by label.
+fn fold_buses(names map[string]string, counts map[string]int) []BusInfo {
+	mut labels_per_name := map[string]int{}
+	for _, nm in names {
+		if nm != '' {
+			labels_per_name[nm]++
 		}
 	}
+	mut buses := []BusInfo{}
+	for iface, n in counts {
+		nm := names[iface] or { '' }
+		buses << BusInfo{
+			iface:  iface
+			name:   if labels_per_name[nm] > 1 { '' } else { nm }
+			frames: n
+		}
+	}
+	buses.sort(a.iface < b.iface)
+	return buses
 }
 
 // read_id_block checks the 64-byte identification block and says whether the file is
@@ -274,29 +306,9 @@ fn parse_recording_unchecked(mut src ByteSource) !Recording {
 		return 0
 	})
 	permute_rows(mut log.rows, idx)
-	// A name that covers SEVERAL labels is not a name for any of them. One channel group whose
-	// records carry their own BusChannel produces two buses under one acquisition name, and
-	// handing that name to both would let a caller ask for a bus the file cannot single out —
-	// the label pretending to be an identity, which is the thing bus_iface exists to prevent.
-	mut labels_per_name := map[string]int{}
-	for _, nm in bus_names {
-		if nm != '' {
-			labels_per_name[nm]++
-		}
-	}
-	mut buses := []BusInfo{}
-	for iface, n in bus_counts {
-		nm := bus_names[iface] or { '' }
-		buses << BusInfo{
-			iface:  iface
-			name:   if labels_per_name[nm] > 1 { '' } else { nm }
-			frames: n
-		}
-	}
-	buses.sort(a.iface < b.iface)
 	return Recording{
 		log:   log
-		buses: buses
+		buses: fold_buses(bus_names, bus_counts)
 	}
 }
 

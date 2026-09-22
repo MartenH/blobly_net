@@ -1787,7 +1787,7 @@ fn test_a_group_whose_time_runs_backwards_is_counted() {
 		log.rows << r
 	}
 	assert log.len() == 3
-	assert s.out_of_order == 1 // 0.030 then 0.010; the loader would have sorted it
+	assert s.out_of_order == 2 // 0.010 and 0.020 are both behind 0.030, already out; the loader would have sorted both ahead of it
 }
 
 // ---- the stream, round 1 of #342: what a loader that demuxes the whole stream never notices ----
@@ -3315,7 +3315,8 @@ fn test_the_survey_measures_the_skew_and_the_read_ahead_of_an_unsorted_group() {
 	sv := survey(mut src) or { panic(err) }
 	assert sv.frames == 5
 	assert sv.groups == 1
-	assert (sv.max_skew_s - 0.040) < 1e-9 && (sv.max_skew_s - 0.040) > -1e-9
+	assert (sv.max_ahead_s - 0.010) < 1e-9 && (sv.max_ahead_s - 0.010) > -1e-9 // 0.010 went out after 0.020 was read
+	assert (sv.max_disorder_s - 0.030) < 1e-9 && (sv.max_disorder_s - 0.030) > -1e-9 // 0.020 read right after 0.050
 	assert sv.max_queued == 3
 	// a sorted file has no groups sharing a stream: nothing to skew, nothing queued
 	p, ids, ts := three()
@@ -3323,7 +3324,7 @@ fn test_the_survey_measures_the_skew_and_the_read_ahead_of_an_unsorted_group() {
 		buf: build_mlsd_file(p, ids, [u32(3), 5, 1])
 	}
 	sv2 := survey(mut src2) or { panic(err) }
-	assert sv2.max_skew_s == 0
+	assert sv2.max_ahead_s == 0
 	assert sv2.max_queued == 0
 	_ = ts
 }
@@ -3399,4 +3400,95 @@ fn test_the_parked_sample_is_merged_without_forcing() {
 	got := stream_log(mut src) or { panic(err) }
 	src.close()
 	assert same_log(got, want)
+}
+
+fn test_a_clock_that_steps_back_does_not_pin_the_window() {
+	// two interleaved groups near 100 s, then the logger's clock steps back to 1 s and the same
+	// interleaving goes on. The loader sorts the post-step rows ahead of everything; the stream
+	// cannot, and counts them — but it must keep MERGING them: with an all-time maximum as the
+	// window's reference it stopped reading ahead and emitted one bus whole before the other
+	mut recs := []URec{}
+	for i in 0 .. 5 {
+		recs << URec{0, 100.0 + 0.010 * f64(i), 0x100, [u8(i)]}
+		recs << URec{1, 100.001 + 0.010 * f64(i), 0x200, [u8(i)]}
+	}
+	for i in 0 .. 8 {
+		recs << URec{0, 1.0 + 0.010 * f64(i), 0x100, [u8(i)]}
+		recs << URec{1, 1.001 + 0.010 * f64(i), 0x200, [u8(i)]}
+	}
+	img := build_unsorted_file(recs)
+	want := parse_log(img) or { panic(err) }
+	log, s := drain(img)
+	assert log.len() == 26
+	// the pre-step rows first, in the loader's relative order (the loader's last ten)...
+	for i in 0 .. 10 {
+		assert log.at(i).t_s == want.at(16 + i).t_s, 'pre-step row ${i}'
+		assert log.at(i).frame.id == want.at(16 + i).frame.id, 'pre-step row ${i}'
+	}
+	// ...then the post-step rows INTERLEAVED, as the loader has them first
+	for i in 0 .. 16 {
+		assert log.at(10 + i).t_s == want.at(i).t_s, 'post-step row ${i}'
+		assert log.at(10 + i).frame.id == want.at(i).frame.id, 'post-step row ${i}'
+	}
+	assert s.out_of_order == 16 // every post-step row is behind a row already out
+	mut src := MemSource{
+		buf: img
+	}
+	sv := survey(mut src) or { panic(err) }
+	assert sv.clock_steps == 1
+	assert sv.max_disorder_s < 0.01 // the interleave's 9 ms; the step is not disorder
+	assert sv.out_of_order == 16
+}
+
+fn test_a_deferred_frame_holds_the_window() {
+	// group B's frame at 10.000 names a payload written after 2,500 group-A frames; the window
+	// would settle A's 10.001 two seconds in, but B@10.000 is the earliest waiting row and
+	// cannot go out yet — so the merge waits, and the order is the loader's
+	mut stream := []u8{}
+	stream << vframe_b(10.000, 0x200, 1, 0)
+	mut off := u32(0)
+	for i in 0 .. 2500 {
+		stream << vpay([u8(i)])
+		stream << vframe(10.001 + 0.001 * f64(i), 0x100, 1, off)
+		off += 5
+	}
+	stream << vother([u8(7)]) // B's payload, at offset 0 of its own group
+	stream << vframe_b(12.600, 0x201, 1, 5)
+	stream << vother([u8(8)])
+	img := build_unsorted_two_frame_groups(stream, 3000)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 2502
+	assert want.at(0).frame.id == 0x200
+	assert want.at(0).frame.data == [u8(7)]
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.out_of_order == 0
+	assert s.unresolved == 0
+	assert s.forced == 0
+}
+
+fn test_disorder_is_measured_against_the_record_read_before() {
+	// a writer flushing two channel buffers by turns: a run of A, then a run of B that starts
+	// behind A's last record — the disorder is that distance, once, not compounded by the
+	// merge's own waiting
+	mut recs := []URec{}
+	for i in 0 .. 10 {
+		recs << URec{0, 1.000 + 0.001 * f64(i), 0x100, [u8(i)]}
+	}
+	for i in 0 .. 10 {
+		recs << URec{1, 0.900 + 0.001 * f64(i), 0x200, [u8(i)]}
+	}
+	for i in 0 .. 10 {
+		recs << URec{0, 1.010 + 0.001 * f64(i), 0x100, [u8(i)]}
+	}
+	img := build_unsorted_file(recs)
+	want := parse_log(img) or { panic(err) }
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.out_of_order == 0
+	mut src := MemSource{
+		buf: img
+	}
+	sv := survey(mut src) or { panic(err) }
+	assert (sv.max_disorder_s - 0.109) < 1e-9 && (sv.max_disorder_s - 0.109) > -1e-9 // 1.009 then 0.900
 }

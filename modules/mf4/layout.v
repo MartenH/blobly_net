@@ -161,6 +161,22 @@ fn resolve_layout(mut src ByteSource, cg u64) ?CgLayout {
 // #342 round 2). Refused in resolve_layout, so the loader and the stream drop the same groups.
 const max_record_stride = 1 << 16
 
+// time_at is a record's time in seconds — the master channel's raw value through the linear
+// conversion — the ONE spelling for decode_row and for the unsorted cursor, which reads it at
+// the record's arrival (deferred or not) to place the record in the merge and to measure the
+// writer's disorder.
+fn time_at(lay &CgLayout, raw []u8, base int) f64 {
+	c_t := lay.c_t
+	raw_t := if c_t.data_type == 4 || c_t.data_type == 5 {
+		math.f64_from_bits(binary.little_endian_u64_at(raw, base + c_t.byte_off))
+	} else if c_t.bit_count > 0 {
+		f64(read_uint(raw, base + c_t.byte_off, int(c_t.bit_off), int(c_t.bit_count)))
+	} else {
+		0.0
+	}
+	return lay.t_off + lay.t_factor * raw_t
+}
+
 // record_count is how many records a group's data of `total` bytes holds: the data length is
 // ground truth, and the declared cg_cycle_count is a sanity cap only when the file is finalized
 // (it is stale in an unfinalized one, and a sorted DT may carry trailing slack that must not be
@@ -181,7 +197,6 @@ fn decode_row(lay &CgLayout, raw []u8, base int, mut vlsd VlsdBytes, mut labels 
 	c_id := lay.c_id
 	c_db := lay.c_db
 	c_len := lay.c_len
-	c_t := lay.c_t
 	c_ide := lay.c_ide
 	c_bus := lay.c_bus
 	c_dir := lay.c_dir
@@ -220,14 +235,7 @@ fn decode_row(lay &CgLayout, raw []u8, base int, mut vlsd VlsdBytes, mut labels 
 	} else {
 		(rid >> 31) & 1 == 1
 	}
-	raw_t := if c_t.data_type == 4 || c_t.data_type == 5 {
-		math.f64_from_bits(binary.little_endian_u64_at(raw, base + c_t.byte_off))
-	} else if c_t.bit_count > 0 {
-		f64(read_uint(raw, base + c_t.byte_off, int(c_t.bit_off), int(c_t.bit_count)))
-	} else {
-		0.0
-	}
-	ts := lay.t_off + lay.t_factor * raw_t
+	ts := time_at(lay, raw, base)
 	mut data := []u8{}
 	// Both payload lookups stay UNSIGNED. The offset and the two length fields are u32 on
 	// the wire, and a corrupt one — 0xFFFFFFF0, or the unwritten filler an unfinalized
