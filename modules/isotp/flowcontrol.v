@@ -133,3 +133,104 @@ pub fn parse_flow_control(data []u8) !FlowControl {
 		stmin_us:   stmin_micros(data[2])
 	}
 }
+
+// fc_total_wait_ms bounds how long ONE transfer may spend waiting for its peer, across every
+// Flow Control it asks for.
+//
+// WHY A SECOND BOUND AT ALL. The two above are per-block and answer a per-block question, and
+// `await_flow_control` resets its wait count on every call -- deliberately, because a receiver
+// that asks to wait, is given time and then accepts a block has done nothing wrong, and a count
+// carried across blocks would abort a long, legitimately paced transfer partway through. That
+// reasoning is right and it leaves NO TOTAL BOUND: at BS=1 a maximum PDU is 585 blocks, so a
+// peer answering `n_wft_max` WAITs per block holds one `send` for 585 x 16 x 1000 ms, about two
+// and a half hours. It does not even need WAIT -- answering every Flow Control at 999 ms is ten
+// minutes. Before #226 the worst case was about a second (#296).
+//
+// WAITING, NOT ELAPSED TIME, and the difference is the whole design. A transfer may legitimately
+// take minutes: 585 Consecutive Frames at the slowest legal separation (STmin 0x7F, 127 ms) is
+// 74 seconds of pacing that ISO 15765-2 entitles the receiver to ask for. Those sleeps are OURS
+// and are not counted. What is counted is time spent blocked on the peer, which a healthy
+// receiver answers in single-digit milliseconds.
+//
+// THE VALUE IS SIZED BY FLASH, which is the real caller and cannot raise it: `flash.program`
+// takes the `Channel` INTERFACE, so no per-channel field is reachable from there, and a bound
+// that aborts a firmware download is worse than the stall it prevents. A maximum PDU at BS=1
+// asks for 584 Flow Controls, so this permits an average of ~205 ms of waiting for each one --
+// a bootloader busy erasing may take tens of milliseconds to answer, and this is an order of
+// magnitude above that. A peer slower than that ON AVERAGE, for the whole transfer, is not
+// working; it is stalling. The per-block bounds still apply and are what an ordinarily slow
+// peer trips first; this one exists for the peer that never trips them.
+//
+// 30 s was the first choice and was too tight by exactly this reasoning: it left ~51 ms per
+// Flow Control, which a real bootloader can exceed without being at fault (self-review).
+//
+// IT DOES NOT MAKE A SEND STOP-RESPONSIVE, which is worth saying plainly: `rebuild_from_proj`
+// waits `drain_budget_ms` = 1500 ms for a run worker, and no bound that accommodates a legal
+// 74-second transfer can also respect that. A parked worker wants `uds.Server.serve` to check
+// `stop` mid-request, which is a different module and a different change.
+pub const fc_total_wait_ms = 120_000
+
+// WaitBudget is what is left of that allowance. Threaded through one transfer, not held on the
+// channel: it belongs to the transfer, and a channel reused for the next one starts again.
+pub struct WaitBudget {
+pub mut:
+	left_us i64
+}
+
+pub fn new_wait_budget() WaitBudget {
+	return new_wait_budget_ms(fc_total_wait_ms)
+}
+
+// new_wait_budget_ms is the allowance a caller states. A value of 0 or less is NOT "no bound" --
+// it is the smallest allowance there is, so a channel field left at zero by a struct literal
+// that forgot it cannot silently restore the two-and-a-half-hour case this exists to close.
+pub fn new_wait_budget_ms(ms int) WaitBudget {
+	if ms <= 0 {
+		return WaitBudget{
+			left_us: 0
+		}
+	}
+	return WaitBudget{
+		left_us: i64(ms) * 1000
+	}
+}
+
+// window_ms is how long the next read may block: the caller's own remaining window, clamped by
+// what is left of the transfer's allowance. Zero or less means the allowance is gone -- the
+// caller reports that rather than reading, since a read of 0 ms is not a refusal.
+pub fn (b WaitBudget) window_ms(want_ms int) int {
+	if b.left_us <= 0 {
+		return 0
+	}
+	left_ms := b.left_us / 1000
+	// A remainder under a millisecond is still time left, and rounding it to 0 would report the
+	// allowance as spent while it is not. One millisecond is the smallest read that means
+	// anything.
+	if left_ms <= 0 {
+		return if want_ms < 1 { want_ms } else { 1 }
+	}
+	if i64(want_ms) > left_ms {
+		return int(left_ms)
+	}
+	return want_ms
+}
+
+// spend_ns subtracts time actually spent blocked. A negative reading -- a clock that went
+// backwards, which is not this clock's contract but costs nothing to refuse -- spends nothing
+// rather than REFUNDING the budget, since a refund is how a bound stops being one.
+pub fn (mut b WaitBudget) spend_ns(ns i64) {
+	if ns <= 0 {
+		return
+	}
+	b.left_us -= ns / 1000
+}
+
+pub fn (b WaitBudget) spent() bool {
+	return b.left_us <= 0
+}
+
+// exhausted_note says which bound was hit, because `timeout` here would name the per-block one
+// and send the reader to the wrong constant.
+pub fn exhausted_note(ms int) string {
+	return 'ISO-TP: transfer spent its ${ms} ms of waiting on the receiver (fc_total_wait_ms) — giving up'
+}
