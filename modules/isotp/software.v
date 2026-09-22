@@ -52,6 +52,16 @@ mut:
 	// the caller read a reply to, and then a segmented send whose drain discarded a LATER reply,
 	// which is exactly what the flag exists to avoid.
 	fc_dirty bool
+pub mut:
+	// How long ONE transfer may spend BLOCKED ON THE PEER, in milliseconds
+	// (`fc_total_wait_ms` for the reasoning and for why our own STmin pacing is not counted).
+	//
+	// A FIELD SO THE BOUND CAN BE EXERCISED: the abort is reachable in a test in milliseconds
+	// instead of two minutes, and a bound nothing exercises is a bound nobody has seen work.
+	// NOT an escape hatch for `flash`, which takes the `Channel` INTERFACE and so cannot reach
+	// this field at all -- the first draft of this comment claimed it could (self-review). The
+	// default is what has to be right for flash, and `fc_total_wait_ms` is sized for it.
+	total_wait_ms int = fc_total_wait_ms
 }
 
 // open_software wraps a freshly opened bus on `iface` as an ISO-TP channel that
@@ -132,7 +142,11 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 // Consecutive Frames it authorises. Split out so `send` can mark the channel dirty on ANY exit
 // from it — there is no path out of here that leaves the peer with nothing more to say.
 fn (mut c SoftChannel) send_segmented(data []u8) ! {
-	mut fc := c.await_flow_control()!
+	// ONE ALLOWANCE FOR THE WHOLE TRANSFER, spent by every Flow Control this send waits for.
+	// Here and not on the channel because it belongs to the transfer: the next send starts
+	// again, as a peer that stalled one request has not forfeited the next (fc_total_wait_ms).
+	mut budget := new_wait_budget_ms(c.total_wait_ms)
+	mut fc := c.await_flow_control(mut budget)!
 	mut sn := u8(1)
 	mut off := 6
 	// When the last Consecutive Frame went out, in monotonic NANOSECONDS. Zero until the first.
@@ -175,7 +189,7 @@ fn (mut c SoftChannel) send_segmented(data []u8) ! {
 		}
 		if off < data.len {
 			// The block is full and there is more: the receiver owes another Flow Control.
-			fc = c.await_flow_control()!
+			fc = c.await_flow_control(mut budget)!
 		}
 	}
 }
@@ -191,10 +205,15 @@ fn (mut c SoftChannel) send_segmented(data []u8) ! {
 // still be arriving when the caller sends the next request, and the first frame met while waiting
 // for Flow Control was one of them — "expected Flow Control" for a peer that had not answered yet
 // (codex round 11 on #225).
-fn (mut c SoftChannel) await_flow_control() !FlowControl {
+fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 	// COUNTED PER WAIT, not per transfer, which is what ISO's N_WFTmax bounds: a receiver that
 	// asks to wait, is given time, then accepts a block, has done nothing wrong — and a counter
 	// carried across blocks would abort a long, legitimately paced transfer partway through.
+	//
+	// THAT IS WHY THE BUDGET IS HERE TOO. The per-wait count and the per-Flow-Control window are
+	// both per block, and nothing bounded the transfer they multiply into (#296). The budget is
+	// the total, spent only by time spent BLOCKED ON THE PEER — never by our own STmin pacing,
+	// which is the receiver's to ask for and can legally run to 74 seconds.
 	mut waits := 0
 	for {
 		deadline := time.ticks() + fc_timeout_ms
@@ -204,7 +223,39 @@ fn (mut c SoftChannel) await_flow_control() !FlowControl {
 			if rem <= 0 {
 				return error('timeout')
 			}
-			raw = c.rx_raw(rem)!
+			// The shorter of this block's remaining window and the transfer's remaining
+			// allowance, so neither bound can be overrun by the other's read.
+			allow := budget.window_ms(rem)
+			if allow <= 0 {
+				return error(exhausted_note(c.total_wait_ms))
+			}
+			// WHICH BOUND SHORTENED THIS READ decides which bound a failure names. When the
+			// allowance is the shorter one the read ends early BY OUR CHOICE, while the
+			// per-block window still had time on it -- so a timeout there is the transfer
+			// running out of patience, not the peer missing its window.
+			//
+			// Reporting `timeout` regardless sent the reader to the per-block constant for
+			// the one case this whole change exists to make legible, and asking `spent()`
+			// instead was not enough either: the last clamped read leaves a sub-millisecond
+			// remainder, so the allowance reads as not-quite-gone at the moment it stops
+			// being usable. Found by the test written for it, which is what it is for.
+			clamped := allow < rem
+			t0 := time.sys_mono_now()
+			raw = c.rx_raw(allow) or {
+				// SPENT EVEN ON THE FAILING PATH: the wait happened, and a bound that only
+				// charges for successful reads is one a stalling peer never pays.
+				budget.spend_ns(time.sys_mono_now() - t0)
+				// ONLY A TIMEOUT. `rx_raw` also reports the carrier failing underneath it --
+				// a closed or closing bus, a terminal driver error -- and rewriting those as
+				// "the transfer spent its allowance waiting on the receiver" would blame the
+				// peer for an adapter somebody unplugged (self-review). A bound may rename a
+				// timeout; it may not rename a fault.
+				if err.msg() == 'timeout' && (clamped || budget.spent()) {
+					return error(exhausted_note(c.total_wait_ms))
+				}
+				return err
+			}
+			budget.spend_ns(time.sys_mono_now() - t0)
 			if raw.len >= 1 && (raw[0] & 0xF0) == 0x20 {
 				continue
 			}
