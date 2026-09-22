@@ -9,8 +9,8 @@
 //
 // It also measures what the stream's caps were set to by guesswork: the read-ahead an unsorted
 // data group actually needed (`max_queued` in rows, against `unsorted_readahead`; `max_ahead_s`
-// in seconds) and the WRITER's disorder (`max_disorder_s`: how far a record was behind the one
-// read just before it, what `unsorted_lookahead_s` must cover). The design says the cap is a
+// in seconds) and the WRITER's disorder (`max_disorder_s`: how far a record was behind the
+// latest time read before it in its epoch, what `unsorted_lookahead_s` must cover). The design says the cap is a
 // number once the survey has measured it; this is where it is measured — and where the
 // measurement replaced the rule (see `settled` in stream.v).
 module mf4
@@ -29,7 +29,7 @@ pub mut:
 	// recorded: a clock that stepped back makes the two differ, and `out_of_order` says so.
 	t0     f64
 	end    f64
-	groups int // data groups read, one cursor each
+	groups int // data groups with a channel-group chain, one cursor each: a group whose channels are not CAN frames counts, an empty data group does not
 	// The stream's counters, folded (see Stream): what the survey asks the caps to be measured
 	// against, and what a replay would have to say about this file.
 	out_of_order   int
@@ -38,8 +38,8 @@ pub mut:
 	refused        int
 	unresolved     int
 	max_queued     int // the most rows an unsorted group ever had queued ahead of an emission
-	max_ahead_s    f64 // the furthest the reader had run ahead of a row when it emitted it, in seconds
-	max_disorder_s f64 // the writer's disorder: the furthest a record was behind the record read just before it
+	max_ahead_s    f64 // the furthest the reader had run ahead (its epoch's latest time read) of a row when it emitted it, in seconds
+	max_disorder_s f64 // the writer's disorder: the furthest a record was behind the latest time read before it in its epoch
 	clock_steps    int // times the clock stepped back by more than the window — counted apart from disorder
 }
 

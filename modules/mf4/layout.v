@@ -194,6 +194,13 @@ fn (lay &CgLayout) record_count(total u64, unfin bool) u64 {
 // for the in-memory loader and the stream. `vlsd` is the payload stream a VLSD group's records
 // point into; `labels` and `log` name the bus.
 fn decode_row(lay &CgLayout, raw []u8, base int, mut vlsd VlsdBytes, mut labels Labels, mut log canlog.Log) ?canlog.Row {
+	return decode_row_at(lay, raw, base, time_at(lay, raw, base), mut vlsd, mut labels, mut log)
+}
+
+// decode_row_at is decode_row with the record's time already decoded — the unsorted cursor
+// reads it at the record's arrival to place the record in the merge, and hands it back here so
+// the hot path decodes it once and a deferred row's time is the one it was filed under.
+fn decode_row_at(lay &CgLayout, raw []u8, base int, ts f64, mut vlsd VlsdBytes, mut labels Labels, mut log canlog.Log) ?canlog.Row {
 	c_id := lay.c_id
 	c_db := lay.c_db
 	c_len := lay.c_len
@@ -235,7 +242,6 @@ fn decode_row(lay &CgLayout, raw []u8, base int, mut vlsd VlsdBytes, mut labels 
 	} else {
 		(rid >> 31) & 1 == 1
 	}
-	ts := time_at(lay, raw, base)
 	mut data := []u8{}
 	// Both payload lookups stay UNSIGNED. The offset and the two length fields are u32 on
 	// the wire, and a corrupt one — 0xFFFFFFF0, or the unwritten filler an unfinalized

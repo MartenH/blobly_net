@@ -3315,7 +3315,7 @@ fn test_the_survey_measures_the_skew_and_the_read_ahead_of_an_unsorted_group() {
 	sv := survey(mut src) or { panic(err) }
 	assert sv.frames == 5
 	assert sv.groups == 1
-	assert (sv.max_ahead_s - 0.010) < 1e-9 && (sv.max_ahead_s - 0.010) > -1e-9 // 0.010 went out after 0.020 was read
+	assert (sv.max_ahead_s - 0.040) < 1e-9 && (sv.max_ahead_s - 0.040) > -1e-9 // 0.010 went out with 0.050 the latest read
 	assert (sv.max_disorder_s - 0.030) < 1e-9 && (sv.max_disorder_s - 0.030) > -1e-9 // 0.020 read right after 0.050
 	assert sv.max_queued == 3
 	// a sorted file has no groups sharing a stream: nothing to skew, nothing queued
@@ -3491,4 +3491,50 @@ fn test_disorder_is_measured_against_the_record_read_before() {
 	}
 	sv := survey(mut src) or { panic(err) }
 	assert (sv.max_disorder_s - 0.109) < 1e-9 && (sv.max_disorder_s - 0.109) > -1e-9 // 1.009 then 0.900
+}
+
+fn test_two_deferred_heads_at_one_millisecond_hold_the_window_for_both() {
+	// X's frame and Y's frame both at 5.000 (millisecond timestamps make ties ordinary), both
+	// deferred for payloads written later. Y's payload comes first; Y's row is decoded and
+	// queued — and X@5.000, still waiting, is still the earliest row. The window must not
+	// settle past it on the strength of Y's row sharing its time (self-review, second pass)
+	mut stream := []u8{}
+	stream << vframe(5.000, 0x100, 1, 0) // X, group 1: payload at the very end
+	stream << vframe_b(5.000, 0x200, 1, 0) // Y, group 3
+	stream << vother([u8(7)]) // Y's payload
+	mut off := u32(5)
+	for i in 0 .. 2500 {
+		stream << vother([u8(i)])
+		stream << vframe_b(5.001 + 0.001 * f64(i), 0x201, 1, off)
+		off += 5
+	}
+	stream << vpay([u8(9)]) // X's payload, at last
+	img := build_unsorted_two_frame_groups(stream, 3000)
+	want := parse_log(img) or { panic(err) }
+	assert want.len() == 2502
+	assert want.at(0).frame.id == 0x100 // X first: same time, earlier record
+	assert want.at(0).frame.data == [u8(9)]
+	log, s := drain(img)
+	assert same_log(log, want)
+	assert s.out_of_order == 0
+	assert s.unresolved == 0
+}
+
+fn test_disorder_is_measured_against_the_epoch_s_latest_time() {
+	// two groups each stepping half a second back from the record before, four records: against
+	// the record read just before each is 0.5 s behind; against the latest time read, the last is
+	// 1.5 s behind — and 1.5 s is what the window had to cover (self-review, second pass)
+	recs := [
+		URec{0, 5.0, 0x100, [u8(1)]},
+		URec{1, 4.5, 0x200, [u8(2)]},
+		URec{0, 4.0, 0x101, [u8(3)]},
+		URec{1, 3.5, 0x201, [u8(4)]},
+	]
+	img := build_unsorted_file(recs)
+	mut src := MemSource{
+		buf: img
+	}
+	sv := survey(mut src) or { panic(err) }
+	assert (sv.max_disorder_s - 1.5) < 1e-9 && (sv.max_disorder_s - 1.5) > -1e-9
+	assert sv.clock_steps == 0 // within the window: disorder, not a step
 }

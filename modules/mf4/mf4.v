@@ -148,6 +148,14 @@ fn tally_buses(log &canlog.Log, start int, acq string, mut names map[string]stri
 	}
 }
 
+// acq_name is a channel group's cg_tx_acq_name — link 2 of the CG block, '' when none — the
+// one spelling for the loader's tally and the stream's cursors, since the survey's names are
+// pinned to the loader's by test and a lookup spelled four times drifts one site at a time.
+fn acq_name(mut src ByteSource, cg u64) string {
+	cgl := block_links(mut src, cg)
+	return read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) })
+}
+
 // note_bus_name files an acquisition name for a label: the first name a label is seen under is
 // its name, and a SECOND, different one is two names for one bus, which is no name — trust
 // neither. The one rule for the loader's tally and the survey's.
@@ -255,9 +263,7 @@ fn parse_recording_unchecked(mut src ByteSource) !Recording {
 				group++
 				// cg_tx_acq_name is link 2. Read AFTER the decode and only over the entries it
 				// produced, so the name follows the frames rather than being guessed at.
-				cgl := block_links(mut src, cg_first)
-				acq := read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) })
-				tally_buses(&log, start, acq, mut bus_names, mut bus_counts)
+				tally_buses(&log, start, acq_name(mut src, cg_first), mut bus_names, mut bus_counts)
 			} else {
 				// Tallied per channel group inside, since each has its own acquisition name.
 				base := seq
@@ -430,9 +436,7 @@ fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, u
 			g++
 			// Each channel group here has its OWN cg_tx_acq_name — sharing a record stream is a
 			// storage detail, not a reason to leave every bus in the file unnamed.
-			cgl := block_links(mut src, c.link)
-			tally_buses(&log, start, read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
-				names, mut counts)
+			tally_buses(&log, start, acq_name(mut src, c.link), mut names, mut counts)
 		}
 	}
 	return g

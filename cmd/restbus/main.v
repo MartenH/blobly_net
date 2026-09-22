@@ -66,7 +66,7 @@ fn main() {
 			eprintln('restbus: ${o.source}: ${err}')
 			exit(1)
 		}
-		println('${o.source}: ${sv.frames} frames, earliest ${sv.t0:.3f} s to latest ${sv.end:.3f} s, ${sv.groups} data group(s) with channels')
+		println('${o.source}: ${sv.frames} frames, earliest ${sv.t0:.3f} s to latest ${sv.end:.3f} s, ${sv.groups} data group(s) read')
 		println('${'bus':-14} ${'label':-16} frames')
 		for b in sv.buses {
 			println('${b.name:-14} ${b.iface:-16} ${b.frames}')

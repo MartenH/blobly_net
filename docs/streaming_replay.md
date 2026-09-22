@@ -184,13 +184,16 @@ import (whole-file by design, 2000-row cap).
    took the window's first shape apart: measured from an all-time maximum time, one clock step
    back pinned it for the rest of the file and the merge stopped reading ahead; it ignored
    deferred frames; and a deferred frame flushed late read as disorder. So `settled` measures
-   from the record read LAST, never while the earliest waiting row is a deferred one, over a
-   cached earliest head (recomputed once per emission, not per record); disorder is measured
-   at READ time against the record read just before; and a step back by more than the window
-   opens a new EPOCH (`clock_steps`, counted apart from disorder) — rows merge by (epoch, time,
-   position), so everything before the step goes out first and the rows after it interleave
-   again, the most a stream can do where the loader's sort put them first. The bus-name policy
-   is ONE (`note_bus_name`, `fold_buses`) for the loader and the survey. The six
+   from the EPOCH's latest time read, never while the earliest waiting row is a deferred one,
+   over a cached earliest head (recomputed once per emission or per deferred change, not per
+   record); disorder is measured at READ time against the epoch's latest time, which is what
+   the window has to cover (against the record read just before, a staircase of half-second
+   hops read as half a second); and a step back by more than the window opens a new EPOCH
+   (`clock_steps`, counted apart from disorder) — rows merge by (epoch, time, position), so
+   everything before the step goes out first and the rows after it interleave again, the most a
+   stream can do where the loader's sort put them first. The record's time is decoded ONCE per
+   record (`time_at`, `decode_row_at`), the acquisition name looked up in ONE place (`acq_name`),
+   and the bus-name policy is ONE (`note_bus_name`, `fold_buses`) for the loader and the survey. The six
    private multi-bus recordings (13–15 buses, 0.6–1.24 M frames each, ~60 s) are all SORTED
    data groups: disorder 0, nothing queued, every counter 0, and the survey's buses equal
    `load_recording`'s on each. The heap marks of `mf4_dump` are within a megabyte for the two
