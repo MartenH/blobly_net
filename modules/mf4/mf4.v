@@ -29,11 +29,8 @@
 // then N u64 links, then a type-specific data section.
 module mf4
 
-import os
-import compress.zlib
 import encoding.binary
 import math
-import transport
 import canlog
 
 // A CAN or CAN-FD frame carries at most 64 payload bytes, whatever a damaged length field in
@@ -101,19 +98,28 @@ pub:
 // load_recording parses a file and also reports its buses. Same work as load_file — the bus
 // list is a by-product of the one walk, not a second pass, so the two cannot disagree.
 pub fn load_recording(path string) !Recording {
-	buf := os.read_bytes(path)!
-	return parse_recording(buf)!
+	mut src := open_source(path)!
+	defer {
+		src.close()
+	}
+	return parse_recording(mut src)!
 }
 
 // parse reads an in-memory MDF4 image. Split out from load_file so callers/tests
 // can feed bytes directly.
 pub fn parse(buf []u8) ![]canlog.LogEntry {
-	return parse_recording(buf)!.log.entries()
+	mut src := MemSource{
+		buf: buf
+	}
+	return parse_recording(mut src)!.log.entries()
 }
 
 // parse_log is parse into the arena: what a replay loads.
 pub fn parse_log(buf []u8) !canlog.Log {
-	return parse_recording(buf)!.log
+	mut src := MemSource{
+		buf: buf
+	}
+	return parse_recording(mut src)!.log
 }
 
 // load_log is load_file into the arena.
@@ -148,15 +154,32 @@ fn tally_buses(log &canlog.Log, start int, acq string, mut names map[string]stri
 	}
 }
 
-fn parse_recording(buf []u8) !Recording {
-	if buf.len < 64 {
+// read_id_block checks the 64-byte identification block and says whether the file is
+// UNFINALIZED (`UnFinMF `: a logger that powered off before finalizing, whose counts and last
+// block length are stale). ONE check for the loader and the stream.
+fn read_id_block(mut src ByteSource) !bool {
+	if src.size() < 64 {
 		return error('not an MDF file (bad id block)')
 	}
-	magic := buf[0..8].bytestr()
+	magic := bytes_at(mut src, 0, 8).bytestr()
 	unfin := magic.starts_with('UnFinMF')
 	if !magic.starts_with('MDF') && !unfin {
 		return error('not an MDF file (bad id block)')
 	}
+	return unfin
+}
+
+fn parse_recording(mut src ByteSource) !Recording {
+	rec := parse_recording_unchecked(mut src)!
+	f := src.failure()
+	if f != '' {
+		return error(f)
+	}
+	return rec
+}
+
+fn parse_recording_unchecked(mut src ByteSource) !Recording {
+	unfin := read_id_block(mut src)!
 	mut log := canlog.Log{}
 	// Tie-break key, one per entry, on ONE monotone scale across the whole file: the position of
 	// the record that produced it. Sorting by timestamp alone reorders frames that share one,
@@ -168,19 +191,20 @@ fn parse_recording(buf []u8) !Recording {
 	mut order := []int{}
 	mut seq := 0
 	// HDBLOCK is at the fixed offset 64; its first link is the first DGBLOCK.
-	hd := block_links(buf, 64)
+	hd := block_links(mut src, 64)
 	mut dg := if hd.len > 0 { hd[0] } else { u64(0) }
 	mut group := 0 // ordinal of the CAN_DataFrame group, for files without a BusChannel
 	mut bus_names := map[string]string{}
 	mut bus_counts := map[string]int{}
 	for dg != 0 {
-		dgl := block_links(buf, dg)
-		dg_data_off := data_off(buf, dg)
-		rec_id_size := buf[dg_data_off]
+		dgl := block_links(mut src, dg)
+		dg_data_off := data_off(mut src, dg)
+		rec_id_size := u8_at(mut src, dg_data_off)
 		cg_first := if dgl.len > 1 { dgl[1] } else { u64(0) }
 		data_link := if dgl.len > 2 { dgl[2] } else { u64(0) }
 		if cg_first != 0 {
-			raw := read_data_block(buf, data_link, unfin)!
+			check_rec_id_size(int(rec_id_size))!
+			raw := read_data_block(mut src, data_link, unfin)!
 			start := log.rows.len
 			if rec_id_size == 0 {
 				// Sorted: one CG per DG, the data block is its record stream.
@@ -190,7 +214,7 @@ fn parse_recording(buf []u8) !Recording {
 				// and the sequence stays ascending. Only the unsorted path indexes ordinals by
 				// record, and only that one breaks when a record produces no entry.
 				mut idxs := []int{}
-				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut idxs, mut log)!
+				parse_cg(mut src, cg_first, raw, unfin, map[u64][]u8{}, group, mut idxs, mut log)!
 				// One entry per ENTRY, in record order, so the counter IS the sequence position.
 				for _ in before .. log.rows.len {
 					order << seq
@@ -199,15 +223,15 @@ fn parse_recording(buf []u8) !Recording {
 				group++
 				// cg_tx_acq_name is link 2. Read AFTER the decode and only over the entries it
 				// produced, so the name follows the frames rather than being guessed at.
-				cgl := block_links(buf, cg_first)
-				acq := read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) })
+				cgl := block_links(mut src, cg_first)
+				acq := read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) })
 				tally_buses(&log, start, acq, mut bus_names, mut bus_counts)
 			} else {
 				// Tallied per channel group inside, since each has its own acquisition name.
 				base := seq
 				before := log.rows.len
-				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut log, mut
-					bus_names, mut bus_counts, mut order)!
+				group = demux_unsorted(mut src, cg_first, raw, int(rec_id_size), unfin, group, mut
+					log, mut bus_names, mut bus_counts, mut order)!
 				// demux appends this group's INTERLEAVED record ordinals; lift them onto the
 				// file-wide scale so ties never compare a per-group ordinal against a global one.
 				mut top := base
@@ -282,6 +306,11 @@ struct CgInfo {
 	rec_id u64
 	vlsd   bool // cg_flags bit 0: variable-length records (4-byte size prefix)
 	size   int  // fixed record size (data + invalidation bytes)
+	// A record id an EARLIER group of this data group already declared. The demux hands a record
+	// to the first group claiming its id; a later claimant gets no records at all, rather than
+	// decoding the first group's bytes a second time under its own label (which is what keying
+	// the per-id streams alone did). The stream's cursor makes the same choice.
+	dup bool
 }
 
 // demux_unsorted splits an unsorted DG's record stream (records from several
@@ -292,20 +321,23 @@ struct CgInfo {
 // concatenation, and their cn_data link names the VLSD CG block (this is how
 // CANedge stores classic-CAN DataBytes).
 // Returns the next free group ordinal, so numbering stays unique across data groups.
-fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
+fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
 	mut log canlog.Log, mut names map[string]string, mut counts map[string]int, mut order []int) !int {
 	mut cgs := []CgInfo{}
+	mut claimed := map[u64]bool{}
 	mut cgi := cg_first
 	for cgi != 0 {
-		cgd := data_off(buf, cgi)
+		cgd := data_off(mut src, cgi)
+		rid := u64_at(mut src, cgd)
 		cgs << CgInfo{
 			link:   cgi
-			rec_id: binary.little_endian_u64_at(buf, cgd)
-			vlsd:   binary.little_endian_u16_at(buf, cgd + 16) & 1 == 1
-			size:   int(binary.little_endian_u32_at(buf, cgd + 24)) +
-				int(binary.little_endian_u32_at(buf, cgd + 28))
+			rec_id: rid
+			vlsd:   u16_at(mut src, cgd + 16) & 1 == 1
+			size:   record_size(u32_at(mut src, cgd + 24), u32_at(mut src, cgd + 28))
+			dup:    rid in claimed
 		}
-		l := block_links(buf, cgi)
+		claimed[rid] = true
+		l := block_links(mut src, cgi)
 		cgi = if l.len > 0 { l[0] } else { u64(0) }
 	}
 	mut streams := map[u64][]u8{} // fixed-length CGs, keyed by record id
@@ -316,6 +348,14 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 	mut ordinals := map[u64][]int{}
 	mut rec_n := 0
 	mut vlsd_streams := map[u64][]u8{} // VLSD CGs, keyed by CG block address
+	for c in cgs {
+		if c.vlsd {
+			// declared here even with no record in the stream: a frame group naming a VLSD group
+			// that wrote nothing is a frame group with no payloads, not a data link to a CG
+			// block — which is what read_data_block was handed, failing the whole file
+			vlsd_streams[c.link] = []u8{}
+		}
+	}
 	mut pos := 0
 	outer: for pos + rec_id_size <= raw.len {
 		rid := read_uint(raw, pos, 0, rec_id_size * 8)
@@ -331,15 +371,20 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 				if pos + 4 > raw.len {
 					break outer
 				}
-				n := int(binary.little_endian_u32_at(raw, pos))
-				if pos + 4 + n > raw.len {
+				// UNSIGNED, and bounded before it slices: the filler an unfinalized file's
+				// extended last block decodes as records reads as 0xFFFFFFF0, which as an int is
+				// negative — the bounds test passed and the slice ran backwards, aborting the
+				// process on one bad record (found by the stream's golden test, #172 step 1).
+				n64 := u64(binary.little_endian_u32_at(raw, pos))
+				if n64 > u64(raw.len - pos - 4) {
 					break outer
 				}
+				n := int(n64)
 				vlsd_streams[c.link] << raw[pos..pos + 4 + n] // keep the length prefix
 				pos += 4 + n
 			} else {
-				if pos + c.size > raw.len {
-					break outer
+				if c.size < 0 || pos + c.size > raw.len {
+					break outer // a corrupt width, or a record past the end
 				}
 				streams[c.rec_id] << raw[pos..pos + c.size]
 				ordinals[c.rec_id] << rec_n
@@ -356,8 +401,9 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 		if !c.vlsd {
 			start := log.rows.len
 			mut idxs := []int{}
-			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
-				idxs, mut log)!
+			// a duplicate claimant decodes nothing (see CgInfo.dup) but still counts as a group
+			recs := if c.dup { []u8{} } else { streams[c.rec_id] or { []u8{} } }
+			parse_cg(mut src, c.link, recs, unfin, vlsd_streams, g, mut idxs, mut log)!
 			// BY RECORD INDEX, not by position in `out`. A record the decoder refused — an
 			// undefined id, a remote frame whose requested length is unknown — produces no
 			// entry, so the two lists stop lining up at the first skip and everything after it
@@ -372,8 +418,8 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 			g++
 			// Each channel group here has its OWN cg_tx_acq_name — sharing a record stream is a
 			// storage detail, not a reason to leave every bus in the file unnamed.
-			cgl := block_links(buf, c.link)
-			tally_buses(&log, start, read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
+			cgl := block_links(mut src, c.link)
+			tally_buses(&log, start, read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
 				names, mut counts)
 		}
 	}
@@ -408,333 +454,35 @@ struct Chan {
 // frames from another channel group would then sort into the wrong order and replay in a
 // cross-bus sequence the recording never had, which is the one property multibus replay exists
 // to preserve (codex #175 r3).
-fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int, mut rec_idx []int,
+fn parse_cg(mut src ByteSource, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int, mut rec_idx []int,
 	mut log canlog.Log) ! {
 	mut labels := new_labels(group)
-	cgl := block_links(buf, cg)
-	cg_d := data_off(buf, cg)
-	declared := binary.little_endian_u64_at(buf, cg_d + 8)
-	data_bytes := int(binary.little_endian_u32_at(buf, cg_d + 24))
-	inval_bytes := int(binary.little_endian_u32_at(buf, cg_d + 28))
-	cn_first := if cgl.len > 1 { cgl[1] } else { u64(0) }
-
-	// Collect leaf channels (recursing struct compositions like CAN_DataFrame).
-	mut chans := []Chan{}
-	collect_channels(buf, cn_first, mut chans)
-	// WHICH KIND of group. A recording carries CAN_RemoteFrame groups beside its CAN_DataFrame
-	// ones, and every channel in them is named under that prefix instead — so the DataFrame
-	// lookups all missed and the group was skipped in silence, taking its frames with it (#131).
-	// Absent, not mislabelled: the trace's request/response split could never appear for an MF4
-	// import while identical traffic from a candump showed it.
-	//
-	// One parser, parameterised, rather than a second one beside it: the identity, timing,
-	// bus-channel, direction and invalidation handling are the same work, and a copy of that
-	// much record striding is a copy that drifts.
-	mut prefix := 'CAN_DataFrame'
-	if _ := find_chan(chans, 'CAN_DataFrame.ID') {
-		prefix = 'CAN_DataFrame'
-	} else if _ := find_chan(chans, 'CAN_RemoteFrame.ID') {
-		prefix = 'CAN_RemoteFrame'
-	} else {
-		return
-	}
-	remote := prefix == 'CAN_RemoteFrame'
-	c_id := find_chan(chans, '${prefix}.ID') or { return }
-	// A remote frame REQUESTS data and carries none, so it has no DataBytes channel and there is
-	// nothing to require. Left empty rather than looked up: an absent Chan reads bit_count 0 and
-	// byte_off 0, which the payload branches below must never be allowed to treat as a field —
-	// see the `remote` branch, which never reaches them.
-	c_db := if remote {
-		Chan{}
-	} else {
-		find_chan(chans, 'CAN_DataFrame.DataBytes') or { return }
-	}
-	// DLC FIRST on a remote group, and that order is the point. A remote frame states the length
-	// it is ASKING for and carries no bytes, so a writer that emits both channels can perfectly
-	// reasonably record DataLength as 0 — there is no payload for a byte count to describe —
-	// while the requested length sits in DLC. Preferring DataLength there imports an `R8` as an
-	// `R0` and replays it as one: a request for eight bytes turned into a request for none,
-	// which the receiving ECU answers differently or not at all (codex #175 r1).
-	//
-	// The data path keeps the opposite preference for the opposite reason: there DataLength
-	// states bytes outright while a DLC has to be decoded, and above 8 the two part company.
-	c_len := if remote {
-		find_chan(chans, 'CAN_RemoteFrame.DLC') or {
-			find_chan(chans, 'CAN_RemoteFrame.DataLength') or { return }
-		}
-	} else {
-		find_chan(chans, 'CAN_DataFrame.DataLength') or {
-			find_chan(chans, 'CAN_DataFrame.DLC') or { return }
-		}
-	}
-	// Whether that channel counts BYTES. DataLength does; DLC is the wire code, and above 8 the
-	// two part company — a CAN-FD DLC of 15 means 64 bytes. Only the byte count can be compared
-	// against a payload length, so a file carrying just DLC gets the ceiling check and not the
-	// agreement check.
-	len_is_bytes := c_len.name == '${prefix}.DataLength'
-	// The time master is identified by cn_type==2, not its name (Vector calls it
-	// 't', python-can 'time'); fall back to a 't' lookup just in case.
-	c_t := find_master(chans) or { find_chan(chans, 't') or { Chan{} } }
-	// Vector packs the IDE flag into ID bit 31; CANedge gives it its own 1-bit
-	// channel (the 29-bit ID is masked to its declared bit count, so bit 31 is 0).
-	c_ide := find_chan(chans, '${prefix}.IDE') or { Chan{} }
-	// WHICH BUS. A recording carries several buses — each CAN_DataFrame group is one, and the
-	// standard BusChannel field names it per record. Labelling every frame 'can' merged them:
-	// 0x100 from CAN1 and 0x100 from CAN3 became one interleaved stream, and one row in the
-	// grouped view whose count was two different messages added together.
-	c_bus := find_chan(chans, '${prefix}.BusChannel') or { Chan{} }
-	// DIRECTION, as the recording states it: 0 = the device received the frame, 1 = it
-	// transmitted. It says what the RECORDER did, not what we would have done — in a foreign
-	// capture a `tx` frame is that recorder's own traffic. Dropped until now; it is the only
-	// provenance a file can carry, and a candump has none at all.
-	c_dir := find_chan(chans, '${prefix}.Dir') or { Chan{} }
-	// EDL — the CAN-FD flag, present only on groups that record FD. It is what makes a DLC above
-	// 8 mean anything: without it, 9..15 could be 12..64 bytes or could be plain 8.
-	c_edl := find_chan(chans, 'CAN_DataFrame.EDL') or { Chan{} }
-	// BRS — the data phase ran at the faster rate. Recorded per frame alongside EDL.
-	c_brs := find_chan(chans, 'CAN_DataFrame.BRS') or { Chan{} }
-	// ESI — the transmitter was error-passive. A capture that recorded a degrading bus must not
-	// replay as a healthy one, which is the whole reason the flag is carried at all.
-	c_esi := find_chan(chans, 'CAN_DataFrame.ESI') or { Chan{} }
-
-	stride := data_bytes + inval_bytes
-	if stride <= 0 {
-		return
-	}
-	// Record count: the data length is ground truth; the declared cg_cycle_count
-	// is a sanity cap only when the file is finalized (it is stale in unfinalized
-	// files, and a sorted DT may carry trailing slack we must not decode).
-	mut cycles := u64(recs.len / stride)
-	if !unfin && declared > 0 && declared < cycles {
-		cycles = declared
-	}
-	// CAN-FD groups store DataBytes as VLSD: a separate signal-data block holding
-	// length-prefixed entries, with each record carrying the byte offset into it.
-	// Classic groups use MLSD: the payload is inline in the record (length =
-	// DataLength). cn_type 1 = VLSD, 5 = MLSD.
-	is_vlsd := c_db.cn_type == 1
+	lay := resolve_layout(mut src, cg) or { return }
+	cycles := lay.record_count(u64(recs.len), unfin)
 	// VLSD source: in a sorted file cn_data links an SD/DZ block; in an unsorted
 	// one it names the VLSD channel GROUP, whose records were concatenated into
 	// vlsd_streams during demux.
-	vlsd := if !is_vlsd {
-		[]u8{}
-	} else if c_db.data_link in vlsd_streams {
-		vlsd_streams[c_db.data_link] or { []u8{} }
-	} else {
-		read_data_block(buf, c_db.data_link, unfin)!
+	mut vlsd := VlsdBytes(MemVlsd{})
+	if lay.is_vlsd {
+		vlsd = if lay.vlsd_link in vlsd_streams {
+			MemVlsd{
+				buf: vlsd_streams[lay.vlsd_link] or { []u8{} }
+			}
+		} else {
+			MemVlsd{
+				buf: read_data_block(mut src, lay.vlsd_link, unfin)!
+			}
+		}
 	}
-	// Master-time scale: raw value (usually integer nanoseconds) -> seconds via a
-	// linear CCBLOCK (t = off + factor*raw); identity if no conversion.
-	t_off, t_factor := cc_linear(buf, c_t.cc_link)
-	raw := recs
 	for k := u64(0); k < cycles; k++ {
-		base := int(k) * stride
-		if base + data_bytes > raw.len {
+		base := int(k) * lay.stride
+		if base + lay.data_bytes > recs.len {
 			break
 		}
-		// IDENTITY FIRST, and a record whose identity is undefined is not a record. An MDF
-		// invalidation flag — channel-wide or per record — says these bits mean nothing, and
-		// reading them anyway produces a frame under a plausible id that the recording never
-		// stated. Unlike an optional field, there is no degraded answer available: an id is not
-		// something a frame can lack, and IDE decides whether the id is 11 or 29 bits, so an
-		// undefined one changes which frame this is. Skipped rather than guessed, because these
-		// entries are REPLAYED — a guess here puts traffic on a real bus that no recording ever
-		// contained (codex #175 r2).
-		//
-		// Applies to data frames as much as to remote ones. The finding was raised against the
-		// remote path this PR adds, but the read is shared, and the consequence — an invented
-		// id, transmitted — does not become acceptable because the frame carries a payload.
-		if chan_invalid(raw, base, data_bytes, inval_bytes, c_id) {
-			continue
-		}
-		if c_ide.bit_count > 0 && chan_invalid(raw, base, data_bytes, inval_bytes, c_ide) {
-			continue
-		}
-		rid := read_uint(raw, base + c_id.byte_off, int(c_id.bit_off), int(c_id.bit_count))
-		ide := if c_ide.bit_count > 0 {
-			read_uint(raw, base + c_ide.byte_off, int(c_ide.bit_off), int(c_ide.bit_count)) == 1
-		} else {
-			(rid >> 31) & 1 == 1
-		}
-		raw_t := if c_t.data_type == 4 || c_t.data_type == 5 {
-			math.f64_from_bits(binary.little_endian_u64_at(raw, base + c_t.byte_off))
-		} else if c_t.bit_count > 0 {
-			f64(read_uint(raw, base + c_t.byte_off, int(c_t.bit_off), int(c_t.bit_count)))
-		} else {
-			0.0
-		}
-		ts := t_off + t_factor * raw_t
-		mut data := []u8{}
-		// Both payload lookups stay UNSIGNED. The offset and the two length fields are u32 on
-		// the wire, and a corrupt one — 0xFFFFFFF0, or the unwritten filler an unfinalized
-		// file's extended last block decodes as records — becomes NEGATIVE as a signed int.
-		// The bounds tests then pass (a negative start is `<=` anything) and the slice runs off
-		// the front of the array, which aborts the process instead of skipping one bad record.
-		// A malformed file must cost its frame, not the measurement.
-		if remote {
-			// A remote frame carries NO bytes; it names the DLC it is requesting. The live
-			// representation of that is a zero-filled payload of the requested length — what
-			// SocketCAN hands a receiver, and exactly what modules/canlog builds from a
-			// candump `200#R8`. Matching it is the point: the same traffic imported from the
-			// two formats must produce the same frame, or the trace's request/response split
-			// depends on which file it was read from.
-			//
-			// CLASSIC ONLY, so the DLC is decoded with fd=false. CAN-FD has no remote frames at
-			// all — the RTR bit is what FD reused for its own signalling — so an FD reading of
-			// codes 9..15 would invent a 64-byte request that cannot exist. A code that still
-			// resolves above 8 is refused rather than clamped, on the same reasoning the two
-			// payload branches below already apply to a length they cannot trust.
-			// INVALIDATION FIRST. An MDF record can mark a channel's value undefined, and the
-			// bits then hold whatever the writer left there. Read regardless, stale bits become
-			// a plausible request length and the frame replays asking for bytes the recording
-			// never said were asked for — the other optional fields in this parser all consult
-			// chan_invalid for exactly this, and a length has more consequence than most
-			// (codex #175 r1).
-			// SKIPPED when the length is unknown, not emitted empty. For a data frame an absent
-			// payload is a frame we can still place on the bus honestly; for a remote frame the
-			// DLC IS the message — `R0` and `R8` are different requests, and an ECU answers them
-			// differently or not at all. So leaving `data` empty here does not withhold a
-			// doubtful detail, it states a specific request the recording never made, and these
-			// entries are replayed onto real buses. The first version of this branch did exactly
-			// that: it turned a stale R8 into an invented R0 and called it caution (codex
-			// #175 r2).
-			//
-			// Three ways the length can be unknown, one answer: the record says the channel is
-			// invalid, the code is not a four-bit DLC at all, or it resolves above 8 — which no
-			// classic remote frame can request, and CAN-FD has none to reinterpret it as.
-			if chan_invalid(raw, base, data_bytes, inval_bytes, c_len) {
-				continue
-			}
-			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off),
-				int(c_len.bit_count))
-			// Whichever channel was chosen above: a DataLength states bytes outright, a DLC is a
-			// code to decode. Deciding by name rather than assuming DLC keeps the fallback honest
-			// for a writer that records only DataLength.
-			resolved := if len_is_bytes { ?u64(stated) } else { dlc_bytes(stated, false) }
-			n := resolved or { continue }
-			if n > 8 {
-				continue
-			}
-			data = []u8{len: int(n)}
-		} else if is_vlsd {
-			off := read_uint(raw, base + c_db.byte_off, int(c_db.bit_off), int(c_db.bit_count))
-			// SUBTRACTION, never `off + 4`: the offset field's width is declared by the file, and
-			// a 64-bit one holding 0xFFFF_FFFF_FFFF_FFFF makes `off + 4` wrap to 3. The bounds
-			// test would pass on the wrapped value and int(off) would go negative — the same
-			// abort as reading it signed, arrived at from the other end.
-			if u64(vlsd.len) >= 4 && off <= u64(vlsd.len) - 4 {
-				n := u64(binary.little_endian_u32_at(vlsd, int(off)))
-				end := off + 4 + n // no overflow: off is within the block and n is a u32
-				// The length prefix is checked against what the RECORD says, not just against
-				// the block's bounds. A damaged prefix that still lands inside the block would
-				// otherwise swallow the next entry's prefix and hand back a frame with bytes
-				// that were never its own — inventing payload is worse than dropping it, because
-				// nothing downstream can tell that it happened.
-				stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off),
-					int(c_len.bit_count))
-				// What the record says the length is — DataLength states it outright, a DLC has
-				// to be decoded, and a DLC above 8 without EDL states nothing decidable at all.
-				// `none` means the record cannot contradict the prefix, so only the ceiling and
-				// the block's bounds apply. It is not a licence to accept anything.
-				expect := if len_is_bytes {
-					?u64(stated)
-				} else {
-					fd := c_edl.bit_count > 0
-						&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1
-					dlc_bytes(stated, fd)
-				}
-				// `none` is NOT permission. It means the record states no resolvable length —
-				// a DLC outside 0..15 — and accepting the prefix on that basis replays a
-				// payload whose only corroboration is the damaged field itself. The inline
-				// branch refuses the identical doubt; these two must not disagree.
-				agrees := if want := expect { n == want } else { false }
-				if n <= max_can_payload && end <= u64(vlsd.len) && agrees {
-					data = vlsd[int(off) + 4..int(end)] // copied into the row below, never kept
-				}
-			}
-		} else {
-			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off),
-				int(c_len.bit_count))
-			// A DLC is a CODE. Without decoding it, a classic frame carrying DLC 9..15 (legal,
-			// and meaning 8 bytes) reads as a length of 9..15, overruns the record's DataBytes
-			// field and yields NO payload — a regression the byte-count path never sees because
-			// DataLength already states bytes.
-			fd_here := c_edl.bit_count > 0
-				&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_edl)
-				&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1
-			// A DLC the format cannot resolve (out of range in a damaged record) means the
-			// length is UNKNOWN. Falling back to 8 accepted the first eight bytes of the field
-			// as a frame — inventing a payload from a record that says nothing trustworthy.
-			// Refused instead, which is what the VLSD branch does with the same doubt.
-			resolved := if len_is_bytes { ?u64(stated) } else { dlc_bytes(stated, fd_here) }
-			n := resolved or { u64(0) }
-			usable := resolved != none
-			dstart := u64(base + c_db.byte_off)
-			// The DataBytes FIELD, not the whole record: bounding by the record would let a
-			// damaged length run into whatever channel is stored after the payload and return
-			// those bytes as though a frame had carried them.
-			field := if c_db.bit_count > 0 { u64(c_db.bit_count / 8) } else { u64(data_bytes) }
-			mut limit := dstart + field
-			if limit > u64(base + data_bytes) {
-				limit = u64(base + data_bytes)
-			}
-			// REFUSED, not clamped. A length that overruns the record is a length we cannot
-			// trust, and trimming it to the record boundary returns whatever the inline
-			// DataBytes array was padded with — or the channel stored after it — as though a
-			// frame had carried those bytes. A well-formed record never reaches this: its
-			// payload fits by construction. Inventing bytes is worse than reporting none,
-			// because only one of the two is visible downstream.
-			if usable && n <= max_can_payload && dstart <= limit && n <= limit - dstart {
-				data = raw[int(dstart)..int(dstart + n)] // copied into the row below, never kept
-			}
-		}
-		bus_no := if c_bus.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_bus) {
-			int(read_uint(raw, base + c_bus.byte_off, int(c_bus.bit_off), int(c_bus.bit_count)))
-		} else {
-			-1 // absent, or this record says the field is not defined: fall back to the group
-		}
-		dir := if c_dir.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_dir) {
-			if read_uint(raw, base + c_dir.byte_off, int(c_dir.bit_off), int(c_dir.bit_count)) == 1 {
-				canlog.Dir.tx
-			} else {
-				canlog.Dir.rx
-			}
-		} else {
-			canlog.Dir.unknown // absent, or this record says the field is not defined
-		}
-		// CAN-FD, as the recording states it. EDL is the flag; a payload over 8 bytes is FD by
-		// construction whatever the flag says, and trusting only the flag would hand a 64-byte
-		// payload to a classic frame that cannot express it.
-		// …and never on a remote group. CAN-FD has no remote frames — FD reused the RTR bit —
-		// so an EDL channel cannot be present there, and a zero-filled request is at most 8
-		// bytes by the branch above. Stated rather than left to those two facts holding: the
-		// pair `fd` and `rtr` describes a frame that does not exist on any wire.
-		is_fd := !remote && (data.len > 8 || (c_edl.bit_count > 0
-			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_edl)
-			&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1))
-		brs := is_fd && c_brs.bit_count > 0
-			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_brs)
-			&& read_uint(raw, base + c_brs.byte_off, int(c_brs.bit_off), int(c_brs.bit_count)) == 1
-		esi := is_fd && c_esi.bit_count > 0
-			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_esi)
-			&& read_uint(raw, base + c_esi.byte_off, int(c_esi.bit_off), int(c_esi.bit_count)) == 1
-		// The bus BEFORE the record index: a record whose bus the Log cannot name is dropped
-		// here, and a dropped record must leave no ordinal behind (the note on rec_idx).
-		bus := labels.label(bus_no, mut log) or { continue }
+		// ONE decoder for this loop and for the stream's cursors (layout.v). A refused record
+		// leaves no ordinal behind: rec_idx is pushed only for a row that was decoded.
+		row := decode_row(&lay, recs, base, mut vlsd, mut labels, mut log) or { continue }
 		rec_idx << int(k) // which record this entry came from — see the note on the parameter
-		// Into the ARENA (canlog.Log): a pointer-free row per frame, the payload copied into
-		// the row rather than cloned beside it, the bus named by index. This is where the
-		// recording's memory is decided, and where a collection's LENGTH was decided with it.
-		mut row := canlog.Row{
-			t_s:   ts
-			id:    u32(rid) & 0x1FFFFFFF
-			len:   u8(data.len)
-			flags: canlog.pack_flags(ide, remote, is_fd, brs, esi, dir)
-			bus:   bus
-		}
-		if data.len > 0 {
-			unsafe { vmemcpy(&row.data[0], data.data, data.len) }
-		}
 		log.rows << row
 	}
 }
@@ -824,27 +572,27 @@ fn (mut l Labels) label(bus_no int, mut log canlog.Log) ?u16 {
 
 // collect_channels walks a cn_next chain, recursing into struct compositions
 // (cn_composition), accumulating every leaf channel's record-layout facts.
-fn collect_channels(buf []u8, cn_first u64, mut chans []Chan) {
+fn collect_channels(mut src ByteSource, cn_first u64, mut chans []Chan) {
 	mut cn := cn_first
 	for cn != 0 {
-		cnl := block_links(buf, cn)
-		d := data_off(buf, cn)
-		name := read_tx(buf, if cnl.len > 2 { cnl[2] } else { u64(0) })
+		cnl := block_links(mut src, cn)
+		d := data_off(mut src, cn)
+		name := read_tx(mut src, if cnl.len > 2 { cnl[2] } else { u64(0) })
 		chans << Chan{
 			name:      name
-			cn_type:   buf[d + 0]
-			data_type: buf[d + 2]
-			bit_off:   buf[d + 3] // cn_bit_offset
-			byte_off:  int(binary.little_endian_u32_at(buf, d + 4))
-			bit_count: binary.little_endian_u32_at(buf, d + 8)
+			cn_type:   u8_at(mut src, d + 0)
+			data_type: u8_at(mut src, d + 2)
+			bit_off:   u8_at(mut src, d + 3) // cn_bit_offset
+			byte_off:  int(u32_at(mut src, d + 4))
+			bit_count: u32_at(mut src, d + 8)
 			data_link: if cnl.len > 5 { cnl[5] } else { u64(0) }
 			cc_link:   if cnl.len > 4 { cnl[4] } else { u64(0) }
-			flags:     binary.little_endian_u32_at(buf, d + 12)
-			inval_bit: binary.little_endian_u32_at(buf, d + 16)
+			flags:     u32_at(mut src, d + 12)
+			inval_bit: u32_at(mut src, d + 16)
 		}
 		comp := if cnl.len > 1 { cnl[1] } else { u64(0) }
-		if comp != 0 && block_id(buf, comp) == '##CN' {
-			collect_channels(buf, comp, mut chans)
+		if comp != 0 && block_id(mut src, comp) == '##CN' {
+			collect_channels(mut src, comp, mut chans)
 		}
 		cn = if cnl.len > 0 { cnl[0] } else { u64(0) }
 	}
@@ -871,18 +619,18 @@ fn chan_invalid(raw []u8, base int, data_bytes int, inval_bytes int, c Chan) boo
 // cc_linear returns (offset, factor) of a linear CCBLOCK (cc_type 1), so that
 // physical = offset + factor*raw. Defaults to (0, 1) when there is no conversion
 // or it isn't linear (the master time channel here is linear ns->s).
-fn cc_linear(buf []u8, cc u64) (f64, f64) {
-	if cc == 0 || block_id(buf, cc) != '##CC' {
+fn cc_linear(mut src ByteSource, cc u64) (f64, f64) {
+	if cc == 0 || block_id(mut src, cc) != '##CC' {
 		return 0.0, 1.0
 	}
-	d := data_off(buf, cc)
-	cc_type := buf[d + 0]
-	val_count := int(binary.little_endian_u16_at(buf, d + 6))
+	d := data_off(mut src, cc)
+	cc_type := u8_at(mut src, d + 0)
+	val_count := int(u16_at(mut src, d + 6))
 	if cc_type != 1 || val_count < 2 {
 		return 0.0, 1.0
 	}
-	off := math.f64_from_bits(binary.little_endian_u64_at(buf, d + 24))
-	factor := math.f64_from_bits(binary.little_endian_u64_at(buf, d + 24 + 8))
+	off := math.f64_from_bits(u64_at(mut src, d + 24))
+	factor := math.f64_from_bits(u64_at(mut src, d + 24 + 8))
 	return off, factor
 }
 
@@ -923,135 +671,146 @@ fn read_uint(b []u8, off int, bit_off int, bits int) u64 {
 
 // ---- block helpers ----
 
-fn block_id(buf []u8, off u64) string {
-	return buf[off..off + 4].bytestr()
+fn block_id(mut src ByteSource, off u64) string {
+	return bytes_at(mut src, off, 4).bytestr()
 }
 
-// block_links returns a block's link array (N u64 links after the common header).
-fn block_links(buf []u8, off u64) []u64 {
-	n := int(binary.little_endian_u64_at(buf, int(off) + 16))
+// block_links returns a block's link array (N u64 links after the common header). The count is
+// bounded before it sizes anything: a damaged header claiming 2^60 links must not be believed.
+// link_count is a block's link count, bounded by what the block and the file can hold: the
+// array lies inside the block's declared length and the block inside the file, so a corrupt
+// count sizes nothing. A fixed cap of 65,536 stood here and read a VALID count above it as 0
+// — a DL block listing a large recording's data blocks one by one — which made the chain
+// empty and the recording silently nothing, in both readers (codex on #342 round 7). The array
+// is materialized: 8 bytes a link, and the bound is the block, so a DL of a hundred thousand
+// links is under a megabyte read once.
+fn link_count(mut src ByteSource, off u64) u64 {
+	n := u64_at(mut src, off + 16)
+	length := u64_at(mut src, off + 8)
+	if length < 24 || n > (length - 24) / 8 {
+		return 0
+	}
+	if off > src.size() || src.size() - off < 24 || n > (src.size() - off - 24) / 8 {
+		return 0
+	}
+	if n > u64(max_int) {
+		return 0
+	}
+	return n
+}
+
+// The most links a HEADER block is read with: the format gives HD, DG, CG, CN, SI and HL a
+// handful each, a CC as many as its value table has entries — hundreds — and only the DL an
+// unbounded array, which chain_walk iterates without this. So the array materialized here is
+// at most half a megabyte, whatever a corrupt count claims; a count past it is a corrupt
+// header, not a large one, and reads as no links.
+const max_header_links = u64(1) << 16
+
+fn block_links(mut src ByteSource, off u64) []u64 {
+	n64 := link_count(mut src, off)
+	n := if n64 > max_header_links { 0 } else { int(n64) }
 	mut links := []u64{cap: n}
 	for i := 0; i < n; i++ {
-		links << binary.little_endian_u64_at(buf, int(off) + 24 + 8 * i)
+		links << u64_at(mut src, off + 24 + 8 * u64(i))
 	}
 	return links
 }
 
 // data_off returns the byte offset of a block's type-specific data section.
-fn data_off(buf []u8, off u64) int {
-	n := int(binary.little_endian_u64_at(buf, int(off) + 16))
-	return int(off) + 24 + 8 * n
+fn data_off(mut src ByteSource, off u64) u64 {
+	return off + 24 + 8 * link_count(mut src, off)
 }
 
 // read_tx returns the UTF-8 text of a TX/MD block (null-terminated), or '' .
-fn read_tx(buf []u8, link u64) string {
+fn read_tx(mut src ByteSource, link u64) string {
 	if link == 0 {
 		return ''
 	}
-	id := block_id(buf, link)
+	id := block_id(mut src, link)
 	if id != '##TX' && id != '##MD' {
 		return ''
 	}
-	d := data_off(buf, link)
-	mut e := d
-	for e < buf.len && buf[e] != 0 {
-		e++
+	d := data_off(mut src, link)
+	// The text runs to its NUL — INSIDE ITS BLOCK. A block missing the terminator used to be
+	// read to the next zero byte in the file, which in a recording of tens of GB is the rest of
+	// the file into memory before the first record is read (codex on #342 round 3); the block's
+	// declared length bounds it now, under a cap no name or comment reaches.
+	length := u64_at(mut src, link + 8)
+	if d >= src.size() {
+		return ''
 	}
-	return buf[d..e].bytestr()
+	// the block's end, clamped to the file before the addition (as chain_walk clamps), and the
+	// text is what lies between the DATA offset and it — the link array is `d`'s to skip, not
+	// the text's to read: `length - 24` read 8 bytes per link past the block (codex on #342
+	// round 5, a defect of round 3's fix)
+	stop := if link > src.size() || length > src.size() - link { src.size() } else { link + length }
+	mut limit := if stop > d { stop - d } else { u64(0) }
+	if limit > max_text_block {
+		limit = max_text_block
+	}
+	mut out := []u8{}
+	mut at := d
+	for at < d + limit {
+		left := d + limit - at
+		n := if left < 256 { int(left) } else { 256 }
+		piece := bytes_at(mut src, at, n)
+		mut end := -1
+		for i in 0 .. n {
+			if piece[i] == 0 {
+				end = i
+				break
+			}
+		}
+		if end >= 0 {
+			out << piece[..end]
+			return out.bytestr()
+		}
+		out << piece[..n]
+		at += u64(n)
+	}
+	return out.bytestr()
 }
 
-// read_data_block resolves a DGBLOCK data link to its raw record bytes, handling
-// uncompressed (DT/DV/DI/RD), compressed (DZ), and list (DL/HL) blocks. In an
-// unfinalized file the LAST DT block's declared length is stale (the logger
-// died before updating it) — when nothing but file-end follows the declared
-// end, the block really extends to the end of the file.
-fn read_data_block(buf []u8, link u64, unfin bool) ![]u8 {
-	if link == 0 {
-		return []u8{}
-	}
-	id := block_id(buf, link)
-	match id {
-		'##DT', '##DV', '##DI', '##RD', '##SD' {
-			length := binary.little_endian_u64_at(buf, int(link) + 8)
-			d := data_off(buf, link)
-			mut end := int(link) + int(length)
-			if unfin {
-				if end > buf.len {
-					end = buf.len
-				} else {
-					// MDF blocks are 8-byte aligned: if no '##' block header sits
-					// where the next block would start, the length is stale and
-					// the data runs to the end of the file.
-					ae := (end + 7) / 8 * 8
-					if ae + 4 > buf.len || buf[ae] != `#` || buf[ae + 1] != `#` {
-						end = buf.len
-					}
-				}
-			}
-			if end > buf.len {
-				end = buf.len
-			}
-			if d >= end {
-				return []u8{}
-			}
-			return buf[d..end].clone()
-		}
-		'##DZ' {
-			return dz_decompress(buf, link)!
-		}
-		'##DL' {
-			mut out := []u8{}
-			mut dl := link
-			for dl != 0 {
-				dll := block_links(buf, dl)
-				for i := 1; i < dll.len; i++ {
-					if dll[i] != 0 {
-						out << read_data_block(buf, dll[i], unfin)!
-					}
-				}
-				dl = if dll.len > 0 { dll[0] } else { u64(0) }
-			}
-			return out
-		}
-		'##HL' {
-			hll := block_links(buf, link)
-			return read_data_block(buf, if hll.len > 0 { hll[0] } else { u64(0) }, unfin)!
-		}
-		else {
-			return error('unknown data block ${id}')
-		}
+// check_rec_id_size admits the record id widths the format defines — 0 (sorted), 1, 2, 4 and 8
+// bytes — and refuses the rest: read_uint over more than 64 bits shifts past the word, which is
+// undefined in the C it becomes, so a corrupt width was a platform-dependent record id and a
+// stream misrouted from its first record (codex on #342 round 11). One rule for both readers.
+fn check_rec_id_size(n int) ! {
+	if n !in [0, 1, 2, 4, 8] {
+		return error('data group declares a record id of ${n} bytes; the format allows 1, 2, 4 or 8')
 	}
 }
 
-// dz_decompress inflates a DZBLOCK and, for zip_type 1, reverses the byte-column
-// transposition MDF applies before deflate to improve compression of records.
-fn dz_decompress(buf []u8, off u64) ![]u8 {
-	d := data_off(buf, off)
-	zip_type := buf[d + 2]
-	zip_param := int(binary.little_endian_u32_at(buf, d + 4))
-	org_len := int(binary.little_endian_u64_at(buf, d + 8))
-	data_len := int(binary.little_endian_u64_at(buf, d + 16))
-	comp := buf[d + 24..d + 24 + data_len]
-	raw := zlib.decompress(comp)!
-	if raw.len != org_len {
-		return error('DZ length mismatch: got ${raw.len}, want ${org_len}')
+// record_size is a fixed channel group's record width — cg_data_bytes + cg_invalidation_bytes —
+// or -1 where the two u32s sum past an int: added as ints they went NEGATIVE, and the demux
+// sliced backwards on it. 0 is a legitimate width (a group with no channels; its record is the
+// record id alone) that both readers step over.
+fn record_size(data u32, inval u32) int {
+	total := u64(data) + u64(inval)
+	if total > u64(max_int) {
+		return -1
 	}
-	if zip_type != 1 {
-		return raw
+	return int(total)
+}
+
+// The most text a TX/MD block is read for: a channel name or a comment is bytes to kilobytes,
+// and a block claiming more is not one whose text this reader needs.
+const max_text_block = u64(1) << 20
+
+// read_data_block resolves a DGBLOCK data link to its raw record bytes: the data CHAIN
+// concatenated (chain.v) — uncompressed (DT/DV/DI/RD/SD), compressed (DZ) and list (DL/HL)
+// blocks, an unfinalized file's understated last block extended to the end of the file. The
+// loader and the stream resolve a link through the one walker, so they cannot disagree about
+// which bytes a link names.
+fn read_data_block(mut src ByteSource, link u64, unfin bool) ![]u8 {
+	blocks := chain_blocks(mut src, link, unfin)!
+	total := chain_len(blocks)
+	if total > u64(max_int) {
+		return error('data of ${total} bytes cannot be held in memory whole; stream it')
 	}
-	// zip_type 1: data was stored column-major in `zip_param`-wide rows; undo it.
-	cols := zip_param
-	rows := org_len / cols
-	mut transposed := []u8{len: org_len}
-	for c := 0; c < cols; c++ {
-		col := c * rows
-		for r := 0; r < rows; r++ {
-			transposed[r * cols + c] = raw[col + r]
-		}
+	mut out := []u8{cap: int(total)}
+	for b in blocks {
+		out << block_bytes(mut src, b)!
 	}
-	// trailing bytes that don't fill a full row are stored as-is at the end.
-	for i := rows * cols; i < org_len; i++ {
-		transposed[i] = raw[i]
-	}
-	return transposed
+	return out
 }
