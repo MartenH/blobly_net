@@ -936,3 +936,150 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 	ch.close()
 	peer.close()
 }
+
+// THE TRANSFER'S TOTAL ALLOWANCE (#296 item 1). The per-block bounds multiply by the number of
+// blocks and nothing bounded the product: at BS=1 a maximum PDU is 585 blocks, so a peer using
+// every WAIT it is allowed holds one send for about two and a half hours.
+fn test_the_wait_budget_clamps_a_read_and_reports_its_own_bound() {
+	mut b := new_wait_budget_ms(100)
+	// the caller's own window wins while it is the shorter of the two
+	assert b.window_ms(50) == 50
+	// and the allowance wins when it is not
+	assert b.window_ms(500) == 100
+	b.spend_ns(60 * 1_000_000)
+	assert b.window_ms(500) == 40
+	assert !b.spent()
+	b.spend_ns(40 * 1_000_000)
+	assert b.spent()
+	assert b.window_ms(500) == 0, 'a spent allowance permits no read at all'
+	// the note names the total bound, not the per-block one, or the reader goes to the wrong
+	// constant for the reason a transfer ended
+	assert exhausted_note(100).contains('fc_total_wait_ms')
+	assert exhausted_note(100).contains('100 ms')
+}
+
+// A REMAINDER UNDER A MILLISECOND IS STILL TIME LEFT. Truncating it to 0 would report the
+// allowance as spent while it is not, and `window_ms` returning 0 is how the caller is told to
+// give up -- so the two must not be confused.
+fn test_a_sub_millisecond_remainder_is_not_a_spent_budget() {
+	mut b := new_wait_budget_ms(1)
+	b.spend_ns(900 * 1_000) // 900 us of a 1000 us allowance
+	assert !b.spent()
+	assert b.window_ms(500) == 1, 'the smallest read that means anything'
+}
+
+// A BOUND THAT REFUNDS IS NOT A BOUND. A clock reading backwards is not this clock's contract,
+// but crediting the difference would hand a stalling peer its time back.
+fn test_a_backwards_clock_reading_spends_nothing() {
+	mut b := new_wait_budget_ms(100)
+	b.spend_ns(-5 * 1_000_000)
+	assert b.window_ms(500) == 100
+}
+
+// ZERO IS THE SMALLEST ALLOWANCE, NOT AN ABSENT ONE: a channel whose field a struct literal
+// left at zero must not silently get the unbounded behaviour this closes.
+fn test_a_zero_allowance_is_not_an_unbounded_one() {
+	b := new_wait_budget_ms(0)
+	assert b.spent()
+	assert b.window_ms(1000) == 0
+	neg := new_wait_budget_ms(-1)
+	assert neg.spent()
+}
+
+// END TO END: WAITs spread ACROSS blocks, each block staying under N_WFTmax so the per-block
+// count never fires, until the transfer's own allowance is gone. This is the shape that ran for
+// hours; the allowance is set low here so the abort arrives in milliseconds.
+fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
+	mut peer := transport.open('inproc:isotp-budget') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-budget', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	ch.total_wait_ms = 150
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		// 20 bytes = 6 + two Consecutive Frames, so at BS=1 there is more than one block
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	must_read_tx(mut peer, 0x7E0) or {
+		assert false, 'no First Frame'
+		return
+	}
+	// A PEER THAT IS FINE BY EVERY PER-BLOCK RULE: a WAIT every 20 ms, well inside the 1000 ms
+	// window each one re-arms, and twelve of them against an N_WFTmax of 16. Nothing per-block
+	// fires; what runs out is the 150 ms of waiting the transfer is allowed.
+	//
+	// AND THE PEER'S OWN QUEUE IS DRAINED EACH ROUND. The in-process bus delivers a sender its
+	// own frames too, so a peer that only ever sends fills its queue, `try_push` starts
+	// refusing, and the stall under test stops being fed -- the sender then dies on the
+	// per-block timeout and the test reads a plausible wrong answer. Cost an hour; it is why
+	// the assertion below also names what must NOT have fired.
+	for _ in 0 .. 12 {
+		if done.len > 0 {
+			break
+		}
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
+			assert false, 'the peer could not send: ${err}'
+			break
+		}
+		time.sleep(20 * time.millisecond)
+		for {
+			peer.recv(0) or { break }
+		}
+	}
+	msg := <-done
+	assert msg.contains('fc_total_wait_ms'), msg
+	assert !msg.contains('N_WFTmax'), 'the per-block count must not be what fired: ${msg}'
+	ch.close()
+	peer.close()
+}
+
+// AND THE ALLOWANCE IS NOT SPENT BY OUR OWN PACING, which is the whole reason it counts waiting
+// rather than elapsed time: STmin is the receiver's to ask for, and 585 frames at the slowest
+// legal separation is 74 seconds that ISO entitles it to. A transfer paced well past its own
+// allowance must still complete.
+fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
+	mut peer := transport.open('inproc:isotp-budget-pace') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-budget-pace', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	// far less than the pacing below: were sleeping charged to it, this send could not finish
+	ch.total_wait_ms = 40
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	must_read_tx(mut peer, 0x7E0) or {
+		assert false, 'no First Frame'
+		return
+	}
+	// one frame per block at 30 ms separation: 60 ms of pacing against a 40 ms allowance
+	for _ in 0 .. 2 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
+			assert false, err.msg()
+		}
+		must_read_tx(mut peer, 0x7E0) or {
+			assert false, 'a Consecutive Frame did not arrive'
+			return
+		}
+	}
+	msg := <-done
+	assert msg == 'sent', msg
+	ch.close()
+	peer.close()
+}
