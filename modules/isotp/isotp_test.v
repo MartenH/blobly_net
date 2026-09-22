@@ -986,9 +986,15 @@ fn test_a_zero_allowance_is_not_an_unbounded_one() {
 	assert neg.spent()
 }
 
-// END TO END: WAITs spread ACROSS blocks, each block staying under N_WFTmax so the per-block
-// count never fires, until the transfer's own allowance is gone. This is the shape that ran for
-// hours; the allowance is set low here so the abort arrives in milliseconds.
+// END TO END, AND GENUINELY ACROSS BLOCKS. The per-block count resets on every Flow Control,
+// so a peer that stays under it forever is fine by every per-block rule while the transfer it
+// belongs to runs for hours. That is the shape this allowance exists for.
+//
+// The first draft never reached a second block: the peer only ever sent WAIT, so no Consecutive
+// Frame was ever authorised and every WAIT landed in the FIRST `await_flow_control` call --
+// testing the per-call path under another name, and making the N_WFTmax assertion vacuous
+// (self-review). Here each block gets ONE wait and then a real CTS, so the count is 1 where the
+// bound is 16, the blocks actually advance, and what runs out is the total.
 fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
 	mut peer := transport.open('inproc:isotp-budget') or {
 		assert false, 'in-process bus: ${err}'
@@ -1000,9 +1006,9 @@ fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
 	}
 	ch.total_wait_ms = 150
 	done := chan string{cap: 1}
+	// 62 bytes = 6 + eight Consecutive Frames, so at BS=1 there are eight blocks to spread over
 	spawn fn [mut ch, done] () {
-		// 20 bytes = 6 + two Consecutive Frames, so at BS=1 there is more than one block
-		ch.send([]u8{len: 20, init: u8(index)}) or {
+		ch.send([]u8{len: 62, init: u8(index)}) or {
 			done <- err.msg()
 			return
 		}
@@ -1012,31 +1018,34 @@ fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
 		assert false, 'no First Frame'
 		return
 	}
-	// A PEER THAT IS FINE BY EVERY PER-BLOCK RULE: a WAIT every 20 ms, well inside the 1000 ms
-	// window each one re-arms, and twelve of them against an N_WFTmax of 16. Nothing per-block
-	// fires; what runs out is the 150 ms of waiting the transfer is allowed.
-	//
-	// AND THE PEER'S OWN QUEUE IS DRAINED EACH ROUND. The in-process bus delivers a sender its
-	// own frames too, so a peer that only ever sends fills its queue, `try_push` starts
-	// refusing, and the stall under test stops being fed -- the sender then dies on the
-	// per-block timeout and the test reads a plausible wrong answer. Cost an hour; it is why
-	// the assertion below also names what must NOT have fired.
-	for _ in 0 .. 12 {
+	// AND THE PEER'S OWN QUEUE IS DRAINED, by reading the Consecutive Frame each block. The
+	// in-process bus delivers a sender its own frames too, so a peer that only sends fills its
+	// own queue, `try_push` starts refusing, and the stall under test stops being fed -- the
+	// sender then dies on the per-block timeout and the test reads a plausible wrong answer.
+	mut blocks := 0
+	for _ in 0 .. 8 {
 		if done.len > 0 {
 			break
 		}
+		// one WAIT, paid for in real time, then the CTS that ends the block
+		time.sleep(30 * time.millisecond)
 		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
 			assert false, 'the peer could not send: ${err}'
 			break
 		}
-		time.sleep(20 * time.millisecond)
-		for {
-			peer.recv(0) or { break }
+		time.sleep(30 * time.millisecond)
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 0] }) or {
+			assert false, 'the peer could not send: ${err}'
+			break
+		}
+		if _ := must_read_tx(mut peer, 0x7E0) {
+			blocks++
 		}
 	}
 	msg := <-done
 	assert msg.contains('fc_total_wait_ms'), msg
-	assert !msg.contains('N_WFTmax'), 'the per-block count must not be what fired: ${msg}'
+	assert !msg.contains('N_WFTmax'), 'one wait per block must not trip the per-block count: ${msg}'
+	assert blocks >= 1, 'the transfer never advanced a block, so nothing was tested across them'
 	ch.close()
 	peer.close()
 }
@@ -1045,6 +1054,13 @@ fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
 // rather than elapsed time: STmin is the receiver's to ask for, and 585 frames at the slowest
 // legal separation is 74 seconds that ISO entitles it to. A transfer paced well past its own
 // allowance must still complete.
+//
+// EVERY FLOW CONTROL IS QUEUED UP FRONT, so no read here blocks and none is charged -- the only
+// elapsed time is our own sleeping. The first draft had the peer answer as it went, which
+// charged the harness's own scheduling to the allowance and could fail on a loaded runner with
+// the exhaustion message instead of `sent` (self-review). The margin is 200 ms of pacing
+// against a 100 ms allowance, so the assertion is about which of the two is counted, not about
+// how fast the machine is.
 fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
 	mut peer := transport.open('inproc:isotp-budget-pace') or {
 		assert false, 'in-process bus: ${err}'
@@ -1054,30 +1070,22 @@ fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
 		assert false, 'software channel: ${err}'
 		return
 	}
-	// far less than the pacing below: were sleeping charged to it, this send could not finish
-	ch.total_wait_ms = 40
+	ch.total_wait_ms = 100
+	// three Flow Controls for three blocks, all waiting before the sender looks
+	for _ in 0 .. 3 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 100] }) or {
+			assert false, err.msg()
+		}
+	}
 	done := chan string{cap: 1}
+	// 27 bytes = 6 + three Consecutive Frames, so STmin is paid twice: 200 ms of pacing
 	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
+		ch.send([]u8{len: 27, init: u8(index)}) or {
 			done <- err.msg()
 			return
 		}
 		done <- 'sent'
 	}()
-	must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
-		return
-	}
-	// one frame per block at 30 ms separation: 60 ms of pacing against a 40 ms allowance
-	for _ in 0 .. 2 {
-		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
-			assert false, err.msg()
-		}
-		must_read_tx(mut peer, 0x7E0) or {
-			assert false, 'a Consecutive Frame did not arrive'
-			return
-		}
-	}
 	msg := <-done
 	assert msg == 'sent', msg
 	ch.close()

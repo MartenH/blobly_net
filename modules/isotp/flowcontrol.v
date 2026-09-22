@@ -152,16 +152,23 @@ pub fn parse_flow_control(data []u8) !FlowControl {
 // and are not counted. What is counted is time spent blocked on the peer, which a healthy
 // receiver answers in single-digit milliseconds.
 //
-// THE VALUE, as a choice rather than a measurement, since no bench here stalls: across the
-// longest legal transfer this permits an average of ~50 ms per block, or any distribution
-// summing to the same total. The per-block bounds still apply and are what an ordinarily slow
+// THE VALUE IS SIZED BY FLASH, which is the real caller and cannot raise it: `flash.program`
+// takes the `Channel` INTERFACE, so no per-channel field is reachable from there, and a bound
+// that aborts a firmware download is worse than the stall it prevents. A maximum PDU at BS=1
+// asks for 584 Flow Controls, so this permits an average of ~205 ms of waiting for each one --
+// a bootloader busy erasing may take tens of milliseconds to answer, and this is an order of
+// magnitude above that. A peer slower than that ON AVERAGE, for the whole transfer, is not
+// working; it is stalling. The per-block bounds still apply and are what an ordinarily slow
 // peer trips first; this one exists for the peer that never trips them.
+//
+// 30 s was the first choice and was too tight by exactly this reasoning: it left ~51 ms per
+// Flow Control, which a real bootloader can exceed without being at fault (self-review).
 //
 // IT DOES NOT MAKE A SEND STOP-RESPONSIVE, which is worth saying plainly: `rebuild_from_proj`
 // waits `drain_budget_ms` = 1500 ms for a run worker, and no bound that accommodates a legal
 // 74-second transfer can also respect that. A parked worker wants `uds.Server.serve` to check
 // `stop` mid-request, which is a different module and a different change.
-pub const fc_total_wait_ms = 30_000
+pub const fc_total_wait_ms = 120_000
 
 // WaitBudget is what is left of that allowance. Threaded through one transfer, not held on the
 // channel: it belongs to the transfer, and a channel reused for the next one starts again.

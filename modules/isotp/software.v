@@ -56,10 +56,11 @@ pub mut:
 	// How long ONE transfer may spend BLOCKED ON THE PEER, in milliseconds
 	// (`fc_total_wait_ms` for the reasoning and for why our own STmin pacing is not counted).
 	//
-	// A FIELD RATHER THAN THE CONSTANT read directly, for two reasons that point the same way:
-	// a bootloader that genuinely needs longer can say so without every other caller inheriting
-	// it, and the abort is reachable in a test in milliseconds instead of thirty seconds. A
-	// bound nothing can exercise is a bound nobody has seen work.
+	// A FIELD SO THE BOUND CAN BE EXERCISED: the abort is reachable in a test in milliseconds
+	// instead of two minutes, and a bound nothing exercises is a bound nobody has seen work.
+	// NOT an escape hatch for `flash`, which takes the `Channel` INTERFACE and so cannot reach
+	// this field at all -- the first draft of this comment claimed it could (self-review). The
+	// default is what has to be right for flash, and `fc_total_wait_ms` is sized for it.
 	total_wait_ms int = fc_total_wait_ms
 }
 
@@ -244,7 +245,12 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 				// SPENT EVEN ON THE FAILING PATH: the wait happened, and a bound that only
 				// charges for successful reads is one a stalling peer never pays.
 				budget.spend_ns(time.sys_mono_now() - t0)
-				if clamped || budget.spent() {
+				// ONLY A TIMEOUT. `rx_raw` also reports the carrier failing underneath it --
+				// a closed or closing bus, a terminal driver error -- and rewriting those as
+				// "the transfer spent its allowance waiting on the receiver" would blame the
+				// peer for an adapter somebody unplugged (self-review). A bound may rename a
+				// timeout; it may not rename a fault.
+				if err.msg() == 'timeout' && (clamped || budget.spent()) {
 					return error(exhausted_note(c.total_wait_ms))
 				}
 				return err
