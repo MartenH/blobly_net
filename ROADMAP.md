@@ -17,9 +17,10 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   reproducing the in-memory order exactly (golden test), a survey pass for labels, span and a seek
   index, a bounded FIFO window of arena rows filled by a decoder thread and drained by the player,
   per-row bus mapping and subtraction at decode time, and a file-size switch between the two paths.
-  Six PR-sized steps, each measured with `cmd/blobly_net/probe.v`; **step 1 is built** (#172:
+  Six PR-sized steps, each measured with `cmd/blobly_net/probe.v`; **steps 1 and 2 are built** (#172:
   `mf4.Stream` reproduces the loader's order from the file a chunk at a time, golden-tested;
-  `mf4_dump --stream`), the window and the player over it are next. Beside it, the smaller items the
+  `mf4.survey()` answers the buses, span and the stream's high-water marks in one pass, and
+  `restbus --list` reads through it), the player over a cursor and the window are next. Beside it, the smaller items the
   reviews named: the wire identity resolved once per channel and tap at open; a per-group index for
   the grouped Trace view; `wiretap` holding only in-flight records; the Replay panel's census not
   loading the file a second time.

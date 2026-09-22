@@ -159,10 +159,34 @@ import (whole-file by design, 2000-row cap).
    (`exact_at`); `FileSource` sizes the handle, not the path; a record id width outside 0/1/2/4/8
    is refused by both readers. The review stopped there by the maintainer's decision, as #329
    did; the class test is #345, for step 2.
-2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
+2. **Built.** `mf4.survey()` / `survey_file()` (`survey.v`): one pass over the stream retaining
+   counts and labels and nothing else, answering what the loader answered from the whole
+   recording — the buses (label, `cg_tx_acq_name`, frames; `tally_buses`' rule for a label with
+   two names and `parse_recording`'s for a name covering two labels, reproduced and pinned by a
+   golden test on every image and sample), the span (earliest and latest time, since the
+   stream counts a backwards clock rather than sorting it), the data-group count — plus the
+   stream's counters and two high-water marks: `max_queued` (rows queued ahead of an emission,
+   what `unsorted_readahead` bounds) and `max_disorder_s` (the writer's disorder: how far a
+   record was behind one read before it, what the merge must look ahead). `restbus --list`
+   reads through it, so a file that does not fit in memory can still say what buses it has.
+   **What the measurement changed.** On the CANedge sample `parked.mf4` (one bus at 350
+   frames/s, one at 28) the row-capped merge read to the sparse bus's NEXT frame before every
+   emission — 142,220 of 150,411 emissions forced at the 8,192-row cap, the order right only
+   because the writer's stream is time-ordered anyway. A row cap is the wrong instrument for a
+   sparse group. The merge now also stops reading when the earliest queued row is a
+   `unsorted_lookahead_s` (2 s) behind the latest row read (`settled`), the row cap staying as
+   the memory bound: parked reads with 961 rows queued at most, 0 forced, and a measured
+   writer disorder of 293 ms (a CANedge flushes its channels' buffers by turns) — the window is
+   seven times that; `out_of_order` says when it is not enough on another recorder. The six
+   private multi-bus recordings (13–15 buses, 0.6–1.24 M frames each, ~60 s) are all SORTED
+   data groups: disorder 0, nothing queued, every counter 0, and the survey's buses equal
+   `load_recording`'s on each. The heap marks of `mf4_dump` are within a megabyte for the two
+   paths, as they must be: the dump materializes the rows either way, and the memory win is
+   the window's, step 4. The seek index the design listed here waits for seek (step 6).
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,
    clock-script equivalence against the in-memory player, seek while starved.
 5. The GUI worker and the CLI over the threshold switch; window fill and underruns in the
    probe summary; probe with `BLOBLY_MF4_STREAM_MB=0` on the bench file.
-6. The seek index and the survey cache.
+6. The seek index (one entry per ~1 s: each DG's raw position and the last emitted key) and the
+   survey cache — with seek, where they are used.

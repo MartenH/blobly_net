@@ -41,6 +41,9 @@ interface Cursor {
 mut:
 	next(mut log canlog.Log) ?canlog.Row
 	failure() string
+	// the acquisition name (cg_tx_acq_name) of the channel group whose row `next` last handed
+	// out — what the survey pairs a bus label with, as the loader's tally does
+	last_acq() string
 }
 
 // Stream is the k-way merge over the file's data groups.
@@ -64,6 +67,18 @@ pub mut:
 	unresolved   int
 	out_of_order int
 	err          string
+	// High-water marks of the unsorted merge, for the survey to measure the caps against: the
+	// most rows ever queued ahead of an emission (the read-ahead `unsorted_readahead` bounds)
+	// and the furthest an emitted row was behind the latest row read, in seconds — the skew
+	// between channel groups sharing one record stream.
+	max_queued int
+	max_skew_s f64
+	// The writer's DISORDER: the furthest a record read from an unsorted stream was behind the
+	// latest one read before it, in seconds. This is what the merge must look ahead to be right;
+	// the read-ahead above is what it did look ahead.
+	max_disorder_s f64
+	// the acquisition name of the channel group whose row `next` last returned
+	last_acq string
 }
 
 // open_stream resolves the file's headers and builds one cursor per data group. Nothing of the
@@ -145,6 +160,7 @@ pub fn (mut s Stream) next(mut log canlog.Log) ?canlog.Row {
 	}
 	s.has[best] = false
 	row := s.heads[best]
+	s.last_acq = s.cursors[best].last_acq()
 	if s.have_prev && row.t_s < s.prev_t {
 		s.out_of_order++
 	}
@@ -159,6 +175,9 @@ fn (mut s Stream) tally() {
 	mut evicted := 0
 	mut refused := 0
 	mut unresolved := 0
+	mut max_queued := 0
+	mut max_skew := 0.0
+	mut max_disorder := 0.0
 	mut err := ''
 	for mut c in s.cursors {
 		if err == '' {
@@ -171,6 +190,15 @@ fn (mut s Stream) tally() {
 			for _, r in c.vlsd {
 				evicted += r.evicted
 			}
+			if c.max_queued > max_queued {
+				max_queued = c.max_queued
+			}
+			if c.max_skew > max_skew {
+				max_skew = c.max_skew
+			}
+			if c.max_disorder > max_disorder {
+				max_disorder = c.max_disorder
+			}
 		} else if mut c is SortedCursor {
 			refused += c.refused
 		}
@@ -179,6 +207,9 @@ fn (mut s Stream) tally() {
 	s.evicted = evicted
 	s.refused = refused
 	s.unresolved = unresolved
+	s.max_queued = max_queued
+	s.max_skew_s = max_skew
+	s.max_disorder_s = max_disorder
 	s.err = err
 }
 
@@ -202,7 +233,8 @@ pub fn stream_log(mut src ByteSource) !canlog.Log {
 struct SortedCursor {
 mut:
 	lay     CgLayout
-	ok      bool // a CAN frame group this reader decodes; false yields nothing, as parse_cg did
+	ok      bool   // a CAN frame group this reader decodes; false yields nothing, as parse_cg did
+	acq     string // cg_tx_acq_name: the recording's own name for the bus, '' when none
 	labels  Labels
 	recs    ChainStream
 	vlsd    VlsdBytes
@@ -245,6 +277,9 @@ fn new_sorted_cursor(mut src ByteSource, cg u64, blocks []ChainBlock, unfin bool
 	lay := resolve_layout(mut src, cg) or { return c }
 	c.lay = lay
 	c.ok = true
+	cgl := block_links(mut src, cg)
+	c.acq =
+		read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) }) // link 2, as the loader reads it
 	c.cycles = lay.record_count(chain_len(blocks), unfin)
 	if lay.is_vlsd {
 		// a sorted group's VLSD payloads live in a signal-data chain (an SD, or an HL/DL of DZ
@@ -261,6 +296,10 @@ fn new_sorted_cursor(mut src ByteSource, cg u64, blocks []ChainBlock, unfin bool
 
 fn (c &SortedCursor) failure() string {
 	return c.err
+}
+
+fn (c &SortedCursor) last_acq() string {
+	return c.acq
 }
 
 fn (mut c SortedCursor) next(mut log canlog.Log) ?canlog.Row {
@@ -305,7 +344,8 @@ struct UCg {
 	info CgInfo
 mut:
 	lay    CgLayout
-	ok     bool // a CAN frame group; a fixed group that is not one is consumed and dropped
+	ok     bool   // a CAN frame group; a fixed group that is not one is consumed and dropped
+	acq    string // cg_tx_acq_name — each group sharing the stream has its own
 	labels Labels
 	queue  []Pending // decoded rows waiting for the merge, in record order
 	qhead  int
@@ -340,6 +380,20 @@ struct Pending {
 	row canlog.Row
 	pos u64
 }
+
+// How far past the earliest queued row the merge reads before it emits that row, in seconds
+// of recording. The rule was "until every frame group has a row queued", which on a stream
+// with a SPARSE group reads to the next frame of that group however far away it is — on the
+// CANedge sample `parked.mf4` (one bus at 350 frames/s, one at 28) that was the row cap below
+// on nearly every emission, 142,220 forced emissions out of 150,411 rows, the order right
+// only because the writer's stream is time-ordered anyway (the survey, step 2). What the
+// merge actually needs to look ahead is the writer's DISORDER — how far a record can be
+// behind one written before it. Measured by the survey: 293 ms on `parked.mf4` (a CANedge
+// flushes its two channels' buffers by turns), 0 on the sorted recordings, which have no groups
+// to disorder. This window is seven times that measurement; the row cap stays as the memory
+// bound. `Survey.max_disorder_s` is what to hold it against on a new recorder, and
+// `out_of_order` is what says when it was not enough.
+const unsorted_lookahead_s = 2.0
 
 // The read-ahead cap over an unsorted group's queues, in rows: eight thousand rows a queue of
 // eighty bytes each is under a megabyte per busy group, and far more than any recorder skews
@@ -382,6 +436,13 @@ mut:
 	unresolved  int
 	err         string
 	none_vlsd   MemVlsd
+	// what the survey measures the caps against (see Stream)
+	max_queued   int
+	latest_t     f64 // the latest time of any row queued so far
+	has_latest   bool
+	max_skew     f64
+	max_disorder f64
+	last         string // the acquisition name of the group whose row `next` last returned
 }
 
 fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, rec_id_size int, unfin bool, group int) &UnsortedCursor {
@@ -418,6 +479,8 @@ fn new_unsorted_cursor(mut src ByteSource, cg_first u64, blocks []ChainBlock, re
 				if lay := resolve_layout(mut src, cgi) {
 					u.lay = lay
 					u.ok = true
+					cgl := block_links(mut src, cgi)
+					u.acq = read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) })
 					if !unfin && lay.declared > 0 {
 						u.cap = lay.declared
 					}
@@ -477,6 +540,10 @@ fn (c &UnsortedCursor) failure() string {
 	return c.err
 }
 
+fn (c &UnsortedCursor) last_acq() string {
+	return c.last
+}
+
 // fits says whether n more bytes can still come out of the stream; a length past the end is a
 // corrupt field — the unwritten filler an unfinalized file's extended last block decodes as
 // records reads as 0xFFFFFFF0 — and is refused BEFORE it sizes a read or a slice: as a signed
@@ -528,6 +595,17 @@ fn (mut c UnsortedCursor) decode_into(ci int, raw []u8, base int, pos u64, mut l
 			pos: pos
 		}
 		c.queued++
+		if c.queued > c.max_queued {
+			c.max_queued = c.queued
+		}
+		if !c.has_latest || r.t_s > c.latest_t {
+			c.latest_t = r.t_s
+			c.has_latest = true
+		} else if c.latest_t - r.t_s > c.max_disorder {
+			// a record behind one read before it: the writer's disorder, what the look-ahead
+			// window has to cover
+			c.max_disorder = c.latest_t - r.t_s
+		}
 	} else {
 		c.refused++
 	}
@@ -758,8 +836,30 @@ fn (c &UnsortedCursor) exhausted_all() bool {
 	return true
 }
 
+// settled says the earliest queued row is far enough behind the latest row read that no
+// record still to come can precede it, by the look-ahead window — so the merge may emit it
+// without waiting for the groups that have nothing queued.
+fn (c &UnsortedCursor) settled() bool {
+	if !c.has_latest {
+		return false
+	}
+	mut earliest := 0.0
+	mut any := false
+	for u in c.cgs {
+		if u.qhead >= u.queue.len {
+			continue
+		}
+		h := u.queue[u.qhead].row.t_s
+		if !any || h < earliest {
+			earliest = h
+			any = true
+		}
+	}
+	return any && c.latest_t - earliest >= unsorted_lookahead_s
+}
+
 fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
-	for !c.ended && c.needs_more() {
+	for !c.ended && c.needs_more() && !c.settled() {
 		if c.queued >= unsorted_readahead {
 			c.forced++
 			break
@@ -794,6 +894,12 @@ fn (mut c UnsortedCursor) next(mut log canlog.Log) ?canlog.Row {
 	r := u.queue[u.qhead].row
 	u.qhead++
 	c.queued--
+	c.last = u.acq
+	// how far behind the latest row read this one was when it went out: the skew between the
+	// groups sharing this stream, which is what the read-ahead exists to absorb
+	if c.has_latest && c.latest_t - r.t_s > c.max_skew {
+		c.max_skew = c.latest_t - r.t_s
+	}
 	// release what the merge has passed, in halves, so a queue never grows without bound
 	if u.qhead >= 1024 && u.qhead >= u.queue.len / 2 {
 		u.queue.delete_many(0, u.qhead)
