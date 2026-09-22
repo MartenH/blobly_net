@@ -1,10 +1,16 @@
 # Streaming replay — design
 
-> Status: design, not built. The window's cell (`canlog.Row`, the arena) exists; the decoder
-> that fills it from disk does not. Written after #299/#300 took the replay's allocation rate
-> from 1,140 MB/s to ~28 and the arena took the collector's pause length down with it; what
-> remains is a recording that does not fit in memory at all. Each step below is measured with
-> `cmd/blobly_net/probe.v` before and after.
+> Status: step 1 of the PR sequence is built — `mf4.Stream` (`stream.v`, `chain.v`) reproduces
+> `parse_log`'s order from the file a chunk at a time, pinned by the golden test over the images
+> in its golden list (sorted MLSD and VLSD, DLC and DataLength, 32- and 64-bit offsets, remote
+> and invalidated frames, a DL chain with a straddling record, DZ both types, an unsorted group
+> with skew, an unsorted group's VLSD channel group, a DL-of-DZ signal-data chain, UnFinMF) and
+> the tracked samples; `cmd/mf4_dump --stream` reads through it and prints the heap
+> high-water mark of either path. The window's cell (`canlog.Row`, the arena) exists; the window,
+> the decoder thread and the player over a cursor (steps 3–8) do not yet. Written after
+> #299/#300 took the replay's allocation rate from 1,140 MB/s to ~28 and the arena took the
+> collector's pause length down with it; what remains is a recording that does not fit in memory
+> at all. Each step below is measured with `cmd/blobly_net/probe.v` before and after.
 
 ## Why
 
@@ -96,9 +102,63 @@ import (whole-file by design, 2000-row cap).
 
 ## PR sequence
 
-1. `mf4.Stream` reproduces `parse_log` order — cursors, merge, the new test-image builders
-   (unsorted DG with skew, a DL chain with a straddling record, DZ both types, `UnFinMF`),
-   the golden test, `cmd/mf4_dump --stream` printing peak heap for both paths. No GUI change.
+1. **Built.** `mf4.Stream` reproduces `parse_log` order — cursors, merge, the new test-image
+   builders (unsorted DG with skew, a DL chain with a straddling record, DZ both types,
+   `UnFinMF`), the golden test, `cmd/mf4_dump --stream` printing peak heap for both paths. No
+   GUI change. What it settled beyond the design: the header helpers take `u64` offsets end to
+   end (the hazard below), `read_data_block` is the chain concatenated so the loader and the
+   stream resolve a link through ONE walker, `decode_row` reads a VLSD payload through a
+   `VlsdBytes` source (the whole block in memory, a `ChainView` over the signal-data chain, or a
+   bounded `RingVlsd` of an unsorted group's VLSD records — CANedge writes the payload record
+   immediately before the frame that names it, so a bounded tail suffices and a release is
+   counted, `evicted`), and the unsorted merge reads ahead until every frame group has a row
+   queued, capped at `unsorted_readahead` rows with a forced emission counted (`forced`) rather
+   than hidden, until the survey makes the cap a measured number. Two things the loader assumed
+   that a stream cannot: a group whose time runs backwards is sorted right by the loader and
+   COUNTED by the stream (`out_of_order`); a broken block fails the loader whole and stops the
+   stream's cursor with the reason (`err`), so a half-played file is never a clean end. A length
+   field is checked against the chain's remaining bytes before it sizes a read or a slice — the
+   filler an unfinalized file's extended last block decodes as records reads as 0xFFFFFFF0.
+   Codex's first round (#342) added what a demuxing loader never notices: a frame record may name
+   a payload record that has not gone past yet, so it is DEFERRED until the bytes arrive (decoded
+   in record order; at the end, or past the cap, decoded as it is and counted, `unresolved`); a
+   VLSD record past `max_vlsd_record` is stepped over rather than buffered; the finalized
+   `cg_cycle_count` caps an unsorted group too; the payload source's failure stops the cursor
+   (`VlsdBytes.failure()`), a short read is an error and a DZ block has a real inflated-size cap.
+   Round 2: a fixed record nobody decodes is skipped like an oversized VLSD record (and a frame
+   group's stride is capped, `max_record_stride`, in both readers), a skip still inflates every DZ
+   block it crosses, the unsorted view path queues nothing after a failure, a block length that
+   wraps the address space is clamped like any over-long one, and `mf4_dump --stream` prints
+   `unresolved` and samples its heap mark after the same conversion the loader branch includes.
+   Round 3: deferred frames are bounded in BYTES too (`max_deferred_bytes`); a group past its
+   declared count is exhausted, not waited for, and the rest of its chain is still stepped over so
+   a corrupt trailing block fails the stream as it fails the loader (sorted `drain`, unsorted
+   `exhausted_all`); a TX/MD text is bounded by its block. And a loader defect the new fixture
+   found: an unsorted VLSD group with no records made the frame group's payload link a data link
+   to a CG block, failing the whole file. Round 4: the loader's block read is exact (a short read
+   was zero-filled into records); a skipped plain span is probed at its last byte; `max_dz_block`
+   is 16 MiB — the format's 4 MB rule times four — because it is the memory PER DATA GROUP, and a
+   served DZ block is released at once; record ordinals are u64. Round 5: the signal-data chain is
+   validated whole when the cursor finishes (`ChainView.validate`), the unsorted cursor finishes
+   the same way after an unknown record id or a corrupt length (`finish`), a duplicate claimant of
+   a record id is not waited for, and the text bound subtracts the link array (a defect of round
+   3's fix). Round 6: nothing deferred is flushed after a read failure; past a deferral cap only
+   the OLDEST frames are evicted (`evict`), not the whole backlog; and a FAILED read in the header
+   walk is the parse's failure (`ByteSource.failure()`), where the zero-filling helpers had read it
+   as an empty recording. Round 7: the deferred flush moved INTO `finish`, after the validation
+   (the round-6 fix had the order right for a read failure and wrong for a clean stop); a link
+   count is bounded by the block and the file, not a fixed 65,536 (`link_count`); a zero-length DZ
+   block is validated at the walk. Round 8: the DL is walked one link at a time, never
+   materialized (header blocks keep a bounded array, `max_header_links`); a VLSD group gets a
+   ring only where a decoded frame group reads it. Round 9: the rings of one data group share one
+   byte budget (`ring_budget`); and a claimed underflow in `skip` at a finished plain block did
+   not hold — the probe reads the block's last byte, which exists — pinned by a test. Round 10:
+   the merge returns none as soon as any cursor has failed; a ring is trimmed to its cap; a
+   zero-width record is consumed rather than the end (and a width past an int is corrupt in both
+   readers, `record_size`). Round 11: a DZ block's header and compressed bytes are read exactly
+   (`exact_at`); `FileSource` sizes the handle, not the path; a record id width outside 0/1/2/4/8
+   is refused by both readers. The review stopped there by the maintainer's decision, as #329
+   did; the class test is #345, for step 2.
 2. `survey()`; `restbus --list` over the stream; golden against `load_recording`.
 3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
 4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,
