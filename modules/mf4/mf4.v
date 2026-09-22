@@ -144,14 +144,54 @@ fn tally_buses(log &canlog.Log, start int, acq string, mut names map[string]stri
 		}
 		lbl := log.labels[b]
 		counts[lbl] += n
-		if existing := names[lbl] {
-			if existing != acq {
-				names[lbl] = '' // two different names for one label: trust neither
-			}
-		} else {
-			names[lbl] = acq
+		note_bus_name(mut names, lbl, acq)
+	}
+}
+
+// acq_name is a channel group's cg_tx_acq_name — link 2 of the CG block, '' when none — the
+// one spelling for the loader's tally and the stream's cursors, since the survey's names are
+// pinned to the loader's by test and a lookup spelled four times drifts one site at a time.
+fn acq_name(mut src ByteSource, cg u64) string {
+	cgl := block_links(mut src, cg)
+	return read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) })
+}
+
+// note_bus_name files an acquisition name for a label: the first name a label is seen under is
+// its name, and a SECOND, different one is two names for one bus, which is no name — trust
+// neither. The one rule for the loader's tally and the survey's.
+fn note_bus_name(mut names map[string]string, lbl string, acq string) {
+	if existing := names[lbl] {
+		if existing != acq {
+			names[lbl] = ''
+		}
+	} else {
+		names[lbl] = acq
+	}
+}
+
+// fold_buses is the bus list both readers report from the names and counts they tallied. A
+// name that covers SEVERAL labels is not a name for any of them: one channel group whose
+// records carry their own BusChannel produces two buses under one acquisition name, and handing
+// that name to both would let a caller ask for a bus the file cannot single out — the label
+// pretending to be an identity, which is the thing bus_iface exists to prevent. Sorted by label.
+fn fold_buses(names map[string]string, counts map[string]int) []BusInfo {
+	mut labels_per_name := map[string]int{}
+	for _, nm in names {
+		if nm != '' {
+			labels_per_name[nm]++
 		}
 	}
+	mut buses := []BusInfo{}
+	for iface, n in counts {
+		nm := names[iface] or { '' }
+		buses << BusInfo{
+			iface:  iface
+			name:   if labels_per_name[nm] > 1 { '' } else { nm }
+			frames: n
+		}
+	}
+	buses.sort(a.iface < b.iface)
+	return buses
 }
 
 // read_id_block checks the 64-byte identification block and says whether the file is
@@ -223,9 +263,7 @@ fn parse_recording_unchecked(mut src ByteSource) !Recording {
 				group++
 				// cg_tx_acq_name is link 2. Read AFTER the decode and only over the entries it
 				// produced, so the name follows the frames rather than being guessed at.
-				cgl := block_links(mut src, cg_first)
-				acq := read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) })
-				tally_buses(&log, start, acq, mut bus_names, mut bus_counts)
+				tally_buses(&log, start, acq_name(mut src, cg_first), mut bus_names, mut bus_counts)
 			} else {
 				// Tallied per channel group inside, since each has its own acquisition name.
 				base := seq
@@ -274,29 +312,9 @@ fn parse_recording_unchecked(mut src ByteSource) !Recording {
 		return 0
 	})
 	permute_rows(mut log.rows, idx)
-	// A name that covers SEVERAL labels is not a name for any of them. One channel group whose
-	// records carry their own BusChannel produces two buses under one acquisition name, and
-	// handing that name to both would let a caller ask for a bus the file cannot single out —
-	// the label pretending to be an identity, which is the thing bus_iface exists to prevent.
-	mut labels_per_name := map[string]int{}
-	for _, nm in bus_names {
-		if nm != '' {
-			labels_per_name[nm]++
-		}
-	}
-	mut buses := []BusInfo{}
-	for iface, n in bus_counts {
-		nm := bus_names[iface] or { '' }
-		buses << BusInfo{
-			iface:  iface
-			name:   if labels_per_name[nm] > 1 { '' } else { nm }
-			frames: n
-		}
-	}
-	buses.sort(a.iface < b.iface)
 	return Recording{
 		log:   log
-		buses: buses
+		buses: fold_buses(bus_names, bus_counts)
 	}
 }
 
@@ -418,9 +436,7 @@ fn demux_unsorted(mut src ByteSource, cg_first u64, raw []u8, rec_id_size int, u
 			g++
 			// Each channel group here has its OWN cg_tx_acq_name — sharing a record stream is a
 			// storage detail, not a reason to leave every bus in the file unnamed.
-			cgl := block_links(mut src, c.link)
-			tally_buses(&log, start, read_tx(mut src, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
-				names, mut counts)
+			tally_buses(&log, start, acq_name(mut src, c.link), mut names, mut counts)
 		}
 	}
 	return g

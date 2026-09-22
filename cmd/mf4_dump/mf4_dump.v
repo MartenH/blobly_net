@@ -49,7 +49,7 @@ fn main() {
 			eprintln('parse failed: ${s.err}')
 			exit(1)
 		}
-		println('stream: forced ${s.forced}, evicted ${s.evicted}, refused ${s.refused}, unresolved ${s.unresolved}, out of order ${s.out_of_order}')
+		println('stream: forced ${s.forced}, evicted ${s.evicted}, refused ${s.refused}, unresolved ${s.unresolved}, out of order ${s.out_of_order}, read-ahead high-water ${s.max_queued} rows / ${s.max_ahead_s * 1000.0:.1f} ms, writer disorder ${s.max_disorder_s * 1000.0:.1f} ms, clock steps ${s.clock_steps}')
 		// the loader branch's mark includes the []LogEntry it returns, so this one is taken
 		// after the same conversion or the two numbers do not compare
 		es := log.entries()
