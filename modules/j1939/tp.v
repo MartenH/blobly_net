@@ -110,6 +110,33 @@ pub fn (c Cm) acknowledges(pgn u32, total int, packets int) bool {
 	return c.pgn == pgn && c.total == total && c.packets == packets
 }
 
+// announces_session reports whether a FRAME is a well-formed announcement — a BAM or an RTS
+// that `admission` would accept.
+//
+// It exists so a RECORDING can answer for itself. A live wire has an owner to ask, and is
+// asked (the row's `j1939:`, its databases' declarations, the panel's override); a file
+// somebody sends you has nobody, so the only honest question is whether the bytes in it prove
+// what they are. This is proof rather than a guess: a control byte of 0x20 or 0x10 on PGN
+// 0xEC00, with a size, a packet count, a destination and a group number that all agree, is not
+// something a bus that is not J1939 produces by accident. A J1939 recording carrying no
+// multi-packet transfer is simply not recognised — a missing reading, never a wrong one.
+//
+// THE SAME RULE the reassembler admits by, so a file that answers yes is one it can then read.
+pub fn announces_session(f transport.CanFrame) bool {
+	if !tp_shaped(f) {
+		return false
+	}
+	id := decompose(f.id)
+	if id.pgn() != pgn_tp_cm {
+		return false
+	}
+	cm := parse_cm_of(f) or { return false }
+	if cm.ctrl != cm_bam && cm.ctrl != cm_rts {
+		return false
+	}
+	return cm.admission(id) == none
+}
+
 // admission is THE rule for whether a TP.CM frame announces a transfer this module will follow,
 // and why not when it does not — for the reassembler, which narrates the reason, and for
 // Transfers, which attributes frames and must refuse exactly the same announcements, or the two

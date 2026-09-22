@@ -452,7 +452,8 @@ fn verdict_mark(refused bool, missed bool) string {
 }
 
 fn draw_trace_all(id string, rows []TraceRow, filt string) {
-	if vgui.table_begin(id, 9) {
+	// see gtrace11 below: a changed default width needs a changed table id, or imgui.ini wins
+	if vgui.table_begin(id + '2', 9) {
 		// Column order follows the layout every CAN tool's summary view has taught people to
 		// read: index and time lead, then where (ch) and what (id/name), then the frame's shape.
 		vgui.table_setup_col('idx', 60)
@@ -462,7 +463,13 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
 		vgui.table_setup_col('id', 82)
-		vgui.table_setup_col('name', 150)
+		// 235, not 150: the widest real reading is an ADDRESSED group's, `PGN 0xEA00 DA 0x03
+		// SA 0x00`, and the old width cut it
+		// mid-address — losing the SENDER, which is the thing the reading exists to show, and
+		// which the trace cannot otherwise tell you. Found by a headless screenshot of the
+		// demo capture, not by a test. A longer DBC message name fits better too; the column
+		// is draggable from here either way.
+		vgui.table_setup_col('name', 235)
 		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('len', 34)
 		vgui.table_setup_col('flags', 58)
@@ -784,7 +791,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		return 0
 	})
-	if vgui.table_begin('gtrace10', 10) {
+	// gtrace11, not gtrace10: ImGui persists column widths per TABLE ID, so a build that has
+	// run before restores the widths saved under the old one and ignores the new default — the
+	// narrow name column stays narrow for exactly the users who already have the problem
+	// (codex). A new id starts clean; the old entry is orphaned, not misapplied.
+	if vgui.table_begin('gtrace11', 10) {
 		// idx and t lead, as in the chronological view and in every summary view readers come
 		// from; the tree (expand) widget rides on the id/name column, wherever that column is.
 		// (Table id carries the column count: imgui persists per-column widths BY INDEX under
@@ -793,7 +804,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		vgui.table_setup_col('idx', 60)
 		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
-		vgui.table_setup_col('id / name', 210)
+		vgui.table_setup_col('id / name', 345) // see the flat view's `name`: a J1939 reading is longer
 		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('len', 34)
 		vgui.table_setup_col('flags', 58)

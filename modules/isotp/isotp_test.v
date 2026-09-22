@@ -749,7 +749,17 @@ fn test_stmin_holds_across_block_boundaries() {
 		assert false, 'no First Frame'
 		return
 	}
-	t0 := time.ticks()
+	// THE FINE CLOCK, for the reason the sibling assertion above spells out at length: this
+	// margin is 10 ms — a true ~60 ms against a bound of 50 — and `ticks()` is GetTickCount on
+	// Windows at ~15.6 ms, so two reads of a correct 60 ms interval land on either 3 or 4 tick
+	// boundaries depending on phase and the measurement itself reads 46.8 or 62.4. #316 moved
+	// that one and left this one, which measures the same interval against the same bound with
+	// the same clock; the Windows job has failed it at `took 46 ms` and at `took 47 ms` (#335).
+	//
+	// The other `ticks()` assertions in this file stay: their margins are hundreds of
+	// milliseconds, where 15 ms of granularity is nothing. It is the RATIO of margin to
+	// granularity that decides, not the clock.
+	t0 := time.sys_mono_now()
 	// ONE frame per block, so the sender must ask again for each — and must still pace.
 	for _ in 0 .. 3 {
 		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
@@ -761,9 +771,9 @@ fn test_stmin_holds_across_block_boundaries() {
 		}
 	}
 	msg := <-done
-	elapsed := time.ticks() - t0
+	elapsed := f64(time.sys_mono_now() - t0) / 1e6
 	assert msg == 'sent', msg
-	assert elapsed >= 50, 'three single-frame blocks at STmin 30 ms took ${elapsed} ms — the separation lapsed at the boundary'
+	assert elapsed >= 50, 'three single-frame blocks at STmin 30 ms took ${elapsed:.1f} ms — the separation lapsed at the boundary'
 	ch.close()
 	peer.close()
 }
@@ -922,6 +932,161 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 	// and it completes normally once THIS transfer is answered
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
 	msg := <-second
+	assert msg == 'sent', msg
+	ch.close()
+	peer.close()
+}
+
+// THE TRANSFER'S TOTAL ALLOWANCE (#296 item 1). The per-block bounds multiply by the number of
+// blocks and nothing bounded the product: at BS=1 a maximum PDU is 585 blocks, so a peer using
+// every WAIT it is allowed holds one send for about two and a half hours.
+fn test_the_wait_budget_clamps_a_read_and_reports_its_own_bound() {
+	mut b := new_wait_budget_ms(100)
+	// the caller's own window wins while it is the shorter of the two
+	assert b.window_ms(50) == 50
+	// and the allowance wins when it is not
+	assert b.window_ms(500) == 100
+	b.spend_ns(60 * 1_000_000)
+	assert b.window_ms(500) == 40
+	assert !b.spent()
+	b.spend_ns(40 * 1_000_000)
+	assert b.spent()
+	assert b.window_ms(500) == 0, 'a spent allowance permits no read at all'
+	// the note names the total bound, not the per-block one, or the reader goes to the wrong
+	// constant for the reason a transfer ended
+	assert exhausted_note(100).contains('fc_total_wait_ms')
+	assert exhausted_note(100).contains('100 ms')
+}
+
+// A REMAINDER UNDER A MILLISECOND IS STILL TIME LEFT. Truncating it to 0 would report the
+// allowance as spent while it is not, and `window_ms` returning 0 is how the caller is told to
+// give up -- so the two must not be confused.
+fn test_a_sub_millisecond_remainder_is_not_a_spent_budget() {
+	mut b := new_wait_budget_ms(1)
+	b.spend_ns(900 * 1_000) // 900 us of a 1000 us allowance
+	assert !b.spent()
+	assert b.window_ms(500) == 1, 'the smallest read that means anything'
+}
+
+// A BOUND THAT REFUNDS IS NOT A BOUND. A clock reading backwards is not this clock's contract,
+// but crediting the difference would hand a stalling peer its time back.
+fn test_a_backwards_clock_reading_spends_nothing() {
+	mut b := new_wait_budget_ms(100)
+	b.spend_ns(-5 * 1_000_000)
+	assert b.window_ms(500) == 100
+}
+
+// ZERO IS THE SMALLEST ALLOWANCE, NOT AN ABSENT ONE: a channel whose field a struct literal
+// left at zero must not silently get the unbounded behaviour this closes.
+fn test_a_zero_allowance_is_not_an_unbounded_one() {
+	b := new_wait_budget_ms(0)
+	assert b.spent()
+	assert b.window_ms(1000) == 0
+	neg := new_wait_budget_ms(-1)
+	assert neg.spent()
+}
+
+// END TO END, AND GENUINELY ACROSS BLOCKS. The per-block count resets on every Flow Control,
+// so a peer that stays under it forever is fine by every per-block rule while the transfer it
+// belongs to runs for hours. That is the shape this allowance exists for.
+//
+// The first draft never reached a second block: the peer only ever sent WAIT, so no Consecutive
+// Frame was ever authorised and every WAIT landed in the FIRST `await_flow_control` call --
+// testing the per-call path under another name, and making the N_WFTmax assertion vacuous
+// (self-review). Here each block gets ONE wait and then a real CTS, so the count is 1 where the
+// bound is 16, the blocks actually advance, and what runs out is the total.
+fn test_waits_spread_across_blocks_exhaust_the_transfer_allowance() {
+	mut peer := transport.open('inproc:isotp-budget') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-budget', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	ch.total_wait_ms = 150
+	done := chan string{cap: 1}
+	// 62 bytes = 6 + eight Consecutive Frames, so at BS=1 there are eight blocks to spread over
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 62, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	must_read_tx(mut peer, 0x7E0) or {
+		assert false, 'no First Frame'
+		return
+	}
+	// AND THE PEER'S OWN QUEUE IS DRAINED, by reading the Consecutive Frame each block. The
+	// in-process bus delivers a sender its own frames too, so a peer that only sends fills its
+	// own queue, `try_push` starts refusing, and the stall under test stops being fed -- the
+	// sender then dies on the per-block timeout and the test reads a plausible wrong answer.
+	mut blocks := 0
+	for _ in 0 .. 8 {
+		if done.len > 0 {
+			break
+		}
+		// one WAIT, paid for in real time, then the CTS that ends the block
+		time.sleep(30 * time.millisecond)
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x31), 0, 0] }) or {
+			assert false, 'the peer could not send: ${err}'
+			break
+		}
+		time.sleep(30 * time.millisecond)
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 0] }) or {
+			assert false, 'the peer could not send: ${err}'
+			break
+		}
+		if _ := must_read_tx(mut peer, 0x7E0) {
+			blocks++
+		}
+	}
+	msg := <-done
+	assert msg.contains('fc_total_wait_ms'), msg
+	assert !msg.contains('N_WFTmax'), 'one wait per block must not trip the per-block count: ${msg}'
+	assert blocks >= 1, 'the transfer never advanced a block, so nothing was tested across them'
+	ch.close()
+	peer.close()
+}
+
+// AND THE ALLOWANCE IS NOT SPENT BY OUR OWN PACING, which is the whole reason it counts waiting
+// rather than elapsed time: STmin is the receiver's to ask for, and 585 frames at the slowest
+// legal separation is 74 seconds that ISO entitles it to. A transfer paced well past its own
+// allowance must still complete.
+//
+// EVERY FLOW CONTROL IS QUEUED UP FRONT, so no read here blocks and none is charged -- the only
+// elapsed time is our own sleeping. The first draft had the peer answer as it went, which
+// charged the harness's own scheduling to the allowance and could fail on a loaded runner with
+// the exhaustion message instead of `sent` (self-review). The margin is 200 ms of pacing
+// against a 100 ms allowance, so the assertion is about which of the two is counted, not about
+// how fast the machine is.
+fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
+	mut peer := transport.open('inproc:isotp-budget-pace') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-budget-pace', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	ch.total_wait_ms = 100
+	// three Flow Controls for three blocks, all waiting before the sender looks
+	for _ in 0 .. 3 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 100] }) or {
+			assert false, err.msg()
+		}
+	}
+	done := chan string{cap: 1}
+	// 27 bytes = 6 + three Consecutive Frames, so STmin is paid twice: 200 ms of pacing
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 27, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	msg := <-done
 	assert msg == 'sent', msg
 	ch.close()
 	peer.close()

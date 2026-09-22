@@ -1,0 +1,38 @@
+# Blobly Net project — J1939 demo (#171), zero drivers, no hardware.
+#
+# One CAN row, ticked J1939. Nothing here transmits: the demo is the RECORDING beside it.
+#
+#   BLOBLY_PROJECT=projects/j1939-demo.blobnet ./scripts/run_gui.sh
+#   → Trace ▸ Open Recording ▸ samples/j1939-bam.log
+#
+# and the trace reads what a truck bus actually looks like, with no database loaded at all:
+#
+#   PGN F004 SA 0x00   and   PGN F004 SA 0x21     one parameter group, two senders
+#   PGN EA00 SA 0x00 DA 0x03                      a request addressed to one node
+#   the TP.CM/TP.DT frames of a multi-packet transfer, and the 20-byte message they
+#   add up to, rejoined as a row of its own
+#   an address claim, after which SA 0x21 is named rather than numbered
+#
+# Attach a DBC and the names replace `PGN ....`.
+#
+# WHY THE TICK, and why the recording needs none. A live wire has an owner to ask, so it is
+# asked: no frame can say it is J1939, since every 29-bit identifier splits into a plausible
+# group number and a plausible source address whether anybody meant it to or not. Most J1939
+# databases declare nothing either — `VFrameFormat` is a Vector attribute they were written
+# without — which is what this tick is for. A recording has nobody to ask, so it answers for
+# itself: a well-formed transport announcement in the file is proof, and nothing else counts.
+project:
+  name: j1939-demo
+  # v6, because `j1939:` below is a key a build that predates it drops on its next structured
+  # save. An older version-aware build warns rather than silently rewriting the declaration
+  # away (project.version_for; codex on #344).
+  version: 6
+
+channels:
+  - name: J1939
+    type: can
+    interface: inproc:J1939   # driver-free; swap for `can0` or `pcan:PCAN_USBBUS1@250000`
+    bitrate: 250000           # the J1939 rate; nothing in-process enforces it
+    mode: normal
+    enabled: true
+    j1939: true
