@@ -617,8 +617,13 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   at every Start. **The run gate is read from the APP, not from the tap**: `install_tap` opens the
   shared tap with `gen 0` — a tap that outlives runs — and that is the tap a generator naming a
   bare wire (`bus: vcan9`) sends through, so `run_gen == guard_gen` matched nothing in exactly the
-  case the feature exists for (measured: 23 failed sends on a down wire, not one line). A failure that follows a
-  success is asked about whatever the cadence says, or the one case this exists for is lost: a
+  case the feature exists for (measured: 23 failed sends on a down wire, not one line). Who else will narrate a wire is
+  `monitorable()` ALONE, not a running or spawning reader: `start()` sets `app.running` before it
+  marks any row spawning, and a tool bus that survives Stop can send in between — so the narrower
+  test read an about-to-be-monitored wire as unowned and spent the advisory on it (codex round 2,
+  the window `load_owner_locked` already documents). A retired row is disabled and so not
+  monitorable, which is what still hands a dead reader's wire back to its tap. A failure that
+  follows a success is asked about whatever the cadence says, or the one case this exists for is lost: a
   successful send polls `.ok`, the controller goes BUS-OFF, and the next send fails inside the
   200 ms floor — and a producer that stops on its first error never asks again. It cannot run away,
   because a REFUSED ask moves nothing, so an escalation needs a granted success ask before it and

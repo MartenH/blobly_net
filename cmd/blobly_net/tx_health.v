@@ -70,18 +70,30 @@ fn (mut app App) tx_health_gate_locked(wire string) &txhealth.Gate {
 	return g
 }
 
-// wire_reader_owns_locked reports whether an rx_loop on this wire is reading it, or about to.
+// wire_reader_owns_locked reports whether somebody else will narrate this wire's ladder.
 // Caller holds app.mu.
 //
-// SPAWNING COUNTS. monitors_locked asks for `running` alone, which is right for "where could an
-// echo arrive"; here the question is "will somebody else narrate this wire's ladder", and a row
-// whose reader is on its way up will. Counting only `running` would narrate from the tap during
-// the open window and then again from the reader a moment later — two lines for one fault, which
-// an operator reads as two faults. A wire that is genuinely transmit-only has no such row at all,
-// so erring towards silence here costs the case #142 is about nothing.
+// `monitorable()` ALONE — not `running || spawning`, which is what this asked first and which has
+// a window under it. `start()` sets `app.running = true` (run.v:1016) BEFORE it marks any row
+// `spawning` (run.v:1056), and a Lua or tool bus that deliberately survives Stop can send in
+// between: nothing is marked yet, so the tap read the wire as unowned, and a failed SocketCAN
+// send there spent the once-per-run advisory on a channel that was about to be monitored — while
+// on a polled wire it could narrate a state the rx_loop then narrated again (codex round 2). The
+// same window `load_owner_locked` already documents in trace.v, found the same way.
+//
+// `monitorable()` is the very predicate `start()` uses to decide which rows get an rx_loop, so a
+// row that WILL be read answers true from the moment the project is applied — which closes the
+// window by construction rather than by ordering two writes.
+//
+// AND A DEAD READER STILL HANDS OVER, which is what makes the broader test safe: when an adapter
+// stops answering, `rx_loop` retires that wire's rows by disabling them
+// (`dest_left_the_run_locked`), and a disabled row is not monitorable — so the tap takes the wire
+// back exactly when there is genuinely nobody left to narrate it. A row DISABLED from the start,
+// whose transmit tap is retained on purpose (#165), is not monitorable either, which is one of
+// the two shapes #142 is about; the other — a generator naming a bare wire — has no row at all.
 fn (app &App) wire_reader_owns_locked(wire string) bool {
 	for c in app.chans {
-		if transport.wire_key(c.iface) == wire && c.monitorable() && (c.running || c.spawning) {
+		if transport.wire_key(c.iface) == wire && c.monitorable() {
 			return true
 		}
 	}
