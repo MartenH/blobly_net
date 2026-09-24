@@ -235,3 +235,79 @@ pub fn socketcan_err_health(can_id u32, d1 u8) BusHealth {
 pub fn is_socketcan_err(can_id u32) bool {
 	return can_id & 0x2000_0000 != 0
 }
+
+// --- where a wire's ladder COMES FROM, for a caller holding a bus nothing reads ---
+
+// HealthSource says how a wire answers health(), which is what decides whether a bus nobody
+// READS can report its fault ladder at all. A transmit-only wire — a generator's target, the
+// retained tap of a disabled row — has an open handle and no reader, and until #142 nothing
+// asked it anything.
+//
+// THREE STATES, NOT A BOOL, and that is the whole point of the type. "There is no ladder" and
+// "the ladder needs a reader" are different facts wanting opposite treatment: a caller that
+// folds them together either warns about an in-process bus with no error counters to report —
+// noise on every simulation project, at every Start, sim-demo included — or goes quiet about a
+// real controller whose faults are genuinely unobserved. That is the two-meanings-in-one-answer
+// mistake vector_names.v's AppSlot comment spends a page on, and it cost six review rounds
+// there; an enum is cheaper than finding out a second time.
+pub enum HealthSource {
+	// health() asks the DRIVER and answers from it, so a transmit tap can report the ladder on
+	// its own with nothing reading the wire.
+	polled
+	// health() only advances while something drains recv. A wire nobody reads answers .unknown
+	// for ever, however often it is asked — so polling a tap here reports nothing, and saying
+	// nothing is the honest outcome rather than a bug.
+	needs_reader
+	// No CAN controller, so no error counters and no ladder at all: the software buses. Nothing
+	// to report, and — unlike needs_reader — nothing missing either.
+	no_controller
+}
+
+// health_source answers for an interface STRING, before anything is opened, so a caller can
+// decide once per tap instead of per frame.
+//
+// PLATFORM-DEPENDENT, exactly as vendor_iface and echoes_own_sends are and for the same reason:
+// only open_windows.v routes `pcan:`, `kvaser:` and `vector:` to a vendor driver. On Linux
+// open_linux.v sends everything that is not a software bus to SocketCAN, so `vector:1` there is
+// an ordinary interface name whose health needs a reader — and a test asserting the Windows
+// answer for it would pass on a Windows bench and fail the Linux job (#202).
+pub fn health_source(iface string) HealthSource {
+	// Asked FIRST, because a software bus is the common case in tests, in sim-demo and in every
+	// in-process project, and because it is the one answer that is the same everywhere.
+	if software_iface(iface) {
+		return .no_controller
+	}
+	// A CANSUB KEEPS ITS OWN VERDICT CURRENT. open_cansub_bus spawns health_loop
+	// unconditionally, so the REST poll behind b.stop.health runs for a transmit-only tap
+	// exactly as it runs for a monitor. Not platform-gated, and matched the way the DISPATCHER
+	// matches it (`to_lower().starts_with`, no leading trim) rather than the way the vendor
+	// prefixes below are: a CANsub is reached over HTTP from Linux and Windows alike, so this
+	// is the one hardware backend whose answer does not depend on which OS is asking.
+	if prefix_fold(iface, 0, 'cansub:') {
+		return .polled
+	}
+	$if windows {
+		start := lead_space(iface)
+		// PCAN asks CAN_GetStatus, Kvaser asks canReadStatus. Both read the controller's own
+		// ladder bits out of the driver, and neither needs a frame to have arrived first.
+		if prefix_fold(iface, start, 'pcan:') || prefix_fold(iface, start, 'kvaser:') {
+			return .polled
+		}
+		// VECTOR IS THE EXCEPTION AMONG THE VENDORS, which is why this cannot be `vendor_iface`.
+		// VectorBus.health() returns the last chip state the RECEIVE STREAM carried and fires
+		// the next async request; the reply lands in recv. Nobody reading means nobody collects
+		// it, so the answer stays .unknown however long a generator transmits.
+		//
+		// A DIRECT ct_vector_chipstate POLL WOULD ANSWER, and is refused mid-run because it
+		// drains the very queue the reader is emptying — an objection that does not apply on a
+		// wire with no reader. That is a real opening, and deliberately not taken here: it
+		// needs a VN1630A to verify and no CI runner has one (#142).
+		if prefix_fold(iface, start, 'vector:') {
+			return .needs_reader
+		}
+	}
+	// SOCKETCAN, and on Linux everything that is not a software bus. hstate is updated PASSIVELY
+	// inside recv from the kernel's error frames — "a healthy bus emits no error frames, so
+	// unknown IS the healthy silence", as health() says — so an unread socket learns nothing.
+	return .needs_reader
+}

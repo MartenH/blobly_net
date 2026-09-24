@@ -7,6 +7,7 @@ import sync
 import time
 import project
 import transport
+import txhealth
 import wiretap
 import candb
 import sim
@@ -935,6 +936,11 @@ fn (mut app App) start() {
 	//
 	// Indexed, not stored raw: it is asked on every successful send.
 	app.verify_said = map[string]bool{} // a new run may be of a corrected project; say it again
+	// Per-run, for the same reason: a new run re-narrates its wires from `unknown`, so a bus that
+	// was BUS-OFF when the last run ended says so again rather than staying silent because the
+	// previous run had already mentioned it (#142).
+	app.tx_health = map[string]&txhealth.Gate{}
+	app.tx_health_noted = map[string]bool{}
 	mut names_by_dest := map[string]map[string]sim.VerifyOrigin{}
 	// One real interface per destination, kept because dbs_for_dest derives the key from an
 	// INTERFACE — handing it a key already derived would rely on that derivation being

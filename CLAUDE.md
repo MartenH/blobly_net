@@ -174,7 +174,12 @@ counted without its live set, a live set read after the drain, a snapshot split 
 and the order of the reads making up that snapshot. Every one was a question about what to do
 with the numbers, and none could be asked of it directly while it read and wrote globals inside
 the main package — the signal this guide already names for covering a path instead of patching
-it;
+it; and `cmd/blobly_net/txhealth/`, WHEN A WIRE NOBODY READS IS ASKED FOR ITS FAULT LADDER — the
+two cadences (a failed send asks promptly, a successful one on the slow tick), and which observed
+rung is worth narrating given the last one said. Covered from the start rather than after the
+repairs, because #142's previous answer (#297) took seventeen review rounds and was closed
+unmerged: `reported` holds what was SAID and not what was seen, so a polled wire whose driver call
+returns `unknown` between two BUS-OFFs is one fault and one line rather than two;
 and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
@@ -584,6 +589,38 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   identical on the wire and no amount of observing separates them. Only a declaration can — a
   DBC's `GenMsgCycleTime` — and that alarm is not built yet. The controller's fault ladder is the
   other half and IS a judgement, because the driver made it: that one stays coloured.
+- **A wire nobody reads reports its ladder** (`cmd/blobly_net/tx_health.v`, `txhealth/`, #142):
+  `hstate` advances inside `recv` and `health()` is polled by `rx_loop`, which is spawned only for
+  monitorable channels — so a generator's target wire, or the retained transmit tap of a disabled
+  row (#165), had a bus open and nothing asking it anything, and a generator blasting into a
+  shorted bus printed `TX failed:` per frame and never the one word that explains them. Asked now
+  on the TAP ALREADY OPEN, from `TapBus.send`: immediately on a failure, and at most once a second
+  on success — which is the only path that reaches the `warning` rung, since a controller over the
+  warning limit still transmits. Nothing is spawned and no second handle is opened, which is the
+  whole difference from **#297**, whose answer was a receive reader per such wire and which ran
+  **seventeen** review rounds on the questions a reader brings (who owns the claim, when it is
+  released, the handoff, the race between the first transmit and the handle being open) before
+  being closed unmerged. **`transport.health_source` is what makes it possible, and it is THREE
+  states** — `polled` (PCAN's `CAN_GetStatus`, Kvaser's `canReadStatus`, a CANsub's own REST poll
+  thread, which `open_cansub_bus` spawns unconditionally), `needs_reader` (SocketCAN's `hstate`;
+  **Vector**, whose `health()` returns the last chip state the RECEIVE STREAM carried, so nobody
+  reading means nobody collects the async reply — a direct `ct_vector_chipstate` poll WOULD answer
+  and is refused mid-run only because it drains the reader's queue, an objection that does not
+  apply here, which is a real opening left untaken because no CI runner has a VN1630A) and
+  `no_controller` (the software buses). Not a bool, because "there is no ladder" and "the ladder
+  needs a reader" want opposite treatment: folded together, a caller either nags about every
+  in-process project at every Start — sim-demo is entirely `inproc:` — or goes quiet about a real
+  controller whose faults are unobserved. That is `AppSlot`'s two-meanings-in-one-answer lesson,
+  which cost six rounds in `vector_names.v`. On a `needs_reader` wire the LIMIT is said instead,
+  once per wire per run and only once a send has actually failed, so it lands where an operator is
+  already reading `TX failed:` rather than as a line about every ordinary SocketCAN generator wire
+  at every Start. **The run gate is read from the APP, not from the tap**: `install_tap` opens the
+  shared tap with `gen 0` — a tap that outlives runs — and that is the tap a generator naming a
+  bare wire (`bus: vcan9`) sends through, so `run_gen == guard_gen` matched nothing in exactly the
+  case the feature exists for (measured: 23 failed sends on a down wire, not one line). Log only,
+  deliberately: such a wire often has no row at all, and writing a disabled row's `health` would
+  tangle with #287. Reproduce it with `ip link add vcan9 type vcan` left DOWN — the bind succeeds
+  so the tap opens, every send fails ENETDOWN — and a cyclic generator with `bus: vcan9`.
 - [simulation.md](docs/simulation.md) — the simulation user manual (rest-bus, generators,
   senders, replay, end-to-end protection) ·
   [doip.md](docs/doip.md) — the DoIP user manual (supported vs planned) ·
