@@ -1049,6 +1049,9 @@ fn (mut app App) start() {
 		// twice in a row. The second row still transmits and is still configured; it simply does
 		// not need its own pair of eyes on a bus somebody is already watching.
 		rx_key := transport.destination_key(ch.iface)
+		// A NEW RUN OPENS EVERYTHING AGAIN, so last run's open failure says nothing about this
+		// one — left set, a wire that failed once would be treated as reader-less for ever.
+		app.chans[ci].rx_failed = false
 		if rx_key in monitored {
 			app.chans[ci].spawning = false
 		} else {

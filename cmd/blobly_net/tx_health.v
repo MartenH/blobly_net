@@ -70,34 +70,29 @@ fn (mut app App) tx_health_gate_locked(wire string) &txhealth.Gate {
 	return g
 }
 
-// wire_reader_owns_locked reports whether somebody else will narrate this wire's ladder.
-// Caller holds app.mu.
+// wire_reader_owns_locked reports whether somebody else will narrate this wire's ladder, so the
+// tap should stay quiet. Caller holds app.mu.
 //
-// `monitorable()` ALONE — not `running || spawning`, which is what this asked first and which has
-// a window under it. `start()` sets `app.running = true` (run.v:1016) BEFORE it marks any row
-// `spawning` (run.v:1056), and a Lua or tool bus that deliberately survives Stop can send in
-// between: nothing is marked yet, so the tap read the wire as unowned, and a failed SocketCAN
-// send there spent the once-per-run advisory on a channel that was about to be monitored — while
-// on a polled wire it could narrate a state the rx_loop then narrated again (codex round 2). The
-// same window `load_owner_locked` already documents in trace.v, found the same way.
+// THE RULE IS `txhealth.wire_owned`, and it is there rather than here because this one question
+// took three review rounds — each fix creating the next finding — while the cadence rules beside
+// it, covered by a test from the start, took none. Its comment carries the three rounds. This
+// function is now only the projection: which rows are on the wire, and what each one offers.
 //
-// `monitorable()` is the very predicate `start()` uses to decide which rows get an rx_loop, so a
-// row that WILL be read answers true from the moment the project is applied — which closes the
-// window by construction rather than by ordering two writes.
-//
-// AND A DEAD READER STILL HANDS OVER, which is what makes the broader test safe: when an adapter
-// stops answering, `rx_loop` retires that wire's rows by disabling them
-// (`dest_left_the_run_locked`), and a disabled row is not monitorable — so the tap takes the wire
-// back exactly when there is genuinely nobody left to narrate it. A row DISABLED from the start,
-// whose transmit tap is retained on purpose (#165), is not monitorable either, which is one of
-// the two shapes #142 is about; the other — a generator naming a bare wire — has no row at all.
+// `rx_failed` is the one piece of state the rule needed that did not exist. A reader that dies
+// MID-RUN retires its wire by disabling every alias on it, and a disabled row is not monitorable,
+// so that handover was already expressed; a reader that never opened at all leaves its row
+// enabled, and nothing recorded that no reader was coming.
 fn (app &App) wire_reader_owns_locked(wire string) bool {
+	mut rows := []txhealth.RowView{}
 	for c in app.chans {
-		if transport.wire_key(c.iface) == wire && c.monitorable() {
-			return true
+		if transport.wire_key(c.iface) == wire {
+			rows << txhealth.RowView{
+				monitored:   c.monitorable()
+				open_failed: c.rx_failed
+			}
 		}
 	}
-	return false
+	return txhealth.wire_owned(rows)
 }
 
 // note_health asks this tap's wire for its fault ladder and narrates a change.

@@ -615,6 +615,12 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			if a.row_is_mine_locked(ci, iface, gen) {
 				a.chans[ci].running = false
 				a.chans[ci].spawning = false // release the guard, or it can never be re-enabled
+				// NO READER IS COMING FOR THIS WIRE. The row stays ENABLED here (unlike the
+				// mid-run retire below, which disables every alias), so this is the only record
+				// that its reader will never narrate anything — and without it the transmit
+				// tap's health rule read the wire as owned for the rest of the run and went
+				// quiet on a bus with nobody watching it (codex round 3 on #349).
+				a.chans[ci].rx_failed = true
 			}
 			// Append UNDER THE SAME take of the lock as the flags: a check that unlocks
 			// first can straddle a Stop/Start and narrate the replacement run (codex #141

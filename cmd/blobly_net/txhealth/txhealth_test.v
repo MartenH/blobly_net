@@ -197,3 +197,48 @@ fn test_a_granted_ask_records_what_it_was_for() {
 	assert g.ask(510, .failure)
 	assert g.last_why == .failure
 }
+
+// --- ownership: the class three rounds kept landing in ---
+
+fn test_a_wire_with_no_rows_is_owned_by_nobody() {
+	// The case #142 exists for: a generator naming a bare address (`bus: pcan:…@250000`), which
+	// is no configured channel at all.
+	assert !wire_owned([])
+}
+
+fn test_a_monitored_row_owns_its_wire_before_its_reader_starts() {
+	// ROUND 2. `start()` sets app.running before it marks any row spawning, so a tool bus sending
+	// in between must not read an about-to-be-monitored wire as unowned. `monitored` is the same
+	// predicate start() uses to choose readers, so it is true from the moment the project applies.
+	assert wire_owned([RowView{ monitored: true }])
+}
+
+fn test_a_row_whose_reader_failed_to_open_owns_nothing() {
+	// ROUND 3, and a defect of round 2's fix. That path clears running and spawning and leaves the
+	// row ENABLED, so `monitorable()` alone claimed an owner that would never narrate — and the
+	// wire went silent rather than falling back to its tap.
+	assert !wire_owned([RowView{ monitored: true, open_failed: true }])
+}
+
+fn test_a_disabled_row_owns_nothing() {
+	// #165's retained transmit tap, and the retire path's handover: a reader that dies mid-run
+	// disables every alias on its wire, which is how that case is already expressed.
+	assert !wire_owned([RowView{ monitored: false }])
+	assert !wire_owned([RowView{ monitored: false, open_failed: true }])
+}
+
+fn test_one_live_row_is_enough() {
+	// A wire with several aliases gets ONE reader, so a failed sibling must not hand the wire to
+	// the tap while another row is still reading it.
+	assert wire_owned([RowView{ monitored: true, open_failed: true }, RowView{ monitored: true }])
+	assert wire_owned([RowView{ monitored: true }, RowView{ monitored: true, open_failed: true }])
+}
+
+fn test_every_row_failing_hands_the_wire_back() {
+	// The relay race the retire path's comment describes, at open time: if every candidate failed,
+	// nobody is reading and the tap is all there is.
+	assert !wire_owned([RowView{ monitored: true, open_failed: true }, RowView{
+		monitored:   true
+		open_failed: true
+	}])
+}

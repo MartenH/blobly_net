@@ -85,6 +85,12 @@ mut:
 	rx_seen   u64
 	running   bool
 	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
+	// Its rx_loop tried to open and could not. Distinct from `spawning`, which this path also
+	// clears: that failure leaves the row ENABLED on purpose, so `monitorable()` stays true and
+	// nothing else records that the wire has no reader coming. Read by the transmit tap's health
+	// ownership rule (cmd/blobly_net/txhealth, #142) — the mid-run retire path needs no such flag
+	// because it disables every alias on the wire instead.
+	rx_failed bool
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
 	// The controller's fault ladder, from the backend's own driver (transport.BusHealth) —
 	// written by the wire's RX loop on transitions, .unknown where the backend cannot say.
