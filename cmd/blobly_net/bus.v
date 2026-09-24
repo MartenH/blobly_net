@@ -204,6 +204,9 @@ mut:
 	// that. Immutable, like every other field on this struct: a TapBus is handed out through a
 	// `transport.Bus` interface, so it may be copied, and nothing here may rely on mutating it.
 	health_src transport.HealthSource
+	// This wire's identity, derived once for the same reason: note_health runs on every send and
+	// wire_key builds a string, which is the per-frame cost #300 removed from these predicates.
+	health_wire string
 }
 
 // run_cancel is the cancellation TapBus.send hands to the retry helper: true once the run the
@@ -296,7 +299,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		// on a wire nobody reads nothing else ever asks (#142). Last, after the trace bookkeeping
 		// above, so a status call through a vendor DLL never delays retracting the row this send
 		// did not put on the wire.
-		t.note_health(.failure)
+		t.note_health_failure(wire)
 		return err
 	}
 	probe_alloc_note(.inner, pb)
@@ -411,6 +414,7 @@ fn (app &App) open_tap_phys(iface string, phys string, origin string, chan_name 
 		// vendor bitrate suffix says nothing about where health comes from and would merely make
 		// two spellings of one wire answer the same question twice.
 		health_src: transport.health_source(logical)
+		health_wire: transport.wire_key(logical)
 	}
 }
 

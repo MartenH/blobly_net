@@ -113,6 +113,54 @@ fn (app &App) wire_reader_owns_locked(wire string) bool {
 // an immutable receiver on Linux, where `inner` resolves to a concrete SocketCAN bus, and fails on
 // the Windows target where it does not: the `-os windows -check` cross-compile in CLAUDE.md is
 // what caught it, in seconds, for a ten-minute CI round trip.
+// reached_the_driver reports whether a failed send is evidence ABOUT THE CONTROLLER.
+//
+// A refusal that never touched the wire says nothing about the bus: a listen-only mark and a
+// frame no controller could carry are decided in software, above or inside the backend, and the
+// transceiver was never asked. Counted as evidence they do real damage — on an unmonitored wire
+// the FIRST such refusal spends the once-per-run advisory latch, so the genuine fault that
+// follows says nothing at all, and on a polled wire it pins the gate to the 200 ms failure
+// cadence for a wire that is perfectly healthy (code-review high).
+//
+// WHY NOT `err is transport.NotWritten`, which is exactly this concept and already exists:
+// because its own comment lists "a listen-only mark" and "a frame the wire cannot carry" among
+// its cases and the CODE does not return it for either — only shared.v's "bus is not open yet"
+// and one CANsub refusal construct one. Widening it is the right end state and is NOT done here:
+// the hub reads that type to decide whether a pending echo entry stays matchable, so changing
+// which refusals carry it changes the echo matcher on a path with a great deal of history, and
+// that belongs in its own change with its own review. Until then this asks the two pure
+// predicates the backends themselves ask, which is a duplication named rather than hidden.
+fn (t &TapBus) reached_the_driver(wire transport.CanFrame) bool {
+	if transport.wire_policy(t.iface).silent {
+		return false // SilentBus refused it; the transceiver never saw a thing
+	}
+	if _ := transport.frame_send_refusal(wire) {
+		return false // a frame no controller could transmit, refused above the driver
+	}
+	return true
+}
+
+// NOT DEMONSTRATED ON THIS BENCH, and worth saying so. Neither refusal can be produced on a
+// wire that is both unmonitored and SocketCAN: SocketCAN CLAMPS an over-wide id rather than
+// refusing it (clamps_to_classic — the refusing tier is the vendor backends), and a listen-only
+// mark is published from an ENABLED row, which by definition has a reader and so is suppressed a
+// step earlier. The damage this prevents is therefore on vendor hardware: a refused frame shape
+// spending the once-per-run advisory latch, and the 200 ms failure cadence pinned to a healthy
+// wire. Reasoned from the code and the predicates, not measured — no CI runner has a PCAN.
+
+// note_health_failure is the failure entry point: it decides whether the failure is evidence
+// about the controller at all before anything else happens. A refusal that never reached the
+// driver is not, and treating it as one is what spends the advisory latch on a healthy wire.
+fn (mut t TapBus) note_health_failure(wire transport.CanFrame) {
+	if t.health_src == .no_controller {
+		return // the common case, answered without touching wire_policy
+	}
+	if !t.reached_the_driver(wire) {
+		return
+	}
+	t.note_health(.failure)
+}
+
 fn (mut t TapBus) note_health(why txhealth.Why) {
 	// A SOFTWARE BUS HAS NO LADDER. Checked first and without a lock, because it is the common
 	// case — every test, every in-process project, sim-demo entire — and because the answer is a
@@ -121,7 +169,9 @@ fn (mut t TapBus) note_health(why txhealth.Why) {
 		return
 	}
 	mut a := unsafe { t.app }
-	wire := transport.wire_key(t.iface)
+	// Precomputed on the tap: t.iface never changes, so deriving the key here was one string
+	// built per send on the one path that is hot enough to care.
+	wire := t.health_wire
 	if t.health_src == .needs_reader {
 		// NOTHING TO ASK, so say why — once per wire per run, and only when a send has failed.
 		// Said at Start instead it would be a line about every ordinary SocketCAN generator wire
@@ -132,7 +182,18 @@ fn (mut t TapBus) note_health(why txhealth.Why) {
 			return
 		}
 		a.mu.lock()
-		gen, first := a.tx_health_claim_locked(wire)
+		// THE SAME OWNERSHIP QUESTION THE POLLED BRANCH ASKS, and leaving it out was a real
+		// defect: on Linux every enabled SocketCAN channel is needs_reader, so a refused frame
+		// or a downed link on a perfectly ordinary MONITORED channel produced "cannot be read on
+		// a wire nothing monitors — enable this channel" about a channel that is enabled and
+		// whose rx_loop is already narrating its ladder (code-review high). The advisory is only
+		// ever true of a wire nobody reads.
+		owned := a.wire_reader_owns_locked(wire)
+		mut gen := u64(0)
+		mut first := false
+		if !owned {
+			gen, first = a.tx_health_claim_locked(wire)
+		}
 		a.mu.unlock()
 		if first {
 			notify_gen(a, gen, '${t.iface}: the controller fault ladder cannot be read on a wire nothing monitors — this backend reports it only through frames a reader would drain, so enable this channel to see whether the bus went error-passive or BUS-OFF')
@@ -141,14 +202,20 @@ fn (mut t TapBus) note_health(why txhealth.Why) {
 	}
 	now := time.ticks()
 	a.mu.lock()
-	// The reader's question first, so a monitored wire never consumes a cadence slot it has no
-	// use for: rx_loop already narrates that wire, on the same words.
-	owned := a.wire_reader_owns_locked(wire)
+	// THE CADENCE FIRST, THEN OWNERSHIP, and the order is a performance decision rather than a
+	// semantic one. `wire_reader_owns_locked` walks app.chans rebuilding transport.wire_key per
+	// row — the per-frame identity-predicate cost #300 went to some length to remove — while
+	// `ask` is one map lookup and an integer compare. Asked first, the walk ran on EVERY send on
+	// a polled wire; asked second it runs once a second (code-review high).
+	//
+	// What it costs: a monitored wire now consumes its own cadence slots, which nothing reads.
+	// Harmless — if its reader later dies and this tap takes over, the first poll may be up to
+	// one interval late, against a fault that has already lasted that long.
 	gen := a.run_gen
 	mut ask := false
-	if !owned && a.running {
+	if a.running {
 		mut g := a.tx_health_gate_locked(wire)
-		ask = g.ask(now, why)
+		ask = g.ask(now, why) && !a.wire_reader_owns_locked(wire)
 	}
 	a.mu.unlock()
 	if !ask {
