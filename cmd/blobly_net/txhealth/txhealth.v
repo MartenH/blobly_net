@@ -179,8 +179,7 @@ pub fn (mut g Gate) saw(to Rung) Said {
 
 // WHO WILL NARRATE A WIRE'S LADDER — the ownership half, and why it is here.
 //
-// THREE CONSECUTIVE REVIEW ROUNDS LANDED ON THIS ONE QUESTION, and the third was a defect of the
-// second one's fix:
+// FOUR CONSECUTIVE REVIEW ROUNDS LANDED ON THIS ONE QUESTION, each on the one before it:
 //
 //   1. the advisory branch never asked it at all, so a MONITORED SocketCAN channel could be told
 //      to "enable this channel" (self-review);
@@ -189,7 +188,10 @@ pub fn (mut g Gate) saw(to Rung) Said {
 //      as unowned (codex round 2);
 //   3. widening it to `monitorable()` alone then claimed an owner FOR EVER on a row whose reader
 //      failed its open, because that path clears `running`/`spawning` and leaves the row enabled —
-//      so a wire with a dead reader went silent instead of falling back to its tap (codex round 3).
+//      so a wire with a dead reader went silent instead of falling back to its tap (codex round 3);
+//   4. and recording that failure on the ROW reached no alias, since `start()` gives a wire one
+//      reader however many rows spell it — so every sibling read as monitored-and-fine and the
+//      wire was owned anyway (codex round 4). It is the WIRE's fact, and it is a parameter here.
 //
 // That is precisely the signal CLAUDE.md names: "when consecutive rounds find defects introduced
 // by the previous round's fix, and they cluster, the loop is designing an untested path one repair
@@ -202,26 +204,35 @@ pub:
 	// row that WILL be read answers true from the moment the project is applied, with no interval
 	// in which the answer is wrong.
 	monitored bool
-	// Its reader tried to open and could not. TERMINAL for the run: that path does not retry, and
-	// topology is fixed at Start (#120), so nothing will revive it.
-	open_failed bool
 }
 
-// wire_owned reports whether any of a wire's rows will narrate its fault ladder, so the tap
-// should stay quiet. `rows` is the rows ON THAT WIRE; a wire with none — a generator naming a
-// bare address — is owned by nobody, which is the case #142 exists for.
+// wire_owned reports whether anybody will narrate this wire's fault ladder, so the tap should
+// stay quiet. `rows` is the rows ON THAT WIRE; a wire with none — a generator naming a bare
+// address — is owned by nobody, which is the case #142 exists for.
+//
+// `reader_failed` IS THE WIRE'S, NOT A ROW'S, and that is round 4's lesson. `start()` gives a
+// wire ONE reader however many rows alias it, so when that open fails there is nothing reading
+// the wire — but the failure was first recorded on the row that happened to be chosen, leaving
+// every sibling alias monitored-and-not-failed and the wire owned for ever (codex round 4). It
+// is the same per-WIRE-not-per-row lesson `silence.v` records about the listen-only mark: the
+// thing being described belongs to the controller, so every handle on it shares one answer.
+//
+// It answers FIRST and alone: one reader, and it is gone, so no row's state can argue otherwise.
 //
 // WHY `running` AND `spawning` ARE NOT HERE. They describe how far along a reader is, and the
-// question is not that: it is whether one is coming at all. A row that is monitored and has not
-// failed will be read, whether or not its thread has got there yet.
+// question is not that: it is whether one is coming at all. A monitored row will be read whether
+// or not its thread has got there yet, which is what closes the startup window.
 //
-// WHY A RETIRED ROW NEEDS NO FIELD. A reader that fails MID-RUN retires its wire by disabling
-// every alias on it (`dest_left_the_run_locked`), and a disabled row is not monitored — so the
-// handover is already expressed. `open_failed` exists only because the OTHER failure path, a
-// reader that never opened at all, deliberately leaves the row enabled.
-pub fn wire_owned(rows []RowView) bool {
+// WHY A RETIRED WIRE NEEDS NO FLAG. A reader that dies MID-RUN retires its wire by disabling
+// every alias on it (`dest_left_the_run_locked`), and a disabled row is not monitored — so that
+// handover is already expressed. `reader_failed` exists only for the OTHER path, a reader that
+// never opened at all, which deliberately leaves its row enabled.
+pub fn wire_owned(rows []RowView, reader_failed bool) bool {
+	if reader_failed {
+		return false
+	}
 	for r in rows {
-		if r.monitored && !r.open_failed {
+		if r.monitored {
 			return true
 		}
 	}

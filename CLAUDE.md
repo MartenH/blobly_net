@@ -618,14 +618,19 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   shared tap with `gen 0` — a tap that outlives runs — and that is the tap a generator naming a
   bare wire (`bus: vcan9`) sends through, so `run_gen == guard_gen` matched nothing in exactly the
   case the feature exists for (measured: 23 failed sends on a down wire, not one line). **Who else will narrate a wire is `txhealth.wire_owned`**, and it is a
-  tested rule because THREE consecutive rounds landed on that one question, the third a defect of
-  the second's fix — the signal this guide names. `monitorable()` (the predicate `start()` itself
-  uses to choose readers, so there is no window: `app.running` is published before any row is
-  marked spawning, and a tool bus sending in between had read an about-to-be-monitored wire as
-  unowned — the window `load_owner_locked` already documents) AND NOT `rx_failed`, the one new
-  bit: a reader that dies MID-RUN disables every alias on its wire so a disabled row already says
-  it, but a reader that never OPENED leaves its row enabled, and `monitorable()` alone then
-  claimed an owner for ever on a wire nobody was watching. A failure that
+  tested rule because FOUR consecutive rounds landed on that one question, each on the previous
+  one's fix — the signal this guide names, and the cadence rules beside it, covered from the
+  start, took none. A wire is owned when a row on it is `monitorable()` (the predicate `start()`
+  itself uses to choose readers, so there is no window: `app.running` is published before any row
+  is marked spawning, and a tool bus sending in between had read an about-to-be-monitored wire as
+  unowned — the window `load_owner_locked` already documents) AND its reader did not fail to open.
+  That last is `App.rx_open_failed`, keyed BY WIRE and answered FIRST: a reader that dies MID-RUN
+  disables every alias on its wire, so a disabled row already says it, but one that never OPENED
+  leaves its row enabled and nothing else records that no reader is coming — and held on the
+  chosen ROW it reached no alias, since `start()` gives a wire one reader however many rows spell
+  it, so every sibling read as fine and the wire stayed owned. The same per-WIRE-not-per-row
+  lesson `silence.v` records about the listen-only mark. Cleared under the lock that publishes the
+  run, not in the row loop after it, for the startup-window reason above. A failure that
   follows a success is asked about whatever the cadence says, or the one case this exists for is lost: a
   successful send polls `.ok`, the controller goes BUS-OFF, and the next send fails inside the
   200 ms floor — and a producer that stops on its first error never asks again. It cannot run away,

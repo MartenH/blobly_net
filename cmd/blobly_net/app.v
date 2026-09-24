@@ -218,6 +218,12 @@ mut:
 	// Keyed by transport.wire_key, because a fault belongs to the controller and several taps
 	// share a wire. Guarded by app.mu; reset at Start with the other per-run state.
 	tx_health map[string]&txhealth.Gate
+	// Wires whose ONE reader failed to open, keyed by transport.wire_key. A per-WIRE fact, not a
+	// per-row one: `start()` gives a wire one reader however many rows alias it, so recorded on
+	// the chosen row alone every sibling looked monitored-and-fine and the wire read as owned
+	// (#142, codex round 4). Cleared under the lock that publishes a run, since a new run opens
+	// everything again. Guarded by app.mu.
+	rx_open_failed map[string]bool
 	// Which wires have already been told that their ladder cannot be read at all — the
 	// needs_reader backends, said once per wire per run. A latch like verify_said beside it, and
 	// reset in the same places.
@@ -1167,6 +1173,7 @@ fn (mut app App) rebuild_from_proj() {
 	// switch would hold what was said about a bus this project may not even have.
 	app.tx_health = map[string]&txhealth.Gate{}
 	app.tx_health_noted = map[string]bool{}
+	app.rx_open_failed = map[string]bool{}
 	app.mu.unlock()
 	app.reset_gen_state()
 	app.replay_view_gen++ // the grouping the stopped Replay panel caches is derived from what

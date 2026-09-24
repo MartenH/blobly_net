@@ -78,21 +78,22 @@ fn (mut app App) tx_health_gate_locked(wire string) &txhealth.Gate {
 // it, covered by a test from the start, took none. Its comment carries the three rounds. This
 // function is now only the projection: which rows are on the wire, and what each one offers.
 //
-// `rx_failed` is the one piece of state the rule needed that did not exist. A reader that dies
-// MID-RUN retires its wire by disabling every alias on it, and a disabled row is not monitorable,
-// so that handover was already expressed; a reader that never opened at all leaves its row
-// enabled, and nothing recorded that no reader was coming.
+// `rx_open_failed` is the one piece of state the rule needed that did not exist, and it is keyed
+// by WIRE. A reader that dies MID-RUN retires its wire by disabling every alias on it, and a
+// disabled row is not monitorable, so that handover was already expressed; a reader that never
+// opened at all leaves its row enabled, and nothing recorded that no reader was coming. Held per
+// wire because `start()` gives a wire one reader however many rows alias it — on the chosen row
+// alone, every sibling read as monitored-and-fine and the wire stayed owned (codex round 4).
 fn (app &App) wire_reader_owns_locked(wire string) bool {
 	mut rows := []txhealth.RowView{}
 	for c in app.chans {
 		if transport.wire_key(c.iface) == wire {
 			rows << txhealth.RowView{
-				monitored:   c.monitorable()
-				open_failed: c.rx_failed
+				monitored: c.monitorable()
 			}
 		}
 	}
-	return txhealth.wire_owned(rows)
+	return txhealth.wire_owned(rows, app.rx_open_failed[wire])
 }
 
 // note_health asks this tap's wire for its fault ladder and narrates a change.

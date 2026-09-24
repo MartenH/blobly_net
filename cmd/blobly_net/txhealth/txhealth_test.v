@@ -198,47 +198,52 @@ fn test_a_granted_ask_records_what_it_was_for() {
 	assert g.last_why == .failure
 }
 
-// --- ownership: the class three rounds kept landing in ---
+// --- ownership: the class four rounds kept landing in ---
 
 fn test_a_wire_with_no_rows_is_owned_by_nobody() {
 	// The case #142 exists for: a generator naming a bare address (`bus: pcan:…@250000`), which
 	// is no configured channel at all.
-	assert !wire_owned([])
+	assert !wire_owned([], false)
 }
 
 fn test_a_monitored_row_owns_its_wire_before_its_reader_starts() {
 	// ROUND 2. `start()` sets app.running before it marks any row spawning, so a tool bus sending
 	// in between must not read an about-to-be-monitored wire as unowned. `monitored` is the same
 	// predicate start() uses to choose readers, so it is true from the moment the project applies.
-	assert wire_owned([RowView{ monitored: true }])
+	assert wire_owned([RowView{ monitored: true }], false)
 }
 
-fn test_a_row_whose_reader_failed_to_open_owns_nothing() {
-	// ROUND 3, and a defect of round 2's fix. That path clears running and spawning and leaves the
-	// row ENABLED, so `monitorable()` alone claimed an owner that would never narrate — and the
-	// wire went silent rather than falling back to its tap.
-	assert !wire_owned([RowView{ monitored: true, open_failed: true }])
+fn test_a_failed_open_hands_the_wire_back_whatever_its_rows_say() {
+	// ROUND 3, a defect of round 2's fix: that path clears running and spawning and leaves the row
+	// ENABLED, so `monitorable()` alone claimed an owner that would never narrate.
+	assert !wire_owned([RowView{ monitored: true }], true)
+}
+
+fn test_the_failure_is_the_wire_s_and_so_reaches_every_alias() {
+	// ROUND 4, a defect of round 3's fix. `start()` gives a wire ONE reader however many rows
+	// alias it, so a failure recorded on the CHOSEN row left every sibling monitored-and-fine and
+	// the wire owned for ever. Held per wire, no alias can argue with it — which is why the flag
+	// is a parameter of the WIRE and not a field on RowView.
+	assert !wire_owned([RowView{ monitored: true }, RowView{ monitored: true }, RowView{
+		monitored: true
+	}], true)
 }
 
 fn test_a_disabled_row_owns_nothing() {
 	// #165's retained transmit tap, and the retire path's handover: a reader that dies mid-run
 	// disables every alias on its wire, which is how that case is already expressed.
-	assert !wire_owned([RowView{ monitored: false }])
-	assert !wire_owned([RowView{ monitored: false, open_failed: true }])
+	assert !wire_owned([RowView{ monitored: false }], false)
+	assert !wire_owned([RowView{ monitored: false }, RowView{ monitored: false }], false)
 }
 
-fn test_one_live_row_is_enough() {
-	// A wire with several aliases gets ONE reader, so a failed sibling must not hand the wire to
-	// the tap while another row is still reading it.
-	assert wire_owned([RowView{ monitored: true, open_failed: true }, RowView{ monitored: true }])
-	assert wire_owned([RowView{ monitored: true }, RowView{ monitored: true, open_failed: true }])
+fn test_one_monitored_row_among_disabled_ones_still_owns_the_wire() {
+	// A wire whose aliases are mostly off still has a reader, and that reader narrates.
+	assert wire_owned([RowView{ monitored: false }, RowView{ monitored: true }], false)
+	assert wire_owned([RowView{ monitored: true }, RowView{ monitored: false }], false)
 }
 
-fn test_every_row_failing_hands_the_wire_back() {
-	// The relay race the retire path's comment describes, at open time: if every candidate failed,
-	// nobody is reading and the tap is all there is.
-	assert !wire_owned([RowView{ monitored: true, open_failed: true }, RowView{
-		monitored:   true
-		open_failed: true
-	}])
+fn test_the_wire_failure_answers_first() {
+	// Stated as its own case because the order is the rule: one reader, and it is gone, so no
+	// row's state can argue otherwise. A mixture of rows must not rescue it.
+	assert !wire_owned([RowView{ monitored: false }, RowView{ monitored: true }], true)
 }

@@ -936,11 +936,6 @@ fn (mut app App) start() {
 	//
 	// Indexed, not stored raw: it is asked on every successful send.
 	app.verify_said = map[string]bool{} // a new run may be of a corrected project; say it again
-	// Per-run, for the same reason: a new run re-narrates its wires from `unknown`, so a bus that
-	// was BUS-OFF when the last run ended says so again rather than staying silent because the
-	// previous run had already mentioned it (#142).
-	app.tx_health = map[string]&txhealth.Gate{}
-	app.tx_health_noted = map[string]bool{}
 	mut names_by_dest := map[string]map[string]sim.VerifyOrigin{}
 	// One real interface per destination, kept because dbs_for_dest derives the key from an
 	// INTERFACE — handing it a key already derived would rely on that derivation being
@@ -1012,6 +1007,18 @@ fn (mut app App) start() {
 	app.wave_t0_ns = time.sys_mono_now()
 	app.gen_send_n = map[u64]int{} // a new run starts the per-send sequences at 0
 	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
+	// A NEW RUN OPENS EVERYTHING AGAIN, so the last run's failed opens say nothing about this
+	// one. HERE, under the lock that publishes the run, and not in the row loop below: that loop
+	// runs AFTER `app.running = true`, and a Lua or tool tap that survives Stop can send in
+	// between — reading a stale failure and treating an about-to-be-monitored wire as unowned
+	// (#142, codex round 4). The same startup window round 2 closed from the other side.
+	// ONE PLACE, for all three: a new run re-narrates its wires from `unknown`, so a bus that was
+	// BUS-OFF when the last run ended says so again rather than staying silent because the
+	// previous run had already mentioned it. Reset earlier in start() as well, they had two
+	// owners and only one of them was inside the lock that publishes the run.
+	app.rx_open_failed = map[string]bool{}
+	app.tx_health = map[string]&txhealth.Gate{}
+	app.tx_health_noted = map[string]bool{}
 	app.mu.unlock()
 	app.running = true
 	// The quiet-bus verdict measures THIS run. Carrying a previous run's first/last across a
@@ -1049,9 +1056,6 @@ fn (mut app App) start() {
 		// twice in a row. The second row still transmits and is still configured; it simply does
 		// not need its own pair of eyes on a bus somebody is already watching.
 		rx_key := transport.destination_key(ch.iface)
-		// A NEW RUN OPENS EVERYTHING AGAIN, so last run's open failure says nothing about this
-		// one — left set, a wire that failed once would be treated as reader-less for ever.
-		app.chans[ci].rx_failed = false
 		if rx_key in monitored {
 			app.chans[ci].spawning = false
 		} else {
