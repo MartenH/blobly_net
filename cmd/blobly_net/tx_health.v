@@ -130,15 +130,54 @@ fn (app &App) wire_reader_owns_locked(wire string) bool {
 // which refusals carry it changes the echo matcher on a path with a great deal of history, and
 // that belongs in its own change with its own review. Until then this asks the two pure
 // predicates the backends themselves ask, which is a duplication named rather than hidden.
-fn (t &TapBus) reached_the_driver(wire transport.CanFrame) bool {
+fn (t &TapBus) reached_the_driver(err IError, wire transport.CanFrame) bool {
+	// WHAT THE BACKEND ITSELF SAID, first and cheapest. `NotWritten` IS this concept — "a send
+	// that was never attempted" — and where a driver returns it there is nothing to infer.
+	if err is transport.NotWritten {
+		return false
+	}
 	if transport.wire_policy(t.iface).silent {
 		return false // SilentBus refused it; the transceiver never saw a thing
 	}
-	if _ := transport.frame_send_refusal(wire) {
-		return false // a frame no controller could transmit, refused above the driver
+	// THE FRAME RULES OF THIS WIRE'S OWN TIER. `frame_send_refusal` is the impossible-frame set
+	// that every backend shares; the VENDOR backends additionally refuse a length rather than
+	// clamping it, and that whole tier is `frame_shape_error` (frame_rules.v names it as such).
+	// Asking the shared set alone read a PCAN/Kvaser/Vector length refusal as a fault of the
+	// controller, which polled a healthy wire and could narrate `bus ok` at it (codex).
+	//
+	// `vendor_iface` is $if windows, which is exactly right here and not a platform bug: on Linux
+	// `vector:1` opens as SocketCAN, which CLAMPS an over-wide length instead of refusing it, so
+	// the shared set really is the whole of that wire's tier.
+	refusal := if transport.vendor_iface(t.iface) {
+		transport.frame_shape_error(wire)
+	} else {
+		transport.frame_send_refusal(wire)
+	}
+	if _ := refusal {
+		return false
 	}
 	return true
 }
+
+// WHAT IS STILL NOT COVERED, and why it is not guessed at. A vendor backend also refuses on
+// CHANNEL properties — an FD frame on a channel opened classic, a Vector port opened `,silent` —
+// and `frame_rules.v` says in as many words that those belong to the backend and not to the
+// shared rules, because only the backend knows how its channel was opened. A tap cannot ask them
+// without keeping its own copy of each backend's open state, which is the per-backend duplication
+// this repo already refuses.
+//
+// The complete answer is `NotWritten` at those sites, which the branch above already reads: its
+// own comment lists "a frame the wire cannot carry" and "a listen-only mark" among its cases and
+// the code returns it for neither, so widening it makes this path better with no change here.
+// Not done in this PR because the hub reads that type to decide whether a pending echo entry
+// stays matchable, so it moves echo attribution on a path with a great deal of history and wants
+// its own change and its own review. Filed as #350 rather than left as a comment nobody will find.
+//
+// Until then the residue is small and one-directional: on a vendor wire, a frame refused for a
+// CHANNEL reason may prompt one health poll that says something true (`bus ok`) at a moment
+// nothing asked about, and on an unmonitored Vector wire it may spend the once-per-run advisory —
+// whose text does not depend on the cause, so the operator is told the same true thing either
+// way, only earlier.
 
 // NOT DEMONSTRATED ON THIS BENCH, and worth saying so. Neither refusal can be produced on a
 // wire that is both unmonitored and SocketCAN: SocketCAN CLAMPS an over-wide id rather than
@@ -151,11 +190,11 @@ fn (t &TapBus) reached_the_driver(wire transport.CanFrame) bool {
 // note_health_failure is the failure entry point: it decides whether the failure is evidence
 // about the controller at all before anything else happens. A refusal that never reached the
 // driver is not, and treating it as one is what spends the advisory latch on a healthy wire.
-fn (mut t TapBus) note_health_failure(wire transport.CanFrame) {
+fn (mut t TapBus) note_health_failure(err IError, wire transport.CanFrame) {
 	if t.health_src == .no_controller {
 		return // the common case, answered without touching wire_policy
 	}
-	if !t.reached_the_driver(wire) {
+	if !t.reached_the_driver(err, wire) {
 		return
 	}
 	t.note_health(.failure)

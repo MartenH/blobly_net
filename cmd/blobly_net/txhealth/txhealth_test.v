@@ -141,3 +141,59 @@ fn test_the_ladder_keeps_its_order() {
 	assert int(Rung.error_passive) == 3
 	assert int(Rung.bus_off) == 4
 }
+
+// --- a failure that follows a success (codex on #349) ---
+
+fn test_a_failure_after_a_success_is_urgent_whatever_the_cadence_says() {
+	// THE CASE THE FEATURE EXISTS FOR. A successful send polls `.ok`; the controller goes BUS-OFF;
+	// the next send fails 10 ms later — inside the 200 ms failure floor. Refused, nothing else is
+	// scheduled, and a producer that stops on its first error leaves the terminal fault unasked.
+	mut g := Gate{}
+	assert g.ask(1000, .success)
+	assert !g.ask(1010, .success) // the ordinary cadence still holds for a success
+	assert g.ask(1010, .failure) // ...and does not hold for the failure behind it
+}
+
+fn test_the_escalation_cannot_run_away() {
+	// A refused ask moves nothing, so after one escalated poll `last_why` is `.failure` and the
+	// next failure is back on the floor. This is what stops a wire alternating success and failure
+	// every frame from polling the driver once per frame — the #224 cost.
+	mut g := Gate{}
+	assert g.ask(1000, .success)
+	assert g.ask(1010, .failure) // escalated
+	assert !g.ask(1020, .failure) // back on the 200 ms floor
+	assert !g.ask(1030, .success) // refused by the one-second floor...
+	assert !g.ask(1040, .failure) // ...so it left last_why alone, and this cannot escalate
+	assert !g.ask(1209, .failure)
+	assert g.ask(1210, .failure) // 200 ms after the escalated poll, on the ordinary floor
+}
+
+fn test_an_escalation_needs_a_granted_success_before_it() {
+	// The bound stated the other way round: escalation costs one GRANTED success ask, which is at
+	// most one a second, so escalated polls are at most about one a second too.
+	mut g := Gate{}
+	assert g.ask(1000, .failure)
+	assert !g.ask(1100, .failure)
+	assert !g.ask(1100, .success) // refused: within the one-second floor
+	assert !g.ask(1150, .failure) // so still no escalation
+	assert g.ask(2000, .success) // granted at last
+	assert g.ask(2001, .failure) // and now a failure behind it escalates
+}
+
+fn test_a_fresh_gate_needs_no_escalation() {
+	// last_ms is 0, so the first ask of either kind is due on its own and the edge never comes
+	// into it. Worth pinning because Why's zero value is `.failure`, which is NOT `.success` —
+	// the escalation must not depend on which variant happens to be first.
+	mut g := Gate{}
+	assert g.ask(0, .failure)
+	mut h := Gate{}
+	assert h.ask(0, .success)
+}
+
+fn test_a_granted_ask_records_what_it_was_for() {
+	mut g := Gate{}
+	assert g.ask(500, .success)
+	assert g.last_why == .success
+	assert g.ask(510, .failure)
+	assert g.last_why == .failure
+}

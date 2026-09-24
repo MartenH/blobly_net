@@ -617,9 +617,18 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   at every Start. **The run gate is read from the APP, not from the tap**: `install_tap` opens the
   shared tap with `gen 0` — a tap that outlives runs — and that is the tap a generator naming a
   bare wire (`bus: vcan9`) sends through, so `run_gen == guard_gen` matched nothing in exactly the
-  case the feature exists for (measured: 23 failed sends on a down wire, not one line). Log only,
-  deliberately: such a wire often has no row at all, and writing a disabled row's `health` would
-  tangle with #287. Reproduce it with `ip link add vcan9 type vcan` left DOWN — the bind succeeds
+  case the feature exists for (measured: 23 failed sends on a down wire, not one line). A failure that follows a
+  success is asked about whatever the cadence says, or the one case this exists for is lost: a
+  successful send polls `.ok`, the controller goes BUS-OFF, and the next send fails inside the
+  200 ms floor — and a producer that stops on its first error never asks again. It cannot run away,
+  because a REFUSED ask moves nothing, so an escalation needs a granted success ask before it and
+  those are one a second (codex on #349). A refusal that never reached the driver is not evidence
+  about the controller, asked at the wire's OWN TIER (`frame_shape_error` where the backend
+  refuses a length, `frame_send_refusal` where it clamps); what is left — an FD frame on a
+  classic-opened channel, a `,silent` Vector port — only the backend knows, and `NotWritten`
+  is the complete answer once it is returned for the cases its own comment already claims (#350).
+  Log only, deliberately: such a wire often has no row at all, and writing a disabled row's
+  `health` would tangle with #287. Reproduce it with `ip link add vcan9 type vcan` left DOWN — the bind succeeds
   so the tap opens, every send fails ENETDOWN — and a cyclic generator with `bus: vcan9`.
 - [simulation.md](docs/simulation.md) — the simulation user manual (rest-bus, generators,
   senders, replay, end-to-end protection) ·

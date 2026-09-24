@@ -299,7 +299,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		// on a wire nobody reads nothing else ever asks (#142). Last, after the trace bookkeeping
 		// above, so a status call through a vendor DLL never delays retracting the row this send
 		// did not put on the wire.
-		t.note_health_failure(wire)
+		t.note_health_failure(err, wire)
 		return err
 	}
 	probe_alloc_note(.inner, pb)

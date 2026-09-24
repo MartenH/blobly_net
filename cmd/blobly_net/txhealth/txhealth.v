@@ -112,6 +112,9 @@ pub struct Gate {
 pub mut:
 	// When this wire's driver was last asked. 0 = never.
 	last_ms i64
+	// What the last GRANTED ask was for. It is what makes a failure after a success urgent —
+	// see ask(). Only a granted ask moves it, which is what bounds the escalation.
+	last_why Why
 	// The last rung actually NARRATED for this wire — not the last one observed. See saw().
 	reported Rung
 }
@@ -123,10 +126,25 @@ pub mut:
 // cadence this exists to enforce is doubled. Checking and claiming together is the same reason
 // `take()` in player/control.v reads and clears in one operation.
 pub fn (mut g Gate) ask(now_ms i64, why Why) bool {
-	if !due(g.last_ms, now_ms, why) {
+	// A FAILURE THAT FOLLOWS A SUCCESS IS ALWAYS URGENT, whatever the cadence says. Without this
+	// the feature loses the one case it exists for: a successful send polls `.ok`, the controller
+	// goes BUS-OFF, and the very next send fails 10 ms later — inside the 200 ms floor, so the
+	// gate refuses, nothing else is scheduled, and if that generator stops (a one-shot, a manual
+	// send, a producer that gives up on its first error) the terminal fault is never asked about
+	// at all. `TX failed` and nothing else, which is exactly the state #142 describes (codex).
+	//
+	// IT CANNOT RUN AWAY, and the reason is that a REFUSED ask moves nothing. After one escalated
+	// poll `last_why` is `.failure`, so the next failure is back on the 200 ms floor; a success in
+	// between is itself refused by the one-second floor and so leaves `last_why` alone. An
+	// escalation therefore needs a GRANTED success ask before it, which is at most one a second —
+	// so a wire alternating success and failure every frame polls about twice a second, not once
+	// per frame. That bound is the whole reason this is an edge and not simply a shorter floor.
+	escalate := why == .failure && g.last_why == .success
+	if !escalate && !due(g.last_ms, now_ms, why) {
 		return false
 	}
 	g.last_ms = now_ms
+	g.last_why = why
 	return true
 }
 
