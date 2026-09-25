@@ -95,7 +95,7 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	// Padded like every other backend: an in-process bus that carried a 9-byte FD payload
 	// verbatim would make a headless test pass where hardware pads to 12, which is the one
 	// thing the default transport must never do.
-	f := if frame.fd {
+	mut f := if frame.fd {
 		CanFrame{
 			...frame
 			data: fd_pad(frame.data)
@@ -103,6 +103,12 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	} else {
 		frame
 	}
+	// A STAMP FROM ANOTHER BUS IS NOT THIS ONE'S. This bus hands the sender's own struct to its
+	// subscribers, so a frame received off vcan0 and forwarded here would arrive still claiming the
+	// kernel read it — a SocketCAN time for a frame this bus never timed. An in-process bus has no
+	// clock of its own, so every frame it delivers says so (#149).
+	f.hw_ns = 0
+	f.hw_domain = ''
 	// UNDER the registry's read lock, and through try_push: a non-blocking push either lands
 	// the frame or reports the queue full, so nothing here can wait while holding the lock —
 	// which is what lets the fan-out skip the target list a send used to build first. That

@@ -6,7 +6,7 @@ import time
 
 fn C.ct_can_open(&u8) int
 fn C.ct_can_send(int, u32, &u8, u8, int, int, int) int
-fn C.ct_can_recv(int, &u32, &u8, int, &u8) int
+fn C.ct_can_recv(int, &u32, &u8, int, &u8, &i64) int
 fn C.ct_can_close(int)
 fn C.strerror(int) &char
 
@@ -85,6 +85,7 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 	for {
 		mut raw_id := u32(0)
 		mut fflags := u8(0)
+		mut stamp := i64(0)
 		mut wait := timeout_ms
 		if timeout_ms >= 0 {
 			left := int(deadline - time.ticks())
@@ -103,7 +104,7 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			}
 		}
 		polled = true
-		dlc := C.ct_can_recv(b.fd, &raw_id, &u8(buf.data), wait, &fflags)
+		dlc := C.ct_can_recv(b.fd, &raw_id, &u8(buf.data), wait, &fflags, &stamp)
 		if dlc == -1 {
 			return error('timeout')
 		}
@@ -148,13 +149,15 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			data[i] = buf[i]
 		}
 		return CanFrame{
-			id:       id
-			extended: ext
-			rtr:      rtr
-			fd:       fflags & 0x01 != 0
-			brs:      fflags & 0x02 != 0
-			esi:      fflags & 0x04 != 0
-			data:     data
+			id:        id
+			extended:  ext
+			rtr:       rtr
+			fd:        fflags & 0x01 != 0
+			brs:       fflags & 0x02 != 0
+			esi:       fflags & 0x04 != 0
+			data:      data
+			hw_ns:     stamp
+			hw_domain: if stamp != 0 { socketcan_domain } else { '' }
 		}
 	}
 	// unreachable — every path exits by return above; V requires a terminal return after a
