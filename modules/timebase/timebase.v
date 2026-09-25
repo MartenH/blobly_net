@@ -131,3 +131,42 @@ fn (mut d Domain) recompute() {
 		}
 	}
 }
+
+// Placer decides where a received frame goes on the host's monotonic timeline (#149 step 4): the
+// one place that answers it, so the trace and anything after it cannot each answer differently.
+//
+// Three cases, by what the frame carries:
+//   - no stamp: its receipt, knowingly — the host time the trace has always used;
+//   - a stamp already on the host's monotonic clock (SocketCAN, which the shim converts): the stamp
+//     itself, with no estimation to add bias;
+//   - a stamp on a foreign clock: that domain's mapping.
+//
+// Each foreign domain's estimator is held by POINTER: V copies a struct out of a map on every read,
+// and a Domain's fixed ring would be copied twice per frame. Unsynchronised; the caller holds the lock.
+pub struct Placer {
+mut:
+	domains map[string]&Domain
+}
+
+// place returns the frame's time on the host monotonic clock, in nanoseconds. `host_clock` says the
+// stamp is already on that clock; `host_ns` is when this host received the frame.
+pub fn (mut p Placer) place(domain string, hw_ns i64, host_ns i64, host_clock bool) i64 {
+	if domain == '' {
+		return host_ns
+	}
+	if host_clock {
+		return hw_ns
+	}
+	mut d := p.domains[domain] or {
+		nd := &Domain{}
+		p.domains[domain] = nd
+		nd
+	}
+	d.observe(hw_ns, host_ns)
+	return d.map(hw_ns) or { host_ns }
+}
+
+// reset forgets every domain: a new run opens every clock again.
+pub fn (mut p Placer) reset() {
+	p.domains = map[string]&Domain{}
+}

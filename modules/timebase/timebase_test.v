@@ -238,3 +238,26 @@ fn test_a_frame_mapped_on_arrival_is_never_early_and_never_later_than_its_receip
 		assert got <= truth + lat
 	}
 }
+
+fn test_the_placer_answers_each_kind_of_frame() {
+	mut p := Placer{}
+	// no stamp: its receipt
+	assert p.place('', 0, 5 * sec, false) == 5 * sec
+	// a stamp on the host clock already: the stamp, not the later receipt
+	assert p.place('kernel', 4 * sec, 4 * sec + 3 * ms, true) == 4 * sec
+	// a foreign clock: mapped through its own domain — here a device 2 s behind the host
+	p.place('pcan:1', 1 * sec, 3 * sec + 1 * ms, false)
+	assert p.place('pcan:1', 1100 * ms, 3100 * ms + 5 * ms, false) == 3100 * ms + 1 * ms
+}
+
+fn test_the_placer_keeps_each_domain_apart_and_forgets_them_on_reset() {
+	mut p := Placer{}
+	p.place('a', 0, 10 * sec, false) // a: 10 s behind
+	p.place('b', 0, 20 * sec, false) // b: 20 s behind
+	assert p.place('a', 1 * sec, 11 * sec + 5 * ms, false) == 11 * sec
+	assert p.place('b', 1 * sec, 21 * sec + 5 * ms, false) == 21 * sec
+	p.reset()
+	// after a reset the first frame sets its domain afresh
+	assert p.place('a', 1 * sec, 50 * sec, false) == 50 * sec
+}
+

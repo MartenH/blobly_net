@@ -12,6 +12,7 @@ import pickrule
 import transport
 import gaterule
 import txhealth
+import timebase
 import wiretap
 import candb
 import prefs
@@ -224,6 +225,10 @@ mut:
 	// (#142, codex round 4). Cleared under the lock that publishes a run, since a new run opens
 	// everything again. Guarded by app.mu.
 	rx_open_failed map[string]bool
+	// Where each received frame goes on the trace's timeline (#149): its receive stamp, mapped per
+	// clock domain, or its receipt when it has none. Guarded by app.mu; reset at Start, since a new
+	// run opens every clock again — only rx_loop feeds it, so nothing reads it between runs.
+	placer timebase.Placer
 	// Which wires have already been told that their ladder cannot be read at all — the
 	// needs_reader backends, said once per wire per run. A latch like verify_said beside it, and
 	// reset in the same places.
