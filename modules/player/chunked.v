@@ -2,6 +2,7 @@ module player
 
 import canlog
 import mf4
+import os
 
 // Chunker plays an MF4 recording a chunk at a time instead of loading it whole, so memory no
 // longer grows with the file (a loaded recording costs about fifteen times its size).
@@ -36,7 +37,8 @@ pub:
 	t0_s  f64
 	end_s f64
 	kept  int // rows a pass plays
-	size  u64 // the file's size at the census; a pass over a file of another size is refused
+	size  u64 // the file's size and modification time at the census: a pass over a file that
+	mtime i64 // no longer matches both is refused
 pub mut:
 	err string // the first read error; a pass ends there
 mut:
@@ -55,6 +57,7 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 		src.close()
 	}
 	size := src.size()
+	mtime := os.file_last_mod_unix(path)
 	mut s := mf4.open_stream(mut src)!
 	mut p := new_planner(specs)
 	mut raw := canlog.Log{}
@@ -83,6 +86,7 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 		end_s: p.end
 		kept:  kept
 		size:  size
+		mtime: mtime
 		ch:    chan Chunk{cap: chunk_ahead}
 		more:  chan bool{cap: 4}
 	}
@@ -116,6 +120,7 @@ struct ReadJob {
 	t0    f64
 	skip  f64
 	size  u64
+	mtime i64
 }
 
 fn (c &Chunker) job(skip f64) ReadJob {
@@ -126,6 +131,7 @@ fn (c &Chunker) job(skip f64) ReadJob {
 		t0:    c.t0_s
 		skip:  skip
 		size:  c.size
+		mtime: c.mtime
 	}
 }
 
@@ -222,9 +228,9 @@ mut:
 // open_pass opens the file for one pass; a file changed since the census is refused.
 fn open_pass(job ReadJob, skip f64) !Pass {
 	mut src := mf4.open_source(job.path)!
-	if src.size() != job.size {
+	if src.size() != job.size || os.file_last_mod_unix(job.path) != job.mtime {
 		src.close()
-		return error('${job.path} changed since it was opened (${job.size} -> ${src.size()} bytes)')
+		return error('${job.path} changed since it was opened')
 	}
 	s := mf4.open_stream(mut src) or {
 		src.close()
