@@ -1,110 +1,45 @@
 // timebase — every CLOCK DOMAIN placed on one timeline (#149).
 //
-// The trace used to stamp a frame when our thread dequeued it, so `t (s)` was a host clock read by
-// whichever receive thread got there first — two channels on one wire disagreed about one physical
-// frame by tens of microseconds, rendered to the microsecond. Every hardware backend already has
-// the wire's own time and drops it. This module is what makes those stamps usable at all: each
-// device's clock has its own zero and its own rate, so its numbers mean nothing next to another's
-// until they are placed on a common timeline.
+// The trace stamps a frame when OUR THREAD dequeued it, so two channels on one wire disagree about
+// one physical frame by tens of microseconds. Every hardware backend has the wire's own time and
+// drops it; this module makes those stamps usable. Each device clock has its own zero and rate, so
+// its stamps mean nothing beside another's until they share a timeline.
 //
-// NOT CLOCK SYNCHRONISATION, and that is the design. Only a few backends can synchronise clocks
-// (PTP on a CANsub, a vendor's own multi-device sync), and only with their own hardware. None of it
-// is needed. A DOMAIN is one clock and one epoch. RAW stamps within a domain are directly
-// comparable; this module places the domain on the host's monotonic timeline, by estimation,
-// within host scheduling jitter — which is the accuracy every comparison had before, so mixing
-// backends costs nothing relative to then.
+// NOT CLOCK SYNCHRONISATION. A DOMAIN is one clock and one epoch. RAW stamps within a domain are
+// exactly comparable — and a delta within a domain (cycle time, jitter, request to response) is
+// taken from them, never from two mapped times, which move whenever the estimate does. `map` places
+// a domain on the host's monotonic timeline, for sorting frames from different domains together.
 //
-// THE RULE FOR CALLERS, and it matters more than anything below: a delta WITHIN a domain — cycle
-// time, jitter, request to response, gateway latency between two channels of one interface — is
-// taken from the RAW stamps, which are exact. A mapped time is for PLACING a frame beside frames
-// from other domains, and it moves whenever the estimate does. Computing cycle time from mapped
-// times would put a small step into the jitter every time the minimum changed.
+// THE MODEL. Our thread always sees a frame AFTER the wire did, and that latency is only ever added,
+// so the smallest `host − hw` gap is the best estimate of the offset (NTP's minimum-delay
+// principle). The minimum is taken over a SLIDING WINDOW of the last 10 s of host time:
 //
-// THE MODEL. Our thread always sees a frame AFTER the wire did — USB, driver, scheduling — and that
-// latency is only ever ADDED. So the smallest `host − hw` gap is the best estimate of the offset
-// between the two clocks: the minimum-delay principle NTP uses. The minimum is taken over a SLIDING
-// WINDOW of recent host time, and that one choice carries all the rest:
+//   - drift is followed by the window's recency: 50 ppm moves the offset at most 0.5 ms in 10 s;
+//   - a frame delivered late (a stall, a backlog, a collector pause) has a HIGH gap, which is never
+//     the minimum — so it never moves the estimate, and is itself placed at its true wire time;
+//   - after a silence longer than the window, the first frame back sets the estimate alone.
 //
-//   - DRIFT is followed by the window's recency. Two crystals 50 ppm apart drift 180 ms an hour;
-//     over a 10 s window the offset moves at most 50 ppm × 10 s = 0.5 ms, which is the error bound.
-//   - A FORWARD STEP lowers every gap, and is adopted at the first frame after it delivered faster
-//     than the step — at once for any step larger than delivery latency. A small step coinciding with
-//     a pause waits for a prompt frame; the frames between are placed late by the step, within their
-//     own receipts.
-//   - A BACKWARD STEP raises every gap; the old minimum lingers until its samples leave the window,
-//     so for up to one window after the LAST pre-step frame the domain maps early by the step.
-//   - A STALL, a STRAGGLER, a DRIVER BACKLOG — anything delivered late — produces a HIGH gap, and a
-//     high gap is never the minimum, so the estimate is untouched. And such a frame is PLACED right:
-//     mapped through the correct offset, it lands at its true wire time however late it arrived.
-//   - ACROSS A STEP, IN EITHER DIRECTION, a frame stamped on the far side of it is placed wrong by
-//     the step, because one domain has one offset and it describes one clock. A pre-step straggler
-//     arriving after a forward step is placed early by the whole step.
-//   - A SILENCE LONGER THAN THE WINDOW empties it, and the first frame back sets the estimate alone:
-//     delivered after a pause, it places its burst late by the pause until a prompt frame arrives.
+// What a frame mapped on arrival gets, held by a property test: never later than its own receipt
+// (its gap is in the window), and early by at most the drift over the larger of one window and its
+// own age — ~0.5 ms at 50 ppm for a prompt frame, ~3 ms for a stamp a minute old. Clock steps do not
+// occur mid-run in this app (a reopen is a new run and a new domain); a frame stamped across one
+// would be misplaced by the step.
 //
-// THE GUARANTEE THOSE ADD UP TO, for a frame placed on arrival with place(), and held by a property
-// test over two hundred thousand frames:
+// A fitted line with step detection was tried first and removed: fed by several receive threads, it
+// read ordinary delivery disagreement as clock steps (#149 has the account).
 //
-//   - NEVER LATER THAN ITS OWN RECEIPT — by construction: place() returns the lesser of the estimate
-//     and the receipt. Normally the estimate already is, since the frame's own gap is in the window;
-//     the clamp is for the frame whose gap is not.
-//   - NEVER EARLY by more than the drift over the larger of one window and the time from its stamp
-//     to its observation. The offset is TODAY'S, so an old stamp gets today's clock phase: a frame
-//     stamped a minute ago and delivered now is early by the drift over that minute — 3 ms at
-//     50 ppm — not over one window (codex round 2 on #351).
+// STAMPS: nanoseconds, 64-bit, monotonic within an epoch. All arithmetic is integer — a CANsub
+// stamp on the Unix epoch in ns is ~1.76×10¹⁸, past the 2⁵³ an f64 holds exactly. Note for step 3:
+// Kvaser's `canReadWait` time is MILLISECONDS unless the timer scale is set, and the shim does not
+// set it, so a Kvaser stamp is 1 ms coarse as things stand.
 //
-// For a frame observed when it is received, that time is its own delivery latency, so the early error
-// is parts per million of how late host-receipt stamping put the same frame. That is the floor #149
-// promised, in both directions: no frame placed worse than the trace placed it before. Every limit
-// above is a case of meeting it rather than beating it; beating it for old stamps would mean
-// estimating the rate, which is the fitted line described next.
-//
-// WHY THE LIMITS ARE STATED RATHER THAN MECHANISED. Two of them looked fixable. A quiet domain's
-// estimate can be carried across the silence, and was: it needed a drift allowance, the minimum's
-// true age, and a plausibility threshold, and it still broke the backward-step bound, since a step
-// during the silence was carried straight past it (codex on #351). A small forward step during a
-// pause can be adopted by detecting the step — which is the machinery described next.
-//
-// WHY NOT A FITTED LINE WITH STEP DETECTION, which is what this was first written as and what #149
-// first described. It tracked drift better, and the review of it found five failures with one
-// cause: a single-epoch state machine that flipped on one contradicting observation, fed by several
-// receive threads whose deliveries disagree as a matter of course. A 3 s stall on one channel's
-// thread produced 599 "clock steps"; a straggler after a real step flipped the epoch back; a
-// sub-threshold step tilted the line by ±500 ms for five minutes; a startup backlog was reported as
-// a step. Each was patchable, and patching five symptoms of one cause is the loop CLAUDE.md warns
-// about. Here there is no state to flip.
-//
-// ALL INTEGER. A CANsub stamps a 48-bit count of microseconds since 2025-01-01 UTC; placed on the
-// Unix epoch in nanoseconds that is ~1.76×10¹⁸, past the 2⁵³ an f64 holds exactly, so through
-// floating point a 10 ms delta would come back rounded to 256 ns. Nothing here is floating.
-//
-// THE CONTRACT ON STAMPS: nanoseconds, 64-bit, and MONOTONIC WITHIN AN EPOCH. A backend whose
-// counter is narrower must extend it before observing, because a counter that wraps is a PERIODIC
-// backward step — each one mapping a window of frames early by the whole wrap. Among ours only
-// Kvaser's is narrow enough to matter: `canRead`'s time is 32 bits, which at microsecond resolution
-// wraps every ~71.6 minutes. PCAN's timestamp is 48-bit milliseconds, a CANsub's 48-bit
-// microseconds (~8.9 years), Vector's and SocketCAN's 64-bit.
-//
-// PURE AND UNSYNCHRONISED: a Domain is a decision with state, and the caller holds whatever lock
-// guards it, like txhealth.Gate.
+// PURE AND UNSYNCHRONISED: the caller holds the lock, like txhealth.Gate.
 module timebase
 
-// slots is how many slots the window holds, and slot_ns how much HOST time each one covers.
-//
-// Host time and not device time, because a backward step sends the device clock back into a range
-// it already covered, where a device-time window would find the old samples again; host time only
-// moves forward, so every sample leaves on schedule.
-//
-// The window's length is a trade: shorter follows drift more closely and forgets a backward step
-// sooner; longer keeps a good estimate through a stretch in which every frame is delivered late (a
-// host under sustained load), where a short window drifts late with the delivery. 10 s bounds drift
-// error to 0.5 ms at 50 ppm — inside host jitter, which is the accuracy promised across domains.
-//
-// A minimum per SLOT rather than per sample, in a FIXED array, so memory is constant by type
-// however fast a domain delivers: a sliding minimum over raw samples can hold a whole window of
-// them when latency happens to rise steadily, which at 4000 frames/s is 40,000 entries a domain.
-// Fixed rather than a slice for a second reason: V copies a slice's header and not its data, so a
-// copied Domain shared its ring with the original and each corrupted the other's estimate.
+// slots of slot_ns host time make up the window. Host time only moves forward, so every sample
+// leaves on schedule. A minimum per slot keeps memory fixed however fast frames arrive, and the ring
+// is a FIXED array because V copies a slice's header, not its data — a copied Domain would share its
+// ring with the original, and V copies a struct out of a map on every read.
 pub const slots = 100
 pub const slot_ns = i64(100) * 1_000_000
 pub const window_ns = i64(slots) * slot_ns
@@ -116,9 +51,7 @@ mut:
 	used bool
 }
 
-// Domain is one clock and one epoch.
-//
-// The zero value is ready: nothing observed, nothing mapped.
+// Domain is one clock and one epoch. The zero value is ready: nothing observed, nothing mapped.
 pub struct Domain {
 mut:
 	started bool
@@ -129,23 +62,19 @@ mut:
 }
 
 // observe records one frame: its hardware stamp and when this host saw it, both in nanoseconds.
-//
-// `host_ns` MUST BE MONOTONIC (time.sys_mono_now), never wall time: wall time can step under NTP,
-// and a step on the host side is indistinguishable from one on the device's.
-//
-// Calls may arrive slightly out of host order — several receive threads read the clock and then
-// race for the lock — and that is handled: a sample is filed under its own slot, not the newest.
+// `host_ns` is the monotonic clock (time.sys_mono_now), never wall time, which can step under NTP.
+// Calls may arrive slightly out of host order — receive threads race for the lock — and a sample is
+// filed under its own slot.
 pub fn (mut d Domain) observe(hw_ns i64, host_ns i64) {
 	d.n++
 	gap := host_ns - hw_ns
-	s := floor_div(host_ns, slot_ns)
+	s := host_ns / slot_ns
 	if d.started && s <= d.newest - slots {
-		return // older than the window by the time it got the lock: says nothing about now
+		return // older than the window: its slot now belongs to a newer one
 	}
 	if !d.started || s > d.newest {
-		// THE FIRST FRAME, OR THE WINDOW SLID — one path for both, since a first frame is a slide
-		// onto an empty ring. Samples may have left the window, so the minimum is recomputed from
-		// what is still inside: at most ten times a second per domain, so the per-frame cost is O(1).
+		// the first frame, or the window slid: recompute from what is still inside — at most ten
+		// times a second per domain, so the per-frame cost stays O(1)
 		d.started = true
 		d.newest = s
 		d.put(s, gap)
@@ -157,29 +86,8 @@ pub fn (mut d Domain) observe(hw_ns i64, host_ns i64) {
 	}
 }
 
-// place records a frame just received and returns where it belongs on the host's timeline: the
-// call for placing a frame on arrival, which is what a trace does.
-//
-// observe() and map() in one, with one thing more — the result is NEVER LATER THAN THE FRAME'S OWN
-// RECEIPT, BY CONSTRUCTION. Stated as a property of the window it held only while the frame's own
-// gap was in the window, which is not always so: a receive thread can read the clock and then wait
-// more than a window for the lock while a sibling advances the domain, and then observe() rejects
-// the sample as too old and the offset may since have risen past its gap (codex round 3 on #351 —
-// the third finding in a row against that sentence, which is when a claim should become a `min`).
-// Clamping is free where it is not needed: the frame's own gap is normally in the window, so the
-// estimate is already no later than the receipt. And it can make nothing worse, since a receipt is
-// never earlier than the true wire time.
-pub fn (mut d Domain) place(hw_ns i64, host_ns i64) i64 {
-	d.observe(hw_ns, host_ns)
-	m := hw_ns + d.offset
-	return if m < host_ns { m } else { host_ns }
-}
-
-// map places a hardware stamp on the host's monotonic timeline using the current estimate, or none
-// before anything has been observed. For a frame JUST RECEIVED, use place(), which carries the
-// receipt bound; map() has no receipt to bound by, and is for placing a stamp again later. And the
-// rule for callers above holds for both: a delta within a domain is taken from the raw stamps, not
-// from two mapped ones.
+// map places a hardware stamp on the host's monotonic timeline, or none before anything has been
+// observed. For placing frames beside other domains — a delta within a domain comes from raw stamps.
 pub fn (d &Domain) map(hw_ns i64) ?i64 {
 	if !d.started {
 		return none
@@ -195,7 +103,7 @@ pub fn (d &Domain) observed() u64 {
 // put files a gap under its slot, reporting whether it lowered that slot's minimum. A slot still
 // holding an index from a previous lap of the ring is stale and is overwritten.
 fn (mut d Domain) put(s i64, gap i64) bool {
-	i := int(floor_mod(s, i64(slots)))
+	i := int(s % i64(slots))
 	if !d.ring[i].used || d.ring[i].s != s {
 		d.ring[i] = Slot{
 			s:    s
@@ -222,16 +130,4 @@ fn (mut d Domain) recompute() {
 			}
 		}
 	}
-}
-
-// floor_div and floor_mod round toward negative infinity, as a slot index must. V's `/` and `%`
-// truncate toward zero, which files −1 ns in slot 0 beside +1 ns — harmless for a monotonic clock
-// that never goes negative, and exactly the kind of assumption that stops holding in a test.
-fn floor_div(a i64, b i64) i64 {
-	q := a / b
-	return if (a % b != 0) && ((a < 0) != (b < 0)) { q - 1 } else { q }
-}
-
-fn floor_mod(a i64, b i64) i64 {
-	return a - floor_div(a, b) * b
 }
