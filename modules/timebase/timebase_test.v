@@ -300,30 +300,9 @@ fn test_a_straggler_across_a_forward_step_is_placed_early_by_the_step() {
 	assert truth - got == jump - 0 // early by exactly the step
 }
 
-fn test_a_short_silence_keeps_the_estimate_through_a_late_first_frame() {
-	// THE REVIEW'S FOURTH FINDING. A diagnostic bus idle for 15 s: every slot expires on the next
-	// arrival, and that arrival came after a 700 ms collector pause. Without the carry, its gap WAS
-	// the offset, and the domain was placed 700 ms late while the estimate it had just thrown away
-	// was good to a millisecond. Carried, inflated by the drift allowance over 15 s (1.5 ms), the old
-	// estimate wins — and, being an upper bound, it is never early.
-	mut d := Domain{}
-	offset := i64(6) * sec
-	for i in 0 .. 50 {
-		hw := i64(i) * 100 * ms
-		d.observe(hw, hw + offset + 1 * ms)
-	}
-	hw := i64(4900) * ms + 15 * sec
-	d.observe(hw, hw + offset + 700 * ms)
-	got := d.map(hw) or { panic('none') }
-	truth := hw + offset
-	assert got >= truth // never early
-	assert got - truth < 3 * ms // the carried estimate, not the 700 ms delivery
-}
-
-fn test_a_long_silence_lets_a_fresh_sample_win() {
-	// The other end of the same rule: after an hour the carried estimate is inflated by 360 ms, far
-	// past a prompt frame's latency, so the fresh sample wins by itself. Nothing to decide — the
-	// inflation does it.
+fn test_a_silence_longer_than_the_window_starts_afresh() {
+	// Every slot expires on the first arrival after a silence longer than the window, so that frame
+	// sets the estimate by itself. Prompt, it is right at once.
 	mut d := Domain{}
 	offset := i64(6) * sec
 	for i in 0 .. 50 {
@@ -336,41 +315,28 @@ fn test_a_long_silence_lets_a_fresh_sample_win() {
 	assert got == hw + offset + 2 * ms
 }
 
-fn test_a_carried_estimate_is_inflated_so_it_is_never_early() {
-	// WHY THE DRIFT ALLOWANCE. With the host running 50 ppm fast of the device, the true offset rises
-	// 3 ms over a minute's silence, so the estimate carried from before it is 3 ms too LOW — carried
-	// as it was, it would place the domain 3 ms early. Inflated by 100 ppm over that minute (6 ms) it
-	// stays above the truth. Without drift, an uninflated carry equals the truth, which is why the
-	// silence test above cannot see this.
+fn test_a_late_first_frame_after_a_silence_is_no_worse_than_its_receipt() {
+	// THE STATED LIMIT, pinned. That lone first frame may itself have been delivered after a 700 ms
+	// collector pause, and then it is the estimate: the burst is placed late by the pause — exactly
+	// where host-receipt stamping put it before #149, and no later — until a prompt frame arrives.
+	//
+	// Carrying the old estimate across the silence would do better HERE, and was tried: it needed a
+	// drift allowance, the minimum's true age, and a plausibility threshold, and it still could not
+	// be reconciled with the backward-step bound — a step during the silence was carried past it.
+	// A pause degrading to today's accuracy is the price; the same one a forward step pays when it
+	// coincides with a pause (below), treated the same way.
 	mut d := Domain{}
 	offset := i64(6) * sec
 	for i in 0 .. 50 {
 		hw := i64(i) * 100 * ms
-		d.observe(hw, offset + hw + hw / 20_000 + 1 * ms)
+		d.observe(hw, hw + offset + 1 * ms)
 	}
-	hw := i64(4900) * ms + 60 * sec
-	truth := offset + hw + hw / 20_000
-	d.observe(hw, truth + 700 * ms) // delivered after a pause: the carry must win, and not early
-	got := d.map(hw) or { panic('none') }
-	assert got >= truth
-	assert got - truth < 7 * ms
-}
-
-fn test_a_carried_estimate_leaves_exactly_one_window_later() {
-	// Filed one slot behind the frame that emptied the window, the carried estimate is still inside
-	// 98 slots on and gone at 99. A bridge to fresh samples, not a floor under them.
-	mut d := Domain{}
-	for i in 0 .. 50 {
-		hw := i64(i) * 100 * ms
-		d.observe(hw, hw + 6 * sec + 1 * ms)
-	}
-	first := i64(300) // the slot of the frame that empties the window
-	late := i64(40) * ms // every frame from here is delivered late, so the carry is the minimum
-	d.observe(first * slot_ns - 6 * sec, first * slot_ns + late)
-	d.observe((first + 98) * slot_ns - 6 * sec, (first + 98) * slot_ns + late)
-	assert (d.map(0) or { panic('none') }) < 6 * sec + late // still carried
-	d.observe((first + 99) * slot_ns - 6 * sec, (first + 99) * slot_ns + late)
-	assert (d.map(0) or { panic('none') }) == 6 * sec + late // gone
+	hw := i64(4900) * ms + 15 * sec
+	receipt := hw + offset + 700 * ms
+	d.observe(hw, receipt)
+	assert (d.map(hw) or { panic('none') }) == receipt // no better than receipt, and no worse
+	d.observe(hw + 10 * ms, hw + 10 * ms + offset + 1 * ms) // a prompt frame
+	assert (d.map(hw) or { panic('none') }) == hw + offset + 1 * ms // right from here
 }
 
 fn test_a_copied_domain_is_independent() {
@@ -387,6 +353,60 @@ fn test_a_copied_domain_is_independent() {
 	a.observe(2500 * ms, 2500 * ms + 5 * sec + 1 * ms) // a slides and recomputes
 	assert (a.map(0) or { panic('none') }) == 5 * sec + 1 * ms
 	assert (b.map(0) or { panic('none') }) == 1 * sec
+}
+
+fn test_a_small_forward_step_during_a_pause_waits_for_a_prompt_frame() {
+	// CODEX ON #351. "Adopted at once" is true when the first post-step frame is delivered faster
+	// than the step. A 100 ms step coinciding with a 700 ms pause is not: every gap still sits above
+	// the old minimum, so the frames delivered through the pause are placed 100 ms late — within
+	// their receipts — until a prompt frame arrives and the step is adopted.
+	//
+	// NOT fixed by detecting the step, which is what codex suggested and what this module was first
+	// written with: that detector is where 599 phantom steps from one 3 s stall came from.
+	mut d := Domain{}
+	offset := i64(5) * sec
+	for i in 0 .. 100 {
+		hw := i64(i) * 10 * ms
+		d.observe(hw, hw + offset + 1 * ms)
+	}
+	step := i64(100) * ms
+	hw := i64(1000) * ms
+	truth := hw + offset // after the step the device reads `hw + step` at this instant
+	d.observe(hw + step, truth + 700 * ms)
+	got := d.map(hw + step) or { panic('none') }
+	assert got == truth + step + 1 * ms // late by the step, still before its 700 ms receipt
+	d.observe(hw + step + 10 * ms, truth + 10 * ms + 1 * ms) // a prompt frame
+	assert (d.map(hw + step + 10 * ms) or { panic('none') }) == truth + 10 * ms + 1 * ms
+}
+
+fn test_within_an_epoch_a_frame_is_never_early_and_never_later_than_its_receipt() {
+	// THE GUARANTEE, as a property over two hundred thousand frames with random latency, collector
+	// pauses and dropped observations: mapped on arrival, every frame sits between its true wire time
+	// and the moment our thread saw it. NEVER WORSE THAN HOST-RECEIPT STAMPING, because the frame's
+	// own gap is in the window, so the minimum can be no larger than it — the floor #149 promised.
+	// And never early, which holds exactly here because there is no drift; with drift the bound is
+	// the drift across one window, which the fifty-ppm test above holds.
+	mut d := Domain{}
+	mut r := Lcg{
+		s: 7
+	}
+	offset := i64(9) * sec
+	for i in 0 .. 200_000 {
+		hw := i64(i) * 1 * ms // 1 kHz
+		mut lat := r.latency(0, 2 * ms)
+		if r.next() % 5000 == 0 {
+			lat += 700 * ms
+		}
+		if r.next() % 20_000 == 0 {
+			continue
+		}
+		truth := hw + offset
+		receipt := truth + lat
+		d.observe(hw, receipt)
+		got := d.map(hw) or { panic('none') }
+		assert got >= truth
+		assert got <= receipt
+	}
 }
 
 // --- the window's mechanics ---

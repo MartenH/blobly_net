@@ -27,23 +27,34 @@
 //
 //   - DRIFT is followed by the window's recency. Two crystals 50 ppm apart drift 180 ms an hour;
 //     over a 10 s window the offset moves at most 50 ppm × 10 s = 0.5 ms, which is the error bound.
-//   - A FORWARD STEP of the device clock lowers every gap, and the new minimum is adopted at once.
+//   - A FORWARD STEP lowers every gap, and is adopted at the first frame after it delivered faster
+//     than the step — at once for any step larger than delivery latency. A small step coinciding with
+//     a pause waits for a prompt frame; the frames between are placed late by the step, within their
+//     own receipts.
 //   - A BACKWARD STEP raises every gap; the old minimum lingers until its samples leave the window,
-//     so for up to one window after the LAST pre-step frame the domain maps early by the step. The
-//     one price of this design, and bounded.
+//     so for up to one window after the LAST pre-step frame the domain maps early by the step.
 //   - A STALL, a STRAGGLER, a DRIVER BACKLOG — anything delivered late — produces a HIGH gap, and a
 //     high gap is never the minimum, so the estimate is untouched. And such a frame is PLACED right:
 //     mapped through the correct offset, it lands at its true wire time however late it arrived.
 //   - ACROSS A STEP, IN EITHER DIRECTION, a frame stamped on the far side of it is placed wrong by
 //     the step, because one domain has one offset and it describes one clock. A pre-step straggler
-//     arriving after a forward step is placed early by the whole step; after a backward step it is
-//     the post-step frames that are early, until the window passes. The estimate is right for the
-//     clock that is current; a stamp from the previous one cannot be placed by it.
-//   - A QUIET DOMAIN keeps its estimate across the silence: when a slide would empty the window,
-//     the previous minimum is carried forward, inflated by `drift_ppm` over the time elapsed so it
-//     stays an UPPER bound on the true offset. A short silence therefore keeps an estimate good to
-//     the drift, rather than taking a lone first frame's latency — up to a 700 ms collector pause —
-//     as the offset; a long one inflates it past usefulness, and a fresh sample wins by itself.
+//     arriving after a forward step is placed early by the whole step.
+//   - A SILENCE LONGER THAN THE WINDOW empties it, and the first frame back sets the estimate alone:
+//     delivered after a pause, it places its burst late by the pause until a prompt frame arrives.
+//
+// THE GUARANTEE THOSE ADD UP TO, held by a test as a property over two hundred thousand frames:
+// within an epoch, a frame mapped on arrival is NEVER LATER THAN ITS OWN RECEIPT — always, because
+// its own gap is in the window, so the minimum is no larger than it — and NEVER EARLY by more than
+// the drift across one window: exactly never without drift, at most 0.5 ms at 50 ppm, since with
+// the host running fast the minimum is the window's oldest sample. The first half is the floor #149
+// promised: no frame is placed worse than host-receipt stamping put it, and every limit above is a
+// case of meeting that floor rather than beating it.
+//
+// WHY THE LIMITS ARE STATED RATHER THAN MECHANISED. Two of them looked fixable. A quiet domain's
+// estimate can be carried across the silence, and was: it needed a drift allowance, the minimum's
+// true age, and a plausibility threshold, and it still broke the backward-step bound, since a step
+// during the silence was carried straight past it (codex on #351). A small forward step during a
+// pause can be adopted by detecting the step — which is the machinery described next.
 //
 // WHY NOT A FITTED LINE WITH STEP DETECTION, which is what this was first written as and what #149
 // first described. It tracked drift better, and the review of it found five failures with one
@@ -89,11 +100,6 @@ pub const slots = 100
 pub const slot_ns = i64(100) * 1_000_000
 pub const window_ns = i64(slots) * slot_ns
 
-// drift_ppm is the rate difference a carried estimate is inflated by across a quiet stretch. Two
-// crystals of ±50 ppm differ by up to 100 ppm; allowed that much, a carried estimate stays an upper
-// bound on the true offset, so the domain is never mapped EARLY by carrying it.
-pub const drift_ppm = i64(100)
-
 struct Slot {
 mut:
 	s    i64 // which slot of host time: host / slot_ns
@@ -131,26 +137,10 @@ pub fn (mut d Domain) observe(hw_ns i64, host_ns i64) {
 		// THE FIRST FRAME, OR THE WINDOW SLID — one path for both, since a first frame is a slide
 		// onto an empty ring. Samples may have left the window, so the minimum is recomputed from
 		// what is still inside: at most ten times a second per domain, so the per-frame cost is O(1).
-		prev := d.offset
-		emptied := d.started && s - d.newest >= slots
-		elapsed := (s - d.newest) * slot_ns
 		d.started = true
 		d.newest = s
 		d.put(s, gap)
 		d.recompute()
-		if emptied {
-			// A QUIET DOMAIN'S ESTIMATE IS CARRIED, not dropped: every slot just expired, and without
-			// this the lone first frame after the silence would BE the offset, however late it was
-			// delivered. Inflated by the drift allowance so it stays an upper bound, and filed one
-			// slot behind so it leaves one window from now, by which time fresh samples have replaced
-			// it. Divided before multiplied: an allowance needs no sub-millisecond precision, and a
-			// domain quiet for years must not overflow computing one.
-			carried := prev + elapsed / 1_000_000 * drift_ppm
-			d.put(s - 1, carried)
-			if carried < d.offset {
-				d.offset = carried
-			}
-		}
 		return
 	}
 	if d.put(s, gap) && gap < d.offset {
