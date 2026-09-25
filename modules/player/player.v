@@ -57,9 +57,11 @@ mut:
 	// says more may follow, so running out of rows is waiting for a chunk and not the end.
 	chunks &Chunker = unsafe { nil }
 	open   bool
-	// A chunked seek reads up to its target, which on a large file takes long enough to matter:
-	// the clock is anchored by the first due() after it rather than by the seek's own `now`,
-	// which would have made every frame recorded during the read owed at once.
+	before int // rows of this pass kept before the current chunk's first
+	// A chunked seek (and a stop, and a restart) starts a new read from the top, which on a large
+	// file takes long enough to matter. Until its first chunk is here the clock does not run:
+	// due() holds it, and the due() that finds the chunk anchors it. Anchored at the seek's own
+	// `now` instead, every frame recorded during the read would be owed at once.
 	anchor bool
 }
 
@@ -224,42 +226,57 @@ pub fn (mut p Player) stop() {
 }
 
 // restart_at puts the cursor at `pos_s` seconds into the pass: the start of it in memory, where
-// only seek moves elsewhere, and a new pass from the source for a chunked player, which holds
-// only the current chunk.
+// only seek moves elsewhere, and a new read from the top for a chunked player, which holds only
+// the current chunk.
 fn (mut p Player) restart_at(pos_s f64) {
 	p.anchor = false
+	p.idx = 0
 	if !isnil(p.chunks) {
 		mut c := p.chunks
-		c.rewind(pos_s) or {
-			if c.err == '' {
-				c.err = err.msg()
-			}
-			c.eof = true
-		}
+		c.rewind(pos_s)
 		p.sel = []u32{}
-		p.idx = 0
+		p.before = 0
 		p.open = true
-		return
+		p.anchor = true
 	}
-	p.idx = 0
 }
 
-// pull fetches a chunked player's next chunk when the current one is spent.
-fn (mut p Player) pull() bool {
+// pull takes a chunked player's next chunk when the current one is spent — waiting for it unless
+// `wait` is false, where a chunk not read yet is a false return with the pass still open.
+fn (mut p Player) pull(wait bool) bool {
 	if isnil(p.chunks) || !p.open {
 		return false
 	}
 	mut c := p.chunks
-	if c.next_chunk() {
-		p.log = c.chunk
-		p.sel = c.sel
-		p.idx = 0
-		return true
+	ck := c.take(wait) or {
+		if wait { // the reader has ended, on an error it has already reported
+			p.open = false
+			p.sel = []u32{}
+			p.idx = 0
+		}
+		return false
 	}
-	p.open = false
-	p.sel = []u32{}
 	p.idx = 0
-	return false
+	p.before = ck.before
+	if ck.end {
+		if ck.err != '' && c.err == '' {
+			c.err = ck.err
+		}
+		p.open = false
+		p.sel = []u32{}
+		return false
+	}
+	p.log = ck.log
+	p.sel = ck.sel
+	return true
+}
+
+// wait_ready waits for a chunked player's next chunk, if it is owed one — for a caller that would
+// rather block than start with the clock held: a test, or a tool with no cadence to keep.
+pub fn (mut p Player) wait_ready() {
+	if p.idx >= p.sel.len {
+		p.pull(true)
+	}
 }
 
 // seek jumps to a recording position (seconds into the recording, clamped to
@@ -276,8 +293,6 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 	p.elapsed_ms = pos * 1000.0 / p.speed
 	if !isnil(p.chunks) {
 		p.restart_at(pos)
-		p.pull()
-		p.anchor = p.st == .playing
 	} else {
 		t0 := p.t0_s()
 		// binary search for the first entry at or after pos — entries are time-sorted by the
@@ -318,8 +333,12 @@ pub fn (p Player) next_due_ms() ?f64 {
 		return none
 	}
 	if p.idx >= p.sel.len && p.open {
-		// A chunk is owed and only due() may read it: answer the pass's start, which has
-		// passed, so the caller wakes at once and asks due().
+		if p.anchor {
+			// Waiting for a new read, with the clock held at the position: look again shortly.
+			return p.base_ms + p.elapsed_ms + 1.0
+		}
+		// A chunk is owed and due() takes it: answer a time already past, so the caller wakes
+		// at once and asks.
 		return p.base_ms
 	}
 	if p.idx >= p.sel.len {
@@ -396,13 +415,19 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 		p.st = .finished
 		return
 	}
-	if p.anchor {
-		p.base_ms = now_ms - p.elapsed_ms
-		p.anchor = false
-	}
 	for {
-		if p.idx >= p.sel.len && p.pull() {
-			continue
+		if p.idx >= p.sel.len && p.open {
+			if p.pull(!p.anchor) {
+				continue
+			}
+			if p.open { // a new read's first chunk is not here yet: nothing is due, the clock holds
+				p.base_ms = now_ms - p.elapsed_ms
+				break
+			}
+		}
+		if p.anchor {
+			p.base_ms = now_ms - p.elapsed_ms
+			p.anchor = false
 		}
 		if p.idx >= p.sel.len {
 			// The pass is not over when the last RETAINED entry goes out -- it is over when the
@@ -426,7 +451,14 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 			// keeps a wrap anchored to the span even when a late tick discovers it.
 			if p.repeat && p.duration_s() > 0 {
 				p.base_ms = pass_end_ms
-				p.restart_at(0)
+				if isnil(p.chunks) {
+					p.restart_at(0)
+				} else {
+					// the reader went straight on into the next pass: it is already queued
+					p.open = true
+					p.sel = []u32{}
+					p.idx = 0
+				}
 				p.loops++
 				continue
 			}
@@ -471,7 +503,7 @@ pub fn (p Player) len() int {
 // sent returns how many frames of the current pass have been emitted.
 pub fn (p Player) sent() int {
 	if !isnil(p.chunks) {
-		return p.chunks.before + p.idx
+		return p.before + p.idx
 	}
 	return p.idx
 }

@@ -42,6 +42,7 @@ fn script(mut p Player) []string {
 			120 { p.seek(0, now) }
 			else {}
 		}
+		p.wait_ready() // the reader's timing is not the test's: a new read is always here in time
 		es, due := p.due_with_schedule(now)
 		for i, e in es {
 			out << '${k} ${due[i]:.6f} ${e.iface} ${e.dir} ${e.frame.id} ${e.frame.data}'
