@@ -53,6 +53,10 @@ mut:
 	base_ms    f64 // playback clock at which the current pass's first entry plays
 	elapsed_ms f64 // playback-clock position retained across pause/stop/seek
 	loops      int // completed loop passes (diagnostics)
+	// A chunked player's rows come from `chunks`, and `log`/`sel` hold the current chunk. `open`
+	// says more may follow, so running out of rows is waiting for a chunk and not the end.
+	chunks &Chunker = unsafe { nil }
+	open   bool
 }
 
 // new_player builds a Player over a recording. Entries are sorted by timestamp
@@ -144,7 +148,7 @@ pub fn (mut p Player) play(now_ms f64) {
 		return
 	}
 	if p.st == .finished {
-		p.idx = 0
+		p.restart_at(0)
 		p.elapsed_ms = 0
 		// The pass count belongs to the RUN, and this is a fresh one -- idx and elapsed_ms are
 		// already being rewound here, and leaving `loops` behind made the counter describe the
@@ -208,8 +212,42 @@ pub fn (mut p Player) set_repeat(on bool) {
 // stop resets to the start of the recording.
 pub fn (mut p Player) stop() {
 	p.st = .stopped
-	p.idx = 0
+	p.restart_at(0)
 	p.elapsed_ms = 0
+}
+
+// restart_at puts the cursor at `pos_s` seconds into the pass: the start of it in memory, where
+// only seek moves elsewhere, and a new pass from the source for a chunked player, which holds
+// only the current chunk.
+fn (mut p Player) restart_at(pos_s f64) {
+	if !isnil(p.chunks) {
+		mut c := p.chunks
+		c.rewind(pos_s) or {
+			c.err = err.msg()
+			c.eof = true
+		}
+		p.sel = []u32{}
+		p.idx = 0
+		p.open = true
+		return
+	}
+	p.idx = 0
+}
+
+// pull fetches a chunked player's next chunk when the current one is spent.
+fn (mut p Player) pull() bool {
+	if isnil(p.chunks) || !p.open {
+		return false
+	}
+	mut c := p.chunks
+	if c.next_chunk() {
+		p.log = c.chunk
+		p.sel = c.sel
+		p.idx = 0
+		return true
+	}
+	p.open = false
+	return false
 }
 
 // seek jumps to a recording position (seconds into the recording, clamped to
@@ -224,22 +262,26 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 		pos = p.duration_s()
 	}
 	p.elapsed_ms = pos * 1000.0 / p.speed
-	t0 := p.t0_s()
-	// binary search for the first entry at or after pos — entries are time-sorted by the
-	// constructor. The linear scan from zero was invisible while nothing called seek; a seek
-	// slider calls it per drag on recordings of millions of entries, and an O(n) walk on the
-	// worker thread stalls playback for the duration and then bursts the owed frames.
-	mut lo := 0
-	mut hi := p.sel.len
-	for lo < hi {
-		mid := lo + (hi - lo) / 2
-		if p.entry_t(mid) - t0 < pos {
-			lo = mid + 1
-		} else {
-			hi = mid
+	if !isnil(p.chunks) {
+		p.restart_at(pos)
+	} else {
+		t0 := p.t0_s()
+		// binary search for the first entry at or after pos — entries are time-sorted by the
+		// constructor. The linear scan from zero was invisible while nothing called seek; a seek
+		// slider calls it per drag on recordings of millions of entries, and an O(n) walk on the
+		// worker thread stalls playback for the duration and then bursts the owed frames.
+		mut lo := 0
+		mut hi := p.sel.len
+		for lo < hi {
+			mid := lo + (hi - lo) / 2
+			if p.entry_t(mid) - t0 < pos {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
 		}
+		p.idx = lo
 	}
-	p.idx = lo
 	if p.st == .playing {
 		p.base_ms = now_ms - p.elapsed_ms
 	} else if p.st == .finished {
@@ -258,8 +300,13 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 // and idle between. `due` stays tick-agnostic and correct at any rate; this makes it possible
 // to be FAITHFUL as well, without picking a constant that is wrong for the next recording.
 pub fn (p Player) next_due_ms() ?f64 {
-	if p.st != .playing || p.sel.len == 0 {
+	if p.st != .playing || p.len() == 0 {
 		return none
+	}
+	if p.idx >= p.sel.len && p.open {
+		// A chunk is owed and only due() may read it: answer the pass's start, which has
+		// passed, so the caller wakes at once and asks due().
+		return p.base_ms
 	}
 	if p.idx >= p.sel.len {
 		if p.duration_s() <= 0 {
@@ -331,11 +378,14 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 	if p.st != .playing {
 		return
 	}
-	if p.sel.len == 0 {
+	if p.len() == 0 {
 		p.st = .finished
 		return
 	}
 	for {
+		if p.idx >= p.sel.len && p.pull() {
+			continue
+		}
 		if p.idx >= p.sel.len {
 			// The pass is not over when the last RETAINED entry goes out -- it is over when the
 			// SOURCE SPAN ends. new_player_over exists precisely because those differ: a
@@ -358,7 +408,7 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 			// keeps a wrap anchored to the span even when a late tick discovers it.
 			if p.repeat && p.duration_s() > 0 {
 				p.base_ms = pass_end_ms
-				p.idx = 0
+				p.restart_at(0)
 				p.loops++
 				continue
 			}
@@ -394,11 +444,17 @@ pub fn (p Player) finished() bool {
 
 // len returns the number of frames in the recording.
 pub fn (p Player) len() int {
+	if !isnil(p.chunks) {
+		return p.chunks.kept
+	}
 	return p.sel.len
 }
 
 // sent returns how many frames of the current pass have been emitted.
 pub fn (p Player) sent() int {
+	if !isnil(p.chunks) && p.sel.len > 0 {
+		return p.chunks.before + p.idx
+	}
 	return p.idx
 }
 

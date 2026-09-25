@@ -74,100 +74,123 @@ pub fn build_multi_log(log canlog.Log, specs []BusSpec) MultiPlan {
 	// and simultaneous cross-bus stimuli are exactly what a gateway is watching. Their order
 	// would then be decided by --map order or by the sort's tie behaviour, which is the skew
 	// this whole feature exists to avoid.
-	// By BUS INDEX: the row names its bus by index into the Log's labels, so the spec for a
-	// row is one array read, and the relabelling to the destination is a second label table
-	// over the same rows (relabelled) rather than a copy of every entry.
-	mut spec_of := []int{len: log.labels.len, init: -1}
-	mut dst := log.labels.clone()
-	for i, sp in specs {
-		if j := log.index_of(sp.src) {
-			spec_of[j] = i
-			dst[j] = sp.dst
-		}
-	}
-	mut walkers := []Walker{}
-	mut tallies := []Tally{}
-	mut sources := []int{}
-	for sp in specs {
-		walkers << new_walker(sp.db, sp.exclude, sp.replay_unattributed)
-		tallies << Tally{}
-		sources << 0
-	}
+	mut p := new_planner(specs)
 	mut sel := []u32{}
-	mut t0 := 0.0
-	mut end := 0.0
-	mut seen_any := false
-	for ri, r in log.rows {
-		i := spec_of[r.bus]
-		if i < 0 {
-			continue
-		}
-		sources[i]++
-		// The span comes from the SOURCE frames, before subtraction, across every mapped bus.
-		if !seen_any {
-			t0 = r.t_s
-			end = r.t_s
-			seen_any = true
-		} else {
-			if r.t_s < t0 {
-				t0 = r.t_s
-			}
-			if r.t_s > end {
-				end = r.t_s
-			}
-		}
-		f := log.frame(ri) // a view: the verdict reads id, width, RTR and length
-		if tallies[i].add_decision(walkers[i].decide(f, r.t_s), f) {
-			// Relabelled to the DESTINATION through the plan's label table, so the sender is a
-			// map lookup and the player never learns that a mapping happened.
+	for ri in 0 .. log.rows.len {
+		if p.keep(&log, ri) {
 			sel << u32(ri)
 		}
 	}
-	mut plans := []BusPlan{}
-	for i, sp in specs {
-		plans << BusPlan{
-			src:    sp.src
-			dst:    sp.dst
-			source: sources[i]
-			report: tallies[i].done(0) // kept is filled below from the tally's own counts
+	p.resolve(&log) // a log with no rows still relabels every bus it names
+	// Relabelled to the DESTINATION through the plan's label table, so the sender is a map
+	// lookup and the player never learns that a mapping happened.
+	return MultiPlan{
+		log:   log.relabelled(p.dst)
+		sel:   sel
+		buses: p.plans()
+		t0_s:  p.t0
+		end_s: p.end
+	}
+}
+
+// Planner is build_multi_log's per-row decision, alive across rows (#172): the same walk decides a
+// recording loaded whole and one read a chunk at a time, and its walkers hold transport-protocol
+// sessions that may straddle any boundary a reader chooses — so they are kept, never rebuilt.
+pub struct Planner {
+	specs []BusSpec
+mut:
+	spec_of []int    // per label index: which spec it replays under, -1 for none
+	dst     []string // per label index: the bus it replays onto
+	walkers []Walker
+	tallies []Tally
+	sources []int
+	t0      f64
+	end     f64
+	seen    bool
+}
+
+pub fn new_planner(specs []BusSpec) Planner {
+	mut p := Planner{
+		specs: specs
+	}
+	for sp in specs {
+		p.walkers << new_walker(sp.db, sp.exclude, sp.replay_unattributed)
+		p.tallies << Tally{}
+		p.sources << 0
+	}
+	return p
+}
+
+// resolve maps every label the log names onto its spec — by BUS INDEX: the row names its bus by
+// index into the Log's labels, so the spec for a row is one array read, and the relabelling to
+// the destination is a second label table over the same rows. Recomputed whenever the table has grown —
+// a stream interns a bus the first time it sees one — and by index_of, the one rule both paths use.
+fn (mut p Planner) resolve(log &canlog.Log) {
+	if p.spec_of.len == log.labels.len {
+		return
+	}
+	p.spec_of = []int{len: log.labels.len, init: -1}
+	p.dst = log.labels.clone()
+	for i, sp in p.specs {
+		if j := log.index_of(sp.src) {
+			p.spec_of[j] = i
+			p.dst[j] = sp.dst
 		}
 	}
-	// kept per bus: the Tally does not know it, so count what each bus contributed.
-	//
-	// EVERY WITHHELD BUCKET has to be subtracted here, and this is the second place that has to
-	// be told when one is added -- the remote-request bucket (#179) was not, so with
-	// --drop-unattributed the frames it withheld were absent from `entries` and still counted as
-	// replayed. A bus whose traffic was all remote requests then reported kept == source, and the
-	// "silent: all frames withheld" diagnosis could never fire for it (self-review).
-	mut kept_of := []int{len: specs.len}
-	for i in 0 .. specs.len {
-		r := plans[i].report
-		kept_of[i] = sources[i] - r.withheld_excluded - r.withheld_unattributed - r.remote
+}
+
+// keep decides whether row `ri` of `log` plays.
+pub fn (mut p Planner) keep(log &canlog.Log, ri int) bool {
+	p.resolve(log)
+	r := log.rows[ri]
+	i := p.spec_of[r.bus]
+	if i < 0 {
+		return false
 	}
-	mut fixed := []BusPlan{}
-	for i, pl in plans {
-		fixed << BusPlan{
-			src:    pl.src
-			dst:    pl.dst
-			source: pl.source
+	p.sources[i]++
+	// The span comes from the SOURCE frames, before subtraction, across every mapped bus.
+	if !p.seen {
+		p.t0 = r.t_s
+		p.end = r.t_s
+		p.seen = true
+	} else {
+		if r.t_s < p.t0 {
+			p.t0 = r.t_s
+		}
+		if r.t_s > p.end {
+			p.end = r.t_s
+		}
+	}
+	f := log.frame(ri) // a view: the verdict reads id, width, RTR and length
+	return p.tallies[i].add_decision(p.walkers[i].decide(f, r.t_s), f)
+}
+
+// plans is the census so far: what each bus sourced, and what its subtraction withheld.
+pub fn (p Planner) plans() []BusPlan {
+	mut out := []BusPlan{}
+	for i, sp in p.specs {
+		r := p.tallies[i].done(0) // kept is derived below from the tally's own counts
+		// EVERY WITHHELD BUCKET has to be subtracted from `kept`, and this is the second place
+		// that has to be told when one is added -- the remote-request bucket (#179) was not, so
+		// with --drop-unattributed the frames it withheld were absent from `entries` and still
+		// counted as replayed. A bus whose traffic was all remote requests then reported
+		// kept == source, and the "silent: all frames withheld" diagnosis could never fire for it.
+		out << BusPlan{
+			src:    sp.src
+			dst:    sp.dst
+			source: p.sources[i]
 			// SPREAD, not field by field. Listing them meant a count added to Subtraction was
 			// simply absent here and read as zero everywhere downstream -- which is what happened
 			// to the remote-request counts, leaving their reporting in `cmd/restbus` dead on this
-			// path while it worked perfectly on the single-bus one (self-review). `kept` is the
-			// only field this loop actually computes.
+			// path while it worked perfectly on the single-bus one. `kept` is the only field
+			// computed here.
 			report: Subtraction{
-				...pl.report
-				kept: kept_of[i]
+				...r
+				kept: p.sources[i] - r.withheld_excluded - r.withheld_unattributed - r.remote
 			}
 		}
 	}
-	return MultiPlan{
-		log:   log.relabelled(dst)
-		sel:   sel
-		buses: fixed
-		t0_s:  t0
-		end_s: end
-	}
+	return out
 }
 
 // conflicts reports mappings that cannot be run as given. Both are user errors that otherwise

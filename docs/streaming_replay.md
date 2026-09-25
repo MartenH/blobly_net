@@ -7,7 +7,8 @@
 > with skew, an unsorted group's VLSD channel group, a DL-of-DZ signal-data chain, UnFinMF) and
 > the tracked samples; `cmd/mf4_dump --stream` reads through it and prints the heap
 > high-water mark of either path. The window's cell (`canlog.Row`, the arena) exists; the window,
-> the decoder thread and the player over a cursor (steps 3–8) do not yet. Written after
+> the decoder thread and the player over a cursor (steps 3–8) do not yet — superseded: step 3
+> below is the lean shape that replaced steps 3–6 of the original sequence. Written after
 > #299/#300 took the replay's allocation rate from 1,140 MB/s to ~28 and the arena took the
 > collector's pause length down with it; what remains is a recording that does not fit in memory
 > at all. Each step below is measured with `cmd/blobly_net/probe.v` before and after.
@@ -204,10 +205,26 @@ import (whole-file by design, 2000-row cap).
    `load_recording`'s on each. The heap marks of `mf4_dump` are within a megabyte for the two
    paths, as they must be: the dump materializes the rows either way, and the memory win is
    the window's, step 4. The seek index the design listed here waits for seek (step 6).
-3. `Player` over `Cursor` with `LogCursor` only — a pure refactor, probe within noise.
-4. `Window`, `WindowCursor`, the decoder thread, `StreamPlan`; tests: cap never exceeded,
-   clock-script equivalence against the in-memory player, seek while starved.
-5. The GUI worker and the CLI over the threshold switch; window fill and underruns in the
-   probe summary; probe with `BLOBLY_MF4_STREAM_MB=0` on the bench file.
-6. The seek index (one entry per ~1 s: each DG's raw position and the last emitted key) and the
-   survey cache — with seek, where they are used.
+3. **Built, and smaller than planned** (#172): no window, no decoder thread, no cursor
+   interface. `player.Chunker` (`chunked.v`) reads the stream a chunk of rows at a time, and
+   the `Player` plays a chunk the way it plays a loaded recording; running out of rows with the
+   pass still open means "read the next chunk", not "the pass is over". The per-row decision is
+   `player.Planner`, factored out of `build_multi_log`, so both paths run one set of rest-bus
+   rules. Its walkers hold J1939 transport sessions that can straddle any chunk boundary, so
+   the planner lives for the whole pass. A seek or a loop wrap reopens the stream and replans
+   from the top, skipping rows before the target. That is the design's seek v1, O(position),
+   and it is the only way a stateful planner reaches the in-memory answer without saving its
+   state. Each chunk gets fresh rows, because a batch already handed out holds views into the
+   previous one. `open_chunker` reads the file through once, keeping nothing, for the census
+   and span, since both are needed before the first frame.
+   **Measured** on the six private recordings (0.6–1.24 M frames, 10–16 MB), with the scratch
+   harness kept outside the repo. Playback in chunks of 1, 4096 and 65536 rows is
+   byte-identical to in-memory playback through a loop wrap, a seek, a stop and a restart:
+   2.2–4.5 M output lines each. Peak RSS for one pass of the 16 MB file is 295 MB in memory
+   against 94 MB chunked; the chunked figure does not grow with the file. The stream reads
+   about 1 M rows/s (12 MB/s) under `gcc -O2`, the same as the loader. That speed is the cost
+   of the open pass and of every seek: on a tens-of-GB file, both are minutes. The committed
+   test is the same comparison over the tracked samples (`chunked_test.v`).
+4. The GUI and the CLI switch to the chunker by file size, and the Replay panel takes its
+   census from the open pass. Background reading, a seek index and a survey cache wait for a
+   measured stall on a file that needs them.
