@@ -198,6 +198,15 @@ mut:
 	// V's closures bump-allocate a trampoline slot the runtime never frees, so a replay leaked
 	// one per emitted frame for as long as it ran (#299's follow-up).
 	cancel fn () bool
+	// WHERE THIS WIRE'S FAULT LADDER COMES FROM, decided once here rather than per frame (#142).
+	// health_source is a handful of string prefix tests, and note_health runs on every send —
+	// the cost prefix_fold was rewritten for in #300, on a path asked about far more often than
+	// that. Immutable, like every other field on this struct: a TapBus is handed out through a
+	// `transport.Bus` interface, so it may be copied, and nothing here may rely on mutating it.
+	health_src transport.HealthSource
+	// This wire's identity, derived once for the same reason: note_health runs on every send and
+	// wire_key builds a string, which is the per-frame cost #300 removed from these predicates.
+	health_wire string
 }
 
 // run_cancel is the cancellation TapBus.send hands to the retry helper: true once the run the
@@ -286,6 +295,11 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
 		// from the backend
 		t.app.unrecord(rec_id)
+		// WHY DID IT FAIL? A refused send is the moment the fault ladder is worth asking for, and
+		// on a wire nobody reads nothing else ever asks (#142). Last, after the trace bookkeeping
+		// above, so a status call through a vendor DLL never delays retracting the row this send
+		// did not put on the wire.
+		t.note_health_failure(err, wire)
 		return err
 	}
 	probe_alloc_note(.inner, pb)
@@ -297,6 +311,11 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// about a frame that never went out, nor consume the once-per-run latch that the real
 	// transmission would need.
 	t.app.note_self_sent(t.iface, wire)
+	// AND ON THE WAY OUT, on the slow cadence: the `warning` rung is the one a failure can never
+	// report, because a controller over the warning limit still transmits. Gated per wire at one
+	// call a second (txhealth.poll_success_ms), and skipped without a lock on every software bus,
+	// so a replay at full rate pays a single bool test per frame.
+	t.note_health(.success)
 	probe_alloc_note(.after, pc)
 }
 
@@ -391,6 +410,11 @@ fn (app &App) open_tap_phys(iface string, phys string, origin string, chan_name 
 		reproduces: reproduces
 		guard_gen:  gen
 		cancel:     run_cancel(gen, app)
+		// The LOGICAL address, the same one the tap is keyed and locked by — not `phys`, whose
+		// vendor bitrate suffix says nothing about where health comes from and would merely make
+		// two spellings of one wire answer the same question twice.
+		health_src: transport.health_source(logical)
+		health_wire: transport.wire_key(logical)
 	}
 }
 

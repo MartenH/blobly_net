@@ -104,3 +104,70 @@ fn test_pcan_read_verdict_overrun_is_not_a_failure() {
 	assert pcan_read_verdict(0x40 | 0x1400) == .failed // ...with ILLHW: adapter unplugged
 	assert pcan_read_verdict(0x1400 | 0x08) == .failed // a real fault WITH ladder bits set
 }
+
+// --- health_source: can a wire nobody reads report its ladder at all? (#142) ---
+
+fn test_a_software_bus_has_no_ladder_at_all() {
+	// THE DISTINCTION THE ENUM EXISTS FOR. `no_controller` rather than `needs_reader`: an
+	// in-process bus has no error counters, so there is nothing to report AND nothing missing.
+	// Folded into one bool with SocketCAN's answer, a caller would warn about every simulation
+	// project at every Start — sim-demo is entirely inproc:.
+	assert health_source('inproc') == .no_controller
+	assert health_source('inproc:CAN1') == .no_controller
+	assert health_source('udp') == .no_controller
+	assert health_source('udp:239.63.42.1:20000') == .no_controller
+}
+
+fn test_a_cansub_answers_from_its_own_poll_on_either_platform() {
+	// The one hardware backend reached over HTTP rather than a driver, dispatched on both
+	// platforms — so unlike the vendor DLLs its answer does not depend on which OS is asking.
+	// open_cansub_bus spawns health_loop unconditionally, so a transmit-only tap's verdict is
+	// kept current exactly as a monitor's is.
+	assert health_source('cansub:ABCD1234/1') == .polled
+	assert health_source('cansub:ABCD1234/1@500000/2000000') == .polled
+	assert health_source('CANSUB:ABCD1234/1') == .polled // matched case-folded, like the dispatcher
+}
+
+fn test_socketcan_needs_a_reader() {
+	// hstate advances only inside recv, from the kernel's error frames, so an unread socket
+	// never learns anything however long a generator transmits.
+	assert health_source('can0') == .needs_reader
+	assert health_source('vcan0') == .needs_reader
+}
+
+fn test_vector_needs_a_reader_on_both_platforms_for_two_different_reasons() {
+	// The answer is the same everywhere and the REASON is not, which is worth pinning precisely
+	// because it looks like a platform-independent rule and is not: on Windows health() returns
+	// the last chip state the RECEIVE STREAM carried, so nobody reading means nobody collects
+	// the async reply; on Linux `vector:1` is an ordinary SocketCAN name (#202).
+	assert health_source('vector:1') == .needs_reader
+	assert health_source('vector:1@500000/2000000') == .needs_reader
+}
+
+fn test_the_polled_vendors_are_platform_gated() {
+	// $if windows for the reason iface_prefix_test.v and framing_test.v are: only
+	// open_windows.v routes these to a vendor driver. On Linux they are ordinary interface
+	// names opened as SocketCAN, and asserting the Windows answer would pass on a Windows
+	// bench and fail the Linux job.
+	$if windows {
+		// CAN_GetStatus and canReadStatus both read the controller's own ladder bits out of the
+		// driver, with no frame needed.
+		assert health_source('pcan:PCAN_USBBUS1') == .polled
+		assert health_source('pcan:PCAN_USBBUS1@500000') == .polled
+		assert health_source('kvaser:0') == .polled
+		assert health_source('kvaser:0@500000/2000000') == .polled
+	} $else {
+		assert health_source('pcan:PCAN_USBBUS1') == .needs_reader
+		assert health_source('kvaser:0') == .needs_reader
+	}
+}
+
+fn test_a_plain_name_that_merely_looks_like_a_vendor_is_socketcan() {
+	// The dispatcher matches on the prefix WITH its separator, so an interface somebody named
+	// `pcan0` or `cansubtle` is an ordinary SocketCAN name — the same trap software_iface's
+	// comment describes for `udp0`.
+	assert health_source('pcan0') == .needs_reader
+	assert health_source('cansubtle') == .needs_reader
+	assert health_source('inproc0') == .needs_reader
+	assert health_source('udpx') == .needs_reader
+}

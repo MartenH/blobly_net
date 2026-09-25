@@ -626,6 +626,17 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// reader, so an aliased row shows no failure of its own yet is equally
 			// unwatched. `running` is not required here: this failure belongs to the run
 			// that spawned this loop, which run_gen just proved is still current.
+			// NO READER IS COMING FOR THIS WIRE, recorded PER WIRE and not on this row. The row
+			// stays ENABLED here — unlike the mid-run retire below, which disables every alias —
+			// so nothing else records that the wire will never be narrated, and the transmit
+			// tap's health rule read it as owned for the rest of the run and went quiet on a bus
+			// with nobody watching it (codex round 3 on #349). Per wire because `start()` gives a
+			// wire ONE reader however many rows alias it: written to this row alone, every
+			// sibling alias stayed monitored-and-not-failed and the wire was owned anyway (round
+			// 4). Under `run_gen == gen` like the line below rather than under the row guard: the
+			// fact is about the WIRE this loop was opening, and it holds whether or not the row
+			// is still this loop's.
+			a.rx_open_failed[transport.wire_key(iface)] = true
 			// A CANsub says how its name fared — the "not resolved" note is for exactly this line
 			// (codex round 1 on #262).
 			how := if n := transport.cansub_lookup_note(iface) { ' (${n})' } else { '' }

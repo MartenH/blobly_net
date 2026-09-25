@@ -11,6 +11,7 @@ import watchrule
 import pickrule
 import transport
 import gaterule
+import txhealth
 import wiretap
 import candb
 import prefs
@@ -213,6 +214,20 @@ mut:
 	// the teardown carries health, cadence, diagnostics and load to the successor. Guarded by
 	// app.mu; reset at Start with the other per-run state.
 	verify_said map[string]bool
+	// Per-WIRE fault-ladder state for the taps that ask it (#142, cmd/blobly_net/txhealth).
+	// Keyed by transport.wire_key, because a fault belongs to the controller and several taps
+	// share a wire. Guarded by app.mu; reset at Start with the other per-run state.
+	tx_health map[string]&txhealth.Gate
+	// Wires whose ONE reader failed to open, keyed by transport.wire_key. A per-WIRE fact, not a
+	// per-row one: `start()` gives a wire one reader however many rows alias it, so recorded on
+	// the chosen row alone every sibling looked monitored-and-fine and the wire read as owned
+	// (#142, codex round 4). Cleared under the lock that publishes a run, since a new run opens
+	// everything again. Guarded by app.mu.
+	rx_open_failed map[string]bool
+	// Which wires have already been told that their ladder cannot be read at all — the
+	// needs_reader backends, said once per wire per run. A latch like verify_said beside it, and
+	// reset in the same places.
+	tx_health_noted map[string]bool
 	// What each wire's `verify:` describes, INDEXED — built by start() from every SimCfg on the
 	// destination, before a single emitter is released, and only read afterwards. Asked by
 	// note_self_sent on each successful send, which is why it is an index and not a walk: the
@@ -1154,6 +1169,11 @@ fn (mut app App) rebuild_from_proj() {
 	app.mu.lock()
 	app.verify_cover = map[string]sim.Coverage{}
 	app.verify_said = map[string]bool{}
+	// A project being replaced takes its wires' ladder state with it: a gate kept across the
+	// switch would hold what was said about a bus this project may not even have.
+	app.tx_health = map[string]&txhealth.Gate{}
+	app.tx_health_noted = map[string]bool{}
+	app.rx_open_failed = map[string]bool{}
 	app.mu.unlock()
 	app.reset_gen_state()
 	app.replay_view_gen++ // the grouping the stopped Replay panel caches is derived from what
