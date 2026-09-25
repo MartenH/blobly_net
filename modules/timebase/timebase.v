@@ -42,13 +42,22 @@
 //   - A SILENCE LONGER THAN THE WINDOW empties it, and the first frame back sets the estimate alone:
 //     delivered after a pause, it places its burst late by the pause until a prompt frame arrives.
 //
-// THE GUARANTEE THOSE ADD UP TO, held by a test as a property over two hundred thousand frames:
-// within an epoch, a frame mapped on arrival is NEVER LATER THAN ITS OWN RECEIPT — always, because
-// its own gap is in the window, so the minimum is no larger than it — and NEVER EARLY by more than
-// the drift across one window: exactly never without drift, at most 0.5 ms at 50 ppm, since with
-// the host running fast the minimum is the window's oldest sample. The first half is the floor #149
-// promised: no frame is placed worse than host-receipt stamping put it, and every limit above is a
-// case of meeting that floor rather than beating it.
+// THE GUARANTEE THOSE ADD UP TO, held by a property test over two hundred thousand frames: within
+// an epoch, a frame mapped on arrival is
+//
+//   - NEVER LATER THAN ITS OWN RECEIPT — always, because its own gap is in the window, so the
+//     minimum is no larger than it; and
+//   - NEVER EARLY by more than the drift across the larger of one window and its own delivery
+//     latency. `map` applies TODAY'S offset, so an old stamp gets today's clock phase: a frame
+//     stamped a minute ago and delivered now is early by the drift over that minute (3 ms at
+//     50 ppm), not over one window (codex round 2 on #351, which is how the narrower claim this
+//     first made was found false).
+//
+// Together those are the floor #149 promised, in BOTH directions: the late error is at most what
+// receipt stamping had, and the early one is parts per million of it — a stamp mapped on arrival is
+// old by exactly its own latency. No frame is placed worse than the trace placed it before, and
+// every limit above is a case of meeting that floor rather than beating it. Beating it for old
+// stamps would mean estimating the rate, which is the fitted line described next.
 //
 // WHY THE LIMITS ARE STATED RATHER THAN MECHANISED. Two of them looked fixable. A quiet domain's
 // estimate can be carried across the silence, and was: it needed a drift allowance, the minimum's

@@ -379,13 +379,46 @@ fn test_a_small_forward_step_during_a_pause_waits_for_a_prompt_frame() {
 	assert (d.map(hw + step + 10 * ms) or { panic('none') }) == truth + 10 * ms + 1 * ms
 }
 
+fn test_an_old_stamp_is_early_by_drift_times_its_own_latency_and_no_more() {
+	// CODEX ROUND 2 ON #351. `map` applies TODAY'S offset, so a backlog frame whose stamp is a minute
+	// old gets today's clock phase applied to a minute-old device time. With the device running
+	// 50 ppm fast of the host, that places it ~3 ms early — well past one window's drift, which is
+	// what the guarantee first claimed.
+	//
+	// The bound that does hold, and is stronger: a stamp mapped ON ARRIVAL is old by exactly its own
+	// delivery latency, so its early error is drift × latency — parts per million of how late
+	// host-receipt stamping put the same frame. A minute-old backlog frame: 3 ms early here, where the
+	// trace used to put it 60 s late. Correcting even the 3 ms would mean estimating the rate, which is
+	// the fitted line this module was rewritten without.
+	mut d := Domain{}
+	offset := i64(8) * sec
+	// the device runs 50 ppm FAST: host − hw falls as time goes on
+	host_of := fn [offset] (hw i64) i64 {
+		return offset + hw - hw / 20_000
+	}
+	for i in 0 .. 120_000 { // a sibling thread keeps the estimate current for two minutes
+		hw := i64(i) * 1 * ms
+		d.observe(hw, host_of(hw) + 100_000)
+	}
+	stale := i64(60) * sec // a frame stamped a minute ago…
+	receipt := host_of(120 * sec) + 100_000 // …delivered now, by a thread that was stuck
+	d.observe(stale, receipt)
+	got := d.map(stale) or { panic('none') }
+	truth := host_of(stale)
+	early := truth - got
+	latency := receipt - truth
+	assert got <= receipt // the floor, as ever
+	assert early > 2 * ms // the cost is real at this age…
+	assert early <= latency / 20_000 // …and is drift × the frame's own latency, no more
+}
+
 fn test_within_an_epoch_a_frame_is_never_early_and_never_later_than_its_receipt() {
 	// THE GUARANTEE, as a property over two hundred thousand frames with random latency, collector
 	// pauses and dropped observations: mapped on arrival, every frame sits between its true wire time
 	// and the moment our thread saw it. NEVER WORSE THAN HOST-RECEIPT STAMPING, because the frame's
 	// own gap is in the window, so the minimum can be no larger than it — the floor #149 promised.
-	// And never early, which holds exactly here because there is no drift; with drift the bound is
-	// the drift across one window, which the fifty-ppm test above holds.
+	// And never early, which holds exactly here because there is no drift; with drift, a stamp
+	// mapped on arrival is early by at most drift × its own delivery latency (the test above).
 	mut d := Domain{}
 	mut r := Lcg{
 		s: 7
