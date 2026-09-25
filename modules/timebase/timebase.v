@@ -42,22 +42,22 @@
 //   - A SILENCE LONGER THAN THE WINDOW empties it, and the first frame back sets the estimate alone:
 //     delivered after a pause, it places its burst late by the pause until a prompt frame arrives.
 //
-// THE GUARANTEE THOSE ADD UP TO, held by a property test over two hundred thousand frames: within
-// an epoch, a frame mapped on arrival is
+// THE GUARANTEE THOSE ADD UP TO, for a frame placed on arrival with place(), and held by a property
+// test over two hundred thousand frames:
 //
-//   - NEVER LATER THAN ITS OWN RECEIPT — always, because its own gap is in the window, so the
-//     minimum is no larger than it; and
-//   - NEVER EARLY by more than the drift across the larger of one window and its own delivery
-//     latency. `map` applies TODAY'S offset, so an old stamp gets today's clock phase: a frame
-//     stamped a minute ago and delivered now is early by the drift over that minute (3 ms at
-//     50 ppm), not over one window (codex round 2 on #351, which is how the narrower claim this
-//     first made was found false).
+//   - NEVER LATER THAN ITS OWN RECEIPT — by construction: place() returns the lesser of the estimate
+//     and the receipt. Normally the estimate already is, since the frame's own gap is in the window;
+//     the clamp is for the frame whose gap is not.
+//   - NEVER EARLY by more than the drift over the larger of one window and the time from its stamp
+//     to its observation. The offset is TODAY'S, so an old stamp gets today's clock phase: a frame
+//     stamped a minute ago and delivered now is early by the drift over that minute — 3 ms at
+//     50 ppm — not over one window (codex round 2 on #351).
 //
-// Together those are the floor #149 promised, in BOTH directions: the late error is at most what
-// receipt stamping had, and the early one is parts per million of it — a stamp mapped on arrival is
-// old by exactly its own latency. No frame is placed worse than the trace placed it before, and
-// every limit above is a case of meeting that floor rather than beating it. Beating it for old
-// stamps would mean estimating the rate, which is the fitted line described next.
+// For a frame observed when it is received, that time is its own delivery latency, so the early error
+// is parts per million of how late host-receipt stamping put the same frame. That is the floor #149
+// promised, in both directions: no frame placed worse than the trace placed it before. Every limit
+// above is a case of meeting it rather than beating it; beating it for old stamps would mean
+// estimating the rate, which is the fitted line described next.
 //
 // WHY THE LIMITS ARE STATED RATHER THAN MECHANISED. Two of them looked fixable. A quiet domain's
 // estimate can be carried across the silence, and was: it needed a drift allowance, the minimum's
@@ -157,10 +157,29 @@ pub fn (mut d Domain) observe(hw_ns i64, host_ns i64) {
 	}
 }
 
-// map places a hardware stamp on the host's monotonic timeline, or none before anything has been
-// observed. For PLACEMENT beside other domains — see the rule for callers above: a delta within a
-// domain is taken from the raw stamps, not from two mapped ones. And a stamp from the far side of a
-// clock step is placed wrong by the step: see the model above.
+// place records a frame just received and returns where it belongs on the host's timeline: the
+// call for placing a frame on arrival, which is what a trace does.
+//
+// observe() and map() in one, with one thing more — the result is NEVER LATER THAN THE FRAME'S OWN
+// RECEIPT, BY CONSTRUCTION. Stated as a property of the window it held only while the frame's own
+// gap was in the window, which is not always so: a receive thread can read the clock and then wait
+// more than a window for the lock while a sibling advances the domain, and then observe() rejects
+// the sample as too old and the offset may since have risen past its gap (codex round 3 on #351 —
+// the third finding in a row against that sentence, which is when a claim should become a `min`).
+// Clamping is free where it is not needed: the frame's own gap is normally in the window, so the
+// estimate is already no later than the receipt. And it can make nothing worse, since a receipt is
+// never earlier than the true wire time.
+pub fn (mut d Domain) place(hw_ns i64, host_ns i64) i64 {
+	d.observe(hw_ns, host_ns)
+	m := hw_ns + d.offset
+	return if m < host_ns { m } else { host_ns }
+}
+
+// map places a hardware stamp on the host's monotonic timeline using the current estimate, or none
+// before anything has been observed. For a frame JUST RECEIVED, use place(), which carries the
+// receipt bound; map() has no receipt to bound by, and is for placing a stamp again later. And the
+// rule for callers above holds for both: a delta within a domain is taken from the raw stamps, not
+// from two mapped ones.
 pub fn (d &Domain) map(hw_ns i64) ?i64 {
 	if !d.started {
 		return none

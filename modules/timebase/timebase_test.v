@@ -402,14 +402,37 @@ fn test_an_old_stamp_is_early_by_drift_times_its_own_latency_and_no_more() {
 	}
 	stale := i64(60) * sec // a frame stamped a minute ago…
 	receipt := host_of(120 * sec) + 100_000 // …delivered now, by a thread that was stuck
-	d.observe(stale, receipt)
-	got := d.map(stale) or { panic('none') }
+	got := d.place(stale, receipt)
 	truth := host_of(stale)
 	early := truth - got
 	latency := receipt - truth
 	assert got <= receipt // the floor, as ever
 	assert early > 2 * ms // the cost is real at this age…
 	assert early <= latency / 20_000 // …and is drift × the frame's own latency, no more
+}
+
+fn test_a_frame_whose_observation_is_too_late_is_still_not_placed_after_its_receipt() {
+	// CODEX ROUND 3 ON #351. A receive thread reads the clock and then waits more than a window for
+	// the lock, while a sibling advances the domain — here across a backward step, so the offset
+	// RISES. observe() rejects the frame as too old, its gap never enters the window, and the current
+	// offset would place it well after the moment it was received. place() is bounded by the receipt
+	// itself, so whatever the window has done since, the frame cannot land later than its own receipt.
+	mut d := Domain{}
+	for i in 0 .. 100 {
+		hw := i64(i) * 10 * ms
+		d.observe(hw, hw + 4 * sec + 1 * ms)
+	}
+	// a thread reads its clock here, stamping this frame's receipt…
+	hw := i64(1000) * ms
+	receipt := hw + 4 * sec + 1 * ms
+	// …and before it gets the lock, 12 s pass with the device clock set back 30 s
+	for i in 0 .. 1200 {
+		h := i64(i) * 10 * ms
+		d.observe(h, h + 4 * sec + 30 * sec + 12 * sec + 1 * ms)
+	}
+	unbounded := d.map(hw) or { panic('none') }
+	assert unbounded > receipt // what the estimate alone would say — after the frame was received
+	assert d.place(hw, receipt) == receipt // bounded by the receipt, as promised
 }
 
 fn test_within_an_epoch_a_frame_is_never_early_and_never_later_than_its_receipt() {
@@ -435,8 +458,7 @@ fn test_within_an_epoch_a_frame_is_never_early_and_never_later_than_its_receipt(
 		}
 		truth := hw + offset
 		receipt := truth + lat
-		d.observe(hw, receipt)
-		got := d.map(hw) or { panic('none') }
+		got := d.place(hw, receipt)
 		assert got >= truth
 		assert got <= receipt
 	}
