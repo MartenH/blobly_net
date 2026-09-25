@@ -60,3 +60,38 @@ fn test_a_software_bus_frame_says_it_has_no_stamp() {
 	assert f.hw_domain == ''
 	assert f.hw_ns == 0
 }
+
+fn test_a_stamp_below_the_last_accepted_is_a_forward_clock_step_and_is_dropped() {
+	// The FIFO rule: a socket's queue is in stamp order, so a stamp below the last accepted one is
+	// only ever a frame queued across a forward wall-clock step (WSL resyncing after sleep), early
+	// by the whole step.
+	mut last := i64(0)
+	mut kept := i64(0)
+	kept, last = in_order_stamp(i64(100) * 1_000_000_000, last)
+	assert kept == i64(100) * 1_000_000_000
+	kept, last = in_order_stamp(i64(40) * 1_000_000_000, last) // a minute-long sleep, early
+	assert kept == 0
+	assert last == i64(100) * 1_000_000_000 // the drop does not move the reference
+	kept, last = in_order_stamp(i64(100) * 1_000_000_000 + 10_000_000, last) // back in order
+	assert kept == i64(100) * 1_000_000_000 + 10_000_000
+}
+
+fn test_old_stamps_in_order_are_kept_however_late_they_are_read() {
+	// A reader stalled in a debugger drains valid stamps long after they were taken; in order, they
+	// are true, and an age test would have thrown them away.
+	mut last := i64(0)
+	mut kept := i64(0)
+	for i in 0 .. 5 {
+		kept, last = in_order_stamp(i64(i) * 100_000_000 + 1, last)
+		assert kept == i64(i) * 100_000_000 + 1
+	}
+}
+
+fn test_the_conversions_own_slack_is_not_a_step() {
+	// Two stamps in true order can convert up to one clock bracket apart the other way.
+	mut last := i64(5_000_000_000)
+	mut kept := i64(0)
+	kept, last = in_order_stamp(5_000_000_000 - 1500, last)
+	assert kept == 5_000_000_000 - 1500
+	assert last == 5_000_000_000
+}

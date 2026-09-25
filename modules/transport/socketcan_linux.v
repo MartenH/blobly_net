@@ -28,6 +28,8 @@ mut:
 	bus_errors u64
 	fd         int       = -1
 	hstate     BusHealth = .unknown // last kernel error-frame verdict; recv updates it
+	// The last receive stamp this socket accepted: what in_order_stamp holds the next one against.
+	last_stamp i64
 }
 
 // open_socketcan binds a raw CAN socket to `iface` (e.g. 'vcan0').
@@ -148,6 +150,8 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 		for i in 0 .. dlc {
 			data[i] = buf[i]
 		}
+		kept, last := in_order_stamp(stamp, b.last_stamp)
+		b.last_stamp = last
 		return CanFrame{
 			id:        id
 			extended:  ext
@@ -156,8 +160,8 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			brs:       fflags & 0x02 != 0
 			esi:       fflags & 0x04 != 0
 			data:      data
-			hw_ns:     stamp
-			hw_domain: if stamp != 0 { socketcan_domain } else { '' }
+			hw_ns:     kept
+			hw_domain: if kept != 0 { socketcan_domain } else { '' }
 		}
 	}
 	// unreachable — every path exits by return above; V requires a terminal return after a

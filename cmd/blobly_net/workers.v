@@ -849,7 +849,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		if a.run_gen != gen {
 			break
 		}
-		t_ms := a.since_ms()
+		// HOST time for everything but the trace row: echo matching compares against our own emit
+		// time, the J1939 timeouts and `last RX` are this process's bookkeeping, so all of them stay
+		// on the clock they were written for. Only the row is placed by the frame's own stamp (#149).
+		host_ns := time.sys_mono_now()
+		t_ms := f64(host_ns - a.t0_ns) / 1_000_000.0
 		// Is this the echo of something WE just put on the wire? Every backend delivers our own
 		// sends to the monitor's separate bus instance (transport.test_inproc_cross_delivery
 		// pins it), so without this the tester and our simulated ECUs arrive here looking
@@ -869,6 +873,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 		claimed := a.claim_echo_locked(ci, transport.canonical_iface(iface), f, t_ms)
 		ours := claimed != none
+		// THE ROW'S TIME: the frame's own receive stamp (#149), except for our own echo — its row was
+		// written at emit on host time, and a transfer it completes follows that row. Placed for EVERY
+		// frame, echoes and paused ones included, so a foreign clock's estimate keeps learning.
+		placed := a.placer.place(f.hw_domain, f.hw_ns, i64(host_ns), transport.on_host_clock(f.hw_domain))
+		row_t_ms := if ours { t_ms } else { f64(placed - i64(a.t0_ns)) / 1_000_000.0 }
 		// The recording follows the WIRE, so its order is observation order — the only order
 		// that is actually true. Our own frame is written HERE, when it comes back, under the
 		// channel of the row it confirmed: recording at emit instead let a fast responder's
@@ -957,7 +966,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			rx_key := gkey_frame(org_rx, chname, f)
 			disp, reading := a.j1939_frame_locked(want_dest, want_dest, f, name)
 			a.push_row_locked(TraceRow{
-				t_ms:    t_ms
+				t_ms:    row_t_ms
 				ch:      chname
 				origin:  org_rx
 				id:      f.id
@@ -980,7 +989,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// A message this frame completed gets its row AFTER the frame's own, and is counted
 		// like a frame: not while paused.
 		if tp_done.len > 0 {
-			a.j1939_push_tp_locked(tp_done, tp_ch, want_dest, want_dest, t_ms, tp_origin, false,
+			// at the completing frame's own time, so the message never lands after its last packet
+			a.j1939_push_tp_locked(tp_done, tp_ch, want_dest, want_dest, row_t_ms, tp_origin, false,
 				!a.paused, !a.paused)
 		}
 		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
