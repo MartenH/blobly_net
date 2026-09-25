@@ -22,6 +22,17 @@ pub mut:
 	// mid-run would otherwise split into two rows, or stop matching its own echo, on a bit that
 	// says nothing about which message it is.
 	esi bool
+	// THE BEST RECEIVE TIME THE BACKEND HAS for a received frame, and which clock read it (#149) —
+	// a controller's own stamp where a backend reads one, the kernel's software stamp at device
+	// receive on SocketCAN. Either way it is free of our reader's scheduling delay, which host
+	// receipt time is not. Frames with equal `hw_domain` carry directly comparable stamps — a delta
+	// within a domain is taken from these — and `timebase` places each domain on one timeline.
+	// `hw_domain == ''` means NO STAMP: `hw_ns` then means nothing, and a consumer falls back to its
+	// own receipt time knowingly, never by a substituted clock. A received fact like `esi`, and for
+	// the same reason absent from wiretap's echo identity and the trace's group key. Ignored on
+	// send, and cleared by the in-process bus, which hands the sender's struct to its subscribers.
+	hw_ns     i64
+	hw_domain string
 	// 0..8 payload bytes for a classic frame; 0..64 for an FD one, and only the lengths a DLC
 	// can encode (0..8, 12, 16, 20, 24, 32, 48, 64) — anything else is padded on the way out.
 	// A payload RECEIVED off a software bus may be BORROWED: the in-process bus hands every
@@ -29,6 +40,12 @@ pub mut:
 	// receiver that keeps a payload past the call clones it, and none writes through it.
 	data []u8
 }
+
+// socketcan_domain is the clock domain of every SocketCAN receive stamp on a host (#149). The kernel
+// stamps with ONE clock for every CAN socket, so all SocketCAN interfaces share it and their stamps
+// compare directly — a gateway's latency between can0 and can1 is a plain subtraction. Here rather
+// than beside the Linux backend so the name means the same on every platform.
+pub const socketcan_domain = 'kernel'
 
 // fd_lengths are the only payload sizes a CAN-FD DLC can express. A frame of 9 bytes does not
 // exist on the wire: it is sent as 12 with the remainder padded, which is what every controller

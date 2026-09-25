@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <poll.h>
+#include <time.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -48,6 +49,13 @@ static inline int ct_can_open(const char *ifname) {
 	 * diagnostics() counts (#213) -- unsubscribed, the kernel never delivers them. */
 	can_err_mask_t errs = CAN_ERR_CRTL | CAN_ERR_BUSOFF | CAN_ERR_RESTARTED | CAN_ERR_PROT | CAN_ERR_ACK;
 	setsockopt(s, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &errs, sizeof(errs));
+	/* The kernel's software receive stamp on every frame (#149): taken at device receive, so it is
+	 * free of this reader's own scheduling delay — though not of a USB adapter's batching, which
+	 * only the adapter's hardware stamp (SOF_TIMESTAMPING_RAW_HARDWARE, not requested) would be.
+	 * One limit: the kernel turns stamping on asynchronously, so frames right after the FIRST
+	 * timestamping socket on a host opens may be stamped at read time instead — today's accuracy,
+	 * for a moment. Not fatal on refusal — a frame without a stamp says so. */
+	setsockopt(s, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on));
 	return s;
 }
 
@@ -93,8 +101,34 @@ static inline int ct_can_send(int fd, uint32_t can_id, const uint8_t *data, uint
 /* Returns the DLC, -1 on timeout, or -(1000+errno) on a real error — EINTR (a signal landing
  * mid-syscall, routine in a GUI process) is RETRIED, not surfaced: it used to abort a whole
  * ISO-TP transfer as an opaque "recv failed". */
+/* The wall clock's offset from the monotonic one, sampled so a preemption cannot hide in it (#149).
+ * Two adjacent clock_gettime calls are not atomic: a reader descheduled between them folds the whole
+ * suspension into the offset, and a stamp converted with it comes out late by exactly the scheduling
+ * delay the stamp exists to remove (codex round 2 on #352). So the wall-clock read is BRACKETED
+ * between two monotonic ones and only a TIGHT bracket (under 2 us) is used — with its OPENING read as
+ * the instant, so a converted stamp is never early, only late by at most the bracket. No tight bracket
+ * in four tries means the offset cannot be vouched for, and the frame gets no stamp rather than a
+ * degraded one (codex round 3). `*after` is the closing read, which every honest stamp converts to
+ * strictly before — what the impossible-stamp check below compares against. */
+static inline int ct_rt_minus_mono(int64_t *off, int64_t *after) {
+	for (int i = 0; i < 4; i++) {
+		struct timespec m1, r, m2;
+		clock_gettime(CLOCK_MONOTONIC, &m1);
+		clock_gettime(CLOCK_REALTIME, &r);
+		clock_gettime(CLOCK_MONOTONIC, &m2);
+		int64_t a = (int64_t)m1.tv_sec * 1000000000LL + m1.tv_nsec;
+		int64_t b = (int64_t)m2.tv_sec * 1000000000LL + m2.tv_nsec;
+		if (b - a < 2000) {
+			*off = ((int64_t)r.tv_sec * 1000000000LL + r.tv_nsec) - a;
+			*after = b;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeout_ms,
-                              uint8_t *frame_flags) {
+                              uint8_t *frame_flags, int64_t *stamp_ns) {
 	if (timeout_ms >= 0) {
 		for (;;) {
 			struct pollfd p;
@@ -113,7 +147,52 @@ static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeo
 		 * CAN_RAW_FD_FRAMES on, the same socket delivers both, and a classic frame is a short
 		 * read rather than an error. */
 		struct canfd_frame f;
-		ssize_t n = read(fd, &f, sizeof(f));
+		/* recvmsg rather than read, for the SO_TIMESTAMPNS stamp that rides as ancillary data. A
+		 * union, not a bare char array, so the buffer is aligned for struct cmsghdr — a misaligned
+		 * read faults on strict-alignment targets such as ARMv7 CAN HATs. */
+		union {
+			char buf[CMSG_SPACE(sizeof(struct timespec))];
+			struct cmsghdr align;
+		} ctrl;
+		struct iovec iov = { .iov_base = &f, .iov_len = sizeof(f) };
+		struct msghdr msg;
+		memset(&msg, 0, sizeof(msg));
+		msg.msg_iov = &iov;
+		msg.msg_iovlen = 1;
+		msg.msg_control = ctrl.buf;
+		msg.msg_controllen = sizeof(ctrl.buf);
+		ssize_t n = recvmsg(fd, &msg, 0);
+		*stamp_ns = 0;
+		/* Only on success: a failed recvmsg leaves msg_controllen as we set it, and walking the
+		 * buffer then reads uninitialised stack — and EINTR is routine here. */
+		for (struct cmsghdr *c = n >= 0 ? CMSG_FIRSTHDR(&msg) : NULL; c != NULL; c = CMSG_NXTHDR(&msg, c)) {
+			if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPNS) {
+				struct timespec ts;
+				memcpy(&ts, CMSG_DATA(c), sizeof(ts));
+				/* ON THE MONOTONIC CLOCK, converted here. The kernel stamps with CLOCK_REALTIME,
+				 * which steps — NTP, or WSL resyncing after the host sleeps — and a stepped domain
+				 * breaks every delta taken across the step. Converted at read, only a frame in flight
+				 * at the step's very instant is affected; and the stamp then sits on the same clock
+				 * as the host receipt time beside it (V's sys_mono_now is CLOCK_MONOTONIC). */
+				int64_t mono_ns = 0, off = 0;
+				if (!ct_rt_minus_mono(&off, &mono_ns)) continue; /* cannot vouch: no stamp */
+				*stamp_ns = ((int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec) - off;
+				/* A STAMP AFTER ITS OWN READ IS IMPOSSIBLE, and is what a wall clock stepped BACK
+				 * between stamp and read produces (NTP stepping back, or `date -s`). Dropped: as a
+				 * negative gap it would become the domain's minimum and shift every frame by the step
+				 * for a whole timebase window. Exact — an honest stamp converts to strictly before the
+				 * bracket's closing read (see ct_rt_minus_mono).
+				 *
+				 * A step FORWARD — which is what WSL's resync after the host sleeps is, its clock having
+				 * fallen behind while suspended — makes a stamp too EARLY instead, and is kept. Its gap
+				 * is large, so it never moves the estimate, but a raw delta taken across it is off by
+				 * the step. Not detected, because it cannot be exactly: from here the offset is seen to
+				 * move between reads, never which queued frames were stamped before it moved. It
+				 * reaches only frames sitting in the socket queue at the step's instant — a handful,
+				 * across a gap in traffic the trace's cycle column already restarts at (#266). */
+				if (*stamp_ns > mono_ns) *stamp_ns = 0;
+			}
+		}
 		if (n == (ssize_t)sizeof(struct can_frame)) {
 			struct can_frame *c = (struct can_frame *)&f;
 			*can_id = c->can_id;
