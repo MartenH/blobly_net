@@ -2,33 +2,22 @@ module player
 
 import canlog
 import mf4
-import time
 
-// Chunker plays an MF4 recording a chunk at a time instead of loading it whole (#172). Only the
-// chunks read ahead are resident, so a recording's size stops deciding whether it can be
-// replayed — in memory, a loaded recording costs about fifteen times its file size.
+// Chunker plays an MF4 recording a chunk at a time instead of loading it whole, so memory no
+// longer grows with the file (a loaded recording costs about fifteen times its size).
 //
-// It is the in-memory path made incremental, not a second implementation of it: the rows come
-// from mf4.Stream, which yields them in the loader's order for a writer whose disorder is within
-// the stream's look-ahead window (a file where it is not is refused at open), and the decision
-// to play each one is the same Planner build_multi_log runs. The planner's walkers hold J1939
-// transport sessions, and a session may straddle any chunk boundary, so the planner lives for
-// the whole pass. For the same reason a seek does not jump: it starts a new pass and plans from
-// the top, skipping what lies before the target. A decision depends on everything before it, and
-// replanning from the start is the one way to reach the in-memory answer. That costs a read up
-// to the target on a seek. A seek index would remove that cost, and is left out until a
-// measured stall asks for one.
+// A reader thread reads the stream, decides each row with the same Planner build_multi_log uses,
+// and queues chunks of rows for the Player. Reading happens off the playback tick because one
+// read can take tens of milliseconds (a compressed block is inflated whole).
 //
-// The reading happens on a thread of its own, never inside due(). Measured on real recordings,
-// one read of the stream can take 60 ms — a compressed block is inflated whole — and on the
-// worker's tick that is 60 ms of frames sent late and then all at once. The reader keeps up to
-// `chunk_ahead` chunks queued, which covers such a stall many times over.
+// The planner's state depends on every row before it (J1939 sessions span chunks), so a seek
+// starts a new reader that plans from the top of the file and skips rows before the target.
 pub const chunk_rows = 256
 pub const chunk_ahead = 64
 
-// Chunk is one read of the recording: rows of their own (a batch the player hands out holds
-// views into them, so the reader never writes them again) and the play order among them. A chunk
-// with `end` set carries no rows: the pass is over, `before` rows were kept in it.
+// Chunk is a block of rows and the ones among them to play. Its rows are never written again,
+// because entries the player hands out are views into them. An `end` chunk marks the end of a
+// pass and carries no rows.
 struct Chunk {
 	log    canlog.Log
 	sel    []u32
@@ -48,18 +37,14 @@ pub:
 	end_s f64
 	kept  int // rows a pass plays
 pub mut:
-	err string // the first read error; the pass ends there, as a truncated file's would
+	err string // the first read error; a pass ends there
 mut:
-	ch chan Chunk
+	ch   chan Chunk
+	more chan bool // one token per pass the player finishes; lets the reader start another
 }
 
-// open_chunker reads `path` through once, keeping nothing, for the census and span
-// build_multi_log would report — replay needs both before its first frame: the span places every
-// frame in time, and the census is what the Replay panel shows — and starts the reader.
-//
-// A file the stream cannot put in the loader's order (`out_of_order`: an unsorted group whose
-// disorder exceeds the look-ahead) is refused: a row handed out after a later one would be sent
-// late and out of sequence, so such a file is replayed from memory instead.
+// open_chunker reads the file once for the census and time span, then starts the reader.
+// A file whose rows the stream cannot put in time order is refused; replay it from memory.
 pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 	if rows <= 0 {
 		return error('chunk size must be positive, not ${rows}')
@@ -72,6 +57,7 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 	mut p := new_planner(specs)
 	mut raw := canlog.Log{}
 	mut kept := 0
+	// Plan every row, keeping only the counts.
 	for {
 		r := s.next(mut raw) or { break }
 		raw.rows.clear()
@@ -95,20 +81,22 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 		end_s: p.end
 		kept:  kept
 		ch:    chan Chunk{cap: chunk_ahead}
+		more:  chan bool{cap: 4}
 	}
-	spawn read_passes(c.job(0), c.ch)
+	spawn read_passes(c.job(0), c.ch, c.more)
 	return c
 }
 
-// rewind abandons the reader and starts another, its first pass `pos_s` seconds in.
+// rewind stops the reader and starts a new one at `pos_s` seconds into the recording.
 fn (mut c Chunker) rewind(pos_s f64) {
-	c.ch.close()
+	c.close()
 	c.ch = chan Chunk{cap: chunk_ahead}
-	spawn read_passes(c.job(pos_s), c.ch)
+	c.more = chan bool{cap: 4}
+	spawn read_passes(c.job(pos_s), c.ch, c.more)
 }
 
-// ReadJob is what the reader needs, handed over as one struct: V's `spawn` passes an f64
-// argument as zero (measured: a seek to 0.03 s arrived at the reader as 0.0), a struct intact.
+// ReadJob is the reader's input. It is one struct because V's `spawn` passes a bare f64
+// argument as zero.
 struct ReadJob {
 	path  string
 	specs []BusSpec
@@ -127,51 +115,70 @@ fn (c &Chunker) job(skip f64) ReadJob {
 	}
 }
 
-// take is the next chunk: waiting for it when `wait`, or none when it is not read yet.
+// take returns the next chunk, waiting for it when `wait`; none if it is not ready. A closed
+// channel reads as the end of the pass. Taking an end chunk lets the reader start another pass.
 fn (mut c Chunker) take(wait bool) ?Chunk {
 	if wait {
-		ck := <-c.ch or { return none }
+		ck := <-c.ch or { return Chunk{
+			end: true
+		} }
+		if ck.end {
+			c.more.try_push(true)
+		}
 		return ck
 	}
 	mut ck := Chunk{}
-	if c.ch.try_pop(mut ck) == .success {
-		return ck
+	match c.ch.try_pop(mut ck) {
+		.success {
+			if ck.end {
+				c.more.try_push(true)
+			}
+			return ck
+		}
+		.closed {
+			return Chunk{
+				end: true
+			}
+		}
+		.not_ready {
+			return none
+		}
 	}
-	return none
 }
 
 // close ends the reader.
 pub fn (mut c Chunker) close() {
 	c.ch.close()
+	c.more.close()
 }
 
-// read_passes is the reader: pass after pass, each ending in an `end` chunk, so a loop wrap finds
-// the next pass already queued. It holds its own file and planner and shares nothing but the
-// channel, and it ends when the channel is closed.
-fn read_passes(job ReadJob, ch chan Chunk) {
+// read_passes is the reader thread. It ends when the channels are closed.
+fn read_passes(job ReadJob, ch chan Chunk, more chan bool) {
 	mut skip := job.skip
-	for {
+	// Read pass after pass, each ending in an `end` chunk, at most one pass ahead of the player.
+	for n := 0; true; n++ {
+		if n >= 2 {
+			_ := <-more or { return }
+		}
 		mut r := open_pass(job.path, job.specs, job.rows, job.t0, skip) or {
 			offer(ch, Chunk{
 				end: true
 				err: err.msg()
 			})
-			ch.close() // nothing more is coming: a player waiting on the next pass is told so
+			ch.close()
 			return
 		}
+		// Queue the pass's chunks.
 		for {
-			ck := r.next() or { break }
+			ck := r.next(ch) or { break }
 			if !offer(ch, ck) {
 				r.src.close()
 				return
 			}
 		}
 		r.src.close()
+		// A read error ends this pass; the next pass replays the readable part again.
 		if !offer(ch, Chunk{ end: true, before: r.counted, err: r.stream.err }) {
-			return
-		}
-		if r.stream.err != '' {
-			ch.close() // the next pass would stop at the same place
 			return
 		}
 		skip = 0
@@ -180,14 +187,8 @@ fn read_passes(job ReadJob, ch chan Chunk) {
 
 // offer queues `ck`, waiting while the queue is full; false once the channel is closed.
 fn offer(ch chan Chunk, ck Chunk) bool {
-	for {
-		match ch.try_push(ck) {
-			.success { return true }
-			.closed { return false }
-			.not_ready { time.sleep(2 * time.millisecond) }
-		}
-	}
-	return false
+	ch <- ck or { return false }
+	return true
 }
 
 // Pass is one read of the recording from the top.
@@ -220,11 +221,15 @@ fn open_pass(path string, specs []BusSpec, rows int, t0 f64, skip f64) !Pass {
 	}
 }
 
-// next reads until a chunk holds a row to play; none at the end of the pass. A chunk that played
-// nothing handed nothing out, so its rows are reused.
-fn (mut r Pass) next() ?Chunk {
+// next returns the next chunk with a row to play; none at the end of the pass, or once `ch` is
+// closed (a seek abandoned this reader).
+fn (mut r Pass) next(ch chan Chunk) ?Chunk {
 	mut fresh := true
+	// Fill chunks until one has a row to play. A chunk with none is reused.
 	for !r.eof {
+		if ch.closed {
+			return none
+		}
 		if fresh {
 			r.raw.rows = []canlog.Row{cap: r.rows}
 			fresh = false
@@ -233,6 +238,7 @@ fn (mut r Pass) next() ?Chunk {
 		}
 		mut sel := []u32{}
 		mut before := 0
+		// Read up to `rows` rows, planning each and selecting those at or after the skip point.
 		for r.raw.rows.len < r.rows {
 			row := r.stream.next(mut r.raw) or {
 				r.eof = true
@@ -243,7 +249,6 @@ fn (mut r Pass) next() ?Chunk {
 			if !r.planner.keep(&r.raw, i) {
 				continue
 			}
-			// seek's own rule, spelled the same way: the first row at or after the position
 			if row.t_s - r.t0 >= r.skip {
 				if sel.len == 0 {
 					before = r.counted
@@ -253,7 +258,7 @@ fn (mut r Pass) next() ?Chunk {
 			r.counted++
 		}
 		if sel.len > 0 {
-			// resolve replaces dst rather than writing into it, so the chunk may share it
+			// sharing dst is safe: the planner replaces it, never writes into it
 			return Chunk{
 				log:    r.raw.relabelled(r.planner.dst)
 				sel:    sel

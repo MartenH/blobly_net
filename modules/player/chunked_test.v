@@ -34,7 +34,7 @@ fn script(mut p Player) []string {
 		match k {
 			40 { p.seek(d * 0.55, now) }
 			50 { p.pause(now) }
-			51 { p.seek(d * 0.3, now) } // a paused seek: sent() must already say where it is
+			51 { p.seek(d * 0.3, now) } // a paused seek
 			53 { p.play(now) }
 			70 { p.set_repeat(false) }
 			95 { p.stop() }

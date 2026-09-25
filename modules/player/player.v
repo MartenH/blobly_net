@@ -53,15 +53,13 @@ mut:
 	base_ms    f64 // playback clock at which the current pass's first entry plays
 	elapsed_ms f64 // playback-clock position retained across pause/stop/seek
 	loops      int // completed loop passes (diagnostics)
-	// A chunked player's rows come from `chunks`, and `log`/`sel` hold the current chunk. `open`
-	// says more may follow, so running out of rows is waiting for a chunk and not the end.
+	// Chunked playback: rows come from `chunks`, and `log`/`sel` hold the current chunk.
+	// `open` means more chunks may follow in this pass.
 	chunks &Chunker = unsafe { nil }
 	open   bool
 	before int // rows of this pass kept before the current chunk's first
-	// A chunked seek (and a stop, and a restart) starts a new read from the top, which on a large
-	// file takes long enough to matter. Until its first chunk is here the clock does not run:
-	// due() holds it, and the due() that finds the chunk anchors it. Anchored at the seek's own
-	// `now` instead, every frame recorded during the read would be owed at once.
+	// Set after a chunked seek, stop or restart: the clock is held until the new read's first
+	// chunk arrives, so the time spent reading does not turn into a burst of overdue frames.
 	anchor bool
 }
 
@@ -172,10 +170,9 @@ pub fn (mut p Player) pause(now_ms f64) {
 	if p.st != .playing {
 		return
 	}
-	if !p.anchor { // an unanchored clock is still where the seek put it
+	if !p.anchor { // a held clock is still where the seek put it, and stays held
 		p.elapsed_ms = now_ms - p.base_ms
 	}
-	p.anchor = false
 	p.st = .paused
 }
 
@@ -225,9 +222,8 @@ pub fn (mut p Player) stop() {
 	p.elapsed_ms = 0
 }
 
-// restart_at puts the cursor at `pos_s` seconds into the pass: the start of it in memory, where
-// only seek moves elsewhere, and a new read from the top for a chunked player, which holds only
-// the current chunk.
+// restart_at moves to `pos_s` seconds into the pass. In memory only 0 is used (seek searches);
+// a chunked player starts a new read at `pos_s` and holds the clock until it delivers.
 fn (mut p Player) restart_at(pos_s f64) {
 	p.anchor = false
 	p.idx = 0
@@ -241,21 +237,14 @@ fn (mut p Player) restart_at(pos_s f64) {
 	}
 }
 
-// pull takes a chunked player's next chunk when the current one is spent — waiting for it unless
-// `wait` is false, where a chunk not read yet is a false return with the pass still open.
+// pull loads a chunked player's next chunk; false at the end of the pass, or (when not `wait`)
+// if the chunk is not ready yet.
 fn (mut p Player) pull(wait bool) bool {
 	if isnil(p.chunks) || !p.open {
 		return false
 	}
 	mut c := p.chunks
-	ck := c.take(wait) or {
-		if wait { // the reader has ended, on an error it has already reported
-			p.open = false
-			p.sel = []u32{}
-			p.idx = 0
-		}
-		return false
-	}
+	ck := c.take(wait) or { return false }
 	p.idx = 0
 	p.before = ck.before
 	if ck.end {
@@ -271,8 +260,8 @@ fn (mut p Player) pull(wait bool) bool {
 	return true
 }
 
-// wait_ready waits for a chunked player's next chunk, if it is owed one — for a caller that would
-// rather block than start with the clock held: a test, or a tool with no cadence to keep.
+// wait_ready blocks until a chunked player's next chunk is loaded. For tests and tools that
+// would rather block than have the clock held.
 pub fn (mut p Player) wait_ready() {
 	if p.idx >= p.sel.len {
 		p.pull(true)
@@ -295,10 +284,7 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 		p.restart_at(pos)
 	} else {
 		t0 := p.t0_s()
-		// binary search for the first entry at or after pos — entries are time-sorted by the
-		// constructor. The linear scan from zero was invisible while nothing called seek; a seek
-		// slider calls it per drag on recordings of millions of entries, and an O(n) walk on the
-		// worker thread stalls playback for the duration and then bursts the owed frames.
+		// binary search for the first entry at or after pos (entries are time-sorted)
 		mut lo := 0
 		mut hi := p.sel.len
 		for lo < hi {
@@ -334,11 +320,10 @@ pub fn (p Player) next_due_ms() ?f64 {
 	}
 	if p.idx >= p.sel.len && p.open {
 		if p.anchor {
-			// Waiting for a new read, with the clock held at the position: look again shortly.
+			// clock held for a new read: check again in a millisecond
 			return p.base_ms + p.elapsed_ms + 1.0
 		}
-		// A chunk is owed and due() takes it: answer a time already past, so the caller wakes
-		// at once and asks.
+		// the next chunk is due now; due() loads it
 		return p.base_ms
 	}
 	if p.idx >= p.sel.len {
@@ -420,7 +405,7 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 			if p.pull(!p.anchor) {
 				continue
 			}
-			if p.open { // a new read's first chunk is not here yet: nothing is due, the clock holds
+			if p.open { // first chunk of a new read not ready: hold the clock
 				p.base_ms = now_ms - p.elapsed_ms
 				break
 			}
@@ -454,7 +439,7 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 				if isnil(p.chunks) {
 					p.restart_at(0)
 				} else {
-					// the reader went straight on into the next pass: it is already queued
+					// the next pass is already queued by the reader
 					p.open = true
 					p.sel = []u32{}
 					p.idx = 0

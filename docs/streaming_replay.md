@@ -214,7 +214,8 @@ import (whole-file by design, 2000-row cap).
    hold J1939 transport sessions across chunk boundaries, so the planner lives for the whole
    pass.
    - **Loop, seek, stop.** The reader goes straight on into the next pass behind an end
-     marker, so a loop wrap finds it queued. A seek (or a stop, or a restart) starts a new
+     marker, so a loop wrap finds it queued. It reads at most one pass ahead of the player and
+     blocks, never polls, while it is that far ahead; the owner's `close()` ends it. A seek (or a stop, or a restart) starts a new
      reader that replans from the top and skips rows before the target. That is seek v1,
      O(position), and the one way a stateful planner reaches the in-memory answer without
      saving its state. Until the new reader's first chunk arrives the clock holds, and the
@@ -225,6 +226,14 @@ import (whole-file by design, 2000-row cap).
    - **The open pass.** `open_chunker` reads the file through once, keeping nothing, for the
      census and span. It refuses a file the stream cannot put in the loader's order
      (`out_of_order`), which then plays from memory.
+   - **Stated limits, not handled.** (1) The hold ends when the new reader's first chunk
+     arrives. A compressed block inflated right after that still lands on the tick once, since
+     the reader reads ~50× faster than playback and is ahead from then on. (2) While a seek's
+     read is pending, `sent()` counts from the last chunk taken; nothing but the tests reads
+     it. (3) No test has a J1939 transfer straddling a chunk: there is no J1939 MF4 and no MF4
+     writer. (4) The clock hold itself is exercised by the real-time harness, not by
+     `chunked_test.v`, which waits for every chunk (`wait_ready`) so that the reader's timing
+     never decides its output.
    - **Why a thread.** A read of the stream measured up to 60 ms, because a compressed block
      is inflated whole. On the worker's tick that is 60 ms of frames sent late and then all at
      once. The synchronous first version had exactly that, and codex found it.
