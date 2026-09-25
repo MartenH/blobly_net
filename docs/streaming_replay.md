@@ -223,8 +223,12 @@ import (whole-file by design, 2000-row cap).
    2.2–4.5 M output lines each. Peak RSS for one pass of the 16 MB file is 295 MB in memory
    against 94 MB chunked; the chunked figure does not grow with the file. The stream reads
    about 1 M rows/s (12 MB/s) under `gcc -O2`, the same as the loader. That speed is the cost
-   of the open pass and of every seek: on a tens-of-GB file, both are minutes. The committed
-   test is the same comparison over the tracked samples (`chunked_test.v`).
+   of the open pass and of every seek: on a tens-of-GB file, both are minutes. A chunk is read
+   inside `due()`, so its size is the stall at each boundary: ~2.4 µs a row unoptimised, so the
+   default `chunk_rows` = 256 is ~0.6 ms, inside the probe's 1 ms bucket, and no reader thread
+   is needed. A seek is the stall that remains: the clock is anchored after it, so the read
+   delays the jump rather than bursting the frames it covered. The committed test is the same
+   comparison over the tracked samples (`chunked_test.v`).
 4. The GUI and the CLI switch to the chunker by file size, and the Replay panel takes its
    census from the open pass. Background reading, a seek index and a survey cache wait for a
    measured stall on a file that needs them.

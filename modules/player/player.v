@@ -57,6 +57,10 @@ mut:
 	// says more may follow, so running out of rows is waiting for a chunk and not the end.
 	chunks &Chunker = unsafe { nil }
 	open   bool
+	// A chunked seek reads up to its target, which on a large file takes long enough to matter:
+	// the clock is anchored by the first due() after it rather than by the seek's own `now`,
+	// which would have made every frame recorded during the read owed at once.
+	anchor bool
 }
 
 // new_player builds a Player over a recording. Entries are sorted by timestamp
@@ -166,7 +170,10 @@ pub fn (mut p Player) pause(now_ms f64) {
 	if p.st != .playing {
 		return
 	}
-	p.elapsed_ms = now_ms - p.base_ms
+	if !p.anchor { // an unanchored clock is still where the seek put it
+		p.elapsed_ms = now_ms - p.base_ms
+	}
+	p.anchor = false
 	p.st = .paused
 }
 
@@ -220,10 +227,13 @@ pub fn (mut p Player) stop() {
 // only seek moves elsewhere, and a new pass from the source for a chunked player, which holds
 // only the current chunk.
 fn (mut p Player) restart_at(pos_s f64) {
+	p.anchor = false
 	if !isnil(p.chunks) {
 		mut c := p.chunks
 		c.rewind(pos_s) or {
-			c.err = err.msg()
+			if c.err == '' {
+				c.err = err.msg()
+			}
 			c.eof = true
 		}
 		p.sel = []u32{}
@@ -247,6 +257,8 @@ fn (mut p Player) pull() bool {
 		return true
 	}
 	p.open = false
+	p.sel = []u32{}
+	p.idx = 0
 	return false
 }
 
@@ -264,6 +276,8 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 	p.elapsed_ms = pos * 1000.0 / p.speed
 	if !isnil(p.chunks) {
 		p.restart_at(pos)
+		p.pull()
+		p.anchor = p.st == .playing
 	} else {
 		t0 := p.t0_s()
 		// binary search for the first entry at or after pos — entries are time-sorted by the
@@ -382,6 +396,10 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 		p.st = .finished
 		return
 	}
+	if p.anchor {
+		p.base_ms = now_ms - p.elapsed_ms
+		p.anchor = false
+	}
 	for {
 		if p.idx >= p.sel.len && p.pull() {
 			continue
@@ -452,7 +470,7 @@ pub fn (p Player) len() int {
 
 // sent returns how many frames of the current pass have been emitted.
 pub fn (p Player) sent() int {
-	if !isnil(p.chunks) && p.sel.len > 0 {
+	if !isnil(p.chunks) {
 		return p.chunks.before + p.idx
 	}
 	return p.idx
@@ -490,7 +508,7 @@ pub fn (p Player) duration_s() f64 {
 // position_s is the current recording position in seconds.
 pub fn (p Player) position_s(now_ms f64) f64 {
 	mut el := p.elapsed_ms
-	if p.st == .playing {
+	if p.st == .playing && !p.anchor {
 		el = now_ms - p.base_ms
 	}
 	mut pos := el * p.speed / 1000.0

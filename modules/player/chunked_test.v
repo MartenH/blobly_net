@@ -33,6 +33,9 @@ fn script(mut p Player) []string {
 	for k in 0 .. 140 {
 		match k {
 			40 { p.seek(d * 0.55, now) }
+			50 { p.pause(now) }
+			51 { p.seek(d * 0.3, now) } // a paused seek: sent() must already say where it is
+			53 { p.play(now) }
 			70 { p.set_repeat(false) }
 			95 { p.stop() }
 			96 { p.play(now) }
@@ -71,7 +74,7 @@ fn test_chunked_playback_is_the_in_memory_playback() {
 				assert c.err == ''
 				c.close()
 				for i in 0 .. want.len {
-					assert got[i] == want[i], '${name} exclude=${exclude} rows=${rows} line ${i}'
+					assert i < got.len && got[i] == want[i], '${name} exclude=${exclude} rows=${rows} line ${i}'
 				}
 				assert got.len == want.len
 			}

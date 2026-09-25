@@ -8,7 +8,8 @@ import mf4
 // in memory, a loaded recording costs about fifteen times its file size.
 //
 // It is the in-memory path made incremental, not a second implementation of it: the rows come
-// from mf4.Stream, which yields them in the loader's order, and the decision to play each one is
+// from mf4.Stream, which yields them in the loader's order for a writer whose disorder is within
+// the stream's look-ahead window (and counts the rows where it is not), and the decision to play each one is
 // the same Planner build_multi_log runs. The planner's walkers hold J1939 transport sessions,
 // and a session may straddle any chunk boundary, so the planner lives for the whole pass. For
 // the same reason a seek or a loop does not jump: it reopens the stream and plans from the top,
@@ -16,6 +17,12 @@ import mf4
 // replanning from the start is the one way to reach the in-memory answer. That costs a read up
 // to the target on a seek. A seek index would remove that cost, and is left out until a
 // measured stall asks for one.
+// chunk_rows is the chunk size a caller passes when it has no reason to pick another. A chunk
+// is read synchronously inside due(), so its size is how long playback stalls at each boundary:
+// measured at ~2.4 us a row in the GUI's unoptimised build, 256 rows is ~0.6 ms — inside the
+// cadence probe's 1 ms bucket, where 4096 rows was a 10 ms stall every 200 ms of a busy capture.
+pub const chunk_rows = 256
+
 @[heap]
 pub struct Chunker {
 	specs []BusSpec
@@ -45,8 +52,14 @@ mut:
 // build_multi_log would report. Replay needs both before its first frame: the span places every
 // frame in time, and the census is what the Replay panel shows.
 pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
+	if rows <= 0 {
+		return error('chunk size must be positive, not ${rows}')
+	}
 	mut src := mf4.open_source(path)!
-	mut s := mf4.open_stream(mut src)!
+	mut s := mf4.open_stream(mut src) or {
+		src.close()
+		return err
+	}
 	mut p := new_planner(specs)
 	mut raw := canlog.Log{}
 	mut kept := 0
@@ -64,14 +77,17 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 	}
 	mut c := &Chunker{
 		specs: specs
-		rows:  if rows > 0 { rows } else { 1 }
+		rows:  rows
 		buses: p.plans()
 		t0_s:  p.t0
 		end_s: p.end
 		kept:  kept
 		src:   src
 	}
-	c.rewind(0)!
+	c.rewind(0) or {
+		c.close()
+		return err
+	}
 	return c
 }
 
@@ -86,12 +102,19 @@ fn (mut c Chunker) rewind(pos_s f64) ! {
 	c.eof = false
 }
 
-// next_chunk reads until the chunk holds a row to play, or the pass ends. Each chunk gets its own
-// rows: a batch the player already handed out holds views into the previous chunk's rows, so
-// those are never overwritten.
+// next_chunk reads until the chunk holds a row to play, or the pass ends. A chunk that is played
+// gets rows of its own: a batch the player already handed out holds views into the previous
+// chunk's rows, so those are never overwritten. A chunk that played nothing handed out nothing,
+// so its rows are reused.
 fn (mut c Chunker) next_chunk() bool {
+	mut fresh := true
 	for !c.eof {
-		c.raw.rows = []canlog.Row{cap: c.rows}
+		if fresh {
+			c.raw.rows = []canlog.Row{cap: c.rows}
+			fresh = false
+		} else {
+			c.raw.rows.clear()
+		}
 		mut sel := []u32{}
 		for c.raw.rows.len < c.rows {
 			r := c.stream.next(mut c.raw) or {
@@ -116,11 +139,13 @@ fn (mut c Chunker) next_chunk() bool {
 			c.counted++
 		}
 		if sel.len > 0 {
-			c.chunk = c.raw.relabelled(c.planner.dst.clone())
+			// resolve replaces dst rather than writing into it, so the chunk may share it
+			c.chunk = c.raw.relabelled(c.planner.dst)
 			c.sel = sel
 			return true
 		}
 	}
+	c.before = c.counted
 	return false
 }
 
