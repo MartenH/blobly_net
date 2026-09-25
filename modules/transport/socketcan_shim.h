@@ -101,6 +101,37 @@ static inline int ct_can_send(int fd, uint32_t can_id, const uint8_t *data, uint
 /* Returns the DLC, -1 on timeout, or -(1000+errno) on a real error — EINTR (a signal landing
  * mid-syscall, routine in a GUI process) is RETRIED, not surfaced: it used to abort a whole
  * ISO-TP transfer as an opaque "recv failed". */
+/* The wall clock's offset from the monotonic one, sampled so a preemption cannot hide in it (#149).
+ * Two adjacent clock_gettime calls are not atomic: a reader descheduled between them folds the whole
+ * suspension into the offset, and every stamp converted with it comes out late by exactly the
+ * scheduling delay the stamp exists to remove (codex round 2 on #352). So the wall-clock read is
+ * BRACKETED between two monotonic ones and a wide bracket is retried. Its instant is taken as the
+ * bracket's OPENING read, not the midpoint: then a converted stamp is never EARLY, only late by at most
+ * the bracket (~2 us when tight). The midpoint halves the worst case but splits it both ways, and an
+ * early stamp can precede its own send — the live test's lower bound, under the wide brackets of a
+ * loaded machine. `*after` is the closing read: an honest stamp converts to at most the bracket past
+ * its true instant, which is before the opening read, so strictly before the closing one — what the
+ * impossible-stamp check below compares against. */
+static inline int64_t ct_rt_minus_mono(int64_t *after) {
+	int64_t best = 0, best_w = INT64_MAX;
+	for (int i = 0; i < 4; i++) {
+		struct timespec m1, r, m2;
+		clock_gettime(CLOCK_MONOTONIC, &m1);
+		clock_gettime(CLOCK_REALTIME, &r);
+		clock_gettime(CLOCK_MONOTONIC, &m2);
+		int64_t a = (int64_t)m1.tv_sec * 1000000000LL + m1.tv_nsec;
+		int64_t b = (int64_t)m2.tv_sec * 1000000000LL + m2.tv_nsec;
+		int64_t w = b - a;
+		if (w < best_w) {
+			best_w = w;
+			best = ((int64_t)r.tv_sec * 1000000000LL + r.tv_nsec) - a;
+			*after = b;
+		}
+		if (w < 2000) break; /* 2 us: tight enough — a stamp is late by at most that */
+	}
+	return best;
+}
+
 static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeout_ms,
                               uint8_t *frame_flags, int64_t *stamp_ns) {
 	if (timeout_ms >= 0) {
@@ -141,27 +172,22 @@ static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeo
 		 * buffer then reads uninitialised stack — and EINTR is routine here. */
 		for (struct cmsghdr *c = n >= 0 ? CMSG_FIRSTHDR(&msg) : NULL; c != NULL; c = CMSG_NXTHDR(&msg, c)) {
 			if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPNS) {
-				struct timespec ts, rt, mono;
+				struct timespec ts;
 				memcpy(&ts, CMSG_DATA(c), sizeof(ts));
 				/* ON THE MONOTONIC CLOCK, converted here. The kernel stamps with CLOCK_REALTIME,
 				 * which steps — NTP, or WSL resyncing after the host sleeps — and a stepped domain
 				 * breaks every delta taken across the step. Converted at read, only a frame in flight
 				 * at the step's very instant is affected; and the stamp then sits on the same clock
 				 * as the host receipt time beside it (V's sys_mono_now is CLOCK_MONOTONIC). */
-				clock_gettime(CLOCK_REALTIME, &rt);
-				clock_gettime(CLOCK_MONOTONIC, &mono);
-				int64_t stamp = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-				int64_t rt_ns = (int64_t)rt.tv_sec * 1000000000LL + rt.tv_nsec;
-				int64_t mono_ns = (int64_t)mono.tv_sec * 1000000000LL + mono.tv_nsec;
-				*stamp_ns = stamp - rt_ns + mono_ns;
+				int64_t mono_ns = 0;
+				int64_t off = ct_rt_minus_mono(&mono_ns);
+				*stamp_ns = ((int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec) - off;
 				/* A STAMP AFTER ITS OWN READ IS IMPOSSIBLE, and is what a wall clock stepped BACK
-				 * between stamp and read produces (WSL resyncing after the host sleeps does exactly
-				 * this). Dropped rather than kept: its gap would be negative, so it would become the
-				 * domain's minimum and shift every frame by the step for a whole timebase window.
-				 * Exact, not a threshold — the clock reads above are ordered so an honest stamp is
-				 * always strictly earlier. A step FORWARD makes a stamp too early instead; that frame
-				 * is misplaced by the step, but its gap is large, so it never moves the estimate.
-				 * (There is no monotonic receive stamp to ask for: the kernel's is wall clock.) */
+				 * between stamp and read produces (WSL resyncing after the host sleeps). Dropped: as a
+				 * negative gap it would become the domain's minimum and shift every frame by the step
+				 * for a whole timebase window. Exact — an honest stamp converts to strictly before the
+				 * bracket's closing read (see ct_rt_minus_mono). A step FORWARD makes one stamp too
+				 * early instead; its gap is large, so it never moves the estimate. */
 				if (*stamp_ns > mono_ns) *stamp_ns = 0;
 			}
 		}
