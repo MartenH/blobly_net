@@ -120,6 +120,10 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   written unbounded (`transport.SharedEntry.settled` is). Not ours to fix — vlib — and pinned
   here so the next `V panic: Invalid argument` in a CI log is read as this, not as a bug in
   the test it landed in.
+- 🔴 **`spawn` can pass an `f64` argument as zero.** `spawn read_passes(path, specs, rows, t0,
+  pos, ch)` delivered `pos` = 0.03 to the thread as 0.0, every time, with no warning (seen under
+  `-old-compiler`, #172). Hand a thread its inputs in ONE struct, which arrives intact
+  (`player.ReadJob`). A seek that silently played from the start was how it showed.
 - 🟡 **A UDP read deadline is not honoured.** `net.UdpConn.set_read_deadline` followed by
   `read` returned after ~100 ms every time, deadline or not (V 0.5.1, #235's first cut). What
   works is `set_read_timeout` re-armed before each read with what is left of the window, which
