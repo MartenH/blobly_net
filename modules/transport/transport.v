@@ -65,6 +65,13 @@ const stamp_order_slack_ns = i64(2000)
 // early by the whole step. Such a stamp is dropped (0, "no stamp"); anything in order is kept, however
 // OLD — a reader stalled in a debugger drains valid stamps late, and an age test would have thrown
 // them away (codex on #353, which replaced one). Returns the stamp to use and the new last accepted.
+//
+// WHAT IT DOES NOT CATCH, stated because the first version of this comment claimed more: a step-early
+// stamp that still lands ABOVE the last accepted one — the socket's first frame, or one after a
+// silence longer than the step. Catching those means knowing which queued frames were stamped before
+// the step, and from userspace the step is visible only as the clock offset moving between two reads,
+// never per frame. Those frames — the few queued at the instant of a forward step — are placed early by
+// the step (codex round 2 on #353).
 fn in_order_stamp(stamp i64, last i64) (i64, i64) {
 	if stamp == 0 {
 		return 0, last
