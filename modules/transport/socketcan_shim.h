@@ -103,17 +103,14 @@ static inline int ct_can_send(int fd, uint32_t can_id, const uint8_t *data, uint
  * ISO-TP transfer as an opaque "recv failed". */
 /* The wall clock's offset from the monotonic one, sampled so a preemption cannot hide in it (#149).
  * Two adjacent clock_gettime calls are not atomic: a reader descheduled between them folds the whole
- * suspension into the offset, and every stamp converted with it comes out late by exactly the
- * scheduling delay the stamp exists to remove (codex round 2 on #352). So the wall-clock read is
- * BRACKETED between two monotonic ones and a wide bracket is retried. Its instant is taken as the
- * bracket's OPENING read, not the midpoint: then a converted stamp is never EARLY, only late by at most
- * the bracket (~2 us when tight). The midpoint halves the worst case but splits it both ways, and an
- * early stamp can precede its own send — the live test's lower bound, under the wide brackets of a
- * loaded machine. `*after` is the closing read: an honest stamp converts to at most the bracket past
- * its true instant, which is before the opening read, so strictly before the closing one — what the
- * impossible-stamp check below compares against. */
-static inline int64_t ct_rt_minus_mono(int64_t *after) {
-	int64_t best = 0, best_w = INT64_MAX;
+ * suspension into the offset, and a stamp converted with it comes out late by exactly the scheduling
+ * delay the stamp exists to remove (codex round 2 on #352). So the wall-clock read is BRACKETED
+ * between two monotonic ones and only a TIGHT bracket (under 2 us) is used — with its OPENING read as
+ * the instant, so a converted stamp is never early, only late by at most the bracket. No tight bracket
+ * in four tries means the offset cannot be vouched for, and the frame gets no stamp rather than a
+ * degraded one (codex round 3). `*after` is the closing read, which every honest stamp converts to
+ * strictly before — what the impossible-stamp check below compares against. */
+static inline int ct_rt_minus_mono(int64_t *off, int64_t *after) {
 	for (int i = 0; i < 4; i++) {
 		struct timespec m1, r, m2;
 		clock_gettime(CLOCK_MONOTONIC, &m1);
@@ -121,15 +118,13 @@ static inline int64_t ct_rt_minus_mono(int64_t *after) {
 		clock_gettime(CLOCK_MONOTONIC, &m2);
 		int64_t a = (int64_t)m1.tv_sec * 1000000000LL + m1.tv_nsec;
 		int64_t b = (int64_t)m2.tv_sec * 1000000000LL + m2.tv_nsec;
-		int64_t w = b - a;
-		if (w < best_w) {
-			best_w = w;
-			best = ((int64_t)r.tv_sec * 1000000000LL + r.tv_nsec) - a;
+		if (b - a < 2000) {
+			*off = ((int64_t)r.tv_sec * 1000000000LL + r.tv_nsec) - a;
 			*after = b;
+			return 1;
 		}
-		if (w < 2000) break; /* 2 us: tight enough — a stamp is late by at most that */
 	}
-	return best;
+	return 0;
 }
 
 static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeout_ms,
@@ -179,8 +174,8 @@ static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeo
 				 * breaks every delta taken across the step. Converted at read, only a frame in flight
 				 * at the step's very instant is affected; and the stamp then sits on the same clock
 				 * as the host receipt time beside it (V's sys_mono_now is CLOCK_MONOTONIC). */
-				int64_t mono_ns = 0;
-				int64_t off = ct_rt_minus_mono(&mono_ns);
+				int64_t mono_ns = 0, off = 0;
+				if (!ct_rt_minus_mono(&off, &mono_ns)) continue; /* cannot vouch: no stamp */
 				*stamp_ns = ((int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec) - off;
 				/* A STAMP AFTER ITS OWN READ IS IMPOSSIBLE, and is what a wall clock stepped BACK
 				 * between stamp and read produces (WSL resyncing after the host sleeps). Dropped: as a
