@@ -36,6 +36,7 @@ pub:
 	t0_s  f64
 	end_s f64
 	kept  int // rows a pass plays
+	size  u64 // the file's size at the census; a pass over a file of another size is refused
 pub mut:
 	err string // the first read error; a pass ends there
 mut:
@@ -53,6 +54,7 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 	defer {
 		src.close()
 	}
+	size := src.size()
 	mut s := mf4.open_stream(mut src)!
 	mut p := new_planner(specs)
 	mut raw := canlog.Log{}
@@ -80,10 +82,11 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 		t0_s:  p.t0
 		end_s: p.end
 		kept:  kept
+		size:  size
 		ch:    chan Chunk{cap: chunk_ahead}
 		more:  chan bool{cap: 4}
 	}
-	spawn read_passes(c.job(0), c.ch, c.more)
+	c.start(0)
 	return c
 }
 
@@ -92,6 +95,15 @@ fn (mut c Chunker) rewind(pos_s f64) {
 	c.close()
 	c.ch = chan Chunk{cap: chunk_ahead}
 	c.more = chan bool{cap: 4}
+	c.start(pos_s)
+}
+
+// start spawns the reader, or with nothing to play leaves the channels closed (read as the end).
+fn (mut c Chunker) start(pos_s f64) {
+	if c.kept == 0 {
+		c.close()
+		return
+	}
 	spawn read_passes(c.job(pos_s), c.ch, c.more)
 }
 
@@ -103,6 +115,7 @@ struct ReadJob {
 	rows  int
 	t0    f64
 	skip  f64
+	size  u64
 }
 
 fn (c &Chunker) job(skip f64) ReadJob {
@@ -112,6 +125,7 @@ fn (c &Chunker) job(skip f64) ReadJob {
 		rows:  c.rows
 		t0:    c.t0_s
 		skip:  skip
+		size:  c.size
 	}
 }
 
@@ -160,7 +174,7 @@ fn read_passes(job ReadJob, ch chan Chunk, more chan bool) {
 		if n >= 2 {
 			_ := <-more or { return }
 		}
-		mut r := open_pass(job.path, job.specs, job.rows, job.t0, skip) or {
+		mut r := open_pass(job, skip) or {
 			offer(ch, Chunk{
 				end: true
 				err: err.msg()
@@ -205,19 +219,24 @@ mut:
 	eof     bool
 }
 
-fn open_pass(path string, specs []BusSpec, rows int, t0 f64, skip f64) !Pass {
-	mut src := mf4.open_source(path)!
+// open_pass opens the file for one pass; a file changed since the census is refused.
+fn open_pass(job ReadJob, skip f64) !Pass {
+	mut src := mf4.open_source(job.path)!
+	if src.size() != job.size {
+		src.close()
+		return error('${job.path} changed since it was opened (${job.size} -> ${src.size()} bytes)')
+	}
 	s := mf4.open_stream(mut src) or {
 		src.close()
 		return err
 	}
 	return Pass{
-		rows:    rows
-		t0:      t0
+		rows:    job.rows
+		t0:      job.t0
 		skip:    skip
 		src:     src
 		stream:  s
-		planner: new_planner(specs)
+		planner: new_planner(job.specs)
 	}
 }
 
