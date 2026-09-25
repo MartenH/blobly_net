@@ -154,6 +154,15 @@ static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeo
 				int64_t rt_ns = (int64_t)rt.tv_sec * 1000000000LL + rt.tv_nsec;
 				int64_t mono_ns = (int64_t)mono.tv_sec * 1000000000LL + mono.tv_nsec;
 				*stamp_ns = stamp - rt_ns + mono_ns;
+				/* A STAMP AFTER ITS OWN READ IS IMPOSSIBLE, and is what a wall clock stepped BACK
+				 * between stamp and read produces (WSL resyncing after the host sleeps does exactly
+				 * this). Dropped rather than kept: its gap would be negative, so it would become the
+				 * domain's minimum and shift every frame by the step for a whole timebase window.
+				 * Exact, not a threshold — the clock reads above are ordered so an honest stamp is
+				 * always strictly earlier. A step FORWARD makes a stamp too early instead; that frame
+				 * is misplaced by the step, but its gap is large, so it never moves the estimate.
+				 * (There is no monotonic receive stamp to ask for: the kernel's is wall clock.) */
+				if (*stamp_ns > mono_ns) *stamp_ns = 0;
 			}
 		}
 		if (n == (ssize_t)sizeof(struct can_frame)) {
