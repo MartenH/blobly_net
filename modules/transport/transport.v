@@ -47,6 +47,13 @@ pub mut:
 // than beside the Linux backend so the name means the same on every platform.
 pub const socketcan_domain = 'kernel'
 
+// on_host_clock reports whether a domain's stamps are already on the host's MONOTONIC clock, and so
+// need no mapping to sit beside host time. True of SocketCAN only: its shim converts the kernel's
+// wall-clock stamp at read. Every vendor clock is foreign and is mapped (timebase.Placer).
+pub fn on_host_clock(domain string) bool {
+	return domain == socketcan_domain
+}
+
 // fd_lengths are the only payload sizes a CAN-FD DLC can express. A frame of 9 bytes does not
 // exist on the wire: it is sent as 12 with the remainder padded, which is what every controller
 // does and what a receiver expects.
