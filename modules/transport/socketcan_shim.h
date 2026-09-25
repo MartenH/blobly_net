@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <poll.h>
+#include <time.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -48,6 +49,13 @@ static inline int ct_can_open(const char *ifname) {
 	 * diagnostics() counts (#213) -- unsubscribed, the kernel never delivers them. */
 	can_err_mask_t errs = CAN_ERR_CRTL | CAN_ERR_BUSOFF | CAN_ERR_RESTARTED | CAN_ERR_PROT | CAN_ERR_ACK;
 	setsockopt(s, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &errs, sizeof(errs));
+	/* The kernel's software receive stamp on every frame (#149): taken at device receive, so it is
+	 * free of this reader's own scheduling delay — though not of a USB adapter's batching, which
+	 * only the adapter's hardware stamp (SOF_TIMESTAMPING_RAW_HARDWARE, not requested) would be.
+	 * One limit: the kernel turns stamping on asynchronously, so frames right after the FIRST
+	 * timestamping socket on a host opens may be stamped at read time instead — today's accuracy,
+	 * for a moment. Not fatal on refusal — a frame without a stamp says so. */
+	setsockopt(s, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on));
 	return s;
 }
 
@@ -94,7 +102,7 @@ static inline int ct_can_send(int fd, uint32_t can_id, const uint8_t *data, uint
  * mid-syscall, routine in a GUI process) is RETRIED, not surfaced: it used to abort a whole
  * ISO-TP transfer as an opaque "recv failed". */
 static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeout_ms,
-                              uint8_t *frame_flags) {
+                              uint8_t *frame_flags, int64_t *stamp_ns) {
 	if (timeout_ms >= 0) {
 		for (;;) {
 			struct pollfd p;
@@ -113,7 +121,41 @@ static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeo
 		 * CAN_RAW_FD_FRAMES on, the same socket delivers both, and a classic frame is a short
 		 * read rather than an error. */
 		struct canfd_frame f;
-		ssize_t n = read(fd, &f, sizeof(f));
+		/* recvmsg rather than read, for the SO_TIMESTAMPNS stamp that rides as ancillary data. A
+		 * union, not a bare char array, so the buffer is aligned for struct cmsghdr — a misaligned
+		 * read faults on strict-alignment targets such as ARMv7 CAN HATs. */
+		union {
+			char buf[CMSG_SPACE(sizeof(struct timespec))];
+			struct cmsghdr align;
+		} ctrl;
+		struct iovec iov = { .iov_base = &f, .iov_len = sizeof(f) };
+		struct msghdr msg;
+		memset(&msg, 0, sizeof(msg));
+		msg.msg_iov = &iov;
+		msg.msg_iovlen = 1;
+		msg.msg_control = ctrl.buf;
+		msg.msg_controllen = sizeof(ctrl.buf);
+		ssize_t n = recvmsg(fd, &msg, 0);
+		*stamp_ns = 0;
+		/* Only on success: a failed recvmsg leaves msg_controllen as we set it, and walking the
+		 * buffer then reads uninitialised stack — and EINTR is routine here. */
+		for (struct cmsghdr *c = n >= 0 ? CMSG_FIRSTHDR(&msg) : NULL; c != NULL; c = CMSG_NXTHDR(&msg, c)) {
+			if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPNS) {
+				struct timespec ts, rt, mono;
+				memcpy(&ts, CMSG_DATA(c), sizeof(ts));
+				/* ON THE MONOTONIC CLOCK, converted here. The kernel stamps with CLOCK_REALTIME,
+				 * which steps — NTP, or WSL resyncing after the host sleeps — and a stepped domain
+				 * breaks every delta taken across the step. Converted at read, only a frame in flight
+				 * at the step's very instant is affected; and the stamp then sits on the same clock
+				 * as the host receipt time beside it (V's sys_mono_now is CLOCK_MONOTONIC). */
+				clock_gettime(CLOCK_REALTIME, &rt);
+				clock_gettime(CLOCK_MONOTONIC, &mono);
+				int64_t stamp = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+				int64_t rt_ns = (int64_t)rt.tv_sec * 1000000000LL + rt.tv_nsec;
+				int64_t mono_ns = (int64_t)mono.tv_sec * 1000000000LL + mono.tv_nsec;
+				*stamp_ns = stamp - rt_ns + mono_ns;
+			}
+		}
 		if (n == (ssize_t)sizeof(struct can_frame)) {
 			struct can_frame *c = (struct can_frame *)&f;
 			*can_id = c->can_id;
