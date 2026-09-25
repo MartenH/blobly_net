@@ -178,11 +178,18 @@ static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeo
 				if (!ct_rt_minus_mono(&off, &mono_ns)) continue; /* cannot vouch: no stamp */
 				*stamp_ns = ((int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec) - off;
 				/* A STAMP AFTER ITS OWN READ IS IMPOSSIBLE, and is what a wall clock stepped BACK
-				 * between stamp and read produces (WSL resyncing after the host sleeps). Dropped: as a
+				 * between stamp and read produces (NTP stepping back, or `date -s`). Dropped: as a
 				 * negative gap it would become the domain's minimum and shift every frame by the step
 				 * for a whole timebase window. Exact — an honest stamp converts to strictly before the
-				 * bracket's closing read (see ct_rt_minus_mono). A step FORWARD makes one stamp too
-				 * early instead; its gap is large, so it never moves the estimate. */
+				 * bracket's closing read (see ct_rt_minus_mono).
+				 *
+				 * A step FORWARD — which is what WSL's resync after the host sleeps is, its clock having
+				 * fallen behind while suspended — makes a stamp too EARLY instead, and is kept. Its gap
+				 * is large, so it never moves the estimate, but a raw delta taken across it is off by
+				 * the step. Not detected, because it cannot be exactly: from here the offset is seen to
+				 * move between reads, never which queued frames were stamped before it moved. It
+				 * reaches only frames sitting in the socket queue at the step's instant — a handful,
+				 * across a gap in traffic the trace's cycle column already restarts at (#266). */
 				if (*stamp_ns > mono_ns) *stamp_ns = 0;
 			}
 		}
