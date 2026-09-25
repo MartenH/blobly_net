@@ -261,10 +261,3 @@ fn test_the_placer_keeps_each_domain_apart_and_forgets_them_on_reset() {
 	assert p.place('a', 1 * sec, 50 * sec, false) == 50 * sec
 }
 
-fn test_a_host_clock_stamp_a_window_older_than_its_receipt_falls_back_to_the_receipt() {
-	// WSL resyncing forward after the host sleeps: frames queued across it convert early by the whole
-	// sleep. Placed by that stamp they would land a minute before their neighbours.
-	mut p := Placer{}
-	assert p.place('kernel', 100 * sec, 100 * sec + 2 * ms, true) == 100 * sec // an ordinary one
-	assert p.place('kernel', 100 * sec, 160 * sec, true) == 160 * sec // a minute early: receipt
-}

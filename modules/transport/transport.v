@@ -54,6 +54,27 @@ pub fn on_host_clock(domain string) bool {
 	return domain == socketcan_domain
 }
 
+// stamp_order_slack_ns is how far a converted SocketCAN stamp may fall below the previous one and
+// still be in order: the conversion is late by at most its tight clock bracket (see the shim's
+// ct_rt_minus_mono), so two stamps in true order can convert up to that far apart the other way.
+const stamp_order_slack_ns = i64(2000)
+
+// in_order_stamp applies the one ordering a socket guarantees: its receive queue is FIFO in stamp
+// order, so a stamp BELOW the last accepted one is impossible — except as the artefact of a FORWARD
+// wall-clock step while frames sat queued (WSL resyncing after the host sleeps), which converts them
+// early by the whole step. Such a stamp is dropped (0, "no stamp"); anything in order is kept, however
+// OLD — a reader stalled in a debugger drains valid stamps late, and an age test would have thrown
+// them away (codex on #353, which replaced one). Returns the stamp to use and the new last accepted.
+fn in_order_stamp(stamp i64, last i64) (i64, i64) {
+	if stamp == 0 {
+		return 0, last
+	}
+	if stamp < last - stamp_order_slack_ns {
+		return 0, last
+	}
+	return stamp, if stamp > last { stamp } else { last }
+}
+
 // fd_lengths are the only payload sizes a CAN-FD DLC can express. A frame of 9 bytes does not
 // exist on the wire: it is sent as 12 with the remainder padded, which is what every controller
 // does and what a receiver expects.

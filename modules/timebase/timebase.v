@@ -155,13 +155,6 @@ pub fn (mut p Placer) place(domain string, hw_ns i64, host_ns i64, host_clock bo
 		return host_ns
 	}
 	if host_clock {
-		// NOT CREDIBLE MORE THAN A WINDOW BEFORE ITS OWN RECEIPT. No reader stalls that long; what
-		// produces it is the wall clock stepping FORWARD while the frame sat in the socket queue —
-		// WSL resyncing after the host sleeps — which leaves the converted stamp early by the whole
-		// step, and it would be placed seconds before its neighbours. Its receipt is the honest time.
-		if host_ns - hw_ns > window_ns {
-			return host_ns
-		}
 		return hw_ns
 	}
 	mut d := p.domains[domain] or {
