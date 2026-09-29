@@ -181,6 +181,7 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 // (orphan notes appended), DoIP's `DoIP recv timeout` — as against one that means a message
 // began and stalled, or a carrier failure. The kernel channel reassembles out of sight, so a stall
 // there reads as silence; the software channel says which it was.
+// (A DoIP socket's own timeout is mapped to its spelling in DoipClient.recv.)
 fn is_silence(msg string) bool {
 	return msg.starts_with('timeout') || msg == 'DoIP recv timeout'
 }

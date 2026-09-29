@@ -398,14 +398,19 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 				if rem <= 0 {
 					// No flush: a flush waits a quiet window per frame and a slow peer renews it
 					// indefinitely past the deadline (codex round 5 on #225). The stale tail is
-					// dropped where the next reply is awaited instead. Not a bare `timeout`: a message
-					// BEGAN, which a caller waiting for silence must be able to tell from none.
-					return error('ISO-TP: a First Frame arrived and its Consecutive Frames stopped before the deadline (timeout mid-reassembly)')
+					// dropped where the next reply is awaited instead.
+					return error(stall_note)
 				}
 			}
 			// A zero timeout collects what is already queued, Consecutive Frames included: rx_raw(0)
 			// reads until the bus is empty (codex round 14 on #225).
-			cf := c.rx_raw(rem)! // the tail is dropped at the next first-frame wait, not flushed
+			// the tail is dropped at the next first-frame wait, not flushed
+			cf := c.rx_raw(rem) or {
+				if err.msg() == 'timeout' {
+					return error(stall_note)
+				}
+				return err
+			}
 			if cf.len < 1 {
 				continue // empty/padding read — ignore
 			}
@@ -530,6 +535,11 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 // expects one — but it turned a diagnosable peer into a bare `timeout`, the one answer that says
 // nothing about what is on the wire (#296). The original error is kept and the context added, so
 // a real bus failure still reads as itself.
+// stall_note is a reception that BEGAN and stopped: a First Frame arrived and its Consecutive
+// Frames did not, by the deadline — never a bare `timeout`, which a caller waiting for silence
+// (a suppressed UDS request) reads as nothing having arrived.
+pub const stall_note = 'ISO-TP: a First Frame arrived and its Consecutive Frames stopped before the deadline (timeout mid-reassembly)'
+
 fn orphan_note(msg string, n int, pci u8) string {
 	if n == 0 {
 		return msg

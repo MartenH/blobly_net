@@ -344,7 +344,7 @@ fn test_is_silence() {
 	assert is_silence('timeout')
 	assert is_silence('timeout — after 2 orphan flow control frame(s), last PCI 0x30: the peer is still answering a transfer that ended')
 	assert is_silence('DoIP recv timeout')
-	assert !is_silence('ISO-TP: a First Frame arrived and its Consecutive Frames stopped before the deadline (timeout mid-reassembly)')
+	assert !is_silence(isotp.stall_note)
 }
 
 fn test_the_service_helpers_send_what_iso_says() {

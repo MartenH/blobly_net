@@ -139,7 +139,8 @@ fn test_the_receive_deadline_covers_the_whole_pdu() {
 	if _ := ch.recv(300) {
 		assert false, 'a stalled peer must not complete within the budget'
 	} else {
-		assert err.msg() == 'timeout', err.msg()
+		// a message BEGAN: said as the stall it is, never as silence
+		assert err.msg() == stall_note, err.msg()
 	}
 	took := time.ticks() - t0
 	// THE MARGIN HERE IS ~300 ms AND IT IS A DELIBERATE TIMING ASSERTION, unlike the read
