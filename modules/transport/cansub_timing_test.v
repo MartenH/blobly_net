@@ -5,6 +5,11 @@ module transport
 // Each row below is copied from the CANsub.4 documentation: nominal rate, data rate, sample point,
 // then BRP/SEG1/SEG2/SJW. Reproducing them is the strongest check available without a scope on the
 // bus — the numbers were computed by the people who built the controller.
+//
+// Except the SJW column, deliberately: the table's 4 quanta are 20%, 10% and 5% of its 20-, 40- and
+// 80-quantum bits, and this solver's bits are longer (160 quanta at 500k), where 4 quanta was 2.5%
+// and measurably too little — so it takes the most the rule allows instead
+// (test_sjw_is_the_most_the_rule_allows).
 
 struct TimingRow {
 	rate int
@@ -222,4 +227,22 @@ fn test_the_boundary_rate_is_handled_rather_than_crashing() {
 		return
 	}
 	assert t.brp >= 1
+}
+
+// the resynchronisation jump is the most the rule allows, min(seg1, seg2), however many quanta a
+// bit has — a fixed count shrinks as a fraction of the bit (4 of 160 quanta at 500 kbit/s is 2.5%,
+// which on the bench cost 20 bus errors a minute) — and never past what the device accepts
+fn test_sjw_is_the_most_the_rule_allows() {
+	for rate in [10_000, 125_000, 250_000, 500_000, 1_000_000] {
+		for sp in [50, 75, 80, 87] {
+			t := cansub_timing_for(rate, sp) or { continue }
+			lim := if t.seg1 < t.seg2 { t.seg1 } else { t.seg2 }
+			assert t.sjw == lim, '${rate}@${sp}%: sjw ${t.sjw}, min(seg1, seg2) ${lim}'
+			assert t.sjw <= cansub_max_sjw
+		}
+	}
+	t := cansub_timing_for(500_000, 80) or { panic(err) }
+	assert t.sjw == 32 // the bench's setting: 20% of the bit
+	d := cansub_timing_for_data(2_000_000, 80) or { panic(err) }
+	assert d.sjw == d.seg2
 }
