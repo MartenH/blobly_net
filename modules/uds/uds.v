@@ -29,8 +29,8 @@ const nrc_response_pending = u8(0x78)
 // by default because the carrier may be a USB or network adapter whose own latency dwarfs the
 // server's 50 ms; after each responsePending (0x78) the next is awaited for the server's P2*
 // plus `margin_ms`. Both server values arrive in the 0x10 answer and are adopted there; the
-// adoption only ever LOOSENS `timeout_ms`. However often the server says pending, one request is
-// bounded by `pending_budget_ms` in all.
+// adoption only ever LOOSENS `timeout_ms`. However often the server says pending, and whatever P2*
+// it announces, one request is bounded by `pending_budget_ms` from its send.
 pub struct Client {
 mut:
 	ch isotp.Channel
@@ -69,8 +69,9 @@ pub fn (e NegativeResponse) code() int {
 pub enum Answer {
 	positive // its positive response
 	negative // its negative response
-	pending  // responsePending (0x78): the server is still working on it
-	stale    // not an answer to it — a late or duplicated answer to an earlier request
+	pending   // responsePending (0x78): the server is still working on it
+	stale     // not an answer to it — a late or duplicated answer to an earlier request
+	malformed // no response at all: empty, or a negative response without its NRC
 }
 
 // answer_to classifies `resp` against `req`. A response names the request it answers — the SID a
@@ -79,11 +80,14 @@ pub enum Answer {
 // after an error at its end is received again by a node that had already accepted it), and taken
 // as the next request's answer it would answer the wrong question.
 pub fn answer_to(req []u8, resp []u8) Answer {
-	if req.len == 0 || resp.len == 0 {
+	if req.len == 0 {
 		return .stale
 	}
+	if resp.len == 0 || (resp[0] == negative_response_sid && resp.len < 3) {
+		return .malformed
+	}
 	if resp[0] == negative_response_sid {
-		if resp.len < 3 || resp[1] != req[0] {
+		if resp[1] != req[0] {
 			return .stale
 		}
 		return if resp[2] == nrc_response_pending { Answer.pending } else { Answer.negative }
@@ -91,46 +95,61 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 	if resp[0] != req[0] + positive_response_offset {
 		return .stale
 	}
-	// what the positive response echoes: a sub-function (without its suppress-positive-response
-	// bit), a data identifier (a multi-DID read echoes its first one first), a sub-function and a
-	// routine identifier, a block sequence counter — or nothing beyond the SID
-	subfn := req[0] in [u8(0x10), 0x11, 0x19, 0x27, 0x28, 0x3E, 0x85, 0x31]
-	echoed := match req[0] {
-		0x10, 0x11, 0x19, 0x27, 0x28, 0x3E, 0x85, 0x36 { 2 }
-		0x22, 0x2E { 3 }
-		0x31 { 4 }
-		else { 1 }
-	}
-	if resp.len < echoed {
+	n, subfn := echo_of(req[0])
+	if resp.len < n {
 		return .stale
 	}
-	for i in 1 .. echoed {
+	for i in 1 .. n {
 		if i >= req.len {
 			break // a malformed request has nothing more to echo
 		}
-		want := if i == 1 && subfn { req[1] & 0x7F } else { req[i] }
-		if resp[i] != want {
+		// a sub-function is echoed without its suppress-positive-response bit; the bit itself is
+		// tolerated (the in-process server echoes it)
+		if resp[i] != req[i] && !(i == 1 && subfn && resp[i] == req[i] & 0x7F) {
 			return .stale
 		}
 	}
 	return .positive
 }
 
+// echo_of: how many leading bytes of a request its positive response echoes, SID included, and
+// whether the second is a sub-function — a sub-function, a data identifier (a multi-DID read
+// echoes its first one first), a sub-function and a routine identifier, a block sequence counter.
+fn echo_of(sid u8) (int, bool) {
+	return match sid {
+		0x10, 0x11, 0x19, 0x27, 0x28, 0x3E, 0x85 { 2, true }
+		0x31 { 4, true }
+		0x36 { 2, false }
+		0x22, 0x2E { 3, false }
+		else { 1, false }
+	}
+}
+
 // raw sends a service request and returns its validated positive-response PDU (including the
 // response SID byte). A negative response becomes a NegativeResponse error; responsePending
 // extends the wait by P2*; a PDU that answers another request is discarded and the wait goes on.
+// What is already queued when the request goes out cannot be its answer, so it is drained first —
+// the one defence against a duplicated answer to an IDENTICAL earlier request, which no echo can
+// tell apart. A 0x10 answer's timing is adopted here, whichever caller sent it.
 pub fn (mut c Client) raw(req []u8) ![]u8 {
 	if req.len == 0 {
 		return error('empty UDS request')
 	}
+	mut discarded := 0
+	for _ in 0 .. max_drain {
+		c.ch.recv(0) or { break }
+		discarded++
+	}
 	c.ch.send(req)!
 	sw := time.new_stopwatch()
 	mut deadline := i64(c.timeout_ms)
-	mut pending_from := i64(-1)
-	mut discarded := 0
+	mut pending := false
 	for {
 		left := deadline - sw.elapsed().milliseconds()
 		if left <= 0 {
+			if pending {
+				return error('UDS: 0x${req[0]:02X} still pending after ${sw.elapsed().milliseconds()} ms')
+			}
 			return error(no_answer(req, discarded))
 		}
 		resp := c.ch.recv(int(left)) or {
@@ -141,7 +160,13 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 		}
 		match answer_to(req, resp) {
 			.positive {
+				if req[0] == sid_diagnostic_session_control {
+					c.adopt(resp)
+				}
 				return resp
+			}
+			.malformed {
+				return error('malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}')
 			}
 			.negative {
 				return NegativeResponse{
@@ -150,13 +175,12 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 				}
 			}
 			.pending {
+				// P2* from now, but never past the request's total allowance from the send — an
+				// announced P2* of hours must not become one wait of hours
+				pending = true
 				now := sw.elapsed().milliseconds()
-				if pending_from < 0 {
-					pending_from = now
-				} else if now - pending_from >= c.pending_budget_ms {
-					return error('UDS: 0x${req[0]:02X} still pending after ${c.pending_budget_ms} ms')
-				}
-				deadline = now + c.p2_star_ms + c.margin_ms
+				wait := i64(c.p2_star_ms) + c.margin_ms
+				deadline = if now + wait < c.pending_budget_ms { now + wait } else { i64(c.pending_budget_ms) }
 			}
 			.stale {
 				discarded++
@@ -165,6 +189,10 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 	}
 	return error('unreachable')
 }
+
+// max_drain bounds the pre-send drain: a peer flooding the response id must not hold a request
+// back forever.
+const max_drain = 64
 
 fn no_answer(req []u8, discarded int) string {
 	mut m := 'UDS: no answer to 0x${req[0]:02X}'
@@ -232,18 +260,21 @@ pub fn (mut c Client) read_data_by_identifier(did u16) ![]u8 {
 
 // diagnostic_session (0x10) switches session and returns the session parameter
 // record (e.g. P2 timings), if any.
-// The server's timing is adopted: its P2* as given, its P2 only where it loosens `timeout_ms`.
 pub fn (mut c Client) diagnostic_session(session u8) ![]u8 {
 	resp := c.raw([sid_diagnostic_session_control, session])!
-	if t := session_timing(resp) {
-		if t.p2_star_ms > 0 {
-			c.p2_star_ms = t.p2_star_ms
-		}
-		if t.p2_ms + c.margin_ms > c.timeout_ms {
-			c.timeout_ms = t.p2_ms + c.margin_ms
-		}
-	}
 	return resp[1..].clone()
+}
+
+// adopt takes a 0x10 answer's timing: its P2* as given, its P2 only where it loosens `timeout_ms`
+// (a 50 ms server P2 is below what a USB or network carrier adds).
+fn (mut c Client) adopt(resp []u8) {
+	t := session_timing(resp) or { return }
+	if t.p2_star_ms > 0 {
+		c.p2_star_ms = t.p2_star_ms
+	}
+	if t.p2_ms + c.margin_ms > c.timeout_ms {
+		c.timeout_ms = t.p2_ms + c.margin_ms
+	}
 }
 
 // tester_present (0x3E sub 0x00) keeps the session alive.
