@@ -81,14 +81,23 @@ pub enum Answer {
 // that names another is STALE: on a real bus an answer can arrive twice (a CAN frame retransmitted
 // after an error at its end is received again by a node that had already accepted it), and taken
 // as the next request's answer it would answer the wrong question.
+//
+// The three verdicts that are not an answer are kept apart: STALE is a complete response to some
+// other request; MALFORMED is no valid response at all — empty, a negative response that is not
+// exactly `7F <sid> <nrc>`, or a positive one too short for the echo its own request asks for.
+// The echo asked for is only what the request carries (0x2C's clear-all has no identifier to
+// echo), so a well-formed short request is answered by a well-formed short response.
 pub fn answer_to(req []u8, resp []u8) Answer {
 	if req.len == 0 {
 		return .stale
 	}
-	if resp.len == 0 || (resp[0] == negative_response_sid && resp.len < 3) {
+	if resp.len == 0 {
 		return .malformed
 	}
 	if resp[0] == negative_response_sid {
+		if resp.len != 3 {
+			return .malformed
+		}
 		if resp[1] != req[0] {
 			return .stale
 		}
@@ -98,13 +107,11 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 		return .stale
 	}
 	n, subfn := echo_of(req[0])
-	if resp.len < n {
-		return .stale
+	echo := if n < req.len { n } else { req.len }
+	if resp.len < echo {
+		return .malformed
 	}
-	for i in 1 .. n {
-		if i >= req.len {
-			break // a malformed request has nothing more to echo
-		}
+	for i in 1 .. echo {
 		// a sub-function is echoed without its suppress-positive-response bit; the bit itself is
 		// tolerated (the in-process server echoes it)
 		if resp[i] != req[i] && !(i == 1 && subfn && resp[i] == req[i] & 0x7F) {
@@ -139,9 +146,13 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 		return error('empty UDS request')
 	}
 	mut discarded := 0
-	for _ in 0 .. max_drain {
+	for {
 		c.ch.recv(0) or { break }
 		discarded++
+		if discarded >= max_drain {
+			// the channel was never seen empty, so what follows could still be an old answer
+			return error('UDS: ${discarded} PDUs already queued before 0x${req[0]:02X} — the channel is not quiet')
+		}
 	}
 	c.ch.send(req)!
 	sw := time.new_stopwatch()
@@ -197,7 +208,7 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 }
 
 // max_drain bounds the pre-send drain: a peer flooding the response id must not hold a request
-// back forever.
+// back forever — and a channel not seen empty is refused rather than trusted.
 const max_drain = 64
 
 fn no_answer(req []u8, discarded int) string {
@@ -392,6 +403,7 @@ pub fn nrc_name(nrc u8) string {
 		0x91 { 'torqueConverterClutchLocked' }
 		0x92 { 'voltageTooHigh' }
 		0x93 { 'voltageTooLow' }
+		0x94 { 'resourceTemporarilyNotAvailable' }
 		else { 'unknown' }
 	}
 }

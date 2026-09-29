@@ -132,6 +132,7 @@ fn test_nrc_name() {
 	assert nrc_name(0x38) == 'secureDataTransmissionRequired'
 	assert nrc_name(0x45) == 'reservedByExtendedDataLinkSecurityDocument'
 	assert nrc_name(0x5D) == 'deAuthenticationFailed'
+	assert nrc_name(0x94) == 'resourceTemporarilyNotAvailable'
 	assert nrc_name(0x24) == 'requestSequenceError'
 	assert nrc_name(0x72) == 'generalProgrammingFailure'
 	assert nrc_name(0x7E) == 'subFunctionNotSupportedInActiveSession'
@@ -149,6 +150,12 @@ fn test_answer_to_names_the_request_it_answers() {
 	assert answer_to(rdbi, [u8(0x7F), 0x22, 0x78]) == .pending
 	assert answer_to(rdbi, [u8(0x7F), 0x11, 0x78]) == .stale // pending for another service
 	assert answer_to(rdbi, [u8(0x7F), 0x22]) == .malformed // a negative response without its NRC
+	assert answer_to(rdbi, [u8(0x7F), 0x22, 0x31, 0xAA]) == .malformed // or with more than it
+	assert answer_to(rdbi, [u8(0x62)]) == .malformed // too short for the DID it must echo
+	assert answer_to(rdbi, [u8(0x62), 0xF1]) == .malformed
+	// the echo is only what the request carries: 0x2C clear-all has no DDDI
+	assert answer_to([u8(0x2C), 0x03], [u8(0x6C), 0x03]) == .positive
+	assert answer_to([u8(0x2C), 0x03, 0xF3, 0x00], [u8(0x6C), 0x03]) == .malformed
 	assert answer_to(rdbi, []u8{}) == .malformed
 	// the in-process server echoes the suppress bit; tolerated
 	assert answer_to([u8(0x10), 0x83], [u8(0x50), 0x83, 0, 0x32, 0x01, 0xF4]) == .positive
@@ -248,4 +255,18 @@ fn test_a_malformed_response_is_an_error_not_a_stale_answer() {
 		return
 	}
 	assert false, 'a malformed response was accepted'
+}
+
+// a channel never seen empty before the send is refused: what follows could be an old answer
+fn test_a_channel_that_never_drains_is_refused() {
+	mut m := &MockChannel{
+		responses: [][]u8{len: 70, init: [u8(0x62), 0xF1, 0x90, 0x01]}
+		queued:    70
+	}
+	mut c := new_client(m)
+	c.read_data_by_identifier(0xF190) or {
+		assert err.msg().contains('not quiet'), err.msg()
+		return
+	}
+	assert false, 'a request went out on a channel that was never drained'
 }
