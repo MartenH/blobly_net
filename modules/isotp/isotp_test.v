@@ -760,11 +760,16 @@ fn test_stmin_holds_across_block_boundaries() {
 	// milliseconds, where 15 ms of granularity is nothing. It is the RATIO of margin to
 	// granularity that decides, not the clock.
 	t0 := time.sys_mono_now()
-	// ONE frame per block, so the sender must ask again for each — and must still pace.
+	// ONE frame per block, so the sender must ask again for each — and must still pace. All three
+	// Flow Controls are queued up front: the sender takes one per block, so this thread never has
+	// to answer inside the sender's Flow Control window, and pacing is the only delay between
+	// blocks.
 	for _ in 0 .. 3 {
 		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
 			assert false, err.msg()
 		}
+	}
+	for _ in 0 .. 3 {
 		must_read_tx(mut peer, 0x7E0) or {
 			assert false, 'a Consecutive Frame did not arrive'
 			return
