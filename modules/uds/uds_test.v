@@ -25,9 +25,13 @@ fn (mut m MockChannel) send(data []u8) ! {
 
 fn (mut m MockChannel) recv(timeout_ms int) ![]u8 {
 	if timeout_ms == 0 {
-		// a drain: only what was queued before the send is there to take
+		// a drain: only what was queued before the send is there to take; an empty PDU stands for
+		// one that failed to parse (taken off the channel, an error rather than a PDU)
 		if m.idx < m.queued {
 			m.idx++
+			if m.responses[m.idx - 1].len == 0 {
+				return error('unexpected PCI 0x40')
+			}
 			return m.responses[m.idx - 1]
 		}
 		return error('timeout')
@@ -156,6 +160,10 @@ fn test_answer_to_names_the_request_it_answers() {
 	// the echo is only what the request carries: 0x2C clear-all has no DDDI
 	assert answer_to([u8(0x2C), 0x03], [u8(0x6C), 0x03]) == .positive
 	assert answer_to([u8(0x2C), 0x03, 0xF3, 0x00], [u8(0x6C), 0x03]) == .malformed
+	// WriteMemoryByAddress echoes its format byte, address and size (widths in the format byte)
+	wmba := [u8(0x3D), 0x14, 0x20, 0x00, 0x10, 0x00, 0x02, 0xAA, 0xBB]
+	assert answer_to(wmba, [u8(0x7D), 0x14, 0x20, 0x00, 0x10, 0x00, 0x02]) == .positive
+	assert answer_to(wmba, [u8(0x7D), 0x14, 0x20, 0x00, 0x20, 0x00, 0x02]) == .stale // another address
 	assert answer_to(rdbi, []u8{}) == .malformed
 	// the in-process server echoes the suppress bit; tolerated
 	assert answer_to([u8(0x10), 0x83], [u8(0x50), 0x83, 0, 0x32, 0x01, 0xF4]) == .positive
@@ -269,4 +277,19 @@ fn test_a_channel_that_never_drains_is_refused() {
 		return
 	}
 	assert false, 'a request went out on a channel that was never drained'
+}
+
+// a queued PDU that fails to parse does not end the drain: what is behind it may be an old answer
+fn test_a_parse_error_during_the_drain_does_not_end_it() {
+	mut m := &MockChannel{
+		responses: [
+			[]u8{},
+			[u8(0x62), 0xF1, 0x90, 0x01], // the previous identical read's answer, behind the bad one
+			[u8(0x62), 0xF1, 0x90, 0x02],
+		]
+		queued:    2
+	}
+	mut c := new_client(m)
+	data := c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert data == [u8(0x02)]
 }

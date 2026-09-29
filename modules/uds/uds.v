@@ -106,7 +106,7 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 	if resp[0] != req[0] + positive_response_offset {
 		return .stale
 	}
-	n, subfn := echo_of(req[0])
+	n, subfn := echo_of(req)
 	echo := if n < req.len { n } else { req.len }
 	if resp.len < echo {
 		return .malformed
@@ -123,13 +123,18 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 
 // echo_of: how many leading bytes of a request its positive response echoes, SID included, and
 // whether the second is a sub-function — a sub-function, a data identifier (a multi-DID read
-// echoes its first one first), a sub-function and a routine identifier, a block sequence counter.
-fn echo_of(sid u8) (int, bool) {
-	return match sid {
-		0x10, 0x11, 0x19, 0x27, 0x28, 0x29, 0x3E, 0x83, 0x85, 0x87 { 2, true }
+// echoes its first one first), a sub-function and a routine identifier, a block sequence counter,
+// or a WriteMemoryByAddress's format byte, address and size (their widths are in that byte).
+// Every other ISO 14229-1 service's positive response echoes nothing beyond its SID (0x14, 0x23,
+// 0x2A, 0x34, 0x35, 0x37, 0x84), so the SID is all there is to match there.
+fn echo_of(req []u8) (int, bool) {
+	wmba := if req.len > 1 { 2 + int(req[1] & 0x0F) + int(req[1] >> 4) } else { 1 }
+	return match req[0] {
+		0x10, 0x11, 0x19, 0x27, 0x28, 0x29, 0x3E, 0x83, 0x85, 0x86, 0x87 { 2, true }
 		0x2C, 0x31 { 4, true }
-		0x36 { 2, false }
+		0x36, 0x38 { 2, false }
 		0x22, 0x24, 0x2E, 0x2F { 3, false }
+		0x3D { wmba, false }
 		else { 1, false }
 	}
 }
@@ -147,7 +152,13 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 	}
 	mut discarded := 0
 	for {
-		c.ch.recv(0) or { break }
+		c.ch.recv(0) or {
+			// only an empty channel ends the drain: a PDU that failed to parse was still taken
+			// off it, and what is behind it may be an old answer
+			if err.msg().contains('timeout') {
+				break
+			}
+		}
 		discarded++
 		if discarded >= max_drain {
 			// the channel was never seen empty, so what follows could still be an old answer
