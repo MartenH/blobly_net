@@ -676,106 +676,91 @@ fn test_endless_waits_are_given_up_on() {
 	peer.close()
 }
 
+// CfStamps is a channel's bus with the send time of every Consecutive Frame recorded, so a
+// pacing test measures the gaps the sender left rather than when a reader thread happened to run.
+// The clock is sys_mono_now: `ticks()` on Windows moves in 15.6 ms steps, too coarse for a 10 ms
+// margin.
+struct CfStamps {
+mut:
+	inner transport.Bus
+	at    []u64
+}
+
+fn (mut b CfStamps) send(f transport.CanFrame) ! {
+	if f.data.len > 0 && (f.data[0] & 0xF0) == 0x20 {
+		b.at << time.sys_mono_now()
+	}
+	b.inner.send(f)!
+}
+
+fn (mut b CfStamps) recv(timeout_ms int) !transport.CanFrame {
+	return b.inner.recv(timeout_ms)
+}
+
+fn (mut b CfStamps) close() {
+	b.inner.close()
+}
+
+fn (mut b CfStamps) health() transport.BusHealth {
+	return b.inner.health()
+}
+
+fn (mut b CfStamps) diagnostics() transport.BusDiagnostics {
+	return b.inner.diagnostics()
+}
+
+fn (mut b CfStamps) reconcile_silence(want bool) ! {
+	b.inner.reconcile_silence(want)!
+}
+
+// cf_span_ms sends a 27-byte PDU (a First Frame and three Consecutive Frames) with `fcs` already
+// queued as the receiver's Flow Controls, and returns the time from the first Consecutive Frame
+// to the last. Queued up front, the sender takes one per block and never waits on another thread.
+fn cf_span_ms(iface string, fcs [][]u8) !f64 {
+	mut peer := transport.open(iface)!
+	defer {
+		peer.close()
+	}
+	mut ch := open_software(iface, 0x7E0, 0x7E8, false)!
+	defer {
+		ch.close()
+	}
+	mut stamps := &CfStamps{
+		inner: ch.bus
+	}
+	ch.bus = stamps
+	for fc in fcs {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: fc })!
+	}
+	ch.send([]u8{len: 27, init: u8(index)})!
+	if stamps.at.len != 3 {
+		return error('${stamps.at.len} Consecutive Frames sent, expected 3')
+	}
+	return f64(stamps.at[2] - stamps.at[0]) / 1e6
+}
+
 // STmin PACES THE CONSECUTIVE FRAMES. Measured rather than asserted structurally, because the
 // only thing that makes a bootloader accept the block is the SEPARATION on the wire.
 fn test_stmin_separates_consecutive_frames() {
-	mut peer := transport.open('inproc:isotp-stmin') or {
-		assert false, 'in-process bus: ${err}'
+	// one block (BS 0) at STmin 30 ms: two separations between three frames, bound 50 ms
+	span := cf_span_ms('inproc:isotp-stmin', [[u8(0x30), 0, 30]]) or {
+		assert false, err.msg()
 		return
 	}
-	mut ch := open_software('inproc:isotp-stmin', 0x7E0, 0x7E8, false) or {
-		assert false, 'software channel: ${err}'
-		return
-	}
-	done := chan string{cap: 1}
-	// 27 bytes = 6 + three Consecutive Frames, so STmin is paid twice.
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 27, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
-		return
-	}
-	// A MONOTONIC NANOSECOND CLOCK, NOT time.ticks(). On Windows `ticks()` is GetTickCount, whose
-	// granularity is ~15.6 ms, and this assertion's margin is 10 ms — correct is ~60 (two 30 ms
-	// separations), the bound is 50. Two GetTickCount reads of a true 60 ms interval land on
-	// either 3 or 4 tick boundaries depending on phase, so the measurement itself reads 46.8 or
-	// 62.4, and the 46.8 case FAILS a correct implementation. Seen on main's Windows job at
-	// exactly `took 47 ms`. sys_mono_now is QueryPerformanceCounter there, sub-microsecond.
-	//
-	// The other timing assertions in this file keep `ticks()`: their margins are hundreds of
-	// milliseconds, where 15 ms of granularity is nothing. It is the RATIO of margin to
-	// granularity that matters, not the clock.
-	t0 := time.sys_mono_now()
-	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 30] }) or { assert false, err.msg() }
-	msg := <-done
-	elapsed := f64(time.sys_mono_now() - t0) / 1e6
-	assert msg == 'sent', msg
-	// two separations of 30 ms; a lower bound only, since a sleep may overshoot and the bus adds
-	// its own time
-	assert elapsed >= 50, 'three Consecutive Frames at STmin 30 ms took ${elapsed:.1f} ms — not paced'
-	ch.close()
-	peer.close()
+	assert span >= 50, 'three Consecutive Frames at STmin 30 ms spanned ${span:.1f} ms — not paced'
 }
 
 // STmin DOES NOT LAPSE AT A BLOCK BOUNDARY. With BS=1 every Consecutive Frame is the first of
 // its block, so a sender that pays the separation only "between frames within a block" pays it
-// never — a receiver asking for 30 ms gets frames as fast as it can answer. The first cut did
-// exactly that, on the reasoning that the Flow Control opening a block is itself the separation;
-// ISO 15765-2 exempts nothing there, and the argument was never measured (codex on #226).
+// never. ISO 15765-2 exempts nothing at a block boundary.
 fn test_stmin_holds_across_block_boundaries() {
-	mut peer := transport.open('inproc:isotp-stmin-bs') or {
-		assert false, 'in-process bus: ${err}'
+	// one frame per block (BS 1) at STmin 30 ms, one Flow Control per block
+	fc := [u8(0x30), 1, 30]
+	span := cf_span_ms('inproc:isotp-stmin-bs', [fc, fc, fc]) or {
+		assert false, err.msg()
 		return
 	}
-	mut ch := open_software('inproc:isotp-stmin-bs', 0x7E0, 0x7E8, false) or {
-		assert false, 'software channel: ${err}'
-		return
-	}
-	done := chan string{cap: 1}
-	// 27 bytes = 6 + three Consecutive Frames, so two separations are owed.
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 27, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
-		return
-	}
-	// THE FINE CLOCK, for the reason the sibling assertion above spells out at length: this
-	// margin is 10 ms — a true ~60 ms against a bound of 50 — and `ticks()` is GetTickCount on
-	// Windows at ~15.6 ms, so two reads of a correct 60 ms interval land on either 3 or 4 tick
-	// boundaries depending on phase and the measurement itself reads 46.8 or 62.4. #316 moved
-	// that one and left this one, which measures the same interval against the same bound with
-	// the same clock; the Windows job has failed it at `took 46 ms` and at `took 47 ms` (#335).
-	//
-	// The other `ticks()` assertions in this file stay: their margins are hundreds of
-	// milliseconds, where 15 ms of granularity is nothing. It is the RATIO of margin to
-	// granularity that decides, not the clock.
-	t0 := time.sys_mono_now()
-	// ONE frame per block, so the sender must ask again for each — and must still pace.
-	for _ in 0 .. 3 {
-		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
-			assert false, err.msg()
-		}
-		must_read_tx(mut peer, 0x7E0) or {
-			assert false, 'a Consecutive Frame did not arrive'
-			return
-		}
-	}
-	msg := <-done
-	elapsed := f64(time.sys_mono_now() - t0) / 1e6
-	assert msg == 'sent', msg
-	assert elapsed >= 50, 'three single-frame blocks at STmin 30 ms took ${elapsed:.1f} ms — the separation lapsed at the boundary'
-	ch.close()
-	peer.close()
+	assert span >= 50, 'three single-frame blocks at STmin 30 ms spanned ${span:.1f} ms — the separation lapsed at the boundary'
 }
 
 // AN ORPHAN FLOW CONTROL IS NOT A MESSAGE. The aborts this change added (N_WFTmax, OVERFLOW) end
