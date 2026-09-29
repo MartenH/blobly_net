@@ -688,8 +688,7 @@ fn test_stmin_separates_consecutive_frames() {
 		return
 	}
 	// The Flow Control is queued before the sender starts, so this thread never has to answer
-	// inside the sender's Flow Control window. The clock starts here too; the bound is a lower one.
-	t0 := time.sys_mono_now()
+	// inside the sender's Flow Control window.
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 30] }) or { assert false, err.msg() }
 	done := chan string{cap: 1}
 	// 27 bytes = 6 + three Consecutive Frames, so STmin is paid twice.
@@ -704,6 +703,8 @@ fn test_stmin_separates_consecutive_frames() {
 		assert false, 'no First Frame'
 		return
 	}
+	// The clock starts once the sender is running, so its scheduling cannot pass for pacing.
+	t0 := time.sys_mono_now()
 	// A MONOTONIC NANOSECOND CLOCK, NOT time.ticks(). On Windows `ticks()` is GetTickCount, whose
 	// granularity is ~15.6 ms, and this assertion's margin is 10 ms — correct is ~60 (two 30 ms
 	// separations), the bound is 50. Two GetTickCount reads of a true 60 ms interval land on
@@ -741,8 +742,7 @@ fn test_stmin_holds_across_block_boundaries() {
 	// ONE frame per block, so the sender must ask again for each — and must still pace. All three
 	// Flow Controls are queued before the sender starts: it takes one per block, so this thread
 	// never has to answer inside the sender's Flow Control window, and pacing is the only delay
-	// between blocks. The clock starts here too; the bound is a lower one.
-	t0 := time.sys_mono_now()
+	// between blocks.
 	for _ in 0 .. 3 {
 		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 1, 30] }) or {
 			assert false, err.msg()
@@ -761,6 +761,8 @@ fn test_stmin_holds_across_block_boundaries() {
 		assert false, 'no First Frame'
 		return
 	}
+	// The clock starts once the sender is running, so its scheduling cannot pass for pacing.
+	t0 := time.sys_mono_now()
 	// THE FINE CLOCK, for the reason the sibling assertion above spells out at length: this
 	// margin is 10 ms — a true ~60 ms against a bound of 50 — and `ticks()` is GetTickCount on
 	// Windows at ~15.6 ms, so two reads of a correct 60 ms interval land on either 3 or 4 tick
