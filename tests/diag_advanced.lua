@@ -30,11 +30,11 @@ test("ECUReset is answered with its kind (0x11)", function()
   check.nrc(0x12, function() diag:reset(0x09) end)
 end)
 
-test("communication control and DTC setting are acknowledged (0x28 / 0x85)", function()
-  diag:comm_control(0x03)     -- disable rx and tx of the normal messages
-  diag:comm_control(0x00)     -- and enable them again
+test("DTC setting is acknowledged, communication control is not faked (0x85 / 0x28)", function()
   diag:dtc_setting(false)
   diag:dtc_setting(true)
+  -- the simulated ECU cannot gate its own traffic, so it refuses rather than acknowledge
+  check.nrc(0x11, function() diag:comm_control(0x03) end)
 end)
 
 test("a suppressed positive response is silence, a refusal is still said", function()
@@ -43,10 +43,9 @@ test("a suppressed positive response is silence, a refusal is still said", funct
   check.nrc(0x12, function() diag:raw_suppressed("\x11\x05") end)
 end)
 
--- last: it empties the simulated fault memory the tests above read
-test("ClearDiagnosticInformation clears one DTC, then all (0x14)", function()
-  diag:clear_dtcs(0x123456)
-  check.nrc(0x31, function() diag:clear_dtcs(0x123456) end) -- gone
-  diag:clear_dtcs()
-  check.equal(tohex(diag:read_dtcs(0xFF)), "FF")          -- the availability mask, no DTCs
+-- the refusals only: a clear would empty the simulated fault memory for every later script in
+-- the same invocation (mixed_carriers compares it across carriers); clearing is unit-tested
+test("ClearDiagnosticInformation refuses what it cannot clear (0x14)", function()
+  check.nrc(0x31, function() diag:clear_dtcs(0x000001) end) -- no such DTC
+  check.nrc(0x13, function() diag:raw("\x14\xFF\xFF") end) -- a group is three bytes
 end)

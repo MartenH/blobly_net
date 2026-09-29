@@ -130,8 +130,8 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 		return .malformed
 	}
 	for i in 1 .. echo {
-		// a sub-function is echoed without its suppress-positive-response bit (the bit itself is
-		// tolerated: the in-process server echoes it) — and ResponseOnEvent's without its
+		// a sub-function is echoed without its suppress-positive-response bit (tolerated with it
+		// all the same: it is an echo of the request) — and ResponseOnEvent's without its
 		// storeEvent bit too, its response's bits 7..6 being reserved
 		if resp[i] != req[i] && !(i == 1 && subfn && resp[i] == req[i] & sub_mask(req[0])) {
 			return .stale
@@ -177,22 +177,35 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 	return resp
 }
 
+// is_silence: a receive error that means nothing arrived — the ISO-TP channels' `timeout`
+// (orphan notes appended), DoIP's `DoIP recv timeout` — as against one that means a message
+// began and stalled, or a carrier failure. The kernel channel reassembles out of sight, so a stall
+// there reads as silence; the software channel says which it was.
+fn is_silence(msg string) bool {
+	return msg.starts_with('timeout') || msg == 'DoIP recv timeout'
+}
+
 // raw_suppressed sends `req` with suppress-positive-response set (bit 7 of its sub-function), so
 // no positive answer comes — only a refusal, which is an error. A server that says responsePending
-// owes its final answer even so (ISO 14229-1), and it is waited for. Returns whether a positive
-// answer came all the same.
+// owes its final answer even so (ISO 14229-1), and it is waited for. Returns whether the server
+// answered positively WITHOUT owing it — that is, ignored the bit.
 pub fn (mut c Client) raw_suppressed(req []u8) !bool {
+	if req.len < 2 {
+		return error('UDS: a suppressed request needs a sub-function')
+	}
 	n, subfn := echo_of(req)
-	if req.len < 2 || !subfn || n < 2 {
+	if !subfn || n < 2 {
 		return error('UDS: 0x${req[0]:02X} has no sub-function to suppress a positive response with')
 	}
 	mut r := req.clone()
 	r[1] |= suppress_positive
-	_, answered := c.exchange(r, true)!
-	return answered
+	resp, owed := c.exchange(r, true)!
+	// a positive answer after 0x78 is what ISO requires; only one without it ignored the bit
+	return resp.len > 0 && !owed
 }
 
-// exchange is one request and its answer; `suppressed`: a quiet P2 is success, not a timeout.
+// exchange is one request and its answer (empty: none, which only a suppressed request accepts —
+// a quiet P2 is its success), and whether the server said responsePending on the way.
 fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 	if req.len == 0 {
 		return error('empty UDS request')
@@ -228,7 +241,7 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 			return error(no_answer(req, discarded))
 		}
 		resp := c.ch.recv(int(left)) or {
-			if suppressed && !pending && err.msg().contains('timeout') {
+			if suppressed && !pending && is_silence(err.msg()) {
 				return []u8{}, false // nothing to say: what a suppressed positive response looks like
 			}
 			if pending {
@@ -244,7 +257,7 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 				if req[0] == sid_diagnostic_session_control {
 					c.adopt(resp)
 				}
-				return resp, true
+				return resp, pending
 			}
 			.malformed {
 				return error('malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}')

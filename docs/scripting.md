@@ -176,7 +176,7 @@ The returned object has:
 | `diag:read_dtcs([mask])` | `0x19` sub `0x02` reportDTCByStatusMask (`mask` defaults `0xFF`) | DTC record (bytes) |
 | `diag:tester_present()` | `0x3E` | — |
 | `diag:reset([kind])` | `0x11` ECUReset (`1` hard — the default, `2` key-off-on, `3` soft) | the answer after its SID (bytes) |
-| `diag:comm_control(control [, type])` | `0x28` CommunicationControl (`control` 0 enable rx+tx … 3 disable both; `type` defaults `1`, the normal messages) | — |
+| `diag:comm_control(control [, type])` | `0x28` CommunicationControl (`control` 0 enable rx+tx … 3 disable both; `type` defaults `1`, the normal messages) — the simulated ECUs refuse it (serviceNotSupported): they cannot gate their own traffic | — |
 | `diag:dtc_setting(on)` | `0x85` ControlDTCSetting (`true` on, `false` off) | — |
 | `diag:clear_dtcs([group])` | `0x14` ClearDiagnosticInformation (one DTC, or a group; defaults `0xFFFFFF`, all) | — |
 | `diag:raw(req)` | send any request PDU | the response (bytes) |

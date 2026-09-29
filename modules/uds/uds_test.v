@@ -325,9 +325,26 @@ fn test_raw_suppressed_refuses_a_service_with_no_sub_function() {
 	mut c, _ := client_with([])
 	c.raw_suppressed([u8(0x22), 0xF1, 0x90]) or {
 		assert err.msg().contains('no sub-function'), err.msg()
+		c.raw_suppressed([]u8{}) or { return } // and an empty request is an error, not a panic
+		assert false
 		return
 	}
 	assert false
+}
+
+// true only for a server that ignored the bit: a positive answer after 0x78 is one ISO requires
+fn test_raw_suppressed_reports_a_positive_answer_only_when_not_owed() {
+	mut c, _ := client_with([[u8(0x7F), 0x31, 0x78], [u8(0x71), 0x01, 0xFF, 0x00]])
+	assert !(c.raw_suppressed([u8(0x31), 0x01, 0xFF, 0x00]) or { panic(err) })
+	mut d, _ := client_with([[u8(0x7E), 0x00]])
+	assert d.raw_suppressed([u8(0x3E), 0x00]) or { panic(err) }
+}
+
+fn test_is_silence() {
+	assert is_silence('timeout')
+	assert is_silence('timeout — after 2 orphan flow control frame(s), last PCI 0x30: the peer is still answering a transfer that ended')
+	assert is_silence('DoIP recv timeout')
+	assert !is_silence('ISO-TP: a First Frame arrived and its Consecutive Frames stopped before the deadline (timeout mid-reassembly)')
 }
 
 fn test_the_service_helpers_send_what_iso_says() {

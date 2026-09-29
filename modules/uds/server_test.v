@@ -55,13 +55,14 @@ fn test_suppress_positive_response_withholds_only_the_positive_answer() {
 	assert s.handle([u8(0x10), 0x03]) == [u8(0x50), 0x03, 0x00, 0x32, 0x01, 0xF4]
 }
 
-fn test_reset_communication_control_dtc_setting_and_clear() {
+fn test_reset_dtc_setting_and_clear_and_no_faked_communication_control() {
 	mut s := default_server()
+	s.handle([u8(0x10), 0x03])
 	assert s.handle([u8(0x11), 0x01]) == [u8(0x51), 0x01]
-	assert s.handle([u8(0x28), 0x03, 0x01]) == [u8(0x68), 0x03]
-	assert s.comm_control == 0x03
+	assert s.session == 1 // the diagnostic state back to power-on
+	assert s.handle([u8(0x11), 0x09]) == [u8(0x7F), 0x11, 0x12] // sub-function before length
+	assert s.handle([u8(0x28), 0x03, 0x01]) == [u8(0x7F), 0x28, 0x11] // not acknowledged unacted
 	assert s.handle([u8(0x85), 0x02]) == [u8(0xC5), 0x02]
-	assert s.dtc_setting_off
 	assert s.handle([u8(0x14), 0x12, 0x34, 0x56]) == [u8(0x54)]
 	assert s.dtcs.len == 1
 	assert s.handle([u8(0x14), 0x12, 0x34, 0x56]) == [u8(0x7F), 0x14, 0x31]

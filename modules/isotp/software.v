@@ -398,8 +398,9 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 				if rem <= 0 {
 					// No flush: a flush waits a quiet window per frame and a slow peer renews it
 					// indefinitely past the deadline (codex round 5 on #225). The stale tail is
-					// dropped where the next reply is awaited instead.
-					return error('timeout')
+					// dropped where the next reply is awaited instead. Not a bare `timeout`: a message
+					// BEGAN, which a caller waiting for silence must be able to tell from none.
+					return error('ISO-TP: a First Frame arrived and its Consecutive Frames stopped before the deadline (timeout mid-reassembly)')
 				}
 			}
 			// A zero timeout collects what is already queued, Consecutive Frames included: rx_raw(0)
