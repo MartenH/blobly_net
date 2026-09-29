@@ -223,3 +223,15 @@ fn test_the_boundary_rate_is_handled_rather_than_crashing() {
 	}
 	assert t.brp >= 1
 }
+
+// the resynchronisation jump is the whole phase-2 segment, however many quanta a bit has — a fixed
+// count shrinks as a fraction of the bit (4 of 160 quanta at 500 kbit/s is 2.5%, which on the
+// bench cost 20 bus errors a minute)
+fn test_sjw_is_the_whole_phase_2_segment() {
+	for rate in [125_000, 250_000, 500_000, 1_000_000] {
+		t := cansub_timing_for(rate, 80) or { panic(err) }
+		assert t.sjw == t.seg2, '${rate}: sjw ${t.sjw} seg2 ${t.seg2}'
+	}
+	d := cansub_timing_for_data(2_000_000, 80) or { panic(err) }
+	assert d.sjw == d.seg2
+}

@@ -159,10 +159,14 @@ fn cansub_solve(bitrate int, sample_point_pct int, max_seg1 int, max_seg2 int) !
 			brp:  brp
 			seg1: seg1
 			seg2: seg2
-			// SJW cannot exceed seg2 — it is how much of the phase-2 segment may be swallowed to
-			// resynchronise. 4 is what the vendor's table uses wherever there is room for it, and
-			// where there is not the table drops to seg2 exactly, which this reproduces.
-			sjw: if seg2 < 4 { seg2 } else { 4 }
+			// SJW is the whole phase-2 segment — the most the rule allows (it is how much of that
+			// segment a resynchronisation may swallow). A fixed 4 quanta, the vendor table's value,
+			// is a FRACTION of the bit that shrinks as the quanta per bit grow: at 500 kbit/s this
+			// solver takes brp 1, 160 quanta, and 4 of them is 2.5% of a bit — too little to follow
+			// the other nodes' edges. Measured on a CANsub.4 (02.05.00) on system_full's compute bus
+			// beside two STM32 FDCANs, receiving only: 20 controller errors a minute at SJW 4, none
+			// at SJW 32 (= seg2), over the same traffic.
+			sjw: seg2
 		}
 	}
 	return error('the CANsub cannot produce ${bitrate} bit/s at ${sample_point_pct}% from its ${cansub_clock_hz} Hz clock')
