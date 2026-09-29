@@ -296,3 +296,45 @@ fn test_a_parse_error_during_the_drain_does_not_end_it() {
 	data := c.read_data_by_identifier(0xF190) or { panic(err) }
 	assert data == [u8(0x02)]
 }
+
+// a suppressed request: the bit set on the wire, a quiet P2 is success, a refusal is an error
+fn test_raw_suppressed() {
+	mut c, m := client_with([])
+	answered := c.raw_suppressed([u8(0x3E), 0x00]) or { panic(err) }
+	assert !answered
+	assert m.last_req == [u8(0x3E), 0x80]
+	mut d, _ := client_with([[u8(0x7F), 0x11, 0x22]])
+	d.raw_suppressed([u8(0x11), 0x01]) or {
+		assert err.msg().contains('NRC 0x22'), err.msg()
+		return
+	}
+	assert false, 'a refusal of a suppressed request was taken for success'
+}
+
+// a server that said responsePending owes its final answer, suppressed or not
+fn test_raw_suppressed_waits_for_the_answer_a_pending_server_owes() {
+	mut c, _ := client_with([[u8(0x7F), 0x31, 0x78]])
+	c.raw_suppressed([u8(0x31), 0x01, 0xFF, 0x00]) or {
+		assert err.msg().contains('still pending'), err.msg()
+		return
+	}
+	assert false, 'a pending suppressed request was taken for done'
+}
+
+fn test_raw_suppressed_refuses_a_service_with_no_sub_function() {
+	mut c, _ := client_with([])
+	c.raw_suppressed([u8(0x22), 0xF1, 0x90]) or {
+		assert err.msg().contains('no sub-function'), err.msg()
+		return
+	}
+	assert false
+}
+
+fn test_the_service_helpers_send_what_iso_says() {
+	mut c, m := client_with([[u8(0x51), 0x01], [u8(0x68), 0x03], [u8(0xC5), 0x02], [u8(0x54)]])
+	assert c.ecu_reset(reset_hard) or { panic(err) } == [u8(0x01)]
+	c.communication_control(comm_disable_rx_tx, comm_type_normal) or { panic(err) }
+	c.control_dtc_setting(false) or { panic(err) }
+	c.clear_dtc(0xFFFFFF) or { panic(err) }
+	assert m.last_req == [u8(0x14), 0xFF, 0xFF, 0xFF]
+}

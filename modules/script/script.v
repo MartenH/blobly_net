@@ -313,6 +313,11 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_sec_seed', l_uds_sec_seed)
 	env.st.register('__uds_sec_key', l_uds_sec_key)
 	env.st.register('__uds_read_dtc', l_uds_read_dtc)
+	env.st.register('__uds_reset', l_uds_reset)
+	env.st.register('__uds_comm_control', l_uds_comm_control)
+	env.st.register('__uds_dtc_setting', l_uds_dtc_setting)
+	env.st.register('__uds_clear_dtc', l_uds_clear_dtc)
+	env.st.register('__uds_raw_suppressed', l_uds_raw_suppressed)
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -831,6 +836,43 @@ fn l_uds_raw(l lua.State) int {
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
 	resp := c.cli.raw(l.arg_bytes(2)) or { return l.fail(err.msg()) }
 	l.push_bytes(resp)
+	return 1
+}
+
+fn l_uds_reset(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	resp := c.cli.ecu_reset(u8(l.arg_int(2))) or { return l.fail(err.msg()) }
+	l.push_bytes(resp)
+	return 1
+}
+
+fn l_uds_comm_control(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.communication_control(u8(l.arg_int(2)), u8(l.arg_int(3))) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_dtc_setting(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.control_dtc_setting(l.arg_int(2) != 0) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_clear_dtc(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.clear_dtc(u32(l.arg_int(2))) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_raw_suppressed(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	answered := c.cli.raw_suppressed(l.arg_bytes(2)) or { return l.fail(err.msg()) }
+	l.push_bool(answered)
 	return 1
 }
 

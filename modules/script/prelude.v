@@ -202,6 +202,17 @@ function uds.open(channel, opts)
   function self:tester_present() return __uds_tester_present(self.handle) end
   function self:raw(req) return __uds_raw(self.handle, req) end
   function self:read_dtcs(mask) return __uds_read_dtc(self.handle, mask or 0xFF) end
+  -- 0x11 ECUReset: kind 1 hard, 2 key-off-on, 3 soft; returns the answer after its SID
+  function self:reset(kind) return __uds_reset(self.handle, kind or 0x01) end
+  -- 0x28 CommunicationControl: control 0..3 for messages of type (1 = the normal ones)
+  function self:comm_control(control, ctype) __uds_comm_control(self.handle, control, ctype or 0x01) end
+  -- 0x85 ControlDTCSetting: true = on, false = off
+  function self:dtc_setting(on) __uds_dtc_setting(self.handle, on and 1 or 0) end
+  -- 0x14 ClearDiagnosticInformation: one DTC or a group (default 0xFFFFFF, all)
+  function self:clear_dtcs(group) __uds_clear_dtc(self.handle, group or 0xFFFFFF) end
+  -- a request with suppress-positive-response set: a refusal raises; returns whether a positive
+  -- answer came anyway
+  function self:raw_suppressed(req) return __uds_raw_suppressed(self.handle, req) end
   -- security access: request the seed for `level` (odd), compute the key with
   -- `keyfn` (default = the simulated servers algorithm, XOR 0xFF), send it at
   -- level+1. Returns the seed. Raises on an invalid key (NRC 0x35).

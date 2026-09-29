@@ -43,3 +43,28 @@ fn test_read_dtc() {
 	bad := s.handle([u8(0x19), 0x01])
 	assert bad == [u8(0x7F), 0x19, 0x12]
 }
+
+// suppress-positive-response: served on the plain sub-function, the positive answer withheld, a
+// refusal still answered
+fn test_suppress_positive_response_withholds_only_the_positive_answer() {
+	mut s := default_server()
+	assert s.handle([u8(0x10), 0x83]) == []u8{}
+	assert s.session == 0x03
+	assert s.handle([u8(0x3E), 0x80]) == []u8{}
+	assert s.handle([u8(0x11), 0x85]) == [u8(0x7F), 0x11, 0x12] // a refusal is still said
+	assert s.handle([u8(0x10), 0x03]) == [u8(0x50), 0x03, 0x00, 0x32, 0x01, 0xF4]
+}
+
+fn test_reset_communication_control_dtc_setting_and_clear() {
+	mut s := default_server()
+	assert s.handle([u8(0x11), 0x01]) == [u8(0x51), 0x01]
+	assert s.handle([u8(0x28), 0x03, 0x01]) == [u8(0x68), 0x03]
+	assert s.comm_control == 0x03
+	assert s.handle([u8(0x85), 0x02]) == [u8(0xC5), 0x02]
+	assert s.dtc_setting_off
+	assert s.handle([u8(0x14), 0x12, 0x34, 0x56]) == [u8(0x54)]
+	assert s.dtcs.len == 1
+	assert s.handle([u8(0x14), 0x12, 0x34, 0x56]) == [u8(0x7F), 0x14, 0x31]
+	assert s.handle([u8(0x14), 0xFF, 0xFF, 0xFF]) == [u8(0x54)]
+	assert s.dtcs.len == 0
+}
