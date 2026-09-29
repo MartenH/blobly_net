@@ -114,7 +114,24 @@ fn test_session_and_tester_present() {
 	c.tester_present() or { panic(err) }
 }
 
+// the total allowance bounds the first wait too, and a wait that times out while pending says so
+fn test_the_budget_bounds_the_first_wait_and_pending_is_named() {
+	mut c, m := client_with([])
+	c.pending_budget_ms = 100
+	c.tester_present() or {}
+	assert m.waits == [100]
+	mut d, _ := client_with([[u8(0x7F), 0x22, 0x78]])
+	d.read_data_by_identifier(0xF190) or {
+		assert err.msg().contains('still pending'), err.msg()
+		return
+	}
+	assert false, 'a pending that never completed was accepted'
+}
+
 fn test_nrc_name() {
+	assert nrc_name(0x38) == 'secureDataTransmissionRequired'
+	assert nrc_name(0x45) == 'reservedByExtendedDataLinkSecurityDocument'
+	assert nrc_name(0x5D) == 'deAuthenticationFailed'
 	assert nrc_name(0x24) == 'requestSequenceError'
 	assert nrc_name(0x72) == 'generalProgrammingFailure'
 	assert nrc_name(0x7E) == 'subFunctionNotSupportedInActiveSession'
@@ -141,6 +158,8 @@ fn test_answer_to_names_the_request_it_answers() {
 	assert answer_to([u8(0x31), 0x01, 0xFF, 0x00], [u8(0x71), 0x01, 0xFF, 0x00, 0x00]) == .positive
 	assert answer_to([u8(0x31), 0x01, 0xFF, 0x00], [u8(0x71), 0x01, 0xFF, 0x01]) == .stale
 	assert answer_to([u8(0x36), 0x02, 0xAA], [u8(0x76), 0x01]) == .stale // the previous block
+	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x03], [u8(0x6F), 0xF1, 0x01, 0x03]) == .stale // another DID
+	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x03], [u8(0x6F), 0xF1, 0x00, 0x03]) == .positive
 }
 
 // a duplicated answer to the previous request, still queued, is not taken for this one's
@@ -174,20 +193,18 @@ fn test_response_pending_waits_p2_star() {
 	assert m.waits[1] > c.timeout_ms && m.waits[1] <= c.p2_star_ms + c.margin_ms
 }
 
-// pending as often as the server likes, but bounded in all
+// pending as often as the server likes, but bounded in all: however large the P2* it announced,
+// no wait after a responsePending reaches past the request's allowance from its send
 fn test_response_pending_is_bounded_in_total() {
-	mut c, _ := client_with([
-		[u8(0x7F), 0x22, 0x78],
+	mut c, m := client_with([
 		[u8(0x7F), 0x22, 0x78],
 		[u8(0x62), 0xF1, 0x90, 0xAA],
 	])
-	c.pending_budget_ms = 0
+	c.pending_budget_ms = 50
 	c.p2_star_ms = 1_000_000
-	c.read_data_by_identifier(0xF190) or {
-		assert err.msg().contains('still pending'), err.msg()
-		return
-	}
-	assert false, 'an unbounded pending was accepted'
+	c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert m.waits.len == 2
+	assert m.waits[1] <= 50
 }
 
 fn test_session_timing_is_read_and_adopted() {
@@ -200,7 +217,7 @@ fn test_session_timing_is_read_and_adopted() {
 	assert c.timeout_ms == 2000 + c.margin_ms // P2 adopted: it loosens the default
 	mut d, _ := client_with([[u8(0x50), 0x03, 0x00, 0x32, 0x01, 0xF4]])
 	d.diagnostic_session(0x03) or { panic(err) }
-	assert d.timeout_ms == 1000 // a 50 ms P2 never tightens the client's
+	assert d.timeout_ms == 50 + d.margin_ms // P2 plus the margin, never below the default
 }
 
 // an answer already queued when a request goes out cannot be its answer — the one defence against

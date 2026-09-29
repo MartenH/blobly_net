@@ -145,14 +145,15 @@ not. A second `uds.open` on the same DoIP channel returns the live connection: a
 entity serves one tester connection at a time.
 
 **Timing and stale answers.** The first answer to a request is awaited for 1 s, or the
-server's P2 plus 200 ms if a session answer named a longer one. After a `0x78`
-responsePending the next is awaited for the server's P2* plus 200 ms (P2* is 5 s until a
-session answer — through `diag:session()` or `diag:raw()` — names another), and no request
-waits more than 120 s from its send in all. A response that answers a DIFFERENT request —
+server's P2 plus 1 s if a session answer named a longer one. After a `0x78`
+responsePending the next is awaited for the server's P2* plus 1 s (P2* is 5 s until a
+session answer — through `diag:session()` or `diag:raw()` — names another; the extra second
+covers reassembling a large multi-frame answer, since P2* bounds only its start), and no
+request waits more than 120 s from its send in all. A response that answers a DIFFERENT request —
 another service's refusal, another DID's data, typically a duplicate of the previous answer
-received twice after a bus error — is discarded and the wait goes on, and whatever is already
-queued when a request goes out is drained first; an error that follows says how many were
-discarded.
+received twice after a bus error — is discarded and the wait goes on, and on a CAN channel
+whatever is already queued when a request goes out is drained first; an error that follows
+says how many were discarded.
 
 On a DoIP channel the entity's ANNOUNCED identity is a separate value from the one
 it serves at DID 0xF190, so both are observable:

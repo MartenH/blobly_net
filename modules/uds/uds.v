@@ -28,7 +28,9 @@ const nrc_response_pending = u8(0x78)
 // Timing (ISO 14229-2): the first answer is awaited for `timeout_ms` — the client's P2, generous
 // by default because the carrier may be a USB or network adapter whose own latency dwarfs the
 // server's 50 ms; after each responsePending (0x78) the next is awaited for the server's P2*
-// plus `margin_ms`. Both server values arrive in the 0x10 answer and are adopted there; the
+// plus `margin_ms`. P2 and P2* bound the START of an answer, but a carrier returns a PDU only
+// once it is reassembled, so the margin covers the transfer as well as the latency — a large
+// multi-frame answer begun just inside P2* on a slow bus still arrives. Both server values arrive in the 0x10 answer and are adopted there; the
 // adoption only ever LOOSENS `timeout_ms`. However often the server says pending, and whatever P2*
 // it announces, one request is bounded by `pending_budget_ms` from its send.
 pub struct Client {
@@ -37,7 +39,7 @@ mut:
 pub mut:
 	timeout_ms        int = 1000
 	p2_star_ms        int = default_p2_star_ms
-	margin_ms         int = 200
+	margin_ms         int = 1000
 	pending_budget_ms int = 120_000
 }
 
@@ -117,10 +119,10 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 // echoes its first one first), a sub-function and a routine identifier, a block sequence counter.
 fn echo_of(sid u8) (int, bool) {
 	return match sid {
-		0x10, 0x11, 0x19, 0x27, 0x28, 0x3E, 0x85 { 2, true }
-		0x31 { 4, true }
+		0x10, 0x11, 0x19, 0x27, 0x28, 0x29, 0x3E, 0x83, 0x85, 0x87 { 2, true }
+		0x2C, 0x31 { 4, true }
 		0x36 { 2, false }
-		0x22, 0x2E { 3, false }
+		0x22, 0x24, 0x2E, 0x2F { 3, false }
 		else { 1, false }
 	}
 }
@@ -130,7 +132,8 @@ fn echo_of(sid u8) (int, bool) {
 // extends the wait by P2*; a PDU that answers another request is discarded and the wait goes on.
 // What is already queued when the request goes out cannot be its answer, so it is drained first —
 // the one defence against a duplicated answer to an IDENTICAL earlier request, which no echo can
-// tell apart. A 0x10 answer's timing is adopted here, whichever caller sent it.
+// tell apart. On the CAN carriers (`recv(0)` polls what has arrived); DoIP's `recv(0)` reads
+// nothing yet (#358), and TCP does not duplicate — only a late answer after a timeout remains. A 0x10 answer's timing is adopted here, whichever caller sent it.
 pub fn (mut c Client) raw(req []u8) ![]u8 {
 	if req.len == 0 {
 		return error('empty UDS request')
@@ -142,7 +145,7 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 	}
 	c.ch.send(req)!
 	sw := time.new_stopwatch()
-	mut deadline := i64(c.timeout_ms)
+	mut deadline := if c.timeout_ms < c.pending_budget_ms { i64(c.timeout_ms) } else { i64(c.pending_budget_ms) }
 	mut pending := false
 	for {
 		left := deadline - sw.elapsed().milliseconds()
@@ -153,6 +156,9 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 			return error(no_answer(req, discarded))
 		}
 		resp := c.ch.recv(int(left)) or {
+			if pending {
+				return error('UDS: 0x${req[0]:02X} still pending after ${sw.elapsed().milliseconds()} ms (${err.msg()})')
+			}
 			if discarded > 0 {
 				return error('${err.msg()} (${no_answer(req, discarded)})')
 			}
@@ -343,6 +349,24 @@ pub fn nrc_name(nrc u8) string {
 		0x35 { 'invalidKey' }
 		0x36 { 'exceededNumberOfAttempts' }
 		0x37 { 'requiredTimeDelayNotExpired' }
+		0x38 { 'secureDataTransmissionRequired' }
+		0x39 { 'secureDataTransmissionNotAllowed' }
+		0x3A { 'secureDataVerificationFailed' }
+		0x3B...0x4F { 'reservedByExtendedDataLinkSecurityDocument' }
+		0x50 { 'certificateVerificationFailedInvalidTimePeriod' }
+		0x51 { 'certificateVerificationFailedInvalidSignature' }
+		0x52 { 'certificateVerificationFailedInvalidChainOfTrust' }
+		0x53 { 'certificateVerificationFailedInvalidType' }
+		0x54 { 'certificateVerificationFailedInvalidFormat' }
+		0x55 { 'certificateVerificationFailedInvalidContent' }
+		0x56 { 'certificateVerificationFailedInvalidScope' }
+		0x57 { 'certificateVerificationFailedInvalidCertificate' }
+		0x58 { 'ownershipVerificationFailed' }
+		0x59 { 'challengeCalculationFailed' }
+		0x5A { 'settingAccessRightsFailed' }
+		0x5B { 'sessionKeyCreationDerivationFailed' }
+		0x5C { 'configurationDataUsageFailed' }
+		0x5D { 'deAuthenticationFailed' }
 		0x70 { 'uploadDownloadNotAccepted' }
 		0x71 { 'transferDataSuspended' }
 		0x72 { 'generalProgrammingFailure' }
