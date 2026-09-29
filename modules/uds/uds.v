@@ -112,13 +112,19 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 		return .malformed
 	}
 	for i in 1 .. echo {
-		// a sub-function is echoed without its suppress-positive-response bit; the bit itself is
-		// tolerated (the in-process server echoes it)
-		if resp[i] != req[i] && !(i == 1 && subfn && resp[i] == req[i] & 0x7F) {
+		// a sub-function is echoed without its suppress-positive-response bit (the bit itself is
+		// tolerated: the in-process server echoes it) — and ResponseOnEvent's without its
+		// storeEvent bit too, its response's bits 7..6 being reserved
+		if resp[i] != req[i] && !(i == 1 && subfn && resp[i] == req[i] & sub_mask(req[0])) {
 			return .stale
 		}
 	}
 	return .positive
+}
+
+// sub_mask: the bits of a sub-function byte its positive response echoes.
+fn sub_mask(sid u8) u8 {
+	return if sid == 0x86 { u8(0x3F) } else { u8(0x7F) }
 }
 
 // echo_of: how many leading bytes of a request its positive response echoes, SID included, and
@@ -126,7 +132,9 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 // echoes its first one first), a sub-function and a routine identifier, a block sequence counter,
 // or a WriteMemoryByAddress's format byte, address and size (their widths are in that byte).
 // Every other ISO 14229-1 service's positive response echoes nothing beyond its SID (0x14, 0x23,
-// 0x2A, 0x34, 0x35, 0x37, 0x84), so the SID is all there is to match there.
+// 0x34, 0x35, 0x37, 0x84), so the SID is all there is to match there. ReadDataByPeriodicIdentifier
+// (0x2A) is matched by SID too: its data arrives asynchronously, naming an identifier the request
+// lists anywhere, which is correlation of another kind (#361).
 fn echo_of(req []u8) (int, bool) {
 	wmba := if req.len > 1 { 2 + int(req[1] & 0x0F) + int(req[1] >> 4) } else { 1 }
 	return match req[0] {
