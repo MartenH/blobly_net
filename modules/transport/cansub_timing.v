@@ -46,6 +46,10 @@ const cansub_max_brp = 32
 const cansub_max_seg1 = 255
 const cansub_max_seg2 = 128
 
+// cansub_max_sjw: measured on a CANsub.4 (02.05.00) — 128 is accepted and read back, 129 is
+// answered HTTP 500. Never reached: SJW is at most seg2, whose own maximum is the same.
+const cansub_max_sjw = 128
+
 // THE DATA PHASE IS NARROWER, and by a lot. Across the vendor's entire table the data segments
 // never exceed DSEG1 17 and DSEG2 10, against 255 and 128 for the nominal phase — which is what a
 // CAN-FD controller looks like, the data-phase registers being a few bits wide because the phase
@@ -159,10 +163,15 @@ fn cansub_solve(bitrate int, sample_point_pct int, max_seg1 int, max_seg2 int) !
 			brp:  brp
 			seg1: seg1
 			seg2: seg2
-			// SJW cannot exceed seg2 — it is how much of the phase-2 segment may be swallowed to
-			// resynchronise. 4 is what the vendor's table uses wherever there is room for it, and
-			// where there is not the table drops to seg2 exactly, which this reproduces.
-			sjw: if seg2 < 4 { seg2 } else { 4 }
+			// SJW is the most the rule allows: min(seg1, seg2), since a resynchronisation may lengthen
+			// phase 1 or shorten phase 2 by at most that much — at the sample points in use, seg2. A fixed 4 quanta, the vendor table's value,
+			// is a FRACTION of the bit that shrinks as the quanta per bit grow: at 500 kbit/s this
+			// solver takes brp 1, 160 quanta, and 4 of them is 2.5% of a bit — too little to follow
+			// the other nodes' edges. Measured on a CANsub.4 (02.05.00) on system_full's compute bus
+			// beside two STM32 FDCANs, receiving only: 20 controller errors a minute at SJW 4, none
+			// at SJW 32 (= seg2), over the same traffic. The device takes every value this produces:
+			// all 27 solutions for 10k..1M at 75/80/87% (SJW 10..80) were written and read back.
+			sjw: if seg1 < seg2 { seg1 } else { seg2 }
 		}
 	}
 	return error('the CANsub cannot produce ${bitrate} bit/s at ${sample_point_pct}% from its ${cansub_clock_hz} Hz clock')
