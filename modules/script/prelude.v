@@ -208,7 +208,10 @@ function uds.open(channel, opts)
   -- 0x28 CommunicationControl: control 0..3 for messages of type (1 = the normal ones)
   function self:comm_control(control, ctype) if ctype == nil then ctype = 0x01 end __uds_comm_control(self.handle, control, ctype) end
   -- 0x85 ControlDTCSetting: true = on, false = off
-  function self:dtc_setting(on) __uds_dtc_setting(self.handle, on and 1 or 0) end
+  function self:dtc_setting(on)
+    if type(on) ~= "boolean" then error("dtc_setting(on): on must be true or false", 2) end
+    __uds_dtc_setting(self.handle, on and 1 or 0)
+  end
   -- 0x14 ClearDiagnosticInformation: one DTC or a group (default 0xFFFFFF, all)
   function self:clear_dtcs(group) if group == nil then group = 0xFFFFFF end __uds_clear_dtc(self.handle, group) end
   -- a request with suppress-positive-response set: a refusal raises; returns whether a positive

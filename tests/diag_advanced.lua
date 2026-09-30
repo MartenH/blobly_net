@@ -33,6 +33,11 @@ end)
 test("DTC setting is acknowledged, communication control is not faked (0x85 / 0x28)", function()
   diag:dtc_setting(false)
   diag:dtc_setting(true)
+  -- the argument is required and boolean: nothing is sent for a missing or other value
+  for _, v in ipairs({ "nil", 1, "on" }) do
+    local ok = pcall(function() if v == "nil" then diag:dtc_setting() else diag:dtc_setting(v) end end)
+    check.truthy(not ok, "dtc_setting(" .. tostring(v) .. ") was sent")
+  end
   -- the simulated ECU cannot gate its own traffic, so it refuses rather than acknowledge
   check.nrc(0x11, function() diag:comm_control(0x03) end)
 end)
