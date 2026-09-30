@@ -5,4 +5,7 @@
 // that is not added here is refused everywhere at once rather than in some places.
 module candb
 
-pub const e2e_profiles = ['crc8_j1850', 'crc8_autosar', 'sum8', 'xor8']
+//
+// `autosar_p01` is a whole PROFILE (AUTOSAR E2E Profile 1: its CRC, coverage, Data ID modes and
+// 0..14 counter), not a primitive; the rest are primitives under blobly's own coverage rule.
+pub const e2e_profiles = ['autosar_p01', 'crc8_j1850', 'crc8_autosar', 'sum8', 'xor8']

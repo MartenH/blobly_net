@@ -312,6 +312,9 @@ fn protect_inline(pr ProtectCfg) string {
 	if id := pr.data_id {
 		parts << 'data_id: ${id}' // written even when 0 — it is a real id
 	}
+	if pr.data_id_mode != '' {
+		parts << 'data_id_mode: ${yaml_flow_scalar(pr.data_id_mode)}'
+	}
 	return '{ ${parts.join(', ')} }'
 }
 

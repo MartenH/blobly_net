@@ -26,12 +26,22 @@ pub fn gen_from_cfg(g project.GenCfg) Gen {
 pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 	mut prot := map[string]E2e{}
 	for p in cfg.protect {
-		prot[p.message] = E2e{
-			counter: p.counter
-			crc:     p.crc
-			profile: p.profile
-			data_id: p.data_id
+		e := e2e_of(p)
+		if e.profile == p01 {
+			// a Profile 1 entry that cannot be stamped as specified is not stamped at all:
+			// validate_protection says why
+			mut refused := true
+			for m in db.messages_from(cfg.name) {
+				if m.name == p.message {
+					refused = p01_problem(m, e) != none
+					break
+				}
+			}
+			if refused {
+				continue
+			}
 		}
+		prot[p.message] = e
 	}
 	// No generators and no response rules: the node has no explicit BEHAVIOUR, so keep the
 	// built-in model — which for 'SUT' is the hand-tuned reference with its own generators and
@@ -194,6 +204,13 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		}
 		if p.crc != '' && p.profile !in candb.e2e_profiles {
 			warns << 'protect: unknown profile "${p.profile}" on ${p.message} — falling back to sum8'
+		}
+		if why := p01_problem(m, e2e_of(p)) {
+			warns << 'protect: ${p.message}: ${why} — protection not applied'
+		}
+		if p.data_id_mode != '' && (p.profile != p01 || p.crc == '') {
+			// read by autosar_p01 alone; elsewhere it saves and reloads while changing nothing
+			warns << 'protect: data_id_mode on ${p.message} applies to profile autosar_p01 with a crc only — ignored'
 		}
 	}
 	return warns
