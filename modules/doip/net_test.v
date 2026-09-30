@@ -543,3 +543,41 @@ fn test_a_message_that_stalls_mid_read_is_not_silence() {
 		l.close() or {}
 	}
 }
+
+// #358: recv(0) is a POLL — it returns what has already arrived, message by message (an ack in
+// front of it skipped), and answers timeout at once when nothing has; which is what lets the UDS
+// client's pre-send drain clear a late answer on DoIP as it does on CAN
+fn test_recv_zero_polls_what_has_arrived() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		time.sleep(200 * time.millisecond)
+		// a late answer, and an ack in front of it, arriving while the client asked nothing
+		c.write(diagnostic_message_ack(0x1000, 0x0E80, 0)) or { return }
+		c.write(diagnostic_message(0x1000, 0x0E80, [u8(0x62), 0x01])) or { return }
+		time.sleep(600 * time.millisecond)
+		c.close() or {}
+	}(mut ln)
+	time.sleep(100 * time.millisecond)
+	mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	t0 := time.ticks()
+	ch.recv(0) or { assert err.msg() == 'DoIP recv timeout' }
+	assert time.ticks() - t0 < 100, 'a poll with nothing queued waited'
+	time.sleep(350 * time.millisecond) // the late answer is in the socket now
+	got := ch.recv(0) or {
+		assert false, 'the queued answer was not polled: ${err}'
+		return
+	}
+	assert got == [u8(0x62), 0x01]
+	ch.recv(0) or { assert err.msg() == 'DoIP recv timeout' } // and nothing after it
+	ch.close()
+	ln.close() or {}
+}

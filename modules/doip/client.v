@@ -145,8 +145,17 @@ pub fn (mut c DoipClient) send(data []u8) ! {
 pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
-		rem := int(deadline - time.ticks())
-		if rem <= 0 {
+		mut rem := int(deadline - time.ticks())
+		if timeout_ms <= 0 {
+			// A POLL (#358): only what has already arrived — the UDS client's pre-send drain.
+			// Asked before reading, never by reading with a zero deadline, which would stop
+			// partway through a message and desynchronise the stream; once something is there,
+			// the whole message is read with an ordinary deadline, since its rest is in flight.
+			if !readable_now(c.conn.sock.handle) {
+				return error('DoIP recv timeout')
+			}
+			rem = poll_read_ms
+		} else if rem <= 0 {
 			return error('DoIP recv timeout')
 		}
 		// the socket's own timeout is this carrier's silence, said the one way a caller reads it
@@ -178,6 +187,10 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 	}
 	return error('DoIP recv timeout')
 }
+
+// poll_read_ms: how long a zero-timeout recv waits for the REST of a message whose first bytes
+// have arrived — TCP delivers it promptly, so this bounds a peer that stalls mid-message.
+const poll_read_ms = 1000
 
 pub fn (mut c DoipClient) close() {
 	if !isnil(c.conn) {
