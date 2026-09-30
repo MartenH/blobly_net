@@ -1232,58 +1232,41 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 		ch.close()
 	}
 	mut c := uds.new_client(ch)
-	// what this target announced on an earlier press, and what it announces now, kept for the
-	// next — on every way out of this press, the early error returns included
 	a.mu.lock()
-	if tm := a.diag_timing[t.key] {
-		c.timeout_ms = tm.timeout_ms
-		c.p2_star_ms = tm.p2_star_ms
-	}
+	epoch := a.diag_timing_epoch
+	c.loosen_p2_star(a.diag_timing[t.key] or { 0 })
 	a.mu.unlock()
-	defer {
-		a.mu.lock()
-		a.diag_timing[t.key] = DiagTiming{
-			timeout_ms: c.timeout_ms
-			p2_star_ms: c.p2_star_ms
-		}
-		a.mu.unlock()
-	}
-	match kind {
+	out := match kind {
 		'session' {
-			c.diagnostic_session(0x03) or {
-				a.diag_push('session: ${err}')
-				a.diag_done()
-				return
-			}
-			a.diag_push('session 0x03 OK')
+			if _ := c.diagnostic_session(0x03) { 'session 0x03 OK' } else { 'session: ${err}' }
 		}
 		'vin' {
-			r := c.read_data_by_identifier(0xF190) or {
-				a.diag_push('VIN: ${err}')
-				a.diag_done()
-				return
-			}
-			a.diag_push('VIN = ${r.bytestr()}')
+			if r := c.read_data_by_identifier(0xF190) { 'VIN = ${r.bytestr()}' } else { 'VIN: ${err}' }
 		}
 		'tp' {
-			c.tester_present() or {
-				a.diag_push('tester present: ${err}')
-				a.diag_done()
-				return
-			}
-			a.diag_push('tester present OK')
+			if _ := c.tester_present() { 'tester present OK' } else { 'tester present: ${err}' }
 		}
 		'did' {
-			r := c.read_data_by_identifier(did) or {
-				a.diag_push('DID ${did:04X}: ${err}')
-				a.diag_done()
-				return
+			if r := c.read_data_by_identifier(did) {
+				'DID ${did:04X} = ${hex(r)}  "${printable(r)}"'
+			} else {
+				'DID ${did:04X}: ${err}'
 			}
-			a.diag_push('DID ${did:04X} = ${hex(r)}  "${printable(r)}"')
 		}
-		else {}
+		else {
+			''
+		}
 	}
-
+	if out != '' {
+		a.diag_push(out)
+	}
+	// what this target has announced, kept for the next press BEFORE this one is done: the
+	// next may start the moment diag_busy clears — and not into a project loaded meanwhile
+	a.mu.lock()
+	if a.diag_timing_epoch == epoch {
+		a.diag_timing[t.key] = c.p2_star_ms
+	}
+	a.mu.unlock()
 	a.diag_done()
 }
 
@@ -1291,13 +1274,6 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 // the selected cores, reassembling each per-core ISO-TP block on 0x7E5 (sending flow control
 // on 0x7E6) and decoding the records into app.trecs for the swimlane. Mirrors diag_worker: a
 // single-flight busy flag, a short-lived spawn, a blocking transfer, results under mu + wake.
-// DiagTiming is what a diagnostic target's 0x10 answer set on a client: its P2 (the client's
-// first-answer wait, which it only ever loosens) and its P2*.
-struct DiagTiming {
-	timeout_ms int
-	p2_star_ms int
-}
-
 fn trace_dump_worker(app &App, core_mask u16) {
 	// A TOOL READER: reads app.chans and app.manifest to find the trace endpoint, unlocked. Not ended by Stop, so the
 	// wait must not include it — see App.tool_readers.

@@ -532,11 +532,14 @@ mut:
 	diag_log    []string
 	diag_gen    u64 // cache key for the Diagnostics panel's joined text
 	diag_busy   bool
-	// The timing each diagnostic target announced (its 0x10 answer's P2/P2*), by DiagTarget.key.
+	// The largest P2* each diagnostic target announced (its 0x10 answers), by DiagTarget.key.
 	// Every button press builds a new client — it opens and closes its own channel, since a
 	// DoIP entity serves one connection at a time — so without this the next press waited on
-	// the default P2* whatever the ECU had said (#356).
-	diag_timing map[string]DiagTiming
+	// the default P2* whatever the ECU had said (#356). Carried only to LOOSEN (uds.Client
+	// .loosen_p2_star). `diag_timing_epoch` moves with a project load, so a press still in
+	// flight across one cannot write its target's value into the new project's map.
+	diag_timing       map[string]int
+	diag_timing_epoch u64
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool
@@ -1087,7 +1090,8 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.trecs = []
 	app.diag_log = []
 	app.diag_gen++ // a clear moves the buffer as surely as an append -- invalidate with it
-	app.diag_timing = map[string]DiagTiming{} // another project's ECUs said nothing to this one
+	app.diag_timing = map[string]int{} // another project's ECUs said nothing to this one
+	app.diag_timing_epoch++
 	app.script_log = []
 	app.script_gen++
 	app.watch = []

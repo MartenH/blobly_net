@@ -64,6 +64,16 @@ pub mut:
 // default_p2_star_ms is ISO 14229-2's default P2*server, used until a 0x10 answer names one.
 pub const default_p2_star_ms = 5000
 
+// loosen_p2_star carries a P2* a server announced earlier (a session ago, a connection ago) into
+// this client, and ONLY loosens: that session may since have ended, and its P2* may be tighter
+// than the one now in force, which a client that tightened to it would give up before. The
+// first-answer wait is left alone, so a server that does not answer still fails fast.
+pub fn (mut c Client) loosen_p2_star(ms int) {
+	if ms > c.p2_star_ms {
+		c.p2_star_ms = ms
+	}
+}
+
 pub fn new_client(ch isotp.Channel) Client {
 	return Client{
 		ch: ch
