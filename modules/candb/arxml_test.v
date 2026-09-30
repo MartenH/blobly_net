@@ -33,7 +33,6 @@ fn test_cluster_and_nodes() {
 	assert a.report.unresolved == []
 	assert a.report.notes == [
 		'/PDUs/LampFrame_PDU: cyclic and event-controlled timing; the simulation sends on the cycle only, never on a change',
-		"LampFrame: declares an E2E PROFILE_01 contract; carried to the DBC export and the fragment, but NOT applied by the native simulation, which protects only what the project's protect: entries name",
 		'SecureFrame: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as 0',
 		'/PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
 		'/Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
@@ -420,21 +419,26 @@ fn test_e2e_positions_are_frame_relative_when_the_pdu_is_offset() {
 	assert e.pdu_offset == 8
 	assert e.crc_byte() == 3
 	assert e.counter_byte() == 4
-	s := c.e2e_signals(m) or { panic('no e2e signals') }
-	assert s.crc == 'Crc'
-	assert s.counter == 'Ctr'
-	assert c.frame_toml('').contains('e2e  = { data_id = 0x7, crc_pos = 3, counter_pos = 4 }')
+	// but Profile 1 covers the PDU and everything that stamps from the export covers the FRAME,
+	// so the contract is named, not exported, and not stamped
+	assert c.e2e_signals(m) == none
+	assert e2e_export_refusal(m, e).contains('not the whole frame')
+	assert !c.frame_toml('').contains('\ne2e  =')
 	// the fields must be EXACTLY the profile's widths: a 4-bit signal at the CRC offset is not
 	// an 8-bit CRC, and a 2-bit one at the counter offset wraps early
 	narrow := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH>', '<SHORT-NAME>Crc</SHORT-NAME><LENGTH>4</LENGTH>') + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>') + arxml_tail) or { panic(err) }
 	nc := narrow.cluster('') or { panic(err) }
 	assert nc.e2e_signals(nc.db.messages[0]) == none
+	ne := (nc.frame_of(nc.db.messages[0]) or { panic('no frame') }).e2e or { panic('unprotected') }
+	assert e2e_export_refusal(nc.db.messages[0], ne).contains('4-bit counter fields')
 	assert !nc.frame_toml('').contains('\ne2e  =')
 	// and on a byte boundary: a CRC at bit 20 has no crc_pos
 	skew := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>16</START-POSITION>', '<START-POSITION>12</START-POSITION>') + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>12</CRC-OFFSET>') + arxml_tail) or { panic(err) }
 	sc := skew.cluster('') or { panic(err) }
 	assert sig(sc.db.messages[0], 'Crc').start_bit == 20
 	assert sc.e2e_signals(sc.db.messages[0]) == none
+	se := (sc.frame_of(sc.db.messages[0]) or { panic('no frame') }).e2e or { panic('unprotected') }
+	assert !e2e_export_refusal(sc.db.messages[0], se).contains('not the whole frame')
 	assert !sc.frame_toml('').contains('\ne2e  =')
 }
 
@@ -619,7 +623,7 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	assert c.e2e_signals(m) == none
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2EDataId')
 	// and the load report says so, since a DBC-only consumer never sees the fragment (round 26)
-	assert a.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — its data-id mode ALTERNATING-8-BIT is not expressible there')), a.report.notes.str()
+	assert a.report.notes.any(it.contains('F: its E2E contract is neither applied by the simulation nor carried as DBC attributes — its data-id mode ALTERNATING-8-BIT is not expressible there')), a.report.notes.str()
 	// a DATA-ID or an offset that is not an integer makes the contract untrustworthy: refused
 	// and said, never exported with the 0 the lenient parser read (round 39)
 	for bad in [['<DATA-ID>7</DATA-ID>', '<DATA-ID>invalid</DATA-ID>', 'DATA-ID "invalid" is not an integer'],
@@ -630,7 +634,7 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 		}
 		mc := mb.cluster('') or { panic(err) }
 		assert mc.e2e_signals(mc.db.messages[0]) == none, bad[1]
-		assert mb.report.notes.any(it.contains('carries NO E2E attributes for it — its ' + bad[2])), mb.report.notes.str()
+		assert mb.report.notes.any(it.contains('nor carried as DBC attributes — its ' + bad[2])), mb.report.notes.str()
 	}
 	// an overflowing DATA-ID is malformed too, not the id 0 (round 40)
 	ovid := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace('<DATA-ID>7</DATA-ID>', '<DATA-ID>0x10000000000000000</DATA-ID>') + arxml_tail) or {
@@ -652,7 +656,7 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	}
 	nc := no_id.cluster('') or { panic(err) }
 	assert nc.e2e_signals(nc.db.messages[0]) == none
-	assert no_id.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — it declares no DATA-ID')), no_id.report.notes.str()
+	assert no_id.report.notes.any(it.contains('F: its E2E contract is neither applied by the simulation nor carried as DBC attributes — it declares no DATA-ID')), no_id.report.notes.str()
 	// and by the same predicate the export refuses with, so a layout refusal is said too: a CRC
 	// offset inside an application signal (round 27)
 	inside := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>0</CRC-OFFSET>') + arxml_tail) or {
@@ -660,7 +664,7 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	}
 	ic := inside.cluster('') or { panic(err) }
 	assert ic.e2e_signals(ic.db.messages[0]) == none
-	assert inside.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — the signals at its CRC and counter offsets are not the byte-aligned')), inside.report.notes.str()
+	assert inside.report.notes.any(it.contains('F: its E2E contract is neither applied by the simulation nor carried as DBC attributes — the signals at its CRC and counter offsets are not the byte-aligned')), inside.report.notes.str()
 	assert c.frame_toml('').contains('# E2E PROFILE_01 with ALTERNATING-8-BIT data ids (0x7, 0x9): this data-id mode is not expressible here')
 	// LOWER-12-BIT feeds part of the id into the CRC: one scalar cannot say that either
 	l := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET><DATA-ID-MODE>LOWER-12-BIT</DATA-ID-MODE>') + arxml_tail) or { panic(err) }
@@ -1662,12 +1666,14 @@ fn example_cluster() ArxmlCluster {
 	return example_arxml().cluster('Body') or { panic(err) }
 }
 
-// the mapped primitive is one the simulation can compute, by the one list
+// PROFILE_01 maps to the profile implemented as specified, by the one list; every other
+// profile to nothing, rather than to a primitive under blobly's own coverage rule
 fn test_e2e_profile_primitive_is_held_to_the_shared_list() {
-	for p in ['PROFILE_01', 'PROFILE_11', 'PROFILE_02', 'PROFILE_22'] {
-		assert e2e_profile_primitive(p) in e2e_profiles, p
+	assert e2e_profile_primitive('PROFILE_01') == 'autosar_p01'
+	assert 'autosar_p01' in e2e_profiles
+	for p in ['PROFILE_11', 'PROFILE_02', 'PROFILE_22', 'PROFILE_05'] {
+		assert e2e_profile_primitive(p) == '', p
 	}
-	assert e2e_profile_primitive('PROFILE_05') == ''
 }
 
 fn test_e2e_signals_from_offsets() {
@@ -1676,13 +1682,13 @@ fn test_e2e_signals_from_offsets() {
 	s := c.e2e_signals(lamp) or { panic('LampFrame is protected') }
 	assert s.counter == 'LampCounter'
 	assert s.crc == 'LampCrc'
-	assert s.profile == 'crc8_j1850'
+	assert s.profile == 'autosar_p01'
 	assert s.data_id == 42
 	// unprotected: none
 	pt := c.db.lookup(0x100) or { panic('no Powertrain') }
 	assert c.e2e_signals(pt) == none
-	// a profile whose CRC this app cannot compute maps to '' — nothing pretends
-	assert e2e_profile_primitive('PROFILE_02') == 'crc8_autosar'
+	// a profile this app does not implement maps to '' — nothing pretends
+	assert e2e_profile_primitive('PROFILE_02') == ''
 	assert e2e_profile_primitive('PROFILE_05') == ''
 }
 
@@ -1697,16 +1703,16 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	}, a.report)
 	lines := text.split('\n')
 	// the network comment says where the file came from and what the reader dropped
-	// notes=5: the same five the golden list in test_cluster_and_nodes pins — a partial read is
+	// notes=4: the same four the golden list in test_cluster_and_nodes pins — a partial read is
 	// stamped as one, and travels with the DBC
-	assert lines.any(it == 'CM_ "arxml2dbc: source=example.arxml sha256=abc123 reader=0.2.0 cluster=Body schema=AUTOSAR_4-2-2 dropped=1 unresolved=0 notes=5";'), lines.filter(it.starts_with('CM_ "arxml2dbc')).str()
+	assert lines.any(it == 'CM_ "arxml2dbc: source=example.arxml sha256=abc123 reader=0.2.0 cluster=Body schema=AUTOSAR_4-2-2 dropped=1 unresolved=0 notes=4";'), lines.filter(it.starts_with('CM_ "arxml2dbc')).str()
 	// #271's attributes, defined once, valued on the protected message only
 	assert lines.any(it == 'BA_DEF_ BO_ "E2ECounterSignal" STRING;')
 	assert lines.any(it == 'BA_DEF_ BO_ "E2EDataId" INT 0 65535;')
 	assert lines.any(it == 'BA_DEF_DEF_ "E2EProfile" "";')
 	assert lines.any(it == 'BA_ "E2ECounterSignal" BO_ 512 "LampCounter";')
 	assert lines.any(it == 'BA_ "E2ECrcSignal" BO_ 512 "LampCrc";')
-	assert lines.any(it == 'BA_ "E2EProfile" BO_ 512 "crc8_j1850";')
+	assert lines.any(it == 'BA_ "E2EProfile" BO_ 512 "autosar_p01";')
 	assert lines.any(it == 'BA_ "E2EDataId" BO_ 512 42;')
 	assert lines.filter(it.starts_with('BA_ "E2E')).len == 4
 	// receivers reach the SG_ lines
@@ -1755,7 +1761,7 @@ fn test_frame_toml_per_ecu() {
 	c := example_cluster()
 	all := c.frame_toml('')
 	assert all.contains('[[frame]]\nname = "Powertrain"\nbus  = "Body"\ntx   = { mode = "cyclic", cycle_ms = 100, min_delay_ms = 20 }')
-	assert all.contains('name = "LampFrame"\nbus  = "Body"\ntx   = { mode = "mixed", cycle_ms = 100, min_delay_ms = 10 }\ne2e  = { data_id = 0x2A, crc_pos = 6, counter_pos = 7 }  # crc8_j1850, from PROFILE_01 (blobly\'s primitive, not the full AUTOSAR profile)')
+	assert all.contains('name = "LampFrame"\nbus  = "Body"\ntx   = { mode = "mixed", cycle_ms = 100, min_delay_ms = 10 }\ne2e  = { data_id = 0x2A, crc_pos = 6, counter_pos = 7 }  # AUTOSAR PROFILE_01')
 	assert all.contains('# secoc = { key = "…", data_id = 0x2B, fresh_pos = 3, mac_pos = 4, mac_len = 4 }')
 	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\ntx   = { mode = "event" }')
 	// a frame nobody sends is still listed when everything is asked for
@@ -1788,7 +1794,6 @@ fn test_report_lines() {
 	assert example_arxml().report.lines() == [
 		'ignored: 1 × N-PDU',
 		'note: /PDUs/LampFrame_PDU: cyclic and event-controlled timing; the simulation sends on the cycle only, never on a change',
-		"note: LampFrame: declares an E2E PROFILE_01 contract; carried to the DBC export and the fragment, but NOT applied by the native simulation, which protects only what the project's protect: entries name",
 		'note: SecureFrame: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as 0',
 		'note: /PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
 		'note: /Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',

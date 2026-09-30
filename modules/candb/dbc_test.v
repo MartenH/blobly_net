@@ -402,3 +402,59 @@ fn test_a_numeric_value_without_a_definition_falls_back_to_vectors_ordering() {
 	}
 	assert db.messages[0].j1939
 }
+
+// #271: the E2E contract is read from its four attributes and written back, so an editor Save
+// keeps it; a malformed Data ID is kept as written, never read as absent
+fn test_e2e_attributes_round_trip() {
+	text := 'BU_: Chassis
+BO_ 769 BrakeStatus: 6 Chassis
+ SG_ BrakeCrc : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ BrakeCounter : 40|4@1+ (1,0) [0|15] "" Vector__XXX
+BO_ 770 Other: 1 Chassis
+ SG_ X : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BA_DEF_ BO_ "E2ECounterSignal" STRING;
+BA_DEF_ BO_ "E2ECrcSignal" STRING;
+BA_DEF_ BO_ "E2EProfile" STRING;
+BA_DEF_ BO_ "E2EDataId" INT 0 65535;
+BA_ "E2ECounterSignal" BO_ 769 "BrakeCounter";
+BA_ "E2ECrcSignal" BO_ 769 "BrakeCrc";
+BA_ "E2EProfile" BO_ 769 "autosar_p01";
+BA_ "E2EDataId" BO_ 769 68;
+BA_ "E2EDataId" BO_ 770 bogus;
+'
+	db := parse_dbc(text) or { panic(err) }
+	m := db.lookup(769) or { panic('no BrakeStatus') }
+	assert m.e2e.counter == 'BrakeCounter' && m.e2e.crc == 'BrakeCrc'
+	assert m.e2e.profile == 'autosar_p01' && m.e2e.has_data_id && m.e2e.data_id == 68
+	o := db.lookup(770) or { panic('no Other') }
+	// kept as said, so the simulation can refuse it by name — never read as "no Data ID"
+	assert o.e2e.bad_data_id == 'bogus' && !o.e2e.has_data_id
+	again := parse_dbc(db.to_dbc()) or { panic(err) }
+	a := again.lookup(769) or { panic('lost') }
+	assert a.e2e == m.e2e, 'the E2E contract did not survive a save'
+}
+
+// a file-wide E2E default is a declaration too, for messages that state one of their own — a
+// message that states none is not protected by a default
+fn test_e2e_defaults_fill_only_declared_messages() {
+	text := 'BO_ 256 A: 2 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ K : 8|4@1+ (1,0) [0|15] "" Vector__XXX
+BO_ 257 B: 1 N
+ SG_ X : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BA_DEF_ BO_ "E2EProfile" STRING;
+BA_DEF_DEF_ "E2EProfile" "autosar_p01";
+BA_ "E2ECrcSignal" BO_ 256 "C";
+BA_ "E2ECounterSignal" BO_ 256 "K";
+'
+	db := parse_dbc(text) or { panic(err) }
+	a := db.lookup(256) or { panic('no A') }
+	assert a.e2e.profile == 'autosar_p01'
+	b := db.lookup(257) or { panic('no B') }
+	assert !b.e2e.declared()
+	mut d := a.e2e
+	d.follow_rename('C', 'Crc')
+	assert d.crc == 'Crc'
+	d.forget('K')
+	assert d.counter == '' && d.declared()
+}

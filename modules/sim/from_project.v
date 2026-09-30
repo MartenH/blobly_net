@@ -23,25 +23,34 @@ pub fn gen_from_cfg(g project.GenCfg) Gen {
 }
 
 // from_project builds the ECU a NodeCfg describes.
+// protection_for is how `node` protects a message it sends — the ONE answer stamping, the
+// fault panel, Lua's sim.fault and response-format selection all ask: its protect: entry if it
+// has one (the node's own word, overriding the file), else what the DBC declares (#271). None
+// when neither applies — a Profile 1 entry that cannot be stamped as specified included, which
+// is not stamped at all (validate_protection says why).
+pub fn protection_for(cfg project.NodeCfg, m candb.Message) ?E2e {
+	for p in cfg.protect {
+		if p.message != m.name {
+			continue
+		}
+		e := e2e_of(p)
+		if !e.active() {
+			return none
+		}
+		if e.profile == p01 && p01_problem(m, e) != none {
+			return none
+		}
+		return e
+	}
+	return declared_e2e(m)
+}
+
 pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 	mut prot := map[string]E2e{}
-	for p in cfg.protect {
-		e := e2e_of(p)
-		if e.profile == p01 {
-			// a Profile 1 entry that cannot be stamped as specified is not stamped at all:
-			// validate_protection says why
-			mut refused := true
-			for m in db.messages_from(cfg.name) {
-				if m.name == p.message {
-					refused = p01_problem(m, e) != none
-					break
-				}
-			}
-			if refused {
-				continue
-			}
+	for m in db.messages_from(cfg.name) {
+		if e := protection_for(cfg, m) {
+			prot[m.name] = e
 		}
-		prot[p.message] = e
 	}
 	// No generators and no response rules: the node has no explicit BEHAVIOUR, so keep the
 	// built-in model — which for 'SUT' is the hand-tuned reference with its own generators and
@@ -132,10 +141,9 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 				if m.id != r.response {
 					continue
 				}
-				for p in cfg.protect {
-					if p.message == m.name {
-						protected_hits++
-					}
+				// the same question resp_is_extended asks: an entry, or a declaration it stamps
+				if cfg.protect.any(it.message == m.name) || protection_for(cfg, m) != none {
+					protected_hits++
 				}
 			}
 			warns << if protected_hits == 1 {
@@ -144,6 +152,29 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 				// zero protected candidates, or several: nothing distinguishes them, so the
 				// DBC order decides the reply format, DLC, protection layout and counter
 				'responses: id 0x${r.response:X} matches both a standard and an extended message and protect: does not single one out — the DBC order decides which is sent; give exactly one of them a protect: entry'
+			}
+		}
+	}
+	// the DBC's own declarations (#271): applied without a protect: entry, so one that cannot be
+	// applied must be said — and an entry that differs from one overrides it, which is legitimate
+	// (a wrong Data ID on purpose) but worth saying
+	for m in db.messages_from(cfg.name) {
+		if !m.e2e.declared() {
+			continue
+		}
+		mine := cfg.protect.filter(it.message == m.name)
+		if mine.len == 0 {
+			why := declared_problem(m, e2e_of_decl(m.e2e))
+			if why != '' {
+				warns << 'dbc: the E2E declaration of ${m.name} cannot be applied — ${why}; ${m.name} is sent unprotected'
+			}
+		} else {
+			p := mine[0]
+			d := m.e2e
+			id := p.data_id or { u32(0) }
+			if p.counter != d.counter || p.crc != d.crc || p.profile != d.profile
+				|| (p.data_id != none) != d.has_data_id || id != d.data_id {
+				warns << 'protect: ${m.name} differs from the E2E the DBC declares — the protect: entry applies'
 			}
 		}
 	}
@@ -226,16 +257,12 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 // wins and validate_cfg reports the ambiguity, rather than silently picking a format that
 // decides the reply's DLC and whether protection applies at all.
 fn resp_is_extended(db candb.Database, cfg project.NodeCfg, id u32) bool {
-	mut protected_names := map[string]bool{}
-	for p in cfg.protect {
-		protected_names[p.message] = true
-	}
 	mut first := ?bool(none)
 	for m in db.messages_from(cfg.name) {
 		if m.id != id {
 			continue
 		}
-		if m.name in protected_names {
+		if cfg.protect.any(it.message == m.name) || protection_for(cfg, m) != none {
 			return m.ext
 		}
 		if first == none {

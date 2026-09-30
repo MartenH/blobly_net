@@ -425,7 +425,7 @@ fn l_sim_fault(l lua.State) int {
 						continue
 					}
 					for cand in m.signals {
-						if sim.can_force_out_of_range(m, cand.name, prot_of(env.chans[ci].nodes,
+						if sim.can_force_out_of_range(m, cand.name, prot_of(env.chans[ci].db, env.chans[ci].nodes,
 							node, msg))
 						{
 							sg = cand.name
@@ -445,7 +445,7 @@ fn l_sim_fault(l lua.State) int {
 			mut usable := false
 			for m in env.chans[ci].db.messages_from(node) {
 				if m.name == msg
-					&& sim.can_force_out_of_range(m, sg, prot_of(env.chans[ci].nodes, node, msg)) {
+					&& sim.can_force_out_of_range(m, sg, prot_of(env.chans[ci].db, env.chans[ci].nodes, node, msg)) {
 					usable = true
 				}
 			}
@@ -489,50 +489,22 @@ pub fn (c ChanInfo) fault_iface() string {
 // The named signal must EXIST in the DBC message, not merely be a non-empty string: the engine
 // attaches a misspelled protection entry happily, and then neither the stamper nor the fault
 // finds the signal — so `bad_crc` was accepted and changed no transmitted bits.
+// has_protection: whether `node` stamps `field` ('crc' or 'counter') on `msg` — by its protect:
+// entry or its DBC declaration, the one answer the simulation stamps by (sim.protection_for).
 fn has_protection(db candb.Database, nodes []project.NodeCfg, node string, msg string, field string) bool {
-	for n in nodes {
-		if n.name != node {
-			continue
-		}
-		for p in n.protect {
-			if p.message != msg {
-				continue
-			}
-			want := if field == 'crc' { p.crc } else { p.counter }
-			if want == '' {
-				return false
-			}
-			for m in db.messages_from(node) {
-				if m.name != msg {
-					continue
-				}
-				for sg in m.signals {
-					if sg.name != want {
-						continue
-					}
-					// A MULTIPLEXED protection field is only written when its selector is
-					// active, and both the stamper and the fault walk active signals only — so
-					// neither would touch it and the fault would change no transmitted bits.
-					return !sg.is_multiplexed
-				}
-			}
-			return false
-		}
-	}
-	return false
+	e := prot_of(db, nodes, node, msg)
+	return if field == 'crc' { e.crc != '' } else { e.counter != '' }
 }
 
-// prot_of returns the protection configured for one message, so a range fault can be kept off
-// the counter and checksum fields — a violation written there is overwritten when the checksum
-// is stamped, and the frame goes out valid.
-fn prot_of(nodes []project.NodeCfg, node string, msg string) sim.E2e {
+// prot_of is the protection `node` stamps on `msg` (empty when none).
+fn prot_of(db candb.Database, nodes []project.NodeCfg, node string, msg string) sim.E2e {
 	for n in nodes {
 		if n.name != node {
 			continue
 		}
-		for p in n.protect {
-			if p.message == msg {
-				return sim.e2e_of(p)
+		for m in db.messages_from(node) {
+			if m.name == msg {
+				return sim.protection_for(n, m) or { sim.E2e{} }
 			}
 		}
 	}

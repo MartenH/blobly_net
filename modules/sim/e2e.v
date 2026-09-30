@@ -88,6 +88,67 @@ pub mut:
 
 pub const p01 = 'autosar_p01'
 
+// declared_e2e is the protection a message's DBC declares (#271), if it declares a usable one:
+// what its sender stamps when no protect: entry says otherwise. The reason is returned beside it
+// when the declaration cannot be applied, for validate_protection to say.
+pub fn declared_e2e(m candb.Message) ?E2e {
+	if !m.e2e.declared() {
+		return none
+	}
+	e := e2e_of_decl(m.e2e)
+	if declared_problem(m, e) != '' {
+		return none
+	}
+	return e
+}
+
+// e2e_of_decl is the protection a DBC declaration states — the one conversion.
+pub fn e2e_of_decl(d candb.E2eDecl) E2e {
+	return E2e{
+		counter: d.counter
+		crc:     d.crc
+		profile: d.profile
+		data_id: if d.has_data_id { ?u32(d.data_id) } else { none }
+	}
+}
+
+// declared_problem says why a message's DBC E2E declaration cannot be stamped — '' when it can.
+// Every shape a protect: entry is warned about is REFUSED here: an entry is the operator's own
+// word, applied with a warning, but a declaration is applied with none, so it must be exact.
+pub fn declared_problem(m candb.Message, e E2e) string {
+	if m.e2e.bad_data_id != '' {
+		return 'its E2EDataId ${m.e2e.bad_data_id} is not a Data ID'
+	}
+	if e.profile !in candb.e2e_profiles {
+		return 'its profile "${e.profile}" is not one this app implements'
+	}
+	if e.counter == '' && e.crc == '' {
+		return 'it names neither a counter nor a crc signal'
+	}
+	if e.counter != '' && e.counter == e.crc {
+		return 'it names "${e.counter}" as both counter and crc'
+	}
+	for name in [e.counter, e.crc] {
+		if name == '' {
+			continue
+		}
+		sig := m.signals.filter(it.name == name)
+		if sig.len == 0 {
+			return '"${name}" is not a signal of ${m.name}'
+		}
+		if sig[0].is_multiplexed {
+			return '"${name}" is multiplexed, so it is written only when its branch is active'
+		}
+		if name == e.crc && sig[0].length != 8 {
+			return 'its crc "${name}" is ${sig[0].length} bits, and every profile produces 8'
+		}
+	}
+	if why := p01_problem(m, e) {
+		return why
+	}
+	return ''
+}
+
 // e2e_of is the protection a protect: or verify: entry describes — the ONE place an entry
 // becomes an E2e, so the stamping, the checking and the panels cannot each carry a subset.
 pub fn e2e_of(p project.ProtectCfg) E2e {
