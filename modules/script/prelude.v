@@ -124,15 +124,24 @@ function sleep_ms(ms) __sleep(ms) end
 --     counter (0..14) in the low nibble of counter_pos and the CRC stamped
 -- Positions are 0-based byte offsets, as the [[frame]].e2e of blobly_emb writes them.
 e2e = {}
+-- errors name the function the script called, at the line that called it
+local function p01_crc(fname, frame, data_id, crc_pos, counter_pos, mode)
+  local ok, v = pcall(__e2e_p01_crc, frame, data_id, crc_pos, counter_pos, mode or "")
+  if not ok then error(fname .. ": " .. tostring(v), 3) end
+  return v
+end
 function e2e.p01_crc(frame, data_id, crc_pos, counter_pos, mode)
-  return __e2e_p01_crc(frame, data_id, crc_pos, counter_pos, mode or "")
+  return p01_crc("e2e.p01_crc", frame, data_id, crc_pos, counter_pos, mode)
 end
 function e2e.p01_protect(frame, data_id, crc_pos, counter_pos, counter, mode)
   if counter < 0 or counter > 14 then error("e2e.p01_protect: a Profile 1 counter is 0..14, not " .. counter, 2) end
+  if counter_pos < 0 or counter_pos >= #frame or crc_pos < 0 or crc_pos >= #frame then
+    error("e2e.p01_protect: crc_pos " .. crc_pos .. " / counter_pos " .. counter_pos .. " must be bytes of the " .. #frame .. "-byte frame", 2)
+  end
   local b = { string.byte(frame, 1, #frame) }
   b[counter_pos + 1] = (b[counter_pos + 1] & 0xF0) | counter
   local f = string.char(table.unpack(b))
-  b[crc_pos + 1] = e2e.p01_crc(f, data_id, crc_pos, counter_pos, mode)
+  b[crc_pos + 1] = p01_crc("e2e.p01_protect", f, data_id, crc_pos, counter_pos, mode)
   return string.char(table.unpack(b))
 end
 

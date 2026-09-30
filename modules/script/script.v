@@ -936,16 +936,19 @@ fn l_e2e_p01_crc(l lua.State) int {
 	crc_pos := l.arg_int_exact(3) or { return l.fail('e2e.p01_crc: crc_pos is not an integer') }
 	ctr_pos := l.arg_int_exact(4) or { return l.fail('e2e.p01_crc: counter_pos is not an integer') }
 	mode := l.arg_str(5)
-	if id < 0 || id > 0xFFFF {
-		return l.fail('e2e.p01_crc: data_id ${id} does not fit Profile 1\'s 16 bits')
+	if id < 0 {
+		return l.fail('data_id ${id} is not a Data ID')
+	}
+	if why := sim.p01_params_problem(u32(id), mode) {
+		return l.fail(why)
 	}
 	if crc_pos < 0 || crc_pos >= data.len || ctr_pos < 0 || ctr_pos >= data.len || crc_pos == ctr_pos {
-		return l.fail('e2e.p01_crc: crc_pos ${crc_pos} / counter_pos ${ctr_pos} must be distinct bytes of the ${data.len}-byte frame')
+		return l.fail('crc_pos ${crc_pos} / counter_pos ${ctr_pos} must be distinct bytes of the ${data.len}-byte frame')
 	}
-	if mode !in ['', 'both', 'low', 'alt'] {
-		return l.fail('e2e.p01_crc: mode "${mode}" is not both, low or alt')
+	crc := sim.p01_crc_bytes(data, int(crc_pos), u16(id), mode, data[int(ctr_pos)] & 0x0F) or {
+		return l.fail(err.msg())
 	}
-	l.push_int(sim.p01_crc_bytes(data, int(crc_pos), u16(id), mode, data[int(ctr_pos)] & 0x0F))
+	l.push_int(crc)
 	return 1
 }
 
