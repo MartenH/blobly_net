@@ -257,6 +257,55 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 			attrs << fmt
 		}
 	}
+	// The E2E contract, from the model (#271) — so an editor Save keeps what the parser read.
+	// NOT WHEN THE CALLER SUPPLIES ITS OWN, as for VFrameFormat: arxml_export passes them as
+	// extras, and two emitters of one attribute would write two definitions.
+	if !x.attrs.any(it.name.starts_with('E2E')) && msgs.any(it.e2e.declared()) {
+		mut ctr := DbcAttr{
+			name:    'E2ECounterSignal'
+			typ:     'STRING'
+			default: '""'
+		}
+		mut crc := DbcAttr{
+			name:    'E2ECrcSignal'
+			typ:     'STRING'
+			default: '""'
+		}
+		mut prof := DbcAttr{
+			name:    'E2EProfile'
+			typ:     'STRING'
+			default: '""'
+		}
+		mut did := DbcAttr{
+			name:    'E2EDataId'
+			default: '0'
+		}
+		mut max_id := u32(65535)
+		for m in msgs {
+			d := m.e2e
+			if d.counter != '' {
+				ctr.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.counter)}"'}
+			}
+			if d.crc != '' {
+				crc.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.crc)}"'}
+			}
+			if d.profile != '' {
+				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.profile)}"'}
+			}
+			if d.has_data_id {
+				did.values << DbcAttrValue{m.id, m.ext, '${d.data_id}'}
+				if d.data_id > max_id {
+					max_id = d.data_id
+				}
+			}
+		}
+		did.typ = 'INT 0 ${max_id}'
+		for a in [ctr, crc, prof, did] {
+			if a.values.len > 0 {
+				attrs << a
+			}
+		}
+	}
 	attrs << x.attrs
 	for a in attrs {
 		b << 'BA_DEF_ BO_ "${a.name}" ${a.typ};'

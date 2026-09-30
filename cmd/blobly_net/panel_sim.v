@@ -99,15 +99,12 @@ fn draw_sim(mut app App) {
 					// Only offer what can take effect on THIS message. bad_crc without a
 					// configured checksum changes no bits, and out_of_range needs a signal with
 					// an illegal value — offering either would show a fault the bus never sees.
-					has_crc := node.protect.any(it.message == m.name && it.crc != '')
-					has_ctr := node.protect.any(it.message == m.name && it.counter != '')
+					// what THIS node stamps on it — its protect: entry or its DBC declaration, the
+					// one answer the simulation itself stamps by
+					mprot := sim.protection_for(node, m) or { sim.E2e{} }
+					has_crc := mprot.crc != ''
+					has_ctr := mprot.counter != ''
 					mut oor_sig := ''
-					mut mprot := sim.E2e{}
-					for pr in node.protect {
-						if pr.message == m.name {
-							mprot = sim.e2e_of(pr)
-						}
-					}
 					for sg in m.signals {
 						if sim.can_force_out_of_range(m, sg.name, mprot) {
 							oor_sig = sg.name
