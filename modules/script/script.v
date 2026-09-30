@@ -109,6 +109,11 @@ mut:
 	ch   isotp.Channel
 	cli  uds.Client
 	chan string // the channel this connection belongs to (DoIP reuse; see l_uds_open)
+	// the CAN response id, for a functional request to recognise this connection's answers;
+	// DoIP addresses by logical address and has none (`can` false)
+	can bool
+	rx  u32
+	ext bool
 }
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
@@ -318,6 +323,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_dtc_setting', l_uds_dtc_setting)
 	env.st.register('__uds_clear_dtc', l_uds_clear_dtc)
 	env.st.register('__uds_raw_suppressed', l_uds_raw_suppressed)
+	env.st.register('__uds_functional', l_uds_functional)
 	env.st.register('__uds_dtcs', l_uds_dtcs)
 	env.st.register('__uds_supported_dtcs', l_uds_supported_dtcs)
 	env.st.register('__uds_dtc_count', l_uds_dtc_count)
@@ -613,6 +619,10 @@ fn l_uds_open(l lua.State) int {
 			return 1
 		}
 	}
+	// Omitted, not zero: the standard physical pair is the CAN default.
+	ctx := if has_tx { tx } else { u32(0x7E0) }
+	crx := if has_rx { rx } else { u32(0x7E8) }
+	ext := ctx > 0x7FF || crx > 0x7FF
 	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the
 	// tx/rx arguments do not apply — the addresses come from the channel's configuration and
 	// passing ids here is a mistake worth naming rather than ignoring.
@@ -622,10 +632,6 @@ fn l_uds_open(l lua.State) int {
 			return l.fail('doip open failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 		})
 	} else {
-		// Omitted, not zero: the standard physical pair is the CAN default.
-		ctx := if has_tx { tx } else { u32(0x7E0) }
-		crx := if has_rx { rx } else { u32(0x7E8) }
-		ext := ctx > 0x7FF || crx > 0x7FF
 		isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
 			return l.fail('isotp open failed on ${name}: ${err}')
 		}, info.iface, ctx, crx, ext) or { return l.fail('isotp open failed on ${name}: ${err}') })
@@ -634,6 +640,9 @@ fn l_uds_open(l lua.State) int {
 		ch:   ch
 		cli:  uds.new_client(ch)
 		chan: name
+		can:  !info.carrier.doip
+		rx:   crx
+		ext:  ext
 	}
 	l.push_int(env.conns.len - 1)
 	return 1
@@ -888,6 +897,64 @@ fn l_uds_clear_dtc(l lua.State) int {
 	}
 	c.cli.clear_dtc(u32(group)) or { return l.fail(err.msg()) }
 	return 0
+}
+
+// l_uds_functional(channel, functional_id, req, window_ms, handle...): one request to every
+// connection named, as uds.functional does it; an array of replies in the handles' order.
+fn l_uds_functional(l lua.State) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	fid := l.arg_int(2)
+	req := l.arg_bytes(3)
+	window := int(l.arg_int(4))
+	ci := env.find_chan(name) or { return l.fail(err.msg()) }
+	info := env.chans[ci]
+	if info.carrier.doip || info.carrier.someip {
+		return l.fail('uds.functional("${name}"): functional addressing here is CAN only')
+	}
+	if fid < 0 || fid > 0x1FFF_FFFF {
+		return l.fail('uds.functional("${name}"): ${fid} is not a CAN identifier')
+	}
+	mut targets := []uds.FunctionalTarget{}
+	for i in 5 .. l.nargs() + 1 {
+		h := int(l.arg_int(i))
+		c := env.conn(h) or { return l.fail('uds.functional: bad uds handle') }
+		if !c.can || c.chan != name {
+			return l.fail('uds.functional("${name}"): a connection opened on "${c.chan}" is not a CAN target here')
+		}
+		targets << uds.FunctionalTarget{
+			client: &c.cli
+			rsp_id: c.rx
+			ext:    c.ext
+		}
+	}
+	ext := u32(fid) > 0x7FF
+	mut tap := env.opener(info.iface, name) or { return l.fail('uds.functional: ${err}') }
+	defer {
+		tap.close()
+	}
+	mut fch := isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
+		return l.fail('uds.functional: ${err}')
+	}, info.iface, u32(fid), u32(fid), ext) or { return l.fail('uds.functional: ${err}') })
+	defer {
+		fch.close()
+	}
+	replies := uds.functional(mut fch, mut tap, targets, req, if window > 0 { window } else { 1000 }) or {
+		return l.fail(err.msg())
+	}
+	l.new_table()
+	for i, r in replies {
+		l.new_table()
+		l.set_str('outcome', r.outcome.str())
+		l.set_str('resp', r.resp.bytestr())
+		l.set_int('nrc', r.nrc)
+		l.set_bool('pended', r.pended)
+		if r.err != '' {
+			l.set_str('err', r.err)
+		}
+		l.set_index(i + 1)
+	}
+	return 1
 }
 
 fn l_uds_raw_suppressed(l lua.State) int {
