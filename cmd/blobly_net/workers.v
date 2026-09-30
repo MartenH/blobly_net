@@ -400,7 +400,7 @@ fn consumer_expected(mut app App, iface string, gen u64) {
 	app.mu.unlock()
 }
 
-fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, srv uds.Server, gen u64) {
+fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, gen u64) {
 	// A RUN WORKER LIKE ANY OTHER. It resolves its tap with open_tap_on, whose bitrate_iface
 	// walks app.chans unlocked — the exact thing open_tap_phys's comment (bus.v) forbids a
 	// worker from doing — so a rebuild after Stop could replace that array under it.
@@ -411,12 +411,18 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 	mut s := srv
 	key := sim_key(pch, name)
 	mut ch := &isotp.SoftChannel(unsafe { nil })
+	// the node's physical channel and, when it answers one, its functional listener: opened,
+	// closed and answered TOGETHER, so a node switched off answers neither
+	mut link := uds.NodeLink{
+		fid:  fid
+		fext: fext
+	}
 	mut open := false
 	mut reported := false
 	mut open_err_said := false
 	defer {
 		if open {
-			ch.close()
+			link.close()
 		}
 	}
 	for a.running {
@@ -434,7 +440,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 			// skipping recv leaves requests queued on the open channel, which are answered
 			// late once the ECU comes back. A closed channel does neither.
 			if open {
-				ch.close()
+				link.close()
 				open = false
 			}
 			time.sleep(50 * time.millisecond)
@@ -467,6 +473,22 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				time.sleep(200 * time.millisecond)
 				continue
 			}
+			if fid != 0 {
+				// receive-only: the answers go out on the physical channel's tap, attributed
+				// there; this subscription only hears the broadcasts
+				ftap := transport.open(a.bitrate_iface(iface)) or {
+					if !open_err_said {
+						open_err_said = true
+						notify_gen(app, gen,
+							'${pch.name}: UDS node could not listen on functional id 0x${fid:X} on ${iface} — ${err} (retrying)')
+					}
+					ch.close()
+					time.sleep(200 * time.millisecond)
+					continue
+				}
+				link.func << ftap
+			}
+			link.phys = ch
 			open = true
 			open_err_said = false // this episode ended in recovery; the next one may speak
 			if !reported {
@@ -474,10 +496,8 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				consumer_attached(a, iface, gen)
 			}
 		}
-		req := ch.recv(50) or { continue }
-		resp := s.handle(req)
-		if resp.len > 0 {
-			ch.send(resp) or {}
+		s.serve_step(mut link, 50) or {
+			time.sleep(50 * time.millisecond) // a failed bus: back off rather than spin
 		}
 	}
 }

@@ -1200,7 +1200,8 @@ fn (mut app App) start() {
 			own := if u.src >= 0 && u.src < owners.len { owners[u.src] } else { sc.pch }
 			consumer_expected(mut app, sc.iface, start_gen)
 			app.reserve_run_worker() // released by the loop's own defer
-			spawn uds_node_loop(app, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.server, start_gen)
+			spawn uds_node_loop(app, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.functional,
+				u.fext, u.server, start_gen)
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
 				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'

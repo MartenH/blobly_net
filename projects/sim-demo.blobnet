@@ -17,7 +17,7 @@
 # only once it is actually listening.
 project:
   name: Simulation demo — CAN1 + CAN2
-  version: 1
+  version: 8
 
 channels:
   # --- CAN1: powertrain + chassis ---
@@ -46,6 +46,7 @@ channels:
         uds:
           rx: "0x7E0"
           tx: "0x7E8"
+          functional: "0x7DF"     # also answers the functional (broadcast) id, on 0x7E8
           dids:
             - { id: "0xF190", text: "BLOBLYNETV0SUT001" }
             - { id: "0xF18C", text: "SN-0001" }
@@ -57,6 +58,7 @@ channels:
         uds:
           rx: "0x7E1"
           tx: "0x7E9"
+          functional: "0x7DF"
           dids:
             - { id: "0xF190", text: "BLOBLY-CHASSIS-01" }
           dtcs:

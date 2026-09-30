@@ -269,7 +269,7 @@ fn main() {
 				} else {
 					for mut u in servers {
 						sims << spawn uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext,
-							u.server, ctl)
+							u.functional, u.fext, u.server, ctl)
 					}
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
 				}
@@ -391,7 +391,7 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software
 // ISO-TP on the channel's bus, until stopped.
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
-fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ctl) {
+fn uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fext bool, srv uds.Server, ctl &Ctl) {
 	// Counted done on EVERY way out, an open that fails included -- a loop that returned
 	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
 	// #231).
@@ -399,16 +399,33 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 		stdatomic.add_i64(&loops_done, 1)
 	}
 	mut ch := isotp.open_software(iface, tx, rx, ext) or { return }
-	mut s := srv
-	for ctl.running {
-		req := ch.recv(50) or { continue }
-		resp := s.handle(req)
-		if resp.len > 0 {
-			ch.send(resp) or {}
+	mut link := uds.NodeLink{
+		phys: ch
+		fid:  fid
+		fext: fext
+	}
+	if fid != 0 {
+		// a raw subscription of its own: functional requests are Single Frames on a shared id.
+		// Failing to open it costs the broadcasts, not the ECU: physical requests are still served.
+		if f := transport.open(iface) {
+			link.func << f
+		} else {
+			eprintln('${iface}: uds node 0x${rx:X} cannot listen on functional id 0x${fid:X}: ${err} — physical requests only')
 		}
 	}
-	ch.close()
+	mut s := srv
+	for ctl.running {
+		s.serve_step(mut link, 50) or { time.sleep(50 * time.millisecond) }
+	}
+	mut fdiags := []transport.BusDiagnostics{}
+	for mut t in link.func {
+		fdiags << t.diagnostics()
+	}
+	link.close()
 	report_diag('${iface} (uds node)', ch.diagnostics()) // after the close: see sim_loop
+	for d in fdiags {
+		report_diag('${iface} (uds node, functional 0x${fid:X})', d)
+	}
 }
 
 // doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,

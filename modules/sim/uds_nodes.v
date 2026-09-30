@@ -20,6 +20,9 @@ pub:
 	rx   u32  // request id  (tester -> ECU)
 	tx   u32  // response id (ECU -> tester)
 	ext  bool // 29-bit addressing, inferred from the ids
+	// the functional id it also answers, 0 = none (and its width, inferred like the pair's)
+	functional u32
+	fext       bool
 pub mut:
 	server uds.Server
 }
@@ -59,7 +62,37 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 			server: build_server(cfg, max_did_bytes, max_dtcs)
 		}
 	}
+	// A functional id is SHARED by design (every ECU on a bus answers 0x7DF), so it claims
+	// nothing — but it must not be any accepted server's physical id, or one ECU would read its
+	// neighbour's requests (or replies) as broadcasts. Decided once every physical id is known.
+	for i, u in out {
+		cfg := nodes[u.src].uds or { continue }
+		if functional_usable(cfg.functional, u.ext, claimed) {
+			out[i] = UdsNode{
+				...u
+				functional: u32(cfg.functional)
+				fext:       cfg.functional > 0x7FF
+			}
+		}
+	}
 	return out
+}
+
+// functional_usable: a configured functional id that is a CAN id of the node's own frame format
+// (an 11-bit broadcast to a 29-bit ECU is a combination no ISO 15765-4 tester uses) and no
+// served ECU's physical id. The ONE rule: uds_nodes applies it, validate_uds explains it.
+fn functional_usable(f u64, ext bool, physical map[u64]bool) bool {
+	return f != 0 && f <= can_id_max && (f > 0x7FF) == ext && f !in physical
+}
+
+// physical_ids are the ids the servers that will actually start listen and answer on.
+fn physical_ids(servers []UdsNode) map[u64]bool {
+	mut ids := map[u64]bool{}
+	for u in servers {
+		ids[u64(u.rx)] = true
+		ids[u64(u.tx)] = true
+	}
+	return ids
 }
 
 // build_server turns one node's `uds:` content into a server. Carrier-independent: what an
@@ -156,6 +189,9 @@ pub fn validate_uds_doip(nodes []project.NodeCfg) []string {
 		cfg := n.uds or { continue }
 		if cfg.rx != 0 || cfg.tx != 0 {
 			warns << 'uds on "${n.name}": rx/tx are ignored on a DoIP channel — addressing is the channel\'s tester_address/ecu_address'
+		}
+		if cfg.functional != 0 {
+			warns << 'uds on "${n.name}": functional is ignored on a DoIP channel — DoIP addresses functional requests by logical address'
 		}
 		for m in cfg.malformed {
 			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
@@ -285,6 +321,19 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 			// SocketCAN masks on send while the software channel matches unmasked, so the ECU
 			// would transmit on a different valid id and never hear its tester
 			warns << 'uds on "${n.name}": 0x${cfg.rx:X}/0x${cfg.tx:X} exceeds the 29-bit CAN id range'
+		}
+		if cfg.functional != 0 {
+			ext := cfg.rx > 0x7FF || cfg.tx > 0x7FF
+			if !functional_usable(cfg.functional, ext, physical_ids(uds_nodes(nodes))) {
+				why := if cfg.functional > can_id_max {
+					'exceeds the 29-bit CAN id range'
+				} else if (cfg.functional > 0x7FF) != ext {
+					'is not in the frame format of the node\'s own pair'
+				} else {
+					'is a served ECU\'s physical id'
+				}
+				warns << 'uds on "${n.name}": functional id 0x${cfg.functional:X} ${why} — not answered'
+			}
 		}
 		if (cfg.rx > 0x7FF) != (cfg.tx > 0x7FF) {
 			// ISO-TP uses one frame format for the pair; a mixed pair cannot be honoured

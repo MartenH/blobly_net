@@ -219,8 +219,9 @@ milliseconds for an ordinary answer. `outcome` is one of:
 
 `pended` says a `0x78` came first. What an ECU answers is reported, never raised. The call raises
 when it cannot run at all: a request it cannot send, a bus that will not open or fails while
-listening, or a target whose response id is flooding (the same refusal a physical request makes). The simulated UDS nodes do not answer the functional id yet, so this is
-for real ECUs (bench-verified against blobly_emb's `system_full`).
+listening, or a target whose response id is flooding (the same refusal a physical request makes). Simulated ECUs answer it when their `uds:` block
+names a `functional:` id (`docs/simulation.md`; `projects/sim-demo.blobnet`, `tests/diag_functional.lua`).
+Bench-verified against blobly_emb's `system_full` too.
 
 ### Raw frames & signals
 
