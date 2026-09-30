@@ -2,6 +2,7 @@ module doip
 
 #include <winsock2.h>
 
+@[typedef]
 pub struct C.WSAPOLLFD {
 mut:
 	fd      u64
