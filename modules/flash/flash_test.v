@@ -23,7 +23,7 @@ fn fake_boot(mut b FakeBoot, stop chan bool) {
 			}
 			else {}
 		}
-		req := b.ch.recv(20) or { continue }
+		req := b.ch.recv(200) or { continue } // one deadline per PDU: room for a 66-byte block
 		match req[0] {
 			0x10 {
 				b.ch.send([u8(0x50), req[1], 0x00, 0x32, 0x01, 0xF4]) or {}
@@ -79,19 +79,21 @@ fn test_a_pending_erase_and_a_late_block_answer_do_not_derail_the_session() {
 	}
 	stop := chan bool{cap: 1}
 	t := spawn fake_boot(mut boot, stop)
-	defer {
-		stop <- true
-		t.wait()
-	}
 	mut ch := isotp.Channel(isotp.open_software('inproc:FLASH', 0x7E0, 0x7E8, false) or {
 		panic(err)
 	})
 	image := []u8{len: 200, init: u8(index)}
 	mut notes := Notes{}
 	program(mut ch, image, Opts{ auth_seed: []u8{len: 32} }, mut notes) or {
+		stop <- true
+		t.wait()
+		ch.close()
 		assert false, 'flash failed: ${err}'
 		return
 	}
+	stop <- true
+	t.wait() // the boot's record is read only after its thread has ended
+	ch.close()
 	assert notes.lines.any(it.contains('0x29 not required'))
 	assert notes.lines.any(it.contains('image verified'))
 	assert notes.lines.last() == 'ECU reset — done'
@@ -109,18 +111,17 @@ fn test_a_secured_boot_refusing_the_challenge_stops_the_flash() {
 	}
 	stop := chan bool{cap: 1}
 	t := spawn fake_boot(mut boot, stop)
-	defer {
-		stop <- true
-		t.wait()
-	}
 	mut ch := isotp.Channel(isotp.open_software('inproc:FLASH2', 0x7E0, 0x7E8, false) or {
 		panic(err)
 	})
 	mut notes := Notes{}
+	mut msg := ''
 	program(mut ch, []u8{len: 10}, Opts{ auth_seed: []u8{len: 32} }, mut notes) or {
-		assert err.msg() == 'request challenge: NRC 0x31'
-		assert boot.blocks == 0
-		return
+		msg = err.msg()
 	}
-	assert false, 'a refused challenge was flashed through'
+	stop <- true
+	t.wait()
+	ch.close()
+	assert msg == 'request challenge: NRC 0x31', 'a refused challenge was flashed through'
+	assert boot.blocks == 0
 }

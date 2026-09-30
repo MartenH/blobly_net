@@ -99,9 +99,8 @@ fn authenticate(mut c uds.Client, seed []u8, mut sink Sink) ! {
 				sink.note('0x29 not required by this boot — flashing without auth')
 				return
 			}
-			return error('request challenge: NRC 0x${err.nrc.hex()}')
 		}
-		return error('request challenge: ${err}')
+		return step_error('request challenge', err)
 	}
 	if cr.len < 2 + 32 {
 		return error('request challenge: unexpected response ${cr.hex()}')
@@ -148,12 +147,15 @@ fn be32(v u32) []u8 {
 // ask is one step of the session: its positive answer, or an error naming the step (a negative
 // answer as its NRC).
 fn ask(mut c uds.Client, req []u8, what string) ![]u8 {
-	return c.raw(req) or {
-		if err is uds.NegativeResponse {
-			return error('${what}: NRC 0x${err.nrc.hex()}')
-		}
-		return error('${what}: ${err}')
+	return c.raw(req) or { return step_error(what, err) }
+}
+
+// step_error names the step a request failed in; a negative answer as its NRC.
+fn step_error(what string, err IError) IError {
+	if err is uds.NegativeResponse {
+		return error('${what}: NRC 0x${err.nrc.hex()}')
 	}
+	return error('${what}: ${err}')
 }
 
 // first_answer_ms: the wait for each step's first answer (the timeout this session always had);
@@ -193,7 +195,11 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 	er << be32(opts.base)
 	er << be32(total)
 	err_rsp := ask(mut c, er, 'erase')!
-	if err_rsp.len >= 5 && err_rsp[4] != 0 {
+	// 71 01 FF 00 <result>: an answer without its result has not said the erase worked
+	if err_rsp.len < 5 {
+		return error('erase: no routine result in ${err_rsp.hex()}')
+	}
+	if err_rsp[4] != 0 {
 		return error('erase routine failed (result ${err_rsp[4]})')
 	}
 	sink.note('erased 0x${opts.base.hex()} +${total}')
@@ -202,12 +208,19 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 	dl << be32(opts.base)
 	dl << be32(total)
 	dr := ask(mut c, dl, 'request download')!
-	if dr.len < 4 {
-		return error('request download: short response')
+	// 74 <lengthFormatIdentifier> <maxNumberOfBlockLength, as wide as its high nibble says>: the
+	// length counts the 0x36 SID and the block counter, so the data per block is two fewer
+	width := if dr.len >= 2 { int(dr[1] >> 4) } else { 0 }
+	if width < 1 || width > 4 || dr.len < 2 + width {
+		return error('request download: bad block length field in ${dr.hex()}')
 	}
-	max_block := int((u16(dr[2]) << 8 | u16(dr[3])) - 2)
+	mut block_len := 0
+	for i in 0 .. width {
+		block_len = block_len << 8 | int(dr[2 + i])
+	}
+	max_block := block_len - 2
 	if max_block <= 0 {
-		return error('request download: bad block size')
+		return error('request download: bad block size ${block_len}')
 	}
 	nblocks := (blob.len + max_block - 1) / max_block
 
@@ -238,9 +251,13 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 	}
 	sink.note('image verified + marked valid')
 
-	ask(mut c, [u8(0x11), 0x01], 'ecu reset') or {
-		// the boot drains its Tx FIFO then resets; on a fast reset the 0x51
-		// can still be lost — the app appearing on the bus is the real ack
+	c.raw([u8(0x11), 0x01]) or {
+		// the boot drains its Tx FIFO then resets; on a fast reset the 0x51 can still be lost —
+		// the app appearing on the bus is the real ack. A REFUSAL is not that: the boot said no
+		// and is still in the boot manager.
+		if err is uds.NegativeResponse {
+			return step_error('ecu reset', err)
+		}
 		sink.note('ECU reset sent (response lost to the reset — normal)')
 		return
 	}
