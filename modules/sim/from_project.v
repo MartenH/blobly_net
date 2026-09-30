@@ -43,6 +43,16 @@ pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 		}
 		prot[p.message] = e
 	}
+	// What the DBC declares (#271), for every message this node sends that no protect: entry
+	// names — an entry, even one refused above, is the node's own word and overrides the file
+	for m in db.messages_from(cfg.name) {
+		if cfg.protect.any(it.message == m.name) {
+			continue
+		}
+		if e := declared_e2e(m) {
+			prot[m.name] = e
+		}
+	}
 	// No generators and no response rules: the node has no explicit BEHAVIOUR, so keep the
 	// built-in model — which for 'SUT' is the hand-tuned reference with its own generators and
 	// request/response rule. Protection is orthogonal to behaviour and is layered on top;
@@ -144,6 +154,29 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 				// zero protected candidates, or several: nothing distinguishes them, so the
 				// DBC order decides the reply format, DLC, protection layout and counter
 				'responses: id 0x${r.response:X} matches both a standard and an extended message and protect: does not single one out — the DBC order decides which is sent; give exactly one of them a protect: entry'
+			}
+		}
+	}
+	// the DBC's own declarations (#271): applied without a protect: entry, so one that cannot be
+	// applied must be said — and an entry that differs from one overrides it, which is legitimate
+	// (a wrong Data ID on purpose) but worth saying
+	for m in db.messages_from(cfg.name) {
+		if !m.e2e.declared() {
+			continue
+		}
+		mine := cfg.protect.filter(it.message == m.name)
+		if mine.len == 0 {
+			why := declared_problem(m, e2e_of_decl(m.e2e))
+			if why != '' {
+				warns << 'dbc: the E2E declaration of ${m.name} cannot be applied — ${why}; ${m.name} is sent unprotected'
+			}
+		} else {
+			p := mine[0]
+			d := m.e2e
+			id := p.data_id or { u32(0) }
+			if p.counter != d.counter || p.crc != d.crc || p.profile != d.profile
+				|| (p.data_id != none) != d.has_data_id || id != d.data_id {
+				warns << 'protect: ${m.name} differs from the E2E the DBC declares — the protect: entry applies'
 			}
 		}
 	}

@@ -84,7 +84,28 @@ pub mut:
 	// merely choosing how to decode a frame it already has may use the fallback and accept the
 	// ambiguity (#95).
 	j1939   bool
+	// The E2E contract the file DECLARES for this message (#271: `BA_ "E2ECounterSignal"` /
+	// `"E2ECrcSignal"` / `"E2EProfile"` / `"E2EDataId"`) — what its sender stamps and every
+	// receiver checks, stated once in the file the whole bench shares. Empty when not declared.
+	e2e     E2eDecl
 	signals []Signal
+}
+
+// E2eDecl is a message's declared E2E contract: the counter and CRC SIGNALS (so positions come
+// from the layout), the profile (`autosar_p01`, or one of the primitives in e2e_profiles) and
+// the Data ID.
+pub struct E2eDecl {
+pub mut:
+	counter     string
+	crc         string
+	profile     string
+	data_id     u32
+	has_data_id bool // 0 is a legitimate Data ID, so presence is its own fact
+}
+
+// declared: the file said anything about this message's E2E at all.
+pub fn (d E2eDecl) declared() bool {
+	return d.counter != '' || d.crc != '' || d.profile != '' || d.has_data_id
 }
 
 // raw_value extracts the unsigned raw bits of the signal from `data`. Handles

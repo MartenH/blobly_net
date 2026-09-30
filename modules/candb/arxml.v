@@ -1214,12 +1214,9 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					r.report.notes << '${sig_pdu_path}: cyclic TIME-OFFSET ${tm.offset_ms} ms is not modelled; the simulation starts every cyclic frame at 0, and the fragment carries no phase'
 				}
 				if e := r.e2e[sig_pdu_path] {
-					// CARRIED, NOT APPLIED: the contract reaches the DBC export's attributes and
-					// the fragment, but the native simulation protects only what the project's
-					// `protect:` entries name (dbc.v does not read the attributes back — #271), so
-					// a simulated transmitter of this frame sends an unstamped counter and CRC
-					// that the declared receiver rejects. Said, once per frame (round 17)
-					r.report.notes << "${fname}: declares an E2E ${e.profile} contract; carried to the DBC export and the fragment, but NOT applied by the native simulation, which protects only what the project's protect: entries name"
+					// APPLIED when it can be stated: the contract goes onto Message.e2e (#271),
+					// which the simulation stamps; one that cannot is said below, by the same
+					// predicate the export refuses with
 					info.e2e = ArxmlE2e{
 						...e
 						pdu_offset: pdu_off
@@ -1298,7 +1295,9 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			// sees the fragment, and the DBC would otherwise lose it without a word (rounds 26–27)
 			why := e2e_export_refusal(msg, e)
 			if why != '' {
-				r.report.notes << '${fname}: the DBC export carries NO E2E attributes for it — ${why}; the fragment names the contract'
+				// and the simulation, which stamps what Message.e2e carries, sends it unprotected:
+				// a simulated transmitter the declared receiver would reject (round 17)
+				r.report.notes << '${fname}: its E2E contract is neither applied by the simulation nor carried as DBC attributes — ${why}; the fragment names the contract'
 			}
 		}
 		msgs << msg
@@ -1309,6 +1308,25 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// ONE format for every frame this cluster simulates; the export's VFrameFormat and
 		// the fragment's per-frame comment are where the distinction survives
 		r.report.notes << '${path}: ${fd_frames} CAN-FD and ${classic_frames} classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction'
+	}
+	// the E2E contract onto the model, as a DBC's attributes put it there (#271): the ONE
+	// predicate the export answers by, so a message carries exactly what the export writes
+	probe := ArxmlCluster{
+		db:     Database{
+			messages: msgs
+		}
+		frames: frames
+	}
+	for i, m in msgs {
+		if s := probe.e2e_signals(m) {
+			msgs[i].e2e = E2eDecl{
+				counter:     s.counter
+				crc:         s.crc
+				profile:     s.profile
+				data_id:     s.data_id
+				has_data_id: true
+			}
+		}
 	}
 	return ArxmlCluster{
 		name: name

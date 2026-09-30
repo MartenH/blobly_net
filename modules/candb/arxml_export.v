@@ -11,9 +11,9 @@
 //   e2e_signals   — the E2E offsets turned into the SIGNALS that sit there, which is the form
 //                   both the attributes and `sim.E2e` take
 //
-// The DBC parser here (dbc.v) does not yet READ the attributes or the comment back — that is
-// #271's rung. Until it lands, opening an export in the DBC editor and saving it drops both:
-// the editor is for a DBC you own, and the provenance line is what tells the two apart.
+// dbc.v reads the E2E attributes back onto Message.e2e (#271), and the writer emits them from
+// there, so an editor Save keeps the contract; the provenance comment is not read back, so a
+// Save drops it — the editor is for a DBC you own, and that line is what tells the two apart.
 module candb
 
 // ArxmlProvenance is what the exported DBC says about its origin.
@@ -35,14 +35,13 @@ pub:
 	data_id u32
 }
 
-// e2e_profile_primitive maps an AUTOSAR E2E profile to the checksum blobly's simulation can
-// compute (`e2e_profiles`, docs/simulation.md). Only the CRC algorithm is mapped — profile
-// 1's header layout and counter rules are the file's, not ours — and a profile with a CRC
-// this app lacks (profile 4/5/6/7 are CRC-16/32/64) maps to '' so nothing pretends.
+// e2e_profile_primitive maps an AUTOSAR E2E profile to the profile blobly implements AS
+// SPECIFIED — PROFILE_01 is `autosar_p01` — and every other to '', so nothing pretends: mapping
+// profile 2 or 11 onto a CRC primitive under blobly's own coverage rule (what this did before
+// autosar_p01 existed) exported a contract no AUTOSAR receiver accepts.
 pub fn e2e_profile_primitive(profile string) string {
 	p := match profile {
-		'PROFILE_01', 'PROFILE_11' { 'crc8_j1850' }
-		'PROFILE_02', 'PROFILE_22' { 'crc8_autosar' }
+		'PROFILE_01' { 'autosar_p01' }
 		else { '' }
 	}
 	// HELD TO THE ONE LIST: a primitive renamed or removed from e2e_profiles must stop being
@@ -91,7 +90,7 @@ pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
 		return 'its data-id mode ${e.data_id_mode} is not expressible there'
 	}
 	if e2e_profile_primitive(e.profile) == '' {
-		return 'its profile ${e.profile} has no checksum this app computes'
+		return 'its profile ${e.profile} is not one this app implements (PROFILE_01 is)'
 	}
 	if e.data_length > 0 && (e.crc_offset + 8 > e.data_length || e.counter_offset + 4 > e.data_length) {
 		return 'its CRC or counter field lies outside the protected DATA-LENGTH of ${e.data_length} bits'
@@ -310,11 +309,10 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 		if e := f.e2e {
 			// the SAME contract the DBC attributes carry (e2e_signals): a protection the
 			// export cannot state exactly is named, never approximated into an entry
-			if s := c.e2e_signals(m) {
-				// what blobly_emb implements is its own CRC-8 + 4-bit counter, not the
-				// complete AUTOSAR profile (docs/simulation.md): the comment names the
-				// primitive the profile's checksum maps to, and where it came from
-				b << "e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # ${s.profile}, from ${e.profile} (blobly's primitive, not the full AUTOSAR profile)"
+			if _ := c.e2e_signals(m) {
+				// blobly_emb's comm/e2e is AUTOSAR E2E Profile 1 (Data ID mode BOTH), which is
+				// the one profile e2e_signals admits
+				b << "e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # AUTOSAR ${e.profile}"
 			} else if !e.single_data_id() {
 				ids := e.data_ids.map('0x${it:X}').join(', ')
 				b << '# E2E ${e.profile} with ${e.data_id_mode} data ids (${ids}): this data-id mode is not expressible here'

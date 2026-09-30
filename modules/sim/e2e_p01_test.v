@@ -203,3 +203,47 @@ fn test_p01_problems_are_reported_and_not_stamped() {
 	}
 	assert validate_protection(db, stray).any(it.contains('data_id_mode'))
 }
+
+// #271: a node with NO protect: entry stamps what its DBC declares — the reference vector — and a
+// protect: entry that differs, or a declaration that cannot be applied, is said
+fn test_dbc_declared_e2e_is_stamped_and_checked() {
+	mut m := candb.Message{
+		...brake_status()
+		sender: 'Chassis'
+		e2e:    candb.E2eDecl{
+			counter:     'BrakeCounter'
+			crc:         'BrakeCrc'
+			profile:     'autosar_p01'
+			data_id:     0x1244
+			has_data_id: true
+		}
+	}
+	db := candb.Database{
+		nodes:    ['Chassis']
+		messages: [m]
+	}
+	e := declared_e2e(m) or { panic('a usable declaration was refused') }
+	mut d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x00]
+	e.apply(m, mut d, 5)
+	assert d[4] == p01_vectors['both'][5]
+	ecu := from_project(db, project.NodeCfg{ name: 'Chassis' })
+	assert ecu.messages.any(it.msg.name == 'BrakeStatus' && it.e2e.profile == 'autosar_p01')
+	differs := project.NodeCfg{
+		name:    'Chassis'
+		protect: [project.ProtectCfg{
+			message: 'BrakeStatus'
+			counter: 'BrakeCounter'
+			crc:     'BrakeCrc'
+			profile: 'autosar_p01'
+			data_id: u32(0x99)
+		}]
+	}
+	assert validate_protection(db, differs).any(it.contains('differs from the E2E the DBC declares'))
+	m.e2e.data_id = 0x10000 // not a Profile 1 Data ID
+	bad := candb.Database{
+		nodes:    ['Chassis']
+		messages: [m]
+	}
+	assert declared_e2e(m) == none
+	assert validate_protection(bad, project.NodeCfg{ name: 'Chassis' }).any(it.contains('cannot be applied'))
+}

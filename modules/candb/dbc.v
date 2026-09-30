@@ -266,6 +266,7 @@ mut:
 	// override single frames back to StandardCAN, and "stated, and not J1939" must beat the
 	// default rather than reading like silence.
 	j1939_stated bool
+	e2e          E2eDecl
 	sigs         []SigBuilder
 }
 
@@ -315,6 +316,8 @@ pub fn parse_dbc(text string) !Database {
 			nodes = line[4..].fields()
 		} else if line.starts_with('BA_ "GenMsgCycleTime"') {
 			apply_cycle_time(mut msgs, by_id, line)
+		} else if line.starts_with('BA_ "E2E') {
+			apply_e2e_attr(mut msgs, by_id, line)
 		} else if line.starts_with('BA_ "VFrameFormat"') {
 			fmt_lines << line
 		} else if line.starts_with('BA_DEF_DEF_ "VFrameFormat"') {
@@ -374,6 +377,7 @@ pub fn parse_dbc(text string) !Database {
 			cycle_ms: mb.cycle_ms
 			// the per-message record wins; the file-wide default fills the rest
 			j1939:   mb.j1939 || (default_j1939 && !mb.j1939_stated)
+			e2e:     mb.e2e
 			signals: sigs
 		}
 	}
@@ -397,6 +401,36 @@ fn apply_tx_bu(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 		if name != '' && name !in msgs[idx].tx_nodes {
 			msgs[idx].tx_nodes << name
 		}
+	}
+}
+
+// apply_e2e_attr parses one of #271's E2E contract attributes — `BA_ "E2ECounterSignal" BO_ <id>
+// "<signal>";`, likewise E2ECrcSignal and E2EProfile, and `BA_ "E2EDataId" BO_ <id> <n>;` — onto
+// its message. A value that is not what the attribute holds is left unset rather than guessed.
+fn apply_e2e_attr(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	f := line.trim_right(';').fields()
+	// f: BA_ "<name>" BO_ <id> <value…>
+	if f.len < 5 || f[2] != 'BO_' {
+		return
+	}
+	idx := by_id[u32(f[3].u64())] or { return }
+	raw := f[4..].join(' ').trim_space()
+	str := if raw.len >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+		raw[1..raw.len - 1]
+	} else {
+		''
+	}
+	match f[1] {
+		'"E2ECounterSignal"' { msgs[idx].e2e.counter = str }
+		'"E2ECrcSignal"' { msgs[idx].e2e.crc = str }
+		'"E2EProfile"' { msgs[idx].e2e.profile = str }
+		'"E2EDataId"' {
+			if raw != '' && raw.bytes().all(it.is_digit()) && raw.len <= 10 && raw.u64() <= 0xFFFF_FFFF {
+				msgs[idx].e2e.data_id = u32(raw.u64())
+				msgs[idx].e2e.has_data_id = true
+			}
+		}
+		else {}
 	}
 }
 
