@@ -16,7 +16,7 @@
 //
 //     -- @project ../projects/doip-announce-demo.blobnet
 //
-// Relative to the SCRIPT, not the working directory — the path is written in the script, so it
+// Relative to the SCRIPT, not the working directory (an absolute path is taken as written) — the path is written in the script, so it
 // resolves from the script, and the declaration keeps working wherever the runner is invoked from.
 //
 // The runner then REFUSES a mismatch rather than running one: an explicit `--project` that
@@ -32,7 +32,7 @@ pub struct Decl {
 pub:
 	script string // the script that declared it
 	raw    string // exactly as written, for messages — the reader has to find it in the file
-	path   string // resolved against the script's own directory
+	path   string // resolved against the script's own directory, unless absolute
 }
 
 // declaration_in reads the directive out of a script's text. Separate from the file so the rule
@@ -61,7 +61,8 @@ pub fn declaration_in(text string, script_path string) ?Decl {
 		return Decl{
 			script: script_path
 			raw:    raw
-			path:   os.norm_path(os.join_path(os.dir(script_path), raw))
+			// an absolute path is taken as written; a relative one from the script's directory
+			path:   os.norm_path(if os.is_abs_path(raw) { raw } else { os.join_path(os.dir(script_path), raw) })
 		}
 	}
 	return none
