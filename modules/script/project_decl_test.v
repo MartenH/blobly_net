@@ -14,6 +14,15 @@ fn test_a_script_declares_the_project_it_needs() {
 	assert os.norm_path(d.path) == os.norm_path('projects/doip-announce-demo.blobnet')
 }
 
+fn test_an_absolute_declaration_is_taken_as_written() {
+	abs := os.join_path(os.temp_dir(), 'bench', 'x.blobnet')
+	d := declaration_in('-- @project ${abs}\n', 'tests/probe.lua') or {
+		assert false, 'the declaration was not found'
+		return
+	}
+	assert os.norm_path(d.path) == os.norm_path(abs)
+}
+
 fn test_a_script_that_declares_nothing_declares_nothing() {
 	if _ := declaration_in('-- just an ordinary test\nlocal t = require("test")\n', 'tests/x.lua') {
 		assert false, 'invented a declaration'
