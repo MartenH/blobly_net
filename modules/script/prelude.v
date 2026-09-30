@@ -223,6 +223,23 @@ end
 
 -- ============================ diagnostics (UDS) ============================
 uds = {}
+-- uds.functional(channel, id, diags, req [, window_ms]): send req ONCE on the functional id and
+-- collect each connection in diags answer on its own response id, in the order of diags: a table
+-- per connection, outcome "positive", "negative", "silent" (nothing, which is normal for a
+-- functional request and what a suppressed positive response looks like), "pending" (0x78 and
+-- then nothing) or "failed"; resp (the answer bytes), nrc, pended (0x78 on the way), err.
+-- window_ms bounds the first answers (default 1000). A functional request is one Single Frame.
+function uds.functional(channel, id, diags, req, window_ms)
+  local hs = {}
+  for i = 1, #diags do
+    local d = diags[i]
+    if type(d) ~= "table" or type(d.handle) ~= "number" then
+      error("uds.functional: diags[" .. i .. "] is not a uds.open connection", 2)
+    end
+    hs[i] = d.handle
+  end
+  return __uds_functional(channel, id, req, window_ms or 0, table.unpack(hs))
+end
 function uds.open(channel, opts)
   opts = opts or {}
   -- Passed through AS GIVEN, nil included. The CAN default (0x7E0/0x7E8) is applied on the V

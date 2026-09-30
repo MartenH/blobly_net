@@ -194,6 +194,34 @@ responses (e.g. the 17-byte VIN) are reassembled for you.
 server's** demo algorithm (key = seed XOR 0xFF) so it unlocks the sim out of the box;
 pass your own `keyfn` for a real ECU's algorithm.
 
+**Functional addressing** — one request to several ECUs at once (CAN only):
+
+```lua
+local dom = uds.open("compute", { tx = 0x7B0, rx = 0x7B8 })
+local gw  = uds.open("compute", { tx = 0x7A0, rx = 0x7A8 })
+local rs = uds.functional("compute", 0x7DF, { dom, gw }, "\x22\xF1\x90" [, window_ms])
+-- rs[i] answers for the i-th connection: { outcome, resp, nrc, pended, err }
+```
+
+The request goes out **once**, as a Single Frame on the functional id (at most 7 bytes: a
+functional request cannot be segmented). Each ECU answers on its own physical response id, and a
+multi-frame answer is reassembled on that connection, its Flow Control going to that ECU's physical
+request id. Several ECUs may answer multi-frame to one request; their transfers are reassembled one
+after another, so a second ECU's Flow Control waits for the first transfer to end, which takes
+milliseconds for an ordinary answer. `outcome` is one of:
+
+- `"positive"` / `"negative"` (`nrc` set);
+- `"silent"`: nothing within `window_ms` (default 1000). That is normal for a functional request,
+  since ISO 14229-1 has servers suppress NRCs 0x11/0x12/0x31/0x7E/0x7F to one, and it is what a
+  suppressed positive response (`"\x3E\x80"`) looks like;
+- `"pending"`: `0x78`, then nothing within that ECU's P2*;
+- `"failed"`: malformed, or the transfer broke (`err`).
+
+`pended` says a `0x78` came first. What an ECU answers is reported, never raised. The call raises
+when it cannot run at all: a request it cannot send, a bus that will not open or fails while
+listening, or a target whose response id is flooding (the same refusal a physical request makes). The simulated UDS nodes do not answer the functional id yet, so this is
+for real ECUs (bench-verified against blobly_emb's `system_full`).
+
 ### Raw frames & signals
 
 ```lua
