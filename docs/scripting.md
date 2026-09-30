@@ -175,7 +175,12 @@ The returned object has:
 | `diag:security_access(level [, keyfn])` | `0x27` SecurityAccess (request seed at `level`, send key at `level+1`) | the seed (bytes) |
 | `diag:read_dtcs([mask])` | `0x19` sub `0x02` reportDTCByStatusMask (`mask` defaults `0xFF`) | DTC record (bytes) |
 | `diag:tester_present()` | `0x3E` | — |
+| `diag:reset([kind])` | `0x11` ECUReset (`1` hard — the default, `2` key-off-on, `3` soft) | the answer after its SID (bytes) |
+| `diag:comm_control(control [, type])` | `0x28` CommunicationControl (`control` 0 enable rx+tx … 3 disable both; `type` defaults `1`, the normal messages) — the simulated ECUs refuse it (serviceNotSupported): they cannot gate their own traffic | — |
+| `diag:dtc_setting(on)` | `0x85` ControlDTCSetting (`true` on, `false` off) | — |
+| `diag:clear_dtcs([group])` | `0x14` ClearDiagnosticInformation (one DTC, or a group; defaults `0xFFFFFF`, all) | — |
 | `diag:raw(req)` | send any request PDU | the response (bytes) |
+| `diag:raw_suppressed(req)` | send a sub-function request with suppress-positive-response set: no positive answer is expected, a refusal raises, and a server that said `0x78` owes its final answer | `true` if a positive answer came anyway |
 
 A negative response **raises a Lua error** (so it aborts the `test`, or is caught by
 `check.nrc` — e.g. `check.nrc(0x35, …)` for an invalid security key). Multi-frame

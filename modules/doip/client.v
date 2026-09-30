@@ -149,7 +149,13 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 		if rem <= 0 {
 			return error('DoIP recv timeout')
 		}
-		msg := read_message(mut c.conn, rem)!
+		// the socket's own timeout is this carrier's silence, said the one way a caller reads it
+		msg := read_message(mut c.conn, rem) or {
+			if err.code() == net.err_timed_out_code {
+				return error('DoIP recv timeout')
+			}
+			return err
+		}
 		match msg.payload_type {
 			pt_diagnostic_message {
 				dm := parse_diagnostic_message(msg.payload)!

@@ -419,12 +419,12 @@ pub fn (mut s DoipServer) close() {
 // re-parsing them.
 fn read_message(mut conn net.TcpConn, timeout_ms int) !Message {
 	conn.set_read_timeout(timeout_ms * time.millisecond)
-	header := read_exact(mut conn, header_len)!
+	header := read_exact(mut conn, header_len, false)!
 	payload_type, payload_len := parse_header(header)!
 	if payload_len > max_payload_len {
 		return error('DoIP payload too large: ${payload_len} > ${max_payload_len}')
 	}
-	payload := if payload_len > 0 { read_exact(mut conn, int(payload_len))! } else { []u8{} }
+	payload := if payload_len > 0 { read_exact(mut conn, int(payload_len), true)! } else { []u8{} }
 	return Message{
 		payload_type: payload_type
 		payload:      payload
@@ -434,11 +434,19 @@ fn read_message(mut conn net.TcpConn, timeout_ms int) !Message {
 // read_exact reads exactly n bytes (TCP may deliver them in pieces), filling the
 // output buffer in place via read_ptr — each read targets the unfilled tail at
 // &out[got], so there's no temp buffer and no copy.
-fn read_exact(mut conn net.TcpConn, n int) ![]u8 {
+// A timeout before the first byte of a message is the socket's own (the carrier's silence); one
+// after bytes of it were consumed — `began`, or `got` > 0 — is a message that stalled, and the
+// stream is now inside it: said as that, never as silence.
+fn read_exact(mut conn net.TcpConn, n int, began bool) ![]u8 {
 	mut out := []u8{len: n}
 	mut got := 0
 	for got < n {
-		r := conn.read_ptr(unsafe { &out[got] }, n - got)!
+		r := conn.read_ptr(unsafe { &out[got] }, n - got) or {
+			if (began || got > 0) && err.code() == net.err_timed_out_code {
+				return error('DoIP: a message began and stalled mid-read; the stream is inside it')
+			}
+			return err
+		}
 		if r <= 0 {
 			return error('DoIP: connection closed mid-message')
 		}

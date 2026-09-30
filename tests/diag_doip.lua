@@ -80,3 +80,7 @@ test("a zero-length VIN write is refused, not silently applied", function()
   check.equal(d:read_did(0xF190), before)
   check.equal(doip.discover("DoIP1").vin, before)
 end)
+
+test("a suppressed positive response over DoIP is silence (the socket's timeout read as such)", function()
+  check.equal(diag:raw_suppressed("\x3E\x00"), false)
+end)

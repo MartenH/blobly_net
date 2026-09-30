@@ -296,3 +296,73 @@ fn test_a_parse_error_during_the_drain_does_not_end_it() {
 	data := c.read_data_by_identifier(0xF190) or { panic(err) }
 	assert data == [u8(0x02)]
 }
+
+// a suppressed request: the bit set on the wire, a quiet P2 is success, a refusal is an error
+fn test_raw_suppressed() {
+	mut c, m := client_with([])
+	answered := c.raw_suppressed([u8(0x3E), 0x00]) or { panic(err) }
+	assert !answered
+	assert m.last_req == [u8(0x3E), 0x80]
+	mut d, _ := client_with([[u8(0x7F), 0x11, 0x22]])
+	d.raw_suppressed([u8(0x11), 0x01]) or {
+		assert err.msg().contains('NRC 0x22'), err.msg()
+		return
+	}
+	assert false, 'a refusal of a suppressed request was taken for success'
+}
+
+// a server that said responsePending owes its final answer, suppressed or not
+fn test_raw_suppressed_waits_for_the_answer_a_pending_server_owes() {
+	mut c, _ := client_with([[u8(0x7F), 0x31, 0x78]])
+	c.raw_suppressed([u8(0x31), 0x01, 0xFF, 0x00]) or {
+		assert err.msg().contains('still pending'), err.msg()
+		return
+	}
+	assert false, 'a pending suppressed request was taken for done'
+}
+
+fn test_raw_suppressed_refuses_a_service_with_no_sub_function() {
+	mut c, _ := client_with([])
+	c.raw_suppressed([u8(0x22), 0xF1, 0x90]) or {
+		assert err.msg().contains('no sub-function'), err.msg()
+		c.raw_suppressed([]u8{}) or { return } // and an empty request is an error, not a panic
+		assert false
+		return
+	}
+	assert false
+}
+
+// true only for a server that ignored the bit: a positive answer after 0x78 is one ISO requires
+fn test_raw_suppressed_reports_a_positive_answer_only_when_not_owed() {
+	mut c, _ := client_with([[u8(0x7F), 0x31, 0x78], [u8(0x71), 0x01, 0xFF, 0x00]])
+	assert !(c.raw_suppressed([u8(0x31), 0x01, 0xFF, 0x00]) or { panic(err) })
+	mut d, _ := client_with([[u8(0x7E), 0x00]])
+	assert d.raw_suppressed([u8(0x3E), 0x00]) or { panic(err) }
+}
+
+fn test_is_silence() {
+	assert is_silence('timeout')
+	assert is_silence('timeout — after 2 orphan flow control frame(s), last PCI 0x30: the peer is still answering a transfer that ended')
+	assert is_silence('DoIP recv timeout')
+	assert !is_silence(isotp.stall_note)
+}
+
+fn test_the_service_helpers_send_what_iso_says() {
+	mut c, m := client_with([[u8(0x51), 0x01], [u8(0x68), 0x03], [u8(0xC5), 0x02], [u8(0x54)]])
+	assert c.ecu_reset(reset_hard) or { panic(err) } == [u8(0x01)]
+	c.communication_control(comm_disable_rx_tx, comm_type_normal) or { panic(err) }
+	c.control_dtc_setting(false) or { panic(err) }
+	c.clear_dtc(0xFFFFFF) or { panic(err) }
+	assert m.last_req == [u8(0x14), 0xFF, 0xFF, 0xFF]
+}
+
+// a group wider than 24 bits is refused, never truncated into 0xFFFFFF — all
+fn test_clear_dtc_refuses_a_group_wider_than_24_bits() {
+	mut c, m := client_with([])
+	c.clear_dtc(0x1FFFFFF) or {
+		assert err.msg().contains('wider than 24 bits'), err.msg()
+		assert m.last_req.len == 0, 'something was sent'
+		return
+	}
+	assert false
+}
