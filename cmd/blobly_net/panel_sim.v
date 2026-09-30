@@ -105,11 +105,7 @@ fn draw_sim(mut app App) {
 					mut mprot := sim.E2e{}
 					for pr in node.protect {
 						if pr.message == m.name {
-							mprot = sim.E2e{
-								counter: pr.counter
-								crc:     pr.crc
-								profile: pr.profile
-							}
+							mprot = sim.e2e_of(pr)
 						}
 					}
 					for sg in m.signals {

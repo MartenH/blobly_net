@@ -550,3 +550,26 @@ fn test_no_shipped_project_uses_a_key_its_version_predates() {
 	}
 	assert seen > 0, 'no shipped projects were checked'
 }
+
+// v7: an older build stamps sum8 for an unknown profile and drops data_id_mode on its next
+// structured save, so a Profile 1 entry would come back as a different checksum
+fn test_autosar_p01_raises_the_version() {
+	p := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    verify:
+      - { message: M, counter: C, crc: K, profile: autosar_p01, data_id: 1 }
+')!
+	assert version_for(p) == 7
+	q := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    verify:
+      - { message: M, counter: C, crc: K, profile: crc8_j1850, data_id: 1 }
+')!
+	assert version_for(q) == 2
+}

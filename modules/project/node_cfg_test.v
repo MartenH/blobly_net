@@ -80,10 +80,13 @@ channels:
         protect:
           - { message: Powertrain, counter: AliveCounter, crc: CRC, profile: crc8_j1850, data_id: 42 }
           - { message: Status, counter: Cnt }
+          - { message: Brake, counter: C, crc: K, profile: autosar_p01, data_id: 0x1244, data_id_mode: alt }
 '
 	p := parse(y) or { panic(err) }
 	n := p.channels[0].nodes[0]
-	assert n.protect.len == 2
+	assert n.protect.len == 3
+	assert n.protect[2].profile == 'autosar_p01' && n.protect[2].data_id_mode == 'alt'
+	assert n.protect[0].data_id_mode == '' // absent: the profile's default
 	assert n.protect[0].message == 'Powertrain'
 	assert n.protect[0].counter == 'AliveCounter'
 	assert n.protect[0].crc == 'CRC'
@@ -94,7 +97,9 @@ channels:
 
 	again := parse(p.to_yaml()) or { panic(err) }
 	m := again.channels[0].nodes[0]
-	assert m.protect.len == 2, 'save() dropped the protection'
+	assert m.protect.len == 3, 'save() dropped the protection'
+	assert m.protect[2].data_id_mode == 'alt', 'data_id_mode lost on save'
+	assert m.protect[0].data_id_mode == ''
 	assert m.protect[0].message == n.protect[0].message
 	assert m.protect[0].counter == n.protect[0].counter
 	assert m.protect[0].crc == n.protect[0].crc
