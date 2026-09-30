@@ -123,6 +123,7 @@ channels:
         uds:
           rx: "0x7E1"
           tx: "0x7E9"
+          functional: "0x7DF"
           session: 3
           dids:
             - { id: "0xF190", text: "BLOBLY-BCM-0001" }
@@ -147,6 +148,8 @@ channels:
 	again := parse(p.to_yaml()) or { panic(err) }
 	v := again.channels[0].nodes[0].uds or { panic('uds dropped on save') }
 	assert v.rx == u.rx && v.tx == u.tx && v.session == u.session
+	assert u.functional == 0x7DF && v.functional == 0x7DF, 'functional lost on save'
+	assert version_for(p) == 8
 	assert v.dids.len == 2 && v.dids[0].text == 'BLOBLY-BCM-0001'
 	assert v.dids[1].bytes == [u8(0x01), 0x00], 'hex bytes must not become text'
 	assert v.dtcs.len == 2 && v.dtcs[0].code == 0x900101

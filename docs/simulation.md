@@ -333,6 +333,7 @@ distinguishable one:
         uds:
           rx: "0x7E1"          # tester -> ECU (where it listens)
           tx: "0x7E9"          # ECU -> tester (where it answers)
+          functional: "0x7DF"  # optional: also answers the functional (broadcast) id
           dids:
             - { id: "0xF190", text: "BLOBLY-BCM-0001" }   # ASCII
             - { id: "0xF195", bytes: "01 00" }            # raw bytes
@@ -350,9 +351,19 @@ distinguishable one:
 A DID's value is `text` **or** `bytes`, never guessed from the string — `"0100"` is four
 characters or two bytes depending on which you meant, so you say which.
 
-Supported services are `0x10` session control, `0x22`/`0x2E` read/write by identifier, `0x27`
-security access, `0x19` sub `0x02` read DTCs (filtered by the requested status mask), and
-`0x3E` tester present. Anything else answers `serviceNotSupported`.
+Supported services are `0x10` session control, `0x11` ECU reset, `0x14` clear DTCs,
+`0x19` read DTCs (sub-functions `0x01` count, `0x02` by status mask, `0x0A` all supported),
+`0x22`/`0x2E` read/write by identifier, `0x27` security access, `0x3E` tester present, and
+`0x85` DTC setting. Anything else answers `serviceNotSupported`.
+
+**`functional:`** gives the ECU a functional id to answer as well, typically `0x7DF` on an 11-bit
+bus, shared by every ECU there. A request arriving on it is one Single Frame, and the answer
+goes out on the ECU's own `tx`, multi-frame included, with its Flow Control on `rx`, as a real
+ECU does. As ISO 14229-1 requires, a refusal a functional request must not draw (NRC 0x11,
+0x12, 0x31, 0x7E or 0x7F) is not sent. The functional id must not be any ECU's `rx` or `tx`;
+if it is, it is reported and not answered. It is ignored on a DoIP channel. A project that
+uses it declares `version: 8`, since an older build would drop it on save. `uds.functional`
+in a script is the tester side of this (`docs/scripting.md`).
 
 **Configure one and you own diagnostics on that channel:** the built-in `0x7E0`/`0x7E8` server
 stops running. Otherwise the two would both answer whenever their ids overlapped, and which

@@ -140,6 +140,9 @@ pub fn (p Project) to_yaml() string {
 					if !ch.is_doip() {
 						b.writeln('          rx: "0x${u.rx:X}"')
 						b.writeln('          tx: "0x${u.tx:X}"')
+						if u.functional != 0 {
+							b.writeln('          functional: "0x${u.functional:X}"')
+						}
 					}
 					if u.session != 1 {
 						b.writeln('          session: ${u.session}')

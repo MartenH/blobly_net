@@ -25,7 +25,7 @@ import doip
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 7
+pub const schema_version = 8
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -39,6 +39,20 @@ pub const schema_version = 7
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v8 — a simulated ECU answering a functional id (#366). An older build drops `functional:`
+	// on its next structured save, and the ECU silently stops answering broadcasts.
+	for c in p.channels {
+		if c.is_doip() {
+			continue // not written there (a DoIP node has no CAN ids), so nothing to lose
+		}
+		for n in c.nodes {
+			if u := n.uds {
+				if u.functional != 0 {
+					return 8
+				}
+			}
+		}
+	}
 	// v7 — AUTOSAR E2E Profile 1 (#271). An older build reads `autosar_p01` as an unknown
 	// profile and stamps sum8, and its structured save drops `data_id_mode`, so the entry comes
 	// back stamping a different checksum with nothing said — the loss v3 and v6 announce.
@@ -207,6 +221,9 @@ pub mut:
 	// u32 for the same reason every other id here is wide: 265 narrowed at the cast becomes 9,
 	// and the server then runs a session the project never asked for.
 	session u32 = 1
+	// A functional request id this ECU also answers (0x7DF on an 11-bit bus), 0 = none. The
+	// answers go out on `tx` like any other; see uds.serve_step.
+	functional u64
 }
 
 // DidCfg is one ReadDataByIdentifier entry. The value is given either as `text` (ASCII, the
@@ -1271,9 +1288,13 @@ fn parse_node(n yaml.Any) NodeCfg {
 		if v := u.value_opt('tx') {
 			idfields['tx'] = v.str()
 		}
+		if v := u.value_opt('functional') {
+			idfields['functional'] = v.str()
+		}
 		mut ucfg := UdsCfg{
-			rx:        parse_id_wide(u.value('rx').str())
-			tx:        parse_id_wide(u.value('tx').str())
+			rx:         parse_id_wide(u.value('rx').str())
+			tx:         parse_id_wide(u.value('tx').str())
+			functional: if f := u.value_opt('functional') { parse_id_wide(f.str()) } else { u64(0) }
 			malformed: bad_ids(idfields)
 			session:   clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
 		}
