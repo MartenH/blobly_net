@@ -419,21 +419,26 @@ fn test_e2e_positions_are_frame_relative_when_the_pdu_is_offset() {
 	assert e.pdu_offset == 8
 	assert e.crc_byte() == 3
 	assert e.counter_byte() == 4
-	s := c.e2e_signals(m) or { panic('no e2e signals') }
-	assert s.crc == 'Crc'
-	assert s.counter == 'Ctr'
-	assert c.frame_toml('').contains('e2e  = { data_id = 0x7, crc_pos = 3, counter_pos = 4 }')
+	// but Profile 1 covers the PDU and everything that stamps from the export covers the FRAME,
+	// so the contract is named, not exported, and not stamped
+	assert c.e2e_signals(m) == none
+	assert e2e_export_refusal(m, e).contains('not the whole frame')
+	assert !c.frame_toml('').contains('\ne2e  =')
 	// the fields must be EXACTLY the profile's widths: a 4-bit signal at the CRC offset is not
 	// an 8-bit CRC, and a 2-bit one at the counter offset wraps early
 	narrow := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH>', '<SHORT-NAME>Crc</SHORT-NAME><LENGTH>4</LENGTH>') + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>') + arxml_tail) or { panic(err) }
 	nc := narrow.cluster('') or { panic(err) }
 	assert nc.e2e_signals(nc.db.messages[0]) == none
+	ne := (nc.frame_of(nc.db.messages[0]) or { panic('no frame') }).e2e or { panic('unprotected') }
+	assert e2e_export_refusal(nc.db.messages[0], ne).contains('4-bit counter fields')
 	assert !nc.frame_toml('').contains('\ne2e  =')
 	// and on a byte boundary: a CRC at bit 20 has no crc_pos
 	skew := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>16</START-POSITION>', '<START-POSITION>12</START-POSITION>') + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>12</CRC-OFFSET>') + arxml_tail) or { panic(err) }
 	sc := skew.cluster('') or { panic(err) }
 	assert sig(sc.db.messages[0], 'Crc').start_bit == 20
 	assert sc.e2e_signals(sc.db.messages[0]) == none
+	se := (sc.frame_of(sc.db.messages[0]) or { panic('no frame') }).e2e or { panic('unprotected') }
+	assert !e2e_export_refusal(sc.db.messages[0], se).contains('not the whole frame')
 	assert !sc.frame_toml('').contains('\ne2e  =')
 }
 

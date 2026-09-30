@@ -103,6 +103,11 @@ pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
 	if !is_e2e_field(m.signals[ci], e.crc_bit(), 8) || !is_e2e_field(m.signals[ki], e.counter_bit(), 4) {
 		return 'the signals at its CRC and counter offsets are not the byte-aligned 8-bit CRC and 4-bit counter fields'
 	}
+	// Profile 1 covers the protected PDU; the attributes, the simulation and blobly_emb all
+	// cover the whole frame — which is the same bytes only when the PDU IS the frame
+	if e.pdu_offset != 0 || e.data_offset != 0 || (e.data_length > 0 && e.data_length != m.dlc * 8) {
+		return 'its protected range (a PDU at byte ${e.pdu_offset / 8}, ${e.data_length} bits) is not the whole frame, which is all the attributes and the simulation can cover'
+	}
 	return ''
 }
 
@@ -163,34 +168,14 @@ pub fn (c ArxmlCluster) ecus() []string {
 const vframe_format_enum = 'ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD"'
 
 // export_dbc renders the cluster as DBC text through the canonical writer, with the
-// provenance comment, the frame format and the E2E attributes as extras the writer places.
+// provenance comment and the frame format as extras the writer places. The E2E attributes come
+// from the model (Message.e2e, set by the reader through e2e_signals), so the writer is their
+// ONE emitter — for an export and for an editor Save alike.
 pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string {
 	mut dropped := 0
 	for _, n in report.ignored {
 		dropped += n
 	}
-	mut counter := DbcAttr{
-		name: 'E2ECounterSignal'
-		typ: 'STRING'
-		default: '""'
-	}
-	mut crc := DbcAttr{
-		name: 'E2ECrcSignal'
-		typ: 'STRING'
-		default: '""'
-	}
-	mut profile := DbcAttr{
-		name: 'E2EProfile'
-		typ: 'STRING'
-		default: '""'
-	}
-	mut data_id := DbcAttr{
-		name: 'E2EDataId'
-		default: '0'
-	}
-	// the declared range must cover every emitted value (a file must not contradict its own
-	// attribute definition): 16 bits is the common case, a profile-4 id needs 32
-	mut max_id := u32(65535)
 	mut fmt := DbcAttr{
 		name: 'VFrameFormat'
 		typ: vframe_format_enum
@@ -214,16 +199,7 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 				else { '0' }
 			}}
 		}
-		s := c.e2e_signals(m) or { continue }
-		counter.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(s.counter)}"'}
-		crc.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(s.crc)}"'}
-		profile.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(s.profile)}"'}
-		data_id.values << DbcAttrValue{m.id, m.ext, '${s.data_id}'}
-		if s.data_id > max_id {
-			max_id = s.data_id
-		}
 	}
-	data_id.typ = 'INT 0 ${max_id}'
 	mut x := DbcExtras{
 		// `notes` too: a file the reader read PARTIALLY — an initial value dropped, a timing mode
 		// the simulation cannot keep — has neither an ignored kind nor a dangling reference, so
@@ -234,9 +210,6 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 	}
 	if fmt.values.len > 0 {
 		x.attrs << fmt
-	}
-	if counter.values.len > 0 {
-		x.attrs << [counter, crc, profile, data_id]
 	}
 	return c.db.to_dbc_with(x)
 }

@@ -23,33 +23,32 @@ pub fn gen_from_cfg(g project.GenCfg) Gen {
 }
 
 // from_project builds the ECU a NodeCfg describes.
-pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
-	mut prot := map[string]E2e{}
+// protection_for is how `node` protects a message it sends — the ONE answer stamping, the
+// fault panel, Lua's sim.fault and response-format selection all ask: its protect: entry if it
+// has one (the node's own word, overriding the file), else what the DBC declares (#271). None
+// when neither applies — a Profile 1 entry that cannot be stamped as specified included, which
+// is not stamped at all (validate_protection says why).
+pub fn protection_for(cfg project.NodeCfg, m candb.Message) ?E2e {
 	for p in cfg.protect {
-		e := e2e_of(p)
-		if e.profile == p01 {
-			// a Profile 1 entry that cannot be stamped as specified is not stamped at all:
-			// validate_protection says why
-			mut refused := true
-			for m in db.messages_from(cfg.name) {
-				if m.name == p.message {
-					refused = p01_problem(m, e) != none
-					break
-				}
-			}
-			if refused {
-				continue
-			}
-		}
-		prot[p.message] = e
-	}
-	// What the DBC declares (#271), for every message this node sends that no protect: entry
-	// names — an entry, even one refused above, is the node's own word and overrides the file
-	for m in db.messages_from(cfg.name) {
-		if cfg.protect.any(it.message == m.name) {
+		if p.message != m.name {
 			continue
 		}
-		if e := declared_e2e(m) {
+		e := e2e_of(p)
+		if !e.active() {
+			return none
+		}
+		if e.profile == p01 && p01_problem(m, e) != none {
+			return none
+		}
+		return e
+	}
+	return declared_e2e(m)
+}
+
+pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
+	mut prot := map[string]E2e{}
+	for m in db.messages_from(cfg.name) {
+		if e := protection_for(cfg, m) {
 			prot[m.name] = e
 		}
 	}
@@ -142,10 +141,9 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 				if m.id != r.response {
 					continue
 				}
-				for p in cfg.protect {
-					if p.message == m.name {
-						protected_hits++
-					}
+				// the same question resp_is_extended asks: an entry, or a declaration it stamps
+				if cfg.protect.any(it.message == m.name) || protection_for(cfg, m) != none {
+					protected_hits++
 				}
 			}
 			warns << if protected_hits == 1 {
@@ -259,16 +257,12 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 // wins and validate_cfg reports the ambiguity, rather than silently picking a format that
 // decides the reply's DLC and whether protection applies at all.
 fn resp_is_extended(db candb.Database, cfg project.NodeCfg, id u32) bool {
-	mut protected_names := map[string]bool{}
-	for p in cfg.protect {
-		protected_names[p.message] = true
-	}
 	mut first := ?bool(none)
 	for m in db.messages_from(cfg.name) {
 		if m.id != id {
 			continue
 		}
-		if m.name in protected_names {
+		if cfg.protect.any(it.message == m.name) || protection_for(cfg, m) != none {
 			return m.ext
 		}
 		if first == none {

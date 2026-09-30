@@ -247,3 +247,42 @@ fn test_dbc_declared_e2e_is_stamped_and_checked() {
 	assert declared_e2e(m) == none
 	assert validate_protection(bad, project.NodeCfg{ name: 'Chassis' }).any(it.contains('cannot be applied'))
 }
+
+// a declaration is applied with no warning, so every shape an entry is warned about is refused;
+// an entry overrides the declaration
+fn test_declarations_are_exact_and_entries_override_them() {
+	base := candb.Message{
+		...brake_status()
+		sender: 'Chassis'
+		e2e:    candb.E2eDecl{
+			counter:     'BrakeCounter'
+			crc:         'BrakeCrc'
+			profile:     'crc8_j1850'
+			data_id:     7
+			has_data_id: true
+		}
+	}
+	assert declared_e2e(base) != none
+	mut same := base
+	same.e2e.crc = 'BrakeCounter'
+	assert declared_problem(same, e2e_of_decl(same.e2e)).contains('both counter and crc')
+	mut wide := base
+	wide.e2e.crc = 'BrakePressure'
+	assert declared_problem(wide, e2e_of_decl(wide.e2e)).contains('16 bits')
+	mut bad := base
+	bad.e2e.has_data_id = false
+	bad.e2e.bad_data_id = '0x2A'
+	assert declared_problem(bad, e2e_of_decl(bad.e2e)).contains('0x2A')
+	// protection_for: the declaration, or the node's own entry over it
+	assert (protection_for(project.NodeCfg{ name: 'Chassis' }, base) or { E2e{} }).profile == 'crc8_j1850'
+	own := project.NodeCfg{
+		name:    'Chassis'
+		protect: [project.ProtectCfg{
+			message: 'BrakeStatus'
+			counter: 'BrakeCounter'
+			profile: 'crc8_j1850'
+		}]
+	}
+	e := protection_for(own, base) or { panic('the entry was lost') }
+	assert e.crc == '', 'the declaration leaked past the entry'
+}

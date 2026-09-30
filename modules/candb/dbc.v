@@ -291,6 +291,7 @@ pub fn parse_dbc(text string) !Database {
 	mut by_id := map[u32]int{} // raw DBC id -> index into msgs
 	mut cur := -1 // index of the message SG_ lines attach to
 	mut nodes := []string{}
+	mut e2e_defaults := []string{}
 
 	for raw_line in text.split_into_lines() {
 		line := raw_line.trim_space()
@@ -318,6 +319,10 @@ pub fn parse_dbc(text string) !Database {
 			apply_cycle_time(mut msgs, by_id, line)
 		} else if line.starts_with('BA_ "E2E') {
 			apply_e2e_attr(mut msgs, by_id, line)
+		} else if line.starts_with('BA_DEF_DEF_ "E2E') {
+			// a file-wide default is a declaration too, as for VFrameFormat: applied below to
+			// every message that states any E2E attribute of its own
+			e2e_defaults << line
 		} else if line.starts_with('BA_ "VFrameFormat"') {
 			fmt_lines << line
 		} else if line.starts_with('BA_DEF_DEF_ "VFrameFormat"') {
@@ -341,6 +346,19 @@ pub fn parse_dbc(text string) !Database {
 	}
 	for line in fmt_lines {
 		apply_frame_format(mut msgs, by_id, line, fmt_choices)
+	}
+	// E2E defaults, now that every message's own records are known: a message that states none
+	// is not protected by a default, and one it states itself wins
+	for line in e2e_defaults {
+		f := line.trim_right(';').fields()
+		if f.len < 3 {
+			continue
+		}
+		for mut mb in msgs {
+			if mb.e2e.declared() {
+				set_e2e_field(mut mb.e2e, f[1], f[2..].join(' ').trim_space(), false)
+			}
+		}
 	}
 
 	// emit immutable model
@@ -414,20 +432,45 @@ fn apply_e2e_attr(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 		return
 	}
 	idx := by_id[u32(f[3].u64())] or { return }
-	raw := f[4..].join(' ').trim_space()
+	set_e2e_field(mut msgs[idx].e2e, f[1], f[4..].join(' ').trim_space(), true)
+}
+
+// set_e2e_field sets one attribute on a declaration — `overwrite` false for a default, which
+// fills only what the message did not state. A Data ID that is not one is KEPT as said, never
+// read as absent: absent means no id, which is a different checksum.
+fn set_e2e_field(mut d E2eDecl, quoted_name string, raw string, overwrite bool) {
 	str := if raw.len >= 2 && raw.starts_with('"') && raw.ends_with('"') {
 		raw[1..raw.len - 1]
 	} else {
 		''
 	}
-	match f[1] {
-		'"E2ECounterSignal"' { msgs[idx].e2e.counter = str }
-		'"E2ECrcSignal"' { msgs[idx].e2e.crc = str }
-		'"E2EProfile"' { msgs[idx].e2e.profile = str }
+	match quoted_name {
+		'"E2ECounterSignal"' {
+			if overwrite || d.counter == '' {
+				d.counter = str
+			}
+		}
+		'"E2ECrcSignal"' {
+			if overwrite || d.crc == '' {
+				d.crc = str
+			}
+		}
+		'"E2EProfile"' {
+			if overwrite || d.profile == '' {
+				d.profile = str
+			}
+		}
 		'"E2EDataId"' {
+			if !overwrite && (d.has_data_id || d.bad_data_id != '') {
+				return
+			}
 			if raw != '' && raw.bytes().all(it.is_digit()) && raw.len <= 10 && raw.u64() <= 0xFFFF_FFFF {
-				msgs[idx].e2e.data_id = u32(raw.u64())
-				msgs[idx].e2e.has_data_id = true
+				d.data_id = u32(raw.u64())
+				d.has_data_id = true
+				d.bad_data_id = ''
+			} else {
+				d.bad_data_id = raw
+				d.has_data_id = false
 			}
 		}
 		else {}
