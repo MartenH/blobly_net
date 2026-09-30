@@ -13,6 +13,8 @@ import transport
 // bus says which target has begun to answer, so its channel is read with a real deadline and the
 // others' frames wait queued in theirs. (A software ISO-TP read gives the whole PDU one deadline,
 // so polling every target with a zero timeout would abort a multi-frame answer mid-transfer.)
+// One answer is reassembled at a time: a second target's First Frame gets its Flow Control once
+// the first transfer ends — milliseconds for an ordinary answer, well inside the peer's N_Bs.
 
 // FunctionalTarget is one server a functional request may reach: its physical client and the id
 // (and width) its answers arrive on.
@@ -63,13 +65,15 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 			}
 		}
 	}
-	// what is already queued is no answer to this request: the same drain a physical exchange runs
+	// what is already queued is no answer to this request: the same drain a physical exchange runs.
+	// The tap FIRST: a frame arriving between the two drains then still has its trigger, and a
+	// trigger whose PDU the channel drain took finds the channel empty — read as silence below.
+	for {
+		tap.recv(0) or { break }
+	}
 	for t in targets {
 		mut c := t.client
 		c.drain_queued(req[0])!
-	}
-	for {
-		tap.recv(0) or { break }
 	}
 	fch.send(req)!
 	sw := time.new_stopwatch()
@@ -81,14 +85,29 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		now := sw.elapsed().milliseconds()
 		mut until := i64(-1)
 		for i, fin in finished {
-			if !fin && deadline[i] > until {
+			if fin {
+				continue
+			}
+			if now >= deadline[i] {
+				// its window is over: what it says after is not counted, whoever else is waited for
+				done[i] = FunctionalReply{
+					outcome: if pended[i] { .pending } else { .silent }
+					pended:  pended[i]
+				}
+				finished[i] = true
+			} else if deadline[i] > until {
 				until = deadline[i]
 			}
 		}
-		if until < 0 || now >= until {
+		if until < 0 {
 			break
 		}
-		f := tap.recv(int(until - now)) or { continue }
+		f := tap.recv(int(until - now)) or {
+			if is_silence(err.msg()) {
+				continue
+			}
+			return error('UDS: the functional listener failed: ${err.msg()}')
+		}
 		// the START of an answer: a Single Frame (0x0_) or a First Frame (0x1_); consecutive
 		// frames belong to a reassembly a channel is already running
 		if f.data.len == 0 || f.data[0] >> 4 > 1 {
@@ -99,8 +118,14 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 			continue
 		}
 		mut c := targets[i].client
+		// an answer that has begun is given the time a physical read would have to finish, not what
+		// is left of the window: a First Frame near its end would otherwise abort mid-transfer
 		left := deadline[i] - sw.elapsed().milliseconds()
-		resp := c.ch.recv(int(if left > 0 { left } else { 1 })) or {
+		read_ms := if left > c.timeout_ms { left } else { i64(c.timeout_ms) }
+		resp := c.ch.recv(int(read_ms)) or {
+			if is_silence(err.msg()) {
+				continue // its PDU was taken by the pre-send drain: nothing of this request's yet
+			}
 			done[i] = FunctionalReply{
 				outcome: .failed
 				pended:  pended[i]
@@ -111,6 +136,9 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		}
 		match answer_to(req, resp) {
 			.positive {
+				if req[0] == sid_diagnostic_session_control {
+					c.adopt(resp)
+				}
 				done[i] = FunctionalReply{
 					outcome: .positive
 					resp:    resp

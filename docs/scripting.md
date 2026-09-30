@@ -206,7 +206,9 @@ local rs = uds.functional("compute", 0x7DF, { dom, gw }, "\x22\xF1\x90" [, windo
 The request goes out **once**, as a Single Frame on the functional id (at most 7 bytes: a
 functional request cannot be segmented). Each ECU answers on its own physical response id, and a
 multi-frame answer is reassembled on that connection, its Flow Control going to that ECU's physical
-request id, so several ECUs may answer multi-frame at once. `outcome` is one of:
+request id. Several ECUs may answer multi-frame to one request; their transfers are reassembled one
+after another, so a second ECU's Flow Control waits for the first transfer to end, which takes
+milliseconds for an ordinary answer. `outcome` is one of:
 
 - `"positive"` / `"negative"` (`nrc` set);
 - `"silent"`: nothing within `window_ms` (default 1000). That is normal for a functional request,
@@ -215,8 +217,9 @@ request id, so several ECUs may answer multi-frame at once. `outcome` is one of:
 - `"pending"`: `0x78`, then nothing within that ECU's P2*;
 - `"failed"`: malformed, or the transfer broke (`err`).
 
-`pended` says a `0x78` came first. Nothing raises for an ECU's answer; the call raises only for a
-request it cannot send. The simulated UDS nodes do not answer the functional id yet, so this is
+`pended` says a `0x78` came first. What an ECU answers is reported, never raised. The call raises
+when it cannot run at all: a request it cannot send, a bus that will not open or fails while
+listening, or a target whose response id is flooding (the same refusal a physical request makes). The simulated UDS nodes do not answer the functional id yet, so this is
 for real ECUs (bench-verified against blobly_emb's `system_full`).
 
 ### Raw frames & signals

@@ -904,13 +904,14 @@ fn l_uds_clear_dtc(l lua.State) int {
 fn l_uds_functional(l lua.State) int {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	fid := l.arg_int(2)
+	// exact: 0 is a CAN id, so a value that is not an integer must not become one
+	fid := l.arg_int_exact(2) or { return l.fail('uds.functional: the functional id is not an integer') }
 	req := l.arg_bytes(3)
 	window := int(l.arg_int(4))
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	info := env.chans[ci]
-	if info.carrier.doip || info.carrier.someip {
-		return l.fail('uds.functional("${name}"): functional addressing here is CAN only')
+	if k := info.carrier.eth_kind() {
+		return l.fail('uds.functional("${name}"): a ${k} channel — functional addressing here is CAN only')
 	}
 	if fid < 0 || fid > 0x1FFF_FFFF {
 		return l.fail('uds.functional("${name}"): ${fid} is not a CAN identifier')

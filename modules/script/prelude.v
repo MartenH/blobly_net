@@ -231,7 +231,13 @@ uds = {}
 -- window_ms bounds the first answers (default 1000). A functional request is one Single Frame.
 function uds.functional(channel, id, diags, req, window_ms)
   local hs = {}
-  for i, d in ipairs(diags) do hs[i] = d.handle end
+  for i = 1, #diags do
+    local d = diags[i]
+    if type(d) ~= "table" or type(d.handle) ~= "number" then
+      error("uds.functional: diags[" .. i .. "] is not a uds.open connection", 2)
+    end
+    hs[i] = d.handle
+  end
   return __uds_functional(channel, id, req, window_ms or 0, table.unpack(hs))
 end
 function uds.open(channel, opts)
