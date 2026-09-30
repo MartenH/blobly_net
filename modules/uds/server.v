@@ -2,7 +2,11 @@
 // It rides an isotp.Channel (e.g. the software ISO-TP over the in-process bus), so
 // a simulated ECU can answer diagnostic requests with no Python and no kernel
 // ISO-TP. Mirrors uds_server.py: 0x10 session control, 0x22 RDBI (DID table),
-// 0x3E tester present; unknown service/DID → negative response.
+// 0x3E tester present; unknown service/DID → negative response. Also 0x11 (the diagnostic state
+// back to power-on), 0x14 (the DTC table) and 0x85 (acknowledged — this server records no faults,
+// so there is nothing to suspend), and suppress-positive-response on every sub-function service.
+// Not 0x28: nothing here gates the simulated ECU's traffic, and an acknowledgement it does not
+// act on would be a lie a test could pass on.
 module uds
 
 import isotp
@@ -51,11 +55,24 @@ pub fn default_server() Server {
 	}
 }
 
-// handle computes the UDS response for one request PDU (pure; no I/O).
+// handle computes the UDS response for one request PDU (pure; no I/O). A sub-function service
+// with suppress-positive-response set (bit 7) is served on its sub-function without the bit, and
+// its positive response is withheld; a refusal is still answered (ISO 14229-1).
 pub fn (mut s Server) handle(req []u8) []u8 {
 	if req.len == 0 {
 		return []
 	}
+	_, subfn := echo_of(req) // the client's list: one answer to which services carry a sub-function
+	if subfn && req.len > 1 && req[1] & 0x80 != 0 {
+		mut plain := req.clone()
+		plain[1] &= 0x7F
+		resp := s.answer(plain)
+		return if resp.len > 0 && resp[0] == 0x7F { resp } else { []u8{} }
+	}
+	return s.answer(req)
+}
+
+fn (mut s Server) answer(req []u8) []u8 {
 	sid := req[0]
 	match sid {
 		0x10 { // DiagnosticSessionControl
@@ -123,6 +140,44 @@ pub fn (mut s Server) handle(req []u8) []u8 {
 		}
 		0x3E { // TesterPresent
 			return [u8(0x7E), 0x00]
+		}
+		0x11 { // ECUReset: the diagnostic state back to power-on (a simulated ECU has no core to restart)
+			if req.len < 2 {
+				return neg(sid, 0x13)
+			}
+			if req[1] < 1 || req[1] > 3 {
+				return neg(sid, 0x12)
+			}
+			if req.len != 2 {
+				return neg(sid, 0x13)
+			}
+			s.session = 1
+			s.unlocked = false
+			s.sec_seed = []u8{}
+			return [u8(0x51), req[1]]
+		}
+		0x85 { // ControlDTCSetting: 0x01 on, 0x02 off
+			if req.len < 2 {
+				return neg(sid, 0x13)
+			}
+			if req[1] != 0x01 && req[1] != 0x02 {
+				return neg(sid, 0x12)
+			}
+			return [u8(0xC5), req[1]]
+		}
+		0x14 { // ClearDiagnosticInformation: a group (0xFFFFFF = all) or one DTC
+			if req.len != 4 {
+				return neg(sid, 0x13)
+			}
+			group := u32(req[1]) << 16 | u32(req[2]) << 8 | u32(req[3])
+			if group == 0xFFFFFF {
+				s.dtcs.clear()
+			} else if s.dtcs.any(it.code == group) {
+				s.dtcs = s.dtcs.filter(it.code != group)
+			} else {
+				return neg(sid, 0x31)
+			}
+			return [u8(0x54)]
 		}
 		else {
 			return neg(sid, 0x11) // serviceNotSupported

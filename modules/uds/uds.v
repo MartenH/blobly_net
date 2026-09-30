@@ -18,6 +18,24 @@ pub const sid_read_data_by_identifier = u8(0x22)
 pub const sid_security_access = u8(0x27)
 pub const sid_write_data_by_identifier = u8(0x2E)
 pub const sid_tester_present = u8(0x3E)
+pub const sid_clear_dtc = u8(0x14)
+pub const sid_communication_control = u8(0x28)
+pub const sid_control_dtc_setting = u8(0x85)
+
+// suppress_positive is the sub-function bit asking the server for no positive response.
+pub const suppress_positive = u8(0x80)
+
+// ECUReset (0x11) kinds.
+pub const reset_hard = u8(0x01)
+pub const reset_key_off_on = u8(0x02)
+pub const reset_soft = u8(0x03)
+
+// CommunicationControl (0x28) controls, and the communication type of normal messages.
+pub const comm_enable_rx_tx = u8(0x00)
+pub const comm_enable_rx_disable_tx = u8(0x01)
+pub const comm_disable_rx_enable_tx = u8(0x02)
+pub const comm_disable_rx_tx = u8(0x03)
+pub const comm_type_normal = u8(0x01)
 
 const positive_response_offset = u8(0x40)
 const negative_response_sid = u8(0x7F)
@@ -112,8 +130,8 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 		return .malformed
 	}
 	for i in 1 .. echo {
-		// a sub-function is echoed without its suppress-positive-response bit (the bit itself is
-		// tolerated: the in-process server echoes it) — and ResponseOnEvent's without its
+		// a sub-function is echoed without its suppress-positive-response bit (tolerated with it
+		// all the same: it is an echo of the request) — and ResponseOnEvent's without its
 		// storeEvent bit too, its response's bits 7..6 being reserved
 		if resp[i] != req[i] && !(i == 1 && subfn && resp[i] == req[i] & sub_mask(req[0])) {
 			return .stale
@@ -155,6 +173,41 @@ fn echo_of(req []u8) (int, bool) {
 // tell apart. On the CAN carriers (`recv(0)` polls what has arrived); DoIP's `recv(0)` reads
 // nothing yet (#358), and TCP does not duplicate — only a late answer after a timeout remains. A 0x10 answer's timing is adopted here, whichever caller sent it.
 pub fn (mut c Client) raw(req []u8) ![]u8 {
+	resp, _ := c.exchange(req, false)!
+	return resp
+}
+
+// is_silence: a receive error that means nothing arrived — the ISO-TP channels' `timeout`
+// (orphan notes appended), DoIP's `DoIP recv timeout` — as against one that means a message
+// began and stalled, or a carrier failure. The kernel channel reassembles out of sight, so a stall
+// there reads as silence; the software channel says which it was.
+// (A DoIP socket's own timeout is mapped to its spelling in DoipClient.recv.)
+fn is_silence(msg string) bool {
+	return msg.starts_with('timeout') || msg == 'DoIP recv timeout'
+}
+
+// raw_suppressed sends `req` with suppress-positive-response set (bit 7 of its sub-function), so
+// no positive answer comes — only a refusal, which is an error. A server that says responsePending
+// owes its final answer even so (ISO 14229-1), and it is waited for. Returns whether the server
+// answered positively WITHOUT owing it — that is, ignored the bit.
+pub fn (mut c Client) raw_suppressed(req []u8) !bool {
+	if req.len < 2 {
+		return error('UDS: a suppressed request needs a sub-function')
+	}
+	n, subfn := echo_of(req)
+	if !subfn || n < 2 {
+		return error('UDS: 0x${req[0]:02X} has no sub-function to suppress a positive response with')
+	}
+	mut r := req.clone()
+	r[1] |= suppress_positive
+	resp, owed := c.exchange(r, true)!
+	// a positive answer after 0x78 is what ISO requires; only one without it ignored the bit
+	return resp.len > 0 && !owed
+}
+
+// exchange is one request and its answer (empty: none, which only a suppressed request accepts —
+// a quiet P2 is its success), and whether the server said responsePending on the way.
+fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 	if req.len == 0 {
 		return error('empty UDS request')
 	}
@@ -180,12 +233,18 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 	for {
 		left := deadline - sw.elapsed().milliseconds()
 		if left <= 0 {
+			if suppressed && !pending {
+				return []u8{}, false
+			}
 			if pending {
 				return error('UDS: 0x${req[0]:02X} still pending after ${sw.elapsed().milliseconds()} ms')
 			}
 			return error(no_answer(req, discarded))
 		}
 		resp := c.ch.recv(int(left)) or {
+			if suppressed && !pending && is_silence(err.msg()) {
+				return []u8{}, false // nothing to say: what a suppressed positive response looks like
+			}
 			if pending {
 				return error('UDS: 0x${req[0]:02X} still pending after ${sw.elapsed().milliseconds()} ms (${err.msg()})')
 			}
@@ -199,7 +258,7 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 				if req[0] == sid_diagnostic_session_control {
 					c.adopt(resp)
 				}
-				return resp
+				return resp, pending
 			}
 			.malformed {
 				return error('malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}')
@@ -323,6 +382,34 @@ pub fn (mut c Client) write_data_by_identifier(did u16, data []u8) ! {
 	mut req := [sid_write_data_by_identifier, u8(did >> 8), u8(did)]
 	req << data
 	c.raw(req)! // positive response is 0x6E <did_hi> <did_lo>
+}
+
+// ecu_reset (0x11) asks for a reset of `kind` (reset_hard, reset_key_off_on, reset_soft) and
+// returns the answer after its SID: the kind echoed, and a power-down time if the server gives one.
+pub fn (mut c Client) ecu_reset(kind u8) ![]u8 {
+	resp := c.raw([sid_ecu_reset, kind])!
+	return resp[1..].clone()
+}
+
+// communication_control (0x28): `control` (comm_enable_rx_tx .. comm_disable_rx_tx) for messages
+// of `comm_type` (comm_type_normal for the application's own).
+pub fn (mut c Client) communication_control(control u8, comm_type u8) ! {
+	c.raw([sid_communication_control, control, comm_type])!
+}
+
+// control_dtc_setting (0x85): DTC setting on (sub 0x01) or off (0x02) — while off, the server's
+// fault memory records nothing.
+pub fn (mut c Client) control_dtc_setting(on bool) ! {
+	c.raw([sid_control_dtc_setting, if on { u8(0x01) } else { u8(0x02) }])!
+}
+
+// clear_dtc (0x14) clears diagnostic information for a group of DTCs (0xFFFFFF: all of them).
+// A group wider than 24 bits is refused, never truncated: its low bits could be 0xFFFFFF, all.
+pub fn (mut c Client) clear_dtc(group u32) ! {
+	if group > 0xFFFFFF {
+		return error('UDS: DTC group 0x${group:X} is wider than 24 bits')
+	}
+	c.raw([sid_clear_dtc, u8(group >> 16), u8(group >> 8), u8(group)])!
 }
 
 // security_request_seed (0x27, odd sub-function) asks for the seed for `level`.

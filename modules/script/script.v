@@ -313,6 +313,11 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_sec_seed', l_uds_sec_seed)
 	env.st.register('__uds_sec_key', l_uds_sec_key)
 	env.st.register('__uds_read_dtc', l_uds_read_dtc)
+	env.st.register('__uds_reset', l_uds_reset)
+	env.st.register('__uds_comm_control', l_uds_comm_control)
+	env.st.register('__uds_dtc_setting', l_uds_dtc_setting)
+	env.st.register('__uds_clear_dtc', l_uds_clear_dtc)
+	env.st.register('__uds_raw_suppressed', l_uds_raw_suppressed)
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -831,6 +836,61 @@ fn l_uds_raw(l lua.State) int {
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
 	resp := c.cli.raw(l.arg_bytes(2)) or { return l.fail(err.msg()) }
 	l.push_bytes(resp)
+	return 1
+}
+
+// uds_byte and uds_group read a script's argument for a request byte / a 24-bit DTC group,
+// refusing what does not fit rather than truncating it into a different request — -1 as a group
+// would otherwise go out as 0xFFFFFF, every DTC.
+fn uds_byte(l lua.State, i int) ?u8 {
+	v := l.arg_int_exact(i)?
+	if v < 0 || v > 0xFF {
+		return none
+	}
+	return u8(v)
+}
+
+fn l_uds_reset(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	kind := uds_byte(l, 2) or { return l.fail('reset kind ${l.arg_int(2)} is not a byte') }
+	resp := c.cli.ecu_reset(kind) or { return l.fail(err.msg()) }
+	l.push_bytes(resp)
+	return 1
+}
+
+fn l_uds_comm_control(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	control := uds_byte(l, 2) or { return l.fail('control ${l.arg_int(2)} is not a byte') }
+	ctype := uds_byte(l, 3) or { return l.fail('communication type ${l.arg_int(3)} is not a byte') }
+	c.cli.communication_control(control, ctype) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_dtc_setting(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.control_dtc_setting(l.arg_int(2) != 0) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_clear_dtc(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	group := l.arg_int_exact(2) or { return l.fail('DTC group is not an integer') }
+	if group < 0 || group > 0xFFFFFF {
+		return l.fail('DTC group ${group} is not a 24-bit value')
+	}
+	c.cli.clear_dtc(u32(group)) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_raw_suppressed(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	answered := c.cli.raw_suppressed(l.arg_bytes(2)) or { return l.fail(err.msg()) }
+	l.push_bool(answered)
 	return 1
 }
 
