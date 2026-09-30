@@ -3,6 +3,7 @@ module doip
 import net
 import testports
 import time
+import uds
 
 // A uds-free networking test: a DoIP server with a trivial echo+1 handler, driven
 // by DoipClient over real localhost TCP, plus UDP discovery. Keeps `v test
@@ -569,7 +570,9 @@ fn test_recv_zero_polls_what_has_arrived() {
 		return
 	}
 	t0 := time.ticks()
-	ch.recv(0) or { assert err.msg() == 'DoIP recv timeout' }
+	if _ := ch.recv(0) {
+		assert false, 'a poll with nothing queued returned data'
+	}
 	assert time.ticks() - t0 < 100, 'a poll with nothing queued waited'
 	time.sleep(350 * time.millisecond) // the late answer is in the socket now
 	got := ch.recv(0) or {
@@ -577,7 +580,50 @@ fn test_recv_zero_polls_what_has_arrived() {
 		return
 	}
 	assert got == [u8(0x62), 0x01]
-	ch.recv(0) or { assert err.msg() == 'DoIP recv timeout' } // and nothing after it
+	if _ := ch.recv(0) {
+		assert false, 'a poll after the queued answer returned data'
+	}
 	ch.close()
+	ln.close() or {}
+}
+
+// #358, end to end: a UDS client over DoIP, whose entity answers a first request LATE — after the
+// client has given up — takes the second request's own answer, not the late one: the pre-send
+// drain polls the late answer away. Both requests are identical, so no echo could tell the two
+// answers apart; only the drain can.
+fn test_uds_over_doip_drains_a_late_answer() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		_ := read_message(mut c, 2000) or { return } // first request: answered late
+		time.sleep(400 * time.millisecond)
+		c.write(diagnostic_message(0x1000, 0x0E80, [u8(0x62), 0xF1, 0x90, 0x01])) or { return }
+		_ := read_message(mut c, 3000) or { return } // second request: answered at once
+		c.write(diagnostic_message(0x1000, 0x0E80, [u8(0x62), 0xF1, 0x90, 0x02])) or { return }
+		time.sleep(500 * time.millisecond)
+		c.close() or {}
+	}(mut ln)
+	time.sleep(100 * time.millisecond)
+	ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	mut cl := uds.new_client(ch)
+	cl.timeout_ms = 200
+	if _ := cl.raw([u8(0x22), 0xF1, 0x90]) {
+		assert false, 'the first request was answered in time'
+	}
+	time.sleep(400 * time.millisecond) // the late answer has now arrived and waits in the socket
+	cl.timeout_ms = 1000
+	got := cl.raw([u8(0x22), 0xF1, 0x90]) or {
+		assert false, 'second request: ${err}'
+		return
+	}
+	assert got == [u8(0x62), 0xF1, 0x90, 0x02], 'the late answer was taken for the new request'
 	ln.close() or {}
 }

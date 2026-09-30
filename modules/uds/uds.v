@@ -282,6 +282,11 @@ fn (mut c Client) drain_queued(sid u8) !int {
 			if err.msg().contains('timeout') {
 				break
 			}
+			// but a CARRIER that failed (a DoIP connection closed, or out of step after a stalled
+			// message) has nothing more to drain, and is the caller's news, not a dropped PDU
+			if err.msg().starts_with('DoIP connection lost: ') {
+				return err
+			}
 		}
 		discarded++
 		if discarded >= max_drain {
