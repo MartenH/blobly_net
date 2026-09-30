@@ -514,3 +514,32 @@ fn test_an_ipv4_announce_to_on_an_ipv6_entity_says_which_settings_disagree() {
 		assert err.msg().contains('::1'), 'the message must name the binding too: ${err}'
 	}
 }
+
+// a timeout before a message's first byte is the carrier's silence; one after bytes of it were
+// read is a message that stalled — the stream is inside it, and it must not read as silence
+fn test_a_message_that_stalls_mid_read_is_not_silence() {
+	for partial in [false, true] {
+		mut l := net.listen_tcp(.ip, '127.0.0.1:0') or { panic(err) }
+		addr := l.addr() or { panic(err) }
+		spawn fn [mut l, partial] () {
+			mut c := l.accept() or { return }
+			if partial {
+				c.write([u8(0x02), 0xFD, 0x80]) or {} // three bytes of a header
+			}
+			time.sleep(600 * time.millisecond)
+			c.close() or {}
+		}()
+		mut conn := net.dial_tcp(addr.str()) or { panic(err) }
+		if _ := read_message(mut conn, 200) {
+			assert false, 'nothing complete was sent'
+		} else {
+			if partial {
+				assert err.msg().contains('stalled mid-read'), err.msg()
+			} else {
+				assert err.code() == net.err_timed_out_code, err.msg()
+			}
+		}
+		conn.close() or {}
+		l.close() or {}
+	}
+}
