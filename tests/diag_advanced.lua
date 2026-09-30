@@ -33,7 +33,8 @@ test("DTCs read as records with named status bits (0x19 01 / 02 / 0A)", function
   check.truthy(all[1].confirmedDTC and all[1].testFailed, "P1234-56 is confirmed and failing")
   check.equal(#diag:dtcs(0x01), 1) -- only one has testFailed
   check.dtc(diag, "P1234-56", { confirmedDTC = true, testFailed = true })
-  check.dtc(diag, "B2BCD-EF", { confirmedDTC = true, testFailed = false }) -- 0xABCDEF
+  check.equal(math.type(all[1].code), "integer")
+  check.dtc(diag, "b2bcd-ef", { confirmedDTC = true, testFailed = false }) -- 0xABCDEF, any case
   local ok, err = pcall(function() check.dtc(diag, "B2BCD-EF", { testFailed = true }) end)
   check.truthy(not ok and tostring(err):find("testFailed is false"), tostring(err))
   ok = pcall(function() check.dtc(diag, "U0001-00") end)

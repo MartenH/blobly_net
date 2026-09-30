@@ -34,6 +34,7 @@ fn test_dtc_names() {
 		assert dtc_code(name) or { panic(name) } == code
 	}
 	assert dtc_code('U0121') or { panic('short') } == 0xC12100
+	assert dtc_code('u01a1-0f') or { panic('lower') } == 0xC1A10F
 	for bad in ['X0121-00', 'U4121-00', 'U01G1-00', 'U0121_00', 'U012'] {
 		assert dtc_code(bad) == none, bad
 	}
@@ -57,4 +58,15 @@ fn test_the_in_process_server_answers_every_supported_sub_function() {
 	assert confirmed.records.len == 2 // both default DTCs carry confirmedDTC (0x08)
 	failed := decode_dtc_list(s.handle([u8(0x19), 0x02, dtc_test_failed])) or { panic(err) }
 	assert failed.records.map(it.name()) == ['P1234-56'] // 0x123456: only it has testFailed
+}
+
+// a request of the wrong length is refused as ISO says, not answered with a guessed mask, and
+// 0x19 carries no suppress bit: its answer is the report
+fn test_the_in_process_server_refuses_malformed_dtc_requests() {
+	mut s := default_server()
+	assert s.handle([u8(0x19), 0x01]) == [u8(0x7F), 0x19, 0x13]
+	assert s.handle([u8(0x19), 0x02]) == [u8(0x7F), 0x19, 0x13]
+	assert s.handle([u8(0x19), 0x0A, 0x00]) == [u8(0x7F), 0x19, 0x13]
+	assert s.handle([u8(0x19), 0x8A]) == [u8(0x7F), 0x19, 0x12]
+	assert s.handle([u8(0x19), 0x82, 0xFF]) == [u8(0x7F), 0x19, 0x12]
 }

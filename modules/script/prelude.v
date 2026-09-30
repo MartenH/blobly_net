@@ -35,24 +35,42 @@ function check.between(v, lo, hi, msg)
     error((msg or "out of range") .. ": " .. tostring(v) .. " not in [" .. tostring(lo) .. ".." .. tostring(hi) .. "]", 2)
   end
 end
--- check.dtc(diag, name [, want]): the server supports DTC `name` ("U0121-00"), and each status bit
--- `want` names has the value it gives, e.g. { confirmedDTC = true, testFailed = false }. Read with
--- 0x19 0A, so every status bit is as the server keeps it. Returns the record.
+-- check.dtc(diag, name [, want]): the server holds DTC `name` ("U0121-00", or "U0121" for failure
+-- type 00), and each status bit `want` names has the value it gives, e.g.
+-- { confirmedDTC = true, testFailed = false }. Read with 0x19 0A, so every status bit is as the
+-- server keeps it; a server without 0x0A (NRC 0x12) is read with 0x19 02 FF instead, which lists
+-- only DTCs with a status bit set. A bit outside the availability mask of the server is an error, not
+-- a pass. Returns the record.
+local dtc_bit_names = { testFailed = true, testFailedThisOperationCycle = true, pendingDTC = true,
+  confirmedDTC = true, testNotCompletedSinceLastClear = true, testFailedSinceLastClear = true,
+  testNotCompletedThisOperationCycle = true, warningIndicatorRequested = true }
 function check.dtc(diag, name, want)
-  for _, r in ipairs(diag:supported_dtcs()) do
-    if r.name == name then
+  local code = __uds_dtc_code(tostring(name))
+  if code == nil then error("check.dtc: not a DTC name: " .. tostring(name), 2) end
+  local ok, recs = pcall(function() return diag:supported_dtcs() end)
+  if not ok then
+    if not string.find(tostring(recs), "NRC 0x12", 1, true) then error(recs, 2) end
+    recs = diag:dtcs(0xFF)
+  end
+  for _, r in ipairs(recs) do
+    if r.code == code then
       for bit, v in pairs(want or {}) do
-        if r[bit] == nil then error("check.dtc: no status bit named " .. tostring(bit), 2) end
+        if not dtc_bit_names[bit] then error("check.dtc: no status bit named " .. tostring(bit), 2) end
+        if r[bit] == nil then
+          error(string.format("%s: the server does not report %s (availability 0x%02X)", r.name, bit,
+            r.availability), 2)
+        end
         if r[bit] ~= v then
-          error(string.format("%s: %s is %s, expected %s (status 0x%02X)", name, bit, tostring(r[bit]),
-            tostring(v), math.tointeger(r.status)), 2)
+          error(string.format("%s: %s is %s, expected %s (status 0x%02X)", r.name, bit, tostring(r[bit]),
+            tostring(v), r.status), 2)
         end
       end
       return r
     end
   end
-  error("check.dtc: the server has no DTC " .. name, 2)
+  error("check.dtc: the server has no DTC " .. tostring(name), 2)
 end
+
 -- expect a UDS negative response with NRC `code` while running fn
 function check.nrc(code, fn)
   local ok, err = pcall(fn)

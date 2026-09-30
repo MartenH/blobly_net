@@ -57,9 +57,10 @@ pub fn dtc_name(code u32) string {
 	return '${letter.str()}${(code >> 8) & 0x3FFF:04X}-${code & 0xFF:02X}'
 }
 
-// dtc_code parses a display name back (`U0121-00`, or `U0121` for failure type 00); none for
-// anything else.
-pub fn dtc_code(name string) ?u32 {
+// dtc_code parses a display name back (`U0121-00`, or `U0121` for failure type 00, in either
+// case); none for anything else.
+pub fn dtc_code(display string) ?u32 {
+	name := display.to_upper()
 	if name.len != 5 && name.len != 8 {
 		return none
 	}

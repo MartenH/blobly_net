@@ -102,6 +102,11 @@ static inline void ctlua_setfield_bool(lua_State *L, const char *k, int v) {
 	lua_pushboolean(L, v);
 	lua_setfield(L, -2, k);
 }
+static inline void ctlua_setfield_int(lua_State *L, const char *k, long long v) {
+	lua_pushinteger(L, (lua_Integer)v);
+	lua_setfield(L, -2, k);
+}
+
 /* ctlua_seti: pop the value on top into the table just below it, at integer index i */
 static inline void ctlua_seti(lua_State *L, long long i) { lua_seti(L, -2, (lua_Integer)i); }
 

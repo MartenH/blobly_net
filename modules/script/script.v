@@ -321,6 +321,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_dtcs', l_uds_dtcs)
 	env.st.register('__uds_supported_dtcs', l_uds_supported_dtcs)
 	env.st.register('__uds_dtc_count', l_uds_dtc_count)
+	env.st.register('__uds_dtc_code', l_uds_dtc_code)
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -898,17 +899,21 @@ fn l_uds_raw_suppressed(l lua.State) int {
 }
 
 // push_dtc_report leaves an array of DTC records on the Lua stack: each a table of its `code`,
-// display `name` (U0121-00), `status` byte, and one boolean per ISO 14229-1 status bit, named as
-// uds.dtc_status_bits names them (confirmedDTC, testFailed, ...).
+// display `name` (U0121-00), `status` byte, the report's `availability` mask, and one boolean per
+// ISO 14229-1 status bit the server supports, named as uds.dtc_status_bits names them — a bit
+// outside the availability mask is absent (nil), since the server says nothing about it.
 fn push_dtc_report(l lua.State, r uds.DtcReport) {
 	l.new_table()
 	for i, rec in r.records {
 		l.new_table()
-		l.set_num('code', f64(rec.code))
+		l.set_int('code', rec.code)
 		l.set_str('name', rec.name())
-		l.set_num('status', f64(rec.status))
+		l.set_int('status', rec.status)
+		l.set_int('availability', r.availability)
 		for bit in uds.dtc_status_bits {
-			l.set_bool(bit.name, rec.status & bit.mask != 0)
+			if r.availability & bit.mask != 0 {
+				l.set_bool(bit.name, rec.status & bit.mask != 0)
+			}
 		}
 		l.set_index(i + 1)
 	}
@@ -928,6 +933,16 @@ fn l_uds_supported_dtcs(l lua.State) int {
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
 	r := c.cli.supported_dtcs() or { return l.fail(err.msg()) }
 	push_dtc_report(l, r)
+	return 1
+}
+
+// l_uds_dtc_code: a DTC display name (`U0121-00`, `U0121`, any case) as its 24-bit code, or nil
+fn l_uds_dtc_code(l lua.State) int {
+	code := uds.dtc_code(l.arg_str(1)) or {
+		l.push_nil()
+		return 1
+	}
+	l.push_int(code)
 	return 1
 }
 
