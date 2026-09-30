@@ -3,8 +3,9 @@
 // a simulated ECU can answer diagnostic requests with no Python and no kernel
 // ISO-TP. Mirrors uds_server.py: 0x10 session control, 0x22 RDBI (DID table),
 // 0x3E tester present; unknown service/DID → negative response. Also 0x11 (the diagnostic state
-// back to power-on), 0x14 (the DTC table) and 0x85 (acknowledged — this server records no faults,
-// so there is nothing to suspend), and suppress-positive-response on every sub-function service.
+// back to power-on), 0x19 01/02/0A (the DTC table: count, by status mask, all), 0x14 (clears it)
+// and 0x85 (acknowledged — this server records no faults, so there is nothing to suspend), and
+// suppress-positive-response on every sub-function service but 0x19, whose answer is its report.
 // Not 0x28: nothing here gates the simulated ECU's traffic, and an acknowledgement it does not
 // act on would be a lie a test could pass on.
 module uds
@@ -14,7 +15,7 @@ import isotp
 pub struct Server {
 pub mut:
 	dids     map[u16][]u8 // ReadDataByIdentifier table (0x22/0x2E)
-	dtcs     []Dtc        // ReadDTCInformation table (0x19 sub 0x02)
+	dtcs     []Dtc        // ReadDTCInformation table (0x19 01/02/0A), cleared by 0x14
 	session  u8 = 1
 	sec_seed []u8 // last seed handed out (0x27 request seed)
 	unlocked bool // security access granted (0x27 valid key accepted)
@@ -63,7 +64,7 @@ pub fn (mut s Server) handle(req []u8) []u8 {
 		return []
 	}
 	_, subfn := echo_of(req) // the client's list: one answer to which services carry a sub-function
-	if subfn && req.len > 1 && req[1] & 0x80 != 0 {
+	if subfn && req[0] != sid_read_dtc_information && req.len > 1 && req[1] & 0x80 != 0 {
 		mut plain := req.clone()
 		plain[1] &= 0x7F
 		resp := s.answer(plain)
@@ -119,13 +120,27 @@ fn (mut s Server) answer(req []u8) []u8 {
 			}
 			return neg(sid, 0x35) // invalidKey
 		}
-		0x19 { // ReadDTCInformation (sub 0x02 reportDTCByStatusMask)
+		0x19 { // ReadDTCInformation: 0x01 count, 0x02 by status mask, 0x0A supported
 			sub := if req.len > 1 { req[1] } else { u8(0) }
-			if sub != 0x02 {
-				return neg(sid, 0x12) // subFunctionNotSupported
+			if sub != 0x01 && sub != 0x02 && sub != 0x0A {
+				return neg(sid, 0x12) // subFunctionNotSupported (bit 7 too: 0x19 has no suppress)
+			}
+			if req.len != if sub == 0x0A { 2 } else { 3 } {
+				return neg(sid, 0x13) // incorrectMessageLengthOrInvalidFormat
+			}
+			if sub == 0x0A { // reportSupportedDTC: every DTC, whole status
+				mut all := [u8(0x59), 0x0A, 0xFF]
+				for d in s.dtcs {
+					all << [u8((d.code >> 16) & 0xFF), u8((d.code >> 8) & 0xFF), u8(d.code & 0xFF), d.status]
+				}
+				return all
+			}
+			mask := req[2]
+			if sub == 0x01 { // reportNumberOfDTCByStatusMask
+				n := s.dtcs.filter(it.status & mask != 0).len
+				return [u8(0x59), 0x01, 0xFF, 0x01, u8(n >> 8), u8(n)]
 			}
 			// [0x59, 0x02, statusAvailabilityMask, {DTC hi/mid/lo, status}...]
-			mask := if req.len > 2 { req[2] } else { u8(0xFF) }
 			mut resp := [u8(0x59), 0x02, 0xFF]
 			for d in s.dtcs {
 				if d.status & mask == 0 {

@@ -433,10 +433,7 @@ pub fn (mut c Client) security_send_key(level u8, key []u8) ! {
 // record (status-availability mask byte followed by DTC(3)+status(1) tuples).
 pub fn (mut c Client) read_dtc_by_status_mask(mask u8) ![]u8 {
 	resp := c.raw([sid_read_dtc_information, 0x02, mask])!
-	// 0x59 0x02 <data...>
-	if resp.len < 2 {
-		return error('readDTC response too short')
-	}
+	decode_dtc_list(resp)! // 0x59 0x02 <availability> {DTC, status}*: refused unless well formed
 	return resp[2..].clone()
 }
 

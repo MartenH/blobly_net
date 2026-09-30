@@ -40,7 +40,7 @@ fn test_read_dtc() {
 	assert r[1] == 0x02
 	assert r.len >= 3
 	// unsupported sub-function
-	bad := s.handle([u8(0x19), 0x01])
+	bad := s.handle([u8(0x19), 0x04])
 	assert bad == [u8(0x7F), 0x19, 0x12]
 }
 
