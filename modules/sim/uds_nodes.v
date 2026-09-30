@@ -20,6 +20,9 @@ pub:
 	rx   u32  // request id  (tester -> ECU)
 	tx   u32  // response id (ECU -> tester)
 	ext  bool // 29-bit addressing, inferred from the ids
+	// the functional id it also answers, 0 = none (and its width, inferred like the pair's)
+	functional u32
+	fext       bool
 pub mut:
 	server uds.Server
 }
@@ -59,7 +62,25 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 			server: build_server(cfg, max_did_bytes, max_dtcs)
 		}
 	}
+	// A functional id is SHARED by design (every ECU on a bus answers 0x7DF), so it claims
+	// nothing — but it must not be any accepted server's physical id, or one ECU would read its
+	// neighbour's requests (or replies) as broadcasts. Decided once every physical id is known.
+	for i, u in out {
+		cfg := nodes[u.src].uds or { continue }
+		if functional_usable(cfg.functional, claimed) {
+			out[i] = UdsNode{
+				...u
+				functional: u32(cfg.functional)
+				fext:       cfg.functional > 0x7FF
+			}
+		}
+	}
 	return out
+}
+
+// functional_usable: a configured functional id that is a CAN id and nobody's physical one.
+fn functional_usable(f u64, physical map[u64]bool) bool {
+	return f != 0 && f <= can_id_max && f !in physical
 }
 
 // build_server turns one node's `uds:` content into a server. Carrier-independent: what an
@@ -156,6 +177,9 @@ pub fn validate_uds_doip(nodes []project.NodeCfg) []string {
 		cfg := n.uds or { continue }
 		if cfg.rx != 0 || cfg.tx != 0 {
 			warns << 'uds on "${n.name}": rx/tx are ignored on a DoIP channel — addressing is the channel\'s tester_address/ecu_address'
+		}
+		if cfg.functional != 0 {
+			warns << 'uds on "${n.name}": functional is ignored on a DoIP channel — DoIP addresses functional requests by logical address'
 		}
 		for m in cfg.malformed {
 			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
@@ -285,6 +309,18 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 			// SocketCAN masks on send while the software channel matches unmasked, so the ECU
 			// would transmit on a different valid id and never hear its tester
 			warns << 'uds on "${n.name}": 0x${cfg.rx:X}/0x${cfg.tx:X} exceeds the 29-bit CAN id range'
+		}
+		if cfg.functional != 0 {
+			if cfg.functional > can_id_max {
+				warns << 'uds on "${n.name}": functional id 0x${cfg.functional:X} exceeds the 29-bit CAN id range — not answered'
+			}
+			for other in nodes {
+				o := other.uds or { continue }
+				if cfg.functional == o.rx || cfg.functional == o.tx {
+					warns << 'uds on "${n.name}": functional id 0x${cfg.functional:X} is "${other.name}"\'s physical id — not answered'
+					break
+				}
+			}
 		}
 		if (cfg.rx > 0x7FF) != (cfg.tx > 0x7FF) {
 			// ISO-TP uses one frame format for the pair; a mixed pair cannot be honoured
