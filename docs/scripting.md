@@ -52,7 +52,7 @@ scripts/runtests.sh [--project <file.blobnet>] <script.lua> [more.lua ...]
 - `--project <file.blobnet>` (or `-p`) — the project that defines the bus setup.
   Defaults to `projects/sim-demo.blobnet`. See [§4](#4-projects-and-the-simulation).
 - **A script may declare the project it needs** in its leading comment —
-  `-- @project ../projects/doip-demo.blobnet`, resolved relative to the script. The declaration
+  `-- @project ../projects/doip-demo.blobnet`, resolved relative to the script (an absolute path is taken as written). The declaration
   wins: a `--project` that contradicts it, or two scripts in one invocation declaring different
   projects, is refused rather than run (one run brings up one project).
 - One or more `.lua` scripts, run in order. With none named, `scripts/runtests.sh` runs every
