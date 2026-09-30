@@ -810,12 +810,6 @@ fn (mut app App) poll_hotkeys() {
 	}
 }
 
-// sender_value resolves one generator signal to the number that goes on the wire: its waveform
-// evaluated at the run clock when it has one, else its static value. The counter source steps
-// per SEND, so each generator keeps its own send count (the simulated-ECU side counts the same
-// way with SimMessage.send_n); sine, sawtooth and stepmod are functions of the run clock.
-// sender_value resolves one signal of an ALREADY-SNAPSHOTTED sender: pure, so the caller holds no
-// lock while encoding. `n` is the index reserved for this fire and `t0_ns` the run epoch.
 fn (mut app App) fire_index(i int) {
 	// ONE FIRE AT A TIME PER GENERATOR, start to finish: reserving an index and rolling it back
 	// could not keep the count equal to DELIVERED frames when two fires finished out of order.
@@ -872,7 +866,7 @@ fn (mut app App) fire_index(i int) {
 		}
 		id = f.id
 		ext = f.extended
-		data = f.data.clone()
+		data = f.data.clone() // V assigns an array only by clone
 	} else if i < app.gen_bufs.len {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))

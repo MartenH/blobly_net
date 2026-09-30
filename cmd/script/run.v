@@ -134,11 +134,15 @@ fn main() {
 	// listen-only nowhere before #117: `bus.send` from a script reached the wire whatever the
 	// project said, and a simulated node on a silenced row transmitted at its own cadence.
 	project.apply_listen_only(proj.channels)
-	for ch in proj.channels {
+	// every row's databases loaded once, by ROW: the channel loop and the generators below both
+	// ask, and a row a generator targets need not be one the loop loaded
+	mut row_dbs := map[int]candb.Database{}
+	run_t0 := time.sys_mono_now() // the ONE epoch every generator's time-based source runs from
+	for ci, ch in proj.channels {
 		if !ch.enabled {
 			continue
 		}
-		db := load_channel_db(ch, os.dir(proj_path))
+		db := row_db(mut row_dbs, proj.channels, ci, os.dir(proj_path))
 		nodes := ch.all_nodes()
 		chans << script.ChanInfo{
 			name: ch.name
@@ -217,30 +221,6 @@ fn main() {
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
 		}
-		// Cyclic generators (`senders:` with trigger: cyclic): sent while the run lasts, as the
-		// GUI sends them during a measurement — without this, a project behaved differently
-		// headless, and a suite could not rely on its own periodic frames
-		for s in ch.senders {
-			if s.trigger != 'cyclic' || s.cycle_ms <= 0 {
-				continue
-			}
-			sb := project.resolve_sender_bus(s.bus, ch, proj.channels)
-			if sb.iface == '' {
-				eprintln('${ch.name}: generator "${s.name}": ${sb.note} — not sent')
-				continue
-			}
-			mut open_iface := sb.iface
-			mut sdb := []candb.Database{}
-			for c in proj.channels {
-				if sb.chan != '' && c.name == sb.chan {
-					open_iface = c.iface_with_bitrate()
-					sdb << load_channel_db(c, os.dir(proj_path))
-					break
-				}
-			}
-			sims << spawn sender_loop(open_iface, s, sdb, ctl)
-			println('channel ${ch.name}: cyclic generator "${s.name}" every ${s.cycle_ms} ms')
-		}
 		if nodes.len > 0 {
 			// BOTH: the suffixed string opens the transport, the logical one keys faults.
 			// Passing only the suffixed form meant sim.apply_injected looked up
@@ -300,6 +280,48 @@ fn main() {
 			}
 		} else {
 			println('channel ${ch.name} (${ch.iface}): monitor only')
+		}
+	}
+	// Cyclic generators (`senders:` with trigger: cyclic), sent while the run lasts as the GUI
+	// sends them during a measurement, by the GUI's rules: every row's generators (a disabled
+	// row's too — its generator may target an enabled channel), sent only where a target row is
+	// still in the run or the target is a wire no row configures, with the target rows'
+	// databases. Without it a project behaved differently headless.
+	for w in project.sender_bus_warnings(proj.channels) {
+		eprintln(w)
+	}
+	for w in project.generator_source_warnings(proj.channels) {
+		eprintln(w)
+	}
+	for ci, ch in proj.channels {
+		if ch.is_doip() || ch.is_someip() {
+			continue
+		}
+		for s in ch.senders {
+			if s.trigger != 'cyclic' || s.cycle_ms <= 0 {
+				continue
+			}
+			sb := project.resolve_sender_bus(s.bus, ch, proj.channels)
+			if sb.iface == '' {
+				eprintln('${ch.name}: generator "${s.name}": ${sb.note} — not sent')
+				continue
+			}
+			rows := project.sender_target_rows(sb, ci, proj.channels)
+			enabled := rows.filter(proj.channels[it].enabled)
+			if rows.len > 0 && enabled.len == 0 {
+				continue // every row on its target has left the run: nothing is sent there
+			}
+			open_iface := if enabled.len > 0 {
+				proj.channels[enabled[0]].iface_with_bitrate()
+			} else {
+				sb.iface
+			}
+			mut sdb := []candb.Database{}
+			for r in rows {
+				sdb << row_db(mut row_dbs, proj.channels, r, os.dir(proj_path))
+			}
+			sims << spawn sender_loop(open_iface, s, sdb, run_t0, ctl)
+			println('channel ${ch.name}: cyclic generator "${s.name}" every ${s.cycle_ms} ms on ${sb.iface}')
 		}
 	}
 	// Let the sims start emitting / the UDS server start polling before scripts run.
@@ -412,11 +434,21 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 	report_diag('${open_iface} (sim)', bus.diagnostics())
 }
 
+// row_db is row `i`'s databases, loaded (and its reader notes printed) once.
+fn row_db(mut cache map[int]candb.Database, chs []project.Channel, i int, proj_dir string) candb.Database {
+	if db := cache[i] {
+		return db
+	}
+	db := load_channel_db(chs[i], proj_dir)
+	cache[i] = db
+	return db
+}
+
 // sender_loop sends one cyclic generator's frame every `cycle_ms` until stopped — the headless
 // counterpart of the GUI's gen_loop, building the frame with the same sim.sender_message_frame.
 // The send index counts DELIVERED frames only, as the GUI's does, so a counter source never
 // skips a value a refused send did not put on the wire.
-fn sender_loop(iface string, s project.Sender, dbs []candb.Database, ctl &Ctl) {
+fn sender_loop(iface string, s project.Sender, dbs []candb.Database, run_t0 u64, ctl &Ctl) {
 	defer {
 		stdatomic.add_i64(&loops_done, 1)
 	}
@@ -424,7 +456,6 @@ fn sender_loop(iface string, s project.Sender, dbs []candb.Database, ctl &Ctl) {
 		eprintln('generator "${s.name}": cannot open ${iface}: ${err}')
 		return
 	}
-	t0 := time.sys_mono_now()
 	mut n := 0
 	mut next := time.ticks()
 	for ctl.running {
@@ -437,7 +468,7 @@ fn sender_loop(iface string, s project.Sender, dbs []candb.Database, ctl &Ctl) {
 		if next < now {
 			next = now + s.cycle_ms // a stall does not become a burst of catch-up frames
 		}
-		el := f64(time.sys_mono_now() - t0) / 1_000_000_000.0
+		el := f64(time.sys_mono_now() - run_t0) / 1_000_000_000.0
 		frame := if s.message != '' {
 			sim.sender_message_frame(s, dbs, n, el) or {
 				eprintln('generator "${s.name}": message "${s.message}" not in the channel databases — not sent')
