@@ -422,10 +422,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 	mut open_err_said := false
 	defer {
 		if open {
-			ch.close()
-			for mut t in link.func {
-				t.close()
-			}
+			link.close()
 		}
 	}
 	for a.running {
@@ -443,11 +440,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 			// skipping recv leaves requests queued on the open channel, which are answered
 			// late once the ECU comes back. A closed channel does neither.
 			if open {
-				ch.close()
-				for mut t in link.func {
-					t.close()
-				}
-				link.func = []
+				link.close()
 				open = false
 			}
 			time.sleep(50 * time.millisecond)
@@ -481,9 +474,9 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				continue
 			}
 			if fid != 0 {
-				// its own tapped subscription: a broadcast answered is transmitted like any
-				// other reply, so it is attributed like one
-				ftap := a.open_tap_on(iface, org_tx_sim, pch.name) or {
+				// receive-only: the answers go out on the physical channel's tap, attributed
+				// there; this subscription only hears the broadcasts
+				ftap := transport.open(a.bitrate_iface(iface)) or {
 					if !open_err_said {
 						open_err_said = true
 						notify_gen(app, gen,
@@ -503,7 +496,9 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				consumer_attached(a, iface, gen)
 			}
 		}
-		s.serve_step(mut link, 50)
+		s.serve_step(mut link, 50) or {
+			time.sleep(50 * time.millisecond) // a failed bus: back off rather than spin
+		}
 	}
 }
 

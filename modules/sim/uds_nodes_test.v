@@ -356,4 +356,8 @@ fn test_functional_id_is_answered_unless_it_is_a_physical_one() {
 	clash := [mk('A', 0x7E0, 0x7E8, 0x7E9), mk('B', 0x7E1, 0x7E9, 0)]
 	assert uds_nodes(clash)[0].functional == 0, "a functional id that is B's response id was answered"
 	assert validate_uds(clash).any(it.contains('functional id 0x7E9') && it.contains('physical'))
+	// 29-bit pair, 11-bit broadcast: refused, and said
+	mixed := [mk('C', 0x18DA10F1, 0x18DAF110, 0x7DF)]
+	assert uds_nodes(mixed)[0].functional == 0
+	assert validate_uds(mixed).any(it.contains('frame format'))
 }

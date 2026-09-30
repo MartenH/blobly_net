@@ -42,6 +42,9 @@ pub fn version_for(p Project) int {
 	// v8 — a simulated ECU answering a functional id (#366). An older build drops `functional:`
 	// on its next structured save, and the ECU silently stops answering broadcasts.
 	for c in p.channels {
+		if c.is_doip() {
+			continue // not written there (a DoIP node has no CAN ids), so nothing to lose
+		}
 		for n in c.nodes {
 			if u := n.uds {
 				if u.functional != 0 {

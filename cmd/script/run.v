@@ -405,22 +405,27 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fext bool, srv
 		fext: fext
 	}
 	if fid != 0 {
-		// a raw subscription of its own: functional requests are Single Frames on a shared id
-		link.func << transport.open(iface) or {
-			eprintln('${iface}: uds node 0x${rx:X} cannot listen on functional id 0x${fid:X}: ${err}')
-			ch.close()
-			return
+		// a raw subscription of its own: functional requests are Single Frames on a shared id.
+		// Failing to open it costs the broadcasts, not the ECU: physical requests are still served.
+		if f := transport.open(iface) {
+			link.func << f
+		} else {
+			eprintln('${iface}: uds node 0x${rx:X} cannot listen on functional id 0x${fid:X}: ${err} — physical requests only')
 		}
 	}
 	mut s := srv
 	for ctl.running {
-		s.serve_step(mut link, 50)
+		s.serve_step(mut link, 50) or { time.sleep(50 * time.millisecond) }
 	}
+	mut fdiags := []transport.BusDiagnostics{}
 	for mut t in link.func {
-		t.close()
+		fdiags << t.diagnostics()
 	}
-	ch.close()
+	link.close()
 	report_diag('${iface} (uds node)', ch.diagnostics()) // after the close: see sim_loop
+	for d in fdiags {
+		report_diag('${iface} (uds node, functional 0x${fid:X})', d)
+	}
 }
 
 // doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,

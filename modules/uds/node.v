@@ -27,17 +27,32 @@ pub mut:
 	fext bool
 }
 
-// serve_step answers what is waiting: a physical request (waiting up to `wait_ms`, less when a
-// functional listener shares the loop), then every functional Single Frame already queued.
-pub fn (mut s Server) serve_step(mut l NodeLink, wait_ms int) {
-	wait := if l.func.len > 0 && wait_ms > 10 { 10 } else { wait_ms }
-	req := l.phys.recv(wait) or { []u8{} }
-	if req.len > 0 {
-		resp := s.handle(req)
-		if resp.len > 0 {
-			l.phys.send(resp) or {}
+// serve_step answers what is waiting: the functional Single Frames already queued, then a
+// physical request (waiting up to `wait_ms`), handling any functional ones queued meanwhile
+// first. Functional requests therefore go before a physical one that arrived after them —
+// except one that arrives while a multi-frame physical request is being reassembled, which
+// no ordering between two subscriptions can place. `wait_ms` is also that reassembly's whole
+// deadline (the software channel gives a PDU one), so it is never shortened here.
+//
+// A physical receive that fails for any reason but silence is returned, so a loop whose bus has
+// failed can back off (and reopen) instead of spinning on an error that comes back at once.
+pub fn (mut s Server) serve_step(mut l NodeLink, wait_ms int) ! {
+	s.serve_functional(mut l)
+	req := l.phys.recv(wait_ms) or {
+		if is_silence(err.msg()) {
+			return
 		}
+		return err
 	}
+	s.serve_functional(mut l)
+	resp := s.handle(req)
+	if resp.len > 0 {
+		l.phys.send(resp) or {}
+	}
+}
+
+// serve_functional answers every functional Single Frame already queued, on the physical channel.
+fn (mut s Server) serve_functional(mut l NodeLink) {
 	for mut t in l.func {
 		for {
 			f := t.recv(0) or { break }
@@ -51,4 +66,14 @@ pub fn (mut s Server) serve_step(mut l NodeLink, wait_ms int) {
 			}
 		}
 	}
+}
+
+// close closes what the link listens on — the physical channel and the functional listener —
+// together, so a node switched off answers neither.
+pub fn (mut l NodeLink) close() {
+	l.phys.close()
+	for mut t in l.func {
+		t.close()
+	}
+	l.func = []
 }

@@ -67,7 +67,7 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	// neighbour's requests (or replies) as broadcasts. Decided once every physical id is known.
 	for i, u in out {
 		cfg := nodes[u.src].uds or { continue }
-		if functional_usable(cfg.functional, claimed) {
+		if functional_usable(cfg.functional, u.ext, claimed) {
 			out[i] = UdsNode{
 				...u
 				functional: u32(cfg.functional)
@@ -78,9 +78,21 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	return out
 }
 
-// functional_usable: a configured functional id that is a CAN id and nobody's physical one.
-fn functional_usable(f u64, physical map[u64]bool) bool {
-	return f != 0 && f <= can_id_max && f !in physical
+// functional_usable: a configured functional id that is a CAN id of the node's own frame format
+// (an 11-bit broadcast to a 29-bit ECU is a combination no ISO 15765-4 tester uses) and no
+// served ECU's physical id. The ONE rule: uds_nodes applies it, validate_uds explains it.
+fn functional_usable(f u64, ext bool, physical map[u64]bool) bool {
+	return f != 0 && f <= can_id_max && (f > 0x7FF) == ext && f !in physical
+}
+
+// physical_ids are the ids the servers that will actually start listen and answer on.
+fn physical_ids(servers []UdsNode) map[u64]bool {
+	mut ids := map[u64]bool{}
+	for u in servers {
+		ids[u64(u.rx)] = true
+		ids[u64(u.tx)] = true
+	}
+	return ids
 }
 
 // build_server turns one node's `uds:` content into a server. Carrier-independent: what an
@@ -311,15 +323,16 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 			warns << 'uds on "${n.name}": 0x${cfg.rx:X}/0x${cfg.tx:X} exceeds the 29-bit CAN id range'
 		}
 		if cfg.functional != 0 {
-			if cfg.functional > can_id_max {
-				warns << 'uds on "${n.name}": functional id 0x${cfg.functional:X} exceeds the 29-bit CAN id range — not answered'
-			}
-			for other in nodes {
-				o := other.uds or { continue }
-				if cfg.functional == o.rx || cfg.functional == o.tx {
-					warns << 'uds on "${n.name}": functional id 0x${cfg.functional:X} is "${other.name}"\'s physical id — not answered'
-					break
+			ext := cfg.rx > 0x7FF || cfg.tx > 0x7FF
+			if !functional_usable(cfg.functional, ext, physical_ids(uds_nodes(nodes))) {
+				why := if cfg.functional > can_id_max {
+					'exceeds the 29-bit CAN id range'
+				} else if (cfg.functional > 0x7FF) != ext {
+					'is not in the frame format of the node\'s own pair'
+				} else {
+					'is a served ECU\'s physical id'
 				}
+				warns << 'uds on "${n.name}": functional id 0x${cfg.functional:X} ${why} — not answered'
 			}
 		}
 		if (cfg.rx > 0x7FF) != (cfg.tx > 0x7FF) {
