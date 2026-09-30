@@ -84,7 +84,52 @@ pub mut:
 	// merely choosing how to decode a frame it already has may use the fallback and accept the
 	// ambiguity (#95).
 	j1939   bool
+	// The E2E contract the file DECLARES for this message (#271: `BA_ "E2ECounterSignal"` /
+	// `"E2ECrcSignal"` / `"E2EProfile"` / `"E2EDataId"`) — stated once in the file the whole
+	// bench shares, for its sender to stamp and its receivers to check. The simulation stamps it
+	// (sim.protection_for); `verify:` checks only what a verify: entry names. Empty when the
+	// file does not declare one.
+	e2e     E2eDecl
 	signals []Signal
+}
+
+// E2eDecl is a message's declared E2E contract: the counter and CRC SIGNALS (so positions come
+// from the layout), the profile (`autosar_p01`, or one of the primitives in e2e_profiles) and
+// the Data ID.
+pub struct E2eDecl {
+pub mut:
+	counter     string
+	crc         string
+	profile     string
+	data_id     u32
+	has_data_id bool   // 0 is a legitimate Data ID, so presence is its own fact
+	bad_data_id string // an E2EDataId the file wrote that is not a Data ID — never read as absent
+}
+
+// declared: the file said anything about this message's E2E at all.
+pub fn (d E2eDecl) declared() bool {
+	return d.counter != '' || d.crc != '' || d.profile != '' || d.has_data_id || d.bad_data_id != ''
+}
+
+// follow_rename keeps the declaration naming a signal the editor renamed.
+pub fn (mut d E2eDecl) follow_rename(old string, new string) {
+	if d.counter == old {
+		d.counter = new
+	}
+	if d.crc == old {
+		d.crc = new
+	}
+}
+
+// forget drops a deleted signal from the declaration — which then says it is incomplete, rather
+// than naming a signal that no longer exists.
+pub fn (mut d E2eDecl) forget(name string) {
+	if d.counter == name {
+		d.counter = ''
+	}
+	if d.crc == name {
+		d.crc = ''
+	}
 }
 
 // raw_value extracts the unsigned raw bits of the signal from `data`. Handles
