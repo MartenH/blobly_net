@@ -810,26 +810,6 @@ fn (mut app App) poll_hotkeys() {
 	}
 }
 
-// sender_value resolves one generator signal to the number that goes on the wire: its waveform
-// evaluated at the run clock when it has one, else its static value. The counter source steps
-// per SEND, so each generator keeps its own send count (the simulated-ECU side counts the same
-// way with SimMessage.send_n); sine, sawtooth and stepmod are functions of the run clock.
-// sender_value resolves one signal of an ALREADY-SNAPSHOTTED sender: pure, so the caller holds no
-// lock while encoding. `n` is the index reserved for this fire and `t0_ns` the run epoch.
-fn sender_value(ss project.SenderSig, n int, el f64) f64 {
-	if ss.wave.typ == '' {
-		return ss.value
-	}
-	// An unusable source (unknown type, zero divisor) sends the STATIC value rather than a
-	// constant nobody asked for or a non-finite number packed into raw bits. The condition is
-	// also reported by project.generator_source_warnings, so it is said, not just survived.
-	if project.gen_source_invalid(ss.wave) != '' {
-		return ss.value
-	}
-	return sim.gen_from_cfg(ss.wave).value(el, n)
-}
-
-
 fn (mut app App) fire_index(i int) {
 	// ONE FIRE AT A TIME PER GENERATOR, start to finish: reserving an index and rolling it back
 	// could not keep the count equal to DELIVERED frames when two fires finished out of order.
@@ -878,39 +858,15 @@ fn (mut app App) fire_index(i int) {
 	mut ext := s.ext
 	mut data := []u8{}
 	if s.message != '' {
-		mut found := false
-		// resolve the message on the generator's own target bus (not globally)
-		for db in app.dbs_for(tgt) {
-			for m in db.messages {
-				if m.name != s.message {
-					continue
-				}
-				id = m.id
-				ext = m.ext
-				data = []u8{len: m.dlc}
-				for ss in s.signals {
-					for sig in m.signals {
-						if sig.name == ss.name {
-							// The value SOURCE, evaluated at send time: a waveform sweeps
-							// (sine/sawtooth/counter/stepmod), no source sends the static value.
-							// Same GenCfg vocabulary and the same evaluator a simulated ECU uses
-							// — only the identity differs (this is the tester, so TX not TX-S).
-							sig.encode(mut data, sender_value(ss, n, el))
-							break
-						}
-					}
-				}
-				found = true
-				break
-			}
-			if found {
-				break
-			}
-		}
-		if !found {
+		// resolved on the generator's own target bus (not globally), by the one builder the
+		// headless runner's cyclic senders use too (sim.sender_message_frame)
+		f := sim.sender_message_frame(s, app.dbs_for(tgt), n, el) or {
 			app.notify('generator: message "${s.message}" not in any DBC')
 			return
 		}
+		id = f.id
+		ext = f.extended
+		data = f.data.clone() // V assigns an array only by clone
 	} else if i < app.gen_bufs.len {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
