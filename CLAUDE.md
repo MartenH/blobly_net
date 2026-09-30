@@ -101,7 +101,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 ```sh
 ./scripts/run_gui.sh                       # GUI
 v -enable-globals -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v   # any other target
-v -enable-globals test modules/             # unit tests — the reliable backbone (103/103)
+v -enable-globals test modules/             # unit tests — the reliable backbone (104/104)
 ./scripts/runtests.sh                       # ALL headless Lua suites (in-process sim) — CI's command
 ./scripts/runtests.sh tests/diag_basic.lua  # or name them: one invocation, one environment
 ```
