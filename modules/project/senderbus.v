@@ -354,3 +354,37 @@ pub fn sender_bus_warnings(chs []Channel) []string {
 	}
 	return out
 }
+
+// sender_target_rows are the rows a generator's resolved bus names — by IDENTITY, the way the
+// GUI attributes it: its own row, the one row of that name, or every row on the wire an
+// interface or an ambiguous value names. A bare wire no row configures names none. The headless
+// runner sends a cyclic generator only where one of these is still enabled, or where there are
+// none (a bare wire, which the GUI opens a tap for on purpose).
+pub fn sender_target_rows(sb SenderBus, own int, chs []Channel) []int {
+	return match sb.kind {
+		.own {
+			[own]
+		}
+		.named {
+			mut out := []int{}
+			for i, c in chs {
+				if c.name == sb.chan {
+					out << i
+				}
+			}
+			out
+		}
+		.iface, .ambiguous {
+			mut out := []int{}
+			for i, c in chs {
+				if c.iface == sb.iface {
+					out << i
+				}
+			}
+			out
+		}
+		.bare {
+			[]int{}
+		}
+	}
+}

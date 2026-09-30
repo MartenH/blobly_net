@@ -689,7 +689,8 @@ Triggerable frames, for the "now do this" half of bench work:
 ```
 
 `trigger` is `manual` (button only), `key` (button plus the hotkey, when no text field has
-focus) or `cyclic` (sent automatically while the measurement runs).
+focus) or `cyclic` (sent automatically while the measurement runs, in the GUI and in the
+headless runner alike, from one frame builder: `sim.sender_message_frame`).
 
 `data:` is parsed as a string of hex bytes (`01 00`, `0102FF`). A YAML sequence such as
 `[0x01, 0x00]` is *not* interpreted as bytes — it is stringified and misread.
