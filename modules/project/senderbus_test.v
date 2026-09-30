@@ -775,3 +775,30 @@ buses:
 	assert p.notes.len == 1, '${p.notes}'
 	assert p.notes[0].contains('no declared version'), p.notes[0]
 }
+
+// the rows a generator targets are decided by identity: own row, the named row, every row on a
+// named wire — never "the first row called X", which may be another wire entirely
+fn test_sender_target_rows_are_identities() {
+	chs := [
+		Channel{
+			name:  'X'
+			iface: 'vcan0'
+		},
+		Channel{
+			name:  'X'
+			iface: 'vcan1'
+		},
+		Channel{
+			name:  'Y'
+			iface: 'vcan1'
+		},
+	]
+	own := resolve_sender_bus('', chs[2], chs)
+	assert sender_target_rows(own, 2, chs) == [2]
+	named := resolve_sender_bus('Y', chs[0], chs)
+	assert sender_target_rows(named, 0, chs) == [2]
+	wire := resolve_sender_bus('vcan1', chs[0], chs)
+	assert sender_target_rows(wire, 0, chs) == [1, 2], 'every row on the named wire'
+	bare := resolve_sender_bus('vcan9', chs[0], chs)
+	assert bare.kind == .bare && sender_target_rows(bare, 0, chs) == []
+}
