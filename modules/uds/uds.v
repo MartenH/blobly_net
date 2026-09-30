@@ -170,8 +170,7 @@ fn echo_of(req []u8) (int, bool) {
 // extends the wait by P2*; a PDU that answers another request is discarded and the wait goes on.
 // What is already queued when the request goes out cannot be its answer, so it is drained first —
 // the one defence against a duplicated answer to an IDENTICAL earlier request, which no echo can
-// tell apart. On the CAN carriers (`recv(0)` polls what has arrived); DoIP's `recv(0)` reads
-// nothing yet (#358), and TCP does not duplicate — only a late answer after a timeout remains. A 0x10 answer's timing is adopted here, whichever caller sent it.
+// tell apart — on every carrier: `recv(0)` polls what has already arrived (DoIP's since #358). A 0x10 answer's timing is adopted here, whichever caller sent it.
 pub fn (mut c Client) raw(req []u8) ![]u8 {
 	resp, _ := c.exchange(req, false)!
 	return resp
@@ -282,6 +281,11 @@ fn (mut c Client) drain_queued(sid u8) !int {
 			// off it, and what is behind it may be an old answer
 			if err.msg().contains('timeout') {
 				break
+			}
+			// but a CARRIER that failed (a DoIP connection closed, or out of step after a stalled
+			// message) has nothing more to drain, and is the caller's news, not a dropped PDU
+			if err.msg().starts_with('DoIP connection lost: ') {
+				return err
 			}
 		}
 		discarded++

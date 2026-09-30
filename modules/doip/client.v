@@ -145,8 +145,27 @@ pub fn (mut c DoipClient) send(data []u8) ! {
 pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
-		rem := int(deadline - time.ticks())
-		if rem <= 0 {
+		mut rem := int(deadline - time.ticks())
+		if timeout_ms <= 0 {
+			// A POLL (#358): only what has already arrived — the UDS client's pre-send drain.
+			// Asked before reading, never by reading with a zero deadline, which would stop
+			// partway through a message and desynchronise the stream; once something is there,
+			// the whole message is read with an ordinary deadline, since its rest is in flight.
+			if !readable_now(c.conn.sock.handle) {
+				return error('DoIP recv timeout')
+			}
+			// what is readable must be read whole; a failure here (the peer closed, or a message
+			// stalled partway) leaves no stream to poll again, and must not read as one more
+			// drained answer
+			msg := read_message(mut c.conn, poll_read_ms) or {
+				return error('${doip_connection_lost}${err.msg()}')
+			}
+			data, mine := c.own_answer(msg)!
+			if mine {
+				return data
+			}
+			continue
+		} else if rem <= 0 {
 			return error('DoIP recv timeout')
 		}
 		// the socket's own timeout is this carrier's silence, said the one way a caller reads it
@@ -156,28 +175,46 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 			}
 			return err
 		}
-		match msg.payload_type {
-			pt_diagnostic_message {
-				dm := parse_diagnostic_message(msg.payload)!
-				if dm.source != c.target || dm.target != c.source {
-					continue // a response for another logical address — not ours
-				}
-				return dm.data
-			}
-			pt_diagnostic_message_ack {
-				continue // positive ack — wait for the real response
-			}
-			pt_diagnostic_message_nack {
-				nack := if msg.payload.len >= 5 { msg.payload[4] } else { u8(0xFF) }
-				return error('DoIP: diagnostic message negative ack (0x${nack:02X})')
-			}
-			else {
-				continue // ignore anything else on this connection
-			}
+		data, mine := c.own_answer(msg)!
+		if mine {
+			return data
 		}
 	}
 	return error('DoIP recv timeout')
 }
+
+// own_answer is a received message's diagnostic payload and true when it is this connection's
+// answer; false for what is skipped (another logical address's response, a positive ack,
+// anything else); an error for a negative ack.
+fn (c &DoipClient) own_answer(msg Message) !([]u8, bool) {
+	match msg.payload_type {
+		pt_diagnostic_message {
+			dm := parse_diagnostic_message(msg.payload)!
+			if dm.source != c.target || dm.target != c.source {
+				return []u8{}, false // a response for another logical address — not ours
+			}
+			return dm.data, true
+		}
+		pt_diagnostic_message_ack {
+			return []u8{}, false // positive ack — wait for the real response
+		}
+		pt_diagnostic_message_nack {
+			nack := if msg.payload.len >= 5 { msg.payload[4] } else { u8(0xFF) }
+			return error('DoIP: diagnostic message negative ack (0x${nack:02X})')
+		}
+		else {
+			return []u8{}, false // ignore anything else on this connection
+		}
+	}
+}
+
+// doip_connection_lost prefixes the error a poll returns when the connection cannot be read any
+// further — a failure of the carrier, which a pre-send drain must pass on, not count as an answer.
+pub const doip_connection_lost = 'DoIP connection lost: '
+
+// poll_read_ms: how long a zero-timeout recv waits for the REST of a message whose first bytes
+// have arrived — TCP delivers it promptly, so this bounds a peer that stalls mid-message.
+const poll_read_ms = 1000
 
 pub fn (mut c DoipClient) close() {
 	if !isnil(c.conn) {
