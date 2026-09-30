@@ -843,7 +843,7 @@ fn l_uds_raw(l lua.State) int {
 // refusing what does not fit rather than truncating it into a different request — -1 as a group
 // would otherwise go out as 0xFFFFFF, every DTC.
 fn uds_byte(l lua.State, i int) ?u8 {
-	v := l.arg_int(i)
+	v := l.arg_int_exact(i)?
 	if v < 0 || v > 0xFF {
 		return none
 	}
@@ -878,7 +878,7 @@ fn l_uds_dtc_setting(l lua.State) int {
 fn l_uds_clear_dtc(l lua.State) int {
 	mut env := env_of(l)
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
-	group := l.arg_int(2)
+	group := l.arg_int_exact(2) or { return l.fail('DTC group is not an integer') }
 	if group < 0 || group > 0xFFFFFF {
 		return l.fail('DTC group ${group} is not a 24-bit value')
 	}

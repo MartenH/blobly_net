@@ -72,6 +72,8 @@ static inline void ctlua_pop(lua_State *L, int n)    { lua_pop(L, n); }
 
 /* argument readers for registered C functions (1-based index). */
 static inline long long ctlua_to_int(lua_State *L, int i)  { return (long long)lua_tointegerx(L, i, NULL); }
+/* ctlua_to_int_ok: the same conversion, and whether it succeeded (a string, 1e30 or 1.5 does not) */
+static inline long long ctlua_to_int_ok(lua_State *L, int i, int *ok) { return (long long)lua_tointegerx(L, i, ok); }
 static inline double    ctlua_to_num(lua_State *L, int i)  { return (double)lua_tonumberx(L, i, NULL); }
 static inline int       ctlua_to_bool(lua_State *L, int i) { return lua_toboolean(L, i); }
 static inline int       ctlua_is_num(lua_State *L, int i)  { return lua_isnumber(L, i); }

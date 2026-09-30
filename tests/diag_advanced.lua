@@ -53,5 +53,12 @@ test("ClearDiagnosticInformation refuses what it cannot clear (0x14)", function(
     local ok, err = pcall(function() diag:clear_dtcs(g) end)
     check.truthy(not ok and tostring(err):find("24%-bit"), "clear_dtcs(" .. g .. "): " .. tostring(err))
   end
+  -- and one Lua cannot convert exactly is refused too, not read as group 0
+  for _, g in ipairs({ 1e30, 1.5 }) do
+    local ok, err = pcall(function() diag:clear_dtcs(g) end)
+    check.truthy(not ok and tostring(err):find("not an integer"), "clear_dtcs(" .. g .. "): " .. tostring(err))
+  end
+  local ok = pcall(function() diag:reset(1.5) end)
+  check.truthy(not ok, "reset(1.5) was sent")
   check.equal(tohex(diag:read_dtcs(0xFF)), "FF 12 34 56 09 AB CD EF 08") -- nothing was cleared
 end)

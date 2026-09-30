@@ -42,6 +42,7 @@ fn C.ctlua_gettop(&C.lua_State) int
 fn C.ctlua_settop(&C.lua_State, int)
 fn C.ctlua_pop(&C.lua_State, int)
 fn C.ctlua_to_int(&C.lua_State, int) i64
+fn C.ctlua_to_int_ok(&C.lua_State, int, &int) i64
 fn C.ctlua_to_num(&C.lua_State, int) f64
 fn C.ctlua_to_bool(&C.lua_State, int) int
 fn C.ctlua_is_num(&C.lua_State, int) int
@@ -122,6 +123,18 @@ fn (l State) pop_error() string {
 
 pub fn (l State) arg_int(i int) i64 {
 	return C.ctlua_to_int(l, i)
+}
+
+// arg_int_exact is arg_int for an argument that must BE an integer: none for a value Lua cannot
+// convert exactly (a string, 1.5, 1e30), where arg_int answers 0 — for a caller to whom 0 means
+// something (a DTC group, a request byte).
+pub fn (l State) arg_int_exact(i int) ?i64 {
+	mut ok := 0
+	v := C.ctlua_to_int_ok(l, i, &ok)
+	if ok == 0 {
+		return none
+	}
+	return v
 }
 
 pub fn (l State) arg_num(i int) f64 {
