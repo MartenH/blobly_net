@@ -61,7 +61,8 @@ pub fn declaration_in(text string, script_path string) ?Decl {
 		return Decl{
 			script: script_path
 			raw:    raw
-			path:   os.norm_path(os.join_path(os.dir(script_path), raw))
+			// an absolute path is taken as written; a relative one from the script's directory
+			path:   os.norm_path(if os.is_abs_path(raw) { raw } else { os.join_path(os.dir(script_path), raw) })
 		}
 	}
 	return none
