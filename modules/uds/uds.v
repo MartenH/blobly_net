@@ -211,21 +211,7 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 	if req.len == 0 {
 		return error('empty UDS request')
 	}
-	mut discarded := 0
-	for {
-		c.ch.recv(0) or {
-			// only an empty channel ends the drain: a PDU that failed to parse was still taken
-			// off it, and what is behind it may be an old answer
-			if err.msg().contains('timeout') {
-				break
-			}
-		}
-		discarded++
-		if discarded >= max_drain {
-			// the channel was never seen empty, so what follows could still be an old answer
-			return error('UDS: ${discarded} PDUs already queued before 0x${req[0]:02X} — the channel is not quiet')
-		}
-	}
+	mut discarded := c.drain_queued(req[0])!
 	c.ch.send(req)!
 	sw := time.new_stopwatch()
 	mut deadline := if c.timeout_ms < c.pending_budget_ms { i64(c.timeout_ms) } else { i64(c.pending_budget_ms) }
@@ -283,6 +269,28 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 		}
 	}
 	return error('unreachable')
+}
+
+// drain_queued empties the channel before a request (a physical one, or a functional one this
+// client is a target of): what is already queued is no answer to it, and could be taken for one.
+// Returns how many PDUs it dropped.
+fn (mut c Client) drain_queued(sid u8) !int {
+	mut discarded := 0
+	for {
+		c.ch.recv(0) or {
+			// only an empty channel ends the drain: a PDU that failed to parse was still taken
+			// off it, and what is behind it may be an old answer
+			if err.msg().contains('timeout') {
+				break
+			}
+		}
+		discarded++
+		if discarded >= max_drain {
+			// the channel was never seen empty, so what follows could still be an old answer
+			return error('UDS: ${discarded} PDUs already queued before 0x${sid:02X} — the channel is not quiet')
+		}
+	}
+	return discarded
 }
 
 // max_drain bounds the pre-send drain: a peer flooding the response id must not hold a request
