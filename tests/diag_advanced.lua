@@ -25,6 +25,22 @@ test("read DTCs returns records (0x19 sub 0x02)", function()
   log("DTC record bytes:", tohex(dtcs))
 end)
 
+test("DTCs read as records with named status bits (0x19 01 / 02 / 0A)", function()
+  check.equal(diag:dtc_count(), 2)
+  local all = diag:supported_dtcs()
+  check.equal(#all, 2)
+  check.equal(all[1].name, "P1234-56")
+  check.truthy(all[1].confirmedDTC and all[1].testFailed, "P1234-56 is confirmed and failing")
+  check.equal(#diag:dtcs(0x01), 1) -- only one has testFailed
+  check.dtc(diag, "P1234-56", { confirmedDTC = true, testFailed = true })
+  check.equal(math.type(all[1].code), "integer")
+  check.dtc(diag, "b2bcd-ef", { confirmedDTC = true, testFailed = false }) -- 0xABCDEF, any case
+  local ok, err = pcall(function() check.dtc(diag, "B2BCD-EF", { testFailed = true }) end)
+  check.truthy(not ok and tostring(err):find("testFailed is false"), tostring(err))
+  ok = pcall(function() check.dtc(diag, "U0001-00") end)
+  check.truthy(not ok, "a DTC the server does not have passed")
+end)
+
 test("ECUReset is answered with its kind (0x11)", function()
   check.equal(tohex(diag:reset(0x01)), "01")
   check.nrc(0x12, function() diag:reset(0x09) end)
