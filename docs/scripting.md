@@ -223,6 +223,20 @@ listening, or a target whose response id is flooding (the same refusal a physica
 names a `functional:` id (`docs/simulation.md`; `projects/sim-demo.blobnet`, `tests/diag_functional.lua`).
 Bench-verified against blobly_emb's `system_full` too.
 
+### End-to-end protection for frames you build (AUTOSAR E2E Profile 1)
+
+```lua
+local f = e2e.p01_protect(fromhex("E8 03 5A 00 00 00"), 0x44, 4, 5, counter [, "alt"])
+local crc = e2e.p01_crc(frame, 0x44, 4, 5 [, mode])   -- the CRC byte for a frame as it stands
+```
+
+For a script that builds a protected frame itself (a simulated sender stamps its own):
+`p01_protect` writes the counter (0..14) into the low nibble of `counter_pos` and stamps the CRC.
+The CRC is the simulation's own Profile 1 (`sim.p01_crc_bytes`), pinned to an independent
+implementation. Positions are 0-based bytes, as blobly_emb's `[[frame]].e2e` writes them. `mode`
+is `both` (default), `low` or `alt`. A counter of 15, a Data ID wider than 16 bits, or positions
+outside the frame raise.
+
 ### Raw frames & signals
 
 ```lua

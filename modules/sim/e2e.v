@@ -189,11 +189,8 @@ pub fn p01_problem(msg candb.Message, e E2e) ?string {
 		return none
 	}
 	id := e.data_id or { return 'autosar_p01 needs a data_id' }
-	if id > 0xFFFF {
-		return 'autosar_p01 data_id 0x${id:X} does not fit its 16 bits'
-	}
-	if e.data_id_mode !in ['', 'both', 'low', 'alt'] {
-		return 'autosar_p01 data_id_mode "${e.data_id_mode}" is not both, low or alt'
+	if why := p01_params_problem(id, e.data_id_mode) {
+		return why
 	}
 	if e.crc == '' {
 		return 'autosar_p01 needs a crc signal'
@@ -208,6 +205,21 @@ pub fn p01_problem(msg candb.Message, e E2e) ?string {
 		if sig.name == e.counter && sig.length != 4 {
 			return 'autosar_p01 needs a 4-bit counter; "${e.counter}" is ${sig.length} bits'
 		}
+	}
+	return none
+}
+
+// p01_modes are the Data ID modes Profile 1 is implemented for ('' is the default, both).
+pub const p01_modes = ['', 'both', 'low', 'alt']
+
+// p01_params_problem: why a Data ID and mode are not Profile 1's — the ONE rule the simulation's
+// validation and a script's e2e helpers both ask.
+pub fn p01_params_problem(data_id u32, mode string) ?string {
+	if data_id > 0xFFFF {
+		return 'autosar_p01 data_id 0x${data_id:X} does not fit its 16 bits'
+	}
+	if mode !in p01_modes {
+		return 'autosar_p01 data_id_mode "${mode}" is not both, low or alt'
 	}
 	return none
 }
@@ -238,34 +250,51 @@ fn (e E2e) checksum(msg candb.Message, sig candb.Signal, data []u8) u8 {
 // bytes before it included.
 fn (e E2e) p01_crc(msg candb.Message, sig candb.Signal, data []u8) u8 {
 	at := crc_byte(sig) or { return 0 } // refused by p01_problem; nothing sensible to stamp
-	id := e.data_id or { u32(0) }
-	mut input := []u8{cap: 2 + msg.dlc}
-	match e.data_id_mode {
-		'low' {
-			input << u8(id)
-		}
-		'alt' {
-			// the counter as this frame carries it: the receiver has nothing else to go by
-			mut ctr := u64(0)
-			for c in msg.active_signals(data) {
-				if c.name == e.counter {
-					ctr = c.raw_value(data)
-					break
-				}
+	// the counter as this frame carries it, which only ALT's byte choice reads
+	mut ctr := u64(0)
+	if e.data_id_mode == 'alt' {
+		for c in msg.active_signals(data) {
+			if c.name == e.counter {
+				ctr = c.raw_value(data)
+				break
 			}
-			input << if ctr % 2 == 0 { u8(id) } else { u8(id >> 8) }
-		}
-		else {
-			input << u8(id)
-			input << u8(id >> 8)
 		}
 	}
 	// the profile's DataLength is the message's: bytes a frame carries past its DBC length
 	// (padding, an FD length rounded up) are not the sender's to have covered
 	n := if data.len < msg.dlc { data.len } else { msg.dlc }
-	for i in 0 .. n {
-		if i != at {
-			input << data[i]
+	return p01_crc_bytes(data[..n], at, u16(e.data_id or { u32(0) }), e.data_id_mode, u8(ctr)) or {
+		0 // refused by p01_problem before anything is stamped
+	}
+}
+
+// p01_crc_bytes is AUTOSAR E2E Profile 1's CRC over a frame's bytes: the Data ID bytes `mode`
+// names ('' or 'both': low then high; 'low'; 'alt': low when `counter` is even, high when odd),
+// then every byte but the CRC's at `crc_at` — CRC-8 poly 0x1D, start 0x00, no final XOR. The ONE
+// computation: the simulation stamps and checks through it, and a script's e2e.p01_crc asks it.
+pub fn p01_crc_bytes(data []u8, crc_at int, data_id u16, mode string, counter u8) !u8 {
+	if why := p01_params_problem(data_id, mode) {
+		return error(why)
+	}
+	if crc_at < 0 || crc_at >= data.len {
+		return error('autosar_p01: the CRC byte ${crc_at} is not in the ${data.len}-byte frame')
+	}
+	mut input := []u8{cap: 2 + data.len}
+	match mode {
+		'low' {
+			input << u8(data_id)
+		}
+		'alt' {
+			input << if counter % 2 == 0 { u8(data_id) } else { u8(data_id >> 8) }
+		}
+		else {
+			input << u8(data_id)
+			input << u8(data_id >> 8)
+		}
+	}
+	for i, b in data {
+		if i != crc_at {
+			input << b
 		}
 	}
 	return crc8_with(input, 0x1D, 0x00, 0x00)
