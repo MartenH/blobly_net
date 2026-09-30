@@ -26,12 +26,7 @@ pub fn gen_from_cfg(g project.GenCfg) Gen {
 pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 	mut prot := map[string]E2e{}
 	for p in cfg.protect {
-		prot[p.message] = E2e{
-			counter: p.counter
-			crc:     p.crc
-			profile: p.profile
-			data_id: p.data_id
-		}
+		prot[p.message] = e2e_of(p)
 	}
 	// No generators and no response rules: the node has no explicit BEHAVIOUR, so keep the
 	// built-in model — which for 'SUT' is the hand-tuned reference with its own generators and
@@ -194,6 +189,9 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		}
 		if p.crc != '' && p.profile !in candb.e2e_profiles {
 			warns << 'protect: unknown profile "${p.profile}" on ${p.message} — falling back to sum8'
+		}
+		if why := p01_problem(m, e2e_of(p)) {
+			warns << 'protect: ${p.message}: ${why}'
 		}
 	}
 	return warns

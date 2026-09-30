@@ -532,11 +532,7 @@ fn prot_of(nodes []project.NodeCfg, node string, msg string) sim.E2e {
 		}
 		for p in n.protect {
 			if p.message == msg {
-				return sim.E2e{
-					counter: p.counter
-					crc:     p.crc
-					profile: p.profile
-				}
+				return sim.e2e_of(p)
 			}
 		}
 	}

@@ -74,16 +74,7 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 			// comparing against the full 8-bit value labelled the sender's own frames !CRC.
 			w := mask_of_bits(sig.length)
 			got := sig.raw_value(data) & w
-			mut probe := data.clone()
-			sig.set_raw(mut probe, 0) // the sender computes with this field zeroed
-			mut input := probe.clone()
-			if id := v.e2e.data_id {
-				input << u8(id & 0xFF)
-				input << u8((id >> 8) & 0xFF)
-				input << u8((id >> 16) & 0xFF)
-				input << u8((id >> 24) & 0xFF)
-			}
-			if got != u64(v.e2e.checksum_of(input)) & w {
+			if got != u64(v.e2e.checksum(v.msg, sig, data)) & w {
 				v.bad++
 				return .bad_crc
 			}
@@ -98,9 +89,10 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 			continue
 		}
 		cur := sig.raw_value(data)
-		// The modulus is the signal's own width, at any width: forcing it to zero past 30 bits
-		// turned a legal 31-bit wrap into a reported skip.
-		span := if sig.length >= 64 { u64(0) } else { u64(1) << sig.length }
+		// The modulus is the signal's own width, at any width (forcing it to zero past 30 bits
+		// turned a legal 31-bit wrap into a reported skip) — or Profile 1's 0..14, whose 15 is
+		// never a valid value and so reads as a skip from wherever it appears.
+		span := v.e2e.counter_span(sig)
 		prev := v.last_ctr
 		had := v.have_ctr
 		v.last_ctr = cur
@@ -395,12 +387,7 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 			}
 			out.by_key[k] = Verifier{
 				msg: m
-				e2e: E2e{
-					counter: p.counter
-					crc:     p.crc
-					profile: p.profile
-					data_id: p.data_id
-				}
+				e2e: e2e_of(p)
 			}
 			// this one describes the ECU under test, not us — and it is THIS message, whose
 			// declaration travels with it rather than being looked up again later
@@ -426,12 +413,7 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 				if k !in out.by_key {
 					out.by_key[k] = Verifier{
 						msg: m
-						e2e: E2e{
-							counter: p.counter
-							crc:     p.crc
-							profile: p.profile
-							data_id: p.data_id
-						}
+						e2e: e2e_of(p)
 					}
 				}
 				break
@@ -458,6 +440,9 @@ pub fn verify_usable(m candb.Message, p project.ProtectCfg) bool {
 		return false // one field cannot be both; see validate_verify for why
 	}
 	if p.crc != '' && p.profile !in candb.e2e_profiles {
+		return false
+	}
+	if _ := p01_problem(m, e2e_of(p)) {
 		return false
 	}
 	mut have := map[string]candb.Signal{}
@@ -607,6 +592,9 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 		}
 		if p.counter == '' && p.crc == '' {
 			warns << 'verify: "${p.message}" names neither counter nor crc — nothing is checked'
+		}
+		if why := p01_problem(m, e2e_of(p)) {
+			warns << 'verify: ${p.message}: ${why} — entry ignored'
 		}
 	}
 	return warns

@@ -247,7 +247,8 @@ pub mut:
 	extended_malformed bool
 	counter            string // signal carrying the alive counter ('' = none)
 	crc                string // signal carrying the checksum ('' = none)
-	profile            string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
+	profile            string = 'crc8_j1850' // autosar_p01 | crc8_j1850 | crc8_autosar | sum8 | xor8
+	data_id_mode       string // autosar_p01's DataIDMode: both (default) | low | alt
 	// Mixed into the checksum only; never occupies payload. An OPTION rather than a u32 with
 	// 0 meaning unset: 0 is a valid Data ID. Carrying presence as a separate bool left three
 	// places to remember it and the GUI forgot one, showing an explicit zero id as absent.
@@ -1223,6 +1224,7 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			counter:            p.value('counter').default_to('').string()
 			crc:                p.value('crc').default_to('').string()
 			profile:            p.value('profile').default_to('crc8_j1850').string()
+			data_id_mode:       p.value('data_id_mode').default_to('').string()
 			data_id:            id
 			data_id_malformed:  idbad
 		}

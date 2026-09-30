@@ -154,21 +154,41 @@ treat the sender as faulty, which looks exactly like a bug in your bench setup.
 
 ```yaml
         protect:
+          - { message: BrakeStatus, counter: BrakeCounter, crc: BrakeCrc, profile: autosar_p01, data_id: 0x44 }
           - { message: Powertrain, counter: AliveCounter, crc: CRC, profile: crc8_j1850, data_id: 42 }
           - { message: DoorStatus, counter: Cnt }
 ```
+
+**Against an AUTOSAR receiver, or blobly_emb, use `profile: autosar_p01`**: AUTOSAR E2E Profile 1
+as specified, pinned by vectors from an independent implementation (`sut/e2e_oracle.py`). The
+other profiles are checksum primitives under blobly's own coverage rule, for OEM schemes that no
+AUTOSAR profile describes.
 
 | field | meaning |
 |---|---|
 | `message` | DBC message name to protect |
 | `counter` | signal carrying the alive counter — omit for none |
 | `crc` | signal carrying the checksum — omit for none |
-| `profile` | `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8` |
-| `data_id` | mixed into the checksum only, never into the payload. `0` is a real id: written explicitly it contributes, omitted it does not, and the two give different checksums |
+| `profile` | `autosar_p01`, or a primitive: `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8` |
+| `data_id` | mixed into the checksum only, never into the payload. `0` is a real id: written explicitly it contributes, omitted it does not, and the two give different checksums. `autosar_p01` requires one, 16 bits |
+| `data_id_mode` | `autosar_p01` only: `both` (default: the low byte, then the high byte), `low`, or `alt` (the low byte when the counter is even, the high byte when it is odd). `nibble` is not supported |
 
 Both are named by **signal**, so width, bit position and byte order come from the DBC.
 
-### On each send
+### AUTOSAR E2E Profile 1 (`autosar_p01`)
+
+- **Counter:** 4 bits, counting 0..14 and wrapping to 0. 15 is never sent, and a received 15 is a
+  skip.
+- **CRC:** CRC-8 with polynomial 0x1D, start value **0x00** and **no final XOR**. This is not the
+  catalogue's CRC-8/SAE-J1850 (0xFF / 0xFF): AUTOSAR's chained CRC calls cancel those.
+- **What the CRC covers:** the Data ID bytes `data_id_mode` names, then every byte of the frame
+  except the CRC byte, including bytes before it.
+- **Positions** come from the DBC signals: the CRC must be one whole byte (8 bits, byte-aligned)
+  and the counter 4 bits. A layout that breaks either rule, a missing Data ID or one wider than
+  16 bits is reported, and a `verify:` entry with one of these problems is ignored rather than
+  checking the wrong thing.
+
+### On each send (the primitives)
 
 1. the generators encode their signals;
 2. the **counter** is written — `send_index mod 2^width`, so a 4-bit counter wraps at 16 exactly
@@ -190,12 +210,11 @@ because a checksum cannot cover itself.
 | `sum8` | low byte of the arithmetic sum. Not a CRC — many OEM "checksum" signals are exactly this. |
 | `xor8` | all bytes XORed. As above. |
 
-**These are CRC primitives, not complete AUTOSAR E2E profiles.** The named algorithm is the one
-the profile uses, but the surrounding rules are blobly's own: the coverage convention above, and
-a Data ID appended as four little-endian bytes to the checksum input. A real profile-1 or -2
-receiver also expects that profile's header layout, its Data-ID handling and its counter state
-machine, so matching the algorithm name alone does not make a frame interoperable — it can still
-reject every one. Full profile support is open work.
+**The primitives are not AUTOSAR profiles.** They use blobly's own rules: the coverage convention
+above, and a Data ID appended as four little-endian bytes. An AUTOSAR receiver rejects every
+frame stamped that way, even with `crc8_j1850`: the measured case is overspeed's BrakeStatus,
+where at counter 1 (payload `E8 03 00 00`, Data ID 0x44) Profile 1 gives CRC 0x1A and the blobly rule 0x42. Use `autosar_p01`
+for Profile 1. Profiles 2 and later are not implemented yet.
 
 Picking the wrong algorithm is a separate and equally real bench trap: a profile-2 receiver fed
 `crc8_j1850` computes a different checksum and rejects every frame, indistinguishable from a

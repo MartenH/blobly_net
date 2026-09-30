@@ -4,3 +4,4 @@ python-can      # high-level CAN, bus abstractions, virtual buses
 cantools        # DBC parsing + signal encode/decode  -> oracle for modules/candb
 can-isotp       # ISO-TP segmentation (kernel socket)  -> oracle for future isotp
 udsoncan        # UDS diagnostics                       -> oracle for future uds
+autosar-e2e     # AUTOSAR E2E profiles              -> oracle for sim autosar_p01 (sut/e2e_oracle.py)
