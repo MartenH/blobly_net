@@ -532,6 +532,11 @@ mut:
 	diag_log    []string
 	diag_gen    u64 // cache key for the Diagnostics panel's joined text
 	diag_busy   bool
+	// The timing each diagnostic target announced (its 0x10 answer's P2/P2*), by DiagTarget.key.
+	// Every button press builds a new client — it opens and closes its own channel, since a
+	// DoIP entity serves one connection at a time — so without this the next press waited on
+	// the default P2* whatever the ECU had said (#356).
+	diag_timing map[string]DiagTiming
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool
@@ -1082,6 +1087,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.trecs = []
 	app.diag_log = []
 	app.diag_gen++ // a clear moves the buffer as surely as an append -- invalidate with it
+	app.diag_timing = map[string]DiagTiming{} // another project's ECUs said nothing to this one
 	app.script_log = []
 	app.script_gen++
 	app.watch = []

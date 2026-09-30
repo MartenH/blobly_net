@@ -1232,6 +1232,22 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 		ch.close()
 	}
 	mut c := uds.new_client(ch)
+	// what this target announced on an earlier press, and what it announces now, kept for the
+	// next — on every way out of this press, the early error returns included
+	a.mu.lock()
+	if tm := a.diag_timing[t.key] {
+		c.timeout_ms = tm.timeout_ms
+		c.p2_star_ms = tm.p2_star_ms
+	}
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.diag_timing[t.key] = DiagTiming{
+			timeout_ms: c.timeout_ms
+			p2_star_ms: c.p2_star_ms
+		}
+		a.mu.unlock()
+	}
 	match kind {
 		'session' {
 			c.diagnostic_session(0x03) or {
@@ -1275,6 +1291,13 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 // the selected cores, reassembling each per-core ISO-TP block on 0x7E5 (sending flow control
 // on 0x7E6) and decoding the records into app.trecs for the swimlane. Mirrors diag_worker: a
 // single-flight busy flag, a short-lived spawn, a blocking transfer, results under mu + wake.
+// DiagTiming is what a diagnostic target's 0x10 answer set on a client: its P2 (the client's
+// first-answer wait, which it only ever loosens) and its P2*.
+struct DiagTiming {
+	timeout_ms int
+	p2_star_ms int
+}
+
 fn trace_dump_worker(app &App, core_mask u16) {
 	// A TOOL READER: reads app.chans and app.manifest to find the trace endpoint, unlocked. Not ended by Stop, so the
 	// wait must not include it — see App.tool_readers.
