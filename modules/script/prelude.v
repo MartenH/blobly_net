@@ -117,6 +117,25 @@ function sleep_ms(ms) __sleep(ms) end
 -- `channel` first, because a project may run the same node and message names on two buses and
 -- dropping a frame on the wrong one invalidates observations nobody was testing.
 --   sim.fault("CAN1", "SUT", "Powertrain", "drop", 3000)
+-- e2e: AUTOSAR E2E Profile 1 for frames a script builds itself (the simulation stamps its own).
+--   e2e.p01_crc(frame, data_id, crc_pos, counter_pos [, mode])  -> the CRC byte for the frame as it
+--     stands (the CRC byte itself is not covered; mode "both" (default), "low" or "alt")
+--   e2e.p01_protect(frame, data_id, crc_pos, counter_pos, counter [, mode]) -> the frame with the
+--     counter (0..14) in the low nibble of counter_pos and the CRC stamped
+-- Positions are 0-based byte offsets, as the [[frame]].e2e of blobly_emb writes them.
+e2e = {}
+function e2e.p01_crc(frame, data_id, crc_pos, counter_pos, mode)
+  return __e2e_p01_crc(frame, data_id, crc_pos, counter_pos, mode or "")
+end
+function e2e.p01_protect(frame, data_id, crc_pos, counter_pos, counter, mode)
+  if counter < 0 or counter > 14 then error("e2e.p01_protect: a Profile 1 counter is 0..14, not " .. counter, 2) end
+  local b = { string.byte(frame, 1, #frame) }
+  b[counter_pos + 1] = (b[counter_pos + 1] & 0xF0) | counter
+  local f = string.char(table.unpack(b))
+  b[crc_pos + 1] = e2e.p01_crc(f, data_id, crc_pos, counter_pos, mode)
+  return string.char(table.unpack(b))
+end
+
 sim = {}
 function sim.fault(channel, node, message, kind, ms, signal)
   __sim_fault(channel, node, message, kind, ms or 0, signal or "")

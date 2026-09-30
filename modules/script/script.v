@@ -324,6 +324,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_clear_dtc', l_uds_clear_dtc)
 	env.st.register('__uds_raw_suppressed', l_uds_raw_suppressed)
 	env.st.register('__uds_functional', l_uds_functional)
+	env.st.register('__e2e_p01_crc', l_e2e_p01_crc)
 	env.st.register('__uds_dtcs', l_uds_dtcs)
 	env.st.register('__uds_supported_dtcs', l_uds_supported_dtcs)
 	env.st.register('__uds_dtc_count', l_uds_dtc_count)
@@ -923,6 +924,28 @@ fn l_uds_functional(l lua.State) int {
 		}
 		l.set_index(i + 1)
 	}
+	return 1
+}
+
+// l_e2e_p01_crc(frame, data_id, crc_pos, counter_pos, mode): AUTOSAR E2E Profile 1's CRC for a
+// frame as it stands (sim.p01_crc_bytes, what the simulation stamps with). The counter is read
+// from the low nibble of counter_pos, which ALT mode's byte choice depends on.
+fn l_e2e_p01_crc(l lua.State) int {
+	data := l.arg_bytes(1)
+	id := l.arg_int_exact(2) or { return l.fail('e2e.p01_crc: data_id is not an integer') }
+	crc_pos := l.arg_int_exact(3) or { return l.fail('e2e.p01_crc: crc_pos is not an integer') }
+	ctr_pos := l.arg_int_exact(4) or { return l.fail('e2e.p01_crc: counter_pos is not an integer') }
+	mode := l.arg_str(5)
+	if id < 0 || id > 0xFFFF {
+		return l.fail('e2e.p01_crc: data_id ${id} does not fit Profile 1\'s 16 bits')
+	}
+	if crc_pos < 0 || crc_pos >= data.len || ctr_pos < 0 || ctr_pos >= data.len || crc_pos == ctr_pos {
+		return l.fail('e2e.p01_crc: crc_pos ${crc_pos} / counter_pos ${ctr_pos} must be distinct bytes of the ${data.len}-byte frame')
+	}
+	if mode !in ['', 'both', 'low', 'alt'] {
+		return l.fail('e2e.p01_crc: mode "${mode}" is not both, low or alt')
+	}
+	l.push_int(sim.p01_crc_bytes(data, int(crc_pos), u16(id), mode, data[int(ctr_pos)] & 0x0F))
 	return 1
 }
 

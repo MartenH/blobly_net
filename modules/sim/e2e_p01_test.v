@@ -286,3 +286,13 @@ fn test_declarations_are_exact_and_entries_override_them() {
 	e := protection_for(own, base) or { panic('the entry was lost') }
 	assert e.crc == '', 'the declaration leaked past the entry'
 }
+
+// the byte-level core the simulation and scripts share gives the reference's vectors directly
+fn test_p01_crc_bytes_is_the_reference() {
+	for mode, want in p01_vectors {
+		for n in 0 .. 15 {
+			d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, u8(n)]
+			assert p01_crc_bytes(d, 4, 0x1244, mode, u8(n)) == want[n], '${mode} ${n}'
+		}
+	}
+}
