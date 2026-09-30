@@ -217,6 +217,30 @@ fn main() {
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
 		}
+		// Cyclic generators (`senders:` with trigger: cyclic): sent while the run lasts, as the
+		// GUI sends them during a measurement — without this, a project behaved differently
+		// headless, and a suite could not rely on its own periodic frames
+		for s in ch.senders {
+			if s.trigger != 'cyclic' || s.cycle_ms <= 0 {
+				continue
+			}
+			sb := project.resolve_sender_bus(s.bus, ch, proj.channels)
+			if sb.iface == '' {
+				eprintln('${ch.name}: generator "${s.name}": ${sb.note} — not sent')
+				continue
+			}
+			mut open_iface := sb.iface
+			mut sdb := []candb.Database{}
+			for c in proj.channels {
+				if sb.chan != '' && c.name == sb.chan {
+					open_iface = c.iface_with_bitrate()
+					sdb << load_channel_db(c, os.dir(proj_path))
+					break
+				}
+			}
+			sims << spawn sender_loop(open_iface, s, sdb, ctl)
+			println('channel ${ch.name}: cyclic generator "${s.name}" every ${s.cycle_ms} ms')
+		}
 		if nodes.len > 0 {
 			// BOTH: the suffixed string opens the transport, the logical one keys faults.
 			// Passing only the suffixed form meant sim.apply_injected looked up
@@ -386,6 +410,51 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 	// handle still answers with the wire's totals (codex round 12 on #231).
 	bus.close()
 	report_diag('${open_iface} (sim)', bus.diagnostics())
+}
+
+// sender_loop sends one cyclic generator's frame every `cycle_ms` until stopped — the headless
+// counterpart of the GUI's gen_loop, building the frame with the same sim.sender_message_frame.
+// The send index counts DELIVERED frames only, as the GUI's does, so a counter source never
+// skips a value a refused send did not put on the wire.
+fn sender_loop(iface string, s project.Sender, dbs []candb.Database, ctl &Ctl) {
+	defer {
+		stdatomic.add_i64(&loops_done, 1)
+	}
+	mut bus := transport.open(iface) or {
+		eprintln('generator "${s.name}": cannot open ${iface}: ${err}')
+		return
+	}
+	t0 := time.sys_mono_now()
+	mut n := 0
+	mut next := time.ticks()
+	for ctl.running {
+		now := time.ticks()
+		if now < next {
+			time.sleep(time.Duration(i64(if next - now > 20 { 20 } else { next - now }) * time.millisecond))
+			continue
+		}
+		next += s.cycle_ms
+		if next < now {
+			next = now + s.cycle_ms // a stall does not become a burst of catch-up frames
+		}
+		el := f64(time.sys_mono_now() - t0) / 1_000_000_000.0
+		frame := if s.message != '' {
+			sim.sender_message_frame(s, dbs, n, el) or {
+				eprintln('generator "${s.name}": message "${s.message}" not in the channel databases — not sent')
+				break
+			}
+		} else {
+			transport.CanFrame{
+				id:       s.id
+				extended: s.ext
+				data:     s.data.clone()
+			}
+		}
+		bus.send(frame) or { continue }
+		n++
+	}
+	bus.close()
+	report_diag('${iface} (generator ${s.name})', bus.diagnostics())
 }
 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software
