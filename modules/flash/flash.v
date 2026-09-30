@@ -9,7 +9,12 @@ module flash
 // -> 0x37 -> 0x31 FF01 check(+mark) -> 0x11 reset. The ECU writes the valid
 // mark ONLY after its own full-image CRC passes — a cut transfer leaves an
 // image the boot refuses, and a plain re-run recovers (bench-verified).
+// Every request goes through uds.Client (`ask`): the responsePending (0x78) wait a bootloader's
+// erase may need, P2* from the 0x10 02 answer, and a response that must name the request it
+// answers — a duplicated earlier answer (a CAN retransmission) is discarded, not taken for the
+// current step's, which on 0x36 would put every later block one answer behind.
 import isotp
+import uds
 import crypto.ed25519 as ed
 
 pub const boot_magic = u32(0x54424C42) // 'BLBT'
@@ -83,24 +88,21 @@ pub fn crc32(data []u8) u32 {
 // authenticate runs the 0x29 challenge/response: the boot sends a random
 // challenge, we sign it with the tester private key, the boot verifies with the
 // public key it holds. Replaces the legacy 0x27 seed/key.
-fn authenticate(mut ch isotp.Channel, seed []u8, mut sink Sink) ! {
-	// Probe with the raw request (not ask, which errors on any NRC): a boot with
-	// NO session key baked (a keyless/legacy build) answers requestChallenge with
-	// conditionsNotCorrect / serviceNotSupported — that boot doesn't require 0x29,
-	// so flash without it. If it IS secured, erase/download stay gated, so
-	// proceeding here can never bypass a real gate.
-	cr := isotp.request(mut ch, [u8(0x29), 0x01], 3000) or {
-		return error('request challenge: ${err}')
-	}
-	if cr.len >= 3 && cr[0] == 0x7F {
-		nrc := cr[2]
-		if nrc == 0x22 || nrc == 0x11 { // conditionsNotCorrect / serviceNotSupported
-			sink.note('0x29 not required by this boot — flashing without auth')
-			return
+fn authenticate(mut c uds.Client, seed []u8, mut sink Sink) ! {
+	// A boot with NO session key baked (a keyless/legacy build) answers requestChallenge with
+	// conditionsNotCorrect / serviceNotSupported — that boot doesn't require 0x29, so flash
+	// without it. If it IS secured, erase/download stay gated, so proceeding here can never
+	// bypass a real gate.
+	cr := c.raw([u8(0x29), 0x01]) or {
+		if err is uds.NegativeResponse {
+			if err.nrc == 0x22 || err.nrc == 0x11 {
+				sink.note('0x29 not required by this boot — flashing without auth')
+				return
+			}
 		}
-		return error('request challenge: NRC 0x${nrc.hex()}')
+		return step_error('request challenge', err)
 	}
-	if cr.len < 2 + 32 || cr[0] != 0x69 {
+	if cr.len < 2 + 32 {
 		return error('request challenge: unexpected response ${cr.hex()}')
 	}
 	challenge := cr[2..34].clone()
@@ -108,7 +110,7 @@ fn authenticate(mut ch isotp.Channel, seed []u8, mut sink Sink) ! {
 	sig := ed.sign(priv, challenge) or { return error('sign challenge: ${err}') }
 	mut proof := [u8(0x29), 0x02]
 	proof << sig
-	ask(mut ch, proof, 'send proof')!
+	ask(mut c, proof, 'send proof')!
 	sink.note('authenticated (0x29)')
 }
 
@@ -142,16 +144,23 @@ fn be32(v u32) []u8 {
 	return [u8(v >> 24), u8(v >> 16), u8(v >> 8), u8(v)]
 }
 
-fn ask(mut ch isotp.Channel, req []u8, what string) ![]u8 {
-	rsp := isotp.request(mut ch, req, 3000) or { return error('${what}: ${err}') }
-	if rsp.len >= 3 && rsp[0] == 0x7F {
-		return error('${what}: NRC 0x${rsp[2].hex()}')
-	}
-	if rsp.len < 1 || rsp[0] != req[0] + 0x40 {
-		return error('${what}: unexpected response ${rsp.hex()}')
-	}
-	return rsp
+// ask is one step of the session: its positive answer, or an error naming the step (a negative
+// answer as its NRC).
+fn ask(mut c uds.Client, req []u8, what string) ![]u8 {
+	return c.raw(req) or { return step_error(what, err) }
 }
+
+// step_error names the step a request failed in; a negative answer as its NRC.
+fn step_error(what string, err IError) IError {
+	if err is uds.NegativeResponse {
+		return error('${what}: NRC 0x${err.nrc.hex()}')
+	}
+	return error('${what}: ${err}')
+}
+
+// first_answer_ms: the wait for each step's first answer (the timeout this session always had);
+// a server that needs longer says 0x78, and is then waited for its P2*.
+const first_answer_ms = 3000
 
 // program drives the full download of `image` (raw .bin or wrapped BLBT .img)
 // over an open ISO-TP channel. Milestones + block progress go to the sink.
@@ -173,9 +182,11 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 	total := u32(blob.len)
 	sink.note('${blob.len} bytes -> 0x${opts.base.hex()}')
 
-	ask(mut ch, [u8(0x10), 0x02], 'programming session')!
+	mut c := uds.new_client(ch)
+	c.timeout_ms = first_answer_ms
+	ask(mut c, [u8(0x10), 0x02], 'programming session')!
 	if opts.auth_seed.len == 32 {
-		authenticate(mut ch, opts.auth_seed, mut sink)!
+		authenticate(mut c, opts.auth_seed, mut sink)!
 	} else {
 		sink.note('no auth seed — skipping 0x29 (boot must have no key baked)')
 	}
@@ -183,8 +194,12 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 	mut er := [u8(0x31), 0x01, 0xFF, 0x00]
 	er << be32(opts.base)
 	er << be32(total)
-	err_rsp := ask(mut ch, er, 'erase')!
-	if err_rsp.len >= 5 && err_rsp[4] != 0 {
+	err_rsp := ask(mut c, er, 'erase')!
+	// 71 01 FF 00 <result>: an answer without its result has not said the erase worked
+	if err_rsp.len < 5 {
+		return error('erase: no routine result in ${err_rsp.hex()}')
+	}
+	if err_rsp[4] != 0 {
 		return error('erase routine failed (result ${err_rsp[4]})')
 	}
 	sink.note('erased 0x${opts.base.hex()} +${total}')
@@ -192,13 +207,20 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 	mut dl := [u8(0x34), 0x00, 0x44]
 	dl << be32(opts.base)
 	dl << be32(total)
-	dr := ask(mut ch, dl, 'request download')!
-	if dr.len < 4 {
-		return error('request download: short response')
+	dr := ask(mut c, dl, 'request download')!
+	// 74 <lengthFormatIdentifier> <maxNumberOfBlockLength, as wide as its high nibble says>: the
+	// length counts the 0x36 SID and the block counter, so the data per block is two fewer
+	width := if dr.len >= 2 { int(dr[1] >> 4) } else { 0 }
+	if width < 1 || width > 4 || dr.len < 2 + width {
+		return error('request download: bad block length field in ${dr.hex()}')
 	}
-	max_block := int((u16(dr[2]) << 8 | u16(dr[3])) - 2)
+	mut block_len := 0
+	for i in 0 .. width {
+		block_len = block_len << 8 | int(dr[2 + i])
+	}
+	max_block := block_len - 2
 	if max_block <= 0 {
-		return error('request download: bad block size')
+		return error('request download: bad block size ${block_len}')
 	}
 	nblocks := (blob.len + max_block - 1) / max_block
 
@@ -214,24 +236,28 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 		td << u8(0x36)
 		td << blk
 		td << blob[off..off + n]
-		ask(mut ch, td, 'transfer block ${blk}')!
+		ask(mut c, td, 'transfer block ${blk}')!
 		off += n
 		blk++
 		done++
 		sink.block(done, nblocks)
 	}
-	ask(mut ch, [u8(0x37)], 'transfer exit')!
+	ask(mut c, [u8(0x37)], 'transfer exit')!
 	sink.note('transferred ${blob.len} bytes in ${done} blocks')
 
-	cr := ask(mut ch, [u8(0x31), 0x01, 0xFF, 0x01], 'check image')!
+	cr := ask(mut c, [u8(0x31), 0x01, 0xFF, 0x01], 'check image')!
 	if cr.len < 5 || cr[4] != 0 {
 		return error('image check FAILED on the ECU — not marked valid')
 	}
 	sink.note('image verified + marked valid')
 
-	ask(mut ch, [u8(0x11), 0x01], 'ecu reset') or {
-		// the boot drains its Tx FIFO then resets; on a fast reset the 0x51
-		// can still be lost — the app appearing on the bus is the real ack
+	c.raw([u8(0x11), 0x01]) or {
+		// the boot drains its Tx FIFO then resets; on a fast reset the 0x51 can still be lost —
+		// the app appearing on the bus is the real ack. A REFUSAL is not that: the boot said no
+		// and is still in the boot manager.
+		if err is uds.NegativeResponse {
+			return step_error('ecu reset', err)
+		}
 		sink.note('ECU reset sent (response lost to the reset — normal)')
 		return
 	}
