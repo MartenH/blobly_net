@@ -118,6 +118,7 @@ scripts/runtests.sh hello.lua
 | `check.equal(got, want [, msg])` | Fail unless `got == want`. |
 | `check.truthy(v [, msg])` | Fail unless `v` is truthy. |
 | `check.between(v, lo, hi [, msg])` | Fail unless `lo <= v <= hi`. |
+| `check.dtc(diag, name[, want])` | Expect the server to support DTC `name` (`"U0121-00"`) with each status bit `want` names at its value, e.g. `{ confirmedDTC = true, testFailed = false }`. Read with `0x19 0A`. Returns the record. |
 | `check.nrc(code, fn)` | Expect `fn` to raise a UDS **negative response** with NRC `code` (e.g. `0x31`). |
 
 A failing `check` aborts only its own `test`; other tests still run. A Lua error
@@ -174,6 +175,9 @@ The returned object has:
 | `diag:write_did(did, data)` | `0x2E` WriteDataByIdentifier | — |
 | `diag:security_access(level [, keyfn])` | `0x27` SecurityAccess (request seed at `level`, send key at `level+1`) | the seed (bytes) |
 | `diag:read_dtcs([mask])` | `0x19` sub `0x02` reportDTCByStatusMask (`mask` defaults `0xFF`) | DTC record (bytes) |
+| `diag:dtcs([mask])` | `0x19 02` decoded (`mask` defaults `0xFF`) | array of records: `code`, `name` (`"U0121-00"`), `status`, and one boolean per ISO 14229-1 status bit — `testFailed`, `testFailedThisOperationCycle`, `pendingDTC`, `confirmedDTC`, `testNotCompletedSinceLastClear`, `testFailedSinceLastClear`, `testNotCompletedThisOperationCycle`, `warningIndicatorRequested` |
+| `diag:supported_dtcs()` | `0x19 0A` reportSupportedDTC — every DTC with its whole status | array of records, as `dtcs` |
+| `diag:dtc_count([mask])` | `0x19 01` reportNumberOfDTCByStatusMask | integer |
 | `diag:tester_present()` | `0x3E` | — |
 | `diag:reset([kind])` | `0x11` ECUReset (`1` hard — the default, `2` key-off-on, `3` soft) | the answer after its SID (bytes) |
 | `diag:comm_control(control [, type])` | `0x28` CommunicationControl (`control` 0 enable rx+tx … 3 disable both; `type` defaults `1`, the normal messages) — the simulated ECUs refuse it (serviceNotSupported): they cannot gate their own traffic | — |

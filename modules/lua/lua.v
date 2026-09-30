@@ -53,6 +53,8 @@ fn C.ctlua_error(&C.lua_State, &char) int
 fn C.ctlua_newtable(&C.lua_State)
 fn C.ctlua_setfield_num(&C.lua_State, &char, f64)
 fn C.ctlua_setfield_str(&C.lua_State, &char, &char, int)
+fn C.ctlua_setfield_bool(&C.lua_State, &char, int)
+fn C.ctlua_seti(&C.lua_State, i64)
 
 // State is a V handle to a Lua interpreter.
 pub type State = &C.lua_State
@@ -221,4 +223,14 @@ pub fn (l State) set_num(key string, v f64) {
 
 pub fn (l State) set_str(key string, v string) {
 	C.ctlua_setfield_str(l, &char(key.str), &char(v.str), v.len)
+}
+
+pub fn (l State) set_bool(key string, v bool) {
+	C.ctlua_setfield_bool(l, &char(key.str), if v { 1 } else { 0 })
+}
+
+// set_index pops the value on top of the stack into the table just below it, at index `i` — an
+// array of tables is new_table(), then per element new_table() + fields + set_index(n).
+pub fn (l State) set_index(i i64) {
+	C.ctlua_seti(l, i)
 }

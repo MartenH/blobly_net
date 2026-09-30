@@ -318,6 +318,9 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_dtc_setting', l_uds_dtc_setting)
 	env.st.register('__uds_clear_dtc', l_uds_clear_dtc)
 	env.st.register('__uds_raw_suppressed', l_uds_raw_suppressed)
+	env.st.register('__uds_dtcs', l_uds_dtcs)
+	env.st.register('__uds_supported_dtcs', l_uds_supported_dtcs)
+	env.st.register('__uds_dtc_count', l_uds_dtc_count)
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -891,6 +894,49 @@ fn l_uds_raw_suppressed(l lua.State) int {
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
 	answered := c.cli.raw_suppressed(l.arg_bytes(2)) or { return l.fail(err.msg()) }
 	l.push_bool(answered)
+	return 1
+}
+
+// push_dtc_report leaves an array of DTC records on the Lua stack: each a table of its `code`,
+// display `name` (U0121-00), `status` byte, and one boolean per ISO 14229-1 status bit, named as
+// uds.dtc_status_bits names them (confirmedDTC, testFailed, ...).
+fn push_dtc_report(l lua.State, r uds.DtcReport) {
+	l.new_table()
+	for i, rec in r.records {
+		l.new_table()
+		l.set_num('code', f64(rec.code))
+		l.set_str('name', rec.name())
+		l.set_num('status', f64(rec.status))
+		for bit in uds.dtc_status_bits {
+			l.set_bool(bit.name, rec.status & bit.mask != 0)
+		}
+		l.set_index(i + 1)
+	}
+}
+
+fn l_uds_dtcs(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mask := uds_byte(l, 2) or { return l.fail('status mask is not a byte') }
+	r := c.cli.dtcs(mask) or { return l.fail(err.msg()) }
+	push_dtc_report(l, r)
+	return 1
+}
+
+fn l_uds_supported_dtcs(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	r := c.cli.supported_dtcs() or { return l.fail(err.msg()) }
+	push_dtc_report(l, r)
+	return 1
+}
+
+fn l_uds_dtc_count(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mask := uds_byte(l, 2) or { return l.fail('status mask is not a byte') }
+	n := c.cli.dtc_count(mask) or { return l.fail(err.msg()) }
+	l.push_int(n.count)
 	return 1
 }
 

@@ -35,6 +35,24 @@ function check.between(v, lo, hi, msg)
     error((msg or "out of range") .. ": " .. tostring(v) .. " not in [" .. tostring(lo) .. ".." .. tostring(hi) .. "]", 2)
   end
 end
+-- check.dtc(diag, name [, want]): the server supports DTC `name` ("U0121-00"), and each status bit
+-- `want` names has the value it gives, e.g. { confirmedDTC = true, testFailed = false }. Read with
+-- 0x19 0A, so every status bit is as the server keeps it. Returns the record.
+function check.dtc(diag, name, want)
+  for _, r in ipairs(diag:supported_dtcs()) do
+    if r.name == name then
+      for bit, v in pairs(want or {}) do
+        if r[bit] == nil then error("check.dtc: no status bit named " .. tostring(bit), 2) end
+        if r[bit] ~= v then
+          error(string.format("%s: %s is %s, expected %s (status 0x%02X)", name, bit, tostring(r[bit]),
+            tostring(v), math.tointeger(r.status)), 2)
+        end
+      end
+      return r
+    end
+  end
+  error("check.dtc: the server has no DTC " .. name, 2)
+end
 -- expect a UDS negative response with NRC `code` while running fn
 function check.nrc(code, fn)
   local ok, err = pcall(fn)
@@ -217,6 +235,13 @@ function uds.open(channel, opts)
   -- a request with suppress-positive-response set: a refusal raises; returns whether a positive
   -- answer came anyway
   function self:raw_suppressed(req) return __uds_raw_suppressed(self.handle, req) end
+  -- 0x19 as records: {code, name = "U0121-00", status, and a boolean per ISO status bit —
+  -- testFailed, testFailedThisOperationCycle, pendingDTC, confirmedDTC,
+  -- testNotCompletedSinceLastClear, testFailedSinceLastClear, testNotCompletedThisOperationCycle,
+  -- warningIndicatorRequested}
+  function self:dtcs(mask) if mask == nil then mask = 0xFF end return __uds_dtcs(self.handle, mask) end   -- 0x19 02
+  function self:supported_dtcs() return __uds_supported_dtcs(self.handle) end                              -- 0x19 0A
+  function self:dtc_count(mask) if mask == nil then mask = 0xFF end return __uds_dtc_count(self.handle, mask) end -- 0x19 01
   -- security access: request the seed for `level` (odd), compute the key with
   -- `keyfn` (default = the simulated servers algorithm, XOR 0xFF), send it at
   -- level+1. Returns the seed. Raises on an invalid key (NRC 0x35).

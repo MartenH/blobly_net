@@ -119,13 +119,24 @@ fn (mut s Server) answer(req []u8) []u8 {
 			}
 			return neg(sid, 0x35) // invalidKey
 		}
-		0x19 { // ReadDTCInformation (sub 0x02 reportDTCByStatusMask)
+		0x19 { // ReadDTCInformation: 0x01 count, 0x02 by status mask, 0x0A supported
 			sub := if req.len > 1 { req[1] } else { u8(0) }
-			if sub != 0x02 {
+			if sub != 0x01 && sub != 0x02 && sub != 0x0A {
 				return neg(sid, 0x12) // subFunctionNotSupported
 			}
-			// [0x59, 0x02, statusAvailabilityMask, {DTC hi/mid/lo, status}...]
+			if sub == 0x0A { // reportSupportedDTC: every DTC, whole status
+				mut all := [u8(0x59), 0x0A, 0xFF]
+				for d in s.dtcs {
+					all << [u8((d.code >> 16) & 0xFF), u8((d.code >> 8) & 0xFF), u8(d.code & 0xFF), d.status]
+				}
+				return all
+			}
 			mask := if req.len > 2 { req[2] } else { u8(0xFF) }
+			if sub == 0x01 { // reportNumberOfDTCByStatusMask
+				n := s.dtcs.filter(it.status & mask != 0).len
+				return [u8(0x59), 0x01, 0xFF, 0x01, u8(n >> 8), u8(n)]
+			}
+			// [0x59, 0x02, statusAvailabilityMask, {DTC hi/mid/lo, status}...]
 			mut resp := [u8(0x59), 0x02, 0xFF]
 			for d in s.dtcs {
 				if d.status & mask == 0 {
