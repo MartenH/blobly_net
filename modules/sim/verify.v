@@ -97,6 +97,13 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 		had := v.have_ctr
 		v.last_ctr = cur
 		v.have_ctr = true
+		if span > 0 && cur >= span {
+			// a value the counter can never hold (Profile 1's 15): wrong from any frame, the
+			// first included, and it predicts nothing about the next
+			v.have_ctr = false
+			v.bad++
+			return .skipped_ctr
+		}
 		if !had {
 			return .ok // first frame: there is nothing to compare against
 		}
@@ -410,6 +417,9 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 					continue
 				}
 				k := vkey(m.id, m.ext)
+				if _ := p01_problem(m, e2e_of(p)) {
+					break // not stamped either (from_project); said by validate_protection
+				}
 				if k !in out.by_key {
 					out.by_key[k] = Verifier{
 						msg: m
@@ -495,7 +505,8 @@ pub fn (mut s VerifySet) merge_into(other VerifySet) []string {
 					&& existing.e2e.data_id != none && v.e2e.data_id != none }
 			}
 			if existing.e2e.counter == v.e2e.counter && existing.e2e.crc == v.e2e.crc
-				&& existing.e2e.profile == v.e2e.profile && same_id {
+				&& existing.e2e.profile == v.e2e.profile && same_id
+				&& existing.e2e.data_id_mode == v.e2e.data_id_mode {
 				continue // the same entry twice: harmless
 			}
 			warns << 'verify: "${v.msg.name}" is configured differently on two channel entries sharing this bus — only the first applies'

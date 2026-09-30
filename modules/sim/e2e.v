@@ -19,11 +19,11 @@ module sim
 import candb
 import project
 
-// crc8_j1850 — CRC-8/SAE-J1850: poly 0x1D, init 0xFF, final xor 0xFF, no reflection.
-// The checksum AUTOSAR E2E profile 1 is built on (profile 2 uses CRC8H2F — see crc8_autosar).
+// crc8_j1850 — CRC-8/SAE-J1850: poly 0x1D, init 0xFF, final xor 0xFF, no reflection. AUTOSAR
+// E2E Profile 1 uses the same polynomial with start 0x00 and no final XOR (`p01_crc`).
 // Check value: crc8_j1850('123456789') == 0x4B, pinned in e2e_test.v.
 pub fn crc8_j1850(data []u8) u8 {
-	return crc8_with(data, 0x1D)
+	return crc8_with(data, 0x1D, 0xFF, 0xFF)
 }
 
 // crc8_autosar — CRC-8/AUTOSAR ("CRC8H2F"): poly 0x2F, otherwise as above. Better error
@@ -31,11 +31,12 @@ pub fn crc8_j1850(data []u8) u8 {
 // a profile-2 receiver produces a different checksum and it rejects every frame.
 // Check value: 0xDF.
 pub fn crc8_autosar(data []u8) u8 {
-	return crc8_with(data, 0x2F)
+	return crc8_with(data, 0x2F, 0xFF, 0xFF)
 }
 
-fn crc8_with(data []u8, poly u8) u8 {
-	mut crc := u8(0xFF)
+// crc8_with is CRC-8 over `poly`, unreflected, from `init`, XORed with `xorout` at the end.
+fn crc8_with(data []u8, poly u8, init u8, xorout u8) u8 {
+	mut crc := init
 	for b in data {
 		crc ^= b
 		for _ in 0 .. 8 {
@@ -43,7 +44,7 @@ fn crc8_with(data []u8, poly u8) u8 {
 			crc = if crc & 0x80 != 0 { (crc << 1) ^ poly } else { crc << 1 }
 		}
 	}
-	return crc ^ 0xFF
+	return crc ^ xorout
 }
 
 // sum8 — the low byte of the arithmetic sum. Not a CRC; included because a large number of
@@ -136,6 +137,9 @@ pub fn p01_problem(msg candb.Message, e E2e) ?string {
 	if e.crc == '' {
 		return 'autosar_p01 needs a crc signal'
 	}
+	if e.counter == '' {
+		return 'autosar_p01 needs a counter signal (a 4-bit alive counter is part of the profile)'
+	}
 	for sig in msg.signals {
 		if sig.name == e.crc && crc_byte(sig) == none {
 			return 'autosar_p01 needs "${e.crc}" to be one whole byte (8 bits, byte-aligned)'
@@ -169,15 +173,15 @@ fn (e E2e) checksum(msg candb.Message, sig candb.Signal, data []u8) u8 {
 
 // p01_crc is AUTOSAR E2E Profile 1's CRC: CRC-8 over poly 0x1D with start value 0x00 and no
 // final XOR (AUTOSAR's chained Crc_CalculateCRC8 calls cancel the catalogue's 0xFF/0xFF), over
-// the Data ID bytes the mode names, then every byte of the frame except the CRC's own —
+// the Data ID bytes the mode names, then every byte of the message's DLC except the CRC's own —
 // bytes before it included.
 fn (e E2e) p01_crc(msg candb.Message, sig candb.Signal, data []u8) u8 {
 	at := crc_byte(sig) or { return 0 } // refused by p01_problem; nothing sensible to stamp
 	id := e.data_id or { u32(0) }
-	mut crc := u8(0)
+	mut input := []u8{cap: 2 + msg.dlc}
 	match e.data_id_mode {
 		'low' {
-			crc = crc8_step(crc, u8(id))
+			input << u8(id)
 		}
 		'alt' {
 			// the counter as this frame carries it: the receiver has nothing else to go by
@@ -188,28 +192,22 @@ fn (e E2e) p01_crc(msg candb.Message, sig candb.Signal, data []u8) u8 {
 					break
 				}
 			}
-			crc = crc8_step(crc, if ctr % 2 == 0 { u8(id) } else { u8(id >> 8) })
+			input << if ctr % 2 == 0 { u8(id) } else { u8(id >> 8) }
 		}
 		else {
-			crc = crc8_step(crc, u8(id))
-			crc = crc8_step(crc, u8(id >> 8))
+			input << u8(id)
+			input << u8(id >> 8)
 		}
 	}
-	for i, b in data {
+	// the profile's DataLength is the message's: bytes a frame carries past its DBC length
+	// (padding, an FD length rounded up) are not the sender's to have covered
+	n := if data.len < msg.dlc { data.len } else { msg.dlc }
+	for i in 0 .. n {
 		if i != at {
-			crc = crc8_step(crc, b)
+			input << data[i]
 		}
 	}
-	return crc
-}
-
-// crc8_step feeds one byte through CRC-8 poly 0x1D, no reflection.
-fn crc8_step(c u8, b u8) u8 {
-	mut crc := c ^ b
-	for _ in 0 .. 8 {
-		crc = if crc & 0x80 != 0 { (crc << 1) ^ 0x1D } else { crc << 1 }
-	}
-	return crc
+	return crc8_with(input, 0x1D, 0x00, 0x00)
 }
 
 // active reports whether anything is protected — a zero E2e is the common case and must cost

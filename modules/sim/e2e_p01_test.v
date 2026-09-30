@@ -1,6 +1,7 @@
 module sim
 
 import candb
+import project
 
 // AUTOSAR E2E Profile 1, pinned by vectors from an INDEPENDENT implementation — autosar-e2e
 // 1.0.0 (sut/e2e_oracle.py regenerates them) — on blobly_emb overspeed's BrakeStatus layout:
@@ -136,4 +137,69 @@ fn test_p01_refuses_what_it_cannot_stamp() {
 	assert (p01_problem(m, e) or { '' }).contains('4-bit counter')
 	// a primitive is not Profile 1's to judge
 	assert p01_problem(m, E2e{ crc: 'BrakePressure', profile: 'crc8_j1850' }) == none
+}
+
+fn test_p01_needs_a_counter_and_covers_the_dlc_only() {
+	m := brake_status()
+	mut e := p01_e2e('alt')
+	e.counter = ''
+	assert (p01_problem(m, e) or { '' }).contains('counter')
+	// a frame carried longer than its DBC length (padding): the CRC covers the 6 declared bytes
+	mut d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x00]
+	p01_e2e('both').apply(m, mut d, 0)
+	mut padded := d.clone()
+	padded << [u8(0xCC), 0xCC]
+	mut v := Verifier{
+		msg: m
+		e2e: p01_e2e('both')
+	}
+	assert v.check(padded) == .ok
+	assert d[4] == p01_vectors['both'][0]
+}
+
+fn test_p01_counter_fifteen_is_wrong_even_first() {
+	m := brake_status()
+	mut v := Verifier{
+		msg: m
+		e2e: p01_e2e('both')
+	}
+	mut d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x0F]
+	d[4] = v.e2e.checksum(m, m.signals[2], d)
+	assert v.check(d) == .skipped_ctr
+}
+
+// a Profile 1 entry that cannot be stamped as specified is said, and not stamped at all; a
+// data_id_mode where nothing reads it is said
+fn test_p01_problems_are_reported_and_not_stamped() {
+	db := candb.Database{
+		nodes:    ['Chassis']
+		messages: [candb.Message{
+			...brake_status()
+			sender: 'Chassis'
+		}]
+	}
+	bad := project.NodeCfg{
+		name:    'Chassis'
+		protect: [project.ProtectCfg{
+			message: 'BrakeStatus'
+			counter: 'BrakeCounter'
+			crc:     'BrakeCrc'
+			profile: 'autosar_p01'
+		}]
+	}
+	w := validate_protection(db, bad)
+	assert w.any(it.contains('needs a data_id') && it.contains('not applied')), '${w}'
+	ecu := from_project(db, bad)
+	assert ecu.messages.all(!it.e2e.active()), 'an unstampable Profile 1 entry was applied'
+	stray := project.NodeCfg{
+		name:    'Chassis'
+		protect: [project.ProtectCfg{
+			message:      'BrakeStatus'
+			counter:      'BrakeCounter'
+			crc:          'BrakeCrc'
+			profile:      'crc8_j1850'
+			data_id_mode: 'alt'
+		}]
+	}
+	assert validate_protection(db, stray).any(it.contains('data_id_mode'))
 }
