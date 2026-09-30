@@ -355,3 +355,14 @@ fn test_the_service_helpers_send_what_iso_says() {
 	c.clear_dtc(0xFFFFFF) or { panic(err) }
 	assert m.last_req == [u8(0x14), 0xFF, 0xFF, 0xFF]
 }
+
+// a group wider than 24 bits is refused, never truncated into 0xFFFFFF — all
+fn test_clear_dtc_refuses_a_group_wider_than_24_bits() {
+	mut c, m := client_with([])
+	c.clear_dtc(0x1FFFFFF) or {
+		assert err.msg().contains('wider than 24 bits'), err.msg()
+		assert m.last_req.len == 0, 'something was sent'
+		return
+	}
+	assert false
+}

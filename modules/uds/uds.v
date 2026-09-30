@@ -404,7 +404,11 @@ pub fn (mut c Client) control_dtc_setting(on bool) ! {
 }
 
 // clear_dtc (0x14) clears diagnostic information for a group of DTCs (0xFFFFFF: all of them).
+// A group wider than 24 bits is refused, never truncated: its low bits could be 0xFFFFFF, all.
 pub fn (mut c Client) clear_dtc(group u32) ! {
+	if group > 0xFFFFFF {
+		return error('UDS: DTC group 0x${group:X} is wider than 24 bits')
+	}
 	c.raw([sid_clear_dtc, u8(group >> 16), u8(group >> 8), u8(group)])!
 }
 

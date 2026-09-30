@@ -839,10 +839,22 @@ fn l_uds_raw(l lua.State) int {
 	return 1
 }
 
+// uds_byte and uds_group read a script's argument for a request byte / a 24-bit DTC group,
+// refusing what does not fit rather than truncating it into a different request — -1 as a group
+// would otherwise go out as 0xFFFFFF, every DTC.
+fn uds_byte(l lua.State, i int) ?u8 {
+	v := l.arg_int(i)
+	if v < 0 || v > 0xFF {
+		return none
+	}
+	return u8(v)
+}
+
 fn l_uds_reset(l lua.State) int {
 	mut env := env_of(l)
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
-	resp := c.cli.ecu_reset(u8(l.arg_int(2))) or { return l.fail(err.msg()) }
+	kind := uds_byte(l, 2) or { return l.fail('reset kind ${l.arg_int(2)} is not a byte') }
+	resp := c.cli.ecu_reset(kind) or { return l.fail(err.msg()) }
 	l.push_bytes(resp)
 	return 1
 }
@@ -850,7 +862,9 @@ fn l_uds_reset(l lua.State) int {
 fn l_uds_comm_control(l lua.State) int {
 	mut env := env_of(l)
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
-	c.cli.communication_control(u8(l.arg_int(2)), u8(l.arg_int(3))) or { return l.fail(err.msg()) }
+	control := uds_byte(l, 2) or { return l.fail('control ${l.arg_int(2)} is not a byte') }
+	ctype := uds_byte(l, 3) or { return l.fail('communication type ${l.arg_int(3)} is not a byte') }
+	c.cli.communication_control(control, ctype) or { return l.fail(err.msg()) }
 	return 0
 }
 
@@ -864,7 +878,11 @@ fn l_uds_dtc_setting(l lua.State) int {
 fn l_uds_clear_dtc(l lua.State) int {
 	mut env := env_of(l)
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
-	c.cli.clear_dtc(u32(l.arg_int(2))) or { return l.fail(err.msg()) }
+	group := l.arg_int(2)
+	if group < 0 || group > 0xFFFFFF {
+		return l.fail('DTC group ${group} is not a 24-bit value')
+	}
+	c.cli.clear_dtc(u32(group)) or { return l.fail(err.msg()) }
 	return 0
 }
 

@@ -48,4 +48,10 @@ end)
 test("ClearDiagnosticInformation refuses what it cannot clear (0x14)", function()
   check.nrc(0x31, function() diag:clear_dtcs(0x000001) end) -- no such DTC
   check.nrc(0x13, function() diag:raw("\x14\xFF\xFF") end) -- a group is three bytes
+  -- and a group that does not fit is refused before anything is sent, never truncated to "all"
+  for _, g in ipairs({ -1, 0x1FFFFFF }) do
+    local ok, err = pcall(function() diag:clear_dtcs(g) end)
+    check.truthy(not ok and tostring(err):find("24%-bit"), "clear_dtcs(" .. g .. "): " .. tostring(err))
+  end
+  check.equal(tohex(diag:read_dtcs(0xFF)), "FF 12 34 56 09 AB CD EF 08") -- nothing was cleared
 end)
