@@ -1232,42 +1232,41 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 		ch.close()
 	}
 	mut c := uds.new_client(ch)
-	match kind {
+	a.mu.lock()
+	epoch := a.diag_timing_epoch
+	c.loosen_p2_star(a.diag_timing[t.key] or { 0 })
+	a.mu.unlock()
+	out := match kind {
 		'session' {
-			c.diagnostic_session(0x03) or {
-				a.diag_push('session: ${err}')
-				a.diag_done()
-				return
-			}
-			a.diag_push('session 0x03 OK')
+			if _ := c.diagnostic_session(0x03) { 'session 0x03 OK' } else { 'session: ${err}' }
 		}
 		'vin' {
-			r := c.read_data_by_identifier(0xF190) or {
-				a.diag_push('VIN: ${err}')
-				a.diag_done()
-				return
-			}
-			a.diag_push('VIN = ${r.bytestr()}')
+			if r := c.read_data_by_identifier(0xF190) { 'VIN = ${r.bytestr()}' } else { 'VIN: ${err}' }
 		}
 		'tp' {
-			c.tester_present() or {
-				a.diag_push('tester present: ${err}')
-				a.diag_done()
-				return
-			}
-			a.diag_push('tester present OK')
+			if _ := c.tester_present() { 'tester present OK' } else { 'tester present: ${err}' }
 		}
 		'did' {
-			r := c.read_data_by_identifier(did) or {
-				a.diag_push('DID ${did:04X}: ${err}')
-				a.diag_done()
-				return
+			if r := c.read_data_by_identifier(did) {
+				'DID ${did:04X} = ${hex(r)}  "${printable(r)}"'
+			} else {
+				'DID ${did:04X}: ${err}'
 			}
-			a.diag_push('DID ${did:04X} = ${hex(r)}  "${printable(r)}"')
 		}
-		else {}
+		else {
+			''
+		}
 	}
-
+	if out != '' {
+		a.diag_push(out)
+	}
+	// what this target has announced, kept for the next press BEFORE this one is done: the
+	// next may start the moment diag_busy clears — and not into a project loaded meanwhile
+	a.mu.lock()
+	if a.diag_timing_epoch == epoch {
+		a.diag_timing[t.key] = c.p2_star_ms
+	}
+	a.mu.unlock()
 	a.diag_done()
 }
 

@@ -366,3 +366,13 @@ fn test_clear_dtc_refuses_a_group_wider_than_24_bits() {
 	}
 	assert false
 }
+
+// a carried P2* only loosens the client: never below what it already allows
+fn test_loosen_p2_star_only_loosens() {
+	mut c := Client{}
+	c.loosen_p2_star(500)
+	assert c.p2_star_ms == default_p2_star_ms
+	c.loosen_p2_star(9000)
+	assert c.p2_star_ms == 9000
+	assert c.timeout_ms == 1000, 'the first-answer wait moved'
+}
