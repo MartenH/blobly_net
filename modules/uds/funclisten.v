@@ -28,6 +28,7 @@ mut:
 	closed   bool   // its last node left; a joiner that was waiting starts over
 	broken   bool   // a receive failed: the bus is closed and reopened in place, for every node
 	retry_at i64    // when a broken wire may next try to reopen (time.ticks)
+	prior    transport.BusDiagnostics // what the bus generations closed on a failure counted
 }
 
 // func_reopen_ms paces a broken wire's reopen attempts, which run on a node's poll.
@@ -167,6 +168,7 @@ fn (mut w FuncWire) pump() {
 	for {
 		f := w.bus.recv(0) or {
 			if !is_silence(err.msg()) {
+				w.prior = w.prior.plus(w.bus.diagnostics())
 				w.bus.close()
 				w.broken = true
 				w.retry_at = time.ticks()
@@ -218,14 +220,11 @@ pub fn (mut s FuncSub) leave() FuncLeave {
 			queue_dropped: s.dropped
 		}
 	}
-	if w.broken {
-		return FuncLeave{
-			fid:           s.fid
-			queue_dropped: s.dropped
-		}
+	mut d := w.prior
+	if !w.broken {
+		d = d.plus(w.bus.diagnostics())
+		w.bus.close()
 	}
-	d := w.bus.diagnostics()
-	w.bus.close()
 	return FuncLeave{
 		fid:           s.fid
 		queue_dropped: s.dropped

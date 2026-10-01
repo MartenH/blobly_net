@@ -137,8 +137,9 @@ fn test_a_node_joining_late_does_not_answer_what_came_before_it() {
 @[heap]
 struct FakeBus {
 mut:
-	q    []transport.CanFrame
-	dead bool
+	q     []transport.CanFrame
+	dead  bool
+	drops u64
 }
 
 fn (mut b FakeBus) send(f transport.CanFrame) ! {}
@@ -162,7 +163,9 @@ fn (mut b FakeBus) health() transport.BusHealth {
 }
 
 fn (mut b FakeBus) diagnostics() transport.BusDiagnostics {
-	return transport.BusDiagnostics{}
+	return transport.BusDiagnostics{
+		dropped: b.drops
+	}
 }
 
 fn (mut b FakeBus) reconcile_silence(want bool) ! {}
@@ -181,6 +184,7 @@ fn test_a_failed_receive_reopens_the_wire_for_every_node_on_it() {
 	}
 	mut a := functional_join('inproc:funclisten_reopen', 0x7DF, false, opener)!
 	mut b := functional_join('inproc:funclisten_reopen', 0x7DF, false, opener)!
+	opens.buses[0].drops = 5
 	opens.buses[0].dead = true
 	assert a.take() == none // the failure is seen
 	assert b.take() == none // and the next poll, by any node, reopens
@@ -192,7 +196,10 @@ fn test_a_failed_receive_reopens_the_wire_for_every_node_on_it() {
 	}
 	assert (a.take() or { []u8{} }) == [u8(0x3E), 0x00]
 	assert (b.take() or { []u8{} }) == [u8(0x3E), 0x00], 'a node that joined before the failure still hears the wire'
+	opens.buses[1].drops = 2
 	a.leave()
-	b.leave()
+	last := b.leave()
+	wd := last.wire or { panic('the last node out reports the wire') }
+	assert wd.dropped == 7, 'the failed generation counted 5 of these'
 	assert functional_wires() == 0
 }

@@ -419,7 +419,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 	mut open_err_said := false
 	defer {
 		if open {
-			link.close()
+			report_func_leaves(app, gen, pch.name, link.close())
 		}
 	}
 	for a.running {
@@ -437,7 +437,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 			// skipping recv leaves requests queued on the open channel, which are answered
 			// late once the ECU comes back. A closed channel does neither.
 			if open {
-				link.close()
+				report_func_leaves(app, gen, pch.name, link.close())
 				open = false
 			}
 			time.sleep(50 * time.millisecond)
@@ -499,6 +499,33 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 		s.serve_step(mut link, 50) or {
 			time.sleep(50 * time.millisecond) // a failed bus: back off rather than spin
 		}
+	}
+}
+
+// report_func_leaves puts in the Log what a node's functional listener lost: requests dropped
+// from its full queue, and — from the last node off the wire — the listener's own diagnostics.
+// Gated on the run generation only, so the close at the end of a run still reports it.
+fn report_func_leaves(app &App, gen u64, who string, leaves []uds.FuncLeave) {
+	mut a := unsafe { app }
+	for l in leaves {
+		mut parts := []string{}
+		if l.queue_dropped > 0 {
+			parts << '${l.queue_dropped} functional request(s) to 0x${l.fid:X} dropped from a full queue'
+		}
+		if wd := l.wire {
+			if !wd.is_empty() {
+				parts << 'functional listener ${wd.str()}'
+			}
+		}
+		if parts.len == 0 {
+			continue
+		}
+		a.mu.lock()
+		if a.run_gen == gen {
+			a.log_append_locked('${who}: ${parts.join('; ')}')
+		}
+		a.mu.unlock()
+		vgui.wake()
 	}
 }
 
