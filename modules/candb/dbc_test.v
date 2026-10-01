@@ -437,7 +437,10 @@ BA_ "E2ETimeout" BO_ 770 soon;
 	a := again.lookup(769) or { panic('lost') }
 	assert a.e2e == m.e2e, 'the E2E contract did not survive a save'
 	o2 := again.lookup(770) or { panic('lost') }
-	assert o2.e2e == o.e2e, 'the E2ETimeout default gave a message a timeout it did not have'
+	// a malformed value is dropped by a Save (it would break other tools), never turned into one:
+	// the writer's E2EDataId default 0 does not become this message's Data ID
+	assert !o2.e2e.has_data_id && !o2.e2e.has_timeout
+	assert !again.to_dbc().contains('bogus') && !again.to_dbc().contains('soon')
 	assert db.to_dbc().contains('BA_ "E2EProfile" BO_ 769 "P01";'), 'Profile 1 is written as P01'
 }
 
@@ -475,4 +478,37 @@ BA_ "E2ECounterSignal" BO_ 256 "K";
 	assert d.crc == 'Crc'
 	d.forget('K')
 	assert d.counter == '' && d.declared()
+}
+
+// E2ETimeout: a per-message 0 means none and is not overridden by a file default; a default of 0
+// states nothing; a timeout alone declares no protection; an empty value is malformed, not absent
+fn test_e2e_timeout_rules() {
+	db := parse_dbc('BO_ 1 A: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BO_ 2 B: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BO_ 3 T: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BO_ 4 E: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BA_DEF_DEF_ "E2ETimeout" 500;
+BA_ "E2ECrcSignal" BO_ 1 "C";
+BA_ "E2ETimeout" BO_ 1 0;
+BA_ "E2ECrcSignal" BO_ 2 "C";
+BA_ "E2ETimeout" BO_ 3 300;
+BA_ "E2EDataId" BO_ 4 ;
+') or { panic(err) }
+	a := db.messages[0].e2e
+	assert a.has_timeout && a.timeout_ms == 0, 'an explicit 0 was overridden by the default'
+	b := db.messages[1].e2e
+	assert b.has_timeout && b.timeout_ms == 500, 'a nonzero default fills a declared message'
+	t := db.messages[2].e2e
+	assert !t.declared() && t.states_anything() && t.timeout_ms == 300, 'a timeout alone declares no protection'
+	assert db.messages[3].e2e.bad_data_id == '(empty)'
+	again := parse_dbc(db.to_dbc()) or { panic(err) }
+	assert again.messages[0].e2e == a && again.messages[2].e2e == t
+	zero := parse_dbc('BO_ 1 A: 8 N\n SG_ C : 0|8@1+ (1,0) [0|255] "" X\nBA_DEF_DEF_ "E2ETimeout" 0;\nBA_ "E2ECrcSignal" BO_ 1 "C";\n') or {
+		panic(err)
+	}
+	assert !zero.messages[0].e2e.has_timeout, 'a default of 0 stated a timeout'
 }

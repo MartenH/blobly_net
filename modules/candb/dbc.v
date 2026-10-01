@@ -427,12 +427,13 @@ fn apply_tx_bu(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 // its message. A value that is not what the attribute holds is left unset rather than guessed.
 fn apply_e2e_attr(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	f := line.trim_right(';').fields()
-	// f: BA_ "<name>" BO_ <id> <value…>
-	if f.len < 5 || f[2] != 'BO_' {
+	// f: BA_ "<name>" BO_ <id> <value…> — the value may be missing, which is malformed, not absent
+	if f.len < 4 || f[2] != 'BO_' {
 		return
 	}
 	idx := by_id[u32(f[3].u64())] or { return }
-	set_e2e_field(mut msgs[idx].e2e, f[1], f[4..].join(' ').trim_space(), true)
+	set_e2e_field(mut msgs[idx].e2e, f[1], if f.len > 4 { f[4..].join(' ').trim_space() } else { '' },
+		true)
 }
 
 // set_e2e_field sets one attribute on a declaration — `overwrite` false for a default, which
@@ -461,16 +462,19 @@ fn set_e2e_field(mut d E2eDecl, quoted_name string, raw string, overwrite bool) 
 			}
 		}
 		'"E2ETimeout"' {
+			// stated per message, 0 included (no timeout), it is not overridden by a default; a
+			// default of 0 is the writer's placeholder and states nothing
 			if !overwrite && (d.has_timeout || d.bad_timeout != '') {
 				return
 			}
-			if raw != '' && raw.bytes().all(it.is_digit()) && raw.len <= 10 && raw.u64() <= 0xFFFF_FFFF {
-				// 0 is no timeout (the definition's default), not a deadline that has always passed
-				d.timeout_ms = u32(raw.u64())
-				d.has_timeout = d.timeout_ms > 0
-				d.bad_timeout = ''
+			if v := e2e_u32(raw) {
+				if overwrite || v > 0 {
+					d.timeout_ms = v
+					d.has_timeout = true
+					d.bad_timeout = ''
+				}
 			} else {
-				d.bad_timeout = raw
+				d.bad_timeout = if raw == '' { '(empty)' } else { raw }
 				d.has_timeout = false
 			}
 		}
@@ -480,17 +484,25 @@ fn set_e2e_field(mut d E2eDecl, quoted_name string, raw string, overwrite bool) 
 			if !overwrite {
 				return
 			}
-			if raw != '' && raw.bytes().all(it.is_digit()) && raw.len <= 10 && raw.u64() <= 0xFFFF_FFFF {
-				d.data_id = u32(raw.u64())
+			if v := e2e_u32(raw) {
+				d.data_id = v
 				d.has_data_id = true
 				d.bad_data_id = ''
 			} else {
-				d.bad_data_id = raw
+				d.bad_data_id = if raw == '' { '(empty)' } else { raw }
 				d.has_data_id = false
 			}
 		}
 		else {}
 	}
+}
+
+// e2e_u32 reads an E2E attribute's integer value: decimal digits that fit a u32.
+fn e2e_u32(raw string) ?u32 {
+	if raw == '' || raw.len > 10 || !raw.bytes().all(it.is_digit()) || raw.u64() > 0xFFFF_FFFF {
+		return none
+	}
+	return u32(raw.u64())
 }
 
 // apply_cycle_time parses `BA_ "GenMsgCycleTime" BO_ <id> <ms>;` and records the

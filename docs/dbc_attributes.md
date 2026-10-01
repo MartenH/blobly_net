@@ -13,9 +13,12 @@ Attributes we did not invent but do read are listed at the end, so the line betw
 
 Declares how a message is protected with **AUTOSAR E2E Profile 1**: CRC-8 (polynomial 0x1D,
 start 0x00, no final XOR) over the Data ID (low byte, then high) and every payload byte except
-the CRC's, with a 4-bit alive counter counting 0..14. A message carrying these attributes is
-stamped by its sender and checked by its receivers with no further configuration: by
-blobly_net's simulated ECUs and by blobly_emb's generated bridge alike.
+the CRC's, with a 4-bit alive counter counting 0..14. With no further configuration, a message
+carrying these attributes is:
+- stamped by blobly_net's simulated sender of it;
+- stamped by blobly_emb's generated bridge when the ECU sends it, and checked when it receives it.
+
+blobly_net checks a received frame only for messages a `verify:` entry names.
 
 ```
 BA_DEF_ BO_ "E2ECounterSignal" STRING;
@@ -37,24 +40,27 @@ BA_ "E2ETimeout" BO_ 769 300;
 
 | attribute | type | meaning |
 |---|---|---|
-| `E2ECounterSignal` | STRING | the signal holding the alive counter: 4 bits, in the low nibble of one byte |
+| `E2ECounterSignal` | STRING | the signal holding the 4-bit alive counter. AUTOSAR lets it sit in either nibble, and blobly_net stamps it wherever its signal is; blobly_emb requires the low nibble of a byte other than the CRC's |
 | `E2ECrcSignal` | STRING | the signal holding the CRC: 8 bits, exactly one byte |
 | `E2EProfile` | STRING | the profile. `"P01"` is AUTOSAR E2E Profile 1, the one both sides implement. `"PROFILE_01"` (AUTOSAR's name) and `"autosar_p01"` (blobly_net's internal name, written by builds before the `P01` spelling) read the same. blobly_net's simulation also knows the checksum primitives `crc8_j1850`, `crc8_autosar`, `sum8` and `xor8`, which no AUTOSAR receiver accepts and blobly_emb refuses |
 | `E2EDataId` | INT | the 16-bit Data ID that goes into the CRC. 0 is a valid Data ID, so a message without this attribute has none, and Profile 1 refuses it |
-| `E2ETimeout` | INT, ms | the receiver's E2E sender-loss timeout: no *valid* frame within this time and the receiver reports `timeout` (blobly_emb REQ-E2E-002). A sender ignores it. 0 means no timeout |
+| `E2ETimeout` | INT, ms | the receiver's E2E sender-loss timeout: no *valid* frame within this time and the receiver reports `timeout` (blobly_emb REQ-E2E-002). A sender ignores it. 0 means no timeout. On its own it declares no protection |
 
 Rules both readers follow:
 
 - **Positions come from the signals**, never from numbers in the attributes, so the layout is
-  stated once, in the `SG_` lines. The CRC and the counter must be in different bytes, and
-  neither may be a multiplexed signal (it would be stamped into every frame, over another mux
-  branch's bits).
-- **A file-wide default (`BA_DEF_DEF_`) fills in only messages that state an E2E attribute of
-  their own.** A message that states none is not protected by a default. `E2EDataId` never
-  comes from a default: a Data ID every frame shares identifies none.
-- **A value that is not what the attribute holds is kept as written, and refused by name.** It
-  is never read as absent: a missing Data ID and Data ID 0 give different checksums. A Save
-  writes it back unchanged.
+  stated once, in the `SG_` lines. The CRC must be one whole byte and the counter 4 bits. Neither
+  may be a multiplexed signal: it would be stamped into every frame, over another mux branch's
+  bits.
+- **A file-wide default (`BA_DEF_DEF_`) fills in only messages that declare protection of their
+  own.** A message that states none is not protected by a default. `E2EDataId` never comes from
+  a default, because a Data ID every frame shares identifies none. An `E2ETimeout` default of 0
+  states nothing, and a message's own `E2ETimeout`, 0 included, is never overridden by a default.
+- **A value that is not what the attribute holds is refused by name when read.** It is never read
+  as absent: a missing Data ID and Data ID 0 give different checksums. An empty value is malformed
+  too. blobly_net's editor does **not** write a malformed value back on Save, because under an
+  `INT` definition it would make the file unreadable to every other tool; so a Save drops it, and
+  the message then has no Data ID (or timeout). Fix the value rather than saving over it.
 - **The local configuration may override, but only on purpose.**
   - In blobly_net, a node's `protect:` entry for the message takes precedence, and the
     difference is reported (for example, a wrong Data ID to test a receiver's rejection path).

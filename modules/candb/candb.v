@@ -104,10 +104,10 @@ pub mut:
 	data_id     u32
 	has_data_id bool   // 0 is a legitimate Data ID, so presence is its own fact
 	bad_data_id string // an E2EDataId the file wrote that is not a Data ID — never read as absent
-	// E2ETimeout: a receiver's E2E sender-loss timeout in ms (REQ-E2E-002 on blobly_emb). The
-	// simulation does not use it; it is carried so a Save and an export keep it.
+	// E2ETimeout: a receiver's E2E sender-loss timeout in ms (REQ-E2E-002 on blobly_emb), 0
+	// meaning none. The simulation does not use it; it is carried so a Save and an export keep it.
 	timeout_ms  u32
-	has_timeout bool
+	has_timeout bool   // stated per message (0 included)
 	bad_timeout string // an E2ETimeout the file wrote that is not a number of ms
 }
 
@@ -129,7 +129,12 @@ pub fn profile_to_dbc(p string) string {
 // declared: the file said anything about this message's E2E at all.
 pub fn (d E2eDecl) declared() bool {
 	return d.counter != '' || d.crc != '' || d.profile != '' || d.has_data_id || d.bad_data_id != ''
-		|| d.has_timeout || d.bad_timeout != ''
+}
+
+// states_anything: the file wrote any E2E attribute for this message — a receiver-only timeout
+// included, which on its own declares no protection.
+pub fn (d E2eDecl) states_anything() bool {
+	return d.declared() || d.has_timeout || d.bad_timeout != ''
 }
 
 // follow_rename keeps the declaration naming a signal the editor renamed.
