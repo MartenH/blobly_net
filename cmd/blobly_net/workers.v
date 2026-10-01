@@ -413,10 +413,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 	mut ch := &isotp.SoftChannel(unsafe { nil })
 	// the node's physical channel and, when it answers one, its functional listener: opened,
 	// closed and answered TOGETHER, so a node switched off answers neither
-	mut link := uds.NodeLink{
-		fid:  fid
-		fext: fext
-	}
+	mut link := uds.NodeLink{}
 	mut open := false
 	mut reported := false
 	mut open_err_said := false
@@ -474,9 +471,12 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				continue
 			}
 			if fid != 0 {
-				// receive-only: the answers go out on the physical channel's tap, attributed
-				// there; this subscription only hears the broadcasts
-				ftap := transport.open(a.bitrate_iface(iface)) or {
+				// receive-only, one per wire whatever the number of nodes: the answers go out on
+				// the physical channel's tap, attributed there; this only hears the broadcasts
+				biface := a.bitrate_iface(iface)
+				fsub := uds.functional_join(biface, fid, fext, fn [biface] () !transport.Bus {
+					return transport.open(biface)!
+				}) or {
 					if !open_err_said {
 						open_err_said = true
 						notify_gen(app, gen,
@@ -486,7 +486,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 					time.sleep(200 * time.millisecond)
 					continue
 				}
-				link.func << ftap
+				link.func << fsub
 			}
 			link.phys = ch
 			open = true

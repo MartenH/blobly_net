@@ -501,13 +501,14 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fext bool, srv
 	mut ch := isotp.open_software(iface, tx, rx, ext) or { return }
 	mut link := uds.NodeLink{
 		phys: ch
-		fid:  fid
-		fext: fext
 	}
 	if fid != 0 {
-		// a raw subscription of its own: functional requests are Single Frames on a shared id.
-		// Failing to open it costs the broadcasts, not the ECU: physical requests are still served.
-		if f := transport.open(iface) {
+		// one functional listener per wire, shared by every node answering on it. Failing to
+		// open it costs the broadcasts, not the ECU: physical requests are still served.
+		if f := uds.functional_join(iface, fid, fext, fn [iface] () !transport.Bus {
+			return transport.open(iface)!
+		})
+		{
 			link.func << f
 		} else {
 			eprintln('${iface}: uds node 0x${rx:X} cannot listen on functional id 0x${fid:X}: ${err} — physical requests only')
@@ -517,11 +518,7 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fext bool, srv
 	for ctl.running {
 		s.serve_step(mut link, 50) or { time.sleep(50 * time.millisecond) }
 	}
-	mut fdiags := []transport.BusDiagnostics{}
-	for mut t in link.func {
-		fdiags << t.diagnostics()
-	}
-	link.close()
+	fdiags := link.close()
 	report_diag('${iface} (uds node)', ch.diagnostics()) // after the close: see sim_loop
 	for d in fdiags {
 		report_diag('${iface} (uds node, functional 0x${fid:X})', d)
