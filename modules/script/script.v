@@ -125,6 +125,11 @@ mut:
 	chans []ChanInfo
 	conns []UdsConn
 	buses map[string]transport.Bus
+	// every SOME/IP session someip.call has used in this run, explicit or automatic, and the last
+	// automatic one: no session is ever sent twice, so a late reply to a timed-out call cannot
+	// complete a later one (someip.RpcClient)
+	someip_session u16
+	someip_used    map[u16]bool
 pub mut:
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
@@ -304,6 +309,9 @@ fn (mut env Env) register_all() {
 	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__doip_listen', l_doip_listen)
 	env.st.register('__someip_listen', l_someip_listen)
+	env.st.register('__someip_send', l_someip_send)
+	env.st.register('__someip_call', l_someip_call)
+	env.st.register('__someip_session', l_someip_session)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -796,14 +804,177 @@ fn l_someip_listen(l lua.State) int {
 	cap := someip.collect(host, use_port, window, group) or {
 		return l.fail('someip.listen(${use_port}): ${err}')
 	}
-	mut out := []string{}
-	for m in cap.messages {
-		h := m.header
-		out << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${someip.msg_type_name(h.msg_type)}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
-	}
-	l.push_str(out.join('\n'))
+	l.push_str(capture_lines(cap))
 	l.push_int(i64(cap.malformed))
 	return 2
+}
+
+// l_someip_send encodes each message (one `svc|method|iface|type|client|session|payloadhex` line,
+// fields hex, built by the prelude), sends them to `to` from the local port and hears that port
+// for the window. One socket both ways: a node with a static peer endpoint answers only the
+// port it was addressed from. Returns what listen returns.
+fn l_someip_send(l lua.State) int {
+	port := int(l.arg_int(1))
+	to := l.arg_str(2)
+	spec := l.arg_str(3)
+	window := int(l.arg_int(4))
+	if port <= 0 || port > 65535 {
+		return l.fail('someip.send: port ${port} is not a UDP port')
+	}
+	mut out := [][]u8{}
+	for line in spec.split_into_lines() {
+		f := line.split('|')
+		if f.len != 7 {
+			return l.fail('someip.send: malformed message spec')
+		}
+		mut v := []u64{}
+		for x in f[..6] {
+			v << u64(strconv_hex(x) or { return l.fail('someip.send: ${x} is not hex') })
+		}
+		limits := [u64(0xFFFF), 0xFFFF, 0xFF, 0xFF, 0xFFFF, 0xFFFF]
+		names := ['service', 'method', 'iface', 'type', 'client', 'session']
+		for i, lim in limits {
+			if v[i] > lim {
+				return l.fail('someip.send: ${names[i]} 0x${v[i]:X} does not fit')
+			}
+		}
+		payload := hex_bytes(f[6]) or { return l.fail('someip.send: payload is not hex') }
+		out << someip.encode(someip.Header{
+			service:           u16(v[0])
+			method:            u16(v[1])
+			client:            u16(v[4])
+			session:           u16(v[5])
+			protocol_version:  someip.protocol_version
+			interface_version: u8(v[2])
+			msg_type:          u8(v[3])
+		}, payload)
+	}
+	cap := someip.exchange('', port, to, out, window) or {
+		return l.fail('someip.send(${to}): ${err}')
+	}
+	l.push_str(capture_lines(cap))
+	l.push_int(i64(cap.malformed))
+	return 2
+}
+
+// l_someip_call is one request through someip.call (RpcClient correlation, the drain, the version
+// check, the peer filter, the deadline): args port, to, service, method, iface, client, session
+// (0 = the next of this run), payload hex, timeout ms. Returns the outcome ("response", "error"
+// or "timeout"), the return code, the payload and the session used.
+fn l_someip_call(l lua.State) int {
+	mut env := env_of(l)
+	port := int(l.arg_int(1))
+	to := l.arg_str(2)
+	limits := [i64(0xFFFF), 0xFFFF, 0xFF, 0xFFFF, 0xFFFF]
+	names := ['service', 'method', 'iface', 'client', 'session']
+	mut vals := []i64{}
+	for i, lim in limits {
+		// exact: 1.5 or 1e30 is refused rather than read as 0, a different header
+		v := l.arg_int_exact(3 + i) or { return l.fail('someip.call: ${names[i]} is not an integer') }
+		if v < 0 || v > lim {
+			return l.fail('someip.call: ${names[i]} ${v} does not fit')
+		}
+		vals << v
+	}
+	if vals[3] == 0 {
+		return l.fail('someip.call: client 0 is reserved (a blobly_emb node refuses it)')
+	}
+	payload := hex_bytes(l.arg_str(8)) or { return l.fail('someip.call: payload is not hex') }
+	timeout := l.arg_int(9)
+	if port <= 0 || port > 65535 {
+		return l.fail('someip.call: port ${port} is not a UDP port')
+	}
+	if vals[1] >= 0x8000 {
+		return l.fail('someip.call: method 0x${vals[1]:04X} is an event id (bit 15) — a request on it is malformed on the wire')
+	}
+	want := env.take_session(u16(vals[4])) or { return l.fail('someip.call: ${err}') }
+	// RpcClient sends the SUCCESSOR of `session`, so it starts one before
+	last := if want == 1 { u16(0xFFFF) } else { want - 1 }
+	mut cli := someip.RpcClient{
+		service:    u16(vals[0])
+		method:     u16(vals[1])
+		iface:      u8(vals[2])
+		client_id:  u16(vals[3])
+		timeout_us: u64(if timeout > 0 { timeout } else { 1000 }) * 1000
+		session:    last
+	}
+	someip.call(port, to, mut cli, payload, 'a script') or {
+		return l.fail('someip.call(${to}): ${err}')
+	}
+	outcome := match cli.state {
+		.done { 'response' }
+		else { if cli.result.timed_out { 'timeout' } else { 'error' } }
+	}
+	l.push_str(outcome)
+	l.push_int(i64(cli.result.rc))
+	l.push_bytes(cli.result.payload)
+	l.push_int(i64(cli.session))
+	return 4
+}
+
+// take_session reserves a SOME/IP request session for this run — `want` when given (0 = the next
+// automatic one): a session goes out at most once per run, whether someip.call or someip.send
+// sends it, so a late reply to one request can never complete another.
+fn (mut env Env) take_session(want u16) !u16 {
+	if want != 0 {
+		if env.someip_used[want] {
+			return error('session ${want} was already used in this run — a late reply to it could complete this request')
+		}
+		env.someip_used[want] = true
+		return want
+	}
+	mut c := env.someip_session
+	for _ in 0 .. 0xFFFF {
+		c = if c >= 0xFFFF { u16(1) } else { c + 1 }
+		if !env.someip_used[c] {
+			env.someip_used[c] = true
+			env.someip_session = c
+			return c
+		}
+	}
+	return error('every session of this run is used')
+}
+
+// l_someip_session reserves a request session for someip.send (arg: the explicit one, or 0).
+fn l_someip_session(l lua.State) int {
+	mut env := env_of(l)
+	v := l.arg_int_exact(1) or { return l.fail('someip.send: session is not an integer') }
+	if v < 0 || v > 0xFFFF {
+		return l.fail('someip.send: session ${v} does not fit')
+	}
+	s := env.take_session(u16(v)) or { return l.fail('someip.send: ${err}') }
+	l.push_int(i64(s))
+	return 1
+}
+
+// capture_lines is one line per message, the shape the prelude reads back (shape_someip).
+fn capture_lines(cap someip.Capture) string {
+	mut lines := []string{}
+	for m in cap.messages {
+		h := m.header
+		lines << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${someip.msg_type_name(h.msg_type)}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
+	}
+	return lines.join('\n')
+}
+
+// strconv_hex reads a non-empty run of hex digits.
+fn strconv_hex(x string) ?u64 {
+	if x == '' || x.len > 16 || !x.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	return x.parse_uint(16, 64) or { return none }
+}
+
+// hex_bytes reads an even run of hex digits as bytes ('' is no bytes).
+fn hex_bytes(x string) ?[]u8 {
+	if x.len % 2 != 0 || !x.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	mut b := []u8{cap: x.len / 2}
+	for i := 0; i < x.len; i += 2 {
+		b << u8(x[i..i + 2].parse_uint(16, 8) or { return none })
+	}
+	return b
 }
 
 fn l_uds_tester_present(l lua.State) int {

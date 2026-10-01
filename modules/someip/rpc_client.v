@@ -24,7 +24,7 @@ pub struct RpcResult {
 pub mut:
 	rc        u8   // return code (0 = ok; the server's rc on an error reply)
 	timed_out bool // deadline passed with no correlated answer
-	payload   []u8 // response payload (empty on error/timeout)
+	payload   []u8 // the answer's payload, RESPONSE or ERROR (empty on timeout)
 }
 
 pub struct RpcClient {
@@ -76,6 +76,15 @@ pub fn (mut c RpcClient) on_datagram(buf []u8) bool {
 		return false // drain: nothing in flight
 	}
 	m := parse(buf) or { return false } // drain: not even a SOME/IP message
+	return c.on_message(m)
+}
+
+// on_message is on_datagram for one message already parsed — a datagram may pack several
+// (split), and the answer may be any of them.
+pub fn (mut c RpcClient) on_message(m Message) bool {
+	if c.state != .waiting {
+		return false
+	}
 	h := m.header
 	if h.msg_type != mt_response && h.msg_type != mt_error {
 		return false // drain: an event or foreign traffic
@@ -92,7 +101,8 @@ pub fn (mut c RpcClient) on_datagram(buf []u8) bool {
 	if h.msg_type == mt_error {
 		c.state = .failed
 		c.result = RpcResult{
-			rc: h.return_code
+			rc:      h.return_code
+			payload: m.payload.clone() // an ERROR may carry one too (error_for)
 		}
 		return true
 	}

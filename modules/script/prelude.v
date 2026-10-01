@@ -200,6 +200,26 @@ end
 -- ============================ observation (SOME/IP) ============================
 someip = {}
 
+-- shape_someip turns the binding lines into message tables (the shape someip.listen returns).
+local function shape_someip(raw)
+  local out = {}
+  for line in tostring(raw):gmatch("[^\n]+") do
+    local at, from, svc, mth, iface, mtype, client, session, rc, hex =
+      line:match("^(%d+)|([^|]+)|(%x+)|(%x+)|(%x+)|([%w ]+)|(%x+)|(%x+)|(%x+)|(%x*)$")
+    if at then
+      local method = tonumber(mth, 16)
+      out[#out+1] = {
+        at_ms = tonumber(at), from = from,
+        service = tonumber(svc, 16), method = method, event = method >= 0x8000,
+        type = mtype:lower(), iface = tonumber(iface, 16),
+        client = tonumber(client, 16), session = tonumber(session, 16), rc = tonumber(rc, 16),
+        payload = fromhex(hex),
+      }
+    end
+  end
+  return out
+end
+
 -- someip.listen(window_ms [, opts]) -> messages, malformed
 --
 -- Sit on a port for a window and report every SOME/IP message that arrived, decoded to its
@@ -231,22 +251,74 @@ function someip.listen(window_ms, opts)
   end
   local raw, malformed = __someip_listen(opts.port or 0, window_ms or 1000, opts.group or "",
                                          opts.from or "")
-  local out = {}
-  for line in tostring(raw):gmatch("[^\n]+") do
-    local at, from, svc, mth, iface, mtype, client, session, rc, hex =
-      line:match("^(%d+)|([^|]+)|(%x+)|(%x+)|(%x+)|([%w ]+)|(%x+)|(%x+)|(%x+)|(%x*)$")
-    if at then
-      local method = tonumber(mth, 16)
-      out[#out+1] = {
-        at_ms = tonumber(at), from = from,
-        service = tonumber(svc, 16), method = method, event = method >= 0x8000,
-        type = mtype:lower(), iface = tonumber(iface, 16),
-        client = tonumber(client, 16), session = tonumber(session, 16), rc = tonumber(rc, 16),
-        payload = fromhex(hex),
-      }
-    end
+  return shape_someip(raw), malformed
+end
+
+local someip_types = { request = 0x00, notification = 0x02 }
+
+-- someip_to checks a destination is "host:port", IPv4: the local port is bound on the IPv4
+-- wildcard, which is the claim every other listener here makes.
+local function someip_to(fname, to)
+  if type(to) ~= "string" or not to:match("^[^:%[%]]+:%d+$") then
+    error(fname .. ": to must be an IPv4 \"host:port\", got " .. tostring(to), 3)
   end
-  return out, malformed
+end
+
+-- someip.send(to, msgs [, opts]) -> messages, malformed
+--
+-- Send SOME/IP messages to `to` ("host:port") FROM a local port, then hear that port for a
+-- window -- one socket both ways, because a node with a static peer endpoint (a blobly_emb SOME/IP
+-- node) accepts datagrams only from its configured peer and answers that same endpoint.
+-- msgs: one message table or a list of them, each { service=, method=, payload=<bytes>,
+-- type="notification"|"request" (default: notification for an event id, request otherwise),
+-- iface=1, client=0, session=0 }. opts = { port = 30491, window_ms = 1000 }.
+-- Returns what someip.listen returns for the window that follows the send.
+function someip.send(to, msgs, opts)
+  opts = opts or {}
+  someip_to("someip.send", to)
+  if type(msgs) ~= "table" then error("someip.send: msgs must be a message or a list of them", 2) end
+  if msgs[1] == nil then msgs = { msgs } end
+  local lines = {}
+  for i, m in ipairs(msgs) do
+    if math.type(m.service) ~= "integer" or math.type(m.method) ~= "integer" then
+      error("someip.send: message " .. i .. " needs an integer service and method", 2)
+    end
+    local mt = m.type or (m.method >= 0x8000 and "notification" or "request")
+    local code = someip_types[mt]
+    if code == nil then error("someip.send: type must be notification or request, got " .. tostring(mt), 2) end
+    -- a request goes out with a live Request ID by default (a blobly_emb node refuses client 0
+    -- and treats session 0 as dead), its session reserved for the run like a someip.call one
+    local req = code == 0
+    local session = m.session or 0
+    if req then session = __someip_session(m.session or 0) end
+    lines[#lines+1] = string.format("%x|%x|%x|%x|%x|%x|%s", m.service, m.method, m.iface or 1,
+      code, m.client or (req and 0x1234 or 0), session, tohex(m.payload or ""):gsub(" ", ""))
+  end
+  local raw, malformed = __someip_send(opts.port or 30491, to, table.concat(lines, "\n"),
+                                       opts.window_ms or 1000)
+  return shape_someip(raw), malformed
+end
+
+-- someip.call(to, req [, opts]) -> response | nil, why
+--
+-- One request/response exchange (modules/someip call: RpcClient correlation): sends `req`
+-- ({service=, method=, payload=, iface=1, client=0x1234, session=next}) from the local port and
+-- returns as soon as the RESPONSE or ERROR mirroring its Request ID arrives from `to` -- an ERROR
+-- is an answer, with its return code in `rc`. Events, other senders and stale replies to an
+-- earlier session are ignored; sessions are never reused within a run. opts = { port = 30491,
+-- timeout_ms = 1000 }. nil, "no answer" when the deadline passes.
+function someip.call(to, req, opts)
+  opts = opts or {}
+  someip_to("someip.call", to)
+  if type(req) ~= "table" or type(req.service) ~= "number" or type(req.method) ~= "number" then
+    error("someip.call: req needs an integer service and method", 2)
+  end
+  local outcome, rc, payload, session = __someip_call(opts.port or 30491, to, req.service,
+    req.method, req.iface or 1, req.client or 0x1234, req.session or 0,
+    tohex(req.payload or ""):gsub(" ", ""), opts.timeout_ms or 1000)
+  if outcome == "timeout" then return nil, "no answer" end
+  return { type = outcome, rc = rc, payload = payload, service = req.service,
+           method = req.method, client = req.client or 0x1234, session = session }
 end
 
 -- ============================ diagnostics (UDS) ============================

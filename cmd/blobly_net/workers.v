@@ -1704,33 +1704,6 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 	}
 	peer_port := sip.peer.all_after_last(':').int()
 	bind_port := if peer_port > 0 { peer_port } else { 30491 }
-	// CLAIMED LIKE EVERY OTHER LISTENER IN THIS PROCESS. The shell binds the board's peer port,
-	// which an enabled SOME/IP row may also be reading — both sockets get SO_REUSEADDR, so the
-	// board's responses would go to whichever the kernel picked and the shell would time out
-	// intermittently with nothing to point at. Refused by name instead, either order.
-	shell_canon := transport.claim_endpoint('', bind_port, 'the eth shell', .tool, '') or {
-		a.shell_append('(:${bind_port}: ${err})')
-		return
-	}
-	defer {
-		transport.release_endpoint(shell_canon, bind_port, 'the eth shell')
-	}
-	// BOUND ON WHAT WAS CLAIMED, the contract every other registered listener keeps: `:<port>`
-	// lets the resolver choose, and it may choose the IPv6 wildcard while the claim reserved the
-	// IPv4 one — so the registry would permit a SOME/IP listener on a v6 address and the split
-	// this claim exists to prevent would be back.
-	mut sock := vnet.listen_udp(someip.bind_addr(shell_canon, bind_port)) or {
-		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
-		return
-	}
-	defer {
-		sock.close() or {}
-	}
-	sock.set_read_timeout(100 * time.millisecond)
-	addrs := vnet.resolve_addrs('${target}:${sip.port}', .ip, .udp) or {
-		a.shell_append('(resolve ${target}: ${err})')
-		return
-	}
 	a.mu.lock()
 	last_session := a.eth_shell_session
 	a.mu.unlock()
@@ -1742,33 +1715,17 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 		timeout_us: 1_500_000
 		session:    last_session
 	}
-	sw := time.new_stopwatch()
-	req := cli.send(line.bytes(), 0) or {
-		a.shell_append('(client busy)')
+	// the call (claim, bind, send, the dialed board's answer only) is someip.call's
+	someip.call(bind_port, '${target}:${sip.port}', mut cli, line.bytes(), 'the eth shell') or {
+		a.mu.lock()
+		a.eth_shell_session = cli.session // burned even when it never went out
+		a.mu.unlock()
+		a.shell_append('(${err})')
 		return
 	}
 	a.mu.lock()
-	a.eth_shell_session = cli.session // burn it NOW: even a timeout never reuses it
+	a.eth_shell_session = cli.session // burned: even a timeout never reuses it
 	a.mu.unlock()
-	sock.write_to(addrs[0], req) or {
-		a.shell_append('(send: ${err})')
-		return
-	}
-	mut buf := []u8{len: 65536} // one FULL UDP datagram: a truncated read would
-	// fail the header-length check and read as a timeout, not as truncation
-	want_src := addrs[0].str()
-	for cli.state == .waiting {
-		n, raddr := sock.read(mut buf) or {
-			cli.poll(u64(sw.elapsed().microseconds()))
-			continue
-		}
-		// only the dialed board may answer — on a shared bench another node
-		// could otherwise forge matching correlation fields
-		if raddr.str() == want_src {
-			cli.on_datagram(buf[..n])
-		}
-		cli.poll(u64(sw.elapsed().microseconds()))
-	}
 	if cli.state == .done {
 		a.shell_append(cli.result.payload.bytestr())
 		return
