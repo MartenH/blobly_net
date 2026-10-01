@@ -160,9 +160,10 @@ treat the sender as faulty, which looks exactly like a bug in your bench setup.
 ```
 
 **The DBC can declare it instead** (#271), once for every tool on the bench: a message carrying
-`BA_ "E2ECounterSignal"`, `"E2ECrcSignal"`, `"E2EProfile"` and `"E2EDataId"` attributes (as
-`cmd/arxml2dbc` exports them, and as an ARXML database states them natively) is protected by
-its simulated sender with no `protect:` entry at all. A `protect:` entry for that message
+`BA_ "E2ECounterSignal"`, `"E2ECrcSignal"`, `"E2EProfile"` (`"P01"`) and `"E2EDataId"` attributes
+(as `cmd/arxml2dbc` exports them, and as an ARXML database states them natively) is protected by
+its simulated sender with no `protect:` entry at all. The attributes, and `"E2ETimeout"` for the
+receiving ECU, are defined in [dbc_attributes.md](dbc_attributes.md). A `protect:` entry for that message
 overrides the declaration, e.g. a wrong Data ID on purpose to test the receiver's rejection path,
 and is reported as differing. A declaration that cannot be applied is reported, and the
 message goes out unprotected.
