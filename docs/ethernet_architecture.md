@@ -160,7 +160,8 @@ tester-side, and none of it is mirrored into emb.
 | | Status |
 |---|---|
 | Header codec + envelope validation, golden vectors shared with emb | ✅ `modules/someip` |
-| RPC **client** — one request in flight, deadline, session liveness, drain | ✅ `rpc_client.v`, the GUI's Shell over Ethernet |
+| RPC **client** — one request in flight, deadline, session liveness, drain | ✅ `rpc_client.v`, driven over UDP by `call.v` (claim, bind the peer port, the dialed node's answers only) — the GUI's Shell over Ethernet and Lua `someip.call` |
+| **Send and hear** — messages sent FROM the local port that then hears the answers, because a blobly_emb node with a static peer endpoint accepts and answers only that endpoint | ✅ `listen.v` `exchange`, Lua `someip.send`; bench-verified with `someip.call` against the H735 (`examples/h735_someip`: the shell RPC, BenchCmd → BenchEcho, BenchTelem's P01 trailer) |
 | **Listen** — sit on a port (and a multicast group), report every message decoded to its header, payload raw; malformed datagrams counted, several messages per datagram split; the window itself is `transport.udp_window`, shared with DoIP's announcement collector | ✅ `listen.v`, Lua `someip.listen` |
 | **A `someip` channel** — `adapter: someip`, `address: <bind-host>:<port>`, optional `group:`; ▶ Start binds it and every message heard is a trace row, carrying its kind so no CAN consumer reads a service:method as an arbitration id. Nothing is sent; nothing is recorded (a recording holds CAN frames, and the Log says so). Lua `someip.listen({ from = name })` takes its endpoint; two listeners in one process cannot hold one endpoint, whichever starts first, because a second UDP socket on one port splits the stream rather than sharing it. `projects/someip-listen.blobnet` beside emb's `examples/host_someip` | ✅ `cmd/blobly_net` `someip_rx_loop` |
 | **Decode SD passively** — read the offer/subscribe entries a discovering SUT multicasts, so a foreign service's ids and endpoints can be listed without asking | 🧭 next: a small extension of Listen, still bounded |
@@ -188,6 +189,6 @@ tester-side, and none of it is mirrored into emb.
 envelope validation, hermetic golden-vector tests), the host-side oracle for blobly_emb's
 eth-bus design (its `docs/someip.md`) — plus the RPC **client** (`rpc_client.v`: one request in
 flight, a deadline, session-id liveness, stale-datagram drain; hermetic and networked tests),
-used by the GUI's Shell over Ethernet, plus the passive **listener** (`listen.v`: verified live
+used by the GUI's Shell over Ethernet and Lua's `someip.call` through `call.v`, plus `someip.send` (`exchange`), plus the passive **listener** (`listen.v`: verified live
 against emb's `examples/host_someip` on loopback) and the **`someip` channel** that puts the same
 stream in the GUI trace. SOME/IP-SD and the sim service remain deferred, as above.

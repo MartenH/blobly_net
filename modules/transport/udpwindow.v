@@ -1,5 +1,5 @@
-// udpwindow — ONE listening window for every passive UDP observer: bind, optionally join a
-// group, read until the deadline, hand back what arrived. doip's announcement collector and
+// udpwindow — ONE listening window for every UDP observer: bind, optionally join a group, read
+// until the deadline, hand back what arrived (`udp_exchange` sends from that socket first). doip's announcement collector and
 // someip's listener both sit on this, so the policy of what ends a window lives in one place.
 //
 // Only the DEADLINE ends the window. This V reports a zero-byte read as an error (`error('none')`,
@@ -97,6 +97,27 @@ pub fn udp_window(addr string, group string, iface string, window_ms int) ![]Dat
 	mut c := udp_bind(addr, group, iface)!
 	defer {
 		c.close() or {}
+	}
+	return udp_window_on(mut c, window_ms)
+}
+
+// udp_exchange binds `addr`, sends each of `out` to `to` FROM that socket, then reads for
+// `window_ms`. One socket for both directions, because a peer that filters by source endpoint
+// (a SOME/IP node with a static peer) answers only the port it was addressed from, and the
+// answer comes back to that same port.
+pub fn udp_exchange(addr string, to string, out [][]u8, window_ms int) ![]Datagram {
+	mut c := udp_bind(addr, '', '')!
+	defer {
+		c.close() or {}
+	}
+	// the family of the bind: an IPv6 first answer could never be sent from a v4 socket
+	fam := if addr.starts_with('[') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
+	dst := net.resolve_addrs(to, fam, .udp) or { return error('udp: cannot resolve ${to}: ${err}') }
+	if dst.len == 0 {
+		return error('udp: ${to} resolves to nothing')
+	}
+	for d in out {
+		c.write_to(dst[0], d) or { return error('udp: send to ${to}: ${err}') }
 	}
 	return udp_window_on(mut c, window_ms)
 }

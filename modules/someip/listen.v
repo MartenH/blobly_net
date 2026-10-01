@@ -2,9 +2,10 @@ module someip
 
 import transport
 
-// listen — the PASSIVE half of a SOME/IP tester: sit on a port (and, for events a service
+// listen — the passive half of a SOME/IP tester (`exchange`, at the end, is its active form:
+// send from the port, then hear it): sit on a port (and, for events a service
 // publishes to a group, join it) and report every message that arrives, decoded to its header
-// and raw payload. Nothing is sent, nothing is subscribed to, nothing is interpreted: the
+// and raw payload. collect sends nothing and subscribes to nothing; nothing is interpreted: the
 // payload layout is deployment-defined (blobly derives it from config; a vsomeip-style SUT
 // describes it elsewhere) and stays opaque here. The DoIP twin is doip.collect_announcements,
 // on the same transport.udp_window; the design boundary is docs/ethernet_architecture.md.
@@ -149,6 +150,23 @@ pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	// the very failure the family default was added for — the fix was unreachable from its own
 	// caller. A caller that genuinely wants one interface names it; these do not.
 	got := transport.udp_window(bind_addr(canon, port), group, '', window_ms)!
+	mut cap := Capture{}
+	for d in got {
+		cap.ingest(d)
+	}
+	return cap
+}
+
+// exchange sends `datagrams` to `to` from the local `port`, then hears that port for `window_ms`
+// — the active form of collect, for a node that answers only its configured peer endpoint. The
+// endpoint is claimed like collect's, so a running listener on the same port refuses it rather
+// than splitting the answers.
+pub fn exchange(host string, port int, to string, datagrams [][]u8, window_ms int) !Capture {
+	canon := transport.claim_endpoint(host, port, 'a script', .tool, '')!
+	defer {
+		transport.release_endpoint(canon, port, 'a script')
+	}
+	got := transport.udp_exchange(bind_addr(canon, port), to, datagrams, window_ms)!
 	mut cap := Capture{}
 	for d in got {
 		cap.ingest(d)
