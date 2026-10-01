@@ -1712,7 +1712,7 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	assert lines.any(it == 'BA_DEF_DEF_ "E2EProfile" "";')
 	assert lines.any(it == 'BA_ "E2ECounterSignal" BO_ 512 "LampCounter";')
 	assert lines.any(it == 'BA_ "E2ECrcSignal" BO_ 512 "LampCrc";')
-	assert lines.any(it == 'BA_ "E2EProfile" BO_ 512 "autosar_p01";')
+	assert lines.any(it == 'BA_ "E2EProfile" BO_ 512 "P01";')
 	assert lines.any(it == 'BA_ "E2EDataId" BO_ 512 42;')
 	assert lines.filter(it.starts_with('BA_ "E2E')).len == 4
 	// receivers reach the SG_ lines

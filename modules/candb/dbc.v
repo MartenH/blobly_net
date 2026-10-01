@@ -457,11 +457,27 @@ fn set_e2e_field(mut d E2eDecl, quoted_name string, raw string, overwrite bool) 
 		}
 		'"E2EProfile"' {
 			if overwrite || d.profile == '' {
-				d.profile = str
+				d.profile = profile_from_dbc(str)
+			}
+		}
+		'"E2ETimeout"' {
+			if !overwrite && (d.has_timeout || d.bad_timeout != '') {
+				return
+			}
+			if raw != '' && raw.bytes().all(it.is_digit()) && raw.len <= 10 && raw.u64() <= 0xFFFF_FFFF {
+				// 0 is no timeout (the definition's default), not a deadline that has always passed
+				d.timeout_ms = u32(raw.u64())
+				d.has_timeout = d.timeout_ms > 0
+				d.bad_timeout = ''
+			} else {
+				d.bad_timeout = raw
+				d.has_timeout = false
 			}
 		}
 		'"E2EDataId"' {
-			if !overwrite && (d.has_data_id || d.bad_data_id != '') {
+			// never from a file-wide default: a Data ID every frame shares identifies none (and
+			// the writer's definition default, 0, would otherwise give one to every message)
+			if !overwrite {
 				return
 			}
 			if raw != '' && raw.bytes().all(it.is_digit()) && raw.len <= 10 && raw.u64() <= 0xFFFF_FFFF {

@@ -85,7 +85,7 @@ pub mut:
 	// ambiguity (#95).
 	j1939   bool
 	// The E2E contract the file DECLARES for this message (#271: `BA_ "E2ECounterSignal"` /
-	// `"E2ECrcSignal"` / `"E2EProfile"` / `"E2EDataId"`) — stated once in the file the whole
+	// `"E2ECrcSignal"` / `"E2EProfile"` / `"E2EDataId"` / `"E2ETimeout"`, docs/dbc_attributes.md) — stated once in the file the whole
 	// bench shares, for its sender to stamp and its receivers to check. The simulation stamps it
 	// (sim.protection_for); `verify:` checks only what a verify: entry names. Empty when the
 	// file does not declare one.
@@ -104,11 +104,32 @@ pub mut:
 	data_id     u32
 	has_data_id bool   // 0 is a legitimate Data ID, so presence is its own fact
 	bad_data_id string // an E2EDataId the file wrote that is not a Data ID — never read as absent
+	// E2ETimeout: a receiver's E2E sender-loss timeout in ms (REQ-E2E-002 on blobly_emb). The
+	// simulation does not use it; it is carried so a Save and an export keep it.
+	timeout_ms  u32
+	has_timeout bool
+	bad_timeout string // an E2ETimeout the file wrote that is not a number of ms
+}
+
+// e2e_p01_dbc is how a DBC spells AUTOSAR E2E Profile 1 in `E2EProfile` (docs/dbc_attributes.md).
+pub const e2e_p01_dbc = 'P01'
+
+// profile_from_dbc is the profile an `E2EProfile` value names: Profile 1 under any of its
+// spellings — `P01`, AUTOSAR's `PROFILE_01`, and `autosar_p01`, the name the simulation uses —
+// and anything else as written, for the validators to refuse or accept.
+pub fn profile_from_dbc(v string) string {
+	return if v in ['P01', 'PROFILE_01', 'autosar_p01'] { 'autosar_p01' } else { v }
+}
+
+// profile_to_dbc is the `E2EProfile` value a profile is written as.
+pub fn profile_to_dbc(p string) string {
+	return if p == 'autosar_p01' { e2e_p01_dbc } else { p }
 }
 
 // declared: the file said anything about this message's E2E at all.
 pub fn (d E2eDecl) declared() bool {
 	return d.counter != '' || d.crc != '' || d.profile != '' || d.has_data_id || d.bad_data_id != ''
+		|| d.has_timeout || d.bad_timeout != ''
 }
 
 // follow_rename keeps the declaration naming a signal the editor renamed.

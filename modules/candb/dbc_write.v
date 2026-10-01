@@ -280,6 +280,11 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 			name:    'E2EDataId'
 			default: '0'
 		}
+		mut tmo := DbcAttr{
+			name:    'E2ETimeout'
+			typ:     'INT 0 65535'
+			default: '0'
+		}
 		mut max_id := u32(65535)
 		for m in msgs {
 			d := m.e2e
@@ -290,17 +295,32 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 				crc.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.crc)}"'}
 			}
 			if d.profile != '' {
-				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.profile)}"'}
+				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(profile_to_dbc(d.profile))}"'}
 			}
-			if d.has_data_id {
+			if d.bad_data_id != '' {
+				// kept as written, so the next read refuses it by name rather than finding none
+				did.values << DbcAttrValue{m.id, m.ext, d.bad_data_id}
+			} else if d.has_data_id {
 				did.values << DbcAttrValue{m.id, m.ext, '${d.data_id}'}
 				if d.data_id > max_id {
 					max_id = d.data_id
 				}
 			}
 		}
+		mut max_tmo := u32(65535)
+		for m in msgs {
+			if m.e2e.bad_timeout != '' {
+				tmo.values << DbcAttrValue{m.id, m.ext, m.e2e.bad_timeout}
+			} else if m.e2e.has_timeout {
+				tmo.values << DbcAttrValue{m.id, m.ext, '${m.e2e.timeout_ms}'}
+				if m.e2e.timeout_ms > max_tmo {
+					max_tmo = m.e2e.timeout_ms
+				}
+			}
+		}
+		tmo.typ = 'INT 0 ${max_tmo}'
 		did.typ = 'INT 0 ${max_id}'
-		for a in [ctr, crc, prof, did] {
+		for a in [ctr, crc, prof, did, tmo] {
 			if a.values.len > 0 {
 				attrs << a
 			}

@@ -421,17 +421,35 @@ BA_ "E2ECrcSignal" BO_ 769 "BrakeCrc";
 BA_ "E2EProfile" BO_ 769 "autosar_p01";
 BA_ "E2EDataId" BO_ 769 68;
 BA_ "E2EDataId" BO_ 770 bogus;
+BA_ "E2ETimeout" BO_ 769 300;
+BA_ "E2ETimeout" BO_ 770 soon;
 '
 	db := parse_dbc(text) or { panic(err) }
 	m := db.lookup(769) or { panic('no BrakeStatus') }
 	assert m.e2e.counter == 'BrakeCounter' && m.e2e.crc == 'BrakeCrc'
 	assert m.e2e.profile == 'autosar_p01' && m.e2e.has_data_id && m.e2e.data_id == 68
+	assert m.e2e.has_timeout && m.e2e.timeout_ms == 300
+	assert (db.lookup(770) or { panic('no Other') }).e2e.bad_timeout == 'soon'
 	o := db.lookup(770) or { panic('no Other') }
 	// kept as said, so the simulation can refuse it by name — never read as "no Data ID"
 	assert o.e2e.bad_data_id == 'bogus' && !o.e2e.has_data_id
 	again := parse_dbc(db.to_dbc()) or { panic(err) }
 	a := again.lookup(769) or { panic('lost') }
 	assert a.e2e == m.e2e, 'the E2E contract did not survive a save'
+	o2 := again.lookup(770) or { panic('lost') }
+	assert o2.e2e == o.e2e, 'the E2ETimeout default gave a message a timeout it did not have'
+	assert db.to_dbc().contains('BA_ "E2EProfile" BO_ 769 "P01";'), 'Profile 1 is written as P01'
+}
+
+// E2EProfile spells AUTOSAR E2E Profile 1 three ways, all one profile
+fn test_e2e_profile_1_spellings() {
+	for v in ['P01', 'PROFILE_01', 'autosar_p01'] {
+		db := parse_dbc('BO_ 1 A: 8 N\n SG_ S : 0|8@1+ (1,0) [0|255] "" X\nBA_ "E2EProfile" BO_ 1 "${v}";\n') or {
+			panic(err)
+		}
+		assert db.messages[0].e2e.profile == 'autosar_p01', v
+	}
+	assert profile_from_dbc('crc8_j1850') == 'crc8_j1850'
 }
 
 // a file-wide E2E default is a declaration too, for messages that state one of their own — a
