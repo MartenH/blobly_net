@@ -25,7 +25,6 @@ pub fn call(port int, to string, mut cli RpcClient, payload []u8, owner string) 
 	defer {
 		sock.close() or {}
 	}
-	sock.set_read_timeout(50 * time.millisecond)
 	addrs := net.resolve_addrs(to, .ip, .udp) or { return error('resolve ${to}: ${err}') }
 	if addrs.len == 0 {
 		return error('${to} has no IPv4 address')
@@ -38,12 +37,27 @@ pub fn call(port int, to string, mut cli RpcClient, payload []u8, owner string) 
 	mut buf := []u8{len: 65536}
 	want := addrs[0].str()
 	for cli.state == .waiting {
+		// each read bounded by what is left of the deadline, so a short one is honoured
+		left := i64(cli.timeout_us) - sw.elapsed().microseconds()
+		sock.set_read_timeout(time.Duration(if left > 50_000 {
+			50_000
+		} else if left > 1000 {
+			left
+		} else {
+			1000
+		}) * time.microsecond)
 		n, from := sock.read(mut buf) or {
 			cli.poll(u64(sw.elapsed().microseconds()))
 			continue
 		}
 		if from.str() == want {
-			cli.on_datagram(buf[..n])
+			// a datagram may pack several messages (vsomeip does under load): any may be ours
+			msgs, _ := split(buf[..n])
+			for msg in msgs {
+				if cli.on_message(msg) {
+					break
+				}
+			}
 		}
 		cli.poll(u64(sw.elapsed().microseconds()))
 	}

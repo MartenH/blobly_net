@@ -154,3 +154,50 @@ fn test_call_takes_only_the_peers_answer_to_its_own_session() {
 	assert cli.result.payload == 'real'.bytes()
 	assert cli.session == 5, 'the session it used stays burned'
 }
+
+// answer_packed answers the first request with ONE datagram packing an event and the response.
+fn answer_packed(port int, wait_ms int) {
+	mut c := net.listen_udp('127.0.0.1:${port}') or { return }
+	defer {
+		c.close() or {}
+	}
+	c.set_read_timeout(wait_ms * time.millisecond)
+	mut buf := []u8{len: 2048}
+	n, from := c.read(mut buf) or { return }
+	req := parse(buf[..n]) or { return }
+	mut packed := notification(0x0100, 0x8001, 1, [u8(1)])
+	packed << error_for(req.header, rc_not_ok, 'why'.bytes())
+	c.write_to(from, packed) or {}
+}
+
+fn test_call_finds_its_answer_in_a_packed_datagram_and_keeps_an_error_payload() {
+	local := uniq_port(0)
+	peer := uniq_port(1)
+	t := spawn answer_packed(peer, 2000)
+	time.sleep(100 * time.millisecond)
+	mut cli := RpcClient{
+		service:    0x0100
+		method:     0x0042
+		iface:      1
+		client_id:  0x00A5
+		timeout_us: 1_000_000
+	}
+	call(local, '127.0.0.1:${peer}', mut cli, []u8{}, 'a test')!
+	t.wait()
+	assert cli.state == .failed && !cli.result.timed_out, 'the packed answer was missed'
+	assert cli.result.rc == rc_not_ok
+	assert cli.result.payload == 'why'.bytes()
+}
+
+fn test_call_honours_a_deadline_shorter_than_one_read() {
+	mut cli := RpcClient{
+		service:    0x0100
+		method:     0x0042
+		iface:      1
+		timeout_us: 10_000
+	}
+	sw := time.new_stopwatch()
+	call(uniq_port(0), '127.0.0.1:${uniq_port(1)}', mut cli, []u8{}, 'a test')!
+	assert cli.result.timed_out
+	assert sw.elapsed().milliseconds() < 40, 'a 10 ms deadline took ${sw.elapsed().milliseconds()} ms'
+}

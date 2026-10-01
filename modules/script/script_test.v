@@ -368,12 +368,20 @@ fn test_someip_send_and_call_against_a_static_peer() {
 			check.equal(#heard, 2)
 			check.equal(heard[1].method, 0x8001); check.equal(heard[2].type, "response")
 		end)
-		test("a destination without a port is refused", function()
+		test("a destination without a port, or IPv6, is refused", function()
 			local ok, err = pcall(someip.send, "127.0.0.1", { service = 1, method = 1 })
 			check.truthy(not ok and tostring(err):find("host:port", 1, true), tostring(err))
+			ok, err = pcall(someip.call, "[::1]:30490", { service = 1, method = 1 })
+			check.truthy(not ok and tostring(err):find("IPv4", 1, true), tostring(err))
+		end)
+		test("a header value that is not an integer is refused, not read as 0", function()
+			local ok, err = pcall(someip.call, to, { service = 1.5, method = 1 }, opts)
+			check.truthy(not ok and tostring(err):find("not an integer", 1, true), tostring(err))
+			ok, err = pcall(someip.send, to, { service = 1, method = 1.5 }, opts)
+			check.truthy(not ok and tostring(err):find("integer", 1, true), tostring(err))
 		end)
 	')!
 	t.wait()
-	assert env.total() == 4
-	assert env.passed() == 4, env.results.filter(!it.ok).map(it.msg).str()
+	assert env.total() == 5
+	assert env.passed() == 5, env.results.filter(!it.ok).map(it.msg).str()
 }

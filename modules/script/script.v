@@ -862,13 +862,16 @@ fn l_someip_call(l lua.State) int {
 	mut env := env_of(l)
 	port := int(l.arg_int(1))
 	to := l.arg_str(2)
-	vals := [l.arg_int(3), l.arg_int(4), l.arg_int(5), l.arg_int(6), l.arg_int(7)]
 	limits := [i64(0xFFFF), 0xFFFF, 0xFF, 0xFFFF, 0xFFFF]
 	names := ['service', 'method', 'iface', 'client', 'session']
+	mut vals := []i64{}
 	for i, lim in limits {
-		if vals[i] < 0 || vals[i] > lim {
-			return l.fail('someip.call: ${names[i]} ${vals[i]} does not fit')
+		// exact: 1.5 or 1e30 is refused rather than read as 0, a different header
+		v := l.arg_int_exact(3 + i) or { return l.fail('someip.call: ${names[i]} is not an integer') }
+		if v < 0 || v > lim {
+			return l.fail('someip.call: ${names[i]} ${v} does not fit')
 		}
+		vals << v
 	}
 	if vals[3] == 0 {
 		return l.fail('someip.call: client 0 is reserved (a blobly_emb node refuses it)')
@@ -878,9 +881,11 @@ fn l_someip_call(l lua.State) int {
 	if port <= 0 || port > 65535 {
 		return l.fail('someip.call: port ${port} is not a UDP port')
 	}
-	// RpcClient sends the SUCCESSOR of `session`: a given session is reached by starting one before
+	// RpcClient sends the SUCCESSOR of `session`: a given session is reached by starting one
+	// before. An explicit session leaves the run's counter alone, so it can never rewind it.
+	explicit := vals[4] != 0
 	mut last := env.someip_session
-	if vals[4] != 0 {
+	if explicit {
 		last = if vals[4] == 1 { u16(0xFFFF) } else { u16(vals[4] - 1) }
 	}
 	mut cli := someip.RpcClient{
@@ -892,10 +897,14 @@ fn l_someip_call(l lua.State) int {
 		session:    last
 	}
 	someip.call(port, to, mut cli, payload, 'a script') or {
-		env.someip_session = cli.session
+		if !explicit {
+			env.someip_session = cli.session
+		}
 		return l.fail('someip.call(${to}): ${err}')
 	}
-	env.someip_session = cli.session
+	if !explicit {
+		env.someip_session = cli.session
+	}
 	outcome := match cli.state {
 		.done { 'response' }
 		else { if cli.result.timed_out { 'timeout' } else { 'error' } }

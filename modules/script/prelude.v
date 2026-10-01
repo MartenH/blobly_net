@@ -256,10 +256,11 @@ end
 
 local someip_types = { request = 0x00, notification = 0x02 }
 
--- someip_to checks a destination is "host:port" (an IPv6 literal in brackets).
+-- someip_to checks a destination is "host:port", IPv4: the local port is bound on the IPv4
+-- wildcard, which is the claim every other listener here makes.
 local function someip_to(fname, to)
-  if type(to) ~= "string" or not (to:match("^[^:%[%]]+:%d+$") or to:match("^%[.+%]:%d+$")) then
-    error(fname .. ": to must be \"host:port\", got " .. tostring(to), 3)
+  if type(to) ~= "string" or not to:match("^[^:%[%]]+:%d+$") then
+    error(fname .. ": to must be an IPv4 \"host:port\", got " .. tostring(to), 3)
   end
 end
 
@@ -279,8 +280,8 @@ function someip.send(to, msgs, opts)
   if msgs[1] == nil then msgs = { msgs } end
   local lines = {}
   for i, m in ipairs(msgs) do
-    if type(m.service) ~= "number" or type(m.method) ~= "number" then
-      error("someip.send: message " .. i .. " needs a numeric service and method", 2)
+    if math.type(m.service) ~= "integer" or math.type(m.method) ~= "integer" then
+      error("someip.send: message " .. i .. " needs an integer service and method", 2)
     end
     local mt = m.type or (m.method >= 0x8000 and "notification" or "request")
     local code = someip_types[mt]
@@ -309,7 +310,7 @@ function someip.call(to, req, opts)
   opts = opts or {}
   someip_to("someip.call", to)
   if type(req) ~= "table" or type(req.service) ~= "number" or type(req.method) ~= "number" then
-    error("someip.call: req needs a numeric service and method", 2)
+    error("someip.call: req needs an integer service and method", 2)
   end
   local outcome, rc, payload, session = __someip_call(opts.port or 30491, to, req.service,
     req.method, req.iface or 1, req.client or 0x1234, req.session or 0,
