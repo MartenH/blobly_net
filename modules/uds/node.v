@@ -17,14 +17,12 @@ pub fn functional_suppressed(resp []u8) bool {
 		&& resp[2] in [u8(0x11), 0x12, 0x31, 0x7E, 0x7F]
 }
 
-// NodeLink is what one served node listens on: its physical channel, and a raw subscription to
-// the bus for the functional id when it answers one (`func` empty when it does not).
+// NodeLink is what one served node listens on: its physical channel, and its place on the
+// wire's functional listener when it answers a functional id (`func` empty when it does not).
 pub struct NodeLink {
 pub mut:
 	phys isotp.Channel
-	func []transport.Bus
-	fid  u32
-	fext bool
+	func []&FuncSub
 }
 
 // serve_step answers what is waiting: the functional Single Frames already queued, then a
@@ -55,11 +53,7 @@ pub fn (mut s Server) serve_step(mut l NodeLink, wait_ms int) ! {
 fn (mut s Server) serve_functional(mut l NodeLink) {
 	for mut t in l.func {
 		for {
-			f := t.recv(0) or { break }
-			if f.id != l.fid || f.extended != l.fext || f.rtr {
-				continue
-			}
-			freq := isotp.single_frame(f.data) or { continue } // functional: one Single Frame
+			freq := t.take() or { break }
 			resp := s.handle(freq)
 			if resp.len > 0 && !functional_suppressed(resp) {
 				l.phys.send(resp) or {}
@@ -68,12 +62,15 @@ fn (mut s Server) serve_functional(mut l NodeLink) {
 	}
 }
 
-// close closes what the link listens on — the physical channel and the functional listener —
-// together, so a node switched off answers neither.
-pub fn (mut l NodeLink) close() {
+// close closes what the link listens on — the physical channel and its place on the functional
+// listener — together, so a node switched off answers neither. Returns what the functional side
+// has worth reporting (see FuncSub.leave).
+pub fn (mut l NodeLink) close() []FuncLeave {
 	l.phys.close()
+	mut ds := []FuncLeave{}
 	for mut t in l.func {
-		t.close()
+		ds << t.leave()
 	}
 	l.func = []
+	return ds
 }
