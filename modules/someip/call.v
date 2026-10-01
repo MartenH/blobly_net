@@ -50,7 +50,9 @@ pub fn call(port int, to string, mut cli RpcClient, payload []u8, owner string) 
 			cli.poll(u64(sw.elapsed().microseconds()))
 			continue
 		}
-		if from.str() == want {
+		// the deadline first: a reply read after it (a wake-up that overshot) does not count
+		cli.poll(u64(sw.elapsed().microseconds()))
+		if cli.state == .waiting && from.str() == want {
 			// a datagram may pack several messages (vsomeip does under load): any may be ours
 			msgs, _ := split(buf[..n])
 			for msg in msgs {
