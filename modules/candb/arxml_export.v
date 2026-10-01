@@ -40,10 +40,8 @@ pub:
 // profile 2 or 11 onto a CRC primitive under blobly's own coverage rule (what this did before
 // autosar_p01 existed) exported a contract no AUTOSAR receiver accepts.
 pub fn e2e_profile_primitive(profile string) string {
-	p := match profile {
-		'PROFILE_01' { 'autosar_p01' }
-		else { '' }
-	}
+	// the reader's one spelling table: PROFILE_01 is Profile 1, every other AUTOSAR profile none
+	p := if profile.starts_with('PROFILE_') { profile_from_dbc(profile) } else { '' }
 	// HELD TO THE ONE LIST: a primitive renamed or removed from e2e_profiles must stop being
 	// exported here too, or the DBC attributes and the fragment would carry a checksum the
 	// simulation's validators reject (codex on #273 round 24)

@@ -260,7 +260,7 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	// The E2E contract, from the model (#271) — so an editor Save keeps what the parser read.
 	// NOT WHEN THE CALLER SUPPLIES ITS OWN, as for VFrameFormat: arxml_export passes them as
 	// extras, and two emitters of one attribute would write two definitions.
-	if !x.attrs.any(it.name.starts_with('E2E')) && msgs.any(it.e2e.declared()) {
+	if !x.attrs.any(it.name.starts_with('E2E')) && msgs.any(it.e2e.states_anything()) {
 		mut ctr := DbcAttr{
 			name:    'E2ECounterSignal'
 			typ:     'STRING'
@@ -280,7 +280,12 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 			name:    'E2EDataId'
 			default: '0'
 		}
+		mut tmo := DbcAttr{
+			name:    'E2ETimeout'
+			default: '0'
+		}
 		mut max_id := u32(65535)
+		mut max_tmo := u32(65535)
 		for m in msgs {
 			d := m.e2e
 			if d.counter != '' {
@@ -290,17 +295,26 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 				crc.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.crc)}"'}
 			}
 			if d.profile != '' {
-				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.profile)}"'}
+				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(profile_to_dbc(d.profile))}"'}
 			}
+			// a malformed value is not written back: under an INT definition it would make the
+			// file unreadable to every other tool (docs/dbc_attributes.md)
 			if d.has_data_id {
 				did.values << DbcAttrValue{m.id, m.ext, '${d.data_id}'}
 				if d.data_id > max_id {
 					max_id = d.data_id
 				}
 			}
+			if d.has_timeout {
+				tmo.values << DbcAttrValue{m.id, m.ext, '${d.timeout_ms}'}
+				if d.timeout_ms > max_tmo {
+					max_tmo = d.timeout_ms
+				}
+			}
 		}
+		tmo.typ = 'INT 0 ${max_tmo}'
 		did.typ = 'INT 0 ${max_id}'
-		for a in [ctr, crc, prof, did] {
+		for a in [ctr, crc, prof, did, tmo] {
 			if a.values.len > 0 {
 				attrs << a
 			}

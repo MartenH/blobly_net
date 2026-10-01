@@ -421,17 +421,38 @@ BA_ "E2ECrcSignal" BO_ 769 "BrakeCrc";
 BA_ "E2EProfile" BO_ 769 "autosar_p01";
 BA_ "E2EDataId" BO_ 769 68;
 BA_ "E2EDataId" BO_ 770 bogus;
+BA_ "E2ETimeout" BO_ 769 300;
+BA_ "E2ETimeout" BO_ 770 soon;
 '
 	db := parse_dbc(text) or { panic(err) }
 	m := db.lookup(769) or { panic('no BrakeStatus') }
 	assert m.e2e.counter == 'BrakeCounter' && m.e2e.crc == 'BrakeCrc'
 	assert m.e2e.profile == 'autosar_p01' && m.e2e.has_data_id && m.e2e.data_id == 68
+	assert m.e2e.has_timeout && m.e2e.timeout_ms == 300
+	assert (db.lookup(770) or { panic('no Other') }).e2e.bad_timeout == 'soon'
 	o := db.lookup(770) or { panic('no Other') }
 	// kept as said, so the simulation can refuse it by name — never read as "no Data ID"
 	assert o.e2e.bad_data_id == 'bogus' && !o.e2e.has_data_id
 	again := parse_dbc(db.to_dbc()) or { panic(err) }
 	a := again.lookup(769) or { panic('lost') }
 	assert a.e2e == m.e2e, 'the E2E contract did not survive a save'
+	o2 := again.lookup(770) or { panic('lost') }
+	// a malformed value is dropped by a Save (it would break other tools), never turned into one:
+	// the writer's E2EDataId default 0 does not become this message's Data ID
+	assert !o2.e2e.has_data_id && !o2.e2e.has_timeout
+	assert !again.to_dbc().contains('bogus') && !again.to_dbc().contains('soon')
+	assert db.to_dbc().contains('BA_ "E2EProfile" BO_ 769 "P01";'), 'Profile 1 is written as P01'
+}
+
+// E2EProfile spells AUTOSAR E2E Profile 1 three ways, all one profile
+fn test_e2e_profile_1_spellings() {
+	for v in ['P01', 'PROFILE_01', 'autosar_p01'] {
+		db := parse_dbc('BO_ 1 A: 8 N\n SG_ S : 0|8@1+ (1,0) [0|255] "" X\nBA_ "E2EProfile" BO_ 1 "${v}";\n') or {
+			panic(err)
+		}
+		assert db.messages[0].e2e.profile == 'autosar_p01', v
+	}
+	assert profile_from_dbc('crc8_j1850') == 'crc8_j1850'
 }
 
 // a file-wide E2E default is a declaration too, for messages that state one of their own — a
@@ -457,4 +478,49 @@ BA_ "E2ECounterSignal" BO_ 256 "K";
 	assert d.crc == 'Crc'
 	d.forget('K')
 	assert d.counter == '' && d.declared()
+}
+
+// E2ETimeout: a per-message 0 means none and is not overridden by a file default; a default of 0
+// states nothing; a timeout alone declares no protection; an empty value is malformed, not absent
+fn test_e2e_timeout_rules() {
+	db := parse_dbc('BO_ 1 A: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BO_ 2 B: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BO_ 3 T: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BO_ 4 E: 8 N
+ SG_ C : 0|8@1+ (1,0) [0|255] "" X
+BA_DEF_DEF_ "E2ETimeout" 500;
+BA_ "E2ECrcSignal" BO_ 1 "C";
+BA_ "E2ETimeout" BO_ 1 0;
+BA_ "E2ECrcSignal" BO_ 2 "C";
+BA_ "E2ETimeout" BO_ 3 300;
+BA_ "E2EDataId" BO_ 4 ;
+') or { panic(err) }
+	a := db.messages[0].e2e
+	assert a.has_timeout && a.timeout_ms == 0, 'an explicit 0 was overridden by the default'
+	b := db.messages[1].e2e
+	assert b.has_timeout && b.timeout_ms == 500, 'a nonzero default fills a declared message'
+	t := db.messages[2].e2e
+	assert !t.declared() && t.states_anything() && t.timeout_ms == 300, 'a timeout alone declares no protection'
+	assert db.messages[3].e2e.bad_data_id == '(empty)'
+	again := parse_dbc(db.to_dbc()) or { panic(err) }
+	assert again.messages[0].e2e == a && again.messages[2].e2e == t
+	zero := parse_dbc('BO_ 1 A: 8 N\n SG_ C : 0|8@1+ (1,0) [0|255] "" X\nBA_DEF_DEF_ "E2ETimeout" 0;\nBA_ "E2ECrcSignal" BO_ 1 "C";\n') or {
+		panic(err)
+	}
+	assert !zero.messages[0].e2e.has_timeout, 'a default of 0 stated a timeout'
+}
+
+// the writer's spelling is P01 whatever the model holds, and a zero-padded value is its number
+fn test_e2e_writer_fixpoint_and_padded_numbers() {
+	mut db := parse_dbc('BO_ 1 A: 8 N\n SG_ C : 0|8@1+ (1,0) [0|255] "" X\nBA_ "E2ECrcSignal" BO_ 1 "C";\nBA_ "E2ETimeout" BO_ 1 00000000300;\nBA_ "E2EDataId" BO_ 1 0068;\n') or {
+		panic(err)
+	}
+	assert db.messages[0].e2e.timeout_ms == 300 && db.messages[0].e2e.data_id == 68
+	db.messages[0].e2e.profile = 'PROFILE_01'
+	once := db.to_dbc()
+	assert once.contains('BA_ "E2EProfile" BO_ 1 "P01";')
+	assert (parse_dbc(once) or { panic(err) }).to_dbc() == once, 'the writer is not a fixpoint'
 }
