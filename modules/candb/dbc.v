@@ -497,12 +497,17 @@ fn set_e2e_field(mut d E2eDecl, quoted_name string, raw string, overwrite bool) 
 	}
 }
 
-// e2e_u32 reads an E2E attribute's integer value: decimal digits that fit a u32.
+// e2e_u32 reads an E2E attribute's integer value: decimal digits that fit a u32, leading zeros
+// allowed (the magnitude is what is bounded, not the spelling).
 fn e2e_u32(raw string) ?u32 {
-	if raw == '' || raw.len > 10 || !raw.bytes().all(it.is_digit()) || raw.u64() > 0xFFFF_FFFF {
+	if raw == '' || !raw.bytes().all(it.is_digit()) {
 		return none
 	}
-	return u32(raw.u64())
+	digits := raw.trim_left('0')
+	if digits.len > 10 || digits.u64() > 0xFFFF_FFFF {
+		return none
+	}
+	return u32(digits.u64())
 }
 
 // apply_cycle_time parses `BA_ "GenMsgCycleTime" BO_ <id> <ms>;` and records the

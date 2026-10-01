@@ -512,3 +512,15 @@ BA_ "E2EDataId" BO_ 4 ;
 	}
 	assert !zero.messages[0].e2e.has_timeout, 'a default of 0 stated a timeout'
 }
+
+// the writer's spelling is P01 whatever the model holds, and a zero-padded value is its number
+fn test_e2e_writer_fixpoint_and_padded_numbers() {
+	mut db := parse_dbc('BO_ 1 A: 8 N\n SG_ C : 0|8@1+ (1,0) [0|255] "" X\nBA_ "E2ECrcSignal" BO_ 1 "C";\nBA_ "E2ETimeout" BO_ 1 00000000300;\nBA_ "E2EDataId" BO_ 1 0068;\n') or {
+		panic(err)
+	}
+	assert db.messages[0].e2e.timeout_ms == 300 && db.messages[0].e2e.data_id == 68
+	db.messages[0].e2e.profile = 'PROFILE_01'
+	once := db.to_dbc()
+	assert once.contains('BA_ "E2EProfile" BO_ 1 "P01";')
+	assert (parse_dbc(once) or { panic(err) }).to_dbc() == once, 'the writer is not a fixpoint'
+}

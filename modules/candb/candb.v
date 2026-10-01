@@ -123,7 +123,7 @@ pub fn profile_from_dbc(v string) string {
 
 // profile_to_dbc is the `E2EProfile` value a profile is written as.
 pub fn profile_to_dbc(p string) string {
-	return if p == 'autosar_p01' { e2e_p01_dbc } else { p }
+	return if profile_from_dbc(p) == 'autosar_p01' { e2e_p01_dbc } else { p }
 }
 
 // declared: the file said anything about this message's E2E at all.
