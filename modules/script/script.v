@@ -125,6 +125,9 @@ mut:
 	chans []ChanInfo
 	conns []UdsConn
 	buses map[string]transport.Bus
+	// the last SOME/IP session someip.call used: never reused within a run, so a late reply to a
+	// timed-out call cannot complete a later one (someip.RpcClient)
+	someip_session u16
 pub mut:
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
@@ -305,6 +308,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__doip_listen', l_doip_listen)
 	env.st.register('__someip_listen', l_someip_listen)
 	env.st.register('__someip_send', l_someip_send)
+	env.st.register('__someip_call', l_someip_call)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -797,12 +801,7 @@ fn l_someip_listen(l lua.State) int {
 	cap := someip.collect(host, use_port, window, group) or {
 		return l.fail('someip.listen(${use_port}): ${err}')
 	}
-	mut out := []string{}
-	for m in cap.messages {
-		h := m.header
-		out << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${someip.msg_type_name(h.msg_type)}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
-	}
-	l.push_str(out.join('\n'))
+	l.push_str(capture_lines(cap))
 	l.push_int(i64(cap.malformed))
 	return 2
 }
@@ -850,14 +849,72 @@ fn l_someip_send(l lua.State) int {
 	cap := someip.exchange('', port, to, out, window) or {
 		return l.fail('someip.send(${to}): ${err}')
 	}
+	l.push_str(capture_lines(cap))
+	l.push_int(i64(cap.malformed))
+	return 2
+}
+
+// l_someip_call is one request through someip.call (RpcClient correlation, the drain, the version
+// check, the peer filter, the deadline): args port, to, service, method, iface, client, session
+// (0 = the next of this run), payload hex, timeout ms. Returns the outcome ("response", "error"
+// or "timeout"), the return code, the payload and the session used.
+fn l_someip_call(l lua.State) int {
+	mut env := env_of(l)
+	port := int(l.arg_int(1))
+	to := l.arg_str(2)
+	vals := [l.arg_int(3), l.arg_int(4), l.arg_int(5), l.arg_int(6), l.arg_int(7)]
+	limits := [i64(0xFFFF), 0xFFFF, 0xFF, 0xFFFF, 0xFFFF]
+	names := ['service', 'method', 'iface', 'client', 'session']
+	for i, lim in limits {
+		if vals[i] < 0 || vals[i] > lim {
+			return l.fail('someip.call: ${names[i]} ${vals[i]} does not fit')
+		}
+	}
+	if vals[3] == 0 {
+		return l.fail('someip.call: client 0 is reserved (a blobly_emb node refuses it)')
+	}
+	payload := hex_bytes(l.arg_str(8)) or { return l.fail('someip.call: payload is not hex') }
+	timeout := l.arg_int(9)
+	if port <= 0 || port > 65535 {
+		return l.fail('someip.call: port ${port} is not a UDP port')
+	}
+	// RpcClient sends the SUCCESSOR of `session`: a given session is reached by starting one before
+	mut last := env.someip_session
+	if vals[4] != 0 {
+		last = if vals[4] == 1 { u16(0xFFFF) } else { u16(vals[4] - 1) }
+	}
+	mut cli := someip.RpcClient{
+		service:    u16(vals[0])
+		method:     u16(vals[1])
+		iface:      u8(vals[2])
+		client_id:  u16(vals[3])
+		timeout_us: u64(if timeout > 0 { timeout } else { 1000 }) * 1000
+		session:    last
+	}
+	someip.call(port, to, mut cli, payload, 'a script') or {
+		env.someip_session = cli.session
+		return l.fail('someip.call(${to}): ${err}')
+	}
+	env.someip_session = cli.session
+	outcome := match cli.state {
+		.done { 'response' }
+		else { if cli.result.timed_out { 'timeout' } else { 'error' } }
+	}
+	l.push_str(outcome)
+	l.push_int(i64(cli.result.rc))
+	l.push_bytes(cli.result.payload)
+	l.push_int(i64(cli.session))
+	return 4
+}
+
+// capture_lines is one line per message, the shape the prelude reads back (shape_someip).
+fn capture_lines(cap someip.Capture) string {
 	mut lines := []string{}
 	for m in cap.messages {
 		h := m.header
 		lines << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${someip.msg_type_name(h.msg_type)}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
 	}
-	l.push_str(lines.join('\n'))
-	l.push_int(i64(cap.malformed))
-	return 2
+	return lines.join('\n')
 }
 
 // strconv_hex reads a non-empty run of hex digits.

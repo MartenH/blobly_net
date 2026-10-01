@@ -1,5 +1,5 @@
-// udpwindow — ONE listening window for every passive UDP observer: bind, optionally join a
-// group, read until the deadline, hand back what arrived. doip's announcement collector and
+// udpwindow — ONE listening window for every UDP observer: bind, optionally join a group, read
+// until the deadline, hand back what arrived (`udp_exchange` sends from that socket first). doip's announcement collector and
 // someip's listener both sit on this, so the policy of what ends a window lives in one place.
 //
 // Only the DEADLINE ends the window. This V reports a zero-byte read as an error (`error('none')`,
@@ -110,7 +110,9 @@ pub fn udp_exchange(addr string, to string, out [][]u8, window_ms int) ![]Datagr
 	defer {
 		c.close() or {}
 	}
-	dst := net.resolve_addrs_fuzzy(to, .udp) or { return error('udp: cannot resolve ${to}: ${err}') }
+	// the family of the bind: an IPv6 first answer could never be sent from a v4 socket
+	fam := if addr.starts_with('[') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
+	dst := net.resolve_addrs(to, fam, .udp) or { return error('udp: cannot resolve ${to}: ${err}') }
 	if dst.len == 0 {
 		return error('udp: ${to} resolves to nothing')
 	}

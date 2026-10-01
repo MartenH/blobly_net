@@ -2,9 +2,10 @@ module someip
 
 import transport
 
-// listen — the PASSIVE half of a SOME/IP tester: sit on a port (and, for events a service
+// listen — the passive half of a SOME/IP tester (`exchange`, at the end, is its active form:
+// send from the port, then hear it): sit on a port (and, for events a service
 // publishes to a group, join it) and report every message that arrives, decoded to its header
-// and raw payload. Nothing is sent, nothing is subscribed to, nothing is interpreted: the
+// and raw payload. collect sends nothing and subscribes to nothing; nothing is interpreted: the
 // payload layout is deployment-defined (blobly derives it from config; a vsomeip-style SUT
 // describes it elsewhere) and stays opaque here. The DoIP twin is doip.collect_announcements,
 // on the same transport.udp_window; the design boundary is docs/ethernet_architecture.md.
