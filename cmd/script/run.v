@@ -521,7 +521,12 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fext bool, srv
 	fdiags := link.close()
 	report_diag('${iface} (uds node)', ch.diagnostics()) // after the close: see sim_loop
 	for d in fdiags {
-		report_diag('${iface} (uds node, functional 0x${fid:X})', d)
+		report_diag('${iface} (uds node 0x${rx:X}, functional 0x${fid:X} queue)', transport.BusDiagnostics{
+			dropped: d.queue_dropped
+		})
+		if wd := d.wire {
+			report_diag('${iface} (functional listener)', wd)
+		}
 	}
 }
 

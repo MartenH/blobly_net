@@ -14,12 +14,16 @@ import transport
 // tester's reply window.
 const func_queue_cap = 32
 
+// FuncWire is one wire's listener. Its first joiner holds `mu` through the open, so every other
+// joiner waits on that one attempt and shares its outcome. Lock order: `mu`, then the registry's.
 struct FuncWire {
 	key string
 mut:
-	mu   &sync.Mutex = sync.new_mutex()
-	bus  transport.Bus
-	subs []&FuncSub
+	mu     &sync.Mutex = sync.new_mutex()
+	bus    transport.Bus
+	subs   []&FuncSub
+	failed string // why the open or a receive failed; the wire is out of the registry then
+	closed bool   // its last node left; a joiner that was waiting starts over
 }
 
 // FuncSub is one node's place on a wire's functional listener: the requests addressed to its
@@ -36,6 +40,15 @@ mut:
 	left    bool
 }
 
+// FuncLeave is what a node's leaving has worth reporting: its own queue's losses, and the wire's
+// diagnostics when it was the last one out and closed the bus.
+pub struct FuncLeave {
+pub:
+	fid           u32
+	queue_dropped u64
+	wire          ?transport.BusDiagnostics
+}
+
 struct FuncRegistry {
 mut:
 	mu    &sync.Mutex = sync.new_mutex()
@@ -46,7 +59,8 @@ __global func_registry = &FuncRegistry{}
 
 // functional_join puts a node answering `fid` on `iface`'s functional listener, opening the wire
 // with `open` if no node has yet. The open runs outside the registry lock, so a slow device
-// stalls only its own wire's joiners; a join that loses the race closes its bus and shares.
+// stalls only its own wire's joiners, and once per wire: a joiner arriving meanwhile waits for
+// that attempt and shares its outcome, a failure included.
 pub fn functional_join(iface string, fid u32, fext bool, open fn () !transport.Bus) !&FuncSub {
 	key := transport.destination_key(iface)
 	mut sub := &FuncSub{
@@ -54,36 +68,56 @@ pub fn functional_join(iface string, fid u32, fext bool, open fn () !transport.B
 		fext: fext
 	}
 	mut r := func_registry
-	r.mu.lock()
-	if mut w := r.wires[key] {
-		w.mu.lock()
+	for {
+		r.mu.lock()
+		mut w := r.wires[key] or { break }
+		r.mu.unlock()
+		w.mu.lock() // waits out an open in progress
+		if w.closed {
+			w.mu.unlock()
+			continue
+		}
+		if w.failed != '' {
+			why := w.failed
+			w.mu.unlock()
+			return error(why)
+		}
+		w.pump() // what arrived before this node joined is not addressed to it
 		sub.wire = w
 		w.subs << sub
 		w.mu.unlock()
-		r.mu.unlock()
 		return sub
 	}
-	r.mu.unlock()
-	mut bus := open()!
-	r.mu.lock()
-	if mut w := r.wires[key] {
-		w.mu.lock()
-		sub.wire = w
-		w.subs << sub
-		w.mu.unlock()
-		r.mu.unlock()
-		bus.close()
-		return sub
-	}
+	// still holding r.mu: nobody has this wire
 	mut w := &FuncWire{
-		key:  key
-		bus:  bus
-		subs: [sub]
+		key: key
 	}
-	sub.wire = w
+	w.mu.lock()
 	r.wires[key] = w
 	r.mu.unlock()
+	defer {
+		w.mu.unlock()
+	}
+	w.bus = open() or {
+		w.failed = err.msg()
+		w.retire()
+		return err
+	}
+	sub.wire = w
+	w.subs << sub
 	return sub
+}
+
+// retire takes the wire out of the registry, if it is still the one registered under its key.
+fn (w &FuncWire) retire() {
+	mut r := func_registry
+	r.mu.lock()
+	if cur := r.wires[w.key] {
+		if voidptr(cur) == voidptr(w) {
+			r.wires.delete(w.key)
+		}
+	}
+	r.mu.unlock()
 }
 
 // take returns the oldest functional request waiting for this node, after draining what the
@@ -107,13 +141,25 @@ pub fn (mut s FuncSub) take() ?[]u8 {
 }
 
 // pump hands every queued frame to the nodes whose functional id it carries. Held under w.mu.
+// A receive that fails for any reason but silence retires the wire, so the next node to join
+// opens a fresh one rather than attaching to a dead bus.
 fn (mut w FuncWire) pump() {
+	if w.failed != '' {
+		return
+	}
 	for {
-		f := w.bus.recv(0) or { break }
+		f := w.bus.recv(0) or {
+			if !is_silence(err.msg()) {
+				w.failed = err.msg()
+				w.retire()
+			}
+			break
+		}
 		if f.rtr {
 			continue
 		}
 		mut req := []u8{}
+		mut given := false
 		for mut s in w.subs {
 			if s.fid != f.id || s.fext != f.extended {
 				continue
@@ -125,41 +171,42 @@ fn (mut w FuncWire) pump() {
 				s.q.delete(0)
 				s.dropped++
 			}
-			s.q << req.clone()
+			s.q << if given { req.clone() } else { req }
+			given = true
 		}
 	}
 }
 
-// leave takes the node off its wire; the last one out closes the bus. Returns what is worth
-// reporting: this node's dropped backlog, plus the wire's own diagnostics when this closed it.
-// Idempotent.
-pub fn (mut s FuncSub) leave() transport.BusDiagnostics {
+// leave takes the node off its wire; the last one out closes the bus. Idempotent.
+pub fn (mut s FuncSub) leave() FuncLeave {
 	if s.left {
-		return transport.BusDiagnostics{}
+		return FuncLeave{
+			fid: s.fid
+		}
 	}
 	s.left = true
-	mut r := func_registry
 	mut w := s.wire
-	r.mu.lock()
 	w.mu.lock()
 	w.subs = w.subs.filter(voidptr(it) != voidptr(&s))
 	last := w.subs.len == 0
 	if last {
-		r.wires.delete(w.key)
-	}
-	mut d := transport.BusDiagnostics{
-		dropped: s.dropped
+		w.closed = true
+		w.retire()
 	}
 	w.mu.unlock()
-	r.mu.unlock()
-	if last {
-		wd := w.bus.diagnostics()
-		d.dropped += wd.dropped
-		d.bus_errors = wd.bus_errors
-		d.decode_errors = wd.decode_errors
-		w.bus.close()
+	if !last {
+		return FuncLeave{
+			fid:           s.fid
+			queue_dropped: s.dropped
+		}
 	}
-	return d
+	d := w.bus.diagnostics()
+	w.bus.close()
+	return FuncLeave{
+		fid:           s.fid
+		queue_dropped: s.dropped
+		wire:          d
+	}
 }
 
 // functional_wires is how many wires have a functional listener open.

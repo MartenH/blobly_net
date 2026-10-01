@@ -1,5 +1,7 @@
 module uds
 
+import sync
+import time
 import transport
 
 // ISO 14229-1: to a FUNCTIONAL request a server keeps quiet instead of refusing with these —
@@ -56,7 +58,77 @@ fn test_a_busy_node_loses_its_oldest_backlog_not_the_wire() {
 	first := busy.take() or { []u8{} }
 	assert first == [u8(0x22), 3], 'the newest ${func_queue_cap} are kept'
 	d := busy.leave()
-	assert d.dropped == 3
+	assert d.queue_dropped == 3
 	idle.leave()
+	tx.close()
+}
+
+struct OpenCount {
+mut:
+	n int
+}
+
+fn join_in(bus string, mut c OpenCount, mut mu sync.Mutex, out chan string) {
+	opener := fn [bus, mut c, mut mu] () !transport.Bus {
+		mu.lock()
+		c.n++
+		mu.unlock()
+		time.sleep(20 * time.millisecond) // a slow device: the other joiners arrive meanwhile
+		return transport.open(bus)!
+	}
+	mut s := functional_join(bus, 0x7DF, false, opener) or {
+		out <- 'err'
+		return
+	}
+	out <- 'ok'
+	time.sleep(50 * time.millisecond)
+	s.leave()
+}
+
+fn test_joiners_arriving_together_share_one_open() {
+	bus := 'inproc:funclisten_race'
+	mut c := &OpenCount{}
+	mut mu := sync.new_mutex()
+	out := chan string{cap: 4}
+	for _ in 0 .. 4 {
+		spawn join_in(bus, mut c, mut mu, out)
+	}
+	for _ in 0 .. 4 {
+		assert <-out == 'ok'
+	}
+	assert c.n == 1, 'four nodes starting together opened the wire ${c.n} times'
+	time.sleep(150 * time.millisecond)
+	assert functional_wires() == 0
+}
+
+fn test_a_failed_open_is_shared_and_the_next_join_tries_again() {
+	bus := 'inproc:funclisten_fail'
+	failing := fn () !transport.Bus {
+		return error('adapter gone')
+	}
+	functional_join(bus, 0x7DF, false, failing) or { assert err.msg() == 'adapter gone' }
+	assert functional_wires() == 0, 'a failed open leaves nothing to attach to'
+	mut s := functional_join(bus, 0x7DF, false, inproc_opener(bus))!
+	assert functional_wires() == 1
+	s.leave()
+}
+
+fn test_a_node_joining_late_does_not_answer_what_came_before_it() {
+	bus := 'inproc:funclisten_late'
+	mut first := functional_join(bus, 0x7DF, false, inproc_opener(bus))!
+	mut tx := transport.open(bus)!
+	tx.send(transport.CanFrame{ id: 0x7DF, data: [u8(0x02), 0x3E, 0x00, 0, 0, 0, 0, 0] })!
+	time.sleep(5 * time.millisecond)
+	mut late := functional_join(bus, 0x7DF, false, inproc_opener(bus))!
+	assert late.take() == none, 'a request sent before the node joined was handed to it'
+	assert (first.take() or { []u8{} }) == [u8(0x3E), 0x00]
+	late.leave()
+	first.leave()
+	// and after the last one out, a rejoin opens the wire afresh
+	mut again := functional_join(bus, 0x7DF, false, inproc_opener(bus))!
+	tx.send(transport.CanFrame{ id: 0x7DF, data: [u8(0x02), 0x3E, 0x80, 0, 0, 0, 0, 0] })!
+	time.sleep(5 * time.millisecond)
+	assert (again.take() or { []u8{} }) == [u8(0x3E), 0x80]
+	again.leave()
 	tx.close()
 }

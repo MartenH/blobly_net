@@ -65,9 +65,9 @@ fn (mut s Server) serve_functional(mut l NodeLink) {
 // close closes what the link listens on — the physical channel and its place on the functional
 // listener — together, so a node switched off answers neither. Returns what the functional side
 // has worth reporting (see FuncSub.leave).
-pub fn (mut l NodeLink) close() []transport.BusDiagnostics {
+pub fn (mut l NodeLink) close() []FuncLeave {
 	l.phys.close()
-	mut ds := []transport.BusDiagnostics{}
+	mut ds := []FuncLeave{}
 	for mut t in l.func {
 		ds << t.leave()
 	}
