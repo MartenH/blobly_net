@@ -286,12 +286,13 @@ function someip.send(to, msgs, opts)
     local mt = m.type or (m.method >= 0x8000 and "notification" or "request")
     local code = someip_types[mt]
     if code == nil then error("someip.send: type must be notification or request, got " .. tostring(mt), 2) end
-    -- a request goes out with a live Request ID by default: a blobly_emb node refuses client 0
-    -- and treats session 0 as dead
+    -- a request goes out with a live Request ID by default (a blobly_emb node refuses client 0
+    -- and treats session 0 as dead), its session reserved for the run like a someip.call one
     local req = code == 0
+    local session = m.session or 0
+    if req then session = __someip_session(m.session or 0) end
     lines[#lines+1] = string.format("%x|%x|%x|%x|%x|%x|%s", m.service, m.method, m.iface or 1,
-      code, m.client or (req and 0x1234 or 0), m.session or (req and 1 or 0),
-      tohex(m.payload or ""):gsub(" ", ""))
+      code, m.client or (req and 0x1234 or 0), session, tohex(m.payload or ""):gsub(" ", ""))
   end
   local raw, malformed = __someip_send(opts.port or 30491, to, table.concat(lines, "\n"),
                                        opts.window_ms or 1000)

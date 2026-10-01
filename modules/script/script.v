@@ -311,6 +311,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__someip_listen', l_someip_listen)
 	env.st.register('__someip_send', l_someip_send)
 	env.st.register('__someip_call', l_someip_call)
+	env.st.register('__someip_session', l_someip_session)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -883,33 +884,12 @@ fn l_someip_call(l lua.State) int {
 	if port <= 0 || port > 65535 {
 		return l.fail('someip.call: port ${port} is not a UDP port')
 	}
-	// a session goes out at most once per run: an explicit one already used is refused, and the
-	// automatic one is the next after the last automatic that nothing has used
-	explicit := vals[4] != 0
-	mut want := u16(vals[4])
-	if explicit {
-		if env.someip_used[want] {
-			return l.fail('someip.call: session ${want} was already used in this run — a late reply to it could complete this call')
-		}
-	} else {
-		mut c := env.someip_session
-		for _ in 0 .. 0xFFFF {
-			c = if c >= 0xFFFF { u16(1) } else { c + 1 }
-			if !env.someip_used[c] {
-				break
-			}
-		}
-		if env.someip_used[c] {
-			return l.fail('someip.call: every session of this run is used')
-		}
-		want = c
+	if vals[1] >= 0x8000 {
+		return l.fail('someip.call: method 0x${vals[1]:04X} is an event id (bit 15) — a request on it is malformed on the wire')
 	}
+	want := env.take_session(u16(vals[4])) or { return l.fail('someip.call: ${err}') }
 	// RpcClient sends the SUCCESSOR of `session`, so it starts one before
 	last := if want == 1 { u16(0xFFFF) } else { want - 1 }
-	env.someip_used[want] = true
-	if !explicit {
-		env.someip_session = want
-	}
 	mut cli := someip.RpcClient{
 		service:    u16(vals[0])
 		method:     u16(vals[1])
@@ -930,6 +910,41 @@ fn l_someip_call(l lua.State) int {
 	l.push_bytes(cli.result.payload)
 	l.push_int(i64(cli.session))
 	return 4
+}
+
+// take_session reserves a SOME/IP request session for this run — `want` when given (0 = the next
+// automatic one): a session goes out at most once per run, whether someip.call or someip.send
+// sends it, so a late reply to one request can never complete another.
+fn (mut env Env) take_session(want u16) !u16 {
+	if want != 0 {
+		if env.someip_used[want] {
+			return error('session ${want} was already used in this run — a late reply to it could complete this request')
+		}
+		env.someip_used[want] = true
+		return want
+	}
+	mut c := env.someip_session
+	for _ in 0 .. 0xFFFF {
+		c = if c >= 0xFFFF { u16(1) } else { c + 1 }
+		if !env.someip_used[c] {
+			env.someip_used[c] = true
+			env.someip_session = c
+			return c
+		}
+	}
+	return error('every session of this run is used')
+}
+
+// l_someip_session reserves a request session for someip.send (arg: the explicit one, or 0).
+fn l_someip_session(l lua.State) int {
+	mut env := env_of(l)
+	v := l.arg_int_exact(1) or { return l.fail('someip.send: session is not an integer') }
+	if v < 0 || v > 0xFFFF {
+		return l.fail('someip.send: session ${v} does not fit')
+	}
+	s := env.take_session(u16(v)) or { return l.fail('someip.send: ${err}') }
+	l.push_int(i64(s))
+	return 1
 }
 
 // capture_lines is one line per message, the shape the prelude reads back (shape_someip).

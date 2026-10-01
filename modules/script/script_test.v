@@ -359,9 +359,15 @@ fn test_someip_send_and_call_against_a_static_peer() {
 			check.equal(r.client, 0x0042); check.equal(r.session, 7)
 			check.equal(r.payload, "cba")
 		end)
-		test("a session goes out once per run, explicit or automatic", function()
+		test("a session goes out once per run, explicit or automatic, call or send", function()
 			local ok, err = pcall(someip.call, to, { service = 0x0100, method = 0x0099, session = 7 }, opts)
 			check.truthy(not ok and tostring(err):find("already used", 1, true), tostring(err))
+			ok, err = pcall(someip.send, to, { service = 0x0100, method = 0x0001, session = 7 }, opts)
+			check.truthy(not ok and tostring(err):find("already used", 1, true), tostring(err))
+		end)
+		test("an event id is not a method", function()
+			local ok, err = pcall(someip.call, to, { service = 0x0100, method = 0x8001 }, opts)
+			check.truthy(not ok and tostring(err):find("event id", 1, true), tostring(err))
 		end)
 		test("a refusal is an answer", function()
 			local r = someip.call(to, { service = 0x0100, method = 0x0099 }, opts)
@@ -386,6 +392,6 @@ fn test_someip_send_and_call_against_a_static_peer() {
 		end)
 	')!
 	t.wait()
-	assert env.total() == 6
-	assert env.passed() == 6, env.results.filter(!it.ok).map(it.msg).str()
+	assert env.total() == 7
+	assert env.passed() == 7, env.results.filter(!it.ok).map(it.msg).str()
 }
