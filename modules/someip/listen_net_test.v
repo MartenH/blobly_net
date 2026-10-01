@@ -80,3 +80,32 @@ fn test_collect_hears_a_multicast_group_it_joined() {
 	assert cap.messages.len == 1, 'heard ${cap.messages.len} on ${group}:${port}'
 	assert cap.messages[0].header.message_id() == 0x01008001
 }
+
+// respond_once answers the first request it hears on `port` from that same socket — the shape of
+// a node with a static peer, which replies to the endpoint the request came from.
+fn respond_once(port int, wait_ms int) {
+	mut c := net.listen_udp('127.0.0.1:${port}') or { return }
+	defer {
+		c.close() or {}
+	}
+	c.set_read_timeout(wait_ms * time.millisecond)
+	mut buf := []u8{len: 2048}
+	n, from := c.read(mut buf) or { return }
+	req := parse(buf[..n]) or { return }
+	c.write_to(from, response_for(req.header, 'ok'.bytes())) or {}
+}
+
+fn test_exchange_sends_from_its_port_and_hears_the_answer_there() {
+	local := uniq_port(0)
+	peer := uniq_port(1)
+	t := spawn respond_once(peer, 2000)
+	time.sleep(100 * time.millisecond) // the responder binds first
+	cap := exchange('', local, '127.0.0.1:${peer}', [rq()], 600)!
+	t.wait()
+	assert cap.messages.len == 1, 'heard ${cap.messages.len}'
+	h := cap.messages[0].header
+	assert h.msg_type == mt_response
+	assert h.client == 0x00A5 && h.session == 0x0001, 'the answer mirrors the request id'
+	assert cap.messages[0].from == '127.0.0.1:${peer}'
+	assert cap.messages[0].payload == 'ok'.bytes()
+}

@@ -317,3 +317,63 @@ fn test_a_duplicated_channel_name_is_refused_not_guessed() {
 	assert env.total() == 2
 	assert env.passed() == 2, env.results.filter(!it.ok).map(it.msg).str()
 }
+
+// answer_someip answers each request it hears on `port` (from that socket) with a RESPONSE, and
+// method 0x0099 with an ERROR — the static-peer shape: replies go to the requesting endpoint.
+fn answer_someip(port int, wait_ms int, count int) {
+	mut c := net.listen_udp('127.0.0.1:${port}') or { return }
+	defer {
+		c.close() or {}
+	}
+	c.set_read_timeout(wait_ms * time.millisecond)
+	mut buf := []u8{len: 2048}
+	for _ in 0 .. count {
+		n, from := c.read(mut buf) or { return }
+		req := someip.parse(buf[..n]) or { continue }
+		if req.header.method == 0x0099 {
+			c.write_to(from, someip.error_for(req.header, someip.rc_unknown_method, []u8{})) or {}
+		} else {
+			// an event first, which a call must look past
+			c.write_to(from, someip.notification(0x0100, 0x8001, 1, [u8(1)])) or {}
+			c.write_to(from, someip.response_for(req.header, req.payload.reverse())) or {}
+		}
+	}
+}
+
+// someip.call sends from its own port and takes the answer that mirrors its Request ID, events
+// ignored; an ERROR is an answer, with its return code; someip.send hands back what was heard.
+fn test_someip_send_and_call_against_a_static_peer() {
+	local := testports.someip.slot(2, 0)
+	peer := testports.someip.slot(2, 1)
+	mut env := quiet_env()
+	defer { env.close() }
+	t := spawn answer_someip(peer, 3000, 3)
+	time.sleep(100 * time.millisecond)
+	env.run_source('
+		local to, opts = "127.0.0.1:${peer}", { port = ${local}, window_ms = 400 }
+		test("a call returns the mirrored response", function()
+			local r, why = someip.call(to, { service = 0x0100, method = 0x0001, payload = "abc",
+				client = 0x0042, session = 7 }, opts)
+			check.truthy(r, why)
+			check.equal(r.type, "response"); check.equal(r.rc, 0)
+			check.equal(r.client, 0x0042); check.equal(r.session, 7)
+			check.equal(r.payload, "cba")
+		end)
+		test("a refusal is an answer", function()
+			local r = someip.call(to, { service = 0x0100, method = 0x0099 }, opts)
+			check.equal(r.type, "error"); check.equal(r.rc, 3)
+		end)
+		test("send returns everything heard", function()
+			local heard = someip.send(to, { service = 0x0100, method = 0x0001, type = "request" }, opts)
+			check.equal(#heard, 2)
+			check.equal(heard[1].method, 0x8001); check.equal(heard[2].type, "response")
+		end)
+		test("a destination without a port is refused", function()
+			local ok, err = pcall(someip.send, "127.0.0.1", { service = 1, method = 1 })
+			check.truthy(not ok and tostring(err):find("host:port", 1, true), tostring(err))
+		end)
+	')!
+	t.wait()
+	assert env.total() == 4
+	assert env.passed() == 4, env.results.filter(!it.ok).map(it.msg).str()
+}

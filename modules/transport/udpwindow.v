@@ -101,6 +101,25 @@ pub fn udp_window(addr string, group string, iface string, window_ms int) ![]Dat
 	return udp_window_on(mut c, window_ms)
 }
 
+// udp_exchange binds `addr`, sends each of `out` to `to` FROM that socket, then reads for
+// `window_ms`. One socket for both directions, because a peer that filters by source endpoint
+// (a SOME/IP node with a static peer) answers only the port it was addressed from, and the
+// answer comes back to that same port.
+pub fn udp_exchange(addr string, to string, out [][]u8, window_ms int) ![]Datagram {
+	mut c := udp_bind(addr, '', '')!
+	defer {
+		c.close() or {}
+	}
+	dst := net.resolve_addrs_fuzzy(to, .udp) or { return error('udp: cannot resolve ${to}: ${err}') }
+	if dst.len == 0 {
+		return error('udp: ${to} resolves to nothing')
+	}
+	for d in out {
+		c.write_to(dst[0], d) or { return error('udp: send to ${to}: ${err}') }
+	}
+	return udp_window_on(mut c, window_ms)
+}
+
 // udp_window_on reads from an already-bound socket until the deadline.
 fn udp_window_on(mut c net.UdpConn, window_ms int) []Datagram {
 	mut out := []Datagram{}

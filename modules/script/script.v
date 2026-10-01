@@ -304,6 +304,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__doip_listen', l_doip_listen)
 	env.st.register('__someip_listen', l_someip_listen)
+	env.st.register('__someip_send', l_someip_send)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -804,6 +805,79 @@ fn l_someip_listen(l lua.State) int {
 	l.push_str(out.join('\n'))
 	l.push_int(i64(cap.malformed))
 	return 2
+}
+
+// l_someip_send encodes each message (one `svc|method|iface|type|client|session|payloadhex` line,
+// fields hex, built by the prelude), sends them to `to` from the local port and hears that port
+// for the window. One socket both ways: a node with a static peer endpoint answers only the
+// port it was addressed from. Returns what listen returns.
+fn l_someip_send(l lua.State) int {
+	port := int(l.arg_int(1))
+	to := l.arg_str(2)
+	spec := l.arg_str(3)
+	window := int(l.arg_int(4))
+	if port <= 0 || port > 65535 {
+		return l.fail('someip.send: port ${port} is not a UDP port')
+	}
+	mut out := [][]u8{}
+	for line in spec.split_into_lines() {
+		f := line.split('|')
+		if f.len != 7 {
+			return l.fail('someip.send: malformed message spec')
+		}
+		mut v := []u64{}
+		for x in f[..6] {
+			v << u64(strconv_hex(x) or { return l.fail('someip.send: ${x} is not hex') })
+		}
+		limits := [u64(0xFFFF), 0xFFFF, 0xFF, 0xFF, 0xFFFF, 0xFFFF]
+		names := ['service', 'method', 'iface', 'type', 'client', 'session']
+		for i, lim in limits {
+			if v[i] > lim {
+				return l.fail('someip.send: ${names[i]} 0x${v[i]:X} does not fit')
+			}
+		}
+		payload := hex_bytes(f[6]) or { return l.fail('someip.send: payload is not hex') }
+		out << someip.encode(someip.Header{
+			service:           u16(v[0])
+			method:            u16(v[1])
+			client:            u16(v[4])
+			session:           u16(v[5])
+			protocol_version:  someip.protocol_version
+			interface_version: u8(v[2])
+			msg_type:          u8(v[3])
+		}, payload)
+	}
+	cap := someip.exchange('', port, to, out, window) or {
+		return l.fail('someip.send(${to}): ${err}')
+	}
+	mut lines := []string{}
+	for m in cap.messages {
+		h := m.header
+		lines << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${someip.msg_type_name(h.msg_type)}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
+	}
+	l.push_str(lines.join('\n'))
+	l.push_int(i64(cap.malformed))
+	return 2
+}
+
+// strconv_hex reads a non-empty run of hex digits.
+fn strconv_hex(x string) ?u64 {
+	if x == '' || x.len > 16 || !x.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	return x.parse_uint(16, 64) or { return none }
+}
+
+// hex_bytes reads an even run of hex digits as bytes ('' is no bytes).
+fn hex_bytes(x string) ?[]u8 {
+	if x.len % 2 != 0 || !x.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	mut b := []u8{cap: x.len / 2}
+	for i := 0; i < x.len; i += 2 {
+		b << u8(x[i..i + 2].parse_uint(16, 8) or { return none })
+	}
+	return b
 }
 
 fn l_uds_tester_present(l lua.State) int {

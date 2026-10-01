@@ -249,6 +249,78 @@ function someip.listen(window_ms, opts)
   return out, malformed
 end
 
+-- shape_someip turns the binding lines into message tables (the shape someip.listen returns).
+local function shape_someip(raw)
+  local out = {}
+  for line in tostring(raw):gmatch("[^\n]+") do
+    local at, from, svc, mth, iface, mtype, client, session, rc, hex =
+      line:match("^(%d+)|([^|]+)|(%x+)|(%x+)|(%x+)|([%w ]+)|(%x+)|(%x+)|(%x+)|(%x*)$")
+    if at then
+      local method = tonumber(mth, 16)
+      out[#out+1] = {
+        at_ms = tonumber(at), from = from,
+        service = tonumber(svc, 16), method = method, event = method >= 0x8000,
+        type = mtype:lower(), iface = tonumber(iface, 16),
+        client = tonumber(client, 16), session = tonumber(session, 16), rc = tonumber(rc, 16),
+        payload = fromhex(hex),
+      }
+    end
+  end
+  return out
+end
+
+local someip_types = { request = 0x00, notification = 0x02 }
+
+-- someip.send(to, msgs [, opts]) -> messages, malformed
+--
+-- Send SOME/IP messages to `to` ("host:port") FROM a local port, then hear that port for a
+-- window -- one socket both ways, because a node with a static peer endpoint (a blobly_emb SOME/IP
+-- node) accepts datagrams only from its configured peer and answers that same endpoint.
+-- msgs: one message table or a list of them, each { service=, method=, payload=<bytes>,
+-- type="notification"|"request" (default: notification for an event id, request otherwise),
+-- iface=1, client=0, session=0 }. opts = { port = 30491, window_ms = 1000 }.
+-- Returns what someip.listen returns for the window that follows the send.
+function someip.send(to, msgs, opts)
+  opts = opts or {}
+  if type(to) ~= "string" or not to:find(":") then
+    error("someip.send: to must be \"host:port\", got " .. tostring(to), 2)
+  end
+  if msgs.service ~= nil then msgs = { msgs } end
+  local lines = {}
+  for _, m in ipairs(msgs) do
+    local mt = m.type or ((m.method or 0) >= 0x8000 and "notification" or "request")
+    local code = someip_types[mt]
+    if code == nil then error("someip.send: type must be notification or request, got " .. tostring(mt), 2) end
+    lines[#lines+1] = string.format("%x|%x|%x|%x|%x|%x|%s", m.service, m.method, m.iface or 1,
+      code, m.client or 0, m.session or 0, tohex(m.payload or ""):gsub(" ", ""))
+  end
+  local raw, malformed = __someip_send(opts.port or 30491, to, table.concat(lines, "\n"),
+                                       opts.window_ms or 1000)
+  return shape_someip(raw), malformed
+end
+
+-- someip.call(to, req [, opts]) -> response | nil, why
+--
+-- One request/response exchange: sends `req` (a someip.send message table, client and session
+-- default 0x1234/1) and returns the RESPONSE or ERROR whose Request ID mirrors it -- a node that
+-- refuses answers ERROR with a return code (`rc`), which is returned too, as an answer. Anything
+-- else heard in the window (the events of the node) is ignored. nil, "no answer" when none came.
+function someip.call(to, req, opts)
+  local r = {}
+  for k, v in pairs(req) do r[k] = v end
+  r.type = "request"
+  r.client = r.client or 0x1234
+  r.session = r.session or 1
+  local heard = someip.send(to, r, opts)
+  for _, m in ipairs(heard) do
+    if (m.type == "response" or m.type == "error") and m.service == r.service
+       and m.method == r.method and m.client == r.client and m.session == r.session then
+      return m
+    end
+  end
+  return nil, "no answer"
+end
+
 -- ============================ diagnostics (UDS) ============================
 uds = {}
 -- uds.functional(channel, id, diags, req [, window_ms]): send req ONCE on the functional id and

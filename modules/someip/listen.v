@@ -155,3 +155,20 @@ pub fn collect(host string, port int, window_ms int, group string) !Capture {
 	}
 	return cap
 }
+
+// exchange sends `datagrams` to `to` from the local `port`, then hears that port for `window_ms`
+// — the active form of collect, for a node that answers only its configured peer endpoint. The
+// endpoint is claimed like collect's, so a running listener on the same port refuses it rather
+// than splitting the answers.
+pub fn exchange(host string, port int, to string, datagrams [][]u8, window_ms int) !Capture {
+	canon := transport.claim_endpoint(host, port, 'a script', .tool, '')!
+	defer {
+		transport.release_endpoint(canon, port, 'a script')
+	}
+	got := transport.udp_exchange(bind_addr(canon, port), to, datagrams, window_ms)!
+	mut cap := Capture{}
+	for d in got {
+		cap.ingest(d)
+	}
+	return cap
+}
