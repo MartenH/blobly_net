@@ -125,9 +125,11 @@ mut:
 	chans []ChanInfo
 	conns []UdsConn
 	buses map[string]transport.Bus
-	// the last SOME/IP session someip.call used: never reused within a run, so a late reply to a
-	// timed-out call cannot complete a later one (someip.RpcClient)
+	// every SOME/IP session someip.call has used in this run, explicit or automatic, and the last
+	// automatic one: no session is ever sent twice, so a late reply to a timed-out call cannot
+	// complete a later one (someip.RpcClient)
 	someip_session u16
+	someip_used    map[u16]bool
 pub mut:
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
@@ -881,12 +883,32 @@ fn l_someip_call(l lua.State) int {
 	if port <= 0 || port > 65535 {
 		return l.fail('someip.call: port ${port} is not a UDP port')
 	}
-	// RpcClient sends the SUCCESSOR of `session`: a given session is reached by starting one
-	// before. An explicit session leaves the run's counter alone, so it can never rewind it.
+	// a session goes out at most once per run: an explicit one already used is refused, and the
+	// automatic one is the next after the last automatic that nothing has used
 	explicit := vals[4] != 0
-	mut last := env.someip_session
+	mut want := u16(vals[4])
 	if explicit {
-		last = if vals[4] == 1 { u16(0xFFFF) } else { u16(vals[4] - 1) }
+		if env.someip_used[want] {
+			return l.fail('someip.call: session ${want} was already used in this run — a late reply to it could complete this call')
+		}
+	} else {
+		mut c := env.someip_session
+		for _ in 0 .. 0xFFFF {
+			c = if c >= 0xFFFF { u16(1) } else { c + 1 }
+			if !env.someip_used[c] {
+				break
+			}
+		}
+		if env.someip_used[c] {
+			return l.fail('someip.call: every session of this run is used')
+		}
+		want = c
+	}
+	// RpcClient sends the SUCCESSOR of `session`, so it starts one before
+	last := if want == 1 { u16(0xFFFF) } else { want - 1 }
+	env.someip_used[want] = true
+	if !explicit {
+		env.someip_session = want
 	}
 	mut cli := someip.RpcClient{
 		service:    u16(vals[0])
@@ -897,13 +919,7 @@ fn l_someip_call(l lua.State) int {
 		session:    last
 	}
 	someip.call(port, to, mut cli, payload, 'a script') or {
-		if !explicit {
-			env.someip_session = cli.session
-		}
 		return l.fail('someip.call(${to}): ${err}')
-	}
-	if !explicit {
-		env.someip_session = cli.session
 	}
 	outcome := match cli.state {
 		.done { 'response' }
