@@ -132,3 +132,67 @@ fn test_a_node_joining_late_does_not_answer_what_came_before_it() {
 	again.leave()
 	tx.close()
 }
+
+// FakeBus fails its receives once `dead` is set, as an unplugged adapter does.
+@[heap]
+struct FakeBus {
+mut:
+	q    []transport.CanFrame
+	dead bool
+}
+
+fn (mut b FakeBus) send(f transport.CanFrame) ! {}
+
+fn (mut b FakeBus) recv(timeout_ms int) !transport.CanFrame {
+	if b.dead {
+		return error('adapter gone')
+	}
+	if b.q.len == 0 {
+		return error('timeout')
+	}
+	f := b.q[0]
+	b.q.delete(0)
+	return f
+}
+
+fn (mut b FakeBus) close() {}
+
+fn (mut b FakeBus) health() transport.BusHealth {
+	return .unknown
+}
+
+fn (mut b FakeBus) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
+
+fn (mut b FakeBus) reconcile_silence(want bool) ! {}
+
+struct FakeOpens {
+mut:
+	buses []&FakeBus
+}
+
+fn test_a_failed_receive_reopens_the_wire_for_every_node_on_it() {
+	mut opens := &FakeOpens{}
+	opener := fn [mut opens] () !transport.Bus {
+		mut b := &FakeBus{}
+		opens.buses << b
+		return b
+	}
+	mut a := functional_join('inproc:funclisten_reopen', 0x7DF, false, opener)!
+	mut b := functional_join('inproc:funclisten_reopen', 0x7DF, false, opener)!
+	opens.buses[0].dead = true
+	assert a.take() == none // the failure is seen
+	assert b.take() == none // and the next poll, by any node, reopens
+	assert opens.buses.len == 2, 'the wire was not reopened in place'
+	assert functional_wires() == 1
+	opens.buses[1].q << transport.CanFrame{
+		id:   0x7DF
+		data: [u8(0x02), 0x3E, 0x00]
+	}
+	assert (a.take() or { []u8{} }) == [u8(0x3E), 0x00]
+	assert (b.take() or { []u8{} }) == [u8(0x3E), 0x00], 'a node that joined before the failure still hears the wire'
+	a.leave()
+	b.leave()
+	assert functional_wires() == 0
+}

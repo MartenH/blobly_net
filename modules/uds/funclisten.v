@@ -2,6 +2,7 @@ module uds
 
 import isotp
 import sync
+import time
 import transport
 
 // funclisten.v — the functional listener: ONE raw subscription per wire, shared by every served
@@ -19,12 +20,18 @@ const func_queue_cap = 32
 struct FuncWire {
 	key string
 mut:
-	mu     &sync.Mutex = sync.new_mutex()
-	bus    transport.Bus
-	subs   []&FuncSub
-	failed string // why the open or a receive failed; the wire is out of the registry then
-	closed bool   // its last node left; a joiner that was waiting starts over
+	mu       &sync.Mutex = sync.new_mutex()
+	bus      transport.Bus
+	open     fn () !transport.Bus = unsafe { nil }
+	subs     []&FuncSub
+	failed   string // why the FIRST open failed; the wire is out of the registry then
+	closed   bool   // its last node left; a joiner that was waiting starts over
+	broken   bool   // a receive failed: the bus is closed and reopened in place, for every node
+	retry_at i64    // when a broken wire may next try to reopen (time.ticks)
 }
+
+// func_reopen_ms paces a broken wire's reopen attempts, which run on a node's poll.
+const func_reopen_ms = 500
 
 // FuncSub is one node's place on a wire's functional listener: the requests addressed to its
 // functional id, as decoded Single Frame payloads.
@@ -103,6 +110,7 @@ pub fn functional_join(iface string, fid u32, fext bool, open fn () !transport.B
 		w.retire()
 		return err
 	}
+	w.open = open
 	sub.wire = w
 	w.subs << sub
 	return sub
@@ -141,17 +149,27 @@ pub fn (mut s FuncSub) take() ?[]u8 {
 }
 
 // pump hands every queued frame to the nodes whose functional id it carries. Held under w.mu.
-// A receive that fails for any reason but silence retires the wire, so the next node to join
-// opens a fresh one rather than attaching to a dead bus.
+// A receive that fails for any reason but silence closes the bus and marks the wire broken; the
+// wire stays registered with every node on it and is reopened IN PLACE, so no node is stranded
+// on a dead bus and a later joiner does not open a second listener beside it.
 fn (mut w FuncWire) pump() {
-	if w.failed != '' {
-		return
+	if w.broken {
+		now := time.ticks()
+		if now < w.retry_at {
+			return
+		}
+		w.bus = w.open() or {
+			w.retry_at = now + func_reopen_ms
+			return
+		}
+		w.broken = false
 	}
 	for {
 		f := w.bus.recv(0) or {
 			if !is_silence(err.msg()) {
-				w.failed = err.msg()
-				w.retire()
+				w.bus.close()
+				w.broken = true
+				w.retry_at = time.ticks()
 			}
 			break
 		}
@@ -195,6 +213,12 @@ pub fn (mut s FuncSub) leave() FuncLeave {
 	}
 	w.mu.unlock()
 	if !last {
+		return FuncLeave{
+			fid:           s.fid
+			queue_dropped: s.dropped
+		}
+	}
+	if w.broken {
 		return FuncLeave{
 			fid:           s.fid
 			queue_dropped: s.dropped
