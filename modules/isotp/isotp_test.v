@@ -1177,3 +1177,33 @@ fn test_a_stoppable_send_that_is_not_stopped_completes() {
 	ch.close()
 	peer.close()
 }
+
+struct StopCount {
+mut:
+	asked int
+}
+
+// ...and an UNPACED block (BS=0, STmin=0), which waits on nothing between its frames: the stop
+// is asked per Consecutive Frame, so the send leaves mid-block rather than writing them all.
+fn test_a_stop_abandons_an_unpaced_block() {
+	mut peer := transport.open('inproc:isotp-stop-unpaced') or { panic(err) }
+	mut ch := open_software('inproc:isotp-stop-unpaced', 0x7E0, 0x7E8, false) or { panic(err) }
+	mut n := &StopCount{}
+	// asked before the First Frame and while the Flow Control is awaited; true from the third
+	ch.stop_requested = fn [mut n] () bool {
+		n.asked++
+		return n.asked >= 3
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { panic(err) }
+	ch.send([]u8{len: 40, init: u8(index)}) or { assert err.msg() == abandoned_note, err.msg() }
+	mut cfs := 0
+	for {
+		f := peer.recv(20) or { break }
+		if f.id == 0x7E0 && f.data.len > 0 && f.data[0] >> 4 == 2 {
+			cfs++
+		}
+	}
+	assert cfs < 5, 'all ${cfs} Consecutive Frames written after the stop'
+	ch.close()
+	peer.close()
+}

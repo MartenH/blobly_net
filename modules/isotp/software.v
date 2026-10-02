@@ -219,6 +219,10 @@ fn (mut c SoftChannel) send_segmented(data []u8) ! {
 					c.pace(int(remain_us))!
 				}
 			}
+			// unpaced (STmin 0) a block is written without waiting at all, so ask per frame
+			if c.stopping() {
+				return error(abandoned_note)
+			}
 			n := if data.len - off > 7 { 7 } else { data.len - off }
 			mut cf := [u8(0x20 | (sn & 0x0F))]
 			cf << data[off..off + n]
