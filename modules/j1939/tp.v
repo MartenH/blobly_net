@@ -163,19 +163,13 @@ pub fn (c Cm) admission(id Id) ?string {
 	if !bam && id.da() == addr_null {
 		return 'RTS to the null address, which no node holds'
 	}
-	// Every field on its own: size, count, the PGN's 18 bits, the BAM's reserved byte (cm_fields).
+	// Every field on its own — size, count, the PGN's 18 bits and its PDU1 low byte, the BAM's
+	// reserved byte (cm_fields).
 	if why := c.refusal() {
 		return why
 	}
 	if c.packets != packets_for(c.total) {
 		return 'announces ${c.total} bytes in ${c.packets} packets; ${c.total} bytes take ${packets_for(c.total)}'
-	}
-	// The PGN it carries must be one: 18 bits (the table), and for a PDU1 group (PF below 0xF0)
-	// a zero low byte, since that byte is a destination there and not part of any PGN. Followed
-	// anyway, compose() would silently drop the bits and present the transfer as a DIFFERENT,
-	// valid parameter group (codex on #329).
-	if ((c.pgn >> 8) & 0xFF) < 0xF0 && (c.pgn & 0xFF) != 0 {
-		return 'carries PGN 0x${c.pgn:05X}, a PDU1 group with a nonzero low byte'
 	}
 	// And it must come from a node: the null address (a Cannot Claim's source) and the global
 	// address originate nothing, so a transfer "from" either is a frame of some other making and

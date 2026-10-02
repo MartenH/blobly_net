@@ -915,6 +915,10 @@ fn (f CmField) bad() ?u32 {
 		.ones {
 			return u32(0)
 		}
+		.excludes {
+			// the reserved code, every other bit as a conforming frame has it
+			return (max & ~f.hi) | f.lo
+		}
 		.any {}
 	}
 	return none
@@ -1017,7 +1021,10 @@ fn test_an_abort_may_carry_its_role() {
 		mut r := Reassembler{}
 		r.feed(rts(0x17, 0x00, 20, dm1), 0)
 		ev := r.feed(f, 1)
-		assert ev.faults.len == 1 && ev.faults[0].kind == .aborted, '${b2:02X}: ${ev.faults.str()}'
+		// the reserved role 10 is said as well, and then read as no role
+		assert ev.faults.filter(it.kind == .off_spec).len == if b2 == 0xFE { 1 } else { 0 }, '${b2:02X}: ${ev.faults.str()}'
+		ab := ev.faults.filter(it.kind == .aborted)
+		assert ab.len == 1, '${b2:02X}: ${ev.faults.str()}'
 		mut t := Transfers{}
 		t.step(rts(0x17, 0x00, 20, dm1))
 		assert t.step(f).role == .sender_abort
@@ -1071,8 +1078,11 @@ fn test_an_abort_role_picks_the_direction() {
 		r.feed(rts(0x17, 0x00, 20, dm1), 0)
 		r.feed(rts(0x00, 0x17, 30, dm1), 1)
 		ev := r.feed(f, 2)
-		assert ev.faults.len == 1 && ev.faults[0].kind == .aborted, '${b2:02X}: ${ev.faults.str()}'
-		assert ev.faults[0].sa == ended_sa, '${b2:02X}: ended ${ev.faults[0].sa:02X}'
+		// the reserved role 10 is said as well, and then read as no role
+		assert ev.faults.filter(it.kind == .off_spec).len == if b2 == 0xFE { 1 } else { 0 }, '${b2:02X}: ${ev.faults.str()}'
+		ab := ev.faults.filter(it.kind == .aborted)
+		assert ab.len == 1, '${b2:02X}: ${ev.faults.str()}'
+		assert ab[0].sa == ended_sa, '${b2:02X}: ended ${ab[0].sa:02X}'
 		assert r.open() == 1
 		mut t := Transfers{}
 		t.step(rts(0x17, 0x00, 20, dm1))
@@ -1093,4 +1103,29 @@ fn test_an_abort_role_picks_the_direction() {
 	t.step(rts(0x00, 0x17, 30, dm1))
 	assert t.step(only).role == .stray
 	assert t.open() == 1
+}
+
+// The PDU1 relation (PF below 0xF0 means a zero low byte) holds for EVERY control frame's PGN,
+// not only an announcement's: a CTS, an acknowledgement or an abort naming 0xEA12 names no
+// group, and is refused like an out-of-range PGN — by both trackers.
+fn test_every_control_frame_names_a_real_pdu1_group() {
+	bad_pgn := u32(0xEA12)
+	frames := [cts(0x00, 0x17, bad_pgn, 1), cm(0x00, 0x17, cm_eom_ack, 20, 3, bad_pgn),
+		abort(0x17, 0x00, 3, bad_pgn)]
+	for f in frames {
+		c := parse_cm(f.data) or { panic('unparsable') }
+		why := c.control_refusal() or { panic('${cm_name(c.ctrl)} with PGN 0xEA12 not refused') }
+		assert why.contains('PDU1'), why
+		mut r := Reassembler{}
+		r.feed(rts(0x17, 0x00, 20, 0xEA00), 0)
+		ev := r.feed(f, 1)
+		assert ev.faults.len == 1 && ev.faults[0].kind == .malformed && ev.faults[0].detail == why, ev.faults.str()
+		assert r.open() == 1
+		mut t := Transfers{}
+		t.step(rts(0x17, 0x00, 20, 0xEA00))
+		assert t.step(f).role == .stray, why
+		assert t.open() == 1
+	}
+	// and the well-formed PDU1 group 0xEA00 is not refused
+	assert parse_cm(cts(0x00, 0x17, 0xEA00, 1).data)?.control_refusal() == none
 }

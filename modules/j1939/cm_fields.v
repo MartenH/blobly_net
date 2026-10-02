@@ -29,6 +29,7 @@ enum FieldRule {
 	range // lo..hi inclusive
 	fixed // exactly lo
 	ones // every bit of the mask `lo` set; the rest are a field of their own
+	excludes // the bits under the mask `hi` are anything but `lo` (a reserved code in a field)
 	any // every value is meaningful; listed so the table is the whole frame
 }
 
@@ -41,19 +42,24 @@ struct CmField {
 	rule  FieldRule
 	lo    u32
 	hi    u32
-	// said, never refused: a reserved byte no reader uses (see the header)
+	// said, never refused: a reserved byte, or a field, no reader uses (see the header)
 	said bool
 }
 
 // The PGN field (bytes 5..7) of every control frame: 18 bits. For a PDU1 group the low byte
-// must also be zero — a relation on the PF byte, stated in `admission`.
+// must also be zero — a relation on the PF byte, checked beside the table in `refusal` for every
+// control frame.
 const pgn_hi = u32(0x3FFFF)
 
 const cm_fields = [
-	// RTS: size, packets, packets per clear-to-send (0xFF = no limit), PGN
+	// The data ranges are J1939-21's TP.CM table: "Total Number of Packets: 2 to 255, zero not
+	// allowed"; "Maximum Number of Packets: 2 to 255, zero through 1 are not allowed"; "Number
+	// of Packets that can be sent: 0 to 255"; "Next Packet Number to be Sent: 1 to 255".
+	// RTS: size, packets, packets per clear-to-send (0xFF = no limit), PGN. Packets per CTS is
+	// SAID, not refused: this listener paces nobody, and real ECUs send 1.
 	CmField{cm_rts, 'size', 1, 2, .range, tp_min_size, tp_max_size, false},
-	CmField{cm_rts, 'packet count', 3, 1, .range, 1, 255, false},
-	CmField{cm_rts, 'packets per CTS', 4, 1, .range, 1, 255, false},
+	CmField{cm_rts, 'packet count', 3, 1, .range, 2, 255, false},
+	CmField{cm_rts, 'packets per CTS', 4, 1, .range, 2, 255, true},
 	CmField{cm_rts, 'PGN', 5, 3, .range, 0, pgn_hi, false},
 	// CTS: packets that may be sent (0 holds the sender), next packet, reserved, PGN. The count
 	// is not judged against the RTS's per-CTS limit: this listener paces nobody.
@@ -64,12 +70,12 @@ const cm_fields = [
 	CmField{cm_cts, 'PGN', 5, 3, .range, 0, pgn_hi, false},
 	// EndOfMsgACK: size, packets, reserved, PGN
 	CmField{cm_eom_ack, 'size', 1, 2, .range, tp_min_size, tp_max_size, false},
-	CmField{cm_eom_ack, 'packet count', 3, 1, .range, 1, 255, false},
+	CmField{cm_eom_ack, 'packet count', 3, 1, .range, 2, 255, false},
 	CmField{cm_eom_ack, 'reserved byte 4', 4, 1, .fixed, 0xFF, 0, true},
 	CmField{cm_eom_ack, 'PGN', 5, 3, .range, 0, pgn_hi, false},
 	// BAM: size, packets, reserved, PGN
 	CmField{cm_bam, 'size', 1, 2, .range, tp_min_size, tp_max_size, false},
-	CmField{cm_bam, 'packet count', 3, 1, .range, 1, 255, false},
+	CmField{cm_bam, 'packet count', 3, 1, .range, 2, 255, false},
 	CmField{cm_bam, 'reserved byte 4', 4, 1, .fixed, 0xFF, 0, false},
 	CmField{cm_bam, 'PGN', 5, 3, .range, 0, pgn_hi, false},
 	// Abort: reason (every value named by `abort_reason`), then byte 2 — reserved 0xFF in the
@@ -77,6 +83,7 @@ const cm_fields = [
 	// the high six bits are what both editions fix — then reserved bytes 3 and 4, PGN.
 	CmField{cm_abort, 'reason', 1, 1, .any, 0, 0, false},
 	CmField{cm_abort, 'reserved bits of byte 2', 2, 1, .ones, 0xFC, 0, true},
+	CmField{cm_abort, 'role', 2, 1, .excludes, 0x02, 0x03, true}, // 10 is reserved; read as no role
 	CmField{cm_abort, 'reserved byte 3', 3, 1, .fixed, 0xFF, 0, true},
 	CmField{cm_abort, 'reserved byte 4', 4, 1, .fixed, 0xFF, 0, true},
 	CmField{cm_abort, 'PGN', 5, 3, .range, 0, pgn_hi, false},
@@ -110,6 +117,11 @@ fn (f CmField) why(v u32) ?string {
 				return '${cm_name(f.ctrl)} ${f.name} ${hex}; J1939-21 sets bits 0x${f.lo:02X}'
 			}
 		}
+		.excludes {
+			if v & f.hi == f.lo {
+				return '${cm_name(f.ctrl)} ${f.name} ${hex}; the code ${f.lo:b} under 0x${f.hi:02X} is reserved'
+			}
+		}
 		.any {}
 	}
 	return none
@@ -119,7 +131,17 @@ fn (f CmField) why(v u32) ?string {
 // J1939-21 does not let it hold, said. None for a well-formed frame — and for an unknown control
 // byte, which has no fields; the readers refuse that by its byte.
 pub fn (c Cm) refusal() ?string {
-	return c.first(false)
+	if why := c.first(false) {
+		return why
+	}
+	// The PGN must be one: for a PDU1 group (PF below 0xF0) a zero low byte, since that byte
+	// is a destination there and not part of any PGN. Followed anyway, compose() would drop the
+	// bits and present the transfer as a DIFFERENT, valid group (codex on #329) — and a CTS, an
+	// acknowledgement or an abort naming one names no transfer (codex on #382).
+	if cm_fields.any(it.ctrl == c.ctrl) && ((c.pgn >> 8) & 0xFF) < 0xF0 && (c.pgn & 0xFF) != 0 {
+		return '${cm_name(c.ctrl)} carries PGN 0x${c.pgn:05X}, a PDU1 group with a nonzero low byte'
+	}
+	return none
 }
 
 // control_refusal is `refusal` for a frame that is not an announcement — the one question the
