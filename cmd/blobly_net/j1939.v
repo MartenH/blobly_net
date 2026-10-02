@@ -352,7 +352,9 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 			// definitions that cannot be told apart decode nothing — said once, not left as a
 			// row that is silently undecoded (#331)
 			if pm.refused != '' {
-				uk := '${gate}|${a.pgn}|${a.sa}'
+				// by the OBSERVED wire (`key`: a live destination, or `\x00rec:<label>` for a
+				// recorded bus) — two recorded buses can share one gate string
+				uk := '${key}|${a.pgn}|${a.sa}'
 				if uk !in app.j1939_undecoded {
 					app.j1939_undecoded[uk] = true
 					app.log_append_locked('${ch}: J1939 ${pm.refused}')

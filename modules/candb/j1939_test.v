@@ -182,93 +182,88 @@ fn test_decode_via_pgn_match() {
 	assert s.physical(data) == 836.0
 }
 
-// THE LOOKUP A REJOINED MESSAGE DECODES BY (#331): two files on one wire each defining a
-// (PGN, SA) once, differently, passed every per-file check and decoded with whichever was listed
-// first. Across the wire, disagreeing candidates decode nothing — and say why.
-fn test_pgn_message_in_refuses_a_pair_two_files_define_differently() {
-	hdr := 'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";\nBA_DEF_DEF_ "VFrameFormat" "J1939PG";\n'
-	a := parse_dbc(hdr + 'BO_ 2566834688 DM1_A: 8 Vector__XXX\n SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n') or {
-		panic(err)
-	}
-	b := parse_dbc(hdr + 'BO_ 2566834688 DM1_B: 8 Vector__XXX\n SG_ Lamp : 8|8@1+ (1,0) [0|255] "" Vector__XXX\n') or {
-		panic(err)
-	}
-	// 2566834688 = 0x98FECA00: PGN 0xFECA from SA 0x00, in both files
-	assert !a.pgn_sa_contested(0xFECA, 0x00) && !b.pgn_sa_contested(0xFECA, 0x00)
-	for order in [[a, b], [b, a]] {
-		pm := pgn_message_in(order, 0xFECA, 0x00)
-		assert !pm.found
-		assert pm.refused.contains('different layouts') && pm.refused.contains('DM1_A')
-			&& pm.refused.contains('DM1_B'), pm.refused
-	}
-	// the same file twice, or two files that agree, decode as one
-	same := pgn_message_in([a, a], 0xFECA, 0x00)
-	assert same.found && same.msg.name == 'DM1_A' && same.refused == ''
-	// a pair defined twice inside ONE file is refused too, with its own reason
-	con := parse_dbc(hdr + 'BO_ 2566834688 DM1_p6: 8 Vector__XXX\nBO_ 2633943552 DM1_p7: 8 Vector__XXX\n') or {
-		panic(err)
-	}
-	pc := pgn_message_in([con], 0xFECA, 0x00)
-	assert !pc.found && pc.refused.contains('more than once'), pc.refused
-	// an unspelled address falls to the PGN, refused where its definitions disagree
-	pu := pgn_message_in([a, b], 0xFECA, 0x17)
-	assert !pu.found && pu.refused.contains('not spelled at SA 0x17'), pu.refused
-	pa := pgn_message_in([a], 0xFECA, 0x17)
-	assert pa.found && pa.msg.name == 'DM1_A'
-	// nothing defines the group: neither found nor refused
-	none_ := pgn_message_in([a, b], 0xF004, 0x00)
-	assert !none_.found && none_.refused == ''
+// A definition for the lookup table: id, name, layout (which byte its one signal sits in) and
+// whether it is declared J1939.
+struct Def {
+	id   u32
+	name string
+	byte int
+	decl bool
 }
 
-// An undeclared 29-bit message at the same id in another file is a coincidence, not a second
-// definition of the group: the declared one decides, at either step.
-fn test_pgn_message_in_compares_the_declared_definitions() {
-	hdr := 'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";\nBA_DEF_DEF_ "VFrameFormat" "J1939PG";\n'
-	a := parse_dbc(hdr + 'BO_ 2566834688 DM1: 8 Vector__XXX\n SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n') or {
-		panic(err)
+// pdb builds one file from definitions, declaring per message (VFrameFormat index 3).
+fn pdb(defs []Def) Database {
+	mut t := 'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";\n'
+	for d in defs {
+		t += 'BO_ ${d.id} ${d.name}: 8 Vector__XXX\n SG_ S : ${d.byte * 8}|8@1+ (1,0) [0|255] "" Vector__XXX\n'
 	}
-	b := parse_dbc('BO_ 2566834688 Proprietary: 8 Vector__XXX\n SG_ X : 8|8@1+ (1,0) [0|255] "" Vector__XXX\n') or {
-		panic(err)
+	for d in defs {
+		if d.decl {
+			t += 'BA_ "VFrameFormat" BO_ ${d.id} 3;\n'
+		}
 	}
-	assert !b.messages[0].j1939
-	for order in [[a, b], [b, a]] {
-		pm := pgn_message_in(order, 0xFECA, 0x00)
-		assert pm.found && pm.msg.name == 'DM1', pm.refused
-		pu := pgn_message_in(order, 0xFECA, 0x17)
-		assert pu.found && pu.msg.name == 'DM1', pu.refused
-	}
-	// two undeclared files that disagree still decode nothing
-	c := parse_dbc('BO_ 2566834688 Other: 8 Vector__XXX\n SG_ Y : 0|4@1+ (1,0) [0|15] "" Vector__XXX\n') or {
-		panic(err)
-	}
-	assert !pgn_message_in([b, c], 0xFECA, 0x00).found
+	return parse_dbc(t) or { panic(err) }
 }
 
-// ...and the same inside ONE file: an undeclared 29-bit message at the pair (another priority)
-// does not contest the declared definition; two declared ones still do
-fn test_pgn_message_in_compares_the_declared_definitions_within_a_file() {
-	one := parse_dbc('BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
-BO_ 2566834688 DM1: 8 Vector__XXX
- SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
-BO_ 2633943552 Proprietary: 8 Vector__XXX
- SG_ X : 8|8@1+ (1,0) [0|255] "" Vector__XXX
-BA_ "VFrameFormat" BO_ 2566834688 3;
-') or {
-		panic(err)
+struct LookupCase {
+	what  string
+	files [][]Def
+	sa    u8
+	want  string // the name found, or '' for none
+	why   string // a substring of the refusal, or '' for none
+}
+
+// THE LOOKUP A REJOINED MESSAGE DECODES BY (#331): ONE rule over every database on the wire —
+// the candidates gathered across all files, the declared kept where there are any, THEN judged
+// (two in one file at one pair, or layouts disagreeing) — at the exact (PGN, SA) step and the
+// PGN-only fallback alike. Every shape: declared / undeclared x same file / other file x
+// agreeing / disagreeing layouts, each in both file orders.
+fn test_pgn_message_in_one_rule_over_the_wire() {
+	// 0x98FECA00 and 0x9CFECA00: PGN 0xFECA from SA 0x00 at two priorities; 0x98FECA0B from 0x0B
+	p6 := u32(2566834688)
+	p7 := u32(2633943552)
+	b0 := u32(2566834699)
+	cases := [
+		LookupCase{'declared x2, other files, disagreeing', [[Def{p6, 'A', 0, true}], [Def{p6, 'B', 1, true}]], 0, '', 'different layouts'},
+		LookupCase{'declared x2, other files, agreeing', [[Def{p6, 'A', 0, true}], [Def{p6, 'A', 0, true}]], 0, 'A', ''},
+		LookupCase{'declared x2, same file', [[Def{p6, 'A', 0, true}, Def{p7, 'B', 0, true}]], 0, '', 'more than once'},
+		LookupCase{'undeclared x2, same file', [[Def{p6, 'A', 0, false}, Def{p7, 'B', 0, false}]], 0, '', 'more than once'},
+		LookupCase{'undeclared x2, other files, disagreeing', [[Def{p6, 'A', 0, false}], [Def{p6, 'B', 1, false}]], 0, '', 'different layouts'},
+		LookupCase{'undeclared x2, other files, agreeing', [[Def{p6, 'A', 0, false}], [Def{p6, 'A', 0, false}]], 0, 'A', ''},
+		LookupCase{'declared + undeclared, same file, disagreeing', [[Def{p6, 'D', 0, true}, Def{p7, 'U', 1, false}]], 0, 'D', ''},
+		LookupCase{'declared + undeclared, other files, disagreeing', [[Def{p6, 'D', 0, true}], [Def{p6, 'U', 1, false}]], 0, 'D', ''},
+		// codex #382 r2: a file contested only among UNDECLARED definitions must not pre-empt
+		// the declared one in a sibling file
+		LookupCase{'undeclared x2 in one file + declared in another', [[Def{p6, 'U1', 0, false}, Def{p7, 'U2', 1, false}], [Def{p6, 'D', 2, true}]], 0, 'D', ''},
+		// the PGN-only fallback (SA 0x17 is spelled nowhere), same rule
+		LookupCase{'fallback: declared, disagreeing', [[Def{p6, 'A', 0, true}], [Def{b0, 'B', 1, true}]], 0x17, '', 'different layouts'},
+		LookupCase{'fallback: declared, agreeing, one file', [[Def{p6, 'A', 0, true}, Def{b0, 'A0B', 0, true}]], 0x17, 'A', ''},
+		LookupCase{'fallback: declared + undeclared, disagreeing', [[Def{p6, 'D', 0, true}], [Def{b0, 'U', 1, false}]], 0x17, 'D', ''},
+		LookupCase{'fallback: undeclared, disagreeing', [[Def{p6, 'A', 0, false}], [Def{b0, 'B', 1, false}]], 0x17, '', 'not spelled at SA 0x17'},
+		LookupCase{'nothing defines it', [[Def{u32(0x98F00400), 'EEC1', 0, true}]], 0, '', ''},
+	]
+	for c in cases {
+		dbs := c.files.map(pdb(it))
+		mut orders := [dbs]
+		if dbs.len == 2 {
+			orders << [dbs[1], dbs[0]]
+		}
+		for o in orders {
+			pm := pgn_message_in(o, 0xFECA, c.sa)
+			if c.want != '' {
+				assert pm.found && pm.msg.name == c.want && pm.refused == '', '${c.what}: ${pm}'
+			} else {
+				assert !pm.found, '${c.what}: found ${pm.msg.name}'
+				if c.why == '' {
+					assert pm.refused == '', '${c.what}: ${pm.refused}'
+				} else {
+					assert pm.refused.contains(c.why), '${c.what}: ${pm.refused}'
+				}
+			}
+		}
+		// the per-file predicate is the same rule over one file
+		for db in dbs {
+			assert db.pgn_sa_contested(0xFECA, c.sa) == pgn_message_in([db], 0xFECA, c.sa).refused.contains('more than once'), c.what
+		}
 	}
-	assert one.messages.filter(it.j1939).len == 1
-	assert !one.pgn_sa_contested(0xFECA, 0x00)
-	pm := pgn_message_in([one], 0xFECA, 0x00)
-	assert pm.found && pm.msg.name == 'DM1', pm.refused
-	both := parse_dbc('BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
-BA_DEF_DEF_ "VFrameFormat" "J1939PG";
-BO_ 2566834688 DM1: 8 Vector__XXX
- SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
-BO_ 2633943552 Proprietary: 8 Vector__XXX
- SG_ X : 8|8@1+ (1,0) [0|255] "" Vector__XXX
-') or {
-		panic(err)
-	}
-	assert both.pgn_sa_contested(0xFECA, 0x00)
-	assert !pgn_message_in([both], 0xFECA, 0x00).found
 }
