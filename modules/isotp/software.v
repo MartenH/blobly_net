@@ -168,7 +168,10 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 		return error(abandoned_note)
 	}
 	if c.fc_dirty {
-		c.flush_rx()
+		// a stop mid-drain leaves the channel dirty, for whichever send comes next
+		if !c.flush_rx() {
+			return error(abandoned_note)
+		}
 		c.fc_dirty = false
 	}
 	// First Frame: PCI 0x1<len_hi><len_lo> + first 6 bytes.
@@ -607,8 +610,13 @@ fn orphan_note(msg string, n int, pci u8) string {
 // The receive side does not call it — a flush there waits its window per frame and a slow peer
 // renews it indefinitely past the deadline (codex round 5 on #225), so stale frames are dropped
 // where the next reply is awaited instead. Before a send there is no deadline to overrun.
-fn (mut c SoftChannel) flush_rx() {
+// Returns false when a stop request ended it before the quiet window was reached.
+fn (mut c SoftChannel) flush_rx() bool {
 	for _ in 0 .. flush_max_frames {
-		c.rx_raw(flush_quiet_ms) or { return } // nothing more queued within the quiet window
+		if c.stopping() {
+			return false
+		}
+		c.rx_raw(flush_quiet_ms) or { return true } // nothing more queued within the quiet window
 	}
+	return true
 }

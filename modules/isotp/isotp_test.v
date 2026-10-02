@@ -1207,3 +1207,44 @@ fn test_a_stop_abandons_an_unpaced_block() {
 	ch.close()
 	peer.close()
 }
+
+// ...and the drain of a channel an earlier aborted send left dirty, which a peer that keeps
+// sending holds open one quiet window at a time.
+fn test_a_stop_abandons_the_dirty_channel_drain() {
+	mut peer := transport.open('inproc:isotp-stop-drain') or { panic(err) }
+	mut ch := open_software('inproc:isotp-stop-drain', 0x7E0, 0x7E8, false) or { panic(err) }
+	stop := chan bool{}
+	ch.stop_requested = fn [stop] () bool {
+		return stop.closed
+	}
+	ch.fc_dirty = true
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	// a frame every 10 ms on the receive id keeps the 30 ms quiet window from ever closing,
+	// before the stop request and after it
+	quit := chan bool{}
+	spawn fn [mut peer, quit] () {
+		for !quit.closed {
+			peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { return }
+			time.sleep(10 * time.millisecond)
+		}
+	}()
+	time.sleep(100 * time.millisecond)
+	t0 := time.ticks()
+	stop.close()
+	msg := <-done
+	took := time.ticks() - t0
+	quit.close()
+	time.sleep(20 * time.millisecond)
+	assert msg == abandoned_note, msg
+	assert took < 200, 'abandoned ${took} ms after the stop request'
+	assert ch.fc_dirty, 'a drain cut short left the channel marked clean'
+	ch.close()
+	peer.close()
+}
