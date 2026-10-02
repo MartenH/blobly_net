@@ -391,12 +391,16 @@ fn (mut app App) load_recording(path string) {
 		app.j1939_push_tp_locked(tp_done, e.iface, gate, rk, t_row, org_rep, true, visible, true)
 	}
 	// And once more at the file's end: a transfer still open then waited at least as long as
-	// the recording went on after its last frame, and where that is past its limit it is said.
+	// the recording went on after its last frame, and where that is past its limit it is said
+	// as a timeout. What is still open after THAT was cut off by the end of the capture —
+	// inside its wait, so no timeout will ever say it — and is said as such (#331).
 	for lbl, mut other in j1939_obs {
 		if other.tp.open() == 0 {
 			continue
 		}
-		app.j1939_expire_locked(mut other, lbl, rec_gates[lbl] or { '' }, t_last)
+		g := rec_gates[lbl] or { '' }
+		app.j1939_expire_locked(mut other, lbl, g, t_last)
+		app.j1939_finish_locked(mut other, lbl, g, 'the recording ends')
 	}
 	// What the ring actually holds, counted rather than assumed — frames and rejoined rows
 	// alike: the rows share the ring, and past its cap the OLDEST go, so with enough rejoined
