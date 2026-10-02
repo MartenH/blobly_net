@@ -798,7 +798,9 @@ fn test_a_clear_to_send_naming_no_real_packet_keeps_nothing_alive() {
 		r.feed(cts(0x00, 0x17, dm1, bad), 600)
 		r.feed(cts(0x00, 0x17, dm1, bad), 1200)
 		ev := r.feed(cts(0x00, 0x17, dm1, bad), 1400)
-		assert ev.faults.len == 1, 'packet ${bad}: ${ev.faults.str()}'
+		// packet 0 is outside J1939-21's range, so that CTS is also refused as malformed
+		want := if bad == 0 { 2 } else { 1 }
+		assert ev.faults.len == want, 'packet ${bad}: ${ev.faults.str()}'
 		assert ev.faults[0].kind == .timeout, '${bad}'
 		assert r.open() == 0, '${bad}'
 	}
@@ -1128,4 +1130,21 @@ fn test_every_control_frame_names_a_real_pdu1_group() {
 	}
 	// and the well-formed PDU1 group 0xEA00 is not refused
 	assert parse_cm(cts(0x00, 0x17, 0xEA00, 1).data)?.control_refusal() == none
+}
+
+// a CTS letting packets flow from packet 0 names nothing: refused by both trackers; a hold is not
+fn test_a_cts_from_packet_zero_is_refused() {
+	f := cts(0x00, 0x17, 0xEA00, 0)
+	c := parse_cm(f.data) or { panic('unparsable') }
+	why := c.control_refusal() or { panic('a CTS from packet 0 not refused') }
+	mut r := Reassembler{}
+	r.feed(rts(0x17, 0x00, 20, 0xEA00), 0)
+	ev := r.feed(f, 1)
+	assert ev.faults.len == 1 && ev.faults[0].kind == .malformed && ev.faults[0].detail == why, ev.faults.str()
+	mut t := Transfers{}
+	t.step(rts(0x17, 0x00, 20, 0xEA00))
+	assert t.step(f).role == .stray, why
+	mut hold := f.data.clone()
+	hold[1] = 0
+	assert parse_cm(hold)?.control_refusal() == none
 }

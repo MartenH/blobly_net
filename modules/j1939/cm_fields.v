@@ -141,6 +141,11 @@ pub fn (c Cm) refusal() ?string {
 	if cm_fields.any(it.ctrl == c.ctrl) && ((c.pgn >> 8) & 0xFF) < 0xF0 && (c.pgn & 0xFF) != 0 {
 		return '${cm_name(c.ctrl)} carries PGN 0x${c.pgn:05X}, a PDU1 group with a nonzero low byte'
 	}
+	// A CTS that lets packets flow names the next one: J1939-21's data ranges, "Next Packet Number
+	// to be Sent: 1 to 255, zero not allowed". A hold (zero packets) is exempt, since it asks for none.
+	if c.ctrl == cm_cts && c.raw[1] > 0 && c.raw[2] == 0 {
+		return 'CTS asks for ${c.raw[1]} packets from packet 0; J1939-21 permits 1..255'
+	}
 	return none
 }
 
