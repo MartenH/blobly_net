@@ -255,7 +255,7 @@ outside the frame raise.
 ### Raw frames & signals
 
 ```lua
-bus.send(channel, id, data [, { ext = false }])   -- send a raw frame
+bus.send(channel, id, data [, { ext = false, format = "classic" }])   -- send a raw frame
 local f = bus.recv(channel [, timeout_ms])          -- receive one frame, or nil on timeout
 -- f = { id = <number>, ext = <bool>, data = <byte string> }
 
@@ -267,6 +267,9 @@ local sig = decode(channel, id, data [, ext])               -- DBC-decode -> { N
 - `bus.send_message` / `decode` use the channel's **DBC** (its `databases:`), looking
   the message up by name (encode) or id (decode). `decode` returns physical values.
 - `bus.recv` defaults to a 1000 ms timeout.
+- `format` states the frame's CAN format: `"classic"`, `"fd"` or `"fd_brs"`. Absent, the
+  channel's declaration decides (`type: canfd` frames as FD). It is how a classic frame reaches
+  a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
 
 ### Byte payloads & helpers
 

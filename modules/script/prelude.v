@@ -397,7 +397,10 @@ end
 bus = {}
 function bus.send(channel, id, data, opts)
   opts = opts or {}
-  __bus_send(channel, id, opts.ext or false, data or "")
+  if opts.format ~= nil and type(opts.format) ~= "string" then
+    error("bus.send: format must be a string (classic, fd or fd_brs)", 2)
+  end
+  __bus_send(channel, id, opts.ext or false, data or "", opts.format)
 end
 function bus.recv(channel, timeout_ms)
   local id, ext, data = __bus_recv(channel, timeout_ms or 1000)

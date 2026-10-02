@@ -17,15 +17,37 @@ fn draw_quick_send(mut app App) {
 	vgui.separator_text('quick send')
 	// target bus: validate the stored quick-send iface against the current channels; fall back to
 	// the default send_iface if it was removed/renamed.
+	//
+	// The row is the one the combo picked while it still spells qs_iface, else the first row on
+	// the target that the run gives a tap of its own (else the first at all), so the combo, the
+	// "on …" line, the send's attribution and the format picker (whose offer depends on the row,
+	// #203) agree on a wire two rows share.
 	mut target := app.send_iface
 	mut cur := 0
+	// Whether `cur` IS the target's row, rather than row 0 standing in for a target no row spells.
+	mut matched := false
+	mut qs_at := -1
+	mut target_at := -1
 	for k, c in app.chans {
-		if c.iface == app.qs_iface {
-			target = app.qs_iface
-			cur = k
-		} else if c.iface == target {
-			cur = k
+		if qs_at < 0 && app.qs_iface != '' && c.iface == app.qs_iface {
+			qs_at = k
 		}
+		if c.iface == target && (target_at < 0
+			|| (!app.chans[target_at].has_named_tap() && c.has_named_tap())) {
+			target_at = k
+		}
+	}
+	if app.qs_row >= 0 && app.qs_row < app.chans.len && app.qs_iface != ''
+		&& app.chans[app.qs_row].iface == app.qs_iface {
+		qs_at = app.qs_row
+	}
+	if qs_at >= 0 {
+		target = app.qs_iface
+		cur = qs_at
+		matched = true
+	} else if target_at >= 0 {
+		cur = target_at
+		matched = true
 	}
 	if app.chans.len > 1 {
 		mut names := []string{cap: app.chans.len}
@@ -36,7 +58,10 @@ fn draw_quick_send(mut app App) {
 		nsel := vgui.combo('bus##qsbus', names, cur)
 		if nsel != cur && nsel >= 0 && nsel < app.chans.len {
 			app.qs_iface = app.chans[nsel].iface
+			app.qs_row = nsel
 			target = app.qs_iface
+			cur = nsel
+			matched = true
 		}
 	}
 	// Stopped, `send_iface` is empty (stop() clears it) and `qs_iface` is only set once the
@@ -44,6 +69,7 @@ fn draw_quick_send(mut app App) {
 	// first (codex round 1 on #256).
 	if target == '' && app.chans.len > 0 {
 		target = app.chans[cur].iface
+		matched = true
 	}
 	// ONE FIELD PER LINE, and a Send that is always there. The bus, id and data used to share
 	// one row, which grew past the panel with any data worth typing; and the Send button
@@ -56,22 +82,69 @@ fn draw_quick_send(mut app App) {
 	// pushed "data (hex)" off the panel edge (codex round 1 on #256).
 	vgui.set_next_item_width(260 * app.prefs.ui_scale)
 	vgui.input_text('data (hex)', mut app.send_data_buf)
+	// THE FRAME'S FORMAT, only where choosing one can change it (#203): on a CAN-FD wire it is
+	// how a classic frame gets out, on the FD row of an undeclared wire how an FD one does.
+	wire_fr := transport.wire_framing(target)
+	row_fr := app.quick_send_row_framing(if matched { cur } else { -1 })
+	row_enabled := matched && cur < app.chans.len && app.chans[cur].enabled
+	offered := transport.format_choice_offered(row_fr, row_enabled, wire_fr)
+	// THE ROW SENDS, not the wire: on a wire two rows share, the anonymous tap attributes the
+	// frame to the first of them, which is not the row the format above was chosen for. A row
+	// with no tap of its own (disabled, Ethernet) falls back to the wire's, as before.
+	send_chan := if matched && cur < app.chans.len && app.chans[cur].has_named_tap() {
+		app.chans[cur].name
+	} else {
+		''
+	}
+	on_name := if send_chan != '' { send_chan } else { app.chan_name_for(target) }
+	if offered {
+		labels := transport.frame_formats.map(if it == .wire {
+			'${it.label()} (${wire_fr.label()})'
+		} else {
+			it.label()
+		})
+		cur_fmt := transport.frame_formats.index(app.qs_format)
+		vgui.set_next_item_width(220 * app.prefs.ui_scale)
+		sel := vgui.combo('format##qsfmt', labels, cur_fmt)
+		if sel != cur_fmt && sel >= 0 && sel < transport.frame_formats.len {
+			app.qs_format = transport.frame_formats[sel]
+		}
+	}
 	if app.running {
 		if vgui.button('Send##quicksend') {
 			id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
 			data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
-			app.tx_on(target, transport.CanFrame{
+			ff := if offered { app.qs_format } else { transport.FrameFormat.wire }
+			if frame := ff.stamp(transport.CanFrame{
 				id:   id
 				data: data
 			})
+			{
+				app.tx_on_chan(send_chan, target, frame)
+			} else {
+				app.notify('TX not sent: ${err}')
+			}
 		}
 		vgui.same_line()
-		vgui.text_dim('on ${app.chan_name_for(target)}')
+		vgui.text_dim('on ${on_name}')
 	} else {
 		vgui.text_dim('[ Send ]')
 		vgui.same_line()
-		vgui.text_dim('on ${app.chan_name_for(target)} · Start to send')
+		vgui.text_dim('on ${on_name} · Start to send')
 	}
+}
+
+// quick_send_row_framing is the format the Quick Send row at `idx` declares; classic when it has
+// no project row.
+fn (app &App) quick_send_row_framing(idx int) transport.Framing {
+	if idx < 0 || idx >= app.chans.len {
+		return transport.Framing{}
+	}
+	pi := app.chans[idx].proj_idx
+	if pi < 0 || pi >= app.proj.channels.len {
+		return transport.Framing{}
+	}
+	return app.proj.channels[pi].origination_framing().to_wire()
 }
 
 // ---- Generators (interactive send blocks) ----
