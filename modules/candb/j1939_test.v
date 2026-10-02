@@ -243,3 +243,32 @@ fn test_pgn_message_in_compares_the_declared_definitions() {
 	}
 	assert !pgn_message_in([b, c], 0xFECA, 0x00).found
 }
+
+// ...and the same inside ONE file: an undeclared 29-bit message at the pair (another priority)
+// does not contest the declared definition; two declared ones still do
+fn test_pgn_message_in_compares_the_declared_definitions_within_a_file() {
+	one := parse_dbc('BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BO_ 2566834688 DM1: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BO_ 2633943552 Proprietary: 8 Vector__XXX
+ SG_ X : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+BA_ "VFrameFormat" BO_ 2566834688 3;
+') or {
+		panic(err)
+	}
+	assert one.messages.filter(it.j1939).len == 1
+	assert !one.pgn_sa_contested(0xFECA, 0x00)
+	pm := pgn_message_in([one], 0xFECA, 0x00)
+	assert pm.found && pm.msg.name == 'DM1', pm.refused
+	both := parse_dbc('BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BO_ 2566834688 DM1: 8 Vector__XXX
+ SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+BO_ 2633943552 Proprietary: 8 Vector__XXX
+ SG_ X : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+') or {
+		panic(err)
+	}
+	assert both.pgn_sa_contested(0xFECA, 0x00)
+	assert !pgn_message_in([both], 0xFECA, 0x00).found
+}

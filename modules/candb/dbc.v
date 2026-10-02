@@ -121,18 +121,11 @@ pub fn (db Database) lookup_pgn_sa(pgn u32, sa u8) ?Message {
 // pgn_sa_contested says whether the database defines MORE THAN ONE message at a (PGN, SA) — two
 // priorities, say — so that a transfer's payload, whose announcement carries neither, cannot be
 // told which layout it has. A consumer that would decode it should decode nothing instead of
-// the first definition (codex on #329).
+// the first definition (codex on #329). Where any of them is declared J1939, only the declared
+// ones count: an undeclared 29-bit message at the same pair is a coincidence (`declared_if_any`).
 pub fn (db Database) pgn_sa_contested(pgn u32, sa u8) bool {
-	mut n := 0
-	for m in db.messages {
-		if m.ext && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
-			n++
-			if n > 1 {
-				return true
-			}
-		}
-	}
-	return false
+	ms := db.messages.filter(it.ext && j1939_pgn(it.id) == pgn && u8(it.id & 0xFF) == sa)
+	return declared_if_any(ms).len > 1
 }
 
 // pgn_layouts_agree says whether every extended message defining `pgn` carries the SAME signal
