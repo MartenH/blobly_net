@@ -250,7 +250,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// apart from an emitter that simply did not say — so framing replay's traffic on an FD wire
 	// would silently rewrite the recording it exists to reproduce (r3).
 	framed := if t.reproduces {
-		frame
+		frame.unstated()
 	} else {
 		transport.framed_for_wire(t.iface, frame)
 	}

@@ -423,6 +423,7 @@ fn test_bus_send_states_a_frame_format() {
 			bus.send("CAN1", 0x11, string.rep("\\0", 8))
 			bus.send("CAN1", 0x12, string.rep("\\0", 8), { format = "fd" })
 			check.equal(pcall(bus.send, "CAN1", 0x13, "", { format = "fdx" }), false)
+			check.equal(pcall(bus.send, "CAN1", 0x15, "", { format = true }), false)
 			check.equal(pcall(bus.send, "CAN1", 0x14, string.rep("\\0", 12), { format = "classic" }), false)
 		end)
 	')!

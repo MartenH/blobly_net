@@ -282,6 +282,9 @@ fn test_a_stated_classic_frame_longer_than_eight_bytes_is_refused() {
 	}
 	fd := FrameFormat.fd.stamp(CanFrame{ id: 0x1, data: []u8{len: 12} }) or { panic(err) }
 	assert fd.fd
+	if _ := FrameFormat.fd_brs.stamp(CanFrame{ id: 0x1, data: []u8{len: 65} }) {
+		assert false, 'an FD frame cannot carry 65 bytes'
+	}
 }
 
 fn test_a_verbatim_bus_drops_the_statement_too() {
@@ -301,8 +304,13 @@ fn test_a_verbatim_bus_drops_the_statement_too() {
 }
 
 fn test_parse_frame_format() {
-	for name in frame_format_names {
-		parse_frame_format(name) or { assert false, name }
+	assert frame_format_names.len == frame_formats.len
+	for i, name in frame_format_names {
+		got := parse_frame_format(name) or {
+			assert false, name
+			continue
+		}
+		assert got == frame_formats[i], 'the names and the picker order agree'
 	}
 	assert parse_frame_format('') or { FrameFormat.classic } == .wire
 	assert parse_frame_format('FD+BRS') or { FrameFormat.wire } == .fd_brs

@@ -111,7 +111,10 @@ pub enum FrameFormat {
 	fd_brs
 }
 
-// frame_format_names are the spellings `parse_frame_format` accepts, in the order a picker lists them.
+// frame_formats is every choice, in the order a picker lists them.
+pub const frame_formats = [FrameFormat.wire, .classic, .fd, .fd_brs]
+
+// frame_format_names are the spellings `parse_frame_format` accepts, one per `frame_formats` entry.
 pub const frame_format_names = ['wire', 'classic', 'fd', 'fd_brs']
 
 // parse_frame_format reads a format name; '' is `wire`.
@@ -148,7 +151,8 @@ pub fn (fr Framing) label() string {
 
 // stamp states this format on `f`. `wire` returns it unchanged — unstated, so the wire decides.
 //
-// A classic frame carries at most eight bytes, so a stated classic frame with more is REFUSED here,
+// A classic frame carries at most eight bytes and an FD one 64, so a stated frame with more is
+// REFUSED here,
 // where the operator asked for it, rather than clamped by SocketCAN or refused by a vendor DLL
 // with a message that says nothing about the choice that caused it.
 pub fn (ff FrameFormat) stamp(f CanFrame) !CanFrame {
@@ -157,6 +161,9 @@ pub fn (ff FrameFormat) stamp(f CanFrame) !CanFrame {
 	}
 	if ff == .classic && f.data.len > 8 {
 		return error('a classic frame carries at most 8 bytes, this one has ${f.data.len} — choose FD')
+	}
+	if f.data.len > 64 {
+		return error('a CAN-FD frame carries at most 64 bytes, this one has ${f.data.len}')
 	}
 	return CanFrame{
 		...f

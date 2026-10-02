@@ -17,15 +17,35 @@ fn draw_quick_send(mut app App) {
 	vgui.separator_text('quick send')
 	// target bus: validate the stored quick-send iface against the current channels; fall back to
 	// the default send_iface if it was removed/renamed.
+	//
+	// The row is the one the combo picked while it still spells qs_iface, else the FIRST row on
+	// the target — the row chan_name_for names, so the combo, the "on …" line and the format
+	// picker (whose offer depends on the row, #203) agree on a wire two rows share.
 	mut target := app.send_iface
 	mut cur := 0
+	// Whether `cur` IS the target's row, rather than row 0 standing in for a target no row spells.
+	mut matched := false
+	mut qs_at := -1
+	mut target_at := -1
 	for k, c in app.chans {
-		if c.iface == app.qs_iface {
-			target = app.qs_iface
-			cur = k
-		} else if c.iface == target {
-			cur = k
+		if qs_at < 0 && app.qs_iface != '' && c.iface == app.qs_iface {
+			qs_at = k
 		}
+		if target_at < 0 && c.iface == target {
+			target_at = k
+		}
+	}
+	if app.qs_row >= 0 && app.qs_row < app.chans.len && app.qs_iface != ''
+		&& app.chans[app.qs_row].iface == app.qs_iface {
+		qs_at = app.qs_row
+	}
+	if qs_at >= 0 {
+		target = app.qs_iface
+		cur = qs_at
+		matched = true
+	} else if target_at >= 0 {
+		cur = target_at
+		matched = true
 	}
 	if app.chans.len > 1 {
 		mut names := []string{cap: app.chans.len}
@@ -36,7 +56,10 @@ fn draw_quick_send(mut app App) {
 		nsel := vgui.combo('bus##qsbus', names, cur)
 		if nsel != cur && nsel >= 0 && nsel < app.chans.len {
 			app.qs_iface = app.chans[nsel].iface
+			app.qs_row = nsel
 			target = app.qs_iface
+			cur = nsel
+			matched = true
 		}
 	}
 	// Stopped, `send_iface` is empty (stop() clears it) and `qs_iface` is only set once the
@@ -44,6 +67,7 @@ fn draw_quick_send(mut app App) {
 	// first (codex round 1 on #256).
 	if target == '' && app.chans.len > 0 {
 		target = app.chans[cur].iface
+		matched = true
 	}
 	// ONE FIELD PER LINE, and a Send that is always there. The bus, id and data used to share
 	// one row, which grew past the panel with any data worth typing; and the Send button
@@ -59,20 +83,19 @@ fn draw_quick_send(mut app App) {
 	// THE FRAME'S FORMAT, only where choosing one can change it (#203): on a CAN-FD wire it is
 	// how a classic frame gets out, on the FD row of an undeclared wire how an FD one does.
 	wire_fr := transport.wire_framing(target)
-	offered := app.chans.len > 0 && transport.format_choice_offered(app.quick_send_row_framing(cur),
-		wire_fr)
+	row_fr := app.quick_send_row_framing(if matched { cur } else { -1 })
+	offered := transport.format_choice_offered(row_fr, wire_fr)
 	if offered {
-		mut labels := []string{cap: transport.frame_format_names.len}
-		for name in transport.frame_format_names {
-			ff := transport.parse_frame_format(name) or { continue }
-			labels << if ff == .wire { '${ff.label()} (${wire_fr.label()})' } else { ff.label() }
-		}
+		labels := transport.frame_formats.map(if it == .wire {
+			'${it.label()} (${wire_fr.label()})'
+		} else {
+			it.label()
+		})
+		cur_fmt := transport.frame_formats.index(app.qs_format)
 		vgui.set_next_item_width(220 * app.prefs.ui_scale)
-		sel := vgui.combo('format##qsfmt', labels, int(app.qs_format))
-		if sel != int(app.qs_format) && sel >= 0 && sel < transport.frame_format_names.len {
-			app.qs_format = transport.parse_frame_format(transport.frame_format_names[sel]) or {
-				transport.FrameFormat.wire
-			}
+		sel := vgui.combo('format##qsfmt', labels, cur_fmt)
+		if sel != cur_fmt && sel >= 0 && sel < transport.frame_formats.len {
+			app.qs_format = transport.frame_formats[sel]
 		}
 	}
 	if app.running {
