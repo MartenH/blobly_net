@@ -37,6 +37,11 @@ pub const diag_ack_ok = u8(0x00)
 pub const diag_nack_invalid_source = u8(0x02)
 pub const diag_nack_unknown_target = u8(0x03)
 
+// default_functional_address is the functional logical address an entity listens on unless told
+// otherwise (ISO 13400-2's functional range starts at 0xE400, and blobly_emb's entity uses it):
+// a diagnostic message with this TARGET reaches the entity functionally rather than physically.
+pub const default_functional_address = u16(0xE400)
+
 // header_len is the fixed generic-header size.
 // doip_discovery_medium names the shared UDP medium ISO 13400 gives to an entity and every
 // tester at once (transport.ClaimKind.shared): they tolerate each other on the discovery port

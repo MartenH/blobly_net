@@ -96,6 +96,8 @@ pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
 			announce_count:    ch.announce_count
 			announce_interval: ch.announce_interval
 			announce_to:       ch.announce_to
+			// a functional request is answered as a CAN node answers one: the quiet NRCs withheld
+			functional_withheld: uds.functional_suppressed
 		}
 		node:     name
 		announce: announce

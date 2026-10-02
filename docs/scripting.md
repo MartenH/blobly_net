@@ -194,7 +194,8 @@ responses (e.g. the 17-byte VIN) are reassembled for you.
 server's** demo algorithm (key = seed XOR 0xFF) so it unlocks the sim out of the box;
 pass your own `keyfn` for a real ECU's algorithm.
 
-**Functional addressing** — one request to several ECUs at once (CAN only):
+**Functional addressing** — one request to several ECUs at once (CAN), or to the functional
+address of a DoIP entity:
 
 ```lua
 local dom = uds.open("compute", { tx = 0x7B0, rx = 0x7B8 })
@@ -222,6 +223,20 @@ when it cannot run at all: a request it cannot send, a bus that will not open or
 listening, or a target whose response id is flooding (the same refusal a physical request makes). Simulated ECUs answer it when their `uds:` block
 names a `functional:` id (`docs/simulation.md`; `projects/sim-demo.blobnet`, `tests/diag_functional.lua`).
 Bench-verified against blobly_emb's `system_full` too.
+
+On a **DoIP** channel the id is a functional *logical address* (`nil` = 0xE400) and `diags` is the
+channel's one connection — a TCP connection is routed to one entity, so there is one reply:
+
+```lua
+local diag = uds.open("DoIP1")
+local rs = uds.functional("DoIP1", nil, { diag }, "\x22\xF1\x90" [, window_ms])
+```
+
+The request goes out on that connection with the functional address as its target, of any length
+(DoIP frames it whole), and the entity's answer — from its own address — is read under the same
+outcomes, `answer_to` and P2* rules as above (`uds.functional_addressed`). An address the entity
+does not answer is `"failed"` (a DoIP negative ack), not `"silent"`. A simulated DoIP entity
+answers 0xE400 (`tests/diag_doip_functional.lua`); see `docs/doip.md`.
 
 ### End-to-end protection for frames you build (AUTOSAR E2E Profile 1)
 
