@@ -166,8 +166,8 @@ pub fn parse_flow_control(data []u8) !FlowControl {
 //
 // IT DOES NOT MAKE A SEND STOP-RESPONSIVE, which is worth saying plainly: `rebuild_from_proj`
 // waits `drain_budget_ms` = 1500 ms for a run worker, and no bound that accommodates a legal
-// 74-second transfer can also respect that. A parked worker wants `uds.Server.serve` to check
-// `stop` mid-request, which is a different module and a different change.
+// 74-second transfer can also respect that. A run worker is made stoppable instead, by
+// `SoftChannel.stop_requested` (#347).
 pub const fc_total_wait_ms = 120_000
 
 // WaitBudget is what is left of that allowance. Threaded through one transfer, not held on the

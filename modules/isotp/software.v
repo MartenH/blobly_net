@@ -62,6 +62,46 @@ pub mut:
 	// this field at all -- the first draft of this comment claimed it could (self-review). The
 	// default is what has to be right for flash, and `fc_total_wait_ms` is sized for it.
 	total_wait_ms int = fc_total_wait_ms
+	// stop_requested, when set, is asked while a segmented send waits — in its STmin pacing and
+	// for each Flow Control — and a true answer abandons the transfer (#347). For a RUN WORKER:
+	// the transfer ISO permits can run to 74 s of pacing alone, which no allowance can cut
+	// without refusing a legal transfer, so a worker asked to stop must be able to leave it.
+	// Unset (the default) the send is never abandoned, which is what flash and the operator's
+	// tools get: Stop does not end them, and must not end a transfer they started.
+	stop_requested fn () bool = unsafe { nil }
+}
+
+// stop_poll_ms is how often a stoppable send asks `stop_requested` while it waits: the bound on
+// how long a worker told to stop stays in a transfer.
+pub const stop_poll_ms = 20
+
+// abandoned_note is the error a send ends with when `stop_requested` answered true.
+pub const abandoned_note = 'ISO-TP: send abandoned — stop requested'
+
+fn (c &SoftChannel) stopping() bool {
+	return c.stop_requested != unsafe { nil } && c.stop_requested()
+}
+
+// stop_slice is the longest a stoppable send may block before asking again: `ms` itself when
+// nothing can ask it to stop.
+fn (c &SoftChannel) stop_slice(ms int) int {
+	if c.stop_requested == unsafe { nil } || ms <= stop_poll_ms {
+		return ms
+	}
+	return stop_poll_ms
+}
+
+// pace sleeps `us` of STmin separation, in slices a stop request can end.
+fn (c &SoftChannel) pace(us int) ! {
+	mut left := pacing_sleep_us(us) / 1000 // whole milliseconds: see pacing_sleep_us
+	for left > 0 {
+		if c.stopping() {
+			return error(abandoned_note)
+		}
+		step := c.stop_slice(left)
+		time.sleep(step * time.millisecond)
+		left -= step
+	}
 }
 
 // open_software wraps a freshly opened bus on `iface` as an ISO-TP channel that
@@ -124,8 +164,16 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	// unlikely and bounded, and there is no version of this that makes it impossible.
 	//
 	if c.fc_dirty {
-		c.flush_rx()
+		// a stop mid-drain leaves the channel dirty, for whichever send comes next
+		if !c.flush_rx() {
+			return error(abandoned_note)
+		}
 		c.fc_dirty = false
+	}
+	// A transfer that would be abandoned at its first Flow Control is not begun: asked last,
+	// right before the First Frame, so a stop during the drain's final quiet window is seen too.
+	if c.stopping() {
+		return error(abandoned_note)
 	}
 	// First Frame: PCI 0x1<len_hi><len_lo> + first 6 bytes.
 	mut ff := [u8(0x10 | u8((data.len >> 8) & 0x0F)), u8(data.len & 0xFF)]
@@ -172,8 +220,12 @@ fn (mut c SoftChannel) send_segmented(data []u8) ! {
 				if remain_us > 0 {
 					// Through pacing_sleep_us: a sub-millisecond wait is not one on Windows,
 					// which is the platform this state machine is for.
-					time.sleep(pacing_sleep_us(int(remain_us)) * time.microsecond)
+					c.pace(int(remain_us))!
 				}
+			}
+			// unpaced (STmin 0) a block is written without waiting at all, so ask per frame
+			if c.stopping() {
+				return error(abandoned_note)
 			}
 			n := if data.len - off > 7 { 7 } else { data.len - off }
 			mut cf := [u8(0x20 | (sn & 0x0F))]
@@ -219,6 +271,9 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 		deadline := time.ticks() + fc_timeout_ms
 		mut raw := []u8{}
 		for {
+			if c.stopping() {
+				return error(abandoned_note)
+			}
 			rem := int(deadline - time.ticks())
 			if rem <= 0 {
 				return error('timeout')
@@ -240,11 +295,20 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 			// remainder, so the allowance reads as not-quite-gone at the moment it stops
 			// being usable. Found by the test written for it, which is what it is for.
 			clamped := allow < rem
+			// Read in slices when a stop request may end the wait; a slice running out is
+			// not the peer's timeout, so it only goes round to ask again.
+			read_ms := c.stop_slice(allow)
 			t0 := time.sys_mono_now()
-			raw = c.rx_raw(allow) or {
+			raw = c.rx_raw(read_ms) or {
 				// SPENT EVEN ON THE FAILING PATH: the wait happened, and a bound that only
 				// charges for successful reads is one a stalling peer never pays.
 				budget.spend_ns(time.sys_mono_now() - t0)
+				// ...when the slice was WAITED: a bus that reports a timeout at once (a closed
+				// in-process queue) would otherwise spin here for the whole window.
+				if err.msg() == 'timeout' && read_ms < allow
+					&& time.sys_mono_now() - t0 >= u64(read_ms) * 500_000 {
+					continue
+				}
 				// ONLY A TIMEOUT. `rx_raw` also reports the carrier failing underneath it --
 				// a closed or closing bus, a terminal driver error -- and rewriting those as
 				// "the transfer spent its allowance waiting on the receiver" would blame the
@@ -547,8 +611,13 @@ fn orphan_note(msg string, n int, pci u8) string {
 // The receive side does not call it — a flush there waits its window per frame and a slow peer
 // renews it indefinitely past the deadline (codex round 5 on #225), so stale frames are dropped
 // where the next reply is awaited instead. Before a send there is no deadline to overrun.
-fn (mut c SoftChannel) flush_rx() {
+// Returns false when a stop request ended it before the quiet window was reached.
+fn (mut c SoftChannel) flush_rx() bool {
 	for _ in 0 .. flush_max_frames {
-		c.rx_raw(flush_quiet_ms) or { return } // nothing more queued within the quiet window
+		if c.stopping() {
+			return false
+		}
+		c.rx_raw(flush_quiet_ms) or { return true } // nothing more queued within the quiet window
 	}
+	return true
 }
