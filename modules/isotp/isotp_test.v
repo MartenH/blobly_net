@@ -1079,7 +1079,7 @@ fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
 }
 
 // abandon_after sends a 20-byte PDU on a stoppable channel whose stop is requested `stop_ms`
-// after the First Frame is seen, while `peer_fc` (when not empty) is answered every 30 ms. Returns
+// after the First Frame is seen, while `peer_fc` (when not empty) is sent every 10 ms. Returns
 // the send's error and how long after the stop request the send took to end.
 fn abandon_after(iface string, stmin_fc []u8, peer_fc []u8, stop_ms int) !(string, i64) {
 	mut peer := transport.open(iface)!

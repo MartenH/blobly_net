@@ -163,6 +163,10 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	// this transfer's own. Nothing in the protocol can separate them; the window makes the case
 	// unlikely and bounded, and there is no version of this that makes it impossible.
 	//
+	// A transfer that would be abandoned at its first Flow Control is not begun.
+	if c.stopping() {
+		return error(abandoned_note)
+	}
 	if c.fc_dirty {
 		c.flush_rx()
 		c.fc_dirty = false
@@ -291,7 +295,10 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 				// SPENT EVEN ON THE FAILING PATH: the wait happened, and a bound that only
 				// charges for successful reads is one a stalling peer never pays.
 				budget.spend_ns(time.sys_mono_now() - t0)
-				if err.msg() == 'timeout' && read_ms < allow {
+				// ...when the slice was WAITED: a bus that reports a timeout at once (a closed
+				// in-process queue) would otherwise spin here for the whole window.
+				if err.msg() == 'timeout' && read_ms < allow
+					&& time.sys_mono_now() - t0 >= u64(read_ms) * 500_000 {
 					continue
 				}
 				// ONLY A TIMEOUT. `rx_raw` also reports the carrier failing underneath it --

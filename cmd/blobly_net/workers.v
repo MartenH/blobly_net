@@ -471,8 +471,8 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				continue
 			}
 			// a run worker: a Stop abandons an answer still being segmented (#347)
-			ch.stop_requested = fn [a] () bool {
-				return !a.running
+			ch.stop_requested = fn [a, gen] () bool {
+				return !a.running || a.run_gen != gen
 			}
 			if fid != 0 {
 				// receive-only, one per wire whatever the number of nodes: the answers go out on
@@ -555,8 +555,8 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 		return
 	}
 	// a run worker: a Stop abandons an answer still being segmented (#347)
-	ch.stop_requested = fn [a] () bool {
-		return !a.running
+	ch.stop_requested = fn [a, gen] () bool {
+		return !a.running || a.run_gen != gen
 	}
 	consumer_attached(a, iface, gen)
 	mut srv := uds.default_server()

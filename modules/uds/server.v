@@ -216,11 +216,22 @@ pub fn (mut s Server) serve(mut ch isotp.Channel, stop chan bool) {
 	stopped := fn [stop] () bool {
 		return stop.len > 0 || stop.closed
 	}
+	// installed for this serve only: the caller's own hook is put back on the way out
+	mut prev := stopped
 	if mut ch is isotp.SoftChannel {
+		prev = ch.stop_requested
 		ch.stop_requested = stopped
 	}
 	for {
 		if stopped() {
+			if mut ch is isotp.SoftChannel {
+				ch.stop_requested = prev
+			}
+			// taken, as the select this replaced took it, so `stop` can serve again
+			select {
+				_ := <-stop {}
+				else {}
+			}
 			return
 		}
 		req := ch.recv(50) or { continue }
