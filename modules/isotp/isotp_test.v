@@ -1248,3 +1248,22 @@ fn test_a_stop_abandons_the_dirty_channel_drain() {
 	ch.close()
 	peer.close()
 }
+
+// ...and a stop that arrives while the drain waits out its final quiet window: the drain ends
+// as drained, and no First Frame may follow it onto the bus.
+fn test_a_stop_during_the_final_quiet_window_sends_no_first_frame() {
+	mut peer := transport.open('inproc:isotp-stop-quiet') or { panic(err) }
+	mut ch := open_software('inproc:isotp-stop-quiet', 0x7E0, 0x7E8, false) or { panic(err) }
+	// the stop arrives 10 ms into the drain's 30 ms quiet window
+	at := time.ticks() + 10
+	ch.stop_requested = fn [at] () bool {
+		return time.ticks() >= at
+	}
+	ch.fc_dirty = true
+	ch.send([]u8{len: 20, init: u8(index)}) or { assert err.msg() == abandoned_note, err.msg() }
+	if f := peer.recv(50) {
+		assert false, 'a frame went out after the stop: ${f.data}'
+	}
+	ch.close()
+	peer.close()
+}

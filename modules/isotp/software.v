@@ -163,16 +163,17 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	// this transfer's own. Nothing in the protocol can separate them; the window makes the case
 	// unlikely and bounded, and there is no version of this that makes it impossible.
 	//
-	// A transfer that would be abandoned at its first Flow Control is not begun.
-	if c.stopping() {
-		return error(abandoned_note)
-	}
 	if c.fc_dirty {
 		// a stop mid-drain leaves the channel dirty, for whichever send comes next
 		if !c.flush_rx() {
 			return error(abandoned_note)
 		}
 		c.fc_dirty = false
+	}
+	// A transfer that would be abandoned at its first Flow Control is not begun: asked last,
+	// right before the First Frame, so a stop during the drain's final quiet window is seen too.
+	if c.stopping() {
+		return error(abandoned_note)
 	}
 	// First Frame: PCI 0x1<len_hi><len_lo> + first 6 bytes.
 	mut ff := [u8(0x10 | u8((data.len >> 8) & 0x0F)), u8(data.len & 0xFF)]
