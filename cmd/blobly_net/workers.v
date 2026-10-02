@@ -470,6 +470,10 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				time.sleep(200 * time.millisecond)
 				continue
 			}
+			// a run worker: a Stop abandons an answer still being segmented (#347)
+			ch.stop_requested = fn [a] () bool {
+				return !a.running
+			}
 			if fid != 0 {
 				// receive-only, one per wire whatever the number of nodes: the answers go out on
 				// the physical channel's tap, attributed there; this only hears the broadcasts
@@ -549,6 +553,10 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 			'${chan_name}: UDS server could not bind ISO-TP on ${iface} — ${err}')
 		consumer_failed(a, iface, gen)
 		return
+	}
+	// a run worker: a Stop abandons an answer still being segmented (#347)
+	ch.stop_requested = fn [a] () bool {
+		return !a.running
 	}
 	consumer_attached(a, iface, gen)
 	mut srv := uds.default_server()

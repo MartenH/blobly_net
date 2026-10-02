@@ -1,6 +1,8 @@
 module uds
 
 import isotp
+import time
+import transport
 
 // End-to-end native diagnostics with NO Python and NO kernel ISO-TP: a uds.Server
 // and a uds.Client talk over the software ISO-TP state machine on the driver-free
@@ -122,4 +124,32 @@ fn serve_one(mut ch isotp.SoftChannel, srv Server, stop chan bool) {
 	mut s := srv // V will not spawn with a mutable non-reference argument
 	s.serve(mut ch, stop)
 	ch.close()
+}
+
+// A SERVER TOLD TO STOP LEAVES AN ANSWER IN PROGRESS (#347): a multi-frame answer to a tester
+// that never sends Flow Control would hold serve for fc_timeout_ms, and a peer that waits for
+// the whole transfer allowance — past the GUI's rebuild drain, which is what a run worker owes.
+fn test_serve_abandons_a_segmented_answer_when_stopped() {
+	iface := 'inproc:uds-serve-stop'
+	mut tester := isotp.open_software(iface, 0x7E0, 0x7E8, false) or { panic(err) }
+	mut raw := transport.open(iface) or { panic(err) }
+	mut ch := isotp.open_software(iface, 0x7E8, 0x7E0, false) or { panic(err) }
+	stop := chan bool{cap: 1}
+	th := spawn serve_one(mut ch, default_server(), stop)
+	// the VIN is 17 bytes, so the answer is a First Frame the tester never acknowledges
+	tester.send([u8(0x22), 0xF1, 0x90]) or { panic(err) }
+	deadline := time.ticks() + 1000
+	mut ff := false
+	for !ff && time.ticks() < deadline {
+		f := raw.recv(50) or { continue }
+		ff = f.id == 0x7E8 && f.data.len > 0 && (f.data[0] & 0xF0) == 0x10
+	}
+	assert ff, 'the server never began its answer'
+	t0 := time.ticks()
+	stop <- true
+	th.wait()
+	took := time.ticks() - t0
+	assert took < 300, 'serve left ${took} ms after the stop request'
+	tester.close()
+	raw.close()
 }

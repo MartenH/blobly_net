@@ -1077,3 +1077,103 @@ fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
 	ch.close()
 	peer.close()
 }
+
+// abandon_after sends a 20-byte PDU on a stoppable channel whose stop is requested `stop_ms`
+// after the First Frame is seen, while `peer_fc` (when not empty) is answered every 30 ms. Returns
+// the send's error and how long after the stop request the send took to end.
+fn abandon_after(iface string, stmin_fc []u8, peer_fc []u8, stop_ms int) !(string, i64) {
+	mut peer := transport.open(iface)!
+	defer {
+		peer.close()
+	}
+	mut ch := open_software(iface, 0x7E0, 0x7E8, false)!
+	defer {
+		ch.close()
+	}
+	stop := chan bool{}
+	ch.stop_requested = fn [stop] () bool {
+		return stop.closed
+	}
+	if stmin_fc.len > 0 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: stmin_fc })!
+	}
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	must_read_tx(mut peer, 0x7E0) or { return error('no First Frame') }
+	t_stop := time.ticks() + stop_ms
+	for time.ticks() < t_stop {
+		if peer_fc.len > 0 {
+			peer.send(transport.CanFrame{ id: 0x7E8, data: peer_fc })!
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	t0 := time.ticks()
+	stop.close()
+	msg := <-done
+	return msg, time.ticks() - t0
+}
+
+// A RUN WORKER TOLD TO STOP LEAVES ITS SEND (#347): a peer that never answers the First Frame
+// would hold it for fc_timeout_ms, and the total allowance for minutes.
+fn test_a_stop_abandons_the_wait_for_a_silent_peer() {
+	msg, took := abandon_after('inproc:isotp-stop-silent', [], [], 50) or {
+		assert false, err.msg()
+		return
+	}
+	assert msg == abandoned_note, msg
+	assert took < 300, 'abandoned ${took} ms after the stop request'
+}
+
+// ...and a peer that only ever WAITs, which keeps a frame arriving so no timeout ever fires.
+fn test_a_stop_abandons_a_peer_that_only_waits() {
+	msg, took := abandon_after('inproc:isotp-stop-wait', [], [u8(0x31), 0, 0], 60) or {
+		assert false, err.msg()
+		return
+	}
+	assert msg == abandoned_note, msg
+	assert took < 300, 'abandoned ${took} ms after the stop request'
+}
+
+// ...and our own STmin pacing, which at 127 ms a frame is the receiver's to ask for.
+fn test_a_stop_abandons_stmin_pacing() {
+	// 20 bytes: two Consecutive Frames, so one 127 ms separation
+	msg, took := abandon_after('inproc:isotp-stop-pace', [u8(0x30), 0, 0x7F], [], 30) or {
+		assert false, err.msg()
+		return
+	}
+	assert msg == abandoned_note, msg
+	assert took < 100, 'abandoned ${took} ms after the stop request'
+}
+
+// A CHANNEL NOBODY CAN STOP IS NOT SLICED INTO A DIFFERENT ANSWER: unset, the hook changes
+// nothing, and a stoppable channel whose stop never comes completes like any other.
+fn test_a_stoppable_send_that_is_not_stopped_completes() {
+	mut peer := transport.open('inproc:isotp-stop-none') or { panic(err) }
+	mut ch := open_software('inproc:isotp-stop-none', 0x7E0, 0x7E8, false) or { panic(err) }
+	stop := chan bool{}
+	ch.stop_requested = fn [stop] () bool {
+		return stop.closed
+	}
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	must_read_tx(mut peer, 0x7E0) or { panic('no First Frame') }
+	// answered after several stop slices have gone by, at an STmin longer than one
+	time.sleep(70 * time.millisecond)
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 45] }) or { panic(err) }
+	msg := <-done
+	assert msg == 'sent', msg
+	ch.close()
+	peer.close()
+}
