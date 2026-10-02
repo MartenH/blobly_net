@@ -134,45 +134,15 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 			finished[i] = true
 			continue
 		}
-		match answer_to(req, resp) {
-			.positive {
-				if req[0] == sid_diagnostic_session_control {
-					c.adopt(resp)
-				}
-				done[i] = FunctionalReply{
-					outcome: .positive
-					resp:    resp
-					pended:  pended[i]
-				}
-				finished[i] = true
-			}
-			.negative {
-				done[i] = FunctionalReply{
-					outcome: .negative
-					resp:    resp
-					nrc:     resp[2]
-					pended:  pended[i]
-				}
+		verdict, reply := heard(mut c, req, resp, pended[i])
+		match verdict {
+			.settled {
+				done[i] = reply
 				finished[i] = true
 			}
 			.pending {
 				pended[i] = true
-				at := sw.elapsed().milliseconds()
-				wait := i64(c.p2_star_ms) + c.margin_ms
-				deadline[i] = if at + wait < c.pending_budget_ms {
-					at + wait
-				} else {
-					i64(c.pending_budget_ms)
-				}
-			}
-			.malformed {
-				done[i] = FunctionalReply{
-					outcome: .failed
-					resp:    resp
-					pended:  pended[i]
-					err:     'malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}'
-				}
-				finished[i] = true
+				deadline[i] = c.pending_deadline(sw.elapsed().milliseconds())
 			}
 			.stale {}
 		}
@@ -198,4 +168,111 @@ fn target_of(targets []FunctionalTarget, f transport.CanFrame) ?int {
 		}
 	}
 	return none
+}
+
+enum Heard {
+	settled // the target's reply is final
+	pending // responsePending: wait for its P2*
+	stale   // an answer to another request: keep waiting
+}
+
+// heard is what one answer `resp` to the functional `req` means for its target — the rule both
+// forms (CAN and addressed) share, so they cannot classify one answer two ways.
+fn heard(mut c Client, req []u8, resp []u8, pended bool) (Heard, FunctionalReply) {
+	match answer_to(req, resp) {
+		.positive {
+			if req[0] == sid_diagnostic_session_control {
+				c.adopt(resp)
+			}
+			return Heard.settled, FunctionalReply{
+				outcome: .positive
+				resp:    resp
+				pended:  pended
+			}
+		}
+		.negative {
+			return Heard.settled, FunctionalReply{
+				outcome: .negative
+				resp:    resp
+				nrc:     resp[2]
+				pended:  pended
+			}
+		}
+		.pending {
+			return Heard.pending, FunctionalReply{}
+		}
+		.malformed {
+			return Heard.settled, FunctionalReply{
+				outcome: .failed
+				resp:    resp
+				pended:  pended
+				err:     'malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}'
+			}
+		}
+		.stale {
+			return Heard.stale, FunctionalReply{}
+		}
+	}
+}
+
+// pending_deadline is when a target that said responsePending at `at` (ms into the request) has
+// to have answered: its P2* plus margin, never past its pending_budget_ms.
+fn (c &Client) pending_deadline(at i64) i64 {
+	wait := i64(c.p2_star_ms) + c.margin_ms
+	return if at + wait < c.pending_budget_ms { at + wait } else { i64(c.pending_budget_ms) }
+}
+
+// AddressedSend is a carrier whose message names its target, so one connection can send a request
+// to a FUNCTIONAL address and receive the answer on its physical one: DoIP (doip.DoipClient
+// send_to), where the target address is a field of the diagnostic message.
+pub interface AddressedSend {
+mut:
+	send_to(target u32, data []u8) !
+}
+
+// functional_addressed sends `req` once to the functional address `target` through `via` and
+// collects the answer on `c`'s channel — the same connection, so ONE server's answer (on DoIP, the
+// entity the connection is routed to). Outcomes, the drain before the send, answer_to and the P2*
+// rule are those of `functional`; `window_ms` bounds the first answer. A request has no Single
+// Frame limit here: the carrier frames it whole.
+pub fn functional_addressed(mut c Client, mut via AddressedSend, target u32, req []u8, window_ms int) !FunctionalReply {
+	if req.len == 0 {
+		return error('empty UDS request')
+	}
+	c.drain_queued(req[0])!
+	via.send_to(target, req)!
+	sw := time.new_stopwatch()
+	mut deadline := i64(window_ms)
+	mut pended := false
+	for {
+		left := deadline - sw.elapsed().milliseconds()
+		if left <= 0 {
+			break
+		}
+		resp := c.ch.recv(int(left)) or {
+			if is_silence(err.msg()) {
+				continue
+			}
+			return FunctionalReply{
+				outcome: .failed
+				pended:  pended
+				err:     err.msg()
+			}
+		}
+		verdict, reply := heard(mut c, req, resp, pended)
+		match verdict {
+			.settled {
+				return reply
+			}
+			.pending {
+				pended = true
+				deadline = c.pending_deadline(sw.elapsed().milliseconds())
+			}
+			.stale {}
+		}
+	}
+	return FunctionalReply{
+		outcome: if pended { .pending } else { .silent }
+		pended:  pended
+	}
 }

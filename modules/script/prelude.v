@@ -329,6 +329,8 @@ uds = {}
 -- functional request and what a suppressed positive response looks like), "pending" (0x78 and
 -- then nothing) or "failed"; resp (the answer bytes), nrc, pended (0x78 on the way), err.
 -- window_ms bounds the first answers (default 1000). A functional request is one Single Frame.
+-- On a DoIP channel id is the functional logical address (nil = 0xE400) and diags is the one
+-- connection of the channel: one TCP connection reaches one entity, so one reply.
 function uds.functional(channel, id, diags, req, window_ms)
   local hs = {}
   for i = 1, #diags do

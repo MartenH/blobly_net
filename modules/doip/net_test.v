@@ -627,3 +627,113 @@ fn test_uds_over_doip_drains_a_late_answer() {
 	assert got == [u8(0x62), 0xF1, 0x90, 0x02], 'the late answer was taken for the new request'
 	ln.close() or {}
 }
+
+fn serve_until_closed(mut s DoipServer) {
+	for {
+		s.accept_and_serve(300) or {
+			if s.stopping {
+				break
+			}
+			continue
+		}
+	}
+}
+
+// A functional request: a diagnostic message to the functional address is acked FROM that address
+// and answered from the entity's own; an answer the functional rule withholds is not sent, and an
+// entity with no functional address NACKs it like any address not its own.
+fn test_entity_answers_a_functional_target() {
+	mut srv := new_server(ServerCfg{
+		logical_address:     0x1000
+		functional_withheld: fn (r []u8) bool {
+			return r.len == 3 && r[0] == 0x7F && r[2] == 0x11
+		}
+	}, fn (req []u8) []u8 {
+		return if req[0] == 0x31 { [u8(0x7F), 0x31, 0x11] } else { [req[0] + 0x40] }
+	})
+	lport := listen_somewhere(mut srv, '127.0.0.1')
+	if lport == 0 {
+		assert false, 'no bindable port in the band'
+		return
+	}
+	spawn serve_until_closed(mut srv)
+	defer {
+		srv.close()
+	}
+	mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	defer {
+		ch.close()
+	}
+	ch.send_to(0xE400, [u8(0x3E), 0x00]) or { assert false, 'send_to: ${err}' }
+	ack := read_message(mut ch.conn, 2000) or {
+		assert false, 'ack: ${err}'
+		return
+	}
+	assert ack.payload_type == pt_diagnostic_message_ack
+	assert ack.payload[0..4] == [u8(0xE4), 0x00, 0x0E, 0x80], 'the ack is from the functional address'
+	rsp := read_message(mut ch.conn, 2000) or {
+		assert false, 'response: ${err}'
+		return
+	}
+	dm := parse_diagnostic_message(rsp.payload) or {
+		assert false, '${err}'
+		return
+	}
+	assert dm.source == 0x1000, 'the answer is from the entity address'
+	assert dm.target == 0x0E80
+	assert dm.data == [u8(0x7E)]
+	// withheld: the ack and then nothing; the physical request after it is answered at once
+	ch.send_to(0xE400, [u8(0x31), 0x01]) or { assert false, 'send_to: ${err}' }
+	ch.send([u8(0x22)]) or { assert false, 'send: ${err}' }
+	assert ch.recv(2000) or { []u8{} } == [u8(0x62)], 'the withheld answer was sent'
+	// another address entirely is NACKed, not acked
+	ch.send_to(0xE401, [u8(0x3E), 0x00]) or { assert false, 'send_to: ${err}' }
+	if _ := ch.recv(2000) {
+		assert false, 'a message to an unknown target was answered'
+	} else {
+		assert err.msg().contains('negative ack (0x03)'), err.msg()
+	}
+}
+
+// uds.functional_addressed over a real connection: one entity's answer, the suppressed positive
+// response silent, the ack in front of each skipped.
+fn test_uds_functional_addressed_over_doip() {
+	mut srv := new_server(ServerCfg{ logical_address: 0x1000 }, fn (req []u8) []u8 {
+		if req.len > 1 && req[1] & 0x80 != 0 {
+			return []u8{} // a suppressed positive response
+		}
+		return [req[0] + 0x40, req[1]]
+	})
+	lport := listen_somewhere(mut srv, '127.0.0.1')
+	if lport == 0 {
+		assert false, 'no bindable port in the band'
+		return
+	}
+	spawn serve_until_closed(mut srv)
+	defer {
+		srv.close()
+	}
+	mut dc := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	mut cl := uds.new_client(dc)
+	mut via := uds.AddressedSend(dc)
+	r := uds.functional_addressed(mut cl, mut via, default_functional_address, [u8(0x3E), 0x00],
+		500) or {
+		assert false, '${err}'
+		return
+	}
+	assert r.outcome == .positive
+	assert r.resp == [u8(0x7E), 0x00]
+	q := uds.functional_addressed(mut cl, mut via, default_functional_address, [u8(0x3E), 0x80],
+		300) or {
+		assert false, '${err}'
+		return
+	}
+	assert q.outcome == .silent
+	dc.close()
+}

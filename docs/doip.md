@@ -19,6 +19,8 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 | **UDS from the Diagnostics panel over a DoIP channel** | ✅ listed as a target, addressed by logical address |
 | Passive discovery — hearing an entity announce itself | ✅ `doip.listen(window_ms [, {from=}])` / `collect_announcements` |
 | A simulated entity announcing itself at Start | ✅ per DoIP **channel** (one channel is one entity): `announce_count` (0 = silent), `announce_interval_ms`, `announce_to` |
+| **Functional UDS over DoIP** — a request to the functional logical address (0xE400) | ✅ from Lua, `uds.functional` on a DoIP channel; a simulated entity answers it |
+| A functional address set per channel in the project file | 🧭 planned — today it is the call's argument, and a simulated entity listens on 0xE400 |
 | **Subnet scan — finding an entity that neither announced nor sits at a known address** | 🧭 planned |
 
 One thing worth knowing before you plan a bench: an entity **binds a real socket** on its
@@ -119,6 +121,22 @@ The acknowledgement runs one way. Each **tester → entity** request draws a `0x
 `0x8003` refusing it) from the entity *before* the UDS response follows in its own `0x8001`.
 The entity's response is not acknowledged in return — the tester consumes it directly. So in a
 capture you see ack-then-response per request, not an ack after every `0x8001`.
+
+A **functional** request is the same `0x8001` with the functional logical address as its
+**target** (0xE400 by default). The entity acks it *from that address* and answers from its own,
+and where ISO 14229-1 has a functionally addressed server keep quiet — NRCs 0x11/0x12/0x31/0x7E/0x7F,
+or a suppressed positive response — it sends the ack and nothing after it. Which entities hear
+it is a gateway's business; on **one TCP connection it reaches one entity**, the one routing was
+activated with, so a tester gets at most one answer per connection. From Lua:
+
+```lua
+local diag = uds.open("DoIP1")
+local rs = uds.functional("DoIP1", nil, { diag }, "\x3E\x00")   -- nil = 0xE400
+-- rs[1] = { outcome = "positive", resp = "\x7E\x00", ... }
+```
+
+`outcome` follows the CAN form exactly (`docs/scripting.md`); an address the entity does not
+answer is NACKed (`0x8003`, unknown target) and comes back as `"failed"`, never as silence.
 
 Routing activation is **mandatory** — a diagnostic message arriving before it is ignored rather
 than answered.
