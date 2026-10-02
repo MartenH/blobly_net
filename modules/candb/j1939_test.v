@@ -181,3 +181,41 @@ fn test_decode_via_pgn_match() {
 	assert s.name == 'EngineSpeed'
 	assert s.physical(data) == 836.0
 }
+
+// THE LOOKUP A REJOINED MESSAGE DECODES BY (#331): two files on one wire each defining a
+// (PGN, SA) once, differently, passed every per-file check and decoded with whichever was listed
+// first. Across the wire, disagreeing candidates decode nothing — and say why.
+fn test_pgn_message_in_refuses_a_pair_two_files_define_differently() {
+	hdr := 'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";\nBA_DEF_DEF_ "VFrameFormat" "J1939PG";\n'
+	a := parse_dbc(hdr + 'BO_ 2566834688 DM1_A: 8 Vector__XXX\n SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n') or {
+		panic(err)
+	}
+	b := parse_dbc(hdr + 'BO_ 2566834688 DM1_B: 8 Vector__XXX\n SG_ Lamp : 8|8@1+ (1,0) [0|255] "" Vector__XXX\n') or {
+		panic(err)
+	}
+	// 2566834688 = 0x98FECA00: PGN 0xFECA from SA 0x00, in both files
+	assert !a.pgn_sa_contested(0xFECA, 0x00) && !b.pgn_sa_contested(0xFECA, 0x00)
+	for order in [[a, b], [b, a]] {
+		pm := pgn_message_in(order, 0xFECA, 0x00)
+		assert !pm.found
+		assert pm.refused.contains('different layouts') && pm.refused.contains('DM1_A')
+			&& pm.refused.contains('DM1_B'), pm.refused
+	}
+	// the same file twice, or two files that agree, decode as one
+	same := pgn_message_in([a, a], 0xFECA, 0x00)
+	assert same.found && same.msg.name == 'DM1_A' && same.refused == ''
+	// a pair defined twice inside ONE file is refused too, with its own reason
+	con := parse_dbc(hdr + 'BO_ 2566834688 DM1_p6: 8 Vector__XXX\nBO_ 2633943552 DM1_p7: 8 Vector__XXX\n') or {
+		panic(err)
+	}
+	pc := pgn_message_in([con], 0xFECA, 0x00)
+	assert !pc.found && pc.refused.contains('more than once'), pc.refused
+	// an unspelled address falls to the PGN, refused where its definitions disagree
+	pu := pgn_message_in([a, b], 0xFECA, 0x17)
+	assert !pu.found && pu.refused.contains('not spelled at SA 0x17'), pu.refused
+	pa := pgn_message_in([a], 0xFECA, 0x17)
+	assert pa.found && pa.msg.name == 'DM1_A'
+	// nothing defines the group: neither found nor refused
+	none_ := pgn_message_in([a, b], 0xF004, 0x00)
+	assert !none_.found && none_.refused == ''
+}

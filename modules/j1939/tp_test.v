@@ -798,8 +798,10 @@ fn test_a_clear_to_send_naming_no_real_packet_keeps_nothing_alive() {
 		r.feed(cts(0x00, 0x17, dm1, bad), 600)
 		r.feed(cts(0x00, 0x17, dm1, bad), 1200)
 		ev := r.feed(cts(0x00, 0x17, dm1, bad), 1400)
-		assert ev.faults.len == 1, 'packet ${bad}: ${ev.faults.str()}'
-		assert ev.faults[0].kind == .timeout, '${bad}'
+		// packet 0 is one the field table refuses outright, so it is said as well (#341)
+		to := ev.faults.filter(it.kind == .timeout)
+		assert to.len == 1, 'packet ${bad}: ${ev.faults.str()}'
+		assert ev.faults.len == if bad == 0 { 2 } else { 1 }, '${bad}: ${ev.faults.str()}'
 		assert r.open() == 0, '${bad}'
 	}
 	// and one naming a real packet does keep it alive
@@ -894,4 +896,138 @@ fn test_a_recording_answers_for_itself() {
 	mut std := bam(0x00, 20, dm1)
 	std.extended = false
 	assert !announces_session(std)
+}
+
+
+// bad is a value the row refuses, or none for a row that refuses nothing.
+fn (f CmField) bad() ?u32 {
+	max := (u32(1) << (8 * f.width)) - 1
+	match f.rule {
+		.range {
+			if f.lo > 0 {
+				return f.lo - 1
+			}
+			if f.hi < max {
+				return f.hi + 1
+			}
+		}
+		.fixed {
+			return f.lo ^ 1
+		}
+		.ones {
+			return u32(0)
+		}
+		.any {}
+	}
+	return none
+}
+
+// with writes `v` into the row's bytes of a copy of `f`.
+fn (row CmField) with(f transport.CanFrame, v u32) transport.CanFrame {
+	mut d := f.data.clone()
+	for i in 0 .. row.width {
+		d[row.at + i] = u8((v >> (8 * i)) & 0xFF)
+	}
+	return transport.CanFrame{
+		...f
+		data: d
+	}
+}
+
+// valid_cm is a well-formed frame of each control byte, about the transfer 0x17 -> 0x00 that
+// `open_transfer` starts — or, for an announcement, one that replaces it.
+fn valid_cm(ctrl u8) transport.CanFrame {
+	return match ctrl {
+		cm_rts { rts(0x17, 0x00, 20, dm1) }
+		cm_cts { cts(0x00, 0x17, dm1, 1) }
+		cm_eom_ack { cm(0x00, 0x17, cm_eom_ack, 20, 3, dm1) }
+		cm_bam { bam(0x17, 20, dm1) }
+		else { abort(0x17, 0x00, 3, dm1) }
+	}
+}
+
+fn open_transfer(ctrl u8) transport.CanFrame {
+	return if ctrl == cm_bam { bam(0x17, 20, dm1) } else { rts(0x17, 0x00, 20, dm1) }
+}
+
+// THE CLASS TEST (#341): every row of the table is fed a value it refuses, and that frame is
+// refused by the table, said once by the reassembler, and acted on by neither tracker.
+fn test_every_field_row_refuses_a_bad_value_in_both_trackers() {
+	mut checked := 0
+	for row in cm_fields {
+		good := valid_cm(row.ctrl)
+		gc := parse_cm(good.data) or { panic('valid ${row.ctrl} unparsable') }
+		assert gc.refusal() == none, '${row.name}: the valid frame is refused: ${gc.refusal()}'
+		v := row.bad() or {
+			assert row.rule == .any, '${cm_name(row.ctrl)} ${row.name}: a rule with no value it refuses'
+			continue
+		}
+		f := row.with(good, v)
+		c := parse_cm(f.data) or { panic('unparsable') }
+		why := c.refusal() or { panic('${cm_name(row.ctrl)} ${row.name} = ${v} is not refused') }
+		assert why.contains(row.name), why
+		announce := row.ctrl == cm_rts || row.ctrl == cm_bam
+
+		mut r := Reassembler{}
+		r.feed(open_transfer(row.ctrl), 0)
+		ev := r.feed(f, 10)
+		bad := ev.faults.filter(it.kind == .malformed)
+		assert bad.len == 1 && bad[0].detail == why, '${why}: ${ev.faults.str()}'
+		assert ev.done.len == 0
+		// an announcement still ends the pair's previous transfer; nothing else touches it
+		assert r.open() == if announce { 0 } else { 1 }, why
+
+		mut t := Transfers{}
+		t.step(open_transfer(row.ctrl))
+		st := t.step(f)
+		assert st.role == .stray, '${why}: ${st.role}'
+		assert t.open() == if announce { 0 } else { 1 }, why
+		assert !announces_session(f), why
+		checked++
+	}
+	assert checked == cm_fields.filter(it.rule != .any).len
+}
+
+// Byte 2 of an abort: 0xFF in the original edition, the abort's role in its low two bits since.
+// Both are aborts.
+fn test_an_abort_may_carry_its_role() {
+	for b2 in [u8(0xFF), 0xFC, 0xFD] {
+		mut f := abort(0x17, 0x00, 3, dm1)
+		f.data[2] = b2
+		mut r := Reassembler{}
+		r.feed(rts(0x17, 0x00, 20, dm1), 0)
+		ev := r.feed(f, 1)
+		assert ev.faults.len == 1 && ev.faults[0].kind == .aborted, '${b2:02X}: ${ev.faults.str()}'
+		mut t := Transfers{}
+		t.step(rts(0x17, 0x00, 20, dm1))
+		assert t.step(f).role == .sender_abort
+	}
+}
+
+fn test_abort_reasons_are_named_or_placed() {
+	assert abort_reason(3).contains('timeout')
+	assert abort_reason(250).contains('does not list')
+	assert abort_reason(254).contains('J1939-71 special value')
+	assert abort_reason(0).contains('not one J1939-21 names')
+	assert abort_reason(42).contains('not one J1939-21 names')
+}
+
+// A recording that stops mid-transfer: inside the wait, so no timeout says it, and `finish`
+// does — every session, with where it had got to.
+fn test_finish_says_every_session_still_open() {
+	mut r := Reassembler{}
+	msg := message(20)
+	r.feed(bam(0x00, msg.len, dm1), 0)
+	r.feed(packets(0x00, addr_global, msg)[0], 10)
+	r.feed(packets(0x00, addr_global, msg)[1], 20)
+	r.feed(rts(0x17, 0x00, msg.len, 0xFED8), 25)
+	assert r.expire(30).len == 0, 'inside the wait'
+	fs := r.finish('the recording ends')
+	assert fs.len == 2
+	assert fs.all(it.kind == .truncated && it.announced)
+	bam_f := fs.filter(it.sa == 0x00)[0]
+	assert bam_f.detail == 'after packet 2 of 3; the recording ends', bam_f.detail
+	assert fs.filter(it.sa == 0x17)[0].detail == 'after packet 0 of 3; the recording ends'
+	assert r.open() == 0
+	assert r.finish('again').len == 0
 }

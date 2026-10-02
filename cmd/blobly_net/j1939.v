@@ -312,6 +312,19 @@ fn (mut app App) j1939_expire_locked(mut obs J1939Obs, ch string, gate string, t
 	}
 }
 
+// j1939_finish_locked ends a listener's observation — the end of a recording — saying every
+// session still open as cut off (`why`), within the same narration budget as the faults; with
+// the reading off for the wire it drops them, as j1939_expire_locked does. Caller holds app.mu.
+fn (mut app App) j1939_finish_locked(mut obs J1939Obs, ch string, gate string, why string) {
+	if !app.j1939_on_locked(gate) {
+		obs.tp = j1939.Reassembler{}
+		return
+	}
+	for fl in obs.tp.finish(why) {
+		app.j1939_narrate_locked(mut obs, ch, fl)
+	}
+}
+
 // j1939_push_tp_locked gives each completed message a row of its own — the channel and origin
 // of the frame that completed it, the whole parameter group as data, flags TP, and the id a
 // single frame of the PGN would carry so the database decodes it like one. `push` says whether
@@ -327,10 +340,20 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 		// the protocol's own name for the few PGNs it has one for, else nothing: the reading in
 		// the same cell says PGN and sender either way.
 		mut name := ''
-		if m := find_pgn_message_in(app.dbs_for_gate(gate), a.pgn, a.sa) {
-			name = m.name
+		pm := candb.pgn_message_in(app.dbs_for_gate(gate), a.pgn, a.sa)
+		if pm.found {
+			name = pm.msg.name
 		} else {
 			name = j1939.pgn_name(a.pgn) or { '' }
+			// definitions that cannot be told apart decode nothing — said once, not left as a
+			// row that is silently undecoded (#331)
+			if pm.refused != '' {
+				uk := '${gate}|${a.pgn}|${a.sa}'
+				if uk !in app.j1939_undecoded {
+					app.j1939_undecoded[uk] = true
+					app.log_append_locked('${ch}: J1939 ${pm.refused}')
+				}
+			}
 		}
 		how := if a.bam { 'BAM' } else { 'RTS/CTS' }
 		reading := '${app.j1939_reading_locked(gate, key, id, true)} · ${a.packets()} packets ${how}'
@@ -368,10 +391,6 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 	return n
 }
 
-// find_pgn_message_in is the message a J1939 parameter group FROM `sa` decodes against, over
-// the given databases: one spelled at exactly that address first (a database may define one
-// PGN at several addresses with several layouts — codex on #329), then by PGN alone; declared
-// before undeclared at each step, the first database with a match winning.
 // find_pgn_message_idx is find_pgn_message_in, saying WHICH of the databases answered.
 //
 // For the one caller that cannot tell from the message itself: two databases on a wire may
@@ -403,44 +422,12 @@ fn same_definition(a candb.Message, b candb.Message) bool {
 	return a.name == b.name && a.id == b.id && a.ext == b.ext && a.j1939 == b.j1939
 }
 
+// find_pgn_message_in is the message a J1939 parameter group FROM `sa` decodes against, over
+// the given databases — `candb.pgn_message_in`, which states the rule.
 fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
-	// A (PGN, SA) the databases define twice — two priorities with two layouts — decodes
-	// NOTHING: the announcement carries neither, and the first definition would be an
-	// arbitrary schema shown as signal values (codex on #329). The row keeps its reading.
-	for db in dbs {
-		if db.pgn_sa_contested(pgn, sa) {
-			return none
-		}
-	}
-	for db in dbs {
-		if m := db.lookup_pgn_sa(pgn, sa) {
-			if m.j1939 {
-				return m
-			}
-		}
-	}
-	for db in dbs {
-		if m := db.lookup_pgn_sa(pgn, sa) {
-			return m
-		}
-	}
-	// An UNSPELLED address falls to the PGN alone — and only where the PGN's definitions agree
-	// about the layout: source-specific variants with different signals would make the first
-	// an arbitrary schema shown as values (codex on #329).
-	if !candb.pgn_layouts_agree_in(dbs, pgn) {
-		return none
-	}
-	for db in dbs {
-		if m := db.lookup_pgn(pgn) {
-			if m.j1939 {
-				return m
-			}
-		}
-	}
-	for db in dbs {
-		if m := db.lookup_pgn(pgn) {
-			return m
-		}
+	pm := candb.pgn_message_in(dbs, pgn, sa)
+	if pm.found {
+		return pm.msg
 	}
 	return none
 }

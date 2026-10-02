@@ -180,21 +180,113 @@ pub fn (m Message) layout_key() string {
 // two files each defining the PGN once, differently, and per-file agreement says nothing about
 // that (codex on #329).
 pub fn pgn_layouts_agree_in(dbs []Database, pgn u32) bool {
-	mut first := ''
+	return layouts_agree(pgn_definitions_in(dbs, pgn))
+}
+
+// pgn_definitions_in is every extended message defining `pgn`, over the databases in order.
+fn pgn_definitions_in(dbs []Database, pgn u32) []Message {
+	mut ms := []Message{}
 	for db in dbs {
 		for m in db.messages {
-			if !m.ext || j1939_pgn(m.id) != pgn {
-				continue
-			}
-			l := m.layout_key()
-			if first == '' {
-				first = l
-			} else if l != first {
-				return false
+			if m.ext && j1939_pgn(m.id) == pgn {
+				ms << m
 			}
 		}
 	}
+	return ms
+}
+
+// PgnMatch is what a J1939 parameter group FROM a known source address decodes against over
+// one wire's databases: the message, or — where definitions exist but cannot be told apart —
+// none, and `refused` says why, so a caller can say it rather than show the row undecoded in
+// silence. Neither: nothing defines the group.
+pub struct PgnMatch {
+pub:
+	found   bool
+	msg     Message
+	refused string
+}
+
+// pgn_message_in is THE lookup for a rejoined transport-protocol message (#331): over every
+// database on the wire, the message spelled at exactly `(pgn, sa)` first, then by PGN alone;
+// declared before undeclared at each step, the first database with a match winning. An
+// announcement carries neither priority nor layout, so wherever the candidates DISAGREE about
+// the layout nothing is decoded — two definitions at the pair in one file, two files each
+// defining the pair once with different layouts, or (for an unspelled address) the PGN's
+// definitions differing — because the first would be an arbitrary schema shown as values.
+pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
+	for db in dbs {
+		if db.pgn_sa_contested(pgn, sa) {
+			return PgnMatch{
+				refused: 'PGN 0x${pgn:04X} from SA 0x${sa:02X} is defined more than once in one database; not decoded'
+			}
+		}
+	}
+	mut exact := []Message{}
+	for db in dbs {
+		if m := db.lookup_pgn_sa(pgn, sa) {
+			exact << m
+		}
+	}
+	if exact.len > 0 {
+		if !layouts_agree(exact) {
+			return PgnMatch{
+				refused: 'PGN 0x${pgn:04X} from SA 0x${sa:02X} has ${exact.len} definitions with different layouts (${names_of(exact)}); not decoded'
+			}
+		}
+		return PgnMatch{
+			found: true
+			msg:   first_declared(exact)
+		}
+	}
+	by_pgn := pgn_definitions_in(dbs, pgn)
+	if by_pgn.len == 0 {
+		return PgnMatch{}
+	}
+	if !layouts_agree(by_pgn) {
+		return PgnMatch{
+			refused: 'PGN 0x${pgn:04X} is not spelled at SA 0x${sa:02X} and its ${by_pgn.len} definitions have different layouts (${names_of(by_pgn)}); not decoded'
+		}
+	}
+	// the database's own choice within each file (lookup_pgn), declared first across them
+	mut picks := []Message{}
+	for db in dbs {
+		if m := db.lookup_pgn(pgn) {
+			picks << m
+		}
+	}
+	return PgnMatch{
+		found: true
+		msg:   first_declared(picks)
+	}
+}
+
+fn layouts_agree(ms []Message) bool {
+	for m in ms {
+		if m.layout_key() != ms[0].layout_key() {
+			return false
+		}
+	}
 	return true
+}
+
+fn first_declared(ms []Message) Message {
+	for m in ms {
+		if m.j1939 {
+			return m
+		}
+	}
+	return ms[0]
+}
+
+fn names_of(ms []Message) string {
+	mut out := []string{}
+	for m in ms {
+		if m.name !in out {
+			out << m.name
+		}
+	}
+	return out.join(', ')
 }
 
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
