@@ -18,9 +18,10 @@ fn draw_quick_send(mut app App) {
 	// target bus: validate the stored quick-send iface against the current channels; fall back to
 	// the default send_iface if it was removed/renamed.
 	//
-	// The row is the one the combo picked while it still spells qs_iface, else the FIRST row on
-	// the target — the row chan_name_for names, so the combo, the "on …" line and the format
-	// picker (whose offer depends on the row, #203) agree on a wire two rows share.
+	// The row is the one the combo picked while it still spells qs_iface, else the first row on
+	// the target that the run gives a tap of its own (else the first at all), so the combo, the
+	// "on …" line, the send's attribution and the format picker (whose offer depends on the row,
+	// #203) agree on a wire two rows share.
 	mut target := app.send_iface
 	mut cur := 0
 	// Whether `cur` IS the target's row, rather than row 0 standing in for a target no row spells.
@@ -31,7 +32,8 @@ fn draw_quick_send(mut app App) {
 		if qs_at < 0 && app.qs_iface != '' && c.iface == app.qs_iface {
 			qs_at = k
 		}
-		if target_at < 0 && c.iface == target {
+		if c.iface == target && (target_at < 0
+			|| (!app.chans[target_at].has_named_tap() && c.has_named_tap())) {
 			target_at = k
 		}
 	}
@@ -84,7 +86,17 @@ fn draw_quick_send(mut app App) {
 	// how a classic frame gets out, on the FD row of an undeclared wire how an FD one does.
 	wire_fr := transport.wire_framing(target)
 	row_fr := app.quick_send_row_framing(if matched { cur } else { -1 })
-	offered := transport.format_choice_offered(row_fr, wire_fr)
+	row_enabled := matched && cur < app.chans.len && app.chans[cur].enabled
+	offered := transport.format_choice_offered(row_fr, row_enabled, wire_fr)
+	// THE ROW SENDS, not the wire: on a wire two rows share, the anonymous tap attributes the
+	// frame to the first of them, which is not the row the format above was chosen for. A row
+	// with no tap of its own (disabled, Ethernet) falls back to the wire's, as before.
+	send_chan := if matched && cur < app.chans.len && app.chans[cur].has_named_tap() {
+		app.chans[cur].name
+	} else {
+		''
+	}
+	on_name := if send_chan != '' { send_chan } else { app.chan_name_for(target) }
 	if offered {
 		labels := transport.frame_formats.map(if it == .wire {
 			'${it.label()} (${wire_fr.label()})'
@@ -108,17 +120,17 @@ fn draw_quick_send(mut app App) {
 				data: data
 			})
 			{
-				app.tx_on(target, frame)
+				app.tx_on_chan(send_chan, target, frame)
 			} else {
 				app.notify('TX not sent: ${err}')
 			}
 		}
 		vgui.same_line()
-		vgui.text_dim('on ${app.chan_name_for(target)}')
+		vgui.text_dim('on ${on_name}')
 	} else {
 		vgui.text_dim('[ Send ]')
 		vgui.same_line()
-		vgui.text_dim('on ${app.chan_name_for(target)} · Start to send')
+		vgui.text_dim('on ${on_name} · Start to send')
 	}
 }
 

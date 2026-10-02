@@ -512,7 +512,7 @@ fn (app &App) phys_for_locked(iface string) string {
 fn (app &App) tap_plan_locked() []TapWant {
 	mut plan := []TapWant{}
 	for ch in app.chans {
-		if ch.enabled && !ch.eth() {
+		if ch.has_named_tap() {
 			plan << TapWant{ch.name, ch.iface, app.phys_for_locked(ch.iface)}
 		}
 	}

@@ -325,7 +325,10 @@ fn test_the_choice_is_offered_only_where_it_can_change_the_frame() {
 	fd := Framing{
 		fd: true
 	}
-	assert !format_choice_offered(classic, classic), 'every frame is classic either way'
-	assert format_choice_offered(classic, fd), 'an FD wire: how a classic frame gets out'
-	assert format_choice_offered(fd, classic), 'an FD row on a disputed wire: how an FD frame gets out'
+	assert !format_choice_offered(classic, true, classic), 'every frame is classic either way'
+	assert format_choice_offered(classic, true, fd), 'an FD wire: how a classic frame gets out'
+	assert format_choice_offered(classic, false, fd), 'an FD wire, whichever row names it'
+	assert format_choice_offered(fd, true, classic), 'an FD row on a disputed wire: how an FD frame gets out'
+	// A disabled FD alias of an enabled classic row: the wire table ignores it, so must this.
+	assert !format_choice_offered(fd, false, classic), 'a disabled row declares nothing about the run'
 }

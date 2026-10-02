@@ -487,6 +487,12 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 // tx_bus_key identifies a tester bus by the CHANNEL that owns it as well as its interface: two
 // channels can share one wire, and a tap opened without the name attributes every frame to
 // whichever channel happens to be listed first.
+// has_named_tap reports whether a run opens this row its own transmit tap (tap_plan_locked), so a
+// manual send can be attributed to the row rather than to the first row on its wire.
+fn (c Chan) has_named_tap() bool {
+	return c.enabled && !c.eth()
+}
+
 fn tx_bus_key(chan_name string, iface string) string {
 	// project.compose_key is injective — see its comment for why a plain 'a|b' is not, and
 	// modules/project/key_test.v for the property under inputs that contain the separator.

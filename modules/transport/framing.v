@@ -174,12 +174,14 @@ pub fn (ff FrameFormat) stamp(f CanFrame) !CanFrame {
 }
 
 // format_choice_offered reports whether a per-frame format choice can change anything for a frame
-// sent from a row declaring `row` onto a wire declaring `wire`.
+// sent from a row declaring `row` (enabled or not) onto a wire declaring `wire`.
 //
 // On a classic row of an undeclared wire every frame goes out classic and the choice would be one
 // the operator has to reason about for nothing. On an FD wire it is how a classic frame gets out;
-// on an FD row of an undeclared wire (two rows disagree, `project.wire_framings`) it is how an FD
-// frame gets out.
-pub fn format_choice_offered(row Framing, wire Framing) bool {
-	return row.fd || wire.fd
+// on an ENABLED FD row of an undeclared wire (two enabled rows disagree, `project.wire_framings`)
+// it is how an FD frame gets out. A DISABLED row declares nothing about the run — the wire table
+// ignores it — so its FD alone offers nothing: an FD frame from it would contradict the only
+// declaration the run has.
+pub fn format_choice_offered(row Framing, row_enabled bool, wire Framing) bool {
+	return wire.fd || (row.fd && row_enabled)
 }

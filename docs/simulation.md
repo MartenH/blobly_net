@@ -20,7 +20,7 @@ Replay is unchanged: frames read from a recording carry the FD bits the recordin
 
 **One frame at a time, by hand** (#203). An FD wire carries classic frames too, so **Quick Send**
 (Generators panel) has a **format** picker — *as declared*, *classic*, *FD*, *FD+BRS* — wherever
-the choice can change the frame: on a channel whose wire is CAN-FD, and on a `canfd` row whose
+the choice can change the frame: on a channel whose wire is CAN-FD, and on an enabled `canfd` row whose
 wire is undeclared because another enabled row on it is classic. A classic channel shows no
 picker, since every frame there is classic either way. Scripts say the same with
 `bus.send(ch, id, data, { format = "classic" })`. A stated classic frame longer than eight bytes
