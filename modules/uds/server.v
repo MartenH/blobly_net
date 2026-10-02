@@ -209,14 +209,30 @@ fn (mut s Server) answer(req []u8) []u8 {
 // keeps this free of any one channel's spelling of "timeout". The GUI drives its own loop on
 // its own thread; this one is for a spawned server whose owner says when it is done.
 // `stop` is checked between requests, so the server leaves within one receive poll; give each
-// server its own, cap 1, and signalling it never blocks.
+// server its own, cap 1, and signalling it never blocks (closing it works too). It is read
+// without being taken, so a software channel's segmented answer can ask it as well and abandon
+// the transfer rather than finish it (#347).
 pub fn (mut s Server) serve(mut ch isotp.Channel, stop chan bool) {
+	stopped := fn [stop] () bool {
+		return stop.len > 0 || stop.closed
+	}
+	// installed for this serve only: the caller's own hook is put back on the way out
+	mut prev := stopped
+	if mut ch is isotp.SoftChannel {
+		prev = ch.stop_requested
+		ch.stop_requested = stopped
+	}
 	for {
-		select {
-			_ := <-stop {
-				return
+		if stopped() {
+			if mut ch is isotp.SoftChannel {
+				ch.stop_requested = prev
 			}
-			else {}
+			// taken, as the select this replaced took it, so `stop` can serve again
+			select {
+				_ := <-stop {}
+				else {}
+			}
+			return
 		}
 		req := ch.recv(50) or { continue }
 		resp := s.handle(req)

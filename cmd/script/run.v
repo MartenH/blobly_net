@@ -499,6 +499,10 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fext bool, srv
 		stdatomic.add_i64(&loops_done, 1)
 	}
 	mut ch := isotp.open_software(iface, tx, rx, ext) or { return }
+	// a run worker: Stop abandons an answer still being segmented (#347)
+	ch.stop_requested = fn [ctl] () bool {
+		return !ctl.running
+	}
 	mut link := uds.NodeLink{
 		phys: ch
 	}
@@ -586,6 +590,9 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 	// Server side: transmit responses on 0x7E8, receive requests on 0x7E0
 	// (the mirror of the tester's tx 0x7E0 / rx 0x7E8).
 	mut ch := isotp.open_software(iface, 0x7E8, 0x7E0, false) or { return }
+	ch.stop_requested = fn [ctl] () bool {
+		return !ctl.running
+	}
 	mut srv := uds.default_server()
 	for ctl.running {
 		req := ch.recv(50) or { continue }
