@@ -1274,11 +1274,14 @@ fn l_bus_send(l lua.State) int {
 	mut env := env_of(l)
 	name := l.arg_str(1)
 	mut bus := env.bus_for(name) or { return l.fail(err.msg()) }
-	bus.send(transport.CanFrame{
+	// `format =` states the frame's format (#203); absent, the wire's declaration decides.
+	ff := transport.parse_frame_format(l.arg_str(5)) or { return l.fail(err.msg()) }
+	frame := ff.stamp(transport.CanFrame{
 		id:       u32(l.arg_int(2))
 		extended: l.arg_bool(3)
 		data:     l.arg_bytes(4)
-	}) or { return l.fail('send failed on ${name}: ${err}') }
+	}) or { return l.fail('${name}: ${err}') }
+	bus.send(frame) or { return l.fail('send failed on ${name}: ${err}') }
 	return 0
 }
 

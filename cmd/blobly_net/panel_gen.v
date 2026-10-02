@@ -56,14 +56,39 @@ fn draw_quick_send(mut app App) {
 	// pushed "data (hex)" off the panel edge (codex round 1 on #256).
 	vgui.set_next_item_width(260 * app.prefs.ui_scale)
 	vgui.input_text('data (hex)', mut app.send_data_buf)
+	// THE FRAME'S FORMAT, only where choosing one can change it (#203): on a CAN-FD wire it is
+	// how a classic frame gets out, on the FD row of an undeclared wire how an FD one does.
+	wire_fr := transport.wire_framing(target)
+	offered := app.chans.len > 0 && transport.format_choice_offered(app.quick_send_row_framing(cur),
+		wire_fr)
+	if offered {
+		mut labels := []string{cap: transport.frame_format_names.len}
+		for name in transport.frame_format_names {
+			ff := transport.parse_frame_format(name) or { continue }
+			labels << if ff == .wire { '${ff.label()} (${wire_fr.label()})' } else { ff.label() }
+		}
+		vgui.set_next_item_width(220 * app.prefs.ui_scale)
+		sel := vgui.combo('format##qsfmt', labels, int(app.qs_format))
+		if sel != int(app.qs_format) && sel >= 0 && sel < transport.frame_format_names.len {
+			app.qs_format = transport.parse_frame_format(transport.frame_format_names[sel]) or {
+				transport.FrameFormat.wire
+			}
+		}
+	}
 	if app.running {
 		if vgui.button('Send##quicksend') {
 			id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
 			data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
-			app.tx_on(target, transport.CanFrame{
+			ff := if offered { app.qs_format } else { transport.FrameFormat.wire }
+			if frame := ff.stamp(transport.CanFrame{
 				id:   id
 				data: data
 			})
+			{
+				app.tx_on(target, frame)
+			} else {
+				app.notify('TX not sent: ${err}')
+			}
 		}
 		vgui.same_line()
 		vgui.text_dim('on ${app.chan_name_for(target)}')
@@ -72,6 +97,19 @@ fn draw_quick_send(mut app App) {
 		vgui.same_line()
 		vgui.text_dim('on ${app.chan_name_for(target)} · Start to send')
 	}
+}
+
+// quick_send_row_framing is the format the Quick Send row at `idx` declares; classic when it has
+// no project row.
+fn (app &App) quick_send_row_framing(idx int) transport.Framing {
+	if idx < 0 || idx >= app.chans.len {
+		return transport.Framing{}
+	}
+	pi := app.chans[idx].proj_idx
+	if pi < 0 || pi >= app.proj.channels.len {
+		return transport.Framing{}
+	}
+	return app.proj.channels[pi].origination_framing().to_wire()
 }
 
 // ---- Generators (interactive send blocks) ----

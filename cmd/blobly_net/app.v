@@ -322,6 +322,7 @@ mut:
 	tx_buses          map[string]transport.Bus
 	send_iface        string
 	qs_iface          string // Quick send target bus (a channel iface); '' = send_iface default
+	qs_format         transport.FrameFormat // Quick send's per-frame format (#203); .wire = as declared
 	send_id_buf       []u8
 	send_data_buf     []u8
 	trace_filter_buf  []u8   // Trace substring filter

@@ -53,8 +53,8 @@ pub fn wire_framing(iface string) Framing {
 // replaced while a Lua script still holds a bus it opened, and an answer frozen at open time is one
 // that goes stale while a wire transmits.
 pub fn framed_for_wire(iface string, f CanFrame) CanFrame {
-	if f.fd {
-		return f
+	if f.fd || f.format_stated {
+		return f.unstated()
 	}
 	return wire_framing(iface).apply(f)
 }
@@ -62,7 +62,14 @@ pub fn framed_for_wire(iface string, f CanFrame) CanFrame {
 // apply is the stamp itself. Idempotent: it is applied at the GUI tap (so the trace RECORDS the
 // frame that will actually go out) and again inside the bus for emitters that hold no tap, and a
 // frame already carrying `fd` passes through both untouched.
+//
+// A frame whose format was STATED (`format_stated`, #203) is the caller's decision and is never
+// stamped — that is how a classic frame reaches a CAN-FD wire. The flag is consumed here: what
+// comes out is the frame that goes on, and nothing past this point needs to know it was stated.
 pub fn (fr Framing) apply(f CanFrame) CanFrame {
+	if f.format_stated {
+		return f.unstated()
+	}
 	if f.fd || !fr.fd {
 		return f
 	}
@@ -71,4 +78,101 @@ pub fn (fr Framing) apply(f CanFrame) CanFrame {
 		fd:  true
 		brs: fr.brs
 	}
+}
+
+// unstated is the frame with the send-side intent removed, once the format has been decided.
+pub fn (f CanFrame) unstated() CanFrame {
+	if !f.format_stated {
+		return f
+	}
+	return CanFrame{
+		...f
+		format_stated: false
+	}
+}
+
+// ---- a format chosen PER FRAME (#203) ---------------------------------------------------------
+//
+// The wire table above answers "what does this wire carry". Two formats on one CAN-FD wire is
+// ordinary traffic, though, and an operator poking a bus by hand needs to say "this one frame is
+// classic" — which `fd == false` cannot, since that already means "not stated". FrameFormat is the
+// statement, made by the one caller that means it (Quick Send, Lua's `bus.send` with `format =`),
+// and carried ON THE FRAME so it survives every wrapper between that caller and the wire: the
+// GUI's tap and `SilentBus` both frame through `Framing.apply`, which leaves a stated frame alone.
+//
+// Everything else — generators, simulated ECUs, ISO-TP, flash, replay — states nothing and is
+// framed per wire as before.
+
+// FrameFormat is a per-frame format choice. `wire` states nothing: the wire's declaration decides.
+pub enum FrameFormat {
+	wire
+	classic
+	fd
+	fd_brs
+}
+
+// frame_format_names are the spellings `parse_frame_format` accepts, in the order a picker lists them.
+pub const frame_format_names = ['wire', 'classic', 'fd', 'fd_brs']
+
+// parse_frame_format reads a format name; '' is `wire`.
+pub fn parse_frame_format(s string) !FrameFormat {
+	return match s.to_lower() {
+		'', 'wire' { FrameFormat.wire }
+		'classic' { FrameFormat.classic }
+		'fd' { FrameFormat.fd }
+		'fd_brs', 'fd+brs' { FrameFormat.fd_brs }
+		else { error('unknown frame format "${s}" (want classic, fd or fd_brs)') }
+	}
+}
+
+// label is how a picker names the choice.
+pub fn (ff FrameFormat) label() string {
+	return match ff {
+		.wire { 'as declared' }
+		.classic { 'classic' }
+		.fd { 'FD' }
+		.fd_brs { 'FD+BRS' }
+	}
+}
+
+// label is how a picker names a wire's declared format.
+pub fn (fr Framing) label() string {
+	return if !fr.fd {
+		'classic'
+	} else if fr.brs {
+		'FD+BRS'
+	} else {
+		'FD'
+	}
+}
+
+// stamp states this format on `f`. `wire` returns it unchanged — unstated, so the wire decides.
+//
+// A classic frame carries at most eight bytes, so a stated classic frame with more is REFUSED here,
+// where the operator asked for it, rather than clamped by SocketCAN or refused by a vendor DLL
+// with a message that says nothing about the choice that caused it.
+pub fn (ff FrameFormat) stamp(f CanFrame) !CanFrame {
+	if ff == .wire {
+		return f
+	}
+	if ff == .classic && f.data.len > 8 {
+		return error('a classic frame carries at most 8 bytes, this one has ${f.data.len} — choose FD')
+	}
+	return CanFrame{
+		...f
+		fd:            ff != .classic
+		brs:           ff == .fd_brs
+		format_stated: true
+	}
+}
+
+// format_choice_offered reports whether a per-frame format choice can change anything for a frame
+// sent from a row declaring `row` onto a wire declaring `wire`.
+//
+// On a classic row of an undeclared wire every frame goes out classic and the choice would be one
+// the operator has to reason about for nothing. On an FD wire it is how a classic frame gets out;
+// on an FD row of an undeclared wire (two rows disagree, `project.wire_framings`) it is how an FD
+// frame gets out.
+pub fn format_choice_offered(row Framing, wire Framing) bool {
+	return row.fd || wire.fd
 }

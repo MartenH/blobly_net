@@ -196,3 +196,128 @@ fn test_a_verbatim_bus_still_obeys_listen_only() {
 		assert false, 'listen-only outranks whoever owns the format'
 	}
 }
+
+// ---- a format STATED per frame (#203) ---------------------------------------------------------
+
+// The case the wire table could not reach: a classic frame, on purpose, on a CAN-FD wire — through
+// an ordinary bus, so the stamping every other emitter relies on is what it has to survive.
+fn test_a_stated_classic_frame_survives_an_fd_wire() {
+	clear_listen_only()
+	replace_wire_policy([], {'inproc:framing_stated': Framing{ fd: true, brs: true }})
+	mut tx := open('inproc:framing_stated') or {
+		assert false, 'tx: ${err}'
+		return
+	}
+	mut rx := open('inproc:framing_stated') or {
+		assert false, 'rx: ${err}'
+		return
+	}
+	defer {
+		tx.close()
+		rx.close()
+		clear_wire_framing()
+	}
+	classic := FrameFormat.classic.stamp(CanFrame{ id: 0x123, data: []u8{len: 8} }) or {
+		assert false, 'stamp: ${err}'
+		return
+	}
+	tx.send(classic) or {
+		assert false, 'send: ${err}'
+		return
+	}
+	got := rx.recv(500) or {
+		assert false, 'nothing arrived: ${err}'
+		return
+	}
+	assert !got.fd && !got.brs, 'stated classic must not be promoted by the wire'
+	assert !got.format_stated, 'the statement is consumed before the frame reaches a receiver'
+	// The NEXT frame states nothing, and the wire's declaration still applies to it.
+	tx.send(CanFrame{ id: 0x124, data: []u8{len: 8} }) or {
+		assert false, 'send: ${err}'
+		return
+	}
+	next := rx.recv(500) or {
+		assert false, 'nothing arrived: ${err}'
+		return
+	}
+	assert next.fd && next.brs, 'an unstated frame on the same wire is still stamped'
+}
+
+fn test_each_stated_format_is_what_goes_out() {
+	replace_wire_policy([], {'inproc:framing_each': Framing{ fd: true, brs: true }})
+	defer {
+		clear_wire_framing()
+	}
+	base := CanFrame{
+		id:   0x200
+		data: []u8{len: 8}
+	}
+	cases := {
+		FrameFormat.classic: [false, false]
+		FrameFormat.fd:      [true, false]
+		FrameFormat.fd_brs:  [true, true]
+	}
+	for ff, want in cases {
+		stated := ff.stamp(base) or {
+			assert false, '${ff}: ${err}'
+			return
+		}
+		assert stated.format_stated
+		out := framed_for_wire('inproc:framing_each', stated)
+		assert out.fd == want[0] && out.brs == want[1], '${ff} on an FD+BRS wire'
+		assert !out.format_stated
+		// And on a wire that declared nothing — the FD row of a disputed wire is this case.
+		bare := framed_for_wire('inproc:framing_undeclared', stated)
+		assert bare.fd == want[0] && bare.brs == want[1], '${ff} on an undeclared wire'
+	}
+	// `wire` states nothing: the wire decides.
+	w := FrameFormat.wire.stamp(base) or { panic(err) }
+	assert !w.format_stated
+	assert framed_for_wire('inproc:framing_each', w).fd
+}
+
+fn test_a_stated_classic_frame_longer_than_eight_bytes_is_refused() {
+	if _ := FrameFormat.classic.stamp(CanFrame{ id: 0x1, data: []u8{len: 12} }) {
+		assert false, 'a classic frame cannot carry 12 bytes'
+	}
+	fd := FrameFormat.fd.stamp(CanFrame{ id: 0x1, data: []u8{len: 12} }) or { panic(err) }
+	assert fd.fd
+}
+
+fn test_a_verbatim_bus_drops_the_statement_too() {
+	clear_listen_only()
+	clear_wire_framing()
+	mut raw := open('inproc:framing_vstated') or { panic(err) }
+	mut tx := verbatim(mut raw)
+	mut rx := open('inproc:framing_vstated') or { panic(err) }
+	defer {
+		tx.close()
+		rx.close()
+	}
+	tx.send(FrameFormat.fd.stamp(CanFrame{ id: 0x5 }) or { panic(err) }) or { panic(err) }
+	got := rx.recv(500) or { panic(err) }
+	assert got.fd
+	assert !got.format_stated
+}
+
+fn test_parse_frame_format() {
+	for name in frame_format_names {
+		parse_frame_format(name) or { assert false, name }
+	}
+	assert parse_frame_format('') or { FrameFormat.classic } == .wire
+	assert parse_frame_format('FD+BRS') or { FrameFormat.wire } == .fd_brs
+	if _ := parse_frame_format('fdx') {
+		assert false, 'an unknown name is refused, not read as the wire default'
+	}
+}
+
+// The choice is offered only where it changes something.
+fn test_the_choice_is_offered_only_where_it_can_change_the_frame() {
+	classic := Framing{}
+	fd := Framing{
+		fd: true
+	}
+	assert !format_choice_offered(classic, classic), 'every frame is classic either way'
+	assert format_choice_offered(classic, fd), 'an FD wire: how a classic frame gets out'
+	assert format_choice_offered(fd, classic), 'an FD row on a disputed wire: how an FD frame gets out'
+}

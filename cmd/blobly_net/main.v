@@ -238,6 +238,10 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_CONFIG') != '' {
 		app.show_config = true
 	}
+	// Same, for the Generators panel and its Quick Send.
+	if os.getenv('BLOBLY_SHOW_GEN') != '' {
+		app.show_gen = true
+	}
 	// Open a recording at startup, the way the file picker would. For the screenshot harness
 	// above all (VGUI_FRAMES / VGUI_SHOT): the picker cannot be driven from a headless run, so
 	// without this there is no way to check what an IMPORTED capture looks like — and the

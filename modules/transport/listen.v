@@ -252,7 +252,7 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	// NOT ON A VERBATIM BUS, whose caller has already decided — the GUI's tap frames before it
 	// records, and replay reproduces a recording rather than originating anything.
 	if s.verbatim {
-		s.inner.send(frame)!
+		s.inner.send(frame.unstated())!
 		return
 	}
 	s.inner.send(p.framing.apply(frame))!

@@ -760,17 +760,16 @@ pub fn wire_framings(chs []Channel) map[string]transport.Framing {
 		// not a regression — before this change every emitter built classic on every wire — but it
 		// is the one configuration this feature does not reach, and it cannot be reached from here:
 		// the table is keyed by WIRE and the disagreement is between ROWS. Two formats on one wire
-		// is ordinary CAN-FD traffic and wants a per-frame answer, which is #203.
+		// is ordinary CAN-FD traffic; the per-frame answer (transport.FrameFormat, #203) reaches it
+		// from Quick Send and Lua, which state each frame's format, but not from the generators or
+		// simulated ECUs, which follow this table.
 		if existing := out[k] {
 			if existing.fd != fr.fd || existing.brs != fr.brs {
 				disputed[k] = true
 			}
 			continue
 		}
-		out[k] = transport.Framing{
-			fd:  fr.fd
-			brs: fr.brs
-		}
+		out[k] = fr.to_wire()
 	}
 	for k, _ in disputed {
 		out.delete(k)
@@ -2030,12 +2029,13 @@ pub fn (c Channel) framed(f transport.CanFrame) transport.CanFrame {
 // from different directions: the GUI has the row and the headless runner has only what it passed
 // into its sim loop. One function either way, so they cannot drift about what `canfd` means.
 pub fn (fr Framing) apply(f transport.CanFrame) transport.CanFrame {
-	if f.fd || !fr.fd {
-		return f
-	}
-	return transport.CanFrame{
-		...f
-		fd:  true
+	return fr.to_wire().apply(f)
+}
+
+// to_wire is this framing as the wire table holds it — the one stamp, transport.Framing.apply.
+pub fn (fr Framing) to_wire() transport.Framing {
+	return transport.Framing{
+		fd:  fr.fd
 		brs: fr.brs
 	}
 }

@@ -16,6 +16,12 @@ pub mut:
 	// an FD-capable bus carries classic frames too, and a receiver distinguishes them.
 	fd  bool
 	brs bool
+	// SEND-SIDE ONLY: the caller STATED `fd`/`brs`, classic included, so the wire's declared
+	// format is not stamped onto it (#203). `fd == false` alone means "not stated" and is promoted
+	// on a CAN-FD wire; this is what says "classic, on purpose". Set through `FrameFormat.stamp`,
+	// consumed by the framing decision (`Framing.apply`, `framed_for_wire`) — the frame that goes
+	// on to a backend, a record or a receiver never carries it.
+	format_stated bool
 	// ESI — the transmitting node was error-passive when it sent this. A received STATUS, not a
 	// choice the sender makes, which is why it is deliberately absent from the echo identity in
 	// `wiretap` and from the trace's group key: a message whose transmitter goes error-passive

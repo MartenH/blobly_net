@@ -18,6 +18,15 @@ simulated ECUs all put real FD frames on an FD channel, with BRS when the data p
 from the arbitration one. Nothing in `modules/sim` sets the flag itself, and that is the point.
 Replay is unchanged: frames read from a recording carry the FD bits the recording captured.
 
+**One frame at a time, by hand** (#203). An FD wire carries classic frames too, so **Quick Send**
+(Generators panel) has a **format** picker — *as declared*, *classic*, *FD*, *FD+BRS* — wherever
+the choice can change the frame: on a channel whose wire is CAN-FD, and on a `canfd` row whose
+wire is undeclared because another enabled row on it is classic. A classic channel shows no
+picker, since every frame there is classic either way. Scripts say the same with
+`bus.send(ch, id, data, { format = "classic" })`. A stated classic frame longer than eight bytes
+is refused rather than truncated. Everything else (generators, simulated ECUs, diagnostics)
+follows the wire's declaration.
+
 Not every backend can carry it. SocketCAN, `inproc` and `udp` all do; Vector and Kvaser do, both
 verified on hardware — PCAN cross-vendor against a Kvaser at 1/2/4/8 Mbit/s (#217), Kvaser and
 Vector to 8 Mbit/s, CANsub at 2 Mbit/s.

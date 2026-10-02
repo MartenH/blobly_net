@@ -395,3 +395,45 @@ fn test_someip_send_and_call_against_a_static_peer() {
 	assert env.total() == 7
 	assert env.passed() == 7, env.results.filter(!it.ok).map(it.msg).str()
 }
+
+// bus.send's `format =` states the frame's format (#203): a classic frame on a CAN-FD wire, which
+// the wire's stamping would otherwise promote; without it the wire still decides.
+fn test_bus_send_states_a_frame_format() {
+	transport.replace_wire_policy([], {
+		'inproc:UT_fmt': transport.Framing{
+			fd:  true
+			brs: true
+		}
+	})
+	mut env := new_env([ChanInfo{
+		name:  'CAN1'
+		iface: 'inproc:UT_fmt'
+		db:    sample_db()
+	}]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	mut rx := transport.open('inproc:UT_fmt') or { panic(err) }
+	defer {
+		rx.close()
+		env.close()
+		transport.clear_wire_framing()
+	}
+	env.run_source('
+		test("formats", function()
+			bus.send("CAN1", 0x10, string.rep("\\0", 8), { format = "classic" })
+			bus.send("CAN1", 0x11, string.rep("\\0", 8))
+			bus.send("CAN1", 0x12, string.rep("\\0", 8), { format = "fd" })
+			check.equal(pcall(bus.send, "CAN1", 0x13, "", { format = "fdx" }), false)
+			check.equal(pcall(bus.send, "CAN1", 0x14, string.rep("\\0", 12), { format = "classic" }), false)
+		end)
+	')!
+	assert env.failed() == 0
+	classic := rx.recv(500) or { panic(err) }
+	assert classic.id == 0x10 && !classic.fd && !classic.brs
+	wire := rx.recv(500) or { panic(err) }
+	assert wire.id == 0x11 && wire.fd && wire.brs, 'unstated: the wire decides'
+	fd := rx.recv(500) or { panic(err) }
+	assert fd.id == 0x12 && fd.fd && !fd.brs
+	if extra := rx.recv(50) {
+		assert false, 'a refused send put 0x${extra.id:x} on the wire'
+	}
+}
