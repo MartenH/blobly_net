@@ -265,6 +265,11 @@ mut:
 	// RX path formats each once (j1939_display_locked). Dropped per wire when its directory
 	// changes, wholly when the databases or the override do.
 	j1939_labels map[string]&LabelCache
+	// Which rejoined parameter groups have been said to decode against nothing because their
+	// definitions disagree (`candb.pgn_message_in`), by observed wire (live destination or
+	// recorded bus), PGN and source — once each, reset wherever the labels are, since it too is
+	// a fact about the databases.
+	j1939_undecoded map[string]bool
 	// transport.destination_key per interface, for the emit path (dest_cached_locked). Reset with
 	// the runtime view.
 	dest_cache map[string]string
@@ -1453,6 +1458,7 @@ fn (mut app App) rebuild_from_proj() {
 		|| app.chans.any(!it.doip && !it.someip && it.j1939)
 	// the databases may have changed under every cached name and key
 	app.j1939_labels = map[string]&LabelCache{}
+	app.j1939_undecoded = map[string]bool{}
 
 	app.dest_cache = map[string]string{}
 	// A recording on screen was stamped and rejoined under the reading in force when it was

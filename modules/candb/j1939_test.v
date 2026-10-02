@@ -181,3 +181,89 @@ fn test_decode_via_pgn_match() {
 	assert s.name == 'EngineSpeed'
 	assert s.physical(data) == 836.0
 }
+
+// A definition for the lookup table: id, name, layout (which byte its one signal sits in) and
+// whether it is declared J1939.
+struct Def {
+	id   u32
+	name string
+	byte int
+	decl bool
+}
+
+// pdb builds one file from definitions, declaring per message (VFrameFormat index 3).
+fn pdb(defs []Def) Database {
+	mut t := 'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";\n'
+	for d in defs {
+		t += 'BO_ ${d.id} ${d.name}: 8 Vector__XXX\n SG_ S : ${d.byte * 8}|8@1+ (1,0) [0|255] "" Vector__XXX\n'
+	}
+	for d in defs {
+		if d.decl {
+			t += 'BA_ "VFrameFormat" BO_ ${d.id} 3;\n'
+		}
+	}
+	return parse_dbc(t) or { panic(err) }
+}
+
+struct LookupCase {
+	what  string
+	files [][]Def
+	sa    u8
+	want  string // the name found, or '' for none
+	why   string // a substring of the refusal, or '' for none
+}
+
+// THE LOOKUP A REJOINED MESSAGE DECODES BY (#331): ONE rule over every database on the wire —
+// the candidates gathered across all files, the declared kept where there are any, THEN judged
+// (two in one file at one pair, or layouts disagreeing) — at the exact (PGN, SA) step and the
+// PGN-only fallback alike. Every shape: declared / undeclared x same file / other file x
+// agreeing / disagreeing layouts, each in both file orders.
+fn test_pgn_message_in_one_rule_over_the_wire() {
+	// 0x98FECA00 and 0x9CFECA00: PGN 0xFECA from SA 0x00 at two priorities; 0x98FECA0B from 0x0B
+	p6 := u32(2566834688)
+	p7 := u32(2633943552)
+	b0 := u32(2566834699)
+	cases := [
+		LookupCase{'declared x2, other files, disagreeing', [[Def{p6, 'A', 0, true}], [Def{p6, 'B', 1, true}]], 0, '', 'different layouts'},
+		LookupCase{'declared x2, other files, agreeing', [[Def{p6, 'A', 0, true}], [Def{p6, 'A', 0, true}]], 0, 'A', ''},
+		LookupCase{'declared x2, same file', [[Def{p6, 'A', 0, true}, Def{p7, 'B', 0, true}]], 0, '', 'more than once'},
+		LookupCase{'undeclared x2, same file', [[Def{p6, 'A', 0, false}, Def{p7, 'B', 0, false}]], 0, '', 'more than once'},
+		LookupCase{'undeclared x2, other files, disagreeing', [[Def{p6, 'A', 0, false}], [Def{p6, 'B', 1, false}]], 0, '', 'different layouts'},
+		LookupCase{'undeclared x2, other files, agreeing', [[Def{p6, 'A', 0, false}], [Def{p6, 'A', 0, false}]], 0, 'A', ''},
+		LookupCase{'declared + undeclared, same file, disagreeing', [[Def{p6, 'D', 0, true}, Def{p7, 'U', 1, false}]], 0, 'D', ''},
+		LookupCase{'declared + undeclared, other files, disagreeing', [[Def{p6, 'D', 0, true}], [Def{p6, 'U', 1, false}]], 0, 'D', ''},
+		// codex #382 r2: a file contested only among UNDECLARED definitions must not pre-empt
+		// the declared one in a sibling file
+		LookupCase{'undeclared x2 in one file + declared in another', [[Def{p6, 'U1', 0, false}, Def{p7, 'U2', 1, false}], [Def{p6, 'D', 2, true}]], 0, 'D', ''},
+		// the PGN-only fallback (SA 0x17 is spelled nowhere), same rule
+		LookupCase{'fallback: declared, disagreeing', [[Def{p6, 'A', 0, true}], [Def{b0, 'B', 1, true}]], 0x17, '', 'different layouts'},
+		LookupCase{'fallback: declared, agreeing, one file', [[Def{p6, 'A', 0, true}, Def{b0, 'A0B', 0, true}]], 0x17, 'A', ''},
+		LookupCase{'fallback: declared + undeclared, disagreeing', [[Def{p6, 'D', 0, true}], [Def{b0, 'U', 1, false}]], 0x17, 'D', ''},
+		LookupCase{'fallback: undeclared, disagreeing', [[Def{p6, 'A', 0, false}], [Def{b0, 'B', 1, false}]], 0x17, '', 'not spelled at SA 0x17'},
+		LookupCase{'nothing defines it', [[Def{u32(0x98F00400), 'EEC1', 0, true}]], 0, '', ''},
+	]
+	for c in cases {
+		dbs := c.files.map(pdb(it))
+		mut orders := [dbs]
+		if dbs.len == 2 {
+			orders << [dbs[1], dbs[0]]
+		}
+		for o in orders {
+			pm := pgn_message_in(o, 0xFECA, c.sa)
+			if c.want != '' {
+				assert pm.found && pm.msg.name == c.want && pm.refused == '', '${c.what}: ${pm}'
+			} else {
+				assert !pm.found, '${c.what}: found ${pm.msg.name}'
+				if c.why == '' {
+					assert pm.refused == '', '${c.what}: ${pm.refused}'
+				} else {
+					assert pm.refused.contains(c.why), '${c.what}: ${pm.refused}'
+				}
+			}
+		}
+		// the per-file predicate is the same rule over one file
+		for db in dbs {
+			assert db.pgn_sa_contested(0xFECA, c.sa) == pgn_message_in([db], 0xFECA, c.sa).refused.contains('more than once'), c.what
+		}
+	}
+}

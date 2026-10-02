@@ -798,7 +798,9 @@ fn test_a_clear_to_send_naming_no_real_packet_keeps_nothing_alive() {
 		r.feed(cts(0x00, 0x17, dm1, bad), 600)
 		r.feed(cts(0x00, 0x17, dm1, bad), 1200)
 		ev := r.feed(cts(0x00, 0x17, dm1, bad), 1400)
-		assert ev.faults.len == 1, 'packet ${bad}: ${ev.faults.str()}'
+		// packet 0 is outside J1939-21's range, so that CTS is also refused as malformed
+		want := if bad == 0 { 2 } else { 1 }
+		assert ev.faults.len == want, 'packet ${bad}: ${ev.faults.str()}'
 		assert ev.faults[0].kind == .timeout, '${bad}'
 		assert r.open() == 0, '${bad}'
 	}
@@ -894,4 +896,255 @@ fn test_a_recording_answers_for_itself() {
 	mut std := bam(0x00, 20, dm1)
 	std.extended = false
 	assert !announces_session(std)
+}
+
+
+// bad is a value the row refuses, or none for a row that refuses nothing.
+fn (f CmField) bad() ?u32 {
+	max := (u32(1) << (8 * f.width)) - 1
+	match f.rule {
+		.range {
+			if f.lo > 0 {
+				return f.lo - 1
+			}
+			if f.hi < max {
+				return f.hi + 1
+			}
+		}
+		.fixed {
+			return f.lo ^ 1
+		}
+		.ones {
+			return u32(0)
+		}
+		.excludes {
+			// the reserved code, every other bit as a conforming frame has it
+			return (max & ~f.hi) | f.lo
+		}
+		.any {}
+	}
+	return none
+}
+
+// with writes `v` into the row's bytes of a copy of `f`.
+fn (row CmField) with(f transport.CanFrame, v u32) transport.CanFrame {
+	mut d := f.data.clone()
+	for i in 0 .. row.width {
+		d[row.at + i] = u8((v >> (8 * i)) & 0xFF)
+	}
+	return transport.CanFrame{
+		...f
+		data: d
+	}
+}
+
+// valid_cm is a well-formed frame of each control byte, about the transfer 0x17 -> 0x00 that
+// `open_transfer` starts — or, for an announcement, one that replaces it.
+fn valid_cm(ctrl u8) transport.CanFrame {
+	return match ctrl {
+		cm_rts { rts(0x17, 0x00, 20, dm1) }
+		cm_cts { cts(0x00, 0x17, dm1, 1) }
+		cm_eom_ack { cm(0x00, 0x17, cm_eom_ack, 20, 3, dm1) }
+		cm_bam { bam(0x17, 20, dm1) }
+		else { abort(0x17, 0x00, 3, dm1) }
+	}
+}
+
+fn open_transfer(ctrl u8) transport.CanFrame {
+	return if ctrl == cm_bam { bam(0x17, 20, dm1) } else { rts(0x17, 0x00, 20, dm1) }
+}
+
+// THE CLASS TEST (#341): every row of the table is fed a value it refuses. A field the readers
+// use refuses the frame — said once by the reassembler, acted on by neither tracker; a reserved
+// byte is said and the frame acted on as ever, in both.
+fn test_every_field_row_refuses_a_bad_value_in_both_trackers() {
+	mut checked := 0
+	for row in cm_fields {
+		good := valid_cm(row.ctrl)
+		gc := parse_cm(good.data) or { panic('valid ${row.ctrl} unparsable') }
+		assert gc.refusal() == none && gc.nonconformity() == none, '${row.name}: the valid frame is judged'
+		v := row.bad() or {
+			assert row.rule == .any, '${cm_name(row.ctrl)} ${row.name}: a rule with no value it refuses'
+			continue
+		}
+		f := row.with(good, v)
+		c := parse_cm(f.data) or { panic('unparsable') }
+		announce := row.ctrl == cm_rts || row.ctrl == cm_bam
+
+		// the same frame, judged and not, through both trackers
+		mut r := Reassembler{}
+		r.feed(open_transfer(row.ctrl), 0)
+		ev := r.feed(f, 10)
+		mut rg := Reassembler{}
+		rg.feed(open_transfer(row.ctrl), 0)
+		evg := rg.feed(good, 10)
+		mut t := Transfers{}
+		t.step(open_transfer(row.ctrl))
+		st := t.step(f)
+		mut tg := Transfers{}
+		tg.step(open_transfer(row.ctrl))
+		stg := tg.step(good)
+
+		if row.said {
+			why := c.nonconformity() or { panic('${cm_name(row.ctrl)} ${row.name} = ${v} is not said') }
+			assert c.refusal() == none, why
+			assert why.contains(row.name), why
+			off := ev.faults.filter(it.kind == .off_spec)
+			assert off.len == 1 && off[0].detail == why, '${why}: ${ev.faults.str()}'
+			// and otherwise exactly what the conforming frame does
+			assert ev.faults.filter(it.kind != .off_spec).map(it.kind) == evg.faults.map(it.kind), why
+			assert r.open() == rg.open(), why
+			assert st == stg, why
+			assert t.open() == tg.open(), why
+		} else {
+			why := c.refusal() or { panic('${cm_name(row.ctrl)} ${row.name} = ${v} is not refused') }
+			assert why.contains(row.name), why
+			bad := ev.faults.filter(it.kind == .malformed)
+			assert bad.len == 1 && bad[0].detail == why, '${why}: ${ev.faults.str()}'
+			assert ev.done.len == 0
+			// an announcement still ends the pair's previous transfer; nothing else touches it
+			assert r.open() == if announce { 0 } else { 1 }, why
+			assert st.role == .stray, '${why}: ${st.role}'
+			assert t.open() == if announce { 0 } else { 1 }, why
+			assert !announces_session(f), why
+		}
+		checked++
+	}
+	assert checked == cm_fields.filter(it.rule != .any).len
+}
+
+// Byte 2 of an abort: 0xFF in the original edition, the abort's role in its low two bits since.
+// Both are aborts.
+fn test_an_abort_may_carry_its_role() {
+	// every byte 2 that names the sender as this transfer's originator, or names no role
+	for b2 in [u8(0xFF), 0xFC, 0xFE] {
+		mut f := abort(0x17, 0x00, 3, dm1)
+		f.data[2] = b2
+		mut r := Reassembler{}
+		r.feed(rts(0x17, 0x00, 20, dm1), 0)
+		ev := r.feed(f, 1)
+		// the reserved role 10 is said as well, and then read as no role
+		assert ev.faults.filter(it.kind == .off_spec).len == if b2 == 0xFE { 1 } else { 0 }, '${b2:02X}: ${ev.faults.str()}'
+		ab := ev.faults.filter(it.kind == .aborted)
+		assert ab.len == 1, '${b2:02X}: ${ev.faults.str()}'
+		mut t := Transfers{}
+		t.step(rts(0x17, 0x00, 20, dm1))
+		assert t.step(f).role == .sender_abort
+	}
+}
+
+fn test_abort_reasons_are_named_or_placed() {
+	assert abort_reason(3).contains('timeout')
+	assert abort_reason(250) == 'reason 250, any other reason'
+	assert abort_reason(254).contains('J1939-71 special value')
+	assert abort_reason(0).contains('not one J1939-21 names')
+	assert abort_reason(42).contains('not one J1939-21 names')
+}
+
+// A recording that stops mid-transfer: inside the wait, so no timeout says it, and `finish`
+// does — every session, with where it had got to.
+fn test_finish_says_every_session_still_open() {
+	mut r := Reassembler{}
+	msg := message(20)
+	r.feed(bam(0x00, msg.len, dm1), 0)
+	r.feed(packets(0x00, addr_global, msg)[0], 10)
+	r.feed(packets(0x00, addr_global, msg)[1], 20)
+	r.feed(rts(0x17, 0x00, msg.len, 0xFED8), 25)
+	assert r.expire(30).len == 0, 'inside the wait'
+	fs := r.finish('the recording ends')
+	assert fs.len == 2
+	assert fs.all(it.kind == .truncated && it.announced)
+	bam_f := fs.filter(it.sa == 0x00)[0]
+	assert bam_f.detail == 'after packet 2 of 3; the recording ends', bam_f.detail
+	assert fs.filter(it.sa == 0x17)[0].detail == 'after packet 0 of 3; the recording ends'
+	assert r.open() == 0
+	assert r.finish('again').len == 0
+}
+
+// Two nodes with the SAME group open towards each other: an abort declaring its sender's role
+// (J1939-21 byte 2 bits 2..1) ends the transfer that role names, in both trackers; one with no
+// role (the first edition's 0xFF) ends the originator's direction first, as before.
+fn test_an_abort_role_picks_the_direction() {
+	// 0x17 -> 0x00 and 0x00 -> 0x17, both DM1; the abort comes from 0x00
+	// byte 2, and the originator of the transfer it ends
+	for c in [
+		[u8(0xFC), 0x00], // originator: 0x00's own transfer
+		[u8(0xFD), 0x17], // responder: the transfer 0x00 is receiving, from 0x17
+		[u8(0xFF), 0x00], // no role: the originator's direction first
+		[u8(0xFE), 0x00], // reserved role 10: as no role
+	] {
+		b2, ended_sa := c[0], c[1]
+		mut f := abort(0x00, 0x17, 3, dm1)
+		f.data[2] = b2
+		mut r := Reassembler{}
+		r.feed(rts(0x17, 0x00, 20, dm1), 0)
+		r.feed(rts(0x00, 0x17, 30, dm1), 1)
+		ev := r.feed(f, 2)
+		// the reserved role 10 is said as well, and then read as no role
+		assert ev.faults.filter(it.kind == .off_spec).len == if b2 == 0xFE { 1 } else { 0 }, '${b2:02X}: ${ev.faults.str()}'
+		ab := ev.faults.filter(it.kind == .aborted)
+		assert ab.len == 1, '${b2:02X}: ${ev.faults.str()}'
+		assert ab[0].sa == ended_sa, '${b2:02X}: ended ${ab[0].sa:02X}'
+		assert r.open() == 1
+		mut t := Transfers{}
+		t.step(rts(0x17, 0x00, 20, dm1))
+		t.step(rts(0x00, 0x17, 30, dm1))
+		st := t.step(f)
+		assert st.done && st.sa == ended_sa, '${b2:02X}: ${st}'
+		assert st.role == if ended_sa == 0x00 { Role.sender_abort } else { Role.receiver }
+		assert t.open() == 1
+	}
+	// a declared role with only the OTHER direction open ends nothing
+	mut only := abort(0x00, 0x17, 3, dm1)
+	only.data[2] = 0xFD // responder, but 0x00 -> 0x17 is the only transfer
+	mut r := Reassembler{}
+	r.feed(rts(0x00, 0x17, 30, dm1), 0)
+	assert r.feed(only, 1).faults.len == 0
+	assert r.open() == 1
+	mut t := Transfers{}
+	t.step(rts(0x00, 0x17, 30, dm1))
+	assert t.step(only).role == .stray
+	assert t.open() == 1
+}
+
+// The PDU1 relation (PF below 0xF0 means a zero low byte) holds for EVERY control frame's PGN,
+// not only an announcement's: a CTS, an acknowledgement or an abort naming 0xEA12 names no
+// group, and is refused like an out-of-range PGN — by both trackers.
+fn test_every_control_frame_names_a_real_pdu1_group() {
+	bad_pgn := u32(0xEA12)
+	frames := [cts(0x00, 0x17, bad_pgn, 1), cm(0x00, 0x17, cm_eom_ack, 20, 3, bad_pgn),
+		abort(0x17, 0x00, 3, bad_pgn)]
+	for f in frames {
+		c := parse_cm(f.data) or { panic('unparsable') }
+		why := c.control_refusal() or { panic('${cm_name(c.ctrl)} with PGN 0xEA12 not refused') }
+		assert why.contains('PDU1'), why
+		mut r := Reassembler{}
+		r.feed(rts(0x17, 0x00, 20, 0xEA00), 0)
+		ev := r.feed(f, 1)
+		assert ev.faults.len == 1 && ev.faults[0].kind == .malformed && ev.faults[0].detail == why, ev.faults.str()
+		assert r.open() == 1
+		mut t := Transfers{}
+		t.step(rts(0x17, 0x00, 20, 0xEA00))
+		assert t.step(f).role == .stray, why
+		assert t.open() == 1
+	}
+	// and the well-formed PDU1 group 0xEA00 is not refused
+	assert parse_cm(cts(0x00, 0x17, 0xEA00, 1).data)?.control_refusal() == none
+}
+
+// a CTS letting packets flow from packet 0 names nothing: refused by both trackers; a hold is not
+fn test_a_cts_from_packet_zero_is_refused() {
+	f := cts(0x00, 0x17, 0xEA00, 0)
+	c := parse_cm(f.data) or { panic('unparsable') }
+	why := c.control_refusal() or { panic('a CTS from packet 0 not refused') }
+	mut r := Reassembler{}
+	r.feed(rts(0x17, 0x00, 20, 0xEA00), 0)
+	ev := r.feed(f, 1)
+	assert ev.faults.len == 1 && ev.faults[0].kind == .malformed && ev.faults[0].detail == why, ev.faults.str()
+	mut t := Transfers{}
+	t.step(rts(0x17, 0x00, 20, 0xEA00))
+	assert t.step(f).role == .stray, why
+	mut hold := f.data.clone()
+	hold[1] = 0
+	assert parse_cm(hold)?.control_refusal() == none
 }

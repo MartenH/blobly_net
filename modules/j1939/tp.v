@@ -34,10 +34,10 @@ pub const cm_abort = u8(255)
 pub struct Cm {
 pub:
 	ctrl     u8
-	reserved u8 // byte 4: J1939-21 fixes it at 0xFF in a BAM; in an RTS it is packets-per-CTS
 	total    int // bytes announced (RTS, BAM); the abort reason sits in the same byte for an abort
 	packets  int // packets announced (RTS, BAM)
 	pgn      u32 // the parameter group the frame is about (bytes 5..7)
+	raw      [8]u8 // every byte, for the field table (cm_fields.v) and the per-control accessors
 }
 
 // tp_shaped says whether a frame has the SHAPE a J1939-21 transport frame has: classic CAN,
@@ -75,11 +75,15 @@ pub fn parse_cm(data []u8) ?Cm {
 	if data.len != 8 {
 		return none
 	}
+	mut raw := [8]u8{}
+	for i in 0 .. 8 {
+		raw[i] = data[i]
+	}
 	return Cm{
+		raw:  raw
 		ctrl: data[0]
 		total: int(binary.little_endian_u16_at(data, 1))
 		packets: int(data[3])
-		reserved: data[4]
 		pgn: u32(data[5]) | (u32(data[6]) << 8) | (u32(data[7]) << 16)
 	}
 }
@@ -159,29 +163,13 @@ pub fn (c Cm) admission(id Id) ?string {
 	if !bam && id.da() == addr_null {
 		return 'RTS to the null address, which no node holds'
 	}
-	if c.total < tp_min_size || c.total > tp_max_size {
-		return 'announces ${c.total} bytes; a multi-packet message is ${tp_min_size}..${tp_max_size}'
+	// Every field on its own — size, count, the PGN's 18 bits and its PDU1 low byte, the BAM's
+	// reserved byte (cm_fields).
+	if why := c.refusal() {
+		return why
 	}
 	if c.packets != packets_for(c.total) {
 		return 'announces ${c.total} bytes in ${c.packets} packets; ${c.total} bytes take ${packets_for(c.total)}'
-	}
-	// The PGN it carries must be one: 18 bits, and for a PDU1 group (PF below 0xF0) a zero low
-	// byte, since that byte is a destination there and not part of any PGN. Followed anyway,
-	// compose() would silently drop the bits and present the transfer as a DIFFERENT, valid
-	// parameter group (codex on #329).
-	if c.pgn > 0x3FFFF {
-		return 'carries PGN 0x${c.pgn:X}, which is wider than 18 bits'
-	}
-	if ((c.pgn >> 8) & 0xFF) < 0xF0 && (c.pgn & 0xFF) != 0 {
-		return 'carries PGN 0x${c.pgn:05X}, a PDU1 group with a nonzero low byte'
-	}
-	// Byte 4 is RESERVED IN A BAM and J1939-21 fixes it at 0xFF, so a frame carrying anything
-	// else there is not a broadcast announcement — and admitted as one it becomes a synthetic
-	// message, and something the rest-bus walker attributes and may withhold (codex). In an RTS
-	// the same byte is a real field (packets the sender may send per CTS), which this listener
-	// does not act on, so it is not judged here.
-	if bam && c.reserved != 0xFF {
-		return 'BAM reserved byte 0x${c.reserved:02X}; J1939-21 fixes it at 0xFF'
 	}
 	// And it must come from a node: the null address (a Cannot Claim's source) and the global
 	// address originate nothing, so a transfer "from" either is a frame of some other making and
@@ -308,6 +296,12 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				role: .stray
 			}
 		}
+		// A control frame the field table refuses acts on nothing (cm_fields.v).
+		if _ := cm.control_refusal() {
+			return Step{
+				role: .stray
+			}
+		}
 		match cm.ctrl {
 			cm_rts, cm_bam {
 				if _ := cm.admission(id) {
@@ -341,38 +335,36 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				}
 			}
 			cm_abort {
-				// The abort names its PGN; from the originator it ends the transfer keyed this
-				// way, from the receiver the one keyed the other way — and neither if it names
-				// a transfer neither is (two nodes can be mid-transfer in both directions).
-				if s := t.open[k] {
-					if s.pgn == cm.pgn {
-						t.open.delete(k)
-						return Step{
-							role: .sender_abort
-							pgn: s.pgn
-							priority: s.priority
-							sa: id.sa
-							da: id.da()
-							done: true
-						}
-					}
-				}
+				// The abort names its PGN, and since J1939-21's second edition its sender's role:
+				// one rule picks the transfer, the reassembler's (abort_targets_forward).
 				rk := skey(id.da(), id.sa)
-				if s := t.open[rk] {
-					// the RECEIVER's abort, which a broadcast has none of (receiver_control)
-					if receiver_control(id, s.bam) && s.pgn == cm.pgn {
-						t.open.delete(rk)
-						return Step{
-							role: .receiver
-							pgn: s.pgn
-							sa: id.da()
-							da: id.sa
-							done: true
-						}
+				fs := if o := t.open[k] { ?AbortSide(AbortSide{o.pgn, o.bam}) } else { ?AbortSide(none) }
+				rs := if o := t.open[rk] { ?AbortSide(AbortSide{o.pgn, o.bam}) } else { ?AbortSide(none) }
+				forward := abort_targets_forward(id, cm, fs, rs) or {
+					return Step{
+						role: .stray
 					}
 				}
+				if forward {
+					s := t.open[k]
+					t.open.delete(k)
+					return Step{
+						role: .sender_abort
+						pgn: s.pgn
+						priority: s.priority
+						sa: id.sa
+						da: id.da()
+						done: true
+					}
+				}
+				s := t.open[rk]
+				t.open.delete(rk)
 				return Step{
-					role: .stray
+					role: .receiver
+					pgn: s.pgn
+					sa: id.da()
+					da: id.sa
+					done: true
 				}
 			}
 			cm_eom_ack {
@@ -404,8 +396,7 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				if mut s := t.open[rk] {
 					// the same packet-field test the reassembler makes, so the two agree about
 					// which controls keep a transfer alive
-					want := f.data[2]
-					if receiver_control(id, s.bam) && s.pgn == cm.pgn && want >= 1 && int(want) <= s.packets {
+					if receiver_control(id, s.bam) && s.pgn == cm.pgn && cm.names_packet(s.packets) {
 						s.last_s = t_s
 						t.open[rk] = s
 					}
@@ -534,6 +525,12 @@ pub enum FaultKind {
 	// NOT ABANDONED, alone among these: those bytes lie past the announced length, so the
 	// message is whole and correct and only the wire was wrong.
 	padding
+	// A reserved byte of a control frame not at the value J1939-21 fixes. REPORTED AND ACTED ON
+	// as ever, like `padding`: no reader uses the byte (cm_fields.v).
+	off_spec
+	// Still open when the observation ended — a recording that stopped mid-transfer, inside the
+	// wait that would otherwise have timed it out (`finish`).
+	truncated
 }
 
 // Fault is one thing that went wrong, about one session.
@@ -711,6 +708,19 @@ pub fn (mut r Reassembler) feed(f transport.CanFrame, now_ms f64) Events {
 	return ev
 }
 
+// finish ends the observation: every session still open is said as cut off — `why` is the
+// caller's, since only the caller knows what ended (a recording's last frame) — and dropped.
+// A session already past its wait is `expire`'s to say, so a caller ending a recording expires
+// at its last timestamp first.
+pub fn (mut r Reassembler) finish(why string) []Fault {
+	mut out := []Fault{}
+	for _, s in r.sessions {
+		out << s.fault(.truncated, 'after ${s.progress()}; ${why}')
+	}
+	r.sessions.clear()
+	return out
+}
+
 // expire drops every session that has waited longer than its limit for the next frame.
 pub fn (mut r Reassembler) expire(now_ms f64) []Fault {
 	mut out := []Fault{}
@@ -751,6 +761,15 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 	}
 	ctrl := cm.ctrl
 	carried := cm.pgn
+	// A control frame the field table refuses is said and acts on nothing — the rule
+	// `Transfers` asks; a reserved byte off the standard is said and the frame read as ever.
+	if why := cm.control_refusal() {
+		ev.faults << id.fault(.malformed, 0, false, why)
+		return
+	}
+	if why := cm.nonconformity() {
+		ev.faults << id.fault(.off_spec, 0, false, why)
+	}
 	match ctrl {
 		cm_bam, cm_rts {
 			bam := ctrl == cm_bam
@@ -805,9 +824,8 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 				// not a frame the receiver of THIS transfer sends, and repeating it kept a
 				// stalled transfer alive past the timeout it had earned (codex). The rewind
 				// below is then the subset of those that ask for a packet already passed.
-				want := data[2]
-				ok := want >= 1 && int(want) <= s.packets()
-				if receiver_control(id, s.bam) && s.pgn == carried && ok {
+				want := cm.next_packet()
+				if receiver_control(id, s.bam) && s.pgn == carried && cm.names_packet(s.packets()) {
 					s.t_last_ms = now_ms
 					// It also names WHICH PACKET to send next, and a receiver that missed one
 					// sends the peer BACK. The retransmission then arrived as a sequence the
@@ -845,39 +863,20 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 			}
 		}
 		cm_abort {
-			// From the originator (session keyed sa->da) or from the receiver (keyed da->sa);
-			// the frame does not say which, so both are tried — and the PGN it names decides,
-			// because two nodes can be mid-transfer in BOTH directions at once and an abort of
-			// one is not an abort of the other (codex on #329). Neither open, or neither
-			// carrying that PGN: nothing this listener tracked, and an abort about a session it
-			// never saw is not a fault of anything it can name.
-			reason := data[1]
-			// ONE session, the originator's direction first: two nodes mid-transfer towards each
-			// other with the SAME PGN would otherwise both lose to one abort (codex on #329) —
-			// and Transfers makes the same choice, so the walker and the trace agree.
-			// The forward key is the originator aborting its own transfer; the reversed one is
-			// the RECEIVER aborting, which a broadcast has none of and a non-node address
-			// cannot be — `receiver_control`, as the clear-to-send and the acknowledgement ask
-			// it. Without that, an abort "from" 0xFF deleted an open BAM through the reversed
-			// key, and cleared its rest-bus attribution with it (codex).
-			// The forward key is the ORIGINATOR aborting its own transfer; the reversed one is
-			// the RECEIVER aborting, which a broadcast has none of and a non-node address
-			// cannot be — `receiver_control`, as the clear-to-send and the acknowledgement ask
-			// it. Without that an abort "from" 0xFF deleted an open BAM through the reversed
-			// key, and `Transfers` cleared its rest-bus attribution with it (codex).
+			// From the originator (session keyed sa->da) or from the responder (keyed da->sa):
+			// ONE session, chosen by the rule `Transfers` asks too (abort_targets_forward) — the
+			// group it names, the role it declares, and a responder only where one can exist.
+			// Neither: nothing this listener tracked, and an abort about a session it never saw
+			// is not a fault of anything it can name.
 			fwd := skey(id.sa, id.da())
-			for k in [fwd, skey(id.da(), id.sa)] {
-				if s := r.sessions[k] {
-					if s.pgn != carried {
-						continue
-					}
-					if k != fwd && !receiver_control(id, s.bam) {
-						continue
-					}
-					ev.faults << s.fault(.aborted, 'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(reason)}')
-					r.sessions.delete(k)
-					break
-				}
+			rev := skey(id.da(), id.sa)
+			fs := if o := r.sessions[fwd] { ?AbortSide(AbortSide{o.pgn, o.bam}) } else { ?AbortSide(none) }
+			rs := if o := r.sessions[rev] { ?AbortSide(AbortSide{o.pgn, o.bam}) } else { ?AbortSide(none) }
+			if forward := abort_targets_forward(id, cm, fs, rs) {
+				k := if forward { fwd } else { rev }
+				s := r.sessions[k]
+				ev.faults << s.fault(.aborted, 'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(cm.reason())}')
+				r.sessions.delete(k)
 			}
 		}
 		else {
@@ -990,6 +989,8 @@ pub fn abort_reason(code u8) string {
 		7 { 'reason 7, bad sequence number' }
 		8 { 'reason 8, duplicate sequence number' }
 		9 { 'reason 9, message too large to send' }
-		else { 'reason ${code}' }
+		250 { 'reason 250, any other reason' }
+		251, 252, 253, 254, 255 { 'reason ${code}, a J1939-71 special value rather than a reason' }
+		else { 'reason ${code}, not one J1939-21 names for this transport protocol' }
 	}
 }

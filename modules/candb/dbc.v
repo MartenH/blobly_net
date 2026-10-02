@@ -121,18 +121,10 @@ pub fn (db Database) lookup_pgn_sa(pgn u32, sa u8) ?Message {
 // pgn_sa_contested says whether the database defines MORE THAN ONE message at a (PGN, SA) — two
 // priorities, say — so that a transfer's payload, whose announcement carries neither, cannot be
 // told which layout it has. A consumer that would decode it should decode nothing instead of
-// the first definition (codex on #329).
+// the first definition (codex on #329). Where any of them is declared J1939, only the declared
+// ones count: an undeclared 29-bit message at the same pair is a coincidence (`pgn_candidates`).
 pub fn (db Database) pgn_sa_contested(pgn u32, sa u8) bool {
-	mut n := 0
-	for m in db.messages {
-		if m.ext && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
-			n++
-			if n > 1 {
-				return true
-			}
-		}
-	}
-	return false
+	return pgn_candidates([db], pgn, int(sa)).len > 1
 }
 
 // pgn_layouts_agree says whether every extended message defining `pgn` carries the SAME signal
@@ -178,23 +170,113 @@ pub fn (m Message) layout_key() string {
 
 // pgn_layouts_agree_in is pgn_layouts_agree over SEVERAL databases at once: a wire may carry
 // two files each defining the PGN once, differently, and per-file agreement says nothing about
-// that (codex on #329).
+// that (codex on #329). The declared definitions decide where there are any — the rule
+// `pgn_message_in` falls back by.
 pub fn pgn_layouts_agree_in(dbs []Database, pgn u32) bool {
-	mut first := ''
-	for db in dbs {
+	return layouts_agree(pgn_candidates(dbs, pgn, -1).map(it.msg))
+}
+
+// PgnMatch is what a J1939 parameter group FROM a known source address decodes against over
+// one wire's databases: the message, or — where definitions exist but cannot be told apart —
+// none, and `refused` says why, so a caller can say it rather than show the row undecoded in
+// silence. Neither: nothing defines the group.
+pub struct PgnMatch {
+pub:
+	found   bool
+	msg     Message
+	refused string
+}
+
+// pgn_message_in is THE lookup for a rejoined transport-protocol message (#331): over every
+// database on the wire, the message spelled at exactly `(pgn, sa)` first, then by PGN alone;
+// declared before undeclared at each step, the first database with a match winning. An
+// announcement carries neither priority nor layout, so wherever the candidates DISAGREE about
+// the layout nothing is decoded — two definitions at the pair in one file, two files each
+// defining the pair once with different layouts, or (for an unspelled address) the PGN's
+// definitions differing — because the first would be an arbitrary schema shown as values.
+// Where any candidate is DECLARED J1939, only the declared ones are compared: an undeclared
+// 29-bit message at the same id is a coincidence, not a second definition of the group.
+pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
+	exact := pgn_candidates(dbs, pgn, int(sa))
+	if exact.len > 0 {
+		return judge_candidates(exact, true, 'PGN 0x${pgn:04X} from SA 0x${sa:02X}')
+	}
+	by_pgn := pgn_candidates(dbs, pgn, -1)
+	if by_pgn.len == 0 {
+		return PgnMatch{}
+	}
+	return judge_candidates(by_pgn, false, 'PGN 0x${pgn:04X} (not spelled at SA 0x${sa:02X})')
+}
+
+// PgnCandidate is one definition and the database (by index) that holds it.
+struct PgnCandidate {
+	msg Message
+	db  int
+}
+
+// pgn_candidates is every extended message over ALL the wire's databases defining `pgn` —
+// at exactly source address `sa`, or at any (`sa` < 0) — in database order, with
+// the declared ones kept where there are any, applied ONCE to the whole set. Nothing is judged per file before this
+// filter, so an undeclared pair in one file cannot pre-empt the declared one in another.
+fn pgn_candidates(dbs []Database, pgn u32, sa int) []PgnCandidate {
+	mut all := []PgnCandidate{}
+	for i, db in dbs {
 		for m in db.messages {
-			if !m.ext || j1939_pgn(m.id) != pgn {
-				continue
-			}
-			l := m.layout_key()
-			if first == '' {
-				first = l
-			} else if l != first {
-				return false
+			if m.ext && j1939_pgn(m.id) == pgn && (sa < 0 || int(m.id & 0xFF) == sa) {
+				all << PgnCandidate{m, i}
 			}
 		}
 	}
+	if all.any(it.msg.j1939) {
+		return all.filter(it.msg.j1939)
+	}
+	return all
+}
+
+// judge_candidates is THE decision over a filtered candidate set, for both steps: contested
+// where one FILE holds two of them at one (PGN, SA) (`one_per_file`; the PGN-only fallback
+// expects one definition per source address in a file), refused where their layouts disagree,
+// else the first.
+fn judge_candidates(cs []PgnCandidate, one_per_file bool, what string) PgnMatch {
+	if one_per_file {
+		mut seen := map[int]bool{}
+		for c in cs {
+			if c.db in seen {
+				return PgnMatch{
+					refused: '${what} is defined more than once in one database (${names_of(cs.map(it.msg))}); not decoded'
+				}
+			}
+			seen[c.db] = true
+		}
+	}
+	ms := cs.map(it.msg)
+	if !layouts_agree(ms) {
+		return PgnMatch{
+			refused: '${what} has ${ms.len} definitions with different layouts (${names_of(ms)}); not decoded'
+		}
+	}
+	return PgnMatch{
+		found: true
+		msg:   ms[0]
+	}
+}
+
+fn layouts_agree(ms []Message) bool {
+	if ms.len < 2 {
+		return true
+	}
+	first := ms[0].layout_key()
+	for m in ms[1..] {
+		if m.layout_key() != first {
+			return false
+		}
+	}
 	return true
+}
+
+// names_of lists every candidate, a name per definition: two files may both call it DM1.
+fn names_of(ms []Message) string {
+	return ms.map('${it.name} 0x${it.id:08X}').join(', ')
 }
 
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
