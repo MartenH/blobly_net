@@ -341,38 +341,36 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				}
 			}
 			cm_abort {
-				// The abort names its PGN; from the originator it ends the transfer keyed this
-				// way, from the receiver the one keyed the other way — and neither if it names
-				// a transfer neither is (two nodes can be mid-transfer in both directions).
-				if s := t.open[k] {
-					if s.pgn == cm.pgn {
-						t.open.delete(k)
-						return Step{
-							role: .sender_abort
-							pgn: s.pgn
-							priority: s.priority
-							sa: id.sa
-							da: id.da()
-							done: true
-						}
-					}
-				}
+				// The abort names its PGN, and since J1939-21's second edition its sender's role:
+				// one rule picks the transfer, the reassembler's (abort_targets_forward).
 				rk := skey(id.da(), id.sa)
-				if s := t.open[rk] {
-					// the RECEIVER's abort, which a broadcast has none of (receiver_control)
-					if receiver_control(id, s.bam) && s.pgn == cm.pgn {
-						t.open.delete(rk)
-						return Step{
-							role: .receiver
-							pgn: s.pgn
-							sa: id.da()
-							da: id.sa
-							done: true
-						}
+				fs := if o := t.open[k] { ?AbortSide(AbortSide{o.pgn, o.bam}) } else { ?AbortSide(none) }
+				rs := if o := t.open[rk] { ?AbortSide(AbortSide{o.pgn, o.bam}) } else { ?AbortSide(none) }
+				forward := abort_targets_forward(id, cm, fs, rs) or {
+					return Step{
+						role: .stray
 					}
 				}
+				if forward {
+					s := t.open[k]
+					t.open.delete(k)
+					return Step{
+						role: .sender_abort
+						pgn: s.pgn
+						priority: s.priority
+						sa: id.sa
+						da: id.da()
+						done: true
+					}
+				}
+				s := t.open[rk]
+				t.open.delete(rk)
 				return Step{
-					role: .stray
+					role: .receiver
+					pgn: s.pgn
+					sa: id.da()
+					da: id.sa
+					done: true
 				}
 			}
 			cm_eom_ack {
@@ -871,34 +869,20 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 			}
 		}
 		cm_abort {
-			// From the originator (session keyed sa->da) or from the receiver (keyed da->sa);
-			// the frame does not say which, so both are tried — and the PGN it names decides,
-			// because two nodes can be mid-transfer in BOTH directions at once and an abort of
-			// one is not an abort of the other (codex on #329). Neither open, or neither
-			// carrying that PGN: nothing this listener tracked, and an abort about a session it
-			// never saw is not a fault of anything it can name.
-			reason := cm.reason()
-			// ONE session, the originator's direction first: two nodes mid-transfer towards each
-			// other with the SAME PGN would otherwise both lose to one abort (codex on #329) —
-			// and Transfers makes the same choice, so the walker and the trace agree.
-			// The forward key is the ORIGINATOR aborting its own transfer; the reversed one is
-			// the RECEIVER aborting, which a broadcast has none of and a non-node address
-			// cannot be — `receiver_control`, as the clear-to-send and the acknowledgement ask
-			// it. Without that an abort "from" 0xFF deleted an open BAM through the reversed
-			// key, and `Transfers` cleared its rest-bus attribution with it (codex).
+			// From the originator (session keyed sa->da) or from the responder (keyed da->sa):
+			// ONE session, chosen by the rule `Transfers` asks too (abort_targets_forward) — the
+			// group it names, the role it declares, and a responder only where one can exist.
+			// Neither: nothing this listener tracked, and an abort about a session it never saw
+			// is not a fault of anything it can name.
 			fwd := skey(id.sa, id.da())
-			for k in [fwd, skey(id.da(), id.sa)] {
-				if s := r.sessions[k] {
-					if s.pgn != carried {
-						continue
-					}
-					if k != fwd && !receiver_control(id, s.bam) {
-						continue
-					}
-					ev.faults << s.fault(.aborted, 'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(reason)}')
-					r.sessions.delete(k)
-					break
-				}
+			rev := skey(id.da(), id.sa)
+			fs := if o := r.sessions[fwd] { ?AbortSide(AbortSide{o.pgn, o.bam}) } else { ?AbortSide(none) }
+			rs := if o := r.sessions[rev] { ?AbortSide(AbortSide{o.pgn, o.bam}) } else { ?AbortSide(none) }
+			if forward := abort_targets_forward(id, cm, fs, rs) {
+				k := if forward { fwd } else { rev }
+				s := r.sessions[k]
+				ev.faults << s.fault(.aborted, 'aborted by SA 0x${id.sa:02X} after ${s.progress()}: ${abort_reason(cm.reason())}')
+				r.sessions.delete(k)
 			}
 		}
 		else {
@@ -1011,7 +995,7 @@ pub fn abort_reason(code u8) string {
 		7 { 'reason 7, bad sequence number' }
 		8 { 'reason 8, duplicate sequence number' }
 		9 { 'reason 9, message too large to send' }
-		250 { 'reason 250, one the standard does not list' }
+		250 { 'reason 250, any other reason' }
 		251, 252, 253, 254, 255 { 'reason ${code}, a J1939-71 special value rather than a reason' }
 		else { 'reason ${code}, not one J1939-21 names for this transport protocol' }
 	}

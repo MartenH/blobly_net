@@ -166,6 +166,59 @@ pub fn (c Cm) reason() u8 {
 	return c.raw[1]
 }
 
+// AbortRole is the role an abort's sender declares in byte 2 bits 2..1 (J1939-21 since its
+// second edition): 00 the transfer's originator, 01 its responder; 10 is reserved and 11 "not
+// specified" — which is also what the first edition's all-0xFF byte reads as.
+pub enum AbortRole {
+	originator
+	responder
+	unspecified
+}
+
+// abort_role decodes an abort's byte 2.
+pub fn (c Cm) abort_role() AbortRole {
+	return match c.raw[2] & 0x03 {
+		0 { .originator }
+		1 { .responder }
+		else { .unspecified }
+	}
+}
+
+// AbortSide is what an abort's addressing can reach of one open transfer: its group, and
+// whether it is a broadcast (which has no responder).
+pub struct AbortSide {
+pub:
+	pgn u32
+	bam bool
+}
+
+// abort_targets_forward is THE rule for which open transfer an abort ends, for both trackers:
+// true for the one keyed (sender -> destination), the frame's sender being its ORIGINATOR;
+// false for the one keyed the other way, the sender being its RESPONDER; none for neither.
+// `fwd` and `rev` are what is open under those two keys. The transfer must carry the group the
+// abort names, and a responder must be able to exist (`receiver_control`). A declared role
+// decides the direction outright — two nodes can have the SAME group open towards each other,
+// and only the role says which of them is meant; with no role (the first edition's 0xFF, or
+// 10/11) the originator's direction is tried first, as before.
+pub fn abort_targets_forward(id Id, c Cm, fwd ?AbortSide, rev ?AbortSide) ?bool {
+	role := c.abort_role()
+	if role != .responder {
+		if f := fwd {
+			if f.pgn == c.pgn {
+				return true
+			}
+		}
+	}
+	if role != .originator {
+		if r := rev {
+			if r.pgn == c.pgn && receiver_control(id, r.bam) {
+				return false
+			}
+		}
+	}
+	return none
+}
+
 // cm_name is a control byte's name, for a refusal.
 fn cm_name(ctrl u8) string {
 	return match ctrl {

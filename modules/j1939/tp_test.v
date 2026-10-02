@@ -1010,7 +1010,8 @@ fn test_every_field_row_refuses_a_bad_value_in_both_trackers() {
 // Byte 2 of an abort: 0xFF in the original edition, the abort's role in its low two bits since.
 // Both are aborts.
 fn test_an_abort_may_carry_its_role() {
-	for b2 in [u8(0xFF), 0xFC, 0xFD] {
+	// every byte 2 that names the sender as this transfer's originator, or names no role
+	for b2 in [u8(0xFF), 0xFC, 0xFE] {
 		mut f := abort(0x17, 0x00, 3, dm1)
 		f.data[2] = b2
 		mut r := Reassembler{}
@@ -1025,7 +1026,7 @@ fn test_an_abort_may_carry_its_role() {
 
 fn test_abort_reasons_are_named_or_placed() {
 	assert abort_reason(3).contains('timeout')
-	assert abort_reason(250).contains('does not list')
+	assert abort_reason(250) == 'reason 250, any other reason'
 	assert abort_reason(254).contains('J1939-71 special value')
 	assert abort_reason(0).contains('not one J1939-21 names')
 	assert abort_reason(42).contains('not one J1939-21 names')
@@ -1049,4 +1050,47 @@ fn test_finish_says_every_session_still_open() {
 	assert fs.filter(it.sa == 0x17)[0].detail == 'after packet 0 of 3; the recording ends'
 	assert r.open() == 0
 	assert r.finish('again').len == 0
+}
+
+// Two nodes with the SAME group open towards each other: an abort declaring its sender's role
+// (J1939-21 byte 2 bits 2..1) ends the transfer that role names, in both trackers; one with no
+// role (the first edition's 0xFF) ends the originator's direction first, as before.
+fn test_an_abort_role_picks_the_direction() {
+	// 0x17 -> 0x00 and 0x00 -> 0x17, both DM1; the abort comes from 0x00
+	// byte 2, and the originator of the transfer it ends
+	for c in [
+		[u8(0xFC), 0x00], // originator: 0x00's own transfer
+		[u8(0xFD), 0x17], // responder: the transfer 0x00 is receiving, from 0x17
+		[u8(0xFF), 0x00], // no role: the originator's direction first
+		[u8(0xFE), 0x00], // reserved role 10: as no role
+	] {
+		b2, ended_sa := c[0], c[1]
+		mut f := abort(0x00, 0x17, 3, dm1)
+		f.data[2] = b2
+		mut r := Reassembler{}
+		r.feed(rts(0x17, 0x00, 20, dm1), 0)
+		r.feed(rts(0x00, 0x17, 30, dm1), 1)
+		ev := r.feed(f, 2)
+		assert ev.faults.len == 1 && ev.faults[0].kind == .aborted, '${b2:02X}: ${ev.faults.str()}'
+		assert ev.faults[0].sa == ended_sa, '${b2:02X}: ended ${ev.faults[0].sa:02X}'
+		assert r.open() == 1
+		mut t := Transfers{}
+		t.step(rts(0x17, 0x00, 20, dm1))
+		t.step(rts(0x00, 0x17, 30, dm1))
+		st := t.step(f)
+		assert st.done && st.sa == ended_sa, '${b2:02X}: ${st}'
+		assert st.role == if ended_sa == 0x00 { Role.sender_abort } else { Role.receiver }
+		assert t.open() == 1
+	}
+	// a declared role with only the OTHER direction open ends nothing
+	mut only := abort(0x00, 0x17, 3, dm1)
+	only.data[2] = 0xFD // responder, but 0x00 -> 0x17 is the only transfer
+	mut r := Reassembler{}
+	r.feed(rts(0x00, 0x17, 30, dm1), 0)
+	assert r.feed(only, 1).faults.len == 0
+	assert r.open() == 1
+	mut t := Transfers{}
+	t.step(rts(0x00, 0x17, 30, dm1))
+	assert t.step(only).role == .stray
+	assert t.open() == 1
 }
