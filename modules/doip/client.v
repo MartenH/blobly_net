@@ -140,6 +140,16 @@ pub fn (mut c DoipClient) send(data []u8) ! {
 	c.conn.write(diagnostic_message(c.source, c.target, data))!
 }
 
+// send_to wraps `data` in a 0x8001 diagnostic message to `target` instead of the connection's own
+// target — a functional logical address, which the entity acks from that address and answers from
+// its own, so recv() takes the answer as usual. On one TCP connection that is one entity's answer.
+pub fn (mut c DoipClient) send_to(target u32, data []u8) ! {
+	if target > 0xFFFF {
+		return error('DoIP: 0x${target:X} is not a logical address')
+	}
+	c.conn.write(diagnostic_message(c.source, u16(target), data))!
+}
+
 // recv returns the UDS user-data of the next diagnostic message (0x8001), skipping
 // the positive ack (0x8002) the entity sends first. A negative ack (0x8003) errors.
 pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {

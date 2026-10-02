@@ -131,3 +131,81 @@ fn test_functional_refuses_what_it_cannot_send_or_tell_apart() {
 	}
 	assert false, 'an 8-byte functional request was accepted'
 }
+
+// A carrier for functional_addressed: what send_to was asked, and the answers recv hands back in
+// order — an error string as `!` followed by the message, a timeout once they run out.
+struct ScriptedCarrier {
+	iface string = 'scripted'
+	tx_id u32
+	rx_id u32
+mut:
+	sent    []u32
+	answers []string
+	queued  int // answers already waiting before the request: what the drain must take
+}
+
+fn (mut s ScriptedCarrier) send(data []u8) ! {}
+
+fn (mut s ScriptedCarrier) send_to(target u32, data []u8) ! {
+	s.sent << target
+}
+
+fn (mut s ScriptedCarrier) recv(timeout_ms int) ![]u8 {
+	if timeout_ms <= 0 && s.queued == 0 {
+		return error('timeout')
+	}
+	if s.answers.len == 0 {
+		return error('timeout')
+	}
+	if s.queued > 0 {
+		s.queued--
+	}
+	a := s.answers[0]
+	s.answers.delete(0)
+	if a.starts_with('!') {
+		return error(a[1..])
+	}
+	return a.bytes()
+}
+
+fn (mut s ScriptedCarrier) close() {}
+
+fn (mut s ScriptedCarrier) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
+
+fn addressed(answers []string, queued int, req []u8) (FunctionalReply, []u32) {
+	mut sc := &ScriptedCarrier{
+		answers: answers
+		queued:  queued
+	}
+	mut cl := new_client(sc)
+	cl.p2_star_ms = 50
+	cl.margin_ms = 0
+	mut via := AddressedSend(sc)
+	r := functional_addressed(mut cl, mut via, 0xE400, req, 100) or { panic(err) }
+	return r, sc.sent
+}
+
+fn test_functional_addressed_follows_the_shared_rules() {
+	// sent once, to the functional address
+	r, sent := addressed(['\x7E\x00'], 0, [u8(0x3E), 0x00])
+	assert sent == [u32(0xE400)]
+	assert r.outcome == .positive
+	// an answer already queued is drained, not taken for this request's
+	q, _ := addressed(['\x62\xF1\x90old', '\x62\xF1\x90new'], 1, [u8(0x22), 0xF1, 0x90])
+	assert q.resp.bytestr() == '\x62\xF1\x90new'
+	// an answer to another request is skipped; responsePending is waited for and remembered
+	p, _ := addressed(['\x50\x01', '\x7F\x22\x78', '\x62\xF1\x90x'], 0, [u8(0x22), 0xF1, 0x90])
+	assert p.outcome == .positive && p.pended
+	// pending and then nothing within its P2*
+	n, _ := addressed(['\x7F\x22\x78'], 0, [u8(0x22), 0xF1, 0x90])
+	assert n.outcome == .pending
+	// nothing at all is silence; a refusal is negative; a carrier failure is failed
+	s, _ := addressed([], 0, [u8(0x3E), 0x80])
+	assert s.outcome == .silent
+	g, _ := addressed(['\x7F\x19\x13'], 0, [u8(0x19), 0x01])
+	assert g.outcome == .negative && g.nrc == 0x13
+	f, _ := addressed(['!DoIP: diagnostic message negative ack (0x03)'], 0, [u8(0x3E), 0x00])
+	assert f.outcome == .failed && f.err.contains('negative ack')
+}

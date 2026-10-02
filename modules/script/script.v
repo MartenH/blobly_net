@@ -1040,18 +1040,32 @@ fn l_uds_clear_dtc(l lua.State) int {
 }
 
 // l_uds_functional(channel, functional_id, req, window_ms, handle...): one request to every
-// connection named, as uds.functional does it; an array of replies in the handles' order.
+// connection named, as uds.functional does it; an array of replies in the handles' order. On a
+// DoIP channel the id is a functional LOGICAL address (nil: 0xE400) and the one connection named
+// carries it (uds_functional_doip).
 fn l_uds_functional(l lua.State) int {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	// exact: 0 is a CAN id, so a value that is not an integer must not become one
-	fid := l.arg_int_exact(2) or { return l.fail('uds.functional: the functional id is not an integer') }
+	// exact: 0 is a CAN id, so a value that is not an integer must not become one. nil is the
+	// DoIP default address, and on a CAN channel the same refusal as any other non-integer
+	nil_id := l.arg_is_nil(2)
+	fid := if nil_id {
+		i64(doip.default_functional_address)
+	} else {
+		l.arg_int_exact(2) or { return l.fail('uds.functional: the functional id is not an integer') }
+	}
 	req := l.arg_bytes(3)
 	window := int(l.arg_int(4))
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	info := env.chans[ci]
+	if info.carrier.doip {
+		return env.uds_functional_doip(l, name, fid, req, window)
+	}
+	if nil_id {
+		return l.fail('uds.functional: the functional id is not an integer')
+	}
 	if k := info.carrier.eth_kind() {
-		return l.fail('uds.functional("${name}"): a ${k} channel — functional addressing here is CAN only')
+		return l.fail('uds.functional("${name}"): a ${k} channel — functional addressing here is CAN or DoIP only')
 	}
 	if fid < 0 || fid > 0x1FFF_FFFF {
 		return l.fail('uds.functional("${name}"): ${fid} is not a CAN identifier')
@@ -1083,6 +1097,37 @@ fn l_uds_functional(l lua.State) int {
 	replies := uds.functional(mut fch, mut tap, targets, req, if window > 0 { window } else { 1000 }) or {
 		return l.fail(err.msg())
 	}
+	push_functional_replies(l, replies)
+	return 1
+}
+
+// uds_functional_doip is uds.functional on a DoIP channel: the request goes out on the channel's
+// one connection with the functional address as its TARGET, and the entity that connection is
+// routed to answers from its own address — one TCP connection is one entity, so exactly one
+// handle, and one reply. Same outcomes as the CAN form (uds.functional_addressed).
+fn (mut env Env) uds_functional_doip(l lua.State, name string, fa i64, req []u8, window int) int {
+	if fa < 0 || fa > 0xFFFF {
+		return l.fail('uds.functional("${name}"): ${fa} is not a DoIP logical address')
+	}
+	if l.nargs() != 5 {
+		return l.fail('uds.functional("${name}"): a DoIP channel is one connection to one entity — pass its one uds.open connection')
+	}
+	mut c := env.conn(int(l.arg_int(5))) or { return l.fail('uds.functional: bad uds handle') }
+	if c.chan != name || c.ch !is doip.DoipClient {
+		return l.fail('uds.functional("${name}"): a connection opened on "${c.chan}" is not this DoIP channel')
+	}
+	mut via := uds.AddressedSend(c.ch as doip.DoipClient)
+	r := uds.functional_addressed(mut c.cli, mut via, u32(fa), req, if window > 0 {
+		window
+	} else {
+		1000
+	}) or { return l.fail(err.msg()) }
+	push_functional_replies(l, [r])
+	return 1
+}
+
+// push_functional_replies is the reply array both forms return, one table per target.
+fn push_functional_replies(l lua.State, replies []uds.FunctionalReply) {
 	l.new_table()
 	for i, r in replies {
 		l.new_table()
@@ -1095,7 +1140,6 @@ fn l_uds_functional(l lua.State) int {
 		}
 		l.set_index(i + 1)
 	}
-	return 1
 }
 
 // l_e2e_p01_crc(frame, data_id, crc_pos, counter_pos, mode): AUTOSAR E2E Profile 1's CRC for a
