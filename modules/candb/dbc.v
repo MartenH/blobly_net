@@ -178,9 +178,10 @@ pub fn (m Message) layout_key() string {
 
 // pgn_layouts_agree_in is pgn_layouts_agree over SEVERAL databases at once: a wire may carry
 // two files each defining the PGN once, differently, and per-file agreement says nothing about
-// that (codex on #329).
+// that (codex on #329). The declared definitions decide where there are any — the rule
+// `pgn_message_in` falls back by.
 pub fn pgn_layouts_agree_in(dbs []Database, pgn u32) bool {
-	return layouts_agree(pgn_definitions_in(dbs, pgn))
+	return layouts_agree(declared_if_any(pgn_definitions_in(dbs, pgn)))
 }
 
 // pgn_definitions_in is every extended message defining `pgn`, over the databases in order.
@@ -214,6 +215,8 @@ pub:
 // the layout nothing is decoded — two definitions at the pair in one file, two files each
 // defining the pair once with different layouts, or (for an unspelled address) the PGN's
 // definitions differing — because the first would be an arbitrary schema shown as values.
+// Where any candidate is DECLARED J1939, only the declared ones are compared: an undeclared
+// 29-bit message at the same id is a coincidence, not a second definition of the group.
 pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
 	for db in dbs {
 		if db.pgn_sa_contested(pgn, sa) {
@@ -229,6 +232,7 @@ pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
 		}
 	}
 	if exact.len > 0 {
+		exact = declared_if_any(exact)
 		if !layouts_agree(exact) {
 			return PgnMatch{
 				refused: 'PGN 0x${pgn:04X} from SA 0x${sa:02X} has ${exact.len} definitions with different layouts (${names_of(exact)}); not decoded'
@@ -239,11 +243,11 @@ pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
 			msg:   first_declared(exact)
 		}
 	}
-	by_pgn := pgn_definitions_in(dbs, pgn)
+	by_pgn := declared_if_any(pgn_definitions_in(dbs, pgn))
 	if by_pgn.len == 0 {
 		return PgnMatch{}
 	}
-	if !layouts_agree(by_pgn) {
+	if !pgn_layouts_agree_in(dbs, pgn) {
 		return PgnMatch{
 			refused: 'PGN 0x${pgn:04X} is not spelled at SA 0x${sa:02X} and its ${by_pgn.len} definitions have different layouts (${names_of(by_pgn)}); not decoded'
 		}
@@ -262,12 +266,22 @@ pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
 }
 
 fn layouts_agree(ms []Message) bool {
-	for m in ms {
-		if m.layout_key() != ms[0].layout_key() {
+	if ms.len < 2 {
+		return true
+	}
+	first := ms[0].layout_key()
+	for m in ms[1..] {
+		if m.layout_key() != first {
 			return false
 		}
 	}
 	return true
+}
+
+// declared_if_any is the declared J1939 messages among `ms` where there are any, else all.
+fn declared_if_any(ms []Message) []Message {
+	d := ms.filter(it.j1939)
+	return if d.len > 0 { d } else { ms }
 }
 
 fn first_declared(ms []Message) Message {
@@ -279,14 +293,9 @@ fn first_declared(ms []Message) Message {
 	return ms[0]
 }
 
+// names_of lists every candidate, a name per definition: two files may both call it DM1.
 fn names_of(ms []Message) string {
-	mut out := []string{}
-	for m in ms {
-		if m.name !in out {
-			out << m.name
-		}
-	}
-	return out.join(', ')
+	return ms.map('${it.name} 0x${it.id:08X}').join(', ')
 }
 
 // messages_from returns every message `node` transmits — i.e. the messages a simulated ECU

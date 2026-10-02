@@ -905,6 +905,7 @@ fn (mut app App) start() {
 	app.j1939_nodes = map[string]j1939.Directory{}
 	app.j1939_obs = map[string]&J1939Obs{}
 	app.j1939_labels = map[string]&LabelCache{}
+	app.j1939_undecoded = map[string]bool{}
 	// The load starts over HERE, under app.mu and before the transmit locks below are
 	// released: a guardless tap a script kept from the previous run may send the instant
 	// they are, and count_tx_load writes these fields under the lock this reset would

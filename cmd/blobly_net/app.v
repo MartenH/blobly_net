@@ -267,7 +267,7 @@ mut:
 	j1939_labels map[string]&LabelCache
 	// Which rejoined parameter groups have been said to decode against nothing because their
 	// definitions disagree (`candb.pgn_message_in`), by wire, PGN and source — once each, reset
-	// with the labels, since it too is a fact about the databases.
+	// wherever the labels are, since it too is a fact about the databases.
 	j1939_undecoded map[string]bool
 	// transport.destination_key per interface, for the emit path (dest_cached_locked). Reset with
 	// the runtime view.

@@ -34,7 +34,6 @@ pub const cm_abort = u8(255)
 pub struct Cm {
 pub:
 	ctrl     u8
-	reserved u8 // byte 4: J1939-21 fixes it at 0xFF in a BAM; in an RTS it is packets-per-CTS
 	total    int // bytes announced (RTS, BAM); the abort reason sits in the same byte for an abort
 	packets  int // packets announced (RTS, BAM)
 	pgn      u32 // the parameter group the frame is about (bytes 5..7)
@@ -85,7 +84,6 @@ pub fn parse_cm(data []u8) ?Cm {
 		ctrl: data[0]
 		total: int(binary.little_endian_u16_at(data, 1))
 		packets: int(data[3])
-		reserved: data[4]
 		pgn: u32(data[5]) | (u32(data[6]) << 8) | (u32(data[7]) << 16)
 	}
 }
@@ -304,13 +302,10 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 				role: .stray
 			}
 		}
-		// A control frame the field table refuses acts on nothing (an announcement's refusal is
-		// `admission`'s, below, since it still ends the pair's previous transfer).
-		if cm.ctrl != cm_rts && cm.ctrl != cm_bam {
-			if _ := cm.refusal() {
-				return Step{
-					role: .stray
-				}
+		// A control frame the field table refuses acts on nothing (cm_fields.v).
+		if _ := cm.control_refusal() {
+			return Step{
+				role: .stray
 			}
 		}
 		match cm.ctrl {
@@ -538,6 +533,9 @@ pub enum FaultKind {
 	// NOT ABANDONED, alone among these: those bytes lie past the announced length, so the
 	// message is whole and correct and only the wire was wrong.
 	padding
+	// A reserved byte of a control frame not at the value J1939-21 fixes. REPORTED AND ACTED ON
+	// as ever, like `padding`: no reader uses the byte (cm_fields.v).
+	off_spec
 	// Still open when the observation ended — a recording that stopped mid-transfer, inside the
 	// wait that would otherwise have timed it out (`finish`).
 	truncated
@@ -771,13 +769,14 @@ fn (mut r Reassembler) on_cm(id Id, data []u8, fd bool, now_ms f64, mut ev Event
 	}
 	ctrl := cm.ctrl
 	carried := cm.pgn
-	// A control frame the field table refuses is said and acts on nothing — the same rule
-	// `Transfers` asks; an announcement's refusal is `admission`'s, below.
-	if ctrl != cm_rts && ctrl != cm_bam {
-		if why := cm.refusal() {
-			ev.faults << id.fault(.malformed, 0, false, why)
-			return
-		}
+	// A control frame the field table refuses is said and acts on nothing — the rule
+	// `Transfers` asks; a reserved byte off the standard is said and the frame read as ever.
+	if why := cm.control_refusal() {
+		ev.faults << id.fault(.malformed, 0, false, why)
+		return
+	}
+	if why := cm.nonconformity() {
+		ev.faults << id.fault(.off_spec, 0, false, why)
 	}
 	match ctrl {
 		cm_bam, cm_rts {

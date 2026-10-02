@@ -219,3 +219,27 @@ fn test_pgn_message_in_refuses_a_pair_two_files_define_differently() {
 	none_ := pgn_message_in([a, b], 0xF004, 0x00)
 	assert !none_.found && none_.refused == ''
 }
+
+// An undeclared 29-bit message at the same id in another file is a coincidence, not a second
+// definition of the group: the declared one decides, at either step.
+fn test_pgn_message_in_compares_the_declared_definitions() {
+	hdr := 'BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";\nBA_DEF_DEF_ "VFrameFormat" "J1939PG";\n'
+	a := parse_dbc(hdr + 'BO_ 2566834688 DM1: 8 Vector__XXX\n SG_ Lamp : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n') or {
+		panic(err)
+	}
+	b := parse_dbc('BO_ 2566834688 Proprietary: 8 Vector__XXX\n SG_ X : 8|8@1+ (1,0) [0|255] "" Vector__XXX\n') or {
+		panic(err)
+	}
+	assert !b.messages[0].j1939
+	for order in [[a, b], [b, a]] {
+		pm := pgn_message_in(order, 0xFECA, 0x00)
+		assert pm.found && pm.msg.name == 'DM1', pm.refused
+		pu := pgn_message_in(order, 0xFECA, 0x17)
+		assert pu.found && pu.msg.name == 'DM1', pu.refused
+	}
+	// two undeclared files that disagree still decode nothing
+	c := parse_dbc('BO_ 2566834688 Other: 8 Vector__XXX\n SG_ Y : 0|4@1+ (1,0) [0|15] "" Vector__XXX\n') or {
+		panic(err)
+	}
+	assert !pgn_message_in([b, c], 0xFECA, 0x00).found
+}

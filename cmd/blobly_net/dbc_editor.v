@@ -306,6 +306,7 @@ fn (mut app App) dbc_refresh_trace_names() {
 	// which erased the PGN/SA/node reading and a rejoined message's packet count on every
 	// editor selection (codex on #329). The cached cells carry the old names and go too.
 	app.j1939_labels = map[string]&LabelCache{}
+	app.j1939_undecoded = map[string]bool{}
 	for i, r in app.trace {
 		// NOT a SOME/IP row: its name is its message type, not a DBC lookup, and `lookup_name`
 		// is keyed on (id, ext) alone — so editing an unrelated DBC would rename NOTIFICATION to

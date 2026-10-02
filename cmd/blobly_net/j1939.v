@@ -42,6 +42,10 @@ mut:
 	// normal case of attaching to a running bus, up to 255 of them per session, so they are
 	// said ONCE and counted after. A budget shared with the real faults would be spent on them.
 	orphans int
+	// Control frames with a reserved byte off the standard (`off_spec`): an ECU that fills them
+	// with 0x00 does it on every frame, so they are said once per wire and counted after, like
+	// orphans, and never spend the budget the real faults need.
+	off_spec int
 }
 
 // How many transport-protocol faults one reader narrates per run before going quiet.
@@ -532,6 +536,13 @@ fn (mut app App) j1939_narrate_locked(mut obs J1939Obs, ch string, fl j1939.Faul
 		obs.orphans++
 		if obs.orphans == 1 {
 			app.log_append_locked('${ch}: J1939 ${fl.str()} — further orphan data frames on this wire are not narrated')
+		}
+		return
+	}
+	if fl.kind == .off_spec {
+		obs.off_spec++
+		if obs.off_spec == 1 {
+			app.log_append_locked('${ch}: J1939 ${fl.str()} — further control frames off the standard on this wire are not narrated')
 		}
 		return
 	}

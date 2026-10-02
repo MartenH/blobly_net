@@ -798,10 +798,8 @@ fn test_a_clear_to_send_naming_no_real_packet_keeps_nothing_alive() {
 		r.feed(cts(0x00, 0x17, dm1, bad), 600)
 		r.feed(cts(0x00, 0x17, dm1, bad), 1200)
 		ev := r.feed(cts(0x00, 0x17, dm1, bad), 1400)
-		// packet 0 is one the field table refuses outright, so it is said as well (#341)
-		to := ev.faults.filter(it.kind == .timeout)
-		assert to.len == 1, 'packet ${bad}: ${ev.faults.str()}'
-		assert ev.faults.len == if bad == 0 { 2 } else { 1 }, '${bad}: ${ev.faults.str()}'
+		assert ev.faults.len == 1, 'packet ${bad}: ${ev.faults.str()}'
+		assert ev.faults[0].kind == .timeout, '${bad}'
 		assert r.open() == 0, '${bad}'
 	}
 	// and one naming a real packet does keep it alive
@@ -950,39 +948,60 @@ fn open_transfer(ctrl u8) transport.CanFrame {
 	return if ctrl == cm_bam { bam(0x17, 20, dm1) } else { rts(0x17, 0x00, 20, dm1) }
 }
 
-// THE CLASS TEST (#341): every row of the table is fed a value it refuses, and that frame is
-// refused by the table, said once by the reassembler, and acted on by neither tracker.
+// THE CLASS TEST (#341): every row of the table is fed a value it refuses. A field the readers
+// use refuses the frame — said once by the reassembler, acted on by neither tracker; a reserved
+// byte is said and the frame acted on as ever, in both.
 fn test_every_field_row_refuses_a_bad_value_in_both_trackers() {
 	mut checked := 0
 	for row in cm_fields {
 		good := valid_cm(row.ctrl)
 		gc := parse_cm(good.data) or { panic('valid ${row.ctrl} unparsable') }
-		assert gc.refusal() == none, '${row.name}: the valid frame is refused: ${gc.refusal()}'
+		assert gc.refusal() == none && gc.nonconformity() == none, '${row.name}: the valid frame is judged'
 		v := row.bad() or {
 			assert row.rule == .any, '${cm_name(row.ctrl)} ${row.name}: a rule with no value it refuses'
 			continue
 		}
 		f := row.with(good, v)
 		c := parse_cm(f.data) or { panic('unparsable') }
-		why := c.refusal() or { panic('${cm_name(row.ctrl)} ${row.name} = ${v} is not refused') }
-		assert why.contains(row.name), why
 		announce := row.ctrl == cm_rts || row.ctrl == cm_bam
 
+		// the same frame, judged and not, through both trackers
 		mut r := Reassembler{}
 		r.feed(open_transfer(row.ctrl), 0)
 		ev := r.feed(f, 10)
-		bad := ev.faults.filter(it.kind == .malformed)
-		assert bad.len == 1 && bad[0].detail == why, '${why}: ${ev.faults.str()}'
-		assert ev.done.len == 0
-		// an announcement still ends the pair's previous transfer; nothing else touches it
-		assert r.open() == if announce { 0 } else { 1 }, why
-
+		mut rg := Reassembler{}
+		rg.feed(open_transfer(row.ctrl), 0)
+		evg := rg.feed(good, 10)
 		mut t := Transfers{}
 		t.step(open_transfer(row.ctrl))
 		st := t.step(f)
-		assert st.role == .stray, '${why}: ${st.role}'
-		assert t.open() == if announce { 0 } else { 1 }, why
-		assert !announces_session(f), why
+		mut tg := Transfers{}
+		tg.step(open_transfer(row.ctrl))
+		stg := tg.step(good)
+
+		if row.said {
+			why := c.nonconformity() or { panic('${cm_name(row.ctrl)} ${row.name} = ${v} is not said') }
+			assert c.refusal() == none, why
+			assert why.contains(row.name), why
+			off := ev.faults.filter(it.kind == .off_spec)
+			assert off.len == 1 && off[0].detail == why, '${why}: ${ev.faults.str()}'
+			// and otherwise exactly what the conforming frame does
+			assert ev.faults.filter(it.kind != .off_spec).map(it.kind) == evg.faults.map(it.kind), why
+			assert r.open() == rg.open(), why
+			assert st == stg, why
+			assert t.open() == tg.open(), why
+		} else {
+			why := c.refusal() or { panic('${cm_name(row.ctrl)} ${row.name} = ${v} is not refused') }
+			assert why.contains(row.name), why
+			bad := ev.faults.filter(it.kind == .malformed)
+			assert bad.len == 1 && bad[0].detail == why, '${why}: ${ev.faults.str()}'
+			assert ev.done.len == 0
+			// an announcement still ends the pair's previous transfer; nothing else touches it
+			assert r.open() == if announce { 0 } else { 1 }, why
+			assert st.role == .stray, '${why}: ${st.role}'
+			assert t.open() == if announce { 0 } else { 1 }, why
+			assert !announces_session(f), why
+		}
 		checked++
 	}
 	assert checked == cm_fields.filter(it.rule != .any).len
