@@ -268,9 +268,7 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 				// P2* from now, but never past the request's total allowance from the send — an
 				// announced P2* of hours must not become one wait of hours
 				pending = true
-				now := sw.elapsed().milliseconds()
-				wait := i64(c.p2_star_ms) + c.margin_ms
-				deadline = if now + wait < c.pending_budget_ms { now + wait } else { i64(c.pending_budget_ms) }
+				deadline = c.pending_deadline(sw.elapsed().milliseconds())
 			}
 			.stale {
 				discarded++

@@ -114,8 +114,6 @@ mut:
 	can bool
 	rx  u32
 	ext bool
-	// the DoIP connection behind `ch`, for a functional request to address on it (nil on CAN)
-	dc &doip.DoipClient = unsafe { nil }
 }
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
@@ -590,7 +588,6 @@ fn l_uds_open(l lua.State) int {
 					ch:   fresh
 					cli:  uds.new_client(fresh)
 					chan: name
-					dc:   fresh
 				}
 				l.push_int(i)
 				return 1
@@ -606,15 +603,11 @@ fn l_uds_open(l lua.State) int {
 	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the
 	// tx/rx arguments do not apply — the addresses come from the channel's configuration and
 	// passing ids here is a mistake worth naming rather than ignoring.
-	mut dc := &doip.DoipClient(unsafe { nil })
-	if info.carrier.doip {
-		dc = doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
+	ch := if info.carrier.doip {
+		isotp.Channel(doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
 			info.carrier.ecu) or {
 			return l.fail('doip open failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
-		}
-	}
-	ch := if info.carrier.doip {
-		isotp.Channel(dc)
+		})
 	} else {
 		isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
 			return l.fail('isotp open failed on ${name}: ${err}')
@@ -627,7 +620,6 @@ fn l_uds_open(l lua.State) int {
 		can:  !info.carrier.doip
 		rx:   crx
 		ext:  ext
-		dc:   dc
 	}
 	l.push_int(env.conns.len - 1)
 	return 1
@@ -1058,23 +1050,19 @@ fn l_uds_functional(l lua.State) int {
 	// DoIP default address, and on a CAN channel the same refusal as any other non-integer
 	nil_id := l.arg_is_nil(2)
 	fid := if nil_id {
-		i64(-1)
+		i64(doip.default_functional_address)
 	} else {
 		l.arg_int_exact(2) or { return l.fail('uds.functional: the functional id is not an integer') }
-	}
-	if nil_id {
-		i := env.find_chan(name) or { return l.fail('uds.functional: the functional id is not an integer') }
-		if !env.chans[i].carrier.doip {
-			return l.fail('uds.functional: the functional id is not an integer')
-		}
 	}
 	req := l.arg_bytes(3)
 	window := int(l.arg_int(4))
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	info := env.chans[ci]
 	if info.carrier.doip {
-		return env.uds_functional_doip(l, name, if nil_id { i64(doip.default_functional_address) } else { fid },
-			req, window)
+		return env.uds_functional_doip(l, name, fid, req, window)
+	}
+	if nil_id {
+		return l.fail('uds.functional: the functional id is not an integer')
 	}
 	if k := info.carrier.eth_kind() {
 		return l.fail('uds.functional("${name}"): a ${k} channel — functional addressing here is CAN or DoIP only')
@@ -1125,10 +1113,10 @@ fn (mut env Env) uds_functional_doip(l lua.State, name string, fa i64, req []u8,
 		return l.fail('uds.functional("${name}"): a DoIP channel is one connection to one entity — pass its one uds.open connection')
 	}
 	mut c := env.conn(int(l.arg_int(5))) or { return l.fail('uds.functional: bad uds handle') }
-	if c.chan != name || isnil(c.dc) {
+	if c.chan != name || c.ch !is doip.DoipClient {
 		return l.fail('uds.functional("${name}"): a connection opened on "${c.chan}" is not this DoIP channel')
 	}
-	mut via := uds.AddressedSend(c.dc)
+	mut via := uds.AddressedSend(c.ch as doip.DoipClient)
 	r := uds.functional_addressed(mut c.cli, mut via, u32(fa), req, if window > 0 {
 		window
 	} else {

@@ -631,7 +631,7 @@ fn test_uds_over_doip_drains_a_late_answer() {
 fn serve_until_closed(mut s DoipServer) {
 	for {
 		s.accept_and_serve(300) or {
-			if s.stopping {
+			if s.is_stopping() {
 				break
 			}
 			continue
@@ -640,8 +640,8 @@ fn serve_until_closed(mut s DoipServer) {
 }
 
 // A functional request: a diagnostic message to the functional address is acked FROM that address
-// and answered from the entity's own; an answer the functional rule withholds is not sent, and an
-// entity with no functional address NACKs it like any address not its own.
+// and answered from the entity's own; an answer the functional rule withholds is not sent, and a
+// message to another address is NACKed unknown-target.
 fn test_entity_answers_a_functional_target() {
 	mut srv := new_server(ServerCfg{
 		logical_address:     0x1000
@@ -720,6 +720,9 @@ fn test_uds_functional_addressed_over_doip() {
 		assert false, 'open_doip: ${err}'
 		return
 	}
+	defer {
+		dc.close()
+	}
 	mut cl := uds.new_client(dc)
 	mut via := uds.AddressedSend(dc)
 	r := uds.functional_addressed(mut cl, mut via, default_functional_address, [u8(0x3E), 0x00],
@@ -735,5 +738,4 @@ fn test_uds_functional_addressed_over_doip() {
 		return
 	}
 	assert q.outcome == .silent
-	dc.close()
 }

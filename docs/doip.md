@@ -21,6 +21,7 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 | A simulated entity announcing itself at Start | ✅ per DoIP **channel** (one channel is one entity): `announce_count` (0 = silent), `announce_interval_ms`, `announce_to` |
 | **Functional UDS over DoIP** — a request to the functional logical address (0xE400) | ✅ from Lua, `uds.functional` on a DoIP channel; a simulated entity answers it |
 | A functional address set per channel in the project file | 🧭 planned — today it is the call's argument, and a simulated entity listens on 0xE400 |
+| Functional answers from **several** logical addresses on one connection (ECUs behind a gateway) | 🧭 planned — only the channel's `ecu_address` answer is collected |
 | **Subnet scan — finding an entity that neither announced nor sits at a known address** | 🧭 planned |
 
 One thing worth knowing before you plan a bench: an entity **binds a real socket** on its
@@ -127,7 +128,9 @@ A **functional** request is the same `0x8001` with the functional logical addres
 and where ISO 14229-1 has a functionally addressed server keep quiet — NRCs 0x11/0x12/0x31/0x7E/0x7F,
 or a suppressed positive response — it sends the ack and nothing after it. Which entities hear
 it is a gateway's business; on **one TCP connection it reaches one entity**, the one routing was
-activated with, so a tester gets at most one answer per connection. From Lua:
+activated with, so a tester gets at most one answer per connection — the one from the channel's
+`ecu_address`. A gateway answering for several ECUs behind it would send more, from their own
+addresses; those are not collected yet. From Lua:
 
 ```lua
 local diag = uds.open("DoIP1")

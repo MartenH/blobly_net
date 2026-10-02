@@ -35,9 +35,9 @@ pub:
 	// broadcasts to 127.255.255.255 and never leaves the machine; anything else uses the
 	// limited broadcast, which DOES go on the wire, exactly like a real ECU would.
 	announce_to string
-	// The functional logical address this entity also answers (0 = none: a diagnostic message
-	// to it is NACKed unknown-target, like any address not its own). A functional request is
-	// acked FROM this address and answered from `logical_address`, as blobly_emb's entity does.
+	// The functional logical address this entity also answers (0 = the default, as in blobly_emb's
+	// entity). A functional request is acked FROM this address and answered from
+	// `logical_address`, as blobly_emb's entity does.
 	functional_address u16 = default_functional_address
 	// Which answers to a FUNCTIONAL request are withheld rather than sent. doip knows no UDS, so
 	// the rule is handed in — sim sets uds.functional_suppressed (ISO 14229-1's quiet NRCs); the
@@ -251,13 +251,15 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 						diag_nack_invalid_source)) or { return }
 					continue
 				}
-				functional := s.cfg.functional_address != 0
-					&& s.cfg.functional_address != s.cfg.logical_address
-					&& dm.target == s.cfg.functional_address
-				if functional {
+				fa := if s.cfg.functional_address != 0 {
+					s.cfg.functional_address
+				} else {
+					default_functional_address
+				}
+				if dm.target == fa && fa != s.cfg.logical_address {
 					// acked from the address it was sent to; answered from this entity's own, and
 					// not at all where the functional rule withholds the answer
-					conn.write(diagnostic_message_ack(s.cfg.functional_address, dm.source,
+					conn.write(diagnostic_message_ack(fa, dm.source,
 						diag_ack_ok)) or { return }
 					resp := s.handler(dm.data)
 					if resp.len > 0 && !s.cfg.functional_withheld(resp) {
