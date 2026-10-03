@@ -10,6 +10,7 @@
 // (stdout vs a log panel), and run a file. The same script behaves identically.
 module script
 
+import os
 import time
 import lua
 import transport
@@ -114,6 +115,9 @@ mut:
 	can bool
 	rx  u32
 	ext bool
+	// opened by flash.program for a channel NAME: a later flash on the same ids takes it again
+	// rather than adding a subscriber per call that nobody reads
+	flashing bool
 }
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
@@ -130,6 +134,9 @@ mut:
 	// complete a later one (someip.RpcClient)
 	someip_session u16
 	someip_used    map[u16]bool
+	// the script run_file is running: paths a script names (flash.program's image and seed file)
+	// resolve from its directory; '' for source text
+	script_path string
 pub mut:
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
@@ -168,6 +175,10 @@ pub fn new_env(chans []ChanInfo) !&Env {
 
 // run_file loads and executes a Lua script file (after the prelude).
 pub fn (mut env Env) run_file(path string) ! {
+	env.script_path = os.abs_path(path)
+	defer {
+		env.script_path = ''
+	}
 	env.st.do_file(path)!
 }
 
@@ -337,6 +348,8 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_supported_dtcs', l_uds_supported_dtcs)
 	env.st.register('__uds_dtc_count', l_uds_dtc_count)
 	env.st.register('__uds_dtc_code', l_uds_dtc_code)
+	env.st.register('__flash_open', l_flash_open)
+	env.st.register('__flash_program', l_flash_program)
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -521,6 +534,17 @@ fn prot_of(db candb.Database, nodes []project.NodeCfg, node string, msg string) 
 }
 
 fn l_uds_open(l lua.State) int {
+	return open_conn(l, 'uds.open', 0x7E0, 0x7E8, false)
+}
+
+// open_conn is uds.open: a diagnostic connection on the channel named by argument 1, CAN ids
+// tx/rx from arguments 2 and 3 (nil = the caller's defaults — uds.open's 0x7E0/0x7E8,
+// flash.program's 0x7B0/0x7B8, cmd/flash's), pushed as a handle. One body for both, so a flash
+// reaches a channel exactly as a diagnostic does: the ISO-TP channel on the bus the opener gives,
+// framed as the wire declares (a CAN-FD channel stamps its frames FD), or the channel's DoIP
+// connection. `what` names the caller in the refusals; `for_flash` marks a CAN connection as
+// flash.program's, and takes one it opened before on the same ids.
+fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) int {
 	mut env := env_of(l)
 	name := l.arg_str(1)
 	// Presence is carried by nil, not by a magic value: 0 is a valid arbitration id, and a
@@ -528,13 +552,15 @@ fn l_uds_open(l lua.State) int {
 	// request to 0x7E0/0x7E8 and reports a result from an ECU the script never addressed.
 	has_tx := !l.arg_is_nil(2)
 	has_rx := !l.arg_is_nil(3)
-	txi := l.arg_int(2)
-	rxi := l.arg_int(3)
+	// exact: a value that is not an integer must not become id 0 — for a flash, that addresses
+	// an erase at an endpoint the script never named
+	txi := if has_tx { l.arg_int_exact(2) or { return l.fail('${what}("${name}"): tx is not an integer') } } else { 0 }
+	rxi := if has_rx { l.arg_int_exact(3) or { return l.fail('${what}("${name}"): rx is not an integer') } } else { 0 }
 	if has_tx && (txi < 0 || txi > 0x1FFF_FFFF) {
-		return l.fail('uds.open("${name}"): tx = ${txi} is not a CAN identifier (0..0x1FFFFFFF)')
+		return l.fail('${what}("${name}"): tx = ${txi} is not a CAN identifier (0..0x1FFFFFFF)')
 	}
 	if has_rx && (rxi < 0 || rxi > 0x1FFF_FFFF) {
-		return l.fail('uds.open("${name}"): rx = ${rxi} is not a CAN identifier (0..0x1FFFFFFF)')
+		return l.fail('${what}("${name}"): rx = ${rxi} is not a CAN identifier (0..0x1FFFFFFF)')
 	}
 	tx := u32(txi)
 	rx := u32(rxi)
@@ -558,7 +584,7 @@ fn l_uds_open(l lua.State) int {
 		// Argument check FIRST. Reusing before validating handed a bad call a good connection,
 		// so the refusal below silently stopped applying to every open after the first.
 		if has_tx || has_rx {
-			return l.fail('uds.open("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
+			return l.fail('${what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
 		}
 		for i, mut c in env.conns {
 			if c.chan != name {
@@ -596,10 +622,18 @@ fn l_uds_open(l lua.State) int {
 			return 1
 		}
 	}
-	// Omitted, not zero: the standard physical pair is the CAN default.
-	ctx := if has_tx { tx } else { u32(0x7E0) }
-	crx := if has_rx { rx } else { u32(0x7E8) }
+	// Omitted, not zero: the caller's physical pair is the CAN default.
+	ctx := if has_tx { tx } else { dtx }
+	crx := if has_rx { rx } else { drx }
 	ext := ctx > 0x7FF || crx > 0x7FF
+	if for_flash && !info.carrier.doip {
+		for i, c in env.conns {
+			if c.flashing && c.chan == name && c.rx == crx && c.ch.tx_id == ctx && c.ext == ext {
+				l.push_int(i)
+				return 1
+			}
+		}
+	}
 	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the
 	// tx/rx arguments do not apply — the addresses come from the channel's configuration and
 	// passing ids here is a mistake worth naming rather than ignoring.
@@ -618,8 +652,9 @@ fn l_uds_open(l lua.State) int {
 		cli:  uds.new_client(ch)
 		chan: name
 		can:  !info.carrier.doip
-		rx:   crx
-		ext:  ext
+		rx:       crx
+		ext:      ext
+		flashing: for_flash && !info.carrier.doip
 	}
 	l.push_int(env.conns.len - 1)
 	return 1

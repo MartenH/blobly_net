@@ -1,8 +1,8 @@
 module flash
 
 // flash — the UDS firmware-download session against a blobly bootloader
-// (blobly_emb docs/bootloader.md), shared by cmd/flash (CLI) and the GUI's
-// Flash panel. Transport-neutral on the ECU side; this is the CAN binding's
+// (blobly_emb docs/bootloader.md), shared by cmd/flash (CLI), the GUI's
+// Flash panel and Lua's flash.program. Transport-neutral on the ECU side; this is the CAN binding's
 // client half over an isotp.Channel.
 //
 // Sequence: 0x10 02 -> 0x27 seed/key -> 0x31 FF00 erase -> 0x34 -> 0x36 xN
@@ -13,6 +13,7 @@ module flash
 // erase may need, P2* from the 0x10 02 answer, and a response that must name the request it
 // answers — a duplicated earlier answer (a CAN retransmission) is discarded, not taken for the
 // current step's, which on 0x36 would put every later block one answer behind.
+import os
 import isotp
 import uds
 import crypto.ed25519 as ed
@@ -23,8 +24,27 @@ pub const hdr_size = 64
 // Sink receives progress: the CLI prints, the GUI appends to its scrollback.
 pub interface Sink {
 mut:
-	note(s string)                // one milestone line ("unlocked", "erased ...")
-	block(done int, total int)    // transfer progress, in blocks
+	note(s string) // one milestone line ("unlocked", "erased ...")
+	// transfer progress, in blocks. An error STOPS the transfer there, before 0x37 and the check
+	// routine, so the boot never marks the image valid (a script's progress callback raising).
+	block(done int, total int) !
+}
+
+// Tenths is the progress a line-per-update sink prints: a line when the transfer crosses a tenth,
+// and at the last block. One rule for cmd/flash and a script's default progress.
+pub struct Tenths {
+mut:
+	last int = -1
+}
+
+// due answers the whole percent to print for this block, or none when no line is due.
+pub fn (mut t Tenths) due(done int, total int) ?int {
+	pct := if total > 0 { done * 100 / total } else { 100 }
+	if pct / 10 == t.last / 10 && done != total {
+		return none
+	}
+	t.last = pct
+	return pct
 }
 
 pub struct Opts {
@@ -35,6 +55,20 @@ pub mut:
 	// with the boot's challenge/response before erasing. Empty = skip auth (a
 	// boot with no key baked; legacy / unsigned targets).
 	auth_seed []u8
+}
+
+// Report is what a completed session did, for a caller that wants more than the sink's lines
+// (the Lua binding returns it as a table).
+pub struct Report {
+pub mut:
+	bytes   int  // header + image, as transferred
+	blocks  int  // 0x36 requests
+	wrapped bool // the image was a pre-wrapped BLBT .img, transferred as-is
+	// how 0x29 went: 'authenticated', 'not required' (a keyless boot refused the challenge with
+	// 0x22/0x11), or 'skipped' (no seed given)
+	auth string
+	// the 0x11 reset was answered; false when its answer was lost to the reset itself
+	reset_acknowledged bool
 }
 
 // tester_seed resolves the 0x29 signing seed (the SESSION key, distinct from the
@@ -64,6 +98,16 @@ pub fn tester_seed(env_val string) ![]u8 {
 	return s
 }
 
+// tester_seed_file reads a seed file as blobly_emb keeps one (examples/keys/tester.seed: the 64 hex
+// characters on one line). An empty file is an error, never the dev seed: a path was named.
+pub fn tester_seed_file(path string) ![]u8 {
+	text := os.read_file(path) or { return error('seed file ${path}: ${err}') }
+	if text.trim_space() == '' {
+		return error('seed file ${path} is empty')
+	}
+	return tester_seed(text) or { return error('seed file ${path}: ${err}') }
+}
+
 fn is_hex(s string) bool {
 	for c in s {
 		if !((c >= `0` && c <= `9`) || (c >= `a` && c <= `f`) || (c >= `A` && c <= `F`)) {
@@ -88,7 +132,7 @@ pub fn crc32(data []u8) u32 {
 // authenticate runs the 0x29 challenge/response: the boot sends a random
 // challenge, we sign it with the tester private key, the boot verifies with the
 // public key it holds. Replaces the legacy 0x27 seed/key.
-fn authenticate(mut c uds.Client, seed []u8, mut sink Sink) ! {
+fn authenticate(mut c uds.Client, seed []u8, mut sink Sink) !string {
 	// A boot with NO session key baked (a keyless/legacy build) answers requestChallenge with
 	// conditionsNotCorrect / serviceNotSupported — that boot doesn't require 0x29, so flash
 	// without it. If it IS secured, erase/download stay gated, so proceeding here can never
@@ -97,7 +141,7 @@ fn authenticate(mut c uds.Client, seed []u8, mut sink Sink) ! {
 		if err is uds.NegativeResponse {
 			if err.nrc == 0x22 || err.nrc == 0x11 {
 				sink.note('0x29 not required by this boot — flashing without auth')
-				return
+				return 'not required'
 			}
 		}
 		return step_error('request challenge', err)
@@ -112,6 +156,7 @@ fn authenticate(mut c uds.Client, seed []u8, mut sink Sink) ! {
 	proof << sig
 	ask(mut c, proof, 'send proof')!
 	sink.note('authenticated (0x29)')
+	return 'authenticated'
 }
 
 // make_header wraps RAW application bytes: magic, length, CRC, version — the
@@ -166,13 +211,15 @@ const first_answer_ms = 3000
 // over an open ISO-TP channel. Milestones + block progress go to the sink.
 // The final 0x11 reset's positive response can legitimately be missed if the
 // ECU resets fast — treated as success with a note, not an error.
-pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
+pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Report {
+	mut rep := Report{}
 	// a pre-wrapped mkimage .img (starts 'BLBT') transfers as-is — mkimage
 	// owns the target layout (vector padding); raw .bins get the header here.
 	mut blob := []u8{}
 	if image.len > 4 && image[0] == 0x42 && image[1] == 0x4C && image[2] == 0x42
 		&& image[3] == 0x54 {
 		blob = image.clone()
+		rep.wrapped = true
 		sink.note('wrapped image (BLBT) — transferring as-is')
 	} else {
 		blob << make_header(image, opts.sw_version)
@@ -186,8 +233,9 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 	c.timeout_ms = first_answer_ms
 	ask(mut c, [u8(0x10), 0x02], 'programming session')!
 	if opts.auth_seed.len == 32 {
-		authenticate(mut c, opts.auth_seed, mut sink)!
+		rep.auth = authenticate(mut c, opts.auth_seed, mut sink)!
 	} else {
+		rep.auth = 'skipped'
 		sink.note('no auth seed — skipping 0x29 (boot must have no key baked)')
 	}
 
@@ -240,9 +288,13 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 		off += n
 		blk++
 		done++
-		sink.block(done, nblocks)
+		sink.block(done, nblocks) or {
+			return error('transfer stopped after block ${done} of ${nblocks}, before the check — the image is not marked valid: ${err}')
+		}
 	}
 	ask(mut c, [u8(0x37)], 'transfer exit')!
+	rep.bytes = blob.len
+	rep.blocks = done
 	sink.note('transferred ${blob.len} bytes in ${done} blocks')
 
 	cr := ask(mut c, [u8(0x31), 0x01, 0xFF, 0x01], 'check image')!
@@ -259,7 +311,9 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 			return step_error('ecu reset', err)
 		}
 		sink.note('ECU reset sent (response lost to the reset — normal)')
-		return
+		return rep
 	}
+	rep.reset_acknowledged = true
 	sink.note('ECU reset — done')
+	return rep
 }

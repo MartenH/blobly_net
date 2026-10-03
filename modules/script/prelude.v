@@ -393,6 +393,50 @@ function uds.open(channel, opts)
   return self
 end
 
+-- ============================ flashing ============================
+-- flash.program(target, opts): the download session against a blobly_emb bootloader (0x10 02,
+-- 0x29, erase, 0x34/0x36/0x37, check, 0x11) -- the session cmd/flash runs, from modules/flash.
+-- target is a channel name (opened on opts.tx/opts.rx, default 0x7B0/0x7B8, as cmd/flash) or a
+-- uds.open connection (its ids; the connection a handoff to the bootloader was made on).
+-- opts: image (path, required; relative to the script), base (default 0x08020000), sw_version
+-- (default 1; for a raw image, which gets its header here), seed (64 hex chars) or seed_file
+-- (relative to the script) -- default $BLOBLY_FLASH_SEED, else the dev tester seed --, auth = false
+-- to skip 0x29, progress = function(done, total) called per whole percent of the blocks (without
+-- it a line per tenth is logged; one that raises stops the transfer before the check, so the image
+-- is not marked valid), quiet = true for no lines at all.
+-- Returns { bytes, blocks, wrapped, auth, reset_acknowledged }; a failed step raises, named.
+flash = {}
+-- the callback of each flash.program in progress, innermost last: the host calls __flash_progress,
+-- which calls the innermost, so a flash started inside a callback does not take the outer one
+local flash_progress = {}
+function __flash_progress(done, total) flash_progress[#flash_progress](done, total) end
+function flash.program(target, opts)
+  opts = opts or {}
+  if type(opts.image) ~= "string" or opts.image == "" then
+    error("flash.program: opts.image must be the path of the image", 2)
+  end
+  if opts.progress ~= nil and type(opts.progress) ~= "function" then
+    error("flash.program: opts.progress must be a function(done, total)", 2)
+  end
+  local h
+  if type(target) == "table" and type(target.handle) == "number" then
+    if opts.tx ~= nil or opts.rx ~= nil then
+      error("flash.program: a uds.open connection brings its own ids; drop tx/rx", 2)
+    end
+    h = target.handle
+  elseif type(target) == "string" then
+    h = __flash_open(target, opts.tx, opts.rx)
+  else
+    error("flash.program: target must be a channel name or a uds.open connection", 2)
+  end
+  flash_progress[#flash_progress + 1] = opts.progress or false
+  local ok, r = pcall(__flash_program, h, opts.image, opts.base, opts.sw_version, opts.auth ~= false,
+    opts.seed, opts.seed_file, opts.progress ~= nil, opts.quiet == true)
+  flash_progress[#flash_progress] = nil
+  if not ok then error(r, 2) end
+  return r
+end
+
 -- ============================ raw bus + signals ============================
 bus = {}
 function bus.send(channel, id, data, opts)

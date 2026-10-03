@@ -252,6 +252,43 @@ implementation. Positions are 0-based bytes, as blobly_emb's `[[frame]].e2e` wri
 is `both` (default), `low` or `alt`. A counter of 15, a Data ID wider than 16 bits, or positions
 outside the frame raise.
 
+### Flashing through a bootloader
+
+```lua
+local r = flash.program("compute", { image = "../build/domain.img", tx = 0x7B0, rx = 0x7B8 })
+-- or over the connection a handoff was made on:
+local d = uds.open("edge", { tx = 0x7C0, rx = 0x7C8 })
+d:session(0x02)                      -- the application hands over to its bootloader
+flash.program(d, { image = "zone_a.img", progress = function(done, total) log(done .. "/" .. total) end })
+```
+
+The download session against a blobly_emb bootloader — 0x10 02, 0x29 challenge/response, 0x31
+FF00 erase, 0x34 / 0x36 ... / 0x37, 0x31 FF01 check (the boot marks the image valid only after its
+own CRC passes), 0x11 reset — run by `modules/flash`, the same code as `cmd/flash` and the GUI's
+Flash panel. The first argument is a channel name, opened on `tx`/`rx` (default 0x7B0/0x7B8, as
+`cmd/flash`), or a `uds.open` connection, whose ids are used. The channel is reached exactly as
+`uds.open` reaches it: on a channel the project declares CAN-FD, the frames go out FD with
+classic-sized ISO-TP.
+
+| option | meaning |
+|---|---|
+| `image` | the image path, **relative to the script** (an absolute path as written). A raw `.bin` gets its header here; a wrapped `.img` (starts `BLBT`) goes as it is |
+| `base` | the slot address, default 0x08020000 |
+| `sw_version` | written into a raw image's header, default 1 |
+| `seed` / `seed_file` | the 0x29 tester seed: 64 hex characters, or a file holding them (relative to the script, like `examples/keys/tester.seed`). Default `$BLOBLY_FLASH_SEED`, else the dev seed — as `cmd/flash`. A malformed seed raises; it never falls back to the dev key |
+| `auth` | `false` to skip 0x29 (a boot with no key baked) |
+| `progress` | `function(done, total)` in blocks, called once per whole percent (at most 101 calls). Without it a `flash: transfer ...` line is logged per tenth |
+| `quiet` | `true`: no `flash: ...` lines at all |
+
+Returns `{ bytes, blocks, wrapped, auth, reset_acknowledged }` — `auth` is `"authenticated"`,
+`"not required"` (the boot refused the challenge with 0x22/0x11: no key baked) or `"skipped"`;
+`reset_acknowledged` is false when the 0x11 answer was lost to the reset, which is normal. A failed
+step raises with the step named — `send proof: NRC 0x35` (wrong key; nothing was erased),
+`erase: NRC 0x22`, `image check FAILED on the ECU — not marked valid`. A cut transfer is safe: the
+boot refuses an unmarked image, and a re-run recovers. A progress callback that raises stops the
+transfer there, before the check — the image is not marked valid — and `flash.program` raises with
+its error. Flashing a channel by name twice on the same ids reuses the first call's connection.
+
 ### Raw frames & signals
 
 ```lua
@@ -455,6 +492,7 @@ own header comment:
 | Tool | What it does |
 |---|---|
 | `cmd/script` | the script/test runner (this guide; usually via `scripts/runtests.sh`) |
+| `cmd/flash` | flash an image through a blobly_emb bootloader over ISO-TP (`flash.program` from a script) |
 | `cmd/doip_smoke` | drive UDS over DoIP against a local entity, no project needed |
 | `cmd/restbus` | replay a recording onto live buses with the ECU under test subtracted |
 | `cmd/lua_smoke` | minimal embedded-Lua check (script + host callback) |

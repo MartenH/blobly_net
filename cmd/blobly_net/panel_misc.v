@@ -1110,7 +1110,7 @@ fn (mut s GuiFlashSink) note(msg string) {
 	a.flash_append(msg)
 }
 
-fn (mut s GuiFlashSink) block(done int, total int) {
+fn (mut s GuiFlashSink) block(done int, total int) ! {
 	mut a := unsafe { s.app }
 	a.mu.lock()
 	a.flash_done = done
