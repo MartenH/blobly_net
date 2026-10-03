@@ -1148,6 +1148,9 @@ fn (mut app App) reset_gen_state() {
 }
 
 fn (mut app App) rebuild_from_proj() {
+	// a reader's note is said once per rebuild: the trace's load and the simulation's merge open
+	// the same files, and several simulated channels may share one
+	mut said_notes := map[string]bool{}
 	// THE PRECONDITION ABOVE IS NOW TRUE, AND SAYS SO IF IT IS NOT. Every caller here has always
 	// asked `app.running` before rebuilding, and until #107 that flag was false for the whole
 	// window in which stop()'s workers were still leaving — so "stopped" meant "still being
@@ -1303,6 +1306,7 @@ fn (mut app App) rebuild_from_proj() {
 				app.dbs_paths << rp // the editor saves back to this path (a .dbc; an .arxml is read-only there)
 				app.dbs_by_iface[ch.iface] << loaded.db // scoped to this channel (generator picker)
 				for n in loaded.notes {
+					said_notes[n] = true
 					app.elog('dbc ${n}') // the reader's honesty report: never dropped in silence
 				}
 			} else {
@@ -1394,6 +1398,10 @@ fn (mut app App) rebuild_from_proj() {
 			sim_paths := ch.databases.map(app.resolve_asset(it))
 			sim_db, sim_notes := candb.merge_files_report(sim_paths)
 			for n in sim_notes {
+				if n in said_notes {
+					continue
+				}
+				said_notes[n] = true
 				app.elog('sim ${ch.name}: ${n}')
 			}
 			app.sims << SimCfg{
