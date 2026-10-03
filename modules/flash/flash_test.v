@@ -70,7 +70,7 @@ fn (mut n Notes) note(s string) {
 	n.lines << s
 }
 
-fn (mut n Notes) block(done int, total int) {}
+fn (mut n Notes) block(done int, total int) ! {}
 
 fn test_a_pending_erase_and_a_late_block_answer_do_not_derail_the_session() {
 	mut boot := &FakeBoot{

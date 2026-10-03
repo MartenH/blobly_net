@@ -61,11 +61,17 @@ pub fn declaration_in(text string, script_path string) ?Decl {
 		return Decl{
 			script: script_path
 			raw:    raw
-			// an absolute path is taken as written; a relative one from the script's directory
-			path:   os.norm_path(if os.is_abs_path(raw) { raw } else { os.join_path(os.dir(script_path), raw) })
+			path:   from_script(script_path, raw)
 		}
 	}
 	return none
+}
+
+// from_script resolves a path written IN a script: an absolute path as written, a relative one
+// from the script's own directory, so it means the same file from any working directory. The one
+// rule for `@project` and for the files a script names (flash.program's image and seed file).
+pub fn from_script(script_path string, raw string) string {
+	return os.norm_path(if os.is_abs_path(raw) { raw } else { os.join_path(os.dir(script_path), raw) })
 }
 
 // declaration_of reads the script and returns what it declares, if anything. An unreadable file

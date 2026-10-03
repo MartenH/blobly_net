@@ -109,8 +109,19 @@ pub fn (l State) do_file(path string) ! {
 // call_global calls the global function `name` with no arguments (used to invoke
 // a script entry point after loading a prelude + the user script).
 pub fn (l State) call_global(name string) ! {
+	l.call_global_ints(name, [])!
+}
+
+// call_global_ints calls the global function `name` with integer arguments and no results — also
+// a host function calling back into the script (flash.program's progress callback). Reentrant: a
+// host function may call it while it is itself running under Lua, and an error the callback
+// raises is returned here rather than unwinding through the host.
+pub fn (l State) call_global_ints(name string, args []i64) ! {
 	C.ctlua_getglobal(l, &char(name.str))
-	if C.ctlua_pcall(l, 0, 0) != 0 {
+	for a in args {
+		C.ctlua_push_int(l, a)
+	}
+	if C.ctlua_pcall(l, args.len, 0) != 0 {
 		return error(l.pop_error())
 	}
 }
