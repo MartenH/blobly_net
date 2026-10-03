@@ -88,6 +88,63 @@ pub mut:
 	attrs   []DbcAttr
 }
 
+// e2e_notes says every #271 E2E value the reader refused, one line each — the ONE place a
+// malformed E2EDataId or E2ETimeout is said, whoever sends the message; the simulation only
+// refuses to apply a declaration with a malformed Data ID.
+pub fn (db Database) e2e_notes() []string {
+	mut out := []string{}
+	for m in db.messages {
+		if m.e2e.bad_data_id != '' {
+			out << '${m.name}: E2EDataId ${m.e2e.bad_data_id} is not a Data ID — its E2E declaration is not applied, and a Save drops it'
+		}
+		if m.e2e.bad_timeout != '' {
+			out << '${m.name}: E2ETimeout ${m.e2e.bad_timeout} is not a number of ms — not read, and a Save drops it'
+		}
+	}
+	return out
+}
+
+// save_drops says what to_dbc leaves out of the file that the model read from it (the
+// difference E2eDecl.as_saved makes), one line per malformed value.
+pub fn (db Database) save_drops() []string {
+	mut out := []string{}
+	for m in db.messages {
+		if m.e2e.bad_data_id != '' {
+			out << '${m.name}: E2EDataId ${m.e2e.bad_data_id} is not a Data ID — its E2E declaration is not saved'
+		}
+		if m.e2e.bad_timeout != '' {
+			out << '${m.name}: E2ETimeout ${m.e2e.bad_timeout} is not a number of ms — not saved'
+		}
+	}
+	return out
+}
+
+// as_saved is the declaration a Save writes, which is what a reload reads back. A malformed
+// value is never written as it was: under an INT definition it makes the file unreadable to
+// every other tool (docs/dbc_attributes.md). A malformed E2EDataId takes the whole declaration
+// with it — written without its id, a profile that needs none would be applied after the reload
+// where it had been refused; a malformed E2ETimeout is left out on its own.
+pub fn (d E2eDecl) as_saved() E2eDecl {
+	if d.bad_data_id != '' {
+		return E2eDecl{
+			timeout_ms:  d.timeout_ms
+			has_timeout: d.has_timeout
+		}
+	}
+	return E2eDecl{
+		...d
+		bad_timeout: ''
+	}
+}
+
+// saved is the database as a Save leaves it — the model the editor keeps once the file is
+// written, so it holds what the file now says and a later Save has nothing more to report.
+pub fn (mut db Database) saved() {
+	for mut m in db.messages {
+		m.e2e = m.e2e.as_saved()
+	}
+}
+
 // to_dbc renders the database as canonical DBC text.
 pub fn (db Database) to_dbc() string {
 	return db.to_dbc_with(DbcExtras{})
@@ -287,7 +344,8 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 		mut max_id := u32(65535)
 		mut max_tmo := u32(65535)
 		for m in msgs {
-			d := m.e2e
+			// what a Save keeps of the declaration — the one rule save_drops reports
+			d := m.e2e.as_saved()
 			if d.counter != '' {
 				ctr.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.counter)}"'}
 			}
@@ -297,8 +355,6 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 			if d.profile != '' {
 				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(profile_to_dbc(d.profile))}"'}
 			}
-			// a malformed value is not written back: under an INT definition it would make the
-			// file unreadable to every other tool (docs/dbc_attributes.md)
 			if d.has_data_id {
 				did.values << DbcAttrValue{m.id, m.ext, '${d.data_id}'}
 				if d.data_id > max_id {

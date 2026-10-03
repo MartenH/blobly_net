@@ -524,3 +524,26 @@ fn test_e2e_writer_fixpoint_and_padded_numbers() {
 	assert once.contains('BA_ "E2EProfile" BO_ 1 "P01";')
 	assert (parse_dbc(once) or { panic(err) }).to_dbc() == once, 'the writer is not a fixpoint'
 }
+
+// #383: the reader says a malformed #271 value as a LOAD NOTE, once, whoever sends the message —
+// here one only the ECU under test sends, which no simulated node would ever report
+fn test_malformed_e2e_values_are_load_notes() {
+	dir := os.join_path(os.vtmp_dir(), 'e2e_notes_${os.getpid()}')
+	os.mkdir_all(dir) or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'sut.dbc')
+	os.write_file(path, 'BU_: SUT
+BO_ 769 BrakeStatus: 6 SUT
+ SG_ BrakeCrc : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+BA_DEF_ BO_ "E2ETimeout" INT 0 65535;
+BA_ "E2ETimeout" BO_ 769 soon;
+') or {
+		panic(err)
+	}
+	loaded := open_database(path) or { panic(err) }
+	assert loaded.notes == ['sut.dbc: BrakeStatus: E2ETimeout soon is not a number of ms — not read, and a Save drops it']
+	_, notes := merge_files_report([path])
+	assert notes == loaded.notes, 'the merge carries the note once'
+}

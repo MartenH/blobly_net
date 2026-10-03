@@ -60,7 +60,11 @@ Rules both readers follow:
   as absent: a missing Data ID and Data ID 0 give different checksums. An empty value is malformed
   too. blobly_net's editor does **not** write a malformed value back on Save, because under an
   `INT` definition it would make the file unreadable to every other tool; so a Save drops it, and
-  the message then has no Data ID (or timeout). Fix the value rather than saving over it.
+  says so. A malformed `E2EDataId` takes the message's whole E2E declaration with it, because a
+  declaration written back without its Data ID is a different one: for a profile that needs no
+  Data ID it would be applied after the reload where it had been refused. A malformed
+  `E2ETimeout` is dropped on its own, and the message then has no timeout. Fix the value rather
+  than saving over it.
 - **The local configuration may override, but only on purpose.**
   - In blobly_net, a node's `protect:` entry for the message takes precedence, and the
     difference is reported (for example, a wrong Data ID to test a receiver's rejection path).
