@@ -181,3 +181,27 @@ channels:
 	v := again.channels[0].nodes[0].uds or { panic('uds lost on save') }
 	assert v.dids[0].text == 'ACME,INC', 'got "${v.dids[0].text}"'
 }
+
+// #383: a protect:/verify: entry reads its profile through candb.profile_from_dbc, so `P01` and
+// `PROFILE_01` are Profile 1 here as in a DBC — and the file declares the version Profile 1 needs
+fn test_protect_profile_1_spellings() {
+	for spelling in ['P01', 'PROFILE_01'] {
+		p := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    verify:
+      - { message: M, counter: C, crc: K, profile: ${spelling}, data_id: 1 }
+    simulation:
+      - name: BCM
+        protect:
+          - { message: M, counter: C, crc: K, profile: ${spelling}, data_id: 1 }
+') or {
+			panic(err)
+		}
+		assert p.channels[0].verify[0].profile == 'autosar_p01', spelling
+		assert p.channels[0].nodes[0].protect[0].profile == 'autosar_p01', spelling
+		assert version_for(p) == 7, spelling
+	}
+}

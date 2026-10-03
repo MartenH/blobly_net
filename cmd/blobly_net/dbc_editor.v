@@ -470,6 +470,7 @@ fn draw_dbc_editor(mut app App) {
 			}
 		}
 		text := app.dbs[di].to_dbc()
+		drops := app.dbs[di].save_drops()
 		app.mu.unlock()
 		tmp := dbc_path + '.tmp~'
 		mut save_ok := true
@@ -488,6 +489,9 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_ed.dirty.delete(dbc_path)
 			app.dbc_ed.loaded_key = ''
 			app.notify('saved ${dbc_path}')
+			for d in drops {
+				app.notify('dbc save: ${d}')
+			}
 			app.dbc_refresh_trace_names()
 			app.dbc_refresh_if_all_clean()
 		}

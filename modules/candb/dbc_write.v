@@ -88,6 +88,24 @@ pub mut:
 	attrs   []DbcAttr
 }
 
+// save_drops says what to_dbc leaves out of the file that the model read from it, one line per
+// value: a malformed E2EDataId takes its whole E2E declaration with it (written without the
+// id, a profile that needs none would be applied after a reload where it had been refused), and
+// a malformed E2ETimeout is left out. Neither is written back as it was: under an INT
+// definition that makes the file unreadable to every other tool (docs/dbc_attributes.md).
+pub fn (db Database) save_drops() []string {
+	mut out := []string{}
+	for m in db.messages {
+		if m.e2e.bad_data_id != '' {
+			out << '${m.name}: E2EDataId ${m.e2e.bad_data_id} is not a Data ID — its E2E declaration is not saved'
+		}
+		if m.e2e.bad_timeout != '' {
+			out << '${m.name}: E2ETimeout ${m.e2e.bad_timeout} is not a number of ms — not saved'
+		}
+	}
+	return out
+}
+
 // to_dbc renders the database as canonical DBC text.
 pub fn (db Database) to_dbc() string {
 	return db.to_dbc_with(DbcExtras{})
@@ -288,13 +306,16 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 		mut max_tmo := u32(65535)
 		for m in msgs {
 			d := m.e2e
-			if d.counter != '' {
+			// a declaration with a malformed Data ID is not written at all (save_drops says so):
+			// written without its id, a profile that does not need one would be APPLIED on reload
+			// where it was refused before
+			if d.bad_data_id == '' && d.counter != '' {
 				ctr.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.counter)}"'}
 			}
-			if d.crc != '' {
+			if d.bad_data_id == '' && d.crc != '' {
 				crc.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(d.crc)}"'}
 			}
-			if d.profile != '' {
+			if d.bad_data_id == '' && d.profile != '' {
 				prof.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(profile_to_dbc(d.profile))}"'}
 			}
 			// a malformed value is not written back: under an INT definition it would make the

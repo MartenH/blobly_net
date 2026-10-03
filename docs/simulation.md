@@ -187,7 +187,7 @@ AUTOSAR profile describes.
 | `message` | DBC message name to protect |
 | `counter` | signal carrying the alive counter — omit for none |
 | `crc` | signal carrying the checksum — omit for none |
-| `profile` | `autosar_p01`, or a primitive: `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8` |
+| `profile` | `autosar_p01` (also spelled `P01` or `PROFILE_01`, as in a DBC's `E2EProfile`), or a primitive: `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8` |
 | `data_id` | mixed into the checksum only, never into the payload. `0` is a real id: written explicitly it contributes, omitted it does not, and the two give different checksums. `autosar_p01` requires one, 16 bits |
 | `data_id_mode` | `autosar_p01` only: `both` (default: the low byte, then the high byte), `low`, or `alt` (the low byte when the counter is even, the high byte when it is odd). `nibble` is not supported |
 

@@ -159,6 +159,10 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 	// applied must be said — and an entry that differs from one overrides it, which is legitimate
 	// (a wrong Data ID on purpose) but worth saying
 	for m in db.messages_from(cfg.name) {
+		// a receiver's timeout, which the sender ignores: said, and nothing else refused for it
+		if m.e2e.bad_timeout != '' {
+			warns << 'dbc: the E2ETimeout of ${m.name}, ${m.e2e.bad_timeout}, is not a number of ms — not read, and a Save drops it'
+		}
 		if !m.e2e.declared() {
 			continue
 		}
