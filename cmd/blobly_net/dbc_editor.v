@@ -492,6 +492,14 @@ fn draw_dbc_editor(mut app App) {
 			for d in drops {
 				app.notify('dbc save: ${d}')
 			}
+			if drops.len > 0 {
+				// the model now holds what the file says, so the next Save repeats nothing
+				app.mu.lock()
+				if di < app.dbs.len && app.db_path(di) == dbc_path {
+					app.dbs[di].saved()
+				}
+				app.mu.unlock()
+			}
 			app.dbc_refresh_trace_names()
 			app.dbc_refresh_if_all_clean()
 		}

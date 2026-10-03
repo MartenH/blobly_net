@@ -335,6 +335,10 @@ BA_ "E2ETimeout" BO_ 769 300;
 	assert !a.e2e.declared(), 'the declaration should be absent after the save'
 	assert a.e2e.has_timeout && a.e2e.timeout_ms == 300, 'the receiver timeout is not part of it'
 	assert !from_project(again, node).messages.any(it.e2e.active())
+	// the editor keeps the saved model, which matches the reload and has nothing left to report
+	mut kept := db
+	kept.saved()
+	assert kept.messages[0].e2e == a.e2e && kept.save_drops().len == 0
 }
 
 // #383: a malformed E2ETimeout is said where the declaration is judged, and refuses nothing —
@@ -386,21 +390,18 @@ channels:
 			panic(err)
 		}
 		cfg := p.channels[0].nodes[0]
-		m := candb.Message{
-			...brake_status()
-			sender: 'Chassis'
-			e2e:    candb.E2eDecl{
-				counter:     'BrakeCounter'
-				crc:         'BrakeCrc'
-				profile:     candb.profile_from_dbc(spelling)
-				data_id:     0x1244
-				has_data_id: true
-			}
+		db := candb.parse_dbc('BU_: Chassis
+BO_ 769 BrakeStatus: 6 Chassis
+ SG_ BrakeCrc : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ BrakeCounter : 40|4@1+ (1,0) [0|15] "" Vector__XXX
+BA_ "E2ECounterSignal" BO_ 769 "BrakeCounter";
+BA_ "E2ECrcSignal" BO_ 769 "BrakeCrc";
+BA_ "E2EProfile" BO_ 769 "${spelling}";
+BA_ "E2EDataId" BO_ 769 4676;
+') or {
+			panic(err)
 		}
-		db := candb.Database{
-			nodes:    ['Chassis']
-			messages: [m]
-		}
+		m := db.messages[0]
 		warns := validate_protection(db, cfg)
 		assert warns.len == 0, '${spelling}: ${warns}'
 		e := protection_for(cfg, m) or { panic('${spelling}: not stamped') }
