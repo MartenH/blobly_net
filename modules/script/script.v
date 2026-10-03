@@ -552,8 +552,10 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) int {
 	// request to 0x7E0/0x7E8 and reports a result from an ECU the script never addressed.
 	has_tx := !l.arg_is_nil(2)
 	has_rx := !l.arg_is_nil(3)
-	txi := l.arg_int(2)
-	rxi := l.arg_int(3)
+	// exact: a value that is not an integer must not become id 0 — for a flash, that addresses
+	// an erase at an endpoint the script never named
+	txi := if has_tx { l.arg_int_exact(2) or { return l.fail('${what}("${name}"): tx is not an integer') } } else { 0 }
+	rxi := if has_rx { l.arg_int_exact(3) or { return l.fail('${what}("${name}"): rx is not an integer') } } else { 0 }
 	if has_tx && (txi < 0 || txi > 0x1FFF_FFFF) {
 		return l.fail('${what}("${name}"): tx = ${txi} is not a CAN identifier (0..0x1FFFFFFF)')
 	}
