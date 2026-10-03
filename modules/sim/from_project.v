@@ -165,7 +165,8 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		mine := cfg.protect.filter(it.message == m.name)
 		if mine.len == 0 {
 			why := declared_problem(m, e2e_of_decl(m.e2e))
-			if why != '' {
+			// a malformed Data ID is said once, by the reader's load note (candb.e2e_notes)
+			if why != '' && m.e2e.bad_data_id == '' {
 				warns << 'dbc: the E2E declaration of ${m.name} cannot be applied — ${why}; ${m.name} is sent unprotected'
 			}
 		} else {

@@ -304,3 +304,99 @@ fn test_p01_crc_bytes_is_the_reference() {
 		assert false, 'a CRC byte off the frame was computed'
 	}
 }
+
+// #383: a declaration refused for a malformed Data ID stays unapplied through an editor Save —
+// the writer drops it whole and says so, since written without its id a profile that needs none
+// would be stamped after the reload
+fn test_a_refused_declaration_is_not_applied_after_a_save() {
+	text := 'BU_: Chassis
+BO_ 769 BrakeStatus: 6 Chassis
+ SG_ BrakePressure : 0|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ BrakeCrc : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ BrakeCounter : 40|4@1+ (1,0) [0|15] "" Vector__XXX
+BA_DEF_ BO_ "E2EDataId" INT 0 65535;
+BA_ "E2ECounterSignal" BO_ 769 "BrakeCounter";
+BA_ "E2ECrcSignal" BO_ 769 "BrakeCrc";
+BA_ "E2EProfile" BO_ 769 "crc8_j1850";
+BA_ "E2EDataId" BO_ 769 bogus;
+BA_ "E2ETimeout" BO_ 769 300;
+'
+	db := candb.parse_dbc(text) or { panic(err) }
+	m := db.messages[0]
+	assert declared_e2e(m) == none, 'refused before the save'
+	node := project.NodeCfg{
+		name: 'Chassis'
+	}
+	// said once, by the reader; the simulation refuses without saying the value again
+	assert db.e2e_notes() == ['BrakeStatus: E2EDataId bogus is not a Data ID — its E2E declaration is not applied, and a Save drops it']
+	assert !validate_protection(db, node).any(it.contains('bogus'))
+	assert db.save_drops() == ['BrakeStatus: E2EDataId bogus is not a Data ID — its E2E declaration is not saved']
+	again := candb.parse_dbc(db.to_dbc()) or { panic(err) }
+	a := again.messages[0]
+	assert declared_e2e(a) == none, 'a Save turned a refused declaration into an applied one'
+	assert !a.e2e.declared(), 'the declaration should be absent after the save'
+	assert a.e2e.has_timeout && a.e2e.timeout_ms == 300, 'the receiver timeout is not part of it'
+	assert !from_project(again, node).messages.any(it.e2e.active())
+	// the editor keeps the saved model, which matches the reload and has nothing left to report
+	mut kept := db
+	kept.saved()
+	assert kept.messages[0].e2e == a.e2e && kept.save_drops().len == 0
+}
+
+// #383: a malformed E2ETimeout is the reader's to say (candb.e2e_notes), not the simulation's —
+// and it refuses nothing, since the sender does not use it
+fn test_a_malformed_timeout_refuses_nothing() {
+	m := candb.Message{
+		...brake_status()
+		sender: 'Chassis'
+		e2e:    candb.E2eDecl{
+			counter:     'BrakeCounter'
+			crc:         'BrakeCrc'
+			profile:     'crc8_j1850'
+			bad_timeout: 'soon'
+		}
+	}
+	db := candb.Database{
+		nodes:    ['Chassis']
+		messages: [m]
+	}
+	assert validate_protection(db, project.NodeCfg{ name: 'Chassis' }).len == 0
+	assert declared_e2e(m) != none, 'a bad receiver timeout refused the sender'
+	assert db.save_drops() == ['BrakeStatus: E2ETimeout soon is not a number of ms — not saved']
+}
+
+// #383: a protect: entry spells Profile 1 as a DBC does — through the one rule — so the two front
+// ends agree: the entry matching the declaration is no difference
+fn test_protect_entry_reads_p01_like_the_dbc() {
+	for spelling in ['P01', 'PROFILE_01', 'autosar_p01'] {
+		p := project.parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: Chassis
+        protect:
+          - { message: BrakeStatus, counter: BrakeCounter, crc: BrakeCrc, profile: ${spelling}, data_id: 0x1244 }
+') or {
+			panic(err)
+		}
+		cfg := p.channels[0].nodes[0]
+		db := candb.parse_dbc('BU_: Chassis
+BO_ 769 BrakeStatus: 6 Chassis
+ SG_ BrakeCrc : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ BrakeCounter : 40|4@1+ (1,0) [0|15] "" Vector__XXX
+BA_ "E2ECounterSignal" BO_ 769 "BrakeCounter";
+BA_ "E2ECrcSignal" BO_ 769 "BrakeCrc";
+BA_ "E2EProfile" BO_ 769 "${spelling}";
+BA_ "E2EDataId" BO_ 769 4676;
+') or {
+			panic(err)
+		}
+		m := db.messages[0]
+		warns := validate_protection(db, cfg)
+		assert warns.len == 0, '${spelling}: ${warns}'
+		e := protection_for(cfg, m) or { panic('${spelling}: not stamped') }
+		assert e.profile == p01, spelling
+	}
+}

@@ -1253,7 +1253,8 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			id_malformed:       mbad
 			counter:            p.value('counter').default_to('').string()
 			crc:                p.value('crc').default_to('').string()
-			profile:            p.value('profile').default_to('crc8_j1850').string()
+			// read through the DBC's rule, so `P01` / `PROFILE_01` mean Profile 1 here too
+			profile:            candb.profile_from_dbc(p.value('profile').default_to('crc8_j1850').string())
 			data_id_mode:       p.value('data_id_mode').default_to('').string()
 			data_id:            id
 			data_id_malformed:  idbad
