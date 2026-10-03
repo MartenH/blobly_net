@@ -88,6 +88,22 @@ pub mut:
 	attrs   []DbcAttr
 }
 
+// e2e_notes says every #271 E2E value the reader refused, one line each — the ONE place a
+// malformed E2EDataId or E2ETimeout is said, whoever sends the message; the simulation only
+// refuses to apply a declaration with a malformed Data ID.
+pub fn (db Database) e2e_notes() []string {
+	mut out := []string{}
+	for m in db.messages {
+		if m.e2e.bad_data_id != '' {
+			out << '${m.name}: E2EDataId ${m.e2e.bad_data_id} is not a Data ID — its E2E declaration is not applied, and a Save drops it'
+		}
+		if m.e2e.bad_timeout != '' {
+			out << '${m.name}: E2ETimeout ${m.e2e.bad_timeout} is not a number of ms — not read, and a Save drops it'
+		}
+	}
+	return out
+}
+
 // save_drops says what to_dbc leaves out of the file that the model read from it (the
 // difference E2eDecl.as_saved makes), one line per malformed value.
 pub fn (db Database) save_drops() []string {

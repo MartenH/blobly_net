@@ -327,7 +327,9 @@ BA_ "E2ETimeout" BO_ 769 300;
 	node := project.NodeCfg{
 		name: 'Chassis'
 	}
-	assert validate_protection(db, node).any(it.contains('bogus is not a Data ID'))
+	// said once, by the reader; the simulation refuses without saying the value again
+	assert db.e2e_notes() == ['BrakeStatus: E2EDataId bogus is not a Data ID — its E2E declaration is not applied, and a Save drops it']
+	assert !validate_protection(db, node).any(it.contains('bogus'))
 	assert db.save_drops() == ['BrakeStatus: E2EDataId bogus is not a Data ID — its E2E declaration is not saved']
 	again := candb.parse_dbc(db.to_dbc()) or { panic(err) }
 	a := again.messages[0]
@@ -341,10 +343,10 @@ BA_ "E2ETimeout" BO_ 769 300;
 	assert kept.messages[0].e2e == a.e2e && kept.save_drops().len == 0
 }
 
-// #383: a malformed E2ETimeout is said where the declaration is judged, and refuses nothing —
-// the sender does not use it
-fn test_a_malformed_timeout_is_said() {
-	mut m := candb.Message{
+// #383: a malformed E2ETimeout is the reader's to say (candb.e2e_notes), not the simulation's —
+// and it refuses nothing, since the sender does not use it
+fn test_a_malformed_timeout_refuses_nothing() {
+	m := candb.Message{
 		...brake_status()
 		sender: 'Chassis'
 		e2e:    candb.E2eDecl{
@@ -358,19 +360,9 @@ fn test_a_malformed_timeout_is_said() {
 		nodes:    ['Chassis']
 		messages: [m]
 	}
-	warns := validate_protection(db, project.NodeCfg{ name: 'Chassis' })
-	assert warns.any(it.contains('E2ETimeout of BrakeStatus, soon, is not a number of ms')), warns.str()
+	assert validate_protection(db, project.NodeCfg{ name: 'Chassis' }).len == 0
 	assert declared_e2e(m) != none, 'a bad receiver timeout refused the sender'
-	// a timeout alone declares no protection, and is still said
-	m.e2e = candb.E2eDecl{
-		bad_timeout: '(empty)'
-	}
-	alone := candb.Database{
-		nodes:    ['Chassis']
-		messages: [m]
-	}
-	assert validate_protection(alone, project.NodeCfg{ name: 'Chassis' }).any(it.contains('(empty)'))
-	assert alone.save_drops() == ['BrakeStatus: E2ETimeout (empty) is not a number of ms — not saved']
+	assert db.save_drops() == ['BrakeStatus: E2ETimeout soon is not a number of ms — not saved']
 }
 
 // #383: a protect: entry spells Profile 1 as a DBC does — through the one rule — so the two front
