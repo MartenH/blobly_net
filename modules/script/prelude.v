@@ -71,6 +71,61 @@ function check.dtc(diag, name, want)
   error("check.dtc: the server has no DTC " .. tostring(name), 2)
 end
 
+-- __dtc_arg: a DTC given by name ("U0401-00") or by its 24-bit code, as the code
+function __dtc_arg(dtc, level)
+  if type(dtc) == "number" then return dtc end
+  local code = __uds_dtc_code(tostring(dtc))
+  if code == nil then error("not a DTC name: " .. tostring(dtc), level + 1) end
+  return code
+end
+
+-- check.snapshot(diag, name [, want]): the server holds a snapshot of DTC `name` (0x19 04), and
+-- each DID `want` names was captured with the value it gives (bytes), e.g. { [0xF1A0] = fromhex("00 00 00 2A") };
+-- a DID given as true only has to be there. Returns the snapshot.
+function check.snapshot(diag, name, want)
+  local s = diag:snapshot(name)
+  if #s.records == 0 then error(string.format("%s: no snapshot stored (status 0x%02X)", s.name, s.status), 2) end
+  for id, v in pairs(want or {}) do
+    -- every record holding the DID is looked at: one with the wanted value is enough
+    local seen, hit = nil, false
+    for _, r in ipairs(s.records) do
+      for _, d in ipairs(r.dids) do
+        if d.id == id then
+          seen = d.data
+          if v == true or d.data == v then hit = true end
+        end
+      end
+    end
+    if seen == nil then error(string.format("%s: the snapshot holds no DID 0x%04X", s.name, id), 2) end
+    if not hit then
+      error(string.format("%s: snapshot DID 0x%04X is %s in every record, expected %s", s.name, id, tohex(seen), tohex(v)), 2)
+    end
+  end
+  return s
+end
+
+-- check.extended(diag, name, want): DTC `name`s extended data (0x19 06) has the counters `want`
+-- gives — occurrence, aging, failed_cycles — or, by record number, the bytes. Returns the answer.
+local ext_names = { occurrence = true, aging = true, failed_cycles = true }
+function check.extended(diag, name, want)
+  local e = diag:extended(name)
+  for k, v in pairs(want or {}) do
+    local got
+    if type(k) == "number" then
+      got = e.records[k]
+    elseif ext_names[k] then
+      got = e[k]
+    else
+      error("check.extended: no extended data named " .. tostring(k), 2)
+    end
+    if got == nil then error(string.format("%s: the answer has no %s", e.name, tostring(k)), 2) end
+    if got ~= v then
+      error(string.format("%s: %s is %s, expected %s", e.name, tostring(k), tostring(got), tostring(v)), 2)
+    end
+  end
+  return e
+end
+
 -- expect a UDS negative response with NRC `code` while running fn
 function check.nrc(code, fn)
   local ok, err = pcall(fn)
@@ -379,6 +434,19 @@ function uds.open(channel, opts)
   function self:dtcs(mask) if mask == nil then mask = 0xFF end return __uds_dtcs(self.handle, mask) end   -- 0x19 02
   function self:supported_dtcs() return __uds_supported_dtcs(self.handle) end                              -- 0x19 0A
   function self:dtc_count(mask) if mask == nil then mask = 0xFF end return __uds_dtc_count(self.handle, mask) end -- 0x19 01
+  -- 0x19 03: every DTC holding a snapshot, as {code, name, record}
+  function self:snapshot_ids() return __uds_snapshot_ids(self.handle) end
+  -- 0x19 04: the DTC (a name like "U0401-00", or its code) with its status bits, and records =
+  -- array of {number, dids = array of {id, data}}; record defaults to 0xFF (all). A snapshot DID
+  -- whose size the tester does not know yet is read once (0x22) to learn it.
+  function self:snapshot(dtc, record) if record == nil then record = 0xFF end return __uds_snapshot(self.handle, __dtc_arg(dtc, 2), record) end
+  -- 0x19 06: the DTC with its status bits, records[number] = bytes, and blobly_emb counters by
+  -- name: occurrence (0x01), aging (0x02), failed_cycles (0x03); record defaults to 0xFF (all)
+  function self:extended(dtc, record) if record == nil then record = 0xFF end return __uds_extended(self.handle, __dtc_arg(dtc, 2), record) end
+  -- the sizes a 0x19 04 / 06 answer does not carry: a snapshot DID the tester cannot read (or whose
+  -- size varies), an extended data record other than blobly_emb ones
+  function self:did_size(did, n) __uds_did_size(self.handle, did, n) end
+  function self:ext_record_size(record, n) __uds_ext_size(self.handle, record, n) end
   -- security access: request the seed for `level` (odd), compute the key with
   -- `keyfn` (default = the simulated servers algorithm, XOR 0xFF), send it at
   -- level+1. Returns the seed. Raises on an invalid key (NRC 0x35).
