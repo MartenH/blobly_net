@@ -9,7 +9,8 @@
 # and SysTick (v15), resolved via the GENERATED manifest (absolute path below, so a
 # `make` in blobly_emb keeps it current — no stale copy).
 #
-# WIRING (this bench): the H735 FDCAN1 is on the PCAN connector silk-screened "can1",
+# WIRING (this bench): the H755 FDCAN1 (through the TLE9251V click) is on the PCAN connector
+# silk-screened "can1", which enumerates as SocketCAN `can0`;
 # click STB (CS pin) tied to GND, VIO strap on 3V3. Classic CAN 500 kbit:
 #     sudo ip link set can0 up type can bitrate 500000
 #
