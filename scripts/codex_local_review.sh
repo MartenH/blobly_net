@@ -115,18 +115,19 @@ if [ "$dry_run" = 1 ]; then
 	exit 0
 fi
 
-mkdir -p "$reviews"
-# Whatever the review's outcome, a working tree it changed must not pass unnoticed.
+mkdir -p "$reviews" "$HOME/.vmodules/.cache" # a writable root that does not exist stops the sandbox
+# Whatever the review's outcome, a working tree it changed must not pass unnoticed: a moved HEAD or
+# a dirty tree is exit 4 even when the review itself also failed.
 dirty_check() {
 	rc=$?
 	if [ "$(git rev-parse HEAD)" != "$head" ]; then
 		echo "codex-local-review: HEAD moved during the review; these findings are for ${head:0:9}, not the branch as it is now" >&2
-		[ "$rc" = 0 ] && rc=4
+		rc=4
 	fi
 	if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
 		echo "codex-local-review: the review left the working tree dirty; inspect before committing:" >&2
 		git status --porcelain --untracked-files=normal >&2
-		[ "$rc" = 0 ] && rc=4
+		rc=4
 	fi
 	exit "$rc"
 }
