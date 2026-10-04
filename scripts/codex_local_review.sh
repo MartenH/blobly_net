@@ -8,7 +8,7 @@
 # Reviews merge-base(REF, HEAD)..HEAD and refuses a dirty tree, because the review runs tests
 # against the working tree and they must be the commits under review. Asks for EVERY defect,
 # hands the review the pinned V, allows sockets in its sandbox, prints the findings, and keeps
-# one transcript per run in the main checkout's .claude/reviews/ (it outlives the worktree).
+# one transcript (and its findings) per run in the main checkout's .claude/reviews/.
 #
 # Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI; 4 the review left the tree dirty;
 # otherwise codex's own failure, with the transcript's tail instead of findings.
@@ -102,7 +102,8 @@ reviews=$(cd "$(git rev-parse --git-common-dir)/.." && pwd)/.claude/reviews
 branch=$(git symbolic-ref --quiet --short HEAD || echo detached)
 name="local-$branch-${head:0:9}-$model-$effort-$(date +%Y%m%d-%H%M%S)-$$"
 out=$reviews/${name//[^A-Za-z0-9._-]/-}.txt
-cmd=("$codex" review -
+findings=${out%.txt}.findings.md
+cmd=("$codex" exec review - --output-last-message "$findings"
 	-c "model=$model" -c "review_model=$model" -c "model_reasoning_effort=$effort"
 	-c 'sandbox_mode="workspace-write"'
 	-c sandbox_workspace_write.network_access=true
@@ -115,6 +116,17 @@ if [ "$dry_run" = 1 ]; then
 fi
 
 mkdir -p "$reviews"
+# Whatever the review's outcome, a working tree it changed must not pass unnoticed.
+dirty_check() {
+	rc=$?
+	if [ -n "$(git status --porcelain)" ]; then
+		echo "codex-local-review: the review left the working tree dirty; inspect before committing:" >&2
+		git status --porcelain >&2
+		[ "$rc" = 0 ] && rc=4
+	fi
+	exit "$rc"
+}
+trap dirty_check EXIT
 echo "codex-local-review: $model ($effort) on ${head:0:9} against $base; transcript: $out" >&2
 start=$(date +%s)
 status=0
@@ -126,18 +138,8 @@ if [ "$status" != 0 ]; then
 	tail -20 "$out" >&2
 	exit "$status"
 fi
-# The final message follows the last line that is exactly `codex`, and codex prints it twice:
-# print the first copy when the block is two equal halves, else the block as it is.
-awk '/^codex$/ { n = 0; next } { line[++n] = $0 }
-	END {
-		h = int(n / 2); same = (n % 2 == 0 && h > 0)
-		for (i = 1; same && i <= h; i++) if (line[i] != line[i + h]) same = 0
-		m = same ? h : n
-		for (i = 1; i <= m; i++) print line[i]
-	}' "$out"
-
-if [ -n "$(git status --porcelain)" ]; then
-	echo "codex-local-review: the review left the working tree dirty; inspect before committing:" >&2
-	git status --porcelain >&2
-	exit 4
+if [ ! -s "$findings" ]; then
+	echo "codex-local-review: codex wrote no final message; see the transcript" >&2
+	exit 1
 fi
+cat "$findings"
