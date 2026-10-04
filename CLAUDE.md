@@ -318,11 +318,20 @@ The Linux release uses the same actions, with separate caches for its Ubuntu 22.
   avoid. Sessions run concurrently, and a second one that finds the shared checkout on a
   foreign branch, or mid-rebase, loses work that was not its own. The main checkout stays on
   `main`, clean, for reading and for merges.
-- **The order is: build → `/code-review high` → `@codex review`.** Not two of the three, and not
-  a different order. Each codex round is a ~10-minute wait, so anything the self-review can find
-  is found for free; codex then sees a branch that has already had its obvious problems removed.
-  Every round is watched by `scripts/codex_review_watch.sh` in a *tracked* background timer —
-  see the note on watchers below.
+- **The order is: build → `/code-review high` → `scripts/codex_local_review.sh` → `@codex
+  review`.** Not a subset, and not a different order. Each GitHub codex round is a ~10-minute
+  wait, so anything a local review can find is found for free; codex then sees a branch that has
+  already had its obvious problems removed. Every GitHub round is watched by
+  `scripts/codex_review_watch.sh` in a *tracked* background timer — see the note on watchers
+  below.
+- **`scripts/codex_local_review.sh` runs codex on this machine** (`gpt-6.1-sol`, high effort, about
+  10 minutes; `--astra` for a risky change) over the COMMITTED branch, and prints its findings.
+  Fix them, then ask GitHub. Its prompt asks for every defect, on purpose: measured on #378's
+  first round, `codex review`'s default prompt found 1–2½ of the 6 findings GitHub's codex
+  reported and this one found 4, plus two GitHub only reported in rounds 3 and 4. It does NOT
+  replace `@codex review` — it missed the three that needed SOME/IP semantics (a packed datagram,
+  an ERROR's payload, an event id in a REQUEST) — and a clean local run proves nothing. Its P3s
+  include out-of-range inputs; an input no caller can produce is not worth code to refuse.
 - **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
   billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
   `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the
