@@ -10,7 +10,7 @@
 # hands the review the pinned V, allows sockets in its sandbox, prints the findings, and keeps
 # one transcript (and its findings) per run in the main checkout's .claude/reviews/.
 #
-# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI; 4 the review left the tree dirty;
+# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI; 4 the review left the tree dirty or HEAD moved;
 # otherwise codex's own failure, with the transcript's tail instead of findings.
 set -eu
 
@@ -59,9 +59,9 @@ if [ -z "$codex" ] || [ ! -x "$codex" ]; then
 	exit 3
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
 	echo "codex-local-review: the working tree is not clean; commit or remove these first:" >&2
-	git status --porcelain >&2
+	git status --porcelain --untracked-files=normal >&2
 	exit 1
 fi
 if [ "$base" = origin/main ] && ! git fetch -q origin; then
@@ -119,9 +119,13 @@ mkdir -p "$reviews"
 # Whatever the review's outcome, a working tree it changed must not pass unnoticed.
 dirty_check() {
 	rc=$?
-	if [ -n "$(git status --porcelain)" ]; then
+	if [ "$(git rev-parse HEAD)" != "$head" ]; then
+		echo "codex-local-review: HEAD moved during the review; these findings are for ${head:0:9}, not the branch as it is now" >&2
+		[ "$rc" = 0 ] && rc=4
+	fi
+	if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
 		echo "codex-local-review: the review left the working tree dirty; inspect before committing:" >&2
-		git status --porcelain >&2
+		git status --porcelain --untracked-files=normal >&2
 		[ "$rc" = 0 ] && rc=4
 	fi
 	exit "$rc"
@@ -143,3 +147,4 @@ if [ ! -s "$findings" ]; then
 	exit 1
 fi
 cat "$findings"
+echo
