@@ -2,8 +2,8 @@ module uds
 
 import transport
 
-// Captured from blobly_emb's own fault memory and diagnostic server (comm/fault + comm/uds at
-// blobly_emb 660a40f, branch r6b), configured as its examples/overspeed declares the engine faults
+// Captured from blobly_emb's own fault memory and diagnostic server (comm/fault + comm/uds of
+// blobly_emb PR #372, at 660a40f), configured as its examples/overspeed declares the engine faults
 // — P0219-00 with the snapshot [0xF1A0 speed (2 B), 0xF190 ECU id (19 B)], priority 1; P0506-00
 // with [0xF1A0]; ONE snapshot entry — and driven in process: the idle fault fails at 12 km/h and
 // takes the entry; the over-rev fails in the same cycle (it may not displace this cycle's

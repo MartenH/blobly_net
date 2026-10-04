@@ -119,6 +119,8 @@ scripts/runtests.sh hello.lua
 | `check.truthy(v [, msg])` | Fail unless `v` is truthy. |
 | `check.between(v, lo, hi [, msg])` | Fail unless `lo <= v <= hi`. |
 | `check.dtc(diag, name[, want])` | Expect the server to support DTC `name` (`"U0121-00"`) with each status bit `want` names at its value, e.g. `{ confirmedDTC = true, testFailed = false }`. Read with `0x19 0A`. Returns the record. |
+| `check.snapshot(diag, name[, want])` | Expect DTC `name` to hold a snapshot (`0x19 04`) and each DID `want` names to have been captured with the value it gives (bytes; `true` = only present), e.g. `{ [0xF1A0] = fromhex("00 00 00 2A") }`. Returns the snapshot. |
+| `check.extended(diag, name, want)` | Expect DTC `name`s extended data (`0x19 06`) to carry the counters `want` gives — `occurrence`, `aging`, `failed_cycles` — or, by record number, the bytes. Returns the answer. |
 | `check.nrc(code, fn)` | Expect `fn` to raise a UDS **negative response** with NRC `code` (e.g. `0x31`). |
 
 A failing `check` aborts only its own `test`; other tests still run. A Lua error
@@ -178,6 +180,9 @@ The returned object has:
 | `diag:dtcs([mask])` | `0x19 02` decoded (`mask` defaults `0xFF`) | array of records: `code`, `name` (`"U0121-00"`), `status`, and one boolean per ISO 14229-1 status bit — `testFailed`, `testFailedThisOperationCycle`, `pendingDTC`, `confirmedDTC`, `testNotCompletedSinceLastClear`, `testFailedSinceLastClear`, `testNotCompletedThisOperationCycle`, `warningIndicatorRequested` |
 | `diag:supported_dtcs()` | `0x19 0A` reportSupportedDTC — every DTC with its whole status | array of records, as `dtcs` |
 | `diag:dtc_count([mask])` | `0x19 01` reportNumberOfDTCByStatusMask | integer |
+| `diag:snapshot_ids()` | `0x19 03` reportDTCSnapshotIdentification | array of `{code, name, record}` |
+| `diag:snapshot(dtc[, record])` | `0x19 04` reportDTCSnapshotRecordByDTCNumber — `dtc` a name or its code, `record` default `0xFF` (all). A snapshot DID whose size the tester does not know is read once (`0x22`) to learn it | `{code, name, status, <status bits>, records = { {number, dids = { {id, data} } } } }` |
+| `diag:extended(dtc[, record])` | `0x19 06` reportDTCExtDataRecordByDTCNumber, sized by blobly_emb's records (`0x01` occurrences 2 B, `0x02` aging, `0x03` failed cycles) | `{code, name, status, <status bits>, occurrence, aging, failed_cycles, records = {[n] = bytes}}` |
 | `diag:tester_present()` | `0x3E` | — |
 | `diag:reset([kind])` | `0x11` ECUReset (`1` hard — the default, `2` key-off-on, `3` soft) | the answer after its SID (bytes) |
 | `diag:comm_control(control [, type])` | `0x28` CommunicationControl (`control` 0 enable rx+tx … 3 disable both; `type` defaults `1`, the normal messages) — the simulated ECUs refuse it (serviceNotSupported): they cannot gate their own traffic | — |
