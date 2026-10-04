@@ -39,9 +39,16 @@ fn test_read_dtc() {
 	assert r[0] == 0x59
 	assert r[1] == 0x02
 	assert r.len >= 3
-	// unsupported sub-function
-	bad := s.handle([u8(0x19), 0x04])
-	assert bad == [u8(0x7F), 0x19, 0x12]
+	// unsupported sub-function; a supported one of the wrong length
+	assert s.handle([u8(0x19), 0x05]) == [u8(0x7F), 0x19, 0x12]
+	assert s.handle([u8(0x19), 0x04]) == [u8(0x7F), 0x19, 0x13]
+	// 0x19 03 / 04 / 06 answered as blobly_emb's fault memory answers them
+	assert s.handle([u8(0x19), 0x03]) == [u8(0x59), 0x03, 0x12, 0x34, 0x56, 0x01]
+	assert s.handle([u8(0x19), 0x04, 0xAB, 0xCD, 0xEF, 0x01]) == [u8(0x59), 0x04, 0xAB, 0xCD, 0xEF, 0x08]
+	assert s.handle([u8(0x19), 0x06, 0x12, 0x34, 0x56, 0x03]) == [u8(0x59), 0x06, 0x12, 0x34, 0x56,
+		0x09, 0x03, 0x01]
+	assert s.handle([u8(0x19), 0x06, 0x12, 0x34, 0x56, 0xFE]) == [u8(0x7F), 0x19, 0x31]
+	assert s.handle([u8(0x19), 0x04, 0x00, 0x00, 0x01, 0x01]) == [u8(0x7F), 0x19, 0x31]
 }
 
 // suppress-positive-response: served on the plain sub-function, the positive answer withheld, a
@@ -68,4 +75,57 @@ fn test_reset_dtc_setting_and_clear_and_no_faked_communication_control() {
 	assert s.handle([u8(0x14), 0x12, 0x34, 0x56]) == [u8(0x7F), 0x14, 0x31]
 	assert s.handle([u8(0x14), 0xFF, 0xFF, 0xFF]) == [u8(0x54)]
 	assert s.dtcs.len == 0
+}
+
+// a snapshot DID the server's table does not hold is left out of the record — and a DTC whose
+// snapshot holds nothing is listed by neither 0x19 03 nor 0x19 04
+fn test_a_snapshot_names_only_dids_the_server_holds() {
+	mut s := Server{
+		dids: {
+			u16(0xF190): [u8(0x41)]
+		}
+		dtcs: [Dtc{
+			code:     0x010203
+			snapshot: [u16(0xF1A0), 0xF190]
+		}, Dtc{
+			code:     0x040506
+			snapshot: [u16(0xF1A0)]
+		}]
+	}
+	assert s.handle([u8(0x19), 0x04, 0x01, 0x02, 0x03, 0x01]) == [u8(0x59), 0x04, 0x01, 0x02, 0x03,
+		0x09, 0x01, 0x01, 0xF1, 0x90, 0x41]
+	assert s.handle([u8(0x19), 0x03]) == [u8(0x59), 0x03, 0x01, 0x02, 0x03, 0x01]
+	assert s.handle([u8(0x19), 0x04, 0x04, 0x05, 0x06, 0xFF]) == [u8(0x59), 0x04, 0x04, 0x05, 0x06, 0x09]
+}
+
+// a freeze frame is history: the snapshot holds the DID values captured when the server first
+// served, and a later write to one of its DIDs does not rewrite it
+fn test_a_snapshot_keeps_its_captured_values() {
+	mut s := default_server()
+	before := s.dids[0xF195].clone()
+	s.handle([u8(0x3E), 0x00]) // the first request captures
+	s.dids[0xF195] = [u8(0xEE), 0xEE]
+	r := s.handle([u8(0x19), 0x04, 0x12, 0x34, 0x56, 0x01])
+	assert r[0] == 0x59
+	// 59 04 DTC(3) status record count, then the first DID: id(2) and its captured bytes
+	assert r[8..10] == [u8(0xF1), 0x95]
+	assert r[10..10 + before.len] == before, 'the snapshot read the live DID'
+}
+
+// more DIDs than a count byte holds are sent with count 0 ("not stated"), which the decoder reads
+// to the end of the answer
+fn test_an_oversized_snapshot_count_is_sent_as_not_stated() {
+	mut s := default_server()
+	mut ids := []u16{}
+	for i in 0 .. 300 {
+		id := u16(0xA000 + i)
+		s.dids[id] = [u8(i)]
+		ids << id
+	}
+	s.dtcs = [Dtc{
+		code:     0x123456
+		snapshot: ids
+	}]
+	r := s.handle([u8(0x19), 0x04, 0x12, 0x34, 0x56, 0x01])
+	assert r[6] == 0x01 && r[7] == 0, 'a count of 300 was truncated into one byte'
 }

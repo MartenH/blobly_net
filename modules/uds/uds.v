@@ -59,6 +59,10 @@ pub mut:
 	p2_star_ms        int = default_p2_star_ms
 	margin_ms         int = 1000
 	pending_budget_ms int = 120_000
+	// snapshot DID sizes learned by reading them (dtc_records.v), and the extended data records'
+	// sizes (empty = blobly_ext_records)
+	did_lens map[u16]int
+	ext_lens map[u8]int
 }
 
 // default_p2_star_ms is ISO 14229-2's default P2*server, used until a 0x10 answer names one.
@@ -147,6 +151,14 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 			return .stale
 		}
 	}
+	// a 0x19 04 / 06 asking for ONE record is answered with that record's number after the DTC and
+	// its status byte: a late answer about another record is not this one. 0xFF asks for every
+	// record, and for 0x06 0xFE for every OBD record — the answer then carries their own numbers
+	group := req.len >= 6 && (req[5] == 0xFF || (req[1] & 0x7F == 0x06 && req[5] == 0xFE))
+	if req[0] == 0x19 && req.len >= 6 && (req[1] & 0x7F == 0x04 || req[1] & 0x7F == 0x06)
+		&& !group && resp.len >= 7 && resp[6] != req[5] {
+		return .stale
+	}
 	return .positive
 }
 
@@ -158,13 +170,19 @@ fn sub_mask(sid u8) u8 {
 // echo_of: how many leading bytes of a request its positive response echoes, SID included, and
 // whether the second is a sub-function — a sub-function, a data identifier (a multi-DID read
 // echoes its first one first), a sub-function and a routine identifier, a block sequence counter,
-// or a WriteMemoryByAddress's format byte, address and size (their widths are in that byte).
+// or a WriteMemoryByAddress's format byte, address and size (their widths are in that byte), or
+// a 0x19 04 / 06's sub-function and DTC.
 // Every other ISO 14229-1 service's positive response echoes nothing beyond its SID (0x14, 0x23,
 // 0x34, 0x35, 0x37, 0x84), so the SID is all there is to match there. ReadDataByPeriodicIdentifier
 // (0x2A) is matched by SID too: its data arrives asynchronously, naming an identifier the request
 // lists anywhere, which is correlation of another kind (#361).
 fn echo_of(req []u8) (int, bool) {
 	wmba := if req.len > 1 { 2 + int(req[1] & 0x0F) + int(req[1] >> 4) } else { 1 }
+	// 0x19 04 / 06 answer one DTC, named after the sub-function: the DTC is echoed too, so a late
+	// answer about another DTC is not taken for this one's
+	if req[0] == 0x19 && req.len >= 5 && (req[1] & 0x7F == 0x04 || req[1] & 0x7F == 0x06) {
+		return 5, true
+	}
 	return match req[0] {
 		0x10, 0x11, 0x19, 0x27, 0x28, 0x29, 0x3E, 0x83, 0x85, 0x86, 0x87 { 2, true }
 		0x2C, 0x31 { 4, true }

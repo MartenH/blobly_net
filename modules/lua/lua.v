@@ -56,6 +56,7 @@ fn C.ctlua_setfield_str(&C.lua_State, &char, &char, int)
 fn C.ctlua_setfield_bool(&C.lua_State, &char, int)
 fn C.ctlua_setfield_int(&C.lua_State, &char, i64)
 fn C.ctlua_seti(&C.lua_State, i64)
+fn C.ctlua_setfield_top(&C.lua_State, &char)
 
 // State is a V handle to a Lua interpreter.
 pub type State = &C.lua_State
@@ -243,6 +244,12 @@ pub fn (l State) set_int(key string, v i64) {
 
 pub fn (l State) set_bool(key string, v bool) {
 	C.ctlua_setfield_bool(l, &char(key.str), if v { 1 } else { 0 })
+}
+
+// set_field pops the value on top of the stack into the table just below it, under `key` — a
+// table field that is itself a table is new_table() + fields + set_field(key).
+pub fn (l State) set_field(key string) {
+	C.ctlua_setfield_top(l, &char(key.str))
 }
 
 // set_index pops the value on top of the stack into the table just below it, at index `i` — an

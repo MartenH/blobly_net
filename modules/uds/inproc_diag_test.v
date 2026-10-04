@@ -81,13 +81,13 @@ fn test_two_ecus_answer_as_separate_targets() {
 		dids: {
 			u16(0xF190): 'BCM-0001'.bytes()
 		}
-		dtcs: [Dtc{0x900101, 0x09}]
+		dtcs: [Dtc{code: 0x900101, status: 0x09}]
 	}
 	ecm := Server{
 		dids: {
 			u16(0xF190): 'ECM-0002'.bytes()
 		}
-		dtcs: [Dtc{0x700205, 0x08}]
+		dtcs: [Dtc{code: 0x700205, status: 0x08}]
 	}
 	// each on its own request/response pair
 	mut bch := isotp.open_software(iface, 0x7E9, 0x7E1, false) or { panic(err) }
