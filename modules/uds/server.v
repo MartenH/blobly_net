@@ -17,6 +17,10 @@ pub struct Server {
 pub mut:
 	dids     map[u16][]u8 // ReadDataByIdentifier table (0x22/0x2E)
 	dtcs     []Dtc        // ReadDTCInformation table (0x19 01/02/0A), cleared by 0x14
+	// each DTC's snapshot DID values, captured when the server serves its first request: a freeze
+	// frame is history, so a later 0x2E to one of its DIDs must not rewrite it
+	snap_vals  map[u32]map[u16][]u8
+	snap_taken bool
 	session  u8 = 1
 	sec_seed []u8 // last seed handed out (0x27 request seed)
 	unlocked bool // security access granted (0x27 valid key accepted)
@@ -31,8 +35,8 @@ pub struct Dtc {
 pub:
 	code   u32 // 24-bit DTC (e.g. 0x123456)
 	status u8 = 0x09 // status-of-DTC byte; 0x09 = confirmed + testFailed
-	// its snapshot (0x19 03/04): the DIDs of record 0x01, read from the server's own table when
-	// asked; none = no snapshot stored
+	// its snapshot (0x19 03/04): the DIDs of record 0x01, their values captured from the server's
+	// own table when it serves its first request (Server.take_snapshots); none = no snapshot stored
 	snapshot []u16
 	// its extended data (0x19 06), blobly_emb's records: 0x01 occurrences, 0x02 aging,
 	// 0x03 failed cycles
@@ -81,6 +85,9 @@ pub fn default_server() Server {
 pub fn (mut s Server) handle(req []u8) []u8 {
 	if req.len == 0 {
 		return []
+	}
+	if !s.snap_taken {
+		s.take_snapshots()
 	}
 	_, subfn := echo_of(req) // the client's list: one answer to which services carry a sub-function
 	if subfn && req[0] != sid_read_dtc_information && req.len > 1 && req[1] & 0x80 != 0 {
@@ -268,6 +275,21 @@ fn neg(sid u8, nrc u8) []u8 {
 	return [u8(negative_response_sid), sid, nrc]
 }
 
+// take_snapshots captures every DTC's snapshot DIDs from the table as it stands; a DID the
+// table does not hold has nothing to capture and is left out.
+fn (mut s Server) take_snapshots() {
+	for d in s.dtcs {
+		mut vals := map[u16][]u8{}
+		for id in d.snapshot {
+			if v := s.dids[id] {
+				vals[id] = v.clone()
+			}
+		}
+		s.snap_vals[d.code] = vals.clone()
+	}
+	s.snap_taken = true
+}
+
 // dtc_records answers 0x19 03 / 04 / 06 the way blobly_emb's fault memory does: one snapshot
 // record (0x01) per DTC that has one, extended data records 0x01 .. 0x03, 0xFF for all, an unknown
 // DTC or record number out of range.
@@ -279,7 +301,7 @@ fn (mut s Server) dtc_records(req []u8) []u8 {
 		}
 		mut out := [u8(0x59), 0x03]
 		for d in s.dtcs {
-			if d.snapshot.any(it in s.dids) {
+			if (s.snap_vals[d.code] or { map[u16][]u8{} }).len > 0 {
 				out << [u8(d.code >> 16), u8(d.code >> 8), u8(d.code), 0x01]
 			}
 		}
@@ -305,13 +327,14 @@ fn (mut s Server) dtc_records(req []u8) []u8 {
 		if rec != 0x01 && rec != 0xFF {
 			return neg(0x19, 0x31)
 		}
-		// a snapshot DID the table does not hold is left out: there is nothing to have captured
-		snap := d.snapshot.filter(it in s.dids)
+		// the values captured, in the order the DTC lists its DIDs
+		vals := (s.snap_vals[d.code] or { map[u16][]u8{} }).clone()
+		snap := d.snapshot.filter(it in vals)
 		if snap.len > 0 {
 			out << [u8(0x01), u8(snap.len)]
 			for id in snap {
 				out << [u8(id >> 8), u8(id)]
-				out << s.dids[id]
+				out << vals[id]
 			}
 		}
 		return out

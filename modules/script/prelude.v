@@ -86,15 +86,19 @@ function check.snapshot(diag, name, want)
   local s = diag:snapshot(name)
   if #s.records == 0 then error(string.format("%s: no snapshot stored (status 0x%02X)", s.name, s.status), 2) end
   for id, v in pairs(want or {}) do
-    local got = nil
+    -- every record holding the DID is looked at: one with the wanted value is enough
+    local seen, hit = nil, false
     for _, r in ipairs(s.records) do
       for _, d in ipairs(r.dids) do
-        if d.id == id then got = d.data end
+        if d.id == id then
+          seen = d.data
+          if v == true or d.data == v then hit = true end
+        end
       end
     end
-    if got == nil then error(string.format("%s: the snapshot holds no DID 0x%04X", s.name, id), 2) end
-    if v ~= true and got ~= v then
-      error(string.format("%s: snapshot DID 0x%04X is %s, expected %s", s.name, id, tohex(got), tohex(v)), 2)
+    if seen == nil then error(string.format("%s: the snapshot holds no DID 0x%04X", s.name, id), 2) end
+    if not hit then
+      error(string.format("%s: snapshot DID 0x%04X is %s in every record, expected %s", s.name, id, tohex(seen), tohex(v)), 2)
     end
   end
   return s

@@ -97,3 +97,17 @@ fn test_a_snapshot_names_only_dids_the_server_holds() {
 	assert s.handle([u8(0x19), 0x03]) == [u8(0x59), 0x03, 0x01, 0x02, 0x03, 0x01]
 	assert s.handle([u8(0x19), 0x04, 0x04, 0x05, 0x06, 0xFF]) == [u8(0x59), 0x04, 0x04, 0x05, 0x06, 0x09]
 }
+
+// a freeze frame is history: the snapshot holds the DID values captured when the server first
+// served, and a later write to one of its DIDs does not rewrite it
+fn test_a_snapshot_keeps_its_captured_values() {
+	mut s := default_server()
+	before := s.dids[0xF195].clone()
+	s.handle([u8(0x3E), 0x00]) // the first request captures
+	s.dids[0xF195] = [u8(0xEE), 0xEE]
+	r := s.handle([u8(0x19), 0x04, 0x12, 0x34, 0x56, 0x01])
+	assert r[0] == 0x59
+	// 59 04 DTC(3) status record count, then the first DID: id(2) and its captured bytes
+	assert r[8..10] == [u8(0xF1), 0x95]
+	assert r[10..10 + before.len] == before, 'the snapshot read the live DID'
+}

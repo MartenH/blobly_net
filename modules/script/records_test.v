@@ -47,6 +47,13 @@ fn test_snapshot_and_extended_data_helpers() {
 		  check.snapshot(diag, "P1234-56", { [0xF195] = fromhex("01 00"), [0xF18C] = true })
 		  local ok, err = pcall(function() check.snapshot(diag, "P1234-56", { [0xF195] = fromhex("02 00") }) end)
 		  check.truthy(not ok and tostring(err):find("expected 02 00"), tostring(err))
+		  -- several records: one holding the wanted value is enough, whichever it is
+		  local two = { snapshot = function() return { name = "X", status = 0x2F, records = {
+		    { dids = { { id = 0x0101, data = "\x01" } } }, { dids = { { id = 0x0101, data = "\x02" } } } } } end }
+		  check.snapshot(two, "X", { [0x0101] = "\x01" })
+		  check.snapshot(two, "X", { [0x0101] = "\x02" })
+		  ok, err = pcall(function() check.snapshot(two, "X", { [0x0101] = "\x03" }) end)
+		  check.truthy(not ok and tostring(err):find("in every record"), tostring(err))
 		  ok, err = pcall(function() check.snapshot(diag, "B2BCD-EF") end)
 		  check.truthy(not ok and tostring(err):find("no snapshot stored"), tostring(err))
 		  check.equal(#diag:snapshot(0xABCDEF).records, 0) -- by code; nothing stored
