@@ -318,11 +318,19 @@ The Linux release uses the same actions, with separate caches for its Ubuntu 22.
   avoid. Sessions run concurrently, and a second one that finds the shared checkout on a
   foreign branch, or mid-rebase, loses work that was not its own. The main checkout stays on
   `main`, clean, for reading and for merges.
-- **The order is: build → `/code-review high` → `@codex review`.** Not two of the three, and not
-  a different order. Each codex round is a ~10-minute wait, so anything the self-review can find
-  is found for free; codex then sees a branch that has already had its obvious problems removed.
-  Every round is watched by `scripts/codex_review_watch.sh` in a *tracked* background timer —
-  see the note on watchers below.
+- **The order is: build → `/code-review high` → `scripts/codex_local_review.sh` → `@codex
+  review`.** Not a subset, and not a different order. Each GitHub codex round is a ~10-minute
+  wait, so anything a local review can find is found for free; codex then sees a branch that has
+  already had its obvious problems removed. Every GitHub round is watched by
+  `scripts/codex_review_watch.sh` in a *tracked* background timer — see the note on watchers
+  below.
+- **`scripts/codex_local_review.sh` runs codex on this machine** (`gpt-6.1-sol`, high effort, about
+  10 minutes; `--astra` for a risky change) over the committed branch — it refuses a dirty tree,
+  because the review runs the tests in it — and prints its findings. Fix them, then ask GitHub.
+  Its prompt asks for every defect, on purpose: `codex review`'s default prompt reports a short
+  list and misses most of what GitHub's codex finds. It does NOT replace `@codex review`, which
+  still finds defects that need protocol knowledge, and a clean local run proves nothing. Its
+  P3s include out-of-range inputs; an input no caller can produce is not worth code to refuse.
 - **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
   billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
   `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the
