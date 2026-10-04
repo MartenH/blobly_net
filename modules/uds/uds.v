@@ -151,6 +151,12 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 			return .stale
 		}
 	}
+	// a 0x19 04 / 06 asking for ONE record (not 0xFF, all of them) is answered with that record's
+	// number after the DTC and its status byte: a late answer about another record is not this one
+	if req[0] == 0x19 && req.len >= 6 && (req[1] & 0x7F == 0x04 || req[1] & 0x7F == 0x06)
+		&& req[5] != 0xFF && resp.len >= 7 && resp[6] != req[5] {
+		return .stale
+	}
 	return .positive
 }
 

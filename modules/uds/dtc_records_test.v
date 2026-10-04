@@ -190,3 +190,17 @@ fn test_a_size_can_be_given() {
 	}
 	assert false
 }
+
+// A request for ONE record is answered with that record's number after the DTC and its status: a
+// late answer about another record of the same DTC is not this one's. All records (0xFF), and an
+// answer carrying no record at all, are matched on the DTC alone.
+fn test_an_answer_about_another_record_is_not_taken() {
+	for sub in [u8(0x04), 0x06] {
+		req := [u8(0x19), sub, 0x05, 0x06, 0x00, 0x01]
+		assert answer_to(req, [u8(0x59), sub, 0x05, 0x06, 0x00, 0x2F, 0x01, 0xAA]) == .positive
+		assert answer_to(req, [u8(0x59), sub, 0x05, 0x06, 0x00, 0x2F, 0x02, 0xAA]) == .stale
+		assert answer_to(req, [u8(0x59), sub, 0x05, 0x06, 0x00, 0x2F]) == .positive // no record stored
+		all := [u8(0x19), sub, 0x05, 0x06, 0x00, 0xFF]
+		assert answer_to(all, [u8(0x59), sub, 0x05, 0x06, 0x00, 0x2F, 0x02, 0xAA]) == .positive
+	}
+}
