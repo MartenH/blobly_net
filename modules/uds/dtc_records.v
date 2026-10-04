@@ -162,7 +162,7 @@ pub fn decode_snapshot(resp []u8, lens map[u16]int) !DtcSnapshot {
 			if n < 0 {
 				return error('0x19 04: DID 0x${id:04X} is configured with a negative size (${n})')
 			}
-			if i + 2 + n > resp.len {
+			if n > resp.len - (i + 2) { // the remaining length, never i + 2 + n (an untrusted n overflows)
 				return error('0x19 04 record 0x${number:02X}: DID 0x${id:04X} of ${n} bytes runs past the answer')
 			}
 			dids << SnapshotDid{
@@ -196,7 +196,7 @@ pub fn decode_extended(resp []u8, lens map[u8]int) !DtcExtended {
 		if n < 0 {
 			return error('0x19 06 record 0x${number:02X} is configured with a negative size (${n})')
 		}
-		if i + 1 + n > resp.len {
+		if n > resp.len - (i + 1) { // the remaining length, never i + 1 + n
 			return error('0x19 06 record 0x${number:02X} of ${n} bytes runs past the answer')
 		}
 		recs << ExtRecord{
@@ -211,7 +211,10 @@ pub fn decode_extended(resp []u8, lens map[u8]int) !DtcExtended {
 	}
 }
 
-fn dtc_request(sub u8, code u32, record u8) []u8 {
+fn dtc_request(sub u8, code u32, record u8) ![]u8 {
+	if code > 0xFFFFFF {
+		return error('UDS: DTC 0x${code:X} is wider than 24 bits')
+	}
 	return [sid_read_dtc_information, sub, u8(code >> 16), u8(code >> 8), u8(code), record]
 }
 
@@ -225,7 +228,7 @@ pub fn (mut c Client) snapshot_ids() ![]SnapshotId {
 // size of its value NOW, which is the captured one's for a fixed-size DID; a DID whose size varies
 // must be given.
 pub fn (mut c Client) snapshot(code u32, record u8) !DtcSnapshot {
-	resp := c.raw(dtc_request(0x04, code, record))!
+	resp := c.raw(dtc_request(0x04, code, record)!)!
 	for {
 		return decode_snapshot(resp, c.did_lens) or {
 			if err is UnknownDidLength {
@@ -259,5 +262,5 @@ pub fn (mut c Client) set_ext_record_size(number u8, n int) {
 // `ext_lens` (blobly_ext_records by default).
 pub fn (mut c Client) extended(code u32, record u8) !DtcExtended {
 	lens := if c.ext_lens.len == 0 { blobly_ext_records } else { c.ext_lens }
-	return decode_extended(c.raw(dtc_request(0x06, code, record))!, lens)!
+	return decode_extended(c.raw(dtc_request(0x06, code, record)!)!, lens)!
 }

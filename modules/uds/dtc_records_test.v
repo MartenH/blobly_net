@@ -232,3 +232,32 @@ fn test_a_negative_configured_size_is_an_error() {
 		assert false, 'a negative record size decoded'
 	}
 }
+
+// a configured size near max_int is compared with what remains of the answer, so it cannot overflow
+// the bounds check into a slice past the end
+fn test_a_huge_configured_size_is_an_error() {
+	if _ := decode_snapshot(emb_19_04_all, {
+		u16(0xF1A0): max_int
+		0xF190:      19
+	})
+	{
+		assert false, 'a max_int DID size decoded'
+	}
+	if _ := decode_extended(emb_19_06_all, {
+		u8(0x01): max_int
+		0x02:     1
+		0x03:     1
+	})
+	{
+		assert false, 'a max_int record size decoded'
+	}
+}
+
+// a DTC wider than 24 bits is refused before anything is sent, as clear_dtc refuses a wide group
+fn test_a_dtc_wider_than_24_bits_is_refused() {
+	if _ := dtc_request(0x04, 0x01_050600, 0xFF) {
+		assert false, 'a 32-bit DTC was truncated into a request for another DTC'
+	}
+	r := dtc_request(0x06, 0x050600, 0xFF) or { panic(err) }
+	assert r == [u8(0x19), 0x06, 0x05, 0x06, 0x00, 0xFF]
+}
