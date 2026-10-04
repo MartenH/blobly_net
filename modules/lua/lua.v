@@ -246,14 +246,14 @@ pub fn (l State) set_bool(key string, v bool) {
 	C.ctlua_setfield_bool(l, &char(key.str), if v { 1 } else { 0 })
 }
 
-// set_index pops the value on top of the stack into the table just below it, at index `i` — an
-// array of tables is new_table(), then per element new_table() + fields + set_index(n).
 // set_field pops the value on top of the stack into the table just below it, under `key` — a
 // table field that is itself a table is new_table() + fields + set_field(key).
 pub fn (l State) set_field(key string) {
 	C.ctlua_setfield_top(l, &char(key.str))
 }
 
+// set_index pops the value on top of the stack into the table just below it, at index `i` — an
+// array of tables is new_table(), then per element new_table() + fields + set_index(n).
 pub fn (l State) set_index(i i64) {
 	C.ctlua_seti(l, i)
 }

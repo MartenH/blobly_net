@@ -92,22 +92,26 @@ pub:
 mut:
 	answers map[string][]u8
 	asked   []string
-	next    []u8
-	pending bool
+	queue   [][]u8
+	late    []u8 // arrives after the next request, ahead of its answer (a retransmitted earlier one)
 }
 
 fn (mut m RecChannel) send(data []u8) ! {
 	m.asked << data.hex()
-	m.next = m.answers[data.hex()] or { [u8(0x7F), data[0], 0x31] }
-	m.pending = true
+	if m.late.len > 0 {
+		m.queue << m.late
+		m.late = []u8{}
+	}
+	m.queue << m.answers[data.hex()] or { [u8(0x7F), data[0], 0x31] }
 }
 
 fn (mut m RecChannel) recv(timeout_ms int) ![]u8 {
-	if timeout_ms == 0 || !m.pending {
+	if timeout_ms == 0 || m.queue.len == 0 {
 		return error('timeout')
 	}
-	m.pending = false
-	return m.next
+	r := m.queue[0]
+	m.queue.delete(0)
+	return r
 }
 
 fn (mut m RecChannel) close() {}
@@ -137,4 +141,52 @@ fn test_the_client_learns_a_did_size_by_reading_it() {
 	e := c.extended(0x021900, 0xFF) or { panic(err) }
 	assert (e.find(1) or { panic('') }).value() == 2
 	assert (c.snapshot_ids() or { panic(err) })[0].code == 0x021900
+}
+
+// A late answer about ANOTHER DTC (its frame retransmitted after the request for this one went out)
+// is not this request's answer: the DTC is part of what a 0x19 04 / 06 answer echoes.
+fn test_an_answer_about_another_dtc_is_not_taken() {
+	mut m := &RecChannel{
+		answers: {
+			'1904050600ff': emb_19_04_displaced
+			'1906021900ff': emb_19_06_all
+		}
+		late:    emb_19_04_all.clone()
+	}
+	mut c := new_client(m)
+	s := c.snapshot(0x050600, 0xFF) or { panic(err) }
+	assert s.dtc.code == 0x050600 && s.records.len == 0
+	m.late = emb_19_04_displaced.clone()
+	e := c.extended(0x021900, 0xFF) or { panic(err) }
+	assert e.dtc.code == 0x021900
+}
+
+// A DID count of 0 is "not stated": the DIDs run to the end of the answer.
+fn test_an_unstated_did_count_runs_to_the_end() {
+	mut r := emb_19_04_all.clone()
+	r[7] = 0
+	s := decode_snapshot(r, {
+		u16(0xF1A0): 2
+		0xF190:      19
+	}) or { panic(err) }
+	assert s.records.len == 1 && s.records[0].dids.len == 2
+}
+
+// A size the tester cannot learn (the DID is not readable) is given instead.
+fn test_a_size_can_be_given() {
+	mut m := &RecChannel{
+		answers: {
+			'1904021900ff': emb_19_04_all
+		}
+	}
+	mut c := new_client(m)
+	c.snapshot(0x021900, 0xFF) or {
+		assert err.msg().contains('snapshot DID 0xF1A0: its size is not known, and reading it (0x22) to learn it failed')
+		c.set_did_size(0xF1A0, 2)
+		c.set_did_size(0xF190, 19)
+		s := c.snapshot(0x021900, 0xFF) or { panic(err) }
+		assert s.records[0].dids.len == 2
+		return
+	}
+	assert false
 }

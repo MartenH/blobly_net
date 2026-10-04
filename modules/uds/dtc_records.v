@@ -102,7 +102,7 @@ pub:
 }
 
 pub fn (e UnknownDidLength) msg() string {
-	return 'snapshot DID 0x${e.did:04X}: its length is not known — read it once, or pass it'
+	return 'snapshot DID 0x${e.did:04X}: its size is not known'
 }
 
 // decode_snapshot_ids reads a positive 0x19 03 answer (59 03 {DTC high, middle, low, record}*).
@@ -135,7 +135,8 @@ fn dtc_header(resp []u8, sub u8) !DtcRecord {
 }
 
 // decode_snapshot reads a positive 0x19 04 answer ({record number, DID count, {DID, data}*}* after
-// the header), each DID's data `lens[id]` bytes long. A DID whose length is not in `lens` is an
+// the header), each DID's data `lens[id]` bytes long; a DID count of 0 (more than 255, or not
+// stated) runs to the end of the answer. A DID whose length is not in `lens` is an
 // UnknownDidLength error.
 pub fn decode_snapshot(resp []u8, lens map[u16]int) !DtcSnapshot {
 	dtc := dtc_header(resp, 0x04)!
@@ -149,7 +150,8 @@ pub fn decode_snapshot(resp []u8, lens map[u16]int) !DtcSnapshot {
 		count := int(resp[i + 1])
 		i += 2
 		mut dids := []SnapshotDid{cap: count}
-		for _ in 0 .. count {
+		// a count of 0 is ISO 14229-1's "not stated": the pairs run to the end of the answer
+		for k := 0; (count == 0 && i < resp.len) || (count != 0 && k < count); k++ {
 			if i + 2 > resp.len {
 				return error('0x19 04 record 0x${number:02X} ends inside a DID at byte ${i}')
 			}
@@ -213,22 +215,38 @@ pub fn (mut c Client) snapshot_ids() ![]SnapshotId {
 }
 
 // snapshot (0x19 04): DTC `code`'s snapshot record `record` (0xFF = every one). A DID whose size
-// the client does not know yet is read once (0x22) to learn it.
+// the client does not know yet (`did_lens`, or set_did_size) is read once (0x22) to learn it — the
+// size of its value NOW, which is the captured one's for a fixed-size DID; a DID whose size varies
+// must be given.
 pub fn (mut c Client) snapshot(code u32, record u8) !DtcSnapshot {
 	resp := c.raw(dtc_request(0x04, code, record))!
-	for _ in 0 .. 256 {
+	for {
 		return decode_snapshot(resp, c.did_lens) or {
 			if err is UnknownDidLength {
-				data := c.read_data_by_identifier(err.did) or {
-					return error('${err.msg()}: reading it failed: ${err}')
+				did := err.did
+				data := c.read_data_by_identifier(did) or {
+					return error('snapshot DID 0x${did:04X}: its size is not known, and reading it (0x22) to learn it failed: ${err.msg()} — give it with set_did_size')
 				}
-				c.did_lens[err.did] = data.len
+				c.did_lens[did] = data.len
 				continue
 			}
 			return err
 		}
 	}
-	return error('0x19 04 answer names more DIDs than one answer can hold')
+	return error('unreachable') // each pass learns one DID the answer names, or returns
+}
+
+// set_did_size states snapshot DID `id`'s size, for one the client cannot read or whose size varies.
+pub fn (mut c Client) set_did_size(id u16, n int) {
+	c.did_lens[id] = n
+}
+
+// set_ext_record_size states extended data record `number`'s size (blobly_ext_records otherwise).
+pub fn (mut c Client) set_ext_record_size(number u8, n int) {
+	if c.ext_lens.len == 0 {
+		c.ext_lens = blobly_ext_records.clone()
+	}
+	c.ext_lens[number] = n
 }
 
 // extended (0x19 06): DTC `code`'s extended data record `record` (0xFF = every one), sized by

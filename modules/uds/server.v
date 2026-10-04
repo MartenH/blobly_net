@@ -279,7 +279,7 @@ fn (mut s Server) dtc_records(req []u8) []u8 {
 		}
 		mut out := [u8(0x59), 0x03]
 		for d in s.dtcs {
-			if d.snapshot.len > 0 {
+			if d.snapshot.any(it in s.dids) {
 				out << [u8(d.code >> 16), u8(d.code >> 8), u8(d.code), 0x01]
 			}
 		}
@@ -305,11 +305,13 @@ fn (mut s Server) dtc_records(req []u8) []u8 {
 		if rec != 0x01 && rec != 0xFF {
 			return neg(0x19, 0x31)
 		}
-		if d.snapshot.len > 0 {
-			out << [u8(0x01), u8(d.snapshot.len)]
-			for id in d.snapshot {
+		// a snapshot DID the table does not hold is left out: there is nothing to have captured
+		snap := d.snapshot.filter(it in s.dids)
+		if snap.len > 0 {
+			out << [u8(0x01), u8(snap.len)]
+			for id in snap {
 				out << [u8(id >> 8), u8(id)]
-				out << s.dids[id] or { []u8{} }
+				out << s.dids[id]
 			}
 		}
 		return out

@@ -439,6 +439,10 @@ function uds.open(channel, opts)
   -- 0x19 06: the DTC with its status bits, records[number] = bytes, and blobly_emb counters by
   -- name: occurrence (0x01), aging (0x02), failed_cycles (0x03); record defaults to 0xFF (all)
   function self:extended(dtc, record) if record == nil then record = 0xFF end return __uds_extended(self.handle, __dtc_arg(dtc, 2), record) end
+  -- the sizes a 0x19 04 / 06 answer does not carry: a snapshot DID the tester cannot read (or whose
+  -- size varies), an extended data record other than blobly_emb ones
+  function self:did_size(did, n) __uds_did_size(self.handle, did, n) end
+  function self:ext_record_size(record, n) __uds_ext_size(self.handle, record, n) end
   -- security access: request the seed for `level` (odd), compute the key with
   -- `keyfn` (default = the simulated servers algorithm, XOR 0xFF), send it at
   -- level+1. Returns the seed. Raises on an invalid key (NRC 0x35).

@@ -351,6 +351,8 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_snapshot_ids', l_uds_snapshot_ids)
 	env.st.register('__uds_snapshot', l_uds_snapshot)
 	env.st.register('__uds_extended', l_uds_extended)
+	env.st.register('__uds_did_size', l_uds_did_size)
+	env.st.register('__uds_ext_size', l_uds_ext_size)
 	env.st.register('__flash_open', l_flash_open)
 	env.st.register('__flash_program', l_flash_program)
 }
@@ -1221,15 +1223,8 @@ fn push_dtc_report(l lua.State, r uds.DtcReport) {
 	l.new_table()
 	for i, rec in r.records {
 		l.new_table()
-		l.set_int('code', rec.code)
-		l.set_str('name', rec.name())
-		l.set_int('status', rec.status)
+		push_dtc_head(l, rec, r.availability)
 		l.set_int('availability', r.availability)
-		for bit in uds.dtc_status_bits {
-			if r.availability & bit.mask != 0 {
-				l.set_bool(bit.name, rec.status & bit.mask != 0)
-			}
-		}
 		l.set_index(i + 1)
 	}
 }
@@ -1252,13 +1247,16 @@ fn l_uds_supported_dtcs(l lua.State) int {
 }
 
 // push_dtc_head sets a DTC's identity and status on the table on top: code, name, status, and a
-// boolean per ISO status bit (all eight: a 0x19 04 / 06 answer carries no availability mask).
-fn push_dtc_head(l lua.State, rec uds.DtcRecord) {
+// boolean per ISO status bit the server supports (`avail`; 0xFF for a 0x19 04 / 06 answer, which
+// carries no availability mask).
+fn push_dtc_head(l lua.State, rec uds.DtcRecord, avail u8) {
 	l.set_int('code', rec.code)
 	l.set_str('name', rec.name())
 	l.set_int('status', rec.status)
 	for bit in uds.dtc_status_bits {
-		l.set_bool(bit.name, rec.status & bit.mask != 0)
+		if avail & bit.mask != 0 {
+			l.set_bool(bit.name, rec.status & bit.mask != 0)
+		}
 	}
 }
 
@@ -1296,7 +1294,7 @@ fn l_uds_snapshot(l lua.State) int {
 	code, rec := dtc_args(l) or { return l.fail('snapshot: a 3-byte DTC and a record number') }
 	s := c.cli.snapshot(code, rec) or { return l.fail(err.msg()) }
 	l.new_table()
-	push_dtc_head(l, s.dtc)
+	push_dtc_head(l, s.dtc, 0xFF)
 	l.new_table()
 	for i, r in s.records {
 		l.new_table()
@@ -1324,7 +1322,7 @@ fn l_uds_extended(l lua.State) int {
 	code, rec := dtc_args(l) or { return l.fail('extended: a 3-byte DTC and a record number') }
 	e := c.cli.extended(code, rec) or { return l.fail(err.msg()) }
 	l.new_table()
-	push_dtc_head(l, e.dtc)
+	push_dtc_head(l, e.dtc, 0xFF)
 	for r in e.records {
 		match r.number {
 			0x01 { l.set_int('occurrence', i64(r.value())) }
@@ -1340,6 +1338,32 @@ fn l_uds_extended(l lua.State) int {
 	}
 	l.set_field('records')
 	return 1
+}
+
+// l_uds_did_size states a snapshot DID's size (args: handle, DID, bytes).
+fn l_uds_did_size(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	id := l.arg_int_exact(2) or { return l.fail('did_size: the DID is not an integer') }
+	n := l.arg_int_exact(3) or { return l.fail('did_size: the size is not an integer') }
+	if id < 0 || id > 0xFFFF || n < 0 || n > 4095 {
+		return l.fail('did_size: DID ${id} or size ${n} out of range')
+	}
+	c.cli.set_did_size(u16(id), int(n))
+	return 0
+}
+
+// l_uds_ext_size states an extended data record's size (args: handle, record number, bytes).
+fn l_uds_ext_size(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	rec := uds_byte(l, 2) or { return l.fail('ext_record_size: the record number is not a byte') }
+	n := l.arg_int_exact(3) or { return l.fail('ext_record_size: the size is not an integer') }
+	if n < 0 || n > 4095 {
+		return l.fail('ext_record_size: size ${n} out of range')
+	}
+	c.cli.set_ext_record_size(rec, int(n))
+	return 0
 }
 
 // l_uds_dtc_code: a DTC display name (`U0121-00`, `U0121`, any case) as its 24-bit code, or nil

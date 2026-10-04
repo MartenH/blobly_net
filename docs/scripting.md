@@ -183,6 +183,7 @@ The returned object has:
 | `diag:snapshot_ids()` | `0x19 03` reportDTCSnapshotIdentification | array of `{code, name, record}` |
 | `diag:snapshot(dtc[, record])` | `0x19 04` reportDTCSnapshotRecordByDTCNumber — `dtc` a name or its code, `record` default `0xFF` (all). A snapshot DID whose size the tester does not know is read once (`0x22`) to learn it | `{code, name, status, <status bits>, records = { {number, dids = { {id, data} } } } }` |
 | `diag:extended(dtc[, record])` | `0x19 06` reportDTCExtDataRecordByDTCNumber, sized by blobly_emb's records (`0x01` occurrences 2 B, `0x02` aging, `0x03` failed cycles) | `{code, name, status, <status bits>, occurrence, aging, failed_cycles, records = {[n] = bytes}}` |
+| `diag:did_size(did, n)` / `diag:ext_record_size(record, n)` | the sizes a `0x19 04` / `06` answer does not carry: a snapshot DID the tester cannot read (or whose size varies), an extended data record other than blobly_emb's | — |
 | `diag:tester_present()` | `0x3E` | — |
 | `diag:reset([kind])` | `0x11` ECUReset (`1` hard — the default, `2` key-off-on, `3` soft) | the answer after its SID (bytes) |
 | `diag:comm_control(control [, type])` | `0x28` CommunicationControl (`control` 0 enable rx+tx … 3 disable both; `type` defaults `1`, the normal messages) — the simulated ECUs refuse it (serviceNotSupported): they cannot gate their own traffic | — |
