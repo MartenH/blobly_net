@@ -3,7 +3,8 @@
 // a simulated ECU can answer diagnostic requests with no Python and no kernel
 // ISO-TP. Mirrors uds_server.py: 0x10 session control, 0x22 RDBI (DID table),
 // 0x3E tester present; unknown service/DID → negative response. Also 0x11 (the diagnostic state
-// back to power-on), 0x19 01/02/0A (the DTC table: count, by status mask, all), 0x14 (clears it)
+// back to power-on), 0x19 01/02/0A (the DTC table: count, by status mask, all) and 03/04/06 (its
+// snapshots and extended data, shaped as blobly_emb's fault memory answers them), 0x14 (clears it)
 // and 0x85 (acknowledged — this server records no faults, so there is nothing to suspend), and
 // suppress-positive-response on every sub-function service but 0x19, whose answer is its report.
 // Not 0x28: nothing here gates the simulated ECU's traffic, and an acknowledgement it does not
@@ -30,13 +31,31 @@ pub struct Dtc {
 pub:
 	code   u32 // 24-bit DTC (e.g. 0x123456)
 	status u8 = 0x09 // status-of-DTC byte; 0x09 = confirmed + testFailed
+	// its snapshot (0x19 03/04): the DIDs of record 0x01, read from the server's own table when
+	// asked; none = no snapshot stored
+	snapshot []u16
+	// its extended data (0x19 06), blobly_emb's records: 0x01 occurrences, 0x02 aging,
+	// 0x03 failed cycles
+	occurrence    u16
+	aging         u8
+	failed_cycles u8
 }
 
 // default_dtcs is what the built-in server has always reported, kept so an unconfigured
 // server behaves exactly as before.
 pub const default_dtcs = [
-	Dtc{0x123456, 0x09},
-	Dtc{0xABCDEF, 0x08},
+	Dtc{
+		code:          0x123456
+		status:        0x09
+		snapshot:      [u16(0xF195), 0xF18C]
+		occurrence:    3
+		failed_cycles: 1
+	},
+	Dtc{
+		code:   0xABCDEF
+		status: 0x08
+		aging:  2
+	},
 ]
 
 // server_security_seed is the demo seed the simulated server returns for any
@@ -122,6 +141,9 @@ fn (mut s Server) answer(req []u8) []u8 {
 		}
 		0x19 { // ReadDTCInformation: 0x01 count, 0x02 by status mask, 0x0A supported
 			sub := if req.len > 1 { req[1] } else { u8(0) }
+			if sub == 0x03 || sub == 0x04 || sub == 0x06 {
+				return s.dtc_records(req)
+			}
 			if sub != 0x01 && sub != 0x02 && sub != 0x0A {
 				return neg(sid, 0x12) // subFunctionNotSupported (bit 7 too: 0x19 has no suppress)
 			}
@@ -244,4 +266,65 @@ pub fn (mut s Server) serve(mut ch isotp.Channel, stop chan bool) {
 
 fn neg(sid u8, nrc u8) []u8 {
 	return [u8(negative_response_sid), sid, nrc]
+}
+
+// dtc_records answers 0x19 03 / 04 / 06 the way blobly_emb's fault memory does: one snapshot
+// record (0x01) per DTC that has one, extended data records 0x01 .. 0x03, 0xFF for all, an unknown
+// DTC or record number out of range.
+fn (mut s Server) dtc_records(req []u8) []u8 {
+	sub := req[1]
+	if sub == 0x03 {
+		if req.len != 2 {
+			return neg(0x19, 0x13)
+		}
+		mut out := [u8(0x59), 0x03]
+		for d in s.dtcs {
+			if d.snapshot.len > 0 {
+				out << [u8(d.code >> 16), u8(d.code >> 8), u8(d.code), 0x01]
+			}
+		}
+		return out
+	}
+	if req.len != 6 {
+		return neg(0x19, 0x13)
+	}
+	code := u32(req[2]) << 16 | u32(req[3]) << 8 | u32(req[4])
+	rec := req[5]
+	mut found := -1
+	for i, d in s.dtcs {
+		if d.code == code {
+			found = i
+		}
+	}
+	if found < 0 {
+		return neg(0x19, 0x31)
+	}
+	d := s.dtcs[found]
+	mut out := [u8(0x59), sub, req[2], req[3], req[4], d.status]
+	if sub == 0x04 {
+		if rec != 0x01 && rec != 0xFF {
+			return neg(0x19, 0x31)
+		}
+		if d.snapshot.len > 0 {
+			out << [u8(0x01), u8(d.snapshot.len)]
+			for id in d.snapshot {
+				out << [u8(id >> 8), u8(id)]
+				out << s.dids[id] or { []u8{} }
+			}
+		}
+		return out
+	}
+	if rec != 0xFF && (rec < 1 || rec > 3) {
+		return neg(0x19, 0x31)
+	}
+	if rec == 0xFF || rec == 1 {
+		out << [u8(0x01), u8(d.occurrence >> 8), u8(d.occurrence)]
+	}
+	if rec == 0xFF || rec == 2 {
+		out << [u8(0x02), d.aging]
+	}
+	if rec == 0xFF || rec == 3 {
+		out << [u8(0x03), d.failed_cycles]
+	}
+	return out
 }
