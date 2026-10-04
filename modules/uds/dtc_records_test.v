@@ -204,3 +204,31 @@ fn test_an_answer_about_another_record_is_not_taken() {
 		assert answer_to(all, [u8(0x59), sub, 0x05, 0x06, 0x00, 0x2F, 0x02, 0xAA]) == .positive
 	}
 }
+
+// 0x19 06 0xFE asks for every OBD record: the answer carries their own numbers, so it is not stale
+fn test_an_obd_group_extended_request_takes_any_record() {
+	req := [u8(0x19), 0x06, 0x05, 0x06, 0x00, 0xFE]
+	assert answer_to(req, [u8(0x59), 0x06, 0x05, 0x06, 0x00, 0x2F, 0x92, 0xAA]) == .positive
+	// for 0x04, 0xFE is an ordinary record number
+	r4 := [u8(0x19), 0x04, 0x05, 0x06, 0x00, 0xFE]
+	assert answer_to(r4, [u8(0x59), 0x04, 0x05, 0x06, 0x00, 0x2F, 0x01, 0xAA]) == .stale
+}
+
+// a size stated as negative is an error, never a reversed slice
+fn test_a_negative_configured_size_is_an_error() {
+	if _ := decode_snapshot(emb_19_04_all, {
+		u16(0xF1A0): -1
+		0xF190:      19
+	})
+	{
+		assert false, 'a negative DID size decoded'
+	}
+	if _ := decode_extended(emb_19_06_all, {
+		u8(0x01): -2
+		0x02:     1
+		0x03:     1
+	})
+	{
+		assert false, 'a negative record size decoded'
+	}
+}

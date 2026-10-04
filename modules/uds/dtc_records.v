@@ -159,6 +159,9 @@ pub fn decode_snapshot(resp []u8, lens map[u16]int) !DtcSnapshot {
 			n := lens[id] or { return UnknownDidLength{
 				did: id
 			} }
+			if n < 0 {
+				return error('0x19 04: DID 0x${id:04X} is configured with a negative size (${n})')
+			}
 			if i + 2 + n > resp.len {
 				return error('0x19 04 record 0x${number:02X}: DID 0x${id:04X} of ${n} bytes runs past the answer')
 			}
@@ -189,6 +192,9 @@ pub fn decode_extended(resp []u8, lens map[u8]int) !DtcExtended {
 		number := resp[i]
 		n := lens[number] or {
 			return error('0x19 06 extended data record 0x${number:02X}: its length is not known')
+		}
+		if n < 0 {
+			return error('0x19 06 record 0x${number:02X} is configured with a negative size (${n})')
 		}
 		if i + 1 + n > resp.len {
 			return error('0x19 06 record 0x${number:02X} of ${n} bytes runs past the answer')

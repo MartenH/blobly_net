@@ -111,3 +111,21 @@ fn test_a_snapshot_keeps_its_captured_values() {
 	assert r[8..10] == [u8(0xF1), 0x95]
 	assert r[10..10 + before.len] == before, 'the snapshot read the live DID'
 }
+
+// more DIDs than a count byte holds are sent with count 0 ("not stated"), which the decoder reads
+// to the end of the answer
+fn test_an_oversized_snapshot_count_is_sent_as_not_stated() {
+	mut s := default_server()
+	mut ids := []u16{}
+	for i in 0 .. 300 {
+		id := u16(0xA000 + i)
+		s.dids[id] = [u8(i)]
+		ids << id
+	}
+	s.dtcs = [Dtc{
+		code:     0x123456
+		snapshot: ids
+	}]
+	r := s.handle([u8(0x19), 0x04, 0x12, 0x34, 0x56, 0x01])
+	assert r[6] == 0x01 && r[7] == 0, 'a count of 300 was truncated into one byte'
+}

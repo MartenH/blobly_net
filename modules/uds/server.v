@@ -331,7 +331,8 @@ fn (mut s Server) dtc_records(req []u8) []u8 {
 		vals := (s.snap_vals[d.code] or { map[u16][]u8{} }).clone()
 		snap := d.snapshot.filter(it in vals)
 		if snap.len > 0 {
-			out << [u8(0x01), u8(snap.len)]
+			// a count that does not fit one byte is sent as 0, "not stated": the DIDs run to the end
+			out << [u8(0x01), if snap.len > 255 { u8(0) } else { u8(snap.len) }]
 			for id in snap {
 				out << [u8(id >> 8), u8(id)]
 				out << vals[id]
