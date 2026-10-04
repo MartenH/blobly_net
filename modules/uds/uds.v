@@ -59,6 +59,10 @@ pub mut:
 	p2_star_ms        int = default_p2_star_ms
 	margin_ms         int = 1000
 	pending_budget_ms int = 120_000
+	// snapshot DID sizes learned by reading them (dtc_records.v), and the extended data records'
+	// sizes (empty = blobly_ext_records)
+	did_lens map[u16]int
+	ext_lens map[u8]int
 }
 
 // default_p2_star_ms is ISO 14229-2's default P2*server, used until a 0x10 answer names one.
