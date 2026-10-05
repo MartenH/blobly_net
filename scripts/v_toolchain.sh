@@ -101,7 +101,7 @@ v_toolchain_install() {
 	rm -f "$(v_toolchain_stamp_path "$vdir")"
 
 	v_toolchain_fetch_pin "$vdir" https://github.com/vlang/v "$v_pin"
-	# The bootstrap, at the vc commit GENERATED FROM $v_pin. Pinning the source without this
+	# The bootstrap, at a vc commit proven to build $v_pin. Pinning the source without this
 	# is not a pin: `make` would clone vc's default branch, and `latest_vc` would then
 	# `git clean -xf && git pull --rebase` whatever we put there.
 	v_toolchain_fetch_pin "$vdir/vc" https://github.com/vlang/vc "$vc_pin"
