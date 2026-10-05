@@ -1,6 +1,6 @@
 module transport
 
-import json
+import json2
 
 // The IPv4 addresses this host has, for a multicast query that must leave through every
 // interface (cansub_mdns.v). The enumeration is per platform -- `ip -j addr` on Linux,
@@ -8,12 +8,12 @@ import json
 // distro or a locale can vary is exactly the kind of input that fails silently inside a
 // platform file CI never runs (the `*_names.v` precedent).
 
-struct IpAddrInfo {
+pub struct IpAddrInfo {
 	family string
 	local  string
 }
 
-struct IpAddrEntry {
+pub struct IpAddrEntry {
 	ifname    string
 	addr_info []IpAddrInfo
 }
@@ -22,7 +22,7 @@ struct IpAddrEntry {
 // but loopback -- by NAME, because WSL2's mirrored networking puts a routable address on `lo`.
 pub fn ipv4_addrs_from_ip_json(text string) []string {
 	mut out := []string{}
-	entries := json.decode([]IpAddrEntry, text) or { return out }
+	entries := json2.decode[[]IpAddrEntry](text) or { return out }
 	for e in entries {
 		if e.ifname == 'lo' {
 			continue

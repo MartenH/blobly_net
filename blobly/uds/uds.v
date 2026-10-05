@@ -448,6 +448,8 @@ fn (mut c Client) drain_queued(sid u8) !int {
 			if err.msg().starts_with('DoIP connection lost: ') || err.msg().ends_with('bus is closed') {
 				return err
 			}
+			// anything else was a PDU taken off the channel: count it like one
+			[]u8{}
 		}
 		discarded++
 		if discarded >= max_drain {

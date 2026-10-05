@@ -74,7 +74,8 @@ fn test_a_view_aliases_the_row_and_a_copy_does_not() {
 fn test_relabelled_shares_the_rows_and_replaces_the_labels() {
 	l := from_entries(sample())
 	m := l.relabelled(['can0', 'can1'])
-	assert m.rows.data == l.rows.data, 'the rows are the same block'
+	m_block, l_block := voidptr(m.rows.data), voidptr(l.rows.data)
+	assert m_block == l_block, 'the rows are the same block'
 	assert m.iface(0) == 'can0' && m.iface(1) == 'can1' && m.iface(2) == 'can0'
 	assert l.iface(0) == 'vcan0', 'the source keeps its own labels'
 }

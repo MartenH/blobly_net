@@ -1,6 +1,6 @@
 # Vendored vlang/markdown (md4c)
 
-Upstream [vlang/markdown](https://github.com/vlang/markdown) at commit **`ef2f101`** — the
+Upstream [vlang/markdown](https://github.com/vlang/markdown) at commit **`55292d1`** — the
 V binding plus the [md4c](https://github.com/mity/md4c) C parser it wraps — committed here
 and compiled into the binary, so a fresh box builds from git alone (the repo's
 single-source-of-truth principle).
