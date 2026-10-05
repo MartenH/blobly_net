@@ -15,15 +15,14 @@ sudo apt-get install -y \
 	mesa-utils xdotool imagemagick x11-utils   # diagnostics + screenshot verification
 
 echo "==> 2/5 V compiler (built from source, at the commits .v-version + .vc-version pin)"
-# The SAME commit CI builds with (.v-version), not master: V master is V3-only since 2026-09-05
-# and this repo does not build under V3, so a fresh machine that cloned master got a compiler
-# that fails on the first `-old-compiler`. GitHub serves a fetch by full SHA, so one commit
-# comes down and nothing else (codex on #282).
+# The SAME commit CI builds with (.v-version), not master: a commit this repo is known to
+# build and pass on, where master may carry a regression we have not met yet. GitHub serves a
+# fetch by full SHA, so one commit comes down and nothing else (codex on #282).
 #
 # And the BOOTSTRAP is pinned too (.vc-version), because pinning only the source is not a pin:
 # `make` clones vlang/vc with no ref, and `latest_vc` then does `git clean -xf && git pull` on
-# it. That floated to V3 master on 2026-09-07 and broke every build with `./v2: No such file or
-# directory` -- a V3 bootstrap cannot build pre-V3 source under -old-compiler. `local=1` is what
+# it. That floated on 2026-09-07 and broke every build with nothing in the repo changed.
+# `local=1` is what
 # holds the pin: it turns latest_vc/latest_tcc/latest_legacy into no-ops (`ifndef local` in V's
 # GNUmakefile), so nothing is pulled out from under us mid-build.
 V_PIN=$(tr -d '[:space:]' < .v-version)

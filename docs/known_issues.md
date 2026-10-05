@@ -14,9 +14,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 ## V language / compiler / tooling
 
 - 🟡 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
-  VALUE.** **Fixed upstream, and we cannot have it yet** — see the end of this entry: the fix is
-  on V3 master and this repo pins a pre-V3 `v` with `-old-compiler` on purpose. Everything below
-  still describes the compiler we build with today.
+  VALUE.** **Fixed upstream, and the fix is now in our pin** — see the end of this entry. The
+  repro has not been re-run on V3 yet; until it is, everything below is how to recognise it.
 
   With `-prod` **and** a Boehm GC mode, V emits a "deep GC scope pin" around **every
   call** in a function whose scope holds a by-value aggregate containing pointers
@@ -63,13 +62,10 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   Boehm-scanned backing allocation instead of walking every element around every call
   (recursive rooting stays for pointerful *structs*). Their measurement on the repro: about
   2,000,000 ns → about 1 ns per call at a million elements.
-  **It is on V3 master, so it is not ours to take.** `.v-version` pins a pre-V3 `v` and both
-  Linux jobs set `VFLAGS=-old-compiler`, because a V3-only `v` refuses that flag — and the fix's
-  own author notes V3 master still fails unrelated fixtures (`assign_fn_addr.vv`, parser
-  diagnostics). So this entry stays until the toolchain moves, which is a project of its own and
-  not a `.v-version` bump. When it does move: re-run the repro first, and if it is clean, the
-  `pump()` split in `cmd/restbus` stops being load-bearing — keep it anyway, it removed a
-  duplicated transmit loop on its own merits.
+  **It is in our pin now**: `.v-version` moved to V3 (`e7bb21c`, which contains `f174e71`).
+  Re-run the repro before relying on it; if it is clean, the `pump()` split in `cmd/restbus`
+  stops being load-bearing — keep it anyway, it removed a duplicated transmit loop on its own
+  merits.
 
   It hides well, which is the other reason it is written down: nothing profiles as hot, the
   cost is attributed to whichever tiny function the loop happens to call, `GC_get_gc_no()` never
@@ -251,43 +247,32 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   exactly what it was before any of this, it is a prebuilt C compiler bundle rather than our
   own source compiled to C, and it is not what broke us. If it ever does, pin it the same way
   from `vlang/tccbin`, branch `thirdparty-<os>-<arch>`.
-  **`.vc-version` must be the vc commit generated from `.v-version`** — its message is
-  `[v:master] <the .v-version sha> - …`. Bump the two together or not at all.
-- 🟡 **V 0.5.2 tries its experimental V3 compiler first, and CI paid for it twice.** Every
-  build attempts V3 and falls back to the established compiler when V3 cannot build the
-  program — 65 of the 72 test programs on the Linux runner, each compiled twice: the test
-  step summed 1,807 s of compile time where the same files take 100 s on a 0.5.1 bench, and
-  the job took eleven minutes for twenty seconds of tests. The fallback also posts an
-  automatic bug report to `bugs.vlang.io` with a bounded excerpt of the failing source
-  (V's docs, "Automatic bug reports"). `ci.yml` sets `VFLAGS=-old-compiler` for both jobs,
-  which skips V3 entirely; it is an env var and not a flag in the scripts because a V that
-  predates V3 rejects `-old-compiler` as an unknown argument. The flag ends only the
-  fallback's report — the established compiler uploads an excerpt of its own on any C
-  compilation error — so `V_C_ERROR_BUG_REPORT_DISABLED=1` sits beside it, which is V's
-  opt-out for every reporting path (and is harmless on a bench, where the flag is not). If a
-  CI log ever shows `note: V3 could not build this program` again, the env has stopped
-  reaching `v`. `windows.yml` sets neither: it runs the pinned `v-toolchain` build
-  (`v-ddc9c99`, a 2026-06 master), and whether that build attempts V3 has not been checked.
-- 🔴 **V master is V3-only since 2026-09-05, and a V3-only `v` REFUSES `-old-compiler`.**
-  `vlang/v` edf824295b ("make macOS and Linux self-builds V3-only") made `make` produce a V
-  with no established compiler in it, so with the env above every Linux job on every branch
-  died at toolchain setup: `` `-old-compiler` is not available: this V executable contains
-  only the V3 compiler ``. This repo does not build under V3 yet, so `ci.yml` no longer takes
-  master: it builds V from source at `.v-version`, which names the last master commit a green
-  run built (`5d34e477`, 2026-09-05 06:06 UTC) — and so do `release.yml`'s Linux job and
-  `scripts/setup_env.sh`, or a tagged release and a fresh bench would each build the master this
-  pin exists to avoid. Bump that file to move; drop `VFLAGS=-old-compiler` in the same change,
-  and expect the V3 fallback behaviour described above to be what you meet.
-  **`vlang/setup-v` is no longer how any of them install it**, and `.v-version` is no longer the
-  only pin: the bootstrap needs `.vc-version` beside it, which is what the entry above this one
-  is about. Read that one before touching either file.
+  **`.vc-version` must be a V3 vc commit proven to build `.v-version`.** vc is regenerated about
+  once a day, so the C generated from an arbitrary master commit rarely exists: pin the newest vc
+  at or before `.v-version`, build the pair with `v_toolchain_install` (scripts/v_toolchain.sh),
+  and commit both files only if that succeeds. Bump the two together or not at all.
+- 🟢 **The toolchain is V3, and a V3 failure must FAIL — not fall back.** When V3 cannot build
+  a program, a V3 `v` silently retries with a downloaded V1 compiler
+  (`~/.cache/v/v1-fallback/`), so a V3 regression passes on the old compiler and nobody sees
+  it. `ci.yml` and the setup-v action set **`V_MACOS_V3_NO_FALLBACK=1`** (read on every platform
+  despite the name — vlang/v `cmd/v/v.v`); set it locally too when checking a V3 result. The
+  migration to V3 (2026-10-05) met eleven V3 bugs, every one fixed upstream (vlang/v #29402,
+  #29403, #29456, #29458, #29460, #29461, #29489, #29502, #29503, #29504, #29506), and the pin is
+  the first master commit that holds them all. V3 changes worth knowing: `int` is **64-bit**
+  (a C callback or struct that means C's `int` must say `i32`), `json` is gone (`json2`), an
+  Option's `or` block binds no `err`, and the module path is not inferred from `v.mod`
+  (`-path "@vlib|@vmodules|modules|libs"`, which every script here already passes).
+  `V_C_ERROR_BUG_REPORT_DISABLED=1` stays: V3 still uploads a source excerpt on a C compilation
+  error (`v help build-c`).
 - 🟡 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**
   `makev.bat` hangs at `Compiling v_stage.exe`, independent of bootstrap compiler, final compiler,
   disk and Defender (every combination timed out at up to 90 min; the same build is ~100 s
   locally). And there's no fallback: V's newest *release* (0.5.1) predates the `vlib/yaml` that
   `modules/project` imports. So `windows.yml` downloads a zipped V from this repo's
   **`v-toolchain`** release. **If that release or its asset disappears, the Windows job breaks** —
-  re-mint the asset if the V pin ever moves.
+  re-mint the asset if the V pin ever moves. **It has moved (to V3) and the asset has NOT been
+  re-minted yet**: Windows CI still builds with the pre-V3 `v-ddc9c99`, which the code supports
+  (it builds on both), so the job stays green but tests a different compiler from Linux.
 - ⚪ **A colon-space inside a step `name:` invalidates the whole workflow.** YAML reads
   `name: … D: disk` as a nested mapping → "workflow file issue" / HTTP 422 on dispatch. Quote any
   step name containing `: `. (Bitten twice.)

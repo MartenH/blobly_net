@@ -255,15 +255,18 @@ evidence that it was built — a stamp naming both pins, written only after `mak
 in for a successful build). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
 release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks — and runs
-`v test modules/isotp/` plus the cmd sweep there. Both Linux jobs set `VFLAGS=-old-compiler`
-and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level (#232; why, and why an env var rather
-than a flag in the scripts, is in `docs/known_issues.md`), and install the V named in
-**`.v-version`** — pinned, not master, since V master went V3-only on 2026-09-05 and a V3-only
-`v` refuses `-old-compiler`; `release.yml`'s Linux job and `scripts/setup_env.sh` read the same
-file. Bump it to move, together with that flag. **TWO pins, and they move together**: V is built
-from source and `make` bootstraps it by cloning **vlang/vc**, which the makefile does with NO
-ref — so `.vc-version` pins that too, at the vc commit GENERATED FROM `.v-version` (its message
-is `[v:master] <the .v-version sha> - …`). Pinning only the source is not a pin: it merely
+`v test modules/isotp/` plus the cmd sweep there (still on the pre-V3 `v-ddc9c99` until that
+asset is re-minted — `docs/known_issues.md`). **The toolchain is V3.** Both Linux jobs set
+`V_MACOS_V3_NO_FALLBACK=1` and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level: without the
+first, a program V3 cannot build is silently rebuilt by a downloaded V1 compiler and a V3
+regression passes unseen — set it locally too when checking a V3 result. They install the V
+named in **`.v-version`** — a V3 master commit this repo is known to pass on, not master itself;
+`release.yml`'s Linux job and `scripts/setup_env.sh` read the same file. **TWO pins, and they
+move together**: V is built from source and `make` bootstraps it by cloning **vlang/vc**, which
+the makefile does with NO ref — so `.vc-version` pins that too, at a vc commit PROVEN TO BUILD
+`.v-version` (vc is regenerated about daily, so the C generated from the exact commit rarely
+exists: take the newest vc at or before it and build the pair with `v_toolchain_install` before
+committing either file). Pinning only the source is not a pin: it merely
 worked while vc's default branch happened to hold our bootstrap, and the morning vc regenerated
 from V3 master (2026-09-07) the identical commit that had been green on `main` sixteen hours
 earlier failed in `make` with `./v2: No such file or directory` — re-running the old run

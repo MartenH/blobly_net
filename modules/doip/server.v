@@ -392,10 +392,9 @@ pub fn broadcast_for_port(host string, port_ int) string {
 		// KEEP THE ZONE. Link-local multicast needs an interface scope, so an entity bound to
 		// fe80::1%eth0 must announce to ff02::1%eth0 — dropping it leaves a multihomed host to
 		// guess the outgoing interface, which is how an announcement goes out the wrong one.
-		if zone := h.split('%')[1] or { '' } {
-			if zone != '' {
-				return '[ff02::1%${zone}]:${port_}'
-			}
+		zone := h.all_after('%')
+		if h.contains('%') && zone != '' {
+			return '[ff02::1%${zone}]:${port_}'
 		}
 		return '[ff02::1]:${port_}'
 	}

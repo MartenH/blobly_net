@@ -6,7 +6,7 @@ module main
 import lua
 
 // a host function exposed to Lua as add(a, b) -> a+b
-fn l_add(l lua.State) int {
+fn l_add(l lua.State) i32 {
 	a := l.arg_num(1)
 	b := l.arg_num(2)
 	l.push_num(a + b)
