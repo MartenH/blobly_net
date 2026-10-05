@@ -119,7 +119,7 @@ fn test_fd_frames_are_counted_among_the_kept_only() {
 	assert rep.withheld_excluded == 3
 	none_excluded, all_rep := without_senders(src, sample_db(), [], true)
 	assert all_rep.fd == 3
-	assert none_excluded.count(it.frame.fd) == 3
+	assert none_excluded.filter(it.frame.fd).len == 3
 	// and it rides the multi-bus plan per bus, through the same tally
 	plan := build_multi(src, [
 		BusSpec{
@@ -290,8 +290,8 @@ fn test_an_additional_transmitter_still_counts_as_the_sender() {
 			candb.Message{
 				name:     'SharedMsg'
 				id:       0x400
-				sender:   'EBS'       // the BO_ line names EBS...
-				tx_nodes: ['SUT_ECU'] // ...and BO_TX_BU_ adds the SUT
+				sender:   'EBS'       // the BO_ line names EBS
+				tx_nodes: ['SUT_ECU'] // and BO_TX_BU_ adds the SUT
 			},
 		]
 	}

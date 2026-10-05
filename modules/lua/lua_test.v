@@ -1,11 +1,11 @@
 module lua
 
-fn t_add(l State) int {
+fn t_add(l State) i32 {
 	l.push_num(l.arg_num(1) + l.arg_num(2))
 	return 1
 }
 
-fn t_concat(l State) int {
+fn t_concat(l State) i32 {
 	// echoes back the byte string argument prefixed with "got:" — exercises
 	// byte-clean string round-tripping across the boundary.
 	l.push_str('got:' + l.arg_str(1))

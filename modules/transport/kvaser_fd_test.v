@@ -154,7 +154,7 @@ fn test_which_adapters_configure_a_data_phase() {
 // refused now — and refused by name, because a bare "not a number" would leave the reader with
 // the same wrong idea about where the number comes from.
 fn test_the_documented_virtual_spelling_is_refused_by_name() {
-	err := kvaser_spec('virtual0') or {
+	_ := kvaser_spec('virtual0') or {
 		assert err.msg().contains('kvasercheck --list'), 'the refusal must say where the number comes from'
 		assert err.msg().contains('virtual0')
 		return

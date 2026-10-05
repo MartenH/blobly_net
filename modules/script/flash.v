@@ -56,7 +56,7 @@ fn (env &Env) script_relative(p string) string {
 	return from_script(env.script_path, p)
 }
 
-fn l_flash_open(l lua.State) int {
+fn l_flash_open(l lua.State) i32 {
 	// cmd/flash's default pair: a blobly_emb bootloader answers on 0x7B0/0x7B8
 	return open_conn(l, 'flash.program', 0x7B0, 0x7B8, true)
 }
@@ -76,7 +76,7 @@ fn u32_arg(l lua.State, i int, what string, dflt u32) !u32 {
 // l_flash_program(handle, image, base, sw_version, auth, seed, seed_file, progress, quiet) runs the
 // session over the uds.open connection `handle` and returns what it did as a table; a failed step
 // raises with the step named (`erase: NRC 0x22`, `image check FAILED …`).
-fn l_flash_program(l lua.State) int {
+fn l_flash_program(l lua.State) i32 {
 	mut env := env_of(l)
 	c := env.conn(int(l.arg_int(1))) or { return l.fail('flash.program: bad uds handle') }
 	// copied out: the progress callback runs Lua, and a uds.open there grows env.conns under `c`

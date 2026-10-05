@@ -64,7 +64,7 @@ pub type State = &C.lua_State
 // CFn is a host function callable from Lua: it receives the state and returns
 // the number of results it left on the stack. Use the `arg_*`/`push_*` helpers
 // below to read arguments and return values.
-pub type CFn = fn (l State) int
+pub type CFn = fn (l State) i32
 
 // new creates a fresh interpreter with the standard libraries opened.
 pub fn new() State {

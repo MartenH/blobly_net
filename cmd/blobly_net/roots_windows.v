@@ -33,7 +33,7 @@ fn fs_roots() []string {
 // GUI would flash a window for. Empty where WSL is not installed.
 fn wsl_roots() []string {
 	mut lxss := unsafe { nil }
-	if C.RegOpenKeyExW(C.HKEY_CURRENT_USER,
+	if C.RegOpenKeyExW(voidptr(C.HKEY_CURRENT_USER),
 		'Software\\Microsoft\\Windows\\CurrentVersion\\Lxss'.to_wide(), 0, u32(C.KEY_READ), &lxss) != 0 {
 		return []
 	}
@@ -81,7 +81,7 @@ fn wsl_prefix_for_build(build int) string {
 // when it cannot be read — which selects the newer spelling, the one a current Windows serves.
 fn windows_build() int {
 	mut key := unsafe { nil }
-	if C.RegOpenKeyExW(C.HKEY_LOCAL_MACHINE,
+	if C.RegOpenKeyExW(voidptr(C.HKEY_LOCAL_MACHINE),
 		'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'.to_wide(), 0, u32(C.KEY_READ), &key) != 0 {
 		return 0
 	}
