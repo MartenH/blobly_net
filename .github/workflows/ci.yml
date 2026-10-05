@@ -19,21 +19,14 @@ name: ci
 # uses). Two pins, not one, and the second is the whole reason this is hand-rolled rather
 # than `vlang/setup-v` — see the note at the install step.
 #
-# VFLAGS=-old-compiler, for every `v` in both jobs. V 0.5.2 tries its experimental V3 compiler
-# FIRST on every build and falls back to the established one when V3 cannot build the program
-# — which on this runner was 65 of the 72 test programs, each compiled twice: the test step
-# summed 1,807 s of compile time where the same 72 files take 100 s locally on V 0.5.1, and the
-# job took eleven minutes. The fallback also posts an automatic bug report to bugs.vlang.io,
-# with a bounded excerpt of the failing source (V's docs, "Automatic bug reports") — from this
-# repository, ~65 times a run. `-old-compiler` skips V3 entirely. The env var rather than the
-# flag in the scripts, because a V that predates V3 (0.5.1, what a bench runs today) rejects
-# the flag as an unknown argument; here the toolchain is always current.
+# V_MACOS_V3_NO_FALLBACK=1, for every `v` in both jobs. The toolchain is V3, and when V3 cannot
+# build a program a V3 `v` silently RETRIES with a downloaded V1 compiler — so without this a
+# V3 regression would pass CI on the old compiler and nobody would know. Despite the name it is
+# read on every platform (vlang/v cmd/v/v.v).
 #
-# V_C_ERROR_BUG_REPORT_DISABLED, because the flag only ends the FALLBACK's report: the
-# established compiler uploads a source excerpt of its own on any C compilation error
-# (vlib/v/builder/cc.v -> submit_c_error_bug_report), and a PR that breaks the vendored Lua's
-# #flag build would send this repository's source too. The env var is V's opt-out for every
-# path that reports (self-review). Harmless on a V that has no reporter, unlike the flag.
+# V_C_ERROR_BUG_REPORT_DISABLED, because V uploads a source excerpt on any C compilation error
+# (`v help build-c`), and a PR that breaks the vendored Lua's #flag build would send this
+# repository's source too. The env var is V's opt-out for every path that reports.
 
 on:
   push:
@@ -46,23 +39,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# PINNED, not latest (2026-09-06): V master became V3-only on 2026-09-05 (vlang/v
-# edf824295b, "make macOS and Linux self-builds V3-only"), and a V3-only `v` REFUSES
-# `-old-compiler` — so every Linux job on every branch failed at `make` before a single test ran.
-# This repo does not build under V3 yet, so `.v-version` names the last master commit a green
-# run here built (5d34e477, 2026-09-05 06:06 UTC). One file, read by both jobs here, by release.yml's Linux job and by scripts/setup_env.sh, so the pin is
-# stated once. Moving to V3 is a decision, not a drift: bump `.v-version` on purpose, and drop
-# VFLAGS=-old-compiler in the same change.
+# PINNED, not latest: `.v-version` names a V3 master commit this repo is known to build and
+# pass on. One file, read by both jobs here, by release.yml's Linux job and by
+# scripts/setup_env.sh, so the pin is stated once. Moving it is a decision, not a drift.
 #
 # `.vc-version` is the SECOND half of that pin and is not optional. Pinning the V source while
-# `make` clones vlang/vc unpinned is not a pin at all: it worked only while vc's default branch
-# happened to hold the C generated from `.v-version`, and the day vc regenerated from V3 master
-# (2026-09-07 05:31 UTC) every Linux job on every branch died in `make` — `./v2: No such file
-# or directory`, because a V3 bootstrap will not build pre-V3 source under `-old-compiler`.
-# The two must be bumped together: `.vc-version` names the vc commit whose message is
-# `[v:master] <the .v-version sha> - ...`.
+# `make` clones vlang/vc unpinned is not a pin at all: the day vc regenerated from V3 master
+# (2026-09-07 05:31 UTC) every Linux job on every branch died in `make` with nothing in the repo
+# changed. vc is regenerated about once a day, so it rarely holds the C generated from the exact
+# `.v-version`: pin the newest vc at or before it, and prove the pair with a build
+# (`v_toolchain_install` from scripts/v_toolchain.sh) before committing either file.
 env:
-  VFLAGS: -old-compiler
+  V_MACOS_V3_NO_FALLBACK: 1
   V_C_ERROR_BUG_REPORT_DISABLED: 1
 
 jobs:

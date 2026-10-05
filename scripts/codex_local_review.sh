@@ -84,7 +84,7 @@ for vdir in "${V_DIR:-}" "$HOME/v" "$HOME/vpin"; do
 done
 probe_note="Put any probe or scratch files under /tmp, never in the repository."
 if [ -n "$v_bin" ]; then
-	v_note="The V toolchain is \`$v_bin\` (built at the pins in .v-version and .vc-version). Run it with \`VFLAGS=-old-compiler\`, e.g. \`VFLAGS=-old-compiler $v_bin -enable-globals test modules/<module>/\`. Do not look for other V installations. Network sockets are allowed, so the UDP/TCP tests can run. $probe_note"
+	v_note="The V toolchain is \`$v_bin\` (built at the pins in .v-version and .vc-version). Run it with \`V_MACOS_V3_NO_FALLBACK=1\`, e.g. \`V_MACOS_V3_NO_FALLBACK=1 $v_bin -enable-globals test modules/<module>/\`. Do not look for other V installations. Network sockets are allowed, so the UDP/TCP tests can run. $probe_note"
 else
 	v_note="No V built at the pinned commits was found on this machine; review statically and say that tests were not run. $probe_note"
 	echo "codex-local-review: warning: no pinned V in \$V_DIR, ~/v or ~/vpin; the review will not run tests" >&2
