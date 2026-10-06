@@ -313,7 +313,9 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	}
 	// on its own thread, so the token ends a slow open (a CANsub open, or waiting on the wire's
 	// first opener) as it ends every other wait; an open that lands after that is closed
-	ap := &app
+	//
+	// `ap := app` is THIS App by reference; `&app` would be a copy (scripts/check_mut_refs.sh)
+	ap := app
 	bus := transport.open_stoppable(fn [ap, iface, phys, t, gen] () !transport.Bus {
 		return ap.open_tap_phys(iface, phys, org_tx, t.chan, gen, false)
 	}, h.stop)!
