@@ -41,11 +41,13 @@ mut:
 	diag_at i64
 }
 
+// Keyed by Chan.fold_key: a CAN row's destination, an Ethernet row's own row (#336).
 fn read_destinations(rows []Chan) map[string]DestState {
 	mut out := map[string]DestState{}
 	for c in rows {
 		if c.enabled && c.running {
-			mut st := out[transport.destination_key(c.iface)] or { DestState{} }
+			key := c.fold_key()
+			mut st := out[key] or { DestState{} }
 			st.read = true
 			st.down = st.down || c.link_down
 			if transport.health_rank(c.health) > transport.health_rank(st.health) {
@@ -62,7 +64,7 @@ fn read_destinations(rows []Chan) map[string]DestState {
 			if !c.diag.is_empty() {
 				st.diag = c.diag
 			}
-			out[transport.destination_key(c.iface)] = st
+			out[key] = st
 		}
 	}
 	// COUNTS OUTLIVE THE READER. A row retired by Stop or by a fatal receive keeps its last
@@ -79,7 +81,7 @@ fn read_destinations(rows []Chan) map[string]DestState {
 		if c.diag_at == 0 {
 			continue
 		}
-		key := transport.destination_key(c.iface)
+		key := c.fold_key()
 		mut st := out[key] or { DestState{} }
 		// `read`, not an empty value: a LIVE reader reporting zero is a reopened wire that has
 		// counted nothing yet, and the retired sample must not paint over it (codex round 3).
@@ -145,7 +147,7 @@ fn worst_wire_health(chans []Chan) (transport.BusHealth, string) {
 		if !c.enabled || !c.running {
 			continue
 		}
-		st := dests[transport.destination_key(c.iface)] or { continue }
+		st := dests[c.fold_key()] or { continue }
 		if transport.health_rank(st.health) > transport.health_rank(worst) {
 			worst = st.health
 			name = c.name
@@ -159,11 +161,10 @@ fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 		return u8(140), u8(140), u8(145), 'off '
 	}
 	// `wire.read` is the CAN alias rule: several rows spelling one wire share its single reader,
-	// so a row that spawned none is still being monitored. An Ethernet row is explicitly ONE
-	// reader per row — two rows on one endpoint are a conflict, not a sharing — so inheriting a
-	// sibling's state would paint a row green whose own listener was refused and whose failure
-	// the Log is reporting at that moment.
-	if c.running || (wire.read && !c.eth()) {
+	// so a row that spawned none is still being monitored. An Ethernet row's `wire` is its OWN
+	// state (Chan.fold_key), so a sibling whose listener won the endpoint never paints a row
+	// green whose own listener was refused.
+	if c.running || wire.read {
 		if c.link_down || wire.down {
 			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
 		}
@@ -302,7 +303,7 @@ fn draw_buses(mut app App, chans []Chan) {
 			}
 			vgui.same_line()
 			// The wire's folded state, read once per row: three chips below describe it.
-			wire := read_dests[transport.destination_key(c.iface)] or { DestState{} }
+			wire := read_dests[c.fold_key()] or { DestState{} }
 			r, g, b, label := chan_state(c, wire)
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
@@ -428,9 +429,7 @@ fn draw_network(mut app App, chans []Chan) {
 		return
 	}
 	for ci, c in chans {
-		r, g, b, st := chan_state(c, read_dests[transport.destination_key(c.iface)] or {
-			DestState{}
-		})
+		r, g, b, st := chan_state(c, read_dests[c.fold_key()] or { DestState{} })
 		vgui.text_colored(r, g, b, '*')
 		vgui.same_line()
 		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}###net${ci}') {
