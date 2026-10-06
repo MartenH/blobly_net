@@ -24,19 +24,22 @@
 # findings.
 set -eu
 
-# $CODEX as the caller meant it, resolved before the cd below: a command name through PATH, a
-# relative path against the caller's directory
+# Before the cd below, everything relative is made the caller's: each relative PATH entry (an
+# empty one is the current directory), so a candidate and whatever it runs through PATH resolve
+# as they would at the call site; then $CODEX, a command name through that PATH or a relative path.
+abs_path=
+IFS=: read -r -a path_dirs <<< "$PATH:"
+for d in "${path_dirs[@]}"; do
+	case "$d" in /*) ;; '') d=$PWD ;; *) d=$PWD/$d ;; esac
+	abs_path=${abs_path:+$abs_path:}$d
+done
+PATH=$abs_path
 codex_env=${CODEX:-}
 case "$codex_env" in
 '' | /*) ;;
 */*) codex_env=$PWD/$codex_env ;;
-*) codex_env=$(command -v "$codex_env" || printf '%s' "$codex_env")
-	case "$codex_env" in /*) ;; */*) codex_env=$PWD/$codex_env ;; esac ;; # found through a relative PATH entry
+*) codex_env=$(command -v "$codex_env" || printf '%s' "$codex_env") ;;
 esac
-# ...and every codex on PATH, the same way: a relative PATH entry is the caller's directory's
-path_codex=$(type -ap codex 2>/dev/null | while IFS= read -r c; do
-	case "$c" in /*) printf '%s\n' "$c" ;; *) printf '%s\n' "$PWD/$c" ;; esac
-done)
 
 self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$self")/.."
@@ -75,12 +78,16 @@ done
 # runs <path>: prints its --version (non-empty) when the binary runs; fails otherwise. Its stdout goes
 # to a file, not a pipe — a child it leaves behind cannot hold the capture open — limited to 64 KiB
 # (a flooding one is stopped there), within the probe's deadline (TERM, then KILL 2 s later).
+# the probe's deadline in seconds: CODEX_PROBE_TIMEOUT when a positive whole number (0 would mean
+# no deadline to `timeout`), else 10
+probe_s=${CODEX_PROBE_TIMEOUT:-10}
+case "$probe_s" in '' | *[!0-9]* | 0 | 00*) probe_s=10 ;; esac
 runs() {
 	local v f rc
 	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
 	f=$(mktemp) || return 1
 	if command -v timeout >/dev/null 2>&1; then
-		(ulimit -f 64; exec timeout -k 2 "${CODEX_PROBE_TIMEOUT:-10}" "$1" --version) </dev/null >"$f" 2>/dev/null
+		(ulimit -f 64; exec timeout -k 2 "$probe_s" "$1" --version) </dev/null >"$f" 2>/dev/null
 	else
 		(ulimit -f 64; exec "$1" --version) </dev/null >"$f" 2>/dev/null
 	fi
@@ -107,7 +114,7 @@ else
 		fi
 		echo "codex-local-review: skipping $candidate: it does not run (empty or broken)" >&2
 	done < <(
-		[ -z "$path_codex" ] || printf '%s\n' "$path_codex"
+		type -ap codex 2>/dev/null || true
 		# newest first by the extension's own version, whichever tree (remote or desktop) holds it:
 		# sorting the whole path would put every desktop copy ahead of every server one
 		find "$HOME"/.vscode-server/extensions "$HOME"/.vscode/extensions \( -path '*/openai.chatgpt-*/bin/*/codex' \

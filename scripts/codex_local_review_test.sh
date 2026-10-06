@@ -108,6 +108,18 @@ chmod +x "$tmp/bg/codex"
 expect "a codex that leaves a child on its stdout does not hang the probe" \
 	"$(check "$tmp/h0" "" CODEX="$tmp/bg/codex" CODEX_PROBE_TIMEOUT=2)" "0|$tmp/bg/codex"
 
+# a codex whose interpreter is found through the same relative PATH entry still runs
+mkdir -p "$tmp/rel"
+printf '#!/bin/sh\necho "codex-cli 0.0.0-test"\n' >"$tmp/rel/myinterp"
+chmod +x "$tmp/rel/myinterp"
+printf '#!/usr/bin/env myinterp\n' >"$tmp/rel/codex"
+chmod +x "$tmp/rel/codex"
+ln -sf "$(command -v env)" "$tmp/tools/env"
+expect "a codex whose interpreter is on the same relative PATH entry runs" "$(CWD=$tmp check "$tmp/h0" "rel")" "0|$tmp/rel/codex"
+
+# a zero probe timeout is not "no deadline": a hanging candidate is still refused
+expect "CODEX_PROBE_TIMEOUT=0 keeps a deadline" "$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=0)" "3|"
+
 # one that floods --version is stopped at the size limit and refused
 printf '#!/bin/sh\nexec yes codex-cli\n' >"$tmp/flood-codex"
 chmod +x "$tmp/flood-codex"
