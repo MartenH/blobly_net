@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Tests for scripts/codex_local_review.sh's choice of codex binary, through --check-codex (which
 # prints the binary it would run and its version, then exits — no git, no network):
-#   - $CODEX that does not run (empty, silent) is refused with exit 3, never replaced;
-#   - otherwise the first candidate that runs wins: PATH, then the extension copies newest first,
-#     skipping a newer empty or non-executable copy for an older working one;
-#   - nothing that runs: exit 3.
+#   - $CODEX (a path, relative or not, or a command name) that does not run — empty, silent, or
+#     hanging on --version — is refused with exit 3, never replaced;
+#   - otherwise the first candidate that runs wins: every codex on PATH, then the extension copies
+#     newest first, skipping a newer empty or non-executable copy for an older working one;
+#   - nothing that runs: exit 3. The chosen binary's version is the second line printed.
 # PATH is built from only the tools the check uses, so an installed codex cannot leak in.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
+repo=$PWD
 
 pass=0
 fail=0
@@ -29,14 +31,17 @@ for t in bash dirname basename find sort head sed timeout; do
 	ln -s "$(command -v "$t")" "$tmp/tools/$t"
 done
 
-# check <home> [extra PATH dir] [VAR=value...]: "<exit>|<first stdout line>" of --check-codex
+# check <home> <extra PATH dirs> [VAR=value...]: "<exit>|<first stdout line>" of --check-codex, run
+# from $CWD (default the repo); $LINE2=1 appends "|<second line>"
 check() {
 	local home=$1 extra=$2
 	shift 2
 	local out code
-	out=$(env -i PATH="${extra:+$extra:}$tmp/tools" HOME="$home" "$@" bash scripts/codex_local_review.sh --check-codex 2>/dev/null)
+	out=$(cd "${CWD:-$repo}" && env -i PATH="${extra:+$extra:}$tmp/tools" HOME="$home" "$@" \
+		bash "$repo/scripts/codex_local_review.sh" --check-codex 2>/dev/null)
 	code=$?
 	printf '%s|%s' "$code" "$(printf '%s\n' "$out" | head -1)"
+	[ -z "${LINE2:-}" ] || printf '|%s' "$(printf '%s\n' "$out" | sed -n 2p)"
 }
 
 working() { # a stub codex that answers --version
@@ -55,7 +60,13 @@ ext() { # ext <home> <version>: the path an extension version bundles codex at
 
 # $CODEX: used when it runs, refused (not replaced) when it does not
 working "$tmp/good/codex"
-expect "a working \$CODEX is chosen" "$(check "$tmp/h0" "" CODEX="$tmp/good/codex")" "0|$tmp/good/codex"
+expect "a working \$CODEX is chosen, with its version" "$(LINE2=1 check "$tmp/h0" "" CODEX="$tmp/good/codex")" \
+	"0|$tmp/good/codex|codex-cli 0.0.0-test"
+expect "a relative \$CODEX is the caller's" "$(CWD=$tmp check "$tmp/h0" "" CODEX=good/codex)" "0|$tmp/good/codex"
+expect "a bare \$CODEX is looked up on PATH" "$(check "$tmp/h0" "$tmp/good" CODEX=codex)" "0|$tmp/good/codex"
+printf '#!/bin/sh\nwhile :; do :; done\n' >"$tmp/hang-codex"
+chmod +x "$tmp/hang-codex"
+expect "a \$CODEX that hangs on --version is refused" "$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=1)" "3|"
 empty "$tmp/empty/codex"
 working "$(ext "$tmp/h1" 26.900.1)"
 expect "an empty \$CODEX is refused, not replaced" "$(check "$tmp/h1" "" CODEX="$tmp/empty/codex")" "3|"
@@ -76,6 +87,7 @@ empty "$tmp/onpath/codex"
 expect "a broken codex on PATH falls through to the extension" "$(check "$h" "$tmp/onpath")" "0|$(ext "$h" 26.900.1)"
 working "$tmp/goodpath/codex"
 expect "a working codex on PATH is chosen first" "$(check "$h" "$tmp/goodpath")" "0|$tmp/goodpath/codex"
+expect "every codex on PATH is tried, a broken first one skipped" "$(check "$h" "$tmp/onpath:$tmp/goodpath")" "0|$tmp/goodpath/codex"
 
 # nothing that runs
 h=$tmp/h3

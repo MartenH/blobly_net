@@ -11,15 +11,27 @@
 # hands the review the pinned V, allows sockets in its sandbox, prints the findings, and keeps
 # one transcript (and its findings) per run in the main checkout's .claude/reviews/.
 #
-# The codex CLI: $CODEX if set (it must run, or the script stops), else the first that runs of
-# `codex` on PATH and the copies the VS Code extension bundles, newest first. "Runs" = executable
-# and answering --version with something within 10 s: an interrupted extension update once left a
-# 0-byte copy, which the old newest-first pick ran — it exited 0 with nothing written, and the
-# review failed only as "codex wrote no final message", naming no cause.
+# The codex CLI: $CODEX if set (a path, or a command name; it must run, or the script stops), else
+# the first that runs of every `codex` on PATH and the copies the VS Code extension bundles (remote
+# and desktop, codex or codex.exe), newest first. "Runs" = executable and answering --version with
+# something within $CODEX_PROBE_TIMEOUT s (default 10; no limit where `timeout` is missing): an
+# interrupted extension update once left a 0-byte copy, which the old newest-first pick ran — it
+# exited 0 with nothing written, and the review failed only as "codex wrote no final message".
 #
-# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs; 4 the review left the tree dirty or HEAD moved;
-# otherwise codex's own failure, with the transcript's tail instead of findings.
+# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs (--check-codex exits 0 or 3
+# and nothing else; a review's own exit can be codex's, which may be any number); 4 the review left
+# the tree dirty or HEAD moved; otherwise codex's own failure, with the transcript's tail instead of
+# findings.
 set -eu
+
+# $CODEX as the caller meant it, resolved before the cd below: a command name through PATH, a
+# relative path against the caller's directory
+codex_env=${CODEX:-}
+case "$codex_env" in
+'' | /*) ;;
+*/*) codex_env=$PWD/$codex_env ;;
+*) codex_env=$(command -v "$codex_env" || printf '%s' "$codex_env") ;;
+esac
 
 self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$self")/.."
@@ -59,19 +71,23 @@ done
 runs() {
 	local v
 	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
-	v=$(timeout 10 "$1" --version </dev/null 2>/dev/null) || return 1
+	if command -v timeout >/dev/null 2>&1; then
+		v=$(timeout "${CODEX_PROBE_TIMEOUT:-10}" "$1" --version </dev/null 2>/dev/null) || return 1
+	else
+		v=$("$1" --version </dev/null 2>/dev/null) || return 1
+	fi
 	[ -n "$v" ] || return 1
 	printf '%s\n' "$v" | head -1
 }
 
 codex=
 codex_version=
-if [ -n "${CODEX:-}" ]; then
-	if ! codex_version=$(runs "$CODEX"); then
+if [ -n "$codex_env" ]; then
+	if ! codex_version=$(runs "$codex_env"); then
 		echo "codex-local-review: \$CODEX=$CODEX does not run (missing, empty or broken)" >&2
 		exit 3
 	fi
-	codex=$CODEX
+	codex=$codex_env
 else
 	while IFS= read -r candidate; do
 		if codex_version=$(runs "$candidate"); then
@@ -80,8 +96,9 @@ else
 		fi
 		echo "codex-local-review: skipping $candidate: it does not run (empty or broken)" >&2
 	done < <(
-		command -v codex || true
-		find "$HOME"/.vscode-server/extensions -path '*/openai.chatgpt-*/bin/*/codex' -type f 2>/dev/null | sort -rV || true
+		type -ap codex || true
+		find "$HOME"/.vscode-server/extensions "$HOME"/.vscode/extensions \( -path '*/openai.chatgpt-*/bin/*/codex' \
+			-o -path '*/openai.chatgpt-*/bin/*/codex.exe' \) -type f 2>/dev/null | sort -rV || true
 	)
 	if [ -z "$codex" ]; then
 		echo "codex-local-review: no codex CLI that runs (reload the Codex extension, or set CODEX=/path/to/codex)" >&2
