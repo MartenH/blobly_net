@@ -110,6 +110,13 @@ pub fn udp_exchange(addr string, to string, out [][]u8, window_ms int) ![]Datagr
 	defer {
 		c.close() or {}
 	}
+	// A broadcast destination needs SO_BROADCAST or the send fails EACCES (DoIP's
+	// identification request to the segment). IPv4 only: IPv6 has no broadcast.
+	if !addr.starts_with('[') {
+		c.sock.set_option_bool(.broadcast, true) or {
+			return error('udp: cannot enable broadcast: ${err}')
+		}
+	}
 	// the family of the bind: an IPv6 first answer could never be sent from a v4 socket
 	fam := if addr.starts_with('[') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
 	dst := net.resolve_addrs(to, fam, .udp) or { return error('udp: cannot resolve ${to}: ${err}') }
@@ -118,6 +125,37 @@ pub fn udp_exchange(addr string, to string, out [][]u8, window_ms int) ![]Datagr
 	}
 	for d in out {
 		c.write_to(dst[0], d) or { return error('udp: send to ${to}: ${err}') }
+	}
+	return udp_window_on(mut c, window_ms)
+}
+
+// udp_exchange_many is udp_exchange to several resolved destinations of the bind's family:
+// `out` goes to each from one socket, and the ONE window hears all their answers — the window
+// is not multiplied by the destinations. A send that fails is skipped (a destination may be
+// unroutable while another answers); every send failing is the error.
+pub fn udp_exchange_many(addr string, tos []net.Addr, out [][]u8, window_ms int) ![]Datagram {
+	mut c := udp_bind(addr, '', '')!
+	defer {
+		c.close() or {}
+	}
+	if !addr.starts_with('[') {
+		c.sock.set_option_bool(.broadcast, true) or {
+			return error('udp: cannot enable broadcast: ${err}')
+		}
+	}
+	mut sent := 0
+	mut last_err := ''
+	for to in tos {
+		for d in out {
+			c.write_to(to, d) or {
+				last_err = 'udp: send to ${to}: ${err}'
+				continue
+			}
+			sent++
+		}
+	}
+	if sent == 0 && tos.len > 0 && out.len > 0 {
+		return error(last_err)
 	}
 	return udp_window_on(mut c, window_ms)
 }

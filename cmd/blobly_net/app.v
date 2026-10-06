@@ -289,7 +289,6 @@ mut:
 	tx_epoch  u64
 	logs      []string           // Log panel (status/events, newest last)
 	log_gen   u64                // bumped on every append/trim of logs -- the Log panel's cache key
-	doip_ents []doip.VehicleInfo // DoIP Discovery results
 	// panel visibility (View menu)
 	// Default workspace is intentionally minimal: Buses + Trace + Log. Everything else is
 	// off and toggled on via the activity bar / View menu (its dock slot is still reserved).
@@ -304,7 +303,6 @@ mut:
 	show_diag     bool
 	show_gen      bool
 	show_script   bool
-	show_doip     bool
 	show_network  bool
 	show_stats    bool
 	show_log      bool = true
@@ -346,7 +344,6 @@ mut:
 	// Its full path, so the J1939 gate can re-import the file it changes the reading of
 	// (meaningful only while viewing_rec is set).
 	viewing_rec_path string
-	doip_host_buf    []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses (index into the CURRENT list)
@@ -499,6 +496,18 @@ mut:
 	disc_cansub_started u64
 	disc_cansub_landed  u64
 	disc_cansub_shown   u64
+	// DoIP entities, found by a vehicle identification request on a worker thread (it waits out
+	// its window). A mailbox under `mu`: `disc_doip` is what every find heard, merged by
+	// address and logical address (doip_key), `disc_doip_busy` the finds still out,
+	// `disc_doip_note` the last one's outcome. The ticks and the host field are the GUI
+	// thread's own.
+	disc_doip          []project.DoipFound
+	disc_doip_note     string
+	disc_doip_busy     int
+	disc_doip_gen      u64 // bumped by Refresh: a find begun before it is dropped when it lands
+	disc_doip_tick     map[string]bool
+	disc_doip_host_buf []u8 = mkbuf('', 64)
+	cfg_rows_open      bool // dev hook (BLOBLY_CFG_ROWS_OPEN): bus rows start expanded
 	// Vector HARDWARE, which is a different question from the list above. That one shows
 	// interfaces this app could open; this one shows physical channels the driver reports,
 	// including the ones nothing is mapped to yet — which are exactly the ones a fresh bench
@@ -1151,6 +1160,12 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.cfg_invalid = [] // describes the buffers just discarded; see the field
 	app.disc_list = []
 	app.disc_tick = []
+	// and every DoIP find: its rows, note and ticks were about the project being replaced, and a
+	// find still out lands in nothing (the generation moves)
+	app.disc_doip = []
+	app.disc_doip_note = ''
+	app.disc_doip_gen++
+	app.disc_doip_tick = map[string]bool{}
 	app.mu.unlock()
 	app.rebuild_from_proj()
 }

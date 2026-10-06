@@ -186,6 +186,18 @@ pub:
 	gid             []u8
 }
 
+// vin_text is the VIN as text, or '' when the entity has none: ISO 13400 fills an unconfigured
+// VIN with 0x00 or 0xFF bytes, which are not a name to show or to name a channel after.
+pub fn (v VehicleInfo) vin_text() string {
+	t := v.vin.trim_right('\x00\xff ').trim_space()
+	for c in t {
+		if c < 0x20 || c > 0x7E {
+			return ''
+		}
+	}
+	return t
+}
+
 // announcement_len is the ISO 13400 vehicle announcement payload size:
 // VIN(17) + logical-addr(2) + EID(6) + GID(6) + further-action(1).
 pub const announcement_len = 32

@@ -186,6 +186,9 @@ fn C.vgui_content_avail_w() f32
 fn C.vgui_content_avail_h() f32
 fn C.vgui_is_item_deactivated_after_edit() int
 fn C.vgui_same_line()
+fn C.vgui_same_line_at(f32)
+fn C.vgui_text_dim_wrapped(&char)
+fn C.vgui_align_text_to_frame_padding()
 fn C.vgui_separator_text(&char)
 fn C.vgui_table_begin(&char, int) int
 fn C.vgui_table_col(&char)
@@ -848,6 +851,11 @@ pub fn text_dim(s string) {
 	C.vgui_text_dim(s.str)
 }
 
+// text_dim_wrapped is text_dim wrapped at the window's right edge.
+pub fn text_dim_wrapped(s string) {
+	C.vgui_text_dim_wrapped(&char(s.str))
+}
+
 pub fn button(label string) bool {
 	return C.vgui_button(label.str) == 1
 }
@@ -919,6 +927,18 @@ pub fn slider_f(label string, v &f32, min_v f32, max_v f32, fmt string) bool {
 
 pub fn same_line() {
 	C.vgui_same_line()
+}
+
+// same_line_at puts the next item on this line at `x` from the window's left edge — a column
+// that does not move with the width of what came before it.
+pub fn same_line_at(x f32) {
+	C.vgui_same_line_at(x)
+}
+
+// align_text_to_frame_padding lowers the next text to a framed widget's baseline, so a label
+// drawn before an input sits level with it.
+pub fn align_text_to_frame_padding() {
+	C.vgui_align_text_to_frame_padding()
 }
 
 pub fn separator_text(s string) {
