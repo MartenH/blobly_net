@@ -622,7 +622,9 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   its Buses row) from its own last RECEIVED frame. Our own sends do not count, or anything this
   host transmits would keep a dead wire looking alive; it is folded per DESTINATION like `health`
   is, and handed to the successor when a reader moves, because only the reader-owning alias
-  records it. **It states a fact and makes no judgement**, deliberately: three attempts to decide
+  records it. **An Ethernet row folds under ITSELF** (`Chan.fold_key`, `cmd/blobly_net/foldrule/`,
+  #336): each DoIP/SOME/IP row has its own reader, so two on one endpoint are a conflict and not
+  aliases — keyed by interface, the row the endpoint claim refused drew its sibling's `last RX`. **It states a fact and makes no judgement**, deliberately: three attempts to decide
   whether silence was a FAULT were each taken apart by the same counter-example (five diagnostic
   requests a second apart), because "traffic that stopped" and "traffic that finished" are
   identical on the wire and no amount of observing separates them. Only a declaration can — a
