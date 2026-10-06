@@ -4,15 +4,42 @@
 #   scripts/codex_local_review.sh            # gpt-6.1-sol, high effort, against origin/main
 #   scripts/codex_local_review.sh --astra    # gpt-6-astra, xhigh (slower; for risky changes)
 #   scripts/codex_local_review.sh --model M --effort E --base REF --dry-run
+#   scripts/codex_local_review.sh --check-codex   # which codex it would run, and its version
 #
 # Reviews merge-base(REF, HEAD)..HEAD and refuses a dirty tree, because the review runs tests
 # against the working tree and they must be the commits under review. Asks for EVERY defect,
 # hands the review the pinned V, allows sockets in its sandbox, prints the findings, and keeps
 # one transcript (and its findings) per run in the main checkout's .claude/reviews/.
 #
-# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI; 4 the review left the tree dirty or HEAD moved;
-# otherwise codex's own failure, with the transcript's tail instead of findings.
+# The codex CLI: $CODEX if set (a path, or a command name; it must run, or the script stops), else
+# the first that runs of every `codex` on PATH and the copies the VS Code extension bundles (remote
+# and desktop, codex or codex.exe), newest first. "Runs" = executable and answering --version with
+# something within $CODEX_PROBE_TIMEOUT s (default 10; no limit where `timeout` is missing): an
+# interrupted extension update once left a 0-byte copy, which the old newest-first pick ran — it
+# exited 0 with nothing written, and the review failed only as "codex wrote no final message".
+#
+# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs (--check-codex exits 0 or 3
+# and nothing else; a review's own exit can be codex's, which may be any number); 4 the review left
+# the tree dirty or HEAD moved; otherwise codex's own failure, with the transcript's tail instead of
+# findings.
 set -eu
+
+# Before the cd below, everything relative is made the caller's: each relative PATH entry (an
+# empty one is the current directory), so a candidate and whatever it runs through PATH resolve
+# as they would at the call site; then $CODEX, a command name through that PATH or a relative path.
+abs_path=
+IFS=: read -r -a path_dirs <<< "$PATH:"
+for d in "${path_dirs[@]}"; do
+	case "$d" in /*) ;; '') d=$PWD ;; *) d=$PWD/$d ;; esac
+	abs_path=${abs_path:+$abs_path:}$d
+done
+PATH=$abs_path
+codex_env=${CODEX:-}
+case "$codex_env" in
+'' | /*) ;;
+*/*) codex_env=$PWD/$codex_env ;;
+*) codex_env=$(command -v "$codex_env" || printf '%s' "$codex_env") ;;
+esac
 
 self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$self")/.."
@@ -25,6 +52,7 @@ model=gpt-6.1-sol
 effort=high
 base=origin/main
 dry_run=0
+check_codex=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--model | --effort | --base)
@@ -41,22 +69,71 @@ while [ $# -gt 0 ]; do
 		;;
 	--astra) model=gpt-6-astra; effort=xhigh; shift ;;
 	--dry-run) dry_run=1; shift ;;
+	--check-codex) check_codex=1; shift ;;
 	-h | --help) usage; exit 0 ;;
 	*) echo "codex-local-review: unknown argument: $1" >&2; usage >&2; exit 2 ;;
 	esac
 done
 
-# The codex CLI: $CODEX, then PATH, then the newest copy the VS Code extension bundles.
-codex=${CODEX:-}
-if [ -z "$codex" ]; then
-	codex=$(command -v codex || true)
+# runs <path>: prints its --version (the first non-empty line) when the binary runs; fails otherwise.
+# Its stdout goes to a file, not a pipe — a child it leaves behind cannot hold the capture open —
+# within the probe's deadline (TERM, then KILL 2 s later). No file-size limit: `ulimit -f` would bind
+# every file a real codex writes (a cache, a log), not only the capture.
+# the probe's deadline in seconds: CODEX_PROBE_TIMEOUT when a positive whole number (0 would mean
+# no deadline to `timeout`), else 10
+probe_s=${CODEX_PROBE_TIMEOUT:-10}
+case "$probe_s" in '' | *[!0-9]* | *[!0]*) ;; *) probe_s= ;; esac # all zeros: no deadline to `timeout`
+case "$probe_s" in '' | *[!0-9]*) probe_s=10 ;; esac
+runs() {
+	local v f d rc
+	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
+	# in a throwaway directory: a candidate being probed must not leave a cache or core file in the
+	# worktree whose cleanliness the review then checks
+	d=$(mktemp -d) || return 1
+	f=$d/version
+	if command -v timeout >/dev/null 2>&1; then
+		(cd "$d" && exec timeout -k 2 "$probe_s" "$1" --version) </dev/null >"$f" 2>/dev/null
+	else
+		(cd "$d" && exec "$1" --version) </dev/null >"$f" 2>/dev/null
+	fi
+	rc=$?
+	v=$(grep -m 1 '[^[:space:]]' "$f" || true)
+	rm -rf "$d"
+	[ "$rc" = 0 ] && [ -n "$v" ] || return 1
+	printf '%s\n' "$v"
+}
+
+codex=
+codex_version=
+if [ -n "$codex_env" ]; then
+	if ! codex_version=$(runs "$codex_env"); then
+		echo "codex-local-review: \$CODEX=$CODEX does not run (missing, empty or broken)" >&2
+		exit 3
+	fi
+	codex=$codex_env
+else
+	while IFS= read -r candidate; do
+		if codex_version=$(runs "$candidate"); then
+			codex=$candidate
+			break
+		fi
+		echo "codex-local-review: skipping $candidate: it does not run (empty or broken)" >&2
+	done < <(
+		type -ap codex 2>/dev/null || true
+		# newest first by the extension's own version, whichever tree (remote or desktop) holds it:
+		# sorting the whole path would put every desktop copy ahead of every server one
+		find "$HOME"/.vscode-server/extensions "$HOME"/.vscode/extensions \( -path '*/openai.chatgpt-*/bin/*/codex' \
+			-o -path '*/openai.chatgpt-*/bin/*/codex.exe' \) -type f 2>/dev/null |
+			sed 's|.*/openai\.chatgpt-\([^/]*\)/.*|\1\t&|' | sort -t "$(printf '\t')" -k1,1rV | cut -f2- || true
+	)
+	if [ -z "$codex" ]; then
+		echo "codex-local-review: no codex CLI that runs (reload the Codex extension, or set CODEX=/path/to/codex)" >&2
+		exit 3
+	fi
 fi
-if [ -z "$codex" ]; then
-	codex=$(find "$HOME"/.vscode-server/extensions -path '*/openai.chatgpt-*/bin/*/codex' -type f 2>/dev/null | sort -V | tail -1 || true)
-fi
-if [ -z "$codex" ] || [ ! -x "$codex" ]; then
-	echo "codex-local-review: no codex CLI found (set CODEX=/path/to/codex)" >&2
-	exit 3
+if [ "$check_codex" = 1 ]; then
+	printf '%s\n%s\n' "$codex" "$codex_version"
+	exit 0
 fi
 
 if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
@@ -132,7 +209,7 @@ dirty_check() {
 	exit "$rc"
 }
 trap dirty_check EXIT
-echo "codex-local-review: $model ($effort) on ${head:0:9} against $base; transcript: $out" >&2
+echo "codex-local-review: $model ($effort) on ${head:0:9} against $base, $codex_version; transcript: $out" >&2
 start=$(date +%s)
 status=0
 printf '%s\n' "$prompt" | "${cmd[@]}" > "$out" 2>&1 || status=$?

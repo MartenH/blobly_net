@@ -331,6 +331,9 @@ The Linux release uses the same actions, with separate caches for its Ubuntu 22.
   list and misses most of what GitHub's codex finds. It does NOT replace `@codex review`, which
   still finds defects that need protocol knowledge, and a clean local run proves nothing. Its
   P3s include out-of-range inputs; an input no caller can produce is not worth code to refuse.
+  It runs the first codex CLI that actually runs (`$CODEX`, else every `codex` on PATH, else the
+  VS Code extension's copies newest first); `--check-codex` prints which, or exits 3 when none
+  does — reload the Codex extension (pinned by `scripts/codex_local_review_test.sh` in CI).
 - **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
   billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
   `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the
