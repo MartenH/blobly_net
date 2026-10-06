@@ -129,3 +129,11 @@ fn test_a_read_asked_of_the_previous_project_is_not_published() {
 	assert view_writable(4, 4)
 	assert !view_writable(3, 4)
 }
+
+fn test_the_refusal_that_ended_the_batch_is_said() {
+	mut b := CounterBatch{}
+	b.refusal(t(10, 0, 0), 'NRC 0x31', true)
+	b.refusal(t(10, 0, 0), 'NRC 0x22', false)
+	assert !b.going()
+	assert b.summary() == '2 refused, the first: NRC 0x31; ended by NRC 0x22; the rest not asked'
+}

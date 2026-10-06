@@ -125,7 +125,12 @@ pub fn (b CounterBatch) summary() string {
 		else { parts << '${b.refused} refused, the first: ${b.note}' }
 	}
 	if b.ended != '' {
-		parts << 'the rest not asked'
+		// the refusal that ended the batch, when it is not the first one already said
+		if b.ended != b.note {
+			parts << 'ended by ${b.ended}; the rest not asked'
+		} else {
+			parts << 'the rest not asked'
+		}
 	}
 	if b.failed != '' {
 		parts << b.failed
