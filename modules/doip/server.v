@@ -451,32 +451,70 @@ pub fn (mut s DoipServer) close() {
 // so we build the Message directly rather than reassembling the wire bytes and
 // re-parsing them.
 fn read_message(mut conn net.TcpConn, timeout_ms int) !Message {
+	return read_message_stoppable(mut conn, timeout_ms, unsafe { nil })
+}
+
+// read_message_stoppable is read_message that a `stop` can end partway. With `stop` set, the
+// message has `timeout_ms` from now in all, and every piece of it, header and payload, is waited
+// for in `stop_poll_ms` slices that ask `stop` — so a peer that sends part of a message and then
+// stalls holds the reader no longer than a slice past a stop. A message abandoned partway leaves
+// the stream inside it: the connection cannot be read again, and a caller that stops lets it go.
+fn read_message_stoppable(mut conn net.TcpConn, timeout_ms int, stop fn () bool) !Message {
 	conn.set_read_timeout(timeout_ms * time.millisecond)
-	header := read_exact(mut conn, header_len, false)!
+	deadline := time.ticks() + i64(timeout_ms)
+	header := read_exact(mut conn, header_len, false, stop, deadline)!
 	payload_type, payload_len := parse_header(header)!
 	if payload_len > max_payload_len {
 		return error('DoIP payload too large: ${payload_len} > ${max_payload_len}')
 	}
-	payload := if payload_len > 0 { read_exact(mut conn, int(payload_len), true)! } else { []u8{} }
+	payload := if payload_len > 0 {
+		read_exact(mut conn, int(payload_len), true, stop, deadline)!
+	} else {
+		[]u8{}
+	}
 	return Message{
 		payload_type: payload_type
 		payload:      payload
 	}
 }
 
+// stalled_note is what a read says when a message began and its rest did not arrive.
+const stalled_note = 'DoIP: a message began and stalled mid-read; the stream is inside it'
+
 // read_exact reads exactly n bytes (TCP may deliver them in pieces), filling the
 // output buffer in place via read_ptr — each read targets the unfilled tail at
 // &out[got], so there's no temp buffer and no copy.
 // A timeout before the first byte of a message is the socket's own (the carrier's silence); one
 // after bytes of it were consumed — `began`, or `got` > 0 — is a message that stalled, and the
-// stream is now inside it: said as that, never as silence.
-fn read_exact(mut conn net.TcpConn, n int, began bool) ![]u8 {
+// stream is now inside it: said as that, never as silence. With `stop` set, each piece is waited
+// for in slices that ask it, up to `deadline` (time.ticks); unset, each read waits the socket's
+// own timeout.
+fn read_exact(mut conn net.TcpConn, n int, began bool, stop fn () bool, deadline i64) ![]u8 {
 	mut out := []u8{len: n}
 	mut got := 0
 	for got < n {
+		if stop != unsafe { nil } {
+			if stop() {
+				return error(stopped_note)
+			}
+			left := deadline - time.ticks()
+			if left <= 0 {
+				if began || got > 0 {
+					return error(stalled_note)
+				}
+				return error_with_code('DoIP: read timed out', net.err_timed_out_code)
+			}
+			if !readable_within(conn.sock.handle, if left < stop_poll_ms {
+				int(left)
+			} else {
+				stop_poll_ms
+			}) {
+				continue
+			}
+		}
 		r := conn.read_ptr(unsafe { &out[got] }, n - got) or {
 			if (began || got > 0) && err.code() == net.err_timed_out_code {
-				return error('DoIP: a message began and stalled mid-read; the stream is inside it')
+				return error(stalled_note)
 			}
 			return err
 		}
