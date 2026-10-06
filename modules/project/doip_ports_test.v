@@ -87,3 +87,16 @@ fn test_hosting_keeps_the_spelling_the_entity_binds() {
 		doip_row('Same', '127.0.0.1:13400', ['SUT'])])
 	assert hs.len == 1 && hs[0].hosts == ['localhost'], 'one loopback address, bound as written'
 }
+
+fn test_an_explicit_announcement_port_moves_with_the_entity() {
+	mut row := doip_row('A', '127.0.0.1:13400', ['SUT'])
+	row.announce_to = '127.255.255.255:13400'
+	out, _ := with_doip_ports([row], {
+		13400: 30004
+	})
+	assert out[0].announce_to == '127.255.255.255:30004'
+	assert with_moved_port('127.255.255.255', 13400, 30004) == '127.255.255.255', 'host-only follows the bind'
+	assert with_moved_port('[ff02::1]:13400', 13400, 30004) == '[ff02::1]:30004'
+	assert with_moved_port('ff02::1:13400', 13400, 30004) == 'ff02::1:13400', 'an unbracketed v6 host'
+	assert with_moved_port('10.0.0.255:13555', 13400, 30004) == '10.0.0.255:13555'
+}

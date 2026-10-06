@@ -81,7 +81,24 @@ pub fn with_doip_ports(chs []Channel, moved map[int]int) ([]Channel, []string) {
 		ch.adapter = 'doip'
 		ch.address = transport.udp_bind_addr(host, moved[port])
 		ch.iface = compose_iface('doip', ch.address)
+		ch.announce_to = with_moved_port(ch.announce_to, port, moved[port])
 		notes << '${ch.name}: DoIP ${was} -> ${ch.address} for this run'
 	}
 	return out, notes
+}
+
+// with_moved_port is an announce_to destination with its port moved from `from` to `to` when it
+// names `from` explicitly; a host-only destination already follows the entity's bound port.
+fn with_moved_port(dest string, from int, to int) string {
+	d := dest.trim_space()
+	suffix := ':${from}'
+	if !d.ends_with(suffix) {
+		return dest
+	}
+	host := d[..d.len - suffix.len]
+	// `host:port` or `[v6]:port`; an unbracketed IPv6 literal ending in those digits is a host
+	if host == '' || (host.contains(':') && !(host.starts_with('[') && host.ends_with(']'))) {
+		return dest
+	}
+	return '${host}:${to}'
 }

@@ -97,7 +97,7 @@ fn main() {
 	// The run's simulated loopback DoIP entities move off the project's ports (13400 in every
 	// demo) onto ports this process can bind, and every row dialing them moves with them, so two
 	// runs on one machine do not collide (#411). Held until each entity binds, below.
-	mut probes := map[string]&net.TcpListener{}
+	mut probes := map[int]&net.TcpListener{}
 	if !project_ports {
 		moved, held := choose_doip_ports(project.doip_hosting(proj.channels)) or {
 			eprintln('cannot host the DoIP entities: ${err}')
@@ -221,7 +221,7 @@ fn main() {
 				eprintln('${ch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${ch.ecu_addr:04X})')
 			}
 			mut srv := ent.server
-			release_probe(mut probes, host, port)
+			release_probe(mut probes, port)
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect
@@ -578,33 +578,29 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 }
 
 // choose_doip_ports picks, for every port the simulated loopback entities bind, the first
-// candidate where all of that port's hosts bind TCP, and returns the move plus the listeners
-// holding them. TCP verifies (testports): a candidate another run holds refuses the bind. The
-// entity binds UDP on the same number and announces to it, so that port is settled too.
-fn choose_doip_ports(hosting []project.DoipHosting) !(map[int]int, map[string]&net.TcpListener) {
+// candidate whose WILDCARD address binds TCP, and returns the move plus the listeners holding
+// them, keyed by the new port. TCP verifies (testports), and the wildcard is refused while ANY
+// address listens on the port, so a candidate another run holds on any loopback address is
+// skipped. The entity binds UDP on the same number and announces to it, so that port is settled
+// too. What is left is the instant between releasing a probe and the entity's bind.
+fn choose_doip_ports(hosting []project.DoipHosting) !(map[int]int, map[int]&net.TcpListener) {
 	mut moved := map[int]int{}
-	mut held := map[string]&net.TcpListener{}
+	mut held := map[int]&net.TcpListener{}
 	for hs in hosting {
+		// an IPv6 socket here is dual-stack, so [::] covers both families
+		v6 := hs.hosts.any(doip.addr_family(it) == .ip6)
 		for cand in testports.doip_entities.candidates() {
-			if cand in moved.values() {
+			if cand in held {
 				continue
 			}
-			mut got := map[string]&net.TcpListener{}
-			for h in hs.hosts {
-				key := transport.udp_bind_addr(h, cand)
-				l := net.listen_tcp(doip.addr_family(h), key) or { break }
-				got[key] = l
+			l := if v6 {
+				net.listen_tcp(.ip6, '[::]:${cand}') or { continue }
+			} else {
+				net.listen_tcp(.ip, '0.0.0.0:${cand}') or { continue }
 			}
-			if got.len == hs.hosts.len {
-				moved[hs.port] = cand
-				for k, _ in got {
-					held[k] = got[k] or { continue }
-				}
-				break
-			}
-			for _, mut l in got {
-				l.close() or {}
-			}
+			moved[hs.port] = cand
+			held[cand] = l
+			break
 		}
 		if hs.port !in moved {
 			for _, mut l in held {
@@ -616,12 +612,11 @@ fn choose_doip_ports(hosting []project.DoipHosting) !(map[int]int, map[string]&n
 	return moved, held
 }
 
-// release_probe closes the listener holding host:port, if any, so the entity can bind it.
-fn release_probe(mut probes map[string]&net.TcpListener, host string, port int) {
-	key := transport.udp_bind_addr(host, port)
-	if mut l := probes[key] {
+// release_probe closes the listener holding `port`, if any, so the entity can bind it.
+fn release_probe(mut probes map[int]&net.TcpListener, port int) {
+	if mut l := probes[port] {
 		l.close() or {}
-		probes.delete(key)
+		probes.delete(port)
 	}
 }
 

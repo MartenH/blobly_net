@@ -24,8 +24,8 @@ You'll see per-test results and a summary:
 
 ```
 project: Simulation demo — CAN1 + CAN2  (projects/sim-demo.blobnet)
-channel CAN1 (inproc:CAN1): simulating 2 node(s) + 2 UDS target(s)
 DoIP1: DoIP 127.0.0.1:13400 -> 127.0.0.1:30178 for this run
+channel CAN1 (inproc:CAN1): simulating 2 node(s) + 2 UDS target(s)
 channel DoIP1 (doip:127.0.0.1:30178): DoIP entity, logical address 0x1000
 ...
 === tests/diag_basic.lua ===
