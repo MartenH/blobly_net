@@ -220,7 +220,7 @@ fn release_run_worker(app &App) {
 }
 
 // reserve_tool_reader / release_tool_reader are the same pairing for the operator's own
-// workers — a script, a flash, a diagnostic, a shell command, a trace dump. Reserved by the
+// workers — a script, a flash, a shell command, a trace dump. Reserved by the
 // spawning thread for the same reason (a worker not yet scheduled has registered nothing), and
 // counted apart because the wait must never include them. See App.tool_readers.
 fn (mut app App) reserve_tool_reader() {
@@ -1494,6 +1494,7 @@ fn (mut app App) stop() {
 	// map this function empties below and outlived the run (codex round 2 on #257).
 	app.mu.lock()
 	app.running = false
+	app.diag_interrupt_locked() // a panel press blocked on a DoIP answer ends now (diag_hold.v)
 	app.mu.unlock()
 	// Then close: the serve loops block in accept for up to 200ms, and close() interrupts them
 	// so the port is released now rather than whenever the last worker notices.

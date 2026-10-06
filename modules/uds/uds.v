@@ -63,6 +63,22 @@ pub mut:
 	// sizes (empty = blobly_ext_records)
 	did_lens map[u16]int
 	ext_lens map[u8]int
+	// how the last request went, on the monotonic clock: set by every exchange, answered or not
+	last ExchangeTiming
+}
+
+// ExchangeTiming is one request's time on the wire, as only the exchange can see it: from the
+// send to the final answer (or the error), and how much of that was spent waiting through
+// responsePending (0x78) — from the first 0x78 to the answer.
+pub struct ExchangeTiming {
+pub:
+	// whether the request reached the carrier: false when the exchange failed before the send
+	// (the pre-send drain found the connection gone, or the send itself failed) — the one case a
+	// caller may repeat the request on a fresh connection without asking the ECU twice
+	sent       bool
+	rtt_us     i64
+	pending    int // how many 0x78 the server sent before its answer
+	pending_us i64 // 0 when there was none
 }
 
 // default_p2_star_ms is ISO 14229-2's default P2*server, used until a 0x10 answer names one.
@@ -238,8 +254,23 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 	if req.len == 0 {
 		return error('empty UDS request')
 	}
+	c.last = ExchangeTiming{}
 	mut discarded := c.drain_queued(req[0])!
+	sent_ns := time.sys_mono_now()
+	mut pendings := 0
+	mut first_pending_ns := u64(0)
+	mut sent := false
+	defer {
+		end_ns := time.sys_mono_now()
+		c.last = ExchangeTiming{
+			sent:       sent
+			rtt_us:     i64(end_ns - sent_ns) / 1000
+			pending:    pendings
+			pending_us: if pendings > 0 { i64(end_ns - first_pending_ns) / 1000 } else { 0 }
+		}
+	}
 	c.ch.send(req)!
+	sent = true
 	sw := time.new_stopwatch()
 	mut deadline := if c.timeout_ms < c.pending_budget_ms { i64(c.timeout_ms) } else { i64(c.pending_budget_ms) }
 	mut pending := false
@@ -286,6 +317,10 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 				// P2* from now, but never past the request's total allowance from the send — an
 				// announced P2* of hours must not become one wait of hours
 				pending = true
+				if pendings == 0 {
+					first_pending_ns = time.sys_mono_now()
+				}
+				pendings++
 				deadline = c.pending_deadline(sw.elapsed().milliseconds())
 			}
 			.stale {

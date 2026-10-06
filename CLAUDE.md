@@ -181,6 +181,19 @@ rung is worth narrating given the last one said. Covered from the start rather t
 repairs, because #142's previous answer (#297) took seventeen review rounds and was closed
 unmerged: `reported` holds what was SAID and not what was seen, so a polled wire whose driver call
 returns `unknown` between two BUS-OFFs is one fault and one line rather than two;
+and `cmd/blobly_net/diaghold/`, THE DIAGNOSTICS PANEL'S HELD CONNECTION — when it is let go
+(target change, panel closed, Stop, Disconnect, a script or flash starting; a failure lets go
+too and the next press reopens), when tester-present (3E 80) keeps a non-default session alive
+(every 2 s, from the holder thread, so never inside a press), when a press found its idle
+connection closed is repeated on a fresh one (only if it never went out), and how a press's time
+is printed — round trip, the 0x78 wait, and an open's TCP connect and routing activation apart,
+measured by `uds.Client.last` and `doip.DoipClient.connect_us`/`activate_us`. One holder thread
+per run (`diag_hold.v`) owns the connection and serves presses one at a time; it is a RUN worker
+(ended by Stop, waited for by a rebuild), not a tool reader. A DoIP entity serves one tester, so
+`script_worker` and `flash_worker` call `diag_tool_begin` first: the panel lets go, the tool waits
+for the close, and while one runs the panel's presses open and close per request as they used to.
+Measured on the bench sysnode: a press used to cost ~490–900 ms of TCP reconnect (the entity's
+socket recycle), and costs 2–5 ms held;
 and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
@@ -227,11 +240,11 @@ rollback) and gave Save a way to go silently stale; DEFERRING the rebuild then c
 window — `app.proj` new, `app.chans` old — which breaks the index alignment the Buses tick and
 `start()` both rely on. Both kept the window and taught more code about it instead of closing it.
 The census is in two buckets, because the drain covers one and must never cover the other:
-`run_workers` (rx, sim, gen, the diagnostic and UDS node servers, a replay group and the DoIP
-watcher — every one RESERVED BY THE SPAWNER and released in the worker's own defer, because a
+`run_workers` (rx, sim, gen, the diagnostic and UDS node servers, a replay group, the DoIP
+watcher and the Diagnostics panel's connection holder — every one RESERVED BY THE SPAWNER and released in the worker's own defer, because a
 worker inside a slow open — a CANsub open is seconds — has registered nothing of its own) and
 `tool_readers`, what the OPERATOR starts and a run does not own: a Lua script, a flash, a
-diagnostic, a shell command, a trace dump. Those read the same arrays, mostly through
+shell command, a trace dump. Those read the same arrays, mostly through
 `bitrate_iface` which walks `app.chans` unlocked, and none is ended by Stop — a script outlives it
 by design and can run for minutes — so waiting for one would hang on the operator's own tool.
 `runtime_census()` reads both counters under one lock and `runtime_busy()` is its words; that is

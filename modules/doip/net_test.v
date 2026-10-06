@@ -739,3 +739,57 @@ fn test_uds_functional_addressed_over_doip() {
 	}
 	assert q.outcome == .silent
 }
+
+// opening says what it cost, apart: the connect, then the routing activation exchange
+fn test_open_times_the_connect_and_the_routing_activation_apart() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		time.sleep(80 * time.millisecond) // an entity slow to activate
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		_ := read_message(mut c, 2000) or { Message{} }
+		c.close() or {}
+	}(mut ln)
+	mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	assert ch.activate_us >= 80_000
+	assert ch.connect_us >= 0 && ch.connect_us < ch.activate_us
+	ch.close()
+	ln.close() or {}
+}
+
+// interrupt ends a recv blocked on another thread at once, rather than at its deadline
+fn test_interrupt_ends_a_blocked_recv() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		_ := read_message(mut c, 5000) or { Message{} } // silent: the request is never answered
+		c.close() or {}
+	}(mut ln)
+	mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	spawn fn (mut ch DoipClient) {
+		time.sleep(100 * time.millisecond)
+		ch.interrupt()
+	}(mut ch)
+	sw := time.new_stopwatch()
+	if _ := ch.recv(4000) {
+		assert false, 'nothing was sent, so nothing can be received'
+	}
+	assert sw.elapsed().milliseconds() < 2000
+	ch.close()
+	ln.close() or {}
+}

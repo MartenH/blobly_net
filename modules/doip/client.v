@@ -39,6 +39,12 @@ pub:
 	iface string // "host:port" for logging/identification
 	tx_id u32    // source (tester) logical address
 	rx_id u32    // target (ECU) logical address
+pub mut:
+	// what opening it cost, on the monotonic clock: the TCP connect, then the routing activation
+	// exchange — apart, because on a real entity they differ by orders of magnitude and only one
+	// of them is the network
+	connect_us  i64
+	activate_us i64
 mut:
 	conn   &net.TcpConn = unsafe { nil }
 	source u16
@@ -106,19 +112,23 @@ pub fn collect_announcements(port_ int, window_ms int) ![]Announcement {
 
 pub fn open_doip(host string, port int, source u16, target u16) !&DoipClient {
 	addr := join_host_port(host, port) // brackets an IPv6 literal for dial_tcp
+	t0 := time.sys_mono_now()
 	conn := net.dial_tcp(addr)!
+	t1 := time.sys_mono_now()
 	mut c := &DoipClient{
-		iface:  addr
-		tx_id:  source
-		rx_id:  target
-		conn:   conn
-		source: source
-		target: target
+		iface:      addr
+		tx_id:      source
+		rx_id:      target
+		conn:       conn
+		source:     source
+		target:     target
+		connect_us: i64(t1 - t0) / 1000
 	}
 	c.activate_routing() or {
 		c.close()
 		return err
 	}
+	c.activate_us = i64(time.sys_mono_now() - t1) / 1000
 	return c
 }
 
@@ -229,6 +239,15 @@ const poll_read_ms = 1000
 pub fn (mut c DoipClient) close() {
 	if !isnil(c.conn) {
 		c.conn.close() or {}
+	}
+}
+
+// interrupt ends a recv that another thread is blocked in — it returns an error at once — without
+// releasing the socket: the owner still closes it. A shutdown rather than a close, so the handle
+// cannot be reused under the owner's next call.
+pub fn (mut c DoipClient) interrupt() {
+	if !isnil(c.conn) {
+		net.shutdown(c.conn.sock.handle)
 	}
 }
 
