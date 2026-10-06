@@ -474,8 +474,9 @@ fn doip_key(f project.DoipFound) string {
 }
 
 // doip_find_window_ms is how long a find listens for answers: one request, every entity that
-// hears it may answer, and nothing says how many will.
-const doip_find_window_ms = 1200
+// hears it may answer, and nothing says how many will. ISO 13400-2's A_DoIP_Ctrl, the time a
+// tester waits for an identification response (an entity may delay a broadcast's at random).
+const doip_find_window_ms = 2000
 
 // start_doip_find sends a vehicle identification request on its own thread, to `target`
 // (host[:port] in a DoIP channel's grammar; empty is 127.0.0.1:13400) — or, with `everyone`,
@@ -486,6 +487,14 @@ fn (mut app App) start_doip_find(target string, everyone bool) {
 		iface: project.compose_iface('doip', target.trim_space())
 	}
 	host, port := probe.doip_endpoint()
+	// A port the grammar refused is kept in the host (one colon left over); asked as it is,
+	// that reads as an IPv6 literal and fails with a resolve error that never names the port.
+	if host.count(':') == 1 {
+		app.mu.lock()
+		app.disc_doip_note = 'DoIP find: "${target.trim_space()}" is not host or host:port (a port is 1-65535)'
+		app.mu.unlock()
+		return
+	}
 	app.mu.lock()
 	app.disc_doip_busy++
 	app.mu.unlock()
@@ -513,7 +522,10 @@ fn doip_find_worker(app &App, host string, port int, everyone bool) {
 	a.mu.lock()
 	for ann in got {
 		f := project.DoipFound{
-			address: ann.dial_address(port)
+			// Asked by address, the entity is reached at the address ASKED — a hostname, or an
+			// IPv6 scope the answer's source does not carry, is what the row will dial and
+			// what it is matched by. Only a broadcast's answers need their source.
+			address: if everyone { ann.dial_address(port) } else { transport.udp_bind_addr(host, port) }
 			logical: ann.info.logical_address
 			vin:     ann.info.vin_text()
 		}
@@ -532,7 +544,7 @@ fn doip_find_worker(app &App, host string, port int, everyone bool) {
 	a.disc_doip_note = note
 	a.disc_doip_busy--
 	a.mu.unlock()
-	vgui.wake()
+	a.notify(note) // the Log too: a bus row's find shows no note of its own when it fails
 }
 
 // doip_find_state reads the DoIP mailbox under the lock: what has been found, whether a find

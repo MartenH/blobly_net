@@ -1,5 +1,7 @@
 module project
 
+import transport
+
 // What the Discover dialog does with a DoIP entity it found: the channel it would add, and
 // whether the project already has it. Here rather than in the GUI because both are decisions
 // about what a channel means — the endpoint grammar is eth_endpoint's.
@@ -50,11 +52,11 @@ pub fn doip_found_in(chs []Channel, f DoipFound) bool {
 // in — what a row shows, so a port left out is not a port nobody can see.
 pub fn (ch Channel) doip_effective_address() string {
 	host, port := ch.doip_endpoint()
-	return if host.contains(':') { '[${host}]:${port}' } else { '${host}:${port}' }
+	return transport.udp_bind_addr(host, port)
 }
 
 // someip_effective_address is the same for a SOME/IP listener's bind endpoint.
 pub fn (ch Channel) someip_effective_address() string {
 	host, port := ch.someip_endpoint()
-	return if host.contains(':') { '[${host}]:${port}' } else { '${host}:${port}' }
+	return transport.udp_bind_addr(host, port)
 }

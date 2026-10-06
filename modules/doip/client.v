@@ -81,12 +81,14 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 	got := transport.udp_window(addr, group, '0', window_ms) or {
 		return error('cannot listen for announcements: ${err}')
 	}
-	return announcements_in(got)
+	return announcements_in(got, false)
 }
 
-// announcements_in keeps the datagrams that are well-formed vehicle announcements, once each:
-// a broadcast request heard on two interfaces is answered twice, and one entity is one row.
-fn announcements_in(got []transport.Datagram) []Announcement {
+// announcements_in keeps the datagrams that are well-formed vehicle announcements. With `once`,
+// an entity is kept once — a broadcast request heard on two interfaces is answered twice — and
+// without it every announcement is kept, since an entity repeating itself is what a passive
+// listener is there to see.
+fn announcements_in(got []transport.Datagram, once bool) []Announcement {
 	mut out := []Announcement{}
 	for d in got {
 		if d.data.len < header_len {
@@ -97,7 +99,7 @@ fn announcements_in(got []transport.Datagram) []Announcement {
 			continue
 		}
 		info := parse_vehicle_announcement(msg.payload) or { continue }
-		if out.any(it.from == d.from && it.info.logical_address == info.logical_address
+		if once && out.any(it.from == d.from && it.info.logical_address == info.logical_address
 			&& it.info.vin == info.vin) {
 			continue
 		}
@@ -123,7 +125,7 @@ pub fn identify(host string, port int, window_ms int) ![]Announcement {
 	bind := if h.contains(':') { '[::]:0' } else { '0.0.0.0:0' }
 	got := transport.udp_exchange(bind, join_host_port(h, port), [vehicle_id_request()],
 		window_ms)!
-	return announcements_in(got)
+	return announcements_in(got, true)
 }
 
 // dial_address is where a tester reaches this entity over TCP: the host it answered from, on

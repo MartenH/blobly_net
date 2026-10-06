@@ -444,6 +444,12 @@ fn draw_discover_dialog(mut app App) {
 	if vgui.button('Refresh') {
 		app.refresh_discovery()
 		app.start_cansub_browse()
+		// and forget the DoIP finds: those are only what was asked, and Refresh starts over
+		app.mu.lock()
+		app.disc_doip = []
+		app.disc_doip_note = ''
+		app.mu.unlock()
+		app.disc_doip_tick = map[string]bool{}
 	}
 	// LOOKING IS FINE WHILE RUNNING; ADDING A BUS IS NOT. The three buttons in THIS group each
 	// add one, which rebuilds the runtime view — app.chans emptied and re-appended — under the
@@ -707,6 +713,7 @@ fn (mut app App) draw_discover_doip() {
 			vgui.table_row()
 			vgui.table_next_col()
 			if project.doip_found_in(app.proj.channels, f) {
+				app.disc_doip_tick.delete(k) // a tick does not outlive the row it was on
 				vgui.text_dim('added')
 				vgui.table_cell_dim(f.address)
 				vgui.table_cell_dim(logical)
@@ -998,7 +1005,10 @@ fn (mut app App) draw_bus_editor(i int) bool {
 				app.set_mode(i, md)
 			}
 		}
-		cfg_field('listen-only', 'Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On Vector the transceiver is put in silent mode as well, so it does not even acknowledge; every other adapter still ACKs what it hears.',
+		// WHICH ADAPTERS SILENCE THE TRANSCEIVER is asked of the registry, not written out: this
+		// said "only Vector" long after CANsub, PCAN and Kvaser could too.
+		silencing := project.adapters.filter(project.adapter_silences_transceiver(it))
+		cfg_field('listen-only', 'Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On ${silencing.join(', ')} the transceiver is put in silent mode as well, so it does not even acknowledge; on SocketCAN the controller still ACKs what it hears, and the software buses have no ACK.',
 			sc)
 		lo := vgui.checkbox('##lo${i}', ch.listen_only)
 		if lo != ch.listen_only {
@@ -1130,7 +1140,7 @@ fn (mut app App) draw_iface_pick(i int) {
 // The finds share the Discover dialog's DoIP mailbox.
 fn (mut app App) draw_doip_entity_pick(i int, ch project.Channel) {
 	sc := app.prefs.ui_scale
-	found, busy, _ := app.doip_find_state()
+	found, busy, note := app.doip_find_state()
 	here := found.filter(project.doip_found_at(ch, it))
 	cfg_field('entity', 'Ask this address which DoIP entities answer (a vehicle identification request) and point this bus at one: the ECU address is set to the one picked, and its VIN fills an empty VIN field.',
 		sc)
@@ -1163,6 +1173,12 @@ fn (mut app App) draw_doip_entity_pick(i int, ch project.Channel) {
 			app.cfg_bufs[i].vin_buf = mkbuf(f.vin, 20)
 		}
 		app.dirty = true
+	}
+	// the last find's outcome, when it was about this row's endpoint (the Log has every one)
+	ep_host, ep_port := ch.doip_endpoint()
+	if !busy && here.len == 0 && note.contains('${ep_host}:${ep_port}') {
+		cfg_field('', '', sc)
+		vgui.text_dim(note)
 	}
 }
 

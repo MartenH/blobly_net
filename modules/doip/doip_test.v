@@ -1,5 +1,7 @@
 module doip
 
+import transport
+
 fn test_header_roundtrip() {
 	msg := encode(pt_diagnostic_message, [u8(0xDE), 0xAD, 0xBE, 0xEF])
 	assert msg.len == header_len + 4
@@ -129,4 +131,22 @@ fn test_vin_text_drops_the_unconfigured_fill() {
 fn test_dial_address_keeps_the_host_and_takes_the_asked_port() {
 	assert Announcement{ from: '192.168.0.50:51234' }.dial_address(13400) == '192.168.0.50:13400'
 	assert Announcement{ from: '[fe80::1]:13400' }.dial_address(13401) == '[fe80::1]:13401'
+}
+
+// A passive listener keeps every announcement (an entity repeats itself, and that is what it is
+// there to see); an identification request keeps one per entity.
+fn test_only_identify_folds_repeated_answers() {
+	ann := vehicle_announcement('TESTVIN0000000042', 0x07A0, default_eid, [])
+	got := [
+		transport.Datagram{
+			from: '10.0.0.2:13400'
+			data: ann
+		},
+		transport.Datagram{
+			from: '10.0.0.2:13400'
+			data: ann
+		},
+	]
+	assert announcements_in(got, false).len == 2
+	assert announcements_in(got, true).len == 1
 }
