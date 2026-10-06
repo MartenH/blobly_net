@@ -374,7 +374,7 @@ fn (mut app App) j1939_push_tp_locked(done []j1939.Assembled, ch string, gate st
 			data:     a.data
 			imported: imported
 			tp:       true
-			wire:     gaterule.placement(gate)
+			wire:     trace_wire(gate, key)
 			// only where the identifier cannot say it: a BAM IS a broadcast, and a PDU1 group
 			// carries its destination in the identifier already
 			tp_da:    if !a.bam && a.pgn >> 8 & 0xFF >= 0xF0 { int(a.da) } else { -1 }
@@ -439,8 +439,8 @@ fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
 }
 
 // dbs_for_gate is the databases of the wire a gate names (every row on it, by the adapter-aware
-// destination key), and all of them for a gate no wire answers to — an import's undecidable or
-// unplaced bus. Two J1939 wires may define one PGN with two layouts, so a rejoined message is
+// destination key), and all of them for a gate no wire answers to — and NONE for an import's
+// undecidable bus, or one filed under its own label (`trace_wire`), which is the same bus. Two J1939 wires may define one PGN with two layouts, so a rejoined message is
 // named and decoded against ITS wire's databases (codex on #329).
 // NOTE concurrency: like dbs_for_dest — app.chans is read unlocked, as every panel reads it.
 fn (app &App) dbs_for_gate(gate string) []candb.Database {
@@ -481,7 +481,7 @@ fn (app &App) dbs_for_gate(gate string) []candb.Database {
 	// parse — resolved to every database in the project, so a transfer on it was named and
 	// decoded with another wire's layout, which is precisely the mixing this scoping exists to
 	// stop (codex). A wire that IS placed answers with what it has, empty included.
-	if placed || wire == j1939_gate_undecidable {
+	if placed || wire == j1939_gate_undecidable || wire.starts_with(rec_wire_prefix) {
 		return out
 	}
 	if out.len == 0 {
@@ -490,30 +490,28 @@ fn (app &App) dbs_for_gate(gate string) []candb.Database {
 	return out
 }
 
-// message_for is the message a trace identity decodes against: by PGN for a rejoined
-// transport-protocol message (its id is composed, and an exact `BO_` there may be another
-// message), by id like every frame otherwise; over `dbs`.
-fn (app &App) message_for(id u32, ext bool, tp bool, dbs []candb.Database) ?candb.Message {
+// message_on is the message a trace identity decodes against, over the databases of the wire
+// it was filed under (`TraceRow.wire`, `Watch.wire`): by PGN for a rejoined transport-protocol
+// message (its id is composed, and an exact `BO_` there may be another message), by id like
+// every frame otherwise. ONE lookup for the trace's groups, the Signals panel and every plotted
+// series, so none of them can decode a row with another wire's layout (#330).
+fn (app &App) message_on(wire string, id u32, ext bool, tp bool) ?candb.Message {
 	if tp {
-		return find_pgn_message_in(dbs, j1939.pgn(id), u8(id & 0xFF))
+		return find_pgn_message_in(app.dbs_for_gate(wire), j1939.pgn(id), u8(id & 0xFF))
 	}
-	return app.find_message(id, ext)
+	return app.frame_message_on(wire, id, ext)
 }
 
-// group_message is message_for a trace row, against the databases of the channel the row was
-// filed under where that is a configured one (a live row's), and all of them for an import's.
+// group_message is message_on a trace row: by the WIRE the row carries, never by its channel
+// name — names are not unique, and two channels of one name on two wires may define one
+// message two ways (codex on #329).
 fn (app &App) group_message(r TraceRow) ?candb.Message {
-	if !r.tp {
-		return app.find_message(r.id, r.ext)
-	}
-	// by the WIRE the row carries, never by its channel name: names are not unique, and two
-	// channels of one name on two wires may define the PGN two ways (codex on #329)
-	return app.message_for(r.id, r.ext, true, app.dbs_for_gate(r.wire))
+	return app.message_on(r.wire, r.id, r.ext, r.tp)
 }
 
 // group_message_kind is group_message with the row's KIND: a SOME/IP payload has no DBC frame
 // behind it, so it decodes to nothing rather than to whatever CAN message shares its number —
-// `find_message_kind`'s rule, asked where a J1939 row needs the wire-scoped lookup as well.
+// `find_message_kind`'s rule, asked where a row needs the wire-scoped lookup as well.
 fn (app &App) group_message_kind(r TraceRow, someip bool) ?candb.Message {
 	if someip {
 		return none
@@ -521,15 +519,11 @@ fn (app &App) group_message_kind(r TraceRow, someip bool) ?candb.Message {
 	return app.group_message(r)
 }
 
-// watch_message is the message a WATCH decodes against — its own wire's databases by PGN for a
-// rejoined message, every loaded database by id for a frame. The same split `group_message`
-// makes for a row, asked of the watch that selects those rows, so the two cannot disagree about
+// watch_message is the message a WATCH decodes against — message_on its own wire, the lookup
+// `group_message` makes for the rows that watch selects, so the two cannot disagree about
 // whether a plotted signal still exists.
 fn (app &App) watch_message(w Watch) ?candb.Message {
-	if !w.tp {
-		return app.find_message(w.id, w.ext)
-	}
-	return app.message_for(w.id, w.ext, true, app.dbs_for_gate(w.wire))
+	return app.message_on(w.wire, w.id, w.ext, w.tp)
 }
 
 // j1939_narrate_locked puts one fault in the Log, within the budget. Caller holds app.mu.

@@ -98,9 +98,11 @@ struct TraceRow {
 	// have carried, so the database decodes it like one; its reading carries the packet count.
 	reading string
 	tp      bool
-	// The wire's gate — its destination key live, the resolved wire (or none) for an import —
-	// so a rejoined message is decoded against ITS wire's databases: the channel name is not
-	// unique and cannot stand for it (codex on #329). Only a TP row reads it.
+	// The wire it came off (`trace_wire`): its destination key live; for an import the
+	// configured wire the recorded bus was placed on, or the recorded bus itself. Every CAN row
+	// carries it, and every row is DECODED against that wire's databases and SELECTED and
+	// PLOTTED by it (#330; `watchrule`) — the channel name is not unique and cannot stand for
+	// it (codex on #329).
 	wire string
 	// The destination of a rejoined CONNECTION-MODE message, where its composed identifier
 	// cannot carry one: a PDU2 group has no destination field, so two transfers of that group
@@ -296,7 +298,8 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	mut seq := ghost_base + app.ghost_seq
 	app.ghost_seq++
 	if !app.paused {
-		k := gkey_frame(origin, chn, f)
+		wire := app.dest_cached_locked(iface)
+		k := gkey_frame(origin, chn, wire, f)
 		seq = app.push_row_locked(TraceRow{
 			t_ms:    t_ms
 			ch:      chn
@@ -311,6 +314,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			reading: reading
 			data:    f.data.clone()
 			key:     k
+			wire:    wire
 		})
 		app.gcount[k]++
 	}

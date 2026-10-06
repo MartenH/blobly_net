@@ -116,6 +116,7 @@ fn (mut app App) load_recording(path string) {
 	// so filed under the bare label, the file's claims named live frames the moment the operator
 	// resumed (codex on #329). One key per label, built once.
 	mut rec_keys := map[string]string{}
+	mut rec_wires := map[string]string{} // each label's TraceRow.wire
 	mut rec_gates := map[string]string{} // each label's gate, for expiring its listener while another bus talks
 	mut t_last := 0.0
 	mut alias := map[string]string{} // recorded label -> destination key
@@ -329,17 +330,12 @@ fn (mut app App) load_recording(path string) {
 				verifiers[ifc] = vs
 			}
 		}
-		// REP, not BUS: these frames were never on this bench's wire. A candump log carries no
-		// origin at all, so we cannot say whether a given line was the recorder's tester, its
-		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
-		rep_key := gkey_frame(org_rep, e.iface, f)
-		app.gcount[rep_key]++
 		t_row := (e.t_s - t0) * 1000.0
 		// J1939 over EVERY frame like verification, and BEFORE the row: a message rejoined in
 		// the shown window began in the trimmed one, and a claim names its sender from its own
 		// row on.
 		rk := rec_keys[e.iface] or {
-			nk := '\x00rec:${e.iface}' // a NUL: no live destination key can spell this (codex on #329)
+			nk := rec_wire(e.iface) // a NUL: no live destination key can spell this (codex on #329)
 			rec_keys[e.iface] = nk
 			nk
 		}
@@ -347,6 +343,17 @@ fn (mut app App) load_recording(path string) {
 		// into this map above (gaterule). A label the table does not hold is answered by the
 		// same function rather than by a second spelling of the rule.
 		gate := gate_by_bus[e.iface] or { bus_gate(e.iface) }
+		// the wire its rows are filed under, selected and plotted by (#330)
+		row_wire := rec_wires[e.iface] or {
+			w := trace_wire(gate, rk)
+			rec_wires[e.iface] = w
+			w
+		}
+		// REP, not BUS: these frames were never on this bench's wire. A candump log carries no
+		// origin at all, so we cannot say whether a given line was the recorder's tester, its
+		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
+		rep_key := gkey_frame(org_rep, e.iface, row_wire, f)
+		app.gcount[rep_key]++
 		mut obs := j1939_obs[e.iface] or {
 			n := &J1939Obs{}
 			j1939_obs[e.iface] = n
@@ -374,6 +381,7 @@ fn (mut app App) load_recording(path string) {
 				ch:       e.iface
 				origin:   org_rep
 				key:      rep_key
+				wire:     row_wire
 				id:       f.id
 				ext:      f.extended
 				fd:       f.fd

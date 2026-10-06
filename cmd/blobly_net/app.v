@@ -311,7 +311,7 @@ mut:
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
-	sel_wire      string  // the wire the selection came off; scopes a rejoined message's lookup
+	sel_wire      string  // the wire the selection came off (#330); '' = picked from a database, bound by bind_selection
 	sel_da        int = -1 // and its receiver, where a PDU2 identifier cannot carry one
 	sel_tp        bool    // the selection is a rejoined TP message, not a frame (see Watch.tp)
 	watch         []Watch // signals plotted in Graphics
@@ -353,6 +353,7 @@ mut:
 	// answers are reported as the selected one's.
 	diag_sel_key string
 	diag_auto    DiagAutopress // BLOBLY_DIAG_PRESS dev hook (diag_auto.v); GUI thread only
+	plot_auto PlotAuto // BLOBLY_PLOT (plot_auto.v)
 	// the last view diag_publish_view handed the holder; GUI thread only
 	diag_pub_open bool
 	diag_pub_key  string

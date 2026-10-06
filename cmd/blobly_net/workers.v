@@ -998,7 +998,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			}
 		}
 		if !a.paused && !ours {
-			rx_key := gkey_frame(org_rx, chname, f)
+			rx_key := gkey_frame(org_rx, chname, want_dest, f)
 			disp, reading := a.j1939_frame_locked(want_dest, want_dest, f, name)
 			a.push_row_locked(TraceRow{
 				t_ms:    row_t_ms
@@ -1015,6 +1015,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				data:    f.data.clone()
 				e2e:     viol
 				key:     rx_key
+				wire:    want_dest
 			})
 			a.gcount[rx_key]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
