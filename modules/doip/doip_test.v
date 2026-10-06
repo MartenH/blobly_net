@@ -116,3 +116,17 @@ fn test_parse_vehicle_announcement_requires_full() {
 	assert info.eid.len == 6
 	assert info.gid.len == 6
 }
+
+// An unconfigured VIN (ISO 13400: all 0x00 or all 0xFF) is no name; a padded one is trimmed.
+fn test_vin_text_drops_the_unconfigured_fill() {
+	assert VehicleInfo{ vin: 'WVWZZZ1JZXW000001' }.vin_text() == 'WVWZZZ1JZXW000001'
+	assert VehicleInfo{ vin: [u8(0)].repeat(17).bytestr() }.vin_text() == ''
+	assert VehicleInfo{ vin: [u8(0xFF)].repeat(17).bytestr() }.vin_text() == ''
+	assert VehicleInfo{ vin: 'SHORT' + [u8(0)].repeat(12).bytestr() }.vin_text() == 'SHORT'
+}
+
+// The address a tester dials is the answering host on the DISCOVERY port, IPv6 bracketed.
+fn test_dial_address_keeps_the_host_and_takes_the_asked_port() {
+	assert Announcement{ from: '192.168.0.50:51234' }.dial_address(13400) == '192.168.0.50:13400'
+	assert Announcement{ from: '[fe80::1]:13400' }.dial_address(13401) == '[fe80::1]:13401'
+}

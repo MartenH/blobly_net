@@ -17,7 +17,7 @@ CAN  vcan/socketcan      open()  →  a Bus per OPENER: the RX loop,       CanFr
 Eth  doip:<host:port>    TCP: DoipClient / DoipServer                  UDS bytes            uds.Client over isotp.Channel
                           — NOT a Bus: it carries diagnostics,          (no frames)          Diagnostics panel, Lua uds.open
                           so it plugs in one level up, at isotp.Channel                      a hosted entity (sim.doip_entity)
-                          UDP: discovery — doip.discover asks,          announcements        DoIP Discovery dialog,
+                          UDP: discovery — doip.identify asks,          announcements        Discover dialog (DoIP),
                           collect_announcements listens                 (VIN, address, from) Lua doip.discover / doip.listen
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
 Eth  someip:<host:port>  udp_bind + udp_read (transport/udpwindow)      someip.Message       someip_rx_loop → TraceRow (RX, kind=someip)

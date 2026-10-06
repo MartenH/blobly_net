@@ -119,6 +119,8 @@ float vgui_content_avail_h(void);
 // apply on commit, not per keystroke, or intermediate digits mutate the anchor it derives from.
 int  vgui_is_item_deactivated_after_edit(void);
 void vgui_same_line(void);
+void vgui_same_line_at(float x);
+void vgui_align_text_to_frame_padding(void);
 void vgui_separator_text(const char* s);
 int  vgui_table_begin(const char* id, int cols);
 void vgui_table_col(const char* c);

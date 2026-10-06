@@ -476,10 +476,18 @@ fn draw_discover_dialog(mut app App) {
 					app.add_bus_spec(d.adapter, d.address)
 				}
 			}
+			found, _, _ := app.doip_find_state()
+			for f in found {
+				if app.disc_doip_tick[doip_key(f)] or { false }
+					&& !project.doip_found_in(app.proj.channels, f) {
+					app.add_channel(project.doip_found_channel(f))
+				}
+			}
+			app.disc_doip_tick = map[string]bool{}
 			app.refresh_discovery()
 		}
 	}
-	vgui.separator()
+	vgui.separator_text('Interfaces (CAN, software buses)')
 	if app.disc_list.len == 0 {
 		vgui.text_dim('click Refresh to scan for interfaces')
 	}
@@ -498,7 +506,7 @@ fn draw_discover_dialog(mut app App) {
 	boxed := app.disc_vector.len > 0 && app.disc_list.len > 0
 	mut box_h := f32(0)
 	box_min := 60 * sc
-	box_max := vgui.content_avail_h() - 200 * sc // the hardware section, the tip and Close keep room
+	box_max := vgui.content_avail_h() - 340 * sc // DoIP, the hardware section, the tip and Close keep room
 	if boxed {
 		mut kept := f32(0)
 		box_h, kept = panerule.drawn(app.disc_list_h, 160, sc, box_min, box_max)
@@ -537,6 +545,7 @@ fn draw_discover_dialog(mut app App) {
 		moved := vgui.splitter_h('##disc_split', box_h, box_min, box_max)
 		app.disc_list_h = app.pane_moved('discover_list', app.disc_list_h, box_h, moved, sc)
 	}
+	app.draw_discover_doip()
 	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
 	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those
 	// are precisely the ones a fresh bench has (#186). Drawn only where there is Vector hardware
@@ -655,6 +664,68 @@ fn draw_discover_dialog(mut app App) {
 	vgui.end()
 }
 
+// draw_discover_doip is the Discover dialog's DoIP section: ask one host, or the network, for
+// vehicle identification, and list each entity that answered as a row to tick and add.
+fn (mut app App) draw_discover_doip() {
+	sc := app.prefs.ui_scale
+	found, busy, note := app.doip_find_state()
+	vgui.separator_text('DoIP entities (Ethernet)')
+	vgui.align_text_to_frame_padding()
+	vgui.text('host')
+	vgui.same_line()
+	vgui.set_next_item_width(220 * sc)
+	vgui.input_text('##disc_doip_host', mut app.disc_doip_host_buf)
+	vgui.same_line()
+	vgui.help_marker('host or host:port of a DoIP entity (port 13400 if left out; empty = 127.0.0.1). "Ask host" sends it a vehicle identification request; "Find on network" sends the same request to the IPv4 broadcast address on that port, and every entity that hears it answers.')
+	vgui.same_line()
+	if vgui.button('Ask host##disc_doip_ask') {
+		app.start_doip_find(vgui.buf_str(app.disc_doip_host_buf), false)
+	}
+	vgui.same_line()
+	if vgui.button('Find on network##disc_doip_all') {
+		app.start_doip_find(vgui.buf_str(app.disc_doip_host_buf), true)
+	}
+	vgui.same_line()
+	vgui.help_marker('On WSL, answers to a broadcast come from addresses this host never sent to and may be dropped; asking the entity\'s address directly always works.')
+	if busy {
+		vgui.same_line()
+		vgui.text_dim('asking…')
+	}
+	if note != '' {
+		vgui.text_dim(note)
+	}
+	if found.len > 0 && vgui.table_begin_flat('##disc_doip', 4) {
+		vgui.table_setup_col('add', 52 * sc)
+		vgui.table_setup_col('address', 240 * sc)
+		vgui.table_setup_col('logical', 90 * sc)
+		vgui.table_setup_col('VIN', 0)
+		vgui.table_headers()
+		for f in found {
+			k := doip_key(f)
+			logical := '0x${f.logical:04X}'
+			vin := if f.vin != '' { f.vin } else { '(none)' }
+			vgui.table_row()
+			vgui.table_next_col()
+			if project.doip_found_in(app.proj.channels, f) {
+				vgui.text_dim('added')
+				vgui.table_cell_dim(f.address)
+				vgui.table_cell_dim(logical)
+				vgui.table_cell_dim(vin)
+				continue
+			}
+			t := app.disc_doip_tick[k] or { false }
+			nt := vgui.checkbox('##ddt${k}', t)
+			if nt != t {
+				app.disc_doip_tick[k] = nt
+			}
+			vgui.table_cell(f.address)
+			vgui.table_cell(logical)
+			vgui.table_cell(vin)
+		}
+		vgui.table_end()
+	}
+}
+
 // draw_config is the dedicated Configuration editor (File → Configure…): add/edit/remove
 // buses, pick adapters, attach DBCs. Stopped-only; Save persists to the .blobnet.
 fn draw_config(mut app App) {
@@ -736,12 +807,30 @@ fn draw_config(mut app App) {
 	vgui.end()
 }
 
+// cfg_label_w is where a bus row's controls start, unscaled px from the window's left edge:
+// past the tree indent and the longest label with its (?).
+const cfg_label_w = f32(175)
+
+// cfg_field starts one line of a bus row: the label, then its (?) when it has help, then the
+// cursor at the controls column. Every line of every adapter's row goes through it, so labels
+// are on one side and the controls line up in one column.
+fn cfg_field(label string, help string, sc f32) {
+	vgui.align_text_to_frame_padding()
+	vgui.text(label)
+	if help != '' {
+		vgui.same_line()
+		vgui.help_marker(help)
+	}
+	vgui.same_line_at(cfg_label_w * sc)
+}
+
 // draw_bus_editor renders one bus as a tree node: an enable checkbox + a header summary on
 // the collapsed row, expanding to the editable fields. Returns true if the bus was removed
 // (indices shifted — the caller stops iterating this frame). Enum/checkbox edits apply to
 // app.proj live; text fields are flushed by commit_cfg on Save / structural change.
 fn (mut app App) draw_bus_editor(i int) bool {
 	ch := app.proj.channels[i]
+	sc := app.prefs.ui_scale
 	// header row: enable checkbox + the tree node (name · adapter:address · network)
 	en := vgui.checkbox('##cfgen${i}', ch.enabled)
 	if en != ch.enabled {
@@ -751,49 +840,50 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	vgui.same_line()
 	vgui.set_item_tooltip('enable this bus (attached on Start)')
 	nm := vgui.buf_str(app.cfg_bufs[i].name_buf)
-	addr := if ch.address != '' { ':${ch.address}' } else { '' }
+	// An Ethernet row shows the endpoint Start uses, defaults filled in: a DoIP address typed
+	// without a port is dialled on 13400, and the header says so rather than hiding it.
+	addr := if ch.is_doip() {
+		':${ch.doip_effective_address()}'
+	} else if ch.is_someip() {
+		':${ch.someip_effective_address()}'
+	} else if ch.address != '' {
+		':${ch.address}'
+	} else {
+		''
+	}
 	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
 	dis := if ch.enabled { '' } else { '   — disabled' } // visible feedback for the enable checkbox
-	// header: collapsible tree node + a remove button that works whether expanded or not.
 	// Use ### so the imgui ID is fixed to `bus<i>` — the visible label (adapter/address/name)
 	// changes as you edit, and with plain ## that would re-key the node and collapse it.
-	open := vgui.tree_node('${nm}   [${ch.adapter}${addr}]${net}${dis}###bus${i}')
-	vgui.same_line()
-	if vgui.small_button('remove##crm${i}') {
-		if open {
-			vgui.tree_pop()
-		}
-		app.remove_bus(i)
-		return true
-	}
-	if !open {
+	label := '${nm}   [${ch.adapter}${addr}]${net}${dis}###bus${i}'
+	if !(if app.cfg_rows_open { vgui.tree_node_open(label) } else { vgui.tree_node(label) }) {
 		return false
 	}
-	// name · network
-	vgui.set_next_item_width(160)
-	if vgui.input_text('name##cn${i}', mut app.cfg_bufs[i].name_buf) {
+	cfg_field('name', '', sc)
+	vgui.set_next_item_width(220 * sc)
+	if vgui.input_text('##cn${i}', mut app.cfg_bufs[i].name_buf) {
 		app.dirty = true
 	}
-	vgui.same_line()
-	vgui.set_next_item_width(140)
-	if vgui.input_text('network##cnw${i}', mut app.cfg_bufs[i].network_buf) {
+	cfg_field('network', 'Optional label grouping buses of one logical vehicle network. Buses that share a network name are grouped in the Buses tree and the Trace bus chips.',
+		sc)
+	vgui.set_next_item_width(220 * sc)
+	if vgui.input_text('##cnw${i}', mut app.cfg_bufs[i].network_buf) {
 		app.dirty = true
 	}
-	vgui.same_line()
-	vgui.help_marker('Optional label grouping buses of one logical vehicle network. Buses that share a network name are grouped in the Buses tree and the Trace bus chips.')
-	// adapter picker + tooltip (only backends usable on this platform)
-	vgui.text('adapter:')
-	vgui.same_line()
-	vgui.help_marker(adapter_tip(ch.adapter))
-	for a in available_adapters(ch.adapter) {
-		vgui.same_line()
+	// adapter picker (only backends usable on this platform)
+	cfg_field('adapter', adapter_tip(ch.adapter), sc)
+	for k, a in available_adapters(ch.adapter) {
+		if k > 0 {
+			vgui.same_line()
+		}
 		if vgui.toggle_button('${a}##ad${i}_${a}', ch.adapter == a, 0) {
 			app.set_adapter(i, a)
 		}
 	}
 	// address (type it, or add detected interfaces via the Discover... dialog above)
-	vgui.set_next_item_width(220)
-	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
+	cfg_field('address', '', sc)
+	vgui.set_next_item_width(220 * sc)
+	if vgui.input_text('##cad${i}', mut app.cfg_bufs[i].address_buf) {
 		old_iface := app.proj.channels[i].iface
 		mut typed := vgui.buf_str(app.cfg_bufs[i].address_buf)
 		// THE SAME LIFT the project loader does. A `,silent` typed here used to stay in the
@@ -835,125 +925,101 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	}
 	vgui.same_line()
 	vgui.text_dim(adapter_hint(ch.adapter))
-	// pick from detected: the SAME list the Discover... dialog shows, applied to THIS row.
-	// The mDNS browse lands on its own thread, so the row folds it in just as the dialog does.
-	_, landed, _ := app.cansub_browse_state()
-	if landed {
-		app.rebuild_discover_list()
-	}
-	if vgui.small_button('rescan##pk${i}') { // a word: the font has no ↻ (#306)
-		app.refresh_discovery()
-		app.start_cansub_browse()
-	}
-	vgui.same_line()
-	vgui.help_marker('Detect interfaces (SocketCAN/vcan on this host, CANsub devices by mDNS) and point this bus at one. Only the adapter and address change; the name, bitrates, DBCs and manifests stay.')
-	vgui.same_line()
-	vgui.set_next_item_width(360)
-	sel := vgui.combo('##pick${i}', pick_items(app.disc_list), 0)
-	if sel > 0 && sel - 1 < app.disc_list.len {
-		d := app.disc_list[sel - 1]
-		app.retarget_bus(i, d.adapter, d.address)
-		app.refresh_discovery() // the [in project] marks follow the edit
+	if ch.is_doip() {
+		app.draw_doip_entity_pick(i, ch)
+	} else if !ch.is_someip() {
+		app.draw_iface_pick(i)
 	}
 
 	if ch.adapter == 'doip' {
-		vgui.set_next_item_width(90)
-		if vgui.input_text('tester##ct${i}', mut app.cfg_bufs[i].tester_buf) {
+		cfg_field('tester', 'Our (tester) DoIP logical address (ISO 13400), the source of every request, e.g. 0x0E80.',
+			sc)
+		vgui.set_next_item_width(90 * sc)
+		if vgui.input_text('##ct${i}', mut app.cfg_bufs[i].tester_buf) {
 			app.dirty = true
 		}
-		vgui.same_line()
-		vgui.set_next_item_width(90)
-		if vgui.input_text('ecu##ce${i}', mut app.cfg_bufs[i].ecu_buf) {
+		cfg_field('ECU', 'The entity\'s DoIP logical address (ISO 13400), the target of every request, e.g. 0x1000. Together with the tester address it replaces the CAN diagnostic id pair.',
+			sc)
+		vgui.set_next_item_width(90 * sc)
+		if vgui.input_text('##ce${i}', mut app.cfg_bufs[i].ecu_buf) {
 			app.dirty = true
 		}
-		vgui.same_line()
-		vgui.help_marker('DoIP logical addresses (ISO 13400): the tester (source) and ECU (target), e.g. 0x0E80 / 0x1000. They replace the CAN diagnostic id pair.')
-		vgui.set_next_item_width(180)
-		if vgui.input_text('vin##cv${i}', mut app.cfg_bufs[i].vin_buf) {
+		cfg_field('VIN', '17-character VIN reported by this entity in vehicle announcements (only used when this DoIP bus hosts a simulated entity).',
+			sc)
+		vgui.set_next_item_width(220 * sc)
+		if vgui.input_text('##cv${i}', mut app.cfg_bufs[i].vin_buf) {
 			app.dirty = true
 		}
-		vgui.same_line()
-		vgui.help_marker('17-character VIN reported by this entity in vehicle announcements (only used when this DoIP bus hosts a simulated entity).')
 	} else if ch.adapter == 'someip' {
-		vgui.set_next_item_width(160)
-		if vgui.input_text('group##cg${i}', mut app.cfg_bufs[i].group_buf) {
+		cfg_field('group', 'Multicast group to join on the bound port (e.g. 239.1.2.3), for events a service publishes to a group or the SD offers on 224.244.224.245. Empty = hear unicast to the address only. Nothing is sent on this channel.',
+			sc)
+		vgui.set_next_item_width(220 * sc)
+		if vgui.input_text('##cg${i}', mut app.cfg_bufs[i].group_buf) {
 			app.dirty = true
 		}
-		vgui.same_line()
-		vgui.help_marker('Multicast group to join on the bound port (e.g. 239.1.2.3), for events a service publishes to a group or the SD offers on 224.244.224.245. Empty = hear unicast to the address only. Nothing is sent on this channel.')
 	} else {
-		vgui.text('protocol:')
-		for pr in ['can', 'canfd'] {
-			vgui.same_line()
+		cfg_field('protocol', '', sc)
+		for k, pr in ['can', 'canfd'] {
+			if k > 0 {
+				vgui.same_line()
+			}
 			if vgui.toggle_button('${pr}##pr${i}_${pr}', ch.typ == pr, 0) {
 				app.set_protocol(i, pr)
 			}
 		}
-		vgui.same_line()
-		vgui.set_next_item_width(90)
-		if vgui.input_text('bitrate##cb${i}', mut app.cfg_bufs[i].bitrate_buf) {
+		cfg_field('bitrate', 'Nominal bit rate in bit/s (e.g. 500000). For virtual/vcan buses this is informational; for real hardware it configures the interface.',
+			sc)
+		vgui.set_next_item_width(90 * sc)
+		if vgui.input_text('##cb${i}', mut app.cfg_bufs[i].bitrate_buf) {
 			app.dirty = true
 		}
-		vgui.same_line()
-		vgui.help_marker('Nominal bit rate in bit/s (e.g. 500000). For virtual/vcan buses this is informational; for real hardware it configures the interface.')
-		// ONLY WHEN THE CHANNEL IS FD, because on a classic channel there is no data phase for the
-		// number to describe — an always-visible field would invite a value that nothing reads and
-		// that a save would then persist as a property of a classic bus.
 		// ONLY WHERE IT CAN BE CONFIGURED. On a classic row there is no data phase for the number
 		// to describe — an editable field there invites a value nothing reads, which a Save would
-		// then persist as a property of a bus that cannot have it. Every CAN backend carries FD
-		// since #217, so the adapter half of this rule has no example left; the classic-row half
-		// still does. Start says what a CAN-FD row means on the chosen adapter
-		// (project.fd_capability_warnings, issue #170).
+		// then persist as a property of a bus that cannot have it. Start says what a CAN-FD row
+		// means on the chosen adapter (project.fd_capability_warnings, issue #170).
 		if ch.fd && ch.can_carry_fd() {
-			vgui.same_line()
-			vgui.set_next_item_width(90)
-			if vgui.input_text('data rate##cd${i}', mut app.cfg_bufs[i].dbitrate_buf) {
+			// THE LIST IS DERIVED, NOT WRITTEN OUT: `adapter_configures_data_phase` is the one place
+			// that answers (codex round 4 on #217).
+			configures := project.adapters.filter(transport.adapter_configures_data_phase(it))
+			cfg_field('data rate', 'CAN-FD data-phase bit rate in bit/s (e.g. 2000000) — the faster rate the payload is sent at. Leave empty to run the data phase at the nominal rate, which is CAN-FD without a bit-rate switch (64-byte payloads, no speed-up). Configured from the address by ${configures.join(', ')}; on SocketCAN the link carries it (ip link ... dbitrate).',
+				sc)
+			vgui.set_next_item_width(90 * sc)
+			if vgui.input_text('##cd${i}', mut app.cfg_bufs[i].dbitrate_buf) {
 				app.dirty = true
 			}
-			vgui.same_line()
-			// THE LIST IS DERIVED, NOT WRITTEN OUT. This said "configured by the Vector backend"
-			// and went on saying it after Kvaser, CANsub and then PCAN could configure a data
-			// phase too — telling operators their entered rate was ignored when it was not
-			// (codex round 4 on #217). `adapter_configures_data_phase` is the one place that
-			// answers, so the tooltip asks it rather than keeping a copy that drifts.
-			configures := project.adapters.filter(transport.adapter_configures_data_phase(it))
-			vgui.help_marker('CAN-FD data-phase bit rate in bit/s (e.g. 2000000) — the faster rate the payload is sent at. Leave empty to run the data phase at the nominal rate, which is CAN-FD without a bit-rate switch (64-byte payloads, no speed-up). Configured from the address by ${configures.join(', ')}; on SocketCAN the link carries it (ip link ... dbitrate).')
 		}
-		vgui.text('mode:')
-		vgui.same_line()
-		vgui.help_marker('normal = live traffic in and out · replay = play a recording onto the bus. To keep a row out of a run, untick it; to keep it from transmitting, tick listen-only.')
-		for md in ['normal', 'replay'] {
-			vgui.same_line()
+		cfg_field('mode', 'normal = live traffic in and out · replay = play a recording onto the bus. To keep a row out of a run, untick it; to keep it from transmitting, tick listen-only.',
+			sc)
+		for k, md in ['normal', 'replay'] {
+			if k > 0 {
+				vgui.same_line()
+			}
 			if vgui.toggle_button('${md}##md${i}_${md}', ch.mode.str() == md, 0) {
 				app.set_mode(i, md)
 			}
 		}
-		vgui.same_line()
-		lo := vgui.checkbox('listen-only##lo${i}', ch.listen_only)
+		cfg_field('listen-only', 'Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On Vector the transceiver is put in silent mode as well, so it does not even acknowledge; every other adapter still ACKs what it hears.',
+			sc)
+		lo := vgui.checkbox('##lo${i}', ch.listen_only)
 		if lo != ch.listen_only {
 			app.proj.channels[i].listen_only = lo
 			app.dirty = true
 		}
-		vgui.same_line()
-		vgui.help_marker('Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On Vector the transceiver is put in silent mode as well, so it does not even acknowledge; every other adapter still ACKs what it hears.')
-		// J1939, after listen-only's own marker so each `?` sits beside the control it explains.
 		// CAN only: a tick on a DoIP or SOME/IP row is one that can never do anything.
 		if !ch.is_eth() {
-			vgui.same_line()
-			jb := vgui.checkbox('J1939##j19${i}', ch.j1939)
+			cfg_field('J1939', 'J1939: read THIS wire as SAE J1939 — the trace names each frame\'s parameter group and sender, and multi-packet transfers are rejoined. For a bus whose database does not declare its frames J1939 (`VFrameFormat` is a Vector attribute most J1939 files were written without). A database that DOES declare them turns it on by itself, and the Trace panel\'s J1939 button overrides every wire at once.',
+				sc)
+			jb := vgui.checkbox('##j19${i}', ch.j1939)
 			if jb != ch.j1939 {
 				app.proj.channels[i].j1939 = jb
 				app.dirty = true
 			}
-			vgui.same_line()
-			vgui.help_marker('J1939: read THIS wire as SAE J1939 — the trace names each frame\'s parameter group and sender, and multi-packet transfers are rejoined. For a bus whose database does not declare its frames J1939 (`VFrameFormat` is a Vector attribute most J1939 files were written without). A database that DOES declare them turns it on by itself, and the Trace panel\'s J1939 button overrides every wire at once.')
 		}
 		if ch.mode == .replay {
-			vgui.text('replay:')
-			vgui.same_line()
-			vgui.set_next_item_width(220)
-			if vgui.input_text('source##rs${i}', mut app.cfg_bufs[i].replay_src_buf) {
+			cfg_field('replay source', "Recording to play on this channel (.log or .mf4). A multi-bus .mf4 needs a `bus:` key in the .blobnet naming WHICH recorded bus feeds this channel (the file's own bus name, or its `mf4:groupN` label) — the recording's names are not this project's, so nothing can infer the pairing; without it a multi-bus source is refused at Start. Channels replaying the same source play on ONE clock.",
+				sc)
+			vgui.set_next_item_width(220 * sc)
+			if vgui.input_text('##rs${i}', mut app.cfg_bufs[i].replay_src_buf) {
 				app.dirty = true
 				// the Replay panel's grouping reads this buffer (the pending source is what
 				// Start will fold) — regroup as it changes (codex #136 r3)
@@ -963,16 +1029,14 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			if vgui.small_button('...##rsbrowse${i}') {
 				app.open_browser('replaysrc:${i}')
 			}
-			vgui.same_line()
-			vgui.help_marker("Recording to play on this channel (.log or .mf4). A multi-bus .mf4 needs a `bus:` key in the .blobnet naming WHICH recorded bus feeds this channel (the file's own bus name, or its `mf4:groupN` label) — the recording's names are not this project's, so nothing can infer the pairing; without it a multi-bus source is refused at Start. Channels replaying the same source play on ONE clock.")
-			vgui.same_line()
-			vgui.set_next_item_width(56)
-			if vgui.input_text('x speed##rsp${i}', mut app.cfg_bufs[i].replay_speed_buf) {
+			cfg_field('speed', 'Playback speed: 1 = as recorded, 2 = twice as fast.', sc)
+			vgui.set_next_item_width(56 * sc)
+			if vgui.input_text('##rsp${i}', mut app.cfg_bufs[i].replay_speed_buf) {
 				app.dirty = true
 			}
-			vgui.same_line()
+			cfg_field('loop', 'Start the recording again when it ends.', sc)
 			loopv := if r := ch.replay { r.repeat } else { false }
-			nl := vgui.checkbox('loop##rl${i}', loopv)
+			nl := vgui.checkbox('##rl${i}', loopv)
 			if nl != loopv {
 				src := vgui.buf_str(app.cfg_bufs[i].replay_src_buf)
 				spd := vgui.buf_str(app.cfg_bufs[i].replay_speed_buf).f64()
@@ -993,12 +1057,14 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			}
 		}
 	}
-	// databases
-	vgui.text('databases:')
-	vgui.same_line()
-	vgui.help_marker('DBC files describing this bus/network — used to decode frames into signals and to drive the simulated ECUs.')
+	// databases: one per line in the controls column, the add button under them
+	cfg_field('databases', 'DBC files describing this bus/network — used to decode frames into signals and to drive the simulated ECUs.',
+		sc)
 	for di, dbp in ch.databases {
-		vgui.text('   ${dbp}')
+		if di > 0 {
+			cfg_field('', '', sc)
+		}
+		vgui.text(dbp)
 		vgui.same_line()
 		if vgui.small_button('x##dbrm${i}_${di}') {
 			app.remove_dbc(i, di)
@@ -1006,12 +1072,16 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			return true
 		}
 	}
+	if ch.databases.len > 0 {
+		cfg_field('', '', sc)
+	}
 	if vgui.small_button('+ Add DBC##adddbc${i}') {
 		app.open_browser('dbc:${i}')
 	}
-	// manifest
-	vgui.set_next_item_width(220)
-	if vgui.input_text('manifest##cmf${i}', mut app.cfg_bufs[i].manifest_buf) {
+	cfg_field('manifest', 'Optional telemetry handler manifest (CSV) — resolves handler ids to FB/handler/core for the Trace Chart.',
+		sc)
+	vgui.set_next_item_width(220 * sc)
+	if vgui.input_text('##cmf${i}', mut app.cfg_bufs[i].manifest_buf) {
 		app.proj.channels[i].manifest = vgui.buf_str(app.cfg_bufs[i].manifest_buf)
 		app.dirty = true
 	}
@@ -1019,43 +1089,81 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	if vgui.small_button('...##mfbrowse${i}') {
 		app.open_browser('manifest:${i}')
 	}
-	vgui.same_line()
-	vgui.help_marker('Optional telemetry handler manifest (CSV) — resolves handler ids to FB/handler/core for the Trace Chart.')
+	// removing the bus is the row's last line, in the controls column, clear of the header
+	cfg_field('', '', sc)
+	if vgui.small_button('remove this bus##crm${i}') {
+		vgui.tree_pop()
+		app.remove_bus(i)
+		return true
+	}
 	vgui.tree_pop()
 	return false
 }
 
-fn draw_doip(mut app App) {
-	vis, op := vgui.begin_dialog('DoIP Discovery', app.show_doip)
-	app.show_doip = op
-	if !vis {
-		vgui.end()
-		return
+// draw_iface_pick is a CAN row's "detected" line: the SAME list the Discover... dialog shows,
+// applied to THIS row. The mDNS browse lands on its own thread, so the row folds it in just as
+// the dialog does.
+fn (mut app App) draw_iface_pick(i int) {
+	sc := app.prefs.ui_scale
+	_, landed, _ := app.cansub_browse_state()
+	if landed {
+		app.rebuild_discover_list()
 	}
-	vgui.set_next_item_width(160)
-	vgui.input_text('host', mut app.doip_host_buf)
+	cfg_field('detected', 'Detect interfaces (SocketCAN/vcan on this host, CANsub devices by mDNS) and point this bus at one. Only the adapter and address change; the name, bitrates, DBCs and manifests stay.',
+		sc)
+	if vgui.small_button('rescan##pk${i}') { // a word: the font has no ↻ (#306)
+		app.refresh_discovery()
+		app.start_cansub_browse()
+	}
 	vgui.same_line()
-	if vgui.button('Discover') {
-		app.mu.lock()
-		app.doip_ents = []
-		app.mu.unlock()
-		spawn doip_worker(app, vgui.buf_str(app.doip_host_buf))
+	vgui.set_next_item_width(360 * sc)
+	sel := vgui.combo('##pick${i}', pick_items(app.disc_list), 0)
+	if sel > 0 && sel - 1 < app.disc_list.len {
+		d := app.disc_list[sel - 1]
+		app.retarget_bus(i, d.adapter, d.address)
+		app.refresh_discovery() // the [in project] marks follow the edit
 	}
-	app.mu.lock()
-	ents := app.doip_ents.clone()
-	app.mu.unlock()
-	vgui.separator_text('entities')
-	if ents.len == 0 {
-		vgui.text_dim('none — Discover a DoIP host (default 127.0.0.1:13400)')
+}
+
+// draw_doip_entity_pick is a DoIP row's "entity" line: ask this row's address for vehicle
+// identification and point the row's ECU address at one of the entities that answered there.
+// The finds share the Discover dialog's DoIP mailbox.
+fn (mut app App) draw_doip_entity_pick(i int, ch project.Channel) {
+	sc := app.prefs.ui_scale
+	found, busy, _ := app.doip_find_state()
+	here := found.filter(project.doip_found_at(ch, it))
+	cfg_field('entity', 'Ask this address which DoIP entities answer (a vehicle identification request) and point this bus at one: the ECU address is set to the one picked, and its VIN fills an empty VIN field.',
+		sc)
+	if vgui.small_button('find##dfind${i}') {
+		app.start_doip_find(ch.address, false)
 	}
-	for e in ents {
-		vgui.text('VIN ${e.vin}   logical 0x${e.logical_address:04X}')
+	vgui.same_line()
+	mut items := [
+		if busy {
+			'asking…'
+		} else if here.len == 0 {
+			'(none found at ${ch.doip_effective_address()} — click find)'
+		} else {
+			'pick an entity…'
+		},
+	]
+	for f in here {
+		vin := if f.vin != '' { '  ·  VIN ${f.vin}' } else { '' }
+		tag := if project.doip_found_in(app.proj.channels, f) { '  [in project]' } else { '' }
+		items << 'ECU 0x${f.logical:04X}${vin}${tag}'
 	}
-	vgui.separator()
-	if vgui.button('Close##doip') {
-		app.show_doip = false
+	vgui.set_next_item_width(360 * sc)
+	sel := vgui.combo('##dpick${i}', items, 0)
+	if sel > 0 && sel - 1 < here.len {
+		f := here[sel - 1]
+		app.proj.channels[i].ecu_addr = f.logical
+		app.cfg_bufs[i].ecu_buf = mkbuf('0x${f.logical:X}', 12)
+		if vgui.buf_str(app.cfg_bufs[i].vin_buf) == '' && f.vin.len == 17 {
+			app.proj.channels[i].vin = f.vin
+			app.cfg_bufs[i].vin_buf = mkbuf(f.vin, 20)
+		}
+		app.dirty = true
 	}
-	vgui.end()
 }
 
 // draw_config_text is the File tab: edit the project as text, validate, write it back.

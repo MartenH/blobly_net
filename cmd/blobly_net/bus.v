@@ -822,15 +822,15 @@ fn (app &App) iface_added(adapter string, address string) bool {
 // adapter_hint is the grey placeholder shown next to a bus's address field.
 fn adapter_hint(a string) string {
 	return match a {
-		'virtual' { 'CAN1 — in-process bus name (driver-free sim)' }
+		'virtual' { 'CAN1 — in-process bus name' }
 		'vcan' { 'vcan0 — Linux virtual CAN' }
 		'socketcan' { 'can0 — real Linux CAN hardware' }
 		'udp' { '239.0.0.1:5000 — group:port software bus' }
 		'pcan' { 'PCAN_USBBUS1 — PEAK channel' }
 		'kvaser' { '0 — Kvaser channel index' }
 		'vector' { '1 — Vector application channel (see Vector Hardware Manager)' }
-		'doip' { '127.0.0.1:13400 — host:port' }
-		'someip' { '0.0.0.0:30490 — bind host:port' }
+		'doip' { 'host:port — 13400 if no port' }
+		'someip' { 'bind host:port — 30490 if no port' }
 		'cansub' { '1A2B3C4D/1 — device id / channel' }
 		else { '' }
 	}

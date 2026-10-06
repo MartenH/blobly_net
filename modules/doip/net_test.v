@@ -418,6 +418,39 @@ fn test_discover() {
 	srv.close()
 }
 
+// identify() returns every answer to one request, each with the address a tester dials, and
+// waits out its window rather than stopping at the first answer.
+fn test_identify_lists_the_answering_entity_with_its_dial_address() {
+	mut srv := new_server(ServerCfg{ logical_address: 0x07A0, vin: 'TESTVIN0000000042' },
+		echo_handler)
+	dport := listen_somewhere(mut srv, '127.0.0.1')
+	if dport == 0 {
+		assert false, 'no bindable port in the band'
+		return
+	}
+	spawn fn (mut s DoipServer) {
+		for {
+			s.serve_udp_once(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+	time.sleep(150 * time.millisecond)
+	found := identify('127.0.0.1', dport, 400) or {
+		srv.close()
+		assert false, 'identify: ${err}'
+		return
+	}
+	srv.close()
+	assert found.len == 1
+	assert found[0].info.vin_text() == 'TESTVIN0000000042'
+	assert found[0].info.logical_address == 0x07A0
+	assert found[0].dial_address(dport) == '127.0.0.1:${dport}'
+}
+
 // The power-on announcement, end to end: an entity announces unasked and a LISTENING tester
 // hears it. This is the half of discovery a real vehicle performs and the simulator did not —
 // a tester that waits for announcements saw nothing at all before this.

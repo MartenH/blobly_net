@@ -908,6 +908,10 @@ int vgui_button_big(const char* label, int r, int g, int b, float w, float h) {
     return c ? 1 : 0;
 }
 void vgui_same_line() { ImGui::SameLine(); }
+// the next item on this line, starting at `x` from the window's left edge (a column).
+void vgui_same_line_at(float x) { ImGui::SameLine(x); }
+// lower the next text to a framed widget's baseline, so a label lines up with its input.
+void vgui_align_text_to_frame_padding() { ImGui::AlignTextToFramePadding(); }
 void vgui_separator_text(const char* s) { ImGui::SeparatorText(s); }
 int  vgui_table_begin(const char* id, int cols) {
     // no RowBg (no zebra striping) — borders + scroll + resizable columns only.

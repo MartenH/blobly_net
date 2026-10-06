@@ -14,7 +14,13 @@ discover*.v`); this is the visual layer on top.
   application-channel assignment section). It is a floating window, not a modal. USB CAN
   pass-through into WSL is a script, `scripts/usbip.sh`, not a GUI button. Attached
   **CANsub** devices are listed too, a row per channel, found by an mDNS browse for
-  `_cansub._tcp` (#235) — on both platforms, since a CANsub is a network device.
+  `_cansub._tcp` (#235) — on both platforms, since a CANsub is a network device. **DoIP
+  entities** have their own section: a host field, **Ask host** (a vehicle identification
+  request to that address) and **Find on network** (the same request to the IPv4 broadcast
+  address); each entity that answers is a row (address, logical address, VIN) that **Add ticked**
+  turns into a `doip` channel — named after the VIN, ECU address the found one, tester 0x0E80.
+  A DoIP bus row has the same lookup as its **entity** picker. On WSL, answers to a broadcast may
+  be dropped (they come from an address this host never sent to); asking the address works.
 - 🔶 **Partly shipped** — the dialog and Add-to-Project exist; inline per-row edit
   (name / mode / DBC) in the grid does not.
 - 🔜 **Part B** — the DBC→generators scaffolder as a second section of the same dialog.

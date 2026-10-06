@@ -11,7 +11,7 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 | | Status |
 |---|---|
 | DoIP channel in a project (`doip:<host>:<port>`) | ✅ configuration |
-| Discovery of an entity at a **known** address (DoIP panel) | ✅ |
+| Finding an entity and adding it as a channel (Configure → **Discover…**, DoIP section) | ✅ ask one address, or broadcast to the network |
 | DoIP entity — discovery, routing activation, UDS | ✅ (`cmd/script` from a project, the GUI, `cmd/doip_smoke`) |
 | UDS over DoIP end-to-end | ✅ headless and in the GUI — from Lua via `uds.open` on a DoIP channel |
 | Starting a simulated DoIP entity from a **project**, headless | ✅ `scripts/runtests.sh --project <p.blobnet>` |
@@ -22,7 +22,7 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 | **Functional UDS over DoIP** — a request to the functional logical address (0xE400) | ✅ from Lua, `uds.functional` on a DoIP channel; a simulated entity answers it |
 | A functional address set per channel in the project file | 🧭 planned — today it is the call's argument, and a simulated entity listens on 0xE400 |
 | Functional answers from **several** logical addresses on one connection (ECUs behind a gateway) | 🧭 planned — only the channel's `ecu_address` answer is collected |
-| **Subnet scan — finding an entity that neither announced nor sits at a known address** | 🧭 planned |
+| **Subnet scan — finding an entity that neither announced nor sits at a known address** | 🔶 on the local segment: a broadcast identification request (Discover → Find on network); a sweep of a routed subnet is planned |
 
 One thing worth knowing before you plan a bench: an entity **binds a real socket** on its
 configured port for as long as it runs. If the port is already held — a second instance, or
@@ -62,13 +62,21 @@ they are not client-side expectations.
 
 ## Discovering an entity
 
-The DoIP panel takes a host (default `127.0.0.1:13400`), sends a vehicle identification request,
-and lists what answers — VIN and logical address per entity.
+Configure → **Discover…** has a DoIP section: a host field (`host` or `host:port`, port 13400
+when left out, `127.0.0.1` when empty), **Ask host** and **Find on network**. Both send one
+vehicle identification request and list every entity that answers within ~1.2 s — address, logical
+address, VIN — and **Add ticked** makes each ticked one a `doip` channel: named after its VIN
+(or its address when it reports none), the address it answered from on the asked port, the
+ECU address it reported, tester 0x0E80 (edit it in the row). One already reached by a DoIP
+channel — same endpoint as Start dials it, same ECU address — is marked *added*. A DoIP bus row
+offers the same lookup for its own address (**entity** → find), and picking an entity there sets
+the row's ECU address.
 
-**It is a unicast request to an address you type.** Nothing is broadcast: the request goes to
-that one host, the first reply is taken, and the simulated entity likewise answers only the
-sender. So discovery here **confirms an identity you already know**; it does not find entities
-you have not been told about.
+**Ask host** is a unicast request to the address you type. **Find on network** sends the same
+request to `255.255.255.255` on that port, so every entity on the segment that hears it answers.
+On WSL that may hear nothing: the answers come from addresses the host never sent to, which its
+firewall drops (measured against the bench entity — asking its address answers, the broadcast
+does not). Ask the address there.
 
 Both halves exist now. The companion firmware (blobly_emb) broadcasts its vehicle announcement
 three times at boot, per ISO 13400, and answers identification requests afterwards — so a tester
@@ -81,15 +89,16 @@ arriving late can still find it. Blobly Net does both sides of that:
   queued for a listener that is not there.
 - **Active**: `doip.discover(host, port, timeout_ms)` (Lua: `doip.discover(channel)`, which uses
   the channel's configured endpoint) sends an identification request to one address and reads
-  the reply. This is what the DoIP panel's Discover uses.
+  the reply. `doip.identify(host, port, window_ms)` is the many-answer form the Discover dialog
+  uses: one request, to an address or a broadcast address, and every answer heard in the window.
 - **As an entity**: a simulated ECU announces itself at Start, three times 500 ms apart by
   default, configured per DoIP channel — one channel is one entity — (`announce_count`,
   `announce_interval_ms`, `announce_to`); `announce_count: 0` is a silent ECU, which is a
   fault worth injecting at a tester that relies on discovery.
 
-What is still missing is a **scan**: sweeping a subnet for entities that neither announced while
-you were listening nor sit at an address you know. For that you still need a static address or a
-DHCP lease you can read.
+What is still missing is a **scan** beyond the local segment: a broadcast does not cross a router,
+so an entity on a routed subnet that did not announce while you were listening still needs an
+address you know — a static one, or a DHCP lease you can read.
 
 ## What happens on the wire
 
@@ -185,8 +194,8 @@ long as the project runs.
 - **Routing activation is single-source.** Once activated, a request from a different source is
   denied rather than replacing the first, and a diagnostic message whose source does not match
   the activated tester is NACKed rather than dispatched. A second tester cannot quietly take over.
-- **No subnet scan** — an entity is found by hearing it announce, or at an address you name;
-  there is no sweep for one that did neither. Planned.
+- **No routed-subnet scan** — an entity is found by hearing it announce, at an address you name,
+  or by answering a broadcast on the local segment; there is no sweep across a router. Planned.
 - **Passive discovery is verified on IPv4 only.** The IPv6 path resolves in the right family,
   joins `ff02::1` and reports a failed join, but an announcement sent to that group is **not
   received** by a wildcard listener on loopback here, so IPv6 passive collection is implemented

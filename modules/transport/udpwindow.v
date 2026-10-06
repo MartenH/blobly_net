@@ -110,6 +110,13 @@ pub fn udp_exchange(addr string, to string, out [][]u8, window_ms int) ![]Datagr
 	defer {
 		c.close() or {}
 	}
+	// A broadcast destination needs SO_BROADCAST or the send fails EACCES (DoIP's
+	// identification request to the segment). IPv4 only: IPv6 has no broadcast.
+	if !addr.starts_with('[') {
+		c.sock.set_option_bool(.broadcast, true) or {
+			return error('udp: cannot enable broadcast: ${err}')
+		}
+	}
 	// the family of the bind: an IPv6 first answer could never be sent from a v4 socket
 	fam := if addr.starts_with('[') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
 	dst := net.resolve_addrs(to, fam, .udp) or { return error('udp: cannot resolve ${to}: ${err}') }

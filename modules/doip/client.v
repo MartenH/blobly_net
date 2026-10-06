@@ -81,6 +81,12 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 	got := transport.udp_window(addr, group, '0', window_ms) or {
 		return error('cannot listen for announcements: ${err}')
 	}
+	return announcements_in(got)
+}
+
+// announcements_in keeps the datagrams that are well-formed vehicle announcements, once each:
+// a broadcast request heard on two interfaces is answered twice, and one entity is one row.
+fn announcements_in(got []transport.Datagram) []Announcement {
 	mut out := []Announcement{}
 	for d in got {
 		if d.data.len < header_len {
@@ -91,12 +97,46 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 			continue
 		}
 		info := parse_vehicle_announcement(msg.payload) or { continue }
+		if out.any(it.from == d.from && it.info.logical_address == info.logical_address
+			&& it.info.vin == info.vin) {
+			continue
+		}
 		out << Announcement{
 			info: info
 			from: d.from
 		}
 	}
 	return out
+}
+
+// identify sends ONE vehicle identification request to `host:port` and returns every entity
+// that answers within `window_ms`, each with the address it answered from. `host` is one
+// entity's address (ask this host) or a broadcast address (find on the network: every entity on
+// the segment that hears it answers). The whole window is waited out either way, since nothing
+// says how many entities will answer.
+//
+// The answers come back to the socket the request left from, which is what lets a host that
+// drops unsolicited UDP (WSL's mirrored networking) still hear a unicast answer — a broadcast
+// request's answers come from addresses it never sent to, and such a host may drop them.
+pub fn identify(host string, port int, window_ms int) ![]Announcement {
+	h := host.trim_space().trim('[]')
+	bind := if h.contains(':') { '[::]:0' } else { '0.0.0.0:0' }
+	got := transport.udp_exchange(bind, join_host_port(h, port), [vehicle_id_request()],
+		window_ms)!
+	return announcements_in(got)
+}
+
+// dial_address is where a tester reaches this entity over TCP: the host it answered from, on
+// `port` — the port the request was sent to, which ISO 13400 makes the TCP port as well. Not
+// the answer's source port, which an entity may send from an ephemeral socket.
+pub fn (a Announcement) dial_address(port int) string {
+	mut host := a.from
+	if host.starts_with('[') {
+		host = host.all_before(']') + ']'
+	} else if host.count(':') == 1 {
+		host = host.all_before(':')
+	}
+	return '${host}:${port}'
 }
 
 // collect_announcements is the IPv4 form, kept for callers that do not care.
