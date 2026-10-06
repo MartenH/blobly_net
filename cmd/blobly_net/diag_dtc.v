@@ -44,6 +44,10 @@ struct DtcDetail {
 	ext      uds.DtcExtended
 	ext_ok   bool
 	ext_err  string
+	// the DTC's status as its own answer gave it (0x19 06's, else 0x19 04's), and when
+	status_ok bool
+	status    u8
+	at_ms     i64
 }
 
 // DtcView is the tab's last read, written by the holder under app.mu and only ever replaced
@@ -56,8 +60,8 @@ struct DtcView {
 	rows     []DtcRow
 	sig      string // what the read found, for the auto-refresh's "changed?" (diaghold)
 	err      string
-	ext_note string // why the counters stopped (a server refusing 0x19 06)
-	at_ms    i64    // time.ticks() of the read, failed or not
+	ext_note string // why some counters are missing (a server refusing 0x19 06, the connection)
+	times    diaghold.ReadTimes // time.ticks() of the last read, and of the last attempt
 	detail   DtcDetail
 }
 
@@ -193,10 +197,12 @@ fn (app &App) diag_desc(t DiagTarget) DiagDesc {
 			why: 'no system.toml beside the project or its databases (load one in the System panel)'
 		}
 	}
+	// the channel decides between two nodes with one address, on either carrier
 	addr := if t.carrier.doip {
 		sysview.TargetAddr{
 			doip:    true
 			logical: t.carrier.ecu
+			bus:     t.chan
 		}
 	} else {
 		sysview.TargetAddr{
@@ -258,10 +264,10 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 			// what was read before the clear no longer describes the ECU: gone NOW, so a refresh
 			// that fails cannot leave pre-clear records on screen under its error
 			app.mu.lock()
-			if app.dtc_view.key == req.key {
+			if diaghold.view_writable(req.epoch, app.dtc_epoch) && app.dtc_view.key == req.key {
 				app.dtc_view = DtcView{
 					key:   req.key
-					at_ms: time.ticks()
+					times: app.dtc_view.times.failed(time.ticks())
 				}
 			}
 			app.mu.unlock()
@@ -314,34 +320,34 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	mut rows := rep.records.map(DtcRow{
 		rec: it
 	})
-	mut ext_us := i64(0)
-	mut ext_n := 0
-	mut ext_note := ''
-	mut failed := ''
+	mut batch := diaghold.CounterBatch{}
 	for i in 0 .. imin(rows.len, dtc_ext_max) {
 		ext := h.cli.extended(rows[i].rec.code, 0xFF) or {
-			ext_us += h.cli.last.rtt_us
 			if answered(err) {
-				// the server keeps no extended data, or none it can be read by: the column stays
-				// empty, and the rest are not asked
-				ext_n++
-				ext_note = '0x19 06 ${rows[i].rec.name()}: ${err.msg()}'
-			} else {
-				failed = '0x19 06 ${rows[i].rec.name()} FF: ${err}'
-				ext_note = failed
+				// extended data is per DTC: this row's column stays empty, the rest are asked
+				batch.refusal(h.timing(), '0x19 06 ${rows[i].rec.name()}: ${err.msg()}')
+				continue
 			}
+			batch.failure(h.timing(), '0x19 06 ${rows[i].rec.name()} FF: ${err}')
 			break
 		}
-		ext_us += h.cli.last.rtt_us
-		ext_n++
+		batch.answered(h.timing())
 		rows[i] = DtcRow{
 			rec:    rows[i].rec
 			ext_ok: true
 			cnt:    ext.blobly_counters()
 		}
 	}
-	sig := rows.map('${it.rec.code:06X}:${it.rec.status:02X}:${it.cnt.occurrences}:${it.cnt.aging}:${it.cnt.failed_cycles}').join(' ')
+	failed := batch.failed
+	ext_note := if failed != '' { failed } else { batch.summary() }
+	sig := rows.map(diaghold.dtc_sig_entry(it.rec.code, it.rec.status, it.ext_ok, it.cnt.has,
+		it.cnt.occurrences, it.cnt.aging, it.cnt.failed_cycles)).join(' ')
 	app.mu.lock()
+	if !diaghold.view_writable(req.epoch, app.dtc_epoch) {
+		// asked of the project before this one: nothing of it is shown, or said
+		app.mu.unlock()
+		return DiagOut{}, false
+	}
 	prev := if app.dtc_view.key == req.key && app.dtc_view.read && app.dtc_view.err == '' {
 		app.dtc_view.sig
 	} else {
@@ -357,7 +363,7 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 		rows:     rows
 		sig:      sig
 		ext_note: ext_note
-		at_ms:    time.ticks()
+		times:    app.dtc_view.times.succeeded(time.ticks())
 		detail:   if keep { app.dtc_view.detail } else { DtcDetail{} }
 	}
 	app.mu.unlock()
@@ -375,17 +381,14 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 			err:  true
 		}, false
 	}
-	if ext_n == 0 {
+	if batch.asked() == 0 {
 		return DiagOut{}, false
 	}
 	note := if ext_note != '' { ' — ${ext_note}' } else { '' }
 	return DiagOut{
-		line:  '0x19 06 FF ×${ext_n}: occurrence / aging counters${note}'
+		line:  '0x19 06 FF ×${batch.asked()}: occurrence / aging counters${note}'
 		timed: true
-		t:     diaghold.Timing{
-			sent:   true
-			rtt_us: ext_us
-		}
+		t:     batch.t
 	}, false
 }
 
@@ -393,19 +396,21 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 // interval before asking again.
 fn (mut app App) dtc_failed(req DiagReq, why string) {
 	app.mu.lock()
-	if app.dtc_view.key == req.key {
-		// the last good read stays, said to be the last good one
+	if !diaghold.view_writable(req.epoch, app.dtc_epoch) {
+		// asked of the project before this one
+	} else if app.dtc_view.key == req.key {
+		// the last good read stays, said to be the last good one, as old as it is
 		app.dtc_view = DtcView{
 			...app.dtc_view
 			err:   why
-			at_ms: time.ticks()
+			times: app.dtc_view.times.failed(time.ticks())
 		}
 	} else {
 		// another target's read is never shown under this one's name
 		app.dtc_view = DtcView{
 			key:   req.key
 			err:   why
-			at_ms: time.ticks()
+			times: diaghold.ReadTimes{}.failed(time.ticks())
 		}
 	}
 	app.mu.unlock()
@@ -444,12 +449,15 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	}
 	ext := h.cli.extended(req.code, 0xFF) or {
 		app.dtc_set_detail(req, DtcDetail{
-			code:     req.code
-			loaded:   true
-			snap:     snap
-			snap_ok:  snap_ok
-			snap_err: snap_err
-			ext_err:  err.msg()
+			code:      req.code
+			loaded:    true
+			snap:      snap
+			snap_ok:   snap_ok
+			snap_err:  snap_err
+			ext_err:   err.msg()
+			status_ok: snap_ok
+			status:    snap.dtc.status
+			at_ms:     time.ticks()
 		})
 		return DiagOut{
 			line: '0x19 06 ${name} FF: ${err}'
@@ -462,8 +470,11 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 		snap:     snap
 		snap_ok:  snap_ok
 		snap_err: snap_err
-		ext:      ext
-		ext_ok:   true
+		ext:       ext
+		ext_ok:    true
+		status_ok: true
+		status:    ext.dtc.status
+		at_ms:     time.ticks()
 	})
 	return DiagOut{
 		line: '0x19 06 ${name} FF: ${ext.records.len} extended data record(s)'
@@ -472,7 +483,7 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 
 fn (mut app App) dtc_set_detail(req DiagReq, d DtcDetail) {
 	app.mu.lock()
-	if app.dtc_view.key == req.key {
+	if diaghold.view_writable(req.epoch, app.dtc_epoch) && app.dtc_view.key == req.key {
 		app.dtc_view = DtcView{
 			...app.dtc_view
 			detail: d
@@ -497,6 +508,7 @@ fn (mut app App) dtc_press(kind string, code u32, on bool, auto bool, desc DiagD
 	}
 	app.diag_send(DiagReq{
 		kind:     kind
+		epoch:    app.dtc_epoch
 		mask:     app.dtc_ui.mask()
 		code:     code
 		on:       on
@@ -605,7 +617,7 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	}
 	// the auto-refresh
 	// (no wake needed: an idle GUI still draws a frame every half second)
-	mut last := if mine { v.at_ms } else { i64(0) }
+	mut last := if mine { v.times.tried_ms } else { i64(0) }
 	if app.dtc_ui.asked_key == t.key && app.dtc_ui.asked_ms > last {
 		last = app.dtc_ui.asked_ms
 	}
@@ -621,7 +633,7 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 			vgui.text_dim('not read from this target yet — Refresh')
 		}
 	} else {
-		age := (time.ticks() - v.at_ms) / 1000
+		age := (time.ticks() - v.times.read_ms) / 1000
 		mut head := '${v.rows.len} DTC(s) with any of 0x${v.mask:02X} · read ${age} s ago · availability 0x${v.avail:02X}'
 		if v.err != '' {
 			head += ' · last refresh failed: ${v.err}'
@@ -791,15 +803,19 @@ fn draw_dtc_detail(mut app App, v DtcView, desc DiagDesc, busy bool) {
 			vgui.text('  ${label} = ${r.value()}   (${hex(r.data)})')
 		}
 	}
-	vgui.separator_text('status')
+	// the newer of the list's status and the DTC's own answer's
+	status, own := diaghold.shown_status(rec.rec.status, v.times.read_ms, d.status_ok, d.status,
+		d.at_ms)
+	from := if own { 'its own answer' } else { 'the list' }
+	vgui.separator_text('status (from ${from})')
 	// the bits set, by name; the clear ones in one line
 	mut clear := []string{}
 	for b in dtc_bits_in_reading_order() {
-		if rec.rec.status & b.mask != 0 {
+		if status & b.mask != 0 {
 			vgui.text('[x] ${b.name}')
 		} else {
 			clear << b.abbrev()
 		}
 	}
-	vgui.text_dim_wrapped('status 0x${rec.rec.status:02X}; clear: ${if clear.len > 0 { clear.join(' ') } else { 'none' }}')
+	vgui.text_dim_wrapped('status 0x${status:02X}; clear: ${if clear.len > 0 { clear.join(' ') } else { 'none' }}')
 }

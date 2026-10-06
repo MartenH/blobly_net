@@ -125,6 +125,7 @@ fn (app &App) diag_targets() []DiagTarget {
 			key:     diag_key_doip(c)
 			label:   '${c.name}  (DoIP 0x${c.ecu_addr:04X})'
 			iface:   c.iface
+			chan:    c.name // what sysview.node_for settles a shared logical address by
 			carrier: car
 		}
 	}

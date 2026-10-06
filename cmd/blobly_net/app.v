@@ -590,6 +590,7 @@ mut:
 	diag_released       diaghold.Mark     // the last release a holder has acted on
 	diag_holders_alive  int               // holder threads not yet exited, this run's and any before
 	dtc_view            DtcView           // the DTC tab's last read (diag_dtc.v), written by the holder
+	dtc_epoch           u64               // moves with each project; a read asked under another publishes nothing
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool
@@ -1146,6 +1147,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.diag_timing = map[string]int{} // another project's ECUs said nothing to this one
 	app.diag_timing_epoch++
 	app.dtc_view = DtcView{}
+	app.dtc_epoch++ // the old run's holder may still be reading (diaghold.view_writable)
 	app.diag_sys_targets = []
 	app.script_log = []
 	app.script_gen++

@@ -23,6 +23,7 @@ struct DiagReq {
 	did  u16
 	key  string
 	// the DTC tab's
+	epoch    u64  // app.dtc_epoch when asked: a read of an earlier project's publishes nothing
 	mask     u8   // 0x19 02's status mask
 	code     u32  // the DTC a 'dtc_detail' reads
 	on       bool // 'dtc_setting': 0x85 01 (true) or 02

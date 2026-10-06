@@ -55,3 +55,128 @@ pub fn deferred_selection(pending bool, busy bool, clicked_key string, selected_
 	}
 	return if busy { Deferred.wait } else { Deferred.send }
 }
+
+// CounterBatch is one refresh's batch of per-DTC 0x19 06 reads behind the table's o/a/c column.
+// Extended data is supported per DTC, so a DTC whose read is REFUSED (answered with a negative
+// response, or with what cannot be read) leaves only its own row empty and the batch goes on;
+// only the connection failing ends it. The batch's time is the sum of its exchanges, the 0x78
+// waits included, so its one log line says what a single request's would.
+pub struct CounterBatch {
+pub mut:
+	read    int    // answered with extended data
+	refused int    // answered with a refusal
+	note    string // the first refusal, for the line
+	failed  string // the connection failed: the batch ended here
+	t       Timing // every exchange summed
+}
+
+// answered records a DTC whose counters were read.
+pub fn (mut b CounterBatch) answered(t Timing) {
+	b.read++
+	b.add(t)
+}
+
+// refusal records a DTC the ECU answered without counters; the batch goes on.
+pub fn (mut b CounterBatch) refusal(t Timing, why string) {
+	b.refused++
+	if b.note == '' {
+		b.note = why
+	}
+	b.add(t)
+}
+
+// failure records the connection failing; the batch ends.
+pub fn (mut b CounterBatch) failure(t Timing, why string) {
+	b.failed = why
+	b.add(t)
+}
+
+// going: the next DTC is asked.
+pub fn (b CounterBatch) going() bool {
+	return b.failed == ''
+}
+
+// asked is how many DTCs the ECU answered, with counters or without.
+pub fn (b CounterBatch) asked() int {
+	return b.read + b.refused
+}
+
+// summary is the refusals in words, '' when there were none.
+pub fn (b CounterBatch) summary() string {
+	return match b.refused {
+		0 { '' }
+		1 { b.note }
+		else { '${b.refused} refused, the first: ${b.note}' }
+	}
+}
+
+fn (mut b CounterBatch) add(t Timing) {
+	b.t = Timing{
+		sent:       b.t.sent || t.sent
+		rtt_us:     b.t.rtt_us + t.rtt_us
+		pending:    b.t.pending + t.pending
+		pending_us: b.t.pending_us + t.pending_us
+	}
+}
+
+// dtc_sig_entry is one DTC's part of a list read's signature — what the auto-refresh compares to
+// decide whether it read anything new. The counters' PRESENCE is in it as well as their values:
+// a counter going from absent to a present 0 changes the cell from '—' to '0', which a signature
+// of values alone (absent reads 0) would not notice. `has` is the record numbers the 0x19 06
+// answer carried; `counters_read` false is no answer at all.
+pub fn dtc_sig_entry(code u32, status u8, counters_read bool, has []u8, occ u64, aging u64, cycles u64) string {
+	head := '${code:06X}:${status:02X}'
+	if !counters_read {
+		return '${head}:-'
+	}
+	mut h := has.clone()
+	h.sort()
+	records := h.map('${it:02X}').join(',')
+	return '${head}:${records}:${occ}:${aging}:${cycles}'
+}
+
+// shown_status is the status byte the detail section shows: the NEWER of the list's (0x19 02,
+// read at `list_ms`) and the selected DTC's own answer's (0x19 04/06, read at `detail_ms`;
+// `detail_ok` false when neither was answered). A status changes as the ECU tests, so the older
+// answer is the stale one, whichever it is. The second value says it is the DTC's own answer's.
+pub fn shown_status(list u8, list_ms i64, detail_ok bool, detail u8, detail_ms i64) (u8, bool) {
+	if detail_ok && detail_ms >= list_ms {
+		return detail, true
+	}
+	return list, false
+}
+
+// ReadTimes is when the tab's list was last READ and last ASKED. Two times because they answer
+// two questions: the auto-refresh counts its interval from the last attempt (a failing target is
+// not asked every frame), while "read N s ago" over retained rows must be the last success — a
+// failed refresh does not make old rows fresh.
+pub struct ReadTimes {
+pub:
+	read_ms  i64 // the last list read that succeeded; 0 = none
+	tried_ms i64 // the last one asked, succeeded or not; 0 = none
+}
+
+// succeeded is these times after a read that succeeded at `now`.
+pub fn (r ReadTimes) succeeded(now i64) ReadTimes {
+	return ReadTimes{
+		read_ms:  now
+		tried_ms: now
+	}
+}
+
+// failed is these times after a read that failed at `now`: the rows kept are as old as they were.
+pub fn (r ReadTimes) failed(now i64) ReadTimes {
+	return ReadTimes{
+		read_ms:  r.read_ms
+		tried_ms: now
+	}
+}
+
+// view_writable: a holder's DTC read may publish to the tab only if the tab is still the one it
+// was asked from. `epoch` moves when a project is loaded, BEFORE the old run's holder has drained
+// (the rebuild waits for it after), so a list request still in flight would otherwise put the old
+// project's rows back under a target key the new project may well reuse — the same interface and
+// ids. A generation, not the key: the key cannot tell two projects apart.
+pub fn view_writable(req_epoch u64, epoch u64) bool {
+	return req_epoch == epoch
+}
