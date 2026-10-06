@@ -330,11 +330,9 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	}
 	// on its own thread, so the token ends a slow open (a CANsub open, or waiting on the wire's
 	// first opener) as it ends every other wait; an open that lands after that is closed
-	// THIS App, by reference: `&app` on a `mut` receiver is a COPY of the struct here, so the tap
-	// opened in the closure carried a second App — its own mutex over the same maps — and every
-	// frame the panel sent (a Flow Control for a multi-frame answer) wrote the trace's maps
-	// beside rx_loop with no lock between them
-	ap := app.self_ref()
+	//
+	// `ap := app` is THIS App by reference; `&app` would be a copy (scripts/check_mut_refs.sh)
+	ap := app
 	bus := transport.open_stoppable(fn [ap, iface, phys, t, gen] () !transport.Bus {
 		return ap.open_tap_phys(iface, phys, org_tx, t.chan, gen, false)
 	}, h.stop)!
@@ -354,11 +352,6 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	h.cli.loosen_p2_star(h.p2_star_ms)
 	h.where = 'ISO-TP on ${iface} (0x${t.rx:X}/0x${t.tx:X})'
 	h.attached = true
-}
-
-// self_ref is the App itself, as a reference a closure can capture.
-fn (app &App) self_ref() &App {
-	return app
 }
 
 // diag_detach closes a CAN exchange's channel, keeping what its client learned of the timing.
