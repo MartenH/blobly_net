@@ -134,7 +134,11 @@ progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`,
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
 never averaged into a cadence (#266); and `cmd/blobly_net/watchrule/`, WHAT MAKES TWO PLOTTED SIGNALS DIFFERENT — a watch's identity
-(id, ext, the rejoined-vs-frame kind, and the wire that scopes a rejoined one), the rows it is
+(id, ext, the rejoined-vs-frame kind, and the WIRE, which since #330 scopes every watch and the
+Signals panel's selection — the destination key live, the recorded bus for an import's unplaced
+bus (`trace_wire`, `scope.v`), never the row, since aliasing rows carry one wire's frames; a
+selection picked from the database list binds to the oldest row's wire among wires that define
+the message), the rows it is
 made of, and which DBC edit moves it. Extracted after that answer got narrower twice in one
 review (`tp`, then `wire`) and each time landed in SOME of the places that ask it: review then
 found the rest one site at a time — the comparisons, the editor's three rewrites, ImPlot's
