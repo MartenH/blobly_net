@@ -260,11 +260,11 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 					err:  true
 				}, answered(err)
 			}
-			app.diag_push('${h.timing().prefix()} 0x14 FFFFFF: every DTC cleared')
+			app.diag_say(req, '${h.timing().prefix()} 0x14 FFFFFF: every DTC cleared')
 			// what was read before the clear no longer describes the ECU: gone NOW, so a refresh
 			// that fails cannot leave pre-clear records on screen under its error
 			app.mu.lock()
-			if diaghold.view_writable(req.epoch, app.dtc_epoch) && app.dtc_view.key == req.key {
+			if diaghold.view_writable(req.epoch, app.diag_epoch) && app.dtc_view.key == req.key {
 				app.dtc_view = DtcView{
 					key:   req.key
 					times: app.dtc_view.times.failed(time.ticks())
@@ -283,7 +283,7 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 				if out.err {
 					return out, negative
 				}
-				app.diag_push('${h.timing().prefix()} ${out.line} (0x85 is served outside the default session)')
+				app.diag_say(req, '${h.timing().prefix()} ${out.line} (0x85 is served outside the default session)')
 			}
 			sub := if req.on { u8(0x01) } else { u8(0x02) }
 			h.cli.control_dtc_setting(req.on) or {
@@ -322,31 +322,46 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	})
 	mut batch := diaghold.CounterBatch{}
 	for i in 0 .. imin(rows.len, dtc_ext_max) {
-		ext := h.cli.extended(rows[i].rec.code, 0xFF) or {
-			if answered(err) {
-				// extended data is per DTC: this row's column stays empty, the rest are asked
-				batch.refusal(h.timing(), '0x19 06 ${rows[i].rec.name()}: ${err.msg()}')
-				continue
-			}
-			batch.failure(h.timing(), '0x19 06 ${rows[i].rec.name()} FF: ${err}')
+		if !batch.going() {
 			break
+		}
+		ext := h.cli.extended(rows[i].rec.code, 0xFF) or {
+			if err is uds.NegativeResponse {
+				// 0x31 is this DTC having none; any other refusal is the service's, for every DTC
+				batch.refusal(h.timing(), '0x19 06 ${rows[i].rec.name()}: ${err.msg()}',
+					diaghold.nrc_per_dtc(err.nrc))
+			} else if err is uds.UndecodableAnswer {
+				batch.refusal(h.timing(), '0x19 06 ${rows[i].rec.name()}: ${err.msg()}',
+					true)
+			} else {
+				batch.failure(h.timing(), '0x19 06 ${rows[i].rec.name()} FF: ${err}')
+			}
+			continue
 		}
 		batch.answered(h.timing())
 		rows[i] = DtcRow{
-			rec:    rows[i].rec
+			// its status as this answer gives it: read after the list's
+			rec:    if ext.dtc.code == rows[i].rec.code { ext.dtc } else { rows[i].rec }
 			ext_ok: true
 			cnt:    ext.blobly_counters()
 		}
 	}
 	failed := batch.failed
-	ext_note := if failed != '' { failed } else { batch.summary() }
-	sig := rows.map(diaghold.dtc_sig_entry(it.rec.code, it.rec.status, it.ext_ok, it.cnt.has,
-		it.cnt.occurrences, it.cnt.aging, it.cnt.failed_cycles)).join(' ')
+	ext_note := batch.summary()
+	sig := rows.map(diaghold.dtc_sig_entry(it.rec.code, it.rec.status, if it.ext_ok {
+		it.cnt.shown()
+	} else {
+		''
+	})).join(' ')
 	app.mu.lock()
-	if !diaghold.view_writable(req.epoch, app.dtc_epoch) {
-		// asked of the project before this one: nothing of it is shown, or said
+	if !diaghold.view_writable(req.epoch, app.diag_epoch) {
+		// asked under the project before this one: nothing of it is shown or said, but a
+		// connection that failed is still let go
 		app.mu.unlock()
-		return DiagOut{}, false
+		return DiagOut{
+			line: failed
+			err:  failed != ''
+		}, false
 	}
 	prev := if app.dtc_view.key == req.key && app.dtc_view.read && app.dtc_view.err == '' {
 		app.dtc_view.sig
@@ -363,7 +378,7 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 		rows:     rows
 		sig:      sig
 		ext_note: ext_note
-		times:    app.dtc_view.times.succeeded(time.ticks())
+		times:    diaghold.read_at(time.ticks())
 		detail:   if keep { app.dtc_view.detail } else { DtcDetail{} }
 	}
 	app.mu.unlock()
@@ -373,7 +388,7 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	}
 	confirmed := rows.filter(it.rec.has(uds.dtc_confirmed)).len
 	auto := if req.auto { ' (auto-refresh: changed)' } else { '' }
-	app.diag_push('${t02.prefix()} ${what}: ${rows.len} DTC(s), ${confirmed} confirmed${auto}')
+	app.diag_say(req, '${t02.prefix()} ${what}: ${rows.len} DTC(s), ${confirmed} confirmed${auto}')
 	if failed != '' {
 		// the connection failed under the counters: said, and let go like any failed press
 		return DiagOut{
@@ -396,7 +411,7 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 // interval before asking again.
 fn (mut app App) dtc_failed(req DiagReq, why string) {
 	app.mu.lock()
-	if !diaghold.view_writable(req.epoch, app.dtc_epoch) {
+	if !diaghold.view_writable(req.epoch, app.diag_epoch) {
 		// asked of the project before this one
 	} else if app.dtc_view.key == req.key {
 		// the last good read stays, said to be the last good one, as old as it is
@@ -437,15 +452,15 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 			n += x
 		}
 		// the 0x19 04 at its own time, and each DID it had to size by reading it, at theirs
-		app.diag_push('${timing_of(st.request).prefix()} 0x19 04 ${name} FF: ${s.records.len} snapshot record(s), ${n} DID(s)')
+		app.diag_say(req, '${timing_of(st.request).prefix()} 0x19 04 ${name} FF: ${s.records.len} snapshot record(s), ${n} DID(s)')
 		for pr in st.probes {
-			app.diag_push('${timing_of(pr.timing).prefix()} 0x22 ${pr.did:04X}: sized a snapshot DID the description does not')
+			app.diag_say(req, '${timing_of(pr.timing).prefix()} 0x22 ${pr.did:04X}: sized a snapshot DID the description does not')
 		}
 	} else {
 		// said and shown; the extended data is still asked for, and a connection that has gone
 		// fails there and is let go as any failed press is
 		snap_err = err.msg()
-		app.diag_push('${h.timing().prefix()} 0x19 04 ${name} FF: ${err}')
+		app.diag_say(req, '${h.timing().prefix()} 0x19 04 ${name} FF: ${err}')
 	}
 	ext := h.cli.extended(req.code, 0xFF) or {
 		app.dtc_set_detail(req, DtcDetail{
@@ -483,7 +498,7 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 
 fn (mut app App) dtc_set_detail(req DiagReq, d DtcDetail) {
 	app.mu.lock()
-	if diaghold.view_writable(req.epoch, app.dtc_epoch) && app.dtc_view.key == req.key {
+	if diaghold.view_writable(req.epoch, app.diag_epoch) && app.dtc_view.key == req.key {
 		app.dtc_view = DtcView{
 			...app.dtc_view
 			detail: d
@@ -508,7 +523,6 @@ fn (mut app App) dtc_press(kind string, code u32, on bool, auto bool, desc DiagD
 	}
 	app.diag_send(DiagReq{
 		kind:     kind
-		epoch:    app.dtc_epoch
 		mask:     app.dtc_ui.mask()
 		code:     code
 		on:       on

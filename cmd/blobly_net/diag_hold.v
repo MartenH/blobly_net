@@ -22,8 +22,8 @@ struct DiagReq {
 	// 'dtc_detail' | 'dtc_clear' | 'dtc_setting'
 	did  u16
 	key  string
+	epoch    u64 // app.diag_epoch when sent: a press of an earlier project's writes nothing
 	// the DTC tab's
-	epoch    u64  // app.dtc_epoch when asked: a read of an earlier project's publishes nothing
 	mask     u8   // 0x19 02's status mask
 	code     u32  // the DTC a 'dtc_detail' reads
 	on       bool // 'dtc_setting': 0x85 01 (true) or 02
@@ -112,7 +112,8 @@ fn (mut app App) diag_send(r DiagReq) {
 	app.diag_busy = true
 	app.diag_q.try_push(DiagReq{
 		...r
-		key: app.diag_sel_key
+		key:   app.diag_sel_key
+		epoch: app.diag_epoch
 	})
 	app.mu.unlock()
 }
@@ -432,7 +433,6 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 		return
 	}
 	app.mu.lock()
-	epoch := app.diag_timing_epoch
 	refused := diaghold.press_refusal(true, false, app.diag_tools)
 	app.mu.unlock()
 	if refused != '' {
@@ -469,7 +469,7 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 	}
 	timing := if out.timed { out.t } else { h.timing() }
 	if out.line != '' { // a multi-request press said its earlier lines itself
-		app.diag_push('${timing.prefix()} ${out.line}')
+		app.diag_say(req, '${timing.prefix()} ${out.line}')
 	}
 	// a press its token cancelled is let go by the holder's next look, with the command's reason
 	if out.err && !negative && !h.stop() {
@@ -478,10 +478,21 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 	// what this target announced, kept for a later connection BEFORE this press is done: the next
 	// may start the moment diag_busy clears — and not into a project loaded meanwhile
 	app.mu.lock()
-	if app.diag_timing_epoch == epoch {
+	if diaghold.view_writable(req.epoch, app.diag_epoch) {
 		app.diag_timing[t.key] = h.cli.p2_star_ms
 	}
 	app.mu.unlock()
+}
+
+// diag_say is diag_push for what a press found: said only while the project it was sent under is
+// the one loaded, since a load clears the log for the new one.
+fn (mut app App) diag_say(req DiagReq, line string) {
+	app.mu.lock()
+	cur := diaghold.view_writable(req.epoch, app.diag_epoch)
+	app.mu.unlock()
+	if cur {
+		app.diag_push(line)
+	}
 }
 
 // diag_connect opens the target's connection into `h` and says so in the log and the strip.

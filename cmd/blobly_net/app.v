@@ -571,10 +571,11 @@ mut:
 	// Every connection the panel opens builds a new client — it is let go on a target change,
 	// a Disconnect, a failure, a script or a Stop (diag_hold.v) — so without this the next
 	// connection waited on the default P2* whatever the ECU had said (#356). Carried only to LOOSEN (uds.Client
-	// .loosen_p2_star). `diag_timing_epoch` moves with a project load, so a press still in
-	// flight across one cannot write its target's value into the new project's map.
-	diag_timing       map[string]int
-	diag_timing_epoch u64
+	// .loosen_p2_star). `diag_epoch` moves with a project load and every press carries the value
+	// it was sent under (DiagReq.epoch), so a press still in flight across one writes nothing into
+	// the new project — not this map, not the DTC tab, not the log (diaghold.view_writable).
+	diag_timing map[string]int
+	diag_epoch  u64
 	// The panel's held connection (diag_hold.v). The holder thread of the run `diag_hold_gen`
 	// (0 = none) takes presses from `diag_q`; `diag_status` is its strip; `diag_view_*` is what
 	// the panel shows, published by the GUI for the holder's release rule; `diag_tools` counts
@@ -590,7 +591,6 @@ mut:
 	diag_released       diaghold.Mark     // the last release a holder has acted on
 	diag_holders_alive  int               // holder threads not yet exited, this run's and any before
 	dtc_view            DtcView           // the DTC tab's last read (diag_dtc.v), written by the holder
-	dtc_epoch           u64               // moves with each project; a read asked under another publishes nothing
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool
@@ -1145,9 +1145,8 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.diag_log = []
 	app.diag_gen++ // a clear moves the buffer as surely as an append -- invalidate with it
 	app.diag_timing = map[string]int{} // another project's ECUs said nothing to this one
-	app.diag_timing_epoch++
+	app.diag_epoch++
 	app.dtc_view = DtcView{}
-	app.dtc_epoch++ // the old run's holder may still be reading (diaghold.view_writable)
 	app.diag_sys_targets = []
 	app.script_log = []
 	app.script_gen++

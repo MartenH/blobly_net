@@ -212,13 +212,16 @@ but what it keeps. Mutation-checked: 11 of 14 rule mutants fail the model, all 1
 cadence (2 s, the tab shown, nothing in flight), that an auto-refresh is logged only when it read
 something new, and that 0x85 02 (off) switches to the extended session first from the default
 or an unknown one, while 0x85 01 (on) never switches. And (#409) the counter batch
-(`CounterBatch`: a refused 0x19 06 empties its own row and the batch goes on, only the connection
-failing ends it, its time sums every exchange's 0x78 waits), the auto-refresh's signature with the
-counters' PRESENCE in it (`dtc_sig_entry`), the last read and the last attempt kept apart
-(`ReadTimes` — "read N s ago" is the rows' age, the interval runs from the attempt), the detail's
-status the newer of the list's and the DTC's own answer's (`shown_status`), and a read asked under
-the previous project publishing nothing (`view_writable`: `App.dtc_epoch` moves at a project load,
-before the rebuild has drained the old holder — the key cannot tell two projects apart). A DoIP
+(`CounterBatch`: a DTC refused with 0x31, or answered unreadably, empties its own row and the
+batch goes on; a refusal of the service (`nrc_per_dtc` false) or the connection failing ends it;
+its time sums every exchange's 0x78 waits; a row takes the status its 0x19 06 answer carried), the
+auto-refresh's signature as what the table shows (`dtc_sig_entry` — '—' to '0' is news), the last
+read and the last attempt kept apart (`ReadTimes` — "read N s ago" is the rows' age, the interval
+runs from the attempt), the detail's status the newer of the list's and the DTC's own answer's
+(`shown_status`), and a press sent under the previous project writing nothing — not the tab, not
+the log, not the P2* map (`view_writable`: every `DiagReq` carries `App.diag_epoch`, which moves at
+a project load, before the rebuild has drained the old holder; the key cannot tell two projects
+apart). A DoIP
 target carries its channel like a CAN one, so `node_for` can settle a shared logical address by it.
 The tab reads 0x19 02 (any status mask) plus 0x19 06 per row for the counters, a
 selected row's 0x19 04/06, clears with 0x14 FFFFFF behind a confirmation, all on the held
