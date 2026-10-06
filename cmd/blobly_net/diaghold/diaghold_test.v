@@ -130,26 +130,35 @@ fn test_an_isotp_open_has_only_its_total() {
 
 // --- a connection found dead before the send ---
 fn test_a_request_that_never_went_out_on_a_stale_connection_is_retried_once() {
-	assert retry_on_reopen(true, true, false, false)
+	assert retry_on_reopen(true, true, 0, false)
 }
 
 fn test_a_request_that_went_out_is_never_repeated() {
-	assert !retry_on_reopen(true, true, true, false)
+	assert !retry_on_reopen(true, true, 1, false)
+}
+
+// A clear sent and answered, then the refresh after it finds the connection closed before ITS
+// send: the press is not retried, so the clear is not sent a second time unconfirmed. The refresh
+// failing unsent is what `last` would say; the press's count says the clear went out.
+fn test_a_completed_step_of_a_press_is_never_replayed() {
+	clear_then_refresh := 1 // the 0x14 reached the carrier; the 0x19 02 never did
+	assert !retry_on_reopen(true, true, clear_then_refresh, false)
+	assert !retry_on_reopen(true, true, 2, false) // a session switch and its 0x85
 }
 
 fn test_a_fresh_connection_that_fails_is_not_retried() {
-	assert !retry_on_reopen(true, false, false, false)
+	assert !retry_on_reopen(true, false, 0, false)
 }
 
 fn test_a_negative_response_is_an_answer_not_a_failure() {
-	assert !retry_on_reopen(true, true, false, true)
-	assert !retry_on_reopen(true, true, true, true)
+	assert !retry_on_reopen(true, true, 0, true)
+	assert !retry_on_reopen(true, true, 1, true)
 }
 
 // a CAN send refused before it went out (listen-only, a wire that is down, a busy response id) is
 // not a stale connection: CAN holds none between exchanges, and repeating it would hide the error
 fn test_a_can_failure_is_never_retried() {
-	assert !retry_on_reopen(false, true, false, false)
+	assert !retry_on_reopen(false, true, 0, false)
 }
 
 fn test_a_keepalive_listens_far_less_than_its_period() {

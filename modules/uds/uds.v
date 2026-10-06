@@ -65,6 +65,10 @@ pub mut:
 	ext_lens map[u8]int
 	// how the last request went, on the monotonic clock: set by every exchange, answered or not
 	last ExchangeTiming
+	// how many requests this client has put on the carrier: a caller running several exchanges as
+	// one operation compares it before and after to know whether ANY went out, which `last`
+	// (the final exchange only) cannot say
+	sent_count u64
 	// stop_requested, when set, is asked before the send and between the answers of a request —
 	// after each responsePending above all, which a server can keep sending until
 	// `pending_budget_ms` — and a true answer ends the request with `abandoned_note`. For a run
@@ -287,6 +291,7 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 	}
 	c.ch.send(req)!
 	sent = true
+	c.sent_count++
 	sw := time.new_stopwatch()
 	mut deadline := if c.timeout_ms < c.pending_budget_ms { i64(c.timeout_ms) } else { i64(c.pending_budget_ms) }
 	mut pending := false

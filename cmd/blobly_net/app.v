@@ -363,6 +363,18 @@ mut:
 	diag_pub_open bool
 	diag_pub_key  string
 	diag_plan    []DiagTarget // what start() actually spawned, per bus
+	// The DTC tab (diag_dtc.v), GUI thread only: its controls, and the system.toml that names the
+	// targets' DTCs and DIDs — the System panel's when one is loaded there, else the one
+	// sysview.find_system finds for the project (`diag_sys_key` says for which).
+	dtc_ui       DtcUi
+	diag_sys     sysview.System
+	diag_sys_ok  bool
+	diag_sys_key string
+	diag_sys_checked_ms i64 // when diag_sys_key was last looked for (time.ticks)
+	diag_sys_print      string // what diag_sys_targets were last published from (diag_dtc.v)
+	// the system's nodes as targets on the running channels named after their buses; written by
+	// the GUI thread, read by the holder too (diag_targets), so guarded by mu
+	diag_sys_targets []DiagTarget
 	// Hosted DoIP entities, by interface. Held so Stop can close the listeners: an entity that
 	// outlived Stop would keep port 13400 bound, and the next Start would fail to bind against
 	// the previous run of the same application.
@@ -583,6 +595,7 @@ mut:
 	diag_cmds           diaghold.Commands // releases for the holder generation they name (diag_hold.v)
 	diag_released       diaghold.Mark     // the last release a holder has acted on
 	diag_holders_alive  int               // holder threads not yet exited, this run's and any before
+	dtc_view            DtcView           // the DTC tab's last read (diag_dtc.v), written by the holder
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool
@@ -1104,6 +1117,9 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	sim.clear_all()
 	app.reserialize_confirm = '' // a different project: a prior warning does not confirm THIS file's Save (codex #268)
 	app.cfg_invalidate() // a different project: the File tab must not keep the old one's text
+	app.diag_sys_key = '' // and the DTC tab finds its system.toml again
+	app.diag_sys_print = ''
+	app.dtc_ui = DtcUi{}
 	app.mu.lock()
 	app.reset_trace_locked()
 	// A different project: what the operator said about the old one's buses does not carry.
@@ -1113,6 +1129,8 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.diag_gen++ // a clear moves the buffer as surely as an append -- invalidate with it
 	app.diag_timing = map[string]int{} // another project's ECUs said nothing to this one
 	app.diag_timing_epoch++
+	app.dtc_view = DtcView{}
+	app.diag_sys_targets = []
 	app.script_log = []
 	app.script_gen++
 	app.watch = []

@@ -94,6 +94,47 @@ pub fn (e DtcExtended) find(number u8) ?ExtRecord {
 	return none
 }
 
+// BloblyCounters are blobly_emb's extended data records (blobly_ext_records) read as what they
+// count; a record the answer did not carry reads 0, and `has` says which were there.
+pub struct BloblyCounters {
+pub:
+	occurrences   u64
+	aging         u64
+	failed_cycles u64
+	has           []u8 // the record numbers the answer carried
+}
+
+// blobly_counters reads this answer's records as blobly_emb's counters.
+pub fn (e DtcExtended) blobly_counters() BloblyCounters {
+	return BloblyCounters{
+		occurrences:   (e.find(0x01) or { ExtRecord{} }).value()
+		aging:         (e.find(0x02) or { ExtRecord{} }).value()
+		failed_cycles: (e.find(0x03) or { ExtRecord{} }).value()
+		has:           e.records.map(it.number)
+	}
+}
+
+// shown is the counters as a tester shows them, occurrences / aging / failed cycles, with '—'
+// for a record the answer did not carry: absent is not zero.
+pub fn (c BloblyCounters) shown() string {
+	occ := if u8(0x01) in c.has { '${c.occurrences}' } else { '—' }
+	age := if u8(0x02) in c.has { '${c.aging}' } else { '—' }
+	cyc := if u8(0x03) in c.has { '${c.failed_cycles}' } else { '—' }
+	return '${occ}/${age}/${cyc}'
+}
+
+// UndecodableAnswer is a positive 0x19 answer that arrived and could not be read: the ECU
+// answered, so the connection is not at fault, which a tester holding one needs to know.
+pub struct UndecodableAnswer {
+	Error
+pub:
+	why string
+}
+
+pub fn (e UndecodableAnswer) msg() string {
+	return e.why
+}
+
 // UnknownDidLength is the snapshot decoder asking for a DID's size it was not given.
 pub struct UnknownDidLength {
 	Error
@@ -228,19 +269,46 @@ pub fn (mut c Client) snapshot_ids() ![]SnapshotId {
 // size of its value NOW, which is the captured one's for a fixed-size DID; a DID whose size varies
 // must be given.
 pub fn (mut c Client) snapshot(code u32, record u8) !DtcSnapshot {
+	s, _ := c.snapshot_timed(code, record)!
+	return s
+}
+
+// SizeProbe is one 0x22 read a snapshot made to learn a DID's size, and its exchange's time.
+pub struct SizeProbe {
+pub:
+	did    u16
+	timing ExchangeTiming
+}
+
+// SnapshotTiming is a snapshot's exchanges told apart: the 0x19 04 itself, and each size probe
+// after it — `Client.last` holds only the LAST exchange, which after a probe is the probe's.
+pub struct SnapshotTiming {
+pub:
+	request ExchangeTiming
+	probes  []SizeProbe
+}
+
+// snapshot_timed is snapshot, with each of its exchanges' timing.
+pub fn (mut c Client) snapshot_timed(code u32, record u8) !(DtcSnapshot, SnapshotTiming) {
 	resp := c.raw(dtc_request(0x04, code, record)!)!
+	request := c.last
+	mut probes := []SizeProbe{}
 	for {
-		return decode_snapshot(resp, c.did_lens) or {
+		snap := decode_snapshot(resp, c.did_lens) or {
 			if err is UnknownDidLength {
 				did := err.did
 				data := c.read_data_by_identifier(did) or {
 					return error('snapshot DID 0x${did:04X}: its size is not known, and reading it (0x22) to learn it failed: ${err.msg()} — give it with set_did_size')
 				}
+				probes << SizeProbe{did, c.last}
 				c.did_lens[did] = data.len
 				continue
 			}
-			return err
+			return UndecodableAnswer{
+				why: err.msg()
+			}
 		}
+		return snap, SnapshotTiming{request, probes}
 	}
 	return error('unreachable') // each pass learns one DID the answer names, or returns
 }
@@ -262,5 +330,9 @@ pub fn (mut c Client) set_ext_record_size(number u8, n int) {
 // `ext_lens` (blobly_ext_records by default).
 pub fn (mut c Client) extended(code u32, record u8) !DtcExtended {
 	lens := if c.ext_lens.len == 0 { blobly_ext_records } else { c.ext_lens }
-	return decode_extended(c.raw(dtc_request(0x06, code, record)!)!, lens)!
+	return decode_extended(c.raw(dtc_request(0x06, code, record)!)!, lens) or {
+		return UndecodableAnswer{
+			why: err.msg()
+		}
+	}
 }

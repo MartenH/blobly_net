@@ -445,6 +445,13 @@ __global (
 	arxml_cache_inflight map[string]bool
 )
 
+// content_key is a file's identity as read: its real path and the SHA-256 of `text`, its bytes.
+// THE rule for "is this still the file I read" — not size and mtime, which a same-length rewrite
+// within one second defeats. Here for the ARXML cache, and for sysview's model sources.
+pub fn content_key(path string, text string) (string, string) {
+	return os.real_path(path), sha256.hexhash(text)
+}
+
 // load_arxml_file reads and parses a .arxml from disk, once per file CONTENT: the GUI and
 // the headless runner open each channel's databases several times per Start, and a real
 // system description costs seconds and hundreds of MB to parse, where reading and hashing it
@@ -453,8 +460,7 @@ __global (
 // a bench holds one or two of these.
 pub fn load_arxml_file(path string) !Arxml {
 	text := os.read_file(path)!
-	key := os.real_path(path)
-	sha := sha256.hexhash(text)
+	key, sha := content_key(path, text)
 	for {
 		arxml_cache_mu.lock()
 		if c := arxml_cache[key] {

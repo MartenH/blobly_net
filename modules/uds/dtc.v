@@ -34,6 +34,25 @@ pub:
 	name string
 }
 
+// abbrev is the bit's ISO 14229-1 abbreviation — the initials of its name, a capital run kept
+// whole: TF, TFTOC, PDTC, CDTC, TNCSLC, TFSLC, TNCTOC, WIR.
+pub fn (b DtcBit) abbrev() string {
+	mut out := []u8{}
+	for i, c in b.name {
+		if i == 0 {
+			out << if c >= `a` && c <= `z` { c - 32 } else { c }
+		} else if c.is_capital() {
+			out << c
+		}
+	}
+	return out.bytestr()
+}
+
+// status_abbrevs: the abbreviations of the bits set in `status`, low to high.
+pub fn status_abbrevs(status u8) []string {
+	return dtc_status_bits.filter(status & it.mask != 0).map(it.abbrev())
+}
+
 // DtcRecord is one DTC as a server reported it: its 3-byte code and its status byte.
 pub struct DtcRecord {
 pub:
@@ -160,7 +179,11 @@ pub fn (mut c Client) dtc_count(mask u8) !DtcCount {
 
 // dtcs (0x19 02): the DTCs with any of `mask`'s status bits.
 pub fn (mut c Client) dtcs(mask u8) !DtcReport {
-	return decode_dtc_list(c.raw([sid_read_dtc_information, 0x02, mask])!)!
+	return decode_dtc_list(c.raw([sid_read_dtc_information, 0x02, mask])!) or {
+		return UndecodableAnswer{
+			why: err.msg()
+		}
+	}
 }
 
 // supported_dtcs (0x19 0A): every DTC the server supports, each with its whole status.
