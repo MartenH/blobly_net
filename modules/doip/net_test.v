@@ -982,3 +982,121 @@ fn test_a_stoppable_client_still_works() {
 	ch.close()
 	ln.close() or {}
 }
+
+// An entity asks whether the connection is alive (0x0007) during routing activation and again
+// between its ack and its answer; the client answers each with 0x0008 carrying its own source
+// address, and the open and the exchange both complete.
+fn test_an_alive_check_inside_an_exchange_is_answered() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	heard := chan Message{cap: 4}
+	spawn fn (mut ln net.TcpListener, heard chan Message) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(alive_check_request()) or { return }
+		heard <- read_message(mut c, 2000) or { Message{} }
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(diagnostic_message_ack(0x1000, 0x0E80, diag_ack_ok)) or { return }
+		c.write(alive_check_request()) or { return }
+		heard <- read_message(mut c, 2000) or { Message{} }
+		c.write(diagnostic_message(0x1000, 0x0E80, [u8(0x62), 0xF1, 0x90, 0x01])) or { return }
+		_ := read_message(mut c, 2000) or { Message{} }
+		c.close() or {}
+	}(mut ln, heard)
+	ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	mut cl := uds.new_client(ch)
+	got := cl.raw([u8(0x22), 0xF1, 0x90]) or {
+		assert false, 'the exchange did not complete: ${err}'
+		return
+	}
+	assert got == [u8(0x62), 0xF1, 0x90, 0x01]
+	for when in ['routing activation', 'the exchange'] {
+		m := <-heard
+		assert m.payload_type == pt_alive_check_response, 'no alive check response during ${when}'
+		assert m.payload == [u8(0x0E), 0x80], 'the response does not carry the tester address'
+	}
+	mut c := ch
+	c.close()
+	ln.close() or {}
+}
+
+// An alive check on an IDLE connection is answered by `idle`, which waits for nothing; a peer
+// that closes the idle connection is the connection lost.
+fn test_idle_answers_an_alive_check_and_sees_a_close() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	heard := chan Message{cap: 2}
+	spawn fn (mut ln net.TcpListener, heard chan Message) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		time.sleep(100 * time.millisecond)
+		c.write(alive_check_request()) or { return }
+		heard <- read_message(mut c, 2000) or { Message{} }
+		c.close() or {}
+	}(mut ln, heard)
+	mut ch := open_doip_stoppable('127.0.0.1', lport, 0x0E80, 0x1000, fn () bool {
+		return false
+	}) or {
+		assert false, 'open: ${err}'
+		return
+	}
+	t0 := time.ticks()
+	ch.idle() or { assert false, 'idle with nothing arrived: ${err}' }
+	assert time.ticks() - t0 < 50, 'idle waited'
+	mut lost := ''
+	for lost == '' && time.ticks() - t0 < 2000 {
+		ch.idle() or { lost = err.msg() }
+		time.sleep(20 * time.millisecond)
+	}
+	m := <-heard
+	assert m.payload_type == pt_alive_check_response
+	assert m.payload == [u8(0x0E), 0x80]
+	assert lost.starts_with(doip_connection_lost), 'the close was not seen: "${lost}"'
+	ch.close()
+	ln.close() or {}
+}
+
+// A peer that sends PART of a message and stalls holds a stoppable recv no longer than a slice
+// past the stop — in the header and in the payload alike.
+fn test_a_stop_ends_a_read_stalled_mid_message() {
+	full := diagnostic_message(0x1000, 0x0E80, [u8(0x62), 0xF1, 0x90, 0x01])
+	for cut in [4, header_len + 3] {
+		mut ln, lport := free_listener() or {
+			assert false, 'listen: ${err}'
+			return
+		}
+		spawn fn (mut ln net.TcpListener, part []u8) {
+			mut c := ln.accept() or { return }
+			_ := read_message(mut c, 2000) or { return }
+			c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+			c.write(part) or { return }
+			time.sleep(3 * time.second) // the rest never comes
+			c.close() or {}
+		}(mut ln, full[..cut])
+		at := time.ticks() + 150
+		mut ch := open_doip_stoppable('127.0.0.1', lport, 0x0E80, 0x1000, fn [at] () bool {
+			return time.ticks() >= at
+		}) or {
+			assert false, 'open: ${err}'
+			return
+		}
+		sw := time.new_stopwatch()
+		if _ := ch.recv(4000) {
+			assert false, 'a partial message was returned'
+		} else {
+			assert err.msg() == stopped_note, 'cut ${cut}: ${err.msg()}'
+		}
+		assert sw.elapsed().milliseconds() < 400, 'cut ${cut}: the stop waited for the stalled read'
+		ch.close()
+		ln.close() or {}
+	}
+}

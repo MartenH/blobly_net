@@ -1416,8 +1416,8 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 		a.mu.unlock()
 		vgui.wake()
 	}
-	// the Diagnostics panel holds nothing while a flash runs: a held ISO-TP channel on the boot
-	// ids would answer the bootloader's First Frames with Flow Control of its own (diaghold)
+	// the Diagnostics panel holds nothing while a flash runs: its presses and keep-alives would
+	// otherwise land inside the transfer, on the wire or on the entity's one connection (diaghold)
 	held_note := a.diag_tool_begin()
 	if held_note != '' {
 		a.flash_append('(${held_note})')

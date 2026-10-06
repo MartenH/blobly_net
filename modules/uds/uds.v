@@ -69,7 +69,7 @@ pub mut:
 	// after each responsePending above all, which a server can keep sending until
 	// `pending_budget_ms` — and a true answer ends the request with `abandoned_note`. For a run
 	// worker that Stop must end; the carrier's own wait is the carrier's to cut short (a software
-	// ISO-TP channel's `stop_requested`, a DoIP client's `interrupt`).
+	// ISO-TP channel's `stop_requested`, a DoIP client's `stop_requested`).
 	stop_requested fn () bool = unsafe { nil }
 }
 
