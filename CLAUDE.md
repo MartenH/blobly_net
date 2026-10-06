@@ -184,19 +184,29 @@ returns `unknown` between two BUS-OFFs is one fault and one line rather than two
 and `cmd/blobly_net/diaghold/`, THE DIAGNOSTICS PANEL'S HELD CONNECTION — when it is let go
 (target change, panel closed, Stop, Disconnect, a script or flash starting; a failure lets go
 too and the next press reopens), when tester-present (3E 80) keeps a non-default session alive
-(every 2 s, from the holder thread, so never inside a press), when a press found its idle
-connection closed is repeated on a fresh one (only if it never went out), and how a press's time
-is printed — round trip, the 0x78 wait, and an open's TCP connect and routing activation apart,
-measured by `uds.Client.last` and `doip.DoipClient.connect_us`/`activate_us`. One holder thread
-per run (`diag_hold.v`) owns the connection and serves presses one at a time; it is a RUN worker
-(ended by Stop, waited for by a rebuild), not a tool reader. Stop ends THIS holder's in-flight
-exchange through one per-generation stop flag — installed as the CAN channel's
-`SoftChannel.stop_requested` and as `uds.Client.stop_requested`, which a 0x78 loop asks between
-answers (`uds.abandoned_note`) — and, on DoIP, `DoipClient.interrupt()` on the connection the
-holder published with its generation; an old holder never unpublishes, and a Stop never
-interrupts, another generation's (`may_unpublish` / `may_interrupt`, mutation-checked). A DoIP entity serves one tester, so
-`script_worker` and `flash_worker` call `diag_tool_begin` first: the panel lets go, the tool waits
-for the close, and while one runs the panel's presses open and close per request as they used to.
+(every 2 s, from the holder thread, so never inside a press; BOUNDED — a 0x78 answer is the
+keep-alive failing, not a wait), when a press found its idle connection closed is repeated on a
+fresh one (only if it never went out), and how a press's time is printed — round trip, the 0x78
+wait, and an open's TCP connect and routing activation apart, measured by `uds.Client.last` and
+`doip.DoipClient.connect_us`/`activate_us`. One holder thread per run (`diag_hold.v`) owns the
+connection and serves presses one at a time; it is a RUN worker (ended by Stop, waited for by a
+rebuild), not a tool reader. **Every trigger that ends or preempts its work is ONE token scoped to
+its generation** (#399 r1–r2, after two rounds of lifecycle findings): Stop, a tool, Disconnect,
+a target change and the panel closing are `diaghold.Commands` for the holder generation they
+name — kept as what they do, so a newer target change cannot hide an older release — and every
+wait the holder blocks in asks `Commands.cancels` every 20 ms: the DoIP open (the TCP connect on
+its own thread, the routing activation read — `doip.open_doip_stoppable`), the DoIP and ISO-TP
+receives (`DoipClient.stop_requested`, `SoftChannel.stop_requested`) and the uds 0x78 loop
+(`uds.Client.stop_requested`). A holder handles only its own generation's commands. A tool
+(`script_worker`, `flash_worker`) is counted first — the panel takes no press while one runs —
+then commands the release and waits for it (`tool_may_start`: no holder alive, or the one it
+commanded has released), a stop poll and a holder look away; a 10 s safety bound reports a defect
+loudly. `diaghold_model_test.v` is a model of the holder driving these functions through random
+interleavings (press, Stop, Start, tool begin/end, Disconnect, target change, panel, keep-alive
+time; an ECU that answers, blocks the open, or answers 0x78 for ever) against the promises: a
+tool never starts while a holder owns the entity, no holder acts on another generation's command,
+every cancellation and every stopped holder ends within its bound, a command leaves nothing held
+but what it keeps. Mutation-checked: 11 of 14 rule mutants fail the model, all 14 a unit test.
 Measured on the bench sysnode: a press used to cost ~490–900 ms of TCP reconnect (the entity's
 socket recycle), and costs 2–5 ms held;
 and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and

@@ -12,6 +12,7 @@ import pickrule
 import transport
 import gaterule
 import txhealth
+import diaghold
 import timebase
 import wiretap
 import candb
@@ -557,15 +558,16 @@ mut:
 	// (0 = none) takes presses from `diag_q`; `diag_status` is its strip; `diag_view_*` is what
 	// the panel shows, published by the GUI for the holder's release rule; `diag_tools` counts
 	// the operator tools speaking UDS (a script, a flash), while which the panel holds nothing.
+	// Every release reaches the holder as a command for its generation (`diag_cmds`).
 	diag_q              chan DiagReq
 	diag_hold_gen       u64
 	diag_status         DiagHoldStatus
 	diag_view_open      bool
 	diag_view_key       string
-	diag_disconnect_req bool
 	diag_tools          int
-	diag_doip_live      &doip.DoipClient = unsafe { nil } // the held DoIP connection, for Stop to interrupt
-	diag_doip_gen       u64 // the holder generation that published it (diaghold.may_interrupt)
+	diag_cmds           diaghold.Commands // releases for the holder generation they name (diag_hold.v)
+	diag_released       diaghold.Mark     // the last release a holder has acted on
+	diag_holders_alive  int               // holder threads not yet exited, this run's and any before
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool

@@ -764,8 +764,8 @@ fn test_open_times_the_connect_and_the_routing_activation_apart() {
 	ln.close() or {}
 }
 
-// interrupt ends a recv blocked on another thread at once, rather than at its deadline
-fn test_interrupt_ends_a_blocked_recv() {
+// a stoppable client's recv ends when the stop is requested, not at its deadline
+fn test_a_stop_ends_a_blocked_recv() {
 	mut ln, lport := free_listener() or {
 		assert false, 'listen: ${err}'
 		return
@@ -777,19 +777,104 @@ fn test_interrupt_ends_a_blocked_recv() {
 		_ := read_message(mut c, 5000) or { Message{} } // silent: the request is never answered
 		c.close() or {}
 	}(mut ln)
-	mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
-		assert false, 'open_doip: ${err}'
+	at := time.ticks() + 100
+	mut ch := open_doip_stoppable('127.0.0.1', lport, 0x0E80, 0x1000, fn [at] () bool {
+		return time.ticks() >= at
+	}) or {
+		assert false, 'open_doip_stoppable: ${err}'
 		return
 	}
-	spawn fn (mut ch DoipClient) {
-		time.sleep(100 * time.millisecond)
-		ch.interrupt()
-	}(mut ch)
 	sw := time.new_stopwatch()
 	if _ := ch.recv(4000) {
 		assert false, 'nothing was sent, so nothing can be received'
+	} else {
+		assert err.msg() == stopped_note, err.msg()
 	}
-	assert sw.elapsed().milliseconds() < 2000
+	assert sw.elapsed().milliseconds() < 1000
+	ch.close()
+	ln.close() or {}
+}
+
+// ...and so does the open, in the routing activation read: an entity that accepts and never
+// answers held it for the read's two seconds
+fn test_a_stop_ends_a_routing_activation_wait() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 3000) or { Message{} }
+		time.sleep(2 * time.second) // the request is read and never answered
+		c.close() or {}
+	}(mut ln)
+	at := time.ticks() + 100
+	stop := fn [at] () bool {
+		return time.ticks() >= at
+	}
+	sw := time.new_stopwatch()
+	mut why := 'opened'
+	mut ch := open_doip_stoppable('127.0.0.1', lport, 0x0E80, 0x1000, stop) or {
+		why = err.msg()
+		&DoipClient{}
+	}
+	assert why == stopped_note, why
+	assert sw.elapsed().milliseconds() < 1000
+	ln.close() or {}
+}
+
+// ...and in the TCP connect, which has no slice of its own to ask in (the dial is a stand-in for
+// one blocked on an unreachable host)
+fn test_a_stop_ends_a_blocked_connect() {
+	slow := fn (addr string) !&net.TcpConn {
+		time.sleep(2 * time.second)
+		return error('connect timed out')
+	}
+	at := time.ticks() + 50
+	stop := fn [at] () bool {
+		return time.ticks() >= at
+	}
+	sw := time.new_stopwatch()
+	mut why := 'dialed'
+	dial_stoppable(slow, '192.0.2.1:13400', stop) or { why = err.msg() }
+	assert why == stopped_note, why
+	assert sw.elapsed().milliseconds() < 500
+}
+
+// unstopped, a stoppable client still answers and still times out
+fn test_a_stoppable_client_still_works() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(diagnostic_message(0x1000, 0x0E80, [u8(0x62), 0xF1, 0x90, 0x01])) or { return }
+		_ := read_message(mut c, 2000) or { Message{} }
+		c.close() or {}
+	}(mut ln)
+	mut ch := open_doip_stoppable('127.0.0.1', lport, 0x0E80, 0x1000, fn () bool {
+		return false
+	}) or {
+		assert false, 'open: ${err}'
+		return
+	}
+	ch.send([u8(0x22), 0xF1, 0x90]) or { assert false, 'send: ${err}' }
+	got := ch.recv(2000) or {
+		assert false, 'recv: ${err}'
+		return
+	}
+	assert got == [u8(0x62), 0xF1, 0x90, 0x01]
+	t0 := time.ticks()
+	if _ := ch.recv(150) {
+		assert false, 'nothing more was sent'
+	} else {
+		assert err.msg() == 'DoIP recv timeout', err.msg()
+	}
+	assert time.ticks() - t0 >= 140
 	ch.close()
 	ln.close() or {}
 }

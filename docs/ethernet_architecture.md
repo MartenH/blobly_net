@@ -132,7 +132,8 @@ structural), and the server takes a plain callback. This keeps the dependency ar
   the panel's connection holder (`diag_hold.v`) opens the carrier the *selected* target names:
   `doip.open_doip(...)` for DoIP, software ISO-TP otherwise, so `uds.Client` rides either
   unchanged. It HOLDS that connection across presses — one entity serves one tester, so it lets
-  go on a target change, Disconnect, Stop, or when a script or flash starts (`diaghold`). Each entry's label carries
+  go on a target change, Disconnect, Stop, or when a script or flash starts — each one a command that
+  cancels whatever the holder is blocked in (`diaghold`; `doip.open_doip_stoppable`). Each entry's label carries
   its carrier and address (`SUT on DoIP1 (DoIP 0x1000)`). **Verified** end-to-end: the GUI
   (autostart + `doip-demo.blobnet`) serves the entity on 127.0.0.1:13400 and an external UDS
   client reads VIN `BLOBLYNETV0SUT001` over Ethernet.

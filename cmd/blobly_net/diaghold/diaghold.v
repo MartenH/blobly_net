@@ -99,13 +99,14 @@ pub:
 	selected_key string
 	panel_open   bool
 	run_live     bool
-	disconnect   bool // the operator pressed Disconnect
-	tool_running bool // a script or flash is running
+	command      Release // a pending Command of this holder's generation that lets the held key go
+	tool_running bool    // a script or flash is running
 }
 
 // release decides whether a held connection is let go, and why. Nothing held is `keep`: there
 // is nothing to let go. The ORDER is the order of the reasons' reach — a run that has ended
-// overrules everything, an explicit Disconnect is said as such even when the panel also closed.
+// overrules everything, an explicit command (Disconnect, a tool, a target change) is said as
+// itself even when the panel also closed.
 pub fn release(v View) Release {
 	if v.held_key == '' {
 		return .keep
@@ -113,8 +114,8 @@ pub fn release(v View) Release {
 	if !v.run_live {
 		return .run_ended
 	}
-	if v.disconnect {
-		return .disconnect
+	if v.command != .keep {
+		return v.command
 	}
 	if v.tool_running {
 		return .tool
@@ -208,22 +209,156 @@ pub fn retry_on_reopen(doip bool, held_before bool, sent bool, negative bool) bo
 	return doip && held_before && !sent && !negative
 }
 
-// WHOSE IN-FLIGHT EXCHANGE STOP ENDS. Each holder generation (one per run) cancels its own
-// exchange through one handle: its stop flag, which a software ISO-TP channel and the uds client
-// both ask while they wait, and — on DoIP, whose blocking read asks nothing — the connection it
-// publishes for Stop to interrupt. That publication carries the generation that made it, because
-// a holder from the previous run can still be on its way out when the next run's holder
-// publishes: unpublishing on the old holder's way out left the new connection out of Stop's
-// reach, and interrupting by anything but generation could end a connection Stop was not about.
+// ---- ONE CANCELLATION TOKEN PER HOLDER GENERATION ----
+//
+// Everything that ends or preempts a holder's work — Stop, a tool taking the entity, Disconnect,
+// a target change, the panel closing — reaches the holder the same way: as a COMMAND scoped to
+// the holder generation it was meant for (one generation per run). The holder handles only its
+// own (`pending`), and the work it is blocked in — the DoIP open (TCP connect and routing
+// activation), a request with its 0x78 waits, a keep-alive — asks `cancels` through its
+// carrier's stop hook every `stop_slice_ms`, so a trigger ends it within a slice. A tool waits
+// for the holder's RELEASE of its command (`tool_may_start`), not for a clock. The whole is
+// exercised by a model of the holder (diaghold_model_test.v) that drives these functions.
 
-// may_unpublish says whether a holder of generation `holder_gen` takes down the published
-// handle, which generation `published_gen` put up (0: nothing is published). Only its own.
-pub fn may_unpublish(published_gen u64, holder_gen u64) bool {
-	return published_gen != 0 && published_gen == holder_gen
+// stop_slice_ms is how often blocked work asks its token: the bound on how long a cancellation
+// takes once the work notices (the carriers' own stop polls are of this order: isotp's 20 ms).
+pub const stop_slice_ms = 20
+
+// tool_safety_ms bounds a tool's wait for the release. Cancellation is prompt (a slice plus one
+// holder look), so reaching this is a defect, and the caller says so loudly.
+pub const tool_safety_ms = 10_000
+
+// Commands is every release request not yet handled, for the holder of generation `gen` — kept
+// as what they DO rather than as a last request, because a newer command must not hide an older
+// one that reaches further: a target change (which keeps the new target) issued after a tool's
+// release (which keeps nothing) would otherwise un-cancel the work the tool is waiting on. So the
+// newest command that keeps nothing (`full_*`) and the newest target change (`keep_*`) are held
+// apart. Guarded by the caller.
+pub struct Commands {
+pub mut:
+	gen      u64
+	seq      u64 // the newest command's number; numbers never repeat, across generations too
+	full_seq u64
+	full_why Release
+	keep_seq u64
+	keep_key string
 }
 
-// may_interrupt says whether the Stop of run `stopped_gen` interrupts the published handle.
-// Only the stopped run's own.
-pub fn may_interrupt(published_gen u64, stopped_gen u64) bool {
-	return published_gen != 0 && published_gen == stopped_gen
+// Ticket names one issued command: the generation it was for and its number.
+pub struct Ticket {
+pub:
+	gen u64
+	seq u64
+}
+
+// issue records a command for generation `gen`: `keep_key` is the target it does NOT preempt — a
+// target change keeps the newly selected target; every other command keeps nothing (''). No
+// holder (`gen` 0) is nothing to command. Commands for an earlier generation are dropped: its
+// run has ended, which cancels everything that holder does anyway.
+pub fn (mut c Commands) issue(gen u64, why Release, keep_key string) Ticket {
+	if gen == 0 {
+		return Ticket{}
+	}
+	if gen != c.gen {
+		c.gen = gen
+		c.full_seq = 0
+		c.keep_seq = 0
+	}
+	c.seq++
+	if why == .deselected && keep_key != '' {
+		c.keep_seq = c.seq
+		c.keep_key = keep_key
+	} else {
+		c.full_seq = c.seq
+		c.full_why = why
+	}
+	return Ticket{gen, c.seq}
+}
+
+// pending says whether there are commands for the holder of generation `gen` it has not handled.
+pub fn (c &Commands) pending(gen u64, handled u64) bool {
+	return c.gen == gen && gen != 0 && c.seq > handled
+}
+
+// releases says what the unhandled commands do to the held key: the reason to let it go, or
+// `keep`. A command that keeps nothing outranks a target change.
+pub fn (c &Commands) releases(handled u64, held_key string) Release {
+	if held_key == '' {
+		return .keep
+	}
+	if c.full_seq > handled {
+		return c.full_why
+	}
+	if c.keep_seq > handled && held_key != c.keep_key {
+		return .deselected
+	}
+	return .keep
+}
+
+// cancels is THE TOKEN: whether the holder of generation `gen`, having handled commands up to
+// `handled`, must abandon the work it is doing on `work_key` now. Its run ending cancels
+// everything; an unhandled command of its own generation cancels what that command does not keep.
+pub fn (c &Commands) cancels(gen u64, handled u64, run_live bool, work_key string) bool {
+	if !run_live {
+		return true
+	}
+	if !c.pending(gen, handled) {
+		return false
+	}
+	return c.full_seq > handled || (c.keep_seq > handled && work_key != c.keep_key)
+}
+
+// Mark is what a holder has released: the last command of its generation it handled.
+pub struct Mark {
+pub:
+	gen u64
+	seq u64
+}
+
+// tool_may_start says whether a tool holding `t` may use the entity, given how many holders are
+// alive, the current holder generation and the last release. Only when NO holder could still own
+// it: none alive, or the one alive is the one it commanded and that one has released it. (No new
+// holder can appear while it waits: presses are refused while a tool is counted.)
+pub fn tool_may_start(alive int, holder_gen u64, released Mark, t Ticket) bool {
+	if alive == 0 {
+		return true
+	}
+	return alive == 1 && t.gen != 0 && holder_gen == t.gen && released.gen == t.gen
+		&& released.seq >= t.seq
+}
+
+// press_refusal is why a press is not taken ('' when it is): the panel works while a run is on,
+// one press at a time, and not at all while a tool has the entity — so a tool never shares it.
+pub fn press_refusal(running bool, busy bool, tools int) string {
+	if !running {
+		return 'not sent — the measurement is stopped'
+	}
+	if busy {
+		return 'busy'
+	}
+	if tools > 0 {
+		return 'not sent — a script or flash is using the target; the panel waits for it'
+	}
+	return ''
+}
+
+// KeepAlive is how a keep-alive went.
+pub enum KeepAlive {
+	ok // silence, or a positive answer: the session holds
+	refused // a negative response: the session is no longer ours to know
+	pending // 0x78 — a keep-alive is bounded, so this is a failure, not a wait
+	failed // the carrier failed, or the stop token ended it
+}
+
+// keepalive_verdict reads a keep-alive's outcome. Its waits are bounded (`keepalive_wait_ms`
+// for the first answer AND as the pending budget), so a server answering 3E 80 with 0x78 cannot
+// hold the holder — and every press queued behind it — for the client's two-minute budget.
+pub fn keepalive_verdict(errored bool, negative bool, pendings int) KeepAlive {
+	if pendings > 0 {
+		return .pending
+	}
+	if !errored {
+		return .ok
+	}
+	return if negative { KeepAlive.refused } else { KeepAlive.failed }
 }

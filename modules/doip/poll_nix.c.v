@@ -23,3 +23,15 @@ fn readable_now(fd int) bool {
 	}
 	return p.revents & i16(C.POLLIN | C.POLLHUP | C.POLLERR) != 0
 }
+
+// readable_within: as readable_now, waiting up to `ms` for it.
+fn readable_within(fd int, ms int) bool {
+	mut p := C.pollfd{
+		fd:     fd
+		events: i16(C.POLLIN)
+	}
+	if C.poll(&p, 1, ms) <= 0 {
+		return false
+	}
+	return p.revents & i16(C.POLLIN | C.POLLHUP | C.POLLERR) != 0
+}

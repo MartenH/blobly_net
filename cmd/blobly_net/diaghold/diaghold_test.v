@@ -16,14 +16,15 @@ fn test_a_held_connection_on_the_selected_target_is_kept() {
 
 fn test_nothing_held_is_nothing_to_release() {
 	assert release(View{}) == .keep
-	assert release(View{ disconnect: true, tool_running: true }) == .keep
+	assert release(View{ command: .disconnect, tool_running: true }) == .keep
 }
 
 fn test_each_reason_on_its_own() {
 	assert release(View{ ...held('a'), selected_key: 'b' }) == .deselected
 	assert release(View{ ...held('a'), panel_open: false }) == .panel_closed
 	assert release(View{ ...held('a'), run_live: false }) == .run_ended
-	assert release(View{ ...held('a'), disconnect: true }) == .disconnect
+	assert release(View{ ...held('a'), command: .disconnect }) == .disconnect
+	assert release(View{ ...held('a'), command: .tool }) == .tool
 	assert release(View{ ...held('a'), tool_running: true }) == .tool
 }
 
@@ -35,14 +36,14 @@ fn test_the_run_ending_overrules_every_other_reason() {
 		selected_key: 'b'
 		panel_open: false
 		run_live: false
-		disconnect: true
+		command: .disconnect
 		tool_running: true
 	}
 	assert release(v) == .run_ended
 }
 
 fn test_an_explicit_disconnect_is_said_even_when_the_panel_also_closed() {
-	assert release(View{ ...held('a'), disconnect: true, panel_open: false }) == .disconnect
+	assert release(View{ ...held('a'), command: .disconnect, panel_open: false }) == .disconnect
 }
 
 // A tool that starts while a press is in flight: the request it was opened for ends, and the
@@ -155,25 +156,80 @@ fn test_a_keepalive_listens_far_less_than_its_period() {
 	assert keepalive_wait_ms * 5 <= keepalive_ms
 }
 
-// --- generation scoping of the published handle ---
 
-// The quick Stop/Start: run 1's holder, on its way out, must not take down run 2's handle —
-// Stop would then have nothing to interrupt the current connection with.
-fn test_an_old_holder_never_unpublishes_a_new_one() {
-	assert !may_unpublish(2, 1)
-	assert may_unpublish(2, 2)
+// --- commands and the token ---
+
+fn test_a_holder_handles_only_its_own_generations_commands() {
+	mut c := Commands{}
+	t := c.issue(2, .disconnect, '')
+	assert c.pending(2, 0)
+	assert !c.pending(1, 0) // the old holder never consumes the new one's Disconnect
+	assert !c.pending(2, t.seq) // handled
+	assert !c.cancels(1, 0, true, 'a')
+	assert c.cancels(2, 0, true, 'a')
 }
 
-fn test_nothing_published_is_nothing_to_take_down() {
-	assert !may_unpublish(0, 0)
-	assert !may_unpublish(0, 3)
+fn test_no_holder_is_nothing_to_command() {
+	mut c := Commands{}
+	assert c.issue(0, .tool, '') == Ticket{}
+	assert !c.pending(0, 0)
 }
 
-// Stop of run 2 ends run 2's exchange and nothing else's; a leftover from run 1 is not its
-// business (its own Stop already interrupted it).
-fn test_a_stop_interrupts_only_its_own_runs_exchange() {
-	assert may_interrupt(2, 2)
-	assert !may_interrupt(1, 2)
-	assert !may_interrupt(3, 2)
-	assert !may_interrupt(0, 2)
+fn test_a_target_change_keeps_the_new_target_only() {
+	mut c := Commands{}
+	c.issue(1, .deselected, 'b')
+	assert c.releases(0, 'a') == .deselected
+	assert c.releases(0, 'b') == .keep
+	assert c.releases(0, '') == .keep
+	assert c.cancels(1, 0, true, 'a')
+	assert !c.cancels(1, 0, true, 'b')
+}
+
+// The defect the holder model found: a target change issued after a tool's release must not
+// un-cancel the work the tool is waiting on.
+fn test_a_newer_target_change_does_not_hide_an_older_release() {
+	mut c := Commands{}
+	c.issue(1, .tool, '')
+	c.issue(1, .deselected, 'b')
+	assert c.cancels(1, 0, true, 'b')
+	assert c.releases(0, 'b') == .tool
+}
+
+fn test_the_run_ending_cancels_everything() {
+	c := Commands{}
+	assert c.cancels(1, 0, false, 'a')
+}
+
+fn test_commands_of_an_ended_generation_are_dropped() {
+	mut c := Commands{}
+	c.issue(1, .tool, '')
+	t := c.issue(2, .deselected, 'b')
+	assert !c.cancels(2, 0, true, 'b')
+	assert t.seq == 2 // numbering continues across generations
+}
+
+fn test_a_tool_starts_once_its_holder_released_or_left() {
+	mut c := Commands{}
+	t := c.issue(3, .tool, '')
+	assert !tool_may_start(1, 3, Mark{3, t.seq - 1}, t)
+	assert tool_may_start(1, 3, Mark{3, t.seq}, t)
+	assert tool_may_start(0, 0, Mark{}, t) // the holder exited
+	assert !tool_may_start(1, 3, Mark{2, 99}, t) // another generation's release is not this one
+	assert !tool_may_start(2, 3, Mark{3, t.seq}, t) // an older holder is still on its way out
+	assert !tool_may_start(1, 0, Mark{}, Ticket{}) // a holder it did not command is alive
+}
+
+fn test_presses_wait_for_a_tool() {
+	assert press_refusal(true, false, 0) == ''
+	assert press_refusal(true, false, 1) != ''
+	assert press_refusal(false, false, 0) != ''
+	assert press_refusal(true, true, 0) == 'busy'
+}
+
+fn test_a_keepalive_answered_pending_fails() {
+	assert keepalive_verdict(false, false, 0) == .ok
+	assert keepalive_verdict(true, true, 0) == .refused
+	assert keepalive_verdict(true, false, 0) == .failed
+	assert keepalive_verdict(true, false, 1) == .pending
+	assert keepalive_verdict(false, false, 1) == .pending
 }

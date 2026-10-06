@@ -1494,7 +1494,6 @@ fn (mut app App) stop() {
 	// map this function empties below and outlived the run (codex round 2 on #257).
 	app.mu.lock()
 	app.running = false
-	app.diag_interrupt_locked() // a panel press blocked on a DoIP answer ends now (diag_hold.v)
 	app.mu.unlock()
 	// Then close: the serve loops block in accept for up to 200ms, and close() interrupts them
 	// so the port is released now rather than whenever the last worker notices.

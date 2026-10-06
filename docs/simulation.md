@@ -407,8 +407,10 @@ held, the session the last 0x10 answer established with its P2/P2*, and how many
 (3E 80, every 2 s outside the default session) have kept it alive; Disconnect lets it go. Each
 response line starts with its round trip, the 0x78 wait when there was one, and a line of its own
 for an open — on DoIP the TCP connect and the routing activation apart. A script or a flash
-starting takes the connection away (one DoIP entity serves one tester); the panel's presses
-during one open and close per request.
+starting takes the connection away (one DoIP entity serves one tester), and the panel takes no
+press until it ends. Stop, Disconnect, a target change, closing the panel and a tool starting
+all end a press in flight within a few tens of milliseconds — a DoIP open, an ECU answering
+0x78 — rather than at its timeout; a keep-alive answered with 0x78 is reported as failed.
 
 ## The same ECU over Ethernet (DoIP)
 

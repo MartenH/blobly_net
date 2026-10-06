@@ -35,8 +35,18 @@ mut:
 	keepalives int // 3E 80 sent on this connection
 }
 
-// HeldConn is the holder thread's own: never shared (a held DoIP client is also published as
-// App.diag_doip_live with its generation, for Stop to interrupt — see diag_interrupt_locked).
+// HoldCtx is what this holder generation's token reads: whose it is, which commands it has
+// handled and what it is working on. Written by the holder thread only; read by its token, which
+// only the holder thread calls (from inside the carriers' waits).
+@[heap]
+struct HoldCtx {
+	gen u64
+mut:
+	handled  u64
+	work_key string
+}
+
+// HeldConn is the holder thread's own: never shared.
 struct HeldConn {
 mut:
 	open     bool
@@ -50,92 +60,101 @@ mut:
 	// CAN: the client's timing, carried from one exchange's client to the next
 	timeout_ms int
 	p2_star_ms int
-	// this holder generation's ONE cancellation: true once its run has ended. Asked by the uds
-	// client between answers (a 0x78 loop) and by a CAN channel while it waits; a DoIP read
-	// asks nothing, so that connection is also published for Stop to interrupt (doip_cli)
-	stop     fn() bool = unsafe { nil }
-	doip_cli &doip.DoipClient = unsafe { nil }
+	// this holder generation's ONE cancellation token (diaghold.Commands.cancels), installed on
+	// every wait it blocks in: the DoIP open and recv, the ISO-TP channel, the uds client
+	stop fn() bool = unsafe { nil }
 }
 
 // diag_press is one press of a Diagnostics panel button: handed to this run's holder, spawned
 // on the first press. Marked busy HERE, under the lock that publishes the request, so a second
-// click cannot slip in before the holder has taken the first.
+// click cannot slip in before the holder has taken the first. Refused while a tool has the target.
 fn (mut app App) diag_press(kind string, did u16) {
 	app.mu.lock()
-	if !app.running || app.diag_busy {
+	why := diaghold.press_refusal(app.running, app.diag_busy, app.diag_tools)
+	if why != '' {
 		app.mu.unlock()
+		if app.diag_tools > 0 {
+			app.diag_push('${kind}: ${why}')
+		}
 		return
 	}
 	if app.diag_hold_gen != app.run_gen {
-		app.diag_q = chan DiagReq{ cap: 4 }
+		app.diag_q = chan DiagReq{cap: 4}
 		app.diag_hold_gen = app.run_gen
+		app.diag_holders_alive++
 		app.reserve_run_worker_locked() // released by the holder's own defer
 		spawn diag_holder(app, app.run_gen, app.diag_q)
 	}
 	app.diag_busy = true
 	app.diag_q.try_push(DiagReq{
 		kind: kind
-		did: did
-		key: app.diag_sel_key
+		did:  did
+		key:  app.diag_sel_key
 	})
 	app.mu.unlock()
 }
 
-// diag_disconnect is the strip's Disconnect: the holder lets go at its next look.
+// diag_command issues a release to THIS run's holder (diaghold.Commands): it cancels the work
+// that holder is blocked in, at its next stop poll, and the holder lets go at its next look.
+fn (mut app App) diag_command_locked(why diaghold.Release, keep_key string) diaghold.Ticket {
+	return app.diag_cmds.issue(app.diag_hold_gen, why, keep_key)
+}
+
+// diag_disconnect is the strip's Disconnect.
 fn (mut app App) diag_disconnect() {
 	app.mu.lock()
-	app.diag_disconnect_req = true
+	app.diag_command_locked(.disconnect, '')
 	app.mu.unlock()
 }
 
-// diag_interrupt_locked is Stop's part: a press blocked on a DoIP answer returns now rather than
-// at its deadline, so the holder — a run worker — is gone before a rebuild has to wait for it.
-// Under app.mu, which the holder takes to unpublish the client BEFORE closing it, so the socket
-// this shuts down is still the holder's. A CAN press has no such handle and ends at its timeout.
-fn (mut app App) diag_interrupt_locked() {
-	if !isnil(app.diag_doip_live) && diaghold.may_interrupt(app.diag_doip_gen, app.run_gen) {
-		mut c := app.diag_doip_live
-		c.interrupt()
-	}
-}
-
-// diag_publish_view tells the holder what the panel shows: open or closed, which target. Called
-// every frame from the GUI thread, it takes the lock only when something changed.
+// diag_publish_view tells the holder what the panel shows — open or closed, which target — and
+// issues the release each change means. Called every frame from the GUI thread, it takes the
+// lock only when something changed.
 fn (mut app App) diag_publish_view() {
 	if app.diag_pub_open == app.show_diag && app.diag_pub_key == app.diag_sel_key {
 		return
 	}
+	closed := app.diag_pub_open && !app.show_diag
+	moved := app.diag_pub_key != app.diag_sel_key && app.diag_pub_key != ''
 	app.diag_pub_open = app.show_diag
 	app.diag_pub_key = app.diag_sel_key
 	app.mu.lock()
 	app.diag_view_open = app.show_diag
 	app.diag_view_key = app.diag_sel_key
+	if closed {
+		app.diag_command_locked(.panel_closed, '')
+	} else if moved {
+		app.diag_command_locked(.deselected, app.diag_sel_key)
+	}
 	app.mu.unlock()
 }
 
-// diag_tool_begin is called by an operator tool that speaks UDS (a script, a flash) as it starts:
-// the panel holds nothing while one runs (./diaghold), and the tool waits here, bounded, for a
-// held connection to close and for a press already queued to finish — a DoIP entity serves one
-// tester, and would otherwise keep the tool waiting behind the panel until its idle timeout.
-// Paired with diag_tool_end. Returns a note when the wait ran out, for the tool to show.
+// diag_tool_begin is called by an operator tool that speaks UDS (a script, a flash) as it starts.
+// The panel holds nothing while one runs (./diaghold): the tool is counted — so no press is taken
+// — and commands this run's holder to release, which cancels whatever it is blocked in; then it
+// waits for that RELEASE (diaghold.tool_may_start), which is a stop poll and a holder look away.
+// The safety bound is for a defect, and says so loudly. Paired with diag_tool_end; returns a note
+// for the tool to show when the bound was hit.
 fn (mut app App) diag_tool_begin() string {
 	app.mu.lock()
 	app.diag_tools++
+	t := app.diag_command_locked(.tool, '')
 	app.mu.unlock()
 	t0 := time.ticks()
 	for {
 		app.mu.lock()
-		st := app.diag_status.conn
-		live := app.diag_hold_gen != 0
-		busy := app.diag_busy
+		may := diaghold.tool_may_start(app.diag_holders_alive, app.diag_hold_gen, app.diag_released,
+			t)
 		app.mu.unlock()
-		if !live || (!busy && st != .held && st != .opening) {
+		if may {
 			return ''
 		}
-		if time.ticks() - t0 > diag_tool_wait_ms {
-			return 'the Diagnostics panel was still using its connection after ${diag_tool_wait_ms} ms; going ahead'
+		if time.ticks() - t0 > diaghold.tool_safety_ms {
+			note := 'DEFECT: the Diagnostics panel did not release the target within ${diaghold.tool_safety_ms} ms of being told to; going ahead'
+			app.elog(note)
+			return note
 		}
-		time.sleep(10 * time.millisecond)
+		time.sleep(5 * time.millisecond)
 	}
 	return ''
 }
@@ -146,10 +165,6 @@ fn (mut app App) diag_tool_end() {
 	app.mu.unlock()
 }
 
-// diag_tool_wait_ms bounds how long a tool waits for the panel to let go: an idle connection
-// closes within one holder look (50 ms); this covers a press in flight on a slow ECU.
-const diag_tool_wait_ms = 3000
-
 // diag_holder is the run's holder thread. A RUN WORKER: reserved by diag_press, ended by Stop,
 // waited for by a rebuild (see ./diaghold for why that bucket).
 fn diag_holder(app &App, gen u64, q chan DiagReq) {
@@ -157,27 +172,42 @@ fn diag_holder(app &App, gen u64, q chan DiagReq) {
 		release_run_worker(app)
 	}
 	mut a := unsafe { app }
-	stop := fn [app, gen] () bool {
+	mut ctx := &HoldCtx{
+		gen: gen
+	}
+	stop := fn [app, ctx] () bool {
 		mut ap := unsafe { app }
-		return !ap.run_live(gen)
+		ap.mu.lock()
+		live := ap.running && ap.run_gen == ctx.gen
+		cmds := ap.diag_cmds
+		ap.mu.unlock()
+		return cmds.cancels(ctx.gen, ctx.handled, live, ctx.work_key)
 	}
 	mut h := HeldConn{
 		stop: stop
 	}
 	for {
-		v := a.diag_hold_view(gen, if h.open { h.target.key } else { '' })
+		v, handled := a.diag_hold_view(gen, ctx.handled, if h.open { h.target.key } else { '' })
 		r := diaghold.release(v)
 		if r != .keep {
 			a.diag_let_go(gen, mut h, .closed, r.words())
 		}
+		// released only once let go: a tool waiting on this mark then finds the target free
+		ctx.handled = handled
+		ctx.work_key = ''
+		a.mu.lock()
+		a.diag_released = diaghold.Mark{gen, handled}
+		a.mu.unlock()
 		if !v.run_live {
 			break
 		}
 		if diaghold.keepalive_due(h.open, h.session, h.last_ms, time.ticks()) {
+			ctx.work_key = h.target.key
 			a.diag_keepalive(gen, mut h)
 		}
 		select {
 			req := <-q {
+				ctx.work_key = req.key
 				a.diag_serve(gen, mut h, req)
 			}
 			50 * time.millisecond {
@@ -191,6 +221,7 @@ fn diag_holder(app &App, gen u64, q chan DiagReq) {
 	if a.diag_hold_gen == gen {
 		a.diag_hold_gen = 0
 	}
+	a.diag_holders_alive--
 	a.mu.unlock()
 	mut req := DiagReq{}
 	for q.try_pop(mut req) == .success {
@@ -199,22 +230,27 @@ fn diag_holder(app &App, gen u64, q chan DiagReq) {
 	}
 }
 
-// diag_hold_view reads what the release rule needs, under one take of the lock. A Disconnect is
-// CONSUMED by the look that sees it, so it lets go of the connection it was pressed for and not
-// of the next one.
-fn (mut app App) diag_hold_view(gen u64, held_key string) diaghold.View {
+// diag_hold_view reads what the release rule needs, under one take of the lock: the commands of
+// THIS generation not yet handled (another generation's are never this holder's), and the number
+// it has handled once this look is acted on.
+fn (mut app App) diag_hold_view(gen u64, handled u64, held_key string) (diaghold.View, u64) {
 	app.mu.lock()
+	mut command := diaghold.Release.keep
+	mut now := handled
+	if app.diag_cmds.pending(gen, handled) {
+		command = app.diag_cmds.releases(handled, held_key)
+		now = app.diag_cmds.seq
+	}
 	v := diaghold.View{
-		held_key: held_key
+		held_key:     held_key
 		selected_key: app.diag_view_key
-		panel_open: app.diag_view_open
-		run_live: app.running && app.run_gen == gen
-		disconnect: app.diag_disconnect_req
+		panel_open:   app.diag_view_open
+		run_live:     app.running && app.run_gen == gen
+		command:      command
 		tool_running: app.diag_tools > 0
 	}
-	app.diag_disconnect_req = false
 	app.mu.unlock()
-	return v
+	return v, now
 }
 
 // diag_set_status writes the strip, only while this holder is the run's: a holder still finishing
@@ -240,14 +276,6 @@ fn (mut app App) diag_let_go(gen u64, mut h HeldConn, conn diaghold.Conn, why st
 		return
 	}
 	if h.target.carrier.doip {
-		// unpublished BEFORE the close, under the lock Stop interrupts under — and only if the
-		// published handle is still this holder's: the next run's may have replaced it
-		app.mu.lock()
-		if diaghold.may_unpublish(app.diag_doip_gen, gen) && voidptr(app.diag_doip_live) == voidptr(h.doip_cli) {
-			app.diag_doip_live = unsafe { nil }
-			app.diag_doip_gen = 0
-		}
-		app.mu.unlock()
 		h.ch.close()
 	} else {
 		app.diag_detach(mut h)
@@ -319,28 +347,15 @@ fn (mut app App) diag_open(gen u64, mut h HeldConn, t DiagTarget) !diaghold.Open
 	h.p2_star_ms = app.diag_timing[t.key] or { 0 }
 	app.mu.unlock()
 	if t.carrier.doip {
-		mut c := doip.open_doip(t.carrier.host, t.carrier.port, t.carrier.tester, t.carrier.ecu)!
+		mut c := doip.open_doip_stoppable(t.carrier.host, t.carrier.port, t.carrier.tester,
+			t.carrier.ecu, h.stop)!
 		total := i64(time.sys_mono_now() - t0) / 1000
 		h.ch = isotp.Channel(c)
 		h.cli = uds.new_client(c)
 		h.cli.stop_requested = h.stop
 		h.cli.loosen_p2_star(h.p2_star_ms)
 		h.where = 'doip ${c.iface}'
-		h.doip_cli = c
-		// published only while this holder's run is live: a Stop that already happened cannot
-		// interrupt it, and must not find it in place of the next run's
-		app.mu.lock()
-		live := app.running && app.run_gen == gen
-		if live {
-			app.diag_doip_live = c
-			app.diag_doip_gen = gen
-		}
-		app.mu.unlock()
 		h.open = true
-		if !live {
-			// Stop landed during the open: its interrupt could not reach a client not yet published
-			return error('the measurement stopped')
-		}
 		return diaghold.Open{
 			doip: true
 			total_us: total
@@ -383,7 +398,12 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 	}
 	app.mu.lock()
 	epoch := app.diag_timing_epoch
+	refused := diaghold.press_refusal(true, false, app.diag_tools)
 	app.mu.unlock()
+	if refused != '' {
+		app.diag_push('${req.kind}: ${refused}')
+		return
+	}
 	t := app.diag_target(req.key) or {
 		app.diag_push('target "${req.key}" is no longer available')
 		return
@@ -400,7 +420,9 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 	mut out := DiagOut{}
 	mut negative := false
 	out, negative = app.diag_request(gen, mut h, req)
-	if out.err && diaghold.retry_on_reopen(t.carrier.doip, held_before, h.cli.last.sent, negative) {
+	// (a press its token cancelled is not a stale connection: it is not repeated)
+	if out.err && !h.stop()
+		&& diaghold.retry_on_reopen(t.carrier.doip, held_before, h.cli.last.sent, negative) {
 		// the entity had closed the idle connection: the request never went out, so it is asked
 		// once more on a fresh one
 		app.diag_push('[not sent] ${out.line} — reopening')
@@ -417,7 +439,8 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 		pending_us: h.cli.last.pending_us
 	}
 	app.diag_push('${timing.prefix()} ${out.line}')
-	if out.err && !negative {
+	// a press its token cancelled is let go by the holder's next look, with the command's reason
+	if out.err && !negative && !h.stop() {
 		app.diag_let_go(gen, mut h, .failed, out.line)
 	}
 	// what this target announced, kept for a later connection BEFORE this press is done: the next
@@ -517,8 +540,11 @@ fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bo
 }
 
 // diag_keepalive sends tester-present with the positive response suppressed (3E 80), on the
-// holder's thread, so it never lands inside a press's exchange. Not logged when it succeeds —
-// one line every two seconds would bury the presses — but counted on the strip.
+// holder's thread, so it never lands inside a press's exchange. BOUNDED: its first-answer wait
+// and its pending budget are both `keepalive_wait_ms`, so a server answering 0x78 cannot hold the
+// holder — and every press queued behind it — for the client's two-minute budget; a 0x78 is the
+// keep-alive failing (diaghold.keepalive_verdict), said on the strip. Not logged when it succeeds
+// — one line every two seconds would bury the presses — but counted on the strip.
 fn (mut app App) diag_keepalive(gen u64, mut h HeldConn) {
 	app.diag_attach(gen, mut h) or {
 		h.last_ms = time.ticks()
@@ -526,30 +552,47 @@ fn (mut app App) diag_keepalive(gen u64, mut h HeldConn) {
 		app.diag_let_go(gen, mut h, .failed, 'keep-alive: ${err}')
 		return
 	}
-	saved := h.cli.timeout_ms
+	saved_wait, saved_budget := h.cli.timeout_ms, h.cli.pending_budget_ms
 	h.cli.timeout_ms = diaghold.keepalive_wait_ms
-	_ := h.cli.raw_suppressed([u8(0x3E), 0x00]) or {
-		h.cli.timeout_ms = saved
-		app.diag_detach(mut h)
-		h.last_ms = time.ticks()
-		if err is uds.NegativeResponse {
-			// the ECU refused it: the session is no longer ours to know, and asking every two
-			// seconds would only repeat the refusal
+	h.cli.pending_budget_ms = diaghold.keepalive_wait_ms
+	mut errored := false
+	mut negative := false
+	mut why := ''
+	h.cli.raw_suppressed([u8(0x3E), 0x00]) or {
+		errored = true
+		negative = err is uds.NegativeResponse
+		why = err.msg()
+	}
+	pendings := h.cli.last.pending
+	h.cli.timeout_ms = saved_wait
+	h.cli.pending_budget_ms = saved_budget
+	app.diag_detach(mut h)
+	h.last_ms = time.ticks()
+	if errored && h.stop() {
+		return // cancelled: the holder's next look lets go, with the command's reason
+	}
+	match diaghold.keepalive_verdict(errored, negative, pendings) {
+		.ok {
+			mut s := app.diag_status_copy()
+			s.keepalives++
+			app.diag_set_status(gen, s)
+		}
+		.refused {
+			// the session is no longer ours to know, and asking every two seconds would only
+			// repeat the refusal
 			h.session = 0
 			mut s := app.diag_status_copy()
 			s.session = 0
 			app.diag_set_status(gen, s)
-			app.diag_push('keep-alive 3E 80 refused (${err}); stopped until the next session change')
-			return
+			app.diag_push('keep-alive 3E 80 refused (${why}); stopped until the next session change')
 		}
-		app.diag_push('keep-alive 3E 80: ${err}')
-		app.diag_let_go(gen, mut h, .failed, 'keep-alive: ${err}')
-		return
+		.pending {
+			app.diag_push('keep-alive 3E 80 answered 0x78 (responsePending): a keep-alive does not wait; let go')
+			app.diag_let_go(gen, mut h, .failed, 'keep-alive answered 0x78 (responsePending)')
+		}
+		.failed {
+			app.diag_push('keep-alive 3E 80: ${why}')
+			app.diag_let_go(gen, mut h, .failed, 'keep-alive: ${why}')
+		}
 	}
-	h.cli.timeout_ms = saved
-	app.diag_detach(mut h)
-	h.last_ms = time.ticks()
-	mut s := app.diag_status_copy()
-	s.keepalives++
-	app.diag_set_status(gen, s)
 }
