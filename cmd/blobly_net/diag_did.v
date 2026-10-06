@@ -152,7 +152,7 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		if out.err {
 			return out, negative
 		}
-		app.diag_say(req, '${h.timing().prefix()} ${out.line} (0x2E ${name} is written in it)')
+		app.diag_push_for(req, '${h.timing().prefix()} ${out.line} (0x2E ${name} is written in it)')
 	}
 	if plan.unlock != 0 {
 		seed := h.cli.security_request_seed(plan.unlock) or {
@@ -162,17 +162,17 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 			}, answered(err)
 		}
 		if seed.any(it != 0) {
-			app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)}')
+			app.diag_push_for(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)}')
 			h.cli.security_send_key(plan.unlock + 1, uds.security_key(seed)) or {
 				return DiagOut{
 					line: '0x27 ${plan.unlock + 1:02X} (reference key): ${err}'
 					err:  true
 				}, answered(err)
 			}
-			app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock + 1:02X}: level ${plan.unlock} unlocked (reference key)')
+			app.diag_push_for(req, '${h.timing().prefix()} 0x27 ${plan.unlock + 1:02X}: level ${plan.unlock} unlocked (reference key)')
 		} else {
 			// an all-zero seed: ISO 14229-1's "already unlocked", and no key is sent
-			app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked')
+			app.diag_push_for(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked')
 		}
 		h.security = plan.unlock
 		mut st := app.diag_status_copy()
@@ -185,14 +185,14 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 			err:  true
 		}, answered(err)
 	}
-	app.diag_say(req, '${h.timing().prefix()} 0x2E ${name} ← ${hex(req.data)} (${did_shown(req.desc,
+	app.diag_push_for(req, '${h.timing().prefix()} 0x2E ${name} ← ${hex(req.data)} (${did_shown(req.desc,
 		req.did, req.data)}): written')
 	for id in req.follow {
 		out, negative := app.did_read(mut h, req, id)
 		if out.err && !negative {
 			return out, false // the connection failed under the read-back
 		}
-		app.diag_say(req, '${h.timing().prefix()} ${out.line}')
+		app.diag_push_for(req, '${h.timing().prefix()} ${out.line}')
 	}
 	return app.did_read(mut h, req, req.did)
 }
