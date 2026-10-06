@@ -28,5 +28,10 @@ for d in cmd/*/; do
 		fi
 	done
 done
+# and the one class -check cannot see: a mut receiver copied into something that outlives the call
+n=$((n + 1))
+if ! ./scripts/check_mut_refs.sh; then
+	fail=$((fail + 1))
+fi
 printf '%d checks, %d failed\n' "$n" "$fail"
 [ "$fail" -eq 0 ]

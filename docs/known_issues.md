@@ -13,6 +13,19 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## V language / compiler / tooling
 
+- 🟡 **Binding `&x` of a `mut x T` receiver, or capturing it by value in a closure, makes a COPY
+  of the struct.** Inside `fn (mut app App) f()`, `ap := &app` has type `App` at a new address, and
+  `fn [app] () { ... }` captures a copy too (a later `app.x = 7` is not seen through it). `a := app`
+  is `&App` at the caller's address, and so is `fn [mut app]`; an inline `&app.field` or
+  `voidptr(&app)` is the real address as well — it is the BINDING that copies (checked with
+  `typeof` and `ptr_str` on the pinned compiler). A copy handed to anything that outlives the
+  call — a closure, a thread, a struct field — is a second App with its own `mu` over the SAME
+  maps and arrays, so its writes race every other thread's with no lock between them. That was
+  the Diagnostics panel's tap after #402 (`diag_attach`): any multi-frame answer, whose Flow
+  Control is a send, crashed the GUI within a second (AddressSanitizer: double free in `map_set`,
+  from `note_emit` beside `rx_loop`). Worked around by `ap := app`; `scripts/check_mut_refs.sh`
+  (run by `check_cmds.sh`, so on both CI jobs) refuses both spellings in `cmd/` and `modules/`.
+
 - 🟡 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
   VALUE.** **Fixed upstream, and we cannot have it yet** — see the end of this entry: the fix is
   on V3 master and this repo pins a pre-V3 `v` with `-old-compiler` on purpose. Everything below
