@@ -75,13 +75,15 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# runs <path>: prints its --version (non-empty) when the binary runs; fails otherwise. Its stdout goes
-# to a file, not a pipe — a child it leaves behind cannot hold the capture open — limited to 64 KiB
-# (a flooding one is stopped there), within the probe's deadline (TERM, then KILL 2 s later).
+# runs <path>: prints its --version (the first non-empty line) when the binary runs; fails otherwise.
+# Its stdout goes to a file, not a pipe — a child it leaves behind cannot hold the capture open —
+# within the probe's deadline (TERM, then KILL 2 s later). No file-size limit: `ulimit -f` would bind
+# every file a real codex writes (a cache, a log), not only the capture.
 # the probe's deadline in seconds: CODEX_PROBE_TIMEOUT when a positive whole number (0 would mean
 # no deadline to `timeout`), else 10
 probe_s=${CODEX_PROBE_TIMEOUT:-10}
-case "$probe_s" in '' | *[!0-9]* | 0 | 00*) probe_s=10 ;; esac
+case "$probe_s" in '' | *[!0-9]* | *[!0]*) ;; *) probe_s= ;; esac # all zeros: no deadline to `timeout`
+case "$probe_s" in '' | *[!0-9]*) probe_s=10 ;; esac
 runs() {
 	local v f d rc
 	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
@@ -90,12 +92,12 @@ runs() {
 	d=$(mktemp -d) || return 1
 	f=$d/version
 	if command -v timeout >/dev/null 2>&1; then
-		(cd "$d" && ulimit -f 64 && exec timeout -k 2 "$probe_s" "$1" --version) </dev/null >"$f" 2>/dev/null
+		(cd "$d" && exec timeout -k 2 "$probe_s" "$1" --version) </dev/null >"$f" 2>/dev/null
 	else
-		(cd "$d" && ulimit -f 64 && exec "$1" --version) </dev/null >"$f" 2>/dev/null
+		(cd "$d" && exec "$1" --version) </dev/null >"$f" 2>/dev/null
 	fi
 	rc=$?
-	v=$(head -1 "$f")
+	v=$(grep -m 1 '[^[:space:]]' "$f" || true)
 	rm -rf "$d"
 	[ "$rc" = 0 ] && [ -n "$v" ] || return 1
 	printf '%s\n' "$v"
