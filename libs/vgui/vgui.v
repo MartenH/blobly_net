@@ -187,6 +187,7 @@ fn C.vgui_content_avail_h() f32
 fn C.vgui_is_item_deactivated_after_edit() int
 fn C.vgui_same_line()
 fn C.vgui_same_line_at(f32)
+fn C.vgui_text_dim_wrapped(&char)
 fn C.vgui_align_text_to_frame_padding()
 fn C.vgui_separator_text(&char)
 fn C.vgui_table_begin(&char, int) int
@@ -848,6 +849,11 @@ pub fn text(s string) {
 
 pub fn text_dim(s string) {
 	C.vgui_text_dim(s.str)
+}
+
+// text_dim_wrapped is text_dim wrapped at the window's right edge.
+pub fn text_dim_wrapped(s string) {
+	C.vgui_text_dim_wrapped(&char(s.str))
 }
 
 pub fn button(label string) bool {

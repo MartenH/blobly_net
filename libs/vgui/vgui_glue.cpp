@@ -892,6 +892,12 @@ void vgui_help_marker(const char* text) {
 }
 void vgui_text(const char* s) { ImGui::TextUnformatted(s); }
 void vgui_text_dim(const char* s) { ImGui::TextDisabled("%s", s); }
+// dim text wrapped at the window's right edge, for a sentence longer than the dialog is wide.
+void vgui_text_dim_wrapped(const char* s) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    ImGui::TextWrapped("%s", s);
+    ImGui::PopStyleColor();
+}
 int  vgui_button(const char* label) { return ImGui::Button(label) ? 1 : 0; }
 // a prominent coloured button at an explicit size (for the Start/Stop primary action).
 // r,g,b are 0-255; w/h are pixels (0 = auto for that axis).

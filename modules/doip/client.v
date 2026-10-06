@@ -120,11 +120,21 @@ fn announcements_in(got []transport.Datagram, once bool) []Announcement {
 // The answers come back to the socket the request left from, which is what lets a host that
 // drops unsolicited UDP (WSL's mirrored networking) still hear a unicast answer — a broadcast
 // request's answers come from addresses it never sent to, and such a host may drop them.
+//
+// The destination is RESOLVED first and the socket bound in the family it resolved to, so a
+// hostname with only an AAAA record is asked over IPv6 — the family is not guessed from the
+// spelling.
 pub fn identify(host string, port int, window_ms int) ![]Announcement {
 	h := host.trim_space().trim('[]')
-	bind := if h.contains(':') { '[::]:0' } else { '0.0.0.0:0' }
-	got := transport.udp_exchange(bind, join_host_port(h, port), [vehicle_id_request()],
-		window_ms)!
+	addrs := net.resolve_addrs(join_host_port(h, port), .unspec, .udp) or {
+		return error('cannot resolve ${h}: ${err}')
+	}
+	if addrs.len == 0 {
+		return error('${h} resolves to nothing')
+	}
+	dst := addrs[0]
+	bind := if dst.family() == .ip6 { '[::]:0' } else { '0.0.0.0:0' }
+	got := transport.udp_exchange(bind, dst.str(), [vehicle_id_request()], window_ms)!
 	return announcements_in(got, true)
 }
 

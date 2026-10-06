@@ -64,13 +64,15 @@ they are not client-side expectations.
 
 Configure → **Discover…** has a DoIP section: a host field (`host` or `host:port`, port 13400
 when left out, `127.0.0.1` when empty), **Ask host** and **Find on network**. Both send one
-vehicle identification request and list every entity that answers within ~1.2 s — address, logical
-address, VIN — and **Add ticked** makes each ticked one a `doip` channel: named after its VIN
+vehicle identification request and list every entity that answers within the find window
+(`doip_find_window_ms` in `cmd/blobly_net/config.v`: ISO 13400-2's A_DoIP_Ctrl) — address,
+logical address, VIN — and **Add ticked** makes each ticked one a `doip` channel: named after its VIN
 (or its address when it reports none), the address it answered from on the asked port, the
 ECU address it reported, tester 0x0E80 (edit it in the row). One already reached by a DoIP
 channel — same endpoint as Start dials it, same ECU address — is marked *added*. A DoIP bus row
 offers the same lookup for its own address (**entity** → find), and picking an entity there sets
-the row's ECU address.
+the row's ECU address. Discover stays reachable while a measurement runs (Configure → Discover…),
+which is when a simulated entity exists to be found; adding a channel waits for Stop.
 
 **Ask host** is a unicast request to the address you type. **Find on network** sends the same
 request to `255.255.255.255` on that port, so every entity on the segment that hears it answers.

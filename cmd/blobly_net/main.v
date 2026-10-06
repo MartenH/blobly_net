@@ -244,16 +244,12 @@ fn main() {
 	// Open the Discover dialog; and ask these DoIP hosts (comma-separated host[:port]), so the
 	// Discover dialog and a DoIP bus row are screenshot-verified with entities found.
 	if os.getenv('BLOBLY_SHOW_DISCOVER') != '' {
-		app.refresh_discovery()
-		app.disc_open = true
+		app.open_discover()
 	}
-	if hosts := os.getenv_opt('BLOBLY_DOIP_FIND') {
-		for h in hosts.split(',') {
-			if h.trim_space() != '' {
-				app.start_doip_find(h, false)
-			}
-		}
-	}
+	// BLOBLY_DOIP_FIND_FRAME delays the finds to that frame — after an autostart, so an entity
+	// the run hosts is there to answer.
+	doip_find_hosts := (os.getenv('BLOBLY_DOIP_FIND')).split(',').filter(it.trim_space() != '')
+	doip_find_frame := os.getenv('BLOBLY_DOIP_FIND_FRAME').int()
 	// Same, for the Generators panel and its Quick Send.
 	if os.getenv('BLOBLY_SHOW_GEN') != '' {
 		app.show_gen = true
@@ -297,6 +293,11 @@ fn main() {
 	mut frame := 0
 	for vgui.running() {
 		frame++
+		if frame == doip_find_frame || (doip_find_frame == 0 && frame == 1) {
+			for h in doip_find_hosts {
+				app.start_doip_find(h, false)
+			}
+		}
 		// During the autostart settle window, wake the loop so those frames render back-to-back
 		// (the event-driven wait would otherwise pace them ~0.5s apart before any RX thread exists).
 		if autostart_frame > 0 && frame < autostart_frame {

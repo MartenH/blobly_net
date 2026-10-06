@@ -21,6 +21,8 @@ discover*.v`); this is the visual layer on top.
   turns into a `doip` channel — named after the VIN, ECU address the found one, tester 0x0E80.
   A DoIP bus row has the same lookup as its **entity** picker. On WSL, answers to a broadcast may
   be dropped (they come from an address this host never sent to); asking the address works.
+  The dialog stays open across Start and can be opened mid-run (the Configuration editor offers
+  only Discover… then): looking works, while the add buttons and Vector **Assign** wait for Stop.
 - 🔶 **Partly shipped** — the dialog and Add-to-Project exist; inline per-row edit
   (name / mode / DBC) in the grid does not.
 - 🔜 **Part B** — the DBC→generators scaffolder as a second section of the same dialog.

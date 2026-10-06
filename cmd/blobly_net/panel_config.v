@@ -448,6 +448,7 @@ fn draw_discover_dialog(mut app App) {
 		app.mu.lock()
 		app.disc_doip = []
 		app.disc_doip_note = ''
+		app.disc_doip_gen++ // a find still out lands in a list that no longer exists
 		app.mu.unlock()
 		app.disc_doip_tick = map[string]bool{}
 	}
@@ -458,12 +459,11 @@ fn draw_discover_dialog(mut app App) {
 	// mid-measurement (the drain in rebuild_from_proj cannot help here: these workers are not
 	// leaving, they belong to the run that is still on).
 	//
-	// SCOPED TO THESE THREE, and said so rather than "every button below": the per-row Assign
-	// further down writes VECTOR DRIVER state, not this app's, and is a different question with
-	// a different answer — see #288.
+	// The per-row Assign further down writes VECTOR DRIVER state, not this app's — a different
+	// question (#288) — and is withheld while running at its own site.
 	if app.running {
 		vgui.same_line()
-		vgui.text_dim('(stop the measurement to add buses)')
+		vgui.text_dim('(looking works while running; stop the measurement to add buses)')
 	} else {
 		vgui.same_line()
 		if vgui.button('+ vcan') {
@@ -641,7 +641,12 @@ fn draw_discover_dialog(mut app App) {
 					// the application's channel list" from "failed this time". The operator knows
 					// which number they want; asking is both safer and shorter than any inference
 					// (#192, option 3).
-					if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
+					// NOT WHILE RUNNING: the dialog is reachable mid-run now (for looking), and an
+					// Assign rewrites the driver's persistent mapping under ports the run may hold
+					// open — #288's option 1, so opening the dialog mid-run does not widen it.
+					if app.running {
+						vgui.text_dim('(stop the measurement to assign)')
+					} else if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
 						n := vgui.buf_str(app.disc_vector_ch_buf).trim_space()
 						if n == '' || !project.is_all_digits(n) {
 							app.notify('type the Vector application channel to assign (1-64) before pressing Assign')
@@ -663,7 +668,7 @@ fn draw_discover_dialog(mut app App) {
 		}
 	}
 	vgui.separator()
-	vgui.text_dim('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
+	vgui.text_dim_wrapped('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
 	if vgui.button('Close##disc') {
 		app.disc_open = false
 	}
@@ -752,6 +757,12 @@ fn draw_config(mut app App) {
 		if vgui.button('Close') {
 			app.show_config = false
 		}
+		// Looking is not editing: Discover lists interfaces and asks DoIP entities — a simulated
+		// one exists only while a run hosts it — and refuses its add buttons until Stop.
+		vgui.same_line()
+		if vgui.button('Discover...') {
+			app.open_discover()
+		}
 		vgui.end()
 		return
 	}
@@ -792,9 +803,7 @@ fn draw_config(mut app App) {
 	}
 	vgui.same_line()
 	if vgui.button('Discover...') {
-		app.refresh_discovery()
-		app.start_cansub_browse()
-		app.disc_open = true
+		app.open_discover()
 	}
 	if app.dirty || app.cfg_file.dirty {
 		vgui.same_line()

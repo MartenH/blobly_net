@@ -981,11 +981,10 @@ fn (mut app App) start() {
 	// the class is every target). Closed at the state change, once, instead of teaching each
 	// confirm about app.running.
 	app.fb_open = false
-	// AND THE DISCOVER DIALOG, for exactly the same reason and missed for exactly as long: its
-	// "+ vcan", "+ Sim net" and "+ Add ticked" all reach rebuild_from_proj, which empties and
-	// re-appends app.chans while this run's readers are walking it. The picker was closed here
-	// and this was not, so a dialog left floating across Start was a live rebuild one click away.
-	app.disc_open = false
+	// NOT the Discover dialog: it stays open across Start, because looking is a run-time job (a
+	// simulated DoIP entity exists only while a run hosts it). Its "+ vcan", "+ Sim net" and
+	// "+ Add ticked" reach rebuild_from_proj, so they are gated on app.running at DRAW time —
+	// the same frame the click lands in — rather than by closing the dialog here.
 	// the epoch the time-based generator sources are evaluated from (sine/sawtooth/stepmod), so a
 	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
 	// UNDER app.mu: fire_index reads gen_send_n/gen_state_epoch under it, and a cyclic fire that

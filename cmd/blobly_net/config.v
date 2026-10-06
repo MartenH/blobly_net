@@ -288,6 +288,13 @@ fn (app &App) unique_bus_name(base string) string {
 	return base
 }
 
+// open_discover opens the Discover dialog on a fresh scan, with a CANsub browse under way.
+fn (mut app App) open_discover() {
+	app.refresh_discovery()
+	app.start_cansub_browse()
+	app.disc_open = true
+}
+
 // refresh_discovery re-scans the machine's transports for the Discover dialog.
 fn (mut app App) refresh_discovery() {
 	app.disc_scan = app.scan_local()
@@ -497,12 +504,13 @@ fn (mut app App) start_doip_find(target string, everyone bool) {
 	}
 	app.mu.lock()
 	app.disc_doip_busy++
+	gen := app.disc_doip_gen
 	app.mu.unlock()
 	spawn doip_find_worker(app, if everyone { '255.255.255.255' } else { host }, port,
-		everyone)
+		everyone, gen)
 }
 
-fn doip_find_worker(app &App, host string, port int, everyone bool) {
+fn doip_find_worker(app &App, host string, port int, everyone bool, gen u64) {
 	mut a := unsafe { app }
 	where := if everyone { 'the network (broadcast, port ${port})' } else { '${host}:${port}' }
 	mut note := ''
@@ -520,6 +528,12 @@ fn doip_find_worker(app &App, host string, port int, everyone bool) {
 		note = '${got.len} DoIP ${if got.len == 1 { 'entity' } else { 'entities' }} answered on ${where}'
 	}
 	a.mu.lock()
+	if a.disc_doip_gen != gen {
+		// Refresh since this find began: its answers belong to the list it cleared
+		a.disc_doip_busy--
+		a.mu.unlock()
+		return
+	}
 	for ann in got {
 		f := project.DoipFound{
 			// Asked by address, the entity is reached at the address ASKED — a hostname, or an

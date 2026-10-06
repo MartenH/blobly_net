@@ -451,6 +451,41 @@ fn test_identify_lists_the_answering_entity_with_its_dial_address() {
 	assert found[0].dial_address(dport) == '127.0.0.1:${dport}'
 }
 
+// A hostname is resolved before the socket is bound, so one with only an IPv6 address
+// (ip6-localhost, ::1 in /etc/hosts) is asked over IPv6 rather than refused for having no colon.
+fn test_identify_resolves_a_hostname_to_its_own_family() {
+	net.resolve_addrs('ip6-localhost:13400', .ip6, .udp) or {
+		eprintln('skip: ip6-localhost does not resolve here')
+		return
+	}
+	mut srv := new_server(ServerCfg{ logical_address: 0x07A1, vin: 'TESTVIN0000000043' },
+		echo_handler)
+	dport := listen_somewhere(mut srv, '::1')
+	if dport == 0 {
+		eprintln('skip: no IPv6 loopback')
+		return
+	}
+	spawn fn (mut s DoipServer) {
+		for {
+			s.serve_udp_once(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+	time.sleep(150 * time.millisecond)
+	found := identify('ip6-localhost', dport, 400) or {
+		srv.close()
+		assert false, 'identify: ${err}'
+		return
+	}
+	srv.close()
+	assert found.len == 1
+	assert found[0].info.logical_address == 0x07A1
+}
+
 // The power-on announcement, end to end: an entity announces unasked and a LISTENING tester
 // hears it. This is the half of discovery a real vehicle performs and the simulator did not —
 // a tester that waits for announcements saw nothing at all before this.

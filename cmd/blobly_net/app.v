@@ -498,6 +498,7 @@ mut:
 	disc_doip          []project.DoipFound
 	disc_doip_note     string
 	disc_doip_busy     int
+	disc_doip_gen      u64 // bumped by Refresh: a find begun before it is dropped when it lands
 	disc_doip_tick     map[string]bool
 	disc_doip_host_buf []u8 = mkbuf('', 64)
 	cfg_rows_open      bool // dev hook (BLOBLY_CFG_ROWS_OPEN): bus rows start expanded
