@@ -81,6 +81,14 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 	got := transport.udp_window(addr, group, '0', window_ms) or {
 		return error('cannot listen for announcements: ${err}')
 	}
+	return announcements_in(got, false)
+}
+
+// announcements_in keeps the datagrams that are well-formed vehicle announcements. With `once`,
+// an entity is kept once — a broadcast request heard on two interfaces is answered twice — and
+// without it every announcement is kept, since an entity repeating itself is what a passive
+// listener is there to see.
+fn announcements_in(got []transport.Datagram, once bool) []Announcement {
 	mut out := []Announcement{}
 	for d in got {
 		if d.data.len < header_len {
@@ -91,12 +99,117 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 			continue
 		}
 		info := parse_vehicle_announcement(msg.payload) or { continue }
+		if once && out.any(it.from == d.from && it.info.logical_address == info.logical_address
+			&& it.info.vin == info.vin) {
+			continue
+		}
 		out << Announcement{
 			info: info
 			from: d.from
 		}
 	}
 	return out
+}
+
+// identify sends ONE vehicle identification request to `host:port` and returns every entity
+// that answers within `window_ms`, each with the address it answered from. `host` is one
+// entity's address (ask this host) or a broadcast address (find on the network: every entity on
+// the segment that hears it answers). The whole window is waited out either way, since nothing
+// says how many entities will answer.
+//
+// The answers come back to the socket the request left from, which is what lets a host that
+// drops unsolicited UDP (WSL's mirrored networking) still hear a unicast answer — a broadcast
+// request's answers come from addresses it never sent to, and such a host may drop them.
+//
+// The destination is RESOLVED first and the socket bound in the family it resolved to, so a
+// hostname with only an AAAA record is asked over IPv6 — the family is not guessed from the
+// spelling.
+//
+// EVERY address the name resolves to is asked, in the same window: a name with an A and an AAAA
+// record, or several A records, reaches its entity through whichever one it listens on.
+pub fn identify(host string, port int, window_ms int) ![]Announcement {
+	h := bare_host(host)!
+	addrs := net.resolve_addrs(join_host_port(h, port), .unspec, .udp) or {
+		return error('cannot resolve ${h}: ${err}')
+	}
+	if addrs.len == 0 {
+		return error('${h} resolves to nothing')
+	}
+	return identify_addrs(addrs, window_ms)
+}
+
+// bare_host is `host` without the brackets an IPv6 literal may carry — a MATCHING outer pair
+// only. A bracket without its partner (`[::1`, `::1]`), or one inside the name, is refused:
+// stripping it would ask some other spelling than the one typed.
+pub fn bare_host(host string) !string {
+	h := host.trim_space()
+	if h.starts_with('[') && h.ends_with(']') {
+		inner := h[1..h.len - 1]
+		if !inner.contains('[') && !inner.contains(']') {
+			return inner
+		}
+	} else if !h.contains('[') && !h.contains(']') {
+		return h
+	}
+	return error('"${h}" is not a host: a bracket must enclose an IPv6 address')
+}
+
+// ExchangeOutcome is one family's exchange, carried out of its thread whole.
+struct ExchangeOutcome {
+	got []transport.Datagram
+	err string
+}
+
+fn exchange_family(bind string, tos []net.Addr, window_ms int) ExchangeOutcome {
+	got := transport.udp_exchange_many(bind, tos, [vehicle_id_request()], window_ms) or {
+		return ExchangeOutcome{
+			err: err.msg()
+		}
+	}
+	return ExchangeOutcome{
+		got: got
+	}
+}
+
+// identify_addrs asks every one of `addrs` in ONE window: one socket per address family, the
+// families concurrently, so two families do not take two windows. An error only when no
+// family could be asked at all.
+fn identify_addrs(addrs []net.Addr, window_ms int) ![]Announcement {
+	v4 := addrs.filter(it.family() == .ip)
+	v6 := addrs.filter(it.family() == .ip6)
+	mut threads := []thread ExchangeOutcome{}
+	if v4.len > 0 {
+		threads << spawn exchange_family('0.0.0.0:0', v4, window_ms)
+	}
+	if v6.len > 0 {
+		threads << spawn exchange_family('[::]:0', v6, window_ms)
+	}
+	mut got := []transport.Datagram{}
+	mut errs := []string{}
+	for t in threads {
+		o := t.wait()
+		if o.err != '' {
+			errs << o.err
+		}
+		got << o.got
+	}
+	if errs.len == threads.len && errs.len > 0 {
+		return error(errs.join('; '))
+	}
+	return announcements_in(got, true)
+}
+
+// dial_address is where a tester reaches this entity over TCP: the host it answered from, on
+// `port` — the port the request was sent to, which ISO 13400 makes the TCP port as well. Not
+// the answer's source port, which an entity may send from an ephemeral socket.
+pub fn (a Announcement) dial_address(port int) string {
+	mut host := a.from
+	if host.starts_with('[') {
+		host = host.all_before(']') + ']'
+	} else if host.count(':') == 1 {
+		host = host.all_before(':')
+	}
+	return '${host}:${port}'
 }
 
 // collect_announcements is the IPv4 form, kept for callers that do not care.

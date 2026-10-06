@@ -46,7 +46,7 @@ sets the frame rate and UI scale.
 - **Shell** — command line on the target (over CAN; Up/Down = history)
 - **Generators** — quick send + saved senders (manual / on-key / cyclic)
 - **Replay** — transport controls (pause / seek / speed) for running replay channels
-- **Diagnostics / DoIP** — UDS diagnostics and DoIP discovery
+- **Diagnostics** — UDS diagnostics, over CAN or DoIP (find a DoIP entity and add it as a channel in Configure → Discover…)
 - **Script** — run a Lua test file
 
 ## Trace capture controls

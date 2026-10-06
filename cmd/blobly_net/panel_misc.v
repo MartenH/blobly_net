@@ -86,9 +86,6 @@ fn draw_activity_bar(mut app App) {
 		app.show_dbc = !app.show_dbc
 	}
 	vgui.set_item_tooltip('DBC Editor')
-	if vgui.toggle_button('DoI', app.show_doip, -1) {
-		app.show_doip = !app.show_doip
-	}
 	if vgui.toggle_button('Net', app.show_network, -1) {
 		app.show_network = !app.show_network
 	}
@@ -209,7 +206,6 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
 			app.show_dbc = vgui.menu_item_check('DBC Editor', app.show_dbc)
-			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
 			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
 			app.show_replay = vgui.menu_item_check('Replay', app.show_replay)
@@ -606,7 +602,6 @@ fn (mut app App) reset_layout() {
 	app.show_diag = false
 	app.show_gen = false
 	app.show_script = false
-	app.show_doip = false
 	app.show_prefs = false // a dialog like the others; left open it hovered over the reset workspace (codex #307 r1)
 	app.show_network = false
 	app.show_stats = false
@@ -662,8 +657,6 @@ fn build_layout() {
 	// surface fight small monitoring panels for one dock node's space.
 	vgui.dock_window('System', midnode)
 	vgui.dock_window('Flash', midnode)
-	// DoIP Discovery is a dialog (begin_dialog) and is not placed: a dock assignment persisted
-	// in the layout would dock it despite the NoDocking flag (codex #307 r9).
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
 	vgui.dock_window('Replay', bottom)

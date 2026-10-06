@@ -1,5 +1,7 @@
 module doip
 
+import transport
+
 fn test_header_roundtrip() {
 	msg := encode(pt_diagnostic_message, [u8(0xDE), 0xAD, 0xBE, 0xEF])
 	assert msg.len == header_len + 4
@@ -115,4 +117,49 @@ fn test_parse_vehicle_announcement_requires_full() {
 	}
 	assert info.eid.len == 6
 	assert info.gid.len == 6
+}
+
+// An unconfigured VIN (ISO 13400: all 0x00 or all 0xFF) is no name; a padded one is trimmed.
+fn test_vin_text_drops_the_unconfigured_fill() {
+	assert VehicleInfo{ vin: 'WVWZZZ1JZXW000001' }.vin_text() == 'WVWZZZ1JZXW000001'
+	assert VehicleInfo{ vin: [u8(0)].repeat(17).bytestr() }.vin_text() == ''
+	assert VehicleInfo{ vin: [u8(0xFF)].repeat(17).bytestr() }.vin_text() == ''
+	assert VehicleInfo{ vin: 'SHORT' + [u8(0)].repeat(12).bytestr() }.vin_text() == 'SHORT'
+}
+
+// The address a tester dials is the answering host on the DISCOVERY port, IPv6 bracketed.
+fn test_dial_address_keeps_the_host_and_takes_the_asked_port() {
+	assert Announcement{ from: '192.168.0.50:51234' }.dial_address(13400) == '192.168.0.50:13400'
+	assert Announcement{ from: '[fe80::1]:13400' }.dial_address(13401) == '[fe80::1]:13401'
+}
+
+// A passive listener keeps every announcement (an entity repeats itself, and that is what it is
+// there to see); an identification request keeps one per entity.
+fn test_only_identify_folds_repeated_answers() {
+	ann := vehicle_announcement('TESTVIN0000000042', 0x07A0, default_eid, [])
+	got := [
+		transport.Datagram{
+			from: '10.0.0.2:13400'
+			data: ann
+		},
+		transport.Datagram{
+			from: '10.0.0.2:13400'
+			data: ann
+		},
+	]
+	assert announcements_in(got, false).len == 2
+	assert announcements_in(got, true).len == 1
+}
+
+// Brackets are an IPv6 literal's matching outer pair, or nothing.
+fn test_bare_host_strips_only_a_matching_pair() {
+	assert bare_host('[::1]')! == '::1'
+	assert bare_host(' 192.168.0.50 ')! == '192.168.0.50'
+	assert bare_host('::1')! == '::1'
+	assert bare_host('ecu.local')! == 'ecu.local'
+	for bad in ['[::1', '::1]', '[[::1]]', 'ecu[1]'] {
+		if _ := bare_host(bad) {
+			assert false, '${bad} accepted'
+		}
+	}
 }

@@ -150,26 +150,6 @@ fn doip_udp_worker(app &App, mut s doip.DoipServer) {
 	}
 }
 
-fn doip_worker(app &App, host string) {
-	mut a := unsafe { app }
-	mut h := host
-	mut port := 13400
-	if host.contains(':') {
-		parts := host.split(':')
-		h = parts[0]
-		port = parts[1].int()
-	}
-	info := doip.discover(h, port, 1200) or {
-		a.notify('DoIP discover ${host}: ${err}')
-		return
-	}
-	a.mu.lock()
-	a.doip_ents << info
-	a.mu.unlock()
-	a.notify('DoIP: found VIN ${info.vin}')
-	vgui.wake()
-}
-
 // notify_gen logs `msg` iff `gen` is still the LIVE, RUNNING measurement — the gate every
 // WORKER-side failure notify must pass, with the check and the append in ONE take of app.mu:
 // a check that unlocks before the append can straddle a Stop/Start and log a stale worker's
