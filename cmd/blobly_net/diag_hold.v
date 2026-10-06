@@ -66,6 +66,9 @@ mut:
 	attached bool // CAN only: a channel is open for the exchange in progress
 	cli      uds.Client
 	session  u8
+	// how many requests the press in progress put on the carrier (diag_request): what the
+	// unsent-request retry asks, since `cli.last` is the last exchange of a press of several
+	press_sent int
 	last_ms  i64 // the last thing sent to the ECU (time.ticks), which is what S3 runs from
 	// CAN: the client's timing, carried from one exchange's client to the next
 	timeout_ms int
@@ -453,7 +456,7 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 	out, negative = app.diag_request(gen, mut h, req)
 	// (a press its token cancelled is not a stale connection: it is not repeated)
 	if out.err && !h.stop()
-		&& diaghold.retry_on_reopen(t.carrier.doip, held_before, h.cli.last.sent, negative) {
+		&& diaghold.retry_on_reopen(t.carrier.doip, held_before, h.press_sent, negative) {
 		// the entity had closed the idle connection: the request never went out, so it is asked
 		// once more on a fresh one
 		app.diag_push('[not sent] ${out.line} — reopening')
@@ -530,8 +533,12 @@ struct DiagOut {
 // an error was a negative response (the ECU answering, which keeps the connection).
 fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	h.cli.last = uds.ExchangeTiming{}
+	h.press_sent = 0
 	app.diag_attach(gen, mut h) or { return DiagOut{line: '${req.kind}: ${err}', err: true}, false }
+	// counted on the client this press runs on (a CAN attach makes a new one per press)
+	base := h.cli.sent_count
 	defer {
+		h.press_sent = int(h.cli.sent_count - base)
 		app.diag_detach(mut h)
 		h.last_ms = time.ticks()
 	}

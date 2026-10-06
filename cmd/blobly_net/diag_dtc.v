@@ -255,6 +255,16 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 				}, answered(err)
 			}
 			app.diag_push('${h.timing().prefix()} 0x14 FFFFFF: every DTC cleared')
+			// what was read before the clear no longer describes the ECU: gone NOW, so a refresh
+			// that fails cannot leave pre-clear records on screen under its error
+			app.mu.lock()
+			if app.dtc_view.key == req.key {
+				app.dtc_view = DtcView{
+					key:   req.key
+					at_ms: time.ticks()
+				}
+			}
+			app.mu.unlock()
 			return app.dtc_read(mut h, DiagReq{
 				...req
 				kind: 'dtcs'

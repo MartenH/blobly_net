@@ -324,3 +324,18 @@ fn test_a_snapshot_times_its_request_and_its_probes_apart() {
 	_, t2 := c.snapshot_timed(0x021900, 0xFF) or { panic(err) }
 	assert t2.request.sent && t2.probes.len == 0
 }
+
+// sent_count counts every request put on the carrier, whatever came back — what tells a caller
+// running several exchanges as one operation that one of them went out.
+fn test_sent_count_counts_every_request_that_went_out() {
+	mut m := &RecChannel{
+		answers: {
+			'1904021900ff': emb_19_04_all
+		}
+	}
+	mut c := new_client(m)
+	assert c.sent_count == 0
+	c.raw([u8(0x19), 0x04, 0x02, 0x19, 0x00, 0xFF]) or { panic(err) }
+	c.raw([u8(0x14), 0xFF, 0xFF, 0xFF]) or {} // refused (0x31): it went out all the same
+	assert c.sent_count == 2
+}
