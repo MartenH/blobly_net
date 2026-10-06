@@ -60,6 +60,7 @@ fn (mut app App) plot_auto_step(rows []TraceRow, frame int) {
 			app.sel_tp = r.tp
 			app.sel_wire = r.wire
 			app.sel_da = r.tp_da
+			app.sel_msg = ''
 		}
 		seen[k] = true
 		app.add_watch(r.id, r.ext, r.tp, r.wire, r.tp_da, app.plot_auto.sig)

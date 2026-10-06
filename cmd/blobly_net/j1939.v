@@ -440,40 +440,28 @@ fn find_pgn_message_in(dbs []candb.Database, pgn u32, sa u8) ?candb.Message {
 
 // dbs_for_gate is the databases of the wire a gate names (every row on it, by the adapter-aware
 // destination key), and all of them for a gate no wire answers to — and NONE for an import's
-// undecidable bus, or one filed under its own label (`trace_wire`), which is the same bus. Two J1939 wires may define one PGN with two layouts, so a rejoined message is
-// named and decoded against ITS wire's databases (codex on #329).
-// NOTE concurrency: like dbs_for_dest — app.chans is read unlocked, as every panel reads it.
+// undecidable bus, or one filed under its own label (`trace_wire`), which is the same bus.
+// Two J1939 wires may define one PGN with two layouts, so a rejoined message is named and
+// decoded against ITS wire's databases (codex on #329).
+// NOTE concurrency: `wire_dbs` and `dbs` are read unlocked, as every panel reads them; both are
+// replaced only by rebuild_from_proj, after the run's workers have drained.
 fn (app &App) dbs_for_gate(gate string) []candb.Database {
 	// THE SCOPE QUESTION, which evidence does not move: a bus the file proved J1939 was still
 	// placed somewhere (or nowhere), and that placement is what its databases come from
 	// (gaterule, codex round 3).
 	wire := gaterule.placement(gate)
-	mut out := []candb.Database{}
-	mut seen := map[string]bool{}
-	mut placed := false
-	for c in app.chans {
-		if c.doip || c.someip {
-			continue
-		}
-		if transport.destination_key_for(c.adapter, c.iface) == wire {
-			// Keyed by what is being ADDED, not by the row: two rows can share one raw
-			// interface and attach DIFFERENT databases, and skipping the second by interface
-			// left the wire auto-enabled by a declaration whose message the decode then could
-			// not find (codex). A file listed twice is still added once.
-			placed = true
-			// THE LIVE COPIES, like `loaded_dbs_for` everywhere else: `dbs_by_iface` holds
-			// value copies that refresh on save or reload, so while the DBC editor has unsaved
-			// changes a rejoined message kept the OLD bit layout, scaling and signal names in
-			// the trace, the Signals panel and Graphics — the one place an editor's point is
-			// to see the change (codex).
-			for raw in c.databases {
-				ref := candb.canonical_database_ref(app.resolve_asset(raw))
-				if ref in seen {
-					continue
-				}
-				seen[ref] = true
-				out << app.loaded_dbs_for([ref])
-			}
+	// Every row on the wire, by the adapter-aware destination key, each file once: two rows can
+	// share one raw interface and attach DIFFERENT databases, and skipping the second by
+	// interface left the wire auto-enabled by a declaration whose message the decode then could
+	// not find (codex). THE LIVE COPIES (`app.dbs`, by index), so while the DBC editor has
+	// unsaved changes a rejoined message is decoded with them — the one place an editor's point
+	// is to see the change (codex). Built once per runtime view (`build_wire_dbs`).
+	placed := wire in app.wire_dbs
+	idxs := app.wire_dbs[wire] or { []int{} }
+	mut out := []candb.Database{cap: idxs.len}
+	for i in idxs {
+		if i < app.dbs.len {
+			out << app.dbs[i]
 		}
 	}
 	// THE FALLBACK IS FOR A GATE THIS PROJECT CANNOT PLACE, not for a wire that simply has no

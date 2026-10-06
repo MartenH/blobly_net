@@ -290,7 +290,8 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// still draining after Stop — is not in that lifecycle, so resolving a name outside the
 	// mutex could read app.dbs while a configuration edit replaces it.
 	chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
-	name, reading := app.j1939_iface_locked(iface, f, app.lookup_name(f.id, f.extended))
+	wire := app.dest_cached_locked(iface)
+	name, reading := app.j1939_iface_locked(iface, f, app.lookup_name_on(wire, f.id, f.extended))
 	app.expire_pending_locked(t_ms)
 	// Paused: the emission is STILL tracked so its echo is recognised as ours — otherwise a
 	// paused trace would feed our own frames to the E2E verifier as the ECU's and log them to
@@ -298,7 +299,6 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	mut seq := ghost_base + app.ghost_seq
 	app.ghost_seq++
 	if !app.paused {
-		wire := app.dest_cached_locked(iface)
 		k := gkey_frame(origin, chn, wire, f)
 		seq = app.push_row_locked(TraceRow{
 			t_ms:    t_ms

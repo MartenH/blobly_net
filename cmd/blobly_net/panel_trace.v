@@ -854,6 +854,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				app.sel_tp = r.tp
 				app.sel_wire = r.wire
 				app.sel_da = r.tp_da
+				app.sel_msg = ''
 			}
 			// right-click a row → context menu (plot its signals / add to filter). Both entries
 			// are CAN-only for the same reason: the lookup goes to the loaded DBCs, so a SOME/IP

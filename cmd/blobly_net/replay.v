@@ -116,7 +116,6 @@ fn (mut app App) load_recording(path string) {
 	// so filed under the bare label, the file's claims named live frames the moment the operator
 	// resumed (codex on #329). One key per label, built once.
 	mut rec_keys := map[string]string{}
-	mut rec_wires := map[string]string{} // each label's TraceRow.wire
 	mut rec_gates := map[string]string{} // each label's gate, for expiring its listener while another bus talks
 	mut t_last := 0.0
 	mut alias := map[string]string{} // recorded label -> destination key
@@ -269,8 +268,10 @@ fn (mut app App) load_recording(path string) {
 		}, sole).gate
 	}
 	mut gate_by_bus := map[string]string{}
+	mut wire_by_bus := map[string]string{} // each label's TraceRow.wire (#330)
 	for lbl, _ in rec_buses {
 		gate_by_bus[lbl] = bus_gate(lbl)
+		wire_by_bus[lbl] = trace_wire(gate_by_bus[lbl], rec_wire(lbl))
 	}
 	app.mu.lock()
 	app.reset_trace_locked()
@@ -344,11 +345,7 @@ fn (mut app App) load_recording(path string) {
 		// same function rather than by a second spelling of the rule.
 		gate := gate_by_bus[e.iface] or { bus_gate(e.iface) }
 		// the wire its rows are filed under, selected and plotted by (#330)
-		row_wire := rec_wires[e.iface] or {
-			w := trace_wire(gate, rk)
-			rec_wires[e.iface] = w
-			w
-		}
+		row_wire := wire_by_bus[e.iface] or { trace_wire(gate, rk) }
 		// REP, not BUS: these frames were never on this bench's wire. A candump log carries no
 		// origin at all, so we cannot say whether a given line was the recorder's tester, its
 		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
@@ -375,7 +372,7 @@ fn (mut app App) load_recording(path string) {
 		}
 		visible := i >= first_row // trimmed rows are never drawn, so they are not built
 		if visible {
-			name, reading := app.j1939_frame_locked(gate, rk, f, app.lookup_name(f.id, f.extended))
+			name, reading := app.j1939_frame_locked(gate, rk, f, app.lookup_name_on(row_wire, f.id, f.extended))
 			app.push_row_locked(TraceRow{
 				t_ms:     t_row
 				ch:       e.iface

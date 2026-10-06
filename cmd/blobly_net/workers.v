@@ -939,7 +939,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			}
 		}
 		a.mu.unlock()
-		name := a.lookup_name(f.id, f.extended)
+		name := a.lookup_name_on(want_dest, f.id, f.extended)
 		// Verify protection on the way in. Done here, on the RX thread that already owns the
 		// frame, because the check is stateful — it needs the previous counter for this id —
 		// and a stateful check spread across draw calls would depend on what the user scrolled.

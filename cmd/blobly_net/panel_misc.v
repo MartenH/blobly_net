@@ -705,7 +705,7 @@ fn (app &App) sel_watch(sig string) Watch {
 
 // bind_selection gives a selection made from the database list — which names a message and no
 // wire — the wire it is shown and plotted from: the oldest row's among wires whose databases
-// define it (`watchrule.Ident.bind`). Until such a row arrives it stays unbound and shows
+// define THAT message at its id (`watchrule.Ident.bind`). Until such a row arrives it stays unbound and shows
 // nothing, rather than every wire's rows at once.
 fn (mut app App) bind_selection(rows []TraceRow) {
 	if app.sel_id < 0 || app.sel_wire != '' {
@@ -713,11 +713,14 @@ fn (mut app App) bind_selection(rows []TraceRow) {
 	}
 	w := app.sel_watch('')
 	a := app
+	name := app.sel_msg
 	app.sel_wire = w.bind(rows.len, fn [rows] (k int) watchrule.Row {
 		return watch_row(rows[k])
-	}, fn [a, w] (wire string) bool {
-		_ := a.message_on(wire, w.id, w.ext, w.tp) or { return false }
-		return true
+	}, fn [a, w, name] (wire string) bool {
+		m := a.message_on(wire, w.id, w.ext, w.tp) or { return false }
+		// the message PICKED, where the list said which: the list shows one entry per (id,
+		// ext) across every database, and another wire may define another message there
+		return name == '' || m.name == name
 	})
 }
 
@@ -748,6 +751,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 				app.sel_tp = false
 				app.sel_wire = '' // unbound: bind_selection picks the wire below
 				app.sel_da = -1 // an ordinary frame has no connection receiver
+				app.sel_msg = m.name
 			}
 		}
 	}
@@ -850,6 +854,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		vgui.end()
 		return
 	}
+	app.bind_watches(rows)
 	if app.watch.len == 0 {
 		vgui.text_dim('tick a signal in the Signals panel to plot it (or right-click a Trace row)')
 		vgui.end()

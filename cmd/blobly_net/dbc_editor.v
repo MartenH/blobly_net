@@ -322,7 +322,7 @@ fn (mut app App) dbc_refresh_trace_names() {
 				j1939.pgn_name(j1939.pgn(r.id)) or { '' }
 			}
 		} else {
-			app.lookup_name(r.id, r.ext)
+			app.lookup_name_on(r.wire, r.id, r.ext)
 		}
 		nn := j1939_join(base, r.reading)
 		if nn != r.name {
@@ -975,13 +975,7 @@ fn draw_dbc_editor(mut app App) {
 				// and since #330 a frame's watch the same way — moved only where this file is
 				// the one its wire decodes it with (`frame_backed_by`). `renamed_by` is the
 				// rule, beside the one that decides a watch's rows.
-				hit := if w.tp {
-					!id_shadowed && edit_wires.any(w.renamed_by(old_id, wext0, it, j1939.pgn(old_id)))
-				} else {
-					app.frame_backed_by(w.wire, di, old_id, wext0)
-						&& w.renamed_by(old_id, wext0, w.wire, 0)
-				}
-				if hit {
+				if app.edit_reaches(w, di, old_id, wext0, if id_shadowed { []string{} } else { edit_wires }) {
 					// SPREAD, not a fresh literal: a rewrite changes ONE field and keeps every
 					// other, so a field added to the identity later cannot be silently dropped
 					// here — which is what happened to `wire`, leaving an edited watch matching
@@ -1030,14 +1024,11 @@ fn draw_dbc_editor(mut app App) {
 			kind_wires := app.wires_of_db(di)
 			for wi, w in app.watch {
 				// a frame's watch by its own wire's lookup, as the id edit above (#330)
-				hit := if w.tp {
-					!kind_shadowed
-						&& kind_wires.any(w.renamed_by(old_id2, old_ext2, it, j1939.pgn(old_id2)))
+				if app.edit_reaches(w, di, old_id2, old_ext2, if kind_shadowed {
+					[]string{}
 				} else {
-					app.frame_backed_by(w.wire, di, old_id2, old_ext2)
-						&& w.renamed_by(old_id2, old_ext2, w.wire, 0)
-				}
-				if hit {
+					kind_wires
+				}) {
 					// A STANDARD frame is never a rejoined J1939 message: the kind goes with
 					// the width, or the watch stays `tp` on an 11-bit id and covers nothing
 					// (codex). Its receiver goes with it, being that kind's field; its WIRE
@@ -1301,12 +1292,7 @@ fn draw_dbc_editor(mut app App) {
 					continue
 				}
 				// RENAMED: a signal's name is the database's whichever kind of row carries it.
-				hit := if w.tp {
-					edit_wires.any(it !in shadow_wires && w.renamed_by(wid, wext, it, j1939.pgn(wid)))
-				} else {
-					app.frame_backed_by(w.wire, di, wid, wext) && w.renamed_by(wid, wext, w.wire, 0)
-				}
-				if hit {
+				if app.edit_reaches(w, di, wid, wext, edit_wires.filter(it !in shadow_wires)) {
 					app.watch[wi] = Watch{
 						...w
 						sig: nv
