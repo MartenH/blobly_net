@@ -365,6 +365,7 @@ mut:
 	diag_sys_ok  bool
 	diag_sys_key string
 	diag_sys_checked_ms i64 // when diag_sys_key was last looked for (time.ticks)
+	diag_sys_print      string // what diag_sys_targets were last published from (diag_dtc.v)
 	// the system's nodes as targets on the running channels named after their buses; written by
 	// the GUI thread, read by the holder too (diag_targets), so guarded by mu
 	diag_sys_targets []DiagTarget
@@ -1133,6 +1134,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.reserialize_confirm = '' // a different project: a prior warning does not confirm THIS file's Save (codex #268)
 	app.cfg_invalidate() // a different project: the File tab must not keep the old one's text
 	app.diag_sys_key = '' // and the DTC tab finds its system.toml again
+	app.diag_sys_print = ''
 	app.dtc_ui = DtcUi{}
 	app.mu.lock()
 	app.reset_trace_locked()

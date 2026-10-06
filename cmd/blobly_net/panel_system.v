@@ -92,6 +92,7 @@ fn (mut app App) load_system(path string) {
 		app.sys = sy
 		app.sys_loaded = true
 		app.diag_sys_key = '' // the Diagnostics panel names DTCs from this one now
+		app.diag_sys_print = ''
 		app.sys_path_buf = mkbuf(path, path.len + 64)
 		app.notify('system: ${sy.nodes.len} node(s), ${sy.buses.len} bus(es), ${sy.signals.len} cross-node signal(s)')
 	} else {
@@ -204,6 +205,12 @@ fn draw_system(mut app App) {
 			}}    ${if en.trace != 0 { 'trace' } else { 'no-trace' }}')
 			if en.diag_req != 0 {
 				vgui.text_dim('diag  0x${en.diag_req.hex()} / 0x${en.diag_rsp.hex()}')
+			}
+			if en.desc.faults.len > 0 || en.desc.dids.len > 0 {
+				vgui.text_dim('diagnostics  ${en.desc.faults.len} fault(s), ${en.desc.dids.len} DID(s), ${en.desc.params.len} parameter(s)')
+			}
+			for e in en.desc.errs {
+				vgui.text_colored(230, 180, 60, 'not read: ${e}')
 			}
 			// the single-ECU bench action: make everything else on this ECU's buses come alive.
 			// It runs rebuild_from_proj(), which clears app.chans/dbs/sims while rx, sim and

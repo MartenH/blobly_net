@@ -114,6 +114,15 @@ pub fn (e DtcExtended) blobly_counters() BloblyCounters {
 	}
 }
 
+// shown is the counters as a tester shows them, occurrences / aging / failed cycles, with '—'
+// for a record the answer did not carry: absent is not zero.
+pub fn (c BloblyCounters) shown() string {
+	occ := if u8(0x01) in c.has { '${c.occurrences}' } else { '—' }
+	age := if u8(0x02) in c.has { '${c.aging}' } else { '—' }
+	cyc := if u8(0x03) in c.has { '${c.failed_cycles}' } else { '—' }
+	return '${occ}/${age}/${cyc}'
+}
+
 // UndecodableAnswer is a positive 0x19 answer that arrived and could not be read: the ECU
 // answered, so the connection is not at fault, which a tester holding one needs to know.
 pub struct UndecodableAnswer {

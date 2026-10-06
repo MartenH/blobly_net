@@ -70,7 +70,10 @@ pub mut:
 	// precomputed at load (id_allocation parses the bus DBC — a per-frame
 	// GUI must never re-read files): bus -> sorted allocation / collision
 	// keys (id | ext<<32 — the frame KIND is part of identity)
-	alloc map[string][]IdUse
+	// every file the model was read from, stamped as it was read (sources.v): what decides
+	// whether the model, and anything derived from it, is still current
+	sources []Source
+	alloc   map[string][]IdUse
 	cols  map[string][]u64
 }
 
@@ -103,10 +106,12 @@ fn tarr(doc toml.Doc, key string) []toml.Any {
 // consumer sets. Missing/broken pieces degrade into errs/ecu_err — a viewer
 // shows what it can, it never refuses the whole system for one bad file.
 pub fn load(path string) !System {
+	top := stamp(path)
 	doc := toml.parse_file(path)!
 	base := os.dir(path)
 	mut sys := System{
-		path: path
+		path:    path
+		sources: [top]
 	}
 
 	if bv := doc.value_opt('bus') {
@@ -176,6 +181,7 @@ pub fn load(path string) !System {
 		}
 		// the node's internals: reads/writes across every FB handler
 		epath := os.join_path(base, n.ecu)
+		sys.sources << stamp(epath) // a missing one too: its appearing is a change
 		if ndoc := toml.parse_file(epath) {
 			n.desc = parse_ecu_desc(ndoc, sig_fields)
 			for fb in tarr(ndoc, 'fb') {

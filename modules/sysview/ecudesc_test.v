@@ -284,11 +284,64 @@ fn test_targets_on_the_buses_a_project_names() {
 		panic(err)
 	}
 	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
-	got := sys.can_targets(['compute', 'edge']).map('${sys.nodes[it.node].name}@${it.bus} 0x${it.req:X}/0x${it.rsp:X}')
+	chans := [ChanRef{'compute', 'can0'}, ChanRef{'edge', 'can1'}]
+	got := sys.can_targets(chans).map('${sys.nodes[it.node].name}@${it.bus}/${it.iface} 0x${it.req:X}/0x${it.rsp:X}')
 	// sysnode on both buses; chassis (no server) is not a target
-	assert got == ['sysnode@compute 0x7A0/0x7A8', 'sysnode@edge 0x7A0/0x7A8',
-		'domain@compute 0x7B0/0x7B8', 'zone_a@edge 0x7C0/0x7C8']
-	assert sys.can_targets(['CAN1']) == []
+	assert got == ['sysnode@compute/can0 0x7A0/0x7A8', 'sysnode@edge/can1 0x7A0/0x7A8',
+		'domain@compute/can0 0x7B0/0x7B8', 'zone_a@edge/can1 0x7C0/0x7C8']
+	assert sys.can_targets([ChanRef{'CAN1', 'inproc:CAN1'}]) == []
+	assert sys.can_targets(chans).all(!it.shared_name)
+	// two channels named edge are two wires: a target on each, each saying its name is shared
+	twins := sys.can_targets([ChanRef{'edge', 'can1'}, ChanRef{'edge', 'vcan1'}]).filter(sys.nodes[it.node].name == 'zone_a')
+	assert twins.map(it.iface) == ['can1', 'vcan1']
+	assert twins.all(it.shared_name)
+}
+
+fn test_system_diag_ids_supersede_the_node_isotp_pair() {
+	dir := desc_fixture('override')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	for i, n in sys.nodes {
+		if n.name == 'zone_a' { // the system re-allocates zone_a; its ecu.toml still says 0x7C0
+			sys.nodes[i].diag_req = 0x7C1
+			sys.nodes[i].diag_rsp = 0x7C9
+		}
+		if n.name == 'domain' { // no `diag`: its own [isotp] is what addresses it
+			sys.nodes[i].diag_req = 0
+			sys.nodes[i].diag_rsp = 0
+		}
+	}
+	assert sys.node_for(TargetAddr{ req: 0x7C0, rsp: 0x7C8 }).node == -1
+	z := sys.node_for(TargetAddr{ req: 0x7C1, rsp: 0x7C9 })
+	assert z.node >= 0 && sys.nodes[z.node].name == 'zone_a'
+	d := sys.node_for(TargetAddr{ req: 0x7B0, rsp: 0x7B8 })
+	assert d.node >= 0 && sys.nodes[d.node].name == 'domain'
+	got := sys.can_targets([ChanRef{'edge', 'can1'}]).filter(sys.nodes[it.node].name == 'zone_a')
+	assert got.len == 1 && got[0].req == 0x7C1
+}
+
+// The model is current while every file it was read from is as it was read — an ecu.toml edited
+// behind an unchanged system.toml included, and one that appears where it was missing.
+fn test_the_model_knows_when_it_is_stale() {
+	dir := desc_fixture('stale')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	assert sys.current()
+	assert sys.sources.map(os.file_name(os.dir(it.path))).contains('zone_a')
+	before := sys.identity()
+	os.write_file(os.join_path(dir, 'nodes', 'zone_a', 'ecu.toml'), fx_zone_a + '\n# edited\n') or {
+		panic(err)
+	}
+	assert !sys.current()
+	again := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	assert again.current() && again.identity() != before
+	// chassis has no ecu.toml in the fixture: writing one is a change too
+	os.write_file(os.join_path(dir, 'nodes', 'chassis', 'ecu.toml'), '[uds]\n') or { panic(err) }
+	assert !again.current()
 }
 
 fn test_find_system_beside_the_project_or_its_databases() {
@@ -302,6 +355,16 @@ fn test_find_system_beside_the_project_or_its_databases() {
 	// a test project one folder down, naming ../edge.dbc
 	in_test := os.join_path(dir, 'test', 'diag_bench.blobnet')
 	assert find_system(in_test, ['../edge.dbc']) or { '' } == sys_path
+	// a reference that resolves only from the working directory (project.resolve_asset's
+	// repo-root-relative form) is looked beside where it resolves
+	far_proj := os.join_path(dir, 'nodes', 'zone_a', 'x', 'p.blobnet')
+	old := os.getwd()
+	os.chdir(dir) or { panic(err) }
+	assert find_system(far_proj, ['edge.dbc']) == none // edge.dbc does not exist: nothing resolves
+	os.write_file(os.join_path(dir, 'edge.dbc'), '') or { panic(err) }
+	assert os.real_path(find_system(far_proj, ['edge.dbc']) or { '' }) == os.real_path(sys_path)
+	os.chdir(old) or { panic(err) }
+	os.rm(os.join_path(dir, 'edge.dbc')) or {}
 	// the parent folder is the last resort, so it is found without a database too
 	assert find_system(in_test, []) or { '' } == sys_path
 	// nothing anywhere near

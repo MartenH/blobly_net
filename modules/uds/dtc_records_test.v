@@ -297,4 +297,11 @@ fn test_blobly_counters_name_the_records() {
 	assert k.failed_cycles == (e.find(0x03) or { panic('') }).value()
 	assert k.has == [u8(1), 2, 3]
 	assert DtcExtended{}.blobly_counters().has == []
+	assert k.shown() == '${k.occurrences}/${k.aging}/${k.failed_cycles}'
+	// an answer with the occurrence counter only: the others are absent, not zero
+	only := DtcExtended{
+		records: [ExtRecord{0x01, [u8(0), 5]}]
+	}.blobly_counters()
+	assert only.shown() == '5/—/—'
+	assert DtcExtended{}.blobly_counters().shown() == '—/—/—'
 }

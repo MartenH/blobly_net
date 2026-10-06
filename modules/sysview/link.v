@@ -1,6 +1,8 @@
 module sysview
 
 import os
+import candb
+import project
 
 // link.v — from a tester's diagnostic target to the blobly_emb node it addresses, and from a
 // project to the system.toml that describes its nodes. Both pure rules (the second reads only
@@ -40,8 +42,8 @@ pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 		if t.req == 0 && t.rsp == 0 {
 			continue
 		}
-		if (n.diag_req == t.req && n.diag_rsp == t.rsp)
-			|| (n.desc.isotp_req == t.req && n.desc.isotp_rsp == t.rsp) {
+		req, rsp := n.can_ids()
+		if req == t.req && rsp == t.rsp {
 			hits << i
 		}
 	}
@@ -68,41 +70,62 @@ pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 	}
 }
 
-// NodeTarget is one node's diagnostic server on one CAN bus.
-pub struct NodeTarget {
-pub:
-	node int
-	bus  string
-	req  u32
-	rsp  u32
-	ext  bool // 29-bit ids (above 0x7FF, the convention the id allocation uses)
+// can_ids is the node's diagnostic request and response id: system.toml's `diag` when it states
+// one — the system allocates the ids, and its pair SUPERSEDES the node's — else the node's own
+// `[isotp]`. (0, 0) = none.
+pub fn (n &SysNode) can_ids() (u32, u32) {
+	if n.diag_req != 0 || n.diag_rsp != 0 {
+		return n.diag_req, n.diag_rsp
+	}
+	return n.desc.isotp_req, n.desc.isotp_rsp
 }
 
-// can_targets: every node's diagnostic server on each of `buses` it sits on — the channels a
-// project names after its system's buses. A node addresses by system.toml's `diag`, else its own
-// `[isotp]`; one whose ecu.toml declares no server (the tester's own declaration) is not a
-// target, while one whose ecu.toml could not be read keeps its system.toml ids.
-pub fn (sys &System) can_targets(buses []string) []NodeTarget {
+// ChanRef is one of a project's CAN channels: its name and its interface.
+pub struct ChanRef {
+pub:
+	name  string
+	iface string
+}
+
+// NodeTarget is one node's diagnostic server on one CAN channel.
+pub struct NodeTarget {
+pub:
+	node  int
+	bus   string
+	iface string // the channel's interface
+	// another channel bears the same name: the label must say which this is
+	shared_name bool
+	req         u32
+	rsp         u32
+	ext         bool // 29-bit ids (above 0x7FF, the convention the id allocation uses)
+}
+
+// can_targets: every node's diagnostic server on each channel named after a bus it sits on. A
+// node addresses by `can_ids`; one whose ecu.toml declares no server (the tester's own
+// declaration) is not a target, while one whose ecu.toml could not be read keeps its system.toml
+// ids. Two channels with one name are two targets — they are two wires, and either may be the one
+// the ECU is on — each marked `shared_name` so neither is shown as THE bus.
+pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 	mut out := []NodeTarget{}
 	for i, n in sys.nodes {
 		if n.ecu_err == '' && !n.desc.server {
 			continue
 		}
-		mut req, mut rsp := n.diag_req, n.diag_rsp
-		if req == 0 && rsp == 0 {
-			req, rsp = n.desc.isotp_req, n.desc.isotp_rsp
-		}
+		req, rsp := n.can_ids()
 		if req == 0 && rsp == 0 {
 			continue
 		}
 		for b in n.buses {
-			if b in buses {
+			on := chans.filter(it.name == b)
+			for c in on {
 				out << NodeTarget{
-					node: i
-					bus:  b
-					req:  req
-					rsp:  rsp
-					ext:  req > 0x7FF || rsp > 0x7FF
+					node:        i
+					bus:         b
+					iface:       c.iface
+					shared_name: on.len > 1
+					req:         req
+					rsp:         rsp
+					ext:         req > 0x7FF || rsp > 0x7FF
 				}
 			}
 		}
@@ -113,7 +136,8 @@ pub fn (sys &System) can_targets(buses []string) []NodeTarget {
 // find_system is the system.toml describing a project: in the project's own folder, else in the
 // folder of one of its databases (a test project in `test/` names `../edge.dbc`, which sits beside
 // the system that generated it), else in the project folder's parent. `db_refs` are the channels'
-// database references as the project writes them, relative to the project's folder.
+// database references as the project writes them, resolved by `project.resolve_asset` — the rule
+// that loads the databases themselves.
 pub fn find_system(proj_path string, db_refs []string) ?string {
 	if proj_path == '' {
 		return none
@@ -121,8 +145,10 @@ pub fn find_system(proj_path string, db_refs []string) ?string {
 	base := os.dir(proj_path)
 	mut dirs := [base]
 	for r in db_refs {
-		p := if os.is_abs_path(r) { r } else { os.join_path(base, r) }
-		dirs << os.dir(p)
+		file, _ := candb.split_database_ref(project.resolve_asset(base, r))
+		if os.exists(file) { // a reference that resolves nowhere says nothing about where to look
+			dirs << os.dir(file)
+		}
 	}
 	dirs << os.dir(base)
 	mut seen := map[string]bool{}

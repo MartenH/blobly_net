@@ -86,32 +86,43 @@ fn (u &DtcUi) mask() u8 {
 
 // ---- the description: which system, which node ----
 
-// diag_sys_refresh resolves the system.toml that describes this project's targets — the System
-// panel's when one is loaded there, else sysview.find_system's, looked for again every few
-// seconds so a file created or edited beside the project is taken — and publishes its nodes as
-// targets on the channels named after their buses. GUI thread.
+// diag_sys_refresh keeps the DTC tab's system model current and publishes its nodes as targets on
+// the channels named after their buses. GUI thread.
+//
+// ONE identity decides both (`diag_sys_key`): the model's sysview.System.identity — every file it
+// was read from, system.toml and each ecu.toml, as it was read. The model is reloaded when the
+// path to use changes (the System panel's system.toml when one is loaded there, else the one
+// sysview.find_system finds) or any of those files has changed since, looked at every few seconds;
+// the targets are rebuilt from the model every frame and republished when anything a target shows
+// differs, the identity included — never by key alone, which survives a node renamed behind
+// unchanged ids.
 fn (mut app App) diag_sys_refresh() {
 	now := time.ticks()
 	if app.diag_sys_key == '' || now - app.diag_sys_checked_ms >= diag_sys_check_ms {
 		app.diag_sys_checked_ms = now
-		mut path := ''
-		if app.sys_loaded {
-			path = app.sys.path
+		path := if app.sys_loaded {
+			app.sys.path
 		} else {
-			path = sysview.find_system(app.proj_path, app.proj_db_refs()) or { '' }
+			sysview.find_system(app.proj_path, app.proj_db_refs()) or { '' }
 		}
-		mtime := if path != '' { os.file_last_mod_unix(path) } else { i64(0) }
-		key := '${app.sys_loaded}|${path}|${mtime}'
-		if key != app.diag_sys_key {
-			app.diag_sys_key = key
+		mut want := 'none'
+		if path != '' {
+			want = if app.diag_sys_ok && app.diag_sys.path == path && app.diag_sys.current() {
+				app.diag_sys_key
+			} else {
+				// to be (re)loaded; a system.toml that will not parse is tried again when it changes
+				'load|${path}@${sysview.stamp(path).stamp}'
+			}
+		}
+		if want != app.diag_sys_key {
 			app.diag_sys_ok = false
-			if app.sys_loaded {
-				app.diag_sys = app.sys
-				app.diag_sys_ok = true
-			} else if path != '' {
+			app.diag_sys = sysview.System{}
+			app.diag_sys_key = want
+			if path != '' {
 				if sy := sysview.load(path) {
 					app.diag_sys = sy
 					app.diag_sys_ok = true
+					app.diag_sys_key = sy.identity()
 				} else {
 					app.elog('Diagnostics: ${path} could not be read (${err}); DTCs are shown by code')
 				}
@@ -120,35 +131,37 @@ fn (mut app App) diag_sys_refresh() {
 	}
 	// the CAN channels a target may be on, under the lock their flags are written under: an
 	// enabled monitored row, whichever row of its wire holds the reader
-	mut rows := []Chan{}
+	mut rows := []sysview.ChanRef{}
 	app.mu.lock()
 	for c in app.chans {
 		if c.monitorable() {
-			rows << c
+			rows << sysview.ChanRef{c.name, c.iface}
 		}
 	}
 	app.mu.unlock()
 	mut targets := []DiagTarget{}
 	if app.diag_sys_ok {
-		for nt in app.diag_sys.can_targets(rows.map(it.name)) {
-			c := rows.filter(it.name == nt.bus)[0] or { continue }
+		for nt in app.diag_sys.can_targets(rows) {
 			node := app.diag_sys.nodes[nt.node].name
+			on := if nt.shared_name { '${nt.bus} (${nt.iface})' } else { nt.bus }
 			targets << DiagTarget{
-				key:   diag_key_can(c.iface, nt.req, nt.rsp)
-				label: '${node} on ${c.name}  (0x${nt.req:X}/0x${nt.rsp:X})'
-				iface: c.iface
-				chan:  c.name
+				key:   diag_key_can(nt.iface, nt.req, nt.rsp)
+				label: '${node} on ${on}  (0x${nt.req:X}/0x${nt.rsp:X})'
+				iface: nt.iface
+				chan:  nt.bus
 				rx:    nt.req
 				tx:    nt.rsp
 				ext:   nt.ext
 			}
 		}
 	}
-	app.mu.lock()
-	if app.diag_sys_targets.map(it.key) != targets.map(it.key) {
+	fp := '${app.diag_sys_key}#' + targets.map('${it.key}|${it.label}|${it.chan}').join('#')
+	if fp != app.diag_sys_print {
+		app.diag_sys_print = fp
+		app.mu.lock()
 		app.diag_sys_targets = targets
+		app.mu.unlock()
 	}
-	app.mu.unlock()
 }
 
 // diag_sys_check_ms is how often the DTC tab looks for its system.toml again.
@@ -495,6 +508,12 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	// where the names come from
 	if desc.ok {
 		vgui.text_dim_wrapped('names: ${desc.node} in ${os.file_name(os.dir(app.diag_sys.path))}/${os.file_name(app.diag_sys.path)} — ${desc.desc.faults.len} fault(s), ${desc.desc.dids.len} DID(s)')
+		if desc.desc.errs.len > 0 {
+			// read only in part: what was left out is said, so an entry missing from the
+			// description is not mistaken for one the ECU does not have
+			vgui.text_colored(230, 180, 60, '${desc.desc.errs.len} entry(ies) of ${desc.node}/ecu.toml not read — hover')
+			vgui.set_item_tooltip(desc.desc.errs.join('\n'))
+		}
 	} else {
 		vgui.text_dim_wrapped('no description: ${desc.why}; DTCs are shown by code')
 	}
@@ -628,7 +647,7 @@ fn draw_dtc_table(mut app App, v DtcView, desc DiagDesc, busy bool) {
 		vgui.table_next_col()
 		draw_dtc_status(r.rec.status)
 		if r.ext_ok {
-			vgui.table_cell('${r.cnt.occurrences}/${r.cnt.aging}/${r.cnt.failed_cycles}')
+			vgui.table_cell(r.cnt.shown())
 		} else {
 			vgui.table_cell_dim('—')
 		}
