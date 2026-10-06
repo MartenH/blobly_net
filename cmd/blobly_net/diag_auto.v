@@ -167,7 +167,7 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 			return
 		}
 		app.mu.lock()
-		view := if app.did_view.key == t.key { app.did_view } else { DidView{} }
+		view := if app.did_view.owns(t.key, desc.ident) { app.did_view } else { DidView{} }
 		app.mu.unlock()
 		app.did_edit(x, view, desc)
 		if step.starts_with('did_write:') {

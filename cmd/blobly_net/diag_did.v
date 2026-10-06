@@ -51,8 +51,15 @@ fn did_val(data []u8, err IError, t diaghold.Timing) DidVal {
 // DidView is what the tab's reads found, for one target. Written by the holder under app.mu and
 // only ever replaced whole, its map included, so a frame's copy of it is consistent.
 struct DidView {
-	key  string
-	vals map[u16]DidVal
+	key   string
+	ident string // the description it was read under: bytes are laid out by THAT one
+	vals  map[u16]DidVal
+}
+
+// owns: the view is the target's under this description — a reload that changed it (a layout, a
+// name) makes the bytes read before it something else's to decode.
+fn (v DidView) owns(key string, ident string) bool {
+	return v.key == key && v.ident == ident
 }
 
 // DidUi is the tab's controls. GUI thread only.
@@ -63,6 +70,7 @@ mut:
 	// the write editor: which DID, on which target, and one buffer per part
 	edit_id   u16
 	edit_key  string
+	edit_ident string // the description it was filled from
 	edit_bufs [][]u8
 	edit_open bool // asks the popup to open next frame
 	// an autopress `did_write` presses the editor's Write without a click
@@ -139,7 +147,8 @@ fn (mut app App) did_read_all(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 // write changes (a parameter's status DID). Each step is its own timed line.
 fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	name := did_label(req.desc, req.did)
-	plan := diaghold.write_plan(h.session, req.sessions, req.level, h.security, req.ref_key)
+	plan := diaghold.write_plan(req.writable, h.session, req.sessions, req.level, h.security,
+		req.ref_key)
 	if plan.refusal != '' {
 		// nothing sent: the connection is as it was
 		return DiagOut{
@@ -204,15 +213,16 @@ fn (mut app App) did_publish(req DiagReq, id u16, v DidVal) {
 	if diaghold.view_writable(req.epoch, app.diag_epoch) {
 		// a NEW map each time, never written in place: a frame's copy of the view shares the old
 		// one (V maps are references) and reads it outside the lock
-		mut vals := if app.did_view.key == req.key {
+		mut vals := if app.did_view.owns(req.key, req.ident) {
 			app.did_view.vals.clone()
 		} else {
 			map[u16]DidVal{}
 		}
 		vals[id] = v
 		app.did_view = DidView{
-			key:  req.key
-			vals: vals
+			key:   req.key
+			ident: req.ident
+			vals:  vals
 		}
 	}
 	app.mu.unlock()
@@ -245,7 +255,8 @@ fn did_shown(d sysview.EcuDesc, id u16, data []u8) string {
 fn (mut app App) did_press(r DiagReq, desc DiagDesc) {
 	app.diag_send(DiagReq{
 		...r
-		desc: if desc.ok { desc.desc } else { sysview.EcuDesc{} }
+		desc:  if desc.ok { desc.desc } else { sysview.EcuDesc{} }
+		ident: desc.ident
 	})
 }
 
@@ -259,7 +270,12 @@ fn did_rows(desc DiagDesc) ([]sysview.DidDesc, []sysview.DidDesc) {
 fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	desc := app.diag_desc(t)
 	app.mu.lock()
-	view := if app.did_view.key == t.key { app.did_view } else { DidView{} }
+	if app.did_view.key == t.key && app.did_view.ident != desc.ident {
+		// the description was reloaded and is another: what was read under the old one is not
+		// laid out by this one, so it goes
+		app.did_view = DidView{}
+	}
+	view := if app.did_view.owns(t.key, desc.ident) { app.did_view } else { DidView{} }
 	app.mu.unlock()
 	own, iso := did_rows(desc)
 	if desc.ok {
@@ -536,6 +552,7 @@ fn (mut app App) did_edit(x sysview.DidDesc, view DidView, desc DiagDesc) {
 	}
 	app.did_ui.edit_id = x.id
 	app.did_ui.edit_key = app.diag_sel_key
+	app.did_ui.edit_ident = desc.ident
 	n := did_edit_room(x)
 	app.did_ui.edit_bufs = texts.map(mkbuf(it, n))
 	app.did_ui.edit_open = true
@@ -551,6 +568,10 @@ fn did_edit_room(x sysview.DidDesc) int {
 // did_write_req is the press the editor's Write sends — the bytes and the gate, the rest decided by
 // the holder (diaghold.write_plan) — or why there is none.
 fn did_write_req(x sysview.DidDesc, texts []string, desc DiagDesc) !DiagReq {
+	// the CURRENT description's gate: absent is not writable (diaghold.write_plan says why)
+	if !x.write_gate.declared {
+		return error(diaghold.write_plan(false, 0, [], 0, 0, false).refusal)
+	}
 	data := x.encode(texts)!
 	mut sessions := []u8{}
 	for s in x.write_gate.sessions {
@@ -572,6 +593,7 @@ fn did_write_req(x sysview.DidDesc, texts []string, desc DiagDesc) !DiagReq {
 		level:    u8(x.write_gate.level)
 		ref_key:  desc.ok && desc.desc.security_key == 'reference'
 		follow:   follow
+		writable: true
 	}
 }
 
@@ -596,9 +618,15 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 		vgui.end_popup()
 		return
 	}
-	if app.did_ui.edit_key != t.key {
-		// the target moved under the dialog: never written to the one selected now
-		vgui.text_dim('the target changed — nothing is written')
+	if app.did_ui.edit_key != t.key || app.did_ui.edit_ident != desc.ident {
+		// the target moved under the dialog, or its description was reloaded: never written to
+		// the one selected now, nor by a layout or gate the dialog was not filled from
+		app.did_ui.auto_write = false
+		vgui.text_dim(if app.did_ui.edit_key != t.key {
+			'the target changed — nothing is written'
+		} else {
+			'${desc.node}\'s description changed since this opened — nothing is written; open it again'
+		})
 		if vgui.button('Close') {
 			vgui.close_current_popup()
 		}
@@ -632,7 +660,7 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 		// what the connection has established, only if it is to THIS target: another target's
 		// session says nothing about this one, and the holder opens a fresh connection for it
 		mine := st.conn == .held && st.key == t.key
-		plan := diaghold.write_plan(if mine { st.session } else { u8(0) }, r.sessions, r.level,
+		plan := diaghold.write_plan(r.writable, if mine { st.session } else { u8(0) }, r.sessions, r.level,
 			if mine { st.security } else { u8(0) }, r.ref_key)
 		if plan.refusal != '' {
 			why = plan.refusal

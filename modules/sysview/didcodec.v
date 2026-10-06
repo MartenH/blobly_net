@@ -31,7 +31,7 @@ pub fn (x DidDesc) parts() []Part {
 	if x.laid_out() {
 		return x.fields.map(Part{
 			label: it.name
-			hint:  field_hint(it, x.limit(it))
+			hint:  field_hint(it, x.limit(it), it.name in x.ranges)
 		})
 	}
 	if x.kind == .ascii {
@@ -87,7 +87,7 @@ pub fn (x DidDesc) encode(texts []string) ![]u8 {
 	mut out := []u8{}
 	if x.laid_out() {
 		for i, f in x.fields {
-			out << field_bytes(f, texts[i], x.limit(f)) or {
+			out << field_bytes(f, texts[i], x.limit(f), f.name in x.ranges) or {
 				return error('${f.name}: ${err.msg()}')
 			}
 		}
@@ -133,18 +133,21 @@ fn field_range(f Field) Range {
 	}
 }
 
-fn field_hint(f Field, r Range) string {
+fn field_hint(f Field, r Range, declared bool) string {
 	if f.typ == 'bool' {
 		return 'bool'
 	}
-	if f.typ in ['u64', 'i64'] {
+	if f.typ in ['u64', 'i64'] && !declared {
 		return f.typ
 	}
 	return '${f.typ} ${r.min}..${r.max}'
 }
 
 // field_bytes is one field's big-endian bytes from its text, within `lim`.
-fn field_bytes(f Field, text string, lim Range) ![]u8 {
+// `declared`: the description gives this field a range. A u64 is checked against it only then —
+// its type's own range is the unsigned parse, which no i64 bound can state, so no value of `lim`
+// may stand for "unbounded" (max_i64 is a bound a description may declare).
+fn field_bytes(f Field, text string, lim Range, declared bool) ![]u8 {
 	t := text.trim_space()
 	w := f.width()
 	if w == 0 {
@@ -159,8 +162,7 @@ fn field_bytes(f Field, text string, lim Range) ![]u8 {
 		}
 	} else if f.typ == 'u64' {
 		v = parse_unsigned(t)!
-		if (lim.min > 0 && v < u64(lim.min)) || lim.max < 0
-			|| (lim.max != max_i64 && v > u64(lim.max)) {
+		if declared && ((lim.min > 0 && v < u64(lim.min)) || lim.max < 0 || v > u64(lim.max)) {
 			return error('${v} is outside ${lim.min}..${lim.max}')
 		}
 	} else {

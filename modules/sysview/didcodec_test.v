@@ -91,6 +91,20 @@ fn test_a_range_narrows_the_width_never_widens_it() {
 	if _ := y.encode(['9']) {
 		assert false
 	}
+	// a declared bound of exactly max_i64 is a bound, not "unbounded"
+	m := DidDesc{
+		kind:   .param
+		size:   8
+		fields: [Field{'n', 'u64'}]
+		ranges: {
+			'n': Range{0, max_i64}
+		}
+	}
+	assert m.encode(['9223372036854775807'])! == [u8(0x7F), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF]
+	if _ := m.encode(['9223372036854775808']) {
+		assert false
+	}
 	z := DidDesc{
 		kind:   .param
 		size:   8
@@ -224,4 +238,17 @@ fn test_encode_is_the_inverse_of_texts() {
 			assert x.encode(ts)! == b, '${x.fields} ${b} -> ${ts}'
 		}
 	}
+}
+
+// The rendering reads through the codec too: a NUL-padded text shows without its padding.
+fn test_decode_did_renders_through_the_codec() {
+	d := EcuDesc{
+		dids: [DidDesc{
+			id:   0xF190
+			kind: .ascii
+			size: 6
+		}]
+	}
+	assert d.decode_did(0xF190, [u8(`A`), `B`, 0, 0, 0, 0]) == '"AB"'
+	assert d.decode_did(0xF190, [u8(`A`)]) == '' // not its size
 }

@@ -36,14 +36,21 @@ pub:
 	refusal string
 }
 
-// write_plan: the steps before a write. `session` is the connection's (0 = none answered yet),
+// write_plan: the steps before a write. `declared` is whether the CURRENT description gives the
+// DID a write gate at all: none means NOT WRITABLE, never "no requirements" — an empty gate and an
+// absent one are the same bytes downstream, so this is asked first and refuses. `session` is the connection's (0 = none answered yet),
 // `allowed` the sessions the DID is written in (none = any), `level` the level it needs (0 = none),
 // `unlocked` the level this connection has unlocked, `can_unlock` whether the panel can compute
 // the node's key (its description names blobly_net's reference key). The extended session is
 // preferred where it is allowed: it is the one a tester writes in. A session change locks the ECU
 // again (ISO 14229-1), so a level unlocked before one is unlocked again after it. A level the
 // panel cannot unlock is refused, never faked: the write would only be refused with 0x33.
-pub fn write_plan(session u8, allowed []u8, level u8, unlocked u8, can_unlock bool) WritePlan {
+pub fn write_plan(declared bool, session u8, allowed []u8, level u8, unlocked u8, can_unlock bool) WritePlan {
+	if !declared {
+		return WritePlan{
+			refusal: 'not writable: the description declares no write gate for it'
+		}
+	}
 	mut to := u8(0)
 	if allowed.len > 0 && session !in allowed {
 		to = if u8(0x03) in allowed { u8(0x03) } else { allowed[0] }

@@ -236,8 +236,9 @@ connection and timed in the log; names and snapshot DID sizes come from `sysview
 of the node the target addresses (the System panel's system.toml when one is loaded, else
 `find_system`'s). Screenshots against sim-demo and the bench's zone_a are in `docs/gui_validation/`
 (`diag_dtc_*.png`).
-`did.v` there is the DIDs tab's two rules (`cmd/blobly_net/diag_did.v`): `write_plan` — what a 0x2E
-needs first, from the DID's write gate and what the CONNECTION has established (asked by the
+`did.v` there is the DIDs tab's two rules (`cmd/blobly_net/diag_did.v`): `write_plan` — whether
+the CURRENT description declares a write gate at all (absent is not writable, never "no
+requirements"), then what a 0x2E needs first, from the DID's write gate and what the CONNECTION has established (asked by the
 holder, not the dialog's snapshot): the session it is written in (extended preferred), a session
 change relocking, the level unlocked with the reference key — or, when the node's key is not that
 one, a refusal saying so, never a write sent to be refused with 0x33 — and `DidBatch`, Read all as
@@ -247,7 +248,11 @@ parameters by name (value from its coding DID, default, coded/default/reverted w
 declares a status DID), its DIDs, the ISO identification DIDs (the refused folded into one line by
 answer) and any DID read by number; values are decoded through `sysview`'s codec with the bytes
 beneath, and the write dialog encodes through the same codec and states the plan before Write.
-`DidView`'s map is replaced, never written in place, since a frame's copy shares it. Bench-run on
+`DidView`'s map is replaced, never written in place, since a frame's copy shares it; the view and
+an open write dialog both carry the description's identity (`DiagDesc.ident`, the model's
+`identity()`), so a reload clears the bytes read under the old layout and closes the dialog
+saying why. `decode_did` renders through the codec (`texts`), so a value is read one way whether
+shown or edited. Bench-run on
 zone_a (SteerLimit coded 300 through extended + level 1, survived an `st-flash` reset, restored to
 360) and sysnode over DoIP (Read all: 4 read, 28 refused 0x31, 57 ms); `diag_did_*.png`.
 Measured on the bench sysnode: a press used to cost ~490–900 ms of TCP reconnect (the entity's

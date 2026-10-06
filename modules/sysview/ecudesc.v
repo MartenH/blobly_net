@@ -204,49 +204,44 @@ pub fn (d &EcuDesc) did_name(id u16) string {
 	return uds.standard_did_name(id)
 }
 
-// decode_did renders a DID's value through its description: text for an ascii DID, each field by
-// name for a laid-out one (`deg=100`), a parameter status by word. '' when the description cannot
-// read it — no entry, no layout, or a length other than the declared one — and the caller shows
-// the bytes.
+// decode_did renders a DID's value through its description, READ BY THE CODEC (DidDesc.texts —
+// the one reading the editor's fields come from too): text for an ascii DID (its NUL padding off),
+// each field by name for a laid-out one (`deg=100`), a parameter status by word. '' when the
+// description cannot read it — no entry, no layout, or a length other than the declared one — and
+// the caller shows the bytes.
 pub fn (d &EcuDesc) decode_did(id u16, data []u8) string {
 	x := d.did(id) or { return '' }
-	if x.size >= 0 && data.len != x.size {
+	if x.kind != .ascii && !x.laid_out() {
 		return ''
 	}
+	ts := x.texts(data) or { return '' }
 	match x.kind {
 		.ascii {
-			return '"${data.bytestr()}"'
+			return '"${ts[0]}"'
 		}
 		.param_status {
 			mut parts := []string{}
 			for i, f in x.fields {
-				word := match data[i] {
-					0 { 'default' }
-					1 { 'coded' }
-					2 { 'reverted' }
+				word := match ts[i] {
+					'0' { 'default' }
+					'1' { 'coded' }
+					'2' { 'reverted' }
 					else { '0x${data[i]:02X}' }
 				}
 				parts << '${f.name} ${word}'
 			}
 			return parts.join(', ')
 		}
-		.signal, .param {
-			if x.fields.len == 0 {
-				return ''
+		else {
+			// a one-field value needs no label beyond the DID's own name
+			if x.fields.len == 1 {
+				return ts[0]
 			}
 			mut parts := []string{}
-			mut at := 0
-			for f in x.fields {
-				w := f.width()
-				v := field_value(f, data[at..at + w])
-				// a one-field value needs no label beyond the DID's own name
-				parts << if x.fields.len == 1 { v } else { '${f.name}=${v}' }
-				at += w
+			for i, f in x.fields {
+				parts << '${f.name}=${ts[i]}'
 			}
 			return parts.join(' ')
-		}
-		else {
-			return ''
 		}
 	}
 }

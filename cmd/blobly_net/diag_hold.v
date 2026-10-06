@@ -38,6 +38,8 @@ struct DiagReq {
 	level    u8              // 'did_write': the security level it needs (0 = none)
 	ref_key  bool            // the node's key is blobly_net's reference key: the panel can unlock
 	follow   []u16           // 'did_write': read back after the DID itself (a parameter's status)
+	writable bool            // 'did_write': the description declares a write gate (diaghold.write_plan)
+	ident    string          // the description's identity the press was made under (DiagDesc.ident)
 	desc     sysview.EcuDesc // the target's description, for naming and decoding the lines
 }
 

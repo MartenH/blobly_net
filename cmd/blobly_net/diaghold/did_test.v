@@ -2,40 +2,40 @@ module diaghold
 
 fn test_a_write_switches_to_the_session_its_did_is_written_in() {
 	// SteerLimit: extended, level 1, from a fresh connection (no session answered yet)
-	p := write_plan(0, [u8(0x03)], 1, 0, true)
+	p := write_plan(true, 0, [u8(0x03)], 1, 0, true)
 	assert p.session == 0x03 && p.unlock == 1 && p.refusal == ''
 	assert p.words() == 'switch to the extended session (0x10 03), then unlock level 1 with the reference key (0x27 01/02), then write (0x2E), then read it back (0x22)'
 	// already there and unlocked: just the write
-	q := write_plan(0x03, [u8(0x03)], 1, 1, true)
+	q := write_plan(true, 0x03, [u8(0x03)], 1, 1, true)
 	assert q.session == 0 && q.unlock == 0
 	// there, but locked
-	assert write_plan(0x03, [u8(0x03)], 1, 0, true).unlock == 1
+	assert write_plan(true, 0x03, [u8(0x03)], 1, 0, true).unlock == 1
 	// an open DID: nothing first
-	o := write_plan(0x01, [], 0, 0, false)
+	o := write_plan(true, 0x01, [], 0, 0, false)
 	assert o.session == 0 && o.unlock == 0 && o.refusal == ''
 	assert o.words() == 'write (0x2E), then read it back (0x22)'
 }
 
 fn test_a_session_change_locks_again() {
 	// unlocked in the programming session, written in extended: the switch relocks it
-	p := write_plan(0x02, [u8(0x03)], 1, 1, true)
+	p := write_plan(true, 0x02, [u8(0x03)], 1, 1, true)
 	assert p.session == 0x03 && p.unlock == 1
 }
 
 fn test_extended_is_preferred_and_any_listed_session_is_kept() {
-	assert write_plan(0x01, [u8(0x02), 0x03], 0, 0, false).session == 0x03
-	assert write_plan(0x02, [u8(0x02), 0x03], 0, 0, false).session == 0
-	assert write_plan(0x01, [u8(0x02)], 0, 0, false).session == 0x02
+	assert write_plan(true, 0x01, [u8(0x02), 0x03], 0, 0, false).session == 0x03
+	assert write_plan(true, 0x02, [u8(0x02), 0x03], 0, 0, false).session == 0
+	assert write_plan(true, 0x01, [u8(0x02)], 0, 0, false).session == 0x02
 }
 
 fn test_a_level_the_panel_cannot_unlock_is_said_not_faked() {
-	p := write_plan(0x03, [u8(0x03)], 1, 0, false)
+	p := write_plan(true, 0x03, [u8(0x03)], 1, 0, false)
 	assert p.unlock == 0
 	assert p.refusal.contains('needs security level 1')
 	assert p.refusal.contains('cannot compute')
 	assert p.words() == p.refusal
 	// a level already unlocked (by whatever means) needs no key
-	assert write_plan(0x03, [u8(0x03)], 1, 1, false).refusal == ''
+	assert write_plan(true, 0x03, [u8(0x03)], 1, 1, false).refusal == ''
 }
 
 fn tm(us i64) Timing {
@@ -81,4 +81,12 @@ fn test_a_did_typed_by_hand_is_read_exactly_or_not_at_all() {
 	assert parse_did('1F190') == none // not a truncated F190
 	assert parse_did('zz') == none // not 0x0000
 	assert parse_did('0x') == none
+}
+
+fn test_an_absent_write_gate_is_not_writable_never_no_requirements() {
+	p := write_plan(false, 0x03, [], 0, 1, true)
+	assert p.refusal == 'not writable: the description declares no write gate for it'
+	assert p.session == 0 && p.unlock == 0
+	// the same gate DECLARED with no session and no level is open
+	assert write_plan(true, 0x03, [], 0, 0, false).refusal == ''
 }
