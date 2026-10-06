@@ -269,14 +269,38 @@ pub fn (mut c Client) snapshot_ids() ![]SnapshotId {
 // size of its value NOW, which is the captured one's for a fixed-size DID; a DID whose size varies
 // must be given.
 pub fn (mut c Client) snapshot(code u32, record u8) !DtcSnapshot {
+	s, _ := c.snapshot_timed(code, record)!
+	return s
+}
+
+// SizeProbe is one 0x22 read a snapshot made to learn a DID's size, and its exchange's time.
+pub struct SizeProbe {
+pub:
+	did    u16
+	timing ExchangeTiming
+}
+
+// SnapshotTiming is a snapshot's exchanges told apart: the 0x19 04 itself, and each size probe
+// after it — `Client.last` holds only the LAST exchange, which after a probe is the probe's.
+pub struct SnapshotTiming {
+pub:
+	request ExchangeTiming
+	probes  []SizeProbe
+}
+
+// snapshot_timed is snapshot, with each of its exchanges' timing.
+pub fn (mut c Client) snapshot_timed(code u32, record u8) !(DtcSnapshot, SnapshotTiming) {
 	resp := c.raw(dtc_request(0x04, code, record)!)!
+	request := c.last
+	mut probes := []SizeProbe{}
 	for {
-		return decode_snapshot(resp, c.did_lens) or {
+		snap := decode_snapshot(resp, c.did_lens) or {
 			if err is UnknownDidLength {
 				did := err.did
 				data := c.read_data_by_identifier(did) or {
 					return error('snapshot DID 0x${did:04X}: its size is not known, and reading it (0x22) to learn it failed: ${err.msg()} — give it with set_did_size')
 				}
+				probes << SizeProbe{did, c.last}
 				c.did_lens[did] = data.len
 				continue
 			}
@@ -284,6 +308,7 @@ pub fn (mut c Client) snapshot(code u32, record u8) !DtcSnapshot {
 				why: err.msg()
 			}
 		}
+		return snap, SnapshotTiming{request, probes}
 	}
 	return error('unreachable') // each pass learns one DID the answer names, or returns
 }

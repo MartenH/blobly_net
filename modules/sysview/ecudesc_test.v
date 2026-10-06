@@ -324,6 +324,31 @@ fn test_system_diag_ids_supersede_the_node_isotp_pair() {
 
 // The model is current while every file it was read from is as it was read — an ecu.toml edited
 // behind an unchanged system.toml included, and one that appears where it was missing.
+// The allocation table lists the ids a tester addresses a node by: a node with no `diag` in
+// system.toml has its own [isotp] pair allocated, and a collision with it is shown.
+fn test_the_allocation_uses_the_addressing_rule() {
+	dir := desc_fixture('alloc')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	sys_path := os.join_path(dir, 'system.toml')
+	// domain loses its `diag`; its ecu.toml answers on 0x7B0/0x7B8, and chassis (edge) gets an
+	// [isotp] pair colliding with zone_a request id
+	text := os.read_file(sys_path) or { panic(err) }
+	os.write_file(sys_path, text.replace('diag  = { req = 0x7B0, rsp = 0x7B8 }\n', '')) or {
+		panic(err)
+	}
+	os.write_file(os.join_path(dir, 'nodes', 'chassis', 'ecu.toml'), '[isotp]\nrx_id = 0x7C0\ntx_id = 0x7E9\n') or {
+		panic(err)
+	}
+	sys := load(sys_path) or { panic(err) }
+	compute := sys.id_allocation('compute').filter(it.owner == 'domain' && it.kind.starts_with('diag'))
+	assert compute.map(it.id) == [u32(0x7B0), 0x7B8]
+	edge := sys.id_allocation('edge').filter(it.owner == 'chassis')
+	assert edge.map(it.id) == [u32(0x7C0), 0x7E9]
+	assert sys.is_collision('edge', 0x7C0, false)
+}
+
 fn test_the_model_knows_when_it_is_stale() {
 	dir := desc_fixture('stale')
 	defer {
@@ -339,7 +364,16 @@ fn test_the_model_knows_when_it_is_stale() {
 	assert !sys.current()
 	again := load(os.join_path(dir, 'system.toml')) or { panic(err) }
 	assert again.current() && again.identity() != before
+	// a same-length rewrite within the same second: the content says so, mtime and size cannot
+	zpath := os.join_path(dir, 'nodes', 'zone_a', 'ecu.toml')
+	text := os.read_file(zpath) or { panic(err) }
+	os.write_file(zpath, text.replace('SpeedImplausible', 'SpeedImplausiblX')) or { panic(err) }
+	assert os.file_size(zpath) == u64(text.len)
+	assert !again.current()
+	os.write_file(zpath, text) or { panic(err) } // and back: current again
+	assert again.current()
 	// chassis has no ecu.toml in the fixture: writing one is a change too
+
 	os.write_file(os.join_path(dir, 'nodes', 'chassis', 'ecu.toml'), '[uds]\n') or { panic(err) }
 	assert !again.current()
 }

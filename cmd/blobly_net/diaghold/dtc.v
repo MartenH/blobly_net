@@ -34,3 +34,24 @@ pub fn dtc_setting_session(session u8, on bool) u8 {
 	}
 	return if session == 0 || session == default_session { u8(0x03) } else { u8(0) }
 }
+
+// Deferred is what becomes of a DTC row clicked while a press was in flight.
+pub enum Deferred {
+	none // nothing deferred
+	wait // still in flight: ask later
+	send // ask for its records now
+	drop // the target changed since the click: that row was another ECU's, never asked of this one
+}
+
+// deferred_selection decides a deferred row click: asked only of the target it was clicked on
+// (`clicked_key`, captured at the click), once nothing is in flight, and dropped the moment the
+// selected target is another.
+pub fn deferred_selection(pending bool, busy bool, clicked_key string, selected_key string) Deferred {
+	if !pending {
+		return .none
+	}
+	if clicked_key != selected_key {
+		return .drop
+	}
+	return if busy { Deferred.wait } else { Deferred.send }
+}

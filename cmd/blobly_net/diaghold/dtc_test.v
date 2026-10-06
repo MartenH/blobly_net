@@ -28,3 +28,12 @@ fn test_dtc_setting_on_never_switches() {
 		assert dtc_setting_session(s, true) == 0
 	}
 }
+
+fn test_a_deferred_row_is_asked_only_of_the_target_it_was_clicked_on() {
+	assert deferred_selection(false, false, 'a', 'a') == .none
+	assert deferred_selection(true, true, 'a', 'a') == .wait
+	assert deferred_selection(true, false, 'a', 'a') == .send
+	// the combo moved while the press was out: never sent to the new target, busy or not
+	assert deferred_selection(true, true, 'a', 'b') == .drop
+	assert deferred_selection(true, false, 'a', 'b') == .drop
+}

@@ -68,7 +68,8 @@ mut:
 	auto       bool
 	sel_code   u32
 	has_sel    bool
-	want_sel   bool // a row was clicked while a press was out: ask for its records when free
+	want_sel   bool   // a row was clicked while a press was out: ask for its records when free
+	want_key   string // ... of the target it was clicked on (diaghold.deferred_selection)
 	select_tab bool // the autopress hook brings the tab forward
 	// the last list press this tab sent, and for which target: the auto-refresh counts its
 	// interval from it as well as from the last read, so a press that fails before it reads
@@ -227,11 +228,15 @@ fn (app &App) diag_desc(t DiagTarget) DiagDesc {
 // ---- the holder's side (diag_hold.v's diag_request hands these over) ----
 
 fn (h &HeldConn) timing() diaghold.Timing {
+	return timing_of(h.cli.last)
+}
+
+fn timing_of(t uds.ExchangeTiming) diaghold.Timing {
 	return diaghold.Timing{
-		sent:       h.cli.last.sent
-		rtt_us:     h.cli.last.rtt_us
-		pending:    h.cli.last.pending
-		pending_us: h.cli.last.pending_us
+		sent:       t.sent
+		rtt_us:     t.rtt_us
+		pending:    t.pending
+		pending_us: t.pending_us
 	}
 }
 
@@ -408,7 +413,7 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	mut snap := uds.DtcSnapshot{}
 	mut snap_ok := false
 	mut snap_err := ''
-	if s := h.cli.snapshot(req.code, 0xFF) {
+	if s, st := h.cli.snapshot_timed(req.code, 0xFF) {
 		snap = s
 		snap_ok = true
 		dids := s.records.map(it.dids.len)
@@ -416,7 +421,11 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 		for x in dids {
 			n += x
 		}
-		app.diag_push('${h.timing().prefix()} 0x19 04 ${name} FF: ${s.records.len} snapshot record(s), ${n} DID(s)')
+		// the 0x19 04 at its own time, and each DID it had to size by reading it, at theirs
+		app.diag_push('${timing_of(st.request).prefix()} 0x19 04 ${name} FF: ${s.records.len} snapshot record(s), ${n} DID(s)')
+		for pr in st.probes {
+			app.diag_push('${timing_of(pr.timing).prefix()} 0x22 ${pr.did:04X}: sized a snapshot DID the description does not')
+		}
 	} else {
 		// said and shown; the extended data is still asked for, and a connection that has gone
 		// fails there and is let go as any failed press is
@@ -492,6 +501,7 @@ fn (mut app App) dtc_select(code u32, busy bool, desc DiagDesc) {
 	app.dtc_ui.has_sel = true
 	if busy {
 		app.dtc_ui.want_sel = true
+		app.dtc_ui.want_key = app.diag_sel_key
 		return
 	}
 	app.dtc_ui.want_sel = false
@@ -573,8 +583,15 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		vgui.end_popup()
 	}
 	// a row clicked while a press was out
-	if app.dtc_ui.want_sel && !busy {
-		app.dtc_select(app.dtc_ui.sel_code, false, desc)
+	match diaghold.deferred_selection(app.dtc_ui.want_sel, busy, app.dtc_ui.want_key, t.key) {
+		.send {
+			app.dtc_select(app.dtc_ui.sel_code, false, desc)
+		}
+		.drop {
+			app.dtc_ui.want_sel = false
+			app.dtc_ui.has_sel = false
+		}
+		else {}
 	}
 	// the auto-refresh
 	// (no wake needed: an idle GUI still draws a frame every half second)

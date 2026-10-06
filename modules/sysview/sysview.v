@@ -106,8 +106,8 @@ fn tarr(doc toml.Doc, key string) []toml.Any {
 // consumer sets. Missing/broken pieces degrade into errs/ecu_err — a viewer
 // shows what it can, it never refuses the whole system for one bad file.
 pub fn load(path string) !System {
-	top := stamp(path)
-	doc := toml.parse_file(path)!
+	top, text := read_source(path)
+	doc := toml.parse_text(text or { return error('cannot read ${path}') })!
 	base := os.dir(path)
 	mut sys := System{
 		path:    path
@@ -181,8 +181,11 @@ pub fn load(path string) !System {
 		}
 		// the node's internals: reads/writes across every FB handler
 		epath := os.join_path(base, n.ecu)
-		sys.sources << stamp(epath) // a missing one too: its appearing is a change
-		if ndoc := toml.parse_file(epath) {
+		esrc, etext := read_source(epath)
+		sys.sources << esrc // a missing one too: its appearing is a change
+		if etext == none {
+			n.ecu_err = 'cannot read ${epath}'
+		} else if ndoc := toml.parse_text(etext or { '' }) {
 			n.desc = parse_ecu_desc(ndoc, sig_fields)
 			for fb in tarr(ndoc, 'fb') {
 				fm := fb.as_map()
@@ -289,18 +292,21 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 				owner: n.name
 			}
 		}
-		if n.diag_req != 0 {
+		// the ids a tester addresses it by — the ONE rule node_for and can_targets use too, so a
+		// node addressed by its own [isotp] pair has those ids allocated, collisions and all
+		req, rsp := n.can_ids()
+		if req != 0 {
 			out << IdUse{
-				id:    n.diag_req
-				ext:   n.diag_req > 0x7FF
+				id:    req
+				ext:   req > 0x7FF
 				kind:  'diag-req'
 				owner: n.name
 			}
 		}
-		if n.diag_rsp != 0 {
+		if rsp != 0 {
 			out << IdUse{
-				id:    n.diag_rsp
-				ext:   n.diag_rsp > 0x7FF
+				id:    rsp
+				ext:   rsp > 0x7FF
 				kind:  'diag-rsp'
 				owner: n.name
 			}

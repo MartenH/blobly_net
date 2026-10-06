@@ -305,3 +305,22 @@ fn test_blobly_counters_name_the_records() {
 	assert only.shown() == '5/—/—'
 	assert DtcExtended{}.blobly_counters().shown() == '—/—/—'
 }
+
+// A snapshot's 0x19 04 and its size probes are timed apart: Client.last ends on the last probe.
+fn test_a_snapshot_times_its_request_and_its_probes_apart() {
+	mut m := &RecChannel{
+		answers: {
+			'1904021900ff': emb_19_04_all
+			'22f1a0':       [u8(0x62), 0xF1, 0xA0, 0x00, 0x30]
+			'22f190':       '\x62\xF1\x90BLOBLY-OVERSPEED-01'.bytes()
+		}
+	}
+	mut c := new_client(m)
+	_, t := c.snapshot_timed(0x021900, 0xFF) or { panic(err) }
+	assert t.request.sent
+	assert t.probes.map(it.did) == [u16(0xF1A0), 0xF190]
+	assert t.probes.all(it.timing.sent)
+	// sized now: no probes the second time
+	_, t2 := c.snapshot_timed(0x021900, 0xFF) or { panic(err) }
+	assert t2.request.sent && t2.probes.len == 0
+}
