@@ -275,7 +275,10 @@ channel when the deferred cleanup and the Ctrl-C handler race, what an empty cla
 an exit may claim (clean / failed / unknown-because-in-flight), the path #197's fix took four codex
 rounds on before it had a test (#278)), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
-jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
+jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220; it also
+runs `scripts/check_mut_refs.sh`, which refuses `x := &recv` and `fn [recv]` inside a `mut recv`
+method — both COPY the struct in V, and the copy's own mutex over shared maps crashed the
+Diagnostics panel after #402, docs/known_issues.md) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
 available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged) and
 `scripts/v_toolchain_test.sh` (when the pinned V toolchain is REBUILT, and what counts as
