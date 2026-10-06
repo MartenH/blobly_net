@@ -30,7 +30,8 @@ codex_env=${CODEX:-}
 case "$codex_env" in
 '' | /*) ;;
 */*) codex_env=$PWD/$codex_env ;;
-*) codex_env=$(command -v "$codex_env" || printf '%s' "$codex_env") ;;
+*) codex_env=$(command -v "$codex_env" || printf '%s' "$codex_env")
+	case "$codex_env" in /*) ;; */*) codex_env=$PWD/$codex_env ;; esac ;; # found through a relative PATH entry
 esac
 
 self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
@@ -72,7 +73,8 @@ runs() {
 	local v
 	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
 	if command -v timeout >/dev/null 2>&1; then
-		v=$(timeout "${CODEX_PROBE_TIMEOUT:-10}" "$1" --version </dev/null 2>/dev/null) || return 1
+		# -k: a binary that ignores TERM is killed 2 s later, so the probe is bounded either way
+		v=$(timeout -k 2 "${CODEX_PROBE_TIMEOUT:-10}" "$1" --version </dev/null 2>/dev/null) || return 1
 	else
 		v=$("$1" --version </dev/null 2>/dev/null) || return 1
 	fi
@@ -97,8 +99,11 @@ else
 		echo "codex-local-review: skipping $candidate: it does not run (empty or broken)" >&2
 	done < <(
 		type -ap codex || true
+		# newest first by the extension's own version, whichever tree (remote or desktop) holds it:
+		# sorting the whole path would put every desktop copy ahead of every server one
 		find "$HOME"/.vscode-server/extensions "$HOME"/.vscode/extensions \( -path '*/openai.chatgpt-*/bin/*/codex' \
-			-o -path '*/openai.chatgpt-*/bin/*/codex.exe' \) -type f 2>/dev/null | sort -rV || true
+			-o -path '*/openai.chatgpt-*/bin/*/codex.exe' \) -type f 2>/dev/null |
+			sed 's|.*/openai\.chatgpt-\([^/]*\)/.*|\1\t&|' | sort -t "$(printf '\t')" -k1,1rV | cut -f2- || true
 	)
 	if [ -z "$codex" ]; then
 		echo "codex-local-review: no codex CLI that runs (reload the Codex extension, or set CODEX=/path/to/codex)" >&2

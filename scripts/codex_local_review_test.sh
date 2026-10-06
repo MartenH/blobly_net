@@ -27,7 +27,7 @@ expect() { # expect <name> <got> <want>
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/tools"
-for t in bash dirname basename find sort head sed timeout; do
+for t in bash dirname basename find sort head sed timeout cut; do
 	ln -s "$(command -v "$t")" "$tmp/tools/$t"
 done
 
@@ -54,8 +54,8 @@ empty() { # a 0-byte executable, as an interrupted extension update left one
 	: >"$1"
 	chmod +x "$1"
 }
-ext() { # ext <home> <version>: the path an extension version bundles codex at
-	printf '%s' "$1/.vscode-server/extensions/openai.chatgpt-$2-linux-x64/bin/linux-x86_64/codex"
+ext() { # ext <home> <version> [tree]: the path an extension version bundles codex at
+	printf '%s' "$1/${3:-.vscode-server}/extensions/openai.chatgpt-$2-linux-x64/bin/linux-x86_64/codex"
 }
 
 # $CODEX: used when it runs, refused (not replaced) when it does not
@@ -88,6 +88,15 @@ expect "a broken codex on PATH falls through to the extension" "$(check "$h" "$t
 working "$tmp/goodpath/codex"
 expect "a working codex on PATH is chosen first" "$(check "$h" "$tmp/goodpath")" "0|$tmp/goodpath/codex"
 expect "every codex on PATH is tried, a broken first one skipped" "$(check "$h" "$tmp/onpath:$tmp/goodpath")" "0|$tmp/goodpath/codex"
+
+# both extension trees: the newer version wins, whichever tree holds it
+h=$tmp/h4
+working "$(ext "$h" 1.0.0 .vscode)"
+working "$(ext "$h" 100.0.0)"
+expect "the newest copy across the remote and desktop trees is chosen" "$(check "$h" "")" "0|$(ext "$h" 100.0.0)"
+
+# a bare $CODEX found through a relative PATH entry is the caller's
+expect "a bare \$CODEX on a relative PATH entry is the caller's" "$(CWD=$tmp check "$tmp/h0" "good" CODEX=codex)" "0|$tmp/good/codex"
 
 # nothing that runs
 h=$tmp/h3
