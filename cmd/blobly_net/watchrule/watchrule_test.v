@@ -3,9 +3,14 @@ module watchrule
 const eec1 = u32(0x0CF00400)
 
 fn frame(sig string) Ident {
+	return on('can0', sig)
+}
+
+fn on(wire string, sig string) Ident {
 	return Ident{
 		id: eec1
 		ext: true
+		wire: wire
 		sig: sig
 	}
 }
@@ -51,22 +56,120 @@ fn test_two_wires_rejoining_one_group_are_two_signals() {
 	assert a.covers(row(a))
 }
 
-fn test_a_frames_watch_is_not_scoped_by_wire() {
-	// #330 is about every row, not about this one: a frame's watch takes its samples from any
-	// wire, as it did before either field existed
-	f := frame('EngineSpeed')
-	assert !f.scoped_by_wire()
-	assert f.covers(Row{
-		id: eec1
-		ext: true
-		wire: 'can1'
-	})
-	assert rejoined('can0', 'EngineSpeed').scoped_by_wire()
+// #330: two wires carrying one identifier with different data — or different layouts in their
+// own databases — are two signals. Unscoped, a frame watch interleaved both into one line.
+fn test_two_wires_carrying_one_frame_are_two_signals() {
+	a := on('can0', 'EngineSpeed')
+	b := on('can1', 'EngineSpeed')
+	assert !a.same(b)
+	assert a.key() != b.key(), 'ImPlot keys a series by this'
+	assert a.covers(row(a))
+	assert !a.covers(row(b))
+	assert !b.covers(row(a))
+}
+
+// A message picked from the database list has no row behind it, so no wire: it covers nothing
+// rather than every wire, which is the behaviour #330 removes.
+fn test_an_unbound_watch_covers_nothing() {
+	u := on('', 'EngineSpeed')
+	for w in ['can0', 'can1', ''] {
+		assert !u.covers(Row{
+			id: eec1
+			ext: true
+			wire: w
+		}), w
+	}
+}
+
+fn every(w string) bool {
+	return true
+}
+
+struct Asked {
+mut:
+	n map[string]int
+}
+
+fn rows_of(rs []Row) fn (int) Row {
+	return fn [rs] (k int) Row {
+		return rs[k]
+	}
+}
+
+// The migration for an unbound watch or selection: the OLDEST row's wire among wires whose
+// databases define the message — stable as traffic arrives, and never a wire that carries the
+// number under no definition of it.
+fn test_an_unbound_watch_binds_to_the_oldest_wire_that_defines_its_message() {
+	u := on('', 'EngineSpeed')
+	rs := [
+		Row{
+			id: eec1
+			ext: true
+			wire: 'can2' // carries the number, defines nothing at it
+		},
+		Row{
+			id: eec1
+			ext: true
+			wire: 'can1'
+			someip: true // not a CAN frame at all
+		},
+		Row{
+			id: eec1
+			ext: false // another frame kind
+			wire: 'can1'
+		},
+		Row{
+			id: eec1
+			ext: true
+			tp: true // a rejoined message, another kind
+			wire: 'can1'
+		},
+		Row{
+			id: eec1
+			ext: true
+			wire: 'can1'
+		},
+		Row{
+			id: eec1
+			ext: true
+			wire: 'can0'
+		},
+	]
+	mut asked := &Asked{} // a closure captures by value, so through a pointer
+	defines := fn [mut asked] (w string) bool {
+		asked.n[w]++
+		return w != 'can2'
+	}
+	assert u.bind(rs.len, rows_of(rs), every, defines) == 'can1'
+	assert asked.n == {
+		'can2': 1
+		'can1': 1
+	}, 'each wire asked once, and only until one answers'
+	bound := Ident{
+		...u
+		wire: u.bind(rs.len, rows_of(rs), every, fn (w string) bool {
+			return w != 'can2'
+		})
+	}
+	assert bound.covers(rs[4])
+	assert !bound.covers(rs[5])
+	// nothing to bind to yet: stays unbound
+	assert u.bind(1, rows_of(rs), every, fn (w string) bool {
+		return w != 'can2'
+	}) == ''
+	assert u.bind(0, rows_of(rs), every, fn (w string) bool {
+		return true
+	}) == ''
+	// a bound watch keeps its wire, whatever the rows say
+	assert on('can0', 'EngineSpeed').bind(rs.len, rows_of(rs), every, fn (w string) bool {
+		return true
+	}) == 'can0'
 }
 
 fn test_nothing_matches_a_someip_row() {
 	// no DBC message behind it; its payload layout is the deployment's
 	for i in [frame('EngineSpeed'), rejoined('can0', 'EngineSpeed')] {
+		assert i.covers(row(i))
 		assert !i.covers(Row{
 			id: i.id
 			ext: i.ext
@@ -106,10 +209,10 @@ fn test_a_dbc_edit_moves_only_the_watches_that_wire_backs() {
 	// another source address, which is the whole reason such a message resolves by PGN at all
 	assert a.renamed_by(0x0CF004FE, true, 'can0', 0xF004), 'another SA in the BO_ id'
 	assert !a.renamed_by(eec1, true, 'can0', 0xF005), 'another group'
-	// a frame's watch follows the edit by ID, whatever wire it was made on
+	// a frame's watch follows the edit by ID, and since #330 only on its own wire
 	f := frame('EngineSpeed')
 	assert f.renamed_by(eec1, true, 'can0', 0)
-	assert f.renamed_by(eec1, true, 'can1', 0)
+	assert !f.renamed_by(eec1, true, 'can1', 0), 'another wire backs another watch'
 	assert !f.renamed_by(0x0CF004FE, true, 'can0', 0xF004)
 	assert !f.renamed_by(eec1, false, 'can0', 0)
 }
@@ -145,4 +248,69 @@ fn test_two_receivers_of_one_group_are_two_signals() {
 	assert base.da == -1
 	assert base.covers(row(base))
 	assert !base.covers(row(a))
+}
+
+// A recorded bus's wire starts with a NUL, and ImGui reads an id as a C string: every imported
+// series' id ended there and the series shared one legend entry. The key carries none, and
+// stays one-to-one with the wire.
+fn test_the_key_carries_no_nul_and_still_separates_wires() {
+	a := on('\x00rec:mf4:bus0', 'EngineSpeed')
+	b := on('\x00rec:mf4:bus2', 'EngineSpeed')
+	c := on('\\0rec:mf4:bus0', 'EngineSpeed') // a name that spells the escape
+	for i in [a, b, c] {
+		assert !i.key().contains('\x00'), i.key()
+	}
+	assert a.key() != b.key()
+	assert a.key() != c.key()
+	assert id_safe('inproc:CAN1') == 'inproc:CAN1'
+}
+
+// After an interface edit or a deleted row the history still carries the old live key, and its
+// database lookup falls back to every file — so the rebinding watch landed straight back on the
+// dead wire (codex on #410). Only a configured wire or a recorded bus is a candidate.
+fn test_a_rebinding_watch_skips_a_live_wire_nothing_configures() {
+	assert bind_candidate('can1', true)
+	assert !bind_candidate('can0', false), 'a live key no channel is on'
+	assert bind_candidate(rec_prefix + 'mf4:bus0', false), 'an unplaced recorded bus'
+	assert !bind_candidate('', true)
+	u := on('', 'EngineSpeed')
+	rs := [
+		Row{
+			id: eec1
+			ext: true
+			wire: 'can0' // the old key, oldest in the history
+		},
+		Row{
+			id: eec1
+			ext: true
+			wire: rec_prefix + 'mf4:bus0'
+		},
+		Row{
+			id: eec1
+			ext: true
+			wire: 'can1'
+		},
+	]
+	configured := fn (w string) bool {
+		return w == 'can1'
+	}
+	all := fn (w string) bool {
+		return true // the fallback: every database defines it
+	}
+	assert u.bind(rs.len, rows_of(rs), configured, all) == rec_prefix + 'mf4:bus0'
+	assert u.bind(1, rows_of(rs), configured, all) == '', 'the dead wire alone binds nothing'
+	assert u.bind(rs.len, rows_of(rs), fn (w string) bool {
+		return w == 'can1'
+	}, fn (w string) bool {
+		return !w.starts_with(rec_prefix)
+	}) == 'can1'
+}
+
+// A selection picked from the database list waits unbound; the DBC editor moving its message to
+// another id moves it by the rule the watches follow, compared on the empty wire it has.
+fn test_a_pending_selection_follows_an_edit_by_the_watch_rule() {
+	pending := on('', '')
+	assert pending.renamed_by(eec1, true, '', 0)
+	assert !pending.renamed_by(eec1 + 1, true, '', 0)
+	assert !pending.renamed_by(eec1, false, '', 0)
 }

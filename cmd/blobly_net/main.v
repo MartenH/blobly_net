@@ -255,6 +255,7 @@ fn main() {
 		app.show_gen = true
 	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
+	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
 	// Open a recording at startup, the way the file picker would. For the screenshot harness
 	// above all (VGUI_FRAMES / VGUI_SHOT): the picker cannot be driven from a headless run, so
 	// without this there is no way to check what an IMPORTED capture looks like — and the
@@ -360,6 +361,7 @@ fn main() {
 		chans := app.snap_chans
 		app.mu.unlock()
 
+		app.plot_auto_step(rows, frame)
 		pf := probe_alloc_mark()
 		vgui.frame_begin()
 		if focus_panel != '' && frame == 3 {

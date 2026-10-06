@@ -322,7 +322,7 @@ fn (mut app App) dbc_refresh_trace_names() {
 				j1939.pgn_name(j1939.pgn(r.id)) or { '' }
 			}
 		} else {
-			app.lookup_name(r.id, r.ext)
+			app.lookup_name_on(r.wire, r.id, r.ext)
 		}
 		nn := j1939_join(base, r.reading)
 		if nn != r.name {
@@ -970,13 +970,12 @@ fn draw_dbc_editor(mut app App) {
 			}
 			edit_wires := app.wires_of_db(di)
 			for wi, w in app.watch {
-				if id_shadowed {
-					break
-				}
 				// SCOPED to the wires this database backs: matching (id, ext) alone moved a
-				// rejoined watch belonging to ANOTHER wire to the edited id and kind (codex).
-				// `rewritten_by` is the rule, beside the one that decides a watch's rows.
-				if edit_wires.any(w.renamed_by(old_id, wext0, it, j1939.pgn(old_id))) {
+				// rejoined watch belonging to ANOTHER wire to the edited id and kind (codex),
+				// and since #330 a frame's watch the same way — moved only where this file is
+				// the one its wire decodes it with (`frame_backed_by`). `renamed_by` is the
+				// rule, beside the one that decides a watch's rows.
+				if app.edit_reaches(w, di, old_id, wext0, if id_shadowed { []string{} } else { edit_wires }) {
 					// SPREAD, not a fresh literal: a rewrite changes ONE field and keeps every
 					// other, so a field added to the identity later cannot be silently dropped
 					// here — which is what happened to `wire`, leaving an edited watch matching
@@ -984,6 +983,7 @@ fn draw_dbc_editor(mut app App) {
 					app.watch[wi] = moved_watch(w, u32(cl))
 				}
 			}
+			app.follow_pending_selection(di, old_id, wext0, u32(cl), wext0)
 			app.mark_dirty(di)
 		} else {
 			app.notify('id 0x${u32(cl).hex()} already used by another frame — not applied')
@@ -1022,14 +1022,18 @@ fn draw_dbc_editor(mut app App) {
 					}
 				}
 			}
+			kind_wires := app.wires_of_db(di)
 			for wi, w in app.watch {
-				if kind_shadowed {
-					break
-				}
-				if app.wires_of_db(di).any(w.renamed_by(old_id2, old_ext2, it, j1939.pgn(old_id2))) {
+				// a frame's watch by its own wire's lookup, as the id edit above (#330)
+				if app.edit_reaches(w, di, old_id2, old_ext2, if kind_shadowed {
+					[]string{}
+				} else {
+					kind_wires
+				}) {
 					// A STANDARD frame is never a rejoined J1939 message: the kind goes with
 					// the width, or the watch stays `tp` on an 11-bit id and covers nothing
-					// (codex). Its wire and receiver go with it, being that kind's fields.
+					// (codex). Its receiver goes with it, being that kind's field; its WIRE
+					// stays, since every watch has one (#330).
 					app.watch[wi] = if next {
 						Watch{
 							...moved_watch(w, nid)
@@ -1039,14 +1043,14 @@ fn draw_dbc_editor(mut app App) {
 						Watch{
 							...moved_watch(w, nid)
 							ext:  next
-							tp:   false
-							wire: ''
-							da:   -1
-							pgn:  0
+							tp:  false
+							da:  -1
+							pgn: 0
 						}
 					}
 				}
 			}
+			app.follow_pending_selection(di, old_id2, old_ext2, nid, next)
 			app.mark_dirty(di)
 		}
 	}
@@ -1258,10 +1262,9 @@ fn draw_dbc_editor(mut app App) {
 			// database a row actually decodes against — and the two kinds differ, which cost a
 			// round in each direction (codex):
 			//
-			//   - A FRAME's watch is unscoped and resolves through every loaded database in
-			//     order, so ANY earlier one defining `(id, ext)` shadows this edit, wherever it
-			//     is attached. Made per-wire, a rename on wire B moved a watch the wire-A
-			//     database still names.
+			//   - A FRAME's watch resolves against ITS OWN wire's databases in order (#330),
+			//     so an earlier one defining `(id, ext)` THERE shadows this edit, and a file
+			//     the wire does not list never reaches it (`frame_backed_by`).
 			//   - A REJOINED message's watch resolves against ITS OWN wire, BY PGN — so the
 			//     question is not "does an earlier database mention this group" but "which
 			//     definition does that wire's whole list actually pick". Asked per database, an
@@ -1270,14 +1273,6 @@ fn draw_dbc_editor(mut app App) {
 			//     So the test IS the lookup, over the wire's list, and the edit is shadowed
 			//     exactly where the winner is not the message being edited.
 			edit_wires := app.wires_of_db(di)
-			mut frame_shadowed := false
-			for odi in 0 .. di {
-				for om in app.dbs[odi].messages {
-					if om.id == wid && om.ext == wext {
-						frame_shadowed = true
-					}
-				}
-			}
 			mut shadow_wires := map[string]bool{}
 			for gw in edit_wires {
 				idxs := app.db_indices_for_gate(gw)
@@ -1295,12 +1290,11 @@ fn draw_dbc_editor(mut app App) {
 				}
 			}
 			for wi, w in app.watch {
-				if w.sig != old_sig || (!w.tp && frame_shadowed) {
+				if w.sig != old_sig {
 					continue
 				}
 				// RENAMED: a signal's name is the database's whichever kind of row carries it.
-				if edit_wires.any((!w.tp || it !in shadow_wires)
-					&& w.renamed_by(wid, wext, it, j1939.pgn(wid))) {
+				if app.edit_reaches(w, di, wid, wext, edit_wires.filter(it !in shadow_wires)) {
 					app.watch[wi] = Watch{
 						...w
 						sig: nv

@@ -73,8 +73,8 @@ Two things enter the same trace from somewhere other than a wire:
 
 | consumer | reads | notes |
 |---|---|---|
-| Trace, Trace (filter), grouped view | `app.trace` rows | groups by row identity — CAN: origin, channel, id, `ext`, `fd`, `brs`, `rtr` (a classic and an FD 0x120 are two rows); SOME/IP: origin, channel, id, message type, both versions, sender, header validity |
-| Signals, Graphics | rows, matched by CAN (id, ext) | kind-gated: never a SOME/IP payload |
+| Trace, Trace (filter), grouped view | `app.trace` rows | groups by row identity — CAN: origin, channel, wire, id, `ext`, `fd`, `brs`, `rtr` (a classic and an FD 0x120 are two rows); SOME/IP: origin, channel, id, message type, both versions, sender, header validity |
+| Signals, Graphics | rows, matched by CAN (id, ext) on ONE wire (`TraceRow.wire`, `watchrule`), decoded with that wire's databases | kind-gated: never a SOME/IP payload. Two wires carrying one id are two series (#330) |
 | Record | received CAN frames, plus our own sends as accepted by the driver (`note_emit` appends at emit; an echo, where the backend gives one, confirms it rather than creating it) → `canlog` (candump `.log`) | **not an independent bus capture**: a host-accepted send is in the file whether or not it was seen on the wire. **CAN only** — a SOME/IP row is shown, not recorded, and the Log says so once |
 | Diagnostics | an `isotp.Channel` | over a CAN tap (`isotp.on_bus`) or a `DoipClient` — the same `uds.Client` either way |
 | Lua (`cmd/script`, the Script panel) | `bus.recv`/`bus.send` over a Bus from `env.opener`; `uds.open`; `someip.listen` | the runner opens buses directly; the GUI hands the script a tap, so its sends are `TX` rows |

@@ -384,7 +384,7 @@ fn draw_symbols(mut app App) {
 	filt := vgui.buf_str(app.symbol_filter_buf).to_lower()
 	vgui.separator_text('messages / signals')
 	mut seen := map[u64]bool{}
-	for db in app.dbs {
+	for di, db in app.dbs {
 		for m in db.messages {
 			key := (u64(m.id) << 1) | if m.ext { u64(1) } else { u64(0) }
 			if key in seen {
@@ -667,30 +667,67 @@ fn build_layout() {
 	vgui.dock_finish(root)
 }
 
-// latest_data returns the payload of the newest trace row matching (id, ext), or [].
+// watch_row is what a trace row offers `watchrule`: the one spelling, for every site that asks
+// whether a row is one of a watch's samples.
+fn watch_row(r TraceRow) watchrule.Row {
+	return watchrule.Row{
+		id:     r.id
+		ext:    r.ext
+		tp:     r.tp
+		wire:   r.wire
+		someip: r.someip
+		da:     r.tp_da
+	}
+}
+
+// latest_data returns the payload of the newest trace row the identity covers, or [].
 //
-// NOT A SOME/IP ROW. This is asked with a CAN (id, ext) and its answer is decoded with a DBC
-// signal layout, so a SOME/IP payload that shares the number would be read as that frame and
-// shown as real signal values. The kind is part of a row's identity (TraceRow.someip), and
-// everything that looks a row up by number has to say so — gating where a watch is CREATED, as
-// this change first did, does not cover matching one that a real CAN frame added. `tp` is the
-// same question for the other kind: a rejoined J1939 message and a single frame at that
-// identifier are two producers.
-fn latest_data(rows []TraceRow, id u32, ext bool, tp bool, wire string, da int) []u8 {
+// Through `watchrule.Ident.covers`, the rule the series uses: not a SOME/IP row (its payload
+// would be read with a DBC layout), the kind (`tp`: a rejoined message and a single frame at one
+// identifier are two producers), and the WIRE (#330: two wires may carry one identifier with
+// different data, and the panel showed whichever spoke last). has_payload: an RTR row matching
+// this id would return its zero-filled DLC placeholder as the "latest value" of every signal.
+fn latest_data(rows []TraceRow, w Watch) []u8 {
 	mut i := rows.len - 1
 	for i >= 0 {
-		// has_payload: an RTR row matching this id would return its zero-filled DLC
-		// placeholder as the "latest value" of every signal
-		// `wire` only where it distinguishes: a rejoined message is looked up by PGN, and two
-		// wires may define one (PGN, SA) differently. An ordinary frame's watch stays unscoped,
-		// which is #330.
-		if !rows[i].someip && rows[i].id == id && rows[i].ext == ext && rows[i].tp == tp
-			&& (!tp || (rows[i].wire == wire && rows[i].tp_da == da)) && rows[i].has_payload() {
+		if w.covers(watch_row(rows[i])) && rows[i].has_payload() {
 			return rows[i].data
 		}
 		i--
 	}
 	return []u8{}
+}
+
+// sel_watch is the Signals panel's selection as a watch identity, signal aside.
+fn (app &App) sel_watch(sig string) Watch {
+	return watch_ident(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, app.sel_da, sig)
+}
+
+// bind_selection gives a selection made from the database list — which names a message and no
+// wire — the wire it is shown and plotted from: the oldest row's among wires whose databases
+// define THAT message at its id (`watchrule.Ident.bind`). Until such a row arrives it stays unbound and shows
+// nothing, rather than every wire's rows at once.
+fn (mut app App) bind_selection(rows []TraceRow) {
+	if app.sel_id < 0 || app.sel_wire != '' {
+		return
+	}
+	w := app.sel_watch('')
+	a := app
+	di := app.sel_db
+	app.sel_wire = w.bind(rows.len, fn [rows] (k int) watchrule.Row {
+		return watch_row(rows[k])
+	}, fn [a] (wire string) bool {
+		return a.wire_configured(wire)
+	}, fn [a, w, di] (wire string) bool {
+		// the message PICKED, where the list said which: the list shows one entry per (id,
+		// ext) across every database, and another wire may define another message there.
+		// By DATABASE, not by name, so a rename in the DBC editor cannot strand it (codex).
+		if di >= 0 {
+			return a.frame_backed_by(wire, di, w.id, w.ext)
+		}
+		_ := a.message_on(wire, w.id, w.ext, w.tp) or { return false }
+		return true
+	})
 }
 
 // draw_signals: pick a DBC message; decode its signals from the latest matching frame.
@@ -705,7 +742,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 	vgui.separator_text('messages')
 	vgui.child_begin('##msglist', 108)
 	mut seen := map[u64]bool{}
-	for db in app.dbs {
+	for di, db in app.dbs {
 		for m in db.messages {
 			key := (u64(m.id) << 1) | if m.ext { u64(1) } else { u64(0) }
 			if key in seen {
@@ -718,37 +755,40 @@ fn draw_signals(mut app App, rows []TraceRow) {
 				app.sel_id = int(m.id)
 				app.sel_ext = m.ext
 				app.sel_tp = false
-				app.sel_wire = ''
+				app.sel_wire = '' // unbound: bind_selection picks the wire below
 				app.sel_da = -1 // an ordinary frame has no connection receiver
+				app.sel_db = di
 			}
 		}
 	}
 	vgui.child_end()
+	app.bind_selection(rows)
 	vgui.separator_text('signals')
 	if app.sel_id < 0 {
 		vgui.text_dim('select a message above')
 		vgui.end()
 		return
 	}
-	// The wire's databases for a rejoined message, every loaded one for a frame — the same
-	// scoping the trace's `group_message` uses, so the panel and the row cannot decode one
-	// (PGN, SA) two ways (codex).
-	m := app.message_for(u32(app.sel_id), app.sel_ext, app.sel_tp, if app.sel_tp {
-		app.dbs_for_gate(app.sel_wire)
-	} else {
-		app.dbs
-	}) or {
-		vgui.text_dim('message not in DBC')
+	sel := app.sel_watch('')
+	if sel.wire == '' {
+		vgui.text_dim('no frame of 0x${sel.id:X} received yet on a wire that defines it')
 		vgui.end()
 		return
 	}
-	data := latest_data(rows, u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, app.sel_da)
+	// The selection's wire's databases — the scoping the trace's `group_message` uses, so the
+	// panel and the row cannot decode one message two ways (codex; #330).
+	m := app.watch_message(sel) or {
+		vgui.text_dim('message not in a DBC on ${app.wire_label(sel.wire)}')
+		vgui.end()
+		return
+	}
+	data := latest_data(rows, sel)
 	if data.len == 0 {
-		vgui.text('${m.name}: no frame received yet')
+		vgui.text('${m.name} on ${app.wire_label(sel.wire)}: no frame received yet')
 		vgui.end()
 		return
 	}
-	vgui.text('${m.name}')
+	vgui.text('${m.name}  on ${app.wire_label(sel.wire)}')
 	if vgui.table_begin('sigs', 4) {
 		vgui.table_col('') // plot checkbox
 		vgui.table_col('signal')
@@ -758,10 +798,10 @@ fn draw_signals(mut app App, rows []TraceRow) {
 		for s in m.active_signals(data) {
 			vgui.table_row()
 			vgui.table_next_col()
-			watched := app.is_watched(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, app.sel_da, s.name)
+			watched := app.is_watched(sel.id, sel.ext, sel.tp, sel.wire, sel.da, s.name)
 			nw := vgui.checkbox('##w_${m.id}_${s.name}', watched)
 			if nw != watched {
-				app.toggle_watch(u32(app.sel_id), app.sel_ext, app.sel_tp, app.sel_wire, app.sel_da, s.name)
+				app.toggle_watch(sel.id, sel.ext, sel.tp, sel.wire, sel.da, s.name)
 			}
 			vgui.table_cell(s.name)
 			lbl := s.label(data)
@@ -782,12 +822,8 @@ fn draw_signals(mut app App, rows []TraceRow) {
 fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	// The WATCH'S OWN WIRE decides which databases name it, exactly as the sample filter below
 	// decides which rows are its. Resolving globally while filtering by wire is the worst of
-	// both: the second wire's series, decoded with the first wire's layout (codex).
-	m := app.message_for(w.id, w.ext, w.tp, if w.tp {
-		app.dbs_for_gate(w.wire)
-	} else {
-		app.dbs
-	}) or { return []f32{}, []f32{} }
+	// both: the second wire's series, decoded with the first wire's layout (codex; #330).
+	m := app.watch_message(w) or { return []f32{}, []f32{} }
 	mut sig := candb.Signal{}
 	mut found := false
 	for s in m.signals {
@@ -807,14 +843,7 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 		// inject a zero sample into the middle of the series
 		// `!r.someip`, for latest_data's reason: a plotted series must not take its points from a
 		// payload that no DBC signal describes; `tp` for the other kind, a rejoined message.
-		if w.covers(watchrule.Row{
-			id: r.id
-			ext: r.ext
-			tp: r.tp
-			wire: r.wire
-			someip: r.someip
-			da: r.tp_da
-		}) && r.has_payload() {
+		if w.covers(watch_row(r)) && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}
@@ -831,6 +860,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		vgui.end()
 		return
 	}
+	app.bind_watches(rows)
 	if app.watch.len == 0 {
 		vgui.text_dim('tick a signal in the Signals panel to plot it (or right-click a Trace row)')
 		vgui.end()
@@ -848,7 +878,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	mut rm := -1
 	for i, w in app.watch {
 		vgui.same_line()
-		if vgui.small_button('${idstr(w.id, w.ext)}.${w.sig} x##rmw${i}') {
+		if vgui.small_button('${idstr(w.id, w.ext)}.${w.sig} @${app.wire_label(w.wire)} x##rmw${i}') {
 			rm = i
 		}
 	}
@@ -894,14 +924,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			// SOME/IP row sharing a watched CAN id, a direct frame under a rejoined watch, or
 			// another wire's rejoined row would each drag a fixed 1/5/10/30 s window past the
 			// series it is meant to frame and leave the plot looking empty.
-			if app.is_watched_row(watchrule.Row{
-				id: r.id
-				ext: r.ext
-				tp: r.tp
-				wire: r.wire
-				someip: r.someip
-				da: r.tp_da
-			}) && f64(r.t_ms) / 1000.0 > xmax {
+			if app.is_watched_row(watch_row(r)) && f64(r.t_ms) / 1000.0 > xmax {
 				xmax = f64(r.t_ms) / 1000.0
 			}
 		}
@@ -929,7 +952,9 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			// watches and must be two plots, or they share legend entry, colour and visibility
 			// while their samples are scoped apart (codex). `key()` is that identity, in one
 			// place, so this cannot fall behind it again.
-			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.key()}'
+			// and the WIRE in the shown name, since two series differing only by it would
+			// otherwise read the same in the legend (#330)
+			label := '0x${w.id:X}.${w.sig} @${app.wire_label(w.wire)} = ${val:.2f}###g${w.key()}'
 			axis := if app.plot_multi { imin(i, 2) } else { 0 } // signal 0/1/2 → Y1/Y2/Y3
 			vgui.plot_line_axis(label, xs, ys, axis)
 		}
