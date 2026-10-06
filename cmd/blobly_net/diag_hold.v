@@ -73,7 +73,7 @@ fn (mut app App) diag_press(kind string, did u16) {
 	why := diaghold.press_refusal(app.running, app.diag_busy, app.diag_tools)
 	if why != '' {
 		app.mu.unlock()
-		if app.diag_tools > 0 {
+		if why != 'busy' { // a click while a press is in flight is the panel's own busy state
 			app.diag_push('${kind}: ${why}')
 		}
 		return
