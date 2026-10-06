@@ -983,6 +983,7 @@ fn draw_dbc_editor(mut app App) {
 					app.watch[wi] = moved_watch(w, u32(cl))
 				}
 			}
+			app.follow_pending_selection(di, old_id, wext0, u32(cl), wext0)
 			app.mark_dirty(di)
 		} else {
 			app.notify('id 0x${u32(cl).hex()} already used by another frame — not applied')
@@ -1049,6 +1050,7 @@ fn draw_dbc_editor(mut app App) {
 					}
 				}
 			}
+			app.follow_pending_selection(di, old_id2, old_ext2, nid, next)
 			app.mark_dirty(di)
 		}
 	}

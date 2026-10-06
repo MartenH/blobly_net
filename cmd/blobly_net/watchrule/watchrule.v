@@ -100,12 +100,24 @@ pub fn (i Ident) covers(r Row) bool {
 	return r.wire == i.wire && r.da == i.da
 }
 
+// rec_prefix starts the wire of a recorded bus the project placed nowhere: a NUL, so no live
+// destination key can spell it (codex on #329).
+pub const rec_prefix = '\x00rec:'
+
+// bind_candidate says whether a row's wire may be bound to: a CONFIGURED wire, or a recorded
+// bus. A live key no configured channel is on is refused — after an interface edit or a deleted
+// row the history still carries the old key, and its database lookup falls back to every file,
+// so a rebinding watch would land straight back on the dead wire (codex on #410).
+pub fn bind_candidate(wire string, configured bool) bool {
+	return wire != '' && (configured || wire.starts_with(rec_prefix))
+}
+
 // bind is the wire an UNBOUND identity takes: the wire of the OLDEST of `n` rows it would cover
-// there, among wires whose databases define its message (`defines`). The oldest, so the answer
-// does not move as traffic arrives; a defining wire, so a message picked from a database is not
-// bound to a wire that carries the same number under no definition of it. '' when no row
-// qualifies yet. A bound identity keeps its wire.
-pub fn (i Ident) bind(n int, at fn (int) Row, defines fn (string) bool) string {
+// there, among `bind_candidate` wires whose databases define its message (`defines`). The
+// oldest, so the answer does not move as traffic arrives; a defining wire, so a message picked
+// from a database is not bound to a wire that carries the same number under no definition of
+// it. '' when no row qualifies yet. A bound identity keeps its wire.
+pub fn (i Ident) bind(n int, at fn (int) Row, configured fn (string) bool, defines fn (string) bool) string {
 	if i.wire != '' {
 		return i.wire
 	}
@@ -117,7 +129,7 @@ pub fn (i Ident) bind(n int, at fn (int) Row, defines fn (string) bool) string {
 			continue
 		}
 		if r.wire !in asked {
-			asked[r.wire] = defines(r.wire)
+			asked[r.wire] = bind_candidate(r.wire, configured(r.wire)) && defines(r.wire)
 		}
 		if asked[r.wire] {
 			return r.wire

@@ -13,9 +13,8 @@ import watchrule
 // row: two rows aliasing one wire carry the same frames, filed under whichever row read or sent
 // each one, so a scope by row would split one wire's traffic by who put it there.
 
-// rec_wire_prefix marks a recorded bus the project cannot place: a NUL, so no live destination
-// key can spell it (codex on #329).
-const rec_wire_prefix = '\x00rec:'
+// rec_wire_prefix marks a recorded bus the project cannot place (`watchrule.rec_prefix`).
+const rec_wire_prefix = watchrule.rec_prefix
 
 // trace_wire is the wire a row is filed under, from the gate that read it and the key that
 // observed it. Live the two are one destination key. For an import it is the configured wire
@@ -155,6 +154,20 @@ fn (app &App) edit_reaches(w Watch, di int, id u32, ext bool, tp_wires []string)
 	return app.frame_backed_by(w.wire, di, id, ext) && w.renamed_by(id, ext, w.wire, 0)
 }
 
+// follow_pending_selection moves a selection picked from the database list and not yet bound
+// with its message, when the DBC editor moves that message to another `(id, ext)`: the same
+// `renamed_by` rule the watches follow, on the database it was picked from. A RENAME needs
+// nothing — the pending selection is keyed by database and id, never by name (codex on #410).
+fn (mut app App) follow_pending_selection(di int, old_id u32, old_ext bool, new_id u32, new_ext bool) {
+	if app.sel_id < 0 || app.sel_wire != '' || app.sel_db != di {
+		return
+	}
+	if app.sel_watch('').renamed_by(old_id, old_ext, '', 0) {
+		app.sel_id = int(new_id)
+		app.sel_ext = new_ext
+	}
+}
+
 // bind_watches gives every UNBOUND watch a wire (`watchrule.Ident.bind`): the oldest row's
 // among wires whose databases name its signal. Two that land on one identity are one watch.
 fn (mut app App) bind_watches(rows []TraceRow) {
@@ -170,6 +183,8 @@ fn (mut app App) bind_watches(rows []TraceRow) {
 				...w
 				wire: w.bind(rows.len, fn [rows] (k int) watchrule.Row {
 					return watch_row(rows[k])
+				}, fn [a] (wire string) bool {
+					return a.wire_configured(wire)
 				}, fn [a, w] (wire string) bool {
 					m := a.message_on(wire, w.id, w.ext, w.tp) or { return false }
 					return m.signals.any(it.name == w.sig)

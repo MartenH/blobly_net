@@ -384,7 +384,7 @@ fn draw_symbols(mut app App) {
 	filt := vgui.buf_str(app.symbol_filter_buf).to_lower()
 	vgui.separator_text('messages / signals')
 	mut seen := map[u64]bool{}
-	for db in app.dbs {
+	for di, db in app.dbs {
 		for m in db.messages {
 			key := (u64(m.id) << 1) | if m.ext { u64(1) } else { u64(0) }
 			if key in seen {
@@ -713,14 +713,20 @@ fn (mut app App) bind_selection(rows []TraceRow) {
 	}
 	w := app.sel_watch('')
 	a := app
-	name := app.sel_msg
+	di := app.sel_db
 	app.sel_wire = w.bind(rows.len, fn [rows] (k int) watchrule.Row {
 		return watch_row(rows[k])
-	}, fn [a, w, name] (wire string) bool {
-		m := a.message_on(wire, w.id, w.ext, w.tp) or { return false }
+	}, fn [a] (wire string) bool {
+		return a.wire_configured(wire)
+	}, fn [a, w, di] (wire string) bool {
 		// the message PICKED, where the list said which: the list shows one entry per (id,
-		// ext) across every database, and another wire may define another message there
-		return name == '' || m.name == name
+		// ext) across every database, and another wire may define another message there.
+		// By DATABASE, not by name, so a rename in the DBC editor cannot strand it (codex).
+		if di >= 0 {
+			return a.frame_backed_by(wire, di, w.id, w.ext)
+		}
+		_ := a.message_on(wire, w.id, w.ext, w.tp) or { return false }
+		return true
 	})
 }
 
@@ -736,7 +742,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 	vgui.separator_text('messages')
 	vgui.child_begin('##msglist', 108)
 	mut seen := map[u64]bool{}
-	for db in app.dbs {
+	for di, db in app.dbs {
 		for m in db.messages {
 			key := (u64(m.id) << 1) | if m.ext { u64(1) } else { u64(0) }
 			if key in seen {
@@ -751,7 +757,7 @@ fn draw_signals(mut app App, rows []TraceRow) {
 				app.sel_tp = false
 				app.sel_wire = '' // unbound: bind_selection picks the wire below
 				app.sel_da = -1 // an ordinary frame has no connection receiver
-				app.sel_msg = m.name
+				app.sel_db = di
 			}
 		}
 	}

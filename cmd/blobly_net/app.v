@@ -317,7 +317,7 @@ mut:
 	sel_ext       bool
 	sel_wire      string  // the wire the selection came off (#330); '' = picked from a database, bound by bind_selection
 	sel_da        int = -1 // and its receiver, where a PDU2 identifier cannot carry one
-	sel_msg       string // the message picked from the database list, which bind_selection binds by
+	sel_db        int = -1 // the database the selection was picked from (-1: from a row), which bind_selection binds by
 	sel_tp        bool    // the selection is a rejoined TP message, not a frame (see Watch.tp)
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
@@ -1276,6 +1276,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.eth_method = 0
 	app.manifest = telem.Manifest{}
 	app.sel_id = -1
+	app.sel_db = -1
 	app.mu.unlock()
 	for ci, ch in proj.channels {
 		app.chans << Chan{
@@ -1436,14 +1437,14 @@ fn (mut app App) rebuild_from_proj() {
 			}
 		}
 	}
-	for db in app.dbs {
+	for di, db in app.dbs {
 		if db.messages.len > 0 {
 			app.sel_id = int(db.messages[0].id)
 			app.sel_ext = db.messages[0].ext
 			app.sel_tp = false
 			app.sel_wire = ''
 			app.sel_da = -1
-			app.sel_msg = db.messages[0].name
+			app.sel_db = di
 			break
 		}
 	}

@@ -81,6 +81,10 @@ fn test_an_unbound_watch_covers_nothing() {
 	}
 }
 
+fn every(w string) bool {
+	return true
+}
+
 struct Asked {
 mut:
 	n map[string]int
@@ -136,28 +140,28 @@ fn test_an_unbound_watch_binds_to_the_oldest_wire_that_defines_its_message() {
 		asked.n[w]++
 		return w != 'can2'
 	}
-	assert u.bind(rs.len, rows_of(rs), defines) == 'can1'
+	assert u.bind(rs.len, rows_of(rs), every, defines) == 'can1'
 	assert asked.n == {
 		'can2': 1
 		'can1': 1
 	}, 'each wire asked once, and only until one answers'
 	bound := Ident{
 		...u
-		wire: u.bind(rs.len, rows_of(rs), fn (w string) bool {
+		wire: u.bind(rs.len, rows_of(rs), every, fn (w string) bool {
 			return w != 'can2'
 		})
 	}
 	assert bound.covers(rs[4])
 	assert !bound.covers(rs[5])
 	// nothing to bind to yet: stays unbound
-	assert u.bind(1, rows_of(rs), fn (w string) bool {
+	assert u.bind(1, rows_of(rs), every, fn (w string) bool {
 		return w != 'can2'
 	}) == ''
-	assert u.bind(0, rows_of(rs), fn (w string) bool {
+	assert u.bind(0, rows_of(rs), every, fn (w string) bool {
 		return true
 	}) == ''
 	// a bound watch keeps its wire, whatever the rows say
-	assert on('can0', 'EngineSpeed').bind(rs.len, rows_of(rs), fn (w string) bool {
+	assert on('can0', 'EngineSpeed').bind(rs.len, rows_of(rs), every, fn (w string) bool {
 		return true
 	}) == 'can0'
 }
@@ -259,4 +263,54 @@ fn test_the_key_carries_no_nul_and_still_separates_wires() {
 	assert a.key() != b.key()
 	assert a.key() != c.key()
 	assert id_safe('inproc:CAN1') == 'inproc:CAN1'
+}
+
+// After an interface edit or a deleted row the history still carries the old live key, and its
+// database lookup falls back to every file — so the rebinding watch landed straight back on the
+// dead wire (codex on #410). Only a configured wire or a recorded bus is a candidate.
+fn test_a_rebinding_watch_skips_a_live_wire_nothing_configures() {
+	assert bind_candidate('can1', true)
+	assert !bind_candidate('can0', false), 'a live key no channel is on'
+	assert bind_candidate(rec_prefix + 'mf4:bus0', false), 'an unplaced recorded bus'
+	assert !bind_candidate('', true)
+	u := on('', 'EngineSpeed')
+	rs := [
+		Row{
+			id: eec1
+			ext: true
+			wire: 'can0' // the old key, oldest in the history
+		},
+		Row{
+			id: eec1
+			ext: true
+			wire: rec_prefix + 'mf4:bus0'
+		},
+		Row{
+			id: eec1
+			ext: true
+			wire: 'can1'
+		},
+	]
+	configured := fn (w string) bool {
+		return w == 'can1'
+	}
+	all := fn (w string) bool {
+		return true // the fallback: every database defines it
+	}
+	assert u.bind(rs.len, rows_of(rs), configured, all) == rec_prefix + 'mf4:bus0'
+	assert u.bind(1, rows_of(rs), configured, all) == '', 'the dead wire alone binds nothing'
+	assert u.bind(rs.len, rows_of(rs), fn (w string) bool {
+		return w == 'can1'
+	}, fn (w string) bool {
+		return !w.starts_with(rec_prefix)
+	}) == 'can1'
+}
+
+// A selection picked from the database list waits unbound; the DBC editor moving its message to
+// another id moves it by the rule the watches follow, compared on the empty wire it has.
+fn test_a_pending_selection_follows_an_edit_by_the_watch_rule() {
+	pending := on('', '')
+	assert pending.renamed_by(eec1, true, '', 0)
+	assert !pending.renamed_by(eec1 + 1, true, '', 0)
+	assert !pending.renamed_by(eec1, false, '', 0)
 }
