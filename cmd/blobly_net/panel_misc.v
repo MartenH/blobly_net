@@ -1219,6 +1219,7 @@ fn draw_diag(mut app App) {
 		app.diag_cache.refresh(dgen, dsrc)
 	}
 	draw_diag_strip(mut app, st)
+	app.diag_sys_refresh()
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
 	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
 	targets := app.diag_targets()
@@ -1241,7 +1242,30 @@ fn draw_diag(mut app App) {
 		app.diag_sel_key = targets[app.diag_sel].key
 	}
 	app.diag_autopress_step(targets)
-	vgui.separator()
+	sel_t := if app.diag_sel >= 0 && app.diag_sel < targets.len {
+		targets[app.diag_sel]
+	} else {
+		DiagTarget{}
+	}
+	if !vgui.tab_bar_begin('##diagtabs') {
+		vgui.end()
+		return
+	}
+	if vgui.tab_item_begin('General', false) {
+		draw_diag_general(mut app, busy)
+		vgui.tab_item_end()
+	}
+	if vgui.tab_item_begin('DTCs', app.dtc_ui.select_tab) {
+		app.dtc_ui.select_tab = false
+		draw_dtc_tab(mut app, sel_t, busy, st)
+		vgui.tab_item_end()
+	}
+	vgui.tab_bar_end()
+	vgui.end()
+}
+
+// draw_diag_general is the General tab: single requests and the log.
+fn draw_diag_general(mut app App, busy bool) {
 	if vgui.button('Session') && !busy {
 		app.diag_press('session', u16(0))
 	}
@@ -1265,7 +1289,6 @@ fn draw_diag(mut app App) {
 	}
 	vgui.separator_text('responses (newest last)')
 	draw_copyable_log(mut app, '##diag', app.diag_cache)
-	vgui.end()
 }
 
 // draw_diag_strip is the held connection at a glance: its state, its target, the session the

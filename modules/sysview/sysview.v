@@ -31,6 +31,7 @@ pub mut:
 	bus       string
 	frame     string
 	cycle_ms  int
+	fields    []Field  // its value fields, in the file's order
 	consumers []string // node names whose ecu.toml FBs read it (derived)
 }
 
@@ -42,10 +43,12 @@ pub mut:
 	nm       u32 // NM node offset within the cluster (0 = none)
 	diag_req u32
 	diag_rsp u32
+	doip     u32 // its DoIP entity's logical address (`doip = { logical = ... }`); 0 = none
 	trace    int
 	reads    []string // signal names its FB handlers read (from its ecu.toml)
 	writes   []string // signal names its FB handlers write
 	ecu_err  string   // non-empty: its ecu.toml could not be read/parsed
+	desc     EcuDesc  // its diagnostic description (faults, DIDs, parameters)
 }
 
 // IdUse is one allocated identifier on a bus, for the allocation table.
@@ -67,7 +70,10 @@ pub mut:
 	// precomputed at load (id_allocation parses the bus DBC — a per-frame
 	// GUI must never re-read files): bus -> sorted allocation / collision
 	// keys (id | ext<<32 — the frame KIND is part of identity)
-	alloc map[string][]IdUse
+	// every file the model was read from, stamped as it was read (sources.v): what decides
+	// whether the model, and anything derived from it, is still current
+	sources []Source
+	alloc   map[string][]IdUse
 	cols  map[string][]u64
 }
 
@@ -100,10 +106,12 @@ fn tarr(doc toml.Doc, key string) []toml.Any {
 // consumer sets. Missing/broken pieces degrade into errs/ecu_err — a viewer
 // shows what it can, it never refuses the whole system for one bad file.
 pub fn load(path string) !System {
-	doc := toml.parse_file(path)!
+	top, text := read_source(path)
+	doc := toml.parse_text(text or { return error('cannot read ${path}') })!
 	base := os.dir(path)
 	mut sys := System{
-		path: path
+		path:    path
+		sources: [top]
 	}
 
 	if bv := doc.value_opt('bus') {
@@ -142,7 +150,12 @@ pub fn load(path string) !System {
 			bus:      tstr(sm, 'bus')
 			frame:    tstr(sm, 'frame')
 			cycle_ms: int(tint(sm, 'cycle_ms'))
+			fields:   fields_of(sm)
 		}
+	}
+	mut sig_fields := map[string][]Field{}
+	for sg in sys.signals {
+		sig_fields[sg.name] = sg.fields
 	}
 
 	for nd in tarr(doc, 'node') {
@@ -163,9 +176,17 @@ pub fn load(path string) !System {
 			n.diag_req = u32(tint(dm, 'req'))
 			n.diag_rsp = u32(tint(dm, 'rsp'))
 		}
+		if dv := nm['doip'] {
+			n.doip = u32(tint(dv.as_map(), 'logical'))
+		}
 		// the node's internals: reads/writes across every FB handler
 		epath := os.join_path(base, n.ecu)
-		if ndoc := toml.parse_file(epath) {
+		esrc, etext := read_source(epath)
+		sys.sources << esrc // a missing one too: its appearing is a change
+		if etext == none {
+			n.ecu_err = 'cannot read ${epath}'
+		} else if ndoc := toml.parse_text(etext or { '' }) {
+			n.desc = parse_ecu_desc(ndoc, sig_fields)
 			for fb in tarr(ndoc, 'fb') {
 				fm := fb.as_map()
 				if hv := fm['handler'] {
@@ -271,18 +292,21 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 				owner: n.name
 			}
 		}
-		if n.diag_req != 0 {
+		// the ids a tester addresses it by — the ONE rule node_for and can_targets use too, so a
+		// node addressed by its own [isotp] pair has those ids allocated, collisions and all
+		req, rsp := n.can_ids()
+		if req != 0 {
 			out << IdUse{
-				id:    n.diag_req
-				ext:   n.diag_req > 0x7FF
+				id:    req
+				ext:   req > 0x7FF
 				kind:  'diag-req'
 				owner: n.name
 			}
 		}
-		if n.diag_rsp != 0 {
+		if rsp != 0 {
 			out << IdUse{
-				id:    n.diag_rsp
-				ext:   n.diag_rsp > 0x7FF
+				id:    rsp
+				ext:   rsp > 0x7FF
 				kind:  'diag-rsp'
 				owner: n.name
 			}

@@ -261,3 +261,81 @@ fn test_a_dtc_wider_than_24_bits_is_refused() {
 	r := dtc_request(0x06, 0x050600, 0xFF) or { panic(err) }
 	assert r == [u8(0x19), 0x06, 0x05, 0x06, 0x00, 0xFF]
 }
+
+// A positive answer that cannot be read is the ECU answering — an UndecodableAnswer, which a
+// tester holding a connection keeps it through — while a silence stays an ordinary error.
+fn test_an_undecodable_answer_is_told_from_a_silence() {
+	mut m := &RecChannel{
+		answers: {
+			'1906021900ff': [u8(0x59), 0x06, 0x02, 0x19, 0x00, 0x2F, 0x04, 0x00] // record 0x04: no size
+			'1902ff':       [u8(0x59), 0x02, 0xFF, 0x02, 0x19] // half a record
+		}
+	}
+	mut c := new_client(m)
+	if _ := c.extended(0x021900, 0xFF) {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	if _ := c.dtcs(0xFF) {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	if _ := c.extended(0x050600, 0xFF) { // not in the table: refused 0x31
+		assert false
+	} else {
+		assert err is NegativeResponse
+	}
+}
+
+fn test_blobly_counters_name_the_records() {
+	e := decode_extended(emb_19_06_all, blobly_ext_records) or { panic(err) }
+	k := e.blobly_counters()
+	assert k.occurrences == (e.find(0x01) or { panic('') }).value()
+	assert k.aging == (e.find(0x02) or { panic('') }).value()
+	assert k.failed_cycles == (e.find(0x03) or { panic('') }).value()
+	assert k.has == [u8(1), 2, 3]
+	assert DtcExtended{}.blobly_counters().has == []
+	assert k.shown() == '${k.occurrences}/${k.aging}/${k.failed_cycles}'
+	// an answer with the occurrence counter only: the others are absent, not zero
+	only := DtcExtended{
+		records: [ExtRecord{0x01, [u8(0), 5]}]
+	}.blobly_counters()
+	assert only.shown() == '5/—/—'
+	assert DtcExtended{}.blobly_counters().shown() == '—/—/—'
+}
+
+// A snapshot's 0x19 04 and its size probes are timed apart: Client.last ends on the last probe.
+fn test_a_snapshot_times_its_request_and_its_probes_apart() {
+	mut m := &RecChannel{
+		answers: {
+			'1904021900ff': emb_19_04_all
+			'22f1a0':       [u8(0x62), 0xF1, 0xA0, 0x00, 0x30]
+			'22f190':       '\x62\xF1\x90BLOBLY-OVERSPEED-01'.bytes()
+		}
+	}
+	mut c := new_client(m)
+	_, t := c.snapshot_timed(0x021900, 0xFF) or { panic(err) }
+	assert t.request.sent
+	assert t.probes.map(it.did) == [u16(0xF1A0), 0xF190]
+	assert t.probes.all(it.timing.sent)
+	// sized now: no probes the second time
+	_, t2 := c.snapshot_timed(0x021900, 0xFF) or { panic(err) }
+	assert t2.request.sent && t2.probes.len == 0
+}
+
+// sent_count counts every request put on the carrier, whatever came back — what tells a caller
+// running several exchanges as one operation that one of them went out.
+fn test_sent_count_counts_every_request_that_went_out() {
+	mut m := &RecChannel{
+		answers: {
+			'1904021900ff': emb_19_04_all
+		}
+	}
+	mut c := new_client(m)
+	assert c.sent_count == 0
+	c.raw([u8(0x19), 0x04, 0x02, 0x19, 0x00, 0xFF]) or { panic(err) }
+	c.raw([u8(0x14), 0xFF, 0xFF, 0xFF]) or {} // refused (0x31): it went out all the same
+	assert c.sent_count == 2
+}
