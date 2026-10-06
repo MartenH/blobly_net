@@ -27,7 +27,7 @@ expect() { # expect <name> <got> <want>
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/tools"
-for t in bash dirname basename find sort head sed timeout cut mktemp rm sleep yes; do
+for t in bash dirname basename find sort head sed timeout cut mktemp rm sleep grep; do
 	ln -s "$(command -v "$t")" "$tmp/tools/$t"
 done
 
@@ -127,10 +127,22 @@ chmod +x "$tmp/litter/codex"
 expect "a probe leaves nothing in the worktree" "$(check "$tmp/h0" "" CODEX="$tmp/litter/codex"; [ -e "$repo/probe-litter" ] && printf ' LITTER')" "0|$tmp/litter/codex"
 rm -f "$repo/probe-litter"
 
-# one that floods --version is stopped at the size limit and refused
-printf '#!/bin/sh\nexec yes codex-cli\n' >"$tmp/flood-codex"
-chmod +x "$tmp/flood-codex"
-expect "a codex that floods --version is refused" "$(check "$tmp/h0" "" CODEX="$tmp/flood-codex")" "3|"
+# a version after a blank first line is still a version
+printf '#!/bin/sh\necho\necho "codex-cli 0.0.0-test"\n' >"$tmp/blank-codex"
+chmod +x "$tmp/blank-codex"
+expect "a version after a blank first line is accepted" "$(LINE2=1 check "$tmp/h0" "" CODEX="$tmp/blank-codex")" \
+	"0|$tmp/blank-codex|codex-cli 0.0.0-test"
+
+# a probe does not bound the files a real codex writes (a cache larger than 64 KiB)
+mkdir -p "$tmp/cache"
+printf '#!/bin/sh\nhead -c 200000 /dev/zero > "$HOME/codex-cache" || exit 1\necho "codex-cli 0.0.0-test"\n' >"$tmp/cache/codex"
+chmod +x "$tmp/cache/codex"
+mkdir -p "$tmp/hc"
+expect "a codex writing a large cache is accepted" "$(check "$tmp/hc" "" CODEX="$tmp/cache/codex")" "0|$tmp/cache/codex"
+
+# a leading-zero timeout is that many seconds, not the default
+expect "CODEX_PROBE_TIMEOUT=001 is one second" \
+	"$(s0=$SECONDS; r=$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=001); [ $((SECONDS - s0)) -lt 6 ] && printf '%s' "$r" || printf 'slow %s' "$r")" "3|"
 
 # nothing that runs
 h=$tmp/h3
