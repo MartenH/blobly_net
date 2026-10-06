@@ -488,6 +488,12 @@ fn test_a_zero_timeout_poll_is_bounded_across_stale_cfs() {
 const tx_arrive_ms = 5000 // hang-breaker for a frame the implementation owes us
 const tx_silence_ms = 250 // how long "nothing may be sent" is actually observed
 
+// The per-block Flow Control window for a channel whose peer answers ON THE TEST'S SCHEDULE --
+// after a silence check, a sleep or a stop. At the 1 s default a stalled test thread reads as a
+// peer that missed N_BS and the send ends `timeout` before the step under test; this is far past
+// any stall, and short enough that a send nothing ends still fails within the suite.
+const test_fc_window_ms = 10_000
+
 // must_read_tx: the implementation is required to send this. Returns none only if it never did.
 fn must_read_tx(mut peer transport.Bus, tx_id u32) ?transport.CanFrame {
 	return read_tx(mut peer, tx_id, tx_arrive_ms)
@@ -525,6 +531,8 @@ fn test_block_size_stops_the_sender_until_the_next_flow_control() {
 		assert false, 'software channel: ${err}'
 		return
 	}
+	// the second Flow Control follows a silence check, on the test's schedule
+	ch.fc_window_ms = test_fc_window_ms
 	done := chan string{cap: 1}
 	// 34 bytes = 6 in the First Frame + four Consecutive Frames of 7.
 	spawn fn [mut ch, done] () {
@@ -579,6 +587,8 @@ fn test_a_wait_is_honoured_and_the_transfer_resumes() {
 		assert false, 'software channel: ${err}'
 		return
 	}
+	// the CTS follows a silence check, on the test's schedule
+	ch.fc_window_ms = test_fc_window_ms
 	done := chan string{cap: 1}
 	spawn fn [mut ch, done] () {
 		ch.send([]u8{len: 20, init: u8(index)}) or {
@@ -864,6 +874,8 @@ fn test_a_retry_after_an_aborted_send_does_not_read_the_old_flow_control() {
 		assert false, 'software channel: ${err}'
 		return
 	}
+	// the retry's CTS follows a silence check, on the test's schedule
+	ch.fc_window_ms = test_fc_window_ms
 	first := chan string{cap: 1}
 	spawn fn [mut ch, first] () {
 		ch.send([]u8{len: 20, init: u8(index)}) or {
@@ -1081,7 +1093,11 @@ fn test_stmin_pacing_does_not_spend_the_transfer_allowance() {
 // abandon_after sends a 20-byte PDU on a stoppable channel whose stop is requested `stop_ms`
 // after the First Frame is seen, while `peer_fc` (when not empty) is sent every 10 ms. Returns
 // the send's error and how long after the stop request the send took to end.
-fn abandon_after(iface string, stmin_fc []u8, peer_fc []u8, stop_ms int) !(string, i64) {
+//
+// The Flow Control window is `test_fc_window_ms`, so nothing but the stop can end the wait, and
+// a wait the stop did not cut short takes that long; how soon a stop is seen is `stop_slice`'s,
+// tested without a clock below.
+fn abandon_after(iface string, peer_fc []u8, stop_ms int) !(string, i64) {
 	mut peer := transport.open(iface)!
 	defer {
 		peer.close()
@@ -1090,12 +1106,10 @@ fn abandon_after(iface string, stmin_fc []u8, peer_fc []u8, stop_ms int) !(strin
 	defer {
 		ch.close()
 	}
+	ch.fc_window_ms = test_fc_window_ms
 	stop := chan bool{}
 	ch.stop_requested = fn [stop] () bool {
 		return stop.closed
-	}
-	if stmin_fc.len > 0 {
-		peer.send(transport.CanFrame{ id: 0x7E8, data: stmin_fc })!
 	}
 	done := chan string{cap: 1}
 	spawn fn [mut ch, done] () {
@@ -1122,33 +1136,87 @@ fn abandon_after(iface string, stmin_fc []u8, peer_fc []u8, stop_ms int) !(strin
 // A RUN WORKER TOLD TO STOP LEAVES ITS SEND (#347): a peer that never answers the First Frame
 // would hold it for fc_timeout_ms, and the total allowance for minutes.
 fn test_a_stop_abandons_the_wait_for_a_silent_peer() {
-	msg, took := abandon_after('inproc:isotp-stop-silent', [], [], 50) or {
+	msg, took := abandon_after('inproc:isotp-stop-silent', [], 50) or {
 		assert false, err.msg()
 		return
 	}
 	assert msg == abandoned_note, msg
-	assert took < 300, 'abandoned ${took} ms after the stop request'
+	assert took < tx_arrive_ms, 'abandoned ${took} ms after the stop request'
 }
 
 // ...and a peer that only ever WAITs, which keeps a frame arriving so no timeout ever fires.
 fn test_a_stop_abandons_a_peer_that_only_waits() {
-	msg, took := abandon_after('inproc:isotp-stop-wait', [], [u8(0x31), 0, 0], 60) or {
+	msg, took := abandon_after('inproc:isotp-stop-wait', [u8(0x31), 0, 0], 60) or {
 		assert false, err.msg()
 		return
 	}
 	assert msg == abandoned_note, msg
-	assert took < 300, 'abandoned ${took} ms after the stop request'
+	assert took < tx_arrive_ms, 'abandoned ${took} ms after the stop request'
 }
 
-// ...and our own STmin pacing, which at 127 ms a frame is the receiver's to ask for.
+// ...and our own STmin pacing, which at 127 ms a frame is the receiver's to ask for. The stop
+// answers true from its third ask once the first Consecutive Frame is on the wire: a pacing
+// sliced at `stop_poll_ms` asks seven times across 127 ms, so that ask is inside it; a pacing
+// slept whole asks at most once, and the second Consecutive Frame goes out before the third.
 fn test_a_stop_abandons_stmin_pacing() {
-	// 20 bytes: two Consecutive Frames, so one 127 ms separation
-	msg, took := abandon_after('inproc:isotp-stop-pace', [u8(0x30), 0, 0x7F], [], 30) or {
-		assert false, err.msg()
-		return
+	mut peer := transport.open('inproc:isotp-stop-pace') or { panic(err) }
+	mut ch := open_software('inproc:isotp-stop-pace', 0x7E0, 0x7E8, false) or { panic(err) }
+	mut w := &CfWatch{
+		bus: transport.open('inproc:isotp-stop-pace') or { panic(err) }
 	}
-	assert msg == abandoned_note, msg
-	assert took < 100, 'abandoned ${took} ms after the stop request'
+	ch.stop_requested = fn [mut w] () bool {
+		return w.ask()
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0x7F] }) or { panic(err) }
+	// 20 bytes: two Consecutive Frames, so one 127 ms separation
+	if _ := ch.send([]u8{len: 20, init: u8(index)}) {
+		assert false, 'the transfer completed: the pacing was not asked to stop'
+	} else {
+		assert err.msg() == abandoned_note, err.msg()
+	}
+	mut cfs := 0
+	for {
+		f := peer.recv(0) or { break }
+		if f.id == 0x7E0 && f.data.len > 0 && f.data[0] >> 4 == 2 {
+			cfs++
+		}
+	}
+	assert cfs == 1, '${cfs} Consecutive Frames went out; the stop came during the pacing after the first'
+	w.bus.close()
+	ch.close()
+	peer.close()
+}
+
+// CfWatch is a stop request that answers true from its third ask after it has seen a
+// Consecutive Frame on the wire.
+struct CfWatch {
+mut:
+	bus   transport.Bus
+	asked int // asks since the first Consecutive Frame was seen
+}
+
+fn (mut w CfWatch) ask() bool {
+	for w.asked == 0 {
+		f := w.bus.recv(0) or { return false }
+		if f.id == 0x7E0 && f.data.len > 0 && f.data[0] >> 4 == 2 {
+			break
+		}
+	}
+	w.asked++
+	return w.asked >= 3
+}
+
+// A stop is seen within `stop_poll_ms` of being requested: a stoppable channel waits in slices
+// no longer than that, and a channel nobody can stop waits the whole time asked.
+fn test_a_stoppable_wait_is_sliced_at_the_poll_interval() {
+	mut ch := open_software('inproc:isotp-stop-slice', 0x7E0, 0x7E8, false) or { panic(err) }
+	assert ch.stop_slice(fc_timeout_ms) == fc_timeout_ms
+	ch.stop_requested = fn () bool {
+		return false
+	}
+	assert ch.stop_slice(fc_timeout_ms) == stop_poll_ms
+	assert ch.stop_slice(stop_poll_ms / 2) == stop_poll_ms / 2
+	ch.close()
 }
 
 // A CHANNEL NOBODY CAN STOP IS NOT SLICED INTO A DIFFERENT ANSWER: unset, the hook changes
@@ -1156,6 +1224,8 @@ fn test_a_stop_abandons_stmin_pacing() {
 fn test_a_stoppable_send_that_is_not_stopped_completes() {
 	mut peer := transport.open('inproc:isotp-stop-none') or { panic(err) }
 	mut ch := open_software('inproc:isotp-stop-none', 0x7E0, 0x7E8, false) or { panic(err) }
+	// the Flow Control follows a sleep, on the test's schedule
+	ch.fc_window_ms = test_fc_window_ms
 	stop := chan bool{}
 	ch.stop_requested = fn [stop] () bool {
 		return stop.closed
@@ -1210,47 +1280,44 @@ fn test_a_stop_abandons_an_unpaced_block() {
 
 // ...and the drain of a channel an earlier aborted send left dirty, which a peer that keeps
 // sending holds open one quiet window at a time.
+//
+// The frames are queued before the send, so they hold the quiet window open whatever the
+// threads' timing, and the stop answers true from the 20th ask, about twenty frames in.
 fn test_a_stop_abandons_the_dirty_channel_drain() {
 	mut peer := transport.open('inproc:isotp-stop-drain') or { panic(err) }
 	mut ch := open_software('inproc:isotp-stop-drain', 0x7E0, 0x7E8, false) or { panic(err) }
-	stop := chan bool{}
-	ch.stop_requested = fn [stop] () bool {
-		return stop.closed
+	backlog := 100
+	for _ in 0 .. backlog {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { panic(err) }
+	}
+	mut n := &StopCount{}
+	ch.stop_requested = fn [mut n] () bool {
+		n.asked++
+		return n.asked >= 20
 	}
 	ch.fc_dirty = true
-	done := chan string{cap: 1}
-	spawn fn [mut ch, done] () {
-		ch.send([]u8{len: 20, init: u8(index)}) or {
-			done <- err.msg()
-			return
-		}
-		done <- 'sent'
-	}()
-	// a frame every 10 ms on the receive id keeps the 30 ms quiet window from ever closing,
-	// before the stop request and after it
-	quit := chan bool{}
-	spawn fn [mut peer, quit] () {
-		for !quit.closed {
-			peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { return }
-			time.sleep(10 * time.millisecond)
-		}
-	}()
-	time.sleep(100 * time.millisecond)
-	t0 := time.ticks()
-	stop.close()
-	msg := <-done
-	took := time.ticks() - t0
-	quit.close()
-	time.sleep(20 * time.millisecond)
-	assert msg == abandoned_note, msg
-	assert took < 200, 'abandoned ${took} ms after the stop request'
+	if _ := ch.send([]u8{len: 20, init: u8(index)}) {
+		assert false, 'the send completed: the drain was not asked to stop'
+	} else {
+		assert err.msg() == abandoned_note, err.msg()
+	}
 	assert ch.fc_dirty, 'a drain cut short left the channel marked clean'
+	// the drain was left partway through the backlog, not read to its end
+	mut left := 0
+	for {
+		ch.bus.recv(0) or { break }
+		left++
+	}
+	assert left > 0 && left < backlog, '${left} of ${backlog} frames left queued'
+	if f := peer.recv(0) {
+		assert false, 'a frame went out after the stop: ${f.data}'
+	}
 	ch.close()
 	peer.close()
 }
 
-// ...and a stop that arrives while the drain waits out its final quiet window: the drain ends
-// as drained, and no First Frame may follow it onto the bus.
+// ...and a stop that arrives while the drain waits out its final quiet window: the drain's read
+// sees it, and no First Frame may follow it onto the bus.
 fn test_a_stop_during_the_final_quiet_window_sends_no_first_frame() {
 	mut peer := transport.open('inproc:isotp-stop-quiet') or { panic(err) }
 	mut ch := open_software('inproc:isotp-stop-quiet', 0x7E0, 0x7E8, false) or { panic(err) }
@@ -1268,6 +1335,26 @@ fn test_a_stop_during_the_final_quiet_window_sends_no_first_frame() {
 	peer.close()
 }
 
+// ...and a stop already requested when a segmented send begins on a clean channel: the
+// transfer is not begun, so no First Frame goes out for a Flow Control nobody will read.
+fn test_a_stop_before_the_first_frame_sends_nothing() {
+	mut peer := transport.open('inproc:isotp-stop-first') or { panic(err) }
+	mut ch := open_software('inproc:isotp-stop-first', 0x7E0, 0x7E8, false) or { panic(err) }
+	ch.stop_requested = fn () bool {
+		return true
+	}
+	if _ := ch.send([]u8{len: 20, init: u8(index)}) {
+		assert false, 'a stopped send completed'
+	} else {
+		assert err.msg() == abandoned_note, err.msg()
+	}
+	if f := peer.recv(0) {
+		assert false, 'a frame went out after the stop: ${f.data}'
+	}
+	ch.close()
+	peer.close()
+}
+
 // a stoppable channel's receive ends when the stop is requested, not at its deadline
 fn test_a_stop_ends_a_blocked_receive() {
 	mut ch := open_software('inproc:isotp-stop-recv', 0x7E0, 0x7E8, false) or { panic(err) }
@@ -1275,13 +1362,12 @@ fn test_a_stop_ends_a_blocked_receive() {
 	ch.stop_requested = fn [at] () bool {
 		return time.ticks() >= at
 	}
-	t0 := time.ticks()
+	// the note is the stop's; the deadline would have said `timeout`
 	if _ := ch.recv(5000) {
 		assert false, 'nothing was sent'
 	} else {
 		assert err.msg().starts_with(abandoned_recv_note), err.msg()
 	}
-	assert time.ticks() - t0 < 1000
 	ch.close()
 }
 
