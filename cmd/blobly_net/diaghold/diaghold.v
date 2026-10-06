@@ -200,13 +200,17 @@ pub fn ms_text(us i64) string {
 	return '${f64(us) / 1000.0:.1f}'
 }
 
-// retry_on_reopen says whether a failed request is repeated once on a fresh connection: only a
+// retry_on_reopen says whether a failed press is repeated once on a fresh connection: only a
 // DoIP connection (an entity closes an idle one; a CAN target holds no channel between exchanges
 // to go stale), only one held from an earlier press (a fresh one that fails has nothing newer to
-// offer), only when the request never went out (the pre-send drain found the connection gone),
-// so the ECU is never asked twice — and never for a negative response, which is the ECU answering.
-pub fn retry_on_reopen(doip bool, held_before bool, sent bool, negative bool) bool {
-	return doip && held_before && !sent && !negative
+// offer), only when NOTHING of the press went out (the pre-send drain found the connection gone
+// before its first request), so the ECU is never asked anything twice — and never for a negative
+// response, which is the ECU answering. A press is a SEQUENCE of exchanges (a clear and the
+// refresh after it, a session switch and the 0x85 after it): `sent` counts every one of its
+// requests that reached the carrier, never only the last, so a completed destructive step is not
+// replayed because a later step of the same press found the connection closed.
+pub fn retry_on_reopen(doip bool, held_before bool, sent int, negative bool) bool {
+	return doip && held_before && sent == 0 && !negative
 }
 
 // ---- ONE CANCELLATION TOKEN PER HOLDER GENERATION ----

@@ -3,12 +3,15 @@ module main
 import os
 import time
 import vgui
+import uds
 
 // DiagAutopress is a dev hook, inert unless BLOBLY_DIAG_PRESS is set: the Diagnostics panel's
 // buttons pressed in order from the frame loop, for the headless screenshot and for timing the
 // panel end to end (VGUI_FRAMES / VGUI_SHOT cannot click). A comma-separated list of
-// `session`, `vin`, `tp`, `did:<hex>`, `wait:<ms>`, `target:<label substring>`, `disconnect`
-// and `script:<path>` (started as the Script panel's Run starts one); each press waits for the
+// `session`, `vin`, `tp`, `did:<hex>`, `wait:<ms>`, `target:<label substring>`, `disconnect`,
+// `script:<path>` (started as the Script panel's Run starts one), and the DTC tab's `tab:dtc`,
+// `dtcs`, `dtc:<display or hex code>` (select a row), `dtc_clear`, `dtc_off`, `dtc_on` and `auto`
+// (the auto-refresh tick on); each press waits for the
 // previous one to finish. Each press's time, from the press to its line, goes to stdout, and once
 // the list is done (and a started script has finished) the panel's lines and the script's.
 struct DiagAutopress {
@@ -109,6 +112,38 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 		au.script_ns = time.sys_mono_now()
 		app.reserve_tool_reader()
 		spawn script_worker(app, step.all_after(':'))
+		return
+	}
+	if step == 'tab:dtc' {
+		app.dtc_ui.select_tab = true
+		return
+	}
+	if step == 'auto' {
+		app.dtc_ui.auto = true
+		return
+	}
+	if step in ['dtcs', 'dtc_clear', 'dtc_off', 'dtc_on'] || step.starts_with('dtc:') {
+		t := targets.filter(it.key == app.diag_sel_key)[0] or { targets[0] or { DiagTarget{} } }
+		desc := app.diag_desc(t)
+		au.gen_at = dgen
+		au.press_ns = time.sys_mono_now()
+		au.waiting = true
+		match step {
+			'dtcs' {
+				app.dtc_press('dtcs', 0, false, false, desc)
+			}
+			'dtc_clear' {
+				app.dtc_press('dtc_clear', 0, false, false, desc)
+			}
+			'dtc_off', 'dtc_on' {
+				app.dtc_press('dtc_setting', 0, step == 'dtc_on', false, desc)
+			}
+			else {
+				arg := step.all_after(':')
+				code := uds.dtc_code(arg) or { u32(('0x' + arg).u64()) }
+				app.dtc_select(code, false, desc)
+			}
+		}
 		return
 	}
 	mut kind := step
