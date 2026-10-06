@@ -412,6 +412,20 @@ press until it ends. Stop, Disconnect, a target change, closing the panel and a 
 all end a press in flight within a few tens of milliseconds — a DoIP open, an ECU answering
 0x78 — rather than at its timeout; a keep-alive answered with 0x78 is reported as failed.
 
+Its **DTCs** tab reads the target's fault memory: the list (0x19 02, any status mask) with each
+DTC's status bits by ISO abbreviation (CDTC confirmed, PDTC pending, TF failing now, … — hover a
+cell for all eight by name) and its occurrence / aging / failed-cycle counters (0x19 06); a
+selected row's snapshot (0x19 04) and extended data below it; Refresh, an auto-refresh tick
+(every 2 s, logged only when the list changes), **Clear all** (0x14 FFFFFF, after a
+confirmation) and **DTC setting off / on** (0x85, switching to the extended session first when the
+connection is in the default one). Every request goes through the held connection and is timed in
+the log. **Names come from blobly_emb**: when a `system.toml` sits beside the project, beside one
+of its databases, or in the project's parent folder (or one is loaded in the System panel), each
+of its nodes is listed as a target on the running channel named after its bus, and a target
+whose addressing matches a node — CAN request and response ids, or a DoIP entity's logical
+address — shows that node's `[[fault]]` names and decodes snapshot DIDs through its `[[did]]`s
+(`SteeringAngle = 145`). With no description every column still works, by code.
+
 ## The same ECU over Ethernet (DoIP)
 
 A `type: doip` channel is diagnostics over TCP, not a bus: no frames, no database, no

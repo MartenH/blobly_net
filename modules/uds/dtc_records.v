@@ -94,6 +94,38 @@ pub fn (e DtcExtended) find(number u8) ?ExtRecord {
 	return none
 }
 
+// BloblyCounters are blobly_emb's extended data records (blobly_ext_records) read as what they
+// count; a record the answer did not carry reads 0, and `has` says which were there.
+pub struct BloblyCounters {
+pub:
+	occurrences   u64
+	aging         u64
+	failed_cycles u64
+	has           []u8 // the record numbers the answer carried
+}
+
+// blobly_counters reads this answer's records as blobly_emb's counters.
+pub fn (e DtcExtended) blobly_counters() BloblyCounters {
+	return BloblyCounters{
+		occurrences:   (e.find(0x01) or { ExtRecord{} }).value()
+		aging:         (e.find(0x02) or { ExtRecord{} }).value()
+		failed_cycles: (e.find(0x03) or { ExtRecord{} }).value()
+		has:           e.records.map(it.number)
+	}
+}
+
+// UndecodableAnswer is a positive 0x19 answer that arrived and could not be read: the ECU
+// answered, so the connection is not at fault, which a tester holding one needs to know.
+pub struct UndecodableAnswer {
+	Error
+pub:
+	why string
+}
+
+pub fn (e UndecodableAnswer) msg() string {
+	return e.why
+}
+
 // UnknownDidLength is the snapshot decoder asking for a DID's size it was not given.
 pub struct UnknownDidLength {
 	Error
@@ -239,7 +271,9 @@ pub fn (mut c Client) snapshot(code u32, record u8) !DtcSnapshot {
 				c.did_lens[did] = data.len
 				continue
 			}
-			return err
+			return UndecodableAnswer{
+				why: err.msg()
+			}
 		}
 	}
 	return error('unreachable') // each pass learns one DID the answer names, or returns
@@ -262,5 +296,9 @@ pub fn (mut c Client) set_ext_record_size(number u8, n int) {
 // `ext_lens` (blobly_ext_records by default).
 pub fn (mut c Client) extended(code u32, record u8) !DtcExtended {
 	lens := if c.ext_lens.len == 0 { blobly_ext_records } else { c.ext_lens }
-	return decode_extended(c.raw(dtc_request(0x06, code, record)!)!, lens)!
+	return decode_extended(c.raw(dtc_request(0x06, code, record)!)!, lens) or {
+		return UndecodableAnswer{
+			why: err.msg()
+		}
+	}
 }

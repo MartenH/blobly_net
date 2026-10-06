@@ -68,6 +68,7 @@ fn (app &App) diag_targets() []DiagTarget {
 	a := unsafe { app }
 	a.mu.lock()
 	plan := app.diag_plan.clone()
+	sys_targets := app.diag_sys_targets.clone()
 	a.mu.unlock()
 	mut out := []DiagTarget{}
 	if hw := app.diag_iface_opt() {
@@ -82,6 +83,13 @@ fn (app &App) diag_targets() []DiagTarget {
 		}
 	}
 	out << plan
+	// the system's nodes on the running channels named after their buses (diag_dtc.v): a bench
+	// project addresses real ECUs it simulates nothing for, which no other entry reaches
+	for t in sys_targets {
+		if !out.any(it.key == t.key) {
+			out << t
+		}
+	}
 	// Every enabled DoIP channel is addressable, hosted by us or not. The panel's DoIP support
 	// would otherwise reach only entities this application started — while the normal
 	// tester-only case, a DoIP channel pointed at a REAL ECU, has no simulated nodes, is not

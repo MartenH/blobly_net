@@ -18,9 +18,16 @@ import diaghold
 
 // DiagReq is one press of a panel button, addressed by the target key captured at click time.
 struct DiagReq {
-	kind string // 'session' | 'vin' | 'tp' | 'did'
+	kind string // 'session' | 'vin' | 'tp' | 'did' | the DTC tab's (diag_dtc.v): 'dtcs' |
+	// 'dtc_detail' | 'dtc_clear' | 'dtc_setting'
 	did  u16
 	key  string
+	// the DTC tab's
+	mask     u8   // 0x19 02's status mask
+	code     u32  // the DTC a 'dtc_detail' reads
+	on       bool // 'dtc_setting': 0x85 01 (true) or 02
+	auto     bool // the auto-refresh's, not a press: refused in silence, logged only on a change
+	did_lens map[u16]int // snapshot DID sizes from the target's description
 }
 
 // DiagHoldStatus is the strip at the top of the panel. Guarded by app.mu.
@@ -34,6 +41,7 @@ mut:
 	p2_ms      int // from that answer; -1 = none yet
 	p2_star_ms int
 	keepalives int // 3E 80 sent on this connection
+	dtc_off    bool // a 0x85 02 was answered on this connection and no 0x85 01 since
 }
 
 // HoldCtx is what this holder generation's token reads: whose it is, which commands it has
@@ -71,12 +79,22 @@ mut:
 // on the first press. Marked busy HERE, under the lock that publishes the request, so a second
 // click cannot slip in before the holder has taken the first. Refused while a tool has the target.
 fn (mut app App) diag_press(kind string, did u16) {
+	app.diag_send(DiagReq{
+		kind: kind
+		did:  did
+	})
+}
+
+// diag_send is diag_press for any request; the key is filled in here.
+fn (mut app App) diag_send(r DiagReq) {
 	app.mu.lock()
 	why := diaghold.press_refusal(app.running, app.diag_busy, app.diag_tools)
 	if why != '' {
 		app.mu.unlock()
-		if why != 'busy' { // a click while a press is in flight is the panel's own busy state
-			app.diag_push('${kind}: ${why}')
+		// a click while a press is in flight is the panel's own busy state; an auto-refresh
+		// refused is not a press at all
+		if why != 'busy' && !r.auto {
+			app.diag_push('${r.kind}: ${why}')
 		}
 		return
 	}
@@ -89,9 +107,8 @@ fn (mut app App) diag_press(kind string, did u16) {
 	}
 	app.diag_busy = true
 	app.diag_q.try_push(DiagReq{
-		kind: kind
-		did:  did
-		key:  app.diag_sel_key
+		...r
+		key: app.diag_sel_key
 	})
 	app.mu.unlock()
 }
@@ -313,7 +330,11 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	}
 	// on its own thread, so the token ends a slow open (a CANsub open, or waiting on the wire's
 	// first opener) as it ends every other wait; an open that lands after that is closed
-	ap := &app
+	// THIS App, by reference: `&app` on a `mut` receiver is a COPY of the struct here, so the tap
+	// opened in the closure carried a second App — its own mutex over the same maps — and every
+	// frame the panel sent (a Flow Control for a multi-frame answer) wrote the trace's maps
+	// beside rx_loop with no lock between them
+	ap := app.self_ref()
 	bus := transport.open_stoppable(fn [ap, iface, phys, t, gen] () !transport.Bus {
 		return ap.open_tap_phys(iface, phys, org_tx, t.chan, gen, false)
 	}, h.stop)!
@@ -333,6 +354,11 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	h.cli.loosen_p2_star(h.p2_star_ms)
 	h.where = 'ISO-TP on ${iface} (0x${t.rx:X}/0x${t.tx:X})'
 	h.attached = true
+}
+
+// self_ref is the App itself, as a reference a closure can capture.
+fn (app &App) self_ref() &App {
+	return app
 }
 
 // diag_detach closes a CAN exchange's channel, keeping what its client learned of the timing.
@@ -444,13 +470,10 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 		}
 		out, negative = app.diag_request(gen, mut h, req)
 	}
-	timing := diaghold.Timing{
-		sent: h.cli.last.sent
-		rtt_us: h.cli.last.rtt_us
-		pending: h.cli.last.pending
-		pending_us: h.cli.last.pending_us
+	timing := if out.timed { out.t } else { h.timing() }
+	if out.line != '' { // a multi-request press said its earlier lines itself
+		app.diag_push('${timing.prefix()} ${out.line}')
 	}
-	app.diag_push('${timing.prefix()} ${out.line}')
 	// a press its token cancelled is let go by the holder's next look, with the command's reason
 	if out.err && !negative && !h.stop() {
 		app.diag_let_go(gen, mut h, .failed, out.line)
@@ -504,55 +527,74 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
 }
 
 struct DiagOut {
-	line string
-	err  bool
+	line  string // '' = nothing more to say
+	err   bool
+	timed bool // `t` is the line's timing, not the last exchange's (a press of several requests)
+	t     diaghold.Timing
 }
 
 // diag_request sends one press's request on the held connection; the second value is whether
 // an error was a negative response (the ECU answering, which keeps the connection).
 fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	h.cli.last = uds.ExchangeTiming{}
-	app.diag_attach(gen, mut h) or { return DiagOut{'${req.kind}: ${err}', true}, false }
+	app.diag_attach(gen, mut h) or { return DiagOut{line: '${req.kind}: ${err}', err: true}, false }
 	defer {
 		app.diag_detach(mut h)
 		h.last_ms = time.ticks()
 	}
 	match req.kind {
 		'session' {
-			resp := h.cli.raw([u8(0x10), 0x03]) or {
-				return DiagOut{'session 0x03: ${err}', true}, err is uds.NegativeResponse
-			}
-			h.session = if resp.len > 1 { resp[1] } else { u8(0) }
-			mut s := app.diag_status_copy()
-			s.session = h.session
-			mut timing := ''
-			if st := uds.session_timing(resp) {
-				s.p2_ms = st.p2_ms
-				s.p2_star_ms = st.p2_star_ms
-				timing = ' · P2 ${st.p2_ms} ms, P2* ${st.p2_star_ms} ms'
-			}
-			app.diag_set_status(gen, s)
-			return DiagOut{'session 0x${h.session:02X} (${diaghold.session_name(h.session)}) OK${timing}', false}, false
+			return app.diag_session_change(gen, mut h, 0x03)
+		}
+		'dtcs', 'dtc_detail', 'dtc_clear', 'dtc_setting' {
+			return app.diag_dtc_request(gen, mut h, req)
 		}
 		'vin' {
 			r := h.cli.read_data_by_identifier(0xF190) or {
-				return DiagOut{'VIN: ${err}', true}, err is uds.NegativeResponse
+				return DiagOut{line: 'VIN: ${err}', err: true}, err is uds.NegativeResponse
 			}
-			return DiagOut{'VIN = ${r.bytestr()}', false}, false
+			return DiagOut{line: 'VIN = ${r.bytestr()}', err: false}, false
 		}
 		'tp' {
 			h.cli.tester_present() or {
-				return DiagOut{'tester present: ${err}', true}, err is uds.NegativeResponse
+				return DiagOut{line: 'tester present: ${err}', err: true}, err is uds.NegativeResponse
 			}
-			return DiagOut{'tester present OK', false}, false
+			return DiagOut{line: 'tester present OK', err: false}, false
 		}
 		else {
 			r := h.cli.read_data_by_identifier(req.did) or {
-				return DiagOut{'DID ${req.did:04X}: ${err}', true}, err is uds.NegativeResponse
+				return DiagOut{line: 'DID ${req.did:04X}: ${err}', err: true}, err is uds.NegativeResponse
 			}
-			return DiagOut{'DID ${req.did:04X} = ${hex(r)}  "${printable(r)}"', false}, false
+			return DiagOut{line: 'DID ${req.did:04X} = ${hex(r)}  "${printable(r)}"', err: false}, false
 		}
 	}
+}
+
+// diag_session_change sends 0x10 `session` on the held connection and records what the answer
+// established, on the connection and on the strip.
+fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagOut, bool) {
+	resp := h.cli.raw([u8(0x10), session]) or {
+		return DiagOut{
+			line: 'session 0x${session:02X}: ${err}'
+			err:  true
+		}, err is uds.NegativeResponse
+	}
+	h.session = if resp.len > 1 { resp[1] } else { u8(0) }
+	mut s := app.diag_status_copy()
+	s.session = h.session
+	if h.session == diaghold.default_session {
+		s.dtc_off = false // ISO 14229-1: entering the default session turns DTC setting back on
+	}
+	mut timing := ''
+	if st := uds.session_timing(resp) {
+		s.p2_ms = st.p2_ms
+		s.p2_star_ms = st.p2_star_ms
+		timing = ' · P2 ${st.p2_ms} ms, P2* ${st.p2_star_ms} ms'
+	}
+	app.diag_set_status(gen, s)
+	return DiagOut{
+		line: 'session 0x${h.session:02X} (${diaghold.session_name(h.session)}) OK${timing}'
+	}, false
 }
 
 // diag_idle serves the held DoIP connection between presses, once per holder look (well inside
@@ -613,6 +655,7 @@ fn (mut app App) diag_keepalive(gen u64, mut h HeldConn) {
 			h.session = 0
 			mut s := app.diag_status_copy()
 			s.session = 0
+			s.dtc_off = false // no longer ours to know either
 			app.diag_set_status(gen, s)
 			app.diag_push('keep-alive 3E 80 refused (${why}); stopped until the next session change')
 		}

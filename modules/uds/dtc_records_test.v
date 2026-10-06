@@ -261,3 +261,40 @@ fn test_a_dtc_wider_than_24_bits_is_refused() {
 	r := dtc_request(0x06, 0x050600, 0xFF) or { panic(err) }
 	assert r == [u8(0x19), 0x06, 0x05, 0x06, 0x00, 0xFF]
 }
+
+// A positive answer that cannot be read is the ECU answering — an UndecodableAnswer, which a
+// tester holding a connection keeps it through — while a silence stays an ordinary error.
+fn test_an_undecodable_answer_is_told_from_a_silence() {
+	mut m := &RecChannel{
+		answers: {
+			'1906021900ff': [u8(0x59), 0x06, 0x02, 0x19, 0x00, 0x2F, 0x04, 0x00] // record 0x04: no size
+			'1902ff':       [u8(0x59), 0x02, 0xFF, 0x02, 0x19] // half a record
+		}
+	}
+	mut c := new_client(m)
+	if _ := c.extended(0x021900, 0xFF) {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	if _ := c.dtcs(0xFF) {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	if _ := c.extended(0x050600, 0xFF) { // not in the table: refused 0x31
+		assert false
+	} else {
+		assert err is NegativeResponse
+	}
+}
+
+fn test_blobly_counters_name_the_records() {
+	e := decode_extended(emb_19_06_all, blobly_ext_records) or { panic(err) }
+	k := e.blobly_counters()
+	assert k.occurrences == (e.find(0x01) or { panic('') }).value()
+	assert k.aging == (e.find(0x02) or { panic('') }).value()
+	assert k.failed_cycles == (e.find(0x03) or { panic('') }).value()
+	assert k.has == [u8(1), 2, 3]
+	assert DtcExtended{}.blobly_counters().has == []
+}

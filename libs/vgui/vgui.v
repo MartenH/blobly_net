@@ -139,6 +139,14 @@ fn C.vgui_plot_is_hovered() int
 fn C.vgui_plot_mouse_x() f64
 fn C.vgui_plot_end()
 fn C.vgui_selectable(&char, int) int
+fn C.vgui_selectable_row(&char, int) int
+fn C.vgui_tab_bar_begin(&char) int
+fn C.vgui_tab_bar_end()
+fn C.vgui_tab_item_begin(&char, int) int
+fn C.vgui_tab_item_end()
+fn C.vgui_open_popup(&char)
+fn C.vgui_begin_popup_modal(&char) int
+fn C.vgui_close_current_popup()
 fn C.vgui_child_begin(&char, f32)
 fn C.vgui_child_fill(&char)
 fn C.vgui_toggle_button(&char, int, f32) int
@@ -581,6 +589,45 @@ pub fn plot_end() {
 // selectable renders a clickable row; returns true the frame it is clicked.
 pub fn selectable(label string, selected bool) bool {
 	return C.vgui_selectable(label.str, if selected { 1 } else { 0 }) == 1
+}
+
+// selectable_row is a selectable in a table's first column that highlights and takes clicks
+// across the whole row.
+pub fn selectable_row(label string, selected bool) bool {
+	return C.vgui_selectable_row(label.str, if selected { 1 } else { 0 }) == 1
+}
+
+// tab_bar_begin opens a tab bar; call tab_bar_end only when it returned true.
+pub fn tab_bar_begin(id string) bool {
+	return C.vgui_tab_bar_begin(id.str) == 1
+}
+
+pub fn tab_bar_end() {
+	C.vgui_tab_bar_end()
+}
+
+// tab_item_begin draws one tab and returns true while it is the selected one — then draw its
+// content and call tab_item_end. `sel` makes it the selected tab this frame.
+pub fn tab_item_begin(label string, sel bool) bool {
+	return C.vgui_tab_item_begin(label.str, if sel { 1 } else { 0 }) == 1
+}
+
+pub fn tab_item_end() {
+	C.vgui_tab_item_end()
+}
+
+// open_popup asks for the modal `id` to open; begin_popup_modal(id) then draws it each frame
+// while it is open (pair a true return with end_popup), close_current_popup closes it from inside.
+pub fn open_popup(id string) {
+	C.vgui_open_popup(id.str)
+}
+
+pub fn begin_popup_modal(title string) bool {
+	return C.vgui_begin_popup_modal(title.str) == 1
+}
+
+pub fn close_current_popup() {
+	C.vgui_close_current_popup()
 }
 
 // child_begin opens a scrollable bordered sub-region of the given pixel height (0 = fill).

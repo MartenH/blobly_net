@@ -31,6 +31,7 @@ pub mut:
 	bus       string
 	frame     string
 	cycle_ms  int
+	fields    []Field  // its value fields, in the file's order
 	consumers []string // node names whose ecu.toml FBs read it (derived)
 }
 
@@ -42,10 +43,12 @@ pub mut:
 	nm       u32 // NM node offset within the cluster (0 = none)
 	diag_req u32
 	diag_rsp u32
+	doip     u32 // its DoIP entity's logical address (`doip = { logical = ... }`); 0 = none
 	trace    int
 	reads    []string // signal names its FB handlers read (from its ecu.toml)
 	writes   []string // signal names its FB handlers write
 	ecu_err  string   // non-empty: its ecu.toml could not be read/parsed
+	desc     EcuDesc  // its diagnostic description (faults, DIDs, parameters)
 }
 
 // IdUse is one allocated identifier on a bus, for the allocation table.
@@ -142,7 +145,12 @@ pub fn load(path string) !System {
 			bus:      tstr(sm, 'bus')
 			frame:    tstr(sm, 'frame')
 			cycle_ms: int(tint(sm, 'cycle_ms'))
+			fields:   fields_of(sm)
 		}
+	}
+	mut sig_fields := map[string][]Field{}
+	for sg in sys.signals {
+		sig_fields[sg.name] = sg.fields
 	}
 
 	for nd in tarr(doc, 'node') {
@@ -163,9 +171,13 @@ pub fn load(path string) !System {
 			n.diag_req = u32(tint(dm, 'req'))
 			n.diag_rsp = u32(tint(dm, 'rsp'))
 		}
+		if dv := nm['doip'] {
+			n.doip = u32(tint(dv.as_map(), 'logical'))
+		}
 		// the node's internals: reads/writes across every FB handler
 		epath := os.join_path(base, n.ecu)
 		if ndoc := toml.parse_file(epath) {
+			n.desc = parse_ecu_desc(ndoc, sig_fields)
 			for fb in tarr(ndoc, 'fb') {
 				fm := fb.as_map()
 				if hv := fm['handler'] {

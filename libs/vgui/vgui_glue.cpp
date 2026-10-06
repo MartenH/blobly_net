@@ -602,6 +602,29 @@ void vgui_plot_end() { ImPlot::EndPlot(); }
 int vgui_selectable(const char* label, int selected) {
     return ImGui::Selectable(label, selected != 0) ? 1 : 0;
 }
+// a selectable in a table's first column that highlights and takes clicks across the whole row
+int vgui_selectable_row(const char* label, int selected) {
+    return ImGui::Selectable(label, selected != 0, ImGuiSelectableFlags_SpanAllColumns) ? 1 : 0;
+}
+
+// tabs: pair vgui_tab_bar_begin with vgui_tab_bar_end only when it returned 1, and
+// vgui_tab_item_begin with vgui_tab_item_end only when it returned 1 (ImGui's own rule).
+// `select` makes that tab the selected one this frame.
+int  vgui_tab_bar_begin(const char* id) { return ImGui::BeginTabBar(id) ? 1 : 0; }
+void vgui_tab_bar_end() { ImGui::EndTabBar(); }
+int  vgui_tab_item_begin(const char* label, int select) {
+    return ImGui::BeginTabItem(label, nullptr, select ? ImGuiTabItemFlags_SetSelected : 0) ? 1 : 0;
+}
+void vgui_tab_item_end() { ImGui::EndTabItem(); }
+
+// a modal confirmation: vgui_open_popup(id) once, then each frame vgui_begin_popup_modal(id) and,
+// when it returned 1, vgui_end_popup. Centred on the main viewport, sized to its content.
+void vgui_open_popup(const char* id) { ImGui::OpenPopup(id); }
+int  vgui_begin_popup_modal(const char* title) {
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    return ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize) ? 1 : 0;
+}
+void vgui_close_current_popup() { ImGui::CloseCurrentPopup(); }
 
 // scrollable bordered child region of fixed pixel height (0 = fill). ALWAYS pair with
 // vgui_child_end (imgui requires EndChild even when begin returns false/clipped).

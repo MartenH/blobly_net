@@ -91,6 +91,7 @@ fn (mut app App) load_system(path string) {
 	if sy := sysview.load(path) {
 		app.sys = sy
 		app.sys_loaded = true
+		app.diag_sys_key = '' // the Diagnostics panel names DTCs from this one now
 		app.sys_path_buf = mkbuf(path, path.len + 64)
 		app.notify('system: ${sy.nodes.len} node(s), ${sy.buses.len} bus(es), ${sy.signals.len} cross-node signal(s)')
 	} else {
@@ -114,15 +115,10 @@ fn draw_system(mut app App) {
 	}
 	sc := app.prefs.ui_scale
 	if app.sys_path_buf.len == 0 {
-		// smart default: the project's own dir usually holds the system.toml (a .blobnet lives
-		// next to it), so Load works out of the box instead of starting on an empty box.
-		mut def := ''
-		if app.proj_path != '' {
-			cand := os.join_path(os.dir(app.proj_path), 'system.toml')
-			if os.is_file(cand) {
-				def = cand
-			}
-		}
+		// smart default: the system.toml the Diagnostics panel would find for this project —
+		// beside it, beside one of its databases, or in its parent (sysview.find_system) — so Load
+		// works out of the box instead of starting on an empty box.
+		def := sysview.find_system(app.proj_path, app.proj_db_refs()) or { '' }
 		app.sys_path_buf = mkbuf(def, 512)
 	}
 	vgui.set_next_item_width(340 * sc)
