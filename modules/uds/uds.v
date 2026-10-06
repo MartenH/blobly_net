@@ -65,6 +65,19 @@ pub mut:
 	ext_lens map[u8]int
 	// how the last request went, on the monotonic clock: set by every exchange, answered or not
 	last ExchangeTiming
+	// stop_requested, when set, is asked before the send and between the answers of a request —
+	// after each responsePending above all, which a server can keep sending until
+	// `pending_budget_ms` — and a true answer ends the request with `abandoned_note`. For a run
+	// worker that Stop must end; the carrier's own wait is the carrier's to cut short (a software
+	// ISO-TP channel's `stop_requested`, a DoIP client's `interrupt`).
+	stop_requested fn () bool = unsafe { nil }
+}
+
+// abandoned_note is the error a request ends with when `stop_requested` answered true.
+pub const abandoned_note = 'UDS: request abandoned — stop requested'
+
+fn (c &Client) stopping() bool {
+	return c.stop_requested != unsafe { nil } && c.stop_requested()
 }
 
 // ExchangeTiming is one request's time on the wire, as only the exchange can see it: from the
@@ -269,12 +282,18 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 			pending_us: if pendings > 0 { i64(end_ns - first_pending_ns) / 1000 } else { 0 }
 		}
 	}
+	if c.stopping() {
+		return error(abandoned_note)
+	}
 	c.ch.send(req)!
 	sent = true
 	sw := time.new_stopwatch()
 	mut deadline := if c.timeout_ms < c.pending_budget_ms { i64(c.timeout_ms) } else { i64(c.pending_budget_ms) }
 	mut pending := false
 	for {
+		if c.stopping() {
+			return error(abandoned_note)
+		}
 		left := deadline - sw.elapsed().milliseconds()
 		if left <= 0 {
 			if suppressed && !pending {
@@ -286,6 +305,9 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 			return error(no_answer(req, discarded))
 		}
 		resp := c.ch.recv(int(left)) or {
+			if c.stopping() {
+				return error(abandoned_note) // the carrier's wait was ended by the same stop
+			}
 			if suppressed && !pending && is_silence(err.msg()) {
 				return []u8{}, false // nothing to say: what a suppressed positive response looks like
 			}

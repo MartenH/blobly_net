@@ -36,7 +36,7 @@ mut:
 }
 
 // HeldConn is the holder thread's own: never shared (a held DoIP client is also published as
-// App.diag_doip_live, for Stop to interrupt — see diag_interrupt_locked).
+// App.diag_doip_live with its generation, for Stop to interrupt — see diag_interrupt_locked).
 struct HeldConn {
 mut:
 	open     bool
@@ -50,6 +50,11 @@ mut:
 	// CAN: the client's timing, carried from one exchange's client to the next
 	timeout_ms int
 	p2_star_ms int
+	// this holder generation's ONE cancellation: true once its run has ended. Asked by the uds
+	// client between answers (a 0x78 loop) and by a CAN channel while it waits; a DoIP read
+	// asks nothing, so that connection is also published for Stop to interrupt (doip_cli)
+	stop     fn() bool = unsafe { nil }
+	doip_cli &doip.DoipClient = unsafe { nil }
 }
 
 // diag_press is one press of a Diagnostics panel button: handed to this run's holder, spawned
@@ -88,7 +93,7 @@ fn (mut app App) diag_disconnect() {
 // Under app.mu, which the holder takes to unpublish the client BEFORE closing it, so the socket
 // this shuts down is still the holder's. A CAN press has no such handle and ends at its timeout.
 fn (mut app App) diag_interrupt_locked() {
-	if !isnil(app.diag_doip_live) {
+	if !isnil(app.diag_doip_live) && diaghold.may_interrupt(app.diag_doip_gen, app.run_gen) {
 		mut c := app.diag_doip_live
 		c.interrupt()
 	}
@@ -152,7 +157,13 @@ fn diag_holder(app &App, gen u64, q chan DiagReq) {
 		release_run_worker(app)
 	}
 	mut a := unsafe { app }
-	mut h := HeldConn{}
+	stop := fn [app, gen] () bool {
+		mut ap := unsafe { app }
+		return !ap.run_live(gen)
+	}
+	mut h := HeldConn{
+		stop: stop
+	}
 	for {
 		v := a.diag_hold_view(gen, if h.open { h.target.key } else { '' })
 		r := diaghold.release(v)
@@ -229,9 +240,13 @@ fn (mut app App) diag_let_go(gen u64, mut h HeldConn, conn diaghold.Conn, why st
 		return
 	}
 	if h.target.carrier.doip {
-		// unpublished BEFORE the close, under the lock Stop interrupts under
+		// unpublished BEFORE the close, under the lock Stop interrupts under — and only if the
+		// published handle is still this holder's: the next run's may have replaced it
 		app.mu.lock()
-		app.diag_doip_live = unsafe { nil }
+		if diaghold.may_unpublish(app.diag_doip_gen, gen) && voidptr(app.diag_doip_live) == voidptr(h.doip_cli) {
+			app.diag_doip_live = unsafe { nil }
+			app.diag_doip_gen = 0
+		}
 		app.mu.unlock()
 		h.ch.close()
 	} else {
@@ -268,13 +283,11 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 		b.close()
 		return err
 	}
-	// a segmented send in flight when the run ends is abandoned rather than finished (#347)
-	sc.stop_requested = fn [app, gen] () bool {
-		mut ap := unsafe { app }
-		return !ap.run_live(gen)
-	}
+	// a send or a wait in flight when the run ends is abandoned rather than finished (#347)
+	sc.stop_requested = h.stop
 	h.ch = isotp.Channel(sc)
 	h.cli = uds.new_client(sc)
+	h.cli.stop_requested = h.stop
 	if h.timeout_ms > 0 {
 		h.cli.timeout_ms = h.timeout_ms
 	}
@@ -300,6 +313,7 @@ fn (mut app App) diag_open(gen u64, mut h HeldConn, t DiagTarget) !diaghold.Open
 	t0 := time.sys_mono_now()
 	h = HeldConn{
 		target: t
+		stop: h.stop
 	}
 	app.mu.lock()
 	h.p2_star_ms = app.diag_timing[t.key] or { 0 }
@@ -309,11 +323,18 @@ fn (mut app App) diag_open(gen u64, mut h HeldConn, t DiagTarget) !diaghold.Open
 		total := i64(time.sys_mono_now() - t0) / 1000
 		h.ch = isotp.Channel(c)
 		h.cli = uds.new_client(c)
+		h.cli.stop_requested = h.stop
 		h.cli.loosen_p2_star(h.p2_star_ms)
 		h.where = 'doip ${c.iface}'
+		h.doip_cli = c
+		// published only while this holder's run is live: a Stop that already happened cannot
+		// interrupt it, and must not find it in place of the next run's
 		app.mu.lock()
-		app.diag_doip_live = c
 		live := app.running && app.run_gen == gen
+		if live {
+			app.diag_doip_live = c
+			app.diag_doip_gen = gen
+		}
 		app.mu.unlock()
 		h.open = true
 		if !live {

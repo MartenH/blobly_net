@@ -19,6 +19,7 @@ mut:
 	waits     []int // the timeout each recv was given
 	queued    int   // how many of `responses` were already queued before the request went out
 	delay_ms  []int // per response (by index), how long the recv takes to return it
+	pending_forever bool // past `responses`, every recv answers 0x78 for the request's service
 }
 
 fn (mut m MockChannel) send(data []u8) ! {
@@ -40,6 +41,9 @@ fn (mut m MockChannel) recv(timeout_ms int) ![]u8 {
 	}
 	m.waits << timeout_ms
 	if m.idx >= m.responses.len {
+		if m.pending_forever && m.last_req.len > 0 {
+			return [u8(0x7F), m.last_req[0], 0x78]
+		}
 		return error('timeout')
 	}
 	r := m.responses[m.idx]
@@ -422,4 +426,37 @@ fn test_a_request_stopped_before_the_send_is_not_sent() {
 	c.read_data_by_identifier(0xF190) or {}
 	assert !c.last.sent
 	assert m.last_req.len == 0
+}
+
+// a server that answers responsePending for ever holds a request until pending_budget_ms (two
+// minutes by default); a stop request ends it after the 0x78 it is waiting behind, distinctly
+fn test_a_stop_ends_a_request_held_by_response_pending() {
+	mut m := &MockChannel{
+		pending_forever: true
+	}
+	mut c := new_client(m)
+	c.stop_requested = fn [m] () bool {
+		return m.waits.len >= 3
+	}
+	sw := time.new_stopwatch()
+	if _ := c.read_data_by_identifier(0xF190) {
+		assert false, 'a server that only says pending answered nothing'
+	} else {
+		assert err.msg() == abandoned_note, err.msg()
+	}
+	assert m.waits.len == 3
+	assert c.last.sent
+	assert c.last.pending == 3
+	assert sw.elapsed().milliseconds() < 1000
+}
+
+// a stop already requested sends nothing
+fn test_a_stopped_client_sends_nothing() {
+	mut c, m := client_with([[u8(0x62), 0xF1, 0x90, 0xAA]])
+	c.stop_requested = fn () bool {
+		return true
+	}
+	c.read_data_by_identifier(0xF190) or { assert err.msg() == abandoned_note, err.msg() }
+	assert m.last_req.len == 0
+	assert !c.last.sent
 }

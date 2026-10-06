@@ -207,3 +207,23 @@ pub fn ms_text(us i64) string {
 pub fn retry_on_reopen(doip bool, held_before bool, sent bool, negative bool) bool {
 	return doip && held_before && !sent && !negative
 }
+
+// WHOSE IN-FLIGHT EXCHANGE STOP ENDS. Each holder generation (one per run) cancels its own
+// exchange through one handle: its stop flag, which a software ISO-TP channel and the uds client
+// both ask while they wait, and — on DoIP, whose blocking read asks nothing — the connection it
+// publishes for Stop to interrupt. That publication carries the generation that made it, because
+// a holder from the previous run can still be on its way out when the next run's holder
+// publishes: unpublishing on the old holder's way out left the new connection out of Stop's
+// reach, and interrupting by anything but generation could end a connection Stop was not about.
+
+// may_unpublish says whether a holder of generation `holder_gen` takes down the published
+// handle, which generation `published_gen` put up (0: nothing is published). Only its own.
+pub fn may_unpublish(published_gen u64, holder_gen u64) bool {
+	return published_gen != 0 && published_gen == holder_gen
+}
+
+// may_interrupt says whether the Stop of run `stopped_gen` interrupts the published handle.
+// Only the stopped run's own.
+pub fn may_interrupt(published_gen u64, stopped_gen u64) bool {
+	return published_gen != 0 && published_gen == stopped_gen
+}

@@ -565,6 +565,7 @@ mut:
 	diag_disconnect_req bool
 	diag_tools          int
 	diag_doip_live      &doip.DoipClient = unsafe { nil } // the held DoIP connection, for Stop to interrupt
+	diag_doip_gen       u64 // the holder generation that published it (diaghold.may_interrupt)
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool

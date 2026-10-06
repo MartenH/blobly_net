@@ -63,6 +63,7 @@ fn test_keepalive_only_in_a_known_non_default_session() {
 	assert !keepalive_due(true, default_session, 0, 10_000)
 	assert !keepalive_due(true, 0, 0, 10_000) // nothing answered 0x10 on this connection
 	
+
 	assert keepalive_due(true, 0x03, 0, 10_000)
 	assert keepalive_due(true, 0x02, 0, 10_000)
 }
@@ -152,4 +153,27 @@ fn test_a_can_failure_is_never_retried() {
 
 fn test_a_keepalive_listens_far_less_than_its_period() {
 	assert keepalive_wait_ms * 5 <= keepalive_ms
+}
+
+// --- generation scoping of the published handle ---
+
+// The quick Stop/Start: run 1's holder, on its way out, must not take down run 2's handle —
+// Stop would then have nothing to interrupt the current connection with.
+fn test_an_old_holder_never_unpublishes_a_new_one() {
+	assert !may_unpublish(2, 1)
+	assert may_unpublish(2, 2)
+}
+
+fn test_nothing_published_is_nothing_to_take_down() {
+	assert !may_unpublish(0, 0)
+	assert !may_unpublish(0, 3)
+}
+
+// Stop of run 2 ends run 2's exchange and nothing else's; a leftover from run 1 is not its
+// business (its own Stop already interrupted it).
+fn test_a_stop_interrupts_only_its_own_runs_exchange() {
+	assert may_interrupt(2, 2)
+	assert !may_interrupt(1, 2)
+	assert !may_interrupt(3, 2)
+	assert !may_interrupt(0, 2)
 }
