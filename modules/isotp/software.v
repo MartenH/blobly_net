@@ -62,6 +62,11 @@ pub mut:
 	// this field at all -- the first draft of this comment claimed it could (self-review). The
 	// default is what has to be right for flash, and `fc_total_wait_ms` is sized for it.
 	total_wait_ms int = fc_total_wait_ms
+	// How long ONE Flow Control may take (ISO's N_BS), in milliseconds; `fc_timeout_ms` is the
+	// default and the reasoning. A field for the same reason as `total_wait_ms`: a test whose
+	// peer answers on its own schedule lengthens it, so a stalled test thread is not read as a
+	// peer that missed its window.
+	fc_window_ms int = fc_timeout_ms
 	// stop_requested, when set, is asked while a segmented send waits — in its STmin pacing and
 	// for each Flow Control — and a true answer abandons the transfer (#347). It is asked while a
 	// recv waits too, so a worker blocked on an answer leaves when told (`abandoned_recv_note`). For a RUN WORKER:
@@ -272,7 +277,7 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 	// which is the receiver's to ask for and can legally run to 74 seconds.
 	mut waits := 0
 	for {
-		deadline := time.ticks() + fc_timeout_ms
+		deadline := time.ticks() + c.fc_window_ms
 		mut raw := []u8{}
 		for {
 			if c.stopping() {
@@ -654,10 +659,9 @@ fn orphan_note(msg string, n int, pci u8) string {
 // Returns false when a stop request ended it before the quiet window was reached.
 fn (mut c SoftChannel) flush_rx() bool {
 	for _ in 0 .. flush_max_frames {
-		if c.stopping() {
-			return false
-		}
-		c.rx_raw(flush_quiet_ms) or { return true } // nothing more queued within the quiet window
+		// a read that fails is the quiet window reached, unless the stop ended it: a stoppable
+		// read asks per slice, so this is where a stop mid-drain is seen
+		c.rx_raw(flush_quiet_ms) or { return err.msg() != abandoned_recv_note }
 	}
 	return true
 }
