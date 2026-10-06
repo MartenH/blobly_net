@@ -83,17 +83,20 @@ done
 probe_s=${CODEX_PROBE_TIMEOUT:-10}
 case "$probe_s" in '' | *[!0-9]* | 0 | 00*) probe_s=10 ;; esac
 runs() {
-	local v f rc
+	local v f d rc
 	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
-	f=$(mktemp) || return 1
+	# in a throwaway directory: a candidate being probed must not leave a cache or core file in the
+	# worktree whose cleanliness the review then checks
+	d=$(mktemp -d) || return 1
+	f=$d/version
 	if command -v timeout >/dev/null 2>&1; then
-		(ulimit -f 64; exec timeout -k 2 "$probe_s" "$1" --version) </dev/null >"$f" 2>/dev/null
+		(cd "$d" && ulimit -f 64 && exec timeout -k 2 "$probe_s" "$1" --version) </dev/null >"$f" 2>/dev/null
 	else
-		(ulimit -f 64; exec "$1" --version) </dev/null >"$f" 2>/dev/null
+		(cd "$d" && ulimit -f 64 && exec "$1" --version) </dev/null >"$f" 2>/dev/null
 	fi
 	rc=$?
 	v=$(head -1 "$f")
-	rm -f "$f"
+	rm -rf "$d"
 	[ "$rc" = 0 ] && [ -n "$v" ] || return 1
 	printf '%s\n' "$v"
 }
