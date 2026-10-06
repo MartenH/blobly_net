@@ -4,6 +4,7 @@ import os
 import time
 import vgui
 import uds
+import diaghold
 
 // DiagAutopress is a dev hook, inert unless BLOBLY_DIAG_PRESS is set: the Diagnostics panel's
 // buttons pressed in order from the frame loop, for the headless screenshot and for timing the
@@ -133,6 +134,7 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 		t := targets.filter(it.key == app.diag_sel_key)[0] or { targets[0] or { DiagTarget{} } }
 		desc := app.diag_desc(t)
 		own, iso := did_rows(desc)
+		app.did_ui.select_tab = true // the write dialog is drawn by the tab
 		if step == 'did_all' {
 			mut ids := own.map(it.id)
 			ids << iso.map(it.id)
@@ -146,7 +148,10 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 			return
 		}
 		arg := step.all_after(':')
-		id := u16(('0x' + arg.all_before('=')).u64())
+		id := diaghold.parse_did(arg.all_before('=')) or {
+			println('diag-autopress: ${step}: not a DID')
+			return
+		}
 		if step.starts_with('did_read:') {
 			au.gen_at = dgen
 			au.press_ns = time.sys_mono_now()

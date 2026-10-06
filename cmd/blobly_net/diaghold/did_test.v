@@ -72,3 +72,13 @@ fn test_read_all_stops_on_the_connection_and_says_what_was_not_asked() {
 	c.refusal(tm(10), 0)
 	assert c.summary(1) == 'Read all, 1 DID(s): 0 read, 1 refused (unreadable ×1)'
 }
+
+fn test_a_did_typed_by_hand_is_read_exactly_or_not_at_all() {
+	assert parse_did('F190') or { 0 } == 0xF190
+	assert parse_did('0xf190') or { 0 } == 0xF190
+	assert parse_did(' 110 ') or { 0 } == 0x0110
+	assert parse_did('') == none
+	assert parse_did('1F190') == none // not a truncated F190
+	assert parse_did('zz') == none // not 0x0000
+	assert parse_did('0x') == none
+}

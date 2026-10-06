@@ -44,6 +44,7 @@ struct DiagReq {
 // DiagHoldStatus is the strip at the top of the panel. Guarded by app.mu.
 struct DiagHoldStatus {
 mut:
+	key        string // ... and its identity, for what is asked of this connection's state
 	label      string // the target the connection is (or was) to
 	doip       bool
 	conn       diaghold.Conn
@@ -510,6 +511,7 @@ fn (mut app App) diag_say(req DiagReq, line string) {
 // diag_connect opens the target's connection into `h` and says so in the log and the strip.
 fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
 	app.diag_set_status(gen, DiagHoldStatus{
+		key: t.key
 		label: t.label
 		doip: t.carrier.doip
 		conn: .opening
@@ -528,6 +530,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
 		why := if cancelled { 'opening abandoned' } else { err.msg() }
 		app.diag_push('[${ms:6} ms] open ${where}: ${why}')
 		app.diag_set_status(gen, DiagHoldStatus{
+			key: t.key
 			label: t.label
 			doip: t.carrier.doip
 			conn: if cancelled { diaghold.Conn.closed } else { diaghold.Conn.failed }
@@ -538,6 +541,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
 	}
 	app.diag_push(opened.line(h.where))
 	app.diag_set_status(gen, DiagHoldStatus{
+		key: t.key
 		label: t.label
 		doip: t.carrier.doip
 		conn: .held

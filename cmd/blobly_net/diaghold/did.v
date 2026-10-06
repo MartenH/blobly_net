@@ -3,6 +3,29 @@ module diaghold
 // did.v — the DIDs tab's rules: what a write has to establish first (the session its DID is
 // written in, the security level it needs), and what a Read all says in the log.
 
+// parse_did reads a DID typed by hand: one to four hex digits, `0x` optional. none for anything
+// else — a typo must not become 0x0000, nor five digits a truncated other DID.
+pub fn parse_did(t string) ?u16 {
+	mut s := t.trim_space()
+	if s.starts_with('0x') || s.starts_with('0X') {
+		s = s[2..]
+	}
+	if s.len == 0 || s.len > 4 {
+		return none
+	}
+	mut v := u16(0)
+	for c in s {
+		d := match c {
+			`0`...`9` { c - `0` }
+			`a`...`f` { c - `a` + 10 }
+			`A`...`F` { c - `A` + 10 }
+			else { return none }
+		}
+		v = v << 4 | u16(d)
+	}
+	return v
+}
+
 // WritePlan is what a 0x2E needs before it is sent, as the description gates it: a session to
 // switch to (0 = stay), a security level to unlock (the 0x27 requestSeed sub-function; 0 = none),
 // or why the panel cannot write it.

@@ -20,11 +20,32 @@ import diaghold
 
 // DidVal is one DID as its last read found it.
 struct DidVal {
-	ok    bool
-	data  []u8
-	err   string
-	at_ms i64
-	t     diaghold.Timing
+	ok      bool
+	data    []u8
+	err     string
+	refused bool // the ECU answered without the value (a negative response, or unreadable)
+	nrc     u8   // the negative response's code; 0 = none
+	at_ms   i64
+	t       diaghold.Timing
+}
+
+// did_val is a 0x22's outcome as the tab records it.
+fn did_val(data []u8, err IError, t diaghold.Timing) DidVal {
+	if err is none {
+		return DidVal{
+			ok:    true
+			data:  data
+			at_ms: time.ticks()
+			t:     t
+		}
+	}
+	return DidVal{
+		err:     err.msg()
+		refused: answered(err)
+		nrc:     if err is uds.NegativeResponse { err.nrc } else { u8(0) }
+		at_ms:   time.ticks()
+		t:       t
+	}
 }
 
 // DidView is what the tab's reads found, for one target. Written by the holder under app.mu and
@@ -70,22 +91,13 @@ fn (mut app App) diag_did_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 fn (mut app App) did_read(mut h HeldConn, req DiagReq, id u16) (DiagOut, bool) {
 	name := did_label(req.desc, id)
 	r := h.cli.read_data_by_identifier(id) or {
-		app.did_publish(req, id, DidVal{
-			err:   err.msg()
-			at_ms: time.ticks()
-			t:     h.timing()
-		})
+		app.did_publish(req, id, did_val([], err, h.timing()))
 		return DiagOut{
 			line: '0x22 ${name}: ${err}'
 			err:  true
 		}, answered(err)
 	}
-	app.did_publish(req, id, DidVal{
-		ok:    true
-		data:  r
-		at_ms: time.ticks()
-		t:     h.timing()
-	})
+	app.did_publish(req, id, did_val(r, none, h.timing()))
 	return DiagOut{
 		line: '0x22 ${name} = ${did_shown(req.desc, id, r)}'
 	}, false
@@ -100,11 +112,7 @@ fn (mut app App) did_read_all(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 			break
 		}
 		r := h.cli.read_data_by_identifier(id) or {
-			app.did_publish(req, id, DidVal{
-				err:   err.msg()
-				at_ms: time.ticks()
-				t:     h.timing()
-			})
+			app.did_publish(req, id, did_val([], err, h.timing()))
 			if err is uds.NegativeResponse {
 				b.refusal(h.timing(), err.nrc)
 			} else if answered(err) {
@@ -115,12 +123,7 @@ fn (mut app App) did_read_all(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 			continue
 		}
 		b.answered(h.timing())
-		app.did_publish(req, id, DidVal{
-			ok:    true
-			data:  r
-			at_ms: time.ticks()
-			t:     h.timing()
-		})
+		app.did_publish(req, id, did_val(r, none, h.timing()))
 	}
 	return DiagOut{
 		line:  b.summary(req.dids.len)
@@ -158,7 +161,7 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 				err:  true
 			}, answered(err)
 		}
-		if seed.any(it != 0) { // an all-zero seed: the level is unlocked already
+		if seed.any(it != 0) {
 			app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)}')
 			h.cli.security_send_key(plan.unlock + 1, uds.security_key(seed)) or {
 				return DiagOut{
@@ -166,12 +169,15 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 					err:  true
 				}, answered(err)
 			}
+			app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock + 1:02X}: level ${plan.unlock} unlocked (reference key)')
+		} else {
+			// an all-zero seed: ISO 14229-1's "already unlocked", and no key is sent
+			app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked')
 		}
 		h.security = plan.unlock
 		mut st := app.diag_status_copy()
 		st.security = plan.unlock
 		app.diag_set_status(gen, st)
-		app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock + 1:02X}: level ${plan.unlock} unlocked (reference key)')
 	}
 	h.cli.write_data_by_identifier(req.did, req.data) or {
 		return DiagOut{
@@ -275,13 +281,18 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	vgui.input_text('##didfree', mut app.did_ui.free_buf)
 	vgui.same_line()
 	if vgui.button('Read DID') && !busy {
-		app.did_press(DiagReq{
-			kind: 'did_read'
-			did:  u16(('0x' + vgui.buf_str(app.did_ui.free_buf)).u64())
-		}, desc)
+		typed := vgui.buf_str(app.did_ui.free_buf)
+		if id := diaghold.parse_did(typed) {
+			app.did_press(DiagReq{
+				kind: 'did_read'
+				did:  id
+			}, desc)
+		} else {
+			app.diag_push('Read DID: "${typed}" is not a DID (one to four hex digits)')
+		}
 	}
 	vgui.set_item_tooltip('0x22 for any identifier, in hex.')
-	if st.conn == .held && st.security != 0 {
+	if st.conn == .held && st.key == t.key && st.security != 0 {
 		vgui.same_line()
 		vgui.text_colored(230, 180, 60, 'level ${st.security} unlocked')
 	}
@@ -318,7 +329,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	// does serve is not lost among the thirty the standard names
 	refused := iso.filter(fn [view] (x sysview.DidDesc) bool {
 		v := view.vals[x.id] or { return false }
-		return !v.ok
+		return v.refused // the ECU's answer; a silence or a lost connection stays in the table
 	})
 	served := iso.filter(fn [refused] (x sysview.DidDesc) bool {
 		return !refused.any(it.id == x.id)
@@ -331,7 +342,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		mut whys := []string{}
 		mut by := map[string][]string{}
 		for x in refused {
-			why := did_err_short((view.vals[x.id] or { DidVal{} }).err)
+			why := did_err_short(view.vals[x.id] or { DidVal{} })
 			if why !in by {
 				whys << why
 			}
@@ -375,7 +386,7 @@ fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, 
 				vgui.set_item_tooltip(when)
 				vgui.text_dim(if v.data.len > 0 { hex(v.data) } else { '(empty)' })
 			} else {
-				vgui.text_colored(235, 90, 80, did_err_short(v.err))
+				vgui.text_colored(235, 90, 80, did_err_short(v))
 				vgui.set_item_tooltip('${v.err}\n${when}')
 			}
 		} else {
@@ -397,12 +408,13 @@ fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, 
 	vgui.table_end()
 }
 
-// did_err_short is a failed read as a table cell: the NRC's name, else the error.
-fn did_err_short(e string) string {
-	if e.contains('NRC 0x') {
-		return 'NRC 0x' + e.all_after('NRC 0x').all_before(' ').all_before(';')
+// did_err_short is a failed read as a table cell: its NRC, else the error, cut by characters.
+fn did_err_short(v DidVal) string {
+	if v.nrc != 0 {
+		return 'NRC 0x${v.nrc:02X}'
 	}
-	return if e.len > 40 { e[..40] + '…' } else { e }
+	r := v.err.runes()
+	return if r.len > 40 { r[..40].string() + '…' } else { v.err }
 }
 
 // did_gate_words is a DID's gates, as the name cell's tooltip says them.
@@ -445,7 +457,7 @@ fn draw_param_table(mut app App, view DidView, desc DiagDesc, busy bool, st Diag
 		mut shown := '—'
 		if x := pd {
 			if v := view.vals[x.id] {
-				shown = if v.ok { did_shown(d, x.id, v.data) } else { did_err_short(v.err) }
+				shown = if v.ok { did_shown(d, x.id, v.data) } else { did_err_short(v) }
 			}
 		}
 		vgui.table_cell(shown)
@@ -504,11 +516,16 @@ fn draw_param_table(mut app App, view DidView, desc DiagDesc, busy bool, st Diag
 fn (mut app App) did_edit(x sysview.DidDesc, view DidView, desc DiagDesc) {
 	parts := x.parts()
 	mut texts := []string{len: parts.len}
+	mut filled := false
 	if v := view.vals[x.id] {
 		if v.ok {
-			texts = x.texts(v.data) or { texts }
+			if ts := x.texts(v.data) {
+				texts = ts.clone()
+				filled = true
+			}
 		}
-	} else if x.kind == .param && desc.ok {
+	}
+	if !filled && x.kind == .param && desc.ok {
 		if p := desc.desc.params.filter(it.name == x.name)[0] {
 			for i, f in x.fields {
 				if dv := p.defaults[f.name] {
@@ -519,8 +536,16 @@ fn (mut app App) did_edit(x sysview.DidDesc, view DidView, desc DiagDesc) {
 	}
 	app.did_ui.edit_id = x.id
 	app.did_ui.edit_key = app.diag_sel_key
-	app.did_ui.edit_bufs = texts.map(mkbuf(it, 128))
+	n := did_edit_room(x)
+	app.did_ui.edit_bufs = texts.map(mkbuf(it, n))
 	app.did_ui.edit_open = true
+}
+
+// did_edit_room is an edit field's size: the value's whole text (a byte is three characters of
+// hex), and room to type past it so too long is said by encode rather than cut by the field.
+fn did_edit_room(x sysview.DidDesc) int {
+	n := if x.size > 0 { 3 * x.size + 16 } else { 0 }
+	return if n > 128 { n } else { 128 }
 }
 
 // did_write_req is the press the editor's Write sends — the bytes and the gate, the rest decided by
@@ -589,7 +614,7 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 	}
 	parts := x.parts()
 	if app.did_ui.edit_bufs.len != parts.len {
-		app.did_ui.edit_bufs = parts.map(mkbuf('', 128))
+		app.did_ui.edit_bufs = parts.map(mkbuf('', did_edit_room(x)))
 	}
 	for i, p in parts {
 		vgui.set_next_item_width(220 * app.prefs.ui_scale)
@@ -599,25 +624,31 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 	}
 	texts := app.did_ui.edit_bufs.map(vgui.buf_str(it))
 	mut ready := false
+	mut why := ''
 	mut req := DiagReq{}
 	if r := did_write_req(x, texts, desc) {
 		req = r
 		vgui.text('bytes: ${hex(r.data)}')
-		plan := diaghold.write_plan(if st.conn == .held { st.session } else { u8(0) },
-			r.sessions, r.level, if st.conn == .held { st.security } else { u8(0) }, r.ref_key)
+		// what the connection has established, only if it is to THIS target: another target's
+		// session says nothing about this one, and the holder opens a fresh connection for it
+		mine := st.conn == .held && st.key == t.key
+		plan := diaghold.write_plan(if mine { st.session } else { u8(0) }, r.sessions, r.level,
+			if mine { st.security } else { u8(0) }, r.ref_key)
 		if plan.refusal != '' {
+			why = plan.refusal
 			vgui.text_colored(235, 90, 80, 'cannot write: ${plan.refusal}')
 		} else {
 			vgui.text_dim_wrapped('will ${plan.words()}')
 			ready = true
 		}
 	} else {
-		vgui.text_colored(235, 90, 80, err.msg())
+		why = err.msg()
+		vgui.text_colored(235, 90, 80, why)
 	}
 	if app.did_ui.auto_write && !ready && !busy {
 		// the autopress hook's write, refused here: said, so its wait ends
 		app.did_ui.auto_write = false
-		app.diag_push('0x2E ${x.id:04X}: not written (autopress) — see the dialog')
+		app.diag_push('0x2E ${x.id:04X}: not written (autopress) — ${why}')
 		vgui.close_current_popup()
 	}
 	if busy {

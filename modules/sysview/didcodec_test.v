@@ -56,6 +56,50 @@ fn test_a_value_outside_the_range_or_the_width_is_refused_by_name() {
 	}
 }
 
+// A declared range narrows the field's own, never widens it: a u8 said to reach 300 still holds
+// 255, rather than 300 passing and its low byte being written.
+fn test_a_range_narrows_the_width_never_widens_it() {
+	x := DidDesc{
+		kind:   .param
+		size:   1
+		fields: [Field{'x', 'u8'}]
+		ranges: {
+			'x': Range{-5, 300}
+		}
+	}
+	assert x.parts()[0].hint == 'u8 0..255'
+	assert x.encode(['255'])! == [u8(0xFF)]
+	if _ := x.encode(['300']) {
+		assert false
+	}
+	if _ := x.encode(['-1']) {
+		assert false
+	}
+	// a u64 field with a range is held to it; without one, the whole unsigned width
+	y := DidDesc{
+		kind:   .param
+		size:   8
+		fields: [Field{'n', 'u64'}]
+		ranges: {
+			'n': Range{10, 1000}
+		}
+	}
+	assert y.encode(['1000'])! == [u8(0), 0, 0, 0, 0, 0, 0x03, 0xE8]
+	if _ := y.encode(['1001']) {
+		assert false
+	}
+	if _ := y.encode(['9']) {
+		assert false
+	}
+	z := DidDesc{
+		kind:   .param
+		size:   8
+		fields: [Field{'n', 'u64'}]
+	}
+	assert z.encode(['18446744073709551615'])! == [u8(0xFF), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF]
+}
+
 fn test_signed_fields_and_several_of_them() {
 	x := DidDesc{
 		kind:   .param
@@ -79,11 +123,14 @@ fn test_text_and_bytes() {
 		kind: .ascii
 		size: 6
 	}
-	assert vin.parts() == [Part{'text', '6 characters'}]
+	assert vin.parts() == [Part{'text', 'up to 6 characters'}]
 	assert vin.texts('ABC123'.bytes())! == ['ABC123']
 	assert vin.encode(['ABC123'])! == 'ABC123'.bytes()
-	if _ := vin.encode(['ABC']) {
-		assert false // not the declared size
+	// shorter: NUL-padded to the size, and a padded text reads back without its NULs
+	assert vin.encode(['ABC'])! == [u8(`A`), `B`, `C`, 0, 0, 0]
+	assert vin.texts([u8(`A`), `B`, `C`, 0, 0, 0])! == ['ABC']
+	if _ := vin.encode(['ABC1234']) {
+		assert false // longer than the size
 	}
 	raw := DidDesc{
 		kind: .bytes
@@ -161,6 +208,10 @@ fn test_encode_is_the_inverse_of_texts() {
 			}
 			if x.kind == .ascii {
 				b = b.map(u8(0x20 + it % 0x5F)) // printable: a text DID holds text
+				if b.len > 2 && rand.intn(2) or { 0 } == 1 {
+					b[b.len - 1] = 0 // NUL-padded
+					b[b.len - 2] = 0
+				}
 			}
 			if x.size == 2 && x.kind == .param {
 				n := rand.intn(361) or { 0 } // within SteerLimit's range

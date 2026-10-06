@@ -31,13 +31,13 @@ pub fn (x DidDesc) parts() []Part {
 	if x.laid_out() {
 		return x.fields.map(Part{
 			label: it.name
-			hint:  field_hint(it, x.ranges[it.name] or { field_range(it) })
+			hint:  field_hint(it, x.limit(it))
 		})
 	}
 	if x.kind == .ascii {
 		return [Part{
 			label: 'text'
-			hint:  '${x.size} characters'
+			hint:  if x.size >= 0 { 'up to ${x.size} characters' } else { 'text' }
 		}]
 	}
 	return [
@@ -65,7 +65,13 @@ pub fn (x DidDesc) texts(data []u8) ![]string {
 		return out
 	}
 	if x.kind == .ascii {
-		return [data.bytestr()]
+		// a fixed-size text is padded with NULs, which an edit field cannot hold: they are what
+		// `encode` pads a shorter text with
+		mut n := data.len
+		for n > 0 && data[n - 1] == 0 {
+			n--
+		}
+		return [data[..n].bytestr()]
 	}
 	return [hex_text(data)]
 }
@@ -81,11 +87,15 @@ pub fn (x DidDesc) encode(texts []string) ![]u8 {
 	mut out := []u8{}
 	if x.laid_out() {
 		for i, f in x.fields {
-			lim := x.ranges[f.name] or { field_range(f) }
-			out << field_bytes(f, texts[i], lim) or { return error('${f.name}: ${err.msg()}') }
+			out << field_bytes(f, texts[i], x.limit(f)) or {
+				return error('${f.name}: ${err.msg()}')
+			}
 		}
 	} else if x.kind == .ascii {
 		out = texts[0].bytes()
+		if x.size >= 0 && out.len < x.size {
+			out << []u8{len: x.size - out.len} // NUL-padded to its size, as `texts` reads it
+		}
 	} else {
 		out = parse_hex(texts[0]) or { return error('bytes: ${err.msg()}') }
 	}
@@ -95,7 +105,20 @@ pub fn (x DidDesc) encode(texts []string) ![]u8 {
 	return out
 }
 
-// field_range is everything a field's type holds.
+// limit is what a field may hold: its type's range, narrowed by the description's where it
+// declares one — never widened, so a range past the field's width cannot let a value through
+// that the bytes then truncate.
+fn (x DidDesc) limit(f Field) Range {
+	t := field_range(f)
+	r := x.ranges[f.name] or { return t }
+	return Range{
+		min: if r.min > t.min { r.min } else { t.min }
+		max: if r.max < t.max { r.max } else { t.max }
+	}
+}
+
+// field_range is everything a field's type holds (a u64's upper half is past an i64: its range
+// is bounded by the unsigned parse, and a declared range is checked against it there).
 fn field_range(f Field) Range {
 	return match f.typ {
 		'bool' { Range{0, 1} }
@@ -105,7 +128,8 @@ fn field_range(f Field) Range {
 		'i8' { Range{-i64(0x80), 0x7F} }
 		'i16' { Range{-i64(0x8000), 0x7FFF} }
 		'i32' { Range{-i64(0x8000_0000), 0x7FFF_FFFF} }
-		else { Range{min_i64, max_i64} } // u64 / i64: bounded by the parse itself
+		'u64' { Range{0, max_i64} }
+		else { Range{min_i64, max_i64} } // i64: bounded by the parse itself
 	}
 }
 
@@ -135,6 +159,10 @@ fn field_bytes(f Field, text string, lim Range) ![]u8 {
 		}
 	} else if f.typ == 'u64' {
 		v = parse_unsigned(t)!
+		if (lim.min > 0 && v < u64(lim.min)) || lim.max < 0
+			|| (lim.max != max_i64 && v > u64(lim.max)) {
+			return error('${v} is outside ${lim.min}..${lim.max}')
+		}
 	} else {
 		n := parse_signed(t)!
 		if n < lim.min || n > lim.max {
