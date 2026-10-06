@@ -254,6 +254,7 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_GEN') != '' {
 		app.show_gen = true
 	}
+	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	// Open a recording at startup, the way the file picker would. For the screenshot harness
 	// above all (VGUI_FRAMES / VGUI_SHOT): the picker cannot be driven from a headless run, so
 	// without this there is no way to check what an IMPORTED capture looks like — and the
@@ -413,6 +414,7 @@ fn main() {
 		if app.show_diag {
 			draw_diag(mut app)
 		}
+		app.diag_publish_view() // after the panel: its close box and combo are this frame's answer
 		if app.show_shell {
 			draw_shell(mut app)
 		}

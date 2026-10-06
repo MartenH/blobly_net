@@ -9,6 +9,7 @@ import candb
 import watchrule
 import vgui
 import panerule
+import diaghold
 
 // examples lists the shipped projects for the File > Open Example menu.
 const examples = [
@@ -1212,10 +1213,12 @@ fn draw_diag(mut app App) {
 	busy := app.diag_busy
 	dgen := app.diag_gen
 	dsrc := if dgen != app.diag_cache.gen { app.diag_log.clone() } else { []string{} }
+	st := app.diag_status
 	app.mu.unlock()
 	if dgen != app.diag_cache.gen {
 		app.diag_cache.refresh(dgen, dsrc)
 	}
+	draw_diag_strip(mut app, st)
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
 	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
 	targets := app.diag_targets()
@@ -1237,28 +1240,24 @@ fn draw_diag(mut app App) {
 	if app.diag_sel >= 0 && app.diag_sel < targets.len {
 		app.diag_sel_key = targets[app.diag_sel].key
 	}
+	app.diag_autopress_step(targets)
 	vgui.separator()
 	if vgui.button('Session') && !busy {
-		app.reserve_tool_reader()
-		spawn diag_worker(app, 'session', u16(0), app.diag_sel_key)
+		app.diag_press('session', u16(0))
 	}
 	vgui.same_line()
 	if vgui.button('Read VIN') && !busy {
-		app.reserve_tool_reader()
-		spawn diag_worker(app, 'vin', u16(0), app.diag_sel_key)
+		app.diag_press('vin', u16(0))
 	}
 	vgui.same_line()
 	if vgui.button('Tester Present') && !busy {
-		app.reserve_tool_reader()
-		spawn diag_worker(app, 'tp', u16(0), app.diag_sel_key)
+		app.diag_press('tp', u16(0))
 	}
 	vgui.set_next_item_width(70)
 	vgui.input_text('DID', mut app.diag_did_buf)
 	vgui.same_line()
 	if vgui.button('Read DID') && !busy {
-		did := u16(('0x' + vgui.buf_str(app.diag_did_buf)).u64())
-		app.reserve_tool_reader()
-		spawn diag_worker(app, 'did', did, app.diag_sel_key)
+		app.diag_press('did', u16(('0x' + vgui.buf_str(app.diag_did_buf)).u64()))
 	}
 	if busy {
 		vgui.same_line()
@@ -1267,6 +1266,44 @@ fn draw_diag(mut app App) {
 	vgui.separator_text('responses (newest last)')
 	draw_copyable_log(mut app, '##diag', app.diag_cache)
 	vgui.end()
+}
+
+// draw_diag_strip is the held connection at a glance: its state, its target, the session the
+// last 0x10 answer established and the timing that answer gave, and a Disconnect.
+fn draw_diag_strip(mut app App, st DiagHoldStatus) {
+	r, g, b := match st.conn {
+		.held { u8(80), u8(200), u8(120) }
+		.opening { u8(230), u8(180), u8(60) }
+		.failed { u8(235), u8(90), u8(80) }
+		.closed { u8(140), u8(140), u8(140) }
+	}
+	vgui.text_colored(r, g, b, st.conn.str())
+	if st.conn == .held && st.doip {
+		vgui.set_item_tooltip('A DoIP entity serves one tester: while this is held, another tester outside this app is refused until Disconnect. A script or flash started here takes it over.')
+	}
+	vgui.same_line()
+	vgui.text(if st.label != '' { st.label } else { '—' })
+	if st.conn == .held || st.conn == .opening {
+		vgui.same_line()
+		if vgui.small_button('Disconnect') {
+			app.diag_disconnect()
+		}
+	}
+	if st.conn == .held {
+		mut line := 'session ${diaghold.session_name(st.session)}'
+		if st.keepalives > 0 {
+			line += ' · 3E 80 ×${st.keepalives}'
+		}
+		line += if st.p2_ms >= 0 {
+			' · P2 ${st.p2_ms} / P2* ${st.p2_star_ms} ms'
+		} else {
+			' · P2 —'
+		}
+		vgui.text_dim(line)
+	} else if st.why != '' {
+		vgui.text_dim(st.why)
+	}
+	vgui.separator()
 }
 
 // ---- Script (Lua, on a worker thread) ----

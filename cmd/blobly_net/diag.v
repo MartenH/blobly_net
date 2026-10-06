@@ -4,12 +4,14 @@ import transport
 import telem
 import script
 import vgui
+import time
 
 // ---- Diagnostics (UDS over software ISO-TP, on a worker thread) ----
 fn (mut app App) diag_push(line string) {
 	app.mu.lock()
 	app.diag_log << line
 	app.diag_gen++
+	app.diag_last_push_ns = time.sys_mono_now()
 	if app.diag_log.len > 200 {
 		app.diag_log = app.diag_log[app.diag_log.len - 200..].clone()
 	}
@@ -273,3 +275,4 @@ fn (app &App) trace_core_mask() u16 {
 	}
 	return mask
 }
+

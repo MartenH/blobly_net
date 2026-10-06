@@ -63,7 +63,8 @@ pub mut:
 	// default is what has to be right for flash, and `fc_total_wait_ms` is sized for it.
 	total_wait_ms int = fc_total_wait_ms
 	// stop_requested, when set, is asked while a segmented send waits — in its STmin pacing and
-	// for each Flow Control — and a true answer abandons the transfer (#347). For a RUN WORKER:
+	// for each Flow Control — and a true answer abandons the transfer (#347). It is asked while a
+	// recv waits too, so a worker blocked on an answer leaves when told (`abandoned_recv_note`). For a RUN WORKER:
 	// the transfer ISO permits can run to 74 s of pacing alone, which no allowance can cut
 	// without refusing a legal transfer, so a worker asked to stop must be able to leave it.
 	// Unset (the default) the send is never abandoned, which is what flash and the operator's
@@ -77,6 +78,9 @@ pub const stop_poll_ms = 20
 
 // abandoned_note is the error a send ends with when `stop_requested` answered true.
 pub const abandoned_note = 'ISO-TP: send abandoned — stop requested'
+
+// abandoned_recv_note is the error a receive ends with when `stop_requested` answered true.
+pub const abandoned_recv_note = 'ISO-TP: receive abandoned — stop requested'
 
 fn (c &SoftChannel) stopping() bool {
 	return c.stop_requested != unsafe { nil } && c.stop_requested()
@@ -303,6 +307,10 @@ fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
 				// SPENT EVEN ON THE FAILING PATH: the wait happened, and a bound that only
 				// charges for successful reads is one a stalling peer never pays.
 				budget.spend_ns(time.sys_mono_now() - t0)
+				// the stop ended the read: it is the SEND that was abandoned
+				if err.msg() == abandoned_recv_note {
+					return error(abandoned_note)
+				}
 				// ...when the slice was WAITED: a bus that reports a timeout at once (a closed
 				// in-process queue) would otherwise spin here for the whole window.
 				if err.msg() == 'timeout' && read_ms < allow
@@ -533,7 +541,7 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	// touching the bus (codex round 5 on #225).
 	if timeout_ms < 0 {
 		for {
-			f := c.bus.recv(-1)!
+			f := c.bus_recv(-1)!
 			if f.id == c.rx_id && f.extended == c.ext && !f.rtr {
 				return f.data.clone() // a received payload may be borrowed (transport.CanFrame)
 			}
@@ -553,10 +561,42 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 			return error('timeout')
 		}
 		c.scanned++
-		f := c.bus.recv(int(if rem < 0 { i64(0) } else { rem }))!
+		f := c.bus_recv(int(if rem < 0 { i64(0) } else { rem }))!
 		if f.id == c.rx_id && f.extended == c.ext && !f.rtr {
 			return f.data.clone() // a received payload may be borrowed (transport.CanFrame)
 		}
+	}
+	return error('timeout')
+}
+
+// bus_recv is the bus's own recv(ms), read in slices a stop request can end when one can be made
+// (`stop_requested`); the deadline is the caller's either way, and a zero poll is one look.
+fn (mut c SoftChannel) bus_recv(ms int) !transport.CanFrame {
+	if c.stop_requested == unsafe { nil } || ms == 0 {
+		return c.bus.recv(ms)
+	}
+	deadline := time.ticks() + i64(ms)
+	for {
+		if c.stopping() {
+			return error(abandoned_recv_note)
+		}
+		mut step := stop_poll_ms
+		if ms > 0 {
+			left := deadline - time.ticks()
+			if left <= 0 {
+				return error('timeout')
+			}
+			if left < step {
+				step = int(left)
+			}
+		}
+		f := c.bus.recv(step) or {
+			if err.msg() == 'timeout' {
+				continue
+			}
+			return err
+		}
+		return f
 	}
 	return error('timeout')
 }

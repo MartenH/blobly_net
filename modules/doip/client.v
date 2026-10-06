@@ -39,6 +39,17 @@ pub:
 	iface string // "host:port" for logging/identification
 	tx_id u32    // source (tester) logical address
 	rx_id u32    // target (ECU) logical address
+pub mut:
+	// what opening it cost, on the monotonic clock: the TCP connect, then the routing activation
+	// exchange — apart, because on a real entity they differ by orders of magnitude and only one
+	// of them is the network
+	connect_us  i64
+	activate_us i64
+	// stop_requested, when set, is asked while this client waits — for the TCP connect, the
+	// routing activation answer and every recv — every `stop_poll_ms`; a true answer ends the
+	// wait with `stopped_note`. For a worker that must leave when told (the GUI's panel holder);
+	// unset, every wait is the plain blocking one.
+	stop_requested fn () bool = unsafe { nil }
 mut:
 	conn   &net.TcpConn = unsafe { nil }
 	source u16
@@ -218,27 +229,121 @@ pub fn collect_announcements(port_ int, window_ms int) ![]Announcement {
 }
 
 pub fn open_doip(host string, port int, source u16, target u16) !&DoipClient {
+	return open_doip_stoppable(host, port, source, target, unsafe { nil })
+}
+
+// stopped_note is the error a stoppable wait ends with when its stop was requested.
+pub const stopped_note = 'DoIP: stopped — stop requested'
+
+// stop_poll_ms is how often a stoppable wait asks its stop: the bound on how long it outlives one.
+pub const stop_poll_ms = 20
+
+fn asked_to_stop(stop fn () bool) bool {
+	return stop != unsafe { nil } && stop()
+}
+
+// open_doip_stoppable is open_doip whose TCP connect and routing activation both end when `stop`
+// answers true; the client keeps `stop` for its recvs.
+pub fn open_doip_stoppable(host string, port int, source u16, target u16, stop fn () bool) !&DoipClient {
 	addr := join_host_port(host, port) // brackets an IPv6 literal for dial_tcp
-	conn := net.dial_tcp(addr)!
+	t0 := time.sys_mono_now()
+	conn := dial_stoppable(net.dial_tcp, addr, stop)!
+	t1 := time.sys_mono_now()
 	mut c := &DoipClient{
-		iface:  addr
-		tx_id:  source
-		rx_id:  target
-		conn:   conn
-		source: source
-		target: target
+		stop_requested: stop
+		iface:      addr
+		tx_id:      source
+		rx_id:      target
+		conn:       conn
+		source:     source
+		target:     target
+		connect_us: i64(t1 - t0) / 1000
 	}
 	c.activate_routing() or {
+		why := err.str()
 		c.close()
-		return err
+		return error(why)
 	}
+	c.activate_us = i64(time.sys_mono_now() - t1) / 1000
 	return c
+}
+
+// Dialed is a dial's outcome, carried back from the thread that made it.
+struct Dialed {
+	conn &net.TcpConn = unsafe { nil }
+	err  string
+}
+
+// dial_stoppable dials `addr` with `dial`. Unstoppable, it is the dial itself. Stoppable, the
+// dial runs on its own thread — a TCP connect has no slice to ask a stop in, and runs up to the
+// platform's connect timeout — and the wait for it asks `stop`; a dial left behind closes its
+// connection when it lands, so nothing leaks.
+fn dial_stoppable(dial fn (string) !&net.TcpConn, addr string, stop fn () bool) !&net.TcpConn {
+	if stop == unsafe { nil } {
+		return dial(addr)
+	}
+	done := chan Dialed{cap: 1}
+	spawn fn [dial, addr, done] () {
+		c := dial(addr) or {
+			done <- Dialed{
+				err: err.str() // a net error may carry only a code, and msg() is then empty
+			}
+			return
+		}
+		done <- Dialed{
+			conn: c
+		}
+	}()
+	for {
+		if stop() {
+			spawn fn [done] () {
+				d := <-done
+				if !isnil(d.conn) {
+					mut c := d.conn
+					c.close() or {}
+				}
+			}()
+			return error(stopped_note)
+		}
+		select {
+			d := <-done {
+				if d.err != '' {
+					return error(d.err)
+				}
+				return d.conn
+			}
+			stop_poll_ms * time.millisecond {}
+		}
+	}
+	return error(stopped_note)
+}
+
+// await_readable waits up to `ms` for the connection to have something to read, in slices that
+// ask the client's stop: true when it has, false when `ms` ran out.
+fn (mut c DoipClient) await_readable(ms int) !bool {
+	deadline := time.ticks() + i64(ms)
+	for {
+		if asked_to_stop(c.stop_requested) {
+			return error(stopped_note)
+		}
+		left := deadline - time.ticks()
+		if left <= 0 {
+			return false
+		}
+		if readable_within(c.conn.sock.handle, if left < stop_poll_ms { int(left) } else { stop_poll_ms }) {
+			return true
+		}
+	}
+	return false
 }
 
 // activate_routing sends a routing activation request and validates the response.
 fn (mut c DoipClient) activate_routing() ! {
 	c.conn.write(routing_activation_request(c.source))!
-	msg := read_message(mut c.conn, 2000)!
+	if c.stop_requested != unsafe { nil } && !c.await_readable(ra_timeout_ms)! {
+		return error('DoIP: no routing activation response within ${ra_timeout_ms} ms')
+	}
+	msg := read_message(mut c.conn, ra_timeout_ms)!
 	if msg.payload_type != pt_routing_activation_response {
 		return error('DoIP: expected routing activation response, got 0x${msg.payload_type:04X}')
 	}
@@ -247,6 +352,8 @@ fn (mut c DoipClient) activate_routing() ! {
 		return error('DoIP: routing activation denied (code 0x${code:02X})')
 	}
 }
+
+const ra_timeout_ms = 2000
 
 // send wraps `data` (a UDS request) in a 0x8001 diagnostic message and writes it.
 pub fn (mut c DoipClient) send(data []u8) ! {
@@ -290,6 +397,17 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 			continue
 		} else if rem <= 0 {
 			return error('DoIP recv timeout')
+		}
+		// a stoppable client waits for the message to begin in slices its stop can end; the rest of
+		// a message is then read with the ordinary deadline, since it is in flight
+		if c.stop_requested != unsafe { nil } {
+			if !c.await_readable(rem)! {
+				return error('DoIP recv timeout')
+			}
+			rem = int(deadline - time.ticks())
+			if rem < stop_poll_ms {
+				rem = stop_poll_ms
+			}
 		}
 		// the socket's own timeout is this carrier's silence, said the one way a caller reads it
 		msg := read_message(mut c.conn, rem) or {
