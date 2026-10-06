@@ -18,11 +18,6 @@ fn test_ethernet_rows_on_one_endpoint_do_not_fold() {
 	assert key(d, true, 2) != key(d, true, 5)
 }
 
-fn test_an_ethernet_row_keeps_its_own_key() {
-	// stable across frames: the panel looks a row up under the key the fold filed it under
-	assert key('someip:0.0.0.0:30491', true, 4) == key('someip:0.0.0.0:30491', true, 4)
-}
-
 fn test_an_ethernet_key_is_never_a_can_wire() {
 	// a CAN row's destination keeps its interface, so no CAN row lands on an Ethernet row's key
 	for row in 0 .. 4 {

@@ -210,6 +210,10 @@ every cancellation and every stopped holder ends within its bound, a command lea
 but what it keeps. Mutation-checked: 11 of 14 rule mutants fail the model, all 14 a unit test.
 Measured on the bench sysnode: a press used to cost ~490–900 ms of TCP reconnect (the entity's
 socket recycle), and costs 2–5 ms held;
+and `cmd/blobly_net/foldrule/`, WHOSE RECEIVE STATE A ROW DRAWS — the key the Buses panel, the
+Network panel and the toolbar fold the readers' state under: the destination for a CAN row,
+whose aliases share one reader, and the row itself for a DoIP or SOME/IP row, which has its own
+(#336: the row the endpoint claim refused drew its sibling's `last RX`);
 and `cmd/blobly_net/genhome/`, WHICH CHANNEL a generator belongs to — where a Save writes it back, and
 what a row deletion does to that (#97). Where it SENDS is a separate question with a separate
 home: `project.resolve_sender_bus` reads a `bus:` value and `project.sender_bus_value` is its
@@ -622,9 +626,9 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   its Buses row) from its own last RECEIVED frame. Our own sends do not count, or anything this
   host transmits would keep a dead wire looking alive; it is folded per DESTINATION like `health`
   is, and handed to the successor when a reader moves, because only the reader-owning alias
-  records it. **An Ethernet row folds under ITSELF** (`Chan.fold_key`, `cmd/blobly_net/foldrule/`,
-  #336): each DoIP/SOME/IP row has its own reader, so two on one endpoint are a conflict and not
-  aliases — keyed by interface, the row the endpoint claim refused drew its sibling's `last RX`. **It states a fact and makes no judgement**, deliberately: three attempts to decide
+  records it. **An Ethernet row folds under ITSELF** (`Chan.fold_key`, #336): each DoIP or
+  SOME/IP row has its own reader, so two on one endpoint are a conflict and not aliases — keyed
+  by interface, the row the endpoint claim refused drew its sibling's `last RX`. **It states a fact and makes no judgement**, deliberately: three attempts to decide
   whether silence was a FAULT were each taken apart by the same counter-example (five diagnostic
   requests a second apart), because "traffic that stopped" and "traffic that finished" are
   identical on the wire and no amount of observing separates them. Only a declaration can — a

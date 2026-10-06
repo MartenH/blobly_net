@@ -16,8 +16,8 @@ module foldrule
 // received, and nothing another row recorded.
 //
 // `dest` is the row's transport.destination_key, `row` its project row index (Chan.proj_idx).
-// '/' cannot occur in a network interface name, and every other destination key carries its
-// adapter's prefix, so the Ethernet key cannot equal one a CAN row is folded under.
+// No destination key starts `eth/`: a bare one is a network interface name, which cannot hold
+// a '/', and every other carries its adapter's `prefix:` first.
 pub fn key(dest string, eth bool, row int) string {
 	if eth {
 		return 'eth/row${row}'

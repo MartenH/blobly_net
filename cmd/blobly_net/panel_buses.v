@@ -46,7 +46,8 @@ fn read_destinations(rows []Chan) map[string]DestState {
 	mut out := map[string]DestState{}
 	for c in rows {
 		if c.enabled && c.running {
-			mut st := out[c.fold_key()] or { DestState{} }
+			key := c.fold_key()
+			mut st := out[key] or { DestState{} }
 			st.read = true
 			st.down = st.down || c.link_down
 			if transport.health_rank(c.health) > transport.health_rank(st.health) {
@@ -63,7 +64,7 @@ fn read_destinations(rows []Chan) map[string]DestState {
 			if !c.diag.is_empty() {
 				st.diag = c.diag
 			}
-			out[c.fold_key()] = st
+			out[key] = st
 		}
 	}
 	// COUNTS OUTLIVE THE READER. A row retired by Stop or by a fatal receive keeps its last
