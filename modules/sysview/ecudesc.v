@@ -63,14 +63,49 @@ pub:
 	text     string // ascii: the text
 	read     string // the read gate (`extended, level 1`), '' = open
 	write    string // the write gate; '' = not writable
+	// the same gates as data: what a tester has to establish before the request
+	read_gate  Gate
+	write_gate Gate
+	// a parameter's per-field range (`range = { deg = { min, max } }`), by field name
+	ranges map[string]Range
+}
+
+// Gate is a `read`/`write` table: the sessions the service is served in (none listed = any) and
+// the security level it needs (the 0x27 requestSeed sub-function; 0 = none). `declared` false is
+// no gate at all — for `write`, not writable.
+pub struct Gate {
+pub:
+	declared bool
+	sessions []string // `default`, `programming`, `extended`, as the ecu.toml writes them
+	level    int
+}
+
+// Range is an inclusive range a field's value must lie in.
+pub struct Range {
+pub:
+	min i64
+	max i64
+}
+
+// session_id is a gate's session name as a DiagnosticSessionControl (0x10) sub-function.
+pub fn session_id(name string) ?u8 {
+	return match name {
+		'default' { u8(0x01) }
+		'programming' { u8(0x02) }
+		'extended' { u8(0x03) }
+		'safety' { u8(0x04) }
+		else { none }
+	}
 }
 
 // ParamDesc is one `[[param]]`.
 pub struct ParamDesc {
 pub:
-	name   string
-	fields []Field
-	apply  string
+	name     string
+	fields   []Field
+	apply    string
+	defaults map[string]i64   // `default = { field = value }`: the value uncoded
+	ranges   map[string]Range // `range = { field = { min, max } }`
 }
 
 // EcuDesc is a node's diagnostic description.
@@ -84,6 +119,9 @@ pub mut:
 	isotp_rsp u32
 	// whether the node runs a diagnostic server at all ([uds], [isotp] or [doip] declared)
 	server bool
+	// `[uds] security_key`: "reference" is blobly_net's public bench key (uds.security_key), the
+	// one key a tester here can compute; '' = the OEM's, which it cannot
+	security_key string
 	errs   []string
 }
 
@@ -101,6 +139,43 @@ pub fn (d &EcuDesc) fault(dtc u32) ?FaultDesc {
 pub fn (d &EcuDesc) did(id u16) ?DidDesc {
 	for x in d.dids {
 		if x.id == id {
+			return x
+		}
+	}
+	return none
+}
+
+// iso_dids: the standard identification DIDs (uds.standard_dids) the description does not declare
+// itself, each as ISO names it — what a tester lists for a node beside its own DIDs, and all it
+// lists without a description.
+pub fn (d &EcuDesc) iso_dids() []DidDesc {
+	mut out := []DidDesc{}
+	for id in uds.standard_dids() {
+		if _ := d.did(id) {
+			continue
+		}
+		out << DidDesc{
+			id:   id
+			name: uds.standard_did_name(id)
+		}
+	}
+	return out
+}
+
+// param_did is the DID a parameter is coded through, if the description declares one.
+pub fn (d &EcuDesc) param_did(name string) ?DidDesc {
+	for x in d.dids {
+		if x.kind == .param && x.name == name {
+			return x
+		}
+	}
+	return none
+}
+
+// param_status_did is the DID holding every parameter's status byte, if the description declares one.
+pub fn (d &EcuDesc) param_status_did() ?DidDesc {
+	for x in d.dids {
+		if x.kind == .param_status {
 			return x
 		}
 	}
@@ -220,6 +295,46 @@ fn access_words(m map[string]toml.Any, key string) string {
 	return if parts.len == 0 { 'open' } else { parts.join(', ') }
 }
 
+// gate_of reads a `{ session = [...], security = N }` gate.
+fn gate_of(m map[string]toml.Any, key string) Gate {
+	v := m[key] or { return Gate{} }
+	am := v.as_map()
+	return Gate{
+		declared: true
+		sessions: if s := am['session'] { s.array().map(it.string()) } else { []string{} }
+		level:    int(tint(am, 'security'))
+	}
+}
+
+// field_ints reads a `{ field = integer }` table.
+fn field_ints(m map[string]toml.Any, key string) map[string]i64 {
+	mut out := map[string]i64{}
+	if v := m[key] {
+		for k, x in v.as_map() {
+			if x is i64 {
+				out[k] = x
+			}
+		}
+	}
+	return out
+}
+
+// field_ranges reads a `{ field = { min, max } }` table; a range missing either end is not one.
+fn field_ranges(m map[string]toml.Any, key string) map[string]Range {
+	mut out := map[string]Range{}
+	if v := m[key] {
+		for k, x in v.as_map() {
+			rm := x.as_map()
+			lo := rm['min'] or { continue }
+			hi := rm['max'] or { continue }
+			if lo is i64 && hi is i64 {
+				out[k] = Range{lo, hi}
+			}
+		}
+	}
+	return out
+}
+
 // parse_ecu_desc reads the diagnostic part of an ecu.toml document. `signals` are the cross-node
 // signals' fields (system.toml's `[[signal]]`s), which a live DID may read beside the node's own.
 pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
@@ -231,6 +346,9 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		sigs[tstr(sm, 'name')] = fields_of(sm)
 	}
 	d.server = ['uds', 'isotp', 'doip'].any(doc.value_opt(it) or { toml.Any(toml.Null{}) } !is toml.Null)
+	if uv := doc.value_opt('uds') {
+		d.security_key = tstr(uv.as_map(), 'security_key')
+	}
 	if iv := doc.value_opt('isotp') {
 		im := iv.as_map()
 		d.isotp_req = u32(tint(im, 'rx_id'))
@@ -241,7 +359,9 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		d.params << ParamDesc{
 			name:   tstr(pm, 'name')
 			fields: fields_of(pm)
-			apply:  if tstr(pm, 'apply') == '' { 'next_dispatch' } else { tstr(pm, 'apply') }
+			apply:    if tstr(pm, 'apply') == '' { 'next_dispatch' } else { tstr(pm, 'apply') }
+			defaults: field_ints(pm, 'default')
+			ranges:   field_ranges(pm, 'range')
 		}
 	}
 	for f in tarr(doc, 'fault') {
@@ -280,13 +400,18 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		}
 		read := access_words(xm, 'read')
 		mut write := access_words(xm, 'write')
+		mut write_gate := gate_of(xm, 'write')
 		if write == '' {
 			if w := xm['writable'] {
 				if w.bool() {
 					write = 'open'
+					write_gate = Gate{
+						declared: true
+					}
 				}
 			}
 		}
+		mut ranges := map[string]Range{}
 		mut kind := DidKind.unknown
 		mut name := ''
 		mut size := -1
@@ -315,6 +440,7 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			name = p.string()
 			if pd := d.params.filter(it.name == name)[0] {
 				fields = pd.fields.clone()
+				ranges = pd.ranges.clone()
 				mut n := 0
 				for f in fields {
 					n += f.width()
@@ -345,8 +471,11 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			size:   size
 			fields: fields
 			text:   text
-			read:   read
-			write:  write
+			read:       read
+			write:      write
+			read_gate:  gate_of(xm, 'read')
+			write_gate: write_gate
+			ranges:     ranges
 		}
 	}
 	return d

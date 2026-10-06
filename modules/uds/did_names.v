@@ -44,6 +44,18 @@ pub fn standard_did_name(id u16) string {
 	}
 }
 
+// standard_dids are the identifiers standard_did_name names, in order: what a tester can ask any
+// ECU for without a description of it.
+pub fn standard_dids() []u16 {
+	mut out := []u16{}
+	for id in u16(0xF180) .. u16(0xF1A0) {
+		if standard_did_name(id) != '' {
+			out << id
+		}
+	}
+	return out
+}
+
 // blobly_ext_record_name: what blobly_emb's extended data record `number` counts
 // (blobly_ext_records sizes them), or '' for one it does not define.
 pub fn blobly_ext_record_name(number u8) string {

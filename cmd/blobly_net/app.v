@@ -367,6 +367,7 @@ mut:
 	// targets' DTCs and DIDs — the System panel's when one is loaded there, else the one
 	// sysview.find_system finds for the project (`diag_sys_key` says for which).
 	dtc_ui       DtcUi
+	did_ui       DidUi
 	diag_sys     sysview.System
 	diag_sys_ok  bool
 	diag_sys_key string
@@ -597,6 +598,7 @@ mut:
 	diag_released       diaghold.Mark     // the last release a holder has acted on
 	diag_holders_alive  int               // holder threads not yet exited, this run's and any before
 	dtc_view            DtcView           // the DTC tab's last read (diag_dtc.v), written by the holder
+	did_view            DidView           // the DIDs tab's reads (diag_did.v), written by the holder
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool
@@ -1121,6 +1123,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.diag_sys_key = '' // and the DTC tab finds its system.toml again
 	app.diag_sys_print = ''
 	app.dtc_ui = DtcUi{}
+	app.did_ui = DidUi{}
 	app.mu.lock()
 	app.reset_trace_locked()
 	// A different project: what the operator said about the old one's buses does not carry.
@@ -1131,6 +1134,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.diag_timing = map[string]int{} // another project's ECUs said nothing to this one
 	app.diag_epoch++
 	app.dtc_view = DtcView{}
+	app.did_view = DidView{}
 	app.diag_sys_targets = []
 	app.script_log = []
 	app.script_gen++

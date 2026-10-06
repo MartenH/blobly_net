@@ -134,12 +134,7 @@ pub fn (b CounterBatch) summary() string {
 }
 
 fn (mut b CounterBatch) add(t Timing) {
-	b.t = Timing{
-		sent:       b.t.sent || t.sent
-		rtt_us:     b.t.rtt_us + t.rtt_us
-		pending:    b.t.pending + t.pending
-		pending_us: b.t.pending_us + t.pending_us
-	}
+	b.t = b.t.plus(t)
 }
 
 // dtc_sig_entry is one DTC's part of a list read's signature — what the auto-refresh compares to

@@ -1,0 +1,636 @@
+module main
+
+import time
+import uds
+import vgui
+import sysview
+import diaghold
+
+// ---- The Diagnostics panel's DIDs tab ----
+//
+// The selected target's data identifiers — the ones its description declares (sysview: each
+// `[[did]]`, with its layout and its read and write gates) and the ISO identification DIDs every
+// ECU may answer — read one at a time or all at once (0x22) on the held connection, each value
+// decoded by the description's layout beside its bytes. A writable DID is written (0x2E) from an
+// editor that encodes through the SAME layout (sysview.DidDesc.encode, the inverse of the decode),
+// behind a confirmation that states what the write will do first: the session it switches to and
+// the level it unlocks (diaghold.write_plan), or why the panel cannot. A node's R7 parameters
+// (`[[param]]`, each coded through a DID) are listed by name with their default and, where the
+// ECU exposes a status DID, whether each is coded.
+
+// DidVal is one DID as its last read found it.
+struct DidVal {
+	ok    bool
+	data  []u8
+	err   string
+	at_ms i64
+	t     diaghold.Timing
+}
+
+// DidView is what the tab's reads found, for one target. Written by the holder under app.mu and
+// only ever replaced whole, its map included, so a frame's copy of it is consistent.
+struct DidView {
+	key  string
+	vals map[u16]DidVal
+}
+
+// DidUi is the tab's controls. GUI thread only.
+struct DidUi {
+mut:
+	select_tab bool // the autopress hook brings the tab forward
+	free_buf   []u8 = mkbuf('F190', 16)
+	// the write editor: which DID, on which target, and one buffer per part
+	edit_id   u16
+	edit_key  string
+	edit_bufs [][]u8
+	edit_open bool // asks the popup to open next frame
+	// an autopress `did_write` presses the editor's Write without a click
+	auto_write bool
+}
+
+// ---- the holder's side (diag_request hands these over) ----
+
+// diag_did_request serves one DIDs-tab press. The second value says an error was the ECU
+// answering, which keeps the connection.
+fn (mut app App) diag_did_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
+	match req.kind {
+		'did_read_all' {
+			return app.did_read_all(mut h, req)
+		}
+		'did_write' {
+			return app.did_write(gen, mut h, req)
+		}
+		else {
+			return app.did_read(mut h, req, req.did)
+		}
+	}
+}
+
+// did_read reads one DID and publishes it; its line is the press's.
+fn (mut app App) did_read(mut h HeldConn, req DiagReq, id u16) (DiagOut, bool) {
+	name := did_label(req.desc, id)
+	r := h.cli.read_data_by_identifier(id) or {
+		app.did_publish(req, id, DidVal{
+			err:   err.msg()
+			at_ms: time.ticks()
+			t:     h.timing()
+		})
+		return DiagOut{
+			line: '0x22 ${name}: ${err}'
+			err:  true
+		}, answered(err)
+	}
+	app.did_publish(req, id, DidVal{
+		ok:    true
+		data:  r
+		at_ms: time.ticks()
+		t:     h.timing()
+	})
+	return DiagOut{
+		line: '0x22 ${name} = ${did_shown(req.desc, id, r)}'
+	}, false
+}
+
+// did_read_all reads every listed DID in turn, publishing each as it is answered, and says the
+// batch in ONE line (diaghold.DidBatch): each DID's own value and time is in the table.
+fn (mut app App) did_read_all(mut h HeldConn, req DiagReq) (DiagOut, bool) {
+	mut b := diaghold.DidBatch{}
+	for id in req.dids {
+		if !b.going() {
+			break
+		}
+		r := h.cli.read_data_by_identifier(id) or {
+			app.did_publish(req, id, DidVal{
+				err:   err.msg()
+				at_ms: time.ticks()
+				t:     h.timing()
+			})
+			if err is uds.NegativeResponse {
+				b.refusal(h.timing(), err.nrc)
+			} else if answered(err) {
+				b.refusal(h.timing(), 0)
+			} else {
+				b.failure(h.timing(), '0x22 ${did_label(req.desc, id)}: ${err}')
+			}
+			continue
+		}
+		b.answered(h.timing())
+		app.did_publish(req, id, DidVal{
+			ok:    true
+			data:  r
+			at_ms: time.ticks()
+			t:     h.timing()
+		})
+	}
+	return DiagOut{
+		line:  b.summary(req.dids.len)
+		err:   b.failed != ''
+		timed: true
+		t:     b.t
+	}, false
+}
+
+// did_write writes one DID as the description gates it: the session it is written in and the
+// level it needs established first (diaghold.write_plan, asked HERE, of what this connection has
+// established, not of what the panel last showed), then 0x2E, then 0x22 of it and of anything the
+// write changes (a parameter's status DID). Each step is its own timed line.
+fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
+	name := did_label(req.desc, req.did)
+	plan := diaghold.write_plan(h.session, req.sessions, req.level, h.security, req.ref_key)
+	if plan.refusal != '' {
+		// nothing sent: the connection is as it was
+		return DiagOut{
+			line: '0x2E ${name}: not written — ${plan.refusal}'
+			err:  true
+		}, true
+	}
+	if plan.session != 0 {
+		out, negative := app.diag_session_change(gen, mut h, plan.session)
+		if out.err {
+			return out, negative
+		}
+		app.diag_say(req, '${h.timing().prefix()} ${out.line} (0x2E ${name} is written in it)')
+	}
+	if plan.unlock != 0 {
+		seed := h.cli.security_request_seed(plan.unlock) or {
+			return DiagOut{
+				line: '0x27 ${plan.unlock:02X} (request seed): ${err}'
+				err:  true
+			}, answered(err)
+		}
+		if seed.any(it != 0) { // an all-zero seed: the level is unlocked already
+			app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)}')
+			h.cli.security_send_key(plan.unlock + 1, uds.security_key(seed)) or {
+				return DiagOut{
+					line: '0x27 ${plan.unlock + 1:02X} (reference key): ${err}'
+					err:  true
+				}, answered(err)
+			}
+		}
+		h.security = plan.unlock
+		mut st := app.diag_status_copy()
+		st.security = plan.unlock
+		app.diag_set_status(gen, st)
+		app.diag_say(req, '${h.timing().prefix()} 0x27 ${plan.unlock + 1:02X}: level ${plan.unlock} unlocked (reference key)')
+	}
+	h.cli.write_data_by_identifier(req.did, req.data) or {
+		return DiagOut{
+			line: '0x2E ${name} ← ${hex(req.data)}: ${err}'
+			err:  true
+		}, answered(err)
+	}
+	app.diag_say(req, '${h.timing().prefix()} 0x2E ${name} ← ${hex(req.data)} (${did_shown(req.desc,
+		req.did, req.data)}): written')
+	for id in req.follow {
+		out, negative := app.did_read(mut h, req, id)
+		if out.err && !negative {
+			return out, false // the connection failed under the read-back
+		}
+		app.diag_say(req, '${h.timing().prefix()} ${out.line}')
+	}
+	return app.did_read(mut h, req, req.did)
+}
+
+// did_publish records one DID's read for the tab: only for the project it was asked under, and a
+// read of another target starts that target's view.
+fn (mut app App) did_publish(req DiagReq, id u16, v DidVal) {
+	app.mu.lock()
+	if diaghold.view_writable(req.epoch, app.diag_epoch) {
+		// a NEW map each time, never written in place: a frame's copy of the view shares the old
+		// one (V maps are references) and reads it outside the lock
+		mut vals := if app.did_view.key == req.key {
+			app.did_view.vals.clone()
+		} else {
+			map[u16]DidVal{}
+		}
+		vals[id] = v
+		app.did_view = DidView{
+			key:  req.key
+			vals: vals
+		}
+	}
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// did_label is a DID as a line names it: its id and the description's (or ISO's) name.
+fn did_label(d sysview.EcuDesc, id u16) string {
+	name := d.did_name(id)
+	return if name != '' { '${id:04X} ${name}' } else { '${id:04X}' }
+}
+
+// did_shown is a value as the tab and the log show it: through the description's layout where
+// it has one, as text where every byte is printable, else its bytes.
+fn did_shown(d sysview.EcuDesc, id u16, data []u8) string {
+	v := d.decode_did(id, data)
+	if v != '' {
+		return v
+	}
+	if data.len > 0 && data.all(it >= 0x20 && it < 0x7F) {
+		return '"${data.bytestr()}"'
+	}
+	return hex(data)
+}
+
+// ---- the tab ----
+
+// did_press sends a DIDs-tab press for the selected target, the description's copy with it for
+// naming and decoding the lines.
+fn (mut app App) did_press(r DiagReq, desc DiagDesc) {
+	app.diag_send(DiagReq{
+		...r
+		desc: if desc.ok { desc.desc } else { sysview.EcuDesc{} }
+	})
+}
+
+// did_rows: what the tab lists — the description's DIDs in its order, then the ISO identification
+// DIDs it does not declare (every one without a description).
+fn did_rows(desc DiagDesc) ([]sysview.DidDesc, []sysview.DidDesc) {
+	d := if desc.ok { desc.desc } else { sysview.EcuDesc{} }
+	return d.dids, d.iso_dids()
+}
+
+fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
+	desc := app.diag_desc(t)
+	app.mu.lock()
+	view := if app.did_view.key == t.key { app.did_view } else { DidView{} }
+	app.mu.unlock()
+	own, iso := did_rows(desc)
+	if desc.ok {
+		vgui.text_dim_wrapped('${desc.node}: ${own.len} DID(s) and ${desc.desc.params.len} parameter(s) in its ecu.toml, plus the ISO identification DIDs')
+	} else {
+		vgui.text_dim_wrapped('no description: ${desc.why}; the ISO identification DIDs and any DID by number')
+	}
+	if vgui.button('Read all') && !busy {
+		mut ids := own.map(it.id)
+		ids << iso.map(it.id)
+		app.did_press(DiagReq{
+			kind: 'did_read_all'
+			dids: ids
+		}, desc)
+	}
+	vgui.set_item_tooltip('0x22 for every DID listed, in turn, on the held connection. One line in the log for the batch; each value and its time is in the table.')
+	vgui.same_line()
+	vgui.set_next_item_width(70 * app.prefs.ui_scale)
+	vgui.input_text('##didfree', mut app.did_ui.free_buf)
+	vgui.same_line()
+	if vgui.button('Read DID') && !busy {
+		app.did_press(DiagReq{
+			kind: 'did_read'
+			did:  u16(('0x' + vgui.buf_str(app.did_ui.free_buf)).u64())
+		}, desc)
+	}
+	vgui.set_item_tooltip('0x22 for any identifier, in hex.')
+	if st.conn == .held && st.security != 0 {
+		vgui.same_line()
+		vgui.text_colored(230, 180, 60, 'level ${st.security} unlocked')
+	}
+	if busy {
+		vgui.same_line()
+		vgui.text_dim('busy…')
+	}
+	h := vgui.content_avail_h()
+	vgui.child_wh('##didarea', 0, h * 0.7)
+	// the parameters first: a name and a value is what coding is about; their DIDs are below too
+	if desc.ok && desc.desc.params.len > 0 {
+		vgui.separator_text('parameters')
+		draw_param_table(mut app, view, desc, busy, st)
+	}
+	if own.len > 0 {
+		vgui.separator_text('${desc.node}')
+		draw_did_table(mut app, '##didown', own, view, desc, busy, st)
+	}
+	// a DID read by number that neither list has
+	mut other := []sysview.DidDesc{}
+	for id, _ in view.vals {
+		if !own.any(it.id == id) && !iso.any(it.id == id) {
+			other << sysview.DidDesc{
+				id: id
+			}
+		}
+	}
+	other.sort(a.id < b.id)
+	if other.len > 0 {
+		vgui.separator_text('read by number')
+		draw_did_table(mut app, '##didother', other, view, desc, busy, st)
+	}
+	// the ISO identification DIDs: the ones this ECU refused folded into one line, so what it
+	// does serve is not lost among the thirty the standard names
+	refused := iso.filter(fn [view] (x sysview.DidDesc) bool {
+		v := view.vals[x.id] or { return false }
+		return !v.ok
+	})
+	served := iso.filter(fn [refused] (x sysview.DidDesc) bool {
+		return !refused.any(it.id == x.id)
+	})
+	if vgui.tree_node_open('ISO identification (${iso.len})##diso') {
+		if served.len > 0 {
+			draw_did_table(mut app, '##didiso', served, view, desc, busy, st)
+		}
+		// grouped by the answer, in the order first met
+		mut whys := []string{}
+		mut by := map[string][]string{}
+		for x in refused {
+			why := did_err_short((view.vals[x.id] or { DidVal{} }).err)
+			if why !in by {
+				whys << why
+			}
+			by[why] << '${x.id:04X}'
+		}
+		for why in whys {
+			vgui.text_dim_wrapped('refused, ${why} (${by[why].len}): ${by[why].join(' ')}')
+		}
+		vgui.tree_pop()
+	}
+	vgui.child_end()
+	draw_did_editor(mut app, t, view, desc, busy, st)
+	vgui.separator_text('responses (newest last)')
+	draw_copyable_log(mut app, '##diag', app.diag_cache)
+}
+
+fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, desc DiagDesc, busy bool, st DiagHoldStatus) {
+	sc := app.prefs.ui_scale
+	if !vgui.table_begin_flat(id, 4) {
+		return
+	}
+	vgui.table_setup_col('DID', 44 * sc)
+	vgui.table_setup_col('name', 100 * sc) // hover for the gates; the value takes the rest
+	vgui.table_setup_col('value', 0)
+	vgui.table_setup_col('', 62 * sc)
+	vgui.table_headers()
+	d := if desc.ok { desc.desc } else { sysview.EcuDesc{} }
+	for x in rows {
+		vgui.table_row()
+		vgui.table_cell('${x.id:04X}')
+		name := if x.name != '' { x.name } else { d.did_name(x.id) }
+		vgui.table_cell(if name != '' { name } else { '—' })
+		vgui.set_item_tooltip(did_gate_words(x))
+		// the value as the layout reads it, its bytes beneath
+		vgui.table_next_col()
+		if v := view.vals[x.id] {
+			age := (time.ticks() - v.at_ms) / 1000
+			when := 'read ${age} s ago, ${v.t.prefix()}'
+			if v.ok {
+				vgui.text(did_shown(d, x.id, v.data))
+				vgui.set_item_tooltip(when)
+				vgui.text_dim(if v.data.len > 0 { hex(v.data) } else { '(empty)' })
+			} else {
+				vgui.text_colored(235, 90, 80, did_err_short(v.err))
+				vgui.set_item_tooltip('${v.err}\n${when}')
+			}
+		} else {
+			vgui.text_dim('—')
+		}
+		vgui.table_next_col()
+		if vgui.small_button('Read##r${x.id:04X}${id}') && !busy {
+			app.did_press(DiagReq{
+				kind: 'did_read'
+				did:  x.id
+			}, desc)
+		}
+		if x.write_gate.declared { // beneath Read: the row is two lines high anyway
+			if vgui.small_button('Write…##w${x.id:04X}${id}') {
+				app.did_edit(x, view, desc)
+			}
+		}
+	}
+	vgui.table_end()
+}
+
+// did_err_short is a failed read as a table cell: the NRC's name, else the error.
+fn did_err_short(e string) string {
+	if e.contains('NRC 0x') {
+		return 'NRC 0x' + e.all_after('NRC 0x').all_before(' ').all_before(';')
+	}
+	return if e.len > 40 { e[..40] + '…' } else { e }
+}
+
+// did_gate_words is a DID's gates, as the name cell's tooltip says them.
+fn did_gate_words(x sysview.DidDesc) string {
+	mut lines := []string{}
+	if x.size >= 0 {
+		lines << '${x.size} byte(s), ${x.kind}'
+	}
+	lines << 'read: ${if x.read != '' { x.read } else { 'open' }}'
+	lines << 'write: ${if x.write != '' { x.write } else { 'not writable' }}'
+	return lines.join('\n')
+}
+
+// draw_param_table lists the node's parameters by name: each field's value as its coding DID last
+// read it, its default, and — when the ECU exposes a parameter status DID — whether it is coded.
+fn draw_param_table(mut app App, view DidView, desc DiagDesc, busy bool, st DiagHoldStatus) {
+	sc := app.prefs.ui_scale
+	d := desc.desc
+	status_did := d.param_status_did()
+	cols := if status_did != none { 5 } else { 4 }
+	if !vgui.table_begin_flat('##params', cols) {
+		return
+	}
+	vgui.table_setup_col('parameter', 0)
+	vgui.table_setup_col('value', 0)
+	vgui.table_setup_col('default', 0)
+	if status_did != none {
+		vgui.table_setup_col('status', 0)
+	}
+	vgui.table_setup_col('', 62 * sc)
+	vgui.table_headers()
+	for i, p in d.params {
+		vgui.table_row()
+		vgui.table_cell(p.name)
+		pd := d.param_did(p.name)
+		coded_by := if x := pd { 'coded through DID ${x.id:04X}' } else { 'no DID codes it' }
+		vgui.set_item_tooltip('${coded_by}\napplies: ${p.apply}' +
+			p.ranges.keys().map('\n${it}: ${p.ranges[it].min}..${p.ranges[it].max}').join(''))
+		// its value, from the coding DID
+		mut shown := '—'
+		if x := pd {
+			if v := view.vals[x.id] {
+				shown = if v.ok { did_shown(d, x.id, v.data) } else { did_err_short(v.err) }
+			}
+		}
+		vgui.table_cell(shown)
+		defaults := p.fields.filter(it.name in p.defaults).map(if p.fields.len == 1 {
+			'${p.defaults[it.name]}'
+		} else {
+			'${it.name}=${p.defaults[it.name]}'
+		})
+		vgui.table_cell_dim(if defaults.len > 0 { defaults.join(' ') } else { '—' })
+		if sd := status_did {
+			mut word := '—'
+			if v := view.vals[sd.id] {
+				if v.ok && i < v.data.len {
+					word = match v.data[i] {
+						0 { 'default' }
+						1 { 'coded' }
+						2 { 'reverted' }
+						else { '0x${v.data[i]:02X}' }
+					}
+				}
+			}
+			if word == 'coded' {
+				vgui.table_next_col()
+				vgui.text_colored(230, 180, 60, word)
+			} else {
+				vgui.table_cell(word)
+			}
+			vgui.set_item_tooltip('from DID ${sd.id:04X}: default = uncoded, coded = written by a tester, reverted = a stored value this firmware refused')
+		}
+		if x := pd {
+			vgui.table_next_col()
+			if vgui.small_button('Read##pr${x.id:04X}') && !busy {
+				mut ids := [x.id]
+				if sd := status_did {
+					ids << sd.id
+				}
+				app.did_press(DiagReq{
+					kind: 'did_read_all'
+					dids: ids
+				}, desc)
+			}
+			if x.write_gate.declared {
+				if vgui.small_button('Code…##pw${x.id:04X}') {
+					app.did_edit(x, view, desc)
+				}
+			}
+		} else {
+			vgui.table_cell_dim('no DID')
+		}
+	}
+	vgui.table_end()
+}
+
+// did_edit opens the write editor on `x`, filled with its last value where it was read, else the
+// parameter's default, else empty.
+fn (mut app App) did_edit(x sysview.DidDesc, view DidView, desc DiagDesc) {
+	parts := x.parts()
+	mut texts := []string{len: parts.len}
+	if v := view.vals[x.id] {
+		if v.ok {
+			texts = x.texts(v.data) or { texts }
+		}
+	} else if x.kind == .param && desc.ok {
+		if p := desc.desc.params.filter(it.name == x.name)[0] {
+			for i, f in x.fields {
+				if dv := p.defaults[f.name] {
+					texts[i] = '${dv}'
+				}
+			}
+		}
+	}
+	app.did_ui.edit_id = x.id
+	app.did_ui.edit_key = app.diag_sel_key
+	app.did_ui.edit_bufs = texts.map(mkbuf(it, 128))
+	app.did_ui.edit_open = true
+}
+
+// did_write_req is the press the editor's Write sends — the bytes and the gate, the rest decided by
+// the holder (diaghold.write_plan) — or why there is none.
+fn did_write_req(x sysview.DidDesc, texts []string, desc DiagDesc) !DiagReq {
+	data := x.encode(texts)!
+	mut sessions := []u8{}
+	for s in x.write_gate.sessions {
+		sessions << sysview.session_id(s) or {
+			return error('written in the "${s}" session, which the panel does not know')
+		}
+	}
+	mut follow := []u16{}
+	if x.kind == .param && desc.ok {
+		if sd := desc.desc.param_status_did() {
+			follow << sd.id
+		}
+	}
+	return DiagReq{
+		kind:     'did_write'
+		did:      x.id
+		data:     data
+		sessions: sessions
+		level:    u8(x.write_gate.level)
+		ref_key:  desc.ok && desc.desc.security_key == 'reference'
+		follow:   follow
+	}
+}
+
+// draw_did_editor is the write dialog: one field per part with what it accepts, the bytes they
+// encode to (or why they do not), what the write will do first, and Write behind it — the
+// confirmation is this dialog, which states all of that before anything is sent.
+fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy bool, st DiagHoldStatus) {
+	title := 'Write DID'
+	if app.did_ui.edit_open {
+		vgui.open_popup(title)
+		app.did_ui.edit_open = false
+	}
+	if !vgui.begin_popup_modal(title) {
+		return
+	}
+	d := if desc.ok { desc.desc } else { sysview.EcuDesc{} }
+	x := d.did(app.did_ui.edit_id) or {
+		vgui.text_dim('DID ${app.did_ui.edit_id:04X} is not in the description any more')
+		if vgui.button('Close') {
+			vgui.close_current_popup()
+		}
+		vgui.end_popup()
+		return
+	}
+	if app.did_ui.edit_key != t.key {
+		// the target moved under the dialog: never written to the one selected now
+		vgui.text_dim('the target changed — nothing is written')
+		if vgui.button('Close') {
+			vgui.close_current_popup()
+		}
+		vgui.end_popup()
+		return
+	}
+	vgui.text('${t.label}')
+	vgui.text('DID ${x.id:04X} ${x.name}')
+	if v := view.vals[x.id] {
+		if v.ok {
+			vgui.text_dim('now: ${did_shown(d, x.id, v.data)}   (${hex(v.data)})')
+		}
+	}
+	parts := x.parts()
+	if app.did_ui.edit_bufs.len != parts.len {
+		app.did_ui.edit_bufs = parts.map(mkbuf('', 128))
+	}
+	for i, p in parts {
+		vgui.set_next_item_width(220 * app.prefs.ui_scale)
+		vgui.input_text('${p.label}##e${i}', mut app.did_ui.edit_bufs[i])
+		vgui.same_line()
+		vgui.text_dim(p.hint)
+	}
+	texts := app.did_ui.edit_bufs.map(vgui.buf_str(it))
+	mut ready := false
+	mut req := DiagReq{}
+	if r := did_write_req(x, texts, desc) {
+		req = r
+		vgui.text('bytes: ${hex(r.data)}')
+		plan := diaghold.write_plan(if st.conn == .held { st.session } else { u8(0) },
+			r.sessions, r.level, if st.conn == .held { st.security } else { u8(0) }, r.ref_key)
+		if plan.refusal != '' {
+			vgui.text_colored(235, 90, 80, 'cannot write: ${plan.refusal}')
+		} else {
+			vgui.text_dim_wrapped('will ${plan.words()}')
+			ready = true
+		}
+	} else {
+		vgui.text_colored(235, 90, 80, err.msg())
+	}
+	if app.did_ui.auto_write && !ready && !busy {
+		// the autopress hook's write, refused here: said, so its wait ends
+		app.did_ui.auto_write = false
+		app.diag_push('0x2E ${x.id:04X}: not written (autopress) — see the dialog')
+		vgui.close_current_popup()
+	}
+	if busy {
+		vgui.text_dim('waiting for the request in flight…')
+	} else if ready && (vgui.button('Write') || app.did_ui.auto_write) {
+		app.did_ui.auto_write = false
+		app.did_press(req, desc)
+		vgui.close_current_popup()
+	}
+	vgui.same_line()
+	if vgui.button('Cancel') {
+		app.did_ui.auto_write = false
+		vgui.close_current_popup()
+	}
+	vgui.end_popup()
+}

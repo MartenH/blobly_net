@@ -109,6 +109,10 @@ on     = "lost"
 [fault_memory]
 cycle = "power"
 
+[uds]
+s3_ms        = 5000
+security_key = "reference"
+
 [isotp]
 bus           = "can0"
 rx_id         = 0x7C0
@@ -214,6 +218,32 @@ fn test_zone_a_description() {
 	assert d.did_name(0x4242) == ''
 	assert (d.did(0x0110) or { panic('') }).write == 'extended, level 1'
 	assert (d.did(0x0110) or { panic('') }).read == ''
+	// the gates as data, for a tester to establish them
+	lim := d.did(0x0110) or { panic('') }
+	assert lim.write_gate == Gate{
+		declared: true
+		sessions: ['extended']
+		level:    1
+	}
+	assert !lim.read_gate.declared
+	assert lim.ranges['deg'] or { panic('') } == Range{0, 360}
+	assert !(d.did(0x0111) or { panic('') }).write_gate.declared // the status is read-only
+	assert d.security_key == 'reference'
+	assert d.params[0].defaults == {
+		'deg': i64(360)
+	}
+	assert session_id('extended') or { 0 } == 0x03
+	assert session_id('nonsense') == none
+	// the coding DID and the status DID of a parameter
+	assert (d.param_did('SteerLimit') or { panic('') }).id == 0x0110
+	assert d.param_did('Nope') == none
+	assert (d.param_status_did() or { panic('') }).id == 0x0111
+	// the ISO identification DIDs beside the node's own: not the ones it declares
+	iso := d.iso_dids()
+	assert iso.len > 20
+	assert !iso.any(it.id in [u16(0xF190), 0xF189])
+	assert iso.any(it.id == 0xF18C && it.name == 'ECU serial number' && it.size == -1)
+	assert EcuDesc{}.iso_dids().len == iso.len + 2 // no description: every one
 
 	// values through the description
 	assert d.decode_did(0xF1A0, [u8(0), 0, 0, 100]) == '100'
