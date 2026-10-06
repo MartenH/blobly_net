@@ -17,6 +17,7 @@ found=$(find cmd modules -name '*.v' ! -name '*_test.v' | sort | xargs awk '
 	/^fn / { recv = ""; next }
 	recv != "" {
 		line = $0
+		sub(/[ \t]*\/\/.*$/, "", line) # a trailing comment must not hide the binding
 		if (line ~ ("(:=|=) *&" recv "[ \t]*$")) {
 			printf "%s:%d: binds &%s, a copy of the mut receiver\n", FILENAME, FNR, recv
 		}
