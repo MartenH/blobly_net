@@ -11,6 +11,7 @@
 module main
 
 import os
+import net
 import time
 import candb
 import project
@@ -20,6 +21,7 @@ import uds
 import sim
 import doip
 import script
+import testports
 import sync.stdatomic
 
 // loops_done counts the bus-holding loops that have exited, so the runner's bounded wait at the
@@ -37,6 +39,7 @@ mut:
 fn main() {
 	mut proj_path := 'projects/sim-demo.blobnet'
 	mut explicit := '' // --project as given, distinct from the default above
+	mut project_ports := false // --project-ports: host DoIP entities on the ports the project states
 	mut scripts := []string{}
 	mut i := 1
 	for i < os.args.len {
@@ -49,6 +52,9 @@ fn main() {
 					proj_path = explicit
 				}
 			}
+			'--project-ports' {
+				project_ports = true
+			}
 			else {
 				scripts << a
 			}
@@ -57,7 +63,7 @@ fn main() {
 		i++
 	}
 	if scripts.len == 0 {
-		eprintln('usage: run [--project <file.blobnet>] <script.lua> [more.lua ...]')
+		eprintln('usage: run [--project <file.blobnet>] [--project-ports] <script.lua> [more.lua ...]')
 		exit(2)
 	}
 
@@ -80,13 +86,29 @@ fn main() {
 
 	// The pre-v4 `bus:` migration says what it converted; stderr here, as the database reader's
 	// notes are (#97).
-	proj := project.load(proj_path) or {
+	mut proj := project.load(proj_path) or {
 		eprintln('cannot load project ${proj_path}: ${err}')
 		exit(2)
 	}
 	println('project: ${proj.name}  (${proj_path})')
 	for n in proj.notes {
 		eprintln('${proj_path}: ${n}')
+	}
+	// The run's simulated loopback DoIP entities move off the project's ports (13400 in every
+	// demo) onto ports this process can bind, and every row dialing them moves with them, so two
+	// runs on one machine do not collide (#411). Held until each entity binds, below.
+	mut probes := map[string]&net.TcpListener{}
+	if !project_ports {
+		moved, held := choose_doip_ports(project.doip_hosting(proj.channels)) or {
+			eprintln('cannot host the DoIP entities: ${err}')
+			exit(1)
+		}
+		probes = held.clone()
+		chs, notes := project.with_doip_ports(proj.channels, moved)
+		proj.channels = chs
+		for n in notes {
+			println(n)
+		}
 	}
 
 	// Build per-channel DBC catalogs + bring the simulation up on every enabled
@@ -199,6 +221,7 @@ fn main() {
 				eprintln('${ch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${ch.ecu_addr:04X})')
 			}
 			mut srv := ent.server
+			release_probe(mut probes, host, port)
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect
@@ -281,6 +304,9 @@ fn main() {
 		} else {
 			println('channel ${ch.name} (${ch.iface}): monitor only')
 		}
+	}
+	for _, mut p in probes {
+		p.close() or {}
 	}
 	// Cyclic generators (`senders:` with trigger: cyclic), sent while the run lasts as the GUI
 	// sends them during a measurement, by the GUI's rules: every row's generators (a disabled
@@ -549,6 +575,54 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	hst.entity = s
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
+}
+
+// choose_doip_ports picks, for every port the simulated loopback entities bind, the first
+// candidate where all of that port's hosts bind TCP, and returns the move plus the listeners
+// holding them. TCP verifies (testports): a candidate another run holds refuses the bind. The
+// entity binds UDP on the same number and announces to it, so that port is settled too.
+fn choose_doip_ports(hosting []project.DoipHosting) !(map[int]int, map[string]&net.TcpListener) {
+	mut moved := map[int]int{}
+	mut held := map[string]&net.TcpListener{}
+	for hs in hosting {
+		for cand in testports.doip_entities.candidates() {
+			if cand in moved.values() {
+				continue
+			}
+			mut got := map[string]&net.TcpListener{}
+			for h in hs.hosts {
+				key := transport.udp_bind_addr(h, cand)
+				l := net.listen_tcp(doip.addr_family(h), key) or { break }
+				got[key] = l
+			}
+			if got.len == hs.hosts.len {
+				moved[hs.port] = cand
+				for k, _ in got {
+					held[k] = got[k] or { continue }
+				}
+				break
+			}
+			for _, mut l in got {
+				l.close() or {}
+			}
+		}
+		if hs.port !in moved {
+			for _, mut l in held {
+				l.close() or {}
+			}
+			return error('no free port in ${testports.doip_entities.base}..${testports.doip_entities.last()} for ${hs.hosts.join(', ')} (from ${hs.port}); --project-ports keeps the project\'s')
+		}
+	}
+	return moved, held
+}
+
+// release_probe closes the listener holding host:port, if any, so the entity can bind it.
+fn release_probe(mut probes map[string]&net.TcpListener, host string, port int) {
+	key := transport.udp_bind_addr(host, port)
+	if mut l := probes[key] {
+		l.close() or {}
+		probes.delete(key)
+	}
 }
 
 // Announcer is one bound entity waiting to announce, held until the script environment exists.

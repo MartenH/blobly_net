@@ -31,7 +31,9 @@ green beside something that is not ours.
 
 The whole path runs from a project, headless:
 `scripts/runtests.sh --project projects/doip-demo.blobnet tests/diag_doip.lua` starts the
-entity described by the project and tests it over real localhost TCP/UDP. `cmd/doip_smoke`
+entity described by the project and tests it over real localhost TCP/UDP — on a free port
+rather than the project's, so two runs on one machine do not collide (`--project-ports` keeps
+the project's; [scripting.md](scripting.md#usage)). `cmd/doip_smoke`
 does the same without a project. Either way the point of the design holds — the same
 `uds.Client` rides a `DoipClient` unchanged, because only the carrier swapped.
 

@@ -25,7 +25,8 @@ You'll see per-test results and a summary:
 ```
 project: Simulation demo — CAN1 + CAN2  (projects/sim-demo.blobnet)
 channel CAN1 (inproc:CAN1): simulating 2 node(s) + 2 UDS target(s)
-channel DoIP1 (doip:127.0.0.1:13400): DoIP entity, logical address 0x1000
+DoIP1: DoIP 127.0.0.1:13400 -> 127.0.0.1:30178 for this run
+channel DoIP1 (doip:127.0.0.1:30178): DoIP entity, logical address 0x1000
 ...
 === tests/diag_basic.lua ===
   ok   default diagnostic session starts
@@ -46,7 +47,7 @@ The runner **exits non-zero if any test fails**, so it drops straight into CI.
 ### Usage
 
 ```sh
-scripts/runtests.sh [--project <file.blobnet>] <script.lua> [more.lua ...]
+scripts/runtests.sh [--project <file.blobnet>] [--project-ports] <script.lua> [more.lua ...]
 ```
 
 - `--project <file.blobnet>` (or `-p`) — the project that defines the bus setup.
@@ -55,6 +56,15 @@ scripts/runtests.sh [--project <file.blobnet>] <script.lua> [more.lua ...]
   `-- @project ../projects/doip-demo.blobnet`, resolved relative to the script (an absolute path is taken as written). The declaration
   wins: a `--project` that contradicts it, or two scripts in one invocation declaring different
   projects, is refused rather than run (one run brings up one project).
+- **Simulated DoIP entities move to a free port for the run** (#411). Every entity the project
+  hosts on a loopback address leaves the project's port (13400 in the demos) for the first port
+  in 30000..31999 this run can bind, and every DoIP channel dialing that entity moves with it; the
+  runner prints each move (`DoIP1: DoIP 127.0.0.1:13400 -> 127.0.0.1:30178 for this run`). So two
+  runs on one machine do not collide. A channel dialing an entity this run does not host — a real
+  ECU, or a loopback one something else serves — keeps its port, and so does an entity on a NIC
+  address. `doip.listen` without `from` still listens on 13400, which no moved entity announces
+  to: name the channel (`{ from = "DoIP1" }`). `--project-ports` keeps the project's ports, for
+  a tool outside the run that dials the entity where the project says it is.
 - One or more `.lua` scripts, run in order. With none named, `scripts/runtests.sh` runs every
   file in `tests/`, one invocation per file — which is what CI does.
 

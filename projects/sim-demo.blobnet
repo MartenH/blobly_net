@@ -11,8 +11,8 @@
 # SAME identity as SUT on CAN1, which is the point of having it here: one ECU,
 # two carriers, and a script that reads the VIN over either. See tests/mixed_carriers.lua.
 #
-# Press Start and the entity comes up on localhost TCP/UDP 13400 — in the GUI and
-# headless alike — and the Diagnostics panel lists it as a target. The CAN buses
+# Press Start and the entity comes up on localhost TCP/UDP 13400 — the headless runner moves
+# it to a free port for its run — and the Diagnostics panel lists it as a target. The CAN buses
 # stay driver-free; the DoIP endpoint is a real socket, so the channel goes green
 # only once it is actually listening.
 project:
