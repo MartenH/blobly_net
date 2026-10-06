@@ -4,13 +4,20 @@
 #   scripts/codex_local_review.sh            # gpt-6.1-sol, high effort, against origin/main
 #   scripts/codex_local_review.sh --astra    # gpt-6-astra, xhigh (slower; for risky changes)
 #   scripts/codex_local_review.sh --model M --effort E --base REF --dry-run
+#   scripts/codex_local_review.sh --check-codex   # which codex it would run, and its version
 #
 # Reviews merge-base(REF, HEAD)..HEAD and refuses a dirty tree, because the review runs tests
 # against the working tree and they must be the commits under review. Asks for EVERY defect,
 # hands the review the pinned V, allows sockets in its sandbox, prints the findings, and keeps
 # one transcript (and its findings) per run in the main checkout's .claude/reviews/.
 #
-# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI; 4 the review left the tree dirty or HEAD moved;
+# The codex CLI: $CODEX if set (it must run, or the script stops), else the first that runs of
+# `codex` on PATH and the copies the VS Code extension bundles, newest first. "Runs" = executable
+# and answering --version with something within 10 s: an interrupted extension update once left a
+# 0-byte copy, which the old newest-first pick ran — it exited 0 with nothing written, and the
+# review failed only as "codex wrote no final message", naming no cause.
+#
+# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs; 4 the review left the tree dirty or HEAD moved;
 # otherwise codex's own failure, with the transcript's tail instead of findings.
 set -eu
 
@@ -25,6 +32,7 @@ model=gpt-6.1-sol
 effort=high
 base=origin/main
 dry_run=0
+check_codex=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--model | --effort | --base)
@@ -41,22 +49,48 @@ while [ $# -gt 0 ]; do
 		;;
 	--astra) model=gpt-6-astra; effort=xhigh; shift ;;
 	--dry-run) dry_run=1; shift ;;
+	--check-codex) check_codex=1; shift ;;
 	-h | --help) usage; exit 0 ;;
 	*) echo "codex-local-review: unknown argument: $1" >&2; usage >&2; exit 2 ;;
 	esac
 done
 
-# The codex CLI: $CODEX, then PATH, then the newest copy the VS Code extension bundles.
-codex=${CODEX:-}
-if [ -z "$codex" ]; then
-	codex=$(command -v codex || true)
+# runs <path>: prints its --version (non-empty) when the binary runs; fails otherwise
+runs() {
+	local v
+	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
+	v=$(timeout 10 "$1" --version </dev/null 2>/dev/null) || return 1
+	[ -n "$v" ] || return 1
+	printf '%s\n' "$v" | head -1
+}
+
+codex=
+codex_version=
+if [ -n "${CODEX:-}" ]; then
+	if ! codex_version=$(runs "$CODEX"); then
+		echo "codex-local-review: \$CODEX=$CODEX does not run (missing, empty or broken)" >&2
+		exit 3
+	fi
+	codex=$CODEX
+else
+	while IFS= read -r candidate; do
+		if codex_version=$(runs "$candidate"); then
+			codex=$candidate
+			break
+		fi
+		echo "codex-local-review: skipping $candidate: it does not run (empty or broken)" >&2
+	done < <(
+		command -v codex || true
+		find "$HOME"/.vscode-server/extensions -path '*/openai.chatgpt-*/bin/*/codex' -type f 2>/dev/null | sort -rV || true
+	)
+	if [ -z "$codex" ]; then
+		echo "codex-local-review: no codex CLI that runs (reload the Codex extension, or set CODEX=/path/to/codex)" >&2
+		exit 3
+	fi
 fi
-if [ -z "$codex" ]; then
-	codex=$(find "$HOME"/.vscode-server/extensions -path '*/openai.chatgpt-*/bin/*/codex' -type f 2>/dev/null | sort -V | tail -1 || true)
-fi
-if [ -z "$codex" ] || [ ! -x "$codex" ]; then
-	echo "codex-local-review: no codex CLI found (set CODEX=/path/to/codex)" >&2
-	exit 3
+if [ "$check_codex" = 1 ]; then
+	printf '%s\n%s\n' "$codex" "$codex_version"
+	exit 0
 fi
 
 if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
@@ -132,7 +166,7 @@ dirty_check() {
 	exit "$rc"
 }
 trap dirty_check EXIT
-echo "codex-local-review: $model ($effort) on ${head:0:9} against $base; transcript: $out" >&2
+echo "codex-local-review: $model ($effort) on ${head:0:9} against $base, $codex_version; transcript: $out" >&2
 start=$(date +%s)
 status=0
 printf '%s\n' "$prompt" | "${cmd[@]}" > "$out" 2>&1 || status=$?

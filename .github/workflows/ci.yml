@@ -123,6 +123,11 @@ jobs:
           chmod +x scripts/codex_review_watch_test.sh
           python3 -m py_compile scripts/codex_review.py
           ./scripts/codex_review_watch_test.sh
+      # Which codex the local review runs: the first candidate that actually runs, never an empty or
+      # broken one (an interrupted extension update once left a 0-byte copy, which failed the review
+      # as "codex wrote no final message" with no cause named). Through --check-codex: no git, no net.
+      - name: codex local review binary tests (scripts/codex_local_review_test.sh)
+        run: bash scripts/codex_local_review_test.sh
 
       # End-to-end: brings the sim-demo project's simulated ECUs + native UDS
       # server up driver-free on the in-proc bus and runs the Lua test scripts.
