@@ -71,7 +71,7 @@ fn (app &App) quietest_wire(chans []Chan) (string, f64) {
 		if c.eth() {
 			continue
 		}
-		st := dests[transport.destination_key(c.iface)] or { continue }
+		st := dests[c.fold_key()] or { continue }
 		q := app.silent_ms(st)
 		if q > worst {
 			worst = q
