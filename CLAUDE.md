@@ -225,7 +225,10 @@ runs from the attempt), the detail's status the newer of the list's and the DTC'
 (`shown_status`), and a press sent under the previous project writing nothing — not the tab, not
 the log, not the P2* map (`view_writable`: every `DiagReq` carries `App.diag_epoch`, which moves at
 a project load, before the rebuild has drained the old holder; the key cannot tell two projects
-apart). A DoIP
+apart). Every line a request causes once the holder takes it — target lookup, open, reopen, let-go,
+responses — goes through `diag_push_for(req, line)`, which compares the epoch and appends under ONE
+take of `app.mu`; `diag_push` is left for what no request caused (keep-alive, idle, the holder's
+releases, a press refused before it is queued). A DoIP
 target carries its channel like a CAN one, so `node_for` can settle a shared logical address by it.
 The tab reads 0x19 02 (any status mask) plus 0x19 06 per row for the counters, a
 selected row's 0x19 04/06, clears with 0x14 FFFFFF behind a confirmation, all on the held

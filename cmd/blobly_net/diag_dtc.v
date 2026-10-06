@@ -260,7 +260,7 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 					err:  true
 				}, answered(err)
 			}
-			app.diag_say(req, '${h.timing().prefix()} 0x14 FFFFFF: every DTC cleared')
+			app.diag_push_for(req, '${h.timing().prefix()} 0x14 FFFFFF: every DTC cleared')
 			// what was read before the clear no longer describes the ECU: gone NOW, so a refresh
 			// that fails cannot leave pre-clear records on screen under its error
 			app.mu.lock()
@@ -283,7 +283,7 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 				if out.err {
 					return out, negative
 				}
-				app.diag_say(req, '${h.timing().prefix()} ${out.line} (0x85 is served outside the default session)')
+				app.diag_push_for(req, '${h.timing().prefix()} ${out.line} (0x85 is served outside the default session)')
 			}
 			sub := if req.on { u8(0x01) } else { u8(0x02) }
 			h.cli.control_dtc_setting(req.on) or {
@@ -355,13 +355,10 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	})).join(' ')
 	app.mu.lock()
 	if !diaghold.view_writable(req.epoch, app.diag_epoch) {
-		// asked under the project before this one: nothing of it is shown or said, but a
-		// connection that failed is still let go
+		// asked under the project before this one: nothing of it is shown (or said — its line
+		// goes through diag_push_for), but a connection that failed is still let go
 		app.mu.unlock()
-		return DiagOut{
-			line: failed
-			err:  failed != ''
-		}, false
+		return counter_out(batch), false
 	}
 	prev := if app.dtc_view.key == req.key && app.dtc_view.read && app.dtc_view.err == '' {
 		app.dtc_view.sig
@@ -388,23 +385,25 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	}
 	confirmed := rows.filter(it.rec.has(uds.dtc_confirmed)).len
 	auto := if req.auto { ' (auto-refresh: changed)' } else { '' }
-	app.diag_say(req, '${t02.prefix()} ${what}: ${rows.len} DTC(s), ${confirmed} confirmed${auto}')
-	if failed != '' {
-		// the connection failed under the counters: said, and let go like any failed press
-		return DiagOut{
-			line: failed
-			err:  true
-		}, false
+	app.diag_push_for(req, '${t02.prefix()} ${what}: ${rows.len} DTC(s), ${confirmed} confirmed${auto}')
+	return counter_out(batch), false
+}
+
+// counter_out is the counter batch's line: what it read, why any are missing, and the time of
+// every exchange in it — an error when the connection failed under it, so the press lets go, with
+// what the batch had read and waited before that still said.
+fn counter_out(batch diaghold.CounterBatch) DiagOut {
+	if batch.asked() == 0 && batch.failed == '' {
+		return DiagOut{}
 	}
-	if batch.asked() == 0 {
-		return DiagOut{}, false
-	}
-	note := if ext_note != '' { ' — ${ext_note}' } else { '' }
+	n := batch.asked() + if batch.failed != '' { 1 } else { 0 }
+	note := batch.summary()
 	return DiagOut{
-		line:  '0x19 06 FF ×${batch.asked()}: occurrence / aging counters${note}'
+		line:  '0x19 06 FF ×${n}: occurrence / aging counters${if note != '' { ' — ' + note } else { '' }}'
+		err:   batch.failed != ''
 		timed: true
 		t:     batch.t
-	}, false
+	}
 }
 
 // dtc_failed records a read that failed, so the tab says so and the auto-refresh waits its
@@ -452,15 +451,15 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 			n += x
 		}
 		// the 0x19 04 at its own time, and each DID it had to size by reading it, at theirs
-		app.diag_say(req, '${timing_of(st.request).prefix()} 0x19 04 ${name} FF: ${s.records.len} snapshot record(s), ${n} DID(s)')
+		app.diag_push_for(req, '${timing_of(st.request).prefix()} 0x19 04 ${name} FF: ${s.records.len} snapshot record(s), ${n} DID(s)')
 		for pr in st.probes {
-			app.diag_say(req, '${timing_of(pr.timing).prefix()} 0x22 ${pr.did:04X}: sized a snapshot DID the description does not')
+			app.diag_push_for(req, '${timing_of(pr.timing).prefix()} 0x22 ${pr.did:04X}: sized a snapshot DID the description does not')
 		}
 	} else {
 		// said and shown; the extended data is still asked for, and a connection that has gone
 		// fails there and is let go as any failed press is
 		snap_err = err.msg()
-		app.diag_say(req, '${h.timing().prefix()} 0x19 04 ${name} FF: ${err}')
+		app.diag_push_for(req, '${h.timing().prefix()} 0x19 04 ${name} FF: ${err}')
 	}
 	ext := h.cli.extended(req.code, 0xFF) or {
 		app.dtc_set_detail(req, DtcDetail{

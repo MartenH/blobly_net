@@ -266,7 +266,7 @@ fn diag_holder(app &App, gen u64, q chan DiagReq) {
 	a.mu.unlock()
 	mut req := DiagReq{}
 	for q.try_pop(mut req) == .success {
-		a.diag_push('${req.kind}: not sent — the measurement stopped')
+		a.diag_push_for(req, '${req.kind}: not sent — the measurement stopped')
 		a.diag_done()
 	}
 }
@@ -312,9 +312,19 @@ fn (mut app App) diag_status_copy() DiagHoldStatus {
 	return s
 }
 
+// diag_let_go lets the connection go for the holder's own reasons (a release, the keep-alive, the
+// idle service) and says so; a request's let-go says it through diag_push_for(req, diag_drop(…)).
 fn (mut app App) diag_let_go(gen u64, mut h HeldConn, conn diaghold.Conn, why string) {
+	line := app.diag_drop(gen, mut h, conn, why)
+	if line != '' {
+		app.diag_push(line)
+	}
+}
+
+// diag_drop closes the connection and updates the strip; the line to say about it, '' for none.
+fn (mut app App) diag_drop(gen u64, mut h HeldConn, conn diaghold.Conn, why string) string {
 	if !h.open {
-		return
+		return ''
 	}
 	if h.target.carrier.doip {
 		h.ch.close()
@@ -326,9 +336,7 @@ fn (mut app App) diag_let_go(gen u64, mut h HeldConn, conn diaghold.Conn, why st
 	s.conn = conn
 	s.why = why
 	app.diag_set_status(gen, s)
-	if conn == .closed {
-		app.diag_push('closed ${h.where}: ${why}')
-	}
+	return if conn == .closed { 'closed ${h.where}: ${why}' } else { '' }
 }
 
 // diag_attach opens a CAN target's ISO-TP channel on a tap for one exchange (DoIP: nothing to do
@@ -442,26 +450,26 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 	}
 	// a press taken just as Stop lands is not sent: the entity may be going away under it
 	if !app.run_live(gen) {
-		app.diag_push('${req.kind}: not sent — the measurement stopped')
+		app.diag_push_for(req, '${req.kind}: not sent — the measurement stopped')
 		return
 	}
 	app.mu.lock()
 	refused := diaghold.press_refusal(true, false, app.diag_tools)
 	app.mu.unlock()
 	if refused != '' {
-		app.diag_push('${req.kind}: ${refused}')
+		app.diag_push_for(req, '${req.kind}: ${refused}')
 		return
 	}
 	t := app.diag_target(req.key) or {
-		app.diag_push('target "${req.key}" is no longer available')
+		app.diag_push_for(req, 'target "${req.key}" is no longer available')
 		return
 	}
 	if h.open && h.target.key != t.key {
-		app.diag_let_go(gen, mut h, .closed, diaghold.Release.deselected.words())
+		app.diag_push_for(req, app.diag_drop(gen, mut h, .closed, diaghold.Release.deselected.words()))
 	}
 	held_before := h.open
 	if !h.open {
-		if !app.diag_connect(gen, mut h, t) {
+		if !app.diag_connect(gen, mut h, t, req) {
 			return
 		}
 	}
@@ -473,20 +481,20 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 		&& diaghold.retry_on_reopen(t.carrier.doip, held_before, h.press_sent, negative) {
 		// the entity had closed the idle connection: the request never went out, so it is asked
 		// once more on a fresh one
-		app.diag_push('[not sent] ${out.line} — reopening')
-		app.diag_let_go(gen, mut h, .closed, 'found closed before the request went out')
-		if !app.diag_connect(gen, mut h, t) {
+		app.diag_push_for(req, '[not sent] ${out.line} — reopening')
+		app.diag_push_for(req, app.diag_drop(gen, mut h, .closed, 'found closed before the request went out'))
+		if !app.diag_connect(gen, mut h, t, req) {
 			return
 		}
 		out, negative = app.diag_request(gen, mut h, req)
 	}
 	timing := if out.timed { out.t } else { h.timing() }
 	if out.line != '' { // a multi-request press said its earlier lines itself
-		app.diag_say(req, '${timing.prefix()} ${out.line}')
+		app.diag_push_for(req, '${timing.prefix()} ${out.line}')
 	}
 	// a press its token cancelled is let go by the holder's next look, with the command's reason
 	if out.err && !negative && !h.stop() {
-		app.diag_let_go(gen, mut h, .failed, out.line)
+		app.diag_push_for(req, app.diag_drop(gen, mut h, .failed, out.line))
 	}
 	// what this target announced, kept for a later connection BEFORE this press is done: the next
 	// may start the moment diag_busy clears — and not into a project loaded meanwhile
@@ -497,19 +505,9 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 	app.mu.unlock()
 }
 
-// diag_say is diag_push for what a press found: said only while the project it was sent under is
-// the one loaded, since a load clears the log for the new one.
-fn (mut app App) diag_say(req DiagReq, line string) {
-	app.mu.lock()
-	cur := diaghold.view_writable(req.epoch, app.diag_epoch)
-	app.mu.unlock()
-	if cur {
-		app.diag_push(line)
-	}
-}
-
 // diag_connect opens the target's connection into `h` and says so in the log and the strip.
-fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
+// Its lines are the request's (`req`) that made it open.
+fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq) bool {
 	app.diag_set_status(gen, DiagHoldStatus{
 		key: t.key
 		label: t.label
@@ -520,7 +518,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
 	t0 := time.sys_mono_now()
 	opened := app.diag_open(gen, mut h, t) or {
 		if h.open {
-			app.diag_let_go(gen, mut h, .failed, err.msg())
+			app.diag_push_for(req, app.diag_drop(gen, mut h, .failed, err.msg()))
 		}
 		ms := diaghold.ms_text(i64(time.sys_mono_now() - t0) / 1000)
 		where := if t.carrier.doip { 'doip ${t.carrier.host}:${t.carrier.port}' } else { t.iface }
@@ -528,7 +526,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
 		// holder's next look to let go with the command's reason
 		cancelled := h.stop()
 		why := if cancelled { 'opening abandoned' } else { err.msg() }
-		app.diag_push('[${ms:6} ms] open ${where}: ${why}')
+		app.diag_push_for(req, '[${ms:6} ms] open ${where}: ${why}')
 		app.diag_set_status(gen, DiagHoldStatus{
 			key: t.key
 			label: t.label
@@ -539,7 +537,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
 		})
 		return false
 	}
-	app.diag_push(opened.line(h.where))
+	app.diag_push_for(req, opened.line(h.where))
 	app.diag_set_status(gen, DiagHoldStatus{
 		key: t.key
 		label: t.label
