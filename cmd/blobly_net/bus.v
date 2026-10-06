@@ -5,6 +5,7 @@ import sync
 import project
 import transport
 import taprule
+import foldrule
 
 // Chan is one project channel's live state (the Buses panel row + Start/Stop target).
 struct Chan {
@@ -109,6 +110,14 @@ fn (c Chan) monitorable() bool {
 // one's name-by-name checks would have missed it (project.Channel.is_eth is the model twin).
 fn (c Chan) eth() bool {
 	return c.doip || c.someip
+}
+
+// fold_key is the key this row's RECEIVE state is folded and looked up under — the wire's
+// destination for a CAN row, whose aliases share one reader, and the row itself for an
+// Ethernet row, which has its own (foldrule.key, #336). Every reader of read_destinations
+// asks this, so the fold and its lookups cannot key a row two ways.
+fn (c Chan) fold_key() string {
+	return foldrule.key(transport.destination_key(c.iface), c.eth(), c.proj_idx)
 }
 
 // replay_blocker names the reason a replay-mode channel will not play — '' when nothing
