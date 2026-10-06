@@ -129,6 +129,37 @@ pub fn udp_exchange(addr string, to string, out [][]u8, window_ms int) ![]Datagr
 	return udp_window_on(mut c, window_ms)
 }
 
+// udp_exchange_many is udp_exchange to several resolved destinations of the bind's family:
+// `out` goes to each from one socket, and the ONE window hears all their answers — the window
+// is not multiplied by the destinations. A send that fails is skipped (a destination may be
+// unroutable while another answers); every send failing is the error.
+pub fn udp_exchange_many(addr string, tos []net.Addr, out [][]u8, window_ms int) ![]Datagram {
+	mut c := udp_bind(addr, '', '')!
+	defer {
+		c.close() or {}
+	}
+	if !addr.starts_with('[') {
+		c.sock.set_option_bool(.broadcast, true) or {
+			return error('udp: cannot enable broadcast: ${err}')
+		}
+	}
+	mut sent := 0
+	mut last_err := ''
+	for to in tos {
+		for d in out {
+			c.write_to(to, d) or {
+				last_err = 'udp: send to ${to}: ${err}'
+				continue
+			}
+			sent++
+		}
+	}
+	if sent == 0 && tos.len > 0 && out.len > 0 {
+		return error(last_err)
+	}
+	return udp_window_on(mut c, window_ms)
+}
+
 // udp_window_on reads from an already-bound socket until the deadline.
 fn udp_window_on(mut c net.UdpConn, window_ms int) []Datagram {
 	mut out := []Datagram{}

@@ -124,17 +124,78 @@ fn announcements_in(got []transport.Datagram, once bool) []Announcement {
 // The destination is RESOLVED first and the socket bound in the family it resolved to, so a
 // hostname with only an AAAA record is asked over IPv6 — the family is not guessed from the
 // spelling.
+//
+// EVERY address the name resolves to is asked, in the same window: a name with an A and an AAAA
+// record, or several A records, reaches its entity through whichever one it listens on.
 pub fn identify(host string, port int, window_ms int) ![]Announcement {
-	h := host.trim_space().trim('[]')
+	h := bare_host(host)!
 	addrs := net.resolve_addrs(join_host_port(h, port), .unspec, .udp) or {
 		return error('cannot resolve ${h}: ${err}')
 	}
 	if addrs.len == 0 {
 		return error('${h} resolves to nothing')
 	}
-	dst := addrs[0]
-	bind := if dst.family() == .ip6 { '[::]:0' } else { '0.0.0.0:0' }
-	got := transport.udp_exchange(bind, dst.str(), [vehicle_id_request()], window_ms)!
+	return identify_addrs(addrs, window_ms)
+}
+
+// bare_host is `host` without the brackets an IPv6 literal may carry — a MATCHING outer pair
+// only. A bracket without its partner (`[::1`, `::1]`), or one inside the name, is refused:
+// stripping it would ask some other spelling than the one typed.
+pub fn bare_host(host string) !string {
+	h := host.trim_space()
+	if h.starts_with('[') && h.ends_with(']') {
+		inner := h[1..h.len - 1]
+		if !inner.contains('[') && !inner.contains(']') {
+			return inner
+		}
+	} else if !h.contains('[') && !h.contains(']') {
+		return h
+	}
+	return error('"${h}" is not a host: a bracket must enclose an IPv6 address')
+}
+
+// ExchangeOutcome is one family's exchange, carried out of its thread whole.
+struct ExchangeOutcome {
+	got []transport.Datagram
+	err string
+}
+
+fn exchange_family(bind string, tos []net.Addr, window_ms int) ExchangeOutcome {
+	got := transport.udp_exchange_many(bind, tos, [vehicle_id_request()], window_ms) or {
+		return ExchangeOutcome{
+			err: err.msg()
+		}
+	}
+	return ExchangeOutcome{
+		got: got
+	}
+}
+
+// identify_addrs asks every one of `addrs` in ONE window: one socket per address family, the
+// families concurrently, so two families do not take two windows. An error only when no
+// family could be asked at all.
+fn identify_addrs(addrs []net.Addr, window_ms int) ![]Announcement {
+	v4 := addrs.filter(it.family() == .ip)
+	v6 := addrs.filter(it.family() == .ip6)
+	mut threads := []thread ExchangeOutcome{}
+	if v4.len > 0 {
+		threads << spawn exchange_family('0.0.0.0:0', v4, window_ms)
+	}
+	if v6.len > 0 {
+		threads << spawn exchange_family('[::]:0', v6, window_ms)
+	}
+	mut got := []transport.Datagram{}
+	mut errs := []string{}
+	for t in threads {
+		o := t.wait()
+		if o.err != '' {
+			errs << o.err
+		}
+		got << o.got
+	}
+	if errs.len == threads.len && errs.len > 0 {
+		return error(errs.join('; '))
+	}
 	return announcements_in(got, true)
 }
 

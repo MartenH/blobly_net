@@ -496,10 +496,13 @@ fn (mut app App) start_doip_find(target string, everyone bool) {
 	host, port := probe.doip_endpoint()
 	// A port the grammar refused is kept in the host (one colon left over); asked as it is,
 	// that reads as an IPv6 literal and fails with a resolve error that never names the port.
-	if host.count(':') == 1 {
+	// So is a bracket without its partner (eth_endpoint keeps `[::1` whole for the dial to fail).
+	if host.count(':') == 1 || host.contains('[') || host.contains(']') {
+		note := 'DoIP find: "${target.trim_space()}" is not host or host:port (a port is 1-65535, an IPv6 address goes in [ ])'
 		app.mu.lock()
-		app.disc_doip_note = 'DoIP find: "${target.trim_space()}" is not host or host:port (a port is 1-65535)'
+		app.disc_doip_note = note
 		app.mu.unlock()
+		app.notify(note)
 		return
 	}
 	app.mu.lock()

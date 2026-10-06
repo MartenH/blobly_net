@@ -150,3 +150,16 @@ fn test_only_identify_folds_repeated_answers() {
 	assert announcements_in(got, false).len == 2
 	assert announcements_in(got, true).len == 1
 }
+
+// Brackets are an IPv6 literal's matching outer pair, or nothing.
+fn test_bare_host_strips_only_a_matching_pair() {
+	assert bare_host('[::1]')! == '::1'
+	assert bare_host(' 192.168.0.50 ')! == '192.168.0.50'
+	assert bare_host('::1')! == '::1'
+	assert bare_host('ecu.local')! == 'ecu.local'
+	for bad in ['[::1', '::1]', '[[::1]]', 'ecu[1]'] {
+		if _ := bare_host(bad) {
+			assert false, '${bad} accepted'
+		}
+	}
+}

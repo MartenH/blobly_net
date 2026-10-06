@@ -52,11 +52,21 @@ pub fn doip_found_in(chs []Channel, f DoipFound) bool {
 // in — what a row shows, so a port left out is not a port nobody can see.
 pub fn (ch Channel) doip_effective_address() string {
 	host, port := ch.doip_endpoint()
+	return effective(host, port)
+}
+
+// effective joins an endpoint for display. A host still holding ONE colon is an address whose
+// port the grammar refused (eth_endpoint keeps it whole): shown as typed, not bracketed into
+// something that looks like an IPv6 literal on the default port.
+fn effective(host string, port int) string {
+	if host.count(':') == 1 {
+		return host
+	}
 	return transport.udp_bind_addr(host, port)
 }
 
 // someip_effective_address is the same for a SOME/IP listener's bind endpoint.
 pub fn (ch Channel) someip_effective_address() string {
 	host, port := ch.someip_endpoint()
-	return transport.udp_bind_addr(host, port)
+	return effective(host, port)
 }

@@ -76,6 +76,8 @@ fn test_effective_address_fills_in_the_default_port_and_host() {
 	assert doip_row('192.168.0.50', 1).doip_effective_address() == '192.168.0.50:13400'
 	assert doip_row('', 1).doip_effective_address() == '127.0.0.1:13400'
 	assert doip_row('[fe80::1]', 1).doip_effective_address() == '[fe80::1]:13400'
+	// a refused port is shown as typed, not as an IPv6 literal on the default port
+	assert doip_row('ecu.local:bad', 1).doip_effective_address() == 'ecu.local:bad'
 	s := Channel{
 		adapter: 'someip'
 		typ:     'someip'

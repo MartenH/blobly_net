@@ -1139,6 +1139,12 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.cfg_invalid = [] // describes the buffers just discarded; see the field
 	app.disc_list = []
 	app.disc_tick = []
+	// and every DoIP find: its rows, note and ticks were about the project being replaced, and a
+	// find still out lands in nothing (the generation moves)
+	app.disc_doip = []
+	app.disc_doip_note = ''
+	app.disc_doip_gen++
+	app.disc_doip_tick = map[string]bool{}
 	app.mu.unlock()
 	app.rebuild_from_proj()
 }

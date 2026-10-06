@@ -486,6 +486,42 @@ fn test_identify_resolves_a_hostname_to_its_own_family() {
 	assert found[0].info.logical_address == 0x07A1
 }
 
+// Several resolved addresses are all asked, in ONE window: here the first (127.0.0.2, where
+// nothing listens) stays silent and the second answers.
+fn test_identify_asks_every_resolved_address_in_one_window() {
+	mut srv := new_server(ServerCfg{ logical_address: 0x07A2, vin: 'TESTVIN0000000044' },
+		echo_handler)
+	dport := listen_somewhere(mut srv, '127.0.0.1')
+	if dport == 0 {
+		assert false, 'no bindable port in the band'
+		return
+	}
+	spawn fn (mut s DoipServer) {
+		for {
+			s.serve_udp_once(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+	time.sleep(150 * time.millisecond)
+	mut addrs := net.resolve_addrs('127.0.0.2:${dport}', .ip, .udp) or { panic(err) }
+	addrs << net.resolve_addrs('127.0.0.1:${dport}', .ip, .udp) or { panic(err) }
+	t0 := time.ticks()
+	found := identify_addrs(addrs, 400) or {
+		srv.close()
+		assert false, 'identify_addrs: ${err}'
+		return
+	}
+	took := time.ticks() - t0
+	srv.close()
+	assert found.len == 1
+	assert found[0].info.logical_address == 0x07A2
+	assert took < 800, 'one window, not one per address: ${took} ms'
+}
+
 // The power-on announcement, end to end: an entity announces unasked and a LISTENING tester
 // hears it. This is the half of discovery a real vehicle performs and the simulator did not —
 // a tester that waits for announcements saw nothing at all before this.

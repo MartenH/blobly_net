@@ -1183,11 +1183,14 @@ fn (mut app App) draw_doip_entity_pick(i int, ch project.Channel) {
 		}
 		app.dirty = true
 	}
-	// the last find's outcome, when it was about this row's endpoint (the Log has every one)
+	// the last find's outcome, when it was about this row — its endpoint, or (a refused one) the
+	// address as typed; the Log has every one
 	ep_host, ep_port := ch.doip_endpoint()
-	if !busy && here.len == 0 && note.contains('${ep_host}:${ep_port}') {
+	typed := ch.address.trim_space()
+	if !busy && here.len == 0 && (note.contains('${ep_host}:${ep_port}')
+		|| (typed != '' && note.contains('"${typed}"'))) {
 		cfg_field('', '', sc)
-		vgui.text_dim(note)
+		vgui.text_dim_wrapped(note)
 	}
 }
 
