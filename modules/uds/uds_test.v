@@ -2,6 +2,7 @@ module uds
 
 import transport
 import isotp
+import time
 
 // MockChannel is an in-memory isotp.Channel: it records the last request and
 // replays a queue of canned responses. Lets us unit-test the UDS protocol logic
@@ -17,6 +18,8 @@ mut:
 	idx       int
 	waits     []int // the timeout each recv was given
 	queued    int   // how many of `responses` were already queued before the request went out
+	delay_ms  []int // per response (by index), how long the recv takes to return it
+	pending_forever bool // past `responses`, every recv answers 0x78 for the request's service
 }
 
 fn (mut m MockChannel) send(data []u8) ! {
@@ -38,9 +41,15 @@ fn (mut m MockChannel) recv(timeout_ms int) ![]u8 {
 	}
 	m.waits << timeout_ms
 	if m.idx >= m.responses.len {
+		if m.pending_forever && m.last_req.len > 0 {
+			return [u8(0x7F), m.last_req[0], 0x78]
+		}
 		return error('timeout')
 	}
 	r := m.responses[m.idx]
+	if m.idx < m.delay_ms.len && m.delay_ms[m.idx] > 0 {
+		time.sleep(m.delay_ms[m.idx] * time.millisecond)
+	}
 	m.idx++
 	return r
 }
@@ -375,4 +384,79 @@ fn test_loosen_p2_star_only_loosens() {
 	c.loosen_p2_star(9000)
 	assert c.p2_star_ms == 9000
 	assert c.timeout_ms == 1000, 'the first-answer wait moved'
+}
+
+// the exchange times itself: the round trip from the send, and the part spent after a 0x78
+fn test_the_last_exchange_is_timed_with_its_pending_wait() {
+	mut m := &MockChannel{
+		responses: [[u8(0x7F), 0x22, 0x78], [u8(0x7F), 0x22, 0x78],
+			[u8(0x62), 0xF1, 0x90, 0xAA]]
+		delay_ms:  [10, 0, 30]
+	}
+	mut c := new_client(m)
+	c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert c.last.sent
+	assert c.last.pending == 2
+	assert c.last.pending_us >= 30_000
+	assert c.last.rtt_us >= 40_000
+	assert c.last.rtt_us >= c.last.pending_us
+	// the next exchange starts from nothing: no pending carried over
+	m.responses << [u8(0x62), 0xF1, 0x90, 0xBB]
+	c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert c.last.pending == 0
+	assert c.last.pending_us == 0
+}
+
+// a request that fails is timed too: the operator reads how long it waited before giving up
+fn test_a_failed_exchange_is_timed() {
+	mut c, _ := client_with([[u8(0x7F), 0x22, 0x31]])
+	c.read_data_by_identifier(0xF190) or {}
+	assert c.last.rtt_us >= 0
+	assert c.last.pending == 0
+}
+
+// a request the pre-send drain stopped never went out, and says so: a caller may repeat it on a
+// fresh connection without asking the ECU twice
+fn test_a_request_stopped_before_the_send_is_not_sent() {
+	mut m := &MockChannel{
+		responses: [][]u8{len: 70, init: [u8(0x62), 0xF1, 0x90, 0x00]}
+		queued:    70
+	}
+	mut c := new_client(m)
+	c.read_data_by_identifier(0xF190) or {}
+	assert !c.last.sent
+	assert m.last_req.len == 0
+}
+
+// a server that answers responsePending for ever holds a request until pending_budget_ms (two
+// minutes by default); a stop request ends it after the 0x78 it is waiting behind, distinctly
+fn test_a_stop_ends_a_request_held_by_response_pending() {
+	mut m := &MockChannel{
+		pending_forever: true
+	}
+	mut c := new_client(m)
+	c.stop_requested = fn [m] () bool {
+		return m.waits.len >= 3
+	}
+	sw := time.new_stopwatch()
+	if _ := c.read_data_by_identifier(0xF190) {
+		assert false, 'a server that only says pending answered nothing'
+	} else {
+		assert err.msg() == abandoned_note, err.msg()
+	}
+	assert m.waits.len == 3
+	assert c.last.sent
+	assert c.last.pending == 3
+	assert sw.elapsed().milliseconds() < 1000
+}
+
+// a stop already requested sends nothing
+fn test_a_stopped_client_sends_nothing() {
+	mut c, m := client_with([[u8(0x62), 0xF1, 0x90, 0xAA]])
+	c.stop_requested = fn () bool {
+		return true
+	}
+	c.read_data_by_identifier(0xF190) or { assert err.msg() == abandoned_note, err.msg() }
+	assert m.last_req.len == 0
+	assert !c.last.sent
 }

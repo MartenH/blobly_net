@@ -1267,3 +1267,44 @@ fn test_a_stop_during_the_final_quiet_window_sends_no_first_frame() {
 	ch.close()
 	peer.close()
 }
+
+// a stoppable channel's receive ends when the stop is requested, not at its deadline
+fn test_a_stop_ends_a_blocked_receive() {
+	mut ch := open_software('inproc:isotp-stop-recv', 0x7E0, 0x7E8, false) or { panic(err) }
+	at := time.ticks() + 50
+	ch.stop_requested = fn [at] () bool {
+		return time.ticks() >= at
+	}
+	t0 := time.ticks()
+	if _ := ch.recv(5000) {
+		assert false, 'nothing was sent'
+	} else {
+		assert err.msg().starts_with(abandoned_recv_note), err.msg()
+	}
+	assert time.ticks() - t0 < 1000
+	ch.close()
+}
+
+// with no stop requested, a stoppable channel still receives, and still times out on time
+fn test_a_stoppable_receive_still_receives_and_times_out() {
+	mut peer := transport.open('inproc:isotp-stop-recv2') or { panic(err) }
+	mut ch := open_software('inproc:isotp-stop-recv2', 0x7E0, 0x7E8, false) or { panic(err) }
+	ch.stop_requested = fn () bool {
+		return false
+	}
+	spawn fn [mut peer] () {
+		time.sleep(60 * time.millisecond)
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x02), 0x50, 0x03, 0, 0, 0, 0, 0] }) or {}
+	}()
+	got := ch.recv(2000) or { panic(err) }
+	assert got == [u8(0x50), 0x03]
+	t0 := time.ticks()
+	if _ := ch.recv(120) {
+		assert false, 'nothing more was sent'
+	} else {
+		assert err.msg().starts_with('timeout'), err.msg()
+	}
+	assert time.ticks() - t0 >= 100
+	ch.close()
+	peer.close()
+}

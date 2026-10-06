@@ -1176,118 +1176,9 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	a.mu.unlock()
 }
 
-fn diag_worker(app &App, kind string, did u16, want_key string) {
-	// A TOOL READER: reads app.chans through bitrate_iface to reach its ISO-TP channel, unlocked. Not ended by Stop, so the
-	// wait must not include it — see App.tool_readers.
-	defer {
-		release_tool_reader(app)
-	}
-	mut a := unsafe { app }
-	a.mu.lock()
-	if a.diag_busy {
-		a.mu.unlock()
-		return
-	}
-	a.diag_busy = true
-	a.mu.unlock()
-	targets := a.diag_targets()
-	// Resolve by the identity captured AT CLICK TIME, passed in rather than read here: the
-	// combo stays enabled while a request is busy, so a worker that read the live field could
-	// address whichever ECU the user selected after clicking. Falling back to another entry
-	// when the chosen one has gone would do the same thing more quietly.
-	key := want_key
-	mut t := DiagTarget{}
-	mut found := false
-	for cand in targets {
-		if cand.key == key || (key == '' && !found) {
-			t = cand
-			found = true
-			if cand.key == key {
-				break
-			}
-		}
-	}
-	if !found {
-		a.diag_push('target "${key}" is no longer available')
-		a.diag_done()
-		return
-	}
-	iface := if t.iface != '' { t.iface } else { a.diag_iface() }
-	// The transport follows the TARGET, not the panel. Opening ISO-TP for a DoIP entry would
-	// try to open `doip:127.0.0.1:13400` as a CAN interface, which on Linux falls through to
-	// SocketCAN and fails — the panel would report the entity unreachable while it was serving.
-	mut ch := if t.carrier.doip {
-		isotp.Channel(doip.open_doip(t.carrier.host, t.carrier.port, t.carrier.tester,
-			t.carrier.ecu) or {
-			a.diag_push('doip ${t.carrier.host}:${t.carrier.port}: ${err}')
-			a.diag_done()
-			return
-		})
-	} else {
-		isotp.Channel(isotp.on_bus(a.open_tap_on(iface, org_tx, t.chan) or {
-			a.diag_push('open ${iface}: ${err}')
-			a.mu.lock()
-			a.diag_busy = false
-			a.mu.unlock()
-			vgui.wake()
-			return
-		}, a.bitrate_iface(iface), t.rx, t.tx, t.ext) or {
-			a.diag_push('open ${iface}: ${err}')
-			a.mu.lock()
-			a.diag_busy = false
-			a.mu.unlock()
-			vgui.wake()
-			return
-		})
-	}
-	// Close it when this request is done. A DoIP entity serves ONE connection at a time and
-	// stays inside it until the peer disconnects, so a leaked connection from the first button
-	// press blocked every later one until the server's 60-second idle timeout.
-	defer {
-		ch.close()
-	}
-	mut c := uds.new_client(ch)
-	a.mu.lock()
-	epoch := a.diag_timing_epoch
-	c.loosen_p2_star(a.diag_timing[t.key] or { 0 })
-	a.mu.unlock()
-	out := match kind {
-		'session' {
-			if _ := c.diagnostic_session(0x03) { 'session 0x03 OK' } else { 'session: ${err}' }
-		}
-		'vin' {
-			if r := c.read_data_by_identifier(0xF190) { 'VIN = ${r.bytestr()}' } else { 'VIN: ${err}' }
-		}
-		'tp' {
-			if _ := c.tester_present() { 'tester present OK' } else { 'tester present: ${err}' }
-		}
-		'did' {
-			if r := c.read_data_by_identifier(did) {
-				'DID ${did:04X} = ${hex(r)}  "${printable(r)}"'
-			} else {
-				'DID ${did:04X}: ${err}'
-			}
-		}
-		else {
-			''
-		}
-	}
-	if out != '' {
-		a.diag_push(out)
-	}
-	// what this target has announced, kept for the next press BEFORE this one is done: the
-	// next may start the moment diag_busy clears — and not into a project loaded meanwhile
-	a.mu.lock()
-	if a.diag_timing_epoch == epoch {
-		a.diag_timing[t.key] = c.p2_star_ms
-	}
-	a.mu.unlock()
-	a.diag_done()
-}
-
 // trace_dump_worker performs one capture read-out: it freezes the target's ring(s) and dumps
 // the selected cores, reassembling each per-core ISO-TP block on 0x7E5 (sending flow control
-// on 0x7E6) and decoding the records into app.trecs for the swimlane. Mirrors diag_worker: a
+// on 0x7E6) and decoding the records into app.trecs for the swimlane: a
 // single-flight busy flag, a short-lived spawn, a blocking transfer, results under mu + wake.
 fn trace_dump_worker(app &App, core_mask u16) {
 	// A TOOL READER: reads app.chans and app.manifest to find the trace endpoint, unlocked. Not ended by Stop, so the
@@ -1436,7 +1327,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	a.trace_done()
 }
 
-// shell_worker sends one command line and collects the response. Mirrors diag/trace workers:
+// shell_worker sends one command line and collects the response. Mirrors the trace worker:
 // a single-flight busy flag, a short-lived spawn, a blocking ISO-TP recv, results under mu +
 // wake. The shell ids come from the manifest's `# shell frames` section (or loom2v defaults).
 fn shell_worker(app &App, line string) {
@@ -1525,6 +1416,15 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 		a.mu.unlock()
 		vgui.wake()
 	}
+	// the Diagnostics panel holds nothing while a flash runs: a held ISO-TP channel on the boot
+	// ids would answer the bootloader's First Frames with Flow Control of its own (diaghold)
+	held_note := a.diag_tool_begin()
+	if held_note != '' {
+		a.flash_append('(${held_note})')
+	}
+	defer {
+		a.diag_tool_end()
+	}
 	iface := a.trace_iface()
 	if iface == '' {
 		a.flash_append('(no running channel)')
@@ -1580,6 +1480,15 @@ fn script_worker(app &App, path string) {
 	// worker may not schedule before an edit) — this side only releases it
 	defer {
 		release_tool_reader(app)
+	}
+	// A script may open any DoIP entity, and one serves a single tester: the Diagnostics panel
+	// lets go of its connection first, and holds none while the script runs (diaghold).
+	held_note := a.diag_tool_begin()
+	if held_note != '' {
+		a.script_push(held_note)
+	}
+	defer {
+		a.diag_tool_end()
 	}
 	mut chans := []script.ChanInfo{}
 	for ch in a.chans {

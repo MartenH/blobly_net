@@ -63,6 +63,35 @@ pub mut:
 	// sizes (empty = blobly_ext_records)
 	did_lens map[u16]int
 	ext_lens map[u8]int
+	// how the last request went, on the monotonic clock: set by every exchange, answered or not
+	last ExchangeTiming
+	// stop_requested, when set, is asked before the send and between the answers of a request —
+	// after each responsePending above all, which a server can keep sending until
+	// `pending_budget_ms` — and a true answer ends the request with `abandoned_note`. For a run
+	// worker that Stop must end; the carrier's own wait is the carrier's to cut short (a software
+	// ISO-TP channel's `stop_requested`, a DoIP client's `interrupt`).
+	stop_requested fn () bool = unsafe { nil }
+}
+
+// abandoned_note is the error a request ends with when `stop_requested` answered true.
+pub const abandoned_note = 'UDS: request abandoned — stop requested'
+
+fn (c &Client) stopping() bool {
+	return c.stop_requested != unsafe { nil } && c.stop_requested()
+}
+
+// ExchangeTiming is one request's time on the wire, as only the exchange can see it: from the
+// send to the final answer (or the error), and how much of that was spent waiting through
+// responsePending (0x78) — from the first 0x78 to the answer.
+pub struct ExchangeTiming {
+pub:
+	// whether the request reached the carrier: false when the exchange failed before the send
+	// (the pre-send drain found the connection gone, or the send itself failed) — the one case a
+	// caller may repeat the request on a fresh connection without asking the ECU twice
+	sent       bool
+	rtt_us     i64
+	pending    int // how many 0x78 the server sent before its answer
+	pending_us i64 // 0 when there was none
 }
 
 // default_p2_star_ms is ISO 14229-2's default P2*server, used until a 0x10 answer names one.
@@ -238,12 +267,33 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 	if req.len == 0 {
 		return error('empty UDS request')
 	}
+	c.last = ExchangeTiming{}
 	mut discarded := c.drain_queued(req[0])!
+	sent_ns := time.sys_mono_now()
+	mut pendings := 0
+	mut first_pending_ns := u64(0)
+	mut sent := false
+	defer {
+		end_ns := time.sys_mono_now()
+		c.last = ExchangeTiming{
+			sent:       sent
+			rtt_us:     i64(end_ns - sent_ns) / 1000
+			pending:    pendings
+			pending_us: if pendings > 0 { i64(end_ns - first_pending_ns) / 1000 } else { 0 }
+		}
+	}
+	if c.stopping() {
+		return error(abandoned_note)
+	}
 	c.ch.send(req)!
+	sent = true
 	sw := time.new_stopwatch()
 	mut deadline := if c.timeout_ms < c.pending_budget_ms { i64(c.timeout_ms) } else { i64(c.pending_budget_ms) }
 	mut pending := false
 	for {
+		if c.stopping() {
+			return error(abandoned_note)
+		}
 		left := deadline - sw.elapsed().milliseconds()
 		if left <= 0 {
 			if suppressed && !pending {
@@ -255,6 +305,9 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 			return error(no_answer(req, discarded))
 		}
 		resp := c.ch.recv(int(left)) or {
+			if c.stopping() {
+				return error(abandoned_note) // the carrier's wait was ended by the same stop
+			}
 			if suppressed && !pending && is_silence(err.msg()) {
 				return []u8{}, false // nothing to say: what a suppressed positive response looks like
 			}
@@ -286,6 +339,10 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 				// P2* from now, but never past the request's total allowance from the send — an
 				// announced P2* of hours must not become one wait of hours
 				pending = true
+				if pendings == 0 {
+					first_pending_ns = time.sys_mono_now()
+				}
+				pendings++
 				deadline = c.pending_deadline(sw.elapsed().milliseconds())
 			}
 			.stale {

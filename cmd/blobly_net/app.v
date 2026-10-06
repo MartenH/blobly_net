@@ -12,6 +12,7 @@ import pickrule
 import transport
 import gaterule
 import txhealth
+import diaghold
 import timebase
 import wiretap
 import candb
@@ -175,14 +176,15 @@ mut:
 	// SPLIT IN TWO, because the drain covers one of them and must never cover the other.
 	//
 	// run_workers are the workers a RUN owns — rx_loop, sim_loop, gen_loop, the diagnostic and
-	// UDS node servers, a replay group and the DoIP watcher. stop() ENDS them but does not wait;
+	// UDS node servers, a replay group, the DoIP watcher and the Diagnostics panel's connection
+	// holder (diag_hold.v). stop() ENDS them but does not wait;
 	// rebuild_from_proj waits, because that is the operation that replaces what they read, and
 	// waiting in stop() would put ~200 ms — or seconds, against an adapter that has gone — on
 	// the GUI thread for every Stop. So `!app.running` is not on its own a licence to replace
 	// the runtime view: going through rebuild_from_proj is.
 	//
 	// tool_readers are the workers the OPERATOR starts and a run does not own: a Lua script, a
-	// flash, a diagnostic request, a shell command, a trace dump. Every one of them reads the
+	// flash, a shell command, a trace dump. Every one of them reads the
 	// same arrays — most through bitrate_iface, which walks app.chans unlocked — and none is
 	// ended by Stop: a script is explicitly allowed to outlive it and can run for minutes. So
 	// they are counted for the "may the runtime view be replaced" question and excluded from
@@ -350,6 +352,10 @@ mut:
 	// the list is rebuilt without it, and the same index then addresses a DIFFERENT ECU whose
 	// answers are reported as the selected one's.
 	diag_sel_key string
+	diag_auto    DiagAutopress // BLOBLY_DIAG_PRESS dev hook (diag_auto.v); GUI thread only
+	// the last view diag_publish_view handed the holder; GUI thread only
+	diag_pub_open bool
+	diag_pub_key  string
 	diag_plan    []DiagTarget // what start() actually spawned, per bus
 	// Hosted DoIP entities, by interface. Held so Stop can close the listeners: an entity that
 	// outlived Stop would keep port 13400 bound, and the next Start would fail to bind against
@@ -548,14 +554,29 @@ mut:
 	diag_log    []string
 	diag_gen    u64 // cache key for the Diagnostics panel's joined text
 	diag_busy   bool
+	diag_last_push_ns u64 // monotonic stamp of the last diag_push, for the autopress hook's timing
 	// The largest P2* each diagnostic target announced (its 0x10 answers), by DiagTarget.key.
-	// Every button press builds a new client — it opens and closes its own channel, since a
-	// DoIP entity serves one connection at a time — so without this the next press waited on
-	// the default P2* whatever the ECU had said (#356). Carried only to LOOSEN (uds.Client
+	// Every connection the panel opens builds a new client — it is let go on a target change,
+	// a Disconnect, a failure, a script or a Stop (diag_hold.v) — so without this the next
+	// connection waited on the default P2* whatever the ECU had said (#356). Carried only to LOOSEN (uds.Client
 	// .loosen_p2_star). `diag_timing_epoch` moves with a project load, so a press still in
 	// flight across one cannot write its target's value into the new project's map.
 	diag_timing       map[string]int
 	diag_timing_epoch u64
+	// The panel's held connection (diag_hold.v). The holder thread of the run `diag_hold_gen`
+	// (0 = none) takes presses from `diag_q`; `diag_status` is its strip; `diag_view_*` is what
+	// the panel shows, published by the GUI for the holder's release rule; `diag_tools` counts
+	// the operator tools speaking UDS (a script, a flash), while which the panel holds nothing.
+	// Every release reaches the holder as a command for its generation (`diag_cmds`).
+	diag_q              chan DiagReq
+	diag_hold_gen       u64
+	diag_status         DiagHoldStatus
+	diag_view_open      bool
+	diag_view_key       string
+	diag_tools          int
+	diag_cmds           diaghold.Commands // releases for the holder generation they name (diag_hold.v)
+	diag_released       diaghold.Mark     // the last release a holder has acted on
+	diag_holders_alive  int               // holder threads not yet exited, this run's and any before
 	script_log  []string
 	script_gen  u64 // cache key for the Script panel's joined text
 	script_busy bool
