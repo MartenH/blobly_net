@@ -337,13 +337,23 @@ fn (mut c DoipClient) await_readable(ms int) !bool {
 	return false
 }
 
-// activate_routing sends a routing activation request and validates the response.
+// activate_routing sends a routing activation request and validates the response. An alive
+// check asked meanwhile is answered and the wait goes on.
 fn (mut c DoipClient) activate_routing() ! {
 	c.conn.write(routing_activation_request(c.source))!
-	if c.stop_requested != unsafe { nil } && !c.await_readable(ra_timeout_ms)! {
-		return error('DoIP: no routing activation response within ${ra_timeout_ms} ms')
+	deadline := time.ticks() + i64(ra_timeout_ms)
+	mut msg := Message{}
+	for {
+		left := int(deadline - time.ticks())
+		if left <= 0
+			|| (c.stop_requested != unsafe { nil } && !c.await_readable(left)!) {
+			return error('DoIP: no routing activation response within ${ra_timeout_ms} ms')
+		}
+		msg = read_message_stoppable(mut c.conn, left, c.stop_requested)!
+		if !c.serve_control(msg)! {
+			break
+		}
 	}
-	msg := read_message(mut c.conn, ra_timeout_ms)!
 	if msg.payload_type != pt_routing_activation_response {
 		return error('DoIP: expected routing activation response, got 0x${msg.payload_type:04X}')
 	}
@@ -387,7 +397,10 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 			// what is readable must be read whole; a failure here (the peer closed, or a message
 			// stalled partway) leaves no stream to poll again, and must not read as one more
 			// drained answer
-			msg := read_message(mut c.conn, poll_read_ms) or {
+			msg := read_message_stoppable(mut c.conn, poll_read_ms, c.stop_requested) or {
+				if err.msg() == stopped_note {
+					return err
+				}
 				return error('${doip_connection_lost}${err.msg()}')
 			}
 			data, mine := c.own_answer(msg)!
@@ -398,8 +411,8 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 		} else if rem <= 0 {
 			return error('DoIP recv timeout')
 		}
-		// a stoppable client waits for the message to begin in slices its stop can end; the rest of
-		// a message is then read with the ordinary deadline, since it is in flight
+		// a stoppable client waits for the message to begin, and then for each piece of it, in
+		// slices its stop can end — a peer that stalls partway cannot hold it past a stop
 		if c.stop_requested != unsafe { nil } {
 			if !c.await_readable(rem)! {
 				return error('DoIP recv timeout')
@@ -410,7 +423,7 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 			}
 		}
 		// the socket's own timeout is this carrier's silence, said the one way a caller reads it
-		msg := read_message(mut c.conn, rem) or {
+		msg := read_message_stoppable(mut c.conn, rem, c.stop_requested) or {
 			if err.code() == net.err_timed_out_code {
 				return error('DoIP recv timeout')
 			}
@@ -425,9 +438,12 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 }
 
 // own_answer is a received message's diagnostic payload and true when it is this connection's
-// answer; false for what is skipped (another logical address's response, a positive ack,
-// anything else); an error for a negative ack.
-fn (c &DoipClient) own_answer(msg Message) !([]u8, bool) {
+// answer; false for what is skipped (another logical address's response, a positive ack, an
+// alive check — answered on the way — anything else); an error for a negative ack.
+fn (mut c DoipClient) own_answer(msg Message) !([]u8, bool) {
+	if c.serve_control(msg)! {
+		return []u8{}, false
+	}
 	match msg.payload_type {
 		pt_diagnostic_message {
 			dm := parse_diagnostic_message(msg.payload)!
@@ -446,6 +462,43 @@ fn (c &DoipClient) own_answer(msg Message) !([]u8, bool) {
 		else {
 			return []u8{}, false // ignore anything else on this connection
 		}
+	}
+}
+
+// serve_control answers what the entity asks of the connection itself rather than of the ECU —
+// an Alive Check Request (0x0007), answered with an Alive Check Response (0x0008) carrying the
+// tester's source address (ISO 13400-2). An entity that asks and hears nothing closes the
+// connection, so it is answered wherever this client reads: inside an exchange, during routing
+// activation, and on an idle connection (`idle`). True when `msg` was such a message.
+fn (mut c DoipClient) serve_control(msg Message) !bool {
+	if msg.payload_type != pt_alive_check_request {
+		return false
+	}
+	c.conn.write(alive_check_response(c.source))!
+	return true
+}
+
+// idle_max_messages bounds one `idle` call, so a peer that never stops sending cannot hold it.
+const idle_max_messages = 16
+
+// idle serves an IDLE connection: what has already arrived is read without waiting for more, an
+// alive check is answered, and anything else is dropped — nothing is waiting for it, and a late
+// answer would be dropped by the next exchange's pre-send drain anyway. For a holder that keeps
+// the connection open between exchanges and polls it on its own rhythm (an entity's alive check
+// timeout is 500 ms). An error when the connection cannot be read any further (`doip_connection_lost`,
+// the peer closed or a message stalled), or `stopped_note` when the client's stop ended a read.
+pub fn (mut c DoipClient) idle() ! {
+	for _ in 0 .. idle_max_messages {
+		if !readable_now(c.conn.sock.handle) {
+			return
+		}
+		msg := read_message_stoppable(mut c.conn, poll_read_ms, c.stop_requested) or {
+			if err.msg() == stopped_note {
+				return err
+			}
+			return error('${doip_connection_lost}${err.msg()}')
+		}
+		c.serve_control(msg) or { return error('${doip_connection_lost}${err.msg()}') }
 	}
 }
 

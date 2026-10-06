@@ -2,6 +2,7 @@ module main
 
 import time
 import isotp
+import transport
 import doip
 import uds
 import vgui
@@ -53,6 +54,7 @@ mut:
 	target   DiagTarget
 	where    string // what was opened, for the log
 	ch       isotp.Channel // DoIP: the held connection; CAN: the exchange's, while attached
+	dc       &doip.DoipClient = unsafe { nil } // DoIP: the same connection, for its idle service
 	attached bool // CAN only: a channel is open for the exchange in progress
 	cli      uds.Client
 	session  u8
@@ -205,6 +207,10 @@ fn diag_holder(app &App, gen u64, q chan DiagReq) {
 			ctx.work_key = h.target.key
 			a.diag_keepalive(gen, mut h)
 		}
+		if h.open && !isnil(h.dc) {
+			ctx.work_key = h.target.key
+			a.diag_idle(gen, mut h)
+		}
 		select {
 			req := <-q {
 				ctx.work_key = req.key
@@ -305,7 +311,12 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	if iface == '' {
 		return error('no running CAN channel')
 	}
-	bus := app.open_tap_phys(iface, phys, org_tx, t.chan, gen, false)!
+	// on its own thread, so the token ends a slow open (a CANsub open, or waiting on the wire's
+	// first opener) as it ends every other wait; an open that lands after that is closed
+	ap := &app
+	bus := transport.open_stoppable(fn [ap, iface, phys, t, gen] () !transport.Bus {
+		return ap.open_tap_phys(iface, phys, org_tx, t.chan, gen, false)
+	}, h.stop)!
 	mut sc := isotp.on_bus(bus, phys, t.rx, t.tx, t.ext) or {
 		mut b := bus
 		b.close()
@@ -351,6 +362,7 @@ fn (mut app App) diag_open(gen u64, mut h HeldConn, t DiagTarget) !diaghold.Open
 			t.carrier.ecu, h.stop)!
 		total := i64(time.sys_mono_now() - t0) / 1000
 		h.ch = isotp.Channel(c)
+		h.dc = c
 		h.cli = uds.new_client(c)
 		h.cli.stop_requested = h.stop
 		h.cli.loosen_p2_star(h.p2_star_ms)
@@ -467,12 +479,16 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget) bool {
 		}
 		ms := diaghold.ms_text(i64(time.sys_mono_now() - t0) / 1000)
 		where := if t.carrier.doip { 'doip ${t.carrier.host}:${t.carrier.port}' } else { t.iface }
-		app.diag_push('[${ms:6} ms] open ${where}: ${err}')
+		// an open the token ended did not fail: it was abandoned, and nothing is held for the
+		// holder's next look to let go with the command's reason
+		cancelled := h.stop()
+		why := if cancelled { 'opening abandoned' } else { err.msg() }
+		app.diag_push('[${ms:6} ms] open ${where}: ${why}')
 		app.diag_set_status(gen, DiagHoldStatus{
 			label: t.label
 			doip: t.carrier.doip
-			conn: .failed
-			why: err.msg()
+			conn: if cancelled { diaghold.Conn.closed } else { diaghold.Conn.failed }
+			why: why
 			p2_ms: -1
 		})
 		return false
@@ -536,6 +552,20 @@ fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bo
 			}
 			return DiagOut{'DID ${req.did:04X} = ${hex(r)}  "${printable(r)}"', false}, false
 		}
+	}
+}
+
+// diag_idle serves the held DoIP connection between presses, once per holder look (well inside
+// an entity's 500 ms alive check timeout): an Alive Check Request is answered there
+// (doip.DoipClient.idle), since an entity that asks and hears nothing closes the connection and
+// the session with it; an entity that closed it anyway is let go now, said, rather than found
+// at the next press.
+fn (mut app App) diag_idle(gen u64, mut h HeldConn) {
+	h.dc.idle() or {
+		if h.stop() {
+			return // cancelled: the holder's next look lets go, with the command's reason
+		}
+		app.diag_let_go(gen, mut h, .closed, '${err.msg()} (while idle)')
 	}
 }
 

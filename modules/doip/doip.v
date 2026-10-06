@@ -22,6 +22,8 @@ pub const pt_vehicle_id_request = u16(0x0001)
 pub const pt_vehicle_announcement = u16(0x0004) // a.k.a. vehicle identification response
 pub const pt_routing_activation_request = u16(0x0005)
 pub const pt_routing_activation_response = u16(0x0006)
+pub const pt_alive_check_request = u16(0x0007) // the entity asks whether this connection is alive
+pub const pt_alive_check_response = u16(0x0008) // the tester's answer: its source address
 pub const pt_diagnostic_message = u16(0x8001)
 pub const pt_diagnostic_message_ack = u16(0x8002) // positive ack
 pub const pt_diagnostic_message_nack = u16(0x8003) // negative ack
@@ -130,6 +132,18 @@ pub fn routing_activation_response(tester u16, entity u16, code u8) []u8 {
 	binary.big_endian_put_u16_at(mut payload, entity, 2)
 	payload[4] = code
 	return encode(pt_routing_activation_response, payload)
+}
+
+// alive_check_request: empty payload — what an entity sends to ask whether a connection is alive.
+pub fn alive_check_request() []u8 {
+	return encode(pt_alive_check_request, [])
+}
+
+// alive_check_response: source(2) — the tester's logical address (ISO 13400-2).
+pub fn alive_check_response(source u16) []u8 {
+	mut payload := []u8{len: 2}
+	binary.big_endian_put_u16_at(mut payload, source, 0)
+	return encode(pt_alive_check_response, payload)
 }
 
 // diagnostic_message: source(2) target(2) user-data(N).

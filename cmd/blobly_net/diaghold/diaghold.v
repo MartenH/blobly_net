@@ -28,10 +28,10 @@
 // is unknowable before it runs. The rule is therefore the simple one that is correct whatever
 // the script does: while an operator tool that speaks UDS is running (a script, a flash), the
 // panel holds NOTHING — the tool's start releases the held connection and waits for it to close
-// (and for a press already queued), and the panel's own presses meanwhile open and close per
-// request, as they always did. A program OUTSIDE this process cannot be asked: while the panel
-// holds a DoIP entity's one connection, another tester is refused until Disconnect — the strip
-// says so.
+// (and for a press already queued), and the panel takes no press until the tool ends — a press
+// meanwhile is refused and said, not queued. A program OUTSIDE this process cannot be asked: while
+// the panel holds a DoIP entity's one connection, another tester is refused until Disconnect — the
+// strip says so; the held connection answers the entity's alive checks, so the entity keeps it.
 //
 // DEPENDENCY-FREE, like the other rule packages: CI runs `v test cmd/blobly_net/diaghold/` with
 // no `-path modules`.
@@ -337,7 +337,7 @@ pub fn press_refusal(running bool, busy bool, tools int) string {
 		return 'busy'
 	}
 	if tools > 0 {
-		return 'not sent — a script or flash is using the target; the panel waits for it'
+		return 'not sent — a script or flash is using the target; press again once it ends'
 	}
 	return ''
 }
