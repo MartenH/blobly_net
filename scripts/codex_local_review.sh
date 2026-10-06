@@ -33,6 +33,10 @@ case "$codex_env" in
 *) codex_env=$(command -v "$codex_env" || printf '%s' "$codex_env")
 	case "$codex_env" in /*) ;; */*) codex_env=$PWD/$codex_env ;; esac ;; # found through a relative PATH entry
 esac
+# ...and every codex on PATH, the same way: a relative PATH entry is the caller's directory's
+path_codex=$(type -ap codex 2>/dev/null | while IFS= read -r c; do
+	case "$c" in /*) printf '%s\n' "$c" ;; *) printf '%s\n' "$PWD/$c" ;; esac
+done)
 
 self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$self")/.."
@@ -68,18 +72,23 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# runs <path>: prints its --version (non-empty) when the binary runs; fails otherwise
+# runs <path>: prints its --version (non-empty) when the binary runs; fails otherwise. Its stdout goes
+# to a file, not a pipe — a child it leaves behind cannot hold the capture open — limited to 64 KiB
+# (a flooding one is stopped there), within the probe's deadline (TERM, then KILL 2 s later).
 runs() {
-	local v
+	local v f rc
 	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
+	f=$(mktemp) || return 1
 	if command -v timeout >/dev/null 2>&1; then
-		# -k: a binary that ignores TERM is killed 2 s later, so the probe is bounded either way
-		v=$(timeout -k 2 "${CODEX_PROBE_TIMEOUT:-10}" "$1" --version </dev/null 2>/dev/null) || return 1
+		(ulimit -f 64; exec timeout -k 2 "${CODEX_PROBE_TIMEOUT:-10}" "$1" --version) </dev/null >"$f" 2>/dev/null
 	else
-		v=$("$1" --version </dev/null 2>/dev/null) || return 1
+		(ulimit -f 64; exec "$1" --version) </dev/null >"$f" 2>/dev/null
 	fi
-	[ -n "$v" ] || return 1
-	printf '%s\n' "$v" | head -1
+	rc=$?
+	v=$(head -1 "$f")
+	rm -f "$f"
+	[ "$rc" = 0 ] && [ -n "$v" ] || return 1
+	printf '%s\n' "$v"
 }
 
 codex=
@@ -98,7 +107,7 @@ else
 		fi
 		echo "codex-local-review: skipping $candidate: it does not run (empty or broken)" >&2
 	done < <(
-		type -ap codex || true
+		[ -z "$path_codex" ] || printf '%s\n' "$path_codex"
 		# newest first by the extension's own version, whichever tree (remote or desktop) holds it:
 		# sorting the whole path would put every desktop copy ahead of every server one
 		find "$HOME"/.vscode-server/extensions "$HOME"/.vscode/extensions \( -path '*/openai.chatgpt-*/bin/*/codex' \

@@ -27,7 +27,7 @@ expect() { # expect <name> <got> <want>
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/tools"
-for t in bash dirname basename find sort head sed timeout cut; do
+for t in bash dirname basename find sort head sed timeout cut mktemp rm sleep yes; do
 	ln -s "$(command -v "$t")" "$tmp/tools/$t"
 done
 
@@ -38,7 +38,7 @@ check() {
 	shift 2
 	local out code
 	out=$(cd "${CWD:-$repo}" && env -i PATH="${extra:+$extra:}$tmp/tools" HOME="$home" "$@" \
-		bash "$repo/scripts/codex_local_review.sh" --check-codex 2>/dev/null)
+		timeout 30 bash "$repo/scripts/codex_local_review.sh" --check-codex 2>/dev/null)
 	code=$?
 	printf '%s|%s' "$code" "$(printf '%s\n' "$out" | head -1)"
 	[ -z "${LINE2:-}" ] || printf '|%s' "$(printf '%s\n' "$out" | sed -n 2p)"
@@ -97,6 +97,21 @@ expect "the newest copy across the remote and desktop trees is chosen" "$(check 
 
 # a bare $CODEX found through a relative PATH entry is the caller's
 expect "a bare \$CODEX on a relative PATH entry is the caller's" "$(CWD=$tmp check "$tmp/h0" "good" CODEX=codex)" "0|$tmp/good/codex"
+
+# a relative PATH entry in the automatic search is the caller's directory too
+expect "a codex on a relative PATH entry is the caller's" "$(CWD=$tmp check "$tmp/h0" "good")" "0|$tmp/good/codex"
+
+# a working one that leaves a child holding its stdout is accepted, promptly
+mkdir -p "$tmp/bg"
+printf '#!/bin/sh\nsleep 30 &\necho "codex-cli 0.0.0-test"\n' >"$tmp/bg/codex"
+chmod +x "$tmp/bg/codex"
+expect "a codex that leaves a child on its stdout does not hang the probe" \
+	"$(check "$tmp/h0" "" CODEX="$tmp/bg/codex" CODEX_PROBE_TIMEOUT=2)" "0|$tmp/bg/codex"
+
+# one that floods --version is stopped at the size limit and refused
+printf '#!/bin/sh\nexec yes codex-cli\n' >"$tmp/flood-codex"
+chmod +x "$tmp/flood-codex"
+expect "a codex that floods --version is refused" "$(check "$tmp/h0" "" CODEX="$tmp/flood-codex")" "3|"
 
 # nothing that runs
 h=$tmp/h3
