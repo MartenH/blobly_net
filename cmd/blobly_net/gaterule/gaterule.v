@@ -30,7 +30,8 @@ pub const undecidable = '? undecidable'
 
 // A GATE ANSWERS TWO QUESTIONS, and evidence moves only one of them. Besides the reading, the
 // gate is what scopes the DATABASES a rejoined message is named and decoded against, and what
-// a watch stores as its wire -- `dbs_for_gate`, `db_indices_for_gate`, `TraceRow.wire`. A flat
+// a row is filed and a watch scoped under -- `dbs_for_gate`, `db_indices_for_gate`, and
+// `TraceRow.wire` through `trace_wire`, which keeps an unplaced bus apart by its own label. A flat
 // `? evident` sentinel replaced the placement, so those matched no configured wire and fell
 // through to EVERY database in the project: an evidenced recording could name a transfer from
 // an unrelated wire's first matching PGN, which is precisely the mixing that scoping exists to

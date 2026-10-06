@@ -275,6 +275,10 @@ mut:
 	// transport.destination_key per interface, for the emit path (dest_cached_locked). Reset with
 	// the runtime view.
 	dest_cache map[string]string
+	// Each configured CAN wire's databases, as indices into `dbs` in lookup order (scope.v):
+	// built once per runtime view, because the decode of every row, watch and selection asks
+	// it per frame and resolving it costs file-system calls per channel and database.
+	wire_dbs   map[string][]int
 	recording  bool
 	rec        []canlog.LogEntry // captured while recording; written on stop
 	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
@@ -311,8 +315,9 @@ mut:
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
-	sel_wire      string  // the wire the selection came off; scopes a rejoined message's lookup
+	sel_wire      string  // the wire the selection came off (#330); '' = picked from a database, bound by bind_selection
 	sel_da        int = -1 // and its receiver, where a PDU2 identifier cannot carry one
+	sel_db        int = -1 // the database the selection was picked from (-1: from a row), which bind_selection binds by
 	sel_tp        bool    // the selection is a rejoined TP message, not a frame (see Watch.tp)
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
@@ -353,6 +358,7 @@ mut:
 	// answers are reported as the selected one's.
 	diag_sel_key string
 	diag_auto    DiagAutopress // BLOBLY_DIAG_PRESS dev hook (diag_auto.v); GUI thread only
+	plot_auto PlotAuto // BLOBLY_PLOT (plot_auto.v)
 	// the last view diag_publish_view handed the holder; GUI thread only
 	diag_pub_open bool
 	diag_pub_key  string
@@ -762,29 +768,7 @@ type Watch = watchrule.Ident
 // message, and the answer alone cannot tell them apart.
 fn (app &App) db_indices_for_gate(gate string) []int {
 	// the placement, not the reading — `dbs_for_gate`'s rule, asked here too (gaterule)
-	wire := gaterule.placement(gate)
-	mut out := []int{}
-	mut seen := map[string]bool{}
-	for c in app.chans {
-		if c.doip || c.someip {
-			continue
-		}
-		if transport.destination_key_for(c.adapter, c.iface) != wire {
-			continue
-		}
-		for raw in c.databases {
-			ref := candb.canonical_database_ref(app.resolve_asset(raw))
-			if ref in seen {
-				continue
-			}
-			seen[ref] = true
-			idx := app.dbs_paths.index(ref)
-			if idx >= 0 {
-				out << idx
-			}
-		}
-	}
-	return out
+	return app.wire_dbs[gaterule.placement(gate)] or { []int{} }
 }
 
 // wires_of_db lists the wires whose databases include the one at `di` — what a DBC edit is an
@@ -1292,6 +1276,8 @@ fn (mut app App) rebuild_from_proj() {
 	app.dbs = []
 	app.dbs_paths = []
 	app.dbs_by_iface = map[string][]candb.Database{}
+	old_wires := app.wire_dbs.keys()
+	app.wire_dbs = map[string][]int{} // indices into the array just emptied; rebuilt below
 	// selection indices go stale across a rebuild; the dragged dividers are the operator's and
 	// stay (they are remembered across runs too, codex #307 r7)
 	app.dbc_ed = DbcEd{
@@ -1308,6 +1294,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.eth_method = 0
 	app.manifest = telem.Manifest{}
 	app.sel_id = -1
+	app.sel_db = -1
 	app.mu.unlock()
 	for ci, ch in proj.channels {
 		app.chans << Chan{
@@ -1468,13 +1455,14 @@ fn (mut app App) rebuild_from_proj() {
 			}
 		}
 	}
-	for db in app.dbs {
+	for di, db in app.dbs {
 		if db.messages.len > 0 {
 			app.sel_id = int(db.messages[0].id)
 			app.sel_ext = db.messages[0].ext
 			app.sel_tp = false
 			app.sel_wire = ''
 			app.sel_da = -1
+			app.sel_db = di
 			break
 		}
 	}
@@ -1523,6 +1511,8 @@ fn (mut app App) rebuild_from_proj() {
 	app.j1939_undecoded = map[string]bool{}
 
 	app.dest_cache = map[string]string{}
+	app.wire_dbs = app.build_wire_dbs()
+	app.unbind_lost_wires(old_wires)
 	// A recording on screen was stamped and rejoined under the reading in force when it was
 	// loaded; in auto that reading just moved with the databases (a J1939 DBC attached or
 	// removed), so the file is re-imported under the new one, as the J1939 button does when

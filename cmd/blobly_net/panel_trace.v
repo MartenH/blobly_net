@@ -5,6 +5,7 @@ import transport
 import candb
 import j1939
 import vgui
+import watchrule
 
 // trace_capture_chips renders the latched capture states — recording destination, and the
 // viewing-a-recording banner with its NON-destructive exit. Shared by both trace panels: the
@@ -573,15 +574,18 @@ fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr b
 	// share an id — a node may send a short form of the same PGN — and one group holding both
 	// would show a 1785-byte payload's delta against an 8-byte one. And a TP group is keyed by
 	// its WIRE too, since two channels of one name on two wires may define the PGN two ways
-	// and the group decodes through its newest row's wire (codex on #329); a frame's key is
-	// unchanged, `wire` being read only for a TP row.
+	// and the group decodes through its newest row's wire (codex on #329). A frame's group too
+	// since #330: it decodes through its wire's databases, and a click on it selects that
+	// wire for the Signals panel, so one group must not hold two wires' rows. ESCAPED, because
+	// the key is also an ImGui id and an unplaced recorded bus's wire starts with a NUL.
+	w := watchrule.id_safe(wire)
 	if tp {
 		// AND THE DESTINATION: a connection-mode transfer of a PDU2 group goes to one node and
 		// its composed identifier has no field for that, so two of them from one sender to
 		// different receivers were one group (codex).
-		return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}|${wire}|${da}'
+		return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}|${w}|${da}'
 	}
-	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}'
+	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}|${tp}|${w}'
 }
 
 // gkey_someip: a SOME/IP message's group identity. Prefixed so it can never collide with a CAN
@@ -614,8 +618,8 @@ fn (r TraceRow) gkey() string {
 
 // gkey_frame: the producer-side identity, for the paths that count a frame without holding
 // its TraceRow (the push sites' gcount writes, and an import's trimmed fast path).
-fn gkey_frame(origin string, ch string, f transport.CanFrame) string {
-	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr, false, '', -1)
+fn gkey_frame(origin string, ch string, wire string, f transport.CanFrame) string {
+	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr, false, wire, -1)
 }
 
 // origin_mark renders the wire verdict for a frame we emitted. Two distinct failures, two
@@ -850,6 +854,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				app.sel_tp = r.tp
 				app.sel_wire = r.wire
 				app.sel_da = r.tp_da
+				app.sel_db = -1
 			}
 			// right-click a row → context menu (plot its signals / add to filter). Both entries
 			// are CAN-only for the same reason: the lookup goes to the loaded DBCs, so a SOME/IP
