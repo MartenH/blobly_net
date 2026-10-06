@@ -54,6 +54,55 @@ pub fn doip_hosting(chs []Channel) []DoipHosting {
 	return ports.map(DoipHosting{ port: it, hosts: hosts[it] })
 }
 
+// doip_retained_ports lists the ports the run's simulated entities keep: those on a NIC or
+// wildcard address, which `doip_hosting` does not move. A moved entity must not be given one of
+// these numbers, since the retained bind (on `0.0.0.0`, say) would cover it.
+pub fn doip_retained_ports(chs []Channel) []int {
+	mut out := []int{}
+	for ch in chs {
+		if !hosts_entity(ch) {
+			continue
+		}
+		host, port := ch.doip_endpoint()
+		if !is_loopback_host(normalised_bind_host(host)) && port !in out {
+			out << port
+		}
+	}
+	return out
+}
+
+// PortProber holds a port for the caller once it binds it: `hold` binds the wildcard of the
+// family asked (the IPv6 one is dual-stack) and keeps it, answering false when the bind fails.
+pub interface PortProber {
+mut:
+	hold(port int, v6 bool) bool
+}
+
+// choose_doip_ports picks a port for every entry of `hosting`: the first of `candidates` that is
+// neither retained, nor already given out, nor refused by `prober`. `is_v6` answers for a host as
+// the entity's bind resolves it, so a name that resolves to ::1 is probed on IPv6.
+pub fn choose_doip_ports(hosting []DoipHosting, retained []int, candidates []int, is_v6 fn (string) bool, mut prober PortProber) !map[int]int {
+	mut moved := map[int]int{}
+	mut given := map[int]bool{}
+	for hs in hosting {
+		v6 := hs.hosts.any(is_v6(it))
+		for cand in candidates {
+			if cand in retained || cand in given {
+				continue
+			}
+			if prober.hold(cand, v6) {
+				moved[hs.port] = cand
+				given[cand] = true
+				break
+			}
+		}
+		if hs.port !in moved {
+			return error('no free candidate port for ${hs.hosts.join(', ')} (from ${hs.port})')
+		}
+	}
+	return moved
+}
+
 // with_doip_ports returns `chs` with every DoIP row that addresses a moved entity's endpoint —
 // its host and its port as `doip_hosting` reported them — rewritten to the new port, and one line
 // per rewritten row saying so. A row whose endpoint no simulated entity binds is left as written,

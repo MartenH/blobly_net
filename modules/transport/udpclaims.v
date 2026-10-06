@@ -178,6 +178,13 @@ fn canonical_host(host string) string {
 	return if i := s.last_index(':') { unbracket(s[..i]) } else { s }
 }
 
+// binds_v6 reports whether a bind on `host` lands on IPv6: `canonical_host`'s resolution, the
+// one `claim_endpoint` and so a DoIP entity's listen use, so a probe of the port picks the same
+// family the entity will bind.
+pub fn binds_v6(host string) bool {
+	return is_v6(canonical_host(host))
+}
+
 // overlaps: could one datagram be delivered to either of these two binds?
 fn overlaps(ha string, pa int, hb string, pb int) bool {
 	if pa != pb {

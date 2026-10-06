@@ -99,11 +99,14 @@ fn main() {
 	// runs on one machine do not collide (#411). Held until each entity binds, below.
 	mut probes := map[int]&net.TcpListener{}
 	if !project_ports {
-		moved, held := choose_doip_ports(project.doip_hosting(proj.channels)) or {
-			eprintln('cannot host the DoIP entities: ${err}')
+		mut prober := &TcpProber{}
+		band := testports.doip_entities
+		moved := project.choose_doip_ports(project.doip_hosting(proj.channels), project.doip_retained_ports(proj.channels),
+			band.candidates(), transport.binds_v6, mut prober) or {
+			eprintln('cannot host the DoIP entities: ${err} in ${band.base}..${band.last()}; --project-ports keeps the project\'s')
 			exit(1)
 		}
-		probes = held.clone()
+		probes = prober.held.clone()
 		chs, notes := project.with_doip_ports(proj.channels, moved)
 		proj.channels = chs
 		for n in notes {
@@ -577,39 +580,24 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	return s
 }
 
-// choose_doip_ports picks, for every port the simulated loopback entities bind, the first
-// candidate whose WILDCARD address binds TCP, and returns the move plus the listeners holding
-// them, keyed by the new port. TCP verifies (testports), and the wildcard is refused while ANY
-// address listens on the port, so a candidate another run holds on any loopback address is
-// skipped. The entity binds UDP on the same number and announces to it, so that port is settled
-// too. What is left is the instant between releasing a probe and the entity's bind.
-fn choose_doip_ports(hosting []project.DoipHosting) !(map[int]int, map[int]&net.TcpListener) {
-	mut moved := map[int]int{}
-	mut held := map[int]&net.TcpListener{}
-	for hs in hosting {
-		// an IPv6 socket here is dual-stack, so [::] covers both families
-		v6 := hs.hosts.any(doip.addr_family(it) == .ip6)
-		for cand in testports.doip_entities.candidates() {
-			if cand in held {
-				continue
-			}
-			l := if v6 {
-				net.listen_tcp(.ip6, '[::]:${cand}') or { continue }
-			} else {
-				net.listen_tcp(.ip, '0.0.0.0:${cand}') or { continue }
-			}
-			moved[hs.port] = cand
-			held[cand] = l
-			break
-		}
-		if hs.port !in moved {
-			for _, mut l in held {
-				l.close() or {}
-			}
-			return error('no free port in ${testports.doip_entities.base}..${testports.doip_entities.last()} for ${hs.hosts.join(', ')} (from ${hs.port}); --project-ports keeps the project\'s')
-		}
+// TcpProber holds each chosen port with a listener on its wildcard until the entity binds it.
+// TCP verifies (testports), and the wildcard is refused while ANY address listens on the port, so
+// a candidate another run holds on any loopback address is skipped. The entity binds UDP on the
+// same number and announces to it, so that port is settled too. What is left is the instant
+// between releasing a probe and the entity's bind.
+struct TcpProber {
+mut:
+	held map[int]&net.TcpListener
+}
+
+fn (mut p TcpProber) hold(port int, v6 bool) bool {
+	l := if v6 {
+		net.listen_tcp(.ip6, '[::]:${port}') or { return false }
+	} else {
+		net.listen_tcp(.ip, '0.0.0.0:${port}') or { return false }
 	}
-	return moved, held
+	p.held[port] = l
+	return true
 }
 
 // release_probe closes the listener holding `port`, if any, so the entity can bind it.

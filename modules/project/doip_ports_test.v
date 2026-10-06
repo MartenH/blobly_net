@@ -100,3 +100,64 @@ fn test_an_explicit_announcement_port_moves_with_the_entity() {
 	assert with_moved_port('ff02::1:13400', 13400, 30004) == 'ff02::1:13400', 'an unbracketed v6 host'
 	assert with_moved_port('10.0.0.255:13555', 13400, 30004) == '10.0.0.255:13555'
 }
+
+struct FakeProber {
+mut:
+	busy  []int // ports another run holds
+	held  []int
+	fam6  []bool
+}
+
+fn (mut f FakeProber) hold(port int, v6 bool) bool {
+	if port in f.busy {
+		return false
+	}
+	f.held << port
+	f.fam6 << v6
+	return true
+}
+
+fn never_v6(h string) bool {
+	return h.contains(':')
+}
+
+fn test_choice_skips_retained_given_and_busy_ports() {
+	chs := [
+		doip_row('A', '127.0.0.1:13400', ['SUT']),
+		doip_row('B', '127.0.0.4:13555', ['SUT']),
+		doip_row('Wild', '0.0.0.0:30000', ['SUT']), // kept, and covers 30000 on every address
+		doip_row('Tester', '192.168.0.51:30001', []), // hosts nothing: not retained
+	]
+	retained := doip_retained_ports(chs)
+	assert retained == [30000]
+	mut p := FakeProber{
+		busy: [30001]
+	}
+	moved := choose_doip_ports(doip_hosting(chs), retained, [30000, 30001, 30002, 30003],
+		never_v6, mut p)!
+	assert moved == {
+		13400: 30002
+		13555: 30003
+	}
+	assert p.held == [30002, 30003], 'the retained port is never probed, a given one never twice'
+}
+
+fn test_choice_probes_the_family_the_host_resolves_to() {
+	chs := [doip_row('L', 'localhost:13400', ['SUT'])]
+	mut p := FakeProber{}
+	_ := choose_doip_ports(doip_hosting(chs), [], [30010], fn (h string) bool {
+		return h == 'localhost' // a resolver answering ::1
+	}, mut p)!
+	assert p.fam6 == [true]
+}
+
+fn test_choice_fails_when_every_candidate_is_refused() {
+	mut p := FakeProber{
+		busy: [30020]
+	}
+	if _ := choose_doip_ports(doip_hosting([doip_row('A', '127.0.0.1:13400', ['SUT'])]),
+		[], [30020], never_v6, mut p)
+	{
+		assert false, 'a refused candidate was given out'
+	}
+}
