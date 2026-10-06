@@ -1,6 +1,7 @@
 module main
 
 import candb
+import doip
 import os
 import time
 import genhome
@@ -208,6 +209,21 @@ fn (mut app App) add_bus() {
 // add_bus_spec appends a bus for a specific adapter+address (used by + Add bus, the Discover
 // dialog's Add-ticked, and the quick-add buttons). The name defaults to the address.
 fn (mut app App) add_bus_spec(adapter string, address string) {
+	app.add_channel(project.Channel{
+		name:    '' // from the address
+		adapter: adapter
+		address: address
+		typ:     if adapter in ['doip', 'someip'] { adapter } else { 'can' }
+	})
+}
+
+// add_channel is THE add path: every new row, a found DoIP entity included, goes through it.
+// `spec` carries the adapter, address and whatever the caller already knows (a DoIP entity's
+// logical addresses and VIN); the name is made unique here, the interface composed, the
+// listen-only default applied.
+fn (mut app App) add_channel(spec project.Channel) {
+	adapter := spec.adapter
+	address := spec.address
 	app.commit_cfg()
 	// APPENDING A ROW IS AN EDIT TO THE NAMESPACE, so the same reconciliation the other edits get
 	// applies here (codex round 6 on #97). `unique_bus_name` keeps the new name clear of existing
@@ -224,14 +240,18 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 		}
 		row_map << j // the new row goes on the end; no existing row moves
 	}
-	base := if address != '' { address } else { adapter }
+	base := if spec.name != '' {
+		spec.name
+	} else if address != '' {
+		address
+	} else {
+		adapter
+	}
 	app.proj.channels << project.Channel{
-		name:    app.unique_bus_name(base)
-		adapter: adapter
-		address: address
-		iface:   project.compose_iface(adapter, address)
-		typ:     'can'
-		mode:    .normal
+		...spec
+		name:  app.unique_bus_name(base)
+		iface: project.compose_iface(adapter, address)
+		mode:  .normal
 		// Normal unless the adapter rule says otherwise — project.adapter_starts_silent, which
 		// answers false for every adapter since 2026-08-29 and says why.
 		listen_only: project.adapter_starts_silent(adapter)
@@ -266,6 +286,13 @@ fn (app &App) unique_bus_name(base string) string {
 		n++
 	}
 	return base
+}
+
+// open_discover opens the Discover dialog on a fresh scan, with a CANsub browse under way.
+fn (mut app App) open_discover() {
+	app.refresh_discovery()
+	app.start_cansub_browse()
+	app.disc_open = true
 }
 
 // refresh_discovery re-scans the machine's transports for the Discover dialog.
@@ -445,6 +472,107 @@ fn cansub_browse_worker(app &App, gen u64) {
 	}
 	a.mu.unlock()
 	vgui.wake()
+}
+
+// doip_key identifies one found DoIP entity: the address it is dialled at and its logical
+// address — two ECUs behind one gateway answer from one address.
+fn doip_key(f project.DoipFound) string {
+	return '${f.address}#${f.logical:04X}'
+}
+
+// doip_find_window_ms is how long a find listens for answers: one request, every entity that
+// hears it may answer, and nothing says how many will. ISO 13400-2's A_DoIP_Ctrl, the time a
+// tester waits for an identification response (an entity may delay a broadcast's at random).
+const doip_find_window_ms = 2000
+
+// start_doip_find sends a vehicle identification request on its own thread, to `target`
+// (host[:port] in a DoIP channel's grammar; empty is 127.0.0.1:13400) — or, with `everyone`,
+// to the IPv4 broadcast address on that port.
+fn (mut app App) start_doip_find(target string, everyone bool) {
+	probe := project.Channel{
+		typ:   'doip'
+		iface: project.compose_iface('doip', target.trim_space())
+	}
+	host, port := probe.doip_endpoint()
+	// A port the grammar refused is kept in the host (one colon left over); asked as it is,
+	// that reads as an IPv6 literal and fails with a resolve error that never names the port.
+	// So is a bracket without its partner (eth_endpoint keeps `[::1` whole for the dial to fail).
+	if host.count(':') == 1 || host.contains('[') || host.contains(']') {
+		note := 'DoIP find: "${target.trim_space()}" is not host or host:port (a port is 1-65535, an IPv6 address goes in [ ])'
+		app.mu.lock()
+		app.disc_doip_note = note
+		app.mu.unlock()
+		app.notify(note)
+		return
+	}
+	app.mu.lock()
+	app.disc_doip_busy++
+	gen := app.disc_doip_gen
+	app.mu.unlock()
+	spawn doip_find_worker(app, if everyone { '255.255.255.255' } else { host }, port,
+		everyone, gen)
+}
+
+fn doip_find_worker(app &App, host string, port int, everyone bool, gen u64) {
+	mut a := unsafe { app }
+	where := if everyone { 'the network (broadcast, port ${port})' } else { '${host}:${port}' }
+	mut note := ''
+	got := doip.identify(host, port, doip_find_window_ms) or {
+		note = 'DoIP find on ${where}: ${err.msg()}'
+		[]doip.Announcement{}
+	}
+	if note == '' && got.len == 0 {
+		note = if everyone {
+			'no DoIP entity answered on ${where}. A host that drops unsolicited UDP (WSL) cannot hear answers to a broadcast — ask the entity\'s address instead.'
+		} else {
+			'no DoIP entity answered at ${where}'
+		}
+	} else if note == '' {
+		note = '${got.len} DoIP ${if got.len == 1 { 'entity' } else { 'entities' }} answered on ${where}'
+	}
+	a.mu.lock()
+	if a.disc_doip_gen != gen {
+		// Refresh since this find began: its answers belong to the list it cleared
+		a.disc_doip_busy--
+		a.mu.unlock()
+		return
+	}
+	for ann in got {
+		f := project.DoipFound{
+			// Asked by address, the entity is reached at the address ASKED — a hostname, or an
+			// IPv6 scope the answer's source does not carry, is what the row will dial and
+			// what it is matched by. Only a broadcast's answers need their source.
+			address: if everyone { ann.dial_address(port) } else { transport.udp_bind_addr(host, port) }
+			logical: ann.info.logical_address
+			vin:     ann.info.vin_text()
+		}
+		k := doip_key(f)
+		mut replaced := false
+		for j, old in a.disc_doip {
+			if doip_key(old) == k {
+				a.disc_doip[j] = f
+				replaced = true
+			}
+		}
+		if !replaced {
+			a.disc_doip << f
+		}
+	}
+	a.disc_doip_note = note
+	a.disc_doip_busy--
+	a.mu.unlock()
+	a.notify(note) // the Log too: a bus row's find shows no note of its own when it fails
+}
+
+// doip_find_state reads the DoIP mailbox under the lock: what has been found, whether a find
+// is still out, and the last one's outcome.
+fn (mut app App) doip_find_state() ([]project.DoipFound, bool, string) {
+	app.mu.lock()
+	rows := app.disc_doip.clone()
+	busy := app.disc_doip_busy > 0
+	note := app.disc_doip_note
+	app.mu.unlock()
+	return rows, busy, note
 }
 
 // cansub_browse_state reads the mailbox under the lock for the frame: whether a browse is in
