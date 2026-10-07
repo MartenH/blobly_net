@@ -246,7 +246,10 @@ fn draw_diag_log(mut app App, sel_t DiagTarget) {
 	// the target column only where the rows name more than one
 	many := rows.any(it.key != rows[0].key)
 	vgui.child_wh('##diaglogbox', 0, if table_h > 60 * sc { table_h } else { 60 * sc })
-	if vgui.table_begin(if many { '##diaglog6' } else { '##diaglog5' }, if many { 6 } else { 5 }) {
+	// request and answer keep ~250 px each in a narrow panel: it scrolls sideways instead
+	min_w := (if many { 820 } else { 740 }) * sc
+	if vgui.table_begin_wide(if many { '##diaglog6' } else { '##diaglog5' }, if many { 6 } else { 5 },
+		min_w) {
 		vgui.table_setup_col('time', 76 * sc)
 		if many {
 			vgui.table_setup_col('target', 72 * sc)

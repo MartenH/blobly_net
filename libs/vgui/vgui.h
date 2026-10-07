@@ -155,6 +155,7 @@ int  vgui_key_enter_pressed(void);
 float vgui_line_height(void);
 float vgui_frame_height(void);
 int  vgui_table_begin_flat(const char* id, int cols);
+int  vgui_table_begin_wide(const char* id, int cols, float min_w);
 void vgui_table_cell_dim(const char* s);
 int  vgui_input_text_enter(const char* label, char* buf, int bufsize);
 int  vgui_window_focused(void);
