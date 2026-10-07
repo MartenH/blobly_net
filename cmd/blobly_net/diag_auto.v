@@ -74,8 +74,10 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 			// a press that never finishes — refused in silence, or a defect — must not hold the
 			// run until VGUI_FRAMES ends it with no report
 			if time.sys_mono_now() - au.press_ns > autopress_timeout_ns {
+				// the press is still out, so no later step could run: end the run with its report
 				au.waiting = false
-				println('diag-autopress: ${au.steps[au.at - 1]} no line within ${autopress_timeout_ns / 1_000_000_000} s; going on')
+				println('diag-autopress: ${au.steps[au.at - 1]} no line within ${autopress_timeout_ns / 1_000_000_000} s; aborting the run')
+				app.diag_autopress_report()
 			}
 			return
 		}
