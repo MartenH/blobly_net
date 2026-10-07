@@ -136,6 +136,7 @@ fn test_the_budget_bounds_the_first_wait_and_pending_is_named() {
 	mut d, _ := client_with([[u8(0x7F), 0x22, 0x78]])
 	d.read_data_by_identifier(0xF190) or {
 		assert err.msg().contains('still pending'), err.msg()
+		assert err is PendingExpired, 'a server silent after 0x78 is not told apart: ${err}'
 		return
 	}
 	assert false, 'a pending that never completed was accepted'
@@ -489,4 +490,26 @@ fn test_a_malformed_read_answer_is_undecodable_not_a_failure() {
 	} else {
 		assert err !is UndecodableAnswer
 	}
+}
+
+// a suppressed request answered 0x78 and then positively is done, and said so (a keep-alive
+// reads this as the session kept, #401)
+fn test_raw_suppressed_pending_then_positive_is_success() {
+	mut c, _ := client_with([[u8(0x7F), 0x3E, 0x78], [u8(0x7E), 0x00]])
+	answered := c.raw_suppressed([u8(0x3E), 0x00]) or { panic(err) }
+	assert !answered
+	assert c.last.pending == 1
+}
+
+// a CAN bus closed under a held channel ends the pre-send drain at once, as the carrier's error —
+// not 64 failed reads called a channel that is not quiet (#401)
+fn test_a_closed_bus_ends_the_drain_as_the_carriers_error() {
+	mut ch := isotp.open_software('inproc:uds-closed-drain', 0x7E0, 0x7E8, false) or { panic(err) }
+	mut c := new_client(ch)
+	ch.close()
+	c.read_data_by_identifier(0xF190) or {
+		assert err.msg().ends_with('bus is closed'), err.msg()
+		return
+	}
+	assert false, 'a request on a closed bus succeeded'
 }
