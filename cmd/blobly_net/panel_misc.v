@@ -1240,10 +1240,7 @@ fn draw_diag(mut app App) {
 	app.diag_sys_refresh()
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
 	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
-	targets := app.diag_listed_targets()
-	if app.running {
-		app.diag_run_targets = targets
-	}
+	targets := app.diag_targets()
 	// Follow the SELECTION, not the position: if the list changed under us, find where the
 	// chosen target went rather than keeping an index that now names something else.
 	if app.diag_sel_key != '' {
@@ -1377,6 +1374,42 @@ fn draw_diag_strip(mut app App, st DiagHoldStatus) {
 	vgui.separator()
 }
 
+// diag_col sets up a column of a Diagnostics table. With `fits` it is FIXED at the width its
+// widest content needs (the header included): a value read later never moves it, and the
+// operator may drag it (the tables are resizable). Without, it stretches over what is left —
+// the value, the answer — and a fixed column takes at most half the panel. Every table in the
+// panel sizes its columns this one way.
+fn diag_col(label string, fits []string) {
+	if fits.len == 0 {
+		vgui.table_setup_col(label, 0)
+		return
+	}
+	mut w := vgui.text_w(label)
+	for f in fits {
+		t := vgui.text_w(f)
+		if t > w {
+			w = t
+		}
+	}
+	// never more than half the panel, so the stretch column keeps room in a narrow dock
+	half := vgui.content_avail_w() / 2
+	w += vgui.cell_pad_w()
+	vgui.table_setup_col(label, if w > half && half > 0 { half } else { w })
+}
+
+// diag_button_col is a fixed column holding the buttons `labels` (one per line), as wide as the
+// widest of them.
+fn diag_button_col(labels []string) {
+	mut w := f32(0)
+	for l in labels {
+		t := vgui.button_w(l)
+		if t > w {
+			w = t
+		}
+	}
+	vgui.table_setup_col('', w + vgui.cell_pad_w())
+}
+
 // diag_button is a button that sends a request: dimmed while the measurement is stopped, its
 // click still answered — the press refuses with a line in the log saying why (vgui has no
 // disabled scope, and a button that silently does nothing explains nothing).
@@ -1414,7 +1447,8 @@ struct DiagPane {
 fn (mut app App) diag_tab_area(id string) DiagPane {
 	sc := app.prefs.ui_scale
 	lo := 80 * sc
-	hi := vgui.content_avail_h() - app.diag_log_min_h()
+	// the divider's grip and the spacing around it come out of the log's share too
+	hi := vgui.content_avail_h() - app.diag_log_min_h() - vgui.frame_height()
 	h, kept := panerule.drawn(app.diag_tab_h, 260, sc, lo, hi)
 	app.diag_tab_h = kept
 	vgui.child_wh(id, 0, h)

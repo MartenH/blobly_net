@@ -55,7 +55,8 @@ pub fn ra_code_hint(code u8, tester u16) string {
 	return match code {
 		0x00 { 'this entity does not accept tester 0x${tester:04X}' }
 		0x01 { 'the entity has no free connection: another tester holds it' }
-		0x02, 0x03 { 'tester 0x${tester:04X} is already active on another connection' }
+		0x02 { 'this connection was already activated with another source address' }
+		0x03 { 'tester 0x${tester:04X} is already active on another connection' }
 		0x04 { 'the entity wants authentication first' }
 		0x07 { 'the entity accepts only TLS connections' }
 		else { '' }

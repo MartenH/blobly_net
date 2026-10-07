@@ -697,18 +697,17 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 }
 
 fn draw_dtc_table(mut app App, v DtcView, desc DiagDesc, busy bool) {
-	sc := app.prefs.ui_scale
 	if v.rows.len == 0 {
 		vgui.text_dim('none')
 		return
 	}
-	if !vgui.table_begin_flat('##dtcs', 4) {
+	if !vgui.table_begin_flat('##dtcs2', 4) {
 		return
 	}
-	vgui.table_setup_col('DTC', 72 * sc)
-	vgui.table_setup_col('name', 0)
-	vgui.table_setup_col('status', 0)
-	vgui.table_setup_col('o/a/c', 44 * sc)
+	diag_col('DTC', ['U0000-00'])
+	diag_col('name', [])
+	diag_col('status', [])
+	diag_col('o/a/c', ['255/255/255'])
 	vgui.table_headers()
 	for r in v.rows {
 		vgui.table_row()

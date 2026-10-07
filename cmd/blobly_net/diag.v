@@ -14,6 +14,21 @@ fn (app &App) diag_iface_opt() ?string {
 	return if iface == '' { none } else { iface }
 }
 
+// diag_default_iface is the wire the default 0x7E0/0x7E8 target is on: the first running
+// monitored channel in a run, and stopped the first one a run would read (monitorable) — the
+// same row whenever its reader opens, so the target keeps its key across Start and Stop.
+fn (app &App) diag_default_iface() ?string {
+	if app.running {
+		return app.diag_iface_opt()
+	}
+	for c in app.chans {
+		if c.monitorable() {
+			return c.iface
+		}
+	}
+	return none
+}
+
 fn (app &App) diag_iface() string {
 	for c in app.chans {
 		if c.monitorable() && c.running {
@@ -69,7 +84,9 @@ fn (app &App) diag_targets() []DiagTarget {
 	}
 	a.mu.unlock()
 	mut out := []DiagTarget{}
-	if hw := app.diag_iface_opt() {
+	// the default target's wire: the running one in a run, the one that will be read once
+	// stopped — one key either way, so the selection and what was read under it survive a Stop
+	if hw := app.diag_default_iface() {
 		if !plan.any(it.key == diag_key_can(hw, diag_tx_id, diag_rx_id)) {
 			out << DiagTarget{
 				key:   diag_key_can(hw, diag_tx_id, diag_rx_id)
@@ -139,16 +156,6 @@ fn (app &App) diag_targets() []DiagTarget {
 		}
 	}
 	return out
-}
-
-// diag_listed_targets is what the panel lists: the live list while a run is on, and once stopped
-// the one the run last listed — the views and the log were read under those keys, and a
-// stopped default target (no running channel) would otherwise be another key. GUI thread.
-fn (app &App) diag_listed_targets() []DiagTarget {
-	if !app.running && app.diag_run_targets.len > 0 {
-		return app.diag_run_targets
-	}
-	return app.diag_targets()
 }
 
 fn (mut app App) diag_done() {

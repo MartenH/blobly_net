@@ -359,7 +359,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	}
 	if own.len > 0 {
 		vgui.separator_text('${desc.node}')
-		draw_did_table(mut app, '##didown', own, view, desc, busy, hide)
+		draw_did_table(mut app, '##didown2', own, view, desc, busy, hide)
 	}
 	// a DID read by number that neither list has
 	mut other := []sysview.DidDesc{}
@@ -373,7 +373,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	other.sort(a.id < b.id)
 	if other.len > 0 {
 		vgui.separator_text('read by number')
-		draw_did_table(mut app, '##didother', other, view, desc, busy, hide)
+		draw_did_table(mut app, '##didother2', other, view, desc, busy, hide)
 	}
 	// the ISO identification DIDs: every one a row, the ones this ECU refused dimmed with its
 	// answer — a refusal in one session is not one in the next, and the row's Read asks again
@@ -383,7 +383,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	}).len
 	head := if refused > 0 { '${iso.len}, ${refused} refused' } else { '${iso.len}' }
 	if vgui.tree_node_open('ISO identification (${head})##diso') {
-		draw_did_table(mut app, '##didiso', iso, view, desc, busy, hide)
+		draw_did_table(mut app, '##didiso2', iso, view, desc, busy, hide)
 		vgui.tree_pop()
 	}
 	app.diag_tab_divider('##did_split', pane)
@@ -392,7 +392,6 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 }
 
 fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, desc DiagDesc, busy bool, hide_refused bool) {
-	sc := app.prefs.ui_scale
 	shown := rows.filter(fn [view, hide_refused] (x sysview.DidDesc) bool {
 		v := view.vals[x.id] or { return true }
 		return !(hide_refused && v.refused)
@@ -404,12 +403,13 @@ fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, 
 	if !vgui.table_begin_flat(id, 4) {
 		return
 	}
-	vgui.table_setup_col('DID', 44 * sc)
-	vgui.table_setup_col('name', 100 * sc) // hover for the gates; the value takes the rest
-	vgui.table_setup_col('value', 0)
-	vgui.table_setup_col('', 62 * sc)
-	vgui.table_headers()
 	d := if desc.ok { desc.desc } else { sysview.EcuDesc{} }
+	// sized by every row the table may list, shown or hidden, so a tick or a read never moves it
+	diag_col('DID', ['FFFF'])
+	diag_col('name', rows.map(if it.name != '' { it.name } else { d.did_name(it.id) })) // hover for the gates
+	diag_col('value', [])
+	diag_button_col(['Read', 'Write…'])
+	vgui.table_headers()
 	for x in shown {
 		vgui.table_row()
 		v := view.vals[x.id] or { DidVal{} }
@@ -492,20 +492,19 @@ fn did_gate_words(x sysview.DidDesc) string {
 // draw_param_table lists the node's parameters by name: each field's value as its coding DID last
 // read it, its default, and — when the ECU exposes a parameter status DID — whether it is coded.
 fn draw_param_table(mut app App, view DidView, desc DiagDesc, busy bool, st DiagHoldStatus) {
-	sc := app.prefs.ui_scale
 	d := desc.desc
 	status_did := d.param_status_did()
 	cols := if status_did != none { 5 } else { 4 }
-	if !vgui.table_begin_flat('##params', cols) {
+	if !vgui.table_begin_flat('##params2', cols) {
 		return
 	}
-	vgui.table_setup_col('parameter', 0)
-	vgui.table_setup_col('value', 0)
-	vgui.table_setup_col('default', 0)
+	diag_col('parameter', d.params.map(it.name))
+	diag_col('value', [])
+	diag_col('default', [])
 	if status_did != none {
-		vgui.table_setup_col('status', 0)
+		diag_col('status', ['uncoded', 'reverted'])
 	}
-	vgui.table_setup_col('', 62 * sc)
+	diag_button_col(['Read', 'Code…'])
 	vgui.table_headers()
 	for i, p in d.params {
 		vgui.table_row()

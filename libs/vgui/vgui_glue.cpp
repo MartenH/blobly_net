@@ -919,12 +919,19 @@ void vgui_help_marker(const char* text) {
 }
 void vgui_text(const char* s) { ImGui::TextUnformatted(s); }
 void vgui_text_dim(const char* s) { ImGui::TextDisabled("%s", s); }
-// dim text wrapped at the window's right edge, for a sentence longer than the dialog is wide.
+// coloured text wrapped at the window's right edge.
 void vgui_text_colored_wrapped(int r, int g, int b, const char* s) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(r/255.f, g/255.f, b/255.f, 1.f));
     ImGui::TextWrapped("%s", s);
     ImGui::PopStyleColor();
 }
+// the width `s` takes in the current font, in px.
+float vgui_text_w(const char* s) { return ImGui::CalcTextSize(s).x; }
+// the width a button labelled `s` takes: its text and the frame padding either side.
+float vgui_button_w(const char* s) { return ImGui::CalcTextSize(s, NULL, true).x + 2.0f * ImGui::GetStyle().FramePadding.x; }
+// the padding a table cell adds either side of its content.
+float vgui_cell_pad_w(void) { return 2.0f * ImGui::GetStyle().CellPadding.x; }
+// dim text wrapped at the window's right edge, for a sentence longer than the dialog is wide.
 void vgui_text_dim_wrapped(const char* s) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
     ImGui::TextWrapped("%s", s);

@@ -263,16 +263,16 @@ fn draw_diag_log(mut app App, sel_t DiagTarget) {
 	vgui.child_wh('##diaglogbox', 0, if table_h > 60 * sc { table_h } else { 60 * sc })
 	// request and answer keep ~250 px each in a narrow panel: it scrolls sideways instead
 	min_w := (if many { 820 } else { 740 }) * sc
-	if vgui.table_begin_wide(if many { '##diaglog6' } else { '##diaglog5' }, if many { 6 } else { 5 },
+	if vgui.table_begin_wide(if many { '##diaglog6b' } else { '##diaglog5b' }, if many { 6 } else { 5 },
 		min_w) {
-		vgui.table_setup_col('time', 76 * sc)
+		diag_col('time', ['00:00.000'])
 		if many {
-			vgui.table_setup_col('target', 72 * sc)
+			diag_col('target', rows.map(it.target.all_before('  ')))
 		}
-		vgui.table_setup_col('request', 0)
-		vgui.table_setup_col('response', 0)
-		vgui.table_setup_col('ms', 44 * sc)
-		vgui.table_setup_col('0x78', 36 * sc)
+		diag_col('request', [])
+		diag_col('response', [])
+		diag_col('ms', ['99999.9'])
+		diag_col('0x78', ['999'])
 		vgui.table_freeze_top()
 		vgui.table_headers()
 		follow := rows.len != ui.rows_shown && vgui.scroll_at_bottom()

@@ -179,6 +179,8 @@ fn test_routing_activation_codes_by_name() {
 	assert ra_code_name(0xE5) == 'OEM-specific'
 	assert ra_code_hint(0x00, 0x0E80) == 'this entity does not accept tester 0x0E80'
 	assert ra_code_hint(0x06, 0x0E80) == ''
+	assert ra_code_hint(0x02, 0x0E80) == 'this connection was already activated with another source address'
+	assert ra_code_hint(0x03, 0x0E80) == 'tester 0x0E80 is already active on another connection'
 	assert RoutingDenied{
 		code:   0x06
 		tester: 0x0E00

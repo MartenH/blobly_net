@@ -489,7 +489,8 @@ fn draw_discover_dialog(mut app App) {
 			for f in found {
 				if app.disc_doip_tick[doip_key(f)] or { false }
 					&& !project.doip_found_in(app.proj.channels, f) {
-					app.add_channel(app.doip_found_row(f))
+					row, _ := app.doip_found_row(f)
+					app.add_channel(row)
 				}
 			}
 			app.disc_doip_tick = map[string]bool{}
@@ -737,9 +738,9 @@ fn (mut app App) draw_discover_doip() {
 			}
 			vgui.table_cell(f.address)
 			vgui.table_cell(logical)
-			row := app.doip_found_row(f)
+			row, described := app.doip_found_row(f)
 			vgui.table_cell('0x${row.tester_addr:04X}')
-			vgui.set_item_tooltip(if row.tester_addr != project.Channel{}.tester_addr {
+			vgui.set_item_tooltip(if described {
 				'the tester the loaded system description lets activate routing at this entity'
 			} else {
 				'the default tester address: no loaded system description names one for this entity'
@@ -751,22 +752,26 @@ fn (mut app App) draw_discover_doip() {
 }
 
 // doip_found_row is the channel "+ Add ticked" adds for a found entity: project.doip_found_channel,
-// its tester the one the loaded system description lets activate routing there
-// (sysview.System.doip_tester_for), else the default.
-fn (app &App) doip_found_row(f project.DoipFound) project.Channel {
+// its tester the one the system description lets activate routing there — the description the
+// Diagnostics panel reads (diag_sys_refresh: the System panel's, else the one beside the project)
+// — else the default. The bool says the description named it.
+fn (app &App) doip_found_row(f project.DoipFound) (project.Channel, bool) {
 	mut ch := project.doip_found_channel(f)
-	sys := if app.sys_loaded {
-		app.sys
-	} else if app.diag_sys_ok {
-		app.diag_sys
-	} else {
-		return ch
+	if t := app.described_tester(ch, f.logical) {
+		ch.tester_addr = t
+		return ch, true
+	}
+	return ch, false
+}
+
+// described_tester is the tester the loaded system description lets activate routing at the
+// entity with logical address `logical` that `ch` dials (sysview.System.doip_tester_for).
+fn (app &App) described_tester(ch project.Channel, logical u16) ?u16 {
+	if !app.diag_sys_ok {
+		return none
 	}
 	host, _ := ch.doip_endpoint()
-	if t := sys.doip_tester_for(f.logical, host) {
-		ch.tester_addr = t
-	}
-	return ch
+	return app.diag_sys.doip_tester_for(logical, host)
 }
 
 // draw_config is the dedicated Configuration editor (File → Configure…): add/edit/remove
@@ -783,6 +788,7 @@ fn draw_config(mut app App) {
 		vgui.end()
 		return
 	}
+	app.diag_sys_refresh() // the system description a DoIP row's entity pick reads its tester from
 	if app.running {
 		vgui.text_dim('Measurement running — Stop to edit the configuration.')
 		if vgui.button('Close') {
@@ -1190,7 +1196,7 @@ fn (mut app App) draw_doip_entity_pick(i int, ch project.Channel) {
 	sc := app.prefs.ui_scale
 	found, busy, note := app.doip_find_state()
 	here := found.filter(project.doip_found_at(ch, it))
-	cfg_field('entity', 'Ask this address which DoIP entities answer (a vehicle identification request) and point this bus at one: the ECU address is set to the one picked, and — on a row that hosts a simulated entity — its VIN fills an empty VIN field.',
+	cfg_field('entity', 'Ask this address which DoIP entities answer (a vehicle identification request) and point this bus at one: the ECU address is set to the one picked, the tester to the one a loaded system description lets in there, and — on a row that hosts a simulated entity — its VIN fills an empty VIN field.',
 		sc)
 	if vgui.small_button('find##dfind${i}') {
 		app.start_doip_find(ch.address, false)
@@ -1216,6 +1222,15 @@ fn (mut app App) draw_doip_entity_pick(i int, ch project.Channel) {
 		f := here[sel - 1]
 		app.proj.channels[i].ecu_addr = f.logical
 		app.cfg_bufs[i].ecu_buf = mkbuf('0x${f.logical:X}', 12)
+		// the tester the description lets in there, as + Add ticked takes it; said, since it
+		// replaces what the row had
+		if t := app.described_tester(ch, f.logical) {
+			if t != ch.tester_addr {
+				app.notify('${ch.name}: tester 0x${ch.tester_addr:04X} -> 0x${t:04X}, the one the system description lets activate routing at 0x${f.logical:04X}')
+			}
+			app.proj.channels[i].tester_addr = t
+			app.cfg_bufs[i].tester_buf = mkbuf('0x${t:X}', 12)
+		}
 		if ch.hosts_doip_entity() && vgui.buf_str(app.cfg_bufs[i].vin_buf) == '' && f.vin.len == 17 {
 			app.proj.channels[i].vin = f.vin
 			app.cfg_bufs[i].vin_buf = mkbuf(f.vin, 20)

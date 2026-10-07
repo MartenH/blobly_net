@@ -198,6 +198,9 @@ fn C.vgui_same_line()
 fn C.vgui_same_line_at(f32)
 fn C.vgui_text_dim_wrapped(&char)
 fn C.vgui_text_colored_wrapped(int, int, int, &char)
+fn C.vgui_text_w(&char) f32
+fn C.vgui_button_w(&char) f32
+fn C.vgui_cell_pad_w() f32
 fn C.vgui_align_text_to_frame_padding()
 fn C.vgui_separator_text(&char)
 fn C.vgui_table_begin(&char, int) int
@@ -911,6 +914,21 @@ pub fn text_dim(s string) {
 // text_dim_wrapped is text_dim wrapped at the window's right edge.
 pub fn text_dim_wrapped(s string) {
 	C.vgui_text_dim_wrapped(&char(s.str))
+}
+
+// text_w is the width `s` takes in the current font, in px.
+pub fn text_w(s string) f32 {
+	return C.vgui_text_w(&char(s.str))
+}
+
+// button_w is the width a button labelled `s` takes (the `##id` part excluded), padding included.
+pub fn button_w(s string) f32 {
+	return C.vgui_button_w(&char(s.str))
+}
+
+// cell_pad_w is what a table cell adds either side of its content, both sides together.
+pub fn cell_pad_w() f32 {
+	return C.vgui_cell_pad_w()
 }
 
 // text_colored_wrapped is text_colored wrapped at the window's right edge.
