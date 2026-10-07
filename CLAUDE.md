@@ -234,8 +234,7 @@ The tab reads 0x19 02 (any status mask) plus 0x19 06 per row for the counters, a
 selected row's 0x19 04/06, clears with 0x14 FFFFFF behind a confirmation, all on the held
 connection and timed in the log; names and snapshot DID sizes come from `sysview`'s description
 of the node the target addresses (the System panel's system.toml when one is loaded, else
-`find_system`'s). Screenshots against sim-demo and the bench's zone_a are in `docs/gui_validation/`
-(`diag_dtc_*.png`).
+`find_system`'s).
 `did.v` there is the DIDs tab's two rules (`cmd/blobly_net/diag_did.v`): `write_plan` — whether
 the CURRENT description declares a write gate at all (absent is not writable, never "no
 requirements"), then what a 0x2E needs first, from the DID's write gate and what the CONNECTION has established (asked by the
