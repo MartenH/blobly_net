@@ -262,9 +262,9 @@ fn (mut w World) finish(mut h MHolder) {
 		.keepalive {
 			h.work = .idle
 			h.last_tx = w.clock_ms
-			// answered 0x78: then silent past the bound (an error), or answered late (no error)
+			// answered 0x78 for ever: the bound runs out on it, an error
 			v := if w.ecu == .pends {
-				keepalive_verdict(rand.intn(2) or { 0 } == 0, false, 1)
+				keepalive_verdict(true, false, 1)
 			} else {
 				keepalive_verdict(false, false, 0)
 			}

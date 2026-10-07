@@ -175,3 +175,23 @@ fn test_the_in_process_bus_refuses_esi_on_a_classic_frame() {
 		assert false, 'ESI on an FD frame is a received status, not a contradiction: ${err}'
 	}
 }
+
+// A CLOSED BUS SAYS SO (#401): what was queued before the close is still delivered, and then
+// every receive, timed or blocking, is 'bus is closed' at once — never a zero frame nobody sent,
+// and never 'timeout', which a retry loop asks again.
+fn test_inproc_closed_bus_says_closed() {
+	mut a := open_inproc('T-closed') or { panic(err) }
+	mut b := open_inproc('T-closed') or { panic(err) }
+	defer { a.close() }
+	a.send(CanFrame{ id: 0x7E8, data: [u8(2)] }) or { panic(err) }
+	b.close()
+	got := b.recv(100) or { panic(err) }
+	assert got.id == 0x7E8
+	for timeout in [100, 0, -1] {
+		if f := b.recv(timeout) {
+			assert false, 'recv(${timeout}) on a closed bus delivered ${f}'
+		} else {
+			assert err.msg() == inproc_closed, err.msg()
+		}
+	}
+}

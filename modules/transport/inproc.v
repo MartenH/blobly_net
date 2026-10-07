@@ -17,6 +17,7 @@ import sync.stdatomic
 import time
 
 const inproc_queue_cap = 8192 // per-subscriber buffered frames before overflow drops
+const inproc_closed = 'bus is closed' // recv on a closed bus: an end, not a quiet wire
 
 // InprocHub is one named medium: the set of buses currently attached to it.
 struct InprocHub {
@@ -132,19 +133,31 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 }
 
 // recv returns the next frame from another participant within timeout_ms
-// (timeout_ms < 0 blocks indefinitely), or error('timeout').
+// (timeout_ms < 0 blocks indefinitely), or error('timeout') — or, once the bus is closed and its
+// queue drained, error('bus is closed') at once. A select over a closed channel returns without
+// waiting, so a closed bus answered every retry-on-timeout loop at once: a spin (#401).
 pub fn (mut b InprocBus) recv(timeout_ms int) !CanFrame {
 	if timeout_ms < 0 {
-		frame := <-b.queue
+		frame := <-b.queue or { return error(inproc_closed) }
 		return frame
 	}
-	select {
-		frame := <-b.queue {
-			return frame
+	// THE SELECT IS AN EXPRESSION, and its `false` is the closed channel: this V runs the receive
+	// branch of a STATEMENT select on a closed channel, with a zero frame (measured) — a frame
+	// that was never sent, delivered at once, every call.
+	mut got := false
+	mut frame := CanFrame{}
+	open := select {
+		f := <-b.queue {
+			got = true
+			frame = f
 		}
-		(i64(timeout_ms) * time.millisecond) {
-			return error('timeout')
-		}
+		(i64(timeout_ms) * time.millisecond) {}
+	}
+	if got {
+		return frame
+	}
+	if !open {
+		return error(inproc_closed)
 	}
 	return error('timeout')
 }

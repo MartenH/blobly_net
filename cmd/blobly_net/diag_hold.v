@@ -70,15 +70,19 @@ mut:
 	work_key string
 }
 
+// diag_idle_drain_max bounds one look's drain of a held CAN tap: the shared hub's ring.
+const diag_idle_drain_max = 4096
+
 // HeldConn is the holder thread's own: never shared.
 struct HeldConn {
 mut:
 	open     bool
 	target   DiagTarget
 	where    string // what was opened, for the log
-	ch       isotp.Channel // DoIP: the held connection; CAN: the exchange's, while attached
+	ch       isotp.Channel // DoIP: the held connection; CAN: the held ISO-TP channel
 	dc       &doip.DoipClient = unsafe { nil } // DoIP: the same connection, for its idle service
-	attached bool // CAN only: a channel is open for the exchange in progress
+	sc       &isotp.SoftChannel = unsafe { nil } // CAN: the same channel, for its idle drain
+	attached bool // CAN only: the channel and its tap are open
 	cli      uds.Client
 	session  u8
 	security u8 // the level unlocked since the last session change (0x27); 0 = locked
@@ -86,7 +90,7 @@ mut:
 	// unsent-request retry asks, since `cli.last` is the last exchange of a press of several
 	press_sent int
 	last_ms  i64 // the last thing sent to the ECU (time.ticks), which is what S3 runs from
-	// CAN: the client's timing, carried from one exchange's client to the next
+	// CAN: the client's timing, carried into the client of the next attach
 	timeout_ms int
 	p2_star_ms int
 	// this holder generation's ONE cancellation token (diaghold.Commands.cancels), installed on
@@ -244,7 +248,7 @@ fn diag_holder(app &App, gen u64, q chan DiagReq) {
 			ctx.work_key = h.target.key
 			a.diag_keepalive(gen, mut h)
 		}
-		if h.open && !isnil(h.dc) {
+		if h.open {
 			ctx.work_key = h.target.key
 			a.diag_idle(gen, mut h)
 		}
@@ -341,8 +345,9 @@ fn (mut app App) diag_drop(gen u64, mut h HeldConn, conn diaghold.Conn, why stri
 	return if conn == .closed { 'closed ${h.where}: ${why}' } else { '' }
 }
 
-// diag_attach opens a CAN target's ISO-TP channel on a tap for one exchange (DoIP: nothing to do
-// — the connection is held). The client is new; the timing the last one learned is carried in.
+// diag_attach opens a CAN target's ISO-TP channel on a tap, held with the connection until it is
+// let go (DoIP: nothing to do — the connection is held). The client is new; the timing the last
+// one learned is carried in.
 fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	if h.target.carrier.doip || h.attached {
 		return
@@ -372,6 +377,7 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	// a send or a wait in flight when the run ends is abandoned rather than finished (#347)
 	sc.stop_requested = h.stop
 	h.ch = isotp.Channel(sc)
+	h.sc = sc
 	h.cli = uds.new_client(sc)
 	h.cli.stop_requested = h.stop
 	if h.timeout_ms > 0 {
@@ -382,7 +388,8 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	h.attached = true
 }
 
-// diag_detach closes a CAN exchange's channel, keeping what its client learned of the timing.
+// diag_detach closes a CAN connection's channel and its tap, keeping what its client learned of
+// the timing.
 fn (mut app App) diag_detach(mut h HeldConn) {
 	if h.target.carrier.doip || !h.attached {
 		return
@@ -390,6 +397,7 @@ fn (mut app App) diag_detach(mut h HeldConn) {
 	h.timeout_ms = h.cli.timeout_ms
 	h.p2_star_ms = h.cli.p2_star_ms
 	h.ch.close()
+	h.sc = unsafe { nil }
 	h.attached = false
 }
 
@@ -563,11 +571,10 @@ fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bo
 	h.cli.last = uds.ExchangeTiming{}
 	h.press_sent = 0
 	app.diag_attach(gen, mut h) or { return DiagOut{line: '${req.kind}: ${err}', err: true}, false }
-	// counted on the client this press runs on (a CAN attach makes a new one per press)
+	// counted on the client this press runs on (an attach makes a new one)
 	base := h.cli.sent_count
 	defer {
 		h.press_sent = int(h.cli.sent_count - base)
-		app.diag_detach(mut h)
 		h.last_ms = time.ticks()
 	}
 	match req.kind {
@@ -630,12 +637,28 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 	}, false
 }
 
-// diag_idle serves the held DoIP connection between presses, once per holder look (well inside
-// an entity's 500 ms alive check timeout): an Alive Check Request is answered there
-// (doip.DoipClient.idle), since an entity that asks and hears nothing closes the connection and
-// the session with it; an entity that closed it anyway is let go now, said, rather than found
+// diag_idle serves the held connection between presses, once per holder look.
+//
+// DoIP (well inside an entity's 500 ms alive check timeout): an Alive Check Request is answered
+// there (doip.DoipClient.idle), since an entity that asks and hears nothing closes the connection
+// and the session with it; an entity that closed it anyway is let go now, said, rather than found
 // at the next press.
+//
+// CAN: what arrived on the held tap since the last look is read away (isotp.SoftChannel.
+// drain_idle), so on a shared-hub wire (PCAN, CANsub) its cursor never falls behind the ring —
+// a tap nobody reads is booked as the WIRE's loss. At a look per 50 ms the ring's 4096 frames
+// are well over ten times a saturated 1 Mbit/s wire's share; the next request's pre-send drain
+// would discard the same frames. A bus that fails here is let go, said.
 fn (mut app App) diag_idle(gen u64, mut h HeldConn) {
+	if !h.target.carrier.doip {
+		if isnil(h.sc) {
+			return
+		}
+		h.sc.drain_idle(diag_idle_drain_max) or {
+			app.diag_let_go(gen, mut h, .failed, '${err.msg()} (while idle)')
+		}
+		return
+	}
 	h.dc.idle() or {
 		if h.stop() {
 			return // cancelled: the holder's next look lets go, with the command's reason
@@ -671,7 +694,6 @@ fn (mut app App) diag_keepalive(gen u64, mut h HeldConn) {
 	pendings := h.cli.last.pending
 	h.cli.timeout_ms = saved_wait
 	h.cli.pending_budget_ms = saved_budget
-	app.diag_detach(mut h)
 	h.last_ms = time.ticks()
 	if errored && h.stop() {
 		return // cancelled: the holder's next look lets go, with the command's reason
