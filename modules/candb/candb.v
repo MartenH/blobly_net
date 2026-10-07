@@ -231,19 +231,19 @@ pub fn (s Signal) raw_from_phys(phys f64) u64 {
 		if r < -f64(top) {
 			return top & mask
 		}
-	} else if r >= f64(mask) + 1.0 {
+		// through i64: a negative's two's-complement pattern masked to the width IS the raw value
+		return u64(i64(r)) & mask
+	}
+	if r >= f64(mask) + 1.0 {
 		// f64(mask) + 1 is exactly 2^length for every width, 64 included
 		return mask
-	} else if r < 0 {
-		// below an unsigned width's bottom: 0, the nearer end — through i64 below it wrapped,
-		// so -1 went out as the maximum
-		return 0
 	}
-	// A negative (a signed signal, by now) goes through i64: its two's-complement pattern masked
-	// to the width IS the raw value. A non-negative goes through u64 DIRECTLY — via i64 it saturates at 2^63, so the
-	// top half of an unsigned 64-bit signal's domain encoded as INT64_MIN.
-	raw := if r < 0 { u64(i64(r)) } else { u64(r) }
-	return raw & mask
+	if r < 0 {
+		return 0 // below an unsigned width: its bottom end, never wrapped to the top
+	}
+	// through u64 DIRECTLY — via i64 it saturates at 2^63, so the top half of an unsigned
+	// 64-bit signal's domain encoded as INT64_MIN.
+	return u64(r) & mask
 }
 
 // physical applies sign-extension, factor and offset: phys = raw * factor + offset.

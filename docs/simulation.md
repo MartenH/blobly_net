@@ -126,7 +126,7 @@ bench.
 | `const` | a fixed value | `value` |
 | `sine` | `offset + amplitude·sin(freq·t + phase)` | `offset`, `amplitude`, `freq` (rad/s), `phase` |
 | `sawtooth` | ramps `min`→`max` over `period` seconds, repeating | `min`, `max`, `period` |
-| `counter` | `start + step·n` per send, wrapping at `modulo` | `start`, `step`, `modulo` |
+| `counter` | `start + step·n` per send, wrapping at `modulo` (without one it holds at the end of the signal's width — 0 for a falling unsigned counter) | `start`, `step`, `modulo` |
 | `stepmod` | a staircase: `base + (⌊t/period⌋ mod count)` | `period`, `count`, `base` |
 
 Signals with no generator keep their payload bits at **raw zero**, which is not the same as
