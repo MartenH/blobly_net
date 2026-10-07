@@ -668,7 +668,7 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	if app.dtc_ui.asked_key == t.key && app.dtc_ui.asked_ms > last {
 		last = app.dtc_ui.asked_ms
 	}
-	if diaghold.autorefresh_due(app.dtc_ui.auto, true, busy, last, time.ticks()) {
+	if diaghold.autorefresh_due(app.dtc_ui.auto && app.running, true, busy, last, time.ticks()) {
 		app.dtc_press('dtcs', 0, false, true, desc)
 	}
 	pane := app.diag_tab_area('##dtcarea')
