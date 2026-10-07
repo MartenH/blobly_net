@@ -266,7 +266,7 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 					err:  true
 				}, answered(err)
 			}
-			app.diag_push_for(req, '${h.timing().prefix()} 0x14 FFFFFF: every DTC cleared')
+			app.diag_say_for(req, '0x14 FFFFFF: every DTC cleared', false)
 			// what was read before the clear no longer describes the ECU: gone NOW, so a refresh
 			// that fails cannot leave pre-clear records on screen under its error
 			app.mu.lock()
@@ -289,7 +289,8 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 				if out.err {
 					return out, negative
 				}
-				app.diag_push_for(req, '${h.timing().prefix()} ${out.line} (0x85 is served outside the default session)')
+				app.diag_say_for(req, '${out.line} (0x85 is served outside the default session)',
+					false)
 			}
 			sub := if req.on { u8(0x01) } else { u8(0x02) }
 			h.cli.control_dtc_setting(req.on) or {
@@ -318,8 +319,9 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	rep := h.cli.dtcs(req.mask) or {
 		app.dtc_failed(req, err.msg())
 		return DiagOut{
-			line: '${what}: ${err}'
-			err:  true
+			line:     '${what}: ${err}'
+			err:      true
+			restates: true
 		}, answered(err)
 	}
 	t02 := h.timing()
@@ -362,7 +364,7 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	app.mu.lock()
 	if !diaghold.view_writable(req.epoch, app.diag_epoch) {
 		// asked under the project before this one: nothing of it is shown (or said — its line
-		// goes through diag_push_for), but a connection that failed is still let go
+		// goes through diag_note_for), but a connection that failed is still let go
 		app.mu.unlock()
 		return counter_out(batch), false
 	}
@@ -391,7 +393,8 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	}
 	confirmed := rows.filter(it.rec.has(uds.dtc_confirmed)).len
 	auto := if req.auto { ' (auto-refresh: changed)' } else { '' }
-	app.diag_push_for(req, '${t02.prefix()} ${what}: ${rows.len} DTC(s), ${confirmed} confirmed${auto}')
+	app.diag_note_for(req, '${t02.prefix()} ${what}: ${rows.len} DTC(s), ${confirmed} confirmed${auto}',
+		false)
 	return counter_out(batch), false
 }
 
@@ -457,15 +460,19 @@ fn (mut app App) dtc_detail(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 			n += x
 		}
 		// the 0x19 04 at its own time, and each DID it had to size by reading it, at theirs
-		app.diag_push_for(req, '${timing_of(st.request).prefix()} 0x19 04 ${name} FF: ${s.records.len} snapshot record(s), ${n} DID(s)')
-		for pr in st.probes {
-			app.diag_push_for(req, '${timing_of(pr.timing).prefix()} 0x22 ${pr.did:04X}: sized a snapshot DID the description does not')
+		// each exchange (the 0x19 04 and every 0x22 sizing a DID) is its own entry
+		probes := if st.probes.len > 0 {
+			', ${st.probes.len} sized by reading them (the description does not)'
+		} else {
+			''
 		}
+		app.diag_note_for(req, '0x19 04 ${name} FF: ${s.records.len} snapshot record(s), ${n} DID(s)${probes}',
+			false)
 	} else {
 		// said and shown; the extended data is still asked for, and a connection that has gone
 		// fails there and is let go as any failed press is
 		snap_err = err.msg()
-		app.diag_push_for(req, '${h.timing().prefix()} 0x19 04 ${name} FF: ${err}')
+		app.diag_note_for(req, '${h.timing().prefix()} 0x19 04 ${name} FF: ${err}', true)
 	}
 	ext := h.cli.extended(req.code, 0xFF) or {
 		app.dtc_set_detail(req, DtcDetail{
@@ -666,8 +673,7 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		draw_dtc_detail(mut app, v, desc, busy)
 	}
 	vgui.child_end()
-	vgui.separator_text('responses (newest last)')
-	draw_copyable_log(mut app, '##diag', app.diag_cache)
+	draw_diag_log(mut app, t)
 }
 
 fn draw_dtc_table(mut app App, v DtcView, desc DiagDesc, busy bool) {

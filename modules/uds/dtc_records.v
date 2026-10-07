@@ -128,7 +128,8 @@ pub fn (c BloblyCounters) shown() string {
 pub struct UndecodableAnswer {
 	Error
 pub:
-	why string
+	why  string
+	resp []u8 // the answer as it came, where the exchange itself refused it
 }
 
 pub fn (e UndecodableAnswer) msg() string {

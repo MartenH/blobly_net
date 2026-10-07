@@ -75,6 +75,10 @@ pub mut:
 	// worker that Stop must end; the carrier's own wait is the carrier's to cut short (a software
 	// ISO-TP channel's `stop_requested`, a DoIP client's `stop_requested`).
 	stop_requested fn () bool = unsafe { nil }
+	// on_exchange, when set, is told of every request this client puts through `raw` /
+	// `raw_suppressed` (every helper goes through them) once it has ended, answered or not: the
+	// bytes both ways and its timing — what an exchange log is made of (exchlog.v).
+	on_exchange fn (Exchange) = unsafe { nil }
 }
 
 // abandoned_note is the error a request ends with when `stop_requested` answered true.
@@ -266,8 +270,45 @@ pub fn (mut c Client) raw_suppressed(req []u8) !bool {
 }
 
 // exchange is one request and its answer (empty: none, which only a suppressed request accepts —
-// a quiet P2 is its success), and whether the server said responsePending on the way.
+// a quiet P2 is its success), and whether the server said responsePending on the way. Reported to
+// `on_exchange` once it has ended.
 fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
+	c.last = ExchangeTiming{} // a request refused before exchange_once times it was not sent
+	resp, owed := c.exchange_once(req, suppressed) or {
+		if c.on_exchange != unsafe { nil } {
+			mut x := Exchange{
+				req:    req.clone()
+				err:    err.msg()
+				timing: c.last
+			}
+			if err is NegativeResponse {
+				x = Exchange{
+					...x
+					resp:     [negative_response_sid, err.sid, err.nrc]
+					negative: true
+				}
+			} else if err is UndecodableAnswer {
+				x = Exchange{
+					...x
+					resp:      err.resp.clone()
+					malformed: true
+				}
+			}
+			c.on_exchange(x)
+		}
+		return err
+	}
+	if c.on_exchange != unsafe { nil } {
+		c.on_exchange(Exchange{
+			req:    req.clone()
+			resp:   resp.clone()
+			timing: c.last
+		})
+	}
+	return resp, owed
+}
+
+fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 	if req.len == 0 {
 		return error('empty UDS request')
 	}
@@ -334,7 +375,8 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 			.malformed {
 				// an answer that ARRIVED and cannot be read: the ECU's, not the connection's
 				return UndecodableAnswer{
-					why: 'malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}'
+					why:  'malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}'
+					resp: resp.clone()
 				}
 			}
 			.negative {

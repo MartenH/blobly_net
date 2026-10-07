@@ -10,6 +10,8 @@ import diaghold
 // buttons pressed in order from the frame loop, for the headless screenshot and for timing the
 // panel end to end (VGUI_FRAMES / VGUI_SHOT cannot click). A comma-separated list of
 // `session`, `vin`, `tp`, `did:<hex>`, `wait:<ms>`, `target:<label substring>`, `disconnect`,
+// `logsel:<n>` (the response table's n-th entry selected, its bytes shown), `copylua:<file>` (Copy
+// as Lua of every entry, into the file),
 // `script:<path>` (started as the Script panel's Run starts one), the DTC tab's `tab:dtc`,
 // `dtcs`, `dtc:<display or hex code>` (select a row), `dtc_clear`, `dtc_off`, `dtc_on` and `auto`
 // (the auto-refresh tick on), and the DIDs tab's `tab:did`, `did_all` (Read all),
@@ -104,6 +106,30 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 				app.diag_sel_key = t.key
 				break
 			}
+		}
+		return
+	}
+	if step.starts_with('logsel:') {
+		// the response table's row at this index (of every entry), selected as a click selects it
+		app.mu.lock()
+		entries := app.diag_log.entries.clone()
+		app.mu.unlock()
+		i := step.all_after(':').int()
+		if i >= 0 && i < entries.len {
+			app.diag_tbl.sel = {
+				entries[i].seq: true
+			}
+			app.diag_tbl.shown = entries[i].seq
+		}
+		return
+	}
+	if step.starts_with('copylua:') {
+		// Copy as Lua of every entry, written to a file instead of the clipboard
+		app.mu.lock()
+		entries := app.diag_log.entries.clone()
+		app.mu.unlock()
+		os.write_file(step.all_after(':'), app.diag_lua(entries)) or {
+			println('diag-autopress: ${step}: ${err}')
 		}
 		return
 	}
@@ -220,8 +246,8 @@ fn (mut app App) diag_autopress_report() {
 	au.reported = true
 	total := f64(au.total_ns) / 1e6
 	println('diag-autopress: ${au.presses} presses, ${total:.1f} ms in all')
+	lines := app.diag_log_lines()
 	app.mu.lock()
-	lines := app.diag_log.clone()
 	slines := app.script_log.clone()
 	app.mu.unlock()
 	for l in lines {
