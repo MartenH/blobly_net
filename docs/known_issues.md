@@ -133,6 +133,15 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   written unbounded (`transport.SharedEntry.settled` is). Not ours to fix — vlib — and pinned
   here so the next `V panic: Invalid argument` in a CI log is read as this, not as a bug in
   the test it landed in.
+- 🔴 **A STATEMENT `select` runs its receive branch on a closed channel.** With the channel
+  closed and empty, `select { f := <-q { … } 20 * time.millisecond {} }` written as a statement
+  enters the receive branch at once with a ZERO value, every time; written as an expression
+  (`ok := select { … }`) the same select returns `false` and runs no branch (measured on the
+  pinned V, #401). `transport.InprocBus.recv` therefore uses the expression form and answers a
+  closed queue with `bus is closed`; before that a closed inproc bus delivered an endless stream
+  of id-0 empty frames, which a stop-sliced ISO-TP receive skipped as not its own and asked
+  again — a spin. Where a closed channel is possible, take the `select` as an expression and
+  read its `false`; a plain `<-q` needs its `or` for the same reason.
 - 🔴 **`spawn` can pass an `f64` argument as zero.** `spawn read_passes(path, specs, rows, t0,
   pos, ch)` delivered `pos` = 0.03 to the thread as 0.0, every time, with no warning (seen under
   `-old-compiler`, #172). Hand a thread its inputs in ONE struct, which arrives intact

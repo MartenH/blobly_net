@@ -18,10 +18,14 @@
 // project" for as long as it stayed open, refusing the DBC editor with nothing to stop.
 //
 // WHAT "HELD" MEANS PER CARRIER. On DoIP it is the TCP connection, routing activation done —
-// the open is what costs. On CAN it is the target, its session and its keep-alive: the ISO-TP
-// channel is opened on a tap for each exchange and closed after it, because an idle subscriber is
-// not free (on a shared-hub wire — PCAN, CANsub — a cursor nobody reads falls behind the ring and
-// is booked as the wire's own loss) and the open costs well under a millisecond.
+// the open is what costs. On CAN it is the target, its session and its keep-alive, AND the ISO-TP
+// channel on its tap, opened with the connection and closed when it is let go (#401). Opened per
+// exchange instead, a held extended session cost a tap open every keep-alive — on Kvaser and
+// Vector a driver handle opened, put bus-on and silenced through every handle every two seconds,
+// which a measurement on the software and hub backends ("well under a millisecond") never saw.
+// What per-exchange taps avoided — an idle subscriber on a shared-hub wire (PCAN, CANsub) falling
+// behind the ring, booked as the WIRE's loss — is answered by reading it: the holder drains the
+// held tap at every look (isotp.SoftChannel.drain_idle), so its cursor stays current.
 //
 // ANOTHER TOOL ON THE SAME ENTITY. In the GUI only a Lua script can open a DoIP entity
 // (uds.open / flash.program), and which one is decided inside the script, so "the same entity"
@@ -212,8 +216,9 @@ pub fn ms_text(us i64) string {
 }
 
 // retry_on_reopen says whether a failed press is repeated once on a fresh connection: only a
-// DoIP connection (an entity closes an idle one; a CAN target holds no channel between exchanges
-// to go stale), only one held from an earlier press (a fresh one that fails has nothing newer to
+// DoIP connection (an entity closes an idle one; a CAN send refused before it went out is the
+// wire's answer — listen-only, a wire that is down — and a held CAN tap whose bus has gone is
+// found and let go by the holder's next look), only one held from an earlier press (a fresh one that fails has nothing newer to
 // offer), only when NOTHING of the press went out (the pre-send drain found the connection gone
 // before its first request), so the ECU is never asked anything twice — and never for a negative
 // response, which is the ECU answering. A press is a SEQUENCE of exchanges (a clear and the
@@ -368,12 +373,16 @@ pub enum KeepAlive {
 // keepalive_verdict reads a keep-alive's outcome. Its waits are bounded (`keepalive_wait_ms`
 // for the first answer AND as the pending budget), so a server answering 3E 80 with 0x78 cannot
 // hold the holder — and every press queued behind it — for the client's two-minute budget.
-pub fn keepalive_verdict(errored bool, negative bool, pendings int) KeepAlive {
-	if pendings > 0 {
-		return .pending
-	}
+// THE FINAL ANSWER DECIDES, not the 0x78 before it: a positive answer after 0x78 inside the
+// window (ISO lets a server send it even with SPRMIB set) is the session kept, and a negative one
+// the refusal it is. Only a 0x78 the window ran out on (`pending_expired`: uds.PendingExpired) is
+// `pending`; a carrier that failed under that wait is `failed`, like any other.
+pub fn keepalive_verdict(errored bool, negative bool, pending_expired bool) KeepAlive {
 	if !errored {
 		return .ok
 	}
-	return if negative { KeepAlive.refused } else { KeepAlive.failed }
+	if negative {
+		return .refused
+	}
+	return if pending_expired { KeepAlive.pending } else { KeepAlive.failed }
 }

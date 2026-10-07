@@ -595,15 +595,44 @@ fn (mut c SoftChannel) bus_recv(ms int) !transport.CanFrame {
 				step = int(left)
 			}
 		}
+		t0 := time.sys_mono_now()
 		f := c.bus.recv(step) or {
-			if err.msg() == 'timeout' {
-				continue
+			if err.msg() != 'timeout' {
+				return err // the bus is gone (closed, failed): the receive ends with it
 			}
-			return err
+			// a 'timeout' that did not wait is not a quiet wire: wait the slice out here, so a
+			// bus that answers at once costs one call per slice and not a core (#401). On the
+			// monotonic clock, and never more than the slice, so a stop is still asked per slice.
+			waited := i64(time.sys_mono_now() - t0)
+			left_ns := i64(step) * time.millisecond - waited
+			if left_ns > 0 {
+				time.sleep(left_ns)
+			}
+			continue
 		}
 		return f
 	}
 	return error('timeout')
+}
+
+// drain_idle reads away what has arrived on the bus since the last exchange, without waiting,
+// and returns how many frames that was. For a channel held open between exchanges: a reader on a
+// shared-hub wire (PCAN, CANsub) that does not read falls behind the hub's ring, and that loss is
+// booked as the WIRE's (transport.BusDiagnostics) though nothing was lost but frames nobody here
+// wanted. Read at the holder's cadence, the cursor never falls behind. Bounded by `max` frames;
+// an error is the bus gone, not a quiet one.
+pub fn (mut c SoftChannel) drain_idle(max int) !int {
+	mut n := 0
+	for n < max {
+		c.bus.recv(0) or {
+			if err.msg() == 'timeout' {
+				return n
+			}
+			return err
+		}
+		n++
+	}
+	return n
 }
 
 // recv_succeeded is the rule the two success returns above spell: A MESSAGE READ IS THE ABORT NO

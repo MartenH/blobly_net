@@ -1394,3 +1394,102 @@ fn test_a_stoppable_receive_still_receives_and_times_out() {
 	ch.close()
 	peer.close()
 }
+
+// RecvCount is a channel's bus with its receive calls counted: how many times a wait went round,
+// which is what a spin is, measured without a clock.
+struct RecvCount {
+mut:
+	inner transport.Bus
+	calls int
+	// answer every receive with 'timeout' at once, as a bus with no queue to wait on would
+	instant bool
+}
+
+fn (mut b RecvCount) send(f transport.CanFrame) ! {
+	b.inner.send(f)!
+}
+
+fn (mut b RecvCount) recv(timeout_ms int) !transport.CanFrame {
+	b.calls++
+	if b.instant {
+		return error('timeout')
+	}
+	return b.inner.recv(timeout_ms)
+}
+
+fn (mut b RecvCount) close() {
+	b.inner.close()
+}
+
+fn (mut b RecvCount) health() transport.BusHealth {
+	return b.inner.health()
+}
+
+fn (mut b RecvCount) diagnostics() transport.BusDiagnostics {
+	return b.inner.diagnostics()
+}
+
+fn (mut b RecvCount) reconcile_silence(want bool) ! {
+	b.inner.reconcile_silence(want)!
+}
+
+// A CLOSED BUS ENDS A STOPPABLE RECEIVE (#401): the inproc queue closed under its reader answers
+// a select at once, which the stop-sliced wait read as a quiet slice and asked again, as fast as
+// it could, until the deadline (or for ever, for a blocking read). Now the closed bus is an error
+// on the first call.
+fn test_a_closed_bus_ends_a_stoppable_recv() {
+	mut ch := open_software('inproc:isotp-closed-recv', 0x7E0, 0x7E8, false) or { panic(err) }
+	mut counted := &RecvCount{
+		inner: ch.bus
+	}
+	ch.bus = counted
+	ch.stop_requested = fn () bool {
+		return false
+	}
+	counted.inner.close()
+	if _ := ch.recv(500) {
+		assert false, 'a closed bus delivered a message'
+	} else {
+		assert err.msg().contains('closed'), err.msg()
+	}
+	assert counted.calls == 1, 'the receive asked a closed bus ${counted.calls} times'
+	// the blocking form too: it would otherwise never return
+	counted.calls = 0
+	ch.recv(-1) or { assert err.msg().contains('closed'), err.msg() }
+	assert counted.calls == 1, 'a blocking receive asked a closed bus ${counted.calls} times'
+}
+
+// ...and a bus that answers 'timeout' WITHOUT waiting is waited out by the slice: one call per
+// stop_poll_ms, not one per instant.
+fn test_an_instant_timeout_does_not_spin_a_stoppable_recv() {
+	mut ch := open_software('inproc:isotp-instant-recv', 0x7E0, 0x7E8, false) or { panic(err) }
+	mut counted := &RecvCount{
+		inner:   ch.bus
+		instant: true
+	}
+	ch.bus = counted
+	ch.stop_requested = fn () bool {
+		return false
+	}
+	ch.recv(200) or { assert err.msg() == 'timeout', err.msg() }
+	// 200 ms in 20 ms slices: ten calls, and a little slack for a short last slice
+	assert counted.calls <= 200 / stop_poll_ms + 2, '${counted.calls} receive calls in 200 ms'
+	ch.close()
+}
+
+// drain_idle reads what is queued and returns at once; a closed bus is an error.
+fn test_drain_idle_reads_what_is_queued() {
+	mut peer := transport.open('inproc:isotp-drain-idle') or { panic(err) }
+	mut ch := open_software('inproc:isotp-drain-idle', 0x7E0, 0x7E8, false) or { panic(err) }
+	for _ in 0 .. 5 {
+		peer.send(transport.CanFrame{ id: 0x123, data: [u8(1)] }) or { panic(err) }
+	}
+	assert ch.drain_idle(3) or { panic(err) } == 3
+	assert ch.drain_idle(100) or { panic(err) } == 2
+	assert ch.drain_idle(100) or { panic(err) } == 0
+	ch.close()
+	if _ := ch.drain_idle(100) {
+		assert false, 'a closed bus drained cleanly'
+	}
+	peer.close()
+}

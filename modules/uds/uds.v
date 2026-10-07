@@ -132,6 +132,22 @@ pub fn (e NegativeResponse) code() int {
 	return int(e.nrc)
 }
 
+// PendingExpired is a server that answered 0x78 (responsePending) and then said nothing more
+// before the wait ran out — the server's silence, told apart from a carrier that failed under the
+// same wait, which is a plain error with the same words and its cause.
+pub struct PendingExpired {
+	Error
+pub:
+	sid   u8
+	ms    i64
+	cause string // the carrier's quiet answer, '' when the deadline ran out between reads
+}
+
+pub fn (e PendingExpired) msg() string {
+	tail := if e.cause != '' { ' (${e.cause})' } else { '' }
+	return 'UDS: 0x${e.sid:02X} still pending after ${e.ms} ms${tail}'
+}
+
 // Answer is what a received PDU is to the request in flight.
 pub enum Answer {
 	positive // its positive response
@@ -305,7 +321,10 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 				return []u8{}, false
 			}
 			if pending {
-				return error('UDS: 0x${req[0]:02X} still pending after ${sw.elapsed().milliseconds()} ms')
+				return PendingExpired{
+					sid: req[0]
+					ms:  sw.elapsed().milliseconds()
+				}
 			}
 			return error(no_answer(req, discarded))
 		}
@@ -317,6 +336,14 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 				return []u8{}, false // nothing to say: what a suppressed positive response looks like
 			}
 			if pending {
+				if is_silence(err.msg()) {
+					return PendingExpired{
+						sid:   req[0]
+						ms:    sw.elapsed().milliseconds()
+						cause: err.msg()
+					}
+				}
+				// the carrier failed under the wait: not the server's silence
 				return error('UDS: 0x${req[0]:02X} still pending after ${sw.elapsed().milliseconds()} ms (${err.msg()})')
 			}
 			if discarded > 0 {
@@ -374,8 +401,9 @@ fn (mut c Client) drain_queued(sid u8) !int {
 				break
 			}
 			// but a CARRIER that failed (a DoIP connection closed, or out of step after a stalled
-			// message) has nothing more to drain, and is the caller's news, not a dropped PDU
-			if err.msg().starts_with('DoIP connection lost: ') {
+			// message; a CAN bus closed under a held channel) has nothing more to drain, and is the
+			// caller's news, not a dropped PDU
+			if err.msg().starts_with('DoIP connection lost: ') || err.msg().ends_with('bus is closed') {
 				return err
 			}
 		}
