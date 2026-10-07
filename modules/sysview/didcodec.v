@@ -93,6 +93,14 @@ pub fn (x DidDesc) encode(texts []string) ![]u8 {
 		}
 	} else if x.kind == .ascii {
 		out = texts[0].bytes()
+		// printable ASCII only, 0x20..0x7E: a text DID is ASCII, so `é` (C3 A9 in UTF-8) is not
+		// one character of it; and a control character is nothing an edit field can show back, so
+		// what is written could not be read back the way it was typed
+		for i, b in out {
+			if b < 0x20 || b > 0x7E {
+				return error('text: character ${i + 1} is not printable ASCII (0x${b:02X})')
+			}
+		}
 		if x.size >= 0 && out.len < x.size {
 			out << []u8{len: x.size - out.len} // NUL-padded to its size, as `texts` reads it
 		}

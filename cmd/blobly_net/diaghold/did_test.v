@@ -90,3 +90,11 @@ fn test_an_absent_write_gate_is_not_writable_never_no_requirements() {
 	// the same gate DECLARED with no session and no level is open
 	assert write_plan(true, 0x03, [], 0, 0, false).refusal == ''
 }
+
+fn test_a_write_made_under_a_reloaded_description_is_not_sent() {
+	assert write_still_current('sys@a', 'sys@a') == ''
+	// changed between queueing and sending: nothing is sent, and it says why
+	r := write_still_current('sys@a', 'sys@b')
+	assert r.starts_with('not written')
+	assert write_still_current('sys@a', '') != '' // the description went away
+}

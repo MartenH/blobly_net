@@ -252,3 +252,21 @@ fn test_decode_did_renders_through_the_codec() {
 	assert d.decode_did(0xF190, [u8(`A`), `B`, 0, 0, 0, 0]) == '"AB"'
 	assert d.decode_did(0xF190, [u8(`A`)]) == '' // not its size
 }
+
+// A text DID takes printable ASCII only: UTF-8 is not ASCII, and a control character could not be
+// read back as typed.
+fn test_a_text_did_refuses_what_is_not_printable_ascii() {
+	x := DidDesc{
+		kind: .ascii
+		size: 4
+	}
+	if _ := x.encode(['café']) {
+		assert false
+	} else {
+		assert err.msg() == 'text: character 4 is not printable ASCII (0xC3)'
+	}
+	if _ := x.encode(['a\tb']) {
+		assert false
+	}
+	assert x.encode(['~ !A'])! == '~ !A'.bytes()
+}

@@ -26,6 +26,18 @@ pub fn parse_did(t string) ?u16 {
 	return v
 }
 
+// write_still_current: the last check before a 0x2E goes out, asked by the holder for EVERY
+// write, after the session switch and the unlock and immediately before the send: the description
+// the write was made under (`req_ident`) must still be the loaded one (`now_ident`). A reload
+// while the write was queued, or while an open, a session change or an unlock was slow, may have
+// moved its layout or taken its write gate away — the bytes were encoded by the old one. '' = send.
+pub fn write_still_current(req_ident string, now_ident string) string {
+	if req_ident == now_ident {
+		return ''
+	}
+	return 'not written: the description was reloaded since this write was made — open the dialog again'
+}
+
 // WritePlan is what a 0x2E needs before it is sent, as the description gates it: a session to
 // switch to (0 = stay), a security level to unlock (the 0x27 requestSeed sub-function; 0 = none),
 // or why the panel cannot write it.

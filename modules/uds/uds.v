@@ -332,7 +332,10 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 				return resp, pending
 			}
 			.malformed {
-				return error('malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}')
+				// an answer that ARRIVED and cannot be read: the ECU's, not the connection's
+				return UndecodableAnswer{
+					why: 'malformed UDS response to 0x${req[0]:02X}: ${resp.hex()}'
+				}
 			}
 			.negative {
 				return NegativeResponse{
@@ -443,12 +446,17 @@ pub fn written_did(req []u8) ?DidWrite {
 pub fn (mut c Client) read_data_by_identifier(did u16) ![]u8 {
 	resp := c.raw([sid_read_data_by_identifier, u8(did >> 8), u8(did)])!
 	// 0x62 <did_hi> <did_lo> <data...>
+	// an answer that arrived and cannot be read is UndecodableAnswer, never the connection failing
 	if resp.len < 3 {
-		return error('RDBI response too short (${resp.len} bytes)')
+		return UndecodableAnswer{
+			why: 'RDBI response too short (${resp.len} bytes)'
+		}
 	}
 	echo_did := (u16(resp[1]) << 8) | u16(resp[2])
 	if echo_did != did {
-		return error('RDBI echoed DID 0x${echo_did:04X}, expected 0x${did:04X}')
+		return UndecodableAnswer{
+			why: 'RDBI echoed DID 0x${echo_did:04X}, expected 0x${did:04X}'
+		}
 	}
 	return resp[3..].clone()
 }

@@ -376,6 +376,7 @@ mut:
 	// the system's nodes as targets on the running channels named after their buses; written by
 	// the GUI thread, read by the holder too (diag_targets), so guarded by mu
 	diag_sys_targets []DiagTarget
+	diag_sys_ident   string // diag_sys_key as last published, under mu: the holder's view of it
 	// Hosted DoIP entities, by interface. Held so Stop can close the listeners: an entity that
 	// outlived Stop would keep port 13400 bound, and the next Start would fail to bind against
 	// the previous run of the same application.
@@ -1136,6 +1137,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.dtc_view = DtcView{}
 	app.did_view = DidView{}
 	app.diag_sys_targets = []
+	app.diag_sys_ident = ''
 	app.script_log = []
 	app.script_gen++
 	app.watch = []

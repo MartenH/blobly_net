@@ -165,6 +165,7 @@ fn (mut app App) diag_sys_refresh() {
 		app.diag_sys_print = fp
 		app.mu.lock()
 		app.diag_sys_targets = targets
+		app.diag_sys_ident = app.diag_sys_key // what a holder asks before a write (diag_did.v)
 		app.mu.unlock()
 	}
 }

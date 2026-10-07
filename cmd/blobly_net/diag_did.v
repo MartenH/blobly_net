@@ -188,6 +188,16 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		st.security = plan.unlock
 		app.diag_set_status(gen, st)
 	}
+	// the last thing before the send: the description it was encoded by is still the loaded one
+	app.mu.lock()
+	stale := diaghold.write_still_current(req.ident, app.diag_sys_ident)
+	app.mu.unlock()
+	if stale != '' {
+		return DiagOut{
+			line: '0x2E ${name}: ${stale}'
+			err:  true
+		}, true // nothing sent: the connection is as it was
+	}
 	h.cli.write_data_by_identifier(req.did, req.data) or {
 		return DiagOut{
 			line: '0x2E ${name} ← ${hex(req.data)}: ${err}'
