@@ -213,7 +213,7 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 		app.mu.unlock()
 		app.did_edit(x, view, desc)
 		if step.starts_with('did_write:') {
-			app.did_ui.edit_bufs = arg.all_after('=').split(';').map(mkbuf(it, 128))
+			app.did_ui.edit_bufs = arg.all_after('=').split(';').map(mkbuf(it, did_edit_room(x, it)))
 			app.did_ui.auto_write = true
 			au.gen_at = dgen
 			au.press_ns = time.sys_mono_now()

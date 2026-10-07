@@ -32,12 +32,17 @@ pub:
 // channel_for is the channel a script reaches a target by, among the channels it is given
 // (`chans`, which holds the enabled ones only): the target's own channel when it names one and it
 // is there, else the first on the target's interface; '' = none, and its requests are comments.
+// Only a name ONE channel carries: `uds.open` refuses a name two rows share as ambiguous, so a
+// script that opened it would fail at run time on what the panel had reached.
 pub fn channel_for(own string, iface string, chans []ChanInfo) string {
+	unique := fn [chans] (name string) bool {
+		return chans.filter(it.name == name).len == 1
+	}
 	if own != '' {
-		return if chans.any(it.name == own) { own } else { '' }
+		return if unique(own) { own } else { '' }
 	}
 	for c in chans {
-		if iface != '' && (c.key_iface == iface || c.iface == iface) {
+		if iface != '' && (c.key_iface == iface || c.iface == iface) && unique(c.name) {
 			return c.name
 		}
 	}
@@ -114,16 +119,10 @@ pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
 			out << ''
 			cur = e.key
 		}
-		// a seed request and the key that followed it are one helper
+		// a seed request and the key that followed it are one test
 		if pair := key_after(entries, i, e) {
 			// (the key's own entry is the next one, which the loop steps over)
-			lvl := e.req[1] & 0x7F
-			call := '${h}:security_access(${lvl})'
-			out << test_block('${e.seq}: ${e.request_text()} + key', if pair.outcome == .negative {
-				'check.nrc(0x${pair.nrc:02X}, function() ${call} end)'
-			} else {
-				'${call}  -- the seed varies; the key is the reference algorithm (seed XOR FF)'
-			}, e)
+			out << test_block('${e.seq}: ${e.request_text()} + key', seed_key_body(h, e, pair), e)
 			i += 2
 			continue
 		}
@@ -163,6 +162,31 @@ fn key_after(entries []uds.LogEntry, i int, e uds.LogEntry) ?uds.LogEntry {
 		return none
 	}
 	return k
+}
+
+// seed_key_body is a seed request and the key that answered it, as one test. Accepted, it is the
+// helper (`security_access`). Refused, it is TWO stages, each checked on its own: the seed must
+// still be answered (it varies, so it is not compared), and then the key must be refused with the
+// NRC the operator saw — one `check.nrc` around both would pass if the SEED were refused instead.
+// The key is the reference one (seed XOR FF) computed from the new seed when the recorded key was
+// that; any other key is sent as recorded.
+fn seed_key_body(h string, seed_e uds.LogEntry, key_e uds.LogEntry) string {
+	if key_e.outcome != .negative {
+		return '${h}:security_access(${seed_e.req[1] & 0x7F})  -- the seed varies; the key is the reference algorithm (seed XOR FF)'
+	}
+	seed := seed_e.resp[2..]
+	sent := key_e.req[2..]
+	reference := sent.len == seed.len && seed.map(it ^ 0xFF) == sent
+	key_sub := uds.bytes_hex(key_e.req[..2], 0)
+	mut lines := ['local seed = ${h}:raw(fromhex("${uds.bytes_hex(seed_e.req, 0)}")):sub(3)  -- the seed is answered; it varies, so it is not compared',
+		'check.truthy(tohex(seed):find("[1-9A-Fa-f]") ~= nil, "a seed asking for a key, as recorded (all zero: already unlocked)")']
+	if reference {
+		lines << 'local key = (seed:gsub(".", function(c) return string.char(string.byte(c) ~ 0xFF) end))  -- the reference key (seed XOR FF)'
+		lines << 'check.nrc(0x${key_e.nrc:02X}, function() ${h}:raw(fromhex("${key_sub}") .. key) end)'
+	} else {
+		lines << 'check.nrc(0x${key_e.nrc:02X}, function() ${h}:raw(fromhex("${uds.bytes_hex(key_e.req, 0)}")) end)  -- the key as it was sent'
+	}
+	return lines.join('\n  ')
 }
 
 fn test_block(name string, body string, e uds.LogEntry) string {
