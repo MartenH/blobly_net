@@ -21,12 +21,27 @@ fn (app &App) diag_default_iface() ?string {
 	if app.running {
 		return app.diag_iface_opt()
 	}
+	// stopped: the wire the run's default was on (diag_note_default), while a row still offers
+	// it — a first row whose reader failed to open is not where the default was
+	if app.diag_default_last != '' && app.chans.any(it.monitorable() && it.iface == app.diag_default_last) {
+		return app.diag_default_last
+	}
 	for c in app.chans {
 		if c.monitorable() {
 			return c.iface
 		}
 	}
 	return none
+}
+
+// diag_note_default records, from the GUI thread during a run, the wire the default target is on,
+// for diag_default_iface to keep once stopped.
+fn (mut app App) diag_note_default() {
+	if app.running {
+		if hw := app.diag_iface_opt() {
+			app.diag_default_last = hw
+		}
+	}
 }
 
 fn (app &App) diag_iface() string {

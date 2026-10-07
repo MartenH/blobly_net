@@ -385,6 +385,9 @@ mut:
 	// the system is loaded and describes no node on the default 0x7E0/0x7E8 pair: its label says
 	// a silence there is expected. Published with diag_sys_targets, under mu
 	diag_sys_default_unknown bool
+	// the wire the default 0x7E0/0x7E8 target was on in the last run (diag_note_default), GUI
+	// thread only: where it stays once stopped
+	diag_default_last string
 	// the DTC and DIDs tabs' content height, unscaled px; the divider above the log drags it
 	diag_tab_h f32
 	// Hosted DoIP entities, by interface. Held so Stop can close the listeners: an entity that
@@ -1154,6 +1157,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.diag_sys_targets = []
 	app.diag_sys_ident = ''
 	app.diag_sys_default_unknown = false
+	app.diag_default_last = ''
 	app.script_log = []
 	app.script_gen++
 	app.watch = []

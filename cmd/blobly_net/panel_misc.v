@@ -1240,6 +1240,7 @@ fn draw_diag(mut app App) {
 	app.diag_sys_refresh()
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
 	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
+	app.diag_note_default()
 	targets := app.diag_targets()
 	// Follow the SELECTION, not the position: if the list changed under us, find where the
 	// chosen target went rather than keeping an index that now names something else.

@@ -259,6 +259,9 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 				arg := step.all_after(':')
 				code := uds.dtc_code(arg) or { u32(('0x' + arg).u64()) }
 				app.dtc_select(code, false, desc)
+				if !app.running {
+					au.waiting = false // stopped, a selection asks nothing: no line to wait for
+				}
 			}
 		}
 		return

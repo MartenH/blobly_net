@@ -382,7 +382,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		return v.refused // the ECU's answer; a silence or a lost connection stays as it is
 	}).len
 	head := if refused > 0 { '${iso.len}, ${refused} refused' } else { '${iso.len}' }
-	if vgui.tree_node_open('ISO identification (${head})##diso') {
+	if vgui.tree_node_open('ISO identification (${head})###diso') { // ### : the count is not the id
 		draw_did_table(mut app, '##didiso2', iso, view, desc, busy, hide)
 		vgui.tree_pop()
 	}
