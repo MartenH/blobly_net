@@ -24,6 +24,7 @@
 // independent logical receive cursor behind one connection and one raw reader.
 module transport
 
+import log
 import net.websocket
 import sync
 import time
@@ -189,7 +190,17 @@ fn cansub_client_opts() websocket.ClientOpt {
 		// behind them (#240). Two seconds is longer than any send this device has been seen to
 		// take and shorter than anybody's patience.
 		write_timeout: cansub_write_timeout
+		// vlib's default logs every connect at INFO to stdout: two terminal lines per channel
+		// per Start. A failure still comes back as the error this backend reports.
+		logger: cansub_ws_logger()
 	}
+}
+
+// cansub_ws_logger is the WebSocket client's logger: errors only.
+fn cansub_ws_logger() &log.Log {
+	mut l := &log.Log{}
+	l.set_level(.error)
+	return l
 }
 
 // cansub_ws_connect opens the channel's WebSocket, trying again when the TLS handshake was

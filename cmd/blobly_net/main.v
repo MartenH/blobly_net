@@ -126,7 +126,6 @@ fn main() {
 	app.symbol_filter_buf = mkbuf('', 64)
 	app.open_session_log(proj_path)
 	app.load_project(proj_path)
-	println('blobly_net: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
 	// Replay stutter probe (probe.v): inert unless BLOBLY_PROBE_LOG is set. Diagnostic only.
 	if os.getenv('BLOBLY_PROBE_LOG') != '' {
