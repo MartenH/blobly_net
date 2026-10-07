@@ -410,7 +410,10 @@ for an open — on DoIP the TCP connect and the routing activation apart. A scri
 starting takes the connection away (one DoIP entity serves one tester), and the panel takes no
 press until it ends. Stop, Disconnect, a target change, closing the panel and a tool starting
 all end a press in flight within a few tens of milliseconds — a DoIP open, an ECU answering
-0x78 — rather than at its timeout; a keep-alive answered with 0x78 is reported as failed.
+0x78 — rather than at its timeout; a keep-alive still answering 0x78 when its 200 ms are up is
+reported as failed (a final answer inside them is that answer). On CAN the connection is the
+ISO-TP channel on its own tap, opened once and read between presses, so a held session does
+not reopen the adapter for every tester-present.
 
 Its **DTCs** tab reads the target's fault memory: the list (0x19 02, any status mask) with each
 DTC's status bits by ISO abbreviation (CDTC confirmed, PDTC pending, TF failing now, … — hover a

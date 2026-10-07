@@ -35,6 +35,9 @@ mut:
 	reported    bool
 }
 
+// autopress_timeout_ns bounds one press's wait for its line.
+const autopress_timeout_ns = u64(60_000_000_000)
+
 fn (mut app App) diag_autopress_init() {
 	spec := os.getenv('BLOBLY_DIAG_PRESS')
 	if spec == '' {
@@ -70,6 +73,14 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 	}
 	if au.waiting {
 		if busy || dgen == au.gen_at {
+			// a press that never finishes — refused in silence, or a defect — must not hold the
+			// run until VGUI_FRAMES ends it with no report
+			if time.sys_mono_now() - au.press_ns > autopress_timeout_ns {
+				// the press is still out, so no later step could run: end the run with its report
+				au.waiting = false
+				println('diag-autopress: ${au.steps[au.at - 1]} no line within ${autopress_timeout_ns / 1_000_000_000} s; aborting the run')
+				app.diag_autopress_report()
+			}
 			return
 		}
 		au.waiting = false
@@ -91,6 +102,11 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 			return
 		}
 		app.diag_autopress_report()
+		return
+	}
+	// not while a press is in flight (the auto-refresh's): it would be refused as busy, which
+	// writes no line, and this hook would wait for one
+	if busy {
 		return
 	}
 	step := au.steps[au.at]
