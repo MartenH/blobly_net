@@ -39,8 +39,8 @@ pub fn write_still_current(req_ident string, now_ident string) string {
 }
 
 // WritePlan is what a 0x2E needs before it is sent, as the description gates it: a session to
-// switch to (0 = stay), a security level to unlock (the 0x27 requestSeed sub-function; 0 = none),
-// or why the panel cannot write it.
+// switch to (0 = stay), a security level to unlock (0 = none; its 0x27 sub-functions are
+// seed_sub), or why the panel cannot write it.
 pub struct WritePlan {
 pub:
 	session u8
@@ -76,13 +76,50 @@ pub fn write_plan(declared bool, session u8, allowed []u8, level u8, unlocked u8
 	if !can_unlock {
 		return WritePlan{
 			session: to
-			refusal: 'needs security level ${level} (0x27 ${level:02X}), and the panel cannot compute this ECU\'s key — only blobly_net\'s reference key ([uds] security_key = "reference"); unlock it from a script'
+			refusal: 'needs security level ${level} (0x27 ${seed_sub(level):02X}), and the panel cannot compute this ECU\'s key — only blobly_net\'s reference key ([uds] security_key = "reference"); unlock it from a script'
 		}
 	}
 	return WritePlan{
 		session: to
 		unlock:  level
 	}
+}
+
+// seed_sub is the 0x27 requestSeed sub-function of a security level (as an ecu.toml numbers
+// levels, 1..8): 2L-1; its sendKey is the next one.
+pub fn seed_sub(level u8) u8 {
+	return 2 * level - 1
+}
+
+// Forget is what a refused 0x2E says the connection no longer has.
+pub enum Forget {
+	nothing
+	security // the level relocked (0x33 securityAccessDenied); the session stands
+	session  // the session is gone, and the level with it (0x7F serviceNotSupportedInActiveSession)
+}
+
+// write_refusal_forgets: what a 0x2E refused with `nrc` says the ECU took back on its own (a reset,
+// an S3 or security timeout), so the next write plans that again rather than skipping it on a
+// stale belief and being refused the same way. Only what the code names: 0x22 conditionsNotCorrect
+// is about the DID's own conditions as often as anything, and forgetting the session on it would
+// stop the keep-alive and lose the session it never said was lost.
+pub fn write_refusal_forgets(nrc u8) Forget {
+	return match nrc {
+		0x7F { .session }
+		0x33 { .security }
+		else { .nothing }
+	}
+}
+
+// edit_room is an edit field's buffer size: a DID of `size` bytes as hex (three characters a
+// byte) with room to type past it, so too long is said by encode rather than cut by the field —
+// and never less than the text it starts with (`text_len`), which it must hold whole.
+pub fn edit_room(size int, text_len int) int {
+	mut n := if size > 0 { 3 * size + 16 } else { 0 }
+	if n < 128 {
+		n = 128
+	}
+	return if text_len + 1 + 16 > n { text_len + 1 + 16 } else { n }
 }
 
 // words: the plan's steps, as the write dialog states them before it is confirmed.
@@ -95,7 +132,8 @@ pub fn (p WritePlan) words() string {
 		steps << 'switch to the ${session_name(p.session)} session (0x10 ${p.session:02X})'
 	}
 	if p.unlock != 0 {
-		steps << 'unlock level ${p.unlock} with the reference key (0x27 ${p.unlock:02X}/${p.unlock + 1:02X})'
+		sub := seed_sub(p.unlock)
+		steps << 'unlock level ${p.unlock} with the reference key (0x27 ${sub:02X}/${sub + 1:02X})'
 	}
 	steps << 'write (0x2E), then read it back (0x22)'
 	return steps.join(', then ')

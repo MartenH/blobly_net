@@ -98,3 +98,37 @@ fn test_a_write_made_under_a_reloaded_description_is_not_sent() {
 	assert r.starts_with('not written')
 	assert write_still_current('sys@a', '') != '' // the description went away
 }
+
+fn test_a_session_or_security_refusal_of_a_write_forgets_what_was_established() {
+	assert write_refusal_forgets(0x7F) == .session
+	assert write_refusal_forgets(0x33) == .security
+	// refusals about the DID, the data or its conditions say nothing about the session
+	for nrc in [u8(0x22), 0x31, 0x13, 0x72, 0x11] {
+		assert write_refusal_forgets(nrc) == .nothing
+	}
+	// what is forgotten is planned again: a lost session switches and unlocks, a relocked level
+	// unlocks in the session it still has
+	p := write_plan(true, 0, [u8(0x03)], 1, 0, true)
+	assert p.session == 0x03 && p.unlock == 1
+	q := write_plan(true, 0x03, [u8(0x03)], 1, 0, true)
+	assert q.session == 0 && q.unlock == 1
+}
+
+fn test_a_level_is_unlocked_by_its_own_sub_functions() {
+	assert seed_sub(1) == 0x01
+	assert seed_sub(2) == 0x03
+	assert seed_sub(8) == 0x0F
+	p := write_plan(true, 0x03, [u8(0x03)], 2, 0, true)
+	assert p.unlock == 2
+	assert p.words().contains('unlock level 2 with the reference key (0x27 03/04)'), p.words()
+	assert write_plan(true, 0x03, [], 3, 0, false).refusal.starts_with('needs security level 3 (0x27 05)')
+}
+
+fn test_an_edit_buffer_holds_its_whole_text() {
+	assert edit_room(2, 0) == 128
+	assert edit_room(64, 0) == 3 * 64 + 16
+	// an ASCII DID's text can outrun the hex room only when it is longer than the DID: held whole,
+	// so encode says too long rather than the field cutting it
+	assert edit_room(4, 300) == 317
+	assert edit_room(200, 200) == 616
+}
