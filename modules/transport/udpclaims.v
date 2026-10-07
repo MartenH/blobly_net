@@ -178,6 +178,13 @@ fn canonical_host(host string) string {
 	return if i := s.last_index(':') { unbracket(s[..i]) } else { s }
 }
 
+// bind_address is the address a bind on `host` will use: `canonical_host`'s resolution, the one
+// `claim_endpoint` and so a DoIP entity's listen use. The headless runner's DoIP port move asks
+// it, so what it compares and probes is what the entity binds.
+pub fn bind_address(host string) string {
+	return canonical_host(host)
+}
+
 // overlaps: could one datagram be delivered to either of these two binds?
 fn overlaps(ha string, pa int, hb string, pb int) bool {
 	if pa != pb {

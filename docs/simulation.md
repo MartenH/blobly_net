@@ -488,12 +488,18 @@ and worth knowing before plugging into a shared lab LAN.
 From a script, listen for them the way a real tester would:
 
 ```lua
-local seen = doip.listen(1200)                     -- window in ms, port defaults to 13400
-local seen = doip.listen(1200, { port = 13555 })   -- an entity bound elsewhere
-local seen = doip.listen(1200, { from = "AltPort" }) -- the same, without repeating the port the
-                                                     -- project already states for that channel
--- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000, from = "127.0.0.1:13400" }, ... }
+local seen = doip.listen(1200, { from = "Talker" })  -- window in ms, on the port that channel is on
+local seen = doip.listen(1200, { port = 13555 })     -- a port given outright
+local seen = doip.listen(1200)                       -- no channel, no port: 13400, the ISO port
+-- seen = { { vin = "ANNOUNCERVIN00001", logical_address = 0x1000, from = "127.0.0.1:30525" }, ... }
 ```
+
+**Name the channel** (`from`) in a suite. Headless, `scripts/runtests.sh` moves every simulated
+loopback entity off the project's port for its run (the printed `… -> 127.0.0.1:30525 for this
+run` line; see [scripting.md](scripting.md#usage)), so an entity the project puts on 13400
+announces to another port there, and a bare `doip.listen` on 13400 hears nothing of this run —
+or another run's entities. `from` follows the move; a bare listen or a literal port is for the
+GUI, or for an entity something else hosts.
 
 Nothing is queued for a listener that is not there, and **a script cannot get there first**: the
 entities come up before the suite is parsed, the same way an ECU is powered long before a tester
@@ -506,8 +512,9 @@ ask-and-answer half.
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a
 DID too large for one ISO-TP transfer is served here and reported there.
 
-> **A real socket.** ▶ Start in the GUI, and `scripts/runtests.sh` headless, both host the
-> entity and bind port 13400 while it runs. The channel goes green only once the listener is
+> **A real socket.** ▶ Start in the GUI hosts the entity and binds the project's port (13400
+> in the demos) while it runs; `scripts/runtests.sh` headless binds a free port in 30000..31999
+> instead, so two runs on one machine do not collide (`--project-ports` keeps the project's). The channel goes green only once the listener is
 > actually up: if the port is taken it stays `idle` and the Log says why, rather than showing
 > green beside an entity that is not ours. See [doip.md](doip.md).
 
