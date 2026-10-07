@@ -87,7 +87,18 @@ pub const udp_bus = Band{
 	tries: 64
 }
 
-pub const bands = [doip, someip, udp_bus]
+// The headless runner's simulated DoIP entities (#411): cmd/script moves every loopback entity a
+// project hosts on, say, 13400 onto the first candidate here it can bind. The entity binds TCP and
+// UDP on one number and announces to it, so the TCP bind verifies the UDP port as well — the
+// announcement port is the entity's port, not a separate prediction.
+pub const doip_entities = Band{
+	name:  'cmd/script (simulated DoIP entities)'
+	base:  30000
+	count: 2000
+	tries: 64
+}
+
+pub const bands = [doip, someip, udp_bus, doip_entities]
 
 // last is the highest port the band can hand out.
 pub fn (b Band) last() int {

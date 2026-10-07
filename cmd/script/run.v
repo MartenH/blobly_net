@@ -11,6 +11,7 @@
 module main
 
 import os
+import net
 import time
 import candb
 import project
@@ -20,6 +21,7 @@ import uds
 import sim
 import doip
 import script
+import testports
 import sync.stdatomic
 
 // loops_done counts the bus-holding loops that have exited, so the runner's bounded wait at the
@@ -37,6 +39,7 @@ mut:
 fn main() {
 	mut proj_path := 'projects/sim-demo.blobnet'
 	mut explicit := '' // --project as given, distinct from the default above
+	mut project_ports := false // --project-ports: host DoIP entities on the ports the project states
 	mut scripts := []string{}
 	mut i := 1
 	for i < os.args.len {
@@ -49,6 +52,9 @@ fn main() {
 					proj_path = explicit
 				}
 			}
+			'--project-ports' {
+				project_ports = true
+			}
 			else {
 				scripts << a
 			}
@@ -57,7 +63,7 @@ fn main() {
 		i++
 	}
 	if scripts.len == 0 {
-		eprintln('usage: run [--project <file.blobnet>] <script.lua> [more.lua ...]')
+		eprintln('usage: run [--project <file.blobnet>] [--project-ports] <script.lua> [more.lua ...]')
 		exit(2)
 	}
 
@@ -80,13 +86,33 @@ fn main() {
 
 	// The pre-v4 `bus:` migration says what it converted; stderr here, as the database reader's
 	// notes are (#97).
-	proj := project.load(proj_path) or {
+	mut proj := project.load(proj_path) or {
 		eprintln('cannot load project ${proj_path}: ${err}')
 		exit(2)
 	}
 	println('project: ${proj.name}  (${proj_path})')
 	for n in proj.notes {
 		eprintln('${proj_path}: ${n}')
+	}
+	// The run's simulated loopback DoIP entities move off the project's ports (13400 in every
+	// demo) onto ports this process can bind, and every row dialing them moves with them, so two
+	// runs on one machine do not collide (#411). Held until each entity binds, below.
+	mut probes := map[int]&net.TcpListener{}
+	if !project_ports {
+		mut prober := &TcpProber{}
+		band := testports.doip_entities
+		moved := project.choose_doip_ports(project.doip_hosting(proj.channels, transport.bind_address),
+			project.reserved_ports(proj.channels), band.candidates(), transport.bind_address, mut
+			prober) or {
+			eprintln('cannot host the DoIP entities: ${err} in ${band.base}..${band.last()}; --project-ports keeps the project\'s')
+			exit(1)
+		}
+		probes = prober.held.clone()
+		chs, notes := project.with_doip_ports(proj.channels, moved, transport.bind_address)
+		proj.channels = chs
+		for n in notes {
+			println(n)
+		}
 	}
 
 	// Build per-channel DBC catalogs + bring the simulation up on every enabled
@@ -199,6 +225,7 @@ fn main() {
 				eprintln('${ch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${ch.ecu_addr:04X})')
 			}
 			mut srv := ent.server
+			release_probe(mut probes, port)
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect
@@ -281,6 +308,9 @@ fn main() {
 		} else {
 			println('channel ${ch.name} (${ch.iface}): monitor only')
 		}
+	}
+	for _, mut p in probes {
+		p.close() or {}
 	}
 	// Cyclic generators (`senders:` with trigger: cyclic), sent while the run lasts as the GUI
 	// sends them during a measurement, by the GUI's rules: every row's generators (a disabled
@@ -549,6 +579,34 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	hst.entity = s
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
+}
+
+// TcpProber holds each chosen port with a listener on its wildcard until the entity binds it.
+// TCP verifies (testports), and the wildcard is refused while ANY address listens on the port, so
+// a candidate another run holds on any loopback address is skipped. The entity binds UDP on the
+// same number and announces to it, so that port is settled too. What is left is the instant
+// between releasing a probe and the entity's bind.
+struct TcpProber {
+mut:
+	held map[int]&net.TcpListener
+}
+
+fn (mut p TcpProber) hold(port int, v6 bool) bool {
+	l := if v6 {
+		net.listen_tcp(.ip6, '[::]:${port}') or { return false }
+	} else {
+		net.listen_tcp(.ip, '0.0.0.0:${port}') or { return false }
+	}
+	p.held[port] = l
+	return true
+}
+
+// release_probe closes the listener holding `port`, if any, so the entity can bind it.
+fn release_probe(mut probes map[int]&net.TcpListener, port int) {
+	if mut l := probes[port] {
+		l.close() or {}
+		probes.delete(port)
+	}
 }
 
 // Announcer is one bound entity waiting to announce, held until the script environment exists.

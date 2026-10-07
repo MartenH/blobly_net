@@ -18,8 +18,11 @@
 -- controlled: modules/sim (the config reaches the entity) and modules/doip net_test
 -- (listener bound, then announce). This suite covers what a script can actually see.
 
+-- Every listen names a channel with `from`: the runner moves each simulated entity off the
+-- project's port for the run (#411), so a bare listen on 13400 would hear another run's entities
+-- and never this one's.
 test("a listening tester hears an entity announce itself", function()
-  local seen = doip.listen(1200)
+  local seen = doip.listen(1200, { from = "Talker" })
   check.truthy(#seen > 0, "a listening tester heard nothing at all")
   local found = false
   for _, a in ipairs(seen) do
@@ -43,7 +46,7 @@ end)
 -- ~4 s announcement sequence, and a fourth would be timing out that sequence rather than
 -- testing anything.
 test("announcements arrive on the entity's own port, named through its channel", function()
-  local seen = doip.listen(1200, { from = "AltPort" })   -- AltPort lives on 13555
+  local seen = doip.listen(1200, { from = "AltPort" })   -- 13555 in the project, not Talker's port
   local found = false
   for _, a in ipairs(seen) do
     if a.vin == "ALTPORTVIN0000001" then found = true; check.equal(a.logical_address, 0x4000) end
@@ -61,7 +64,7 @@ end)
 -- announce_count 0 is a legitimate ECU to simulate, and the fault worth injecting at a tester
 -- that relies on discovery: it must stay findable by ASKING while never announcing.
 test("a silent ECU never announces but still answers a direct query", function()
-  local seen = doip.listen(800)
+  local seen = doip.listen(800, { from = "Silent" })
   for _, a in ipairs(seen) do
     check.truthy(a.vin ~= "SILENTECUVIN00001", "the silent ECU announced itself")
   end
