@@ -220,6 +220,33 @@ fn test_log_is_bounded_numbered_and_annotates_only_its_newest() {
 	assert l.entries.last().is_error(), 'an answer the front end could not use is an error'
 }
 
+fn test_held_entries_are_pushed_or_dropped_together() {
+	mut l := ExchangeLog{}
+	l.push(LogEntry{
+		outcome: .positive
+		req:     [u8(0x22), 0xF1, 0x90]
+	})
+	for sub in [u8(0x02), 0x06, 0x06] {
+		l.hold(LogEntry{
+			outcome: .positive
+			req:     [u8(0x19), sub]
+		})
+	}
+	assert l.entries.len == 1, 'held back, not shown'
+	assert l.settle(false) == 0
+	assert l.entries.len == 1 && l.held.len == 0, 'an unchanged refresh leaves no rows'
+	for sub in [u8(0x02), 0x06] {
+		l.hold(LogEntry{
+			outcome: .positive
+			req:     [u8(0x19), sub]
+		})
+	}
+	last := l.settle(true)
+	assert l.entries.len == 3
+	assert l.entries.map(it.req[1]) == [u8(0xF1), 0x02, 0x06]
+	assert last == l.entries.last().seq
+}
+
 fn test_filter() {
 	ok := LogEntry{
 		outcome: .positive

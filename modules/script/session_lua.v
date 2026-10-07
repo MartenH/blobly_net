@@ -29,6 +29,21 @@ pub:
 	targets []LuaTarget
 }
 
+// channel_for is the channel a script reaches a target by, among the channels it is given
+// (`chans`, which holds the enabled ones only): the target's own channel when it names one and it
+// is there, else the first on the target's interface; '' = none, and its requests are comments.
+pub fn channel_for(own string, iface string, chans []ChanInfo) string {
+	if own != '' {
+		return if chans.any(it.name == own) { own } else { '' }
+	}
+	for c in chans {
+		if iface != '' && (c.key_iface == iface || c.iface == iface) {
+			return c.name
+		}
+	}
+	return ''
+}
+
 // lua_from_log writes `entries` as a script.
 pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
 	mut reach := map[string]LuaTarget{} // target key -> how a script opens it
@@ -165,6 +180,11 @@ fn test_block(name string, body string, e uds.LogEntry) string {
 
 // body_of is the test's one statement: the call and the check of what came back.
 fn body_of(h string, e uds.LogEntry) string {
+	if e.outcome == .positive && e.failed && e.resp.len > 0 {
+		// an answer the panel could not use (its helper refused to decode it): a helper would
+		// raise on it here too, so the bytes themselves are what is checked
+		return 'check.equal(tohex(${h}:raw(fromhex("${uds.bytes_hex(e.req, 0)}"))), ${hex_value(e.resp)})  -- the answer the panel could not decode, compared as it came'
+	}
 	call, value := call_of(h, e)
 	if e.outcome == .negative {
 		bare := if call.starts_with('tohex(') { call[6..call.len - 1] } else { call }

@@ -522,6 +522,11 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 		}
 		out, negative = app.diag_request(gen, mut h, req)
 	}
+	// an auto-refresh that ended before deciding whether it is said (it failed): its rows are kept
+	// with its error, and nothing is held past its press
+	if req.auto {
+		app.diag_settle_held(req, out.err)
+	}
 	// a restating line is dropped where the press's entry already says it: an entry that is an
 	// error exactly when the line is (a positive answer the helper then refused is not)
 	app.mu.lock()

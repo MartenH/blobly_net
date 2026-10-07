@@ -409,6 +409,9 @@ pub mut:
 	cap     int = 500
 	entries []LogEntry
 	seq     u64 // the last number given
+	// entries held back until their press decides whether it is worth saying (settle): a DTC
+	// auto-refresh that read what the last one did is not, and its exchanges go with its line
+	held []LogEntry
 }
 
 // push appends `e` (dropping the oldest past the cap) and returns its number.
@@ -445,8 +448,27 @@ pub fn (mut l ExchangeLog) annotate(seq u64, note string, failed bool) bool {
 	return true
 }
 
+// hold keeps `e` back, unnumbered, until settle.
+pub fn (mut l ExchangeLog) hold(e LogEntry) {
+	l.held << e
+}
+
+// settle pushes what is held, in order, when `keep`, and drops it otherwise; returns the number
+// of the last entry pushed (0 = none).
+pub fn (mut l ExchangeLog) settle(keep bool) u64 {
+	mut last := u64(0)
+	if keep {
+		for e in l.held {
+			last = l.push(e)
+		}
+	}
+	l.held = []
+	return last
+}
+
 pub fn (mut l ExchangeLog) clear() {
 	l.entries = []
+	l.held = []
 }
 
 // LogFilter is what the table shows.

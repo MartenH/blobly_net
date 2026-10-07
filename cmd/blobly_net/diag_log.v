@@ -6,7 +6,6 @@ import uds
 import vgui
 import script
 import diaghold
-import project
 
 // ---- The Diagnostics panel's log: one entry per request, as a table ----
 //
@@ -164,13 +163,41 @@ fn (mut app App) diag_say_for(req DiagReq, line string, failed bool) {
 }
 
 // diag_exchange_for logs one exchange of the press `req` (the client's on_exchange, on the holder
-// thread), the DID it names called what the target's description calls it.
+// thread), the DID it names called what the target's description calls it. An auto-refresh's are
+// held back until it is known whether the refresh is said at all (diag_settle_held).
 fn (mut app App) diag_exchange_for(req DiagReq, x uds.Exchange) {
 	mut e := uds.entry_of(x)
 	if x.req.len >= 3 && (x.req[0] == 0x22 || x.req[0] == 0x2E) {
 		e.did_name = req.desc.did_name(u16(x.req[1]) << 8 | u16(x.req[2]))
 	}
-	app.diag_entry_for(req, e)
+	if !req.auto {
+		app.diag_entry_for(req, e)
+		return
+	}
+	app.mu.lock()
+	if diaghold.view_writable(req.epoch, app.diag_epoch) {
+		app.diag_log.hold(uds.LogEntry{
+			...e
+			clock:  log_clock()
+			target: if req.label != '' { req.label } else { req.key }
+			key:    req.key
+		})
+	}
+	app.mu.unlock()
+}
+
+// diag_settle_held commits an auto-refresh's held exchanges when the refresh is said (`keep`:
+// diaghold.autorefresh_logged, the rule that says its line) and drops them otherwise — under the
+// project it was pressed in only.
+fn (mut app App) diag_settle_held(req DiagReq, keep bool) {
+	app.mu.lock()
+	last := app.diag_log.settle(keep && diaghold.view_writable(req.epoch, app.diag_epoch))
+	if last != 0 {
+		app.diag_press_seq = last
+		app.diag_gen++
+		app.diag_last_push_ns = time.sys_mono_now()
+	}
+	app.mu.unlock()
 }
 
 // diag_log_lines is the log as text, for the autopress report.
@@ -326,20 +353,33 @@ fn (mut app App) diag_copy_lua(rows []uds.LogEntry) {
 
 // diag_lua is `rows` as a script.
 fn (app &App) diag_lua(rows []uds.LogEntry) string {
+	chans := app.script_chan_names()
 	return script.lua_from_log(rows, script.LuaOpts{
 		project: if app.proj_path != '' { os.real_path(app.proj_path) } else { '' }
-		targets: app.diag_targets().map(app.lua_target(it))
+		targets: app.diag_targets().map(app.lua_target(it, chans))
 	})
 }
 
-// lua_target is how a script reaches `t`: by the channel that carries it (its own, else the
-// project channel on its interface), with its ids on CAN — the tester transmits on the id the ECU
-// listens on.
-fn (app &App) lua_target(t DiagTarget) script.LuaTarget {
-	mut ch := t.chan
-	if ch == '' {
-		ch = (app.proj.channels.filter(it.iface == t.iface)[0] or { project.Channel{} }).name
-	}
+// script_chan_names is the channels a script started now is given, by name and interface only:
+// the enabled runtime rows, in their order (script_worker additionally drops a DoIP row whose
+// hosting failed, which no CAN fallback below can name).
+fn (app &App) script_chan_names() []script.ChanInfo {
+	mut a := unsafe { app }
+	a.mu.lock()
+	out := a.chans.filter(it.enabled).map(script.ChanInfo{
+		name:      it.name
+		iface:     it.iface
+		key_iface: it.iface
+	})
+	a.mu.unlock()
+	return out
+}
+
+// lua_target is how a script reaches `t`: by the channel that carries it, among the channels a
+// script is given — the ENABLED runtime ones, as script_worker builds them (script.channel_for) —
+// with its ids on CAN: the tester transmits on the id the ECU listens on.
+fn (app &App) lua_target(t DiagTarget, chans []script.ChanInfo) script.LuaTarget {
+	mut ch := script.channel_for(t.chan, t.iface, chans)
 	// uds.open infers 29-bit addressing from an id above 0x7FF: a 29-bit target on smaller ids
 	// cannot be opened as it was reached, so its requests are left as comments
 	if !t.carrier.doip && t.ext && t.rx <= 0x7FF && t.tx <= 0x7FF {

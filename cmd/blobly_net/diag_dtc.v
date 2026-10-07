@@ -388,7 +388,12 @@ fn (mut app App) dtc_read(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	}
 	app.mu.unlock()
 	vgui.wake()
-	if !diaghold.autorefresh_logged(req.auto, failed != '', prev, sig) {
+	// ONE decision for the refresh's line and its exchanges' rows
+	logged := diaghold.autorefresh_logged(req.auto, failed != '', prev, sig)
+	if req.auto {
+		app.diag_settle_held(req, logged)
+	}
+	if !logged {
 		return DiagOut{}, false
 	}
 	confirmed := rows.filter(it.rec.has(uds.dtc_confirmed)).len

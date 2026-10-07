@@ -214,6 +214,47 @@ fn test_a_seed_and_key_pair_only_when_adjacent_in_the_log() {
 	assert paired.contains('diag:security_access(1)'), paired
 }
 
+fn test_an_answer_the_panel_could_not_decode_is_compared_raw() {
+	mut bad := ent(4, [u8(0x19), 0x02, 0xFF], [u8(0x59), 0x02, 0xFF, 0x12, 0x34])
+	bad.failed = true
+	bad.note = '0x19 02 FF: 0x19 02 answer of 5 bytes is not a whole number of DTC records'
+	got := lua_from_log([bad], LuaOpts{
+		targets: [LuaTarget{
+			key:     'sut'
+			channel: 'CAN1'
+		}]
+	})
+	assert got.contains('test("4: 19 02 FF ReadDTC byMask", function()
+  -- 0x19 02 FF: 0x19 02 answer of 5 bytes is not a whole number of DTC records
+  check.equal(tohex(diag:raw(fromhex("19 02 FF"))), "59 02 FF 12 34")  -- the answer the panel could not decode, compared as it came
+end)'), got
+	assert !got.contains('read_dtcs'), 'a helper would raise on the same answer'
+}
+
+fn test_a_target_is_reached_by_a_channel_the_script_is_given() {
+	// the script's channels: the ENABLED runtime rows only — a disabled CAN1a on inproc:CAN1 is
+	// not among them, so the default target on that wire is reached by CAN1b
+	chans := [ChanInfo{
+		name:      'CAN1b'
+		iface:     'inproc:CAN1'
+		key_iface: 'inproc:CAN1'
+	}, ChanInfo{
+		name:      'DoIP1'
+		iface:     'doip:127.0.0.1:13400'
+		key_iface: 'doip:127.0.0.1:13400'
+	}, ChanInfo{
+		name:      'PC'
+		iface:     'pcan:PCAN_USBBUS1@500000'
+		key_iface: 'pcan:PCAN_USBBUS1'
+	}]
+	assert channel_for('', 'inproc:CAN1', chans) == 'CAN1b'
+	assert channel_for('', 'pcan:PCAN_USBBUS1', chans) == 'PC', 'by the logical interface'
+	assert channel_for('DoIP1', 'doip:127.0.0.1:13400', chans) == 'DoIP1'
+	assert channel_for('CAN1a', 'inproc:CAN1', chans) == '', 'a disabled own channel is not opened'
+	assert channel_for('', 'inproc:CAN9', chans) == ''
+	assert channel_for('', '', chans) == ''
+}
+
 fn test_a_suppressed_request_checks_whether_an_answer_came() {
 	t := [LuaTarget{
 		key:     'sut'
