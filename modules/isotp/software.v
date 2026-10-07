@@ -595,16 +595,18 @@ fn (mut c SoftChannel) bus_recv(ms int) !transport.CanFrame {
 				step = int(left)
 			}
 		}
-		t0 := time.ticks()
+		t0 := time.sys_mono_now()
 		f := c.bus.recv(step) or {
 			if err.msg() != 'timeout' {
 				return err // the bus is gone (closed, failed): the receive ends with it
 			}
 			// a 'timeout' that did not wait is not a quiet wire: wait the slice out here, so a
-			// bus that answers at once costs one call per slice and not a core (#401)
-			waited := time.ticks() - t0
-			if waited < step {
-				time.sleep((step - waited) * time.millisecond)
+			// bus that answers at once costs one call per slice and not a core (#401). On the
+			// monotonic clock, and never more than the slice, so a stop is still asked per slice.
+			waited := i64(time.sys_mono_now() - t0)
+			left_ns := i64(step) * time.millisecond - waited
+			if left_ns > 0 {
+				time.sleep(left_ns)
 			}
 			continue
 		}

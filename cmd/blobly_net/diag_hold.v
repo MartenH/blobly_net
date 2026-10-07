@@ -90,8 +90,8 @@ mut:
 	// unsent-request retry asks, since `cli.last` is the last exchange of a press of several
 	press_sent int
 	last_ms  i64 // the last thing sent to the ECU (time.ticks), which is what S3 runs from
-	// CAN: the client's timing, carried into the client of the next attach
-	timeout_ms int
+	// the P2* the target announced on an earlier connection (app.diag_timing), loosened into the
+	// client at the open
 	p2_star_ms int
 	// this holder generation's ONE cancellation token (diaghold.Commands.cancels), installed on
 	// every wait it blocks in: the DoIP open and recv, the ISO-TP channel, the uds client
@@ -346,12 +346,9 @@ fn (mut app App) diag_drop(gen u64, mut h HeldConn, conn diaghold.Conn, why stri
 }
 
 // diag_attach opens a CAN target's ISO-TP channel on a tap, held with the connection until it is
-// let go (DoIP: nothing to do — the connection is held). The client is new; the timing the last
-// one learned is carried in.
+// let go: diag_open's CAN half. The client is new; the P2* the target announced before is
+// loosened into it.
 fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
-	if h.target.carrier.doip || h.attached {
-		return
-	}
 	t := h.target
 	// the physical interface resolved under the lock: bitrate_iface walks app.chans
 	app.mu.lock()
@@ -380,22 +377,16 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	h.sc = sc
 	h.cli = uds.new_client(sc)
 	h.cli.stop_requested = h.stop
-	if h.timeout_ms > 0 {
-		h.cli.timeout_ms = h.timeout_ms
-	}
 	h.cli.loosen_p2_star(h.p2_star_ms)
 	h.where = 'ISO-TP on ${iface} (0x${t.rx:X}/0x${t.tx:X})'
 	h.attached = true
 }
 
-// diag_detach closes a CAN connection's channel and its tap, keeping what its client learned of
-// the timing.
+// diag_detach closes a CAN connection's channel and its tap.
 fn (mut app App) diag_detach(mut h HeldConn) {
 	if h.target.carrier.doip || !h.attached {
 		return
 	}
-	h.timeout_ms = h.cli.timeout_ms
-	h.p2_star_ms = h.cli.p2_star_ms
 	h.ch.close()
 	h.sc = unsafe { nil }
 	h.attached = false
@@ -570,8 +561,7 @@ struct DiagOut {
 fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	h.cli.last = uds.ExchangeTiming{}
 	h.press_sent = 0
-	app.diag_attach(gen, mut h) or { return DiagOut{line: '${req.kind}: ${err}', err: true}, false }
-	// counted on the client this press runs on (an attach makes a new one)
+	// counted on the connection's client (diag_serve opened the connection: on CAN, its channel)
 	base := h.cli.sent_count
 	defer {
 		h.press_sent = int(h.cli.sent_count - base)
@@ -647,14 +637,16 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 // CAN: what arrived on the held tap since the last look is read away (isotp.SoftChannel.
 // drain_idle), so on a shared-hub wire (PCAN, CANsub) its cursor never falls behind the ring —
 // a tap nobody reads is booked as the WIRE's loss. At a look per 50 ms the ring's 4096 frames
-// are well over ten times a saturated 1 Mbit/s wire's share; the next request's pre-send drain
-// would discard the same frames. A bus that fails here is let go, said.
+// are about four times what a 1 Mbit/s wire saturated with empty classic frames (~20k/s) carries
+// meanwhile; the next request's pre-send drain would discard the same frames. A bus that fails
+// here is let go, said.
 fn (mut app App) diag_idle(gen u64, mut h HeldConn) {
 	if !h.target.carrier.doip {
 		if isnil(h.sc) {
 			return
 		}
 		h.sc.drain_idle(diag_idle_drain_max) or {
+			app.diag_push('${h.where}: ${err.msg()} (while idle)')
 			app.diag_let_go(gen, mut h, .failed, '${err.msg()} (while idle)')
 		}
 		return
@@ -674,31 +666,26 @@ fn (mut app App) diag_idle(gen u64, mut h HeldConn) {
 // keep-alive failing (diaghold.keepalive_verdict), said on the strip. Not logged when it succeeds
 // — one line every two seconds would bury the presses — but counted on the strip.
 fn (mut app App) diag_keepalive(gen u64, mut h HeldConn) {
-	app.diag_attach(gen, mut h) or {
-		h.last_ms = time.ticks()
-		app.diag_push('keep-alive 3E 80: ${err}')
-		app.diag_let_go(gen, mut h, .failed, 'keep-alive: ${err}')
-		return
-	}
 	saved_wait, saved_budget := h.cli.timeout_ms, h.cli.pending_budget_ms
 	h.cli.timeout_ms = diaghold.keepalive_wait_ms
 	h.cli.pending_budget_ms = diaghold.keepalive_wait_ms
 	mut errored := false
 	mut negative := false
+	mut expired := false
 	mut why := ''
 	h.cli.raw_suppressed([u8(0x3E), 0x00]) or {
 		errored = true
 		negative = err is uds.NegativeResponse
+		expired = err is uds.PendingExpired
 		why = err.msg()
 	}
-	pendings := h.cli.last.pending
 	h.cli.timeout_ms = saved_wait
 	h.cli.pending_budget_ms = saved_budget
 	h.last_ms = time.ticks()
 	if errored && h.stop() {
 		return // cancelled: the holder's next look lets go, with the command's reason
 	}
-	match diaghold.keepalive_verdict(errored, negative, pendings) {
+	match diaghold.keepalive_verdict(errored, negative, expired) {
 		.ok {
 			mut s := app.diag_status_copy()
 			s.keepalives++

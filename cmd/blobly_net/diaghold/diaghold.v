@@ -375,13 +375,14 @@ pub enum KeepAlive {
 // hold the holder — and every press queued behind it — for the client's two-minute budget.
 // THE FINAL ANSWER DECIDES, not the 0x78 before it: a positive answer after 0x78 inside the
 // window (ISO lets a server send it even with SPRMIB set) is the session kept, and a negative one
-// the refusal it is. Only a 0x78 the window ran out on is `pending`.
-pub fn keepalive_verdict(errored bool, negative bool, pendings int) KeepAlive {
+// the refusal it is. Only a 0x78 the window ran out on (`pending_expired`: uds.PendingExpired) is
+// `pending`; a carrier that failed under that wait is `failed`, like any other.
+pub fn keepalive_verdict(errored bool, negative bool, pending_expired bool) KeepAlive {
 	if !errored {
 		return .ok
 	}
 	if negative {
 		return .refused
 	}
-	return if pendings > 0 { KeepAlive.pending } else { KeepAlive.failed }
+	return if pending_expired { KeepAlive.pending } else { KeepAlive.failed }
 }

@@ -25,6 +25,7 @@ enum Ecu {
 	answers
 	open_blocks // TCP connect or routing activation never completes
 	pends // every request answered 0x78, for ever
+	pends_once // every request answered 0x78 and then, inside the keep-alive's window, finally
 }
 
 struct MHolder {
@@ -262,17 +263,19 @@ fn (mut w World) finish(mut h MHolder) {
 		.keepalive {
 			h.work = .idle
 			h.last_tx = w.clock_ms
-			// answered 0x78 for ever: the bound runs out on it, an error
-			v := if w.ecu == .pends {
-				keepalive_verdict(true, false, 1)
-			} else {
-				keepalive_verdict(false, false, 0)
+			// answered 0x78 for ever, the bound runs out on it; answered 0x78 and then finally, the
+			// final answer is what counts
+			v := match w.ecu {
+				.pends { keepalive_verdict(true, false, true) }
+				else { keepalive_verdict(false, false, false) }
 			}
 			if v != .ok {
 				h.held = ''
 				h.session = 0
 			}
 			w.check(w.ecu != .pends || h.held == '', 'a keep-alive answered 0x78 kept the connection')
+			w.check(w.ecu != .pends_once || h.held != '',
+				'a keep-alive answered 0x78 and then positively let the connection go')
 		}
 		.idle {}
 	}
@@ -335,7 +338,7 @@ fn (mut w World) event() {
 			if !w.running {
 				w.running = true
 				w.run_gen++
-				w.ecu = unsafe { Ecu(rand.intn(3) or { 0 }) }
+				w.ecu = unsafe { Ecu(rand.intn(4) or { 0 }) }
 			}
 		}
 		5 { w.tool_begin() }
@@ -348,7 +351,7 @@ fn (mut w World) event() {
 				w.command(.panel_closed, '')
 			}
 		}
-		10 { w.ecu = unsafe { Ecu(rand.intn(3) or { 0 }) } }
+		10 { w.ecu = unsafe { Ecu(rand.intn(4) or { 0 }) } }
 		11 { w.clock_ms += keepalive_ms }
 		else {} // a quiet tick: keep-alives fall due
 	}

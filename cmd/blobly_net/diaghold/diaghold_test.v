@@ -237,16 +237,17 @@ fn test_presses_wait_for_a_tool() {
 }
 
 fn test_a_keepalive_answered_pending_fails() {
-	assert keepalive_verdict(false, false, 0) == .ok
-	assert keepalive_verdict(true, true, 0) == .refused
-	assert keepalive_verdict(true, false, 0) == .failed
-	assert keepalive_verdict(true, false, 1) == .pending
+	assert keepalive_verdict(false, false, false) == .ok
+	assert keepalive_verdict(true, true, false) == .refused
+	assert keepalive_verdict(true, false, false) == .failed
+	assert keepalive_verdict(true, false, true) == .pending
 }
 
 // a 0x78 followed inside the window by the final answer is that answer (#401): positive keeps
-// the session, negative is the refusal
+// the session (no error, whatever 0x78s came first), negative is the refusal, and a carrier that
+// failed under the wait is a failure, not the server's 0x78
 fn test_a_keepalive_answered_after_pending_is_its_final_answer() {
-	assert keepalive_verdict(false, false, 1) == .ok
-	assert keepalive_verdict(false, false, 3) == .ok
-	assert keepalive_verdict(true, true, 1) == .refused
+	assert keepalive_verdict(false, false, false) == .ok
+	assert keepalive_verdict(true, true, false) == .refused
+	assert keepalive_verdict(true, false, false) == .failed
 }
