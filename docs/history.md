@@ -61,7 +61,7 @@
   sorting disabled on the live trace.
 - 2026-06-03: **Dock layout VALIDATED** (`cmd/dock_demo`) — gui's `dock_layout` does resizable splits,
   tabbed panel groups, a data_grid nested in a panel, working inputs/buttons, and drag-to-redock with
-  drop-zone preview + layout persistence. Solid under WSLg. Screenshots docs/gui_validation/dock_*.png.
+  drop-zone preview + layout persistence. Solid under WSLg. (Its screenshots were removed from the repository on 2026-10-07.)
   → Greenlit to refactor `src/main.v` into a dockable panel layout (Trace/Signals/Send/… panels).
 - 2026-06-03: GUI is dockable (Trace/Signals/Send/Statistics panels); fixed gui.input sizing quirk.
   Hardware-GL investigation: GPU works (glmark2) but our sokol app crashes Mesa 23.2's d3d12 core
