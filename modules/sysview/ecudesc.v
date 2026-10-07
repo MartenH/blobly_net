@@ -71,7 +71,8 @@ pub:
 }
 
 // Gate is a `read`/`write` table: the sessions the service is served in (none listed = any) and
-// the security level it needs (the 0x27 requestSeed sub-function; 0 = none). `declared` false is
+// the security LEVEL it needs (1..max_security_level, as blobly_emb's ecu.toml numbers them —
+// level L is unlocked with 0x27 requestSeed 2L-1 and sendKey 2L; 0 = none). `declared` false is
 // no gate at all — for `write`, not writable.
 pub struct Gate {
 pub:
@@ -290,6 +291,24 @@ fn access_words(m map[string]toml.Any, key string) string {
 	return if parts.len == 0 { 'open' } else { parts.join(', ') }
 }
 
+// max_security_level is the highest security level an ecu.toml gate may name (blobly_emb's
+// uds.max_security_level, which its generator holds a description to).
+pub const max_security_level = 8
+
+// gate_level_refusal: why a gate's `security` is not a level a tester can unlock — anything but an
+// integer 0..max_security_level (256, a negative, a string) would plan no unlock or the wrong one.
+// '' = fine, and an absent `security` is no level.
+fn gate_level_refusal(m map[string]toml.Any, key string) string {
+	v := m[key] or { return '' }
+	lv := v.as_map()['security'] or { return '' }
+	if lv is i64 {
+		if lv >= 0 && lv <= max_security_level {
+			return ''
+		}
+	}
+	return '${key} security ${lv.to_toml()} is not a security level (1..${max_security_level})'
+}
+
 // gate_of reads a `{ session = [...], security = N }` gate.
 fn gate_of(m map[string]toml.Any, key string) Gate {
 	v := m[key] or { return Gate{} }
@@ -391,6 +410,11 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		id := tint(xm, 'id')
 		if id < 0 || id > 0xFFFF {
 			d.errs << 'did ${id}: not a 16-bit identifier; not read'
+			continue
+		}
+		gate_err := ['read', 'write'].map(gate_level_refusal(xm, it)).filter(it != '')
+		if gate_err.len > 0 {
+			d.errs << 'did 0x${id:04X}: ${gate_err.join('; ')}; not read'
 			continue
 		}
 		read := access_words(xm, 'read')

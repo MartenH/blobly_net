@@ -164,25 +164,26 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		app.diag_say_for(req, '${out.line} (0x2E ${name} is written in it)', false)
 	}
 	if plan.unlock != 0 {
-		seed := h.cli.security_request_seed(plan.unlock) or {
+		sub := diaghold.seed_sub(plan.unlock)
+		seed := h.cli.security_request_seed(sub) or {
 			return DiagOut{
-				line: '0x27 ${plan.unlock:02X} (request seed): ${err}'
+				line: '0x27 ${sub:02X} (request seed): ${err}'
 				err:  true
 			}, answered(err)
 		}
 		if seed.any(it != 0) {
-			app.diag_say_for(req, '0x27 ${plan.unlock:02X}: seed ${hex(seed)}', false)
-			h.cli.security_send_key(plan.unlock + 1, uds.security_key(seed)) or {
+			app.diag_say_for(req, '0x27 ${sub:02X}: seed ${hex(seed)}', false)
+			h.cli.security_send_key(sub + 1, uds.security_key(seed)) or {
 				return DiagOut{
-					line: '0x27 ${plan.unlock + 1:02X} (reference key): ${err}'
+					line: '0x27 ${sub + 1:02X} (reference key): ${err}'
 					err:  true
 				}, answered(err)
 			}
-			app.diag_say_for(req, '0x27 ${plan.unlock + 1:02X}: level ${plan.unlock} unlocked (reference key)',
+			app.diag_say_for(req, '0x27 ${sub + 1:02X}: level ${plan.unlock} unlocked (reference key)',
 				false)
 		} else {
 			// an all-zero seed: ISO 14229-1's "already unlocked", and no key is sent
-			app.diag_say_for(req, '0x27 ${plan.unlock:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked',
+			app.diag_say_for(req, '0x27 ${sub:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked',
 				false)
 		}
 		h.security = plan.unlock
@@ -201,8 +202,24 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		}, true // nothing sent: the connection is as it was
 	}
 	h.cli.write_data_by_identifier(req.did, req.data) or {
+		mut line := '0x2E ${name} ← ${hex(req.data)}: ${err}'
+		if err is uds.NegativeResponse {
+			// the ECU left the session or relocked on its own: what that took back is forgotten,
+			// so the next write plans it again
+			match diaghold.write_refusal_forgets(err.nrc) {
+				.session {
+					app.diag_forget(gen, mut h, true)
+					line += ' — the session is no longer known; the next write switches and unlocks again'
+				}
+				.security {
+					app.diag_forget(gen, mut h, false)
+					line += ' — the level relocked; the next write unlocks again'
+				}
+				.nothing {}
+			}
+		}
 		return DiagOut{
-			line: '0x2E ${name} ← ${hex(req.data)}: ${err}'
+			line: line
 			err:  true
 		}, answered(err)
 	}
@@ -564,16 +581,13 @@ fn (mut app App) did_edit(x sysview.DidDesc, view DidView, desc DiagDesc) {
 	app.did_ui.edit_id = x.id
 	app.did_ui.edit_key = app.diag_sel_key
 	app.did_ui.edit_ident = desc.ident
-	n := did_edit_room(x)
-	app.did_ui.edit_bufs = texts.map(mkbuf(it, n))
+	app.did_ui.edit_bufs = texts.map(mkbuf(it, did_edit_room(x, it)))
 	app.did_ui.edit_open = true
 }
 
-// did_edit_room is an edit field's size: the value's whole text (a byte is three characters of
-// hex), and room to type past it so too long is said by encode rather than cut by the field.
-fn did_edit_room(x sysview.DidDesc) int {
-	n := if x.size > 0 { 3 * x.size + 16 } else { 0 }
-	return if n > 128 { n } else { 128 }
+// did_edit_room is an edit field's buffer for `text` (diaghold.edit_room): never one that cuts it.
+fn did_edit_room(x sysview.DidDesc, text string) int {
+	return diaghold.edit_room(x.size, text.len)
 }
 
 // did_write_req is the press the editor's Write sends — the bytes and the gate, the rest decided by
@@ -653,7 +667,7 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 	}
 	parts := x.parts()
 	if app.did_ui.edit_bufs.len != parts.len {
-		app.did_ui.edit_bufs = parts.map(mkbuf('', did_edit_room(x)))
+		app.did_ui.edit_bufs = parts.map(mkbuf('', did_edit_room(x, '')))
 	}
 	for i, p in parts {
 		vgui.set_next_item_width(220 * app.prefs.ui_scale)

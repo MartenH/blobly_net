@@ -1,6 +1,7 @@
 module sysview
 
 import os
+import toml
 
 // A trimmed copy of blobly_emb's examples/system_full (origin/main, 2026-10-06): the system.toml
 // node and signal declarations the diagnostic link reads, and zone_a's ecu.toml with its faults,
@@ -455,4 +456,48 @@ fn test_find_system_beside_the_project_or_its_databases() {
 	far := os.join_path(dir, 'nodes', 'zone_a', 'x', 'p.blobnet')
 	assert find_system(far, ['y.dbc']) == none
 	assert find_system('', []) == none
+}
+
+// A gate's `security` must be a level 1..8 (blobly_emb's): 256 would be cast to no unlock, so
+// such a DID is refused by name, not read.
+fn test_a_gate_security_that_is_not_a_level_is_refused() {
+	doc := toml.parse_text('
+[[did]]
+id = 0x0110
+bytes = "00"
+write = { session = ["extended"], security = 256 }
+
+[[did]]
+id = 0x0111
+bytes = "00"
+write = { security = 9 }
+
+[[did]]
+id = 0x0112
+bytes = "00"
+read = { security = -1 }
+
+[[did]]
+id = 0x0113
+bytes = "00"
+write = { security = "1" }
+
+[[did]]
+id = 0x0114
+bytes = "00"
+write = { session = ["extended"], security = 8 }
+
+[[did]]
+id = 0x0115
+bytes = "00"
+write = { security = 2 }
+') or { panic(err) }
+	d := parse_ecu_desc(doc, map[string][]Field{})
+	assert d.dids.map(it.id) == [u16(0x0114), 0x0115]
+	assert d.dids.map(it.write_gate.level) == [8, 2]
+	assert d.errs.len == 4, d.errs.str()
+	assert d.errs[0] == 'did 0x0110: write security 256 is not a security level (1..8); not read'
+	assert d.errs[1].starts_with('did 0x0111: write security 9 ')
+	assert d.errs[2].starts_with('did 0x0112: read security -1 ')
+	assert d.errs[3].starts_with('did 0x0113: write security "1" ')
 }

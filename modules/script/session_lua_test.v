@@ -313,6 +313,9 @@ fn test_a_recorded_session_replays_as_a_passing_script() {
 	cli.read_data_by_identifier(0xF190) or { panic(err) }
 	cli.read_data_by_identifier(0xF195) or { panic(err) }
 	cli.read_data_by_identifier(0xABCD) or {}
+	// a seed answered, then a key refused (invalidKey): two stages in the script
+	cli.security_request_seed(0x01) or { panic(err) }
+	cli.security_send_key(0x02, [u8(0x00), 0x00, 0x00, 0x00]) or {}
 	seed := cli.security_request_seed(0x01) or { panic(err) }
 	cli.security_send_key(0x02, uds.security_key(seed)) or { panic(err) }
 	cli.write_data_by_identifier(0xF198, 'BENCH'.bytes()) or { panic(err) }
@@ -332,7 +335,7 @@ fn test_a_recorded_session_replays_as_a_passing_script() {
 	for e in rec.entries {
 		l.push(e)
 	}
-	assert l.entries.len == 16
+	assert l.entries.len == 18
 	src := lua_from_log(l.entries, LuaOpts{
 		targets: [LuaTarget{
 			key:     'sut'
@@ -354,10 +357,75 @@ fn test_a_recorded_session_replays_as_a_passing_script() {
 	env.run_source(src)!
 	stop2 = true
 	t2.wait()
-	// the seed and its key are one test
-	assert env.total() == 15, src
-	assert env.passed() == 15, env.results.filter(!it.ok).map(it.msg).str() + '\n' + src
+	// each seed and its key are one test
+	assert env.total() == 16, src
+	assert env.passed() == 16, env.results.filter(!it.ok).map(it.msg).str() + '\n' + src
+	assert src.contains('check.nrc(0x35, function() diag:raw(fromhex("27 02 00 00 00 00")) end)  -- the key as it was sent')
 	assert src.contains('check.equal(diag:read_did(0xF198), "BENCH")')
 	assert src.contains('check.equal(diag:dtc_count(0xFF), ')
 	assert src.contains('check.nrc(0x12, ')
+}
+
+// A refused key after an answered seed is two stages: the seed is asserted answered, and the NRC
+// is checked around the key alone — so a seed refused with that NRC fails the test.
+fn test_a_refused_key_is_checked_apart_from_its_seed() {
+	t := [LuaTarget{
+		key:     'sut'
+		channel: 'CAN1'
+	}]
+	seed := ent(5, [u8(0x27), 0x01], [u8(0x67), 0x01, 0x11, 0x22])
+	// the reference key (seed XOR FF), refused: computed again from the new seed
+	refused := lua_from_log([seed, ent(6, [u8(0x27), 0x02, 0xEE, 0xDD], [u8(0x7F), 0x27, 0x36])],
+		LuaOpts{
+		targets: t
+	})
+	assert refused.contains('test("5: 27 01 SecurityAccess seed 1 + key", function()
+  local seed = diag:raw(fromhex("27 01")):sub(3)  -- the seed is answered; it varies, so it is not compared
+  check.truthy(tohex(seed):find("[1-9A-Fa-f]") ~= nil, "a seed asking for a key, as recorded (all zero: already unlocked)")
+  local key = (seed:gsub(".", function(c) return string.char(string.byte(c) ~ 0xFF) end))  -- the reference key (seed XOR FF)
+  check.nrc(0x36, function() diag:raw(fromhex("27 02") .. key) end)
+end)'), refused
+	assert !refused.contains('security_access'), refused
+	// another key: sent as recorded
+	other := lua_from_log([seed, ent(6, [u8(0x27), 0x02, 0x01, 0x02], [u8(0x7F), 0x27, 0x35])],
+		LuaOpts{
+		targets: t
+	})
+	assert other.contains('check.nrc(0x35, function() diag:raw(fromhex("27 02 01 02")) end)  -- the key as it was sent'), other
+	// accepted: still the one helper
+	ok := lua_from_log([seed, ent(6, [u8(0x27), 0x02, 0xEE, 0xDD], [u8(0x67), 0x02])], LuaOpts{
+		targets: t
+	})
+	assert ok.contains('  diag:security_access(1)  -- the seed varies'), ok
+}
+
+// A name two of the script's channels carry is refused by uds.open as ambiguous, so it reaches
+// nothing: the target's requests are comments, not a script that fails at run time.
+fn test_a_channel_name_two_rows_share_reaches_nothing() {
+	chans := [ChanInfo{
+		name:      'CAN1'
+		iface:     'inproc:CAN1'
+		key_iface: 'inproc:CAN1'
+	}, ChanInfo{
+		name:      'CAN1'
+		iface:     'inproc:CAN2'
+		key_iface: 'inproc:CAN2'
+	}, ChanInfo{
+		name:      'CAN2b'
+		iface:     'inproc:CAN2'
+		key_iface: 'inproc:CAN2'
+	}]
+	assert channel_for('CAN1', 'inproc:CAN1', chans) == ''
+	assert channel_for('', 'inproc:CAN1', chans) == ''
+	// on a wire a unique name also reaches, that one is taken
+	assert channel_for('', 'inproc:CAN2', chans) == 'CAN2b'
+	got := lua_from_log([ent(1, [u8(0x3E), 0x00], [u8(0x7E), 0x00])], LuaOpts{
+		targets: [LuaTarget{
+			key:     'sut'
+			label:   'SUT'
+			channel: channel_for('CAN1', 'inproc:CAN1', chans)
+		}]
+	})
+	assert got.contains('-- SUT: no project channel reaches it; its requests are comments'), got
+	assert !got.contains('uds.open'), got
 }

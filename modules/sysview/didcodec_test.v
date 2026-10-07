@@ -114,6 +114,37 @@ fn test_a_range_narrows_the_width_never_widens_it() {
 		0xFF]
 }
 
+// A bool field's declared range is held like a number's: `min = 0, max = 0` refuses true.
+fn test_a_bool_field_is_held_to_its_declared_range() {
+	x := DidDesc{
+		kind:   .param
+		size:   1
+		fields: [Field{'on', 'bool'}]
+		ranges: {
+			'on': Range{0, 0}
+		}
+	}
+	assert x.parts()[0].hint == 'bool 0..0'
+	assert x.encode(['false'])! == [u8(0)]
+	if _ := x.encode(['true']) {
+		assert false
+	} else {
+		assert err.msg() == 'on: true is outside 0..0'
+	}
+	y := DidDesc{
+		kind:   .param
+		size:   1
+		fields: [Field{'on', 'bool'}]
+		ranges: {
+			'on': Range{1, 1}
+		}
+	}
+	assert y.encode(['1'])! == [u8(1)]
+	if _ := y.encode(['0']) {
+		assert false
+	}
+}
+
 fn test_signed_fields_and_several_of_them() {
 	x := DidDesc{
 		kind:   .param

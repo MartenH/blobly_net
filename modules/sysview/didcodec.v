@@ -143,7 +143,8 @@ fn field_range(f Field) Range {
 
 fn field_hint(f Field, r Range, declared bool) string {
 	if f.typ == 'bool' {
-		return 'bool'
+		// a declared range that narrows it is said, since it refuses true or false
+		return if r.min > 0 || r.max < 1 { 'bool ${r.min}..${r.max}' } else { 'bool' }
 	}
 	if f.typ in ['u64', 'i64'] && !declared {
 		return f.typ
@@ -167,6 +168,9 @@ fn field_bytes(f Field, text string, lim Range, declared bool) ![]u8 {
 			'true', '1' { u64(1) }
 			'false', '0' { u64(0) }
 			else { return error('"${t}" is not true or false') }
+		}
+		if i64(v) < lim.min || i64(v) > lim.max {
+			return error('${v == 1} is outside ${lim.min}..${lim.max}')
 		}
 	} else if f.typ == 'u64' {
 		v = parse_unsigned(t)!

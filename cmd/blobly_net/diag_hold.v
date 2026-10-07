@@ -683,6 +683,21 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 	}, false
 }
 
+// diag_forget: what the ECU took back on its own is no longer ours to know, on the connection and
+// on the strip — the security level always, and with `session` the session and the DTC setting it
+// carried too (no session known stops the keep-alive).
+fn (mut app App) diag_forget(gen u64, mut h HeldConn, session bool) {
+	h.security = 0
+	mut s := app.diag_status_copy()
+	s.security = 0
+	if session {
+		h.session = 0
+		s.session = 0
+		s.dtc_off = false
+	}
+	app.diag_set_status(gen, s)
+}
+
 // diag_idle serves the held connection between presses, once per holder look.
 //
 // DoIP (well inside an entity's 500 ms alive check timeout): an Alive Check Request is answered
@@ -750,13 +765,7 @@ fn (mut app App) diag_keepalive(gen u64, mut h HeldConn) {
 		.refused {
 			// the session is no longer ours to know, and asking every two seconds would only
 			// repeat the refusal
-			h.session = 0
-			h.security = 0
-			mut s := app.diag_status_copy()
-			s.session = 0
-			s.security = 0
-			s.dtc_off = false // no longer ours to know either
-			app.diag_set_status(gen, s)
+			app.diag_forget(gen, mut h, true)
 			app.diag_push_conn(h.target, 'keep-alive 3E 80 refused (${why}); stopped until the next session change', true)
 		}
 		.pending {
