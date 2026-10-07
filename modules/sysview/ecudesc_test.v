@@ -275,6 +275,26 @@ fn test_one_address_on_two_nodes_is_settled_by_bus_or_not_at_all() {
 	assert unsettled.node == -1 && unsettled.why.contains('domain, zone_a')
 }
 
+// A DoIP target is settled by its channel's bus the same way: the Diagnostics panel passes the
+// DoIP channel's name, as it does a CAN one's.
+fn test_one_logical_address_on_two_nodes_is_settled_by_bus_too() {
+	dir := desc_fixture('twin_doip')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	for i, n in sys.nodes {
+		if n.name == 'zone_a' {
+			sys.nodes[i].doip = 0x07A0 // sysnode's entity address
+		}
+	}
+	on_edge := sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, bus: 'compute' })
+	assert on_edge.node >= 0 && sys.nodes[on_edge.node].name == 'sysnode'
+	unsettled := sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, bus: 'edge' })
+	assert unsettled.node == -1 // both sit on edge
+	assert sys.node_for(TargetAddr{ doip: true, logical: 0x07A0 }).node == -1
+}
+
 fn test_targets_on_the_buses_a_project_names() {
 	dir := desc_fixture('targets')
 	defer {

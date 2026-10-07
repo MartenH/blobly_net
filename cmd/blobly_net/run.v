@@ -1316,6 +1316,7 @@ fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity
 		key:     diag_key_doip(pch)
 		label:   '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
 		iface:   pch.iface
+		chan:    pch.name
 		carrier: script.carrier_of(pch)
 	}
 	if !app.diag_plan.any(it.key == tgt.key) {
