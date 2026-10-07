@@ -4,43 +4,9 @@ import transport
 import telem
 import script
 import vgui
-import diaghold
-import time
 
 // ---- Diagnostics (UDS over software ISO-TP, on a worker thread) ----
-fn (mut app App) diag_push(line string) {
-	app.mu.lock()
-	app.diag_append_locked(line)
-	app.mu.unlock()
-}
-
-// diag_push_for is the log line of a REQUEST: every line a DiagReq causes once the holder takes it
-// — its target lookup, the open or reopen it makes, its responses, the connection it lets go —
-// goes through here, so a request sent under the previous project says nothing in the new one's
-// log (diaghold.view_writable). The epoch is compared and the line appended under ONE take of the
-// lock: a load between the two would clear the log and then receive the stale line. diag_push
-// stays for what no request caused — the holder's own keep-alive, idle service and releases, and
-// a press the GUI refuses before it is queued (under the project it was pressed in). '' says
-// nothing.
-fn (mut app App) diag_push_for(req DiagReq, line string) {
-	if line == '' {
-		return
-	}
-	app.mu.lock()
-	if diaghold.view_writable(req.epoch, app.diag_epoch) {
-		app.diag_append_locked(line)
-	}
-	app.mu.unlock()
-}
-
-fn (mut app App) diag_append_locked(line string) {
-	app.diag_log << line
-	app.diag_gen++
-	app.diag_last_push_ns = time.sys_mono_now()
-	if app.diag_log.len > 200 {
-		app.diag_log = app.diag_log[app.diag_log.len - 200..].clone()
-	}
-}
+// (its log: diag_log.v)
 
 // diag_iface_opt is diag_iface, but says when there is no running channel at all.
 fn (app &App) diag_iface_opt() ?string {

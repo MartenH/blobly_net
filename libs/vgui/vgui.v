@@ -220,6 +220,7 @@ fn C.vgui_key_enter_pressed() int
 fn C.vgui_line_height() f32
 fn C.vgui_frame_height() f32
 fn C.vgui_table_begin_flat(&char, int) int
+fn C.vgui_table_begin_wide(&char, int, f32) int
 fn C.vgui_table_cell_dim(&char)
 fn C.vgui_input_text_enter(&char, &char, int) int
 fn C.vgui_window_focused() int
@@ -995,6 +996,12 @@ pub fn separator_text(s string) {
 // table: begin -> col×N -> headers -> (row -> cell×N)… -> end
 pub fn table_begin(id string, cols int) bool {
 	return C.vgui_table_begin(id.str, cols) == 1
+}
+
+// table_begin_wide is table_begin that scrolls sideways once the region is narrower than `min_w`
+// px: its stretch columns fill a wider region, and are not squeezed to nothing in a narrow one.
+pub fn table_begin_wide(id string, cols int, min_w f32) bool {
+	return C.vgui_table_begin_wide(id.str, cols, min_w) == 1
 }
 
 // table_begin_flat is a table sized to its rows that leaves the scrolling to the window or
