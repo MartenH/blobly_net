@@ -101,13 +101,14 @@ fn main() {
 	if !project_ports {
 		mut prober := &TcpProber{}
 		band := testports.doip_entities
-		moved := project.choose_doip_ports(project.doip_hosting(proj.channels), project.doip_retained_ports(proj.channels),
-			band.candidates(), transport.binds_v6, mut prober) or {
+		moved := project.choose_doip_ports(project.doip_hosting(proj.channels, transport.bind_address),
+			project.reserved_ports(proj.channels), band.candidates(), transport.bind_address, mut
+			prober) or {
 			eprintln('cannot host the DoIP entities: ${err} in ${band.base}..${band.last()}; --project-ports keeps the project\'s')
 			exit(1)
 		}
 		probes = prober.held.clone()
-		chs, notes := project.with_doip_ports(proj.channels, moved)
+		chs, notes := project.with_doip_ports(proj.channels, moved, transport.bind_address)
 		proj.channels = chs
 		for n in notes {
 			println(n)

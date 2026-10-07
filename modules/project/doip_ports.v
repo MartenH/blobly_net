@@ -16,7 +16,12 @@ pub:
 	hosts []string // as the rows write them (what the entity binds), in project order
 }
 
-// is_loopback_host reports whether a normalised bind host is a loopback address. Only those are
+// Resolve is how a bind host becomes the address the bind uses — `transport.bind_address` in the
+// runner, the resolution the entity's own listen makes — so `localhost` is compared as whichever
+// of 127.0.0.1 and ::1 it is on this machine. A parameter so the rules test without DNS.
+pub type Resolve = fn (host string) string
+
+// is_loopback_host reports whether a resolved bind address is a loopback address. Only those are
 // moved: an entity on a NIC or the wildcard may be dialed from another machine on the port the
 // project states.
 fn is_loopback_host(h string) bool {
@@ -31,7 +36,7 @@ fn hosts_entity(ch Channel) bool {
 
 // doip_hosting lists the ports the enabled simulated DoIP entities bind on loopback, each with
 // its hosts, in project order.
-pub fn doip_hosting(chs []Channel) []DoipHosting {
+pub fn doip_hosting(chs []Channel, resolve Resolve) []DoipHosting {
 	mut ports := []int{}
 	mut hosts := map[int][]string{}
 	for ch in chs {
@@ -39,7 +44,7 @@ pub fn doip_hosting(chs []Channel) []DoipHosting {
 			continue
 		}
 		host, port := ch.doip_endpoint()
-		h := normalised_bind_host(host)
+		h := resolve(host)
 		if !is_loopback_host(h) {
 			continue
 		}
@@ -47,24 +52,30 @@ pub fn doip_hosting(chs []Channel) []DoipHosting {
 			ports << port
 			hosts[port] = []string{}
 		}
-		if !hosts[port].any(normalised_bind_host(it) == h) {
+		if !hosts[port].any(resolve(it) == h) {
 			hosts[port] << host
 		}
 	}
 	return ports.map(DoipHosting{ port: it, hosts: hosts[it] })
 }
 
-// doip_retained_ports lists the ports the run's simulated entities keep: those on a NIC or
-// wildcard address, which `doip_hosting` does not move. A moved entity must not be given one of
-// these numbers, since the retained bind (on `0.0.0.0`, say) would cover it.
-pub fn doip_retained_ports(chs []Channel) []int {
+// reserved_ports lists every port the project's Ethernet rows name — DoIP entities and the
+// endpoints tester rows dial, SOME/IP listeners — enabled or not. A moved entity is never given
+// one: an unmoved entity's bind (on `0.0.0.0`, say) would cover it, and a row dialing that port
+// meant something else there.
+pub fn reserved_ports(chs []Channel) []int {
 	mut out := []int{}
 	for ch in chs {
-		if !hosts_entity(ch) {
+		port := if ch.is_doip() {
+			_, p := ch.doip_endpoint()
+			p
+		} else if ch.is_someip() {
+			_, p := ch.someip_endpoint()
+			p
+		} else {
 			continue
 		}
-		host, port := ch.doip_endpoint()
-		if !is_loopback_host(normalised_bind_host(host)) && port !in out {
+		if port !in out {
 			out << port
 		}
 	}
@@ -79,15 +90,15 @@ mut:
 }
 
 // choose_doip_ports picks a port for every entry of `hosting`: the first of `candidates` that is
-// neither retained, nor already given out, nor refused by `prober`. `is_v6` answers for a host as
+// neither reserved, nor already given out, nor refused by `prober`. The family probed is the one `resolve` gives a host, as
 // the entity's bind resolves it, so a name that resolves to ::1 is probed on IPv6.
-pub fn choose_doip_ports(hosting []DoipHosting, retained []int, candidates []int, is_v6 fn (string) bool, mut prober PortProber) !map[int]int {
+pub fn choose_doip_ports(hosting []DoipHosting, reserved []int, candidates []int, resolve Resolve, mut prober PortProber) !map[int]int {
 	mut moved := map[int]int{}
 	mut given := map[int]bool{}
 	for hs in hosting {
-		v6 := hs.hosts.any(is_v6(it))
+		v6 := hs.hosts.any(resolve(it).contains(':'))
 		for cand in candidates {
-			if cand in retained || cand in given {
+			if cand in reserved || cand in given {
 				continue
 			}
 			if prober.hold(cand, v6) {
@@ -107,12 +118,12 @@ pub fn choose_doip_ports(hosting []DoipHosting, retained []int, candidates []int
 // its host and its port as `doip_hosting` reported them — rewritten to the new port, and one line
 // per rewritten row saying so. A row whose endpoint no simulated entity binds is left as written,
 // so a tester dialing a real entity, or a loopback one this run does not host, keeps its port.
-pub fn with_doip_ports(chs []Channel, moved map[int]int) ([]Channel, []string) {
+pub fn with_doip_ports(chs []Channel, moved map[int]int, resolve Resolve) ([]Channel, []string) {
 	mut hosted := map[string]bool{}
-	for hs in doip_hosting(chs) {
+	for hs in doip_hosting(chs, resolve) {
 		if hs.port in moved {
 			for h in hs.hosts {
-				hosted[transport.udp_bind_addr(normalised_bind_host(h), hs.port)] = true
+				hosted[transport.udp_bind_addr(resolve(h), hs.port)] = true
 			}
 		}
 	}
@@ -123,7 +134,7 @@ pub fn with_doip_ports(chs []Channel, moved map[int]int) ([]Channel, []string) {
 			continue
 		}
 		host, port := ch.doip_endpoint()
-		if transport.udp_bind_addr(normalised_bind_host(host), port) !in hosted {
+		if transport.udp_bind_addr(resolve(host), port) !in hosted {
 			continue
 		}
 		was := ch.doip_effective_address()
