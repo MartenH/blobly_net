@@ -1,5 +1,7 @@
 module candb
 
+import math
+
 fn test_raw_extraction_le() {
 	data := [u8(0xAB), 0, 0, 0, 0, 0, 0, 0]
 	s := Signal{
@@ -236,4 +238,95 @@ fn test_signal_at() {
 	assert m.signal_at(5) == 0
 	assert m.signal_at(20) == 1
 	assert m.signal_at(40) == -1
+}
+
+// Only the WIDTH is enforced on encode: a value past it clamps to the NEARER end — an unsigned
+// signal's negative to 0, never wrapped to the maximum (#415) — and NaN encodes as 0. The DBC's
+// [min|max] is not applied, so an out-of-range value inside the width goes out as asked.
+fn test_raw_from_phys_clamps_to_the_width() {
+	inf := math.inf(1)
+	ninf := math.inf(-1)
+	nan := math.nan()
+	u8s := Signal{
+		name:    'U8'
+		length:  8
+		minimum: 0
+		maximum: 100
+	}
+	assert u8s.raw_from_phys(-1.0) == 0
+	assert u8s.raw_from_phys(-40.0) == 0
+	assert u8s.raw_from_phys(-0.4) == 0 // rounds to zero, not below it
+	assert u8s.raw_from_phys(-0.5) == 0 // rounds to -1, which clamps
+	assert u8s.raw_from_phys(200.0) == 200 // past [min|max], inside the width: sent as asked
+	assert u8s.raw_from_phys(256.0) == 255
+	assert u8s.raw_from_phys(inf) == 255
+	assert u8s.raw_from_phys(ninf) == 0
+	assert u8s.raw_from_phys(nan) == 0
+	u12 := Signal{
+		name:       'U12'
+		start_bit:  7
+		length:     12
+		byte_order: .big_endian
+	}
+	assert u12.raw_from_phys(-1.0) == 0
+	assert u12.raw_from_phys(4095.0) == 4095
+	assert u12.raw_from_phys(4096.0) == 4095
+	assert u12.raw_from_phys(inf) == 4095
+	assert u12.raw_from_phys(ninf) == 0
+	assert u12.raw_from_phys(nan) == 0
+	mut data := []u8{len: 8}
+	u12.encode(mut data, -1.0)
+	assert u12.physical(data) == 0.0
+	u64s := Signal{
+		name:   'U64'
+		length: 64
+	}
+	assert u64s.raw_from_phys(-1.0) == 0
+	assert u64s.raw_from_phys(-1.0e30) == 0
+	assert u64s.raw_from_phys(1.0e30) == ~u64(0)
+	assert u64s.raw_from_phys(inf) == ~u64(0)
+	assert u64s.raw_from_phys(ninf) == 0
+	assert u64s.raw_from_phys(nan) == 0
+	s8 := Signal{
+		name:      'S8'
+		length:    8
+		is_signed: true
+	}
+	assert s8.raw_from_phys(-1.0) == 0xFF
+	assert s8.raw_from_phys(-128.0) == 0x80
+	assert s8.raw_from_phys(-129.0) == 0x80
+	assert s8.raw_from_phys(128.0) == 0x7F
+	assert s8.raw_from_phys(inf) == 0x7F
+	assert s8.raw_from_phys(ninf) == 0x80
+	assert s8.raw_from_phys(nan) == 0
+	s12 := Signal{
+		name:       'S12'
+		start_bit:  7
+		length:     12
+		byte_order: .big_endian
+		is_signed:  true
+	}
+	assert s12.raw_from_phys(-1.0) == 0xFFF
+	assert s12.raw_from_phys(inf) == 0x7FF
+	assert s12.raw_from_phys(ninf) == 0x800
+	assert s12.raw_from_phys(nan) == 0
+	s64 := Signal{
+		name:      'S64'
+		length:    64
+		is_signed: true
+	}
+	assert s64.raw_from_phys(-1.0) == ~u64(0)
+	assert s64.raw_from_phys(inf) == u64(9223372036854775807)
+	assert s64.raw_from_phys(ninf) == u64(1) << 63
+	assert s64.raw_from_phys(nan) == 0
+	// scaled: (factor 0.5, offset -40) puts phys -40 at raw 0, so -41 is below the width
+	sc := Signal{
+		name:   'Temp'
+		length: 8
+		factor: 0.5
+		offset: -40
+	}
+	assert sc.raw_from_phys(-40.0) == 0
+	assert sc.raw_from_phys(-41.0) == 0
+	assert sc.raw_from_phys(87.5) == 255
 }
