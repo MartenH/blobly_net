@@ -24,6 +24,7 @@ import canlog
 import doip
 import j1939
 import vgui
+import uds
 
 const diag_tx_id = u32(0x7E0)
 const diag_rx_id = u32(0x7E8)
@@ -138,7 +139,11 @@ mut:
 	// Joined text for the three panels that render selectable console output, rebuilt only when
 	// the matching *_gen moves (net#153). GUI-thread state, like the replay latches above.
 	log_cache    LogCache
-	diag_cache   LogCache
+	// the Diagnostics panel's table: its copy of diag_log's entries (taken when diag_gen moves)
+	// and its controls (diag_log.v). GUI-thread state.
+	diag_rows     []DiagRow
+	diag_rows_gen u64
+	diag_tbl      DiagTableUi
 	script_cache LogCache
 	flash_cache  LogCache
 	// Scan results for the Configure replay row, keyed by channel index — index-bound display
@@ -571,8 +576,13 @@ mut:
 	sim_enabled map[string]bool // sim_key(channel, node) -> enabled (Simulation panel)
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
-	diag_log    []string
-	diag_gen    u64 // cache key for the Diagnostics panel's joined text
+	// The Diagnostics panel's response table: one entry per request, and the connection events
+	// and lines beside them (uds.ExchangeLog, diag_log.v). Bounded.
+	diag_log    uds.ExchangeLog
+	diag_gen    u64 // moves with every change of diag_log: what the table's copy is refreshed by
+	// the newest entry the press in progress put there (its request's), which a line about that
+	// answer annotates (diag_say_for); 0 = none yet
+	diag_press_seq u64
 	diag_busy   bool
 	diag_last_push_ns u64 // monotonic stamp of the last diag_push, for the autopress hook's timing
 	// The largest P2* each diagnostic target announced (its 0x10 answers), by DiagTarget.key.
@@ -1130,7 +1140,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// A different project: what the operator said about the old one's buses does not carry.
 	app.j1939_override = .follow
 	app.trecs = []
-	app.diag_log = []
+	app.diag_log.clear()
 	app.diag_gen++ // a clear moves the buffer as surely as an append -- invalidate with it
 	app.diag_timing = map[string]int{} // another project's ECUs said nothing to this one
 	app.diag_epoch++

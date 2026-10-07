@@ -948,6 +948,15 @@ int  vgui_table_begin(const char* id, int cols) {
     return ImGui::BeginTable(id, cols,
         ImGuiTableFlags_Borders|ImGuiTableFlags_ScrollY|ImGuiTableFlags_Resizable) ? 1 : 0;
 }
+// vgui_table_begin_wide: vgui_table_begin that scrolls sideways once the region is narrower than
+// `min_w` — its stretch columns fill the region when it is wider, and keep `min_w` between them
+// when it is not, rather than being squeezed to nothing beside the fixed ones.
+int  vgui_table_begin_wide(const char* id, int cols, float min_w) {
+    float avail = ImGui::GetContentRegionAvail().x;
+    return ImGui::BeginTable(id, cols,
+        ImGuiTableFlags_Borders|ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX|ImGuiTableFlags_Resizable,
+        ImVec2(0, 0), avail > min_w ? avail : min_w) ? 1 : 0;
+}
 // vgui_table_begin_flat: a table sized to its rows, with NO scrolling of its own -- the window
 // or child around it scrolls. The plain vgui_table_begin cannot do that: its ScrollY flag with
 // no outer height makes ImGui size the table to everything LEFT in the window (CalcItemSize

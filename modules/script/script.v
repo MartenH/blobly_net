@@ -118,6 +118,9 @@ mut:
 	// opened by flash.program for a channel NAME: a later flash on the same ids takes it again
 	// rather than adding a subscriber per call that nobody reads
 	flashing bool
+	// let go by diag:close(): its channel is closed, the handle refuses, and a later uds.open on
+	// the channel opens afresh (a DoIP entity serves one connection at a time)
+	closed bool
 }
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
@@ -208,7 +211,9 @@ pub fn (env &Env) total() int {
 pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 	mut out := map[string]transport.BusDiagnostics{}
 	for i, mut c in env.conns {
-		c.ch.close()
+		if !c.closed {
+			c.ch.close()
+		}
 		d := c.ch.diagnostics()
 		if !d.is_empty() {
 			// Its own key per CONNECTION: on a backend that counts per handle, two connections
@@ -324,6 +329,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__someip_call', l_someip_call)
 	env.st.register('__someip_session', l_someip_session)
 	env.st.register('__uds_session', l_uds_session)
+	env.st.register('__uds_close', l_uds_close)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
 	env.st.register('__uds_raw', l_uds_raw)
@@ -592,7 +598,7 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) int {
 			return l.fail('${what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
 		}
 		for i, mut c in env.conns {
-			if c.chan != name {
+			if c.chan != name || c.closed {
 				continue
 			}
 			// Prove it is still there. The entity closes an idle connection after 60s
@@ -633,7 +639,7 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) int {
 	ext := ctx > 0x7FF || crx > 0x7FF
 	if for_flash && !info.carrier.doip {
 		for i, c in env.conns {
-			if c.flashing && c.chan == name && c.rx == crx && c.ch.tx_id == ctx && c.ext == ext {
+			if c.flashing && !c.closed && c.chan == name && c.rx == crx && c.ch.tx_id == ctx && c.ext == ext {
 				l.push_int(i)
 				return 1
 			}
@@ -666,10 +672,26 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) int {
 }
 
 fn (mut env Env) conn(h int) ?&UdsConn {
-	if h < 0 || h >= env.conns.len {
+	if h < 0 || h >= env.conns.len || env.conns[h].closed {
 		return none
 	}
 	return unsafe { &env.conns[h] }
+}
+
+// l_uds_close is diag:close(): the connection let go, so the next uds.open on its channel opens
+// a new one — a DoIP entity serving one connection at a time accepts it only once this one is
+// gone. Closing a closed handle does nothing.
+fn l_uds_close(l lua.State) int {
+	mut env := env_of(l)
+	h := int(l.arg_int(1))
+	if h < 0 || h >= env.conns.len {
+		return l.fail('bad uds handle')
+	}
+	if !env.conns[h].closed {
+		env.conns[h].ch.close()
+		env.conns[h].closed = true
+	}
+	return 0
 }
 
 fn l_uds_session(l lua.State) int {

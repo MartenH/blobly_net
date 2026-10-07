@@ -1236,13 +1236,8 @@ fn draw_diag(mut app App) {
 	}
 	app.mu.lock()
 	busy := app.diag_busy
-	dgen := app.diag_gen
-	dsrc := if dgen != app.diag_cache.gen { app.diag_log.clone() } else { []string{} }
 	st := app.diag_status
 	app.mu.unlock()
-	if dgen != app.diag_cache.gen {
-		app.diag_cache.refresh(dgen, dsrc)
-	}
 	draw_diag_strip(mut app, st)
 	app.diag_sys_refresh()
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
@@ -1277,7 +1272,7 @@ fn draw_diag(mut app App) {
 		return
 	}
 	if vgui.tab_item_begin('General', false) {
-		draw_diag_general(mut app, busy)
+		draw_diag_general(mut app, busy, sel_t)
 		vgui.tab_item_end()
 	}
 	if vgui.tab_item_begin('DTCs', app.dtc_ui.select_tab) {
@@ -1295,7 +1290,7 @@ fn draw_diag(mut app App) {
 }
 
 // draw_diag_general is the General tab: single requests and the log.
-fn draw_diag_general(mut app App, busy bool) {
+fn draw_diag_general(mut app App, busy bool, sel_t DiagTarget) {
 	if vgui.button('Session') && !busy {
 		app.diag_press('session', u16(0))
 	}
@@ -1317,8 +1312,7 @@ fn draw_diag_general(mut app App, busy bool) {
 		vgui.same_line()
 		vgui.text_dim('busy…')
 	}
-	vgui.separator_text('responses (newest last)')
-	draw_copyable_log(mut app, '##diag', app.diag_cache)
+	draw_diag_log(mut app, sel_t)
 }
 
 // draw_diag_strip is the held connection at a glance: its state, its target, the session the

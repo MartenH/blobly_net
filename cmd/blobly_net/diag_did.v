@@ -161,7 +161,7 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		if out.err {
 			return out, negative
 		}
-		app.diag_push_for(req, '${h.timing().prefix()} ${out.line} (0x2E ${name} is written in it)')
+		app.diag_say_for(req, '${out.line} (0x2E ${name} is written in it)', false)
 	}
 	if plan.unlock != 0 {
 		seed := h.cli.security_request_seed(plan.unlock) or {
@@ -171,17 +171,19 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 			}, answered(err)
 		}
 		if seed.any(it != 0) {
-			app.diag_push_for(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)}')
+			app.diag_say_for(req, '0x27 ${plan.unlock:02X}: seed ${hex(seed)}', false)
 			h.cli.security_send_key(plan.unlock + 1, uds.security_key(seed)) or {
 				return DiagOut{
 					line: '0x27 ${plan.unlock + 1:02X} (reference key): ${err}'
 					err:  true
 				}, answered(err)
 			}
-			app.diag_push_for(req, '${h.timing().prefix()} 0x27 ${plan.unlock + 1:02X}: level ${plan.unlock} unlocked (reference key)')
+			app.diag_say_for(req, '0x27 ${plan.unlock + 1:02X}: level ${plan.unlock} unlocked (reference key)',
+				false)
 		} else {
 			// an all-zero seed: ISO 14229-1's "already unlocked", and no key is sent
-			app.diag_push_for(req, '${h.timing().prefix()} 0x27 ${plan.unlock:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked')
+			app.diag_say_for(req, '0x27 ${plan.unlock:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked',
+				false)
 		}
 		h.security = plan.unlock
 		mut st := app.diag_status_copy()
@@ -204,14 +206,14 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 			err:  true
 		}, answered(err)
 	}
-	app.diag_push_for(req, '${h.timing().prefix()} 0x2E ${name} ← ${hex(req.data)} (${did_shown(req.desc,
-		req.did, req.data)}): written')
+	app.diag_say_for(req, '0x2E ${name} ← ${hex(req.data)} (${did_shown(req.desc, req.did,
+		req.data)}): written', false)
 	for id in req.follow {
 		out, negative := app.did_read(mut h, req, id)
 		if out.err && !negative {
 			return out, false // the connection failed under the read-back
 		}
-		app.diag_push_for(req, '${h.timing().prefix()} ${out.line}')
+		app.diag_say_for(req, out.line, out.err)
 	}
 	return app.did_read(mut h, req, req.did)
 }
@@ -314,7 +316,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 				did:  id
 			}, desc)
 		} else {
-			app.diag_push('Read DID: "${typed}" is not a DID (one to four hex digits)')
+			app.diag_push_refusal(t.key, t.label, 'Read DID: "${typed}" is not a DID (one to four hex digits)')
 		}
 	}
 	vgui.set_item_tooltip('0x22 for any identifier, in hex.')
@@ -381,8 +383,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	}
 	vgui.child_end()
 	draw_did_editor(mut app, t, view, desc, busy, st)
-	vgui.separator_text('responses (newest last)')
-	draw_copyable_log(mut app, '##diag', app.diag_cache)
+	draw_diag_log(mut app, t)
 }
 
 fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, desc DiagDesc, busy bool, st DiagHoldStatus) {
@@ -686,7 +687,7 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 	if app.did_ui.auto_write && !ready && !busy {
 		// the autopress hook's write, refused here: said, so its wait ends
 		app.did_ui.auto_write = false
-		app.diag_push('0x2E ${x.id:04X}: not written (autopress) — ${why}')
+		app.diag_push_refusal(t.key, t.label, '0x2E ${x.id:04X}: not written (autopress) — ${why}')
 		vgui.close_current_popup()
 	}
 	if busy {

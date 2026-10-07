@@ -200,6 +200,7 @@ The returned object has:
 | `diag:dtc_setting(on)` | `0x85` ControlDTCSetting (`true` on, `false` off) | — |
 | `diag:clear_dtcs([group])` | `0x14` ClearDiagnosticInformation (one DTC, or a group; defaults `0xFFFFFF`, all) | — |
 | `diag:raw(req)` | send any request PDU | the response (bytes) |
+| `diag:close()` | let the connection go: the handle refuses from then on, and the next `uds.open` on the channel opens a new one (a DoIP entity serves one connection at a time) | — |
 | `diag:raw_suppressed(req)` | send a sub-function request with suppress-positive-response set: no positive answer is expected, a refusal raises, and a server that said `0x78` owes its final answer | `true` if a positive answer came anyway |
 
 A negative response **raises a Lua error** (so it aborts the `test`, or is caught by
@@ -437,6 +438,67 @@ runs scripts against the **live measurement**:
 Output (per-test results + a pass/fail summary) appears in the panel. Because it uses
 the live measurement, the ISO-TP request frames a script sends are visible in the
 **Trace**, just like any other traffic.
+
+### Recording a script in the Diagnostics panel — Copy as Lua
+
+The **Diagnostics** panel logs every request it puts on the wire as one row of its response
+table: time, target, the request (`22 F190 ReadDID VIN` — bytes and a short name, the DID named
+by the target's description where it has one), the answer (`F190 = "BLOBLY…"`, or
+`7F 22 31 requestOutOfRange`), the round trip in ms and how many `0x78` (responsePending) it
+waited through. Connection events (an open with its connect and routing-activation times, a
+let-go, a failed keep-alive) and the panel's own notes are rows of their own. **errors only**
+and **this target only** filter it; a click selects a row and shows every byte of it below the
+table, Ctrl+click adds to the selection; **Copy all** copies the rows shown as text.
+
+**Copy as Lua** turns the selected rows — or every row shown, when none is selected — into a
+script for `cmd/script`, on the clipboard. Each request becomes ONE test, calling the
+higher-level helper where the request is one and `diag:raw` otherwise, and checking the answer
+the operator saw — its data, or its NRC through `check.nrc` — so a recorded session is a
+regression test of the ECU it was recorded against:
+
+```lua
+-- Recorded in the blobly_net Diagnostics panel: 4 request(s).
+-- Each request is one test, checking the answer the operator saw.
+-- @project /home/me/blobly_net/projects/sim-demo.blobnet
+
+local diag  -- the connection the requests below go to
+
+diag = uds.open("CAN1", { tx = 0x7E0, rx = 0x7E8 })  -- SUT  (0x7E0/0x7E8)
+
+test("2: 10 03 Session extended", function()
+  check.equal(tohex(diag:session(0x03)), "03 00 32 01 F4")
+end)
+
+test("3: 22 F190 ReadDID VIN", function()
+  check.equal(diag:read_did(0xF190), "BLOBLYNETV0SUT001")
+end)
+
+test("4: 22 ABCD ReadDID", function()
+  check.nrc(0x31, function() diag:read_did(0xABCD) end)
+end)
+
+test("5: 19 02 FF ReadDTC byMask", function()
+  check.equal(tohex(diag:read_dtcs(0xFF)), "FF 12 34 56 09 AB CD EF 08")
+end)
+```
+
+Paste it into a file and run it with `scripts/runtests.sh <file>`. The mapping:
+`0x10` → `diag:session`, `0x11` → `diag:reset`, `0x14` → `diag:clear_dtcs`, `0x19 01` →
+`diag:dtc_count`, `0x19 02` → `diag:read_dtcs`, `0x22` (one DID) → `diag:read_did`, `0x2E` →
+`diag:write_did`, `0x28` → `diag:comm_control`, `0x3E 00` → `diag:tester_present`, `0x85` →
+`diag:dtc_setting`, a seed request followed by its key — the next entry of the log, not merely the next row
+selected — → `diag:security_access(level)` (the seed varies, so it is not compared; the key is
+the reference algorithm the panel used; a seed on its own is sent uncompared, a key on its own
+is a comment), a request
+with suppress-positive-response set → `diag:raw_suppressed`, checked for whether a positive
+answer came anyway, as it did or did not when recorded; anything else → `diag:raw` with its
+whole answer compared. A request that went unanswered or unsent is written as a comment, not
+replayed, and so are connection events and notes. Each target is opened by the project channel
+that carries it (CAN with its ids, DoIP by the channel alone), at its first request, and closed
+(`diag:close()`) when the requests move to another target — one connection at a time, as the
+panel holds one, since a DoIP entity serves one connection and a second open of its endpoint
+waits on the first; the `-- @project` line names the
+project the panel had loaded. The generator is `script.lua_from_log` (`modules/script/session_lua.v`).
 
 ---
 
