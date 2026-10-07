@@ -4,14 +4,17 @@ import os
 import time
 import vgui
 import uds
+import diaghold
 
 // DiagAutopress is a dev hook, inert unless BLOBLY_DIAG_PRESS is set: the Diagnostics panel's
 // buttons pressed in order from the frame loop, for the headless screenshot and for timing the
 // panel end to end (VGUI_FRAMES / VGUI_SHOT cannot click). A comma-separated list of
 // `session`, `vin`, `tp`, `did:<hex>`, `wait:<ms>`, `target:<label substring>`, `disconnect`,
-// `script:<path>` (started as the Script panel's Run starts one), and the DTC tab's `tab:dtc`,
+// `script:<path>` (started as the Script panel's Run starts one), the DTC tab's `tab:dtc`,
 // `dtcs`, `dtc:<display or hex code>` (select a row), `dtc_clear`, `dtc_off`, `dtc_on` and `auto`
-// (the auto-refresh tick on); each press waits for the
+// (the auto-refresh tick on), and the DIDs tab's `tab:did`, `did_all` (Read all),
+// `did_read:<hex>`, `did_edit:<hex>` (the write dialog, opened and left open) and
+// `did_write:<hex>=<part>;<part>…` (the dialog filled and its Write pressed); each press waits for the
 // previous one to finish. Each press's time, from the press to its line, goes to stdout, and once
 // the list is done (and a started script has finished) the panel's lines and the script's.
 struct DiagAutopress {
@@ -120,6 +123,60 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 	}
 	if step == 'auto' {
 		app.dtc_ui.auto = true
+		return
+	}
+	if step == 'tab:did' {
+		app.did_ui.select_tab = true
+		return
+	}
+	if step == 'did_all' || step.starts_with('did_read:') || step.starts_with('did_edit:')
+		|| step.starts_with('did_write:') {
+		t := targets.filter(it.key == app.diag_sel_key)[0] or { targets[0] or { DiagTarget{} } }
+		desc := app.diag_desc(t)
+		own, iso := did_rows(desc)
+		app.did_ui.select_tab = true // the write dialog is drawn by the tab
+		if step == 'did_all' {
+			mut ids := own.map(it.id)
+			ids << iso.map(it.id)
+			au.gen_at = dgen
+			au.press_ns = time.sys_mono_now()
+			au.waiting = true
+			app.did_press(DiagReq{
+				kind: 'did_read_all'
+				dids: ids
+			}, desc)
+			return
+		}
+		arg := step.all_after(':')
+		id := diaghold.parse_did(arg.all_before('=')) or {
+			println('diag-autopress: ${step}: not a DID')
+			return
+		}
+		if step.starts_with('did_read:') {
+			au.gen_at = dgen
+			au.press_ns = time.sys_mono_now()
+			au.waiting = true
+			app.did_press(DiagReq{
+				kind: 'did_read'
+				did:  id
+			}, desc)
+			return
+		}
+		x := desc.desc.did(id) or {
+			println('diag-autopress: ${step}: no DID ${id:04X} in the description')
+			return
+		}
+		app.mu.lock()
+		view := if app.did_view.owns(t.key, desc.ident) { app.did_view } else { DidView{} }
+		app.mu.unlock()
+		app.did_edit(x, view, desc)
+		if step.starts_with('did_write:') {
+			app.did_ui.edit_bufs = arg.all_after('=').split(';').map(mkbuf(it, 128))
+			app.did_ui.auto_write = true
+			au.gen_at = dgen
+			au.press_ns = time.sys_mono_now()
+			au.waiting = true
+		}
 		return
 	}
 	if step in ['dtcs', 'dtc_clear', 'dtc_off', 'dtc_on'] || step.starts_with('dtc:') {

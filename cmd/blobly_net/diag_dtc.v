@@ -165,6 +165,7 @@ fn (mut app App) diag_sys_refresh() {
 		app.diag_sys_print = fp
 		app.mu.lock()
 		app.diag_sys_targets = targets
+		app.diag_sys_ident = app.diag_sys_key // what a holder asks before a write (diag_did.v)
 		app.mu.unlock()
 	}
 }
@@ -189,6 +190,10 @@ struct DiagDesc {
 	node string
 	desc sysview.EcuDesc
 	why  string
+	// the identity of the model it came from (sysview.System.identity, every file by content):
+	// what is derived from a description — bytes read and laid out by it, an editor filled from
+	// it — belongs to this one, not to the next reload
+	ident string
 }
 
 fn (app &App) diag_desc(t DiagTarget) DiagDesc {
@@ -225,9 +230,10 @@ fn (app &App) diag_desc(t DiagTarget) DiagDesc {
 		}
 	}
 	return DiagDesc{
-		ok:   true
-		node: n.name
-		desc: n.desc
+		ok:    true
+		node:  n.name
+		desc:  n.desc
+		ident: app.diag_sys_key
 	}
 }
 

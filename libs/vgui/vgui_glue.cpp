@@ -621,6 +621,7 @@ void vgui_tab_item_end() { ImGui::EndTabItem(); }
 // when it returned 1, vgui_end_popup. Centred on the main viewport, sized to its content.
 void vgui_open_popup(const char* id) { ImGui::OpenPopup(id); }
 int  vgui_begin_popup_modal(const char* title) {
+    ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID); // never an OS window of its own
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     return ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize) ? 1 : 0;
 }

@@ -1285,6 +1285,11 @@ fn draw_diag(mut app App) {
 		draw_dtc_tab(mut app, sel_t, busy, st)
 		vgui.tab_item_end()
 	}
+	if vgui.tab_item_begin('DIDs', app.did_ui.select_tab) {
+		app.did_ui.select_tab = false
+		draw_did_tab(mut app, sel_t, busy, st)
+		vgui.tab_item_end()
+	}
 	vgui.tab_bar_end()
 	vgui.end()
 }
@@ -1339,6 +1344,9 @@ fn draw_diag_strip(mut app App, st DiagHoldStatus) {
 	}
 	if st.conn == .held {
 		mut line := 'session ${diaghold.session_name(st.session)}'
+		if st.security != 0 {
+			line += ' · level ${st.security} unlocked'
+		}
 		if st.keepalives > 0 {
 			line += ' · 3E 80 ×${st.keepalives}'
 		}

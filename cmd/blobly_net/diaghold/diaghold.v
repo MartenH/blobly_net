@@ -163,6 +163,17 @@ pub:
 	pending_us i64 // from the first 0x78 to the final answer
 }
 
+// plus is two exchanges' timing summed, as one line of several requests states it: sent if either
+// was, the round trips and the 0x78 waits added.
+pub fn (t Timing) plus(o Timing) Timing {
+	return Timing{
+		sent:       t.sent || o.sent
+		rtt_us:     t.rtt_us + o.rtt_us
+		pending:    t.pending + o.pending
+		pending_us: t.pending_us + o.pending_us
+	}
+}
+
 // prefix is the log line's leading column: the round trip, and the pending wait when there was
 // one. Fixed width for the common case so a column of presses lines up.
 pub fn (t Timing) prefix() string {
