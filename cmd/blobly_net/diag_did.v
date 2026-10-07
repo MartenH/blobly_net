@@ -75,6 +75,8 @@ mut:
 	edit_open bool // asks the popup to open next frame
 	// an autopress `did_write` presses the editor's Write without a click
 	auto_write bool
+	// leave out the DIDs the ECU refused (off: every described DID is a row, its Read with it)
+	hide_refused bool
 }
 
 // ---- the holder's side (diag_request hands these over) ----
@@ -312,7 +314,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	} else {
 		vgui.text_dim_wrapped('no description: ${desc.why}; the ISO identification DIDs and any DID by number')
 	}
-	if vgui.button('Read all') && !busy {
+	if app.diag_button('Read all') && !busy {
 		mut ids := own.map(it.id)
 		ids << iso.map(it.id)
 		app.did_press(DiagReq{
@@ -325,7 +327,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	vgui.set_next_item_width(70 * app.prefs.ui_scale)
 	vgui.input_text('##didfree', mut app.did_ui.free_buf)
 	vgui.same_line()
-	if vgui.button('Read DID') && !busy {
+	if app.diag_button('Read DID') && !busy {
 		typed := vgui.buf_str(app.did_ui.free_buf)
 		if id := diaghold.parse_did(typed) {
 			app.did_press(DiagReq{
@@ -337,6 +339,9 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		}
 	}
 	vgui.set_item_tooltip('0x22 for any identifier, in hex.')
+	vgui.same_line()
+	app.did_ui.hide_refused = vgui.checkbox('hide refused', app.did_ui.hide_refused)
+	vgui.set_item_tooltip('Leave out the DIDs this ECU answered with a negative response. Their Read stays useful after a session change, so they are listed by default.')
 	if st.conn == .held && st.key == t.key && st.security != 0 {
 		vgui.same_line()
 		vgui.text_colored(230, 180, 60, 'level ${st.security} unlocked')
@@ -345,8 +350,8 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		vgui.same_line()
 		vgui.text_dim('busy…')
 	}
-	h := vgui.content_avail_h()
-	vgui.child_wh('##didarea', 0, h * 0.7)
+	pane := app.diag_tab_area('##didarea')
+	hide := app.did_ui.hide_refused
 	// the parameters first: a name and a value is what coding is about; their DIDs are below too
 	if desc.ok && desc.desc.params.len > 0 {
 		vgui.separator_text('parameters')
@@ -354,7 +359,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	}
 	if own.len > 0 {
 		vgui.separator_text('${desc.node}')
-		draw_did_table(mut app, '##didown', own, view, desc, busy, st)
+		draw_did_table(mut app, '##didown', own, view, desc, busy, hide)
 	}
 	// a DID read by number that neither list has
 	mut other := []sysview.DidDesc{}
@@ -368,43 +373,34 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	other.sort(a.id < b.id)
 	if other.len > 0 {
 		vgui.separator_text('read by number')
-		draw_did_table(mut app, '##didother', other, view, desc, busy, st)
+		draw_did_table(mut app, '##didother', other, view, desc, busy, hide)
 	}
-	// the ISO identification DIDs: the ones this ECU refused folded into one line, so what it
-	// does serve is not lost among the thirty the standard names
+	// the ISO identification DIDs: every one a row, the ones this ECU refused dimmed with its
+	// answer — a refusal in one session is not one in the next, and the row's Read asks again
 	refused := iso.filter(fn [view] (x sysview.DidDesc) bool {
 		v := view.vals[x.id] or { return false }
-		return v.refused // the ECU's answer; a silence or a lost connection stays in the table
-	})
-	served := iso.filter(fn [refused] (x sysview.DidDesc) bool {
-		return !refused.any(it.id == x.id)
-	})
-	if vgui.tree_node_open('ISO identification (${iso.len})##diso') {
-		if served.len > 0 {
-			draw_did_table(mut app, '##didiso', served, view, desc, busy, st)
-		}
-		// grouped by the answer, in the order first met
-		mut whys := []string{}
-		mut by := map[string][]string{}
-		for x in refused {
-			why := did_err_short(view.vals[x.id] or { DidVal{} })
-			if why !in by {
-				whys << why
-			}
-			by[why] << '${x.id:04X}'
-		}
-		for why in whys {
-			vgui.text_dim_wrapped('refused, ${why} (${by[why].len}): ${by[why].join(' ')}')
-		}
+		return v.refused // the ECU's answer; a silence or a lost connection stays as it is
+	}).len
+	head := if refused > 0 { '${iso.len}, ${refused} refused' } else { '${iso.len}' }
+	if vgui.tree_node_open('ISO identification (${head})##diso') {
+		draw_did_table(mut app, '##didiso', iso, view, desc, busy, hide)
 		vgui.tree_pop()
 	}
-	vgui.child_end()
+	app.diag_tab_divider('##did_split', pane)
 	draw_did_editor(mut app, t, view, desc, busy, st)
 	draw_diag_log(mut app, t)
 }
 
-fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, desc DiagDesc, busy bool, st DiagHoldStatus) {
+fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, desc DiagDesc, busy bool, hide_refused bool) {
 	sc := app.prefs.ui_scale
+	shown := rows.filter(fn [view, hide_refused] (x sysview.DidDesc) bool {
+		v := view.vals[x.id] or { return true }
+		return !(hide_refused && v.refused)
+	})
+	if shown.len == 0 {
+		vgui.text_dim('every one refused (hide refused is ticked)')
+		return
+	}
 	if !vgui.table_begin_flat(id, 4) {
 		return
 	}
@@ -414,21 +410,34 @@ fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, 
 	vgui.table_setup_col('', 62 * sc)
 	vgui.table_headers()
 	d := if desc.ok { desc.desc } else { sysview.EcuDesc{} }
-	for x in rows {
+	for x in shown {
 		vgui.table_row()
-		vgui.table_cell('${x.id:04X}')
+		v := view.vals[x.id] or { DidVal{} }
+		read := x.id in view.vals
+		// a DID the ECU refused is dimmed, its answer by name; its Read stays
+		dim := read && v.refused
 		name := if x.name != '' { x.name } else { d.did_name(x.id) }
-		vgui.table_cell(if name != '' { name } else { '—' })
+		if dim {
+			vgui.table_cell_dim('${x.id:04X}')
+			vgui.table_cell_dim(if name != '' { name } else { '—' })
+		} else {
+			vgui.table_cell('${x.id:04X}')
+			vgui.table_cell(if name != '' { name } else { '—' })
+		}
 		vgui.set_item_tooltip(did_gate_words(x))
 		// the value as the layout reads it, its bytes beneath
 		vgui.table_next_col()
-		if v := view.vals[x.id] {
+		if read {
 			age := (time.ticks() - v.at_ms) / 1000
 			when := 'read ${age} s ago, ${v.t.prefix()}'
 			if v.ok {
 				vgui.text(did_shown(d, x.id, v.data))
 				vgui.set_item_tooltip(when)
 				vgui.text_dim(if v.data.len > 0 { hex(v.data) } else { '(empty)' })
+			} else if v.refused {
+				words := did_refusal(v)
+				vgui.text_dim(words)
+				vgui.set_item_tooltip('${words}\n${v.err}\n${when}') // whole where a narrow column cuts it
 			} else {
 				vgui.text_colored(235, 90, 80, did_err_short(v))
 				vgui.set_item_tooltip('${v.err}\n${when}')
@@ -437,7 +446,7 @@ fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, 
 			vgui.text_dim('—')
 		}
 		vgui.table_next_col()
-		if vgui.small_button('Read##r${x.id:04X}${id}') && !busy {
+		if app.diag_small_button('Read##r${x.id:04X}${id}') && !busy {
 			app.did_press(DiagReq{
 				kind: 'did_read'
 				did:  x.id
@@ -450,6 +459,14 @@ fn draw_did_table(mut app App, id string, rows []sysview.DidDesc, view DidView, 
 		}
 	}
 	vgui.table_end()
+}
+
+// did_refusal is a DID the ECU refused, as its row says it: the NRC by name (diaghold.refused_words).
+fn did_refusal(v DidVal) string {
+	if v.nrc == 0 {
+		return did_err_short(v) // answered with what cannot be read: no code to name
+	}
+	return diaghold.refused_words(v.nrc, uds.nrc_name(v.nrc))
 }
 
 // did_err_short is a failed read as a table cell: its NRC, else the error, cut by characters.
@@ -533,7 +550,7 @@ fn draw_param_table(mut app App, view DidView, desc DiagDesc, busy bool, st Diag
 		}
 		if x := pd {
 			vgui.table_next_col()
-			if vgui.small_button('Read##pr${x.id:04X}') && !busy {
+			if app.diag_small_button('Read##pr${x.id:04X}') && !busy {
 				mut ids := [x.id]
 				if sd := status_did {
 					ids << sd.id
@@ -706,7 +723,7 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 	}
 	if busy {
 		vgui.text_dim('waiting for the request in flight…')
-	} else if ready && (vgui.button('Write') || app.did_ui.auto_write) {
+	} else if ready && (app.diag_button('Write') || app.did_ui.auto_write) {
 		app.did_ui.auto_write = false
 		app.did_press(req, desc)
 		vgui.close_current_popup()

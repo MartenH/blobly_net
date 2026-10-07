@@ -1229,11 +1229,9 @@ fn draw_diag(mut app App) {
 		vgui.end()
 		return
 	}
-	if !app.running {
-		vgui.text_dim('press Start (needs a UDS server on the bus)')
-		vgui.end()
-		return
-	}
+	// Stopped, the panel still shows everything — the target, the tabs and what they last read,
+	// the log — as the Trace panel keeps its rows; only what sends is dimmed, and a press of it is
+	// refused with a line in the log (diaghold.press_refusal).
 	app.mu.lock()
 	busy := app.diag_busy
 	st := app.diag_status
@@ -1242,7 +1240,10 @@ fn draw_diag(mut app App) {
 	app.diag_sys_refresh()
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
 	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
-	targets := app.diag_targets()
+	targets := app.diag_listed_targets()
+	if app.running {
+		app.diag_run_targets = targets
+	}
 	// Follow the SELECTION, not the position: if the list changed under us, find where the
 	// chosen target went rather than keeping an index that now names something else.
 	if app.diag_sel_key != '' {
@@ -1266,6 +1267,9 @@ fn draw_diag(mut app App) {
 		targets[app.diag_sel]
 	} else {
 		DiagTarget{}
+	}
+	if sel_t.note != '' {
+		vgui.text_dim_wrapped(sel_t.note)
 	}
 	if !vgui.tab_bar_begin('##diagtabs') {
 		vgui.end()
@@ -1291,21 +1295,21 @@ fn draw_diag(mut app App) {
 
 // draw_diag_general is the General tab: single requests and the log.
 fn draw_diag_general(mut app App, busy bool, sel_t DiagTarget) {
-	if vgui.button('Session') && !busy {
+	if app.diag_button('Session') && !busy {
 		app.diag_press('session', u16(0))
 	}
 	vgui.same_line()
-	if vgui.button('Read VIN') && !busy {
+	if app.diag_button('Read VIN') && !busy {
 		app.diag_press('vin', u16(0))
 	}
 	vgui.same_line()
-	if vgui.button('Tester Present') && !busy {
+	if app.diag_button('Tester Present') && !busy {
 		app.diag_press('tp', u16(0))
 	}
 	vgui.set_next_item_width(70)
 	vgui.input_text('DID', mut app.diag_did_buf)
 	vgui.same_line()
-	if vgui.button('Read DID') && !busy {
+	if app.diag_button('Read DID') && !busy {
 		app.diag_press('did', u16(('0x' + vgui.buf_str(app.diag_did_buf)).u64()))
 	}
 	if busy {
@@ -1316,27 +1320,40 @@ fn draw_diag_general(mut app App, busy bool, sel_t DiagTarget) {
 }
 
 // draw_diag_strip is the held connection at a glance: its state, its target, the session the
-// last 0x10 answer established and the timing that answer gave, and a Disconnect.
+// last 0x10 answer established and the timing that answer gave, and a Disconnect — or, with
+// nothing held, a Connect. Stopped, it says so: nothing is held and nothing is sent until Start.
 fn draw_diag_strip(mut app App, st DiagHoldStatus) {
-	r, g, b := match st.conn {
-		.held { u8(80), u8(200), u8(120) }
-		.opening { u8(230), u8(180), u8(60) }
-		.failed { u8(235), u8(90), u8(80) }
-		.closed { u8(140), u8(140), u8(140) }
-	}
-	vgui.text_colored(r, g, b, st.conn.str())
-	if st.conn == .held && st.doip {
-		vgui.set_item_tooltip('A DoIP entity serves one tester: while this is held, another tester outside this app is refused until Disconnect. A script or flash started here takes it over.')
+	if !app.running {
+		vgui.text_colored(140, 140, 140, 'stopped')
+	} else {
+		r, g, b := match st.conn {
+			.held { u8(80), u8(200), u8(120) }
+			.opening { u8(230), u8(180), u8(60) }
+			.failed { u8(235), u8(90), u8(80) }
+			.closed { u8(140), u8(140), u8(140) }
+		}
+		vgui.text_colored(r, g, b, st.conn.str())
+		if st.conn == .held && st.doip {
+			vgui.set_item_tooltip('A DoIP entity serves one tester: while this is held, another tester outside this app is refused until Disconnect. A script or flash started here takes it over.')
+		}
 	}
 	vgui.same_line()
 	vgui.text(if st.label != '' { st.label } else { '—' })
-	if st.conn == .held || st.conn == .opening {
+	if app.running && (st.conn == .held || st.conn == .opening) {
 		vgui.same_line()
 		if vgui.small_button('Disconnect') {
 			app.diag_disconnect()
 		}
+	} else {
+		vgui.same_line()
+		if app.diag_small_button('Connect') {
+			app.diag_press('connect', u16(0))
+		}
+		vgui.set_item_tooltip('Open the held connection to the selected target without sending a request: on DoIP the TCP connection and its routing activation, on CAN the ISO-TP channel.')
 	}
-	if st.conn == .held {
+	if !app.running {
+		vgui.text_dim_wrapped('the measurement is stopped — what is shown is from the last run; Start to send requests')
+	} else if st.conn == .held {
 		mut line := 'session ${diaghold.session_name(st.session)}'
 		if st.security != 0 {
 			line += ' · level ${st.security} unlocked'
@@ -1351,9 +1368,72 @@ fn draw_diag_strip(mut app App, st DiagHoldStatus) {
 		}
 		vgui.text_dim(line)
 	} else if st.why != '' {
-		vgui.text_dim(st.why)
+		if st.conn == .failed {
+			vgui.text_colored_wrapped(235, 140, 120, st.why)
+		} else {
+			vgui.text_dim_wrapped(st.why)
+		}
 	}
 	vgui.separator()
+}
+
+// diag_button is a button that sends a request: dimmed while the measurement is stopped, its
+// click still answered — the press refuses with a line in the log saying why (vgui has no
+// disabled scope, and a button that silently does nothing explains nothing).
+fn (app &App) diag_button(label string) bool {
+	if app.running {
+		return vgui.button(label)
+	}
+	vgui.push_alpha(0.45)
+	hit := vgui.button(label)
+	vgui.pop_style_var(1)
+	return hit
+}
+
+// diag_small_button is diag_button as a small button.
+fn (app &App) diag_small_button(label string) bool {
+	if app.running {
+		return vgui.small_button(label)
+	}
+	vgui.push_alpha(0.45)
+	hit := vgui.small_button(label)
+	vgui.pop_style_var(1)
+	return hit
+}
+
+// DiagPane is one frame's extent of the DTC or DIDs tab's content, and the clamp it was drawn in.
+struct DiagPane {
+	h  f32
+	lo f32
+	hi f32
+}
+
+// diag_tab_area opens the DTC and DIDs tabs' content: a bordered child at the persisted height
+// (panerule — clamped BEFORE it is drawn to what the panel has now, so the log below always keeps
+// diag_log_min_h). Paired with diag_tab_divider, which closes it and draws the divider.
+fn (mut app App) diag_tab_area(id string) DiagPane {
+	sc := app.prefs.ui_scale
+	lo := 80 * sc
+	hi := vgui.content_avail_h() - app.diag_log_min_h()
+	h, kept := panerule.drawn(app.diag_tab_h, 260, sc, lo, hi)
+	app.diag_tab_h = kept
+	vgui.child_wh(id, 0, h)
+	return DiagPane{h, lo, hi}
+}
+
+// diag_tab_divider closes the area diag_tab_area opened, under it the divider that drags it:
+// a drag persists (one height for both tabs), a clamp does not.
+fn (mut app App) diag_tab_divider(id string, p DiagPane) {
+	vgui.child_end()
+	sc := app.prefs.ui_scale
+	moved := vgui.splitter_h(id, p.h, p.lo, p.hi)
+	app.diag_tab_h = app.pane_moved('diagnostics_tab', app.diag_tab_h, p.h, moved, sc)
+}
+
+// diag_log_min_h is what the response log keeps under a tab's content however the divider is
+// dragged: its heading, its two control rows and a few rows of the table.
+fn (app &App) diag_log_min_h() f32 {
+	return 3 * vgui.frame_height() + 5 * vgui.line_height()
 }
 
 // ---- Script (Lua, on a worker thread) ----

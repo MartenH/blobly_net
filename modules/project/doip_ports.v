@@ -31,7 +31,7 @@ fn is_loopback_host(h string) bool {
 // hosts_entity reports whether a row hosts a simulated DoIP entity in a run: enabled, DoIP, with
 // a simulated node — what the runner and the GUI's Start bind.
 fn hosts_entity(ch Channel) bool {
-	return ch.enabled && ch.is_doip() && ch.all_nodes().len > 0
+	return ch.enabled && ch.hosts_doip_entity()
 }
 
 // doip_hosting lists the ports the enabled simulated DoIP entities bind on loopback, each with

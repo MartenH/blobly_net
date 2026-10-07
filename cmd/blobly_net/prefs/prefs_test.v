@@ -152,3 +152,15 @@ fn test_control_characters_in_the_editor_command_survive_a_rewrite() {
 	q := parse(p.serialize())!
 	assert q.editor == p.editor
 }
+
+fn test_the_headless_size_is_fixed_and_strict() {
+	dw, dh := headless_size('')!
+	assert dw == 1500 && dh == 850
+	w, h := headless_size('2400x1350')!
+	assert w == 2400 && h == 1350
+	for bad in ['2400', '2400x', 'x1350', '2400X1350', '2400x1350x2', '-1x5', '2400 x 1350', '24.0x1350',
+		'100x100', '99999x1350'] {
+		headless_size(bad) or { continue }
+		assert false, bad
+	}
+}

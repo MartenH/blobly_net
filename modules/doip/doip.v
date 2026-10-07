@@ -32,6 +32,49 @@ pub const pt_diagnostic_message_nack = u16(0x8003) // negative ack
 pub const ra_denied_source_mismatch = u8(0x02) // SA differs from the one already activated here
 pub const ra_success = u8(0x10)
 
+// ra_code_name is a routing activation response code by its ISO 13400-2 meaning.
+pub fn ra_code_name(code u8) string {
+	return match code {
+		0x00 { 'unknown source address' }
+		0x01 { 'all sockets registered' }
+		0x02 { 'SA differs from the active socket' }
+		0x03 { 'SA already active on another socket' }
+		0x04 { 'missing authentication' }
+		0x05 { 'rejected confirmation' }
+		0x06 { 'unsupported activation type' }
+		0x07 { 'TLS required' }
+		0x10 { 'success' }
+		0x11 { 'confirmation required' }
+		else { if code >= 0xE0 && code <= 0xFE { 'OEM-specific' } else { 'reserved' } }
+	}
+}
+
+// ra_code_hint is what a tester can do about a denial with `code`, having asked as `tester`;
+// '' where there is nothing to add to the name.
+pub fn ra_code_hint(code u8, tester u16) string {
+	return match code {
+		0x00 { 'this entity does not accept tester 0x${tester:04X}' }
+		0x01 { 'the entity has no free connection: another tester holds it' }
+		0x02, 0x03 { 'tester 0x${tester:04X} is already active on another connection' }
+		0x04 { 'the entity wants authentication first' }
+		0x07 { 'the entity accepts only TLS connections' }
+		else { '' }
+	}
+}
+
+// RoutingDenied is a routing activation the entity answered with a code other than success.
+pub struct RoutingDenied {
+	Error
+pub:
+	code   u8
+	tester u16 // the source address the activation asked for
+}
+
+pub fn (e RoutingDenied) msg() string {
+	hint := ra_code_hint(e.code, e.tester)
+	return 'DoIP: routing activation denied: 0x${e.code:02X} ${ra_code_name(e.code)}${if hint != '' { ' — ' + hint } else { '' }}'
+}
+
 // Diagnostic message ack code (positive).
 pub const diag_ack_ok = u8(0x00)
 

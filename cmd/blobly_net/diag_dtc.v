@@ -160,11 +160,18 @@ fn (mut app App) diag_sys_refresh() {
 			}
 		}
 	}
-	fp := '${app.diag_sys_key}#' + targets.map('${it.key}|${it.label}|${it.chan}').join('#')
+	// a loaded system that addresses nobody as 0x7E0/0x7E8: the default target's silence is expected
+	unknown := app.diag_sys_ok && !app.diag_sys.describes(sysview.TargetAddr{
+		req: diag_tx_id
+		rsp: diag_rx_id
+	})
+	fp := '${app.diag_sys_key}#${unknown}#' +
+		targets.map('${it.key}|${it.label}|${it.chan}').join('#')
 	if fp != app.diag_sys_print {
 		app.diag_sys_print = fp
 		app.mu.lock()
 		app.diag_sys_targets = targets
+		app.diag_sys_default_unknown = unknown
 		app.diag_sys_ident = app.diag_sys_key // what a holder asks before a write (diag_did.v)
 		app.mu.unlock()
 	}
@@ -552,6 +559,11 @@ fn (mut app App) dtc_press(kind string, code u32, on bool, auto bool, desc DiagD
 fn (mut app App) dtc_select(code u32, busy bool, desc DiagDesc) {
 	app.dtc_ui.sel_code = code
 	app.dtc_ui.has_sel = true
+	if !app.running {
+		// stopped: a selection, nothing asked — the records already read for it stay shown
+		app.dtc_ui.want_sel = false
+		return
+	}
 	if busy {
 		app.dtc_ui.want_sel = true
 		app.dtc_ui.want_key = app.diag_sel_key
@@ -581,7 +593,7 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		vgui.text_dim_wrapped('no description: ${desc.why}; DTCs are shown by code')
 	}
 	// controls
-	if vgui.button('Refresh') && !busy {
+	if app.diag_button('Refresh') && !busy {
 		app.dtc_press('dtcs', 0, false, false, desc)
 	}
 	vgui.same_line()
@@ -593,19 +605,23 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	vgui.same_line()
 	app.dtc_ui.auto = vgui.checkbox('auto', app.dtc_ui.auto)
 	vgui.set_item_tooltip('Read the list again every ${diaghold.autorefresh_ms / 1000} s while this tab is shown. A read that finds what the last one found is not logged.')
-	if vgui.button('Clear all…') && !busy {
-		vgui.open_popup('Clear all DTCs?')
+	if app.diag_button('Clear all…') && !busy {
+		if app.running {
+			vgui.open_popup('Clear all DTCs?')
+		} else {
+			app.dtc_press('dtc_clear', 0, false, false, desc) // refused, with the reason in the log
+		}
 	}
 	vgui.same_line()
 	vgui.align_text_to_frame_padding()
 	vgui.text('DTC setting')
 	vgui.same_line()
-	if vgui.button('off') && !busy {
+	if app.diag_button('off') && !busy {
 		app.dtc_press('dtc_setting', 0, false, false, desc)
 	}
 	vgui.set_item_tooltip('0x85 02: the ECU stops recording faults. Served outside the default session, so the panel switches to the extended session (0x10 03) first when it is not in one.')
 	vgui.same_line()
-	if vgui.button('on') && !busy {
+	if app.diag_button('on') && !busy {
 		app.dtc_press('dtc_setting', 0, true, false, desc)
 	}
 	vgui.set_item_tooltip('0x85 01: the ECU records faults again.')
@@ -655,8 +671,7 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	if diaghold.autorefresh_due(app.dtc_ui.auto, true, busy, last, time.ticks()) {
 		app.dtc_press('dtcs', 0, false, true, desc)
 	}
-	h := vgui.content_avail_h()
-	vgui.child_wh('##dtcarea', 0, h * 0.7)
+	pane := app.diag_tab_area('##dtcarea')
 	if !mine || !v.read {
 		if mine && v.err != '' {
 			vgui.text_colored(235, 90, 80, 'read failed: ${v.err}')
@@ -677,7 +692,7 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		draw_dtc_table(mut app, v, desc, busy)
 		draw_dtc_detail(mut app, v, desc, busy)
 	}
-	vgui.child_end()
+	app.diag_tab_divider('##dtc_split', pane)
 	draw_diag_log(mut app, t)
 }
 
@@ -793,7 +808,9 @@ fn draw_dtc_detail(mut app App, v DtcView, desc DiagDesc, busy bool) {
 	d := v.detail
 	if !d.loaded || d.code != code {
 		// in flight, or asked and never answered (refused, or the connection failed — the log says)
-		vgui.text_dim(if busy || app.dtc_ui.want_sel {
+		vgui.text_dim(if !app.running {
+			'its records were not read — the measurement is stopped'
+		} else if busy || app.dtc_ui.want_sel {
 			'reading its records…'
 		} else {
 			'its records were not read — click the row to ask again'

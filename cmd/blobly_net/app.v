@@ -382,6 +382,14 @@ mut:
 	// the GUI thread, read by the holder too (diag_targets), so guarded by mu
 	diag_sys_targets []DiagTarget
 	diag_sys_ident   string // diag_sys_key as last published, under mu: the holder's view of it
+	// the system is loaded and describes no node on the default 0x7E0/0x7E8 pair: its label says
+	// a silence there is expected. Published with diag_sys_targets, under mu
+	diag_sys_default_unknown bool
+	// the targets the panel listed during the last run, GUI thread only: what it keeps showing
+	// once stopped, so the selection and the views read under it stay (diag_listed_targets)
+	diag_run_targets []DiagTarget
+	// the DTC and DIDs tabs' content height, unscaled px; the divider above the log drags it
+	diag_tab_h f32
 	// Hosted DoIP entities, by interface. Held so Stop can close the listeners: an entity that
 	// outlived Stop would keep port 13400 bound, and the next Start would fail to bind against
 	// the previous run of the same application.
@@ -1148,6 +1156,8 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.did_view = DidView{}
 	app.diag_sys_targets = []
 	app.diag_sys_ident = ''
+	app.diag_sys_default_unknown = false
+	app.diag_run_targets = []
 	app.script_log = []
 	app.script_gen++
 	app.watch = []

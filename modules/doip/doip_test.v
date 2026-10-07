@@ -163,3 +163,24 @@ fn test_bare_host_strips_only_a_matching_pair() {
 		}
 	}
 }
+
+fn test_routing_activation_codes_by_name() {
+	assert ra_code_name(0x00) == 'unknown source address'
+	assert ra_code_name(0x01) == 'all sockets registered'
+	assert ra_code_name(0x02) == 'SA differs from the active socket'
+	assert ra_code_name(0x03) == 'SA already active on another socket'
+	assert ra_code_name(0x04) == 'missing authentication'
+	assert ra_code_name(0x05) == 'rejected confirmation'
+	assert ra_code_name(0x06) == 'unsupported activation type'
+	assert ra_code_name(0x07) == 'TLS required'
+	assert ra_code_name(0x10) == 'success'
+	assert ra_code_name(0x11) == 'confirmation required'
+	assert ra_code_name(0x08) == 'reserved'
+	assert ra_code_name(0xE5) == 'OEM-specific'
+	assert ra_code_hint(0x00, 0x0E80) == 'this entity does not accept tester 0x0E80'
+	assert ra_code_hint(0x06, 0x0E80) == ''
+	assert RoutingDenied{
+		code:   0x06
+		tester: 0x0E00
+	}.msg() == 'DoIP: routing activation denied: 0x06 unsupported activation type'
+}

@@ -194,7 +194,7 @@ fn main() {
 			continue
 		}
 		if ch.is_doip() {
-			if nodes.len == 0 {
+			if !ch.hosts_doip_entity() {
 				println('channel ${ch.name} (${ch.iface}): DoIP tester only (no simulated entity)')
 				continue
 			}

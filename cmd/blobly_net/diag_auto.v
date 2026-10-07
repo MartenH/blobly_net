@@ -9,7 +9,9 @@ import diaghold
 // DiagAutopress is a dev hook, inert unless BLOBLY_DIAG_PRESS is set: the Diagnostics panel's
 // buttons pressed in order from the frame loop, for the headless screenshot and for timing the
 // panel end to end (VGUI_FRAMES / VGUI_SHOT cannot click). A comma-separated list of
-// `session`, `vin`, `tp`, `did:<hex>`, `wait:<ms>`, `target:<label substring>`, `disconnect`,
+// `session`, `vin`, `tp`, `did:<hex>`, `wait:<ms>`, `target:<label substring>`, `connect` (the
+// strip's Connect), `disconnect`, `stop` (the measurement stopped, as the toolbar's Stop), `pane:<px>` (the
+// DTC/DIDs divider dragged to that height),
 // `logsel:<n>` (the response table's n-th entry selected, its bytes shown), `copylua:<file>` (Copy
 // as Lua of every entry, into the file),
 // `script:<path>` (started as the Script panel's Run starts one), the DTC tab's `tab:dtc`,
@@ -33,6 +35,7 @@ mut:
 	script_end  u64 // when a frame first saw it finished
 	script_seen bool // a frame saw it running
 	reported    bool
+	stopped     bool // a `stop` step ran: the later steps go on with the measurement stopped
 }
 
 // autopress_timeout_ns bounds one press's wait for its line.
@@ -47,10 +50,14 @@ fn (mut app App) diag_autopress_init() {
 	app.show_diag = true
 }
 
-// diag_autopress_step runs from draw_diag once the run is on, with the current target list.
+// diag_autopress_step runs from draw_diag every frame, with the listed targets.
 fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 	mut au := &app.diag_auto
 	if au.steps.len == 0 {
+		return
+	}
+	// the steps start once the run is on, and go on stopped only after a `stop` step of their own
+	if !app.running && !au.stopped {
 		return
 	}
 	// frames keep coming, so VGUI_FRAMES (which this hook is run under) ends a quiet project too
@@ -151,6 +158,17 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 	}
 	if step == 'disconnect' {
 		app.diag_disconnect()
+		return
+	}
+	if step.starts_with('pane:') {
+		// the tabs' divider dragged to this height (unscaled px), as a drag sets it
+		app.diag_tab_h = step.all_after(':').f32()
+		return
+	}
+	if step == 'stop' {
+		// the measurement stopped as the toolbar's Stop does: the panel keeps showing what it read
+		au.stopped = true
+		app.stop()
 		return
 	}
 	if step.starts_with('script:') {

@@ -44,6 +44,8 @@ pub mut:
 	diag_req u32
 	diag_rsp u32
 	doip     u32 // its DoIP entity's logical address (`doip = { logical = ... }`); 0 = none
+	testers  []u16  // who may activate routing at that entity (`doip = { testers = [...] }`)
+	address  string // its network address (`endpoint = { address = ... }`); '' = none
 	trace    int
 	reads    []string // signal names its FB handlers read (from its ecu.toml)
 	writes   []string // signal names its FB handlers write
@@ -177,7 +179,18 @@ pub fn load(path string) !System {
 			n.diag_rsp = u32(tint(dm, 'rsp'))
 		}
 		if dv := nm['doip'] {
-			n.doip = u32(tint(dv.as_map(), 'logical'))
+			dm := dv.as_map()
+			n.doip = u32(tint(dm, 'logical'))
+			if tv := dm['testers'] {
+				for x in tv.array() {
+					if x is i64 && x >= 0 && x <= 0xFFFF {
+						n.testers << u16(x)
+					}
+				}
+			}
+		}
+		if ev := nm['endpoint'] {
+			n.address = tstr(ev.as_map(), 'address')
 		}
 		// the node's internals: reads/writes across every FB handler
 		epath := os.join_path(base, n.ecu)

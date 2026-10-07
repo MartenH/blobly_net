@@ -1261,7 +1261,7 @@ fn (mut app App) start_doip_hosts() {
 		for w in sim.validate_uds_doip(nodes) {
 			app.notify('${c.name}: ${w}')
 		}
-		if nodes.len == 0 {
+		if !c.hosts_doip_entity() {
 			// Tester-only, as the headless runner treats it: a channel that simulates no ECU
 			// exists to address an EXTERNAL one. Hosting would bind the endpoint and answer
 			// with stock data, so a bench would read results from an ECU nobody asked for.
@@ -1347,7 +1347,7 @@ fn (app &App) doip_host_failed(name string, iface string) bool {
 	mut simulated := false
 	for c in a.proj.channels {
 		if c.name == name && c.iface == iface && c.is_doip() {
-			simulated = c.all_nodes().len > 0
+			simulated = c.hosts_doip_entity()
 			break
 		}
 	}

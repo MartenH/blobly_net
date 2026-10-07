@@ -37,6 +37,7 @@ struct DiagTarget {
 	rx    u32    // the ECU listens here — the tester TRANSMITS to it
 	tx    u32    // the ECU answers here — the tester RECEIVES from it
 	ext   bool
+	note  string // said under the target selector when it is selected ('' = nothing to say)
 	// How to reach it. A DoIP target has no CAN ids at all — it is addressed by the channel's
 	// logical pair — so rx/tx above are meaningless for one and the panel must not open an
 	// ISO-TP channel for it. Derived by the same carrier_of() the scripting side uses.
@@ -59,13 +60,21 @@ fn (app &App) diag_targets() []DiagTarget {
 	a.mu.lock()
 	plan := app.diag_plan.clone()
 	sys_targets := app.diag_sys_targets.clone()
+	// the default pair's label says so when a loaded system describes nobody there
+	nobody := if app.diag_sys_default_unknown { ', no ECU described here' } else { '' }
+	note := if app.diag_sys_default_unknown {
+		'the loaded system describes no ECU on 0x${diag_tx_id:X}/0x${diag_rx_id:X}: a timeout here is expected'
+	} else {
+		''
+	}
 	a.mu.unlock()
 	mut out := []DiagTarget{}
 	if hw := app.diag_iface_opt() {
 		if !plan.any(it.key == diag_key_can(hw, diag_tx_id, diag_rx_id)) {
 			out << DiagTarget{
 				key:   diag_key_can(hw, diag_tx_id, diag_rx_id)
-				label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+				label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X}${nobody})'
+				note:  note
 				iface: hw
 				rx:    diag_tx_id
 				tx:    diag_rx_id
@@ -94,7 +103,7 @@ fn (app &App) diag_targets() []DiagTarget {
 		if !app.chan_enabled(c) {
 			continue
 		}
-		if c.all_nodes().len > 0 {
+		if c.hosts_doip_entity() {
 			// This channel SIMULATES an ECU. If it is not in diag_plan, hosting it failed —
 			// and the bind failure means someone else owns that endpoint. Offering it anyway
 			// would let the panel report results from that other process, which is the exact
@@ -122,13 +131,24 @@ fn (app &App) diag_targets() []DiagTarget {
 	if out.len == 0 {
 		out << DiagTarget{
 			key:   diag_key_can(app.diag_iface(), diag_tx_id, diag_rx_id)
-			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X}${nobody})'
+			note:  note
 			iface: app.diag_iface()
 			rx:    diag_tx_id
 			tx:    diag_rx_id
 		}
 	}
 	return out
+}
+
+// diag_listed_targets is what the panel lists: the live list while a run is on, and once stopped
+// the one the run last listed — the views and the log were read under those keys, and a
+// stopped default target (no running channel) would otherwise be another key. GUI thread.
+fn (app &App) diag_listed_targets() []DiagTarget {
+	if !app.running && app.diag_run_targets.len > 0 {
+		return app.diag_run_targets
+	}
+	return app.diag_targets()
 }
 
 fn (mut app App) diag_done() {

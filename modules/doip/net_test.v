@@ -1100,3 +1100,33 @@ fn test_a_stop_ends_a_read_stalled_mid_message() {
 		ln.close() or {}
 	}
 }
+
+// a denied routing activation reaches the caller as a RoutingDenied, its code named and the
+// tester it asked as in the message — through the stoppable open the panel uses
+fn test_a_denied_activation_says_its_code_by_name() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(routing_activation_response(0x0E80, 0x07A0, 0x00)) or { return }
+		time.sleep(100 * time.millisecond)
+		c.close() or {}
+	}(mut ln)
+	if _ := open_doip_stoppable('127.0.0.1', lport, 0x0E80, 0x07A0, fn () bool {
+		return false
+	})
+	{
+		assert false, 'a denied activation opened'
+	} else {
+		assert err is RoutingDenied, err.msg()
+		if err is RoutingDenied {
+			assert err.code == 0x00
+			assert err.tester == 0x0E80
+		}
+		assert err.msg() == 'DoIP: routing activation denied: 0x00 unknown source address — this entity does not accept tester 0x0E80'
+	}
+	ln.close() or {}
+}

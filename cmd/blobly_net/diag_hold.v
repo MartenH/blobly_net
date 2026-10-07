@@ -19,7 +19,7 @@ import sysview
 
 // DiagReq is one press of a panel button, addressed by the target key captured at click time.
 struct DiagReq {
-	kind string // 'session' | 'vin' | 'tp' | 'did' | the DTC tab's (diag_dtc.v): 'dtcs' |
+	kind string // 'connect' (the strip's: open, send nothing) | 'session' | 'vin' | 'tp' | 'did' | the DTC tab's (diag_dtc.v): 'dtcs' |
 	// 'dtc_detail' | 'dtc_clear' | 'dtc_setting' | the DIDs tab's (diag_did.v): 'did_read' |
 	// 'did_read_all' | 'did_write'
 	did  u16
@@ -506,6 +506,13 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 			return
 		}
 	}
+	if req.kind == 'connect' {
+		// the strip's Connect: the open IS the press, and diag_connect said it
+		if held_before {
+			app.diag_conn_for(req, 'already held: ${h.where}', false)
+		}
+		return
+	}
 	mut out := DiagOut{}
 	mut negative := false
 	out, negative = app.diag_request(gen, mut h, req)
@@ -575,7 +582,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq
 		// an open the token ended did not fail: it was abandoned, and nothing is held for the
 		// holder's next look to let go with the command's reason
 		cancelled := h.stop()
-		why := if cancelled { 'opening abandoned' } else { err.msg() }
+		why := if cancelled { 'opening abandoned' } else { diag_open_refusal(err) }
 		app.diag_conn_for(req, '[${ms:6} ms] open ${where}: ${why}', !cancelled)
 		app.diag_set_status(gen, DiagHoldStatus{
 			key: t.key
@@ -596,6 +603,18 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq
 		p2_ms: -1
 	})
 	return true
+}
+
+// diag_open_refusal is a failed open as the strip and the log say it. A routing activation the
+// entity denied is named by its code (doip.RoutingDenied); an unknown source address is the
+// tester address on the bus row, so the line says where that is set.
+fn diag_open_refusal(err IError) string {
+	if err is doip.RoutingDenied {
+		if err.code == 0x00 {
+			return '${err.msg()}; set the tester address on the bus row (Configure → Buses)'
+		}
+	}
+	return err.msg()
 }
 
 struct DiagOut {

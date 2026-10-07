@@ -260,9 +260,8 @@ pub fn open_doip_stoppable(host string, port int, source u16, target u16, stop f
 		connect_us: i64(t1 - t0) / 1000
 	}
 	c.activate_routing() or {
-		why := err.str()
 		c.close()
-		return error(why)
+		return err // a RoutingDenied stays one: the caller says what to do about its code
 	}
 	c.activate_us = i64(time.sys_mono_now() - t1) / 1000
 	return c
@@ -358,8 +357,13 @@ fn (mut c DoipClient) activate_routing() ! {
 		return error('DoIP: expected routing activation response, got 0x${msg.payload_type:04X}')
 	}
 	if msg.payload.len < 5 || msg.payload[4] != ra_success {
-		code := if msg.payload.len >= 5 { msg.payload[4] } else { u8(0xFF) }
-		return error('DoIP: routing activation denied (code 0x${code:02X})')
+		if msg.payload.len < 5 {
+			return error('DoIP: routing activation response too short (${msg.payload.len} bytes)')
+		}
+		return RoutingDenied{
+			code:   msg.payload[4]
+			tester: c.source
+		}
 	}
 }
 
