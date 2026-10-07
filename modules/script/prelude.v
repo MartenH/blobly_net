@@ -407,6 +407,8 @@ function uds.open(channel, opts)
   local h = __uds_open(channel, opts.tx, opts.rx)
   local self = { handle = h, channel = channel }
   function self:session(sub) return __uds_session(self.handle, sub or 0x01) end
+  -- let the connection go: the next uds.open on the channel opens a new one
+  function self:close() __uds_close(self.handle) end
   function self:read_did(did) return __uds_read_did(self.handle, did) end
   function self:write_did(did, data) return __uds_write_did(self.handle, did, data) end
   function self:tester_present() return __uds_tester_present(self.handle) end

@@ -14,7 +14,7 @@ import project
 // on_exchange hook — diag_exchange_for): its bytes both ways, the NRC, the latency and the
 // responsePending it waited through. What is not a request is an entry of its own kind: a
 // connection opened or let go (diag_conn_for, diag_push_conn) or a line the panel had to say
-// (diag_note_for, diag_push). A line ABOUT an answer — a value decoded by the description —
+// (diag_note_for, diag_push_refusal). A line ABOUT an answer — a value decoded by the description —
 // annotates that answer's entry instead (diag_say_for). uds.LogEntry.line() is the one text form:
 // the table's Copy all and the autopress report print it. Copy as Lua turns rows into a script
 // (script.lua_from_log).
@@ -68,20 +68,6 @@ fn (mut app App) diag_append_locked(e uds.LogEntry) u64 {
 	return seq
 }
 
-// diag_push says a line no request caused — a press refused before it was queued, the holder's
-// own trouble — as a failed note under the held connection's target.
-fn (mut app App) diag_push(line string) {
-	app.mu.lock()
-	app.diag_append_locked(uds.LogEntry{
-		outcome: .note
-		target:  app.diag_status.label
-		key:     app.diag_status.key
-		text:    line
-		failed:  true
-	})
-	app.mu.unlock()
-}
-
 // diag_push_refusal says a press refused before it was queued, under the target pressed.
 fn (mut app App) diag_push_refusal(key string, label string, line string) {
 	app.mu.lock()
@@ -95,13 +81,15 @@ fn (mut app App) diag_push_refusal(key string, label string, line string) {
 	app.mu.unlock()
 }
 
-// diag_push_conn is a connection event no request caused: the holder letting go, a keep-alive.
-fn (mut app App) diag_push_conn(line string, failed bool) {
+// diag_push_conn is a connection event no request caused — the holder letting go, its idle
+// service, a keep-alive — filed under the target of the connection it is about (`t`, the emitting
+// holder's own): the strip's target may already be a newer holder's.
+fn (mut app App) diag_push_conn(t DiagTarget, line string, failed bool) {
 	app.mu.lock()
 	app.diag_append_locked(uds.LogEntry{
 		outcome: .connection
-		target:  app.diag_status.label
-		key:     app.diag_status.key
+		target:  if t.label != '' { t.label } else { t.key }
+		key:     t.key
 		text:    line
 		failed:  failed
 	})

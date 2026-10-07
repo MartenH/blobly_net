@@ -344,7 +344,7 @@ fn (mut app App) diag_status_copy() DiagHoldStatus {
 fn (mut app App) diag_let_go(gen u64, mut h HeldConn, conn diaghold.Conn, why string) {
 	line := app.diag_drop(gen, mut h, conn, why)
 	if line != '' {
-		app.diag_push_conn(line, false)
+		app.diag_push_conn(h.target, line, false)
 	}
 }
 
@@ -697,7 +697,7 @@ fn (mut app App) diag_idle(gen u64, mut h HeldConn) {
 			return
 		}
 		h.sc.drain_idle(diag_idle_drain_max) or {
-			app.diag_push_conn('${h.where}: ${err.msg()} (while idle)', true)
+			app.diag_push_conn(h.target, '${h.where}: ${err.msg()} (while idle)', true)
 			app.diag_let_go(gen, mut h, .failed, '${err.msg()} (while idle)')
 		}
 		return
@@ -752,14 +752,14 @@ fn (mut app App) diag_keepalive(gen u64, mut h HeldConn) {
 			s.security = 0
 			s.dtc_off = false // no longer ours to know either
 			app.diag_set_status(gen, s)
-			app.diag_push_conn('keep-alive 3E 80 refused (${why}); stopped until the next session change', true)
+			app.diag_push_conn(h.target, 'keep-alive 3E 80 refused (${why}); stopped until the next session change', true)
 		}
 		.pending {
-			app.diag_push_conn('keep-alive 3E 80 answered 0x78 (responsePending): a keep-alive does not wait; let go', true)
+			app.diag_push_conn(h.target, 'keep-alive 3E 80 answered 0x78 (responsePending): a keep-alive does not wait; let go', true)
 			app.diag_let_go(gen, mut h, .failed, 'keep-alive answered 0x78 (responsePending)')
 		}
 		.failed {
-			app.diag_push_conn('keep-alive 3E 80: ${why}', true)
+			app.diag_push_conn(h.target, 'keep-alive 3E 80: ${why}', true)
 			app.diag_let_go(gen, mut h, .failed, 'keep-alive: ${why}')
 		}
 	}

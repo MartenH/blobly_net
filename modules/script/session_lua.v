@@ -31,11 +31,10 @@ pub:
 
 // lua_from_log writes `entries` as a script.
 pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
-	mut handles := map[string]string{} // target key -> Lua variable
-	mut order := []LuaTarget{}
+	mut reach := map[string]LuaTarget{} // target key -> how a script opens it
 	mut missing := map[string]string{} // target key -> label, for keys no LuaTarget covers
 	for e in entries {
-		if !e.is_request() || e.key in handles || e.key in missing {
+		if !e.is_request() || e.key in reach || e.key in missing {
 			continue
 		}
 		t := opts.targets.filter(it.key == e.key)[0] or {
@@ -46,8 +45,7 @@ pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
 			missing[e.key] = t.label
 			continue
 		}
-		handles[e.key] = if order.len == 0 { 'diag' } else { 'diag${order.len + 1}' }
-		order << t
+		reach[e.key] = t
 	}
 	n := entries.filter(it.is_request()).len
 	mut out := []string{}
@@ -59,20 +57,20 @@ pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
 		out << '-- (no project file: run it with --project <the .blobnet it was recorded under>)'
 	}
 	out << ''
-	for t in order {
-		open := if t.ids {
-			'uds.open(${lua_str(t.channel)}, { tx = 0x${t.tx:X}, rx = 0x${t.rx:X} })'
-		} else {
-			'uds.open(${lua_str(t.channel)})'
-		}
-		out << 'local ${handles[t.key]} = ${open}  -- ${one_line(t.label)}'
-	}
 	for _, label in missing {
 		out << '-- ${one_line(label)}: no project channel reaches it; its requests are comments'
 	}
-	if order.len > 0 || missing.len > 0 {
+	// ONE connection at a time, opened at a target's first request and let go when the requests
+	// move to another: a DoIP entity serves one connection at a time, so a second open of its
+	// endpoint waits on the first, and the panel itself holds one connection
+	if reach.len > 0 {
+		out << 'local diag  -- the connection the requests below go to'
+		out << ''
+	} else if missing.len > 0 {
 		out << ''
 	}
+	h := 'diag'
+	mut cur := ''
 	mut i := 0
 	for i < entries.len {
 		e := entries[i]
@@ -81,15 +79,29 @@ pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
 			i++
 			continue
 		}
-		h := handles[e.key] or { '' }
-		if h == '' || e.outcome !in [.positive, .negative] {
-			why := if h == '' { 'no channel reaches ${e.target}' } else { e.response_text() }
+		t := reach[e.key] or { LuaTarget{} }
+		if t.channel == '' || e.outcome !in [.positive, .negative] {
+			why := if t.channel == '' { 'no channel reaches ${e.target}' } else { e.response_text() }
 			out << '-- ${e.request_text()}: ${one_line(why)} — not replayed'
 			i++
 			continue
 		}
+		if e.key != cur {
+			if cur != '' {
+				out << '${h}:close()  -- the requests move to another target'
+			}
+			open := if t.ids {
+				'uds.open(${lua_str(t.channel)}, { tx = 0x${t.tx:X}, rx = 0x${t.rx:X} })'
+			} else {
+				'uds.open(${lua_str(t.channel)})'
+			}
+			out << '${h} = ${open}' + if t.label != '' { '  -- ${one_line(t.label)}' } else { '' }
+			out << ''
+			cur = e.key
+		}
 		// a seed request and the key that followed it are one helper
 		if pair := key_after(entries, i, e) {
+			// (the key's own entry is the next one, which the loop steps over)
 			lvl := e.req[1] & 0x7F
 			call := '${h}:security_access(${lvl})'
 			out << test_block('${e.seq}: ${e.request_text()} + key', if pair.outcome == .negative {
@@ -122,14 +134,16 @@ pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
 }
 
 // key_after: the entry after `i`, when `e` is a seed request answered positively with a seed that
-// is not all zero (an unlocked level sends no key) and that entry sends its key on the same target.
+// is not all zero (an unlocked level sends no key) and that entry sends its key on the same target
+// AS THE NEXT ENTRY OF THE LOG — numbered right after it, not merely next in a selection that may
+// have skipped what came between.
 fn key_after(entries []uds.LogEntry, i int, e uds.LogEntry) ?uds.LogEntry {
 	if e.req.len != 2 || e.req[0] != 0x27 || e.req[1] & 1 == 0 || e.outcome != .positive
 		|| e.resp.len < 3 || e.resp[2..].all(it == 0) || i + 1 >= entries.len {
 		return none
 	}
 	k := entries[i + 1]
-	if k.key != e.key || k.req.len < 2 || k.req[0] != 0x27 || k.req[1] != e.req[1] + 1
+	if k.seq != e.seq + 1 || k.key != e.key || k.req.len < 2 || k.req[0] != 0x27 || k.req[1] != e.req[1] + 1
 		|| k.outcome !in [.positive, .negative] {
 		return none
 	}
@@ -171,7 +185,9 @@ fn call_of(h string, e uds.LogEntry) (string, string) {
 	if suppressed {
 		mut plain := req.clone()
 		plain[1] &= 0x7F
-		return '${h}:raw_suppressed(fromhex("${uds.bytes_hex(plain, 0)}"))', ''
+		// whether a positive answer came anyway (one owed after a 0x78 does not count), as seen
+		came := e.resp.len > 0 && e.pending == 0
+		return '${h}:raw_suppressed(fromhex("${uds.bytes_hex(plain, 0)}"))', '${came}'
 	}
 	after := fn [resp] (n int) []u8 {
 		return if resp.len > n { resp[n..] } else { []u8{} }

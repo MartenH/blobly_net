@@ -72,9 +72,11 @@ fn test_golden_script() {
 -- Each request is one test, checking the answer the operator saw.
 -- @project /p/sim-demo.blobnet
 
-local diag = uds.open("CAN1", { tx = 0x7E0, rx = 0x7E8 })  -- SUT  (0x7E0/0x7E8)
+local diag  -- the connection the requests below go to
 
 -- 10:00:00.000  SUT  (0x7E0/0x7E8)  [connection] opened ISO-TP on inproc:CAN1 (0x7E0/0x7E8)
+diag = uds.open("CAN1", { tx = 0x7E0, rx = 0x7E8 })  -- SUT  (0x7E0/0x7E8)
+
 test("1: 10 03 Session extended", function()
   check.equal(tohex(diag:session(0x03)), "03 00 32 01 F4")
 end)
@@ -110,7 +112,7 @@ test("9: 19 02 FF ReadDTC byMask", function()
 end)
 
 test("10: 3E 80 TesterPresent (suppressed)", function()
-  diag:raw_suppressed(fromhex("3E 00"))
+  check.equal(diag:raw_suppressed(fromhex("3E 00")), false)
 end)
 
 test("11: 31 01 0203 Routine", function()
@@ -155,10 +157,11 @@ fn test_unreachable_target_and_no_project_are_said() {
 	assert !got.contains('test(')
 }
 
-fn test_a_doip_target_opens_by_channel_and_targets_get_their_own_handles() {
+fn test_one_connection_at_a_time_opened_at_its_first_request() {
 	mut b := ent(2, [u8(0x3E), 0x00], [u8(0x7E), 0x00])
 	b.key = 'gw'
-	got := lua_from_log([ent(1, [u8(0x3E), 0x00], [u8(0x7E), 0x00]), b], LuaOpts{
+	mut c := ent(3, [u8(0x3E), 0x00], [u8(0x7E), 0x00])
+	got := lua_from_log([ent(1, [u8(0x3E), 0x00], [u8(0x7E), 0x00]), b, c], LuaOpts{
 		targets: [LuaTarget{
 			key:     'sut'
 			channel: 'DoIP1'
@@ -170,9 +173,61 @@ fn test_a_doip_target_opens_by_channel_and_targets_get_their_own_handles() {
 			rx:      0x18DAF110
 		}]
 	})
-	assert got.contains('local diag = uds.open("DoIP1")')
-	assert got.contains('local diag2 = uds.open("CAN1", { tx = 0x18DA10F1, rx = 0x18DAF110 })')
-	assert got.contains('  diag2:tester_present()')
+	assert got.contains('
+local diag  -- the connection the requests below go to
+
+diag = uds.open("DoIP1")
+
+test("1: 3E 00 TesterPresent", function()
+  diag:tester_present()
+end)
+
+diag:close()  -- the requests move to another target
+diag = uds.open("CAN1", { tx = 0x18DA10F1, rx = 0x18DAF110 })
+
+test("2: 3E 00 TesterPresent", function()
+  diag:tester_present()
+end)
+
+diag:close()  -- the requests move to another target
+diag = uds.open("DoIP1")
+'), got
+	assert !got.contains('diag2')
+}
+
+fn test_a_seed_and_key_pair_only_when_adjacent_in_the_log() {
+	t := [LuaTarget{
+		key:     'sut'
+		channel: 'CAN1'
+	}]
+	seed := ent(5, [u8(0x27), 0x01], [u8(0x67), 0x01, 0x11, 0x22])
+	// a selection that skipped what came between: seq 5 and 9 are not one exchange pair
+	got := lua_from_log([seed, ent(9, [u8(0x27), 0x02, 0xEE, 0xDD], [u8(0x67), 0x02])], LuaOpts{
+		targets: t
+	})
+	assert !got.contains('security_access'), got
+	assert got.contains('diag:raw(fromhex("27 01"))  -- the seed varies: not compared'), got
+	assert got.contains('-- 27 02 EE DD SecurityAccess key 1: a key without the seed'), got
+	paired := lua_from_log([seed, ent(6, [u8(0x27), 0x02, 0xEE, 0xDD], [u8(0x67), 0x02])], LuaOpts{
+		targets: t
+	})
+	assert paired.contains('diag:security_access(1)'), paired
+}
+
+fn test_a_suppressed_request_checks_whether_an_answer_came() {
+	t := [LuaTarget{
+		key:     'sut'
+		channel: 'CAN1'
+	}]
+	quiet := lua_from_log([ent(1, [u8(0x3E), 0x80], []u8{})], LuaOpts{ targets: t })
+	assert quiet.contains('check.equal(diag:raw_suppressed(fromhex("3E 00")), false)'), quiet
+	answered := lua_from_log([ent(1, [u8(0x3E), 0x80], [u8(0x7E), 0x00])], LuaOpts{
+		targets: t
+	})
+	assert answered.contains('check.equal(diag:raw_suppressed(fromhex("3E 00")), true)'), answered
+	mut owed := ent(1, [u8(0x3E), 0x80], [u8(0x7E), 0x00])
+	owed.pending = 1 // the answer after a 0x78 is owed, not "came anyway"
+	assert lua_from_log([owed], LuaOpts{ targets: t }).contains(', false)')
 }
 
 // serve_recorded is the native simulated server cmd/script hosts on 0x7E0 / 0x7E8, on a channel

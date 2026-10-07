@@ -316,7 +316,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 				did:  id
 			}, desc)
 		} else {
-			app.diag_push('Read DID: "${typed}" is not a DID (one to four hex digits)')
+			app.diag_push_refusal(t.key, t.label, 'Read DID: "${typed}" is not a DID (one to four hex digits)')
 		}
 	}
 	vgui.set_item_tooltip('0x22 for any identifier, in hex.')
@@ -687,7 +687,7 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 	if app.did_ui.auto_write && !ready && !busy {
 		// the autopress hook's write, refused here: said, so its wait ends
 		app.did_ui.auto_write = false
-		app.diag_push('0x2E ${x.id:04X}: not written (autopress) — ${why}')
+		app.diag_push_refusal(t.key, t.label, '0x2E ${x.id:04X}: not written (autopress) — ${why}')
 		vgui.close_current_popup()
 	}
 	if busy {
