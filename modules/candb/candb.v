@@ -209,10 +209,16 @@ pub fn (s Signal) phys_from_raw(raw u64) f64 {
 }
 
 // raw_from_phys is the inverse of phys_from_raw: physical -> raw bits (two's-complement,
-// masked to the signal width for signed signals).
+// masked to the signal width for signed signals). Only the WIDTH is enforced: a value past what
+// the width holds clamps to its nearer end (an unsigned signal's negative to 0, its overflow to
+// the mask; ±inf likewise), and NaN encodes as raw 0. The DBC's [min|max] is NOT applied — a
+// tester must be able to send an out-of-range value on purpose.
 pub fn (s Signal) raw_from_phys(phys f64) u64 {
 	// round half away from zero; a bare `+ 0.5` truncates negatives wrongly.
 	r := math.round((phys - s.offset) / s.factor)
+	if math.is_nan(r) {
+		return 0 // stated rather than left to a C cast, which is undefined for NaN
+	}
 	mask := if s.length >= 64 { ~u64(0) } else { (u64(1) << s.length) - 1 }
 	// CLAMPED TO THE DOMAIN'S ENDPOINTS before the cast: f64 cannot hold 2^64-1 or 2^63-1
 	// exactly, so a wide signal set to its maximum rounded to 2^64 (zero, on the C backend) or
@@ -225,15 +231,19 @@ pub fn (s Signal) raw_from_phys(phys f64) u64 {
 		if r < -f64(top) {
 			return top & mask
 		}
-	} else if r >= f64(mask) + 1.0 {
+		// through i64: a negative's two's-complement pattern masked to the width IS the raw value
+		return u64(i64(r)) & mask
+	}
+	if r >= f64(mask) + 1.0 {
 		// f64(mask) + 1 is exactly 2^length for every width, 64 included
 		return mask
 	}
-	// A negative goes through i64: its two's-complement pattern masked to the width IS the raw
-	// value. A non-negative goes through u64 DIRECTLY — via i64 it saturates at 2^63, so the
-	// top half of an unsigned 64-bit signal's domain encoded as INT64_MIN.
-	raw := if r < 0 { u64(i64(r)) } else { u64(r) }
-	return raw & mask
+	if r < 0 {
+		return 0 // below an unsigned width: its bottom end, never wrapped to the top
+	}
+	// through u64 DIRECTLY — via i64 it saturates at 2^63, so the top half of an unsigned
+	// 64-bit signal's domain encoded as INT64_MIN.
+	return u64(r) & mask
 }
 
 // physical applies sign-extension, factor and offset: phys = raw * factor + offset.
