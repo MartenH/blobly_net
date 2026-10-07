@@ -460,3 +460,33 @@ fn test_a_stopped_client_sends_nothing() {
 	assert m.last_req.len == 0
 	assert !c.last.sent
 }
+
+
+// A 0x62 too short to echo its DID ARRIVED: it is UndecodableAnswer (the ECU's answer, which a
+// tester holding a connection keeps it through, and which Read all counts as that DID's), never
+// the generic error a lost connection is.
+fn test_a_malformed_read_answer_is_undecodable_not_a_failure() {
+	for resp in [[u8(0x62), 0xF1], [u8(0x62)]] {
+		mut c, _ := client_with([resp])
+		if _ := c.read_data_by_identifier(0xF190) {
+			assert false
+		} else {
+			assert err is UndecodableAnswer, '${resp}: ${err}'
+			assert err.msg().contains('malformed'), err.msg()
+		}
+	}
+	// a negative response without its NRC is malformed the same way
+	mut d, _ := client_with([[u8(0x7F), 0x22]])
+	if _ := d.read_data_by_identifier(0xF190) {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	// and a silence is not
+	mut e, _ := client_with([])
+	if _ := e.read_data_by_identifier(0xF190) {
+		assert false
+	} else {
+		assert err !is UndecodableAnswer
+	}
+}

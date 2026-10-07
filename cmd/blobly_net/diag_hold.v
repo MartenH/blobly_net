@@ -7,6 +7,7 @@ import doip
 import uds
 import vgui
 import diaghold
+import sysview
 
 // ---- The Diagnostics panel's held connection ----
 //
@@ -19,7 +20,8 @@ import diaghold
 // DiagReq is one press of a panel button, addressed by the target key captured at click time.
 struct DiagReq {
 	kind string // 'session' | 'vin' | 'tp' | 'did' | the DTC tab's (diag_dtc.v): 'dtcs' |
-	// 'dtc_detail' | 'dtc_clear' | 'dtc_setting'
+	// 'dtc_detail' | 'dtc_clear' | 'dtc_setting' | the DIDs tab's (diag_did.v): 'did_read' |
+	// 'did_read_all' | 'did_write'
 	did  u16
 	key  string
 	epoch    u64 // app.diag_epoch when sent: a press of an earlier project's writes nothing
@@ -29,11 +31,22 @@ struct DiagReq {
 	on       bool // 'dtc_setting': 0x85 01 (true) or 02
 	auto     bool // the auto-refresh's, not a press: refused in silence, logged only on a change
 	did_lens map[u16]int // snapshot DID sizes from the target's description
+	// the DIDs tab's
+	dids     []u16           // 'did_read_all': in order
+	data     []u8            // 'did_write': the value
+	sessions []u8            // 'did_write': the sessions the DID is written in (none = any)
+	level    u8              // 'did_write': the security level it needs (0 = none)
+	ref_key  bool            // the node's key is blobly_net's reference key: the panel can unlock
+	follow   []u16           // 'did_write': read back after the DID itself (a parameter's status)
+	writable bool            // 'did_write': the description declares a write gate (diaghold.write_plan)
+	ident    string          // the description's identity the press was made under (DiagDesc.ident)
+	desc     sysview.EcuDesc // the target's description, for naming and decoding the lines
 }
 
 // DiagHoldStatus is the strip at the top of the panel. Guarded by app.mu.
 struct DiagHoldStatus {
 mut:
+	key        string // ... and its identity, for what is asked of this connection's state
 	label      string // the target the connection is (or was) to
 	doip       bool
 	conn       diaghold.Conn
@@ -42,6 +55,7 @@ mut:
 	p2_ms      int // from that answer; -1 = none yet
 	p2_star_ms int
 	keepalives int // 3E 80 sent on this connection
+	security   u8  // the level a 0x27 unlocked on this connection, since its last session change
 	dtc_off    bool // a 0x85 02 was answered on this connection and no 0x85 01 since
 }
 
@@ -67,6 +81,7 @@ mut:
 	attached bool // CAN only: a channel is open for the exchange in progress
 	cli      uds.Client
 	session  u8
+	security u8 // the level unlocked since the last session change (0x27); 0 = locked
 	// how many requests the press in progress put on the carrier (diag_request): what the
 	// unsent-request retry asks, since `cli.last` is the last exchange of a press of several
 	press_sent int
@@ -496,6 +511,7 @@ fn (mut app App) diag_serve(gen u64, mut h HeldConn, req DiagReq) {
 // Its lines are the request's (`req`) that made it open.
 fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq) bool {
 	app.diag_set_status(gen, DiagHoldStatus{
+		key: t.key
 		label: t.label
 		doip: t.carrier.doip
 		conn: .opening
@@ -514,6 +530,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq
 		why := if cancelled { 'opening abandoned' } else { err.msg() }
 		app.diag_push_for(req, '[${ms:6} ms] open ${where}: ${why}')
 		app.diag_set_status(gen, DiagHoldStatus{
+			key: t.key
 			label: t.label
 			doip: t.carrier.doip
 			conn: if cancelled { diaghold.Conn.closed } else { diaghold.Conn.failed }
@@ -524,6 +541,7 @@ fn (mut app App) diag_connect(gen u64, mut h HeldConn, t DiagTarget, req DiagReq
 	}
 	app.diag_push_for(req, opened.line(h.where))
 	app.diag_set_status(gen, DiagHoldStatus{
+		key: t.key
 		label: t.label
 		doip: t.carrier.doip
 		conn: .held
@@ -559,6 +577,9 @@ fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bo
 		'dtcs', 'dtc_detail', 'dtc_clear', 'dtc_setting' {
 			return app.diag_dtc_request(gen, mut h, req)
 		}
+		'did_read', 'did_read_all', 'did_write' {
+			return app.diag_did_request(gen, mut h, req)
+		}
 		'vin' {
 			r := h.cli.read_data_by_identifier(0xF190) or {
 				return DiagOut{line: 'VIN: ${err}', err: true}, err is uds.NegativeResponse
@@ -590,8 +611,10 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 		}, err is uds.NegativeResponse
 	}
 	h.session = if resp.len > 1 { resp[1] } else { u8(0) }
+	h.security = 0 // ISO 14229-1: a session transition locks the server again
 	mut s := app.diag_status_copy()
 	s.session = h.session
+	s.security = 0
 	if h.session == diaghold.default_session {
 		s.dtc_off = false // ISO 14229-1: entering the default session turns DTC setting back on
 	}
@@ -663,8 +686,10 @@ fn (mut app App) diag_keepalive(gen u64, mut h HeldConn) {
 			// the session is no longer ours to know, and asking every two seconds would only
 			// repeat the refusal
 			h.session = 0
+			h.security = 0
 			mut s := app.diag_status_copy()
 			s.session = 0
+			s.security = 0
 			s.dtc_off = false // no longer ours to know either
 			app.diag_set_status(gen, s)
 			app.diag_push('keep-alive 3E 80 refused (${why}); stopped until the next session change')
