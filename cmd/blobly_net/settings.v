@@ -187,6 +187,7 @@ fn (mut app App) collect_panes() {
 		'system_ecu':    app.sys_ecu_h
 		'discover_list': app.disc_list_h
 		'script_editor': app.script_ed_h
+		'diagnostics_tab': app.diag_tab_h
 		'dbc_left':      app.dbc_ed.left_w
 		'dbc_msgs':      app.dbc_ed.msgs_h
 		'dbc_props':     app.dbc_ed.props_h

@@ -326,6 +326,46 @@ fn test_one_logical_address_on_two_nodes_is_settled_by_bus_too() {
 	assert sys.node_for(TargetAddr{ doip: true, logical: 0x07A0 }).node == -1
 }
 
+// Discover's "+ Add ticked" asks which tester an entity it found lets in: the description's
+// `testers`, matched by logical address, and by endpoint address where two nodes share one.
+fn test_the_tester_a_described_entity_accepts() {
+	dir := desc_fixture('testers')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	n := sys.nodes.filter(it.name == 'sysnode')[0] or { panic('no sysnode') }
+	assert n.testers == [u16(0x0E00)]
+	assert n.address == '192.168.0.50'
+	assert sys.doip_tester_for(0x07A0, '192.168.0.50')? == 0x0E00
+	assert sys.doip_tester_for(0x07A0, '')? == 0x0E00
+	// not described: the caller keeps its default
+	assert sys.doip_tester_for(0x1000, '192.168.0.50') == none
+	// the described entity lives elsewhere: this one is not it
+	assert sys.doip_tester_for(0x07A0, '10.0.0.9') == none
+	// two nodes on one logical address: the endpoint address settles it, or nothing does
+	for i, x in sys.nodes {
+		if x.name == 'zone_a' {
+			sys.nodes[i].doip = 0x07A0
+			sys.nodes[i].testers = [u16(0x0E01)]
+			sys.nodes[i].address = '192.168.0.51'
+		}
+	}
+	assert sys.doip_tester_for(0x07A0, '192.168.0.51')? == 0x0E01
+	assert sys.doip_tester_for(0x07A0, '192.168.0.50')? == 0x0E00
+	assert sys.doip_tester_for(0x07A0, '') == none
+	// a node that names no testers leaves the default
+	for i, x in sys.nodes {
+		if x.name == 'zone_a' {
+			sys.nodes[i].testers = []
+		}
+	}
+	assert sys.doip_tester_for(0x07A0, '192.168.0.51') == none
+	// describes: the default CAN pair is nobody here
+	assert !sys.describes(TargetAddr{ req: 0x7E0, rsp: 0x7E8 })
+	assert sys.describes(TargetAddr{ req: 0x7C0, rsp: 0x7C8 })
+}
+
 fn test_targets_on_the_buses_a_project_names() {
 	dir := desc_fixture('targets')
 	defer {

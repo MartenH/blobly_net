@@ -801,6 +801,9 @@ void vgui_indent_y(float h) { ImGui::SetCursorPosY(ImGui::GetCursorPosY() + h); 
 void vgui_push_frame_padding(float x, float y) { ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(x, y)); }
 void vgui_push_window_padding(float x, float y) { ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(x, y)); }
 void vgui_pop_style_var(int n) { ImGui::PopStyleVar(n); }
+// dim what follows (alpha multiplied by `a`) without disabling it: still clickable, so a caller
+// can answer a click with why it did nothing. Pop with vgui_pop_style_var(1).
+void vgui_push_alpha(float a) { ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * a); }
 // Fixed dark colours for the activity bar so it looks identical in light AND dark themes
 // (VS Code keeps its activity bar dark regardless of the editor theme). Push before the
 // child, pop after. Inactive buttons blend into the strip; the active one gets the accent.
@@ -916,6 +919,18 @@ void vgui_help_marker(const char* text) {
 }
 void vgui_text(const char* s) { ImGui::TextUnformatted(s); }
 void vgui_text_dim(const char* s) { ImGui::TextDisabled("%s", s); }
+// coloured text wrapped at the window's right edge.
+void vgui_text_colored_wrapped(int r, int g, int b, const char* s) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(r/255.f, g/255.f, b/255.f, 1.f));
+    ImGui::TextWrapped("%s", s);
+    ImGui::PopStyleColor();
+}
+// the width `s` takes in the current font, in px.
+float vgui_text_w(const char* s) { return ImGui::CalcTextSize(s).x; }
+// the width a button labelled `s` takes: its text and the frame padding either side.
+float vgui_button_w(const char* s) { return ImGui::CalcTextSize(s, NULL, true).x + 2.0f * ImGui::GetStyle().FramePadding.x; }
+// the padding a table cell adds either side of its content.
+float vgui_cell_pad_w(void) { return 2.0f * ImGui::GetStyle().CellPadding.x; }
 // dim text wrapped at the window's right edge, for a sentence longer than the dialog is wide.
 void vgui_text_dim_wrapped(const char* s) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);

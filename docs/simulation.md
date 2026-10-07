@@ -404,7 +404,13 @@ address, which is the point.
 The **Diagnostics panel** picks which target to address when more than one is configured. It
 holds one connection to that target across presses: the strip at its top says whether it is
 held, the session the last 0x10 answer established with its P2/P2*, and how many tester-presents
-(3E 80, every 2 s outside the default session) have kept it alive; Disconnect lets it go. Each
+(3E 80, every 2 s outside the default session) have kept it alive; Disconnect lets it go, and
+with nothing held **Connect** opens it to the selected target without sending a request (on DoIP
+the TCP connection and its routing activation). A routing activation the entity denies is said by
+its code's name — `0x00 unknown source address` is the tester address on the bus row, which the
+line says to change. Stopped, the panel keeps showing the target, the tabs' last reads and the
+log; only the buttons that send are dimmed, and a press of one says why in the log. The default
+`0x7E0/0x7E8` target says so when a loaded system describes no ECU there. Each
 response line starts with its round trip, the 0x78 wait when there was one, and a line of its own
 for an open — on DoIP the TCP connect and the routing activation apart. A script or a flash
 starting takes the connection away (one DoIP entity serves one tester), and the panel takes no
@@ -427,7 +433,11 @@ of its databases, or in the project's parent folder (or one is loaded in the Sys
 of its nodes is listed as a target on the running channel named after its bus, and a target
 whose addressing matches a node — CAN request and response ids, or a DoIP entity's logical
 address — shows that node's `[[fault]]` names and decodes snapshot DIDs through its `[[did]]`s
-(`SteeringAngle = 145`). With no description every column still works, by code.
+(`SteeringAngle = 145`). With no description every column still works, by code. The divider
+between a tab's content and the response log is dragged like the System panel's and remembered.
+The **DIDs** tab lists every described DID and every ISO identification DID as a row: one the ECU
+refused is dimmed with its answer by name (`0x31 requestOutOfRange`; `0x7F` reads *not supported
+in this session*) and keeps its Read, for after a session change; *hide refused* leaves them out.
 
 ## The same ECU over Ethernet (DoIP)
 

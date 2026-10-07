@@ -14,6 +14,36 @@ fn (app &App) diag_iface_opt() ?string {
 	return if iface == '' { none } else { iface }
 }
 
+// diag_default_iface is the wire the default 0x7E0/0x7E8 target is on: the first running
+// monitored channel in a run, and stopped the first one a run would read (monitorable) — the
+// same row whenever its reader opens, so the target keeps its key across Start and Stop.
+fn (app &App) diag_default_iface() ?string {
+	if app.running {
+		return app.diag_iface_opt()
+	}
+	// stopped: the wire the run's default was on (diag_note_default), while a row still offers
+	// it — a first row whose reader failed to open is not where the default was
+	if app.diag_default_last != '' && app.chans.any(it.monitorable() && it.iface == app.diag_default_last) {
+		return app.diag_default_last
+	}
+	for c in app.chans {
+		if c.monitorable() {
+			return c.iface
+		}
+	}
+	return none
+}
+
+// diag_note_default records, from the GUI thread during a run, the wire the default target is on,
+// for diag_default_iface to keep once stopped.
+fn (mut app App) diag_note_default() {
+	if app.running {
+		if hw := app.diag_iface_opt() {
+			app.diag_default_last = hw
+		}
+	}
+}
+
 fn (app &App) diag_iface() string {
 	for c in app.chans {
 		if c.monitorable() && c.running {
@@ -37,6 +67,7 @@ struct DiagTarget {
 	rx    u32    // the ECU listens here — the tester TRANSMITS to it
 	tx    u32    // the ECU answers here — the tester RECEIVES from it
 	ext   bool
+	note  string // said under the target selector when it is selected ('' = nothing to say)
 	// How to reach it. A DoIP target has no CAN ids at all — it is addressed by the channel's
 	// logical pair — so rx/tx above are meaningless for one and the panel must not open an
 	// ISO-TP channel for it. Derived by the same carrier_of() the scripting side uses.
@@ -59,13 +90,23 @@ fn (app &App) diag_targets() []DiagTarget {
 	a.mu.lock()
 	plan := app.diag_plan.clone()
 	sys_targets := app.diag_sys_targets.clone()
+	// the default pair's label says so when a loaded system describes nobody there
+	nobody := if app.diag_sys_default_unknown { ', no ECU described here' } else { '' }
+	note := if app.diag_sys_default_unknown {
+		'the loaded system describes no ECU on 0x${diag_tx_id:X}/0x${diag_rx_id:X}: a timeout here is expected'
+	} else {
+		''
+	}
 	a.mu.unlock()
 	mut out := []DiagTarget{}
-	if hw := app.diag_iface_opt() {
+	// the default target's wire: the running one in a run, the one that will be read once
+	// stopped — one key either way, so the selection and what was read under it survive a Stop
+	if hw := app.diag_default_iface() {
 		if !plan.any(it.key == diag_key_can(hw, diag_tx_id, diag_rx_id)) {
 			out << DiagTarget{
 				key:   diag_key_can(hw, diag_tx_id, diag_rx_id)
-				label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+				label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X}${nobody})'
+				note:  note
 				iface: hw
 				rx:    diag_tx_id
 				tx:    diag_rx_id
@@ -94,7 +135,7 @@ fn (app &App) diag_targets() []DiagTarget {
 		if !app.chan_enabled(c) {
 			continue
 		}
-		if c.all_nodes().len > 0 {
+		if c.hosts_doip_entity() {
 			// This channel SIMULATES an ECU. If it is not in diag_plan, hosting it failed —
 			// and the bind failure means someone else owns that endpoint. Offering it anyway
 			// would let the panel report results from that other process, which is the exact
@@ -122,7 +163,8 @@ fn (app &App) diag_targets() []DiagTarget {
 	if out.len == 0 {
 		out << DiagTarget{
 			key:   diag_key_can(app.diag_iface(), diag_tx_id, diag_rx_id)
-			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X}${nobody})'
+			note:  note
 			iface: app.diag_iface()
 			rx:    diag_tx_id
 			tx:    diag_rx_id

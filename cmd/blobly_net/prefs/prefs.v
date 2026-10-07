@@ -238,3 +238,23 @@ pub fn editor_argv(cmd string, path string) []string {
 	}
 	return out
 }
+
+// headless_size is the main window's size for a headless run (VGUI_FRAMES / VGUI_SHOT): `env`
+// as WIDTHxHEIGHT (VGUI_SIZE, e.g. `2400x1350`), else 1500x850 — fixed either way, so a
+// screenshot's dimensions never depend on the monitor. Strict: anything but two decimal numbers
+// from 320x240 to 7680x4320 is refused, never half-read.
+pub fn headless_size(env string) !(int, int) {
+	s := env.trim_space()
+	if s == '' {
+		return 1500, 850
+	}
+	parts := s.split('x')
+	if parts.len != 2 || parts.any(it.len == 0 || it.len > 4 || !it.bytes().all(it.is_digit())) {
+		return error('VGUI_SIZE "${env}": not WIDTHxHEIGHT (e.g. 2400x1350)')
+	}
+	w, h := parts[0].int(), parts[1].int()
+	if w < 320 || h < 240 || w > 7680 || h > 4320 {
+		return error('VGUI_SIZE "${env}": outside 320x240 .. 7680x4320')
+	}
+	return w, h
+}

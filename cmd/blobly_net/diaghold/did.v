@@ -194,3 +194,14 @@ pub fn (b DidBatch) summary(of int) string {
 	}
 	return line
 }
+
+// refused_words is a DID the ECU refused, as its row in the DIDs tab says it: the NRC and `name`,
+// its ISO 14229-1 name (uds.nrc_name). The two session refusals say what they mean for a DID —
+// served, but not in the session the connection is in — since a session change is exactly what
+// the row's Read is kept for.
+pub fn refused_words(nrc u8, name string) string {
+	if nrc == 0x7F || nrc == 0x7E {
+		return '0x${nrc:02X} not supported in this session'
+	}
+	return '0x${nrc:02X} ${name}'
+}

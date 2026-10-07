@@ -24,7 +24,8 @@ fn test_a_found_entity_becomes_a_doip_channel_named_after_its_vin() {
 	assert c.iface == 'doip:192.168.0.50:13400'
 	assert c.ecu_addr == 0x07A0
 	assert c.tester_addr == 0x0E80
-	assert c.vin == 'BLOBLYEMBSYSNODE1'
+	assert c.vin == '' // tester-only: a VIN is what a HOSTED entity announces
+	assert !c.hosts_doip_entity()
 	host, port := c.doip_endpoint()
 	assert host == '192.168.0.50' && port == 13400
 }
@@ -84,4 +85,23 @@ fn test_effective_address_fills_in_the_default_port_and_host() {
 		iface:   compose_iface('someip', '0.0.0.0')
 	}
 	assert s.someip_effective_address() == '0.0.0.0:30490'
+}
+
+// the one rule Start, the headless runner and the Configuration panel ask: a DoIP row hosts an
+// entity exactly when it simulates a node, by `nodes:` or by the `simulate:` shorthand
+fn test_a_doip_row_hosts_an_entity_only_when_it_simulates_a_node() {
+	mut c := doip_row('127.0.0.1:13400', 0x1000)
+	assert !c.hosts_doip_entity()
+	c.simulate = ['SUT']
+	assert c.hosts_doip_entity()
+	c.simulate = []
+	c.nodes = [NodeCfg{
+		name: 'ECU'
+	}]
+	assert c.hosts_doip_entity()
+	mut can := Channel{
+		name:     'C'
+		simulate: ['SUT']
+	}
+	assert !can.hosts_doip_entity()
 }

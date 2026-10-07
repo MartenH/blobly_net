@@ -17,7 +17,9 @@ pub:
 
 // doip_found_channel is the channel that reaches `f`: adapter `doip` at its address, the
 // entity's logical address as the ECU, the default tester address, named after the VIN — or
-// the address when there is none. The VIN is kept only when it is a whole one.
+// the address when there is none. The row is tester-only (it simulates nothing), so the VIN is
+// not set as the row's own: `vin` is what a HOSTED entity announces (hosts_doip_entity), and on
+// this row it would do nothing.
 pub fn doip_found_channel(f DoipFound) Channel {
 	address := f.address.trim_space()
 	return Channel{
@@ -27,7 +29,6 @@ pub fn doip_found_channel(f DoipFound) Channel {
 		iface:    compose_iface('doip', address)
 		typ:      'doip'
 		ecu_addr: f.logical
-		vin:      if f.vin.len == 17 { f.vin } else { '' }
 	}
 }
 

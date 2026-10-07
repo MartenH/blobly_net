@@ -20,6 +20,7 @@ import player
 import time
 import sync.stdatomic
 import vgui
+import prefs
 
 // load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
 // if set, else the first available system monospace (DejaVu Sans Mono / Consolas). Keeping
@@ -176,9 +177,16 @@ fn main() {
 	// persisted at the old size; View > Reset Layout is the recovery) and deliberately not
 	// clamped to the monitor (a clamp made these sizes machine-dependent, which the headless
 	// branch exists to prevent). HEADLESS runs (VGUI_FRAMES / VGUI_SHOT — the documented GUI
-	// smoke) keep 1500x850: a screenshot's dimensions must not depend on the monitor.
+	// smoke) keep 1500x850 — or the fixed size VGUI_SIZE names (prefs.headless_size), for a
+	// screenshot that needs room: a screenshot's dimensions must not depend on the monitor.
 	headless := max_frames > 0 || shot != ''
-	init_w, init_h := if headless { 1500, 850 } else { 1800, 1000 }
+	mut init_w, mut init_h := 1800, 1000
+	if headless {
+		init_w, init_h = prefs.headless_size(os.getenv('VGUI_SIZE')) or {
+			eprintln('${err}')
+			exit(2)
+		}
+	}
 	if !vgui.init('blobly_net ${app_version} — ${app.proj_name}', init_w, init_h, true) {
 		app.elog('vgui.init failed')
 		return
@@ -223,6 +231,7 @@ fn main() {
 		app.sys_ecu_h = app.prefs.panes['system_ecu'] or { 0 }
 		app.disc_list_h = app.prefs.panes['discover_list'] or { 0 }
 		app.script_ed_h = app.prefs.panes['script_editor'] or { 0 }
+		app.diag_tab_h = app.prefs.panes['diagnostics_tab'] or { 0 }
 		app.dbc_ed.left_w = app.prefs.panes['dbc_left'] or { 0 }
 		app.dbc_ed.msgs_h = app.prefs.panes['dbc_msgs'] or { 0 }
 		app.dbc_ed.props_h = app.prefs.panes['dbc_props'] or { 0 }

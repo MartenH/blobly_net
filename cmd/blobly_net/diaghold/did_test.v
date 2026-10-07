@@ -132,3 +132,10 @@ fn test_an_edit_buffer_holds_its_whole_text() {
 	assert edit_room(4, 300) == 317
 	assert edit_room(200, 200) == 616
 }
+
+fn test_a_refused_did_says_its_code_by_name() {
+	assert refused_words(0x31, 'requestOutOfRange') == '0x31 requestOutOfRange'
+	assert refused_words(0x33, 'securityAccessDenied') == '0x33 securityAccessDenied'
+	assert refused_words(0x7F, 'serviceNotSupportedInActiveSession') == '0x7F not supported in this session'
+	assert refused_words(0x7E, 'subFunctionNotSupportedInActiveSession') == '0x7E not supported in this session'
+}

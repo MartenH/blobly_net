@@ -1,7 +1,8 @@
 module panerule
 
-// THE PERSISTED DIVIDER, AS A RULE. Six panes keep a dragged height or width across frames —
-// the System panel's ECU panes, Discover's interface list, the Script editor, and the DBC
+// THE PERSISTED DIVIDER, AS A RULE. Seven panes keep a dragged height or width across frames —
+// the System panel's ECU panes, Discover's interface list, the Script editor, the Diagnostics
+// panel's DTC/DIDs tab content (one height for both, over the response log), and the DBC
 // editor's messages box, properties region and left pane — and the decision "how tall is it
 // THIS frame, and what does a drag change" had been written per pane, in two shapes. One of
 // them was codex #305 r2's finding on the System panel: the clamp ran AFTER the panes had taken

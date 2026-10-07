@@ -31,22 +31,7 @@ pub:
 // one address are told apart by the bus the target's channel is named after; if that does not
 // settle it, no node is chosen — a description of the wrong ECU is worse than none.
 pub fn (sys &System) node_for(t TargetAddr) NodeLink {
-	mut hits := []int{}
-	for i, n in sys.nodes {
-		if t.doip {
-			if n.doip != 0 && n.doip == t.logical {
-				hits << i
-			}
-			continue
-		}
-		if t.req == 0 && t.rsp == 0 {
-			continue
-		}
-		req, rsp := n.can_ids()
-		if req == t.req && rsp == t.rsp {
-			hits << i
-		}
-	}
+	hits := sys.addressed(t)
 	addr := if t.doip { 'DoIP 0x${t.logical:04X}' } else { '0x${t.req:X}/0x${t.rsp:X}' }
 	if hits.len == 0 {
 		return NodeLink{
@@ -163,4 +148,54 @@ pub fn find_system(proj_path string, db_refs []string) ?string {
 		}
 	}
 	return none
+}
+
+// addressed is every node `t`'s addressing names, whatever bus it is on.
+fn (sys &System) addressed(t TargetAddr) []int {
+	mut hits := []int{}
+	for i, n in sys.nodes {
+		if t.doip {
+			if n.doip != 0 && n.doip == t.logical {
+				hits << i
+			}
+			continue
+		}
+		if t.req == 0 && t.rsp == 0 {
+			continue
+		}
+		req, rsp := n.can_ids()
+		if req == t.req && rsp == t.rsp {
+			hits << i
+		}
+	}
+	return hits
+}
+
+// describes reports whether any node is addressed as `t` — on any bus: a target nothing in the
+// system answers to is one a tester should expect silence from.
+pub fn (sys &System) describes(t TargetAddr) bool {
+	return sys.addressed(t).len > 0
+}
+
+// doip_tester_for is the tester address an entity found at `host` with logical address `logical`
+// lets activate routing, as the system describes it: the first of its node's `testers`. The
+// node is the one whose DoIP address is `logical` — and, where several are, whose endpoint
+// address is `host`; none when that does not settle it, or the node lists no testers.
+pub fn (sys &System) doip_tester_for(logical u16, host string) ?u16 {
+	mut hits := sys.addressed(TargetAddr{
+		doip:    true
+		logical: logical
+	})
+	if hits.len > 1 && host != '' {
+		hits = hits.filter(sys.nodes[it].address != ''
+			&& sys.nodes[it].address.to_lower() == host.to_lower())
+	}
+	if hits.len != 1 {
+		return none
+	}
+	n := sys.nodes[hits[0]]
+	if n.address != '' && host != '' && n.address.to_lower() != host.to_lower() {
+		return none // the description's entity is at another address: not this one
+	}
+	return n.testers[0] or { return none }
 }

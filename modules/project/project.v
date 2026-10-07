@@ -599,6 +599,14 @@ pub fn (ch Channel) all_nodes() []NodeCfg {
 	return out
 }
 
+// hosts_doip_entity is whether Start hosts a DoIP entity for `ch`: a DoIP channel that simulates
+// at least one node. One without any is tester-only — it addresses somebody else's entity, and
+// what only an entity uses (its announced VIN) does nothing there. The GUI's Start, the headless
+// runner and the Configuration panel all ask this.
+pub fn (ch Channel) hosts_doip_entity() bool {
+	return ch.is_doip() && ch.all_nodes().len > 0
+}
+
 // Project is a parsed project file.
 pub struct Project {
 pub mut:
