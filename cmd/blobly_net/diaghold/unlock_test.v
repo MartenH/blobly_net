@@ -38,9 +38,14 @@ fn test_a_refusal_says_what_it_means() {
 }
 
 fn test_an_unlock_is_refused_only_where_the_description_names_another_key() {
-	assert unlock_refusal(true, true) == ''
-	assert unlock_refusal(false, false) == '' // undescribed: tried, and a 0x35 says so
-	assert unlock_refusal(true, false).contains('names no reference key')
+	assert unlock_refusal(true, true, false, false) == ''
+	assert unlock_refusal(false, false, true, false) == '' // undescribed: tried, and a 0x35 says so
+	assert unlock_refusal(true, false, false, false).contains('names no reference key')
+	// over DoIP the reference key also needs the node's opt-in
+	assert unlock_refusal(true, true, true, true) == ''
+	assert unlock_refusal(true, true, true, false).contains('allow_bench_key')
+	// on CAN the opt-in is not asked
+	assert unlock_refusal(true, true, false, false) == ''
 }
 
 fn test_a_refused_unlock_forgets_what_it_may_have_taken_back() {
@@ -48,6 +53,17 @@ fn test_a_refused_unlock_forgets_what_it_may_have_taken_back() {
 	assert unlock_refusal_forgets(0x7E) == .security // the session is still the one it was
 	assert unlock_refusal_forgets(0x35) == .security
 	assert unlock_refusal_forgets(0x12) == .security
+	assert unlock_refusal_forgets(0) == .security // a malformed answer
+}
+
+fn test_security_is_unknown_locked_or_a_level() {
+	fresh := Security{}
+	assert !fresh.known && fresh.unlocked() == 0 && fresh.words() == 'security unknown'
+	assert security_locked().words() == 'locked' && security_locked().unlocked() == 0
+	assert security_unlocked(2).words() == 'level 2 unlocked' && security_unlocked(2).unlocked() == 2
+	// a write gated at a level asks the connection's unlocked level: unknown plans the unlock
+	assert write_plan(true, 0x03, [u8(0x03)], 1, Security{}.unlocked(), true).unlock == 1
+	assert write_plan(true, 0x03, [u8(0x03)], 1, security_unlocked(1).unlocked(), true).unlock == 0
 }
 
 fn test_a_queued_unlock_is_not_sent_after_a_reload() {

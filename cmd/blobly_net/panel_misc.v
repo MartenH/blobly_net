@@ -1354,13 +1354,9 @@ fn draw_diag_strip(mut app App, st DiagHoldStatus) {
 		vgui.text_dim_wrapped('the measurement is stopped — what is shown is from the last run; Start to send requests')
 	} else if st.conn == .held {
 		mut line := 'session ${diaghold.session_name(st.session)}'
-		// locked only once a 0x10 answered on this connection says so (a session change relocks):
-		// a fresh connection does not know what another tester or a script left unlocked
-		if st.security != 0 {
-			line += ' · level ${st.security} unlocked'
-		} else if st.session != 0 {
-			line += ' · locked'
-		}
+		// locked only once a 0x10 answered on this connection says so (a session change relocks);
+		// a fresh connection, or one after a 0x27 the ECU did not grant, does not know
+		line += ' · ${st.security.words()}'
 		if st.keepalives > 0 {
 			line += ' · 3E 80 ×${st.keepalives}'
 		}

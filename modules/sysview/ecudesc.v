@@ -123,6 +123,10 @@ pub mut:
 	// `[uds] security_key`: "reference" is blobly_net's public bench key (uds.security_key), the
 	// one key a tester here can compute; '' = the OEM's, which it cannot
 	security_key string
+	// `allow_bench_key = true` in its [doip] table (or its system.toml node's `doip`, which sysgen
+	// lowers there): over DoIP it answers 0x27 with the reference key; without it, it refuses that
+	// key over the network (blobly_emb REQ-NET-012)
+	allow_bench_key bool
 	// the security levels `[uds] services` rows name (a service gated behind 0x27), in file order
 	service_levels []int
 	errs   []string
@@ -395,6 +399,11 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 					d.service_levels << int(lv)
 				}
 			}
+		}
+	}
+	if dv := doc.value_opt('doip') {
+		if b := dv.as_map()['allow_bench_key'] {
+			d.allow_bench_key = b is bool && b
 		}
 	}
 	if iv := doc.value_opt('isotp') {

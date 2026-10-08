@@ -49,7 +49,9 @@ description says so by name:
 
 A production ECU uses its own algorithm, and blobly_net does not have it. Every wrong key counts
 toward the ECU's lockout, so the panel does not send the reference key to a target whose
-description names no `security_key = "reference"`. It refuses the Unlock and says why. A target
+description names no `security_key = "reference"`, or to a DoIP target whose description does
+not opt in with `allow_bench_key`. It refuses the Unlock and says why. A DID write's unlock
+follows the same rule. A target
 with no description is tried. If it answers `0x35` invalidKey, the panel says that this ECU does
 not accept blobly_net's reference key and that its algorithm is the OEM's. A script can supply the
 real algorithm (below).
@@ -64,13 +66,16 @@ The **General** tab has a security row:
   behind (a DID gate or a service row), or at 1 when the target has no description.
 - **Unlock**: if the held connection is in the default session (or no session has been set on
   it yet), it first switches to the extended session. It then sends the seed request and answers
-  it with the reference key. It is refused for a target whose description names another key.
+  it with the reference key. It is refused for a target whose description names another key, and
+  for a DoIP target whose description lacks `allow_bench_key = true`.
 - **Lock**: returns to the default session (`10 01`), which is the only way UDS takes a level
   back.
 
 The result is written to the response log. The strip at the top shows `level N unlocked`, or
-`locked` once a session change on this connection has relocked the ECU. A fresh connection does not
-claim either, because it cannot know what a script or another tester left unlocked. A refusal is shown on the strip by its NRC, with what it means. Like every other button
+`locked` once a session change on this connection has relocked the ECU. Otherwise it shows
+`security unknown`: on a fresh connection, because a script or another tester may have left the
+ECU unlocked, and after a 0x27 the ECU answered without granting, because that may have relocked
+it, or not. A refusal is shown on the strip by its NRC, with what it means. Like every other button
 in the panel, Unlock and Lock are refused while the measurement is stopped, and while a script or
 flash is using the target.
 

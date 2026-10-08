@@ -56,7 +56,7 @@ mut:
 	p2_ms      int // from that answer; -1 = none yet
 	p2_star_ms int
 	keepalives int // 3E 80 sent on this connection
-	security   u8  // the level a 0x27 unlocked on this connection, since its last session change
+	security   diaghold.Security // the connection's (HeldConn.security), as the strip says it
 	dtc_off    bool // a 0x85 02 was answered on this connection and no 0x85 01 since
 	unlock_why string // the last 0x27 on this connection was refused: what it said ('' = none since)
 }
@@ -90,7 +90,7 @@ mut:
 	attached bool // CAN only: the channel and its tap are open
 	cli      uds.Client
 	session  u8
-	security u8 // the level unlocked since the last session change (0x27); 0 = locked
+	security diaghold.Security // unknown, locked (a session change answered) or the level a 0x27 granted
 	// how many requests the press in progress put on the carrier (diag_request): what the
 	// unsent-request retry asks, since `cli.last` is the last exchange of a press of several
 	press_sent int
@@ -687,10 +687,10 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 		}, err is uds.NegativeResponse
 	}
 	h.session = if resp.len > 1 { resp[1] } else { u8(0) }
-	h.security = 0 // ISO 14229-1: a session transition locks the server again
+	h.security = diaghold.security_locked() // ISO 14229-1: a session transition locks the server again
 	mut s := app.diag_status_copy()
 	s.session = h.session
-	s.security = 0
+	s.security = h.security
 	s.unlock_why = ''
 	if h.session == diaghold.default_session {
 		s.dtc_off = false // ISO 14229-1: entering the default session turns DTC setting back on
@@ -708,12 +708,12 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 }
 
 // diag_forget: what the ECU took back on its own is no longer ours to know, on the connection and
-// on the strip — the security level always, and with `session` the session and the DTC setting it
-// carried too (no session known stops the keep-alive).
+// on the strip — the security state always (unknown: the ECU may have relocked, or not), and with
+// `session` the session and the DTC setting it carried too (no session known stops the keep-alive).
 fn (mut app App) diag_forget(gen u64, mut h HeldConn, session bool) {
-	h.security = 0
+	h.security = diaghold.Security{}
 	mut s := app.diag_status_copy()
-	s.security = 0
+	s.security = h.security
 	if session {
 		h.session = 0
 		s.session = 0

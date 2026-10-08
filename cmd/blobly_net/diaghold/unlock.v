@@ -32,14 +32,60 @@ pub fn unlock_session(session u8) u8 {
 	return 0
 }
 
+// Security is what a connection knows of the ECU's security state: unknown (a fresh connection, or
+// after a 0x27 the ECU did not grant — it may have relocked, or not), locked (a session transition
+// was answered: ISO 14229-1 relocks on every one), or `level` unlocked (a 0x27 granted it since).
+pub struct Security {
+pub:
+	known bool
+	level u8 // known: 0 = locked, else the level unlocked
+}
+
+// security_locked is the state a positive 0x10 answer establishes.
+pub fn security_locked() Security {
+	return Security{
+		known: true
+	}
+}
+
+// security_unlocked is the state a granted 0x27 (or an all-zero seed) establishes.
+pub fn security_unlocked(level u8) Security {
+	return Security{
+		known: true
+		level: level
+	}
+}
+
+// unlocked is the level known to be unlocked, 0 when none is — locked or unknown alike, since
+// either way a gated request must unlock first (write_plan's `unlocked`).
+pub fn (s Security) unlocked() u8 {
+	return if s.known { s.level } else { u8(0) }
+}
+
+// words is the state as the strip says it.
+pub fn (s Security) words() string {
+	if !s.known {
+		return 'security unknown'
+	}
+	return if s.level == 0 { 'locked' } else { 'level ${s.level} unlocked' }
+}
+
 // unlock_refusal is why an Unlock is not sent ('' = send it). The panel computes only blobly_net's
 // reference key, and every wrong key counts toward the ECU's lockout, so a target whose
-// description says its key is another (`described`, and no `security_key = "reference"`) is
-// refused before anything goes out. An undescribed target is tried: a simulated ECU, or an ECU
-// nothing here describes, may accept it, and a 0x35 then says that it does not.
-pub fn unlock_refusal(described bool, ref_key bool) string {
-	if described && !ref_key {
+// description says it will not accept that key is refused before anything goes out: one that names
+// another key (no `security_key = "reference"`), or — reached over DoIP (`doip`) — one that does not
+// opt into the public key over the network (`allow_bench_key`, which blobly_emb requires on a
+// [doip] node: REQ-NET-012). An undescribed target is tried: a simulated ECU, or an ECU nothing here
+// describes, may accept it, and a 0x35 then says that it does not.
+pub fn unlock_refusal(described bool, ref_key bool, doip bool, bench_key bool) string {
+	if !described {
+		return ''
+	}
+	if !ref_key {
 		return 'not sent — its description names no reference key ([uds] security_key = "reference"): its key is the OEM\'s, which the panel cannot compute, and a wrong key counts toward its lockout; unlock it from a script with its key function'
+	}
+	if doip && !bench_key {
+		return 'not sent — over DoIP its description does not allow the reference key (no allow_bench_key = true in its doip table): it refuses that key over the network, and a wrong key counts toward its lockout'
 	}
 	return ''
 }
@@ -55,12 +101,13 @@ pub fn unlock_still_current(req_ident string, now_ident string) string {
 	return 'not sent: the system description was reloaded since Unlock was pressed — press it again'
 }
 
-// unlock_refusal_forgets: what a refused 0x27 says the connection no longer has. 0x7F (the service
-// not served in this session): the session is not the one the panel believed (an S3 timeout, a
-// reset), so the next Unlock switches again. Anything else, 0x7E included — a sub-function served
-// in another session says nothing about which one this is: the level is no longer known (a seed
-// request for another level, or a wrong key, may have relocked the ECU), so the next write
-// unlocks again.
+// unlock_refusal_forgets: what a 0x27 the ECU ANSWERED without granting says the connection no
+// longer has — `nrc` its negative response's code, 0 for an answer that was not one (malformed, or
+// with no seed). 0x7F (the service not served in this session): the session is not the one the
+// panel believed (an S3 timeout, a reset), so the next Unlock switches again. Anything else, 0x7E
+// and a malformed answer included: the level is no longer known (a seed request for another level,
+// or a key the ECU may have processed, may have changed it), so the next write unlocks again. A
+// carrier that failed is not here: that connection is let go.
 pub fn unlock_refusal_forgets(nrc u8) Forget {
 	return if nrc == 0x7F { Forget.session } else { Forget.security }
 }

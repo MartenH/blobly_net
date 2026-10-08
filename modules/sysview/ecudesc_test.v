@@ -570,3 +570,23 @@ read = { security = 2 }
 		'[uds] services 0x31 security "1" is not a security level (1..8); not read']
 	assert parse_ecu_desc(toml.parse_text('[uds]') or { panic(err) }, map[string][]Field{}).security_levels() == []
 }
+
+// Over DoIP the reference key needs the node's opt-in: the system.toml node's `doip` table (which
+// sysgen lowers into [doip]) or, for a node on its own, its ecu.toml's [doip].
+fn test_the_bench_key_opt_in_is_carried() {
+	dir := desc_fixture('benchkey')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	sn := sys.nodes.filter(it.name == 'sysnode')[0] or { panic('no sysnode') }
+	assert sn.desc.allow_bench_key
+	z := sys.nodes.filter(it.name == 'zone_a')[0] or { panic('no zone_a') }
+	assert !z.desc.allow_bench_key
+	on := parse_ecu_desc(toml.parse_text('[doip]\nallow_bench_key = true') or { panic(err) },
+		map[string][]Field{})
+	assert on.allow_bench_key
+	bad := parse_ecu_desc(toml.parse_text('[doip]\nallow_bench_key = "yes"') or { panic(err) },
+		map[string][]Field{})
+	assert !bad.allow_bench_key
+}

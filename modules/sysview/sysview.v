@@ -178,9 +178,13 @@ pub fn load(path string) !System {
 			n.diag_req = u32(tint(dm, 'req'))
 			n.diag_rsp = u32(tint(dm, 'rsp'))
 		}
+		mut node_bench_key := ?bool(none)
 		if dv := nm['doip'] {
 			dm := dv.as_map()
 			n.doip = u32(tint(dm, 'logical'))
+			if b := dm['allow_bench_key'] {
+				node_bench_key = b is bool && b
+			}
 			if tv := dm['testers'] {
 				for x in tv.array() {
 					if x is i64 && x >= 0 && x <= 0xFFFF {
@@ -200,6 +204,9 @@ pub fn load(path string) !System {
 			n.ecu_err = 'cannot read ${epath}'
 		} else if ndoc := toml.parse_text(etext or { '' }) {
 			n.desc = parse_ecu_desc(ndoc, sig_fields)
+			if b := node_bench_key {
+				n.desc.allow_bench_key = b // the system's, which sysgen lowers into [doip]
+			}
 			for fb in tarr(ndoc, 'fb') {
 				fm := fb.as_map()
 				if hv := fm['handler'] {

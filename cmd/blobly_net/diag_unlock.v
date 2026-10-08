@@ -48,9 +48,9 @@ fn (mut app App) diag_unlock(gen u64, mut h HeldConn, level u8) (DiagOut, bool) 
 			line = 'level ${level} unlocked (reference key)'
 		}
 	}
-	h.security = level
+	h.security = diaghold.security_unlocked(level)
 	mut st := app.diag_status_copy()
-	st.security = level
+	st.security = h.security
 	st.unlock_why = ''
 	app.diag_set_status(gen, st)
 	return DiagOut{
@@ -58,14 +58,19 @@ fn (mut app App) diag_unlock(gen u64, mut h HeldConn, level u8) (DiagOut, bool) 
 	}, false
 }
 
-// unlock_failed is a refused or failed 0x27 step: said by its NRC's meaning, and on the strip; what
-// the refusal may have taken back is forgotten (diaghold.unlock_refusal_forgets). `ecu_answered` is
-// returned as the second value: the ECU answered, so the connection is kept.
+// unlock_failed is a refused or failed 0x27 step: said by its NRC's meaning, and on the strip. An
+// answer that did not grant the level — refused, malformed, or without a seed (`ecu_answered`) —
+// forgets what it may have taken back (diaghold.unlock_refusal_forgets); a carrier that failed is
+// let go with its connection. `ecu_answered` is returned as the second value: the connection is kept.
 fn (mut app App) unlock_failed(gen u64, mut h HeldConn, step string, level u8, key_sent bool, err IError, ecu_answered bool) (DiagOut, bool) {
 	mut words := err.msg()
+	mut nrc := u8(0)
 	if err is uds.NegativeResponse {
+		nrc = err.nrc
 		words = diaghold.unlock_refusal_words(err.nrc, uds.nrc_name(err.nrc), level, key_sent)
-		app.diag_forget(gen, mut h, diaghold.unlock_refusal_forgets(err.nrc) == .session)
+	}
+	if ecu_answered {
+		app.diag_forget(gen, mut h, diaghold.unlock_refusal_forgets(nrc) == .session)
 	}
 	mut st := app.diag_status_copy()
 	st.unlock_why = 'level ${level} not unlocked: ${words}'
@@ -126,8 +131,7 @@ fn (mut app App) unlock_level(t DiagTarget, desc DiagDesc) int {
 // unlock_press sends Unlock at `level` for the selected target `t`, unless its description says
 // its key is one the panel cannot compute (diaghold.unlock_refusal): refused then, nothing sent.
 fn (mut app App) unlock_press(t DiagTarget, desc DiagDesc, level int) {
-	why := diaghold.unlock_refusal(desc.ok && desc.desc.server, desc.ok
-		&& desc.desc.security_key == 'reference')
+	why := unlock_refusal_for(t, desc)
 	if why != '' {
 		app.diag_push_refusal(t.key, t.label, 'Unlock level ${level}: ${why}')
 		return
@@ -162,11 +166,26 @@ fn draw_unlock(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 		app.diag_press('lock', u16(0))
 	}
 	vgui.set_item_tooltip(diaghold.lock_words)
-	if st.conn == .held && st.key == t.key && st.security != 0 {
+	if st.conn == .held && st.key == t.key && st.security.unlocked() != 0 {
 		vgui.same_line()
-		vgui.text_colored(230, 180, 60, 'level ${st.security} unlocked')
+		vgui.text_colored(230, 180, 60, st.security.words())
 	}
-	if desc.ok && desc.desc.server && desc.desc.security_key != 'reference' {
-		vgui.text_dim_wrapped('${desc.node}\'s description names no reference key: its key is the OEM\'s, which the panel cannot compute — Unlock is refused; a script can unlock it with its key function')
+	refused := unlock_refusal_for(t, desc)
+	if refused != '' {
+		vgui.text_dim_wrapped('Unlock ${refused}')
 	}
+}
+
+// unlock_refusal_for is diaghold.unlock_refusal for target `t` as `desc` describes it: its key, and
+// on DoIP its opt-in to the reference key over the network.
+fn unlock_refusal_for(t DiagTarget, desc DiagDesc) string {
+	return diaghold.unlock_refusal(desc.ok && desc.desc.server, desc.ok
+		&& desc.desc.security_key == 'reference', t.carrier.doip, desc.ok
+		&& desc.desc.allow_bench_key)
+}
+
+// panel_can_unlock: a DID write's unlock (diaghold.write_plan's `can_unlock`) asks the same as an
+// Unlock — a described target that accepts the reference key on this carrier.
+fn panel_can_unlock(t DiagTarget, desc DiagDesc) bool {
+	return desc.ok && desc.desc.security_key == 'reference' && unlock_refusal_for(t, desc) == ''
 }
