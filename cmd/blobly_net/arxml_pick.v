@@ -20,7 +20,6 @@ mut:
 	path    string // the ARXML, resolved
 	rows    []ArxmlPickRow
 	sel     int
-	current int // the row the entry already names; -1 for none
 }
 
 struct ArxmlPickRow {
@@ -100,7 +99,6 @@ fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, cur
 		path:    path
 		rows:    rows
 		sel:     sel
-		current: sel
 	}
 }
 
@@ -127,9 +125,6 @@ fn (mut app App) arxml_pick_confirm() {
 	p := app.arxml_pick
 	app.arxml_pick.open = false
 	if p.sel < 0 || p.sel >= p.rows.len || p.ci < 0 || p.ci >= app.proj.channels.len {
-		return
-	}
-	if p.sel == p.current {
 		return
 	}
 	dbs := app.proj.channels[p.ci].databases
@@ -164,6 +159,9 @@ fn (mut app App) arxml_pick_confirm() {
 	} else {
 		// the fragment rides on the RESOLVED path: rel_path asks the file system about it
 		rel_path(p.path) + '#' + bus
+	}
+	if ref == p.before {
+		return // the cluster the entry already names, under the name it already has
 	}
 	app.drop_replay_scan(p.ci) // the census on display was attributed through the OLD databases
 	app.commit_cfg()
