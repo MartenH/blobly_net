@@ -176,8 +176,8 @@ fn (mut app App) arxml_pick_confirm() {
 		f, _ := candb.split_database_ref(p.before)
 		f + '#' + bus
 	} else {
-		// the fragment rides on the RESOLVED path: rel_path asks the file system about it
-		rel_path(p.path) + '#' + bus
+		// the fragment rides on the RESOLVED path: asset_ref asks the file system about it
+		app.asset_ref(p.path) + '#' + bus
 	}
 	if ref == p.before {
 		return // the cluster the entry already names, under the name it already has

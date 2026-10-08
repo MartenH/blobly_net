@@ -166,7 +166,7 @@ fn (mut app App) arxml_import_confirm() bool {
 	// the panel's unsaved edits first: import_arxml names the new rows clear of the existing ones
 	app.commit_cfg()
 	chans, notes := project.import_arxml(ui.a, project.ArxmlImport{
-		ref:      rel_path(ui.path)
+		ref:      app.asset_ref(ui.path)
 		clusters: plans
 		sut:      sut
 		restbus:  ui.restbus

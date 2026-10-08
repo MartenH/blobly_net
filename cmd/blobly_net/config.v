@@ -12,22 +12,21 @@ import sysview
 import sim
 import vgui
 
-// rel_path makes an absolute path relative to the cwd when it lives under it, so a saved
-// project references e.g. `dbc/foo.dbc` rather than an absolute machine-specific path.
-// Separators are normalized to `/` first, so it also works for the file browser's
-// backslash paths on Windows (and the stored `.blobnet` path stays portable).
 // cfg_address_cap is the size of an address field, the editor's and the import dialog's alike:
 // an address the import accepts must fit the field that holds it afterwards, or the next commit
 // truncates it.
 const cfg_address_cap = 64
 
-fn rel_path(p string) string {
-	np := p.replace('\\', '/')
-	cwd := os.getwd().replace('\\', '/')
-	if np.starts_with(cwd + '/') {
-		return np[cwd.len + 1..]
-	}
-	return np
+// asset_ref is how this project names a file a picker chose: relative to the project's own
+// directory (project.asset_ref), so it resolves wherever the program is started (#440). It was
+// relative to the working directory, which named the file only from there.
+fn (app &App) asset_ref(path string) string {
+	return project.asset_ref(app.proj_dir(), path)
+}
+
+// proj_dir is the project's directory, '' while the project has never been saved.
+fn (app &App) proj_dir() string {
+	return if app.proj_path == '' { '' } else { os.dir(app.proj_path) }
 }
 
 // parse_u16_hex reads a 16-bit address ("0x"-hex or bare hex). Any malformed input — empty,
@@ -1087,7 +1086,7 @@ fn (mut app App) add_dbc(ci int, path string) {
 	}
 	app.drop_replay_scan(ci) // the census on display was attributed through the OLD databases
 	app.commit_cfg()
-	app.proj.channels[ci].databases << rel_path(path)
+	app.proj.channels[ci].databases << app.asset_ref(path)
 	app.dirty = true
 	app.sync_cfg_bufs()
 	app.rebuild_preserving_senders()
@@ -1113,7 +1112,7 @@ fn (mut app App) set_manifest(ci int, path string) {
 		return
 	}
 	app.commit_cfg()
-	app.proj.channels[ci].manifest = rel_path(path)
+	app.proj.channels[ci].manifest = app.asset_ref(path)
 	app.dirty = true
 	app.sync_cfg_bufs()
 	app.rebuild_preserving_senders()
@@ -1146,7 +1145,7 @@ fn (mut app App) update_replay(ci int, f fn (project.Replay) project.Replay) {
 // All of it lands in app.proj with dirty set, so Save writes the .blobnet: these are project
 // edits, not runtime ones.
 fn (mut app App) set_replay_source(ci int, path string) {
-	rel := rel_path(path)
+	rel := app.asset_ref(path)
 	app.update_replay(ci, fn [rel] (old project.Replay) project.Replay {
 		return project.Replay{
 			...old
@@ -1645,6 +1644,12 @@ fn (mut app App) save_as(path string) {
 	// model but defers the runtime rebuild until the guard passes.
 	prev_path := app.proj_path
 	before := app.saved_at
+	// References are relative to the project's directory (#440), so a project saved somewhere else
+	// names its files from there: rebased BEFORE the write, and the buffers re-synced, or the
+	// commit inside save_project copies the old manifest and replay source back from them.
+	chans_before := app.proj.channels.clone()
+	app.proj.rebase_assets(app.proj_dir(), os.dir(p))
+	app.sync_cfg_bufs()
 	app.proj_path = p
 	app.proj.name = app.proj_name
 	app.save_project()
@@ -1652,6 +1657,9 @@ fn (mut app App) save_as(path string) {
 		// The Save As did not write (Project.save failed after the runtime was rebuilt against the
 		// destination). Restore the path and rebuild WITH the sender-preserving helper, so unsaved
 		// generator edits are not discarded merely because the destination was refused (codex #268).
+		// The references go back to naming their files from the old directory with it.
+		app.proj.channels = chans_before
+		app.sync_cfg_bufs()
 		app.proj_path = prev_path
 		if !app.running {
 			app.rebuild_preserving_senders()

@@ -328,6 +328,14 @@ and — like every dialog (Configuration, Discover, Preferences) — it cannot
 leave the main window: dragged past an edge it parks there, and it is never given an OS
 window of its own the way a torn-off panel is (`vgui.begin_dialog`).
 
+**What a picked file is written as** (#440): relative to the project's own directory
+(`project.asset_ref` — `../dbc/x.dbc` for a project in `projects/`), so it resolves wherever the
+program is started; absolute where the two share nothing but the root; and, for a project never
+saved, relative to the working directory as before. **Save As rebases** every reference that
+resolved against the old directory (`Project.rebase_assets`: databases, the manifest, a replay
+source) so it names the same file from the new one; an absolute reference, or one that resolves
+only from the working directory, is left as written.
+
 ## Configuration editor — the Bus fields
 
 Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
