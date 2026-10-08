@@ -604,6 +604,10 @@ channels:
       - "db/net.arxml#Chassis"
       - dbc/x.dbc   # see db/net.arxml#Body
       - db/my network.arxml#Body	# a real comment
+  - name: CAN3
+    interface: inproc:CAN3
+    databases:
+      - db/net.arxml#Chassis
   - name: CAN2
     interface: inproc:CAN2
     databases: ["db/net.arxml#Body"]
@@ -613,21 +617,29 @@ channels:
 	p := parse(y)!
 	assert p.channels[0].databases == ['db/net.arxml', 'db/net.arxml#Chassis', 'dbc/x.dbc',
 		'db/my network.arxml']
-	assert p.channels[1].databases == ['db/net.arxml#Body']
+	assert p.channels[2].databases == ['db/net.arxml#Body']
 	assert p.notes == [
-		'line 8: `db/net.arxml#Body` is read as `db/net.arxml` and a comment — quote it: "db/net.arxml#Body"',
-		'line 11: `db/my network.arxml#Body` is read as `db/my network.arxml` and a comment — quote it: "db/my network.arxml#Body"',
+		'CAN1: database `db/net.arxml#Body` is read as `db/net.arxml` and a comment — quote it: "db/net.arxml#Body"',
+		'CAN1: database `db/my network.arxml#Body` is read as `db/my network.arxml` and a comment — quote it: "db/my network.arxml#Body"',
+		'CAN3: database `db/net.arxml#Chassis` is read as `db/net.arxml` and a comment — quote it: "db/net.arxml#Chassis"',
 	]
 }
 
-// `databases:` written inside a block scalar is text: no note, wherever the block sits.
-fn test_unquoted_fragment_in_block_scalar_is_not_noted() {
+// `databases:` anywhere but a channel's own list — a block scalar, a mapping the parser
+// ignores — is not an entry: no note, whatever it says.
+fn test_unquoted_fragment_outside_a_channel_is_not_noted() {
 	y := 'project:
   name: t
+  extra:
+    databases:
+      - db/net.arxml#Body
 channels:
   - name: CAN1
     interface: inproc:CAN1
     script: |
+      databases:
+        - db/net.arxml#Body
+    notes:
       databases:
         - db/net.arxml#Body
     databases:

@@ -208,6 +208,14 @@ fn rate_cell(cluster int, row int) string {
 	return if cluster > 0 && row > 0 && cluster != row { '${t} (row ${rate_text(row)})' } else { t }
 }
 
+// data_cell is rate_cell for the data phase, where 0 means classic: a classic cluster on an FD
+// row, or the reverse, is the mismatch that matters most, so it is named rather than blank.
+fn data_cell(cluster int, row int) string {
+	c := if cluster > 0 { rate_text(cluster) } else { 'classic' }
+	r := if row > 0 { rate_text(row) } else { 'classic' }
+	return if c != r { '${c} (row ${r})' } else { c }
+}
+
 fn draw_arxml_pick(mut app App) {
 	id := 'CAN cluster##arxmlpick'
 	if !app.arxml_pick.open {
@@ -224,7 +232,7 @@ fn draw_arxml_pick(mut app App) {
 		app.arxml_pick.popped = true
 	}
 	sc := app.prefs.ui_scale
-	vgui.set_next_window(180, 120, 760, 190 + 26 * f32(app.arxml_pick.rows.len))
+	vgui.set_next_window(180, 120, 820, 190 + 26 * f32(app.arxml_pick.rows.len))
 	if !vgui.begin_popup_modal(id) {
 		app.arxml_pick.open = false
 		app.arxml_pick.popped = false
@@ -236,9 +244,9 @@ fn draw_arxml_pick(mut app App) {
 	vgui.text('${os.file_name(p.path)} describes ${n}. Which one is ${p.chan} (${rate_text(p.rate)}, ${fd})?')
 	vgui.text_dim('A channel is one bus: it reads the frames of the cluster picked here.')
 	if vgui.table_begin_flat('##arxml_clusters', 5) {
-		vgui.table_setup_col('cluster', 180 * sc)
+		vgui.table_setup_col('cluster', 160 * sc)
 		vgui.table_setup_col('bitrate', 120 * sc)
-		vgui.table_setup_col('data rate', 120 * sc)
+		vgui.table_setup_col('data rate', 170 * sc)
 		vgui.table_setup_col('frames', 60 * sc)
 		vgui.table_setup_col('already on', 0)
 		vgui.table_headers()
@@ -250,7 +258,7 @@ fn draw_arxml_pick(mut app App) {
 			}
 			vgui.set_item_tooltip(r.path)
 			vgui.table_cell(rate_cell(r.rate, p.rate))
-			vgui.table_cell(rate_cell(r.fd_rate, p.fd_rate))
+			vgui.table_cell(data_cell(r.fd_rate, p.fd_rate))
 			vgui.table_cell('${r.frames}')
 			mut on := r.used_by.clone()
 			if r.this_row {

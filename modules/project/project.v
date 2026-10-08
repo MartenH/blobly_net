@@ -870,98 +870,50 @@ pub fn parse(text string) !Project {
 	return p
 }
 
-// is_block_scalar_start reports a line whose value opens a literal or folded block (`key: |`,
-// `- >-`, `key: |2 # c`): the lines indented under it are text, not YAML structure.
-fn is_block_scalar_start(v string) bool {
-	mut val := v
-	if k := v.index(': ') {
-		val = v[k + 2..]
-	} else if v.starts_with('- ') {
-		val = v[2..]
-	} else {
-		return false
-	}
-	val = val.all_before(' #').trim_space()
-	if val.len == 0 || val[0] !in [`|`, `>`] {
-		return false
-	}
-	for c in val[1..] {
-		if c !in [`-`, `+`] && !c.is_digit() {
-			return false
-		}
-	}
-	return true
-}
+const fragment_mark = '__BLOBLY_ARXML_FRAGMENT__'
 
-// unquoted_fragment_notes names every `x.arxml#Cluster` item of a `databases:` block sequence
-// written without quotes: vlib's yaml reads the `#` as a comment (docs/known_issues.md), so the
-// entry loads as the bare file, which a multi-cluster ARXML refuses as naming no cluster — a
-// refusal that says nothing of quoting. Builds before the writer quoted `#` saved the
-// Configuration panel's pick this way. The block form is the one the writer and the docs use;
-// a flow sequence (`[...]`) quotes or not on its own and is not looked at.
-// A hit must also be what the parser produced — the bare file in some channel's databases —
-// and text inside a block scalar (`script: |`) is skipped, since neither is an entry.
+// unquoted_fragment_notes names every channel database entry that lost its `#Cluster` to an
+// unquoted `#`: vlib's yaml reads `net.arxml#Body` as `net.arxml` and a comment
+// (docs/known_issues.md), so the entry loads as the bare file, which a multi-cluster ARXML
+// refuses as naming no cluster — a refusal that says nothing of quoting. Builds before the
+// writer quoted `#` saved the Configuration panel's pick this way. Asked of the PARSER, not of
+// the text: the file is parsed again with each `.arxml#` spelled without a `#`, and an entry
+// that differs between the two reads is one the comment rule cut.
 fn unquoted_fragment_notes(text string, chans []Channel) []string {
-	mut loaded := map[string]bool{}
-	for ch in chans {
-		for d in ch.databases {
-			loaded[d] = true
-		}
+	low := text.to_lower()
+	if !low.contains('.arxml#') {
+		return []
 	}
+	mut marked := []u8{cap: text.len + 64}
+	mut i := 0
+	for i < text.len {
+		if low[i] == `#` && i >= 6 && low[i - 6..i] == '.arxml' {
+			marked << fragment_mark.bytes()
+		} else {
+			marked << text[i]
+		}
+		i++
+	}
+	doc := yaml.parse_text(marked.bytestr()) or { return [] }
+	chs := doc.value_opt('buses') or { doc.value_opt('channels') or { return [] } }
 	mut out := []string{}
-	mut in_dbs := -1 // the indent of the `databases:` key whose items follow; -1 outside one
-	mut in_block := -1 // the indent of the key a block scalar belongs to; -1 outside one
-	for n, raw in text.split_into_lines() {
-		v := raw.trim_space()
-		if v == '' {
+	mut ci := -1 // the index parse gave this node: it skips the null ones too
+	for c in chs.array() {
+		if c is yaml.Null {
 			continue
 		}
-		indent := raw.len - raw.trim_left(' \t').len
-		if in_block >= 0 {
-			if indent > in_block {
-				continue
-			}
-			in_block = -1
+		ci++
+		if ci >= chans.len {
+			break
 		}
-		if v.starts_with('#') {
-			continue
-		}
-		if is_block_scalar_start(v) {
-			in_block = indent
-			continue
-		}
-		if in_dbs >= 0 && indent <= in_dbs && !v.starts_with('- ') {
-			in_dbs = -1
-		}
-		if v == 'databases:' || v.starts_with('databases: #') || v.starts_with('databases:\t') {
-			in_dbs = indent
-			continue
-		}
-		if in_dbs < 0 || !v.starts_with('- ') {
-			continue
-		}
-		item := v[2..].trim_space()
-		if item.len == 0 || item[0] in [`"`, `'`, `[`, `{`] {
-			continue
-		}
-		at := item.to_lower().index('.arxml#') or { continue }
-		if item.index_u8(`#`) != at + 6 {
-			continue // an earlier `#` is where the parser cut: this one is in the comment
-		}
-		if !loaded[item[..at + 6]] {
-			continue
-		}
-		// the scalar ends at a REAL comment: whitespace then `#`, past the fragment's own
-		mut end := item.len
-		for i := at + 7; i < item.len; i++ {
-			if item[i] == `#` && item[i - 1] in [` `, `\t`] {
-				end = i
-				break
+		dbs := c.value_opt('databases') or { continue }
+		for k, d in dbs.array().as_strings() {
+			want := d.replace(fragment_mark, '#')
+			if k < chans[ci].databases.len && want != d && chans[ci].databases[k] != want {
+				out << '${chans[ci].name}: database `${want}` is read as `${chans[ci].databases[k]}` and a comment — quote it: "${want.replace('"',
+					'\\"')}"'
 			}
 		}
-		ref := item[..end].trim_space()
-		quoted := '"' + ref.replace('\\', '\\\\').replace('"', '\\"') + '"'
-		out << 'line ${n + 1}: `${ref}` is read as `${item[..at + 6]}` and a comment — quote it: ${quoted}'
 	}
 	return out
 }
