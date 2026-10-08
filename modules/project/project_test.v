@@ -879,7 +879,11 @@ fn test_rate_conflict_actually_fires() {
 		},
 	]
 	legacy_got := destination_conflicts(legacy)
-	assert legacy_got.len == 1, 'one wire, two rates in the interfaces: ${legacy_got}'
+	// the cross-row disagreement is the point here; each row is ALSO refused on its own since
+	// classic rows are asked (#441), because a rate in the address doubles the one the bitrate
+	// field adds — a state the loader never produces (it lifts the rate) but typing one does
+	one_wire := legacy_got.filter(it.contains(' share '))
+	assert one_wire.len == 1, 'one wire, two rates in the interfaces: ${legacy_got}'
 }
 
 // Listen-only is enforced on every backend since #117, so a disagreement about it is a conflict
@@ -1800,3 +1804,29 @@ fn test_a_bad_eth_spelling_is_refused_not_carried() {
 }
 
 
+
+// A classic row is asked too: a rate the backend opens from a fixed table it does not have is
+// refused in the editor, not at Start (codex on #441).
+fn test_address_config_error_asks_classic_rows() {
+	for adapter, addr in {
+		'kvaser': '0'
+		'pcan':   'PCAN_USBBUS1'
+	} {
+		odd := Channel{
+			adapter: adapter
+			address: addr
+			iface:   compose_iface(adapter, addr)
+			bitrate: 333333
+		}
+		if why := odd.address_config_error() {
+			assert why.contains('333333'), why
+		} else {
+			assert false, '${adapter} classic 333333 accepted'
+		}
+		ok := Channel{
+			...odd
+			bitrate: 250000
+		}
+		assert ok.address_config_error() == none
+	}
+}

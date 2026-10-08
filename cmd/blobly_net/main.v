@@ -264,6 +264,16 @@ fn main() {
 	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
+	// Open Import ARXML on a file, and (BLOBLY_IMPORT_ARXML_GO) press Import with its defaults,
+	// for the screenshot harness, which can neither drive the picker nor click.
+	if imp := os.getenv_opt('BLOBLY_IMPORT_ARXML') {
+		if imp != '' {
+			app.open_arxml_import(imp)
+			if os.getenv('BLOBLY_IMPORT_ARXML_GO') != '' && app.arxml_import_confirm() {
+				app.arxml_import.open = false
+			}
+		}
+	}
 	// Attach a database to the first bus, the way + Add DBC would — the picker cannot be driven
 	// headless, and a multi-cluster ARXML opens the cluster dialog from there.
 	if db := os.getenv_opt('BLOBLY_ATTACH_DB') {
@@ -467,6 +477,9 @@ fn main() {
 		}
 		if app.arxml_pick.open || app.arxml_pick.popped {
 			draw_arxml_pick(mut app)
+		}
+		if app.arxml_import.open || app.arxml_import.popped {
+			draw_arxml_import(mut app)
 		}
 		// AFTER the panels: draw_gen is where a generator's name and key buffers are copied into
 		// the sender, so a Ctrl+S polled before it saved the previous value and then read clean

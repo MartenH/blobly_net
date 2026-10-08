@@ -16,6 +16,11 @@ import vgui
 // project references e.g. `dbc/foo.dbc` rather than an absolute machine-specific path.
 // Separators are normalized to `/` first, so it also works for the file browser's
 // backslash paths on Windows (and the stored `.blobnet` path stays portable).
+// cfg_address_cap is the size of an address field, the editor's and the import dialog's alike:
+// an address the import accepts must fit the field that holds it afterwards, or the next commit
+// truncates it.
+const cfg_address_cap = 64
+
 fn rel_path(p string) string {
 	np := p.replace('\\', '/')
 	cwd := os.getwd().replace('\\', '/')
@@ -70,7 +75,7 @@ fn (mut app App) sync_cfg_bufs() {
 		app.cfg_bufs << CfgBuf{
 			name_buf:         mkbuf(ch.name, 48)
 			network_buf:      mkbuf(ch.network, 48)
-			address_buf:      mkbuf(ch.address, 64)
+			address_buf:      mkbuf(ch.address, cfg_address_cap)
 			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
 			dbitrate_buf:     mkbuf(if ch.data_bitrate > 0 { '${ch.data_bitrate}' } else { '' }, 12)
 			manifest_buf:     mkbuf(ch.manifest, 128)
@@ -222,8 +227,11 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 // logical addresses and VIN); the name is made unique here, the interface composed, the
 // listen-only default applied.
 fn (mut app App) add_channel(spec project.Channel) {
-	adapter := spec.adapter
-	address := spec.address
+	app.add_channels([spec])
+}
+
+// add_channels is add_channel for several rows at once, with one rebuild after the last.
+fn (mut app App) add_channels(specs []project.Channel) {
 	app.commit_cfg()
 	// APPENDING A ROW IS AN EDIT TO THE NAMESPACE, so the same reconciliation the other edits get
 	// applies here (codex round 6 on #97). `unique_bus_name` keeps the new name clear of existing
@@ -238,23 +246,28 @@ fn (mut app App) add_channel(spec project.Channel) {
 			name:  c.name
 			iface: c.iface
 		}
-		row_map << j // the new row goes on the end; no existing row moves
+		row_map << j // the new rows go on the end; no existing row moves
 	}
-	base := if spec.name != '' {
-		spec.name
-	} else if address != '' {
-		address
-	} else {
-		adapter
-	}
-	app.proj.channels << project.Channel{
-		...spec
-		name:  app.unique_bus_name(base)
-		iface: project.compose_iface(adapter, address)
-		mode:  .normal
-		// Normal unless the adapter rule says otherwise — project.adapter_starts_silent, which
-		// answers false for every adapter since 2026-08-29 and says why.
-		listen_only: project.adapter_starts_silent(adapter)
+	for spec in specs {
+		adapter := spec.adapter
+		address := spec.address
+		base := if spec.name != '' {
+			spec.name
+		} else if address != '' {
+			address
+		} else {
+			adapter
+		}
+		app.proj.channels << project.Channel{
+			...spec
+			name:  app.unique_bus_name(base)
+			iface: project.compose_iface(adapter, address)
+			mode:  .normal
+			// Normal unless the caller or the adapter rule says otherwise — an import lifts a
+			// Vector `,silent` into the flag; project.adapter_starts_silent answers false for
+			// every adapter since 2026-08-29 and says why.
+			listen_only: spec.listen_only || project.adapter_starts_silent(adapter)
+		}
 	}
 	app.mu.lock()
 	said := app.follow_channel_edits_locked(before, row_map)
@@ -773,7 +786,7 @@ fn (mut app App) retarget_bus(i int, adapter string, address string) {
 		app.set_adapter(i, adapter)
 	}
 	old_iface := app.proj.channels[i].iface
-	app.cfg_bufs[i].address_buf = mkbuf(address, 64)
+	app.cfg_bufs[i].address_buf = mkbuf(address, cfg_address_cap)
 	app.proj.channels[i].address = address
 	// rebind_senders makes the assignment itself, for the reason it states.
 	app.rebind_senders(i, old_iface, project.compose_iface(adapter, address))

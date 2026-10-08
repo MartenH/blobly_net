@@ -459,6 +459,13 @@ pub fn content_key(path string, text string) (string, string) {
 // mtime, which a same-length rewrite within one second defeats. Process-wide, never evicted:
 // a bench holds one or two of these.
 pub fn load_arxml_file(path string) !Arxml {
+	a, _ := load_arxml_content(path)!
+	return a
+}
+
+// load_arxml_content is load_arxml_file with the SHA-256 of the bytes it read: the content key a
+// caller compares to tell whether the file changed since (the import dialog, before it writes).
+pub fn load_arxml_content(path string) !(Arxml, string) {
 	text := os.read_file(path)!
 	key, sha := content_key(path, text)
 	for {
@@ -470,7 +477,7 @@ pub fn load_arxml_file(path string) !Arxml {
 				if c.err != '' {
 					return error(c.err)
 				}
-				return c.a
+				return c.a, sha
 			}
 		}
 		if key !in arxml_cache_inflight {
@@ -504,7 +511,7 @@ pub fn load_arxml_file(path string) !Arxml {
 		a: a
 	}
 	arxml_cache_mu.unlock()
-	return a
+	return a, sha
 }
 
 // arxml_cache_hit_count is how many loads the cache answered — for the test that pins it.
