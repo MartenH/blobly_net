@@ -87,7 +87,9 @@ ARXML's **cluster...** button changes it.
 CAN cluster is put on an interface or left out, the ECUs under test are ticked, and the import
 adds one channel per mapped cluster, reading `"net.arxml#<Cluster>"`, at the cluster's rate (FD
 when the cluster carries an FD frame), with every other ECU that sends on it under `simulate:`
-when the rest-bus box is ticked. References only: frames, timing and E2E stay in the file.
+when the rest-bus box is ticked. References only: frames, timing and E2E stay in the file. The
+rates are the one thing copied, so Start warns about a channel whose rate or CAN-FD setting no
+longer matches the cluster it reads, as a reissued extract can leave it.
 
 Channel `mode` is `normal` (the default; older files say `monitor`, which loads the same) or
 `replay`. There is no `off` any more — untick the row instead; an older file's `mode: off` loads

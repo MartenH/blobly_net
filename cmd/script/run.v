@@ -152,6 +152,9 @@ fn main() {
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
+	for w in project.arxml_rate_warnings(proj.channels, os.dir(proj_path)) {
+		eprintln('warning: ${w}')
+	}
 	// NOT someip_endpoint_warnings HERE. That warning is about rows this front end BINDS, and
 	// the headless runner binds none: a SOME/IP row is a declaration a suite may listen on by
 	// name, one window at a time, and the claim registry refuses a second. Emitting it here told

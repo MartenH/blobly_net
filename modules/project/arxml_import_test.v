@@ -218,3 +218,62 @@ fn test_import_address_rules() {
 		assert err.msg().starts_with('Chassis on kvaser 0: unsupported Kvaser CAN-FD arbitration bitrate 250000')
 	}
 }
+
+// At Start, a row whose rate or format no longer matches its cluster is said — the reissued
+// extract that changed a bus — and a row that matches, a disabled row, or a reference that does
+// not load is not.
+fn test_arxml_rate_warnings() {
+	dir := os.join_path(os.vtmp_dir(), 'arxml_rates_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	src := os.read_file(os.join_path(@VMODROOT, 'dbc', 'example.arxml'))!
+	os.write_file(os.join_path(dir, 'net.arxml'), src)!
+	// the same file with its one FD frame made classic: a cluster that carries no FD frame
+	os.write_file(os.join_path(dir, 'classic.arxml'), src.replace('>CAN-FD</', '>CAN-20</'))!
+	body := Channel{
+		name:         'Body'
+		iface:        'inproc:Body'
+		typ:          'canfd'
+		fd:           true
+		bitrate:      500000
+		data_bitrate: 2000000
+		databases:    ['net.arxml#Body']
+	}
+	assert arxml_rate_warnings([body], dir) == []
+	assert arxml_rate_warnings([Channel{
+		...body
+		bitrate: 250000
+	}], dir) == ['Body runs at 250000 bit/s but Body (net.arxml) is 500000 bit/s']
+	assert arxml_rate_warnings([Channel{
+		...body
+		typ:          'can'
+		fd:           false
+		data_bitrate: 0
+	}], dir) == ['Body is classic but Body (net.arxml) carries CAN-FD frames, which a classic channel cannot carry']
+	assert arxml_rate_warnings([Channel{
+		...body
+		data_bitrate: 4000000
+	}], dir) == ['Body runs its data phase at 4000000 bit/s but Body (net.arxml) states 2000000 bit/s']
+	assert arxml_rate_warnings([Channel{
+		...body
+		databases: ['classic.arxml#Body']
+	}], dir) == ['Body is CAN-FD but Body (classic.arxml) carries no CAN-FD frame; frames this app originates on it go out as CAN-FD']
+	// the bare file reads its only cluster, as the loader does
+	assert arxml_rate_warnings([Channel{
+		...body
+		bitrate:   1000000
+		databases: ['net.arxml']
+	}], dir).len == 1
+	assert arxml_rate_warnings([Channel{
+		...body
+		bitrate: 250000
+		enabled: false
+	}], dir) == []
+	assert arxml_rate_warnings([Channel{
+		...body
+		bitrate:   250000
+		databases: ['missing.arxml#Body', 'net.arxml#Nope', 'x.dbc']
+	}], dir) == []
+}

@@ -1,6 +1,7 @@
 module project
 
 import candb
+import os
 import transport
 
 // An ARXML describes a system: its CAN clusters, their rates, the ECUs on each. A project adds
@@ -201,4 +202,41 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 		out << ch
 	}
 	return out, notes
+}
+
+// arxml_rate_warnings names every enabled row whose rate or CAN-FD setting disagrees with the
+// ARXML cluster it reads (#439). An import copies the rates into the row, because the interface
+// is where they live, so a reissued extract that changes a bus's rate leaves the row behind —
+// and a wire at the wrong rate is no traffic at all on hardware. Said at Start, by both front
+// ends, rather than refused: a bench may run a bus at another rate on purpose. A reference that
+// does not load is the database loader's to report, so it is skipped here; `dir` is the project's
+// directory, which references resolve against.
+pub fn arxml_rate_warnings(chs []Channel, dir string) []string {
+	mut out := []string{}
+	for ch in chs {
+		if !ch.enabled || ch.is_eth() {
+			continue
+		}
+		for ref in ch.databases {
+			if !candb.is_arxml_ref(ref) {
+				continue
+			}
+			file, frag := candb.split_database_ref(resolve_asset(dir, ref))
+			a := candb.load_arxml_file(file) or { continue }
+			c := a.cluster(frag) or { continue }
+			r := arxml_cluster_rates(c)
+			what := '${c.bus} (${os.file_name(file)})'
+			if !r.no_baudrate && ch.nominal_bitrate() != r.bitrate {
+				out << '${ch.name} runs at ${ch.nominal_bitrate()} bit/s but ${what} is ${r.bitrate} bit/s'
+			}
+			if r.fd && !ch.fd {
+				out << '${ch.name} is classic but ${what} carries CAN-FD frames, which a classic channel cannot carry'
+			} else if !r.fd && ch.fd {
+				out << '${ch.name} is CAN-FD but ${what} carries no CAN-FD frame; frames this app originates on it go out as CAN-FD'
+			} else if r.fd && r.data_bitrate > 0 && ch.data_rate() != r.data_bitrate {
+				out << '${ch.name} runs its data phase at ${ch.data_rate()} bit/s but ${what} states ${r.data_bitrate} bit/s'
+			}
+		}
+	}
+	return out
 }
