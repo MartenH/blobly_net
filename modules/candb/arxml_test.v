@@ -2143,3 +2143,30 @@ fn test_self_review_of_the_leaf_table() {
 	mc := mode_bad.cluster('') or { panic(err) }
 	assert mc.e2e_signals(mc.db.messages[0]) == none
 }
+
+// The bus line in each shape a cluster can have: a classic cluster (no data-phase line), one that
+// declares an FD data rate it carries no frame for (said), one stating no baudrate (no
+// `bitrate = 0` offered for copying), and FD with no data rate stated.
+fn test_frame_toml_bus_line_shapes() {
+	fd_frames := {
+		'1|false': ArxmlFrame{
+			fd: true
+		}
+	}
+	line := fn (c ArxmlCluster) string {
+		return c.frame_toml('').split_into_lines().filter(it.starts_with('#   ')).join('\n')
+	}
+	assert line(ArxmlCluster{
+		bus:      'B'
+		baudrate: 250000
+	}) == '#   ecu.toml     [bus.B]  fd = false\n#   system.toml  [bus.B]  fd = false, bitrate = 250000'
+	assert line(ArxmlCluster{
+		bus:         'B'
+		baudrate:    500000
+		fd_baudrate: 2000000
+	}) == '#   ecu.toml     [bus.B]  fd = false\n#   system.toml  [bus.B]  fd = false, bitrate = 500000\n#   (it declares a CAN-FD data rate, 2000000 bit/s, but carries no CAN-FD frame)'
+	assert line(ArxmlCluster{
+		bus:    'B'
+		frames: fd_frames
+	}) == '#   ecu.toml     [bus.B]  fd = true\n#   system.toml  [bus.B]  fd = true'
+}

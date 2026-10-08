@@ -106,7 +106,15 @@ fn main() {
 	if list {
 		names := a.cluster_names()
 		for ci, c in a.clusters {
-			fd := if c.fd_baudrate > 0 { ' fd ${c.fd_baudrate}' } else { '' }
+			// FD by the frames (carries_fd), as the fragment and the project import say it; a
+			// declared CAN-FD baudrate on a cluster carrying none is named as only that
+			fd := if !c.carries_fd() {
+				if c.fd_baudrate > 0 { ' classic (declares fd ${c.fd_baudrate})' } else { '' }
+			} else if c.fd_baudrate > 0 {
+				' fd ${c.fd_baudrate}'
+			} else {
+				' fd (no data rate stated)'
+			}
 			// the first column is what --cluster takes: the SHORT-NAME, or the path when two
 			// packages share one
 			println('${names[ci]}\t${c.baudrate}${fd}\t${c.db.messages.len} messages\t${c.db.nodes.len} nodes\t${c.path}')

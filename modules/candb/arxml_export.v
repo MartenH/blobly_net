@@ -233,6 +233,8 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 	b << '#   system.toml  [bus.${c.bus}]  fd = ${fd}${rate}'
 	if fd && c.fd_baudrate > 0 {
 		b << '#   (the data phase, ${c.fd_baudrate} bit/s, has a key in neither: the platform sets it)'
+	} else if !fd && c.fd_baudrate > 0 {
+		b << '#   (it declares a CAN-FD data rate, ${c.fd_baudrate} bit/s, but carries no CAN-FD frame)'
 	}
 	mut msgs := c.db.messages.clone()
 	msgs.sort_with_compare(message_order)
