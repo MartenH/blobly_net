@@ -250,14 +250,19 @@ pub fn arxml_rate_findings(chs []Channel, dir string, find DatabaseLoad) []RowWa
 		if ch.is_eth() {
 			continue
 		}
+		mut checked := map[string]bool{} // this row's: a cluster listed twice is one statement
 		for ref in ch.databases {
 			if !candb.is_arxml_ref(ref) {
 				continue
 			}
 			resolved := resolve_asset(dir, ref)
 			// by canonical reference (real path + #Cluster): two spellings of one cluster of one
-			// file are looked up once
+			// file are looked up once, and said once per row
 			key := candb.canonical_database_ref(resolved)
+			if key in checked {
+				continue
+			}
+			checked[key] = true
 			if key !in seen {
 				seen[key] = true
 				if db := find(resolved) {

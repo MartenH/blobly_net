@@ -322,6 +322,12 @@ fn test_arxml_rate_warnings() {
 		return load_for_test(ref)
 	})
 	assert asked.n == 1
+	// and a row naming one cluster twice is warned about once
+	assert w([Channel{
+		...body
+		bitrate:   250000
+		databases: ['net.arxml#Body', '../${os.file_name(dir)}/net.arxml#Body']
+	}]).len == 1
 	// silent: a cluster stating no baudrate, a disabled row, an Ethernet row, and what does not load
 	assert w([Channel{
 		...body
