@@ -298,6 +298,19 @@ fn (s &Server) did_spec(id u16) ?DidSpec {
 	return none
 }
 
+// written_size: the size a 0x2E to DID `id` must carry on this described server; none when the
+// DID is not writable (or the server is not described).
+pub fn (s &Server) written_size(id u16) ?int {
+	if !s.described {
+		return none
+	}
+	d := s.did_spec(id) or { return none }
+	if !d.writable {
+		return none
+	}
+	return d.data.len
+}
+
 // unreadable_at_start: why a fresh tester — default session, nothing unlocked — cannot read DID
 // `id` with 0x22 from this described server; none when it can (or the server is not described).
 pub fn (s &Server) unreadable_at_start(id u16) ?string {

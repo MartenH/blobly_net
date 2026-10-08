@@ -680,3 +680,42 @@ fn test_a_described_vin_write_takes_the_servers_size_check() {
 	assert host.handle(vin) == [u8(0x6E), 0xF1, 0x90]
 	assert host.server.dids[u16(0xF190)].bytestr() == 'BLOBLYSYSNODE0001'
 }
+
+// a VIN written at the declared size must be one discovery can announce
+fn test_an_entity_whose_vin_is_writable_at_another_size_is_refused() {
+	mut sys := dx_load('vin18')
+	for i, n in sys.nodes {
+		if n.name == 'sysnode' {
+			mut desc := n.desc
+			desc.dids = desc.dids.map(if it.id == 0xF190 {
+				sysview.DidDesc{
+					...it
+					text:       'BLOBLYSYSNODEH7350'
+					size:       18
+					write:      'extended'
+					write_gate: sysview.Gate{
+						declared: true
+						sessions: ['extended']
+					}
+				}
+			} else {
+				it
+			})
+			sys.nodes[i] = sysview.SysNode{
+				...n
+				desc: desc
+			}
+		}
+	}
+	ch := project.Channel{
+		name:     'DoIP1'
+		typ:      'doip'
+		iface:    'doip:127.0.0.1:13400'
+		ecu_addr: 0x07A0
+	}
+	doip_entity_described(ch, [], &sys, []) or {
+		assert err.msg().contains('writable at 18 bytes'), err.msg()
+		return
+	}
+	assert false, 'an entity whose VIN write would split served from announced was started'
+}
