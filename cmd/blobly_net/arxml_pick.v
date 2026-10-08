@@ -111,7 +111,16 @@ fn (mut app App) pick_arxml_cluster(ci int, di int) {
 		app.notify('${os.file_name(f)}: ${err}')
 		return
 	}
-	if a.clusters.len < 2 {
+	// one cluster is a choice only when the entry names something else: a regenerated file
+	// whose sole cluster was renamed leaves a fragment that no longer loads
+	mut stale := false
+	if frag != '' {
+		if _ := a.cluster(frag) {
+		} else {
+			stale = true
+		}
+	}
+	if a.clusters.len == 0 || (a.clusters.len == 1 && !stale) {
 		what := if a.clusters.len == 0 { 'no CAN cluster' } else { 'one CAN cluster' }
 		app.notify('${os.file_name(f)} describes ${what}: there is nothing to choose')
 		return
@@ -201,7 +210,8 @@ fn draw_arxml_pick(mut app App) {
 	}
 	p := app.arxml_pick
 	fd := if p.fd_rate > 0 { 'CAN-FD ${rate_text(p.fd_rate)}' } else { 'classic' }
-	vgui.text('${os.file_name(p.path)} describes ${p.rows.len} CAN clusters. Which one is ${p.chan} (${rate_text(p.rate)}, ${fd})?')
+	n := if p.rows.len == 1 { 'one CAN cluster' } else { '${p.rows.len} CAN clusters' }
+	vgui.text('${os.file_name(p.path)} describes ${n}. Which one is ${p.chan} (${rate_text(p.rate)}, ${fd})?')
 	vgui.text_dim('A channel is one bus: it reads the frames of the cluster picked here.')
 	if vgui.table_begin_flat('##arxml_clusters', 5) {
 		vgui.table_setup_col('cluster', 180 * sc)
