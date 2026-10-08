@@ -866,7 +866,39 @@ pub fn parse(text string) !Project {
 	// A pre-v4 file's `bus:` values were written under interface-first semantics; convert them
 	// once, here, so nothing downstream has to know there was ever another rule (#97).
 	p.notes = migrate_legacy_sender_buses(mut p, declared)
+	p.notes << unquoted_fragment_notes(text)
 	return p
+}
+
+// unquoted_fragment_notes names every `x.arxml#Cluster` value written without quotes: vlib's
+// yaml reads the `#` as a comment (docs/known_issues.md), so the entry loads as the bare file,
+// which a multi-cluster ARXML refuses as naming no cluster — a refusal that says nothing of
+// quoting. Builds before the writer quoted `#` saved the Configuration panel's pick this way.
+fn unquoted_fragment_notes(text string) []string {
+	mut out := []string{}
+	for n, raw in text.split_into_lines() {
+		mut v := raw.trim_space()
+		if v.starts_with('#') {
+			continue
+		}
+		v = v.trim_string_left('- ')
+		if k := v.index(': ') {
+			v = v[k + 2..].trim_space()
+		}
+		if v.starts_with('"') || v.starts_with("'") {
+			continue
+		}
+		at := v.to_lower().index('.arxml#') or { continue }
+		// a ` #` before it starts a real comment, which may mention a reference
+		if c := v.index(' #') {
+			if c < at {
+				continue
+			}
+		}
+		end := v.index(' ') or { v.len }
+		out << 'line ${n + 1}: `${v[..end]}` is read as `${v[..at + 6]}` and a comment — quote it: "${v[..end]}"'
+	}
+	return out
 }
 
 // load reads and parses a project file.
