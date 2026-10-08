@@ -24,6 +24,13 @@ fn (app &App) asset_ref(path string) string {
 	return project.asset_ref(app.proj_dir(), path)
 }
 
+// path_cap sizes a path field: room to edit, and never less than what it holds — a reference a
+// Save As rebased (`../../…`, or absolute) can be longer than the field's usual 128, and a field
+// shorter than its value is truncated by the next commit.
+fn path_cap(s string) int {
+	return if s.len + 64 > 128 { s.len + 64 } else { 128 }
+}
+
 // proj_dir is the project's directory, '' while the project has never been saved.
 fn (app &App) proj_dir() string {
 	return if app.proj_path == '' { '' } else { os.dir(app.proj_path) }
@@ -77,13 +84,13 @@ fn (mut app App) sync_cfg_bufs() {
 			address_buf:      mkbuf(ch.address, cfg_address_cap)
 			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
 			dbitrate_buf:     mkbuf(if ch.data_bitrate > 0 { '${ch.data_bitrate}' } else { '' }, 12)
-			manifest_buf:     mkbuf(ch.manifest, 128)
+			manifest_buf:     mkbuf(ch.manifest, path_cap(ch.manifest))
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
 			group_buf:        mkbuf(ch.group, 48)
 			ecu_buf:          mkbuf('0x${ch.ecu_addr:X}', 12)
 			vin_buf:          mkbuf(ch.vin, 20)
-			replay_src_buf:   mkbuf(rsrc, 128)
+			replay_src_buf:   mkbuf(rsrc, path_cap(rsrc))
 			replay_speed_buf: mkbuf(rspeed, 12)
 		}
 	}
@@ -1646,10 +1653,25 @@ fn (mut app App) save_as(path string) {
 	before := app.saved_at
 	// References are relative to the project's directory (#440), so a project saved somewhere else
 	// names its files from there: rebased BEFORE the write, and the buffers re-synced, or the
-	// commit inside save_project copies the old manifest and replay source back from them.
-	chans_before := app.proj.channels.clone()
-	app.proj.rebase_assets(app.proj_dir(), os.dir(p))
+	// commit inside save_project copies the old manifest and replay source back from them. The
+	// runtime rows' databases too, under the lock: a run is not rebuilt by a Save As, and what
+	// reads them (a script's database, the replay and J1939 scopes) resolves them against the
+	// project path that is about to move. A slot is replaced whole (the field is immutable), and
+	// the spread writes every other field back byte for byte, so the readers that walk app.chans
+	// unlocked (bitrate_iface) see nothing change; script_db reads `databases` under the lock.
+	old_dir := app.proj_dir()
+	new_dir := os.dir(p)
+	was := app.proj.rebase_assets(old_dir, new_dir)
 	app.sync_cfg_bufs()
+	app.mu.lock()
+	run_dbs := app.chans.map(it.databases)
+	for i, c in app.chans {
+		app.chans[i] = Chan{
+			...c
+			databases: c.databases.map(project.rebase_ref(old_dir, new_dir, it))
+		}
+	}
+	app.mu.unlock()
 	app.proj_path = p
 	app.proj.name = app.proj_name
 	app.save_project()
@@ -1657,9 +1679,20 @@ fn (mut app App) save_as(path string) {
 		// The Save As did not write (Project.save failed after the runtime was rebuilt against the
 		// destination). Restore the path and rebuild WITH the sender-preserving helper, so unsaved
 		// generator edits are not discarded merely because the destination was refused (codex #268).
-		// The references go back to naming their files from the old directory with it.
-		app.proj.channels = chans_before
+		// The references go back to naming their files from the old directory with it — only
+		// them: save_project synced the generators into the channels, which stays.
+		app.proj.restore_assets(was)
 		app.sync_cfg_bufs()
+		app.mu.lock()
+		for i, dbs in run_dbs {
+			if i < app.chans.len {
+				app.chans[i] = Chan{
+					...app.chans[i]
+					databases: dbs
+				}
+			}
+		}
+		app.mu.unlock()
 		app.proj_path = prev_path
 		if !app.running {
 			app.rebuild_preserving_senders()
