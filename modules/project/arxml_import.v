@@ -222,11 +222,25 @@ pub type ArxmlLoad = fn (path string) ?candb.Arxml
 // (wire_framings), which this does not try to predict. `dir` is the project's directory, which
 // references resolve against; each file is looked up once.
 pub fn arxml_rate_warnings(chs []Channel, dir string, find ArxmlLoad) []string {
+	return arxml_rate_findings(chs, dir, find).filter(chs[it.row].enabled).map(it.text)
+}
+
+// RowWarning is one warning about the row at index `row`.
+pub struct RowWarning {
+pub:
+	row  int
+	text string
+}
+
+// arxml_rate_findings is arxml_rate_warnings for EVERY row, enabled or not, each tagged with its
+// index: what the GUI keeps from a rebuild, because a row ticked on or off while stopped changes
+// no rate and causes no rebuild, so Start filters by the enabled state it finds then.
+pub fn arxml_rate_findings(chs []Channel, dir string, find ArxmlLoad) []RowWarning {
 	mut seen := map[string]bool{}
 	mut files := map[string]candb.Arxml{}
-	mut out := []string{}
-	for ch in chs {
-		if !ch.enabled || ch.is_eth() {
+	mut out := []RowWarning{}
+	for i, ch in chs {
+		if ch.is_eth() {
 			continue
 		}
 		for ref in ch.databases {
@@ -246,22 +260,22 @@ pub fn arxml_rate_warnings(chs []Channel, dir string, find ArxmlLoad) []string {
 			what := '${c.bus} (${os.file_name(file)})'
 			if transport.adapter_configures_bitrate(ch.adapter) && !r.no_baudrate
 				&& ch.nominal_bitrate() != r.bitrate {
-				out << '${ch.name} runs at ${ch.nominal_bitrate()} bit/s but ${what} is ${r.bitrate} bit/s'
+				out << RowWarning{i, '${ch.name} runs at ${ch.nominal_bitrate()} bit/s but ${what} is ${r.bitrate} bit/s'}
 			}
 			if r.fd && !ch.fd {
-				out << '${ch.name} is configured classic but ${what} carries CAN-FD frames'
+				out << RowWarning{i, '${ch.name} is configured classic but ${what} carries CAN-FD frames'}
 			} else if !r.fd && ch.fd {
-				out << '${ch.name} is configured CAN-FD but ${what} carries no CAN-FD frame'
+				out << RowWarning{i, '${ch.name} is configured CAN-FD but ${what} carries no CAN-FD frame'}
 			} else if r.fd && r.data_bitrate > 0 {
 				if transport.adapter_configures_data_phase(ch.adapter) {
 					if ch.data_rate() != r.data_bitrate {
-						out << '${ch.name} runs its data phase at ${ch.data_rate()} bit/s but ${what} states ${r.data_bitrate} bit/s'
+						out << RowWarning{i, '${ch.name} runs its data phase at ${ch.data_rate()} bit/s but ${what} states ${r.data_bitrate} bit/s'}
 					}
 				} else if ch.origination_framing().brs != (r.data_bitrate != r.bitrate) {
 					// the rates are not this app's to set here, but they still decide BRS
 					sw := if ch.origination_framing().brs { 'switches' } else { 'does not switch' }
 					cs := if r.data_bitrate != r.bitrate { 'does' } else { 'does not' }
-					out << '${ch.name}\'s data phase ${sw} rate but ${what}\'s ${cs}'
+					out << RowWarning{i, '${ch.name}\'s data phase ${sw} rate but ${what}\'s ${cs}'}
 				}
 			}
 		}

@@ -310,6 +310,14 @@ fn test_arxml_rate_warnings() {
 		bitrate: 250000
 		enabled: false
 	}]) == []
+	// …but its finding is kept, for a front end that learns the enabled state later
+	f := arxml_rate_findings([body, Channel{
+		...body
+		name:    'Off'
+		bitrate: 250000
+		enabled: false
+	}], dir, load_for_test)
+	assert f == [RowWarning{1, 'Off runs at 250000 bit/s but Body (net.arxml) is 500000 bit/s'}]
 	assert w([Channel{
 		...body
 		adapter: 'doip'

@@ -799,7 +799,9 @@ fn (mut app App) start() {
 	// same reason: on hardware the symptom is a silent bus, not an error. Computed by the rebuild
 	// against what it loaded (rebuild_from_proj), which is what this run uses.
 	for w in app.arxml_rates_said {
-		app.notify(w)
+		if w.row < app.chans.len && app.chans[w.row].enabled {
+			app.notify(w.text)
+		}
 	}
 	// Two listeners on one endpoint, same place and same reason: said before anything binds,
 	// because afterwards both rows are green and the symptom is only missing messages.
