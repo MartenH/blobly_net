@@ -74,6 +74,16 @@ fn is_unc(p string) bool {
 	return p.starts_with('\\\\') || p.starts_with('//')
 }
 
+// absolute_anywhere is os.is_abs_path for a reference a project may have been WRITTEN on another
+// host: a Windows drive path (`C:/…`, `C:\\…`) or a UNC one is absolute whatever this host's
+// grammar says, so a Windows project Save-As'd on Linux does not rewrite one as relative.
+fn absolute_anywhere(p string) bool {
+	if os.is_abs_path(p) || is_unc(p) {
+		return true
+	}
+	return p.len >= 3 && p[0].is_letter() && p[1] == `:` && p[2] in [`/`, `\\`]
+}
+
 fn same_component(a string, b string) bool {
 	$if windows {
 		return a.to_lower() == b.to_lower()
@@ -93,8 +103,14 @@ pub fn rebase_ref(old_dir string, new_dir string, ref string) string {
 	if ref == '' {
 		return ref
 	}
-	if os.is_abs_path(ref) {
-		return if old_dir == '' { asset_ref(new_dir, ref) } else { ref }
+	if absolute_anywhere(ref) {
+		// an unsaved project's NATIVE absolute reference gets a relative spelling; a foreign one
+		// (a Windows path read on Unix, a UNC path) is this host's to leave alone
+		return if old_dir == '' && os.is_abs_path(ref) && !is_unc(ref) {
+			asset_ref(new_dir, ref)
+		} else {
+			ref
+		}
 	}
 	from_dir := resolve_asset(old_dir, ref)
 	if from_dir != ref {

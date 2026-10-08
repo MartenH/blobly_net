@@ -458,7 +458,10 @@ fn selftest_config(mut app App) {
 		ok = selftest_check('c0 adapter vcan', c0.adapter == 'vcan') && ok
 		ok = selftest_check('c0 address vcan0', c0.address == 'vcan0') && ok
 		ok = selftest_check('c0 iface vcan0', c0.iface == 'vcan0') && ok
-		ok = selftest_check('c0 dbc attached', c0.databases == ['dbc/blobly_net.dbc']) && ok
+		// the reference is the file's from the SAVED project's directory (#440): what it is
+		// spelled depends on where the temp directory sits, so ask what it resolves to
+		ok = selftest_check('c0 dbc attached', c0.databases.len == 1
+			&& os.real_path(project.resolve_asset(os.dir(tmp), c0.databases[0])) == os.real_path('dbc/blobly_net.dbc')) && ok
 		c1 := rp.channels[1]
 		ok = selftest_check('c1 name Diag', c1.name == 'Diag') && ok
 		ok = selftest_check('c1 is doip', c1.is_doip()) && ok

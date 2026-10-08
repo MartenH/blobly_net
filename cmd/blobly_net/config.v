@@ -1665,12 +1665,20 @@ fn (mut app App) save_as(path string) {
 	app.sync_cfg_bufs()
 	// the rows and the path they resolve against published TOGETHER, under one lock: script_db
 	// reads both under it, so it never pairs a rebased reference with the old directory
+	// The file-system questions the rebase asks (exists, real_path) run OUTSIDE the lock — a slow
+	// or absent mount must not stall the RX loops that need it — and the lock is held only for the
+	// swap. A row whose references changed meanwhile keeps its own.
 	app.mu.lock()
 	run_dbs := app.chans.map(it.databases)
+	app.mu.unlock()
+	rebased := run_dbs.map(it.map(project.rebase_ref(old_dir, new_dir, it)))
+	app.mu.lock()
 	for i, c in app.chans {
-		app.chans[i] = Chan{
-			...c
-			databases: c.databases.map(project.rebase_ref(old_dir, new_dir, it))
+		if i < run_dbs.len && c.databases == run_dbs[i] {
+			app.chans[i] = Chan{
+				...c
+				databases: rebased[i]
+			}
 		}
 	}
 	app.proj_path = p

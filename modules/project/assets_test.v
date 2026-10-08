@@ -213,3 +213,12 @@ fn test_unc_stays_absolute() {
 	assert asset_ref('//srv/share/proj', '//srv/share/proj/db/x.dbc') == '//srv/share/proj/db/x.dbc'
 	assert asset_ref('/home/u/proj', '\\\\srv\\share\\x.dbc') == '\\\\srv\\share\\x.dbc'
 }
+
+// A Windows project opened on Linux: its drive and UNC references are absolute whatever this
+// host's grammar says, and a Save As leaves them as written.
+fn test_foreign_absolute_references_are_left_alone() {
+	for ref in ['C:/bench/net.arxml#Body', 'C:\\bench\\x.dbc', '\\\\srv\\share\\x.dbc', '//srv/share/x.dbc'] {
+		assert rebase_ref('/home/u/old', '/home/u/new', ref) == ref
+		assert rebase_ref('', '/home/u/new', ref) == ref
+	}
+}
