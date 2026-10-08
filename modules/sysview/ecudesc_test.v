@@ -559,10 +559,11 @@ read = { session = ["default"] }
 ') or { panic(err) }
 	d := parse_ecu_desc(doc, map[string][]Field{})
 	assert d.dids.map(it.id) == [u16(0x0120), 0x0121]
-	assert d.errs == [
+	assert d.errs == []
+	assert d.warns == [
 		'did 0x0120: read gate needs security level 2 but names only the default session, where 0x27 is not served',
 		'did 0x0120: write gate needs security level 1 but names only the default session, where 0x27 is not served',
-	], d.errs.str()
+	], d.warns.str()
 }
 
 // The levels an Unlock offers first: the DIDs' gates and the `[uds] services` rows, each once.

@@ -589,6 +589,10 @@ fn draw_dtc_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 			vgui.text_colored(230, 180, 60, '${desc.desc.errs.len} entry(ies) of ${desc.node}/ecu.toml not read — hover')
 			vgui.set_item_tooltip(desc.desc.errs.join('\n'))
 		}
+		if desc.desc.warns.len > 0 {
+			vgui.text_colored(230, 180, 60, '${desc.desc.warns.len} warning(s) about entries of ${desc.node}/ecu.toml — hover')
+			vgui.set_item_tooltip(desc.desc.warns.join('\n'))
+		}
 	} else {
 		vgui.text_dim_wrapped('no description: ${desc.why}; DTCs are shown by code')
 	}

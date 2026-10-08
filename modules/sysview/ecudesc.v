@@ -130,6 +130,9 @@ pub mut:
 	// the security levels `[uds] services` rows name (a service gated behind 0x27), in file order
 	service_levels []int
 	errs   []string
+	// problems with entries that WERE read and kept (a gate that cannot be met): warnings, not
+	// omissions — `errs` is what was left out
+	warns []string
 }
 
 // security_levels is every 0x27 level the description's gates name — the DIDs' read and write
@@ -480,7 +483,7 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			'write': write_gate
 		} {
 			if why := g.contradiction() {
-				d.errs << 'did 0x${id:04X}: ${key} ${why}'
+				d.warns << 'did 0x${id:04X}: ${key} ${why}'
 			}
 		}
 		if write == '' {

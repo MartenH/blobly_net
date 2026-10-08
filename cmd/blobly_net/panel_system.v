@@ -212,6 +212,9 @@ fn draw_system(mut app App) {
 			for e in en.desc.errs {
 				vgui.text_colored(230, 180, 60, 'not read: ${e}')
 			}
+			for w in en.desc.warns {
+				vgui.text_colored(230, 180, 60, 'warning: ${w}')
+			}
 			// the single-ECU bench action: make everything else on this ECU's buses come alive.
 			// It runs rebuild_from_proj(), which clears app.chans/dbs/sims while rx, sim and
 			// generator workers iterate them lock-free — safe only when stopped AND drained.
