@@ -15,7 +15,7 @@ mut:
 	di      int    // the database entry being changed; -1 attaches a new one
 	chan    string // the row's name, for the question
 	rate    int    // the row's nominal bitrate
-	fd_rate int    // the row's data rate; 0 for a classic row
+	fd_rate int    // the row's data rate (project.Channel.data_rate); 0 for a classic row
 	before  string // the entry at `di` at open
 	path    string // the ARXML, resolved
 	rows    []ArxmlPickRow
@@ -30,21 +30,17 @@ struct ArxmlPickRow {
 	fd_rate  int
 	frames   int
 	used_by  []string // other channel rows already reading this cluster of this file
-	this_row bool     // this row reads it through another entry
+	this_row bool     // this row reads it through another entry, at open
 }
 
-// open_arxml_pick lists the clusters of `path` for entry di of channel ci (-1: a new entry);
-// `current` is the fragment the entry carries, '' for none.
-fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, current string) {
-	if app.arxml_pick.open {
-		app.notify('cluster picker for ${app.arxml_pick.chan} closed unanswered: nothing attached there')
-	}
-	// which cluster of THIS file every other entry of the project reads, resolved once
+// cluster_readers maps each cluster of `a` (by AUTOSAR path) to the rows whose entries read
+// it, skipping entry `skip_di` of row `skip_ci`.
+fn (app &App) cluster_readers(path string, a candb.Arxml, skip_ci int, skip_di int) map[string][]int {
 	file := os.real_path(path)
-	mut readers := map[string][]int{} // cluster path -> rows
+	mut readers := map[string][]int{}
 	for j, ch in app.proj.channels {
 		for k, ref in ch.databases {
-			if j == ci && k == di {
+			if j == skip_ci && k == skip_di {
 				continue
 			}
 			f, frag := candb.split_database_ref(ref)
@@ -56,6 +52,18 @@ fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, cur
 			}
 		}
 	}
+	return readers
+}
+
+// open_arxml_pick lists the clusters of `path` for entry di of channel ci (-1: a new entry);
+// `current` is the fragment the entry carries, '' for none.
+fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, current string) {
+	if app.arxml_pick.open {
+		app.notify('cluster picker for ${app.arxml_pick.chan} closed unanswered: nothing attached there')
+	}
+	// the row as the panel shows it: an edit still in its buffers is what Attach commits
+	app.commit_cfg()
+	readers := app.cluster_readers(path, a, ci, di)
 	cur_path := if current == '' {
 		''
 	} else if hit := a.cluster(current) {
@@ -87,7 +95,7 @@ fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, cur
 		di:      di
 		chan:    ch.name
 		rate:    ch.nominal_bitrate()
-		fd_rate: if ch.fd { ch.data_bitrate } else { 0 }
+		fd_rate: ch.data_rate()
 		before:  if di >= 0 { ch.databases[di] } else { '' }
 		path:    path
 		rows:    rows
@@ -130,8 +138,14 @@ fn (mut app App) arxml_pick_confirm() {
 		return
 	}
 	r := p.rows[p.sel]
-	if r.this_row {
-		app.notify('${p.chan} already reads ${r.bus} of ${os.file_name(p.path)}; nothing changed')
+	// asked of the entries NOW: the dialog does not block the panel, so one may have gone
+	if a := candb.load_arxml_file(p.path) {
+		if p.ci in (app.cluster_readers(p.path, a, p.ci, p.di)[r.path] or { []int{} }) {
+			app.notify('${p.chan} already reads ${r.bus} of ${os.file_name(p.path)}; nothing changed')
+			return
+		}
+	} else {
+		app.notify('${os.file_name(p.path)}: ${err}')
 		return
 	}
 	ref := if p.di >= 0 {

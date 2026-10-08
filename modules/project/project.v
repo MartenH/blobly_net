@@ -870,33 +870,50 @@ pub fn parse(text string) !Project {
 	return p
 }
 
-// unquoted_fragment_notes names every `x.arxml#Cluster` value written without quotes: vlib's
-// yaml reads the `#` as a comment (docs/known_issues.md), so the entry loads as the bare file,
-// which a multi-cluster ARXML refuses as naming no cluster — a refusal that says nothing of
-// quoting. Builds before the writer quoted `#` saved the Configuration panel's pick this way.
+// unquoted_fragment_notes names every `x.arxml#Cluster` item of a `databases:` block sequence
+// written without quotes: vlib's yaml reads the `#` as a comment (docs/known_issues.md), so the
+// entry loads as the bare file, which a multi-cluster ARXML refuses as naming no cluster — a
+// refusal that says nothing of quoting. Builds before the writer quoted `#` saved the
+// Configuration panel's pick this way. The block form is the one the writer and the docs use;
+// a flow sequence (`[...]`) quotes or not on its own and is not looked at.
 fn unquoted_fragment_notes(text string) []string {
 	mut out := []string{}
+	mut in_dbs := -1 // the indent of the `databases:` key whose items follow; -1 outside one
 	for n, raw in text.split_into_lines() {
-		mut v := raw.trim_space()
-		if v.starts_with('#') {
+		v := raw.trim_space()
+		if v == '' || v.starts_with('#') {
 			continue
 		}
-		v = v.trim_string_left('- ')
-		if k := v.index(': ') {
-			v = v[k + 2..].trim_space()
+		indent := raw.len - raw.trim_left(' \t').len
+		if in_dbs >= 0 && indent <= in_dbs && !v.starts_with('- ') {
+			in_dbs = -1
 		}
-		if v.starts_with('"') || v.starts_with("'") {
+		if v == 'databases:' || v.starts_with('databases: #') || v.starts_with('databases:\t') {
+			in_dbs = indent
 			continue
 		}
-		at := v.to_lower().index('.arxml#') or { continue }
-		// a ` #` before it starts a real comment, which may mention a reference
-		if c := v.index(' #') {
-			if c < at {
-				continue
+		if in_dbs < 0 || !v.starts_with('- ') {
+			continue
+		}
+		item := v[2..].trim_space()
+		if item.len == 0 || item[0] in [`"`, `'`, `[`, `{`] {
+			continue
+		}
+		at := item.to_lower().index('.arxml#') or { continue }
+		if item.index_u8(`#`) != at + 6 {
+			continue // an earlier `#` is where the parser cut: this one is in the comment
+		}
+		// the scalar ends at a REAL comment: whitespace then `#`, past the fragment's own
+		mut end := item.len
+		for i := at + 7; i < item.len; i++ {
+			if item[i] == `#` && item[i - 1] in [` `, `\t`] {
+				end = i
+				break
 			}
 		}
-		end := v.index(' ') or { v.len }
-		out << 'line ${n + 1}: `${v[..end]}` is read as `${v[..at + 6]}` and a comment — quote it: "${v[..end]}"'
+		ref := item[..end].trim_space()
+		quoted := '"' + ref.replace('\\', '\\\\').replace('"', '\\"') + '"'
+		out << 'line ${n + 1}: `${ref}` is read as `${item[..at + 6]}` and a comment — quote it: ${quoted}'
 	}
 	return out
 }
@@ -2294,6 +2311,12 @@ fn fd_wanted(c Channel) int {
 		return c.data_bitrate
 	}
 	return if c.bitrate > 0 { c.bitrate } else { default_bitrate }
+}
+
+// data_rate is the data-phase rate this row opens with: 0 for a classic row, the arbitration
+// rate for an FD row with none configured.
+pub fn (c Channel) data_rate() int {
+	return fd_wanted(c)
 }
 
 // fd_describe names an fd_wanted value the way an operator would read it back.

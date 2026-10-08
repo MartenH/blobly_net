@@ -590,7 +590,8 @@ fn test_arxml_fragment_round_trips() {
 	assert back.channels[0].databases == ['db/net.arxml#Body', 'dbc/x.dbc']
 }
 
-// An unquoted fragment, as a build before the quoting saved it, is said where it is lost.
+// An unquoted fragment, as a build before the quoting saved it, is said where it is lost —
+// and only there: not a quoted one, a flow sequence, a comment, or text that is not an entry.
 fn test_unquoted_fragment_is_noted() {
 	y := '# a comment naming db/net.arxml#Body is not an entry
 project:
@@ -602,8 +603,19 @@ channels:
       - db/net.arxml#Body
       - "db/net.arxml#Chassis"
       - dbc/x.dbc   # see db/net.arxml#Body
+      - db/my network.arxml#Body	# a real comment
+  - name: CAN2
+    interface: inproc:CAN2
+    databases: ["db/net.arxml#Body"]
+    script: |
+      - db/net.arxml#Body
 '
 	p := parse(y)!
-	assert p.channels[0].databases == ['db/net.arxml', 'db/net.arxml#Chassis', 'dbc/x.dbc']
-	assert p.notes == ['line 8: `db/net.arxml#Body` is read as `db/net.arxml` and a comment — quote it: "db/net.arxml#Body"']
+	assert p.channels[0].databases == ['db/net.arxml', 'db/net.arxml#Chassis', 'dbc/x.dbc',
+		'db/my network.arxml']
+	assert p.channels[1].databases == ['db/net.arxml#Body']
+	assert p.notes == [
+		'line 8: `db/net.arxml#Body` is read as `db/net.arxml` and a comment — quote it: "db/net.arxml#Body"',
+		'line 11: `db/my network.arxml#Body` is read as `db/my network.arxml` and a comment — quote it: "db/my network.arxml#Body"',
+	]
 }
