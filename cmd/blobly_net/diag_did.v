@@ -166,7 +166,7 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		app.diag_say_for(req, '${out.line} (0x2E ${name} is written in it)', false)
 	}
 	if plan.unlock != 0 {
-		out, negative := app.diag_unlock(gen, mut h, plan.unlock)
+		out, negative := app.diag_secure(gen, mut h, req, plan.unlock, '0x2E ${name}: not written')
 		if out.err {
 			return out, negative
 		}
@@ -612,6 +612,7 @@ fn did_write_req(x sysview.DidDesc, texts []string, t DiagTarget, desc DiagDesc)
 		sessions: sessions
 		level:    u8(x.write_gate.level)
 		ref_key:  panel_can_unlock(t, desc)
+		unlock_policy: unlock_refusal_for(t, desc)
 		follow:   follow
 		writable: true
 	}

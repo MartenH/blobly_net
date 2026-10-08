@@ -14,7 +14,13 @@ test("security access unlocks with the seed/key exchange (0x27)", function()
   log("seed =", tohex(seed))
 end)
 
+test("an unlocked level answers an all-zero seed, and no key is sent", function()
+  local seed = diag:security_access(0x01, function(s) error("no key is computed for a zero seed") end)
+  check.equal(tohex(seed), "00 00 00 00")
+end)
+
 test("a wrong key is rejected (NRC 0x35 invalidKey)", function()
+  diag:session(0x01)  -- relock: a session change locks the server again
   -- identity keyfn returns the seed unchanged -> wrong key
   check.nrc(0x35, function() diag:security_access(0x01, function(s) return s end) end)
 end)

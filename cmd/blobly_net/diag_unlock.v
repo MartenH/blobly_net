@@ -92,25 +92,48 @@ fn (mut app App) diag_unlock_request(gen u64, mut h HeldConn, req DiagReq) (Diag
 			line: 'security locked: the default session serves no 0x27'
 		}, false
 	}
-	to := diaghold.unlock_session(h.session)
-	if to != 0 {
-		out, negative := app.diag_session_change(gen, mut h, to)
+	return app.diag_secure(gen, mut h, req, req.level, 'Unlock level ${req.level}')
+}
+
+// diag_secure is THE way to a 0x27, for an Unlock and a gated DID write alike: the gate
+// (diaghold.unlock_step: the press's key policy, still under the description it was decided by),
+// the session switch it asks for, the gate again — a reload may land during a slow switch — and
+// then diag_unlock. `what` names the press in a refusal.
+fn (mut app App) diag_secure(gen u64, mut h HeldConn, req DiagReq, level u8, what string) (DiagOut, bool) {
+	first := app.unlock_step(req, h.session)
+	if first.refusal != '' {
+		return unlock_refused(what, first.refusal)
+	}
+	if first.session != 0 {
+		out, negative := app.diag_session_change(gen, mut h, first.session)
 		if out.err {
 			return out, negative
 		}
 		app.diag_say_for(req, 'for 0x27, which the default session does not serve', false)
+		// a reload may have landed during the switch
+		again := app.unlock_step(req, h.session)
+		if again.refusal != '' {
+			return unlock_refused(what, again.refusal)
+		}
 	}
-	// the last thing before the 0x27: the key policy it was pressed under is still the loaded one
+	return app.diag_unlock(gen, mut h, level)
+}
+
+// unlock_step asks diaghold.unlock_step for `req` against the system loaded now.
+fn (mut app App) unlock_step(req DiagReq, session u8) diaghold.UnlockStep {
 	app.mu.lock()
-	stale := diaghold.unlock_still_current(req.ident, app.diag_sys_ident)
-	app.mu.unlock()
-	if stale != '' {
-		return DiagOut{
-			line: 'Unlock level ${req.level}: ${stale}'
-			err:  true
-		}, true // nothing of the 0x27 sent: the connection is as it was
+	defer {
+		app.mu.unlock()
 	}
-	return app.diag_unlock(gen, mut h, req.level)
+	return diaghold.unlock_step(req.ident, app.diag_sys_ident, req.unlock_policy, session)
+}
+
+// unlock_refused is a 0x27 the gate held back: nothing of it sent, so the connection is as it was.
+fn unlock_refused(what string, why string) (DiagOut, bool) {
+	return DiagOut{
+		line: '${what}: ${why}'
+		err:  true
+	}, true
 }
 
 // unlock_level is the level the selector shows for `t`: the operator's pick for this target, else
@@ -139,8 +162,9 @@ fn (mut app App) unlock_press(t DiagTarget, desc DiagDesc, level int) {
 	app.diag_send(DiagReq{
 		kind:  'unlock'
 		level: u8(level)
-		// the system the refusal above read, re-asked by the holder before the 0x27 goes out
-		ident: app.diag_sys_key
+		// the verdict above and the system it read, re-asked by the holder before the 0x27
+		unlock_policy: why
+		ident:         app.diag_sys_key
 	})
 }
 

@@ -56,7 +56,8 @@ with no description is tried. If it answers `0x35` invalidKey, the panel says th
 not accept blobly_net's reference key and that its algorithm is the OEM's. A script can supply the
 real algorithm (below).
 
-blobly_net's simulated ECUs accept the reference key at every level, in any session.
+blobly_net's simulated ECUs accept the reference key at every level, in any session. Once
+unlocked, they answer an all-zero seed, and a session change locks them again.
 
 ## Unlocking from the Diagnostics panel
 
@@ -93,7 +94,8 @@ diag:session(0x01)                 -- back to default: locked again
 ```
 
 `security_access` takes the **seed sub-function** (`2L-1`), not the level number. Without a key
-function it uses the reference key. With one, it sends whatever key that function returns, which
+function it uses the reference key. An all-zero seed (already unlocked) returns at once, and no key
+is computed or sent. With one, it sends whatever key that function returns, which
 is how a script unlocks an ECU whose algorithm is not the reference one. A refusal raises a Lua
 error. `check.nrc(0x35, function() … end)` expects one. See [scripting.md](scripting.md).
 

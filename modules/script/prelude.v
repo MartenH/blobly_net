@@ -451,9 +451,11 @@ function uds.open(channel, opts)
   function self:ext_record_size(record, n) __uds_ext_size(self.handle, record, n) end
   -- security access: request the seed for `level` (odd), compute the key with
   -- `keyfn` (default = the simulated servers algorithm, XOR 0xFF), send it at
-  -- level+1. Returns the seed. Raises on an invalid key (NRC 0x35).
+  -- level+1. Returns the seed. An all-zero seed is ISO 14229-1 "already unlocked":
+  -- no key is sent. Raises on an invalid key (NRC 0x35).
   function self:security_access(level, keyfn)
     local seed = __uds_sec_seed(self.handle, level)
+    if #seed > 0 and seed == string.rep(string.char(0), #seed) then return seed end
     keyfn = keyfn or function(s)
       return (s:gsub(".", function(c) return string.char(string.byte(c) ~ 0xFF) end))
     end

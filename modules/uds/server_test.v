@@ -129,3 +129,15 @@ fn test_an_oversized_snapshot_count_is_sent_as_not_stated() {
 	r := s.handle([u8(0x19), 0x04, 0x12, 0x34, 0x56, 0x01])
 	assert r[6] == 0x01 && r[7] == 0, 'a count of 300 was truncated into one byte'
 }
+
+// ISO 14229-1: an unlocked server answers its seed request with zeros; a session change relocks it.
+fn test_an_unlocked_server_answers_an_all_zero_seed_until_a_session_change() {
+	mut s := Server{}
+	seed := s.handle([u8(0x27), 0x01])[2..].clone()
+	mut send := [u8(0x27), 0x02]
+	send << security_key(seed)
+	assert s.handle(send) == [u8(0x67), 0x02]
+	assert s.handle([u8(0x27), 0x01]) == [u8(0x67), 0x01, 0, 0, 0, 0]
+	s.handle([u8(0x10), 0x03])
+	assert s.handle([u8(0x27), 0x01])[2..] == server_security_seed
+}

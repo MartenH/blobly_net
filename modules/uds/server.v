@@ -105,6 +105,9 @@ fn (mut s Server) answer(req []u8) []u8 {
 		0x10 { // DiagnosticSessionControl
 			session := if req.len > 1 { req[1] } else { u8(1) }
 			s.session = session
+			// ISO 14229-1: every session transition locks the server again
+			s.unlocked = false
+			s.sec_seed = []u8{}
 			return [u8(0x50), session, 0x00, 0x32, 0x01, 0xF4] // + default P2 timings
 		}
 		0x22 { // ReadDataByIdentifier
@@ -133,8 +136,13 @@ fn (mut s Server) answer(req []u8) []u8 {
 				return neg(sid, 0x12) // subFunctionNotSupported
 			}
 			if sub % 2 == 1 { // requestSeed
-				s.sec_seed = server_security_seed.clone()
 				mut resp := [u8(0x67), sub]
+				if s.unlocked {
+					// ISO 14229-1: an unlocked server answers an all-zero seed, and expects no key
+					resp << []u8{len: server_security_seed.len}
+					return resp
+				}
+				s.sec_seed = server_security_seed.clone()
 				resp << s.sec_seed
 				return resp
 			}

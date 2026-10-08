@@ -90,6 +90,38 @@ pub fn unlock_refusal(described bool, ref_key bool, doip bool, bench_key bool) s
 	return ''
 }
 
+// UnlockStep is the next step before a 0x27, as unlock_step decides it: a refusal (nothing sent), a
+// session to switch to first (0 = none), or neither — send the 0x27.
+pub struct UnlockStep {
+pub:
+	refusal string
+	session u8
+}
+
+// unlock_step is THE gate in front of every 0x27 the panel sends — an Unlock's and a gated DID
+// write's alike — asked before the session switch and again right before the 0x27. `policy` is the
+// press's own verdict on the reference key (unlock_refusal for its target and description; '' =
+// it may be sent), `req_ident` the system that verdict was reached under and `now_ident` the one
+// loaded now: the verdict holds only while they are one, since a reload may have taken
+// `security_key = "reference"` or `allow_bench_key` away. Then the session: the default one, or none
+// known, is left first (unlock_session) — also for a write gate that names a level and no session.
+pub fn unlock_step(req_ident string, now_ident string, policy string, session u8) UnlockStep {
+	if policy != '' {
+		return UnlockStep{
+			refusal: policy
+		}
+	}
+	stale := unlock_still_current(req_ident, now_ident)
+	if stale != '' {
+		return UnlockStep{
+			refusal: stale
+		}
+	}
+	return UnlockStep{
+		session: unlock_session(session)
+	}
+}
+
 // unlock_still_current: the last check before a queued Unlock's 0x27 goes out — the system it was
 // decided under (`req_ident`; unlock_refusal read its description) is still the loaded one
 // (`now_ident`). A reload while the press waited may have taken the reference key away, and a
@@ -98,7 +130,7 @@ pub fn unlock_still_current(req_ident string, now_ident string) string {
 	if req_ident == now_ident {
 		return ''
 	}
-	return 'not sent: the system description was reloaded since Unlock was pressed — press it again'
+	return 'no 0x27 sent: the system description was reloaded since this was pressed — press it again'
 }
 
 // unlock_refusal_forgets: what a 0x27 the ECU ANSWERED without granting says the connection no

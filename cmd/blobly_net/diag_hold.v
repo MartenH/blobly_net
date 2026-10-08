@@ -38,6 +38,9 @@ struct DiagReq {
 	sessions []u8            // 'did_write': the sessions the DID is written in (none = any)
 	level    u8              // 'did_write': the security level it needs (0 = none); 'unlock': the level
 	ref_key  bool            // the node's key is blobly_net's reference key: the panel can unlock
+	// the press's verdict on sending the reference key to its target (unlock_refusal_for; '' = it
+	// may), held by every 0x27 the press makes as long as `ident` is the loaded system (diag_secure)
+	unlock_policy string
 	follow   []u16           // 'did_write': read back after the DID itself (a parameter's status)
 	writable bool            // 'did_write': the description declares a write gate (diaghold.write_plan)
 	ident    string          // the description's identity the press was made under (DiagDesc.ident)
