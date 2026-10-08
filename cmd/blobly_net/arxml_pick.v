@@ -138,22 +138,32 @@ fn (mut app App) arxml_pick_confirm() {
 		return
 	}
 	r := p.rows[p.sel]
-	// asked of the entries NOW: the dialog does not block the panel, so one may have gone
-	if a := candb.load_arxml_file(p.path) {
-		if p.ci in (app.cluster_readers(p.path, a, p.ci, p.di)[r.path] or { []int{} }) {
-			app.notify('${p.chan} already reads ${r.bus} of ${os.file_name(p.path)}; nothing changed')
-			return
-		}
-	} else {
+	// asked of the file and the entries NOW: the dialog does not block the panel, and the file
+	// may have been replaced — the cluster is found again by its path, under its current name
+	a := candb.load_arxml_file(p.path) or {
 		app.notify('${os.file_name(p.path)}: ${err}')
+		return
+	}
+	mut bus := ''
+	for c in a.clusters {
+		if c.path == r.path {
+			bus = c.bus
+		}
+	}
+	if bus == '' {
+		app.notify('${os.file_name(p.path)} no longer has ${r.path}; nothing changed')
+		return
+	}
+	if p.ci in (app.cluster_readers(p.path, a, p.ci, p.di)[r.path] or { []int{} }) {
+		app.notify('${p.chan} already reads ${bus} of ${os.file_name(p.path)}; nothing changed')
 		return
 	}
 	ref := if p.di >= 0 {
 		f, _ := candb.split_database_ref(p.before)
-		f + '#' + r.bus
+		f + '#' + bus
 	} else {
 		// the fragment rides on the RESOLVED path: rel_path asks the file system about it
-		rel_path(p.path) + '#' + r.bus
+		rel_path(p.path) + '#' + bus
 	}
 	app.drop_replay_scan(p.ci) // the census on display was attributed through the OLD databases
 	app.commit_cfg()

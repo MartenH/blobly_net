@@ -619,3 +619,21 @@ channels:
 		'line 11: `db/my network.arxml#Body` is read as `db/my network.arxml` and a comment — quote it: "db/my network.arxml#Body"',
 	]
 }
+
+// `databases:` written inside a block scalar is text: no note, wherever the block sits.
+fn test_unquoted_fragment_in_block_scalar_is_not_noted() {
+	y := 'project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    script: |
+      databases:
+        - db/net.arxml#Body
+    databases:
+      - db/net.arxml
+'
+	p := parse(y)!
+	assert p.channels[0].databases == ['db/net.arxml']
+	assert p.notes == []
+}

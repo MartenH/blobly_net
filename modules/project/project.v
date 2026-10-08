@@ -866,8 +866,31 @@ pub fn parse(text string) !Project {
 	// A pre-v4 file's `bus:` values were written under interface-first semantics; convert them
 	// once, here, so nothing downstream has to know there was ever another rule (#97).
 	p.notes = migrate_legacy_sender_buses(mut p, declared)
-	p.notes << unquoted_fragment_notes(text)
+	p.notes << unquoted_fragment_notes(text, p.channels)
 	return p
+}
+
+// is_block_scalar_start reports a line whose value opens a literal or folded block (`key: |`,
+// `- >-`, `key: |2 # c`): the lines indented under it are text, not YAML structure.
+fn is_block_scalar_start(v string) bool {
+	mut val := v
+	if k := v.index(': ') {
+		val = v[k + 2..]
+	} else if v.starts_with('- ') {
+		val = v[2..]
+	} else {
+		return false
+	}
+	val = val.all_before(' #').trim_space()
+	if val.len == 0 || val[0] !in [`|`, `>`] {
+		return false
+	}
+	for c in val[1..] {
+		if c !in [`-`, `+`] && !c.is_digit() {
+			return false
+		}
+	}
+	return true
 }
 
 // unquoted_fragment_notes names every `x.arxml#Cluster` item of a `databases:` block sequence
@@ -876,15 +899,37 @@ pub fn parse(text string) !Project {
 // refusal that says nothing of quoting. Builds before the writer quoted `#` saved the
 // Configuration panel's pick this way. The block form is the one the writer and the docs use;
 // a flow sequence (`[...]`) quotes or not on its own and is not looked at.
-fn unquoted_fragment_notes(text string) []string {
+// A hit must also be what the parser produced — the bare file in some channel's databases —
+// and text inside a block scalar (`script: |`) is skipped, since neither is an entry.
+fn unquoted_fragment_notes(text string, chans []Channel) []string {
+	mut loaded := map[string]bool{}
+	for ch in chans {
+		for d in ch.databases {
+			loaded[d] = true
+		}
+	}
 	mut out := []string{}
 	mut in_dbs := -1 // the indent of the `databases:` key whose items follow; -1 outside one
+	mut in_block := -1 // the indent of the key a block scalar belongs to; -1 outside one
 	for n, raw in text.split_into_lines() {
 		v := raw.trim_space()
-		if v == '' || v.starts_with('#') {
+		if v == '' {
 			continue
 		}
 		indent := raw.len - raw.trim_left(' \t').len
+		if in_block >= 0 {
+			if indent > in_block {
+				continue
+			}
+			in_block = -1
+		}
+		if v.starts_with('#') {
+			continue
+		}
+		if is_block_scalar_start(v) {
+			in_block = indent
+			continue
+		}
 		if in_dbs >= 0 && indent <= in_dbs && !v.starts_with('- ') {
 			in_dbs = -1
 		}
@@ -902,6 +947,9 @@ fn unquoted_fragment_notes(text string) []string {
 		at := item.to_lower().index('.arxml#') or { continue }
 		if item.index_u8(`#`) != at + 6 {
 			continue // an earlier `#` is where the parser cut: this one is in the comment
+		}
+		if !loaded[item[..at + 6]] {
+			continue
 		}
 		// the scalar ends at a REAL comment: whitespace then `#`, past the fragment's own
 		mut end := item.len
