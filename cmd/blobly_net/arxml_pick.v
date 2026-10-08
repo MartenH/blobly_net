@@ -2,6 +2,7 @@ module main
 
 import os
 import candb
+import project
 import vgui
 
 // ArxmlPick is the "which CAN cluster?" dialog: an ARXML describes every bus of a system, and
@@ -76,11 +77,15 @@ fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, cur
 	mut other := ''
 	for k, c in a.clusters {
 		js := readers[c.path] or { []int{} }
+		// the import's rule (project.arxml_cluster_rates), so the picker and an imported row agree:
+		// FD by the frames, an unstated data rate at the arbitration rate — as Channel.data_rate
+		// reads the row it is compared with. A declared CAN-FD baudrate alone is not FD.
+		r := project.arxml_cluster_rates(c)
 		rows << ArxmlPickRow{
 			bus:      c.bus
 			path:     c.path
 			rate:     c.baudrate
-			fd_rate:  c.fd_baudrate
+			fd_rate:  if !r.fd { 0 } else if r.data_bitrate > 0 { r.data_bitrate } else { r.bitrate }
 			frames:   c.db.messages.len
 			used_by:  js.filter(it != ci).map(app.proj.channels[it].name)
 			this_row: ci in js

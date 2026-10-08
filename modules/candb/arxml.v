@@ -154,6 +154,19 @@ pub fn frame_key(id u32, ext bool) string {
 	return '${id}|${ext}'
 }
 
+// carries_fd says whether the cluster runs as CAN-FD: it carries an FD frame. A declared CAN-FD
+// baudrate alone is not enough — a classic bus may state one it never uses — and an FD channel
+// carries classic frames too, so one FD frame decides it. The ONE rule: the export's bus line
+// and the project import's rates (project.arxml_cluster_rates) both ask it.
+pub fn (c ArxmlCluster) carries_fd() bool {
+	for _, f in c.frames {
+		if f.fd {
+			return true
+		}
+	}
+	return false
+}
+
 // frame_of returns the extras for a message of this cluster, if the file said anything.
 pub fn (c ArxmlCluster) frame_of(m Message) ?ArxmlFrame {
 	return c.frames[frame_key(m.id, m.ext)] or { return none }

@@ -1778,7 +1778,9 @@ fn test_frame_toml_per_ecu() {
 	assert !a.contains('name = "Wide"')
 	assert !a.contains('name = "Powertrain"\nbus  = "Body"\n# rx')
 	// FD is a bus property in ecu.toml: stated once for the bus, and marked on the frame
-	assert all.contains('# [bus.Body]  baudrate = 500000, data_baudrate = 2000000, fd = true')
+	// in the keys ecu.toml and system.toml accept; the data rate has none
+	assert all.contains('#   ecu.toml     [bus.Body]  fd = true\n#   system.toml  [bus.Body]  fd = true, bitrate = 500000\n#   (the data phase, 2000000 bit/s, has a key in neither: the platform sets it)')
+	assert !all.contains('baudrate =')
 	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\ntx   =')
 	// an ECU the cluster never names is a typo, not an empty fragment
 	assert c.ecus() == ['ECU_A', 'ECU_B', 'ECU_C']
@@ -2140,4 +2142,31 @@ fn test_self_review_of_the_leaf_table() {
 	assert mode_bad.report.notes.any(it.contains('DATA-ID-MODE "SOMETIMES" is not one of')), mode_bad.report.notes.str()
 	mc := mode_bad.cluster('') or { panic(err) }
 	assert mc.e2e_signals(mc.db.messages[0]) == none
+}
+
+// The bus line in each shape a cluster can have: a classic cluster (no data-phase line), one that
+// declares an FD data rate it carries no frame for (said), one stating no baudrate (no
+// `bitrate = 0` offered for copying), and FD with no data rate stated.
+fn test_frame_toml_bus_line_shapes() {
+	fd_frames := {
+		'1|false': ArxmlFrame{
+			fd: true
+		}
+	}
+	line := fn (c ArxmlCluster) string {
+		return c.frame_toml('').split_into_lines().filter(it.starts_with('#   ')).join('\n')
+	}
+	assert line(ArxmlCluster{
+		bus:      'B'
+		baudrate: 250000
+	}) == '#   ecu.toml     [bus.B]  fd = false\n#   system.toml  [bus.B]  fd = false, bitrate = 250000'
+	assert line(ArxmlCluster{
+		bus:         'B'
+		baudrate:    500000
+		fd_baudrate: 2000000
+	}) == '#   ecu.toml     [bus.B]  fd = false\n#   system.toml  [bus.B]  fd = false, bitrate = 500000\n#   (it declares a CAN-FD data rate, 2000000 bit/s, but carries no CAN-FD frame)'
+	assert line(ArxmlCluster{
+		bus:    'B'
+		frames: fd_frames
+	}) == '#   ecu.toml     [bus.B]  fd = true\n#   system.toml  [bus.B]  fd = true'
 }
