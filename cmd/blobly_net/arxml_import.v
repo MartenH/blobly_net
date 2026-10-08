@@ -17,6 +17,7 @@ mut:
 	popped   bool
 	path     string      // the ARXML, resolved
 	a        candb.Arxml // as parsed when the dialog opened: what is shown is what is imported
+	sha      string      // its content, compared at Import: a file changed since is not imported
 	rows     []ArxmlImportRow
 	sut      map[string]bool // ticked ECUs under test, by name
 	restbus  bool = true
@@ -95,7 +96,7 @@ fn (ui ArxmlImportUi) import_ecus() []string {
 }
 
 fn (mut app App) open_arxml_import(path string) {
-	a := candb.load_arxml_file(path) or {
+	a, sha := candb.load_arxml_content(path) or {
 		app.notify('${os.file_name(path)}: ${err}')
 		return
 	}
@@ -117,7 +118,7 @@ fn (mut app App) open_arxml_import(path string) {
 			senders:  project.arxml_senders(c)
 			ecus:     project.arxml_ecus(c)
 			adapter:  1
-			addr_buf: mkbuf(addr, 128)
+			addr_buf: mkbuf(addr, cfg_address_cap)
 		}
 	}
 	mut kinds := a.report.ignored.keys()
@@ -126,6 +127,7 @@ fn (mut app App) open_arxml_import(path string) {
 		open:     true
 		path:     path
 		a:        a
+		sha:      sha
 		rows:     rows
 		ignored:  kinds.map('${a.report.ignored[it]} × ${it}').join(', ')
 		adapters: adapters
@@ -139,6 +141,17 @@ fn (mut app App) arxml_import_confirm() bool {
 	if app.running {
 		// closed at Start already (run.v); kept so a new path to this cannot rebuild mid-run
 		app.arxml_import.err = 'a measurement is running: Stop to import'
+		return false
+	}
+	// the channels reference the file and load whatever it holds at the rebuild: a file changed
+	// since the dialog opened would be imported by decisions taken over other content
+	text := os.read_file(ui.path) or {
+		app.arxml_import.err = '${os.file_name(ui.path)}: ${err}'
+		return false
+	}
+	_, sha := candb.content_key(ui.path, text)
+	if sha != ui.sha {
+		app.arxml_import.err = '${os.file_name(ui.path)} changed since this dialog opened: Cancel and import it again'
 		return false
 	}
 	mut plans := []project.ClusterPlan{}
@@ -228,7 +241,7 @@ fn draw_arxml_import(mut app App) {
 				} else {
 					''
 				}
-				app.arxml_import.rows[k].addr_buf = mkbuf(addr, 128)
+				app.arxml_import.rows[k].addr_buf = mkbuf(addr, cfg_address_cap)
 			}
 			vgui.table_next_col()
 			if r.adapter > 0 {

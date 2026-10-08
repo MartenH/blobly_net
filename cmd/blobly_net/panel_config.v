@@ -964,7 +964,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 				// interface flipping from `vector:1` to `vector:1,silent` behind the operator,
 				// after which every generator bound to the old spelling no longer matched its
 				// own bus. What the field shows has to be what the model holds.
-				app.cfg_bufs[i].address_buf = mkbuf(stripped, 64)
+				app.cfg_bufs[i].address_buf = mkbuf(stripped, cfg_address_cap)
 			}
 			typed = stripped
 			// AGAINST WHAT WAS TYPED, which is `had_suffix` — captured before the buffer was

@@ -83,6 +83,32 @@ pub fn arxml_cluster_rates(c candb.ArxmlCluster) ClusterRates {
 	}
 }
 
+// import_address is a plan's address as the row keeps it: trimmed, and for Vector without a
+// `,silent` / `,normal` suffix, which the loader and the editor lift into listen_only too
+// (split_vector_mode) — left in the address, the port opens silent while the row is called
+// transmit-capable.
+fn import_address(pl ClusterPlan) !string {
+	a := pl.address.trim_space()
+	if pl.adapter != 'vector' {
+		return a
+	}
+	body, _, ok := split_vector_mode(a)
+	if !ok {
+		return error('${pl.bus}: unrecognised mode in ${a} (,silent or ,normal)')
+	}
+	return body
+}
+
+// import_wire is a wire's identity for the one-cluster-per-wire rule: without the rate where the
+// adapter carries one (two rates on one channel are still one wire), and the whole name
+// elsewhere — `@` is a literal in a software bus's name, and `bench@A` is not `bench@B`.
+fn import_wire(adapter string, iface string) string {
+	if transport.adapter_configures_bitrate(adapter) {
+		return transport.wire_key_for(adapter, iface)
+	}
+	return transport.destination_key_for(adapter, iface)
+}
+
 // import_arxml builds the channel rows an import adds to `existing`, plus notes for what the
 // operator should know about them. Refused, before anything is built, for a cluster the file
 // does not have, a cluster mapped twice, an adapter that does not carry CAN, two clusters on
@@ -99,14 +125,18 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 		if chosen.any(it.path == c.path) {
 			return error('${c.bus} is mapped twice')
 		}
-		iface := compose_iface(pl.adapter, pl.address)
+		addr := import_address(pl)!
+		iface := compose_iface(pl.adapter, addr)
 		if pl.adapter !in adapters || iface_is_eth(iface) {
 			return error('${c.bus}: ${pl.adapter} is not a CAN adapter')
 		}
-		if pl.address.trim_space() == '' && pl.adapter !in ['virtual', 'udp'] {
+		if addr == '' && pl.adapter !in ['virtual', 'udp'] {
 			return error('${c.bus}: ${pl.adapter} needs an address')
 		}
-		w := transport.wire_key_for(pl.adapter, iface)
+		if transport.adapter_configures_bitrate(pl.adapter) && addr.contains('@') {
+			return error('${c.bus}: the address holds a rate (${addr}); the rate is the cluster\'s')
+		}
+		w := import_wire(pl.adapter, iface)
 		if other := wires[w] {
 			return error('${other} and ${c.bus} are both on ${iface}: a cluster is a bus, and a wire carries one')
 		}
@@ -135,7 +165,9 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 	mut notes := []string{}
 	for k, c in chosen {
 		pl := plans[k]
-		iface := compose_iface(pl.adapter, pl.address)
+		addr := import_address(pl)!
+		_, silent, _ := split_vector_mode(if pl.adapter == 'vector' { pl.address.trim_space() } else { '' })
+		iface := compose_iface(pl.adapter, addr)
 		mut name := c.bus
 		for n := 2; name in names; n++ {
 			name = '${c.bus}_${n}'
@@ -145,14 +177,18 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 		mut ch := Channel{
 			name:         name
 			adapter:      pl.adapter
-			address:      pl.address.trim_space()
+			address:      addr
 			iface:        iface
 			typ:          if r.fd { 'canfd' } else { 'can' }
 			fd:           r.fd
 			bitrate:      r.bitrate
 			data_bitrate: r.data_bitrate
 			databases:    ['${imp.ref}#${c.bus}']
-			listen_only:  adapter_starts_silent(pl.adapter)
+			listen_only:  silent || adapter_starts_silent(pl.adapter)
+		}
+		// what the backend could not open is refused here, while another adapter can be picked
+		if why := ch.address_config_error() {
+			return error('${c.bus} on ${pl.adapter} ${addr}: ${why}')
 		}
 		if r.no_baudrate {
 			notes << '${name}: ${c.bus} states no baudrate; set to ${default_bitrate}'
@@ -163,9 +199,9 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 		if imp.restbus {
 			ch.simulate = arxml_senders(c).filter(it !in imp.sut)
 		}
-		w := transport.wire_key_for(pl.adapter, iface)
+		w := import_wire(pl.adapter, iface)
 		for e in existing {
-			if transport.wire_key_for(e.adapter, e.iface) == w {
+			if import_wire(e.adapter, e.iface) == w {
 				notes << '${name} is on ${iface}, which ${e.name} already uses'
 			}
 		}

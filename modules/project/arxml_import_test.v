@@ -176,3 +176,45 @@ fn test_cluster_rates() {
 	assert chans[0].fd && chans[0].data_rate() == 500000
 	assert notes == ['Body: Body carries CAN-FD frames and states no CAN-FD baudrate; the data phase runs at the arbitration rate']
 }
+
+// What an address may say: `@` is literal in a software bus's name, a rate in a hardware address
+// is refused (the rate is the cluster's), Vector's mode suffix becomes listen_only, and a
+// combination the backend cannot open is refused before it is written.
+fn test_import_address_rules() {
+	a := two_clusters()!
+	chans, _ := import_arxml(a, ArxmlImport{
+		ref:      'n.arxml'
+		clusters: [ClusterPlan{'Body', 'virtual', 'bench@A'}, ClusterPlan{'Chassis', 'virtual', 'bench@B'}]
+	}, [])!
+	assert chans.map(it.iface) == ['inproc:bench@A', 'inproc:bench@B']
+	if _, _ := import_arxml(a, ArxmlImport{
+		ref:      'n.arxml'
+		clusters: [ClusterPlan{'Body', 'pcan', 'PCAN_USBBUS1@250000'}]
+	}, []) {
+		assert false, 'a rate in a hardware address'
+	} else {
+		assert err.msg().contains('holds a rate')
+	}
+	v, _ := import_arxml(a, ArxmlImport{
+		ref:      'n.arxml'
+		clusters: [ClusterPlan{'Chassis', 'vector', '1,silent'}]
+	}, [])!
+	assert v[0].address == '1' && v[0].listen_only
+	if _, _ := import_arxml(a, ArxmlImport{
+		ref:      'n.arxml'
+		clusters: [ClusterPlan{'Chassis', 'vector', '1,silnt'}]
+	}, []) {
+		assert false, 'an unrecognised mode'
+	} else {
+		assert err.msg().contains('unrecognised mode')
+	}
+	// Body is FD at 500k: Kvaser takes it. Chassis is FD at 250k: Kvaser's FD arbitration does not
+	if _, _ := import_arxml(a, ArxmlImport{
+		ref:      'n.arxml'
+		clusters: [ClusterPlan{'Chassis', 'kvaser', '0'}]
+	}, []) {
+		assert false, 'Kvaser FD at 250k'
+	} else {
+		assert err.msg().starts_with('Chassis on kvaser 0: unsupported Kvaser CAN-FD arbitration bitrate 250000')
+	}
+}
