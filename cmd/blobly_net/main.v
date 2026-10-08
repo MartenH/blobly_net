@@ -264,8 +264,6 @@ fn main() {
 	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
-	// Attach a database to the first bus, the way + Add DBC would — the picker cannot be driven
-	// headless, and a multi-cluster ARXML opens the cluster dialog from there.
 	// Open Import ARXML on a file, and (BLOBLY_IMPORT_ARXML_GO) press Import with its defaults,
 	// for the screenshot harness, which can neither drive the picker nor click.
 	if imp := os.getenv_opt('BLOBLY_IMPORT_ARXML') {
@@ -276,6 +274,8 @@ fn main() {
 			}
 		}
 	}
+	// Attach a database to the first bus, the way + Add DBC would — the picker cannot be driven
+	// headless, and a multi-cluster ARXML opens the cluster dialog from there.
 	if db := os.getenv_opt('BLOBLY_ATTACH_DB') {
 		if db != '' {
 			app.add_dbc(0, db)

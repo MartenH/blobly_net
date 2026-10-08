@@ -983,6 +983,7 @@ fn (mut app App) start() {
 	// confirm about app.running.
 	app.fb_open = false
 	app.arxml_pick.open = false // the same: its confirm rebuilds the runtime view
+	app.arxml_import.open = false // and so does Import's
 	// NOT the Discover dialog: it stays open across Start, because looking is a run-time job (a
 	// simulated DoIP entity exists only while a run hosts it). Its "+ vcan", "+ Sim net" and
 	// "+ Add ticked" reach rebuild_from_proj, so they are gated on app.running at DRAW time —

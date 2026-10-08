@@ -8,15 +8,17 @@ import vgui
 // ArxmlImportUi is the "Import system from ARXML" dialog (#439): one row per CAN cluster, each
 // mapped onto an interface or left out, the ECUs under test, and whether the others are
 // simulated. What it writes is project.import_arxml's answer; the dialog only collects the
-// decisions. MODAL, like the cluster picker, so the rows it appends to cannot change under it.
+// decisions. MODAL, like the cluster picker, so the rows it appends to cannot change under it;
+// closed besides wherever a run starts or the project is replaced (run.v, set_project), since its
+// Import rebuilds the runtime view.
 struct ArxmlImportUi {
 mut:
 	open     bool
 	popped   bool
-	path     string // the ARXML, resolved
+	path     string      // the ARXML, resolved
+	a        candb.Arxml // as parsed when the dialog opened: what is shown is what is imported
 	rows     []ArxmlImportRow
-	ecus     []string
-	sut      []bool // parallel to ecus
+	sut      map[string]bool // ticked ECUs under test, by name
 	restbus  bool = true
 	err      string
 	ignored  string // what the file holds that is not imported, one line
@@ -26,11 +28,11 @@ mut:
 struct ArxmlImportRow {
 mut:
 	bus      string
-	rate     int
-	fd_rate  int // the data rate the row would run at; 0 when classic
+	rates    project.ClusterRates
 	frames   int
 	senders  []string
-	adapter  int // index into ArxmlImportUi.adapters; 0 leaves the cluster out
+	ecus     []string // project.arxml_ecus: what may be marked under test
+	adapter  int      // index into ArxmlImportUi.adapters; 0 leaves the cluster out
 	addr_buf []u8
 }
 
@@ -42,13 +44,54 @@ fn import_adapters() []string {
 }
 
 // default_address is the address a fresh mapping starts from: the cluster's name for a software
-// bus, the next vcanN for vcan, nothing where only the operator knows (hardware).
-fn default_address(adapter string, bus string, k int) string {
+// bus, the lowest vcanN nothing else uses for vcan, nothing where only the operator knows
+// (hardware). `taken` is every address the project's rows and the dialog's other rows hold.
+fn default_address(adapter string, bus string, taken []string) string {
 	return match adapter {
-		'virtual' { bus }
-		'vcan' { 'vcan${k}' }
-		else { '' }
+		'virtual' {
+			bus
+		}
+		'vcan' {
+			mut n := 0
+			for 'vcan${n}' in taken {
+				n++
+			}
+			'vcan${n}'
+		}
+		else {
+			''
+		}
 	}
+}
+
+// taken_addresses is what default_address must not reuse: the project's interfaces and the
+// addresses the dialog's other rows hold.
+fn (app &App) taken_addresses(skip int) []string {
+	mut out := app.proj.channels.map(it.iface)
+	for k, r in app.arxml_import.rows {
+		if k != skip && r.adapter > 0 {
+			out << vgui.buf_str(r.addr_buf).trim_space()
+		}
+	}
+	return out
+}
+
+// import_ecus is the ECUs that may be marked under test: those of the clusters being imported,
+// project.arxml_ecus per row — the list import_arxml validates against, so a tick is never
+// refused after the fact.
+fn (ui ArxmlImportUi) import_ecus() []string {
+	mut out := []string{}
+	for r in ui.rows {
+		if r.adapter == 0 {
+			continue
+		}
+		for e in r.ecus {
+			if e !in out {
+				out << e
+			}
+		}
+	}
+	return out
 }
 
 fn (mut app App) open_arxml_import(path string) {
@@ -62,23 +105,19 @@ fn (mut app App) open_arxml_import(path string) {
 	}
 	adapters := import_adapters()
 	mut rows := []ArxmlImportRow{}
-	mut ecus := []string{}
-	for k, c in a.clusters {
-		fd := project.arxml_cluster_fd(c)
-		senders := project.arxml_senders(c)
+	mut taken := app.proj.channels.map(it.iface)
+	for c in a.clusters {
+		// the first offered adapter: virtual, so an import runs with no hardware
+		addr := default_address(adapters[1], c.bus, taken)
+		taken << addr
 		rows << ArxmlImportRow{
 			bus:      c.bus
-			rate:     c.baudrate
-			fd_rate:  if fd { c.fd_baudrate } else { 0 }
+			rates:    project.arxml_cluster_rates(c)
 			frames:   c.db.messages.len
-			senders:  senders
-			adapter:  1 // the first offered adapter: virtual, so an import runs with no hardware
-			addr_buf: mkbuf(default_address(adapters[1], c.bus, k), 128)
-		}
-		for s in senders {
-			if s !in ecus {
-				ecus << s
-			}
+			senders:  project.arxml_senders(c)
+			ecus:     project.arxml_ecus(c)
+			adapter:  1
+			addr_buf: mkbuf(addr, 128)
 		}
 	}
 	mut kinds := a.report.ignored.keys()
@@ -86,9 +125,8 @@ fn (mut app App) open_arxml_import(path string) {
 	app.arxml_import = ArxmlImportUi{
 		open:     true
 		path:     path
+		a:        a
 		rows:     rows
-		ecus:     ecus
-		sut:      []bool{len: ecus.len}
 		ignored:  kinds.map('${a.report.ignored[it]} × ${it}').join(', ')
 		adapters: adapters
 	}
@@ -98,8 +136,9 @@ fn (mut app App) open_arxml_import(path string) {
 // stays open with the reason.
 fn (mut app App) arxml_import_confirm() bool {
 	ui := app.arxml_import
-	a := candb.load_arxml_file(ui.path) or {
-		app.arxml_import.err = '${os.file_name(ui.path)}: ${err}'
+	if app.running {
+		// closed at Start already (run.v); kept so a new path to this cannot rebuild mid-run
+		app.arxml_import.err = 'a measurement is running: Stop to import'
 		return false
 	}
 	mut plans := []project.ClusterPlan{}
@@ -110,14 +149,10 @@ fn (mut app App) arxml_import_confirm() bool {
 			address: vgui.buf_str(r.addr_buf).trim_space()
 		}
 	}
-	mut sut := []string{}
-	for k, e in ui.ecus {
-		if ui.sut[k] {
-			sut << e
-		}
-	}
+	sut := ui.import_ecus().filter(ui.sut[it])
+	// the panel's unsaved edits first: import_arxml names the new rows clear of the existing ones
 	app.commit_cfg()
-	chans, notes := project.import_arxml(a, project.ArxmlImport{
+	chans, notes := project.import_arxml(ui.a, project.ArxmlImport{
 		ref:      rel_path(ui.path)
 		clusters: plans
 		sut:      sut
@@ -134,6 +169,8 @@ fn (mut app App) arxml_import_confirm() bool {
 	return true
 }
 
+const ecu_cols = 4 // ECUs under test per line: a system names dozens, and one line would clip them
+
 fn draw_arxml_import(mut app App) {
 	id := 'Import system from ARXML##arxmlimport'
 	if !app.arxml_import.open {
@@ -149,7 +186,9 @@ fn draw_arxml_import(mut app App) {
 		app.arxml_import.popped = true
 	}
 	sc := app.prefs.ui_scale
-	vgui.set_next_window(140, 100, 980, 330 + 26 * f32(app.arxml_import.rows.len))
+	ecus := app.arxml_import.import_ecus()
+	lines := app.arxml_import.rows.len + (ecus.len + ecu_cols - 1) / ecu_cols
+	vgui.set_next_window(140, 100, 980, 330 + 26 * f32(lines))
 	if !vgui.begin_popup_modal(id) {
 		app.arxml_import.open = false
 		app.arxml_import.popped = false
@@ -170,15 +209,25 @@ fn draw_arxml_import(mut app App) {
 			vgui.table_row()
 			vgui.table_cell(r.bus)
 			vgui.set_item_tooltip('sent by: ${r.senders.join(', ')}')
-			vgui.table_cell(rate_text(r.rate))
-			vgui.table_cell(if r.fd_rate > 0 { rate_text(r.fd_rate) } else { 'classic' })
+			vgui.table_cell(rate_text(r.rates.bitrate) + if r.rates.no_baudrate { ' (unstated)' } else { '' })
+			vgui.table_cell(if !r.rates.fd {
+				'classic'
+			} else if r.rates.no_fd_rate {
+				'${rate_text(r.rates.bitrate)} (unstated)'
+			} else {
+				rate_text(r.rates.data_bitrate)
+			})
 			vgui.table_cell('${r.frames}')
 			vgui.table_next_col()
 			vgui.set_next_item_width(140 * sc)
 			pick := vgui.combo('##imad${k}', ui.adapters, r.adapter)
 			if pick != r.adapter {
 				app.arxml_import.rows[k].adapter = pick
-				addr := if pick > 0 { default_address(ui.adapters[pick], r.bus, k) } else { '' }
+				addr := if pick > 0 {
+					default_address(ui.adapters[pick], r.bus, app.taken_addresses(k))
+				} else {
+					''
+				}
 				app.arxml_import.rows[k].addr_buf = mkbuf(addr, 128)
 			}
 			vgui.table_next_col()
@@ -190,12 +239,16 @@ fn draw_arxml_import(mut app App) {
 		vgui.table_end()
 	}
 	vgui.separator_text('ECUs under test')
-	vgui.text_dim('Not simulated: the real ones on the bench.')
-	for k, e in ui.ecus {
-		if k > 0 {
-			vgui.same_line()
+	vgui.text_dim('Not simulated: the real ones on the bench. Listed from the clusters being imported.')
+	if ecus.len > 0 && vgui.table_begin_flat('##arxml_import_sut', ecu_cols) {
+		for k, e in ecus {
+			if k % ecu_cols == 0 {
+				vgui.table_row()
+			}
+			vgui.table_next_col()
+			app.arxml_import.sut[e] = vgui.checkbox('${e}##imsut${k}', ui.sut[e])
 		}
-		app.arxml_import.sut[k] = vgui.checkbox('${e}##imsut${k}', ui.sut[k])
+		vgui.table_end()
 	}
 	app.arxml_import.restbus = vgui.checkbox('simulate every other ECU that sends on an imported cluster (rest bus)',
 		ui.restbus)

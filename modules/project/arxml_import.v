@@ -40,22 +40,53 @@ pub fn arxml_senders(c candb.ArxmlCluster) []string {
 	return out
 }
 
-// arxml_cluster_fd says whether a cluster is run as CAN-FD: it carries an FD frame. A declared
-// CAN-FD baudrate alone is not enough — a classic bus may state one it never uses — and an FD
-// channel carries classic frames too, so one FD frame decides it.
-pub fn arxml_cluster_fd(c candb.ArxmlCluster) bool {
-	for _, f in c.frames {
-		if f.fd {
-			return true
+// arxml_ecus lists the ECUs a cluster names — its senders, then the rest of its nodes — which is
+// what may be marked under test.
+pub fn arxml_ecus(c candb.ArxmlCluster) []string {
+	mut out := arxml_senders(c)
+	for n in c.db.nodes {
+		if n !in out {
+			out << n
 		}
 	}
-	return false
+	return out
+}
+
+// ClusterRates is how a channel reading a cluster is opened, and what the file left unsaid.
+pub struct ClusterRates {
+pub:
+	bitrate      int
+	fd           bool
+	data_bitrate int  // 0: classic, or FD with no data rate stated (it runs at the arbitration rate)
+	no_baudrate  bool // the cluster states no baudrate; `bitrate` is the default
+	no_fd_rate   bool // it carries an FD frame and states no CAN-FD baudrate
+}
+
+// arxml_cluster_rates is the ONE rule for a cluster's rates, which the import writes and the
+// dialog shows. FD is decided by the frames: a declared CAN-FD baudrate alone is not enough — a
+// classic bus may state one it never uses — and an FD channel carries classic frames too, so
+// one FD frame decides it.
+pub fn arxml_cluster_rates(c candb.ArxmlCluster) ClusterRates {
+	mut fd := false
+	for _, f in c.frames {
+		if f.fd {
+			fd = true
+			break
+		}
+	}
+	return ClusterRates{
+		bitrate:      if c.baudrate > 0 { c.baudrate } else { default_bitrate }
+		fd:           fd
+		data_bitrate: if fd && c.fd_baudrate > 0 { c.fd_baudrate } else { 0 }
+		no_baudrate:  c.baudrate <= 0
+		no_fd_rate:   fd && c.fd_baudrate <= 0
+	}
 }
 
 // import_arxml builds the channel rows an import adds to `existing`, plus notes for what the
 // operator should know about them. Refused, before anything is built, for a cluster the file
-// does not have, a cluster mapped twice, two clusters on one wire (each is a bus), and an ECU
-// under test the imported clusters do not name.
+// does not have, a cluster mapped twice, an adapter that does not carry CAN, two clusters on
+// one wire (each is a bus), and an ECU under test the imported clusters do not name.
 pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Channel, []string) {
 	mut chosen := []candb.ArxmlCluster{}
 	mut plans := []ClusterPlan{}
@@ -69,6 +100,9 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 			return error('${c.bus} is mapped twice')
 		}
 		iface := compose_iface(pl.adapter, pl.address)
+		if pl.adapter !in adapters || iface_is_eth(iface) {
+			return error('${c.bus}: ${pl.adapter} is not a CAN adapter')
+		}
 		if pl.address.trim_space() == '' && pl.adapter !in ['virtual', 'udp'] {
 			return error('${c.bus}: ${pl.adapter} needs an address')
 		}
@@ -85,14 +119,9 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 	}
 	mut ecus := []string{}
 	for c in chosen {
-		for s in arxml_senders(c) {
-			if s !in ecus {
-				ecus << s
-			}
-		}
-		for n in c.db.nodes {
-			if n !in ecus {
-				ecus << n
+		for e in arxml_ecus(c) {
+			if e !in ecus {
+				ecus << e
 			}
 		}
 	}
@@ -112,21 +141,24 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 			name = '${c.bus}_${n}'
 		}
 		names << name
-		fd := arxml_cluster_fd(c)
+		r := arxml_cluster_rates(c)
 		mut ch := Channel{
 			name:         name
 			adapter:      pl.adapter
 			address:      pl.address.trim_space()
 			iface:        iface
-			typ:          if fd { 'canfd' } else { 'can' }
-			fd:           fd
-			bitrate:      if c.baudrate > 0 { c.baudrate } else { default_bitrate }
-			data_bitrate: if fd { c.fd_baudrate } else { 0 }
+			typ:          if r.fd { 'canfd' } else { 'can' }
+			fd:           r.fd
+			bitrate:      r.bitrate
+			data_bitrate: r.data_bitrate
 			databases:    ['${imp.ref}#${c.bus}']
 			listen_only:  adapter_starts_silent(pl.adapter)
 		}
-		if c.baudrate <= 0 {
+		if r.no_baudrate {
 			notes << '${name}: ${c.bus} states no baudrate; set to ${default_bitrate}'
+		}
+		if r.no_fd_rate {
+			notes << '${name}: ${c.bus} carries CAN-FD frames and states no CAN-FD baudrate; the data phase runs at the arbitration rate'
 		}
 		if imp.restbus {
 			ch.simulate = arxml_senders(c).filter(it !in imp.sut)

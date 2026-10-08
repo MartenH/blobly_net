@@ -112,6 +112,16 @@ fn test_import_refuses_what_cannot_be_one_bus_per_wire() {
 	} else {
 		assert err.msg().contains('needs an address')
 	}
+	for adapter in ['doip', 'someip', 'bogus'] {
+		if _, _ := import_arxml(a, ArxmlImport{
+			ref:      'n.arxml'
+			clusters: [ClusterPlan{'Body', adapter, 'x'}]
+		}, []) {
+			assert false, '${adapter} is not CAN'
+		} else {
+			assert err.msg().contains('not a CAN adapter')
+		}
+	}
 	if _, _ := import_arxml(a, ArxmlImport{ ref: 'n.arxml' }, []) {
 		assert false, 'nothing mapped'
 	} else {
@@ -136,4 +146,33 @@ fn test_imported_rows_round_trip() {
 	assert back.channels[0].fd && back.channels[0].data_bitrate == 2000000
 	assert back.channels[0].simulate == ['ECU_A', 'ECU_C']
 	assert back.channels[0].iface == 'inproc:CAN1'
+}
+
+// The rates, as the dialog shows them and the import writes them: FD decided by the frames, the
+// data rate where stated, and what the file left out said rather than guessed.
+fn test_cluster_rates() {
+	a := two_clusters()!
+	body := a.cluster('Body')!
+	r := arxml_cluster_rates(body)
+	assert r.bitrate == 500000 && r.fd && r.data_bitrate == 2000000
+	assert !r.no_baudrate && !r.no_fd_rate
+	assert arxml_ecus(body) == ['ECU_A', 'ECU_B', 'ECU_C']
+	// an FD frame with no CAN-FD baudrate: FD, at the arbitration rate, and said
+	src := os.read_file(os.join_path(@VMODROOT, 'dbc', 'example.arxml'))!
+	at := src.index('<CAN-FD-BAUDRATE>') or { panic('fixture has no CAN-FD-BAUDRATE') }
+	end := (src.index('</CAN-FD-BAUDRATE>') or { panic('unclosed') }) + '</CAN-FD-BAUDRATE>'.len
+	path := os.join_path(os.vtmp_dir(), 'arxml_nofd_${os.getpid()}.arxml')
+	os.write_file(path, src[..at] + src[end..])!
+	defer {
+		os.rm(path) or {}
+	}
+	nofd := candb.load_arxml_file(path)!
+	r2 := arxml_cluster_rates(nofd.cluster('Body')!)
+	assert r2.fd && r2.data_bitrate == 0 && r2.no_fd_rate
+	chans, notes := import_arxml(nofd, ArxmlImport{
+		ref:      'n.arxml'
+		clusters: [ClusterPlan{'Body', 'virtual', 'B'}]
+	}, [])!
+	assert chans[0].fd && chans[0].data_rate() == 500000
+	assert notes == ['Body: Body carries CAN-FD frames and states no CAN-FD baudrate; the data phase runs at the arbitration rate']
 }
