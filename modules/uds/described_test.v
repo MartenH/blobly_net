@@ -215,3 +215,17 @@ fn test_a_parameter_write_checks_its_width_before_its_range() {
 	assert s.handle([u8(0x22), 0x02, 0x00, 0x02, 0x01]) == [u8(0x62), 0x02, 0x00, 0x00, 0x32,
 		0x02, 0x01, 0x01]
 }
+
+// A writable DID past comm/uds's 32-byte cell takes no record, not even one of its own size.
+fn test_a_writable_did_past_the_cell_takes_no_record() {
+	mut s := server_from(ServerSpec{
+		dids: [DidSpec{
+			id:       0x0300
+			data:     []u8{len: 33}
+			writable: true
+		}]
+	})
+	mut req := [u8(0x2E), 0x03, 0x00]
+	req << []u8{len: 33, init: 0x41}
+	assert s.handle(req) == [u8(0x7F), 0x2E, 0x13]
+}

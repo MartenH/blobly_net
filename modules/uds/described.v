@@ -137,6 +137,9 @@ pub const status_cleared = u8(0x50)
 // availability_mask is the status bits blobly_emb's fault memory maintains (no warning lamp).
 pub const fault_availability = u8(0x7F)
 
+// max_described_did is the most a written DID record may hold (comm/uds max_did_data).
+const max_described_did = 32
+
 // sa_seed_len is a seed's length (comm/uds seed_len), which a key must match.
 const sa_seed_len = 4
 
@@ -528,8 +531,8 @@ fn (mut s Server) d_write(req []u8) []u8 {
 		return neg(0x2E, 0x33)
 	}
 	// the declared size is the only record a DID takes (comm/uds, emb#403): a write never
-	// resizes a DID
-	if rec.len != d.data.len {
+	// resizes a DID; past comm/uds's cell no record is taken at all
+	if rec.len != d.data.len || rec.len > max_described_did {
 		return neg(0x2E, 0x13)
 	}
 	if d.source == .param {
