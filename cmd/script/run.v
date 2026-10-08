@@ -18,6 +18,7 @@ import transport
 import isotp
 import uds
 import sim
+import sysview
 import doip
 import script
 import testports
@@ -164,6 +165,9 @@ fn main() {
 	// ask, and a row a generator targets need not be one the loop loaded
 	mut row_dbs := map[int]candb.Database{}
 	run_t0 := time.sys_mono_now() // the ONE epoch every generator's time-based source runs from
+	// the description the simulated diagnostic servers answer by (sim.describe): the system.toml
+	// the GUI's Diagnostics panel would read for this project
+	desc_sys := described_system(proj_path, proj)
 	for ci, ch in proj.channels {
 		if !ch.enabled {
 			continue
@@ -210,7 +214,7 @@ fn main() {
 			// the single VIN both identity surfaces use. An entity that came up differently
 			// depending on which side started it would make a bench result depend on how the
 			// tool was launched.
-			ent := sim.doip_entity(ch, nodes) or {
+			ent := sim.doip_entity_described(ch, nodes, &desc_sys) or {
 				eprintln('${ch.name}: ${err}')
 				// ABORT, not continue. Leaving the channel in place let scripts dial the
 				// endpoint anyway, and if another DoIP process holds it the suite passes
@@ -218,6 +222,9 @@ fn main() {
 				// reached by skipping the bind entirely.
 				eprintln('refusing to run: scripts would dial ${ch.name} and reach whatever else is there')
 				exit(1)
+			}
+			for n in ent.notes {
+				eprintln('${ch.name}: ${n}')
 			}
 			if ent.extra > 0 {
 				// One channel is one entity at one logical address, so extra UDS nodes have no
@@ -270,16 +277,23 @@ fn main() {
 				// ENABLED channels only: a disabled entry sharing this interface must not
 				// contribute servers, or a test observes an ECU it explicitly switched off.
 				mut peers := []project.NodeCfg{}
+				mut owners := []string{} // each peer's channel, by position
 				for other in proj.channels {
 					if other.enabled
 						&& transport.destination_key_for(other.adapter, other.iface) == ch_dest {
-						peers << other.all_nodes()
+						for n in other.all_nodes() {
+							peers << n
+							owners << other.name
+						}
 					}
 				}
 				for w in sim.validate_uds(peers) {
 					eprintln('${ch.name}: ${w}')
 				}
 				mut servers := sim.uds_nodes(peers)
+				for n in sim.describe_uds_nodes(&desc_sys, mut servers, peers, owners, ch.iface) {
+					eprintln('${ch.name}: ${n}')
+				}
 				// Same hazard as the DoIP branch: falling back to the built-in server when
 				// every CONFIGURED one was rejected makes a broken project look like a working
 				// ECU. Only an absence of `uds:` blocks earns the default.
@@ -295,7 +309,11 @@ fn main() {
 					continue
 				}
 				if servers.len == 0 {
-					sims << spawn diag_server_loop(ch.iface_with_bitrate(), ctl)
+					dflt := sim.describe_default(&desc_sys, ch.name, 0x7E0, 0x7E8)
+					for n in dflt.notes {
+						eprintln(n)
+					}
+					sims << spawn diag_server_loop(ch.iface_with_bitrate(), dflt.server, ctl)
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
@@ -450,6 +468,7 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}
 		}
+		sim.publish_live(fault_iface, &engine) // what a described server's live DIDs read
 		if frame := bus.recv(5) {
 			for resp in engine.on_frame(frame) {
 				bus.send(resp) or {}
@@ -608,7 +627,7 @@ fn doip_udp_loop(mut s doip.DoipServer, ctl &Ctl) {
 	}
 }
 
-fn diag_server_loop(iface string, ctl &Ctl) {
+fn diag_server_loop(iface string, server uds.Server, ctl &Ctl) {
 	// Counted done on EVERY way out, an open that fails included -- a loop that returned
 	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
 	// #231).
@@ -621,7 +640,7 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 	ch.stop_requested = fn [ctl] () bool {
 		return !ctl.running
 	}
-	mut srv := uds.default_server()
+	mut srv := server
 	for ctl.running {
 		req := ch.recv(50) or { continue }
 		resp := srv.handle(req)
@@ -644,6 +663,22 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 		eprintln('${cfg.name}: ${w}')
 	}
 	return sim.from_project(db, cfg)
+}
+
+// described_system is the system.toml sysview.find_system finds for the project, loaded; an empty
+// model, which describes nothing, when there is none.
+fn described_system(proj_path string, proj project.Project) sysview.System {
+	mut refs := []string{}
+	for c in proj.channels {
+		refs << c.databases
+	}
+	path := sysview.find_system(proj_path, refs) or { return sysview.System{} }
+	sys := sysview.load(path) or {
+		eprintln('${path} could not be read (${err}); simulated servers answer from the project')
+		return sysview.System{}
+	}
+	println('described: ${path}')
+	return sys
 }
 
 // report_diag prints what one handle counted that no frame carried, if anything (#213).

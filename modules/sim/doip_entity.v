@@ -3,7 +3,9 @@
 // not come up at all: a bench result would depend on how the tool was launched.
 module sim
 
+import os
 import project
+import sysview
 import uds
 import doip
 
@@ -20,13 +22,19 @@ pub:
 	node     string // the UDS node being served; '' = the built-in default server
 	announce string // the announced VIN, always == the served DID 0xF190
 	extra    int    // configured UDS nodes beyond the one served
+	// the described node it answers as (describe), '' = the project's content; and what to say
+	described string
+	notes     []string
 pub mut:
 	server uds.Server
 }
 
 // node_label names the served node for a UI list; the built-in default has no node name.
 pub fn (e DoipEntity) node_label() string {
-	return if e.node != '' { e.node } else { 'default entity' }
+	if e.node != '' {
+		return e.node
+	}
+	return if e.described != '' { '${e.described} (described)' } else { 'default entity' }
 }
 
 // doip_entity decides what `ch` should host, or refuses.
@@ -40,6 +48,13 @@ pub fn (e DoipEntity) node_label() string {
 //   - the resolved VIN is not exactly 17 bytes. vehicle_announcement zero-pads or truncates to
 //     17 while the server returns it whole, so the two surfaces would differ by construction.
 pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
+	return doip_entity_described(ch, nodes, &sysview.System{})
+}
+
+// doip_entity_described is doip_entity whose server is the one `sys` describes for the node at
+// the channel's logical address (describe), when it describes one: its F190 is then the identity
+// as a configured node's is.
+pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &sysview.System) !DoipEntity {
 	mut declared := 0
 	for n in nodes {
 		if _ := n.uds {
@@ -52,11 +67,19 @@ pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
 	}
 	mut srv := if built.len > 0 { built[0].server } else { uds.default_server() }
 	name := if built.len > 0 { built[0].name } else { '' }
+	cfg := if built.len > 0 { nodes[built[0].src].uds } else { none }
+	d := describe(sys, sysview.TargetAddr{ doip: true, logical: ch.ecu_addr }, name, cfg, true)
+	mut notes := d.notes.clone()
+	if d.ok {
+		srv = d.server
+		notes.prepend('diagnostics as described for ${d.node} (${os.file_name(sys.path)})')
+	}
+	configured := built.len > 0 || d.ok
 
 	// A CONFIGURED node's DID is the identity. The fallback server's 0xF190 is a module
 	// default rather than a configuration, so it must not win the same way.
 	mut announce := ch.vin
-	if built.len > 0 {
+	if configured {
 		if v := srv.dids[u16(0xF190)] {
 			node_vin := v.bytestr()
 			if node_vin == '' {
@@ -64,25 +87,25 @@ pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
 				// below would overwrite a configured DID with the stock VIN and skip the
 				// 17-byte check entirely, so a broken project would come up as a plausible
 				// entity and let tests pass against data it never configured.
-				return error('node "${name}" defines DID 0xF190 with no value — an entity cannot announce an empty VIN')
+				return error('node "${if d.ok { d.node } else { name }}" defines DID 0xF190 with no value — an entity cannot announce an empty VIN')
 			}
 			if ch.vin != '' && node_vin != ch.vin {
-				return error('vin "${ch.vin}" and node "${name}" DID 0xF190 "${node_vin}" are two identities for one entity')
+				return error('vin "${ch.vin}" and node "${if d.ok { d.node } else { name }}" DID 0xF190 "${node_vin}" are two identities for one entity')
 			}
 			announce = node_vin
 		} else if ch.vin != '' {
 			// Announced but not served: reading 0xF190 would answer NRC while discovery
 			// advertised a VIN. Serve what is announced.
-			srv.dids[0xF190] = ch.vin.bytes()
+			srv.put_did(0xF190, ch.vin.bytes())
 		}
 	} else if ch.vin != '' {
-		srv.dids[0xF190] = ch.vin.bytes()
+		srv.put_did(0xF190, ch.vin.bytes())
 	}
 	if announce == '' {
 		// Nothing configured either way: server_cfg advertises its built-in default, so serve
 		// that same string rather than answering NRC 0x31 for the DID it just advertised.
 		announce = doip.default_vin
-		srv.dids[0xF190] = announce.bytes()
+		srv.put_did(0xF190, announce.bytes())
 	}
 	if announce.len != 17 {
 		return error('VIN "${announce}" is ${announce.len} bytes, not 17 — discovery would advertise a padded or truncated string while 0xF190 serves this one')
@@ -99,9 +122,11 @@ pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
 			// a functional request is answered as a CAN node answers one: the quiet NRCs withheld
 			functional_withheld: uds.functional_suppressed
 		}
-		node:     name
-		announce: announce
-		extra:    if built.len > 1 { built.len - 1 } else { 0 }
-		server:   srv
+		node:      name
+		announce:  announce
+		extra:     if built.len > 1 { built.len - 1 } else { 0 }
+		described: if d.ok { d.node } else { '' }
+		notes:     notes
+		server:    srv
 	}
 }

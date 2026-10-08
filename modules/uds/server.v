@@ -25,6 +25,22 @@ pub mut:
 	sec_seed []u8 // last seed handed out (0x27 request seed)
 	seed_lvl u8   // the security level sec_seed was handed out for
 	unlocked u8   // the security level granted (0x27 valid key accepted), 0 = locked
+	// the DTC status bits the server maintains: a 0x19 mask is ANDed with it, and it is the
+	// availability mask the answers carry (blobly_emb's fault memory: 0x7F, no warning lamp)
+	avail u8 = 0xFF
+	// built from a description (server_from, described.v): gates, the service table, 0x27 and
+	// parameters as the description states them. false = the fixture, which gates nothing.
+	described bool
+	spec      ServerSpec
+	// a live DID's signal value, for a described server whose owner simulates the signal; nil or
+	// none = the DID keeps its zeros
+	signal_value fn (name string) ?i64 = unsafe { nil }
+	// the described server's clock in ms (S3, the 0x27 lockout); nil = time.ticks()
+	clock          fn () i64 = unsafe { nil }
+	last_rx_ms     i64
+	sa_failed      [8]u8 // wrong keys per level
+	sa_delay_until i64
+	sa_state       u32 // the seed generator
 }
 
 // Dtc is one stored fault: a 3-byte UDS DTC code and its status byte.
@@ -101,6 +117,9 @@ pub fn (mut s Server) handle(req []u8) []u8 {
 }
 
 fn (mut s Server) answer(req []u8) []u8 {
+	if s.described {
+		return s.answer_described(req)
+	}
 	sid := req[0]
 	match sid {
 		0x10 { // DiagnosticSessionControl
@@ -165,41 +184,8 @@ fn (mut s Server) answer(req []u8) []u8 {
 			s.sec_seed = []u8{} // a refused key ends its seed: the next key needs a new one
 			return neg(sid, 0x35) // invalidKey
 		}
-		0x19 { // ReadDTCInformation: 0x01 count, 0x02 by status mask, 0x0A supported
-			sub := if req.len > 1 { req[1] } else { u8(0) }
-			if sub == 0x03 || sub == 0x04 || sub == 0x06 {
-				return s.dtc_records(req)
-			}
-			if sub != 0x01 && sub != 0x02 && sub != 0x0A {
-				return neg(sid, 0x12) // subFunctionNotSupported (bit 7 too: 0x19 has no suppress)
-			}
-			if req.len != if sub == 0x0A { 2 } else { 3 } {
-				return neg(sid, 0x13) // incorrectMessageLengthOrInvalidFormat
-			}
-			if sub == 0x0A { // reportSupportedDTC: every DTC, whole status
-				mut all := [u8(0x59), 0x0A, 0xFF]
-				for d in s.dtcs {
-					all << [u8((d.code >> 16) & 0xFF), u8((d.code >> 8) & 0xFF), u8(d.code & 0xFF), d.status]
-				}
-				return all
-			}
-			mask := req[2]
-			if sub == 0x01 { // reportNumberOfDTCByStatusMask
-				n := s.dtcs.filter(it.status & mask != 0).len
-				return [u8(0x59), 0x01, 0xFF, 0x01, u8(n >> 8), u8(n)]
-			}
-			// [0x59, 0x02, statusAvailabilityMask, {DTC hi/mid/lo, status}...]
-			mut resp := [u8(0x59), 0x02, 0xFF]
-			for d in s.dtcs {
-				if d.status & mask == 0 {
-					continue // the tester asked for a status this fault does not have
-				}
-				resp << u8((d.code >> 16) & 0xFF)
-				resp << u8((d.code >> 8) & 0xFF)
-				resp << u8(d.code & 0xFF)
-				resp << d.status
-			}
-			return resp
+		0x14, 0x19, 0x85 {
+			return s.answer_dtc(req)
 		}
 		0x3E { // TesterPresent
 			return [u8(0x7E), 0x00]
@@ -218,29 +204,6 @@ fn (mut s Server) answer(req []u8) []u8 {
 			s.unlocked = 0
 			s.sec_seed = []u8{}
 			return [u8(0x51), req[1]]
-		}
-		0x85 { // ControlDTCSetting: 0x01 on, 0x02 off
-			if req.len < 2 {
-				return neg(sid, 0x13)
-			}
-			if req[1] != 0x01 && req[1] != 0x02 {
-				return neg(sid, 0x12)
-			}
-			return [u8(0xC5), req[1]]
-		}
-		0x14 { // ClearDiagnosticInformation: a group (0xFFFFFF = all) or one DTC
-			if req.len != 4 {
-				return neg(sid, 0x13)
-			}
-			group := u32(req[1]) << 16 | u32(req[2]) << 8 | u32(req[3])
-			if group == 0xFFFFFF {
-				s.dtcs.clear()
-			} else if s.dtcs.any(it.code == group) {
-				s.dtcs = s.dtcs.filter(it.code != group)
-			} else {
-				return neg(sid, 0x31)
-			}
-			return [u8(0x54)]
 		}
 		else {
 			return neg(sid, 0x11) // serviceNotSupported
@@ -286,6 +249,81 @@ pub fn (mut s Server) serve(mut ch isotp.Channel, stop chan bool) {
 		resp := s.handle(req)
 		if resp.len > 0 {
 			ch.send(resp) or {}
+		}
+	}
+}
+
+// answer_dtc answers the fault memory's services: 0x19 01/02/0A (count, by status mask, all) and
+// 03/04/06 (snapshots, extended data), 0x85 (acknowledged) and 0x14 (a clear — which empties the
+// fixture's table, and puts a described server's DTCs back to their power-on status, since its
+// faults are declared and stay).
+fn (mut s Server) answer_dtc(req []u8) []u8 {
+	sid := req[0]
+	match sid {
+		0x19 { // ReadDTCInformation: 0x01 count, 0x02 by status mask, 0x0A supported
+			sub := if req.len > 1 { req[1] } else { u8(0) }
+			if sub == 0x03 || sub == 0x04 || sub == 0x06 {
+				return s.dtc_records(req)
+			}
+			if sub != 0x01 && sub != 0x02 && sub != 0x0A {
+				return neg(sid, 0x12) // subFunctionNotSupported (bit 7 too: 0x19 has no suppress)
+			}
+			if req.len != if sub == 0x0A { 2 } else { 3 } {
+				return neg(sid, 0x13) // incorrectMessageLengthOrInvalidFormat
+			}
+			if sub == 0x0A { // reportSupportedDTC: every DTC, whole status
+				mut all := [u8(0x59), 0x0A, s.avail]
+				for d in s.dtcs {
+					all << [u8((d.code >> 16) & 0xFF), u8((d.code >> 8) & 0xFF), u8(d.code & 0xFF), d.status]
+				}
+				return all
+			}
+			mask := req[2] & s.avail
+			if sub == 0x01 { // reportNumberOfDTCByStatusMask
+				n := s.dtcs.filter(it.status & mask != 0).len
+				return [u8(0x59), 0x01, s.avail, 0x01, u8(n >> 8), u8(n)]
+			}
+			// [0x59, 0x02, statusAvailabilityMask, {DTC hi/mid/lo, status}...]
+			mut resp := [u8(0x59), 0x02, s.avail]
+			for d in s.dtcs {
+				if d.status & mask == 0 {
+					continue // the tester asked for a status this fault does not have
+				}
+				resp << u8((d.code >> 16) & 0xFF)
+				resp << u8((d.code >> 8) & 0xFF)
+				resp << u8(d.code & 0xFF)
+				resp << d.status
+			}
+			return resp
+		}
+		0x85 { // ControlDTCSetting: 0x01 on, 0x02 off
+			if req.len < 2 {
+				return neg(sid, 0x13)
+			}
+			if req[1] != 0x01 && req[1] != 0x02 {
+				return neg(sid, 0x12)
+			}
+			return [u8(0xC5), req[1]]
+		}
+		0x14 { // ClearDiagnosticInformation: a group (0xFFFFFF = all) or one DTC
+			if req.len != 4 {
+				return neg(sid, 0x13)
+			}
+			group := u32(req[1]) << 16 | u32(req[2]) << 8 | u32(req[3])
+			if s.described {
+				return s.clear_described(group)
+			}
+			if group == 0xFFFFFF {
+				s.dtcs.clear()
+			} else if s.dtcs.any(it.code == group) {
+				s.dtcs = s.dtcs.filter(it.code != group)
+			} else {
+				return neg(sid, 0x31)
+			}
+			return [u8(0x54)]
+		}
+		else {
+			return neg(sid, 0x11)
 		}
 	}
 }

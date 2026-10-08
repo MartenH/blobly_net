@@ -1,0 +1,25 @@
+# A simulated ECU DESCRIBED by blobly_emb's ecu.toml (docs/simulation.md, "Described servers"):
+# zone_a of system_full, on an in-process edge bus. Its `uds:` block gives only its addresses —
+# the DIDs, their gates, the services, 0x27 and the parameter come from nodes/zone_a/ecu.toml,
+# which system.toml beside this file names for the node addressed 0x7C0/0x7C8. So it answers as
+# the real zone_a does (tests/diag_described.lua), and a test written against it runs unchanged
+# against the board (blobly_emb examples/system_full/test/diag_bench.blobnet).
+project:
+  name: Described zone_a
+  version: 8
+
+channels:
+  - name: edge
+    type: can
+    interface: inproc:EDGE
+    mode: monitor
+    databases:
+      - edge.dbc
+    simulation:
+      - name: zone_a
+        signals:
+          - { name: SteeringAngle, type: const, value: 180 }
+        uds:
+          rx: "0x7C0"
+          tx: "0x7C8"
+          functional: "0x7DF"

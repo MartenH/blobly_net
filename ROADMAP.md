@@ -52,15 +52,17 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   backs the Lua test runner, the GUI's simulated diagnostics and `doip_smoke`, and it serves
   **0x10** session control, **0x22**/**0x2E** RDBI/WDBI, **0x27** security access, **0x19**
   ReadDTCInformation (sub `0x02` only) and **0x3E** tester present. What is missing:
-  - **Config-driven per node** — the biggest gap. `default_server()` is a hardcoded fixture: one
-    fixed DID table, one fixed seed/key. A node's DIDs, sessions and security ought to come from
-    the project / `system.toml`, so a simulated ECU answers like *that* ECU
-    ([`docs/simulation_architecture.md`](docs/simulation_architecture.md)).
+  - ✅ **Config-driven per node** — a simulated server addressed like a node of the project's
+    `system.toml` is built from that node's `ecu.toml` (`uds.server_from`, `sim.describe`): its
+    DIDs, gates, services table, 0x27 levels and key, parameters and DTCs, answering as the
+    board does (cross-checked against zone_a; `docs/simulation.md`, "Described servers").
+    Without a description, `default_server()` and the project's `uds:` content as before.
   - **0x31 RoutineControl** — start/stop/requestResults; nothing today.
   - **0x11 ECUReset**, **0x14 ClearDiagnosticInformation**, and the remaining **0x19**
     subfunctions beyond `reportDTCByStatusMask`.
-  - **Session and security state actually gating access** — a session change is acknowledged but
-    does not restrict which services or DIDs are reachable, and `unlocked` is never required.
+  - **Session and security state actually gating access** — done for a DESCRIBED server (its
+    services table and DID gates); a server configured only by the project's `uds:` block still
+    gates nothing, since that block states no gates.
   - **Per-connection state** for DoIP (shared with the threading item below).
 
 ## Planned

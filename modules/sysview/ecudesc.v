@@ -46,6 +46,7 @@ pub enum DidKind {
 	signal       // a live signal's value
 	param        // a coded parameter
 	param_status // one status byte per parameter
+	tx_saturations // the count of sent values held to their DBC range: a u32, big-endian
 	unknown      // none of the above: its size is not known here
 }
 
@@ -61,6 +62,7 @@ pub:
 	// one byte per parameter for a status DID); empty for text and fixed bytes
 	fields   []Field
 	text     string // ascii: the text
+	data     []u8   // bytes: the value
 	read     string // the read gate (`extended, level 1`), '' = open
 	write    string // the write gate; '' = not writable
 	// the same gates as data: what a tester has to establish before the request
@@ -99,6 +101,38 @@ pub fn session_id(name string) ?u8 {
 	}
 }
 
+// ServiceRow is one `[uds] services` row: the service, the sub-function it narrows (-1 = the
+// whole service; the one sub-function row is the programming handoff, "0x10 02"), and its gate —
+// the sessions it runs in (none listed = the service's default ones) and the 0x27 level it needs.
+pub struct ServiceRow {
+pub:
+	sid  u8
+	sub  int = -1
+	gate Gate
+}
+
+// service_key reads one `[uds] services` key: "0x22", or "0x10 02". none = not a service key.
+fn service_key(key string) ?(u8, int) {
+	parts := key.fields()
+	if parts.len == 0 || parts.len > 2 {
+		return none
+	}
+	sid := hex_u8(parts[0])?
+	if parts.len == 1 {
+		return sid, -1
+	}
+	return sid, int(hex_u8(parts[1])?)
+}
+
+// hex_u8 is a byte in hex, with or without its `0x`.
+fn hex_u8(t string) ?u8 {
+	h := t.to_lower().trim_string_left('0x')
+	if h.len < 1 || h.len > 2 || !h.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	return u8(h.parse_uint(16, 8) or { return none })
+}
+
 // ParamDesc is one `[[param]]`.
 pub struct ParamDesc {
 pub:
@@ -129,6 +163,16 @@ pub mut:
 	allow_bench_key bool
 	// the security levels `[uds] services` rows name (a service gated behind 0x27), in file order
 	service_levels []int
+	// `[uds] services`: whether the file states the table (then exactly `services` are served),
+	// and its rows — a service's, or the one sub-function row, the programming handoff "0x10 02"
+	services_table bool
+	services       []ServiceRow
+	// `[boot]`: the node sits behind a bootloader, so 0x10 02 is the programming handoff
+	boot bool
+	// `[uds]` timing and 0x27 limits as written; 0 = the server's defaults
+	s3_ms             int
+	security_attempts int
+	security_delay_ms int
 	errs   []string
 	// problems with entries that WERE read and kept (a gate that cannot be met): warnings, not
 	// omissions — `errs` is what was left out
@@ -399,18 +443,41 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 	}
 	d.server = ['uds', 'isotp', 'doip'].any(doc.value_opt(it) or { toml.Any(toml.Null{}) } !is toml.Null)
 	if uv := doc.value_opt('uds') {
-		d.security_key = tstr(uv.as_map(), 'security_key')
-		if sv := uv.as_map()['services'] {
+		um := uv.as_map()
+		d.security_key = tstr(um, 'security_key')
+		d.s3_ms = int(tint(um, 's3_ms'))
+		d.security_attempts = int(tint(um, 'security_attempts'))
+		d.security_delay_ms = int(tint(um, 'security_delay_ms'))
+		if sv := um['services'] {
+			d.services_table = true
 			rows := sv.as_map()
-			for sid, row in rows {
-				bad := gate_level_refusal(rows, sid)
+			for key, row in rows {
+				bad := gate_level_refusal(rows, key)
 				if bad != '' {
 					d.errs << '[uds] services ${bad}; not read'
 					continue
 				}
-				lv := tint(row.as_map(), 'security')
+				sid, sub := service_key(key) or {
+					d.errs << '[uds] services "${key}" is not a service id; not read'
+					continue
+				}
+				rm := row.as_map()
+				lv := tint(rm, 'security')
 				if lv > 0 {
 					d.service_levels << int(lv)
+				}
+				d.services << ServiceRow{
+					sid:  sid
+					sub:  sub
+					gate: Gate{
+						declared: true
+						sessions: if s := rm['sessions'] {
+							s.array().map(it.string())
+						} else {
+							[]string{}
+						}
+						level:    int(lv)
+					}
 				}
 			}
 		}
@@ -420,6 +487,7 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			d.allow_bench_key = b is bool && b
 		}
 	}
+	d.boot = doc.value_opt('boot') or { toml.Any(toml.Null{}) } !is toml.Null
 	if iv := doc.value_opt('isotp') {
 		im := iv.as_map()
 		d.isotp_req = u32(tint(im, 'rx_id'))
@@ -502,13 +570,25 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		mut size := -1
 		mut fields := []Field{}
 		mut text := ''
+		mut data := []u8{}
 		if a := xm['ascii'] {
 			kind = .ascii
 			text = a.string()
 			size = text.len
 		} else if b := xm['bytes'] {
 			kind = .bytes
+			data = parse_hex(b.string()) or {
+				d.errs << 'did 0x${id:04X}: bytes "${b.string()}" are not hex; its value is not known'
+				[]u8{}
+			}
 			size = b.string().fields().len
+		} else if ts := xm['tx_saturations'] {
+			if ts.bool() {
+				kind = .tx_saturations
+				name = 'sent values saturated'
+				fields = [Field{'count', 'u32'}]
+				size = 4
+			}
 		} else if s := xm['signal'] {
 			kind = .signal
 			name = s.string()
@@ -556,6 +636,7 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			size:   size
 			fields: fields
 			text:   text
+			data:   data
 			read:       read
 			write:      write
 			read_gate:  read_gate

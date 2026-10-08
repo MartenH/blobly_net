@@ -1,0 +1,89 @@
+# zone_a's diagnostic description: a trimmed copy of blobly_emb's
+# examples/system_full/nodes/zone_a/ecu.toml (origin/main a8728c9) — its parameter, faults,
+# [uds], [boot], [isotp] and DIDs as written there; the partitions, function blocks and IO,
+# which a diagnostic server does not read, left out.
+
+[[param]]
+name    = "SteerLimit"
+fields  = { deg = "u16" }
+default = { deg = 360 }
+range   = { deg = { min = 0, max = 360 } }   # refused at 0x2E (0x31) and at restore
+apply   = "reset"
+
+[[fault]]
+name     = "SpeedImplausible"
+dtc      = 0xC40100                    # U0401-00: invalid data received from the powertrain
+from     = "SteerLimiter.on_50ms"
+debounce = { kind = "counter", fail = 3, pass = 3 }
+confirm  = 1
+aging    = 3
+freeze   = [0xF1A0]
+
+[[fault]]
+name   = "SafetyCmdTimeout"
+dtc    = 0xC16400                      # U0164-00
+signal = "SafetyCmd"
+on     = "timeout"
+
+[[fault]]
+name   = "SafetyCmdIntegrity"
+dtc    = 0xC46400                      # U0464-00
+signal = "SafetyCmd"
+on     = "integrity"
+
+[[fault]]
+name   = "SafetyCmdLost"
+dtc    = 0xC46401
+signal = "SafetyCmd"
+on     = "lost"
+
+[fault_memory]
+cycle = "power"
+
+[uds]
+s3_ms             = 5000
+security_attempts = 3
+security_delay_ms = 3000
+security_key      = "reference"
+
+[boot]
+image_key   = "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+session_key = "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7"
+
+[isotp]
+bus           = "can0"
+rx_id         = 0x7C0
+tx_id         = 0x7C8
+functional_id = 0x7DF
+bs            = 8
+stmin_ms      = 0
+
+[[did]]
+id    = 0xF190
+ascii = "BLOBLY-ZONE_A-H723"
+
+[[did]]
+id    = 0xF189
+ascii = "system_full"
+
+[[did]]
+id     = 0xF1A0
+signal = "SteeringAngle"
+
+[[did]]
+id    = 0x0110
+param = "SteerLimit"
+write = { session = ["extended"], security = 1 }
+
+[[did]]
+id           = 0x0111
+param_status = true
+
+[[did]]
+id             = 0x0120
+tx_saturations = true
+
+[[did]]
+id    = 0x0102
+bytes = "00"
+write = { session = ["extended"], security = 1 }
