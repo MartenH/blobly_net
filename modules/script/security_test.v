@@ -33,11 +33,17 @@ fn test_an_all_zero_seed_sends_no_key() {
 			diag:session(0x03)
 			check.equal(tohex(diag:security_access(0x01)), "11 22 33 44")
 		end)
+		test("another level is not unlocked by the first", function()
+			diag:session(0x03)
+			check.equal(tohex(diag:security_access(0x01)), "11 22 33 44")
+			-- a real seed, answered with the reference key (a refused key raises)
+			check.equal(tohex(diag:security_access(0x03)), "11 22 33 44")
+		end)
 	') or { panic(err) }
 	passed, failed := env.passed(), env.failed()
 	env.close()
 	stop <- true
 	t.wait()
 	assert failed == 0
-	assert passed == 2
+	assert passed == 3
 }

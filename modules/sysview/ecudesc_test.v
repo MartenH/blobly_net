@@ -542,6 +542,29 @@ write = { security = 2 }
 	assert d.errs[3].starts_with('did 0x0113: write security "1" ')
 }
 
+// A level in a gate that names only the default session cannot be met: said, the DID kept.
+fn test_a_secured_default_only_gate_is_said() {
+	doc := toml.parse_text('
+[[did]]
+id = 0x0120
+bytes = "00"
+write = { session = ["default"], security = 1 }
+read = { session = ["default"], security = 2 }
+
+[[did]]
+id = 0x0121
+bytes = "00"
+write = { session = ["default", "extended"], security = 1 }
+read = { session = ["default"] }
+') or { panic(err) }
+	d := parse_ecu_desc(doc, map[string][]Field{})
+	assert d.dids.map(it.id) == [u16(0x0120), 0x0121]
+	assert d.errs == [
+		'did 0x0120: read gate needs security level 2 but names only the default session, where 0x27 is not served',
+		'did 0x0120: write gate needs security level 1 but names only the default session, where 0x27 is not served',
+	], d.errs.str()
+}
+
 // The levels an Unlock offers first: the DIDs' gates and the `[uds] services` rows, each once.
 fn test_the_security_levels_a_description_names() {
 	doc := toml.parse_text('

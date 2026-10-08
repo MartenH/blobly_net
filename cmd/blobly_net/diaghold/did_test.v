@@ -139,3 +139,23 @@ fn test_a_refused_did_says_its_code_by_name() {
 	assert refused_words(0x7F, 'serviceNotSupportedInActiveSession') == '0x7F not supported in this session'
 	assert refused_words(0x7E, 'subFunctionNotSupportedInActiveSession') == '0x7E not supported in this session'
 }
+
+fn test_a_gated_write_is_not_planned_in_the_default_session() {
+	// only the default session: no 0x27 there, so the gate cannot be met
+	p := write_plan(true, 0x01, [default_session], 1, 0, true)
+	assert p.refusal.contains('needs security level 1 but names only the default session'), p.refusal
+	assert p.session == 0 && p.unlock == 0
+	assert p.words() == p.refusal
+	assert write_plan(true, 0x03, [default_session], 2, 2, true).refusal != ''
+	// default or extended, from default: written in extended, where the unlock is
+	q := write_plan(true, 0x01, [default_session, 0x03], 1, 0, true)
+	assert q.refusal == '' && q.session == 0x03 && q.unlock == 1
+	// default or programming: the programming session
+	assert write_plan(true, 0x01, [default_session, 0x02], 1, 0, true).session == 0x02
+	// a level and any session, from default: the switch the unlock makes is in the plan
+	a := write_plan(true, 0x01, [], 1, 0, true)
+	assert a.session == 0x03 && a.unlock == 1
+	assert write_plan(true, 0x02, [], 1, 0, true).session == 0
+	// with no level the default session is fine
+	assert write_plan(true, 0x01, [default_session], 0, 0, false) == WritePlan{}
+}

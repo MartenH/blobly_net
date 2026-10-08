@@ -23,7 +23,8 @@ pub mut:
 	snap_taken bool
 	session  u8 = 1
 	sec_seed []u8 // last seed handed out (0x27 request seed)
-	unlocked bool // security access granted (0x27 valid key accepted)
+	seed_lvl u8   // the security level sec_seed was handed out for
+	unlocked u8   // the security level granted (0x27 valid key accepted), 0 = locked
 }
 
 // Dtc is one stored fault: a 3-byte UDS DTC code and its status byte.
@@ -106,7 +107,7 @@ fn (mut s Server) answer(req []u8) []u8 {
 			session := if req.len > 1 { req[1] } else { u8(1) }
 			s.session = session
 			// ISO 14229-1: every session transition locks the server again
-			s.unlocked = false
+			s.unlocked = 0
 			s.sec_seed = []u8{}
 			return [u8(0x50), session, 0x00, 0x32, 0x01, 0xF4] // + default P2 timings
 		}
@@ -135,23 +136,31 @@ fn (mut s Server) answer(req []u8) []u8 {
 			if sub == 0 {
 				return neg(sid, 0x12) // subFunctionNotSupported
 			}
+			// level L is requestSeed 2L-1 / sendKey 2L
+			level := u8((int(sub) + 1) / 2)
 			if sub % 2 == 1 { // requestSeed
 				mut resp := [u8(0x67), sub]
-				if s.unlocked {
-					// ISO 14229-1: an unlocked server answers an all-zero seed, and expects no key
+				if s.unlocked == level {
+					// ISO 14229-1: an unlocked level answers its own seed all zero, and expects no key
 					resp << []u8{len: server_security_seed.len}
 					return resp
 				}
 				s.sec_seed = server_security_seed.clone()
+				s.seed_lvl = level
 				resp << s.sec_seed
 				return resp
 			}
-			// sendKey: validate against the demo algorithm
+			// sendKey: for the level whose seed is outstanding, validated against the demo algorithm
+			if s.sec_seed.len == 0 || s.seed_lvl != level {
+				return neg(sid, 0x24) // requestSequenceError
+			}
 			key := if req.len > 2 { req[2..].clone() } else { []u8{} }
-			if s.sec_seed.len > 0 && key == security_key(s.sec_seed) {
-				s.unlocked = true
+			if key == security_key(s.sec_seed) {
+				s.unlocked = level
+				s.sec_seed = []u8{}
 				return [u8(0x67), sub]
 			}
+			s.sec_seed = []u8{} // a refused key ends its seed: the next key needs a new one
 			return neg(sid, 0x35) // invalidKey
 		}
 		0x19 { // ReadDTCInformation: 0x01 count, 0x02 by status mask, 0x0A supported
@@ -204,7 +213,7 @@ fn (mut s Server) answer(req []u8) []u8 {
 				return neg(sid, 0x13)
 			}
 			s.session = 1
-			s.unlocked = false
+			s.unlocked = 0
 			s.sec_seed = []u8{}
 			return [u8(0x51), req[1]]
 		}

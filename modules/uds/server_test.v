@@ -22,7 +22,7 @@ fn test_security_access_unlock() {
 	send << security_key(seed)
 	ok := s.handle(send)
 	assert ok == [u8(0x67), 0x02]
-	assert s.unlocked
+	assert s.unlocked == 1
 }
 
 fn test_security_access_bad_key() {
@@ -30,7 +30,38 @@ fn test_security_access_bad_key() {
 	s.handle([u8(0x27), 0x01]) // seed
 	bad := s.handle([u8(0x27), 0x02, 0x00, 0x00, 0x00, 0x00])
 	assert bad == [u8(0x7F), 0x27, 0x35] // invalidKey
-	assert !s.unlocked
+	assert s.unlocked == 0
+	// the refused key ended the seed: the right key now is out of sequence
+	mut right := [u8(0x27), 0x02]
+	right << security_key(server_security_seed)
+	assert s.handle(right) == [u8(0x7F), 0x27, 0x24]
+}
+
+fn unlock_level(mut s Server, level u8) {
+	seed := s.handle([u8(0x27), 2 * level - 1])
+	mut send := [u8(0x27), 2 * level]
+	send << security_key(seed[2..])
+	assert s.handle(send) == [u8(0x67), 2 * level]
+}
+
+// only the unlocked level answers its own seed all zero: another level gets a real seed and
+// still needs its key, and a session change relocks every level
+fn test_an_all_zero_seed_is_only_the_unlocked_levels() {
+	mut s := default_server()
+	unlock_level(mut s, 1)
+	assert s.handle([u8(0x27), 0x01]) == [u8(0x67), 0x01, 0, 0, 0, 0]
+	assert s.handle([u8(0x27), 0x03]) == [u8(0x67), 0x03, 0x11, 0x22, 0x33, 0x44]
+	// a key for another level than the seed outstanding is out of sequence
+	mut wrong := [u8(0x27), 0x02]
+	wrong << security_key(server_security_seed)
+	assert s.handle(wrong) == [u8(0x7F), 0x27, 0x24]
+	unlock_level(mut s, 2)
+	assert s.unlocked == 2
+	assert s.handle([u8(0x27), 0x03]) == [u8(0x67), 0x03, 0, 0, 0, 0]
+	assert s.handle([u8(0x27), 0x01]) == [u8(0x67), 0x01, 0x11, 0x22, 0x33, 0x44]
+	s.handle([u8(0x10), 0x03])
+	assert s.unlocked == 0
+	assert s.handle([u8(0x27), 0x03]) == [u8(0x67), 0x03, 0x11, 0x22, 0x33, 0x44]
 }
 
 fn test_read_dtc() {

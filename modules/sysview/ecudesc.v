@@ -333,6 +333,17 @@ fn gate_level_refusal(m map[string]toml.Any, key string) string {
 	return '${key} security ${lv.to_toml()} is not a security level (1..${max_security_level})'
 }
 
+// contradiction: why the gate cannot be met — a security level in a gate that names only the
+// default session, where ISO 14229-1 serves no 0x27, so the level cannot be unlocked there and a
+// tester that unlocks it has left the gate's sessions. none = it can be met. The DIDs tab's write
+// plan (cmd/blobly_net diaghold.write_plan) refuses the same gate; this says it at load.
+pub fn (g Gate) contradiction() ?string {
+	if g.level > 0 && g.sessions.len > 0 && g.sessions.all(it == 'default') {
+		return 'gate needs security level ${g.level} but names only the default session, where 0x27 is not served'
+	}
+	return none
+}
+
 // gate_of reads a `{ session = [...], security = N }` gate.
 fn gate_of(m map[string]toml.Any, key string) Gate {
 	v := m[key] or { return Gate{} }
@@ -462,7 +473,16 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		}
 		read := access_words(xm, 'read')
 		mut write := access_words(xm, 'write')
+		read_gate := gate_of(xm, 'read')
 		mut write_gate := gate_of(xm, 'write')
+		for key, g in {
+			'read':  read_gate
+			'write': write_gate
+		} {
+			if why := g.contradiction() {
+				d.errs << 'did 0x${id:04X}: ${key} ${why}'
+			}
+		}
 		if write == '' {
 			if w := xm['writable'] {
 				if w.bool() {
@@ -535,7 +555,7 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			text:   text
 			read:       read
 			write:      write
-			read_gate:  gate_of(xm, 'read')
+			read_gate:  read_gate
 			write_gate: write_gate
 			ranges:     ranges
 		}
