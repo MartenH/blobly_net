@@ -27,7 +27,7 @@ pub fn asset_ref(dir string, path string) string {
 		cwd := slash(physical(os.getwd()))
 		return if abs.starts_with(cwd + '/') { abs[cwd.len + 1..] } else { abs }
 	}
-	base := slash(physical(dir))
+	base := slash(physical(dir)) // a directory: resolved whole, the kernel walks it
 	a := abs.split('/')
 	b := base.split('/')
 	mut common := 0
@@ -44,13 +44,14 @@ pub fn asset_ref(dir string, path string) string {
 	return parts.join('/')
 }
 
-// physical is `p` made absolute with its symlinks resolved — the existing part of it, so a
-// `#Cluster` on a file that exists, or a file that does not exist yet, keeps its spelling. Made
-// absolute by concatenation, not os.abs_path, which collapses `..` on paper before real_path can
-// walk it: `link/../x` through a symlink names the file beside the link's TARGET.
+// physical is `p` made absolute with the symlinks of its DIRECTORIES resolved, and its own last
+// component kept as named: a file that is itself a link (`current.dbc -> v1.dbc`) stays the link,
+// so retargeting it still moves the project, and a `#Cluster` or a file not there yet keeps its
+// spelling. Made absolute by concatenation, not os.abs_path, which collapses `..` on paper before
+// real_path can walk it: `link/../x` through a symlink names the file beside the link's TARGET.
 fn physical(p string) string {
 	abs := if os.is_abs_path(p) { p } else { os.getwd() + os.path_separator + p }
-	if os.exists(abs) {
+	if os.is_dir(abs) {
 		return os.real_path(abs)
 	}
 	parent := os.dir(abs)

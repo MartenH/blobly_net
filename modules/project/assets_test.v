@@ -222,3 +222,19 @@ fn test_foreign_absolute_references_are_left_alone() {
 		assert rebase_ref('', '/home/u/new', ref) == ref
 	}
 }
+
+// A file that is itself a symlink is named as the link, not its target: retargeting
+// `current.dbc` still moves the project, and the reference stays project-local.
+fn test_a_symlinked_file_keeps_its_name() {
+	$if windows {
+		return
+	}
+	root := asset_tree()!
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	os.symlink(os.join_path(root, 'dbc', 'x.dbc'), os.join_path(root, 'proj', 'current.dbc'))!
+	proj := os.join_path(root, 'proj')
+	assert asset_ref(proj, os.join_path(proj, 'current.dbc')) == 'current.dbc'
+	assert rebase_ref(proj, os.join_path(root, 'other'), 'current.dbc') == '../proj/current.dbc'
+}
