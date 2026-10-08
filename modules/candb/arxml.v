@@ -527,6 +527,23 @@ pub fn load_arxml_content(path string) !(Arxml, string) {
 	return a, sha
 }
 
+// arxml_cached is the ARXML at `path` as last parsed, without reading the file: what the
+// databases loaded at the last rebuild were built from, for a check at Start that must neither
+// block the GUI thread on a hundreds-of-MB read nor compare against bytes the run is not using.
+// none when the file was never parsed here, or its last parse failed (which the loader said).
+pub fn arxml_cached(path string) ?Arxml {
+	key := os.real_path(path)
+	arxml_cache_mu.lock()
+	defer {
+		arxml_cache_mu.unlock()
+	}
+	c := arxml_cache[key] or { return none }
+	if c.err != '' {
+		return none
+	}
+	return c.a
+}
+
 // arxml_cache_hit_count is how many loads the cache answered — for the test that pins it.
 pub fn arxml_cache_hit_count() int {
 	arxml_cache_mu.lock()

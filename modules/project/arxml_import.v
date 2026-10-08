@@ -204,14 +204,24 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 	return out, notes
 }
 
+// ArxmlLoad finds the ARXML at a resolved path: candb.arxml_cached (what the last rebuild loaded;
+// the GUI, on its own thread) or a function over candb.load_arxml_file (the headless runner,
+// before anything is loaded). none means skip: the database loader reports a file that fails.
+pub type ArxmlLoad = fn (path string) ?candb.Arxml
+
 // arxml_rate_warnings names every enabled row whose rate or CAN-FD setting disagrees with the
 // ARXML cluster it reads (#439). An import copies the rates into the row, because the interface
 // is where they live, so a reissued extract that changes a bus's rate leaves the row behind —
 // and a wire at the wrong rate is no traffic at all on hardware. Said at Start, by both front
-// ends, rather than refused: a bench may run a bus at another rate on purpose. A reference that
-// does not load is the database loader's to report, so it is skipped here; `dir` is the project's
-// directory, which references resolve against.
-pub fn arxml_rate_warnings(chs []Channel, dir string) []string {
+// ends, rather than refused: a bench may run a bus at another rate on purpose. A rate is
+// compared only where this app SETS it (transport.adapter_configures_bitrate / _data_phase): on
+// SocketCAN it is `ip link`'s and on a software bus nobody's. Classic against FD is compared on
+// every adapter, since the row's format is what frames this app originates are stamped with.
+// `dir` is the project's directory, which references resolve against; each file is looked up
+// once.
+pub fn arxml_rate_warnings(chs []Channel, dir string, find ArxmlLoad) []string {
+	mut seen := map[string]bool{}
+	mut files := map[string]candb.Arxml{}
 	mut out := []string{}
 	for ch in chs {
 		if !ch.enabled || ch.is_eth() {
@@ -222,18 +232,26 @@ pub fn arxml_rate_warnings(chs []Channel, dir string) []string {
 				continue
 			}
 			file, frag := candb.split_database_ref(resolve_asset(dir, ref))
-			a := candb.load_arxml_file(file) or { continue }
+			if file !in seen {
+				seen[file] = true
+				if x := find(file) {
+					files[file] = x
+				}
+			}
+			a := files[file] or { continue }
 			c := a.cluster(frag) or { continue }
 			r := arxml_cluster_rates(c)
 			what := '${c.bus} (${os.file_name(file)})'
-			if !r.no_baudrate && ch.nominal_bitrate() != r.bitrate {
+			if transport.adapter_configures_bitrate(ch.adapter) && !r.no_baudrate
+				&& ch.nominal_bitrate() != r.bitrate {
 				out << '${ch.name} runs at ${ch.nominal_bitrate()} bit/s but ${what} is ${r.bitrate} bit/s'
 			}
 			if r.fd && !ch.fd {
 				out << '${ch.name} is classic but ${what} carries CAN-FD frames, which a classic channel cannot carry'
 			} else if !r.fd && ch.fd {
 				out << '${ch.name} is CAN-FD but ${what} carries no CAN-FD frame; frames this app originates on it go out as CAN-FD'
-			} else if r.fd && r.data_bitrate > 0 && ch.data_rate() != r.data_bitrate {
+			} else if r.fd && r.data_bitrate > 0 && transport.adapter_configures_data_phase(ch.adapter)
+				&& ch.data_rate() != r.data_bitrate {
 				out << '${ch.name} runs its data phase at ${ch.data_rate()} bit/s but ${what} states ${r.data_bitrate} bit/s'
 			}
 		}
