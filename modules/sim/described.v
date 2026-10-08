@@ -70,7 +70,12 @@ pub fn describe(sys &sysview.System, t sysview.TargetAddr, name string, cfg ?pro
 				value := if d.bytes.len > 0 { d.bytes.clone() } else { d.text.bytes() }
 				declared := spec.dids.filter(it.id == u16(d.id))
 				if declared.len > 0 && declared[0].writable && declared[0].data.len != value.len {
-					notes << 'DID 0x${d.id:04X}: the project gives it ${value.len} bytes where the description declares ${declared[0].data.len}; it reads the project\'s value and 0x2E takes ${declared[0].data.len}'
+					takes := if declared[0].data.len > uds.max_described_did {
+						'0x2E takes no record (past the ${uds.max_described_did}-byte write limit)'
+					} else {
+						'0x2E takes ${declared[0].data.len}'
+					}
+					notes << 'DID 0x${d.id:04X}: the project gives it ${value.len} bytes where the description declares ${declared[0].data.len}; it reads the project\'s value and ${takes}'
 				}
 				srv.put_did(u16(d.id), value)
 			}

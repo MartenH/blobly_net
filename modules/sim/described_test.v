@@ -654,3 +654,29 @@ fn test_a_refused_send_publishes_nothing() {
 	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
 	clear_live()
 }
+
+// a described server judges a VIN write itself: its gates first, then the declared size
+fn test_a_described_vin_write_takes_the_servers_size_check() {
+	mut host := DoipHost{
+		server: uds.server_from(uds.ServerSpec{
+			dids: [
+				uds.DidSpec{
+					id:       0xF190
+					data:     'BLOBLYSYSNODEH735'.bytes()
+					writable: true
+					write:    uds.GateSpec{
+						sessions: uds.in_extended
+					}
+				},
+			]
+		})
+	}
+	short := [u8(0x2E), 0xF1, 0x90, 0x41]
+	assert host.handle(short) == [u8(0x7F), 0x2E, 0x31] // default session: not writable here
+	assert host.handle([u8(0x10), 0x03])[0] == 0x50
+	assert host.handle(short) == [u8(0x7F), 0x2E, 0x13]
+	mut vin := [u8(0x2E), 0xF1, 0x90]
+	vin << 'BLOBLYSYSNODE0001'.bytes()
+	assert host.handle(vin) == [u8(0x6E), 0xF1, 0x90]
+	assert host.server.dids[u16(0xF190)].bytestr() == 'BLOBLYSYSNODE0001'
+}

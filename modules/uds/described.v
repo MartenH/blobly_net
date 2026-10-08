@@ -138,7 +138,7 @@ pub const status_cleared = u8(0x50)
 pub const fault_availability = u8(0x7F)
 
 // max_described_did is the most a written DID record may hold (comm/uds max_did_data).
-const max_described_did = 32
+pub const max_described_did = 32
 
 // sa_seed_len is a seed's length (comm/uds seed_len), which a key must match.
 const sa_seed_len = 4
