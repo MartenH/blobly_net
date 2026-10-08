@@ -1,7 +1,9 @@
 module sim
 
+import candb
 import os
 import project
+import toml
 import sysview
 import uds
 
@@ -27,6 +29,14 @@ producer = "zone_a"
 bus      = "edge"
 frame    = "SteeringFrame"
 cycle_ms = 50
+
+[[signal]]
+name     = "GwUptime"
+fields   = { s = "u32" }
+producer = "sysnode"
+bus      = "compute"
+frame    = "GwStatusFrame"
+cycle_ms = 1000
 
 [[node]]
 name     = "sysnode"
@@ -137,6 +147,10 @@ tx_id = 0x7A8
 [[did]]
 id    = 0xF190
 ascii = "BLOBLYSYSNODEH735"
+
+[[did]]
+id     = 0x0130
+signal = "GwUptime"
 
 [[did]]
 id    = 0x0102
@@ -315,7 +329,7 @@ fn test_over_doip_the_entity_announces_the_described_vin_and_serves_no_reset() {
 		iface:    'doip:127.0.0.1:13400'
 		ecu_addr: 0x07A0
 	}
-	e := doip_entity_described(ch, [], &sys) or { panic(err) }
+	e := doip_entity_described(ch, [], &sys, []) or { panic(err) }
 	assert e.described == 'sysnode' && e.node_label() == 'sysnode (described)'
 	assert e.announce == 'BLOBLYSYSNODEH735'
 	mut s := e.server
@@ -327,7 +341,7 @@ fn test_over_doip_the_entity_announces_the_described_vin_and_serves_no_reset() {
 		ecu_addr: 0x0999
 		vin:      'CHANNELVIN0000001'
 	}
-	e2 := doip_entity_described(ch2, [], &sys) or { panic(err) }
+	e2 := doip_entity_described(ch2, [], &sys, []) or { panic(err) }
 	mut s2 := e2.server
 	assert h(mut s2, [u8(0x22), 0xF1, 0x90])[3..] == 'CHANNELVIN0000001'.bytes()
 }
@@ -436,30 +450,131 @@ fn test_the_project_block_overlays_values_and_seeds_faults() {
 	assert h(mut s, [u8(0x19), 0x02, 0x08]) == [u8(0x59), 0x02, 0x7F]
 }
 
-fn test_a_live_did_reads_the_simulated_signal() {
-	sys := dx_load('live')
-	mut s := zone_a(sys)
-	clear_live()
-	wire_live(mut s, 'inproc:EDGE', 'edge', 'zone_a')
-	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0, 0] // not sent yet
-	e := Engine{
+// candb_msg is an 8-byte frame carrying `signal` as a u32 at bit 0, range 0..360 (SteeringFrame's).
+fn candb_msg(signal string) candb.Message {
+	return candb.Message{
+		name:    'F'
+		id:      0x132
+		dlc:     8
+		signals: [candb.Signal{
+			name:    signal
+			length:  32
+			maximum: 360
+		}]
+	}
+}
+
+fn one_signal_engine(node string, signal string, value f64, f Fault) Engine {
+	return Engine{
 		ecus: [
 			SimEcu{
-				name:     'zone_a'
+				name:     node
 				messages: [
 					SimMessage{
+						msg:       candb_msg(signal)
 						period_ms: 50
-						send_n:    1 // sent once
+						fault:     f
 						signals:   [SimSignal{
-							name: 'SteeringAngle'
-							gen:  gen_const(300)
+							name: signal
+							gen:  gen_const(value)
 						}]
 					},
 				]
 			},
 		]
 	}
+}
+
+fn test_a_live_did_reads_the_simulated_signal() {
+	sys := dx_load('live')
+	mut s := zone_a(sys)
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'zone_a')
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0, 0] // not sent yet
+	mut e := one_signal_engine('zone_a', 'SteeringAngle', 300, Fault{})
+	assert e.due_frames(0).len == 1
 	publish_live('inproc:EDGE', 'edge', &e)
 	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
 	clear_live()
+}
+
+fn test_a_dropped_frame_publishes_nothing() {
+	sys := dx_load('drop')
+	mut s := zone_a(sys)
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'zone_a')
+	mut e := one_signal_engine('zone_a', 'SteeringAngle', 300, Fault{
+		kind: .drop
+	})
+	assert e.due_frames(0).len == 0 // dropped: nothing reached the bus
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0, 0]
+	clear_live()
+}
+
+fn test_a_described_doip_entity_reads_its_node_simulated_on_can() {
+	sys := dx_load('doiplive')
+	ch := project.Channel{
+		name:     'DoIP1'
+		typ:      'doip'
+		iface:    'doip:127.0.0.1:13400'
+		ecu_addr: 0x07A0
+	}
+	// nothing simulates sysnode: said, and it reads zeros
+	lone := doip_entity_described(ch, [], &sys, []) or { panic(err) }
+	assert lone.notes.any(it.contains('GwUptime') && it.contains('reads zeros'))
+	sims := [project.NodeCfg{
+		name:    'sysnode'
+		signals: [project.GenCfg{
+			signal: 'GwUptime'
+			value:  7
+		}]
+	}]
+	clear_live()
+	e := doip_entity_described(ch, [], &sys, sims) or { panic(err) }
+	assert !e.notes.any(it.contains('reads zeros'))
+	mut s := e.server
+	assert h(mut s, [u8(0x22), 0x01, 0x30]) == [u8(0x62), 0x01, 0x30, 0, 0, 0, 0]
+	mut eng := one_signal_engine('sysnode', 'GwUptime', 7, Fault{})
+	eng.due_frames(0)
+	publish_live('inproc:COMPUTE', 'compute', &eng)
+	assert h(mut s, [u8(0x22), 0x01, 0x30]) == [u8(0x62), 0x01, 0x30, 0, 0, 0, 7]
+	clear_live()
+}
+
+fn test_bytes_that_are_not_hex_are_not_served() {
+	doc := toml.parse_text('[uds]\n[isotp]\nrx_id = 0x700\ntx_id = 0x708\n[[did]]\nid = 0x0500\nbytes = "ZZ FF"\n') or {
+		panic(err)
+	}
+	d := sysview.parse_ecu_desc(doc, map[string][]sysview.Field{})
+	assert d.errs.any(it.contains('0x0500'))
+	spec, notes := d.server_spec(false)
+	assert notes.any(it.contains('0x0500') && it.contains('not served'))
+	mut s := uds.server_from(spec)
+	assert h(mut s, [u8(0x22), 0x05, 0x00]) == [u8(0x7F), 0x22, 0x31]
+}
+
+fn test_a_bool_range_narrows_but_never_widens_the_type() {
+	d := sysview.EcuDesc{
+		server: true
+		dids:   [
+			sysview.DidDesc{
+				id:         0x0400
+				kind:       .param
+				name:       'Flag'
+				size:       1
+				fields:     [sysview.Field{'on', 'bool'}]
+				ranges:     {
+					'on': sysview.Range{0, 5}
+				}
+				write_gate: sysview.Gate{
+					declared: true
+				}
+			},
+		]
+	}
+	spec, _ := d.server_spec(false)
+	mut s := uds.server_from(spec)
+	assert h(mut s, [u8(0x2E), 0x04, 0x00, 0x02]) == [u8(0x7F), 0x2E, 0x31]
+	assert h(mut s, [u8(0x2E), 0x04, 0x00, 0x01]) == [u8(0x6E), 0x04, 0x00]
 }

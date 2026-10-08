@@ -271,11 +271,21 @@ pub fn physical_only(req []u8) bool {
 // ignores one that is physical only, which still keeps its session alive.
 pub fn (mut s Server) handle_functional(req []u8) []u8 {
 	if s.described && physical_only(req) {
-		s.last_rx_ms = s.now_ms()
-		s.rx_seen = true
+		s.received(s.now_ms()) // ignored, but it is a request: S3 first, then the stamp
 		return []u8{}
 	}
 	return s.handle(req)
+}
+
+// received is the ONE place a request reaches a described server, answered or ignored: S3 ends a
+// session no request has kept alive, then this request is stamped.
+fn (mut s Server) received(now i64) {
+	s3 := i64(if s.spec.s3_ms > 0 { s.spec.s3_ms } else { 5000 })
+	if s.session != 1 && s.rx_seen && now - s.last_rx_ms > s3 {
+		s.enter_session(1) // S3: no request for that long ends the session
+	}
+	s.last_rx_ms = now
+	s.rx_seen = true
 }
 
 fn (s &Server) did_spec(id u16) ?DidSpec {
@@ -330,12 +340,7 @@ fn (mut s Server) enter_session(session u8) {
 
 fn (mut s Server) answer_described(req []u8) []u8 {
 	now := s.now_ms()
-	s3 := i64(if s.spec.s3_ms > 0 { s.spec.s3_ms } else { 5000 })
-	if s.session != 1 && s.rx_seen && now - s.last_rx_ms > s3 {
-		s.enter_session(1) // S3: no request for that long ends the session
-	}
-	s.last_rx_ms = now
-	s.rx_seen = true
+	s.received(now)
 	sid := req[0]
 	if !s.supported(sid) {
 		return neg(sid, 0x11)

@@ -127,3 +127,13 @@ fn test_a_duplicate_did_serves_the_first_declaration() {
 	})
 	assert s.handle([u8(0x22), 0x01, 0x00]) == [u8(0x62), 0x01, 0x00, 0x01]
 }
+
+fn test_an_ignored_functional_request_after_s3_still_ends_the_session() {
+	mut now := &FakeClock{}
+	mut s := gated(now)
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	now.t += 6000 // past S3
+	assert s.handle_functional([u8(0x27), 0x01]) == []u8{}
+	now.t += 1000 // within S3 of the ignored request: it did not revive the session
+	assert s.handle([u8(0x2E), 0x01, 0x02, 0x05]) == [u8(0x7F), 0x2E, 0x31] // back in default
+}

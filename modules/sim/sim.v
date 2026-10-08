@@ -104,7 +104,8 @@ pub mut:
 	last_e2e int
 	has_tx   bool // whether last_e2e means anything yet
 	next_ms   f64 // next due time
-	last_t    f64 // when due_frames last built it (s): the time its last frame's generators read
+	last_t    f64 // when due_frames last handed a frame of it out (s): what its generators read
+	last_n    int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
 }
 
 // e2e_value is the counter this frame should carry: the last transmitted one while frozen, so
@@ -234,9 +235,10 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 			}
 			if now_ms + 1e-6 >= m.next_ms {
 				mut f := m.build(now_ms / 1000.0)
-				m.last_t = now_ms / 1000.0
 				if m.fault.apply_post(m.msg, m.e2e, mut f.data) {
 					out << f
+					m.last_t = now_ms / 1000.0 // a dropped frame carried nothing to the bus
+					m.last_n = m.send_n
 				}
 				m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
 				// The PROTECTION counter is what freezes. A dropped frame still advances it, so

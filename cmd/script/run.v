@@ -214,7 +214,7 @@ fn main() {
 			// the single VIN both identity surfaces use. An entity that came up differently
 			// depending on which side started it would make a bench result depend on how the
 			// tool was launched.
-			ent := sim.doip_entity_described(ch, nodes, &desc_sys) or {
+			ent := sim.doip_entity_described(ch, nodes, &desc_sys, can_sims(proj)) or {
 				eprintln('${ch.name}: ${err}')
 				// ABORT, not continue. Leaving the channel in place let scripts dial the
 				// endpoint anyway, and if another DoIP process holds it the suite passes
@@ -663,6 +663,18 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 		eprintln('${cfg.name}: ${w}')
 	}
 	return sim.from_project(db, cfg)
+}
+
+// can_sims is every node the project simulates on an enabled CAN channel: the frames a described
+// DoIP entity's live DIDs read.
+fn can_sims(proj project.Project) []project.NodeCfg {
+	mut out := []project.NodeCfg{}
+	for c in proj.channels {
+		if c.enabled && !c.is_eth() {
+			out << c.all_nodes()
+		}
+	}
+	return out
 }
 
 // described_system is the system.toml sysview.find_system finds for the project, loaded; an empty

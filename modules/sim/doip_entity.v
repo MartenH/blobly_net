@@ -48,13 +48,14 @@ pub fn (e DoipEntity) node_label() string {
 //   - the resolved VIN is not exactly 17 bytes. vehicle_announcement zero-pads or truncates to
 //     17 while the server returns it whole, so the two surfaces would differ by construction.
 pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
-	return doip_entity_described(ch, nodes, &sysview.System{})
+	return doip_entity_described(ch, nodes, &sysview.System{}, [])
 }
 
 // doip_entity_described is doip_entity whose server is the one `sys` describes for the node at
 // the channel's logical address (describe), when it describes one: its F190 is then the identity
-// as a configured node's is.
-pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &sysview.System) !DoipEntity {
+// as a configured node's is. Its live DIDs read the described node as the project simulates it on
+// CAN (`sims`, every node simulated there): a DoIP entity sends no frames of its own.
+pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &sysview.System, sims []project.NodeCfg) !DoipEntity {
 	mut declared := 0
 	for n in nodes {
 		if _ := n.uds {
@@ -73,7 +74,9 @@ pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &s
 	mut notes := d.notes.clone()
 	if d.ok {
 		srv = d.server
+		wire_live_node(mut srv, d.node)
 		notes.prepend('diagnostics as described for ${d.node} (${os.file_name(sys.path)})')
+		notes << live_gaps(srv, d.node, sims)
 	}
 	configured := built.len > 0 || d.ok
 

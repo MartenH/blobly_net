@@ -1289,7 +1289,7 @@ fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
 			app.notify('${c.name}: DoIP tester only (no simulated entity)')
 			continue
 		}
-		ent := sim.doip_entity_described(c, nodes, &desc_sys) or {
+		ent := sim.doip_entity_described(c, nodes, &desc_sys, app.can_sims()) or {
 			app.notify('${c.name}: ${err}')
 			app.notify('${c.name}: DoIP entity NOT started')
 			continue
@@ -1308,6 +1308,18 @@ fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
 		app.reserve_run_worker() // released by the watcher's own defer
 		spawn doip_watch(app, c, ent, key, app.run_gen)
 	}
+}
+
+// can_sims is every node this run simulates on a CAN channel: the frames a described DoIP entity's
+// live DIDs read.
+fn (app &App) can_sims() []project.NodeCfg {
+	mut out := []project.NodeCfg{}
+	for sc in app.sims {
+		if !sc.pch.is_eth() {
+			out << sc.nodes
+		}
+	}
+	return out
 }
 
 // described_system is the system.toml the simulated diagnostic servers are described by — the

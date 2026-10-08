@@ -107,6 +107,9 @@ pub fn describe_uds_nodes(sys &sysview.System, mut nodes []UdsNode, peers []proj
 			u.described = d.node
 			wire_live(mut u.server, iface, chans[u.src] or { '' }, u.name)
 			out << '${u.name}: diagnostics as described for ${d.node} (${os.file_name(sys.path)})'
+			if u.src >= 0 && u.src < peers.len {
+				out << live_gaps(u.server, u.name, [peers[u.src]]).map('${u.name}: ${it}')
+			}
 		}
 		out << d.notes
 	}
@@ -169,11 +172,34 @@ fn live_key(iface string, chan_name string, node string, signal string) string {
 	return '${transport.destination_key(iface)}|${chan_name}|${node}|${signal}'
 }
 
+// any_key is what a server wants when it does not know the wire: a DoIP entity's node, whose
+// frames a CAN channel of the project simulates.
+fn any_key(node string, signal string) string {
+	return '*|${node}|${signal}'
+}
+
 // want_live registers what a described server reads, so the simulation publishes it.
 pub fn want_live(iface string, chan_name string, node string, signal string) {
 	live.mu.lock()
 	live.want[live_key(iface, chan_name, node, signal)] = true
 	live.mu.unlock()
+}
+
+// live_value_of_node is node `node`'s published value of `signal` on whichever wire simulates it;
+// none when no wire does, or when two do (which of them the ECU is cannot be said).
+pub fn live_value_of_node(node string, signal string) ?i64 {
+	suffix := '|${node}|${signal}'
+	live.mu.rlock()
+	defer {
+		live.mu.runlock()
+	}
+	mut found := []i64{}
+	for k, v in live.vals {
+		if k.ends_with(suffix) {
+			found << v
+		}
+	}
+	return if found.len == 1 { found[0] } else { none }
 }
 
 // clear_live forgets every want and value: a new run registers its own.
@@ -204,18 +230,18 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 	}
 	for ecu in e.ecus {
 		for m in ecu.messages {
-			if m.period_ms <= 0 || m.send_n == 0 {
-				continue // a response, or not sent yet: no frame of it carries a generator's value
+			if m.period_ms <= 0 || m.last_n < 0 {
+				continue // a response, or none handed out yet: no frame carries a generator's value
 			}
 			for s in m.signals {
 				k := live_key(iface, chan_name, ecu.name, s.name)
 				live.mu.rlock()
-				wanted := k in live.want
+				wanted := k in live.want || any_key(ecu.name, s.name) in live.want
 				live.mu.runlock()
 				if !wanted {
 					continue
 				}
-				mut phys := s.gen.value(m.last_t, m.send_n - 1)
+				mut phys := s.gen.value(m.last_t, m.last_n)
 				for sig in m.msg.signals {
 					if sig.name == s.name {
 						phys = sig.phys_from_raw(sig.raw_from_phys(phys)) // as encoded: clamped
@@ -229,6 +255,40 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 			}
 		}
 	}
+}
+
+// wire_live_node points a described server's live DIDs at node `node` on whichever wire the
+// project simulates it — a DoIP entity, whose node sends its frames on a CAN channel.
+pub fn wire_live_node(mut srv uds.Server, node string) {
+	mut any := false
+	for d in srv.spec.dids {
+		if d.source == .live {
+			live.mu.lock()
+			live.want[any_key(node, d.signal)] = true
+			live.mu.unlock()
+			any = true
+		}
+	}
+	if any {
+		srv.signal_value = fn [node] (signal string) ?i64 {
+			return live_value_of_node(node, signal)
+		}
+	}
+}
+
+// live_gaps: a note for each live DID of `srv` whose signal no simulated node `node` generates
+// (`sims`: the nodes the project simulates on CAN) — it reads zeros.
+pub fn live_gaps(srv uds.Server, node string, sims []project.NodeCfg) []string {
+	mut out := []string{}
+	for d in srv.spec.dids {
+		if d.source != .live {
+			continue
+		}
+		if !sims.any(it.name == node && it.signals.any(it.signal == d.signal)) {
+			out << 'DID 0x${d.id:04X} reads ${d.signal}, which no simulated ${node} generates; it reads zeros'
+		}
+	}
+	return out
 }
 
 // wire_live points a described server's live DIDs at the simulation of node `node` of channel

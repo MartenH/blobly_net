@@ -34,28 +34,18 @@ fn gate_spec(g Gate) uds.GateSpec {
 	}
 }
 
-fn field_spec(f Field, r ?Range) uds.FieldSpec {
-	rg := r or {
-		if f.typ == 'bool' {
-			// a bool holds 0 or 1 whatever the range says nothing about
-			return uds.FieldSpec{
-				width:  1
-				ranged: true
-				min:    0
-				max:    1
-			}
-		}
-		return uds.FieldSpec{
-			width:  f.width()
-			signed: f.typ.starts_with('i')
-		}
-	}
+// field_spec is a field of DID `x` as the server checks it: a written value must lie in what the
+// DIDs tab offers (DidDesc.limit, the type's range narrowed by a declared one) — a bool's 0..1
+// even where the description declares no range or a wider one.
+fn field_spec(x DidDesc, f Field) uds.FieldSpec {
+	ranged := f.typ == 'bool' || f.name in x.ranges
+	lim := x.limit(f)
 	return uds.FieldSpec{
 		width:  f.width()
 		signed: f.typ.starts_with('i')
-		ranged: true
-		min:    rg.min
-		max:    rg.max
+		ranged: ranged
+		min:    lim.min
+		max:    lim.max
 	}
 }
 
@@ -116,18 +106,22 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 				data = x.text.bytes()
 			}
 			.bytes {
-				if x.data.len == x.size {
-					data = x.data.clone()
+				if x.data.len != x.size {
+					// its value is not known (the bytes are not hex): served as nothing rather
+					// than as a plausible zero
+					notes << 'DID 0x${x.id:04X}: its bytes are not known here; not served'
+					continue
 				}
+				data = x.data.clone()
 			}
 			.signal {
 				src = .live
 				signal = x.name
-				fields = x.fields.map(field_spec(it, none))
+				fields = x.fields.map(field_spec(x, it))
 			}
 			.param {
 				src = .param
-				fields = x.fields.map(field_spec(it, x.ranges[it.name] or { none }))
+				fields = x.fields.map(field_spec(x, it))
 				data = []u8{}
 				for f in x.fields {
 					pd := d.params.filter(it.name == x.name)

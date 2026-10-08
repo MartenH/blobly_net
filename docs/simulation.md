@@ -463,7 +463,10 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
 - **its DIDs at their real sizes** — `ascii` and `bytes` as written, a parameter at its
   `default`, the parameter status DID at 0 (uncoded), a `signal` DID with the value the
   simulation is sending for that signal now (a generator on the node of that name; zeros of the
-  signal's width before it has sent, or without one). Several DIDs per `0x22`, as ISO allows.
+  signal's width before it has sent, or without one; a dropped frame changes nothing). A DoIP
+  entity's live DIDs read the node of that name as a CAN channel of the project simulates it,
+  and say so at Start when none does. A `bytes` DID whose bytes are not hex is not served at all.
+  Several DIDs per `0x22`, as ISO allows.
 - **their gates** — a DID readable or writable only in its sessions (`0x31` elsewhere) and
   behind its 0x27 level (`0x33`). A DID with no `write` is not writable (`0x31`).
 - **the `[uds] services` table** — a service it leaves out is `0x11`, one outside its sessions
