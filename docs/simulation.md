@@ -57,8 +57,9 @@ channels:
     databases:
       - dbc/blobly_net.dbc      # the NETWORK owns the database, not the ECU
                                 # an AUTOSAR system description works here too:
-                                # `db/net.arxml`, or `db/net.arxml#Body` to name the
-                                # CAN cluster when the file describes several
+                                # `db/net.arxml`, or `"db/net.arxml#Body"` to name the
+                                # CAN cluster when the file describes several — QUOTED,
+                                # or the `#Body` is read as a comment
     simulation:
       - name: SUT               # must SEND something in the DBC — named as a message's
                                 # transmitter. A BU_ entry alone is not enough; a node
@@ -78,7 +79,9 @@ or you, to edit), `cmd/arxml2dbc` exports one with the E2E contract as message a
 provenance comment naming the ARXML it came from. What the reader could not resolve or chose
 not to extract (container PDUs, LIN clusters, …) is reported on load — in the Log, on the
 headless runner's stderr, by `cmd/sim_startup_check` — never dropped in silence; and a file
-with several CAN clusters is refused until the entry names one (`net.arxml#Body`).
+with several CAN clusters is refused until the entry names one (`"net.arxml#Body"`, quoted). The
+Configuration panel's **+ Add DBC** asks which cluster when there are several, and an attached
+ARXML's **cluster...** button changes it.
 
 Channel `mode` is `normal` (the default; older files say `monitor`, which loads the same) or
 `replay`. There is no `off` any more — untick the row instead; an older file's `mode: off` loads

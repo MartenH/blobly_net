@@ -264,6 +264,13 @@ fn main() {
 	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
+	// Attach a database to the first bus, the way + Add DBC would — the picker cannot be driven
+	// headless, and a multi-cluster ARXML opens the cluster dialog from there.
+	if db := os.getenv_opt('BLOBLY_ATTACH_DB') {
+		if db != '' {
+			app.add_dbc(0, db)
+		}
+	}
 	// Open a recording at startup, the way the file picker would. For the screenshot harness
 	// above all (VGUI_FRAMES / VGUI_SHOT): the picker cannot be driven from a headless run, so
 	// without this there is no way to check what an IMPORTED capture looks like — and the
@@ -457,6 +464,9 @@ fn main() {
 		}
 		if app.fb_open {
 			draw_filebrowser(mut app)
+		}
+		if app.arxml_pick.open {
+			draw_arxml_pick(mut app)
 		}
 		// AFTER the panels: draw_gen is where a generator's name and key buffers are copied into
 		// the sender, so a Ctrl+S polled before it saved the previous value and then read clean

@@ -618,6 +618,7 @@ fn (mut app App) reset_layout() {
 	app.set_config_open(false)
 	app.disc_open = false
 	app.fb_open = false
+	app.arxml_pick.open = false
 }
 
 fn build_layout() {

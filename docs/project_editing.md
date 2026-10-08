@@ -344,7 +344,7 @@ Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
 | bitrate, data_bitrate | int input | data_bitrate only for canfd; hidden for doip |
 | listen_only | `checkbox` | CAN only |
 | j1939 | `checkbox` | CAN only — read this wire as SAE J1939 ([j1939.md](j1939.md)) |
-| **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc`) | `bus.databases` |
+| **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc` / `*.arxml`; an ARXML with several CAN clusters asks which one, and an attached ARXML's **cluster...** changes it) | `bus.databases` |
 | manifest | `input_text` + **…** | telemetry CSV |
 | DoIP: tester/ecu addr, vin, eid | `input_text` | doip adapter only |
 | Replay: source / speed / loop, plus **Scan recording** — pick the recorded bus (`bus:`) and tick nodes to subtract (`exclude:`) | inputs + dialog | mode==replay only |

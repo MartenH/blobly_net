@@ -30,7 +30,7 @@ fn (mut app App) open_browser(target string) {
 	app.fb_ext = if target == 'open' || target == 'saveas' {
 		['.blobnet', '.yml', '.yaml']
 	} else if target.starts_with('dbc') {
-		['.dbc', '.arxml'] // an ARXML attaches as is; a multi-cluster one is refused at load, naming them
+		['.dbc', '.arxml'] // a multi-cluster ARXML asks which cluster (arxml_pick.v)
 	} else if target.starts_with('manifest') {
 		['.csv']
 	} else if target == 'system' {
@@ -1129,6 +1129,13 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			cfg_field('', '', sc)
 		}
 		vgui.text(dbp)
+		if candb.is_arxml_ref(dbp) {
+			vgui.same_line()
+			if vgui.small_button('cluster...##dbcl${i}_${di}') {
+				app.pick_arxml_cluster(i, di)
+			}
+			vgui.set_item_tooltip('Which CAN cluster of this ARXML the channel reads')
+		}
 		vgui.same_line()
 		if vgui.small_button('x##dbrm${i}_${di}') {
 			app.remove_dbc(i, di)

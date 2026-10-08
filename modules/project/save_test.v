@@ -573,3 +573,19 @@ channels:
 ')!
 	assert version_for(q) == 2
 }
+
+// An ARXML cluster fragment survives a Save: unquoted, vlib's yaml reads the `#` as a comment.
+fn test_arxml_fragment_round_trips() {
+	orig := Project{
+		name:     'rt'
+		channels: [
+			Channel{
+				name:      'CAN1'
+				iface:     'inproc:CAN1'
+				databases: ['db/net.arxml#Body', 'dbc/x.dbc']
+			},
+		]
+	}
+	back := parse(orig.to_yaml())!
+	assert back.channels[0].databases == ['db/net.arxml#Body', 'dbc/x.dbc']
+}
