@@ -718,9 +718,10 @@ fn report_diag(what string, d transport.BusDiagnostics) {
 // databases the run uses, so a file replaced between the two cannot make them disagree.
 struct DbFiles {
 mut:
-	refs   map[string]candb.Loaded // by canonical reference
-	failed map[string]string
-	arxml  map[string]candb.Arxml // by real path
+	refs         map[string]candb.Loaded // by canonical reference
+	failed       map[string]string
+	arxml        map[string]candb.Arxml // by real path
+	arxml_failed map[string]string      // by real path: a broken file is read once, not per cluster
 }
 
 fn (mut f DbFiles) open(ref string) !candb.Loaded {
@@ -745,8 +746,14 @@ fn (mut f DbFiles) open_new(ref string) !candb.Loaded {
 		return candb.open_database(ref)
 	}
 	k := os.real_path(file)
+	if why := f.arxml_failed[k] {
+		return error(why)
+	}
 	if k !in f.arxml {
-		f.arxml[k] = candb.load_arxml_file(file)!
+		f.arxml[k] = candb.load_arxml_file(file) or {
+			f.arxml_failed[k] = err.msg()
+			return err
+		}
 	}
 	return f.arxml[k].loaded(cluster, os.base(file))
 }
