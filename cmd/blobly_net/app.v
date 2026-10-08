@@ -1546,12 +1546,17 @@ fn (mut app App) rebuild_from_proj() {
 
 	app.dest_cache = map[string]string{}
 	app.wire_dbs = app.build_wire_dbs()
-	// The ARXML rate check (#439), HERE rather than at Start: against the parse this rebuild just
-	// loaded (candb.arxml_cached, no file I/O), which is what this run uses — at Start the cache
-	// may hold a newer parse an import dialog or a script took since, and the run would not.
+	// The ARXML rate check (#439), against the databases THIS rebuild loaded (app.dbs, by
+	// canonical reference — each carries its cluster's bus facts), which is what this run uses:
+	// no file I/O, and no later parse of the same path (an import dialog, a script) can stand in.
 	// For every row, enabled or not: a tick while stopped causes no rebuild, so Start filters.
+	loaded_paths := app.dbs_paths.clone()
+	loaded := app.dbs.clone()
 	app.arxml_rates_said = project.arxml_rate_findings(app.runtime_rows(), os.dir(app.proj_path),
-		candb.arxml_cached)
+		fn [loaded_paths, loaded] (ref string) ?candb.Database {
+		i := loaded_paths.index(candb.canonical_database_ref(ref))
+		return if i >= 0 && i < loaded.len { loaded[i] } else { none }
+	})
 	app.unbind_lost_wires(old_wires)
 	// A recording on screen was stamped and rejoined under the reading in force when it was
 	// loaded; in auto that reading just moved with the databases (a J1939 DBC attached or

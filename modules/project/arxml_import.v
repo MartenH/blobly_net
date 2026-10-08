@@ -64,16 +64,21 @@ pub:
 }
 
 // arxml_cluster_rates is the ONE rule for a cluster's rates, which the import writes and the
-// dialog shows. FD is decided by the frames (candb.ArxmlCluster.carries_fd, the export's rule
-// too).
+// dialog shows: arxml_bus_rates over what the cluster states.
 pub fn arxml_cluster_rates(c candb.ArxmlCluster) ClusterRates {
-	fd := c.carries_fd()
+	return arxml_bus_rates(c.bus_facts(''))
+}
+
+// arxml_bus_rates reads a cluster's statement about its bus — FD decided by the frames
+// (candb.ArxmlCluster.carries_fd), an unstated nominal rate the default, an unstated FD data rate
+// none (it runs at the arbitration rate).
+pub fn arxml_bus_rates(b candb.ArxmlBus) ClusterRates {
 	return ClusterRates{
-		bitrate:      if c.baudrate > 0 { c.baudrate } else { default_bitrate }
-		fd:           fd
-		data_bitrate: if fd && c.fd_baudrate > 0 { c.fd_baudrate } else { 0 }
-		no_baudrate:  c.baudrate <= 0
-		no_fd_rate:   fd && c.fd_baudrate <= 0
+		bitrate:      if b.baudrate > 0 { b.baudrate } else { default_bitrate }
+		fd:           b.fd
+		data_bitrate: if b.fd && b.fd_baudrate > 0 { b.fd_baudrate } else { 0 }
+		no_baudrate:  b.baudrate <= 0
+		no_fd_rate:   b.fd && b.fd_baudrate <= 0
 	}
 }
 
@@ -204,10 +209,11 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 	return out, notes
 }
 
-// ArxmlLoad finds the ARXML at a resolved path: candb.arxml_cached (what the last rebuild loaded;
-// the GUI, on its own thread) or a function over candb.load_arxml_file (the headless runner,
-// before anything is loaded). none means skip: the database loader reports a file that fails.
-pub type ArxmlLoad = fn (path string) ?candb.Arxml
+// DatabaseLoad finds the database a resolved reference loads: the GUI's from what its rebuild
+// LOADED (app.dbs, by canonical reference — so the check compares a row with exactly the parse
+// the run uses, never a later parse of the same path), the headless runner's through
+// candb.open_database. none means skip: the database loader reports a reference that fails.
+pub type DatabaseLoad = fn (resolved_ref string) ?candb.Database
 
 // arxml_rate_warnings names every enabled row whose rate or CAN-FD setting disagrees with the
 // ARXML cluster it reads (#439). An import copies the rates into the row, because the interface
@@ -221,7 +227,7 @@ pub type ArxmlLoad = fn (path string) ?candb.Arxml
 // as the mismatch it is: what it costs depends on the backend and on the wire's other rows
 // (wire_framings), which this does not try to predict. `dir` is the project's directory, which
 // references resolve against; each file is looked up once.
-pub fn arxml_rate_warnings(chs []Channel, dir string, find ArxmlLoad) []string {
+pub fn arxml_rate_warnings(chs []Channel, dir string, find DatabaseLoad) []string {
 	// disabled rows filtered BEFORE anything is looked up: a file only they name is not read
 	return arxml_rate_findings(chs.filter(it.enabled), dir, find).map(it.text)
 }
@@ -236,9 +242,9 @@ pub:
 // arxml_rate_findings is arxml_rate_warnings for EVERY row, enabled or not, each tagged with its
 // index: what the GUI keeps from a rebuild, because a row ticked on or off while stopped changes
 // no rate and causes no rebuild, so Start filters by the enabled state it finds then.
-pub fn arxml_rate_findings(chs []Channel, dir string, find ArxmlLoad) []RowWarning {
+pub fn arxml_rate_findings(chs []Channel, dir string, find DatabaseLoad) []RowWarning {
 	mut seen := map[string]bool{}
-	mut files := map[string]candb.Arxml{}
+	mut dbs := map[string]candb.Database{}
 	mut out := []RowWarning{}
 	for i, ch in chs {
 		if ch.is_eth() {
@@ -248,19 +254,22 @@ pub fn arxml_rate_findings(chs []Channel, dir string, find ArxmlLoad) []RowWarni
 			if !candb.is_arxml_ref(ref) {
 				continue
 			}
-			file, frag := candb.split_database_ref(resolve_asset(dir, ref))
-			// by REAL path: `net.arxml` and `./net.arxml` are one file, looked up once
-			key := os.real_path(file)
+			resolved := resolve_asset(dir, ref)
+			// by canonical reference (real path + #Cluster): two spellings of one cluster of one
+			// file are looked up once
+			key := candb.canonical_database_ref(resolved)
 			if key !in seen {
 				seen[key] = true
-				if x := find(file) {
-					files[key] = x
+				if db := find(resolved) {
+					dbs[key] = db
 				}
 			}
-			a := files[key] or { continue }
-			c := a.cluster(frag) or { continue }
-			r := arxml_cluster_rates(c)
-			what := '${c.bus} (${os.file_name(file)})'
+			db := dbs[key] or { continue }
+			if db.arxml.name == '' {
+				continue
+			}
+			r := arxml_bus_rates(db.arxml)
+			what := '${db.arxml.name} (${db.arxml.file})'
 			if transport.adapter_configures_bitrate(ch.adapter) && !r.no_baudrate
 				&& ch.nominal_bitrate() != r.bitrate {
 				out << RowWarning{i, '${ch.name} runs at ${ch.nominal_bitrate()} bit/s but ${what} is ${r.bitrate} bit/s'}

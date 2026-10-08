@@ -224,8 +224,9 @@ mut:
 	n int
 }
 
-fn load_for_test(path string) ?candb.Arxml {
-	return candb.load_arxml_file(path) or { return none }
+fn load_for_test(ref string) ?candb.Database {
+	loaded := candb.open_database(ref) or { return none }
+	return loaded.db
 }
 
 // At Start, a row whose rate or format no longer matches its cluster is said — the reissued
@@ -316,9 +317,9 @@ fn test_arxml_rate_warnings() {
 	_ = arxml_rate_warnings([Channel{
 		...body
 		databases: ['net.arxml#Body', '../${os.file_name(dir)}/net.arxml#Body']
-	}], dir, fn [mut asked] (p string) ?candb.Arxml {
+	}], dir, fn [mut asked] (ref string) ?candb.Database {
 		asked.n++
-		return candb.load_arxml_file(p) or { return none }
+		return load_for_test(ref)
 	})
 	assert asked.n == 1
 	// silent: a cluster stating no baudrate, a disabled row, an Ethernet row, and what does not load

@@ -152,7 +152,7 @@ fn main() {
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
-	for w in project.arxml_rate_warnings(proj.channels, os.dir(proj_path), load_arxml) {
+	for w in project.arxml_rate_warnings(proj.channels, os.dir(proj_path), load_db) {
 		eprintln('warning: ${w}')
 	}
 	// NOT someip_endpoint_warnings HERE. That warning is about rows this front end BINDS, and
@@ -701,8 +701,9 @@ fn report_diag(what string, d transport.BusDiagnostics) {
 	}
 }
 
-// load_arxml is project.ArxmlLoad over the content-keyed loader: the runner checks the rates
-// before it has loaded any database, so the parse it does here is the one the load then reuses.
-fn load_arxml(path string) ?candb.Arxml {
-	return candb.load_arxml_file(path) or { return none }
+// load_db is project.DatabaseLoad over candb.open_database: the runner checks the rates before
+// it has loaded any database, and the ARXML parse it causes is the one the load then reuses.
+fn load_db(ref string) ?candb.Database {
+	loaded := candb.open_database(ref) or { return none }
+	return loaded.db
 }

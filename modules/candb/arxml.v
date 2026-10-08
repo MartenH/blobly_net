@@ -167,6 +167,18 @@ pub fn (c ArxmlCluster) carries_fd() bool {
 	return false
 }
 
+// bus_facts is what the cluster states about its bus, as a database built from it carries it
+// (Database.arxml); `file` is the file's base name, for messages.
+pub fn (c ArxmlCluster) bus_facts(file string) ArxmlBus {
+	return ArxmlBus{
+		name:        c.bus
+		file:        file
+		baudrate:    c.baudrate
+		fd_baudrate: c.fd_baudrate
+		fd:          c.carries_fd()
+	}
+}
+
 // frame_of returns the extras for a message of this cluster, if the file said anything.
 pub fn (c ArxmlCluster) frame_of(m Message) ?ArxmlFrame {
 	return c.frames[frame_key(m.id, m.ext)] or { return none }
@@ -479,14 +491,7 @@ pub fn load_arxml_file(path string) !Arxml {
 // load_arxml_content is load_arxml_file with the SHA-256 of the bytes it read: the content key a
 // caller compares to tell whether the file changed since (the import dialog, before it writes).
 pub fn load_arxml_content(path string) !(Arxml, string) {
-	text := os.read_file(path) or {
-		// a file that cannot be read now has no parse: arxml_cached must not keep answering with
-		// the bytes it held before, which nothing loaded from this time
-		arxml_cache_mu.lock()
-		arxml_cache.delete(os.real_path(path))
-		arxml_cache_mu.unlock()
-		return err
-	}
+	text := os.read_file(path)!
 	key, sha := content_key(path, text)
 	for {
 		arxml_cache_mu.lock()
@@ -532,27 +537,6 @@ pub fn load_arxml_content(path string) !(Arxml, string) {
 	}
 	arxml_cache_mu.unlock()
 	return a, sha
-}
-
-// arxml_cached is the ARXML at `path` as last parsed, without reading the file: what the
-// databases loaded at the last rebuild were built from, for a check at Start that must neither
-// block the GUI thread on a hundreds-of-MB read nor compare against bytes the run is not using.
-// none when the file was never parsed here, or its last parse failed (which the loader said).
-pub fn arxml_cached(path string) ?Arxml {
-	// gone or unreadable since: whatever the cache holds is not what a load would see
-	if !os.is_readable(path) {
-		return none
-	}
-	key := os.real_path(path)
-	arxml_cache_mu.lock()
-	defer {
-		arxml_cache_mu.unlock()
-	}
-	c := arxml_cache[key] or { return none }
-	if c.err != '' {
-		return none
-	}
-	return c.a
 }
 
 // arxml_cache_hit_count is how many loads the cache answered — for the test that pins it.

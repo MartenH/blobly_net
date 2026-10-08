@@ -71,8 +71,10 @@ pub fn open_database(ref string) !Loaded {
 		a := load_arxml_file(file)!
 		c := a.cluster(cluster)!
 		base := os.base(file)
+		mut db := c.db
+		db.arxml = c.bus_facts(base)
 		return Loaded{
-			db:    c.db
+			db:    db
 			notes: a.report.lines().map('${base}: ${it}')
 		}
 	}
