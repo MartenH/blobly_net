@@ -13,6 +13,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## V language / compiler / tooling
 
+- 🟡 **vlib's `yaml` reads `#` as a comment even with no space before it.** `- net.arxml#Body`
+  parses as `net.arxml`, where YAML says a comment needs whitespace before the `#`. So an ARXML
+  cluster reference in a `.blobnet` must be quoted (`- "net.arxml#Body"`), and the project writer
+  quotes every value containing a `#` (`project.yaml_scalar`). An unquoted one written by hand
+  loses its cluster and, on a multi-cluster file, is refused at load as naming none.
 - 🟡 **Binding `&x` of a `mut x T` receiver, or capturing it by value in a closure, makes a COPY
   of the struct.** Inside `fn (mut app App) f()`, `ap := &app` has type `App` at a new address, and
   `fn [app] () { ... }` captures a copy too (a later `app.x = 7` is not seen through it). `a := app`

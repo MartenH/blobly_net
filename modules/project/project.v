@@ -866,7 +866,55 @@ pub fn parse(text string) !Project {
 	// A pre-v4 file's `bus:` values were written under interface-first semantics; convert them
 	// once, here, so nothing downstream has to know there was ever another rule (#97).
 	p.notes = migrate_legacy_sender_buses(mut p, declared)
+	p.notes << unquoted_fragment_notes(text, p.channels)
 	return p
+}
+
+const fragment_mark = '__BLOBLY_ARXML_FRAGMENT__'
+
+// unquoted_fragment_notes names every channel database entry that lost its `#Cluster` to an
+// unquoted `#`: vlib's yaml reads `net.arxml#Body` as `net.arxml` and a comment
+// (docs/known_issues.md), so the entry loads as the bare file, which a multi-cluster ARXML
+// refuses as naming no cluster — a refusal that says nothing of quoting. Builds before the
+// writer quoted `#` saved the Configuration panel's pick this way. Asked of the PARSER, not of
+// the text: the file is parsed again with each `.arxml#` spelled without a `#`, and an entry
+// that differs between the two reads is one the comment rule cut.
+fn unquoted_fragment_notes(text string, chans []Channel) []string {
+	low := text.to_lower()
+	if !low.contains('.arxml#') {
+		return []
+	}
+	mut marked := []u8{cap: text.len + 64}
+	mut i := 0
+	for i < text.len {
+		if low[i] == `#` && i >= 6 && low[i - 6..i] == '.arxml' {
+			marked << fragment_mark.bytes()
+		} else {
+			marked << text[i]
+		}
+		i++
+	}
+	doc := yaml.parse_text(marked.bytestr()) or { return [] }
+	chs := doc.value_opt('buses') or { doc.value_opt('channels') or { return [] } }
+	mut out := []string{}
+	mut ci := -1 // the index parse gave this node: it skips the null ones too
+	for c in chs.array() {
+		if c is yaml.Null {
+			continue
+		}
+		ci++
+		if ci >= chans.len {
+			break
+		}
+		dbs := c.value_opt('databases') or { continue }
+		for k, d in dbs.array().as_strings() {
+			want := d.replace(fragment_mark, '#')
+			if k < chans[ci].databases.len && want != d && chans[ci].databases[k] != want {
+				out << '${chans[ci].name}: database `${want}` is read as `${chans[ci].databases[k]}` and a comment — quote it: ${yaml_flow_scalar(want)}'
+			}
+		}
+	}
+	return out
 }
 
 // load reads and parses a project file.
@@ -2262,6 +2310,12 @@ fn fd_wanted(c Channel) int {
 		return c.data_bitrate
 	}
 	return if c.bitrate > 0 { c.bitrate } else { default_bitrate }
+}
+
+// data_rate is the data-phase rate this row opens with: 0 for a classic row, the arbitration
+// rate for an FD row with none configured.
+pub fn (c Channel) data_rate() int {
+	return fd_wanted(c)
 }
 
 // fd_describe names an fd_wanted value the way an operator would read it back.

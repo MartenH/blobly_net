@@ -330,7 +330,9 @@ fn yaml_scalar(s string) string {
 		return '""'
 	}
 	indicators := '[]{},#&*!|>\'"%@?:- '
-	needs := s[0] in indicators.bytes() || s.contains(': ') || s.contains(' #')
+	// ANY `#`, not only ` #`: vlib's yaml reads `net.arxml#Body` as `net.arxml` and a comment,
+	// which the YAML spec does not (docs/known_issues.md)
+	needs := s[0] in indicators.bytes() || s.contains(': ') || s.contains('#')
 		|| s.contains('\n') || s[s.len - 1] == ` `
 	if !needs {
 		return s

@@ -573,3 +573,95 @@ channels:
 ')!
 	assert version_for(q) == 2
 }
+
+// An ARXML cluster fragment survives a Save: unquoted, vlib's yaml reads the `#` as a comment.
+fn test_arxml_fragment_round_trips() {
+	orig := Project{
+		name:     'rt'
+		channels: [
+			Channel{
+				name:      'CAN1'
+				iface:     'inproc:CAN1'
+				databases: ['db/net.arxml#Body', 'dbc/x.dbc']
+			},
+		]
+	}
+	back := parse(orig.to_yaml())!
+	assert back.channels[0].databases == ['db/net.arxml#Body', 'dbc/x.dbc']
+}
+
+// An unquoted fragment, as a build before the quoting saved it, is said where it is lost —
+// and only there: not a quoted one, a flow sequence, a comment, or text that is not an entry.
+fn test_unquoted_fragment_is_noted() {
+	y := '# a comment naming db/net.arxml#Body is not an entry
+project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    databases:
+      - db/net.arxml#Body
+      - "db/net.arxml#Chassis"
+      - dbc/x.dbc   # see db/net.arxml#Body
+      - db/my network.arxml#Body	# a real comment
+  - name: CAN3
+    interface: inproc:CAN3
+    databases:
+      - db/net.arxml#Chassis
+  - name: CAN2
+    interface: inproc:CAN2
+    databases: ["db/net.arxml#Body"]
+    script: |
+      - db/net.arxml#Body
+'
+	p := parse(y)!
+	assert p.channels[0].databases == ['db/net.arxml', 'db/net.arxml#Chassis', 'dbc/x.dbc',
+		'db/my network.arxml']
+	assert p.channels[2].databases == ['db/net.arxml#Body']
+	assert p.notes == [
+		'CAN1: database `db/net.arxml#Body` is read as `db/net.arxml` and a comment — quote it: "db/net.arxml#Body"',
+		'CAN1: database `db/my network.arxml#Body` is read as `db/my network.arxml` and a comment — quote it: "db/my network.arxml#Body"',
+		'CAN3: database `db/net.arxml#Chassis` is read as `db/net.arxml` and a comment — quote it: "db/net.arxml#Chassis"',
+	]
+}
+
+// `databases:` anywhere but a channel's own list — a block scalar, a mapping the parser
+// ignores — is not an entry: no note, whatever it says.
+fn test_unquoted_fragment_outside_a_channel_is_not_noted() {
+	y := 'project:
+  name: t
+  extra:
+    databases:
+      - db/net.arxml#Body
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    script: |
+      databases:
+        - db/net.arxml#Body
+    notes:
+      databases:
+        - db/net.arxml#Body
+    databases:
+      - db/net.arxml
+'
+	p := parse(y)!
+	assert p.channels[0].databases == ['db/net.arxml']
+	assert p.notes == []
+}
+
+// The suggested spelling is the writer's own: a backslash path survives being pasted back.
+fn test_unquoted_fragment_suggestion_escapes() {
+	y := 'project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    databases:
+      - C:\\net.arxml#Body
+'
+	p := parse(y)!
+	assert p.notes == ['CAN1: database `C:\\net.arxml#Body` is read as `C:\\net.arxml` and a comment — quote it: "C:\\\\net.arxml#Body"']
+	fixed := parse(y.replace('- C:\\net.arxml#Body', '- "C:\\\\net.arxml#Body"'))!
+	assert fixed.channels[0].databases == ['C:\\net.arxml#Body']
+}

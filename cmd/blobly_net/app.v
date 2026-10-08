@@ -509,6 +509,7 @@ mut:
 	layout_warned    bool            // a failed layout write is said once, not every settling period
 	panes_dragged    map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
 	cfg_bufs         []CfgBuf
+	arxml_pick ArxmlPick // which CAN cluster of an ARXML a channel reads
 	// Discover-interfaces dialog (add buses from detected transports)
 	disc_open   bool
 	disc_list_h f32 // the interface list's height in Discover, unscaled px (#306)
@@ -1127,6 +1128,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	if app.recording {
 		app.toggle_record()
 	}
+	app.arxml_pick.open = false // its row index belongs to the project being replaced
 	// Warn HERE, not in load_project: this is the function that abandons the File tab's buffer
 	// (via cfg_invalidate below), so every caller is covered — File ▸ New bypassed a warning
 	// placed in load_project — and load_project's error path returns before reaching this, so
