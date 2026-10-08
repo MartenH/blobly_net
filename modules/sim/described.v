@@ -57,20 +57,25 @@ pub fn describe(sys &sysview.System, t sysview.TargetAddr, name string, cfg ?pro
 			notes: ['${n.name} declares no diagnostic server; served from the project']
 		}
 	}
-	spec, base_notes := n.desc.server_spec(remote)
-	mut notes := base_notes.clone()
+	mut spec, base_notes := n.desc.server_spec(remote)
+	// what one answer may carry: one ISO-TP transfer, or a DoIP diagnostic message
+	max_did := if remote { max_did_bytes_doip } else { max_did_bytes }
+	spec.max_response = max_did + 3
+	mut notes := n.desc.errs.map('${it} (in its ecu.toml)')
+	notes << base_notes
 	mut srv := uds.server_from(spec)
 	if c := cfg {
 		for d in c.dids {
-			if d.id <= 0xFFFF {
+			if d.id <= 0xFFFF && d.value_len() <= max_did { // past that, validate_uds said so
 				srv.put_did(u16(d.id), if d.bytes.len > 0 { d.bytes.clone() } else { d.text.bytes() })
 			}
 		}
 		if c.dtcs.len > 0 && spec.faults.len == 0 {
 			notes << 'it has no fault memory (no [[fault]]), so 0x19 is not served and the `dtcs:` of the project are not'
 		} else {
+			max_dtc := if remote { max_dtcs_doip } else { max_dtcs }
 			for x in c.dtcs {
-				if x.code <= 0xFFFFFF && x.status <= 0xFF {
+				if x.code <= 0xFFFFFF && x.status <= 0xFF && srv.dtcs.len < max_dtc {
 					srv.set_dtc_status(x.code, u8(x.status))
 				}
 			}
@@ -100,7 +105,7 @@ pub fn describe_uds_nodes(sys &sysview.System, mut nodes []UdsNode, peers []proj
 		if d.ok {
 			u.server = d.server
 			u.described = d.node
-			wire_live(mut u.server, iface, u.name)
+			wire_live(mut u.server, iface, chans[u.src] or { '' }, u.name)
 			out << '${u.name}: diagnostics as described for ${d.node} (${os.file_name(sys.path)})'
 		}
 		out << d.notes
@@ -110,14 +115,19 @@ pub fn describe_uds_nodes(sys &sysview.System, mut nodes []UdsNode, peers []proj
 
 // describe_default is a channel's built-in server (on `rx`/`tx`): the node a description
 // addresses so, or uds.default_server().
-pub fn describe_default(sys &sysview.System, chan_name string, rx u32, tx u32) Described {
-	d := describe(sys, sysview.TargetAddr{ req: rx, rsp: tx, bus: chan_name }, '', none, false)
+// Its live DIDs read the simulation of the node of the described node's name on the channel.
+pub fn describe_default(sys &sysview.System, chan_name string, iface string, rx u32, tx u32) Described {
+	mut d := describe(sys, sysview.TargetAddr{ req: rx, rsp: tx, bus: chan_name }, '', none,
+		false)
 	if d.ok {
+		mut srv := d.server
+		wire_live(mut srv, iface, chan_name, d.node)
 		mut notes := ['${chan_name}: the built-in server answers as described for ${d.node} (${os.file_name(sys.path)})']
 		notes << d.notes
 		return Described{
 			...d
-			notes: notes
+			notes:  notes
+			server: srv
 		}
 	}
 	return Described{
@@ -154,14 +164,15 @@ mut:
 	vals map[string]i64
 }
 
-fn live_key(iface string, node string, signal string) string {
-	return '${transport.destination_key(iface)}|${node}|${signal}'
+// keyed by wire, channel and node: node names are not unique across the channels of one wire
+fn live_key(iface string, chan_name string, node string, signal string) string {
+	return '${transport.destination_key(iface)}|${chan_name}|${node}|${signal}'
 }
 
 // want_live registers what a described server reads, so the simulation publishes it.
-pub fn want_live(iface string, node string, signal string) {
+pub fn want_live(iface string, chan_name string, node string, signal string) {
 	live.mu.lock()
-	live.want[live_key(iface, node, signal)] = true
+	live.want[live_key(iface, chan_name, node, signal)] = true
 	live.mu.unlock()
 }
 
@@ -174,17 +185,17 @@ pub fn clear_live() {
 }
 
 // live_value is a published signal's value, none before its node has sent it.
-pub fn live_value(iface string, node string, signal string) ?i64 {
+pub fn live_value(iface string, chan_name string, node string, signal string) ?i64 {
 	live.mu.rlock()
 	defer {
 		live.mu.runlock()
 	}
-	return live.vals[live_key(iface, node, signal)] or { return none }
+	return live.vals[live_key(iface, chan_name, node, signal)] or { return none }
 }
 
 // publish_live records, for the signals a described server wants, the value each generator gave
 // the last frame due_frames sent of its message.
-pub fn publish_live(iface string, e &Engine) {
+pub fn publish_live(iface string, chan_name string, e &Engine) {
 	live.mu.rlock()
 	empty := live.want.len == 0
 	live.mu.runlock()
@@ -197,14 +208,21 @@ pub fn publish_live(iface string, e &Engine) {
 				continue // a response, or not sent yet: no frame of it carries a generator's value
 			}
 			for s in m.signals {
-				k := live_key(iface, ecu.name, s.name)
+				k := live_key(iface, chan_name, ecu.name, s.name)
 				live.mu.rlock()
 				wanted := k in live.want
 				live.mu.runlock()
 				if !wanted {
 					continue
 				}
-				v := i64(math.round(s.gen.value(m.last_t, m.send_n - 1)))
+				mut phys := s.gen.value(m.last_t, m.send_n - 1)
+				for sig in m.msg.signals {
+					if sig.name == s.name {
+						phys = sig.phys_from_raw(sig.raw_from_phys(phys)) // as encoded: clamped
+						break
+					}
+				}
+				v := i64(math.round(phys))
 				live.mu.lock()
 				live.vals[k] = v
 				live.mu.unlock()
@@ -213,18 +231,19 @@ pub fn publish_live(iface string, e &Engine) {
 	}
 }
 
-// wire_live points a described server's live DIDs at the simulation of node `node` on `iface`.
-pub fn wire_live(mut srv uds.Server, iface string, node string) {
+// wire_live points a described server's live DIDs at the simulation of node `node` of channel
+// `chan_name` on `iface`.
+pub fn wire_live(mut srv uds.Server, iface string, chan_name string, node string) {
 	mut any := false
 	for d in srv.spec.dids {
 		if d.source == .live {
-			want_live(iface, node, d.signal)
+			want_live(iface, chan_name, node, d.signal)
 			any = true
 		}
 	}
 	if any {
-		srv.signal_value = fn [iface, node] (signal string) ?i64 {
-			return live_value(iface, node, signal)
+		srv.signal_value = fn [iface, chan_name, node] (signal string) ?i64 {
+			return live_value(iface, chan_name, node, signal)
 		}
 	}
 }

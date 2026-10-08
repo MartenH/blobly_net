@@ -260,7 +260,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}
 		}
-		sim.publish_live(sc.iface, &engine) // what a described server's live DIDs read
+		sim.publish_live(sc.iface, sc.pch.name, &engine) // what a described server's live DIDs read
 		if frame := bus.recv(5) {
 			for resp in engine.on_frame(frame) {
 				bus.send(resp) or {}

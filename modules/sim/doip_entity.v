@@ -68,7 +68,8 @@ pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &s
 	mut srv := if built.len > 0 { built[0].server } else { uds.default_server() }
 	name := if built.len > 0 { built[0].name } else { '' }
 	cfg := if built.len > 0 { nodes[built[0].src].uds } else { none }
-	d := describe(sys, sysview.TargetAddr{ doip: true, logical: ch.ecu_addr }, name, cfg, true)
+	d := describe(sys, sysview.TargetAddr{ doip: true, logical: ch.ecu_addr, bus: ch.name },
+		name, cfg, true)
 	mut notes := d.notes.clone()
 	if d.ok {
 		srv = d.server
@@ -121,6 +122,8 @@ pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &s
 			announce_to:       ch.announce_to
 			// a functional request is answered as a CAN node answers one: the quiet NRCs withheld
 			functional_withheld: uds.functional_suppressed
+			// a described node ignores a functional SecurityAccess, as blobly_emb's entity does
+			functional_ignored: if d.ok { uds.physical_only } else { doip.ignore_nothing }
 		}
 		node:      name
 		announce:  announce

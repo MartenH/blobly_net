@@ -105,6 +105,8 @@ pub mut:
 	serves_reset      bool
 	reference_key     bool
 	security_attempts int // 0 = 3
+	// the longest answer the carrier takes (0x22 answers 0x14 past it); 0 = one ISO-TP transfer
+	max_response int
 	security_delay_ms int // 0 = 10 s
 	s3_ms             int // 0 = 5 s
 }
@@ -156,7 +158,9 @@ pub fn server_from(spec ServerSpec) Server {
 		avail:     fault_availability
 	}
 	for d in spec.dids {
-		s.dids[d.id] = d.data.clone()
+		if d.id !in s.dids {
+			s.dids[d.id] = d.data.clone() // the first declaration, whose gates did_spec finds
+		}
 	}
 	for f in spec.faults {
 		s.dtcs << Dtc{
@@ -225,6 +229,10 @@ pub fn (mut s Server) set_dtc_status(code u32, status u8) {
 	}
 }
 
+fn (spec ServerSpec) resp_cap() int {
+	return if spec.max_response > 0 { spec.max_response } else { 4095 }
+}
+
 // security_mask is the 0x27 levels the server serves (bit L-1 for level L): every level a DID
 // gate, a service row or the handoff row names — a level nothing is gated on unlocks nothing.
 pub fn (spec ServerSpec) security_mask() u8 {
@@ -250,7 +258,24 @@ fn (s &Server) now_ms() i64 {
 	if s.clock != unsafe { nil } {
 		return s.clock()
 	}
-	return time.ticks()
+	return i64(time.sys_mono_now() / 1_000_000) // monotonic: a wall-clock step moves no deadline
+}
+
+// physical_only: a request a server ignores when it arrives functionally — SecurityAccess, whose
+// seed and key are one tester's exchange (comm/uds handle_functional).
+pub fn physical_only(req []u8) bool {
+	return req.len > 0 && req[0] == 0x27
+}
+
+// handle_functional answers a request that arrived on the functional address: a described server
+// ignores one that is physical only, which still keeps its session alive.
+pub fn (mut s Server) handle_functional(req []u8) []u8 {
+	if s.described && physical_only(req) {
+		s.last_rx_ms = s.now_ms()
+		s.rx_seen = true
+		return []u8{}
+	}
+	return s.handle(req)
 }
 
 fn (s &Server) did_spec(id u16) ?DidSpec {
@@ -306,10 +331,11 @@ fn (mut s Server) enter_session(session u8) {
 fn (mut s Server) answer_described(req []u8) []u8 {
 	now := s.now_ms()
 	s3 := i64(if s.spec.s3_ms > 0 { s.spec.s3_ms } else { 5000 })
-	if s.session != 1 && s.last_rx_ms != 0 && now - s.last_rx_ms > s3 {
+	if s.session != 1 && s.rx_seen && now - s.last_rx_ms > s3 {
 		s.enter_session(1) // S3: no request for that long ends the session
 	}
 	s.last_rx_ms = now
+	s.rx_seen = true
 	sid := req[0]
 	if !s.supported(sid) {
 		return neg(sid, 0x11)
@@ -382,6 +408,11 @@ fn (mut s Server) d_reset(req []u8) []u8 {
 		return neg(0x11, 0x13)
 	}
 	s.enter_session(1)
+	if s.sa_failed.any(it > 0) {
+		// a reset between wrong keys costs the delay (comm/uds reset_state), or resets would be
+		// the way around the attempt limit
+		s.sa_delay_until = s.now_ms() + i64(s.sa_delay())
+	}
 	return [u8(0x51), req[1]]
 }
 
@@ -422,6 +453,13 @@ fn (mut s Server) d_read(req []u8) []u8 {
 	}
 	if ids.len == 0 {
 		return neg(0x22, 0x31)
+	}
+	mut total := 1
+	for id in ids {
+		total += 2 + (s.dids[id] or { []u8{} }).len
+	}
+	if total > s.spec.resp_cap() {
+		return neg(0x22, 0x14) // responseTooLong: more than the carrier takes in one answer
 	}
 	mut resp := [u8(0x62)]
 	for id in ids {
@@ -559,8 +597,7 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 		limit := if s.spec.security_attempts > 0 { s.spec.security_attempts } else { 3 }
 		if s.sa_failed[level - 1] >= limit {
 			s.sa_failed[level - 1] = 0
-			delay := if s.spec.security_delay_ms > 0 { s.spec.security_delay_ms } else { 10000 }
-			s.sa_delay_until = now + i64(delay)
+			s.sa_delay_until = now + i64(s.sa_delay())
 			return neg(0x27, 0x36)
 		}
 		return neg(0x27, 0x35)
@@ -568,6 +605,10 @@ fn (mut s Server) d_security(req []u8, now i64) []u8 {
 	s.sa_failed[level - 1] = 0
 	s.unlocked = level
 	return [u8(0x67), sub]
+}
+
+fn (s &Server) sa_delay() int {
+	return if s.spec.security_delay_ms > 0 { s.spec.security_delay_ms } else { 10000 }
 }
 
 // next_seed is a fresh, never all-zero seed (all zeros means "already unlocked" on the wire).

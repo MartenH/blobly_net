@@ -359,6 +359,36 @@ fn test_an_unknown_session_name_closes_the_gate() {
 	}
 }
 
+fn test_a_bool_parameter_is_read_and_written_as_one() {
+	d := sysview.EcuDesc{
+		server: true
+		params: [sysview.ParamDesc{
+			name:     'Flag'
+			fields:   [sysview.Field{'on', 'bool'}]
+			defaults: {
+				'on': i64(1)
+			}
+		}]
+		dids:   [
+			sysview.DidDesc{
+				id:         0x0400
+				kind:       .param
+				name:       'Flag'
+				size:       1
+				fields:     [sysview.Field{'on', 'bool'}]
+				write_gate: sysview.Gate{
+					declared: true
+				}
+			},
+		]
+	}
+	spec, _ := d.server_spec(false)
+	mut s := uds.server_from(spec)
+	assert h(mut s, [u8(0x22), 0x04, 0x00]) == [u8(0x62), 0x04, 0x00, 0x01]
+	assert h(mut s, [u8(0x2E), 0x04, 0x00, 0x02]) == [u8(0x7F), 0x2E, 0x31] // a bool is 0 or 1
+	assert h(mut s, [u8(0x2E), 0x04, 0x00, 0x00]) == [u8(0x6E), 0x04, 0x00]
+}
+
 fn test_the_link_is_addressing_then_name() {
 	sys := dx_load('link')
 	// addressing wins over the name
@@ -410,7 +440,7 @@ fn test_a_live_did_reads_the_simulated_signal() {
 	sys := dx_load('live')
 	mut s := zone_a(sys)
 	clear_live()
-	wire_live(mut s, 'inproc:EDGE', 'zone_a')
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'zone_a')
 	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0, 0] // not sent yet
 	e := Engine{
 		ecus: [
@@ -429,7 +459,7 @@ fn test_a_live_did_reads_the_simulated_signal() {
 			},
 		]
 	}
-	publish_live('inproc:EDGE', &e)
+	publish_live('inproc:EDGE', 'edge', &e)
 	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
 	clear_live()
 }

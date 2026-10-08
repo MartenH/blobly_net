@@ -489,7 +489,9 @@ here gates the simulated traffic); the programming handoff `0x10 02` is `conditi
 once its gates pass (no bootloader is simulated); a `tx_saturations` DID reads 0 and a `[boot]`
 node's `0xF195` reads 0; DTC statuses start at power-on rather than at the node's history. A
 gate naming a session that is not one (`"extended "`) is closed rather than open, and said. Two
-nodes addressed alike that the bus does not tell apart describe neither — no name decides it.
+nodes addressed alike that the bus does not tell apart describe neither — no name decides it. Over
+DoIP the session and the unlock belong to the entity, not to the connection, so a tester that
+reconnects finds them as the last one left them (the per-connection state on the roadmap).
 `tests/diag_described.lua` runs against `projects/described/`, a trimmed copy of system_full's
 zone_a; the same requests against the board on the bench gave the same answers but for those.
 

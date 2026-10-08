@@ -409,6 +409,8 @@ fn field_ints(m map[string]toml.Any, key string) map[string]i64 {
 		for k, x in v.as_map() {
 			if x is i64 {
 				out[k] = x
+			} else if x is bool {
+				out[k] = if x { 1 } else { 0 } // a bool field's default, as its byte carries it
 			}
 		}
 	}
@@ -581,7 +583,7 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 				d.errs << 'did 0x${id:04X}: bytes "${b.string()}" are not hex; its value is not known'
 				[]u8{}
 			}
-			size = b.string().fields().len
+			size = if data.len > 0 { data.len } else { b.string().fields().len }
 		} else if ts := xm['tx_saturations'] {
 			if ts.bool() {
 				kind = .tx_saturations

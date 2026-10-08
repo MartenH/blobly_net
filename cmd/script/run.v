@@ -260,7 +260,7 @@ fn main() {
 			// Passing only the suffixed form meant sim.apply_injected looked up
 			// `pcan:…@250000` while sim.fault() had stored under `pcan:…`, so a scripted
 			// fault on vendor hardware reported success and never reached the wire.
-			sims << spawn sim_loop(ch.iface_with_bitrate(), ch.iface, db, nodes, ctl)
+			sims << spawn sim_loop(ch.iface_with_bitrate(), ch.iface, ch.name, db, nodes, ctl)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -309,7 +309,7 @@ fn main() {
 					continue
 				}
 				if servers.len == 0 {
-					dflt := sim.describe_default(&desc_sys, ch.name, 0x7E0, 0x7E8)
+					dflt := sim.describe_default(&desc_sys, ch.name, ch.iface, 0x7E0, 0x7E8)
 					for n in dflt.notes {
 						eprintln(n)
 					}
@@ -445,7 +445,7 @@ fn load_channel_db(ch project.Channel, proj_dir string) candb.Database {
 
 // sim_loop runs the channel's simulated ECUs on a dedicated in-process bus
 // instance (driver-free twin of src/main.v's sim_loop, minus the GUI).
-fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) {
+fn sim_loop(open_iface string, fault_iface string, chan_name string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) {
 	// Counted done on EVERY way out, an open that fails included -- a loop that returned
 	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
 	// #231).
@@ -468,7 +468,7 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}
 		}
-		sim.publish_live(fault_iface, &engine) // what a described server's live DIDs read
+		sim.publish_live(fault_iface, chan_name, &engine) // what a described server's live DIDs read
 		if frame := bus.recv(5) {
 			for resp in engine.on_frame(frame) {
 				bus.send(resp) or {}

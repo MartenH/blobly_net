@@ -36,6 +36,15 @@ fn gate_spec(g Gate) uds.GateSpec {
 
 fn field_spec(f Field, r ?Range) uds.FieldSpec {
 	rg := r or {
+		if f.typ == 'bool' {
+			// a bool holds 0 or 1 whatever the range says nothing about
+			return uds.FieldSpec{
+				width:  1
+				ranged: true
+				min:    0
+				max:    1
+			}
+		}
 		return uds.FieldSpec{
 			width:  f.width()
 			signed: f.typ.starts_with('i')
@@ -59,6 +68,10 @@ fn be_bytes(v i64, w int) []u8 {
 	return out
 }
 
+// performed_sids are the services a described server performs (uds supported(), less those a
+// description may leave out): a table row for any other is refused, and said.
+const performed_sids = [u8(0x10), 0x11, 0x14, 0x19, 0x22, 0x27, 0x2E, 0x3E, 0x85]
+
 // boot_sw_version_did is the DID a [boot] node answers with its running image's sw_version
 // (blobly_emb loom2v handoff_did): a u32, which the simulation has no image to take it from.
 const boot_sw_version_did = u16(0xF195)
@@ -73,7 +86,13 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 	for i, p in d.params {
 		status_of[p.name] = i
 	}
+	mut seen := map[u16]bool{}
 	for x in d.dids {
+		if x.id in seen {
+			notes << 'DID 0x${x.id:04X} is declared twice; the first is served'
+			continue
+		}
+		seen[x.id] = true
 		for key, g in {
 			'read':  x.read_gate
 			'write': x.write_gate
@@ -152,6 +171,12 @@ pub fn (d &EcuDesc) server_spec(remote bool) (uds.ServerSpec, []string) {
 		bad := unknown_sessions(r.gate.sessions)
 		if bad.len > 0 {
 			notes << '[uds] services 0x${r.sid:02X}: session ${bad.join(', ')} is no session; not allowed there'
+		}
+		if r.sid !in performed_sids {
+			notes << '[uds] services 0x${r.sid:02X} is not simulated; it is refused (serviceNotSupported)'
+		}
+		if r.sub >= 0 && !(r.sid == 0x10 && r.sub == 2) {
+			notes << '[uds] services "0x${r.sid:02X} ${r.sub:02X}": the one sub-function row is the programming handoff "0x10 02"; ignored'
 		}
 		if r.sub >= 0 {
 			if r.sid == 0x10 && r.sub == 2 {

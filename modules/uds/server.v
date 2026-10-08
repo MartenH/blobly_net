@@ -38,7 +38,8 @@ pub mut:
 	// the described server's clock in ms (S3, the 0x27 lockout); nil = time.ticks()
 	clock          fn () i64 = unsafe { nil }
 	last_rx_ms     i64
-	sa_failed      [8]u8 // wrong keys per level
+	rx_seen        bool  // last_rx_ms holds a request's time (a clock may start at 0)
+	sa_failed      [8]int // wrong keys per level
 	sa_delay_until i64
 	sa_state       u32 // the seed generator
 }

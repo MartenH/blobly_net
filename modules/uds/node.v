@@ -54,10 +54,7 @@ fn (mut s Server) serve_functional(mut l NodeLink) {
 	for mut t in l.func {
 		for {
 			freq := t.take() or { break }
-			if s.described && freq.len > 0 && freq[0] == 0x27 {
-				continue // SecurityAccess is physical only: a described server ignores it (comm/uds)
-			}
-			resp := s.handle(freq)
+			resp := s.handle_functional(freq)
 			if resp.len > 0 && !functional_suppressed(resp) {
 				l.phys.send(resp) or {}
 			}

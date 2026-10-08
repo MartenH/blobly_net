@@ -1190,7 +1190,7 @@ fn (mut app App) start() {
 			app.notify(n)
 		}
 		if diag_nodes.len == 0 {
-			dflt := sim.describe_default(&desc_sys, sc.pch.name, diag_tx_id, diag_rx_id)
+			dflt := sim.describe_default(&desc_sys, sc.pch.name, sc.iface, diag_tx_id, diag_rx_id)
 			for n in dflt.notes {
 				app.notify(n)
 			}

@@ -43,6 +43,17 @@ pub:
 	// the rule is handed in — sim sets uds.functional_suppressed (ISO 14229-1's quiet NRCs); the
 	// default withholds nothing.
 	functional_withheld ResponseFilter = withhold_nothing
+	// Which FUNCTIONAL requests are ignored outright — acked, not handled, not answered. sim sets
+	// uds.physical_only for a described server (SecurityAccess, as blobly_emb's entity); the
+	// default ignores nothing.
+	functional_ignored RequestFilter = ignore_nothing
+}
+
+// RequestFilter says whether a request is ignored (true) instead of handled.
+pub type RequestFilter = fn (req []u8) bool
+
+pub fn ignore_nothing(req []u8) bool {
+	return false
 }
 
 // ResponseFilter says whether a handler's answer is withheld (true) instead of sent.
@@ -261,6 +272,9 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 					// not at all where the functional rule withholds the answer
 					conn.write(diagnostic_message_ack(fa, dm.source,
 						diag_ack_ok)) or { return }
+					if s.cfg.functional_ignored(dm.data) {
+						continue
+					}
 					resp := s.handler(dm.data)
 					if resp.len > 0 && !s.cfg.functional_withheld(resp) {
 						conn.write(diagnostic_message(s.cfg.logical_address, dm.source, resp)) or {
