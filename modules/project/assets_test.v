@@ -238,3 +238,20 @@ fn test_a_symlinked_file_keeps_its_name() {
 	assert asset_ref(proj, os.join_path(proj, 'current.dbc')) == 'current.dbc'
 	assert rebase_ref(proj, os.join_path(root, 'other'), 'current.dbc') == '../proj/current.dbc'
 }
+
+// A reference to a file in directories not made yet, under a project opened through a symlinked
+// directory: the existing ancestor is resolved and the rest appended, so the rebased reference
+// names where the original project would find the file once it appears.
+fn test_missing_nested_reference_through_a_symlinked_project() {
+	$if windows {
+		return
+	}
+	root := asset_tree()!
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	// <root>/link -> <root>/proj; the project is opened as <root>/link
+	os.symlink(os.join_path(root, 'proj'), os.join_path(root, 'link'))!
+	moved := rebase_ref(os.join_path(root, 'link'), os.join_path(root, 'other'), 'gen/db/net.dbc')
+	assert moved == '../proj/gen/db/net.dbc'
+}

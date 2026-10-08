@@ -25,7 +25,7 @@ pub fn asset_ref(dir string, path string) string {
 	abs := slash(physical(path))
 	if dir == '' {
 		cwd := slash(physical(os.getwd()))
-		return if abs.starts_with(cwd + '/') { abs[cwd.len + 1..] } else { abs }
+		return if under(abs, cwd) { abs[cwd.len + 1..] } else { abs }
 	}
 	base := slash(physical(dir)) // a directory: resolved whole, the kernel walks it
 	a := abs.split('/')
@@ -54,10 +54,21 @@ fn physical(p string) string {
 	if os.is_dir(abs) {
 		return os.real_path(abs)
 	}
-	parent := os.dir(abs)
-	if parent != abs && os.exists(parent) {
-		// concatenated, not os.join_path, which rewrites a literal `\\` in a Unix name
-		return os.real_path(parent) + os.path_separator + os.file_name(abs)
+	// the longest EXISTING ancestor resolved, the components below it (the file, and any
+	// directories not made yet) appended as named — concatenated, not os.join_path, which
+	// rewrites a literal `\\` in a Unix name
+	mut head := abs
+	mut tail := []string{}
+	for {
+		parent := os.dir(head)
+		tail.prepend(os.file_name(head))
+		if parent == head || parent == '' {
+			return os.abs_path(abs)
+		}
+		if os.is_dir(parent) {
+			return os.real_path(parent) + os.path_separator + tail.join(os.path_separator)
+		}
+		head = parent
 	}
 	return os.abs_path(abs)
 }
@@ -83,6 +94,15 @@ fn absolute_anywhere(p string) bool {
 		return true
 	}
 	return p.len >= 3 && p[0].is_letter() && p[1] == `:` && p[2] in [`/`, `\\`]
+}
+
+// under says whether `p` lies below the directory `dir`, by the same component rule
+fn under(p string, dir string) bool {
+	$if windows {
+		return p.to_lower().starts_with(dir.to_lower() + '/')
+	} $else {
+		return p.starts_with(dir + '/')
+	}
 }
 
 fn same_component(a string, b string) bool {
