@@ -796,10 +796,9 @@ fn (mut app App) start() {
 	}
 	// A row whose rate or format no longer matches the ARXML cluster it reads — an import copied
 	// the rates, and a reissued extract can change them (#439). Before anything opens, for the
-	// same reason: on hardware the symptom is a silent bus, not an error. Against the parse the
-	// last rebuild loaded (candb.arxml_cached): no file I/O on this thread, and those are the
-	// databases this run uses.
-	for w in project.arxml_rate_warnings(app.runtime_rows(), os.dir(app.proj_path), candb.arxml_cached) {
+	// same reason: on hardware the symptom is a silent bus, not an error. Computed by the rebuild
+	// against what it loaded (rebuild_from_proj), which is what this run uses.
+	for w in app.arxml_rates_said {
 		app.notify(w)
 	}
 	// Two listeners on one endpoint, same place and same reason: said before anything binds,

@@ -215,10 +215,12 @@ pub type ArxmlLoad = fn (path string) ?candb.Arxml
 // and a wire at the wrong rate is no traffic at all on hardware. Said at Start, by both front
 // ends, rather than refused: a bench may run a bus at another rate on purpose. A rate is
 // compared only where this app SETS it (transport.adapter_configures_bitrate / _data_phase): on
-// SocketCAN it is `ip link`'s and on a software bus nobody's. Classic against FD is compared on
-// every adapter, since the row's format is what frames this app originates are stamped with.
-// `dir` is the project's directory, which references resolve against; each file is looked up
-// once.
+// SocketCAN it is `ip link`'s and on a software bus nobody's. The FORMAT is compared on every
+// adapter — classic against FD, and whether the data phase switches rate (BRS), which
+// origination_framing derives from the row's rates even where nothing applies them — and said
+// as the mismatch it is: what it costs depends on the backend and on the wire's other rows
+// (wire_framings), which this does not try to predict. `dir` is the project's directory, which
+// references resolve against; each file is looked up once.
 pub fn arxml_rate_warnings(chs []Channel, dir string, find ArxmlLoad) []string {
 	mut seen := map[string]bool{}
 	mut files := map[string]candb.Arxml{}
@@ -247,12 +249,20 @@ pub fn arxml_rate_warnings(chs []Channel, dir string, find ArxmlLoad) []string {
 				out << '${ch.name} runs at ${ch.nominal_bitrate()} bit/s but ${what} is ${r.bitrate} bit/s'
 			}
 			if r.fd && !ch.fd {
-				out << '${ch.name} is classic but ${what} carries CAN-FD frames, which a classic channel cannot carry'
+				out << '${ch.name} is configured classic but ${what} carries CAN-FD frames'
 			} else if !r.fd && ch.fd {
-				out << '${ch.name} is CAN-FD but ${what} carries no CAN-FD frame; frames this app originates on it go out as CAN-FD'
-			} else if r.fd && r.data_bitrate > 0 && transport.adapter_configures_data_phase(ch.adapter)
-				&& ch.data_rate() != r.data_bitrate {
-				out << '${ch.name} runs its data phase at ${ch.data_rate()} bit/s but ${what} states ${r.data_bitrate} bit/s'
+				out << '${ch.name} is configured CAN-FD but ${what} carries no CAN-FD frame'
+			} else if r.fd && r.data_bitrate > 0 {
+				if transport.adapter_configures_data_phase(ch.adapter) {
+					if ch.data_rate() != r.data_bitrate {
+						out << '${ch.name} runs its data phase at ${ch.data_rate()} bit/s but ${what} states ${r.data_bitrate} bit/s'
+					}
+				} else if ch.origination_framing().brs != (r.data_bitrate != r.bitrate) {
+					// the rates are not this app's to set here, but they still decide BRS
+					sw := if ch.origination_framing().brs { 'switches' } else { 'does not switch' }
+					cs := if r.data_bitrate != r.bitrate { 'does' } else { 'does not' }
+					out << '${ch.name}\'s data phase ${sw} rate but ${what}\'s ${cs}'
+				}
 			}
 		}
 	}

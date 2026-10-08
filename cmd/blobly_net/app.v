@@ -510,6 +510,7 @@ mut:
 	panes_dragged    map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
 	cfg_bufs         []CfgBuf
 	arxml_pick ArxmlPick // which CAN cluster of an ARXML a channel reads
+	arxml_rates_said []string // arxml_rate_warnings as of the last rebuild; said at Start
 	arxml_import ArxmlImportUi // Import system from ARXML (#439)
 	// Discover-interfaces dialog (add buses from detected transports)
 	disc_open   bool
@@ -1545,6 +1546,11 @@ fn (mut app App) rebuild_from_proj() {
 
 	app.dest_cache = map[string]string{}
 	app.wire_dbs = app.build_wire_dbs()
+	// The ARXML rate check (#439), HERE rather than at Start: against the parse this rebuild just
+	// loaded (candb.arxml_cached, no file I/O), which is what this run uses — at Start the cache
+	// may hold a newer parse an import dialog or a script took since, and the run would not.
+	app.arxml_rates_said = project.arxml_rate_warnings(app.runtime_rows(), os.dir(app.proj_path),
+		candb.arxml_cached)
 	app.unbind_lost_wires(old_wires)
 	// A recording on screen was stamped and rejoined under the reading in force when it was
 	// loaded; in auto that reading just moved with the databases (a J1939 DBC attached or

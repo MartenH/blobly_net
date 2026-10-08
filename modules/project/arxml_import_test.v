@@ -264,7 +264,7 @@ fn test_arxml_rate_warnings() {
 		typ:          'can'
 		fd:           false
 		data_bitrate: 0
-	}]) == ['Body is classic but Body (net.arxml) carries CAN-FD frames, which a classic channel cannot carry']
+	}]) == ['Body is configured classic but Body (net.arxml) carries CAN-FD frames']
 	assert w([Channel{
 		...body
 		data_bitrate: 4000000
@@ -272,7 +272,7 @@ fn test_arxml_rate_warnings() {
 	assert w([Channel{
 		...body
 		databases: ['classic.arxml#Body']
-	}]) == ['Body is CAN-FD but Body (classic.arxml) carries no CAN-FD frame; frames this app originates on it go out as CAN-FD']
+	}]) == ['Body is configured CAN-FD but Body (classic.arxml) carries no CAN-FD frame']
 	// the bare file reads its only cluster, as the loader does
 	assert w([Channel{
 		...body
@@ -293,6 +293,12 @@ fn test_arxml_rate_warnings() {
 		typ: 'can'
 		fd:  false
 	}]).len == 1
+	// …and whether the data phase switches rate, which the row's rates decide even there
+	assert w([Channel{
+		...vcan
+		bitrate:      500000
+		data_bitrate: 500000
+	}]) == ["Body's data phase does not switch rate but Body (net.arxml)'s does"]
 	// silent: a cluster stating no baudrate, a disabled row, an Ethernet row, and what does not load
 	assert w([Channel{
 		...body
