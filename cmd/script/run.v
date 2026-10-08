@@ -152,7 +152,10 @@ fn main() {
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
-	for w in project.arxml_rate_warnings(proj.channels, os.dir(proj_path), load_db) {
+	mut arxml_files := &ArxmlFiles{}
+	for w in project.arxml_rate_warnings(proj.channels, os.dir(proj_path), fn [mut arxml_files] (ref string) ?candb.Database {
+		return arxml_files.database(ref)
+	}) {
 		eprintln('warning: ${w}')
 	}
 	// NOT someip_endpoint_warnings HERE. That warning is about rows this front end BINDS, and
@@ -701,9 +704,26 @@ fn report_diag(what string, d transport.BusDiagnostics) {
 	}
 }
 
-// load_db is project.DatabaseLoad over candb.open_database: the runner checks the rates before
-// it has loaded any database, and the ARXML parse it causes is the one the load then reuses.
-fn load_db(ref string) ?candb.Database {
-	loaded := candb.open_database(ref) or { return none }
-	return loaded.db
+// ArxmlFiles is the rate check's lookup for the runner, which checks before it has loaded any
+// database: each FILE is read and hashed once however many of its clusters rows name (a reissued
+// system description is hundreds of MB), and each cluster's database built from that one parse.
+struct ArxmlFiles {
+mut:
+	parsed map[string]candb.Arxml
+	failed map[string]bool
+}
+
+fn (mut f ArxmlFiles) database(ref string) ?candb.Database {
+	file, cluster := candb.split_database_ref(ref)
+	key := os.real_path(file)
+	if key in f.failed {
+		return none
+	}
+	if key !in f.parsed {
+		f.parsed[key] = candb.load_arxml_file(file) or {
+			f.failed[key] = true
+			return none
+		}
+	}
+	return f.parsed[key].database(cluster, os.base(file)) or { return none }
 }

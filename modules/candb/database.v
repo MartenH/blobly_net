@@ -61,6 +61,16 @@ pub:
 	notes []string
 }
 
+// database is the Database a cluster of this parse loads as: the cluster's messages with its bus
+// facts on them (Database.arxml). open_database's ARXML half, and the one way to build it for a
+// caller that keeps the parse of a file across several of its clusters.
+pub fn (a Arxml) database(cluster string, file_base string) !Database {
+	c := a.cluster(cluster)!
+	mut db := c.db
+	db.arxml = c.bus_facts(file_base)
+	return db
+}
+
 // open_database opens a `.dbc` or an `.arxml[#Cluster]`. An ARXML with several CAN clusters
 // and no fragment is refused, naming them — a bus chosen silently is a database applied to
 // the wrong wire. What the ARXML carries beyond a Database (timing, E2E, SecOC) is reachable
@@ -69,12 +79,9 @@ pub fn open_database(ref string) !Loaded {
 	file, cluster := split_database_ref(ref)
 	if is_arxml_path(file) {
 		a := load_arxml_file(file)!
-		c := a.cluster(cluster)!
 		base := os.base(file)
-		mut db := c.db
-		db.arxml = c.bus_facts(base)
 		return Loaded{
-			db:    db
+			db:    a.database(cluster, base)!
 			notes: a.report.lines().map('${base}: ${it}')
 		}
 	}
