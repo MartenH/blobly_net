@@ -1778,7 +1778,9 @@ fn test_frame_toml_per_ecu() {
 	assert !a.contains('name = "Wide"')
 	assert !a.contains('name = "Powertrain"\nbus  = "Body"\n# rx')
 	// FD is a bus property in ecu.toml: stated once for the bus, and marked on the frame
-	assert all.contains('# [bus.Body]  baudrate = 500000, data_baudrate = 2000000, fd = true')
+	// in the keys ecu.toml and system.toml accept; the data rate has none
+	assert all.contains('#   ecu.toml     [bus.Body]  fd = true\n#   system.toml  [bus.Body]  fd = true, bitrate = 500000\n#   (the data phase, 2000000 bit/s, has a key in neither: the platform sets it)')
+	assert !all.contains('baudrate =')
 	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\ntx   =')
 	// an ECU the cluster never names is a typo, not an empty fragment
 	assert c.ecus() == ['ECU_A', 'ECU_B', 'ECU_C']

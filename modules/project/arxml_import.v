@@ -63,17 +63,10 @@ pub:
 }
 
 // arxml_cluster_rates is the ONE rule for a cluster's rates, which the import writes and the
-// dialog shows. FD is decided by the frames: a declared CAN-FD baudrate alone is not enough — a
-// classic bus may state one it never uses — and an FD channel carries classic frames too, so
-// one FD frame decides it.
+// dialog shows. FD is decided by the frames (candb.ArxmlCluster.carries_fd, the export's rule
+// too).
 pub fn arxml_cluster_rates(c candb.ArxmlCluster) ClusterRates {
-	mut fd := false
-	for _, f in c.frames {
-		if f.fd {
-			fd = true
-			break
-		}
-	}
+	fd := c.carries_fd()
 	return ClusterRates{
 		bitrate:      if c.baudrate > 0 { c.baudrate } else { default_bitrate }
 		fd:           fd
