@@ -111,6 +111,13 @@ pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &s
 		announce = doip.default_vin
 		srv.put_did(0xF190, announce.bytes())
 	}
+	if d.ok {
+		// the identity discovery advertises must be one a tester can read back as it finds the
+		// entity: in the default session, with nothing unlocked
+		if why := srv.unreadable_at_start(0xF190) {
+			return error('node "${d.node}" is described so that DID 0xF190 cannot be read (${why}), yet the entity would announce VIN "${announce}" — refusing to advertise an identity it cannot serve')
+		}
+	}
 	if announce.len != 17 {
 		return error('VIN "${announce}" is ${announce.len} bytes, not 17 — discovery would advertise a padded or truncated string while 0xF190 serves this one')
 	}
@@ -125,8 +132,6 @@ pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &s
 			announce_to:       ch.announce_to
 			// a functional request is answered as a CAN node answers one: the quiet NRCs withheld
 			functional_withheld: uds.functional_suppressed
-			// a described node ignores a functional SecurityAccess, as blobly_emb's entity does
-			functional_ignored: if d.ok { uds.physical_only } else { doip.ignore_nothing }
 		}
 		node:      name
 		announce:  announce

@@ -465,10 +465,7 @@ fn sim_loop(open_iface string, fault_iface string, chan_name string, db candb.Da
 		// The table owns its own clock, so calling this from every bus loop is safe.
 		sim.apply_injected(fault_iface, mut engine)
 		now_ms := f64(time.ticks() - t0)
-		for f in engine.due_frames(now_ms) {
-			bus.send(f) or {}
-		}
-		sim.publish_live(fault_iface, chan_name, &engine) // what a described server's live DIDs read
+		sim.transmit(mut engine, mut bus, now_ms, fault_iface, chan_name)
 		if frame := bus.recv(5) {
 			for resp in engine.on_frame(frame) {
 				bus.send(resp) or {}
@@ -594,6 +591,7 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	}
 	mut s := doip.new_server(cfg, handler)
 	hst.entity = s
+	hst.bind_functional(mut s)
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
 }

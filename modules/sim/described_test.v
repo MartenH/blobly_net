@@ -4,6 +4,7 @@ import candb
 import os
 import project
 import toml
+import transport
 import sysview
 import uds
 
@@ -577,4 +578,69 @@ fn test_a_bool_range_narrows_but_never_widens_the_type() {
 	mut s := uds.server_from(spec)
 	assert h(mut s, [u8(0x2E), 0x04, 0x00, 0x02]) == [u8(0x7F), 0x2E, 0x31]
 	assert h(mut s, [u8(0x2E), 0x04, 0x00, 0x01]) == [u8(0x6E), 0x04, 0x00]
+}
+
+fn test_an_entity_whose_vin_cannot_be_read_is_refused() {
+	mut sys := dx_load('novin')
+	// sysnode with a services table that leaves 0x22 out
+	for i, n in sys.nodes {
+		if n.name == 'sysnode' {
+			mut desc := n.desc
+			desc.services = desc.services.filter(it.sid != 0x22)
+			sys.nodes[i] = sysview.SysNode{
+				...n
+				desc: desc
+			}
+		}
+	}
+	ch := project.Channel{
+		name:     'DoIP1'
+		typ:      'doip'
+		iface:    'doip:127.0.0.1:13400'
+		ecu_addr: 0x07A0
+		vin:      'BLOBLYSYSNODEH735'
+	}
+	doip_entity_described(ch, [], &sys, []) or {
+		assert err.msg().contains('0xF190') && err.msg().contains('leaves out 0x22')
+		return
+	}
+	assert false, 'an entity announcing a VIN it cannot serve was started'
+}
+
+fn test_a_doip_functional_security_access_is_ignored_and_keeps_s3() {
+	sys := dx_load('doipfunc')
+	ch := project.Channel{
+		name:     'DoIP1'
+		typ:      'doip'
+		iface:    'doip:127.0.0.1:13400'
+		ecu_addr: 0x07A0
+	}
+	e := doip_entity_described(ch, [], &sys, []) or { panic(err) }
+	mut host := DoipHost{
+		server: e.server
+	}
+	assert host.handle([u8(0x10), 0x03])[0] == 0x50
+	assert host.handle_functional([u8(0x27), 0x01]) == []u8{} // ignored: physical only
+	assert host.server.seed_lvl == 0
+	assert host.server.rx_seen // but it is a request: S3 saw it
+}
+
+// a frame the transport refuses (listen-only, a bus that is down) is not what the ECU sent
+fn test_a_refused_send_publishes_nothing() {
+	sys := dx_load('refused')
+	mut s := zone_a(sys)
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'zone_a')
+	mut e := one_signal_engine('zone_a', 'SteeringAngle', 300, Fault{})
+	e.step(0, fn (f transport.CanFrame) bool {
+		return false
+	})
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0, 0]
+	e.step(50, fn (f transport.CanFrame) bool {
+		return true
+	})
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
+	clear_live()
 }

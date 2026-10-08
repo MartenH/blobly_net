@@ -466,7 +466,10 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
   signal's width before it has sent, or without one; a dropped frame changes nothing). A DoIP
   entity's live DIDs read the node of that name as a CAN channel of the project simulates it,
   and say so at Start when none does. A `bytes` DID whose bytes are not hex is not served at all.
-  Several DIDs per `0x22`, as ISO allows.
+  Several DIDs per `0x22`, as ISO allows. A live value is what the transport TOOK: a frame a
+  listen-only or failed bus refused publishes nothing. A described DoIP entity whose `0xF190`
+  a fresh tester cannot read (no 0x22 in its table, or a gated F190) is not started, rather than
+  announce a VIN it cannot serve.
 - **their gates** — a DID readable or writable only in its sessions (`0x31` elsewhere) and
   behind its 0x27 level (`0x33`). A DID with no `write` is not writable (`0x31`).
 - **the `[uds] services` table** — a service it leaves out is `0x11`, one outside its sessions

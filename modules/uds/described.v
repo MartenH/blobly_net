@@ -297,6 +297,29 @@ fn (s &Server) did_spec(id u16) ?DidSpec {
 	return none
 }
 
+// unreadable_at_start: why a fresh tester — default session, nothing unlocked — cannot read DID
+// `id` with 0x22 from this described server; none when it can (or the server is not described).
+pub fn (s &Server) unreadable_at_start(id u16) ?string {
+	if !s.described {
+		return none
+	}
+	if !s.supported(0x22) {
+		return '0x22 is not served'
+	}
+	row, listed := s.row(0x22)
+	if !listed {
+		return '[uds] services leaves out 0x22'
+	}
+	if !in_mask(row.sessions, 1) || row.level != 0 {
+		return '0x22 is not served in the default session without unlocking'
+	}
+	d := s.did_spec(id) or { return 'it is not declared' }
+	if !in_mask(d.read.sessions, 1) || d.read.level != 0 {
+		return 'its read gate excludes the default session or needs a level'
+	}
+	return none
+}
+
 // supported: the services a described server performs at all.
 fn (s &Server) supported(sid u8) bool {
 	return match sid {

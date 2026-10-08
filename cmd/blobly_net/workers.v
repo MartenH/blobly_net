@@ -257,10 +257,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		// from the Script panel reported success and changed nothing on the bus.
 		sim.apply_injected(sc.iface, mut engine)
 		now_ms := f64(time.ticks() - t0)
-		for f in engine.due_frames(now_ms) {
-			bus.send(f) or {}
-		}
-		sim.publish_live(sc.iface, sc.pch.name, &engine) // what a described server's live DIDs read
+		sim.transmit(mut engine, mut bus, now_ms, sc.iface, sc.pch.name)
 		if frame := bus.recv(5) {
 			for resp in engine.on_frame(frame) {
 				bus.send(resp) or {}
