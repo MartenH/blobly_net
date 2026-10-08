@@ -46,7 +46,7 @@ fn test_an_exclusive_udp_hold_refuses_and_is_refused() {
 		}
 	}
 	squat.close()!
-	mut again := hold_udp(port, has_v6())!
+	mut again := hold_udp(port, false)! // the family held_port probed
 	again.close()
 }
 
