@@ -104,6 +104,8 @@ pub mut:
 	last_e2e int
 	has_tx   bool // whether last_e2e means anything yet
 	next_ms   f64 // next due time
+	last_t    f64 // when due_frames last handed a frame of it out (s): what its generators read
+	last_n    int = -1 // that frame's send index; -1 = none handed out (all dropped, or not due yet)
 }
 
 // e2e_value is the counter this frame should carry: the last transmitted one while frozen, so
@@ -222,9 +224,29 @@ pub fn (mut e Engine) restore_counters(from map[string]int) {
 }
 
 // due_frames advances every cyclic message whose period has elapsed by now_ms and
-// returns the frames to transmit (also bumping send counters / next-due times).
+// returns the frames to transmit (also bumping send counters / next-due times). A frame returned
+// is taken as sent; a caller whose transport can refuse uses step.
 pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
-	mut out := []transport.CanFrame{}
+	mut out := &FrameBox{}
+	e.step(now_ms, fn [mut out] (f transport.CanFrame) bool {
+		out.frames << f
+		return true
+	})
+	return out.frames
+}
+
+// FrameBox collects frames from inside a closure, which captures by value.
+@[heap]
+struct FrameBox {
+mut:
+	frames []transport.CanFrame
+}
+
+// step advances every cyclic message whose period has elapsed by now_ms, handing each frame due to
+// `send`, which says whether the transport took it: only a frame taken is the message's LAST SENT
+// (`last_t`/`last_n`, what a described server's live DID reads), so a frame refused — a
+// listen-only wire, a bus that is down — or dropped by a fault leaves it as it was.
+pub fn (mut e Engine) step(now_ms f64, send fn (f transport.CanFrame) bool) {
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			mut m := &e.ecus[i].messages[j]
@@ -233,8 +255,9 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 			}
 			if now_ms + 1e-6 >= m.next_ms {
 				mut f := m.build(now_ms / 1000.0)
-				if m.fault.apply_post(m.msg, m.e2e, mut f.data) {
-					out << f
+				if m.fault.apply_post(m.msg, m.e2e, mut f.data) && send(f) {
+					m.last_t = now_ms / 1000.0
+					m.last_n = m.send_n
 				}
 				m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
 				// The PROTECTION counter is what freezes. A dropped frame still advances it, so
@@ -248,7 +271,16 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 			}
 		}
 	}
-	return out
+}
+
+// transmit sends what is due on `bus` and publishes what a described server's live DIDs read —
+// the one body both simulation loops (the GUI's and the headless runner's) run each pass.
+pub fn transmit(mut e Engine, mut bus transport.Bus, now_ms f64, iface string, chan_name string) {
+	e.step(now_ms, fn [mut bus] (f transport.CanFrame) bool {
+		bus.send(f) or { return false }
+		return true
+	})
+	publish_live(iface, chan_name, e)
 }
 
 // run_for drives the engine live on a bus for duration_ms: it transmits due

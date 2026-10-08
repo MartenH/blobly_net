@@ -9,7 +9,8 @@ Status: **design agreed 2026-06-07; the CAN CORE is IMPLEMENTED as
 shipped: per-signal generators, request/response rules and end-to-end protection are all
 configurable per node.
 
-Since shipped from this plan: per-node UDS servers (`uds:` per simulated ECU, `modules/sim/uds_nodes.v`)
+Since shipped from this plan: per-node UDS servers (`uds:` per simulated ECU, `modules/sim/uds_nodes.v`),
+described per node by blobly_emb's `ecu.toml` (`uds.server_from`, below)
 and the Ethernet phase for DoIP (`modules/sim/doip_entity.v`, `doip_host.v`). Still open: **LIN**,
 and SOME/IP service simulation. Tracked in [`ROADMAP.md`](../ROADMAP.md).
 
@@ -98,7 +99,16 @@ a conventional tool's model, which we already half-have (`project.Channel.databa
   unit-testable. Signal values come from per-signal generators.
 - **UDS server** — `modules/uds` server side (or `modules/diagserver`): sessions,
   RDBI/WDBI DIDs, tester-present, security, routines. Native twin of
-  `sut/uds_server.py`; config-driven per node.
+  `sut/uds_server.py`; config-driven per node. **Shipped config-driven from the node's
+  description**: a server addressed like a node of the project's `system.toml` is built from that
+  node's `ecu.toml` (`uds.server_from`) and answers with blobly_emb `comm/uds`'s gates and NRC
+  order — DIDs with sizes, values and read/write gates, the `[uds] services` table, 0x27 at its
+  levels with the reference key only where the description names it, parameters within their
+  range, the declared DTCs. The dependency runs **uds ← sysview ← sim**: sysview already imports
+  uds (the standard DID names), so uds cannot read a description; it defines `ServerSpec`,
+  sysview fills it (`EcuDesc.server_spec`), and sim links a simulated node to its described node
+  (`sim.describe`, by the Diagnostics panel's rule `System.node_for`, else by name) and feeds a
+  live DID from the simulation (`publish_live`). Routines are still not served.
 - Later: **`modules/lindb`** (LDF) + `LinFrame`; **`someip`/`doip`** for Ethernet.
 
 ## Multi-protocol seam (CAN / LIN / Eth) — keep it type-safe

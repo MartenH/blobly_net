@@ -76,6 +76,9 @@ pub struct DoipServer {
 	cfg     ServerCfg
 	handler DiagHandler @[required]
 mut:
+	// what a FUNCTIONAL request is handed to: `handler` unless set_functional_handler says
+	// otherwise — sim hands it uds.Server.handle_functional, which ignores what is physical only
+	functional_handler DiagHandler = unsafe { nil }
 	// The ANNOUNCED VIN, which has to be able to follow the SERVED one: a UDS write to DID
 	// 0xF190 changes what the entity reports over TCP, and a fixed announcement would go on
 	// advertising the VIN it had at startup. Guarded because the write arrives on the TCP
@@ -113,10 +116,17 @@ fn (mut s DoipServer) announced_vin() string {
 pub fn new_server(cfg ServerCfg, handler DiagHandler) &DoipServer {
 	// the announced VIN starts as the configured one and only moves if set_vin is called
 	return &DoipServer{
-		cfg:     cfg
-		handler: handler
-		vin:     cfg.vin
+		cfg:                cfg
+		handler:            handler
+		functional_handler: handler
+		vin:                cfg.vin
 	}
+}
+
+// set_functional_handler hands FUNCTIONAL requests to `h` instead of the physical handler. Set
+// before listen: the serving thread reads it.
+pub fn (mut s DoipServer) set_functional_handler(h DiagHandler) {
+	s.functional_handler = h
 }
 
 // is_stopping reports whether close() has been called. Serve loops driven as
@@ -261,7 +271,7 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 					// not at all where the functional rule withholds the answer
 					conn.write(diagnostic_message_ack(fa, dm.source,
 						diag_ack_ok)) or { return }
-					resp := s.handler(dm.data)
+					resp := s.functional_handler(dm.data)
 					if resp.len > 0 && !s.cfg.functional_withheld(resp) {
 						conn.write(diagnostic_message(s.cfg.logical_address, dm.source, resp)) or {
 							return

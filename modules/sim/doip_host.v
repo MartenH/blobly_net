@@ -39,3 +39,17 @@ pub fn (mut h DoipHost) handle(req []u8) []u8 {
 	}
 	return h.server.handle(req)
 }
+
+// handle_functional serves a request that arrived on the functional address through the server's
+// own functional entry (uds.Server.handle_functional): one rule on CAN and DoIP for what a
+// broadcast may not do, S3 kept either way.
+pub fn (mut h DoipHost) handle_functional(req []u8) []u8 {
+	return h.server.handle_functional(req)
+}
+
+// bind_functional hands an entity's functional requests to its host.
+pub fn (mut h DoipHost) bind_functional(mut s doip.DoipServer) {
+	s.set_functional_handler(fn [mut h] (req []u8) []u8 {
+		return h.handle_functional(req)
+	})
+}

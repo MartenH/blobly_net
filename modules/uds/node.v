@@ -54,7 +54,7 @@ fn (mut s Server) serve_functional(mut l NodeLink) {
 	for mut t in l.func {
 		for {
 			freq := t.take() or { break }
-			resp := s.handle(freq)
+			resp := s.handle_functional(freq)
 			if resp.len > 0 && !functional_suppressed(resp) {
 				l.phys.send(resp) or {}
 			}

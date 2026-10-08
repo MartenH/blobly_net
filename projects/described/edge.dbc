@@ -1,0 +1,14 @@
+VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: zone_a sysnode
+
+BO_ 306 SteeringFrame: 8 zone_a
+ SG_ SteeringAngle : 0|32@1+ (1,0) [0|360] "deg" sysnode
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 306 50;

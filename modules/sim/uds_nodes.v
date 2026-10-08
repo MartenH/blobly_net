@@ -25,6 +25,8 @@ pub:
 	fext       bool
 pub mut:
 	server uds.Server
+	// the described node it answers as (describe_uds_nodes), '' = the project's content
+	described string
 }
 
 // uds_nodes builds a server for every node on the channel that configures one.

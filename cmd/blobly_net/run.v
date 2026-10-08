@@ -14,6 +14,7 @@ import sim
 import script
 import doip
 import j1939
+import sysview
 
 // open_transport opens `iface`, appending the vendor bitrate (`@<rate>`) for pcan/kvaser
 // buses so the driver uses the configured rate. The logical KEY stays the raw iface —
@@ -1109,6 +1110,10 @@ fn (mut app App) start() {
 	app.tap_failed = map[string]bool{}
 	app.mu.unlock()
 	spawn open_taps_for_run(app, plan, start_gen)
+	// the description the simulated diagnostic servers answer by (sim.describe), and the signal
+	// values their live DIDs read, which this run's simulation publishes afresh
+	desc_sys := app.described_system()
+	sim.clear_live()
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
@@ -1180,13 +1185,25 @@ fn (mut app App) start() {
 			app.notify(w)
 		}
 		mut diag_nodes := sim.uds_nodes(peers)
+		for n in sim.describe_uds_nodes(&desc_sys, mut diag_nodes, peers, owners.map(it.name),
+			sc.iface) {
+			app.notify(n)
+		}
 		if diag_nodes.len == 0 {
+			dflt := sim.describe_default(&desc_sys, sc.pch.name, sc.iface, diag_tx_id, diag_rx_id)
+			for n in dflt.notes {
+				app.notify(n)
+			}
 			consumer_expected(mut app, sc.iface, start_gen)
 			app.reserve_run_worker() // released by the loop's own defer
-			spawn diag_server_loop(app, sc.iface, sc.pch.name, start_gen) // the built-in default for this bus
+			spawn diag_server_loop(app, sc.iface, sc.pch.name, dflt.server, start_gen) // the built-in default for this bus
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
-				label: 'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+				label: if dflt.ok {
+					'${dflt.node} (described) on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+				} else {
+					'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+				}
 				iface: sc.iface
 				chan:  sc.pch.name
 				rx:    diag_tx_id
@@ -1204,7 +1221,11 @@ fn (mut app App) start() {
 				u.fext, u.server, start_gen)
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
-				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
+				label: if u.described != '' && u.described != u.name {
+					'${u.name} (described as ${u.described})  (0x${u.rx:X}/0x${u.tx:X})'
+				} else {
+					'${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
+				}
 				iface: sc.iface
 				chan:  own.name // this node's OWN channel, not the first one on the wire
 				rx:    u.rx
@@ -1217,7 +1238,7 @@ fn (mut app App) start() {
 	// as a bind succeeds — a localhost bind is fast enough to land mid-loop — and the CAN plan
 	// above appends to the same array without the lock. Finishing that construction first is
 	// what makes the unlocked appends safe, rather than adding a lock to every one of them.
-	app.start_doip_hosts()
+	app.start_doip_hosts(desc_sys)
 	app.reserve_run_worker()
 	spawn gen_loop(app) // cyclic senders
 	// The players go LAST -- after the monitors, and after every in-process consumer has been
@@ -1252,7 +1273,7 @@ fn host_key(name string, iface string) string {
 // Driven from the PROJECT rather than app.sims, because a channel disabled when the project
 // loaded is excluded from app.sims entirely: there would be no supervisor, and enabling it
 // later would leave the entity permanently idle with no worker to notice.
-fn (mut app App) start_doip_hosts() {
+fn (mut app App) start_doip_hosts(desc_sys sysview.System) {
 	for c in app.proj.channels {
 		if !c.is_doip() {
 			continue
@@ -1268,10 +1289,13 @@ fn (mut app App) start_doip_hosts() {
 			app.notify('${c.name}: DoIP tester only (no simulated entity)')
 			continue
 		}
-		ent := sim.doip_entity(c, nodes) or {
+		ent := sim.doip_entity_described(c, nodes, &desc_sys, app.can_sims()) or {
 			app.notify('${c.name}: ${err}')
 			app.notify('${c.name}: DoIP entity NOT started')
 			continue
+		}
+		for n in ent.notes {
+			app.notify('${c.name}: ${n}')
 		}
 		if ent.extra > 0 {
 			app.notify('${c.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${c.ecu_addr:04X})')
@@ -1283,6 +1307,36 @@ fn (mut app App) start_doip_hosts() {
 		key := if ent.node != '' { ent.node } else { nodes[0].name }
 		app.reserve_run_worker() // released by the watcher's own defer
 		spawn doip_watch(app, c, ent, key, app.run_gen)
+	}
+}
+
+// can_sims is every node this run simulates on a CAN channel: the frames a described DoIP entity's
+// live DIDs read.
+fn (app &App) can_sims() []project.NodeCfg {
+	mut out := []project.NodeCfg{}
+	for sc in app.sims {
+		if !sc.pch.is_eth() {
+			out << sc.nodes
+		}
+	}
+	return out
+}
+
+// described_system is the system.toml the simulated diagnostic servers are described by — the
+// one the Diagnostics panel reads (the System panel's when one is loaded there, else the one
+// sysview.find_system finds for the project); an empty model, which describes nothing, without one.
+fn (mut app App) described_system() sysview.System {
+	path := if app.sys_loaded {
+		app.sys.path
+	} else {
+		sysview.find_system(app.proj_path, app.proj_db_refs()) or { return sysview.System{} }
+	}
+	if app.diag_sys_ok && app.diag_sys.path == path && app.diag_sys.current() {
+		return app.diag_sys // the Diagnostics panel's model, still what the files say
+	}
+	return sysview.load(path) or {
+		app.notify('Simulation: ${path} could not be read (${err}); simulated servers answer from the project')
+		sysview.System{}
 	}
 }
 
@@ -1421,6 +1475,7 @@ fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst si
 	}
 	mut s := doip.new_server(cfg, handler)
 	hst.entity = s
+	hst.bind_functional(mut s)
 	// The REAL error. Flattening it to "someone else owns it" sent people looking for a port
 	// conflict when the host was not a local address, the family was unavailable, or the
 	// address was malformed — none of which clear by waiting.

@@ -257,9 +257,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		// from the Script panel reported success and changed nothing on the bus.
 		sim.apply_injected(sc.iface, mut engine)
 		now_ms := f64(time.ticks() - t0)
-		for f in engine.due_frames(now_ms) {
-			bus.send(f) or {}
-		}
+		sim.transmit(mut engine, mut bus, now_ms, sc.iface, sc.pch.name)
 		if frame := bus.recv(5) {
 			for resp in engine.on_frame(frame) {
 				bus.send(resp) or {}
@@ -513,7 +511,7 @@ fn report_func_leaves(app &App, gen u64, who string, leaves []uds.FuncLeave) {
 	}
 }
 
-fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
+fn diag_server_loop(app &App, iface string, chan_name string, server uds.Server, gen u64) {
 	// Same as uds_node_loop above: open_tap_on resolves through bitrate_iface, which walks
 	// app.chans, so this loop holds a census slot for as long as it is in the run.
 	defer {
@@ -539,7 +537,7 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 		return !a.running || a.run_gen != gen
 	}
 	consumer_attached(a, iface, gen)
-	mut srv := uds.default_server()
+	mut srv := server
 	for a.running {
 		req := ch.recv(50) or { continue }
 		resp := srv.handle(req)

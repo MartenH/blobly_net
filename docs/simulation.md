@@ -439,6 +439,68 @@ The **DIDs** tab lists every described DID and every ISO identification DID as a
 refused is dimmed with its answer by name (`0x31 requestOutOfRange`; `0x7F` reads *not supported
 in this session*) and keeps its Read, for after a session change; *hide refused* leaves them out.
 
+### Described servers: an ECU as blobly_emb describes it
+
+When a `system.toml` describes the project's ECUs — beside the project, beside one of its
+databases, or in the project's parent folder, the file the Diagnostics panel reads (or the one
+loaded in the System panel) — a simulated server **addressed like one of its nodes answers as
+that node**: its `uds:` `rx`/`tx` are that node's request and response ids (system.toml's `diag`,
+else its `[isotp]`), or on DoIP the channel's `ecu_address` is the node's logical address. With no
+node so addressed, the one node of the simulated node's NAME is taken. The built-in `0x7E0`/`0x7E8`
+server is described the same way, by its address. Each one is said in the Log (or on stderr
+headless): which node it answers as, and every way the simulation differs from it.
+
+```yaml
+    simulation:
+      - name: zone_a
+        signals:
+          - { name: SteeringAngle, type: const, value: 180 }
+        uds: { rx: "0x7C0", tx: "0x7C8" }   # the addresses alone: the rest is zone_a's ecu.toml
+```
+
+From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds`):
+
+- **its DIDs at their real sizes** — `ascii` and `bytes` as written, a parameter at its
+  `default`, the parameter status DID at 0 (uncoded), a `signal` DID with the value the
+  simulation is sending for that signal now (a generator on the node of that name; zeros of the
+  signal's width before it has sent, or without one; a dropped frame changes nothing). A DoIP
+  entity's live DIDs read the node of that name as a CAN channel of the project simulates it,
+  and say so at Start when none does. A `bytes` DID whose bytes are not hex is not served at all.
+  Several DIDs per `0x22`, as ISO allows. A live value is what the transport TOOK: a frame a
+  listen-only or failed bus refused publishes nothing. A described DoIP entity whose `0xF190`
+  a fresh tester cannot read (no 0x22 in its table, or a gated F190) is not started, rather than
+  announce a VIN it cannot serve.
+- **their gates** — a DID readable or writable only in its sessions (`0x31` elsewhere) and
+  behind its 0x27 level (`0x33`). A DID with no `write` is not writable (`0x31`).
+- **the `[uds] services` table** — a service it leaves out is `0x11`, one outside its sessions
+  `0x7F`, one behind a level `0x33`; with no table, the default sessions (0x27 and 0x85 only
+  outside the default session). Over DoIP `0x11` is `serviceNotSupported`, as a DoIP connection's
+  server answers it.
+- **0x27** at the levels its gates name (any other is `0x12`), with blobly_net's reference key
+  only when the description says `security_key = "reference"` — and over DoIP only with
+  `allow_bench_key`. Otherwise the key is one the reference never matches, so the Diagnostics
+  panel and `diag:security_access` are refused as by an OEM node. Wrong keys count
+  (`security_attempts`; `0x36` on the last, then `0x37` for `security_delay_ms`), and every
+  session entry relocks. The session times out after `s3_ms` without a request. A functional
+  0x27 is ignored (SecurityAccess is physical only).
+- **parameters through 0x2E** — the record's length (`0x13`) and each field's `range` (`0x31`),
+  and once written the status DID reads 1 (coded).
+- **the fault memory** — every `[[fault]]` at its power-on status (`0x50`, nothing completed),
+  availability mask `0x7F`; `0x14` puts them back there. The `uds:` block's `dtcs:` set a
+  status, so a test can seed a fault (one that failed gets its `freeze` snapshot), and its `dids:`
+  replace a value or add a readable DID.
+
+What it serves differently, each said when it starts: `0x28` is `serviceNotSupported` (nothing
+here gates the simulated traffic); the programming handoff `0x10 02` is `conditionsNotCorrect`
+once its gates pass (no bootloader is simulated); a `tx_saturations` DID reads 0 and a `[boot]`
+node's `0xF195` reads 0; DTC statuses start at power-on rather than at the node's history. A
+gate naming a session that is not one (`"extended "`) is closed rather than open, and said. Two
+nodes addressed alike that the bus does not tell apart describe neither — no name decides it. Over
+DoIP the session and the unlock belong to the entity, not to the connection, so a tester that
+reconnects finds them as the last one left them (the per-connection state on the roadmap).
+`tests/diag_described.lua` runs against `projects/described/`, a trimmed copy of system_full's
+zone_a; the same requests against the board on the bench gave the same answers but for those.
+
 ## The same ECU over Ethernet (DoIP)
 
 A `type: doip` channel is diagnostics over TCP, not a bus: no frames, no database, no
@@ -940,7 +1002,8 @@ See [scripting.md](scripting.md) for the test API.
 ## What it cannot do yet
 
 - **Diagnostics are stateless between requests beyond session and security state.** A
-  simulated ECU serves the DIDs and DTCs the project gives it; it does not model routines
+  simulated ECU serves the DIDs and DTCs the project — or its description — gives it; it does
+  not model routines
   (`0x31`), memory access (`0x23`/`0x3D`), or transfer (`0x34`-`0x37`), and writing a DID does
   not affect the signals the ECU transmits.
 - **One logical address per DoIP channel.** An entity answers for itself; several ECUs over

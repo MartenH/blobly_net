@@ -1,0 +1,22 @@
+# A trimmed copy of blobly_emb's examples/system_full/system.toml (origin/main a8728c9): the edge
+# bus, the signal zone_a transmits, and zone_a itself — what describes the simulated zone_a in
+# described.blobnet beside it (sysview.find_system finds this file in the project's folder).
+[bus.edge]
+interface = "can1"
+fd        = true
+bitrate   = 500000
+dbc       = "edge.dbc"
+
+[[signal]]
+name     = "SteeringAngle"
+fields   = { deg = "u32" }
+producer = "zone_a"
+bus      = "edge"
+frame    = "SteeringFrame"
+cycle_ms = 50
+
+[[node]]
+name  = "zone_a"
+ecu   = "nodes/zone_a/ecu.toml"
+buses = ["edge"]
+diag  = { req = 0x7C0, rsp = 0x7C8 }

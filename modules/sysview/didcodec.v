@@ -22,7 +22,7 @@ pub:
 
 // laid_out: the value is its fields, back to back.
 fn (x DidDesc) laid_out() bool {
-	return x.kind in [.signal, .param, .param_status] && x.fields.len > 0
+	return x.kind in [.signal, .param, .param_status, .tx_saturations] && x.fields.len > 0
 		&& x.fields.all(it.width() > 0)
 }
 
