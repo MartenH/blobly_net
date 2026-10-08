@@ -2173,9 +2173,13 @@ pub fn (c Channel) address_config_error() ?string {
 			}
 		}
 	}
-	if !c.fd || !c.can_carry_fd() {
-		return none
-	}
+	// CLASSIC ROWS TOO. This returned `none` for every classic row, so a classic rate the backend
+	// refuses (333333 on Kvaser or PCAN, which open from a fixed table) was accepted here and
+	// refused at Start — the failure this function exists to move into the editor (codex on #441,
+	// where an import that claims to refuse what cannot open let it through). The validators read
+	// a classic address as readily as an FD one: whatever iface_with_bitrate composes is what
+	// `transport.open` is handed.
+	//
 	// PER ADAPTER, because each backend's parser owns its own rates and ranges. Asking
 	// Vector's validator about a Kvaser address would answer about the wrong hardware --
 	// and answering `none` for every non-Vector adapter, which is what this did while

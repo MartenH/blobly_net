@@ -182,6 +182,8 @@ fn (mut app App) arxml_import_confirm() bool {
 	return true
 }
 
+const cluster_rows = 10 // clusters shown before the table scrolls
+
 const ecu_cols = 4 // ECUs under test per line: a system names dozens, and one line would clip them
 
 fn draw_arxml_import(mut app App) {
@@ -200,7 +202,7 @@ fn draw_arxml_import(mut app App) {
 	}
 	sc := app.prefs.ui_scale
 	ecus := app.arxml_import.import_ecus()
-	lines := app.arxml_import.rows.len + (ecus.len + ecu_cols - 1) / ecu_cols
+	lines := int_min(app.arxml_import.rows.len, cluster_rows + 1) + (ecus.len + ecu_cols - 1) / ecu_cols
 	vgui.set_next_window(140, 100, 980, 330 + 26 * f32(lines))
 	if !vgui.begin_popup_modal(id) {
 		app.arxml_import.open = false
@@ -210,6 +212,13 @@ fn draw_arxml_import(mut app App) {
 	ui := app.arxml_import
 	vgui.text('${os.file_name(ui.path)}: put each CAN cluster on an interface, or leave it out.')
 	vgui.text_dim('Each becomes a channel reading that cluster. Frames, timing and E2E stay in the file.')
+	// past cluster_rows the table scrolls in its own region, so Import stays in view: the modal
+	// is capped at the window and a 30-cluster file put the buttons below the fold
+	boxed := ui.rows.len > cluster_rows
+	if boxed {
+		vgui.child_wh('##arxml_import_box', 940 * sc, f32(cluster_rows + 1) * (vgui.frame_height() +
+			4 * sc))
+	}
 	if vgui.table_begin_flat('##arxml_import', 6) {
 		vgui.table_setup_col('cluster', 150 * sc)
 		vgui.table_setup_col('bitrate', 70 * sc)
@@ -250,6 +259,9 @@ fn draw_arxml_import(mut app App) {
 			}
 		}
 		vgui.table_end()
+	}
+	if boxed {
+		vgui.child_end()
 	}
 	vgui.separator_text('ECUs under test')
 	vgui.text_dim('Not simulated: the real ones on the bench. Listed from the clusters being imported.')
