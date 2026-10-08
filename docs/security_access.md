@@ -47,10 +47,12 @@ description says so by name:
 - on a node reachable over DoIP, additionally `[doip] allow_bench_key = true`. Over a routed
   network a public key authenticates nobody, so the node has to opt into it explicitly.
 
-A production ECU uses its own algorithm, and blobly_net does not have it. The panel tries the
-reference key. When the ECU answers it with `0x35` invalidKey, the panel says that this ECU does
-not accept blobly_net's reference key and that its algorithm is the OEM's. Every wrong key counts
-toward the ECU's lockout. A script can supply the real algorithm (below).
+A production ECU uses its own algorithm, and blobly_net does not have it. Every wrong key counts
+toward the ECU's lockout, so the panel does not send the reference key to a target whose
+description names no `security_key = "reference"`. It refuses the Unlock and says why. A target
+with no description is tried. If it answers `0x35` invalidKey, the panel says that this ECU does
+not accept blobly_net's reference key and that its algorithm is the OEM's. A script can supply the
+real algorithm (below).
 
 blobly_net's simulated ECUs accept the reference key at every level, in any session.
 
@@ -62,7 +64,7 @@ The **General** tab has a security row:
   behind (a DID gate or a service row), or at 1 when the target has no description.
 - **Unlock**: if the held connection is in the default session (or no session has been set on
   it yet), it first switches to the extended session. It then sends the seed request and answers
-  it with the reference key.
+  it with the reference key. It is refused for a target whose description names another key.
 - **Lock**: returns to the default session (`10 01`), which is the only way UDS takes a level
   back.
 

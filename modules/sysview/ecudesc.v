@@ -383,12 +383,14 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 	if uv := doc.value_opt('uds') {
 		d.security_key = tstr(uv.as_map(), 'security_key')
 		if sv := uv.as_map()['services'] {
-			for sid, row in sv.as_map() {
-				lv := tint(row.as_map(), 'security')
-				if lv < 0 || lv > max_security_level {
-					d.errs << '[uds] services "${sid}": security ${lv} is not a security level (1..${max_security_level}); not read'
+			rows := sv.as_map()
+			for sid, row in rows {
+				bad := gate_level_refusal(rows, sid)
+				if bad != '' {
+					d.errs << '[uds] services ${bad}; not read'
 					continue
 				}
+				lv := tint(row.as_map(), 'security')
 				if lv > 0 {
 					d.service_levels << int(lv)
 				}

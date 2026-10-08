@@ -552,6 +552,7 @@ security_key = "reference"
 "0x10" = {}
 "0x11" = { sessions = ["extended"], security = 3 }
 "0x28" = { security = 9 }
+"0x31" = { security = "1" }
 
 [[did]]
 id = 0x0110
@@ -565,6 +566,7 @@ read = { security = 2 }
 ') or { panic(err) }
 	d := parse_ecu_desc(doc, map[string][]Field{})
 	assert d.security_levels() == [2, 3]
-	assert d.errs == ['[uds] services "0x28": security 9 is not a security level (1..8); not read']
+	assert d.errs == ['[uds] services 0x28 security 9 is not a security level (1..8); not read',
+		'[uds] services 0x31 security "1" is not a security level (1..8); not read']
 	assert parse_ecu_desc(toml.parse_text('[uds]') or { panic(err) }, map[string][]Field{}).security_levels() == []
 }

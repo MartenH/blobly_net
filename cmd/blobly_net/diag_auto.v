@@ -5,6 +5,7 @@ import time
 import vgui
 import uds
 import diaghold
+import sysview
 
 // DiagAutopress is a dev hook, inert unless BLOBLY_DIAG_PRESS is set: the Diagnostics panel's
 // buttons pressed in order from the frame loop, for the headless screenshot and for timing the
@@ -269,15 +270,20 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 	}
 	if step == 'unlock' || step.starts_with('unlock:') {
 		t := targets.filter(it.key == app.diag_sel_key)[0] or { targets[0] or { DiagTarget{} } }
-		mut level := app.unlock_level(t, app.diag_desc(t))
+		desc := app.diag_desc(t)
+		mut level := app.unlock_level(t, desc)
 		if step.starts_with('unlock:') {
 			level = step.all_after(':').int()
+			if level < 1 || level > sysview.max_security_level {
+				println('diag-autopress: ${step}: not a security level (1..${sysview.max_security_level})')
+				return
+			}
 			app.unlock_ui.level = level
 		}
 		au.gen_at = dgen
 		au.press_ns = time.sys_mono_now()
 		au.waiting = true
-		app.unlock_press(level)
+		app.unlock_press(t, desc, level)
 		return
 	}
 	mut kind := step

@@ -4,19 +4,16 @@ module diaghold
 // switches to first, how a seed is read, and how a refusal is said. The 0x27 exchange itself is
 // the one the DID write path runs (cmd/blobly_net diag_unlock).
 
-// max_level is the highest security level a tester can pick (blobly_emb's ecu.toml numbers them
-// 1..8; sysview.max_security_level, restated: this package has no dependencies).
-pub const max_level = 8
-
 // extended_session is DiagnosticSessionControl's extendedDiagnosticSession.
 pub const extended_session = u8(0x03)
 
 // unlock_level_default is the level the selector starts at: the lowest one the description's
-// gates name (`levels`, sysview.EcuDesc.security_levels), else 1.
-pub fn unlock_level_default(levels []int) u8 {
+// gates name (`levels`, sysview.EcuDesc.security_levels) that the selector offers (1..`max`,
+// sysview.max_security_level), else 1.
+pub fn unlock_level_default(levels []int, max int) u8 {
 	mut best := 0
 	for l in levels {
-		if l >= 1 && l <= max_level && (best == 0 || l < best) {
+		if l >= 1 && l <= max && (best == 0 || l < best) {
 			best = l
 		}
 	}
@@ -33,6 +30,26 @@ pub fn unlock_session(session u8) u8 {
 		return extended_session
 	}
 	return 0
+}
+
+// unlock_refusal is why an Unlock is not sent ('' = send it). The panel computes only blobly_net's
+// reference key, and every wrong key counts toward the ECU's lockout, so a target whose
+// description says its key is another (`described`, and no `security_key = "reference"`) is
+// refused before anything goes out. An undescribed target is tried: a simulated ECU, or an ECU
+// nothing here describes, may accept it, and a 0x35 then says that it does not.
+pub fn unlock_refusal(described bool, ref_key bool) string {
+	if described && !ref_key {
+		return 'not sent — its description names no reference key ([uds] security_key = "reference"): its key is the OEM\'s, which the panel cannot compute, and a wrong key counts toward its lockout; unlock it from a script with its key function'
+	}
+	return ''
+}
+
+// unlock_refusal_forgets: what a refused 0x27 says the connection no longer has. Not served in
+// this session: the session is not the one the panel believed (an S3 timeout, a reset), so the
+// next Unlock switches again. Any other refusal: the level is no longer known — a seed request
+// for another level, or a wrong key, may have relocked the ECU — so the next write unlocks again.
+pub fn unlock_refusal_forgets(nrc u8) Forget {
+	return if nrc == 0x7E || nrc == 0x7F { Forget.session } else { Forget.security }
 }
 
 // Seed is what a 0x27 requestSeed answer says.

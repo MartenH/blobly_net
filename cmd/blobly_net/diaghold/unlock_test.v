@@ -1,11 +1,11 @@
 module diaghold
 
 fn test_the_selector_starts_at_the_lowest_level_the_gates_name() {
-	assert unlock_level_default([]) == 1
-	assert unlock_level_default([3, 2]) == 2
-	assert unlock_level_default([0, 5]) == 5
-	// a level no tester can pick is not offered
-	assert unlock_level_default([9]) == 1
+	assert unlock_level_default([], 8) == 1
+	assert unlock_level_default([3, 2], 8) == 2
+	assert unlock_level_default([0, 5], 8) == 5
+	// a level the selector does not offer is not its default
+	assert unlock_level_default([9], 8) == 1
 }
 
 fn test_an_unlock_leaves_the_default_session_and_keeps_any_other() {
@@ -35,4 +35,17 @@ fn test_a_refusal_says_what_it_means() {
 	assert unlock_refusal_words(0x24, 'requestSequenceError', 1, true).contains('no seed outstanding')
 	assert unlock_refusal_words(0x12, 'subFunctionNotSupported', 3, false) == '0x12 subFunctionNotSupported — this ECU has no security level 3'
 	assert unlock_refusal_words(0x10, 'generalReject', 1, false) == '0x10 generalReject'
+}
+
+fn test_an_unlock_is_refused_only_where_the_description_names_another_key() {
+	assert unlock_refusal(true, true) == ''
+	assert unlock_refusal(false, false) == '' // undescribed: tried, and a 0x35 says so
+	assert unlock_refusal(true, false).contains('names no reference key')
+}
+
+fn test_a_refused_unlock_forgets_what_it_may_have_taken_back() {
+	assert unlock_refusal_forgets(0x7F) == .session
+	assert unlock_refusal_forgets(0x7E) == .session
+	assert unlock_refusal_forgets(0x35) == .security
+	assert unlock_refusal_forgets(0x12) == .security
 }
