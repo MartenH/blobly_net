@@ -344,6 +344,7 @@ Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
 | bitrate, data_bitrate | int input | data_bitrate only for canfd; hidden for doip |
 | listen_only | `checkbox` | CAN only |
 | j1939 | `checkbox` | CAN only — read this wire as SAE J1939 ([j1939.md](j1939.md)) |
+| **Import ARXML...** | one channel per CAN cluster of an AUTOSAR system description, mapped to an interface; the ECUs under test; rest-bus `simulate:` for the others (`cmd/blobly_net/arxml_import.v`, rows from `project.import_arxml`) | appends `buses` |
 | **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc` / `*.arxml`; an ARXML with several CAN clusters asks which one, and an attached ARXML's **cluster...** changes it) | `bus.databases` |
 | manifest | `input_text` + **…** | telemetry CSV |
 | DoIP: tester/ecu addr, vin, eid | `input_text` | doip adapter only |

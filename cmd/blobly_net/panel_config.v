@@ -24,11 +24,14 @@ fn is_recording_target(t string) bool {
 //   'dbc:<ci>'      — attach a DBC to bus ci (.dbc)
 //   'manifest:<ci>' — attach a telemetry manifest to bus ci (.csv)
 //   'script'        — the Script panel's .lua (#270)
+//   'arxml_import'  — Import system from ARXML (.arxml, arxml_import.v)
 fn (mut app App) open_browser(target string) {
 	app.fb_target = target
 	app.fb_save = target == 'saveas'
 	app.fb_ext = if target == 'open' || target == 'saveas' {
 		['.blobnet', '.yml', '.yaml']
+	} else if target == 'arxml_import' {
+		['.arxml']
 	} else if target.starts_with('dbc') {
 		['.dbc', '.arxml'] // a multi-cluster ARXML asks which cluster (arxml_pick.v)
 	} else if target.starts_with('manifest') {
@@ -178,6 +181,8 @@ fn (mut app App) browser_confirm(path string) {
 		app.load_project(path)
 	} else if t == 'saveas' {
 		app.save_as(path)
+	} else if t == 'arxml_import' {
+		app.open_arxml_import(path)
 	} else if t.starts_with('dbc:') {
 		app.add_dbc(t['dbc:'.len..].int(), path)
 	} else if t.starts_with('manifest:') {
@@ -214,6 +219,8 @@ fn draw_filebrowser(mut app App) {
 		'Save Project As'
 	} else if app.fb_target.starts_with('dbc') {
 		'Attach DBC'
+	} else if app.fb_target == 'arxml_import' {
+		'Import ARXML'
 	} else if app.fb_target == 'system' {
 		'Open system.toml'
 	} else if app.fb_target == 'recording' {
@@ -842,6 +849,11 @@ fn draw_config(mut app App) {
 	if vgui.button('Discover...') {
 		app.open_discover()
 	}
+	vgui.same_line()
+	if vgui.button('Import ARXML...') {
+		app.open_browser('arxml_import')
+	}
+	vgui.set_item_tooltip('A channel per CAN cluster of an AUTOSAR system description, reading it from the file')
 	if app.dirty || app.cfg_file.dirty {
 		vgui.same_line()
 		vgui.text_colored(230, 170, 70, '● modified')

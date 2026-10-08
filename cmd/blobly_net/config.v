@@ -222,8 +222,11 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 // logical addresses and VIN); the name is made unique here, the interface composed, the
 // listen-only default applied.
 fn (mut app App) add_channel(spec project.Channel) {
-	adapter := spec.adapter
-	address := spec.address
+	app.add_channels([spec])
+}
+
+// add_channels is add_channel for several rows at once, with one rebuild after the last.
+fn (mut app App) add_channels(specs []project.Channel) {
 	app.commit_cfg()
 	// APPENDING A ROW IS AN EDIT TO THE NAMESPACE, so the same reconciliation the other edits get
 	// applies here (codex round 6 on #97). `unique_bus_name` keeps the new name clear of existing
@@ -238,23 +241,27 @@ fn (mut app App) add_channel(spec project.Channel) {
 			name:  c.name
 			iface: c.iface
 		}
-		row_map << j // the new row goes on the end; no existing row moves
+		row_map << j // the new rows go on the end; no existing row moves
 	}
-	base := if spec.name != '' {
-		spec.name
-	} else if address != '' {
-		address
-	} else {
-		adapter
-	}
-	app.proj.channels << project.Channel{
-		...spec
-		name:  app.unique_bus_name(base)
-		iface: project.compose_iface(adapter, address)
-		mode:  .normal
-		// Normal unless the adapter rule says otherwise — project.adapter_starts_silent, which
-		// answers false for every adapter since 2026-08-29 and says why.
-		listen_only: project.adapter_starts_silent(adapter)
+	for spec in specs {
+		adapter := spec.adapter
+		address := spec.address
+		base := if spec.name != '' {
+			spec.name
+		} else if address != '' {
+			address
+		} else {
+			adapter
+		}
+		app.proj.channels << project.Channel{
+			...spec
+			name:  app.unique_bus_name(base)
+			iface: project.compose_iface(adapter, address)
+			mode:  .normal
+			// Normal unless the adapter rule says otherwise — project.adapter_starts_silent, which
+			// answers false for every adapter since 2026-08-29 and says why.
+			listen_only: project.adapter_starts_silent(adapter)
+		}
 	}
 	app.mu.lock()
 	said := app.follow_channel_edits_locked(before, row_map)
