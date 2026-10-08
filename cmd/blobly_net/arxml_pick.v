@@ -6,11 +6,14 @@ import vgui
 
 // ArxmlPick is the "which CAN cluster?" dialog: an ARXML describes every bus of a system, and
 // one channel is one of them. Opened when an attached file has several clusters, and from an
-// attached ARXML's `cluster...` button to change which one the row reads. Index-bound: closed
-// wherever rows can shift or be replaced (drop_index_bound_ui, set_project, Start).
+// attached ARXML's `cluster...` button to change which one the row reads. MODAL, so the panel
+// cannot change the row under it; the file on disk still can, so the confirm reads it again.
+// Index-bound besides: closed wherever rows can shift or be replaced (drop_index_bound_ui,
+// set_project, Start) — paths a modal blocks today, kept so a new one cannot reopen the hole.
 struct ArxmlPick {
 mut:
 	open    bool
+	popped  bool // the ImGui popup is open; draw_arxml_pick closes it once `open` drops
 	ci      int    // the channel row
 	di      int    // the database entry being changed; -1 attaches a new one
 	chan    string // the row's name, for the question
@@ -20,6 +23,7 @@ mut:
 	path    string // the ARXML, resolved
 	rows    []ArxmlPickRow
 	sel     int
+	other   string // the cluster this row already reads from this file through another entry
 }
 
 struct ArxmlPickRow {
@@ -29,7 +33,7 @@ struct ArxmlPickRow {
 	fd_rate  int
 	frames   int
 	used_by  []string // other channel rows already reading this cluster of this file
-	this_row bool     // this row reads it through another entry, at open
+	this_row bool     // this row reads it through another entry
 }
 
 // cluster_readers maps each cluster of `a` (by AUTOSAR path) to the rows whose entries read
@@ -57,9 +61,6 @@ fn (app &App) cluster_readers(path string, a candb.Arxml, skip_ci int, skip_di i
 // open_arxml_pick lists the clusters of `path` for entry di of channel ci (-1: a new entry);
 // `current` is the fragment the entry carries, '' for none.
 fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, current string) {
-	if app.arxml_pick.open {
-		app.notify('cluster picker for ${app.arxml_pick.chan} closed unanswered: nothing attached there')
-	}
 	// the row as the panel shows it: an edit still in its buffers is what Attach commits
 	app.commit_cfg()
 	readers := app.cluster_readers(path, a, ci, di)
@@ -72,6 +73,7 @@ fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, cur
 	}
 	mut rows := []ArxmlPickRow{}
 	mut sel := -1
+	mut other := ''
 	for k, c in a.clusters {
 		js := readers[c.path] or { []int{} }
 		rows << ArxmlPickRow{
@@ -86,6 +88,9 @@ fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, cur
 		if c.path == cur_path {
 			sel = k
 		}
+		if ci in js {
+			other = c.bus
+		}
 	}
 	ch := app.proj.channels[ci]
 	app.arxml_pick = ArxmlPick{
@@ -99,6 +104,7 @@ fn (mut app App) open_arxml_pick(ci int, di int, path string, a candb.Arxml, cur
 		path:    path
 		rows:    rows
 		sel:     sel
+		other:   other
 	}
 }
 
@@ -158,9 +164,13 @@ fn (mut app App) arxml_pick_confirm() {
 		app.notify('${os.file_name(p.path)} no longer has ${r.path}; nothing changed')
 		return
 	}
-	if p.ci in (app.cluster_readers(p.path, a, p.ci, p.di)[r.path] or { []int{} }) {
-		app.notify('${p.chan} already reads ${bus} of ${os.file_name(p.path)}; nothing changed')
-		return
+	// ONE cluster of one file per row: a channel is one bus, and two clusters merged into one
+	// row would decode a shared id by whichever definition came first
+	for c in a.clusters {
+		if p.ci in (app.cluster_readers(p.path, a, p.ci, p.di)[c.path] or { []int{} }) {
+			app.notify('${p.chan} already reads ${c.bus} of ${os.file_name(p.path)}; nothing changed')
+			return
+		}
 	}
 	ref := if p.di >= 0 {
 		f, _ := candb.split_database_ref(p.before)
@@ -199,13 +209,25 @@ fn rate_cell(cluster int, row int) string {
 }
 
 fn draw_arxml_pick(mut app App) {
+	id := 'CAN cluster##arxmlpick'
+	if !app.arxml_pick.open {
+		// closed from outside (a project load, Start): the popup goes with it
+		if vgui.begin_popup_modal(id) {
+			vgui.close_current_popup()
+			vgui.end_popup()
+		}
+		app.arxml_pick.popped = false
+		return
+	}
+	if !app.arxml_pick.popped {
+		vgui.open_popup(id)
+		app.arxml_pick.popped = true
+	}
 	sc := app.prefs.ui_scale
-	// sized to its rows (first use only; ImGui keeps a moved or resized dialog where it is left)
 	vgui.set_next_window(180, 120, 760, 190 + 26 * f32(app.arxml_pick.rows.len))
-	vis, op := vgui.begin_dialog('CAN cluster##arxmlpick', app.arxml_pick.open)
-	app.arxml_pick.open = op
-	if !vis {
-		vgui.end()
+	if !vgui.begin_popup_modal(id) {
+		app.arxml_pick.open = false
+		app.arxml_pick.popped = false
 		return
 	}
 	p := app.arxml_pick
@@ -240,7 +262,9 @@ fn draw_arxml_pick(mut app App) {
 	}
 	vgui.separator()
 	label := if p.di >= 0 { 'Use' } else { 'Attach' }
-	if p.sel >= 0 {
+	if p.other != '' {
+		vgui.text_dim('${p.chan} already reads ${p.other} of this file: one cluster per channel.')
+	} else if p.sel >= 0 {
 		if vgui.button(label) {
 			app.arxml_pick_confirm()
 		}
@@ -251,5 +275,9 @@ fn draw_arxml_pick(mut app App) {
 	if vgui.button('Cancel') {
 		app.arxml_pick.open = false
 	}
-	vgui.end()
+	if !app.arxml_pick.open {
+		vgui.close_current_popup()
+		app.arxml_pick.popped = false
+	}
+	vgui.end_popup()
 }

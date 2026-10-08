@@ -465,7 +465,7 @@ fn main() {
 		if app.fb_open {
 			draw_filebrowser(mut app)
 		}
-		if app.arxml_pick.open {
+		if app.arxml_pick.open || app.arxml_pick.popped {
 			draw_arxml_pick(mut app)
 		}
 		// AFTER the panels: draw_gen is where a generator's name and key buffers are copied into
