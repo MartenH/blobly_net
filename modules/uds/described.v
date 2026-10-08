@@ -137,9 +137,6 @@ pub const status_cleared = u8(0x50)
 // availability_mask is the status bits blobly_emb's fault memory maintains (no warning lamp).
 pub const fault_availability = u8(0x7F)
 
-// max_described_did is the most a DID record may hold (comm/uds max_did_data).
-const max_described_did = 32
-
 // sa_seed_len is a seed's length (comm/uds seed_len), which a key must match.
 const sa_seed_len = 4
 
@@ -174,8 +171,8 @@ pub fn server_from(spec ServerSpec) Server {
 }
 
 // put_did sets a DID's value, keeping its gates; a DID the description does not declare is added
-// readable everywhere and not writable (a project's `dids:` on a described node). The value's
-// length is the DID's size from then on, the one record length a 0x2E is accepted with.
+// readable everywhere and not writable (a project's `dids:` on a described node). A 0x2E still
+// takes a record of the DESCRIBED size, whatever length the value put here has.
 pub fn (mut s Server) put_did(id u16, data []u8) {
 	if !s.spec.dids.any(it.id == id) {
 		s.spec.dids << DidSpec{
@@ -530,8 +527,9 @@ fn (mut s Server) d_write(req []u8) []u8 {
 	if d.write.level != 0 && s.unlocked != d.write.level {
 		return neg(0x2E, 0x33)
 	}
-	// the DID's size is the only record it takes (comm/uds, emb#403): a write never resizes a DID
-	if rec.len != (s.dids[id] or { d.data }).len || rec.len > max_described_did {
+	// the declared size is the only record a DID takes (comm/uds, emb#403): a write never
+	// resizes a DID
+	if rec.len != d.data.len {
 		return neg(0x2E, 0x13)
 	}
 	if d.source == .param {
@@ -554,8 +552,9 @@ fn (mut s Server) d_write(req []u8) []u8 {
 	return [u8(0x6E), req[1], req[2]]
 }
 
-// param_refusal: the NRC a parameter's record is refused with (comm/param): its length (0x13),
-// then each field's range (0x31); none = accepted.
+// param_refusal: the NRC a parameter's record is refused with (comm/param): each field's range
+// (0x31); none = accepted. d_write has held the record to the declared size, which is the fields'
+// width; a record of another width is still 0x13 rather than read past its end.
 fn param_refusal(fields []FieldSpec, rec []u8) ?u8 {
 	mut n := 0
 	for f in fields {

@@ -483,10 +483,11 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
   (`security_attempts`; `0x36` on the last, then `0x37` for `security_delay_ms`), and every
   session entry relocks. The session times out after `s3_ms` without a request. A functional
   0x27 is ignored (SecurityAccess is physical only).
-- **0x2E at the DID's size** — a writable DID takes a record of exactly its size (`bytes` /
-  `ascii`, a parameter's width, or the value a `dids:` entry gave it); any other length is
-  `0x13`, checked after the write gate's session (`0x31`) and level (`0x33`), and the DID keeps
-  its value and size — a write never resizes a DID (blobly_emb#403).
+- **0x2E at the DID's size** — a writable DID takes a record of exactly its declared size
+  (`bytes` / `ascii`, a parameter's width); any other length is `0x13`, checked after the write
+  gate's session (`0x31`) and level (`0x33`), and the DID keeps its value and size — a write
+  never resizes a DID (blobly_emb#403). A `dids:` entry that gives a writable DID another size
+  is read as given, and said at Start, but 0x2E still takes the declared size.
 - **parameters through 0x2E** — after the length, each field's `range` (`0x31`), and once
   written the status DID reads 1 (coded).
 - **the fault memory** — every `[[fault]]` at its power-on status (`0x50`, nothing completed),
