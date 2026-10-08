@@ -591,6 +591,22 @@ fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnos
 	return '${iface}: +${to.minus(from).short().replace(' · ', ', +')} — since open: ${to.str()}'
 }
 
+// current_db_paths_locked is a row's database references, resolved: the row's CURRENT
+// references, read with the project path they resolve against — `ch` is a copy a worker took,
+// unlocked, before a Save As may have rebased both together (#440). _locked: the caller holds
+// app.mu, which is what makes the pair one reading. script_db and replay_db both ask it.
+fn (a &App) current_db_paths_locked(ch Chan) []string {
+	mut at := -1
+	for i, c in a.chans {
+		if c.proj_idx == ch.proj_idx && c.name == ch.name {
+			at = i
+			break
+		}
+	}
+	dbs := if at >= 0 { a.chans[at].databases } else { ch.databases }
+	return dbs.map(a.resolve_asset(it))
+}
+
 // script_db is one channel's merged database for a script: the channel's files, RESOLVED against
 // the project (round 13 — the raw project-relative strings opened against the process working
 // directory), read through the same loader the simulation uses. From the FILES, not from
@@ -602,7 +618,7 @@ fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnos
 fn (a &App) script_db(ch Chan) candb.Database {
 	mut al := unsafe { a }
 	al.mu.lock()
-	paths := ch.databases.map(a.resolve_asset(it))
+	paths := a.current_db_paths_locked(ch)
 	al.mu.unlock()
 	// WITH THE REPORT: a file deleted or broken since the project was loaded, or a reader note,
 	// would otherwise hand the script an empty or partial database and let it fail on "unknown

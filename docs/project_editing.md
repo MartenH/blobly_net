@@ -328,6 +328,17 @@ and — like every dialog (Configuration, Discover, Preferences) — it cannot
 leave the main window: dragged past an edge it parks there, and it is never given an OS
 window of its own the way a torn-off panel is (`vgui.begin_dialog`).
 
+**What a picked file is written as** (#440): relative to the project's own directory
+(`project.asset_ref` — `../dbc/x.dbc` for a project in `projects/`), so it resolves wherever the
+program is started; absolute where the two share nothing but the root; and, for a project never
+saved, relative to the working directory as before. Computed over real paths, since the kernel
+walks `../` physically through a symlinked directory. **Save As rebases** every relative
+reference (`Project.rebase_assets`: databases with their `#Cluster`, the manifest, a replay
+source) by `resolve_asset`'s own rule, so it names the same file from the new directory — one
+that resolves only from the working directory too (the shipped projects' `dbc/…`), and one that
+resolves nowhere today keeps naming where it would be looked for first. A saved project's
+absolute reference is left as written. A Save As that does not write puts the references back.
+
 ## Configuration editor — the Bus fields
 
 Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
