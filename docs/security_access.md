@@ -68,8 +68,9 @@ The **General** tab has a security row:
 - **Lock**: returns to the default session (`10 01`), which is the only way UDS takes a level
   back.
 
-The result is written to the response log, and the strip at the top shows `level N unlocked` or
-`locked`. A refusal is shown on the strip by its NRC, with what it means. Like every other button
+The result is written to the response log. The strip at the top shows `level N unlocked`, or
+`locked` once a session change on this connection has relocked the ECU. A fresh connection does not
+claim either, because it cannot know what a script or another tester left unlocked. A refusal is shown on the strip by its NRC, with what it means. Like every other button
 in the panel, Unlock and Lock are refused while the measurement is stopped, and while a script or
 flash is using the target.
 
@@ -100,7 +101,7 @@ error. `check.nrc(0x35, function() … end)` expects one. See [scripting.md](scr
 | `0x22` | conditionsNotCorrect | the ECU's conditions for unlocking are not met |
 | `0x24` | requestSequenceError | a key with no seed outstanding (or a seed request out of order) |
 | `0x33` | securityAccessDenied | (on another service) the level it needs is not unlocked |
-| `0x35` | invalidKey | the key is wrong; it counts toward the lockout. From an ECU that does not use the reference key, this is the expected answer |
+| `0x35` | invalidKey | the key is wrong; it counts toward the lockout. From an ECU that does not use the reference key, this is the expected answer. It also happens if another tester asked for a seed between this tester's seed and key |
 | `0x36` | exceededNumberOfAttempts | too many wrong keys: the ECU is now locked out for its delay |
 | `0x37` | requiredTimeDelayNotExpired | the lockout delay (or the delay after power-up) is still running |
 | `0x7E` / `0x7F` | …NotSupportedInActiveSession | not served in this session (on blobly_emb, any session but extended) |

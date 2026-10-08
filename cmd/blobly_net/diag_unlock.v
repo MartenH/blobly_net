@@ -95,6 +95,16 @@ fn (mut app App) diag_unlock_request(gen u64, mut h HeldConn, req DiagReq) (Diag
 		}
 		app.diag_say_for(req, 'for 0x27, which the default session does not serve', false)
 	}
+	// the last thing before the 0x27: the key policy it was pressed under is still the loaded one
+	app.mu.lock()
+	stale := diaghold.unlock_still_current(req.ident, app.diag_sys_ident)
+	app.mu.unlock()
+	if stale != '' {
+		return DiagOut{
+			line: 'Unlock level ${req.level}: ${stale}'
+			err:  true
+		}, true // nothing of the 0x27 sent: the connection is as it was
+	}
 	return app.diag_unlock(gen, mut h, req.level)
 }
 
@@ -125,6 +135,8 @@ fn (mut app App) unlock_press(t DiagTarget, desc DiagDesc, level int) {
 	app.diag_send(DiagReq{
 		kind:  'unlock'
 		level: u8(level)
+		// the system the refusal above read, re-asked by the holder before the 0x27 goes out
+		ident: app.diag_sys_key
 	})
 }
 

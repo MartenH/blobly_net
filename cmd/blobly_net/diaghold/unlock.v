@@ -44,12 +44,25 @@ pub fn unlock_refusal(described bool, ref_key bool) string {
 	return ''
 }
 
-// unlock_refusal_forgets: what a refused 0x27 says the connection no longer has. Not served in
-// this session: the session is not the one the panel believed (an S3 timeout, a reset), so the
-// next Unlock switches again. Any other refusal: the level is no longer known — a seed request
-// for another level, or a wrong key, may have relocked the ECU — so the next write unlocks again.
+// unlock_still_current: the last check before a queued Unlock's 0x27 goes out — the system it was
+// decided under (`req_ident`; unlock_refusal read its description) is still the loaded one
+// (`now_ident`). A reload while the press waited may have taken the reference key away, and a
+// wrong key counts toward the lockout. '' = send.
+pub fn unlock_still_current(req_ident string, now_ident string) string {
+	if req_ident == now_ident {
+		return ''
+	}
+	return 'not sent: the system description was reloaded since Unlock was pressed — press it again'
+}
+
+// unlock_refusal_forgets: what a refused 0x27 says the connection no longer has. 0x7F (the service
+// not served in this session): the session is not the one the panel believed (an S3 timeout, a
+// reset), so the next Unlock switches again. Anything else, 0x7E included — a sub-function served
+// in another session says nothing about which one this is: the level is no longer known (a seed
+// request for another level, or a wrong key, may have relocked the ECU), so the next write
+// unlocks again.
 pub fn unlock_refusal_forgets(nrc u8) Forget {
-	return if nrc == 0x7E || nrc == 0x7F { Forget.session } else { Forget.security }
+	return if nrc == 0x7F { Forget.session } else { Forget.security }
 }
 
 // Seed is what a 0x27 requestSeed answer says.
@@ -73,7 +86,7 @@ pub fn unlock_refusal_words(nrc u8, name string, level u8, key_sent bool) string
 	what := '0x${nrc:02X} ${name}'
 	return match nrc {
 		0x35 {
-			'${what} — this ECU does not accept blobly_net\'s reference key; its algorithm is the OEM\'s, which the panel cannot compute (a script can, with its own key function)'
+			'${what} — this ECU does not accept blobly_net\'s reference key: its algorithm is the OEM\'s, which the panel cannot compute (a script can, with its own key function) — unless another tester asked it for a seed in between'
 		}
 		0x36 {
 			'${what} — too many wrong keys: the ECU is locked out for its delay'

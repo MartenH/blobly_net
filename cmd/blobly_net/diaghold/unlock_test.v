@@ -45,7 +45,13 @@ fn test_an_unlock_is_refused_only_where_the_description_names_another_key() {
 
 fn test_a_refused_unlock_forgets_what_it_may_have_taken_back() {
 	assert unlock_refusal_forgets(0x7F) == .session
-	assert unlock_refusal_forgets(0x7E) == .session
+	assert unlock_refusal_forgets(0x7E) == .security // the session is still the one it was
 	assert unlock_refusal_forgets(0x35) == .security
 	assert unlock_refusal_forgets(0x12) == .security
+}
+
+fn test_a_queued_unlock_is_not_sent_after_a_reload() {
+	assert unlock_still_current('a', 'a') == ''
+	assert unlock_still_current('', '') == ''
+	assert unlock_still_current('a', 'b').contains('reloaded')
 }
