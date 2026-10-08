@@ -35,8 +35,16 @@ cd "$(dirname "$0")/.."
 V="${V:-$HOME/v/v}"
 [ -x "$V" ] || V="v"
 
+# Built ONCE, into a directory of this invocation's own. `v run` writes its binary beside the
+# source and deletes it after, so two runs in parallel raced on one cmd/script/run: one started
+# a suite on a binary the other had just removed ("No such file or directory") — and every
+# suite paid a compile of its own.
+bin_dir="$(mktemp -d)"
+trap 'rm -rf "$bin_dir"' EXIT
+"$V" -enable-globals -path "@vlib|@vmodules|modules" -o "$bin_dir/run" cmd/script/run.v
+
 run_one() {
-  "$V" -enable-globals -path "@vlib|@vmodules|modules" run cmd/script/run.v "$@"
+  "$bin_dir/run" "$@"
 }
 
 # Named scripts run as one invocation, in one environment — the fast path, and what --project is
@@ -44,7 +52,7 @@ run_one() {
 for a in "${args[@]}"; do
   case "$a" in
     -*) ;;
-    *)  exec "$V" -enable-globals -path "@vlib|@vmodules|modules" run cmd/script/run.v "${args[@]}" ;;
+    *)  run_one "${args[@]}"; exit $? ;;
   esac
 done
 

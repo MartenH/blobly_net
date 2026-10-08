@@ -11,7 +11,6 @@
 module main
 
 import os
-import net
 import time
 import candb
 import project
@@ -97,18 +96,17 @@ fn main() {
 	// The run's simulated loopback DoIP entities move off the project's ports (13400 in every
 	// demo) onto ports this process can bind, and every row dialing them moves with them, so two
 	// runs on one machine do not collide (#411). Held until each entity binds, below.
-	mut probes := map[int]&net.TcpListener{}
+	// Each host is resolved ONCE, here, and that address is what is probed, matched and bound (#416).
+	hosts := project.resolve_doip_hosts(proj.channels, transport.bind_address)
+	mut probes := &testports.Holder{}
 	if !project_ports {
-		mut prober := &TcpProber{}
 		band := testports.doip_entities
-		moved := project.choose_doip_ports(project.doip_hosting(proj.channels, transport.bind_address),
-			project.reserved_ports(proj.channels), band.candidates(), transport.bind_address, mut
-			prober) or {
+		moves := project.choose_doip_ports(project.doip_hosting(proj.channels, hosts),
+			project.reserved_ports(proj.channels), band.candidates(), mut probes) or {
 			eprintln('cannot host the DoIP entities: ${err} in ${band.base}..${band.last()}; --project-ports keeps the project\'s')
 			exit(1)
 		}
-		probes = prober.held.clone()
-		chs, notes := project.with_doip_ports(proj.channels, moved, transport.bind_address)
+		chs, notes := project.with_doip_ports(proj.channels, moves, hosts)
 		proj.channels = chs
 		for n in notes {
 			println(n)
@@ -225,12 +223,12 @@ fn main() {
 				eprintln('${ch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${ch.ecu_addr:04X})')
 			}
 			mut srv := ent.server
-			release_probe(mut probes, port)
+			probes.release(port)
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect
 			// to THAT and the suite would pass against the wrong ECU.
-			mut entity := doip_listen(host, port, ent.cfg, srv) or {
+			mut entity := doip_listen(hosts.of(host), port, ent.cfg, srv) or {
 				eprintln('${ch.name}: ${err}')
 				eprintln('refusing to run: a suite would connect to whatever else is on ${host}:${port}')
 				exit(1)
@@ -309,9 +307,7 @@ fn main() {
 			println('channel ${ch.name} (${ch.iface}): monitor only')
 		}
 	}
-	for _, mut p in probes {
-		p.close() or {}
-	}
+	probes.release_all()
 	// Cyclic generators (`senders:` with trigger: cyclic), sent while the run lasts as the GUI
 	// sends them during a measurement, by the GUI's rules: every row's generators (a disabled
 	// row's too — its generator may target an enabled channel), sent only where a target row is
@@ -579,34 +575,6 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	hst.entity = s
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
-}
-
-// TcpProber holds each chosen port with a listener on its wildcard until the entity binds it.
-// TCP verifies (testports), and the wildcard is refused while ANY address listens on the port, so
-// a candidate another run holds on any loopback address is skipped. The entity binds UDP on the
-// same number and announces to it, so that port is settled too. What is left is the instant
-// between releasing a probe and the entity's bind.
-struct TcpProber {
-mut:
-	held map[int]&net.TcpListener
-}
-
-fn (mut p TcpProber) hold(port int, v6 bool) bool {
-	l := if v6 {
-		net.listen_tcp(.ip6, '[::]:${port}') or { return false }
-	} else {
-		net.listen_tcp(.ip, '0.0.0.0:${port}') or { return false }
-	}
-	p.held[port] = l
-	return true
-}
-
-// release_probe closes the listener holding `port`, if any, so the entity can bind it.
-fn release_probe(mut probes map[int]&net.TcpListener, port int) {
-	if mut l := probes[port] {
-		l.close() or {}
-		probes.delete(port)
-	}
 }
 
 // Announcer is one bound entity waiting to announce, held until the script environment exists.

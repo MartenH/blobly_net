@@ -33,7 +33,11 @@
 //     each sees the other's frames — which is exactly what a self-filter assertion reads as a
 //     failure.
 //
-// So UDP predicts, and predicts properly: `slot_for` gives each process a disjoint BLOCK of
+// `hold_udp` (udphold.v) is the exception that proves the point: a socket bound through C WITHOUT
+// SO_REUSEADDR is refused while anything holds the port, so it does verify — for a caller that can
+// hold the port itself until its own server binds it (`Holder`, the headless runner's DoIP
+// entities). A test whose UDP socket is created by `net.listen_udp` cannot, so elsewhere UDP
+// predicts, and predicts properly: `slot_for` gives each process a disjoint BLOCK of
 // `stride` ports, because the original defect was that `base + pid + slot` made process N's slot 1
 // into process N+1's slot 0 — and a runner spawns its files with pids a few apart, so adjacent is
 // the common case, not the unlucky one. Aliasing at the band width remains, and no arithmetic can
@@ -89,8 +93,8 @@ pub const udp_bus = Band{
 
 // The headless runner's simulated DoIP entities (#411): cmd/script moves every loopback entity a
 // project hosts on, say, 13400 onto the first candidate here it can bind. The entity binds TCP and
-// UDP on one number and announces to it, so the TCP bind verifies the UDP port as well — the
-// announcement port is the entity's port, not a separate prediction.
+// UDP on one number and announces to it, so a candidate is held on BOTH (`Holder`) until the
+// entity binds: one held over UDP alone is skipped (#416).
 pub const doip_entities = Band{
 	name:  'cmd/script (simulated DoIP entities)'
 	base:  30000
