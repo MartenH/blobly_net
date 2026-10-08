@@ -205,3 +205,14 @@ fn (mut app App) f() {
 	}
 	assert false, 'the census passed a file nobody walked'
 }
+
+// fields V's walker skips, reached so that valid code is not refused by the census
+fn test_skipped_fields_are_walked() {
+	assert lines("module main
+fn (mut app App) f(ch chan int) {
+	assert true, '\${voidptr(&app)}'
+	ch <- 1 or { register(fn [app] () {}) }
+	b := isreftype(app.get(voidptr(&app)))
+}
+") == [4]
+}

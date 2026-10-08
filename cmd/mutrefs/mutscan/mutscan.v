@@ -117,6 +117,9 @@ fn (mut v Scan) visit(node &ast.Node) ! {
 					}
 				}
 			}
+			ast.AssertStmt {
+				v.queue(node.extra)
+			}
 			ast.ForStmt {
 				v.queue(node.cond)
 			}
@@ -148,6 +151,7 @@ fn (mut v Scan) visit(node &ast.Node) ! {
 			if expr.op == .amp {
 				v.amps[expr.pos.pos] = true // `mask & app.flags`, which the census also sees
 			}
+			v.queue(ast.Expr(expr.or_block)) // `ch <- x or { }`
 		}
 		ast.AnonFn {
 			if expr.decl.pos.pos !in v.fns {
@@ -182,6 +186,10 @@ fn (mut v Scan) visit(node &ast.Node) ! {
 			for a in expr.args {
 				v.queue(a.expr)
 			}
+			v.queue(ast.Expr(expr.or_block))
+		}
+		ast.IsRefType {
+			v.queue(expr.expr)
 		}
 		ast.DumpExpr {
 			v.queue(expr.expr)
