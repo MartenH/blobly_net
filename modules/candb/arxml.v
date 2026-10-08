@@ -479,7 +479,14 @@ pub fn load_arxml_file(path string) !Arxml {
 // load_arxml_content is load_arxml_file with the SHA-256 of the bytes it read: the content key a
 // caller compares to tell whether the file changed since (the import dialog, before it writes).
 pub fn load_arxml_content(path string) !(Arxml, string) {
-	text := os.read_file(path)!
+	text := os.read_file(path) or {
+		// a file that cannot be read now has no parse: arxml_cached must not keep answering with
+		// the bytes it held before, which nothing loaded from this time
+		arxml_cache_mu.lock()
+		arxml_cache.delete(os.real_path(path))
+		arxml_cache_mu.unlock()
+		return err
+	}
 	key, sha := content_key(path, text)
 	for {
 		arxml_cache_mu.lock()
@@ -532,6 +539,10 @@ pub fn load_arxml_content(path string) !(Arxml, string) {
 // block the GUI thread on a hundreds-of-MB read nor compare against bytes the run is not using.
 // none when the file was never parsed here, or its last parse failed (which the loader said).
 pub fn arxml_cached(path string) ?Arxml {
+	// gone or unreadable since: whatever the cache holds is not what a load would see
+	if !os.is_readable(path) {
+		return none
+	}
 	key := os.real_path(path)
 	arxml_cache_mu.lock()
 	defer {

@@ -222,7 +222,8 @@ pub type ArxmlLoad = fn (path string) ?candb.Arxml
 // (wire_framings), which this does not try to predict. `dir` is the project's directory, which
 // references resolve against; each file is looked up once.
 pub fn arxml_rate_warnings(chs []Channel, dir string, find ArxmlLoad) []string {
-	return arxml_rate_findings(chs, dir, find).filter(chs[it.row].enabled).map(it.text)
+	// disabled rows filtered BEFORE anything is looked up: a file only they name is not read
+	return arxml_rate_findings(chs.filter(it.enabled), dir, find).map(it.text)
 }
 
 // RowWarning is one warning about the row at index `row`.
@@ -248,13 +249,15 @@ pub fn arxml_rate_findings(chs []Channel, dir string, find ArxmlLoad) []RowWarni
 				continue
 			}
 			file, frag := candb.split_database_ref(resolve_asset(dir, ref))
-			if file !in seen {
-				seen[file] = true
+			// by REAL path: `net.arxml` and `./net.arxml` are one file, looked up once
+			key := os.real_path(file)
+			if key !in seen {
+				seen[key] = true
 				if x := find(file) {
-					files[file] = x
+					files[key] = x
 				}
 			}
-			a := files[file] or { continue }
+			a := files[key] or { continue }
 			c := a.cluster(frag) or { continue }
 			r := arxml_cluster_rates(c)
 			what := '${c.bus} (${os.file_name(file)})'
@@ -271,7 +274,8 @@ pub fn arxml_rate_findings(chs []Channel, dir string, find ArxmlLoad) []RowWarni
 					if ch.data_rate() != r.data_bitrate {
 						out << RowWarning{i, '${ch.name} runs its data phase at ${ch.data_rate()} bit/s but ${what} states ${r.data_bitrate} bit/s'}
 					}
-				} else if ch.origination_framing().brs != (r.data_bitrate != r.bitrate) {
+				} else if !r.no_baudrate && ch.origination_framing().brs != (r.data_bitrate != r.bitrate) {
+					// (with no nominal rate stated, the file cannot say whether its phases differ)
 					// the rates are not this app's to set here, but they still decide BRS
 					sw := if ch.origination_framing().brs { 'switches' } else { 'does not switch' }
 					cs := if r.data_bitrate != r.bitrate { 'does' } else { 'does not' }

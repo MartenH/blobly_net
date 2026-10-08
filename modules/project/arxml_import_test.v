@@ -219,6 +219,11 @@ fn test_import_address_rules() {
 	}
 }
 
+struct LookupCount {
+mut:
+	n int
+}
+
 fn load_for_test(path string) ?candb.Arxml {
 	return candb.load_arxml_file(path) or { return none }
 }
@@ -299,6 +304,23 @@ fn test_arxml_rate_warnings() {
 		bitrate:      500000
 		data_bitrate: 500000
 	}]) == ["Body's data phase does not switch rate but Body (net.arxml)'s does"]
+	// no nominal rate stated: nothing to say whether its phases differ, so no BRS claim either
+	assert w([Channel{
+		...vcan
+		bitrate:      2000000
+		data_bitrate: 2000000
+		databases:    ['norate.arxml#Body']
+	}]) == []
+	// one file under two spellings is looked up once
+	mut asked := &LookupCount{} // through a pointer: a closure captures a copy of anything else
+	_ = arxml_rate_warnings([Channel{
+		...body
+		databases: ['net.arxml#Body', '../${os.file_name(dir)}/net.arxml#Body']
+	}], dir, fn [mut asked] (p string) ?candb.Arxml {
+		asked.n++
+		return candb.load_arxml_file(p) or { return none }
+	})
+	assert asked.n == 1
 	// silent: a cluster stating no baudrate, a disabled row, an Ethernet row, and what does not load
 	assert w([Channel{
 		...body
