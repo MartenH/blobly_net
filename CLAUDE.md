@@ -336,7 +336,11 @@ rounds on before it had a test (#278)), `scripts/runtests.sh`,
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220; it also
 runs `scripts/check_mut_refs.sh`, which refuses `x := &recv` and `fn [recv]` inside a `mut recv`
 method — both COPY the struct in V, and the copy's own mutex over shared maps crashed the
-Diagnostics panel after #402, docs/known_issues.md) and
+Diagnostics panel after #402, docs/known_issues.md. The check is `cmd/mutrefs`, a walk over V's
+own parse (`v.parser`), held to a census of V's own tokens so a node the walk skips is an
+error rather than a pass, not a regex: the line scan it replaced read `//` in a string as a
+comment, `== &app` as a binding and skipped one-line bodies (#406); `cmd/mutrefs/mutscan/` is
+tested in CI with the other cmd rules) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
 available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged) and
 `scripts/v_toolchain_test.sh` (when the pinned V toolchain is REBUILT, and what counts as
