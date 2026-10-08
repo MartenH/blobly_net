@@ -910,8 +910,7 @@ fn unquoted_fragment_notes(text string, chans []Channel) []string {
 		for k, d in dbs.array().as_strings() {
 			want := d.replace(fragment_mark, '#')
 			if k < chans[ci].databases.len && want != d && chans[ci].databases[k] != want {
-				out << '${chans[ci].name}: database `${want}` is read as `${chans[ci].databases[k]}` and a comment — quote it: "${want.replace('"',
-					'\\"')}"'
+				out << '${chans[ci].name}: database `${want}` is read as `${chans[ci].databases[k]}` and a comment — quote it: ${yaml_flow_scalar(want)}'
 			}
 		}
 	}

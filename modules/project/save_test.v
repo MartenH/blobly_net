@@ -649,3 +649,19 @@ channels:
 	assert p.channels[0].databases == ['db/net.arxml']
 	assert p.notes == []
 }
+
+// The suggested spelling is the writer's own: a backslash path survives being pasted back.
+fn test_unquoted_fragment_suggestion_escapes() {
+	y := 'project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    databases:
+      - C:\\net.arxml#Body
+'
+	p := parse(y)!
+	assert p.notes == ['CAN1: database `C:\\net.arxml#Body` is read as `C:\\net.arxml` and a comment — quote it: "C:\\\\net.arxml#Body"']
+	fixed := parse(y.replace('- C:\\net.arxml#Body', '- "C:\\\\net.arxml#Body"'))!
+	assert fixed.channels[0].databases == ['C:\\net.arxml#Body']
+}
