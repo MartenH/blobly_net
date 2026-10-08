@@ -58,12 +58,11 @@ pub:
 	hosts []string // as the rows write them (what the entity binds), in project order
 }
 
-// DoipMove is one hosting entry moved: entities of family `v6` on `from` go to `to`.
+// DoipMove is one hosting entry moved to port `to`.
 pub struct DoipMove {
 pub:
-	from int
-	v6   bool
-	to   int
+	hosting DoipHosting
+	to      int
 }
 
 // is_loopback_host reports whether a resolved bind address is a loopback address. Only those are
@@ -165,9 +164,8 @@ pub fn choose_doip_ports(hosting []DoipHosting, reserved []int, candidates []int
 			return error('no free candidate port for ${hs.hosts.join(', ')} (from ${hs.port})')
 		}
 		moves << DoipMove{
-			from: hs.port
-			v6:   hs.v6
-			to:   to
+			hosting: hs
+			to:      to
 		}
 	}
 	return moves
@@ -177,15 +175,14 @@ pub fn choose_doip_ports(hosting []DoipHosting, reserved []int, candidates []int
 // its host and its port as `doip_hosting` reported them — rewritten to the new port, and one line
 // per rewritten row saying so. A row whose endpoint no simulated entity binds is left as written,
 // so a tester dialing a real entity, or a loopback one this run does not host, keeps its port.
+// A rewritten row names the ADDRESS its host resolved to, not the name: the family split leaves
+// the other family's loopback free on the new port for a concurrent run, so a tester dialing
+// `localhost` that resolved differently at dial time could reach that run's entity.
 pub fn with_doip_ports(chs []Channel, moves []DoipMove, hosts DoipHosts) ([]Channel, []string) {
 	mut hosted := map[string]int{} // resolved entity endpoint -> its new port
-	for hs in doip_hosting(chs, hosts) {
-		for m in moves {
-			if m.from == hs.port && m.v6 == hs.v6 {
-				for h in hs.hosts {
-					hosted[transport.udp_bind_addr(hosts.of(h), hs.port)] = m.to
-				}
-			}
+	for m in moves {
+		for h in m.hosting.hosts {
+			hosted[transport.udp_bind_addr(hosts.of(h), m.hosting.port)] = m.to
 		}
 	}
 	mut out := chs.clone()
@@ -198,7 +195,7 @@ pub fn with_doip_ports(chs []Channel, moves []DoipMove, hosts DoipHosts) ([]Chan
 		to := hosted[transport.udp_bind_addr(hosts.of(host), port)] or { continue }
 		was := ch.doip_effective_address()
 		ch.adapter = 'doip'
-		ch.address = transport.udp_bind_addr(host, to)
+		ch.address = transport.udp_bind_addr(hosts.of(host), to)
 		ch.iface = compose_iface('doip', ch.address)
 		ch.announce_to = with_moved_port(ch.announce_to, port, to)
 		notes << '${ch.name}: DoIP ${was} -> ${ch.address} for this run'

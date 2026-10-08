@@ -33,7 +33,7 @@
 //     each sees the other's frames — which is exactly what a self-filter assertion reads as a
 //     failure.
 //
-// `hold_udp` (udphold.v) is the exception that proves the point: a socket bound through C WITHOUT
+// `hold_udp` (hold.v) is the exception that proves the point: a socket bound through C WITHOUT
 // SO_REUSEADDR is refused while anything holds the port, so it does verify — for a caller that can
 // hold the port itself until its own server binds it (`Holder`, the headless runner's DoIP
 // entities). A test whose UDP socket is created by `net.listen_udp` cannot, so elsewhere UDP
@@ -102,7 +102,21 @@ pub const doip_entities = Band{
 	tries: 64
 }
 
-pub const bands = [doip, someip, udp_bus, doip_entities]
+pub const holds = Band{
+	name:  'testports/hold_test.v'
+	base:  32000
+	count: 384
+	tries: 64
+}
+
+pub const doip_moves = Band{
+	name:  'project/doip_ports_test.v'
+	base:  32384
+	count: 384
+	tries: 64
+}
+
+pub const bands = [doip, someip, udp_bus, doip_entities, holds, doip_moves]
 
 // last is the highest port the band can hand out.
 pub fn (b Band) last() int {

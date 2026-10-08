@@ -96,10 +96,12 @@ fn main() {
 	// The run's simulated loopback DoIP entities move off the project's ports (13400 in every
 	// demo) onto ports this process can bind, and every row dialing them moves with them, so two
 	// runs on one machine do not collide (#411). Held until each entity binds, below.
-	// Each host is resolved ONCE, here, and that address is what is probed, matched and bound (#416).
-	hosts := project.resolve_doip_hosts(proj.channels, transport.bind_address)
+	// Each host is resolved ONCE, here, and that address is what is probed, matched, written into
+	// the moved rows and bound (#416). Kept as the project writes them, entities bind their own
+	// spelling, which the listen resolves once.
 	mut probes := &testports.Holder{}
 	if !project_ports {
+		hosts := project.resolve_doip_hosts(proj.channels, transport.bind_address)
 		band := testports.doip_entities
 		moves := project.choose_doip_ports(project.doip_hosting(proj.channels, hosts),
 			project.reserved_ports(proj.channels), band.candidates(), mut probes) or {
@@ -228,7 +230,7 @@ fn main() {
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect
 			// to THAT and the suite would pass against the wrong ECU.
-			mut entity := doip_listen(hosts.of(host), port, ent.cfg, srv) or {
+			mut entity := doip_listen(host, port, ent.cfg, srv) or {
 				eprintln('${ch.name}: ${err}')
 				eprintln('refusing to run: a suite would connect to whatever else is on ${host}:${port}')
 				exit(1)
