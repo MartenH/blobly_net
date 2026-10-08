@@ -167,6 +167,18 @@ pub fn (c ArxmlCluster) carries_fd() bool {
 	return false
 }
 
+// bus_facts is what the cluster states about its bus, as a database built from it carries it
+// (Database.arxml); `file` is the file's base name, for messages.
+pub fn (c ArxmlCluster) bus_facts(file string) ArxmlBus {
+	return ArxmlBus{
+		name:        c.bus
+		file:        file
+		baudrate:    c.baudrate
+		fd_baudrate: c.fd_baudrate
+		fd:          c.carries_fd()
+	}
+}
+
 // frame_of returns the extras for a message of this cluster, if the file said anything.
 pub fn (c ArxmlCluster) frame_of(m Message) ?ArxmlFrame {
 	return c.frames[frame_key(m.id, m.ext)] or { return none }

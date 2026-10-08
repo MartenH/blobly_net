@@ -152,6 +152,16 @@ fn main() {
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
+	// one opener for the whole run, behind a pointer: a closure copies a struct it captures (maps
+	// included), and the check and the row databases must share this one
+	db_files := &DbFiles{}
+	for w in project.arxml_rate_warnings(proj.channels, os.dir(proj_path), fn [db_files] (ref string) ?candb.Database {
+		mut f := unsafe { db_files }
+		l := f.open(ref) or { return none }
+		return l.db
+	}) {
+		eprintln('warning: ${w}')
+	}
 	// NOT someip_endpoint_warnings HERE. That warning is about rows this front end BINDS, and
 	// the headless runner binds none: a SOME/IP row is a declaration a suite may listen on by
 	// name, one window at a time, and the claim registry refuses a second. Emitting it here told
@@ -172,7 +182,7 @@ fn main() {
 		if !ch.enabled {
 			continue
 		}
-		db := row_db(mut row_dbs, proj.channels, ci, os.dir(proj_path))
+		db := row_db(mut row_dbs, proj.channels, ci, os.dir(proj_path), db_files)
 		nodes := ch.all_nodes()
 		chans << script.ChanInfo{
 			name: ch.name
@@ -364,7 +374,7 @@ fn main() {
 			}
 			mut sdb := []candb.Database{}
 			for r in rows {
-				sdb << row_db(mut row_dbs, proj.channels, r, os.dir(proj_path))
+				sdb << row_db(mut row_dbs, proj.channels, r, os.dir(proj_path), db_files)
 			}
 			sims << spawn sender_loop(open_iface, s, sdb, run_t0, ctl)
 			println('channel ${ch.name}: cyclic generator "${s.name}" every ${s.cycle_ms} ms on ${sb.iface}')
@@ -429,12 +439,16 @@ fn main() {
 // definition of an id wins) — a GUI-free slice of src/main.v's load_databases.
 // load_channel_db delegates to candb.merge_files — see the GUI's merge_dbs. Having one merge
 // each is how the same project came to mean two different databases.
-fn load_channel_db(ch project.Channel, proj_dir string) candb.Database {
+fn load_channel_db(ch project.Channel, proj_dir string, files &DbFiles) candb.Database {
 	// Resolved against the PROJECT's directory, exactly as the GUI does. runtests.sh changes to
 	// the repository root before running, so a project kept anywhere else had its relative
 	// `databases:` entries opened as written — the load failed, the database came back empty,
 	// and the simulation transmitted nothing with no error anywhere.
-	db, notes := candb.merge_files_report(ch.databases.map(project.resolve_asset(proj_dir, it)))
+	db, notes := candb.merge_files_report_with(ch.databases.map(project.resolve_asset(proj_dir, it)),
+		fn [files] (ref string) !candb.Loaded {
+		mut f := unsafe { files }
+		return f.open(ref)
+	})
 	// what could not be opened, and what the ARXML reader had to skip: on stderr, because a
 	// refused database otherwise surfaces as failing tests with no line saying why
 	for n in notes {
@@ -479,11 +493,11 @@ fn sim_loop(open_iface string, fault_iface string, chan_name string, db candb.Da
 }
 
 // row_db is row `i`'s databases, loaded (and its reader notes printed) once.
-fn row_db(mut cache map[int]candb.Database, chs []project.Channel, i int, proj_dir string) candb.Database {
+fn row_db(mut cache map[int]candb.Database, chs []project.Channel, i int, proj_dir string, files &DbFiles) candb.Database {
 	if db := cache[i] {
 		return db
 	}
-	db := load_channel_db(chs[i], proj_dir)
+	db := load_channel_db(chs[i], proj_dir, files)
 	cache[i] = db
 	return db
 }
@@ -696,4 +710,50 @@ fn report_diag(what string, d transport.BusDiagnostics) {
 	if !d.is_empty() {
 		eprintln('${what}: ${d.str()}')
 	}
+}
+
+// DbFiles opens the runner's databases: each reference once and each ARXML FILE once, however
+// many of its clusters rows name (a system description is hundreds of MB to read and hash), and
+// the SAME parse for every question asked of it — the rate check before the run and the row
+// databases the run uses, so a file replaced between the two cannot make them disagree.
+struct DbFiles {
+mut:
+	refs         map[string]candb.Loaded // by canonical reference
+	failed       map[string]string
+	arxml        map[string]candb.Arxml // by real path
+	arxml_failed map[string]string      // by real path: a broken file is read once, not per cluster
+}
+
+fn (mut f DbFiles) open(ref string) !candb.Loaded {
+	key := candb.canonical_database_ref(ref)
+	if why := f.failed[key] {
+		return error(why)
+	}
+	if l := f.refs[key] {
+		return l
+	}
+	l := f.open_new(ref) or {
+		f.failed[key] = err.msg()
+		return err
+	}
+	f.refs[key] = l
+	return l
+}
+
+fn (mut f DbFiles) open_new(ref string) !candb.Loaded {
+	file, cluster := candb.split_database_ref(ref)
+	if !candb.is_arxml_path(file) {
+		return candb.open_database(ref)
+	}
+	k := os.real_path(file)
+	if why := f.arxml_failed[k] {
+		return error(why)
+	}
+	if k !in f.arxml {
+		f.arxml[k] = candb.load_arxml_file(file) or {
+			f.arxml_failed[k] = err.msg()
+			return err
+		}
+	}
+	return f.arxml[k].loaded(cluster, os.base(file))
 }

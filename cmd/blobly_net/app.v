@@ -510,6 +510,7 @@ mut:
 	panes_dragged    map[string]bool // which panes THIS instance dragged (pane_moved): what the exit save writes
 	cfg_bufs         []CfgBuf
 	arxml_pick ArxmlPick // which CAN cluster of an ARXML a channel reads
+	arxml_rates_said []project.RowWarning // arxml_rate_findings as of the last rebuild; Start says the enabled rows'
 	arxml_import ArxmlImportUi // Import system from ARXML (#439)
 	// Discover-interfaces dialog (add buses from detected transports)
 	disc_open   bool
@@ -1545,6 +1546,17 @@ fn (mut app App) rebuild_from_proj() {
 
 	app.dest_cache = map[string]string{}
 	app.wire_dbs = app.build_wire_dbs()
+	// The ARXML rate check (#439), against the databases THIS rebuild loaded (app.dbs, by
+	// canonical reference — each carries its cluster's bus facts), which is what this run uses:
+	// no file I/O, and no later parse of the same path (an import dialog, a script) can stand in.
+	// For every row, enabled or not: a tick while stopped causes no rebuild, so Start filters.
+	loaded_paths := app.dbs_paths.clone()
+	loaded := app.dbs.clone()
+	app.arxml_rates_said = project.arxml_rate_findings(app.runtime_rows(), os.dir(app.proj_path),
+		fn [loaded_paths, loaded] (ref string) ?candb.Database {
+		i := loaded_paths.index(candb.canonical_database_ref(ref))
+		return if i >= 0 && i < loaded.len { loaded[i] } else { none }
+	})
 	app.unbind_lost_wires(old_wires)
 	// A recording on screen was stamped and rejoined under the reading in force when it was
 	// loaded; in auto that reading just moved with the databases (a J1939 DBC attached or

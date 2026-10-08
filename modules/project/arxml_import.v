@@ -1,6 +1,7 @@
 module project
 
 import candb
+import os
 import transport
 
 // An ARXML describes a system: its CAN clusters, their rates, the ECUs on each. A project adds
@@ -63,16 +64,21 @@ pub:
 }
 
 // arxml_cluster_rates is the ONE rule for a cluster's rates, which the import writes and the
-// dialog shows. FD is decided by the frames (candb.ArxmlCluster.carries_fd, the export's rule
-// too).
+// dialog shows: arxml_bus_rates over what the cluster states.
 pub fn arxml_cluster_rates(c candb.ArxmlCluster) ClusterRates {
-	fd := c.carries_fd()
+	return arxml_bus_rates(c.bus_facts(''))
+}
+
+// arxml_bus_rates reads a cluster's statement about its bus — FD decided by the frames
+// (candb.ArxmlCluster.carries_fd), an unstated nominal rate the default, an unstated FD data rate
+// none (it runs at the arbitration rate).
+pub fn arxml_bus_rates(b candb.ArxmlBus) ClusterRates {
 	return ClusterRates{
-		bitrate:      if c.baudrate > 0 { c.baudrate } else { default_bitrate }
-		fd:           fd
-		data_bitrate: if fd && c.fd_baudrate > 0 { c.fd_baudrate } else { 0 }
-		no_baudrate:  c.baudrate <= 0
-		no_fd_rate:   fd && c.fd_baudrate <= 0
+		bitrate:      if b.baudrate > 0 { b.baudrate } else { default_bitrate }
+		fd:           b.fd
+		data_bitrate: if b.fd && b.fd_baudrate > 0 { b.fd_baudrate } else { 0 }
+		no_baudrate:  b.baudrate <= 0
+		no_fd_rate:   b.fd && b.fd_baudrate <= 0
 	}
 }
 
@@ -201,4 +207,96 @@ pub fn import_arxml(a candb.Arxml, imp ArxmlImport, existing []Channel) !([]Chan
 		out << ch
 	}
 	return out, notes
+}
+
+// DatabaseLoad finds the database a resolved reference loads: the GUI's from what its rebuild
+// LOADED (app.dbs, by canonical reference — so the check compares a row with exactly the parse
+// the run uses, never a later parse of the same path), the headless runner's through
+// candb.open_database. none means skip: the database loader reports a reference that fails.
+pub type DatabaseLoad = fn (resolved_ref string) ?candb.Database
+
+// arxml_rate_warnings names every enabled row whose rate or CAN-FD setting disagrees with the
+// ARXML cluster it reads (#439). An import copies the rates into the row, because the interface
+// is where they live, so a reissued extract that changes a bus's rate leaves the row behind —
+// and a wire at the wrong rate is no traffic at all on hardware. Said at Start, by both front
+// ends, rather than refused: a bench may run a bus at another rate on purpose. A rate is
+// compared only where this app SETS it (transport.adapter_configures_bitrate / _data_phase): on
+// SocketCAN it is `ip link`'s and on a software bus nobody's. The FORMAT is compared on every
+// adapter — classic against FD, and whether the data phase switches rate (BRS), which
+// origination_framing derives from the row's rates even where nothing applies them — and said
+// as the mismatch it is: what it costs depends on the backend and on the wire's other rows
+// (wire_framings), which this does not try to predict. `dir` is the project's directory, which
+// references resolve against; each file is looked up once.
+pub fn arxml_rate_warnings(chs []Channel, dir string, find DatabaseLoad) []string {
+	// disabled rows filtered BEFORE anything is looked up: a file only they name is not read
+	return arxml_rate_findings(chs.filter(it.enabled), dir, find).map(it.text)
+}
+
+// RowWarning is one warning about the row at index `row`.
+pub struct RowWarning {
+pub:
+	row  int
+	text string
+}
+
+// arxml_rate_findings is arxml_rate_warnings for EVERY row, enabled or not, each tagged with its
+// index: what the GUI keeps from a rebuild, because a row ticked on or off while stopped changes
+// no rate and causes no rebuild, so Start filters by the enabled state it finds then.
+pub fn arxml_rate_findings(chs []Channel, dir string, find DatabaseLoad) []RowWarning {
+	mut seen := map[string]bool{}
+	mut dbs := map[string]candb.Database{}
+	mut out := []RowWarning{}
+	for i, ch in chs {
+		if ch.is_eth() {
+			continue
+		}
+		mut checked := map[string]bool{} // this row's: a cluster listed twice is one statement
+		for ref in ch.databases {
+			if !candb.is_arxml_ref(ref) {
+				continue
+			}
+			resolved := resolve_asset(dir, ref)
+			// by canonical reference (real path + #Cluster): two spellings of one cluster of one
+			// file are looked up once, and said once per row
+			key := candb.canonical_database_ref(resolved)
+			if key in checked {
+				continue
+			}
+			checked[key] = true
+			if key !in seen {
+				seen[key] = true
+				if db := find(resolved) {
+					dbs[key] = db
+				}
+			}
+			db := dbs[key] or { continue }
+			if db.arxml.name == '' {
+				continue
+			}
+			r := arxml_bus_rates(db.arxml)
+			what := '${db.arxml.name} (${db.arxml.file})'
+			if transport.adapter_configures_bitrate(ch.adapter) && !r.no_baudrate
+				&& ch.nominal_bitrate() != r.bitrate {
+				out << RowWarning{i, '${ch.name} runs at ${ch.nominal_bitrate()} bit/s but ${what} is ${r.bitrate} bit/s'}
+			}
+			if r.fd && !ch.fd {
+				out << RowWarning{i, '${ch.name} is configured classic but ${what} carries CAN-FD frames'}
+			} else if !r.fd && ch.fd {
+				out << RowWarning{i, '${ch.name} is configured CAN-FD but ${what} carries no CAN-FD frame'}
+			} else if r.fd && r.data_bitrate > 0 {
+				if transport.adapter_configures_data_phase(ch.adapter) {
+					if ch.data_rate() != r.data_bitrate {
+						out << RowWarning{i, '${ch.name} runs its data phase at ${ch.data_rate()} bit/s but ${what} states ${r.data_bitrate} bit/s'}
+					}
+				} else if !r.no_baudrate && ch.origination_framing().brs != (r.data_bitrate != r.bitrate) {
+					// (with no nominal rate stated, the file cannot say whether its phases differ)
+					// the rates are not this app's to set here, but they still decide BRS
+					sw := if ch.origination_framing().brs { 'switches' } else { 'does not switch' }
+					cs := if r.data_bitrate != r.bitrate { 'does' } else { 'does not' }
+					out << RowWarning{i, '${ch.name}\'s data phase ${sw} rate but ${what}\'s ${cs}'}
+				}
+			}
+		}
+	}
+	return out
 }

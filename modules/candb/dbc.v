@@ -22,6 +22,20 @@ pub struct Database {
 pub mut:
 	messages []Message
 	nodes    []string // ECU nodes declared by the DBC BU_ record
+	// what an ARXML cluster says about its bus, set by open_database on the database built from
+	// it ('' name for a DBC): so a check compares a row with the parse that was LOADED, never a
+	// later one of the same path (#439)
+	arxml ArxmlBus
+}
+
+// ArxmlBus is what an ARXML cluster states about the bus that carries it.
+pub struct ArxmlBus {
+pub:
+	name        string // the cluster's identifier (ArxmlCluster.bus); '' when not from an ARXML
+	file        string // the file's base name, for messages
+	baudrate    int    // 0: not stated
+	fd_baudrate int    // 0: not stated
+	fd          bool   // carries a CAN-FD frame (ArxmlCluster.carries_fd)
 }
 
 // lookup returns the message defined for `id`, if any (exact id match).

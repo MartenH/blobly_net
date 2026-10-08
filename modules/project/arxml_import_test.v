@@ -218,3 +218,145 @@ fn test_import_address_rules() {
 		assert err.msg().starts_with('Chassis on kvaser 0: unsupported Kvaser CAN-FD arbitration bitrate 250000')
 	}
 }
+
+struct LookupCount {
+mut:
+	n int
+}
+
+fn load_for_test(ref string) ?candb.Database {
+	loaded := candb.open_database(ref) or { return none }
+	return loaded.db
+}
+
+// At Start, a row whose rate or format no longer matches its cluster is said — the reissued
+// extract that changed a bus — and a row that matches, a disabled row, an Ethernet row, or a
+// reference that does not load is not. A rate is compared only where this app sets it.
+fn test_arxml_rate_warnings() {
+	dir := os.join_path(os.vtmp_dir(), 'arxml_rates_${os.getpid()}')
+	os.mkdir_all(dir)!
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	src := os.read_file(os.join_path(@VMODROOT, 'dbc', 'example.arxml'))!
+	os.write_file(os.join_path(dir, 'net.arxml'), src)!
+	// the same file with its one FD frame made classic: a cluster that carries no FD frame
+	os.write_file(os.join_path(dir, 'classic.arxml'), src.replace('>CAN-FD</', '>CAN-20</'))!
+	// and with no BAUDRATE: nothing stated to compare the nominal rate with
+	b0 := src.index('<BAUDRATE>') or { panic('no BAUDRATE') }
+	b1 := (src.index('</BAUDRATE>') or { panic('unclosed') }) + '</BAUDRATE>'.len
+	os.write_file(os.join_path(dir, 'norate.arxml'), src[..b0] + src[b1..])!
+	w := fn [dir] (rows []Channel) []string {
+		return arxml_rate_warnings(rows, dir, load_for_test)
+	}
+	body := Channel{
+		name:         'Body'
+		adapter:      'vector'
+		address:      '1'
+		iface:        'vector:1'
+		typ:          'canfd'
+		fd:           true
+		bitrate:      500000
+		data_bitrate: 2000000
+		databases:    ['net.arxml#Body']
+	}
+	assert w([body]) == []
+	assert w([Channel{
+		...body
+		bitrate: 250000
+	}]) == ['Body runs at 250000 bit/s but Body (net.arxml) is 500000 bit/s']
+	assert w([Channel{
+		...body
+		typ:          'can'
+		fd:           false
+		data_bitrate: 0
+	}]) == ['Body is configured classic but Body (net.arxml) carries CAN-FD frames']
+	assert w([Channel{
+		...body
+		data_bitrate: 4000000
+	}]) == ['Body runs its data phase at 4000000 bit/s but Body (net.arxml) states 2000000 bit/s']
+	assert w([Channel{
+		...body
+		databases: ['classic.arxml#Body']
+	}]) == ['Body is configured CAN-FD but Body (classic.arxml) carries no CAN-FD frame']
+	// the bare file reads its only cluster, as the loader does
+	assert w([Channel{
+		...body
+		bitrate:   1000000
+		databases: ['net.arxml']
+	}]).len == 1
+	// where the rate is not this app's to set (`ip link`'s, or a software bus's), only the format
+	vcan := Channel{
+		...body
+		adapter: 'vcan'
+		address: 'vcan0'
+		iface:   'vcan0'
+		bitrate: 250000
+	}
+	assert w([vcan]) == []
+	assert w([Channel{
+		...vcan
+		typ: 'can'
+		fd:  false
+	}]).len == 1
+	// …and whether the data phase switches rate, which the row's rates decide even there
+	assert w([Channel{
+		...vcan
+		bitrate:      500000
+		data_bitrate: 500000
+	}]) == ["Body's data phase does not switch rate but Body (net.arxml)'s does"]
+	// no nominal rate stated: nothing to say whether its phases differ, so no BRS claim either
+	assert w([Channel{
+		...vcan
+		bitrate:      2000000
+		data_bitrate: 2000000
+		databases:    ['norate.arxml#Body']
+	}]) == []
+	// one file under two spellings is looked up once
+	mut asked := &LookupCount{} // through a pointer: a closure captures a copy of anything else
+	_ = arxml_rate_warnings([Channel{
+		...body
+		databases: ['net.arxml#Body', '../${os.file_name(dir)}/net.arxml#Body']
+	}], dir, fn [mut asked] (ref string) ?candb.Database {
+		asked.n++
+		return load_for_test(ref)
+	})
+	assert asked.n == 1
+	// and a row naming one cluster twice is warned about once
+	assert w([Channel{
+		...body
+		bitrate:   250000
+		databases: ['net.arxml#Body', '../${os.file_name(dir)}/net.arxml#Body']
+	}]).len == 1
+	// silent: a cluster stating no baudrate, a disabled row, an Ethernet row, and what does not load
+	assert w([Channel{
+		...body
+		bitrate:   250000
+		databases: ['norate.arxml#Body']
+	}]) == []
+	assert w([Channel{
+		...body
+		bitrate: 250000
+		enabled: false
+	}]) == []
+	// …but its finding is kept, for a front end that learns the enabled state later
+	f := arxml_rate_findings([body, Channel{
+		...body
+		name:    'Off'
+		bitrate: 250000
+		enabled: false
+	}], dir, load_for_test)
+	assert f == [RowWarning{1, 'Off runs at 250000 bit/s but Body (net.arxml) is 500000 bit/s'}]
+	assert w([Channel{
+		...body
+		adapter: 'doip'
+		iface:   'doip:127.0.0.1'
+		typ:     'doip'
+		bitrate: 250000
+	}]) == []
+	assert w([Channel{
+		...body
+		bitrate:   250000
+		databases: ['missing.arxml#Body', 'net.arxml#Nope', 'x.dbc']
+	}]) == []
+}

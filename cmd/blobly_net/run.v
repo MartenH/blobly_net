@@ -173,6 +173,8 @@ fn (app &App) runtime_rows() []project.Channel {
 			data_bitrate: c.data_bitrate
 			listen_only:  c.listen_only
 			enabled:      c.enabled
+			// and the databases, which arxml_rate_warnings compares the rates with (#439)
+			databases: c.databases
 		}
 	}
 	return rows
@@ -791,6 +793,15 @@ fn (mut app App) start() {
 	// A warning rather than a refusal: the classic half of that run is real.
 	for w in project.fd_capability_warnings(app.runtime_rows()) {
 		app.notify(w)
+	}
+	// A row whose rate or format no longer matches the ARXML cluster it reads — an import copied
+	// the rates, and a reissued extract can change them (#439). Before anything opens, for the
+	// same reason: on hardware the symptom is a silent bus, not an error. Computed by the rebuild
+	// against what it loaded (rebuild_from_proj), which is what this run uses.
+	for w in app.arxml_rates_said {
+		if w.row < app.chans.len && app.chans[w.row].enabled {
+			app.notify(w.text)
+		}
 	}
 	// Two listeners on one endpoint, same place and same reason: said before anything binds,
 	// because afterwards both rows are green and the symptom is only missing messages.
