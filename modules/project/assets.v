@@ -17,6 +17,11 @@ import os
 // climb lands somewhere else. A database's `#Cluster` rides on the last component untouched
 // (it never holds a `/`). Separators are `/`, so the file is portable.
 pub fn asset_ref(dir string, path string) string {
+	// a UNC path stays absolute: resolve_asset joins with os.join_path, which collapses the
+	// `\\server` prefix, so a relative reference under a share would resolve nowhere
+	if is_unc(path) || (dir != '' && is_unc(dir)) {
+		return path
+	}
 	abs := slash(physical(path))
 	if dir == '' {
 		cwd := slash(physical(os.getwd()))
@@ -29,10 +34,9 @@ pub fn asset_ref(dir string, path string) string {
 	for common < a.len - 1 && common < b.len && same_component(a[common], b[common]) {
 		common++
 	}
-	// the root is one component (`''` on Unix, `C:` on Windows), a UNC share root four
-	// (`''`, `''`, server, share): a climb above it names nothing, so share more or go absolute
-	root := if abs.starts_with('//') { 4 } else { 1 }
-	if common <= root {
+	// the root is one component (`''` on Unix, `C:` on Windows): sharing only that names
+	// nothing a climb can reach usefully, so share more or go absolute
+	if common <= 1 {
 		return abs
 	}
 	mut parts := []string{len: b.len - common, init: '..'}
@@ -41,21 +45,33 @@ pub fn asset_ref(dir string, path string) string {
 }
 
 // physical is `p` made absolute with its symlinks resolved — the existing part of it, so a
-// `#Cluster` on a file that exists, or a file that does not exist yet, keeps its spelling.
+// `#Cluster` on a file that exists, or a file that does not exist yet, keeps its spelling. Made
+// absolute by concatenation, not os.abs_path, which collapses `..` on paper before real_path can
+// walk it: `link/../x` through a symlink names the file beside the link's TARGET.
 fn physical(p string) string {
-	abs := os.abs_path(p)
+	abs := if os.is_abs_path(p) { p } else { os.getwd() + os.path_separator + p }
 	if os.exists(abs) {
 		return os.real_path(abs)
 	}
 	parent := os.dir(abs)
 	if parent != abs && os.exists(parent) {
-		return os.join_path(os.real_path(parent), os.file_name(abs))
+		// concatenated, not os.join_path, which rewrites a literal `\\` in a Unix name
+		return os.real_path(parent) + os.path_separator + os.file_name(abs)
 	}
-	return abs
+	return os.abs_path(abs)
 }
 
+// slash spells a path with `/`. On Windows only: on Unix a backslash is a character of the name.
 fn slash(p string) string {
-	return p.replace('\\', '/').trim_right('/')
+	$if windows {
+		return p.replace('\\', '/').trim_right('/')
+	} $else {
+		return p.trim_right('/')
+	}
+}
+
+fn is_unc(p string) bool {
+	return p.starts_with('\\\\') || p.starts_with('//')
 }
 
 fn same_component(a string, b string) bool {
@@ -84,11 +100,16 @@ pub fn rebase_ref(old_dir string, new_dir string, ref string) string {
 	if from_dir != ref {
 		return asset_ref(new_dir, from_dir)
 	}
+	// what the loader does with a reference resolve_asset returned unchanged: open it from the
+	// working directory, as written (a literal `\\` in a Unix name included)
+	if os.exists(ref) {
+		return asset_ref(new_dir, ref)
+	}
 	from_cwd := resolve_asset(os.getwd(), ref)
 	if from_cwd != ref {
 		return asset_ref(new_dir, from_cwd)
 	}
-	return asset_ref(new_dir, if old_dir == '' { ref } else { os.join_path(old_dir, ref) })
+	return asset_ref(new_dir, if old_dir == '' { ref } else { old_dir + os.path_separator + ref })
 }
 
 // AssetRefs is one channel's file references, as rebase_assets found them.

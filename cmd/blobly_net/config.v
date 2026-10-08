@@ -1663,6 +1663,8 @@ fn (mut app App) save_as(path string) {
 	new_dir := os.dir(p)
 	was := app.proj.rebase_assets(old_dir, new_dir)
 	app.sync_cfg_bufs()
+	// the rows and the path they resolve against published TOGETHER, under one lock: script_db
+	// reads both under it, so it never pairs a rebased reference with the old directory
 	app.mu.lock()
 	run_dbs := app.chans.map(it.databases)
 	for i, c in app.chans {
@@ -1671,8 +1673,8 @@ fn (mut app App) save_as(path string) {
 			databases: c.databases.map(project.rebase_ref(old_dir, new_dir, it))
 		}
 	}
-	app.mu.unlock()
 	app.proj_path = p
+	app.mu.unlock()
 	app.proj.name = app.proj_name
 	app.save_project()
 	if app.saved_at == before {
@@ -1692,8 +1694,8 @@ fn (mut app App) save_as(path string) {
 				}
 			}
 		}
-		app.mu.unlock()
 		app.proj_path = prev_path
+		app.mu.unlock()
 		if !app.running {
 			app.rebuild_preserving_senders()
 		}

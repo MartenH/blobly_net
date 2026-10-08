@@ -602,7 +602,17 @@ fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnos
 fn (a &App) script_db(ch Chan) candb.Database {
 	mut al := unsafe { a }
 	al.mu.lock()
-	paths := ch.databases.map(a.resolve_asset(it))
+	// the row's CURRENT references, read under the same lock as the project path they resolve
+	// against: `ch` is a copy the caller took unlocked, and a Save As rebases both together
+	mut at := -1
+	for i, c in a.chans {
+		if c.proj_idx == ch.proj_idx && c.name == ch.name {
+			at = i
+			break
+		}
+	}
+	dbs := if at >= 0 { a.chans[at].databases } else { ch.databases }
+	paths := dbs.map(a.resolve_asset(it))
 	al.mu.unlock()
 	// WITH THE REPORT: a file deleted or broken since the project was loaded, or a reader note,
 	// would otherwise hand the script an empty or partial database and let it fail on "unknown

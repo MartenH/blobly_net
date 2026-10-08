@@ -170,3 +170,46 @@ fn test_asset_ref_through_a_symlink() {
 	assert ref == '../../dbc/x.dbc'
 	assert os.exists(resolve_asset(proj, ref))
 }
+
+// A reference that climbs OUT of a symlinked directory names the file beside the link's target,
+// as the kernel walks it — os.abs_path's paper collapse would have named the one beside the link.
+fn test_rebase_walks_dotdot_physically() {
+	$if windows {
+		return
+	}
+	root := asset_tree()!
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	proj := os.join_path(root, 'proj')
+	// proj/link -> <root>/other/deeper; `link/../m2.csv` is <root>/other/m2.csv
+	os.symlink(os.join_path(root, 'other', 'deeper'), os.join_path(proj, 'link'))!
+	os.write_file(os.join_path(root, 'other', 'm2.csv'), '')!
+	moved := rebase_ref(proj, os.join_path(root, 'dbc'), 'link/../m2.csv')
+	assert moved == '../other/m2.csv'
+	assert os.exists(resolve_asset(os.join_path(root, 'dbc'), moved))
+}
+
+// On Unix a backslash is part of a name: a file the loader opens from the working directory as
+// written keeps its name through a Save As.
+fn test_rebase_keeps_a_literal_backslash_on_unix() {
+	$if windows {
+		return
+	}
+	root := asset_tree()!
+	was := os.getwd()
+	defer {
+		os.chdir(was) or {}
+		os.rmdir_all(root) or {}
+	}
+	os.chdir(root)!
+	os.write_file(root + '/a\\b.dbc', '')! // not os.join_path, which rewrites the `\\`
+	assert rebase_ref(os.join_path(root, 'proj'), os.join_path(root, 'proj'), 'a\\b.dbc') == '../a\\b.dbc'
+}
+
+// A UNC path stays absolute: resolve_asset's join collapses the server prefix, so a relative
+// reference under a share would resolve nowhere.
+fn test_unc_stays_absolute() {
+	assert asset_ref('//srv/share/proj', '//srv/share/proj/db/x.dbc') == '//srv/share/proj/db/x.dbc'
+	assert asset_ref('/home/u/proj', '\\\\srv\\share\\x.dbc') == '\\\\srv\\share\\x.dbc'
+}
