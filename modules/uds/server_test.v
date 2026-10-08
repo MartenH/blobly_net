@@ -59,6 +59,13 @@ fn test_an_all_zero_seed_is_only_the_unlocked_levels() {
 	assert s.unlocked == 2
 	assert s.handle([u8(0x27), 0x03]) == [u8(0x67), 0x03, 0, 0, 0, 0]
 	assert s.handle([u8(0x27), 0x01]) == [u8(0x67), 0x01, 0x11, 0x22, 0x33, 0x44]
+	// a seed request answered all zero ends the seed outstanding before it
+	assert s.handle([u8(0x27), 0x01])[2..] == server_security_seed
+	assert s.handle([u8(0x27), 0x03]) == [u8(0x67), 0x03, 0, 0, 0, 0]
+	mut stale := [u8(0x27), 0x02]
+	stale << security_key(server_security_seed)
+	assert s.handle(stale) == [u8(0x7F), 0x27, 0x24]
+	assert s.unlocked == 2
 	s.handle([u8(0x10), 0x03])
 	assert s.unlocked == 0
 	assert s.handle([u8(0x27), 0x03]) == [u8(0x67), 0x03, 0x11, 0x22, 0x33, 0x44]

@@ -142,6 +142,8 @@ fn (mut s Server) answer(req []u8) []u8 {
 				mut resp := [u8(0x67), sub]
 				if s.unlocked == level {
 					// ISO 14229-1: an unlocked level answers its own seed all zero, and expects no key
+					// — and any seed handed out before is no longer outstanding
+					s.sec_seed = []u8{}
 					resp << []u8{len: server_security_seed.len}
 					return resp
 				}
