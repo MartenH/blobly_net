@@ -57,7 +57,8 @@ not accept blobly_net's reference key and that its algorithm is the OEM's. A scr
 real algorithm (below).
 
 blobly_net's simulated ECUs accept the reference key at every level, in any session. Once
-unlocked, they answer an all-zero seed, and a session change locks them again.
+unlocked, they answer an all-zero seed for that level only (another level gets a real seed and
+needs its own key), and a session change locks them again.
 
 ## Unlocking from the Diagnostics panel
 
@@ -81,7 +82,10 @@ in the panel, Unlock and Lock are refused while the measurement is stopped, and 
 flash is using the target.
 
 A DID write whose gate needs a level unlocks the same way, using the same code. The DIDs tab's
-write dialog says beforehand which session and level it will set up.
+write dialog says beforehand which session and level it will set up. A gated write is never
+planned in the default session, since 0x27 is not served there. A gate that names a level and only
+`session = ["default"]` cannot be met at all, so the write is refused, and the DIDs tab flags the
+entry when it reads the description.
 
 ## Unlocking from Lua
 

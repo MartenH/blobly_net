@@ -56,16 +56,32 @@ pub:
 // the node's key (its description names blobly_net's reference key). The extended session is
 // preferred where it is allowed: it is the one a tester writes in. A session change locks the ECU
 // again (ISO 14229-1), so a level unlocked before one is unlocked again after it. A level the
-// panel cannot unlock is refused, never faked: the write would only be refused with 0x33.
+// panel cannot unlock is refused, never faked: the write would only be refused with 0x33. A gated
+// write is never planned in the default session, which serves no 0x27, and a gate that allows
+// only that one is refused as the contradiction it is.
 pub fn write_plan(declared bool, session u8, allowed []u8, level u8, unlocked u8, can_unlock bool) WritePlan {
 	if !declared {
 		return WritePlan{
 			refusal: 'not writable: the description declares no write gate for it'
 		}
 	}
+	// a gated write is sent where its level can be unlocked: never the default session, which
+	// serves no 0x27 — the unlock would leave it, and the write would go out of its gate
+	mut ok := allowed.clone()
+	if level != 0 && allowed.len > 0 {
+		ok = allowed.filter(it != default_session)
+		if ok.len == 0 {
+			return WritePlan{
+				refusal: 'not writable: its write gate needs security level ${level} but names only the default session, where 0x27 is not served (ISO 14229-1) — the description contradicts itself'
+			}
+		}
+	}
 	mut to := u8(0)
-	if allowed.len > 0 && session !in allowed {
-		to = if u8(0x03) in allowed { u8(0x03) } else { allowed[0] }
+	if ok.len > 0 && session !in ok {
+		to = if extended_session in ok { extended_session } else { ok[0] }
+	} else if ok.len == 0 && level != 0 && unlocked != level {
+		// any session: the unlock's own rule, said in the plan rather than done unannounced
+		to = unlock_session(session)
 	}
 	have := if to != 0 { u8(0) } else { unlocked }
 	if level == 0 || have == level {

@@ -80,10 +80,11 @@ fn test_every_0x27_passes_one_gate() {
 	// a description that refuses the key on this carrier: no 0x27, whatever the session
 	r := unlock_step('a', 'a', unlock_refusal(true, true, true, false), 0x01)
 	assert r.refusal.contains('allow_bench_key') && r.session == 0
-	// a write gate naming a level and no session, on a default-session connection: the plan stays
-	// in the session, and the gate switches before the 0x27
+	// a write gate naming a level and no session, on a default-session connection: the plan
+	// switches by the gate's own rule, so the dialog says it, and the gate then stays
 	p := write_plan(true, default_session, [], 1, 0, true)
-	assert p.session == 0 && p.unlock == 1
+	assert p.session == unlock_session(default_session) && p.unlock == 1
+	assert unlock_step('a', 'a', '', p.session).session == 0
 	assert unlock_step('a', 'a', '', default_session).session == extended_session
 	assert unlock_step('a', 'a', '', 0).session == extended_session
 }

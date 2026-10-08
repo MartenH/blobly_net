@@ -290,6 +290,11 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	own, iso := did_rows(desc)
 	if desc.ok {
 		vgui.text_dim_wrapped('${desc.node}: ${own.len} DID(s) and ${desc.desc.params.len} parameter(s) in its ecu.toml, plus the ISO identification DIDs')
+		// a DID entry kept with a problem (a gate that cannot be met), said before a write is tried
+		if desc.desc.warns.len > 0 {
+			vgui.text_colored(230, 180, 60, '${desc.desc.warns.len} warning(s) about ${desc.node}/ecu.toml\'s DIDs — hover')
+			vgui.set_item_tooltip(desc.desc.warns.join('\n'))
+		}
 	} else {
 		vgui.text_dim_wrapped('no description: ${desc.why}; the ISO identification DIDs and any DID by number')
 	}
