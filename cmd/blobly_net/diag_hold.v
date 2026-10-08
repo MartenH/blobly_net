@@ -21,7 +21,7 @@ import sysview
 struct DiagReq {
 	kind string // 'connect' (the strip's: open, send nothing) | 'session' | 'vin' | 'tp' | 'did' | the DTC tab's (diag_dtc.v): 'dtcs' |
 	// 'dtc_detail' | 'dtc_clear' | 'dtc_setting' | the DIDs tab's (diag_did.v): 'did_read' |
-	// 'did_read_all' | 'did_write'
+	// 'did_read_all' | 'did_write' | the General tab's security access (diag_unlock.v): 'unlock' | 'lock'
 	did  u16
 	key  string
 	label string // the target's label when it was pressed, for the log
@@ -36,7 +36,7 @@ struct DiagReq {
 	dids     []u16           // 'did_read_all': in order
 	data     []u8            // 'did_write': the value
 	sessions []u8            // 'did_write': the sessions the DID is written in (none = any)
-	level    u8              // 'did_write': the security level it needs (0 = none)
+	level    u8              // 'did_write': the security level it needs (0 = none); 'unlock': the level
 	ref_key  bool            // the node's key is blobly_net's reference key: the panel can unlock
 	follow   []u16           // 'did_write': read back after the DID itself (a parameter's status)
 	writable bool            // 'did_write': the description declares a write gate (diaghold.write_plan)
@@ -58,6 +58,7 @@ mut:
 	keepalives int // 3E 80 sent on this connection
 	security   u8  // the level a 0x27 unlocked on this connection, since its last session change
 	dtc_off    bool // a 0x85 02 was answered on this connection and no 0x85 01 since
+	unlock_why string // the last 0x27 on this connection was refused: what it said ('' = none since)
 }
 
 // HoldCtx is what this holder generation's token reads: whose it is, which commands it has
@@ -652,6 +653,9 @@ fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bo
 		'did_read', 'did_read_all', 'did_write' {
 			return app.diag_did_request(gen, mut h, req)
 		}
+		'unlock', 'lock' {
+			return app.diag_unlock_request(gen, mut h, req)
+		}
 		'vin' {
 			r := h.cli.read_data_by_identifier(0xF190) or {
 				return DiagOut{line: 'VIN: ${err}', err: true, restates: true}, err is uds.NegativeResponse
@@ -687,6 +691,7 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 	mut s := app.diag_status_copy()
 	s.session = h.session
 	s.security = 0
+	s.unlock_why = ''
 	if h.session == diaghold.default_session {
 		s.dtc_off = false // ISO 14229-1: entering the default session turns DTC setting back on
 	}

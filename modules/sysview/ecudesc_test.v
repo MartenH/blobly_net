@@ -541,3 +541,30 @@ write = { security = 2 }
 	assert d.errs[2].starts_with('did 0x0112: read security -1 ')
 	assert d.errs[3].starts_with('did 0x0113: write security "1" ')
 }
+
+// The levels an Unlock offers first: the DIDs' gates and the `[uds] services` rows, each once.
+fn test_the_security_levels_a_description_names() {
+	doc := toml.parse_text('
+[uds]
+security_key = "reference"
+
+[uds.services]
+"0x10" = {}
+"0x11" = { sessions = ["extended"], security = 3 }
+"0x28" = { security = 9 }
+
+[[did]]
+id = 0x0110
+bytes = "00"
+write = { session = ["extended"], security = 2 }
+
+[[did]]
+id = 0x0111
+bytes = "00"
+read = { security = 2 }
+') or { panic(err) }
+	d := parse_ecu_desc(doc, map[string][]Field{})
+	assert d.security_levels() == [2, 3]
+	assert d.errs == ['[uds] services "0x28": security 9 is not a security level (1..8); not read']
+	assert parse_ecu_desc(toml.parse_text('[uds]') or { panic(err) }, map[string][]Field{}).security_levels() == []
+}

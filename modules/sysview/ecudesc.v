@@ -123,7 +123,27 @@ pub mut:
 	// `[uds] security_key`: "reference" is blobly_net's public bench key (uds.security_key), the
 	// one key a tester here can compute; '' = the OEM's, which it cannot
 	security_key string
+	// the security levels `[uds] services` rows name (a service gated behind 0x27), in file order
+	service_levels []int
 	errs   []string
+}
+
+// security_levels is every 0x27 level the description's gates name — the DIDs' read and write
+// gates and the `[uds] services` rows — each once, lowest first.
+pub fn (d &EcuDesc) security_levels() []int {
+	mut out := []int{}
+	mut all := d.service_levels.clone()
+	for x in d.dids {
+		all << x.read_gate.level
+		all << x.write_gate.level
+	}
+	for l in all {
+		if l > 0 && l !in out {
+			out << l
+		}
+	}
+	out.sort()
+	return out
 }
 
 // fault is the `[[fault]]` declaring `dtc`.
@@ -362,6 +382,18 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 	d.server = ['uds', 'isotp', 'doip'].any(doc.value_opt(it) or { toml.Any(toml.Null{}) } !is toml.Null)
 	if uv := doc.value_opt('uds') {
 		d.security_key = tstr(uv.as_map(), 'security_key')
+		if sv := uv.as_map()['services'] {
+			for sid, row in sv.as_map() {
+				lv := tint(row.as_map(), 'security')
+				if lv < 0 || lv > max_security_level {
+					d.errs << '[uds] services "${sid}": security ${lv} is not a security level (1..${max_security_level}); not read'
+					continue
+				}
+				if lv > 0 {
+					d.service_levels << int(lv)
+				}
+			}
+		}
 	}
 	if iv := doc.value_opt('isotp') {
 		im := iv.as_map()

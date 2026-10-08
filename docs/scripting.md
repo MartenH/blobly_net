@@ -209,7 +209,8 @@ responses (e.g. the 17-byte VIN) are reassembled for you.
 
 `security_access(level, keyfn)`: `keyfn(seed) -> key` defaults to the **simulated
 server's** demo algorithm (key = seed XOR 0xFF) so it unlocks the sim out of the box;
-pass your own `keyfn` for a real ECU's algorithm.
+pass your own `keyfn` for a real ECU's algorithm. `level` is the seed SUB-FUNCTION (`2L-1` for
+level `L`). Levels, the reference key and the NRCs: [security_access.md](security_access.md).
 
 **Functional addressing** — one request to several ECUs at once (CAN), or to the functional
 address of a DoIP entity:

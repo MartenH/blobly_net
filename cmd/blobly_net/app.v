@@ -373,6 +373,7 @@ mut:
 	// sysview.find_system finds for the project (`diag_sys_key` says for which).
 	dtc_ui       DtcUi
 	did_ui       DidUi
+	unlock_ui    UnlockUi // the General tab's security level (diag_unlock.v)
 	diag_sys     sysview.System
 	diag_sys_ok  bool
 	diag_sys_key string
@@ -1143,6 +1144,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.diag_sys_print = ''
 	app.dtc_ui = DtcUi{}
 	app.did_ui = DidUi{}
+	app.unlock_ui = UnlockUi{}
 	app.mu.lock()
 	app.reset_trace_locked()
 	// A different project: what the operator said about the old one's buses does not carry.

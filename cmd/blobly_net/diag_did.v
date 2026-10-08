@@ -166,32 +166,11 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		app.diag_say_for(req, '${out.line} (0x2E ${name} is written in it)', false)
 	}
 	if plan.unlock != 0 {
-		sub := diaghold.seed_sub(plan.unlock)
-		seed := h.cli.security_request_seed(sub) or {
-			return DiagOut{
-				line: '0x27 ${sub:02X} (request seed): ${err}'
-				err:  true
-			}, answered(err)
+		out, negative := app.diag_unlock(gen, mut h, plan.unlock)
+		if out.err {
+			return out, negative
 		}
-		if seed.any(it != 0) {
-			app.diag_say_for(req, '0x27 ${sub:02X}: seed ${hex(seed)}', false)
-			h.cli.security_send_key(sub + 1, uds.security_key(seed)) or {
-				return DiagOut{
-					line: '0x27 ${sub + 1:02X} (reference key): ${err}'
-					err:  true
-				}, answered(err)
-			}
-			app.diag_say_for(req, '0x27 ${sub + 1:02X}: level ${plan.unlock} unlocked (reference key)',
-				false)
-		} else {
-			// an all-zero seed: ISO 14229-1's "already unlocked", and no key is sent
-			app.diag_say_for(req, '0x27 ${sub:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked',
-				false)
-		}
-		h.security = plan.unlock
-		mut st := app.diag_status_copy()
-		st.security = plan.unlock
-		app.diag_set_status(gen, st)
+		app.diag_say_for(req, out.line, false)
 	}
 	// the last thing before the send: the description it was encoded by is still the loaded one
 	app.mu.lock()
