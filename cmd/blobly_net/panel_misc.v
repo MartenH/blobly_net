@@ -1274,7 +1274,7 @@ fn draw_diag(mut app App) {
 		return
 	}
 	if vgui.tab_item_begin('General', false) {
-		draw_diag_general(mut app, busy, sel_t)
+		draw_diag_general(mut app, busy, sel_t, st)
 		vgui.tab_item_end()
 	}
 	if vgui.tab_item_begin('DTCs', app.dtc_ui.select_tab) {
@@ -1291,8 +1291,8 @@ fn draw_diag(mut app App) {
 	vgui.end()
 }
 
-// draw_diag_general is the General tab: single requests and the log.
-fn draw_diag_general(mut app App, busy bool, sel_t DiagTarget) {
+// draw_diag_general is the General tab: single requests, security access and the log.
+fn draw_diag_general(mut app App, busy bool, sel_t DiagTarget, st DiagHoldStatus) {
 	if app.diag_button('Session') && !busy {
 		app.diag_press('session', u16(0))
 	}
@@ -1314,6 +1314,7 @@ fn draw_diag_general(mut app App, busy bool, sel_t DiagTarget) {
 		vgui.same_line()
 		vgui.text_dim('busy…')
 	}
+	draw_unlock(mut app, sel_t, busy, st)
 	draw_diag_log(mut app, sel_t)
 }
 
@@ -1353,9 +1354,9 @@ fn draw_diag_strip(mut app App, st DiagHoldStatus) {
 		vgui.text_dim_wrapped('the measurement is stopped — what is shown is from the last run; Start to send requests')
 	} else if st.conn == .held {
 		mut line := 'session ${diaghold.session_name(st.session)}'
-		if st.security != 0 {
-			line += ' · level ${st.security} unlocked'
-		}
+		// locked only once a 0x10 answered on this connection says so (a session change relocks);
+		// a fresh connection, or one after a 0x27 the ECU did not grant, does not know
+		line += ' · ${st.security.words()}'
 		if st.keepalives > 0 {
 			line += ' · 3E 80 ×${st.keepalives}'
 		}
@@ -1365,6 +1366,9 @@ fn draw_diag_strip(mut app App, st DiagHoldStatus) {
 			' · P2 —'
 		}
 		vgui.text_dim(line)
+		if st.unlock_why != '' {
+			vgui.text_colored_wrapped(235, 140, 120, st.unlock_why)
+		}
 	} else if st.why != '' {
 		if st.conn == .failed {
 			vgui.text_colored_wrapped(235, 140, 120, st.why)

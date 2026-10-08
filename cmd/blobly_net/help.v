@@ -24,6 +24,7 @@ const help_docs = [
 	// shipped bundle.
 	HelpDoc{'Vector (Windows)', 'docs/windows_can_hardware.md'},
 	HelpDoc{'Ethernet / DoIP', 'docs/doip.md'},
+	HelpDoc{'Security access', 'docs/security_access.md'},
 	HelpDoc{'Known issues', 'docs/known_issues.md'},
 ]
 

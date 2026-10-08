@@ -149,7 +149,7 @@ fn (mut app App) did_read_all(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 // write changes (a parameter's status DID). Each step is its own timed line.
 fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	name := did_label(req.desc, req.did)
-	plan := diaghold.write_plan(req.writable, h.session, req.sessions, req.level, h.security,
+	plan := diaghold.write_plan(req.writable, h.session, req.sessions, req.level, h.security.unlocked(),
 		req.ref_key)
 	if plan.refusal != '' {
 		// nothing sent: the connection is as it was
@@ -166,32 +166,11 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		app.diag_say_for(req, '${out.line} (0x2E ${name} is written in it)', false)
 	}
 	if plan.unlock != 0 {
-		sub := diaghold.seed_sub(plan.unlock)
-		seed := h.cli.security_request_seed(sub) or {
-			return DiagOut{
-				line: '0x27 ${sub:02X} (request seed): ${err}'
-				err:  true
-			}, answered(err)
+		out, negative := app.diag_secure(gen, mut h, req, plan.unlock, '0x2E ${name}: not written')
+		if out.err {
+			return out, negative
 		}
-		if seed.any(it != 0) {
-			app.diag_say_for(req, '0x27 ${sub:02X}: seed ${hex(seed)}', false)
-			h.cli.security_send_key(sub + 1, uds.security_key(seed)) or {
-				return DiagOut{
-					line: '0x27 ${sub + 1:02X} (reference key): ${err}'
-					err:  true
-				}, answered(err)
-			}
-			app.diag_say_for(req, '0x27 ${sub + 1:02X}: level ${plan.unlock} unlocked (reference key)',
-				false)
-		} else {
-			// an all-zero seed: ISO 14229-1's "already unlocked", and no key is sent
-			app.diag_say_for(req, '0x27 ${sub:02X}: seed ${hex(seed)} — level ${plan.unlock} already unlocked',
-				false)
-		}
-		h.security = plan.unlock
-		mut st := app.diag_status_copy()
-		st.security = plan.unlock
-		app.diag_set_status(gen, st)
+		app.diag_say_for(req, out.line, false)
 	}
 	// the last thing before the send: the description it was encoded by is still the loaded one
 	app.mu.lock()
@@ -342,9 +321,9 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	vgui.same_line()
 	app.did_ui.hide_refused = vgui.checkbox('hide refused', app.did_ui.hide_refused)
 	vgui.set_item_tooltip('Leave out the DIDs this ECU answered with a negative response. Their Read stays useful after a session change, so they are listed by default.')
-	if st.conn == .held && st.key == t.key && st.security != 0 {
+	if st.conn == .held && st.key == t.key && st.security.unlocked() != 0 {
 		vgui.same_line()
-		vgui.text_colored(230, 180, 60, 'level ${st.security} unlocked')
+		vgui.text_colored(230, 180, 60, st.security.words())
 	}
 	if busy {
 		vgui.same_line()
@@ -608,7 +587,7 @@ fn did_edit_room(x sysview.DidDesc, text string) int {
 
 // did_write_req is the press the editor's Write sends — the bytes and the gate, the rest decided by
 // the holder (diaghold.write_plan) — or why there is none.
-fn did_write_req(x sysview.DidDesc, texts []string, desc DiagDesc) !DiagReq {
+fn did_write_req(x sysview.DidDesc, texts []string, t DiagTarget, desc DiagDesc) !DiagReq {
 	// the CURRENT description's gate: absent is not writable (diaghold.write_plan says why)
 	if !x.write_gate.declared {
 		return error(diaghold.write_plan(false, 0, [], 0, 0, false).refusal)
@@ -632,7 +611,8 @@ fn did_write_req(x sysview.DidDesc, texts []string, desc DiagDesc) !DiagReq {
 		data:     data
 		sessions: sessions
 		level:    u8(x.write_gate.level)
-		ref_key:  desc.ok && desc.desc.security_key == 'reference'
+		ref_key:  panel_can_unlock(t, desc)
+		unlock_policy: unlock_refusal_for(t, desc)
 		follow:   follow
 		writable: true
 	}
@@ -695,14 +675,14 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 	mut ready := false
 	mut why := ''
 	mut req := DiagReq{}
-	if r := did_write_req(x, texts, desc) {
+	if r := did_write_req(x, texts, t, desc) {
 		req = r
 		vgui.text('bytes: ${hex(r.data)}')
 		// what the connection has established, only if it is to THIS target: another target's
 		// session says nothing about this one, and the holder opens a fresh connection for it
 		mine := st.conn == .held && st.key == t.key
 		plan := diaghold.write_plan(r.writable, if mine { st.session } else { u8(0) }, r.sessions, r.level,
-			if mine { st.security } else { u8(0) }, r.ref_key)
+			if mine { st.security.unlocked() } else { u8(0) }, r.ref_key)
 		if plan.refusal != '' {
 			why = plan.refusal
 			vgui.text_colored(235, 90, 80, 'cannot write: ${plan.refusal}')

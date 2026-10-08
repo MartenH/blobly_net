@@ -5,6 +5,7 @@ import time
 import vgui
 import uds
 import diaghold
+import sysview
 
 // DiagAutopress is a dev hook, inert unless BLOBLY_DIAG_PRESS is set: the Diagnostics panel's
 // buttons pressed in order from the frame loop, for the headless screenshot and for timing the
@@ -18,8 +19,9 @@ import diaghold
 // `dtcs`, `dtc:<display or hex code>` (select a row), `dtc_clear`, `dtc_off`, `dtc_on` and `auto`
 // (the auto-refresh tick on), and the DIDs tab's `tab:did`, `did_all` (Read all),
 // `did_read:<hex>`, `did_edit:<hex>` (the write dialog, opened and left open) and
-// `did_write:<hex>=<part>;<part>…` (the dialog filled and its Write pressed); each press waits for the
-// previous one to finish. Each press's time, from the press to its line, goes to stdout, and once
+// `did_write:<hex>=<part>;<part>…` (the dialog filled and its Write pressed), and the General tab's
+// `unlock` / `unlock:<level>` (Unlock at the selector's level, or at this one) and `lock`; each press
+// waits for the previous one to finish. Each press's time, from the press to its line, goes to stdout, and once
 // the list is done (and a started script has finished) the panel's lines and the script's.
 struct DiagAutopress {
 mut:
@@ -264,6 +266,24 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 				}
 			}
 		}
+		return
+	}
+	if step == 'unlock' || step.starts_with('unlock:') {
+		t := targets.filter(it.key == app.diag_sel_key)[0] or { targets[0] or { DiagTarget{} } }
+		desc := app.diag_desc(t)
+		mut level := app.unlock_level(t, desc)
+		if step.starts_with('unlock:') {
+			level = step.all_after(':').int()
+			if level < 1 || level > sysview.max_security_level {
+				println('diag-autopress: ${step}: not a security level (1..${sysview.max_security_level})')
+				return
+			}
+			app.unlock_ui.level = level
+		}
+		au.gen_at = dgen
+		au.press_ns = time.sys_mono_now()
+		au.waiting = true
+		app.unlock_press(t, desc, level)
 		return
 	}
 	mut kind := step

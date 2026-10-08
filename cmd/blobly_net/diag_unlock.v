@@ -1,0 +1,215 @@
+module main
+
+import uds
+import vgui
+import diaghold
+import sysview
+
+// ---- Security access (0x27) on the held connection ----
+//
+// ONE seed/key exchange, with blobly_net's reference key (uds.security_key: seed XOR 0xFF), run by
+// both the General tab's Unlock and a DID write whose gate needs a level (diaghold.write_plan). The
+// panel computes no other key: an ECU that answers the reference key with 0x35 is said to be the
+// OEM's (diaghold.unlock_refusal_words). Lock is a return to the default session, the only way
+// UDS takes a level back.
+
+// UnlockUi is the General tab's security control. GUI thread only.
+struct UnlockUi {
+mut:
+	key   string // the target the level was chosen for: another target starts at its own default
+	ident string // ... and the description it was derived from: a reload starts at the new default
+	level int    // 1..sysview.max_security_level
+}
+
+// diag_unlock runs 0x27 for `level` on the held connection, in the session it is in, and records
+// the level on the connection and the strip. The returned line is the outcome, which annotates the
+// last exchange's entry (the seed and the key are in the entries themselves). The second value:
+// an error was the ECU answering, which keeps the connection.
+fn (mut app App) diag_unlock(gen u64, mut h HeldConn, level u8) (DiagOut, bool) {
+	sub := diaghold.seed_sub(level)
+	seed := h.cli.security_request_seed(sub) or {
+		return app.unlock_failed(gen, mut h, '0x27 ${sub:02X} (request seed)', level, false,
+			err, answered(err))
+	}
+	mut line := ''
+	match diaghold.seed_state(seed) {
+		.empty {
+			return app.unlock_failed(gen, mut h, '0x27 ${sub:02X} (request seed)', level, false,
+				error('the answer carries no seed'), true)
+		}
+		.unlocked {
+			line = 'level ${level} already unlocked (an all-zero seed; no key sent)'
+		}
+		.locked {
+			h.cli.security_send_key(sub + 1, uds.security_key(seed)) or {
+				return app.unlock_failed(gen, mut h, '0x27 ${sub + 1:02X} (reference key)', level, true,
+					err, answered(err))
+			}
+			line = 'level ${level} unlocked (reference key)'
+		}
+	}
+	h.security = diaghold.security_unlocked(level)
+	mut st := app.diag_status_copy()
+	st.security = h.security
+	st.unlock_why = ''
+	app.diag_set_status(gen, st)
+	return DiagOut{
+		line: line
+	}, false
+}
+
+// unlock_failed is a refused or failed 0x27 step: said by its NRC's meaning, and on the strip. An
+// answer that did not grant the level — refused, malformed, or without a seed (`ecu_answered`) —
+// forgets what it may have taken back (diaghold.unlock_refusal_forgets); a carrier that failed is
+// let go with its connection. `ecu_answered` is returned as the second value: the connection is kept.
+fn (mut app App) unlock_failed(gen u64, mut h HeldConn, step string, level u8, key_sent bool, err IError, ecu_answered bool) (DiagOut, bool) {
+	mut words := err.msg()
+	mut nrc := u8(0)
+	if err is uds.NegativeResponse {
+		nrc = err.nrc
+		words = diaghold.unlock_refusal_words(err.nrc, uds.nrc_name(err.nrc), level, key_sent)
+	}
+	if ecu_answered {
+		app.diag_forget(gen, mut h, diaghold.unlock_refusal_forgets(nrc) == .session)
+	}
+	mut st := app.diag_status_copy()
+	st.unlock_why = 'level ${level} not unlocked: ${words}'
+	app.diag_set_status(gen, st)
+	return DiagOut{
+		line: '${step}: ${words}'
+		err:  true
+	}, ecu_answered
+}
+
+// diag_unlock_request serves the General tab's Unlock and Lock.
+fn (mut app App) diag_unlock_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
+	if req.kind == 'lock' {
+		out, negative := app.diag_session_change(gen, mut h, diaghold.default_session)
+		if out.err {
+			return out, negative
+		}
+		return DiagOut{
+			line: 'security locked: the default session serves no 0x27'
+		}, false
+	}
+	return app.diag_secure(gen, mut h, req, req.level, 'Unlock level ${req.level}')
+}
+
+// diag_secure is THE way to a 0x27, for an Unlock and a gated DID write alike: the gate
+// (diaghold.unlock_step: the press's key policy, still under the description it was decided by),
+// the session switch it asks for, the gate again — a reload may land during a slow switch — and
+// then diag_unlock. `what` names the press in a refusal.
+fn (mut app App) diag_secure(gen u64, mut h HeldConn, req DiagReq, level u8, what string) (DiagOut, bool) {
+	first := app.unlock_step(req, h.session)
+	if first.refusal != '' {
+		return unlock_refused(what, first.refusal)
+	}
+	if first.session != 0 {
+		out, negative := app.diag_session_change(gen, mut h, first.session)
+		if out.err {
+			return out, negative
+		}
+		app.diag_say_for(req, 'for 0x27, which the default session does not serve', false)
+		// a reload may have landed during the switch
+		again := app.unlock_step(req, h.session)
+		if again.refusal != '' {
+			return unlock_refused(what, again.refusal)
+		}
+	}
+	return app.diag_unlock(gen, mut h, level)
+}
+
+// unlock_step asks diaghold.unlock_step for `req` against the system loaded now.
+fn (mut app App) unlock_step(req DiagReq, session u8) diaghold.UnlockStep {
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	return diaghold.unlock_step(req.ident, app.diag_sys_ident, req.unlock_policy, session)
+}
+
+// unlock_refused is a 0x27 the gate held back: nothing of it sent, so the connection is as it was.
+fn unlock_refused(what string, why string) (DiagOut, bool) {
+	return DiagOut{
+		line: '${what}: ${why}'
+		err:  true
+	}, true
+}
+
+// unlock_level is the level the selector shows for `t`: the operator's pick for this target, else
+// the lowest level its description's gates name, else 1.
+fn (mut app App) unlock_level(t DiagTarget, desc DiagDesc) int {
+	if app.unlock_ui.key != t.key || app.unlock_ui.ident != desc.ident || app.unlock_ui.level < 1
+		|| app.unlock_ui.level > sysview.max_security_level {
+		levels := if desc.ok { desc.desc.security_levels() } else { []int{} }
+		app.unlock_ui = UnlockUi{
+			key:   t.key
+			ident: desc.ident
+			level: int(diaghold.unlock_level_default(levels, sysview.max_security_level))
+		}
+	}
+	return app.unlock_ui.level
+}
+
+// unlock_press sends Unlock at `level` for the selected target `t`, unless its description says
+// its key is one the panel cannot compute (diaghold.unlock_refusal): refused then, nothing sent.
+fn (mut app App) unlock_press(t DiagTarget, desc DiagDesc, level int) {
+	why := unlock_refusal_for(t, desc)
+	if why != '' {
+		app.diag_push_refusal(t.key, t.label, 'Unlock level ${level}: ${why}')
+		return
+	}
+	app.diag_send(DiagReq{
+		kind:  'unlock'
+		level: u8(level)
+		// the verdict above and the system it read, re-asked by the holder before the 0x27
+		unlock_policy: why
+		ident:         app.diag_sys_key
+	})
+}
+
+// draw_unlock is the General tab's security row: the level, Unlock and Lock.
+fn draw_unlock(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
+	desc := app.diag_desc(t)
+	level := app.unlock_level(t, desc)
+	vgui.align_text_to_frame_padding()
+	vgui.text('security')
+	vgui.same_line()
+	vgui.set_next_item_width(110 * app.prefs.ui_scale)
+	labels := []string{len: sysview.max_security_level, init: 'level ${index + 1}'}
+	app.unlock_ui.level = vgui.combo('##unlocklevel', labels, level - 1) + 1
+	sub := diaghold.seed_sub(u8(app.unlock_ui.level))
+	vgui.set_item_tooltip('The 0x27 level: level L is requestSeed 0x${sub:02X} and sendKey 0x${sub + 1:02X} (2L-1 / 2L), as blobly_emb\'s ecu.toml numbers them.')
+	vgui.same_line()
+	if app.diag_button('Unlock') && !busy {
+		app.unlock_press(t, desc, app.unlock_ui.level)
+	}
+	vgui.set_item_tooltip('Switch to the extended session if the connection is in the default one (0x27 is not served there), then request a seed and answer it with blobly_net\'s reference key (seed XOR FF). An all-zero seed means the level is already unlocked. Only a blobly_emb node with [uds] security_key = "reference" accepts that key.')
+	vgui.same_line()
+	if app.diag_button('Lock') && !busy {
+		app.diag_press('lock', u16(0))
+	}
+	vgui.set_item_tooltip(diaghold.lock_words)
+	if st.conn == .held && st.key == t.key && st.security.unlocked() != 0 {
+		vgui.same_line()
+		vgui.text_colored(230, 180, 60, st.security.words())
+	}
+	refused := unlock_refusal_for(t, desc)
+	if refused != '' {
+		vgui.text_dim_wrapped('Unlock ${refused}')
+	}
+}
+
+// unlock_refusal_for is diaghold.unlock_refusal for target `t` as `desc` describes it: its key, and
+// on DoIP its opt-in to the reference key over the network.
+fn unlock_refusal_for(t DiagTarget, desc DiagDesc) string {
+	return diaghold.unlock_refusal(desc.ok && desc.desc.server, desc.ok
+		&& desc.desc.security_key == 'reference', t.carrier.doip, desc.ok
+		&& desc.desc.allow_bench_key)
+}
+
+// panel_can_unlock: a DID write's unlock (diaghold.write_plan's `can_unlock`) asks the same as an
+// Unlock — a described target that accepts the reference key on this carrier.
+fn panel_can_unlock(t DiagTarget, desc DiagDesc) bool {
+	return desc.ok && desc.desc.security_key == 'reference' && unlock_refusal_for(t, desc) == ''
+}

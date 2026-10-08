@@ -746,6 +746,9 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   Log only, deliberately: such a wire often has no row at all, and writing a disabled row's
   `health` would tangle with #287. Reproduce it with `ip link add vcan9 type vcan` left DOWN — the bind succeeds
   so the tap opens, every send fails ENETDOWN — and a cyclic generator with `bus: vcan9`.
+- [security_access.md](docs/security_access.md) — 0x27 levels, blobly_net's reference key, the
+  Diagnostics panel's Unlock / Lock (`cmd/blobly_net/diag_unlock.v`, rules in `diaghold/unlock.v`)
+  and Lua's `security_access`, and what the NRCs mean
 - [simulation.md](docs/simulation.md) — the simulation user manual (rest-bus, generators,
   senders, replay, end-to-end protection) ·
   [doip.md](docs/doip.md) — the DoIP user manual (supported vs planned) ·
