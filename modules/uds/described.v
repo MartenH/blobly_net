@@ -9,7 +9,7 @@
 //   0x22: length (0x13) → each DID's support and read session (0x31 when none answers) → its
 //   security (0x33);
 //   0x2E: length (0x13) → the DID's support, writability and write session (0x31) → security
-//   (0x33) → the record length (0x13) → a parameter's range (0x31);
+//   (0x33) → the record length, which must be the DID's size (0x13) → a parameter's range (0x31);
 //   0x27: sub-function (0x12) → requestSeed: the lockout delay (0x37); sendKey: length (0x13), a
 //   seed of that level outstanding (0x24), the key (0x35, 0x36 on the last allowed attempt).
 //
@@ -137,7 +137,7 @@ pub const status_cleared = u8(0x50)
 // availability_mask is the status bits blobly_emb's fault memory maintains (no warning lamp).
 pub const fault_availability = u8(0x7F)
 
-// max_described_did is the most a written DID record may hold (comm/uds max_did_data).
+// max_described_did is the most a DID record may hold (comm/uds max_did_data).
 const max_described_did = 32
 
 // sa_seed_len is a seed's length (comm/uds seed_len), which a key must match.
@@ -174,7 +174,8 @@ pub fn server_from(spec ServerSpec) Server {
 }
 
 // put_did sets a DID's value, keeping its gates; a DID the description does not declare is added
-// readable everywhere and not writable (a project's `dids:` on a described node).
+// readable everywhere and not writable (a project's `dids:` on a described node). The value's
+// length is the DID's size from then on, the one record length a 0x2E is accepted with.
 pub fn (mut s Server) put_did(id u16, data []u8) {
 	if !s.spec.dids.any(it.id == id) {
 		s.spec.dids << DidSpec{
@@ -529,7 +530,8 @@ fn (mut s Server) d_write(req []u8) []u8 {
 	if d.write.level != 0 && s.unlocked != d.write.level {
 		return neg(0x2E, 0x33)
 	}
-	if rec.len > max_described_did {
+	// the DID's size is the only record it takes (comm/uds, emb#403): a write never resizes a DID
+	if rec.len != (s.dids[id] or { d.data }).len || rec.len > max_described_did {
 		return neg(0x2E, 0x13)
 	}
 	if d.source == .param {
