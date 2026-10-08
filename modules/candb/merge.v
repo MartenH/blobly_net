@@ -23,13 +23,23 @@ pub fn merge_files(paths []string) Database {
 // merge_files_report is merge_files plus one line per file it could not open and one per
 // note the reader made; a front end prints them, a test asserts on them.
 pub fn merge_files_report(paths []string) (Database, []string) {
+	return merge_files_report_with(paths, open_database)
+}
+
+// DatabaseOpener opens one database reference, as open_database does.
+pub type DatabaseOpener = fn (ref string) !Loaded
+
+// merge_files_report_with is merge_files_report through `open`: for a caller that opens each
+// reference once and must see that one parse everywhere it asks (the headless runner's rate
+// check and its row databases).
+pub fn merge_files_report_with(paths []string, open DatabaseOpener) (Database, []string) {
 	mut msgs := []Message{}
 	mut nodes := []string{}
 	mut seen := map[string]bool{}
 	mut seen_node := map[string]bool{}
 	mut notes := []string{}
 	for p in paths {
-		loaded := open_database(p) or {
+		loaded := open(p) or {
 			notes << 'cannot load ${p}: ${err}'
 			continue
 		}
