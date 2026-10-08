@@ -22,10 +22,8 @@ $if windows {
 	#include <netinet/in.h>
 }
 
-fn C.socket(domain i32, typ i32, protocol i32) i32
-fn C.bind(sockfd i32, addr voidptr, addrlen u32) i32
-fn C.listen(sockfd i32, backlog i32) i32
-fn C.setsockopt(sockfd i32, level i32, optname i32, optval voidptr, optlen u32) i32
+// socket, bind, listen and setsockopt are the ones `net` declares; declared again here they emit
+// prototypes that conflict with the system headers under the old compiler.
 
 // PortHold is one exclusively bound socket, held until `close`.
 pub struct PortHold {
