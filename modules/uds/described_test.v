@@ -137,3 +137,95 @@ fn test_an_ignored_functional_request_after_s3_still_ends_the_session() {
 	now.t += 1000 // within S3 of the ignored request: it did not revive the session
 	assert s.handle([u8(0x2E), 0x01, 0x02, 0x05]) == [u8(0x7F), 0x2E, 0x31] // back in default
 }
+
+// emb#403: a writable DID takes a record of exactly its size — shorter or longer is 0x13 and the
+// DID keeps its value and size — and the length is checked after the session (0x31) and the
+// security level (0x33).
+fn test_a_write_takes_a_record_of_exactly_the_dids_size() {
+	mut now := &FakeClock{}
+	mut s := server_from(ServerSpec{
+		dids:          [
+			DidSpec{
+				id:       0x0102
+				data:     [u8(0x12), 0x34]
+				writable: true
+				write:    GateSpec{
+					sessions: in_extended
+					level:    1
+				}
+			},
+		]
+		reference_key: true
+	})
+	s.clock = fn [now] () i64 {
+		return now.t
+	}
+	short := [u8(0x2E), 0x01, 0x02, 0xAA]
+	long := [u8(0x2E), 0x01, 0x02, 0xAA, 0xBB, 0xCC]
+	assert s.handle(short) == [u8(0x7F), 0x2E, 0x31] // default session: not writable here
+	assert s.handle(long) == [u8(0x7F), 0x2E, 0x31]
+	assert s.handle([u8(0x10), 0x03])[0] == 0x50
+	assert s.handle(short) == [u8(0x7F), 0x2E, 0x33] // locked
+	assert s.handle(long) == [u8(0x7F), 0x2E, 0x33]
+	seed := s.handle([u8(0x27), 0x01])
+	mut key := [u8(0x27), 0x02]
+	key << security_key(seed[2..])
+	assert s.handle(key) == [u8(0x67), 0x02]
+	assert s.handle(short) == [u8(0x7F), 0x2E, 0x13]
+	assert s.handle(long) == [u8(0x7F), 0x2E, 0x13]
+	// no record at all: refused before the gates, as comm/uds refuses a request under four bytes
+	assert s.handle([u8(0x2E), 0x01, 0x02]) == [u8(0x7F), 0x2E, 0x13]
+	assert s.handle([u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0x12, 0x34]
+	assert s.dids[0x0102].len == 2
+	assert s.handle([u8(0x2E), 0x01, 0x02, 0xCA, 0xFE]) == [u8(0x6E), 0x01, 0x02] // exact
+	assert s.handle([u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0xCA, 0xFE]
+}
+
+// A parameter's record is held to its width before its range (0x31), and a refused one leaves
+// the value and the coded status as they were.
+fn test_a_parameter_write_checks_its_width_before_its_range() {
+	mut s := server_from(ServerSpec{
+		dids: [
+			DidSpec{
+				id:           0x0200
+				source:       .param
+				data:         [u8(0), 10]
+				writable:     true
+				fields:       [FieldSpec{
+					width:  2
+					ranged: true
+					min:    0
+					max:    100
+				}]
+				status_index: 0
+			},
+			DidSpec{
+				id:     0x0201
+				source: .param_status
+				data:   [u8(0)]
+			},
+		]
+	})
+	assert s.handle([u8(0x2E), 0x02, 0x00, 0x01]) == [u8(0x7F), 0x2E, 0x13]
+	assert s.handle([u8(0x2E), 0x02, 0x00, 0x00, 0x00, 0x05]) == [u8(0x7F), 0x2E, 0x13]
+	assert s.handle([u8(0x2E), 0x02, 0x00, 0x01, 0x00]) == [u8(0x7F), 0x2E, 0x31] // 256 > 100
+	assert s.handle([u8(0x22), 0x02, 0x00, 0x02, 0x01]) == [u8(0x62), 0x02, 0x00, 0x00, 0x0A,
+		0x02, 0x01, 0x00]
+	assert s.handle([u8(0x2E), 0x02, 0x00, 0x00, 0x32]) == [u8(0x6E), 0x02, 0x00]
+	assert s.handle([u8(0x22), 0x02, 0x00, 0x02, 0x01]) == [u8(0x62), 0x02, 0x00, 0x00, 0x32,
+		0x02, 0x01, 0x01]
+}
+
+// A writable DID past comm/uds's 32-byte cell takes no record, not even one of its own size.
+fn test_a_writable_did_past_the_cell_takes_no_record() {
+	mut s := server_from(ServerSpec{
+		dids: [DidSpec{
+			id:       0x0300
+			data:     []u8{len: 33}
+			writable: true
+		}]
+	})
+	mut req := [u8(0x2E), 0x03, 0x00]
+	req << []u8{len: 33, init: 0x41}
+	assert s.handle(req) == [u8(0x7F), 0x2E, 0x13]
+}

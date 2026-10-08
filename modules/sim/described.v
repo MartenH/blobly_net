@@ -67,7 +67,17 @@ pub fn describe(sys &sysview.System, t sysview.TargetAddr, name string, cfg ?pro
 	if c := cfg {
 		for d in c.dids {
 			if d.id <= 0xFFFF && d.value_len() <= max_did { // past that, validate_uds said so
-				srv.put_did(u16(d.id), if d.bytes.len > 0 { d.bytes.clone() } else { d.text.bytes() })
+				value := if d.bytes.len > 0 { d.bytes.clone() } else { d.text.bytes() }
+				declared := spec.dids.filter(it.id == u16(d.id))
+				if declared.len > 0 && declared[0].writable && declared[0].data.len != value.len {
+					takes := if declared[0].data.len > uds.max_described_did {
+						'0x2E takes no record (past the ${uds.max_described_did}-byte write limit)'
+					} else {
+						'0x2E takes ${declared[0].data.len}'
+					}
+					notes << 'DID 0x${d.id:04X}: the project gives it ${value.len} bytes where the description declares ${declared[0].data.len}; it reads the project\'s value and ${takes}'
+				}
+				srv.put_did(u16(d.id), value)
 			}
 		}
 		if c.dtcs.len > 0 && spec.faults.len == 0 {

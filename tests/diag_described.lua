@@ -31,6 +31,8 @@ test("a gated write needs the extended session and level 1", function()
   d:session(0x03)
   check.nrc(0x33, function() d:write_did(0x0102, fromhex("05")) end) -- locked
   d:security_access(1) -- the description names the reference key
+  check.nrc(0x13, function() d:write_did(0x0102, fromhex("00 00")) end) -- a one-byte DID
+  check.equal(tohex(d:read_did(0x0102)), "00")                          -- kept, at its size
   d:write_did(0x0102, fromhex("05"))
   check.equal(tohex(d:read_did(0x0102)), "05")
   d:write_did(0x0102, fromhex("00"))

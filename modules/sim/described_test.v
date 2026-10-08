@@ -431,6 +431,9 @@ fn test_the_project_block_overlays_values_and_seeds_faults() {
 		}, project.DidCfg{
 			id:    0x4242
 			bytes: [u8(0x01)]
+		}, project.DidCfg{
+			id:    0x0102
+			bytes: [u8(0x00), 0x07]
 		}]
 		dtcs: [project.DtcCfg{
 			code:   0xC40100
@@ -449,6 +452,13 @@ fn test_the_project_block_overlays_values_and_seeds_faults() {
 	assert h(mut s, [u8(0x19), 0x03]) == [u8(0x59), 0x03, 0xC4, 0x01, 0x00, 0x01] // frozen at failure
 	assert h(mut s, [u8(0x14), 0xFF, 0xFF, 0xFF]) == [u8(0x54)]
 	assert h(mut s, [u8(0x19), 0x02, 0x08]) == [u8(0x59), 0x02, 0x7F]
+	// a writable DID given another size reads the project's value, and 0x2E still takes the
+	// described size — said at Start
+	assert d.notes.any(it.contains('DID 0x0102') && it.contains('0x2E takes 1'))
+	assert h(mut s, [u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0x00, 0x07]
+	unlock(mut s)
+	assert h(mut s, [u8(0x2E), 0x01, 0x02, 0x00, 0x08]) == [u8(0x7F), 0x2E, 0x13]
+	assert h(mut s, [u8(0x2E), 0x01, 0x02, 0x05]) == [u8(0x6E), 0x01, 0x02]
 }
 
 // candb_msg is an 8-byte frame carrying `signal` as a u32 at bit 0, range 0..360 (SteeringFrame's).
@@ -643,4 +653,69 @@ fn test_a_refused_send_publishes_nothing() {
 	publish_live('inproc:EDGE', 'edge', &e)
 	assert h(mut s, [u8(0x22), 0xF1, 0xA0]) == [u8(0x62), 0xF1, 0xA0, 0, 0, 0x01, 0x2C]
 	clear_live()
+}
+
+// a described server judges a VIN write itself: its gates first, then the declared size
+fn test_a_described_vin_write_takes_the_servers_size_check() {
+	mut host := DoipHost{
+		server: uds.server_from(uds.ServerSpec{
+			dids: [
+				uds.DidSpec{
+					id:       0xF190
+					data:     'BLOBLYSYSNODEH735'.bytes()
+					writable: true
+					write:    uds.GateSpec{
+						sessions: uds.in_extended
+					}
+				},
+			]
+		})
+	}
+	short := [u8(0x2E), 0xF1, 0x90, 0x41]
+	assert host.handle(short) == [u8(0x7F), 0x2E, 0x31] // default session: not writable here
+	assert host.handle([u8(0x10), 0x03])[0] == 0x50
+	assert host.handle(short) == [u8(0x7F), 0x2E, 0x13]
+	mut vin := [u8(0x2E), 0xF1, 0x90]
+	vin << 'BLOBLYSYSNODE0001'.bytes()
+	assert host.handle(vin) == [u8(0x6E), 0xF1, 0x90]
+	assert host.server.dids[u16(0xF190)].bytestr() == 'BLOBLYSYSNODE0001'
+}
+
+// a VIN written at the declared size must be one discovery can announce
+fn test_an_entity_whose_vin_is_writable_at_another_size_is_refused() {
+	mut sys := dx_load('vin18')
+	for i, n in sys.nodes {
+		if n.name == 'sysnode' {
+			mut desc := n.desc
+			desc.dids = desc.dids.map(if it.id == 0xF190 {
+				sysview.DidDesc{
+					...it
+					text:       'BLOBLYSYSNODEH7350'
+					size:       18
+					write:      'extended'
+					write_gate: sysview.Gate{
+						declared: true
+						sessions: ['extended']
+					}
+				}
+			} else {
+				it
+			})
+			sys.nodes[i] = sysview.SysNode{
+				...n
+				desc: desc
+			}
+		}
+	}
+	ch := project.Channel{
+		name:     'DoIP1'
+		typ:      'doip'
+		iface:    'doip:127.0.0.1:13400'
+		ecu_addr: 0x07A0
+	}
+	doip_entity_described(ch, [], &sys, []) or {
+		assert err.msg().contains('writable at 18 bytes'), err.msg()
+		return
+	}
+	assert false, 'an entity whose VIN write would split served from announced was started'
 }

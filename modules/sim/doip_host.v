@@ -23,15 +23,16 @@ pub mut:
 // or the entity spends the rest of the run advertising a VIN it no longer reports. A VIN of
 // any other length than 17 is refused rather than accepted: vehicle_announcement zero-pads or
 // truncates to 17 while the server would return it whole, which is the same split created at
-// runtime instead of from configuration.
+// runtime instead of from configuration. A described server judges the write itself (its
+// gates, then the declared size), and the announcement follows only a 17-byte VIN it accepted.
 pub fn (mut h DoipHost) handle(req []u8) []u8 {
 	if w := uds.written_did(req) {
 		if w.did == 0xF190 {
-			if w.data.len != 17 {
+			if w.data.len != 17 && !h.server.described {
 				return [u8(0x7F), uds.sid_write_data_by_identifier, 0x31] // requestOutOfRange
 			}
 			resp := h.server.handle(req)
-			if resp.len > 0 && resp[0] == 0x6E && h.entity != unsafe { nil } {
+			if resp.len > 0 && resp[0] == 0x6E && w.data.len == 17 && h.entity != unsafe { nil } {
 				h.entity.set_vin(w.data.bytestr())
 			}
 			return resp

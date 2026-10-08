@@ -117,6 +117,12 @@ pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &s
 		if why := srv.unreadable_at_start(0xF190) {
 			return error('node "${d.node}" is described so that DID 0xF190 cannot be read (${why}), yet the entity would announce VIN "${announce}" — refusing to advertise an identity it cannot serve')
 		}
+		// a write is the declared size, and the announcement can only follow a 17-byte one
+		if n := srv.written_size(0xF190) {
+			if n != 17 {
+				return error('node "${d.node}" declares DID 0xF190 writable at ${n} bytes, not 17 — a write would change the served VIN while discovery kept the old one')
+			}
+		}
 	}
 	if announce.len != 17 {
 		return error('VIN "${announce}" is ${announce.len} bytes, not 17 — discovery would advertise a padded or truncated string while 0xF190 serves this one')

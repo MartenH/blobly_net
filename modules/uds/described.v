@@ -9,7 +9,7 @@
 //   0x22: length (0x13) → each DID's support and read session (0x31 when none answers) → its
 //   security (0x33);
 //   0x2E: length (0x13) → the DID's support, writability and write session (0x31) → security
-//   (0x33) → the record length (0x13) → a parameter's range (0x31);
+//   (0x33) → the record length, which must be the DID's size (0x13) → a parameter's range (0x31);
 //   0x27: sub-function (0x12) → requestSeed: the lockout delay (0x37); sendKey: length (0x13), a
 //   seed of that level outstanding (0x24), the key (0x35, 0x36 on the last allowed attempt).
 //
@@ -138,7 +138,7 @@ pub const status_cleared = u8(0x50)
 pub const fault_availability = u8(0x7F)
 
 // max_described_did is the most a written DID record may hold (comm/uds max_did_data).
-const max_described_did = 32
+pub const max_described_did = 32
 
 // sa_seed_len is a seed's length (comm/uds seed_len), which a key must match.
 const sa_seed_len = 4
@@ -174,7 +174,8 @@ pub fn server_from(spec ServerSpec) Server {
 }
 
 // put_did sets a DID's value, keeping its gates; a DID the description does not declare is added
-// readable everywhere and not writable (a project's `dids:` on a described node).
+// readable everywhere and not writable (a project's `dids:` on a described node). A 0x2E still
+// takes a record of the DESCRIBED size, whatever length the value put here has.
 pub fn (mut s Server) put_did(id u16, data []u8) {
 	if !s.spec.dids.any(it.id == id) {
 		s.spec.dids << DidSpec{
@@ -295,6 +296,19 @@ fn (s &Server) did_spec(id u16) ?DidSpec {
 		}
 	}
 	return none
+}
+
+// written_size: the size a 0x2E to DID `id` must carry on this described server; none when the
+// DID is not writable (or the server is not described).
+pub fn (s &Server) written_size(id u16) ?int {
+	if !s.described {
+		return none
+	}
+	d := s.did_spec(id) or { return none }
+	if !d.writable {
+		return none
+	}
+	return d.data.len
 }
 
 // unreadable_at_start: why a fresh tester — default session, nothing unlocked — cannot read DID
@@ -529,7 +543,9 @@ fn (mut s Server) d_write(req []u8) []u8 {
 	if d.write.level != 0 && s.unlocked != d.write.level {
 		return neg(0x2E, 0x33)
 	}
-	if rec.len > max_described_did {
+	// the declared size is the only record a DID takes (comm/uds, emb#403): a write never
+	// resizes a DID; past comm/uds's cell no record is taken at all
+	if rec.len != d.data.len || rec.len > max_described_did {
 		return neg(0x2E, 0x13)
 	}
 	if d.source == .param {
@@ -552,8 +568,9 @@ fn (mut s Server) d_write(req []u8) []u8 {
 	return [u8(0x6E), req[1], req[2]]
 }
 
-// param_refusal: the NRC a parameter's record is refused with (comm/param): its length (0x13),
-// then each field's range (0x31); none = accepted.
+// param_refusal: the NRC a parameter's record is refused with (comm/param): each field's range
+// (0x31); none = accepted. d_write has held the record to the declared size, which is the fields'
+// width; a record of another width is still 0x13 rather than read past its end.
 fn param_refusal(fields []FieldSpec, rec []u8) ?u8 {
 	mut n := 0
 	for f in fields {
