@@ -1130,3 +1130,60 @@ fn test_a_denied_activation_says_its_code_by_name() {
 	}
 	ln.close() or {}
 }
+
+// A gateway that routes to a node behind it (ISO 13400-2) may tie what a tester reaches to what
+// it unlocked on the gateway over the same connection — so the tester talks to the gateway first
+// and then retargets the connection to the node: its requests go to the node's address, and recv
+// takes the node's answers (the gateway's own are now another address's).
+fn test_a_retargeted_client_talks_to_the_node_behind_the_gateway() {
+	mut ln, lport := free_listener() or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		_ := read_message(mut c, 2000) or { return }
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		// the gateway's own exchange
+		m1 := read_message(mut c, 2000) or { return }
+		d1 := parse_diagnostic_message(m1.payload) or { return }
+		if d1.target != 0x1000 {
+			return
+		}
+		c.write(diagnostic_message(0x1000, 0x0E80, [u8(0x50), 0x03])) or { return }
+		// after the retarget: the request is the node's, and so is the answer recv takes
+		m2 := read_message(mut c, 2000) or { return }
+		d2 := parse_diagnostic_message(m2.payload) or { return }
+		if d2.target != 0x2000 {
+			return
+		}
+		c.write(diagnostic_message(0x1000, 0x0E80, [u8(0x7E), 0x00])) or { return } // the gateway's: not ours now
+		c.write(diagnostic_message(0x2000, 0x0E80, [u8(0x62), 0xF1, 0x90, 0x5A])) or { return }
+		time.sleep(200 * time.millisecond)
+		c.close() or {}
+	}(mut ln)
+	time.sleep(150 * time.millisecond)
+
+	mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	ch.send([u8(0x10), 0x03]) or { assert false, 'send: ${err}' }
+	assert ch.recv(2000) or { []u8{} } == [u8(0x50), 0x03]
+	assert ch.rx_id == 0x1000
+	ch.retarget(0x2000)
+	assert ch.rx_id == 0x2000 // the Channel view names the ECU the traffic is now with
+	ch.send([u8(0x22), 0xF1, 0x90]) or { assert false, 'send: ${err}' }
+	resp := ch.recv(2000) or {
+		assert false, 'recv: ${err}'
+		return
+	}
+	assert resp == [u8(0x62), 0xF1, 0x90, 0x5A]
+	// a target past 16 bits is no logical address: refused, never narrowed onto another ECU's
+	ch.rx_id = 0x12000
+	if _ := ch.send([u8(0x3E), 0x00]) {
+		assert false, 'an oversized target was sent to'
+	}
+	ch.close()
+	ln.close() or {}
+}

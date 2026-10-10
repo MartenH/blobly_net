@@ -38,8 +38,11 @@ pub struct DoipClient {
 pub:
 	iface string // "host:port" for logging/identification
 	tx_id u32    // source (tester) logical address
-	rx_id u32    // target (ECU) logical address
 pub mut:
+	// the target (ECU) logical address: where diagnostic messages go and whose answers recv takes —
+	// the one statement of it, so the Channel view names the ECU the traffic is with. Set at open,
+	// moved by retarget (a node behind a DoIP gateway).
+	rx_id u32
 	// what opening it cost, on the monotonic clock: the TCP connect, then the routing activation
 	// exchange — apart, because on a real entity they differ by orders of magnitude and only one
 	// of them is the network
@@ -53,7 +56,6 @@ pub mut:
 mut:
 	conn   &net.TcpConn = unsafe { nil }
 	source u16
-	target u16
 }
 
 // Announcement is one heard announcement AND where it came from.
@@ -256,7 +258,6 @@ pub fn open_doip_stoppable(host string, port int, source u16, target u16, stop f
 		rx_id:      target
 		conn:       conn
 		source:     source
-		target:     target
 		connect_us: i64(t1 - t0) / 1000
 	}
 	c.activate_routing() or {
@@ -371,7 +372,11 @@ const ra_timeout_ms = 2000
 
 // send wraps `data` (a UDS request) in a 0x8001 diagnostic message and writes it.
 pub fn (mut c DoipClient) send(data []u8) ! {
-	c.conn.write(diagnostic_message(c.source, c.target, data))!
+	if c.rx_id > 0xFFFF {
+		// rx_id is writable: a value past 16 bits would otherwise address another ECU
+		return error('DoIP: 0x${c.rx_id:X} is not a logical address')
+	}
+	c.conn.write(diagnostic_message(c.source, u16(c.rx_id), data))!
 }
 
 // send_to wraps `data` in a 0x8001 diagnostic message to `target` instead of the connection's own
@@ -382,6 +387,15 @@ pub fn (mut c DoipClient) send_to(target u32, data []u8) ! {
 		return error('DoIP: 0x${target:X} is not a logical address')
 	}
 	c.conn.write(diagnostic_message(c.source, u16(target), data))!
+}
+
+// retarget: the logical address this connection's diagnostic messages go to from now on, and whose
+// answers recv takes — the entity itself, or a node behind it that a DoIP gateway routes to (ISO
+// 13400-2). One TCP connection: a gateway may tie what a tester reaches through it to what the
+// tester unlocked on the gateway over that same connection, so the tester unlocks the gateway
+// first and then retargets, rather than opening a second connection.
+pub fn (mut c DoipClient) retarget(target u16) {
+	c.rx_id = target
 }
 
 // recv returns the UDS user-data of the next diagnostic message (0x8001), skipping
@@ -451,7 +465,8 @@ fn (mut c DoipClient) own_answer(msg Message) !([]u8, bool) {
 	match msg.payload_type {
 		pt_diagnostic_message {
 			dm := parse_diagnostic_message(msg.payload)!
-			if dm.source != c.target || dm.target != c.source {
+			// compared at full width: a target past 16 bits matches no answer, never another ECU's
+			if u32(dm.source) != c.rx_id || dm.target != c.source {
 				return []u8{}, false // a response for another logical address — not ours
 			}
 			return dm.data, true

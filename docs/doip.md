@@ -36,6 +36,10 @@ rather than the project's, so two runs on one machine do not collide (`--project
 the project's; [scripting.md](scripting.md#usage)). `cmd/doip_smoke`
 does the same without a project. Either way the point of the design holds — the same
 `uds.Client` rides a `DoipClient` unchanged, because only the carrier swapped.
+A node *behind* a DoIP gateway (ISO 13400-2 routing — a CAN node with no network of its own) is
+the same: `retarget(node)` moves the connection's target from the gateway to the node, after the
+tester has done what the gateway asks on that connection first (blobly_emb's sysnode routes only
+for a tester holding its own 0x27 unlock, kept for the connection).
 
 The GUI does the same on ▶ Start, and the Diagnostics panel talks to it as another target.
 
