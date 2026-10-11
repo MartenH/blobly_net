@@ -18,21 +18,15 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   cluster reference in a `.blobnet` must be quoted (`- "net.arxml#Body"`), and the project writer
   quotes every value containing a `#` (`project.yaml_scalar`). An unquoted one written by hand
   loses its cluster and, on a multi-cluster file, is refused at load as naming none.
-- 🟡 **Binding `&x` of a `mut x T` receiver, or capturing it by value in a closure, makes a COPY
-  of the struct.** Inside `fn (mut app App) f()`, `ap := &app` has type `App` at a new address, and
-  `fn [app] () { ... }` captures a copy too (a later `app.x = 7` is not seen through it). `a := app`
-  is `&App` at the caller's address, and so is `fn [mut app]`; an inline `&app.field` or
-  `voidptr(&app)` is the real address as well, and so are `d := (&app)` and `e = &app` into an
-  existing reference — it is the bare `x := &app` declaration that copies (checked with
-  `typeof` and `ptr_str` on the pinned compiler). A copy handed to anything that outlives the
-  call — a closure, a thread, a struct field — is a second App with its own `mu` over the SAME
-  maps and arrays, so its writes race every other thread's with no lock between them. That was
-  the Diagnostics panel's tap after #402 (`diag_attach`): any multi-frame answer, whose Flow
-  Control is a send, crashed the GUI within a second (AddressSanitizer: double free in `map_set`,
-  from `note_emit` beside `rx_loop`). Worked around by `ap := app`; `scripts/check_mut_refs.sh`
-  (run by `check_cmds.sh`, so on both CI jobs) refuses both spellings in `cmd/` and `blobly/`.
-  It runs `cmd/mutrefs`, which walks V's own parse of each file (#406), so strings, comments, a
-  comparison with `&app` and a one-line method body cannot fool it the way the old line scan was.
+- 🟢 **Binding `&x` of a `mut x T` receiver, or capturing it by value in a closure, made a COPY
+  of the struct — before V3.** On the pre-V3 compiler, inside `fn (mut app App) f()`,
+  `ap := &app` had type `App` at a new address and `fn [app] () { ... }` captured a copy, so a
+  copy handed to a closure, thread or field was a second App with its own `mu` over the SAME
+  maps. That was the Diagnostics panel's crash after #402 (a double free in `map_set`), and
+  `cmd/mutrefs` (#406) refused both spellings until the move to V3. **Under V3 both share the
+  receiver** (measured: a write through `&app` lands, and the closure sees a later `app.n = 7`;
+  the pre-V3 pin printed 0 for both), so the check was retired with the old compiler — it walked
+  `v.ast`, which V3 no longer has. `ap := app` remains the plain spelling.
 
 - 🟡 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
   VALUE.** **Fixed upstream, and the fix is now in our pin** — see the end of this entry. The
