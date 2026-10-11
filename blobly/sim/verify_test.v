@@ -587,12 +587,12 @@ fn test_verify_covers_answers_with_one_key_for_every_source_address() {
 	// the index is built from the provenance half, which the adoption must not have touched:
 	// every address, including the adopted one, answers with the MESSAGE's key
 	cover := build_coverage([db], set.from_verify)
-	for id in [u32(0x0CF00421), 0x0CF00422, 0x0CF004FE, 0x0CF00400] {
-		got := cover.covers(id, true) or {
-			assert false, 'must be covered: 0x${id:X}'
+	for live in [u32(0x0CF00421), 0x0CF00422, 0x0CF004FE, 0x0CF00400] {
+		got := cover.covers(live, true) or {
+			assert false, 'must be covered: 0x${live:X}'
 			return
 		}
-		assert got == want, '0x${id:X} answered ${got}, not the message key ${want}'
+		assert got == want, '0x${live:X} answered ${got}, not the message key ${want}'
 	}
 }
 

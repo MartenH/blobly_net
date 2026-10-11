@@ -163,12 +163,12 @@ fn link_node(sys &sysview.System, t sysview.TargetAddr, name string) ?int {
 	return if named.len == 1 { named[0] } else { none }
 }
 
-// live is the simulated signal values a described server's live DIDs read: the generators'
+// live_table is the simulated signal values a described server's live DIDs read: the generators'
 // current values, published by the simulation loop of the wire (publish_live) for the signals
 // some described server asked for (want_live). Process-wide like the fault table, and for the
 // same reason: the simulation and the diagnostic server run on different threads, reached
 // through different call chains.
-__global live = &LiveTable{}
+__global live_table = &LiveTable{}
 
 pub struct LiveTable {
 mut:
@@ -190,21 +190,21 @@ fn any_key(node string, signal string) string {
 
 // want_live registers what a described server reads, so the simulation publishes it.
 pub fn want_live(iface string, chan_name string, node string, signal string) {
-	live.mu.lock()
-	live.want[live_key(iface, chan_name, node, signal)] = true
-	live.mu.unlock()
+	live_table.mu.lock()
+	live_table.want[live_key(iface, chan_name, node, signal)] = true
+	live_table.mu.unlock()
 }
 
 // live_value_of_node is node `node`'s published value of `signal` on whichever wire simulates it;
 // none when no wire does, or when two do (which of them the ECU is cannot be said).
 pub fn live_value_of_node(node string, signal string) ?i64 {
 	suffix := '|${node}|${signal}'
-	live.mu.rlock()
+	live_table.mu.rlock()
 	defer {
-		live.mu.runlock()
+		live_table.mu.runlock()
 	}
 	mut found := []i64{}
-	for k, v in live.vals {
+	for k, v in live_table.vals {
 		if k.ends_with(suffix) {
 			found << v
 		}
@@ -214,27 +214,27 @@ pub fn live_value_of_node(node string, signal string) ?i64 {
 
 // clear_live forgets every want and value: a new run registers its own.
 pub fn clear_live() {
-	live.mu.lock()
-	live.want.clear()
-	live.vals.clear()
-	live.mu.unlock()
+	live_table.mu.lock()
+	live_table.want.clear()
+	live_table.vals.clear()
+	live_table.mu.unlock()
 }
 
 // live_value is a published signal's value, none before its node has sent it.
 pub fn live_value(iface string, chan_name string, node string, signal string) ?i64 {
-	live.mu.rlock()
+	live_table.mu.rlock()
 	defer {
-		live.mu.runlock()
+		live_table.mu.runlock()
 	}
-	return live.vals[live_key(iface, chan_name, node, signal)] or { return none }
+	return live_table.vals[live_key(iface, chan_name, node, signal)] or { return none }
 }
 
 // publish_live records, for the signals a described server wants, the value each generator gave
 // the last frame due_frames sent of its message.
 pub fn publish_live(iface string, chan_name string, e &Engine) {
-	live.mu.rlock()
-	empty := live.want.len == 0
-	live.mu.runlock()
+	live_table.mu.rlock()
+	empty := live_table.want.len == 0
+	live_table.mu.runlock()
 	if empty {
 		return
 	}
@@ -245,9 +245,9 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 			}
 			for s in m.signals {
 				k := live_key(iface, chan_name, ecu.name, s.name)
-				live.mu.rlock()
-				wanted := k in live.want || any_key(ecu.name, s.name) in live.want
-				live.mu.runlock()
+				live_table.mu.rlock()
+				wanted := k in live_table.want || any_key(ecu.name, s.name) in live_table.want
+				live_table.mu.runlock()
 				if !wanted {
 					continue
 				}
@@ -259,9 +259,9 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 					}
 				}
 				v := i64(math.round(phys))
-				live.mu.lock()
-				live.vals[k] = v
-				live.mu.unlock()
+				live_table.mu.lock()
+				live_table.vals[k] = v
+				live_table.mu.unlock()
 			}
 		}
 	}
@@ -273,9 +273,9 @@ pub fn wire_live_node(mut srv uds.Server, node string) {
 	mut any := false
 	for d in srv.spec.dids {
 		if d.source == .live {
-			live.mu.lock()
-			live.want[any_key(node, d.signal)] = true
-			live.mu.unlock()
+			live_table.mu.lock()
+			live_table.want[any_key(node, d.signal)] = true
+			live_table.mu.unlock()
 			any = true
 		}
 	}
