@@ -4,14 +4,14 @@
 > a simulation, see **[simulation.md](simulation.md)**, the user manual.
 
 Status: **design agreed 2026-06-07; the CAN CORE is IMPLEMENTED as
-[`modules/sim`](../modules/sim)** — native, in-process, driver-free, and what `sim-demo` and
+[`blobly/sim`](../blobly/sim)** — native, in-process, driver-free, and what `sim-demo` and
 `scripts/runtests.sh` run against. The per-node configuration this design calls for has since
 shipped: per-signal generators, request/response rules and end-to-end protection are all
 configurable per node.
 
-Since shipped from this plan: per-node UDS servers (`uds:` per simulated ECU, `modules/sim/uds_nodes.v`),
+Since shipped from this plan: per-node UDS servers (`uds:` per simulated ECU, `blobly/sim/uds_nodes.v`),
 described per node by blobly_emb's `ecu.toml` (`uds.server_from`, below)
-and the Ethernet phase for DoIP (`modules/sim/doip_entity.v`, `doip_host.v`). Still open: **LIN**,
+and the Ethernet phase for DoIP (`blobly/sim/doip_entity.v`, `doip_host.v`). Still open: **LIN**,
 and SOME/IP service simulation. Tracked in [`ROADMAP.md`](../ROADMAP.md).
 
 This is the plan for
@@ -26,7 +26,7 @@ that proves the native stack before we trust it.
 > `simulation:`/`nodes:`, `adapter:`+`address:`, signals as a list and `uds:` with a `dids:` list,
 > never `networks:`/`backend:`/`diagnostics:` — [`simulation.md`](simulation.md) and
 > [`project_editing.md`](project_editing.md) are the current description, and the "What exists vs.
-> what's needed" table, the "Python SUT as the oracle" verification gate (superseded by `modules/sim`
+> what's needed" table, the "Python SUT as the oracle" verification gate (superseded by `blobly/sim`
 > and the Lua suites; `sut/*.py` are dev-time oracles, not the sim path) and the phasing below are
 > historical (phases 1–5 shipped; 6 shipped for DoIP, not LIN).
 
@@ -84,7 +84,7 @@ a conventional tool's model, which we already half-have (`project.Channel.databa
 | Verification | candb↔oracle, uds↔uds_server.py, transport↔candump, mf4↔asammdf | a **conformance gate** + native-sim==Python assertions |
 | LIN / Eth | — | `linframe`/`lindb`, then `ethframe`/`someip`/`doip` (later) |
 
-## New modules (GUI-free, the usual `modules/` convention)
+## New modules (GUI-free, the usual `blobly/` convention)
 
 - **in-process bus backend** — in `transport` (or a sibling): a named in-memory
   medium where a frame TX'd by any attached participant is delivered to all
@@ -92,12 +92,12 @@ a conventional tool's model, which we already half-have (`project.Channel.databa
   threads and ECUs attach identically. `transport.open('inproc:CAN1')` joins the
   named bus; `udp:`/`vcan0` remain as bridges. (Model after `udpbus.v`'s
   src-filter + broadcast, minus the sockets.)
-- **`modules/sim`** — the engine. Given the project (networks + databases + node
+- **`blobly/sim`** — the engine. Given the project (networks + databases + node
   defs) it instantiates **`SimEcu`** nodes, attaches each to its network(s), and
   runs a **scheduler**: cyclic TX timers, on-event, request/response, on a
   *controllable* time base (×1 / faster / stepped) so it is deterministic and
   unit-testable. Signal values come from per-signal generators.
-- **UDS server** — `modules/uds` server side (or `modules/diagserver`): sessions,
+- **UDS server** — `blobly/uds` server side (or `blobly/diagserver`): sessions,
   RDBI/WDBI DIDs, tester-present, security, routines. Native twin of
   `sut/uds_server.py`; config-driven per node. **Shipped config-driven from the node's
   description**: a server addressed like a node of the project's `system.toml` is built from that
@@ -109,7 +109,7 @@ a conventional tool's model, which we already half-have (`project.Channel.databa
   sysview fills it (`EcuDesc.server_spec`), and sim links a simulated node to its described node
   (`sim.describe`, by the Diagnostics panel's rule `System.node_for`, else by name) and feeds a
   live DID from the simulation (`publish_live`). Routines are still not served.
-- Later: **`modules/lindb`** (LDF) + `LinFrame`; **`someip`/`doip`** for Ethernet.
+- Later: **`blobly/lindb`** (LDF) + `LinFrame`; **`someip`/`doip`** for Ethernet.
 
 ## Multi-protocol seam (CAN / LIN / Eth) — keep it type-safe
 
@@ -170,7 +170,7 @@ Build/keep this *before and alongside* the sim. Python stays the oracle.
    Small; unblocks everything. Verify two in-proc clients exchange frames.
 2. **`candb` transmitter node** — parse `BU_` + `BO_` sender; expose
    `Message.sender` and `Database.nodes`. Lets an ECU own its messages.
-3. **`modules/sim` + one `SimEcu`** replicating `can_sut.py`; **verify native ==
+3. **`blobly/sim` + one `SimEcu`** replicating `can_sut.py`; **verify native ==
    Python** (the gate). Wire Start/Stop to run sim + tester together.
 4. **Multi-ECU** on one CAN network, shared in-process.
 5. **Native UDS server** node, verified vs `uds_server.py`.

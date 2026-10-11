@@ -30,7 +30,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   the Diagnostics panel's tap after #402 (`diag_attach`): any multi-frame answer, whose Flow
   Control is a send, crashed the GUI within a second (AddressSanitizer: double free in `map_set`,
   from `note_emit` beside `rx_loop`). Worked around by `ap := app`; `scripts/check_mut_refs.sh`
-  (run by `check_cmds.sh`, so on both CI jobs) refuses both spellings in `cmd/` and `modules/`.
+  (run by `check_cmds.sh`, so on both CI jobs) refuses both spellings in `cmd/` and `blobly/`.
   It runs `cmd/mutrefs`, which walks V's own parse of each file (#406), so strings, comments, a
   comparison with `&app` and a one-line method body cannot fool it the way the old line scan was.
 
@@ -98,7 +98,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   is emitted by the GC path.
 
   **How to find them without guessing.** The pins are visible in the generated C, so the metric
-  is objective: `v -enable-globals -prod -path "@vlib|@vmodules|modules" -o out.c cmd/<tool>`,
+  is objective: `v -enable-globals -prod -o out.c cmd/<tool>`,
   then count `collect_keepalive` per function. `cmd/restbus` before this was written down:
   `main__run_multi` 591, `main__main` 531, `player__build_multi` **0** — and build_multi holds
   a million-entry array by value too, so the count, not the shape, is what to trust.
@@ -120,13 +120,13 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   untouched `main` and is an environment matter, not a code one. `-check` and `-o out.c` both
   work, which is enough to verify a change compiles.)
 - 🟡 **`v test` needs `-cc gcc` on Windows, or it looks like it cannot run at all.**
-  `v -enable-globals test modules/` on native Windows (MSYS2/mingw) fails before running a
+  `v -enable-globals test blobly/` on native Windows (MSYS2/mingw) fails before running a
   single test with
   `C function 'C.GetFinalPathNameByHandleW' was declared in V, but the C compiler did not see a
   matching C declaration`. It comes from **vlib**, not from this repo, and it reproduces on
   untouched files on `main` — so it reads exactly like "the module suite does not run on this
   machine", which cost most of a session on that assumption. It is V's default **tcc**:
-  `v -enable-globals -cc gcc test modules/` runs the whole suite (72 test programs today). The Linux CI job uses
+  `v -enable-globals -cc gcc test blobly/` runs the whole suite (72 test programs today). The Linux CI job uses
   the default compiler and never sees it.
 - 🔴 **A timed `select` can panic `Invalid argument` under starvation.** V 0.5.1's
   `channel_select` computes `remaining := timeout - stopwatch.elapsed()` only after its
@@ -159,18 +159,21 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   works is `set_read_timeout` re-armed before each read with what is left of the window, which
   is what `transport.cansub_browse` does. And a 0-byte datagram comes back from `read` as an
   ERROR (`none`), not as `n == 0`, so a collector must break only on `net.err_timed_out_code`.
-- 🟡 **Local module not found.** `import candb` (a module under `./modules/`) fails with
-  `cannot import module "candb" (not found)` when compiling a file in `cmd/…`. V's `-path`
-  *replaces* the default lookup order, so the working incantation re-lists the defaults:
-  `v -path "@vlib|@vmodules|modules" run <file>`. Baked into `scripts/run_gui.sh`. Plain `v run`
-  on a file that imports a local module will fail without it. (Tooling ergonomics, not a bug.)
-- 🟡 **`v test` mangles a `-path` with `|`.** `v -path "@vlib|@vmodules|modules" test modules/`
-  fails (`/bin/sh: @vmodules: not found`) because the test runner re-invokes `v` per file and the
-  `|`-separated path leaks into a shell unquoted. Run `v -enable-globals test modules/` **without**
-  `-path` — it resolves, and that is what CI does. When a module's test DOES need the local path,
-  use a `:`-separated path, which survives the unquoted shell because `:` isn't a metachar:
-  `v -path '@vlib:@vmodules:modules' test modules/mf4/mf4_test.v`.
-- 🟡 **`-enable-globals` is not optional.** `modules/transport/inproc.v` uses `__global`, so every
+- 🟡 **The modules are `blobly/<name>`, imported as `blobly.<name>`.** V3 no longer searches a
+  project's `modules/` directory (vlang/v#28575): a module's import path is its folder path under
+  the lookup root, the folder holding `v.mod` — as `math.vec` is `vlib/math/vec/`. So the
+  modules live in `blobly/`, every import names the namespace (`import blobly.candb`; the code
+  still writes `candb.x`), and a `cmd/…` file or a test finds them with no `-path`. The pre-V3
+  compiler resolves the same layout. `-path` is still needed for `libs/` (`vgui`, `markdown`),
+  and V's `-path` *replaces* the default order, so it re-lists the defaults:
+  `-path "@vlib|@vmodules|libs"`. **V also searches UPWARD for modules**, past the project root:
+  from a worktree under `.claude/worktrees/`, a module missing on the branch would resolve to
+  the MAIN checkout's `blobly/` and build against code that is not on the branch. `.v.mod.stop`
+  at the root stops that walk — under V3; the pre-V3 compiler ignores the marker (measured). And
+  a package that promises to import no blobly module (the GUI-local rules, `libs/vgui`) is
+  checked from a copy outside the repository, where none is reachable
+  (`scripts/test_cmd_rules.sh`, CI's vgui standalone step).
+- 🟡 **`-enable-globals` is not optional.** `blobly/transport/inproc.v` uses `__global`, so every
   build, test and run that touches `transport` needs the flag.
 - ⚪ **`cannot copy map: call move or clone`.** Assigning a `map` value into a struct field (e.g.
   `sig.values = vals`) errors — V won't implicitly copy a map. Use `vals.move()` (transfers
@@ -179,7 +182,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   (`(x & C.mask()) | …`) both give `unexpected token )`. Fixes: pass `s.str` to a `&u8` C param;
   define stable C constants (e.g. CAN flag masks) as V `const`s instead of calling C accessors.
   For larger C surfaces prefer **c2v** over hand-writing; keep hand shims tiny (as in
-  `modules/transport`, ~40 lines).
+  `blobly/transport`, ~40 lines).
 
 ## GUI (Dear ImGui + ImPlot)
 
@@ -221,7 +224,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
   ```powershell
   $env:PATH = "C:\dev\msys64-ct\mingw64\bin;$env:PATH"
-  C:\dev\v\v.exe -cc gcc -enable-globals -path "@vlib|@vmodules|modules" -o thing.exe cmd\thing\main.v
+  C:\dev\v\v.exe -cc gcc -enable-globals -o thing.exe cmd\thing\main.v
   ```
 
   It is what `.github/workflows/windows.yml` uses too. Bench work has to be native anyway — the
@@ -232,7 +235,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   prompts for any listen on a non-loopback address. A per-program allow rule never sticks, because
   V builds each test binary to a **fresh temp path** every run, so the prompt returns forever.
 
-  Allow the port bands instead — they are declared once in `modules/testports` and are narrow:
+  Allow the port bands instead — they are declared once in `blobly/testports` and are narrow:
 
   ```powershell
   New-NetFirewallRule -DisplayName "blobly_net tests (UDP)" -Direction Inbound `
@@ -315,7 +318,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   `makev.bat` hangs at `Compiling v_stage.exe`, independent of bootstrap compiler, final compiler,
   disk and Defender (every combination timed out at up to 90 min; the same build is ~100 s
   locally). And there's no fallback: V's newest *release* (0.5.1) predates the `vlib/yaml` that
-  `modules/project` imports. So `windows.yml` downloads a zipped V from this repo's
+  `blobly/project` imports. So `windows.yml` downloads a zipped V from this repo's
   **`v-toolchain`** release. **If that release or its asset disappears, the Windows job breaks** —
   re-mint the asset if the V pin ever moves.
 - ⚪ **A colon-space inside a step `name:` invalidates the whole workflow.** YAML reads
@@ -357,7 +360,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   subscriber, a closure per send whose trampoline V never frees, a bus label string per MF4
   record — and the worker SPINNING: on Windows a sub-millisecond `time.sleep` is `Sleep(0)`, so it
   ran 80 M ticks in 70 s taking `app.mu` on each, and a longer sleep rounded up to the 15.6 ms
-  quantum nothing had shortened. `modules/player/pace_windows.v` sleeps whole milliseconds and waits out the last on the
+  quantum nothing had shortened. `blobly/player/pace_windows.v` sleeps whole milliseconds and waits out the last on the
   stopwatch and asks for the 1 ms period (`pace_nix.v` is one accurate nanosleep).
   **Then the arena (#303) took the collection's LENGTH**: a loaded recording is pointer-free rows in
   one block the collector never walks (`canlog.Log`, the `canlog` row of CLAUDE.md), played through

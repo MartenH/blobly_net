@@ -4,7 +4,7 @@
 // typed. The ECU under test is subtracted, so it remains the only transmitter of its own
 // messages rather than arbitrating against a recording of itself.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/restbus/main.v \
+//   v -enable-globals run cmd/restbus/main.v \
 //       --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude SUT_ECU --iface inproc:rest
 //
 // SEVERAL buses at once — the shape a real bench needs, since the ECU under test sits on all of
@@ -22,16 +22,16 @@
 //   --speed 1.0            playback rate; --loop to repeat
 //   --drop-unattributed    withhold messages the DBC defines but does not attribute
 //
-// The decisions live in modules/player (what to leave out) and modules/mf4 (what a bus is);
+// The decisions live in blobly/player (what to leave out) and blobly/mf4 (what a bus is);
 // this file is argument parsing, a socket, and a sleep.
 module main
 
-import candb
-import mf4
+import blobly.candb
+import blobly.mf4
 import os
-import player
+import blobly.player
 import time
-import transport
+import blobly.transport
 
 struct Opts {
 	source        string
@@ -49,7 +49,7 @@ struct Opts {
 
 fn main() {
 	// Before anything paces itself: on Windows every sleep rounds up to the scheduler quantum
-	// until the process asks for the 1 ms one (modules/player/pace_windows.v).
+	// until the process asks for the 1 ms one (blobly/player/pace_windows.v).
 	player.raise_timer_resolution()
 	o := parse_args() or {
 		eprintln('restbus: ${err}')
@@ -269,7 +269,7 @@ fn report_pump(sent u64, failed u64, first_err string) {
 }
 
 // run_multi replays several recorded buses at once: one stream, one clock, one open bus per
-// destination. See modules/player/multibus.v for why the buses must not each get their own
+// destination. See blobly/player/multibus.v for why the buses must not each get their own
 // player — a gateway ECU polices the timing BETWEEN them.
 // `rec` by REFERENCE, not by value: it carries the whole recording's `[]canlog.LogEntry`, and
 // under `-prod` a by-value copy in this frame would make every call this function makes cost
@@ -452,7 +452,7 @@ fn run_multi(o Opts, rec &mf4.Recording) {
 	report_pump(sent, failed, first_err)
 }
 
-// resolve_bus asks modules/player, which owns the rule — see the note there on why this is not
+// resolve_bus asks blobly/player, which owns the rule — see the note there on why this is not
 // a front-end concern.
 fn resolve_bus(buses []mf4.BusInfo, want string) !string {
 	mut names := []player.BusName{}

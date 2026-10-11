@@ -33,7 +33,7 @@ bumps survivable.
 | `vgui_glue.cpp` | lifecycle (GLFW + multi-viewport) + the ImPlot swimlane, in C++ |
 | `build_deps.sh` | fetch pinned cimgui/cimplot + build `libvgui_c.a` (Linux/WSL **and** Windows) |
 | `build_win.sh`  | 2-step Windows build of the example — a fallback; see the note below |
-| `examples/trace_chart/` | swimlane demo importing only `os` + `vgui`. **CI builds this with `modules/` OFF the path**, which is what proves this module has no app dependency |
+| `examples/trace_chart/` | swimlane demo importing only `os` + `vgui`. **CI builds this with `blobly/` OFF the path**, which is what proves this module has no app dependency |
 | `shots/`        | screenshots from the toolkit evaluation, referenced by `docs/gui_toolkit_evaluation.md` |
 
 ## Build & run (Linux / WSL)

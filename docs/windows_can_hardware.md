@@ -276,7 +276,7 @@ Quirks. The first one is the worst thing in this file, and everything under it f
   better — initialisation access belongs to one PORT, so when that port closes while siblings
   stay open XL releases it, and the next port to win it reconfigures the channel under those
   siblings, which go on running against a mode they never asked for. This is why the front ends ask
-  `transport.wire_pin_clash` before they open anything (`modules/transport/pinned.v`), and it
+  `transport.wire_pin_clash` before they open anything (`blobly/transport/pinned.v`), and it
   is the one rule here a disabled channel can still break — a disabled row keeps its transmit
   taps open on purpose, so its ports go on holding a channel the project no longer mentions
   (issue #165).
@@ -443,7 +443,7 @@ tool and is not in the release bundle** — that ships `blobly_net` only — so 
 first, or use the Discover dialog above, which does the same job and checks more before it writes:
 
 ```sh
-v -enable-globals -path "@vlib|@vmodules|modules" -o vectorcheck.exe cmd/vectorcheck
+v -enable-globals -o vectorcheck.exe cmd/vectorcheck
 ```
 
 ```sh
@@ -603,7 +603,7 @@ termination in general. On a metres-long harness the one-resistor column is wher
 appear first, and the correct answer stays 120 Ω at both ends.
 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
-`modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
+`blobly/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
 device can answer whether the driver actually refuses what that bookkeeping predicts. It holds
 one listen-only port, asks for a second bitrate, opens a matching sibling, and checks the
 refusals against the predictions — then that all of it is released when the ports close.
@@ -681,7 +681,7 @@ in *normal* mode — and `--modecheck` holds one *silent*, which is how the mism
 message now derives the direction instead of assuming it.
 
 CROSS-COMPILED FROM WSL, which is how it is run here — `v -os windows -enable-globals -path
-"@vlib|@vmodules|modules" -o vectorcheck.exe cmd/vectorcheck/main.v`, then the `.exe` from a
+"@vlib|@vmodules" -o vectorcheck.exe cmd/vectorcheck/main.v`, then the `.exe` from a
 Windows-visible directory. WSL's interop launches it as an ordinary Windows process, so it
 reaches `vxlapi64.dll` and the adapter. A Linux build of this tool warns at startup that the
 backend is Windows-only and then runs anyway — on Linux `vector:1` is an ordinary SocketCAN
@@ -780,7 +780,7 @@ rather than a bug in the backend.
 ## Bus health (fault ladder)
 
 Every backend now reports the controller's fault ladder (warning / error-passive / **BUS-OFF**)
-through one decode in `modules/transport/health.v`: PCAN via `CAN_GetStatus`, Kvaser via
+through one decode in `blobly/transport/health.v`: PCAN via `CAN_GetStatus`, Kvaser via
 `canReadStatus`, Vector from its chip state, CANsub from the device's controller status,
 SocketCAN from the kernel's error frames. The Buses panel colors the row (`BOFF` red) and the
 Log narrates transitions. The decoders are pinned to the vendors' header constants by unit

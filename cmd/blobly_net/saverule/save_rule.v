@@ -31,7 +31,7 @@ pub:
 // save_target is THE rule behind Save. Pure, and in a sub-module of the GUI rather than in
 // its main package so it has a test without linking ImGui: five review rounds on #250 each
 // moved this decision, and each fix was checked by reading. It is GUI policy — what the File
-// tab, the picker and the run state mean to Save — so it does NOT live in modules/, which
+// tab, the picker and the run state mean to Save — so it does NOT live in blobly/, which
 // knows nothing of any of them (codex round 6 on #250). CI runs it as
 // `v test cmd/blobly_net/saverule/`. The order matters and is the point:
 //

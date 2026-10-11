@@ -5,7 +5,7 @@
  * the 5.4.7 tarball ships no onelua.c. The standalone programs lua.c / luac.c are
  * deliberately omitted — we embed the library, not the interpreter.
  *
- * Build flags (set via V `#flag` in modules/lua/lua.v): -I this dir, -lm, and on
+ * Build flags (set via V `#flag` in blobly/lua/lua.v): -I this dir, -lm, and on
  * Linux -DLUA_USE_LINUX -ldl. LUA_USE_READLINE only affects lua.c (not built),
  * so no readline dependency is pulled in.
  */

@@ -1,8 +1,8 @@
 module main
 
 import os
-import candb
-import project
+import blobly.candb
+import blobly.project
 import vgui
 
 // ArxmlPick is the "which CAN cluster?" dialog: an ARXML describes every bus of a system, and

@@ -1,10 +1,10 @@
 // cmd/script — the headless script/test runner. It loads a project, brings the
 // same engine the GUI uses up (per-channel buses, simulated ECUs + the native
 // UDS server — driver-free on the in-process bus), then runs one or more Lua
-// test scripts (modules/script) and reports pass/fail. Exits non-zero if any
+// test scripts (blobly/script) and reports pass/fail. Exits non-zero if any
 // test fails, so it drops straight into CI.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/script/run.v \
+//   v -enable-globals run cmd/script/run.v \
 //       --project projects/sim-demo.blobnet tests/diag_basic.lua
 //
 // -enable-globals is required for the in-process bus (transport/inproc.v).
@@ -12,16 +12,16 @@ module main
 
 import os
 import time
-import candb
-import project
-import transport
-import isotp
-import uds
-import sim
-import sysview
-import doip
-import script
-import testports
+import blobly.candb
+import blobly.project
+import blobly.transport
+import blobly.isotp
+import blobly.uds
+import blobly.sim
+import blobly.sysview
+import blobly.doip
+import blobly.script
+import blobly.testports
 import sync.stdatomic
 
 // loops_done counts the bus-holding loops that have exited, so the runner's bounded wait at the
@@ -69,7 +69,7 @@ fn main() {
 
 	// A test that needs a particular project says so in its own head; script.agree decides what
 	// that means here, and refuses a run it cannot make true rather than producing failures that
-	// read as broken features (#115). See modules/script/project_decl.v.
+	// read as broken features (#115). See blobly/script/project_decl.v.
 	mut decls := []script.Decl{}
 	for s in scripts {
 		if d := script.declaration_of(s) {
@@ -195,7 +195,7 @@ fn main() {
 			carrier:   script.carrier_of(ch)
 		}
 		// DoIP is a different carrier, not a CAN bus: no frames, no ISO-TP, and the entity is
-		// reached by logical address over TCP. Nothing outside modules/doip ever started one,
+		// reached by logical address over TCP. Nothing outside blobly/doip ever started one,
 		// so a `type: doip` channel printed "+ UDS server" while spawning a CAN responder on an
 		// interface no CAN transport can open — the project documented an entity that was never
 		// listening. Start the real thing here.

@@ -1,9 +1,9 @@
 module main
 
 import cyclerule
-import transport
-import candb
-import j1939
+import blobly.transport
+import blobly.candb
+import blobly.j1939
 import vgui
 import watchrule
 
@@ -561,7 +561,7 @@ mut:
 // one id are two messages), and rtr for the same reason again — a remote REQUEST and its data
 // response ride one CAN id BY DESIGN, and merging them fed the `cycle (ms)` column intervals from
 // two interleaved streams. ESI is deliberately absent, here AND in the echo identity — see
-// TraceRow.esi. This list must move in step with wiretap.frame_key (modules/wiretap), which
+// TraceRow.esi. This list must move in step with wiretap.frame_key (blobly/wiretap), which
 // keys the SAME frame-kind distinction for echo claiming: the two agreeing is what keeps the
 // origin column and the grouped rows describing one world. gkey lagged it on rtr for a release.
 //

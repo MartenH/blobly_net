@@ -2,13 +2,13 @@ module main
 
 import os
 import time
-import transport
-import wiretap
-import telem
-import canlog
-import project
-import sim
-import j1939
+import blobly.transport
+import blobly.wiretap
+import blobly.telem
+import blobly.canlog
+import blobly.project
+import blobly.sim
+import blobly.j1939
 import vgui
 
 struct TraceRow {
@@ -605,7 +605,7 @@ fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
 
 // claim_echo_locked confirms the emission this frame is the echo of, and reports whether it
 // found one. The matching rules (one-shot, oldest first, width-exact) and why they are what they
-// are live in modules/wiretap. Caller holds app.mu.
+// are live in blobly/wiretap. Caller holds app.mu.
 fn (mut app App) claim_echo_locked(monitor int, iface string, f transport.CanFrame, t_ms f64) ?wiretap.Claim {
 	app.expire_pending_locked(t_ms)
 	return app.taps.claim(monitor, iface, f, t_ms)

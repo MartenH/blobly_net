@@ -1,9 +1,9 @@
 module main
 
 import time
-import uds
+import blobly.uds
 import vgui
-import sysview
+import blobly.sysview
 import diaghold
 
 // ---- The Diagnostics panel's DIDs tab ----

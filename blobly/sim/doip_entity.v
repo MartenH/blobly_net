@@ -1,0 +1,149 @@
+// Deciding what a DoIP channel hosts. Shared by the headless runner and the GUI, because an
+// entity that comes up differently depending on which started it is worse than one that does
+// not come up at all: a bench result would depend on how the tool was launched.
+module sim
+
+import os
+import blobly.project
+import blobly.sysview
+import blobly.uds
+import blobly.doip
+
+// DoipEntity is one channel's entity: the server to serve, and the VIN discovery announces.
+//
+// `announce` is always the SAME string the server returns for DID 0xF190. An entity has two
+// identity surfaces and they must not be able to disagree — a tester that finds one ECU on the
+// network and reads another out of it has no way to tell which is the lie.
+pub struct DoipEntity {
+pub:
+	// The server config to bind with, built HERE so the GUI and the runner cannot announce
+	// differently — the same reason the identity decision lives here.
+	cfg      doip.ServerCfg
+	node     string // the UDS node being served; '' = the built-in default server
+	announce string // the announced VIN, always == the served DID 0xF190
+	extra    int    // configured UDS nodes beyond the one served
+	// the described node it answers as (describe), '' = the project's content; and what to say
+	described string
+	notes     []string
+pub mut:
+	server uds.Server
+}
+
+// node_label names the served node for a UI list; the built-in default has no node name.
+pub fn (e DoipEntity) node_label() string {
+	if e.node != '' {
+		return e.node
+	}
+	return if e.described != '' { '${e.described} (described)' } else { 'default entity' }
+}
+
+// doip_entity decides what `ch` should host, or refuses.
+//
+// It refuses rather than improvises in three cases, all of which would otherwise produce an
+// entity that answers confidently with the wrong identity:
+//
+//   - every configured UDS node was rejected. Serving the built-in default in their place
+//     turns a broken configuration into a passing test.
+//   - `vin:` and the served DID 0xF190 disagree. Picking either silently makes the other a lie.
+//   - the resolved VIN is not exactly 17 bytes. vehicle_announcement zero-pads or truncates to
+//     17 while the server returns it whole, so the two surfaces would differ by construction.
+pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
+	return doip_entity_described(ch, nodes, &sysview.System{}, [])
+}
+
+// doip_entity_described is doip_entity whose server is the one `sys` describes for the node at
+// the channel's logical address (describe), when it describes one: its F190 is then the identity
+// as a configured node's is. Its live DIDs read the described node as the project simulates it on
+// CAN (`sims`, every node simulated there): a DoIP entity sends no frames of its own.
+pub fn doip_entity_described(ch project.Channel, nodes []project.NodeCfg, sys &sysview.System, sims []project.NodeCfg) !DoipEntity {
+	mut declared := 0
+	for n in nodes {
+		if _ := n.uds {
+			declared++
+		}
+	}
+	mut built := uds_nodes_doip(nodes)
+	if built.len == 0 && declared > 0 {
+		return error('all ${declared} configured UDS node(s) rejected — refusing to serve the built-in default in their place')
+	}
+	mut srv := if built.len > 0 { built[0].server } else { uds.default_server() }
+	name := if built.len > 0 { built[0].name } else { '' }
+	cfg := if built.len > 0 { nodes[built[0].src].uds } else { none }
+	d := describe(sys, sysview.TargetAddr{ doip: true, logical: ch.ecu_addr, bus: ch.name },
+		name, cfg, true)
+	mut notes := d.notes.clone()
+	if d.ok {
+		srv = d.server
+		wire_live_node(mut srv, d.node)
+		notes.prepend('diagnostics as described for ${d.node} (${os.file_name(sys.path)})')
+		notes << live_gaps(srv, d.node, sims)
+	}
+	configured := built.len > 0 || d.ok
+
+	// A CONFIGURED node's DID is the identity. The fallback server's 0xF190 is a module
+	// default rather than a configuration, so it must not win the same way.
+	mut announce := ch.vin
+	if configured {
+		if v := srv.dids[u16(0xF190)] {
+			node_vin := v.bytestr()
+			if node_vin == '' {
+				// PRESENT and empty is not the same as absent. Falling through to the default
+				// below would overwrite a configured DID with the stock VIN and skip the
+				// 17-byte check entirely, so a broken project would come up as a plausible
+				// entity and let tests pass against data it never configured.
+				return error('node "${if d.ok { d.node } else { name }}" defines DID 0xF190 with no value — an entity cannot announce an empty VIN')
+			}
+			if ch.vin != '' && node_vin != ch.vin {
+				return error('vin "${ch.vin}" and node "${if d.ok { d.node } else { name }}" DID 0xF190 "${node_vin}" are two identities for one entity')
+			}
+			announce = node_vin
+		} else if ch.vin != '' {
+			// Announced but not served: reading 0xF190 would answer NRC while discovery
+			// advertised a VIN. Serve what is announced.
+			srv.put_did(0xF190, ch.vin.bytes())
+		}
+	} else if ch.vin != '' {
+		srv.put_did(0xF190, ch.vin.bytes())
+	}
+	if announce == '' {
+		// Nothing configured either way: server_cfg advertises its built-in default, so serve
+		// that same string rather than answering NRC 0x31 for the DID it just advertised.
+		announce = doip.default_vin
+		srv.put_did(0xF190, announce.bytes())
+	}
+	if d.ok {
+		// the identity discovery advertises must be one a tester can read back as it finds the
+		// entity: in the default session, with nothing unlocked
+		if why := srv.unreadable_at_start(0xF190) {
+			return error('node "${d.node}" is described so that DID 0xF190 cannot be read (${why}), yet the entity would announce VIN "${announce}" — refusing to advertise an identity it cannot serve')
+		}
+		// a write is the declared size, and the announcement can only follow a 17-byte one
+		if n := srv.written_size(0xF190) {
+			if n != 17 {
+				return error('node "${d.node}" declares DID 0xF190 writable at ${n} bytes, not 17 — a write would change the served VIN while discovery kept the old one')
+			}
+		}
+	}
+	if announce.len != 17 {
+		return error('VIN "${announce}" is ${announce.len} bytes, not 17 — discovery would advertise a padded or truncated string while 0xF190 serves this one')
+	}
+	return DoipEntity{
+		// server_cfg() fills the module defaults for an absent eid; passing ch.eid straight
+		// into the struct suppressed them, so a channel without `eid:` advertised
+		// 00:00:00:00:00:01 as all zeros in every announcement and discovery reply.
+		cfg:      doip.ServerCfg{
+			...doip.server_cfg(ch.ecu_addr, announce, ch.eid)
+			announce_count:    ch.announce_count
+			announce_interval: ch.announce_interval
+			announce_to:       ch.announce_to
+			// a functional request is answered as a CAN node answers one: the quiet NRCs withheld
+			functional_withheld: uds.functional_suppressed
+		}
+		node:      name
+		announce:  announce
+		extra:     if built.len > 1 { built.len - 1 } else { 0 }
+		described: if d.ok { d.node } else { '' }
+		notes:     notes
+		server:    srv
+	}
+}

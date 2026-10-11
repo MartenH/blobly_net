@@ -1,0 +1,1517 @@
+// script — the blobly_net scripting runtime: an embedded Lua 5.4 interpreter
+// (blobly/lua) wired to the GUI-free protocol stack so test scripts can drive
+// diagnostics (UDS over ISO-TP), send/receive raw CAN frames, and decode/encode
+// DBC signals. The professional ergonomics (test()/check/uds:/bus.) live in the
+// Lua prelude; this file is the thin host side — it registers scalar/string
+// primitives and owns the channels, ISO-TP connections and buses a script uses.
+//
+// It is deliberately GUI-free: both the headless runner (cmd/script) and the
+// GUI Script panel construct an Env, point its output sink wherever they want
+// (stdout vs a log panel), and run a file. The same script behaves identically.
+module script
+
+import os
+import time
+import blobly.lua
+import blobly.transport
+import blobly.isotp
+import blobly.doip
+import blobly.someip
+import blobly.sim
+import blobly.uds
+import blobly.candb
+import blobly.project
+
+// ChanInfo is one channel a script may address by name: its bus interface and
+// the DBC catalog used for decode/encode on it.
+pub struct ChanInfo {
+pub:
+	name string
+	// The string a transport is OPENED with — it may carry a vendor bitrate suffix.
+	iface string
+	// The LOGICAL interface, without that suffix. Faults are keyed on this: the GUI opened
+	// with `pcan:…@250000` and the simulation loop looks up `pcan:…`, so a scripted fault on a
+	// vendor channel reported success and was stored under a key nothing would ever read.
+	key_iface string
+	db        candb.Database
+	// The simulated nodes on this channel. Carried so a script can be told that a fault cannot
+	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
+	// succeeding there is the difference between a test that fails and a test that lies.
+	nodes []project.NodeCfg
+	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
+	// channel whatever its type, so a DoIP channel failed with "No such device" from the CAN
+	// layer: the tool could simulate a DoIP ECU it could not then test.
+	carrier Carrier
+}
+
+// Carrier is the transport UDS rides on this channel. Derived from the project channel by
+// carrier_of() rather than assembled by each caller — the runner and the GUI build ChanInfo
+// separately, and a carrier only one of them filled in would make scripts behave differently
+// depending on which one launched them.
+pub struct Carrier {
+pub:
+	doip   bool
+	someip bool // a SOME/IP listener endpoint: host/port are where it binds, group what it joins
+	group  string
+	host   string
+	port   int
+	tester u16
+	ecu    u16
+}
+
+// carrier_of derives the UDS carrier from a project channel.
+// eth_kind names this carrier's Ethernet kind, or none for a CAN channel. One predicate, so a
+// third kind does not become a third `|| c.someip` in every caller.
+pub fn (c Carrier) eth_kind() ?string {
+	if c.doip {
+		return 'DoIP'
+	}
+	if c.someip {
+		return 'SOME/IP'
+	}
+	return none
+}
+
+pub fn carrier_of(ch project.Channel) Carrier {
+	if ch.is_someip() {
+		host, port := ch.someip_endpoint()
+		return Carrier{
+			someip: true
+			group:  ch.group
+			host:   host
+			port:   port
+		}
+	}
+	if !ch.is_doip() {
+		return Carrier{}
+	}
+	host, port := ch.doip_endpoint()
+	return Carrier{
+		doip:   true
+		host:   host
+		port:   port
+		tester: ch.tester_addr
+		ecu:    ch.ecu_addr
+	}
+}
+
+// TestResult is one test() outcome collected during a run.
+pub struct TestResult {
+pub:
+	name string
+	ok   bool
+	msg  string
+}
+
+struct UdsConn {
+mut:
+	// The INTERFACE, not the CAN implementation: a connection may ride ISO-TP or DoIP, and
+	// uds.Client already accepts either (cmd/doip_smoke hands it a DoipClient directly).
+	ch   isotp.Channel
+	cli  uds.Client
+	chan string // the channel this connection belongs to (DoIP reuse; see l_uds_open)
+	// the CAN response id, for a functional request to recognise this connection's answers;
+	// DoIP addresses by logical address and has none (`can` false)
+	can bool
+	rx  u32
+	ext bool
+	// opened by flash.program for a channel NAME: a later flash on the same ids takes it again
+	// rather than adding a subscriber per call that nobody reads
+	flashing bool
+	// let go by diag:close(): its channel is closed, the handle refuses, and a later uds.open on
+	// the channel opens afresh (a DoIP entity serves one connection at a time)
+	closed bool
+}
+
+// Env is one scripting session: a Lua state plus the channels/connections it can
+// reach. Construct with new_env, optionally set `on_output`, then run a script.
+
+pub struct Env {
+mut:
+	st    lua.State
+	chans []ChanInfo
+	conns []UdsConn
+	buses map[string]transport.Bus
+	// every SOME/IP session someip.call has used in this run, explicit or automatic, and the last
+	// automatic one: no session is ever sent twice, so a late reply to a timed-out call cannot
+	// complete a later one (someip.RpcClient)
+	someip_session u16
+	someip_used    map[u16]bool
+	// the script run_file is running: paths a script names (flash.program's image and seed file)
+	// resolve from its directory; '' for source text
+	script_path string
+pub mut:
+	// How every bus this engine touches is opened. See BusOpener.
+	opener    BusOpener = default_opener
+	results   []TestResult
+	on_output fn (string) = fn (s string) {
+		println(s)
+	}
+}
+
+// open_bus is how the engine reaches a bus. The default is transport.open; a host that has to
+// account for every frame it puts on the wire (the GUI attributes traffic by origin in its
+// trace) supplies its own, so script sends are not the one emitter it cannot see.
+//
+// `chan_name` rides along because two configured channels may share one physical interface: the
+// interface alone cannot say which of them a script selected, and a host resolving it back from
+// the interface would pick the first and attribute the second channel's traffic to its neighbour.
+pub type BusOpener = fn (iface string, chan_name string) !transport.Bus
+
+fn default_opener(iface string, chan_name string) !transport.Bus {
+	return transport.open(iface)
+}
+
+// new_env creates a scripting session over the given channels, loads the prelude
+// and registers the host primitives. The returned pointer is stable (heap) so it
+// can be stashed in the Lua state for the host callbacks to reach.
+pub fn new_env(chans []ChanInfo) !&Env {
+	mut env := &Env{
+		st:    lua.new()
+		chans: chans
+	}
+	env.st.set_ctx(env)
+	env.register_all()
+	env.st.do_string(prelude) or { return error('prelude load failed: ${err}') }
+	return env
+}
+
+// run_file loads and executes a Lua script file (after the prelude).
+pub fn (mut env Env) run_file(path string) ! {
+	env.script_path = os.abs_path(path)
+	defer {
+		env.script_path = ''
+	}
+	env.st.do_file(path)!
+}
+
+// run_source loads and executes Lua source text (after the prelude).
+pub fn (mut env Env) run_source(src string) ! {
+	env.st.do_string(src)!
+}
+
+// passed/failed/total summarise the collected test() results.
+pub fn (env &Env) passed() int {
+	return env.results.filter(it.ok).len
+}
+
+pub fn (env &Env) failed() int {
+	return env.results.filter(!it.ok).len
+}
+
+pub fn (env &Env) total() int {
+	return env.results.len
+}
+
+// close_reporting is close() that also answers what each bus and connection the script opened
+// counted that no frame carried (#213), by key, non-empty ones only -- sampled AFTER the handles
+// are closed, because on a shared wire a subscriber's close is where its last ring gap is booked
+// and a closed handle still answers with the wire's totals (codex on #231). Sampled before the
+// close, the loss booked by the close itself was never reported.
+pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
+	mut out := map[string]transport.BusDiagnostics{}
+	for i, mut c in env.conns {
+		if !c.closed {
+			c.ch.close()
+		}
+		d := c.ch.diagnostics()
+		if !d.is_empty() {
+			// Its own key per CONNECTION: on a backend that counts per handle, two connections
+			// on one channel are two answers, and so are two opens of one address pair
+			// (codex rounds 10 and 13 on #231).
+			out['${c.chan} (uds #${i} 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
+		}
+	}
+	for name, mut b in env.buses {
+		b.close()
+		d := b.diagnostics()
+		if !d.is_empty() {
+			out[name] = d
+		}
+	}
+	env.st.close()
+	return out
+}
+
+// close tears down the ISO-TP connections, buses and the interpreter; what they counted is
+// discarded -- see close_reporting.
+pub fn (mut env Env) close() {
+	_ = env.close_reporting()
+}
+
+// emit is every line the script produces — log(), print(), a test's verdict — handed to the
+// host's sink: stdout by default (the headless runner), the Script panel in the GUI. Nothing
+// is buffered here; a host that wants the lines keeps them itself.
+fn (mut env Env) emit(s string) {
+	env.on_output(s)
+}
+
+// find_chan resolves a channel BY NAME — and refuses a name that resolves to more than one.
+//
+// Nothing makes channel names unique: a project may carry two rows called `ETH`, and this
+// returned the FIRST, so every primitive here acted on whichever row happened to be written
+// first. On one kind of row that is a silent substitution (a send goes to the wrong wire); on
+// two kinds it is worse, because the refusals this file makes are per-carrier — `someip.listen`
+// would reject a perfectly good SOME/IP row for not being one, having found the CAN row of the
+// same name, and `uds.open` would open the wrong carrier entirely. The repo already records the
+// same trap for NODE names (cmd/blobly_net/run.v, sim/uds_nodes.v), where it went wrong twice.
+//
+// Refusing is the only answer available: no argument distinguishes the rows, so guessing is all
+// the alternative offers. Pre-existing and shared by all nine callers here, which is why it is
+// fixed HERE rather than inside the one primitive that made it visible.
+fn (env &Env) find_chan(name string) !int {
+	mut found := -1
+	for i, c in env.chans {
+		if c.name != name {
+			continue
+		}
+		if found >= 0 {
+			return error('"${name}" names more than one channel in this project; rename one, because nothing here can tell which you mean')
+		}
+		found = i
+	}
+	if found < 0 {
+		return error('unknown channel "${name}"')
+	}
+	return found
+}
+
+// bus_for returns (opening once, lazily) a persistent monitor bus for the named
+// channel, so bus.recv sees traffic from sims/other nodes on the same interface.
+fn (mut env Env) bus_for(name string) !transport.Bus {
+	ci := env.find_chan(name) or { return err }
+	// EVERY CAN primitive enters here (can.send, can.recv, the taps), so the "not a CAN wire"
+	// refusal belongs here rather than on each of them. Without it the opener is handed
+	// `someip:0.0.0.0:30490` / `doip:127.0.0.1:13400` as an interface NAME: on Linux that falls
+	// through to SocketCAN and fails with an ioctl error about a device of that spelling, which
+	// tells the author nothing about what they actually did. Guarding uds.open alone (where this
+	// started) left the same mistake reachable through three other doors.
+	if k := env.chans[ci].carrier.eth_kind() {
+		return error('"${name}" is a ${k} channel — not a CAN bus; nothing is transmitted or received as frames on it')
+	}
+	if b := env.buses[name] {
+		return b
+	}
+	b := env.opener(env.chans[ci].iface, name)!
+	env.buses[name] = b
+	return b
+}
+
+fn find_msg(db candb.Database, name string) ?candb.Message {
+	for m in db.messages {
+		if m.name == name {
+			return m
+		}
+	}
+	return none
+}
+
+fn find_sig(m candb.Message, name string) ?candb.Signal {
+	for s in m.signals {
+		if s.name == name {
+			return s
+		}
+	}
+	return none
+}
+
+// register_all binds every host primitive the prelude relies on.
+fn (mut env Env) register_all() {
+	env.st.register('__report', l_report)
+	env.st.register('__log', l_log)
+	env.st.register('__sleep', l_sleep)
+	env.st.register('__sim_fault', l_sim_fault)
+	env.st.register('__uds_open', l_uds_open)
+	env.st.register('__doip_discover', l_doip_discover)
+	env.st.register('__doip_listen', l_doip_listen)
+	env.st.register('__someip_listen', l_someip_listen)
+	env.st.register('__someip_send', l_someip_send)
+	env.st.register('__someip_call', l_someip_call)
+	env.st.register('__someip_session', l_someip_session)
+	env.st.register('__uds_session', l_uds_session)
+	env.st.register('__uds_close', l_uds_close)
+	env.st.register('__uds_read_did', l_uds_read_did)
+	env.st.register('__uds_tester_present', l_uds_tester_present)
+	env.st.register('__uds_raw', l_uds_raw)
+	env.st.register('__bus_send', l_bus_send)
+	env.st.register('__bus_recv', l_bus_recv)
+	env.st.register('__msg_template', l_msg_template)
+	env.st.register('__encode_signal', l_encode_signal)
+	env.st.register('__decode', l_decode)
+	env.st.register('__now_ms', l_now_ms)
+	env.st.register('__uds_write_did', l_uds_write_did)
+	env.st.register('__uds_sec_seed', l_uds_sec_seed)
+	env.st.register('__uds_sec_key', l_uds_sec_key)
+	env.st.register('__uds_read_dtc', l_uds_read_dtc)
+	env.st.register('__uds_reset', l_uds_reset)
+	env.st.register('__uds_comm_control', l_uds_comm_control)
+	env.st.register('__uds_dtc_setting', l_uds_dtc_setting)
+	env.st.register('__uds_clear_dtc', l_uds_clear_dtc)
+	env.st.register('__uds_raw_suppressed', l_uds_raw_suppressed)
+	env.st.register('__uds_functional', l_uds_functional)
+	env.st.register('__e2e_p01_crc', l_e2e_p01_crc)
+	env.st.register('__uds_dtcs', l_uds_dtcs)
+	env.st.register('__uds_supported_dtcs', l_uds_supported_dtcs)
+	env.st.register('__uds_dtc_count', l_uds_dtc_count)
+	env.st.register('__uds_dtc_code', l_uds_dtc_code)
+	env.st.register('__uds_snapshot_ids', l_uds_snapshot_ids)
+	env.st.register('__uds_snapshot', l_uds_snapshot)
+	env.st.register('__uds_extended', l_uds_extended)
+	env.st.register('__uds_did_size', l_uds_did_size)
+	env.st.register('__uds_ext_size', l_uds_ext_size)
+	env.st.register('__flash_open', l_flash_open)
+	env.st.register('__flash_program', l_flash_program)
+}
+
+// env_of recovers the &Env stashed in the Lua state by new_env.
+fn env_of(l lua.State) &Env {
+	return unsafe { &Env(l.get_ctx()) }
+}
+
+// ============================ host primitives ============================
+
+fn l_report(l lua.State) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	ok := l.arg_bool(2)
+	msg := l.arg_str(3)
+	env.results << TestResult{
+		name: name
+		ok:   ok
+		msg:  msg
+	}
+	if ok {
+		env.emit('  ok   ${name}')
+	} else {
+		env.emit('  FAIL ${name}: ${msg}')
+	}
+	return 0
+}
+
+fn l_log(l lua.State) int {
+	mut env := env_of(l)
+	env.emit(l.arg_str(1))
+	return 0
+}
+
+fn l_sleep(l lua.State) int {
+	ms := l.arg_int(1)
+	if ms > 0 {
+		time.sleep(ms * time.millisecond)
+	}
+	return 0
+}
+
+// l_sim_fault injects (or clears) a fault: sim_fault(node, message, kind [, ms [, signal]]).
+//
+// Injecting from a script is the point — a fault a human has to click is a demo, while a fault
+// a test can raise and clear is a regression check: drop the frame, assert the DTC appears,
+// clear it, assert it goes away.
+fn l_sim_fault(l lua.State) int {
+	mut env := env_of(l)
+	chan_name := l.arg_str(1)
+	node := l.arg_str(2)
+	msg := l.arg_str(3)
+	kind := l.arg_str(4)
+	ms := l.arg_int(5)
+	signal := l.arg_str(6)
+	ci := env.find_chan(chan_name) or { return l.fail(err.msg()) }
+	// A PASSIVE CHANNEL HAS NOTHING TO INJECT INTO. Faults are consumed by the simulation loop,
+	// and no simulation runs on an Ethernet row — the runner skips it, the GUI never plans one.
+	// Without this the fault was STORED and reported as armed whenever the channel happened to
+	// carry a DBC naming the message, so a fault test could pass while the traffic it claims to
+	// have corrupted was never touched. Refusing a fault that cannot take effect is the rule
+	// ChanInfo.nodes already exists to enforce for the CAN case.
+	if k := env.chans[ci].carrier.eth_kind() {
+		return l.fail('"${chan_name}" is a ${k} channel — nothing simulates on it, so a fault there could never take effect')
+	}
+	iface := env.chans[ci].fault_iface()
+	k := match kind {
+		'none', 'clear', '' { sim.FaultKind.none_ }
+		'drop' { sim.FaultKind.drop }
+		'bad_crc' { sim.FaultKind.bad_crc }
+		'freeze_counter' { sim.FaultKind.freeze_ctr }
+		'out_of_range' { sim.FaultKind.out_of_range }
+		else { return l.fail('unknown fault kind "${kind}"') }
+	}
+
+	// Reject a target nothing will ever read. A misspelled node or message stored under a key
+	// no engine looks at reports success and changes no traffic — which in an automated fault
+	// experiment is indistinguishable from a fault that was armed and had no effect.
+	if k != .none_ {
+		mut known := false
+		for m in env.chans[ci].db.messages_from(node) {
+			if m.name == msg {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return l.fail('"${node}" does not send "${msg}" on ${chan_name}')
+		}
+		if k == .out_of_range {
+			mut sg := signal
+			if sg == '' {
+				// choose one, as the panel does, rather than succeeding and mutating nothing
+				for m in env.chans[ci].db.messages_from(node) {
+					if m.name != msg {
+						continue
+					}
+					for cand in m.signals {
+						if sim.can_force_out_of_range(m, cand.name, prot_of(env.chans[ci].db, env.chans[ci].nodes,
+							node, msg))
+						{
+							sg = cand.name
+							break
+						}
+					}
+					break
+				}
+			}
+			if sg == '' {
+				return l.fail('no signal on "${msg}" has a value outside its declared range')
+			}
+			// Validate a signal the caller NAMED as well. Only the auto-picked case was
+			// checked, so a misspelled or full-width signal was stored happily and then
+			// transmitted an unchanged frame — the exact "armed but does nothing" outcome the
+			// rest of this validation exists to prevent.
+			mut usable := false
+			for m in env.chans[ci].db.messages_from(node) {
+				if m.name == msg
+					&& sim.can_force_out_of_range(m, sg, prot_of(env.chans[ci].db, env.chans[ci].nodes, node, msg)) {
+					usable = true
+				}
+			}
+			if !usable {
+				return l.fail('"${sg}" on "${msg}" has no value outside its declared range')
+			}
+			sim.inject(iface, node, msg, sim.Fault{
+				kind:         k
+				signal:       sg
+				remaining_ms: int(ms)
+			})
+			return 0
+		}
+		if k == .bad_crc && !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'crc') {
+			return l.fail('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing')
+		}
+		if k == .freeze_ctr
+			&& !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'counter') {
+			// The E2E counter is what freezes; a `counter` GENERATOR is an ordinary signal and
+			// keeps running by design. Without protection there is nothing to stall, and
+			// arming it would report success and change nothing.
+			return l.fail('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing')
+		}
+	}
+	sim.inject(iface, node, msg, sim.Fault{
+		kind:         k
+		signal:       signal
+		remaining_ms: int(ms)
+	})
+	return 0
+}
+
+// fault_iface is the key faults are stored under — the logical interface, falling back to the
+// transport string for channels that never had a separate one.
+pub fn (c ChanInfo) fault_iface() string {
+	return if c.key_iface != '' { c.key_iface } else { c.iface }
+}
+
+// has_protection reports whether this message really has the E2E field a fault needs.
+//
+// The named signal must EXIST in the DBC message, not merely be a non-empty string: the engine
+// attaches a misspelled protection entry happily, and then neither the stamper nor the fault
+// finds the signal — so `bad_crc` was accepted and changed no transmitted bits.
+// has_protection: whether `node` stamps `field` ('crc' or 'counter') on `msg` — by its protect:
+// entry or its DBC declaration, the one answer the simulation stamps by (sim.protection_for).
+fn has_protection(db candb.Database, nodes []project.NodeCfg, node string, msg string, field string) bool {
+	e := prot_of(db, nodes, node, msg)
+	return if field == 'crc' { e.crc != '' } else { e.counter != '' }
+}
+
+// prot_of is the protection `node` stamps on `msg` (empty when none).
+fn prot_of(db candb.Database, nodes []project.NodeCfg, node string, msg string) sim.E2e {
+	for n in nodes {
+		if n.name != node {
+			continue
+		}
+		for m in db.messages_from(node) {
+			if m.name == msg {
+				return sim.protection_for(n, m) or { sim.E2e{} }
+			}
+		}
+	}
+	return sim.E2e{}
+}
+
+fn l_uds_open(l lua.State) int {
+	return open_conn(l, 'uds.open', 0x7E0, 0x7E8, false)
+}
+
+// open_conn is uds.open: a diagnostic connection on the channel named by argument 1, CAN ids
+// tx/rx from arguments 2 and 3 (nil = the caller's defaults — uds.open's 0x7E0/0x7E8,
+// flash.program's 0x7B0/0x7B8, cmd/flash's), pushed as a handle. One body for both, so a flash
+// reaches a channel exactly as a diagnostic does: the ISO-TP channel on the bus the opener gives,
+// framed as the wire declares (a CAN-FD channel stamps its frames FD), or the channel's DoIP
+// connection. `what` names the caller in the refusals; `for_flash` marks a CAN connection as
+// flash.program's, and takes one it opened before on the same ids.
+fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	// Presence is carried by nil, not by a magic value: 0 is a valid arbitration id, and a
+	// negative one is a caller mistake — treating either as "omitted" silently redirects the
+	// request to 0x7E0/0x7E8 and reports a result from an ECU the script never addressed.
+	has_tx := !l.arg_is_nil(2)
+	has_rx := !l.arg_is_nil(3)
+	// exact: a value that is not an integer must not become id 0 — for a flash, that addresses
+	// an erase at an endpoint the script never named
+	txi := if has_tx { l.arg_int_exact(2) or { return l.fail('${what}("${name}"): tx is not an integer') } } else { 0 }
+	rxi := if has_rx { l.arg_int_exact(3) or { return l.fail('${what}("${name}"): rx is not an integer') } } else { 0 }
+	if has_tx && (txi < 0 || txi > 0x1FFF_FFFF) {
+		return l.fail('${what}("${name}"): tx = ${txi} is not a CAN identifier (0..0x1FFFFFFF)')
+	}
+	if has_rx && (rxi < 0 || rxi > 0x1FFF_FFFF) {
+		return l.fail('${what}("${name}"): rx = ${rxi} is not a CAN identifier (0..0x1FFFFFFF)')
+	}
+	tx := u32(txi)
+	rx := u32(rxi)
+	ci := env.find_chan(name) or { return l.fail(err.msg()) }
+	// 29-bit addressing is inferred from the ids, exactly as the server side infers it: an
+	// address above 0x7FF cannot be 11-bit. Opened standard, SocketCAN masks 0x18DA10F1 to
+	// 0x0F1, so a script could not reach a 29-bit server the runner had correctly started.
+	info := env.chans[ci]
+	// Not a diagnostics carrier at all: nothing here to open ISO-TP or DoIP on, and the CAN
+	// default would try to open `someip:…` as a CAN interface and fail on whatever that means
+	// to the platform. Named for what it is.
+	if info.carrier.someip {
+		return l.fail('"${name}" is a SOME/IP channel — not a diagnostics carrier; use someip.listen')
+	}
+	// A DoIP entity serves ONE TCP connection at a time — accept_and_serve stays inside the
+	// accepted connection until the peer disconnects, and nothing here closes a connection
+	// before the session ends. A second uds.open() on the same channel therefore connected and
+	// then timed out waiting for a routing activation that would never come. Hand back the
+	// live connection instead: it addresses the same entity, from the same tester address.
+	if info.carrier.doip {
+		// Argument check FIRST. Reusing before validating handed a bad call a good connection,
+		// so the refusal below silently stopped applying to every open after the first.
+		if has_tx || has_rx {
+			return l.fail('${what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
+		}
+		for i, mut c in env.conns {
+			if c.chan != name || c.closed {
+				continue
+			}
+			// Prove it is still there. The entity closes an idle connection after 60s
+			// (server.v read_message), and handing back a dead socket would fail the next
+			// request on a channel that is in fact accepting connections again.
+			c.cli.tester_present() or {
+				// A NEGATIVE RESPONSE is proof of life: the ECU received the request and
+				// refused it (wrong session, service unavailable). Reconnecting on that would
+				// tear down a healthy connection and reset the session and security state of
+				// every handle sharing this slot, turning a legitimate refusal into a silently
+				// unauthenticated retry. ONLY a transport failure means death.
+				if !probe_says_dead(err) {
+					l.push_int(i)
+					return 1
+				}
+				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
+				// holding keeps working rather than being orphaned by the repair.
+				c.ch.close()
+				fresh := doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
+					info.carrier.ecu) or {
+					return l.fail('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
+				}
+				env.conns[i] = UdsConn{
+					ch:   fresh
+					cli:  uds.new_client(fresh)
+					chan: name
+				}
+				l.push_int(i)
+				return 1
+			}
+			l.push_int(i)
+			return 1
+		}
+	}
+	// Omitted, not zero: the caller's physical pair is the CAN default.
+	ctx := if has_tx { tx } else { dtx }
+	crx := if has_rx { rx } else { drx }
+	ext := ctx > 0x7FF || crx > 0x7FF
+	if for_flash && !info.carrier.doip {
+		for i, c in env.conns {
+			if c.flashing && !c.closed && c.chan == name && c.rx == crx && c.ch.tx_id == ctx && c.ext == ext {
+				l.push_int(i)
+				return 1
+			}
+		}
+	}
+	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the
+	// tx/rx arguments do not apply — the addresses come from the channel's configuration and
+	// passing ids here is a mistake worth naming rather than ignoring.
+	ch := if info.carrier.doip {
+		isotp.Channel(doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
+			info.carrier.ecu) or {
+			return l.fail('doip open failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
+		})
+	} else {
+		isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
+			return l.fail('isotp open failed on ${name}: ${err}')
+		}, info.iface, ctx, crx, ext) or { return l.fail('isotp open failed on ${name}: ${err}') })
+	}
+	env.conns << UdsConn{
+		ch:   ch
+		cli:  uds.new_client(ch)
+		chan: name
+		can:  !info.carrier.doip
+		rx:       crx
+		ext:      ext
+		flashing: for_flash && !info.carrier.doip
+	}
+	l.push_int(env.conns.len - 1)
+	return 1
+}
+
+fn (mut env Env) conn(h int) ?&UdsConn {
+	if h < 0 || h >= env.conns.len || env.conns[h].closed {
+		return none
+	}
+	return unsafe { &env.conns[h] }
+}
+
+// l_uds_close is diag:close(): the connection let go, so the next uds.open on its channel opens
+// a new one — a DoIP entity serving one connection at a time accepts it only once this one is
+// gone. Closing a closed handle does nothing.
+fn l_uds_close(l lua.State) int {
+	mut env := env_of(l)
+	h := int(l.arg_int(1))
+	if h < 0 || h >= env.conns.len {
+		return l.fail('bad uds handle')
+	}
+	if !env.conns[h].closed {
+		env.conns[h].ch.close()
+		env.conns[h].closed = true
+	}
+	return 0
+}
+
+fn l_uds_session(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	params := c.cli.diagnostic_session(u8(l.arg_int(2))) or { return l.fail(err.msg()) }
+	l.push_bytes(params)
+	return 1
+}
+
+fn l_uds_read_did(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	data := c.cli.read_data_by_identifier(u16(l.arg_int(2))) or { return l.fail(err.msg()) }
+	l.push_bytes(data)
+	return 1
+}
+
+// l_doip_discover asks a DoIP channel's endpoint to identify itself (ISO 13400 vehicle
+// identification). Scriptable because the ANNOUNCED identity and the SERVED identity are
+// separate values that can disagree — and a test that can only read DID 0xF190 cannot see
+// half of that.
+// doip_chan resolves a channel a DoIP primitive names, with the two refusals every one of them
+// makes — ONE lookup and one wording, where discover and listen each had their own.
+fn (env &Env) doip_chan(name string) !ChanInfo {
+	ci := env.find_chan(name) or { return err }
+	info := env.chans[ci]
+	if !info.carrier.doip {
+		return error('"${name}" is not a DoIP channel')
+	}
+	return info
+}
+
+// listen_port is the port doip.listen binds: the channel `from` names decides when it is given,
+// and a `requested` port that disagrees with it is refused rather than overruled — two answers
+// to one question. Without `from`, the request or the DoIP default. Pure, so the three branches
+// are pinned by direct asserts and not only through a Lua VM and an error string.
+fn listen_port(requested int, from string, from_port int, dflt int, what string) !int {
+	if from == '' {
+		return if requested == 0 { dflt } else { requested }
+	}
+	if requested != 0 && requested != from_port {
+		return error('port ${requested} contradicts from = "${from}", whose ${what} is on port ${from_port}; give one or the other')
+	}
+	return from_port
+}
+
+// someip_chan resolves a channel a SOME/IP primitive names — doip_chan's twin, one wording.
+fn (env &Env) someip_chan(name string) !ChanInfo {
+	ci := env.find_chan(name) or { return err }
+	info := env.chans[ci]
+	if !info.carrier.someip {
+		return error('"${name}" is not a SOME/IP channel')
+	}
+	// WHO holds this endpoint is not asked here. It was, through a `live` flag the GUI filled in
+	// when it built the environment, and a snapshot can only answer one ordering: a script that
+	// began while the GUI was stopped carried `live = false` for its whole window, and a Start
+	// during it spawned the row onto the same port. transport.claim_endpoint answers both orderings
+	// from one registry, at the moment either side actually binds (transport/udpclaims.v).
+	return info
+}
+
+fn l_doip_discover(l lua.State) int {
+	env := env_of(l)
+	name := l.arg_str(1)
+	info := env.doip_chan(name) or { return l.fail('doip.discover: ${err}') }
+	v := doip.discover(info.carrier.host, info.carrier.port, 1200) or {
+		return l.fail('doip.discover("${name}") on ${info.carrier.host}:${info.carrier.port}: ${err}')
+	}
+	l.push_str(v.vin)
+	l.push_int(i64(v.logical_address))
+	return 2
+}
+
+// probe_says_dead decides whether a failed liveness probe means the connection is gone.
+//
+// A NEGATIVE RESPONSE is proof of life: the ECU received the request and refused it (wrong
+// session, service unavailable). Reconnecting on that tears down a healthy connection and
+// resets the session and security state of every handle sharing the slot — turning a
+// legitimate refusal into a silently unauthenticated retry. Only a TRANSPORT failure is death.
+//
+// A named predicate because the simulated server always answers 0x3E positively, so no project
+// can reach this from a Lua suite: it fires against a real ECU on a bench, where it cannot be
+// caught by CI. The distinction is at least pinned by a unit test.
+fn probe_says_dead(err IError) bool {
+	return err !is uds.NegativeResponse
+}
+
+// l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,
+// by listening rather than asking. Returns "vin|0xADDR" lines; the prelude shapes them.
+fn l_doip_listen(l lua.State) int {
+	port := int(l.arg_int(1))
+	window := int(l.arg_int(2))
+	mut use_ip6 := l.arg_bool(3)
+	from := l.arg_str(4)
+	mut from_port := 0
+	if from != '' {
+		// `from` names a channel: the listener takes THAT channel's own port, so a suite does
+		// not repeat a number the project already states. The prelude documented and passed
+		// this for a release while the host read three arguments and defaulted to 13400 — a
+		// script asking for AltPort's port listened on the default, heard nothing, and failed
+		// as if the entity were silent (#233). Resolved here, refused loudly when it cannot be.
+		info := env_of(l).doip_chan(from) or { return l.fail('doip.listen: ${err}') }
+		from_port = info.carrier.port
+		// AND ITS ADDRESS FAMILY. An IPv6 entity announces to ff02::1, which only a v6 listener
+		// that joined the group can hear — a port taken from the channel with the family left at
+		// the caller's default is #233 again, one family over. THE MODULE'S ONE RULE, the same
+		// one the entity announces by: the family is read off the literal, so a hostname that
+		// resolves to IPv6 only is read as v4 here exactly as it is there (docs/doip.md, the
+		// IPv6 passive-discovery limitation) — a second rule here would make the tester and the
+		// entity disagree about one channel.
+		use_ip6 = use_ip6 || doip.addr_family(info.carrier.host) == .ip6
+	}
+	use_port := listen_port(port, from, from_port, 13400, 'entity') or {
+		return l.fail('doip.listen: ${err}')
+	}
+	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
+		return l.fail('doip.listen(${use_port}): ${err}')
+	}
+	mut out := []string{}
+	for f in found {
+		// the sender endpoint travels with it: a tester that discovers an ECU passively still
+		// has to dial it, and vin+address are not routable
+		out << '${f.info.vin}|0x${f.info.logical_address:04X}|${f.from}'
+	}
+	l.push_str(out.join('\n'))
+	return 1
+}
+
+// l_someip_listen hears whatever SOME/IP the port (and a joined group) already carries — the
+// passive tester, no channel and no subscription. Returns one line per message plus the count
+// of malformed datagrams; the prelude shapes the lines. The payload travels as hex: the line
+// format is delimited text, and a payload byte can be anything.
+fn l_someip_listen(l lua.State) int {
+	port := int(l.arg_int(1))
+	window := int(l.arg_int(2))
+	mut group := l.arg_str(3)
+	from := l.arg_str(4)
+	mut from_port := 0
+	// The channel's BIND HOST travels with its port: a row deliberately bound to loopback must
+	// not become a wildcard listener just because a script named it, or the two surfaces report
+	// different traffic for what the project calls one endpoint.
+	mut host := ''
+	if from != '' {
+		// `from` names a someip channel: the listener takes THAT channel's port and group, so a
+		// suite does not repeat what the project already states — doip.listen's rule (#233),
+		// and the same refusal when the two disagree.
+		info := env_of(l).someip_chan(from) or { return l.fail('someip.listen: ${err}') }
+		from_port = info.carrier.port
+		host = info.carrier.host
+		// EMPTY IS AN ANSWER, not an absence. A channel with no `group:` is configured as a
+		// unicast listener, and accepting a script's group there silently turned it into a
+		// multicast one — the prelude promises `from` takes the channel's group and refuses a
+		// differing one, and "differing from nothing" is differing.
+		if group != '' && group != info.carrier.group {
+			joins := if info.carrier.group == '' {
+				'joins no multicast group'
+			} else {
+				'joins ${info.carrier.group}'
+			}
+			return l.fail('someip.listen: group ${group} contradicts from = "${from}", whose listener ${joins}; give one or the other')
+		}
+		if group == '' {
+			group = info.carrier.group
+		}
+	}
+	use_port := listen_port(port, from, from_port, someip.default_port, 'listener') or {
+		return l.fail('someip.listen: ${err}')
+	}
+	// The claim inside collect() refuses an endpoint another listener in this process holds,
+	// however the script named it — by channel or by bare port, both reach the same socket.
+	cap := someip.collect(host, use_port, window, group) or {
+		return l.fail('someip.listen(${use_port}): ${err}')
+	}
+	l.push_str(capture_lines(cap))
+	l.push_int(i64(cap.malformed))
+	return 2
+}
+
+// l_someip_send encodes each message (one `svc|method|iface|type|client|session|payloadhex` line,
+// fields hex, built by the prelude), sends them to `to` from the local port and hears that port
+// for the window. One socket both ways: a node with a static peer endpoint answers only the
+// port it was addressed from. Returns what listen returns.
+fn l_someip_send(l lua.State) int {
+	port := int(l.arg_int(1))
+	to := l.arg_str(2)
+	spec := l.arg_str(3)
+	window := int(l.arg_int(4))
+	if port <= 0 || port > 65535 {
+		return l.fail('someip.send: port ${port} is not a UDP port')
+	}
+	mut out := [][]u8{}
+	for line in spec.split_into_lines() {
+		f := line.split('|')
+		if f.len != 7 {
+			return l.fail('someip.send: malformed message spec')
+		}
+		mut v := []u64{}
+		for x in f[..6] {
+			v << u64(strconv_hex(x) or { return l.fail('someip.send: ${x} is not hex') })
+		}
+		limits := [u64(0xFFFF), 0xFFFF, 0xFF, 0xFF, 0xFFFF, 0xFFFF]
+		names := ['service', 'method', 'iface', 'type', 'client', 'session']
+		for i, lim in limits {
+			if v[i] > lim {
+				return l.fail('someip.send: ${names[i]} 0x${v[i]:X} does not fit')
+			}
+		}
+		payload := hex_bytes(f[6]) or { return l.fail('someip.send: payload is not hex') }
+		out << someip.encode(someip.Header{
+			service:           u16(v[0])
+			method:            u16(v[1])
+			client:            u16(v[4])
+			session:           u16(v[5])
+			protocol_version:  someip.protocol_version
+			interface_version: u8(v[2])
+			msg_type:          u8(v[3])
+		}, payload)
+	}
+	cap := someip.exchange('', port, to, out, window) or {
+		return l.fail('someip.send(${to}): ${err}')
+	}
+	l.push_str(capture_lines(cap))
+	l.push_int(i64(cap.malformed))
+	return 2
+}
+
+// l_someip_call is one request through someip.call (RpcClient correlation, the drain, the version
+// check, the peer filter, the deadline): args port, to, service, method, iface, client, session
+// (0 = the next of this run), payload hex, timeout ms. Returns the outcome ("response", "error"
+// or "timeout"), the return code, the payload and the session used.
+fn l_someip_call(l lua.State) int {
+	mut env := env_of(l)
+	port := int(l.arg_int(1))
+	to := l.arg_str(2)
+	limits := [i64(0xFFFF), 0xFFFF, 0xFF, 0xFFFF, 0xFFFF]
+	names := ['service', 'method', 'iface', 'client', 'session']
+	mut vals := []i64{}
+	for i, lim in limits {
+		// exact: 1.5 or 1e30 is refused rather than read as 0, a different header
+		v := l.arg_int_exact(3 + i) or { return l.fail('someip.call: ${names[i]} is not an integer') }
+		if v < 0 || v > lim {
+			return l.fail('someip.call: ${names[i]} ${v} does not fit')
+		}
+		vals << v
+	}
+	if vals[3] == 0 {
+		return l.fail('someip.call: client 0 is reserved (a blobly_emb node refuses it)')
+	}
+	payload := hex_bytes(l.arg_str(8)) or { return l.fail('someip.call: payload is not hex') }
+	timeout := l.arg_int(9)
+	if port <= 0 || port > 65535 {
+		return l.fail('someip.call: port ${port} is not a UDP port')
+	}
+	if vals[1] >= 0x8000 {
+		return l.fail('someip.call: method 0x${vals[1]:04X} is an event id (bit 15) — a request on it is malformed on the wire')
+	}
+	want := env.take_session(u16(vals[4])) or { return l.fail('someip.call: ${err}') }
+	// RpcClient sends the SUCCESSOR of `session`, so it starts one before
+	last := if want == 1 { u16(0xFFFF) } else { want - 1 }
+	mut cli := someip.RpcClient{
+		service:    u16(vals[0])
+		method:     u16(vals[1])
+		iface:      u8(vals[2])
+		client_id:  u16(vals[3])
+		timeout_us: u64(if timeout > 0 { timeout } else { 1000 }) * 1000
+		session:    last
+	}
+	someip.call(port, to, mut cli, payload, 'a script') or {
+		return l.fail('someip.call(${to}): ${err}')
+	}
+	outcome := match cli.state {
+		.done { 'response' }
+		else { if cli.result.timed_out { 'timeout' } else { 'error' } }
+	}
+	l.push_str(outcome)
+	l.push_int(i64(cli.result.rc))
+	l.push_bytes(cli.result.payload)
+	l.push_int(i64(cli.session))
+	return 4
+}
+
+// take_session reserves a SOME/IP request session for this run — `want` when given (0 = the next
+// automatic one): a session goes out at most once per run, whether someip.call or someip.send
+// sends it, so a late reply to one request can never complete another.
+fn (mut env Env) take_session(want u16) !u16 {
+	if want != 0 {
+		if env.someip_used[want] {
+			return error('session ${want} was already used in this run — a late reply to it could complete this request')
+		}
+		env.someip_used[want] = true
+		return want
+	}
+	mut c := env.someip_session
+	for _ in 0 .. 0xFFFF {
+		c = if c >= 0xFFFF { u16(1) } else { c + 1 }
+		if !env.someip_used[c] {
+			env.someip_used[c] = true
+			env.someip_session = c
+			return c
+		}
+	}
+	return error('every session of this run is used')
+}
+
+// l_someip_session reserves a request session for someip.send (arg: the explicit one, or 0).
+fn l_someip_session(l lua.State) int {
+	mut env := env_of(l)
+	v := l.arg_int_exact(1) or { return l.fail('someip.send: session is not an integer') }
+	if v < 0 || v > 0xFFFF {
+		return l.fail('someip.send: session ${v} does not fit')
+	}
+	s := env.take_session(u16(v)) or { return l.fail('someip.send: ${err}') }
+	l.push_int(i64(s))
+	return 1
+}
+
+// capture_lines is one line per message, the shape the prelude reads back (shape_someip).
+fn capture_lines(cap someip.Capture) string {
+	mut lines := []string{}
+	for m in cap.messages {
+		h := m.header
+		lines << '${m.at_ms}|${m.from}|${h.service:04X}|${h.method:04X}|${h.interface_version:02X}|${someip.msg_type_name(h.msg_type)}|${h.client:04X}|${h.session:04X}|${h.return_code:02X}|${m.payload.hex()}'
+	}
+	return lines.join('\n')
+}
+
+// strconv_hex reads a non-empty run of hex digits.
+fn strconv_hex(x string) ?u64 {
+	if x == '' || x.len > 16 || !x.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	return x.parse_uint(16, 64) or { return none }
+}
+
+// hex_bytes reads an even run of hex digits as bytes ('' is no bytes).
+fn hex_bytes(x string) ?[]u8 {
+	if x.len % 2 != 0 || !x.bytes().all(it.is_hex_digit()) {
+		return none
+	}
+	mut b := []u8{cap: x.len / 2}
+	for i := 0; i < x.len; i += 2 {
+		b << u8(x[i..i + 2].parse_uint(16, 8) or { return none })
+	}
+	return b
+}
+
+fn l_uds_tester_present(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.tester_present() or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_raw(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	resp := c.cli.raw(l.arg_bytes(2)) or { return l.fail(err.msg()) }
+	l.push_bytes(resp)
+	return 1
+}
+
+// uds_byte and uds_group read a script's argument for a request byte / a 24-bit DTC group,
+// refusing what does not fit rather than truncating it into a different request — -1 as a group
+// would otherwise go out as 0xFFFFFF, every DTC.
+fn uds_byte(l lua.State, i int) ?u8 {
+	v := l.arg_int_exact(i)?
+	if v < 0 || v > 0xFF {
+		return none
+	}
+	return u8(v)
+}
+
+fn l_uds_reset(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	kind := uds_byte(l, 2) or { return l.fail('reset kind ${l.arg_int(2)} is not a byte') }
+	resp := c.cli.ecu_reset(kind) or { return l.fail(err.msg()) }
+	l.push_bytes(resp)
+	return 1
+}
+
+fn l_uds_comm_control(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	control := uds_byte(l, 2) or { return l.fail('control ${l.arg_int(2)} is not a byte') }
+	ctype := uds_byte(l, 3) or { return l.fail('communication type ${l.arg_int(3)} is not a byte') }
+	c.cli.communication_control(control, ctype) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_dtc_setting(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.control_dtc_setting(l.arg_int(2) != 0) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_clear_dtc(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	group := l.arg_int_exact(2) or { return l.fail('DTC group is not an integer') }
+	if group < 0 || group > 0xFFFFFF {
+		return l.fail('DTC group ${group} is not a 24-bit value')
+	}
+	c.cli.clear_dtc(u32(group)) or { return l.fail(err.msg()) }
+	return 0
+}
+
+// l_uds_functional(channel, functional_id, req, window_ms, handle...): one request to every
+// connection named, as uds.functional does it; an array of replies in the handles' order. On a
+// DoIP channel the id is a functional LOGICAL address (nil: 0xE400) and the one connection named
+// carries it (uds_functional_doip).
+fn l_uds_functional(l lua.State) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	// exact: 0 is a CAN id, so a value that is not an integer must not become one. nil is the
+	// DoIP default address, and on a CAN channel the same refusal as any other non-integer
+	nil_id := l.arg_is_nil(2)
+	fid := if nil_id {
+		i64(doip.default_functional_address)
+	} else {
+		l.arg_int_exact(2) or { return l.fail('uds.functional: the functional id is not an integer') }
+	}
+	req := l.arg_bytes(3)
+	window := int(l.arg_int(4))
+	ci := env.find_chan(name) or { return l.fail(err.msg()) }
+	info := env.chans[ci]
+	if info.carrier.doip {
+		return env.uds_functional_doip(l, name, fid, req, window)
+	}
+	if nil_id {
+		return l.fail('uds.functional: the functional id is not an integer')
+	}
+	if k := info.carrier.eth_kind() {
+		return l.fail('uds.functional("${name}"): a ${k} channel — functional addressing here is CAN or DoIP only')
+	}
+	if fid < 0 || fid > 0x1FFF_FFFF {
+		return l.fail('uds.functional("${name}"): ${fid} is not a CAN identifier')
+	}
+	mut targets := []uds.FunctionalTarget{}
+	for i in 5 .. l.nargs() + 1 {
+		h := int(l.arg_int(i))
+		c := env.conn(h) or { return l.fail('uds.functional: bad uds handle') }
+		if !c.can || c.chan != name {
+			return l.fail('uds.functional("${name}"): a connection opened on "${c.chan}" is not a CAN target here')
+		}
+		targets << uds.FunctionalTarget{
+			client: &c.cli
+			rsp_id: c.rx
+			ext:    c.ext
+		}
+	}
+	ext := u32(fid) > 0x7FF
+	mut tap := env.opener(info.iface, name) or { return l.fail('uds.functional: ${err}') }
+	defer {
+		tap.close()
+	}
+	mut fch := isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
+		return l.fail('uds.functional: ${err}')
+	}, info.iface, u32(fid), u32(fid), ext) or { return l.fail('uds.functional: ${err}') })
+	defer {
+		fch.close()
+	}
+	replies := uds.functional(mut fch, mut tap, targets, req, if window > 0 { window } else { 1000 }) or {
+		return l.fail(err.msg())
+	}
+	push_functional_replies(l, replies)
+	return 1
+}
+
+// uds_functional_doip is uds.functional on a DoIP channel: the request goes out on the channel's
+// one connection with the functional address as its TARGET, and the entity that connection is
+// routed to answers from its own address — one TCP connection is one entity, so exactly one
+// handle, and one reply. Same outcomes as the CAN form (uds.functional_addressed).
+fn (mut env Env) uds_functional_doip(l lua.State, name string, fa i64, req []u8, window int) int {
+	if fa < 0 || fa > 0xFFFF {
+		return l.fail('uds.functional("${name}"): ${fa} is not a DoIP logical address')
+	}
+	if l.nargs() != 5 {
+		return l.fail('uds.functional("${name}"): a DoIP channel is one connection to one entity — pass its one uds.open connection')
+	}
+	mut c := env.conn(int(l.arg_int(5))) or { return l.fail('uds.functional: bad uds handle') }
+	if c.chan != name || c.ch !is doip.DoipClient {
+		return l.fail('uds.functional("${name}"): a connection opened on "${c.chan}" is not this DoIP channel')
+	}
+	mut via := uds.AddressedSend(c.ch as doip.DoipClient)
+	r := uds.functional_addressed(mut c.cli, mut via, u32(fa), req, if window > 0 {
+		window
+	} else {
+		1000
+	}) or { return l.fail(err.msg()) }
+	push_functional_replies(l, [r])
+	return 1
+}
+
+// push_functional_replies is the reply array both forms return, one table per target.
+fn push_functional_replies(l lua.State, replies []uds.FunctionalReply) {
+	l.new_table()
+	for i, r in replies {
+		l.new_table()
+		l.set_str('outcome', r.outcome.str())
+		l.set_str('resp', r.resp.bytestr())
+		l.set_int('nrc', r.nrc)
+		l.set_bool('pended', r.pended)
+		if r.err != '' {
+			l.set_str('err', r.err)
+		}
+		l.set_index(i + 1)
+	}
+}
+
+// l_e2e_p01_crc(frame, data_id, crc_pos, counter_pos, mode): AUTOSAR E2E Profile 1's CRC for a
+// frame as it stands (sim.p01_crc_bytes, what the simulation stamps with). The counter is read
+// from the low nibble of counter_pos, which ALT mode's byte choice depends on.
+fn l_e2e_p01_crc(l lua.State) int {
+	data := l.arg_bytes(1)
+	id := l.arg_int_exact(2) or { return l.fail('e2e.p01_crc: data_id is not an integer') }
+	crc_pos := l.arg_int_exact(3) or { return l.fail('e2e.p01_crc: crc_pos is not an integer') }
+	ctr_pos := l.arg_int_exact(4) or { return l.fail('e2e.p01_crc: counter_pos is not an integer') }
+	mode := l.arg_str(5)
+	if id < 0 {
+		return l.fail('data_id ${id} is not a Data ID')
+	}
+	if why := sim.p01_params_problem(u32(id), mode) {
+		return l.fail(why)
+	}
+	if crc_pos < 0 || crc_pos >= data.len || ctr_pos < 0 || ctr_pos >= data.len || crc_pos == ctr_pos {
+		return l.fail('crc_pos ${crc_pos} / counter_pos ${ctr_pos} must be distinct bytes of the ${data.len}-byte frame')
+	}
+	crc := sim.p01_crc_bytes(data, int(crc_pos), u16(id), mode, data[int(ctr_pos)] & 0x0F) or {
+		return l.fail(err.msg())
+	}
+	l.push_int(crc)
+	return 1
+}
+
+fn l_uds_raw_suppressed(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	answered := c.cli.raw_suppressed(l.arg_bytes(2)) or { return l.fail(err.msg()) }
+	l.push_bool(answered)
+	return 1
+}
+
+// push_dtc_report leaves an array of DTC records on the Lua stack: each a table of its `code`,
+// display `name` (U0121-00), `status` byte, the report's `availability` mask, and one boolean per
+// ISO 14229-1 status bit the server supports, named as uds.dtc_status_bits names them — a bit
+// outside the availability mask is absent (nil), since the server says nothing about it.
+fn push_dtc_report(l lua.State, r uds.DtcReport) {
+	l.new_table()
+	for i, rec in r.records {
+		l.new_table()
+		push_dtc_head(l, rec, r.availability)
+		l.set_int('availability', r.availability)
+		l.set_index(i + 1)
+	}
+}
+
+fn l_uds_dtcs(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mask := uds_byte(l, 2) or { return l.fail('status mask is not a byte') }
+	r := c.cli.dtcs(mask) or { return l.fail(err.msg()) }
+	push_dtc_report(l, r)
+	return 1
+}
+
+fn l_uds_supported_dtcs(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	r := c.cli.supported_dtcs() or { return l.fail(err.msg()) }
+	push_dtc_report(l, r)
+	return 1
+}
+
+// push_dtc_head sets a DTC's identity and status on the table on top: code, name, status, and a
+// boolean per ISO status bit the server supports (`avail`; 0xFF for a 0x19 04 / 06 answer, which
+// carries no availability mask).
+fn push_dtc_head(l lua.State, rec uds.DtcRecord, avail u8) {
+	l.set_int('code', rec.code)
+	l.set_str('name', rec.name())
+	l.set_int('status', rec.status)
+	for bit in uds.dtc_status_bits {
+		if avail & bit.mask != 0 {
+			l.set_bool(bit.name, rec.status & bit.mask != 0)
+		}
+	}
+}
+
+// l_uds_snapshot_ids (0x19 03): an array of {code, name, record}.
+fn l_uds_snapshot_ids(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	ids := c.cli.snapshot_ids() or { return l.fail(err.msg()) }
+	l.new_table()
+	for i, s in ids {
+		l.new_table()
+		l.set_int('code', s.code)
+		l.set_str('name', s.name())
+		l.set_int('record', s.record)
+		l.set_index(i + 1)
+	}
+	return 1
+}
+
+// dtc_args: the DTC code and the record number of a 0x19 04 / 06 call (args 2 and 3).
+fn dtc_args(l lua.State) ?(u32, u8) {
+	code := l.arg_int_exact(2)?
+	if code < 0 || code > 0xFFFFFF {
+		return none
+	}
+	rec := uds_byte(l, 3)?
+	return u32(code), rec
+}
+
+// l_uds_snapshot (0x19 04): the DTC's identity and status, and `records`, an array of
+// {number, dids = array of {id, data}}.
+fn l_uds_snapshot(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	code, rec := dtc_args(l) or { return l.fail('snapshot: a 3-byte DTC and a record number') }
+	s := c.cli.snapshot(code, rec) or { return l.fail(err.msg()) }
+	l.new_table()
+	push_dtc_head(l, s.dtc, 0xFF)
+	l.new_table()
+	for i, r in s.records {
+		l.new_table()
+		l.set_int('number', r.number)
+		l.new_table()
+		for k, d in r.dids {
+			l.new_table()
+			l.set_int('id', d.id)
+			l.set_str('data', d.data.bytestr())
+			l.set_index(k + 1)
+		}
+		l.set_field('dids')
+		l.set_index(i + 1)
+	}
+	l.set_field('records')
+	return 1
+}
+
+// l_uds_extended (0x19 06): the DTC's identity and status, `records` keyed by record number (the
+// bytes), and blobly_emb's counters by name where the answer carries them — occurrence (0x01),
+// aging (0x02), failed_cycles (0x03).
+fn l_uds_extended(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	code, rec := dtc_args(l) or { return l.fail('extended: a 3-byte DTC and a record number') }
+	e := c.cli.extended(code, rec) or { return l.fail(err.msg()) }
+	l.new_table()
+	push_dtc_head(l, e.dtc, 0xFF)
+	for r in e.records {
+		match r.number {
+			0x01 { l.set_int('occurrence', i64(r.value())) }
+			0x02 { l.set_int('aging', i64(r.value())) }
+			0x03 { l.set_int('failed_cycles', i64(r.value())) }
+			else {}
+		}
+	}
+	l.new_table()
+	for r in e.records {
+		l.push_str(r.data.bytestr())
+		l.set_index(r.number)
+	}
+	l.set_field('records')
+	return 1
+}
+
+// l_uds_did_size states a snapshot DID's size (args: handle, DID, bytes).
+fn l_uds_did_size(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	id := l.arg_int_exact(2) or { return l.fail('did_size: the DID is not an integer') }
+	n := l.arg_int_exact(3) or { return l.fail('did_size: the size is not an integer') }
+	if id < 0 || id > 0xFFFF || n < 0 || n > 4095 {
+		return l.fail('did_size: DID ${id} or size ${n} out of range')
+	}
+	c.cli.set_did_size(u16(id), int(n))
+	return 0
+}
+
+// l_uds_ext_size states an extended data record's size (args: handle, record number, bytes).
+fn l_uds_ext_size(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	rec := uds_byte(l, 2) or { return l.fail('ext_record_size: the record number is not a byte') }
+	n := l.arg_int_exact(3) or { return l.fail('ext_record_size: the size is not an integer') }
+	if n < 0 || n > 4095 {
+		return l.fail('ext_record_size: size ${n} out of range')
+	}
+	c.cli.set_ext_record_size(rec, int(n))
+	return 0
+}
+
+// l_uds_dtc_code: a DTC display name (`U0121-00`, `U0121`, any case) as its 24-bit code, or nil
+fn l_uds_dtc_code(l lua.State) int {
+	code := uds.dtc_code(l.arg_str(1)) or {
+		l.push_nil()
+		return 1
+	}
+	l.push_int(code)
+	return 1
+}
+
+fn l_uds_dtc_count(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	mask := uds_byte(l, 2) or { return l.fail('status mask is not a byte') }
+	n := c.cli.dtc_count(mask) or { return l.fail(err.msg()) }
+	l.push_int(n.count)
+	return 1
+}
+
+fn l_uds_write_did(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.write_data_by_identifier(u16(l.arg_int(2)), l.arg_bytes(3)) or {
+		return l.fail(err.msg())
+	}
+	return 0
+}
+
+fn l_uds_sec_seed(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	seed := c.cli.security_request_seed(u8(l.arg_int(2))) or { return l.fail(err.msg()) }
+	l.push_bytes(seed)
+	return 1
+}
+
+fn l_uds_sec_key(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.security_send_key(u8(l.arg_int(2)), l.arg_bytes(3)) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_read_dtc(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	dtcs := c.cli.read_dtc_by_status_mask(u8(l.arg_int(2))) or { return l.fail(err.msg()) }
+	l.push_bytes(dtcs)
+	return 1
+}
+
+// l_now_ms returns a monotonic millisecond clock for the prelude's expect/run/timers.
+fn l_now_ms(l lua.State) int {
+	l.push_int(time.ticks())
+	return 1
+}
+
+fn l_bus_send(l lua.State) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	mut bus := env.bus_for(name) or { return l.fail(err.msg()) }
+	// `format =` states the frame's format (#203); absent, the wire's declaration decides.
+	ff := transport.parse_frame_format(l.arg_str(5)) or { return l.fail(err.msg()) }
+	frame := ff.stamp(transport.CanFrame{
+		id:       u32(l.arg_int(2))
+		extended: l.arg_bool(3)
+		data:     l.arg_bytes(4)
+	}) or { return l.fail('${name}: ${err}') }
+	bus.send(frame) or { return l.fail('send failed on ${name}: ${err}') }
+	return 0
+}
+
+fn l_bus_recv(l lua.State) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	mut bus := env.bus_for(name) or { return l.fail(err.msg()) }
+	frame := bus.recv(int(l.arg_int(2))) or {
+		l.push_nil()
+		return 1
+	}
+	l.push_int(frame.id)
+	l.push_bool(frame.extended)
+	l.push_bytes(frame.data)
+	return 3
+}
+
+fn l_msg_template(l lua.State) int {
+	mut env := env_of(l)
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
+	msg := find_msg(env.chans[ci].db, l.arg_str(2)) or {
+		return l.fail('unknown message "${l.arg_str(2)}"')
+	}
+	l.push_int(msg.id)
+	l.push_bool(msg.ext)
+	l.push_bytes([]u8{len: msg.dlc})
+	return 3
+}
+
+fn l_encode_signal(l lua.State) int {
+	mut env := env_of(l)
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
+	msg := find_msg(env.chans[ci].db, l.arg_str(2)) or {
+		return l.fail('unknown message "${l.arg_str(2)}"')
+	}
+	sig := find_sig(msg, l.arg_str(3)) or {
+		return l.fail('unknown signal "${l.arg_str(3)}" in ${l.arg_str(2)}')
+	}
+	mut data := l.arg_bytes(5)
+	sig.encode(mut data, l.arg_num(4))
+	l.push_bytes(data)
+	return 1
+}
+
+fn l_decode(l lua.State) int {
+	mut env := env_of(l)
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
+	data := l.arg_bytes(4)
+	msg := env.chans[ci].db.lookup_frame(u32(l.arg_int(2)), l.arg_bool(3)) or {
+		l.push_nil()
+		return 1
+	}
+	l.new_table()
+	for s in msg.active_signals(data) {
+		l.set_num(s.name, s.physical(data))
+	}
+	return 1
+}

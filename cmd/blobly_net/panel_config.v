@@ -1,14 +1,14 @@
 module main
 
-import candb
+import blobly.candb
 import os
-import project
-import transport
+import blobly.project
+import blobly.transport
 import vgui
-import mf4
+import blobly.mf4
 import pickrule
 import panerule
-import player
+import blobly.player
 
 // is_recording_target: does this picker action open a recording? ONE predicate — the ext
 // filter, the samples shortcut and the title each asked separately, and two of the three had

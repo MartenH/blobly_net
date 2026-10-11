@@ -9,7 +9,7 @@ Lua is distributed under the **MIT license**; the copyright notice lives in
 `lua.h`, and the same text is reproduced verbatim in [`LICENSE`](LICENSE) beside
 this file so the terms are findable without reading a header (and so automated
 licence scanners see them). It is the embedded
-scripting engine for `modules/lua` / `modules/script` (scripting replacement —
+scripting engine for `blobly/lua` / `blobly/script` (scripting replacement —
 see the "custom message sending" tier roadmap).
 
 ## What's here vs. upstream
@@ -19,10 +19,10 @@ see the "custom message sending" tier roadmap).
 - `ct_lua_amalg.c` — **added by us**: a single translation unit that `#include`s
   the core + library `.c` files (what upstream's `onelua.c` does; the 5.4.7
   tarball ships no `onelua.c`). This is the file fed to the C compiler via V's
-  `#flag` in `modules/lua/lua.v`.
+  `#flag` in `blobly/lua/lua.v`.
 
 ## Upgrading
 Replace `*.c`/`*.h` from a newer tarball's `src/`, delete `lua.c`/`luac.c`, keep
 `ct_lua_amalg.c` (re-check its include list against the new `src/` Makefile's
 `CORE_O` + `LIB_O`). Build flags (`-DLUA_USE_LINUX`, `-lm`, `-ldl`) are in
-`modules/lua/lua.v`.
+`blobly/lua/lua.v`.

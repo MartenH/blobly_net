@@ -1,8 +1,8 @@
 module main
 
-import project
-import candb
-import sim
+import blobly.project
+import blobly.candb
+import blobly.sim
 
 // mkbuf returns a fixed-size NUL-terminated input buffer seeded with `s`.
 fn mkbuf(s string, size int) []u8 {

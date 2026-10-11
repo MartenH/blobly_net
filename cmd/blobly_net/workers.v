@@ -2,21 +2,21 @@ module main
 
 import os
 import time
-import project
-import candb
-import transport
+import blobly.project
+import blobly.candb
+import blobly.transport
 import loadrule
 import taprule
-import telem
-import isotp
-import uds
-import flash
-import sim
-import script
-import canlog
-import doip
-import someip
-import j1939
+import blobly.telem
+import blobly.isotp
+import blobly.uds
+import blobly.flash
+import blobly.sim
+import blobly.script
+import blobly.canlog
+import blobly.doip
+import blobly.someip
+import blobly.j1939
 import net as vnet
 import vgui
 
@@ -1589,7 +1589,7 @@ fn script_worker(app &App, path string) {
 
 // shell_worker_eth sends one command line as a SOME/IP REQUEST and renders
 // the correlated response — the client half of the emb P3 RPC design
-// (modules/someip RpcClient: one in flight, deadline, drain). The local
+// (blobly/someip RpcClient: one in flight, deadline, drain). The local
 // socket binds the manifest peer\'s PORT: the board\'s static source filter
 // accepts only its configured peer endpoint, and the WSL->LAN NAT path
 // preserves a bound source port (the emb#158 bench recipe). Single-flight

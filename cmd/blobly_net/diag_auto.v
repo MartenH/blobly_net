@@ -3,9 +3,9 @@ module main
 import os
 import time
 import vgui
-import uds
+import blobly.uds
 import diaghold
-import sysview
+import blobly.sysview
 
 // DiagAutopress is a dev hook, inert unless BLOBLY_DIAG_PRESS is set: the Diagnostics panel's
 // buttons pressed in order from the frame loop, for the headless screenshot and for timing the

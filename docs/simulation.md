@@ -15,7 +15,7 @@ inferred from a payload size, and it is applied inside `transport.open` — the 
 listen-only uses, and for the same reason: an emitter never sees the decision, it is simply
 handed a bus that frames what it sends. So generators, senders, E2E protection and the
 simulated ECUs all put real FD frames on an FD channel, with BRS when the data phase differs
-from the arbitration one. Nothing in `modules/sim` sets the flag itself, and that is the point.
+from the arbitration one. Nothing in `blobly/sim` sets the flag itself, and that is the point.
 Replay is unchanged: frames read from a recording carry the FD bits the recording captured.
 
 **One frame at a time, by hand** (#203). An FD wire carries classic frames too, so **Quick Send**
@@ -72,7 +72,7 @@ Because the database belongs to the network, a simulated ECU never restates mess
 times, signal placement or byte order. It says only what its values should *do*. Move a signal
 in the DBC and the simulation follows.
 
-**ARXML.** A `.arxml` entry is read natively (AUTOSAR 4.x system description; `modules/candb/
+**ARXML.** A `.arxml` entry is read natively (AUTOSAR 4.x system description; `blobly/candb/
 arxml.v`) — the OEM's file stays the source of truth and nothing is regenerated when a new one
 arrives. It is read-only in the DBC editor. For a consumer that needs a DBC (blobly_emb's build,
 or you, to edit), `cmd/arxml2dbc` exports one with the E2E contract as message attributes and a
@@ -920,7 +920,7 @@ signal values, real jitter, real event-driven messages, from the car itself.
 under test subtracted:
 
 ```sh
-v -enable-globals -path "@vlib|@vmodules|modules" run cmd/restbus/main.v \
+v -enable-globals run cmd/restbus/main.v \
     --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude SUT_ECU --iface vcan0
 restbus --source capture.mf4 --list          # which buses the recording holds
 restbus ... --dry-run                        # what the subtraction would do, transmitting nothing
@@ -948,7 +948,7 @@ worked: the same recorded bus mapped twice (its traffic sent two ways), and two 
 mapped onto one interface (ids that never shared a wire colliding — the collapse `mf4:busN`
 labelling exists to prevent, reintroduced by config). A mapped bus that yields no frames, or
 whose every frame belongs to the excluded node, is reported per bus rather than summed away. The subtraction itself is
-in `modules/player` (`without_senders`, `on_bus`, `check_nodes`), so the GUI will not have to
+in `blobly/player` (`without_senders`, `on_bus`, `check_nodes`), so the GUI will not have to
 re-decide any of it.
 
 **What it does with the awkward cases**, none of which the database answers on its own:
@@ -987,7 +987,7 @@ frames in the replay whenever it is the secondary sender.
 **Rest bus from a recording is shipped end to end** ([#98](https://github.com/MartenH/blobly_net/issues/98)):
 replay channels play at Start, `replay.bus` selects the recorded bus of a multi-bus `.mf4`,
 `replay.exclude` subtracts the ECU under test by DBC sender, and the Scan-recording dialog fills
-both from the file. The subtraction lives in `modules/player` (`restbus.v`: `without_senders`,
+both from the file. The subtraction lives in `blobly/player` (`restbus.v`: `without_senders`,
 `check_nodes`, `census`; `multibus.v` for several recorded buses on one clock), shared with
 `cmd/restbus`. A message the DBC gives no transmitter is always replayed in the GUI (there is no
 switch for it yet) and can be held back with `--drop-unattributed` headless; a remote frame is

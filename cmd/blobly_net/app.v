@@ -4,27 +4,27 @@ import os
 import sync
 import time
 import runtime
-import project
+import blobly.project
 import logfile
 import loadrule
 import watchrule
 import pickrule
-import transport
+import blobly.transport
 import gaterule
 import txhealth
 import diaghold
-import timebase
-import wiretap
-import candb
+import blobly.timebase
+import blobly.wiretap
+import blobly.candb
 import prefs
-import sysview
-import telem
-import sim
-import canlog
-import doip
-import j1939
+import blobly.sysview
+import blobly.telem
+import blobly.sim
+import blobly.canlog
+import blobly.doip
+import blobly.j1939
 import vgui
-import uds
+import blobly.uds
 
 const diag_tx_id = u32(0x7E0)
 const diag_rx_id = u32(0x7E8)
@@ -36,7 +36,7 @@ const trace_cap = 2000
 // they all arrive at the monitor identically. Deriving the label from the project ("this id
 // belongs to a sim node") would paint a real ECU's frame as simulated the moment it shares an
 // id with one of ours, which is the single collision most worth catching.
-// The labels and the matching live in modules/wiretap, where they can be tested: this file is
+// The labels and the matching live in blobly/wiretap, where they can be tested: this file is
 // compile-linked by CI but never run by it.
 // Identities for emissions made while the trace is paused: tracked (so their echoes are still
 // recognised as ours) but with no row to mark. They come from the TOP of the range, which the
@@ -655,7 +655,7 @@ mut:
 	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool              // single-flight: one command in flight at a time
 	shell_follow bool              // new output arrived — pin the scrollback to the bottom next frame
-	// Flash (UDS firmware download THROUGH the blobly bootloader — modules/flash;
+	// Flash (UDS firmware download THROUGH the blobly bootloader — blobly/flash;
 	// the bootloader itself is not field-updatable by design, docs/bootloader.md)
 	show_flash     bool
 	flash_img_buf  []u8     // image path: a wrapped mkimage .img or a raw .bin

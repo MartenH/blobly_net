@@ -1,0 +1,515 @@
+module uds
+
+import blobly.transport
+import blobly.isotp
+import time
+
+// MockChannel is an in-memory isotp.Channel: it records the last request and
+// replays a queue of canned responses. Lets us unit-test the UDS protocol logic
+// (response validation, negative responses, 0x78 pending retries) with no bus.
+struct MockChannel {
+pub:
+	iface string = 'mock'
+	tx_id u32
+	rx_id u32
+mut:
+	last_req  []u8
+	responses [][]u8
+	idx       int
+	waits     []int // the timeout each recv was given
+	queued    int   // how many of `responses` were already queued before the request went out
+	delay_ms  []int // per response (by index), how long the recv takes to return it
+	pending_forever bool // past `responses`, every recv answers 0x78 for the request's service
+}
+
+fn (mut m MockChannel) send(data []u8) ! {
+	m.last_req = data.clone()
+}
+
+fn (mut m MockChannel) recv(timeout_ms int) ![]u8 {
+	if timeout_ms == 0 {
+		// a drain: only what was queued before the send is there to take; an empty PDU stands for
+		// one that failed to parse (taken off the channel, an error rather than a PDU)
+		if m.idx < m.queued {
+			m.idx++
+			if m.responses[m.idx - 1].len == 0 {
+				return error('unexpected PCI 0x40')
+			}
+			return m.responses[m.idx - 1]
+		}
+		return error('timeout')
+	}
+	m.waits << timeout_ms
+	if m.idx >= m.responses.len {
+		if m.pending_forever && m.last_req.len > 0 {
+			return [u8(0x7F), m.last_req[0], 0x78]
+		}
+		return error('timeout')
+	}
+	r := m.responses[m.idx]
+	if m.idx < m.delay_ms.len && m.delay_ms[m.idx] > 0 {
+		time.sleep(m.delay_ms[m.idx] * time.millisecond)
+	}
+	m.idx++
+	return r
+}
+
+fn (mut m MockChannel) close() {}
+
+fn (mut m MockChannel) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
+
+fn client_with(responses [][]u8) (Client, &MockChannel) {
+	mut m := &MockChannel{
+		responses: responses
+	}
+	return new_client(m), m
+}
+
+fn test_read_data_by_identifier_ok() {
+	mut c, m := client_with([[u8(0x62), 0xF1, 0x90, 0x41, 0x42, 0x43]])
+	data := c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert data == [u8(0x41), 0x42, 0x43]
+	// the request PDU must be 22 F1 90
+	assert m.last_req == [u8(0x22), 0xF1, 0x90]
+}
+
+fn test_negative_response_surfaced() {
+	mut c, _ := client_with([[u8(0x7F), 0x22, 0x31]])
+	if _ := c.read_data_by_identifier(0xF190) {
+		assert false, 'expected negative response'
+	} else {
+		// the IError is a NegativeResponse carrying the NRC
+		assert err is NegativeResponse
+		ne := err as NegativeResponse
+		assert ne.sid == 0x22
+		assert ne.nrc == 0x31
+		assert err.code() == 0x31
+	}
+}
+
+fn test_response_pending_is_retried() {
+	// 0x78 (response pending) then the real positive response.
+	mut c, _ := client_with([
+		[u8(0x7F), 0x22, 0x78],
+		[u8(0x7F), 0x22, 0x78],
+		[u8(0x62), 0xF1, 0x90, 0xAA],
+	])
+	data := c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert data == [u8(0xAA)]
+}
+
+fn test_did_echo_mismatch_errors() {
+	// server echoes the wrong DID (0xF191 instead of 0xF190)
+	mut c, _ := client_with([[u8(0x62), 0xF1, 0x91, 0x00]])
+	if _ := c.read_data_by_identifier(0xF190) {
+		assert false, 'expected DID echo mismatch error'
+	}
+}
+
+fn test_wrong_service_id_errors() {
+	// positive response SID should be request+0x40; 0x99 is neither that nor 0x7F
+	mut c, _ := client_with([[u8(0x99), 0x00]])
+	if _ := c.diagnostic_session(0x01) {
+		assert false, 'expected unexpected-SID error'
+	}
+}
+
+fn test_session_and_tester_present() {
+	mut c, _ := client_with([
+		[u8(0x50), 0x01, 0x00, 0x32, 0x01, 0xF4], // session params
+		[u8(0x7E), 0x00], // tester present ack
+	])
+	params := c.diagnostic_session(0x01) or { panic(err) }
+	// returns everything after the 0x50 SID: echoed session + P2 timings
+	assert params == [u8(0x01), 0x00, 0x32, 0x01, 0xF4]
+	c.tester_present() or { panic(err) }
+}
+
+// the total allowance bounds the first wait too, and a wait that times out while pending says so
+fn test_the_budget_bounds_the_first_wait_and_pending_is_named() {
+	mut c, m := client_with([])
+	c.pending_budget_ms = 100
+	c.tester_present() or {}
+	assert m.waits == [100]
+	mut d, _ := client_with([[u8(0x7F), 0x22, 0x78]])
+	d.read_data_by_identifier(0xF190) or {
+		assert err.msg().contains('still pending'), err.msg()
+		assert err is PendingExpired, 'a server silent after 0x78 is not told apart: ${err}'
+		return
+	}
+	assert false, 'a pending that never completed was accepted'
+}
+
+fn test_nrc_name() {
+	assert nrc_name(0x38) == 'secureDataTransmissionRequired'
+	assert nrc_name(0x45) == 'reservedByExtendedDataLinkSecurityDocument'
+	assert nrc_name(0x5D) == 'deAuthenticationFailed'
+	assert nrc_name(0x94) == 'resourceTemporarilyNotAvailable'
+	assert nrc_name(0x24) == 'requestSequenceError'
+	assert nrc_name(0x72) == 'generalProgrammingFailure'
+	assert nrc_name(0x7E) == 'subFunctionNotSupportedInActiveSession'
+	assert nrc_name(0x31) == 'requestOutOfRange'
+	assert nrc_name(0x11) == 'serviceNotSupported'
+	assert nrc_name(0x78).contains('Pending')
+}
+
+fn test_answer_to_names_the_request_it_answers() {
+	rdbi := [u8(0x22), 0xF1, 0x90]
+	assert answer_to(rdbi, [u8(0x62), 0xF1, 0x90, 0x41]) == .positive
+	assert answer_to(rdbi, [u8(0x62), 0xF1, 0x89, 0x41]) == .stale // another DID's answer
+	assert answer_to(rdbi, [u8(0x7F), 0x22, 0x31]) == .negative
+	assert answer_to(rdbi, [u8(0x7F), 0x11, 0x11]) == .stale // another service's refusal
+	assert answer_to(rdbi, [u8(0x7F), 0x22, 0x78]) == .pending
+	assert answer_to(rdbi, [u8(0x7F), 0x11, 0x78]) == .stale // pending for another service
+	assert answer_to(rdbi, [u8(0x7F), 0x22]) == .malformed // a negative response without its NRC
+	assert answer_to(rdbi, [u8(0x7F), 0x22, 0x31, 0xAA]) == .malformed // or with more than it
+	assert answer_to(rdbi, [u8(0x62)]) == .malformed // too short for the DID it must echo
+	assert answer_to(rdbi, [u8(0x62), 0xF1]) == .malformed
+	// the echo is only what the request carries: 0x2C clear-all has no DDDI
+	assert answer_to([u8(0x2C), 0x03], [u8(0x6C), 0x03]) == .positive
+	assert answer_to([u8(0x2C), 0x03, 0xF3, 0x00], [u8(0x6C), 0x03]) == .malformed
+	// WriteMemoryByAddress echoes its format byte, address and size (widths in the format byte)
+	wmba := [u8(0x3D), 0x14, 0x20, 0x00, 0x10, 0x00, 0x02, 0xAA, 0xBB]
+	assert answer_to(wmba, [u8(0x7D), 0x14, 0x20, 0x00, 0x10, 0x00, 0x02]) == .positive
+	assert answer_to(wmba, [u8(0x7D), 0x14, 0x20, 0x00, 0x20, 0x00, 0x02]) == .stale // another address
+	// ResponseOnEvent echoes its event type without the storeEvent bit (6) as well as bit 7
+	assert answer_to([u8(0x86), 0x41, 0x02], [u8(0xC6), 0x01, 0x00]) == .positive
+	assert answer_to([u8(0x86), 0x41, 0x02], [u8(0xC6), 0x02, 0x00]) == .stale
+	assert answer_to(rdbi, []u8{}) == .malformed
+	// the in-process server echoes the suppress bit; tolerated
+	assert answer_to([u8(0x10), 0x83], [u8(0x50), 0x83, 0, 0x32, 0x01, 0xF4]) == .positive
+	// a sub-function is echoed without its suppress-positive-response bit
+	assert answer_to([u8(0x10), 0x83], [u8(0x50), 0x03, 0, 0x32, 0x01, 0xF4]) == .positive
+	assert answer_to([u8(0x10), 0x03], [u8(0x50), 0x01, 0, 0x32, 0x01, 0xF4]) == .stale
+	assert answer_to([u8(0x31), 0x01, 0xFF, 0x00], [u8(0x71), 0x01, 0xFF, 0x00, 0x00]) == .positive
+	assert answer_to([u8(0x31), 0x01, 0xFF, 0x00], [u8(0x71), 0x01, 0xFF, 0x01]) == .stale
+	assert answer_to([u8(0x36), 0x02, 0xAA], [u8(0x76), 0x01]) == .stale // the previous block
+	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x03], [u8(0x6F), 0xF1, 0x01, 0x03]) == .stale // another DID
+	assert answer_to([u8(0x2F), 0xF1, 0x00, 0x03], [u8(0x6F), 0xF1, 0x00, 0x03]) == .positive
+}
+
+// a duplicated answer to the previous request, still queued, is not taken for this one's
+fn test_a_stale_answer_ahead_of_the_real_one_is_discarded() {
+	mut c, _ := client_with([
+		[u8(0x7F), 0x11, 0x11], // the previous request's refusal, received twice
+		[u8(0x67), 0x01, 0xDE, 0xAD, 0xBE, 0xEF],
+	])
+	seed := c.security_request_seed(0x01) or { panic(err) }
+	assert seed == [u8(0xDE), 0xAD, 0xBE, 0xEF]
+}
+
+fn test_only_stale_answers_is_no_answer_and_says_so() {
+	mut c, _ := client_with([[u8(0x7F), 0x11, 0x11]])
+	c.tester_present() or {
+		assert err.msg().contains('1 response(s) to other requests discarded'), err.msg()
+		return
+	}
+	assert false, 'a stale answer was accepted'
+}
+
+// after a responsePending the wait is the server's P2* (plus the margin), not the client's P2
+fn test_response_pending_waits_p2_star() {
+	mut c, m := client_with([
+		[u8(0x7F), 0x22, 0x78],
+		[u8(0x62), 0xF1, 0x90, 0xAA],
+	])
+	c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert m.waits.len == 2
+	assert m.waits[0] <= c.timeout_ms
+	assert m.waits[1] > c.timeout_ms && m.waits[1] <= c.p2_star_ms + c.margin_ms
+}
+
+// pending as often as the server likes, but bounded in all: however large the P2* it announced,
+// no wait after a responsePending reaches past the request's allowance from its send
+fn test_response_pending_is_bounded_in_total() {
+	mut c, m := client_with([
+		[u8(0x7F), 0x22, 0x78],
+		[u8(0x62), 0xF1, 0x90, 0xAA],
+	])
+	c.pending_budget_ms = 50
+	c.p2_star_ms = 1_000_000
+	c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert m.waits.len == 2
+	assert m.waits[1] <= 50
+}
+
+fn test_session_timing_is_read_and_adopted() {
+	t := session_timing([u8(0x50), 0x03, 0x07, 0xD0, 0x00, 0x64]) or { panic('no timing') }
+	assert t.p2_ms == 2000 && t.p2_star_ms == 1000
+	assert session_timing([u8(0x50), 0x03]) == none
+	mut c, _ := client_with([[u8(0x50), 0x03, 0x07, 0xD0, 0x00, 0x64]])
+	c.diagnostic_session(0x03) or { panic(err) }
+	assert c.p2_star_ms == 1000 // the server's P2*, as given
+	assert c.timeout_ms == 2000 + c.margin_ms // P2 adopted: it loosens the default
+	mut d, _ := client_with([[u8(0x50), 0x03, 0x00, 0x32, 0x01, 0xF4]])
+	d.diagnostic_session(0x03) or { panic(err) }
+	assert d.timeout_ms == 50 + d.margin_ms // P2 plus the margin, never below the default
+}
+
+// an answer already queued when a request goes out cannot be its answer — the one defence against
+// a duplicated answer to an IDENTICAL earlier request, which no echo can tell apart
+fn test_what_is_queued_before_the_send_is_drained() {
+	mut m := &MockChannel{
+		responses: [
+			[u8(0x62), 0xF1, 0x90, 0x01], // the previous identical read's answer, received twice
+			[u8(0x62), 0xF1, 0x90, 0x02],
+		]
+		queued:    1
+	}
+	mut c := new_client(m)
+	data := c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert data == [u8(0x02)]
+}
+
+fn test_a_session_switch_through_raw_adopts_its_timing() {
+	mut c, _ := client_with([[u8(0x50), 0x02, 0x00, 0x32, 0x0B, 0xB8]])
+	c.raw([u8(0x10), 0x02]) or { panic(err) }
+	assert c.p2_star_ms == 30_000
+}
+
+fn test_a_malformed_response_is_an_error_not_a_stale_answer() {
+	mut c, _ := client_with([[u8(0x7F), 0x3E]])
+	c.tester_present() or {
+		assert err.msg().contains('malformed'), err.msg()
+		return
+	}
+	assert false, 'a malformed response was accepted'
+}
+
+// a channel never seen empty before the send is refused: what follows could be an old answer
+fn test_a_channel_that_never_drains_is_refused() {
+	mut m := &MockChannel{
+		responses: [][]u8{len: 70, init: [u8(0x62), 0xF1, 0x90, 0x01]}
+		queued:    70
+	}
+	mut c := new_client(m)
+	c.read_data_by_identifier(0xF190) or {
+		assert err.msg().contains('not quiet'), err.msg()
+		return
+	}
+	assert false, 'a request went out on a channel that was never drained'
+}
+
+// a queued PDU that fails to parse does not end the drain: what is behind it may be an old answer
+fn test_a_parse_error_during_the_drain_does_not_end_it() {
+	mut m := &MockChannel{
+		responses: [
+			[]u8{},
+			[u8(0x62), 0xF1, 0x90, 0x01], // the previous identical read's answer, behind the bad one
+			[u8(0x62), 0xF1, 0x90, 0x02],
+		]
+		queued:    2
+	}
+	mut c := new_client(m)
+	data := c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert data == [u8(0x02)]
+}
+
+// a suppressed request: the bit set on the wire, a quiet P2 is success, a refusal is an error
+fn test_raw_suppressed() {
+	mut c, m := client_with([])
+	answered := c.raw_suppressed([u8(0x3E), 0x00]) or { panic(err) }
+	assert !answered
+	assert m.last_req == [u8(0x3E), 0x80]
+	mut d, _ := client_with([[u8(0x7F), 0x11, 0x22]])
+	d.raw_suppressed([u8(0x11), 0x01]) or {
+		assert err.msg().contains('NRC 0x22'), err.msg()
+		return
+	}
+	assert false, 'a refusal of a suppressed request was taken for success'
+}
+
+// a server that said responsePending owes its final answer, suppressed or not
+fn test_raw_suppressed_waits_for_the_answer_a_pending_server_owes() {
+	mut c, _ := client_with([[u8(0x7F), 0x31, 0x78]])
+	c.raw_suppressed([u8(0x31), 0x01, 0xFF, 0x00]) or {
+		assert err.msg().contains('still pending'), err.msg()
+		return
+	}
+	assert false, 'a pending suppressed request was taken for done'
+}
+
+fn test_raw_suppressed_refuses_a_service_with_no_sub_function() {
+	mut c, _ := client_with([])
+	c.raw_suppressed([u8(0x22), 0xF1, 0x90]) or {
+		assert err.msg().contains('no sub-function'), err.msg()
+		c.raw_suppressed([]u8{}) or { return } // and an empty request is an error, not a panic
+		assert false
+		return
+	}
+	assert false
+}
+
+// true only for a server that ignored the bit: a positive answer after 0x78 is one ISO requires
+fn test_raw_suppressed_reports_a_positive_answer_only_when_not_owed() {
+	mut c, _ := client_with([[u8(0x7F), 0x31, 0x78], [u8(0x71), 0x01, 0xFF, 0x00]])
+	assert !(c.raw_suppressed([u8(0x31), 0x01, 0xFF, 0x00]) or { panic(err) })
+	mut d, _ := client_with([[u8(0x7E), 0x00]])
+	assert d.raw_suppressed([u8(0x3E), 0x00]) or { panic(err) }
+}
+
+fn test_is_silence() {
+	assert is_silence('timeout')
+	assert is_silence('timeout — after 2 orphan flow control frame(s), last PCI 0x30: the peer is still answering a transfer that ended')
+	assert is_silence('DoIP recv timeout')
+	assert !is_silence(isotp.stall_note)
+}
+
+fn test_the_service_helpers_send_what_iso_says() {
+	mut c, m := client_with([[u8(0x51), 0x01], [u8(0x68), 0x03], [u8(0xC5), 0x02], [u8(0x54)]])
+	assert c.ecu_reset(reset_hard) or { panic(err) } == [u8(0x01)]
+	c.communication_control(comm_disable_rx_tx, comm_type_normal) or { panic(err) }
+	c.control_dtc_setting(false) or { panic(err) }
+	c.clear_dtc(0xFFFFFF) or { panic(err) }
+	assert m.last_req == [u8(0x14), 0xFF, 0xFF, 0xFF]
+}
+
+// a group wider than 24 bits is refused, never truncated into 0xFFFFFF — all
+fn test_clear_dtc_refuses_a_group_wider_than_24_bits() {
+	mut c, m := client_with([])
+	c.clear_dtc(0x1FFFFFF) or {
+		assert err.msg().contains('wider than 24 bits'), err.msg()
+		assert m.last_req.len == 0, 'something was sent'
+		return
+	}
+	assert false
+}
+
+// a carried P2* only loosens the client: never below what it already allows
+fn test_loosen_p2_star_only_loosens() {
+	mut c := Client{}
+	c.loosen_p2_star(500)
+	assert c.p2_star_ms == default_p2_star_ms
+	c.loosen_p2_star(9000)
+	assert c.p2_star_ms == 9000
+	assert c.timeout_ms == 1000, 'the first-answer wait moved'
+}
+
+// the exchange times itself: the round trip from the send, and the part spent after a 0x78
+fn test_the_last_exchange_is_timed_with_its_pending_wait() {
+	mut m := &MockChannel{
+		responses: [[u8(0x7F), 0x22, 0x78], [u8(0x7F), 0x22, 0x78],
+			[u8(0x62), 0xF1, 0x90, 0xAA]]
+		delay_ms:  [10, 0, 30]
+	}
+	mut c := new_client(m)
+	c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert c.last.sent
+	assert c.last.pending == 2
+	assert c.last.pending_us >= 30_000
+	assert c.last.rtt_us >= 40_000
+	assert c.last.rtt_us >= c.last.pending_us
+	// the next exchange starts from nothing: no pending carried over
+	m.responses << [u8(0x62), 0xF1, 0x90, 0xBB]
+	c.read_data_by_identifier(0xF190) or { panic(err) }
+	assert c.last.pending == 0
+	assert c.last.pending_us == 0
+}
+
+// a request that fails is timed too: the operator reads how long it waited before giving up
+fn test_a_failed_exchange_is_timed() {
+	mut c, _ := client_with([[u8(0x7F), 0x22, 0x31]])
+	c.read_data_by_identifier(0xF190) or {}
+	assert c.last.rtt_us >= 0
+	assert c.last.pending == 0
+}
+
+// a request the pre-send drain stopped never went out, and says so: a caller may repeat it on a
+// fresh connection without asking the ECU twice
+fn test_a_request_stopped_before_the_send_is_not_sent() {
+	mut m := &MockChannel{
+		responses: [][]u8{len: 70, init: [u8(0x62), 0xF1, 0x90, 0x00]}
+		queued:    70
+	}
+	mut c := new_client(m)
+	c.read_data_by_identifier(0xF190) or {}
+	assert !c.last.sent
+	assert m.last_req.len == 0
+}
+
+// a server that answers responsePending for ever holds a request until pending_budget_ms (two
+// minutes by default); a stop request ends it after the 0x78 it is waiting behind, distinctly
+fn test_a_stop_ends_a_request_held_by_response_pending() {
+	mut m := &MockChannel{
+		pending_forever: true
+	}
+	mut c := new_client(m)
+	c.stop_requested = fn [m] () bool {
+		return m.waits.len >= 3
+	}
+	sw := time.new_stopwatch()
+	if _ := c.read_data_by_identifier(0xF190) {
+		assert false, 'a server that only says pending answered nothing'
+	} else {
+		assert err.msg() == abandoned_note, err.msg()
+	}
+	assert m.waits.len == 3
+	assert c.last.sent
+	assert c.last.pending == 3
+	assert sw.elapsed().milliseconds() < 1000
+}
+
+// a stop already requested sends nothing
+fn test_a_stopped_client_sends_nothing() {
+	mut c, m := client_with([[u8(0x62), 0xF1, 0x90, 0xAA]])
+	c.stop_requested = fn () bool {
+		return true
+	}
+	c.read_data_by_identifier(0xF190) or { assert err.msg() == abandoned_note, err.msg() }
+	assert m.last_req.len == 0
+	assert !c.last.sent
+}
+
+
+// A 0x62 too short to echo its DID ARRIVED: it is UndecodableAnswer (the ECU's answer, which a
+// tester holding a connection keeps it through, and which Read all counts as that DID's), never
+// the generic error a lost connection is.
+fn test_a_malformed_read_answer_is_undecodable_not_a_failure() {
+	for resp in [[u8(0x62), 0xF1], [u8(0x62)]] {
+		mut c, _ := client_with([resp])
+		if _ := c.read_data_by_identifier(0xF190) {
+			assert false
+		} else {
+			assert err is UndecodableAnswer, '${resp}: ${err}'
+			assert err.msg().contains('malformed'), err.msg()
+		}
+	}
+	// a negative response without its NRC is malformed the same way
+	mut d, _ := client_with([[u8(0x7F), 0x22]])
+	if _ := d.read_data_by_identifier(0xF190) {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	// and a silence is not
+	mut e, _ := client_with([])
+	if _ := e.read_data_by_identifier(0xF190) {
+		assert false
+	} else {
+		assert err !is UndecodableAnswer
+	}
+}
+
+// a suppressed request answered 0x78 and then positively is done, and said so (a keep-alive
+// reads this as the session kept, #401)
+fn test_raw_suppressed_pending_then_positive_is_success() {
+	mut c, _ := client_with([[u8(0x7F), 0x3E, 0x78], [u8(0x7E), 0x00]])
+	answered := c.raw_suppressed([u8(0x3E), 0x00]) or { panic(err) }
+	assert !answered
+	assert c.last.pending == 1
+}
+
+// a CAN bus closed under a held channel ends the pre-send drain at once, as the carrier's error —
+// not 64 failed reads called a channel that is not quiet (#401)
+fn test_a_closed_bus_ends_the_drain_as_the_carriers_error() {
+	mut ch := isotp.open_software('inproc:uds-closed-drain', 0x7E0, 0x7E8, false) or { panic(err) }
+	mut c := new_client(ch)
+	ch.close()
+	c.read_data_by_identifier(0xF190) or {
+		assert err.msg().ends_with('bus is closed'), err.msg()
+		return
+	}
+	assert false, 'a request on a closed bus succeeded'
+}

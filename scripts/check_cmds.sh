@@ -1,8 +1,8 @@
 #!/bin/sh
 # check_cmds.sh — type-check EVERY cmd/ entry point, for BOTH OS targets, from one machine.
 #
-# Nothing else in CI compiles a CLI tool: `v test modules/` covers the engine and runtests.sh
-# runs the Lua suites through the headless runner. So a rename in modules/ could break any of
+# Nothing else in CI compiles a CLI tool: `v test blobly/` covers the engine and runtests.sh
+# runs the Lua suites through the headless runner. So a rename in blobly/ could break any of
 # the tools in cmd/ and the build stayed green — #217 retired a helper and broke cmd/vectorcheck,
 # the tool you reach for when you suspect the HARDWARE, and two smoke tools sat broken on
 # Windows for months (#220). `-check` stops before C: no GLFW, no FreeType, no linker, so both
@@ -20,7 +20,7 @@ for d in cmd/*/; do
 	d="${d%/}"
 	for os in $targets; do
 		n=$((n + 1))
-		if out="$("$V" -os "$os" -enable-globals -path '@vlib|@vmodules|modules|libs' -check "$d" 2>&1)"; then
+		if out="$("$V" -os "$os" -enable-globals -path '@vlib|@vmodules|libs' -check "$d" 2>&1)"; then
 			:
 		else
 			fail=$((fail + 1))

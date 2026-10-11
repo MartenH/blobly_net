@@ -1,9 +1,9 @@
 module main
 
-import candb
+import blobly.candb
 import gaterule
-import transport
-import j1939
+import blobly.transport
+import blobly.j1939
 import watchrule
 
 // WHICH WIRE A ROW IS FILED UNDER, and which databases a frame on it decodes against (#330).

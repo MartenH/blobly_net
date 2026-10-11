@@ -3,11 +3,11 @@
 // existing uds.Client rides a doip.DoipClient (which implements isotp.Channel)
 // unchanged. Also exercises UDP vehicle discovery.
 //
-//   v -path "@vlib|@vmodules|modules" run cmd/doip_smoke/smoke.v [port]
+//   v run cmd/doip_smoke/smoke.v [port]
 module main
 
-import doip
-import uds
+import blobly.doip
+import blobly.uds
 import net
 import os
 import time

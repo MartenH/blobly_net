@@ -6,7 +6,7 @@
 // the blobly_net Trace Chart's dump worker; run it against emb's trace_multicore demo:
 //
 //   (emb)  examples/trace_multicore/bin/trace_multicore vcan0 &
-//   v -path "@vlib|@vmodules|modules" run cmd/trace_dump/dump.v vcan0 0x0003 path/to/trace-manifest.csv
+//   v run cmd/trace_dump/dump.v vcan0 0x0003 path/to/trace-manifest.csv
 //
 // args: [iface=vcan0] [core_mask=0] [manifest.csv]  (mask 0 = the single receiving core;
 // 0x0003 = cores 0+1). The manifest supplies the config-driven trace frame ids; without it the
@@ -14,9 +14,9 @@
 module main
 
 import os
-import transport
-import isotp
-import telem
+import blobly.transport
+import blobly.isotp
+import blobly.telem
 
 fn main() {
 	iface := if os.args.len > 1 { os.args[1] } else { 'vcan0' }

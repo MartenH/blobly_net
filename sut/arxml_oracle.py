@@ -3,7 +3,7 @@
 `cmd/arxml2dbc --dump` prints, so the two can be diffed by `diff` alone.
 
     python3 sut/arxml_oracle.py dbc/example.arxml [--cluster Body] > /tmp/oracle.txt
-    v -enable-globals -path "@vlib|@vmodules|modules" run cmd/arxml2dbc/ dbc/example.arxml --dump > /tmp/ours.txt
+    v -enable-globals run cmd/arxml2dbc/ dbc/example.arxml --dump > /tmp/ours.txt
     diff /tmp/oracle.txt <(grep -v -e '^e2e-layout' -e '^e2e-header' /tmp/ours.txt)
 
 An independent implementation is the point (see README.md): agreement between a V reader and a

@@ -1,0 +1,912 @@
+// dbc — a pragmatic parser for the DBC (CAN database) file format, producing the
+// candb Message/Signal model the rest of the tester decodes against. This is the
+// Phase 5 replacement for the hand-coded `sampledb` catalog: load real .dbc files
+// instead of describing layouts in V.
+//
+// Supported today (the subset our messages need + the common cases):
+//   BO_  <id> <Name>: <dlc> <transmitter>            — message definition
+//   SG_  <Name> [mux] : <start>|<len>@<order><sign> (<factor>,<offset>)
+//                       [<min>|<max>] "<unit>" <receivers>   — signal definition
+//   VAL_ <id> <Signal> <int> "label" <int> "label" … ;       — value table (enum)
+//   CM_ SG_ <id> <Signal> "comment" ;                        — signal description
+// @order: 1 = Intel/little-endian, 0 = Motorola/big-endian.  sign: + unsigned, - signed.
+// Multiplexor markers (M / m<n>) are tolerated but not yet modelled. Other DBC
+// records (BU_, BA_, network attrs, …) are ignored.
+module candb
+
+import blobly.j1939
+import os
+
+// Database is a parsed set of CAN messages with id lookup.
+pub struct Database {
+pub mut:
+	messages []Message
+	nodes    []string // ECU nodes declared by the DBC BU_ record
+	// what an ARXML cluster says about its bus, set by open_database on the database built from
+	// it ('' name for a DBC): so a check compares a row with the parse that was LOADED, never a
+	// later one of the same path (#439)
+	arxml ArxmlBus
+}
+
+// ArxmlBus is what an ARXML cluster states about the bus that carries it.
+pub struct ArxmlBus {
+pub:
+	name        string // the cluster's identifier (ArxmlCluster.bus); '' when not from an ARXML
+	file        string // the file's base name, for messages
+	baudrate    int    // 0: not stated
+	fd_baudrate int    // 0: not stated
+	fd          bool   // carries a CAN-FD frame (ArxmlCluster.carries_fd)
+}
+
+// lookup returns the message defined for `id`, if any (exact id match).
+pub fn (db Database) lookup(id u32) ?Message {
+	for m in db.messages {
+		if m.id == id {
+			return m
+		}
+	}
+	return none
+}
+
+// j1939_pgn extracts the Parameter Group Number from a 29-bit J1939 id. The layout and the
+// PDU1/PDU2 rule live in `blobly/j1939` (`j1939.Id`); this is that answer under the name candb
+// has always given it, so the database's PGN-fallback lookup and the trace's reading of an id
+// cannot disagree about which bits are the PGN.
+pub fn j1939_pgn(id u32) u32 {
+	return j1939.pgn(id)
+}
+
+// lookup_frame resolves a received frame to a message: exact id first, then —
+// for extended (29-bit) frames only — a J1939 PGN match that ignores the
+// priority and source-address bits. Real J1939 DBCs (e.g. the CSS/CANedge
+// ones) encode prio+PGN+SA in the BO_ id, so live frames from a different
+// source address never match exactly; the PGN is the stable key.
+pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
+	// exact match must respect the frame KIND: a standard and an extended
+	// frame may share the numeric id, and decoding std traffic against the
+	// ext definition (or vice versa) is silent corruption
+	for m in db.messages {
+		if m.id == id && m.ext == ext {
+			return m
+		}
+	}
+	if !ext {
+		return none
+	}
+	pgn := j1939_pgn(id)
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn {
+			return m
+		}
+	}
+	return none
+}
+
+// j1939_declared says whether the file declared ANY message J1939 (`BA_ "VFrameFormat" …
+// J1939PG`, per message or as the file-wide default). The one question a front end asks before
+// reading 29-bit ids as priority/PGN/source-address: the declaration is the database's, never
+// inferred from the ids (see Message.j1939).
+pub fn (db Database) j1939_declared() bool {
+	// AND EXTENDED. A parameter group is a 29-bit identifier by definition, and the DBC editor
+	// can turn a message marked J1939PG into a standard-CAN one without clearing the mark — so
+	// the flag alone declared a database J1939 after that edit, and auto mode then read an
+	// 11-bit bus's frames as parameter groups (codex). The two lookups below already pair the
+	// flag with `ext` for the same reason.
+	return db.messages.any(it.j1939 && it.ext)
+}
+
+// lookup_pgn resolves a J1939 parameter group to its message: a DECLARED J1939 message with the
+// PGN first, else any extended message with it. For a caller that holds a PGN and not a frame —
+// a transport-protocol transfer announces one — and must not go through an exact id it would
+// have to compose, since an unrelated extended `BO_` can sit at exactly that id (codex on #329).
+pub fn (db Database) lookup_pgn(pgn u32) ?Message {
+	for m in db.messages {
+		if m.ext && m.j1939 && j1939_pgn(m.id) == pgn {
+			return m
+		}
+	}
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn {
+			return m
+		}
+	}
+	return none
+}
+
+// lookup_pgn_sa resolves a J1939 parameter group FROM A KNOWN SOURCE ADDRESS to the message the
+// database spells at exactly that address — declared first, then any extended message — and
+// none where it spells none for that address (the caller then falls back to lookup_pgn). A
+// database may define one PGN at several addresses with different layouts, and a transfer's
+// announcement names its originator (codex on #329).
+pub fn (db Database) lookup_pgn_sa(pgn u32, sa u8) ?Message {
+	for m in db.messages {
+		if m.ext && m.j1939 && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
+			return m
+		}
+	}
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn && u8(m.id & 0xFF) == sa {
+			return m
+		}
+	}
+	return none
+}
+
+// pgn_sa_contested says whether the database defines MORE THAN ONE message at a (PGN, SA) — two
+// priorities, say — so that a transfer's payload, whose announcement carries neither, cannot be
+// told which layout it has. A consumer that would decode it should decode nothing instead of
+// the first definition (codex on #329). Where any of them is declared J1939, only the declared
+// ones count: an undeclared 29-bit message at the same pair is a coincidence (`pgn_candidates`).
+pub fn (db Database) pgn_sa_contested(pgn u32, sa u8) bool {
+	return pgn_candidates([db], pgn, int(sa)).len > 1
+}
+
+// pgn_layouts_agree says whether every extended message defining `pgn` carries the SAME signal
+// layout. A J1939 DBC repeats one parameter group per source address, and those repeats
+// normally share the layout — then any of them decodes a frame from an unspelled address. Where
+// they do NOT (source-specific variants with different signals), a consumer decoding by PGN
+// alone cannot know which applies and should decode nothing (codex on #329). True for a PGN
+// defined once or not at all.
+pub fn (db Database) pgn_layouts_agree(pgn u32) bool {
+	mut first := ''
+	for m in db.messages {
+		if !m.ext || j1939_pgn(m.id) != pgn {
+			continue
+		}
+		l := m.layout_key()
+		if first == '' {
+			first = l
+		} else if l != first {
+			return false
+		}
+	}
+	return true
+}
+
+// layout_key spells a message's signal layout — every field that decides how a byte becomes a
+// value AND how the value is shown: the names (a differently named signal is a different
+// reading of the same bits), the unit, and the value table, since a label or a unit shown from
+// the wrong definition is as wrong as a number (codex on #329).
+pub fn (m Message) layout_key() string {
+	mut parts := []string{cap: m.signals.len + 1}
+	parts << '${m.dlc}'
+	for s in m.signals {
+		mut keys := s.values.keys()
+		keys.sort()
+		mut vals := []string{cap: keys.len}
+		for k in keys {
+			vals << '${k}=${s.values[k]}'
+		}
+		parts << '${s.name}|${s.start_bit}|${s.length}|${s.byte_order}|${s.factor}|${s.offset}|${s.is_signed}|${s.is_multiplexor}|${s.is_multiplexed}|${s.multiplexor_value}|${s.unit}|${vals.join(',')}'
+	}
+	return parts.join(';')
+}
+
+// pgn_layouts_agree_in is pgn_layouts_agree over SEVERAL databases at once: a wire may carry
+// two files each defining the PGN once, differently, and per-file agreement says nothing about
+// that (codex on #329). The declared definitions decide where there are any — the rule
+// `pgn_message_in` falls back by.
+pub fn pgn_layouts_agree_in(dbs []Database, pgn u32) bool {
+	return layouts_agree(pgn_candidates(dbs, pgn, -1).map(it.msg))
+}
+
+// PgnMatch is what a J1939 parameter group FROM a known source address decodes against over
+// one wire's databases: the message, or — where definitions exist but cannot be told apart —
+// none, and `refused` says why, so a caller can say it rather than show the row undecoded in
+// silence. Neither: nothing defines the group.
+pub struct PgnMatch {
+pub:
+	found   bool
+	msg     Message
+	refused string
+}
+
+// pgn_message_in is THE lookup for a rejoined transport-protocol message (#331): over every
+// database on the wire, the message spelled at exactly `(pgn, sa)` first, then by PGN alone;
+// declared before undeclared at each step, the first database with a match winning. An
+// announcement carries neither priority nor layout, so wherever the candidates DISAGREE about
+// the layout nothing is decoded — two definitions at the pair in one file, two files each
+// defining the pair once with different layouts, or (for an unspelled address) the PGN's
+// definitions differing — because the first would be an arbitrary schema shown as values.
+// Where any candidate is DECLARED J1939, only the declared ones are compared: an undeclared
+// 29-bit message at the same id is a coincidence, not a second definition of the group.
+pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
+	exact := pgn_candidates(dbs, pgn, int(sa))
+	if exact.len > 0 {
+		return judge_candidates(exact, true, 'PGN 0x${pgn:04X} from SA 0x${sa:02X}')
+	}
+	by_pgn := pgn_candidates(dbs, pgn, -1)
+	if by_pgn.len == 0 {
+		return PgnMatch{}
+	}
+	return judge_candidates(by_pgn, false, 'PGN 0x${pgn:04X} (not spelled at SA 0x${sa:02X})')
+}
+
+// PgnCandidate is one definition and the database (by index) that holds it.
+struct PgnCandidate {
+	msg Message
+	db  int
+}
+
+// pgn_candidates is every extended message over ALL the wire's databases defining `pgn` —
+// at exactly source address `sa`, or at any (`sa` < 0) — in database order, with
+// the declared ones kept where there are any, applied ONCE to the whole set. Nothing is judged per file before this
+// filter, so an undeclared pair in one file cannot pre-empt the declared one in another.
+fn pgn_candidates(dbs []Database, pgn u32, sa int) []PgnCandidate {
+	mut all := []PgnCandidate{}
+	for i, db in dbs {
+		for m in db.messages {
+			if m.ext && j1939_pgn(m.id) == pgn && (sa < 0 || int(m.id & 0xFF) == sa) {
+				all << PgnCandidate{m, i}
+			}
+		}
+	}
+	if all.any(it.msg.j1939) {
+		return all.filter(it.msg.j1939)
+	}
+	return all
+}
+
+// judge_candidates is THE decision over a filtered candidate set, for both steps: contested
+// where one FILE holds two of them at one (PGN, SA) (`one_per_file`; the PGN-only fallback
+// expects one definition per source address in a file), refused where their layouts disagree,
+// else the first.
+fn judge_candidates(cs []PgnCandidate, one_per_file bool, what string) PgnMatch {
+	if one_per_file {
+		mut seen := map[int]bool{}
+		for c in cs {
+			if c.db in seen {
+				return PgnMatch{
+					refused: '${what} is defined more than once in one database (${names_of(cs.map(it.msg))}); not decoded'
+				}
+			}
+			seen[c.db] = true
+		}
+	}
+	ms := cs.map(it.msg)
+	if !layouts_agree(ms) {
+		return PgnMatch{
+			refused: '${what} has ${ms.len} definitions with different layouts (${names_of(ms)}); not decoded'
+		}
+	}
+	return PgnMatch{
+		found: true
+		msg:   ms[0]
+	}
+}
+
+fn layouts_agree(ms []Message) bool {
+	if ms.len < 2 {
+		return true
+	}
+	first := ms[0].layout_key()
+	for m in ms[1..] {
+		if m.layout_key() != first {
+			return false
+		}
+	}
+	return true
+}
+
+// names_of lists every candidate, a name per definition: two files may both call it DM1.
+fn names_of(ms []Message) string {
+	return ms.map('${it.name} 0x${it.id:08X}').join(', ')
+}
+
+// messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
+// named `node` is responsible for sending. Through senders(), so a node declared only as an
+// ADDITIONAL transmitter (a DBC BO_TX_BU_, an ARXML frame two ECUs send) gets its frames too;
+// filtered on `sender` alone, such a node simulated nothing while the database listed it.
+pub fn (db Database) messages_from(node string) []Message {
+	return db.messages.filter(node in it.senders())
+}
+
+// remove_node forgets an ECU everywhere the database names it: the node list, and every
+// message it sends (sender or additional transmitter) or receives. The writer declares in BU_
+// every node the file REFERENCES (not only the node list, since #273 round 39: a file whose SG_
+// names an undeclared receiver is one other tools refuse), so a deletion that touched the list
+// alone came back on the next Save — the editor showed the node gone and the file kept it
+// (codex on #273 round 50). One rule here, so the editor and a script agree on what deleting
+// a node means.
+pub fn (mut db Database) remove_node(name string) {
+	db.nodes = db.nodes.filter(it != name)
+	for mut m in db.messages {
+		if m.sender == name {
+			m.sender = ''
+		}
+		m.tx_nodes = m.tx_nodes.filter(it != name)
+		for mut s in m.signals {
+			s.receivers = s.receivers.filter(it != name)
+		}
+	}
+}
+
+// load_dbc_file reads and parses a .dbc file from disk.
+pub fn load_dbc_file(path string) !Database {
+	return parse_dbc(os.read_file(path)!)!
+}
+
+// --- internal mutable builders (final Message/Signal are immutable) ----------
+
+struct SigBuilder {
+mut:
+	name              string
+	start_bit         int
+	length            int
+	factor            f64 = 1.0
+	offset            f64
+	minimum           f64
+	maximum           f64
+	unit              string
+	desc              string
+	values            map[u64]string
+	is_signed         bool
+	byte_order        ByteOrder
+	receivers         []string
+	is_multiplexor    bool
+	is_multiplexed    bool
+	multiplexor_value int
+}
+
+struct MsgBuilder {
+mut:
+	name     string
+	id       u32
+	ext      bool
+	dlc      int
+	sender   string
+	tx_nodes []string // additional transmitters from BO_TX_BU_
+	cycle_ms int
+	j1939    bool
+	// whether a per-message BA_ record was seen at all: a file may default to J1939PG and
+	// override single frames back to StandardCAN, and "stated, and not J1939" must beat the
+	// default rather than reading like silence.
+	j1939_stated bool
+	e2e          E2eDecl
+	sigs         []SigBuilder
+}
+
+// CAN_EFF_FLAG marks an extended (29-bit) id in a DBC BO_ record.
+const can_eff_flag = u32(0x8000_0000)
+const can_eff_mask = u32(0x1FFF_FFFF)
+
+// parse_dbc parses DBC text into a Database. Pure (no I/O) so it is directly
+// unit-testable. Returns an error only on a structurally broken BO_/SG_ line.
+pub fn parse_dbc(text string) !Database {
+	mut msgs := []MsgBuilder{}
+	// VFrameFormat is resolved AFTER the whole file has been read, because a value cannot be
+	// judged until the enum it indexes is known and a DBC does not promise the order of its
+	// records. Collected raw here; interpreted below.
+	mut fmt_choices := []string{}
+	mut fmt_lines := []string{} // per-message `BA_` records
+	mut fmt_default := '' // the `BA_DEF_DEF_` record
+	// keyed by the RAW DBC id (EFF bit intact): auxiliary records (VAL_/CM_/
+	// BA_) carry the same raw id as their BO_, and a standard and an extended
+	// frame may share the numeric id — stripping here would attach one
+	// frame's aux records to the other
+	mut by_id := map[u32]int{} // raw DBC id -> index into msgs
+	mut cur := -1 // index of the message SG_ lines attach to
+	mut nodes := []string{}
+	mut e2e_defaults := []string{}
+
+	for raw_line in text.split_into_lines() {
+		line := raw_line.trim_space()
+		if line.starts_with('BO_ ') {
+			mb := parse_bo(line)!
+			raw := if mb.ext { mb.id | can_eff_flag } else { mb.id }
+			by_id[raw] = msgs.len
+			cur = msgs.len
+			msgs << mb
+		} else if line.starts_with('SG_ ') {
+			if cur < 0 {
+				return error('SG_ line with no preceding BO_: ${line}')
+			}
+			msgs[cur].sigs << parse_sg(line)!
+		} else if line.starts_with('BO_TX_BU_ ') {
+			apply_tx_bu(mut msgs, by_id, line)
+		} else if line.starts_with('VAL_ ') {
+			apply_val(mut msgs, by_id, line)
+		} else if line.starts_with('CM_ SG_ ') {
+			apply_cm_sg(mut msgs, by_id, line)
+		} else if line.starts_with('BU_:') {
+			// BU_: NodeA NodeB …  — the declared ECU nodes
+			nodes = line[4..].fields()
+		} else if line.starts_with('BA_ "GenMsgCycleTime"') {
+			apply_cycle_time(mut msgs, by_id, line)
+		} else if line.starts_with('BA_ "E2E') {
+			apply_e2e_attr(mut msgs, by_id, line)
+		} else if line.starts_with('BA_DEF_DEF_ "E2E') {
+			// a file-wide default is a declaration too, as for VFrameFormat: applied below to
+			// every message that states any E2E attribute of its own
+			e2e_defaults << line
+		} else if line.starts_with('BA_ "VFrameFormat"') {
+			fmt_lines << line
+		} else if line.starts_with('BA_DEF_DEF_ "VFrameFormat"') {
+			// THE FILE-WIDE DEFAULT IS A DECLARATION TOO. A DBC states an attribute's default
+			// once and then overrides only the exceptions, so a J1939 database can declare
+			// J1939PG here and carry no per-message BA_ at all — read as "no declaration", every
+			// frame in it came back not-J1939, which is the same explicit-file-answered-wrongly
+			// case the both-spellings rule exists to prevent (codex on #289).
+			fmt_default = line
+		} else if line.starts_with('BA_DEF_ BO_ "VFrameFormat"') {
+			fmt_choices = frame_format_choices(line)
+		}
+		// other records (BA_DEF_, blank, …) are ignored.
+	}
+
+	// VFrameFormat, now that the file's own enum ordering is known
+	default_j1939 := if fmt_default != '' {
+		frame_format_is_j1939(fmt_default, 2, fmt_choices)
+	} else {
+		false
+	}
+	for line in fmt_lines {
+		apply_frame_format(mut msgs, by_id, line, fmt_choices)
+	}
+	// E2E defaults, now that every message's own records are known: a message that states none
+	// is not protected by a default, and one it states itself wins
+	for line in e2e_defaults {
+		f := line.trim_right(';').fields()
+		if f.len < 3 {
+			continue
+		}
+		for mut mb in msgs {
+			if mb.e2e.declared() {
+				set_e2e_field(mut mb.e2e, f[1], f[2..].join(' ').trim_space(), false)
+			}
+		}
+	}
+
+	// emit immutable model
+	mut out := []Message{cap: msgs.len}
+	for mb in msgs {
+		mut sigs := []Signal{cap: mb.sigs.len}
+		for sb in mb.sigs {
+			sigs << Signal{
+				name:              sb.name
+				start_bit:         sb.start_bit
+				length:            sb.length
+				factor:            sb.factor
+				offset:            sb.offset
+				minimum:           sb.minimum
+				maximum:           sb.maximum
+				unit:              sb.unit
+				desc:              sb.desc
+				values:            sb.values.clone()
+				is_signed:         sb.is_signed
+				byte_order:        sb.byte_order
+				receivers:         sb.receivers.clone()
+				is_multiplexor:    sb.is_multiplexor
+				is_multiplexed:    sb.is_multiplexed
+				multiplexor_value: sb.multiplexor_value
+			}
+		}
+		out << Message{
+			name:     mb.name
+			id:       mb.id
+			ext:      mb.ext
+			dlc:      mb.dlc
+			sender:   mb.sender
+			tx_nodes: mb.tx_nodes.clone()
+			cycle_ms: mb.cycle_ms
+			// the per-message record wins; the file-wide default fills the rest
+			j1939:   mb.j1939 || (default_j1939 && !mb.j1939_stated)
+			e2e:     mb.e2e
+			signals: sigs
+		}
+	}
+	return Database{
+		messages: out
+		nodes:    nodes
+	}
+}
+
+// apply_tx_bu parses `BO_TX_BU_ <id> : <NodeA>,<NodeB>;` — the record that declares ADDITIONAL
+// transmitters for a message whose BO_ line names only one. Ignoring it meant a database could
+// state that a node sends a message and this parser would not know, which is a wrong answer to
+// "who sends this?" rather than a missing convenience.
+fn apply_tx_bu(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	rest := line['BO_TX_BU_ '.len..]
+	colon := rest.index(':') or { return }
+	id := rest[..colon].trim_space().u32()
+	idx := by_id[id] or { return }
+	for n in rest[colon + 1..].trim_space().trim_right(';').split(',') {
+		name := n.trim_space()
+		if name != '' && name !in msgs[idx].tx_nodes {
+			msgs[idx].tx_nodes << name
+		}
+	}
+}
+
+// apply_e2e_attr parses one of #271's E2E contract attributes — `BA_ "E2ECounterSignal" BO_ <id>
+// "<signal>";`, likewise E2ECrcSignal and E2EProfile, and `BA_ "E2EDataId" BO_ <id> <n>;` — onto
+// its message. A value that is not what the attribute holds is left unset rather than guessed.
+fn apply_e2e_attr(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	f := line.trim_right(';').fields()
+	// f: BA_ "<name>" BO_ <id> <value…> — the value may be missing, which is malformed, not absent
+	if f.len < 4 || f[2] != 'BO_' {
+		return
+	}
+	idx := by_id[u32(f[3].u64())] or { return }
+	set_e2e_field(mut msgs[idx].e2e, f[1], if f.len > 4 { f[4..].join(' ').trim_space() } else { '' },
+		true)
+}
+
+// set_e2e_field sets one attribute on a declaration — `overwrite` false for a default, which
+// fills only what the message did not state. A Data ID that is not one is KEPT as said, never
+// read as absent: absent means no id, which is a different checksum.
+fn set_e2e_field(mut d E2eDecl, quoted_name string, raw string, overwrite bool) {
+	str := if raw.len >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+		raw[1..raw.len - 1]
+	} else {
+		''
+	}
+	match quoted_name {
+		'"E2ECounterSignal"' {
+			if overwrite || d.counter == '' {
+				d.counter = str
+			}
+		}
+		'"E2ECrcSignal"' {
+			if overwrite || d.crc == '' {
+				d.crc = str
+			}
+		}
+		'"E2EProfile"' {
+			if overwrite || d.profile == '' {
+				d.profile = profile_from_dbc(str)
+			}
+		}
+		'"E2ETimeout"' {
+			// stated per message, 0 included (no timeout), it is not overridden by a default; a
+			// default of 0 is the writer's placeholder and states nothing
+			if !overwrite && (d.has_timeout || d.bad_timeout != '') {
+				return
+			}
+			if v := e2e_u32(raw) {
+				if overwrite || v > 0 {
+					d.timeout_ms = v
+					d.has_timeout = true
+					d.bad_timeout = ''
+				}
+			} else {
+				d.bad_timeout = if raw == '' { '(empty)' } else { raw }
+				d.has_timeout = false
+			}
+		}
+		'"E2EDataId"' {
+			// never from a file-wide default: a Data ID every frame shares identifies none (and
+			// the writer's definition default, 0, would otherwise give one to every message)
+			if !overwrite {
+				return
+			}
+			if v := e2e_u32(raw) {
+				d.data_id = v
+				d.has_data_id = true
+				d.bad_data_id = ''
+			} else {
+				d.bad_data_id = if raw == '' { '(empty)' } else { raw }
+				d.has_data_id = false
+			}
+		}
+		else {}
+	}
+}
+
+// e2e_u32 reads an E2E attribute's integer value: decimal digits that fit a u32, leading zeros
+// allowed (the magnitude is what is bounded, not the spelling).
+fn e2e_u32(raw string) ?u32 {
+	if raw == '' || !raw.bytes().all(it.is_digit()) {
+		return none
+	}
+	digits := raw.trim_left('0')
+	if digits.len > 10 || digits.u64() > 0xFFFF_FFFF {
+		return none
+	}
+	return u32(digits.u64())
+}
+
+// apply_cycle_time parses `BA_ "GenMsgCycleTime" BO_ <id> <ms>;` and records the
+// period on the matching message (DBC convention for cyclic-message timing).
+fn apply_cycle_time(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	f := line.replace(';', '').fields()
+	// f: BA_ "GenMsgCycleTime" BO_ <id> <ms>
+	if f.len < 5 || f[2] != 'BO_' {
+		return
+	}
+	id := u32(f[3].u64()) // raw: by_id keys keep the EFF bit
+	if idx := by_id[id] {
+		msgs[idx].cycle_ms = f[4].int()
+	}
+}
+
+// apply_frame_format parses `BA_ "VFrameFormat" BO_ <id> <value>;` and records whether the file
+// DECLARED the frame J1939.
+//
+// Only that one fact is kept. The attribute's other values distinguish standard from extended
+// and classic from CAN-FD, which this model already carries (`ext`) or has never carried (FD is
+// a property of the transport here, not of a DBC message), so reading them would be inventing a
+// field nothing consumes.
+//
+// BOTH SPELLINGS. An ENUM attribute's value in a `BA_` record is the enum INDEX — 3 is J1939PG
+// in Vector's ordering, which is what this repo's own ARXML export emits — but tools do write
+// the quoted choice, and a reader that took only one of them would answer "not J1939" for a
+// perfectly explicit file. The index list is Vector's and is duplicated nowhere: `vframe_format_enum`
+// in arxml_export.v is the definition this reads back.
+fn apply_frame_format(mut msgs []MsgBuilder, by_id map[u32]int, line string, choices []string) {
+	f := line.replace(';', '').fields()
+	// f: BA_ "VFrameFormat" BO_ <id> <value>
+	if f.len < 5 || f[2] != 'BO_' {
+		return
+	}
+	id := u32(f[3].u64()) // raw: by_id keys keep the EFF bit
+	idx := by_id[id] or { return }
+	msgs[idx].j1939 = frame_format_is_j1939(line, 4, choices)
+	msgs[idx].j1939_stated = true
+}
+
+// vframe_j1939_fallback is the J1939PG index in VECTOR's ordering, used only when a file gives
+// a numeric value without defining the enum it indexes. That combination is malformed DBC — an
+// attribute's values are meaningless without its `BA_DEF_` — so this is a convention applied to
+// a broken file, not an assumption about a well-formed one.
+const vframe_j1939_fallback = 3
+
+// frame_format_choices reads the ordering out of `BA_DEF_ BO_ "VFrameFormat" ENUM "a","b",…;`.
+//
+// THE FILE DECIDES WHAT ITS INDICES MEAN. A `BA_` record carries the enum INDEX, and a DBC that
+// declares `ENUM "StandardCAN","ExtendedCAN","J1939PG"` means 2 by J1939PG — read against
+// Vector's ordering it is "reserved", so an explicitly J1939 file was silently undeclared, while
+// that file's own index 3 (if it had one) would have been read AS J1939 (codex on #289).
+fn frame_format_choices(line string) []string {
+	i := line.index('ENUM') or { return [] }
+	mut out := []string{}
+	for part in line[i + 4..].replace(';', '').split(',') {
+		out << part.trim_space().trim('"')
+	}
+	return out
+}
+
+// frame_format_is_j1939 reads field `at` of a VFrameFormat record against `choices`, the file's
+// own enum ordering. Shared by the per-message `BA_` and the file-wide `BA_DEF_DEF_`, so the two
+// cannot disagree about what a value means.
+fn frame_format_is_j1939(line string, at int, choices []string) bool {
+	f := line.replace(';', '').fields()
+	if f.len <= at {
+		return false
+	}
+	v := f[at].trim('"')
+	if v == '' {
+		return false
+	}
+	// The quoted choice needs no ordering at all, and is what a BA_DEF_DEF_ usually carries.
+	if v == 'J1939PG' {
+		return true
+	}
+	if !v[0].is_digit() {
+		return false
+	}
+	if choices.len > 0 {
+		// The file defined its enum: an index means J1939 only if THIS file put J1939PG there,
+		// and if it never lists J1939PG at all then no index can mean it.
+		idx := choices.index('J1939PG')
+		return idx >= 0 && v.int() == idx
+	}
+	return v.int() == vframe_j1939_fallback
+}
+
+// parse_bo parses:  BO_ <id> <Name>: <dlc> <transmitter>
+fn parse_bo(line string) !MsgBuilder {
+	f := line.fields()
+	if f.len < 4 {
+		return error('malformed BO_: ${line}')
+	}
+	raw_id := u32(f[1].u64())
+	// DBC tags extended ids with the high bit; strip it for the real id.
+	ext := raw_id & can_eff_flag != 0
+	id := if ext { raw_id & can_eff_mask } else { raw_id }
+	return MsgBuilder{
+		name: f[2].trim_right(':')
+		id:   id
+		ext:  ext
+		dlc:  f[3].int()
+		// 'Vector__XXX' is DBC's no-transmitter placeholder — normalize to ''
+		// (the Message doc's representation) so write->parse round-trips
+		sender: if f.len >= 5 && f[4] != 'Vector__XXX' { f[4] } else { '' }
+	}
+}
+
+// parse_sg parses:
+//   SG_ <Name> [M|m<n>] : <start>|<len>@<order><sign> (<f>,<o>) [<min>|<max>] "<unit>" <rx>
+fn parse_sg(line string) !SigBuilder {
+	colon := line.index(':') or { return error('SG_ without ":" : ${line}') }
+	head := line[..colon].trim_space() // "SG_ Name" or "SG_ Name m0"
+	body := line[colon + 1..].trim_space()
+
+	hf := head.fields()
+	if hf.len < 2 {
+		return error('SG_ missing name: ${line}')
+	}
+	name := hf[1]
+
+	// Optional multiplexing marker between the name and ':' — 'M' (the switch),
+	// 'm<N>' (multiplexed, selector N), or 'm<N>M' (extended: both).
+	mut is_multiplexor := false
+	mut is_multiplexed := false
+	mut multiplexor_value := 0
+	if hf.len > 2 {
+		marker := hf[2]
+		if marker == 'M' {
+			is_multiplexor = true
+		} else if marker.starts_with('m') {
+			is_multiplexed = true
+			multiplexor_value = marker[1..].trim_right('M').int()
+			if marker.ends_with('M') {
+				is_multiplexor = true
+			}
+		}
+	}
+
+	// unit is quoted and may contain spaces; split the body at the first quote.
+	q1 := index_byte_from(body, `"`, 0) or { return error('SG_ missing unit quotes: ${line}') }
+	q2 := index_byte_from(body, `"`, q1 + 1) or { return error('SG_ unterminated unit: ${line}') }
+	unit := body[q1 + 1..q2]
+	pre := body[..q1].trim_space() // "<start>|<len>@<order><sign> (f,o) [min|max]"
+	// what follows the unit is the receiver list: `Vector__XXX` (none) or `NodeA,NodeB`
+	mut receivers := []string{}
+	for rcv in body[q2 + 1..].trim_space().split(',') {
+		n := rcv.trim_space()
+		if n != '' && n != 'Vector__XXX' && n !in receivers {
+			receivers << n
+		}
+	}
+
+	pf := pre.fields()
+	if pf.len < 2 {
+		return error('SG_ malformed layout: ${line}')
+	}
+
+	// bit spec:  start|len@order sign
+	bitspec := pf[0]
+	bar := index_byte_from(bitspec, `|`, 0) or { return error('SG_ bad bit spec: ${line}') }
+	at := index_byte_from(bitspec, `@`, 0) or { return error('SG_ bad bit spec: ${line}') }
+	start := bitspec[..bar].int()
+	length := bitspec[bar + 1..at].int()
+	order_sign := bitspec[at + 1..] // e.g. "1+"
+	if order_sign.len < 2 {
+		return error('SG_ bad order/sign: ${line}')
+	}
+	byte_order := if order_sign[0] == `1` { ByteOrder.little_endian } else { ByteOrder.big_endian }
+	is_signed := order_sign[1] == `-`
+
+	// (factor,offset)
+	fo := pf[1].trim('()').split(',')
+	factor := if fo.len > 0 { fo[0].f64() } else { 1.0 }
+	offset := if fo.len > 1 { fo[1].f64() } else { 0.0 }
+
+	// [min|max] — optional
+	mut minimum := 0.0
+	mut maximum := 0.0
+	if pf.len > 2 {
+		mm := pf[2].trim('[]').split('|')
+		if mm.len > 1 {
+			minimum = mm[0].f64()
+			maximum = mm[1].f64()
+		}
+	}
+
+	return SigBuilder{
+		name:              name
+		start_bit:         start
+		length:            length
+		factor:            factor
+		offset:            offset
+		minimum:           minimum
+		maximum:           maximum
+		unit:              unit
+		is_signed:         is_signed
+		byte_order:        byte_order
+		receivers:         receivers
+		is_multiplexor:    is_multiplexor
+		is_multiplexed:    is_multiplexed
+		multiplexor_value: multiplexor_value
+	}
+}
+
+// apply_val parses a VAL_ table and attaches it to the named signal.
+//   VAL_ <id> <Signal> <int> "label" <int> "label" … ;
+fn apply_val(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	body := line.trim_string_left('VAL_').trim_space().trim_right(';').trim_space()
+	f := body.fields()
+	if f.len < 2 {
+		return
+	}
+	id := u32(f[0].u64()) // raw: by_id keys keep the EFF bit
+	sig_name := f[1]
+	mi := by_id[id] or { return }
+	si := signal_index(msgs[mi], sig_name) or { return }
+	// remaining tokens alternate <int> "<label>"; labels can hold spaces, so
+	// scan the raw remainder after the signal name for value/quoted-label pairs.
+	name_at := index_str_from(body, sig_name, 0) or { return }
+	rest := body[name_at + sig_name.len..]
+	mut vals := map[u64]string{}
+	mut i := 0
+	for i < rest.len {
+		for i < rest.len && rest[i] == ` ` {
+			i++
+		}
+		mut num := ''
+		for i < rest.len && (rest[i] == `-` || (rest[i] >= `0` && rest[i] <= `9`)) {
+			num += rest[i].ascii_str()
+			i++
+		}
+		q := index_byte_from(rest, `"`, i) or { break }
+		qe := index_byte_from(rest, `"`, q + 1) or { break }
+		label := rest[q + 1..qe]
+		if num.len > 0 {
+			// canonical key representation: the WIDTH-SIZED raw pattern (what
+			// raw_value produces and label() looks up) — sign bits masked to
+			// the signal width, and positive values parsed as u64 so 64-bit
+			// keys above i64.max survive
+			w := msgs[mi].sigs[si].length
+			mask := if w >= 64 { ~u64(0) } else { (u64(1) << w) - 1 }
+			raw := if num.starts_with('-') { u64(num.i64()) } else { num.u64() }
+			vals[raw & mask] = label
+		}
+		i = qe + 1
+	}
+	msgs[mi].sigs[si].values = vals.move()
+}
+
+// apply_cm_sg parses a signal comment and stores it as the signal's desc.
+//   CM_ SG_ <id> <Signal> "comment" ;
+fn apply_cm_sg(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	rest := line.trim_string_left('CM_ SG_').trim_space()
+	f := rest.fields()
+	if f.len < 2 {
+		return
+	}
+	id := u32(f[0].u64()) // raw: by_id keys keep the EFF bit
+	sig_name := f[1]
+	q1 := index_byte_from(line, `"`, 0) or { return }
+	q2 := index_byte_from(line, `"`, q1 + 1) or { return }
+	comment := line[q1 + 1..q2]
+	mi := by_id[id] or { return }
+	si := signal_index(msgs[mi], sig_name) or { return }
+	msgs[mi].sigs[si].desc = comment
+}
+
+fn signal_index(mb MsgBuilder, name string) ?int {
+	for i, s in mb.sigs {
+		if s.name == name {
+			return i
+		}
+	}
+	return none
+}
+
+// index_byte_from returns the index of byte `c` at or after `from`, or none.
+fn index_byte_from(s string, c u8, from int) ?int {
+	mut i := if from < 0 { 0 } else { from }
+	for i < s.len {
+		if s[i] == c {
+			return i
+		}
+		i++
+	}
+	return none
+}
+
+// index_str_from returns the index of substring `sub` at or after `from`, or none.
+fn index_str_from(s string, sub string, from int) ?int {
+	if sub.len == 0 || s.len < sub.len {
+		return none
+	}
+	mut i := if from < 0 { 0 } else { from }
+	for i <= s.len - sub.len {
+		if s[i..i + sub.len] == sub {
+			return i
+		}
+		i++
+	}
+	return none
+}

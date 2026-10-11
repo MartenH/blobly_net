@@ -1,9 +1,9 @@
 // lua_smoke — verify the embedded Lua 5.4 builds, runs a script, and can call a
-// host function registered from V. No GUI, no bus; just proves modules/lua.
-//   v -path "@vlib|@vmodules|modules" run cmd/lua_smoke/smoke.v
+// host function registered from V. No GUI, no bus; just proves blobly/lua.
+//   v run cmd/lua_smoke/smoke.v
 module main
 
-import lua
+import blobly.lua
 
 // a host function exposed to Lua as add(a, b) -> a+b
 fn l_add(l lua.State) int {

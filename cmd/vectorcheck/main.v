@@ -7,21 +7,21 @@
 // know. A node that goes on the bus at the wrong bitrate floods error frames and degrades the
 // bus for everyone on it; a silent one that has the bitrate wrong simply reports nothing.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/vectorcheck/main.v --list
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/vectorcheck/main.v --channel 1
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/vectorcheck/main.v --channel 1 --transmit
+//   v -enable-globals run cmd/vectorcheck/main.v --list
+//   v -enable-globals run cmd/vectorcheck/main.v --channel 1
+//   v -enable-globals run cmd/vectorcheck/main.v --channel 1 --transmit
 //
-// `-enable-globals` is not optional: modules/transport/inproc.v uses `__global`, and without it
+// `-enable-globals` is not optional: blobly/transport/inproc.v uses `__global`, and without it
 // the build fails before anything Vector-specific is reached.
 //
 // From WSL, cross-compile and run the result on Windows — the XL library lives there:
-//   v -os windows -enable-globals -path "@vlib|@vmodules|modules" -o vectorcheck.exe cmd/vectorcheck/main.v
+//   v -os windows -enable-globals -o vectorcheck.exe cmd/vectorcheck/main.v
 module main
 
 import os
 import time
 import sync
-import transport
+import blobly.transport
 import restorerule
 
 struct Opts {
@@ -990,7 +990,7 @@ fn main() {
 // THE THING NO OTHER TEST CAN REACH. The XL driver fixes a channel's output mode and bitrate
 // when the first port configures it, and will not reconfigure while any port on that channel is
 // still open — so `transport.wire_pin_clash` predicts a refusal that only this driver can
-// deliver. modules/transport/pinned_test.v checks the bookkeeping over `inproc:` buses because
+// deliver. blobly/transport/pinned_test.v checks the bookkeeping over `inproc:` buses because
 // that is all a Linux machine has; what it cannot check is that the prediction is TRUE. That is
 // this, and it wants silicon.
 //

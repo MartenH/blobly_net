@@ -5,7 +5,7 @@
 // when there is no traffic, and CPU scales with (not ahead of) the frame rate.
 //
 // Build:  libs/vgui/build_deps.sh  then
-//   v -cc gcc -path "@vlib|@vmodules|modules|libs" run libs/vgui/examples/live_trace/live_trace.v [iface]
+//   v -cc gcc -path "@vlib|@vmodules|libs" run libs/vgui/examples/live_trace/live_trace.v [iface]
 // iface defaults to vcan0 (SocketCAN). Feed it:  cansend vcan0 100#DEADBEEF  /  cangen vcan0
 //
 // Env: VGUI_FRAMES=N exit after N rendered frames (headless CI); VGUI_SHOT=path dump last frame.
@@ -14,7 +14,7 @@ module main
 import os
 import sync
 import time
-import transport
+import blobly.transport
 import vgui
 
 struct Shared {

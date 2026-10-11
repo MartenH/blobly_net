@@ -1,7 +1,7 @@
 name: ci
 
 # Linux CI for Blobly Net. Two jobs:
-#   * test       — the reliable backbone: `v -enable-globals test modules/` (every GUI-free module,
+#   * test       — the reliable backbone: `v -enable-globals test blobly/` (every GUI-free module,
 #                  incl. the embedded-Lua `lua`/`script` modules) + the headless Lua
 #                  integration tests (scripts/runtests.sh) against the in-process sim.
 #                  No GUI, no vcan, no Windows — fast and deterministic.
@@ -15,7 +15,7 @@ name: ci
 #
 # V acquisition: built from source at the master commit `.v-version` names, with the
 # BOOTSTRAP pinned by `.vc-version` (a master V — the in-process bus and the vendored Lua
-# need a current toolchain; the 0.5.1 *release* predates vlib/yaml which modules/project
+# need a current toolchain; the 0.5.1 *release* predates vlib/yaml which blobly/project
 # uses). Two pins, not one, and the second is the whole reason this is hand-rolled rather
 # than `vlang/setup-v` — see the note at the install step.
 #
@@ -80,15 +80,16 @@ jobs:
 
       # All GUI-free modules. -enable-globals: the in-process bus
       # (transport/inproc.v) uses a process-global hub. The vendored Lua compiles
-      # in here too (modules/lua + modules/script pull it via #flag).
-      - name: Unit tests (v test modules/)
-        run: v -enable-globals test modules/
-      - name: GUI-local rules (v test cmd/blobly_net/saverule/)
-        # GUI policy with a test: pure V, no ImGui, so it runs where the GUI cannot.
-        run: v -enable-globals test cmd/blobly_net/saverule/ cmd/blobly_net/logfile/ cmd/blobly_net/taprule/ cmd/blobly_net/loadrule/ cmd/blobly_net/cyclerule/ cmd/blobly_net/drainrule/ cmd/blobly_net/genhome/ cmd/blobly_net/pickrule/ cmd/blobly_net/watchrule/ cmd/blobly_net/prefs/ cmd/blobly_net/panerule/ cmd/blobly_net/endrule/ cmd/blobly_net/gaterule/ cmd/blobly_net/txhealth/ cmd/blobly_net/diaghold/ cmd/blobly_net/foldrule/ cmd/vectorcheck/restorerule/ cmd/mutrefs/mutscan/
+      # in here too (blobly/lua + blobly/script pull it via #flag).
+      - name: Unit tests (v test blobly/)
+        run: v -enable-globals test blobly/
+      - name: GUI-local rules (scripts/test_cmd_rules.sh)
+        # GUI policy with a test: pure V, no ImGui, so it runs where the GUI cannot — from a copy
+        # outside the repository, so a rule package that imports a blobly module fails here.
+        run: ./scripts/test_cmd_rules.sh
 
       # EVERY cmd/ tool type-checks, for both OS targets. Nothing else here compiles a CLI
-      # tool, so a rename in modules/ could break any of them and the build stayed green: #217
+      # tool, so a rename in blobly/ could break any of them and the build stayed green: #217
       # retired a helper and broke cmd/vectorcheck, and two smoke tools sat broken on Windows
       # for months (#220). -check needs no C compiler and no GLFW, so this costs under a minute.
       - name: Every cmd/ tool type-checks, both targets (scripts/check_cmds.sh)
@@ -135,7 +136,7 @@ jobs:
           # somebody remembered to add it — the gap #115 was filed for.
           #
           # The suites that need a particular project now declare it themselves
-          # (`-- @project`, see modules/script/project_decl.v), so this list cannot drift out of
+          # (`-- @project`, see blobly/script/project_decl.v), so this list cannot drift out of
           # step with what the tests actually require, and the runner refuses a project that
           # contradicts a declaration rather than reporting it as failing tests.
           ./scripts/runtests.sh
@@ -245,13 +246,17 @@ jobs:
           if-no-files-found: error
 
       # libs/vgui is a standalone module, and this is what proves it: trace_chart imports only
-      # `os` + `vgui`, so it compiles WITHOUT modules/ on the path. If the binding ever grows a
-      # dependency on app code, this breaks and the app build does not. Reuses libvgui_c.a from
-      # the step above, so it costs seconds.
-      - name: vgui builds standalone (no app on the path)
+      # `os` + `vgui`, so it compiles with no app module reachable. Built from a COPY outside the
+      # repository: V's upward module search from libs/vgui reaches blobly/ beside v.mod, so a
+      # stray app import would resolve. If the binding ever grows a dependency on app code, this
+      # breaks and the app build does not. Reuses libvgui_c.a from the step above (it travels in
+      # the copy), so it costs seconds.
+      - name: vgui builds standalone (no app reachable)
         run: |
-          v -cc gcc -path "@vlib|@vmodules|libs" -o /tmp/vgui_standalone \
-            libs/vgui/examples/trace_chart/trace_chart.v
+          iso=$(mktemp -d)
+          cp -r libs/vgui "$iso/vgui"
+          v -cc gcc -path "@vlib|@vmodules|$iso" -o /tmp/vgui_standalone \
+            "$iso/vgui/examples/trace_chart/trace_chart.v"
           test -x /tmp/vgui_standalone && echo "OK — vgui has no app dependency"
 
   # THE ONE STEP THAT HANDS SOMEBODY A BINARY, and the only one gated on the WHOLE verdict:

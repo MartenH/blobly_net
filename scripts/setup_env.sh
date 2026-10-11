@@ -65,7 +65,7 @@ echo "==> 3/5 Build the GUI (imgui C deps -> libvgui_c.a, then cmd/blobly_net)"
 RUN=0 ./scripts/run_gui.sh
 
 echo "==> 4/5 Tests"
-"$HOME/v/v" -enable-globals test modules/
+"$HOME/v/v" -enable-globals test blobly/
 
 echo "==> 5/5 Virtual CAN bus (vcan0)"
 # NOT built into a stock WSL2 kernel: CONFIG_CAN_VCAN is unset there and no vcan.ko ships, so

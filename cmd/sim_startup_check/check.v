@@ -5,9 +5,9 @@ module main
 // one round of due_frames per channel — to isolate logic crashes from GUI ones.
 
 import os
-import project
-import candb
-import sim
+import blobly.project
+import blobly.candb
+import blobly.sim
 
 fn main() {
 	path := os.args[1] or { 'projects/sim-demo.blobnet' }

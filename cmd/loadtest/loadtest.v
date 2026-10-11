@@ -7,15 +7,15 @@
 // The in-proc bus drops on a full subscriber queue, so sent-vs-received shows the
 // sustainable rate and where the bottleneck is (transport vs decode).
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/loadtest/loadtest.v \
+//   v -enable-globals run cmd/loadtest/loadtest.v \
 //       [buses=20] [rate_per_bus=0(max)] [secs=5] [decode=1]
 module main
 
 import os
 import time
 import runtime
-import transport
-import candb
+import blobly.transport
+import blobly.candb
 
 struct CStat {
 	recvd   u64

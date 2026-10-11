@@ -1,6 +1,6 @@
 #!/bin/sh
 # setup_doip_oracle.sh — build the .venv-doip virtualenv with scapy, the
-# independent DoIP/UDS oracle for modules/doip (see sut/doip_server.py).
+# independent DoIP/UDS oracle for blobly/doip (see sut/doip_server.py).
 # Dev-only; the venv is git-ignored. Re-run on a fresh box.
 set -e
 cd "$(dirname "$0")/.."
@@ -16,7 +16,7 @@ cat <<'EOF'
 
 DoIP oracle ready. To cross-validate the V DoIP entity against scapy:
   1) start the V entity:
-       v -enable-globals -path "@vlib|@vmodules|modules" run cmd/doip_smoke/smoke.v serve
+       v -enable-globals run cmd/doip_smoke/smoke.v serve
   2) run the oracle:
        .venv-doip/bin/python sut/doip_server.py 127.0.0.1 13400
 EOF

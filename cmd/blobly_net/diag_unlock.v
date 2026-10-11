@@ -1,9 +1,9 @@
 module main
 
-import uds
+import blobly.uds
 import vgui
 import diaghold
-import sysview
+import blobly.sysview
 
 // ---- Security access (0x27) on the held connection ----
 //

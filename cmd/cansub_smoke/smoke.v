@@ -1,6 +1,6 @@
 // cansub_smoke — prove a CANsub is on the wire, end to end, against real hardware.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/cansub_smoke/smoke.v <device-id> [tx-ch] [rx-ch]
+//   v -enable-globals run cmd/cansub_smoke/smoke.v <device-id> [tx-ch] [rx-ch]
 //   v ... run cmd/cansub_smoke/smoke.v e5a16adf 1 2
 //
 // It configures nothing destructive: it reads the device's identity over REST, opens the transmit
@@ -8,7 +8,7 @@
 // on the other. That needs the two channels WIRED TOGETHER — which is the point. A loopback pair
 // is the only way to check the transmit path without a second tool on the bus, and the only way to
 // prove the codec against a real controller rather than against the vendor's test vectors, which
-// `modules/transport/cansub_codec_test.v` already does with no hardware at all.
+// `blobly/transport/cansub_codec_test.v` already does with no hardware at all.
 //
 // What it is really testing is the seam: TLS to a device with its own certificate, the WebSocket
 // upgrade, HDLC on the way out, HDLC on the way back, and the identity of a frame surviving the
@@ -17,7 +17,7 @@ module main
 
 import os
 import time
-import transport
+import blobly.transport
 
 fn main() {
 	args := os.args[1..].filter(!it.starts_with('-'))
@@ -174,7 +174,7 @@ fn describe(f transport.CanFrame) string {
 // rest goes through transport's own client, not V's. `net.http` cannot read this device at all:
 // the status line carries no reason phrase, V's parser demands three tokens, and every request
 // fails with "expected at least 3 tokens, but found: 2" after reading to the close.
-// modules/transport/cansub_http.v has the captured bytes and the reasoning.
+// blobly/transport/cansub_http.v has the captured bytes and the reasoning.
 fn rest(host string, path string) !string {
 	return transport.cansub_get(host, path)
 }

@@ -67,7 +67,7 @@ pub fn scan_text(text string, path string) ![]Finding {
 
 fn new_prefs() &pref.Preferences {
 	mut p := pref.new_preferences()
-	p.enable_globals = true // modules/transport/inproc.v uses __global
+	p.enable_globals = true // blobly/transport/inproc.v uses __global
 	p.output_mode = .silent
 	return p
 }

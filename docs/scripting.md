@@ -71,7 +71,7 @@ scripts/runtests.sh [--project <file.blobnet>] [--project-ports] <script.lua> [m
 Raw form (what the wrapper runs):
 
 ```sh
-v -enable-globals -path "@vlib|@vmodules|modules" run cmd/script/run.v \
+v -enable-globals run cmd/script/run.v \
     --project projects/sim-demo.blobnet tests/diag_basic.lua
 ```
 
@@ -283,7 +283,7 @@ flash.program(d, { image = "zone_a.img", progress = function(done, total) log(do
 
 The download session against a blobly_emb bootloader — 0x10 02, 0x29 challenge/response, 0x31
 FF00 erase, 0x34 / 0x36 ... / 0x37, 0x31 FF01 check (the boot marks the image valid only after its
-own CRC passes), 0x11 reset — run by `modules/flash`, the same code as `cmd/flash` and the GUI's
+own CRC passes), 0x11 reset — run by `blobly/flash`, the same code as `cmd/flash` and the GUI's
 Flash panel. The first argument is a channel name, opened on `tx`/`rx` (default 0x7B0/0x7B8, as
 `cmd/flash`), or a `uds.open` connection, whose ids are used. The channel is reached exactly as
 `uds.open` reaches it: on a channel the project declares CAN-FD, the frames go out FD with
@@ -392,7 +392,7 @@ Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 | `doip.listen(window_ms [, {port=, ip6=, from=}])` | collect vehicle announcements for a window; each entry names the sender's endpoint. `from=` names a channel and listens on that channel's own port; a `port=` that contradicts it is an error |
 | `someip.listen(window_ms [, {port=, group=, from=}])` | hear every SOME/IP message on a port for a window, decoded to its header (`service`, `method`, `event`, `type`, `iface`, `client`, `session`, `rc`), the payload raw, the sender in `from`; returns the list and a count of malformed datagrams. `group=` joins that multicast group, which is what hearing a service's multicast events or a SUT's SD offers takes (a plain bind hears unicast only). `from=` names a `someip` channel of the project and takes its bind host, port and group (a `port=`, or a `group=` differing from the channel's own, is an error). An endpoint another listener in this process already holds — a running channel row, or another window — is refused and names the holder, whichever started first: two sockets on one UDP port split the stream rather than share it (docs/bus_config_dialog.md). Port defaults to 30490. Nothing is sent or subscribed to: an event a service delivers only to subscribers is not heard (docs/ethernet_architecture.md) |
 | `someip.send(to, msgs [, {port=30491, window_ms=1000}])` | send SOME/IP messages to `to` (`"host:port"`) FROM a local port, then hear that port for the window — one socket both ways, because a node with a static peer endpoint (a blobly_emb SOME/IP node) accepts datagrams only from its configured peer and answers that same endpoint. `msgs` is one message or a list: `{service=, method=, payload=, type="notification"\|"request", iface=1, client=, session=}` (the type defaults by the id's bit 15; a request defaults to client 0x1234 and a session reserved for the run, the tracker `someip.call` uses, so no session goes out twice). Returns what `someip.listen` returns. The port is claimed like a listener's: a running channel row or another window on it is refused |
-| `someip.call(to, req [, opts])` | one request/response exchange (`modules/someip` `call`, on `RpcClient` — the GUI's Shell over Ethernet uses the same): sends from `opts.port` (30491) and returns as soon as the RESPONSE or ERROR mirroring its Request ID arrives FROM `to` — `{type="response"\|"error", rc=, payload=, client=, session=}`, an ERROR being an answer with its return code. Events, other senders, an incompatible interface version and late replies to an earlier session are ignored; `nil, "no answer"` past `opts.timeout_ms` (1000). Client defaults to 0x1234 (0 is refused: a blobly_emb node rejects it); sessions advance within a run and are never reused. IPv4. Bench-verified 2026-10-02 against the H735's shell method (blobly_emb `examples/h735_someip`, since retired into system_full's `tcu` node, emb#348) |
+| `someip.call(to, req [, opts])` | one request/response exchange (`blobly/someip` `call`, on `RpcClient` — the GUI's Shell over Ethernet uses the same): sends from `opts.port` (30491) and returns as soon as the RESPONSE or ERROR mirroring its Request ID arrives FROM `to` — `{type="response"\|"error", rc=, payload=, client=, session=}`, an ERROR being an answer with its return code. Events, other senders, an incompatible interface version and late replies to an earlier session are ignored; `nil, "no answer"` past `opts.timeout_ms` (1000). Client defaults to 0x1234 (0 is refused: a blobly_emb node rejects it); sessions advance within a run and are never reused. IPv4. Bench-verified 2026-10-02 against the H735's shell method (blobly_emb `examples/h735_someip`, since retired into system_full's `tcu` node, emb#348) |
 
 `uds.open` validates its ids (negative or above `0x1FFFFFFF` is an error) and uses 29-bit
 addressing for any id above `0x7FF`. The handle it returns exposes `handle` and `channel`.
@@ -409,7 +409,7 @@ each with the `dbc/blobly_net.dbc` database and simulated ECUs, and `DoIP1`, a D
 The channel `name:` in the project is the string you pass to `uds.open` / `bus.*` /
 `decode` (e.g. `"CAN1"`). The channel `databases:` provide the DBC used by
 `send_message` and `decode`. Full project schema: [project_editing.md](project_editing.md)
-and `modules/project`.
+and `blobly/project`.
 
 To run against **real hardware** later, point a channel's `interface:` at a vendor
 adapter (e.g. `pcan:PCAN_USBBUS1`) — the scripts don't change. See
@@ -500,7 +500,7 @@ that carries it (CAN with its ids, DoIP by the channel alone), at its first requ
 (`diag:close()`) when the requests move to another target — one connection at a time, as the
 panel holds one, since a DoIP entity serves one connection and a second open of its endpoint
 waits on the first; the `-- @project` line names the
-project the panel had loaded. The generator is `script.lua_from_log` (`modules/script/session_lua.v`).
+project the panel had loaded. The generator is `script.lua_from_log` (`blobly/script/session_lua.v`).
 
 ---
 
@@ -564,7 +564,7 @@ scripts/runtests.sh powertrain.lua
 ## Appendix — other command-line tools
 
 A selection of the `cmd/` tools (run with
-`v -enable-globals -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v [args]`). The
+`v -enable-globals run cmd/<tool>/<file>.v [args]`). The
 hardware bench tools — `silentcheck`, `vectorcheck`, `kvasercheck`, `crosscheck` — are
 described in [windows_can_hardware.md](windows_can_hardware.md); `cansub_smoke` has only its
 own header comment:

@@ -2,8 +2,8 @@ module main
 
 import os
 import sync
-import project
-import transport
+import blobly.project
+import blobly.transport
 import taprule
 import foldrule
 
@@ -504,7 +504,7 @@ fn (c Chan) has_named_tap() bool {
 
 fn tx_bus_key(chan_name string, iface string) string {
 	// project.compose_key is injective — see its comment for why a plain 'a|b' is not, and
-	// modules/project/key_test.v for the property under inputs that contain the separator.
+	// blobly/project/key_test.v for the property under inputs that contain the separator.
 	return project.compose_key(chan_name, iface)
 }
 

@@ -4,14 +4,14 @@
 // This is the native replacement for `python3 sut/can_sut.py` + a tester, all in
 // one process with zero drivers.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/sim_smoke/sim_smoke.v
+//   v -enable-globals run cmd/sim_smoke/sim_smoke.v
 module main
 
 import os
 import time
-import transport
-import candb
-import sim
+import blobly.transport
+import blobly.candb
+import blobly.sim
 
 // EcuRunner owns an engine + its bus so it can be driven from a spawned thread
 // via a pointer receiver (spawn forbids `mut` non-reference args).
