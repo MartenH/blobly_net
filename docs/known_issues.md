@@ -295,9 +295,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   migration to V3 (2026-10-05) met eleven V3 bugs, every one fixed upstream (vlang/v #29402,
   #29403, #29456, #29458, #29460, #29461, #29489, #29502, #29503, #29504, #29506), and the pin is
   the first master commit that holds them all. V3 changes worth knowing: `int` is **64-bit**
-  (a C callback or struct that means C's `int` must say `i32`), `json` is gone (`json2`), an
-  Option's `or` block binds no `err`, and a project's `modules/` directory is no longer searched
-  (the engine is `blobly/`, entry above).
+  (a C callback or struct that means C's `int` must say `i32`, and so must a C `int*`: V3 copies
+  a literal `&local` through a C int and back, but not a forwarded pointer, a local whose address
+  escapes, or an array, so `check_cmds.sh` refuses `&int` in a `fn C.` declaration), `json` is
+  gone (`json2`), an Option's `or` block binds no `err`, and a project's `modules/` directory is
+  no longer searched (the engine is `blobly/`, entry above).
   `V_C_ERROR_BUG_REPORT_DISABLED=1` stays: V3 still uploads a source excerpt on a C compilation
   error (`v help build-c`).
 - 🟡 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**

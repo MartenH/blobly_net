@@ -8,7 +8,7 @@ import os
 fn C.fork() int
 fn C.execv(path &char, argv &&char) int
 fn C._exit(code int)
-fn C.waitpid(pid int, status &int, options int) int
+fn C.waitpid(pid int, status &i32, options int) int
 fn C.close(fd int) int
 
 // is_wsl reports whether we're under WSL, where no Linux browser or editor is around and the
@@ -107,7 +107,7 @@ fn launch_detached(argv []string, report fn (string)) ! {
 }
 
 fn reap(pid int, name string, report fn (string)) {
-	mut status := 0
+	mut status := i32(0)
 	if C.waitpid(pid, &status, 0) < 0 {
 		return
 	}

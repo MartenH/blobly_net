@@ -14,6 +14,7 @@
 # C is therefore generated, the baked root rewritten to C:/v-ct, and compiled here with mingw:
 # the asset only works unpacked at C:\v-ct, which is where windows.yml puts it.
 set -eu
+set -o pipefail # a failed `git archive` must not zip a v.exe with no vlib
 here=$(cd "$(dirname "$0")/.." && pwd -P)
 . "$here/scripts/v_toolchain.sh"
 vdir=$(cd "${1:-${V_DIR:-$HOME/v}}" && pwd -P)

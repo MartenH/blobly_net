@@ -162,7 +162,7 @@ fn C.vgui_console_text(&char, &char, int, int)
 fn C.vgui_text_edit(&char, &char, int, f32) int
 fn C.vgui_text_edit_code(&char, &char, int, f32) int
 fn C.vgui_input_double(&char, &f64) int
-fn C.vgui_input_int(&char, &int) int
+fn C.vgui_input_int(&char, &i32) int
 fn C.vgui_progress(f32, &char)
 fn C.vgui_slider_f(&char, &f32, f32, f32, &char) int
 fn C.vgui_set_next_item_width(f32)
@@ -175,8 +175,8 @@ fn C.vgui_dock_window(&char, u32)
 fn C.vgui_dock_reset()
 fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char) int
-fn C.vgui_begin_closable(&char, &int) int
-fn C.vgui_begin_dialog(&char, &int) int
+fn C.vgui_begin_closable(&char, &i32) int
+fn C.vgui_begin_dialog(&char, &i32) int
 fn C.vgui_pin_next_window_within(&char)
 fn C.vgui_add_font_merge(&char, f32) int
 fn C.vgui_set_ini_path(&char)
@@ -763,7 +763,15 @@ pub fn input_double(label string, v &f64) bool {
 
 // input_int edits *v in place (integer input with +/- steps). Returns true on change.
 pub fn input_int(label string, v &int) bool {
-	return C.vgui_input_int(label.str, v) == 1
+	// through a C int: ImGui writes 32 bits, and *v is 64 under V3
+	mut x := i32(*v)
+	changed := C.vgui_input_int(label.str, &x) == 1
+	if changed {
+		unsafe {
+			*v = int(x)
+		}
+	}
+	return changed
 }
 
 // buf_str reads a NUL-terminated input buffer as a V string.
@@ -838,7 +846,7 @@ pub fn begin(title string) bool {
 // `open` goes false the frame the user clicks the X — the caller stores it back into its
 // show-flag. Skip the content when `visible` is false, but ALWAYS call end().
 pub fn begin_closable(title string, open bool) (bool, bool) {
-	mut o := if open { 1 } else { 0 }
+	mut o := i32(if open { 1 } else { 0 })
 	vis := C.vgui_begin_closable(title.str, &o) == 1
 	return vis, o != 0
 }
@@ -855,7 +863,7 @@ pub fn begin_closable(title string, open bool) (bool, bool) {
 // point. Same contract: (visible, open), and ALWAYS call end().
 pub fn begin_dialog(title string, open bool) (bool, bool) {
 	C.vgui_pin_next_window_within(title.str)
-	mut o := if open { 1 } else { 0 }
+	mut o := i32(if open { 1 } else { 0 })
 	vis := C.vgui_begin_dialog(title.str, &o) == 1
 	return vis, o != 0
 }

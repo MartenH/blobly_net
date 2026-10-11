@@ -32,9 +32,8 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   real time to about thirteen days (~17,000×), and nothing profiles as hot. First entry in
   [docs/known_issues.md](docs/known_issues.md); upstream
   [vlang/v#28418](https://github.com/vlang/v/issues/28418), **fixed** by
-  [vlang/v#28426](https://github.com/vlang/v/pull/28426) — but on **V3 master**, which we pin
-  away from with `-old-compiler`, so taking the fix means moving the toolchain and that is its
-  own piece of work, not a `.v-version` bump. `cmd/restbus` is **done** — its
+  [vlang/v#28426](https://github.com/vlang/v/pull/28426), which is in the V3 pin the toolchain
+  now uses; the repro has not been re-run on it yet. `cmd/restbus` is **done** — its
   transmit loop is `pump()`, which holds nothing big by value and replays 1,069,214 frames in
   66 s under `-prod` where the inline version managed 562 in ten minutes. What is left, measured
   as `collect_keepalive` sites in the `-prod` C: `main__draw_dbc_editor` 1959,

@@ -555,7 +555,7 @@ fn l_uds_open(l lua.State) i32 {
 // framed as the wire declares (a CAN-FD channel stamps its frames FD), or the channel's DoIP
 // connection. `what` names the caller in the refusals; `for_flash` marks a CAN connection as
 // flash.program's, and takes one it opened before on the same ids.
-fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) int {
+fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
 	// Presence is carried by nil, not by a magic value: 0 is a valid arbitration id, and a

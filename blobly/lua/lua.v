@@ -42,13 +42,13 @@ fn C.ctlua_gettop(&C.lua_State) int
 fn C.ctlua_settop(&C.lua_State, int)
 fn C.ctlua_pop(&C.lua_State, int)
 fn C.ctlua_to_int(&C.lua_State, int) i64
-fn C.ctlua_to_int_ok(&C.lua_State, int, &int) i64
+fn C.ctlua_to_int_ok(&C.lua_State, int, &i32) i64
 fn C.ctlua_to_num(&C.lua_State, int) f64
 fn C.ctlua_to_bool(&C.lua_State, int) int
 fn C.ctlua_is_num(&C.lua_State, int) int
 fn C.ctlua_is_str(&C.lua_State, int) int
 fn C.ctlua_is_nil(&C.lua_State, int) int
-fn C.ctlua_to_lstr(&C.lua_State, int, &int) &char
+fn C.ctlua_to_lstr(&C.lua_State, int, &i32) &char
 fn C.ctlua_error(&C.lua_State, &char) int
 fn C.ctlua_newtable(&C.lua_State)
 fn C.ctlua_setfield_num(&C.lua_State, &char, f64)
@@ -144,7 +144,7 @@ pub fn (l State) arg_int(i int) i64 {
 // convert exactly (a string, 1.5, 1e30), where arg_int answers 0 — for a caller to whom 0 means
 // something (a DTC group, a request byte).
 pub fn (l State) arg_int_exact(i int) ?i64 {
-	mut ok := 0
+	mut ok := i32(0)
 	v := C.ctlua_to_int_ok(l, i, &ok)
 	if ok == 0 {
 		return none
@@ -170,7 +170,7 @@ pub fn (l State) arg_is_num(i int) bool {
 
 // arg_str copies the (byte-clean) string/byte argument at `i` into a V string.
 pub fn (l State) arg_str(i int) string {
-	mut n := 0
+	mut n := i32(0)
 	p := C.ctlua_to_lstr(l, i, &n)
 	if p == unsafe { nil } || n <= 0 {
 		return ''
@@ -180,7 +180,7 @@ pub fn (l State) arg_str(i int) string {
 
 // arg_bytes copies the byte payload at `i` into a []u8 (CAN/UDS data).
 pub fn (l State) arg_bytes(i int) []u8 {
-	mut n := 0
+	mut n := i32(0)
 	p := C.ctlua_to_lstr(l, i, &n)
 	if p == unsafe { nil } || n <= 0 {
 		return []u8{}
@@ -220,8 +220,8 @@ pub fn (l State) push_bytes(b []u8) {
 }
 
 // fail raises a Lua error from a host function (does not return on the Lua side).
-pub fn (l State) fail(msg string) int {
-	return C.ctlua_error(l, &char(msg.str))
+pub fn (l State) fail(msg string) i32 {
+	return i32(C.ctlua_error(l, &char(msg.str)))
 }
 
 // ---- table building: push_table() then set fields on the top-of-stack table ----

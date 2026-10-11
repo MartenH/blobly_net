@@ -28,5 +28,14 @@ for d in cmd/*/; do
 		fi
 	done
 done
+# and one class -check cannot see: C's int is 32 bits and V3's 64, so an `&int` in a C declaration
+# hands C half a value wherever V3 does not copy it through a C int itself (a forwarded pointer,
+# an escaped local, an array). C's int* is `&i32` (docs/known_issues.md).
+n=$((n + 1))
+if bad=$(grep -rnE --include='*.v' '^[[:space:]]*(pub )?fn C\.[A-Za-z0-9_.]+\(.*&int\b' cmd blobly libs); then
+	echo "FAIL fn C. declarations taking &int (a C int* is &i32):"
+	echo "$bad"
+	fail=$((fail + 1))
+fi
 printf '%d checks, %d failed\n' "$n" "$fail"
 [ "$fail" -eq 0 ]

@@ -340,7 +340,8 @@ channel when the deferred cleanup and the Ctrl-C handler race, what an empty cla
 an exit may claim (clean / failed / unknown-because-in-flight), the path #197's fix took four codex
 rounds on before it had a test (#278)), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
-jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
+jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220; it also
+refuses `&int` in a `fn C.` declaration, since C's `int*` is `&i32` under V3) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
 available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged) and
 `scripts/v_toolchain_test.sh` (when the pinned V toolchain is REBUILT, and what counts as
