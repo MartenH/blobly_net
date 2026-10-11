@@ -62,16 +62,17 @@ module vgui
 #flag windows -mwindows -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -l:libstdc++.a -l:libgdi32.a
 #include "vgui.h"
 
-// Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout).
+// Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout, so C's
+// `int` is `i32` here: V's `int` is 64-bit under V3).
 pub struct Bar {
 pub:
 	t0        f32 // start, µs (relative to capture start)
 	dur       f32 // cpu_us
-	lane      int
+	lane      i32
 	color     u32 // packed IM_COL32 (RGBA, little-endian ABGR in memory)
-	warn      int // overran/saturated -> red outline
-	preempted int // torn-edge mark at the slice's end (an involuntary cut)
-	style     int // 0 = running; 1 = ready-but-waiting (thin + dim)
+	warn      i32 // overran/saturated -> red outline
+	preempted i32 // torn-edge mark at the slice's end (an involuntary cut)
+	style     i32 // 0 = running; 1 = ready-but-waiting (thin + dim)
 }
 
 // Link is one preemption cut: a vertical connector at time x from the victim's lane to the
@@ -79,13 +80,13 @@ pub:
 pub struct Link {
 pub mut:
 	x         f32
-	lane_from int
-	lane_to   int
+	lane_from i32
+	lane_to   i32
 }
 
 fn C.vgui_init(&char, int, int, int) int
 fn C.vgui_set_window_icon(int, int, &u8)
-fn C.vgui_set_window_icons(int, &int, &int, &voidptr)
+fn C.vgui_set_window_icons(int, &i32, &i32, &voidptr)
 fn C.vgui_create_texture(int, int, &u8) u32
 fn C.vgui_menu_image(u32, f32)
 fn C.vgui_plot_begin_x(&char, f32, f64, f64) int
@@ -265,21 +266,22 @@ pub:
 // after init(). Entries whose buffer is shorter than w*h*4 are dropped; one call replaces the
 // whole set.
 pub fn set_window_icons(icons []IconImage) {
-	mut ws := []int{cap: icons.len}
-	mut hs := []int{cap: icons.len}
+	// C's int: an []int is 64-bit under V3, and C would read each width as two
+	mut ws := []i32{cap: icons.len}
+	mut hs := []i32{cap: icons.len}
 	mut ps := []voidptr{cap: icons.len}
 	for ic in icons {
 		if ic.w <= 0 || ic.h <= 0 || i64(ic.rgba.len) < i64(ic.w) * i64(ic.h) * 4 {
 			continue
 		}
-		ws << ic.w
-		hs << ic.h
+		ws << i32(ic.w)
+		hs << i32(ic.h)
 		ps << voidptr(ic.rgba.data)
 	}
 	if ps.len == 0 {
 		return
 	}
-	C.vgui_set_window_icons(ps.len, unsafe { &int(ws.data) }, unsafe { &int(hs.data) },
+	C.vgui_set_window_icons(ps.len, unsafe { &i32(ws.data) }, unsafe { &i32(hs.data) },
 		unsafe { &voidptr(ps.data) })
 }
 
