@@ -42,7 +42,10 @@ python3 - "$tmp/v.c" "$vdir" "$install_root" <<'EOF'
 import re, sys
 path, vdir, root = sys.argv[1:4]
 s = open(path, encoding='latin-1').read()
-lit = re.escape('{"%s", %d, 1};' % (vdir, len(vdir)))
+# the C holds the path's UTF-8 BYTES and their count; read as latin-1, one char per byte
+nbytes = len(vdir.encode('utf-8'))
+vdir = vdir.encode('utf-8').decode('latin-1')
+lit = re.escape('{"%s", %d, 1};' % (vdir, nbytes))
 s, n1 = re.subn(r'(static const string _str_\d+ = )' + lit, lambda m: m.group(1) + '{"%s", %d, 1};' % (root, len(root)), s)
 s, n2 = re.subn(re.escape('const char* v3_vexe = "%s/v";' % vdir), 'const char* v3_vexe = "%s/v.exe";' % root, s)
 if (n1, n2) != (1, 1):
