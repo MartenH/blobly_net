@@ -9,6 +9,9 @@
 # each copies on its own. Extra arguments are V options, placed before `test` (e.g. -stats);
 # V picks the compiler.
 set -eu
+v=${V:-v}
+# a relative compiler path names it from where we were called, not from the copy
+case "$v" in */*) v=$(cd "$(dirname "$v")" && pwd -P)/$(basename "$v") ;; esac
 cd "$(dirname "$0")/.."
 rules=(
 	cmd/blobly_net/saverule cmd/blobly_net/logfile cmd/blobly_net/taprule cmd/blobly_net/loadrule
@@ -27,6 +30,8 @@ case "$(cd "$iso" && pwd -P)/" in
 	exit 2
 	;;
 esac
+# its own module root, so no v.mod above TMPDIR lends the copy a namespace or its modules
+printf "Module {\n\tname: 'cmd_rules'\n}\n" >"$iso/v.mod"
 names=()
 for r in "${rules[@]}"; do
 	n=$(basename "$r")
@@ -36,5 +41,5 @@ done
 cd "$iso"
 # not exec: the EXIT trap removes the copy, and the status is the tests'
 status=0
-"${V:-v}" -enable-globals "$@" test "${names[@]}" || status=$?
+"$v" -enable-globals "$@" test "${names[@]}" || status=$?
 exit "$status"
