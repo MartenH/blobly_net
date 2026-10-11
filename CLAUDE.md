@@ -523,7 +523,7 @@ The Linux release uses the same actions, with separate caches for its Ubuntu 22.
   that added the ignore file, so blame now names THAT one and the cost is paid off. Anything
   else the ignore file ever hides is a real defect in the entry, not a rounding error: an entry
   belongs there only if every line the commit touched is one nobody would blame.
-- **Update this file in the PR that lands the work** — especially new blobly/panels. The gap
+- **Update this file in the PR that lands the work** — especially new modules or panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
   [`docs/blobly_emb_synergies.md`](docs/blobly_emb_synergies.md). Wire formats (trace records,
@@ -629,7 +629,7 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   the reproducible recipe — it builds the shipped bundle on every push; there is no hand-written
   walkthrough to drift from it.
 - **Working from Windows, type-check the OTHER platform before you push:**
-  `v -os linux -enable-globals -path "@vlib|@vmodules|libs" -check cmd/blobly_net`.
+  `v -os linux -enable-globals -path "@vlib|libs|@vmodules" -check cmd/blobly_net`.
   The per-platform backends (`vector_windows.v` / `vector_linux.v`, the `discover_*` pair, and
   the GUI's `roots_windows.v` / `roots_nix.v` — the picker's drive roots)
   are two files that must offer the SAME symbols, and a Windows bench compiles only one of them —

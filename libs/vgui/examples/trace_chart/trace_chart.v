@@ -6,7 +6,7 @@
 // second monitor). Drag any panel's title bar out for the same effect.
 //
 // Build (Linux/WSL):  libs/vgui/build_deps.sh  then
-//   v -path "@vlib|@vmodules|libs" run libs/vgui/examples/trace_chart/trace_chart.v
+//   v -path "@vlib|libs|@vmodules" run libs/vgui/examples/trace_chart/trace_chart.v
 // Build (Windows/mingw): see libs/vgui/README.md — same command with -cc gcc.
 //
 // Env knobs (headless / CI verification):

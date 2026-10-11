@@ -113,7 +113,7 @@ fi
 
 # 2. build (+ run). V's #flags (libs/vgui/vgui.v) carry the whole link line; in-proc bus
 #    needs -enable-globals. DBG=1 adds -g (source-level symbols for gdb).
-set -- -cc gcc -enable-globals -path "@vlib|@vmodules|libs"
+set -- -cc gcc -enable-globals -path "@vlib|libs|@vmodules"
 [ "${DBG:-0}" = "1" ] && set -- "$@" -g
 # Serialised C compile. The Windows CI runner builds with this; keep it a knob rather than a
 # platform default so a local Windows build still gets the parallel (much faster) path.

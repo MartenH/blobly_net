@@ -20,7 +20,7 @@ for d in cmd/*/; do
 	d="${d%/}"
 	for os in $targets; do
 		n=$((n + 1))
-		if out="$("$V" -os "$os" -enable-globals -path '@vlib|@vmodules|libs' -check "$d" 2>&1)"; then
+		if out="$("$V" -os "$os" -enable-globals -path '@vlib|libs|@vmodules' -check "$d" 2>&1)"; then
 			:
 		else
 			fail=$((fail + 1))

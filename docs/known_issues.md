@@ -166,13 +166,22 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   still writes `candb.x`), and a `cmd/…` file or a test finds them with no `-path`. The pre-V3
   compiler resolves the same layout. `-path` is still needed for `libs/` (`vgui`, `markdown`),
   and V's `-path` *replaces* the default order, so it re-lists the defaults:
-  `-path "@vlib|@vmodules|libs"`. **V also searches UPWARD for modules**, past the project root:
-  from a worktree under `.claude/worktrees/`, a module missing on the branch would resolve to
-  the MAIN checkout's `blobly/` and build against code that is not on the branch. `.v.mod.stop`
-  at the root stops that walk — under V3; the pre-V3 compiler ignores the marker (measured). And
-  a package that promises to import no blobly module (the GUI-local rules, `libs/vgui`) is
-  checked from a copy outside the repository, where none is reachable
-  (`scripts/test_cmd_rules.sh`, CI's vgui standalone step).
+  `-path "@vlib|libs|@vmodules"`. The FIRST entry holding a module wins, so `libs` goes before
+  `@vmodules`: a `markdown` installed in `~/.vmodules` would otherwise shadow the vendored copy.
+  **V also searches UPWARD for modules**, past the project root: from a worktree under
+  `.claude/worktrees/`, a module missing on the branch would resolve to the MAIN checkout's
+  `blobly/` and build against code that is not on the branch. `.v.mod.stop` at the root stops
+  that walk — under V3; the pre-V3 compiler ignores the marker (measured). And the GUI-local rule
+  packages, which promise to import no blobly module, are checked from a copy outside the
+  repository (`scripts/test_cmd_rules.sh`): inside it, `v.mod` makes every `blobly.*` reachable.
+  `libs/vgui` needs no copy — its own `v.mod` roots its imports, so `blobly.*` is unreachable
+  there unless the repository root is named on `-path`.
+- 🟡 **`v test` mangles a `-path` with `|`.** `v -path "@vlib|libs|@vmodules" test …` fails
+  (`/bin/sh: @vmodules: not found`) because the test runner re-invokes `v` per file and the
+  `|`-separated path leaks into a shell unquoted. The module tests need no `-path`
+  (`v -enable-globals test blobly/`, as CI runs them). When a test DOES need one, use a
+  `:`-separated path, which survives the unquoted shell because `:` isn't a metachar:
+  `v -path '@vlib:libs:@vmodules' test …`.
 - 🟡 **`-enable-globals` is not optional.** `blobly/transport/inproc.v` uses `__global`, so every
   build, test and run that touches `transport` needs the flag.
 - ⚪ **`cannot copy map: call move or clone`.** Assigning a `map` value into a struct field (e.g.

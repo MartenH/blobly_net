@@ -246,17 +246,15 @@ jobs:
           if-no-files-found: error
 
       # libs/vgui is a standalone module, and this is what proves it: trace_chart imports only
-      # `os` + `vgui`, so it compiles with no app module reachable. Built from a COPY outside the
-      # repository: V's upward module search from libs/vgui reaches blobly/ beside v.mod, so a
-      # stray app import would resolve. If the binding ever grows a dependency on app code, this
-      # breaks and the app build does not. Reuses libvgui_c.a from the step above (it travels in
-      # the copy), so it costs seconds.
-      - name: vgui builds standalone (no app reachable)
+      # `os` + `vgui`, so it compiles with no app module reachable. libs/vgui has its own v.mod,
+      # which roots its imports there, and the repository root is not on the path, so a stray
+      # `import blobly.x` fails (checked on both compilers). If the binding ever grows a dependency
+      # on app code, this breaks and the app build does not. Reuses libvgui_c.a from the step
+      # above, so it costs seconds.
+      - name: vgui builds standalone (no app on the path)
         run: |
-          iso=$(mktemp -d)
-          cp -r libs/vgui "$iso/vgui"
-          v -cc gcc -path "@vlib|@vmodules|$iso" -o /tmp/vgui_standalone \
-            "$iso/vgui/examples/trace_chart/trace_chart.v"
+          v -cc gcc -path "@vlib|libs|@vmodules" -o /tmp/vgui_standalone \
+            libs/vgui/examples/trace_chart/trace_chart.v
           test -x /tmp/vgui_standalone && echo "OK — vgui has no app dependency"
 
   # THE ONE STEP THAT HANDS SOMEBODY A BINARY, and the only one gated on the WHOLE verdict:

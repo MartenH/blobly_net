@@ -128,6 +128,6 @@ what the app already does, just via `glfwPostEmptyEvent`. **Cleared to start the
 Reproduce:
 ```sh
 libs/vgui/build_deps.sh
-v -enable-globals -cc gcc -path "@vlib|@vmodules|libs" run \
+v -enable-globals -cc gcc -path "@vlib|libs|@vmodules" run \
   libs/vgui/examples/live_trace/live_trace.v vcan0        # then: cangen vcan0   (VGUI_WAKE_MS caps repaint)
 ```

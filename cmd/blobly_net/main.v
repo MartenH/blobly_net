@@ -7,7 +7,7 @@
 //            telem) unchanged; gui's src/main.v stays the shipping app until parity.
 //
 // Build: libs/vgui/build_deps.sh  then
-//   v -enable-globals -cc gcc -path "@vlib|@vmodules|libs" run cmd/blobly_net/
+//   v -enable-globals -cc gcc -path "@vlib|libs|@vmodules" run cmd/blobly_net/
 // (the DIRECTORY — the app is many files in one `module main`; naming one file fails on the
 // first cross-file reference)
 // Project: argv[1] (a .blobnet path — the Windows file association passes it), else

@@ -5,7 +5,8 @@
 // when there is no traffic, and CPU scales with (not ahead of) the frame rate.
 //
 // Build:  libs/vgui/build_deps.sh  then
-//   v -cc gcc -path "@vlib|@vmodules|libs" run libs/vgui/examples/live_trace/live_trace.v [iface]
+//   v -enable-globals -cc gcc -path "@vlib|libs|@vmodules|." run libs/vgui/examples/live_trace/live_trace.v [iface]
+// The `.` is the repository root, for `blobly.transport`: libs/vgui has its own v.mod.
 // iface defaults to vcan0 (SocketCAN). Feed it:  cansend vcan0 100#DEADBEEF  /  cangen vcan0
 //
 // Env: VGUI_FRAMES=N exit after N rendered frames (headless CI); VGUI_SHOT=path dump last frame.

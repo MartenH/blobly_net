@@ -680,8 +680,8 @@ The shim's check is bidirectional and says so, but the V-side text assumed the c
 in *normal* mode — and `--modecheck` holds one *silent*, which is how the mismatch showed. The
 message now derives the direction instead of assuming it.
 
-CROSS-COMPILED FROM WSL, which is how it is run here — `v -os windows -enable-globals -path
-"@vlib|@vmodules" -o vectorcheck.exe cmd/vectorcheck/main.v`, then the `.exe` from a
+CROSS-COMPILED FROM WSL, which is how it is run here — `v -os windows -enable-globals -o
+vectorcheck.exe cmd/vectorcheck/main.v`, then the `.exe` from a
 Windows-visible directory. WSL's interop launches it as an ordinary Windows process, so it
 reaches `vxlapi64.dll` and the adapter. A Linux build of this tool warns at startup that the
 backend is Windows-only and then runs anyway — on Linux `vector:1` is an ordinary SocketCAN
