@@ -1700,7 +1700,7 @@ fn (mut app App) open_session_log(proj_path string) {
 		os_ver:  '${u.release} ${u.version}'.trim_space()
 		arch:    u.machine
 		cpus:    runtime.nr_cpus()
-		v_hash:  @VHASH
+		v_hash:  @VCURRENTHASH // the V checkout's commit; V3's @VHASH is its compiler's build id
 		project: proj_path
 		args:    os.args
 		started: time.now()
@@ -1724,7 +1724,7 @@ fn (app &App) diagnostics_text() (string, int) {
 	a.mu.unlock()
 	u := os.uname()
 	mut b := []string{}
-	b << 'blobly_net ${app_version} · ${u.sysname} ${u.release} ${u.version} · ${u.machine} · ${runtime.nr_cpus()} cpus · v ${@VHASH}'
+	b << 'blobly_net ${app_version} · ${u.sysname} ${u.release} ${u.version} · ${u.machine} · ${runtime.nr_cpus()} cpus · v ${@VCURRENTHASH}'
 	b << 'project ${app.proj_path}'
 	if s := app.session_log {
 		b << 'session log ${s.path}'
