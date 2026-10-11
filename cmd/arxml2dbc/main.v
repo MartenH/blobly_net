@@ -2,7 +2,7 @@
 // one (#272): blobly_emb's build (DBC + a `[[frame]]` fragment for ecu.toml) and a user who
 // needs to edit. blobly_net itself reads the .arxml natively; this is the honest snapshot.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/arxml2dbc/ <file.arxml> [options]
+//   v -enable-globals run cmd/arxml2dbc/ <file.arxml> [options]
 //
 //   --cluster <name>   which CAN cluster (required when the file has several)
 //   --ecu <name>       the `[[frame]]` fragment for this ECU only (tx for what it sends, rx
@@ -20,7 +20,7 @@
 // is worse than one that refuses.
 module main
 
-import candb
+import blobly.candb
 import crypto.sha256
 import os
 import rand

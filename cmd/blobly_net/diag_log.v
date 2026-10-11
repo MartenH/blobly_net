@@ -2,9 +2,9 @@ module main
 
 import os
 import time
-import uds
+import blobly.uds
 import vgui
-import script
+import blobly.script
 import diaghold
 
 // ---- The Diagnostics panel's log: one entry per request, as a table ----

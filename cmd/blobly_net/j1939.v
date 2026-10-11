@@ -1,13 +1,13 @@
 module main
 
-import transport
-import candb
-import j1939
+import blobly.transport
+import blobly.candb
+import blobly.j1939
 import gaterule
 
 // J1939 in the trace (#171): what a 29-bit id MEANS, a multi-packet message as one row, and a
 // source address named by the node that claimed it. All of it read-side — the engine is
-// `modules/j1939`, and this file is the GUI's use of it: where the reading is decided and
+// `blobly/j1939`, and this file is the GUI's use of it: where the reading is decided and
 // computed, where a rejoined message becomes a TraceRow, where a fault or a claim becomes a
 // Log line.
 //

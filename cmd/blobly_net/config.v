@@ -1,15 +1,15 @@
 module main
 
-import candb
-import doip
+import blobly.candb
+import blobly.doip
 import os
 import time
 import genhome
-import project
+import blobly.project
 import saverule
-import transport
-import sysview
-import sim
+import blobly.transport
+import blobly.sysview
+import blobly.sim
 import vgui
 
 // cfg_address_cap is the size of an address field, the editor's and the import dialog's alike:

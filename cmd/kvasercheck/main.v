@@ -7,24 +7,24 @@
 // nothing but a real frame going out one connector and arriving at another settles it. So this
 // tool asks for two channels and a cable between them, and is explicit that it transmits.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/kvasercheck/main.v --list
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/kvasercheck/main.v --from 0 --to 1
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/kvasercheck/main.v --from 0 --to 1 --data 4000000
+//   v -enable-globals run cmd/kvasercheck/main.v --list
+//   v -enable-globals run cmd/kvasercheck/main.v --from 0 --to 1
+//   v -enable-globals run cmd/kvasercheck/main.v --from 0 --to 1 --data 4000000
 //
 // `--from`/`--to` are canlib channel numbers as `--list` prints them, NOT the numbers silk-screened
 // on the box: canlib counts from 0, the connectors from 1, so the cable between connectors 1 and 2
 // is `--from 0 --to 1`. Getting that wrong is the single likeliest reason a good bench reports
 // nothing, so --list prints both.
 //
-// `-enable-globals` is not optional: modules/transport/inproc.v uses `__global`.
+// `-enable-globals` is not optional: blobly/transport/inproc.v uses `__global`.
 //
 // From WSL, cross-compile and run the result on Windows — canlib lives there:
-//   v -os windows -enable-globals -path "@vlib|@vmodules|modules" -o kvasercheck.exe cmd/kvasercheck/main.v
+//   v -os windows -enable-globals -o kvasercheck.exe cmd/kvasercheck/main.v
 module main
 
 import os
 import time
-import transport
+import blobly.transport
 
 struct Opts {
 mut:

@@ -94,7 +94,7 @@ def build_v_decoder():
         v = "v"
     out = "/tmp/blobly_net_dbc_decode"
     subprocess.run(
-        [v, "-path", "@vlib|@vmodules|modules", "-o", out,
+        [v, "-enable-globals", "-o", out,
          os.path.join("cmd", "dbc_decode", "decode.v")],
         cwd=REPO, check=True,
     )

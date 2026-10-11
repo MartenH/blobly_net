@@ -31,7 +31,7 @@ philosophy. They are two halves of one world.
 4. **Features emb has that blobly_net could grow tester-side support for:**
    **SecOC** (freshness/MAC) and **NM** (network management states) — blobly_net has neither,
    and emb is a ready oracle for each. **E2E** is no longer on this list: blobly_net stamps
-   and verifies counter/CRC protection (`modules/sim/e2e.v`, `verify.v`) and injects
+   and verifies counter/CRC protection (`blobly/sim/e2e.v`, `verify.v`) and injects
    `bad_crc`/`freeze_counter` from a script; the synergy left there is cross-validating the
    two implementations.
 
@@ -45,7 +45,7 @@ drift/duplication cost exceeds the versioning overhead.
 
 | Module | Split? | Why |
 |--------|--------|-----|
-| **`candb`** | **Yes — the one clear case** | emb's `tools/candb/candb.v` and net's `modules/candb/` (now `candb.v` + `dbc.v` + `merge.v` + `dbc_write.v`, net having added DBC writing and multi-file merge) share a **forked core** (the same `ByteOrder`/`Signal`/`label()`/`raw_value()`/`load_dbc_file()`). Both use it in alloc-OK contexts (net runtime+build; emb's `dbc2cfg` is BUILD-TIME — "heap is fine here, candb never ships to target"). One source of truth for DBC semantics (bit order, mux, value tables) removes a *correctness* drift risk across the very tester/ECU boundary under test. A shared `candb` also subsumes any "DBC cross-validation" test — same code, nothing to diverge. |
+| **`candb`** | **Yes — the one clear case** | emb's `tools/candb/candb.v` and net's `blobly/candb/` (now `candb.v` + `dbc.v` + `merge.v` + `dbc_write.v`, net having added DBC writing and multi-file merge) share a **forked core** (the same `ByteOrder`/`Signal`/`label()`/`raw_value()`/`load_dbc_file()`). Both use it in alloc-OK contexts (net runtime+build; emb's `dbc2cfg` is BUILD-TIME — "heap is fine here, candb never ships to target"). One source of truth for DBC semantics (bit order, mux, value tables) removes a *correctness* drift risk across the very tester/ECU boundary under test. A shared `candb` also subsumes any "DBC cross-validation" test — same code, nothing to diverge. |
 | `lua` | Maybe (low priority) | Clean, reusable V↔Lua 5.4 facade; only net consumes it today. Extract only if reuse is foreseen. |
 | `uds`, `isotp` | **No** | emb's are **no-alloc runtime** (`[max_dids]Did`, `&u8`); net's are dynamic. Different implementations under different constraints — oracle pairs, not merge candidates. |
 | `transport` | No | emb has `driver/can` (no-alloc, different abstraction). |

@@ -1,11 +1,11 @@
 // isotp_smoke — send one ISO-TP PDU and print the peer's reply. Exercises the
 // kernel ISO-TP path end-to-end (multi-frame if the payload is > 7 bytes).
 //
-//   v -path "@vlib|@vmodules|modules" run cmd/isotp_smoke/smoke.v [iface] [tx_hex] [rx_hex] [data_hex]
+//   v run cmd/isotp_smoke/smoke.v [iface] [tx_hex] [rx_hex] [data_hex]
 // defaults: vcan0 7E0 7E8 000102030405060708090A0B0C0D0E0F10111213
 module main
 
-import isotp
+import blobly.isotp
 import os
 
 fn main() {

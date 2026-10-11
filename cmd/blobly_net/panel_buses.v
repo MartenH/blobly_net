@@ -1,7 +1,7 @@
 module main
 
-import transport
-import project
+import blobly.transport
+import blobly.project
 import vgui
 
 // channel state colour + short ASCII label (imgui's default font is ASCII-only):

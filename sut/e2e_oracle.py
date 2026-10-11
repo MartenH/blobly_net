@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """e2e_oracle.py - AUTOSAR E2E Profile 1 vectors from an INDEPENDENT implementation.
 
-blobly_net's autosar_p01 (modules/sim/e2e.v) is pinned by modules/sim/e2e_p01_test.v; this
+blobly_net's autosar_p01 (blobly/sim/e2e.v) is pinned by blobly/sim/e2e_p01_test.v; this
 regenerates that test's table from autosar-e2e (https://github.com/zariiii9003/autosar-e2e,
 MIT), so the vectors are the reference's, not blobly's own output fed back.
 

@@ -1,8 +1,8 @@
 module main
 
-import transport
-import telem
-import script
+import blobly.transport
+import blobly.telem
+import blobly.script
 import vgui
 
 // ---- Diagnostics (UDS over software ISO-TP, on a worker thread) ----

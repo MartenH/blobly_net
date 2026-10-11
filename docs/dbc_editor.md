@@ -73,7 +73,7 @@ comment-rich, PR-reviewed — and their validation brain (ecucheck/sysmodel)
 lives in blobly_emb. A round-tripping TOML editor would destroy comments and
 duplicate schema knowledge, so:
 
-- **viewer first — SHIPPED** (modules/sysview + the System panel): reads
+- **viewer first — SHIPPED** (blobly/sysview + the System panel): reads
   system.toml + node ecu.tomls, derives consumers from the FB reads, and
   renders the communication matrix (P/C, with undeclared writers flagged W?),
   node identities, and per-bus id allocation (DBC frames via candb + NM alive

@@ -2,14 +2,14 @@ module main
 
 // flash — the host flasher CLI: drives a blobly bootloader's UDS programming
 // session (blobly_emb docs/bootloader.md) over ISO-TP on SocketCAN. The whole
-// session lives in modules/flash (shared with the GUI's Flash panel); this
+// session lives in blobly/flash (shared with the GUI's Flash panel); this
 // file is argument parsing + a println sink. Scripts reach the same session as flash.program.
 //
 //   v run cmd/flash <iface> <image.bin|.img> [base_hex] [req_id_hex] [rsp_id_hex] [sw_version]
 //   v run cmd/flash vcan0 app.bin 08020000 7B0 7B8 1
 import os
-import isotp
-import flash
+import blobly.isotp
+import blobly.flash
 
 struct StdoutSink {
 mut:

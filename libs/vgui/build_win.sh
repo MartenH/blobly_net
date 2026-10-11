@@ -23,7 +23,7 @@ mkdir -p "$BLD"
 echo "1/3  V -> C ($EXAMPLE)"
 # -gc none keeps the link deps minimal for the spike (no libgc); the app proper would use
 # V's default GC. -cc gcc so the generated C is C (g++ rejects V's char**/named-struct casts).
-"$V" -cc gcc -gc none -path "@vlib|@vmodules|libs" -o "$BLD/trace_chart.c" "$EXAMPLE"
+"$V" -cc gcc -gc none -path "@vlib|libs|@vmodules" -o "$BLD/trace_chart.c" "$EXAMPLE"
 
 echo "2/3  gcc -c (compile the generated C)"
 gcc -c "$BLD/trace_chart.c" -o "$BLD/trace_chart.o" \

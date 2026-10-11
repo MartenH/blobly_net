@@ -16,7 +16,7 @@ driver at all. All four vendors are hand-verified on the bench, CAN-FD included.
 > This is a single-author project still in its **design phase** — not a product, and not
 > something to rely on yet. Specifically:
 >
-> - **Maturity varies a lot between features.** The protocol engine in `modules/` is
+> - **Maturity varies a lot between features.** The protocol engine in `blobly/` is
 >   [unit-tested and runs in CI](#how-its-tested) on every push; a fair amount of the rest has
 >   only ever been exercised on the
 >   author's own bench, against the author's own boards. Some of it is **effectively untested**,
@@ -32,7 +32,7 @@ driver at all. All four vendors are hand-verified on the bench, CAN-FD included.
 
 **Two ways to drive it, over the same engine:** the **GUI** for interactive work, and
 **[headless](#headless--scripted-no-gui)** — Lua test scripts and CLI tools with no window and
-no display, which is how it runs in CI. The protocol engine lives in `modules/` and imports no
+no display, which is how it runs in CI. The protocol engine lives in `blobly/` and imports no
 GUI code, so scripted use is a first-class path, not a cut-down one. (The reverse isn't claimed:
 editing a DBC or watching a live plot needs the GUI.)
 
@@ -242,7 +242,7 @@ To reproduce the screenshot above — no hardware, no drivers, nothing else to s
 BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_gui.sh
 ```
 
-The simulated ECUs are native (`modules/sim`) and run in-process.
+The simulated ECUs are native (`blobly/sim`) and run in-process.
 
 ### Dependencies
 
@@ -285,7 +285,7 @@ Point it at a different project with `--project projects/<name>.blobnet`. The fu
 in the **[scripting & test guide](docs/scripting.md)**.
 
 **CLI tools** — each runs standalone via
-`v -enable-globals -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v`:
+`v -enable-globals run cmd/<tool>/<file>.v`:
 
 | tool | what | |
 |---|---|---|
@@ -298,7 +298,7 @@ in the **[scripting & test guide](docs/scripting.md)**.
 
 † needs a **blobly_emb** target, which is [not released yet](#-this-screenshot-needs-the-other-half--which-isnt-released-yet).
 
-**CI** (`.github/workflows/`) runs `v -enable-globals test modules/` plus
+**CI** (`.github/workflows/`) runs `v -enable-globals test blobly/` plus
 `scripts/runtests.sh` — no display involved. See [How it's tested](#how-its-tested).
 
 ## How it's tested
@@ -310,7 +310,7 @@ evidence behind that warning.
 
 | layer | what | where |
 |---|---|---|
-| **Unit tests** | every `_test.v` under `modules/` — 72 files, ~900 test functions and ~3,200 assertions at 2026.08.00 | `v -enable-globals test modules/` |
+| **Unit tests** | every `_test.v` under `blobly/` — 72 files, ~900 test functions and ~3,200 assertions at 2026.08.00 | `v -enable-globals test blobly/` |
 | **Golden byte vectors** | wire formats are pinned to exact bytes — SOME/IP headers, trace records, the simulated ECU's frames — and the same vectors exist on the blobly_emb side, so neither repo can drift alone | inside the unit tests |
 | **Headless integration** | 9 Lua suites — every file in `tests/`, which is what CI runs with no arguments — drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
 | **GUI build** | the ImGui app compile-links on Linux and Windows | `ci.yml`, `windows.yml` |
@@ -328,7 +328,7 @@ evidence behind that warning.
   link, nothing more.
 
 **The gaps, plainly:** there is **no automated GUI testing** — CI proves the app builds, not that
-a panel behaves. The Windows job runs the per-platform module tests (`modules/isotp/`) and
+a panel behaves. The Windows job runs the per-platform module tests (`blobly/isotp/`) and
 type-checks every `cmd/` tool for both targets, **not the full unit suite**. And every hardware and oracle check
 above is manual, so a regression there is caught only when someone next runs it.
 

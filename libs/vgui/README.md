@@ -33,7 +33,7 @@ bumps survivable.
 | `vgui_glue.cpp` | lifecycle (GLFW + multi-viewport) + the ImPlot swimlane, in C++ |
 | `build_deps.sh` | fetch pinned cimgui/cimplot + build `libvgui_c.a` (Linux/WSL **and** Windows) |
 | `build_win.sh`  | 2-step Windows build of the example — a fallback; see the note below |
-| `examples/trace_chart/` | swimlane demo importing only `os` + `vgui`. **CI builds this with `modules/` OFF the path**, which is what proves this module has no app dependency |
+| `examples/trace_chart/` | swimlane demo importing only `os` + `vgui`. **CI builds this with the repository root OFF the path** (this folder's own `v.mod` roots its imports), which is what proves this module has no app dependency |
 | `shots/`        | screenshots from the toolkit evaluation, referenced by `docs/gui_toolkit_evaluation.md` |
 
 ## Build & run (Linux / WSL)
@@ -43,7 +43,7 @@ Dependencies match what CI installs (`.github/workflows/ci.yml` is the source of
 ```sh
 sudo apt install g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
 libs/vgui/build_deps.sh                  # clones cimgui/cimplot (pinned) + builds libvgui_c.a
-v -path "@vlib|@vmodules|libs" run libs/vgui/examples/trace_chart/trace_chart.v
+v -path "@vlib|libs|@vmodules" run libs/vgui/examples/trace_chart/trace_chart.v
 ```
 
 Drag a panel's title bar out → it becomes its own OS window (drag to another monitor). In the
@@ -61,7 +61,7 @@ spawns **real native Win32 windows** across monitors; event-driven idle CPU **0.
 # dedicated MSYS2 MINGW64 shell — don't pollute the user's personal MSYS2
 pacman -S --needed git mingw-w64-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
 sh libs/vgui/build_deps.sh      # clones cimgui/cimplot (pinned) + builds libvgui_c.a
-v -cc gcc -path "@vlib|@vmodules|libs" -o trace_chart.exe \
+v -cc gcc -path "@vlib|libs|@vmodules" -o trace_chart.exe \
   libs/vgui/examples/trace_chart/trace_chart.v
 ```
 

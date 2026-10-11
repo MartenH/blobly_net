@@ -1,8 +1,8 @@
 module main
 
 import os
-import candb
-import project
+import blobly.candb
+import blobly.project
 import vgui
 
 // ArxmlImportUi is the "Import system from ARXML" dialog (#439): one row per CAN cluster, each

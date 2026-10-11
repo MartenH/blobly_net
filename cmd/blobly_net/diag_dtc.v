@@ -2,9 +2,9 @@ module main
 
 import os
 import time
-import uds
+import blobly.uds
 import vgui
-import sysview
+import blobly.sysview
 import diaghold
 
 // ---- The Diagnostics panel's DTC tab ----

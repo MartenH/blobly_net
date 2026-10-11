@@ -48,7 +48,7 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - ⏭️ **System wizards** ([`docs/dbc_editor.md`](docs/dbc_editor.md)) — "add a signal/frame"
   generators that emit correctly-shaped TOML blocks to **append**. Deliberately *not* a TOML
   editor: mutations must never rewrite the file, so comments survive and diffs stay clean.
-- ⏭️ **UDS server — finish it.** `modules/uds/server.v` already exists and is load-bearing: it
+- ⏭️ **UDS server — finish it.** `blobly/uds/server.v` already exists and is load-bearing: it
   backs the Lua test runner, the GUI's simulated diagnostics and `doip_smoke`, and it serves
   **0x10** session control, **0x22**/**0x2E** RDBI/WDBI, **0x27** security access, **0x19**
   ReadDTCInformation (sub `0x02` only) and **0x3E** tester present. What is missing:
@@ -99,12 +99,12 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   **Both address families, and they are not the same mechanism:** IPv4 gets subnet broadcast,
   but IPv6 has no broadcast at all, so it needs link-local multicast. That is not a detail to
   discover during implementation — this repo already supports IPv6 DoIP endpoints
-  (`modules/doip/server.v`) and round-trips them in `modules/doip/net_test.v`, so a
+  (`blobly/doip/server.v`) and round-trips them in `blobly/doip/net_test.v`, so a
   broadcast-only scan would ship "finds any ISO 13400 entity" while leaving a class of entity
   we deliberately support permanently invisible. Core
   tester behaviour, not blobly_emb integration — any ISO 13400 entity answers, and it is
   recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
-- 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
+- 🧭 **LIN** — `blobly/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
 - 🧭 **Split `cmd/blobly_net/main.v`** — *the mechanical half landed via #123: per-concern
   files (24 today, 14,751 lines between them, `main.v` itself 311), pure moves, build targets
@@ -187,7 +187,7 @@ a wire-visible feature, the matching host support usually lands here in the same
 
 ## Already shipped
 
-- ✅ **J1939 understood, read-side** (#171, `modules/j1939`, [docs/j1939.md](docs/j1939.md)): the
+- ✅ **J1939 understood, read-side** (#171, `blobly/j1939`, [docs/j1939.md](docs/j1939.md)): the
   trace's name column reads a 29-bit id as PGN / source (and destination) address, BAM and RTS/CTS
   transfers are rejoined into rows of their own (flags `TP`, the whole parameter group as data,
   decoded against the DBC by PGN) with failed transfers said in the Log (twenty per wire per run,
@@ -245,7 +245,7 @@ a wire-visible feature, the matching host support usually lands here in the same
   FD as it does on Vector and Kvaser. This one completes the set: every CAN backend now carries FD.
   PCANBasic takes neither a rate constant nor a segment struct but a **bit-rate string of register
   values** (`f_clock=80000000,nom_brp=1,nom_tseg1=127,…`), so the timing is SOLVED rather than
-  looked up — `pcan_fd_bitrate` in `modules/transport/pcan_names.v`, deliberately outside the
+  looked up — `pcan_fd_bitrate` in `blobly/transport/pcan_names.v`, deliberately outside the
   `_windows.v` file so CI can check the arithmetic on a runner with no adapter. And on an
   FD-initialized channel `CAN_Write` is refused outright (`PCAN_ERROR_ILLOPERATION`), so **every**
   send on such a channel goes through `CAN_WriteFD`, classic frames included. Bench-verified

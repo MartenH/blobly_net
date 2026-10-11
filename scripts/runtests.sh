@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # Absolutise caller-relative paths BEFORE changing directory. The cd below is what lets the
-# repo-relative `-path modules` and `cmd/script/run.v` work, but it also silently re-based every
+# repo-relative `cmd/script/run.v` and the blobly modules beside v.mod resolve, but it also silently re-based every
 # argument the caller wrote — so `--project my.blobnet` from another directory looked for that
 # file inside the repository and failed before any asset resolution ran. Scripts have the same
 # problem, so both are resolved here.
@@ -41,7 +41,7 @@ V="${V:-$HOME/v/v}"
 # suite paid a compile of its own.
 bin_dir="$(mktemp -d)"
 trap 'rm -rf "$bin_dir"' EXIT
-"$V" -enable-globals -path "@vlib|@vmodules|modules" -o "$bin_dir/run" cmd/script/run.v
+"$V" -enable-globals -o "$bin_dir/run" cmd/script/run.v
 
 run_one() {
   "$bin_dir/run" "$@"
@@ -60,7 +60,7 @@ done
 #
 # One invocation PER FILE, because a run brings up ONE project and the tests do not all want the
 # same one — the DoIP pair needs its own, and says so in its own head (`-- @project`, see
-# modules/script/project_decl.v). Per file, each script selects for itself and this script never
+# blobly/script/project_decl.v). Per file, each script selects for itself and this script never
 # has to parse that directive, so the rule lives in exactly one place.
 #
 # CI ran a single named file before, so six of the eight suites were only ever run by hand. Two

@@ -1,7 +1,7 @@
 module main
 
 // project_scaffold — fill a project .yml from what's discoverable, instead of hand-writing
-// it. GUI-free; a thin consumer of modules/transport (and later modules/candb for the
+// it. GUI-free; a thin consumer of blobly/transport (and later blobly/candb for the
 // generator half). The eventual GUI "Bus Configuration" dialog calls the same module APIs.
 //
 //   project_scaffold scan         # discover bus interfaces -> a `channels:` block (stdout)
@@ -9,7 +9,7 @@ module main
 // Discovery summary goes to stderr so stdout can be redirected straight into a project file:
 //   project_scaffold scan > projects/discovered.blobnet
 import os
-import transport
+import blobly.transport
 
 fn main() {
 	cmd := if os.args.len > 1 { os.args[1] } else { 'scan' }

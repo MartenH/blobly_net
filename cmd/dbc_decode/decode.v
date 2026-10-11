@@ -2,11 +2,11 @@
 // Machine-readable output (one `Name=value` per line) so the Python oracle can
 // diff V's decode against an independent implementation.
 //
-//   v -path "@vlib|@vmodules|modules" run cmd/dbc_decode/decode.v <dbc> <id_hex> <data_hex>
+//   v run cmd/dbc_decode/decode.v <dbc> <id_hex> <data_hex>
 //   e.g.  ... dbc/blobly_net.dbc 100 1234ABCD00000000
 module main
 
-import candb
+import blobly.candb
 import os
 import strconv
 

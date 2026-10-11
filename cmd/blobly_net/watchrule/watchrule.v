@@ -167,9 +167,9 @@ pub fn (i Ident) renamed_by(id u32, ext bool, wire string, pgn u32) bool {
 //     RECOMPOSED from it, because that identifier comes from the transfer on the wire — group,
 //     sender, priority — so writing the database's raw `BO_` id into it pointed the watch at a
 //     number no row carries, while leaving the group alone left it on one the file no longer
-//     defines. The caller recomposes because composing an identifier is `modules/j1939`'s to
-//     do, and this package stays dependency-free: CI runs its test with a bare `v test`, which
-//     cannot reach `modules/`.
+//     defines. The caller recomposes because composing an identifier is `blobly/j1939`'s to
+//     do, and this package stays dependency-free: CI tests it from a copy outside the repository, where it
+//     cannot reach `blobly/`.
 //
 // `renamed_by` answers whether the edit concerns this watch at all, for every kind and for
 // every edit — a rename, an id change, a signal rename. There is no second predicate, because

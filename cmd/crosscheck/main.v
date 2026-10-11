@@ -1,6 +1,6 @@
 // crosscheck — prove that two wires are on one bus, and that a frame survives the crossing.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/crosscheck/main.v <A> <B>
+//   v -enable-globals run cmd/crosscheck/main.v <A> <B>
 //   crosscheck kvaser:2@500000 cansub:e5a16adf/1@500000
 //   crosscheck kvaser:2@500000/2000000 cansub:e5a16adf/1@500000/2000000   (CAN-FD)
 //
@@ -19,7 +19,7 @@ module main
 
 import os
 import time
-import transport
+import blobly.transport
 
 struct Case {
 	label string

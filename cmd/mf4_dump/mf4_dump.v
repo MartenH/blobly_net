@@ -1,8 +1,8 @@
 // mf4_dump — native-V MF4 reader smoke test / oracle-diff tool.
-// Parses an .mf4 with modules/mf4 and prints a frame summary (count, unique IDs,
+// Parses an .mf4 with blobly/mf4 and prints a frame summary (count, unique IDs,
 // first frames). Compare against sut/mf4_bridge.py / asammdf for cross-validation.
 //
-//   v -path "@vlib|@vmodules|modules" run cmd/mf4_dump/mf4_dump.v <file.mf4> [--all] [--stream]
+//   v run cmd/mf4_dump/mf4_dump.v <file.mf4> [--all] [--stream]
 //
 // --stream reads the file through mf4.Stream (docs/streaming_replay.md) instead of the
 // whole-file loader, and prints the heap high-water mark it saw — the number the two paths are
@@ -10,8 +10,8 @@
 module main
 
 import os
-import mf4
-import canlog
+import blobly.mf4
+import blobly.canlog
 
 fn main() {
 	if os.args.len < 2 {

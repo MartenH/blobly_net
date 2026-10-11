@@ -15,7 +15,7 @@
 -- entities up before it parses the suite, exactly as an ECU is powered before a tester arrives.
 -- A one-shot sequence is therefore unobservable from Lua by construction, and no fixture here
 -- pretends otherwise. The shipped 3 x 500ms default is verified where the ordering can be
--- controlled: modules/sim (the config reaches the entity) and modules/doip net_test
+-- controlled: blobly/sim (the config reaches the entity) and blobly/doip net_test
 -- (listener bound, then announce). This suite covers what a script can actually see.
 
 -- Every listen names a channel with `from`: the runner moves each simulated entity off the
@@ -55,7 +55,7 @@ test("announcements arrive on the entity's own port, named through its channel",
 end)
 
 -- Two answers to one question are refused, never silently overruled. No window: the refusal
--- comes before any socket is opened (the branches themselves are pinned in modules/script).
+-- comes before any socket is opened (the branches themselves are pinned in blobly/script).
 test("a port that contradicts the channel is refused", function()
   local ok, err = pcall(doip.listen, 100, { from = "AltPort", port = 13400 })
   check.truthy(not ok and tostring(err):find("contradicts", 1, true), "a contradicting port was accepted: " .. tostring(err))

@@ -3,11 +3,11 @@
 // small diagnostic session: start session, read a few DIDs, tester-present, and
 // a deliberately-unknown DID to show negative-response handling.
 //
-//   v -path "@vlib|@vmodules|modules" run cmd/uds_smoke/smoke.v [iface]
+//   v run cmd/uds_smoke/smoke.v [iface]
 module main
 
-import isotp
-import uds
+import blobly.isotp
+import blobly.uds
 import os
 
 fn main() {

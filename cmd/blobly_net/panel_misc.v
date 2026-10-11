@@ -2,10 +2,10 @@ module main
 
 import os
 import time
-import project
+import blobly.project
 import logfile
-import transport
-import candb
+import blobly.transport
+import blobly.candb
 import watchrule
 import vgui
 import panerule
@@ -1123,7 +1123,7 @@ fn (mut app App) flash_append(line string) {
 	vgui.wake()
 }
 
-// GuiFlashSink adapts modules/flash progress to the panel's log + block counter.
+// GuiFlashSink adapts blobly/flash progress to the panel's log + block counter.
 struct GuiFlashSink {
 mut:
 	app &App = unsafe { nil }

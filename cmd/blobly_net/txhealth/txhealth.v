@@ -14,8 +14,8 @@
 // every tap on one wire, and that is precisely the kind this repo covers with a rule and a test
 // rather than patching in place (CLAUDE.md, "when findings repeat in one path, write the test").
 //
-// DEPENDENCY-FREE ON PURPOSE. CI runs `v test cmd/blobly_net/txhealth/` with no `-path modules`,
-// so nothing here may import `transport` — hence Rung below rather than transport.BusHealth. The
+// DEPENDENCY-FREE ON PURPOSE. CI tests it from a copy outside the repository (scripts/
+// test_cmd_rules.sh), so nothing here may import `transport` — hence Rung below rather than transport.BusHealth. The
 // caller maps between them in ONE exhaustive match, which V's compiler checks: a rung added to
 // BusHealth and not to that match fails the build, which is a stronger guarantee than a test.
 module txhealth

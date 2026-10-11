@@ -2,7 +2,7 @@
 // `x := &recv` and a closure `fn [recv]` inside a `fn (mut recv T)` method. The compiler accepts
 // both, and the copy's own mutex over the caller's maps crashed the Diagnostics panel after #402.
 //
-//   mutrefs [dir-or-file ...]   default: cmd modules; *_test.v files are skipped
+//   mutrefs [dir-or-file ...]   default: cmd blobly; *_test.v files are skipped
 //
 // Exit 1 with `file:line: ...` per finding, 2 when the check itself cannot be made (a path that
 // is not a .v file or directory, a file the parser refuses, a spelling the walk did not reach).
@@ -12,7 +12,7 @@ import os
 import mutscan
 
 fn main() {
-	roots := if os.args.len > 1 { os.args[1..] } else { ['cmd', 'modules'] }
+	roots := if os.args.len > 1 { os.args[1..] } else { ['cmd', 'blobly'] }
 	mut files := []string{}
 	for r in roots {
 		if os.is_dir(r) {

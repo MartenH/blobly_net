@@ -12,21 +12,21 @@
 // the cross-vendor pairing is the more convincing one, because neither driver is scoring its own
 // homework.
 //
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/silentcheck/main.v \
+//   v -enable-globals run cmd/silentcheck/main.v \
 //       --listener kvaser:0@500000 --talker kvaser:1@500000
-//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/silentcheck/main.v \
+//   v -enable-globals run cmd/silentcheck/main.v \
 //       --listener pcan:PCAN_USBBUS1@500000 --talker kvaser:2@500000
 //
 // IT TRANSMITS, from `--talker`, deliberately and repeatedly. Do not point it at a bus you are not
 // willing to disturb — and note that the point of phase 2 is to drive the talker's controller into
 // its fault ladder, which is a state a real ECU would report.
 //
-// `-enable-globals` is not optional: modules/transport/inproc.v uses `__global`.
+// `-enable-globals` is not optional: blobly/transport/inproc.v uses `__global`.
 module main
 
 import os
 import time
-import transport
+import blobly.transport
 
 struct Opts {
 mut:

@@ -6,7 +6,7 @@
 ## The shape
 
 ```
-wire / medium            backend (modules/transport, doip, someip)     what comes out       who reads it
+wire / medium            backend (blobly/transport, doip, someip)     what comes out       who reads it
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
 CAN  vcan/socketcan      open()  →  a Bus per OPENER: the RX loop,       CanFrame             rx_loop → TraceRow (RX)
      pcan/kvaser/vector   each transmit tap, the sim, diagnostics                              sim_loop → tap (TX-S)
@@ -29,11 +29,11 @@ LIN                      planned (ROADMAP) — its own LinFrame + bus,   —    
 
 Two things enter the same trace from somewhere other than a wire:
 
-- **A recording, two ways** (`cmd/blobly_net/replay.v`, `modules/player`). *Opening* one for inspection
+- **A recording, two ways** (`cmd/blobly_net/replay.v`, `blobly/player`). *Opening* one for inspection
   makes `REP` rows on the file's own clock and transmits nothing. *Replaying* one sends its frames
   through a tap: the SUT sees ordinary CAN frames, and the trace shows them as `TX-S` rows. Two paths,
   not two steps of one.
-- **Telemetry from a blobly_emb target** (`modules/telem`) mostly does NOT go through rows. The Trace
+- **Telemetry from a blobly_emb target** (`blobly/telem`) mostly does NOT go through rows. The Trace
   Chart's `trace_dump_worker` and the Shell's `shell_worker` each open their own ISO-TP channel and
   decode into their own state (`app.trecs`, `shell_lines`); the eth Shell talks `someip.RpcClient`
   directly. The frames may also appear in the trace, and `rx_loop` decodes one thing inline — the
@@ -50,7 +50,7 @@ Two things enter the same trace from somewhere other than a wire:
   the config-derived layout (SOME/IP, next rung) is applied by whoever displays or checks the value.
 - **Every row says where it came from.** `TX` we sent as tester · `TX-S` our simulated rest-of-bus,
   active replay included · `REP` a recording opened for viewing, nothing sent · `RX` anything real on
-  the wire (`modules/wiretap`). What keeps our own
+  the wire (`blobly/wiretap`). What keeps our own
   echo out of the SUT's pile is the wiretap's emit/claim matcher: `rx_loop` asks it before it makes an
   `RX` row, and an unmatched frame is external. Origin being part of the group identity is a
   separate fact — it keeps our 0x120 and the ECU's 0x120 as two rows — and does not do that job.
@@ -78,7 +78,7 @@ Two things enter the same trace from somewhere other than a wire:
 | Record | received CAN frames, plus our own sends as accepted by the driver (`note_emit` appends at emit; an echo, where the backend gives one, confirms it rather than creating it) → `canlog` (candump `.log`) | **not an independent bus capture**: a host-accepted send is in the file whether or not it was seen on the wire. **CAN only** — a SOME/IP row is shown, not recorded, and the Log says so once |
 | Diagnostics | an `isotp.Channel` | over a CAN tap (`isotp.on_bus`) or a `DoipClient` — the same `uds.Client` either way |
 | Lua (`cmd/script`, the Script panel) | `bus.recv`/`bus.send` over a Bus from `env.opener`; `uds.open`; `someip.listen` | the runner opens buses directly; the GUI hands the script a tap, so its sends are `TX` rows |
-| Simulation | sends `TX-S` through a tap, stamped per each simulated node's `protect:` | `modules/sim`, [simulation_architecture.md](simulation_architecture.md) |
+| Simulation | sends `TX-S` through a tap, stamped per each simulated node's `protect:` | `blobly/sim`, [simulation_architecture.md](simulation_architecture.md) |
 | Verification | checks frames against the channel's **`verify:`** entries — live `RX` in `rx_loop`, and every frame of an opened recording in `load_recording`, whose verdict sits on the `REP` row | a DUT is not a simulated node, so its messages can never sit under a `protect:`; `verify:` exists for exactly that ECU (`sim.verifiers_for`) |
 
 ## Where to read next

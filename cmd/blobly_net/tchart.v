@@ -1,6 +1,6 @@
 module main
 
-import telem
+import blobly.telem
 import vgui
 
 const lane_palette = [

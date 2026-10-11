@@ -1,13 +1,13 @@
 module main
 
 import time
-import isotp
-import transport
-import doip
-import uds
+import blobly.isotp
+import blobly.transport
+import blobly.doip
+import blobly.uds
 import vgui
 import diaghold
-import sysview
+import blobly.sysview
 
 // ---- The Diagnostics panel's held connection ----
 //

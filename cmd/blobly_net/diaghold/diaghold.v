@@ -37,8 +37,8 @@
 // the panel holds a DoIP entity's one connection, another tester is refused until Disconnect — the
 // strip says so; the held connection answers the entity's alive checks, so the entity keeps it.
 //
-// DEPENDENCY-FREE, like the other rule packages: CI runs `v test cmd/blobly_net/diaghold/` with
-// no `-path modules`.
+// DEPENDENCY-FREE, like the other rule packages: CI tests it from a copy outside the repository
+// (scripts/test_cmd_rules.sh), where no blobly module is reachable.
 module diaghold
 
 // keepalive_ms is the tester-present period while a non-default session is held: below ISO

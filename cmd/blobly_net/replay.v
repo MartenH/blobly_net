@@ -2,14 +2,14 @@ module main
 
 import os
 import time
-import transport
-import candb
-import sim
-import canlog
-import j1939
+import blobly.transport
+import blobly.candb
+import blobly.sim
+import blobly.canlog
+import blobly.j1939
 import gaterule
-import mf4
-import player
+import blobly.mf4
+import blobly.player
 import vgui
 
 // ReplayState is one recording's lifecycle within a run.
@@ -41,10 +41,10 @@ mut:
 	failed     u64
 	// commands: panel -> worker (applied and cleared by the worker).
 	//
-	// THE PROTOCOL ITSELF LIVES IN modules/player (control.v), not here. It used to be four
+	// THE PROTOCOL ITSELF LIVES IN blobly/player (control.v), not here. It used to be four
 	// fields with four different staleness rules -- a target rather than a toggle, a tri-state
 	// sentinel, an apply-before-publish ordering, an acknowledgement latch -- each correct, none
-	// checkable: `cmd/blobly_net` has no tests and CI runs `v test modules/` only. Two of the
+	// checkable: `cmd/blobly_net` has no tests and CI runs `v test blobly/` only. Two of the
 	// four codex findings on #160 landed in exactly this path and the second was a defect of the
 	// first one's fix, which is the pattern CLAUDE.md says to answer with a test rather than
 	// another repair (#161). The rules are now code a test holds; this is just where the panel
@@ -439,7 +439,7 @@ fn (mut app App) load_recording(path string) {
 // A worker per channel would give each its own stopwatch, started whenever its thread happened
 // to run, and decoding a large `.mf4` takes seconds: the skew between buses would be seconds
 // too. The ECU under test gateways between these buses and polices the timing across them, so
-// that skew is not a detail — it is the measurement. modules/player/multibus.v builds one
+// that skew is not a detail — it is the measurement. blobly/player/multibus.v builds one
 // time-sorted stream from all of them; this feeds it to one player and dispatches per channel.
 //
 // Channels replaying DIFFERENT files get their own group and their own clock, because timestamps
@@ -1279,7 +1279,7 @@ fn load_recording_for_replay(source string) !(canlog.Log, []mf4.BusInfo) {
 	return log, buses
 }
 
-// resolve_replay_bus asks modules/player, which owns the rule. The GUI and cmd/restbus each had
+// resolve_replay_bus asks blobly/player, which owns the rule. The GUI and cmd/restbus each had
 // their own copy and had already drifted; which bus a recording means is a fact about the file.
 fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
 	mut names := []player.BusName{}

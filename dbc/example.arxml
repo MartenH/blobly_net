@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!--
   example.arxml - a hand-written AUTOSAR 4.2 system description exercising everything
-  modules/candb/arxml.v reads (one feature per frame, so a failing test names the feature):
+  blobly/candb/arxml.v reads (one feature per frame, so a failing test names the feature):
 
     Powertrain 0x100   cyclic 100 ms, ECU_A -> ECU_B, ECU_C; Intel + Motorola + signed + enum
     LampFrame  0x200   E2E profile 1 (data id 0x2A, CRC byte 6, counter byte 7), mixed timing

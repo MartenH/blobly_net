@@ -2,11 +2,11 @@ module main
 
 import math
 import genhome
-import project
-import sim
+import blobly.project
+import blobly.sim
 import time
-import transport
-import candb
+import blobly.transport
+import blobly.candb
 import vgui
 
 // ---- Send ----

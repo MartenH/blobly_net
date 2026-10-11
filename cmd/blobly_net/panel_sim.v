@@ -1,6 +1,6 @@
 module main
 
-import sim
+import blobly.sim
 import vgui
 
 // draw_sim lists the in-process simulation workload: each channel's simulated ECUs,

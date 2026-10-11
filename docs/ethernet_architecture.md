@@ -15,7 +15,7 @@ This mirrors `docs/simulation_architecture.md` — design captured before buildi
 ## Why DoIP first
 
 DoIP is just **UDS-over-IP**: it carries the same UDS (ISO 14229) diagnostic payloads our
-`modules/uds` stack already speaks, only over TCP/IP instead of ISO-TP/CAN. That makes it the
+`blobly/uds` stack already speaks, only over TCP/IP instead of ISO-TP/CAN. That makes it the
 cheapest possible Ethernet beachhead:
 
 - **The whole UDS stack is reused unchanged.** `uds.Client` and `uds.Server` are written against the
@@ -82,7 +82,7 @@ identification request (0x0001) → vehicle announcement (0x0004).
 ## Module layout
 
 ```
-modules/doip/
+blobly/doip/
   doip.v      pure framing: header encode/parse, payload-type consts, builders+parsers for the
               messages above. GUI-free, protocol-only, hermetic tests. NO imports of uds/isotp.
   client.v    DoipClient — TCP tester. Implements isotp.Channel (structural): send() wraps UDS in a
@@ -106,8 +106,8 @@ structural), and the server takes a plain callback. This keeps the dependency ar
    round-trip. This is the primary hermetic end-to-end.
 2. **scapy oracle** (`sut/doip_server.py`, scapy `automotive.doip`, in a venv): an independent DoIP
    entity. Cross-checks our framing on the wire both ways (our client vs scapy server, and scapy
-   client vs our server), the role `uds_server.py` plays for `modules/uds`.
-3. Hermetic framing tests in `modules/doip/doip_test.v` (round-trip every builder/parser).
+   client vs our server), the role `uds_server.py` plays for `blobly/uds`.
+3. Hermetic framing tests in `blobly/doip/doip_test.v` (round-trip every builder/parser).
 
 ## App wiring (phase E2) — ✅ DONE 2026-06-29
 
@@ -162,7 +162,7 @@ tester-side, and none of it is mirrored into emb.
 
 | | Status |
 |---|---|
-| Header codec + envelope validation, golden vectors shared with emb | ✅ `modules/someip` |
+| Header codec + envelope validation, golden vectors shared with emb | ✅ `blobly/someip` |
 | RPC **client** — one request in flight, deadline, session liveness, drain | ✅ `rpc_client.v`, driven over UDP by `call.v` (claim, bind the peer port, the dialed node's answers only) — the GUI's Shell over Ethernet and Lua `someip.call` |
 | **Send and hear** — messages sent FROM the local port that then hears the answers, because a blobly_emb node with a static peer endpoint accepts and answers only that endpoint | ✅ `listen.v` `exchange`, Lua `someip.send`; bench-verified 2026-10-02 with `someip.call` against the H735 running blobly_emb's `examples/h735_someip` (the shell RPC, BenchCmd → BenchEcho, BenchTelem's P01 trailer) — since retired into system_full's `tcu` node (emb#348), whose bench run is pending |
 | **Listen** — sit on a port (and a multicast group), report every message decoded to its header, payload raw; malformed datagrams counted, several messages per datagram split; the window itself is `transport.udp_window`, shared with DoIP's announcement collector | ✅ `listen.v`, Lua `someip.listen` |
@@ -188,7 +188,7 @@ tester-side, and none of it is mirrored into emb.
 - **Nothing tester-shaped goes into emb.** An application-initiated request on the ECU is an
   application feature and lives in emb's roadmap; it is not this tester.
 
-**Status:** the codec/validation core — `modules/someip/` (16-byte header encode/decode +
+**Status:** the codec/validation core — `blobly/someip/` (16-byte header encode/decode +
 envelope validation, hermetic golden-vector tests), the host-side oracle for blobly_emb's
 eth-bus design (its `docs/someip.md`) — plus the RPC **client** (`rpc_client.v`: one request in
 flight, a deadline, session-id liveness, stale-datagram drain; hermetic and networked tests),

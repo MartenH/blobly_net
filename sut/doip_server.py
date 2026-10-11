@@ -10,7 +10,7 @@ our framing/addressing is wrong the handshake or decode breaks here.
 Requires scapy (`.venv-doip/bin/python`, see scripts/setup_doip_oracle.sh).
 
 Start the V entity first:
-    v -enable-globals -path "@vlib|@vmodules|modules" run cmd/doip_smoke/smoke.v serve
+    v -enable-globals run cmd/doip_smoke/smoke.v serve
 Then:
     .venv-doip/bin/python sut/doip_server.py [host] [port]
 

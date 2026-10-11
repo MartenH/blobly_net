@@ -5,16 +5,16 @@ import drainrule
 import taprule
 import sync
 import time
-import project
-import transport
+import blobly.project
+import blobly.transport
 import txhealth
-import wiretap
-import candb
-import sim
-import script
-import doip
-import j1939
-import sysview
+import blobly.wiretap
+import blobly.candb
+import blobly.sim
+import blobly.script
+import blobly.doip
+import blobly.j1939
+import blobly.sysview
 
 // open_transport opens `iface`, appending the vendor bitrate (`@<rate>`) for pcan/kvaser
 // buses so the driver uses the configured rate. The logical KEY stays the raw iface —
@@ -130,7 +130,7 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 	return false
 }
 
-// runtime_rows is app.chans in the shape modules/project's shared policies take. Extracted
+// runtime_rows is app.chans in the shape blobly/project's shared policies take. Extracted
 // because there are two of them now -- the destination conflicts below and the listen-only wire
 // list -- and both must see the SAME rows: the runtime set, which a live enable/disable moves
 // without touching the file.

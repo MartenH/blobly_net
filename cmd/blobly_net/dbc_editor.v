@@ -1,10 +1,10 @@
 module main
 
 import os
-import candb
+import blobly.candb
 import panerule
 import vgui
-import j1939
+import blobly.j1939
 
 // ---- DBC Editor (docs/dbc_editor.md P1) -------------------------------------
 // Edits the IN-MEMORY app.dbs — the same databases the Trace panel decodes

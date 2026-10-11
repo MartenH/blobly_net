@@ -1,0 +1,537 @@
+// server.v — DoipServer, a DoIP entity (simulated ECU / gateway) over TCP+UDP.
+// It is protocol-AGNOSTIC: it speaks DoIP framing + routing activation + the diag
+// message ack, and hands each diagnostic message's UDS user-data to a `handler`
+// callback, sending whatever the handler returns back as a 0x8001 response. The
+// caller wires uds.Server.handle as the handler, so doip imports neither uds nor
+// isotp and stays a leaf transport module. UDP answers discovery (0x0001 → 0x0004).
+//
+// Threading is left to the caller (like isotp/sim): listen(), then drive
+// accept_and_serve()/serve_udp_once() in loops/threads. GUI-free.
+module doip
+
+import net
+import blobly.transport
+import time
+import sync
+
+// Default entity identity (used by ServerCfg defaults and server_cfg()).
+pub const default_vin = 'BLOBLYNETV0SUT001'
+pub const default_eid = [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x01] // entity id (≈ MAC)
+
+// ServerCfg is the entity's identity (for routing activation + announcements).
+pub struct ServerCfg {
+pub:
+	logical_address u16 = 0x1000 // this entity's DoIP logical address
+	vin             string = default_vin
+	eid             []u8 = default_eid // entity id (≈ MAC)
+	gid             []u8 = default_eid // group id
+	// Power-on announcement (ISO 13400 A_DoIP_Announce_Num / A_DoIP_Announce_Interval). A real
+	// entity announces itself when it gets its IP, three times, 500ms apart — that is how a
+	// tester discovers ECUs it was never told about, by listening rather than asking. 0 = say
+	// nothing, which is a legitimate ECU to simulate and a useful fault to inject.
+	announce_count    int = announce_num_default
+	announce_interval int = announce_interval_default // ms
+	// Where announcements go. Empty derives it from the entity's own address: a loopback entity
+	// broadcasts to 127.255.255.255 and never leaves the machine; anything else uses the
+	// limited broadcast, which DOES go on the wire, exactly like a real ECU would.
+	announce_to string
+	// The functional logical address this entity also answers (0 = the default, as in blobly_emb's
+	// entity). A functional request is acked FROM this address and answered from
+	// `logical_address`, as blobly_emb's entity does.
+	functional_address u16 = default_functional_address
+	// Which answers to a FUNCTIONAL request are withheld rather than sent. doip knows no UDS, so
+	// the rule is handed in — sim sets uds.functional_suppressed (ISO 14229-1's quiet NRCs); the
+	// default withholds nothing.
+	functional_withheld ResponseFilter = withhold_nothing
+}
+
+// ResponseFilter says whether a handler's answer is withheld (true) instead of sent.
+pub type ResponseFilter = fn (resp []u8) bool
+
+fn withhold_nothing(resp []u8) bool {
+	return false
+}
+
+// ISO 13400 defaults: three announcements, 500ms apart.
+pub const announce_num_default = 3
+pub const announce_interval_default = 500
+
+// server_cfg builds a ServerCfg from a logical address + optional VIN/EID, filling
+// in the module defaults for any empty field. Lets callers in other modules set a
+// per-entity identity without reaching the (read-only) struct fields directly.
+pub fn server_cfg(logical_address u16, vin string, eid []u8) ServerCfg {
+	id := if eid.len > 0 { eid } else { default_eid }
+	return ServerCfg{
+		logical_address: logical_address
+		vin:             if vin != '' { vin } else { default_vin }
+		eid:             id
+		gid:             id
+	}
+}
+
+// DiagHandler maps a UDS request PDU to a UDS response PDU (empty = no reply).
+pub type DiagHandler = fn (req []u8) []u8
+
+pub struct DoipServer {
+	cfg     ServerCfg
+	handler DiagHandler @[required]
+mut:
+	// what a FUNCTIONAL request is handed to: `handler` unless set_functional_handler says
+	// otherwise — sim hands it uds.Server.handle_functional, which ignores what is physical only
+	functional_handler DiagHandler = unsafe { nil }
+	// The ANNOUNCED VIN, which has to be able to follow the SERVED one: a UDS write to DID
+	// 0xF190 changes what the entity reports over TCP, and a fixed announcement would go on
+	// advertising the VIN it had at startup. Guarded because the write arrives on the TCP
+	// thread while the UDP loop reads it to answer discovery — replacing a string header
+	// unsynchronised lets an announcement observe a torn value. Only this field is mutable;
+	// the logical address, EID and GID never change, so they stay lock-free in cfg.
+	vin_mu sync.Mutex
+	vin    string
+	listener &net.TcpListener = unsafe { nil }
+	udp      &net.UdpConn     = unsafe { nil }
+	// The UDP endpoint this entity claimed, and the port it claimed it on — released on close.
+	// See transport.claim_endpoint: a bind cannot refuse a second reader, so listeners that need
+	// to be the only one say so in one registry.
+	udp_canon string
+	udp_port  int
+	udp_owner string // formed once, so the claim and its release cannot disagree
+	// The host this entity bound to. announce() needs it to choose a destination, and asking
+	// the socket back for it is more indirection than storing the one string.
+	bound_host string
+	bound_port int
+	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
+	stopping bool // set by close(): stop accepting/serving and tear down the active conn
+}
+
+// new_server builds an entity with the given identity + UDS handler. Returns a
+// heap pointer so it can be shared with serving threads (spawn needs a reference).
+// announced_vin returns the VIN discovery should advertise right now.
+fn (mut s DoipServer) announced_vin() string {
+	s.vin_mu.lock()
+	v := s.vin
+	s.vin_mu.unlock()
+	return v
+}
+
+pub fn new_server(cfg ServerCfg, handler DiagHandler) &DoipServer {
+	// the announced VIN starts as the configured one and only moves if set_vin is called
+	return &DoipServer{
+		cfg:                cfg
+		handler:            handler
+		functional_handler: handler
+		vin:                cfg.vin
+	}
+}
+
+// set_functional_handler hands FUNCTIONAL requests to `h` instead of the physical handler. Set
+// before listen: the serving thread reads it.
+pub fn (mut s DoipServer) set_functional_handler(h DiagHandler) {
+	s.functional_handler = h
+}
+
+// is_stopping reports whether close() has been called. Serve loops driven as
+// `for { srv.accept_and_serve(t) or { continue } }` should break on it, otherwise
+// they hot-spin after close() (the listener is shut so every call errors at once).
+pub fn (s &DoipServer) is_stopping() bool {
+	return s.stopping
+}
+
+// listen opens the TCP listener and UDP discovery socket on host:port. Atomic: if
+// the UDP bind fails after the TCP listener is already open, the TCP listener is
+// closed before returning, so a failed listen() never leaves a socket bound. An
+// IPv6 host literal (one containing ':') is bracketed and bound on the IPv6 family.
+pub fn (mut s DoipServer) listen(host string, port int) ! {
+	s.bound_port = port
+	// RESOLVED ONCE, AND BOTH SOCKETS USE IT. A hostname with several answers — or `localhost` on
+	// a machine where the two lookups prefer different families — would otherwise put the TCP
+	// listener on one address and the UDP listener on another: the entity would announce itself
+	// from B while accepting diagnostic connections only on A, so a tester that followed the
+	// discovery sender could not connect. Claiming FIRST is what makes one answer available to
+	// both, since the claim resolves (transport.claim_endpoint) and hands back what it reserved.
+	//
+	// The claim itself is why this is here at all: a SOME/IP row configured on this port would
+	// bind it too — both sockets get SO_REUSEADDR — and the kernel would give each discovery
+	// datagram to one of them, so an identification request could be answered by neither.
+	requested := join_host_port(host, port)
+	s.udp_owner = 'the DoIP entity on ${requested}'
+	// SHARED, for the reason in client.v: an entity and the testers listening for its
+	// announcements all sit on the discovery port, so they must not refuse each other — while an
+	// exclusive reader there (a SOME/IP row) still is refused, which is why this claim exists.
+	s.udp_canon = transport.claim_endpoint(host, port, s.udp_owner, .shared, doip_discovery_medium) or {
+		return error('${requested}: ${err}')
+	}
+	s.udp_port = port
+	// THE BOUND HOST IS WHAT WAS BOUND, not what was configured. `announce()` derives both the
+	// default destination and the socket's family from this, so leaving the configured spelling
+	// here — `localhost` on a resolver that answers ::1, say — made it pick the IPv4 loopback
+	// broadcast and try to send it from an IPv6 socket: a hosted entity that never announced
+	// itself. The two sockets already share this address; the announcement path must too.
+	s.bound_host = s.udp_canon
+	addr := transport.udp_bind_addr(s.udp_canon, port)
+	s.listener = net.listen_tcp(addr_family(s.udp_canon), addr) or {
+		transport.release_endpoint(s.udp_canon, port, s.udp_owner)
+		s.udp_canon = ''
+		return err
+	}
+	s.udp = net.listen_udp(transport.udp_bind_addr(s.udp_canon, port)) or {
+		s.listener.close() or {}
+		s.listener = unsafe { nil }
+		// AND THE CLAIM GOES WITH IT. A caller that treats a failed listen() as a finished
+		// attempt — `listen_somewhere` walks ports exactly this way — never calls close(), so a
+		// claim left here would refuse that endpoint to everything for the rest of the process,
+		// as if a live entity owned it.
+		transport.release_endpoint(s.udp_canon, port, s.udp_owner)
+		s.udp_canon = ''
+		return err
+	}
+}
+
+// join_host_port formats host:port for net dial/listen, bracketing an IPv6 literal
+// (a host containing ':', e.g. ::1) as [host]:port. IPv4/hostnames are host:port.
+fn join_host_port(host string, port int) string {
+	if host.contains(':') && !host.starts_with('[') {
+		return '[${host}]:${port}'
+	}
+	return '${host}:${port}'
+}
+
+// addr_family picks the socket family for a host: ip6 for an IPv6 literal, else ip.
+pub fn addr_family(host string) net.AddrFamily {
+	return if host.contains(':') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
+}
+
+// accept_and_serve waits up to timeout_ms for a TCP connection, then serves its
+// request/response loop until the peer disconnects. Returns an error on accept
+// timeout (so callers can poll a shutdown flag between attempts).
+//
+// NOTE: one connection is served to completion before the next is accepted, so a
+// stale peer can delay others (see docs/ethernet_architecture.md "Known
+// limitations"). Intentional for the single-tester virtual-first scope; a
+// thread-per-connection model would need handler synchronisation (uds.Server is
+// not thread-safe).
+pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
+	if s.stopping {
+		return error('DoIP server stopping')
+	}
+	s.listener.set_accept_timeout(timeout_ms * time.millisecond)
+	mut conn := s.listener.accept()!
+	// Publish the accepted connection so close() can tear it down from another
+	// thread (Stop), interrupting an otherwise-blocking per-connection read.
+	s.active = conn
+	s.serve_connection(mut conn)
+	s.active = unsafe { nil }
+	conn.close() or {}
+}
+
+// serve_connection handles one client: routing activation, then diagnostic
+// messages (ack + handler reply) until the peer closes the connection. Per
+// ISO 13400, diagnostics are only dispatched after a successful routing
+// activation on this connection.
+fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
+	mut activated := false
+	mut tester_source := u16(0) // the source address activated on this connection
+	for {
+		if s.stopping {
+			return // Stop requested — drop the connection without serving further
+		}
+		msg := read_message(mut conn, 60000) or { return } // peer closed / timeout / closed by Stop
+		match msg.payload_type {
+			pt_routing_activation_request {
+				ra := parse_routing_activation_request(msg.payload) or { continue }
+				if activated && ra.source != tester_source {
+					// already activated with a different source — deny and keep the
+					// first source, so re-activation can't bypass the source guard.
+					conn.write(routing_activation_response(ra.source, s.cfg.logical_address,
+						ra_denied_source_mismatch)) or { return }
+					continue
+				}
+				conn.write(routing_activation_response(ra.source, s.cfg.logical_address,
+					ra_success)) or { return }
+				activated = true
+				tester_source = ra.source
+			}
+			pt_diagnostic_message {
+				if !activated {
+					continue // routing activation is mandatory before diagnostics
+				}
+				dm := parse_diagnostic_message(msg.payload) or { continue }
+				if dm.source != tester_source {
+					// spoofed source (≠ the activated tester) — NACK, don't dispatch.
+					conn.write(diagnostic_message_nack(s.cfg.logical_address, dm.source,
+						diag_nack_invalid_source)) or { return }
+					continue
+				}
+				fa := if s.cfg.functional_address != 0 {
+					s.cfg.functional_address
+				} else {
+					default_functional_address
+				}
+				if dm.target == fa && fa != s.cfg.logical_address {
+					// acked from the address it was sent to; answered from this entity's own, and
+					// not at all where the functional rule withholds the answer
+					conn.write(diagnostic_message_ack(fa, dm.source,
+						diag_ack_ok)) or { return }
+					resp := s.functional_handler(dm.data)
+					if resp.len > 0 && !s.cfg.functional_withheld(resp) {
+						conn.write(diagnostic_message(s.cfg.logical_address, dm.source, resp)) or {
+							return
+						}
+					}
+					continue
+				}
+				if dm.target != s.cfg.logical_address {
+					// not addressed to this entity — NACK, don't ack/dispatch.
+					conn.write(diagnostic_message_nack(s.cfg.logical_address, dm.source,
+						diag_nack_unknown_target)) or { return }
+					continue
+				}
+				// positive ack first (entity → tester), then the UDS response.
+				conn.write(diagnostic_message_ack(s.cfg.logical_address, dm.source, diag_ack_ok)) or {
+					return
+				}
+				resp := s.handler(dm.data)
+				if resp.len > 0 {
+					conn.write(diagnostic_message(s.cfg.logical_address, dm.source, resp)) or {
+						return
+					}
+				}
+			}
+			else {} // ignore (alive-check, etc.)
+		}
+	}
+}
+
+// serve_udp_once waits up to timeout_ms for a UDP datagram; if it's a vehicle
+// identification request (0x0001) it replies to the sender with an announcement
+// (0x0004). Returns an error on timeout.
+pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
+	s.udp.set_read_timeout(timeout_ms * time.millisecond)
+	mut buf := []u8{len: 64}
+	n, addr := s.udp.read(mut buf)!
+	if n < header_len {
+		return
+	}
+	msg := parse(buf[..n]) or { return }
+	if msg.payload_type == pt_vehicle_id_request {
+		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
+			s.cfg.gid)
+		s.udp.write_to(addr, ann) or {}
+	}
+}
+
+// announce sends the power-on vehicle announcements. Blocking: count × interval.
+//
+// Sent from the entity's OWN socket, so the source address is the one a tester will dial back.
+// SO_BROADCAST has to be set explicitly or the send fails with EACCES.
+pub fn (mut s DoipServer) announce() ! {
+	if s.cfg.announce_count <= 0 {
+		return // deliberately silent
+	}
+	if isnil(s.udp) {
+		return error('announce before listen')
+	}
+	dest := if s.cfg.announce_to != '' {
+		// the bound port here as well: fixing only the derived branch left an explicit
+		// host-only announce_to (e.g. "127.255.255.255") going to 13400 on a custom-port entity
+		with_port(s.cfg.announce_to, s.bound_port)
+	} else {
+		// The port this entity BOUND, not the module default: an entity on a custom port
+		// announced to 13400, so a listener on the configured port heard nothing while direct
+		// discovery and TCP both worked — a mismatch only an explicit announce_to could avoid.
+		broadcast_for_port(s.bound_host, s.bound_port)
+	}
+	s.udp.sock.set_option_bool(.broadcast, true) or {
+		return error('cannot enable broadcast: ${err}')
+	}
+	// The family of the SOCKET, unless the destination is an explicit literal of the other
+	// kind. Choosing by punctuation alone classified every hostname as IPv4, so an IPv6 entity
+	// with `announce_to: localhost` (or an AAAA-only alias) resolved to a sockaddr its socket
+	// cannot send to.
+	bound_v6 := s.bound_host.contains(':')
+	literal_v6 := dest.starts_with('[') || dest.trim('[]').count(':') > 1
+	literal_v4 := !literal_v6 && dest.all_before_last(':').split('.').len == 4
+		&& dest.all_before_last(':').split('.').all(it.int().str() == it)
+	// An IPv4 destination from an IPv6 socket is not a family-selection problem — the send
+	// itself is impossible (ENETUNREACH; a broadcast address has no v4-mapped form). Say which
+	// two settings disagree, once, instead of logging a bare socket errno at every Start.
+	if literal_v4 && bound_v6 {
+		return error('announce_to ${dest} is IPv4 but the entity is bound to ${s.bound_host}: an IPv6 socket cannot reach it — use an IPv6 destination (or bind the entity to IPv4)')
+	}
+	fam := if literal_v6 || bound_v6 { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
+	addrs := net.resolve_addrs(dest, fam, .udp) or { return error('announce_to ${dest}: ${err}') }
+	if addrs.len == 0 {
+		return error('announce_to ${dest}: resolved to nothing') // indexing [0] would panic
+	}
+	for i in 0 .. s.cfg.announce_count {
+		if s.stopping {
+			return // Stop, a toggle, or a script run ending; the fd may already be gone
+		}
+		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
+			s.cfg.gid)
+		s.udp.write_to(addrs[0], ann) or { return error('announce to ${dest}: ${err}') }
+		if i + 1 < s.cfg.announce_count {
+			// SLICED, so a cancel lands within ~50ms instead of at the end of the interval.
+			// One sleep(60s) meant teardown still waited a full minute for a 100 × 60s
+			// sequence — better than the 100 minutes before it, and still a hung suite.
+			mut left := s.cfg.announce_interval
+			for left > 0 {
+				if s.stopping {
+					return
+				}
+				step := if left > 50 { 50 } else { left }
+				time.sleep(step * time.millisecond)
+				left -= step
+			}
+		}
+	}
+}
+
+// broadcast_for_port picks the destination for an entity bound to `host` on `port_`. A loopback
+// entity stays on the machine (127.255.255.255); anything else uses the limited broadcast and
+// reaches the network the bench is on.
+//
+// (No port-less variant: one existed, had no callers, and hard-coded the module default — the
+// custom-port bug this signature exists to prevent.)
+pub fn broadcast_for_port(host string, port_ int) string {
+	h := host.trim_space().trim('[]')
+	if h.contains(':') {
+		// IPv6 has no broadcast; the equivalent reach is the link-local all-nodes multicast.
+		// Sending 255.255.255.255 from an IPv6 socket fails ENETUNREACH, so every IPv6 entity
+		// logged "announce failed" at each Start and never announced.
+		//
+		// KEEP THE ZONE. Link-local multicast needs an interface scope, so an entity bound to
+		// fe80::1%eth0 must announce to ff02::1%eth0 — dropping it leaves a multihomed host to
+		// guess the outgoing interface, which is how an announcement goes out the wrong one.
+		if zone := h.split('%')[1] or { '' } {
+			if zone != '' {
+				return '[ff02::1%${zone}]:${port_}'
+			}
+		}
+		return '[ff02::1]:${port_}'
+	}
+	if h.starts_with('127.') || h == 'localhost' {
+		return '127.255.255.255:${port_}'
+	}
+	return '255.255.255.255:${port_}'
+}
+
+// with_port appends the DoIP port when a destination carries none. resolve_addrs needs
+// host:port and silently resolves a bare address to port 0, which then fails EINVAL.
+fn with_port(dest string, port_ int) string {
+	d := dest.trim_space()
+	if d.starts_with('[') {
+		return if d.contains(']:') { d } else { '${d}:${port_}' }
+	}
+	return if d.count(':') == 1 { d } else if d.contains(':') { '[${d}]:${port_}' } else { '${d}:${port_}' }
+}
+
+// set_vin updates the VIN this entity ANNOUNCES, so discovery keeps naming the same ECU the
+// UDS server serves. Callers are responsible for the two agreeing; see cmd/script/run.v.
+pub fn (mut s DoipServer) set_vin(vin string) {
+	s.vin_mu.lock()
+	s.vin = vin
+	s.vin_mu.unlock()
+}
+
+// close stops the entity and releases its sockets. It is safe to call from a
+// different thread than the serving loop (e.g. a GUI Stop): it sets `stopping`
+// and closes the currently-active accepted connection, so a serve loop blocked in
+// a per-connection read is interrupted rather than waiting out the read timeout.
+pub fn (mut s DoipServer) close() {
+	s.stopping = true
+	if !isnil(s.active) {
+		s.active.close() or {}
+	}
+	if !isnil(s.listener) {
+		s.listener.close() or {}
+	}
+	if !isnil(s.udp) {
+		s.udp.close() or {}
+	}
+	// RELEASED WITH THE SOCKET, so a restarted entity can take its own endpoint back. Keyed on
+	// the canonical value the claim returned, never on the configured spelling.
+	if s.udp_canon != '' {
+		transport.release_endpoint(s.udp_canon, s.udp_port, s.udp_owner)
+		s.udp_canon = ''
+	}
+}
+
+// read_message reads one full DoIP message from a TCP stream (shared by client).
+// The payload buffer comes straight from read_exact (already a fresh allocation),
+// so we build the Message directly rather than reassembling the wire bytes and
+// re-parsing them.
+fn read_message(mut conn net.TcpConn, timeout_ms int) !Message {
+	return read_message_stoppable(mut conn, timeout_ms, unsafe { nil })
+}
+
+// read_message_stoppable is read_message that a `stop` can end partway. With `stop` set, the
+// message has `timeout_ms` from now in all, and every piece of it, header and payload, is waited
+// for in `stop_poll_ms` slices that ask `stop` — so a peer that sends part of a message and then
+// stalls holds the reader no longer than a slice past a stop. A message abandoned partway leaves
+// the stream inside it: the connection cannot be read again, and a caller that stops lets it go.
+fn read_message_stoppable(mut conn net.TcpConn, timeout_ms int, stop fn () bool) !Message {
+	conn.set_read_timeout(timeout_ms * time.millisecond)
+	deadline := time.ticks() + i64(timeout_ms)
+	header := read_exact(mut conn, header_len, false, stop, deadline)!
+	payload_type, payload_len := parse_header(header)!
+	if payload_len > max_payload_len {
+		return error('DoIP payload too large: ${payload_len} > ${max_payload_len}')
+	}
+	payload := if payload_len > 0 {
+		read_exact(mut conn, int(payload_len), true, stop, deadline)!
+	} else {
+		[]u8{}
+	}
+	return Message{
+		payload_type: payload_type
+		payload:      payload
+	}
+}
+
+// stalled_note is what a read says when a message began and its rest did not arrive.
+const stalled_note = 'DoIP: a message began and stalled mid-read; the stream is inside it'
+
+// read_exact reads exactly n bytes (TCP may deliver them in pieces), filling the
+// output buffer in place via read_ptr — each read targets the unfilled tail at
+// &out[got], so there's no temp buffer and no copy.
+// A timeout before the first byte of a message is the socket's own (the carrier's silence); one
+// after bytes of it were consumed — `began`, or `got` > 0 — is a message that stalled, and the
+// stream is now inside it: said as that, never as silence. With `stop` set, each piece is waited
+// for in slices that ask it, up to `deadline` (time.ticks); unset, each read waits the socket's
+// own timeout.
+fn read_exact(mut conn net.TcpConn, n int, began bool, stop fn () bool, deadline i64) ![]u8 {
+	mut out := []u8{len: n}
+	mut got := 0
+	for got < n {
+		if stop != unsafe { nil } {
+			if stop() {
+				return error(stopped_note)
+			}
+			left := deadline - time.ticks()
+			if left <= 0 {
+				if began || got > 0 {
+					return error(stalled_note)
+				}
+				return error_with_code('DoIP: read timed out', net.err_timed_out_code)
+			}
+			if !readable_within(conn.sock.handle, if left < stop_poll_ms {
+				int(left)
+			} else {
+				stop_poll_ms
+			}) {
+				continue
+			}
+		}
+		r := conn.read_ptr(unsafe { &out[got] }, n - got) or {
+			if (began || got > 0) && err.code() == net.err_timed_out_code {
+				return error(stalled_note)
+			}
+			return err
+		}
+		if r <= 0 {
+			return error('DoIP: connection closed mid-message')
+		}
+		got += r
+	}
+	return out
+}

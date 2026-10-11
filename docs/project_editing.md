@@ -415,7 +415,7 @@ makes a new chip appear automatically.
 
 ## Verification
 
-- **Round-trip unit test** (`modules/project/save_test.v`): build a `Project` from blank
+- **Round-trip unit test** (`blobly/project/save_test.v`): build a `Project` from blank
   (a virtual bus + DBC, a doip bus, a replay bus, a `network` label), `to_yaml()` →
   `parse()` → assert equality. Also a legacy-file test (`channels:`/`interface:` still
   loads). Covers persistence independent of the GUI.
@@ -428,7 +428,7 @@ makes a new chip appear automatically.
 Ordered so each step builds + runs on its own. Model/persistence first (pure V, testable),
 then the GUI surfaces. All GUI work is in `cmd/blobly_net/` (one `module main` split across per-concern files; the config editor itself is mostly `panel_config.v` and `config.v`).
 
-### Step 1 — schema v2 in `modules/project` (pure V, no GUI)
+### Step 1 — schema v2 in `blobly/project` (pure V, no GUI)
 - `project.v`: add `Channel` fields `adapter string`, `address string`, `network string`,
   `protocol string` (`can`/`canfd`; supersedes `type` for CAN, `type: doip` still sets the
   doip adapter). Keep `iface` as the **derived internal** field.
@@ -444,7 +444,7 @@ then the GUI surfaces. All GUI work is in `cmd/blobly_net/` (one `module main` s
   table in this doc; unit-tested both directions.
 - Tests (`save_test.v`, `project_test.v`): from-blank round-trip (virtual + doip + replay
   buses, a `network:` label); a legacy-file test (`channels:`/`interface:`/`type:` still
-  loads and decomposes correctly). **Gate: `v test modules/project/` green.**
+  loads and decomposes correctly). **Gate: `v test blobly/project/` green.**
 
 ### Step 2 — `rebuild_from_proj()` extraction (now `cmd/blobly_net/app.v`)
 - Extract the derivation loop currently inline in `load_project` (since extracted to `rebuild_from_proj`, `app.v`) — the
@@ -502,7 +502,7 @@ then the GUI surfaces. All GUI work is in `cmd/blobly_net/` (one `module main` s
 - Update `docs/` + the status log; note the `DEPS=1`-on-glue-change gotcha in `run_gui.sh`.
 
 ### Verification summary
-- `v test modules/project/` (round-trip + legacy) — Step 1.
+- `v test blobly/project/` (round-trip + legacy) — Step 1.
 - Headless GUI smoke (`VGUI_FRAMES`+`VGUI_SHOT`, seeded buffers) driving New→add bus→add
   DBC→Save As, asserting `project.load()` on the output — Steps 3–5.
 - Manual/screenshot: blank walkthrough + 2-vcan trace split — Steps 5–6.

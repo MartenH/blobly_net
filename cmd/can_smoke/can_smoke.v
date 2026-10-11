@@ -9,7 +9,7 @@ module main
 
 import os
 import strconv
-import transport
+import blobly.transport
 
 fn main() {
 	args := os.args

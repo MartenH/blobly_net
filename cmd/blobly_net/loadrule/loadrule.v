@@ -42,8 +42,8 @@ pub const keep = 60
 pub const interval_ms = 1000.0
 
 // Percent turns an interval's bits and its length into a load percentage — the caller's
-// transport.load_percent, passed in so this module imports nothing from modules/ (the CI test
-// line resolves no -path) and the formula lives in one place.
+// transport.load_percent, passed in so this module imports nothing from blobly/ (the CI test
+// copy is outside the repository, scripts/test_cmd_rules.sh) and the formula lives in one place.
 pub type Percent = fn (bits f64, ms i64) f32
 
 // roll advances `w` to `now` for a row in state `owner`, and reports whether an interval

@@ -22,13 +22,13 @@
 module main
 
 import time
-import transport
+import blobly.transport
 import txhealth
 
 // rung_of maps the transport ladder onto the rule's own.
 //
-// EXHAUSTIVE, WITH NO `else`, ON PURPOSE. txhealth is dependency-free — CI runs its test without
-// `-path modules`, so it cannot name transport.BusHealth — which leaves this the one place the
+// EXHAUSTIVE, WITH NO `else`, ON PURPOSE. txhealth is dependency-free — CI tests it from a copy
+// outside the repository, so it cannot name transport.BusHealth — which leaves this the one place the
 // two vocabularies meet. V requires a match over an enum to be exhaustive, so a rung added to
 // BusHealth and not handled here FAILS THE BUILD. That is a stronger guarantee than any test of
 // the mapping could give, and it is why there is no `else` to be tempted by.

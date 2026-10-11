@@ -4,7 +4,7 @@ A GUI front-end for setting up channels by **discovering** the available interfa
 ticking the ones you want and adding them to the project (editing them afterwards in the
 Configuration editor; the inline grid edit sketched below did not ship) — the
 same idea as a network hardware configuration dialog. The GUI-free seam already
-exists (`transport.list_interfaces()` / `channels_yaml()`, `modules/transport/
+exists (`transport.list_interfaces()` / `channels_yaml()`, `blobly/transport/
 discover*.v`); this is the visual layer on top.
 
 ## Status
@@ -68,7 +68,7 @@ back — you see it, then save).
 Once a channel has a DBC, the dialog gains a *Simulate node ▸ scaffold from DBC*
 section: it lists the node's signals with auto-picked generators in an editable grid,
 and **Add** writes the `nodes:`/`signals:` block. One dialog, two scaffolders, both on
-the GUI-free core (`modules/sim` generators + the `Iface`/`channels_yaml` seam).
+the GUI-free core (`blobly/sim` generators + the `Iface`/`channels_yaml` seam).
 
 ## Toolkit note
 
