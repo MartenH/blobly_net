@@ -306,9 +306,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   locally). And there's no fallback: V's newest *release* (0.5.1) predates the `vlib/yaml` that
   `blobly/project` imports. So `windows.yml` downloads a zipped V from this repo's
   **`v-toolchain`** release. **If that release or its asset disappears, the Windows job breaks** —
-  re-mint the asset if the V pin ever moves. **It has moved (to V3) and the asset has NOT been
-  re-minted yet**: Windows CI still builds with the pre-V3 `v-ddc9c99`, which the code supports
-  (it builds on both), so the job stays green but tests a different compiler from Linux.
+  re-mint the asset whenever the V pin moves, with `scripts/mint_windows_v.sh`: it cross-builds
+  the pinned V3 for Windows from Linux (mingw-w64) and zips it with its checkout. V3 bakes the
+  directory it was BUILT in into the compiler as its root (`@VMODROOT`) and prefers it over where
+  the executable sits, so the script rewrites that root to `C:/v-ct` in the generated C before
+  compiling it — the asset works only unpacked there, which is where `windows.yml` puts it.
 - ⚪ **A colon-space inside a step `name:` invalidates the whole workflow.** YAML reads
   `name: … D: disk` as a nested mapping → "workflow file issue" / HTTP 422 on dispatch. Quote any
   step name containing `: `. (Bitten twice.)
