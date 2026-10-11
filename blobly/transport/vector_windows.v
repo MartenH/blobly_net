@@ -60,23 +60,23 @@ import time
 #include "vector_shim.h"
 
 fn C.ct_vector_load() int
-fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64, int, u32, u32, u32, u32, u32, u32, u32) int
+fn C.ct_vector_open(u32, u32, int, &i32, &u64, &voidptr, &u64, int, u32, u32, u32, u32, u32, u32, u32) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
 fn C.ct_vector_write_fd(int, u64, u32, u8, &u8, int, int, int, int, &u8) int
-fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int, &int, int, &int, &int, &int, &int) int
+fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &i32, &i32, int, &i32, int, &i32, &i32, &i32, &i32) int
 fn C.ct_vector_close(int, u64, u64, voidptr)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
 fn C.ct_vector_dll_path() &char
 fn C.ct_vector_assign(u32, int, int, int) int
-fn C.ct_vector_appl_get(u32, &int, &int, &int) int
+fn C.ct_vector_appl_get(u32, &i32, &i32, &i32) int
 fn C.ct_vector_borrow_lock() int
 fn C.ct_vector_borrow_lock_for(u32) int
 fn C.ct_vector_borrow_unlock()
-fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
-fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int, &int, &int, &int) int
+fn C.ct_vector_probe(int, &i32, &i32, &i32, &u64) int
+fn C.ct_vector_channel_info(int, &char, int, &char, int, &i32, &i32, &i32, &u32, &u32, &u32, &i32, &i32, &i32, &i32, &i32) int
 fn C.ct_vector_error_frames() int
-fn C.ct_vector_chipstate(int, u64, &int, &int, &int, int) int
+fn C.ct_vector_chipstate(int, u64, &i32, &i32, &i32, int) int
 fn C.ct_vector_reqchip(int, u64) int
 fn C.ct_vector_set_verbose(int)
 fn C.ct_vector_err(int) &char
@@ -107,7 +107,7 @@ mut:
 // open_windows.v.
 pub fn open_vector(spec string) !&VectorBus {
 	s := parse_vector_spec(spec)!
-	mut port := 0
+	mut port := i32(0) // C int: every `&x` handed to the shim is i32
 	mut mask := u64(0)
 	mut notify := unsafe { nil }
 	mut gen := u64(0)
@@ -365,19 +365,19 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	mut id := u32(0)
 	mut ln := u8(0)
-	mut ext := 0
-	mut rtr := 0
+	mut ext := i32(0)
+	mut rtr := i32(0)
 	// 64 ALWAYS, not 8 on a classic channel. The shim writes at most `ln` bytes and a V3 decode
 	// never sets `ln` above 8, so the extra bytes cost one stack frame's worth of nothing — while
 	// a buffer sized by the channel's protocol would be an 8-byte array behind a pointer the FD
 	// decoder writes 64 bytes through the moment the two ever disagree.
 	mut data := [64]u8{}
-	mut chip := -1
-	mut isfd := 0
-	mut brs := 0
-	mut esi := 0
+	mut chip := i32(-1)
+	mut isfd := i32(0)
+	mut brs := i32(0)
+	mut esi := i32(0)
 	pfd := if b.fd { 1 } else { 0 }
-	mut errs := 0
+	mut errs := i32(0)
 	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip, pfd,
 		&isfd, &brs, &esi, &errs)
 	if chip >= 0 {
@@ -446,9 +446,9 @@ pub:
 pub fn vector_hardware() []VectorHw {
 	mut out := []VectorHw{}
 	for i in 0 .. 64 {
-		mut ht := 0
-		mut hi := 0
-		mut hc := 0
+		mut ht := i32(0)
+		mut hi := i32(0)
+		mut hc := i32(0)
 		mut m := u64(0)
 		if C.ct_vector_probe(i, &ht, &hi, &hc, &m) != 0 {
 			break
@@ -479,9 +479,9 @@ pub fn vector_hardware() []VectorHw {
 // A caller that must distinguish "no such channel" from "could not read" wants vector_app_slot,
 // which keeps the four states apart and confirms the ambiguous one before anything is written.
 pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
-	mut ht := 0
-	mut hi := 0
-	mut hc := 0
+	mut ht := i32(0)
+	mut hi := i32(0)
+	mut hc := i32(0)
 	rc := C.ct_vector_appl_get(u32(app_channel - 1), &ht, &hi, &hc)
 	if rc == -2 {
 		return VectorChannel{}, false
@@ -499,9 +499,9 @@ pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
 // appl_get_code asks about one channel and returns the raw code, without the two-state flattening
 // vector_assignment does. `slot_of` lives in vector_names.v, where the tests can reach it.
 fn appl_get_code(app_channel int) int {
-	mut ht := 0
-	mut hi := 0
-	mut hc := 0
+	mut ht := i32(0)
+	mut hi := i32(0)
+	mut hc := i32(0)
 	return C.ct_vector_appl_get(u32(app_channel - 1), &ht, &hi, &hc)
 }
 
@@ -614,17 +614,17 @@ pub fn vector_channels() []VectorChannel {
 	for i in 0 .. 64 {
 		mut nm := [33]u8{}
 		mut tr := [33]u8{}
-		mut ht := 0
-		mut hi := 0
-		mut hc := 0
+		mut ht := i32(0)
+		mut hi := i32(0)
+		mut hc := i32(0)
 		mut sn := u32(0)
 		mut bt := u32(0)
 		mut br := u32(0)
-		mut ob := 0
-		mut ts := 0
-		mut fiso := 0
-		mut fbosch := 0
-		mut cancap := 0
+		mut ob := i32(0)
+		mut ts := i32(0)
+		mut fiso := i32(0)
+		mut fbosch := i32(0)
+		mut cancap := i32(0)
 		rc := C.ct_vector_channel_info(i, unsafe { &char(&nm[0]) }, 33, unsafe { &char(&tr[0]) },
 			33, &ht, &hi, &hc, &sn, &bt, &br, &ob, &ts, &fiso, &fbosch, &cancap)
 		if rc != 0 {
@@ -664,9 +664,9 @@ pub:
 // traffic is ambiguous until you look here: unacknowledged frames drive tx_errors up, while a
 // frame that never reached the wire leaves the counters alone.
 pub fn (b &VectorBus) chip_state() !VectorChipState {
-	mut bs := 0
-	mut tx := 0
-	mut rx := 0
+	mut bs := i32(0)
+	mut tx := i32(0)
+	mut rx := i32(0)
 	if C.ct_vector_chipstate(b.port, b.mask, &bs, &tx, &rx, if b.fd { 1 } else { 0 }) != 0 {
 		return error('the controller did not report its state')
 	}

@@ -48,11 +48,11 @@ fn test_claims_oldest_first() {
 	r.note(1, 'vcan0', f, 0, [0], '', false)
 	r.note(2, 'vcan0', f, 5, [0], '', false)
 	ca := r.claim(0, 'vcan0', f, 6) or {
-		assert false, '${err}'
+		assert false, 'no claim'
 		return
 	}
 	cb := r.claim(0, 'vcan0', f, 7) or {
-		assert false, '${err}'
+		assert false, 'no claim'
 		return
 	}
 	assert ca.seq == 1 && cb.seq == 2, 'frames leave in order, so their echoes must be claimed in order'
@@ -157,7 +157,7 @@ fn test_a_claimed_emission_is_not_reported_missing() {
 	f := frame(0x120, [u8(1)])
 	r.note(9, 'vcan0', f, 0, [0], '', false)
 	r.claim(0, 'vcan0', f, 1) or {
-		assert false, '${err}'
+		assert false, 'no claim'
 		return
 	}
 	assert r.expire(default_window_ms + 1) == []u64{}
@@ -312,9 +312,9 @@ fn test_capping_gives_up_settled_records_before_pending_ones() {
 	r.note(1, 'vcan0', a, 0, [0, 1], '', false)
 	r.note(2, 'vcan0', b, 0, [0, 1], '', false)
 	// record 1 is fully accounted for; record 2 is still waiting on monitor 1
-	r.claim(0, 'vcan0', a, 1) or { assert false, '${err}' }
-	r.claim(1, 'vcan0', a, 1) or { assert false, '${err}' }
-	r.claim(0, 'vcan0', b, 1) or { assert false, '${err}' }
+	r.claim(0, 'vcan0', a, 1) or { assert false, 'no claim' }
+	r.claim(1, 'vcan0', a, 1) or { assert false, 'no claim' }
+	r.claim(0, 'vcan0', b, 1) or { assert false, 'no claim' }
 	r.note(3, 'vcan0', frame(0x103, [u8(3)]), 1, [0, 1], '', false)
 	// the settled one was dropped, so monitor 1's late copy of b can still be claimed
 	c := r.claim(1, 'vcan0', b, 2) or {
@@ -332,7 +332,7 @@ fn test_a_departing_monitor_leaves_its_evidence_behind() {
 	f := frame(0x120, [u8(1)])
 	r.note(1, 'vcan0', f, 0, [0, 1], '', false)
 	r.claim(0, 'vcan0', f, 1) or {
-		assert false, '${err}'
+		assert false, 'no claim'
 		return
 	}
 	r.drop_monitor(0) // that observer goes away, its claim stands
@@ -346,7 +346,7 @@ fn test_an_already_accounted_emission_says_so_on_claim() {
 	f := frame(0x120, [u8(1)])
 	r.note(1, 'vcan0', f, 0, [], '', true)
 	c := r.claim(0, 'vcan0', f, 1) or {
-		assert false, '${err}'
+		assert false, 'no claim'
 		return
 	}
 	assert c.done, 'the claim did not carry that the caller already handled it'
@@ -399,7 +399,7 @@ fn test_a_settled_record_goes_before_an_older_unwatched_one() {
 	r.note(1, 'vcan0', un, 0, [], '', false) // older, unwatched, still claimable
 	r.note(2, 'vcan0', st, 0, [0], '', false)
 	r.claim(0, 'vcan0', st, 1) or {
-		assert false, '${err}'
+		assert false, 'no claim'
 		return
 	} // now settled
 	r.note(3, 'vcan0', frame(0x103, [u8(3)]), 1, [0], '', false)

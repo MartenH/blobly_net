@@ -41,7 +41,7 @@ fn C.ct_kvaser_status(int, &u32) int
 fn C.ct_kvaser_count() int
 fn C.ct_kvaser_descr(int, &char, int) int
 fn C.ct_kvaser_is_virtual(int) int
-fn C.ct_kvaser_set_silent_all(&int, int, int) int
+fn C.ct_kvaser_set_silent_all(&i32, int, int) int
 
 // KvaserBus is one open + bus-on CANlib channel handle.
 // kvaser_wires is every handle THIS PROCESS holds, per wire; `kvaser_handles` reads it.
@@ -157,7 +157,9 @@ fn kvaser_apply_wire_silence(iface string, want bool) ! {
 		if hs.len == 0 {
 			return -100 // nothing open on this wire: nothing to reconcile, and nothing to claim
 		}
-		return C.ct_kvaser_set_silent_all(&hs[0], hs.len, if silent { 1 } else { 0 })
+		// C's int: passed as an []int, V3's 64-bit elements reach C as every other handle 0
+		hs32 := hs.map(i32(it))
+		return C.ct_kvaser_set_silent_all(&hs32[0], hs32.len, if silent { 1 } else { 0 })
 	})!
 }
 

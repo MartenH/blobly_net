@@ -503,9 +503,9 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 						bars << vgui.Bar{
 							t0:        f32(ck.s - tmin)
 							dur:       f32(ck.e - ck.s)
-							lane:      li
+							lane:      i32(li)
 							color:     vgui.rgba(c[0], c[1], c[2], 235)
-							warn:      warn
+							warn:      i32(warn)
 							preempted: 0 // functions don't get preempted — threads do (see the thread lane)
 						}
 					}
@@ -516,10 +516,10 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 		bars << vgui.Bar{
 			t0:        f32(tr.abs_us - tmin) // relative µs (f32-exact even for long captures)
 			dur:       f32(r.cpu_us)
-			lane:      li
+			lane:      i32(li)
 			color:     vgui.rgba(c[0], c[1], c[2], 235)
-			warn:      warn
-			preempted: preempted
+			warn:      i32(warn)
+			preempted: i32(preempted)
 		}
 	}
 	// thread execution chunks (ISR-chopped, wall-consistent), the torn edge on the LAST chunk of
@@ -533,7 +533,7 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 			bars << vgui.Bar{
 				t0:        f32(ch.s - tmin)
 				dur:       f32(ch.e - ch.s)
-				lane:      li
+				lane:      i32(li)
 				color:     vgui.rgba(c[0], c[1], c[2], 235)
 				preempted: if tsl_pre[i] && j == nch - 1 { 1 } else { 0 }
 			}
@@ -550,7 +550,7 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 				bars << vgui.Bar{
 					t0:    f32(tsl_e[i] - tmin)
 					dur:   f32(nxt - tsl_e[i])
-					lane:  li
+					lane:  i32(li)
 					color: vgui.rgba(c[0], c[1], c[2], 90)
 					style: 1
 				}
@@ -579,8 +579,8 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 		if best_key != '' {
 			links << vgui.Link{
 				x:         f32(cut - tmin)
-				lane_from: lane_of['t${k}']
-				lane_to:   lane_of['t${best_key}']
+				lane_from: i32(lane_of['t${k}'])
+				lane_to:   i32(lane_of['t${best_key}'])
 			}
 		}
 	}

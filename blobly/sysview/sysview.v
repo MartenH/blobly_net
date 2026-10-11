@@ -200,9 +200,12 @@ pub fn load(path string) !System {
 		epath := os.join_path(base, n.ecu)
 		esrc, etext := read_source(epath)
 		sys.sources << esrc // a missing one too: its appearing is a change
+		// unwrapped once, before the chain: V3 narrows `etext` after the none check and refuses
+		// an or-block on it, while the older compiler does not narrow — this reads the same on both
+		ecu_text := etext or { '' }
 		if etext == none {
 			n.ecu_err = 'cannot read ${epath}'
-		} else if ndoc := toml.parse_text(etext or { '' }) {
+		} else if ndoc := toml.parse_text(ecu_text) {
 			n.desc = parse_ecu_desc(ndoc, sig_fields)
 			if b := node_bench_key {
 				n.desc.allow_bench_key = b // the system's, which sysgen lowers into [doip]

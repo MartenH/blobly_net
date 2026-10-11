@@ -12,8 +12,9 @@ name: windows-build
 # If a link lib ever goes missing, add the matching mingw-w64-x86_64-* package to the MSYS2
 # install list below.
 #
-# V acquisition: DOWNLOAD the prebuilt master V from this repo's "v-toolchain" release
-# (V's makev.bat self-compile hangs on the runner). It just drives mingw gcc via -cc gcc.
+# V acquisition: DOWNLOAD the prebuilt V from this repo's "v-toolchain" release (V's makev.bat
+# self-compile hangs on the runner). It is the V3 of .v-version, cross-built from Linux by
+# scripts/mint_windows_v.sh for exactly C:\v-ct, and drives mingw gcc via -cc gcc.
 
 on:
   push:
@@ -36,7 +37,10 @@ concurrency:
 
 env:
   V_RELEASE: v-toolchain            # release storing the prebuilt V asset
-  V_ASSET: v-ddc9c99-windows.zip    # prebuilt master V (has vlib/yaml + -enable-globals)
+  V_ASSET: v-e7bb21c-windows.zip    # scripts/mint_windows_v.sh at .v-version; re-mint when it moves
+  # a V3 failure must fail, not be rebuilt by a downloaded V1 (ci.yml says why)
+  V_MACOS_V3_NO_FALLBACK: 1
+  V_C_ERROR_BUG_REPORT_DISABLED: 1
 
 jobs:
   build-msys2:
@@ -47,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download prebuilt master V (ddc9c99)
+      - name: Download prebuilt V (e7bb21c)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

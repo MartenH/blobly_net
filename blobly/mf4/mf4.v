@@ -798,12 +798,12 @@ fn check_rec_id_size(n int) ! {
 }
 
 // record_size is a fixed channel group's record width — cg_data_bytes + cg_invalidation_bytes —
-// or -1 where the two u32s sum past an int: added as ints they went NEGATIVE, and the demux
+// or -1 where the two u32s sum past an i32: added as ints they went NEGATIVE, and the demux
 // sliced backwards on it. 0 is a legitimate width (a group with no channels; its record is the
 // record id alone) that both readers step over.
 fn record_size(data u32, inval u32) int {
 	total := u64(data) + u64(inval)
-	if total > u64(max_int) {
+	if total > u64(max_i32) {
 		return -1
 	}
 	return int(total)

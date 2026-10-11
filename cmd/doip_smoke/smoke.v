@@ -58,7 +58,7 @@ fn main() {
 	// 1) DiagnosticSessionControl (extended)
 	sess := client.diagnostic_session(0x03) or {
 		eprintln('  session FAIL: ${err}')
-		fails++
+		fails += 1
 		[]u8{}
 	}
 	if sess.len > 0 {
@@ -68,7 +68,7 @@ fn main() {
 	// 2) ReadDataByIdentifier VIN (0xF190)
 	vin := client.read_data_by_identifier(0xF190) or {
 		eprintln('  read VIN FAIL: ${err}')
-		fails++
+		fails += 1
 		[]u8{}
 	}
 	if vin.len > 0 {
@@ -83,7 +83,7 @@ fn main() {
 	// 3) ReadDataByIdentifier software version (0xF195)
 	sw := client.read_data_by_identifier(0xF195) or {
 		eprintln('  read SW ver FAIL: ${err}')
-		fails++
+		fails += 1
 		[]u8{}
 	}
 	if sw.len > 0 {

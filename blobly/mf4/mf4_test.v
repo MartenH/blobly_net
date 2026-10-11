@@ -3077,7 +3077,7 @@ fn test_a_zero_width_record_is_stepped_over_not_the_end() {
 
 fn test_a_record_width_past_an_int_is_corrupt_not_negative() {
 	assert record_size(0xFFFF_FFFF, 0xFFFF_FFFF) == -1
-	assert record_size(0x7FFF_FFFF, 0) == max_int
+	assert record_size(0x7FFF_FFFF, 0) == max_i32
 	assert record_size(0, 0) == 0
 }
 

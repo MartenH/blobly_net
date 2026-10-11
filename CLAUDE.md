@@ -341,13 +341,7 @@ an exit may claim (clean / failed / unknown-because-in-flight), the path #197's 
 rounds on before it had a test (#278)), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220; it also
-runs `scripts/check_mut_refs.sh`, which refuses `x := &recv` and `fn [recv]` inside a `mut recv`
-method — both COPY the struct in V, and the copy's own mutex over shared maps crashed the
-Diagnostics panel after #402, docs/known_issues.md. The check is `cmd/mutrefs`, a walk over V's
-own parse (`v.parser`), held to a census of V's own tokens so a node the walk skips is an
-error rather than a pass, not a regex: the line scan it replaced read `//` in a string as a
-comment, `== &app` as a binding and skipped one-line bodies (#406); `cmd/mutrefs/mutscan/` is
-tested in CI with the other cmd rules) and
+refuses `&int` in a `fn C.` declaration, since C's `int*` is `&i32` under V3) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
 available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged) and
 `scripts/v_toolchain_test.sh` (when the pinned V toolchain is REBUILT, and what counts as
@@ -355,16 +349,20 @@ evidence that it was built — a stamp naming both pins, written only after `mak
 #285 found the same shape three rounds running, a check on the state of the inputs standing
 in for a successful build). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
-release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks — and runs
-`v test blobly/isotp/` plus the cmd sweep there. Both Linux jobs set `VFLAGS=-old-compiler`
-and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level (#232; why, and why an env var rather
-than a flag in the scripts, is in `docs/known_issues.md`), and install the V named in
-**`.v-version`** — pinned, not master, since V master went V3-only on 2026-09-05 and a V3-only
-`v` refuses `-old-compiler`; `release.yml`'s Linux job and `scripts/setup_env.sh` read the same
-file. Bump it to move, together with that flag. **TWO pins, and they move together**: V is built
-from source and `make` bootstraps it by cloning **vlang/vc**, which the makefile does with NO
-ref — so `.vc-version` pins that too, at the vc commit GENERATED FROM `.v-version` (its message
-is `[v:master] <the .v-version sha> - …`). Pinning only the source is not a pin: it merely
+release or its `v-e7bb21c-windows.zip` asset disappears, the Windows job breaks — and runs
+`v test blobly/isotp/` plus the cmd sweep there. The asset is the V3 of `.v-version`
+cross-built from Linux by `scripts/mint_windows_v.sh`; re-mint it whenever the pin moves.
+**The toolchain is V3.** Every job sets
+`V_MACOS_V3_NO_FALLBACK=1` and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level: without the
+first, a program V3 cannot build is silently rebuilt by a downloaded V1 compiler and a V3
+regression passes unseen — set it locally too when checking a V3 result. The Linux jobs install the V
+named in **`.v-version`** — a V3 master commit this repo is known to pass on, not master itself;
+`release.yml`'s Linux job and `scripts/setup_env.sh` read the same file. **TWO pins, and they
+move together**: V is built from source and `make` bootstraps it by cloning **vlang/vc**, which
+the makefile does with NO ref — so `.vc-version` pins that too, at a vc commit PROVEN TO BUILD
+`.v-version` (vc is regenerated about daily, so the C generated from the exact commit rarely
+exists: take the newest vc at or before it and build the pair with `v_toolchain_install` before
+committing either file). Pinning only the source is not a pin: it merely
 worked while vc's default branch happened to hold our bootstrap, and the morning vc regenerated
 from V3 master (2026-09-07) the identical commit that had been green on `main` sixteen hours
 earlier failed in `make` with `./v2: No such file or directory` — re-running the old run
