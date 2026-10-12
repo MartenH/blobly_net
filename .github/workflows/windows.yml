@@ -44,6 +44,9 @@ env:
   # V3's module cache, on by default since ea5156d, makes every compile here SLOWER on a runner
   # that starts with it empty (measured: a test 9.0 -> 2.5 s, an image's transpile 38 -> 25 s)
   VFLAGS: -nocache
+  # V3's test runner allows one parallel job per 8 GB, so a 16 GB runner tests on one or two of
+  # its four cores; a compile here peaks near 1 GB
+  VJOBS: 4
 
 jobs:
   build-msys2:
