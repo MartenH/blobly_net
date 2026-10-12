@@ -349,14 +349,16 @@ evidence that it was built — a stamp naming both pins, written only after `mak
 #285 found the same shape three rounds running, a check on the state of the inputs standing
 in for a successful build). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
-release or its `v-e7bb21c-windows.zip` asset disappears, the Windows job breaks — and runs
+release or its `v-e2cdd9e-windows.zip` asset disappears, the Windows job breaks — and runs
 `v test blobly/isotp/` plus the cmd sweep there. The asset is the V3 of `.v-version`
 cross-built from Linux by `scripts/mint_windows_v.sh`; re-mint it whenever the pin moves.
 **The toolchain is V3.** Every job sets
 `V_MACOS_V3_NO_FALLBACK=1` and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level: without the
 first, a program V3 cannot build is silently rebuilt by a downloaded V1 compiler and a V3
 regression passes unseen — set it locally too when checking a V3 result. The Linux jobs install the V
-named in **`.v-version`** — a V3 master commit this repo is known to pass on, not master itself;
+named in **`.v-version`** — a V3 commit this repo is known to pass on, not master itself (today the
+head of vlang/v#30204, `ea5156d` plus the fixed-array borrow fix that master carries as `7858acc`:
+vlang's vc generation is stalled, and no vc builds a master commit that has it);
 `release.yml`'s Linux job and `scripts/setup_env.sh` read the same file. **TWO pins, and they
 move together**: V is built from source and `make` bootstraps it by cloning **vlang/vc**, which
 the makefile does with NO ref — so `.vc-version` pins that too, at a vc commit PROVEN TO BUILD
