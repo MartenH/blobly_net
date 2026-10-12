@@ -88,7 +88,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   Boehm-scanned backing allocation instead of walking every element around every call
   (recursive rooting stays for pointerful *structs*). Their measurement on the repro: about
   2,000,000 ns → about 1 ns per call at a million elements.
-  **It is in our pin now**: `.v-version` moved to V3 (`e7bb21c`, which contains `f174e71`).
+  **It is in our pin now**: `.v-version` is a V3 commit after `f174e71`.
   Re-run the repro before relying on it; if it is clean, the `pump()` split in `cmd/restbus`
   stops being load-bearing — keep it anyway, it removed a duplicated transmit loop on its own
   merits.
