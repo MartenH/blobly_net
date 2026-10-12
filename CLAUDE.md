@@ -357,8 +357,10 @@ cross-built from Linux by `scripts/mint_windows_v.sh`; re-mint it whenever the p
 first, a program V3 cannot build is silently rebuilt by a downloaded V1 compiler and a V3
 regression passes unseen — set it locally too when checking a V3 result. The Linux jobs install the V
 named in **`.v-version`** — a V3 commit this repo is known to pass on, not master itself (today the
-head of vlang/v#30204, `ea5156d` plus the fixed-array borrow fix that master carries as `7858acc`:
-vlang's vc generation is stalled, and no vc builds a master commit that has it);
+head of vlang/v#30204, `ea5156d` plus the fixed-array borrow fix that master carries as `7858acc`,
+because no vc published by 2026-10-12 builds a master commit that has it; the commit is reachable
+from vlang/v only through the PR's ref, so move the pin to master, `7858acc` or later, once a vc
+builds one);
 `release.yml`'s Linux job and `scripts/setup_env.sh` read the same file. **TWO pins, and they
 move together**: V is built from source and `make` bootstraps it by cloning **vlang/vc**, which
 the makefile does with NO ref — so `.vc-version` pins that too, at a vc commit PROVEN TO BUILD

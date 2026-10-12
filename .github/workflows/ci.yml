@@ -13,7 +13,7 @@ name: ci
 # was retired when the migration landed, so there's no gui/vglyph to fetch here, and
 # vlang/markdown is vendored in libs/markdown.
 #
-# V acquisition: built from source at the master commit `.v-version` names, with the
+# V acquisition: built from source at the commit `.v-version` names, with the
 # BOOTSTRAP pinned by `.vc-version` (a master V — the in-process bus and the vendored Lua
 # need a current toolchain; the 0.5.1 *release* predates vlib/yaml which blobly/project
 # uses). Two pins, not one, and the second is the whole reason this is hand-rolled rather
@@ -39,8 +39,8 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# PINNED, not latest: `.v-version` names a V3 master commit this repo is known to build and
-# pass on. One file, read by both jobs here, by release.yml's Linux job and by
+# PINNED, not latest: `.v-version` names a V3 commit this repo is known to build and pass on
+# (a master commit, but for the exception CLAUDE.md states). One file, read by both jobs here, by release.yml's Linux job and by
 # scripts/setup_env.sh, so the pin is stated once. Moving it is a decision, not a drift.
 #
 # `.vc-version` is the SECOND half of that pin and is not optional. Pinning the V source while
