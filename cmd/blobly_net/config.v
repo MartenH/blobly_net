@@ -195,7 +195,6 @@ fn (mut app App) commit_cfg() {
 			}
 		}
 		if ch.mode == .replay {
-			spd := vgui.buf_str(b.replay_speed_buf).f64()
 			// Rebuilt from the buffers the editor HAS, carrying over the keys it does not: the
 			// dialog offers source/speed/loop, while `bus:` and `exclude:` are typed into the
 			// file. Reconstructing the struct from the widgets alone deleted them on every Save
@@ -205,7 +204,7 @@ fn (mut app App) commit_cfg() {
 			ch.replay = project.Replay{
 				...old
 				source: vgui.buf_str(b.replay_src_buf)
-				speed:  if spd > 0 { spd } else { 1.0 }
+				speed:  project.replay_speed_of(vgui.buf_str(b.replay_speed_buf))
 			}
 		}
 	}

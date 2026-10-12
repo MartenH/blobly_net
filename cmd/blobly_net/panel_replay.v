@@ -227,8 +227,7 @@ fn draw_replay(mut app App) {
 // Start refused the group for it (codex #136 r2).
 fn pending_replay_speed(app &App, ci int, fallback f64) f64 {
 	if ci < app.cfg_bufs.len {
-		spd := vgui.buf_str(app.cfg_bufs[ci].replay_speed_buf).f64()
-		return if spd > 0 { spd } else { 1.0 }
+		return project.replay_speed_of(vgui.buf_str(app.cfg_bufs[ci].replay_speed_buf))
 	}
 	return fallback
 }
