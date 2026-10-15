@@ -37,5 +37,15 @@ if bad=$(grep -rnE --include='*.v' '^[[:space:]]*(pub )?fn C\.[A-Za-z0-9_.]+\(.*
 	echo "$bad"
 	fail=$((fail + 1))
 fi
+# and $embed_file, which V3 does not embed outside -prod: it records the BUILD machine's path and
+# reads that file at run time, panicking wherever the build tree is absent -- every user's machine.
+# The shipped build is not -prod (#284), so one such constant killed the Windows bundle before its
+# first frame (#455). Spell the bytes out instead (cmd/blobly_net/assets/gen.vsh).
+n=$((n + 1))
+if bad=$(grep -rnE --include='*.v' --exclude-dir=build '^[^/]*\$embed_file\(' cmd blobly libs); then
+	echo "FAIL \$embed_file (V3 reads it from the build tree at run time outside -prod):"
+	echo "$bad"
+	fail=$((fail + 1))
+fi
 printf '%d checks, %d failed\n' "$n" "$fail"
 [ "$fail" -eq 0 ]

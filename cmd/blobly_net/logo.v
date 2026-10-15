@@ -1,23 +1,24 @@
 module main
 
+import assets
 import stbi
 import vgui
 
 // The BLOBLY.NET wordmark, white on transparent, sized for the menu bar (drawn at font
 // height; the PNG is 2x that for a clean minify). White so one texture serves both themes:
 // menu_image multiplies by a tint, and white times the tint IS the tint.
-const logo_png = $embed_file('logo_white.png')
+// (assets.logo_png — the bytes of assets/logo_white.png; why not $embed_file is in assets.v.)
 
 // The window/taskbar icon: the wordmark's stencil B on the accent-blue rounded tile, 64px
 // (the wordmark itself is far too wide for a square icon). Decoded and downscaled at startup
 // so the OS gets native 16/32/48/64 candidates instead of scaling one bitmap.
-const icon_png = $embed_file('icon_b.png')
+// (assets.icon_png, from assets/icon_b.png.)
 
 // set_app_icon decodes the embedded icon and hands the OS a size set. Call after vgui.init().
 // If decoding fails it falls back to the procedural placeholder, so the window never goes
 // without an icon.
 fn set_app_icon() {
-	img := stbi.load_from_memory(icon_png.data(), icon_png.len) or {
+	img := stbi.load_from_memory(assets.icon_png.data, assets.icon_png.len) or {
 		vgui.set_window_icon(32, 32, app_icon())
 		return
 	}
@@ -48,7 +49,7 @@ fn icon_rgba_copy(data &u8, w int, h int) []u8 {
 // load_logo decodes the embedded wordmark and uploads it as a GL texture. Call after
 // vgui.init(). Failure just leaves logo_tex 0 and the menu bar starts at File, as before.
 fn (mut app App) load_logo() {
-	img := stbi.load_from_memory(logo_png.data(), logo_png.len) or { return }
+	img := stbi.load_from_memory(assets.logo_png.data, assets.logo_png.len) or { return }
 	defer {
 		img.free()
 	}
