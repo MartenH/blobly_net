@@ -30,6 +30,12 @@ fn open_raw(iface string) !Bus {
 	if t := parse_udp_iface(iface) {
 		return open_udp(t.group, t.port)!
 	}
+	if iface.starts_with('bridge:') {
+		// A channel of a CAN bridge that has dialled in (bridge.v). Through the shared registry
+		// because one channel is one subscription on the bridge's connection, however many
+		// handles a Start opens on it.
+		return shared_open_events(wire_key_for('bridge', iface), iface, open_bridge_bus)!
+	}
 	if iface.to_lower().starts_with('cansub:') {
 		// The one hardware backend that is not platform-specific: a CANsub enumerates as a USB
 		// NETWORK adapter and is spoken to over HTTP, so the same code reaches it here as on

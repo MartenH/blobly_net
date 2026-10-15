@@ -328,7 +328,10 @@ pub fn clamps_to_classic(iface string) bool {
 	// return an error, which PcanBus.send/KvaserBus.send surface. Masking before handing them
 	// the frame would turn that rejection into a valid-but-different transmission (0x800 sent as
 	// 0x000), which is the opposite of what a bench needs from a malformed frame.
-	return !software_iface(iface) && !vendor_iface(iface)
+	// NOR A CAN BRIDGE: its driver refuses a frame no controller could send (bridge.v) rather than
+	// hand it to the far side's SocketCAN to clamp, so normalising it here would turn that refusal
+	// into a different frame on the wire.
+	return !software_iface(iface) && !vendor_iface(iface) && !iface.starts_with('bridge:')
 }
 
 // software_iface recognises the in-process and UDP buses the SAME way the dispatcher does:
