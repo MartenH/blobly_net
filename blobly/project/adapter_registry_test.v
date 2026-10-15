@@ -80,7 +80,7 @@ fn test_every_declared_adapter_is_known_to_transport() {
 // disagree with the code for the check above to be worth anything.
 const software_adapters = ['virtual', 'udp'] // driver-free, no bit timing exists
 
-const kernel_adapters = ['vcan', 'socketcan'] // the OS owns the timing
+const kernel_adapters = ['vcan', 'socketcan', 'bridge'] // the OS owns the timing (a bridge's, its host's)
 
 const vendor_adapters = ['pcan', 'kvaser', 'vector', 'cansub'] // the address carries the rate
 
@@ -132,6 +132,7 @@ fn test_every_adapter_round_trips_through_compose() {
 		'kvaser':    '0'
 		'vector':    '1'
 		'cansub':    'e5a16adf/1'
+		'bridge':    'Ubuntu-24.04/vcan0'
 		'doip':      '127.0.0.1:13400'
 		'someip':    '0.0.0.0:30491'
 	}

@@ -447,8 +447,9 @@ fn draw_discover_dialog(mut app App) {
 	// from (doip_found_row) — looked for as the Diagnostics panel looks, whether or not it is open
 	app.diag_sys_refresh()
 	busy, landed, note := app.cansub_browse_state()
-	if landed {
-		// A browse landed since the list was built: merge its rows, on this thread, ticks kept.
+	if landed || bridge_signature(transport.bridge_rows()) != app.disc_bridges {
+		// A browse landed, or a bridge connected or left, since the list was built: merge its
+		// rows, on this thread, ticks kept.
 		app.rebuild_discover_list()
 	}
 	if vgui.button('Refresh') {
@@ -562,6 +563,7 @@ fn draw_discover_dialog(mut app App) {
 		moved := vgui.splitter_h('##disc_split', box_h, box_min, box_max)
 		app.disc_list_h = app.pane_moved('discover_list', app.disc_list_h, box_h, moved, sc)
 	}
+	app.draw_discover_wsl()
 	app.draw_discover_doip()
 	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
 	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those
@@ -684,6 +686,59 @@ fn draw_discover_dialog(mut app App) {
 		app.disc_open = false
 	}
 	vgui.end()
+}
+
+// draw_discover_wsl is the Discover dialog's CAN bridge section (#451): one line per WSL
+// distribution, to start canbridge in it — its interfaces then join the list above as
+// `bridge:<distro>/<iface>` — or to disconnect it. Drawn only where there is WSL to talk about.
+fn (mut app App) draw_discover_wsl() {
+	if app.disc_wsl.len == 0 {
+		return
+	}
+	vgui.separator_text('WSL (CAN bridge)')
+	for d in app.disc_wsl {
+		st, why := transport.bridge_state(d)
+		vgui.text(d)
+		vgui.same_line()
+		match st {
+			.connected {
+				vgui.text_dim('connected — its interfaces are listed above')
+				// Disconnecting fails every channel on it, which is a run's topology: stopped only.
+				if !app.running {
+					vgui.same_line()
+					if vgui.button('Disconnect##bridge_${d}') {
+						transport.bridge_drop(d)
+					}
+				}
+			}
+			.starting {
+				vgui.text_dim('starting…')
+			}
+			.idle, .failed {
+				if vgui.button('Start bridge##bridge_${d}') {
+					// Off the render thread: the launch is a registry read and a shell call.
+					spawn bridge_start_worker(app, d)
+				}
+				if st == .failed {
+					vgui.text_colored_wrapped(u8(240), u8(150), u8(60), why)
+				}
+			}
+		}
+	}
+	vgui.text_dim_wrapped('Start runs canbridge in the distribution as root: it creates vcan0 and vcan1 if they are missing and offers its CAN interfaces here. WSL must use networkingMode=mirrored.')
+}
+
+fn bridge_start_worker(app &App, distro string) {
+	transport.bridge_start(distro) or {
+		mut a := unsafe { app }
+		a.notify('bridge ${distro}: ${err}')
+	}
+}
+
+// bridge_signature is every connected bridge's channels, one string: what the Discover list was
+// built from, so a bridge that comes, goes or comes back offering other channels rebuilds it.
+fn bridge_signature(rows []transport.Iface) string {
+	return rows.map(it.iface).join('\n')
 }
 
 // draw_discover_doip is the Discover dialog's DoIP section: ask one host, or the network, for

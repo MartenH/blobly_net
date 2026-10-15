@@ -9,6 +9,12 @@
 // restarted after its host went away without closing the connection (WSL shut down under it)
 // must not be refused by the ghost of itself.
 //
+// On Windows a bridge in a WSL distribution is STARTED by this side: `bridge_start` runs it through
+// `wsl.exe` with the listener's port and token, and opening a channel of a bridge that is not
+// connected starts it when its name is a WSL distribution, then waits for it to dial in. That is
+// what lets a saved project's `bridge:Ubuntu-24.04/vcan0` row open at Start with nothing done by
+// hand, though the port and token change with every launch of the app.
+//
 // A channel is opened through `shared_open_events`, like a CANsub's: one driver per wire however
 // many handles a Start opens on it. The driver asks the bridge to open the channel, sends frames
 // over the session's connection and waits for each one's acknowledgement, and receives what the
@@ -27,6 +33,13 @@ const bridge_hello_ms = 5000
 
 // How long a channel open waits for the bridge's answer.
 const bridge_open_ms = 3000
+
+// How long a started bridge has to dial in. A WSL distribution that is not running boots first,
+// which takes seconds.
+const bridge_launch_ms = 20000
+
+// The vcan interfaces a bridge started in WSL makes sure exist.
+const bridge_wsl_vcans = 2
 
 // How long a send waits for its acknowledgement, and how long one write to the connection may
 // take. A bridge answers every frame it is sent, so running out means the bridge has stopped, not
@@ -71,6 +84,15 @@ pub fn parse_bridge_iface(iface string) !BridgeSpec {
 		name:    name
 		channel: ch
 	}
+}
+
+// bridge_address_error is why an address is not a bridge channel, or none — for the editor, so a
+// malformed one is said where it is typed rather than at Start.
+pub fn bridge_address_error(iface string) ?string {
+	spec := parse_bridge_iface(iface) or { return err.msg() }
+	// The rule a bridge's own hello is held to: an address no bridge could ever answer to is
+	// said here, not at Start.
+	return bridge_label_error(spec.name, [spec.channel])
 }
 
 // bridge_domain is the clock domain of one session of a bridge: its host's monotonic clock, in
@@ -156,6 +178,18 @@ mut:
 	sessions map[string]&BridgeSession
 	// Sessions accepted so far: each gets its own clock domain.
 	session_count u64
+	// Bridges started and not yet dialled in, by name: when they run out of time.
+	launching map[string]i64
+	// Why a bridge could not start, by name, as it said in its hello or as its launch failed.
+	failed map[string]string
+}
+
+// BridgeState is where a bridge of a given name stands.
+pub enum BridgeState {
+	idle      // not connected, not starting
+	starting  // started; not dialled in yet
+	connected // dialled in; its channels can open
+	failed    // could not start; bridge_state says why
 }
 
 __global (
@@ -234,6 +268,105 @@ pub fn bridge_drop(name string) {
 	}
 }
 
+// bridge_state is where the bridge of that name stands, with the reason when it failed.
+pub fn bridge_state(name string) (BridgeState, string) {
+	now := time.ticks()
+	mut st := BridgeState.idle
+	mut why := ''
+	rlock bridge_reg {
+		if name in bridge_reg.sessions {
+			st = .connected
+		} else if name in bridge_reg.failed {
+			st = .failed
+			why = bridge_reg.failed[name]
+		} else if name in bridge_reg.launching {
+			if now < bridge_reg.launching[name] {
+				st = .starting
+			} else {
+				st = .failed
+				why = bridge_silence_note(name)
+			}
+		}
+	}
+	return st, why
+}
+
+// bridge_silence_note is what a started bridge that never dialled in is reported as.
+fn bridge_silence_note(name string) string {
+	return 'started in WSL "${name}" but it did not dial in within ${bridge_launch_ms / 1000} s — WSL must run with networkingMode=mirrored for it to reach this app on 127.0.0.1; run the canbridge command by hand in the distribution to see why'
+}
+
+// bridge_launch_args are canbridge's arguments for a bridge started in WSL distribution `distro`.
+pub fn bridge_launch_args(distro string, ep BridgeEndpoint) []string {
+	return ['--vcan', '${bridge_wsl_vcans}', '--connect', '127.0.0.1:${ep.port}', '--token', ep.token,
+		'--name', distro]
+}
+
+// bridge_start starts the bridge in WSL distribution `name`, unless it is connected or already
+// starting. It returns once the bridge has been launched, not once it has dialled in:
+// bridge_state follows it from there.
+pub fn bridge_start(name string) ! {
+	if name !in wsl_distros() {
+		return error('there is no WSL distribution named "${name}" to start a bridge in')
+	}
+	ep := bridge_listen()!
+	// Claimed in ONE lock: two channels of one distribution open on two threads at Start, and
+	// both must not launch a bridge.
+	now := time.ticks()
+	go_ahead := lock bridge_reg {
+		mut claim := true
+		if name in bridge_reg.sessions {
+			claim = false
+		} else if name in bridge_reg.launching {
+			claim = now >= bridge_reg.launching[name]
+		}
+		if claim {
+			bridge_reg.failed.delete(name)
+			bridge_reg.launching[name] = now + bridge_launch_ms
+		}
+		claim
+	}
+	if !go_ahead {
+		return
+	}
+	bridge_launch_wsl(name, ep) or {
+		lock bridge_reg {
+			bridge_reg.launching.delete(name)
+			bridge_reg.failed[name] = err.msg()
+		}
+		return err
+	}
+}
+
+// bridge_await waits for the bridge of that name to dial in, start it first if it is a WSL
+// distribution that has not been started.
+fn bridge_await(name string) !&BridgeSession {
+	if s := bridge_session(name) {
+		return s
+	}
+	bridge_start(name) or {
+		if name !in wsl_distros() {
+			return error('no bridge named "${name}" is connected')
+		}
+		return err
+	}
+	// Bounded by the launch's budget; a run worker opens through transport.open_stoppable, so its
+	// Stop does not wait this out.
+	for {
+		if s := bridge_session(name) {
+			return s
+		}
+		st, why := bridge_state(name)
+		match st {
+			.failed { return error('bridge "${name}": ${why}') }
+			.idle { return error('bridge "${name}" is not connected') }
+			else {}
+		}
+		time.sleep(50 * time.millisecond)
+	}
+	return error('unreachable')
+}
+
 // bridge_read reads once from the connection and returns the records it completed.
 fn bridge_read(mut c net.TcpConn, mut dec BridgeDecoder, mut buf []u8) ![]BridgeRecord {
 	n := c.read(mut buf)!
@@ -306,11 +439,29 @@ fn bridge_session_run(mut c net.TcpConn, token string) {
 		}
 		c.set_read_timeout(left * time.millisecond)
 		recs = bridge_read(mut c, mut dec, mut buf) or {
+			// Bytes that are not a record this side can read are most likely a canbridge of
+			// another version: say so, rather than leave it to time out unexplained.
+			if !bridge_is_timeout(err) && err !is io.Eof {
+				c.write(bridge_encode_refused('cannot read the hello (${err.msg()}) — is canbridge the same version as this app?')) or {}
+			}
 			c.close() or {}
 			return
 		}
 	}
 	hello := recs[0]
+	// A bridge that could not start says why in place of offering channels.
+	// Not recorded while that bridge is connected: a duplicate that failed is no news about it.
+	if hello.kind == .hello && hello.version == bridge_version && hello.token == token
+		&& hello.error != '' && hello.name != '' {
+		lock bridge_reg {
+			if hello.name !in bridge_reg.sessions {
+				bridge_reg.launching.delete(hello.name)
+				bridge_reg.failed[hello.name] = hello.error
+			}
+		}
+		c.close() or {}
+		return
+	}
 	if why := bridge_refusal(hello, token) {
 		c.write(bridge_encode_refused(why)) or {}
 		c.close() or {}
@@ -330,6 +481,8 @@ fn bridge_session_run(mut c net.TcpConn, token string) {
 	lock bridge_reg {
 		replaced = bridge_reg.sessions[hello.name] or { none }
 		bridge_reg.sessions[hello.name] = s
+		bridge_reg.launching.delete(hello.name)
+		bridge_reg.failed.delete(hello.name)
 	}
 	if mut old := replaced {
 		old.cut('replaced by a new connection from the same bridge')
@@ -550,9 +703,7 @@ mut:
 // waits for the answer.
 fn open_bridge_bus(iface string) !SharedDriver {
 	spec := parse_bridge_iface(iface)!
-	mut s := bridge_session(spec.name) or {
-		return error('${iface}: no bridge named "${spec.name}" is connected')
-	}
+	mut s := bridge_await(spec.name) or { return error('${iface}: ${err}') }
 	idx := s.channels.index(spec.channel)
 	if idx < 0 {
 		return error('${iface}: bridge "${spec.name}" offers ${s.channels.join(', ')}, not ${spec.channel}')

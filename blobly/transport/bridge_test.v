@@ -242,8 +242,8 @@ fn test_a_disconnected_bridge_fails_its_channels_and_may_return() {
 
 fn test_a_refused_bridge_is_told_why() {
 	ep := bridge_listen()!
-	for hello in [bridge_encode_hello('not-the-token', 'b-intruder', ['A']),
-		bridge_encode_hello(ep.token, 'bad/name', ['A'])] {
+	for hello in [bridge_encode_hello('not-the-token', 'b-intruder', ['A'], ''),
+		bridge_encode_hello(ep.token, 'bad/name', ['A'], '')] {
 		mut c := net.dial_tcp('127.0.0.1:${ep.port}')!
 		c.write(hello)!
 		c.set_read_timeout(2 * time.second)
@@ -631,4 +631,51 @@ fn test_a_frame_received_before_a_send_comes_before_its_acknowledgement() {
 	second := drv.recv_shared(1000)!
 	assert !first.tx_ack && first.frame.id == 0x111, 'the earlier frame came after the acknowledgement'
 	assert second.tx_ack && second.frame.id == 0x7E0
+}
+
+fn test_a_bridge_that_cannot_start_says_why_and_a_forged_failure_is_ignored() {
+	ep := bridge_listen()!
+	mut forged := net.dial_tcp('127.0.0.1:${ep.port}')!
+	bridge_report_failure(mut forged, 'not-the-token', 'b-cannot', 'forged')!
+	forged.close() or {}
+	mut c := net.dial_tcp('127.0.0.1:${ep.port}')!
+	bridge_report_failure(mut c, ep.token, 'b-cannot', 'cannot create vcan0: no vcan module')!
+	c.close() or {}
+	for _ in 0 .. 300 {
+		st, why := bridge_state('b-cannot')
+		if st == .failed {
+			assert why == 'cannot create vcan0: no vcan module'
+			assert 'b-cannot' !in bridge_names()
+			return
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	assert false, 'the failure was never recorded'
+}
+
+fn test_bridge_states_and_a_name_that_is_not_a_wsl_distribution() {
+	st, _ := bridge_state('b-nobody')
+	assert st == .idle
+	open('bridge:b-nobody/vcan0') or {
+		assert err.msg().contains('no bridge named "b-nobody" is connected'), err.msg()
+		start_bridge('b-state', ['A'], inproc_opener('bs-'))!
+		st2, _ := bridge_state('b-state')
+		assert st2 == .connected
+		return
+	}
+	assert false
+}
+
+fn test_launch_arguments() {
+	args := bridge_launch_args('Ubuntu-24.04', BridgeEndpoint{ port: 4321, token: 'abc' })
+	assert args == ['--vcan', '2', '--connect', '127.0.0.1:4321', '--token', 'abc', '--name',
+		'Ubuntu-24.04']
+}
+
+fn test_an_address_no_bridge_could_answer_is_refused_in_the_editor() {
+	assert bridge_address_error('bridge:Ubuntu-24.04/vcan0') == none
+	for bad in ['bridge:a/b/vcan0', 'bridge:${'x'.repeat(bridge_max_label + 1)}/vcan0', 'bridge:x',
+		'bridge:x/vcan0@500000'] {
+		assert bridge_address_error(bad) != none, bad
+	}
 }

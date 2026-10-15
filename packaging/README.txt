@@ -36,6 +36,11 @@ Which version is this?
 What's in this folder
 ---------------------
   blobly_net[.exe]  the application
+  canbridge         (Windows) a LINUX program the app runs inside WSL to reach
+                    its vcan/CAN interfaces — see docs/wsl_bridge.md
+  scripts/          (Windows) setup_sudoers.sh / build_vcan_module.sh /
+                    setup_vcan.sh, to run in WSL when its kernel has no vcan
+                    module — see docs/wsl_bridge.md
   *.dll             (Windows) runtime libraries — keep them next to the .exe
   LICENSE.txt       Blobly Net's own licence (MIT)
   THIRD-PARTY-NOTICES.txt  what is compiled in and what is bundled beside it

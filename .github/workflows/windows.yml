@@ -43,8 +43,32 @@ env:
   V_C_ERROR_BUG_REPORT_DISABLED: 1
 
 jobs:
+  # THE BUNDLE CARRIES A LINUX PROGRAM (#451): canbridge, which the Windows app starts inside a WSL
+  # distribution through wsl.exe to reach its vcans. It is a Linux ELF, so it is built on Linux —
+  # on 22.04, the oldest supported glibc, for the reason release.yml's AppImage is — and handed to
+  # the Windows job below as a short-lived artifact, never published on its own.
+  canbridge-linux:
+    name: canbridge (Linux, for the WSL bridge)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pinned V (cached)
+        uses: ./.github/actions/setup-v
+      - name: Build canbridge
+        run: |
+          v -enable-globals -o canbridge cmd/canbridge
+          ./canbridge --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canbridge-linux
+          path: canbridge
+          retention-days: 1
+          if-no-files-found: error
+
   build-msys2:
     name: mingw (MSYS2) • GUI bundle
+    needs: canbridge-linux
     runs-on: windows-latest
     timeout-minutes: 60
 
@@ -129,6 +153,12 @@ jobs:
       # Linux tar.gz, so the two archives cannot drift (and it fails hard on a missing
       # file instead of shipping thin). Only the platform extras stage here: the exe, its
       # mingw runtime DLLs, and the file-association script.
+      - name: Fetch canbridge (built on Linux above)
+        uses: actions/download-artifact@v4
+        with:
+          name: canbridge-linux
+          path: canbridge-linux
+
       - name: Stage bundle
       # msys2 shell so the SAME sh script serves both platforms. bash rather than sh: the DLL
       # licence sweep below uses an array and nullglob.
@@ -138,6 +168,12 @@ jobs:
           ver="$(sed -n "s/^\s*version: '\(.*\)'\s*$/\1/p" v.mod)"
           V=/c/v-ct/v.exe sh scripts/stage_bundle.sh dist "$ver"
           cp build/blobly_net.exe dist/blobly_net.exe
+          # Beside the exe, where transport.bridge_launch_wsl looks for it (#451), with the scripts
+          # its "no vcan module" failure tells the user to run in WSL from this folder.
+          cp canbridge-linux/canbridge dist/canbridge
+          mkdir -p dist/scripts
+          cp scripts/setup_vcan.sh scripts/build_vcan_module.sh scripts/vcan_common.sh \
+            scripts/setup_sudoers.sh dist/scripts/
           # The bare -static is gone (#318), so the freetype chain resolves to DLLs and the ldd
           # sweep above copies them here. `find` rather than `cp build/*.dll` is still right:
           # GLFW and the GCC runtime stay static by explicit flag, so the set is small and could
