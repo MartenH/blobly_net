@@ -36,8 +36,14 @@ const bridge_send_ms = 2000
 // The ceiling on one wait inside recv and send, so a dead session is noticed.
 const bridge_poll_ms = i64(100)
 
-// Received frames queued per channel before the oldest arrivals are dropped and counted.
+// Received frames queued per channel before further arrivals are dropped and counted.
 const bridge_queue_cap = 4096
+
+// Room beyond that kept for TX acknowledgements alone: a send reports success when its
+// acknowledgement arrives, so the hub must get that acknowledgement too, however far behind the
+// bus has left it. Order is kept — nothing is evicted — and only a hub this many acknowledgements
+// behind on top of a full queue loses one.
+const bridge_ack_reserve = 256
 
 // BridgeSpec is a parsed `bridge:<name>/<channel>`.
 pub struct BridgeSpec {
@@ -384,19 +390,11 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 				}
 				tx_ack: rec.tx
 			}
-			if ch.rx.try_push(ingress) != .success {
+			// One producer, this thread, so the length read and the push cannot be overtaken.
+			room := if rec.tx { bridge_queue_cap + bridge_ack_reserve } else { bridge_queue_cap }
+			if ch.rx.len >= room || ch.rx.try_push(ingress) != .success {
 				lock ch.st {
 					ch.st.dropped++
-				}
-				// An acknowledgement is never the one dropped: the send it confirms reports
-				// success, and the hub must see it to know the frame as ours. The oldest queued
-				// frame makes room instead.
-				if rec.tx {
-					select {
-						_ := <-ch.rx {}
-						else {}
-					}
-					_ := ch.rx.try_push(ingress)
 				}
 			}
 			if rec.tx {
@@ -566,7 +564,7 @@ fn open_bridge_bus(iface string) !SharedDriver {
 	}
 	ch := u8(idx)
 	mut c := &BridgeChan{
-		rx:      chan SharedIngress{cap: bridge_queue_cap}
+		rx:      chan SharedIngress{cap: bridge_queue_cap + bridge_ack_reserve}
 		results: chan BridgeResult{cap: 64}
 		opened:  chan string{cap: 1}
 	}

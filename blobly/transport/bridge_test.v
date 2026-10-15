@@ -442,16 +442,20 @@ fn test_an_acknowledgement_survives_a_full_receive_queue() {
 		time.sleep(10 * time.millisecond)
 	}
 	assert b.c.rx.len == bridge_queue_cap
+	// Several sends, none of their acknowledgements consumed before the next: all are kept, in
+	// order, behind the frames already queued.
 	commit := fn () {}
-	drv.send(CanFrame{ id: 0x7E0, data: [u8(2)] }, commit)!
-	mut acked := false
+	for i in 0 .. 3 {
+		drv.send(CanFrame{ id: 0x7E0, data: [u8(i)] }, commit)!
+	}
+	mut acks := []u8{}
 	for {
 		got := drv.recv_shared(0) or { break }
 		if got.tx_ack && got.frame.id == 0x7E0 {
-			acked = true
+			acks << got.frame.data[0]
 		}
 	}
-	assert acked, 'the acknowledgement was dropped'
+	assert acks == [u8(0), 1, 2], 'acknowledgements lost or reordered: ${acks}'
 	assert drv.diagnostics().dropped > 0
 }
 
@@ -478,4 +482,60 @@ fn test_frames_from_a_previous_open_of_a_channel_are_not_admitted() {
 
 fn test_each_session_is_its_own_clock_domain() {
 	assert bridge_domain('x', 1) != bridge_domain('x', 2)
+}
+
+struct EchoingBus {
+mut:
+	replies chan CanFrame
+}
+
+fn (mut b EchoingBus) send(frame CanFrame) ! {
+	// An ECU that answers at once: the reply is ready before send returns.
+	b.replies <- CanFrame{
+		id:   frame.id + 8
+		data: [u8(0x50)]
+	}
+}
+
+fn (mut b EchoingBus) recv(timeout_ms int) !CanFrame {
+	select {
+		f := <-b.replies {
+			return f
+		}
+		timeout_ms * time.millisecond {}
+	}
+	return error('timeout')
+}
+
+fn (mut b EchoingBus) close() {}
+
+fn (mut b EchoingBus) health() BusHealth {
+	return .unknown
+}
+
+fn (mut b EchoingBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
+fn (mut b EchoingBus) reconcile_silence(want bool) ! {}
+
+fn test_a_reply_never_overtakes_the_acknowledgement_of_its_request() {
+	echoing := fn (name string) !Bus {
+		return &EchoingBus{
+			replies: chan CanFrame{cap: 4}
+		}
+	}
+	start_bridge('b-order', ['A'], echoing)!
+	mut drv := open_bridge_bus('bridge:b-order/A')!
+	defer {
+		drv.close()
+	}
+	commit := fn () {}
+	for _ in 0 .. 20 {
+		drv.send(CanFrame{ id: 0x7E0, data: [u8(0x10)] }, commit)!
+		first := drv.recv_shared(1000)!
+		second := drv.recv_shared(1000)!
+		assert first.tx_ack && first.frame.id == 0x7E0, 'the reply came first'
+		assert !second.tx_ack && second.frame.id == 0x7E8
+	}
 }

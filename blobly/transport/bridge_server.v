@@ -11,6 +11,7 @@ module transport
 import io
 import net
 import sync
+import sync.stdatomic
 import time
 
 // How long one receive on a served channel waits before it looks at the channel's health.
@@ -49,6 +50,11 @@ mut:
 	conn  &net.TcpConn
 	wmu   &sync.Mutex = sync.new_mutex()
 	chans map[u8]&BridgeServed
+	// When the write in progress began, or 0; read by the reader, which ends a connection whose
+	// write has stalled (an app that stopped reading without closing). Atomic: written by every
+	// writer, read by the reader.
+	writing_since i64
+	stalled       i64
 }
 
 // bridge_stamp is the bridge host's monotonic clock now, the domain every stamp it sends is in.
@@ -80,7 +86,15 @@ pub fn bridge_serve(mut c net.TcpConn, cfg BridgeServeCfg) ! {
 	mut dec := BridgeDecoder{}
 	mut buf := []u8{len: 8192}
 	for {
+		since := stdatomic.load_i64(&srv.writing_since)
+		if since != 0 && time.ticks() - since > bridge_send_ms {
+			stdatomic.store_i64(&srv.stalled, 1)
+			srv.fail()
+		}
 		recs := bridge_read(mut c, mut dec, mut buf) or {
+			if stdatomic.load_i64(&srv.stalled) != 0 {
+				return error('a write to the app stalled for more than ${bridge_send_ms} ms')
+			}
 			if bridge_is_timeout(err) {
 				continue
 			}
@@ -107,6 +121,14 @@ fn (mut srv BridgeServer) write(rec []u8) ! {
 	srv.wmu.lock()
 	defer {
 		srv.wmu.unlock()
+	}
+	srv.write_locked(rec)!
+}
+
+fn (mut srv BridgeServer) write_locked(rec []u8) ! {
+	stdatomic.store_i64(&srv.writing_since, time.ticks())
+	defer {
+		stdatomic.store_i64(&srv.writing_since, 0)
 	}
 	srv.conn.write(rec)!
 }
@@ -180,12 +202,18 @@ fn (mut srv BridgeServer) send_frame(rec BridgeRecord) ! {
 		srv.write(bridge_encode_senderr(rec.channel, rec.seq, 'channel ${srv.cfg.channels[rec.channel]} is not open'))!
 		return
 	}
+	// The output lock is held from the send to its acknowledgement, so a reply the pump hears
+	// is written after the acknowledgement of the request that caused it, as the wire had them.
+	srv.wmu.lock()
+	defer {
+		srv.wmu.unlock()
+	}
 	s.bus.send(rec.frame) or {
 		why := if err.msg() == '' { 'the interface refused the frame' } else { err.msg() }
-		srv.write(bridge_encode_senderr(rec.channel, rec.seq, why))!
+		srv.write_locked(bridge_encode_senderr(rec.channel, rec.seq, why))!
 		return
 	}
-	srv.write(bridge_encode_frame(rec.channel, rec.frame, rec.seq, true, bridge_stamp()))!
+	srv.write_locked(bridge_encode_frame(rec.channel, rec.frame, rec.seq, true, bridge_stamp()))!
 }
 
 // pump returns every frame the channel receives, and its health and counts whenever they change,
