@@ -286,6 +286,11 @@ pub fn health_source(iface string) HealthSource {
 	if prefix_fold(iface, 0, 'cansub:') {
 		return .polled
 	}
+	// A BRIDGE reads its interface all the time and reports the ladder as it changes, whether or
+	// not anything on this side receives.
+	if iface.starts_with('bridge:') {
+		return .polled
+	}
 	$if windows {
 		start := lead_space(iface)
 		// PCAN asks CAN_GetStatus, Kvaser asks canReadStatus. Both read the controller's own
