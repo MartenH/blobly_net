@@ -6,7 +6,8 @@ module assets
 // stores the BUILD machine's path, and `.data()` reads that file at run time and panics
 // when it is not there — which on every machine but the one that built it, it is not.
 // The shipped build is not -prod (#284), so the window icon took the Windows bundle down
-// before its first frame (#455). `scripts/check_cmds.sh` refuses `$embed_file` anywhere.
+// before its first frame (#455). `scripts/check_cmds.sh` refuses `$embed_file` in
+// cmd/, blobly/ and libs/.
 
 // logo_white.png, 4913 bytes
 pub const logo_png = [u8(137),
@@ -312,3 +313,9 @@ pub const icon_png = [u8(137),
 	232, 10, 252, 216, 23, 240, 193, 51, 240, 163, 111, 224, 135, 239, 128, 142, 255, 255, 1, 191, 249, 189, 105, 225,
 	57, 212, 201, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ]
+
+// files is every asset by its file name, for the test.
+pub const files = {
+	'logo_white.png': logo_png
+	'icon_b.png': icon_png
+}
