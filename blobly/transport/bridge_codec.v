@@ -437,10 +437,13 @@ pub fn (mut d BridgeDecoder) feed(data []u8) ![]BridgeRecord {
 	mut out := []BridgeRecord{}
 	mut at := 0
 	for d.buf.len - at >= 4 {
-		n := int(get_u32_le(d.buf, at))
-		if n > bridge_max_record {
-			return error('record of ${n} bytes, at most ${bridge_max_record}')
+		// Bounded while still unsigned: a length past 2^31 converted first would go negative and
+		// pass the bound.
+		len32 := get_u32_le(d.buf, at)
+		if len32 > u32(bridge_max_record) {
+			return error('record of ${len32} bytes, at most ${bridge_max_record}')
 		}
+		n := int(len32)
 		if d.buf.len - at - 4 < n {
 			break
 		}

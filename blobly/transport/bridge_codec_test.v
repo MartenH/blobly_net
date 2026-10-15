@@ -98,6 +98,15 @@ fn test_decoder_refuses_what_is_not_a_bridge_stream() {
 	if _ := d.feed(huge) {
 		assert false
 	}
+	// A length past 2^31 is refused too, never read as a negative one.
+	for big in [u32(0x8000_0000), 0xFFFF_FFFF] {
+		mut d2 := BridgeDecoder{}
+		mut hdr := []u8{}
+		put_u32_le(mut hdr, big)
+		if _ := d2.feed(hdr) {
+			assert false, '${big:x}'
+		}
+	}
 	assert bridge_decode_body([]u8{}) or { BridgeRecord{} }.kind != .frame
 	if _ := bridge_decode_body([u8(99)]) {
 		assert false
