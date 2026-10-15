@@ -67,9 +67,11 @@ pub fn parse_bridge_iface(iface string) !BridgeSpec {
 	}
 }
 
-// bridge_domain is the clock domain of a bridge's stamps: its own host's monotonic clock.
-pub fn bridge_domain(name string) string {
-	return 'bridge:${name}'
+// bridge_domain is the clock domain of one session of a bridge: its host's monotonic clock, in
+// the epoch that session started in. Per SESSION, because a bridge that reconnects may do so after
+// its host restarted, with a clock that started again; one domain is one clock and one epoch.
+pub fn bridge_domain(name string, session u64) string {
+	return 'bridge:${name}#${session}'
 }
 
 // BridgeEndpoint is what a bridge needs to dial in.
@@ -96,6 +98,11 @@ mut:
 	lost      bool
 	lost_why  string
 	closed    bool
+	// Frames are admitted once the bridge has answered this open. Anything filed under the
+	// channel before that is from a previous open of it, still in the stream: TCP delivers the
+	// old pump's records before the answer to the new open, since the bridge closes the one
+	// before it opens the other.
+	admitting bool
 }
 
 // BridgeChan is one open channel's mailboxes, filled by the session's reader thread.
@@ -142,6 +149,8 @@ mut:
 	port     int
 	token    string
 	sessions map[string]&BridgeSession
+	// Sessions accepted so far: each gets its own clock domain.
+	session_count u64
 }
 
 __global (
@@ -302,10 +311,14 @@ fn bridge_session_run(mut c net.TcpConn, token string) {
 		c.close() or {}
 		return
 	}
+	session := lock bridge_reg {
+		bridge_reg.session_count++
+		bridge_reg.session_count
+	}
 	mut s := &BridgeSession{
 		name:     hello.name
 		channels: hello.channels
-		domain:   bridge_domain(hello.name)
+		domain:   bridge_domain(hello.name, session)
 		conn:     c
 	}
 	mut replaced := ?&BridgeSession(none)
@@ -358,6 +371,11 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 	}
 	match rec.kind {
 		.frame {
+			if !rlock ch.st {
+				ch.st.admitting
+			} {
+				return
+			}
 			ingress := SharedIngress{
 				frame:  CanFrame{
 					...rec.frame
@@ -393,6 +411,11 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 			})
 		}
 		.opened {
+			if rec.error == '' {
+				lock ch.st {
+					ch.st.admitting = true
+				}
+			}
 			_ := ch.opened.try_push(rec.error)
 		}
 		.status {

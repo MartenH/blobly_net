@@ -65,7 +65,7 @@ fn test_frames_cross_both_ways_with_the_bridge_clock() {
 	peer.send(CanFrame{ id: 0x100, data: [u8(1), 2] })!
 	got := app.recv(2000)!
 	assert got.id == 0x100 && got.data == [u8(1), 2]
-	assert got.hw_domain == bridge_domain('b-traffic')
+	assert got.hw_domain.starts_with('bridge:b-traffic#')
 	assert got.hw_ns > 0
 	assert sibling.recv(2000)!.id == 0x100
 
@@ -74,7 +74,7 @@ fn test_frames_cross_both_ways_with_the_bridge_clock() {
 	out := peer.recv(2000)!
 	assert out.id == 0x18DAF110 && out.extended && out.fd && out.brs && out.data.len == 64
 	echo := sibling.recv(2000)!
-	assert echo.id == 0x18DAF110 && echo.hw_domain == bridge_domain('b-traffic')
+	assert echo.id == 0x18DAF110 && echo.hw_domain == got.hw_domain
 	if f := app.recv(200) {
 		assert false, 'the sender heard its own frame: ${f}'
 	}
@@ -453,4 +453,29 @@ fn test_an_acknowledgement_survives_a_full_receive_queue() {
 	}
 	assert acked, 'the acknowledgement was dropped'
 	assert drv.diagnostics().dropped > 0
+}
+
+fn test_frames_from_a_previous_open_of_a_channel_are_not_admitted() {
+	start_bridge('b-reopen', ['A'], inproc_opener('bro-'))!
+	mut s := bridge_session('b-reopen') or { panic('not registered') }
+	mut c := &BridgeChan{
+		rx:      chan SharedIngress{cap: 8}
+		results: chan BridgeResult{cap: 8}
+		opened:  chan string{cap: 1}
+	}
+	lock s.st {
+		s.st.chans[0] = c
+	}
+	// The old pump's frame, still in the stream, then the answer to the new open, then traffic.
+	s.dispatch(BridgeRecord{ kind: .frame, frame: CanFrame{ id: 0x111 } })!
+	s.dispatch(BridgeRecord{ kind: .opened })!
+	s.dispatch(BridgeRecord{ kind: .frame, frame: CanFrame{ id: 0x222 } })!
+	assert c.rx.len == 1
+	got := <-c.rx
+	assert got.frame.id == 0x222
+	s.forget(0, c)
+}
+
+fn test_each_session_is_its_own_clock_domain() {
+	assert bridge_domain('x', 1) != bridge_domain('x', 2)
 }
