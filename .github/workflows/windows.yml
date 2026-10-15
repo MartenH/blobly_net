@@ -52,14 +52,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up pinned V (cached)
         uses: ./.github/actions/setup-v
       - name: Build canbridge
         run: |
           v -enable-globals -o canbridge cmd/canbridge
           ./canbridge --help
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: canbridge-linux
           path: canbridge
@@ -73,7 +73,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download prebuilt V (e7bb21c)
         shell: pwsh
@@ -154,7 +154,7 @@ jobs:
       # file instead of shipping thin). Only the platform extras stage here: the exe, its
       # mingw runtime DLLs, and the file-association script.
       - name: Fetch canbridge (built on Linux above)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: canbridge-linux
           path: canbridge-linux
@@ -220,7 +220,7 @@ jobs:
       # tightened by the release self-review).
       - name: Upload bundle
         if: github.ref == 'refs/heads/main' || inputs.publish_bundle == true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: blobly_net-windows-x64
           path: dist

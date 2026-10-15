@@ -17,7 +17,7 @@ runs:
 
     - name: Restore V
       id: cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ runner.temp }}/v
         key: v-1-${{ runner.os }}-${{ runner.arch }}-${{ steps.environment.outputs.key }}-${{ hashFiles('.v-version', '.vc-version', 'scripts/v_toolchain.sh', '.github/actions/setup-v/action.yml') }}
@@ -46,7 +46,7 @@ runs:
     # Save before repo tests/builds use the compiler, so they cannot add their outputs to it.
     - name: Save V
       if: steps.cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ${{ runner.temp }}/v
         key: ${{ steps.cache.outputs.cache-primary-key }}

@@ -58,7 +58,7 @@ jobs:
     name: linux • modules + headless Lua
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up pinned V (cached)
         uses: ./.github/actions/setup-v
@@ -133,7 +133,7 @@ jobs:
     name: linux • GUI (imgui) compile-link
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up pinned V (cached)
         uses: ./.github/actions/setup-v
@@ -226,7 +226,7 @@ jobs:
       # (codex round 2). The name below says what it is, and it expires in a day.
       - name: Hand the archive to the publish job (main only)
         if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-build-unvalidated
           path: blobly_net-linux-x64.tar.gz
@@ -260,12 +260,12 @@ jobs:
     needs: [test, gui-build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-build-unvalidated
 
       - name: Upload the Linux binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: blobly_net-linux-x64
           path: blobly_net-linux-x64.tar.gz
