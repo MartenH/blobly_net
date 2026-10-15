@@ -51,6 +51,8 @@ runs:
           sh libs/vgui/build_deps.sh
         else
           test -s libs/vgui/libvgui_c.a
+          # and for the toolchain run_gui.sh will ask about, or every hit would rebuild there
+          test "$(cat libs/vgui/libvgui_c.toolchain)" = "$(sh libs/vgui/build_deps.sh --toolchain-id)"
           # An exact content/toolchain match is stronger evidence than mtimes. checkout
           # gives unchanged glue/headers fresh timestamps; make the validated archive newer
           # so run_gui.sh's local freshness check does not rebuild it on every cache hit.

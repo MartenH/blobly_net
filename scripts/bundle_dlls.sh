@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 exe="build/blobly_net.exe"
 [ -f "$exe" ] || { echo "no $exe (build first)"; exit 1; }
 n=0
-ldd "$exe" | grep -i 'ucrt64' | awk '{print $3}' | sort -u | while read -r f; do
+ldd "$exe" | grep -i '/ucrt64/bin/' | awk '{print $3}' | sort -u | while read -r f; do
   if [ -f "$f" ]; then cp -f "$f" build/; echo "  $(basename "$f")"; fi
 done
 echo "bundled ucrt64 DLLs into build/"

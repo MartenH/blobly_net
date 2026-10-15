@@ -1,6 +1,6 @@
 #!/bin/sh
-# build_win.sh — build the trace_chart example on Windows (mingw / MSYS2 MINGW64).
-# Run from the dedicated MSYS2 MINGW64 shell (gcc + glfw on PATH). Run from anywhere:
+# build_win.sh — build the trace_chart example on Windows (mingw / MSYS2 UCRT64).
+# Run from the dedicated MSYS2 UCRT64 shell (gcc + glfw on PATH). Run from anywhere:
 #   sh libs/vgui/build_win.sh
 #
 # WHY A 2-STEP BUILD (not the one-liner `v -cc gcc run`)? V 0.5.1 (c0624b2) panics on
@@ -13,7 +13,7 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BLD="$HERE/build"
-V="${V:-/c/dev/v/v.exe}"
+V="${V:-/c/v-ct/v.exe}"
 EXAMPLE="$HERE/examples/trace_chart/trace_chart.v"
 OUT="$HERE/examples/trace_chart/trace_chart.exe"
 

@@ -84,20 +84,33 @@ case "$(uname -s)" in
 		# would be silently useless there and hides a mistyped MSYS2_CT here.
 		if [ -x "$ct/ucrt64/bin/gcc.exe" ]; then
 			export PATH="$ct/ucrt64/bin:$PATH"             # gcc + static glfw/freetype libs
-		elif [ -d "$ct/mingw64/bin" ]; then
-			# A toolchain set up before the move to UCRT64: say what to install rather than
-			# quietly building against MINGW64, which CI no longer does.
-			echo "run_gui.sh: $ct has MINGW64 but no UCRT64 gcc; the build moved to UCRT64. Install it:" >&2
-			echo "  pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}" >&2
-			exit 1
-		elif ! command -v gcc >/dev/null 2>&1; then
+		fi
+		if ! command -v gcc >/dev/null 2>&1; then
 			echo "run_gui.sh: no gcc on PATH and no UCRT64 at $ct/ucrt64/bin" >&2
 			echo "  install the dedicated MSYS2 (see Prereqs above) or set MSYS2_CT=" >&2
 			exit 1
 		fi
+		# WHICH COMPILER WILL BUILD THIS, not where msys64-ct is: a UCRT64 shell from another MSYS2
+		# is fine, and a MINGW64 gcc first on PATH is not, whichever directory it came from.
+		tc="$(sh libs/vgui/build_deps.sh --toolchain-id)" || exit 1
+		if [ "$tc" != ucrt64 ]; then
+			echo "run_gui.sh: gcc on PATH is MSYS2 $tc, but the Windows build is UCRT64 (CI's). Install it:" >&2
+			echo "  pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}" >&2
+			echo "  into $ct, or run from an MSYS2 UCRT64 shell" >&2
+			exit 1
+		fi
 		export TMP="${TMP:-/tmp}" TEMP="${TEMP:-/tmp}"     # writable temp (not C:\Windows) for gcc
-		V="${V:-$parent/v/v.exe}"
-		[ -x "$V" ] || V=v                                 # fall back to `v` on PATH
+		# The pinned V is minted for C:\v-ct (scripts/mint_windows_v.sh, windows.yml); an older
+		# checkout-side C:\dev\v is the fallback, then `v` on PATH.
+		if [ -z "${V:-}" ]; then
+			for c in /c/v-ct/v.exe "$parent/v/v.exe"; do
+				if [ -x "$c" ]; then
+					V="$c"
+					break
+				fi
+			done
+		fi
+		[ -x "${V:-}" ] || V=v
 		;;
 	*)
 		V="${V:-v}"
