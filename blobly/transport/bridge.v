@@ -89,8 +89,10 @@ pub fn parse_bridge_iface(iface string) !BridgeSpec {
 // bridge_address_error is why an address is not a bridge channel, or none — for the editor, so a
 // malformed one is said where it is typed rather than at Start.
 pub fn bridge_address_error(iface string) ?string {
-	parse_bridge_iface(iface) or { return err.msg() }
-	return none
+	spec := parse_bridge_iface(iface) or { return err.msg() }
+	// The rule a bridge's own hello is held to: an address no bridge could ever answer to is
+	// said here, not at Start.
+	return bridge_label_error(spec.name, [spec.channel])
 }
 
 // bridge_domain is the clock domain of one session of a bridge: its host's monotonic clock, in

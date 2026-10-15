@@ -671,3 +671,11 @@ fn test_launch_arguments() {
 	assert args == ['--vcan', '2', '--connect', '127.0.0.1:4321', '--token', 'abc', '--name',
 		'Ubuntu-24.04']
 }
+
+fn test_an_address_no_bridge_could_answer_is_refused_in_the_editor() {
+	assert bridge_address_error('bridge:Ubuntu-24.04/vcan0') == none
+	for bad in ['bridge:a/b/vcan0', 'bridge:${'x'.repeat(bridge_max_label + 1)}/vcan0', 'bridge:x',
+		'bridge:x/vcan0@500000'] {
+		assert bridge_address_error(bad) != none, bad
+	}
+}
