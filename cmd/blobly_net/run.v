@@ -1563,9 +1563,6 @@ fn (mut app App) stop() {
 	app.mu.lock()
 	app.running = false
 	app.mu.unlock()
-	// A channel opening through a CAN bridge may be waiting for it to dial in; that wait belongs
-	// to this run and ends with it.
-	transport.bridge_cancel_waits()
 	// Then close: the serve loops block in accept for up to 200ms, and close() interrupts them
 	// so the port is released now rather than whenever the last worker notices.
 	// Snapshot under the lock the supervisor uses: it inserts and deletes entries as channels

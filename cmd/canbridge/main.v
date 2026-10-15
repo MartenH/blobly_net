@@ -44,7 +44,12 @@ fn main() {
 				match a {
 					'--connect' { addr = v }
 					'--token' { token = v }
-					'--vcan' { vcans = v.int() }
+					'--vcan' {
+						vcans = v.int()
+						if vcans < 0 || vcans.str() != v {
+							fail('--vcan takes a count of interfaces, not "${v}"')
+						}
+					}
 					else { name = v }
 				}
 				i += 2
@@ -87,6 +92,8 @@ fn main() {
 	if why == '' {
 		if e := transport.bridge_label_error(name, ifaces) {
 			why = e
+		} else if ifaces.len > transport.bridge_max_channels {
+			why = 'a bridge offers at most ${transport.bridge_max_channels} channels, not ${ifaces.len}'
 		}
 	}
 	mut c := dial(addr) or {
@@ -118,13 +125,16 @@ fn ensure_vcans(n int) ! {
 				os.exec(['modprobe', 'vcan'])
 				r = os.exec(['ip', 'link', 'add', 'dev', dev, 'type', 'vcan'])
 			}
-			if r.exit_code != 0 {
+			// Another bridge may have created it meanwhile.
+			if r.exit_code != 0 && !os.exists('/sys/class/net/${dev}') {
 				return error('cannot create ${dev}: ${r.output.trim_space()} — this kernel has no vcan module loaded; run scripts/setup_vcan.sh in the distribution, which loads one built by scripts/build_vcan_module.sh')
 			}
 		}
 		if vcan_ready(dev) {
 			continue
 		}
+		// Down first: the MTU of an interface that is up cannot change.
+		os.exec(['ip', 'link', 'set', dev, 'down'])
 		r := os.exec(['ip', 'link', 'set', dev, 'mtu', '72', 'up'])
 		if r.exit_code != 0 {
 			return error('cannot bring ${dev} up: ${r.output.trim_space()}')

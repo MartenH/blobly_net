@@ -57,7 +57,7 @@ jobs:
         uses: ./.github/actions/setup-v
       - name: Build canbridge
         run: |
-          v -enable-globals -prod -o canbridge cmd/canbridge
+          v -enable-globals -o canbridge cmd/canbridge
           ./canbridge --help
       - uses: actions/upload-artifact@v4
         with:

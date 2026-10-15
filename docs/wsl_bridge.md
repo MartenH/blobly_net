@@ -67,6 +67,10 @@ Windows folder.
   any adapter's hardware clock.
 - **The bitrate** of a real interface behind a bridge is set in the distribution
   (`ip link set can0 type can bitrate 500000`), not in the project.
+- **Listen-only** stops the app from sending. It does not stop the controller of a *real*
+  `can0` behind a bridge from acknowledging frames. That has to be set in the distribution
+  (`ip link set can0 type can listen-only on`), as for any SocketCAN interface (#454). A vcan
+  has no controller, so this does not affect vcans.
 
 ## When it does not start
 

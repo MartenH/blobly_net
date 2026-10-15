@@ -449,8 +449,11 @@ fn (mut app App) rebuild_discover_list() {
 	mut rows := app.disc_cansub.clone()
 	app.disc_cansub_shown = app.disc_cansub_landed
 	app.mu.unlock()
-	rows << transport.bridge_rows()
-	app.disc_bridges = bridge_signature()
+	// One snapshot for the list AND its signature, or a bridge arriving between two reads is in
+	// the signature and not the list, and the list is never rebuilt for it.
+	bridges := transport.bridge_rows()
+	rows << bridges
+	app.disc_bridges = bridge_signature(bridges)
 	app.disc_list = app.merge_discovered(app.disc_scan, rows)
 	app.disc_tick = []bool{len: app.disc_list.len}
 	for k, d in app.disc_list {

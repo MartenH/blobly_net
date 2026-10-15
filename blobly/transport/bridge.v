@@ -180,8 +180,6 @@ mut:
 	launching map[string]i64
 	// Why a bridge could not start, by name, as it said in its hello or as its launch failed.
 	failed map[string]string
-	// Moved by bridge_cancel_waits; an open waiting for a bridge gives up when it changes.
-	cancel_gen u64
 }
 
 // BridgeState is where a bridge of a given name stands.
@@ -338,22 +336,11 @@ pub fn bridge_start(name string) ! {
 	}
 }
 
-// bridge_cancel_waits ends every open waiting for a bridge to dial in. A run's Stop calls it: an
-// open inside a run worker must not outlive the run by the launch's whole budget.
-pub fn bridge_cancel_waits() {
-	lock bridge_reg {
-		bridge_reg.cancel_gen++
-	}
-}
-
 // bridge_await waits for the bridge of that name to dial in, start it first if it is a WSL
 // distribution that has not been started.
 fn bridge_await(name string) !&BridgeSession {
 	if s := bridge_session(name) {
 		return s
-	}
-	gen := rlock bridge_reg {
-		bridge_reg.cancel_gen
 	}
 	bridge_start(name) or {
 		if name !in wsl_distros() {
@@ -361,12 +348,9 @@ fn bridge_await(name string) !&BridgeSession {
 		}
 		return err
 	}
+	// Bounded by the launch's budget; a run worker opens through transport.open_stoppable, so its
+	// Stop does not wait this out.
 	for {
-		if rlock bridge_reg {
-			bridge_reg.cancel_gen
-		} != gen {
-			return error('bridge "${name}": stopped while waiting for it to dial in')
-		}
 		if s := bridge_session(name) {
 			return s
 		}
@@ -465,7 +449,8 @@ fn bridge_session_run(mut c net.TcpConn, token string) {
 	hello := recs[0]
 	// A bridge that could not start says why in place of offering channels.
 	// Not recorded while that bridge is connected: a duplicate that failed is no news about it.
-	if hello.kind == .hello && hello.token == token && hello.error != '' && hello.name != '' {
+	if hello.kind == .hello && hello.version == bridge_version && hello.token == token
+		&& hello.error != '' && hello.name != '' {
 		lock bridge_reg {
 			if hello.name !in bridge_reg.sessions {
 				bridge_reg.launching.delete(hello.name)

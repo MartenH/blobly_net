@@ -650,7 +650,17 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	defer {
 		release_run_worker(app)
 	}
-	mut bus := app.open_transport(iface) or {
+	// STOPPABLE: an open can wait seconds — a CANsub's, or a CAN bridge's for the bridge it started
+	// to dial in — and it belongs to this run, so the run's Stop ends the wait. A late open closes
+	// its bus when it lands.
+	mut bus := transport.open_stoppable(fn [app, iface] () !transport.Bus {
+		return app.open_transport(iface)
+	}, fn [app, gen] () bool {
+		return !app.running || app.run_gen != gen
+	}) or {
+		if err.msg() == transport.open_stopped_note {
+			return // the run ended while this wire was opening: nothing to report about the wire
+		}
 		mut al := unsafe { app }
 		al.elog('rx ${iface}: ${err}')
 		mut a := unsafe { app }

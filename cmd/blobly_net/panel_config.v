@@ -447,7 +447,7 @@ fn draw_discover_dialog(mut app App) {
 	// from (doip_found_row) — looked for as the Diagnostics panel looks, whether or not it is open
 	app.diag_sys_refresh()
 	busy, landed, note := app.cansub_browse_state()
-	if landed || bridge_signature() != app.disc_bridges {
+	if landed || bridge_signature(transport.bridge_rows()) != app.disc_bridges {
 		// A browse landed, or a bridge connected or left, since the list was built: merge its
 		// rows, on this thread, ticks kept.
 		app.rebuild_discover_list()
@@ -737,8 +737,8 @@ fn bridge_start_worker(app &App, distro string) {
 
 // bridge_signature is every connected bridge's channels, one string: what the Discover list was
 // built from, so a bridge that comes, goes or comes back offering other channels rebuilds it.
-fn bridge_signature() string {
-	return transport.bridge_rows().map(it.iface).join('\n')
+fn bridge_signature(rows []transport.Iface) string {
+	return rows.map(it.iface).join('\n')
 }
 
 // draw_discover_doip is the Discover dialog's DoIP section: ask one host, or the network, for
