@@ -25,6 +25,11 @@ fn test_control_records_round_trip() {
 	assert bad.error == 'no such device'
 	se := one(bridge_encode_senderr(2, 77, 'Network is down'))
 	assert se.kind == .senderr && se.channel == 2 && se.seq == 77 && se.error == 'Network is down'
+	no := one(bridge_encode_refused('wrong token'))
+	assert no.kind == .refused && no.error == 'wrong token'
+	// A string longer than a record needs is cut, never sent whole.
+	long := one(bridge_encode_lost(5, 'x'.repeat(100_000)))
+	assert long.error.len == bridge_max_str
 	lost := one(bridge_encode_lost(5, 'recv failed'))
 	assert lost.kind == .lost && lost.error == 'recv failed'
 	st := one(bridge_encode_status(1, .error_passive, BusDiagnostics{
@@ -113,7 +118,7 @@ fn test_decoder_refuses_what_is_not_a_bridge_stream() {
 fn test_parse_bridge_iface() {
 	s := parse_bridge_iface('bridge:Ubuntu-24.04/vcan0')!
 	assert s.name == 'Ubuntu-24.04' && s.channel == 'vcan0'
-	for bad in ['bridge:', 'bridge:x', 'bridge:/vcan0', 'bridge:x/', 'vcan0'] {
+	for bad in ['bridge:', 'bridge:x', 'bridge:/vcan0', 'bridge:x/', 'vcan0', 'bridge:x/vcan0@500000'] {
 		if _ := parse_bridge_iface(bad) {
 			assert false, bad
 		}

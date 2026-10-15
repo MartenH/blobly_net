@@ -20,6 +20,7 @@
 //     senderr (bridge -> app)  u8 channel, u32 seq, str error — a frame the app sent did not go out
 //     status  (bridge -> app)  u8 channel, u8 health, u64 dropped, u64 bus errors, u64 decode errors
 //     lost    (bridge -> app)  u8 channel, str error — the channel failed on the bridge and is closed
+//     refused (app -> bridge)  str reason — the hello was not accepted; the app then closes
 //
 // A `frame` from the bridge with the `tx` flag is the acknowledgement of one the app sent: the
 // bridge puts it on its interface and returns it stamped, so this side can tell its own traffic
@@ -37,7 +38,11 @@ pub const bridge_version = u16(1)
 // bridge_max_record bounds one record's body. The largest legitimate one is a hello naming many
 // channels; a length past this is a stream that is not ours (or has lost sync), and nothing is
 // allocated for it.
-const bridge_max_record = 16384
+const bridge_max_record = 1 << 20
+
+// bridge_max_str is the most bytes of a string that are sent: a name or an error message, never
+// long enough to need more, and short enough that a hello of every channel fits a record.
+const bridge_max_str = 1024
 
 // bridge_max_channels is how many channels one bridge may offer: the index is a byte.
 pub const bridge_max_channels = 255
@@ -51,6 +56,7 @@ pub enum BridgeKind as u8 {
 	senderr = 6
 	status  = 7
 	lost    = 8
+	refused = 9
 }
 
 const bridge_flag_ext = u8(0x01)
@@ -95,7 +101,7 @@ fn bridge_put_u64(mut b []u8, v u64) {
 }
 
 fn bridge_put_str(mut b []u8, s string) {
-	n := if s.len > 0xFFFF { 0xFFFF } else { s.len }
+	n := if s.len > bridge_max_str { bridge_max_str } else { s.len }
 	bridge_put_u16(mut b, u16(n))
 	b << s.bytes()[..n]
 }
@@ -181,6 +187,12 @@ pub fn bridge_encode_senderr(ch u8, seq u32, err string) []u8 {
 pub fn bridge_encode_lost(ch u8, err string) []u8 {
 	mut b := [u8(BridgeKind.lost), ch]
 	bridge_put_str(mut b, err)
+	return bridge_wrap(b)
+}
+
+pub fn bridge_encode_refused(why string) []u8 {
+	mut b := [u8(BridgeKind.refused)]
+	bridge_put_str(mut b, why)
 	return bridge_wrap(b)
 }
 
@@ -298,6 +310,12 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 				kind:    unsafe { BridgeKind(kind) }
 				channel: ch
 				error:   r.str()
+			}
+		}
+		u8(BridgeKind.refused) {
+			BridgeRecord{
+				kind:  .refused
+				error: r.str()
 			}
 		}
 		u8(BridgeKind.senderr) {

@@ -4,9 +4,10 @@
 //
 // It dials the app, offers the named interfaces (every CAN and vcan interface `ip link` lists,
 // when none are named), and carries frames both ways until the app closes the connection; then it
-// exits. The app starts it with the port and token of its listener — the Windows build runs it in
-// WSL through `wsl.exe` — so nothing here is configured by hand. The name is what the channels are
-// called on the app's side, `bridge:<name>/vcan0`: the WSL distribution by default, else the host.
+// exits. The port and token are those of the app's listener (`transport.bridge_listen`); the
+// Windows build is to start this in WSL through `wsl.exe` with both (#451's next step). The name is
+// what the channels are called on the app's side, `bridge:<name>/vcan0`: the WSL distribution by
+// default, else the host. A bridge the app refuses exits 1 with the app's reason.
 module main
 
 import net

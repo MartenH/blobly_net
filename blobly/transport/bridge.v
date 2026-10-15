@@ -3,9 +3,11 @@
 //
 // The listener is process-wide and bound to loopback. `bridge_listen` starts it once and hands
 // back the port and a token; whatever launches a bridge passes both on its command line, and a
-// connection whose hello does not carry the token is closed unheard. A bridge's name is the
+// connection whose hello does not carry the token is told so and closed. A bridge's name is the
 // session's identity — `bridge:Ubuntu-24.04/vcan0` survives the port changing on every launch —
-// so a second bridge under a name already connected is refused.
+// and a bridge that dials in under a name already connected REPLACES that session: a bridge
+// restarted after its host went away without closing the connection (WSL shut down under it)
+// must not be refused by the ghost of itself.
 //
 // A channel is opened through `shared_open_events`, like a CANsub's: one driver per wire however
 // many handles a Start opens on it. The driver asks the bridge to open the channel, sends frames
@@ -14,9 +16,9 @@
 // stream marked as a TX ack, which is how the hub tells this process's frames from the bus's.
 module transport
 
+import crypto.rand as crypto_rand
 import io
 import net
-import rand
 import sync
 import time
 
@@ -26,8 +28,9 @@ const bridge_hello_ms = 5000
 // How long a channel open waits for the bridge's answer.
 const bridge_open_ms = 3000
 
-// How long a send waits for its acknowledgement. A bridge answers every frame it is sent, so
-// running out means the bridge has stopped, not that the bus is slow.
+// How long a send waits for its acknowledgement, and how long one write to the connection may
+// take. A bridge answers every frame it is sent, so running out means the bridge has stopped, not
+// that the bus is slow, and the session is ended.
 const bridge_send_ms = 2000
 
 // The ceiling on one wait inside recv and send, so a dead session is noticed.
@@ -54,6 +57,9 @@ pub fn parse_bridge_iface(iface string) !BridgeSpec {
 	ch := body.all_after_last('/')
 	if !body.contains('/') || name == '' || ch == '' {
 		return error('"${iface}" is not bridge:<name>/<channel>')
+	}
+	if body.contains('@') {
+		return error('"${iface}": a bridge channel takes no bitrate here; it is set on the bridge\'s host')
 	}
 	return BridgeSpec{
 		name:    name
@@ -109,16 +115,20 @@ mut:
 }
 
 // BridgeSession is one connected bridge. Its reader thread owns the connection's receive side
-// and closes the connection when it ends; writers serialise on `wmu`.
+// and closes the connection when it ends; writers serialise on `wmu`. Anything else that has to
+// stop the session shuts the socket down through `cut`, under `cmu`, which no I/O ever holds —
+// so a write stalled on a bridge that stopped reading cannot hold up its own teardown.
 @[heap]
 struct BridgeSession {
 	name     string
 	channels []string
 	domain   string
 mut:
-	conn &net.TcpConn
-	wmu  &sync.Mutex = sync.new_mutex()
-	st   shared BridgeSessionState
+	conn   &net.TcpConn
+	wmu    &sync.Mutex = sync.new_mutex()
+	cmu    &sync.Mutex = sync.new_mutex()
+	closed bool // under cmu: the socket is closed, so its descriptor may already be reused
+	st     shared BridgeSessionState
 }
 
 struct BridgeRegistry {
@@ -140,7 +150,7 @@ pub fn bridge_listen() !BridgeEndpoint {
 		if bridge_reg.port == 0 {
 			mut l := net.listen_tcp(.ip, '127.0.0.1:0')!
 			bridge_reg.port = int(l.addr()!.port()!)
-			bridge_reg.token = rand.hex(32)
+			bridge_reg.token = (crypto_rand.bytes(16)!).hex()
 			spawn bridge_accept_loop(mut l, bridge_reg.token)
 		}
 		ep = BridgeEndpoint{
@@ -197,14 +207,7 @@ pub fn bridge_rows() []Iface {
 // closes. Every channel open on it fails.
 pub fn bridge_drop(name string) {
 	if mut s := bridge_session(name) {
-		// Shut down, not closed: the reader thread is blocked in the socket and closes it itself.
-		// Under the write lock and only while the session lives, since `end` closes the socket
-		// under that lock once it has ended, and a closed descriptor's number may be reused.
-		s.wmu.lock()
-		if s.failure() == none {
-			net.shutdown(s.conn.sock.handle)
-		}
-		s.wmu.unlock()
+		s.cut('disconnected by this app')
 	}
 }
 
@@ -218,22 +221,49 @@ fn bridge_is_timeout(err IError) bool {
 	return err.code() == net.err_timed_out_code
 }
 
+// bridge_refusal is why a hello is not accepted, or none.
+fn bridge_refusal(hello BridgeRecord, token string) ?string {
+	if hello.kind != .hello {
+		return 'the first record was ${hello.kind}, not a hello'
+	}
+	if hello.version != bridge_version {
+		return 'protocol version ${hello.version}; this app speaks ${bridge_version}'
+	}
+	if hello.token != token {
+		return 'wrong token'
+	}
+	if hello.name == '' || hello.name.contains('/') || hello.name.contains('@') {
+		return 'the name "${hello.name}" cannot be part of an address bridge:<name>/<channel>'
+	}
+	if hello.channels.len == 0 {
+		return 'no channels offered'
+	}
+	return none
+}
+
 // bridge_session_run serves one connection: the hello, then every record until it ends.
 fn bridge_session_run(mut c net.TcpConn, token string) {
 	mut dec := BridgeDecoder{}
 	mut buf := []u8{len: 65536}
-	c.set_read_timeout(bridge_hello_ms * time.millisecond)
-	mut recs := []BridgeRecord{}
+	c.set_write_timeout(bridge_send_ms * time.millisecond)
 	// The first record must be a hello carrying the token, and must arrive in time.
+	deadline := time.ticks() + bridge_hello_ms
+	mut recs := []BridgeRecord{}
 	for recs.len == 0 {
+		left := deadline - time.ticks()
+		if left <= 0 {
+			c.close() or {}
+			return
+		}
+		c.set_read_timeout(left * time.millisecond)
 		recs = bridge_read(mut c, mut dec, mut buf) or {
 			c.close() or {}
 			return
 		}
 	}
 	hello := recs[0]
-	if hello.kind != .hello || hello.version != bridge_version || hello.token != token
-		|| hello.name == '' || hello.name.contains('/') || hello.channels.len == 0 {
+	if why := bridge_refusal(hello, token) {
+		c.write(bridge_encode_refused(why)) or {}
 		c.close() or {}
 		return
 	}
@@ -243,17 +273,13 @@ fn bridge_session_run(mut c net.TcpConn, token string) {
 		domain:   bridge_domain(hello.name)
 		conn:     c
 	}
-	accepted := lock bridge_reg {
-		if hello.name in bridge_reg.sessions {
-			false
-		} else {
-			bridge_reg.sessions[hello.name] = s
-			true
-		}
+	mut replaced := ?&BridgeSession(none)
+	lock bridge_reg {
+		replaced = bridge_reg.sessions[hello.name] or { none }
+		bridge_reg.sessions[hello.name] = s
 	}
-	if !accepted {
-		c.close() or {}
-		return
+	if mut old := replaced {
+		old.cut('replaced by a new connection from the same bridge')
 	}
 	c.set_read_timeout(time.second)
 	mut why := ''
@@ -334,12 +360,31 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 	}
 }
 
-// end retires the session: it leaves the registry, so a bridge of the same name may connect
-// again, and every channel on it fails with `why`.
+// cut stops the session from outside its reader thread: the socket is shut down, which ends the
+// reader's read and any write in progress, and the reader then ends the session. `why` is what
+// every channel on it reports, unless the session had already ended for another reason.
+fn (mut s BridgeSession) cut(why string) {
+	lock s.st {
+		if !s.st.ended && s.st.err == '' {
+			s.st.err = why
+		}
+	}
+	s.cmu.lock()
+	if !s.closed {
+		net.shutdown(s.conn.sock.handle)
+	}
+	s.cmu.unlock()
+}
+
+// end retires the session, on its reader thread: it leaves the registry (unless a newer
+// connection from the same bridge has taken its place), every channel on it fails, and the
+// socket is closed once no write is using it.
 fn (mut s BridgeSession) end(why string) {
 	lock s.st {
 		s.st.ended = true
-		s.st.err = why
+		if s.st.err == '' {
+			s.st.err = why
+		}
 	}
 	lock bridge_reg {
 		if cur := bridge_reg.sessions[s.name] {
@@ -348,8 +393,13 @@ fn (mut s BridgeSession) end(why string) {
 			}
 		}
 	}
+	// Shut down first so a write stalled on the socket gives up, then close under both locks.
+	s.cut(why)
 	s.wmu.lock()
+	s.cmu.lock()
 	s.conn.close() or {}
+	s.closed = true
+	s.cmu.unlock()
 	s.wmu.unlock()
 }
 
@@ -379,7 +429,7 @@ fn (mut s BridgeSession) write_locked(rec []u8) ! {
 		return error(e)
 	}
 	s.conn.write(rec) or {
-		net.shutdown(s.conn.sock.handle)
+		s.cut('write failed: ${err}')
 		return error('bridge "${s.name}": write failed: ${err}')
 	}
 }
@@ -528,7 +578,9 @@ fn (mut b BridgeBus) send(frame CanFrame, commit fn ()) ! {
 			return error(e)
 		}
 		if time.ticks() >= deadline {
-			return error('${b.iface}: the bridge did not confirm the send within ${bridge_send_ms} ms')
+			why := 'the bridge did not confirm a send within ${bridge_send_ms} ms'
+			b.sess.cut(why)
+			return error('${b.iface}: ${why}')
 		}
 	}
 }

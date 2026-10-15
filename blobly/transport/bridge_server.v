@@ -102,7 +102,7 @@ fn (mut srv BridgeServer) write(rec []u8) ! {
 
 // handle acts on one record from the app.
 fn (mut srv BridgeServer) handle(rec BridgeRecord) ! {
-	if int(rec.channel) >= srv.cfg.channels.len {
+	if rec.kind != .refused && int(rec.channel) >= srv.cfg.channels.len {
 		return error('the app named channel ${rec.channel}; this bridge offers ${srv.cfg.channels.len}')
 	}
 	match rec.kind {
@@ -114,6 +114,9 @@ fn (mut srv BridgeServer) handle(rec BridgeRecord) ! {
 		}
 		.frame {
 			srv.send_frame(rec)!
+		}
+		.refused {
+			return error('the app refused this bridge: ${rec.error}')
 		}
 		else {
 			return error('the app sent a ${rec.kind} record')

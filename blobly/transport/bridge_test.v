@@ -226,27 +226,89 @@ fn test_a_disconnected_bridge_fails_its_channels_and_may_return() {
 	}
 	bridge_drop('b-drop')
 	wait_gone('b-drop')
-	app.recv(500) or { assert err.msg().contains('bridge "b-drop"') }
-	app.send(CanFrame{ id: 1 }) or { assert err.msg().contains('bridge "b-drop"') }
+	if f := app.recv(500) {
+		assert false, 'received ${f} from a dropped bridge'
+	} else {
+		assert err.msg().contains('bridge "b-drop"'), err.msg()
+	}
+	if _ := app.send(CanFrame{ id: 1 }) {
+		assert false, 'sent on a dropped bridge'
+	} else {
+		assert err.msg().contains('bridge "b-drop"'), err.msg()
+	}
 	// The name is free again once the session has ended.
 	start_bridge('b-drop', ['A'], inproc_opener('bd-'))!
 }
 
-fn test_a_wrong_token_or_a_name_in_use_is_turned_away() {
-	start_bridge('b-taken', ['A'], inproc_opener('bk-'))!
+fn test_a_refused_bridge_is_told_why() {
 	ep := bridge_listen()!
 	for hello in [bridge_encode_hello('not-the-token', 'b-intruder', ['A']),
-		bridge_encode_hello(ep.token, 'b-taken', ['A'])] {
+		bridge_encode_hello(ep.token, 'bad/name', ['A'])] {
 		mut c := net.dial_tcp('127.0.0.1:${ep.port}')!
 		c.write(hello)!
 		c.set_read_timeout(2 * time.second)
-		mut buf := []u8{len: 16}
-		// The listener closes the connection unheard.
-		if n := c.read(mut buf) {
-			assert false, 'read ${n} bytes from a refused connection'
-		}
+		mut dec := BridgeDecoder{}
+		mut buf := []u8{len: 256}
+		recs := bridge_read(mut c, mut dec, mut buf)!
+		assert recs.len == 1 && recs[0].kind == .refused
+		assert recs[0].error.contains('wrong token') || recs[0].error.contains('bad/name')
 		c.close() or {}
 	}
 	assert 'b-intruder' !in bridge_names()
-	assert bridge_names().filter(it == 'b-taken').len == 1
+	// The bridge's own side ends with the reason rather than as a clean shutdown.
+	mut c := net.dial_tcp('127.0.0.1:${ep.port}')!
+	if _ := bridge_serve(mut c, BridgeServeCfg{
+		token:    'wrong'
+		name:     'b-refused'
+		channels: ['A']
+		opener:   inproc_opener('br-')
+	})
+	{
+		assert false, 'a refused bridge served cleanly'
+	} else {
+		assert err.msg().contains('the app refused this bridge: wrong token'), err.msg()
+	}
+	c.close() or {}
+}
+
+fn test_a_bridge_dialling_in_again_replaces_its_stale_session() {
+	start_bridge('b-again', ['A'], inproc_opener('ba-'))!
+	mut old := open('bridge:b-again/A')!
+	defer {
+		old.close()
+	}
+	first := bridge_session('b-again') or { panic('not registered') }
+	// The same bridge again, as after its host went away without closing the connection.
+	ep := bridge_listen()!
+	mut c := net.dial_tcp('127.0.0.1:${ep.port}')!
+	spawn serve_detached(mut c, BridgeServeCfg{
+		token:    ep.token
+		name:     'b-again'
+		channels: ['A']
+		opener:   inproc_opener('ba-')
+	})
+	for _ in 0 .. 300 {
+		if s := bridge_session('b-again') {
+			if voidptr(s) != voidptr(first) {
+				break
+			}
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	second := bridge_session('b-again') or { panic('the new session is not registered') }
+	assert voidptr(second) != voidptr(first)
+	// The old session's channel fails with the reason; the new one opens.
+	mut why := ''
+	for _ in 0 .. 50 {
+		old.recv(100) or {
+			if err.msg() == 'timeout' {
+				continue
+			}
+			why = err.msg()
+			break
+		}
+	}
+	assert why.contains('replaced by a new connection'), why
+	mut fresh := open('bridge:b-again/A')!
+	fresh.close()
 }
