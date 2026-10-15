@@ -13,9 +13,9 @@ struct SlowOpenBus {
 	ctl &SlowOpenCount
 }
 
-fn (mut b SlowOpenBus) send(frame CanFrame) ! {}
+fn (mut b SlowOpenBus) send(_ CanFrame) ! {}
 
-fn (mut b SlowOpenBus) recv(timeout_ms int) !CanFrame {
+fn (mut b SlowOpenBus) recv(_ int) !CanFrame {
 	return error('timeout')
 }
 
@@ -31,7 +31,7 @@ fn (mut b SlowOpenBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
-fn (mut b SlowOpenBus) reconcile_silence(want bool) ! {}
+fn (mut b SlowOpenBus) reconcile_silence(_ bool) ! {}
 
 fn slow_opener(ms int, ctl &SlowOpenCount) fn () !Bus {
 	return fn [ms, ctl] () !Bus {

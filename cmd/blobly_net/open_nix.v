@@ -34,7 +34,7 @@ fn system_open(path string, report fn (string)) (bool, string) {
 			// explorer.exe from that thread (codex #307 r18), so a broken wslu is not the end.
 			fallback := fn [path, report] (msg string) {
 				if exe2 := os.find_abs_path_of_executable('explorer.exe') {
-					win := os.execute('wslpath -w ' + os.quoted_path(path))
+					win := os.exec(['wslpath', '-w', path])
 					if win.exit_code == 0 {
 						launch_detached([exe2, win.output.trim_space()], report) or {
 							report('${msg}; explorer.exe: ${err.msg()}')
@@ -51,7 +51,7 @@ fn system_open(path string, report fn (string)) (bool, string) {
 		}
 		if exe := os.find_abs_path_of_executable('explorer.exe') {
 			// wslpath is a short synchronous conversion, not the launch
-			win := os.execute('wslpath -w ' + os.quoted_path(path))
+			win := os.exec(['wslpath', '-w', path])
 			if win.exit_code == 0 {
 				launch_detached([exe, win.output.trim_space()], report) or {
 					return false, err.msg()
@@ -135,7 +135,7 @@ fn wsl_windows_path(p string) ?string {
 	if !is_wsl() {
 		return none
 	}
-	win := os.execute('wslpath -w ' + os.quoted_path(p))
+	win := os.exec(['wslpath', '-w', p])
 	if win.exit_code != 0 {
 		return none
 	}

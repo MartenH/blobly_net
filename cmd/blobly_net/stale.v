@@ -1,6 +1,5 @@
 module main
 
-import blobly.transport
 
 // How long has this wire been silent? (issue #156)
 //

@@ -88,12 +88,6 @@ __global (
 	udp_claims shared Claims
 )
 
-// wildcard_host reports whether this bind address is a wildcard at all — for the group rule,
-// which only cares that a socket is not pinned to one address.
-fn wildcard_host(h string) bool {
-	return h == '' || h == '0.0.0.0' || h == '::' || h == '[::]'
-}
-
 // is_v6 classifies a canonical address by family. Canonical form has no brackets, so a colon
 // can only be an IPv6 separator.
 fn is_v6(h string) bool {

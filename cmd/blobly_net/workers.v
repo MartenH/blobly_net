@@ -17,7 +17,6 @@ import blobly.canlog
 import blobly.doip
 import blobly.someip
 import blobly.j1939
-import net as vnet
 import vgui
 
 // doip_watch owns one entity's socket for the life of a run: it binds while the channel and

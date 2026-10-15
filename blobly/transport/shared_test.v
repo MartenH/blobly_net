@@ -78,7 +78,7 @@ fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	return error('timeout')
 }
 
-fn (mut f FakeBus) reconcile_silence(want bool) ! {
+fn (mut f FakeBus) reconcile_silence(_ bool) ! {
 	f.reconciles++
 	if f.gated_reconcile {
 		_ := <-f.reconcile_gate
@@ -596,7 +596,7 @@ fn (mut d HubFakeDriver) diagnostics() BusDiagnostics {
 	return d.diag
 }
 
-fn (mut d HubFakeDriver) reconcile_silence(want bool) ! {}
+fn (mut d HubFakeDriver) reconcile_silence(_ bool) ! {}
 
 fn (mut d HubFakeDriver) reports_tx_ack() bool {
 	return true
@@ -605,7 +605,7 @@ fn (mut d HubFakeDriver) reports_tx_ack() bool {
 const hub_fake_handshake_ms = 5000
 
 // hub_fake_make snapshots the CURRENT config into the driver it makes -- see FakeBus.
-fn hub_fake_make(spec string) !SharedDriver {
+fn hub_fake_make(_ string) !SharedDriver {
 	hub_fake_opens++
 	select {
 		hub_fake_opened <- true {}

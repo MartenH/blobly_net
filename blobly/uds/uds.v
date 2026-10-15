@@ -53,7 +53,7 @@ const nrc_response_pending = u8(0x78)
 // it announces, one request is bounded by `pending_budget_ms` from its send.
 pub struct Client {
 mut:
-	ch isotp.Channel
+	ch isotp.Channel = isotp.UnopenedChannel{}
 pub mut:
 	timeout_ms        int = 1000
 	p2_star_ms        int = default_p2_star_ms

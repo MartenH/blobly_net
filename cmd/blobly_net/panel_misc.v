@@ -127,7 +127,7 @@ fn draw_activity_bar(mut app App) {
 	vgui.activity_style_pop()
 }
 
-fn draw_menubar(mut app App, rx u64) {
+fn draw_menubar(mut app App, _ u64) {
 	if vgui.menu_bar_begin() {
 		draw_logo(app)
 		if vgui.menu_begin('File') {

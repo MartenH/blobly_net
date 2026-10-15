@@ -262,11 +262,11 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 	if width < 1 || width > 4 || dr.len < 2 + width {
 		return error('request download: bad block length field in ${dr.hex()}')
 	}
-	mut block_len := 0
+	mut block_len := u32(0)
 	for i in 0 .. width {
-		block_len = block_len << 8 | int(dr[2 + i])
+		block_len = block_len << 8 | u32(dr[2 + i])
 	}
-	max_block := block_len - 2
+	max_block := int(block_len) - 2
 	if max_block <= 0 {
 		return error('request download: bad block size ${block_len}')
 	}

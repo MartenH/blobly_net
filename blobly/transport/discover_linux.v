@@ -29,7 +29,7 @@ pub struct IpBittiming {
 // virtual fallbacks rather than failing — discovery should degrade gracefully.
 pub fn list_interfaces() ![]Iface {
 	mut out := []Iface{}
-	res := os.execute('ip -details -json link show')
+	res := os.exec(['ip', '-details', '-json', 'link', 'show'])
 	if res.exit_code == 0 {
 		links := json2.decode[[]IpLink](res.output) or { []IpLink{} }
 		for l in links {
@@ -53,7 +53,7 @@ pub fn list_interfaces() ![]Iface {
 // local_ipv4_addrs is every IPv4 address this host has, loopback excluded -- the interfaces an
 // mDNS query has to leave through (cansub_mdns.v). The parsing is in local_addrs.v, tested.
 fn local_ipv4_addrs() []string {
-	res := os.execute('ip -4 -j addr')
+	res := os.exec(['ip', '-4', '-j', 'addr'])
 	if res.exit_code != 0 {
 		return []
 	}

@@ -326,23 +326,23 @@ fn (mut app App) refresh_discovery() {
 	// pointing at nothing; `absent` is not registered at all, which is equally free — writing it
 	// creates it. Listing only `empty` named the 5 channels this application happens to have and hid
 	// the other 57 an operator may legitimately type (codex #192 r6).
-	mut free := []string{}
+	mut free_slots := []string{}
 	mut absent := 0
 	for i, s in transport.vector_app_slots() {
 		match s {
-			.empty { free << '${i + 1}' }
+			.empty { free_slots << '${i + 1}' }
 			.absent { absent++ }
 			else {}
 		}
 	}
 	// Not enumerated: on an ordinary bench `absent` is most of the range, and a list of 57 numbers
 	// is not an answer anybody reads. The count says the same thing and stays short.
-	app.disc_vector_free = if absent > 0 && free.len > 0 {
-		'${free.join(', ')} (and ${absent} not yet registered, which Assign would create)'
+	app.disc_vector_free = if absent > 0 && free_slots.len > 0 {
+		'${free_slots.join(', ')} (and ${absent} not yet registered, which Assign would create)'
 	} else if absent > 0 {
 		'${absent} channels not yet registered, which Assign would create'
 	} else {
-		free.join(', ')
+		free_slots.join(', ')
 	}
 	app.disc_vector_app_seen = transport.vector_application_seen() or {
 		if app.disc_vector.len > 0 {

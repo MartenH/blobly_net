@@ -126,6 +126,8 @@ fn pinned_open_config(iface string) ?PinnedConfig {
 //
 // It answers for the WIRE and says nothing about which row opened it — the whole point is that
 // the port outlives the row's part in the run.
+// @[markused]: its callers are tests
+@[markused]
 fn wire_pinned_config(iface string) ?PinnedConfig {
 	if !mode_pinned_by_ports(iface) {
 		return none

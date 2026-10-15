@@ -158,7 +158,7 @@ pub mut:
 // the interface would pick the first and attribute the second channel's traffic to its neighbour.
 pub type BusOpener = fn (iface string, chan_name string) !transport.Bus
 
-fn default_opener(iface string, chan_name string) !transport.Bus {
+fn default_opener(iface string, _ string) !transport.Bus {
 	return transport.open(iface)
 }
 

@@ -393,7 +393,7 @@ const cansub_max_payload = 64 * 1024
 
 // overrun drops a frame that has no end. Said once, so both append paths report it the same way
 // — the escaped path having been the one that did not (codex round 10 on #204).
-fn (mut d CansubDecoder) overrun(mut out []CansubRecord) {
+fn (mut d CansubDecoder) overrun(mut _ []CansubRecord) {
 	d.buf.clear()
 	d.escaped = false
 	// AND LEAVE FRAME MODE, which is what makes this a resynchronisation rather than a truncation.

@@ -542,7 +542,7 @@ pub fn cansub_browse(window time.Duration) !CansubBrowse {
 			time.sleep(time.millisecond)
 			continue
 		}
-		pkt := buf[..n]
+		pkt := buf[..n].clone()
 		// Every mDNS packet on every segment lands here for the whole window; only one that
 		// carries the service label is worth parsing.
 		if !has_label_ci(pkt, '_cansub') {

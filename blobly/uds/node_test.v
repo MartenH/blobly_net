@@ -142,9 +142,9 @@ mut:
 	drops u64
 }
 
-fn (mut b FakeBus) send(f transport.CanFrame) ! {}
+fn (mut b FakeBus) send(_ transport.CanFrame) ! {}
 
-fn (mut b FakeBus) recv(timeout_ms int) !transport.CanFrame {
+fn (mut b FakeBus) recv(_ int) !transport.CanFrame {
 	if b.dead {
 		return error('adapter gone')
 	}
@@ -168,7 +168,7 @@ fn (mut b FakeBus) diagnostics() transport.BusDiagnostics {
 	}
 }
 
-fn (mut b FakeBus) reconcile_silence(want bool) ! {}
+fn (mut b FakeBus) reconcile_silence(_ bool) ! {}
 
 struct FakeOpens {
 mut:

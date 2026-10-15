@@ -146,7 +146,7 @@ pub fn (mut b InprocBus) recv(timeout_ms int) !CanFrame {
 	// that was never sent, delivered at once, every call.
 	mut got := false
 	mut frame := CanFrame{}
-	open := select {
+	chan_open := select {
 		f := <-b.queue {
 			got = true
 			frame = f
@@ -156,7 +156,7 @@ pub fn (mut b InprocBus) recv(timeout_ms int) !CanFrame {
 	if got {
 		return frame
 	}
-	if !open {
+	if !chan_open {
 		return error(inproc_closed)
 	}
 	return error('timeout')

@@ -7,6 +7,6 @@ pub fn wsl_distros() []string {
 
 // bridge_launch_wsl is Windows-only; elsewhere a bridge is started by hand with the port and
 // token `bridge_listen` returns.
-fn bridge_launch_wsl(distro string, ep BridgeEndpoint) ! {
+fn bridge_launch_wsl(_ string, _ BridgeEndpoint) ! {
 	return error('starting a bridge in WSL is something the Windows build does; run canbridge yourself')
 }

@@ -1,7 +1,6 @@
 module project
 
 import blobly.candb
-import os
 import blobly.transport
 
 // An ARXML describes a system: its CAN clusters, their rates, the ECUs on each. A project adds

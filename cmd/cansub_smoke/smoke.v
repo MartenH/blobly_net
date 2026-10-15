@@ -16,7 +16,6 @@
 module main
 
 import os
-import time
 import blobly.transport
 
 fn main() {

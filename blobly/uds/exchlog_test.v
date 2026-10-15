@@ -15,7 +15,7 @@ mut:
 	idx       int
 }
 
-fn (mut m Canned) send(data []u8) ! {}
+fn (mut m Canned) send(_ []u8) ! {}
 
 fn (mut m Canned) recv(timeout_ms int) ![]u8 {
 	if timeout_ms == 0 || m.idx >= m.responses.len {

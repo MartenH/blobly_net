@@ -4,7 +4,6 @@ import os
 import vgui
 import blobly.player
 import blobly.transport
-import blobly.mf4
 import blobly.project
 
 // replay_speeds is the preset rate row. A project may configure ANY rate ('speed: 3'), so the

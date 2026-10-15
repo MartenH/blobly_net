@@ -1467,7 +1467,7 @@ fn (mut app App) doip_forget_if_current(pch project.Channel, ent sim.DoipEntity,
 }
 
 // forget_locked is the mutation itself. Caller holds app.mu.
-fn (mut app App) forget_locked(pch project.Channel, ent sim.DoipEntity) {
+fn (mut app App) forget_locked(pch project.Channel, _ sim.DoipEntity) {
 	app.doip_hosts.delete(host_key(pch.name, pch.iface))
 	if ci := app.chan_index_locked(pch) {
 		app.chans[ci].running = false
