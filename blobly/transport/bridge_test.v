@@ -576,3 +576,59 @@ fn test_only_a_certain_refusal_is_not_written() {
 		assert err.msg().contains('Network is down')
 	}
 }
+
+struct HoldingBus {
+mut:
+	calls int
+}
+
+fn (mut b HoldingBus) send(frame CanFrame) ! {}
+
+// recv returns one frame, then stalls in the next look, so that frame is held as pending while a
+// send arrives; afterwards the bus is idle.
+fn (mut b HoldingBus) recv(timeout_ms int) !CanFrame {
+	b.calls++
+	if b.calls == 1 {
+		return CanFrame{
+			id:   0x111
+			data: [u8(1)]
+		}
+	}
+	if b.calls == 2 {
+		time.sleep(400 * time.millisecond)
+	} else {
+		time.sleep(timeout_ms * time.millisecond)
+	}
+	return error('timeout')
+}
+
+fn (mut b HoldingBus) close() {}
+
+fn (mut b HoldingBus) health() BusHealth {
+	return .unknown
+}
+
+fn (mut b HoldingBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
+fn (mut b HoldingBus) reconcile_silence(want bool) ! {}
+
+fn test_a_frame_received_before_a_send_comes_before_its_acknowledgement() {
+	holding := fn (name string) !Bus {
+		return &HoldingBus{}
+	}
+	start_bridge('b-pending', ['A'], holding)!
+	mut drv := open_bridge_bus('bridge:b-pending/A')!
+	defer {
+		drv.close()
+	}
+	// The pump has taken 0x111 and is stalled before writing it.
+	time.sleep(100 * time.millisecond)
+	commit := fn () {}
+	drv.send(CanFrame{ id: 0x7E0, data: [u8(2)] }, commit)!
+	first := drv.recv_shared(1000)!
+	second := drv.recv_shared(1000)!
+	assert !first.tx_ack && first.frame.id == 0x111, 'the earlier frame came after the acknowledgement'
+	assert second.tx_ack && second.frame.id == 0x7E0
+}

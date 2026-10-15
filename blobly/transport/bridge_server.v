@@ -35,6 +35,9 @@ mut:
 	pump    thread
 	// The app's number for this open of the channel, carried by every record about it.
 	gen u32
+	// Frame records the pump has received and not yet written. Here rather than in the pump, so a
+	// send writes them ahead of its acknowledgement: they were on the wire before it.
+	pending []u8
 }
 
 // BridgeServed is one channel the app has open.
@@ -206,6 +209,28 @@ fn (mut srv BridgeServer) open_channel(ch u8, gen u32) ! {
 	srv.write(bridge_encode_opened(ch, gen, ''))!
 }
 
+// flush writes the channel's pending frame records.
+fn (mut srv BridgeServer) flush(mut s BridgeServed) ! {
+	srv.wmu.lock()
+	defer {
+		srv.wmu.unlock()
+	}
+	srv.flush_locked(mut s)!
+}
+
+// flush_locked is flush for a caller holding the output lock. The records are taken under the
+// channel's lock and written under the output lock, so none is written twice or out of order.
+fn (mut srv BridgeServer) flush_locked(mut s BridgeServed) ! {
+	recs := lock s.st {
+		p := s.st.pending
+		s.st.pending = []u8{}
+		p
+	}
+	if recs.len > 0 {
+		srv.write_locked(recs)!
+	}
+}
+
 // served_gen is the open a channel's records are currently about.
 fn served_gen(s &BridgeServed) u32 {
 	return rlock s.st {
@@ -250,6 +275,8 @@ fn (mut srv BridgeServer) send_frame(rec BridgeRecord) ! {
 	defer {
 		srv.wmu.unlock()
 	}
+	// What the channel received before this send goes out before its acknowledgement.
+	srv.flush_locked(mut s)!
 	s.bus.send(rec.frame) or {
 		why := if err.msg() == '' { 'the interface refused the frame' } else { err.msg() }
 		definite := send_refusal_definite(srv.cfg.channels[rec.channel], err)
@@ -272,27 +299,32 @@ fn (mut srv BridgeServer) pump(ch u8, mut s BridgeServed) {
 			return
 		}
 		// Everything the channel has queued goes out in one write, so a burst costs the interface's
-		// receive queue one write rather than one per frame.
-		mut batch := []u8{}
+		// receive queue one write rather than one per frame. Collected into the channel's pending
+		// records, which a send flushes ahead of its acknowledgement.
 		mut wait := bridge_pump_ms
-		for batch.len < bridge_pump_batch {
+		for {
 			f := s.bus.recv(wait) or {
 				if err.msg() != 'timeout' {
-					srv.write(batch) or {}
+					srv.flush(mut s) or {}
 					srv.write(bridge_encode_lost(ch, served_gen(s), err.msg())) or {}
 					return
 				}
 				break
 			}
 			stamp := if f.hw_domain == socketcan_domain { f.hw_ns } else { bridge_stamp() }
-			batch << bridge_encode_frame(ch, served_gen(s), f, 0, false, stamp)
+			rec := bridge_encode_frame(ch, served_gen(s), f, 0, false, stamp)
+			full := lock s.st {
+				s.st.pending << rec
+				s.st.pending.len >= bridge_pump_batch
+			}
+			if full {
+				break
+			}
 			wait = 0
 		}
-		if batch.len > 0 {
-			srv.write(batch) or {
-				srv.fail()
-				return
-			}
+		srv.flush(mut s) or {
+			srv.fail()
+			return
 		}
 		h := s.bus.health()
 		d := s.bus.diagnostics()
