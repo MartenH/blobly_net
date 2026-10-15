@@ -231,15 +231,3 @@ pub fn (mut s FuncSub) leave() FuncLeave {
 		wire:          d
 	}
 }
-
-// functional_wires is how many wires have a functional listener open.
-// @[markused]: its callers are tests
-@[markused]
-fn functional_wires() int {
-	mut r := func_registry
-	r.mu.lock()
-	defer {
-		r.mu.unlock()
-	}
-	return r.wires.len
-}

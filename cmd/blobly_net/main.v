@@ -392,7 +392,7 @@ fn main() {
 		if focus_panel != '' && frame == 3 {
 			vgui.set_window_focus(focus_panel)
 		}
-		draw_menubar(mut app, rx)
+		draw_menubar(mut app)
 		// activity bar spans the full height on the far left (VS Code style); the toolbar
 		// and dockspace live in a right-hand pane beside it (not above it).
 		draw_activity_bar(mut app)

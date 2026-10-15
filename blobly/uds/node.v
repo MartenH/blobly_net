@@ -66,6 +66,7 @@ fn (mut s Server) serve_functional(mut l NodeLink) {
 // has worth reporting (see FuncSub.leave).
 pub fn (mut l NodeLink) close() []FuncLeave {
 	l.phys.close()
+	l.phys = isotp.UnopenedChannel{}
 	mut ds := []FuncLeave{}
 	for mut t in l.func {
 		ds << t.leave()

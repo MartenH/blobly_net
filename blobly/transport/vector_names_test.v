@@ -554,3 +554,13 @@ fn test_the_channel_number_must_be_one_the_library_addresses() {
 		}
 	}
 }
+
+// moved from vector_names.v: the tests are its only callers
+// xl_status_of recovers the driver status the shim encoded as -(1000 + status), or none when this
+// code carries no status. For diagnostics only — nothing decides anything from it.
+fn xl_status_of(rc int) ?int {
+	if rc > -1000 {
+		return none
+	}
+	return -rc - 1000
+}

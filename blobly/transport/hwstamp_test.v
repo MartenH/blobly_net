@@ -1,6 +1,5 @@
 module transport
 
-
 // THE RECEIVE STAMP CONTRACT (#149): every received frame either names the clock that read it, or
 // says it has none.
 

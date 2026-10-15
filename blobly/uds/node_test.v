@@ -203,3 +203,14 @@ fn test_a_failed_receive_reopens_the_wire_for_every_node_on_it() {
 	assert wd.dropped == 7, 'the failed generation counted 5 of these'
 	assert functional_wires() == 0
 }
+
+// moved from funclisten.v: the tests are its only callers
+// functional_wires is how many wires have a functional listener open.
+fn functional_wires() int {
+	mut r := func_registry
+	r.mu.lock()
+	defer {
+		r.mu.unlock()
+	}
+	return r.wires.len
+}

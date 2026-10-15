@@ -1,6 +1,5 @@
 module main
 
-
 // How long has this wire been silent? (issue #156)
 //
 // CAN has no link detection — no carrier, no PHY link state — so to a RECEIVER a disconnected

@@ -3,7 +3,11 @@ module transport
 // An unopened bus refuses everything, and says a send went nowhere.
 fn test_an_unopened_bus_refuses() {
 	mut b := Bus(UnopenedBus{})
-	b.send(CanFrame{ id: 0x100 }) or { assert err is NotWritten }
+	if _ := b.send(CanFrame{ id: 0x100 }) {
+		assert false, 'an unopened bus sent a frame'
+	} else {
+		assert err is NotWritten, 'a refused send must say nothing went out'
+	}
 	if _ := b.recv(0) {
 		assert false, 'an unopened bus received a frame'
 	}

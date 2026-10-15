@@ -6,12 +6,15 @@ module transport
 // made loud). A sender gets `not_written`, so nothing reads it as a frame that went out.
 pub struct UnopenedBus {}
 
+// bus_not_open is the refusal both placeholders give, this one and SharedNoDriver (shared.v).
+const bus_not_open = 'bus is not open'
+
 pub fn (mut b UnopenedBus) send(_ CanFrame) ! {
-	return not_written('bus is not open')
+	return not_written(bus_not_open)
 }
 
 pub fn (mut b UnopenedBus) recv(_ int) !CanFrame {
-	return error('bus is not open')
+	return error(bus_not_open)
 }
 
 pub fn (mut b UnopenedBus) close() {}
@@ -25,5 +28,5 @@ pub fn (mut b UnopenedBus) diagnostics() BusDiagnostics {
 }
 
 pub fn (mut b UnopenedBus) reconcile_silence(_ bool) ! {
-	return error('bus is not open')
+	return error(bus_not_open)
 }

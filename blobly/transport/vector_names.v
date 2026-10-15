@@ -305,17 +305,6 @@ fn reconcile_absent(first AppSlot, second AppSlot) AppSlot {
 	return if second == .absent { AppSlot.absent } else { second }
 }
 
-// xl_status_of recovers the driver status the shim encoded as -(1000 + status), or none when this
-// code carries no status. For diagnostics only — nothing decides anything from it.
-// @[markused]: its callers are tests
-@[markused]
-fn xl_status_of(rc int) ?int {
-	if rc > -1000 {
-		return none
-	}
-	return -rc - 1000
-}
-
 // assign_refusal reports why an application channel must not be written, or none when it may be.
 //
 // THE OPERATOR NAMES THE CHANNEL; NOTHING GUESSES IT. Rounds 3 and 4 tried to infer which channels

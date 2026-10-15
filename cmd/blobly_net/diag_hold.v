@@ -414,6 +414,7 @@ fn (mut app App) diag_detach(mut h HeldConn) {
 		return
 	}
 	h.ch.close()
+	h.ch = isotp.UnopenedChannel{}
 	h.sc = unsafe { nil }
 	h.attached = false
 }

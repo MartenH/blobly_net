@@ -1458,16 +1458,16 @@ fn diag_key_can(iface string, rx u32, tx u32) string {
 	return 'can|' + project.compose_key(iface, '0x${rx:X}/0x${tx:X}')
 }
 
-fn (mut app App) doip_forget_if_current(pch project.Channel, ent sim.DoipEntity, gen u64) {
+fn (mut app App) doip_forget_if_current(pch project.Channel, gen u64) {
 	app.mu.lock()
 	if app.running && app.run_gen == gen {
-		app.forget_locked(pch, ent)
+		app.forget_locked(pch)
 	}
 	app.mu.unlock()
 }
 
 // forget_locked is the mutation itself. Caller holds app.mu.
-fn (mut app App) forget_locked(pch project.Channel, _ sim.DoipEntity) {
+fn (mut app App) forget_locked(pch project.Channel) {
 	app.doip_hosts.delete(host_key(pch.name, pch.iface))
 	if ci := app.chan_index_locked(pch) {
 		app.chans[ci].running = false

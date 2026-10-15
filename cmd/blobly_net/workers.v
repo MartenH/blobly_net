@@ -57,7 +57,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 			// Generation-checked here TOO. Guarding only the bind-failure path left this one:
 			// an old watcher between its close() and this call, while a Stop/Start/re-enable
 			// published a replacement, would deregister the NEW run's live listener.
-			a.doip_forget_if_current(pch, ent, gen)
+			a.doip_forget_if_current(pch, gen)
 			a.notify('${pch.name}: DoIP entity stopped — ${host}:${port} released')
 		} else if !want || !bound {
 			if want && !bound {
@@ -108,7 +108,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 						// not listening — leaving it selectable would point the panel at
 						// whatever else owns that endpoint and report the wrong ECU's answers.
 						a.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
-						a.doip_forget_if_current(pch, ent, gen)
+						a.doip_forget_if_current(pch, gen)
 						warned = true
 					}
 				}

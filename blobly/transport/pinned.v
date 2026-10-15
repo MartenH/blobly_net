@@ -121,36 +121,6 @@ fn pinned_open_config(iface string) ?PinnedConfig {
 	}
 }
 
-// wire_pinned_config reports the configuration that ports already open on this wire have fixed,
-// or none when nothing is open on it or the backend does not pin.
-//
-// It answers for the WIRE and says nothing about which row opened it — the whole point is that
-// the port outlives the row's part in the run.
-// @[markused]: its callers are tests
-@[markused]
-fn wire_pinned_config(iface string) ?PinnedConfig {
-	if !mode_pinned_by_ports(iface) {
-		return none
-	}
-	k := pinned_wire_key(iface)
-	pinned_tbl.mu.lock()
-	w := pinned_tbl.wires[k] or { PinnedWire{} }
-	pinned_tbl.mu.unlock()
-	if w.ports.len == 0 {
-		return none
-	}
-	// THE LATEST, not the first, and the difference is not a preference: an open that RETURNED is
-	// one whose configuration the channel now has. Either it matched what was already installed,
-	// and this changes nothing — or it installed it, which happens more readily than "the first
-	// port pins it forever" suggests. Initialisation access belongs to a PORT: when the port
-	// holding it closes while siblings stay open, XL releases that access, the shim marks its
-	// record stale (vector_shim.h, ct_vec_cfg_unref) and the next port to win access reconfigures
-	// the channel outright and re-notes it. Keeping the first answer would describe a
-	// configuration no longer installed. What wire_pin_clash does with a wire whose ports
-	// DISAGREE is stricter still — see there.
-	return w.ports.last().cfg
-}
-
 // wire_pin_clash reports how opening THIS ADDRESS would contradict the configuration the ports
 // already open on its wire have fixed, and '' when it would not — including when nothing is open
 // on the wire and when the backend does not pin at all.

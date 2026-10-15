@@ -162,11 +162,11 @@ enum SharedEntryState {
 struct SharedNoDriver {}
 
 fn (mut d SharedNoDriver) send(_ CanFrame, _ fn ()) ! {
-	return not_written('bus is not open yet')
+	return not_written('${bus_not_open} yet')
 }
 
 fn (mut d SharedNoDriver) recv_shared(_ int) !SharedIngress {
-	return error('bus is not open yet')
+	return error('${bus_not_open} yet')
 }
 
 fn (mut d SharedNoDriver) close() {}
@@ -180,7 +180,7 @@ fn (mut d SharedNoDriver) diagnostics() BusDiagnostics {
 }
 
 fn (mut d SharedNoDriver) reconcile_silence(_ bool) ! {
-	return error('bus is not open yet')
+	return error('${bus_not_open} yet')
 }
 
 fn (mut d SharedNoDriver) reports_tx_ack() bool {

@@ -2232,16 +2232,6 @@ fn xml_unescape(s string) string {
 	return xml.unescape_text(s) or { s }
 }
 
-// parse_key reads an enum key as the width-sized raw pattern candb keys value tables by: a
-// non-negative literal as u64 (so the top half of a 64-bit domain survives), a negative one
-// through i64 (its two's-complement pattern). Hex, decimal, or a float that is integral —
-// never through f64 for an integer literal, which would lose the low bits above 2^53.
-// @[markused]: its callers are tests (key_of is what the reader uses)
-@[markused]
-fn parse_key(s string) u64 {
-	return key_of(s) or { 0 }
-}
-
 // key_of is parse_key that can SAY NO: a literal no 64-bit raw key can hold — `18446744073709551616`,
 // a magnitude past 2^63 with a minus sign — is none, where the fallback to 0 filed its label on
 // raw zero (codex on #273 round 20). The value-table filing asks this; parse_key keeps the 0
