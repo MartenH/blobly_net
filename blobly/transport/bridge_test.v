@@ -409,3 +409,48 @@ fn test_labels_must_be_addressable() {
 	}
 	c.close() or {}
 }
+
+fn test_a_bridge_frame_is_not_normalised_on_the_way_out() {
+	// The driver refuses what no controller could send, so nothing upstream may clamp it first.
+	assert !clamps_to_classic('bridge:x/vcan0')
+	f := CanFrame{
+		id:   0x800
+		data: []u8{len: 9}
+	}
+	assert wire_frame('bridge:x/vcan0', f) == f
+}
+
+fn test_an_acknowledgement_survives_a_full_receive_queue() {
+	start_bridge('b-full', ['A'], inproc_opener('bf-'))!
+	mut drv := open_bridge_bus('bridge:b-full/A')!
+	defer {
+		drv.close()
+	}
+	mut b := drv as BridgeBus
+	// Nothing reads the queue: fill it from the bus, then send.
+	mut peer := open_inproc('bf-A')!
+	defer {
+		peer.close()
+	}
+	for i in 0 .. bridge_queue_cap + 10 {
+		peer.send(CanFrame{ id: 0x100, data: [u8(i)] })!
+	}
+	for _ in 0 .. 300 {
+		if b.c.rx.len >= bridge_queue_cap {
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	assert b.c.rx.len == bridge_queue_cap
+	commit := fn () {}
+	drv.send(CanFrame{ id: 0x7E0, data: [u8(2)] }, commit)!
+	mut acked := false
+	for {
+		got := drv.recv_shared(0) or { break }
+		if got.tx_ack && got.frame.id == 0x7E0 {
+			acked = true
+		}
+	}
+	assert acked, 'the acknowledgement was dropped'
+	assert drv.diagnostics().dropped > 0
+}

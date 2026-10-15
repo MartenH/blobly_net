@@ -370,6 +370,16 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 				lock ch.st {
 					ch.st.dropped++
 				}
+				// An acknowledgement is never the one dropped: the send it confirms reports
+				// success, and the hub must see it to know the frame as ours. The oldest queued
+				// frame makes room instead.
+				if rec.tx {
+					select {
+						_ := <-ch.rx {}
+						else {}
+					}
+					_ := ch.rx.try_push(ingress)
+				}
 			}
 			if rec.tx {
 				_ := ch.results.try_push(BridgeResult{ seq: rec.seq })
