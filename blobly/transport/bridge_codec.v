@@ -41,7 +41,7 @@
 // other end.
 module transport
 
-pub const bridge_version = u16(1)
+pub const bridge_version = u16(2) // 2: the hello carries a startup failure
 
 // bridge_max_record bounds one record's body. The largest legitimate one is a hello naming many
 // channels; a length past this is a stream that is not ours (or has lost sync), and nothing is

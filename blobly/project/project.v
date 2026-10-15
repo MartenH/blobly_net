@@ -25,7 +25,7 @@ import blobly.doip
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 8
+pub const schema_version = 9
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -39,6 +39,14 @@ pub const schema_version = 8
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v9 — a CAN bridge channel (#451). An older build has no `bridge` adapter, so compose_iface
+	// makes the address the interface name and the row becomes a CAN channel on an interface
+	// called `Ubuntu-24.04/vcan0` that fails at Start — v5's loss, for the same reason.
+	for c in p.channels {
+		if c.adapter == 'bridge' {
+			return 9
+		}
+	}
 	// v8 — a simulated ECU answering a functional id (#366). An older build drops `functional:`
 	// on its next structured save, and the ECU silently stops answering broadcasts.
 	for c in p.channels {
@@ -1733,14 +1741,13 @@ pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', '
 //
 // Split by platform because most backends are: SocketCAN and vcan are Linux kernel interfaces,
 // PCAN/Kvaser/Vector are Windows vendor DLLs. CANsub is on BOTH — it is a network device the
-// host reaches over USB-Ethernet, so there is no driver to be missing — and so is a CAN bridge
-// (`bridge:<name>/<channel>`), another host's interface reached over TCP: the vcans in WSL from
-// the Windows build, or a Linux box's from either.
+// host reaches over USB-Ethernet, so there is no driver to be missing. A CAN bridge
+// (`bridge:<name>/<channel>`) is Windows only for now: it is how the Windows build reaches the
+// vcans in WSL, and the only bridge anything starts is one in a WSL distribution.
 pub const windows_adapters = ['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'cansub', 'bridge',
 	'doip', 'someip']
 
-pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'bridge', 'doip',
-	'someip']
+pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'doip', 'someip']
 
 // adapter_silences_transceiver reports whether this app can put the adapter's CONTROLLER into
 // listen-only — the half of the promise software cannot keep for itself, because an ACK is

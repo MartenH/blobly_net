@@ -450,7 +450,7 @@ fn (mut app App) rebuild_discover_list() {
 	app.disc_cansub_shown = app.disc_cansub_landed
 	app.mu.unlock()
 	rows << transport.bridge_rows()
-	app.disc_bridges = transport.bridge_names().join('\n')
+	app.disc_bridges = bridge_signature()
 	app.disc_list = app.merge_discovered(app.disc_scan, rows)
 	app.disc_tick = []bool{len: app.disc_list.len}
 	for k, d in app.disc_list {

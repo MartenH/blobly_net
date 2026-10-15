@@ -72,15 +72,31 @@ fn main() {
 	if name == '' {
 		name = os.hostname() or { 'bridge' }
 	}
-	mut c := dial(addr) or { fail('cannot reach ${addr}: ${err}') }
-	ensure_vcans(vcans) or { give_up(mut c, token, name, err.msg()) }
+	// Everything that can fail BEFORE dialling: the app gives a connection a few seconds to say
+	// hello, so the slow part is done first and only its verdict travels.
+	mut why := ''
+	ensure_vcans(vcans) or { why = err.msg() }
 	// Every CAN interface the host has, when none were named.
-	if ifaces.len == 0 {
+	if why == '' && ifaces.len == 0 {
 		found := transport.list_interfaces() or { []transport.Iface{} }
 		ifaces = found.filter(it.kind in ['can', 'vcan']).map(it.iface)
+		if ifaces.len == 0 {
+			why = 'no CAN interface to offer: none named, and `ip link` lists no can or vcan interface'
+		}
 	}
-	if ifaces.len == 0 {
-		give_up(mut c, token, name, 'no CAN interface to offer: none named, and `ip link` lists no can or vcan interface')
+	if why == '' {
+		if e := transport.bridge_label_error(name, ifaces) {
+			why = e
+		}
+	}
+	mut c := dial(addr) or {
+		if why != '' {
+			eprintln('canbridge: ${why}')
+		}
+		fail('cannot reach ${addr}: ${err}')
+	}
+	if why != '' {
+		give_up(mut c, token, name, why)
 	}
 	eprintln('canbridge: ${name} offers ${ifaces.join(', ')} to ${addr}')
 	transport.bridge_serve(mut c, transport.BridgeServeCfg{
@@ -106,11 +122,21 @@ fn ensure_vcans(n int) ! {
 				return error('cannot create ${dev}: ${r.output.trim_space()} — this kernel has no vcan module loaded; run scripts/setup_vcan.sh in the distribution, which loads one built by scripts/build_vcan_module.sh')
 			}
 		}
+		if vcan_ready(dev) {
+			continue
+		}
 		r := os.exec(['ip', 'link', 'set', dev, 'mtu', '72', 'up'])
 		if r.exit_code != 0 {
 			return error('cannot bring ${dev} up: ${r.output.trim_space()}')
 		}
 	}
+}
+
+// vcan_ready is whether an interface is already up at mtu 72, so nothing needs root to change it.
+fn vcan_ready(dev string) bool {
+	mtu := os.read_file('/sys/class/net/${dev}/mtu') or { return false }
+	flags := os.read_file('/sys/class/net/${dev}/flags') or { return false }
+	return mtu.trim_space() == '72' && (flags.trim_space().i64() & 1) != 0
 }
 
 // give_up tells the app why this bridge cannot start, and exits.
@@ -121,17 +147,46 @@ fn give_up(mut c net.TcpConn, token string, name string, why string) {
 	fail(why)
 }
 
+struct Dialled {
+	conn &net.TcpConn = unsafe { nil }
+	err  string
+}
+
+// dial reaches the app within the connect budget. On its own thread, because a connect cannot be
+// given a deadline here and a loopback port nobody listens on may never answer rather than refuse
+// (measured in mirrored WSL); a thread still out when the budget ends is left behind, since the
+// program then exits.
 fn dial(addr string) !&net.TcpConn {
-	deadline := time.now().add(connect_budget)
-	for {
-		c := net.dial_tcp(addr) or {
-			if time.now() > deadline {
-				return err
+	done := chan Dialled{cap: 1}
+	spawn fn [addr, done] () {
+		deadline := time.now().add(connect_budget)
+		for {
+			c := net.dial_tcp(addr) or {
+				if time.now() > deadline {
+					done <- Dialled{
+						err: err.msg()
+					}
+					return
+				}
+				time.sleep(200 * time.millisecond)
+				continue
 			}
-			time.sleep(200 * time.millisecond)
-			continue
+			done <- Dialled{
+				conn: c
+			}
+			return
 		}
-		return c
+	}()
+	select {
+		d := <-done {
+			if d.err != '' {
+				return error(d.err)
+			}
+			return d.conn
+		}
+		connect_budget {
+			return error('no answer within ${connect_budget / time.second} s')
+		}
 	}
 	return error('unreachable')
 }

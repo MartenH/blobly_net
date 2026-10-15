@@ -68,8 +68,18 @@ Windows folder.
 - **The bitrate** of a real interface behind a bridge is set in the distribution
   (`ip link set can0 type can bitrate 500000`), not in the project.
 
-## Running a bridge by hand
+## When it does not start
 
-`canbridge --help` lists the options. The port and token are the app's own and change at every
-launch, so by hand is for development. A bridge that cannot start says why to the app, which
-shows it in the Discover dialog. A bridge the app turns away exits 1 with the app's reason.
+A bridge that cannot start tells the app why, and the Discover dialog shows it under **Start
+bridge**. A bridge that never dials in is reported after 20 seconds. The usual cause is WSL not
+running in mirrored networking mode.
+
+To check the distribution's side by hand, run this from the app's folder in a WSL terminal:
+
+```
+sudo ./canbridge --vcan 2 --connect 127.0.0.1:1 --token x
+```
+
+It sets up the vcans as **Start bridge** would and prints anything that fails. It then cannot
+reach the app, which is expected, because the real port and token are the app's own and change
+at every launch. `canbridge --help` lists the options.
