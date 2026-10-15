@@ -27,9 +27,10 @@ v_toolchain_stamp_path() {
 	printf '%s\n' "$1/.blobly_built_from"
 }
 
-# v_toolchain_want_stamp <v_pin> <vc_pin> — the stamp content these pins ask for.
+# v_toolchain_want_stamp <v_pin> <vc_pin> — the stamp content these pins ask for, and the build
+# flavour: a compiler built before it was `prod` names no flavour and is rebuilt.
 v_toolchain_want_stamp() {
-	printf '%s %s\n' "$1" "$2"
+	printf '%s %s prod\n' "$1" "$2"
 }
 
 # v_toolchain_build_reason <vdir> <v_pin> <vc_pin> — why a build is needed, or empty if not.
@@ -111,8 +112,10 @@ v_toolchain_install() {
 	# linking libgc in `v run cmd/tools/detect_tcc.v`. tcc stays floating, as it always was.
 	make -C "$vdir" latest_tcc
 	# local=1 makes latest_vc/latest_tcc/latest_legacy no-ops (`ifndef local`), so nothing is
-	# pulled out from under the pinned bootstrap mid-build.
-	make -C "$vdir" local=1
+	# pulled out from under the pinned bootstrap mid-build. prod=1 builds the compiler with -prod:
+	# without it the C compiler is tcc at no optimisation, and every compile is ~3x slower (loom2v
+	# 4.9 -> 1.6 s, blobly_emb's unit suite 88 -> 34 s); the release binaries are built this way.
+	make -C "$vdir" local=1 prod=1
 
 	v_toolchain_want_stamp "$v_pin" "$vc_pin" > "$(v_toolchain_stamp_path "$vdir")"
 }

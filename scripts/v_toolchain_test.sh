@@ -62,8 +62,11 @@ d="$work/nostamp"; read -r VH VCH <<<"$(make_vdir "$d")"
 ok "both trees at the pins but NO stamp -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 d="$work/good"; read -r VH VCH <<<"$(make_vdir "$d")"
-printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+v_toolchain_want_stamp "$VH" "$VCH" > "$d/.blobly_built_from"
 ok "trees at the pins AND stamp names them -> no build" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" ""
+# a compiler built before the toolchain was built -prod names the pins and no flavour
+printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+ok "stamp from before the prod build -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 # Regression for round 4: the stamp is untracked, so a hand checkout leaves it behind claiming
 # a build of a tree that is no longer there.
@@ -94,12 +97,14 @@ exit 0
 SH
 chmod +x "$stub/git"
 
-printf '#!/bin/sh\nexit 0\n' > "$stub/make"; chmod +x "$stub/make"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$MAKELOG"\nexit 0\n' > "$stub/make"; chmod +x "$stub/make"
 d="$work/inst_ok"; mkdir -p "$d"; printf '#!/bin/sh\n' > "$d/v"; chmod +x "$d/v"
 GITLOG="$work/git_ok.log"; : > "$GITLOG"
+export MAKELOG="$work/make_ok.log"; : > "$MAKELOG"
 out=$(PATH="$stub:$PATH" GITLOG="$GITLOG" bash -c "set -euo pipefail; . scripts/v_toolchain.sh; v_toolchain_install '$d' AAA BBB; echo rc=\$?" 2>&1)
 ok "install: succeeds" "${out##*$'\n'}" "rc=0"
-ok "install: writes the stamp AFTER a successful make" "$(cat "$d/.blobly_built_from" 2>/dev/null || echo MISSING)" "AAA BBB"
+ok "install: writes the stamp AFTER a successful make" "$(cat "$d/.blobly_built_from" 2>/dev/null || echo MISSING)" "AAA BBB prod"
+ok "install: the compiler is built -prod" "$(grep -c 'local=1 prod=1' "$MAKELOG")" "1"
 
 # Round-4 finding: the installer must not rewrite a fork's or a mirror's remote, and it runs
 # against pre-existing checkouts whenever the stamp is missing, so this is not a rare path.

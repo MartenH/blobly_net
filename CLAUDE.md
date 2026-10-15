@@ -358,7 +358,7 @@ evidence that it was built — a stamp naming both pins, written only after `mak
 #285 found the same shape three rounds running, a check on the state of the inputs standing
 in for a successful build). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
-release or its `v-e2cdd9e-windows.zip` asset disappears, the Windows job breaks — and runs
+release or its `v-075855f-windows.zip` asset disappears, the Windows job breaks — and runs
 `v test blobly/isotp/` plus the cmd sweep there. The asset is the V3 of `.v-version`
 cross-built from Linux by `scripts/mint_windows_v.sh`; re-mint it whenever the pin moves.
 **The toolchain is V3.** Every job sets
@@ -368,10 +368,11 @@ regression passes unseen — set it locally too when checking a V3 result. They 
 too: V3's module cache, on by default since `ea5156d`, makes this repo's compiles slower, not
 faster (unit tests 13.7 -> 21.9 min in CI when the pin crossed it). The Linux jobs install the V
 named in **`.v-version`** — a V3 commit this repo is known to pass on, not master itself (today the
-head of vlang/v#30204, `ea5156d` plus the fixed-array borrow fix that master carries as `7858acc`,
-because no vc published by 2026-10-12 builds a master commit that has it; the commit is reachable
-from vlang/v only through the PR's ref, so move the pin to master, `7858acc` or later, once a vc
-builds one);
+head of vlang/v#30552, master `56b36ba` plus the fix that lets blobly_emb's firmware build declare
+its own errno accessor — every master commit since vlang/v#30215 restates it in a type newlib on
+arm-none-eabi refuses. This repo does not need the fix; it pins that commit so one V builds both.
+The commit is reachable from vlang/v only through the PR's ref, so move the pin to master once the
+PR merges);
 `release.yml`'s Linux job and `scripts/setup_env.sh` read the same file. **TWO pins, and they
 move together**: V is built from source and `make` bootstraps it by cloning **vlang/vc**, which
 the makefile does with NO ref — so `.vc-version` pins that too, at a vc commit PROVEN TO BUILD

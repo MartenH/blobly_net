@@ -47,6 +47,10 @@ nbytes = len(vdir.encode('utf-8'))
 vdir = vdir.encode('utf-8').decode('latin-1')
 lit = re.escape('{"%s", %d, 1};' % (vdir, nbytes))
 s, n1 = re.subn(r'(static const string _str_\d+ = )' + lit, lambda m: m.group(1) + '{"%s", %d, 1};' % (root, len(root)), s)
+if n1 == 0:
+    # since vlang/v#30453 a literal is declared through a macro: `_SL(_str_N, "...", len);`
+    macro = re.escape('"%s", %d);' % (vdir, nbytes))
+    s, n1 = re.subn(r'(_SL\(_str_\d+, )' + macro, lambda m: m.group(1) + '"%s", %d);' % (root, len(root)), s)
 s, n2 = re.subn(re.escape('const char* v3_vexe = "%s/v";' % vdir), 'const char* v3_vexe = "%s/v.exe";' % root, s)
 if (n1, n2) != (1, 1):
     sys.exit('mint_windows_v: expected one baked root and one VEXE default in the C, found %d and %d; V changed shape' % (n1, n2))
@@ -59,9 +63,18 @@ if left:
 open(path, 'w', encoding='latin-1').write(s)
 EOF
 
+# the native C files V links through `#flag ....o`, which `-o v.c` leaves out: the list V's own
+# Windows bootstrap compiles beside its generated C (makev.bat's V_STAGE_NATIVE)
+helpers=()
+natives=$(grep -m1 '^set V_STAGE_NATIVE=' "$vdir/makev.bat" || true)
+for f in $(printf '%s' "$natives" | grep -o '%~dp0[^"]*' | sed -e 's/^%~dp0//' -e 's|\\|/|g'); do
+	[ -f "$vdir/$f" ] || { echo "mint_windows_v: makev.bat names $f, which $vdir does not have" >&2; exit 1; }
+	helpers+=("$vdir/$f")
+done
+
 # the command `v -prod -showcc -os windows -cc $cc` runs, with the C above in place of its own
 "$cc" -std=gnu11 -O2 -flto -municode -Wl,--stack=33554432 -w -Wno-incompatible-pointer-types \
-	-fwrapv -Wno-int-conversion -o "$tmp/v.exe" "$tmp/v.c" -l dbghelp -lws2_32 \
+	-fwrapv -Wno-int-conversion -o "$tmp/v.exe" "$tmp/v.c" "${helpers[@]}" -l dbghelp -lws2_32 \
 	-L"$vdir/vlib/crypto/rand/internal/libraries/bcrypt" -lbcrypt \
 	-I "$vdir/thirdparty/stdatomic/win" -l advapi32
 
