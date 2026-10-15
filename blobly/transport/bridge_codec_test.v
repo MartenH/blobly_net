@@ -8,12 +8,16 @@ fn one(rec []u8) BridgeRecord {
 }
 
 fn test_hello_round_trips() {
-	r := one(bridge_encode_hello('tok', 'Ubuntu-24.04', ['vcan0', 'vcan1']))
+	r := one(bridge_encode_hello('tok', 'Ubuntu-24.04', ['vcan0', 'vcan1'], ''))
 	assert r.kind == .hello
 	assert r.version == bridge_version
 	assert r.token == 'tok'
 	assert r.name == 'Ubuntu-24.04'
 	assert r.channels == ['vcan0', 'vcan1']
+	assert r.error == ''
+	// A bridge that could not start says why in place of channels.
+	f := one(bridge_encode_hello('tok', 'Ubuntu-24.04', [], 'no vcan module'))
+	assert f.channels.len == 0 && f.error == 'no vcan module'
 }
 
 fn test_control_records_round_trip() {

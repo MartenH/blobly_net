@@ -1,12 +1,10 @@
 module main
 
+import blobly.transport
+
 #include <windows.h>
 
 fn C.GetLogicalDrives() u32
-
-// The registry, through the W entry points vlib already declares (builtin/cfns.c.v) plus the
-// one it does not; advapi32 is on the link line already (vgui.v).
-fn C.RegEnumKeyExW(hkey voidptr, idx u32, name &u16, len &u32, r voidptr, cls &u16, clen &u32, ft voidptr) int
 
 // drive_roots: this platform's roots are drives (pickrule.parent's `windows`).
 const drive_roots = true
@@ -28,44 +26,10 @@ fn fs_roots() []string {
 
 // wsl_roots is one entry per WSL distribution, `\\wsl.localhost\<distro>\`, which is how a file
 // under WSL is reached from Windows (#306) — `\\wsl.localhost` itself is not listable, so the
-// picker cannot discover them by walking. The names come from the registry
-// (HKCU\...\Lxss\<guid>\DistributionName), not from `wsl.exe -l`, which is a console process a
-// GUI would flash a window for. Empty where WSL is not installed.
+// picker cannot discover them by walking. The distributions are `transport.wsl_distros`, the
+// registry's list, which the CAN bridge's launcher reads too.
 fn wsl_roots() []string {
-	mut lxss := unsafe { nil }
-	if C.RegOpenKeyExW(voidptr(C.HKEY_CURRENT_USER),
-		'Software\\Microsoft\\Windows\\CurrentVersion\\Lxss'.to_wide(), 0, u32(C.KEY_READ), &lxss) != 0 {
-		return []
-	}
-	defer {
-		C.RegCloseKey(lxss)
-	}
-	mut out := []string{}
-	for i := u32(0); i < 64; i++ {
-		mut name := [256]u16{}
-		mut nlen := u32(255)
-		if C.RegEnumKeyExW(lxss, i, &name[0], &nlen, unsafe { nil }, unsafe { nil },
-			unsafe { nil }, unsafe { nil }) != 0 {
-			break
-		}
-		mut sub := unsafe { nil }
-		if C.RegOpenKeyExW(lxss, &name[0], 0, u32(C.KEY_READ), &sub) != 0 {
-			continue
-		}
-		mut data := [512]u16{}
-		mut dlen := u32(1022) // bytes
-		mut typ := u32(0)
-		if C.RegQueryValueExW(sub, 'DistributionName'.to_wide(), unsafe { nil }, &typ, &u8(&data[0]), &dlen) == 0
-			&& typ == 1 {
-			distro := unsafe { string_from_wide(&data[0]) }
-			if distro != '' {
-				out << wsl_prefix + distro + '\\'
-			}
-		}
-		C.RegCloseKey(sub)
-	}
-	out.sort()
-	return out
+	return transport.wsl_distros().map(wsl_prefix + it + '\\')
 }
 
 // wsl_prefix is how Windows reaches a distribution's files: `\\wsl.localhost\` since Windows 10

@@ -597,6 +597,7 @@ fn adapter_tip(a string) string {
 		'kvaser' { 'Kvaser hardware (Windows). The address is a channel index (0, 1…). Discovery needs the Kvaser driver on Windows.' }
 		'vector' { 'Vector hardware (Windows). The address is an APPLICATION channel number as Vector Hardware Manager numbers them (1, 2…) — the rates belong in the bitrate fields below, not here. Needs vxlapi64.dll, which is a separate download from the drivers.' }
 		'cansub' { 'CSS Electronics CANsub.4 (any platform). The address is the device id and channel, e.g. 1A2B3C4D/1 — nothing else: the rates belong in the bitrate fields below, and an @rate typed here is appended twice and refused. Channels are numbered 1 to 4. Reached over USB-Ethernet by device id through mDNS, so there is no driver to install and no IP to write down.' }
+		'bridge' { 'A CAN interface on another host, reached through canbridge (#451): the vcans in WSL from the Windows build. The address is <bridge>/<interface>, e.g. Ubuntu-24.04/vcan0 — a bridge started in WSL is named after its distribution. Start it from Discover ▸ WSL, or just press Start: a row whose bridge is a WSL distribution starts it when the run opens the channel. The rate is the interface\'s own, set on the bridge\'s host (ip link), not here.' }
 		'doip' { 'Diagnostics over Ethernet (ISO 13400) — NOT a CAN bus. The address is host:port (default 127.0.0.1:13400); set the tester/ECU logical addresses below.' }
 		'someip' { 'SOME/IP listener — NOT a CAN bus, and nothing is sent. The address is the bind host:port (default 0.0.0.0:30490); a multicast group below is joined on it. Every message heard becomes a trace row: the 32-bit message id, its type, the raw payload.' }
 		else { '' }
@@ -693,6 +694,9 @@ fn iface_desc(f transport.Iface) string {
 		'cansub' {
 			f.name
 		}
+		'bridge' {
+			'through canbridge on ${f.iface.all_after('bridge:').all_before_last('/')}'
+		}
 		else {
 			f.kind
 		}
@@ -714,8 +718,11 @@ fn iface_desc(f transport.Iface) string {
 //   3. the last mDNS browse's CANsub rows (#235), read under the lock. Not browsed here: a
 //      browse waits its whole window and this runs on the render thread;
 //      start_cansub_browse() fills the mailbox from its own thread.
+//   4. the channels of every CAN bridge connected now (#451) — a registry read, no waiting.
 fn (app &App) discover_all() []DiscoveredIface {
-	return app.merge_discovered(app.scan_local(), app.cansub_rows_locked())
+	mut found := app.cansub_rows_locked()
+	found << transport.bridge_rows()
+	return app.merge_discovered(app.scan_local(), found)
 }
 
 // scan_local is sources 1 and 2: what this host can enumerate without waiting on a network.
@@ -841,6 +848,7 @@ fn adapter_hint(a string) string {
 		'doip' { 'host:port — 13400 if no port' }
 		'someip' { 'bind host:port — 30490 if no port' }
 		'cansub' { '1A2B3C4D/1 — device id / channel' }
+		'bridge' { 'Ubuntu-24.04/vcan0 — bridge / interface' }
 		else { '' }
 	}
 }

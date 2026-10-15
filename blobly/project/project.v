@@ -1718,7 +1718,7 @@ fn parse_id(s string) u32 {
 // Order = the picker order. `virtual`/`vcan`/`socketcan`/`udp` are cross-platform or
 // Linux; `pcan`/`kvaser` are Windows CAN hardware; `doip` is an Ethernet diag endpoint.
 pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'cansub',
-	'doip', 'someip']
+	'bridge', 'doip', 'someip']
 
 // WHICH ADAPTERS A PLATFORM MAY OFFER. `adapters` above is every name a project FILE may carry —
 // these two are what an editor may put in front of somebody, and they live here, next to the
@@ -1733,11 +1733,14 @@ pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', '
 //
 // Split by platform because most backends are: SocketCAN and vcan are Linux kernel interfaces,
 // PCAN/Kvaser/Vector are Windows vendor DLLs. CANsub is on BOTH — it is a network device the
-// host reaches over USB-Ethernet, so there is no driver to be missing.
-pub const windows_adapters = ['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'cansub', 'doip',
-	'someip']
+// host reaches over USB-Ethernet, so there is no driver to be missing — and so is a CAN bridge
+// (`bridge:<name>/<channel>`), another host's interface reached over TCP: the vcans in WSL from
+// the Windows build, or a Linux box's from either.
+pub const windows_adapters = ['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'cansub', 'bridge',
+	'doip', 'someip']
 
-pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'doip', 'someip']
+pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'bridge', 'doip',
+	'someip']
 
 // adapter_silences_transceiver reports whether this app can put the adapter's CONTROLLER into
 // listen-only — the half of the promise software cannot keep for itself, because an ACK is
@@ -1871,6 +1874,9 @@ pub fn compose_iface(adapter string, address string) string {
 		'vector' {
 			'vector:${a}'
 		}
+		'bridge' {
+			'bridge:${a}'
+		}
 		'doip' {
 			if a == '' {
 				'doip'
@@ -1938,6 +1944,9 @@ pub fn decompose_iface(iface string) (string, string) {
 		body := s['vector:'.len..]
 		mode := if body.contains(',') { ',' + body.all_after_last(',') } else { '' }
 		return 'vector', body.all_before('@').all_before_last(',') + mode
+	}
+	if s.starts_with('bridge:') {
+		return 'bridge', s['bridge:'.len..]
 	}
 	if s == 'doip' {
 		return 'doip', ''
@@ -2190,6 +2199,7 @@ pub fn (c Channel) address_config_error() ?string {
 		'kvaser' { transport.kvaser_address_error(c.iface_with_bitrate()) }
 		'cansub' { transport.cansub_address_error(c.iface_with_bitrate()) }
 		'pcan' { transport.pcan_address_error(c.iface_with_bitrate()) }
+		'bridge' { transport.bridge_address_error(c.iface) }
 		else { none }
 	}
 }

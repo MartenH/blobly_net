@@ -316,6 +316,7 @@ fn (mut app App) open_discover() {
 
 // refresh_discovery re-scans the machine's transports for the Discover dialog.
 fn (mut app App) refresh_discovery() {
+	app.disc_wsl = transport.wsl_distros()
 	app.disc_scan = app.scan_local()
 	app.rebuild_discover_list()
 	// Empty on any machine without the XL driver, which is the honest answer rather than a
@@ -445,9 +446,11 @@ fn (mut app App) rebuild_discover_list() {
 		}
 	}
 	app.mu.lock()
-	rows := app.disc_cansub.clone()
+	mut rows := app.disc_cansub.clone()
 	app.disc_cansub_shown = app.disc_cansub_landed
 	app.mu.unlock()
+	rows << transport.bridge_rows()
+	app.disc_bridges = transport.bridge_names().join('\n')
 	app.disc_list = app.merge_discovered(app.disc_scan, rows)
 	app.disc_tick = []bool{len: app.disc_list.len}
 	for k, d in app.disc_list {

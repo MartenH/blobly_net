@@ -95,7 +95,7 @@ pub fn bridge_serve(mut c net.TcpConn, cfg BridgeServeCfg) ! {
 	defer {
 		srv.close_all()
 	}
-	srv.write(bridge_encode_hello(cfg.token, cfg.name, cfg.channels))!
+	srv.write(bridge_encode_hello(cfg.token, cfg.name, cfg.channels, ''))!
 	c.set_read_timeout(time.second)
 	mut dec := BridgeDecoder{}
 	mut buf := []u8{len: 8192}
@@ -139,6 +139,12 @@ fn (mut srv BridgeServer) watchdog() {
 // pumps have been joined, so the descriptor is still this connection's here.
 fn (mut srv BridgeServer) fail() {
 	net.shutdown(srv.conn.sock.handle)
+}
+
+// bridge_report_failure tells the app this bridge could not start, and why, in place of a hello
+// offering channels: a bridge the app launched has no console anybody sees.
+pub fn bridge_report_failure(mut c net.TcpConn, token string, name string, why string) ! {
+	c.write(bridge_encode_hello(token, name, [], why))!
 }
 
 fn (mut srv BridgeServer) write(rec []u8) ! {

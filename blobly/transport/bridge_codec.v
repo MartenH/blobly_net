@@ -12,7 +12,8 @@
 //     body    = u8 kind, then the kind's fields
 //     str     = u16 LE length, then UTF-8 bytes
 //
-//     hello   (bridge -> app)  u16 version, str token, str name, u8 count, count x str channel
+//     hello   (bridge -> app)  u16 version, str token, str name, u8 count, count x str channel,
+//                              str error — set when the bridge could not start, with no channels
 //     open    (app -> bridge)  u8 channel, u32 gen
 //     opened  (bridge -> app)  u8 channel, u32 gen, str error ('' when the channel opened)
 //     close   (app -> bridge)  u8 channel
@@ -83,7 +84,7 @@ pub:
 	token    string
 	name     string
 	channels []string
-	// opened (empty = success), senderr, lost
+	// opened (empty = success), senderr, lost, refused; a hello's is why the bridge could not start
 	error string
 	// open, opened, frame, status, lost: which open of the channel the record is about
 	gen u32
@@ -129,7 +130,10 @@ fn bridge_wrap(body []u8) []u8 {
 	return out
 }
 
-pub fn bridge_encode_hello(token string, name string, channels []string) []u8 {
+// bridge_encode_hello is the first record a bridge sends. `failure` is set instead of offering
+// channels when the bridge could not start — the app has no other way to hear why, since a bridge
+// it launched has no console anyone sees.
+pub fn bridge_encode_hello(token string, name string, channels []string, failure string) []u8 {
 	mut b := [u8(BridgeKind.hello)]
 	bridge_put_u16(mut b, bridge_version)
 	bridge_put_str(mut b, token)
@@ -139,6 +143,7 @@ pub fn bridge_encode_hello(token string, name string, channels []string) []u8 {
 	for c in channels[..n] {
 		bridge_put_str(mut b, c)
 	}
+	bridge_put_str(mut b, failure)
 	return bridge_wrap(b)
 }
 
@@ -319,6 +324,7 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 				token:    token
 				name:     name
 				channels: chans
+				error:    r.str()
 			}
 		}
 		u8(BridgeKind.open) {

@@ -530,6 +530,11 @@ mut:
 	// were the #84 class in the first cut (self-review).
 	disc_cansub         []transport.Iface
 	disc_cansub_note    string
+	// WSL distributions a CAN bridge can be started in (#451), read at Refresh, and the bridges
+	// connected when the list was last built — when that changes, the list is rebuilt so a
+	// bridge's channels appear as it dials in.
+	disc_wsl     []string
+	disc_bridges string
 	disc_cansub_started u64
 	disc_cansub_landed  u64
 	disc_cansub_shown   u64
