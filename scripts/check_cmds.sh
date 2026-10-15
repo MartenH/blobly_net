@@ -37,5 +37,24 @@ if bad=$(grep -rnE --include='*.v' '^[[:space:]]*(pub )?fn C\.[A-Za-z0-9_.]+\(.*
 	echo "$bad"
 	fail=$((fail + 1))
 fi
+# and $embed_file, which V3 does not embed outside -prod: it records the BUILD machine's path and
+# reads that file at run time, panicking wherever the build tree is absent -- every user's machine.
+# The shipped build is not -prod (#284), so one such constant killed the Windows bundle before its
+# first frame (#455). Spell the bytes out instead (cmd/blobly_net/assets/gen.vsh).
+# Comment lines are skipped (the reason is written down in several); grep exiting 2 is a FAILED
+# scan, not a clean one.
+n=$((n + 1))
+# The TOKEN, not one spelling of the call: V takes `$embed_file ('x')`, and a call split after
+# the name, alike (codex #456 r1).
+hits=$(grep -rnE --include='*.v' --exclude-dir=build '\$embed_file([^A-Za-z0-9_]|$)' cmd blobly libs)
+st=$?
+if [ "$st" -gt 1 ]; then
+	echo "FAIL the \$embed_file scan itself (grep exit $st)"
+	fail=$((fail + 1))
+elif bad=$(printf '%s\n' "$hits" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//') && [ -n "$hits" ]; then
+	echo "FAIL \$embed_file (V3 reads it from the build tree at run time outside -prod):"
+	echo "$bad"
+	fail=$((fail + 1))
+fi
 printf '%d checks, %d failed\n' "$n" "$fail"
 [ "$fail" -eq 0 ]
