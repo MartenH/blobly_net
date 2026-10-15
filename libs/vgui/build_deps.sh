@@ -1,10 +1,37 @@
 #!/bin/sh
 # build_deps.sh — fetch cimgui + cimplot (pinned) and build libvgui_c.a next to v.mod.
-# Runs unmodified on Linux/WSL AND Windows/MSYS2 (verified: plain git + g++). On Windows use
-# the dedicated MSYS2 MINGW64 shell; then build the example with build_win.sh. Run from anywhere:
+# Runs unmodified on Linux/WSL AND Windows/MSYS2 (verified: plain git + g++). On Windows the
+# compiler is MSYS2's UCRT64 one (scripts/run_gui.sh puts it on PATH). Run from anywhere:
 #   sh libs/vgui/build_deps.sh
+#   sh libs/vgui/build_deps.sh --toolchain-id   # which toolchain a build would use now
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# WHICH TOOLCHAIN BUILT THE ARCHIVE, written beside it as libvgui_c.toolchain. The compiler's
+# install root: `ucrt64` or `mingw64` under MSYS2 (`usr` on Linux). The two Windows ones both say
+# x86_64-w64-mingw32 to -dumpmachine but link different C runtimes (UCRT / msvcrt), so an archive
+# from one linked by the other is a mixed-CRT binary; run_gui.sh rebuilds when this differs.
+# BOTH compilers, because build_deps compiles with g++ and V links with gcc: two roots on one PATH
+# (Git Bash's own /mingw64 ahead of a partial UCRT64) would stamp the archive right and link the
+# exe wrong. Links resolved first, so a /bin-vs-/usr/bin PATH order or a ccache shim is not a
+# different toolchain.
+toolchain_root() { # compiler
+	p="$(command -v "$1")" || { echo "build_deps.sh: no $1 on PATH" >&2; return 1; }
+	basename "$(dirname "$(dirname "$(readlink -f "$p" 2>/dev/null || echo "$p")")")"
+}
+toolchain_id() {
+	cxx="$(toolchain_root g++)" || return 1
+	cc="$(toolchain_root gcc)" || return 1
+	if [ "$cxx" != "$cc" ]; then
+		echo "build_deps.sh: g++ ($cxx) and gcc ($cc) come from different toolchains" >&2
+		return 1
+	fi
+	echo "$cxx"
+}
+if [ "${1:-}" = "--toolchain-id" ]; then
+	toolchain_id
+	exit $?
+fi
 BLD="$HERE/build"
 mkdir -p "$BLD"
 
@@ -52,5 +79,7 @@ g++ $CFG -c \
 	"$IMGUI/backends/imgui_impl_glfw.cpp" "$IMGUI/backends/imgui_impl_opengl3.cpp" \
 	"$HERE/vgui_glue.cpp"
 ar rcs "$HERE/libvgui_c.a" *.o
-echo "built $HERE/libvgui_c.a"
+tc="$(toolchain_id)"
+printf '%s\n' "$tc" >"$HERE/libvgui_c.toolchain"
+echo "built $HERE/libvgui_c.a ($(cat "$HERE/libvgui_c.toolchain"))"
 echo "run: v -path \"@vlib|libs|@vmodules\" run libs/vgui/examples/trace_chart/trace_chart.v"
