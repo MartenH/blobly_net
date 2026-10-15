@@ -459,10 +459,11 @@ fn test_an_acknowledgement_survives_a_full_receive_queue() {
 	assert drv.diagnostics().dropped > 0
 }
 
-fn test_frames_from_a_previous_open_of_a_channel_are_not_admitted() {
+fn test_records_from_a_previous_open_of_a_channel_are_dropped() {
 	start_bridge('b-reopen', ['A'], inproc_opener('bro-'))!
 	mut s := bridge_session('b-reopen') or { panic('not registered') }
 	mut c := &BridgeChan{
+		gen:     7
 		rx:      chan SharedIngress{cap: 8}
 		results: chan BridgeResult{cap: 8}
 		opened:  chan string{cap: 1}
@@ -470,13 +471,23 @@ fn test_frames_from_a_previous_open_of_a_channel_are_not_admitted() {
 	lock s.st {
 		s.st.chans[0] = c
 	}
-	// The old pump's frame, still in the stream, then the answer to the new open, then traffic.
-	s.dispatch(BridgeRecord{ kind: .frame, frame: CanFrame{ id: 0x111 } })!
-	s.dispatch(BridgeRecord{ kind: .opened })!
-	s.dispatch(BridgeRecord{ kind: .frame, frame: CanFrame{ id: 0x222 } })!
-	assert c.rx.len == 1
-	got := <-c.rx
-	assert got.frame.id == 0x222
+	// The previous open's (gen 6) records still in the stream, interleaved with this open's —
+	// whose pump may well write before its `opened` answer does.
+	s.dispatch(BridgeRecord{ kind: .frame, gen: 6, frame: CanFrame{ id: 0x111 } })!
+	s.dispatch(BridgeRecord{ kind: .frame, gen: 7, frame: CanFrame{ id: 0x222 } })!
+	s.dispatch(BridgeRecord{ kind: .lost, gen: 6, error: 'old pump failed' })!
+	s.dispatch(BridgeRecord{ kind: .status, gen: 6, health: .bus_off })!
+	s.dispatch(BridgeRecord{ kind: .opened, gen: 6 })!
+	s.dispatch(BridgeRecord{ kind: .opened, gen: 7 })!
+	s.dispatch(BridgeRecord{ kind: .frame, gen: 7, frame: CanFrame{ id: 0x333 } })!
+	assert c.rx.len == 2
+	assert (<-c.rx).frame.id == 0x222
+	assert (<-c.rx).frame.id == 0x333
+	assert c.opened.len == 1
+	st := rlock c.st {
+		c.st
+	}
+	assert !st.lost && st.health == .unknown
 	s.forget(0, c)
 }
 
@@ -537,5 +548,31 @@ fn test_a_reply_never_overtakes_the_acknowledgement_of_its_request() {
 		second := drv.recv_shared(1000)!
 		assert first.tx_ack && first.frame.id == 0x7E0, 'the reply came first'
 		assert !second.tx_ack && second.frame.id == 0x7E8
+	}
+}
+
+fn test_only_a_certain_refusal_is_not_written() {
+	refusing := fn (name string) !Bus {
+		return &RefusingBus{}
+	}
+	// A SocketCAN interface takes a frame whole or not at all; another backend's failed write may
+	// have reached the wire, so the hub must keep the send matchable.
+	start_bridge('b-maybe', ['can0', 'net:A'], refusing)!
+	mut sure := open('bridge:b-maybe/can0')!
+	mut maybe := open('bridge:b-maybe/net:A')!
+	defer {
+		sure.close()
+		maybe.close()
+	}
+	if _ := sure.send(CanFrame{ id: 1, data: [u8(1)] }) {
+		assert false
+	} else {
+		assert err is NotWritten, err.msg()
+	}
+	if _ := maybe.send(CanFrame{ id: 1, data: [u8(1)] }) {
+		assert false
+	} else {
+		assert err !is NotWritten, err.msg()
+		assert err.msg().contains('Network is down')
 	}
 }

@@ -88,9 +88,10 @@ pub:
 }
 
 struct BridgeResult {
-	seq    u32
-	failed bool
-	err    string
+	seq      u32
+	failed   bool
+	definite bool // the frame certainly did not reach the wire
+	err      string
 }
 
 struct BridgeChanState {
@@ -104,16 +105,14 @@ mut:
 	lost      bool
 	lost_why  string
 	closed    bool
-	// Frames are admitted once the bridge has answered this open. Anything filed under the
-	// channel before that is from a previous open of it, still in the stream: TCP delivers the
-	// old pump's records before the answer to the new open, since the bridge closes the one
-	// before it opens the other.
-	admitting bool
 }
 
 // BridgeChan is one open channel's mailboxes, filled by the session's reader thread.
 @[heap]
 struct BridgeChan {
+	// This open's number: every record about it carries it, and one carrying another is from a
+	// previous open of the channel, still in the stream.
+	gen     u32
 	rx      chan SharedIngress
 	results chan BridgeResult
 	opened  chan string
@@ -375,13 +374,13 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 		// A record for a channel this side has closed: its answer, or traffic still in flight.
 		return
 	}
+	// A record about a previous open of this channel, still in the stream (a send's failure is
+	// matched by its own sequence number instead).
+	if rec.kind != .senderr && rec.gen != ch.gen {
+		return
+	}
 	match rec.kind {
 		.frame {
-			if !rlock ch.st {
-				ch.st.admitting
-			} {
-				return
-			}
 			ingress := SharedIngress{
 				frame:  CanFrame{
 					...rec.frame
@@ -403,17 +402,13 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 		}
 		.senderr {
 			_ := ch.results.try_push(BridgeResult{
-				seq:    rec.seq
-				failed: true
-				err:    if rec.error == '' { 'the bridge could not send the frame' } else { rec.error }
+				seq:      rec.seq
+				failed:   true
+				definite: rec.definite
+				err:      if rec.error == '' { 'the bridge could not send the frame' } else { rec.error }
 			})
 		}
 		.opened {
-			if rec.error == '' {
-				lock ch.st {
-					ch.st.admitting = true
-				}
-			}
 			_ := ch.opened.try_push(rec.error)
 		}
 		.status {
@@ -564,6 +559,7 @@ fn open_bridge_bus(iface string) !SharedDriver {
 	}
 	ch := u8(idx)
 	mut c := &BridgeChan{
+		gen: s.next_seq()
 		rx:      chan SharedIngress{cap: bridge_queue_cap + bridge_ack_reserve}
 		results: chan BridgeResult{cap: 64}
 		opened:  chan string{cap: 1}
@@ -571,7 +567,7 @@ fn open_bridge_bus(iface string) !SharedDriver {
 	lock s.st {
 		s.st.chans[ch] = c
 	}
-	s.write(bridge_encode_open(ch)) or {
+	s.write(bridge_encode_open(ch, c.gen)) or {
 		s.forget(ch, c)
 		return error('${iface}: ${err}')
 	}
@@ -635,7 +631,7 @@ fn (mut b BridgeBus) send(frame CanFrame, commit fn ()) ! {
 		return not_written('${b.iface}: ${why}')
 	}
 	seq := b.sess.next_seq()
-	rec := bridge_encode_frame(b.ch, frame, seq, false, 0)
+	rec := bridge_encode_frame(b.ch, b.c.gen, frame, seq, false, 0)
 	b.sess.wmu.lock()
 	if e := b.failure() {
 		b.sess.wmu.unlock()
@@ -662,7 +658,13 @@ fn (mut b BridgeBus) send(frame CanFrame, commit fn ()) ! {
 				// Refused on the bridge's side: the frame did not go out, and no acknowledgement
 				// will come for it, so the hub must not hold this send's token open.
 				if r.failed {
-					return not_written('${b.iface}: ${r.err}')
+					// A failure the bridge is sure of means nothing went out, and the hub drops
+					// this send's token; otherwise the frame may be on the wire, and the hub keeps
+					// it matchable for its grace.
+					if r.definite {
+						return not_written('${b.iface}: ${r.err}')
+					}
+					return error('${b.iface}: ${r.err}')
 				}
 				return
 			}

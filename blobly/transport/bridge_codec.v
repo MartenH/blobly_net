@@ -13,13 +13,20 @@
 //     str     = u16 LE length, then UTF-8 bytes
 //
 //     hello   (bridge -> app)  u16 version, str token, str name, u8 count, count x str channel
-//     open    (app -> bridge)  u8 channel
-//     opened  (bridge -> app)  u8 channel, str error ('' when the channel opened)
+//     open    (app -> bridge)  u8 channel, u32 gen
+//     opened  (bridge -> app)  u8 channel, u32 gen, str error ('' when the channel opened)
 //     close   (app -> bridge)  u8 channel
-//     frame   (both ways)      u8 channel, u8 flags, u32 seq, u32 id, i64 stamp ns, u8 len, data
-//     senderr (bridge -> app)  u8 channel, u32 seq, str error — a frame the app sent did not go out
-//     status  (bridge -> app)  u8 channel, u8 health, u64 dropped, u64 bus errors, u64 decode errors
-//     lost    (bridge -> app)  u8 channel, str error — the channel failed on the bridge and is closed
+//     frame   (both ways)      u8 channel, u32 gen, u8 flags, u32 seq, u32 id, i64 stamp ns, u8 len,
+//                              data
+//     senderr (bridge -> app)  u8 channel, u32 seq, u8 definite, str error — a frame the app sent
+//                              failed; `definite` when it certainly did not reach the wire
+//     status  (bridge -> app)  u8 channel, u32 gen, u8 health, u64 dropped, u64 bus errors,
+//                              u64 decode errors
+//     lost    (bridge -> app)  u8 channel, u32 gen, str error — the channel failed on the bridge
+//
+// `gen` is the app's number for one OPEN of a channel, carried by every record about that open, so
+// a record still in the stream from a previous open of the same channel is told apart by value
+// rather than by where it falls in the stream.
 //     refused (app -> bridge)  str reason — the hello was not accepted; the app then closes
 //
 // A `frame` from the bridge with the `tx` flag is the acknowledgement of one the app sent: the
@@ -78,8 +85,12 @@ pub:
 	channels []string
 	// opened (empty = success), senderr, lost
 	error string
+	// open, opened, frame, status, lost: which open of the channel the record is about
+	gen u32
 	// frame, senderr
 	seq u32
+	// senderr: the frame certainly did not reach the wire
+	definite bool
 	// frame
 	frame    CanFrame
 	tx       bool
@@ -131,12 +142,15 @@ pub fn bridge_encode_hello(token string, name string, channels []string) []u8 {
 	return bridge_wrap(b)
 }
 
-pub fn bridge_encode_open(ch u8) []u8 {
-	return bridge_wrap([u8(BridgeKind.open), ch])
+pub fn bridge_encode_open(ch u8, gen u32) []u8 {
+	mut b := [u8(BridgeKind.open), ch]
+	put_u32_le(mut b, gen)
+	return bridge_wrap(b)
 }
 
-pub fn bridge_encode_opened(ch u8, err string) []u8 {
+pub fn bridge_encode_opened(ch u8, gen u32, err string) []u8 {
 	mut b := [u8(BridgeKind.opened), ch]
+	put_u32_le(mut b, gen)
 	bridge_put_str(mut b, err)
 	return bridge_wrap(b)
 }
@@ -148,7 +162,7 @@ pub fn bridge_encode_close(ch u8) []u8 {
 // bridge_encode_frame serialises one frame. `tx` marks the bridge's acknowledgement of a frame
 // the app sent; the app always sends it false. A remote frame carries its requested length as
 // zeroes, the way every backend here represents one.
-pub fn bridge_encode_frame(ch u8, f CanFrame, seq u32, tx bool, stamp_ns i64) []u8 {
+pub fn bridge_encode_frame(ch u8, gen u32, f CanFrame, seq u32, tx bool, stamp_ns i64) []u8 {
 	mut flags := u8(0)
 	if f.extended {
 		flags |= bridge_flag_ext
@@ -169,9 +183,10 @@ pub fn bridge_encode_frame(ch u8, f CanFrame, seq u32, tx bool, stamp_ns i64) []
 		flags |= bridge_flag_tx
 	}
 	n := if f.data.len > 64 { 64 } else { f.data.len }
-	mut b := []u8{cap: 24 + n}
+	mut b := []u8{cap: 28 + n}
 	b << u8(BridgeKind.frame)
 	b << ch
+	put_u32_le(mut b, gen)
 	b << flags
 	put_u32_le(mut b, seq)
 	put_u32_le(mut b, f.id)
@@ -181,15 +196,17 @@ pub fn bridge_encode_frame(ch u8, f CanFrame, seq u32, tx bool, stamp_ns i64) []
 	return bridge_wrap(b)
 }
 
-pub fn bridge_encode_senderr(ch u8, seq u32, err string) []u8 {
+pub fn bridge_encode_senderr(ch u8, seq u32, definite bool, err string) []u8 {
 	mut b := [u8(BridgeKind.senderr), ch]
 	put_u32_le(mut b, seq)
+	b << u8(if definite { 1 } else { 0 })
 	bridge_put_str(mut b, err)
 	return bridge_wrap(b)
 }
 
-pub fn bridge_encode_lost(ch u8, err string) []u8 {
+pub fn bridge_encode_lost(ch u8, gen u32, err string) []u8 {
 	mut b := [u8(BridgeKind.lost), ch]
+	put_u32_le(mut b, gen)
 	bridge_put_str(mut b, err)
 	return bridge_wrap(b)
 }
@@ -200,8 +217,10 @@ pub fn bridge_encode_refused(why string) []u8 {
 	return bridge_wrap(b)
 }
 
-pub fn bridge_encode_status(ch u8, h BusHealth, d BusDiagnostics) []u8 {
-	mut b := [u8(BridgeKind.status), ch, u8(h)]
+pub fn bridge_encode_status(ch u8, gen u32, h BusHealth, d BusDiagnostics) []u8 {
+	mut b := [u8(BridgeKind.status), ch]
+	put_u32_le(mut b, gen)
+	b << u8(h)
 	bridge_put_u64(mut b, d.dropped)
 	bridge_put_u64(mut b, d.bus_errors)
 	bridge_put_u64(mut b, d.decode_errors)
@@ -302,17 +321,27 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 				channels: chans
 			}
 		}
-		u8(BridgeKind.open), u8(BridgeKind.close) {
+		u8(BridgeKind.open) {
+			ch := r.u8()
 			BridgeRecord{
-				kind:    unsafe { BridgeKind(kind) }
+				kind:    .open
+				channel: ch
+				gen:     r.u32()
+			}
+		}
+		u8(BridgeKind.close) {
+			BridgeRecord{
+				kind:    .close
 				channel: r.u8()
 			}
 		}
 		u8(BridgeKind.opened), u8(BridgeKind.lost) {
 			ch := r.u8()
+			gen := r.u32()
 			BridgeRecord{
 				kind:    unsafe { BridgeKind(kind) }
 				channel: ch
+				gen:     gen
 				error:   r.str()
 			}
 		}
@@ -325,15 +354,18 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 		u8(BridgeKind.senderr) {
 			ch := r.u8()
 			seq := r.u32()
+			definite := r.u8() != 0
 			BridgeRecord{
-				kind:    .senderr
-				channel: ch
-				seq:     seq
-				error:   r.str()
+				kind:     .senderr
+				channel:  ch
+				seq:      seq
+				definite: definite
+				error:    r.str()
 			}
 		}
 		u8(BridgeKind.frame) {
 			ch := r.u8()
+			gen := r.u32()
 			flags := r.u8()
 			seq := r.u32()
 			id := r.u32()
@@ -346,6 +378,7 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 			BridgeRecord{
 				kind:     .frame
 				channel:  ch
+				gen:      gen
 				seq:      seq
 				tx:       flags & bridge_flag_tx != 0
 				stamp_ns: stamp
@@ -362,6 +395,7 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 		}
 		u8(BridgeKind.status) {
 			ch := r.u8()
+			gen := r.u32()
 			h := r.u8()
 			if h > u8(BusHealth.bus_off) {
 				return error('status record: health ${h} is not a rung this decoder knows')
@@ -374,6 +408,7 @@ pub fn bridge_decode_body(body []u8) !BridgeRecord {
 			BridgeRecord{
 				kind:    .status
 				channel: ch
+				gen:     gen
 				health:  unsafe { BusHealth(h) }
 				diag:    d
 			}

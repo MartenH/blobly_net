@@ -17,30 +17,33 @@ fn test_hello_round_trips() {
 }
 
 fn test_control_records_round_trip() {
-	assert one(bridge_encode_open(3)).channel == 3
+	o := one(bridge_encode_open(3, 42))
+	assert o.channel == 3 && o.gen == 42
 	assert one(bridge_encode_close(4)).kind == .close
-	ok := one(bridge_encode_opened(1, ''))
-	assert ok.kind == .opened && ok.error == ''
-	bad := one(bridge_encode_opened(1, 'no such device'))
+	ok := one(bridge_encode_opened(1, 42, ''))
+	assert ok.kind == .opened && ok.gen == 42 && ok.error == ''
+	bad := one(bridge_encode_opened(1, 42, 'no such device'))
 	assert bad.error == 'no such device'
-	se := one(bridge_encode_senderr(2, 77, 'Network is down'))
-	assert se.kind == .senderr && se.channel == 2 && se.seq == 77 && se.error == 'Network is down'
+	se := one(bridge_encode_senderr(2, 77, true, 'Network is down'))
+	assert se.kind == .senderr && se.channel == 2 && se.seq == 77 && se.definite
+	assert se.error == 'Network is down'
+	assert !one(bridge_encode_senderr(2, 78, false, 'x')).definite
 	no := one(bridge_encode_refused('wrong token'))
 	assert no.kind == .refused && no.error == 'wrong token'
 	// A string longer than a record needs is cut, never sent whole.
-	long := one(bridge_encode_lost(5, 'x'.repeat(100_000)))
+	long := one(bridge_encode_lost(5, 42, 'x'.repeat(100_000)))
 	assert long.error.len == bridge_max_str
 	// ...and at a character boundary: 1023 ASCII bytes then a two-byte é keeps 1023.
-	cut := one(bridge_encode_lost(5, 'x'.repeat(bridge_max_str - 1) + 'é'))
+	cut := one(bridge_encode_lost(5, 42, 'x'.repeat(bridge_max_str - 1) + 'é'))
 	assert cut.error == 'x'.repeat(bridge_max_str - 1)
-	lost := one(bridge_encode_lost(5, 'recv failed'))
-	assert lost.kind == .lost && lost.error == 'recv failed'
-	st := one(bridge_encode_status(1, .error_passive, BusDiagnostics{
+	lost := one(bridge_encode_lost(5, 42, 'recv failed'))
+	assert lost.kind == .lost && lost.gen == 42 && lost.error == 'recv failed'
+	st := one(bridge_encode_status(1, 42, .error_passive, BusDiagnostics{
 		dropped:       1
 		bus_errors:    2
 		decode_errors: 3
 	}))
-	assert st.health == .error_passive
+	assert st.health == .error_passive && st.gen == 42
 	assert st.diag == BusDiagnostics{
 		dropped:       1
 		bus_errors:    2
@@ -57,22 +60,22 @@ fn test_frame_round_trips_every_flag() {
 		esi:      true
 		data:     []u8{len: 64, init: u8(index)}
 	}
-	r := one(bridge_encode_frame(7, f, 0xDEADBEEF, true, -5))
-	assert r.kind == .frame && r.channel == 7 && r.seq == 0xDEADBEEF && r.tx
+	r := one(bridge_encode_frame(7, 42, f, 0xDEADBEEF, true, -5))
+	assert r.kind == .frame && r.channel == 7 && r.gen == 42 && r.seq == 0xDEADBEEF && r.tx
 	assert r.stamp_ns == -5
 	assert r.frame.id == f.id && r.frame.extended && r.frame.fd && r.frame.brs && r.frame.esi
 	assert !r.frame.rtr
 	assert r.frame.data == f.data
-	rtr := one(bridge_encode_frame(0, CanFrame{ id: 0x7FF, rtr: true, data: []u8{len: 2} }, 0,
+	rtr := one(bridge_encode_frame(0, 1, CanFrame{ id: 0x7FF, rtr: true, data: []u8{len: 2} }, 0,
 		false, 0))
 	assert rtr.frame.rtr && !rtr.tx && rtr.frame.data.len == 2
 }
 
 fn test_decoder_follows_any_read_boundary() {
-	mut stream := bridge_encode_frame(1, CanFrame{ id: 0x123, data: [u8(1), 2, 3] }, 9, false,
+	mut stream := bridge_encode_frame(1, 1, CanFrame{ id: 0x123, data: [u8(1), 2, 3] }, 9, false,
 		42)
-	stream << bridge_encode_status(1, .ok, BusDiagnostics{})
-	stream << bridge_encode_opened(0, '')
+	stream << bridge_encode_status(1, 1, .ok, BusDiagnostics{})
+	stream << bridge_encode_opened(0, 1, '')
 	mut d := BridgeDecoder{}
 	mut got := []BridgeRecord{}
 	// One byte at a time, then all three back to back in one read.
@@ -100,19 +103,19 @@ fn test_decoder_refuses_what_is_not_a_bridge_stream() {
 		assert false
 	}
 	// A frame body cut short.
-	full := bridge_encode_frame(0, CanFrame{ id: 1, data: [u8(1), 2] }, 1, false, 0)
+	full := bridge_encode_frame(0, 1, CanFrame{ id: 1, data: [u8(1), 2] }, 1, false, 0)
 	if _ := bridge_decode_body(full[4..full.len - 1]) {
 		assert false
 	}
 	// A payload length past 64.
 	mut big := full[4..].clone()
-	big[19] = 65
+	big[23] = 65 // the payload length, after kind, channel, gen, flags, seq, id and stamp
 	if _ := bridge_decode_body(big) {
 		assert false
 	}
 	// A health rung this decoder does not know.
-	mut st := bridge_encode_status(0, .ok, BusDiagnostics{})[4..].clone()
-	st[2] = 9
+	mut st := bridge_encode_status(0, 1, .ok, BusDiagnostics{})[4..].clone()
+	st[6] = 9 // the health byte, after kind, channel and gen
 	if _ := bridge_decode_body(st) {
 		assert false
 	}

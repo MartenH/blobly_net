@@ -33,6 +33,8 @@ struct BridgeServedState {
 mut:
 	running bool = true
 	pump    thread
+	// The app's number for this open of the channel, carried by every record about it.
+	gen u32
 }
 
 // BridgeServed is one channel the app has open.
@@ -55,6 +57,7 @@ mut:
 	// writer, read by the reader.
 	writing_since i64
 	stalled       i64
+	done          i64
 }
 
 // bridge_stamp is the bridge host's monotonic clock now, the domain every stamp it sends is in.
@@ -78,6 +81,14 @@ pub fn bridge_serve(mut c net.TcpConn, cfg BridgeServeCfg) ! {
 		cfg:  cfg
 		conn: c
 	}
+	// The watchdog outlives the channels' teardown — a pump stuck in a write is what it unsticks —
+	// and ends before this returns, since the caller closes the socket it shuts down. Deferred
+	// first, so it runs last.
+	wd := spawn srv.watchdog()
+	defer {
+		stdatomic.store_i64(&srv.done, 1)
+		wd.wait()
+	}
 	defer {
 		srv.close_all()
 	}
@@ -86,11 +97,6 @@ pub fn bridge_serve(mut c net.TcpConn, cfg BridgeServeCfg) ! {
 	mut dec := BridgeDecoder{}
 	mut buf := []u8{len: 8192}
 	for {
-		since := stdatomic.load_i64(&srv.writing_since)
-		if since != 0 && time.ticks() - since > bridge_send_ms {
-			stdatomic.store_i64(&srv.stalled, 1)
-			srv.fail()
-		}
 		recs := bridge_read(mut c, mut dec, mut buf) or {
 			if stdatomic.load_i64(&srv.stalled) != 0 {
 				return error('a write to the app stalled for more than ${bridge_send_ms} ms')
@@ -106,6 +112,21 @@ pub fn bridge_serve(mut c net.TcpConn, cfg BridgeServeCfg) ! {
 		for rec in recs {
 			srv.handle(rec)!
 		}
+	}
+}
+
+// watchdog ends a connection whose write has stalled — an app that stopped reading without
+// closing — on its own thread, because any thread can be the one stuck in that write, the reader
+// included (it writes the acknowledgement of a send).
+fn (mut srv BridgeServer) watchdog() {
+	for stdatomic.load_i64(&srv.done) == 0 {
+		since := stdatomic.load_i64(&srv.writing_since)
+		if since != 0 && time.ticks() - since > bridge_send_ms
+			&& stdatomic.load_i64(&srv.stalled) == 0 {
+			stdatomic.store_i64(&srv.stalled, 1)
+			srv.fail()
+		}
+		time.sleep(100 * time.millisecond)
 	}
 }
 
@@ -140,7 +161,7 @@ fn (mut srv BridgeServer) handle(rec BridgeRecord) ! {
 	}
 	match rec.kind {
 		.open {
-			srv.open_channel(rec.channel)!
+			srv.open_channel(rec.channel, rec.gen)!
 		}
 		.close {
 			srv.close_channel(rec.channel)
@@ -157,25 +178,46 @@ fn (mut srv BridgeServer) handle(rec BridgeRecord) ! {
 	}
 }
 
-fn (mut srv BridgeServer) open_channel(ch u8) ! {
-	if ch in srv.chans {
-		srv.write(bridge_encode_opened(ch, ''))!
+fn (mut srv BridgeServer) open_channel(ch u8, gen u32) ! {
+	// Already open: from here its records are this open's.
+	if mut s := srv.chans[ch] {
+		lock s.st {
+			s.st.gen = gen
+		}
+		srv.write(bridge_encode_opened(ch, gen, ''))!
 		return
 	}
 	name := srv.cfg.channels[ch]
 	bus := srv.cfg.opener(name) or {
-		srv.write(bridge_encode_opened(ch, 'cannot open ${name}: ${err}'))!
+		srv.write(bridge_encode_opened(ch, gen, 'cannot open ${name}: ${err}'))!
 		return
 	}
 	mut s := &BridgeServed{
 		bus: bus
+	}
+	lock s.st {
+		s.st.gen = gen
 	}
 	srv.chans[ch] = s
 	t := spawn srv.pump(ch, mut s)
 	lock s.st {
 		s.st.pump = t
 	}
-	srv.write(bridge_encode_opened(ch, ''))!
+	srv.write(bridge_encode_opened(ch, gen, ''))!
+}
+
+// served_gen is the open a channel's records are currently about.
+fn served_gen(s &BridgeServed) u32 {
+	return rlock s.st {
+		s.st.gen
+	}
+}
+
+// send_refusal_definite is whether a send that `name`'s bus refused certainly did not reach the
+// wire: a driver's own refusal, or any failure of a SocketCAN write (the kernel takes a frame
+// whole or not at all). Anything else may have reached the wire before it failed.
+fn send_refusal_definite(name string, err IError) bool {
+	return err is NotWritten || !name.contains(':')
 }
 
 fn (mut srv BridgeServer) close_channel(ch u8) {
@@ -199,7 +241,7 @@ fn (mut srv BridgeServer) close_all() {
 // why it did not go out.
 fn (mut srv BridgeServer) send_frame(rec BridgeRecord) ! {
 	mut s := srv.chans[rec.channel] or {
-		srv.write(bridge_encode_senderr(rec.channel, rec.seq, 'channel ${srv.cfg.channels[rec.channel]} is not open'))!
+		srv.write(bridge_encode_senderr(rec.channel, rec.seq, true, 'channel ${srv.cfg.channels[rec.channel]} is not open'))!
 		return
 	}
 	// The output lock is held from the send to its acknowledgement, so a reply the pump hears
@@ -210,10 +252,12 @@ fn (mut srv BridgeServer) send_frame(rec BridgeRecord) ! {
 	}
 	s.bus.send(rec.frame) or {
 		why := if err.msg() == '' { 'the interface refused the frame' } else { err.msg() }
-		srv.write_locked(bridge_encode_senderr(rec.channel, rec.seq, why))!
+		definite := send_refusal_definite(srv.cfg.channels[rec.channel], err)
+		srv.write_locked(bridge_encode_senderr(rec.channel, rec.seq, definite, why))!
 		return
 	}
-	srv.write_locked(bridge_encode_frame(rec.channel, rec.frame, rec.seq, true, bridge_stamp()))!
+	srv.write_locked(bridge_encode_frame(rec.channel, served_gen(s), rec.frame, rec.seq, true,
+		bridge_stamp()))!
 }
 
 // pump returns every frame the channel receives, and its health and counts whenever they change,
@@ -235,13 +279,13 @@ fn (mut srv BridgeServer) pump(ch u8, mut s BridgeServed) {
 			f := s.bus.recv(wait) or {
 				if err.msg() != 'timeout' {
 					srv.write(batch) or {}
-					srv.write(bridge_encode_lost(ch, err.msg())) or {}
+					srv.write(bridge_encode_lost(ch, served_gen(s), err.msg())) or {}
 					return
 				}
 				break
 			}
 			stamp := if f.hw_domain == socketcan_domain { f.hw_ns } else { bridge_stamp() }
-			batch << bridge_encode_frame(ch, f, 0, false, stamp)
+			batch << bridge_encode_frame(ch, served_gen(s), f, 0, false, stamp)
 			wait = 0
 		}
 		if batch.len > 0 {
@@ -255,7 +299,7 @@ fn (mut srv BridgeServer) pump(ch u8, mut s BridgeServed) {
 		if h != health || d != diag {
 			health = h
 			diag = d
-			srv.write(bridge_encode_status(ch, h, d)) or {
+			srv.write(bridge_encode_status(ch, served_gen(s), h, d)) or {
 				srv.fail()
 				return
 			}
