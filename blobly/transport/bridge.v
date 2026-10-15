@@ -80,8 +80,9 @@ pub:
 }
 
 struct BridgeResult {
-	seq u32
-	err string
+	seq    u32
+	failed bool
+	err    string
 }
 
 struct BridgeChanState {
@@ -92,8 +93,9 @@ mut:
 	// Frames this side dropped because the channel's queue was full.
 	dropped u64
 	// Why the bridge closed the channel, once it has.
-	lost   string
-	closed bool
+	lost      bool
+	lost_why  string
+	closed    bool
 }
 
 // BridgeChan is one open channel's mailboxes, filled by the session's reader thread.
@@ -112,6 +114,10 @@ mut:
 	ended bool
 	err   string
 	seq   u32
+	// When the write in progress began, or 0. A write to a bridge that stopped reading (its host
+	// asleep) blocks once the socket's buffer is full, whatever timeout is set, so the reader —
+	// which wakes at least once a second — cuts a session whose write has stalled.
+	writing_since i64
 }
 
 // BridgeSession is one connected bridge. Its reader thread owns the connection's receive side
@@ -148,10 +154,13 @@ pub fn bridge_listen() !BridgeEndpoint {
 	mut ep := BridgeEndpoint{}
 	lock bridge_reg {
 		if bridge_reg.port == 0 {
+			// Everything that can fail first, so a failure leaves nothing half-published.
+			token := (crypto_rand.bytes(16)!).hex()
 			mut l := net.listen_tcp(.ip, '127.0.0.1:0')!
-			bridge_reg.port = int(l.addr()!.port()!)
-			bridge_reg.token = (crypto_rand.bytes(16)!).hex()
-			spawn bridge_accept_loop(mut l, bridge_reg.token)
+			port := int(l.addr()!.port()!)
+			spawn bridge_accept_loop(mut l, token)
+			bridge_reg.token = token
+			bridge_reg.port = port
 		}
 		ep = BridgeEndpoint{
 			port:  bridge_reg.port
@@ -232,11 +241,37 @@ fn bridge_refusal(hello BridgeRecord, token string) ?string {
 	if hello.token != token {
 		return 'wrong token'
 	}
-	if hello.name == '' || hello.name.contains('/') || hello.name.contains('@') {
-		return 'the name "${hello.name}" cannot be part of an address bridge:<name>/<channel>'
-	}
 	if hello.channels.len == 0 {
 		return 'no channels offered'
+	}
+	if why := bridge_label_error(hello.name, hello.channels) {
+		return why
+	}
+	return none
+}
+
+// bridge_max_label is the longest bridge or channel name: one is a WSL distribution's name, the
+// other an interface's, and both are part of an address.
+pub const bridge_max_label = 255
+
+// bridge_label_error is why a bridge name and its channel names cannot all be spelled as
+// `bridge:<name>/<channel>`, or none. Asked by the bridge before it says hello and by the app of
+// the hello it hears, so a channel is never offered that no address could open.
+pub fn bridge_label_error(name string, channels []string) ?string {
+	for label in [name] {
+		if label == '' || label.len > bridge_max_label || label.contains('/') || label.contains('@') {
+			return 'the bridge name "${label}" cannot be part of an address bridge:<name>/<channel>'
+		}
+	}
+	mut seen := map[string]bool{}
+	for ch in channels {
+		if ch == '' || ch.len > bridge_max_label || ch.contains('/') || ch.contains('@') {
+			return 'the channel name "${ch}" cannot be part of an address bridge:<name>/<channel>'
+		}
+		if ch in seen {
+			return 'the channel ${ch} is offered twice'
+		}
+		seen[ch] = true
 	}
 	return none
 }
@@ -291,6 +326,7 @@ fn bridge_session_run(mut c net.TcpConn, token string) {
 	}
 	// Records until the bridge goes away or says something this side cannot follow.
 	for why == '' {
+		s.check_stall()
 		more := bridge_read(mut c, mut dec, mut buf) or {
 			if bridge_is_timeout(err) {
 				continue
@@ -340,7 +376,11 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 			}
 		}
 		.senderr {
-			_ := ch.results.try_push(BridgeResult{ seq: rec.seq, err: rec.error })
+			_ := ch.results.try_push(BridgeResult{
+				seq:    rec.seq
+				failed: true
+				err:    if rec.error == '' { 'the bridge could not send the frame' } else { rec.error }
+			})
 		}
 		.opened {
 			_ := ch.opened.try_push(rec.error)
@@ -353,7 +393,8 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 		}
 		.lost {
 			lock ch.st {
-				ch.st.lost = rec.error
+				ch.st.lost = true
+				ch.st.lost_why = if rec.error == '' { 'the bridge closed the channel' } else { rec.error }
 			}
 		}
 		else {}
@@ -428,9 +469,25 @@ fn (mut s BridgeSession) write_locked(rec []u8) ! {
 	if e := s.failure() {
 		return error(e)
 	}
+	lock s.st {
+		s.st.writing_since = time.ticks()
+	}
 	s.conn.write(rec) or {
 		s.cut('write failed: ${err}')
 		return error('bridge "${s.name}": write failed: ${err}')
+	}
+	lock s.st {
+		s.st.writing_since = 0
+	}
+}
+
+// check_stall cuts the session when a write has been blocked longer than a send may take.
+fn (mut s BridgeSession) check_stall() {
+	since := rlock s.st {
+		s.st.writing_since
+	}
+	if since != 0 && time.ticks() - since > bridge_send_ms {
+		s.cut('a write to the bridge stalled for more than ${bridge_send_ms} ms')
 	}
 }
 
@@ -508,9 +565,11 @@ fn open_bridge_bus(iface string) !SharedDriver {
 			return error('${iface}: ${e}')
 		}
 		if time.ticks() >= deadline {
+			// Ended, not retried: a late answer to this open would be taken for the next one's.
+			why := 'the bridge did not answer an open within ${bridge_open_ms} ms'
 			s.forget(ch, c)
-			s.write(bridge_encode_close(ch)) or {}
-			return error('${iface}: the bridge did not answer the open within ${bridge_open_ms} ms')
+			s.cut(why)
+			return error('${iface}: ${why}')
 		}
 	}
 	return &BridgeBus{
@@ -529,8 +588,8 @@ fn (b &BridgeBus) failure() ?string {
 	return rlock b.c.st {
 		if b.c.st.closed {
 			'bus is closed'
-		} else if b.c.st.lost != '' {
-			'${b.iface}: ${b.c.st.lost}'
+		} else if b.c.st.lost {
+			'${b.iface}: ${b.c.st.lost_why}'
 		} else {
 			none
 		}
@@ -539,7 +598,9 @@ fn (b &BridgeBus) failure() ?string {
 
 // send puts a frame on the bridge's channel and waits for the bridge to say it went out.
 fn (mut b BridgeBus) send(frame CanFrame, commit fn ()) ! {
-	if why := frame_send_refusal(frame) {
+	// REFUSED, not clamped: the interface on the bridge's side clamps what SocketCAN clamps, and
+	// this side's record of the frame would then not be what went out.
+	if why := frame_shape_error(frame) {
 		return not_written('${b.iface}: ${why}')
 	}
 	seq := b.sess.next_seq()
@@ -566,13 +627,14 @@ fn (mut b BridgeBus) send(frame CanFrame, commit fn ()) ! {
 			bridge_poll_ms * time.millisecond {}
 		}
 		if r := got {
-			if r.seq != seq {
-				continue
+			if r.seq == seq {
+				// Refused on the bridge's side: the frame did not go out, and no acknowledgement
+				// will come for it, so the hub must not hold this send's token open.
+				if r.failed {
+					return not_written('${b.iface}: ${r.err}')
+				}
+				return
 			}
-			if r.err != '' {
-				return error('${b.iface}: ${r.err}')
-			}
-			return
 		}
 		if e := b.failure() {
 			return error(e)

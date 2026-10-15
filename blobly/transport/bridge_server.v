@@ -65,6 +65,9 @@ pub fn bridge_serve(mut c net.TcpConn, cfg BridgeServeCfg) ! {
 	if cfg.channels.len > bridge_max_channels {
 		return error('a bridge offers at most ${bridge_max_channels} channels, not ${cfg.channels.len}')
 	}
+	if why := bridge_label_error(cfg.name, cfg.channels) {
+		return error(why)
+	}
 	mut srv := &BridgeServer{
 		cfg:  cfg
 		conn: c
@@ -90,6 +93,14 @@ pub fn bridge_serve(mut c net.TcpConn, cfg BridgeServeCfg) ! {
 			srv.handle(rec)!
 		}
 	}
+}
+
+// fail ends the connection after a write from a channel's pump failed: the stream may hold part of
+// a record, and a channel that stopped forwarding must not look as if it were still open. The
+// reader sees the shutdown and bridge_serve returns; the socket is closed by its caller after the
+// pumps have been joined, so the descriptor is still this connection's here.
+fn (mut srv BridgeServer) fail() {
+	net.shutdown(srv.conn.sock.handle)
 }
 
 fn (mut srv BridgeServer) write(rec []u8) ! {
@@ -170,7 +181,8 @@ fn (mut srv BridgeServer) send_frame(rec BridgeRecord) ! {
 		return
 	}
 	s.bus.send(rec.frame) or {
-		srv.write(bridge_encode_senderr(rec.channel, rec.seq, err.msg()))!
+		why := if err.msg() == '' { 'the interface refused the frame' } else { err.msg() }
+		srv.write(bridge_encode_senderr(rec.channel, rec.seq, why))!
 		return
 	}
 	srv.write(bridge_encode_frame(rec.channel, rec.frame, rec.seq, true, bridge_stamp()))!
@@ -205,14 +217,20 @@ fn (mut srv BridgeServer) pump(ch u8, mut s BridgeServed) {
 			wait = 0
 		}
 		if batch.len > 0 {
-			srv.write(batch) or { return }
+			srv.write(batch) or {
+				srv.fail()
+				return
+			}
 		}
 		h := s.bus.health()
 		d := s.bus.diagnostics()
 		if h != health || d != diag {
 			health = h
 			diag = d
-			srv.write(bridge_encode_status(ch, h, d)) or { return }
+			srv.write(bridge_encode_status(ch, h, d)) or {
+				srv.fail()
+				return
+			}
 		}
 	}
 }

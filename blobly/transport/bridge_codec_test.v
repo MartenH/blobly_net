@@ -30,6 +30,9 @@ fn test_control_records_round_trip() {
 	// A string longer than a record needs is cut, never sent whole.
 	long := one(bridge_encode_lost(5, 'x'.repeat(100_000)))
 	assert long.error.len == bridge_max_str
+	// ...and at a character boundary: 1023 ASCII bytes then a two-byte é keeps 1023.
+	cut := one(bridge_encode_lost(5, 'x'.repeat(bridge_max_str - 1) + 'é'))
+	assert cut.error == 'x'.repeat(bridge_max_str - 1)
 	lost := one(bridge_encode_lost(5, 'recv failed'))
 	assert lost.kind == .lost && lost.error == 'recv failed'
 	st := one(bridge_encode_status(1, .error_passive, BusDiagnostics{

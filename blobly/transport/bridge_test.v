@@ -312,3 +312,100 @@ fn test_a_bridge_dialling_in_again_replaces_its_stale_session() {
 	mut fresh := open('bridge:b-again/A')!
 	fresh.close()
 }
+
+struct BlankErrorBus {}
+
+fn (mut b BlankErrorBus) send(frame CanFrame) ! {
+	return error('')
+}
+
+fn (mut b BlankErrorBus) recv(timeout_ms int) !CanFrame {
+	time.sleep(timeout_ms * time.millisecond)
+	return error('timeout')
+}
+
+fn (mut b BlankErrorBus) close() {}
+
+fn (mut b BlankErrorBus) health() BusHealth {
+	return .unknown
+}
+
+fn (mut b BlankErrorBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
+fn (mut b BlankErrorBus) reconcile_silence(want bool) ! {}
+
+fn test_refusals_are_not_written_and_never_look_like_success() {
+	// A frame no interface could carry is refused here, never clamped on the bridge's side.
+	start_bridge('b-shape', ['A'], inproc_opener('bsh-'))!
+	mut app := open('bridge:b-shape/A')!
+	defer {
+		app.close()
+	}
+	if _ := app.send(CanFrame{ id: 1, data: []u8{len: 9} }) {
+		assert false, 'a 9-byte classic frame was sent'
+	} else {
+		assert err is NotWritten, err.msg()
+	}
+	// A frame the interface refuses is not written either, even with an empty reason.
+	blank := fn (name string) !Bus {
+		return &BlankErrorBus{}
+	}
+	start_bridge('b-blank', ['A'], blank)!
+	mut b := open('bridge:b-blank/A')!
+	defer {
+		b.close()
+	}
+	if _ := b.send(CanFrame{ id: 1, data: [u8(1)] }) {
+		assert false, 'a refused send reported success'
+	} else {
+		assert err is NotWritten, err.msg()
+		assert err.msg().contains('the interface refused the frame'), err.msg()
+	}
+}
+
+fn test_a_stalled_write_ends_the_session() {
+	start_bridge('b-stall', ['A'], inproc_opener('bst-'))!
+	mut app := open('bridge:b-stall/A')!
+	defer {
+		app.close()
+	}
+	mut s := bridge_session('b-stall') or { panic('not registered') }
+	// As if a write had been blocked for three seconds, on a bridge that stopped reading.
+	lock s.st {
+		s.st.writing_since = time.ticks() - 3000
+	}
+	s.check_stall()
+	wait_gone('b-stall')
+	if _ := app.recv(500) {
+		assert false
+	} else {
+		assert err.msg().contains('stalled'), err.msg()
+	}
+}
+
+fn test_labels_must_be_addressable() {
+	assert bridge_label_error('Ubuntu-24.04', ['vcan0', 'can0']) == none
+	for name in ['', 'a/b', 'a@b', 'x'.repeat(bridge_max_label + 1)] {
+		assert bridge_label_error(name, ['vcan0']) != none, name
+	}
+	for chans in [[''], ['A/B'], ['A@B'], ['vcan0', 'vcan0']] {
+		assert bridge_label_error('n', chans) != none, chans.str()
+	}
+	// The bridge refuses to offer what cannot be addressed, before it says hello.
+	ep := bridge_listen()!
+	mut c := net.dial_tcp('127.0.0.1:${ep.port}')!
+	if _ := bridge_serve(mut c, BridgeServeCfg{
+		token:    ep.token
+		name:     'b-label'
+		channels: ['net/A']
+		opener:   inproc_opener('bl-')
+	})
+	{
+		assert false
+	} else {
+		assert err.msg().contains('"net/A"'), err.msg()
+	}
+	c.close() or {}
+}

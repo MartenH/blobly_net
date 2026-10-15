@@ -101,7 +101,11 @@ fn bridge_put_u64(mut b []u8, v u64) {
 }
 
 fn bridge_put_str(mut b []u8, s string) {
-	n := if s.len > bridge_max_str { bridge_max_str } else { s.len }
+	mut n := if s.len > bridge_max_str { bridge_max_str } else { s.len }
+	// Cut at a character boundary, never inside a UTF-8 sequence.
+	for n < s.len && n > 0 && s[n] & 0xC0 == 0x80 {
+		n--
+	}
 	bridge_put_u16(mut b, u16(n))
 	b << s.bytes()[..n]
 }
