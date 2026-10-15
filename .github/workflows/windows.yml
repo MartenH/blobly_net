@@ -172,7 +172,8 @@ jobs:
           # its "no vcan module" failure tells the user to run in WSL from this folder.
           cp canbridge-linux/canbridge dist/canbridge
           mkdir -p dist/scripts
-          cp scripts/setup_vcan.sh scripts/build_vcan_module.sh scripts/vcan_common.sh dist/scripts/
+          cp scripts/setup_vcan.sh scripts/build_vcan_module.sh scripts/vcan_common.sh \
+            scripts/setup_sudoers.sh dist/scripts/
           # The bare -static is gone (#318), so the freetype chain resolves to DLLs and the ldd
           # sweep above copies them here. `find` rather than `cp build/*.dll` is still right:
           # GLFW and the GCC runtime stay static by explicit flag, so the set is small and could

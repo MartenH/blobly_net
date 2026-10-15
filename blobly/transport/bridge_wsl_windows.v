@@ -4,7 +4,7 @@ import os
 
 #include <windows.h>
 #include <shellapi.h>
-#flag windows -lshell32
+#flag windows -lshell32 -ladvapi32
 
 fn C.ShellExecuteW(hwnd voidptr, op &u16, file &u16, params &u16, dir &u16, show int) voidptr
 

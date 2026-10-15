@@ -55,6 +55,7 @@ Windows folder.
   a WSL terminal in the app's folder (the bundle ships both scripts) and run:
 
   ```
+  sudo ./scripts/setup_sudoers.sh   # once: lets the two below load the module without a password
   ./scripts/build_vcan_module.sh    # once per WSL kernel: builds and loads the module (a few minutes)
   ./scripts/setup_vcan.sh           # after each WSL restart: loads it and brings vcan0/vcan1 up
   ```
