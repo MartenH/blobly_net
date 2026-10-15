@@ -233,8 +233,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   latter sends you to WSL for everything:
 
   ```powershell
-  $env:PATH = "C:\dev\msys64-ct\mingw64\bin;$env:PATH"
-  C:\dev\v\v.exe -cc gcc -enable-globals -o thing.exe cmd\thing\main.v
+  $env:PATH = "C:\dev\msys64-ct\ucrt64\bin;$env:PATH"
+  C:\v-ct\v.exe -cc gcc -enable-globals -o thing.exe cmd\thing\main.v
   ```
 
   It is what `.github/workflows/windows.yml` uses too. Bench work has to be native anyway — the

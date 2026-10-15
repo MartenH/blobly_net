@@ -58,8 +58,8 @@ spawns **real native Win32 windows** across monitors; event-driven idle CPU **0.
 `docs/gui_toolkit_evaluation.md` → "Windows build check — RESULTS".
 
 ```sh
-# dedicated MSYS2 MINGW64 shell — don't pollute the user's personal MSYS2
-pacman -S --needed git mingw-w64-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
+# dedicated MSYS2 UCRT64 shell — don't pollute the user's personal MSYS2
+pacman -S --needed git mingw-w64-ucrt-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
 sh libs/vgui/build_deps.sh      # clones cimgui/cimplot (pinned) + builds libvgui_c.a
 v -cc gcc -path "@vlib|libs|@vmodules" -o trace_chart.exe \
   libs/vgui/examples/trace_chart/trace_chart.v

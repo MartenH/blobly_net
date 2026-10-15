@@ -38,6 +38,7 @@ runs:
           libs/vgui/build/cimgui
           libs/vgui/build/cimplot
           libs/vgui/libvgui_c.a
+          libs/vgui/libvgui_c.toolchain
         key: gui-deps-1-${{ runner.os }}-${{ runner.arch }}-${{ steps.environment.outputs.key }}-${{ hashFiles('libs/vgui/build_deps.sh', 'libs/vgui/*.cpp', 'libs/vgui/*.h', '.github/actions/gui-deps/action.yml') }}
 
     - name: Build or validate GUI dependencies
@@ -64,4 +65,5 @@ runs:
           libs/vgui/build/cimgui
           libs/vgui/build/cimplot
           libs/vgui/libvgui_c.a
+          libs/vgui/libvgui_c.toolchain
         key: ${{ steps.cache.outputs.cache-primary-key }}

@@ -58,7 +58,7 @@ header_notice "$vroot/thirdparty/libgc/gc.c" "$dest/licenses/boehm-gc-LICENSE.tx
 # static link happened (codex round 1, and round 1 on the release PR for the GCC half — which
 # this branch created by making libstdc++ static in the first place).
 for d in glfw gcc-libs gcc; do
-  for base in /mingw64/share/licenses/$d /mingw64/share/doc/$d; do
+  for base in /ucrt64/share/licenses/$d /ucrt64/share/doc/$d; do
     [ -d "$base" ] || continue
     mkdir -p "$dest/licenses/$d"
     cp -r "$base/." "$dest/licenses/$d/"
@@ -67,9 +67,9 @@ for d in glfw gcc-libs gcc; do
 done
 # ON WINDOWS THOSE ARE NOT OPTIONAL. The loop skips what is absent, which is right on Linux where
 # both are the distro's shared libraries — and would be a silent miss on Windows if MSYS2 ever
-# moved the paths. An mingw64 tree present means the static link happened, so the texts must be
+# moved the paths. A ucrt64 tree present means the static link happened, so the texts must be
 # here. Fail rather than ship the claim without the files behind it.
-if [ -d /mingw64 ]; then
+if [ -d /ucrt64/bin ]; then
   [ -d "$dest/licenses/glfw" ] || { echo "stage_bundle: no GLFW licence, but -l:libglfw3.a links it" >&2; exit 1; }
   [ -d "$dest/licenses/gcc-libs" ] || [ -d "$dest/licenses/gcc" ] \
     || { echo "stage_bundle: no GCC runtime licence, but -static-libgcc/-l:libstdc++.a link it" >&2; exit 1; }

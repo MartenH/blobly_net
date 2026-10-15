@@ -22,7 +22,7 @@ module vgui
 // imgui/implot C++ objects, static libstdc++/libgcc so the exe carries no MinGW runtime
 // DLLs (deps end up: kernel32/user32/gdi32/shell32/opengl32/msvcrt only). Multi-viewport
 // is native Win32 (no X11). Verified: mingw-w64 gcc 16.1.0, self-contained exe, GL 4.6.
-// FreeType (crisp text): needs `pacman -S mingw-w64-x86_64-freetype`. mingw's libfreetype.a
+// FreeType (crisp text): needs `pacman -S mingw-w64-ucrt-x86_64-freetype`. mingw's libfreetype.a
 // is built WITH HarfBuzz, so the chain below is `pkg-config --static --libs freetype2`
 // verbatim (harfbuzz→glib/dwrite/usp10/pcre2/intl/graphite2, png→z, brotli, bz2). HarfBuzz +
 // graphite2 are C++, so `-lstdc++` MUST come LAST (after them) or you get `undefined

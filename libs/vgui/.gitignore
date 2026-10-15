@@ -12,3 +12,4 @@ examples/*/trace_chart.exe
 examples/**/*.ppm
 examples/*/live_trace
 examples/*/live_trace.exe
+libvgui_c.toolchain

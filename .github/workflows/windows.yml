@@ -9,8 +9,13 @@ name: windows-build
 # is what the README points people at for a prebuilt bundle, so treat a failure as a release
 # blocker, not as an expected flake. (It was marked best-effort/unvalidated while the imgui
 # migration settled; that is no longer true.)
-# If a link lib ever goes missing, add the matching mingw-w64-x86_64-* package to the MSYS2
+# If a link lib ever goes missing, add the matching mingw-w64-ucrt-x86_64-* package to the MSYS2
 # install list below.
+#
+# MSYS2 environment: UCRT64. MINGW64 is deprecated by MSYS2, and the two link different C runtimes
+# (UCRT / msvcrt), so the compiler, the ImGui archive and every bundled DLL come from UCRT64 alone;
+# libs/vgui/build_deps.sh stamps which toolchain built the archive and run_gui.sh rebuilds a
+# mismatch. GCC either way: CLANG64 would also change the compiler and the C++ library.
 #
 # V acquisition: DOWNLOAD the prebuilt V from this repo's "v-toolchain" release (V's makev.bat
 # self-compile hangs on the runner). It is the V3 of .v-version, cross-built from Linux by
@@ -85,24 +90,24 @@ jobs:
           if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
           & C:\v-ct\v.exe version
 
-      # mingw toolchain + the imgui link deps (mirror the `#flag windows` line in vgui.v):
+      # UCRT64 toolchain + the imgui link deps (mirror the `#flag windows` line in vgui.v):
       # gcc/g++ (build_deps.sh), glfw (windowing), freetype/harfbuzz/glib2/fribidi/fontconfig
       # (glyph rasterizer + text stack), git (build_deps clones cimgui/cimplot).
-      - name: Set up MSYS2 (mingw-w64 gcc + glfw + freetype)
+      - name: Set up MSYS2 (UCRT64 gcc + glfw + freetype)
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
             git
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-glfw
-            mingw-w64-x86_64-freetype
-            mingw-w64-x86_64-harfbuzz
-            mingw-w64-x86_64-glib2
-            mingw-w64-x86_64-fribidi
-            mingw-w64-x86_64-fontconfig
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-glfw
+            mingw-w64-ucrt-x86_64-freetype
+            mingw-w64-ucrt-x86_64-harfbuzz
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-fribidi
+            mingw-w64-ucrt-x86_64-fontconfig
 
       - name: Build GUI dependencies (cached)
         uses: ./.github/actions/gui-deps
@@ -141,11 +146,11 @@ jobs:
         run: |
           RUN=0 NO_PARALLEL=1 V=/c/v-ct/v.exe sh scripts/run_gui.sh
           test -f build/blobly_net.exe && echo "BUILD OK -> build/blobly_net.exe"
-          # Copy the exe's mingw64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
+          # Copy the exe's ucrt64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
           # ldd, so the bundled artifact runs outside an MSYS2 shell.
-          ldd build/blobly_net.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
+          ldd build/blobly_net.exe | awk '/\/ucrt64\/bin\// {print $3}' | sort -u \
             | while read -r d; do cp -f "$d" build/; done
-          echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) mingw64 DLLs"
+          echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) ucrt64 DLLs"
 
       # Stage the demo projects/DBCs/samples + the ldd-resolved runtime DLLs next to the exe,
       # so the artifact runs on a clean machine.
@@ -197,12 +202,12 @@ jobs:
           mkdir -p dist/licenses
           for dll in "${dlls[@]}"; do
             base="$(basename "$dll")"
-            pkg="$(pacman -Qoq "/mingw64/bin/$base" 2>/dev/null || true)"
+            pkg="$(pacman -Qoq "/ucrt64/bin/$base" 2>/dev/null || true)"
             [ -n "$pkg" ] || { echo "no owning package for $base"; exit 1; }
-            lic="/mingw64/share/licenses/${pkg#mingw-w64-x86_64-}"
+            lic="/ucrt64/share/licenses/${pkg#mingw-w64-ucrt-x86_64-}"
             [ -d "$lic" ] || { echo "no licence directory for $pkg ($base)"; exit 1; }
-            mkdir -p "dist/licenses/${pkg#mingw-w64-x86_64-}"
-            cp -r "$lic/." "dist/licenses/${pkg#mingw-w64-x86_64-}/"
+            mkdir -p "dist/licenses/${pkg#mingw-w64-ucrt-x86_64-}"
+            cp -r "$lic/." "dist/licenses/${pkg#mingw-w64-ucrt-x86_64-}/"
           done
           echo "staged licences for ${#dlls[@]} bundled DLL(s)"
 

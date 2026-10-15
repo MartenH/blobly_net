@@ -256,12 +256,12 @@ if this drifts, believe them.
 sudo apt install g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
 ```
 
-**Native Windows** — MSYS2 `MINGW64`, mirroring
+**Native Windows** — MSYS2 `UCRT64`, mirroring
 [`windows.yml`](.github/workflows/windows.yml). More than the Linux set, because the glyph
 rasterizer and text stack are not system libraries there:
 
 ```sh
-pacman -S git mingw-w64-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
+pacman -S git mingw-w64-ucrt-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
 ```
 
 Plus the V compiler on both. For Windows, [`.github/workflows/windows.yml`](.github/workflows/windows.yml)

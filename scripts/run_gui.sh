@@ -24,10 +24,12 @@
 # Dependencies section, and .github/workflows/{ci,windows}.yml as the source of truth:
 #   Linux/WSL : sudo apt install g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
 #   Windows   : the dedicated C:\dev\msys64-ct with
-#               pacman -S --needed git mingw-w64-x86_64-{gcc,pkgconf,glfw,freetype,\
+#               pacman -S --needed git mingw-w64-ucrt-x86_64-{gcc,pkgconf,glfw,freetype,\
 #                                  harfbuzz,glib2,fribidi,fontconfig}
+#               (UCRT64, not MINGW64: MSYS2 deprecated MINGW64, and the two link different C
+#               runtimes, so the whole build, ImGui archive included, must come from one)
 set -e
-# On Windows run this from Git Bash or a MSYS2 MINGW64 context, so coreutils + gcc are on PATH.
+# On Windows run this from Git Bash or a MSYS2 UCRT64 context, so coreutils + gcc are on PATH.
 # Capture the CALLER's directory before moving: a project path given on the command line is
 # relative to where the user ran this from, not to the repo root (codex #65 r4).
 CALLER_PWD="$PWD"
@@ -77,13 +79,19 @@ case "$(uname -s)" in
 		done
 		[ -d "$d/msys64-ct" ] && parent="$d"
 		ct="${MSYS2_CT:-$parent/msys64-ct}"
-		# Only prepend a toolchain that is actually there. CI installs mingw via setup-msys2
+		# Only prepend a toolchain that is actually there. CI installs UCRT64 via setup-msys2
 		# (already on PATH, and no sibling msys64-ct exists); prepending a missing directory
 		# would be silently useless there and hides a mistyped MSYS2_CT here.
-		if [ -d "$ct/mingw64/bin" ]; then
-			export PATH="$ct/mingw64/bin:$PATH"            # gcc + static glfw/freetype libs
+		if [ -x "$ct/ucrt64/bin/gcc.exe" ]; then
+			export PATH="$ct/ucrt64/bin:$PATH"             # gcc + static glfw/freetype libs
+		elif [ -d "$ct/mingw64/bin" ]; then
+			# A toolchain set up before the move to UCRT64: say what to install rather than
+			# quietly building against MINGW64, which CI no longer does.
+			echo "run_gui.sh: $ct has MINGW64 but no UCRT64 gcc; the build moved to UCRT64. Install it:" >&2
+			echo "  pacman -S --needed mingw-w64-ucrt-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}" >&2
+			exit 1
 		elif ! command -v gcc >/dev/null 2>&1; then
-			echo "run_gui.sh: no gcc on PATH and no mingw at $ct/mingw64/bin" >&2
+			echo "run_gui.sh: no gcc on PATH and no UCRT64 at $ct/ucrt64/bin" >&2
 			echo "  install the dedicated MSYS2 (see Prereqs above) or set MSYS2_CT=" >&2
 			exit 1
 		fi
@@ -108,6 +116,14 @@ fi
 #     then refreshes the archive's mtime so a fresh checkout does not invalidate a valid cache.
 if [ libs/vgui/vgui_glue.cpp -nt libs/vgui/libvgui_c.a ] || [ libs/vgui/vgui.h -nt libs/vgui/libvgui_c.a ]; then
 	echo "vgui_glue.cpp/vgui.h newer than libvgui_c.a — rebuilding the archive"
+	bash libs/vgui/build_deps.sh
+fi
+# 1.6 and when a DIFFERENT toolchain built it: on Windows an archive from MINGW64 (msvcrt) linked by
+#     UCRT64 is a mixed-CRT binary, and nothing about the files' dates says so. An archive with no
+#     stamp predates the stamp, so it is rebuilt once too.
+tc_now="$(sh libs/vgui/build_deps.sh --toolchain-id)"
+if [ "$(cat libs/vgui/libvgui_c.toolchain 2>/dev/null)" != "$tc_now" ]; then
+	echo "libvgui_c.a was not built by this toolchain ($tc_now) — rebuilding the archive"
 	bash libs/vgui/build_deps.sh
 fi
 
