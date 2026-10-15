@@ -32,7 +32,7 @@ runs:
     # both. No restore-keys: a compiled archive from different inputs is never reusable.
     - name: Restore GUI dependencies
       id: cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: |
           libs/vgui/build/cimgui
@@ -58,7 +58,7 @@ runs:
 
     - name: Save GUI dependencies
       if: steps.cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: |
           libs/vgui/build/cimgui

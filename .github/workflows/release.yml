@@ -48,9 +48,9 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      # full history: merge-base needs origin/main, and checkout@v4 at depth 0 fetches all
+      # full history: merge-base needs origin/main, and checkout at depth 0 fetches all
       # branch heads even on a tag ref
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: tag equals v.mod and sits on main
@@ -75,7 +75,7 @@ jobs:
     # runner is the widest compatibility. The tarball is built here too and gets the same benefit.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # the same pin as ci.yml, for the same reason: a release built with V master would build
       # with a compiler no CI run has tested (codex on #282)
       - name: Set up pinned V (cached)
@@ -114,7 +114,7 @@ jobs:
       # ship: the tarball is still the right thing for anyone who wants the payload unpacked.
       - name: Build the AppImage
         run: sh scripts/build_appimage.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-tarball
           path: |
@@ -132,16 +132,16 @@ jobs:
       # read below, gh resolves the repo from it, and the tag revalidation + previous-tag
       # baseline need the refs — hence full depth with tags. The tarball downloads into the
       # workspace root; its name is untracked, so the two writers cannot collide.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-tarball
       # into a subdirectory named for the app, so the zip below carries ONE top-level folder
       # like the tar does — "Extract All" into Downloads must not scatter an exe, fifteen
       # DLLs and six directories among the user's files
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: blobly_net-windows-x64
           path: winbundle/blobly_net
