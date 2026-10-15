@@ -51,9 +51,15 @@ Windows folder.
   Without it, WSL cannot reach the app on `127.0.0.1`, and the bridge reports that it did not
   dial in.
 - **A kernel that can create vcan interfaces.** The stock WSL kernel has no `vcan` module. If
-  **Start bridge** reports *"cannot create vcan0 … this kernel has no vcan module loaded"*, set
-  vcan up once inside the distribution with `scripts/setup_vcan.sh` (it loads a module built by
-  `scripts/build_vcan_module.sh`). Interfaces that already exist are used as they are.
+  **Start bridge** reports *"cannot create vcan0 … this kernel has no vcan module loaded"*, open
+  a WSL terminal in the app's folder (the bundle ships both scripts) and run:
+
+  ```
+  ./scripts/build_vcan_module.sh    # once per WSL kernel: builds and loads the module (a few minutes)
+  ./scripts/setup_vcan.sh           # after each WSL restart: loads it and brings vcan0/vcan1 up
+  ```
+
+  Interfaces that already exist are used as they are.
 
 ## Limits
 

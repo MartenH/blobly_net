@@ -127,7 +127,7 @@ fn ensure_vcans(n int) ! {
 			}
 			// Another bridge may have created it meanwhile.
 			if r.exit_code != 0 && !os.exists('/sys/class/net/${dev}') {
-				return error('cannot create ${dev}: ${r.output.trim_space()} — this kernel has no vcan module loaded; run scripts/setup_vcan.sh in the distribution, which loads one built by scripts/build_vcan_module.sh')
+				return error('cannot create ${dev}: ${r.output.trim_space()} — this kernel has no vcan module loaded. In WSL, from the app\'s folder: ./scripts/build_vcan_module.sh once per kernel (it builds the module), then ./scripts/setup_vcan.sh after each WSL restart')
 			}
 		}
 		if vcan_ready(dev) {
