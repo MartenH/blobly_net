@@ -13,11 +13,25 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BLD="$HERE/build"
-V="${V:-/c/v-ct/v.exe}"
+# the pinned V at C:\v-ct first, then the older checkout-side C:\dev\v (run_gui.sh's order)
+if [ -z "${V:-}" ]; then
+	for c in /c/v-ct/v.exe /c/dev/v/v.exe; do
+		if [ -x "$c" ]; then
+			V="$c"
+			break
+		fi
+	done
+fi
+[ -n "${V:-}" ] || { echo "no V: set V=, or install the pinned one at C:\\v-ct"; exit 1; }
 EXAMPLE="$HERE/examples/trace_chart/trace_chart.v"
 OUT="$HERE/examples/trace_chart/trace_chart.exe"
 
 [ -f "$HERE/libvgui_c.a" ] || { echo "libvgui_c.a missing — run build_deps.sh first"; exit 1; }
+# an archive another toolchain built (MINGW64's msvcrt into a UCRT64 link) is a mixed-CRT exe;
+# run_gui.sh rebuilds it, this fallback refuses it like a missing one
+tc_now="$(sh "$HERE/build_deps.sh" --toolchain-id)"
+[ "$(cat "$HERE/libvgui_c.toolchain" 2>/dev/null)" = "$tc_now" ] \
+	|| { echo "libvgui_c.a was not built by this toolchain ($tc_now) — run build_deps.sh first"; exit 1; }
 mkdir -p "$BLD"
 
 echo "1/3  V -> C ($EXAMPLE)"
