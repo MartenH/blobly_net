@@ -44,7 +44,9 @@ fi
 # Comment lines are skipped (the reason is written down in several); grep exiting 2 is a FAILED
 # scan, not a clean one.
 n=$((n + 1))
-hits=$(grep -rnE --include='*.v' --exclude-dir=build '\$embed_file\(' cmd blobly libs)
+# The TOKEN, not one spelling of the call: V takes `$embed_file ('x')`, and a call split after
+# the name, alike (codex #456 r1).
+hits=$(grep -rnE --include='*.v' --exclude-dir=build '\$embed_file([^A-Za-z0-9_]|$)' cmd blobly libs)
 st=$?
 if [ "$st" -gt 1 ]; then
 	echo "FAIL the \$embed_file scan itself (grep exit $st)"
