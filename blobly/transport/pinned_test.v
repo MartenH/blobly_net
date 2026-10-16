@@ -277,7 +277,6 @@ fn test_a_wire_whose_ports_disagree_refuses_both_answers() {
 	assert wire_pin_clash('vector:13@500000,silent') != '', 'the silent port on this wire was not consulted'
 }
 
-// moved from pinned.v: the tests are its only callers
 // wire_pinned_config reports the configuration that ports already open on this wire have fixed,
 // or none when nothing is open on it or the backend does not pin.
 //

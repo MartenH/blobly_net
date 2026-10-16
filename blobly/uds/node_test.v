@@ -204,7 +204,6 @@ fn test_a_failed_receive_reopens_the_wire_for_every_node_on_it() {
 	assert functional_wires() == 0
 }
 
-// moved from funclisten.v: the tests are its only callers
 // functional_wires is how many wires have a functional listener open.
 fn functional_wires() int {
 	mut r := func_registry

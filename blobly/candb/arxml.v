@@ -2234,8 +2234,8 @@ fn xml_unescape(s string) string {
 
 // key_of is parse_key that can SAY NO: a literal no 64-bit raw key can hold — `18446744073709551616`,
 // a magnitude past 2^63 with a minus sign — is none, where the fallback to 0 filed its label on
-// raw zero (codex on #273 round 20). The value-table filing asks this; parse_key keeps the 0
-// fallback for the callers that only compare.
+// raw zero (codex on #273 round 20). The value-table filing asks this; parse_key, the 0-fallback
+// form, is the tests' alone.
 fn key_of(s string) ?u64 {
 	t := s.trim_space().trim_left('+')
 	if t.starts_with('-') {
