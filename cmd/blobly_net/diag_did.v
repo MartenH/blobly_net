@@ -339,7 +339,7 @@ fn draw_did_tab(mut app App, t DiagTarget, busy bool, st DiagHoldStatus) {
 	// the parameters first: a name and a value is what coding is about; their DIDs are below too
 	if desc.ok && desc.desc.params.len > 0 {
 		vgui.separator_text('parameters')
-		draw_param_table(mut app, view, desc, busy, st)
+		draw_param_table(mut app, view, desc, busy)
 	}
 	if own.len > 0 {
 		vgui.separator_text('${desc.node}')
@@ -475,7 +475,7 @@ fn did_gate_words(x sysview.DidDesc) string {
 
 // draw_param_table lists the node's parameters by name: each field's value as its coding DID last
 // read it, its default, and — when the ECU exposes a parameter status DID — whether it is coded.
-fn draw_param_table(mut app App, view DidView, desc DiagDesc, busy bool, st DiagHoldStatus) {
+fn draw_param_table(mut app App, view DidView, desc DiagDesc, busy bool) {
 	d := desc.desc
 	status_did := d.param_status_did()
 	cols := if status_did != none { 5 } else { 4 }

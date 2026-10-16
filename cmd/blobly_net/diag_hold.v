@@ -87,7 +87,7 @@ mut:
 	open     bool
 	target   DiagTarget
 	where    string // what was opened, for the log
-	ch       isotp.Channel // DoIP: the held connection; CAN: the held ISO-TP channel
+	ch       isotp.Channel = isotp.UnopenedChannel{} // DoIP: the held connection; CAN: the held ISO-TP channel
 	dc       &doip.DoipClient = unsafe { nil } // DoIP: the same connection, for its idle service
 	sc       &isotp.SoftChannel = unsafe { nil } // CAN: the same channel, for its idle drain
 	attached bool // CAN only: the channel and its tap are open
@@ -414,6 +414,7 @@ fn (mut app App) diag_detach(mut h HeldConn) {
 		return
 	}
 	h.ch.close()
+	h.ch = isotp.UnopenedChannel{}
 	h.sc = unsafe { nil }
 	h.attached = false
 }

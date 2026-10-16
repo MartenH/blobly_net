@@ -148,15 +148,15 @@ pub fn (db Database) pgn_sa_contested(pgn u32, sa u8) bool {
 // alone cannot know which applies and should decode nothing (codex on #329). True for a PGN
 // defined once or not at all.
 pub fn (db Database) pgn_layouts_agree(pgn u32) bool {
-	mut first := ''
+	mut first_layout := ''
 	for m in db.messages {
 		if !m.ext || j1939_pgn(m.id) != pgn {
 			continue
 		}
 		l := m.layout_key()
-		if first == '' {
-			first = l
-		} else if l != first {
+		if first_layout == '' {
+			first_layout = l
+		} else if l != first_layout {
 			return false
 		}
 	}
@@ -279,9 +279,9 @@ fn layouts_agree(ms []Message) bool {
 	if ms.len < 2 {
 		return true
 	}
-	first := ms[0].layout_key()
+	first_key := ms[0].layout_key()
 	for m in ms[1..] {
-		if m.layout_key() != first {
+		if m.layout_key() != first_key {
 			return false
 		}
 	}
@@ -700,10 +700,10 @@ fn parse_bo(line string) !MsgBuilder {
 	if f.len < 4 {
 		return error('malformed BO_: ${line}')
 	}
-	raw_id := u32(f[1].u64())
+	bo_id := u32(f[1].u64())
 	// DBC tags extended ids with the high bit; strip it for the real id.
-	ext := raw_id & can_eff_flag != 0
-	id := if ext { raw_id & can_eff_mask } else { raw_id }
+	ext := bo_id & can_eff_flag != 0
+	id := if ext { bo_id & can_eff_mask } else { bo_id }
 	return MsgBuilder{
 		name: f[2].trim_right(':')
 		id:   id

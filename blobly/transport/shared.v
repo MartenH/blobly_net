@@ -161,12 +161,12 @@ enum SharedEntryState {
 // does, it answers as a closed bus rather than dereferencing nothing (#147's hazard, made loud).
 struct SharedNoDriver {}
 
-fn (mut d SharedNoDriver) send(frame CanFrame, commit fn ()) ! {
-	return not_written('bus is not open yet')
+fn (mut d SharedNoDriver) send(_ CanFrame, _ fn ()) ! {
+	return not_written('${bus_not_open} yet')
 }
 
-fn (mut d SharedNoDriver) recv_shared(timeout_ms int) !SharedIngress {
-	return error('bus is not open yet')
+fn (mut d SharedNoDriver) recv_shared(_ int) !SharedIngress {
+	return error('${bus_not_open} yet')
 }
 
 fn (mut d SharedNoDriver) close() {}
@@ -179,8 +179,8 @@ fn (mut d SharedNoDriver) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
-fn (mut d SharedNoDriver) reconcile_silence(want bool) ! {
-	return error('bus is not open yet')
+fn (mut d SharedNoDriver) reconcile_silence(_ bool) ! {
+	return error('${bus_not_open} yet')
 }
 
 fn (mut d SharedNoDriver) reports_tx_ack() bool {
@@ -438,6 +438,8 @@ fn (mut e SharedEntry) book_own_gap_locked(mut h SharedHandle) {
 
 // shared_open is the existing PCAN/fake factory seam. The raw Bus is adapted to SharedDriver and
 // therefore contributes only external ingress events.
+// @[markused]: called from open_windows.v, so unused in a Linux build
+@[markused]
 fn shared_open(key string, spec string, make fn (string) !Bus) !Bus {
 	factory := fn [make] (s string) !SharedDriver {
 		bus := make(s)!

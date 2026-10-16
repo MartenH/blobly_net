@@ -264,8 +264,8 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 		}
 	}
 	id := decompose(f.id)
-	pgn := id.pgn()
-	if pgn == pgn_tp_cm {
+	this_pgn := id.pgn()
+	if this_pgn == pgn_tp_cm {
 		k := skey(id.sa, id.da())
 		cm := parse_cm_of(f) or {
 			// AN FD FRAME RESTARTS NOTHING. The fallback below is about a J1939-21 announcement
@@ -415,7 +415,7 @@ pub fn (mut t Transfers) step_at(f transport.CanFrame, t_s f64) Step {
 			}
 		}
 	}
-	if pgn == pgn_tp_dt {
+	if this_pgn == pgn_tp_dt {
 		k := skey(id.sa, id.da())
 		mut s := t.open[k] or {
 			return Step{

@@ -188,8 +188,3 @@ fn u8_at(p []u8, i int) u8 {
 fn u16le(p []u8, i int) u16 {
 	return u16(u8_at(p, i)) | (u16(u8_at(p, i + 1)) << 8)
 }
-
-fn u32le(p []u8, i int) u32 {
-	return u32(u8_at(p, i)) | (u32(u8_at(p, i + 1)) << 8) | (u32(u8_at(p, i + 2)) << 16) | (u32(u8_at(p,
-		i + 3)) << 24)
-}

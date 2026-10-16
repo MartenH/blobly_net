@@ -20,7 +20,7 @@ pub fn list_interfaces() ![]Iface {
 // subnet where resolving the host's own name may not; the parsing is in local_addrs.v, tested
 // against an English and a German listing. Unverified on a Windows bench as of #235.
 fn local_ipv4_addrs() []string {
-	res := os.execute('ipconfig')
+	res := os.exec(['ipconfig'])
 	if res.exit_code != 0 {
 		return []
 	}

@@ -122,7 +122,7 @@ fn test_a_channel_the_bridge_cannot_open_is_refused_with_its_reason() {
 
 struct RefusingBus {}
 
-fn (mut b RefusingBus) send(frame CanFrame) ! {
+fn (mut b RefusingBus) send(_ CanFrame) ! {
 	return error('Network is down')
 }
 
@@ -143,7 +143,7 @@ fn (mut b RefusingBus) diagnostics() BusDiagnostics {
 	}
 }
 
-fn (mut b RefusingBus) reconcile_silence(want bool) ! {}
+fn (mut b RefusingBus) reconcile_silence(_ bool) ! {}
 
 fn test_a_send_the_interface_refuses_fails_with_its_reason_and_health_arrives() {
 	refusing := fn (name string) !Bus {
@@ -174,7 +174,7 @@ mut:
 	reads int
 }
 
-fn (mut b DyingBus) send(frame CanFrame) ! {}
+fn (mut b DyingBus) send(_ CanFrame) ! {}
 
 fn (mut b DyingBus) recv(timeout_ms int) !CanFrame {
 	b.reads++
@@ -195,7 +195,7 @@ fn (mut b DyingBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
-fn (mut b DyingBus) reconcile_silence(want bool) ! {}
+fn (mut b DyingBus) reconcile_silence(_ bool) ! {}
 
 fn test_a_channel_that_fails_on_the_bridge_fails_here() {
 	dying := fn (name string) !Bus {
@@ -315,7 +315,7 @@ fn test_a_bridge_dialling_in_again_replaces_its_stale_session() {
 
 struct BlankErrorBus {}
 
-fn (mut b BlankErrorBus) send(frame CanFrame) ! {
+fn (mut b BlankErrorBus) send(_ CanFrame) ! {
 	return error('')
 }
 
@@ -334,7 +334,7 @@ fn (mut b BlankErrorBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
-fn (mut b BlankErrorBus) reconcile_silence(want bool) ! {}
+fn (mut b BlankErrorBus) reconcile_silence(_ bool) ! {}
 
 fn test_refusals_are_not_written_and_never_look_like_success() {
 	// A frame no interface could carry is refused here, never clamped on the bridge's side.
@@ -528,7 +528,7 @@ fn (mut b EchoingBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
-fn (mut b EchoingBus) reconcile_silence(want bool) ! {}
+fn (mut b EchoingBus) reconcile_silence(_ bool) ! {}
 
 fn test_a_reply_never_overtakes_the_acknowledgement_of_its_request() {
 	echoing := fn (name string) !Bus {
@@ -582,7 +582,7 @@ mut:
 	calls int
 }
 
-fn (mut b HoldingBus) send(frame CanFrame) ! {}
+fn (mut b HoldingBus) send(_ CanFrame) ! {}
 
 // recv returns one frame, then stalls in the next look, so that frame is held as pending while a
 // send arrives; afterwards the bus is idle.
@@ -612,7 +612,7 @@ fn (mut b HoldingBus) diagnostics() BusDiagnostics {
 	return BusDiagnostics{}
 }
 
-fn (mut b HoldingBus) reconcile_silence(want bool) ! {}
+fn (mut b HoldingBus) reconcile_silence(_ bool) ! {}
 
 fn test_a_frame_received_before_a_send_comes_before_its_acknowledgement() {
 	holding := fn (name string) !Bus {

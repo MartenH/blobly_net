@@ -1,7 +1,6 @@
 module uds
 
 import blobly.isotp
-import blobly.transport
 
 // node.v — serving one simulated ECU: its physical requests, and — when it answers one — the
 // functional id's. A functional request is one Single Frame (ISO 15765-2); the answer goes out on
@@ -21,7 +20,7 @@ pub fn functional_suppressed(resp []u8) bool {
 // wire's functional listener when it answers a functional id (`func` empty when it does not).
 pub struct NodeLink {
 pub mut:
-	phys isotp.Channel
+	phys isotp.Channel = isotp.UnopenedChannel{}
 	func []&FuncSub
 }
 
@@ -67,6 +66,7 @@ fn (mut s Server) serve_functional(mut l NodeLink) {
 // has worth reporting (see FuncSub.leave).
 pub fn (mut l NodeLink) close() []FuncLeave {
 	l.phys.close()
+	l.phys = isotp.UnopenedChannel{}
 	mut ds := []FuncLeave{}
 	for mut t in l.func {
 		ds << t.leave()

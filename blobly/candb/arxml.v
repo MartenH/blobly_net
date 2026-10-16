@@ -358,14 +358,14 @@ fn frame_admission(ft xml.XMLNode, frame xml.XMLNode, fname string) FrameAdmissi
 	ext := mode == 'EXTENDED'
 	// an id read as 0 for want of a number would claim the real id-0 frame; an oversized one
 	// reaches the simulator and is refused there (rounds 35–36)
-	raw_id := int_in(ft, 'IDENTIFIER') or {
+	ident := int_in(ft, 'IDENTIFIER') or {
 		return FrameAdmission{
 			refusal: frame_refusal(fname, 'IDENTIFIER', err.msg())
 		}
 	}
-	if !ext && raw_id > 0x7FF {
+	if !ext && ident > 0x7FF {
 		return FrameAdmission{
-			refusal: 'IDENTIFIER ${raw_id} is outside 0..2047 for a STANDARD frame; not read'
+			refusal: 'IDENTIFIER ${ident} is outside 0..2047 for a STANDARD frame; not read'
 		}
 	}
 	// a simulated sender allocates its payload from the length, so a negative one panicked and
@@ -400,7 +400,7 @@ fn frame_admission(ft xml.XMLNode, frame xml.XMLNode, fname string) FrameAdmissi
 		}
 	}
 	return FrameAdmission{
-		id: u32(raw_id)
+		id: u32(ident)
 		ext: ext
 		dlc: dlc
 		fd: fd
@@ -429,9 +429,9 @@ fn signal_fits_frame(s Signal, dlc int) bool {
 	last_byte := if s.byte_order == .little_endian {
 		(s.start_bit + s.length - 1) / 8
 	} else {
-		first := s.start_bit / 8
+		first_byte := s.start_bit / 8
 		in_first := s.start_bit % 8 + 1 // bits available from the start bit down to bit 0 of its byte
-		if s.length <= in_first { first } else { first + (s.length - in_first + 7) / 8 }
+		if s.length <= in_first { first_byte } else { first_byte + (s.length - in_first + 7) / 8 }
 	}
 	return last_byte < dlc
 }
@@ -2166,8 +2166,8 @@ fn (mut r ArxmlReader) desc_of(n xml.XMLNode, path string) string {
 	if d := child(n, 'DESC') {
 		langs := descendants(d, 'L-2')
 		if langs.len > 1 {
-			first := langs[0].attributes['L'] or { '?' }
-			r.report.notes << '${path}: the description has ${langs.len} languages; only the first (${first}) is kept'
+			first_lang := langs[0].attributes['L'] or { '?' }
+			r.report.notes << '${path}: the description has ${langs.len} languages; only the first (${first_lang}) is kept'
 		}
 	}
 	return desc_text(n)
@@ -2232,18 +2232,10 @@ fn xml_unescape(s string) string {
 	return xml.unescape_text(s) or { s }
 }
 
-// parse_key reads an enum key as the width-sized raw pattern candb keys value tables by: a
-// non-negative literal as u64 (so the top half of a 64-bit domain survives), a negative one
-// through i64 (its two's-complement pattern). Hex, decimal, or a float that is integral —
-// never through f64 for an integer literal, which would lose the low bits above 2^53.
-fn parse_key(s string) u64 {
-	return key_of(s) or { 0 }
-}
-
 // key_of is parse_key that can SAY NO: a literal no 64-bit raw key can hold — `18446744073709551616`,
 // a magnitude past 2^63 with a minus sign — is none, where the fallback to 0 filed its label on
-// raw zero (codex on #273 round 20). The value-table filing asks this; parse_key keeps the 0
-// fallback for the callers that only compare.
+// raw zero (codex on #273 round 20). The value-table filing asks this; parse_key, the 0-fallback
+// form, is the tests' alone.
 fn key_of(s string) ?u64 {
 	t := s.trim_space().trim_left('+')
 	if t.starts_with('-') {

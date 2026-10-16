@@ -231,6 +231,8 @@ fn cansub_ws_connect(url string, deadline time.Time) !&websocket.Client {
 // The connected thing comes back as the RETURN VALUE: a V closure captures by value, so a
 // `mut` capture written inside `connect` would update a copy (the first draft did exactly that
 // and handed back nil).
+// @[markused]: V3 does not count generic call sites (cansub.v, cansub_http.v)
+@[markused]
 fn cansub_connect_attempts[T](deadline time.Time, connect fn () !T) !T {
 	mut last := IError(none)
 	for attempt := 1; attempt <= cansub_connect_tries; attempt++ {
@@ -727,7 +729,7 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 // cansub_silence_reason reads a refused PHY PUT for the operator. A 500 on a live channel is
 // DECLARED — the device's rule, not a fault — which is what lets a bench tool call that phase not
 // applicable while still failing on a driver error elsewhere.
-fn cansub_silence_reason(want bool, status int) SilenceReason {
+fn cansub_silence_reason(_ bool, status int) SilenceReason {
 	return SilenceReason{
 		why:      cansub_phy_refusal(status)
 		declared: status == 500

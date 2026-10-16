@@ -1006,7 +1006,7 @@ fn test_an_alive_check_inside_an_exchange_is_answered() {
 		_ := read_message(mut c, 2000) or { Message{} }
 		c.close() or {}
 	}(mut ln, heard)
-	ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+	mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
 		assert false, 'open_doip: ${err}'
 		return
 	}
@@ -1021,8 +1021,7 @@ fn test_an_alive_check_inside_an_exchange_is_answered() {
 		assert m.payload_type == pt_alive_check_response, 'no alive check response during ${when}'
 		assert m.payload == [u8(0x0E), 0x80], 'the response does not carry the tester address'
 	}
-	mut c := ch
-	c.close()
+	ch.close()
 	ln.close() or {}
 }
 

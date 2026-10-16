@@ -46,9 +46,8 @@ const cansub_max_brp = 32
 const cansub_max_seg1 = 255
 const cansub_max_seg2 = 128
 
-// cansub_max_sjw: measured on a CANsub.4 (02.05.00) — 128 is accepted and read back, 129 is
-// answered HTTP 500. Never reached: SJW is at most seg2, whose own maximum is the same.
-const cansub_max_sjw = 128
+// The device's SJW limit (128) is in cansub_timing_test.v: never reached, since SJW is at most
+// seg2, whose own maximum is the same, so the test is its only reader.
 
 // THE DATA PHASE IS NARROWER, and by a lot. Across the vendor's entire table the data segments
 // never exceed DSEG1 17 and DSEG2 10, against 255 and 128 for the nominal phase — which is what a

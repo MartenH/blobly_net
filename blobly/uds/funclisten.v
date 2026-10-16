@@ -21,7 +21,7 @@ struct FuncWire {
 	key string
 mut:
 	mu       &sync.Mutex = sync.new_mutex()
-	bus      transport.Bus
+	bus      transport.Bus = transport.UnopenedBus{}
 	open     fn () !transport.Bus = unsafe { nil }
 	subs     []&FuncSub
 	failed   string // why the FIRST open failed; the wire is out of the registry then
@@ -230,14 +230,4 @@ pub fn (mut s FuncSub) leave() FuncLeave {
 		queue_dropped: s.dropped
 		wire:          d
 	}
-}
-
-// functional_wires is how many wires have a functional listener open.
-fn functional_wires() int {
-	mut r := func_registry
-	r.mu.lock()
-	defer {
-		r.mu.unlock()
-	}
-	return r.wires.len
 }

@@ -15,7 +15,7 @@ fn C.MoveFileExW(src &u16, dst &u16, flags u32) int
 // (a .lua on a fresh machine) "opened" while Windows showed its "how do you want to open
 // this" box and the user cancelled (self-review on #307). `report` is unused here: on this
 // platform the verdict is synchronous.
-fn system_open(path string, report fn (string)) (bool, string) {
+fn system_open(path string, _ fn (string)) (bool, string) {
 	r := shell_execute(unsafe { nil }, path, '')
 	if r > 32 {
 		return true, 'opened ${path}'
@@ -31,7 +31,7 @@ fn system_open(path string, report fn (string)) (bool, string) {
 // (failed_cfn_report_error → exit(1)), so a mistyped editor command would take the GUI and
 // its run down with it. ShellExecute on the resolved executable instead; its verdict is
 // immediate, so `report` is not needed here.
-fn launch_detached(argv []string, report fn (string)) ! {
+fn launch_detached(argv []string, _ fn (string)) ! {
 	exe := os.find_abs_path_of_executable(argv[0]) or {
 		return error('${argv[0]}: not found on PATH — set the command in Settings ▸ Preferences…')
 	}
@@ -88,6 +88,6 @@ fn replace_file(tmp string, dst string) ! {
 }
 
 // wsl_windows_path: a path here is already a Windows path.
-fn wsl_windows_path(p string) ?string {
+fn wsl_windows_path(_ string) ?string {
 	return none
 }

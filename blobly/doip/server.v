@@ -48,7 +48,7 @@ pub:
 // ResponseFilter says whether a handler's answer is withheld (true) instead of sent.
 pub type ResponseFilter = fn (resp []u8) bool
 
-fn withhold_nothing(resp []u8) bool {
+fn withhold_nothing(_ []u8) bool {
 	return false
 }
 

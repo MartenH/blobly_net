@@ -1,6 +1,5 @@
 module main
 
-import os
 import blobly.sysview
 import vgui
 import panerule

@@ -1,5 +1,9 @@
 module transport
 
+// cansub_max_sjw: measured on a CANsub.4 (02.05.00) — 128 is accepted and read back, 129 is
+// answered HTTP 500. Never reached by the solver: SJW is at most seg2, whose own maximum is the same.
+const cansub_max_sjw = 128
+
 // The solver against the VENDOR'S OWN bit-timing table, not against itself.
 //
 // Each row below is copied from the CANsub.4 documentation: nominal rate, data rate, sample point,

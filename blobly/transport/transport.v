@@ -78,6 +78,8 @@ const stamp_order_slack_ns = i64(2000)
 // the step, and from userspace the step is visible only as the clock offset moving between two reads,
 // never per frame. Those frames — the few queued at the instant of a forward step — are placed early by
 // the step (codex round 2 on #353).
+// @[markused]: called from socketcan_linux.v, so unused in a Windows build
+@[markused]
 fn in_order_stamp(stamp i64, last i64) (i64, i64) {
 	if stamp == 0 {
 		return 0, last

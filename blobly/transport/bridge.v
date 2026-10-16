@@ -884,7 +884,7 @@ fn (mut b BridgeBus) diagnostics() BusDiagnostics {
 
 // reconcile_silence — the interface's mode is set on the bridge's host, as for SocketCAN, and a
 // vcan has no transceiver at all.
-fn (mut b BridgeBus) reconcile_silence(want bool) ! {}
+fn (mut b BridgeBus) reconcile_silence(_ bool) ! {}
 
 fn (mut b BridgeBus) reports_tx_ack() bool {
 	return true

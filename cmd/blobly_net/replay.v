@@ -837,14 +837,14 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			}
 			return
 		}
-		mut free := true
+		mut is_free := true
 		for k in dests {
 			if _ := a.replay_owner[k] {
-				free = false
+				is_free = false
 				break
 			}
 		}
-		if free {
+		if is_free {
 			for k in dests {
 				a.replay_owner[k] = ReplayOwner{
 					src:   source

@@ -278,6 +278,8 @@ pub enum AppSlot {
 // a code this function has never heard of must never come out as permission to write (codex #192
 // r7). The encoded status is preserved rather than flattened so a bench whose driver answers
 // differently can be diagnosed from the number instead of from a shrug.
+// @[markused]: called from vector_windows.v; here so a test reaches it
+@[markused]
 fn slot_of(rc int) AppSlot {
 	return match rc {
 		0 { AppSlot.taken }
@@ -294,20 +296,13 @@ fn slot_of(rc int) AppSlot {
 // three (`taken`, `unreadable`) refuse, and the third (`empty`) permits on evidence rather than on
 // the absence of it — so every disagreement resolves in the safe direction. Agreement on `absent`
 // is the only way a write stays authorized (codex #192 r8).
+// @[markused]: called from vector_windows.v; here so a test reaches it
+@[markused]
 fn reconcile_absent(first AppSlot, second AppSlot) AppSlot {
 	if first != .absent {
 		return first
 	}
 	return if second == .absent { AppSlot.absent } else { second }
-}
-
-// xl_status_of recovers the driver status the shim encoded as -(1000 + status), or none when this
-// code carries no status. For diagnostics only — nothing decides anything from it.
-fn xl_status_of(rc int) ?int {
-	if rc > -1000 {
-		return none
-	}
-	return -rc - 1000
 }
 
 // assign_refusal reports why an application channel must not be written, or none when it may be.

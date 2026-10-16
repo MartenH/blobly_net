@@ -2170,3 +2170,11 @@ fn test_frame_toml_bus_line_shapes() {
 		frames: fd_frames
 	}) == '#   ecu.toml     [bus.B]  fd = true\n#   system.toml  [bus.B]  fd = true'
 }
+
+// parse_key reads an enum key as the width-sized raw pattern candb keys value tables by: a
+// non-negative literal as u64 (so the top half of a 64-bit domain survives), a negative one
+// through i64 (its two's-complement pattern). Hex, decimal, or a float that is integral —
+// never through f64 for an integer literal, which would lose the low bits above 2^53.
+fn parse_key(s string) u64 {
+	return key_of(s) or { 0 }
+}

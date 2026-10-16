@@ -542,13 +542,13 @@ pub fn cansub_browse(window time.Duration) !CansubBrowse {
 			time.sleep(time.millisecond)
 			continue
 		}
-		pkt := buf[..n]
 		// Every mDNS packet on every segment lands here for the whole window; only one that
-		// carries the service label is worth parsing.
-		if !has_label_ci(pkt, '_cansub') {
+		// carries the service label is worth parsing. Neither call keeps the bytes, so the
+		// reused buffer is read in place rather than copied per packet.
+		if !has_label_ci(buf[..n], '_cansub') {
 			continue
 		}
-		devices := cansub_mdns_parse_known(pkt, found.map(it.id)) or { continue }
+		devices := cansub_mdns_parse_known(buf[..n], found.map(it.id)) or { continue }
 		for d in devices {
 			cansub_merge(mut found, d)
 		}

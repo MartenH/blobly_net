@@ -206,7 +206,7 @@ mut:
 	// retries. Built ONCE here: as a closure literal inside send it was rebuilt per frame, and
 	// V's closures bump-allocate a trampoline slot the runtime never frees, so a replay leaked
 	// one per emitted frame for as long as it ran (#299's follow-up).
-	cancel fn () bool
+	cancel fn () bool @[required]
 	// WHERE THIS WIRE'S FAULT LADDER COMES FROM, decided once here rather than per frame (#142).
 	// health_source is a handful of string prefix tests, and note_health runs on every send —
 	// the cost prefix_fold was rewritten for in #300, on a path asked about far more often than

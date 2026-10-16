@@ -353,7 +353,7 @@ pub fn (mut d CansubDecoder) feed(chunk []u8) []CansubRecord {
 			// failure the bound was added for, alive on the path a hostile or broken device is
 			// most likely to take (codex round 10 on #204).
 			if d.buf.len > cansub_max_payload {
-				d.overrun(mut out)
+				d.overrun()
 			}
 			continue
 		}
@@ -372,7 +372,7 @@ pub fn (mut d CansubDecoder) feed(chunk []u8) []CansubRecord {
 		// a frame we lost the end of, it is a stream that has stopped making sense -- so the
 		// buffer is dropped and said so, rather than kept in the hope that a flag arrives.
 		if d.buf.len > cansub_max_payload {
-			d.overrun(mut out)
+			d.overrun()
 		}
 	}
 	return out
@@ -393,7 +393,7 @@ const cansub_max_payload = 64 * 1024
 
 // overrun drops a frame that has no end. Said once, so both append paths report it the same way
 // — the escaped path having been the one that did not (codex round 10 on #204).
-fn (mut d CansubDecoder) overrun(mut out []CansubRecord) {
+fn (mut d CansubDecoder) overrun() {
 	d.buf.clear()
 	d.escaped = false
 	// AND LEAVE FRAME MODE, which is what makes this a resynchronisation rather than a truncation.

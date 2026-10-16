@@ -26,7 +26,8 @@ full text is in [`LICENSE`](LICENSE) beside this file, unmodified.
 
 ## What's here vs. upstream
 
-- All module sources (`html.v`, `html_experimental.v`, `md4c.v`, `plaintext.v`, `renderer.v`),
+- All module sources (`html.v`, `html_experimental.v`, `md4c.v`, `plaintext.v`, `renderer.v`)
+  but the local change listed below (five lines of `html.v`),
   `v.mod`, `LICENSE`, `.gitignore`, `.gitattributes` and the whole `thirdparty/` tree —
   unmodified. Keep the `.gitattributes`: its `eol=lf` is what stops a Windows checkout
   rewriting this vendored tree to CRLF, which would make every future upgrade diff as a
@@ -34,9 +35,13 @@ full text is in [`LICENSE`](LICENSE) beside this file, unmodified.
 - **Dropped:** `*_test.v` (upstream's own tests — we do not run another project's suite in our
   CI), `.github/`, and `.editorconfig`. Re-fetch upstream to run them.
 - **Added:** this README (upstream's own was dropped in its place).
+- **Changed:** `html.v`'s five md4c flag constants are `pub`. Upstream declares them private and
+  never reads them, which V3 reports as an unused constant on every build of the app; as `pub`
+  they are API, which is what md4c flags are. Re-apply after an upgrade.
 
 ## Upgrading
 
 Clone upstream at the new commit, copy the files listed above over this directory, delete the
-dropped ones, and record the new commit at the top of this file. Then rebuild and open Help →
+dropped ones, and record the new commit at the top of this file. Re-apply the **Changed** item above
+(the five `pub const` lines in `html.v`), or every app build reports them as unused again. Then rebuild and open Help →
 "Open in browser" to confirm the pages still render.

@@ -144,9 +144,9 @@ mut:
 	queued  int // answers already waiting before the request: what the drain must take
 }
 
-fn (mut s ScriptedCarrier) send(data []u8) ! {}
+fn (mut s ScriptedCarrier) send(_ []u8) ! {}
 
-fn (mut s ScriptedCarrier) send_to(target u32, data []u8) ! {
+fn (mut s ScriptedCarrier) send_to(target u32, _ []u8) ! {
 	s.sent << target
 }
 
