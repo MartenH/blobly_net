@@ -71,19 +71,19 @@ ok "stamp from before the prod build -> stale" "$(v_toolchain_build_reason "$d" 
 # Regression for round 4: the stamp is untracked, so a hand checkout leaves it behind claiming
 # a build of a tree that is no longer there.
 d="$work/vmoved"; read -r VH VCH <<<"$(make_vdir "$d")"
-printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+v_toolchain_want_stamp "$VH" "$VCH" > "$d/.blobly_built_from"
 tgit -C "$d" commit -q --allow-empty -m moved
 ok "stamp intact but V tree moved by hand -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 d="$work/vcmoved"; read -r VH VCH <<<"$(make_vdir "$d")"
-printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+v_toolchain_want_stamp "$VH" "$VCH" > "$d/.blobly_built_from"
 tgit -C "$d/vc" commit -q --allow-empty -m moved
 ok "stamp intact but vc tree moved by hand -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 # A pin bump must reach a bench that already built the OLD pins — the point of the stamp naming
 # both, rather than recording a bare "built once".
 d="$work/bumped"; read -r VH VCH <<<"$(make_vdir "$d")"
-printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+v_toolchain_want_stamp "$VH" "$VCH" > "$d/.blobly_built_from"
 ok "pins bumped under an existing build -> stale" "$(v_toolchain_build_reason "$d" "$VH" deadbeef)" "stale"
 
 # --- the install ------------------------------------------------------------------------------
