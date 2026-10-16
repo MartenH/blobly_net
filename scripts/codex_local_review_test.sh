@@ -121,11 +121,13 @@ expect "a codex whose interpreter is on the same relative PATH entry runs" "$(CW
 expect "CODEX_PROBE_TIMEOUT=0 keeps a deadline" "$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=0)" "3|"
 
 # a probe runs outside the worktree: a candidate that drops a file where it runs leaves the repo clean
+# (a name this run owns, so the cleanup can never remove a file of somebody else's)
+litter=probe-litter-$$-$RANDOM$RANDOM
 mkdir -p "$tmp/litter"
-printf '#!/bin/sh\n: > probe-litter\necho "codex-cli 0.0.0-test"\n' >"$tmp/litter/codex"
+printf '#!/bin/sh\n: > %s\necho "codex-cli 0.0.0-test"\n' "$litter" >"$tmp/litter/codex"
 chmod +x "$tmp/litter/codex"
-expect "a probe leaves nothing in the worktree" "$(check "$tmp/h0" "" CODEX="$tmp/litter/codex"; [ -e "$repo/probe-litter" ] && printf ' LITTER')" "0|$tmp/litter/codex"
-rm -f "$repo/probe-litter"
+expect "a probe leaves nothing in the worktree" "$(check "$tmp/h0" "" CODEX="$tmp/litter/codex"; [ -e "$repo/$litter" ] && printf ' LITTER')" "0|$tmp/litter/codex"
+rm -f "$repo/$litter"
 
 # a version after a blank first line is still a version
 printf '#!/bin/sh\necho\necho "codex-cli 0.0.0-test"\n' >"$tmp/blank-codex"
