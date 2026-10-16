@@ -149,6 +149,9 @@ expect "CODEX_PROBE_TIMEOUT=001 is one second" \
 # a PATH entry starting with ~ is bash's to expand, not a directory under the caller's
 working "$tmp/ht/bin/codex"
 expect "a codex in a ~ PATH entry is found" "$(check "$tmp/ht" "~/bin")" "0|$tmp/ht/bin/codex"
+# ~name with no such user is a relative directory, which bash leaves as it is
+working "$tmp/~nouser-$$/bin/codex"
+expect "a ~nouser PATH entry is the caller's directory" "$(CWD=$tmp check "$tmp/h0" "~nouser-$$/bin")" "0|$tmp/~nouser-$$/bin/codex"
 
 # a bare $CODEX names a file on PATH, never a function of the same name
 expect "a bare \$CODEX skips a function of that name" \

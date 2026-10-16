@@ -25,12 +25,12 @@
 set -eu
 
 # Before the cd below, everything relative is made the caller's: each relative PATH entry (an
-# empty one is the current directory; one starting with ~ is left, since bash expands it), so a candidate and whatever it runs through PATH resolve
+# empty one is the current directory; ~ and ~/... are $HOME's, as bash would read them), so a candidate and whatever it runs through PATH resolve
 # as they would at the call site; then $CODEX, a command name through that PATH or a relative path.
 abs_path=
 IFS=: read -r -d '' -a path_dirs < <(printf '%s:\0' "$PATH") # the whole value, newlines and all
 for d in "${path_dirs[@]}"; do
-	case "$d" in /* | '~'*) ;; '') d=$PWD ;; *) d=$PWD/$d ;; esac
+	case "$d" in /*) ;; '') d=$PWD ;; '~' | '~/'*) d=$HOME${d#'~'} ;; *) d=$PWD/$d ;; esac
 	abs_path=${abs_path:+$abs_path:}$d
 done
 PATH=$abs_path
