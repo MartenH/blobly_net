@@ -463,8 +463,8 @@ fn (mut c Client) drain_queued(sid u8) !int {
 // connection closed or out of step after a stalled message, a CAN bus closed under a held
 // channel, or a bus or channel that was never opened.
 fn carrier_failed(msg string) bool {
-	return msg.starts_with('DoIP connection lost: ') || msg.ends_with('bus is closed')
-		|| msg.contains(transport.bus_not_open) || msg == isotp.channel_not_open
+	return msg.starts_with('DoIP connection lost: ') || msg.contains('bus is closed')
+		|| msg.contains(transport.bus_not_open) || msg.contains(isotp.channel_not_open)
 }
 
 // max_drain bounds the pre-send drain: a peer flooding the response id must not hold a request
