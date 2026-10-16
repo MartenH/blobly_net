@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Tests for scripts/codex_local_review.sh's choice of codex binary, through --check-codex (which
+# prints the binary it would run and its version, then exits — no git, no network):
+#   - $CODEX (a path, relative or not, or a command name) that does not run — empty, silent, or
+#     hanging on --version — is refused with exit 3, never replaced;
+#   - otherwise the first candidate that runs wins: every codex on PATH, then the extension copies
+#     newest first, skipping a newer empty or non-executable copy for an older working one;
+#   - nothing that runs: exit 3. The chosen binary's version is the second line printed.
+# PATH is built from only the tools the check uses, so an installed codex cannot leak in.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit
+repo=$PWD
+
+pass=0
+fail=0
+expect() { # expect <name> <got> <want>
+	if [ "$2" = "$3" ]; then
+		pass=$((pass+1))
+	else
+		fail=$((fail+1))
+		echo "FAIL: $1"
+		echo "  want: $3"
+		echo "  got:  $2"
+	fi
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/tools"
+for t in bash dirname basename find sort head sed timeout cut mktemp rm sleep grep; do
+	ln -s "$(command -v "$t")" "$tmp/tools/$t"
+done
+
+# check <home> <extra PATH dirs> [VAR=value...]: "<exit>|<first stdout line>" of --check-codex, run
+# from $CWD (default the repo); $LINE2=1 appends "|<second line>"
+check() {
+	local home=$1 extra=$2
+	shift 2
+	local out code
+	out=$(cd "${CWD:-$repo}" && env -i PATH="${extra:+$extra:}$tmp/tools" HOME="$home" "$@" \
+		timeout 30 bash "$repo/scripts/codex_local_review.sh" --check-codex 2>/dev/null)
+	code=$?
+	printf '%s|%s' "$code" "$(printf '%s\n' "$out" | head -1)"
+	[ -z "${LINE2:-}" ] || printf '|%s' "$(printf '%s\n' "$out" | sed -n 2p)"
+}
+
+working() { # a stub codex that answers --version
+	mkdir -p "$(dirname "$1")"
+	printf '#!/bin/sh\necho "codex-cli 0.0.0-test"\n' >"$1"
+	chmod +x "$1"
+}
+empty() { # a 0-byte executable, as an interrupted extension update left one
+	mkdir -p "$(dirname "$1")"
+	: >"$1"
+	chmod +x "$1"
+}
+ext() { # ext <home> <version> [tree]: the path an extension version bundles codex at
+	printf '%s' "$1/${3:-.vscode-server}/extensions/openai.chatgpt-$2-linux-x64/bin/linux-x86_64/codex"
+}
+
+# $CODEX: used when it runs, refused (not replaced) when it does not
+working "$tmp/good/codex"
+expect "a working \$CODEX is chosen, with its version" "$(LINE2=1 check "$tmp/h0" "" CODEX="$tmp/good/codex")" \
+	"0|$tmp/good/codex|codex-cli 0.0.0-test"
+expect "a relative \$CODEX is the caller's" "$(CWD=$tmp check "$tmp/h0" "" CODEX=good/codex)" "0|$tmp/good/codex"
+expect "a bare \$CODEX is looked up on PATH" "$(check "$tmp/h0" "$tmp/good" CODEX=codex)" "0|$tmp/good/codex"
+printf '#!/bin/sh\nexec sleep 1000\n' >"$tmp/hang-codex"
+chmod +x "$tmp/hang-codex"
+expect "a \$CODEX that hangs on --version is refused" "$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=1)" "3|"
+empty "$tmp/empty/codex"
+working "$(ext "$tmp/h1" 26.900.1)"
+expect "an empty \$CODEX is refused, not replaced" "$(check "$tmp/h1" "" CODEX="$tmp/empty/codex")" "3|"
+printf '#!/bin/sh\nexit 0\n' >"$tmp/mute-codex"
+chmod +x "$tmp/mute-codex"
+expect "a silent \$CODEX is refused" "$(check "$tmp/h1" "" CODEX="$tmp/mute-codex")" "3|"
+
+# the extension copies, newest first: a newer empty one and a newer non-executable one are skipped
+h=$tmp/h2
+working "$(ext "$h" 26.900.1)"
+empty "$(ext "$h" 26.930.1)"
+working "$(ext "$h" 26.920.1)"
+chmod -x "$(ext "$h" 26.920.1)"
+expect "an older working copy is chosen over newer broken ones" "$(check "$h" "")" "0|$(ext "$h" 26.900.1)"
+
+# PATH first: a broken codex on PATH falls through to a working extension copy
+empty "$tmp/onpath/codex"
+expect "a broken codex on PATH falls through to the extension" "$(check "$h" "$tmp/onpath")" "0|$(ext "$h" 26.900.1)"
+working "$tmp/goodpath/codex"
+expect "a working codex on PATH is chosen first" "$(check "$h" "$tmp/goodpath")" "0|$tmp/goodpath/codex"
+expect "every codex on PATH is tried, a broken first one skipped" "$(check "$h" "$tmp/onpath:$tmp/goodpath")" "0|$tmp/goodpath/codex"
+
+# both extension trees: the newer version wins, whichever tree holds it
+h=$tmp/h4
+working "$(ext "$h" 1.0.0 .vscode)"
+working "$(ext "$h" 100.0.0)"
+expect "the newest copy across the remote and desktop trees is chosen" "$(check "$h" "")" "0|$(ext "$h" 100.0.0)"
+
+# a bare $CODEX found through a relative PATH entry is the caller's
+expect "a bare \$CODEX on a relative PATH entry is the caller's" "$(CWD=$tmp check "$tmp/h0" "good" CODEX=codex)" "0|$tmp/good/codex"
+
+# a relative PATH entry in the automatic search is the caller's directory too
+expect "a codex on a relative PATH entry is the caller's" "$(CWD=$tmp check "$tmp/h0" "good")" "0|$tmp/good/codex"
+
+# a working one that leaves a child holding its stdout is accepted, promptly
+mkdir -p "$tmp/bg"
+printf '#!/bin/sh\nsleep 30 &\necho "codex-cli 0.0.0-test"\n' >"$tmp/bg/codex"
+chmod +x "$tmp/bg/codex"
+expect "a codex that leaves a child on its stdout does not hang the probe" \
+	"$(check "$tmp/h0" "" CODEX="$tmp/bg/codex" CODEX_PROBE_TIMEOUT=2)" "0|$tmp/bg/codex"
+
+# a codex whose interpreter is found through the same relative PATH entry still runs
+mkdir -p "$tmp/rel"
+printf '#!/bin/sh\necho "codex-cli 0.0.0-test"\n' >"$tmp/rel/myinterp"
+chmod +x "$tmp/rel/myinterp"
+printf '#!/usr/bin/env myinterp\n' >"$tmp/rel/codex"
+chmod +x "$tmp/rel/codex"
+ln -sf "$(command -v env)" "$tmp/tools/env"
+expect "a codex whose interpreter is on the same relative PATH entry runs" "$(CWD=$tmp check "$tmp/h0" "rel")" "0|$tmp/rel/codex"
+
+# a zero probe timeout is not "no deadline": a hanging candidate is still refused
+expect "CODEX_PROBE_TIMEOUT=0 keeps a deadline" "$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=0)" "3|"
+
+# a probe runs outside the worktree: a candidate that drops a file where it runs leaves the repo clean
+# (a name this run owns, so the cleanup can never remove a file of somebody else's)
+litter=probe-litter-$$-$RANDOM$RANDOM
+mkdir -p "$tmp/litter"
+printf '#!/bin/sh\n: > %s\necho "codex-cli 0.0.0-test"\n' "$litter" >"$tmp/litter/codex"
+chmod +x "$tmp/litter/codex"
+expect "a probe leaves nothing in the worktree" "$(check "$tmp/h0" "" CODEX="$tmp/litter/codex"; [ -e "$repo/$litter" ] && printf ' LITTER')" "0|$tmp/litter/codex"
+rm -f "$repo/$litter"
+
+# a version after a blank first line is still a version
+printf '#!/bin/sh\necho\necho "codex-cli 0.0.0-test"\n' >"$tmp/blank-codex"
+chmod +x "$tmp/blank-codex"
+expect "a version after a blank first line is accepted" "$(LINE2=1 check "$tmp/h0" "" CODEX="$tmp/blank-codex")" \
+	"0|$tmp/blank-codex|codex-cli 0.0.0-test"
+
+# a probe does not bound the files a real codex writes (a cache larger than 64 KiB)
+mkdir -p "$tmp/cache"
+printf '#!/bin/sh\nhead -c 200000 /dev/zero > "$HOME/codex-cache" || exit 1\necho "codex-cli 0.0.0-test"\n' >"$tmp/cache/codex"
+chmod +x "$tmp/cache/codex"
+mkdir -p "$tmp/hc"
+expect "a codex writing a large cache is accepted" "$(check "$tmp/hc" "" CODEX="$tmp/cache/codex")" "0|$tmp/cache/codex"
+
+# a leading-zero timeout is that many seconds, not the default
+expect "CODEX_PROBE_TIMEOUT=001 is one second" \
+	"$(s0=$SECONDS; r=$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=001); [ $((SECONDS - s0)) -lt 6 ] && printf '%s' "$r" || printf 'slow %s' "$r")" "3|"
+
+# a PATH entry starting with ~ is bash's to expand, not a directory under the caller's
+working "$tmp/ht/bin/codex"
+expect "a codex in a ~ PATH entry is found" "$(check "$tmp/ht" "~/bin")" "0|$tmp/ht/bin/codex"
+# ~name with no such user is a relative directory, which bash leaves as it is
+working "$tmp/~nouser-$$/bin/codex"
+expect "a ~nouser PATH entry is the caller's directory" "$(CWD=$tmp check "$tmp/h0" "~nouser-$$/bin")" "0|$tmp/~nouser-$$/bin/codex"
+
+# a bare $CODEX names a file on PATH, never a function of the same name
+expect "a bare \$CODEX skips a function of that name" \
+	"$(check "$tmp/h0" "$tmp/good" CODEX=codex 'BASH_FUNC_codex%%=() { :; }')" "0|$tmp/good/codex"
+
+# a drive-qualified $CODEX is absolute, not a path under the caller's directory (which here holds
+# a working C:/codex that only a wrongly prefixed path would reach)
+working "$tmp/C:/codex"
+expect "a drive-qualified \$CODEX is taken as written" "$(CWD=$tmp check "$tmp/h0" "" CODEX=C:/codex)" "3|"
+
+# a PATH entry holding a newline does not cut off the entries after it
+mkdir -p "$tmp/nl"$'\n'dir
+expect "the whole PATH is kept past a newline" "$(check "$tmp/h0" "$tmp/nl"$'\n'"dir:$tmp/good")" "0|$tmp/good/codex"
+
+# a refusal says why
+why() { # the stderr of --check-codex for $CODEX=<path>
+	env -i PATH="$tmp/tools" HOME="$tmp/h0" CODEX="$1" CODEX_PROBE_TIMEOUT=1 \
+		timeout 30 bash "$repo/scripts/codex_local_review.sh" --check-codex 2>&1 >/dev/null
+}
+expect "an empty \$CODEX is called empty" "$(why "$tmp/empty/codex")" "codex-local-review: \$CODEX=$tmp/empty/codex does not run: an empty file"
+expect "a hanging \$CODEX is called slow" "$(why "$tmp/hang-codex")" \
+	"codex-local-review: \$CODEX=$tmp/hang-codex does not run: no answer to --version within 1 s (CODEX_PROBE_TIMEOUT raises it)"
+printf '#!/bin/sh\nexit 124\n' >"$tmp/x124-codex"
+chmod +x "$tmp/x124-codex"
+expect "a \$CODEX exiting 124 at once is not called slow" "$(why "$tmp/x124-codex")" "codex-local-review: \$CODEX=$tmp/x124-codex does not run: --version exited 124"
+expect "a silent \$CODEX is called silent" "$(why "$tmp/mute-codex")" "codex-local-review: \$CODEX=$tmp/mute-codex does not run: --version printed nothing"
+
+# nothing that runs
+h=$tmp/h3
+empty "$(ext "$h" 26.930.1)"
+expect "an empty extension copy alone is refused" "$(check "$h" "")" "3|"
+
+echo "codex_local_review_test: $pass passed, $fail failed"
+[ "$fail" = 0 ]
