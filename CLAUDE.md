@@ -364,8 +364,8 @@ cross-built from Linux by `scripts/mint_windows_v.sh`; re-mint it whenever the p
 **The toolchain is V3.** Every job sets
 `V_MACOS_V3_NO_FALLBACK=1` and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level: without the
 first, a program V3 cannot build is silently rebuilt by a downloaded V1 compiler and a V3
-regression passes unseen — set it locally too when checking a V3 result. They set `VFLAGS=-nocache`
-too: V3's module cache, on by default since `ea5156d`, makes this repo's compiles slower, not
+regression passes unseen — set it locally too when checking a V3 result. `ci.yml` and `windows.yml`
+set `VFLAGS=-nocache` too: V3's module cache, on by default since `ea5156d`, makes this repo's compiles slower, not
 faster (unit tests 13.7 -> 21.9 min in CI when the pin crossed it). The Linux jobs install the V
 named in **`.v-version`** — a V3 commit this repo is known to pass on, not master itself (today the
 head of vlang/v#30552, master `56b36ba` plus the fix that lets blobly_emb's firmware build declare

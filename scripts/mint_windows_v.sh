@@ -75,6 +75,7 @@ for f in $(printf '%s' "$natives" | grep -o '%~dp0[^"]*' | sed -e 's/^%~dp0//' -
 	[ -f "$vdir/$f" ] || { echo "mint_windows_v: makev.bat names $f, which $vdir does not have" >&2; exit 1; }
 	helpers+=("$vdir/$f")
 done
+[ ${#helpers[@]} -gt 0 ] || { echo "mint_windows_v: no V_STAGE_NATIVE list in $vdir/makev.bat; V changed shape" >&2; exit 1; }
 
 # the command `v -prod -showcc -os windows -cc $cc` runs, with the C above in place of its own
 "$cc" -std=gnu11 -O2 -flto -municode -Wl,--stack=33554432 -w -Wno-incompatible-pointer-types \

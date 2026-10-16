@@ -13,6 +13,7 @@ module project
 
 import blobly.candb
 import blobly.transport
+import math
 import os
 import yaml
 import blobly.doip
@@ -166,10 +167,10 @@ pub:
 }
 
 // replay_speed_of reads a replay speed typed as text: surrounding space is ignored (V3's `f64()`
-// reads ' 2' as 0), and anything that is not a positive number is 1, real time.
+// reads ' 2' as 0), and anything that is not a positive finite number is 1, real time.
 pub fn replay_speed_of(text string) f64 {
 	spd := text.trim_space().f64()
-	return if spd > 0 { spd } else { 1.0 }
+	return if spd > 0 && !math.is_inf(spd, 0) { spd } else { 1.0 }
 }
 
 // GenCfg configures one signal's value generator for a simulated ECU. `typ`
