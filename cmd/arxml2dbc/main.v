@@ -2,7 +2,11 @@
 // one (#272): blobly_emb's build (DBC + a `[[frame]]` fragment for ecu.toml) and a user who
 // needs to edit. blobly_net itself reads the .arxml natively; this is the honest snapshot.
 //
-//   v -enable-globals run cmd/arxml2dbc/ <file.arxml> [options]
+//   v -enable-globals run cmd/arxml2dbc/ <file.arxml>... [options]
+//
+// Several inputs (files, directories of .arxml files, globs, `@FILE` lists) are one system
+// description, merged by AUTOSAR identity: a cluster in one file, its Nm in another. A model
+// file (`<name>.arxmodel.toml`) names them, and the schema they are merged by, once.
 //
 //   --cluster <name>   which CAN cluster (required when the file has several)
 //   --ecu <name>       the `[[frame]]` fragment for this ECU only (tx for what it sends, rx
@@ -21,7 +25,6 @@
 module main
 
 import blobly.candb
-import crypto.sha256
 import os
 import rand
 import v.vmod
@@ -40,7 +43,7 @@ fn C._commit(fd int) int
 
 fn main() {
 	args := os.args[1..].clone()
-	mut src := ''
+	mut srcs := []string{}
 	mut cluster := ''
 	mut ecu := ''
 	mut dbc_out := ''
@@ -78,25 +81,22 @@ fn main() {
 				dump_mode = true
 			}
 			else {
-				if a.starts_with('-') || src != '' {
+				if a.starts_with('-') && a != '-' {
 					eprintln('arxml2dbc: unexpected argument ${a}')
 					usage()
 					exit(2)
 				}
-				src = a
+				srcs << a
 			}
 		}
 		i++
 	}
-	if src == '' {
+	if srcs.len == 0 {
 		usage()
 		exit(2)
 	}
-	text := os.read_file(src) or {
-		eprintln('arxml2dbc: ${src}: ${err}')
-		exit(1)
-	}
-	a := candb.parse_arxml(text) or {
+	src := srcs.join(' ')
+	a, set := candb.load_arxml_inputs(srcs) or {
 		eprintln('arxml2dbc: ${src}: ${err}')
 		exit(1)
 	}
@@ -131,8 +131,8 @@ fn main() {
 	}
 	version := (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 	dbc := c.export_dbc(candb.ArxmlProvenance{
-		source: os.base(src)
-		sha256: sha256.hexhash(text)
+		source: set.files.map(os.base(it)).join(',')
+		sha256: set.sha256.join(',')
 		reader: 'blobly_net ${version}'
 		cluster: c.bus
 	}, a.report)
@@ -145,12 +145,19 @@ fn main() {
 	// could aim the publication at the source these checks refused
 	dbc_dst := if dbc_out != '' && dbc_out != '-' { canon(dbc_out) } else { '' }
 	toml_dst := if toml_out != '' && toml_out != '-' { canon(toml_out) } else { '' }
-	src_real := canon(src)
+	// every file the description is read from (candb.ArxmlInputs): the ARXML files, the model
+	// file, every @FILE list, the rules, policy and schema files
+	inputs := candb.arxml_inputs(srcs) or {
+		eprintln('arxml2dbc: ${src}: ${err}')
+		exit(1)
+	}
+	mut src_reals := inputs.files.map(canon(it))
+	src_reals << inputs.deps.map(canon(it))
 	outs := [dbc_out, toml_out]
 	dsts := [dbc_dst, toml_dst]
 	for k, out in outs {
-		if dsts[k] != '' && dsts[k] == src_real {
-			eprintln('arxml2dbc: ${out} is the input ARXML; refusing to overwrite the source')
+		if dsts[k] != '' && dsts[k] in src_reals {
+			eprintln('arxml2dbc: ${out} is an input of the system description; refusing to overwrite the source')
 			exit(2)
 		}
 		if dsts[k] != '' && os.is_dir(dsts[k]) {
@@ -434,7 +441,7 @@ fn take(args []string, i int, flag string) string {
 }
 
 fn usage() {
-	eprintln('usage: arxml2dbc <file.arxml> [--cluster <name>] [--ecu <name>] [--dbc <out.dbc>] [--toml <out.toml>|-] [--list] [--dump]')
+	eprintln('usage: arxml2dbc <file.arxml|dir|@list>...|<model.arxmodel.toml> [--cluster <name>] [--ecu <name>] [--dbc <out.dbc>] [--toml <out.toml>|-] [--list] [--dump]')
 }
 
 // dump_cluster prints the database in the line-per-fact form sut/arxml_oracle.py also

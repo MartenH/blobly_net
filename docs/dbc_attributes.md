@@ -88,6 +88,11 @@ file is never mistaken for a hand-written one:
 CM_ "arxml2dbc: source=<file> sha256=<hex> reader=<version> cluster=<name> schema=<AUTOSAR schema> dropped=<n> unresolved=<n> notes=<n>";
 ```
 
+A system description read from several files (`arxml2dbc a.arxml b.arxml`, or a directory)
+names each in `source`, comma-separated in the order read, and each one's hash in `sha256`, in
+the same order, and in `schema` each distinct schema they declare; one file is written as it
+always was.
+
 Nonzero `dropped`, `unresolved` or `notes` means the ARXML was read only partly; re-run the
 export to see what was left out. Nothing reads this comment back.
 

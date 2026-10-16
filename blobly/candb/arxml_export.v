@@ -19,8 +19,8 @@ module candb
 // ArxmlProvenance is what the exported DBC says about its origin.
 pub struct ArxmlProvenance {
 pub:
-	source  string // the ARXML's file name
-	sha256  string // of its bytes
+	source  string // the ARXML's file name; several, comma-separated, for a model read from several
+	sha256  string // of its bytes; of each file's, in the same order
 	reader  string // blobly_net version that exported it
 	cluster string
 }

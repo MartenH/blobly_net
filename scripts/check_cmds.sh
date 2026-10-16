@@ -46,7 +46,8 @@ fi
 n=$((n + 1))
 # The TOKEN, not one spelling of the call: V takes `$embed_file ('x')`, and a call split after
 # the name, alike (codex #456 r1).
-hits=$(grep -rnE --include='*.v' --exclude-dir=build '\$embed_file([^A-Za-z0-9_]|$)' cmd blobly libs)
+# The vendored libraries too: a re-vendor must not bring one back.
+hits=$(grep -rnE --include='*.v' --exclude-dir=build '\$embed_file([^A-Za-z0-9_]|$)' cmd blobly libs arxmodel flatxml)
 st=$?
 if [ "$st" -gt 1 ]; then
 	echo "FAIL the \$embed_file scan itself (grep exit $st)"

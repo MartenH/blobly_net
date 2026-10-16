@@ -9,12 +9,14 @@
 // turn a reference into the key the GUI stores loaded databases under.
 module candb
 
+import arxmodel
+
 import os
 
 // split_database_ref separates `file.arxml#Cluster` into the file and the cluster name. The
 // `#` is a fragment ONLY after an `.arxml` extension — a DBC named `a#b.dbc` keeps its hash.
 pub fn split_database_ref(ref string) (string, string) {
-	if ref.to_lower().ends_with('.dbc') || ref.to_lower().ends_with('.arxml') {
+	if ref.to_lower().ends_with('.dbc') || is_arxml_path(ref) {
 		// the WHOLE reference names a file: `archive.arxml#body.dbc` is one DBC with a hash in
 		// its name, `archive.arxml#copy.arxml` one ARXML — not an ARXML with a `body.dbc` or
 		// `copy.arxml` cluster (codex on #273 rounds 26 and 29). A cluster fragment never ends
@@ -30,8 +32,10 @@ pub fn split_database_ref(ref string) (string, string) {
 }
 
 // is_arxml_path reports whether a path (without fragment) names an ARXML file.
+// A model file (`<name>.arxmodel.toml`: the files of one system description and the schema they
+// are merged by) is one too.
 pub fn is_arxml_path(path string) bool {
-	return path.to_lower().ends_with('.arxml')
+	return path.to_lower().ends_with('.arxml') || arxmodel.is_model_file(path)
 }
 
 // is_arxml_ref reports whether a database reference names an ARXML, fragment or not.

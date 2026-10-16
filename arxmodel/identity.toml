@@ -1,0 +1,23 @@
+# arxmodel's built-in identity rules: how the elements of an AUTOSAR model are told apart and
+# matched when no schema is given (no --schema-dir, ARXMODEL_SCHEMA_DIR or schema_dir in the
+# user's configuration, and no --rules file), as in CI and in git merges, where the AUTOSAR XSD
+# is not at hand. Hand-written: public conventions of the ARXML format, nothing read from a
+# schema. A schema, or a rules file made from one, replaces them with the exact rules.
+#
+# Why not flatxml's rule text: it names children exactly, and cannot say "any element with a
+# SHORT-NAME child", "any *-PARAM-VALUE", or "a list of named elements".
+
+[identity]
+# An element with a SHORT-NAME child is named by it, and by the further parts given (a variation
+# point's label: two variants of one element share a short name).
+name = ["SHORT-NAME", "VARIATION-POINT/SHORT-LABEL"]
+
+# ECUC values are named by the definition they give a value to; a container by its short name
+# too. A `*` in a pattern stands for any part of an element name.
+by_definition = ["*-PARAM-VALUE", "*-REFERENCE-VALUE", "ECUC-CONTAINER-VALUE"]
+definition = "DEFINITION-REF"
+
+# An element with neither, every child element of which is named (a list, such as AR-PACKAGES
+# or ELEMENTS), is one list with its namesakes under one parent, so the lists of several files
+# merge. Any other element is matched by its name and its place among its siblings, and its
+# order counts: a reorder is reported. The order of named elements does not count.

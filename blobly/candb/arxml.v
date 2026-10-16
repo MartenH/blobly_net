@@ -49,8 +49,9 @@
 // cantools agrees (sut/arxml_oracle.py diffs the two against cmd/arxml2dbc --dump).
 module candb
 
+import arxmodel
 import crypto.sha256
-import encoding.xml
+import flatxml
 import math
 import os
 import sync
@@ -191,11 +192,15 @@ pub mut:
 	ignored    map[string]int // element kind -> how many were seen and not extracted
 	notes      []string // things extracted PARTIALLY, one line each
 	schema     string // the XSD the file declares (AUTOSAR_4-2-2, AUTOSAR_00046), or 'unstated'
+	merged_by  string // what the files were merged by: a schema, a rules file, or the built-in rules
 }
 
 // lines renders the findings for a terminal or a log, one line each.
 pub fn (r ArxmlReport) lines() []string {
 	mut out := []string{}
+	if r.merged_by != '' && r.merged_by != 'built-in identity rules' {
+		out << 'merged by the ${r.merged_by}'
+	}
 	for u in r.unresolved {
 		out << 'unresolved reference: ${u}'
 	}
@@ -335,7 +340,7 @@ struct FrameAdmission {
 // allocates its payload from the length, so a negative one panicked and one over 64 went to a
 // transport that cannot carry it; and a classic frame over 8 bytes would simulate three ways —
 // the software buses carry it, SocketCAN clamps it, the vendor backends refuse it (rounds 34–36).
-fn frame_admission(ft xml.XMLNode, frame xml.XMLNode, fname string) FrameAdmission {
+fn frame_admission(ft flatxml.MNode, frame flatxml.MNode, fname string) FrameAdmission {
 	// The VALUES are the table's business (arxml_leaves.v) and check_leaves has said what was
 	// wrong with each; a refusal here says only that the FRAME is dropped for it — one line per
 	// frame, not a second diagnosis of the value — and adds the relations the table cannot state.
@@ -377,14 +382,17 @@ fn frame_admission(ft xml.XMLNode, frame xml.XMLNode, fname string) FrameAdmissi
 	})
 	// FD is what BOTH behaviours say: TX and RX disagreeing made the frame one thing on the wire
 	// and another in the file (#280)
+	// and (an RX behaviour of ANY receives either, so it disagrees with nothing)
 	tx_b := child_text(ft, 'CAN-FRAME-TX-BEHAVIOR').trim_space()
 	rx_b := child_text(ft, 'CAN-FRAME-RX-BEHAVIOR').trim_space()
-	if tx_b != '' && rx_b != '' && tx_b != rx_b {
+	if tx_b != '' && rx_b != '' && rx_b != 'ANY' && tx_b != rx_b {
 		return FrameAdmission{
 			refusal: 'frame ${fname}: CAN-FRAME-TX-BEHAVIOR ${tx_b} and CAN-FRAME-RX-BEHAVIOR ${rx_b} disagree; not read'
 		}
 	}
-	fd := tx_b == 'CAN-FD' || rx_b == 'CAN-FD'
+	// a receiver taking either format with no transmitter stated: a length only CAN-FD carries
+	// says it is FD
+	fd := tx_b == 'CAN-FD' || rx_b == 'CAN-FD' || (rx_b == 'ANY' && tx_b == '' && dlc > 8)
 	if !fd && dlc > 8 {
 		// a classic frame cannot carry it: the software buses would, SocketCAN clamps and the
 		// vendor backends refuse, so the same file would simulate three ways (round 35)
@@ -483,26 +491,160 @@ pub fn content_key(path string, text string) (string, string) {
 // cost milliseconds. Keyed on the real path and the SHA-256 of the bytes — not size and
 // mtime, which a same-length rewrite within one second defeats. Process-wide, never evicted:
 // a bench holds one or two of these.
+//
+// A model file (`<name>.arxmodel.toml`, `arxmodel.is_model_file`) is read as the system it
+// describes: its files, merged by its schema (else this machine's, else the built-in rules).
 pub fn load_arxml_file(path string) !Arxml {
 	a, _ := load_arxml_content(path)!
 	return a
 }
 
-// load_arxml_content is load_arxml_file with the SHA-256 of the bytes it read: the content key a
-// caller compares to tell whether the file changed since (the import dialog, before it writes).
+// load_arxml_content is load_arxml_file with the fingerprint of what it read (ArxmlInputs): the
+// key a caller compares to tell whether the description changed since (the import dialog).
 pub fn load_arxml_content(path string) !(Arxml, string) {
-	text := os.read_file(path)!
-	key, sha := content_key(path, text)
+	inputs := arxml_inputs([path])!
+	a, fp := load_inputs(inputs)!
+	return a, fp
+}
+
+// arxml_fingerprint is the fingerprint load_arxml_content gives, without parsing anything: every
+// file the description is read from, by content.
+pub fn arxml_fingerprint(path string) !string {
+	return arxml_inputs([path])!.fingerprint()
+}
+
+// load_arxml_inputs reads the system description a command line names: one model file, read as
+// the files it describes merged by its schema, or an input set of ARXML files.
+pub fn load_arxml_inputs(paths []string) !(Arxml, ArxmlSet) {
+	inputs := arxml_inputs(paths)!
+	a, _ := load_inputs(inputs)!
+	return a, inputs.set()!
+}
+
+// ArxmlSet is the files one system description was read from, in the order read, and the
+// SHA-256 of each one's bytes.
+pub struct ArxmlSet {
+pub:
+	files  []string
+	sha256 []string
+}
+
+// ArxmlInputs is every file one system description is read from: its ARXML files, in the order
+// read, and everything else the read depends on (deps) — the model file naming them, every
+// @FILE list, the rules, policy and schema files the merge is by. THE one answer to "what was
+// this read from": the cache keys on it, the import dialog compares it, and arxml2dbc refuses to
+// overwrite any of it.
+pub struct ArxmlInputs {
+pub:
+	files    []string
+	deps     []string
+	opts     arxmodel.OpenOptions
+	warnings []string // paths of the input set that named nothing
+}
+
+// arxml_inputs is the inputs of the description the paths name: one model file, or an input set
+// of ARXML files (arxmodel's rules: files, directories, globs, @FILE lists, sorted by path).
+pub fn arxml_inputs(paths []string) !ArxmlInputs {
+	mut deps := []string{}
+	mut set_paths := paths.clone()
+	mut opts := arxmodel.OpenOptions{}
+	if paths.len == 1 && arxmodel.is_model_file(paths[0]) {
+		mf := arxmodel.load_model_file(paths[0])!
+		deps << paths[0]
+		set_paths = mf.paths
+		opts = mf.options()!
+	} else {
+		for p in paths {
+			if arxmodel.is_model_file(p) {
+				return error('${p}: a model file describes a whole system; name it alone')
+			}
+		}
+	}
+	return inputs_of(set_paths, opts, deps)
+}
+
+fn inputs_of(paths []string, opts arxmodel.OpenOptions, deps0 []string) !ArxmlInputs {
+	found := arxmodel.find_arxml(paths, arxmodel.LoadOptions{
+		exclude: opts.exclude
+	})!
+	if found.failed.len > 0 {
+		return error(found.failed.map(it.msg).join('; '))
+	}
+	if found.files.len == 0 {
+		return error('no .arxml file at ${paths.join(', ')}')
+	}
+	mut deps := deps0.clone()
+	deps << found.lists
+	for f in [opts.rules_file, opts.policy] {
+		if f != '' && os.is_file(f) {
+			deps << f
+		}
+	}
+	if opts.schema_dir != '' && os.is_dir(opts.schema_dir) {
+		// every schema below the directory, its extension in any case (a schema it imports from
+		// elsewhere is not followed: put it in the directory)
+		mut xsds := []string{}
+		os.walk(opts.schema_dir, fn [mut xsds] (f string) {
+			if f.to_lower().ends_with('.xsd') {
+				xsds << f
+			}
+		})
+		xsds.sort()
+		deps << xsds
+	}
+	return ArxmlInputs{
+		files:    found.files
+		deps:     deps
+		opts:     opts
+		warnings: found.warnings
+	}
+}
+
+// fingerprint is a SHA-256 over every input's path and content, in order: a change to any file
+// the description is read from is a change to the description.
+pub fn (i ArxmlInputs) fingerprint() !string {
+	mut parts := []string{}
+	for f in i.files {
+		parts << '${os.real_path(f)}=${sha256.sum(os.read_bytes(f)!).hex()}'
+	}
+	for f in i.deps {
+		parts << '+${os.real_path(f)}=${sha256.sum(os.read_bytes(f)!).hex()}'
+	}
+	parts << 'rules=${i.opts.schema_dir};${i.opts.rules_file};${i.opts.policy}'
+	return sha256.hexhash(parts.join('\n'))
+}
+
+// set is the ARXML files and each one's SHA-256, for a provenance line.
+pub fn (i ArxmlInputs) set() !ArxmlSet {
+	return ArxmlSet{
+		files:  i.files
+		sha256: i.files.map(sha256.sum(os.read_bytes(it)!).hex())
+	}
+}
+
+// load_arxml_set reads the system description the input set at paths makes, merged by opts.
+pub fn load_arxml_set(paths []string, opts arxmodel.OpenOptions) !(Arxml, ArxmlSet) {
+	inputs := inputs_of(paths, opts, [])!
+	a, _ := load_inputs(inputs)!
+	return a, inputs.set()!
+}
+
+// load_inputs reads a description from its inputs, once per content of all of them (the cache:
+// a real file is seconds and hundreds of MB to parse, and a project opens each channel's
+// databases several times per Start), and returns the read and its fingerprint.
+fn load_inputs(inputs ArxmlInputs) !(Arxml, string) {
+	fp := inputs.fingerprint()!
+	key := inputs.files.map(os.real_path(it)).join('\n') + '\n' + inputs.deps.map(os.real_path(it)).join('\n')
 	for {
 		arxml_cache_mu.lock()
 		if c := arxml_cache[key] {
-			if c.sha == sha {
+			if c.sha == fp {
 				arxml_cache_hits++
 				arxml_cache_mu.unlock()
 				if c.err != '' {
 					return error(c.err)
 				}
-				return c.a, sha
+				return with_set_notes(c.a, inputs.warnings), fp
 			}
 		}
 		if key !in arxml_cache_inflight {
@@ -510,7 +652,7 @@ pub fn load_arxml_content(path string) !(Arxml, string) {
 			arxml_cache_mu.unlock()
 			break
 		}
-		// somebody is parsing this very file: wait for their answer instead of parsing it again
+		// somebody is parsing these very files: wait for their answer instead of parsing again
 		arxml_cache_mu.unlock()
 		time.sleep(10 * time.millisecond)
 	}
@@ -519,12 +661,19 @@ pub fn load_arxml_content(path string) !(Arxml, string) {
 		arxml_cache_inflight.delete(key)
 		arxml_cache_mu.unlock()
 	}
-	a := parse_arxml(text) or {
-		// remembered under the same path-and-content key, so repaired bytes retry and the
-		// same broken bytes do not cost seconds and hundreds of MB per rebuild
+	mut srcs := []arxmodel.Source{cap: inputs.files.len}
+	for f in inputs.files {
+		srcs << arxmodel.Source{
+			path: f
+			data: os.read_bytes(f)!
+		}
+	}
+	a := read_arxml(srcs, inputs.opts) or {
+		// remembered under the same inputs and content, so repaired bytes retry and the same
+		// broken bytes do not cost seconds and hundreds of MB per rebuild
 		arxml_cache_mu.lock()
 		arxml_cache[key] = ArxmlCached{
-			sha: sha
+			sha: fp
 			err: err.msg()
 		}
 		arxml_cache_mu.unlock()
@@ -532,12 +681,28 @@ pub fn load_arxml_content(path string) !(Arxml, string) {
 	}
 	arxml_cache_mu.lock()
 	arxml_cache[key] = ArxmlCached{
-		sha: sha
-		a: a
+		sha: fp
+		a:   a
 	}
 	arxml_cache_mu.unlock()
-	return a, sha
+	return with_set_notes(a, inputs.warnings), fp
 }
+
+// with_set_notes is a read with what its input set said (a glob or a directory that matched no
+// .arxml file): a model read partly because a path named nothing is said so.
+fn with_set_notes(a Arxml, warnings []string) Arxml {
+	if warnings.len == 0 {
+		return a
+	}
+	mut report := a.report
+	report.notes = warnings.map('input: ${it}')
+	report.notes << a.report.notes
+	return Arxml{
+		...a
+		report: report
+	}
+}
+
 
 // arxml_cache_hit_count is how many loads the cache answered — for the test that pins it.
 pub fn arxml_cache_hit_count() int {
@@ -550,37 +715,67 @@ pub fn arxml_cache_hit_count() int {
 
 // parse_arxml parses ARXML text. Pure (no I/O) so it is directly unit-testable.
 pub fn parse_arxml(text string) !Arxml {
-	doc := xml.XMLDocument.from_string(text) or { return error('not XML: ${err}') }
-	if lname(doc.root) != 'AUTOSAR' {
-		return error('root element is <${doc.root.name}>, not <AUTOSAR>')
+	return read_arxml([arxmodel.Source{
+		path: 'arxml'
+		data: unsafe { text.str.vbytes(text.len) }
+	}], arxmodel.OpenOptions{})
+}
+
+// read_arxml reads one system description from the files it is made of, merged into one model
+// by arxmodel (a package, a cluster or an ECU may be described across several files). Every
+// file must be an AUTOSAR 4.x document.
+pub fn read_arxml(srcs []arxmodel.Source, opts arxmodel.OpenOptions) !Arxml {
+	mut o := arxmodel.open_sources(srcs, opts) or {
+		return error(if opts.schema_dir != '' || opts.rules_file != '' {
+			err.msg()
+		} else {
+			'not XML: ${err}'
+		})
 	}
-	// the namespace the ROOT is in: the default one, or the one its prefix is bound to —
-	// a 3.x file with a prefixed root must meet the same guard as one without
-	prefix := if doc.root.name.contains(':') { doc.root.name.all_before(':') } else { '' }
-	ns_attr := if prefix == '' { 'xmlns' } else { 'xmlns:${prefix}' }
-	ns := doc.root.attributes[ns_attr] or { '' }
-	if ns != '' && !ns.contains('autosar.org/schema/r4') {
-		// 3.x (autosar.org/3.x.y) renames half the elements this walk names, so nothing
-		// below would match — say so rather than returning an empty database
-		return error('AUTOSAR schema ${ns} is not 4.x')
+	defer {
+		o.free()
 	}
-	mut r := &ArxmlReader{}
-	r.index_node(doc.root, '')
-	r.note_schema(doc.root)
-	r.check_leaves(doc.root, '', '') // every leaf the table names, once, before anything reads it
+	for d in o.model.set.docs {
+		root := d.root_node()
+		if root.local_name() != 'AUTOSAR' {
+			return error('${where(o, d)}root element is <${root.name()}>, not <AUTOSAR>')
+		}
+		// the namespace the ROOT is in, whatever prefix spells it: 3.x (autosar.org/3.x.y)
+		// renames half the elements this walk names, so nothing below would match — say so
+		// rather than returning an empty database
+		ns := d.ns_uri(d.ns_of(root.i))
+		if ns != '' && !ns.contains('autosar.org/schema/r4') {
+			return error('${where(o, d)}AUTOSAR schema ${ns} is not 4.x')
+		}
+	}
+	mut r := &ArxmlReader{
+		o: o
+	}
+	r.report.merged_by = o.rules
+	for n in o.notes {
+		r.report.notes << n
+	}
+	r.note_schema()
+	r.note_merge()
+	r.check_leaves(o.root(), '', '') // every leaf the table names, once, before anything reads it
 	r.count_ignored()
 	r.name_ecus()
 	r.load_e2e()
 	r.load_pdu_groups()
 	mut clusters := []ArxmlCluster{}
-	for path in r.kinds['CAN-CLUSTER'] {
+	for path in r.kind_paths('CAN-CLUSTER') {
 		clusters << r.load_cluster(path)
 	}
 	named := r.name_clusters(clusters)
 	return Arxml{
 		clusters: named
-		report: r.report
+		report:   r.report
 	}
+}
+
+// where names a file in a message about it, when the model has more than one.
+fn where(o &arxmodel.Opened, d &flatxml.Doc) string {
+	return if o.model.set.docs.len > 1 { '${d.path}: ' } else { '' }
 }
 
 // --- the walk ----------------------------------------------------------------------------
@@ -611,62 +806,75 @@ const arxml_ignored_kinds = [
 
 struct ArxmlReader {
 mut:
-	by_path map[string]xml.XMLNode // every identifiable element, by AUTOSAR path
-	kinds   map[string][]string // element name -> paths, in document order
-	e2e     map[string]ArxmlE2e // protected I-SIGNAL-I-PDU path -> its protection
-	pdu_out map[string][]string // I-SIGNAL-I-PDU path -> ECUs whose OUT I-PDU group carries it
-	pdu_in  map[string][]string // ... and whose IN group does
+	o       &arxmodel.Opened = unsafe { nil } // the files, merged, and their elements by path
+	e2e     map[string]ArxmlE2e   // protected I-SIGNAL-I-PDU path -> its protection
+	pdu_out map[string][]string   // I-SIGNAL-I-PDU path -> ECUs whose OUT I-PDU group carries it
+	pdu_in  map[string][]string   // ... and whose IN group does
 	compu   map[string]ArxmlScale // COMPU-METHOD path -> its scale, read once
-	ecus    map[string]string // ECU-INSTANCE path -> the name it goes by (package-qualified when shared)
+	ecus    map[string]string     // ECU-INSTANCE path -> the name it goes by (package-qualified when shared)
 	report  ArxmlReport
 }
 
-// index_node registers every element that has a SHORT-NAME under the path its ancestors
-// build. An element without one (a container such as ELEMENTS or FRAME-TRIGGERINGS) passes
-// its parent's path down unchanged.
-fn (mut r ArxmlReader) index_node(n xml.XMLNode, parent string) {
-	mut path := parent
-	if sn := child(n, 'SHORT-NAME') {
-		path = '${parent}/${el_text(sn)}'
-		r.by_path[path] = n
-		r.kinds[lname(n)] << path
+// node_at is the element at an AUTOSAR path. Several elements holding one path is the file's
+// own defect, said once by note_merge; the first is read.
+fn (r &ArxmlReader) node_at(path string) ?flatxml.MNode {
+	n := r.o.at(path)
+	return if n.ok() { n } else { none }
+}
+
+// kind_paths are the paths of every identifiable element of a kind, in document order.
+fn (r &ArxmlReader) kind_paths(kind string) []string {
+	return r.o.of_kind(kind).map(r.o.path_of(it))
+}
+
+// note_merge says what merging the files found: an element two of them describe differently,
+// a path several elements hold — the first is what is read.
+fn (mut r ArxmlReader) note_merge() {
+	for path in r.o.index.dup() {
+		r.report.notes << '${path}: held by ${r.o.holders(path).len} elements; the first is read'
 	}
-	for c in n.children {
-		if c is xml.XMLNode {
-			r.index_node(c, path)
+	// what the policy rates `ignore` (an item the schema keys, written without its key) is
+	// ordinary in real files and says nothing about what this reader extracted
+	for f in r.o.findings {
+		if f.severity != .ignore {
+			r.report.notes << '${f.path}: ${f.message}'
 		}
+	}
+	for x in r.o.repeated {
+		r.report.notes << '${x.all_before(': ')}: described more than once in one file, read as one (${x.all_after(': ')})'
 	}
 }
 
 fn (mut r ArxmlReader) count_ignored() {
 	for k in arxml_ignored_kinds {
-		if paths := r.kinds[k] {
-			if paths.len > 0 {
-				r.report.ignored[k] = paths.len
-			}
+		n := r.o.of_kind(k).len
+		if n > 0 {
+			r.report.ignored[k] = n
 		}
 	}
 }
 
 // deref follows a `*-REF` child of `n` named `tag`, returning the target and its path, and
 // recording a dangling one against `from` (the referrer's path, for the report).
-fn (mut r ArxmlReader) deref(n xml.XMLNode, tag string, from string) ?(xml.XMLNode, string) {
+fn (mut r ArxmlReader) deref(n flatxml.MNode, tag string, from string) ?(flatxml.MNode, string) {
 	ref := child(n, tag) or { return none }
 	return r.deref_node(ref, from)
 }
 
-fn (mut r ArxmlReader) deref_node(ref xml.XMLNode, from string) ?(xml.XMLNode, string) {
+fn (mut r ArxmlReader) deref_node(ref flatxml.MNode, from string) ?(flatxml.MNode, string) {
 	target := el_text(ref)
-	if t := r.by_path[target] {
+	if t := r.node_at(target) {
 		return t, target
 	}
-	dest := ref.attributes['DEST'] or { '?' }
-	r.report.unresolved << '${from} ${ref.name} -> ${target} (${dest})'
+	dest := ref.attr('DEST')
+	r.report.unresolved << '${from} ${lname(ref)} -> ${target} (${if dest == '' { '?' } else { dest }})'
 	return none
 }
 
-fn (r ArxmlReader) path_of(n xml.XMLNode, fallback string) string {
-	// cheap identity for report lines: the SHORT-NAME, since a node does not know its path
+fn (r ArxmlReader) path_of(n flatxml.MNode, fallback string) string {
+	if p := r.o.index.path_of(n.i) {
+		return p
+	}
 	if sn := child(n, 'SHORT-NAME') {
 		return '${fallback}/${el_text(sn)}'
 	}
@@ -713,8 +921,8 @@ fn claim_name(mut taken map[string]bool, want string) string {
 // package has an ECU of the same SHORT-NAME — a legal AUTOSAR shape that, reduced to the
 // last path component, would fold two ECUs into one sender and one `--ecu` selection.
 fn (mut r ArxmlReader) name_ecus() {
-	r.ecus = allocate_names(r.kinds['ECU-INSTANCE'])
-	for p in r.kinds['ECU-INSTANCE'] {
+	r.ecus = allocate_names(r.kind_paths('ECU-INSTANCE'))
+	for p in r.kind_paths('ECU-INSTANCE') {
 		short := p.all_after_last('/')
 		if r.ecus[p] == 'Vector__XXX' {
 			// the DBC's placeholder for "no transmitter": an ECU that legitimately bears the
@@ -742,8 +950,8 @@ fn (mut r ArxmlReader) name_ecus() {
 // first way is the FRAME-PORTs on the frame triggering; a file may carry either or both, and
 // cantools reads only this one, so both are read and unioned.
 fn (mut r ArxmlReader) load_pdu_groups() {
-	for ecu_path in r.kinds['ECU-INSTANCE'] {
-		ecu := r.by_path[ecu_path] or { continue }
+	for ecu_path in r.kind_paths('ECU-INSTANCE') {
+		ecu := r.node_at(ecu_path) or { continue }
 		name := r.ecus[ecu_path] or { continue }
 		for gref in descendants(ecu, 'ASSOCIATED-COM-I-PDU-GROUP-REF') {
 			group, gpath := r.deref_node(gref, ecu_path) or { continue }
@@ -752,7 +960,7 @@ fn (mut r ArxmlReader) load_pdu_groups() {
 	}
 }
 
-fn (mut r ArxmlReader) collect_pdu_group(group xml.XMLNode, group_path string, ecu string, dir_in string, depth int) {
+fn (mut r ArxmlReader) collect_pdu_group(group flatxml.MNode, group_path string, ecu string, dir_in string, depth int) {
 	if depth > 8 {
 		r.report.notes << '${group_path}: I-PDU groups nested deeper than 8, stopped'
 		return
@@ -790,8 +998,8 @@ fn (mut r ArxmlReader) collect_pdu_group(group xml.XMLNode, group_path string, e
 // load_e2e collects every END-TO-END-PROTECTION into a map keyed by the protected PDU's path,
 // so a frame can ask "is my PDU protected?" in one lookup.
 fn (mut r ArxmlReader) load_e2e() {
-	for set_path in r.kinds['END-TO-END-PROTECTION-SET'] {
-		set := r.by_path[set_path] or { continue }
+	for set_path in r.kind_paths('END-TO-END-PROTECTION-SET') {
+		set := r.node_at(set_path) or { continue }
 		for prot in descendants(set, 'END-TO-END-PROTECTION') {
 			prot_path := r.path_of(prot, set_path)
 			profile := child(prot, 'END-TO-END-PROFILE') or {
@@ -925,7 +1133,7 @@ fn note_node(mut nodes []string, ecu string) {
 }
 
 fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
-	cl := r.by_path[path] or { return ArxmlCluster{} }
+	cl := r.node_at(path) or { return ArxmlCluster{} }
 	name := path.all_after_last('/')
 	// the bus parameters sit at CAN-CLUSTER-VARIANTS/CAN-CLUSTER-CONDITIONAL, and a
 	// depth-first search from the cluster would walk every triggering to find them
@@ -968,7 +1176,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// the import pass refuses with, or a rejected /A/F reserved `F` and the imported /B/F
 		// came out `B_F` (round 37)
 		fp := el_text(child(ft, 'FRAME-REF') or { continue })
-		fnode := r.by_path[fp] or { continue }
+		fnode := r.node_at(fp) or { continue }
 		adm := frame_admission(ft, fnode, child_text(fnode, 'SHORT-NAME'))
 		if adm.refusal != '' {
 			continue
@@ -1142,11 +1350,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				r.report.notes << "${ft_path}: frame ${fname} maps ${pdus} PDUs; the signals of ${child_text(pdu, 'SHORT-NAME')} are read, its timing and protection are not (the first PDU's are kept)"
 			} else {
 				info.pdu = child_text(pdu, 'SHORT-NAME')
-				info.pdu_kind = pref.attributes['DEST'] or { lname(pdu) }
+				info.pdu_kind = attr_or(pref, 'DEST', lname(pdu))
 			}
 			mut sig_pdu := pdu
 			mut sig_pdu_path := pdu_path
-			if (pref.attributes['DEST'] or { lname(pdu) }) == 'SECURED-I-PDU' {
+			if attr_or(pref, 'DEST', lname(pdu)) == 'SECURED-I-PDU' {
 				// the authentic PDU is behind PAYLOAD-REF -> PDU-TRIGGERING -> I-PDU-REF;
 				// followed ONCE here, and handed to the layout reader
 				if child(pdu, 'PAYLOAD-REF') == none {
@@ -1392,7 +1600,7 @@ struct ArxmlTiming {
 // CYCLIC-TIMING, event if an EVENT-CONTROLLED-TIMING, mixed if both. The FALSE mode (what
 // the PDU does when its mode condition is off) is not read: COM's mode switching is ECU
 // configuration, and a bench needs the cadence the bus is expected to carry.
-fn (mut r ArxmlReader) load_timing(pdu xml.XMLNode, pdu_path string) ArxmlTiming {
+fn (mut r ArxmlReader) load_timing(pdu flatxml.MNode, pdu_path string) ArxmlTiming {
 	specs := descendants(pdu, 'I-PDU-TIMING')
 	if specs.len > 1 {
 		// timing per configuration variant: the first is read, like every other variant
@@ -1482,7 +1690,7 @@ fn (mut r ArxmlReader) timing_ms(s string, at string, what string) int {
 // load_secoc reads a SECURED-I-PDU's layout; `authentic` is the payload PDU's length in bytes
 // (the caller has already followed PAYLOAD-REF, so a dangling one is reported once) and
 // `pdu_off` where the secured PDU sits in its frame, so the positions are frame-relative.
-fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic int, pdu_off int) ?ArxmlSecOc {
+fn (mut r ArxmlReader) load_secoc(pdu flatxml.MNode, pdu_path string, authentic int, pdu_off int) ?ArxmlSecOc {
 	props := first(pdu, 'SECURE-COMMUNICATION-PROPS') or {
 		r.report.notes << '${pdu_path}: SECURED-I-PDU without SECURE-COMMUNICATION-PROPS, layout unknown'
 		return none
@@ -1536,7 +1744,7 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 // load_signals reads every I-SIGNAL-TO-I-PDU-MAPPING of an I-SIGNAL-I-PDU. `pdu_off` is the
 // PDU's bit offset inside the frame, added to each start position — it is byte-aligned in
 // any real file, so it shifts an Intel and a Motorola start alike.
-fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int) ([]Signal, []string) {
+fn (mut r ArxmlReader) load_signals(pdu flatxml.MNode, pdu_path string, pdu_off int) ([]Signal, []string) {
 	mut out := []Signal{}
 	mut paths := []string{} // the I-SIGNAL path of each entry of `out`, for the naming pass
 	// the PDU's own length bounds its signals: the frame check alone let a 16-bit signal of a
@@ -1638,9 +1846,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		// rest are reported, since nothing here evaluates a variation condition
 		mut is_signed := false
 		props := first(isig, 'SW-DATA-DEF-PROPS-CONDITIONAL') or {
-			xml.XMLNode{
-				name: ''
-			}
+			flatxml.MNode{}
 		}
 		r.note_variants(isig, isig_path)
 		if bt, _ := r.deref(props, 'BASE-TYPE-REF', isig_path) {
@@ -1675,12 +1881,8 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		mut minimum := 0.0
 		mut maximum := 0.0
 		mut sys_path := ''
-		mut phys := xml.XMLNode{
-			name: ''
-		}
-		mut sys := xml.XMLNode{
-			name: ''
-		}
+		mut phys := flatxml.MNode{}
+		mut sys := flatxml.MNode{}
 		if s, sp := r.deref(isig, 'SYSTEM-SIGNAL-REF', isig_path) {
 			sys = s
 			sys_path = sp
@@ -1689,9 +1891,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				r.note_variants(pp, sp)
 			}
 		}
-		mut cm := xml.XMLNode{
-			name: ''
-		}
+		mut cm := flatxml.MNode{}
 		mut cm_path := ''
 		if opaque {
 			// a byte array has no scale, no enum, no unit
@@ -1758,9 +1958,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 
 		// range: a data constraint's physical limits, else its internal ones scaled, else the
 		// domain of the linear compu scale (raw) scaled — the last being cantools' answer
-		mut dc := xml.XMLNode{
-			name: ''
-		}
+		mut dc := flatxml.MNode{}
 		mut has_dc := false
 		if opaque {
 			// nor a range
@@ -1842,7 +2040,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 // note_variants reports a SW-DATA-DEF-PROPS-VARIANTS with more than one conditional: the
 // reader takes the first and says so, rather than letting document order choose a signal's
 // signedness or scaling without a word.
-fn (mut r ArxmlReader) note_variants(n xml.XMLNode, at string) {
+fn (mut r ArxmlReader) note_variants(n flatxml.MNode, at string) {
 	if v := first(n, 'SW-DATA-DEF-PROPS-VARIANTS') {
 		conds := children(v, 'SW-DATA-DEF-PROPS-CONDITIONAL')
 		if conds.len > 1 {
@@ -1880,7 +2078,7 @@ fn scaled_range(lo f64, hi f64, factor f64, offset f64) (f64, f64) {
 // offset (numerator V0 = offset, V1 = factor, over denominator V0); TEXTTABLE scales with
 // equal limits give the enum; SCALE_LINEAR_AND_TEXTTABLE gives both. A rational function
 // with a non-constant denominator is not a factor/offset and is noted — once.
-fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
+fn (mut r ArxmlReader) load_compu(cm flatxml.MNode, cm_path string) ArxmlScale {
 	if s := r.compu[cm_path] {
 		return s
 	}
@@ -2088,148 +2286,154 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 // lname is an element's LOCAL name: a document may bind the AUTOSAR namespace to a prefix
 // (`<ar:AUTOSAR xmlns:ar=…>`), and a prefix is the author's choice, not part of the name.
 // Every comparison of an element name in this file goes through it.
-fn lname(n xml.XMLNode) string {
-	return n.name.all_after_last(':')
+fn lname(n flatxml.MNode) string {
+	return n.local_name().clone()
+}
+
+// name_id is the id local name `name` has in the model's name table; none where no element of
+// the model is named so.
+fn name_id(n flatxml.MNode, name string) ?u32 {
+	if !n.ok() {
+		return none
+	}
+	return n.m.set.tab.id(name)
 }
 
 // descendants returns every element named `name` below `n` (not `n` itself), document
-// order, by LOCAL name — vlib's get_elements_by_tag compares the prefixed name, and a
-// document that binds the namespace to a prefix would then have no frames at all.
-fn descendants(n xml.XMLNode, name string) []xml.XMLNode {
-	mut out := []xml.XMLNode{}
-	for c in n.children {
-		if c is xml.XMLNode {
-			if lname(c) == name {
-				out << c
-			}
-			out << descendants(c, name)
-		}
-	}
+// order, by LOCAL name.
+fn descendants(n flatxml.MNode, name string) []flatxml.MNode {
+	mut out := []flatxml.MNode{}
+	id := name_id(n, name) or { return out }
+	collect_named(n, id, mut out)
 	return out
 }
 
+fn collect_named(n flatxml.MNode, id u32, mut out []flatxml.MNode) {
+	for c in n.children() {
+		if c.tag() == id {
+			out << c
+		}
+		collect_named(c, id, mut out)
+	}
+}
+
 // child returns the first DIRECT child element named `name`.
-fn child(n xml.XMLNode, name string) ?xml.XMLNode {
-	for c in n.children {
-		if c is xml.XMLNode {
-			if lname(c) == name {
-				return c
-			}
+fn child(n flatxml.MNode, name string) ?flatxml.MNode {
+	id := name_id(n, name) or { return none }
+	for c in n.children() {
+		if c.tag() == id {
+			return c
 		}
 	}
 	return none
 }
 
 // children returns the DIRECT child elements named `name`, document order.
-fn children(n xml.XMLNode, name string) []xml.XMLNode {
-	mut out := []xml.XMLNode{}
-	for c in n.children {
-		if c is xml.XMLNode {
-			if lname(c) == name {
-				out << c
-			}
+fn children(n flatxml.MNode, name string) []flatxml.MNode {
+	mut out := []flatxml.MNode{}
+	id := name_id(n, name) or { return out }
+	for c in n.children() {
+		if c.tag() == id {
+			out << c
 		}
 	}
 	return out
 }
 
-fn child_text(n xml.XMLNode, name string) string {
+fn child_text(n flatxml.MNode, name string) string {
 	c := child(n, name) or { return '' }
 	return el_text(c)
 }
 
 // first returns the first element named `name` anywhere below `n`, document order.
-fn first(n xml.XMLNode, name string) ?xml.XMLNode {
-	for c in n.children {
-		if c is xml.XMLNode {
-			if lname(c) == name {
-				return c
-			}
-			if f := first(c, name) {
-				return f
-			}
+fn first(n flatxml.MNode, name string) ?flatxml.MNode {
+	id := name_id(n, name) or { return none }
+	return first_named(n, id)
+}
+
+fn first_named(n flatxml.MNode, id u32) ?flatxml.MNode {
+	for c in n.children() {
+		if c.tag() == id {
+			return c
+		}
+		if f := first_named(c, id) {
+			return f
 		}
 	}
 	return none
 }
 
-fn first_text(n xml.XMLNode, name string) string {
+fn first_text(n flatxml.MNode, name string) string {
 	c := first(n, name) or { return '' }
 	return el_text(c)
+}
+
+// attr_or is an attribute's value, or `absent` where the element does not carry it.
+fn attr_or(n flatxml.MNode, name string, absent string) string {
+	for f in n.fragments() {
+		if f.has_attr(name) {
+			return f.attr(name).clone() // outlives the model, as el_text's does
+		}
+	}
+	return absent
 }
 
 // desc_text reads a DESC's first language entry.
 // desc_of is desc_text with the report: a DESC in several languages keeps its first entry only
 // — Signal.desc is one string — and says so, since the other translations do not reach the
 // database or the export (codex on #273 round 27).
-fn (mut r ArxmlReader) desc_of(n xml.XMLNode, path string) string {
+fn (mut r ArxmlReader) desc_of(n flatxml.MNode, path string) string {
 	if d := child(n, 'DESC') {
 		langs := descendants(d, 'L-2')
 		if langs.len > 1 {
-			first_lang := langs[0].attributes['L'] or { '?' }
+			first_lang := attr_or(langs[0], 'L', '?')
 			r.report.notes << '${path}: the description has ${langs.len} languages; only the first (${first_lang}) is kept'
 		}
 	}
 	return desc_text(n)
 }
 
-fn desc_text(n xml.XMLNode) string {
+// desc_text is a description's text: every descendant's text in document order, since a
+// description may carry inline markup (<E>, <TT>, …), with each run of white space one space —
+// the line breaks of a description are its file's layout, not its words.
+fn desc_text(n flatxml.MNode) string {
 	d := child(n, 'DESC') or { return '' }
 	l := first(d, 'L-2') or { return '' }
-	// a description may carry inline markup (<E>, <TT>, …): every descendant's text, in
-	// document order, is the description — the leaf-only read dropped the marked-up words
-	return xml_unescape(deep_text(l).trim_space())
+	return deep_text(l.fragment(0)).fields().join(' ')
 }
 
-// closing_punctuation: what the source cannot have had a space before, so no reconstructed
-// boundary space goes there
-const closing_punctuation = [u8(`.`), `,`, `;`, `:`, `!`, `?`, `)`, `]`]
-
-fn deep_text(n xml.XMLNode) string {
-	mut s := ''
-	for c in n.children {
-		chunk := match c {
-			string { c }
-			xml.XMLNode { deep_text(c) }
-			else { '' }
-		}
-		if chunk == '' {
-			continue
-		}
-		// the parser trims the text on either side of an inline element, so "over <E>all</E>
-		// bytes" arrives as three chunks with no boundary space: put one back where both
-		// sides lack it — except where the source cannot have had one, before closing
-		// punctuation ("use <E>foo</E>." is "use foo.", not "use foo .") and after an opening
-		// bracket. The trim took the boundary; this is the honest reconstruction of it
-		opens := s.ends_with('(') || s.ends_with('[')
-		closes := chunk[0] in closing_punctuation
-		if s != '' && !s.ends_with(' ') && !chunk.starts_with(' ') && !opens && !closes {
-			s += ' '
-		}
-		s += chunk
+// deep_text is every descendant's text in document order. The parser keeps no text node of
+// white space only, so `<E>a</E> <E>b</E>` holds no separator between its two elements: one is
+// put back between two elements with no text between them (in `<E>a</E><E>b</E>` too, which
+// the source cannot tell apart).
+fn deep_text(n flatxml.Node) string {
+	runs := n.text_runs()
+	mut by_slot := map[int]string{}
+	for r in runs {
+		by_slot[r.slot] = by_slot[r.slot] + r.text
 	}
-	return s
+	mut out := by_slot[0]
+	mut slot := 0
+	for c in n.children() {
+		slot++
+		if out != '' && !out.ends_with(' ') && by_slot[slot - 1] == '' && slot > 1 {
+			out += ' '
+		}
+		out += deep_text(c)
+		out += by_slot[slot]
+	}
+	return out
 }
 
-// el_text is the element's own text, trimmed, with entities decoded — vlib's parser hands
-// them through undecoded, and its own decoder is the one that undoes them. A reference it
-// does not know (a numeric one, say) fails the whole decode, and the raw text is then the
-// honest answer rather than nothing.
-fn el_text(n xml.XMLNode) string {
-	mut s := ''
-	for c in n.children {
-		if c is string {
-			s += c
-		}
+// el_text is the element's own text (not its children's), trimmed and decoded: a copy, since
+// what is read outlives the model (a view would keep the whole file in memory with it).
+fn el_text(n flatxml.MNode) string {
+	runs := n.text_runs()
+	return match runs.len {
+		0 { '' }
+		1 { runs[0].text.trim_space().clone() }
+		else { runs.map(it.text).join('').trim_space() }
 	}
-	return xml_unescape(s.trim_space())
-}
-
-fn xml_unescape(s string) string {
-	if !s.contains('&') {
-		return s
-	}
-	return xml.unescape_text(s) or { s }
 }
 
 // key_of is parse_key that can SAY NO: a literal no 64-bit raw key can hold — `18446744073709551616`,
@@ -2300,7 +2504,7 @@ fn one_sign(t string) ?string {
 // num_of is num_text over a child element by its table row: a MISSING element is said here (the
 // table checks what is present); a present one that is not a number was said by check_leaves,
 // so it is skipped in silence — one note per defect (round 42, then #280).
-fn (mut r ArxmlReader) num_of(n xml.XMLNode, tag string, path string) ?f64 {
+fn (mut r ArxmlReader) num_of(n flatxml.MNode, tag string, path string) ?f64 {
 	l := leaf_rule(lname(n), tag) or {
 		r.report.notes << '${path}: the reader has no rule for ${lname(n)}/${tag}; not read'
 		return none
@@ -2317,7 +2521,7 @@ fn (mut r ArxmlReader) num_of(n xml.XMLNode, tag string, path string) ?f64 {
 	if t == '' {
 		// the table exempts an empty INFINITE bound (the attribute is the value); the model
 		// keeps closed ranges, so there is nothing to read — said, not silent
-		r.report.notes << '${path}: ${tag} has no value (INTERVAL-TYPE ${c.attributes['INTERVAL-TYPE'] or { 'unstated' }}); not read'
+		r.report.notes << '${path}: ${tag} has no value (INTERVAL-TYPE ${attr_or(c, 'INTERVAL-TYPE', 'unstated')}); not read'
 		return none
 	}
 	if t in non_finite_limits {
@@ -2330,7 +2534,7 @@ fn (mut r ArxmlReader) num_of(n xml.XMLNode, tag string, path string) ?f64 {
 // int_in is int_text over a child element with the bounds the table gives it, refusing a missing
 // element and an element the table has no row for — a field read without a rule is a defect of
 // the reader, and it says so rather than inventing bounds.
-fn int_in(n xml.XMLNode, tag string) !i64 {
+fn int_in(n flatxml.MNode, tag string) !i64 {
 	l := leaf_rule(lname(n), tag) or { return error('the reader has no rule for ${lname(n)}/${tag}') }
 	if l.kind != .integer {
 		return error('the reader has no integer rule for ${lname(n)}/${tag}')
@@ -2341,7 +2545,7 @@ fn int_in(n xml.XMLNode, tag string) !i64 {
 
 // int_of is int_in with the report, and none says "skip": a missing element (or a missing rule)
 // is said here; text the rule refuses was said by check_leaves and is skipped in silence.
-fn (mut r ArxmlReader) int_of(n xml.XMLNode, tag string, path string) ?i64 {
+fn (mut r ArxmlReader) int_of(n flatxml.MNode, tag string, path string) ?i64 {
 	l := leaf_rule(lname(n), tag) or {
 		r.report.notes << '${path}: the reader has no rule for ${lname(n)}/${tag}; not read'
 		return none
@@ -2538,7 +2742,7 @@ fn parse_num(s string) f64 {
 // one (no bound; the value is meaningless) read as a closed bound advertise the excluded value
 // as valid — in the editor, in the exported DBC, and to range-based fault handling. Said,
 // since the constraint changed meaning on the way in.
-fn (mut r ArxmlReader) note_open_bounds(c xml.XMLNode, path string) {
+fn (mut r ArxmlReader) note_open_bounds(c flatxml.MNode, path string) {
 	for f in open_bound_facts(c) {
 		r.report.notes << '${path}: ${f}; read as a closed (inclusive) bound, which the range model is'
 	}
@@ -2546,11 +2750,11 @@ fn (mut r ArxmlReader) note_open_bounds(c xml.XMLNode, path string) {
 
 // open_bound_facts names each bound of `c` that is not CLOSED — `LOWER-LIMIT 0 is OPEN` — pure,
 // so a scale can carry them until a signal actually USES its domain as the range (round 25).
-fn open_bound_facts(c xml.XMLNode) []string {
+fn open_bound_facts(c flatxml.MNode) []string {
 	mut out := []string{}
 	for lim in ['LOWER-LIMIT', 'UPPER-LIMIT'] {
 		l := child(c, lim) or { continue }
-		kind := l.attributes['INTERVAL-TYPE'] or { 'CLOSED' }
+		kind := attr_or(l, 'INTERVAL-TYPE', 'CLOSED')
 		if kind != 'CLOSED' {
 			out << '${lim} ${el_text(l)} is ${kind}'
 		}

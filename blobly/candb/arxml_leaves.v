@@ -20,7 +20,7 @@
 // report so a drift is a line in the export, not a puzzle.
 module candb
 
-import encoding.xml
+import flatxml
 
 enum LeafKind {
 	integer
@@ -108,7 +108,9 @@ const arxml_leaves = [
 		'CAN-20',
 		'CAN-FD',
 	]},
+	// a receiver may take the frame in either format (ANY); a transmitter sends one
 	Leaf{leaf_any, 'CAN-FRAME-RX-BEHAVIOR', .choice, 0, 0, [
+		'ANY',
 		'CAN-20',
 		'CAN-FD',
 	]},
@@ -180,14 +182,14 @@ fn leaf_int(parent string, tag string, text string) !i64 {
 // check_leaves walks the whole document once and files a note for every leaf the table names
 // whose text is not a value it accepts, at the path of the nearest identifiable ancestor. The
 // extractor's own readers skip such a field silently afterwards: the note is here, once.
-fn (mut r ArxmlReader) check_leaves(n xml.XMLNode, parent_tag string, parent_path string) {
+fn (mut r ArxmlReader) check_leaves(n flatxml.MNode, parent_tag string, parent_path string) {
 	path := r.path_of(n, parent_path)
 	tag := lname(n)
 	if l := leaf_rule(parent_tag, tag) {
-		if !n.children.any(it is xml.XMLNode) {
+		if n.child_count() == 0 {
 			text := el_text(n)
 			// an INFINITE or OPEN interval bound may carry no number: the attribute is the value
-			infinite := (n.attributes['INTERVAL-TYPE'] or { '' }) == 'INFINITE'
+			infinite := n.attr('INTERVAL-TYPE') == 'INFINITE'
 			if !(infinite && text == '') {
 				if why := leaf_reason(l, text) {
 					r.report.notes << '${path}: ${parent_tag}/${why}; not read'
@@ -195,10 +197,8 @@ fn (mut r ArxmlReader) check_leaves(n xml.XMLNode, parent_tag string, parent_pat
 			}
 		}
 	}
-	for c in n.children {
-		if c is xml.XMLNode {
-			r.check_leaves(c, tag, path)
-		}
+	for c in n.children() {
+		r.check_leaves(c, tag, path)
 	}
 }
 
@@ -206,23 +206,35 @@ fn (mut r ArxmlReader) check_leaves(n xml.XMLNode, parent_tag string, parent_pat
 // `AUTOSAR_4-2-2` or the `AUTOSAR_00046` of R19-11 and later) and says when it is not one of the
 // 4.x family this table was written against. The namespace guard in parse_arxml already refuses
 // 3.x; this is finer, and it puts the version into the provenance.
-fn (mut r ArxmlReader) note_schema(root xml.XMLNode) {
-	mut loc := ''
-	for k, v in root.attributes {
-		if k.all_after_last(':') == 'schemaLocation' {
-			loc = v
+fn (mut r ArxmlReader) note_schema() {
+	mut names := []string{}
+	for d in r.o.model.set.docs {
+		root := d.root_node()
+		mut loc := ''
+		lo, hi := d.attr_range(root.i)
+		for a := lo; a < hi; a++ {
+			if d.attr_name(a).all_after_last(':') == 'schemaLocation' {
+				loc = d.attr_value(a)
+			}
+		}
+		name := schema_name(loc)
+		if name !in names {
+			names << name
+		}
+		if name != 'unstated' && !schema_is_4x(name) {
+			r.report.notes << '${where(r.o, d)}declares schema ${name}, which is not one of the AUTOSAR 4.x releases this reader was written against (AUTOSAR_4-x-y, AUTOSAR_000nn); read as 4.x'
 		}
 	}
+	r.report.schema = names.join(',')
+}
+
+// schema_name is the XSD a schemaLocation names, without its extension; `unstated` for none.
+fn schema_name(loc string) string {
 	if loc.trim_space() == '' {
-		r.report.schema = 'unstated'
-		return
+		return 'unstated'
 	}
 	xsd := loc.trim_space().fields().last().all_after_last('/').all_after_last('\\')
-	name := if xsd.ends_with('.xsd') { xsd[..xsd.len - 4] } else { xsd }
-	r.report.schema = name
-	if !schema_is_4x(name) {
-		r.report.notes << 'declares schema ${name}, which is not one of the AUTOSAR 4.x releases this reader was written against (AUTOSAR_4-x-y, AUTOSAR_000nn); read as 4.x'
-	}
+	return if xsd.ends_with('.xsd') { xsd[..xsd.len - 4] } else { xsd }
 }
 
 // schema_is_4x: AUTOSAR_4-<d>-<d>, or the release-numbered AUTOSAR_000<dd> of R19-11 onwards —
