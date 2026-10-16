@@ -154,6 +154,15 @@ expect "a codex in a ~ PATH entry is found" "$(check "$tmp/ht" "~/bin")" "0|$tmp
 expect "a bare \$CODEX skips a function of that name" \
 	"$(check "$tmp/h0" "$tmp/good" CODEX=codex 'BASH_FUNC_codex%%=() { :; }')" "0|$tmp/good/codex"
 
+# a drive-qualified $CODEX is absolute, not a path under the caller's directory (which here holds
+# a working C:/codex that only a wrongly prefixed path would reach)
+working "$tmp/C:/codex"
+expect "a drive-qualified \$CODEX is taken as written" "$(CWD=$tmp check "$tmp/h0" "" CODEX=C:/codex)" "3|"
+
+# a PATH entry holding a newline does not cut off the entries after it
+mkdir -p "$tmp/nl"$'\n'dir
+expect "the whole PATH is kept past a newline" "$(check "$tmp/h0" "$tmp/nl"$'\n'"dir:$tmp/good")" "0|$tmp/good/codex"
+
 # a refusal says why
 why() { # the stderr of --check-codex for $CODEX=<path>
 	env -i PATH="$tmp/tools" HOME="$tmp/h0" CODEX="$1" CODEX_PROBE_TIMEOUT=1 \
