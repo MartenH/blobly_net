@@ -18,19 +18,19 @@
 # interrupted extension update once left a 0-byte copy, which the old newest-first pick ran — it
 # exited 0 with nothing written, and the review failed only as "codex wrote no final message".
 #
-# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs (--check-codex exits 0 or 3
-# and nothing else; a review's own exit can be codex's, which may be any number); 4 the review left
-# the tree dirty or HEAD moved; otherwise codex's own failure, with the transcript's tail instead of
-# findings.
+# Exit: 0 reviewed; 1 setup failed; 2 usage; 3 no codex CLI that runs (with --check-codex, 0 is a
+# codex found and 3 none, besides the usage and setup exits; a review's own exit can be codex's,
+# which may be any number); 4 the review left the tree dirty or HEAD moved; otherwise codex's own
+# failure, with the transcript's tail instead of findings.
 set -eu
 
 # Before the cd below, everything relative is made the caller's: each relative PATH entry (an
-# empty one is the current directory), so a candidate and whatever it runs through PATH resolve
+# empty one is the current directory; one starting with ~ is left, since bash expands it), so a candidate and whatever it runs through PATH resolve
 # as they would at the call site; then $CODEX, a command name through that PATH or a relative path.
 abs_path=
 IFS=: read -r -a path_dirs <<< "$PATH:"
 for d in "${path_dirs[@]}"; do
-	case "$d" in /*) ;; '') d=$PWD ;; *) d=$PWD/$d ;; esac
+	case "$d" in /* | '~'*) ;; '') d=$PWD ;; *) d=$PWD/$d ;; esac
 	abs_path=${abs_path:+$abs_path:}$d
 done
 PATH=$abs_path
@@ -38,7 +38,7 @@ codex_env=${CODEX:-}
 case "$codex_env" in
 '' | /*) ;;
 */*) codex_env=$PWD/$codex_env ;;
-*) codex_env=$(command -v "$codex_env" || printf '%s' "$codex_env") ;;
+*) codex_env=$(type -P "$codex_env" || printf '%s' "$codex_env") ;; # a file, never a function or alias
 esac
 
 self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
@@ -75,21 +75,23 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# runs <path>: prints its --version (the first non-empty line) when the binary runs; fails otherwise.
-# Its stdout goes to a file, not a pipe — a child it leaves behind cannot hold the capture open —
-# within the probe's deadline (TERM, then KILL 2 s later). No file-size limit: `ulimit -f` would bind
-# every file a real codex writes (a cache, a log), not only the capture.
 # the probe's deadline in seconds: CODEX_PROBE_TIMEOUT when a positive whole number (0 would mean
 # no deadline to `timeout`), else 10
 probe_s=${CODEX_PROBE_TIMEOUT:-10}
-case "$probe_s" in '' | *[!0-9]* | *[!0]*) ;; *) probe_s= ;; esac # all zeros: no deadline to `timeout`
-case "$probe_s" in '' | *[!0-9]*) probe_s=10 ;; esac
+[[ $probe_s =~ ^[0-9]+$ ]] && ((10#$probe_s > 0)) || probe_s=10
+
+# runs <path>: prints its --version (the first non-empty line) when the binary runs; otherwise
+# prints why not and fails. Its stdout goes to a file, not a pipe — a child it leaves behind cannot
+# hold the capture open — within the probe's deadline (TERM, then KILL 2 s later). No file-size
+# limit: `ulimit -f` would bind every file a real codex writes (a cache, a log), not only the capture.
 runs() {
 	local v f d rc
-	[ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
+	if [ -z "$1" ] || [ ! -e "$1" ]; then echo "not found"; return 1; fi
+	if [ ! -f "$1" ] || [ ! -x "$1" ]; then echo "not an executable file"; return 1; fi
+	if [ ! -s "$1" ]; then echo "an empty file"; return 1; fi
 	# in a throwaway directory: a candidate being probed must not leave a cache or core file in the
 	# worktree whose cleanliness the review then checks
-	d=$(mktemp -d) || return 1
+	d=$(mktemp -d) || { echo "no temporary directory to probe it in"; return 1; }
 	f=$d/version
 	if command -v timeout >/dev/null 2>&1; then
 		(cd "$d" && exec timeout -k 2 "$probe_s" "$1" --version) </dev/null >"$f" 2>/dev/null
@@ -99,15 +101,24 @@ runs() {
 	rc=$?
 	v=$(grep -m 1 '[^[:space:]]' "$f" || true)
 	rm -rf "$d"
-	[ "$rc" = 0 ] && [ -n "$v" ] || return 1
-	printf '%s\n' "$v"
+	if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+		echo "no answer to --version within $probe_s s (CODEX_PROBE_TIMEOUT raises it)"
+	elif [ "$rc" != 0 ]; then
+		echo "--version exited $rc"
+	elif [ -z "$v" ]; then
+		echo "--version printed nothing"
+	else
+		printf '%s\n' "$v"
+		return 0
+	fi
+	return 1
 }
 
 codex=
 codex_version=
 if [ -n "$codex_env" ]; then
 	if ! codex_version=$(runs "$codex_env"); then
-		echo "codex-local-review: \$CODEX=$CODEX does not run (missing, empty or broken)" >&2
+		echo "codex-local-review: \$CODEX=$CODEX does not run: $codex_version" >&2
 		exit 3
 	fi
 	codex=$codex_env
@@ -117,7 +128,7 @@ else
 			codex=$candidate
 			break
 		fi
-		echo "codex-local-review: skipping $candidate: it does not run (empty or broken)" >&2
+		echo "codex-local-review: skipping $candidate: $codex_version" >&2
 	done < <(
 		type -ap codex 2>/dev/null || true
 		# newest first by the extension's own version, whichever tree (remote or desktop) holds it:

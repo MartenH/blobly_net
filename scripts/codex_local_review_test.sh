@@ -64,7 +64,7 @@ expect "a working \$CODEX is chosen, with its version" "$(LINE2=1 check "$tmp/h0
 	"0|$tmp/good/codex|codex-cli 0.0.0-test"
 expect "a relative \$CODEX is the caller's" "$(CWD=$tmp check "$tmp/h0" "" CODEX=good/codex)" "0|$tmp/good/codex"
 expect "a bare \$CODEX is looked up on PATH" "$(check "$tmp/h0" "$tmp/good" CODEX=codex)" "0|$tmp/good/codex"
-printf '#!/bin/sh\nwhile :; do :; done\n' >"$tmp/hang-codex"
+printf '#!/bin/sh\nexec sleep 1000\n' >"$tmp/hang-codex"
 chmod +x "$tmp/hang-codex"
 expect "a \$CODEX that hangs on --version is refused" "$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=1)" "3|"
 empty "$tmp/empty/codex"
@@ -145,6 +145,24 @@ expect "a codex writing a large cache is accepted" "$(check "$tmp/hc" "" CODEX="
 # a leading-zero timeout is that many seconds, not the default
 expect "CODEX_PROBE_TIMEOUT=001 is one second" \
 	"$(s0=$SECONDS; r=$(check "$tmp/h0" "" CODEX="$tmp/hang-codex" CODEX_PROBE_TIMEOUT=001); [ $((SECONDS - s0)) -lt 6 ] && printf '%s' "$r" || printf 'slow %s' "$r")" "3|"
+
+# a PATH entry starting with ~ is bash's to expand, not a directory under the caller's
+working "$tmp/ht/bin/codex"
+expect "a codex in a ~ PATH entry is found" "$(check "$tmp/ht" "~/bin")" "0|$tmp/ht/bin/codex"
+
+# a bare $CODEX names a file on PATH, never a function of the same name
+expect "a bare \$CODEX skips a function of that name" \
+	"$(check "$tmp/h0" "$tmp/good" CODEX=codex 'BASH_FUNC_codex%%=() { :; }')" "0|$tmp/good/codex"
+
+# a refusal says why
+why() { # the stderr of --check-codex for $CODEX=<path>
+	env -i PATH="$tmp/tools" HOME="$tmp/h0" CODEX="$1" CODEX_PROBE_TIMEOUT=1 \
+		timeout 30 bash "$repo/scripts/codex_local_review.sh" --check-codex 2>&1 >/dev/null
+}
+expect "an empty \$CODEX is called empty" "$(why "$tmp/empty/codex")" "codex-local-review: \$CODEX=$tmp/empty/codex does not run: an empty file"
+expect "a hanging \$CODEX is called slow" "$(why "$tmp/hang-codex")" \
+	"codex-local-review: \$CODEX=$tmp/hang-codex does not run: no answer to --version within 1 s (CODEX_PROBE_TIMEOUT raises it)"
+expect "a silent \$CODEX is called silent" "$(why "$tmp/mute-codex")" "codex-local-review: \$CODEX=$tmp/mute-codex does not run: --version printed nothing"
 
 # nothing that runs
 h=$tmp/h3
