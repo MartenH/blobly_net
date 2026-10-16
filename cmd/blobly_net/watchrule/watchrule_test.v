@@ -81,7 +81,7 @@ fn test_an_unbound_watch_covers_nothing() {
 	}
 }
 
-fn every(w string) bool {
+fn every(_ string) bool {
 	return true
 }
 
