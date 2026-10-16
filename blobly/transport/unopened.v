@@ -7,7 +7,7 @@ module transport
 pub struct UnopenedBus {}
 
 // bus_not_open is the refusal both placeholders give, this one and SharedNoDriver (shared.v).
-const bus_not_open = 'bus is not open'
+pub const bus_not_open = 'bus is not open'
 
 pub fn (mut b UnopenedBus) send(_ CanFrame) ! {
 	return not_written(bus_not_open)

@@ -513,3 +513,24 @@ fn test_a_closed_bus_ends_the_drain_as_the_carriers_error() {
 	}
 	assert false, 'a request on a closed bus succeeded'
 }
+
+// a channel never opened is the carrier failing, not 64 queued answers to discard
+fn test_an_unopened_channel_fails_the_request_as_itself() {
+	mut c := Client{}
+	c.raw([u8(0x22), 0xF1, 0x90]) or {
+		assert err.msg() == isotp.channel_not_open, err.msg()
+		return
+	}
+	assert false, 'an unopened channel answered'
+}
+
+// and so is a channel over a bus never opened
+fn test_a_channel_over_an_unopened_bus_fails_the_request_as_the_bus() {
+	mut c := new_client(isotp.on_bus(transport.UnopenedBus{}, 'unopened', 0x7E0, 0x7E8,
+		false) or { panic(err) })
+	c.raw([u8(0x22), 0xF1, 0x90]) or {
+		assert err.msg().contains(transport.bus_not_open), err.msg()
+		return
+	}
+	assert false, 'an unopened bus answered'
+}

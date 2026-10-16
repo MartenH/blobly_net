@@ -8,6 +8,7 @@
 module uds
 
 import blobly.isotp
+import blobly.transport
 import time
 
 // Request service ids.
@@ -442,10 +443,8 @@ fn (mut c Client) drain_queued(sid u8) !int {
 			if err.msg().contains('timeout') {
 				break
 			}
-			// but a CARRIER that failed (a DoIP connection closed, or out of step after a stalled
-			// message; a CAN bus closed under a held channel) has nothing more to drain, and is the
-			// caller's news, not a dropped PDU
-			if err.msg().starts_with('DoIP connection lost: ') || err.msg().ends_with('bus is closed') {
+			// but a carrier that failed has nothing more to drain, and is the caller's news
+			if carrier_failed(err.msg()) {
 				return err
 			}
 			// anything else was a PDU taken off the channel: count it like one
@@ -458,6 +457,14 @@ fn (mut c Client) drain_queued(sid u8) !int {
 		}
 	}
 	return discarded
+}
+
+// carrier_failed is whether a receive error is the CARRIER's rather than one PDU's: a DoIP
+// connection closed or out of step after a stalled message, a CAN bus closed under a held
+// channel, or a bus or channel that was never opened.
+fn carrier_failed(msg string) bool {
+	return msg.starts_with('DoIP connection lost: ') || msg.ends_with('bus is closed')
+		|| msg.contains(transport.bus_not_open) || msg == isotp.channel_not_open
 }
 
 // max_drain bounds the pre-send drain: a peer flooding the response id must not hold a request
