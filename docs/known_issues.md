@@ -325,6 +325,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   directory it was BUILT in into the compiler as its root (`@VMODROOT`) and prefers it over where
   the executable sits, so the script rewrites that root to `C:/v-ct` in the generated C before
   compiling it — the asset works only unpacked there, which is where `windows.yml` puts it.
+  It builds the compiler with `-no-prealloc`: V3 builds a compiler on its bump arena by default,
+  and that arena's `v_realloc` copies the new size out of the old block, so at `075855f` the
+  Windows `v.exe` read off the end of its arena and died with an access violation (0xC0000005)
+  compiling `blobly/isotp/isotp_test.v` — deterministically, in the transform stage, while Linux
+  built the same source. Linux runs the same read; it has not been seen to fault there.
 - ⚪ **A colon-space inside a step `name:` invalidates the whole workflow.** YAML reads
   `name: … D: disk` as a nested mapping → "workflow file issue" / HTTP 422 on dispatch. Quote any
   step name containing `: `. (Bitten twice.)

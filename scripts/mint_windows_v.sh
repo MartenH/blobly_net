@@ -34,8 +34,12 @@ command -v zip >/dev/null || { echo "mint_windows_v: needs zip" >&2; exit 1; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-# -prod embeds the compiler's $embed_file headers; without it they are read from vdir at run time
-(cd "$vdir" && V_MACOS_V3_NO_FALLBACK=1 ./v -prod -os windows -o "$tmp/v.c" cmd/v)
+# -prod embeds the compiler's $embed_file headers; without it they are read from vdir at run time.
+# -no-prealloc: a compiler build defaults to V's bump arena, whose realloc copies the NEW size out
+# of the old block (vlib/builtin/allocation.c.v); on Windows that read runs off the end of the
+# arena and v.exe dies with an access violation compiling blobly/isotp/isotp_test.v. The C
+# allocator has no such read.
+(cd "$vdir" && V_MACOS_V3_NO_FALLBACK=1 ./v -prod -no-prealloc -os windows -o "$tmp/v.c" cmd/v)
 
 # the two run-time copies of the build root: the baked vroot, and the VEXE default set in main
 python3 - "$tmp/v.c" "$vdir" "$install_root" <<'EOF'
