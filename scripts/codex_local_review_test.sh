@@ -174,6 +174,9 @@ why() { # the stderr of --check-codex for $CODEX=<path>
 expect "an empty \$CODEX is called empty" "$(why "$tmp/empty/codex")" "codex-local-review: \$CODEX=$tmp/empty/codex does not run: an empty file"
 expect "a hanging \$CODEX is called slow" "$(why "$tmp/hang-codex")" \
 	"codex-local-review: \$CODEX=$tmp/hang-codex does not run: no answer to --version within 1 s (CODEX_PROBE_TIMEOUT raises it)"
+printf '#!/bin/sh\nexit 124\n' >"$tmp/x124-codex"
+chmod +x "$tmp/x124-codex"
+expect "a \$CODEX exiting 124 at once is not called slow" "$(why "$tmp/x124-codex")" "codex-local-review: \$CODEX=$tmp/x124-codex does not run: --version exited 124"
 expect "a silent \$CODEX is called silent" "$(why "$tmp/mute-codex")" "codex-local-review: \$CODEX=$tmp/mute-codex does not run: --version printed nothing"
 
 # nothing that runs

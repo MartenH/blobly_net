@@ -25,12 +25,24 @@
 set -eu
 
 # Before the cd below, everything relative is made the caller's: each relative PATH entry (an
-# empty one is the current directory; ~ and ~/... are $HOME's, as bash would read them), so a candidate and whatever it runs through PATH resolve
+# empty one is the current directory; ~ and ~user are expanded as bash's own lookup would, and a
+# ~name with no such user is relative like the rest), so a candidate and whatever it runs through PATH resolve
 # as they would at the call site; then $CODEX, a command name through that PATH or a relative path.
 abs_path=
 IFS=: read -r -d '' -a path_dirs < <(printf '%s:\0' "$PATH") # the whole value, newlines and all
 for d in "${path_dirs[@]}"; do
-	case "$d" in /*) ;; '') d=$PWD ;; '~' | '~/'*) d=$HOME${d#'~'} ;; *) d=$PWD/$d ;; esac
+	case "$d" in
+	/*) ;;
+	'') d=$PWD ;;
+	'~'*)
+		t=${d%%/*}
+		h=$t
+		# the name is checked to be a user name first, so expanding it runs nothing else
+		[[ $t =~ ^~[A-Za-z0-9._][A-Za-z0-9._-]*$|^~$ ]] && eval "h=$t"
+		if [ "$h" != "$t" ]; then d=$h${d#"$t"}; else d=$PWD/$d; fi
+		;;
+	*) d=$PWD/$d ;;
+	esac
 	abs_path=${abs_path:+$abs_path:}$d
 done
 PATH=$abs_path
@@ -85,7 +97,7 @@ probe_s=${CODEX_PROBE_TIMEOUT:-10}
 # hold the capture open — within the probe's deadline (TERM, then KILL 2 s later). No file-size
 # limit: `ulimit -f` would bind every file a real codex writes (a cache, a log), not only the capture.
 runs() {
-	local v f d rc
+	local v f d rc t0
 	if [ -z "$1" ] || [ ! -e "$1" ]; then echo "not found"; return 1; fi
 	if [ ! -f "$1" ] || [ ! -x "$1" ]; then echo "not an executable file"; return 1; fi
 	if [ ! -s "$1" ]; then echo "an empty file"; return 1; fi
@@ -93,6 +105,7 @@ runs() {
 	# worktree whose cleanliness the review then checks
 	d=$(mktemp -d) || { echo "no temporary directory to probe it in"; return 1; }
 	f=$d/version
+	t0=$SECONDS
 	if command -v timeout >/dev/null 2>&1; then
 		(cd "$d" && exec timeout -k 2 "$probe_s" "$1" --version) </dev/null >"$f" 2>/dev/null
 	else
@@ -101,7 +114,8 @@ runs() {
 	rc=$?
 	v=$(grep -m 1 '[^[:space:]]' "$f" || true)
 	rm -rf "$d"
-	if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+	# 124 / 137 are timeout's, but a candidate may exit with them too: the deadline must have passed
+	if { [ "$rc" = 124 ] || [ "$rc" = 137 ]; } && [ $((SECONDS - t0)) -ge "$probe_s" ]; then
 		echo "no answer to --version within $probe_s s (CODEX_PROBE_TIMEOUT raises it)"
 	elif [ "$rc" != 0 ]; then
 		echo "--version exited $rc"
