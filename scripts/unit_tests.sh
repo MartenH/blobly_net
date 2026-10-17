@@ -6,6 +6,7 @@
 #
 #   ./scripts/unit_tests.sh [path...]   default: blobly/
 set -e
-cd "$(dirname "$0")/.."
+# the default is the repo's; a path given is the caller's, so the directory is not changed
+root=$(cd "$(dirname "$0")/.." && pwd)
 export VJOBS=${VJOBS:-$(nproc)}
-exec v -enable-globals test "${@:-blobly/}"
+exec v -enable-globals test "${@:-$root/blobly/}"

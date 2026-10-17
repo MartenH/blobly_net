@@ -70,6 +70,12 @@ pub fn speed_ok(speed f64) bool {
 	return speed > 0 && !math.is_inf(speed, 0) && !math.is_inf(1000.0 / speed, 0)
 }
 
+// usable_speed is the rate a player runs at for a configured one: itself where `speed_ok`, else
+// 1.0, real time. A front end showing or comparing a configured rate reads it through this.
+pub fn usable_speed(speed f64) f64 {
+	return if speed_ok(speed) { speed } else { 1.0 }
+}
+
 // new_player builds a Player over a recording. Entries are sorted by timestamp
 // defensively (canlog/mf4 already produce sorted streams). A speed `speed_ok` refuses is
 // coerced to 1.0.
@@ -96,7 +102,7 @@ pub fn new_player(entries []canlog.LogEntry, speed f64, repeat bool) Player {
 	return Player{
 		log:    log
 		sel:    sel
-		speed:  if speed_ok(speed) { speed } else { 1.0 }
+		speed:  usable_speed(speed)
 		repeat: repeat
 	}
 }
@@ -121,7 +127,7 @@ pub fn new_player_log(log canlog.Log, sel []u32, speed f64, repeat bool, t0_s f6
 	mut p := Player{
 		log:    log
 		sel:    sel
-		speed:  if speed_ok(speed) { speed } else { 1.0 }
+		speed:  usable_speed(speed)
 		repeat: repeat
 	}
 	if end_s >= t0_s {
