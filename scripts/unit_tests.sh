@@ -9,4 +9,7 @@ set -e
 # the default is the repo's; a path given is the caller's, so the directory is not changed
 root=$(cd "$(dirname "$0")/.." && pwd)
 export VJOBS=${VJOBS:-$(nproc)}
-exec v -enable-globals test "${@:-$root/blobly/}"
+# V's default tcc cannot build the suite on native Windows (docs/known_issues.md)
+cc=()
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) cc=(-cc gcc) ;; esac
+exec v "${cc[@]}" -enable-globals test "${@:-$root/blobly/}"

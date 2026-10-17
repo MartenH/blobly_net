@@ -391,13 +391,21 @@ pub fn (g Gate) contradiction() ?string {
 	return none
 }
 
+// strings_at reads a string array, empty when the key is absent. A function rather than an
+// `if s := m[key]` guard in a struct literal: V's -no-parallel build on Windows loses the
+// guard's variable there ('undefined ident').
+fn strings_at(m map[string]toml.Any, key string) []string {
+	v := m[key] or { return []string{} }
+	return v.array().map(it.string())
+}
+
 // gate_of reads a `{ session = [...], security = N }` gate.
 fn gate_of(m map[string]toml.Any, key string) Gate {
 	v := m[key] or { return Gate{} }
 	am := v.as_map()
 	return Gate{
 		declared: true
-		sessions: if s := am['session'] { s.array().map(it.string()) } else { []string{} }
+		sessions: strings_at(am, 'session')
 		level:    int(tint(am, 'security'))
 	}
 }
@@ -473,11 +481,7 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 					sub:  sub
 					gate: Gate{
 						declared: true
-						sessions: if s := rm['sessions'] {
-							s.array().map(it.string())
-						} else {
-							[]string{}
-						}
+						sessions: strings_at(rm, 'sessions')
 						level:    int(lv)
 					}
 				}

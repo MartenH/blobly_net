@@ -64,10 +64,14 @@ mut:
 	anchor bool
 }
 
-// speed_ok is whether a playback rate gives a finite schedule: positive, finite, and not so small
-// that the 1000 / speed every due time is scaled by overflows (a subnormal does).
+// min_speed is the slowest rate a player runs at: an hour of recording in 114 years. Below some
+// floor a due time (t * 1000 / speed) overflows to infinity, and this one keeps it finite for any
+// recording time a f64 holds short of 1e299 s.
+pub const min_speed = 1e-6
+
+// speed_ok is whether a playback rate gives a finite schedule: finite, and at least `min_speed`.
 pub fn speed_ok(speed f64) bool {
-	return speed > 0 && !math.is_inf(speed, 0) && !math.is_inf(1000.0 / speed, 0)
+	return speed >= min_speed && !math.is_inf(speed, 0)
 }
 
 // usable_speed is the rate a player runs at for a configured one: itself where `speed_ok`, else

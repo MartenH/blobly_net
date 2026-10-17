@@ -145,7 +145,7 @@ fn test_unsorted_input_is_sorted() {
 fn test_speed_guard() {
 	// a project file's speed reaches the constructors unread: infinity, and a subnormal whose
 	// 1000 / speed overflows, would schedule every frame at once or never
-	for bad in [-3.0, 0.0, math.inf(1), 1e-320] {
+	for bad in [-3.0, 0.0, math.inf(1), 1e-320, 1e-305, min_speed / 2] {
 		mut p := new_player(rec([0.0]), bad, false)
 		assert p.speed == 1.0, '${bad}'
 		p.set_speed(bad, 0)
