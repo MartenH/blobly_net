@@ -22,6 +22,7 @@ pub mut:
 	dbc     string // as written (relative to the system.toml dir)
 	nm_lo   u32    // NM peers range (0 = none)
 	nm_hi   u32
+	subnet  string // a someip segment's network, "192.168.77.0/24"; its members give a `host`
 }
 
 pub struct SysSignal {
@@ -45,7 +46,8 @@ pub mut:
 	diag_rsp u32
 	doip     u32 // its DoIP entity's logical address (`doip = { logical = ... }`); 0 = none
 	testers  []u16  // who may activate routing at that entity (`doip = { testers = [...] }`)
-	address  string // its network address (`endpoint = { address = ... }`); '' = none
+	address  string // its network address (`endpoint = { address = ... }`, or its `host` on its segment's subnet); '' = none
+	host     i64    // `endpoint = { host = 50 }`: resolved into address by resolve_hosts; 0 = none
 	trace    int
 	reads    []string // signal names its FB handlers read (from its ecu.toml)
 	writes   []string // signal names its FB handlers write
@@ -124,6 +126,7 @@ pub fn load(path string) !System {
 				iface:   tstr(bm, 'interface')
 				bitrate: int(tint(bm, 'bitrate'))
 				dbc:     tstr(bm, 'dbc')
+				subnet:  tstr(bm, 'subnet')
 			}
 			if v := bm['fd'] {
 				if v is bool {
@@ -195,6 +198,7 @@ pub fn load(path string) !System {
 		}
 		if ev := nm['endpoint'] {
 			n.address = tstr(ev.as_map(), 'address')
+			n.host = tint(ev.as_map(), 'host')
 		}
 		// the node's internals: reads/writes across every FB handler
 		epath := os.join_path(base, n.ecu)
@@ -237,6 +241,7 @@ pub fn load(path string) !System {
 		}
 		sys.nodes << n
 	}
+	sys.resolve_hosts(os.getenv(subnet_env))
 
 	// derive consumers: a node reading a cross-node signal consumes it
 	for i, sg in sys.signals {
