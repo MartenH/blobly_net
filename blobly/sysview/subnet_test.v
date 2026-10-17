@@ -10,8 +10,11 @@ fn segment() System {
 		}]
 		nodes: [SysNode{
 			name:  'sysnode'
-			buses: ['compute', 'tel']
-			host:  50
+			buses:    ['compute', 'tel']
+			host:     50
+			has_host: true
+			doip:     0x07A0
+			testers:  [u16(0x0E00)]
 		}, SysNode{
 			name:    'old'
 			buses:   ['tel']
@@ -52,4 +55,36 @@ fn test_what_cannot_be_resolved_has_no_address() {
 	two.buses[1].subnet = '192.168.78.0/24'
 	two.resolve_hosts('10.0.0.0/24')
 	assert two.errs.any(it.contains('2 buses declare one'))
+}
+
+fn test_resolving_again_derives_again() {
+	mut s := segment()
+	s.resolve_hosts('')
+	s.resolve_hosts('10.20.0.0/16')
+	assert s.nodes[0].address == '10.20.0.50'
+	assert s.nodes[1].address == '10.0.0.9'
+}
+
+fn test_an_unresolved_host_is_said_and_matches_no_entity() {
+	for i in 0 .. 3 {
+		mut s := segment()
+		match i {
+			0 { s.nodes[0].host = 0 }
+			1 { s.nodes[0].host = -1 } // not an integer
+			else {
+				s.buses << SysBus{
+					name:   'tel2'
+					subnet: 'bogus'
+				}
+				s.nodes[0].buses << 'tel2'
+			}
+		}
+		s.resolve_hosts('')
+		assert s.nodes[0].address == '', '${i}'
+		assert s.errs.len > 0, '${i}'
+		assert s.doip_tester_for(0x07A0, '10.0.0.199') == none, '${i}'
+	}
+	mut ok := segment()
+	ok.resolve_hosts('')
+	assert ok.doip_tester_for(0x07A0, '192.168.77.50') or { 0 } == 0x0E00
 }

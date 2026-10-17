@@ -7,7 +7,8 @@ pub const subnet_env = 'BLOB_NET_SUBNET'
 
 // resolve_hosts gives each `endpoint = { host = N }` its address: host N of the subnet of the one
 // segment it sits on that states one — `override` in its place where exactly one segment does, as
-// blobly_emb's sysmodel resolves it. What cannot be resolved stays '' and is said in errs.
+// blobly_emb's sysmodel resolves it. What cannot be resolved is '' (has_host tells it from no
+// endpoint) and is said in errs.
 pub fn (mut sys System) resolve_hosts(override string) {
 	declared := sys.buses.filter(it.subnet != '')
 	mut nets := map[string]Subnet{}
@@ -23,13 +24,17 @@ pub fn (mut sys System) resolve_hosts(override string) {
 			}
 		}
 	}
+	segments := declared.map(it.name)
 	for mut n in sys.nodes {
-		if n.host == 0 || n.address != '' {
+		if !n.has_host {
 			continue
 		}
-		on := n.buses.filter(it in nets)
-		if on.len != 1 {
-			sys.errs << 'node "${n.name}": endpoint host ${n.host} has no single segment subnet to be a host of'
+		n.address = ''
+		on := n.buses.filter(it in segments)
+		if on.len != 1 || on[0] !in nets {
+			if on.len != 1 {
+				sys.errs << 'node "${n.name}": endpoint host ${n.host} has no single segment subnet to be a host of'
+			}
 			continue
 		}
 		sn := nets[on[0]]

@@ -47,7 +47,8 @@ pub mut:
 	doip     u32 // its DoIP entity's logical address (`doip = { logical = ... }`); 0 = none
 	testers  []u16  // who may activate routing at that entity (`doip = { testers = [...] }`)
 	address  string // its network address (`endpoint = { address = ... }`, or its `host` on its segment's subnet); '' = none
-	host     i64    // `endpoint = { host = 50 }`: resolved into address by resolve_hosts; 0 = none
+	host     i64    // `endpoint = { host = 50 }`: resolved into address by resolve_hosts
+	has_host bool   // the endpoint gives `host` (any value): its address is derived, '' when it cannot be
 	trace    int
 	reads    []string // signal names its FB handlers read (from its ecu.toml)
 	writes   []string // signal names its FB handlers write
@@ -198,7 +199,10 @@ pub fn load(path string) !System {
 		}
 		if ev := nm['endpoint'] {
 			n.address = tstr(ev.as_map(), 'address')
-			n.host = tint(ev.as_map(), 'host')
+			if hv := ev.as_map()['host'] {
+				n.has_host = true
+				n.host = if hv is i64 { hv } else { -1 } // not an integer: refused as no host
+			}
 		}
 		// the node's internals: reads/writes across every FB handler
 		epath := os.join_path(base, n.ecu)
