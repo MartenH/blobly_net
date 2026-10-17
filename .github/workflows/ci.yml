@@ -40,7 +40,7 @@ concurrency:
   cancel-in-progress: true
 
 # PINNED, not latest: `.v-version` names a V3 commit this repo is known to build and pass on
-# (a master commit, but for the exception CLAUDE.md states). One file, read by both jobs here,
+# (a master commit). One file, read by both jobs here,
 # by release.yml's Linux job and by scripts/setup_env.sh, so the pin is stated once. Moving it is
 # a decision, not a drift.
 #

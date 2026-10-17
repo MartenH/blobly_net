@@ -15,6 +15,7 @@
 module player
 
 import blobly.canlog
+import math
 
 // time_eps_ms absorbs float error in the offset arithmetic (timestamps are
 // f64 seconds; subtracting a large epoch base leaves ~1e-11 ms residue that
@@ -63,8 +64,14 @@ mut:
 	anchor bool
 }
 
+// speed_ok is whether a playback rate gives a finite schedule: positive, finite, and not so small
+// that the 1000 / speed every due time is scaled by overflows (a subnormal does).
+pub fn speed_ok(speed f64) bool {
+	return speed > 0 && !math.is_inf(speed, 0) && !math.is_inf(1000.0 / speed, 0)
+}
+
 // new_player builds a Player over a recording. Entries are sorted by timestamp
-// defensively (canlog/mf4 already produce sorted streams). A speed <= 0 is
+// defensively (canlog/mf4 already produce sorted streams). A speed `speed_ok` refuses is
 // coerced to 1.0.
 pub fn new_player(entries []canlog.LogEntry, speed f64, repeat bool) Player {
 	log := canlog.from_entries(entries)
@@ -89,7 +96,7 @@ pub fn new_player(entries []canlog.LogEntry, speed f64, repeat bool) Player {
 	return Player{
 		log:    log
 		sel:    sel
-		speed:  if speed > 0 { speed } else { 1.0 }
+		speed:  if speed_ok(speed) { speed } else { 1.0 }
 		repeat: repeat
 	}
 }
@@ -114,7 +121,7 @@ pub fn new_player_log(log canlog.Log, sel []u32, speed f64, repeat bool, t0_s f6
 	mut p := Player{
 		log:    log
 		sel:    sel
-		speed:  if speed > 0 { speed } else { 1.0 }
+		speed:  if speed_ok(speed) { speed } else { 1.0 }
 		repeat: repeat
 	}
 	if end_s >= t0_s {
@@ -183,10 +190,9 @@ pub fn (mut p Player) pause(now_ms f64) {
 // obvious pause/set/play dance teleported 30s forward on a 2x click and dumped every frame
 // in between onto the wire in one burst (net#133). seek() owns the correct rebase
 // (elapsed_ms and idx recomputed for the new rate); this is the one place allowed to
-// combine the two. A rate <= 0 is ignored — the same guard the constructors apply, because
-// due() divides by it.
+// combine the two. A rate `speed_ok` refuses is ignored — the same guard the constructors apply.
 pub fn (mut p Player) set_speed(rate f64, now_ms f64) {
-	if rate <= 0 || rate == p.speed {
+	if !speed_ok(rate) || rate == p.speed {
 		return
 	}
 	pos := p.position_s(now_ms)
