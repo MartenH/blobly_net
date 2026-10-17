@@ -132,6 +132,9 @@ pub mut:
 	repetitions   int // event-controlled: a change is sent 1 + repetitions times …
 	repetition_ms int // … this far apart. blobly_emb sends once; the fragment says so
 	fd            bool // CAN-FRAME-TX-BEHAVIOR / RX-BEHAVIOR = CAN-FD
+	// received in either format (CAN-FRAME-RX-BEHAVIOR = ANY, no TX behaviour): a short one is
+	// not fd, but an FD bus may carry it so
+	either bool
 	receivers     []string // ECUs with an IN frame port, or an IN I-PDU group, for it
 	e2e           ?ArxmlE2e
 	secoc         ?ArxmlSecOc
@@ -161,7 +164,9 @@ pub fn frame_key(id u32, ext bool) string {
 // and the project import's rates (project.arxml_cluster_rates) both ask it.
 pub fn (c ArxmlCluster) carries_fd() bool {
 	for _, f in c.frames {
-		if f.fd {
+		// a frame received in either format on a bus with a data rate: opened classic, the
+		// bus could not receive the FD form the file allows
+		if f.fd || (f.either && c.fd_baudrate > 0) {
 			return true
 		}
 	}
@@ -335,6 +340,7 @@ struct FrameAdmission {
 	ext     bool
 	dlc     int
 	fd      bool
+	either  bool // received in either format (ArxmlFrame.either)
 }
 
 // frame_admission validates the identifier and the frame length where they are read: no schema
@@ -415,6 +421,7 @@ fn frame_admission(ft flatxml.MNode, frame flatxml.MNode, fname string) FrameAdm
 		ext: ext
 		dlc: dlc
 		fd: fd
+		either: rx_b == 'ANY' && tx_b == ''
 	}
 }
 
@@ -558,6 +565,11 @@ pub:
 	deps     []string
 	opts     arxmodel.OpenOptions
 	warnings []string // paths of the input set that named nothing
+mut:
+	// what they were expanded from, to expand them again (again): the paths named, and, for
+	// an input set opened with options of its own (load_arxml_set), those options
+	named []string
+	given ?arxmodel.OpenOptions
 }
 
 // arxml_inputs is the inputs of the description the paths name: one model file, or an input set
@@ -578,7 +590,31 @@ pub fn arxml_inputs(paths []string) !ArxmlInputs {
 			}
 		}
 	}
-	return inputs_of(set_paths, opts, deps)
+	return ArxmlInputs{
+		...inputs_of(set_paths, opts, deps)!
+		named: paths.clone()
+	}
+}
+
+// again is the inputs expanded again from what they were expanded from: what a read checks
+// itself against, since the model file and the lists may change while it runs.
+fn (i ArxmlInputs) again() !ArxmlInputs {
+	if given := i.given {
+		return ArxmlInputs{
+			...inputs_of(i.named, given, [])!
+			named: i.named
+			given: given
+		}
+	}
+	return arxml_inputs(i.named)
+}
+
+// same reports whether two expansions name the same files and options.
+fn (i ArxmlInputs) same(o ArxmlInputs) bool {
+	return i.files == o.files && i.deps == o.deps && i.opts.schema_dir == o.opts.schema_dir
+		&& i.opts.rules_file == o.opts.rules_file && i.opts.policy == o.opts.policy
+		&& i.opts.config == o.opts.config && i.opts.exclude == o.opts.exclude
+		&& i.opts.roots == o.opts.roots
 }
 
 fn inputs_of(paths []string, opts arxmodel.OpenOptions, deps0 []string) !ArxmlInputs {
@@ -593,10 +629,14 @@ fn inputs_of(paths []string, opts arxmodel.OpenOptions, deps0 []string) !ArxmlIn
 	}
 	mut deps := deps0.clone()
 	deps << found.lists
-	for f in [opts.rules_file, opts.policy, opts.config] {
-		if f != '' && os.is_file(f) {
+	// named or not, present or not: one created later is a change (deps_hash)
+	for f in [opts.rules_file, opts.config] {
+		if f != '' {
 			deps << f
 		}
+	}
+	if opts.policy !in ['', 'spec', 'automat'] {
+		deps << opts.policy
 	}
 	if opts.schema_dir != '' && os.is_dir(opts.schema_dir) {
 		// every schema below the directory, its extension in any case: which one is found
@@ -650,7 +690,7 @@ fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
 	for f in i.deps {
 		reals << os.real_path(f)
 	}
-	deps := i.deps_hash()!
+	deps := i.deps_hash()
 	parts << '+${deps}'
 	parts << 'rules=${i.opts.schema_dir};${i.opts.rules_file};${i.opts.policy}'
 	// where the files came from, which a policy filter's relative file glob is read from: one
@@ -673,10 +713,12 @@ fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
 // deps_hash is a SHA-256 over every dependency's real path and content. The ARXML bytes are
 // parsed from the snapshot; the rules, policy, configuration and schema files the merge reads
 // again by path, so the read is checked against this after it (load_inputs).
-fn (i ArxmlInputs) deps_hash() !string {
+fn (i ArxmlInputs) deps_hash() string {
 	mut parts := []string{cap: i.deps.len}
 	for f in i.deps {
-		parts << '${os.real_path(f)}=${sha256.sum(os.read_bytes(f)!).hex()}'
+		// a dependency that cannot be read is one: absent, it is no change until it appears
+		sha := if data := os.read_bytes(f) { sha256.sum(data).hex() } else { 'unread' }
+		parts << '${os.real_path(f)}=${sha}'
 	}
 	return sha256.hexhash(parts.join('\n'))
 }
@@ -713,7 +755,11 @@ pub fn (i ArxmlInputs) fingerprint() !string {
 
 // load_arxml_set reads the system description the input set at paths makes, merged by opts.
 pub fn load_arxml_set(paths []string, opts arxmodel.OpenOptions) !(Arxml, ArxmlSet) {
-	inputs := inputs_of(paths, opts, [])!
+	inputs := ArxmlInputs{
+		...inputs_of(paths, opts, [])!
+		named: paths.clone()
+		given: opts
+	}
 	a, _, set := load_inputs(inputs)!
 	return a, set
 }
@@ -722,18 +768,20 @@ pub fn load_arxml_set(paths []string, opts arxmodel.OpenOptions) !(Arxml, ArxmlS
 // a real file is seconds and hundreds of MB to parse, and a project opens each channel's
 // databases several times per Start), and returns the read, its fingerprint and the files read.
 fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
-	// a dependency rewritten during the read is read again: the model and its fingerprint are
-	// of one content or neither is returned
+	// inputs that changed during the read are expanded and read again: the model and its
+	// fingerprint are of one content, or neither is returned
+	mut cur := inputs
 	for _ in 0 .. 3 {
-		a, fp, set, stable := load_once(inputs)!
+		a, fp, set, stable := load_once(cur)!
 		if stable {
 			return a, fp, ArxmlSet{
 				...set
 				fingerprint: fp
 			}
 		}
+		cur = inputs.again()!
 	}
-	return error('the rules, policy, configuration or schema files changed during every read of them; try again')
+	return error('the system description changed during every read of it; try again')
 }
 
 // load_once is load_inputs's one attempt; not stable when a dependency changed during the
@@ -790,7 +838,10 @@ fn load_once(inputs ArxmlInputs) !(Arxml, string, ArxmlSet, bool) {
 		arxml_cache_mu.unlock()
 		return err
 	}
-	if inputs.deps_hash()! != snap.deps {
+	// what the read was of is what the inputs still say: the model file and the lists expand
+	// as they did, and the files the merge reread by path hash as they did
+	now := inputs.again() or { return a, '', snap.set, false }
+	if !inputs.same(now) || now.deps_hash() != snap.deps {
 		return a, '', snap.set, false
 	}
 	// the rule files the inputs do not name are inputs too, found by this read
@@ -1361,7 +1412,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			fname = claimed
 		}
 		mut info := ArxmlFrame{
-			fd: adm.fd
+			fd:     adm.fd
+			either: adm.either
 		}
 
 		// who sends, who listens: the frame ports on the triggering, by direction

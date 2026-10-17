@@ -170,11 +170,18 @@ fn main() {
 	}
 	src_reals << now.files.map(canon(it))
 	src_reals << now.deps.map(canon(it))
+	// the directories the input set is drawn from: an .arxml written into one would join it
+	roots := now.opts.roots.map(canon(it))
 	outs := [dbc_out, toml_out]
 	dsts := [dbc_dst, toml_dst]
 	for k, out in outs {
 		if dsts[k] != '' && dsts[k] in src_reals {
 			eprintln('arxml2dbc: ${out} is an input of the system description; refusing to overwrite the source')
+			exit(2)
+		}
+		if dsts[k].to_lower().ends_with('.arxml')
+			&& roots.any(dsts[k].starts_with(it.trim_right(os.path_separator) + os.path_separator)) {
+			eprintln('arxml2dbc: ${out} is an .arxml file where the input set is read from, so the next read would take it for ARXML; name it otherwise')
 			exit(2)
 		}
 		if dsts[k] != '' && os.is_dir(dsts[k]) {

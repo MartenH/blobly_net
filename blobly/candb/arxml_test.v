@@ -1995,6 +1995,14 @@ fn test_relations_the_table_cannot_state_are_said() {
 	ac := any.cluster('') or { panic(err) }
 	assert ac.db.messages.len == 1
 	assert (ac.frame_of(ac.db.messages[0]) or { panic('no frame') }).fd
+	// short, it is no FD frame; but a bus with a data rate is opened FD, since the receiver
+	// takes the FD form too
+	short := arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>',
+		'<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-RX-BEHAVIOR>ANY</CAN-FRAME-RX-BEHAVIOR>') + offset_pdu_xml + arxml_tail
+	sc := parse_arxml(short)!.cluster('Bus')!
+	assert !(sc.frame_of(sc.db.messages[0]) or { panic('no frame') }).fd && !sc.carries_fd()
+	with_rate := parse_arxml(short.replace('<BAUDRATE>500000</BAUDRATE>', '<BAUDRATE>500000</BAUDRATE><CAN-FD-BAUDRATE>2000000</CAN-FD-BAUDRATE>'))!.cluster('Bus')!
+	assert with_rate.fd_baudrate == 2000000 && with_rate.carries_fd()
 	assert !any.report.notes.any(it.contains('BEHAVIOR')), any.report.notes.str()
 	// an unknown behaviour: the frame is refused too (and the leaf pass named the value)
 	unk := parse_arxml(arxml_head + fd_cluster().replace('>CAN-FD<', '>CAN-XL<') + offset_pdu_xml + arxml_tail) or {
@@ -2287,6 +2295,14 @@ fn test_the_reader_after_its_move_to_arxmodel() {
 	ac := any.cluster('Bus')!
 	assert ac.db.messages.len == 1
 	assert (ac.frame_of(ac.db.messages[0]) or { panic('no frame') }).fd
+	// short, it is no FD frame; but a bus with a data rate is opened FD, since the receiver
+	// takes the FD form too
+	short := arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>',
+		'<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-RX-BEHAVIOR>ANY</CAN-FRAME-RX-BEHAVIOR>') + offset_pdu_xml + arxml_tail
+	sc := parse_arxml(short)!.cluster('Bus')!
+	assert !(sc.frame_of(sc.db.messages[0]) or { panic('no frame') }).fd && !sc.carries_fd()
+	with_rate := parse_arxml(short.replace('<BAUDRATE>500000</BAUDRATE>', '<BAUDRATE>500000</BAUDRATE><CAN-FD-BAUDRATE>2000000</CAN-FD-BAUDRATE>'))!.cluster('Bus')!
+	assert with_rate.fd_baudrate == 2000000 && with_rate.carries_fd()
 	// an input set path that names nothing is said
 	net := os.join_path(dir, 'net')
 	os.mkdir_all(net) or { panic(err) }
@@ -2328,6 +2344,17 @@ fn test_a_description_is_its_inputs() {
 	before := arxml_fingerprint(mf)!
 	os.write_file(policy, base_policy + '\n')!
 	assert arxml_fingerprint(mf)! != before
+	// expanded again they are the same, until the model file says otherwise: what a read checks
+	// itself against
+	assert inputs.same(inputs.again()!)
+	os.write_file(mf, 'paths = ["net/"]\npolicy = "p.toml"\nrules = "other.txt"\n')!
+	assert !inputs.same(inputs.again()!)
+	// a rules file named and not there yet is an input: created, it is a change
+	missing := arxml_inputs([mf])!
+	assert missing.deps.map(os.file_name(it)) == ['sys.arxmodel.toml', 'other.txt', 'p.toml']
+	absent := arxml_fingerprint(mf)!
+	os.write_file(os.join_path(dir, 'other.txt'), 'x')!
+	assert arxml_fingerprint(mf)! != absent
 	// excluded and named twice, a file is still one input and an excluded one none
 	os.write_file(os.join_path(dir, 'net', 'b.arxml'), arxml_head + arxml_tail)!
 	ex := inputs_of([os.join_path(dir, 'net', 'a.arxml'), os.join_path(dir, 'net', '.', 'a.arxml'),
