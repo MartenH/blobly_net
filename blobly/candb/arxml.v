@@ -624,6 +624,7 @@ struct ArxmlSnapshot {
 	set  ArxmlSet
 	key  string // the cache key: every input's real path
 	base string // the fingerprint of the inputs, without what only a read finds (`extra`)
+	deps string // the dependencies' part of it, which the merge rereads by path (deps_hash)
 }
 
 fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
@@ -644,10 +645,10 @@ fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
 		parts << '${real}=${sha}'
 	}
 	for f in i.deps {
-		real := os.real_path(f)
-		reals << real
-		parts << '+${real}=${sha256.sum(os.read_bytes(f)!).hex()}'
+		reals << os.real_path(f)
 	}
+	deps := i.deps_hash()!
+	parts << '+${deps}'
 	parts << 'rules=${i.opts.schema_dir};${i.opts.rules_file};${i.opts.policy}'
 	// where the files came from, which a policy filter's relative file glob is read from: one
 	// set of files reached by two expressions may be filtered two ways
@@ -662,7 +663,19 @@ fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
 		}
 		key:  reals.join('\n') + '\n' + roots
 		base: sha256.hexhash(parts.join('\n'))
+		deps: deps
 	}
+}
+
+// deps_hash is a SHA-256 over every dependency's real path and content. The ARXML bytes are
+// parsed from the snapshot; the rules, policy, configuration and schema files the merge reads
+// again by path, so the read is checked against this after it (load_inputs).
+fn (i ArxmlInputs) deps_hash() !string {
+	mut parts := []string{cap: i.deps.len}
+	for f in i.deps {
+		parts << '${os.real_path(f)}=${sha256.sum(os.read_bytes(f)!).hex()}'
+	}
+	return sha256.hexhash(parts.join('\n'))
 }
 
 // with_extra is a fingerprint with the content of the files only a read found: `path<US>sha`
@@ -706,6 +719,20 @@ pub fn load_arxml_set(paths []string, opts arxmodel.OpenOptions) !(Arxml, ArxmlS
 // a real file is seconds and hundreds of MB to parse, and a project opens each channel's
 // databases several times per Start), and returns the read, its fingerprint and the files read.
 fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
+	// a dependency rewritten during the read is read again: the model and its fingerprint are
+	// of one content or neither is returned
+	for _ in 0 .. 3 {
+		a, fp, set, stable := load_once(inputs)!
+		if stable {
+			return a, fp, set
+		}
+	}
+	return error('the rules, policy, configuration or schema files changed during every read of them; try again')
+}
+
+// load_once is load_inputs's one attempt; not stable when a dependency changed during the
+// read, which is then not cached.
+fn load_once(inputs ArxmlInputs) !(Arxml, string, ArxmlSet, bool) {
 	snap := inputs.snapshot()!
 	key := snap.key
 	for {
@@ -723,7 +750,7 @@ fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
 					if c2.err != '' {
 						return error(c2.err)
 					}
-					return with_set_notes(c2.a, inputs.warnings), fp, snap.set
+					return with_set_notes(c2.a, inputs.warnings), fp, snap.set, true
 				}
 			}
 		}
@@ -757,6 +784,9 @@ fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
 		arxml_cache_mu.unlock()
 		return err
 	}
+	if inputs.deps_hash()! != snap.deps {
+		return a, '', snap.set, false
+	}
 	// the rule files the inputs do not name are inputs too, found by this read
 	named := snap.set.read
 	mut seen := map[string]bool{}
@@ -778,7 +808,7 @@ fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
 		a:     a
 	}
 	arxml_cache_mu.unlock()
-	return with_set_notes(a, inputs.warnings), fp, snap.set
+	return with_set_notes(a, inputs.warnings), fp, snap.set, true
 }
 
 // with_set_notes is a read with what its input set said (a glob or a directory that matched no

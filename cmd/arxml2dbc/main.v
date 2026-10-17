@@ -161,11 +161,14 @@ fn main() {
 	src_reals << set.read
 	// and what only the read found: a schema imported from outside the schema directory
 	src_reals << a.report.rule_files.map(canon(it))
-	// and what they name now, should a list have changed since
-	if now := candb.arxml_inputs(srcs) {
-		src_reals << now.files.map(canon(it))
-		src_reals << now.deps.map(canon(it))
+	// and what they name now, should a list have changed since: one that no longer expands
+	// names who knows what, so nothing is written
+	now := candb.arxml_inputs(srcs) or {
+		eprintln('arxml2dbc: ${src}: the inputs changed during the read and no longer expand: ${err}')
+		exit(1)
 	}
+	src_reals << now.files.map(canon(it))
+	src_reals << now.deps.map(canon(it))
 	outs := [dbc_out, toml_out]
 	dsts := [dbc_dst, toml_dst]
 	for k, out in outs {
