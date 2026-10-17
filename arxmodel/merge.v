@@ -55,10 +55,15 @@ pub mut:
 	unkeyed_by_design bool
 	// roles whose items are identified by a definition (the policy's item_identity)
 	identity_roles []IdentityRole
+	// such roles whose items have no wrapper: keyed by the identity as their split key (values)
+	direct_identities []IdentityRole
 	// rules of non-splittable roles allowed in several fragments only as identical repetitions
 	repeat_rules []int
 	// elements whose content a merge does not compare (structured comments, by the policy)
 	ignored_content []string
+	// the built-in identity rules the Flat was made of, which name values by their definition
+	// (values); nil for a schema's rules
+	identified &Identified = unsafe { nil }
 }
 
 // Conflict is an element pair under a parent path that roles of different holders still give
@@ -468,9 +473,10 @@ fn (rs &RuleSet) describe(c Cands, ks []int) []string {
 pub fn (rs &RuleSet) to_flat(opts FlatOptions) Flat {
 	mut c := rs.candidates()
 	mut f := Flat{
-		flat_wrappers:  c.flats
-		lost_keys:      c.lost_keys
-		identity_roles: rs.identity_roles()
+		flat_wrappers:     c.flats
+		lost_keys:         c.lost_keys
+		identity_roles:    rs.identity_roles()
+		direct_identities: rs.direct_identity_roles()
 	}
 	if rs.policy.ignore_structured {
 		f.ignored_content = rs.structured_elements()

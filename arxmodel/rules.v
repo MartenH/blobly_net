@@ -881,6 +881,43 @@ fn (mut rs RuleSet) check_naming(mut r Rule) {
 	}
 }
 
+// direct_identity_roles are the roles the policy identifies by one role of their items whose items
+// are written in their holder with no wrapper: merged by that identity as their split key
+// (resolve_key), named by it by values as a wrapper role's items are. Their parent is left empty.
+pub fn (rs &RuleSet) direct_identity_roles() []IdentityRole {
+	mut out := []IdentityRole{}
+	for r in rs.rules {
+		if r.name !in rs.policy.item_identity || r.wrapper || r.flat || r.items.len == 0 {
+			continue
+		}
+		def, label := rs.identity_parts(r) or { continue }
+		out << IdentityRole{
+			items:      r.items.map(it.element)
+			definition: def
+			label:      label
+		}
+	}
+	return out
+}
+
+// identity_parts are the paths of an item_identity role's identity and label in its items' key:
+// the part the policy's identity gave (resolve_key), wherever it stands, and the part after it.
+fn (rs &RuleSet) identity_parts(r Rule) ?(string, string) {
+	by := rs.policy.item_identity[r.name] or { return none }
+	if r.items.len == 0 {
+		return none
+	}
+	w := rs.walk_roles(rs.schema.elements[r.items[0].decl].typ, [by]) or { return none }
+	def := w.steps.join('/')
+	key := r.items[0].key
+	for j, k in key {
+		if k.steps.join('/') == def {
+			return def, if j + 1 < key.len { key[j + 1].steps.join('/') } else { '' }
+		}
+	}
+	return none
+}
+
 // identity_roles are the wrapper roles the policy identifies by one role of their items: the
 // wrapper, its items, and the resolved paths of their identity and of the rest of the key.
 pub fn (rs &RuleSet) identity_roles() []IdentityRole {
@@ -889,15 +926,13 @@ pub fn (rs &RuleSet) identity_roles() []IdentityRole {
 		if r.name !in rs.policy.item_identity || !r.wrapper || r.flat || r.items.len == 0 {
 			continue
 		}
-		key := r.items[0].key
-		if key.len == 0 {
-			continue
-		}
+		// the policy's identity wherever it stands in the key, and the part after it
+		def, label := rs.identity_parts(r) or { continue }
 		out << IdentityRole{
 			parent:     r.element
 			items:      r.items.map(it.element)
-			definition: key[0].steps.join('/')
-			label:      if key.len > 1 { key[1].steps.join('/') } else { '' }
+			definition: def
+			label:      label
 		}
 	}
 	return out

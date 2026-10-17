@@ -404,6 +404,21 @@ fn (d &Doc) skip_pi(j int) !int {
 	return 0
 }
 
+// ref_end marks the bytes that end the search for a reference's `;`: the `;` itself, and the
+// bytes neither an entity name nor a character reference may contain.
+const ref_end = ref_end_table()
+
+fn ref_end_table() []bool {
+	mut t := []bool{len: 256}
+	for c in 0 .. 0x21 {
+		t[c] = true
+	}
+	for c in [u8(`;`), `&`, `<`, `>`, `"`, `'`] {
+		t[c] = true
+	}
+	return t
+}
+
 // check_refs fails on an `&` in a .. b that does not start a reference `decode` can expand.
 fn (d &Doc) check_refs(a int, b int) ! {
 	mut k := a
@@ -412,8 +427,10 @@ fn (d &Doc) check_refs(a int, b int) ! {
 		if p < 0 {
 			return
 		}
+		// a reference has no length limit (`&#000…065;` is `A`), but ends at a byte no name or
+		// number may hold
 		mut e := p + 1
-		for e < b && e - p < 32 && unsafe { d.src[e] } != `;` {
+		for e < b && !ref_end[unsafe { d.src[e] }] {
 			e++
 		}
 		if e >= b || unsafe { d.src[e] } != `;` {

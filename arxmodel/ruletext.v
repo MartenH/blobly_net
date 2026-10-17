@@ -11,7 +11,7 @@ import os
 
 // rules_format is the version of the rules file's format this arxmodel writes and reads. A file
 // of another format is refused: its rules are not in the order this one merges and writes by.
-pub const rules_format = 3
+pub const rules_format = 4
 
 // version is arxmodel's version, from its own v.mod (builtin.v: @VMOD_FILE would be the v.mod of a
 // program that vendors arxmodel).
@@ -90,6 +90,11 @@ pub fn format_rules(f Flat, pv Provenance, st Settings) !string {
 	for r in f.identity_roles {
 		out << '# identity: ${r.parent} ${r.items.join(',')} ${r.definition} ${r.label}'.trim_space()
 	}
+	// such roles without a wrapper: their rules key by the definition already; values names their
+	// items by it
+	for r in f.direct_identities {
+		out << '# direct-identity: ${r.items.join(',')} ${r.definition} ${r.label}'.trim_space()
+	}
 	// the rules (by their number, from 0) of non-splittable roles that must repeat identically,
 	// and the elements a merge does not compare
 	if f.repeat_rules.len > 0 {
@@ -145,6 +150,16 @@ pub fn parse_rules_file(text string) !(Flat, Provenance, Settings) {
 						items:      w[1].split(',')
 						definition: w[2]
 						label:      if w.len > 3 { w[3] } else { '' }
+					}
+				}
+			}
+			'direct-identity' {
+				w := value.fields()
+				if w.len >= 2 {
+					f.direct_identities << IdentityRole{
+						items:      w[0].split(',')
+						definition: w[1]
+						label:      if w.len > 2 { w[2] } else { '' }
 					}
 				}
 			}
