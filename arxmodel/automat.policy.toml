@@ -1,0 +1,125 @@
+#:schema ./policy.schema.json
+# arxmodel's alternative merge policy (`--policy automat`). The
+# default, policy.toml, follows the AUTOSAR FO TPS Generic Structure Template (R24-11); each
+# setting here that differs from it says how, and which specification item it departs from.
+# TOML: every setting below must be given; policy.schema.json states what each takes.
+
+[merge]
+# An item whose split key parts are all absent gets the one empty key of its aggregation, so such
+# items merge and their differences are reported. Differs from [TPS_GST_00417] ("own").
+absent_keys = "empty"
+
+# Keys compared ignoring ASCII case. Differs from [TPS_GST_00021] and [constr_2508] ("exact").
+key_case = "ignore"
+
+# As in policy.toml.
+ignore_attrs = ["UUID"]
+
+# As in policy.toml.
+ignore_declarations = true
+
+# The items, with children, of a multi-valued role whose split key is the role alone are keyed by
+# their single-valued element children and merged by them. Differs from [TPS_GST_00417] ("copy").
+item_itself = "single_values"
+
+# A value of a multi-valued role of primitive values is its own key: identical values are one.
+# Differs from [TPS_GST_00449] ("copy").
+primitive_values = "merge_identical"
+
+# A non-splittable multi-valued role in several fragments: each occurrence kept, a key met twice a
+# collision, nothing checking that repetitions are identical. Differs from [constr_2524] and
+# [TPS_GST_00447] ("identical").
+repeated_content = "copy"
+
+# The items of a role of several item types: each type keyed by its own key parts. Differs from
+# [TPS_GST_00416] ("union").
+abstract_items = "per_kind"
+
+# As in policy.toml, for the reason given there: an ECUC value is identified by its definition.
+item_identity = { "EcucContainerValue.parameterValue" = "definition", "EcucContainerValue.referenceValue" = "definition" }
+
+# As in policy.toml.
+repeated_choice_as_mixed = true
+
+# A structured comment (FILE-INFO-COMMENT) compared like any content, so differing comments are
+# reported. Differs from [TPS_GST_00382] ("ignore").
+file_info_comment = "compare"
+
+[schema]
+# Which release governs a model whose files declare several: "newest_declared", the newest the
+# files declare, or the newest at hand when that one is not.
+governing = "newest_declared"
+
+# Splittability: "schema", exactly where the schema says atpSplitable, nothing added.
+splittable = "schema"
+
+[references]
+# The element that is a package. A reference whose target is missing and whose nearest existing
+# ancestor is a package (or which has none) points at definitions not loaded: `external`; one
+# whose nearest existing ancestor is any other element points into content that is loaded:
+# `unresolved`.
+package_element = "AR-PACKAGE"
+
+# Severities: what each finding means for `check`, which fails (exit 1) on errors only. A key is
+# a layer, "layer.kind" or "layer.kind:element" ("layer.kind:@attribute"), quoted where it has a
+# dot; its value "error", "warning" or "ignore". The most specific one applies, and a finding no
+# key names is an error. Layers: merge (the merge rules), xml_schema (each file against its XML
+# schema), multiplicity (each role's count in the merged model against the meta-model),
+# reference (each reference against the merged model's AUTOSAR paths).
+[severity]
+merge = "error"
+# A problem on an element pair whose holders' rules no parent path tells apart was judged by a
+# rule that may not be the pair's.
+"merge.in_conflict" = "warning"
+# Keys of one aggregation that differ only in case, and a non-splittable repetition that differs.
+"merge.case_only" = "error"
+"merge.repeated_differs" = "error"
+# An item with no part of its split key, kept an item of its own, is what the specification asks
+# for ([TPS_GST_00417]), not a fault: a missing identity such as a short name is a role below its
+# fewest (multiplicity).
+"merge.missing_key" = "ignore"
+# A [[filter]] that matched nothing: the policy may be out of date.
+"policy.unused_filter" = "warning"
+xml_schema = "error"
+# What the XML schema validator does not support (xsi:type) is not a fault of the file.
+"xml_schema.unsupported" = "warning"
+# The XML schema makes every lower bound 0 so a model may be split; the merged model may still be
+# unfinished in a process phase, so a role below its fewest is a warning ([constr_2502]).
+"multiplicity.below_min" = "warning"
+"multiplicity.above_max" = "error"
+# References. Nothing at the path where its nearest existing ancestor is an element whose content
+# is loaded, a target of another kind than its DEST (or a DEST the reference may not give), or no
+# path at all: errors. Nothing at the path where its nearest existing ancestor is a package, or
+# nothing of it exists (standard or vendor definitions not at hand, which --refs-from can
+# supply): a warning. A path found only ignoring case, as the merge compares keys: a warning. A
+# reference relative to a base (BASE, or a path not from the root) is not resolved here, as the
+# files declare no REFERENCE-BASE to resolve it by: a warning. One path held by two elements the
+# merge keeps apart: an error, short names being unique in their namespace ([constr_2508]).
+"reference.unresolved" = "error"
+"reference.wrong_kind" = "error"
+"reference.empty" = "error"
+"reference.external" = "warning"
+"reference.case_mismatch" = "warning"
+"reference.relative" = "warning"
+"reference.duplicate_path" = "error"
+
+# Filters: severities for the findings each matches, after [severity], the first that matches
+# winning. A finding must match every field given: `match` (a layer, "layer.kind" or
+# "layer.kind:element", as [severity] keys), `path` (an AUTOSAR path glob: `*` one segment or
+# part of one, `**` any segments, `#` and what follows are segments too), `file` (a file glob,
+# relative to the paths checked, or absolute), `message` (a substring), `message_re` (an XML
+# Schema pattern the whole message matches), `base` and `dest` (a reference's BASE and DEST);
+# then `severity`, and a `reason`, recommended. A filter that matches nothing is reported
+# (policy.unused_filter). None by default; for example:
+#
+# [[filter]]
+# match = "reference.relative"
+# base = "Trace"
+# severity = "ignore"
+# reason = "Trace references are resolved by another tool, not by the model"
+#
+# [[filter]]
+# match = "merge.repeated_differs"
+# path = "/AUTOSAR/EcucDefs/**#DESC"
+# severity = "warning"
+# reason = "descriptions of the standard definitions differ between vendor copies"

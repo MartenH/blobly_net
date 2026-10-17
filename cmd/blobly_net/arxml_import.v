@@ -145,11 +145,12 @@ fn (mut app App) arxml_import_confirm() bool {
 	}
 	// the channels reference the file and load whatever it holds at the rebuild: a file changed
 	// since the dialog opened would be imported by decisions taken over other content
-	text := os.read_file(ui.path) or {
+	// by the loader's own fingerprint (every file the description is read from), as at open, and
+	// without parsing: a changed file is refused, not read for nothing
+	sha := candb.arxml_fingerprint(ui.path) or {
 		app.arxml_import.err = '${os.file_name(ui.path)}: ${err}'
 		return false
 	}
-	_, sha := candb.content_key(ui.path, text)
 	if sha != ui.sha {
 		app.arxml_import.err = '${os.file_name(ui.path)} changed since this dialog opened: Cancel and import it again'
 		return false

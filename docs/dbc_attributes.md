@@ -85,8 +85,17 @@ Rules both readers follow:
 file is never mistaken for a hand-written one:
 
 ```
-CM_ "arxml2dbc: source=<file> sha256=<hex> reader=<version> cluster=<name> schema=<AUTOSAR schema> dropped=<n> unresolved=<n> notes=<n>";
+CM_ "arxml2dbc: source=<file> sha256=<hex> reader=<version> cluster=<name> schema=<AUTOSAR schema> inputs=<hex> dropped=<n> unresolved=<n> notes=<n>";
 ```
+
+A system description read from several files (`arxml2dbc a.arxml b.arxml`, or a directory)
+names each in `source`, comma-separated in the order read, and each one's hash in `sha256`, in
+the same order, and in `schema` each distinct schema they declare; one file is written as it
+always was.
+
+`inputs` is a SHA-256 over everything the read depends on: the ARXML files and the model
+file, its lists, the rules, policy, configuration and schema files it is merged by. A merge
+rule or a schema changed changes it where `sha256` stays the same.
 
 Nonzero `dropped`, `unresolved` or `notes` means the ARXML was read only partly; re-run the
 export to see what was left out. Nothing reads this comment back.

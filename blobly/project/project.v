@@ -885,17 +885,18 @@ const fragment_mark = '__BLOBLY_ARXML_FRAGMENT__'
 // (docs/known_issues.md), so the entry loads as the bare file, which a multi-cluster ARXML
 // refuses as naming no cluster — a refusal that says nothing of quoting. Builds before the
 // writer quoted `#` saved the Configuration panel's pick this way. Asked of the PARSER, not of
-// the text: the file is parsed again with each `.arxml#` spelled without a `#`, and an entry
+// the text: the file is parsed again with each `.arxml#` (and `.arxmodel.toml#`) spelled without a `#`, and an entry
 // that differs between the two reads is one the comment rule cut.
 fn unquoted_fragment_notes(text string, chans []Channel) []string {
 	low := text.to_lower()
-	if !low.contains('.arxml#') {
+	if !low.contains('.arxml#') && !low.contains('.arxmodel.toml#') {
 		return []
 	}
 	mut marked := []u8{cap: text.len + 64}
 	mut i := 0
 	for i < text.len {
-		if low[i] == `#` && i >= 6 && low[i - 6..i] == '.arxml' {
+		if low[i] == `#` && ((i >= 6 && low[i - 6..i] == '.arxml')
+			|| (i >= 14 && low[i - 14..i] == '.arxmodel.toml')) {
 			marked << fragment_mark.bytes()
 		} else {
 			marked << text[i]

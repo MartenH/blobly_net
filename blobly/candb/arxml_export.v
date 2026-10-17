@@ -19,10 +19,13 @@ module candb
 // ArxmlProvenance is what the exported DBC says about its origin.
 pub struct ArxmlProvenance {
 pub:
-	source  string // the ARXML's file name
-	sha256  string // of its bytes
+	source  string // the ARXML's file name; several, comma-separated, for a model read from several
+	sha256  string // of its bytes; of each file's, in the same order
 	reader  string // blobly_net version that exported it
 	cluster string
+	// the fingerprint of every input the read depends on (ArxmlSet.fingerprint): the rules,
+	// policy, configuration and schema files too, which change an export the ARXML bytes do not
+	inputs string
 }
 
 // E2eSignals names the counter and CRC SIGNALS of a protected message, derived from the E2E
@@ -204,7 +207,9 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 		// `dropped=0 unresolved=0` stamped it as complete while the detail went to the exporting
 		// process's stderr and not with the artifact (codex on #273 round 21). The count says
 		// "there was more; re-run the export to read it"
-		comment: 'arxml2dbc: source=${p.source} sha256=${p.sha256} reader=${p.reader} cluster=${p.cluster} schema=${report.schema} dropped=${dropped} unresolved=${report.unresolved.len} notes=${report.notes.len}'
+		comment: 'arxml2dbc: source=${p.source} sha256=${p.sha256} reader=${p.reader} cluster=${p.cluster} schema=${report.schema}' +
+			(if p.inputs != '' { ' inputs=${p.inputs}' } else { '' }) +
+			' dropped=${dropped} unresolved=${report.unresolved.len} notes=${report.notes.len}'
 	}
 	if fmt.values.len > 0 {
 		x.attrs << fmt

@@ -20,6 +20,8 @@ Compiled into the executable
   Lua 5.4            MIT            https://www.lua.org/               (vendored in thirdparty/lua)
   vlang/markdown     MIT            https://github.com/vlang/markdown  (Help panel)
   md4c               MIT            https://github.com/mity/md4c       (vendored in libs/markdown)
+  arxmodel           MIT            https://github.com/MartenH/arxmodel (vendored in arxmodel/; ARXML)
+  flatxml            MIT            https://github.com/MartenH/flatxml (vendored in flatxml/; XML)
   V standard library MIT            https://github.com/vlang/v
   Boehm-Demers-Weiser GC            https://github.com/ivmai/bdwgc   (V's default collector)
                      notice-retention, see licenses/boehm-gc-LICENSE.txt

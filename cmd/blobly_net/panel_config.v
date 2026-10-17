@@ -31,9 +31,11 @@ fn (mut app App) open_browser(target string) {
 	app.fb_ext = if target == 'open' || target == 'saveas' {
 		['.blobnet', '.yml', '.yaml']
 	} else if target == 'arxml_import' {
-		['.arxml']
+		['.arxml', '.arxmodel.toml']
 	} else if target.starts_with('dbc') {
-		['.dbc', '.arxml'] // a multi-cluster ARXML asks which cluster (arxml_pick.v)
+		// a multi-cluster ARXML asks which cluster (arxml_pick.v); a model file is one system
+		// description made of several ARXML files
+		['.dbc', '.arxml', '.arxmodel.toml']
 	} else if target.starts_with('manifest') {
 		['.csv']
 	} else if target == 'system' {

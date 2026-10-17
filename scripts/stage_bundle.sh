@@ -27,6 +27,8 @@ cp packaging/THIRD-PARTY-NOTICES.txt "$dest/"
 mkdir -p "$dest/licenses"
 cp thirdparty/lua/LICENSE                    "$dest/licenses/lua-LICENSE.txt"
 cp libs/markdown/LICENSE                     "$dest/licenses/vlang-markdown-LICENSE.txt"
+cp arxmodel/LICENSE                          "$dest/licenses/arxmodel-LICENSE.txt"
+cp flatxml/LICENSE                           "$dest/licenses/flatxml-LICENSE.txt"
 # Two components keep their notice in a SOURCE HEADER rather than a LICENSE file, so it is
 # extracted: everything up to the first close-comment, with the comment marks stripped.
 header_notice() { awk '/^ \*\//{exit} {sub(/^\/\*/,""); sub(/^ \* ?/,""); print}' "$1" > "$2"; }

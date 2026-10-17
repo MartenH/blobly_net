@@ -1,5 +1,6 @@
 module candb
 
+import arxmodel
 import os
 
 // dbc/example.arxml is the hand-written AUTOSAR 4.2 fixture: one feature per frame, so a
@@ -1368,7 +1369,7 @@ fn test_unique_names_are_reserved_before_duplicates_are_qualified() {
 	assert (c.db.lookup(256) or { panic('no 256') }).name == 'F', 'the first duplicate keeps the short name'
 	// signals: the same order inside one message
 	v_sig := '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>'
-	maps := '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MB</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/B/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MC</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/C/B_V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>20</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS>'
+	maps := '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MB</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/B/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MD</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/C/B_V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>20</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS>'
 	sigs_xml := offset_pdu_xml.replace_once('</I-SIGNAL-TO-PDU-MAPPINGS>', maps) + '<AR-PACKAGE><SHORT-NAME>B</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE><AR-PACKAGE><SHORT-NAME>C</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>B_V</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
 	assert sigs_xml.contains(v_sig)
 	s := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + sigs_xml + arxml_tail) or {
@@ -1656,9 +1657,6 @@ fn test_number_forms() {
 	assert seconds_to_ms('1.0E-2') == 10
 	assert seconds_to_ms('0.02') == 20
 	assert seconds_to_ms('') == 0
-	assert xml_unescape('a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;') == 'a & b < c > d "e" \'f\''
-	// a reference vlib does not know fails its decode; the raw text is the honest answer
-	assert xml_unescape('x &unknown; y') == 'x &unknown; y'
 }
 
 // --- the export (arxml_export.v) --------------------------------------------------------
@@ -1706,6 +1704,15 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	// notes=4: the same four the golden list in test_cluster_and_nodes pins — a partial read is
 	// stamped as one, and travels with the DBC
 	assert lines.any(it == 'CM_ "arxml2dbc: source=example.arxml sha256=abc123 reader=0.2.0 cluster=Body schema=AUTOSAR_4-2-2 dropped=1 unresolved=0 notes=4";'), lines.filter(it.starts_with('CM_ "arxml2dbc')).str()
+	// and, where the read gives one, the fingerprint of everything it depended on
+	with_inputs := c.export_dbc(ArxmlProvenance{
+		source:  'example.arxml'
+		sha256:  'abc123'
+		reader:  '0.2.0'
+		cluster: 'Body'
+		inputs:  'f00d'
+	}, a.report)
+	assert with_inputs.contains('schema=AUTOSAR_4-2-2 inputs=f00d dropped=1')
 	// #271's attributes, defined once, valued on the protected message only
 	assert lines.any(it == 'BA_DEF_ BO_ "E2ECounterSignal" STRING;')
 	assert lines.any(it == 'BA_DEF_ BO_ "E2EDataId" INT 0 65535;')
@@ -1981,6 +1988,22 @@ fn test_relations_the_table_cannot_state_are_said() {
 	}
 	assert (dis.cluster('') or { panic(err) }).db.messages.len == 0
 	assert dis.report.notes.any(it.contains('CAN-FRAME-TX-BEHAVIOR CAN-FD and CAN-FRAME-RX-BEHAVIOR CAN-20 disagree; not read')), dis.report.notes.str()
+	// a receiver taking ANY format disagrees with no transmitter: the frame is read, FD as sent
+	any := parse_arxml(arxml_head + fd_cluster().replace('<CAN-FRAME-TX-BEHAVIOR>CAN-FD</CAN-FRAME-TX-BEHAVIOR>', '<CAN-FRAME-TX-BEHAVIOR>CAN-FD</CAN-FRAME-TX-BEHAVIOR><CAN-FRAME-RX-BEHAVIOR>ANY</CAN-FRAME-RX-BEHAVIOR>') + offset_pdu_xml + arxml_tail) or {
+		panic(err)
+	}
+	ac := any.cluster('') or { panic(err) }
+	assert ac.db.messages.len == 1
+	assert (ac.frame_of(ac.db.messages[0]) or { panic('no frame') }).fd
+	// short, it is no FD frame; but a bus with a data rate is opened FD, since the receiver
+	// takes the FD form too
+	short := arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>',
+		'<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-RX-BEHAVIOR>ANY</CAN-FRAME-RX-BEHAVIOR>') + offset_pdu_xml + arxml_tail
+	sc := parse_arxml(short)!.cluster('Bus')!
+	assert !(sc.frame_of(sc.db.messages[0]) or { panic('no frame') }).fd && !sc.carries_fd()
+	with_rate := parse_arxml(short.replace('<BAUDRATE>500000</BAUDRATE>', '<BAUDRATE>500000</BAUDRATE><CAN-FD-BAUDRATE>2000000</CAN-FD-BAUDRATE>'))!.cluster('Bus')!
+	assert with_rate.fd_baudrate == 2000000 && with_rate.carries_fd()
+	assert !any.report.notes.any(it.contains('BEHAVIOR')), any.report.notes.str()
 	// an unknown behaviour: the frame is refused too (and the leaf pass named the value)
 	unk := parse_arxml(arxml_head + fd_cluster().replace('>CAN-FD<', '>CAN-XL<') + offset_pdu_xml + arxml_tail) or {
 		panic(err)
@@ -2177,4 +2200,254 @@ fn test_frame_toml_bus_line_shapes() {
 // never through f64 for an integer literal, which would lose the low bits above 2^53.
 fn parse_key(s string) u64 {
 	return key_of(s) or { 0 }
+}
+
+// One system description split over two files, named by a model file: the same database as the
+// one file holding both, and the reference splits like an ARXML's.
+fn test_a_model_file_reads_a_system_split_over_files() {
+	dir := os.join_path(os.temp_dir(), 'candb_arxmodel_${os.getpid()}')
+	os.mkdir_all(os.join_path(dir, 'net')) or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	os.write_file(os.join_path(dir, 'net', 'cluster.arxml'), arxml_head +
+		cluster_xml('Bus', 256, '/Frames/F') + arxml_tail)!
+	os.write_file(os.join_path(dir, 'net', 'frames.arxml'), arxml_head + offset_pdu_xml + arxml_tail)!
+	mf := os.join_path(dir, 'sys.arxmodel.toml')
+	os.write_file(mf, 'paths = ["net/"]\n')!
+	// a model file with no schema takes this machine's: the test runs with none configured
+	old_dir, old_xdg := os.getenv('ARXMODEL_SCHEMA_DIR'), os.getenv('XDG_CONFIG_HOME')
+	os.setenv('ARXMODEL_SCHEMA_DIR', '', true)
+	os.setenv('XDG_CONFIG_HOME', dir, true)
+	defer {
+		os.setenv('ARXMODEL_SCHEMA_DIR', old_dir, true)
+		os.setenv('XDG_CONFIG_HOME', old_xdg, true)
+	}
+	file, cluster := split_database_ref(mf + '#Bus')
+	assert file == mf && cluster == 'Bus'
+	assert is_arxml_ref(mf)
+	split := open_database(mf + '#Bus')!
+	whole := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml +
+		arxml_tail)!
+	assert split.db.messages.str() == (whole.cluster('Bus')!).db.messages.str()
+	a := load_arxml_file(mf)!
+	assert a.report.merged_by == 'built-in identity rules'
+	// a file giving the frame another length: the first file's is read, and that is said
+	os.write_file(os.join_path(dir, 'net', 'more.arxml'), arxml_head + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail)!
+	b := load_arxml_file(mf)!
+	assert b.report.notes.any(it.contains('#FRAME-LENGTH') && it.contains('the first is read')), b.report.notes.str()
+	// a policy filter by a file relative to where the files came from applies, as arxmodel's own
+	// open applies it
+	policy := os.read_file(os.join_path(@VMODROOT, 'arxmodel', 'policy.toml'))! +
+		'\n[[filter]]\nmatch = "merge.value_differs"\nfile = "more.arxml"\nseverity = "ignore"\nreason = "a test"\n'
+	os.write_file(os.join_path(dir, 'p.toml'), policy)!
+	os.write_file(mf, 'paths = ["net/"]\npolicy = "p.toml"\n')!
+	filtered := load_arxml_file(mf)!
+	assert !filtered.report.notes.any(it.contains('#FRAME-LENGTH')), filtered.report.notes.str()
+	// the same files reached from another root are another read: the filter names no file there
+	pol := arxmodel.OpenOptions{
+		policy: os.join_path(dir, 'p.toml')
+	}
+	from_net, _ := load_arxml_set([os.join_path(dir, 'net')], pol)!
+	assert !from_net.report.notes.any(it.contains('#FRAME-LENGTH'))
+	from_dir, _ := load_arxml_set([dir], pol)!
+	assert from_dir.report.notes.any(it.contains('#FRAME-LENGTH')), from_dir.report.notes.str()
+	os.write_file(mf, 'paths = ["net/"]\n')!
+	os.rm(os.join_path(dir, 'net', 'more.arxml'))!
+	// a description that names a schema directory with no schema in it is refused, not read
+	// by other rules
+	os.write_file(mf, 'paths = ["net/"]\nschema_dir = "net"\n')!
+	load_arxml_file(mf) or {
+		assert err.msg().contains('schema'), err.msg()
+		return
+	}
+	assert false
+}
+
+// What #461's self-review found, one assertion each: a description of inline markup only, a plain
+// path with glob characters in its name, a receiver taking ANY on an FD length, an input set path
+// that names nothing, and a cache that sees a rules file change.
+fn test_the_reader_after_its_move_to_arxmodel() {
+	inline := arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>',
+		'<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><DESC><L-2 L="EN"><E>Deprecated</E></L-2></DESC><LENGTH>16</LENGTH></I-SIGNAL>') + arxml_tail
+	assert inline.contains('<E>Deprecated</E>')
+	d := parse_arxml(inline)!
+	assert sig((d.cluster('Bus')!).db.messages[0], 'V').desc == 'Deprecated'
+	// two inline elements with a space between them: a space, though the parser keeps no text
+	// node of white space only
+	two := parse_arxml(inline.replace('<E>Deprecated</E>', '<E>Torque</E> <E>value</E>, see <TT>X</TT>.'))!
+	assert sig((two.cluster('Bus')!).db.messages[0], 'V').desc == 'Torque value, see X.'
+	dir := os.join_path(os.temp_dir(), 'candb_after_move_${os.getpid()}')
+	os.mkdir_all(dir) or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	// a file named with glob characters is the file: read as a glob, body*.arxml would take in
+	// bodyX.arxml beside it, and its second cluster
+	odd := os.join_path(dir, 'body*.arxml')
+	os.write_file(odd, arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + arxml_tail)!
+	os.write_file(os.join_path(dir, 'bodyX.arxml'), arxml_head + cluster_xml('Other', 300, '/Frames/F') + arxml_tail)!
+	assert (load_arxml_file(odd)!).clusters.map(it.bus) == ['Bus']
+	// RX ANY, no TX behaviour, a 12-byte frame: FD
+	any := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>',
+		'<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-RX-BEHAVIOR>ANY</CAN-FRAME-RX-BEHAVIOR>') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>',
+		'<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail)!
+	ac := any.cluster('Bus')!
+	assert ac.db.messages.len == 1
+	assert (ac.frame_of(ac.db.messages[0]) or { panic('no frame') }).fd
+	// short, it is no FD frame; but a bus with a data rate is opened FD, since the receiver
+	// takes the FD form too
+	short := arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>',
+		'<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-RX-BEHAVIOR>ANY</CAN-FRAME-RX-BEHAVIOR>') + offset_pdu_xml + arxml_tail
+	sc := parse_arxml(short)!.cluster('Bus')!
+	assert !(sc.frame_of(sc.db.messages[0]) or { panic('no frame') }).fd && !sc.carries_fd()
+	with_rate := parse_arxml(short.replace('<BAUDRATE>500000</BAUDRATE>', '<BAUDRATE>500000</BAUDRATE><CAN-FD-BAUDRATE>2000000</CAN-FD-BAUDRATE>'))!.cluster('Bus')!
+	assert with_rate.fd_baudrate == 2000000 && with_rate.carries_fd()
+	// an input set path that names nothing is said
+	net := os.join_path(dir, 'net')
+	os.mkdir_all(net) or { panic(err) }
+	os.write_file(os.join_path(net, 'a.arxml'), arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + arxml_tail)!
+	a, _ := load_arxml_set([net, os.join_path(dir, 'extracts', '*.arxml')], arxmodel.OpenOptions{})!
+	assert a.report.notes.any(it.starts_with('input: ') && it.contains('extracts')), a.report.notes.str()
+	// a rules file changed is another merge: its content is in the key
+	rules := os.join_path(dir, 'x.rules.txt')
+	os.write_file(rules, 'not a rules file\n')!
+	load_arxml_set([net], arxmodel.OpenOptions{ rules_file: rules }) or { assert err.msg().contains('rules') }
+	os.write_file(rules, 'still not one, but other bytes\n')!
+	hits := arxml_cache_hit_count()
+	load_arxml_set([net], arxmodel.OpenOptions{ rules_file: rules }) or {}
+	assert arxml_cache_hit_count() == hits, 'a changed rules file is not answered from the cache'
+}
+
+// Every file a description is read from is one of its inputs (ArxmlInputs): nested @FILE lists,
+// a model file's policy, and the fingerprint follows each of them without parsing anything.
+fn test_a_description_is_its_inputs() {
+	dir := os.join_path(os.temp_dir(), 'candb_inputs_${os.getpid()}')
+	os.mkdir_all(os.join_path(dir, 'net')) or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	os.write_file(os.join_path(dir, 'net', 'a.arxml'), arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + arxml_tail)!
+	os.write_file(os.join_path(dir, 'inner.txt'), 'net/a.arxml\n')!
+	os.write_file(os.join_path(dir, 'outer.txt'), '@inner.txt\n')!
+	lists := arxml_inputs(['@' + os.join_path(dir, 'outer.txt')])!
+	assert lists.deps.map(os.file_name(it)) == ['outer.txt', 'inner.txt']
+	// a model file's policy is an input: changing it changes the fingerprint
+	policy := os.join_path(dir, 'p.toml')
+	base_policy := os.read_file(os.join_path(@VMODROOT, 'arxmodel', 'policy.toml'))!
+	os.write_file(policy, base_policy)!
+	mf := os.join_path(dir, 'sys.arxmodel.toml')
+	os.write_file(mf, 'paths = ["net/"]\npolicy = "p.toml"\nrules = "none.txt"\n')!
+	os.write_file(os.join_path(dir, 'none.txt'), 'x')!
+	inputs := arxml_inputs([mf])!
+	assert inputs.deps.map(os.file_name(it)) == ['sys.arxmodel.toml', 'none.txt', 'p.toml']
+	before := arxml_fingerprint(mf)!
+	os.write_file(policy, base_policy + '\n')!
+	assert arxml_fingerprint(mf)! != before
+	// expanded again they are the same, until the model file says otherwise: what a read checks
+	// itself against
+	assert inputs.same(inputs.again()!)
+	os.write_file(mf, 'paths = ["net/"]\npolicy = "p.toml"\nrules = "other.txt"\n')!
+	assert !inputs.same(inputs.again()!)
+	// a rules file named and not there yet is an input: created, it is a change
+	missing := arxml_inputs([mf])!
+	assert missing.deps.map(os.file_name(it)) == ['sys.arxmodel.toml', 'other.txt', 'p.toml']
+	absent := arxml_fingerprint(mf)!
+	os.write_file(os.join_path(dir, 'other.txt'), 'x')!
+	assert arxml_fingerprint(mf)! != absent
+	// excluded and named twice, a file is still one input and an excluded one none
+	os.write_file(os.join_path(dir, 'net', 'b.arxml'), arxml_head + arxml_tail)!
+	ex := inputs_of([os.join_path(dir, 'net', 'a.arxml'), os.join_path(dir, 'net', '.', 'a.arxml'),
+		os.join_path(dir, 'net', 'b.arxml')], arxmodel.OpenOptions{
+		exclude: [os.join_path(dir, 'net', 'b.arxml')]
+	}, [])!
+	assert ex.files.map(os.file_name(it)) == ['a.arxml']
+}
+
+// a schema of the AUTOSAR namespace declaring its root alone: enough to govern a merge (what it
+// does not declare is each its own), and nothing taken from the AUTOSAR schema
+const lax_schema = '<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="http://autosar.org/schema/r4.0" elementFormDefault="qualified">IMPORT<xsd:element name="AUTOSAR"><xsd:complexType/></xsd:element></xsd:schema>'
+
+fn test_the_schemas_a_description_is_merged_by_are_its_inputs() {
+	dir := os.join_path(os.temp_dir(), 'candb_schema_inputs_${os.getpid()}')
+	os.mkdir_all(os.join_path(dir, 'net')) or { panic(err) }
+	os.mkdir_all(os.join_path(dir, 'xsd', 'r')) or { panic(err) }
+	os.mkdir_all(os.join_path(dir, 'other')) or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	head := arxml_head.replace('<AUTOSAR xmlns="http://autosar.org/schema/r4.0">', '<AUTOSAR xmlns="http://autosar.org/schema/r4.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://autosar.org/schema/r4.0 LAX.xsd">')
+	os.write_file(os.join_path(dir, 'net', 'a.arxml'), head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + arxml_tail)!
+	// the schema, its extension in another case, imports one from outside the schema directory
+	os.write_file(os.join_path(dir, 'xsd', 'r', 'LAX.Xsd'), lax_schema.replace('IMPORT', '<xsd:import namespace="urn:other" schemaLocation="../../other/O.xsd"/>'))!
+	other := os.join_path(dir, 'other', 'O.xsd')
+	o_text := '<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:other"/>'
+	os.write_file(other, o_text)!
+	mf := os.join_path(dir, 'sys.arxmodel.toml')
+	os.write_file(mf, 'paths = ["net/"]\nschema_dir = "xsd"\n')!
+	inputs := arxml_inputs([mf])!
+	assert inputs.deps.map(os.file_name(it)) == ['sys.arxmodel.toml', 'LAX.Xsd']
+	hits := arxml_cache_hit_count()
+	a, fp := load_arxml_content(mf)!
+	assert a.report.merged_by == 'schema LAX.xsd', a.report.merged_by
+	assert os.real_path(other) in a.report.rule_files.map(os.real_path(it))
+	assert a.clusters.len == 1
+	// the import is an input like the rest: unchanged, the cache answers; changed, it does not
+	assert arxml_fingerprint(mf)! == fp
+	_, again := load_arxml_content(mf)!
+	assert again == fp && arxml_cache_hit_count() == hits + 1
+	os.write_file(other, o_text + '\n')!
+	assert arxml_fingerprint(mf)! != fp
+	_, after := load_arxml_content(mf)!
+	assert after != fp && arxml_cache_hit_count() == hits + 1
+	// the provenance's fingerprint follows the schema, where the ARXML hashes do not
+	_, set_before := load_arxml_inputs([mf])!
+	os.write_file(other, o_text + '\n\n')!
+	_, set_after := load_arxml_inputs([mf])!
+	assert set_after.sha256 == set_before.sha256 && set_after.fingerprint != set_before.fingerprint
+	assert set_before.fingerprint == after
+	// a read that fails on a broken import, even one no read has found yet, is retried once the
+	// import is repaired
+	fresh := os.join_path(dir, 'other', 'F.xsd')
+	os.write_file(fresh, '<broken')!
+	os.write_file(os.join_path(dir, 'xsd', 'r', 'LAX.Xsd'), lax_schema.replace('IMPORT', '<xsd:import namespace="urn:fresh" schemaLocation="../../other/F.xsd"/><xsd:import namespace="urn:other" schemaLocation="../../other/O.xsd"/>'))!
+	if _, _ := load_arxml_content(mf) {
+		assert false, 'read with a new import broken'
+	}
+	os.write_file(fresh, '<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:fresh"/>')!
+	repaired, _ := load_arxml_content(mf)!
+	assert repaired.clusters.len == 1
+	os.write_file(other, '<broken')!
+	if _, _ := load_arxml_content(mf) {
+		assert false, 'read with its import broken'
+	}
+	os.write_file(other, o_text)!
+	restored, _ := load_arxml_content(mf)!
+	assert restored.clusters.len == 1
+	// an import reached through a link is followed again: retargeted, it is another input
+	$if !windows {
+		target := os.join_path(dir, 'other', 'O2.xsd')
+		os.write_file(target, o_text + '<!-- another -->')!
+		os.rm(other)!
+		os.write_file(os.join_path(dir, 'other', 'O1.xsd'), o_text + '<!-- one -->')!
+		os.symlink(os.join_path(dir, 'other', 'O1.xsd'), other)!
+		_, linked := load_arxml_content(mf)!
+		os.rm(other)!
+		os.symlink(target, other)!
+		assert arxml_fingerprint(mf)! != linked
+	}
+	// and the configuration naming the schema directory is one
+	cfg_home := os.join_path(dir, 'cfg')
+	os.mkdir_all(os.join_path(cfg_home, 'arxmodel'))!
+	cfg := os.join_path(cfg_home, 'arxmodel', 'config.toml')
+	os.write_file(cfg, 'schema_dir = "${os.join_path(dir, 'xsd')}"\n')!
+	old_env, old_xdg := os.getenv('ARXMODEL_SCHEMA_DIR'), os.getenv('XDG_CONFIG_HOME')
+	os.setenv('ARXMODEL_SCHEMA_DIR', '', true)
+	os.setenv('XDG_CONFIG_HOME', cfg_home, true)
+	defer {
+		os.setenv('ARXMODEL_SCHEMA_DIR', old_env, true)
+		os.setenv('XDG_CONFIG_HOME', old_xdg, true)
+	}
+	os.write_file(mf, 'paths = ["net/"]\n')!
+	assert arxml_inputs([mf])!.deps.map(os.file_name(it)) == ['sys.arxmodel.toml', 'config.toml', 'LAX.Xsd']
 }
