@@ -539,6 +539,9 @@ pub struct ArxmlSet {
 pub:
 	files  []string
 	sha256 []string
+	// the real path of every input as it resolved when it was read, files then dependencies:
+	// what a guard against overwriting a source must cover, whatever a name resolves to later
+	read []string
 }
 
 // ArxmlInputs is every file one system description is read from: its ARXML files, in the order
@@ -629,9 +632,9 @@ fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
 	mut shas := []string{cap: i.files.len}
 	mut reals := []string{cap: i.files.len + i.deps.len}
 	for f in i.files {
+		real := os.real_path(f)
 		data := os.read_bytes(f)!
 		sha := sha256.sum(data).hex()
-		real := os.real_path(f)
 		srcs << arxmodel.Source{
 			path: f
 			data: data
@@ -646,13 +649,18 @@ fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
 		parts << '+${real}=${sha256.sum(os.read_bytes(f)!).hex()}'
 	}
 	parts << 'rules=${i.opts.schema_dir};${i.opts.rules_file};${i.opts.policy}'
+	// where the files came from, which a policy filter's relative file glob is read from: one
+	// set of files reached by two expressions may be filtered two ways
+	roots := 'roots=' + i.opts.roots.map(os.real_path(it)).join(';')
+	parts << roots
 	return ArxmlSnapshot{
 		srcs: srcs
 		set:  ArxmlSet{
 			files:  i.files
 			sha256: shas
+			read:   reals.clone()
 		}
-		key:  reals.join('\n')
+		key:  reals.join('\n') + '\n' + roots
 		base: sha256.hexhash(parts.join('\n'))
 	}
 }
@@ -735,23 +743,22 @@ fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
 	}
 	a := read_arxml(snap.srcs, inputs.opts) or {
 		// remembered under the same inputs and content, so repaired bytes retry and the same
-		// broken bytes do not cost seconds and hundreds of MB per rebuild — the content of the
-		// files an earlier read found included, so restoring one of those retries too
-		arxml_cache_mu.lock()
-		known := if c := arxml_cache[key] { c.extra } else { []string{} }
-		arxml_cache_mu.unlock()
-		extra := extra_now(known)
+		// broken bytes do not cost seconds and hundreds of MB per rebuild. Not for a merge by
+		// schema: a failed schema read does not say which files it read (arxmodel#12), so a
+		// repaired import would go unseen
+		if inputs.opts.schema_dir != '' {
+			return err
+		}
 		arxml_cache_mu.lock()
 		arxml_cache[key] = ArxmlCached{
-			sha:   with_extra(snap.base, extra)
-			extra: extra
-			err:   err.msg()
+			sha: snap.base
+			err: err.msg()
 		}
 		arxml_cache_mu.unlock()
 		return err
 	}
 	// the rule files the inputs do not name are inputs too, found by this read
-	named := key.split('\n')
+	named := snap.set.read
 	mut seen := map[string]bool{}
 	mut outside := []string{}
 	for f in a.report.rule_files {

@@ -2227,6 +2227,14 @@ fn test_a_model_file_reads_a_system_split_over_files() {
 	os.write_file(mf, 'paths = ["net/"]\npolicy = "p.toml"\n')!
 	filtered := load_arxml_file(mf)!
 	assert !filtered.report.notes.any(it.contains('#FRAME-LENGTH')), filtered.report.notes.str()
+	// the same files reached from another root are another read: the filter names no file there
+	pol := arxmodel.OpenOptions{
+		policy: os.join_path(dir, 'p.toml')
+	}
+	from_net, _ := load_arxml_set([os.join_path(dir, 'net')], pol)!
+	assert !from_net.report.notes.any(it.contains('#FRAME-LENGTH'))
+	from_dir, _ := load_arxml_set([dir], pol)!
+	assert from_dir.report.notes.any(it.contains('#FRAME-LENGTH')), from_dir.report.notes.str()
 	os.write_file(mf, 'paths = ["net/"]\n')!
 	os.rm(os.join_path(dir, 'net', 'more.arxml'))!
 	// a description that names a schema directory with no schema in it is refused, not read
@@ -2356,7 +2364,17 @@ fn test_the_schemas_a_description_is_merged_by_are_its_inputs() {
 	assert arxml_fingerprint(mf)! != fp
 	_, after := load_arxml_content(mf)!
 	assert after != fp && arxml_cache_hit_count() == hits + 1
-	// a read that fails on a broken import still knows it: repaired, the read is retried
+	// a read that fails on a broken import, even one no read has found yet, is retried once the
+	// import is repaired
+	fresh := os.join_path(dir, 'other', 'F.xsd')
+	os.write_file(fresh, '<broken')!
+	os.write_file(os.join_path(dir, 'xsd', 'r', 'LAX.Xsd'), lax_schema.replace('IMPORT', '<xsd:import namespace="urn:fresh" schemaLocation="../../other/F.xsd"/><xsd:import namespace="urn:other" schemaLocation="../../other/O.xsd"/>'))!
+	if _, _ := load_arxml_content(mf) {
+		assert false, 'read with a new import broken'
+	}
+	os.write_file(fresh, '<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:fresh"/>')!
+	repaired, _ := load_arxml_content(mf)!
+	assert repaired.clusters.len == 1
 	os.write_file(other, '<broken')!
 	if _, _ := load_arxml_content(mf) {
 		assert false, 'read with its import broken'

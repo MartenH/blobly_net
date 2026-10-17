@@ -156,6 +156,9 @@ fn main() {
 	// file, every @FILE list, the rules, policy, configuration and schema files
 	mut src_reals := inputs.files.map(canon(it))
 	src_reals << inputs.deps.map(canon(it))
+	// and every input as it resolved when it was read: a link retargeted since must not
+	// uncover the file whose bytes were parsed
+	src_reals << set.read
 	// and what only the read found: a schema imported from outside the schema directory
 	src_reals << a.report.rule_files.map(canon(it))
 	// and what they name now, should a list have changed since
