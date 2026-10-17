@@ -122,6 +122,12 @@ rc=$?
 ok "install: a failing make fails the script" "$rc" "1"
 ok "install: no stamp survives a failed make" "$(cat "$d/.blobly_built_from" 2>/dev/null || echo MISSING)" "MISSING"
 
+# The same, run by hand WITHOUT `set -e`, as a pin bump asks: a failing step still ends the install.
+d="$work/inst_fail_noe"; mkdir -p "$d"; printf '#!/bin/sh\n' > "$d/v"; chmod +x "$d/v"
+out=$(PATH="$stub:$PATH" GITLOG="$GITLOG" bash -c ". scripts/v_toolchain.sh; v_toolchain_install '$d' AAA BBB; echo rc=\$?" 2>&1)
+ok "install without set -e: a failing make returns non-zero" "${out##*$'\n'}" "rc=1"
+ok "install without set -e: writes no stamp" "$(cat "$d/.blobly_built_from" 2>/dev/null || echo MISSING)" "MISSING"
+
 # ...and therefore the NEXT run rebuilds rather than trusting the stale binary. Every earlier
 # version of the predicate answered "nothing to do" here.
 d2="$work/after_fail"; read -r VH VCH <<<"$(make_vdir "$d2")"

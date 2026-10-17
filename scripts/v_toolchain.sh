@@ -82,9 +82,9 @@ v_toolchain_fetch_pin() {
 	url=$2
 	sha=$3
 	if [ ! -e "$dir/.git" ]; then
-		git init -q "$dir"
+		git init -q "$dir" || return
 	fi
-	git -C "$dir" fetch -q --depth=1 "$url" "$sha"
+	git -C "$dir" fetch -q --depth=1 "$url" "$sha" || return
 	git -C "$dir" checkout -q FETCH_HEAD
 }
 
@@ -98,24 +98,25 @@ v_toolchain_install() {
 	v_pin=$2
 	vc_pin=$3
 
-	# A stamp from a previous build is not evidence about this one.
+	# A stamp from a previous build is not evidence about this one. Every step returns on failure,
+	# so a caller without `set -e` (run by hand, as the pin bump asks) gets no stamp either.
 	rm -f "$(v_toolchain_stamp_path "$vdir")"
 
-	v_toolchain_fetch_pin "$vdir" https://github.com/vlang/v "$v_pin"
+	v_toolchain_fetch_pin "$vdir" https://github.com/vlang/v "$v_pin" || return
 	# The bootstrap, at a vc commit proven to build $v_pin. Pinning the source without this
 	# is not a pin: `make` would clone vc's default branch, and `latest_vc` would then
 	# `git clean -xf && git pull --rebase` whatever we put there.
-	v_toolchain_fetch_pin "$vdir/vc" https://github.com/vlang/vc "$vc_pin"
+	v_toolchain_fetch_pin "$vdir/vc" https://github.com/vlang/vc "$vc_pin" || return
 
 	# tcc FIRST and WITHOUT local=1: that flag turns off latest_tcc too, and V keeps its
 	# bundled libgc.a in thirdparty/tcc/lib — without it the build completes and then fails
 	# linking libgc in `v run cmd/tools/detect_tcc.v`. tcc stays floating, as it always was.
-	make -C "$vdir" latest_tcc
+	make -C "$vdir" latest_tcc || return
 	# local=1 makes latest_vc/latest_tcc/latest_legacy no-ops (`ifndef local`), so nothing is
 	# pulled out from under the pinned bootstrap mid-build. prod=1 builds the compiler with -prod:
 	# without it the C compiler is tcc at no optimisation, and every compile is ~3x slower (loom2v
 	# 4.9 -> 1.6 s, blobly_emb's unit suite 88 -> 34 s); the release binaries are built this way.
-	make -C "$vdir" local=1 prod=1
+	make -C "$vdir" local=1 prod=1 || return
 
 	v_toolchain_want_stamp "$v_pin" "$vc_pin" > "$(v_toolchain_stamp_path "$vdir")"
 }

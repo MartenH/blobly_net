@@ -58,10 +58,14 @@ if n1 == 0:
 s, n2 = re.subn(re.escape('const char* v3_vexe = "%s/v";' % vdir), 'const char* v3_vexe = "%s/v.exe";' % root, s)
 if (n1, n2) != (1, 1):
     sys.exit('mint_windows_v: expected one baked root and one VEXE default in the C, found %d and %d; V changed shape' % (n1, n2))
-# an #include is read here at compile time; a vlib/ path is an $embed_file's label, its content
-# compiled in under -prod
+# an #include is read here at compile time; an $embed_file's path is only its label (`.apath`),
+# its content compiled in under -prod
+embedded = set(re.findall(r'\.apath = (_str_\d+),', s))
+def is_label(l):
+    m = re.match(r'_SL\((_str_\d+), ', l)
+    return m is not None and m.group(1) in embedded
 left = [l for l in s.splitlines()
-        if vdir in l and not l.startswith('#include') and '"%s/vlib/' % vdir not in l]
+        if vdir in l and not l.startswith('#include') and not is_label(l)]
 if left:
     sys.exit('mint_windows_v: the build root is still in the C outside #include lines:\n' + '\n'.join(left[:5]))
 open(path, 'w', encoding='latin-1').write(s)
@@ -71,6 +75,13 @@ EOF
 # Windows bootstrap compiles beside its generated C (makev.bat's V_STAGE_NATIVE)
 helpers=()
 natives=$(grep -m1 '^set V_STAGE_NATIVE=' "$vdir/makev.bat" || true)
+# the list may name another list (`%V_BOOTSTRAP_NATIVE%`): expanded from its first `set`
+while var=$(printf '%s' "$natives" | grep -o -m1 '%[A-Z_][A-Z0-9_]*%' | head -1) && [ -n "$var" ]; do
+	name=${var//%/}
+	val=$(grep -m1 "^set $name=" "$vdir/makev.bat" | sed "s/^set $name=//") ||
+		{ echo "mint_windows_v: makev.bat uses $var and never sets it" >&2; exit 1; }
+	natives=${natives//"$var"/"$val"}
+done
 for f in $(printf '%s' "$natives" | grep -o '%~dp0[^"]*' | sed -e 's/^%~dp0//' -e 's|\\|/|g'); do
 	[ -f "$vdir/$f" ] || { echo "mint_windows_v: makev.bat names $f, which $vdir does not have" >&2; exit 1; }
 	helpers+=("$vdir/$f")
