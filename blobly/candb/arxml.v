@@ -542,6 +542,9 @@ pub:
 	// the real path of every input as it resolved when it was read, files then dependencies:
 	// what a guard against overwriting a source must cover, whatever a name resolves to later
 	read []string
+	// the fingerprint of every input, the merge's dependencies included (ArxmlInputs.fingerprint):
+	// what changes when anything the read depends on changes, the ARXML bytes or not
+	fingerprint string
 }
 
 // ArxmlInputs is every file one system description is read from: its ARXML files, in the order
@@ -724,7 +727,10 @@ fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
 	for _ in 0 .. 3 {
 		a, fp, set, stable := load_once(inputs)!
 		if stable {
-			return a, fp, set
+			return a, fp, ArxmlSet{
+				...set
+				fingerprint: fp
+			}
 		}
 	}
 	return error('the rules, policy, configuration or schema files changed during every read of them; try again')

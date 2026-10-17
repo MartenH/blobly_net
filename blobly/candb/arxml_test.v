@@ -1704,6 +1704,15 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	// notes=4: the same four the golden list in test_cluster_and_nodes pins — a partial read is
 	// stamped as one, and travels with the DBC
 	assert lines.any(it == 'CM_ "arxml2dbc: source=example.arxml sha256=abc123 reader=0.2.0 cluster=Body schema=AUTOSAR_4-2-2 dropped=1 unresolved=0 notes=4";'), lines.filter(it.starts_with('CM_ "arxml2dbc')).str()
+	// and, where the read gives one, the fingerprint of everything it depended on
+	with_inputs := c.export_dbc(ArxmlProvenance{
+		source:  'example.arxml'
+		sha256:  'abc123'
+		reader:  '0.2.0'
+		cluster: 'Body'
+		inputs:  'f00d'
+	}, a.report)
+	assert with_inputs.contains('schema=AUTOSAR_4-2-2 inputs=f00d dropped=1')
 	// #271's attributes, defined once, valued on the protected message only
 	assert lines.any(it == 'BA_DEF_ BO_ "E2ECounterSignal" STRING;')
 	assert lines.any(it == 'BA_DEF_ BO_ "E2EDataId" INT 0 65535;')
@@ -2364,6 +2373,12 @@ fn test_the_schemas_a_description_is_merged_by_are_its_inputs() {
 	assert arxml_fingerprint(mf)! != fp
 	_, after := load_arxml_content(mf)!
 	assert after != fp && arxml_cache_hit_count() == hits + 1
+	// the provenance's fingerprint follows the schema, where the ARXML hashes do not
+	_, set_before := load_arxml_inputs([mf])!
+	os.write_file(other, o_text + '\n\n')!
+	_, set_after := load_arxml_inputs([mf])!
+	assert set_after.sha256 == set_before.sha256 && set_after.fingerprint != set_before.fingerprint
+	assert set_before.fingerprint == after
 	// a read that fails on a broken import, even one no read has found yet, is retried once the
 	// import is repaired
 	fresh := os.join_path(dir, 'other', 'F.xsd')

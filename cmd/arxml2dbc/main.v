@@ -142,6 +142,7 @@ fn main() {
 		sha256: set.sha256.join(',')
 		reader: 'blobly_net ${version}'
 		cluster: c.bus
+		inputs:  set.fingerprint
 	}, a.report)
 	// REFUSED BEFORE ANY WRITE: an output path that is the SOURCE replaces the system description
 	// — the one file this tool exists to leave alone — with its own output, and two outputs on
