@@ -318,5 +318,6 @@ pub fn (x &Identified) flat() Flat {
 		}
 		described:         ['built-in identity']
 		unkeyed_by_design: true
+		identified:        x
 	}
 }
