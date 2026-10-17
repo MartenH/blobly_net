@@ -285,11 +285,21 @@ pub fn list_key(name string) string {
 // identity_flat is the merge rules of identity rules, as applied to the models: every child of
 // every parent keyed as `key` says, merged by its key, an unkeyed one each its own.
 pub fn identity_flat(id Identity, models []&Model) Flat {
+	return identified(id, models).flat()
+}
+
+// identified is identity rules as applied to the models, observed.
+pub fn identified(id Identity, models []&Model) &Identified {
 	mut x := &Identified{
 		id: id
 		nm: naming(model_namespace(models), models)
 	}
 	x.observe(models)
+	return x
+}
+
+// flat is the merge rules of the identity rules as applied (see identity_flat).
+pub fn (x &Identified) flat() Flat {
 	key_fn := fn [x] (n flatxml.Node) ?string {
 		return x.key(n)
 	}

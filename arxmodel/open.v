@@ -20,9 +20,10 @@ pub mut:
 	index &PathIndex      = unsafe { nil }
 	rules string   // what the files were merged by: a schema's name, a rules file, or the built-in rules
 	notes []string // what choosing the rules had to say (a rules file made for another release)
-	// the files the rules were read from: the rules file; or the configuration file that named
-	// the schema directory (OpenOptions.config) and every schema document the files declare that
-	// was found, with what they import (inside the schema directory or not)
+	// the files the rules were read from: a policy file, then the rules file; or the
+	// configuration file that named the schema directory (OpenOptions.config) and every schema
+	// document the files declare that was found, with what they import (inside the schema
+	// directory or not)
 	rule_files []string
 	findings   []Finding // what the merge found, with the policy's severities
 	// the elements one file describes more than once (a key repeated among siblings), merged
@@ -107,6 +108,10 @@ pub fn open_model(m &Model, opts OpenOptions) !&Opened {
 	mut notes := []string{}
 	mut ty := &Typing(unsafe { nil })
 	mut rule_files := []string{}
+	mut by_identity := &Identified(unsafe { nil })
+	if opts.policy !in ['', 'spec', 'automat'] {
+		rule_files << opts.policy
+	}
 	if opts.rules_file != '' {
 		text := os.read_file(opts.rules_file) or { return error('${opts.rules_file}: ${err.msg()}') }
 		f, pv, fst := parse_rules_file(text) or { return error('${opts.rules_file}: ${err.msg()}') }
@@ -127,7 +132,8 @@ pub fn open_model(m &Model, opts OpenOptions) !&Opened {
 		flat, name = f, 'schema ${gname}'
 		ty = new_typing(gov.schema)
 	} else {
-		flat, name = identity_flat(builtin_identity(), [m]), 'built-in identity rules'
+		x := identified(builtin_identity(), [m])
+		flat, name, by_identity = x.flat(), 'built-in identity rules', x
 	}
 	// a reader reads in the order the files are written: siblings as first written, not by key.
 	// The rules name the local namespace already (the schema's, or the model's for the built-in
@@ -142,14 +148,16 @@ pub fn open_model(m &Model, opts OpenOptions) !&Opened {
 		skip_references:   true
 	}
 	mut c := check_typed(m, flat, name, st, p, copts, ty)!
-	if opts.rules_file == '' && opts.schema_dir == '' {
-		nm := naming(flat.rules.local_ns, [m])
+	if by_identity != unsafe { nil } {
 		_, ignored := st.apply(m, copts)
 		mut ignore := ignored_identities(ignored, [m])
 		for a in ignored {
 			ignore[a] = true
 		}
-		c.findings << singles_differ(mut c.view, c.index, p, &nm, ignore)
+		c.findings << singles_differ(mut c.view, c.index, p, &Canon{
+			x:      by_identity
+			ignore: ignore
+		})
 	}
 	c.filter(p, copts, m)
 	mut o := &Opened{
@@ -196,7 +204,8 @@ pub fn open_model(m &Model, opts OpenOptions) !&Opened {
 // read from the first file, and content in which they differ is a finding, as the merge makes
 // one. Attributes the merge ignores (ignore: by name, and by the identity any document gives a
 // name ignored) are no part of either.
-fn singles_differ(mut v flatxml.Merged, index &PathIndex, p Policy, nm &Naming, ignore map[string]bool) []Finding {
+fn singles_differ(mut v flatxml.Merged, index &PathIndex, p Policy, cn &Canon) []Finding {
+	nm := &cn.x.nm
 	mut out := []Finding{}
 	mut slots := map[voidptr]int{}
 	for i in 0 .. v.len() {
@@ -214,7 +223,7 @@ fn singles_differ(mut v flatxml.Merged, index &PathIndex, p Policy, nm &Naming, 
 			}
 			f := ch.fragment(0)
 			mut sb := strings.new_builder(32)
-			write_open(mut sb, f, nm, ignore)
+			cn.write_open(mut sb, f)
 			id := sb.str()
 			gi := number[id] or {
 				number[id] = groups.len
@@ -233,8 +242,8 @@ fn singles_differ(mut v flatxml.Merged, index &PathIndex, p Policy, nm &Naming, 
 			if g.len < 2 || repeated[gi] {
 				continue
 			}
-			first := canonical(g[0].fragment(0), nm, ignore)
-			if g[1..].all(canonical(it.fragment(0), nm, ignore) == first) {
+			first := cn.canonical(g[0].fragment(0))
+			if g[1..].all(cn.canonical(it.fragment(0)) == first) {
 				continue
 			}
 			what := nm.node_name(g[0].fragment(0))
@@ -261,11 +270,18 @@ fn doc_number(mut slots map[voidptr]int, d &flatxml.Doc) int {
 	return slots.len - 1
 }
 
-// write_open writes an element's name and attributes, as the merge names them, the attributes
-// sorted (their order tells nothing apart) and those in ignore left out; each part
-// length-prefixed, so no text can pass for a part.
-fn write_open(mut sb strings.Builder, n flatxml.Node, nm &Naming, ignore map[string]bool) {
-	write_part(mut sb, nm.node_name(n))
+// Canon is how singles_differ writes an element: by the identity rules the merge was made by,
+// which name it and key its children, attributes in ignore left out.
+struct Canon {
+	x      &Identified
+	ignore map[string]bool
+}
+
+// write_open writes an element's name and attributes, the attributes sorted (their order tells
+// nothing apart) and those in ignore left out; each part length-prefixed, so no text can pass
+// for a part.
+fn (cn &Canon) write_open(mut sb strings.Builder, n flatxml.Node) {
+	write_part(mut sb, cn.x.nm.node_name(n))
 	lo, hi := n.doc.attr_range(n.i)
 	mut attrs := []string{}
 	for a := lo; a < hi; a++ {
@@ -273,7 +289,7 @@ fn write_open(mut sb strings.Builder, n flatxml.Node, nm &Naming, ignore map[str
 			continue
 		}
 		id := n.doc.tab.name(n.doc.attr_id(a))
-		if id in ignore || n.doc.attr_name(a) in ignore {
+		if id in cn.ignore || n.doc.attr_name(a) in cn.ignore {
 			continue
 		}
 		mut ab := strings.new_builder(id.len + 16)
@@ -293,18 +309,19 @@ fn write_part(mut sb strings.Builder, s string) {
 	sb.write_string(s)
 }
 
-// canonical is an element's whole content, as one string: its name and attributes (write_open),
+// canonical is an element's whole content, as one string: its name and attributes (write_open);
 // its own text in each slot among its children (the runs of one slot joined, then trimmed) and
-// its children so, in document order.
-fn canonical(n flatxml.Node, nm &Naming, ignore map[string]bool) string {
+// its unkeyed children so, in document order; then its keyed children (is_named), whose order
+// does not count, sorted.
+fn (cn &Canon) canonical(n flatxml.Node) string {
 	mut sb := strings.new_builder(64)
-	write_canonical(mut sb, n, nm, ignore)
+	cn.write_canonical(mut sb, n)
 	return sb.str()
 }
 
-fn write_canonical(mut sb strings.Builder, n flatxml.Node, nm &Naming, ignore map[string]bool) {
+fn (cn &Canon) write_canonical(mut sb strings.Builder, n flatxml.Node) {
 	sb.write_u8(`<`)
-	write_open(mut sb, n, nm, ignore)
+	cn.write_open(mut sb, n)
 	runs := n.text_runs()
 	mut r := 0
 	mut slot := 0
@@ -312,6 +329,7 @@ fn write_canonical(mut sb strings.Builder, n flatxml.Node, nm &Naming, ignore ma
 	for c in n.children() {
 		kids << c
 	}
+	mut named := []string{}
 	for {
 		mut text := strings.new_builder(16)
 		for r < runs.len && runs[r].slot == slot {
@@ -323,10 +341,25 @@ fn write_canonical(mut sb strings.Builder, n flatxml.Node, nm &Naming, ignore ma
 		if slot >= kids.len {
 			break
 		}
-		write_canonical(mut sb, kids[slot], nm, ignore)
+		if cn.is_named(kids[slot]) {
+			named << cn.canonical(kids[slot])
+		} else {
+			cn.write_canonical(mut sb, kids[slot])
+		}
 		slot++
 	}
+	named.sort()
+	sb.write_string('${named.len}#')
+	for x in named {
+		write_part(mut sb, x)
+	}
 	sb.write_u8(`>`)
+}
+
+// is_named reports whether the identity rules key n (a name, a definition, a list): such
+// children are matched by their key and not their place, so their order does not count.
+fn (cn &Canon) is_named(n flatxml.Node) bool {
+	return cn.x.key(n) != none
 }
 
 // model_namespace is the namespace a model is in: the one most of its documents' roots are in,
