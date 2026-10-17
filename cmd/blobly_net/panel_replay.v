@@ -221,16 +221,16 @@ fn draw_replay(mut app App) {
 }
 
 // pending_replay_speed reads the speed Configure currently SHOWS — the buffered text —
-// parsed exactly as commit_cfg will parse it when Start folds the edits (spd > 0, else 1.0).
+// parsed exactly as commit_cfg will parse it when Start folds the edits, and with no buffer
+// (a project just opened) the file's rate as the runtime channel holds it (`usable_speed`).
 // The preview must read the pending state Start commits: proj lags the buffer while both
 // windows are open, and a mismatch typed but not yet applied was invisible right up until
 // Start refused the group for it (codex #136 r2).
 fn pending_replay_speed(app &App, ci int, fallback f64) f64 {
 	if ci < app.cfg_bufs.len {
-		spd := vgui.buf_str(app.cfg_bufs[ci].replay_speed_buf).f64()
-		return if spd > 0 { spd } else { 1.0 }
+		return project.replay_speed_of(vgui.buf_str(app.cfg_bufs[ci].replay_speed_buf))
 	}
-	return fallback
+	return player.usable_speed(fallback)
 }
 
 // ReplayGroupView is one recording's stopped-view group, precomputed OFF the frame loop: the

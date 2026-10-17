@@ -37,7 +37,10 @@ const hic_edges_ms = [20.0, 50.0, 200.0, 1000.0]!
 // runs at whatever rate the quantum gives.
 const probe_heap_every_ms = 200.0
 
-fn C.GC_get_gc_no() u32
+// No header the generated C includes declares it, so the prototype is asked for (gcc 14 refuses
+// an implicit declaration); `GC_word` is pointer-sized.
+@[c_extern]
+fn C.GC_get_gc_no() usize
 
 __global (
 	probe_active        bool
@@ -136,7 +139,7 @@ fn live_mb() u64 {
 // comptime guard so a `-gc none` build links, which a bare C declaration would not.
 fn gc_count() u32 {
 	$if gcboehm ? {
-		return C.GC_get_gc_no()
+		return u32(C.GC_get_gc_no())
 	}
 	return 0
 }

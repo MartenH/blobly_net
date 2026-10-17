@@ -16,6 +16,7 @@ import blobly.transport
 import os
 import yaml
 import blobly.doip
+import blobly.player
 
 // schema_version is the newest project-file format version this build understands. Bump it when
 // the `.yml` schema grows something an older build would not preserve. Files carry `version:`,
@@ -163,6 +164,14 @@ pub:
 	exclude []string
 	speed   f64 = 1.0
 	repeat  bool // yaml key `loop`
+}
+
+// replay_speed_of reads a replay speed typed as text: surrounding space is ignored (V3's `f64()`
+// reads ' 2' as 0), the number is `f64()`'s reading of the leading digits (`2x` is 2), and a
+// speed the player refuses (`player.speed_ok`) is 1, real time.
+pub fn replay_speed_of(text string) f64 {
+	spd := text.trim_space().f64()
+	return if player.speed_ok(spd) { spd } else { 1.0 }
 }
 
 // GenCfg configures one signal's value generator for a simulated ECU. `typ`

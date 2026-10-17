@@ -486,14 +486,8 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		loading:   true
 		// No clamp, unlike cfg_speed below -- a bool has no out-of-range spelling to coerce.
 		cfg_repeat: chans.len > 0 && chans[0].replay_loop
-		// clamped like new_player_over clamps its speed: a `speed: 0` in the file otherwise
-		// becomes a dead 0x button and a "restored on Stop/Start" promise that is false —
-		// Start restores the coerced 1.0, not the 0 (self-review of the Scan work)
-		cfg_speed: if chans.len > 0 && chans[0].replay_speed > 0 {
-			chans[0].replay_speed
-		} else {
-			1.0
-		}
+		// already `player.usable_speed`'s reading (app.v), the rate Start restores
+		cfg_speed: if chans.len > 0 { chans[0].replay_speed } else { 1.0 }
 	}
 	a.mu.lock()
 	a.replay_ctls[token] = ctl

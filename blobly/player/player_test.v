@@ -2,6 +2,7 @@ module player
 
 import blobly.canlog
 import blobly.transport
+import math
 
 // rec builds a tiny recording: frames at the given offsets (seconds), each
 // with its index as the CAN id so emissions are identifiable.
@@ -142,8 +143,14 @@ fn test_unsorted_input_is_sorted() {
 }
 
 fn test_speed_guard() {
-	p := new_player(rec([0.0]), -3.0, false)
-	assert p.speed == 1.0
+	// a project file's speed reaches the constructors unread: infinity, and a subnormal whose
+	// 1000 / speed overflows, would schedule every frame at once or never
+	for bad in [-3.0, 0.0, math.inf(1), 1e-320, 1e-305, min_speed / 2] {
+		mut p := new_player(rec([0.0]), bad, false)
+		assert p.speed == 1.0, '${bad}'
+		p.set_speed(bad, 0)
+		assert p.speed == 1.0, '${bad}'
+	}
 }
 
 // set_speed preserves the recording position in every state — the property the GUI's

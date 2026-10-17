@@ -70,6 +70,27 @@ fn free_listener() !(&net.TcpListener, int) {
 	})
 }
 
+// serve_udp answers on the server's UDP socket until it is closed. Stop it with `stop_udp`: a
+// thread blocked in a read keeps its socket open past close(), and on the next test's port
+// (the same first candidate) it answers that test's request with this test's entity.
+fn serve_udp(mut srv DoipServer) thread {
+	return spawn fn (mut s DoipServer) {
+		for {
+			s.serve_udp_once(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+}
+
+fn stop_udp(mut srv DoipServer, udp thread) {
+	srv.close()
+	udp.wait()
+}
+
 fn echo_handler(req []u8) []u8 {
 	return req.map(it + 1) // distinct from the request so we know it round-tripped
 }
@@ -135,16 +156,7 @@ fn test_client_server_roundtrip() {
 			}
 		}
 	}(mut srv)
-	spawn fn (mut s DoipServer) {
-		for {
-			s.serve_udp_once(300) or {
-				if s.stopping {
-					break
-				}
-				continue
-			}
-		}
-	}(mut srv)
+	udp := serve_udp(mut srv)
 	time.sleep(150 * time.millisecond)
 
 	// TCP: routing activation (in open_doip) + a diagnostic message round-trip.
@@ -283,7 +295,7 @@ fn test_client_server_roundtrip() {
 	assert bgot <= 0, 'server did not reject oversized payload length'
 	big.close() or {}
 
-	srv.close()
+	stop_udp(mut srv, udp)
 }
 
 // close() must tear down the in-progress accepted connection from another thread
@@ -397,25 +409,16 @@ fn test_discover() {
 		assert false, 'no bindable port in the band'
 		return
 	}
-	spawn fn (mut s DoipServer) {
-		for {
-			s.serve_udp_once(300) or {
-				if s.stopping {
-					break
-				}
-				continue
-			}
-		}
-	}(mut srv)
+	udp := serve_udp(mut srv)
 	time.sleep(150 * time.millisecond)
 	info := discover('127.0.0.1', dport, 1000) or {
-		srv.close()
+		stop_udp(mut srv, udp)
 		assert false, 'discover: ${err}'
 		return
 	}
 	assert info.vin == 'TESTVIN0000000099'
 	assert info.logical_address == 0x1234
-	srv.close()
+	stop_udp(mut srv, udp)
 }
 
 // identify() returns every answer to one request, each with the address a tester dials, and
@@ -428,23 +431,14 @@ fn test_identify_lists_the_answering_entity_with_its_dial_address() {
 		assert false, 'no bindable port in the band'
 		return
 	}
-	spawn fn (mut s DoipServer) {
-		for {
-			s.serve_udp_once(300) or {
-				if s.stopping {
-					break
-				}
-				continue
-			}
-		}
-	}(mut srv)
+	udp := serve_udp(mut srv)
 	time.sleep(150 * time.millisecond)
 	found := identify('127.0.0.1', dport, 400) or {
-		srv.close()
+		stop_udp(mut srv, udp)
 		assert false, 'identify: ${err}'
 		return
 	}
-	srv.close()
+	stop_udp(mut srv, udp)
 	assert found.len == 1
 	assert found[0].info.vin_text() == 'TESTVIN0000000042'
 	assert found[0].info.logical_address == 0x07A0
@@ -465,23 +459,14 @@ fn test_identify_resolves_a_hostname_to_its_own_family() {
 		eprintln('skip: no IPv6 loopback')
 		return
 	}
-	spawn fn (mut s DoipServer) {
-		for {
-			s.serve_udp_once(300) or {
-				if s.stopping {
-					break
-				}
-				continue
-			}
-		}
-	}(mut srv)
+	udp := serve_udp(mut srv)
 	time.sleep(150 * time.millisecond)
 	found := identify('ip6-localhost', dport, 400) or {
-		srv.close()
+		stop_udp(mut srv, udp)
 		assert false, 'identify: ${err}'
 		return
 	}
-	srv.close()
+	stop_udp(mut srv, udp)
 	assert found.len == 1
 	assert found[0].info.logical_address == 0x07A1
 }
@@ -496,27 +481,18 @@ fn test_identify_asks_every_resolved_address_in_one_window() {
 		assert false, 'no bindable port in the band'
 		return
 	}
-	spawn fn (mut s DoipServer) {
-		for {
-			s.serve_udp_once(300) or {
-				if s.stopping {
-					break
-				}
-				continue
-			}
-		}
-	}(mut srv)
+	udp := serve_udp(mut srv)
 	time.sleep(150 * time.millisecond)
 	mut addrs := net.resolve_addrs('127.0.0.2:${dport}', .ip, .udp) or { panic(err) }
 	addrs << net.resolve_addrs('127.0.0.1:${dport}', .ip, .udp) or { panic(err) }
 	t0 := time.ticks()
 	found := identify_addrs(addrs, 400) or {
-		srv.close()
+		stop_udp(mut srv, udp)
 		assert false, 'identify_addrs: ${err}'
 		return
 	}
 	took := time.ticks() - t0
-	srv.close()
+	stop_udp(mut srv, udp)
 	assert found.len == 1
 	assert found[0].info.logical_address == 0x07A2
 	assert took < 800, 'one window, not one per address: ${took} ms'

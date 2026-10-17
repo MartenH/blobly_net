@@ -88,7 +88,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   Boehm-scanned backing allocation instead of walking every element around every call
   (recursive rooting stays for pointerful *structs*). Their measurement on the repro: about
   2,000,000 ns → about 1 ns per call at a million elements.
-  **It is in our pin now**: `.v-version` moved to V3 (`e7bb21c`, which contains `f174e71`).
+  **It is in our pin now**: `.v-version` is a V3 commit after `f174e71`.
   Re-run the repro before relying on it; if it is clean, the `pump()` split in `cmd/restbus`
   stops being load-bearing — keep it anyway, it removed a duplicated transmit loop on its own
   merits.
@@ -304,11 +304,12 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   it. `ci.yml` and the setup-v action set **`V_MACOS_V3_NO_FALLBACK=1`** (read on every platform
   despite the name — vlang/v `cmd/v/v.v`); set it locally too when checking a V3 result. The
   migration to V3 (2026-10-05) met eleven V3 bugs, every one fixed upstream (vlang/v #29402,
-  #29403, #29456, #29458, #29460, #29461, #29489, #29502, #29503, #29504, #29506), and the pin is
-  the first master commit that holds them all. V3 changes worth knowing: `int` is **64-bit**
+  #29403, #29456, #29458, #29460, #29461, #29489, #29502, #29503, #29504, #29506), and every pin since
+  holds them all. V3 changes worth knowing: `int` is **64-bit**
   (a C callback or struct that means C's `int` must say `i32`, and so must a C `int*`: V3 copies
   a literal `&local` through a C int and back, but not a forwarded pointer, a local whose address
-  escapes, or an array, so `check_cmds.sh` refuses `&int` in a `fn C.` declaration), `json` is
+  escapes, or an array, so `check_cmds.sh` refuses `&int` in a `fn C.` declaration; through that copy V3 also folds a
+  later comparison of an immutable local as if nothing wrote it, vlang/v#30221), `json` is
   gone (`json2`), an Option's `or` block binds no `err`, and a project's `modules/` directory is
   no longer searched (the engine is `blobly/`, entry above).
   `V_C_ERROR_BUG_REPORT_DISABLED=1` stays: V3 still uploads a source excerpt on a C compilation
@@ -324,6 +325,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   directory it was BUILT in into the compiler as its root (`@VMODROOT`) and prefers it over where
   the executable sits, so the script rewrites that root to `C:/v-ct` in the generated C before
   compiling it — the asset works only unpacked there, which is where `windows.yml` puts it.
+  It builds the compiler with `-no-prealloc`: V3 builds a compiler on its bump arena by default,
+  and that arena's `v_realloc` copies the new size out of the old block, so at `075855f` the
+  Windows `v.exe` read off the end of its arena and died with an access violation (0xC0000005)
+  compiling `blobly/isotp/isotp_test.v` — deterministically, in the transform stage, while Linux
+  built the same source. Linux runs the same read; it has not been seen to fault there.
 - ⚪ **A colon-space inside a step `name:` invalidates the whole workflow.** YAML reads
   `name: … D: disk` as a nested mapping → "workflow file issue" / HTTP 422 on dispatch. Quote any
   step name containing `: `. (Bitten twice.)

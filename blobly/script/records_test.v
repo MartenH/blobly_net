@@ -6,9 +6,9 @@ import blobly.uds
 // The 0x19 03 / 04 / 06 helpers end to end: diag:snapshot_ids / snapshot / extended and
 // check.snapshot / check.extended against the native simulated server (uds.default_server, the
 // one cmd/script hosts on 0x7E0 / 0x7E8), on an in-process bus — a snapshot DID's size is learned
-// by reading it (0x22).
-fn serve_default(iface string, stop &bool) {
-	mut ch := isotp.open_software(iface, 0x7E8, 0x7E0, false) or { return }
+// by reading it (0x22). The channel is opened before the thread starts: opened inside it, the
+// script's first request could reach the bus before anything listened.
+fn serve_default(mut ch isotp.Channel, stop &bool) {
 	mut srv := uds.default_server()
 	for !*stop {
 		req := ch.recv(20) or { continue }
@@ -28,7 +28,8 @@ fn test_snapshot_and_extended_data_helpers() {
 	env.on_output = fn (s string) {}
 	defer { env.close() }
 	mut stop := false
-	t := spawn serve_default('inproc:RECS', &stop)
+	mut ch := isotp.open_software('inproc:RECS', 0x7E8, 0x7E0, false) or { panic(err) }
+	t := spawn serve_default(mut ch, &stop)
 	env.run_source('
 		local diag = uds.open("CAN1")
 				test("snapshots and extended data (0x19 03 / 04 / 06)", function()

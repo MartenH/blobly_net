@@ -62,25 +62,28 @@ d="$work/nostamp"; read -r VH VCH <<<"$(make_vdir "$d")"
 ok "both trees at the pins but NO stamp -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 d="$work/good"; read -r VH VCH <<<"$(make_vdir "$d")"
-printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+v_toolchain_want_stamp "$VH" "$VCH" > "$d/.blobly_built_from"
 ok "trees at the pins AND stamp names them -> no build" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" ""
+# a compiler built before the toolchain was built -prod names the pins and no flavour
+printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+ok "stamp from before the prod build -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 # Regression for round 4: the stamp is untracked, so a hand checkout leaves it behind claiming
 # a build of a tree that is no longer there.
 d="$work/vmoved"; read -r VH VCH <<<"$(make_vdir "$d")"
-printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+v_toolchain_want_stamp "$VH" "$VCH" > "$d/.blobly_built_from"
 tgit -C "$d" commit -q --allow-empty -m moved
 ok "stamp intact but V tree moved by hand -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 d="$work/vcmoved"; read -r VH VCH <<<"$(make_vdir "$d")"
-printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+v_toolchain_want_stamp "$VH" "$VCH" > "$d/.blobly_built_from"
 tgit -C "$d/vc" commit -q --allow-empty -m moved
 ok "stamp intact but vc tree moved by hand -> stale" "$(v_toolchain_build_reason "$d" "$VH" "$VCH")" "stale"
 
 # A pin bump must reach a bench that already built the OLD pins — the point of the stamp naming
 # both, rather than recording a bare "built once".
 d="$work/bumped"; read -r VH VCH <<<"$(make_vdir "$d")"
-printf '%s %s\n' "$VH" "$VCH" > "$d/.blobly_built_from"
+v_toolchain_want_stamp "$VH" "$VCH" > "$d/.blobly_built_from"
 ok "pins bumped under an existing build -> stale" "$(v_toolchain_build_reason "$d" "$VH" deadbeef)" "stale"
 
 # --- the install ------------------------------------------------------------------------------
@@ -94,12 +97,14 @@ exit 0
 SH
 chmod +x "$stub/git"
 
-printf '#!/bin/sh\nexit 0\n' > "$stub/make"; chmod +x "$stub/make"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$MAKELOG"\nexit 0\n' > "$stub/make"; chmod +x "$stub/make"
 d="$work/inst_ok"; mkdir -p "$d"; printf '#!/bin/sh\n' > "$d/v"; chmod +x "$d/v"
 GITLOG="$work/git_ok.log"; : > "$GITLOG"
+export MAKELOG="$work/make_ok.log"; : > "$MAKELOG"
 out=$(PATH="$stub:$PATH" GITLOG="$GITLOG" bash -c "set -euo pipefail; . scripts/v_toolchain.sh; v_toolchain_install '$d' AAA BBB; echo rc=\$?" 2>&1)
 ok "install: succeeds" "${out##*$'\n'}" "rc=0"
-ok "install: writes the stamp AFTER a successful make" "$(cat "$d/.blobly_built_from" 2>/dev/null || echo MISSING)" "AAA BBB"
+ok "install: writes the stamp AFTER a successful make" "$(cat "$d/.blobly_built_from" 2>/dev/null || echo MISSING)" "AAA BBB prod"
+ok "install: the compiler is built -prod" "$(grep -c 'local=1 prod=1' "$MAKELOG")" "1"
 
 # Round-4 finding: the installer must not rewrite a fork's or a mirror's remote, and it runs
 # against pre-existing checkouts whenever the stamp is missing, so this is not a rare path.
@@ -116,6 +121,12 @@ PATH="$stub:$PATH" GITLOG="$GITLOG" bash -c "set -euo pipefail; . scripts/v_tool
 rc=$?
 ok "install: a failing make fails the script" "$rc" "1"
 ok "install: no stamp survives a failed make" "$(cat "$d/.blobly_built_from" 2>/dev/null || echo MISSING)" "MISSING"
+
+# The same, run by hand WITHOUT `set -e`, as a pin bump asks: a failing step still ends the install.
+d="$work/inst_fail_noe"; mkdir -p "$d"; printf '#!/bin/sh\n' > "$d/v"; chmod +x "$d/v"
+out=$(PATH="$stub:$PATH" GITLOG="$GITLOG" bash -c ". scripts/v_toolchain.sh; v_toolchain_install '$d' AAA BBB; echo rc=\$?" 2>&1)
+ok "install without set -e: a failing make returns non-zero" "${out##*$'\n'}" "rc=1"
+ok "install without set -e: writes no stamp" "$(cat "$d/.blobly_built_from" 2>/dev/null || echo MISSING)" "MISSING"
 
 # ...and therefore the NEXT run rebuilds rather than trusting the stale binary. Every earlier
 # version of the predicate answered "nothing to do" here.

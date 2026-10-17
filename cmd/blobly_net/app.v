@@ -4,6 +4,7 @@ import os
 import sync
 import time
 import runtime
+import blobly.player
 import blobly.project
 import logfile
 import loadrule
@@ -1360,7 +1361,7 @@ fn (mut app App) rebuild_from_proj() {
 			replay_src:     if r := ch.replay { app.resolve_asset(r.source) } else { '' }
 			replay_bus:     if r := ch.replay { r.bus } else { '' }
 			replay_exclude: if r := ch.replay { r.exclude.clone() } else { []string{} }
-			replay_speed:   if r := ch.replay { r.speed } else { 1.0 }
+			replay_speed:   if r := ch.replay { player.usable_speed(r.speed) } else { 1.0 }
 			replay_loop:    if r := ch.replay { r.repeat } else { false }
 		}
 		for dbpath in ch.databases {

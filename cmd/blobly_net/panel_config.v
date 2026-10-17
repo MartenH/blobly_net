@@ -1172,14 +1172,13 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			nl := vgui.checkbox('##rl${i}', loopv)
 			if nl != loopv {
 				src := vgui.buf_str(app.cfg_bufs[i].replay_src_buf)
-				spd := vgui.buf_str(app.cfg_bufs[i].replay_speed_buf).f64()
 				// ...old for the same reason as commit_cfg: one click on a checkbox must not
 				// delete the keys this dialog cannot edit.
 				old := app.proj.channels[i].replay or { project.Replay{} }
 				app.proj.channels[i].replay = project.Replay{
 					...old
 					source: src
-					speed:  if spd > 0 { spd } else { 1.0 }
+					speed:  project.replay_speed_of(vgui.buf_str(app.cfg_bufs[i].replay_speed_buf))
 					repeat: nl
 				}
 				app.dirty = true
