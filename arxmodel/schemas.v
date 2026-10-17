@@ -98,8 +98,7 @@ pub fn find_schema(dir string, name string) (string, string) {
 	}
 	mut exact := ''
 	mut folded := ''
-	mut all := os.walk_ext(dir, '.xsd')
-	all << os.walk_ext(dir, '.XSD')
+	mut all := os.walk_ext(dir, '').filter(it.to_lower().ends_with('.xsd'))
 	all.sort()
 	for f in all {
 		fname := os.file_name(f)
@@ -146,6 +145,28 @@ pub fn compile_schemas(m &Model, dir string, opts SchemaOptions) Schemas {
 pub struct SchemaOptions {
 pub:
 	policy Policy = default_policy()
+}
+
+// files are the schema documents read for the uses: each found schema and every document it
+// imports (one that failed to compile is its own file alone), in the order read, a document
+// reached by several spellings once.
+pub fn (s &Schemas) files() []string {
+	mut out := []string{}
+	mut seen := map[string]bool{}
+	for u in s.uses {
+		if u.path == '' {
+			continue
+		}
+		read := if u.schema != unsafe { nil } { u.schema.files } else { [u.path] }
+		for f in read {
+			real := os.real_path(f)
+			if real !in seen {
+				seen[real] = true
+				out << f
+			}
+		}
+	}
+	return out
 }
 
 // declare_schemas lists the distinct schemas m's documents declare, and the documents that

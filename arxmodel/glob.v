@@ -27,12 +27,39 @@ pub:
 	abs bool
 }
 
-// compile_file_glob compiles a file glob.
+// compile_file_glob compiles a file glob. An absolute one is normalized as the absolute path it
+// is matched against is: `a/../b` is `b`, where a is a name and not a wildcard.
 pub fn compile_file_glob(glob string) FileGlob {
+	abs := os.is_abs_path(glob)
+	norm := glob.replace('\\', '/')
+	segs := norm.split('/').filter(it != '' && it != '.')
+	// the volume an absolute path is on (a drive, or a UNC share's server and share), which `..`
+	// never leaves: at the root it stays there, as the file system has it
+	mut volume := 0
+	$if windows {
+		if abs && segs.len > 0 {
+			if norm.starts_with('//') {
+				volume = if segs.len < 2 { segs.len } else { 2 }
+			} else if segs[0].len == 2 && segs[0][1] == `:` && segs[0][0].is_letter() {
+				volume = 1
+			}
+		}
+	}
+	mut pat := []string{cap: segs.len}
+	for seg in segs {
+		if abs && seg == '..' && pat.len >= volume && (pat.len == volume || (pat.last() != '..'
+			&& !pat.last().contains_any('*?'))) {
+			if pat.len > volume {
+				pat.delete_last()
+			}
+		} else {
+			pat << seg
+		}
+	}
 	return FileGlob{
 		src: glob
-		pat: glob.replace('\\', '/').split('/').filter(it != '' && it != '.')
-		abs: os.is_abs_path(glob)
+		pat: pat
+		abs: abs
 	}
 }
 

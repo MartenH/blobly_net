@@ -146,13 +146,15 @@ fn main() {
 	dbc_dst := if dbc_out != '' && dbc_out != '-' { canon(dbc_out) } else { '' }
 	toml_dst := if toml_out != '' && toml_out != '-' { canon(toml_out) } else { '' }
 	// every file the description is read from (candb.ArxmlInputs): the ARXML files, the model
-	// file, every @FILE list, the rules, policy and schema files
+	// file, every @FILE list, the rules, policy, configuration and schema files
 	inputs := candb.arxml_inputs(srcs) or {
 		eprintln('arxml2dbc: ${src}: ${err}')
 		exit(1)
 	}
 	mut src_reals := inputs.files.map(canon(it))
 	src_reals << inputs.deps.map(canon(it))
+	// and what only the read found: a schema imported from outside the schema directory
+	src_reals << a.report.rule_files.map(canon(it))
 	outs := [dbc_out, toml_out]
 	dsts := [dbc_dst, toml_dst]
 	for k, out in outs {

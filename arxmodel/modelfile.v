@@ -83,17 +83,24 @@ pub fn parse_model_file(text string, path string) !ModelFile {
 	}
 }
 
-// options are the options the model file opens with: its schema directory, else this machine's.
+// options are the options the model file opens with: its schema directory, else this machine's
+// (and the configuration file it was read from, if one).
 pub fn (mf ModelFile) options() !OpenOptions {
 	mut dir := mf.schema_dir
+	mut config := ''
 	if dir == '' && mf.rules == '' {
-		dir, _ = configured_schema_dir()!
+		mut from := ''
+		dir, from = configured_schema_dir()!
+		if dir != '' && from != schema_dir_env {
+			config = from
+		}
 	}
 	return OpenOptions{
 		exclude:    mf.exclude
 		schema_dir: dir
 		rules_file: mf.rules
 		policy:     mf.policy
+		config:     config
 	}
 }
 

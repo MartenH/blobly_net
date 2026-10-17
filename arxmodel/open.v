@@ -2,6 +2,7 @@ module arxmodel
 
 import flatxml
 import os
+import strings
 
 // Opened is a model opened for reading: its files merged into one view, and every referrable
 // element by its AUTOSAR path. It is what a program that reads a model, rather than checks it,
@@ -14,12 +15,16 @@ import os
 @[heap]
 pub struct Opened {
 pub mut:
-	model    &Model          = unsafe { nil }
-	view     &flatxml.Merged = unsafe { nil }
-	index    &PathIndex      = unsafe { nil }
-	rules    string    // what the files were merged by: a schema's name, a rules file, or the built-in rules
-	notes    []string  // what choosing the rules had to say (a rules file made for another release)
-	findings []Finding // what the merge found, with the policy's severities
+	model &Model          = unsafe { nil }
+	view  &flatxml.Merged = unsafe { nil }
+	index &PathIndex      = unsafe { nil }
+	rules string   // what the files were merged by: a schema's name, a rules file, or the built-in rules
+	notes []string // what choosing the rules had to say (a rules file made for another release)
+	// the files the rules were read from: the rules file; or the configuration file that named
+	// the schema directory (OpenOptions.config) and every schema document the files declare that
+	// was found, with what they import (inside the schema directory or not)
+	rule_files []string
+	findings   []Finding // what the merge found, with the policy's severities
 	// the elements one file describes more than once (a key repeated among siblings), merged
 	// into one as the identity rules merge any: `path: file:line, file:line`
 	repeated []string
@@ -35,6 +40,8 @@ pub:
 	schema_dir string   // where the schemas the files declare are; '' for none
 	rules_file string   // a rules file to merge by instead of a schema (`arxmodel rules --emit`)
 	policy     string   // `spec` (the default), `automat`, or a policy file
+	// the configuration file schema_dir was read from (`configured_schema_dir`); '' for none
+	config string
 }
 
 // Source is a document given as bytes, named by its path: for a caller that has read it already.
@@ -99,6 +106,7 @@ pub fn open_model(m &Model, opts OpenOptions) !&Opened {
 	mut name := ''
 	mut notes := []string{}
 	mut ty := &Typing(unsafe { nil })
+	mut rule_files := []string{}
 	if opts.rules_file != '' {
 		text := os.read_file(opts.rules_file) or { return error('${opts.rules_file}: ${err.msg()}') }
 		f, pv, fst := parse_rules_file(text) or { return error('${opts.rules_file}: ${err.msg()}') }
@@ -106,8 +114,13 @@ pub fn open_model(m &Model, opts OpenOptions) !&Opened {
 			return error('${opts.rules_file}: ${err.msg()}')
 		}
 		flat, st, name = f, fst, 'rules file ${os.file_name(opts.rules_file)} (${pv.schema})'
+		rule_files << opts.rules_file
 	} else if opts.schema_dir != '' {
 		sc := compile_schemas(m, opts.schema_dir, policy: p)
+		if opts.config != '' {
+			rule_files << opts.config
+		}
+		rule_files << sc.files()
 		why := 'merging by the schemas in ${opts.schema_dir}'
 		f, gname := governing_flat(sc) or { return error('${why}: ${err.msg()}') }
 		gov := governing_use(sc) or { return error('${why}: ${err.msg()}') }
@@ -129,14 +142,24 @@ pub fn open_model(m &Model, opts OpenOptions) !&Opened {
 		skip_references:   true
 	}
 	mut c := check_typed(m, flat, name, st, p, copts, ty)!
+	if opts.rules_file == '' && opts.schema_dir == '' {
+		nm := naming(flat.rules.local_ns, [m])
+		_, ignored := st.apply(m, copts)
+		mut ignore := ignored_identities(ignored, [m])
+		for a in ignored {
+			ignore[a] = true
+		}
+		c.findings << singles_differ(mut c.view, c.index, p, &nm, ignore)
+	}
 	c.filter(p, copts, m)
 	mut o := &Opened{
-		model:    m
-		view:     c.view
-		index:    c.index
-		rules:    name
-		notes:    notes
-		findings: c.findings
+		model:      m
+		view:       c.view
+		index:      c.index
+		rules:      name
+		notes:      notes
+		rule_files: rule_files
+		findings:   c.findings
 	}
 	// by the id the merge names a node by: its local name's, in the document's namespace
 	for k in c.index.nodes {
@@ -165,6 +188,145 @@ pub fn open_model(m &Model, opts OpenOptions) !&Opened {
 		}
 	}
 	return o
+}
+
+// singles_differ are what the built-in rules' merge cannot say. They match an unnamed element by
+// its place, each file's apart; so under a merged element, the children of one name and
+// attributes that each file gives once (a frame's FRAME-LENGTH) are one element of the model,
+// read from the first file, and content in which they differ is a finding, as the merge makes
+// one. Attributes the merge ignores (ignore: by name, and by the identity any document gives a
+// name ignored) are no part of either.
+fn singles_differ(mut v flatxml.Merged, index &PathIndex, p Policy, nm &Naming, ignore map[string]bool) []Finding {
+	mut out := []Finding{}
+	mut slots := map[voidptr]int{}
+	for i in 0 .. v.len() {
+		n := v.node(u32(i))
+		if n.fragment_count() < 2 {
+			continue
+		}
+		mut number := map[string]int{} // a group's identity -> its number, in the order met
+		mut groups := [][]flatxml.MNode{}
+		mut seen := map[u64]bool{} // group number << 32 | document number: a member of the group
+		mut repeated := []bool{}
+		for ch in n.children() {
+			if ch.keyed() || ch.fragment_count() != 1 {
+				continue
+			}
+			f := ch.fragment(0)
+			mut sb := strings.new_builder(32)
+			write_open(mut sb, f, nm, ignore)
+			id := sb.str()
+			gi := number[id] or {
+				number[id] = groups.len
+				groups << []flatxml.MNode{}
+				repeated << false
+				groups.len - 1
+			}
+			member := u64(gi) << 32 | u64(doc_number(mut slots, f.doc))
+			if member in seen {
+				repeated[gi] = true
+			}
+			seen[member] = true
+			groups[gi] << ch
+		}
+		for gi, g in groups {
+			if g.len < 2 || repeated[gi] {
+				continue
+			}
+			first := canonical(g[0].fragment(0), nm, ignore)
+			if g[1..].all(canonical(it.fragment(0), nm, ignore) == first) {
+				continue
+			}
+			what := nm.node_name(g[0].fragment(0))
+			out << Finding{
+				layer:    .merge
+				kind:     'value_differs'
+				what:     what
+				severity: p.merge_severity('value_differs', what, false)
+				path:     merged_path(g[0], index)
+				message:  '${what} differs between the files; the first is read'
+				at:       g.map(v.pos(it.fragment(0)))
+			}
+		}
+	}
+	return out
+}
+
+// doc_number is a document's number, given in the order asked.
+fn doc_number(mut slots map[voidptr]int, d &flatxml.Doc) int {
+	if k := slots[voidptr(d)] {
+		return k
+	}
+	slots[voidptr(d)] = slots.len
+	return slots.len - 1
+}
+
+// write_open writes an element's name and attributes, as the merge names them, the attributes
+// sorted (their order tells nothing apart) and those in ignore left out; each part
+// length-prefixed, so no text can pass for a part.
+fn write_open(mut sb strings.Builder, n flatxml.Node, nm &Naming, ignore map[string]bool) {
+	write_part(mut sb, nm.node_name(n))
+	lo, hi := n.doc.attr_range(n.i)
+	mut attrs := []string{}
+	for a := lo; a < hi; a++ {
+		if n.doc.is_ns_decl(a) {
+			continue
+		}
+		id := n.doc.tab.name(n.doc.attr_id(a))
+		if id in ignore || n.doc.attr_name(a) in ignore {
+			continue
+		}
+		mut ab := strings.new_builder(id.len + 16)
+		write_part(mut ab, id)
+		write_part(mut ab, n.doc.attr_value(a))
+		attrs << ab.str()
+	}
+	attrs.sort()
+	sb.write_string('${attrs.len}@')
+	for x in attrs {
+		sb.write_string(x)
+	}
+}
+
+fn write_part(mut sb strings.Builder, s string) {
+	sb.write_string('${s.len}:')
+	sb.write_string(s)
+}
+
+// canonical is an element's whole content, as one string: its name and attributes (write_open),
+// its own text in each slot among its children (the runs of one slot joined, then trimmed) and
+// its children so, in document order.
+fn canonical(n flatxml.Node, nm &Naming, ignore map[string]bool) string {
+	mut sb := strings.new_builder(64)
+	write_canonical(mut sb, n, nm, ignore)
+	return sb.str()
+}
+
+fn write_canonical(mut sb strings.Builder, n flatxml.Node, nm &Naming, ignore map[string]bool) {
+	sb.write_u8(`<`)
+	write_open(mut sb, n, nm, ignore)
+	runs := n.text_runs()
+	mut r := 0
+	mut slot := 0
+	mut kids := []flatxml.Node{}
+	for c in n.children() {
+		kids << c
+	}
+	for {
+		mut text := strings.new_builder(16)
+		for r < runs.len && runs[r].slot == slot {
+			text.write_string(runs[r].text)
+			r++
+		}
+		t := text.str()
+		write_part(mut sb, t.trim_space())
+		if slot >= kids.len {
+			break
+		}
+		write_canonical(mut sb, kids[slot], nm, ignore)
+		slot++
+	}
+	sb.write_u8(`>`)
 }
 
 // model_namespace is the namespace a model is in: the one most of its documents' roots are in,

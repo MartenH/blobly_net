@@ -58,18 +58,26 @@ pub fn new_content_hashes(ignore []string, nm Naming) &ContentHashes {
 // observe_ignored records, in every document of the models, the identity of each attribute
 // spelled by an ignored name: what the merge ignores in every contribution.
 pub fn (mut ch ContentHashes) observe_ignored(models []&Model) {
-	if ch.ignore.len == 0 {
-		return
+	ch.ignored = ignored_identities(ch.ignore, models)
+}
+
+// ignored_identities are the identities (expanded names) of the attributes any document of the
+// models spells by an ignored name: one ignored is ignored however another document spells it.
+fn ignored_identities(ignore []string, models []&Model) map[string]bool {
+	mut out := map[string]bool{}
+	if ignore.len == 0 {
+		return out
 	}
 	for m in models {
 		for d in m.set.docs {
 			for a in 0 .. d.attr_tag.len {
-				if d.attr_name(u32(a)) in ch.ignore {
-					ch.ignored[d.tab.name(d.attr_id(u32(a)))] = true
+				if d.attr_name(u32(a)) in ignore {
+					out[d.tab.name(d.attr_id(u32(a)))] = true
 				}
 			}
 		}
 	}
+	return out
 }
 
 fn mix(h u64, x u64) u64 {

@@ -2215,6 +2215,11 @@ fn test_a_model_file_reads_a_system_split_over_files() {
 	assert split.db.messages.str() == (whole.cluster('Bus')!).db.messages.str()
 	a := load_arxml_file(mf)!
 	assert a.report.merged_by == 'built-in identity rules'
+	// a file giving the frame another length: the first file's is read, and that is said
+	os.write_file(os.join_path(dir, 'net', 'more.arxml'), arxml_head + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail)!
+	b := load_arxml_file(mf)!
+	assert b.report.notes.any(it.contains('#FRAME-LENGTH') && it.contains('the first is read')), b.report.notes.str()
+	os.rm(os.join_path(dir, 'net', 'more.arxml'))!
 	// a description that names a schema directory with no schema in it is refused, not read
 	// by other rules
 	os.write_file(mf, 'paths = ["net/"]\nschema_dir = "net"\n')!
@@ -2304,4 +2309,56 @@ fn test_a_description_is_its_inputs() {
 		exclude: [os.join_path(dir, 'net', 'b.arxml')]
 	}, [])!
 	assert ex.files.map(os.file_name(it)) == ['a.arxml']
+}
+
+// a schema of the AUTOSAR namespace declaring its root alone: enough to govern a merge (what it
+// does not declare is each its own), and nothing taken from the AUTOSAR schema
+const lax_schema = '<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="http://autosar.org/schema/r4.0" elementFormDefault="qualified">IMPORT<xsd:element name="AUTOSAR"><xsd:complexType/></xsd:element></xsd:schema>'
+
+fn test_the_schemas_a_description_is_merged_by_are_its_inputs() {
+	dir := os.join_path(os.temp_dir(), 'candb_schema_inputs_${os.getpid()}')
+	os.mkdir_all(os.join_path(dir, 'net')) or { panic(err) }
+	os.mkdir_all(os.join_path(dir, 'xsd', 'r')) or { panic(err) }
+	os.mkdir_all(os.join_path(dir, 'other')) or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	head := arxml_head.replace('<AUTOSAR xmlns="http://autosar.org/schema/r4.0">', '<AUTOSAR xmlns="http://autosar.org/schema/r4.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://autosar.org/schema/r4.0 LAX.xsd">')
+	os.write_file(os.join_path(dir, 'net', 'a.arxml'), head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + arxml_tail)!
+	// the schema, its extension in another case, imports one from outside the schema directory
+	os.write_file(os.join_path(dir, 'xsd', 'r', 'LAX.Xsd'), lax_schema.replace('IMPORT', '<xsd:import namespace="urn:other" schemaLocation="../../other/O.xsd"/>'))!
+	other := os.join_path(dir, 'other', 'O.xsd')
+	o_text := '<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:other"/>'
+	os.write_file(other, o_text)!
+	mf := os.join_path(dir, 'sys.arxmodel.toml')
+	os.write_file(mf, 'paths = ["net/"]\nschema_dir = "xsd"\n')!
+	inputs := arxml_inputs([mf])!
+	assert inputs.deps.map(os.file_name(it)) == ['sys.arxmodel.toml', 'LAX.Xsd']
+	hits := arxml_cache_hit_count()
+	a, fp := load_arxml_content(mf)!
+	assert a.report.merged_by == 'schema LAX.xsd', a.report.merged_by
+	assert os.real_path(other) in a.report.rule_files.map(os.real_path(it))
+	assert a.clusters.len == 1
+	// the import is an input like the rest: unchanged, the cache answers; changed, it does not
+	assert arxml_fingerprint(mf)! == fp
+	_, again := load_arxml_content(mf)!
+	assert again == fp && arxml_cache_hit_count() == hits + 1
+	os.write_file(other, o_text + '\n')!
+	assert arxml_fingerprint(mf)! != fp
+	_, after := load_arxml_content(mf)!
+	assert after != fp && arxml_cache_hit_count() == hits + 1
+	// and the configuration naming the schema directory is one
+	cfg_home := os.join_path(dir, 'cfg')
+	os.mkdir_all(os.join_path(cfg_home, 'arxmodel'))!
+	cfg := os.join_path(cfg_home, 'arxmodel', 'config.toml')
+	os.write_file(cfg, 'schema_dir = "${os.join_path(dir, 'xsd')}"\n')!
+	old_env, old_xdg := os.getenv('ARXMODEL_SCHEMA_DIR'), os.getenv('XDG_CONFIG_HOME')
+	os.setenv('ARXMODEL_SCHEMA_DIR', '', true)
+	os.setenv('XDG_CONFIG_HOME', cfg_home, true)
+	defer {
+		os.setenv('ARXMODEL_SCHEMA_DIR', old_env, true)
+		os.setenv('XDG_CONFIG_HOME', old_xdg, true)
+	}
+	os.write_file(mf, 'paths = ["net/"]\n')!
+	assert arxml_inputs([mf])!.deps.map(os.file_name(it)) == ['sys.arxmodel.toml', 'config.toml', 'LAX.Xsd']
 }

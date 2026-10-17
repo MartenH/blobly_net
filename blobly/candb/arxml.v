@@ -193,6 +193,9 @@ pub mut:
 	notes      []string // things extracted PARTIALLY, one line each
 	schema     string // the XSD the file declares (AUTOSAR_4-2-2, AUTOSAR_00046), or 'unstated'
 	merged_by  string // what the files were merged by: a schema, a rules file, or the built-in rules
+	// the files the merge rules were read from (arxmodel's Opened.rule_files): the rules file, or
+	// the configuration naming the schema directory and every schema read, imports included
+	rule_files []string
 }
 
 // lines renders the findings for a terminal or a log, one line each.
@@ -464,7 +467,10 @@ fn (mut r ArxmlReader) name_clusters(clusters []ArxmlCluster) []ArxmlCluster {
 // --- the per-file parse cache ---------------------------------------------------------------
 struct ArxmlCached {
 	sha string
-	a   Arxml
+	// the files the merge rules were read from that the inputs do not name (a schema imported
+	// from outside the schema directory), each `real_path=sha256`, part of sha
+	extra []string
+	a     Arxml
 	err string // a parse that FAILED for these bytes: remembered, so a broken file attached to a project is not reparsed on every rebuild (round 29)
 }
 
@@ -503,7 +509,7 @@ pub fn load_arxml_file(path string) !Arxml {
 // key a caller compares to tell whether the description changed since (the import dialog).
 pub fn load_arxml_content(path string) !(Arxml, string) {
 	inputs := arxml_inputs([path])!
-	a, fp := load_inputs(inputs)!
+	a, fp, _ := load_inputs(inputs)!
 	return a, fp
 }
 
@@ -517,8 +523,8 @@ pub fn arxml_fingerprint(path string) !string {
 // the files it describes merged by its schema, or an input set of ARXML files.
 pub fn load_arxml_inputs(paths []string) !(Arxml, ArxmlSet) {
 	inputs := arxml_inputs(paths)!
-	a, _ := load_inputs(inputs)!
-	return a, inputs.set()!
+	a, _, set := load_inputs(inputs)!
+	return a, set
 }
 
 // ArxmlSet is the files one system description was read from, in the order read, and the
@@ -575,20 +581,16 @@ fn inputs_of(paths []string, opts arxmodel.OpenOptions, deps0 []string) !ArxmlIn
 	}
 	mut deps := deps0.clone()
 	deps << found.lists
-	for f in [opts.rules_file, opts.policy] {
+	for f in [opts.rules_file, opts.policy, opts.config] {
 		if f != '' && os.is_file(f) {
 			deps << f
 		}
 	}
 	if opts.schema_dir != '' && os.is_dir(opts.schema_dir) {
-		// every schema below the directory, its extension in any case (a schema it imports from
-		// elsewhere is not followed: put it in the directory)
-		mut xsds := []string{}
-		os.walk(opts.schema_dir, fn [mut xsds] (f string) {
-			if f.to_lower().ends_with('.xsd') {
-				xsds << f
-			}
-		})
+		// every schema below the directory, its extension in any case: which one is found
+		// depends on all of them. One imported from elsewhere is known only once read (the
+		// cache's `extra`, the report's rule_files)
+		mut xsds := os.walk_ext(opts.schema_dir, '').filter(it.to_lower().ends_with('.xsd'))
 		xsds.sort()
 		deps << xsds
 	}
@@ -600,51 +602,106 @@ fn inputs_of(paths []string, opts arxmodel.OpenOptions, deps0 []string) !ArxmlIn
 	}
 }
 
-// fingerprint is a SHA-256 over every input's path and content, in order: a change to any file
-// the description is read from is a change to the description.
-pub fn (i ArxmlInputs) fingerprint() !string {
-	mut parts := []string{}
-	for f in i.files {
-		parts << '${os.real_path(f)}=${sha256.sum(os.read_bytes(f)!).hex()}'
-	}
-	for f in i.deps {
-		parts << '+${os.real_path(f)}=${sha256.sum(os.read_bytes(f)!).hex()}'
-	}
-	parts << 'rules=${i.opts.schema_dir};${i.opts.rules_file};${i.opts.policy}'
-	return sha256.hexhash(parts.join('\n'))
+// ArxmlSnapshot is the inputs read once: the ARXML files' bytes, the one read that is hashed,
+// parsed and named in a provenance line, so a file rewritten meanwhile cannot be cached, or
+// stamped, under another content than the one read.
+struct ArxmlSnapshot {
+	srcs []arxmodel.Source
+	set  ArxmlSet
+	key  string // the cache key: every input's real path
+	base string // the fingerprint of the inputs, without what only a read finds (`extra`)
 }
 
-// set is the ARXML files and each one's SHA-256, for a provenance line.
-pub fn (i ArxmlInputs) set() !ArxmlSet {
-	return ArxmlSet{
-		files:  i.files
-		sha256: i.files.map(sha256.sum(os.read_bytes(it)!).hex())
+fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
+	mut parts := []string{}
+	mut srcs := []arxmodel.Source{cap: i.files.len}
+	mut shas := []string{cap: i.files.len}
+	mut reals := []string{cap: i.files.len + i.deps.len}
+	for f in i.files {
+		data := os.read_bytes(f)!
+		sha := sha256.sum(data).hex()
+		real := os.real_path(f)
+		srcs << arxmodel.Source{
+			path: f
+			data: data
+		}
+		shas << sha
+		reals << real
+		parts << '${real}=${sha}'
 	}
+	for f in i.deps {
+		real := os.real_path(f)
+		reals << real
+		parts << '+${real}=${sha256.sum(os.read_bytes(f)!).hex()}'
+	}
+	parts << 'rules=${i.opts.schema_dir};${i.opts.rules_file};${i.opts.policy}'
+	return ArxmlSnapshot{
+		srcs: srcs
+		set:  ArxmlSet{
+			files:  i.files
+			sha256: shas
+		}
+		key:  reals.join('\n')
+		base: sha256.hexhash(parts.join('\n'))
+	}
+}
+
+// with_extra is a fingerprint with the content of the files only a read found: `real=sha` each,
+// as recorded; its current content where reread.
+fn with_extra(base string, extra []string) string {
+	return if extra.len == 0 { base } else { sha256.hexhash(base + '\n' + extra.join('\n')) }
+}
+
+// extra_now is each extra file as it is now: `real=sha`, or `real=` for one that cannot be read.
+fn extra_now(extra []string) []string {
+	return extra.map(fn (e string) string {
+		real := e.all_before_last('=')
+		data := os.read_bytes(real) or { return '${real}=' }
+		return '${real}=${sha256.sum(data).hex()}'
+	})
+}
+
+// fingerprint is a SHA-256 over every input's path and content, in order: a change to any file
+// the description is read from is a change to the description — a schema imported from outside
+// the schema directory included, once a read has found it.
+pub fn (i ArxmlInputs) fingerprint() !string {
+	snap := i.snapshot()!
+	arxml_cache_mu.lock()
+	extra := if c := arxml_cache[snap.key] { c.extra } else { []string{} }
+	arxml_cache_mu.unlock()
+	return with_extra(snap.base, extra_now(extra))
 }
 
 // load_arxml_set reads the system description the input set at paths makes, merged by opts.
 pub fn load_arxml_set(paths []string, opts arxmodel.OpenOptions) !(Arxml, ArxmlSet) {
 	inputs := inputs_of(paths, opts, [])!
-	a, _ := load_inputs(inputs)!
-	return a, inputs.set()!
+	a, _, set := load_inputs(inputs)!
+	return a, set
 }
 
 // load_inputs reads a description from its inputs, once per content of all of them (the cache:
 // a real file is seconds and hundreds of MB to parse, and a project opens each channel's
-// databases several times per Start), and returns the read and its fingerprint.
-fn load_inputs(inputs ArxmlInputs) !(Arxml, string) {
-	fp := inputs.fingerprint()!
-	key := inputs.files.map(os.real_path(it)).join('\n') + '\n' + inputs.deps.map(os.real_path(it)).join('\n')
+// databases several times per Start), and returns the read, its fingerprint and the files read.
+fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
+	snap := inputs.snapshot()!
+	key := snap.key
 	for {
 		arxml_cache_mu.lock()
 		if c := arxml_cache[key] {
-			if c.sha == fp {
-				arxml_cache_hits++
-				arxml_cache_mu.unlock()
-				if c.err != '' {
-					return error(c.err)
+			// rereading the extra files outside the lock: they are few, and a schema is not small
+			extra := c.extra
+			arxml_cache_mu.unlock()
+			fp := with_extra(snap.base, extra_now(extra))
+			arxml_cache_mu.lock()
+			if c2 := arxml_cache[key] {
+				if c2.sha == fp {
+					arxml_cache_hits++
+					arxml_cache_mu.unlock()
+					if c2.err != '' {
+						return error(c2.err)
+					}
+					return with_set_notes(c2.a, inputs.warnings), fp, snap.set
 				}
-				return with_set_notes(c.a, inputs.warnings), fp
 			}
 		}
 		if key !in arxml_cache_inflight {
@@ -661,31 +718,37 @@ fn load_inputs(inputs ArxmlInputs) !(Arxml, string) {
 		arxml_cache_inflight.delete(key)
 		arxml_cache_mu.unlock()
 	}
-	mut srcs := []arxmodel.Source{cap: inputs.files.len}
-	for f in inputs.files {
-		srcs << arxmodel.Source{
-			path: f
-			data: os.read_bytes(f)!
-		}
-	}
-	a := read_arxml(srcs, inputs.opts) or {
+	a := read_arxml(snap.srcs, inputs.opts) or {
 		// remembered under the same inputs and content, so repaired bytes retry and the same
 		// broken bytes do not cost seconds and hundreds of MB per rebuild
 		arxml_cache_mu.lock()
 		arxml_cache[key] = ArxmlCached{
-			sha: fp
+			sha: snap.base
 			err: err.msg()
 		}
 		arxml_cache_mu.unlock()
 		return err
 	}
+	// the rule files the inputs do not name are inputs too, found by this read
+	named := key.split('\n')
+	mut outside := []string{}
+	for f in a.report.rule_files {
+		real := os.real_path(f)
+		if real !in named && real !in outside {
+			outside << real
+		}
+	}
+	outside.sort()
+	extra := extra_now(outside.map('${it}='))
+	fp := with_extra(snap.base, extra)
 	arxml_cache_mu.lock()
 	arxml_cache[key] = ArxmlCached{
-		sha: fp
-		a:   a
+		sha:   fp
+		extra: extra
+		a:     a
 	}
 	arxml_cache_mu.unlock()
-	return with_set_notes(a, inputs.warnings), fp
+	return with_set_notes(a, inputs.warnings), fp, snap.set
 }
 
 // with_set_notes is a read with what its input set said (a glob or a directory that matched no
@@ -752,6 +815,7 @@ pub fn read_arxml(srcs []arxmodel.Source, opts arxmodel.OpenOptions) !Arxml {
 		o: o
 	}
 	r.report.merged_by = o.rules
+	r.report.rule_files = o.rule_files.clone()
 	for n in o.notes {
 		r.report.notes << n
 	}
