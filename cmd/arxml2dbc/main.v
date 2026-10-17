@@ -96,7 +96,14 @@ fn main() {
 		exit(2)
 	}
 	src := srcs.join(' ')
-	a, set := candb.load_arxml_inputs(srcs) or {
+	// the inputs expanded ONCE: the read is of exactly these, and they are what the overwrite
+	// guard below protects (expanded again after the read, a list edited meanwhile could drop
+	// the very file read)
+	inputs := candb.arxml_inputs(srcs) or {
+		eprintln('arxml2dbc: ${src}: ${err}')
+		exit(1)
+	}
+	a, set := candb.load_arxml_from(inputs) or {
 		eprintln('arxml2dbc: ${src}: ${err}')
 		exit(1)
 	}
@@ -147,14 +154,15 @@ fn main() {
 	toml_dst := if toml_out != '' && toml_out != '-' { canon(toml_out) } else { '' }
 	// every file the description is read from (candb.ArxmlInputs): the ARXML files, the model
 	// file, every @FILE list, the rules, policy, configuration and schema files
-	inputs := candb.arxml_inputs(srcs) or {
-		eprintln('arxml2dbc: ${src}: ${err}')
-		exit(1)
-	}
 	mut src_reals := inputs.files.map(canon(it))
 	src_reals << inputs.deps.map(canon(it))
 	// and what only the read found: a schema imported from outside the schema directory
 	src_reals << a.report.rule_files.map(canon(it))
+	// and what they name now, should a list have changed since
+	if now := candb.arxml_inputs(srcs) {
+		src_reals << now.files.map(canon(it))
+		src_reals << now.deps.map(canon(it))
+	}
 	outs := [dbc_out, toml_out]
 	dsts := [dbc_dst, toml_dst]
 	for k, out in outs {

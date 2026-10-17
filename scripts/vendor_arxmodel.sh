@@ -27,11 +27,21 @@ if [ -d "$src" ]; then
 fi
 git -C "$work" fetch -q --depth=1 "$src" "$commit"
 full=$(git -C "$work" rev-parse FETCH_HEAD)
-git -C "$work" checkout -q FETCH_HEAD -- arxmodel flatxml
+git -C "$work" checkout -q FETCH_HEAD -- arxmodel flatxml LICENSE
+# flatxml's licence from flatxml itself, at the commit arxmodel vendors: arxmodel carries its
+# library folder and not the licence beside it, and the notice must travel with the copy
+fx_commit=$(awk '$1 == "flatxml" {print $2}' "$work/flatxml/VENDORED")
+fx_src=$(awk '$1 == "source" {print $2}' "$work/flatxml/VENDORED")
+fx=$work/fx
+git init -q "$fx"
+git -C "$fx" fetch -q --depth=1 "$fx_src" "$fx_commit"
+git -C "$fx" checkout -q FETCH_HEAD -- LICENSE
 find "$work/arxmodel" "$work/flatxml" -name '*_test.v' -delete
 rm -rf "$root/arxmodel" "$root/flatxml"
 cp -R "$work/arxmodel" "$root/arxmodel"
 cp -R "$work/flatxml" "$root/flatxml"
+cp "$work/LICENSE" "$root/arxmodel/LICENSE"
+cp "$fx/LICENSE" "$root/flatxml/LICENSE"
 printf 'arxmodel %s\nsource %s\nThe library folder at that commit, without its tests. Do not edit; re-vendor.\n' \
 	"$full" "$src" > "$root/arxmodel/VENDORED"
 echo "vendored arxmodel ${full} ($(head -1 "$root/flatxml/VENDORED"))"

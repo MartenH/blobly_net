@@ -43,6 +43,9 @@ pub:
 	policy     string   // `spec` (the default), `automat`, or a policy file
 	// the configuration file schema_dir was read from (`configured_schema_dir`); '' for none
 	config string
+	// for open_sources: the directories the documents came from (find_arxml's bases), which a
+	// policy filter's relative file glob is read from, as `open` reads it
+	roots []string
 }
 
 // Source is a document given as bytes, named by its path: for a caller that has read it already.
@@ -88,6 +91,7 @@ pub fn open_sources(srcs []Source, opts OpenOptions) !&Opened {
 		set:   set
 		files: files
 		bytes: bytes
+		bases: opts.roots.clone()
 	}
 	return open_model(m, opts) or {
 		m.free()

@@ -2219,6 +2219,15 @@ fn test_a_model_file_reads_a_system_split_over_files() {
 	os.write_file(os.join_path(dir, 'net', 'more.arxml'), arxml_head + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail)!
 	b := load_arxml_file(mf)!
 	assert b.report.notes.any(it.contains('#FRAME-LENGTH') && it.contains('the first is read')), b.report.notes.str()
+	// a policy filter by a file relative to where the files came from applies, as arxmodel's own
+	// open applies it
+	policy := os.read_file(os.join_path(@VMODROOT, 'arxmodel', 'policy.toml'))! +
+		'\n[[filter]]\nmatch = "merge.value_differs"\nfile = "more.arxml"\nseverity = "ignore"\nreason = "a test"\n'
+	os.write_file(os.join_path(dir, 'p.toml'), policy)!
+	os.write_file(mf, 'paths = ["net/"]\npolicy = "p.toml"\n')!
+	filtered := load_arxml_file(mf)!
+	assert !filtered.report.notes.any(it.contains('#FRAME-LENGTH')), filtered.report.notes.str()
+	os.write_file(mf, 'paths = ["net/"]\n')!
 	os.rm(os.join_path(dir, 'net', 'more.arxml'))!
 	// a description that names a schema directory with no schema in it is refused, not read
 	// by other rules
@@ -2347,6 +2356,26 @@ fn test_the_schemas_a_description_is_merged_by_are_its_inputs() {
 	assert arxml_fingerprint(mf)! != fp
 	_, after := load_arxml_content(mf)!
 	assert after != fp && arxml_cache_hit_count() == hits + 1
+	// a read that fails on a broken import still knows it: repaired, the read is retried
+	os.write_file(other, '<broken')!
+	if _, _ := load_arxml_content(mf) {
+		assert false, 'read with its import broken'
+	}
+	os.write_file(other, o_text)!
+	restored, _ := load_arxml_content(mf)!
+	assert restored.clusters.len == 1
+	// an import reached through a link is followed again: retargeted, it is another input
+	$if !windows {
+		target := os.join_path(dir, 'other', 'O2.xsd')
+		os.write_file(target, o_text + '<!-- another -->')!
+		os.rm(other)!
+		os.write_file(os.join_path(dir, 'other', 'O1.xsd'), o_text + '<!-- one -->')!
+		os.symlink(os.join_path(dir, 'other', 'O1.xsd'), other)!
+		_, linked := load_arxml_content(mf)!
+		os.rm(other)!
+		os.symlink(target, other)!
+		assert arxml_fingerprint(mf)! != linked
+	}
 	// and the configuration naming the schema directory is one
 	cfg_home := os.join_path(dir, 'cfg')
 	os.mkdir_all(os.join_path(cfg_home, 'arxmodel'))!

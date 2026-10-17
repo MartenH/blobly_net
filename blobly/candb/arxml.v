@@ -468,7 +468,8 @@ fn (mut r ArxmlReader) name_clusters(clusters []ArxmlCluster) []ArxmlCluster {
 struct ArxmlCached {
 	sha string
 	// the files the merge rules were read from that the inputs do not name (a schema imported
-	// from outside the schema directory), each `real_path=sha256`, part of sha
+	// from outside the schema directory), each `path<US>sha256` by the path the read went
+	// through (a link retargeted is followed again), part of sha
 	extra []string
 	a     Arxml
 	err string // a parse that FAILED for these bytes: remembered, so a broken file attached to a project is not reparsed on every rebuild (round 29)
@@ -522,7 +523,12 @@ pub fn arxml_fingerprint(path string) !string {
 // load_arxml_inputs reads the system description a command line names: one model file, read as
 // the files it describes merged by its schema, or an input set of ARXML files.
 pub fn load_arxml_inputs(paths []string) !(Arxml, ArxmlSet) {
-	inputs := arxml_inputs(paths)!
+	return load_arxml_from(arxml_inputs(paths)!)
+}
+
+// load_arxml_from reads a system description from inputs already expanded: for a caller that
+// must know exactly which files the read was of (arxml2dbc, which refuses to overwrite them).
+pub fn load_arxml_from(inputs ArxmlInputs) !(Arxml, ArxmlSet) {
 	a, _, set := load_inputs(inputs)!
 	return a, set
 }
@@ -597,7 +603,12 @@ fn inputs_of(paths []string, opts arxmodel.OpenOptions, deps0 []string) !ArxmlIn
 	return ArxmlInputs{
 		files:    found.files
 		deps:     deps
-		opts:     opts
+		// the read is of bytes (one read, ArxmlSnapshot): where they came from is what a policy
+		// filter's relative file glob is read from
+		opts:     arxmodel.OpenOptions{
+			...opts
+			roots: found.bases
+		}
 		warnings: found.warnings
 	}
 }
@@ -646,18 +657,22 @@ fn (i ArxmlInputs) snapshot() !ArxmlSnapshot {
 	}
 }
 
-// with_extra is a fingerprint with the content of the files only a read found: `real=sha` each,
-// as recorded; its current content where reread.
+// with_extra is a fingerprint with the content of the files only a read found: `path<US>sha`
+// each (extra_sep), as recorded; its current content where reread.
 fn with_extra(base string, extra []string) string {
 	return if extra.len == 0 { base } else { sha256.hexhash(base + '\n' + extra.join('\n')) }
 }
 
-// extra_now is each extra file as it is now: `real=sha`, or `real=` for one that cannot be read.
+// extra_sep separates an extra file's path from its hash: a byte no path holds.
+const extra_sep = '\x1f'
+
+// extra_now is each extra file as it is now: `path<US>sha`, an empty sha for one that cannot be
+// read.
 fn extra_now(extra []string) []string {
 	return extra.map(fn (e string) string {
-		real := e.all_before_last('=')
-		data := os.read_bytes(real) or { return '${real}=' }
-		return '${real}=${sha256.sum(data).hex()}'
+		path := e.all_before_last(extra_sep)
+		data := os.read_bytes(path) or { return path + extra_sep }
+		return path + extra_sep + sha256.sum(data).hex()
 	})
 }
 
@@ -720,26 +735,34 @@ fn load_inputs(inputs ArxmlInputs) !(Arxml, string, ArxmlSet) {
 	}
 	a := read_arxml(snap.srcs, inputs.opts) or {
 		// remembered under the same inputs and content, so repaired bytes retry and the same
-		// broken bytes do not cost seconds and hundreds of MB per rebuild
+		// broken bytes do not cost seconds and hundreds of MB per rebuild — the content of the
+		// files an earlier read found included, so restoring one of those retries too
+		arxml_cache_mu.lock()
+		known := if c := arxml_cache[key] { c.extra } else { []string{} }
+		arxml_cache_mu.unlock()
+		extra := extra_now(known)
 		arxml_cache_mu.lock()
 		arxml_cache[key] = ArxmlCached{
-			sha: snap.base
-			err: err.msg()
+			sha:   with_extra(snap.base, extra)
+			extra: extra
+			err:   err.msg()
 		}
 		arxml_cache_mu.unlock()
 		return err
 	}
 	// the rule files the inputs do not name are inputs too, found by this read
 	named := key.split('\n')
+	mut seen := map[string]bool{}
 	mut outside := []string{}
 	for f in a.report.rule_files {
 		real := os.real_path(f)
-		if real !in named && real !in outside {
-			outside << real
+		if real !in named && real !in seen {
+			seen[real] = true
+			outside << os.abs_path(f)
 		}
 	}
 	outside.sort()
-	extra := extra_now(outside.map('${it}='))
+	extra := extra_now(outside.map(it + extra_sep))
 	fp := with_extra(snap.base, extra)
 	arxml_cache_mu.lock()
 	arxml_cache[key] = ArxmlCached{
