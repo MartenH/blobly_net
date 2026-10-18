@@ -28,15 +28,16 @@ pub mut:
 // physical request (waiting up to `wait_ms`), handling any functional ones queued meanwhile
 // first. Functional requests therefore go before a physical one that arrived after them —
 // except one that arrives while a multi-frame physical request is being reassembled, which
-// no ordering between two subscriptions can place. `wait_ms` is also that reassembly's whole
-// deadline (the software channel gives a PDU one), so it is never shortened here.
+// no ordering between two subscriptions can place. A multi-frame request that `wait_ms` cuts
+// short is kept by the channel and completed by the next step (#467).
 //
-// A physical receive that fails for any reason but silence is returned, so a loop whose bus has
-// failed can back off (and reopen) instead of spinning on an error that comes back at once.
+// A physical receive that fails for any reason but silence or that cut-short transfer is
+// returned, so a loop whose bus has failed can back off (and reopen) instead of spinning on an
+// error that comes back at once.
 pub fn (mut s Server) serve_step(mut l NodeLink, wait_ms int) ! {
 	s.serve_functional(mut l)
 	req := l.phys.recv(wait_ms) or {
-		if is_silence(err.msg()) {
+		if is_silence(err.msg()) || err.msg() in [isotp.stall_note, isotp.ncr_note] {
 			return
 		}
 		return err
