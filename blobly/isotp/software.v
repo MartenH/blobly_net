@@ -52,6 +52,16 @@ mut:
 	// the caller read a reply to, and then a segmented send whose drain discarded a LATER reply,
 	// which is exactly what the flag exists to avoid.
 	fc_dirty bool
+	// A transfer whose First Frame arrived but whose Consecutive Frames had not all arrived when
+	// a recv's deadline ended. It is KEPT for the next recv, as the kernel channel goes on
+	// reassembling behind a read that timed out: a server polling recv(50) otherwise drops every
+	// multi-frame request whose frames straddle one poll's end (#467). Dropped when its peer has
+	// been silent for N_Cr (`cr_timeout_ms`), on any framing error, and when a Single or First
+	// Frame arrives in its place (the peer moved on).
+	partial       []u8
+	partial_total int // 0: no transfer in progress
+	partial_sn    u8
+	partial_at    u64 // sys_mono_now of its last frame
 pub mut:
 	// How long ONE transfer may spend BLOCKED ON THE PEER, in milliseconds
 	// (`fc_total_wait_ms` for the reasoning and for why our own STmin pacing is not counted).
@@ -371,6 +381,8 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	// ONE DEADLINE FOR THE WHOLE PDU. Each Consecutive Frame used to get the full timeout afresh,
 	// so a peer stalling just under it between frames made request(..., 2000) wait many times
 	// two seconds, where the kernel channel bounds the reassembled PDU (codex round 3 on #225).
+	// The deadline bounds the CALLER'S wait, not the transfer: one it cuts short is kept for the
+	// next recv (`partial`), as the kernel goes on reassembling behind a read that timed out.
 	// Negative is "forever", as everywhere else.
 	deadline := time.ticks() + i64(timeout_ms)
 	c.scanned = 0
@@ -401,6 +413,17 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		first = c.rx_raw(rem) or { return error(orphan_note(err.msg(), orphan_fc, orphan_pci)) }
 		if first.len < 1 {
 			return error('ISO-TP: empty frame')
+		}
+		if c.partial_total > 0 {
+			if time.sys_mono_now() - c.partial_at > u64(cr_timeout_ms) * 1_000_000 {
+				c.drop_partial() // N_Cr passed: the frame below is judged with no transfer open
+			} else if (first[0] & 0xF0) == 0x20 {
+				return c.reassemble(first, timeout_ms, deadline)
+			} else if (first[0] & 0xF0) != 0x30 {
+				// the peer moved on: this frame starts its next message. An orphan Flow Control
+				// (0x3x) says nothing about the peer's transfer and is skipped below, keeping it.
+				c.drop_partial()
+			}
 		}
 		// A CONSECUTIVE FRAME WITH NO TRANSFER IN PROGRESS IS A STALE TAIL, not a message: the
 		// rest of a transfer this channel abandoned on its deadline, still arriving from a peer
@@ -446,65 +469,88 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			// Frame that never comes (codex round 7 on #225).
 			return error('ISO-TP FF declares ${total} bytes, which must be a Single Frame')
 		}
-		mut out := []u8{cap: total}
-		out << first[2..]
-		c.tx([u8(0x30), 0, 0])! // Flow Control: CTS, block size 0, STmin 0
-		// Collect Consecutive Frames, validating the 4-bit sequence number. A gap (dropped frame)
-		// or a non-CF (the *next* message's FF arriving because this transfer lost a frame) is a
-		// clean error rather than silently absorbing it — which used to corrupt this block AND eat
-		// the next block's First Frame, surfacing later as a spurious "unexpected PCI" on the next
-		// recv(). The caller re-issues the transfer; a hard error beats silent misassembly.
-		mut sn := u8(1)
-		for out.len < total {
+		c.partial = first[2..].clone()
+		c.partial_total = total
+		c.partial_sn = 1
+		c.partial_at = time.sys_mono_now()
+		c.tx([u8(0x30), 0, 0]) or {
+			c.drop_partial()
+			return err
+		} // Flow Control: CTS, block size 0, STmin 0
+		return c.reassemble([]u8{}, timeout_ms, deadline)
+	}
+	return error('ISO-TP: unexpected PCI 0x${first[0]:02X}')
+}
+
+// reassemble collects the Consecutive Frames of the transfer in `partial`, starting with `cf`
+// when the caller already read one. The 4-bit sequence number is validated: a gap (a dropped
+// frame) or a non-CF (the NEXT message's First Frame arriving because this transfer lost a
+// frame) is a clean error rather than silently absorbing it, which used to corrupt this block
+// AND eat the next block's First Frame. A deadline ending the wait is not an error of the
+// transfer: it is kept for the next recv (see `partial`), and the caller hears `stall_note`.
+fn (mut c SoftChannel) reassemble(cf_in []u8, timeout_ms int, deadline i64) ![]u8 {
+	mut pending := cf_in
+	for c.partial.len < c.partial_total {
+		mut cf := pending
+		pending = []u8{}
+		if cf.len == 0 {
 			mut rem := timeout_ms
 			if timeout_ms > 0 {
 				rem = int(deadline - time.ticks())
 				if rem <= 0 {
-					// No flush: a flush waits a quiet window per frame and a slow peer renews it
-					// indefinitely past the deadline (codex round 5 on #225). The stale tail is
-					// dropped where the next reply is awaited instead.
 					return error(stall_note)
 				}
 			}
-			// A zero timeout collects what is already queued, Consecutive Frames included: rx_raw(0)
-			// reads until the bus is empty (codex round 14 on #225).
-			// the tail is dropped at the next first-frame wait, not flushed
-			cf := c.rx_raw(rem) or {
+			// A zero timeout collects what is already queued, Consecutive Frames included:
+			// rx_raw(0) reads until the bus is empty (codex round 14 on #225).
+			cf = c.rx_raw(rem) or {
 				if err.msg() == 'timeout' {
 					return error(stall_note)
 				}
+				c.drop_partial()
 				return err
 			}
 			if cf.len < 1 {
 				continue // empty/padding read — ignore
 			}
-			if (cf[0] & 0xF0) != 0x20 {
-				// No flush here either: its quiet window renews per frame past the deadline (codex
-				// round 8 on #225). The aborted transfer's tail is dropped at the next first-frame
-				// wait, which is what resyncs a reused channel.
-				return error('ISO-TP: expected Consecutive Frame, got PCI 0x${cf[0]:02X} mid-reassembly (a frame was lost)')
-			}
-			if (cf[0] & 0x0F) != sn {
-				return error('ISO-TP: CF sequence gap — got SN ${cf[0] & 0x0F}, expected ${sn} (a frame was lost)')
-			}
-			if cf.len > 8 {
-				// Classic ISO-TP: seven payload bytes per Consecutive Frame; an FD-sized frame on our
-				// id is not one of ours (codex round 17 on #225).
-				return error('ISO-TP: Consecutive Frame of ${cf.len} bytes on a classic channel')
-			}
-			if cf.len < 8 && out.len + cf.len - 1 < total {
-				// Only the LAST Consecutive Frame may be short; a short one with more of the PDU
-				// still to come would have its missing bytes filled from the next frame — a
-				// shifted PDU returned as valid (codex round 16 on #225).
-				return error('ISO-TP: short Consecutive Frame (${cf.len - 1} bytes) with ${total - out.len} still to come')
-			}
-			sn = (sn + 1) & 0x0F
-			out << cf[1..]
 		}
-		c.fc_dirty = false // a message got through: see recv_succeeded
-		return out[..total].clone()
+		if (cf[0] & 0xF0) != 0x20 {
+			c.drop_partial()
+			return error('ISO-TP: expected Consecutive Frame, got PCI 0x${cf[0]:02X} mid-reassembly (a frame was lost)')
+		}
+		if (cf[0] & 0x0F) != c.partial_sn {
+			sn := c.partial_sn
+			c.drop_partial()
+			return error('ISO-TP: CF sequence gap — got SN ${cf[0] & 0x0F}, expected ${sn} (a frame was lost)')
+		}
+		if cf.len > 8 {
+			// Classic ISO-TP: seven payload bytes per Consecutive Frame; an FD-sized frame on our
+			// id is not one of ours (codex round 17 on #225).
+			c.drop_partial()
+			return error('ISO-TP: Consecutive Frame of ${cf.len} bytes on a classic channel')
+		}
+		if cf.len < 8 && c.partial.len + cf.len - 1 < c.partial_total {
+			// Only the LAST Consecutive Frame may be short; a short one with more of the PDU
+			// still to come would have its missing bytes filled from the next frame — a shifted
+			// PDU returned as valid (codex round 16 on #225).
+			left := c.partial_total - c.partial.len
+			c.drop_partial()
+			return error('ISO-TP: short Consecutive Frame (${cf.len - 1} bytes) with ${left} still to come')
+		}
+		c.partial_sn = (c.partial_sn + 1) & 0x0F
+		c.partial << cf[1..]
+		c.partial_at = time.sys_mono_now()
 	}
-	return error('ISO-TP: unexpected PCI 0x${first[0]:02X}')
+	out := c.partial[..c.partial_total].clone()
+	c.drop_partial()
+	c.fc_dirty = false // a message got through: see recv_succeeded
+	return out
+}
+
+fn (mut c SoftChannel) drop_partial() {
+	c.partial = []u8{}
+	c.partial_total = 0
+	c.partial_sn = 0
 }
 
 pub fn (mut c SoftChannel) close() {
