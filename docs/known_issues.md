@@ -39,7 +39,12 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   `cmd/mutrefs` (#406) refused both spellings until the move to V3. **Under V3 both share the
   receiver** (measured: a write through `&app` lands, and the closure sees a later `app.n = 7`;
   the pre-V3 pin printed 0 for both), so the check was retired with the old compiler — it walked
-  `v.ast`, which V3 no longer has. `ap := app` remains the plain spelling.
+  `v.ast`, which V3 no longer has. **But a local alias `ap := app` COPIES under V3** (`0535623`,
+  measured: the alias and a closure capturing it each hold their own address; `ap := &app`,
+  `fn [app]` and `spawn f(app)` all get the receiver). So spell the alias `ap := &app`.
+  `diag_attach` used the copy for a tap opened on another thread, which kept a pointer into that
+  thread's stack, and the CAN diagnostic press crashed with an access violation on the next
+  send. `scripts/check_cmds.sh` refuses `x := <receiver>` inside a `mut` receiver method.
 
 - 🟡 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
   VALUE.** **Fixed upstream, and the fix is now in our pin** — see the end of this entry. The

@@ -57,5 +57,23 @@ elif bad=$(printf '%s\n' "$hits" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//') && [
 	echo "$bad"
 	fail=$((fail + 1))
 fi
+# and a local alias of a `mut` receiver: inside `fn (mut app App) f()`, `ap := app` is a COPY of
+# the struct under V3 (`ap := &app`, `fn [app]` and `spawn g(app)` share it). The copy has its own
+# mutex over the same maps, and handed to a closure run on another thread it is a pointer into that
+# thread's stack: the CAN diagnostic press crashed that way (docs/known_issues.md).
+n=$((n + 1))
+if bad=$(find cmd blobly libs -name '*.v' -not -path '*/build/*' -print0 | xargs -0 awk '
+	FNR == 1 { recv = "" }
+	/^(pub )?fn \(mut [A-Za-z_][A-Za-z0-9_]* / {
+		recv = $0; sub(/^(pub )?fn \(mut /, "", recv); sub(/ .*/, "", recv); next
+	}
+	/^(pub )?fn / { recv = ""; next }
+	recv != "" && $0 ~ "^[ \t]*(mut )?[A-Za-z_][A-Za-z0-9_]* := " recv "[ \t]*$" {
+		print FILENAME ":" FNR ": " $0
+	}'); [ -n "$bad" ]; then
+	echo "FAIL a local alias of a mut receiver is a COPY under V3; spell it := &<receiver>:"
+	echo "$bad"
+	fail=$((fail + 1))
+fi
 printf '%d checks, %d failed\n' "$n" "$fail"
 [ "$fail" -eq 0 ]
