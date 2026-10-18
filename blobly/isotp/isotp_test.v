@@ -216,8 +216,8 @@ fn test_a_kept_transfer_is_dropped_after_n_cr_of_waiting() {
 	if _ := ch.recv(400) {
 		assert false, 'only the First Frame has arrived'
 	} else {
-		// given up after N_Cr of waiting, then silence for the rest of the deadline
-		assert err.msg().starts_with('timeout'), err.msg()
+		// given up after N_Cr of waiting: a reception that began and failed, never silence
+		assert err.msg() == ncr_note, err.msg()
 	}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x21), 7, 8, 9, 10, 11, 12, 13] }) or {}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x01), 0xBB] }) or {}
@@ -331,6 +331,85 @@ fn test_a_drain_drops_a_kept_transfer() {
 		return
 	}
 	assert next == [u8(0xEE)]
+	ch.close()
+	peer.close()
+}
+
+// ORPHAN FLOW CONTROLS DO NOT KEEP A TRANSFER ALIVE: the time a wait spent before one counts
+// towards N_Cr, so a transfer whose Consecutive Frames stopped is given up even though frames
+// keep arriving.
+fn test_orphan_flow_controls_do_not_extend_n_cr() {
+	mut peer := transport.open('inproc:isotp-fc-ncr') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-fc-ncr', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	ch.cr_window_ms = 100
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 14, 1, 2, 3, 4, 5, 6] }) or {}
+	spawn fn [mut peer] () {
+		for _ in 0 .. 20 {
+			time.sleep(20 * time.millisecond)
+			peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or {}
+		}
+	}()
+	t0 := time.ticks()
+	if _ := ch.recv(1000) {
+		assert false, 'no Consecutive Frame was sent'
+	} else {
+		assert err.msg() == ncr_note, err.msg()
+	}
+	assert time.ticks() - t0 < 600, 'orphan Flow Controls kept the transfer alive'
+	ch.close()
+	peer.close()
+}
+
+// A SEND REFUSED BEFORE ANYTHING WENT OUT keeps a transfer in progress: it moved on from nothing.
+fn test_a_refused_send_keeps_a_kept_transfer() {
+	mut peer := transport.open('inproc:isotp-refused-send') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-refused-send', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 8, 1, 2, 3, 4, 5, 6] }) or {}
+	ch.recv(20) or {}
+	ch.send([]u8{}) or {}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x21), 7, 8] }) or {}
+	pdu := ch.recv(500) or {
+		assert false, 'a refused send dropped the transfer: ${err}'
+		return
+	}
+	assert pdu == []u8{len: 8, init: u8(index + 1)}
+	ch.close()
+	peer.close()
+}
+
+// abandon_reception DROPS A KEPT TRANSFER: a caller that discards what is queued (the uds drain
+// before a request) must not have its next answer completed from an older transfer's frames.
+fn test_abandon_reception_drops_a_kept_transfer() {
+	mut peer := transport.open('inproc:isotp-abandon') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-abandon', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 8, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA] }) or {}
+	ch.recv(0) or {}
+	ch.abandon_reception()
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x21), 0xAA, 0xAA] }) or {}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x02), 0x62, 0xBB] }) or {}
+	next := ch.recv(500) or {
+		assert false, 'the fresh answer was lost: ${err}'
+		return
+	}
+	assert next == [u8(0x62), 0xBB]
 	ch.close()
 	peer.close()
 }

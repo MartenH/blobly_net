@@ -37,7 +37,7 @@ pub mut:
 pub fn (mut s Server) serve_step(mut l NodeLink, wait_ms int) ! {
 	s.serve_functional(mut l)
 	req := l.phys.recv(wait_ms) or {
-		if is_silence(err.msg()) || err.msg() == isotp.stall_note {
+		if is_silence(err.msg()) || err.msg() in [isotp.stall_note, isotp.ncr_note] {
 			return
 		}
 		return err

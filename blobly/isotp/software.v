@@ -150,9 +150,6 @@ pub fn on_bus(bus transport.Bus, iface string, tx_id u32, rx_id u32, ext bool) !
 // send segments `data` into ISO-TP frames: a Single Frame for ≤7 bytes, else a
 // First Frame + (after a Flow Control) Consecutive Frames.
 pub fn (mut c SoftChannel) send(data []u8) ! {
-	// a channel that sends has moved on from a transfer a recv cut short; its late frames are a
-	// stale tail from here (and the Flow Control wait below would read them away)
-	c.rx = Reassembly{}
 	// AN EMPTY PDU IS REFUSED HERE AS THE KERNEL REFUSES IT: encoded, it is a Single Frame with
 	// SF_DL 0, which no receiver accepts, and a platform-transparent open() must not transmit it
 	// on one platform only (codex round 2 on #225).
@@ -162,6 +159,10 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	if data.len > max_pdu {
 		return error('ISO-TP PDU too large: ${data.len} > ${max_pdu}')
 	}
+	// a channel that sends has moved on from a transfer a recv cut short; its late frames are a
+	// stale tail from here (and the Flow Control wait below would read them away). After the
+	// checks: a send refused before anything went out has moved on from nothing.
+	c.abandon_reception()
 	if data.len <= 7 {
 		mut sf := [u8(data.len)] // SF: PCI 0x0<len>
 		sf << data
@@ -494,6 +495,17 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	return error('unreachable')
 }
 
+// abandon_reception drops a transfer kept from a recv a deadline cut short (`rx`): what arrives of
+// it from here is a stale tail. For a caller that discards what is queued, such as a drain before
+// a request, whose answer must not be completed from an older transfer's frames.
+pub fn (mut c SoftChannel) abandon_reception() {
+	c.rx = Reassembly{}
+}
+
+// ncr_note is a transfer given up because its peer stopped for N_Cr mid-transfer: a reception
+// that began and failed, never silence.
+pub const ncr_note = 'ISO-TP: a First Frame arrived and its Consecutive Frames stopped for N_Cr (transfer given up)'
+
 // Reassembly is a multi-frame transfer in progress. `total == 0` is none; dropping one is one
 // assignment (`c.rx = Reassembly{}`), so no field can be left behind.
 struct Reassembly {
@@ -521,12 +533,15 @@ fn (mut c SoftChannel) reassemble(timeout_ms int, deadline i64) ![]u8 {
 				return error(stall_note)
 			}
 		}
-		// never wait past N_Cr: the transfer is given up then, whatever the caller's deadline
-		left_ms := (i64(c.cr_window_ms) * 1_000_000 - i64(c.rx.idle_ns)) / 1_000_000
-		if left_ms <= 0 {
+		// never wait past N_Cr: the transfer is given up then, whatever the caller's deadline. A
+		// reception that began and failed, so an error and never silence: a suppressed request
+		// reads silence as success.
+		left_ns := i64(c.cr_window_ms) * 1_000_000 - i64(c.rx.idle_ns)
+		if left_ns <= 0 {
 			c.rx = Reassembly{}
-			return []u8{}
+			return error(ncr_note)
 		}
+		left_ms := (left_ns + 999_999) / 1_000_000 // up: a fraction of a millisecond is time left
 		if rem < 0 || i64(rem) > left_ms {
 			rem = int(left_ms)
 		}
@@ -538,18 +553,22 @@ fn (mut c SoftChannel) reassemble(timeout_ms int, deadline i64) ![]u8 {
 				c.rx.idle_ns += time.sys_mono_now() - t0
 				if c.rx.idle_ns >= u64(c.cr_window_ms) * 1_000_000 {
 					c.rx = Reassembly{} // N_Cr: the peer stopped mid-transfer
-					return []u8{}
+					return error(ncr_note)
 				}
 				return error(stall_note)
 			}
 			c.rx = Reassembly{}
 			return err
 		}
+		// the wait counts towards N_Cr however it ended; only a Consecutive Frame resets it
+		waited := time.sys_mono_now() - t0
 		if cf.len < 1 {
+			c.rx.idle_ns += waited
 			continue // empty/padding read — ignore
 		}
 		pci := cf[0] & 0xF0
 		if pci == 0x30 {
+			c.rx.idle_ns += waited
 			continue // an orphan Flow Control says nothing about the peer's transfer
 		}
 		if pci == 0x00 || pci == 0x10 {

@@ -209,3 +209,24 @@ fn test_functional_addressed_follows_the_shared_rules() {
 	f, _ := addressed(['!DoIP: diagnostic message negative ack (0x03)'], 0, [u8(0x3E), 0x00])
 	assert f.outcome == .failed && f.err.contains('negative ack')
 }
+
+// THE PRE-REQUEST DRAIN DISCARDS A TRANSFER IT BEGAN: a poll that met an older answer's First Frame
+// keeps that transfer, and a functional request goes out on another channel, so nothing else
+// drops it. Completed from its late frames, the old value would be this request's answer.
+fn test_the_drain_before_a_request_abandons_a_transfer_it_began() {
+	bus := 'inproc:FUNC-DRAIN'
+	mut peer := transport.open(bus) or { panic(err) }
+	mut c := client_on(bus, 0x7E0, 0x7E8)
+	// an older answer, 62 F1 90 AA..., cut off after its First Frame
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 10, 0x62, 0xF1, 0x90, 0xAA, 0xAA, 0xAA] }) or {
+		panic(err)
+	}
+	c.drain_queued(0x22) or { panic(err) }
+	// its tail arrives late, then the fresh answer
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x21), 0xAA, 0xAA, 0xAA, 0xAA] }) or { panic(err) }
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x04), 0x62, 0xF1, 0x90, 0xBB] }) or { panic(err) }
+	fresh := c.ch.recv(500) or { panic(err) }
+	assert fresh == [u8(0x62), 0xF1, 0x90, 0xBB]
+	c.ch.close()
+	peer.close()
+}
