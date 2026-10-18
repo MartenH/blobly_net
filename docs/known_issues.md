@@ -28,7 +28,9 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   parses as `net.arxml`, where YAML says a comment needs whitespace before the `#`. So an ARXML
   cluster reference in a `.blobnet` must be quoted (`- "net.arxml#Body"`), and the project writer
   quotes every value containing a `#` (`project.yaml_scalar`). An unquoted one written by hand
-  loses its cluster and, on a multi-cluster file, is refused at load as naming none.
+  loses its cluster and, on a multi-cluster file, is refused at load as naming none. Still so on
+  V3 (`0535623`, master `6ebd90a`); vlang/v#30828 fixes it, open and in no V yet. Keep the
+  quoting either way: an older V reads the file too.
 - 🟢 **Binding `&x` of a `mut x T` receiver, or capturing it by value in a closure, made a COPY
   of the struct — before V3.** On the pre-V3 compiler, inside `fn (mut app App) f()`,
   `ap := &app` had type `App` at a new address and `fn [app] () { ... }` captured a copy, so a
@@ -129,37 +131,41 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   machine", which cost most of a session on that assumption. It is V's default **tcc**:
   `v -enable-globals -cc gcc test blobly/` runs the whole suite (72 test programs today). The Linux CI job uses
   the default compiler and never sees it.
-- 🔴 **A timed `select` can panic `Invalid argument` under starvation.** V 0.5.1's
-  `channel_select` computes `remaining := timeout - stopwatch.elapsed()` only after its
-  non-blocking try loop, so a thread descheduled for longer than its timeout hands
-  `sem_timedwait` a NEGATIVE duration; `Duration.timespec()` adds a negative `tv_nsec` to the
-  clock, and when that underflows the current nanoseconds the kernel answers EINVAL and V's
-  `cpanic` kills the process with `V panic: Invalid argument`. Probabilistic (it needs the
-  current `tv_nsec` to be smaller than the overshoot) and load-dependent: seen once in twenty
-  runs of `shared_test` pinned to two cores behind three busy loops, from a 50 ms wait in a
-  spawned thread, never at 16 cores. Every `select { … N * time.millisecond {} }` in this repo
-  carries it; a wait that has a sender guaranteed to close or post the channel is better
-  written unbounded (`transport.SharedEntry.settled` is). Not ours to fix — vlib — and pinned
-  here so the next `V panic: Invalid argument` in a CI log is read as this, not as a bug in
-  the test it landed in.
-- 🔴 **A STATEMENT `select` runs its receive branch on a closed channel.** With the channel
-  closed and empty, `select { f := <-q { … } 20 * time.millisecond {} }` written as a statement
-  enters the receive branch at once with a ZERO value, every time; written as an expression
-  (`ok := select { … }`) the same select returns `false` and runs no branch (measured on the
-  pinned V, #401). `transport.InprocBus.recv` therefore uses the expression form and answers a
-  closed queue with `bus is closed`; before that a closed inproc bus delivered an endless stream
-  of id-0 empty frames, which a stop-sliced ISO-TP receive skipped as not its own and asked
-  again — a spin. Where a closed channel is possible, take the `select` as an expression and
-  read its `false`; a plain `<-q` needs its `or` for the same reason.
-- 🔴 **`spawn` can pass an `f64` argument as zero.** `spawn read_passes(path, specs, rows, t0,
-  pos, ch)` delivered `pos` = 0.03 to the thread as 0.0, every time, with no warning (seen under
-  `-old-compiler`, #172). Hand a thread its inputs in ONE struct, which arrives intact
-  (`player.ReadJob`). A seek that silently played from the start was how it showed.
+- 🟢 **A timed `select` could panic `Invalid argument` under starvation (V 0.5.1).** Its
+  `channel_select` computed `remaining := timeout - stopwatch.elapsed()` only after its
+  non-blocking try loop, so a thread descheduled for longer than its timeout handed
+  `sem_timedwait` a NEGATIVE duration, and the kernel's EINVAL became `V panic: Invalid argument`
+  (seen once in twenty runs of `shared_test` on two loaded cores). V3's `channel_select_priv`
+  checks `remaining <= 0` before waiting, so it cannot happen on the pinned V. A
+  `V panic: Invalid argument` in an old log is this, not a bug in the test it landed in.
+- 🟡 **A STATEMENT `select` runs its receive branch on a closed channel — by design.** With the
+  channel closed and empty, `select { f := <-q { … } 20 * time.millisecond {} }` written as a
+  statement enters the receive branch at once with a ZERO value, every time, as Go's does: V
+  makes a closed receive case selectable like a plain `<-ch` (vlang/v `9edfec4157`, "fix read
+  from closed channel behavior as in Go"; `sync.channel_select_lang`). Written as an expression
+  (`ok := select { … }`) the same select returns `false` and runs no branch, as V's docs say.
+  `transport.InprocBus.recv` therefore uses the expression form and answers a closed queue with
+  `bus is closed`; before that a closed inproc bus delivered an endless stream of id-0 empty
+  frames, which a stop-sliced ISO-TP receive skipped as not its own and asked again — a spin
+  (#401). Where a closed channel is possible, take the `select` as an expression and read its
+  `false`; a plain `<-q` needs its `or` for the same reason. On V3 the expression's result is
+  untyped, so `if ok` and `!ok` work but `println(ok)`, `'${ok}'` and `ok.str()` do not compile;
+  vlang/v#30830 fixes that, open and in no V yet.
+- 🟢 **`spawn` could pass an `f64` argument as zero (pre-V3 compiler).** `spawn read_passes(path,
+  specs, rows, t0, pos, ch)` delivered `pos` = 0.03 to the thread as 0.0, every time, with no
+  warning (`-old-compiler`, #172). V3 delivers it intact (checked on `0535623` and master
+  `6ebd90a`). The workaround stays because it is no worse: a thread's inputs travel in ONE struct
+  (`player.ReadJob`).
 - 🟡 **A UDP read deadline is not honoured.** `net.UdpConn.set_read_deadline` followed by
-  `read` returned after ~100 ms every time, deadline or not (V 0.5.1, #235's first cut). What
-  works is `set_read_timeout` re-armed before each read with what is left of the window, which
-  is what `transport.cansub_browse` does. And a 0-byte datagram comes back from `read` as an
-  ERROR (`none`), not as `n == 0`, so a collector must break only on `net.err_timed_out_code`.
+  `read` returns after ~100 ms every time: `wait_for_common` uses a deadline only when the
+  timeout is 0, and a `UdpConn`'s read timeout is 100 ms by default (`udp_default_read_timeout`).
+  What works is `set_read_timeout` re-armed before each read with what is left of the window,
+  which is what `transport.cansub_browse` does. `set_read_timeout(0)` plus a deadline also
+  works, but is a trap: with the timeout 0 and no deadline set, `read` returns `timed out` at
+  once instead of blocking (measured on `0535623`). And a 0-byte datagram comes back from `read` as
+  an ERROR (`none`), not as `n == 0`, so a collector must break only on
+  `net.err_timed_out_code`. Both still so on V3 (`0535623`, master `6ebd90a`); vlang/v#30831
+  (the deadline) and vlang/v#30829 (the empty datagram) fix them, open and in no V yet.
 - 🟡 **The modules are `blobly/<name>`, imported as `blobly.<name>`.** V3 no longer searches a
   project's `modules/` directory (vlang/v#28575): a module's import path is its folder path under
   the lookup root, the folder holding `v.mod` — as `math.vec` is `vlib/math/vec/`. So the
@@ -177,22 +183,21 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   repository (`scripts/test_cmd_rules.sh`): inside it, `v.mod` makes every `blobly.*` reachable.
   `libs/vgui` needs no copy — its own `v.mod` roots its imports, so `blobly.*` is unreachable
   there unless the repository root is named on `-path`.
-- 🟡 **`v test` mangles a `-path` with `|`.** `v -path "@vlib|libs|@vmodules" test …` fails
-  (`/bin/sh: @vmodules: not found`) because the test runner re-invokes `v` per file and the
-  `|`-separated path leaks into a shell unquoted. The module tests need no `-path`
-  (`v -enable-globals test blobly/`, as CI runs them). When a test DOES need one, use a
-  `:`-separated path, which survives the unquoted shell because `:` isn't a metachar:
-  `v -path '@vlib:libs:@vmodules' test …`.
+- 🟢 **`v test` mangled a `-path` with `|` (pre-V3).** `v -path "@vlib|libs|@vmodules" test …`
+  failed (`/bin/sh: @vmodules: not found`): the runner re-invoked `v` per file and the
+  `|`-separated path leaked into a shell unquoted. V3 passes it through (checked on `0535623`
+  and master `6ebd90a`). The module tests need no `-path` anyway (`v -enable-globals test
+  blobly/`, as CI runs them).
 - 🟡 **`-enable-globals` is not optional.** `blobly/transport/inproc.v` uses `__global`, so every
   build, test and run that touches `transport` needs the flag.
 - ⚪ **`cannot copy map: call move or clone`.** Assigning a `map` value into a struct field (e.g.
   `sig.values = vals`) errors — V won't implicitly copy a map. Use `vals.move()` (transfers
   ownership, cheap) or `vals.clone()` (deep copy) explicitly.
-- 🟡 **C interop parse friction.** `&char(s.str)` casts and no-arg C funcs used inside an expression
-  (`(x & C.mask()) | …`) both give `unexpected token )`. Fixes: pass `s.str` to a `&u8` C param;
-  define stable C constants (e.g. CAN flag masks) as V `const`s instead of calling C accessors.
-  For larger C surfaces prefer **c2v** over hand-writing; keep hand shims tiny (as in
-  `blobly/transport`, ~40 lines).
+- 🟢 **C interop parse friction (pre-V3).** `&char(s.str)` casts and no-arg C funcs used inside an
+  expression (`(x & C.mask()) | …`) both gave `unexpected token )`. V3 parses both (checked on
+  `0535623` and master `6ebd90a`). Stable C constants (e.g. CAN flag masks) are still better as
+  V `const`s than C accessors, and for larger C surfaces prefer **c2v** over hand-writing; keep
+  hand shims tiny (as in `blobly/transport`, ~40 lines).
 
 ## GUI (Dear ImGui + ImPlot)
 

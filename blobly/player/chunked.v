@@ -111,8 +111,8 @@ fn (mut c Chunker) start(pos_s f64) {
 	spawn read_passes(c.job(pos_s), c.ch, c.more)
 }
 
-// ReadJob is the reader's input. It is one struct because V's `spawn` passes a bare f64
-// argument as zero.
+// ReadJob is the reader's input, in one struct: the pre-V3 compiler's `spawn` passed a bare f64
+// argument as zero (docs/known_issues.md).
 struct ReadJob {
 	path  string
 	specs []BusSpec
