@@ -436,6 +436,13 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 // Returns how many PDUs it dropped.
 fn (mut c Client) drain_queued(sid u8) !int {
 	mut discarded := 0
+	defer {
+		// what was queued is discarded, a transfer the poll began included: completed from its
+		// late frames it would be an older answer returned for this request
+		if mut c.ch is isotp.SoftChannel {
+			c.ch.abandon_reception()
+		}
+	}
 	for {
 		c.ch.recv(0) or {
 			// only an empty channel ends the drain: a PDU that failed to parse was still taken

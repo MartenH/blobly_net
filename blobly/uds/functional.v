@@ -11,8 +11,9 @@ import blobly.transport
 // Control the tester sends on that server's physical REQUEST id. So each target is a physical
 // Client, whose channel reassembles its answer and sends that Flow Control, and a raw tap on the
 // bus says which target has begun to answer, so its channel is read with a real deadline and the
-// others' frames wait queued in theirs. (A software ISO-TP read gives the whole PDU one deadline,
-// so polling every target with a zero timeout would abort a multi-frame answer mid-transfer.)
+// others' frames wait queued in theirs. (A software ISO-TP read gives the whole PDU one deadline;
+// a transfer it cuts short is kept for the next read, but only the target that began answering
+// is worth a real deadline.)
 // One answer is reassembled at a time: a second target's First Frame gets its Flow Control once
 // the first transfer ends — milliseconds for an ordinary answer, well inside the peer's N_Bs.
 
