@@ -319,18 +319,27 @@ fn (app &App) trace_target_text() (string, string) {
 	} else if app.manifest.node != '' {
 		app.manifest.node
 	} else {
-		os.file_name(app.manifest_ref)
+		manifest_owner(app.manifest_ref)
 	}
-	mut cores := []int{}
-	for h in app.manifest.handlers {
-		if h.core !in cores {
-			cores << h.core
+	// the cores Dump addresses: the bits of the mask it sends (0 = the one default core)
+	mask := app.trace_core_mask()
+	mut cores := []string{}
+	for b in 0 .. 16 {
+		if mask & (u16(1) << u16(b)) != 0 {
+			cores << b.str()
 		}
 	}
-	cores.sort()
-	core_txt := if cores.len > 1 { ', cores ${cores.map(it.str()).join(' + ')}' } else { '' }
+	core_txt := if cores.len > 0 { ', cores ${cores.join(' + ')}' } else { '' }
 	cmd := app.manifest.frames.or_defaults().cmd
 	return 'target: ${node}${core_txt}', 'on ${chan} · cmd 0x${cmd:03X}'
+}
+
+// manifest_owner names a manifest by the folder it was generated for: `<node>/gen/x.csv` ->
+// `<node>`, else the folder holding it, else the file name.
+fn manifest_owner(ref string) string {
+	dir := os.dir(ref)
+	owner := if os.file_name(dir) == 'gen' { os.file_name(os.dir(dir)) } else { os.file_name(dir) }
+	return if owner in ['', '.'] { os.file_name(ref) } else { owner }
 }
 
 // trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out

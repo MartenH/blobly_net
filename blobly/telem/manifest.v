@@ -129,6 +129,7 @@ pub fn parse_manifest(text string) !Manifest {
 	mut sip := SomeipIdent{}
 	mut shell_method := u16(0)
 	mut node := ''
+	mut first := true // loom2v names the node on the file's first line only
 	mut seen := map[u16]bool{}
 	mut seen_tid := map[u32]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
@@ -140,8 +141,10 @@ pub fn parse_manifest(text string) !Manifest {
 		if line == '' {
 			continue
 		}
+		at_first := first
+		first = false
 		if line.starts_with('#') {
-			if node == '' {
+			if at_first {
 				node = generated_for(line)
 			}
 			low := line.to_lower()
