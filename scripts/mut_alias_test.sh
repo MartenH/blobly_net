@@ -44,6 +44,14 @@ fn (mut app App) after_a_literal() {
 	}(app)
 	later := app
 }
+
+fn (mut app App) one_line() { copy := app }
+
+fn (mut app App) one_line_ok() { ok := &app }
+
+fn (mut app App) after_one_liners() {
+	tail := app
+}
 EOF
 got=$(awk -f scripts/mut_alias.awk "$t/fix.v" | sed "s|^$t/||")
 want='fix.v:4: 	ap := app
@@ -52,7 +60,9 @@ fix.v:6: 	cp = app
 fix.v:17: 	a := app
 fix.v:26: 	c := s
 fix.v:31: 	snapshot := log
-fix.v:38: 	later := app'
+fix.v:38: 	later := app
+fix.v:41: fn (mut app App) one_line() { copy := app }
+fix.v:46: 	tail := app'
 if [ "$got" = "$want" ]; then
 	echo "mut_alias_test: ok"
 	exit 0

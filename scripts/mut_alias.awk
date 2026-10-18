@@ -71,14 +71,31 @@ function start_fn() {
 	sig = ""
 }
 
+# `text` is a body statement (a whole line, or what follows a one-line fn's opening brace)
+function check(text,    line, name) {
+	if (text ~ /\/\/ copy:/) {
+		return
+	}
+	line = text
+	sub(/[ \t]*\/\/.*$/, "", line)
+	sub(/[ \t]*\}[ \t]*$/, "", line) # a one-line body's closing brace
+	for (name in muts) {
+		if (line ~ "^[ \t]*(mut )?[A-Za-z_][A-Za-z0-9_]*[ \t]*:?=[ \t]*" name "[ \t]*$") {
+			print FILENAME ":" FNR ": " $0
+		}
+	}
+}
+
 FNR == 1 { delete muts; nsh = 0; depth = 0; in_sig = 0 }
 /^(pub )?fn / { start_fn() }
 in_sig {
-	# a signature runs until the line that opens the body
+	# a signature runs to its body's opening brace — at the end of a line, or followed by the
+	# whole body on that line (`fn (mut app App) f() { copy := app }`), which is then checked
 	sig = sig " " $0
-	if ($0 ~ /\{[ \t]*$/ || $0 ~ /\{[ \t]*\/\//) {
+	if (index($0, "{") > 0) {
 		in_sig = 0
 		collect(sig)
+		check(substr($0, index($0, "{") + 1))
 		depth = brace_delta($0)
 	}
 	next
@@ -87,15 +104,7 @@ in_sig {
 	if ($0 ~ /fn[ \t]*(\[[^]]*\][ \t]*)?\(/) {
 		shadow($0)
 	}
-	if ($0 !~ /\/\/ copy:/) {
-		line = $0
-		sub(/[ \t]*\/\/.*$/, "", line)
-		for (name in muts) {
-			if (line ~ "^[ \t]*(mut )?[A-Za-z_][A-Za-z0-9_]*[ \t]*:?=[ \t]*" name "[ \t]*$") {
-				print FILENAME ":" FNR ": " $0
-			}
-		}
-	}
+	check($0)
 	depth += brace_delta($0)
 	restore()
 }
