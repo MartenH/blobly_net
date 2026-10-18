@@ -310,16 +310,20 @@ fn (app &App) trace_target_text() (string, string) {
 	a.mu.lock()
 	i := a.trace_chan_locked(a.running)
 	chan := if i >= 0 { '${a.chans[i].name} (${a.chans[i].iface})' } else { '' }
+	carries := i >= 0 && a.chans[i].manifest == a.manifest_ref
 	a.mu.unlock()
 	if chan == '' {
 		return 'target: none', 'no channel to send the trace commands on'
 	}
 	node := if !app.has_manifest {
 		'whichever node answers the default ids'
+	} else if !carries {
+		// a fallback route: the loaded manifest describes a node on another channel
+		'unknown — this channel does not carry the loaded manifest'
 	} else if app.manifest.node != '' {
 		app.manifest.node
 	} else {
-		manifest_owner(app.manifest_ref)
+		manifest_owner(app.resolve_asset(app.manifest_ref))
 	}
 	// the cores Dump addresses: the bits of the mask it sends (0 = the one default core)
 	mask := app.trace_core_mask()
