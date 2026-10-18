@@ -514,7 +514,7 @@ gate naming a session that is not one (`"extended "`) is closed rather than open
 nodes addressed alike that the bus does not tell apart describe neither — no name decides it. Over
 DoIP the session and the unlock belong to the entity, not to the connection, so a tester that
 reconnects finds them as the last one left them (the per-connection state on the roadmap).
-`tests/diag_described.lua` runs against `projects/described/`, a trimmed copy of system_full's
+`tests/diag_described.lua` runs against `projects/described-ecu-demo/`, a trimmed copy of system_full's
 zone_a; the same requests against the board on the bench gave the same answers but for those.
 
 ## The same ECU over Ethernet (DoIP)
