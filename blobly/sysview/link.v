@@ -194,6 +194,9 @@ pub fn (sys &System) doip_tester_for(logical u16, host string) ?u16 {
 		return none
 	}
 	n := sys.nodes[hits[0]]
+	if n.has_host && n.address == '' {
+		return none // its address could not be derived: nothing says the entity found is this one
+	}
 	if n.address != '' && host != '' && n.address.to_lower() != host.to_lower() {
 		return none // the description's entity is at another address: not this one
 	}
