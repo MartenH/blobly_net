@@ -29,8 +29,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   cluster reference in a `.blobnet` must be quoted (`- "net.arxml#Body"`), and the project writer
   quotes every value containing a `#` (`project.yaml_scalar`). An unquoted one written by hand
   loses its cluster and, on a multi-cluster file, is refused at load as naming none. Still so on
-  V3 (`0535623`, master `6ebd90a`); the fix is vlang/v#30828. Keep the quoting either way: an
-  older V reads the file too.
+  V3 (`0535623`, master `6ebd90a`); vlang/v#30828 fixes it, open and in no V yet. Keep the
+  quoting either way: an older V reads the file too.
 - 🟢 **Binding `&x` of a `mut x T` receiver, or capturing it by value in a closure, made a COPY
   of the struct — before V3.** On the pre-V3 compiler, inside `fn (mut app App) f()`,
   `ap := &app` had type `App` at a new address and `fn [app] () { ... }` captured a copy, so a
@@ -138,7 +138,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   (seen once in twenty runs of `shared_test` on two loaded cores). V3's `channel_select_priv`
   checks `remaining <= 0` before waiting, so it cannot happen on the pinned V. A
   `V panic: Invalid argument` in an old log is this, not a bug in the test it landed in.
-- ⚪ **A STATEMENT `select` runs its receive branch on a closed channel — by design.** With the
+- 🟡 **A STATEMENT `select` runs its receive branch on a closed channel — by design.** With the
   channel closed and empty, `select { f := <-q { … } 20 * time.millisecond {} }` written as a
   statement enters the receive branch at once with a ZERO value, every time, as Go's does: V
   makes a closed receive case selectable like a plain `<-ch` (vlang/v `9edfec4157`, "fix read
@@ -150,7 +150,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   (#401). Where a closed channel is possible, take the `select` as an expression and read its
   `false`; a plain `<-q` needs its `or` for the same reason. On V3 the expression's result is
   untyped, so `if ok` and `!ok` work but `println(ok)`, `'${ok}'` and `ok.str()` do not compile;
-  the fix is vlang/v#30830.
+  vlang/v#30830 fixes that, open and in no V yet.
 - 🟢 **`spawn` could pass an `f64` argument as zero (pre-V3 compiler).** `spawn read_passes(path,
   specs, rows, t0, pos, ch)` delivered `pos` = 0.03 to the thread as 0.0, every time, with no
   warning (`-old-compiler`, #172). V3 delivers it intact (checked on `0535623` and master
@@ -160,10 +160,12 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   `read` returns after ~100 ms every time: `wait_for_common` uses a deadline only when the
   timeout is 0, and a `UdpConn`'s read timeout is 100 ms by default (`udp_default_read_timeout`).
   What works is `set_read_timeout` re-armed before each read with what is left of the window,
-  which is what `transport.cansub_browse` does. And a 0-byte datagram comes back from `read` as
+  which is what `transport.cansub_browse` does. `set_read_timeout(0)` plus a deadline also
+  works, but is a trap: with the timeout 0 and no deadline set, `read` returns `timed out` at
+  once instead of blocking (measured on `0535623`). And a 0-byte datagram comes back from `read` as
   an ERROR (`none`), not as `n == 0`, so a collector must break only on
-  `net.err_timed_out_code`. Both still so on V3 (`0535623`, master `6ebd90a`); the fixes are
-  vlang/v#30831 (the deadline) and vlang/v#30829 (the empty datagram).
+  `net.err_timed_out_code`. Both still so on V3 (`0535623`, master `6ebd90a`); vlang/v#30831
+  (the deadline) and vlang/v#30829 (the empty datagram) fix them, open and in no V yet.
 - 🟡 **The modules are `blobly/<name>`, imported as `blobly.<name>`.** V3 no longer searches a
   project's `modules/` directory (vlang/v#28575): a module's import path is its folder path under
   the lookup root, the folder holding `v.mod` — as `math.vec` is `vlib/math/vec/`. So the

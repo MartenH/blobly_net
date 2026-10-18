@@ -203,10 +203,8 @@ struct SharedEntry {
 	send_mu sync.Mutex
 	// settled is CLOSED by the first opener when its attempt has an outcome, success or failure:
 	// a closed channel wakes every waiter at once, which is the broadcast a cap-1 token cannot
-	// do. Waiters block on it -- unbounded, and on purpose: a bounded wait is a timed select,
-	// and under starvation a timed select can be handed a negative remainder by V's runtime and
-	// panic (docs/known_issues.md, "sem_timedwait: Invalid argument"). Every path out of the
-	// attempt closes it, so nothing is waited for that cannot come.
+	// do. Waiters block on it -- unbounded, and on purpose: every path out of the attempt closes
+	// it, so nothing is waited for that cannot come.
 	settled chan bool
 mut:
 	tx_acks bool
