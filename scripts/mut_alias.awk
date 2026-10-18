@@ -7,11 +7,16 @@
 # diag_attach's `ap := app`, opened on another thread, left a tap pointing into a dead stack and
 # the CAN diagnostic press crashed (docs/known_issues.md).
 #
-# Reports `FILE:LINE: TEXT` for `[mut] x := NAME` and `x = NAME`, a trailing comment allowed,
-# where NAME is a `mut` receiver or parameter of the enclosing fn — its signature read whole,
-# continuation lines included. A nested `fn (...)` / `fn [...]` literal re-declaring NAME
-# (`app &App`) hides it for the literal's BODY only (brace depth), not for the rest of the fn.
-# A copy that is meant (a snapshot) says so with `// copy:` on its line.
+# A lint over V text, not a parser, so its model is stated here and its fixtures are
+# mut_alias_test.sh:
+#   SCOPE   a top-level `fn` whose signature (continuation lines included) declares `mut NAME T`
+#           opens a scope for NAME; it ends when the body's braces close, so top-level code after
+#           it is not in it. A nested `fn (...)` / `fn [...] (...)` literal's own parameters —
+#           any of them, pointer or value — hide the outer names until the literal's body closes.
+#   UNIT    a STATEMENT: the text between `{`, `}` and `;` (strings and the trailing comment
+#           removed), so `if ok { copy := app }` and `fn f() { copy := app }` are both seen.
+#   REPORT  a statement that is exactly `[mut] x := NAME` or `x = NAME`, as `FILE:LINE: TEXT`.
+#           A snapshot that is meant says `// copy:` on its line.
 #
 #   find cmd blobly ... -name '*.v' | xargs awk -f scripts/mut_alias.awk
 
@@ -25,86 +30,118 @@ function collect(sig,    s, frag, parts) {
 	}
 }
 
-# braces opened minus closed on a line, outside string literals and the trailing comment
-function brace_delta(line,    s, o, c) {
+# a line without its string literals and trailing comment: what braces and statements are read from
+function code(line,    s) {
 	s = line
-	gsub(/'[^']*'/, "", s)
-	gsub(/"[^"]*"/, "", s)
-	gsub(/`[^`]*`/, "", s)
+	gsub(/'[^']*'/, "''", s)
+	gsub(/"[^"]*"/, "\"\"", s)
+	gsub(/`[^`]*`/, "``", s)
 	sub(/\/\/.*$/, "", s)
+	return s
+}
+
+function brace_delta(s,    o, c) {
 	o = gsub(/\{/, "{", s)
 	c = gsub(/\}/, "}", s)
 	return o - c
 }
 
-# a nested fn literal's own pointer parameters hide the outer names until its body closes:
-# push them with the depth the literal starts at; they come back when depth falls to it again
-function shadow(line,    s, frag, parts, name) {
-	s = line
-	sub(/^.*fn[ \t]*(\[[^]]*\][ \t]*)?\(/, "", s)
-	while (match(s, /[A-Za-z_][A-Za-z0-9_]* &/)) {
-		frag = substr(s, RSTART, RLENGTH)
-		split(frag, parts, " ")
-		name = parts[1]
+# a nested fn literal's own parameters hide the outer names until its body closes: each one that
+# is a watched name is pushed with the depth the literal starts at, and comes back when the depth
+# falls to it again. Every parameter, pointer or value: `fn (app App)` hides `app` as surely as
+# `fn (app &App)` does.
+function shadow(s,    plist, n, i, p, w, name) {
+	plist = s
+	sub(/^.*fn[ \t]*(\[[^]]*\][ \t]*)?\(/, "", plist)
+	sub(/\).*$/, "", plist)
+	n = split(plist, p, ",")
+	for (i = 1; i <= n; i++) {
+		w = p[i]
+		sub(/^[ \t]*(mut[ \t]+)?/, "", w)
+		match(w, /^[A-Za-z_][A-Za-z0-9_]*/)
+		if (RLENGTH <= 0) {
+			continue
+		}
+		name = substr(w, 1, RLENGTH)
 		if (name in muts) {
 			nsh++
 			sh_name[nsh] = name
 			sh_depth[nsh] = depth
 			delete muts[name]
 		}
-		s = substr(s, RSTART + RLENGTH)
 	}
 }
 
-function restore(    k) {
+function restore() {
 	while (nsh > 0 && depth <= sh_depth[nsh]) {
 		muts[sh_name[nsh]] = 1
 		nsh--
 	}
 }
 
-function start_fn() {
-	delete muts
-	nsh = 0
-	depth = 0
-	in_sig = 1
-	sig = ""
-}
-
-# `text` is a body statement (a whole line, or what follows a one-line fn's opening brace)
-function check(text,    line, name) {
-	if (text ~ /\/\/ copy:/) {
+# every statement of a line (or of the part of it after a signature's opening brace)
+function check(raw, s,    n, i, parts, st, name) {
+	if (raw ~ /\/\/ copy:/) {
 		return
 	}
-	line = text
-	sub(/[ \t]*\/\/.*$/, "", line)
-	sub(/[ \t]*\}[ \t]*$/, "", line) # a one-line body's closing brace
-	for (name in muts) {
-		if (line ~ "^[ \t]*(mut )?[A-Za-z_][A-Za-z0-9_]*[ \t]*:?=[ \t]*" name "[ \t]*$") {
-			print FILENAME ":" FNR ": " $0
+	n = split(s, parts, /[{};]/)
+	for (i = 1; i <= n; i++) {
+		st = parts[i]
+		for (name in muts) {
+			if (st ~ "^[ \t]*(mut[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*:?=[ \t]*" name "[ \t]*$") {
+				print FILENAME ":" FNR ": " raw
+				return
+			}
 		}
 	}
 }
 
-FNR == 1 { delete muts; nsh = 0; depth = 0; in_sig = 0 }
-/^(pub )?fn / { start_fn() }
+function end_fn() {
+	delete muts
+	nsh = 0
+	depth = 0
+	in_fn = 0
+}
+
+FNR == 1 { end_fn(); in_sig = 0 }
+/^(pub )?fn / {
+	end_fn()
+	in_sig = 1
+	sig = ""
+}
 in_sig {
-	# a signature runs to its body's opening brace — at the end of a line, or followed by the
-	# whole body on that line (`fn (mut app App) f() { copy := app }`), which is then checked
-	sig = sig " " $0
-	if (index($0, "{") > 0) {
+	# a signature runs to its body's opening brace: at the end of a line, or followed by the
+	# body on that same line (`fn (mut app App) f() { copy := app }`)
+	c = code($0)
+	sig = sig " " c
+	k = index(c, "{")
+	if (k > 0) {
 		in_sig = 0
+		in_fn = 1
 		collect(sig)
-		check(substr($0, index($0, "{") + 1))
-		depth = brace_delta($0)
+		rest = substr(c, k + 1)
+		if (rest ~ /fn[ \t]*(\[[^]]*\][ \t]*)?\(/) {
+			shadow(rest)
+		}
+		check($0, rest)
+		depth = brace_delta(c)
+		restore()
+		if (depth <= 0) {
+			end_fn()
+		}
 	}
 	next
 }
-{
-	if ($0 ~ /fn[ \t]*(\[[^]]*\][ \t]*)?\(/) {
-		shadow($0)
+in_fn {
+	c = code($0)
+	if (c ~ /fn[ \t]*(\[[^]]*\][ \t]*)?\(/) {
+		shadow(c)
 	}
-	check($0)
-	depth += brace_delta($0)
+	check($0, c)
+	depth += brace_delta(c)
 	restore()
+	# the outermost body closed: what follows is top-level, in no fn's scope
+	if (depth <= 0) {
+		end_fn()
+	}
 }
