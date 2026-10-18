@@ -200,9 +200,9 @@ fn test_a_transfer_survives_the_poll_that_saw_its_first_frame() {
 	peer.close()
 }
 
-// A TRANSFER WHOSE PEER IS SILENT FOR N_Cr IS GIVEN UP: a Consecutive Frame arriving after that
+// A TRANSFER THE CHANNEL WAITED N_Cr FOR IS GIVEN UP: a Consecutive Frame arriving after that
 // is a stale tail, dropped, and the next message is read as itself.
-fn test_a_kept_transfer_is_dropped_after_n_cr() {
+fn test_a_kept_transfer_is_dropped_after_n_cr_of_waiting() {
 	mut peer := transport.open('inproc:isotp-ncr') or {
 		assert false, 'in-process bus: ${err}'
 		return
@@ -211,9 +211,14 @@ fn test_a_kept_transfer_is_dropped_after_n_cr() {
 		assert false, 'software channel: ${err}'
 		return
 	}
+	ch.cr_window_ms = 100
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 14, 1, 2, 3, 4, 5, 6] }) or {}
-	ch.recv(50) or {}
-	time.sleep((cr_timeout_ms + 200) * time.millisecond)
+	if _ := ch.recv(400) {
+		assert false, 'only the First Frame has arrived'
+	} else {
+		// given up after N_Cr of waiting, then silence for the rest of the deadline
+		assert err.msg().starts_with('timeout'), err.msg()
+	}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x21), 7, 8, 9, 10, 11, 12, 13] }) or {}
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x01), 0xBB] }) or {}
 	next := ch.recv(500) or {
@@ -221,6 +226,111 @@ fn test_a_kept_transfer_is_dropped_after_n_cr() {
 		return
 	}
 	assert next == [u8(0xBB)]
+	ch.close()
+	peer.close()
+}
+
+// N_Cr IS PER CONSECUTIVE FRAME: each gap is under it, so a transfer whose gaps together exceed
+// it is still received.
+fn test_n_cr_restarts_at_every_consecutive_frame() {
+	mut peer := transport.open('inproc:isotp-ncr-gaps') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-ncr-gaps', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	ch.cr_window_ms = 200
+	spawn fn [mut peer] () {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 27, 1, 2, 3, 4, 5, 6] }) or {}
+		for sn in 1 .. 4 {
+			time.sleep(150 * time.millisecond) // under N_Cr each, 450 ms in all
+			peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x20 | sn), 0, 0, 0, 0, 0, 0, 0] }) or {}
+		}
+	}()
+	// polled as a server polls, so each gap is spent in receives that time out
+	mut pdu := []u8{}
+	for _ in 0 .. 40 {
+		pdu = ch.recv(50) or { continue }
+		break
+	}
+	assert pdu.len == 27, 'gaps each under N_Cr ended the transfer'
+	ch.close()
+	peer.close()
+}
+
+// FRAMES THAT ARRIVED WHILE NOBODY WAS READING ARE ON TIME: only time a recv spends blocked
+// counts towards N_Cr, so a caller that reads again later than N_Cr still completes a transfer
+// whose frames came promptly.
+fn test_frames_queued_between_receives_complete_the_transfer() {
+	mut peer := transport.open('inproc:isotp-queued') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-queued', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	ch.cr_window_ms = 100
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 14, 1, 2, 3, 4, 5, 6] }) or {}
+	ch.recv(20) or { assert err.msg() == stall_note, err.msg() }
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x21), 7, 8, 9, 10, 11, 12, 13] }) or {}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x22), 14] }) or {}
+	time.sleep(300 * time.millisecond) // three N_Cr windows, nobody reading
+	pdu := ch.recv(500) or {
+		assert false, 'frames queued while nobody read were dropped: ${err}'
+		return
+	}
+	assert pdu == []u8{len: 14, init: u8(index + 1)}
+	ch.close()
+	peer.close()
+}
+
+// A SINGLE FRAME IN PLACE OF THE NEXT CONSECUTIVE FRAME, WITHIN ONE RECEIVE, is the next message
+// too (ISO 15765-2): the same rule wherever the deadline fell.
+fn test_a_single_frame_mid_transfer_is_the_next_message() {
+	mut peer := transport.open('inproc:isotp-sf-mid') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-sf-mid', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 14, 1, 2, 3, 4, 5, 6] }) or {}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x02), 0xCC, 0xDD] }) or {}
+	next := ch.recv(500) or {
+		assert false, 'a Single Frame mid-transfer was refused: ${err}'
+		return
+	}
+	assert next == [u8(0xCC), 0xDD]
+	ch.close()
+	peer.close()
+}
+
+// A DRAIN READS A KEPT TRANSFER'S FRAMES AWAY, so it drops the transfer: what arrives after is
+// judged with none in progress.
+fn test_a_drain_drops_a_kept_transfer() {
+	mut peer := transport.open('inproc:isotp-drain-kept') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-drain-kept', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 20, 1, 2, 3, 4, 5, 6] }) or {}
+	ch.recv(20) or {}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x21), 7, 8, 9, 10, 11, 12, 13] }) or {}
+	ch.drain_quiet(30)
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x22), 14, 15, 16, 17, 18, 19, 20] }) or {}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x01), 0xEE] }) or {}
+	next := ch.recv(500) or {
+		assert false, 'the reply after a drain was lost: ${err}'
+		return
+	}
+	assert next == [u8(0xEE)]
 	ch.close()
 	peer.close()
 }

@@ -52,16 +52,14 @@ mut:
 	// the caller read a reply to, and then a segmented send whose drain discarded a LATER reply,
 	// which is exactly what the flag exists to avoid.
 	fc_dirty bool
-	// A transfer whose First Frame arrived but whose Consecutive Frames had not all arrived when
-	// a recv's deadline ended. It is KEPT for the next recv, as the kernel channel goes on
-	// reassembling behind a read that timed out: a server polling recv(50) otherwise drops every
-	// multi-frame request whose frames straddle one poll's end (#467). Dropped when its peer has
-	// been silent for N_Cr (`cr_timeout_ms`), on any framing error, and when a Single or First
-	// Frame arrives in its place (the peer moved on).
-	partial       []u8
-	partial_total int // 0: no transfer in progress
-	partial_sn    u8
-	partial_at    u64 // sys_mono_now of its last frame
+	// The transfer being reassembled, KEPT across recv calls: a recv whose deadline ends
+	// mid-transfer returns `stall_note` and the next recv continues it, as the kernel channel goes
+	// on reassembling behind a read that timed out. A server polling recv(50) otherwise dropped
+	// every multi-frame request whose frames straddled one poll's end (#467).
+	rx Reassembly
+	// A Single or First Frame that arrived in place of the next Consecutive Frame: the peer moved
+	// on, so the transfer was dropped and this frame is the next message (ISO 15765-2).
+	held []u8
 pub mut:
 	// How long ONE transfer may spend BLOCKED ON THE PEER, in milliseconds
 	// (`fc_total_wait_ms` for the reasoning and for why our own STmin pacing is not counted).
@@ -77,6 +75,11 @@ pub mut:
 	// peer answers on its own schedule lengthens it, so a stalled test thread is not read as a
 	// peer that missed its window.
 	fc_window_ms int = fc_timeout_ms
+	// How long the channel may WAIT for the next Consecutive Frame of a transfer before giving it
+	// up (ISO's N_Cr), in milliseconds; `cr_timeout_ms` is the default. Only time spent blocked in
+	// a recv counts: what arrived while nobody was reading is queued, and on time. A field for the
+	// same reason as `fc_window_ms`, so a test needs no second of real time.
+	cr_window_ms int = cr_timeout_ms
 	// stop_requested, when set, is asked while a segmented send waits — in its STmin pacing and
 	// for each Flow Control — and a true answer abandons the transfer (#347). It is asked while a
 	// recv waits too, so a worker blocked on an answer leaves when told (`abandoned_recv_note`). For a RUN WORKER:
@@ -147,6 +150,9 @@ pub fn on_bus(bus transport.Bus, iface string, tx_id u32, rx_id u32, ext bool) !
 // send segments `data` into ISO-TP frames: a Single Frame for ≤7 bytes, else a
 // First Frame + (after a Flow Control) Consecutive Frames.
 pub fn (mut c SoftChannel) send(data []u8) ! {
+	// a channel that sends has moved on from a transfer a recv cut short; its late frames are a
+	// stale tail from here (and the Flow Control wait below would read them away)
+	c.rx = Reassembly{}
 	// AN EMPTY PDU IS REFUSED HERE AS THE KERNEL REFUSES IT: encoded, it is a Single Frame with
 	// SF_DL 0, which no receiver accepts, and a platform-transparent open() must not transmit it
 	// on one platform only (codex round 2 on #225).
@@ -272,8 +278,8 @@ fn (mut c SoftChannel) send_segmented(data []u8) ! {
 // it must be counted: a peer answering every request with WAIT never trips a timeout, because a
 // frame keeps arriving, and without n_wft_max `send` would block for as long as it kept doing it.
 //
-// STALE CONSECUTIVE FRAMES ARE SKIPPED: a transfer this channel abandoned on its deadline can
-// still be arriving when the caller sends the next request, and the first frame met while waiting
+// STALE CONSECUTIVE FRAMES ARE SKIPPED: a transfer this channel was receiving (dropped by the
+// send, see `send`) can still be arriving when the caller sends the next request, and the first frame met while waiting
 // for Flow Control was one of them — "expected Flow Control" for a peer that had not answered yet
 // (codex round 11 on #225).
 fn (mut c SoftChannel) await_flow_control(mut budget WaitBudget) !FlowControl {
@@ -382,11 +388,10 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	// so a peer stalling just under it between frames made request(..., 2000) wait many times
 	// two seconds, where the kernel channel bounds the reassembled PDU (codex round 3 on #225).
 	// The deadline bounds the CALLER'S wait, not the transfer: one it cuts short is kept for the
-	// next recv (`partial`), as the kernel goes on reassembling behind a read that timed out.
+	// next recv (`rx`), as the kernel goes on reassembling behind a read that timed out.
 	// Negative is "forever", as everywhere else.
 	deadline := time.ticks() + i64(timeout_ms)
 	c.scanned = 0
-	mut first := []u8{}
 	// What the skip below swallowed, so a timeout can say so (#296). Read as a message, an
 	// orphan Flow Control used to surface as `unexpected PCI 0x31`; skipping it is right, but it
 	// turned a diagnosable peer into a bare `timeout` — the one answer that says nothing about
@@ -394,42 +399,47 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	mut orphan_fc := 0
 	mut orphan_pci := u8(0)
 	for {
-		mut rem := timeout_ms
-		if timeout_ms >= 0 {
-			rem = int(deadline - time.ticks())
-			// A zero timeout keeps polling past stale Consecutive Frames as well: the poll ends
-			// when rx_raw reports the bus empty, not after the first frame it had to drop (codex
-			// round 13 on #225). A positive timeout expires by the clock.
-			if rem <= 0 && timeout_ms > 0 {
-				return error(orphan_note('timeout', orphan_fc, orphan_pci))
+		if c.rx.total > 0 {
+			// a transfer in progress, kept from an earlier recv or begun below
+			pdu := c.reassemble(timeout_ms, deadline)!
+			if pdu.len > 0 {
+				return pdu
 			}
-			if rem < 0 {
-				rem = 0
-			}
+			// empty: the transfer ended without a PDU (the peer moved on, or N_Cr passed);
+			// what comes next is read as a first frame
 		}
-		// THE TIMEOUT USUALLY COMES FROM HERE, not from the deadline check above: a caller with
-		// time left blocks inside rx_raw and that call is what expires. Decorating only the
-		// check left the diagnostic unreachable on the ordinary path (#296).
-		first = c.rx_raw(rem) or { return error(orphan_note(err.msg(), orphan_fc, orphan_pci)) }
+		mut first := []u8{}
+		if c.held.len > 0 {
+			first = c.held
+			c.held = []u8{}
+		} else {
+			mut rem := timeout_ms
+			if timeout_ms >= 0 {
+				rem = int(deadline - time.ticks())
+				// A zero timeout keeps polling past stale Consecutive Frames as well: the poll
+				// ends when rx_raw reports the bus empty, not after the first frame it had to
+				// drop (codex round 13 on #225). A positive timeout expires by the clock.
+				if rem <= 0 && timeout_ms > 0 {
+					return error(orphan_note('timeout', orphan_fc, orphan_pci))
+				}
+				if rem < 0 {
+					rem = 0
+				}
+			}
+			// THE TIMEOUT USUALLY COMES FROM HERE, not from the deadline check above: a caller
+			// with time left blocks inside rx_raw and that call is what expires. Decorating only
+			// the check left the diagnostic unreachable on the ordinary path (#296).
+			first = c.rx_raw(rem) or { return error(orphan_note(err.msg(), orphan_fc, orphan_pci)) }
+		}
 		if first.len < 1 {
 			return error('ISO-TP: empty frame')
 		}
-		if c.partial_total > 0 {
-			if time.sys_mono_now() - c.partial_at > u64(cr_timeout_ms) * 1_000_000 {
-				c.drop_partial() // N_Cr passed: the frame below is judged with no transfer open
-			} else if (first[0] & 0xF0) == 0x20 {
-				return c.reassemble(first, timeout_ms, deadline)
-			} else if (first[0] & 0xF0) != 0x30 {
-				// the peer moved on: this frame starts its next message. An orphan Flow Control
-				// (0x3x) says nothing about the peer's transfer and is skipped below, keeping it.
-				c.drop_partial()
-			}
-		}
+		pci := first[0] & 0xF0
 		// A CONSECUTIVE FRAME WITH NO TRANSFER IN PROGRESS IS A STALE TAIL, not a message: the
-		// rest of a transfer this channel abandoned on its deadline, still arriving from a peer
-		// that did not know. A flush at abort time cannot catch frames that have not arrived
-		// yet, so they are dropped HERE, where the next reply is awaited (codex round 4 on
-		// #225; the first cut flushed and the test proved it insufficient).
+		// rest of a transfer this channel gave up (N_Cr, a framing error, a drain), still
+		// arriving from a peer that did not know. A flush at that point cannot catch frames that
+		// have not arrived yet, so they are dropped HERE, where the next reply is awaited (codex
+		// round 4 on #225; the first cut flushed and the test proved it insufficient).
 		//
 		// AND SO IS AN ORPHAN FLOW CONTROL, for the same reason and by the same remedy (#226).
 		// This side never expects one — it SENDS Flow Control as a receiver and reads it only
@@ -439,118 +449,145 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		// this leftover is new: the old send accepted the first 0x3x it saw and there was never
 		// a second one to strand. Read as a message it surfaced as `unexpected PCI 0x31` in
 		// place of the next reply (codex on #226).
-		if (first[0] & 0xF0) == 0x20 || (first[0] & 0xF0) == 0x30 {
-			if (first[0] & 0xF0) == 0x30 {
+		if pci == 0x20 || pci == 0x30 {
+			if pci == 0x30 {
 				orphan_fc++
 				orphan_pci = first[0]
 			}
 			continue
 		}
-		break
-	}
-	pci := first[0] & 0xF0
-	if pci == 0x00 {
-		payload := single_frame(first)!
-		c.fc_dirty = false // a message got through: see recv_succeeded
-		return payload
-	}
-	if pci == 0x10 {
-		if first.len != 8 {
-			// A First Frame carries exactly six initial payload bytes on a classic channel: shorter,
-			// those bytes would be taken from the Consecutive Frames instead -- a shifted PDU
-			// returned as valid (codex round 14 on #225); longer, an FD-sized frame on our id could
-			// complete a PDU on its own (codex round 18).
-			return error('ISO-TP FF too short')
+		if pci == 0x00 {
+			payload := single_frame(first)!
+			c.fc_dirty = false // a message got through: see recv_succeeded
+			return payload
 		}
-		total := (int(first[0] & 0x0F) << 8) | int(first[1])
-		if total <= 7 {
-			// A length that fits a Single Frame must be sent as one (ISO 15765-2); accepted, a
-			// total of 0..6 returned the padding bytes as a PDU and 7 waited for a Consecutive
-			// Frame that never comes (codex round 7 on #225).
-			return error('ISO-TP FF declares ${total} bytes, which must be a Single Frame')
-		}
-		c.partial = first[2..].clone()
-		c.partial_total = total
-		c.partial_sn = 1
-		c.partial_at = time.sys_mono_now()
-		c.tx([u8(0x30), 0, 0]) or {
-			c.drop_partial()
-			return err
-		} // Flow Control: CTS, block size 0, STmin 0
-		return c.reassemble([]u8{}, timeout_ms, deadline)
-	}
-	return error('ISO-TP: unexpected PCI 0x${first[0]:02X}')
-}
-
-// reassemble collects the Consecutive Frames of the transfer in `partial`, starting with `cf`
-// when the caller already read one. The 4-bit sequence number is validated: a gap (a dropped
-// frame) or a non-CF (the NEXT message's First Frame arriving because this transfer lost a
-// frame) is a clean error rather than silently absorbing it, which used to corrupt this block
-// AND eat the next block's First Frame. A deadline ending the wait is not an error of the
-// transfer: it is kept for the next recv (see `partial`), and the caller hears `stall_note`.
-fn (mut c SoftChannel) reassemble(cf_in []u8, timeout_ms int, deadline i64) ![]u8 {
-	mut pending := cf_in
-	for c.partial.len < c.partial_total {
-		mut cf := pending
-		pending = []u8{}
-		if cf.len == 0 {
-			mut rem := timeout_ms
-			if timeout_ms > 0 {
-				rem = int(deadline - time.ticks())
-				if rem <= 0 {
-					return error(stall_note)
-				}
+		if pci == 0x10 {
+			if first.len != 8 {
+				// A First Frame carries exactly six initial payload bytes on a classic channel:
+				// shorter, those bytes would be taken from the Consecutive Frames instead -- a
+				// shifted PDU returned as valid (codex round 14 on #225); longer, an FD-sized frame
+				// on our id could complete a PDU on its own (codex round 18).
+				return error('ISO-TP FF too short')
 			}
-			// A zero timeout collects what is already queued, Consecutive Frames included:
-			// rx_raw(0) reads until the bus is empty (codex round 14 on #225).
-			cf = c.rx_raw(rem) or {
-				if err.msg() == 'timeout' {
-					return error(stall_note)
-				}
-				c.drop_partial()
+			total := (int(first[0] & 0x0F) << 8) | int(first[1])
+			if total <= 7 {
+				// A length that fits a Single Frame must be sent as one (ISO 15765-2); accepted, a
+				// total of 0..6 returned the padding bytes as a PDU and 7 waited for a Consecutive
+				// Frame that never comes (codex round 7 on #225).
+				return error('ISO-TP FF declares ${total} bytes, which must be a Single Frame')
+			}
+			mut buf := []u8{cap: total}
+			buf << first[2..]
+			c.rx = Reassembly{
+				buf:   buf
+				total: total
+				sn:    1
+			}
+			c.tx([u8(0x30), 0, 0]) or { // Flow Control: CTS, block size 0, STmin 0
+				c.rx = Reassembly{}
 				return err
 			}
-			if cf.len < 1 {
-				continue // empty/padding read — ignore
+			continue // reassembled at the top of the loop
+		}
+		return error('ISO-TP: unexpected PCI 0x${first[0]:02X}')
+	}
+	return error('unreachable')
+}
+
+// Reassembly is a multi-frame transfer in progress. `total == 0` is none; dropping one is one
+// assignment (`c.rx = Reassembly{}`), so no field can be left behind.
+struct Reassembly {
+mut:
+	buf     []u8
+	total   int
+	sn      u8
+	idle_ns u64 // time a recv spent blocked with no Consecutive Frame since the last one
+}
+
+// reassemble collects the Consecutive Frames of the transfer in `rx`. The 4-bit sequence number
+// is validated: a gap (a dropped frame) is a clean error rather than silently absorbed, which
+// used to corrupt this block. A Single or First Frame in place of the next Consecutive Frame
+// means the peer moved on: the transfer is dropped, the frame is `held` for recv to read as the
+// next message, and an empty PDU says so (ISO 15765-2). A deadline ending the wait is not an
+// error of the transfer: it is kept for the next recv and the caller hears `stall_note`. Only
+// time spent blocked here counts towards N_Cr (`cr_window_ms`): frames that arrived while nobody
+// was reading are queued, and read as on time.
+fn (mut c SoftChannel) reassemble(timeout_ms int, deadline i64) ![]u8 {
+	for c.rx.buf.len < c.rx.total {
+		mut rem := timeout_ms
+		if timeout_ms > 0 {
+			rem = int(deadline - time.ticks())
+			if rem <= 0 {
+				return error(stall_note)
 			}
 		}
-		if (cf[0] & 0xF0) != 0x20 {
-			c.drop_partial()
+		// never wait past N_Cr: the transfer is given up then, whatever the caller's deadline
+		left_ms := (i64(c.cr_window_ms) * 1_000_000 - i64(c.rx.idle_ns)) / 1_000_000
+		if left_ms <= 0 {
+			c.rx = Reassembly{}
+			return []u8{}
+		}
+		if rem < 0 || i64(rem) > left_ms {
+			rem = int(left_ms)
+		}
+		t0 := time.sys_mono_now()
+		// A zero timeout collects what is already queued, Consecutive Frames included: rx_raw(0)
+		// reads until the bus is empty (codex round 14 on #225).
+		cf := c.rx_raw(rem) or {
+			if err.msg() == 'timeout' {
+				c.rx.idle_ns += time.sys_mono_now() - t0
+				if c.rx.idle_ns >= u64(c.cr_window_ms) * 1_000_000 {
+					c.rx = Reassembly{} // N_Cr: the peer stopped mid-transfer
+					return []u8{}
+				}
+				return error(stall_note)
+			}
+			c.rx = Reassembly{}
+			return err
+		}
+		if cf.len < 1 {
+			continue // empty/padding read — ignore
+		}
+		pci := cf[0] & 0xF0
+		if pci == 0x30 {
+			continue // an orphan Flow Control says nothing about the peer's transfer
+		}
+		if pci == 0x00 || pci == 0x10 {
+			c.rx = Reassembly{}
+			c.held = cf
+			return []u8{}
+		}
+		if pci != 0x20 {
+			c.rx = Reassembly{}
 			return error('ISO-TP: expected Consecutive Frame, got PCI 0x${cf[0]:02X} mid-reassembly (a frame was lost)')
 		}
-		if (cf[0] & 0x0F) != c.partial_sn {
-			sn := c.partial_sn
-			c.drop_partial()
+		if (cf[0] & 0x0F) != c.rx.sn {
+			sn := c.rx.sn
+			c.rx = Reassembly{}
 			return error('ISO-TP: CF sequence gap — got SN ${cf[0] & 0x0F}, expected ${sn} (a frame was lost)')
 		}
 		if cf.len > 8 {
 			// Classic ISO-TP: seven payload bytes per Consecutive Frame; an FD-sized frame on our
 			// id is not one of ours (codex round 17 on #225).
-			c.drop_partial()
+			c.rx = Reassembly{}
 			return error('ISO-TP: Consecutive Frame of ${cf.len} bytes on a classic channel')
 		}
-		if cf.len < 8 && c.partial.len + cf.len - 1 < c.partial_total {
+		if cf.len < 8 && c.rx.buf.len + cf.len - 1 < c.rx.total {
 			// Only the LAST Consecutive Frame may be short; a short one with more of the PDU
 			// still to come would have its missing bytes filled from the next frame — a shifted
 			// PDU returned as valid (codex round 16 on #225).
-			left := c.partial_total - c.partial.len
-			c.drop_partial()
+			left := c.rx.total - c.rx.buf.len
+			c.rx = Reassembly{}
 			return error('ISO-TP: short Consecutive Frame (${cf.len - 1} bytes) with ${left} still to come')
 		}
-		c.partial_sn = (c.partial_sn + 1) & 0x0F
-		c.partial << cf[1..]
-		c.partial_at = time.sys_mono_now()
+		c.rx.sn = (c.rx.sn + 1) & 0x0F
+		c.rx.buf << cf[1..]
+		c.rx.idle_ns = 0
 	}
-	out := c.partial[..c.partial_total].clone()
-	c.drop_partial()
+	out := c.rx.buf[..c.rx.total].clone()
+	c.rx = Reassembly{}
 	c.fc_dirty = false // a message got through: see recv_succeeded
 	return out
-}
-
-fn (mut c SoftChannel) drop_partial() {
-	c.partial = []u8{}
-	c.partial_total = 0
-	c.partial_sn = 0
 }
 
 pub fn (mut c SoftChannel) close() {
@@ -575,6 +612,7 @@ fn (mut c SoftChannel) tx(payload []u8) ! {
 // quiet_ms — used to flush a stale in-flight transfer (e.g. a timed-out dump still streaming)
 // before re-requesting, so the next recv() starts on a fresh First Frame.
 pub fn (mut c SoftChannel) drain_quiet(quiet_ms int) {
+	c.rx = Reassembly{} // what is read away below includes its frames
 	for {
 		_ := c.rx_raw(quiet_ms) or { return } // quiet window reached — done
 	}
@@ -668,6 +706,7 @@ fn (mut c SoftChannel) bus_recv(ms int) !transport.CanFrame {
 // wanted. Read at the holder's cadence, the cursor never falls behind. Bounded by `max` frames;
 // an error is the bus gone, not a quiet one.
 pub fn (mut c SoftChannel) drain_idle(max int) !int {
+	c.rx = Reassembly{} // what is read away below includes its frames
 	mut n := 0
 	for n < max {
 		c.bus.recv(0) or {
@@ -733,6 +772,7 @@ fn orphan_note(msg string, n int, pci u8) string {
 // where the next reply is awaited instead. Before a send there is no deadline to overrun.
 // Returns false when a stop request ended it before the quiet window was reached.
 fn (mut c SoftChannel) flush_rx() bool {
+	c.rx = Reassembly{} // what is read away below includes its frames
 	for _ in 0 .. flush_max_frames {
 		// a read that fails is the quiet window reached, unless the stop ended it: a stoppable
 		// read asks per slice, so this is where a stop mid-drain is seen

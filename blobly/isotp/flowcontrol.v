@@ -42,8 +42,7 @@ pub const n_wft_max = 16
 pub const fc_timeout_ms = 1000
 
 // cr_timeout_ms is ISO 15765-2's N_Cr: how long a receiver waits for the next Consecutive Frame
-// before it gives the transfer up. The software channel keeps a transfer a recv's deadline cut
-// short (`SoftChannel.partial`) for this long after its last frame.
+// before it gives the transfer up. The default of `SoftChannel.cr_window_ms`.
 pub const cr_timeout_ms = 1000
 
 // stmin_micros converts the STmin byte to microseconds.
