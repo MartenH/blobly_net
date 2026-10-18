@@ -32,13 +32,27 @@ fn (app &App) pointer_receiver() {
 fn (mut s Stats) other_type() {
 	c := s
 }
+
+fn multiline(path string,
+	mut log Log, mut names []string) {
+	snapshot := log
+}
+
+fn (mut app App) after_a_literal() {
+	spawn fn (app &App) {
+		inner := app
+	}(app)
+	later := app
+}
 EOF
 got=$(awk -f scripts/mut_alias.awk "$t/fix.v" | sed "s|^$t/||")
 want='fix.v:4: 	ap := app
 fix.v:5: 	mut bp := app // a trailing comment does not hide it
 fix.v:6: 	cp = app
 fix.v:17: 	a := app
-fix.v:26: 	c := s'
+fix.v:26: 	c := s
+fix.v:31: 	snapshot := log
+fix.v:38: 	later := app'
 if [ "$got" = "$want" ]; then
 	echo "mut_alias_test: ok"
 	exit 0
