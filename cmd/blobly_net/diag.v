@@ -1,5 +1,6 @@
 module main
 
+import os
 import blobly.transport
 import blobly.telem
 import blobly.script
@@ -269,30 +270,67 @@ fn (app &App) trace_iface() string {
 	// manifest was ignored and another destination's channel answered for it — trace commands
 	// going to the wrong bus in a multi-bus project.
 	//
-	// UNDER THE LOCK, taken here. The previous version of this comment asserted that callers
-	// held app.mu; they do not — trace_dump_worker, the shell and the flash worker all release
-	// it before calling, and the panel never takes it. So the scan below ran unlocked against
-	// rows an rx_loop was publishing or a toggle was rewriting. None of the callers hold it,
-	// which is what makes taking it here safe as well as necessary.
+	// UNDER THE LOCK, taken here. None of the callers (trace_dump_worker, the shell, the flash
+	// worker, the panel) hold app.mu, so the scan must take it itself.
 	mut a := unsafe { app }
 	a.mu.lock()
-	mut found := ''
-	for c in a.chans {
-		if c.monitorable() && c.manifest != '' && a.dest_is_read_locked(c.iface) {
-			found = c.iface
-			break
-		}
-	}
-	if found == '' {
-		for c in a.chans {
-			if c.monitorable() && c.running {
-				found = c.iface
-				break
+	i := a.trace_chan_locked(true)
+	found := if i >= 0 { a.chans[i].iface } else { '' }
+	a.mu.unlock()
+	return found
+}
+
+// trace_chan_locked picks the row trace commands go out on: the one carrying the manifest the
+// trace ids came from, else any row with a manifest, else the first running row. `read` asks
+// that the wire be read now (a run); false answers the same question for a stopped project.
+// -1 = none. Caller holds app.mu.
+fn (app &App) trace_chan_locked(read bool) int {
+	for want_ref in [true, false] {
+		for i, c in app.chans {
+			if !c.monitorable() || c.manifest == '' || (want_ref && c.manifest != app.manifest_ref) {
+				continue
+			}
+			if !read || app.dest_is_read_locked(c.iface) {
+				return i
 			}
 		}
 	}
+	for i, c in app.chans {
+		if c.monitorable() && (c.running || !read) {
+			return i
+		}
+	}
+	return -1
+}
+
+// trace_target_text names what Record / Stop / Dump address: the node and cores the manifest
+// describes, then the channel the commands go out on and the command id.
+fn (app &App) trace_target_text() (string, string) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	i := a.trace_chan_locked(a.running)
+	chan := if i >= 0 { '${a.chans[i].name} (${a.chans[i].iface})' } else { '' }
 	a.mu.unlock()
-	return found
+	if chan == '' {
+		return 'target: none', 'no channel to send the trace commands on'
+	}
+	node := if !app.has_manifest {
+		'whichever node answers the default ids'
+	} else if app.manifest.node != '' {
+		app.manifest.node
+	} else {
+		os.file_name(app.manifest_ref)
+	}
+	mut cores := []int{}
+	for h in app.manifest.handlers {
+		if h.core !in cores {
+			cores << h.core
+		}
+	}
+	cores.sort()
+	core_txt := if cores.len > 1 { ', cores ${cores.map(it.str()).join(' + ')}' } else { '' }
+	cmd := app.manifest.frames.or_defaults().cmd
+	return 'target: ${node}${core_txt}', 'on ${chan} · cmd 0x${cmd:03X}'
 }
 
 // trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out

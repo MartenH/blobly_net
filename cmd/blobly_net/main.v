@@ -262,6 +262,10 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_GEN') != '' {
 		app.show_gen = true
 	}
+	// And the Trace Chart panel, whose target line names what Record / Dump address.
+	if os.getenv('BLOBLY_SHOW_TCHART') != '' {
+		app.show_tchart = true
+	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
 	// Open Import ARXML on a file, and (BLOBLY_IMPORT_ARXML_GO) press Import with its defaults,
