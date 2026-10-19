@@ -444,8 +444,11 @@ fn test_a_shared_address_is_settled_where_the_node_serves() {
 	assert sys.node_for(TargetAddr{ doip: true, logical: 0x07A0 }).node == -1
 	assert name(sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, host: '192.168.0.51' })) == 'zone_a'
 	assert name(sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, host: '192.168.0.50' })) == 'sysnode'
-	// endpoints unknown: the bus still settles it
+	// one at that endpoint beats one whose endpoint is unknown
 	si := sys.nodes.map(it.name).index('sysnode')
+	sys.nodes[zi].address = ''
+	assert name(sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, host: '192.168.0.50' })) == 'sysnode'
+	// endpoints unknown: the bus still settles it
 	sys.nodes[si].address = ''
 	sys.nodes[zi].address = ''
 	sys.nodes[si].buses = ['compute']

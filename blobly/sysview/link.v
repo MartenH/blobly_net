@@ -36,9 +36,10 @@ pub:
 pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 	mut hits := sys.addressed(t)
 	if hits.len > 1 && t.doip && t.host != '' {
-		// a node at another endpoint is not it; one whose endpoint is unknown may still be
-		hits = hits.filter(sys.nodes[it].address == ''
-			|| sys.nodes[it].address.to_lower() == t.host.to_lower())
+		// the node at that endpoint; else one whose endpoint is unknown may still be it, while a
+		// node at another endpoint is not
+		exact := hits.filter(sys.nodes[it].address.to_lower() == t.host.to_lower())
+		hits = if exact.len > 0 { exact } else { hits.filter(sys.nodes[it].address == '') }
 	}
 	addr := if t.doip { 'DoIP 0x${t.logical:04X}' } else { '0x${t.req:X}/0x${t.rsp:X}' }
 	if hits.len == 0 {
