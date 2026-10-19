@@ -5,6 +5,9 @@ import time
 import blobly.uds
 import vgui
 import blobly.sysview
+import blobly.doip
+import blobly.project
+import blobly.script
 import diaghold
 
 // ---- The Diagnostics panel's DTC tab ----
@@ -147,17 +150,32 @@ fn (mut app App) diag_sys_refresh() {
 	mut targets := []DiagTarget{}
 	if app.diag_sys_ok {
 		for nt in app.diag_sys.can_targets(rows) {
-			node := app.diag_sys.nodes[nt.node].name
-			on := if nt.shared_name { '${nt.bus} (${nt.iface})' } else { nt.bus }
 			targets << DiagTarget{
 				key:   diag_key_can(nt.iface, nt.req, nt.rsp)
-				label: '${node} on ${on}  (0x${nt.req:X}/0x${nt.rsp:X})'
 				iface: nt.iface
 				chan:  nt.bus
 				rx:    nt.req
 				tx:    nt.rsp
 				ext:   nt.ext
+			}.named(app.diag_sys.nodes[nt.node].name, chan_where(nt.bus, nt.iface))
+		}
+		// and its DoIP entities, at the endpoint the system gives them (diag_targets drops one a
+		// project channel already reaches)
+		for nd in app.diag_sys.doip_targets() {
+			car := script.Carrier{
+				doip:   true
+				host:   nd.host
+				port:   doip.port
+				tester: if nd.tester != 0 { nd.tester } else { project.Channel{}.tester_addr }
+				ecu:    nd.logical
 			}
+			// no channel and no interface: nothing of the project's carries it, so a script made of
+			// its log (Copy as Lua) is not handed a channel that addresses another entity
+			targets << DiagTarget{
+				key:     'doip|' + project.compose_key('system', nd.host, '0x${nd.logical:04X}',
+					'0x${car.tester:04X}')
+				carrier: car
+			}.named(app.diag_sys.nodes[nd.node].name, '${nd.host}:${doip.port}')
 		}
 	}
 	// a loaded system that addresses nobody as 0x7E0/0x7E8: the default target's silence is expected
@@ -214,6 +232,7 @@ fn (app &App) diag_desc(t DiagTarget) DiagDesc {
 		sysview.TargetAddr{
 			doip:    true
 			logical: t.carrier.ecu
+			host:    t.carrier.host
 			bus:     t.chan
 		}
 	} else {

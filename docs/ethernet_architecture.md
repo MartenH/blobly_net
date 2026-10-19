@@ -134,7 +134,10 @@ structural), and the server takes a plain callback. This keeps the dependency ar
   unchanged. It HOLDS that connection across presses — one entity serves one tester, so it lets
   go on a target change, Disconnect, Stop, or when a script or flash starts — each one a command that
   cancels whatever the holder is blocked in (`diaghold`; `doip.open_doip_stoppable`). Each entry's label carries
-  its carrier and address (`SUT on DoIP1 (DoIP 0x1000)`). **Verified** end-to-end: the GUI
+  the ECU, its carrier, where it is and its address (`SUT (simulated) · DoIP DoIP1 (127.0.0.1:13400)
+  (0x1000)`), and the selector heads its entries by carrier and channel (`DoIP · DoIP1
+  (127.0.0.1:13400)`, `CAN · compute (vcan0)`). A node the project's `system.toml` gives a DoIP
+  entity and an address is listed too, with no DoIP channel in the project (`sysview.doip_targets`). **Verified** end-to-end: the GUI
   (autostart + `doip-demo.blobnet`) serves the entity on 127.0.0.1:13400 and an external UDS
   client reads VIN `BLOBLYNETV0SUT001` over Ethernet.
 

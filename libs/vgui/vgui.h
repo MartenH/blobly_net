@@ -165,6 +165,7 @@ void vgui_table_cell_dim(const char* s);
 int  vgui_input_text_enter(const char* label, char* buf, int bufsize);
 int  vgui_window_focused(void);
 int  vgui_combo(const char* label, const char** items, int n, int current);
+int  vgui_combo_grouped(const char* label, const char* preview, const char** items, const char** groups, int n, int current);
 #ifdef __cplusplus
 }
 #endif

@@ -233,6 +233,7 @@ fn C.vgui_window_focused() int
 fn C.vgui_key_ctrl() int
 fn C.vgui_key_ctrl_only() int
 fn C.vgui_combo(&char, &&char, int, int) int
+fn C.vgui_combo_grouped(&char, &char, &&char, &&char, int, int) int
 
 // --- lifecycle ---
 // init creates the OS window + GL context, at EXACTLY w x h (a non-positive value falls back
@@ -398,6 +399,25 @@ pub fn combo(label string, items []string, current int) int {
 		ip << it.str
 	}
 	return C.vgui_combo(label.str, unsafe { &&char(ip.data) }, items.len, current)
+}
+
+// combo_grouped draws a dropdown of `items` under a heading per run of equal `groups` (the caller
+// keeps each heading's items together), shows `preview` while closed, and returns the selected
+// index (== current when unchanged).
+pub fn combo_grouped(label string, preview string, items []string, groups []string, current int) int {
+	if items.len == 0 || groups.len != items.len {
+		return current
+	}
+	mut ip := []&char{cap: items.len}
+	for it in items {
+		ip << it.str
+	}
+	mut gp := []&char{cap: groups.len}
+	for g in groups {
+		gp << g.str
+	}
+	return C.vgui_combo_grouped(label.str, preview.str, unsafe { &&char(ip.data) }, unsafe { &&char(gp.data) },
+		items.len, current)
 }
 
 // --- widgets ---

@@ -16,7 +16,7 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 | UDS over DoIP end-to-end | ✅ headless and in the GUI — from Lua via `uds.open` on a DoIP channel |
 | Starting a simulated DoIP entity from a **project**, headless | ✅ `scripts/runtests.sh --project <p.blobnet>` |
 | **Starting a simulated DoIP entity from the GUI** | ✅ ▶ Start hosts it; the channel goes green only once the listener is up |
-| **UDS from the Diagnostics panel over a DoIP channel** | ✅ listed as a target, addressed by logical address |
+| **UDS from the Diagnostics panel over a DoIP channel** | ✅ listed as a target, addressed by logical address — also with no DoIP channel, for a node the project's `system.toml` gives an entity and an address |
 | Passive discovery — hearing an entity announce itself | ✅ `doip.listen(window_ms [, {from=}])` / `collect_announcements` |
 | A simulated entity announcing itself at Start | ✅ per DoIP **channel** (one channel is one entity): `announce_count` (0 = silent), `announce_interval_ms`, `announce_to` |
 | **Functional UDS over DoIP** — a request to the functional logical address (0xE400) | ✅ from Lua, `uds.functional` on a DoIP channel; a simulated entity answers it |

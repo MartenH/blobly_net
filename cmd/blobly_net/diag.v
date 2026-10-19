@@ -62,7 +62,10 @@ struct DiagTarget {
 	// so selecting the second silently reset to the first and requests went to the wrong bus.
 	// Eighth instance in this change of a convenient string standing in for an identity.
 	key   string
-	label string
+	label string // the whole name — '<who> · <carrier> <where>  (<address>)' — for the strip and the log
+	group string // the selector's heading: '<carrier> · <where>'
+	item  string // the selector's line under that heading: '<who>  <address>'
+	who   string // the ECU, as `named` was told it
 	iface string
 	chan  string // the CHANNEL that owns it — an interface cannot say which, when two share one
 	rx    u32    // the ECU listens here — the tester TRANSMITS to it
@@ -73,6 +76,47 @@ struct DiagTarget {
 	// logical pair — so rx/tx above are meaningless for one and the panel must not open an
 	// ISO-TP channel for it. Derived by the same carrier_of() the scripting side uses.
 	carrier script.Carrier
+}
+
+// named gives `t` its three names from what it is: `who` the ECU, `where` the channel (a CAN
+// target's with its interface — chan_where) or the DoIP endpoint, the carrier from `t.carrier`, so
+// every entry says CAN or DoIP the same way and two targets differ in the words that differ.
+fn (t DiagTarget) named(who string, where string) DiagTarget {
+	kind := if t.carrier.doip { 'DoIP' } else { 'CAN' }
+	addr := if t.carrier.doip {
+		'0x${t.carrier.ecu:04X}'
+	} else {
+		'0x${t.rx:X}→0x${t.tx:X}'
+	}
+	return DiagTarget{
+		...t
+		label: '${who} · ${kind} ${where}  (${addr})'
+		group: '${kind} · ${where}'
+		item:  '${who}  ${addr}'
+		who:   who
+	}
+}
+
+// chan_where is a target's channel as the selector shows it: its name and where it leads (a CAN
+// interface, a DoIP endpoint), or that alone where there is no name to add.
+fn chan_where(chan string, at string) string {
+	return if chan == '' || chan == at { at } else { '${chan} (${at})' }
+}
+
+// grouped orders `ts` so each selector heading's targets are together, the headings in the order
+// they first appear (a stable regroup: within a heading, the order is the list's).
+fn grouped(ts []DiagTarget) []DiagTarget {
+	mut heads := []string{}
+	for t in ts {
+		if t.group !in heads {
+			heads << t.group
+		}
+	}
+	mut out := []DiagTarget{cap: ts.len}
+	for h in heads {
+		out << ts.filter(it.group == h)
+	}
+	return out
 }
 
 // diag_targets lists what the Diagnostics panel can talk to.
@@ -92,7 +136,7 @@ fn (app &App) diag_targets() []DiagTarget {
 	plan := app.diag_plan.clone()
 	sys_targets := app.diag_sys_targets.clone()
 	// the default pair's label says so when a loaded system describes nobody there
-	nobody := if app.diag_sys_default_unknown { ', no ECU described here' } else { '' }
+	nobody := if app.diag_sys_default_unknown { ' (no ECU described)' } else { '' }
 	note := if app.diag_sys_default_unknown {
 		'the loaded system describes no ECU on 0x${diag_tx_id:X}/0x${diag_rx_id:X}: a timeout here is expected'
 	} else {
@@ -102,25 +146,42 @@ fn (app &App) diag_targets() []DiagTarget {
 	mut out := []DiagTarget{}
 	// the default target's wire: the running one in a run, the one that will be read once
 	// stopped — one key either way, so the selection and what was read under it survive a Stop
+	mut dflt := []DiagTarget{}
 	if hw := app.diag_default_iface() {
+		// named by the channel the wire is, so it heads the selector with the system's targets on it
+		mut hw_name := ''
+		a.mu.lock()
+		for c in app.chans {
+			if c.monitorable() && c.iface == hw {
+				hw_name = c.name
+				break
+			}
+		}
+		a.mu.unlock()
 		if !plan.any(it.key == diag_key_can(hw, diag_tx_id, diag_rx_id)) {
-			out << DiagTarget{
+			dflt << DiagTarget{
 				key:   diag_key_can(hw, diag_tx_id, diag_rx_id)
-				label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X}${nobody})'
 				note:  note
 				iface: hw
 				rx:    diag_tx_id
 				tx:    diag_rx_id
-			}
+			}.named('default${nobody}', chan_where(hw_name, hw))
 		}
+	}
+	// first — and so selected first — unless the loaded system says nobody answers there
+	if nobody == '' {
+		out << dflt
 	}
 	out << plan
 	// the system's nodes on the running channels named after their buses (diag_dtc.v): a bench
 	// project addresses real ECUs it simulates nothing for, which no other entry reaches
 	for t in sys_targets {
-		if !out.any(it.key == t.key) {
+		if !t.carrier.doip && !out.any(it.key == t.key) {
 			out << t
 		}
+	}
+	if nobody != '' {
+		out << dflt
 	}
 	// Every enabled DoIP channel is addressable, hosted by us or not. The panel's DoIP support
 	// would otherwise reach only entities this application started — while the normal
@@ -153,25 +214,45 @@ fn (app &App) diag_targets() []DiagTarget {
 		if out.any(it.key == diag_key_doip(c)) {
 			continue
 		}
+		// the ECU by the name the system gives the entity at that endpoint, else the channel's
+		described := sys_targets.filter(it.carrier.doip && same_entity(it.carrier, car))
+		who := if d := described[0] { d.who } else { 'ECU' }
 		out << DiagTarget{
 			key:     diag_key_doip(c)
-			label:   '${c.name}  (DoIP 0x${c.ecu_addr:04X})'
 			iface:   c.iface
 			chan:    c.name // what sysview.node_for settles a shared logical address by
 			carrier: car
+		}.named(who, chan_where(c.name, '${car.host}:${car.port}'))
+	}
+	// the system's DoIP entities (diag_dtc.v), where no project channel reaches one: a project
+	// need not carry a DoIP channel for an ECU its system.toml says is on the network. One that
+	// does decides — ticked off, or hosting an entity whose bind failed, it is skipped above on
+	// purpose, and the system's entry must not reach the entity in its place.
+	for t in sys_targets {
+		if t.carrier.doip && !app.proj.channels.any(it.is_doip()
+			&& same_entity(script.carrier_of(it), t.carrier)) && !out.any(it.key == t.key) {
+			out << t
 		}
 	}
 	if out.len == 0 {
 		out << DiagTarget{
 			key:   diag_key_can(app.diag_iface(), diag_tx_id, diag_rx_id)
-			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X}${nobody})'
 			note:  note
 			iface: app.diag_iface()
 			rx:    diag_tx_id
 			tx:    diag_rx_id
-		}
+		}.named('default${nobody}', if app.diag_iface() != '' { app.diag_iface() } else { 'no channel' })
 	}
-	return out
+	return grouped(out)
+}
+
+// same_entity: two DoIP carriers reach one entity — one endpoint, one logical address. The
+// tester address is not part of it: a channel the project configures to that entity is the one
+// to use, whatever tester it names. Hosts compare as written: a channel naming the entity by a
+// hostname is not matched to the system's address, since resolving it here would be a lookup per
+// frame on the GUI thread.
+fn same_entity(a script.Carrier, b script.Carrier) bool {
+	return a.host.to_lower() == b.host.to_lower() && a.port == b.port && a.ecu == b.ecu
 }
 
 fn (mut app App) diag_done() {
