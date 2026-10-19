@@ -142,6 +142,7 @@ fn C.vgui_plot_mouse_x() f64
 fn C.vgui_plot_vlines(&char, &f32, int)
 fn C.vgui_plot_begin_lim(&char, f32, f64, f64, int, f64, f64) int
 fn C.vgui_keep_busy()
+fn C.vgui_swap_ns() u64
 fn C.vgui_plot_end()
 fn C.vgui_selectable(&char, int) int
 fn C.vgui_selectable_row(&char, int) int
@@ -626,6 +627,11 @@ pub fn plot_mouse_x() f64 {
 pub fn plot_begin_lim(title string, height f32, x_min f64, x_max f64, y1_max f64, y2_max f64) bool {
 	return C.vgui_plot_begin_lim(title.str, height, x_min, x_max, if y2_max > 0 { 2 } else { 1 },
 		y1_max, y2_max) == 1
+}
+
+// swap_ns is how long the last frame_end blocked in the buffer swap: the vsync wait.
+pub fn swap_ns() u64 {
+	return C.vgui_swap_ns()
 }
 
 // keep_busy keeps the event-driven loop rendering at full rate with no input, for a view that

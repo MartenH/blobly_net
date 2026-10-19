@@ -329,6 +329,7 @@ fn main() {
 	for vgui.running() {
 		frame++
 		frame_ns := time.sys_mono_now() // after the idle wait: the frame's work starts here
+		frame_gc := gc_count()
 		if frame == doip_find_frame || (doip_find_frame == 0 && frame == 1) {
 			for h in doip_find_hosts {
 				app.start_doip_find(h, false)
@@ -503,7 +504,7 @@ fn main() {
 		// After the frame, because that is where ImGui decides the layout has settled.
 		app.save_layout(false)
 		probe_alloc_note(.render, pf)
-		app.perf_step(frame_ns)
+		app.perf_step(frame_ns, frame_gc)
 		if last {
 			app.elog('rendered ${frame} frames; RX ${rx}')
 			break

@@ -4,12 +4,15 @@
 module perfrule
 
 // Reading is what the caller measured for one frame: when its work began and ended (monotonic
-// ns; the event-driven wait before a frame is not work), and the collector's counters after it.
+// ns; neither the event-driven wait before a frame nor the vsync wait after it is work), and the
+// collector's counters — the collection count at both ends, so a collection that completed while
+// the thread waited is not blamed on the frame after it.
 pub struct Reading {
 pub:
 	begin_ns    u64
 	end_ns      u64
-	gc_no       u64 // collections so far
+	gc_begin    u64 // collections so far, when the work began
+	gc_no       u64 // collections so far, when it ended
 	alloc_total u64 // bytes allocated so far
 	heap        u64 // heap size, bytes
 	free        u64 // free bytes in the heap
@@ -21,9 +24,8 @@ pub struct Sample {
 pub:
 	t_s        f64 // the frame's end, seconds on the caller's clock
 	work_ms    f32 // the frame's work, wait excluded
-	gc         bool // a collection completed since the previous frame ended
+	gc         bool // a collection completed during the frame's work
 	heap_mb    f32
-	live_mb    f32 // heap less free: the live set only right after a collection
 	since_mb   f32 // allocated since the last collection, not yet collected
 	alloc_mb_s f32 // allocation rate over the last rate_window_s
 }
@@ -42,7 +44,7 @@ mut:
 	rate_b  u64
 	rate    f32
 pub mut:
-	live_after_gc_mb f32 // heap less free at the last frame a collection completed in
+	live_after_gc_mb f32 // heap less free at the first reading after the last collection
 	gcs              u64 // collections seen since the first reading
 }
 
@@ -54,11 +56,13 @@ pub fn new_sampler(cap int) Sampler {
 
 const mib = f32(1048576.0)
 
-// step records one frame. The first reading only primes the counters: a collection count with
-// no previous one to compare says nothing about this frame.
+// step records one frame. The first reading only primes the totals: a collection count with no
+// previous one to compare says nothing about the stretch before it.
 pub fn (mut s Sampler) step(r Reading) Sample {
 	t := f64(r.end_ns) / 1e9
-	gc := s.primed && r.gc_no != s.gc_prev
+	gc := r.gc_no != r.gc_begin
+	// any collection since the last reading, in the frame or in the wait before it
+	collected := s.primed && r.gc_no != s.gc_prev
 	if !s.primed {
 		s.rate_t = t
 		s.rate_b = r.alloc_total
@@ -77,7 +81,7 @@ pub fn (mut s Sampler) step(r Reading) Sample {
 		s.rate_b = r.alloc_total
 	}
 	live := if r.heap >= r.free { f32(r.heap - r.free) / mib } else { 0 }
-	if gc {
+	if collected {
 		s.live_after_gc_mb = live
 	}
 	work := if r.end_ns >= r.begin_ns { f32(f64(r.end_ns - r.begin_ns) / 1e6) } else { 0 }
@@ -86,7 +90,6 @@ pub fn (mut s Sampler) step(r Reading) Sample {
 		work_ms:    work
 		gc:         gc
 		heap_mb:    f32(r.heap) / mib
-		live_mb:    live
 		since_mb:   f32(r.since_gc) / mib
 		alloc_mb_s: s.rate
 	}

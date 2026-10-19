@@ -1228,6 +1228,7 @@ fn (mut app App) reset_gen_state() {
 }
 
 fn (mut app App) rebuild_from_proj() {
+	app.diag_sys_key = '' // which system.toml applies follows the project's databases
 	// a reader's note is said once per rebuild: the trace's load and the simulation's merge open
 	// the same files, and several simulated channels may share one
 	mut said_notes := map[string]bool{}

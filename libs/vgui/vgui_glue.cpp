@@ -10,6 +10,7 @@
 #include "misc/freetype/imgui_freetype.h"
 #endif
 #include <GLFW/glfw3.h>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -262,6 +263,10 @@ void vgui_menu_image(unsigned int tex, float aspect) {
 // rate. Set in vgui_frame_end when activity is detected; counted down here.
 static int g_busy_frames = 0;
 
+// how long the last frame's buffer swap blocked — the vsync wait, which is not the frame's work
+static unsigned long long g_swap_ns = 0;
+unsigned long long vgui_swap_ns() { return g_swap_ns; }
+
 int vgui_running() {
     if (glfwWindowShouldClose(g_win)) return 0;
     if (g_event_driven) {
@@ -350,7 +355,10 @@ void vgui_frame_end() {
         ImGui::UpdatePlatformWindows(); ImGui::RenderPlatformWindowsDefault();
         glfwMakeContextCurrent(b);
     }
+    auto swap0 = std::chrono::steady_clock::now();
     glfwSwapBuffers(g_win);
+    g_swap_ns = (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - swap0).count();
     // Keep rendering at full rate for a short burst after any UI activity so imgui's
     // close/reflow/hover animations settle smoothly (otherwise they play at the 0.5s idle
     // rate → a window takes ~1-2s to visibly close). True idle falls back to the cheap wait.
