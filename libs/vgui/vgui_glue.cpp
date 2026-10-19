@@ -351,14 +351,35 @@ void vgui_frame_render() {
         if(f){ fprintf(f,"P6\n%d %d\n255\n",w,h); for(int y=h-1;y>=0;y--) fwrite(px+y*w*3,1,w*3,f); fclose(f); }
         free(px); g_dump=nullptr;
     }
+    // ImGui::RenderPlatformWindowsDefault in its two halves: the torn-off windows are drawn here,
+    // with the frame's work, and swapped in frame_present with the main window's
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        GLFWwindow* b = glfwGetCurrentContext();
+        ImGui::UpdatePlatformWindows();
+        ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+        for (int i = 1; i < pio.Viewports.Size; i++) {
+            ImGuiViewport* v = pio.Viewports[i];
+            if (v->Flags & ImGuiViewportFlags_IsMinimized) continue;
+            if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(v, nullptr);
+            if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(v, nullptr);
+        }
+        glfwMakeContextCurrent(b);
+    }
 }
 
-// frame_present shows it: the extra viewports, and the main window's swap (the vsync wait).
+// frame_present shows it: every window's swap, which blocks for vsync.
 void vgui_frame_present() {
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         GLFWwindow* b = glfwGetCurrentContext();
-        ImGui::UpdatePlatformWindows(); ImGui::RenderPlatformWindowsDefault();
+        ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+        for (int i = 1; i < pio.Viewports.Size; i++) {
+            ImGuiViewport* v = pio.Viewports[i];
+            if (v->Flags & ImGuiViewportFlags_IsMinimized) continue;
+            if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(v, nullptr);
+            if (pio.Renderer_SwapBuffers) pio.Renderer_SwapBuffers(v, nullptr);
+        }
         glfwMakeContextCurrent(b);
     }
     glfwSwapBuffers(g_win);
