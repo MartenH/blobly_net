@@ -192,9 +192,26 @@ jobs:
                 printf '%s\n' "$t"
                 break
               done)"
+          # no ancestor tag, but a product tag whose CONTENT is in this history: the history was
+          # rewritten after it (an identity rewrite keeps every tree), so the commit carrying the
+          # newest such tag's tree is the baseline, and the list is the squash-merge subjects
+          # since it. Only the newest tag is asked, so an older one cannot stand in for it.
+          # (Every pipe reads its input whole: the shell runs with pipefail.)
+          base=""
+          if [ -z "$prev" ]; then
+            newest="$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" | sed -n 1p)"
+            if [ -n "$newest" ]; then
+              tree="$(git rev-parse "$newest^{tree}")"
+              base="$(git log --first-parent --format='%H %T' "$GITHUB_SHA" \
+                | awk -v t="$tree" '$2 == t && !f { print $1; f = 1 }')"
+            fi
+          fi
           if [ -n "$prev" ]; then
             gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
               -f tag_name="$GITHUB_REF_NAME" -f previous_tag_name="$prev" --jq .body > generated.md
+          elif [ -n "$base" ]; then
+            printf "## What's Changed since %s\n\n" "$newest" > generated.md
+            git log --first-parent --format='* %s' "$base..$GITHUB_SHA" >> generated.md
           else
             # a first release still owes the promised PR history — the API cannot express
             # "baseline = the beginning" (it wants a tag, and auto-choice picks the
