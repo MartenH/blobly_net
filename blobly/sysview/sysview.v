@@ -16,7 +16,7 @@ import blobly.candb
 pub struct SysBus {
 pub mut:
 	name    string
-	kind    string = 'can' // or 'someip'
+	kind    string = 'can' // the carrier: 'can' (DBC frames) or 'someip' (a service)
 	iface   string
 	fd      bool
 	bitrate int
@@ -24,6 +24,14 @@ pub mut:
 	nm_lo   u32    // NM peers range (0 = none)
 	nm_hi   u32
 	subnet  string // a someip segment's network, "192.168.77.0/24"; its members give a `host`
+}
+
+// bus_kinds: the carriers a bus may declare, as blobly_emb's sysmodel names them
+const bus_kinds = ['can', 'someip']
+
+// is_can: the bus carries CAN frames, so it has an id allocation and a DBC
+pub fn (b SysBus) is_can() bool {
+	return b.kind == 'can'
 }
 
 pub struct SysSignal {
@@ -123,14 +131,19 @@ pub fn load(path string) !System {
 	if bv := doc.value_opt('bus') {
 		for bname, bcfg in bv.as_map() {
 			bm := bcfg.as_map()
-			kind := tstr(bm, 'kind')
 			mut b := SysBus{
 				name:    bname
-				kind:    if kind != '' { kind } else { 'can' }
 				iface:   tstr(bm, 'interface')
 				bitrate: int(tint(bm, 'bitrate'))
 				dbc:     tstr(bm, 'dbc')
 				subnet:  tstr(bm, 'subnet')
+			}
+			// an absent kind is CAN; anything but the two carriers is said, never read as either
+			if kv := bm['kind'] {
+				b.kind = if kv is string { kv } else { kv.to_toml() }
+				if b.kind !in bus_kinds {
+					sys.errs << 'bus ${bname}: unknown kind "${b.kind}" — the carrier is "can" or "someip"'
+				}
 			}
 			if v := bm['fd'] {
 				if v is bool {
@@ -292,6 +305,10 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 		if sb.name == bus {
 			b = sb
 		}
+	}
+	// only a CAN bus has arbitration ids to allocate; a someip segment's contract is its service
+	if !b.is_can() {
+		return out
 	}
 	if b.dbc == '' {
 		sys.errs << 'bus ${bus}: no dbc declared — frame ids absent from the allocation'

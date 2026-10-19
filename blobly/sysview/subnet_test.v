@@ -4,6 +4,7 @@ fn segment() System {
 	return System{
 		buses: [SysBus{
 			name:   'tel'
+			kind:   'someip'
 			subnet: '192.168.77.0/24'
 		}, SysBus{
 			name: 'compute'
@@ -52,9 +53,19 @@ fn test_what_cannot_be_resolved_has_no_address() {
 	big.resolve_hosts('')
 	assert big.nodes[0].address == '' && big.errs[0].contains('not a host of 192.168.77.0/24')
 	mut two := segment()
-	two.buses[1].subnet = '192.168.78.0/24'
+	two.buses << SysBus{
+		name:   'tel2'
+		kind:   'someip'
+		subnet: '192.168.78.0/24'
+	}
 	two.resolve_hosts('10.0.0.0/24')
 	assert two.errs.any(it.contains('2 buses declare one'))
+	// a CAN bus stating a subnet is said, and is not a segment a host could sit on
+	mut can := segment()
+	can.buses[1].subnet = '192.168.78.0/24'
+	can.resolve_hosts('')
+	assert can.errs.any(it.contains('a can bus has no addresses')), '${can.errs}'
+	assert can.nodes[0].address == '192.168.77.50'
 }
 
 fn test_resolving_again_derives_again() {
@@ -74,6 +85,7 @@ fn test_an_unresolved_host_is_said_and_matches_no_entity() {
 			else {
 				s.buses << SysBus{
 					name:   'tel2'
+					kind:   'someip'
 					subnet: 'bogus'
 				}
 				s.nodes[0].buses << 'tel2'

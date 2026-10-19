@@ -10,7 +10,12 @@ pub const subnet_env = 'BLOB_NET_SUBNET'
 // blobly_emb's sysmodel resolves it. What cannot be resolved is '' (has_host tells it from no
 // endpoint) and is said in errs.
 pub fn (mut sys System) resolve_hosts(override string) {
-	declared := sys.buses.filter(it.subnet != '')
+	for b in sys.buses {
+		if b.subnet != '' && b.kind != 'someip' {
+			sys.errs << 'bus "${b.name}": `subnet` is a someip segment\'s; a ${b.kind} bus has no addresses'
+		}
+	}
+	declared := sys.buses.filter(it.subnet != '' && it.kind == 'someip')
 	mut nets := map[string]Subnet{}
 	if override != '' && declared.len > 1 {
 		sys.errs << '${subnet_env} replaces THE segment subnet, but ${declared.len} buses declare one'

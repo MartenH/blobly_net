@@ -258,11 +258,19 @@ fn draw_system(mut app App) {
 	vgui.child_fill('##sysbusid_body')
 	if vgui.tree_node('buses & id allocation###sysbusid') {
 		for b in app.sys.buses {
-			vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
-				', ${b.bitrate / 1000} kbit'
+			if b.is_can() {
+				vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
+					', ${b.bitrate / 1000} kbit'
+				} else {
+					''
+				}})')
 			} else {
-				''
-			}})')
+				vgui.separator_text('bus ${b.name} (${b.kind}${if b.iface != '' { ', ${b.iface}' } else { '' }}${if b.subnet != '' {
+					', ${b.subnet}'
+				} else {
+					''
+				}})')
+			}
 
 			// the communication matrix: signals x nodes, node columns chunked
 			// well under Dear ImGui's hard 64-column table limit
@@ -311,6 +319,10 @@ fn draw_system(mut app App) {
 				n0 = n1
 			}
 
+			// a CAN bus only: a someip segment has no arbitration ids to allocate
+			if !b.is_can() {
+				continue
+			}
 			// id allocation with collisions (kind-aware: an ext twin of a
 			// colliding std id is not itself flagged)
 			ncols := app.sys.collision_count(b.name)

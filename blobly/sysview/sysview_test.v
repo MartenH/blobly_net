@@ -19,6 +19,11 @@ bitrate   = 500000
 dbc       = "compute.dbc"
 nm        = { peers = [0x500, 0x53F], timeout_ms = 300 }
 
+[bus.tel]
+kind    = "someip"
+service = 0x0100
+version = 1
+
 [[signal]]
 name     = "VehicleSpeed"
 fields   = { kph = "u32" }
@@ -38,7 +43,7 @@ cycle_ms = 50
 [[node]]
 name  = "sysnode"
 ecu   = "nodes/sysnode.toml"
-buses = ["compute"]
+buses = ["compute", "tel"]
 nm    = 0x11
 diag  = { req = 0x7A0, rsp = 0x7A8 }
 
@@ -98,8 +103,9 @@ fn test_load_and_derive() {
 	}
 	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
 
-	assert sys.buses.len == 1
-	assert sys.buses[0].name == 'compute' && sys.buses[0].nm_lo == 0x500
+	assert sys.buses.len == 2
+	compute := sys.buses.filter(it.name == 'compute')[0]
+	assert compute.nm_lo == 0x500 && compute.kind == 'can'
 	assert sys.nodes.len == 2
 	assert sys.nodes[0].ecu_err == '' && sys.nodes[1].ecu_err == ''
 
@@ -134,6 +140,32 @@ fn test_id_allocation_and_planted_collision() {
 	// even at the COLLIDING number an ext identity would be innocent
 	assert !sys.is_collision('compute', 0x511, true)
 	assert !sys.is_collision('compute', 0x100, false)
+}
+
+fn test_someip_bus_has_no_can_allocation() {
+	dir := fixture_dir()
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+
+	// no DBC is the someip contract, not an omission; and sysnode's CAN diag/NM ids are not tel's
+	assert sys.buses.filter(it.name == 'tel')[0].kind == 'someip'
+	assert sys.id_allocation('tel').len == 0
+	assert sys.errs.filter(it.starts_with('bus tel')).len == 0, '${sys.errs}'
+}
+
+fn test_unknown_bus_kind_is_said() {
+	dir := fixture_dir()
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'system.toml')
+	os.write_file(path, os.read_file(path) or { panic(err) }.replace('kind    = "someip"',
+		'kind    = "CAN"')) or { panic(err) }
+	sys := load(path) or { panic(err) }
+	assert sys.errs.any(it.contains('unknown kind "CAN"')), '${sys.errs}'
+	assert !sys.buses.filter(it.name == 'tel')[0].is_can()
 }
 
 fn test_missing_node_ecu_degrades_not_fails() {

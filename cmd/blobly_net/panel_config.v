@@ -490,9 +490,11 @@ fn draw_discover_dialog(mut app App) {
 		}
 		vgui.same_line()
 		if vgui.button('+ Add ticked') {
+			mut added := 0
 			for k, d in app.disc_list {
 				if k < app.disc_tick.len && app.disc_tick[k] && !d.added {
 					app.add_bus_spec(d.adapter, d.address)
+					added++
 				}
 			}
 			found, _, _ := app.doip_find_state()
@@ -501,10 +503,15 @@ fn draw_discover_dialog(mut app App) {
 					&& !project.doip_found_in(app.proj.channels, f) {
 					row, _ := app.doip_found_row(f)
 					app.add_channel(row)
+					added++
 				}
 			}
 			app.disc_doip_tick = map[string]bool{}
 			app.refresh_discovery()
+			// the dialog's task is done once something was added; with nothing ticked it stays
+			if added > 0 {
+				app.disc_open = false
+			}
 		}
 	}
 	vgui.separator_text('Interfaces (CAN, software buses)')
