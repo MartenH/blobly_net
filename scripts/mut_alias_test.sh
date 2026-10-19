@@ -70,6 +70,16 @@ fn (mut app App) value_param_literal() {
 fn (mut app App) closes() {}
 
 const copy = app
+
+fn (mut app App) escaped_quote() {
+	s := 'don\'t }'
+	after_escape := app
+}
+
+fn (mut app App) marker_in_string() {
+	label := '// copy:'; ap := app
+	ok := app // copy: a snapshot, said in the comment
+}
 EOF
 got=$(awk -f scripts/mut_alias.awk "$t/fix.v" | sed "s|^$t/||")
 want='fix.v:4: 	ap := app
@@ -83,7 +93,9 @@ fix.v:41: fn (mut app App) one_line() { copy := app }
 fix.v:46: 	tail := app
 fix.v:50: 	if ok { copy := app }
 fix.v:51: 	for _ in 0 .. 1 { x := 1; y = app }
-fix.v:60: 	after := app'
+fix.v:60: 	after := app
+fix.v:69: 	after_escape := app
+fix.v:73: 	label := '"'"'// copy:'"'"'; ap := app'
 if [ "$got" = "$want" ]; then
 	echo "mut_alias_test: ok"
 	exit 0

@@ -16,7 +16,14 @@
 #   UNIT    a STATEMENT: the text between `{`, `}` and `;` (strings and the trailing comment
 #           removed), so `if ok { copy := app }` and `fn f() { copy := app }` are both seen.
 #   REPORT  a statement that is exactly `[mut] x := NAME` or `x = NAME`, as `FILE:LINE: TEXT`.
-#           A snapshot that is meant says `// copy:` on its line.
+#           A snapshot that is meant says `// copy:` in its line's comment (not in a string).
+#   LIMITS  known and accepted, since `v fmt` writes neither and the repo has neither:
+#           - a nested literal and a LATER outer statement on one line
+#             (`{ fn (app App) {}(app); copy := app }`) — the literal hides `app` for the whole
+#             line, so that copy is missed;
+#           - a nested literal whose parameter list spans lines (`fn (n int,` / `app App) {`)
+#             only shadows from its first line, so a copy of that value parameter is reported —
+#             loudly, and `// copy:` silences it.
 #
 #   find cmd blobly ... -name '*.v' | xargs awk -f scripts/mut_alias.awk
 
@@ -30,14 +37,27 @@ function collect(sig,    s, frag, parts) {
 	}
 }
 
-# a line without its string literals and trailing comment: what braces and statements are read from
-function code(line,    s) {
+# a line with its string literals emptied — an escaped quote (`'don\'t }'`) stays inside its string
+function unquoted(line,    s) {
 	s = line
-	gsub(/'[^']*'/, "''", s)
-	gsub(/"[^"]*"/, "\"\"", s)
-	gsub(/`[^`]*`/, "``", s)
+	gsub(/'([^'\\]|\\.)*'/, "''", s)
+	gsub(/"([^"\\]|\\.)*"/, "\"\"", s)
+	gsub(/`([^`\\]|\\.)*`/, "``", s)
+	return s
+}
+
+# what braces and statements are read from: no strings, no trailing comment
+function code(line,    s) {
+	s = unquoted(line)
 	sub(/\/\/.*$/, "", s)
 	return s
+}
+
+# the snapshot marker counts only in the line's COMMENT, never inside a string
+function marked_copy(line,    s, k) {
+	s = unquoted(line)
+	k = index(s, "//")
+	return k > 0 && substr(s, k) ~ /^\/\/ copy:/
 }
 
 function brace_delta(s,    o, c) {
@@ -81,7 +101,7 @@ function restore() {
 
 # every statement of a line (or of the part of it after a signature's opening brace)
 function check(raw, s,    n, i, parts, st, name) {
-	if (raw ~ /\/\/ copy:/) {
+	if (marked_copy(raw)) {
 		return
 	}
 	n = split(s, parts, /[{};]/)
