@@ -7,23 +7,24 @@ inputs:
 runs:
   using: composite
   steps:
-    # Native packages can update independently of the runner image (apt / MSYS2 update).
-    # Include their installed versions, not just the workflow's list of package names.
+    # What the archive is compiled against: the C++ compiler, the C runtime and system headers
+    # under it, and the headers of the libraries it includes. NOT the runner image's build or
+    # the whole package list — MSYS2 updates on every run and the images weekly.
     - name: Identify the native toolchain
       id: environment
       shell: ${{ inputs.shell }}
       run: |
         set -euo pipefail
         key=$({
-          printf '%s\n' "${ImageOS:?}" "${ImageVersion:?}"
+          printf '%s\n' "${ImageOS:?}"
           g++ --version
           g++ -dumpmachine
           pkg-config --modversion freetype2 glfw3
           pkg-config --cflags freetype2 glfw3
           if command -v pacman >/dev/null 2>&1; then
-            pacman -Q
+            pacman -Q | grep -E -- '-(gcc|crt-git|headers-git|winpthreads-git|libwinpthread-git) '
           else
-            dpkg-query -W
+            dpkg-query -W libc6-dev
           fi
         } | sha256sum | cut -d ' ' -f 1)
         echo "key=$key" >> "$GITHUB_OUTPUT"
