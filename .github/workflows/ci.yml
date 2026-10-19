@@ -111,6 +111,14 @@ jobs:
           chmod +x scripts/v_toolchain_test.sh
           ./scripts/v_toolchain_test.sh
 
+      # What check_cmds.sh's mut-alias scan calls a COPY under V3 (`ap := app` in a mut method)
+      # and what it must not (`&app`, `unsafe { app }`, a nested fn's pointer parameter, a
+      # `// copy:` snapshot). The copy it guards against crashed the CAN diagnostic press.
+      - name: mut-alias scan fixtures (scripts/mut_alias_test.sh)
+        run: |
+          chmod +x scripts/mut_alias_test.sh
+          ./scripts/mut_alias_test.sh
+
       # The @codex review watcher has to read GitHub JSON from every verdict channel, match by
       # reviewed SHA, and preserve gh API failures instead of reporting "nothing waiting". The
       # fixtures pin those behaviours so future review rounds do not depend on hand polling.

@@ -216,7 +216,7 @@ fn (mut app App) open_in_editor(path string) {
 		app.notify('nothing to open yet')
 		return
 	}
-	a := app
+	a := &app
 	report := fn [a] (s string) {
 		mut ap := unsafe { a }
 		ap.notify(s)

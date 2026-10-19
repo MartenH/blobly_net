@@ -717,7 +717,7 @@ fn (mut app App) bind_selection(rows []TraceRow) {
 		return
 	}
 	w := app.sel_watch('')
-	a := app
+	a := &app
 	di := app.sel_db
 	app.sel_wire = w.bind(rows.len, fn [rows] (k int) watchrule.Row {
 		return watch_row(rows[k])

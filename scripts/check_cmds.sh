@@ -57,5 +57,23 @@ elif bad=$(printf '%s\n' "$hits" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//') && [
 	echo "$bad"
 	fail=$((fail + 1))
 fi
+# and a local alias of a `mut` receiver or parameter: inside `fn (mut app App) f()`, `ap := app` is
+# a COPY of the struct under V3 (`&app`, `fn [app]`, `spawn g(app)`, `unsafe { app }` share it).
+# Handed to a closure on another thread it is a pointer into that thread's stack: the CAN
+# diagnostic press crashed that way. The rule is scripts/mut_alias.awk (its fixtures:
+# mut_alias_test.sh). A scan that cannot run is a FAILED check, not a clean one.
+n=$((n + 1))
+if ! files=$(find cmd blobly libs arxmodel flatxml -name '*.v' -not -path '*/build/*' -not -name '*_test.v'); then
+	echo "FAIL the mut-alias scan could not list the sources"
+	fail=$((fail + 1))
+elif ! bad=$(printf '%s\n' "$files" | xargs awk -f scripts/mut_alias.awk); then
+	echo "FAIL the mut-alias scan itself (awk)"
+	fail=$((fail + 1))
+elif [ -n "$bad" ]; then
+	echo "FAIL a local alias of a mut receiver/parameter is a COPY under V3; spell it := &<name>"
+	echo "     (or mark a deliberate snapshot with // copy:):"
+	echo "$bad"
+	fail=$((fail + 1))
+fi
 printf '%d checks, %d failed\n' "$n" "$fail"
 [ "$fail" -eq 0 ]

@@ -350,7 +350,9 @@ Windows bundle before its first frame (#455)), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220; it also
 refuses `&int` in a `fn C.` declaration, since C's `int*` is `&i32` under V3, and `$embed_file`
-in `cmd`/`blobly`/`libs`, #455) and
+in `cmd`/`blobly`/`libs`, #455, and `ap := app` inside a `mut` receiver or parameter — a COPY
+under V3, which crashed the CAN diagnostic press; `scripts/mut_alias.awk`, its fixtures in
+`scripts/mut_alias_test.sh`) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
 available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged) and
 `scripts/v_toolchain_test.sh` (when the pinned V toolchain is REBUILT, and what counts as

@@ -174,7 +174,7 @@ fn (mut app App) bind_watches(rows []TraceRow) {
 	if !app.watch.any(it.wire == '') {
 		return
 	}
-	a := app
+	a := &app
 	mut kept := []Watch{cap: app.watch.len}
 	for w in app.watch {
 		mut b := w

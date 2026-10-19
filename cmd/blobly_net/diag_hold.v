@@ -386,10 +386,12 @@ fn (mut app App) diag_attach(gen u64, mut h HeldConn) ! {
 	// on its own thread, so the token ends a slow open (a CANsub open, or waiting on the wire's
 	// first opener) as it ends every other wait; an open that lands after that is closed
 	//
-	// `ap := app` is THIS App by reference
-	ap := app
-	bus := transport.open_stoppable(fn [ap, iface, phys, t, gen] () !transport.Bus {
-		return ap.open_tap_phys(iface, phys, org_tx, t.chan, gen, false)
+	// `app` CAPTURED, which is THIS App. It was `ap := app` captured, and under V3 that local alias
+	// is a COPY: the opener runs on its own thread, so the tap kept a pointer into that thread's
+	// stack, and the next send through it crashed once the thread was gone (the CAN diagnostic
+	// press, an access violation). check_cmds.sh refuses the alias (scripts/mut_alias.awk).
+	bus := transport.open_stoppable(fn [app, iface, phys, t, gen] () !transport.Bus {
+		return app.open_tap_phys(iface, phys, org_tx, t.chan, gen, false)
 	}, h.stop)!
 	mut sc := isotp.on_bus(bus, phys, t.rx, t.tx, t.ext) or {
 		mut b := bus

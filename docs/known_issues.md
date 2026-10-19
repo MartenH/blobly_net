@@ -39,7 +39,20 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   `cmd/mutrefs` (#406) refused both spellings until the move to V3. **Under V3 both share the
   receiver** (measured: a write through `&app` lands, and the closure sees a later `app.n = 7`;
   the pre-V3 pin printed 0 for both), so the check was retired with the old compiler — it walked
-  `v.ast`, which V3 no longer has. `ap := app` remains the plain spelling.
+  `v.ast`, which V3 no longer has. The local ALIAS is a different matter under V3 — next entry.
+- 🟡 **Under V3 a local alias of a `mut` receiver or parameter, `ap := app`, is a COPY.**
+  Measured on `0535623`, inside `fn (mut app App) f()`: `ap := app` has its own address, and a
+  closure capturing `ap` holds a further copy. `ap := &app`, capturing `fn [app]`,
+  `spawn g(app)` and `mut ap := unsafe { app }` all reach the receiver. V documents struct
+  assignment as a copy, so this is V's rule, not a regression to wait out. It cost a crash:
+  `diag_attach` captured `ap := app` in an opener run on its own thread, the tap kept a pointer
+  into that thread's stack, and on Windows the CAN diagnostic press died with an access
+  violation (`0xC0000005`, which bash shows as exit 5) at the next send. Linux keeps exited
+  thread stacks mapped, so there it ran on against a stale snapshot instead of crashing. Four
+  quieter copies went with it: two notified through a copy (its own `mu` over the shared maps),
+  two bound watch predicates to a snapshot. Spell the alias `:= &app`, or capture `app`.
+  `scripts/check_cmds.sh` refuses the copy (`scripts/mut_alias.awk`, fixtures in
+  `mut_alias_test.sh`); a snapshot that is meant says so with `// copy:` on its line.
 
 - 🟡 **`-prod` makes a hot loop O(len) per call when the frame holds a pointerful array BY
   VALUE.** **Fixed upstream, and the fix is now in our pin** — see the end of this entry. The

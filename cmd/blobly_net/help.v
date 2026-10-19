@@ -223,7 +223,7 @@ fn (mut app App) open_help_in_browser() {
 		app.notify('Help: could not write ${path} (${err})')
 		return
 	}
-	a := app
+	a := &app
 	ok, note := system_open(path, fn [a] (m string) {
 		mut ap := unsafe { a }
 		ap.notify(m)
