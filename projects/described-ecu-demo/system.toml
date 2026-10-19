@@ -1,6 +1,6 @@
 # A trimmed copy of blobly_emb's examples/system_full/system.toml (origin/main a8728c9): the edge
 # bus, the signal zone_a transmits, and zone_a itself — what describes the simulated zone_a in
-# described.blobnet beside it (sysview.find_system finds this file in the project's folder).
+# described-ecu-demo.blobnet beside it (sysview.find_system finds this file in the project's folder).
 [bus.edge]
 interface = "can1"
 fd        = true

@@ -203,6 +203,7 @@ mut:
 	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
 	has_manifest bool
+	manifest_ref string // the `manifest:` value `manifest` was loaded from — names the trace target's channel
 	// Monotonic ns anchor for every row/record timestamp. Was `t0 i64` in ms via time.ticks(),
 	// which quantised t_ms to whole milliseconds — a 1 kHz bus showed every frame at the same
 	// stamp as its neighbour, and an FPS column computed from those stamps divides by zero.
@@ -1330,6 +1331,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.senders = []
 	app.gen_bufs = []
 	app.has_manifest = false
+	app.manifest_ref = ''
 	app.eth_someip = telem.SomeipIdent{}
 	app.eth_method = 0
 	app.manifest = telem.Manifest{}
@@ -1408,6 +1410,7 @@ fn (mut app App) rebuild_from_proj() {
 				if !app.has_manifest || (app.manifest.someip.service != 0 && m.someip.service == 0) {
 					app.manifest = m
 					app.has_manifest = true
+					app.manifest_ref = ch.manifest
 				}
 				if m.shell_method != 0 && app.eth_method == 0 {
 					app.eth_someip = m.someip

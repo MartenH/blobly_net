@@ -55,6 +55,11 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	} else {
 		vgui.text_dim('Start a channel, then Record / Dump')
 	}
+	target, route := app.trace_target_text()
+	vgui.text(target)
+	vgui.same_line()
+	vgui.help_marker('A blobly_emb node built with [trace] in its ecu.toml keeps a flight recorder per core: thread switches, ISRs and, at level "all", every function-block handler run, stamped in microseconds. This panel talks to ONE such node. The target is the node whose trace manifest (`manifest:` on a channel in the project) is loaded; the commands go out on that channel, on the ids the manifest gives, to every core it lists. Without a manifest the default ids are used and lanes carry numbers instead of names. Record clears the ring and lets it run (it runs from boot anyway). Stop freezes it; the board keeps running. Dump reads the frozen window out over ISO-TP and draws it below: one lane per core and thread plus ISRs, handler runs as bars inside their thread. A node without [trace] does not answer, and Dump times out.')
+	vgui.text_dim(route)
 	// A missing manifest does NOT mean a missing endpoint: send_trace_cmd/trace_dump_worker
 	// use TraceFrames.or_defaults(), so a default-configured target answers without one. Keep
 	// the controls live and say what the manifest WOULD add (names) — a hint, not a gate
@@ -66,7 +71,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		vgui.text_dim(status)
 	}
 	if freeze != '' { // the target's own report: capturing / frozen-by-trigger / frozen-by-stop
-		vgui.text_dim('target: ${freeze}')
+		vgui.text_dim('target reports: ${freeze}')
 	}
 	labels, bars, links, span := build_swimlane(app, trecs)
 	vgui.text('${trecs.len} records · ${labels.len} lanes · idle lane = derived (gap between thread runs)')

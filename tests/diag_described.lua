@@ -1,7 +1,7 @@
--- @project ../projects/described/described.blobnet
+-- @project ../projects/described-ecu-demo/described-ecu-demo.blobnet
 -- diag_described.lua — a simulated ECU that answers as blobly_emb DESCRIBES it: zone_a of
 -- system_full, whose project block gives only its addresses. Its DIDs, their gates, the services,
--- 0x27 and the parameter come from projects/described/nodes/zone_a/ecu.toml, so every answer
+-- 0x27 and the parameter come from projects/described-ecu-demo/nodes/zone_a/ecu.toml, so every answer
 -- below is the one the real zone_a gives (the cross-check in docs/simulation.md).
 --   scripts/runtests.sh tests/diag_described.lua
 
