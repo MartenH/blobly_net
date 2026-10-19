@@ -212,6 +212,7 @@ fn draw_menubar(mut app App) {
 			app.show_replay = vgui.menu_item_check('Replay', app.show_replay)
 			app.show_script = vgui.menu_item_check('Script', app.show_script)
 			app.show_stats = vgui.menu_item_check('Statistics', app.show_stats)
+			app.show_perf = vgui.menu_item_check('Performance', app.show_perf)
 			app.show_log = vgui.menu_item_check('Log', app.show_log)
 			// panels that only work against a blobly_emb SUT — grouped so the generic
 			// CAN workflow above stays uncluttered
@@ -609,6 +610,7 @@ fn (mut app App) reset_layout() {
 	app.show_prefs = false // a dialog like the others; left open it hovered over the reset workspace (codex #307 r1)
 	app.show_network = false
 	app.show_stats = false
+	app.show_perf = false
 	app.show_shell = false
 	app.show_dbc = false
 	app.show_sys = false

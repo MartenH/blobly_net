@@ -596,6 +596,10 @@ void vgui_plot_line_axis(const char* name, const float* xs, const float* ys, int
 }
 int vgui_plot_is_hovered() { return ImPlot::IsPlotHovered() ? 1 : 0; }
 double vgui_plot_mouse_x() { return ImPlot::GetPlotMousePos().x; }
+// vertical lines across the whole plot at each x: events on a time axis
+void vgui_plot_vlines(const char* name, const float* xs, int n) {
+    ImPlot::PlotInfLines(name, xs, n);
+}
 void vgui_plot_end() { ImPlot::EndPlot(); }
 
 // selectable row/label; returns 1 the frame it is clicked.

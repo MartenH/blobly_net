@@ -316,6 +316,8 @@ mut:
 	show_script   bool
 	show_network  bool
 	show_stats    bool
+	show_perf     bool
+	perf          PerfView // the Performance panel's samples (panel_perf.v)
 	show_log      bool = true
 	show_replay   bool
 	help_cache    map[string]string = map[string]string{} // markdown file -> contents (read once)
@@ -379,7 +381,6 @@ mut:
 	diag_sys     sysview.System
 	diag_sys_ok  bool
 	diag_sys_key string
-	diag_sys_checked_ms i64 // when diag_sys_key was last looked for (time.ticks)
 	diag_sys_print      string // what diag_sys_targets were last published from (diag_dtc.v)
 	// the system's nodes as targets on the running channels named after their buses; written by
 	// the GUI thread, read by the holder too (diag_targets), so guarded by mu

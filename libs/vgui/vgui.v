@@ -139,6 +139,7 @@ fn C.vgui_plot_begin2(&char, f32, f64, f64, int) int
 fn C.vgui_plot_line_axis(&char, &f32, &f32, int, int)
 fn C.vgui_plot_is_hovered() int
 fn C.vgui_plot_mouse_x() f64
+fn C.vgui_plot_vlines(&char, &f32, int)
 fn C.vgui_plot_end()
 fn C.vgui_selectable(&char, int) int
 fn C.vgui_selectable_row(&char, int) int
@@ -615,6 +616,14 @@ pub fn plot_is_hovered() bool {
 // plot_mouse_x returns the mouse position in x-axis (data) coordinates (call between begin/end).
 pub fn plot_mouse_x() f64 {
 	return C.vgui_plot_mouse_x()
+}
+
+// plot_vlines draws a vertical line across the plot at each x — events on the time axis.
+pub fn plot_vlines(name string, xs []f32) {
+	if xs.len == 0 {
+		return
+	}
+	C.vgui_plot_vlines(name.str, unsafe { &xs[0] }, xs.len)
 }
 
 pub fn plot_end() {

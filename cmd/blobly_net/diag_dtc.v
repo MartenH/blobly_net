@@ -100,14 +100,14 @@ fn (u &DtcUi) mask() u8 {
 // ONE identity decides both (`diag_sys_key`): the model's sysview.System.identity — every file it
 // was read from, system.toml and each ecu.toml, as it was read. The model is reloaded when the
 // path to use changes (the System panel's system.toml when one is loaded there, else the one
-// sysview.find_system finds) or any of those files has changed since, looked at every few seconds;
-// the targets are rebuilt from the model every frame and republished when anything a target shows
+// sysview.find_system finds). It is read when the key is cleared — a project load, the System
+// panel loading a file — and at Start (described_system), never polled: re-reading and hashing
+// every source every few seconds on this thread was a visible hitch, for an edit that matters
+// only to the next run. The targets are rebuilt from the model every frame and republished when anything a target shows
 // differs, the identity included — never by key alone, which survives a node renamed behind
 // unchanged ids.
 fn (mut app App) diag_sys_refresh() {
-	now := time.ticks()
-	if app.diag_sys_key == '' || now - app.diag_sys_checked_ms >= diag_sys_check_ms {
-		app.diag_sys_checked_ms = now
+	if app.diag_sys_key == '' {
 		path := if app.sys_loaded {
 			app.sys.path
 		} else {
@@ -194,9 +194,6 @@ fn (mut app App) diag_sys_refresh() {
 		app.mu.unlock()
 	}
 }
-
-// diag_sys_check_ms is how often the DTC tab looks for its system.toml again.
-const diag_sys_check_ms = 3000
 
 // proj_db_refs is every channel's database references as the project writes them — what
 // sysview.find_system looks beside.

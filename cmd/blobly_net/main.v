@@ -266,6 +266,10 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_TCHART') != '' {
 		app.show_tchart = true
 	}
+	// And the Performance panel, which samples only while it is open.
+	if os.getenv('BLOBLY_SHOW_PERF') != '' {
+		app.show_perf = true
+	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
 	// Open Import ARXML on a file, and (BLOBLY_IMPORT_ARXML_GO) press Import with its defaults,
@@ -324,6 +328,7 @@ fn main() {
 	mut frame := 0
 	for vgui.running() {
 		frame++
+		frame_ns := time.sys_mono_now() // after the idle wait: the frame's work starts here
 		if frame == doip_find_frame || (doip_find_frame == 0 && frame == 1) {
 			for h in doip_find_hosts {
 				app.start_doip_find(h, false)
@@ -421,6 +426,9 @@ fn main() {
 		if app.show_stats {
 			draw_stats(mut app, chans, rx, txs)
 		}
+		if app.show_perf {
+			draw_perf(mut app)
+		}
 		if app.show_trace {
 			draw_trace(mut app, rows, gcount, rx)
 		}
@@ -495,6 +503,7 @@ fn main() {
 		// After the frame, because that is where ImGui decides the layout has settled.
 		app.save_layout(false)
 		probe_alloc_note(.render, pf)
+		app.perf_step(frame_ns)
 		if last {
 			app.elog('rendered ${frame} frames; RX ${rx}')
 			break

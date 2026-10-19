@@ -1342,10 +1342,15 @@ fn (mut app App) described_system() sysview.System {
 	if app.diag_sys_ok && app.diag_sys.path == path && app.diag_sys.current() {
 		return app.diag_sys // the Diagnostics panel's model, still what the files say
 	}
-	return sysview.load(path) or {
+	sy := sysview.load(path) or {
 		app.notify('Simulation: ${path} could not be read (${err}); simulated servers answer from the project')
-		sysview.System{}
+		return sysview.System{}
 	}
+	// and the Diagnostics panel reads the files as this run does
+	app.diag_sys = sy
+	app.diag_sys_ok = true
+	app.diag_sys_key = sy.identity()
+	return sy
 }
 
 // doip_publish_if_current publishes a freshly bound entity, but ONLY if this run still wants
