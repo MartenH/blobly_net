@@ -55,9 +55,10 @@ done" is then a fact somebody can check rather than a feeling.
 
 1. **Kvaser project timing.** `sample_point` and `timing{}` are ignored *silently*, which is the
    failure mode this repo refuses elsewhere. Honour it or refuse it as CANsub does.
-2. **Hardware timestamps** (#149) — cross-cutting: `transport.CanFrame` has nowhere to put one, so
-   no backend can carry one. PCAN passes `NULL` where a `TPCANTimestamp*` goes, Vector reads a
-   `chip` time it discards, CANsub decodes a synchronised device stamp and drops it.
+2. **Hardware timestamps** (#149, step 3) — `transport.CanFrame` carries one (`hw_ns` /
+   `hw_domain`) and SocketCAN fills it, but no vendor backend does yet. PCAN passes `NULL` where a
+   `TPCANTimestamp*` goes, Vector reads a `chip` time it discards, CANsub decodes a synchronised
+   device stamp and drops it.
 
 *Listen-only at the transceiver used to head this list and was closed by #219.* The one row where
 the four still differ is whether the mode follows a **mid-run** toggle: PCAN and Kvaser
@@ -72,8 +73,7 @@ applicable in the device's own words; **Vector records nothing yet**, so a Vecto
 those phases outright — a known gap in reporting, not in behaviour. Properties of the drivers, not
 gaps to close.
 
-Also cross-cutting and filed: #208 (per-backend duplication of the shared frame rules). Closed
-since: #211 (`shared_open` held a process-wide lock across I/O; it now reserves the wire and opens
+Closed since: #208 (the vendor send paths ask the shared frame rules in `frame_rules.v`), #211 (`shared_open` held a process-wide lock across I/O; it now reserves the wire and opens
 outside it), #212 (a second open subscribes rather than competing for frames), #213 (a backend can
 now report what is neither a frame nor a health rung — `Bus.diagnostics()`).
 
@@ -145,7 +145,7 @@ call — PCAN's `TPCANBaudrate` enum for standard rates, or raw `timing{}` for a
 ## Why a backend per vendor
 
 On **Linux**, CAN is an OS service: SocketCAN lives in the kernel behind one standard API
-(`AF_CAN`), which is why `transport/socketcan_linux.v` is thin. On **Windows** a vendor's
+(`AF_CAN`), which is why `blobly/transport/socketcan_linux.v` is thin. On **Windows** a vendor's
 driver package makes the device work and ships the vendor's user-mode DLL, but each exposes
 its own proprietary API.
 
@@ -158,9 +158,9 @@ its own proprietary API.
 ## The seam
 
 Callers depend only on `transport.Bus` (`send`/`recv`/`close`) and `transport.open(iface) !Bus`.
-The dispatcher is per-OS: `open_linux.v` handles `inproc:` / `udp:` / `cansub:` / SocketCAN;
-`open_windows.v` handles `inproc:` / `udp:` / `pcan:` / `kvaser:` / `vector:` / `cansub:` and
-errors otherwise. Each DLL backend is one `transport/<vendor>_windows.v` file — V gates it to
+The dispatcher is per-OS: `open_linux.v` handles `inproc:` / `udp:` / `bridge:` / `cansub:` / SocketCAN;
+`open_windows.v` handles `inproc:` / `udp:` / `bridge:` / `pcan:` / `kvaser:` / `vector:` / `cansub:` and
+errors otherwise. Each DLL backend is one `blobly/transport/<vendor>_windows.v` file — V gates it to
 Windows by the `_windows.v` suffix, as with `socketcan_linux.v` — so a new vendor is additive
 and never compiles off-Windows. CANsub is the exception: HTTP and WebSocket, not a DLL, so it
 is one `cansub.v` that compiles on both platforms.

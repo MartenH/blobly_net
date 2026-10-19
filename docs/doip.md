@@ -74,7 +74,8 @@ vehicle identification request and list every entity that answers within the fin
 (`doip_find_window_ms` in `cmd/blobly_net/config.v`: ISO 13400-2's A_DoIP_Ctrl) — address,
 logical address, VIN — and **Add ticked** makes each ticked one a `doip` channel: named after its VIN
 (or its address when it reports none), the address it answered from on the asked port, the
-ECU address it reported, tester 0x0E80 (edit it in the row). One already reached by a DoIP
+ECU address it reported, the tester the project's `system.toml` lets in at that entity, else
+0x0E80 (edit it in the row). One already reached by a DoIP
 channel — same endpoint as Start dials it, same ECU address — is marked *added*. A DoIP bus row
 offers the same lookup for its own address (**entity** → find), and picking an entity there sets
 the row's ECU address. Discover stays reachable while a measurement runs (Configure → Discover…),
@@ -128,6 +129,8 @@ so treat "a version byte followed by its inverse" as the marker rather than `02 
 | `0x0004` | vehicle announcement / identification response | UDP |
 | `0x0005` | routing activation request | TCP |
 | `0x0006` | routing activation response | TCP |
+| `0x0007` | alive check request (entity asks) | TCP |
+| `0x0008` | alive check response (tester answers) | TCP |
 | `0x8001` | diagnostic message (carries UDS) | TCP |
 | `0x8002` | diagnostic message positive ACK | TCP |
 | `0x8003` | diagnostic message negative ACK | TCP |
@@ -223,6 +226,7 @@ Then, by payload type:
 - `0001` — someone asking who is out there
 - `0004` — an entity identifying itself
 - `0005` / `0006` — routing activation and its answer
+- `0007` / `0008` — an entity's alive check and the tester's answer
 - `8001` — diagnostics; the UDS service byte follows the two logical addresses
 - `8002` / `8003` — the per-message ACK / NACK
 

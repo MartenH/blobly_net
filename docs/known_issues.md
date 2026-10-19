@@ -89,8 +89,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   [vlang/v#28418](https://github.com/vlang/v/issues/28418) (V 0.5.1).
 
   **Measured on a V that is NOT the pinned one, and here is how far that carries.** Every number
-  above came from a local `v` reporting 0.5.1, not from `.v-version`'s `5d34e477` — so the tie to
-  our own toolchain is a SOURCE comparison, not a second measurement. It holds where it matters:
+  above came from a local `v` reporting 0.5.1, not from the then-pinned `5d34e477` — so the tie to
+  that toolchain is a SOURCE comparison, not a second measurement. It holds where it matters:
   at `5d34e477` `scope_gc_pin_pregen` (which decides when a pin is emitted, and carries the
   `!g.pref.is_prod` guard) is byte-identical to the one measured, and so is the `.array` branch
   of `boehm_collect_keep_alive_helper_name` — the `for … _v_keep_i < it->len` walk that makes the
@@ -142,7 +142,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   matching C declaration`. It comes from **vlib**, not from this repo, and it reproduces on
   untouched files on `main` — so it reads exactly like "the module suite does not run on this
   machine", which cost most of a session on that assumption. It is V's default **tcc**:
-  `v -enable-globals -cc gcc test blobly/` runs the whole suite (72 test programs today). The Linux CI job uses
+  `v -enable-globals -cc gcc test blobly/` runs the whole suite (127 test programs today). The Linux CI job uses
   the default compiler and never sees it.
 - 🟢 **A timed `select` could panic `Invalid argument` under starvation (V 0.5.1).** Its
   `channel_select` computed `remaining := timeout - stopwatch.elapsed()` only after its
@@ -210,7 +210,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   expression (`(x & C.mask()) | …`) both gave `unexpected token )`. V3 parses both (checked on
   `0535623` and master `6ebd90a`). Stable C constants (e.g. CAN flag masks) are still better as
   V `const`s than C accessors, and for larger C surfaces prefer **c2v** over hand-writing; keep
-  hand shims tiny (as in `blobly/transport`, ~40 lines).
+  hand shims small (`blobly/transport/*_shim.h`).
 
 ## GUI (Dear ImGui + ImPlot)
 
@@ -259,7 +259,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   vendor DLLs only exist on Windows.
 
 - 🟡 **The network suites make Windows Firewall prompt on every run.** `udpbus_test.v` binds
-  `0.0.0.0:<port>` and joins multicast, and the DoIP and SOME/IP suites listen on TCP — Windows
+  `0.0.0.0:<port>` and joins multicast, the DoIP and SOME/IP suites listen on TCP, and `testports`' port holds bind the
+  wildcard address over both — Windows
   prompts for any listen on a non-loopback address. A per-program allow rule never sticks, because
   V builds each test binary to a **fresh temp path** every run, so the prompt returns forever.
 
@@ -267,9 +268,9 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
   ```powershell
   New-NetFirewallRule -DisplayName "blobly_net tests (UDP)" -Direction Inbound `
-    -Protocol UDP -LocalPort 20000-29999 -Action Allow -Profile Any
+    -Protocol UDP -LocalPort 20000-32767 -Action Allow -Profile Any
   New-NetFirewallRule -DisplayName "blobly_net tests (TCP)" -Direction Inbound `
-    -Protocol TCP -LocalPort 20000-25999 -Action Allow -Profile Any
+    -Protocol TCP -LocalPort 20000-25999,30000-32767 -Action Allow -Profile Any
   ```
 
   Not merely cosmetic: dismissing a prompt can fail the multicast bind, and `udpbus_test` then
@@ -335,8 +336,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 - 🟡 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**
   `makev.bat` hangs at `Compiling v_stage.exe`, independent of bootstrap compiler, final compiler,
   disk and Defender (every combination timed out at up to 90 min; the same build is ~100 s
-  locally). And there's no fallback: V's newest *release* (0.5.1) predates the `vlib/yaml` that
-  `blobly/project` imports. So `windows.yml` downloads a zipped V from this repo's
+  locally). And there's no fallback: V's newest *release* (0.5.2) is not the V3 this repo is pinned to. So `windows.yml` downloads a zipped V from this repo's
   **`v-toolchain`** release. **If that release or its asset disappears, the Windows job breaks** —
   re-mint the asset whenever the V pin moves, with `scripts/mint_windows_v.sh`: it cross-builds
   the pinned V3 for Windows from Linux (mingw-w64) and zips it with its checkout. V3 bakes the

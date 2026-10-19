@@ -4,7 +4,8 @@
 > editor panel (this PR). System viewer/wizards are roadmap (§ below),
 > deliberately NOT editors.
 >
-> An **ARXML-backed** database (a `databases:` entry ending in `.arxml`, #272) opens in the
+> An **ARXML-backed** database (a `databases:` entry naming an `.arxml`, with or without a `#Cluster`
+> fragment, or an `.arxmodel.toml` model file; #272, #461) opens in the
 > editor **read-only**: Save serialises DBC text to the selected path, and that path is the
 > customer's system description. Export with `cmd/arxml2dbc` and edit the DBC it produces.
 
@@ -24,8 +25,9 @@ else (forms, validation, the bit grid) is table stakes.
 
 `candb` was parse-only; the editor needs the inverse. The serializer emits the
 exact record subset the parser reads — `BU_`, `BO_`, `SG_` (incl. mux
-markers), `CM_ SG_`, `VAL_`, `BA_ "GenMsgCycleTime"` (+ its `BA_DEF_`) and the
-standard preamble — in **canonical order**: messages by id, signals by
+markers, receivers), `BO_TX_BU_`, `CM_ SG_`, `VAL_`, the message attributes
+`GenMsgCycleTime`, `VFrameFormat` and the E2E contract ([dbc_attributes.md](dbc_attributes.md))
+with their `BA_DEF_`s, and the standard preamble — in **canonical order**: messages by id, signals by
 start_bit then name, value-table keys ascending, nodes sorted. Two laws, both
 tested (`dbc_write_test.v`):
 

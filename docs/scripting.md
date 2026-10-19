@@ -83,6 +83,9 @@ For every **enabled** channel that declares simulated ECUs it starts:
 - their **diagnostic responders** — one per node that configures `uds:`, on that node's own
   ids, or a single built-in server on `0x7E0` → `0x7E8` if none does.
 
+and every **cyclic generator** (`senders:` with `trigger: cyclic`), sent as the GUI sends it
+during a measurement.
+
 A `type: doip` channel with simulated nodes gets a real DoIP entity bound on its host:port
 instead of a bus. A channel without simulated nodes is monitor-only: nothing is started for it,
 and it exists for the scripts to open.
@@ -164,7 +167,7 @@ session answer — through `diag:session()` or `diag:raw()` — names another; t
 covers reassembling a large multi-frame answer, since P2* bounds only its start), and no
 request waits more than 120 s from its send in all. A response that answers a DIFFERENT request —
 another service's refusal, another DID's data, typically a duplicate of the previous answer
-received twice after a bus error — is discarded and the wait goes on, and on a CAN channel
+received twice after a bus error — is discarded and the wait goes on, and on CAN and DoIP alike
 whatever is already queued when a request goes out is drained first; an error that follows
 says how many were discarded.
 

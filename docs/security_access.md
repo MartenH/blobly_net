@@ -56,9 +56,12 @@ with no description is tried. If it answers `0x35` invalidKey, the panel says th
 not accept blobly_net's reference key and that its algorithm is the OEM's. A script can supply the
 real algorithm (below).
 
-blobly_net's simulated ECUs accept the reference key at every level, in any session. Once
-unlocked, they answer an all-zero seed for that level only (another level gets a real seed and
-needs its own key), and a session change locks them again.
+blobly_net's simulated ECUs with no description accept the reference key at every level, in
+any session. A simulated ECU described by a blobly_emb `ecu.toml` follows that description
+instead: it serves 0x27 only at the levels its gates name (`0x12` for any other), in the sessions
+its `[uds] services` table allows, and accepts the reference key only under the rules above.
+Once unlocked, a simulated ECU answers an all-zero seed for that level only (another level gets a
+real seed and needs its own key), and a session change locks it again.
 
 ## Unlocking from the Diagnostics panel
 

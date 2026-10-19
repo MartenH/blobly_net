@@ -56,6 +56,8 @@ Payload types we handle:
 | 0x0004 | Vehicle announcement / ident. response | UDP       | ECU → tester   |
 | 0x0005 | Routing activation request             | TCP       | tester → ECU   |
 | 0x0006 | Routing activation response            | TCP       | ECU → tester   |
+| 0x0007 | Alive check request                    | TCP       | ECU → tester   |
+| 0x0008 | Alive check response                   | TCP       | tester → ECU   |
 | 0x8001 | Diagnostic message (carries UDS)       | TCP       | both           |
 | 0x8002 | Diagnostic message positive ack        | TCP       | ECU → tester   |
 | 0x8003 | Diagnostic message negative ack        | TCP       | ECU → tester   |
@@ -87,7 +89,9 @@ blobly/doip/
               messages above. GUI-free, protocol-only, hermetic tests. NO imports of uds/isotp.
   client.v    DoipClient — TCP tester. Implements isotp.Channel (structural): send() wraps UDS in a
               0x8001 diag message, recv() reads frames and returns the UDS user-data (skips 0x8002
-              acks). open_doip() does connect + routing activation. So uds.Client rides it unchanged.
+              acks, answers an alive check with 0x0008). open_doip() does connect + routing
+              activation; retarget() moves it to a node behind a gateway. So uds.Client rides it
+              unchanged.
   server.v    DoipServer — TCP/UDP ECU sim. Accepts a connection, answers routing activation, acks +
               forwards each diag message's UDS bytes to a `handler fn([]u8) []u8` callback, sends the
               reply as a 0x8001. UDP: answers 0x0001 with a 0x0004 announcement. uds-AGNOSTIC (the
@@ -123,7 +127,9 @@ structural), and the server takes a plain callback. This keeps the dependency ar
   project's DoIP channels — enabled or not, so a channel enabled later still has a supervisor —
   and spawns a `doip_watch` per channel that simulates an ECU. What it serves comes from
   `sim.doip_entity()`, shared with the headless runner so the GUI cannot announce differently:
-  the first configured `uds:` node's server, or `uds.default_server()` when none is configured.
+  the first configured `uds:` node's server, or `uds.default_server()` when none is configured —
+  replaced by the server the project's `system.toml` describes for the node at the channel's
+  logical address, when it describes one (`sim.doip_entity_described`).
   A channel with no simulated node is tester-only and nothing is bound.
 - **GUI Diagnostics panel:** `diag_targets()` (`diag.v`) enumerates every addressable ECU —
   per-node CAN servers, the DoIP channels this run is hosting, and enabled tester-only DoIP

@@ -74,12 +74,13 @@ replaces the overloaded "channel".
 | Kvaser | `kvaser` | `0` | `kvaser:0` |
 | Vector | `vector` | `1` | `vector:1` |
 | CANsub | `cansub` | `e5a16adf/1` | `cansub:e5a16adf/1` |
+| CAN bridge (WSL) | `bridge` | `Ubuntu-24.04/vcan0` | `bridge:Ubuntu-24.04/vcan0` |
 | DoIP (Ethernet diag) | `doip` | `127.0.0.1:13400` | `doip:127.0.0.1:13400` |
 | SOME/IP (Ethernet listen) | `someip` | `0.0.0.0:30490` | `someip:0.0.0.0:30490` |
 
 The picker is platform-filtered (`project.windows_adapters` / `linux_adapters`): `vcan`,
-`socketcan` on Linux only, `pcan`/`kvaser`/`vector` on Windows only, `cansub`, `doip` and
-`someip` on both.
+`socketcan` on Linux only, `pcan`/`kvaser`/`vector`/`bridge` on Windows only, `cansub`, `doip`
+and `someip` on both.
 
 The two Ethernet adapters are not CAN buses, so the editor hides `protocol`, `bitrate`, `mode`,
 `listen_only` and replay for them; `someip` offers a `group` instead (the multicast group to
@@ -90,7 +91,8 @@ The transport layer is untouched: parse composes `adapter`+`address` into the ex
 
 ## Schema (evolved, back-compatible)
 
-`schema_version` bumps to 2. New files use `buses:` + `adapter`/`address`/`network`; old
+`schema_version` bumps to 2 (now 9: a Save writes the version the project's features need,
+`version_for` in `blobly/project/project.v`). New files use `buses:` + `adapter`/`address`/`network`; old
 files (`channels:` + `interface:`) still load — the parser accepts the legacy keys and
 decomposes `interface:` into `adapter`+`address`.
 
@@ -102,7 +104,7 @@ project:
 buses:
   - name: CAN1
     network: Powertrain          # optional grouping label
-    adapter: virtual             # virtual | vcan | socketcan | udp | pcan | kvaser | doip
+    adapter: virtual             # virtual | vcan | socketcan | udp | pcan | kvaser | vector | cansub | bridge | doip | someip
     address: CAN1                # adapter-specific
     protocol: can                # can | canfd
     bitrate: 500000
@@ -351,12 +353,12 @@ Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
 | address | `input_text` + per-adapter hint | `CAN1` / `vcan0` / `can0` / `grp:port` / `PCAN_USBBUS1` / `host:port` |
 | protocol | toggle `can | canfd` | CAN adapters only |
 | enabled | `checkbox` | |
-| mode | toggle `off | monitor | replay` | CAN only |
+| mode | toggle `normal | replay` | CAN only (`off` and `monitor` still load: an unticked row, and normal) |
 | bitrate, data_bitrate | int input | data_bitrate only for canfd; hidden for doip |
 | listen_only | `checkbox` | CAN only |
 | j1939 | `checkbox` | CAN only — read this wire as SAE J1939 ([j1939.md](j1939.md)) |
 | **Import ARXML...** | one channel per CAN cluster of an AUTOSAR system description, mapped to an interface; the ECUs under test; rest-bus `simulate:` for the others (`cmd/blobly_net/arxml_import.v`, rows from `project.import_arxml`) | appends `buses` |
-| **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc` / `*.arxml`; an ARXML with several CAN clusters asks which one, and an attached ARXML's **cluster...** changes it) | `bus.databases` |
+| **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc` / `*.arxml` / `*.arxmodel.toml`; an ARXML with several CAN clusters asks which one, and an attached ARXML's **cluster...** changes it) | `bus.databases` |
 | manifest | `input_text` + **…** | telemetry CSV |
 | DoIP: tester/ecu addr, vin, eid | `input_text` | doip adapter only |
 | Replay: source / speed / loop, plus **Scan recording** — pick the recorded bus (`bus:`) and tick nodes to subtract (`exclude:`) | inputs + dialog | mode==replay only |

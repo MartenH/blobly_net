@@ -189,9 +189,9 @@ mut:
 // echoes_own_sends reports whether frames written to this interface come back to another bus
 // instance on the same host. The virtual backends and SocketCAN do (SocketCAN loops transmitted
 // frames back to every other socket by default), and so does VECTOR — we open separate ports on
-// one XL channel and the driver hands a frame from one to the others (#139). PCAN and Kvaser do
-// NOT, so on those a caller waiting for its own frame waits forever, and must not read that
-// silence as the bus having dropped it. THE VENDOR BACKENDS ARE NOT ONE CLASS HERE: reading this
+// one XL channel and the driver hands a frame from one to the others (#139), and Kvaser, whose
+// canlib does the same between handles on a channel. PCAN does NOT, so there a caller waiting
+// for its own frame waits forever, and must not read that silence as the bus having dropped it. THE VENDOR BACKENDS ARE NOT ONE CLASS HERE: reading this
 // answer off vendor_iface below, which groups all three, is what filed every Vector transmission
 // a second time as the device under test's.
 // vendor_iface reports the Windows vendor backends, whose address may carry an `@<bitrate>`
@@ -313,7 +313,7 @@ pub fn echoes_own_sends(iface string) bool {
 	if prefix_fold(iface, 0, 'cansub:') {
 		return true
 	}
-	// PCAN and Kvaser do not. Matched by DISPATCHER prefix, separator included: on Linux
+	// PCAN does not. Matched by DISPATCHER prefix, separator included: on Linux
 	// anything without one is opened as SocketCAN, which does echo, so a plain interface a user
 	// happened to name `pcan0` must not be mistaken for one.
 	return !vendor_iface(iface)

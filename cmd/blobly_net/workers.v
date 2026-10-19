@@ -993,7 +993,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// while paused too: pausing freezes the table, not the sessions or the directory.
 		// AND OF WHAT WE PUT THERE, once, off its first echo: a replayed BAM or an address
 		// claim of our own is on the wire like anyone's, and a listener that skipped it showed
-		// the packets and never the message (codex on #329). PCAN and Kvaser echo nothing, so
+		// the packets and never the message (codex on #329). PCAN echoes nothing, so
 		// there this stays what the bus brought us — said in docs/j1939.md.
 		mut tp_done := []j1939.Assembled{}
 		mut tp_origin := org_rx

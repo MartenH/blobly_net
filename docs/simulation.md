@@ -234,8 +234,8 @@ because a checksum cannot cover itself.
 
 | profile | algorithm |
 |---|---|
-| `crc8_j1850` | CRC-8/SAE-J1850 — poly `0x1D`, init `0xFF`, final xor `0xFF`. What **AUTOSAR E2E profile 1** uses. |
-| `crc8_autosar` | CRC-8/AUTOSAR, a.k.a. **CRC8H2F** — poly `0x2F`. What **AUTOSAR E2E profile 2** uses. |
+| `crc8_j1850` | CRC-8/SAE-J1850 — poly `0x1D`, init `0xFF`, final xor `0xFF`. The polynomial of **AUTOSAR E2E profile 1**, which is `autosar_p01`, not this. |
+| `crc8_autosar` | CRC-8/AUTOSAR, a.k.a. **CRC8H2F** — poly `0x2F`. The CRC of **AUTOSAR E2E profile 2**, which is not implemented as a profile. |
 | `sum8` | low byte of the arithmetic sum. Not a CRC — many OEM "checksum" signals are exactly this. |
 | `xor8` | all bytes XORed. As above. |
 
@@ -373,7 +373,8 @@ A DID's value is `text` **or** `bytes`, never guessed from the string — `"0100
 characters or two bytes depending on which you meant, so you say which.
 
 Supported services are `0x10` session control, `0x11` ECU reset, `0x14` clear DTCs,
-`0x19` read DTCs (sub-functions `0x01` count, `0x02` by status mask, `0x0A` all supported),
+`0x19` read DTCs (sub-functions `0x01` count, `0x02` by status mask, `0x0A` all supported,
+`0x03` snapshot ids, `0x04` snapshot by DTC, `0x06` extended data by DTC),
 `0x22`/`0x2E` read/write by identifier, `0x27` security access, `0x3E` tester present, and
 `0x85` DTC setting. Anything else answers `serviceNotSupported`.
 
@@ -641,7 +642,8 @@ The **channel comes first**: a project may run the same node and message names o
 dropping a frame on the wrong one invalidates observations of a network nobody was testing.
 
 A fault that cannot take effect is **refused, loudly** — an unknown node or message, `bad_crc`
-where the project configures no checksum, `freeze_counter` where it configures no E2E counter,
+where the node stamps no checksum, `freeze_counter` where it stamps no E2E counter (its
+`protect:` entry or the DBC's E2E declaration, whichever the simulation stamps by),
 `out_of_range` on a signal with no illegal value. Arming a fault that changes nothing is the
 difference between a test that fails and a test that lies.
 
@@ -733,7 +735,7 @@ vcan0: verify: a frame this app sent carried EngineData (0x100), which `verify:`
 our own frames are never verified, so that entry checks only frames somebody else sends
 ```
 
-It reports the frame, not a verdict on the project: a single Quick Send or one `can.send` from a
+It reports the frame, not a verdict on the project: a single Quick Send or one `bus.send` from a
 script is equally ours and says nothing about how the project is configured. Usually it means a
 node was added to `simulate:` later without the `verify:` line being revisited.
 

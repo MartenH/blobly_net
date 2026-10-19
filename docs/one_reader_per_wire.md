@@ -37,6 +37,7 @@ existing open and receive paths:
 |---|---|---|
 | PCAN | use the shared hub | PCANBasic permits one initialized channel and currently exposes one competing receive queue |
 | CANsub | use the shared hub | the device permits one WebSocket client per channel and currently exposes one competing receive queue |
+| `bridge:` | use the shared hub | one channel is one subscription on the bridge's connection, and its acknowledgements arrive on the receive stream marked TX, as CANsub's do |
 | SocketCAN | unchanged | each socket already receives its own kernel-delivered copy |
 | `inproc:` | unchanged | each participant already has its own queue |
 | `udp:` | unchanged | each participant already receives the multicast traffic |
@@ -202,8 +203,8 @@ a policy of reconnecting on every missing acknowledgement. #212 does not justify
 trace confirmation into a wire outage.
 
 This private origin mechanism is not generalized to PCAN or to native-fanout backends. It exists
-only because CANsub supplies an explicit TX bit on the one receive stream shared by all logical
-handles.
+only because CANsub — and since then the CAN bridge (`bridge.v`) — supplies an explicit TX bit on
+the one receive stream shared by all logical handles.
 
 ## Trace recording
 

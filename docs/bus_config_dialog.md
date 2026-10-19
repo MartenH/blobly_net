@@ -18,9 +18,13 @@ discover*.v`); this is the visual layer on top.
   entities** have their own section: a host field, **Ask host** (a vehicle identification
   request to that address) and **Find on network** (the same request to the IPv4 broadcast
   address); each entity that answers is a row (address, logical address, VIN) that **Add ticked**
-  turns into a `doip` channel — named after the VIN, ECU address the found one, tester 0x0E80.
+  turns into a `doip` channel — named after the VIN, ECU address the found one, tester the one the
+  project's `system.toml` lets in at that entity, else 0x0E80.
   A DoIP bus row has the same lookup as its **entity** picker. On WSL, answers to a broadcast may
   be dropped (they come from an address this host never sent to); asking the address works.
+  On Windows with WSL, a **WSL (CAN bridge)** section starts `canbridge` in a distribution, and
+  its CAN interfaces join the list as `bridge:<distro>/<iface>` rows ([wsl_bridge.md](wsl_bridge.md)).
+  **Add ticked** closes the dialog once it has added something.
   The dialog stays open across Start and can be opened mid-run (the Configuration editor offers
   only Discover… then): looking works, while the add buttons and Vector **Assign** wait for Stop.
 - 🔶 **Partly shipped** — the dialog and Add-to-Project exist; inline per-row edit
@@ -56,7 +60,7 @@ the iface, bitrate read off a configured `can0`). Tick the ones you want and pre
 **Refresh** re-scans (e.g. after `ip link add vcan1`).
 
 **Where the YAML write happens:** the dialog only edits the in-memory `Project` →
-the Buses panel updates live → it lands in the `.yml` on **File ▸ Save** (the project
+the Buses panel updates live → it lands in the `.blobnet` on **File ▸ Save** (the project
 file stays the single source of truth; discovery never clobbers the file behind your
 back — you see it, then save).
 
