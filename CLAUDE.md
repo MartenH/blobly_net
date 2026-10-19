@@ -390,9 +390,9 @@ keyed by both pins, the installer/action, the OS, gcc and glibc. It still
 checks both git HEADs and the successful-build stamp on restore. `.github/actions/gui-deps`
 reuses the ImGui/ImPlot archive plus sources (headers and licence texts) on Linux and Windows,
 keyed by the pinned build script, C++ glue/headers, action, g++ and the freetype/glfw headers.
-Neither key names the runner image's build or its whole package list: those move weekly (MSYS2
-on every run), and each move was a from-source V build — 14 min on the 22.04 canbridge job.
-canbridge builds BESIDE the mingw job, and a small `bundle` job joins the two.
+Neither key names the runner image's build or its whole package list, which move weekly (MSYS2
+on every run); to flush a bad entry, bump the key's `v-1`/`gui-deps-1` prefix. canbridge builds
+BESIDE the mingw job, and a `bundle` job joins the two where the bundle is published.
 Both use exact keys, rebuild on a miss and save only after a successful dependency build.
 A valid GUI restore refreshes the archive timestamp: checkout timestamps alone would otherwise
 make `run_gui.sh` rebuild unchanged glue. The app and every test still build/run each time.

@@ -216,8 +216,9 @@ jobs:
           # was unreachable for exactly the users it was written for. Stage it.
           cp scripts/register_blobnet_win.ps1 dist/register_blobnet_win.ps1
 
-      # Handed to the bundle job, which adds canbridge. Every run, so a PR proves the assembly.
+      # Handed to the bundle job, which adds canbridge — only where one is published.
       - name: Hand the staged bundle on
+        if: github.ref == 'refs/heads/main' || inputs.publish_bundle == true
         uses: actions/upload-artifact@v7
         with:
           name: windows-staged
@@ -228,6 +229,8 @@ jobs:
   bundle:
     name: Windows bundle (+ canbridge)
     needs: [canbridge-linux, build-msys2]
+    # the gate the upload below states, so a PR pays for no artifact round trip
+    if: github.ref == 'refs/heads/main' || inputs.publish_bundle == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
