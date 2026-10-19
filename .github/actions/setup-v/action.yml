@@ -3,15 +3,19 @@ description: Cache the complete V toolchain, including its pinned bootstrap and 
 runs:
   using: composite
   steps:
+    # What a built V depends on: the C compiler that built it and the libc it links. NOT the
+    # runner image's build number or its whole package list — those move every week or so, and
+    # each move cost a from-source V build (14 min on ubuntu-22.04, holding up the Windows job).
+    # The restore below still validates both git HEADs and the build stamp.
     - name: Identify the runner toolchain
       id: environment
       shell: bash
       run: |
         set -euo pipefail
         key=$({
-          printf '%s\n' "${ImageOS:?}" "${ImageVersion:?}"
+          printf '%s\n' "${ImageOS:?}"
           gcc --version
-          dpkg-query -W
+          getconf GNU_LIBC_VERSION
         } | sha256sum | cut -d ' ' -f 1)
         echo "key=$key" >> "$GITHUB_OUTPUT"
 

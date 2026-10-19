@@ -1,7 +1,8 @@
 name: windows-build
 
 # Native Windows build of the Blobly Net GUI (the Dear ImGui app, cmd/blobly_net).
-# Compiles + links + bundles it; does NOT run it. One job (mingw); the old vlang/gui app
+# Compiles + links + bundles it; does NOT run it. The mingw job builds and stages; the bundle
+# job adds canbridge (built on Linux beside it) and publishes. The old vlang/gui app
 # (src/main.v) and its MSVC/vcpkg/pango/vglyph path were retired when the migration landed.
 #
 # Status: VALIDATED ON THE RUNNER. The imgui Windows build (build_deps.sh + the `#flag windows`
@@ -57,7 +58,8 @@ jobs:
   # THE BUNDLE CARRIES A LINUX PROGRAM (#451): canbridge, which the Windows app starts inside a WSL
   # distribution through wsl.exe to reach its vcans. It is a Linux ELF, so it is built on Linux —
   # on 22.04, the oldest supported glibc, for the reason release.yml's AppImage is — and handed to
-  # the Windows job below as a short-lived artifact, never published on its own.
+  # the bundle job below as a short-lived artifact, never published on its own. Built IN PARALLEL
+  # with the mingw job, not ahead of it: a cold V cache makes this job the long one.
   canbridge-linux:
     name: canbridge (Linux, for the WSL bridge)
     runs-on: ubuntu-22.04
@@ -79,7 +81,6 @@ jobs:
 
   build-msys2:
     name: mingw (MSYS2) • GUI bundle
-    needs: canbridge-linux
     runs-on: windows-latest
     timeout-minutes: 60
 
@@ -164,12 +165,6 @@ jobs:
       # Linux tar.gz, so the two archives cannot drift (and it fails hard on a missing
       # file instead of shipping thin). Only the platform extras stage here: the exe, its
       # mingw runtime DLLs, and the file-association script.
-      - name: Fetch canbridge (built on Linux above)
-        uses: actions/download-artifact@v8
-        with:
-          name: canbridge-linux
-          path: canbridge-linux
-
       - name: Stage bundle
       # msys2 shell so the SAME sh script serves both platforms. bash rather than sh: the DLL
       # licence sweep below uses an array and nullglob.
@@ -179,9 +174,8 @@ jobs:
           ver="$(sed -n "s/^\s*version: '\(.*\)'\s*$/\1/p" v.mod)"
           V=/c/v-ct/v.exe sh scripts/stage_bundle.sh dist "$ver"
           cp build/blobly_net.exe dist/blobly_net.exe
-          # Beside the exe, where transport.bridge_launch_wsl looks for it (#451), with the scripts
-          # its "no vcan module" failure tells the user to run in WSL from this folder.
-          cp canbridge-linux/canbridge dist/canbridge
+          # The scripts canbridge's "no vcan module" failure tells the user to run in WSL from
+          # this folder; canbridge itself joins in the bundle job.
           mkdir -p dist/scripts
           cp scripts/setup_vcan.sh scripts/build_vcan_module.sh scripts/vcan_common.sh \
             scripts/setup_sudoers.sh dist/scripts/
@@ -221,6 +215,35 @@ jobs:
           # says the bundle stages it alongside — it once did not, so .blobnet association
           # was unreachable for exactly the users it was written for. Stage it.
           cp scripts/register_blobnet_win.ps1 dist/register_blobnet_win.ps1
+
+      # Handed to the bundle job, which adds canbridge. Every run, so a PR proves the assembly.
+      - name: Hand the staged bundle on
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-staged
+          path: dist
+          retention-days: 1
+          if-no-files-found: error
+
+  bundle:
+    name: Windows bundle (+ canbridge)
+    needs: [canbridge-linux, build-msys2]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-staged
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: canbridge-linux
+          path: canbridge-linux
+      # Beside the exe, where transport.bridge_launch_wsl looks for it (#451).
+      - name: Add canbridge
+        run: |
+          test -f dist/blobly_net.exe
+          cp canbridge-linux/canbridge dist/canbridge
 
       # Publishes from reviewed history ONLY: a push to main, or a call from release.yml
       # carrying publish_bundle=true — which it sets only after its guard proves the
