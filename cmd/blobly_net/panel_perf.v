@@ -27,7 +27,7 @@ mut:
 }
 
 // perf_step records the frame that began at begin_ns with gc_begin collections done. Called once
-// per frame, after frame_end; the buffer swap's vsync wait is taken off, since it is not work.
+// per frame, between frame_render and frame_present: the swap's vsync wait is not work.
 fn (mut app App) perf_step(begin_ns u64, gc_begin u32) {
 	if !app.show_perf {
 		if app.perf.on {
@@ -42,11 +42,9 @@ fn (mut app App) perf_step(begin_ns u64, gc_begin u32) {
 		app.perf.on = true
 	}
 	u := gc_heap_usage()
-	now := time.sys_mono_now()
-	swap := vgui.swap_ns()
 	app.perf.sampler.step(perfrule.Reading{
 		begin_ns:    begin_ns
-		end_ns:      if now - begin_ns > swap { now - swap } else { begin_ns }
+		end_ns:      time.sys_mono_now()
 		gc_begin:    u64(gc_begin)
 		gc_no:       u64(gc_count())
 		alloc_total: u64(u.total_bytes)
@@ -75,10 +73,10 @@ fn draw_perf(mut app App) {
 	now := last.t_s
 	sm := p.sampler.summary(now - perf_window_s, perf_spike_ms)
 	vgui.text('heap ${last.heap_mb:.1} MB    live after last GC ${p.sampler.live_after_gc_mb:.1} MB')
-	vgui.text('allocated since GC ${last.since_mb:.1} MB    ${last.alloc_mb_s:.1} MB/s    GCs ${p.sampler.gcs}')
+	vgui.text('allocated since GC ${last.since_mb:.1} MB    ${last.alloc_mb_s:.1} MB/s    GCs since opened ${p.sampler.gcs}')
 	worst_why := if sm.worst_gc { ', a GC frame' } else { '' }
 	vgui.text('last ${perf_window_s:.0} s: ${sm.frames} frames, worst ${sm.worst_ms:.1} ms${worst_why}')
-	vgui.text('${sm.spikes} over ${perf_spike_ms:.0} ms, ${sm.gc_spikes} of them GC frames; ${sm.gcs} GCs')
+	vgui.text('${sm.spikes} over ${perf_spike_ms:.0} ms, ${sm.gc_spikes} of them GC frames; ${sm.gc_frames} frames with a GC')
 	vgui.text_dim('frame = the GUI thread\'s work, idle and vsync waits excluded; a vertical line = a GC completed in that frame')
 	p.xs.clear()
 	p.work.clear()

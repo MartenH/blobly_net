@@ -500,11 +500,12 @@ fn main() {
 		// #250). Polled here, what is saved is what is shown.
 		app.poll_shortcuts()
 
-		vgui.frame_end()
+		vgui.frame_render()
+		app.perf_step(frame_ns, frame_gc) // the frame's work ends here: the swap's vsync wait is not
+		vgui.frame_present()
 		// After the frame, because that is where ImGui decides the layout has settled.
 		app.save_layout(false)
 		probe_alloc_note(.render, pf)
-		app.perf_step(frame_ns, frame_gc)
 		if last {
 			app.elog('rendered ${frame} frames; RX ${rx}')
 			break

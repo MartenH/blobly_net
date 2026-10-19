@@ -34,6 +34,14 @@ fn test_a_frame_is_a_gc_frame_only_if_the_collection_completed_in_its_work() {
 	assert c.since_mb == 1
 }
 
+fn test_the_first_frames_own_collections_are_counted() {
+	mut s := new_sampler(4)
+	a := s.step(rd(0, 30, 41, 44, 0))
+	assert a.gc
+	assert s.gcs == 3
+	assert s.live_after_gc_mb == 48
+}
+
 fn test_ring_keeps_the_newest_oldest_first() {
 	mut s := new_sampler(3)
 	for i in 0 .. 5 {
@@ -66,7 +74,7 @@ fn test_summary_tells_collection_spikes_from_others() {
 	assert sm.frames == 4
 	assert sm.spikes == 2
 	assert sm.gc_spikes == 1
-	assert sm.gcs == 2
+	assert sm.gc_frames == 2
 	assert sm.worst_ms == 60
 	assert sm.worst_gc
 	assert s.summary(0.1, 33).spikes == 1

@@ -113,16 +113,13 @@ fn (mut app App) diag_sys_refresh() {
 		} else {
 			sysview.find_system(app.proj_path, app.proj_db_refs()) or { '' }
 		}
-		mut want := 'none'
-		if path != '' {
-			want = if app.diag_sys_ok && app.diag_sys.path == path && app.diag_sys.current() {
-				app.diag_sys_key
-			} else {
-				// to be (re)loaded; a system.toml that will not parse is tried again when it changes
-				'load|${path}@${sysview.stamp(path).stamp}'
-			}
-		}
-		if want != app.diag_sys_key {
+		if path != '' && app.diag_sys_ok && app.diag_sys.path == path && app.diag_sys.current() {
+			// still what the files say: kept under its own identity, not reloaded
+			app.diag_sys_key = app.diag_sys.identity()
+		} else {
+			// a system.toml that will not parse is keyed by its stamp, and read again at the next
+			// clear of the key
+			want := if path == '' { 'none' } else { 'load|${path}@${sysview.stamp(path).stamp}' }
 			app.diag_sys_ok = false
 			app.diag_sys = sysview.System{}
 			app.diag_sys_key = want

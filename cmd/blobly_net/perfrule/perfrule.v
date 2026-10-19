@@ -61,13 +61,16 @@ const mib = f32(1048576.0)
 pub fn (mut s Sampler) step(r Reading) Sample {
 	t := f64(r.end_ns) / 1e9
 	gc := r.gc_no != r.gc_begin
-	// any collection since the last reading, in the frame or in the wait before it
-	collected := s.primed && r.gc_no != s.gc_prev
+	// collections since the last reading, in the frame or in the wait before it; before the first
+	// reading only this frame's own are known
+	prev := if s.primed { s.gc_prev } else { r.gc_begin }
+	collected := r.gc_no != prev
+	if r.gc_no > prev {
+		s.gcs += r.gc_no - prev
+	}
 	if !s.primed {
 		s.rate_t = t
 		s.rate_b = r.alloc_total
-	} else if r.gc_no > s.gc_prev {
-		s.gcs += r.gc_no - s.gc_prev
 	}
 	s.primed = true
 	s.gc_prev = r.gc_no
@@ -117,7 +120,7 @@ pub:
 	frames    int
 	worst_ms  f32
 	worst_gc  bool // the worst frame had a collection in it
-	gcs       int  // frames a collection completed in
+	gc_frames int  // frames a collection completed in
 	spikes    int  // frames over the spike threshold
 	gc_spikes int  // of those, the ones a collection completed in
 }
@@ -125,7 +128,7 @@ pub:
 // summary covers the samples whose frame ended at or after t0. A spike is a frame whose work
 // took spike_ms or more — the one a collection explains when it completed in that frame.
 pub fn (s &Sampler) summary(t0 f64, spike_ms f32) Summary {
-	mut frames, mut gcs, mut spikes, mut gc_spikes := 0, 0, 0, 0
+	mut frames, mut gc_frames, mut spikes, mut gc_spikes := 0, 0, 0, 0
 	mut worst := f32(0)
 	mut worst_gc := false
 	for i in 0 .. s.buf.len {
@@ -135,7 +138,7 @@ pub fn (s &Sampler) summary(t0 f64, spike_ms f32) Summary {
 		}
 		frames++
 		if x.gc {
-			gcs++
+			gc_frames++
 		}
 		if x.work_ms >= spike_ms {
 			spikes++
@@ -152,7 +155,7 @@ pub fn (s &Sampler) summary(t0 f64, spike_ms f32) Summary {
 		frames:    frames
 		worst_ms:  worst
 		worst_gc:  worst_gc
-		gcs:       gcs
+		gc_frames: gc_frames
 		spikes:    spikes
 		gc_spikes: gc_spikes
 	}

@@ -10,7 +10,6 @@
 #include "misc/freetype/imgui_freetype.h"
 #endif
 #include <GLFW/glfw3.h>
-#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -263,10 +262,6 @@ void vgui_menu_image(unsigned int tex, float aspect) {
 // rate. Set in vgui_frame_end when activity is detected; counted down here.
 static int g_busy_frames = 0;
 
-// how long the last frame's buffer swap blocked — the vsync wait, which is not the frame's work
-static unsigned long long g_swap_ns = 0;
-unsigned long long vgui_swap_ns() { return g_swap_ns; }
-
 int vgui_running() {
     if (glfwWindowShouldClose(g_win)) return 0;
     if (g_event_driven) {
@@ -335,7 +330,14 @@ void vgui_dock_2col(const char* left, const char* right, float ratio) {
     ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
-void vgui_frame_end() {
+// frame_end is frame_render then frame_present: the split lets a caller measure the frame's work
+// without the swap, which blocks for vsync.
+void vgui_frame_render();
+void vgui_frame_present();
+void vgui_frame_end() { vgui_frame_render(); vgui_frame_present(); }
+
+// frame_render closes the frame and draws it into the back buffer.
+void vgui_frame_render() {
     ImGui::End(); // host window (opened in frame_begin)
     ImGui::Render();
     int w,h; glfwGetFramebufferSize(g_win,&w,&h);
@@ -349,16 +351,17 @@ void vgui_frame_end() {
         if(f){ fprintf(f,"P6\n%d %d\n255\n",w,h); for(int y=h-1;y>=0;y--) fwrite(px+y*w*3,1,w*3,f); fclose(f); }
         free(px); g_dump=nullptr;
     }
+}
+
+// frame_present shows it: the extra viewports, and the main window's swap (the vsync wait).
+void vgui_frame_present() {
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         GLFWwindow* b = glfwGetCurrentContext();
         ImGui::UpdatePlatformWindows(); ImGui::RenderPlatformWindowsDefault();
         glfwMakeContextCurrent(b);
     }
-    auto swap0 = std::chrono::steady_clock::now();
     glfwSwapBuffers(g_win);
-    g_swap_ns = (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now() - swap0).count();
     // Keep rendering at full rate for a short burst after any UI activity so imgui's
     // close/reflow/hover animations settle smoothly (otherwise they play at the 0.5s idle
     // rate → a window takes ~1-2s to visibly close). True idle falls back to the cheap wait.
