@@ -1,14 +1,16 @@
 # Streaming replay — design
 
-> Status: step 1 of the PR sequence is built — `mf4.Stream` (`stream.v`, `chain.v`) reproduces
+> Status: steps 1–3 of the PR sequence are built — `mf4.Stream` (`stream.v`, `chain.v`) reproduces
 > `parse_log`'s order from the file a chunk at a time, pinned by the golden test over the images
 > in its golden list (sorted MLSD and VLSD, DLC and DataLength, 32- and 64-bit offsets, remote
 > and invalidated frames, a DL chain with a straddling record, DZ both types, an unsorted group
 > with skew, an unsorted group's VLSD channel group, a DL-of-DZ signal-data chain, UnFinMF) and
 > the tracked samples; `cmd/mf4_dump --stream` reads through it and prints the heap
-> high-water mark of either path. The window's cell (`canlog.Row`, the arena) exists; the window,
-> the decoder thread and the player over a cursor (steps 3–8) do not yet — superseded: step 3
-> below is the lean shape that replaced steps 3–6 of the original sequence. Written after
+> high-water mark of either path; `mf4.survey()` is the one-pass survey; `player.Chunker` plays a
+> recording a chunk at a time. Step 4 — the GUI and the CLI switching to the chunker — is not
+> built: a replay still loads the whole file. **This shipped differently from *The shape* below**:
+> no window ring, no decoder thread filling one and no cursor interface (items 3–8); step 3's
+> reader thread queuing chunks replaced them. Written after
 > #299/#300 took the replay's allocation rate from 1,140 MB/s to ~28 and the arena took the
 > collector's pause length down with it; what remains is a recording that does not fit in memory
 > at all. Each step below is measured with `cmd/blobly_net/probe.v` before and after.
@@ -86,22 +88,20 @@ played, FIFO. The arena is the cell of that window, not something the window rep
 
 `canlog.Row`/`Log` (the cell), `restbus.Decider`/`Tally`/`census`/`subtract`, every test
 that builds `[]canlog.LogEntry`, `mf4.parse`/`load_file` for tests and small files (refactored
-INTERNALLY to share one `decode_record` with the stream), `player/control.v`, the trace
+INTERNALLY to share one `decode_row` with the stream), `player/control.v`, the trace
 import (whole-file by design, 2000-row cap).
 
 ## Hazards
 
-- File offsets are `int` in four helpers of `mf4.v` (`block_links`, `data_off`,
-  `read_data_block`, `dz_decompress`); the stream uses `u64` end to end and indexes `int`
-  only inside a bounded chunk. A `[]u8` over 2 GB is impossible in V regardless.
+- File offsets are `u64` end to end, the header helpers included (`block_links`, `data_off`,
+  `read_data_block`, `dz_decompress`); `int` indexes only inside a bounded chunk. A `[]u8` over
+  2 GB is impossible in V regardless.
 - `os.File` is not safe to share between threads (one position); the decoder and the survey
   each open their own.
 - `read_bytes_into` swallows the seek error and returns a short count at EOF: a short read is
   EOF or corruption, never zeros.
 - Under `-prod`, the fill loop must hold the window and the source by pointer
   (`docs/known_issues.md`, the scope pin).
-- `mf4.v`'s doc comment says VLSD groups in unsorted streams are skipped; the code handles
-  them. Fix the comment with the first PR.
 
 ## PR sequence
 
@@ -204,7 +204,7 @@ import (whole-file by design, 2000-row cap).
    data groups: disorder 0, nothing queued, every counter 0, and the survey's buses equal
    `load_recording`'s on each. The heap marks of `mf4_dump` are within a megabyte for the two
    paths, as they must be: the dump materializes the rows either way, and the memory win is
-   the window's, step 4. The seek index the design listed here waits for seek (step 6).
+   the chunked player's, step 3. The seek index the design listed here waits for step 4.
 3. **Built** (#172), smaller than planned: no window ring and no cursor interface.
    `player.Chunker` (`chunked.v`) runs a READER THREAD that reads the stream, decides each row
    and queues chunks of rows (`chunk_rows` = 256, up to `chunk_ahead` = 64 ahead) on a channel.

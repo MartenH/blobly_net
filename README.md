@@ -114,19 +114,30 @@ everything in one folder, take a release.
   still refuses an FD frame rather than truncating it.
 - **Software buses** for driver-free tests — in-process (`inproc:`) and UDP multicast, so the
   whole test suite runs with no hardware and no drivers.
-- **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (an RPC client, a passive listener, and a `someip`
-  channel whose messages are trace rows), over ordinary
+- **CAN bridge** — another host's CAN interfaces over TCP (`bridge:`, `cmd/canbridge`): the
+  Windows build reaches WSL's `vcan`s this way ([wsl_bridge.md](docs/wsl_bridge.md)).
+- **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (send and call from Lua, an RPC client, a
+  passive listener, and a `someip` channel whose messages are trace rows), over ordinary
   TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
 - **LIN** — 🧭 [planned](ROADMAP.md), not implemented yet
 
 **Diagnostics**
-- **ISO-TP** (ISO 15765-2) and a **UDS client** over it
-- **DoIP** (ISO 13400) — UDS over TCP, tester side and entity (server) side
-- **Firmware flashing** — `cmd/flash` and the GUI Flash panel, UDS download with 0x29 auth
+- **ISO-TP** (ISO 15765-2) and a **UDS client** over it — physical and functional addressing,
+  DTCs with their snapshots and extended data
+- **DoIP** (ISO 13400) — UDS over TCP, tester side and entity (server) side; **Discover** finds
+  an entity on the local segment and adds it as a channel
+- **Diagnostics panel** — one held connection per target, DTC and DID tabs named from a
+  blobly_emb `ecu.toml`, security-access unlock, and the session copied out as a Lua script
+- **Firmware flashing** — `cmd/flash`, the GUI Flash panel and Lua's `flash.program`, UDS
+  download with 0x29 auth
 - **Shell panel** — an interactive console to the target over CAN
 
 **Databases & decoding**
 - **DBC** parse, decode, encode — multiplexing and value tables included
+- **AUTOSAR ARXML** read natively (one database per CAN cluster), a project's channels imported
+  from one, and `cmd/arxml2dbc` to export a DBC
+- **J1939**, read side — PGN and source address in the trace, transport-protocol transfers
+  rejoined, address claims ([j1939.md](docs/j1939.md))
 - **DBC editor** in the GUI — forms, a bit-matrix grid, live save, read-only while running
 - **`candump -l` logs** and a native **ASAM MDF4** (`.mf4`) reader
 
@@ -137,6 +148,8 @@ everything in one folder, take a release.
   DBC sender, so it cannot argue with a recording of itself
 - **Multi-bus replay** — several recorded buses onto several live ones from one clock, because
   the timing *between* buses is what a gateway polices
+- **End-to-end protection** — AUTOSAR E2E Profile 1 stamped and verified, declared in the DBC
+  or in the project
 - **Fault injection** — drop, bad CRC, frozen counter, out-of-range, applied around end-to-end
   protection rather than after it
 
@@ -178,7 +191,7 @@ Full detail, including the WSL kernel requirements:
 drives a UDS firmware-download session against a [blobly_emb](docs/blobly_emb_synergies.md)
 bootloader.
 
-**Databases & signals** — a native **DBC** parser (`candb`) with a **DBC editor** in the
+**Databases & signals** — a native **DBC** parser and **ARXML** reader (`candb`) with a **DBC editor** in the
 GUI: decode/encode signals, value tables, multiplexing, and a canonical writer so a
 save/load cycle never drifts a file (git diffs show real changes only).
 
@@ -294,6 +307,8 @@ in the **[scripting & test guide](docs/scripting.md)**.
 | `dbc_decode` | decode one CAN frame to physical signal values | |
 | `mf4_dump` | parse an ASAM MDF4 log and summarise its frames | |
 | `loadtest` | data-plane benchmark across many concurrent buses | |
+| `arxml2dbc` | export one CAN cluster of an AUTOSAR ARXML as a DBC (and an `ecu.toml` fragment) | |
+| `canbridge` | offer this host's CAN interfaces to a Blobly Net elsewhere — WSL's `vcan`s to the Windows build | |
 | `restbus` | replay a recording onto live bus(es) with the ECU under test subtracted by DBC sender; several recorded buses onto several live ones from one clock | |
 
 † needs a **blobly_emb** target, which is [not released yet](#-this-screenshot-needs-the-other-half--which-isnt-released-yet).
@@ -310,9 +325,9 @@ evidence behind that warning.
 
 | layer | what | where |
 |---|---|---|
-| **Unit tests** | every `_test.v` under `blobly/` — 72 files, ~900 test functions and ~3,200 assertions at 2026.08.00 | `v -enable-globals test blobly/` |
+| **Unit tests** | every `_test.v` under `blobly/` — 127 files, ~1,700 test functions and ~7,300 assertions at 2026.10.00 | `v -enable-globals test blobly/` |
 | **Golden byte vectors** | wire formats are pinned to exact bytes — SOME/IP headers, trace records, the simulated ECU's frames — and the same vectors exist on the blobly_emb side, so neither repo can drift alone | inside the unit tests |
-| **Headless integration** | 9 Lua suites — every file in `tests/`, which is what CI runs with no arguments — drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
+| **Headless integration** | 14 Lua suites — every file in `tests/`, which is what CI runs with no arguments — drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
 | **GUI build** | the ImGui app compile-links on Linux and Windows | `ci.yml`, `windows.yml` |
 
 **Not automated — done by hand, and worth knowing about:**
@@ -339,6 +354,11 @@ above is manual, so a regression there is caught only when someone next runs it.
 - [dbc_editor.md](docs/dbc_editor.md) — the DBC editor
 - [project_editing.md](docs/project_editing.md) — projects, buses and channels
 - [bus_config_dialog.md](docs/bus_config_dialog.md) — bus/hardware configuration
+- [simulation.md](docs/simulation.md) — simulated ECUs, rest bus, generators, E2E, fault injection
+- [doip.md](docs/doip.md) — DoIP: what works, discovering an entity, the wire
+- [security_access.md](docs/security_access.md) — 0x27 levels and the reference key
+- [j1939.md](docs/j1939.md) — the J1939 read side
+- [wsl_bridge.md](docs/wsl_bridge.md) — the Windows build reaching WSL's vcans
 
 **Design**
 - [data_path.md](docs/data_path.md) — the map: every carrier from the wire to the panels, scripts and files

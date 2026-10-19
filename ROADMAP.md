@@ -17,10 +17,12 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   reproducing the in-memory order exactly (golden test), a survey pass for labels, span and a seek
   index, a bounded FIFO window of arena rows filled by a decoder thread and drained by the player,
   per-row bus mapping and subtraction at decode time, and a file-size switch between the two paths.
-  Six PR-sized steps, each measured with `cmd/blobly_net/probe.v`; **steps 1 and 2 are built** (#172:
+  Each step measured with `cmd/blobly_net/probe.v`; **steps 1–3 are built** (#172:
   `mf4.Stream` reproduces the loader's order from the file a chunk at a time, golden-tested;
   `mf4.survey()` answers the buses, span and the stream's high-water marks in one pass, and
-  `restbus --list` reads through it), the player over a cursor and the window are next. Beside it, the smaller items the
+  `restbus --list` reads through it; `player.Chunker` plays a recording a chunk at a time from a
+  reader thread, held to the in-memory playback by `chunked_test.v`). Next is step 4: the GUI and
+  the CLI switching to the chunker by file size, which neither does yet. Beside it, the smaller items the
   reviews named: the wire identity resolved once per channel and tap at open; a per-group index for
   the grouped Trace view; `wiretap` holding only in-flight records; the Replay panel's census not
   loading the file a second time.
@@ -38,9 +40,9 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   66 s under `-prod` where the inline version managed 562 in ten minutes. What is left, measured
   as `collect_keepalive` sites in the `-prod` C: `main__draw_dbc_editor` 1959,
   `main__replay_group` 1014, `main__draw_buses` 636, `main__draw_replay_config` 549. Only
-  `replay_group` is a per-frame loop, and it is deliberately untouched — `cmd/blobly_net` has no
-  tests (#161) and that function's comments record four codex rounds of mid-run stop/seek
-  defects, so it is not a thing to restructure for a benefit no test can observe. Do it in the
+  `replay_group` is a per-frame loop, and it is deliberately untouched — it has no test of its
+  own (#161 moved only its command protocol out, to `player/control.v`) and its comments
+  record four codex rounds of mid-run stop/seek defects, so it is not a thing to restructure for a benefit no test can observe. Do it in the
   same change that turns `-prod` on, with a large-recording replay actually timed.
 - ⏭️ **`fill_rect` / drawlist binding in `vgui`** — the blocker for two shipped-adjacent features:
   **trace-manifest rows** and a **drawn topology graph** in the System panel both wait on it.
@@ -49,16 +51,18 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   editor: mutations must never rewrite the file, so comments survive and diffs stay clean.
 - ⏭️ **UDS server — finish it.** `blobly/uds/server.v` already exists and is load-bearing: it
   backs the Lua test runner, the GUI's simulated diagnostics and `doip_smoke`, and it serves
-  **0x10** session control, **0x22**/**0x2E** RDBI/WDBI, **0x27** security access, **0x19**
-  ReadDTCInformation (sub `0x02` only) and **0x3E** tester present. What is missing:
+  **0x10** session control, **0x22**/**0x2E** RDBI/WDBI, **0x27** security access, **0x11**
+  ECUReset, **0x14** ClearDiagnosticInformation, **0x19** ReadDTCInformation (`01`/`02`/`0A` and
+  the records `03`/`04`/`06`), **0x85** ControlDTCSetting, **0x3E** tester present, functional
+  requests, and suppress-positive-response. What is missing:
   - ✅ **Config-driven per node** — a simulated server addressed like a node of the project's
     `system.toml` is built from that node's `ecu.toml` (`uds.server_from`, `sim.describe`): its
     DIDs, gates, services table, 0x27 levels and key, parameters and DTCs, answering as the
     board does (cross-checked against zone_a; `docs/simulation.md`, "Described servers").
     Without a description, `default_server()` and the project's `uds:` content as before.
   - **0x31 RoutineControl** — start/stop/requestResults; nothing today.
-  - **0x11 ECUReset**, **0x14 ClearDiagnosticInformation**, and the remaining **0x19**
-    subfunctions beyond `reportDTCByStatusMask`.
+  - **0x28 CommunicationControl** — refused, because nothing in the simulation gates its
+    traffic yet, and an acknowledgement it does not act on would be a lie a test could pass on.
   - **Session and security state actually gating access** — done for a DESCRIBED server (its
     services table and DID gates); a server configured only by the project's `uds:` block still
     gates nothing, since that block states no gates.
@@ -69,44 +73,29 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
-- 🧭 **DoIP discovery — actually discover.** `discover()` sends a **unicast** vehicle
-  identification request to a host you already name, reads one reply and returns. It
-  confirms an identity; it cannot find an ECU nobody told it about. That is backwards for a
-  bus tester: on CAN you attach and observe because the medium is broadcast, and on Ethernet
-  the same tool sees nothing without an address typed in by hand. The asymmetry is real
-  today — blobly_emb **already** broadcasts its vehicle announcement three times at boot and
-  answers identification requests afterwards, precisely so a late tester can find it. Blobly Net
-  The **passive listener has shipped**: `doip.collect_announcements()` (Lua
-  `doip.listen(window_ms)`) hears unsolicited announcements and returns each sender's endpoint,
-  and a simulated entity announces itself at Start — so the ECU-booting-while-you-watch case is
-  covered in both directions. What remains is a request that collects **many** responses instead
-  of returning at the first, and a **Scan** action turning results into channels rather than
-  hand-typed `doip:` strings — for the ECU that neither announced while you were listening nor
-  sits at an address you know.
-  (a) *Keep the source address.* `discover()` throws it away (`n, _ := u.read`) and
-  `VehicleInfo` carries only VIN, logical address, EID and GID — none of which is an endpoint.
-  A channel needs `doip:<host>[:<port>]`, so without retaining each responder's source (with
-  the IPv6 scope id where there is one) a Scan can list identities it cannot connect to.
+- 🧭 **DoIP discovery — beyond the local IPv4 segment.** The tester half has shipped (see the
+  shipped list): `doip.identify` collects every answer to one identification request, each with
+  the address it answered from, and Configure → **Discover…** asks one address or broadcasts on
+  the segment and adds what answers as channels. What remains:
+  (a) *A routed subnet.* A broadcast does not cross a router, so an entity there that did not
+  announce while you listened still needs an address you know; a sweep is not built.
   (b) *Answer on the entity side.* `DoipServer.listen()` binds UDP to its own unicast
   `host:port` and joins no multicast group, so the simulated entities receive neither an IPv4
-  subnet broadcast nor an IPv6 multicast — change only the requester and the repo's own
-  virtual ECUs stay silent, leaving nothing to test against. The entity-side socket and
-  hermetic tests belong in this item.
+  subnet broadcast nor an IPv6 multicast — a broadcast request does not reach the repo's own
+  virtual ECUs, leaving nothing hermetic to test it against.
   (c) *Send per interface.* Link-scoped multicast needs an outbound interface, and one send
   covers one link; a multi-homed host must enumerate eligible interfaces and transmit on each,
   keeping the scope that replied.
-  **Both address families, and they are not the same mechanism:** IPv4 gets subnet broadcast,
-  but IPv6 has no broadcast at all, so it needs link-local multicast. That is not a detail to
-  discover during implementation — this repo already supports IPv6 DoIP endpoints
-  (`blobly/doip/server.v`) and round-trips them in `blobly/doip/net_test.v`, so a
-  broadcast-only scan would ship "finds any ISO 13400 entity" while leaving a class of entity
-  we deliberately support permanently invisible. Core
+  (d) *IPv6.* **Find on network** is an IPv4 broadcast, and IPv6 has no broadcast at all, so it
+  needs link-local multicast — and passive collection on `ff02::1` is implemented but unproven.
+  This repo supports IPv6 DoIP endpoints (`blobly/doip/server.v`, round-tripped in
+  `blobly/doip/net_test.v`), so they stay findable only by an address you name. Core
   tester behaviour, not blobly_emb integration — any ISO 13400 entity answers, and it is
   recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
 - 🧭 **LIN** — `blobly/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
 - 🧭 **Split `cmd/blobly_net/main.v`** — *the mechanical half landed via #123: per-concern
-  files (24 today, 14,751 lines between them, `main.v` itself 311), pure moves, build targets
+  files (44 today, 27,111 lines between them, `main.v` itself 525), pure moves, build targets
   the directory. What remains here is the second half below — the app state and the
   telemetry-speaking core paths, which no file move dislodges.*
   The motivation, as measured before the split (2026-08-10): one file of **7,475 lines /
@@ -280,6 +269,12 @@ a wire-visible feature, the matching host support usually lands here in the same
   platform-gated: a USB network adapter over REST + WebSocket, HW-verified classic and FD
 - ✅ Software buses — in-process (`inproc:`) and localhost UDP multicast (`udp:`) — driver-free
   tests and demos
+- ✅ **CAN bridge** (#451) — `bridge:<name>/<channel>`, another host's CAN interfaces over one TCP
+  connection (`cmd/canbridge` dials in); the Windows build starts it in a WSL distribution from
+  the Discover dialog and reaches its `vcan`s ([docs/wsl_bridge.md](docs/wsl_bridge.md))
+- ✅ **Receive timestamps** (#149 steps 1, 2 and 4) — a frame carries its receive time and the
+  clock that read it (`blobly/timebase`), and the trace places each row by it; the vendor
+  backends' stamps (step 3) are what is left
 - ✅ **Releases** — `v0.1.0` cut 2026-08-21; `release.yml` proves tag = `v.mod` and the tagged
   commit is on `main`, `windows.yml` publishes only behind that guard. **No vendor CAN library
   ships, ever** — `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll` are the user's to install
@@ -291,17 +286,37 @@ a wire-visible feature, the matching host support usually lands here in the same
 - ✅ **DBC** parse/decode/encode (`candb`), incl. multiplexing and value tables
 - ✅ **DBC editor** — forms, bit-matrix grid, live-loop save, read-only while running, and a
   **canonical writer** so a save/load cycle never drifts a file (git diffs show real changes only)
+- ✅ **AUTOSAR ARXML** (#272, #461) — read natively into the same `Database`, one per CAN cluster,
+  several files merged as one system through the vendored arxmodel; **Import ARXML…** makes a
+  project's channels from one (#439); `cmd/arxml2dbc` exports a DBC plus an `ecu.toml` fragment
+- ✅ **AUTOSAR E2E Profile 1** (#271) — stamped and verified as specified, declared in the DBC
+  (`E2E*` attributes, [docs/dbc_attributes.md](docs/dbc_attributes.md)) or by a node's
+  `protect:`/`verify:`; Lua's `e2e.p01_crc` / `e2e.p01_protect` for frames a script builds
 
 **Diagnostics**
 - ✅ **ISO-TP** (ISO 15765-2) · ✅ **UDS client** · ✅ **DoIP** (ISO 13400 — UDS over TCP)
-- ✅ **Flashing** — `cmd/flash` + the GUI Flash panel; UDS firmware download against a
-  blobly_emb bootloader, with **0x29 challenge/response** auth (retired 0x27 seed/key)
+- ✅ **UDS client, complete enough to test with** — a response must answer its request, P2/P2*
+  timing, 0x11/0x14/0x28/0x85 and suppress-positive-response, DTCs as a model with snapshots and
+  extended data (0x19 01/02/0A/03/04/06), and **functional addressing** on CAN and DoIP
+- ✅ **Diagnostics panel** — one held connection per target with tester-present, a request log
+  that **Copy as Lua** turns into a script, DTC and DID tabs named from a blobly_emb `ecu.toml`,
+  writes behind a stated plan, and security-access Unlock / Lock
+  ([docs/security_access.md](docs/security_access.md))
+- ✅ **Described simulated servers** — a simulated node addressed like a node of the project's
+  `system.toml` answers as its `ecu.toml` describes it (DIDs, gates, services, 0x27 levels, DTCs)
+- ✅ **DoIP discovery on the local segment** — `doip.identify` (every answer to one request, with
+  the address to dial) and Configure → **Discover…** adding what answers as channels; a client
+  can be retargeted to a node behind a DoIP gateway
+- ✅ **Flashing** — `cmd/flash`, the GUI Flash panel and Lua's `flash.program`; UDS firmware
+  download against a blobly_emb bootloader, with **0x29 challenge/response** auth (retired 0x27
+  seed/key)
 
 **Ethernet services**
 - ✅ **SOME/IP** — 16-byte header codec, envelope validation, golden vectors, an **RPC client**
   (with the eth shell in the GUI) cross-checked against blobly_emb by an oracle, and a **passive
   listener** (Lua `someip.listen`: any port or multicast group, header-decoded, payload raw) — also
-  as a **`someip` channel** in a project, so the GUI trace shows the stream.
+  as a **`someip` channel** in a project, so the GUI trace shows the stream — and Lua's
+  `someip.send` / `someip.call`, which send from a port and hear that port.
   What the tester does and does not do on SOME/IP is fixed in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md)
 
@@ -320,6 +335,9 @@ a wire-visible feature, the matching host support usually lands here in the same
 - ✅ **`Bus.diagnostics()`** (#213) — dropped, controller-error and undecodable counts beside
   health on every backend, a chip on the Buses row, narrated by the Log, printed by the
   headless runner at close
+- ✅ **Fault ladder on a wire nobody reads** (#142) — a generator's target wire reports its
+  controller state, asked on the transmit tap already open
+- ✅ **Performance panel** — each frame's work and the garbage collector, for a stutter
 - ✅ **Trace chart** — handler/thread swimlanes, derived idle lane, execution-vs-response bars,
   preemption cut-links, per-core lanes, RTOS priority labels, multi-block dump
 - ✅ **Cross-core time correlation** — a satellite core's block carries its measured clock offset
@@ -329,7 +347,9 @@ a wire-visible feature, the matching host support usually lands here in the same
 - ✅ **Shell panel** — interactive console to the target over CAN
 
 **Platform**
-- ✅ **Dear ImGui + ImPlot** GUI · ✅ Windows build + CI
+- ✅ **Dear ImGui + ImPlot** GUI · ✅ Windows build + CI (MSYS2 UCRT64)
+- ✅ **V3 toolchain** — one pinned V for this repo and blobly_emb; the engine's modules live in
+  `blobly/` and are imported as `blobly.<name>` (#447)
 - ✅ **Lua scripting** — test framework, headless runner for CI, Script panel in the GUI
 - ✅ `.blobnet` project files
 

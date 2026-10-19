@@ -192,9 +192,27 @@ jobs:
                 printf '%s\n' "$t"
                 break
               done)"
+          # no ancestor tag, but a product tag whose CONTENT is in this history: the history was
+          # rewritten after it (an identity rewrite keeps every tree), so the commit carrying the
+          # tree of the tag just BELOW this one is the baseline, and the list is the squash-merge
+          # subjects since it. Below, not newest: a backfilled older tag must not baseline on a
+          # later release, and an older one must not stand in for the one before this.
+          base=""
+          if [ -z "$prev" ]; then
+            below="$(git tag -l 'v[0-9]*' --sort=-v:refname \
+              | awk -v cur="$GITHUB_REF_NAME" 'f && !n { print; n = 1 } $0 == cur { f = 1 }')"
+            if [ -n "$below" ]; then
+              tree="$(git rev-parse "$below^{tree}")"
+              base="$(git log --first-parent --format='%H %T' "$GITHUB_SHA" \
+                | awk -v t="$tree" '$2 == t && !f { print $1; f = 1 }')"
+            fi
+          fi
           if [ -n "$prev" ]; then
             gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
               -f tag_name="$GITHUB_REF_NAME" -f previous_tag_name="$prev" --jq .body > generated.md
+          elif [ -n "$base" ]; then
+            printf "## What's Changed since %s\n\n" "$below" > generated.md
+            git log --first-parent --format='* %s' "$base..$GITHUB_SHA" >> generated.md
           else
             # a first release still owes the promised PR history — the API cannot express
             # "baseline = the beginning" (it wants a tag, and auto-choice picks the
@@ -205,7 +223,12 @@ jobs:
             # be advertised by them (codex #137 r5) — hence the ancestry filter per merge
             # commit (PRs merged by other means may carry no mergeCommit; skipped, since
             # nothing proves they are in this history)
-            printf '## First release — every PR in this history\n\n' > generated.md
+            if [ -n "$below" ]; then
+              # an earlier tag exists but neither its commit nor its tree is in this history
+              printf '## Every PR in this history (no earlier release is in it)\n\n' > generated.md
+            else
+              printf '## First release — every PR in this history\n\n' > generated.md
+            fi
             gh pr list --state merged --base main --limit 1000 \
               --json number,title,mergeCommit \
               --jq '.[] | select(.mergeCommit != null) | "\(.mergeCommit.oid) \(.number) \(.title)"' \

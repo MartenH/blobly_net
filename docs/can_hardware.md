@@ -55,7 +55,7 @@ zcat /proc/config.gz | grep -iE 'KVASER|PEAK_USB|USBIP_VHCI|CONFIG_USB='
 ```
 If empty, enable them in the kernel source tree (`scripts/config`, the `-e` you asked
 about; build them **`=y` / built-in** to match the existing `CAN=y` approach and dodge
-the empty-`/lib/modules` module-loading gotcha noted in CLAUDE.md):
+the empty-`/lib/modules` module-loading gotcha noted below):
 ```bash
 scripts/config -e USB \
                -e USBIP_CORE -e USBIP_VHCI_HCD \   # USB/IP client for usbipd-win
@@ -88,13 +88,13 @@ No SocketCAN on Windows, so each vendor needs its SDK DLL wrapped via C-interop 
 
 | Vendor | SDK | File | Key calls (open/tx/rx) | Discovery |
 |---|---|---|---|---|
-| Kvaser | CANlib (`canlib32.dll`) | `transport/kvaser_windows.v` | `canOpenChannel` / `canWrite` / `canReadWait` | `canGetNumberOfChannels` |
-| PEAK | PCAN-Basic (`PCANBasic.dll`) | `transport/pcan_windows.v` | `CAN_Initialize` / `CAN_Write` / `CAN_Read` | `CAN_GetValue(PCAN_ATTACHED_CHANNELS)` |
-| Vector | XL Driver Library (`vxlapi64.dll`) | `transport/vector_windows.v` (+ `vector_shim.h`, where the open/config calls live) | `xlOpenPort` / `xlCanTransmit`(`Ex`) / `xlReceive`, `xlCanReceive` | `xlGetDriverConfig` |
+| Kvaser | CANlib (`canlib32.dll`) | `blobly/transport/kvaser_windows.v` | `canOpenChannel` / `canWrite` / `canReadWait` | `canGetNumberOfChannels` |
+| PEAK | PCAN-Basic (`PCANBasic.dll`) | `blobly/transport/pcan_windows.v` | `CAN_Initialize` / `CAN_Write` / `CAN_Read` | `CAN_GetValue(PCAN_ATTACHED_CHANNELS)` |
+| Vector | XL Driver Library (`vxlapi64.dll`) | `blobly/transport/vector_windows.v` (+ `vector_shim.h`, where the open/config calls live) | `xlOpenPort` / `xlCanTransmit`(`Ex`) / `xlReceive`, `xlCanReceive` | `xlGetDriverConfig` |
 
 Each implements the existing `transport.Bus` interface, so callers don't change.
 `discover_windows.v` enumerates Kvaser, PCAN and Vector channels alongside the software buses.
-The `open()` dispatcher accepts `pcan:`, `kvaser:`, `vector:` and `cansub:` beside
+The `open()` dispatcher accepts `pcan:`, `kvaser:`, `vector:`, `cansub:` and `bridge:` beside
 `inproc:`/`udp:` — e.g. `kvaser:0`, `pcan:PCAN_USBBUS1@500000`, `vector:1@500000,silent`
 (Vector channels are numbered from 1).
 

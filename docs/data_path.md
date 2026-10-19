@@ -10,8 +10,8 @@ wire / medium            backend (blobly/transport, doip, someip)     what comes
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
 CAN  vcan/socketcan      open()  →  a Bus per OPENER: the RX loop,       CanFrame             rx_loop → TraceRow (RX)
      pcan/kvaser/vector   each transmit tap, the sim, diagnostics                              sim_loop → tap (TX-S)
-     cansub               hold their own. pcan/cansub share one                               diagnostics → isotp.on_bus(tap)
-     inproc / udp:        handle behind per-Bus cursors                                       Lua opener → Bus
+     cansub / bridge      hold their own. pcan/cansub/bridge share                            diagnostics → isotp.on_bus(tap)
+     inproc / udp:        one handle behind per-Bus cursors                                   Lua opener → Bus
                           (one_reader_per_wire.md); the rest fan out
 ──────────────────────   ─────────────────────────────────────────    ─────────────────    ─────────────────────────────
 Eth  doip:<host:port>    TCP: DoipClient / DoipServer                  UDS bytes            uds.Client over isotp.Channel
