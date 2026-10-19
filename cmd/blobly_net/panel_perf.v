@@ -79,6 +79,11 @@ fn draw_perf(mut app App) {
 	p.since.clear()
 	p.alloc.clear()
 	p.gcx.clear()
+	// the y ranges, from what is in the window: a spike sets the scale, and leaves it when it
+	// scrolls out
+	mut top_ms := perf_spike_ms * 1.2
+	mut top_mb := f32(1)
+	mut top_rate := f32(1)
 	for i in 0 .. n {
 		s := p.sampler.at(i)
 		if now - s.t_s > perf_window_s {
@@ -93,13 +98,20 @@ fn draw_perf(mut app App) {
 		if s.gc {
 			p.gcx << x
 		}
+		top_ms = f32_max(top_ms, s.work_ms)
+		top_mb = f32_max(top_mb, f32_max(s.heap_mb, s.since_mb))
+		top_rate = f32_max(top_rate, s.alloc_mb_s)
 	}
-	if vgui.plot_begin_x('frame (ms)##perf_frame', 200, -perf_window_s, 0) {
+	// the plot moves every frame, so frames keep coming without input
+	vgui.keep_busy()
+	if vgui.plot_begin_lim('frame (ms)##perf_frame', 200, -perf_window_s, 0, f64(top_ms) * 1.1,
+		0) {
 		vgui.plot_line('frame ms', p.xs, p.work)
 		vgui.plot_vlines('GC', p.gcx)
 		vgui.plot_end()
 	}
-	if vgui.plot_begin_multi('memory##perf_mem', 200, -perf_window_s, 0, 2) {
+	if vgui.plot_begin_lim('memory##perf_mem', 200, -perf_window_s, 0, f64(top_mb) * 1.1,
+		f64(top_rate) * 1.1) {
 		// series i takes axis i's colour, so the right axis's one series goes second
 		vgui.plot_line_axis('heap MB', p.xs, p.heap, 0)
 		vgui.plot_line_axis('alloc MB/s', p.xs, p.alloc, 1)

@@ -64,6 +64,8 @@ void vgui_plot_line_axis(const char* name, const float* xs, const float* ys, int
 int  vgui_plot_is_hovered(void);
 double vgui_plot_mouse_x(void);
 void vgui_plot_line(const char* name, const float* xs, const float* ys, int n);
+int  vgui_plot_begin_lim(const char* title, float height, double x_min, double x_max, int n_yaxes, double y1_max, double y2_max);
+void vgui_keep_busy(void);
 void vgui_plot_vlines(const char* name, const float* xs, int n);
 void vgui_plot_end(void);
 int  vgui_selectable(const char* label, int selected);

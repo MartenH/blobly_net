@@ -362,6 +362,10 @@ void vgui_frame_end() {
     else if (g_busy_frames > 0) g_busy_frames--;
 }
 
+// vgui_keep_busy: render the next frames at full rate even with no input — for a view that
+// changes every frame on its own (a live plot). Call it each frame the view is shown.
+void vgui_keep_busy() { if (g_busy_frames < 2) g_busy_frames = 2; }
+
 void vgui_shutdown() {
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
     ImPlot::DestroyContext(); ImGui::DestroyContext();
@@ -596,6 +600,25 @@ void vgui_plot_line_axis(const char* name, const float* xs, const float* ys, int
 }
 int vgui_plot_is_hovered() { return ImPlot::IsPlotHovered() ? 1 : 0; }
 double vgui_plot_mouse_x() { return ImPlot::GetPlotMousePos().x; }
+// plot with a fixed x-window and FIXED y ranges [0, y_max] per axis (1 or 2), for a caller that
+// knows its data's range: no auto-fit, so nothing lags or sticks to an old extent. Axis tick
+// labels take the colour of the series plotted first on them, as in vgui_plot_begin2.
+int vgui_plot_begin_lim(const char* title, float height, double x_min, double x_max, int n_yaxes, double y1_max, double y2_max) {
+    if (!ImPlot::BeginPlot(title, ImVec2(-1, height))) return 0;
+    ImPlot::SetupAxis(ImAxis_X1, "t (s)");
+    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
+    ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(0));
+    ImPlot::SetupAxis(ImAxis_Y1, NULL);
+    ImPlot::PopStyleColor();
+    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, y1_max, ImPlotCond_Always);
+    if (n_yaxes >= 2) {
+        ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(1));
+        ImPlot::SetupAxis(ImAxis_Y2, NULL, ImPlotAxisFlags_Opposite);
+        ImPlot::PopStyleColor();
+        ImPlot::SetupAxisLimits(ImAxis_Y2, 0, y2_max, ImPlotCond_Always);
+    }
+    return 1;
+}
 // vertical lines across the whole plot at each x: events on a time axis
 void vgui_plot_vlines(const char* name, const float* xs, int n) {
     ImPlot::PlotInfLines(name, xs, n);
