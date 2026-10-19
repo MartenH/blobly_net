@@ -110,7 +110,7 @@ changelog of every PR merged since the previous product release** (baselined on 
 `v[0-9]*` tag that is an ancestor; the first release says "First release" instead). When no
 earlier tag is an ancestor because the history was rewritten after it (as it was after
 `v2026.09.01` — a rewrite keeps every tree), the baseline is the commit on `main` whose tree is
-the newest tag's, and the list is the squash-merge subjects since it (`What's Changed since
+that of the tag just below the one being released, and the list is the squash-merge subjects since it (`What's Changed since
 <tag>`). Edit the release on GitHub afterwards if you want to add anything by hand.
 
 ## If something goes wrong

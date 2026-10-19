@@ -294,7 +294,8 @@ records what it is about to send, and a received frame is matched against those 
 one-shot, oldest first, exact on id width, RTR and payload. What matches nothing of ours is the
 other side.
 
-On **PCAN and Kvaser** (Windows only — on Linux those names are ordinary SocketCAN interfaces) the driver never hands your own transmissions back, so there is nothing to
+On **PCAN** (Windows only — on Linux the name is an ordinary SocketCAN interface) the driver
+never hands your own transmissions back, so there is nothing to
 match: `TX`/`TX-S` there come from the tap alone (still accurate — we know what we sent) and
 `RX` is everything the driver delivered. No row can be wire-*confirmed* there, and none is
 marked for silence — but a row is still marked `!` when the driver **refuses** the send outright,
@@ -334,12 +335,12 @@ off the bus, not when we hand it to the driver — so the file is in observation
 at emit put a fast responder's answer ahead of the request that caused it, because the simulation
 and the monitor are different threads on different sockets and neither waits for the other. Two
 consequences worth knowing: a frame that never reaches the wire is not in the recording (it is in
-the trace, marked), and on **PCAN/Kvaser**, where the driver never returns our own frames, we
+the trace, marked), and on **PCAN**, where the driver never returns our own frames, we
 record at emit instead — there is nothing else to record from.
 
 **Silence is not evidence.** The mark is only ever applied where an echo could have arrived: no
 monitor on that bus (a generator firing at a channel you are not watching), a channel disabled
-mid-run, or a driver that never hands your own transmissions back (PCAN and Kvaser do not) all
+mid-run, or a driver that never hands your own transmissions back (PCAN does not) all
 mean nobody was looking — so nothing is marked, rather than a healthy bus being accused.
 
 ## Diagnostics: a UDS server per ECU

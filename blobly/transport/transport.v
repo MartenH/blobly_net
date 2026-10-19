@@ -191,9 +191,10 @@ mut:
 // frames back to every other socket by default), and so does VECTOR — we open separate ports on
 // one XL channel and the driver hands a frame from one to the others (#139), and Kvaser, whose
 // canlib does the same between handles on a channel. PCAN does NOT, so there a caller waiting
-// for its own frame waits forever, and must not read that silence as the bus having dropped it. THE VENDOR BACKENDS ARE NOT ONE CLASS HERE: reading this
-// answer off vendor_iface below, which groups all three, is what filed every Vector transmission
-// a second time as the device under test's.
+// for its own frame waits forever, and must not read that silence as the bus having dropped it.
+// THE VENDOR BACKENDS ARE NOT ONE CLASS HERE: reading this answer off vendor_iface below, which
+// groups all three, is what filed every Vector transmission a second time as the device under
+// test's.
 // vendor_iface reports the Windows vendor backends, whose address may carry an `@<bitrate>`
 // suffix. Nothing else uses `@` as syntax — `inproc:bench@A` is a perfectly good bus NAME, and
 // treating the suffix as universal sent the emitters to a different hub than the monitor.
