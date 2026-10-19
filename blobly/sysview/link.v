@@ -85,11 +85,12 @@ pub:
 	ext         bool // 29-bit ids (above 0x7FF, the convention the id allocation uses)
 }
 
-// can_targets: every node's diagnostic server on each channel named after a bus it sits on. A
-// node addresses by `can_ids`; one whose ecu.toml declares no server (the tester's own
-// declaration) is not a target, while one whose ecu.toml could not be read keeps its system.toml
-// ids. Two channels with one name are two targets — they are two wires, and either may be the one
-// the ECU is on — each marked `shared_name` so neither is shown as THE bus.
+// can_targets: every node's diagnostic server on each channel named after the bus its server is on
+// (`diag_bus`; every CAN bus it sits on where that cannot be told). A node addresses by `can_ids`;
+// one whose ecu.toml declares no server (the tester's own declaration) is not a target, while one
+// whose ecu.toml could not be read keeps its system.toml ids. Two channels with one name are two
+// targets — they are two wires, and either may be the one the ECU is on — each marked
+// `shared_name` so neither is shown as THE bus.
 pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 	mut out := []NodeTarget{}
 	for i, n in sys.nodes {
@@ -100,7 +101,8 @@ pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 		if req == 0 && rsp == 0 {
 			continue
 		}
-		for b in n.buses {
+		buses := if b := sys.diag_bus(n) { [b] } else { sys.can_buses(n) }
+		for b in buses {
 			on := chans.filter(it.name == b)
 			for c in on {
 				out << NodeTarget{
@@ -113,6 +115,65 @@ pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 					ext:         req > 0x7FF || rsp > 0x7FF
 				}
 			}
+		}
+	}
+	return out
+}
+
+// can_buses is the buses `n` sits on that are not declared as another kind (a someip segment), in
+// its own order.
+fn (sys &System) can_buses(n &SysNode) []string {
+	return n.buses.filter(fn [sys] (b string) bool {
+		return !sys.buses.any(it.name == b && it.kind != 'can')
+	})
+}
+
+// diag_bus is the CAN bus `n`'s diagnostic server is on: its only CAN bus, or the one its
+// `[isotp] bus` names — none when that cannot be told. A node's ecu.toml names a controller in
+// its own terms, as sysgen generates it: `can0` on a node with one bus, the system bus's
+// `interface` on a node with several (blobly_emb sysmodel's `local_can_iface`, whose `diag_bus`
+// this is).
+pub fn (sys &System) diag_bus(n &SysNode) ?string {
+	cans := sys.can_buses(n)
+	if n.desc.isotp_bus == '' {
+		return if cans.len == 1 { cans[0] } else { none }
+	}
+	for b in cans {
+		for sb in sys.buses {
+			if sb.name == b {
+				local := if n.buses.len == 1 { 'can0' } else { sb.iface }
+				if local == n.desc.isotp_bus {
+					return b
+				}
+			}
+		}
+	}
+	return none
+}
+
+// NodeDoip is one node's diagnostic server over DoIP, as the system describes it.
+pub struct NodeDoip {
+pub:
+	node    int
+	host    string // the node's network address (`endpoint`)
+	logical u16    // its entity's logical address
+	tester  u16    // the first tester it lets activate routing; 0 = it names none
+}
+
+// doip_targets: every node whose system.toml entry gives it a DoIP entity (`doip = { logical }`)
+// at an address the model can state. A node whose address cannot be derived is not a target —
+// nothing says where it is — and neither is one whose ecu.toml declares no server.
+pub fn (sys &System) doip_targets() []NodeDoip {
+	mut out := []NodeDoip{}
+	for i, n in sys.nodes {
+		if n.doip == 0 || n.address == '' || (n.ecu_err == '' && !n.desc.server) {
+			continue
+		}
+		out << NodeDoip{
+			node:    i
+			host:    n.address
+			logical: u16(n.doip)
+			tester:  n.testers[0] or { u16(0) }
 		}
 	}
 	return out

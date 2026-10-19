@@ -16,6 +16,7 @@ import blobly.candb
 pub struct SysBus {
 pub mut:
 	name    string
+	kind    string // 'can' (the default) or 'someip'
 	iface   string
 	fd      bool
 	bitrate int
@@ -124,6 +125,7 @@ pub fn load(path string) !System {
 			bm := bcfg.as_map()
 			mut b := SysBus{
 				name:    bname
+				kind:    if tstr(bm, 'kind') != '' { tstr(bm, 'kind') } else { 'can' }
 				iface:   tstr(bm, 'interface')
 				bitrate: int(tint(bm, 'bitrate'))
 				dbc:     tstr(bm, 'dbc')

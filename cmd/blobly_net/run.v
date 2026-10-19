@@ -1212,16 +1212,12 @@ fn (mut app App) start() {
 			spawn diag_server_loop(app, sc.iface, sc.pch.name, dflt.server, start_gen) // the built-in default for this bus
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
-				label: if dflt.ok {
-					'${dflt.node} (described) on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
-				} else {
-					'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
-				}
 				iface: sc.iface
 				chan:  sc.pch.name
 				rx:    diag_tx_id
 				tx:    diag_rx_id
-			}
+			}.named(if dflt.ok { '${dflt.node} (simulated, described)' } else { 'default (simulated)' },
+				chan_where(sc.pch.name, sc.iface))
 			continue
 		}
 		// Configure a per-ECU server and you own diagnostics on this bus: the default does NOT
@@ -1234,17 +1230,16 @@ fn (mut app App) start() {
 				u.fext, u.server, start_gen)
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
-				label: if u.described != '' && u.described != u.name {
-					'${u.name} (described as ${u.described})  (0x${u.rx:X}/0x${u.tx:X})'
-				} else {
-					'${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
-				}
 				iface: sc.iface
 				chan:  own.name // this node's OWN channel, not the first one on the wire
 				rx:    u.rx
 				tx:    u.tx
 				ext:   u.ext
-			}
+			}.named(if u.described != '' && u.described != u.name {
+				'${u.name} (simulated, described as ${u.described})'
+			} else {
+				'${u.name} (simulated)'
+			}, chan_where(own.name, sc.iface))
 		}
 	}
 	// DoIP hosts start LAST. Their supervisors publish targets from their own threads as soon
@@ -1379,13 +1374,13 @@ fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity
 	if ci := app.chan_index_locked(pch) {
 		app.chans[ci].running = true
 	}
+	car := script.carrier_of(pch)
 	tgt := DiagTarget{
 		key:     diag_key_doip(pch)
-		label:   '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
 		iface:   pch.iface
 		chan:    pch.name
-		carrier: script.carrier_of(pch)
-	}
+		carrier: car
+	}.named('${ent.node_label()} (simulated)', chan_where(pch.name, '${car.host}:${car.port}'))
 	if !app.diag_plan.any(it.key == tgt.key) {
 		app.diag_plan << tgt
 	}

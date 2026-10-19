@@ -1241,7 +1241,6 @@ fn draw_diag(mut app App) {
 	busy := app.diag_busy
 	st := app.diag_status
 	app.mu.unlock()
-	draw_diag_strip(mut app, st)
 	app.diag_sys_refresh()
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
 	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
@@ -1257,14 +1256,22 @@ fn draw_diag(mut app App) {
 	if app.diag_sel < 0 || app.diag_sel >= targets.len {
 		app.diag_sel = 0
 	}
+	// the selector first — what the buttons below act on — headed by carrier and channel, so CAN
+	// and DoIP read apart; the held connection is its status line
+	vgui.align_text_to_frame_padding()
+	vgui.text('target')
+	vgui.same_line()
 	if targets.len > 1 {
-		app.diag_sel = vgui.combo('target', targets.map(it.label), app.diag_sel)
+		vgui.set_next_item_width(-1)
+		app.diag_sel = vgui.combo_grouped('##target', targets[app.diag_sel].label, targets.map(it.item),
+			targets.map(it.group), app.diag_sel)
 	} else if targets.len == 1 {
-		vgui.text_dim('target: ${targets[0].label}')
+		vgui.text_dim(targets[0].label)
 	}
 	if app.diag_sel >= 0 && app.diag_sel < targets.len {
 		app.diag_sel_key = targets[app.diag_sel].key
 	}
+	draw_diag_strip(mut app, st, app.diag_sel_key)
 	app.diag_autopress_step(targets)
 	sel_t := if app.diag_sel >= 0 && app.diag_sel < targets.len {
 		targets[app.diag_sel]
@@ -1323,10 +1330,11 @@ fn draw_diag_general(mut app App, busy bool, sel_t DiagTarget, st DiagHoldStatus
 	draw_diag_log(mut app, sel_t)
 }
 
-// draw_diag_strip is the held connection at a glance: its state, its target, the session the
-// last 0x10 answer established and the timing that answer gave, and a Disconnect — or, with
-// nothing held, a Connect. Stopped, it says so: nothing is held and nothing is sent until Start.
-fn draw_diag_strip(mut app App, st DiagHoldStatus) {
+// draw_diag_strip is the held connection at a glance: its state, its target where that is not the
+// one selected (`sel_key`), the session the last 0x10 answer established and the timing that
+// answer gave, and a Disconnect — or, with nothing held, a Connect (to the selected target).
+// Stopped, it says so: nothing is held and nothing is sent until Start.
+fn draw_diag_strip(mut app App, st DiagHoldStatus, sel_key string) {
 	if !app.running {
 		vgui.text_colored(140, 140, 140, 'stopped')
 	} else {
@@ -1341,8 +1349,11 @@ fn draw_diag_strip(mut app App, st DiagHoldStatus) {
 			vgui.set_item_tooltip('A DoIP entity serves one tester: while this is held, another tester outside this app is refused until Disconnect. A script or flash started here takes it over.')
 		}
 	}
-	vgui.same_line()
-	vgui.text(if st.label != '' { st.label } else { '—' })
+	// the selected target is named by the selector above; another one is named here
+	if st.key != '' && st.key != sel_key {
+		vgui.same_line()
+		vgui.text_dim('to ${st.label}')
+	}
 	if app.running && (st.conn == .held || st.conn == .opening) {
 		vgui.same_line()
 		if vgui.small_button('Disconnect') {

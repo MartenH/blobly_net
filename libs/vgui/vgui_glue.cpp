@@ -1023,6 +1023,30 @@ int vgui_combo(const char* label, const char** items, int n, int current) {
     return sel;
 }
 
+// vgui_combo_grouped is vgui_combo with a heading over each run of items sharing `groups[i]`
+// (contiguous: the caller orders them) and `preview` shown closed. Each item is its own ID, since
+// one name may appear under two headings.
+int vgui_combo_grouped(const char* label, const char* preview, const char** items,
+                       const char** groups, int n, int current) {
+    int sel = current;
+    if (ImGui::BeginCombo(label, preview)) {
+        const char* last = nullptr;
+        for (int i = 0; i < n; i++) {
+            if (last == nullptr || strcmp(groups[i], last) != 0) {
+                ImGui::SeparatorText(groups[i]);
+                last = groups[i];
+            }
+            bool is_sel = (i == current);
+            ImGui::PushID(i);
+            if (ImGui::Selectable(items[i], is_sel)) sel = i;
+            ImGui::PopID();
+            if (is_sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    return sel;
+}
+
 // true while a text field is focused / imgui wants the keyboard — callers use this to suppress
 // their own single-key shortcuts so typing in an input box doesn't trigger them.
 int vgui_want_text_input() { return ImGui::GetIO().WantTextInput ? 1 : 0; }

@@ -377,15 +377,70 @@ fn test_targets_on_the_buses_a_project_names() {
 	sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
 	chans := [ChanRef{'compute', 'can0'}, ChanRef{'edge', 'can1'}]
 	got := sys.can_targets(chans).map('${sys.nodes[it.node].name}@${it.bus}/${it.iface} 0x${it.req:X}/0x${it.rsp:X}')
-	// sysnode on both buses; chassis (no server) is not a target
-	assert got == ['sysnode@compute/can0 0x7A0/0x7A8', 'sysnode@edge/can1 0x7A0/0x7A8',
-		'domain@compute/can0 0x7B0/0x7B8', 'zone_a@edge/can1 0x7C0/0x7C8']
+	// sysnode sits on both buses but serves on the one its [isotp] names (can0 = compute); chassis
+	// (no server) is not a target
+	assert got == ['sysnode@compute/can0 0x7A0/0x7A8', 'domain@compute/can0 0x7B0/0x7B8',
+		'zone_a@edge/can1 0x7C0/0x7C8']
 	assert sys.can_targets([ChanRef{'CAN1', 'inproc:CAN1'}]) == []
 	assert sys.can_targets(chans).all(!it.shared_name)
 	// two channels named edge are two wires: a target on each, each saying its name is shared
 	twins := sys.can_targets([ChanRef{'edge', 'can1'}, ChanRef{'edge', 'vcan1'}]).filter(sys.nodes[it.node].name == 'zone_a')
 	assert twins.map(it.iface) == ['can1', 'vcan1']
 	assert twins.all(it.shared_name)
+}
+
+// A node's server is on the CAN bus its [isotp] names in the node's own terms — `can0` on a node
+// with one bus, the system bus's interface on a node with several — and on every CAN bus it sits
+// on where that cannot be told.
+fn test_the_diag_bus_is_the_one_the_isotp_names() {
+	dir := desc_fixture('diagbus')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	idx := sys.nodes.map(it.name).index('sysnode')
+	zi := sys.nodes.map(it.name).index('zone_a')
+	assert sys.diag_bus(&sys.nodes[idx])? == 'compute'
+	// one bus: can0 is its only controller, whatever the system bus's interface
+	assert sys.diag_bus(&sys.nodes[zi])? == 'edge'
+	sys.nodes[idx].desc.isotp_bus = 'can1'
+	assert sys.diag_bus(&sys.nodes[idx])? == 'edge'
+	chans := [ChanRef{'compute', 'can0'}, ChanRef{'edge', 'can1'}]
+	assert sysnode_buses(sys, chans) == ['edge']
+	// a controller the node does not have: nothing tells, so every CAN bus it is on
+	sys.nodes[idx].desc.isotp_bus = 'can7'
+	assert sys.diag_bus(&sys.nodes[idx]) == none
+	assert sysnode_buses(sys, chans) == ['compute', 'edge']
+	// a someip segment is not a CAN bus, even when a channel bears its name
+	sys.buses << SysBus{
+		name: 'tel'
+		kind: 'someip'
+	}
+	assert sysnode_buses(sys, [ChanRef{'tel', 'udp:tel'}]) == []
+}
+
+fn sysnode_buses(sys System, chans []ChanRef) []string {
+	return sys.can_targets(chans).filter(sys.nodes[it.node].name == 'sysnode').map(it.bus)
+}
+
+// A node is a DoIP target where the system gives it an entity and an address; the tester is the
+// first it lets in.
+fn test_doip_targets_from_the_system() {
+	dir := desc_fixture('doiptargets')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	got := sys.doip_targets()
+	assert got.len == 1
+	assert sys.nodes[got[0].node].name == 'sysnode'
+	assert got[0].host == '192.168.0.50' && got[0].logical == 0x07A0 && got[0].tester == 0x0E00
+	idx := sys.nodes.map(it.name).index('sysnode')
+	sys.nodes[idx].testers = []
+	assert sys.doip_targets()[0].tester == 0
+	// no address the model can state: nothing says where it is
+	sys.nodes[idx].address = ''
+	assert sys.doip_targets() == []
 }
 
 fn test_system_diag_ids_supersede_the_node_isotp_pair() {

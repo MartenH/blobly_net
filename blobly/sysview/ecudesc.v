@@ -152,6 +152,7 @@ pub mut:
 	// the node's own ISO-TP ids ([isotp] rx_id / tx_id): its request and response
 	isotp_req u32
 	isotp_rsp u32
+	isotp_bus string // [isotp] bus: the node's own name for the controller its server is on ("can0")
 	// whether the node runs a diagnostic server at all ([uds], [isotp] or [doip] declared)
 	server bool
 	// `[uds] security_key`: "reference" is blobly_net's public bench key (uds.security_key), the
@@ -498,6 +499,7 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		im := iv.as_map()
 		d.isotp_req = u32(tint(im, 'rx_id'))
 		d.isotp_rsp = u32(tint(im, 'tx_id'))
+		d.isotp_bus = tstr(im, 'bus')
 	}
 	for p in tarr(doc, 'param') {
 		pm := p.as_map()
