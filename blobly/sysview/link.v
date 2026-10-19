@@ -13,8 +13,9 @@ pub struct TargetAddr {
 pub:
 	doip    bool
 	logical u32 // DoIP: the entity's logical address
-	req     u32 // CAN: the request id — what the ECU listens on
-	rsp     u32 // CAN: the response id
+	host    string // DoIP: the entity's endpoint address, where known
+	req     u32    // CAN: the request id — what the ECU listens on
+	rsp     u32    // CAN: the response id
 	bus     string // the channel's name: a project made from a system names its channels by its buses
 }
 
@@ -28,10 +29,15 @@ pub:
 // node_for maps a target to the node it addresses — by diagnostic addressing, the one thing a
 // target and a node both state: a DoIP target by its entity's logical address, a CAN target by its
 // request AND response ids (system.toml's `diag`, else the node's own `[isotp]`). Two nodes with
-// one address are told apart by the bus the target's channel is named after; if that does not
-// settle it, no node is chosen — a description of the wrong ECU is worse than none.
+// one address are told apart by the bus the target's channel is named after — a CAN target by the
+// bus the node SERVES on (`diag_bus`), the one `can_targets` offers it on — and a DoIP target by
+// its endpoint address; if that does not settle it, no node is chosen — a description of the
+// wrong ECU is worse than none.
 pub fn (sys &System) node_for(t TargetAddr) NodeLink {
-	hits := sys.addressed(t)
+	mut hits := sys.addressed(t)
+	if hits.len > 1 && t.doip && t.host != '' {
+		hits = hits.filter(sys.nodes[it].address.to_lower() == t.host.to_lower())
+	}
 	addr := if t.doip { 'DoIP 0x${t.logical:04X}' } else { '0x${t.req:X}/0x${t.rsp:X}' }
 	if hits.len == 0 {
 		return NodeLink{
@@ -39,7 +45,7 @@ pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 		}
 	}
 	if hits.len > 1 {
-		on_bus := hits.filter(t.bus in sys.nodes[it].buses)
+		on_bus := hits.filter(sys.serves_on(sys.nodes[it], t))
 		if on_bus.len == 1 {
 			return NodeLink{
 				node: on_bus[0]
@@ -53,6 +59,17 @@ pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 	return NodeLink{
 		node: hits[0]
 	}
+}
+
+// serves_on: `n` is reached on the bus `t`'s channel is named after — for a CAN target the bus its
+// server is on where that can be told, else (and over DoIP) any bus it sits on.
+fn (sys &System) serves_on(n &SysNode, t TargetAddr) bool {
+	if !t.doip {
+		if b := sys.diag_bus(n) {
+			return b == t.bus
+		}
+	}
+	return t.bus in n.buses
 }
 
 // can_ids is the node's diagnostic request and response id: system.toml's `diag` when it states
@@ -134,7 +151,10 @@ fn (sys &System) can_buses(n &SysNode) []string {
 // `interface` on a node with several (blobly_emb sysmodel's `local_can_iface`, whose `diag_bus`
 // this is).
 pub fn (sys &System) diag_bus(n &SysNode) ?string {
-	cans := sys.can_buses(n)
+	// the CAN buses the system DECLARES it on: one it names and does not declare tells nothing
+	cans := n.buses.filter(fn [sys] (b string) bool {
+		return sys.buses.any(it.name == b && it.kind == 'can')
+	})
 	if n.desc.isotp_bus == '' {
 		return if cans.len == 1 { cans[0] } else { none }
 	}

@@ -417,6 +417,33 @@ fn test_the_diag_bus_is_the_one_the_isotp_names() {
 		kind: 'someip'
 	}
 	assert sysnode_buses(sys, [ChanRef{'tel', 'udp:tel'}]) == []
+	// a bus the node names but the system does not declare tells nothing about where it serves
+	sys.nodes[zi].buses = ['edge', 'undeclared']
+	sys.nodes[zi].desc.isotp_bus = ''
+	assert sys.diag_bus(&sys.nodes[zi])? == 'edge'
+}
+
+// Two nodes on one CAN address are told apart by the bus each SERVES on, the bus can_targets
+// offers it on — not by every bus it sits on; two on one DoIP address by the endpoint.
+fn test_a_shared_address_is_settled_where_the_node_serves() {
+	dir := desc_fixture('shared')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut sys := load(os.join_path(dir, 'system.toml')) or { panic(err) }
+	zi := sys.nodes.map(it.name).index('zone_a')
+	sys.nodes[zi].diag_req = 0x7A0 // sysnode's pair; sysnode sits on edge too but serves on compute
+	sys.nodes[zi].diag_rsp = 0x7A8
+	name := fn [sys] (l NodeLink) string {
+		return if l.node >= 0 { sys.nodes[l.node].name } else { '' }
+	}
+	assert name(sys.node_for(TargetAddr{ req: 0x7A0, rsp: 0x7A8, bus: 'edge' })) == 'zone_a'
+	assert name(sys.node_for(TargetAddr{ req: 0x7A0, rsp: 0x7A8, bus: 'compute' })) == 'sysnode'
+	sys.nodes[zi].doip = 0x07A0
+	sys.nodes[zi].address = '192.168.0.51'
+	assert sys.node_for(TargetAddr{ doip: true, logical: 0x07A0 }).node == -1
+	assert name(sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, host: '192.168.0.51' })) == 'zone_a'
+	assert name(sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, host: '192.168.0.50' })) == 'sysnode'
 }
 
 fn sysnode_buses(sys System, chans []ChanRef) []string {

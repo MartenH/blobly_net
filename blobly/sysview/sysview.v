@@ -123,9 +123,10 @@ pub fn load(path string) !System {
 	if bv := doc.value_opt('bus') {
 		for bname, bcfg in bv.as_map() {
 			bm := bcfg.as_map()
+			kind := tstr(bm, 'kind')
 			mut b := SysBus{
 				name:    bname
-				kind:    if tstr(bm, 'kind') != '' { tstr(bm, 'kind') } else { 'can' }
+				kind:    if kind != '' { kind } else { 'can' }
 				iface:   tstr(bm, 'interface')
 				bitrate: int(tint(bm, 'bitrate'))
 				dbc:     tstr(bm, 'dbc')

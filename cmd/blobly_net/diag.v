@@ -149,8 +149,14 @@ fn (app &App) diag_targets() []DiagTarget {
 	mut dflt := []DiagTarget{}
 	if hw := app.diag_default_iface() {
 		// named by the channel the wire is, so it heads the selector with the system's targets on it
+		mut hw_name := ''
 		a.mu.lock()
-		hw_name := (app.chans.filter(it.monitorable() && it.iface == hw)[0] or { Chan{} }).name
+		for c in app.chans {
+			if c.monitorable() && c.iface == hw {
+				hw_name = c.name
+				break
+			}
+		}
 		a.mu.unlock()
 		if !plan.any(it.key == diag_key_can(hw, diag_tx_id, diag_rx_id)) {
 			dflt << DiagTarget{
@@ -218,10 +224,13 @@ fn (app &App) diag_targets() []DiagTarget {
 			carrier: car
 		}.named(who, chan_where(c.name, '${car.host}:${car.port}'))
 	}
-	// the system's DoIP entities (diag_dtc.v), where no channel above already reaches one: a
-	// project need not carry a DoIP channel for an ECU its system.toml says is on the network
+	// the system's DoIP entities (diag_dtc.v), where no project channel reaches one: a project
+	// need not carry a DoIP channel for an ECU its system.toml says is on the network. One that
+	// does decides — ticked off, or hosting an entity whose bind failed, it is skipped above on
+	// purpose, and the system's entry must not reach the entity in its place.
 	for t in sys_targets {
-		if t.carrier.doip && !out.any(it.carrier.doip && same_entity(it.carrier, t.carrier)) {
+		if t.carrier.doip && !app.proj.channels.any(it.is_doip()
+			&& same_entity(script.carrier_of(it), t.carrier)) && !out.any(it.key == t.key) {
 			out << t
 		}
 	}
@@ -232,7 +241,7 @@ fn (app &App) diag_targets() []DiagTarget {
 			iface: app.diag_iface()
 			rx:    diag_tx_id
 			tx:    diag_rx_id
-		}.named('default${nobody}', app.diag_iface())
+		}.named('default${nobody}', if app.diag_iface() != '' { app.diag_iface() } else { 'no channel' })
 	}
 	return grouped(out)
 }

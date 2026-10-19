@@ -169,10 +169,11 @@ fn (mut app App) diag_sys_refresh() {
 				tester: if nd.tester != 0 { nd.tester } else { project.Channel{}.tester_addr }
 				ecu:    nd.logical
 			}
+			// no channel and no interface: nothing of the project's carries it, so a script made of
+			// its log (Copy as Lua) is not handed a channel that addresses another entity
 			targets << DiagTarget{
 				key:     'doip|' + project.compose_key('system', nd.host, '0x${nd.logical:04X}',
 					'0x${car.tester:04X}')
-				iface:   'doip:${nd.host}:${doip.port}'
 				carrier: car
 			}.named(app.diag_sys.nodes[nd.node].name, '${nd.host}:${doip.port}')
 		}
@@ -231,6 +232,7 @@ fn (app &App) diag_desc(t DiagTarget) DiagDesc {
 		sysview.TargetAddr{
 			doip:    true
 			logical: t.carrier.ecu
+			host:    t.carrier.host
 			bus:     t.chan
 		}
 	} else {
