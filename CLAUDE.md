@@ -340,7 +340,10 @@ tool workers, then `doip_watch`, which reaches `app.chans` through a helper and 
 grep for `.chans` in its own body. If you add a worker that outlives its spawn, give it a bucket;
 grep the helpers it calls, not just the function. It was `dbc_readers`, counting rx loops only, from after
 their open, and those two panels had each written their own copy of the check — kept in GUI-free sub-modules so
-they run without ImGui; and `cmd/vectorcheck/restorerule/`, the borrow-and-restore ledger — who restores a
+they run without ImGui; and `cmd/blobly_net/perfrule/`, the Performance panel's per-frame samples — a frame's work (the
+idle wait excluded), whether a collection completed in it, heap, allocated-since-GC and the
+allocation rate — in a fixed ring, and what a window of them says (View ▸ Performance; sampled only
+while open); and `cmd/vectorcheck/restorerule/`, the borrow-and-restore ledger — who restores a
 channel when the deferred cleanup and the Ctrl-C handler race, what an empty claim means, and what
 an exit may claim (clean / failed / unknown-because-in-flight), the path #197's fix took four codex
 rounds on before it had a test (#278); and `cmd/blobly_net/assets/`, the GUI's PNGs spelled out

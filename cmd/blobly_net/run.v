@@ -1337,15 +1337,30 @@ fn (mut app App) described_system() sysview.System {
 	path := if app.sys_loaded {
 		app.sys.path
 	} else {
-		sysview.find_system(app.proj_path, app.proj_db_refs()) or { return sysview.System{} }
+		sysview.find_system(app.proj_path, app.proj_db_refs()) or { '' }
+	}
+	if path == '' {
+		app.adopt_diag_sys(sysview.System{}, false, 'none')
+		return sysview.System{}
 	}
 	if app.diag_sys_ok && app.diag_sys.path == path && app.diag_sys.current() {
 		return app.diag_sys // the Diagnostics panel's model, still what the files say
 	}
-	return sysview.load(path) or {
+	sy := sysview.load(path) or {
 		app.notify('Simulation: ${path} could not be read (${err}); simulated servers answer from the project')
-		sysview.System{}
+		app.adopt_diag_sys(sysview.System{}, false, 'load|${path}@${sysview.stamp(path).stamp}')
+		return sysview.System{}
 	}
+	app.adopt_diag_sys(sy, true, sy.identity())
+	return sy
+}
+
+// adopt_diag_sys hands the Diagnostics panel the model this run reads (or its absence), so the
+// panel never names nodes from files the run did not use.
+fn (mut app App) adopt_diag_sys(sy sysview.System, ok bool, key string) {
+	app.diag_sys = sy
+	app.diag_sys_ok = ok
+	app.diag_sys_key = key
 }
 
 // doip_publish_if_current publishes a freshly bound entity, but ONLY if this run still wants

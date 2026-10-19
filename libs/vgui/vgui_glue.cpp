@@ -330,7 +330,14 @@ void vgui_dock_2col(const char* left, const char* right, float ratio) {
     ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
-void vgui_frame_end() {
+// frame_end is frame_render then frame_present: the split lets a caller measure the frame's work
+// without the swap, which blocks for vsync.
+void vgui_frame_render();
+void vgui_frame_present();
+void vgui_frame_end() { vgui_frame_render(); vgui_frame_present(); }
+
+// frame_render closes the frame and draws it into the back buffer.
+void vgui_frame_render() {
     ImGui::End(); // host window (opened in frame_begin)
     ImGui::Render();
     int w,h; glfwGetFramebufferSize(g_win,&w,&h);
@@ -344,10 +351,35 @@ void vgui_frame_end() {
         if(f){ fprintf(f,"P6\n%d %d\n255\n",w,h); for(int y=h-1;y>=0;y--) fwrite(px+y*w*3,1,w*3,f); fclose(f); }
         free(px); g_dump=nullptr;
     }
+    // ImGui::RenderPlatformWindowsDefault in its two halves: the torn-off windows are drawn here,
+    // with the frame's work, and swapped in frame_present with the main window's
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         GLFWwindow* b = glfwGetCurrentContext();
-        ImGui::UpdatePlatformWindows(); ImGui::RenderPlatformWindowsDefault();
+        ImGui::UpdatePlatformWindows();
+        ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+        for (int i = 1; i < pio.Viewports.Size; i++) {
+            ImGuiViewport* v = pio.Viewports[i];
+            if (v->Flags & ImGuiViewportFlags_IsMinimized) continue;
+            if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(v, nullptr);
+            if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(v, nullptr);
+        }
+        glfwMakeContextCurrent(b);
+    }
+}
+
+// frame_present shows it: every window's swap, which blocks for vsync.
+void vgui_frame_present() {
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        GLFWwindow* b = glfwGetCurrentContext();
+        ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+        for (int i = 1; i < pio.Viewports.Size; i++) {
+            ImGuiViewport* v = pio.Viewports[i];
+            if (v->Flags & ImGuiViewportFlags_IsMinimized) continue;
+            if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(v, nullptr);
+            if (pio.Renderer_SwapBuffers) pio.Renderer_SwapBuffers(v, nullptr);
+        }
         glfwMakeContextCurrent(b);
     }
     glfwSwapBuffers(g_win);
@@ -361,6 +393,10 @@ void vgui_frame_end() {
     if (active) g_busy_frames = 45;          // ~0.75s of smooth frames after the last input
     else if (g_busy_frames > 0) g_busy_frames--;
 }
+
+// vgui_keep_busy: render the next frames at full rate even with no input — for a view that
+// changes every frame on its own (a live plot). Call it each frame the view is shown.
+void vgui_keep_busy() { if (g_busy_frames < 2) g_busy_frames = 2; }
 
 void vgui_shutdown() {
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
@@ -596,6 +632,29 @@ void vgui_plot_line_axis(const char* name, const float* xs, const float* ys, int
 }
 int vgui_plot_is_hovered() { return ImPlot::IsPlotHovered() ? 1 : 0; }
 double vgui_plot_mouse_x() { return ImPlot::GetPlotMousePos().x; }
+// plot with a fixed x-window and FIXED y ranges [0, y_max] per axis (1 or 2), for a caller that
+// knows its data's range: no auto-fit, so nothing lags or sticks to an old extent. Axis tick
+// labels take the colour of the series plotted first on them, as in vgui_plot_begin2.
+int vgui_plot_begin_lim(const char* title, float height, double x_min, double x_max, int n_yaxes, double y1_max, double y2_max) {
+    if (!ImPlot::BeginPlot(title, ImVec2(-1, height))) return 0;
+    ImPlot::SetupAxis(ImAxis_X1, "t (s)");
+    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
+    ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(0));
+    ImPlot::SetupAxis(ImAxis_Y1, NULL);
+    ImPlot::PopStyleColor();
+    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, y1_max, ImPlotCond_Always);
+    if (n_yaxes >= 2) {
+        ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(1));
+        ImPlot::SetupAxis(ImAxis_Y2, NULL, ImPlotAxisFlags_Opposite);
+        ImPlot::PopStyleColor();
+        ImPlot::SetupAxisLimits(ImAxis_Y2, 0, y2_max, ImPlotCond_Always);
+    }
+    return 1;
+}
+// vertical lines across the whole plot at each x: events on a time axis
+void vgui_plot_vlines(const char* name, const float* xs, int n) {
+    ImPlot::PlotInfLines(name, xs, n);
+}
 void vgui_plot_end() { ImPlot::EndPlot(); }
 
 // selectable row/label; returns 1 the frame it is clicked.

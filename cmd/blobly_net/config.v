@@ -1688,6 +1688,7 @@ fn (mut app App) save_as(path string) {
 	}
 	app.proj_path = p
 	app.mu.unlock()
+	app.diag_sys_key = '' // which system.toml applies follows the project's path
 	app.proj.name = app.proj_name
 	app.save_project()
 	if app.saved_at == before {
