@@ -444,6 +444,12 @@ fn test_a_shared_address_is_settled_where_the_node_serves() {
 	assert sys.node_for(TargetAddr{ doip: true, logical: 0x07A0 }).node == -1
 	assert name(sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, host: '192.168.0.51' })) == 'zone_a'
 	assert name(sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, host: '192.168.0.50' })) == 'sysnode'
+	// endpoints unknown: the bus still settles it
+	si := sys.nodes.map(it.name).index('sysnode')
+	sys.nodes[si].address = ''
+	sys.nodes[zi].address = ''
+	sys.nodes[si].buses = ['compute']
+	assert name(sys.node_for(TargetAddr{ doip: true, logical: 0x07A0, host: '10.0.0.1', bus: 'edge' })) == 'zone_a'
 }
 
 fn sysnode_buses(sys System, chans []ChanRef) []string {
@@ -465,6 +471,9 @@ fn test_doip_targets_from_the_system() {
 	idx := sys.nodes.map(it.name).index('sysnode')
 	sys.nodes[idx].testers = []
 	assert sys.doip_targets()[0].tester == 0
+	sys.nodes[idx].doip = 0x10001 // not a 16-bit address
+	assert sys.doip_targets() == []
+	sys.nodes[idx].doip = 0x07A0
 	// no address the model can state: nothing says where it is
 	sys.nodes[idx].address = ''
 	assert sys.doip_targets() == []

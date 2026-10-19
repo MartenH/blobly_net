@@ -16,7 +16,7 @@ import blobly.candb
 pub struct SysBus {
 pub mut:
 	name    string
-	kind    string // 'can' (the default) or 'someip'
+	kind    string = 'can' // or 'someip'
 	iface   string
 	fd      bool
 	bitrate int

@@ -36,7 +36,9 @@ pub:
 pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 	mut hits := sys.addressed(t)
 	if hits.len > 1 && t.doip && t.host != '' {
-		hits = hits.filter(sys.nodes[it].address.to_lower() == t.host.to_lower())
+		// a node at another endpoint is not it; one whose endpoint is unknown may still be
+		hits = hits.filter(sys.nodes[it].address == ''
+			|| sys.nodes[it].address.to_lower() == t.host.to_lower())
 	}
 	addr := if t.doip { 'DoIP 0x${t.logical:04X}' } else { '0x${t.req:X}/0x${t.rsp:X}' }
 	if hits.len == 0 {
@@ -186,7 +188,8 @@ pub:
 pub fn (sys &System) doip_targets() []NodeDoip {
 	mut out := []NodeDoip{}
 	for i, n in sys.nodes {
-		if n.doip == 0 || n.address == '' || (n.ecu_err == '' && !n.desc.server) {
+		// a logical address past 16 bits is no address: narrowed, it would name another entity
+		if n.doip == 0 || n.doip > 0xFFFF || n.address == '' || (n.ecu_err == '' && !n.desc.server) {
 			continue
 		}
 		out << NodeDoip{

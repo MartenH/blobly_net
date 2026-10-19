@@ -248,7 +248,9 @@ fn (app &App) diag_targets() []DiagTarget {
 
 // same_entity: two DoIP carriers reach one entity — one endpoint, one logical address. The
 // tester address is not part of it: a channel the project configures to that entity is the one
-// to use, whatever tester it names.
+// to use, whatever tester it names. Hosts compare as written: a channel naming the entity by a
+// hostname is not matched to the system's address, since resolving it here would be a lookup per
+// frame on the GUI thread.
 fn same_entity(a script.Carrier, b script.Carrier) bool {
 	return a.host.to_lower() == b.host.to_lower() && a.port == b.port && a.ecu == b.ecu
 }
