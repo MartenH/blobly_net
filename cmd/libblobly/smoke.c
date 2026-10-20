@@ -62,14 +62,15 @@ static int exchange(const char *who, int n) {
 }
 
 #ifndef _WIN32
-/* A thread the host created: the V runtime's collector did not see it born. Many short-lived
- * handles first, so that a COLLECTION happens on this thread (an unregistered thread collecting
- * is Boehm's "Collecting from unknown thread" abort) — then the exchange. */
+/* A thread the host created: the V runtime's collector did not see it born. Short-lived handles
+ * first, so that a COLLECTION happens on this thread (an unregistered thread collecting is
+ * Boehm's "Collecting from unknown thread" abort: measured at 10 churns, 3 of 3 runs, and
+ * survived at 5 — 200 is the margin) — then the exchange. */
 static void *host_thread(void *arg) {
 	(void)arg;
 	static int rc;
 	if (bb_thread_attach_p() != 0) { fprintf(stderr, "FAIL attach: %s\n", bb_last_error_p()); rc = 1; return &rc; }
-	for (int i = 0; i < 3000; i++) {
+	for (int i = 0; i < 200; i++) {
 		int h = bb_bus_open_p("inproc:CAN1");
 		if (h < 0 || bb_bus_close_p(h) != 0) { fprintf(stderr, "FAIL host thread churn %d: %s\n", i, bb_last_error_p()); rc = 1; return &rc; }
 	}

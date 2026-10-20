@@ -9,14 +9,18 @@
  *     error (the message belongs to the library; copy it if you keep it). Calls that have a
  *     non-error "nothing" answer return > 0 for it (bb_bus_recv: 1 = no frame in time).
  *     bb_bus_open and bb_bus_health return their value when >= 0.
- *   - call bb_init() once before anything else, from the thread that will drive the library.
- *     The V runtime initialises itself when the library is loaded (a constructor); bb_init is
- *     where a host-side requirement would go, and a host that calls it is not broken by one.
+ *   - LOAD THE LIBRARY FROM THE PROCESS'S MAIN THREAD, and call bb_init() once before anything
+ *     else. The V runtime initialises itself when the library is loaded (a constructor) and takes
+ *     the loading thread for the main one — loaded from a worker, its collector scans the wrong
+ *     stack and the real main thread is unknown to it; nothing inside can detect or repair that.
+ *     bb_init is where a host-side requirement would go, and a host that calls it is not broken
+ *     by one.
  *   - a thread the HOST created calls bb_thread_attach() before its first other call and
  *     bb_thread_detach() before it ends: the library's collector scans the stacks of the threads
  *     it knows, and an allocation on an unknown one aborts the process at the next collection
- *     ("Collecting from unknown thread"). The thread that loaded the library needs neither;
- *     attaching it again is harmless.
+ *     ("Collecting from unknown thread"). The loading thread needs neither: attaching it is
+ *     harmless, and detaching a thread attach did not register is refused.
+ *   - bb_last_error is PER THREAD: the calling thread's last error, "" after its last success.
  *   - ONE HOST THREAD drives the library's STATE in this version: open, close, load, start and
  *     stop are not synchronised against each other. Send and recv on a handle may run on an
  *     attached thread of their own. A frame received is copied into the caller's bb_frame;
@@ -79,7 +83,9 @@ int bb_stop(void);
 /* The loaded project's ENABLED rows, in project order. */
 int         bb_channel_count(void);
 const char *bb_channel_name(int i);
-const char *bb_channel_iface(int i);   /* what bb_bus_open takes for this row */
+const char *bb_channel_iface(int i);   /* what bb_bus_open takes for this row; after bb_start,
+                                          as the run has it (a hosted DoIP row moves onto a port
+                                          this process could bind) */
 
 /* A bus handle of the host's own on an interface ("inproc:CAN1", "vcan0", "pcan:PCAN_USBBUS1@500000"). */
 int bb_bus_open(const char *iface);                          /* >= 0: the handle */

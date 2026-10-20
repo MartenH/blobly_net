@@ -78,13 +78,13 @@ def main(path, project):
         # collection happens on it, then the exchange.
         try:
             assert lib.bb_thread_attach() == 0, f"attach: {err(lib)}"
-            for i in range(3000):
+            for i in range(200):  # an unattached thread aborts by 10 (measured); 20x that
                 h = lib.bb_bus_open(b"inproc:CAN1")
                 assert h >= 0 and lib.bb_bus_close(h) == 0, f"churn {i}: {err(lib)}"
             exchange(lib, "python thread", 20)
             assert lib.bb_thread_detach() == 0, f"detach: {err(lib)}"
-        except AssertionError as e:
-            failures.append(str(e))
+        except Exception as e:  # any failure on the thread fails the smoke, not only an assert
+            failures.append(repr(e))
 
     t = threading.Thread(target=from_thread)
     t.start()

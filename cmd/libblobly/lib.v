@@ -9,17 +9,25 @@
 // host's own). Nothing of UDS and nothing event-driven yet: those are the next PRs' seams.
 //
 // Strings handed to the host are V strings' bytes: kept in globals so the collector keeps them,
-// and valid until the next call that replaces them (bb.h says so).
+// and valid until the next call that replaces them (bb.h says so) — except the error text, which
+// is a per-thread C buffer (host.h), so a worker's call cannot overwrite the driver thread's.
 module main
 
 #flag -DBB_FROM_V
 #include "@VMODROOT/cmd/libblobly/bb.h"
-#include "@VMODROOT/cmd/libblobly/gc_attach.h"
+#include "@VMODROOT/cmd/libblobly/host.h"
 
+import sync
 import v.vmod
 import blobly.headless
 import blobly.project
 import blobly.transport
+
+// per-thread error text and attached flag (host.h)
+fn C.bb_err_set(&char)
+fn C.bb_err_get() &char
+fn C.bb_attached() int
+fn C.bb_set_attached(int)
 
 pub struct C.bb_frame {
 pub mut:
@@ -39,31 +47,36 @@ const bb_err = -1
 const bb_err_handle = -2
 const bb_err_state = -3
 
-// BusHandle is one bus the host opened; a closed one keeps its index, so an index is never
-// reused under a host still holding it.
+// BusHandle is one bus the host opened. The table is keyed by an index that is never reused
+// (`bb_next`), and a closed handle is DELETED from it, so its bus — an inproc queue is 8192
+// frames — is the collector's again; held, 3000 open/close churns peaked at 2.4 GB and 73 s, let
+// go 35 MB and 1.6 s (self-review).
+// Under `bb_mu`, since bb.h lets send and recv run on an attached thread of their own while the
+// driver thread opens and closes; the bus itself is used outside the lock, and a close under a
+// blocked recv ends that recv with the bus's own `closed` error.
 struct BusHandle {
 mut:
-	bus  transport.Bus
-	open bool
+	bus transport.Bus
 }
 
 __global (
-	bb_last    string
+	bb_mu      sync.Mutex
 	bb_proj    project.Project
 	bb_path    string
 	bb_loaded  bool
 	bb_run     &headless.Run = unsafe { nil }
 	bb_names   []string // the C strings bb_channel_* handed out, kept alive here
-	bb_handles []&BusHandle
+	bb_handles map[int]&BusHandle
+	bb_next    int
 )
 
 fn fail(code int, msg string) int {
-	bb_last = msg
+	C.bb_err_set(&char(msg.str))
 	return code
 }
 
 fn ok() int {
-	bb_last = ''
+	C.bb_err_set(c'')
 	return bb_ok
 }
 
@@ -97,8 +110,9 @@ fn C.GC_unregister_my_thread() int
 // bb_thread_attach: a thread the HOST created tells the collector about itself before its first
 // call. Every V thread is born registered; a host's is not, and the first collection an
 // allocation on it triggers is Boehm's `Collecting from unknown thread` abort — measured, from a
-// C pthread and from a Python thread, once each had churned 3000 handles (cmd/libblobly/smoke.*).
-// Registering a registered thread (the main one, or twice) is GC_DUPLICATE: harmless, and ok here.
+// C pthread and from a Python thread (cmd/libblobly/smoke.*). Registering a registered thread
+// (the loading one, or twice) is GC_DUPLICATE: harmless, ok here, and NOT this call's to detach.
+// The messages are literals: this thread is not registered yet, so nothing may allocate on it.
 @[export: 'bb_thread_attach']
 pub fn bb_thread_attach() int {
 	mut sb := C.bb_stack_base{}
@@ -106,28 +120,37 @@ pub fn bb_thread_attach() int {
 		return fail(bb_err, 'thread_attach: the collector cannot find this stack')
 	}
 	rc := C.GC_register_my_thread(&sb)
-	if rc != 0 && rc != 1 {
-		return fail(bb_err, 'thread_attach: GC_register_my_thread returned ${rc}')
+	if rc == 0 {
+		C.bb_set_attached(1)
+	} else if rc != 1 {
+		return fail(bb_err, 'thread_attach: the collector refused this thread')
 	}
 	return ok()
 }
 
 // bb_thread_detach: the attached thread is about to end; the collector stops scanning its stack.
+// Only a thread THIS library attached: GC_unregister_my_thread would delete the loading thread's
+// record as readily (measured: a core dump on the next call).
 @[export: 'bb_thread_detach']
 pub fn bb_thread_detach() int {
-	if C.GC_unregister_my_thread() != 0 {
-		return fail(bb_err, 'thread_detach: this thread was not attached')
+	if C.bb_attached() == 0 {
+		return fail(bb_err, 'thread_detach: this thread was not attached by bb_thread_attach')
 	}
+	C.GC_unregister_my_thread()
+	C.bb_set_attached(0)
 	return ok()
 }
 
 @[export: 'bb_last_error']
 pub fn bb_last_error() &char {
-	return cstr(bb_last)
+	return C.bb_err_get()
 }
 
 @[export: 'bb_load']
 pub fn bb_load(path &char) int {
+	if isnil(path) {
+		return fail(bb_err, 'load: no path')
+	}
 	if !isnil(bb_run) {
 		return fail(bb_err_state, 'a run is active; stop it before loading another project')
 	}
@@ -136,7 +159,12 @@ pub fn bb_load(path &char) int {
 	bb_proj = proj
 	bb_path = p
 	bb_loaded = true
-	// the enabled rows' names and interfaces, as C strings that outlive the call
+	name_rows(proj)
+	return ok()
+}
+
+// name_rows is the enabled rows' names and interfaces, as C strings that outlive the call.
+fn name_rows(proj project.Project) {
 	bb_names = []string{}
 	for ch in proj.channels {
 		if ch.enabled {
@@ -144,7 +172,6 @@ pub fn bb_load(path &char) int {
 			bb_names << ch.iface_with_bitrate()
 		}
 	}
-	return ok()
 }
 
 @[export: 'bb_start']
@@ -155,8 +182,16 @@ pub fn bb_start() int {
 	if !isnil(bb_run) {
 		return fail(bb_err_state, 'already started; stop first')
 	}
-	r := headless.start(bb_proj, bb_path, headless.Options{}) or { return fail(bb_err, err.msg()) }
+	r := headless.start(bb_proj, bb_path, headless.Options{}) or {
+		// headless's own state refusal (a previous run's loop still out past stop's bound)
+		code := if err.msg() == headless.active_note { bb_err_state } else { bb_err }
+		return fail(code, err.msg())
+	}
 	bb_run = r
+	// as the RUN has them: start moves a hosted DoIP row onto a port this process could bind, and
+	// the address a host dials must be that one (self-review: the smoke printed 13400 while the
+	// entity listened on 30342)
+	name_rows(r.proj)
 	return ok()
 }
 
@@ -176,16 +211,16 @@ pub fn bb_channel_count() int {
 	if !bb_loaded {
 		return fail(bb_err_state, 'no project loaded')
 	}
-	bb_last = ''
+	ok()
 	return bb_names.len / 2
 }
 
 fn channel_str(i int, which int) &char {
 	if !bb_loaded || i < 0 || i * 2 + which >= bb_names.len {
-		bb_last = 'no channel ${i}'
-		return cstr('')
+		fail(bb_err, 'no channel ${i}')
+		return c''
 	}
-	bb_last = ''
+	ok()
 	return cstr(bb_names[i * 2 + which])
 }
 
@@ -201,21 +236,31 @@ pub fn bb_channel_iface(i int) &char {
 
 @[export: 'bb_bus_open']
 pub fn bb_bus_open(iface &char) int {
+	if isnil(iface) {
+		return fail(bb_err, 'open: no interface')
+	}
 	name := unsafe { cstring_to_vstring(iface) }
 	bus := transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') }
-	bb_handles << &BusHandle{
-		bus:  bus
-		open: true
+	bb_mu.lock()
+	h := bb_next
+	bb_next++
+	bb_handles[h] = &BusHandle{
+		bus: bus
 	}
-	bb_last = ''
-	return bb_handles.len - 1
+	bb_mu.unlock()
+	ok()
+	return h
 }
 
 fn handle(h int) ?&BusHandle {
-	if h < 0 || h >= bb_handles.len || !bb_handles[h].open {
-		return none
+	bb_mu.lock()
+	defer {
+		bb_mu.unlock()
 	}
-	return bb_handles[h]
+	if hd := bb_handles[h] {
+		return hd
+	}
+	return none
 }
 
 @[export: 'bb_bus_send']
@@ -250,11 +295,12 @@ pub fn bb_bus_recv(h int, timeout_ms int, out &C.bb_frame) int {
 	}
 	fr := hd.bus.recv(timeout_ms) or {
 		if err.msg() == 'timeout' {
-			bb_last = ''
+			ok() // nothing in time is not an error
 			return 1
 		}
 		return fail(bb_err, 'recv: ${err.msg()}')
 	}
+	// after the frame is OUT of V: a close from another thread ended this recv as an error above
 	unsafe {
 		out.id = fr.id
 		out.len = u8(fr.data.len)
@@ -271,14 +317,19 @@ pub fn bb_bus_recv(h int, timeout_ms int, out &C.bb_frame) int {
 @[export: 'bb_bus_health']
 pub fn bb_bus_health(h int) int {
 	mut hd := handle(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
-	bb_last = ''
+	ok()
 	return int(hd.bus.health())
 }
 
 @[export: 'bb_bus_close']
 pub fn bb_bus_close(h int) int {
-	mut hd := handle(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
-	hd.open = false
+	bb_mu.lock()
+	mut hd := bb_handles[h] or {
+		bb_mu.unlock()
+		return fail(bb_err_handle, 'no open bus handle ${h}')
+	}
+	bb_handles.delete(h)
+	bb_mu.unlock()
 	hd.bus.close()
 	return ok()
 }
