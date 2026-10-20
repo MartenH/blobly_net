@@ -167,8 +167,14 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		// ZERO IS A LOOK: only a datagram already queued is read. The socket read below has no
 		// zero timeout — the shortest it takes is a millisecond, which an idle look used to wait
 		// out every time.
-		if timeout_ms == 0 && !readable_now(b.rx.sock.handle) {
-			return error('timeout')
+		if timeout_ms == 0 {
+			// asked before the socket is: a closed bus is closed, not quiet
+			if stdatomic.load_i64(&b.closed_flag) != 0 {
+				return error('bus is closed')
+			}
+			if !readable_now(b.rx.sock.handle) {
+				return error('timeout')
+			}
 		}
 		// NEGATIVE IS FOREVER, as every other bus has it: computed as a deadline it was a deadline
 		// in the past, and recv(-1) returned timeout without reading (codex round 6 on #225, via
@@ -202,30 +208,20 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 			}
 			return error('timeout')
 		}
-		if n < 10 {
-			filtered++
-			b.decode_errors++
-			if !look_again(timeout_ms, filtered, i64(time.sys_mono_now() - started)) {
-				return error('timeout')
+		// FILTERED: too short for the header, our own frame echoed back, or truncated (counted
+		// against the poll budget like the others, codex round 18) — one skip path for all three
+		malformed := n < 10 || 10 + int(buf[9]) > n
+		if malformed || get_u32_le(buf, 0) == b.src {
+			if malformed {
+				b.decode_errors++
 			}
-			continue
-		}
-		if get_u32_le(buf, 0) == b.src {
-			filtered++ // our own frame echoed back — ignore
-			if !look_again(timeout_ms, filtered, i64(time.sys_mono_now() - started)) {
+			filtered++
+			if !look_again(timeout_ms, filtered, since_ns(started)) {
 				return error('timeout')
 			}
 			continue
 		}
 		dlc := int(buf[9])
-		if 10 + dlc > n {
-			filtered++ // truncated: counted against the poll budget like the others (codex round 18)
-			b.decode_errors++
-			if !look_again(timeout_ms, filtered, i64(time.sys_mono_now() - started)) {
-				return error('timeout')
-			}
-			continue
-		}
 		flags := buf[8]
 		return CanFrame{
 			id:       get_u32_le(buf, 4)

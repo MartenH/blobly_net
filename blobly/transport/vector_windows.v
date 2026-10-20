@@ -398,7 +398,7 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 		// already looks past skipped events inside the shim, against its own deadline.
 		skipped += int(skips)
 		if r == 1 && timeout_ms == 0 && skips > 0
-			&& look_again(0, skipped, i64(time.sys_mono_now() - started)) {
+			&& look_again(0, skipped, since_ns(started)) {
 			continue
 		}
 		break

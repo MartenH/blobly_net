@@ -140,7 +140,7 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			}
 			// an error frame is not a frame: look past it (a data frame may be queued behind)
 			skipped++
-			if !look_again(timeout_ms, skipped, i64(time.sys_mono_now() - started)) {
+			if !look_again(timeout_ms, skipped, since_ns(started)) {
 				return error('timeout')
 			}
 			continue

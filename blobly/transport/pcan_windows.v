@@ -310,7 +310,7 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 			if mt & pcan_msg_status != 0 {
 				// PCAN status/error frame, not a data frame: looked past by the shared rule
 				skipped++
-				if !look_again(timeout_ms, skipped, i64(time.sys_mono_now() - started)) {
+				if !look_again(timeout_ms, skipped, since_ns(started)) {
 					return error('timeout')
 				}
 				continue
@@ -354,7 +354,7 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 			// the shared hub a fatal read uninitialises the channel under every handle (#221).
 			stdatomic.add_u64(&b.overruns, 1)
 			skipped++
-			if !look_again(timeout_ms, skipped, i64(time.sys_mono_now() - started)) {
+			if !look_again(timeout_ms, skipped, since_ns(started)) {
 				return error('timeout')
 			}
 			continue

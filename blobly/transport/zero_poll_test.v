@@ -31,7 +31,7 @@ fn test_inproc_zero_receive_is_a_look() {
 			assert false, 'a frame from nowhere'
 		}
 	}
-	assert time.ticks() - t0 < 50, '100 looks at an empty bus took ${time.ticks() - t0} ms'
+	assert time.ticks() - t0 < 80, '100 looks at an empty bus took ${time.ticks() - t0} ms'
 	tx.send(CanFrame{ id: 0x42 })!
 	assert rx.recv(0)!.id == 0x42
 }

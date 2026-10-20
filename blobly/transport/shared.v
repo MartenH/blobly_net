@@ -1375,6 +1375,12 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 						h.mu.unlock()
 						return error('timeout')
 					}
+					// THE BOUNDARY IS AFTER THIS DRAIN, as admit() has it: what the drain found was
+					// queued before this handle listened, and published only for a join pending
+					// beside it — drain_mu is held, so nothing else committed meanwhile
+					e.mu.lock()
+					h.cursor = e.next_seq
+					e.mu.unlock()
 				}
 			}
 		}

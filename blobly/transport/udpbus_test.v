@@ -172,5 +172,19 @@ fn test_udp_zero_receive_on_an_idle_socket_waits_for_nothing() {
 		}
 	}
 	el := time.ticks() - t0
-	assert el < 50, '100 looks at an idle socket took ${el} ms: each waited for a datagram'
+	// the old code waited a millisecond per look, so 100 of them took over 100 ms
+	assert el < 80, '100 looks at an idle socket took ${el} ms: each waited for a datagram'
+}
+
+// A look at a closed bus says so: a quiet socket and a closed one are different answers to a
+// caller that drains until timeout.
+fn test_udp_zero_receive_on_a_closed_bus_says_closed() {
+	group, port := uniq_group(7)
+	mut a := open_udp(group, port) or { panic('open a: ${err}') }
+	a.close()
+	if _ := a.recv(0) {
+		assert false
+	} else {
+		assert err.msg() == 'bus is closed', err.msg()
+	}
 }

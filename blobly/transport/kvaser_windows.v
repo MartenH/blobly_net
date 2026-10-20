@@ -409,7 +409,7 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 			to := if timeout_ms < 0 {
 				u32(200)
 			} else {
-				left := i64(timeout_ms) - i64(time.sys_mono_now() - started) / 1_000_000
+				left := i64(timeout_ms) - since_ns(started) / 1_000_000
 				if left > 0 { u32(left) } else { u32(0) }
 			}
 			r = C.ct_kvaser_read(b.handle, &id, &ln, &data[0], &flags, to)
@@ -432,7 +432,7 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 		if f.error_frame {
 			stdatomic.add_u64(&b.bus_errors, 1)
 			skipped++
-			if !look_again(timeout_ms, skipped, i64(time.sys_mono_now() - started)) {
+			if !look_again(timeout_ms, skipped, since_ns(started)) {
 				return error('timeout')
 			}
 			continue

@@ -1,5 +1,7 @@
 module transport
 
+import time
+
 // zero_poll_skip_limit and zero_poll_budget_ns bound how far ONE zero-timeout receive looks past
 // records its backend filters before it answers timeout — the "bounded by count AND by time" of
 // the recv(0) contract stated on the Bus interface (transport.v).
@@ -23,4 +25,9 @@ fn look_again(timeout_ms int, skipped int, elapsed_ns i64) bool {
 		return elapsed_ns < i64(timeout_ms) * 1_000_000
 	}
 	return skipped < zero_poll_skip_limit && elapsed_ns < zero_poll_budget_ns
+}
+
+// since_ns is the time since `started` (a time.sys_mono_now() reading), for look_again.
+fn since_ns(started u64) i64 {
+	return i64(time.sys_mono_now() - started)
 }

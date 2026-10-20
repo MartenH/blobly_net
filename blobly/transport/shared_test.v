@@ -1174,6 +1174,44 @@ fn test_a_zero_timeout_poll_from_an_expired_tap_subscribes_on_a_busy_wire() {
 	tap.close()
 }
 
+// A JOIN PENDING BESIDE A FIRST RECEIVE gets the backlog its drain publishes, and the receiving
+// handle does not: its boundary is after its own drain, as admit() has it. With the cursor taken
+// before the drain, the handle was served the frames from before it listened as new.
+fn test_a_first_receive_beside_a_pending_join_starts_after_its_own_drain() {
+	fake_opens = 0
+	fake_ctl = &FakeControls{}
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 64}
+	mut tap := shared_open('fake:pending-join', 'fake:pending-join', fake_make)!
+	shared_test_wait_parked(mut tap)
+	pending := u64(0xFFFF_FFFF)
+	if mut tap is SharedHandle {
+		mut e := tap.entry
+		e.mu.lock()
+		e.pending_admit[pending] = true // a join inserted and not yet admitted
+		e.mu.unlock()
+	}
+	for i in 0 .. 10 {
+		fake_rx <- CanFrame{
+			id: u32(0x100 + i) // from before the tap listened
+		}
+	}
+	if f := tap.recv(0) {
+		assert false, 'a frame from before the boundary: 0x${f.id:X}'
+	}
+	if mut tap is SharedHandle {
+		mut e := tap.entry
+		e.mu.lock()
+		e.pending_admit.delete(pending)
+		e.mu.unlock()
+	}
+	fake_rx <- CanFrame{
+		id: 0x300
+	}
+	assert tap.recv(1000)!.id == 0x300, 'the tap was served the backlog its drain published for another join'
+	tap.close()
+}
+
 fn shared_test_failed(mut bus Bus) bool {
 	if mut bus is SharedHandle {
 		mut e := bus.entry
