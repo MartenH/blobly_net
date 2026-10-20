@@ -30,7 +30,14 @@ fn look_again(timeout_ms int, skipped int, elapsed_ns i64) bool {
 // zero_poll_spent_code marks a zero-timeout look that stopped at its bound with filtered records
 // still queued — the message stays 'timeout', so every caller reads it as one, and a caller that
 // must know the queue is EMPTY (a boundary drain) reads the code.
-const zero_poll_spent_code = 0x5A0
+pub const zero_poll_spent_code = 0x5A0
+
+// look_was_spent says a receive's error is a zero-timeout look that stopped at its bound with
+// records still queued, as opposed to an empty queue: a caller polling several buses looks again
+// at once rather than sleeping.
+pub fn look_was_spent(err IError) bool {
+	return err.code() == zero_poll_spent_code
+}
 
 // look_over is the timeout a receive answers once look_again says stop: a spent zero-timeout look
 // carries zero_poll_spent_code; a spent positive wait is an ordinary timeout.

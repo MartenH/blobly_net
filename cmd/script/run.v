@@ -11,9 +11,13 @@ module main
 
 import os
 import blobly.headless
+import blobly.player
 import blobly.script
 
 fn main() {
+	// a run() on several channels sleeps a 1 ms slice between looks, which is the 15.6 ms
+	// default quantum on Windows unless raised (a no-op elsewhere)
+	player.raise_timer_resolution()
 	mut proj_path := 'projects/sim-demo.blobnet'
 	mut explicit := '' // --project as given, distinct from the default above
 	mut project_ports := false // --project-ports: host DoIP entities on the ports the project states
