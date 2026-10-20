@@ -23,10 +23,10 @@ repository's `build/`. Any CPython 3.8 or later; no other packages are needed.
 same: importing does not load the library). The library must be loaded on the process's main
 thread (`bb.h`), and the package refuses to load it anywhere else. After that, any thread may
 call in: a thread is attached to the library on its first call and detached when it ends,
-without you doing anything. **Use a channel from one thread at a time.** Some drivers forbid two
-threads on one handle (Kvaser's canlib), and others keep state that a receive updates and a send
-or a health check reads (SocketCAN). The project itself (load, start, stop) is driven from one
-thread.
+without you doing anything. Loading, starting and stopping a project, and opening or closing a
+channel, are serialised by the package, so threads may share a project. **Use a channel from one
+thread at a time**, though. Some drivers forbid two threads on one handle (Kvaser's canlib), and
+others keep state that a receive updates and a send or a health check reads (SocketCAN).
 
 ## An example
 
@@ -48,10 +48,10 @@ with blobly.Project("projects/sim-demo.blobnet") as net:      # loaded and start
 
 | | |
 |---|---|
-| `Project(path)` | A `.blobnet` project. `with` loads and starts it and stops it at the end; `load()`, `start()` and `stop()` do the same separately. One run per process, and one thread drives load, start and stop. The library holds one loaded project at a time: `start()` reloads its own if another was loaded since, and a channel taken from an earlier load refuses rather than reach whichever row now has its place. |
+| `Project(path)` | A `.blobnet` project. `with` loads and starts it and stops it at the end; `load()`, `start()` and `stop()` do the same separately. One run per process, and one thread drives load, start and stop. The library holds one loaded project at a time: `start()` reloads its own if another was loaded since. A reload keeps each channel whose row is still at its place under its name, so variables, timer closures and handlers go on working. A row that went is dropped and its handlers named. A channel of another project's load refuses rather than reach whichever row now has its place. |
 | `net.channels` | The project's enabled rows: `net.channels.CAN1`, `net.channels["CAN-1"]`, `net.channels[0]` by position, iteration in project order, `keys()`, and `dir()` for completion. A name two rows share is refused as ambiguous; reach those rows by position. |
 | `ch.send(id, data, ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` let the wire's declared format decide. A frame no controller could send is refused by the transport, as for every sender in the app. |
-| `ch.recv(timeout_ms=1000)` | The next frame other nodes sent, or `None` when nothing came in time; `None` as the timeout waits for ever. Returns a `Frame` (`id`, `data`, `length`, `ext`, `fd`, `brs`, `rtr`, `esi`); for a remote frame `data` is empty and `length` is the length it asks for. |
+| `ch.recv(timeout_ms=1000)` | The next frame other nodes sent, waiting at most `timeout_ms` (a fraction is rounded down), or `None` when nothing came; `None` as the timeout waits for ever. Returns a `Frame` (`id`, `data`, `length`, `ext`, `fd`, `brs`, `rtr`, `esi`); for a remote frame `data` is empty and `length` is the length it asks for. |
 | `ch.health()` | The controller's fault ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""` where the backend cannot say (the software buses). On SocketCAN and Vector the ladder advances only on a channel that is being read (`recv`, or `run()` with a handler naming it): a channel that only sends keeps its last state. |
 | `net.on_message(ch, id, fn)` | `fn(frame)` for each frame on `ch` with that `id` (`None`: every frame) received during `run()`. Your own sends are never heard back. |
 | `net.on_health(ch, fn)` | `fn(state)` during `run()` when the ladder has moved, and at its first sample with the state then. Sampled every 100 ms, so a state held for less than that can be missed. |

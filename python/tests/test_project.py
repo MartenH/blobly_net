@@ -107,6 +107,43 @@ class TestLoads(unittest.TestCase):
         net = blobly.Project(os.fsencode(SIM_DEMO)).load()
         self.assertIn("CAN1", net.channels.keys())
 
+    def test_a_timer_closing_over_a_channel_survives_a_reload(self):
+        net = blobly.Project(SIM_DEMO)
+        with net:
+            can1 = net.channels.CAN1
+            answers = []
+            net.on_message(can1, 0x102, answers.append)
+            net.on_timer(30, lambda: can1.send(0x101, b"\x05"))
+        blobly.Project(DEMO).load()  # another project's load in between
+        try:
+            net.start()
+            self.assertIs(net.channels.CAN1, can1, "the reload replaced the channel the timer holds")
+            net.run(200)
+            self.assertTrue(answers)
+        finally:
+            net.stop()
+
+    def test_native_state_calls_run_under_the_lock(self):
+        lib = _lib.lib()
+        real = lib.bb_bus_open
+        unlocked = []
+
+        def checked(iface):
+            if not _lib.state_lock._is_owned():
+                unlocked.append(iface)
+            return real(iface)
+        lib.bb_bus_open = checked
+        try:
+            with blobly.Project(SIM_DEMO) as net:
+                ts = [threading.Thread(target=lambda c=c: c.recv(0)) for c in (net.channels.CAN1, net.channels.CAN2)]
+                for th in ts:
+                    th.start()
+                for th in ts:
+                    th.join()
+        finally:
+            lib.bb_bus_open = real
+        self.assertEqual(unlocked, [], "a bus was opened outside the state lock")
+
     def test_handlers_follow_a_reload(self):
         net = blobly.Project(SIM_DEMO)
         heard = []

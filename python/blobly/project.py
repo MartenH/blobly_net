@@ -35,12 +35,13 @@ def frame_of(f):
 
 
 def _ms(timeout_ms):
-    """A timeout as bb_bus_recv takes it: whole milliseconds rounded up, None for forever."""
+    """A timeout as bb_bus_recv takes it: whole milliseconds rounded DOWN (a receive waits at most
+    what was asked), None for forever."""
     if timeout_ms is None:
         return -1
-    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, (int, float)):
-        raise TypeError("timeout_ms must be a number of milliseconds or None")
-    ms = max(0, math.ceil(timeout_ms))
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, (int, float)) or not math.isfinite(timeout_ms):
+        raise TypeError("timeout_ms must be a finite number of milliseconds, or None")
+    ms = max(0, math.floor(timeout_ms))
     if ms > 2**31 - 1:  # a C int: wider would wrap to 'forever' or to 0
         raise ValueError(f"timeout_ms {timeout_ms} is longer than one wait can be (2**31 - 1 ms); use None to wait for ever")
     return ms
@@ -49,8 +50,9 @@ def _ms(timeout_ms):
 class Channel:
     """One enabled row of the project. Its bus handle is opened on first use and is the one send,
     recv, health and the event loop all use, so what this channel sends is never heard back. It
-    belongs to one load of its project: after another load (its own or another project's) it
-    refuses, rather than reach whatever row now has its index."""
+    belongs to its project: after another project's load it refuses, rather than reach whatever
+    row now has its index, and a reload of its own project keeps it if its row is still there.
+    Native state calls (open, close) run under _lib.state_lock, so threads may share a project."""
 
     def __init__(self, project, index, name, gen):
         self._project, self._index, self.name, self._gen = project, index, name, gen
@@ -67,18 +69,23 @@ class Channel:
         """What the row opens: after start, as the run has it (a hosted DoIP row moves onto a port
         this process could bind)."""
         lib = _lib.lib()
-        self._current()
-        return _lib.text(lib.bb_channel_iface(self._index))
+        with _lib.state_lock:
+            self._current()
+            return _lib.text(lib.bb_channel_iface(self._index))
 
     def _handle(self):
-        if self._h is None:
-            self._current()
-            if not self._project.started:
-                raise BloblyError(f"{self.name}: the project is not started", _lib.BB_ERR_STATE)
-            lib = _lib.lib()
-            # the library's own bytes: what it named, not a re-encoding of it
-            self._h = _lib.check(lib.bb_bus_open(lib.bb_channel_iface(self._index)))
-        return self._h
+        h = self._h
+        if h is not None:
+            return h
+        lib = _lib.lib()
+        with _lib.state_lock:
+            if self._h is None:
+                self._current()
+                if not self._project.started:
+                    raise BloblyError(f"{self.name}: the project is not started", _lib.BB_ERR_STATE)
+                # the library's own bytes: what it named, not a re-encoding of it
+                self._h = _lib.check(lib.bb_bus_open(lib.bb_channel_iface(self._index)))
+            return self._h
 
     def send(self, id, data=b"", ext=False, fd=False, brs=False):
         """Puts a frame on the wire. fd/brs left False let the wire's declared format decide."""
@@ -111,10 +118,11 @@ class Channel:
 
     def close(self):
         """Lets the handle go; the next use opens another."""
-        if self._h is not None:
-            lib = _lib.lib()
-            h, self._h = self._h, None
-            _lib.check(lib.bb_bus_close(h))
+        lib = _lib.lib()
+        with _lib.state_lock:
+            if self._h is not None:
+                h, self._h = self._h, None
+                _lib.check(lib.bb_bus_close(h))
 
     def __repr__(self):
         return f"<Channel {self.name}>"
@@ -185,74 +193,79 @@ class Project(EventLoop):
         self._rr = 0
 
     def load(self):
-        """Reads the project into the library, which holds one at a time: channels of an earlier
-        load, this project's or another's, refuse from here on."""
+        """Reads the project into the library, which holds one load at a time: another project's
+        channels refuse from here on. A reload of this project KEEPS each Channel whose row is
+        still at its position under its name — so a variable, a timer's closure and a handler all
+        go on working — and drops the handlers of rows that went, naming them."""
         lib = _lib.lib()
-        _lib.check(lib.bb_load(os.fsencode(self.path)))  # the filesystem's bytes, not UTF-8
-        if self._channels is not None:
-            for c in self._channels:
+        with _lib.state_lock:
+            _lib.check(lib.bb_load(os.fsencode(self.path)))  # the filesystem's bytes, not UTF-8
+            old = list(self._channels) if self._channels is not None else []
+            for c in old:
                 try:
                     c.close()
                 except BloblyError:
                     pass
-        st = _lib.state
-        st["gen"] += 1
-        st["owner"] = self
-        self._gen = st["gen"]
-        n = _lib.check(lib.bb_channel_count())
-        rows = [Channel(self, i, _lib.text(lib.bb_channel_name(i)), st["gen"]) for i in range(n)]
-        self._channels = Channels(rows)
-        gone = self._rebind(rows)
+            st = _lib.state
+            st["gen"] += 1
+            st["owner"] = self
+            self._gen = st["gen"]
+            n = _lib.check(lib.bb_channel_count())
+            rows = []
+            for i in range(n):
+                name = _lib.text(lib.bb_channel_name(i))
+                keep = old[i] if i < len(old) and old[i].name == name else None
+                if keep is not None:
+                    keep._gen = st["gen"]  # the same object, current again
+                    rows.append(keep)
+                else:
+                    rows.append(Channel(self, i, name, st["gen"]))
+            self._channels = Channels(rows)
+        gone = self._drop_gone(rows)
         if gone:
             raise BloblyError("handlers dropped: their rows are not in this load of the project ("
                               + ", ".join(gone) + "); register them again", _lib.BB_ERR_STATE)
         return self
 
-    def _rebind(self, rows):
-        """Moves every registration onto the row this load has at its position, where the name
-        still matches; drops the rest and names them, rather than leave a handler that hears
-        nothing."""
+    def _drop_gone(self, rows):
+        """Drops the registrations on channels this load did not keep, and names them, rather than
+        leave a handler that hears nothing."""
+        live = set(map(id, rows))
         gone = []
 
-        def moved(key):
-            if not isinstance(key, Channel):
-                return key
-            if key._index < len(rows) and rows[key._index].name == key.name:
-                return rows[key._index]
+        def kept(key):
+            if not isinstance(key, Channel) or id(key) in live:
+                return True
             gone.append(f"{key.name} (row {key._index})")
-            return None
-        self._listened = [k for k in (moved(k) for k in self._listened) if k is not None]
-        self._on_msg = [(k, i, fn) for k, i, fn in ((moved(k), i, fn) for k, i, fn in self._on_msg) if k is not None]
-        kept = []
-        for h in self._on_health:
-            k = moved(h.channel)
-            if k is not None:
-                h.channel = k
-                kept.append(h)
-        self._on_health = kept
+            return False
+        self._listened = [k for k in self._listened if kept(k)]
+        self._on_msg = [(k, i, fn) for k, i, fn in self._on_msg if kept(k)]
+        self._on_health = [h for h in self._on_health if kept(h.channel)]
         return sorted(set(gone))
 
     def start(self):
         """Starts this project — reloaded first if the library holds another load now."""
-        st = _lib.state
-        if st["owner"] is not self or st["gen"] != self._gen:
-            self.load()
         lib = _lib.lib()
-        _lib.check(lib.bb_start())
-        self.started = True
+        with _lib.state_lock:
+            st = _lib.state
+            if st["owner"] is not self or st["gen"] != self._gen:
+                self.load()
+            _lib.check(lib.bb_start())
+            self.started = True
         return self
 
     def stop(self):
-        if not self.started:
-            return
-        for c in self._channels:
-            try:
-                c.close()
-            except BloblyError:
-                pass  # a handle already gone is closed enough
         lib = _lib.lib()
-        self.started = False
-        _lib.check(lib.bb_stop())
+        with _lib.state_lock:
+            if not self.started:
+                return
+            for c in self._channels:
+                try:
+                    c.close()
+                except BloblyError:
+                    pass  # a handle already gone is closed enough
+            self.started = False
+            _lib.check(lib.bb_stop())
 
     def __enter__(self):
         return self.start()

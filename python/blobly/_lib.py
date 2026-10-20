@@ -79,6 +79,10 @@ detached = collections.deque(maxlen=64)
 # which Project's load the library holds now, and which load that was: a channel of another
 # project, or of an earlier load of its own, would reach another row by its index
 state = {"owner": None, "gen": 0}
+# bb.h: open, close, load, start and stop are not synchronised against each other, and ctypes
+# releases the GIL inside a call, so every one of them (and the row-name reads a load replaces)
+# runs under this lock, from whichever thread makes it
+state_lock = threading.RLock()
 
 
 class _Attachment:

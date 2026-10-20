@@ -519,6 +519,17 @@ class TestOrder(unittest.TestCase):
         self.assertEqual(first, [1, 2])
 
 
+class TestTimeout(unittest.TestCase):
+    def test_a_receive_waits_at_most_what_was_asked(self):
+        from blobly.project import _ms
+        self.assertEqual(_ms(0.01), 0)
+        self.assertEqual(_ms(1.99), 1)
+        self.assertEqual(_ms(None), -1)
+        for bad in (float("nan"), float("inf"), True, "5"):
+            with self.assertRaises(TypeError, msg=repr(bad)):
+                _ms(bad)
+
+
 class TestText(unittest.TestCase):
     def test_a_message_cut_inside_a_utf8_sequence_still_reads(self):
         # the library truncates its error buffer at 512 bytes, possibly inside a character
