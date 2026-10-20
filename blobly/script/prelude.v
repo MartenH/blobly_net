@@ -609,6 +609,9 @@ function on_health(channel, fn)
   __on_health[#__on_health + 1] = { channel = channel, fn = fn, said = nil }
 end
 function on_timer(period_ms, fn)
+  if type(period_ms) ~= "number" or period_ms <= 0 then
+    error("on_timer: the period must be a positive number of milliseconds", 2)
+  end
   __timers[#__timers + 1] = { due = __now_ms() + period_ms, period = period_ms, fn = fn, active = false }
 end
 
@@ -660,7 +663,8 @@ function run(duration_ms)
       if not t.active and t.due < wake then wake = t.due end
     end
     if #__on_health > 0 and next_health < wake then wake = next_health end
-    local wait = wake - now
+    -- whole milliseconds, rounded UP: a fractional wait would reach the binding as 0, a busy poll
+    local wait = math.ceil(wake - now)
     if wait < 0 then wait = 0 end
     local ch, id, ext, data = __wait_frame(wait, table.unpack(__listened))
     if ch then

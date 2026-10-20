@@ -704,3 +704,41 @@ fn test_no_health_handler_starts_past_the_deadline() {
 	')!
 	assert said.num('second') == 0, said.lines.str()
 }
+
+// A period that is not a positive number is refused where the timer is registered: zero could
+// never move its grid, and run() would not return.
+fn test_on_timer_refuses_a_period_that_is_not_positive() {
+	for period in ['0', '-5', '"10"'] {
+		mut env, _ := events_env(['CAN1'], ['inproc:EV_T'])
+		if _ := env.run_source('on_timer(${period}, function() end)') {
+			env.close()
+			assert false, 'period ${period} was accepted'
+			return
+		} else {
+			assert err.msg().contains('positive number'), err.msg()
+		}
+		env.close()
+	}
+}
+
+// A fractional period is waited in whole milliseconds rounded up, never as a busy poll.
+fn test_a_fractional_period_does_not_spin() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_U'])
+	defer { env.close() }
+	env.run_source('
+		local fires, waits = 0, 0
+		local real = __wait_frame
+		__wait_frame = function(ms, ...)
+			waits = waits + 1
+			return real(ms, ...)
+		end
+		on_message("CAN1", nil, function(f) end)
+		on_timer(2.5, function() fires = fires + 1 end)
+		run(100)
+		__wait_frame = real
+		log("fires " .. fires)
+		log("waits " .. waits)
+	')!
+	assert said.num('fires') >= 20, said.lines.str()
+	assert said.num('waits') < 500, 'run() polled ${said.num('waits')} times in 100 ms'
+}

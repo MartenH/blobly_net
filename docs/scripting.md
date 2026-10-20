@@ -373,7 +373,7 @@ handler it matches, since a frame read off the bus cannot be read again.
 |---|---|
 | `on_message(channel, id, fn)` | `fn(frame)` fires for each matching frame received during `run()`. `id` may be `nil` to match every frame on the channel. |
 | `on_health(channel, fn)` | `fn(state)` fires during `run()` when the controller's fault ladder has moved — `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"` — and at its first sample with the state then, however late the handler was registered. Sampled every 100 ms, like the Buses panel: a state held for less than that between two samples can be missed. A software bus (`inproc:`, `udp:`) has no ladder and never fires. |
-| `on_timer(period_ms, fn)` | `fn()` fires every `period_ms` during `run()`, on its own grid: a late fire does not delay the next one, and periods missed while the script was busy are skipped, not sent in a burst. A timer is never fired again inside its own callback. |
+| `on_timer(period_ms, fn)` | `fn()` fires every `period_ms` during `run()`, on its own grid: a late fire does not delay the next one, and periods missed while the script was busy are skipped, not sent in a burst. A timer is never fired again inside its own callback. The period must be a positive number of milliseconds; a fraction is honoured to within a millisecond. |
 | `run(duration_ms)` | Run the event loop for `duration_ms`. |
 | `bus.health(channel)` | The ladder now, as the strings above; `""` where the backend cannot say. |
 
