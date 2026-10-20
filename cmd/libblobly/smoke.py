@@ -12,7 +12,8 @@ import threading
 
 class Frame(ctypes.Structure):
     _fields_ = [("id", ctypes.c_uint32), ("len", ctypes.c_uint8), ("ext", ctypes.c_uint8),
-                ("fd", ctypes.c_uint8), ("brs", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64)]
+                ("fd", ctypes.c_uint8), ("brs", ctypes.c_uint8), ("rtr", ctypes.c_uint8),
+                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64)]
 
 
 BB_ERR_HANDLE = -2

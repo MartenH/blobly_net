@@ -38,15 +38,21 @@
 extern "C" {
 #endif
 
-/* A CAN frame on the wire. `len` is the payload length (0..8 classic, up to 64 with fd);
- * `ext` a 29-bit identifier; `fd`/`brs` CAN-FD and its bit-rate switch. On a send, fd and brs
- * unset mean "not stated": the frame takes the wire's declared format. */
+/* A CAN frame on the wire. `len` is the payload length (0..8 classic, up to 64 with fd); `ext`
+ * a 29-bit identifier; `fd`/`brs` CAN-FD and its bit-rate switch; `rtr` a remote frame (its
+ * `len` the requested DLC, no payload); `esi` CAN-FD's error-state indicator. On a send, fd and
+ * brs unset mean "not stated": the frame takes the wire's declared format; a frame no controller
+ * could send (brs or esi without fd, an id past its width) and a remote frame are refused by the
+ * transport, as for every sender in this app. A received frame that does not fit is refused, not
+ * truncated. */
 typedef struct bb_frame {
 	uint32_t id;
 	uint8_t  len;
 	uint8_t  ext;
 	uint8_t  fd;
 	uint8_t  brs;
+	uint8_t  rtr;
+	uint8_t  esi;
 	uint8_t  data[64];
 } bb_frame;
 
@@ -90,9 +96,12 @@ const char *bb_channel_iface(int i);   /* what bb_bus_open takes for this row; a
 /* A bus handle of the host's own on an interface ("inproc:CAN1", "vcan0", "pcan:PCAN_USBBUS1@500000"). */
 int bb_bus_open(const char *iface);                          /* >= 0: the handle */
 int bb_bus_send(int h, const bb_frame *f);
-int bb_bus_recv(int h, int timeout_ms, bb_frame *out);       /* 0: a frame; 1: none in time */
+int bb_bus_recv(int h, int timeout_ms, bb_frame *out);       /* 0: a frame; 1: none in time;
+                                                                timeout < 0 waits for a frame */
 int bb_bus_health(int h);                                    /* >= 0: an enum bb_health */
-int bb_bus_close(int h);
+int bb_bus_close(int h);  /* a send or recv on another thread ends first (a recv within 20 ms,
+                             with BB_ERR_HANDLE); the handle is then closed and its index never
+                             reused */
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus

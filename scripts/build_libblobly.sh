@@ -14,6 +14,9 @@ case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN*) lib="$out/blobly.dll" cc="-cc gcc" ;;
 *) lib="$out/libblobly.so" cc="" ;;
 esac
+# -nocache: V3's module cache cannot build a -shared target at all — the cached builtin's C has a
+# bare string literal at file scope ("expected identifier or '(' before string constant"; a
+# one-export `module main` reproduces it on 0535623, -nocache builds it). CI's VFLAGS has it too.
 # shellcheck disable=SC2086
-"$V" $cc -enable-globals -prod -shared -o "$lib" cmd/libblobly
+"$V" $cc -enable-globals -prod -shared -nocache -o "$lib" cmd/libblobly
 echo "built $lib"

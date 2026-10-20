@@ -218,6 +218,8 @@ jobs:
           mkdir -p dist/licenses
           for dll in "${dlls[@]}"; do
             base="$(basename "$dll")"
+            # ours (cmd/libblobly): under this repo's LICENSE, not an MSYS2 package's
+            [ "$base" = blobly.dll ] && continue
             pkg="$(pacman -Qoq "/ucrt64/bin/$base" 2>/dev/null || true)"
             [ -n "$pkg" ] || { echo "no owning package for $base"; exit 1; }
             lic="/ucrt64/share/licenses/${pkg#mingw-w64-ucrt-x86_64-}"

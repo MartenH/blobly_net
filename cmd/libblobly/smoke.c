@@ -62,6 +62,19 @@ static int exchange(const char *who, int n) {
 }
 
 #ifndef _WIN32
+#include <time.h>
+/* blocks in an unbounded recv on a quiet wire until the main thread closes the handle */
+static int quiet_handle;
+static void *blocked_recv(void *arg) {
+	(void)arg;
+	static int rc;
+	if (bb_thread_attach_p() != 0) { rc = 99; return &rc; }
+	bb_frame f;
+	rc = bb_bus_recv_p(quiet_handle, -1, &f);
+	bb_thread_detach_p();
+	return &rc;
+}
+
 /* A thread the host created: the V runtime's collector did not see it born. Short-lived handles
  * first, so that a COLLECTION happens on this thread (an unregistered thread collecting is
  * Boehm's "Collecting from unknown thread" abort: measured at 10 churns, 3 of 3 runs, and
@@ -107,7 +120,26 @@ int main(int argc, char **argv) {
 	int *rc;
 	pthread_join(t, (void **)&rc);
 	if (*rc) return 1;
+	/* a close on this thread ends an unbounded recv on another, as BB_ERR_HANDLE */
+	quiet_handle = bb_bus_open_p("inproc:BB_SMOKE_QUIET");
+	if (quiet_handle < 0) FAIL("open quiet");
+	pthread_t q;
+	pthread_create(&q, NULL, blocked_recv, NULL);
+	struct timespec ts = {0, 100 * 1000 * 1000};
+	nanosleep(&ts, NULL);
+	if (bb_bus_close_p(quiet_handle) != 0) FAIL("close under a blocked recv");
+	int *qrc;
+	pthread_join(q, (void **)&qrc);
+	if (*qrc != BB_ERR_HANDLE) { fprintf(stderr, "FAIL a closed handle's blocked recv: rc=%d\n", *qrc); return 1; }
+	printf("ok   a close ended a blocked recv on another thread\n");
 #endif
+	/* -1 is a handle no open returned: refused and named, not read as 4294967295 (V3's int is
+	 * 64 bits, C's 32) */
+	if (bb_bus_close_p(-1) != BB_ERR_HANDLE) { fprintf(stderr, "FAIL close(-1)\n"); return 1; }
+	if (strstr(bb_last_error_p(), "-1") == NULL) { fprintf(stderr, "FAIL close(-1) names: %s\n", bb_last_error_p()); return 1; }
+	(void)bb_version_p();
+	if (bb_last_error_p()[0] != 0) { fprintf(stderr, "FAIL a success leaves the error empty\n"); return 1; }
+	printf("ok   handle -1 refused by name; a success clears the error\n");
 	if (bb_stop_p() != 0) FAIL("stop");
 	if (bb_stop_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL a second stop must refuse\n"); return 1; }
 	/* the process is free again: the same project starts a second time */
