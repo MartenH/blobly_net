@@ -94,15 +94,19 @@ the previous tag by version sort). It does care about direction: a date sorts ab
    bundle publishes for a tag *only* when `release.yml` calls `windows.yml` with
    `publish_bundle=true`, which happens behind this guard — a manual dispatch pointed at a
    tag publishes nothing.
-3. **the built binary answers with the tag** — the Linux job runs
+3. **the highlights name the tag** — the first line of `packaging/RELEASE_HIGHLIGHTS.md` is
+   `<!-- vX.Y.Z -->`, so the previous release's summary cannot open this one's page. CI checks
+   the same line against `v.mod` on every push, so a bump PR that forgot them fails before
+   anything is tagged.
+4. **the built binary answers with the tag** — the Linux job runs
    `./blobly_net --version` and compares. (The Windows exe compiles the same committed
    `v.mod`, so one execution covers both.)
-4. **the tag still is what the guard proved** — re-checked just before publish, because the
+5. **the tag still is what the guard proved** — re-checked just before publish, because the
    Windows build runs for the better part of an hour and a deleted or force-moved tag must
    not associate the binaries with different source (`--verify-tag` blocks gh's silent
    tag re-creation too).
 
-## Release notes — automatic
+## Release notes
 
 The published notes open with `packaging/RELEASE_HIGHLIGHTS.md` (step 3), then the changelog,
 then `packaging/RELEASE_NOTES_HEADER.md` — the standing statement of what
@@ -114,12 +118,12 @@ changelog of every PR merged since the previous product release** (baselined on 
 earlier tag is an ancestor because the history was rewritten after it (as it was after
 `v2026.09.01` — a rewrite keeps every tree), the baseline is the commit on `main` whose tree is
 that of the tag just below the one being released, and the list is the squash-merge subjects since it (`What's Changed since
-<tag>`). Edit the release on GitHub afterwards if you want to add anything by hand.
+<tag>`).
 
 ## If something goes wrong
 
-- **Guard fails** — the message says which invariant broke (tag/version mismatch, or the
-  commit is not on main). Fix, delete the tag **both places** — remote and local, or the
+- **Guard fails** — the message says which invariant broke (tag/version mismatch, the
+  commit is not on main, or highlights that name another tag). Fix it on `main` through a PR, delete the tag **both places** — remote and local, or the
   re-tag fails with "already exists":
   `git push --delete origin vX.Y.Z && git tag -d vX.Y.Z` — then re-tag.
 - **A build fails after the guard** — nothing was published; re-tagging the same name after

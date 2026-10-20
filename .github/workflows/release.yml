@@ -138,8 +138,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      # the checkout is load-bearing three times over: packaging/RELEASE_NOTES_HEADER.md is
-      # read below, gh resolves the repo from it, and the tag revalidation + previous-tag
+      # the checkout is load-bearing three times over: packaging/RELEASE_HIGHLIGHTS.md and
+      # RELEASE_NOTES_HEADER.md are read below, gh resolves the repo from it, and the tag revalidation + previous-tag
       # baseline need the refs — hence full depth with tags. The tarball downloads into the
       # workspace root; its name is untracked, so the two writers cannot collide.
       - uses: actions/checkout@v7
