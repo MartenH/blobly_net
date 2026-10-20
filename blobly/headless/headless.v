@@ -20,7 +20,17 @@ import blobly.sim
 import blobly.sysview
 import blobly.doip
 import blobly.testports
+import sync
 import sync.stdatomic
+
+// ONE RUN PER PROCESS. The wire policy (listen-only marks, FD framing — `project.apply_listen_only`),
+// the injected faults and the live-value table are process-wide, as the GUI's one run owns them:
+// a second start would replace the first run's marks under its handles, and a listen-only wire
+// with simulated nodes would begin transmitting. Refused instead, until the first is stopped.
+__global (
+	headless_mu     sync.Mutex
+	headless_active bool
+)
 
 // Options is what a caller decides about a run.
 pub struct Options {
@@ -64,7 +74,11 @@ mut:
 	// spawns the UDP loop from its own thread, so both counts are atomic
 	spawned    i64
 	loops_done i64
-	err        fn (string) @[required]
+	// the DoIP entities bound, closed by stop: a connected tester keeps `accept_and_serve`
+	// inside the connection, where only the entity's own `stopping` ends it
+	entities []&doip.DoipServer
+	mu       sync.Mutex
+	err      fn (string) @[required]
 pub:
 	path string
 	// the project as the run uses it: the DoIP rows moved onto this process's ports
@@ -89,7 +103,20 @@ pub fn load(proj_path string, o Options) !project.Project {
 // start brings a loaded project up: refused with the first problem, and nothing is left running
 // on a refusal.
 pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
+	headless_mu.lock()
+	if headless_active {
+		headless_mu.unlock()
+		return error('a run is already active in this process; stop it before starting another')
+	}
+	headless_active = true
+	headless_mu.unlock()
 	mut proj := loaded
+	// What the previous run published and what a script armed against it: a fault keyed by
+	// interface, node and message would apply to a new project reusing the names, and a
+	// described node moved between wires would read as two sources (the GUI clears both at a
+	// project load / Start).
+	sim.clear_all()
+	sim.clear_live()
 	// The run's simulated loopback DoIP entities move off the project's ports (13400 in every
 	// demo) onto ports this process can bind, and every row dialing them moves with them, so two
 	// runs on one machine do not collide (#411). Held until each entity binds, below.
@@ -102,6 +129,9 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 		band := testports.doip_entities
 		moves := project.choose_doip_ports(project.doip_hosting(proj.channels, hosts),
 			project.reserved_ports(proj.channels), band.candidates(), mut probes) or {
+			// the candidates an earlier entity of this project already took, held until bind
+			probes.release_all()
+			release_process()
 			return error("cannot host the DoIP entities: ${err} in ${band.base}..${band.last()}; Options.project_ports keeps the project's")
 		}
 		chs, notes := project.with_doip_ports(proj.channels, moves, hosts)
@@ -126,6 +156,13 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 		return err
 	}
 	return r
+}
+
+// release_process lets the next start in: the run that held the process is over.
+fn release_process() {
+	headless_mu.lock()
+	headless_active = false
+	headless_mu.unlock()
 }
 
 // bring_up spawns the run's loops; what it spawned before a refusal is the caller's to stop.
@@ -251,6 +288,9 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			mut entity := doip_listen(host, port, ent.cfg, srv) or {
 				return error('${ch.name}: ${err}\nrefusing to run: a suite would connect to whatever else is on ${host}:${port}')
 			}
+			r.mu.lock()
+			r.entities << entity
+			r.mu.unlock()
 			r.counted()
 			spawn r.doip_serve_loop(mut entity)
 			// NOT announced here. The default sequence is 3 × 500ms and would be finished
@@ -403,6 +443,11 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 // responder counted is booked before the caller asks its own handles (#213).
 pub fn (mut r Run) stop() {
 	r.ctl.running = false
+	r.mu.lock()
+	for mut e in r.entities {
+		e.close() // sets its `stopping`: the serve loop's connection and the announce end
+	}
+	r.mu.unlock()
 	wait_until := time.ticks() + 2000
 	for stdatomic.load_i64(&r.loops_done) < stdatomic.load_i64(&r.spawned)
 		&& time.ticks() < wait_until {
@@ -411,7 +456,12 @@ pub fn (mut r Run) stop() {
 	left := stdatomic.load_i64(&r.spawned) - stdatomic.load_i64(&r.loops_done)
 	if left > 0 {
 		r.err('${left} bus loop(s) still busy at exit; their wires are not reported')
+		// A loop past the bound (an open stalled in a driver) will still say its piece when it
+		// returns, to a sink the host may have torn down by then: it says it to nobody. A
+		// pointer-sized swap the loop reads unlocked, which is the extent of the race.
+		r.err = fn (_ string) {}
 	}
+	release_process()
 }
 
 // counted is one more loop spawned; done counts it out.
@@ -615,7 +665,7 @@ fn (mut r Run) doip_serve_loop(mut s doip.DoipServer) {
 		// A timeout is the normal case (no tester connected), not a failure.
 		s.accept_and_serve(200) or { continue }
 	}
-	s.close()
+	s.close() // after stop's own close: every socket is closed under `or {}`, the claim once
 }
 
 // doip_udp_loop answers vehicle-identification requests, so Discover finds the entity.

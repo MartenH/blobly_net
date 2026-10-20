@@ -63,8 +63,38 @@ fn test_start_runs_the_simulation_and_stop_ends_it() {
 		...o
 		project_ports: true
 	})!
+	// one run per process: a second start is refused until this one is stopped
+	if _ := start(proj, path, o) {
+		assert false, 'two runs in one process'
+	} else {
+		assert err.msg().contains('already active'), err.msg()
+	}
 	again.stop()
 	assert !lines.said('refusing')
+}
+
+// A tester still connected to the entity does not keep it serving past stop: the entity is
+// closed from stop, and the port is free when it returns.
+fn test_stop_closes_a_connected_entity() {
+	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
+	mut lines := &Lines{}
+	o := lines.options()
+	proj := load(path, o)!
+	mut r := start(proj, path, o)!
+	row := r.proj.channels.filter(it.enabled && it.is_doip())[0]
+	host, port := row.doip_endpoint()
+	mut tester := net.dial_tcp('${host}:${port}')!
+	time.sleep(50 * time.millisecond) // accepted: the serve loop is inside the connection
+	t := time.ticks()
+	r.stop()
+	assert time.ticks() - t < 1500, 'stop waited out its bound: ${time.ticks() - t} ms'
+	assert !lines.said('still busy')
+	tester.close() or {}
+	mut again := start(r.proj, path, Options{
+		...o
+		project_ports: true
+	})!
+	again.stop()
 }
 
 // A refusal reached AFTER loops were spawned stops them: the CAN row's simulation is running
