@@ -42,6 +42,12 @@ const shared_attentive_ms = i64(1000)
 // after the handle's open — whatever the bus is doing. Worst case is a few hundred milliseconds
 // of reads, and only on a saturated bus with a deep backlog.
 const shared_boundary_drain_frames = u64(65536)
+
+// shared_spent_looks is how many looks in a row a drain takes past a backend look that stopped at
+// its bound (zero_poll_spent_code) before it takes the position for its boundary: a few thousand
+// filtered records behind each other are a backlog to read past, a continuous stream of them is
+// a storm that would hold drain_mu for as long as it lasted.
+const shared_spent_looks = 4
 const shared_pending_capacity = 4096
 const shared_pending_ttl_ms = 5000
 
@@ -1069,6 +1075,7 @@ fn (mut e SharedEntry) drain_parked(join bool, publish bool) !bool {
 	mut n := u64(0)
 	mut more := true
 	mut fatal := ''
+	mut spent := 0
 	for n < u64(shared_ring_capacity) {
 		ingress := e.driver.recv_shared(0) or {
 			if err.msg() != 'timeout' {
@@ -1079,12 +1086,19 @@ fn (mut e SharedEntry) drain_parked(join bool, publish bool) !bool {
 			// A LOOK THAT STOPPED AT ITS BOUND is not an empty queue: filtered records were still
 			// queued, possibly with a frame behind them that is from before this boundary. A plain
 			// timeout is empty — asked again, the queue could hand over a frame that arrived after.
+			// Looked past a few times in a row and it is a STORM of filtered records that will not
+			// end while we wait: this position is the boundary, an approximate one, as a look's
+			// full batch is — a handle that never subscribes would be worse than a stale frame.
 			if err.code() == zero_poll_spent_code {
-				continue
+				spent++
+				if spent < shared_spent_looks {
+					continue
+				}
 			}
 			more = false
 			break
 		}
+		spent = 0
 		if publish {
 			e.commit_external(ingress.frame)
 		}

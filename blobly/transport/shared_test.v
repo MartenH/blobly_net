@@ -1267,6 +1267,30 @@ fn test_a_spent_budget_drains_nothing_and_a_look_one_batch() {
 	tap.close()
 }
 
+// A STORM OF FILTERED RECORDS ENDS A DRAIN: every look stopping at its bound, the drain takes the
+// position for its boundary after shared_spent_looks of them rather than looking for ever with
+// drain_mu held.
+fn test_a_drain_through_a_storm_of_bounded_looks_ends() {
+	fake_opens = 0
+	fake_ctl = &FakeControls{}
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	mut tap := shared_open('fake:storm', 'fake:storm', fake_make)!
+	shared_test_wait_parked(mut tap)
+	stdatomic.store_i64(&fake_ctl.bounded_looks, 1_000_000) // every look stops at its bound
+	if mut tap is SharedHandle {
+		mut e := tap.entry
+		e.take_drain_lock()
+		before := stdatomic.load_i64(&fake_ctl.recv_calls)
+		more := e.drain_parked(true, false) or { panic(err) }
+		assert !more
+		assert stdatomic.load_i64(&fake_ctl.recv_calls) - before == shared_spent_looks
+		e.drain_mu.unlock()
+	}
+	stdatomic.store_i64(&fake_ctl.bounded_looks, 0)
+	tap.close()
+}
+
 // AN EMPTY QUEUE IS ONE QUIET LOOK: a drain that asked again could take a frame that arrived
 // after the boundary was observed, and discard it as from before.
 fn test_a_drain_of_an_empty_queue_looks_once() {
