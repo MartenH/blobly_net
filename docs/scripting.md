@@ -352,23 +352,43 @@ the script until the condition or the timeout, then return or raise.
 | `expect(channel, id, timeout_ms)` | Wait for a frame with CAN `id`; returns the frame `{id,ext,data}`, or raises on timeout. |
 | `expect_signal(channel, id, signal, want, timeout_ms)` | Wait until decoded `signal` of message `id` matches `want` (a value, or a `function(v)->bool` predicate); returns the matching value, or raises. |
 
-### Reactive callbacks — on_message / on_timer / run
+### Reactive callbacks — on_message / on_health / on_timer / run
 
-Register handlers, then `run()` a cooperative event loop that pumps the listened
-channels and fires due timers. Handlers fire *during* `run()`.
+Register handlers, then `run()` an event loop. Handlers fire *during* `run()`, on the script's
+own thread, which is also the only thread that ever touches the script's buses — so a handler may
+call `bus.send`, `bus.recv`, `expect`, a `uds` exchange or even `run()` itself.
+
+`run()` reads every channel a handler names, from the same handle `bus.recv` reads: a frame it reads
+is **consumed** (a later `expect` gets the next one), whether or not a handler matched it, and the
+script's own frames are never heard back. With one channel listened it blocks in the driver, so a
+handler runs within about 0.1 ms of the frame; with several it looks at each in turn every 0.1 ms
+(1 ms on Windows), about 0.11 ms from frame to handler with two channels on a Linux bench, at
+roughly a tenth of a core while it waits. A callback that runs past
+the deadline ends `run()` when it returns, and what arrived meanwhile stays queued for the next
+reader. The rule is per event — a frame, a timer, a health
+sample: none is taken up once the deadline has passed, and a frame taken up before it reaches every
+handler it matches, since a frame read off the bus cannot be read again.
 
 | Call | Meaning |
 |---|---|
-| `on_message(channel, id, fn)` | `fn(frame)` fires for each matching frame during `run()`. `id` may be `nil` to match every frame on the channel. |
-| `on_timer(period_ms, fn)` | `fn()` fires roughly every `period_ms` during `run()`. |
-| `run(duration_ms)` | Run the event loop for `duration_ms`, dispatching messages + timers. |
+| `on_message(channel, id, fn)` | `fn(frame)` fires for each matching frame received during `run()`. `id` may be `nil` to match every frame on the channel. |
+| `on_health(channel, fn)` | `fn(state)` fires during `run()` when the controller's fault ladder has moved — `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"` — and at its first sample with the state then, however late the handler was registered. Sampled every 100 ms, like the Buses panel: a state held for less than that between two samples can be missed. A software bus (`inproc:`, `udp:`) has no ladder and never fires. |
+| `on_timer(period_ms, fn)` | `fn()` fires every `period_ms` during `run()`, on its own grid: a late fire does not delay the next one, and periods missed while the script was busy are skipped, not sent in a burst. A timer is never fired again inside its own callback. |
+| `run(duration_ms)` | Run the event loop for `duration_ms`. |
+| `bus.health(channel)` | The ladder now, as the strings above; `""` where the backend cannot say. |
 
 ```lua
 local hb = 0
 on_message("CAN1", 0x700, function(f) hb = hb + 1 end)   -- Heartbeat
+on_health("CAN1", function(s) log("CAN1 is", s) end)
+on_timer(100, function() bus.send("CAN1", 0x123, string.char(0, 1)) end)  -- a cyclic frame
 on_timer(500, function() log("tick, heartbeats so far:", hb) end)
 run(3000)
 ```
+
+A frame sent periodically from `on_timer` goes out only while `run()` runs; one that must keep
+going while the script waits in `expect` or a diagnostic exchange belongs in the project's
+generators (`senders:`, docs/simulation.md).
 
 (Lua's own coroutines are available too if you want to hand-roll more elaborate
 flows, but `expect` + `on_message`/`run` cover the common test shapes.)

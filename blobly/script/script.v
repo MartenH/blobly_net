@@ -140,6 +140,8 @@ mut:
 	// the script run_file is running: paths a script names (flash.program's image and seed file)
 	// resolve from its directory; '' for source text
 	script_path string
+	// the channel after the one run() served last, so a flooding channel cannot starve the others
+	rr int
 pub mut:
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
@@ -361,6 +363,9 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_ext_size', l_uds_ext_size)
 	env.st.register('__flash_open', l_flash_open)
 	env.st.register('__flash_program', l_flash_program)
+	env.st.register('__wait_frame', l_wait_frame)
+	env.st.register('__listen', l_listen)
+	env.st.register('__bus_health', l_bus_health)
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
