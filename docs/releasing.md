@@ -49,17 +49,19 @@ have to rediscover it:
    statements across 19 files, including a hardware guide that still said the Vector backend
    was not implemented. Fix, do not annotate; a design document that shipped differently gets
    one note at its top saying so.
-3. **One PR**: the audit, then `v.mod` bumped **in its own commit** so `git log v.mod` explains
+3. **Write the highlights** in `packaging/RELEASE_HIGHLIGHTS.md`: a first line naming the tag
+   (`<!-- vX.Y.Z -->`, which `release.yml` refuses to publish without), one sentence, then a
+   handful of one-line items — what is NEW first, in words a user would look for, not PR titles.
+   It opens the release page, above the changelog.
+4. **One PR**: the audit, the highlights, then `v.mod` bumped **in its own commit** so `git log v.mod` explains
    itself. Build the GUI and check `./build/blobly_net --version` prints the new number —
    `release.yml` refuses a tag that disagrees with it. The usual gate: `/code-review high`, then
    `@codex review` until clean, CI green.
-4. **Merge everything meant for the release first**, then that PR last (a PR merged after the
+5. **Merge everything meant for the release first**, then that PR last (a PR merged after the
    bump but before the tag is still in the release; one merged after the tag is not).
-5. **Tag** from `origin/main`, never from a local branch, and push it (the short version above).
+6. **Tag** from `origin/main`, never from a local branch, and push it (the short version above).
    Watch the `release` workflow: the Windows bundle takes the better part of an hour.
-6. **After it publishes**, edit the release description on GitHub if one change deserves a
-   headline above the generated list — the header is a standing statement, not a summary of
-   the version.
+7. **After it publishes**, read the release page; edit it on GitHub if anything needs adding.
 
 ## The number — CalVer, `YYYY.MM.PATCH`
 
@@ -102,10 +104,11 @@ the previous tag by version sort). It does care about direction: a date sorts ab
 
 ## Release notes — automatic
 
-The published notes are `packaging/RELEASE_NOTES_HEADER.md` — the standing statement of what
+The published notes open with `packaging/RELEASE_HIGHLIGHTS.md` (step 3), then the changelog,
+then `packaging/RELEASE_NOTES_HEADER.md` — the standing statement of what
 the version's claims rest on (CI-verified virtual paths, bench-exercised SocketCAN,
 hand-verified Windows vendor backends, the no-vendor-DLL rule, the Linux runtime packages),
-with its evidence link pinned to the released tag — followed by **GitHub's generated
+with its evidence link pinned to the released tag. The changelog is **GitHub's generated
 changelog of every PR merged since the previous product release** (baselined on the highest
 `v[0-9]*` tag that is an ancestor; the first release says "First release" instead). When no
 earlier tag is an ancestor because the history was rewritten after it (as it was after

@@ -127,7 +127,8 @@ with `publish_bundle=true` from behind that guard). Bundle payload list:
 GLFW before a downloaded release will start. Its Linux job is pinned to **ubuntu-22.04**, not
 `ubuntu-latest`: an AppImage does not bundle glibc, so the build host sets the oldest system it
 runs on, and a floating label raises that floor silently. Notes =
-`packaging/RELEASE_NOTES_HEADER.md` + generated changelog. Never bundle a vendor CAN DLL
+`packaging/RELEASE_HIGHLIGHTS.md` (written per release, its first line naming the tag) +
+generated changelog + `packaging/RELEASE_NOTES_HEADER.md`. Never bundle a vendor CAN DLL
 (ROADMAP has the list and the reason). The maintainer walkthrough is
 [docs/releasing.md](docs/releasing.md).
 
