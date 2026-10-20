@@ -932,7 +932,7 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 		return error('${e.key}: generation failed while joining')
 	}
 	if parked && !e.tx_acks {
-		_ := e.drain_boundary(0, true, others) or {
+		_ := e.drain_boundary(0, true, others, false) or {
 			// The failure is taken under the lock (a queued joiner must find it), the reader is
 			// retired with the lock RELEASED: it may be blocked on drain_mu for its next batch,
 			// and only it sends done (codex round 10 on #224).
@@ -972,13 +972,17 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 // own stops when that budget is spent, and accepts an approximate boundary rather than blocking
 // past what it asked for (codex round 3 on #224).
 // Returns whether the boundary was ESTABLISHED — the queue empty, or the count reached — as
-// opposed to the caller's deadline stopping it first. A deadline is checked BEFORE every batch,
-// so a receive with no budget left runs one batch at most and never waits (codex round 4 on #224).
-fn (mut e SharedEntry) drain_boundary(until i64, join bool, publish bool) !bool {
+// opposed to the caller's deadline stopping it first. A deadline is checked BEFORE every batch:
+// a positive receive whose budget is spent reads nothing more (codex round 4 on #224), and a
+// zero-timeout LOOK (`look`) runs exactly one batch — the recv(0) contract, transport.v.
+fn (mut e SharedEntry) drain_boundary(until i64, join bool, publish bool, look bool) !bool {
 	mut read := u64(0)
 	for read < shared_boundary_drain_frames {
 		if until > 0 && time.ticks() >= until {
-			// NO BUDGET LEFT: one batch — non-blocking reads of what is queued now, never a wait —
+			if !look {
+				return false
+			}
+			// A LOOK: one batch — non-blocking reads of what is queued now, never a wait —
 			// established if it empties the queue. One frame per call never caught a busy wire
 			// polled with recv(0): each look discarded one frame and none subscribed.
 			return !e.drain_parked(join, publish)!
@@ -1063,14 +1067,25 @@ fn (mut e SharedEntry) drain_parked(join bool, publish bool) !bool {
 	mut n := u64(0)
 	mut more := true
 	mut fatal := ''
+	// EMPTY IS TWO QUIET LOOKS IN A ROW: a look may stop at its bound with filtered records still
+	// queued (look_again, zero_poll.v), and a drain that took that for an empty queue let the frame
+	// behind them through as if it came after the boundary
+	mut quiet := 0
 	for n < u64(shared_ring_capacity) {
 		ingress := e.driver.recv_shared(0) or {
 			if err.msg() != 'timeout' {
 				fatal = err.msg()
+				more = false
+				break
+			}
+			quiet++
+			if quiet < 2 {
+				continue
 			}
 			more = false
 			break
 		}
+		quiet = 0
 		if publish {
 			e.commit_external(ingress.frame)
 		}
@@ -1359,7 +1374,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				e.mu.unlock()
 				{
 					established := e.drain_boundary(if timeout_ms < 0 { i64(0) } else { deadline },
-						true, pending_join) or {
+						true, pending_join, timeout_ms == 0) or {
 						e.fail_and_close(err.msg())
 						e.drain_mu.unlock()
 						select {

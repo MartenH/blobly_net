@@ -31,3 +31,21 @@ fn look_again(timeout_ms int, skipped int, elapsed_ns i64) bool {
 fn since_ns(started u64) i64 {
 	return i64(time.sys_mono_now() - started)
 }
+
+// read_wait_ms is how long a receive's next driver read may wait, for a backend that re-reads
+// after a skip: the whole timeout on its first read, what is LEFT of it on a retry, and none — the
+// receive is over — once a positive wait is spent, since a zero-wait read past expiry could accept
+// a frame that arrived after it. A negative timeout reads in `slice_ms` slices; zero is a look.
+fn read_wait_ms(timeout_ms int, skipped int, elapsed_ns i64, slice_ms u32) ?u32 {
+	if timeout_ms < 0 {
+		return slice_ms
+	}
+	if timeout_ms == 0 || skipped == 0 {
+		return u32(timeout_ms)
+	}
+	left := i64(timeout_ms) - elapsed_ns / 1_000_000
+	if left <= 0 {
+		return none
+	}
+	return u32(left)
+}

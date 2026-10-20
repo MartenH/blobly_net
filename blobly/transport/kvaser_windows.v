@@ -406,11 +406,10 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 			b.reconcile_silence(is_listen_only(b.iface)) or {}
 			// a finite timeout is what is LEFT of it: an error frame skipped below is not the end
 			// of the caller's wait
-			to := if timeout_ms < 0 {
-				u32(200)
-			} else {
-				left := i64(timeout_ms) - since_ns(started) / 1_000_000
-				if left > 0 { u32(left) } else { u32(0) }
+			// a retry after a skip waits what is LEFT, and a wait already spent (the reconcile
+			// above can take time) is a timeout, never a zero-wait look past expiry (zero_poll.v)
+			to := read_wait_ms(timeout_ms, skipped, since_ns(started), 200) or {
+				return error('timeout')
 			}
 			r = C.ct_kvaser_read(b.handle, &id, &ln, &data[0], &flags, to)
 			// 1 is "no message" from this shim; 0 is a frame and negative is an error. Only "no

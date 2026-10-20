@@ -35,3 +35,14 @@ fn test_inproc_zero_receive_is_a_look() {
 	tx.send(CanFrame{ id: 0x42 })!
 	assert rx.recv(0)!.id == 0x42
 }
+
+// What a re-reading backend (Kvaser) waits on its next read.
+fn test_read_wait_is_what_is_left_and_nothing_once_spent() {
+	assert read_wait_ms(-1, 3, 999_000_000, 200)? == 200 // forever, in slices
+	assert read_wait_ms(0, 7, 999_000_000, 200)? == 0 // a look stays a look
+	assert read_wait_ms(50, 0, 999_000_000, 200)? == 50 // the first read gets the whole wait
+	assert read_wait_ms(50, 1, 20_000_000, 200)? == 30 // a retry gets what is left
+	if w := read_wait_ms(50, 1, 50_000_000, 200) {
+		assert false, 'a spent wait read again for ${w} ms'
+	}
+}
