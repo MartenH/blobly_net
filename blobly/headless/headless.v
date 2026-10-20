@@ -27,9 +27,13 @@ import sync.stdatomic
 // the injected faults and the live-value table are process-wide, as the GUI's one run owns them:
 // a second start would replace the first run's marks under its handles, and a listen-only wire
 // with simulated nodes would begin transmitting. Refused instead, until the first is stopped.
+// The slot is held by a GENERATION, released only by the run that took it and only once every
+// loop of that run is out — a second stop of an older run cannot free a newer run's slot, and a
+// loop past stop's bound (an open stalled in a driver) keeps the slot until it returns.
 __global (
-	headless_mu     sync.Mutex
-	headless_active bool
+	headless_mu    sync.Mutex
+	headless_owner u64 // the generation holding the process; 0 is free
+	headless_next  u64
 )
 
 // Options is what a caller decides about a run.
@@ -69,6 +73,13 @@ mut:
 pub struct Run {
 mut:
 	ctl &Ctl
+	gen u64
+	// stop ran: a second stop does nothing (the entities are closed once, the slot released once)
+	stopped bool
+	// the sink is not called once stop has returned (Options). Set under `mu`, which `say` holds
+	// THROUGH the sink call, so a report in flight finishes before stop returns and none starts
+	// after — the sink itself is never replaced
+	silenced bool
 	// the loops spawned and the loops that have exited — every one counted on its way out, so
 	// stop's bounded wait knows whether every wire has said its piece (#213); the serve loop
 	// spawns the UDP loop from its own thread, so both counts are atomic
@@ -104,11 +115,13 @@ pub fn load(proj_path string, o Options) !project.Project {
 // on a refusal.
 pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 	headless_mu.lock()
-	if headless_active {
+	if headless_owner != 0 {
 		headless_mu.unlock()
 		return error('a run is already active in this process; stop it before starting another')
 	}
-	headless_active = true
+	headless_next++
+	gen := headless_next
+	headless_owner = gen
 	headless_mu.unlock()
 	mut proj := loaded
 	// What the previous run published and what a script armed against it: a fault keyed by
@@ -131,7 +144,7 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 			project.reserved_ports(proj.channels), band.candidates(), mut probes) or {
 			// the candidates an earlier entity of this project already took, held until bind
 			probes.release_all()
-			release_process()
+			release_process(gen)
 			return error("cannot host the DoIP entities: ${err} in ${band.base}..${band.last()}; Options.project_ports keeps the project's")
 		}
 		chs, notes := project.with_doip_ports(proj.channels, moves, hosts)
@@ -143,6 +156,7 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 
 	mut r := &Run{
 		ctl:  &Ctl{}
+		gen:  gen
 		err:  o.err
 		path: proj_path
 		proj: proj
@@ -158,10 +172,12 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 	return r
 }
 
-// release_process lets the next start in: the run that held the process is over.
-fn release_process() {
+// release_process lets the next start in, if `gen` is the run holding the process.
+fn release_process(gen u64) {
 	headless_mu.lock()
-	headless_active = false
+	if headless_owner == gen {
+		headless_owner = 0
+	}
 	headless_mu.unlock()
 }
 
@@ -442,10 +458,18 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 // would have booked is not reported. Returns once the wires have said their piece, so what a
 // responder counted is booked before the caller asks its own handles (#213).
 pub fn (mut r Run) stop() {
-	r.ctl.running = false
 	r.mu.lock()
+	if r.stopped {
+		r.mu.unlock()
+		return
+	}
+	r.stopped = true
+	r.ctl.running = false
+	// THE ONE CLOSER of the entities: a close sets `stopping`, which ends the serve loop's
+	// connection and the announce; the serve loop closes nothing itself, so two threads never
+	// close one socket
 	for mut e in r.entities {
-		e.close() // sets its `stopping`: the serve loop's connection and the announce end
+		e.close()
 	}
 	r.mu.unlock()
 	wait_until := time.ticks() + 2000
@@ -455,13 +479,25 @@ pub fn (mut r Run) stop() {
 	}
 	left := stdatomic.load_i64(&r.spawned) - stdatomic.load_i64(&r.loops_done)
 	if left > 0 {
-		r.err('${left} bus loop(s) still busy at exit; their wires are not reported')
-		// A loop past the bound (an open stalled in a driver) will still say its piece when it
-		// returns, to a sink the host may have torn down by then: it says it to nobody. A
-		// pointer-sized swap the loop reads unlocked, which is the extent of the race.
-		r.err = fn (_ string) {}
+		r.say('${left} bus loop(s) still busy at exit; their wires are not reported')
 	}
-	release_process()
+	r.mu.lock()
+	r.silenced = true
+	r.mu.unlock()
+	if left > 0 {
+		// still holding wires and the process: the next start is refused until they return
+		return
+	}
+	release_process(r.gen)
+}
+
+// say reports from a worker, unless stop has returned.
+fn (mut r Run) say(s string) {
+	r.mu.lock()
+	if !r.silenced {
+		r.err(s)
+	}
+	r.mu.unlock()
 }
 
 // counted is one more loop spawned; done counts it out.
@@ -484,7 +520,7 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string,
 	mut bus := transport.open(open_iface) or { return }
 	mut engine := sim.Engine{}
 	for n in nodes {
-		engine.ecus << build_node(db, n, r.err)
+		engine.ecus << r.build_node(db, n)
 	}
 	t0 := time.ticks()
 	for r.ctl.running {
@@ -516,7 +552,7 @@ fn (mut r Run) sender_loop(iface string, s project.Sender, dbs []candb.Database,
 		r.done()
 	}
 	mut bus := transport.open(iface) or {
-		r.err('generator "${s.name}": cannot open ${iface}: ${err}')
+		r.say('generator "${s.name}": cannot open ${iface}: ${err}')
 		return
 	}
 	mut n := 0
@@ -534,7 +570,7 @@ fn (mut r Run) sender_loop(iface string, s project.Sender, dbs []candb.Database,
 		el := f64(time.sys_mono_now() - run_t0) / 1_000_000_000.0
 		frame := if s.message != '' {
 			sim.sender_message_frame(s, dbs, n, el) or {
-				r.err('generator "${s.name}": message "${s.message}" not in the channel databases — not sent')
+				r.say('generator "${s.name}": message "${s.message}" not in the channel databases — not sent')
 				break
 			}
 		} else {
@@ -574,7 +610,7 @@ fn (mut r Run) uds_node_loop(iface string, rx u32, tx u32, ext bool, fid u32, fe
 		{
 			link.func << f
 		} else {
-			r.err('${iface}: uds node 0x${rx:X} cannot listen on functional id 0x${fid:X}: ${err} — physical requests only')
+			r.say('${iface}: uds node 0x${rx:X} cannot listen on functional id 0x${fid:X}: ${err} — physical requests only')
 		}
 	}
 	mut s := srv
@@ -650,11 +686,11 @@ fn (mut r Run) doip_announce(mut s doip.DoipServer, name string) {
 	defer {
 		r.done()
 	}
-	s.announce() or { r.err('${name}: announce failed: ${err}') }
+	s.announce() or { r.say('${name}: announce failed: ${err}') }
 }
 
-// doip_serve_loop runs an already-bound entity until stop, then closes it — counted, so a stop
-// has the port free when it returns and the next start on the same endpoint can bind it.
+// doip_serve_loop runs an already-bound entity until stop closes it — counted, so a stop has
+// the port free when it returns and the next start on the same endpoint can bind it.
 fn (mut r Run) doip_serve_loop(mut s doip.DoipServer) {
 	defer {
 		r.done()
@@ -665,7 +701,6 @@ fn (mut r Run) doip_serve_loop(mut s doip.DoipServer) {
 		// A timeout is the normal case (no tester connected), not a failure.
 		s.accept_and_serve(200) or { continue }
 	}
-	s.close() // after stop's own close: every socket is closed under `or {}`, the claim once
 }
 
 // doip_udp_loop answers vehicle-identification requests, so Discover finds the entity.
@@ -682,11 +717,11 @@ fn (mut r Run) doip_udp_loop(mut s doip.DoipServer) {
 // ("mirror src/main.v"), which is how end-to-end protection reached the GUI and not this
 // runner — the one CI and runtests.sh use, so a protected project would have been scored
 // against unprotected traffic.
-fn build_node(db candb.Database, cfg project.NodeCfg, err_out fn (string)) sim.SimEcu {
+fn (mut r Run) build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 	// A protect: entry naming a message or signal that is not there applies nothing, and the
 	// run would otherwise score a protected project against unprotected traffic without a word.
 	for w in sim.validate_cfg(db, cfg) {
-		err_out('${cfg.name}: ${w}')
+		r.say('${cfg.name}: ${w}')
 	}
 	return sim.from_project(db, cfg)
 }
@@ -720,9 +755,9 @@ fn described_system(proj_path string, proj project.Project, o Options) sysview.S
 }
 
 // report_diag prints what one handle counted that no frame carried, if anything (#213).
-fn (r &Run) report_diag(what string, d transport.BusDiagnostics) {
+fn (mut r Run) report_diag(what string, d transport.BusDiagnostics) {
 	if !d.is_empty() {
-		r.err('${what}: ${d.str()}')
+		r.say('${what}: ${d.str()}')
 	}
 }
 

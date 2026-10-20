@@ -166,19 +166,25 @@ fn test_load_names_an_unreadable_project() {
 	}
 }
 
+// A second stop of an older run does nothing: it cannot free the slot a newer run holds.
 fn test_stop_twice_is_harmless() {
-	path := os.join_path(@VMODROOT, 'projects', 'demo.blobnet')
+	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
 	mut lines := &Lines{}
 	o := lines.options()
 	proj := load(path, o)!
-	// demo.blobnet's one enabled row is vcan0: absent on CI, the loop counts itself out on the
-	// failed open and the run is still a run
-	mut r := start(proj, path, o) or {
-		eprintln('demo.blobnet refused here (${err}); skipping')
-		return
-	}
-	r.stop()
+	mut first := start(proj, path, o)!
+	first.stop()
+	mut second := start(first.proj, path, Options{
+		...o
+		project_ports: true
+	})!
 	t := time.ticks()
-	r.stop()
+	first.stop()
 	assert time.ticks() - t < 500
+	if _ := start(proj, path, o) {
+		assert false, "the older run's second stop freed the slot the newer one holds"
+	} else {
+		assert err.msg().contains('already active'), err.msg()
+	}
+	second.stop()
 }
