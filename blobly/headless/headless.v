@@ -28,7 +28,9 @@ pub:
 	// host the DoIP entities on the ports the project states, rather than moving them onto ports
 	// this process can bind (#411) — the headless runner's --project-ports
 	project_ports bool
-	// progress and warnings: what the runner printed on stdout and stderr
+	// progress and warnings: what the runner printed on stdout and stderr. Called from the run's
+	// worker threads as well as from `start` — a sink must take that — and never after `stop`
+	// has returned, which waits for every loop that could call them.
 	out fn (string) = fn (s string) {
 		println(s)
 	}
@@ -37,17 +39,13 @@ pub:
 	}
 }
 
-// Channel is one enabled row of the project as a script reaches it.
+// Channel is one enabled row of the project with its databases loaded — what a script OPENS with
+// is `cfg.iface_with_bitrate()`, what faults are KEYED on `cfg.iface`, the nodes a fault may
+// name `cfg.all_nodes()`: answered by the row, not copied beside it.
 pub struct Channel {
 pub:
-	name string
-	// what a script OPENS with — carries the vendor bitrate
-	iface string
-	// what faults are KEYED on — the logical interface, no suffix
-	key_iface string
-	db        candb.Database
-	nodes     []project.NodeCfg // so a fault that cannot take effect can be refused
-	cfg       project.Channel
+	cfg project.Channel
+	db  candb.Database
 }
 
 // Ctl is the shared run flag the simulation threads poll; set false to stop them.
@@ -60,10 +58,11 @@ mut:
 @[heap]
 pub struct Run {
 mut:
-	ctl  &Ctl
-	sims []thread
-	// the bus-holding loops that have exited, so stop's bounded wait knows whether every wire
-	// has said its piece (#213)
+	ctl &Ctl
+	// the loops spawned and the loops that have exited — every one counted on its way out, so
+	// stop's bounded wait knows whether every wire has said its piece (#213); the serve loop
+	// spawns the UDP loop from its own thread, so both counts are atomic
+	spawned    i64
 	loops_done i64
 	err        fn (string) @[required]
 pub:
@@ -103,7 +102,7 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 		band := testports.doip_entities
 		moves := project.choose_doip_ports(project.doip_hosting(proj.channels, hosts),
 			project.reserved_ports(proj.channels), band.candidates(), mut probes) or {
-			return error("cannot host the DoIP entities: ${err} in ${band.base}..${band.last()}; --project-ports keeps the project's")
+			return error("cannot host the DoIP entities: ${err} in ${band.base}..${band.last()}; Options.project_ports keeps the project's")
 		}
 		chs, notes := project.with_doip_ports(proj.channels, moves, hosts)
 		proj.channels = chs
@@ -119,6 +118,10 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 		proj: proj
 	}
 	r.bring_up(o, mut probes) or {
+		// what was spawned before the refusal, and the candidate ports still held for entities
+		// that never bound — the runner's exit closed those; a library caller's next start
+		// would find them taken
+		probes.release_all()
 		r.stop()
 		return err
 	}
@@ -129,7 +132,6 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	proj := r.proj
 	proj_path := r.path
-	ctl := r.ctl
 	mut seeded_ifaces := []string{} // one set of diagnostic servers per physical bus
 	// Entities to announce once the environment is ready — see below.
 	mut announcers := []Announcer{}
@@ -192,12 +194,8 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		db := row_db(mut row_dbs, proj.channels, ci, os.dir(proj_path), db_files)
 		nodes := ch.all_nodes()
 		r.chans << Channel{
-			name:      ch.name
-			iface:     ch.iface_with_bitrate()
-			key_iface: ch.iface
-			db:        db
-			nodes:     nodes
-			cfg:       ch
+			cfg: ch
+			db:  db
 		}
 		// DoIP is a different carrier, not a CAN bus: no frames, no ISO-TP, and the entity is
 		// reached by logical address over TCP. Nothing outside blobly/doip ever started one,
@@ -253,7 +251,8 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			mut entity := doip_listen(host, port, ent.cfg, srv) or {
 				return error('${ch.name}: ${err}\nrefusing to run: a suite would connect to whatever else is on ${host}:${port}')
 			}
-			spawn doip_serve_loop(mut entity, ctl)
+			r.counted()
+			spawn r.doip_serve_loop(mut entity)
 			// NOT announced here. The default sequence is 3 × 500ms and would be finished
 			// before the script environment exists, so a suite could never observe it — the
 			// documented "listen before they announce" was unachievable with the defaults, and
@@ -271,7 +270,8 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			// Passing only the suffixed form meant sim.apply_injected looked up
 			// `pcan:…@250000` while sim.fault() had stored under `pcan:…`, so a scripted
 			// fault on vendor hardware reported success and never reached the wire.
-			r.sims << spawn r.sim_loop(ch.iface_with_bitrate(), ch.iface, ch.name, db, nodes)
+			r.counted()
+			spawn r.sim_loop(ch.iface_with_bitrate(), ch.iface, ch.name, db, nodes)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -324,11 +324,13 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 					for n in dflt.notes {
 						o.err(n)
 					}
-					r.sims << spawn r.diag_server_loop(ch.iface_with_bitrate(), dflt.server)
+					r.counted()
+					spawn r.diag_server_loop(ch.iface_with_bitrate(), dflt.server)
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
-						r.sims << spawn r.uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext,
+						r.counted()
+						spawn r.uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext,
 							u.functional, u.fext, u.server)
 					}
 					o.out('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
@@ -377,7 +379,8 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			for row in rows {
 				sdb << row_db(mut row_dbs, proj.channels, row, os.dir(proj_path), db_files)
 			}
-			r.sims << spawn r.sender_loop(open_iface, s, sdb, run_t0)
+			r.counted()
+			spawn r.sender_loop(open_iface, s, sdb, run_t0)
 			o.out('channel ${ch.name}: cyclic generator "${s.name}" every ${s.cycle_ms} ms on ${sb.iface}')
 		}
 	}
@@ -387,7 +390,8 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	// doip.listen() in its first lines can actually catch the sequence. A real ECU announces
 	// when it comes up; from outside this process that is still what this looks like.
 	for mut a in announcers {
-		spawn doip_announce(mut a.srv, a.name, o.err)
+		r.counted()
+		spawn r.doip_announce(mut a.srv, a.name)
 	}
 }
 
@@ -400,12 +404,19 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 pub fn (mut r Run) stop() {
 	r.ctl.running = false
 	wait_until := time.ticks() + 2000
-	for stdatomic.load_i64(&r.loops_done) < i64(r.sims.len) && time.ticks() < wait_until {
+	for stdatomic.load_i64(&r.loops_done) < stdatomic.load_i64(&r.spawned)
+		&& time.ticks() < wait_until {
 		time.sleep(10 * time.millisecond)
 	}
-	if stdatomic.load_i64(&r.loops_done) < i64(r.sims.len) {
-		r.err('${r.sims.len - int(stdatomic.load_i64(&r.loops_done))} bus loop(s) still busy at exit; their wires are not reported')
+	left := stdatomic.load_i64(&r.spawned) - stdatomic.load_i64(&r.loops_done)
+	if left > 0 {
+		r.err('${left} bus loop(s) still busy at exit; their wires are not reported')
 	}
+}
+
+// counted is one more loop spawned; done counts it out.
+fn (mut r Run) counted() {
+	stdatomic.add_i64(&r.spawned, 1)
 }
 
 // done counts one bus-holding loop out, on EVERY way out, an open that fails included -- a loop
@@ -583,14 +594,24 @@ mut:
 }
 
 // doip_announce sends the power-on announcements, reporting a failure rather than dropping it.
-fn doip_announce(mut s doip.DoipServer, name string, err_out fn (string)) {
-	s.announce() or { err_out('${name}: announce failed: ${err}') }
+// Counted like a bus loop: the sequence is sliced on the entity's `stopping`, which its close
+// sets, so a stop ends it within ~50 ms and no sink is called after stop has returned.
+fn (mut r Run) doip_announce(mut s doip.DoipServer, name string) {
+	defer {
+		r.done()
+	}
+	s.announce() or { r.err('${name}: announce failed: ${err}') }
 }
 
-// doip_serve_loop runs an already-bound entity until Stop.
-fn doip_serve_loop(mut s doip.DoipServer, ctl &Ctl) {
-	spawn doip_udp_loop(mut s, ctl)
-	for ctl.running {
+// doip_serve_loop runs an already-bound entity until stop, then closes it — counted, so a stop
+// has the port free when it returns and the next start on the same endpoint can bind it.
+fn (mut r Run) doip_serve_loop(mut s doip.DoipServer) {
+	defer {
+		r.done()
+	}
+	r.counted()
+	spawn r.doip_udp_loop(mut s)
+	for r.ctl.running {
 		// A timeout is the normal case (no tester connected), not a failure.
 		s.accept_and_serve(200) or { continue }
 	}
@@ -598,8 +619,11 @@ fn doip_serve_loop(mut s doip.DoipServer, ctl &Ctl) {
 }
 
 // doip_udp_loop answers vehicle-identification requests, so Discover finds the entity.
-fn doip_udp_loop(mut s doip.DoipServer, ctl &Ctl) {
-	for ctl.running {
+fn (mut r Run) doip_udp_loop(mut s doip.DoipServer) {
+	defer {
+		r.done()
+	}
+	for r.ctl.running {
 		s.serve_udp_once(200) or { continue }
 	}
 }

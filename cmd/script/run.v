@@ -75,11 +75,13 @@ fn main() {
 	mut chans := []script.ChanInfo{}
 	for c in run.chans {
 		chans << script.ChanInfo{
-			name:      c.name
-			iface:     c.iface
-			key_iface: c.key_iface
+			name:      c.cfg.name
+			// what a script OPENS with — carries the vendor bitrate
+			iface:     c.cfg.iface_with_bitrate()
+			// what faults are KEYED on — the logical interface, no suffix
+			key_iface: c.cfg.iface
 			db:        c.db
-			nodes:     c.nodes
+			nodes:     c.cfg.all_nodes() // so a fault that cannot take effect can be refused
 			carrier:   script.carrier_of(c.cfg)
 		}
 	}

@@ -2,31 +2,40 @@ module headless
 
 import os
 import net
+import sync
 import time
 import blobly.transport
 
-// Lines is what a run said, kept for the assertions.
+// Lines is what a run said, kept for the assertions. HEAP, and locked: the sinks are called from
+// the run's worker threads (Options says so), and the test reads while they are still starting.
+@[heap]
 struct Lines {
 mut:
+	mu  sync.Mutex
 	out []string
 	err []string
 }
 
 fn (mut l Lines) options() Options {
-	lp := &l
 	return Options{
-		out: fn [lp] (s string) {
-			mut m := unsafe { lp }
-			m.out << s
+		out: fn [mut l] (s string) {
+			l.mu.lock()
+			l.out << s
+			l.mu.unlock()
 		}
-		err: fn [lp] (s string) {
-			mut m := unsafe { lp }
-			m.err << s
+		err: fn [mut l] (s string) {
+			l.mu.lock()
+			l.err << s
+			l.mu.unlock()
 		}
 	}
 }
 
-fn (l Lines) said(what string) bool {
+fn (mut l Lines) said(what string) bool {
+	l.mu.lock()
+	defer {
+		l.mu.unlock()
+	}
 	return l.out.any(it.contains(what)) || l.err.any(it.contains(what))
 }
 
@@ -34,20 +43,28 @@ fn (l Lines) said(what string) bool {
 // transmit on inproc:CAN1, and a stop ends every loop it spawned.
 fn test_start_runs_the_simulation_and_stop_ends_it() {
 	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')
-	mut lines := Lines{}
+	mut lines := &Lines{}
 	o := lines.options()
 	proj := load(path, o)!
 	mut r := start(proj, path, o)!
-	assert r.chans.map(it.name).contains('CAN1')
+	assert r.chans.map(it.cfg.name).contains('CAN1')
 	assert lines.said('simulating')
 	mut bus := transport.open('inproc:CAN1')!
 	frame := bus.recv(1000)!
 	assert frame.data.len > 0
 	bus.close()
-	assert r.sims.len > 0
+	assert r.spawned > 0
 	r.stop()
-	assert r.loops_done == i64(r.sims.len), 'every loop counted out: ${r.loops_done} of ${r.sims.len}'
+	assert r.loops_done == r.spawned, 'every loop counted out: ${r.loops_done} of ${r.spawned}'
 	assert !lines.said('still busy')
+	// and the DoIP entity's port is free when stop returns: the same project starts again on
+	// the ports the first run bound (its entity was moved onto one this process could bind)
+	mut again := start(r.proj, path, Options{
+		...o
+		project_ports: true
+	})!
+	again.stop()
+	assert !lines.said('refusing')
 }
 
 // A refusal reached AFTER loops were spawned stops them: the CAN row's simulation is running
@@ -88,7 +105,7 @@ channels:
           dids:
             - { id: "0xF190", text: "VIN" }
 ')!
-	mut lines := Lines{}
+	mut lines := &Lines{}
 	o := Options{
 		...lines.options()
 		project_ports: true
@@ -111,7 +128,7 @@ channels:
 // A project that cannot be read is load's error, not start's, so a caller can tell the two
 // apart.
 fn test_load_names_an_unreadable_project() {
-	mut lines := Lines{}
+	mut lines := &Lines{}
 	if _ := load('/nonexistent/x.blobnet', lines.options()) {
 		assert false
 	} else {
@@ -121,7 +138,7 @@ fn test_load_names_an_unreadable_project() {
 
 fn test_stop_twice_is_harmless() {
 	path := os.join_path(@VMODROOT, 'projects', 'demo.blobnet')
-	mut lines := Lines{}
+	mut lines := &Lines{}
 	o := lines.options()
 	proj := load(path, o)!
 	// demo.blobnet's one enabled row is vcan0: absent on CI, the loop counts itself out on the
