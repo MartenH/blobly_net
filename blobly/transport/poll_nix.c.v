@@ -1,4 +1,4 @@
-module doip
+module transport
 
 #include <poll.h>
 
@@ -12,8 +12,9 @@ mut:
 fn C.poll(fds &C.pollfd, nfds u64, timeout int) int
 
 // readable_now: the socket has something to read (or has closed, which a read then reports)
-// without waiting at all — what a zero-timeout recv asks before it reads a framed message.
-fn readable_now(fd int) bool {
+// without waiting at all — what a zero-timeout recv asks before it reads (the recv(0) contract,
+// transport.v). One home for the socket backends here and for doip's framed reads.
+pub fn readable_now(fd int) bool {
 	mut p := C.pollfd{
 		fd:     fd
 		events: i16(C.POLLIN)
@@ -25,7 +26,7 @@ fn readable_now(fd int) bool {
 }
 
 // readable_within: as readable_now, waiting up to `ms` for it.
-fn readable_within(fd int, ms int) bool {
+pub fn readable_within(fd int, ms int) bool {
 	mut p := C.pollfd{
 		fd:     fd
 		events: i16(C.POLLIN)

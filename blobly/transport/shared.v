@@ -973,25 +973,15 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 // past what it asked for (codex round 3 on #224).
 // Returns whether the boundary was ESTABLISHED — the queue empty, or the count reached — as
 // opposed to the caller's deadline stopping it first. A deadline is checked BEFORE every batch,
-// so a receive with no budget left reads nothing at all (codex round 4 on #224).
+// so a receive with no budget left runs one batch at most and never waits (codex round 4 on #224).
 fn (mut e SharedEntry) drain_boundary(until i64, join bool, publish bool) !bool {
 	mut read := u64(0)
 	for read < shared_boundary_drain_frames {
 		if until > 0 && time.ticks() >= until {
-			ingress := e.driver.recv_shared(0) or {
-				if err.msg() == 'timeout' {
-					return true
-				}
-				return err
-			}
-			if publish {
-				e.commit_external(ingress.frame)
-			} else {
-				e.mu.lock()
-				e.parked_discards++
-				e.mu.unlock()
-			}
-			return false
+			// NO BUDGET LEFT: one batch — non-blocking reads of what is queued now, never a wait —
+			// established if it empties the queue. One frame per call never caught a busy wire
+			// polled with recv(0): each look discarded one frame and none subscribed.
+			return !e.drain_parked(join, publish)!
 		}
 		before := e.discards()
 		more := e.drain_parked(join, publish)!

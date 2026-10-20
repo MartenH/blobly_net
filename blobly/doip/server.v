@@ -541,7 +541,7 @@ fn read_exact(mut conn net.TcpConn, n int, began bool, stop fn () bool, deadline
 				}
 				return error_with_code('DoIP: read timed out', net.err_timed_out_code)
 			}
-			if !readable_within(conn.sock.handle, if left < stop_poll_ms {
+			if !transport.readable_within(conn.sock.handle, if left < stop_poll_ms {
 				int(left)
 			} else {
 				stop_poll_ms

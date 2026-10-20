@@ -48,9 +48,6 @@ fn parse_udp_iface(iface string) ?UdpTarget {
 	return UdpTarget{group, port}
 }
 
-// zero_poll_filtered_datagrams bounds how many filtered datagrams one zero-timeout poll crosses.
-const zero_poll_filtered_datagrams = 4096
-
 pub struct UdpBus {
 mut:
 	tx  &net.UdpConn = unsafe { nil } // dialed to group:port — sends
@@ -161,12 +158,16 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 	// 10-byte header + up to 64 payload bytes. The old 64-byte buffer silently truncated a
 	// CAN-FD frame at read(), losing bytes before any of the decoding below could see them.
 	mut buf := []u8{len: 10 + 64}
-	// A zero-timeout poll looks past filtered datagrams (our own echo, malformed) but not
-	// forever: a socket fed a continuous stream of them would never let it return (codex round
-	// 17 on #225).
+	// Filtered datagrams (our own echo, malformed) are looked past by the one rule every backend
+	// shares, `look_again`: a zero-timeout look within its count and time bound, a positive
+	// timeout while it lasts.
+	started := time.sys_mono_now()
 	mut filtered := 0
 	for {
-		if timeout_ms == 0 && filtered >= zero_poll_filtered_datagrams {
+		// ZERO IS A LOOK: only a datagram already queued is read. The socket read below has no
+		// zero timeout — the shortest it takes is a millisecond, which an idle look used to wait
+		// out every time.
+		if timeout_ms == 0 && !readable_now(b.rx.sock.handle) {
 			return error('timeout')
 		}
 		// NEGATIVE IS FOREVER, as every other bus has it: computed as a deadline it was a deadline
@@ -204,16 +205,25 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		if n < 10 {
 			filtered++
 			b.decode_errors++
+			if !look_again(timeout_ms, filtered, i64(time.sys_mono_now() - started)) {
+				return error('timeout')
+			}
 			continue
 		}
 		if get_u32_le(buf, 0) == b.src {
-			filtered++
-			continue // our own frame echoed back — ignore
+			filtered++ // our own frame echoed back — ignore
+			if !look_again(timeout_ms, filtered, i64(time.sys_mono_now() - started)) {
+				return error('timeout')
+			}
+			continue
 		}
 		dlc := int(buf[9])
 		if 10 + dlc > n {
 			filtered++ // truncated: counted against the poll budget like the others (codex round 18)
 			b.decode_errors++
+			if !look_again(timeout_ms, filtered, i64(time.sys_mono_now() - started)) {
+				return error('timeout')
+			}
 			continue
 		}
 		flags := buf[8]

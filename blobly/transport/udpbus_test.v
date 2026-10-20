@@ -156,3 +156,21 @@ fn test_udp_bus_zero_timeout_returns_a_queued_frame() {
 	got2 := a.recv(0) or { panic('recv(0) stopped at a filtered datagram: ${err}') }
 	assert got2.id == 0x323
 }
+
+// recv(0) on an idle UDP bus answers at once: the socket read has no zero timeout, and the
+// shortest it takes — a millisecond — used to be waited out by every look.
+fn test_udp_zero_receive_on_an_idle_socket_waits_for_nothing() {
+	group, port := uniq_group(6)
+	mut a := open_udp(group, port) or { panic('open a: ${err}') }
+	defer {
+		a.close()
+	}
+	t0 := time.ticks()
+	for _ in 0 .. 100 {
+		if _ := a.recv(0) {
+			assert false, 'a frame from nowhere'
+		}
+	}
+	el := time.ticks() - t0
+	assert el < 50, '100 looks at an idle socket took ${el} ms: each waited for a datagram'
+}
