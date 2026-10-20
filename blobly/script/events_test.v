@@ -63,7 +63,9 @@ fn send_n(iface string, id u32, n int, gap_ms int) {
 //      one the newest sample of its channel — never an older one a nested run() overtook;
 //   A5 a timer is never fired inside its own callback;
 //   A6 a timer stays on its grid: its next due time is its first plus whole periods, and later
-//      than when it fired.
+//      than when it fired;
+//   A7 the grid points a callback ran over are skipped: between one fire's end and the next fire
+//      of the same timer lies a point of its grid.
 const model_src = r'
 local s = SEED
 local function rnd(n) s = (s * 1103515245 + 12345) % 2147483648; return s % n end
@@ -234,6 +236,9 @@ for i = 1, rnd(3) do
     if (entry.due - first) % period ~= 0 or entry.due <= t then
       error("A6: next due " .. entry.due .. " is off the grid of " .. first .. "+" .. period .. "k or not after " .. t)
     end
+    if rec.prev_end and math.floor((t - first) / period) < math.ceil((rec.prev_end - first) / period) then
+      error("A7: fired at " .. t .. " with no point of its grid since its last callback ended at " .. rec.prev_end)
+    end
     fired = true
     rec.active = true
     local st = t
@@ -248,6 +253,7 @@ for i = 1, rnd(3) do
     end
     spans[#spans + 1] = { st, t }
     rec.active = false
+    rec.prev_end = t
   end)
   rec.entry = __timers[#__timers]
 end

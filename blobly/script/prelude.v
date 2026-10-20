@@ -634,15 +634,25 @@ local function poll_health(deadline)
   end
 end
 
+-- past_grid moves a timer to the first point on its grid after `at`
+local function past_grid(t, at)
+  if t.due <= at then
+    t.due = t.due + (math.floor((at - t.due) / t.period) + 1) * t.period
+    while t.due <= at do t.due = t.due + t.period end -- rounding, at most once
+  end
+end
+
 -- fire_timer moves a due timer to its next point on its grid BEFORE calling it, and marks it
--- running, so a run() inside its callback neither fires it again nor waits on it
+-- running, so a run() inside its callback neither fires it again nor waits on it; and again when
+-- the callback ends, so the points a long callback ran over are skipped, not fired back to back
 local function fire_timer(t)
-  local at = __now_ms()
-  t.due = t.due + (math.floor((at - t.due) / t.period) + 1) * t.period
-  while t.due <= at do t.due = t.due + t.period end -- rounding, at most once
+  past_grid(t, __now_ms())
   t.active = true
-  -- cleared however the callback ends: a return, an error, or the coroutine it yielded from closed
-  local _ <close> = setmetatable({}, { __close = function() t.active = false end })
+  -- however the callback ends: a return, an error, or the coroutine it yielded from closed
+  local _ <close> = setmetatable({}, { __close = function()
+    t.active = false
+    past_grid(t, __now_ms())
+  end })
   t.fn()
 end
 
