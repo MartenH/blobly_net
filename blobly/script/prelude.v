@@ -593,19 +593,22 @@ __on_msg = {}
 __on_health = {}
 __timers = {}
 __listened = {}
-local function listen(channel)
-  __listen(channel)
+-- a channel is listened from where a handler names it on; a health handler needs it read only
+-- where the backend`s ladder advances inside recv (SocketCAN, Vector), not where it is polled
+local function listen(channel, for_health)
+  local needs_reader = __listen(channel)
+  if for_health and not needs_reader then return end
   for _, c in ipairs(__listened) do
     if c == channel then return end
   end
   __listened[#__listened + 1] = channel
 end
 function on_message(channel, id, fn)
-  listen(channel)
+  listen(channel, false)
   __on_msg[#__on_msg + 1] = { channel = channel, id = id, fn = fn }
 end
 function on_health(channel, fn)
-  listen(channel)
+  listen(channel, true)
   __on_health[#__on_health + 1] = { channel = channel, fn = fn, said = nil }
 end
 function on_timer(period_ms, fn)
@@ -634,7 +637,8 @@ end
 -- running, so a run() inside its callback neither fires it again nor waits on it
 local function fire_timer(t)
   local at = __now_ms()
-  repeat t.due = t.due + t.period until t.due > at
+  t.due = t.due + (math.floor((at - t.due) / t.period) + 1) * t.period
+  while t.due <= at do t.due = t.due + t.period end -- rounding, at most once
   t.active = true
   local ok, err = pcall(t.fn)
   t.active = false
@@ -666,6 +670,7 @@ function run(duration_ms)
     -- whole milliseconds, rounded UP: a fractional wait would reach the binding as 0, a busy poll
     local wait = math.ceil(wake - now)
     if wait < 0 then wait = 0 end
+    if wait > 1000 then wait = 1000 end -- the loop goes on; a run(math.huge) is not one wait
     local ch, id, ext, data = __wait_frame(wait, table.unpack(__listened))
     if ch then
       local f = { id = id, ext = ext, data = data }

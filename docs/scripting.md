@@ -358,9 +358,12 @@ Register handlers, then `run()` an event loop. Handlers fire *during* `run()`, o
 own thread, which is also the only thread that ever touches the script's buses — so a handler may
 call `bus.send`, `bus.recv`, `expect`, a `uds` exchange or even `run()` itself.
 
-`run()` reads every channel a handler names, from the same handle `bus.recv` reads: a frame it reads
-is **consumed** (a later `expect` gets the next one), whether or not a handler matched it, and the
-script's own frames are never heard back. With one channel listened it blocks in the driver, so a
+`run()` reads every channel an `on_message` handler names — and one an `on_health` handler names
+where the backend's ladder only moves while the channel is read (SocketCAN, Vector) — from the same
+handle `bus.recv` reads. A channel is listened from the line that names it, so frames that arrive
+between that line and `run()` are dispatched by `run()`. A frame it reads is **consumed** (a later
+`expect` gets the next one), whether or not a handler matched it, and the script's own frames are
+never heard back. With one channel listened it blocks in the driver, so a
 handler runs within about 0.1 ms of the frame; with several it looks at each in turn every 0.1 ms
 (1 ms on Windows), about 0.11 ms from frame to handler with two channels on a Linux bench, at
 roughly a tenth of a core while it waits. A callback that runs past

@@ -306,32 +306,78 @@ fn test_run_dispatches_frames_from_two_channels() {
 	assert said.num('other') == 0
 }
 
-// What run() dispatched is consumed: a later expect gets the frame that arrives after run().
+// What run() dispatched is consumed: a later expect gets the frame that arrives after run(), not
+// one run() already handled.
 fn test_run_consumes_what_it_dispatched() {
 	mut env, said := events_env(['CAN1'], ['inproc:EV_F'])
 	defer { env.close() }
 	env.bus_for('CAN1')!
-	t := spawn fn () {
-		mut bus := transport.open('inproc:EV_F') or { panic(err) }
-		for i in 0 .. 5 {
-			bus.send(transport.CanFrame{ id: 0x700, data: [u8(i)] }) or {}
-		}
-		time.sleep(150 * time.millisecond) // run() is over by now
-		bus.send(transport.CanFrame{ id: 0x700, data: [u8(99)] }) or {}
-		time.sleep(30 * time.millisecond)
-		bus.close()
-	}()
+	mut tx := transport.open('inproc:EV_F')!
+	defer { tx.close() }
+	for i in 0 .. 5 {
+		tx.send(transport.CanFrame{ id: 0x700, data: [u8(i)] })!
+	}
 	env.run_source('
-		local n = 0
-		on_message("CAN1", 0x700, function(f) n = n + 1 end)
+		__n = 0
+		on_message("CAN1", 0x700, function(f) __n = __n + 1 end)
 		run(100)
-		log("during " .. n)
+		log("during " .. __n)
+	')!
+	tx.send(transport.CanFrame{ id: 0x700, data: [u8(99)] })!
+	env.run_source('
 		local f = expect("CAN1", 0x700, 500)
 		log("after " .. string.byte(f.data, 1))
 	')!
-	t.wait()
 	assert said.num('during') == 5, said.lines.str()
 	assert said.num('after') == 99, 'expect got a frame run() had dispatched: ${said.lines}'
+}
+
+// A channel only a health handler names is not read where its ladder needs no reader: what
+// arrives there during run() is left for the next reader.
+fn test_on_health_alone_does_not_consume_where_health_is_polled() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_V'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	mut tx := transport.open('inproc:EV_V')!
+	defer { tx.close() }
+	tx.send(transport.CanFrame{ id: 0x55 })!
+	env.run_source('
+		on_health("CAN1", function(s) end)
+		run(50)
+		local f = bus.recv("CAN1", 200)
+		log("left " .. (f and f.id or -1))
+	')!
+	assert said.num('left') == 0x55, said.lines.str()
+}
+
+// run(math.huge) waits a second at a time, not one infinite wait the binding reads as 0 (a busy
+// poll): with nothing to wake it but a frame, it makes a handful of waits.
+fn test_an_unbounded_run_waits_rather_than_spins() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_W'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn fn () {
+		mut bus := transport.open('inproc:EV_W') or { panic(err) }
+		time.sleep(150 * time.millisecond)
+		bus.send(transport.CanFrame{ id: 0x66 }) or {}
+		bus.close()
+	}()
+	env.run_source('
+		local waits = 0
+		local real = __wait_frame
+		__wait_frame = function(ms, ...)
+			waits = waits + 1
+			return real(ms, ...)
+		end
+		on_message("CAN1", nil, function(f) error("stop") end)
+		local ok = pcall(run, math.huge)
+		__wait_frame = real
+		log("ended " .. tostring(ok))
+		log("waits " .. waits)
+	')!
+	t.wait()
+	assert said.lines.contains('ended false'), said.lines.str()
+	assert said.num('waits') < 50, 'run(math.huge) polled ${said.num('waits')} times'
 }
 
 // What the script sends itself is never heard back as received.

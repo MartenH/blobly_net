@@ -89,12 +89,15 @@ fn l_wait_frame(l lua.State) i32 {
 	return 4
 }
 
-// __listen(channel): a channel a handler names is opened (and refused, if it is not a CAN bus)
-// where the handler is registered, not at the first run()
+// __listen(channel) -> whether the channel's ladder needs its recv read: a channel a handler names
+// is opened (and refused, if it is not a CAN bus) where the handler is registered
 fn l_listen(l lua.State) i32 {
 	mut env := env_of(l)
-	env.bus_for(l.arg_str(1)) or { return l.fail(err.msg()) }
-	return 0
+	name := l.arg_str(1)
+	env.bus_for(name) or { return l.fail(err.msg()) }
+	ci := env.find_chan(name) or { return l.fail(err.msg()) }
+	l.push_bool(transport.health_source(env.chans[ci].iface) == .needs_reader)
+	return 1
 }
 
 // __bus_health(channel) -> the rung's name, "" where the backend cannot say
