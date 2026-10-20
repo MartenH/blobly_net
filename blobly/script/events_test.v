@@ -754,14 +754,14 @@ fn test_no_health_handler_starts_past_the_deadline() {
 // A period that is not a positive number is refused where the timer is registered: zero could
 // never move its grid, and run() would not return.
 fn test_on_timer_refuses_a_period_that_is_not_positive() {
-	for period in ['0', '-5', '"10"'] {
+	for period in ['0', '-5', '0.0001', '"10"'] {
 		mut env, _ := events_env(['CAN1'], ['inproc:EV_T'])
 		if _ := env.run_source('on_timer(${period}, function() end)') {
 			env.close()
 			assert false, 'period ${period} was accepted'
 			return
 		} else {
-			assert err.msg().contains('positive number'), err.msg()
+			assert err.msg().contains('at least 1'), err.msg()
 		}
 		env.close()
 	}
@@ -787,4 +787,121 @@ fn test_a_fractional_period_does_not_spin() {
 	')!
 	assert said.num('fires') >= 20, said.lines.str()
 	assert said.num('waits') < 500, 'run() polled ${said.num('waits')} times in 100 ms'
+}
+
+// Busy is a bus whose looks stop at their bound `spent` times, then return a frame.
+@[heap]
+struct Busy {
+mut:
+	spent int
+}
+
+fn (mut b Busy) send(frame transport.CanFrame) ! {}
+
+fn (mut b Busy) recv(timeout_ms int) !transport.CanFrame {
+	if b.spent > 0 {
+		b.spent--
+		return error_with_code('timeout', transport.zero_poll_spent_code)
+	}
+	return transport.CanFrame{
+		id: 0x88
+	}
+}
+
+fn (mut b Busy) close() {}
+
+fn (mut b Busy) health() transport.BusHealth {
+	return .unknown
+}
+
+fn (mut b Busy) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
+
+fn (mut b Busy) reconcile_silence(_ bool) ! {}
+
+// A look stopped at its bound with records still queued is looked again at once, not slept on:
+// the frame behind ten such looks comes back well inside one slice.
+fn test_wait_frame_looks_again_after_a_spent_look() {
+	mut env, _ := events_env(['CAN1', 'CAN2'], ['busy', 'quiet'])
+	defer { env.close() }
+	busy := &Busy{
+		spent: 10
+	}
+	quiet := &Late{
+		ready_at: time.ticks() + 1_000_000
+	}
+	env.opener = fn [busy, quiet] (iface string, _ string) !transport.Bus {
+		return if iface == 'busy' { busy } else { quiet }
+	}
+	t0 := time.ticks()
+	name, f := env.wait_frame(['CAN1', 'CAN2'], 2000, 100 * time.millisecond) or {
+		assert false, 'nothing came'
+		return
+	}
+	el := time.ticks() - t0
+	assert name == 'CAN1' && f.id == 0x88
+	assert el < 100, 'slept ${el} ms on a queue that said it was not empty'
+}
+
+// A timer whose callback yielded out of a coroutine that is then closed fires again in a later
+// run(): closing the coroutine ends the callback.
+fn test_a_timer_fires_again_after_its_coroutine_is_closed() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_X'])
+	defer { env.close() }
+	env.run_source('
+		local n = 0
+		on_timer(5, function()
+			n = n + 1
+			if n == 1 then coroutine.yield() end
+		end)
+		local co = coroutine.create(function() run(100) end)
+		coroutine.resume(co)
+		coroutine.close(co)
+		run(60)
+		log("fires " .. n)
+	')!
+	assert said.num('fires') > 1, said.lines.str()
+}
+
+// Slow is a bus whose every look takes `ms` and finds nothing.
+@[heap]
+struct Slow {
+	ms int
+}
+
+fn (mut b Slow) send(frame transport.CanFrame) ! {}
+
+fn (mut b Slow) recv(timeout_ms int) !transport.CanFrame {
+	time.sleep(b.ms * time.millisecond)
+	return error('timeout')
+}
+
+fn (mut b Slow) close() {}
+
+fn (mut b Slow) health() transport.BusHealth {
+	return .unknown
+}
+
+fn (mut b Slow) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
+
+fn (mut b Slow) reconcile_silence(_ bool) ! {}
+
+// A look that takes past the deadline ends the sweep: the next channel's frame, ready all along,
+// is not taken after it.
+fn test_no_channel_is_looked_at_after_the_deadline() {
+	mut env, _ := events_env(['CAN1', 'CAN2'], ['slow', 'ready'])
+	defer { env.close() }
+	slow := &Slow{
+		ms: 30
+	}
+	mut ready := &Busy{}
+	env.opener = fn [slow, ready] (iface string, _ string) !transport.Bus {
+		return if iface == 'slow' { slow } else { ready }
+	}
+	if name, _ := env.wait_frame(['CAN1', 'CAN2'], 20, 100 * time.microsecond) {
+		assert false, 'a frame on ${name} taken after the deadline'
+	}
 }

@@ -360,8 +360,10 @@ call `bus.send`, `bus.recv`, `expect`, a `uds` exchange or even `run()` itself.
 
 `run()` reads every channel an `on_message` handler names — and one an `on_health` handler names
 where the backend's ladder only moves while the channel is read (SocketCAN, Vector) — from the same
-handle `bus.recv` reads. A channel is listened from the line that names it, so frames that arrive
-between that line and `run()` are dispatched by `run()`. A frame it reads is **consumed** (a later
+handle `bus.recv` reads. What is already queued on that handle when `run()` starts — since the line that
+opened it, which may be an earlier `bus.send` or `expect` — is dispatched by `run()`; how much a
+backend keeps for a handle nobody has read yet differs (a socket's buffer; a shared PCAN or CANsub
+wire keeps only what arrives after the handle's first read), so a test should not count on either. A frame it reads is **consumed** (a later
 `expect` gets the next one), whether or not a handler matched it, and the script's own frames are
 never heard back. With one channel listened it blocks in the driver, so a
 handler runs within about 0.1 ms of the frame; with several it looks at each in turn every 0.1 ms
@@ -375,10 +377,10 @@ handler it matches, since a frame read off the bus cannot be read again.
 | Call | Meaning |
 |---|---|
 | `on_message(channel, id, fn)` | `fn(frame)` fires for each matching frame received during `run()`. `id` may be `nil` to match every frame on the channel. |
-| `on_health(channel, fn)` | `fn(state)` fires during `run()` when the controller's fault ladder has moved — `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"` — and at its first sample with the state then, however late the handler was registered. Sampled every 100 ms, like the Buses panel: a state held for less than that between two samples can be missed. A software bus (`inproc:`, `udp:`) has no ladder and never fires. |
-| `on_timer(period_ms, fn)` | `fn()` fires every `period_ms` during `run()`, on its own grid: a late fire does not delay the next one, and periods missed while the script was busy are skipped, not sent in a burst. A timer is never fired again inside its own callback. The period must be a positive number of milliseconds; a fraction is honoured to within a millisecond. |
+| `on_health(channel, fn)` | On SocketCAN and Vector the ladder moves only while the channel is read, so `run()` reads it — and consumes its frames — as it does for `on_message`. `fn(state)` fires during `run()` when the controller's fault ladder has moved — `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"` — and at its first sample with the state then, however late the handler was registered. Sampled every 100 ms, like the Buses panel: a state held for less than that between two samples can be missed. A software bus (`inproc:`, `udp:`) has no ladder and never fires. |
+| `on_timer(period_ms, fn)` | `fn()` fires every `period_ms` during `run()`, on its own grid: a late fire does not delay the next one, and periods missed while the script was busy are skipped, not sent in a burst. A timer is never fired again inside its own callback; one whose callback yields stays paused until that coroutine resumes or is closed. The period is a number of milliseconds, at least 1; a fraction is honoured to within a millisecond. |
 | `run(duration_ms)` | Run the event loop for `duration_ms`. |
-| `bus.health(channel)` | The ladder now, as the strings above; `""` where the backend cannot say. |
+| `bus.health(channel)` | The ladder as the backend last saw it, as the strings above; `""` where it cannot say. PCAN, Kvaser and CANsub ask the driver; on SocketCAN and Vector it is the state the channel's last read saw, so outside `run()` it can be stale. |
 
 ```lua
 local hb = 0

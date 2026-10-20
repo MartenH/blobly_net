@@ -51,15 +51,25 @@ fn (mut env Env) wait_frame(names []string, timeout_ms int, slice time.Duration)
 	}
 	deadline := time.sys_mono_now() + u64(timeout_ms) * 1_000_000
 	for {
+		mut spent := false
 		for k in 0 .. names.len {
-			i := (env.rr + k) % names.len
-			if f := buses[i].recv(0) {
-				env.rr = i + 1
-				return names[i], f
+			// a look may spend its own bound filtering: past the deadline, the next is not taken
+			if k > 0 && time.sys_mono_now() >= deadline {
+				return none
 			}
+			i := (env.rr + k) % names.len
+			f := buses[i].recv(0) or {
+				spent = spent || transport.look_was_spent(err)
+				continue
+			}
+			env.rr = i + 1
+			return names[i], f
 		}
 		if time.sys_mono_now() >= deadline {
 			return none
+		}
+		if spent {
+			continue // records still queued behind a look's bound: look again at once
 		}
 		time.sleep(slice)
 		// a frame that came during the last slice stays for the next reader: nothing is taken

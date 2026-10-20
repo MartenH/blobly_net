@@ -612,8 +612,9 @@ function on_health(channel, fn)
   __on_health[#__on_health + 1] = { channel = channel, fn = fn, said = nil }
 end
 function on_timer(period_ms, fn)
-  if type(period_ms) ~= "number" or period_ms <= 0 then
-    error("on_timer: the period must be a positive number of milliseconds", 2)
+  -- the clock counts milliseconds: a shorter period could not move a timer`s grid at all
+  if type(period_ms) ~= "number" or period_ms < 1 then
+    error("on_timer: the period must be a number of milliseconds, at least 1", 2)
   end
   __timers[#__timers + 1] = { due = __now_ms() + period_ms, period = period_ms, fn = fn, active = false }
 end
@@ -640,9 +641,9 @@ local function fire_timer(t)
   t.due = t.due + (math.floor((at - t.due) / t.period) + 1) * t.period
   while t.due <= at do t.due = t.due + t.period end -- rounding, at most once
   t.active = true
-  local ok, err = pcall(t.fn)
-  t.active = false
-  if not ok then error(err, 0) end
+  -- cleared however the callback ends: a return, an error, or the coroutine it yielded from closed
+  local _ <close> = setmetatable({}, { __close = function() t.active = false end })
+  t.fn()
 end
 
 -- run looks __now_ms, __wait_frame and __bus_health up as globals at every call: the model test
