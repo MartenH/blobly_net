@@ -1143,7 +1143,7 @@ fn (mut b CansubBus) recv_shared(timeout_ms int) !SharedIngress {
 					// storm of them would otherwise hold even a bounded receive past its deadline
 					skipped++
 					if !look_again(timeout_ms, skipped, since_ns(started)) {
-						return error('timeout')
+						return look_over(timeout_ms)
 					}
 					continue
 				}

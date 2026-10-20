@@ -379,6 +379,7 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	pfd := if b.fd { 1 } else { 0 }
 	started := time.sys_mono_now()
 	mut skipped := 0
+	mut bounded := false
 	mut r := 0
 	for {
 		mut errs := i32(0)
@@ -397,14 +398,16 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 		// the shared rule, since a data frame may be queued right behind it. A positive timeout
 		// already looks past skipped events inside the shim, against its own deadline.
 		skipped += int(skips)
-		if r == 1 && timeout_ms == 0 && skips > 0
-			&& look_again(0, skipped, since_ns(started)) {
-			continue
+		if r == 1 && timeout_ms == 0 && skips > 0 {
+			if look_again(0, skipped, since_ns(started)) {
+				continue
+			}
+			bounded = true
 		}
 		break
 	}
 	if r == 1 {
-		return error('timeout')
+		return if bounded { look_over(0) } else { error('timeout') }
 	}
 	if r < 0 {
 		msg := unsafe { cstring_to_vstring(C.ct_vector_err(-r)) }

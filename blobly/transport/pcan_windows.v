@@ -311,7 +311,7 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 				// PCAN status/error frame, not a data frame: looked past by the shared rule
 				skipped++
 				if !look_again(timeout_ms, skipped, since_ns(started)) {
-					return error('timeout')
+					return look_over(timeout_ms)
 				}
 				continue
 			}
@@ -355,7 +355,7 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 			stdatomic.add_u64(&b.overruns, 1)
 			skipped++
 			if !look_again(timeout_ms, skipped, since_ns(started)) {
-				return error('timeout')
+				return look_over(timeout_ms)
 			}
 			continue
 		}

@@ -982,10 +982,12 @@ fn (mut e SharedEntry) drain_boundary(until i64, join bool, publish bool, look b
 			if !look {
 				return false
 			}
-			// A LOOK: one batch — non-blocking reads of what is queued now, never a wait —
-			// established if it empties the queue. One frame per call never caught a busy wire
-			// polled with recv(0): each look discarded one frame and none subscribed.
-			return !e.drain_parked(join, publish)!
+			// A LOOK: one batch — non-blocking reads of what is queued now, never a wait — and that
+			// is the boundary, however full the batch: an approximate one, as a spent budget
+			// accepts, because a look that waited for the queue to empty would never subscribe on
+			// a saturated wire. One frame per look was the same starvation, a frame at a time.
+			_ := e.drain_parked(join, publish)!
+			return true
 		}
 		before := e.discards()
 		more := e.drain_parked(join, publish)!
@@ -1067,10 +1069,6 @@ fn (mut e SharedEntry) drain_parked(join bool, publish bool) !bool {
 	mut n := u64(0)
 	mut more := true
 	mut fatal := ''
-	// EMPTY IS TWO QUIET LOOKS IN A ROW: a look may stop at its bound with filtered records still
-	// queued (look_again, zero_poll.v), and a drain that took that for an empty queue let the frame
-	// behind them through as if it came after the boundary
-	mut quiet := 0
 	for n < u64(shared_ring_capacity) {
 		ingress := e.driver.recv_shared(0) or {
 			if err.msg() != 'timeout' {
@@ -1078,14 +1076,15 @@ fn (mut e SharedEntry) drain_parked(join bool, publish bool) !bool {
 				more = false
 				break
 			}
-			quiet++
-			if quiet < 2 {
+			// A LOOK THAT STOPPED AT ITS BOUND is not an empty queue: filtered records were still
+			// queued, possibly with a frame behind them that is from before this boundary. A plain
+			// timeout is empty — asked again, the queue could hand over a frame that arrived after.
+			if err.code() == zero_poll_spent_code {
 				continue
 			}
 			more = false
 			break
 		}
-		quiet = 0
 		if publish {
 			e.commit_external(ingress.frame)
 		}

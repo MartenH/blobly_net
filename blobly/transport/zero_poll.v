@@ -27,6 +27,20 @@ fn look_again(timeout_ms int, skipped int, elapsed_ns i64) bool {
 	return skipped < zero_poll_skip_limit && elapsed_ns < zero_poll_budget_ns
 }
 
+// zero_poll_spent_code marks a zero-timeout look that stopped at its bound with filtered records
+// still queued — the message stays 'timeout', so every caller reads it as one, and a caller that
+// must know the queue is EMPTY (a boundary drain) reads the code.
+const zero_poll_spent_code = 0x5A0
+
+// look_over is the timeout a receive answers once look_again says stop: a spent zero-timeout look
+// carries zero_poll_spent_code; a spent positive wait is an ordinary timeout.
+fn look_over(timeout_ms int) IError {
+	if timeout_ms == 0 {
+		return error_with_code('timeout', zero_poll_spent_code)
+	}
+	return error('timeout')
+}
+
 // since_ns is the time since `started` (a time.sys_mono_now() reading), for look_again.
 fn since_ns(started u64) i64 {
 	return i64(time.sys_mono_now() - started)

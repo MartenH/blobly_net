@@ -432,7 +432,7 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 			stdatomic.add_u64(&b.bus_errors, 1)
 			skipped++
 			if !look_again(timeout_ms, skipped, since_ns(started)) {
-				return error('timeout')
+				return look_over(timeout_ms)
 			}
 			continue
 		}

@@ -22,8 +22,8 @@ mut:
 	closes     i64
 	recv_calls i64
 	recv_fails i64
-	// bounded_looks answers that many zero-timeout looks with timeout although a frame is queued:
-	// a look that stopped at its skip bound (look_again, zero_poll.v)
+	// bounded_looks answers that many zero-timeout looks as a look that stopped at its skip bound
+	// (look_over, zero_poll.v), although a frame is queued
 	bounded_looks i64
 }
 
@@ -57,7 +57,7 @@ fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	if timeout_ms == 0 {
 		if stdatomic.load_i64(&f.ctl.bounded_looks) > 0 {
 			stdatomic.add_i64(&f.ctl.bounded_looks, -1)
-			return error('timeout')
+			return look_over(0)
 		}
 		// A zero timeout is one look, not a wait — what a parked reader's drain asks for.
 		select {
@@ -1219,9 +1219,9 @@ fn test_a_first_receive_beside_a_pending_join_starts_after_its_own_drain() {
 	tap.close()
 }
 
-// A BOUNDARY DRAIN IS NOT ENDED BY ONE QUIET LOOK: a look may stop at its skip bound with a
-// frame still queued behind the records it filtered, and a drain that took that for an empty
-// queue let the frame through as if it arrived after the boundary.
+// A BOUNDARY DRAIN IS NOT ENDED BY A LOOK THAT STOPPED AT ITS BOUND: a frame may still be queued
+// behind the records it filtered, and a drain that took that for an empty queue let the frame
+// through as if it arrived after the boundary.
 fn test_a_boundary_drain_reads_past_a_look_that_stopped_at_its_bound() {
 	fake_opens = 0
 	fake_ctl = &FakeControls{}
@@ -1263,6 +1263,51 @@ fn test_a_spent_budget_drains_nothing_and_a_look_one_batch() {
 		assert looked, 'a look at an empty queue is a boundary'
 		assert stdatomic.load_i64(&fake_ctl.recv_calls) > before, 'a look read nothing'
 		e.drain_mu.unlock()
+	}
+	tap.close()
+}
+
+// AN EMPTY QUEUE IS ONE QUIET LOOK: a drain that asked again could take a frame that arrived
+// after the boundary was observed, and discard it as from before.
+fn test_a_drain_of_an_empty_queue_looks_once() {
+	fake_opens = 0
+	fake_ctl = &FakeControls{}
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	mut tap := shared_open('fake:one-look', 'fake:one-look', fake_make)!
+	shared_test_wait_parked(mut tap)
+	if mut tap is SharedHandle {
+		mut e := tap.entry
+		e.take_drain_lock()
+		before := stdatomic.load_i64(&fake_ctl.recv_calls)
+		more := e.drain_parked(true, false) or { panic(err) }
+		assert !more
+		assert stdatomic.load_i64(&fake_ctl.recv_calls) == before + 1, 'an empty queue was asked ${stdatomic.load_i64(&fake_ctl.recv_calls) - before} times'
+		e.drain_mu.unlock()
+	}
+	tap.close()
+}
+
+// A LOOK ON A SATURATED QUEUE SUBSCRIBES: its one batch is the boundary however full it was, or a
+// wire that keeps refilling the queue would never let the handle listen.
+fn test_a_zero_timeout_look_on_a_saturated_queue_subscribes() {
+	fake_opens = 0
+	fake_ctl = &FakeControls{}
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: shared_ring_capacity + 16}
+	mut tap := shared_open('fake:saturated', 'fake:saturated', fake_make)!
+	shared_test_wait_parked(mut tap)
+	for i in 0 .. shared_ring_capacity + 8 {
+		fake_rx <- CanFrame{
+			id: u32(i & 0x7FF)
+		}
+	}
+	tap.recv(0) or {}
+	if mut tap is SharedHandle {
+		tap.mu.lock()
+		subscribed := tap.subscribed
+		tap.mu.unlock()
+		assert subscribed, 'a look that filled its batch did not subscribe'
 	}
 	tap.close()
 }

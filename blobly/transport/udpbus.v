@@ -217,7 +217,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 			}
 			filtered++
 			if !look_again(timeout_ms, filtered, since_ns(started)) {
-				return error('timeout')
+				return look_over(timeout_ms)
 			}
 			continue
 		}
