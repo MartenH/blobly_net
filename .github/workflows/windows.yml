@@ -148,6 +148,21 @@ jobs:
         shell: msys2 {0}
         run: /c/v-ct/v.exe -cc gcc -enable-globals test blobly/isotp/
 
+      # blobly.dll, the C ABI (cmd/libblobly), driven by the C smoke here and by the runner's own
+      # Python below; the ucrt64 runtime it links lands beside it, as the exe's does, so a host
+      # outside the msys2 shell can load it.
+      - name: libblobly (blobly.dll) + C smoke
+        shell: msys2 {0}
+        run: |
+          V=/c/v-ct/v.exe sh scripts/build_libblobly.sh build
+          ldd build/blobly.dll | awk '/\/ucrt64\/bin\// {print $3}' | sort -u \
+            | while read -r d; do cp -f "$d" build/; done
+          gcc -Wall -o build/bb_smoke.exe cmd/libblobly/smoke.c
+          build/bb_smoke.exe build/blobly.dll projects/sim-demo.blobnet
+      - name: libblobly ctypes smoke (Windows Python)
+        shell: pwsh
+        run: python -I cmd/libblobly/smoke.py build/blobly.dll projects/sim-demo.blobnet
+
       - name: Build the GUI app (RUN=0 scripts/run_gui.sh)
         shell: msys2 {0}
         run: |
@@ -174,6 +189,7 @@ jobs:
           ver="$(sed -n "s/^\s*version: '\(.*\)'\s*$/\1/p" v.mod)"
           V=/c/v-ct/v.exe sh scripts/stage_bundle.sh dist "$ver"
           cp build/blobly_net.exe dist/blobly_net.exe
+          cp build/blobly.dll dist/blobly.dll   # the C ABI (cmd/libblobly); its header is in include/
           # The scripts canbridge's "no vcan module" failure tells the user to run in WSL from
           # this folder; canbridge itself joins in the bundle job.
           mkdir -p dist/scripts
