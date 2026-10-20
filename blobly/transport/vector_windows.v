@@ -63,7 +63,7 @@ fn C.ct_vector_load() int
 fn C.ct_vector_open(u32, u32, int, &i32, &u64, &voidptr, &u64, int, u32, u32, u32, u32, u32, u32, u32) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
 fn C.ct_vector_write_fd(int, u64, u32, u8, &u8, int, int, int, int, &u8) int
-fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &i32, &i32, int, &i32, int, &i32, &i32, &i32, &i32) int
+fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &i32, &i32, int, &i32, int, &i32, &i32, &i32, &i32, &i32) int
 fn C.ct_vector_close(int, u64, u64, voidptr)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
@@ -377,19 +377,37 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	mut brs := i32(0)
 	mut esi := i32(0)
 	pfd := if b.fd { 1 } else { 0 }
-	mut errs := i32(0)
-	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip, pfd,
-		&isfd, &brs, &esi, &errs)
-	if chip >= 0 {
-		b.last_chip = chip
-	}
-	if errs > 0 {
-		// Error records the shim consumed on this port's queue during this read: not frames,
-		// reported through diagnostics() (#213). Atomic: read by the GUI's RX loop.
-		stdatomic.add_u64(&b.bus_errors, errs)
+	started := time.sys_mono_now()
+	mut skipped := 0
+	mut bounded := false
+	mut r := 0
+	for {
+		mut errs := i32(0)
+		mut skips := i32(0)
+		r = C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip,
+			pfd, &isfd, &brs, &esi, &errs, &skips)
+		if chip >= 0 {
+			b.last_chip = chip
+		}
+		if errs > 0 {
+			// Error records the shim consumed on this port's queue during this read: not frames,
+			// reported through diagnostics() (#213). Atomic: read by the GUI's RX loop.
+			stdatomic.add_u64(&b.bus_errors, errs)
+		}
+		// A ZERO-TIMEOUT READ stops after one poll; one that skipped an event looks again under
+		// the shared rule, since a data frame may be queued right behind it. A positive timeout
+		// already looks past skipped events inside the shim, against its own deadline.
+		skipped += int(skips)
+		if r == 1 && timeout_ms == 0 && skips > 0 {
+			if look_again(0, skipped, since_ns(started)) {
+				continue
+			}
+			bounded = true
+		}
+		break
 	}
 	if r == 1 {
-		return error('timeout')
+		return if bounded { look_over(0) } else { error('timeout') }
 	}
 	if r < 0 {
 		msg := unsafe { cstring_to_vstring(C.ct_vector_err(-r)) }

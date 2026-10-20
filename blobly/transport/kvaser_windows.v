@@ -25,6 +25,7 @@
 module transport
 
 import sync.stdatomic
+import time
 import sync
 
 #include "kvaser_shim.h"
@@ -396,29 +397,46 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 	//
 	// A FINITE timeout is passed straight through: it already bounds itself, and cutting it into
 	// slices would only add wakeups to the hot path every monitored wire runs.
-	mut r := 0
+	started := time.sys_mono_now()
+	mut skipped := 0
+	mut f := KvaserFrameFlags{}
 	for {
-		b.reconcile_silence(is_listen_only(b.iface)) or {}
-		to := if timeout_ms < 0 { u32(200) } else { u32(timeout_ms) }
-		r = C.ct_kvaser_read(b.handle, &id, &ln, &data[0], &flags, to)
-		// 1 is "no message" from this shim; 0 is a frame and negative is an error. Only "no
-		// message" is worth another slice, and only when the caller asked to block forever.
-		if r != 1 || timeout_ms >= 0 {
-			break
+		mut r := 0
+		for {
+			b.reconcile_silence(is_listen_only(b.iface)) or {}
+			// a finite timeout is what is LEFT of it: an error frame skipped below is not the end
+			// of the caller's wait
+			// a retry after a skip waits what is LEFT, and a wait already spent (the reconcile
+			// above can take time) is a timeout, never a zero-wait look past expiry (zero_poll.v)
+			to := read_wait_ms(timeout_ms, skipped, since_ns(started), 200) or {
+				return error('timeout')
+			}
+			r = C.ct_kvaser_read(b.handle, &id, &ln, &data[0], &flags, to)
+			// 1 is "no message" from this shim; 0 is a frame and negative is an error. Only "no
+			// message" is worth another slice, and only when the caller asked to block forever.
+			if r != 1 || timeout_ms >= 0 {
+				break
+			}
 		}
-	}
-	if r == 1 {
-		return error('timeout')
-	}
-	if r < 0 {
-		return error('canReadWait failed (canStatus ${r})')
-	}
-	// ONE DECODE, IN V, pinned by a test — see kvaser_decode_flags. An error frame is not a frame
-	// and is reported as nothing arriving, which is what the shim used to do with it.
-	f := kvaser_decode_flags(flags)
-	if f.error_frame {
-		stdatomic.add_u64(&b.bus_errors, 1)
-		return error('timeout')
+		if r == 1 {
+			return error('timeout')
+		}
+		if r < 0 {
+			return error('canReadWait failed (canStatus ${r})')
+		}
+		// ONE DECODE, IN V, pinned by a test — see kvaser_decode_flags. An error frame is not a
+		// frame: counted, and looked past by the shared rule, since a data frame may be queued
+		// right behind it (it used to answer timeout there, at any timeout).
+		f = kvaser_decode_flags(flags)
+		if f.error_frame {
+			stdatomic.add_u64(&b.bus_errors, 1)
+			skipped++
+			if !look_again(timeout_ms, skipped, since_ns(started)) {
+				return look_over(timeout_ms)
+			}
+			continue
+		}
+		break
 	}
 	mut out := []u8{len: int(ln)}
 	for i in 0 .. int(ln) {

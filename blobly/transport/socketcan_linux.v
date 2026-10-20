@@ -82,8 +82,10 @@ pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
 
 pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
+	started := time.sys_mono_now()
 	mut buf := []u8{len: 64} // an FD frame is up to 64 bytes; a classic one fills the first 8
 	mut polled := false
+	mut skipped := 0
 	for {
 		mut raw_id := u32(0)
 		mut fflags := u8(0)
@@ -97,7 +99,9 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 				// the drain time, and an ISO-TP N_Cr timeout fed a late consecutive frame it
 				// should have refused (self-review). One poll is still owed when nothing has
 				// been tried yet — recv(0) is the drain loop's nonblocking probe.
-				if polled {
+				// a zero-timeout look polls again after a skipped error frame (`look_again`
+				// below decides); a spent positive timeout is spent
+				if polled && timeout_ms != 0 {
 					return error('timeout')
 				}
 				wait = 0
@@ -133,6 +137,11 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			}
 			if raw_id & (0x08 | 0x20) != 0 {
 				b.bus_errors++
+			}
+			// an error frame is not a frame: look past it (a data frame may be queued behind)
+			skipped++
+			if !look_again(timeout_ms, skipped, since_ns(started)) {
+				return look_over(timeout_ms)
 			}
 			continue
 		}

@@ -287,6 +287,8 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 	// of the story on a receive-only wire (codex round 3 on #219).
 	b.reconcile_silence(is_listen_only(b.iface)) or {}
 	deadline := time.ticks() + i64(timeout_ms)
+	started := time.sys_mono_now()
+	mut skipped := 0
 	for {
 		mut id := u32(0)
 		mut mt := u8(0)
@@ -306,7 +308,12 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 		verdict := pcan_read_verdict(st)
 		if verdict == .frame {
 			if mt & pcan_msg_status != 0 {
-				continue // PCAN status/error frame, not a data frame
+				// PCAN status/error frame, not a data frame: looked past by the shared rule
+				skipped++
+				if !look_again(timeout_ms, skipped, since_ns(started)) {
+					return look_over(timeout_ms)
+				}
+				continue
 			}
 			// ON AN FD READ `ln` IS A DLC CODE, not a byte count — CAN_ReadFD fills DLC where
 			// CAN_Read fills LEN. Treating the code as a length turns a 12-byte frame into 12
@@ -346,6 +353,10 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 			// the status right now, and returning an error here is what killed the wire: through
 			// the shared hub a fatal read uninitialises the channel under every handle (#221).
 			stdatomic.add_u64(&b.overruns, 1)
+			skipped++
+			if !look_again(timeout_ms, skipped, since_ns(started)) {
+				return look_over(timeout_ms)
+			}
 			continue
 		}
 		if verdict == .failed {

@@ -1063,8 +1063,13 @@ static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8
  * port (#213). */
 static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_t *len,
                           uint8_t *data, int *ext, int *rtr, int timeout_ms, int *chip_status,
-                          int port_is_fd, int *fd, int *brs, int *esi, int *errs) {
+                          int port_is_fd, int *fd, int *brs, int *esi, int *errs, int *skips) {
 	if (chip_status) *chip_status = -1; /* -1 = no chip-state event seen this call */
+	/* SKIPS: events this call took off the queue and dropped. A zero-timeout read answers 1 after
+	 * its one poll whether that poll found the queue empty or skipped an event; the count is what
+	 * tells the caller which, so it can look again under the one rule every backend shares
+	 * (look_again, zero_poll.v) — a data frame may be queued right behind the skipped event. */
+	if (skips) *skips = 0;
 	DWORD waited;
 	int rc;
 	/* Against a DEADLINE, not a budget that is spent by the first wake. The notification fires
@@ -1104,9 +1109,13 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 		 * is what stops a queue that keeps producing skippable events from holding the caller. */
 		if (rc == 3) {
 			if (errs) (*errs)++;
+			if (skips) (*skips)++;
 			continue;
 		}
-		if (rc == 2) continue;
+		if (rc == 2) {
+			if (skips) (*skips)++;
+			continue;
+		}
 		/* rc == 1: the queue really is empty, and waiting is the whole point. */
 		if (!ev_handle) {
 			/* No notification object — xlSetNotification failed at open. Returning at once made

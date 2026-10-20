@@ -42,6 +42,12 @@ const shared_attentive_ms = i64(1000)
 // after the handle's open — whatever the bus is doing. Worst case is a few hundred milliseconds
 // of reads, and only on a saturated bus with a deep backlog.
 const shared_boundary_drain_frames = u64(65536)
+
+// shared_spent_looks is how many looks in a row a drain takes past a backend look that stopped at
+// its bound (zero_poll_spent_code) before it takes the position for its boundary: a few thousand
+// filtered records behind each other are a backlog to read past, a continuous stream of them is
+// a storm that would hold drain_mu for as long as it lasted.
+const shared_spent_looks = 4
 const shared_pending_capacity = 4096
 const shared_pending_ttl_ms = 5000
 
@@ -932,7 +938,7 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 		return error('${e.key}: generation failed while joining')
 	}
 	if parked && !e.tx_acks {
-		_ := e.drain_boundary(0, true, others) or {
+		_ := e.drain_boundary(0, true, others, false) or {
 			// The failure is taken under the lock (a queued joiner must find it), the reader is
 			// retired with the lock RELEASED: it may be blocked on drain_mu for its next batch,
 			// and only it sends done (codex round 10 on #224).
@@ -972,26 +978,22 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 // own stops when that budget is spent, and accepts an approximate boundary rather than blocking
 // past what it asked for (codex round 3 on #224).
 // Returns whether the boundary was ESTABLISHED — the queue empty, or the count reached — as
-// opposed to the caller's deadline stopping it first. A deadline is checked BEFORE every batch,
-// so a receive with no budget left reads nothing at all (codex round 4 on #224).
-fn (mut e SharedEntry) drain_boundary(until i64, join bool, publish bool) !bool {
+// opposed to the caller's deadline stopping it first. A deadline is checked BEFORE every batch:
+// a positive receive whose budget is spent reads nothing more (codex round 4 on #224), and a
+// zero-timeout LOOK (`look`) runs exactly one batch — the recv(0) contract, transport.v.
+fn (mut e SharedEntry) drain_boundary(until i64, join bool, publish bool, look bool) !bool {
 	mut read := u64(0)
 	for read < shared_boundary_drain_frames {
 		if until > 0 && time.ticks() >= until {
-			ingress := e.driver.recv_shared(0) or {
-				if err.msg() == 'timeout' {
-					return true
-				}
-				return err
+			if !look {
+				return false
 			}
-			if publish {
-				e.commit_external(ingress.frame)
-			} else {
-				e.mu.lock()
-				e.parked_discards++
-				e.mu.unlock()
-			}
-			return false
+			// A LOOK: one batch — non-blocking reads of what is queued now, never a wait — and that
+			// is the boundary, however full the batch: an approximate one, as a spent budget
+			// accepts, because a look that waited for the queue to empty would never subscribe on
+			// a saturated wire. One frame per look was the same starvation, a frame at a time.
+			_ := e.drain_parked(join, publish)!
+			return true
 		}
 		before := e.discards()
 		more := e.drain_parked(join, publish)!
@@ -1073,14 +1075,30 @@ fn (mut e SharedEntry) drain_parked(join bool, publish bool) !bool {
 	mut n := u64(0)
 	mut more := true
 	mut fatal := ''
+	mut spent := 0
 	for n < u64(shared_ring_capacity) {
 		ingress := e.driver.recv_shared(0) or {
 			if err.msg() != 'timeout' {
 				fatal = err.msg()
+				more = false
+				break
+			}
+			// A LOOK THAT STOPPED AT ITS BOUND is not an empty queue: filtered records were still
+			// queued, possibly with a frame behind them that is from before this boundary. A plain
+			// timeout is empty — asked again, the queue could hand over a frame that arrived after.
+			// Looked past a few times in a row and it is a STORM of filtered records that will not
+			// end while we wait: this position is the boundary, an approximate one, as a look's
+			// full batch is — a handle that never subscribes would be worse than a stale frame.
+			if err.code() == zero_poll_spent_code {
+				spent++
+				if spent < shared_spent_looks {
+					continue
+				}
 			}
 			more = false
 			break
 		}
+		spent = 0
 		if publish {
 			e.commit_external(ingress.frame)
 		}
@@ -1369,7 +1387,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				e.mu.unlock()
 				{
 					established := e.drain_boundary(if timeout_ms < 0 { i64(0) } else { deadline },
-						true, pending_join) or {
+						true, pending_join, timeout_ms == 0) or {
 						e.fail_and_close(err.msg())
 						e.drain_mu.unlock()
 						select {
@@ -1385,6 +1403,12 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 						h.mu.unlock()
 						return error('timeout')
 					}
+					// THE BOUNDARY IS AFTER THIS DRAIN, as admit() has it: what the drain found was
+					// queued before this handle listened, and published only for a join pending
+					// beside it — drain_mu is held, so nothing else committed meanwhile
+					e.mu.lock()
+					h.cursor = e.next_seq
+					e.mu.unlock()
 				}
 			}
 		}
