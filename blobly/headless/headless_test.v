@@ -173,7 +173,11 @@ fn test_stop_twice_is_harmless() {
 	o := lines.options()
 	proj := load(path, o)!
 	mut first := start(proj, path, o)!
+	// two stops at once: the second returns when the first has finished, not before
+	other := spawn first.stop()
 	first.stop()
+	assert first.stop_done
+	other.wait()
 	mut second := start(first.proj, path, Options{
 		...o
 		project_ports: true

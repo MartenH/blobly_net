@@ -44,7 +44,8 @@ pub:
 	project_ports bool
 	// progress and warnings: what the runner printed on stdout and stderr. Called from the run's
 	// worker threads as well as from `start` — a sink must take that — and never after `stop`
-	// has returned, which waits for every loop that could call them.
+	// has returned, which waits for a report in flight. So a sink MUST NOT call `stop`: the
+	// wait would be for itself.
 	out fn (string) = fn (s string) {
 		println(s)
 	}
@@ -74,12 +75,18 @@ pub struct Run {
 mut:
 	ctl &Ctl
 	gen u64
-	// stop ran: a second stop does nothing (the entities are closed once, the slot released once)
-	stopped bool
-	// the sink is not called once stop has returned (Options). Set under `mu`, which `say` holds
-	// THROUGH the sink call, so a report in flight finishes before stop returns and none starts
-	// after — the sink itself is never replaced
+	// stop began / stop returned: a second stop, concurrent or later, waits for the first and
+	// returns when it has (the entities closed once, the slot released once)
+	stopping  bool
+	stop_done bool
+	// the sink is not called once stop has returned (Options): `say` counts itself in flight
+	// under `mu` and calls the sink OUTSIDE it (host code under our lock would deadlock a sink
+	// that reports by stopping), and stop silences then waits for the count to reach zero
 	silenced bool
+	inflight int
+	// stop returned with loops still out (an open stalled in a driver): the last of them to
+	// return releases the process slot, since no later stop will
+	abandoned bool
 	// the loops spawned and the loops that have exited — every one counted on its way out, so
 	// stop's bounded wait knows whether every wire has said its piece (#213); the serve loop
 	// spawns the UDP loop from its own thread, so both counts are atomic
@@ -459,11 +466,17 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 // responder counted is booked before the caller asks its own handles (#213).
 pub fn (mut r Run) stop() {
 	r.mu.lock()
-	if r.stopped {
+	if r.stopping {
+		// another stop is at it: return when it has, so what it promises holds for this caller
+		for !r.stop_done {
+			r.mu.unlock()
+			time.sleep(10 * time.millisecond)
+			r.mu.lock()
+		}
 		r.mu.unlock()
 		return
 	}
-	r.stopped = true
+	r.stopping = true
 	r.ctl.running = false
 	// THE ONE CLOSER of the entities: a close sets `stopping`, which ends the serve loop's
 	// connection and the announce; the serve loop closes nothing itself, so two threads never
@@ -483,20 +496,34 @@ pub fn (mut r Run) stop() {
 	}
 	r.mu.lock()
 	r.silenced = true
-	r.mu.unlock()
-	if left > 0 {
-		// still holding wires and the process: the next start is refused until they return
-		return
+	for r.inflight > 0 {
+		r.mu.unlock()
+		time.sleep(time.millisecond)
+		r.mu.lock()
 	}
-	release_process(r.gen)
+	// decided under the lock `done` takes, so a loop returning now either sees `abandoned` or
+	// is counted here
+	if stdatomic.load_i64(&r.loops_done) < stdatomic.load_i64(&r.spawned) {
+		r.abandoned = true // still holding wires and the process: the last loop out lets go
+	} else {
+		release_process(r.gen)
+	}
+	r.stop_done = true
+	r.mu.unlock()
 }
 
 // say reports from a worker, unless stop has returned.
 fn (mut r Run) say(s string) {
 	r.mu.lock()
-	if !r.silenced {
-		r.err(s)
+	if r.silenced {
+		r.mu.unlock()
+		return
 	}
+	r.inflight++
+	r.mu.unlock()
+	r.err(s)
+	r.mu.lock()
+	r.inflight--
 	r.mu.unlock()
 }
 
@@ -510,6 +537,12 @@ fn (mut r Run) counted() {
 // #231).
 fn (mut r Run) done() {
 	stdatomic.add_i64(&r.loops_done, 1)
+	r.mu.lock()
+	if r.abandoned && stdatomic.load_i64(&r.loops_done) == stdatomic.load_i64(&r.spawned) {
+		r.abandoned = false
+		release_process(r.gen)
+	}
+	r.mu.unlock()
 }
 
 // sim_loop runs the channel's simulated ECUs on a dedicated bus handle.
