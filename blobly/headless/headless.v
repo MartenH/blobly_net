@@ -124,7 +124,7 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 	headless_mu.lock()
 	if headless_owner != 0 {
 		headless_mu.unlock()
-		return error('a run is already active in this process; stop it before starting another')
+		return error(active_note)
 	}
 	headless_next++
 	gen := headless_next
@@ -178,6 +178,10 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 	}
 	return r
 }
+
+// active_note is start's refusal while a run holds the process — a constant, so a caller that
+// tells a state refusal from a project's can compare rather than parse.
+pub const active_note = 'a run is already active in this process; stop it before starting another'
 
 // release_process lets the next start in, if `gen` is the run holding the process.
 fn release_process(gen u64) {

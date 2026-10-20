@@ -92,6 +92,17 @@ jobs:
           chmod +x scripts/check_cmds.sh
           ./scripts/check_cmds.sh
 
+      # The engine as a shared library with a C ABI (cmd/libblobly, bb.h): built -prod -shared,
+      # then driven by a C host and by a ctypes host — each on a thread of the HOST's own as
+      # well, with enough allocation on it to collect there, since a thread the collector did
+      # not see born is the one way an embedded V runtime differs from a program.
+      - name: libblobly C ABI smokes (cmd/libblobly)
+        run: |
+          sh scripts/build_libblobly.sh build
+          gcc -Wall -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread
+          build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
+          python3 -I cmd/libblobly/smoke.py build/libblobly.so projects/sim-demo.blobnet
+
       # The shared answers behind setup_vcan.sh / build_vcan_module.sh. Pure functions of the
       # environment (whose home under sudo, is vcan available, may we even ask), driven through
       # stubbed getent/id/ip/sudo so they run unprivileged here. net#122 spent four review rounds

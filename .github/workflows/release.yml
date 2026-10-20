@@ -108,6 +108,9 @@ jobs:
           mkdir -p dist/blobly_net
           sh scripts/stage_bundle.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
           cp build/blobly_net dist/blobly_net/
+          # the C ABI (cmd/libblobly) beside the app; its header is in include/
+          sh scripts/build_libblobly.sh build
+          cp build/libblobly.so dist/blobly_net/
           tar -C dist -czf "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" blobly_net
 
       # THE ONE FILE A LINUX USER CAN ACTUALLY RUN (#322). The tarball is dynamically linked, so

@@ -18,6 +18,9 @@ mkdir -p "$dest/samples"
 cp -r projects dbc tests manifests docs "$dest/"
 cp samples/*.log samples/*.mf4 "$dest/samples/"
 cp LICENSE "$dest/LICENSE.txt"
+# the C ABI's one statement (cmd/libblobly); the library itself is a platform extra beside the exe
+mkdir -p "$dest/include"
+cp cmd/libblobly/bb.h "$dest/include/"
 cp packaging/THIRD-PARTY-NOTICES.txt "$dest/"
 # THE TEXTS, NOT JUST THE INDEX (#318). THIRD-PARTY-NOTICES.txt lists components and links and
 # says so itself; MIT wants the copyright and permission notices to travel with copies of what
