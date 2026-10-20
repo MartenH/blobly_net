@@ -102,6 +102,10 @@ jobs:
           gcc -Wall -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread
           build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
           python3 -I cmd/libblobly/smoke.py build/libblobly.so projects/sim-demo.blobnet
+      # The Python package over that library (python/blobly): its event loop's model and the
+      # package against sim-demo. BLOBLY_LIB set, so a missing library fails rather than skips.
+      - name: Python package (python/blobly)
+        run: BLOBLY_LIB=build/libblobly.so python3 -I -m unittest discover -s python/tests -t python -v
 
       # The shared answers behind setup_vcan.sh / build_vcan_module.sh. Pure functions of the
       # environment (whose home under sudo, is vcan available, may we even ask), driven through
