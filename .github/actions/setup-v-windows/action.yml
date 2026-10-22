@@ -1,0 +1,30 @@
+name: Set up pinned V (Windows)
+description: >-
+  Unpack the prebuilt V3 of .v-version from this repository's release into C:\v-ct, the root
+  scripts/mint_windows_v.sh minted it for (V's makev.bat self-compile hangs on the runner).
+inputs:
+  release:
+    description: the release that stores the toolchain asset
+    required: true
+  asset:
+    description: the zip scripts/mint_windows_v.sh wrote for .v-version
+    required: true
+runs:
+  using: composite
+  steps:
+    # Windows' own tar (libarchive) unpacks the zip in seconds where Expand-Archive took half a
+    # minute. By full path: the runner's PATH may put Git's GNU tar first, which reads no zip.
+    - name: Download prebuilt V
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+        V_RELEASE: ${{ inputs.release }}
+        V_ASSET: ${{ inputs.asset }}
+      run: |
+        gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
+        if ($LASTEXITCODE -ne 0) { throw "could not download $env:V_ASSET from $env:V_RELEASE" }
+        New-Item -ItemType Directory -Force -Path C:\v-ct | Out-Null
+        & "$env:SystemRoot\System32\tar.exe" -xf "$env:RUNNER_TEMP\$env:V_ASSET" -C C:\v-ct
+        if ($LASTEXITCODE -ne 0) { throw "could not unpack $env:V_ASSET" }
+        if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
+        & C:\v-ct\v.exe version

@@ -406,6 +406,17 @@ A valid GUI restore refreshes the archive timestamp: checkout timestamps alone w
 make `run_gui.sh` rebuild unchanged glue. The app and every test still build/run each time.
 The Linux release uses the same actions, with separate caches for its Ubuntu 22.04 environment.
 
+**CI runs as parallel jobs, and two required checks are verdict jobs.** The time is compiling
+(the unit suite was 18 CPU-minutes on a four-core runner), so the Linux backbone is `unit` —
+the suite in parts, `scripts/unit_tests.sh --shard I/N`: whole module folders balanced by test
+count (`scripts/unit_shard.sh`, tested by `unit_shard_test.sh`), the part count the matrix's
+length — beside `abi` (libblobly + the Python package) and `checks` (the cmd sweep, the
+scripts' tests, the Lua suites); Windows is `checks-msys2` (gcc only) beside `build-msys2`.
+The protect-main ruleset requires three check NAMES — `linux • modules + headless Lua`,
+`linux • GUI (imgui) compile-link`, `mingw (MSYS2) • GUI bundle` — and the first and last
+are now verdict jobs over the parts (`test`, `verdict-msys2`). A new job joins its verdict's
+`needs`; a verdict renamed or dropped leaves every PR waiting on a check that never reports.
+
 ## Conventions
 
 - **Every module GUI-free and unit-tested.** New protocol work starts in `blobly/` with tests.

@@ -1,9 +1,14 @@
 name: ci
 
-# Linux CI for Blobly Net. Two jobs:
-#   * test       — the reliable backbone: `v -enable-globals test blobly/` (every GUI-free module,
-#                  incl. the embedded-Lua `lua`/`script` modules) + the headless Lua
-#                  integration tests (scripts/runtests.sh) against the in-process sim.
+# Linux CI for Blobly Net. The backbone runs as parallel jobs, because its time is compiling
+# (the unit suite alone was 18 CPU-minutes of compile on a four-core runner, in one job):
+#   * unit       — `v -enable-globals test` over every GUI-free module (incl. the embedded-Lua
+#                  `lua`/`script` modules), in parts (scripts/unit_tests.sh --shard)
+#   * abi        — libblobly, the engine as a shared library, from C and Python, and the
+#                  Python package over it
+#   * checks     — every cmd/ tool type-checked, the scripts' own tests, and the headless Lua
+#                  integration tests (scripts/runtests.sh) against the in-process sim
+#   * test       — the verdict over those three, under the name protect-main requires
 #                  No GUI, no vcan, no Windows — fast and deterministic.
 #   * gui-build — compile-links the Dear ImGui + ImPlot app (cmd/blobly_net): builds
 #                  the imgui/ImPlot/GLFW/FreeType C deps into libs/vgui/libvgui_c.a, then
@@ -61,36 +66,33 @@ env:
   VJOBS: 4
 
 jobs:
-  test:
-    name: linux • modules + headless Lua
+  # All GUI-free modules, in parts run side by side: whole module folders balanced by test count
+  # (scripts/unit_shard.sh), so V's own discovery still picks the test files in each. The part
+  # count is the matrix's length and stated nowhere else. -enable-globals: the in-process bus
+  # (transport/inproc.v) uses a process-global hub. The vendored Lua compiles in here too
+  # (blobly/lua + blobly/script pull it via #flag).
+  unit:
+    name: linux • unit tests ${{ matrix.part }}/${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+    strategy:
+      # every part reports, so one failure does not hide another part's
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up pinned V (cached)
+        uses: ./.github/actions/setup-v
+      - name: Unit tests (scripts/unit_tests.sh --shard)
+        run: ./scripts/unit_tests.sh --shard ${{ matrix.part }}/${{ strategy.job-total }}
+
+  abi:
+    name: linux • libblobly C ABI + Python
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
       - name: Set up pinned V (cached)
         uses: ./.github/actions/setup-v
-
-      - name: V version
-        run: v version
-
-      # All GUI-free modules. -enable-globals: the in-process bus
-      # (transport/inproc.v) uses a process-global hub. The vendored Lua compiles
-      # in here too (blobly/lua + blobly/script pull it via #flag).
-      - name: Unit tests (v test blobly/)
-        run: v -enable-globals test blobly/
-      - name: GUI-local rules (scripts/test_cmd_rules.sh)
-        # GUI policy with a test: pure V, no ImGui, so it runs where the GUI cannot — from a copy
-        # outside the repository, so a rule package that imports a blobly module fails here.
-        run: ./scripts/test_cmd_rules.sh
-
-      # EVERY cmd/ tool type-checks, for both OS targets. Nothing else here compiles a CLI
-      # tool, so a rename in blobly/ could break any of them and the build stayed green: #217
-      # retired a helper and broke cmd/vectorcheck, and two smoke tools sat broken on Windows
-      # for months (#220). -check needs no C compiler and no GLFW, so this costs under a minute.
-      - name: Every cmd/ tool type-checks, both targets (scripts/check_cmds.sh)
-        run: |
-          chmod +x scripts/check_cmds.sh
-          ./scripts/check_cmds.sh
 
       # The engine as a shared library with a C ABI (cmd/libblobly, bb.h): built -prod -shared,
       # then driven by a C host and by a ctypes host — each on a thread of the HOST's own as
@@ -106,6 +108,36 @@ jobs:
       # package against sim-demo. BLOBLY_LIB set, so a missing library fails rather than skips.
       - name: Python package (python/blobly)
         run: BLOBLY_LIB=build/libblobly.so python3 -I -m unittest discover -s python/tests -t python -v
+
+  checks:
+    name: linux • cmd checks, script tests + headless Lua
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up pinned V (cached)
+        uses: ./.github/actions/setup-v
+
+      - name: V version
+        run: v version
+
+      # The unit suite's parts cover every module folder exactly once, for any part count: a
+      # folder in no part is a suite that silently stops running.
+      - name: unit-suite parts (scripts/unit_shard_test.sh)
+        run: ./scripts/unit_shard_test.sh
+      - name: GUI-local rules (scripts/test_cmd_rules.sh)
+        # GUI policy with a test: pure V, no ImGui, so it runs where the GUI cannot — from a copy
+        # outside the repository, so a rule package that imports a blobly module fails here.
+        run: ./scripts/test_cmd_rules.sh
+
+      # EVERY cmd/ tool type-checks, for both OS targets. Nothing else here compiles a CLI
+      # tool, so a rename in blobly/ could break any of them and the build stayed green: #217
+      # retired a helper and broke cmd/vectorcheck, and two smoke tools sat broken on Windows
+      # for months (#220). -check needs no C compiler and no GLFW, so this costs under a minute.
+      - name: Every cmd/ tool type-checks, both targets (scripts/check_cmds.sh)
+        run: |
+          chmod +x scripts/check_cmds.sh
+          ./scripts/check_cmds.sh
 
       # The shared answers behind setup_vcan.sh / build_vcan_module.sh. Pure functions of the
       # environment (whose home under sudo, is vcan available, may we even ask), driven through
@@ -163,6 +195,23 @@ jobs:
           # step with what the tests actually require, and the runner refuses a project that
           # contradicts a declaration rather than reporting it as failing tests.
           ./scripts/runtests.sh
+
+  # THE REQUIRED CHECK. The protect-main ruleset requires a check of this name, so the jobs
+  # above report under it here: it passes only if every one of them passed. Renaming it, or
+  # dropping it, leaves every PR waiting on a check that never reports. Skipped only when the
+  # run is cancelled by a newer push, whose own run reports for the new head.
+  test:
+    name: linux • modules + headless Lua
+    needs: [unit, abi, checks]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every part passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "unit abi checks: $RESULTS"
+          for r in $RESULTS; do [ "$r" = success ] || exit 1; done
 
   gui-build:
     name: linux • GUI (imgui) compile-link
@@ -281,10 +330,10 @@ jobs:
           test -x /tmp/vgui_standalone && echo "OK — vgui has no app dependency"
 
   # THE ONE STEP THAT HANDS SOMEBODY A BINARY, and the only one gated on the WHOLE verdict:
-  # `needs` both jobs, so a main push whose engine tests failed publishes nothing. It exists as
-  # a third job rather than a `needs: test` on gui-build because that would serialise every PR —
-  # ~5 minutes on each — to gate an artifact only main pushes ever produce. Re-uploading a
-  # staged archive costs seconds and leaves the two builds parallel.
+  # `needs` the build and the tests' verdict, so a main push whose engine tests failed publishes
+  # nothing. It exists as its own job rather than a `needs: test` on gui-build because that would
+  # serialise every PR behind the tests to gate an artifact only main pushes ever produce.
+  # Re-uploading a staged archive costs seconds and leaves the builds parallel.
   #
   # Residual, stated rather than hidden: `linux-build-unvalidated` from the job above is
   # attached to a failed run too. It is named for what it is and expires in a day; the
