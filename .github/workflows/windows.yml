@@ -162,6 +162,11 @@ jobs:
       - name: libblobly ctypes smoke (Windows Python)
         shell: pwsh
         run: python -I cmd/libblobly/smoke.py build/blobly.dll projects/sim-demo.blobnet
+      - name: Python package (python/blobly, Windows Python)
+        shell: pwsh
+        run: |
+          $env:BLOBLY_LIB = "build/blobly.dll"
+          python -I -m unittest discover -s python/tests -t python -v
 
       - name: Build the GUI app (RUN=0 scripts/run_gui.sh)
         shell: msys2 {0}
