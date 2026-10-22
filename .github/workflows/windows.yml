@@ -171,11 +171,6 @@ jobs:
       - name: libblobly ctypes smoke (Windows Python)
         shell: pwsh
         run: python -I cmd/libblobly/smoke.py build/blobly.dll projects/sim-demo.blobnet
-      - name: Python package (python/blobly, Windows Python)
-        shell: pwsh
-        run: |
-          $env:BLOBLY_LIB = "build/blobly.dll"
-          python -I -m unittest discover -s python/tests -t python -v
       # The Windows wheel's native payload: blobly.dll, the ucrt64 runtime DLLs it loads, and each
       # runtime package's licence texts from pacman — derived from what is there, never a list kept
       # by hand, as the bundle's are. By NAME: the step above already copied the runtime into build/,
@@ -200,9 +195,8 @@ jobs:
             cp -r "$lic/." "build/wheel-licenses/${pkg#mingw-w64-ucrt-x86_64-}/"
           done < build/wheel-deps.txt
           echo "wheel payload: $(ls build/wheel-native | tr '\n' ' ')"
-      # Built with the runner's Windows Python, installed into a fresh venv, and the package's tests
-      # run against the INSTALLED copy, as on Linux.
-      - name: Python wheel on Windows (built, installed, tested)
+      # Built with the runner's Windows Python.
+      - name: Python wheel on Windows (built)
         shell: pwsh
         run: |
           python -m venv "$env:RUNNER_TEMP\wheeltools"
@@ -214,12 +208,14 @@ jobs:
           if ("${{ inputs.publish_bundle }}" -eq "true") { $release = @("--release") }
           & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --licenses build/wheel-licenses --v C:/v-ct/v.exe --out build/wheels @release
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          python -m venv "$env:RUNNER_TEMP\wheeltest"
+      # The package's tests, its examples, the pytest example and its docs under the runner's Windows
+      # Python, from the source tree (blobly.dll beside its runtime DLLs in build/) and then from the
+      # INSTALLED wheel, as on Linux (scripts/python_tests.py; ci.yml's abi job has the detail).
+      - name: Python package (python/blobly), source tree and installed wheel
+        shell: pwsh
+        run: |
           $whl = (Get-ChildItem build/wheels -Filter *.whl).FullName
-          & "$env:RUNNER_TEMP\wheeltest\Scripts\pip" install -q $whl
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          $env:BLOBLY_TEST_INSTALLED = "1"
-          & "$env:RUNNER_TEMP\wheeltest\Scripts\python" -I -m unittest discover -s python/tests -t python/tests -v
+          python scripts/python_tests.py --lib build/blobly.dll --wheel $whl python
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/upload-artifact@v7
         with:
