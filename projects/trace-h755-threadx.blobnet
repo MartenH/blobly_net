@@ -32,4 +32,4 @@ buses:
     enabled: true
     manifest: /home/mahi/repos/blobly_emb/examples/h755_threadx/gen/trace-manifest.csv
     databases:
-      - dbc/trace.dbc
+      - ../dbc/trace.dbc

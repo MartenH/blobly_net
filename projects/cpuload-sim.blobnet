@@ -28,7 +28,7 @@ channels:
     interface: inproc:CAN1
     mode: normal
     databases:
-      - dbc/cpuload.dbc
+      - ../dbc/cpuload.dbc
     simulation:
       - name: SUT
         signals:

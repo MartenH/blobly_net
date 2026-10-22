@@ -22,6 +22,6 @@ buses:
     bitrate: 500000
     mode: monitor
     enabled: true
-    manifest: manifests/trace-demo.csv
+    manifest: ../manifests/trace-demo.csv
     databases:
-      - dbc/trace.dbc
+      - ../dbc/trace.dbc

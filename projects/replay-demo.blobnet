@@ -22,8 +22,8 @@ channels:
     mode: replay
     enabled: true
     databases:
-      - dbc/blobly_net.dbc
+      - ../dbc/blobly_net.dbc
     replay:
-      source: samples/demo.log
+      source: ../samples/demo.log
       speed: 1.0
       loop: true

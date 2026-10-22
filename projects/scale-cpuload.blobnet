@@ -28,4 +28,4 @@ channels:
                          # `ip link set canX type can listen-only`.
     enabled: true
     databases:
-      - dbc/cpuload.dbc
+      - ../dbc/cpuload.dbc

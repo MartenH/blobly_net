@@ -18,4 +18,4 @@ channels:
     mode: normal
     enabled: true
     databases:
-      - dbc/blobly_net.dbc
+      - ../dbc/blobly_net.dbc
