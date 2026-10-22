@@ -1,8 +1,9 @@
 // udsconn — a UDS connection on a project row: which carrier the row's diagnostics ride (ISO-TP
 // over its CAN bus, or its DoIP connection), which CAN ids a request goes out and comes back on,
-// and the uds.Client over the opened channel. The ONE rule for it: the Lua `uds.open`
-// (blobly/script) and the C ABI's bb_uds_open (cmd/libblobly) both open through here, so a
-// script and a Python host reach a row's ECU the same way.
+// and the uds.Client over the opened channel; and a DoIP row's discovery (discovery.v). The ONE
+// rule for it: the Lua `uds.open` and `doip.*` (blobly/script) and the C ABI's bb_uds_open and
+// bb_doip_* (cmd/libblobly) all go through here, so a script and a Python host reach a row's ECU
+// the same way.
 module udsconn
 
 import blobly.doip
@@ -10,6 +11,7 @@ import blobly.isotp
 import blobly.project
 import blobly.transport
 import blobly.uds
+import time
 
 // Carrier is the transport UDS rides on a row. Derived from the project channel by carrier_of()
 // rather than assembled by each caller, so every front end reaches a row the same way.
@@ -138,8 +140,12 @@ pub mut:
 // stamps its frames FD.
 pub fn open(t Target, name string, iface string, car Carrier, opener fn (string, string) !transport.Bus) !Conn {
 	ch := if t.doip {
+		// in the words of the open, of its cause's kind: a routing activation denied stays one
 		isotp.Channel(open_doip(car) or {
-			return error('doip open failed on ${name} (${car.host}:${car.port}): ${err}')
+			return uds.ContextError{
+				text:  'doip open failed on ${name} (${car.host}:${car.port}): ${err}'
+				cause: err
+			}
 		})
 	} else {
 		isotp.Channel(isotp.on_bus(opener(iface, name) or {
@@ -152,8 +158,24 @@ pub fn open(t Target, name string, iface string, car Carrier, opener fn (string,
 	}
 }
 
+// doip_open_ms bounds a DoIP row's open, the TCP connect and the routing activation together: a
+// connect has no bound of its own where the entity drops the attempt, and a routing activation
+// answer may trickle in.
+pub const doip_open_ms = 7000
+
 // open_doip is a DoIP row's connection: to its entity's endpoint, from its tester address to its
-// ECU address. The error is doip's own; the caller says what it was opening for.
+// ECU address, within doip_open_ms. The error is doip's own; the caller says what it was opening
+// for.
 pub fn open_doip(car Carrier) !&doip.DoipClient {
-	return doip.open_doip(car.host, car.port, car.tester, car.ecu)
+	deadline := time.ticks() + doip_open_ms
+	mut c := doip.open_doip_stoppable(car.host, car.port, car.tester, car.ecu, fn [deadline] () bool {
+		return time.ticks() >= deadline
+	}) or {
+		if err.msg() == doip.stopped_note {
+			return error('DoIP: no connection with routing activated within ${doip_open_ms} ms')
+		}
+		return err
+	}
+	c.stop_requested = unsafe { nil } // the deadline was the open's; the connection's waits are its own
+	return c
 }

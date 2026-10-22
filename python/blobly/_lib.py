@@ -52,7 +52,29 @@ class UndecodableAnswer(BloblyError):
 
 class CarrierFailed(BloblyError):
     """The carrier failed under the UDS request: the bus, or the ISO-TP channel (a frame lost
-    mid-transfer)."""
+    mid-transfer); on DoIP a negative acknowledgement, or a connection that could not be opened
+    (refused, or no routing activation answer)."""
+
+
+class ConnectionLost(CarrierFailed):
+    """The DoIP connection is gone (closed by the entity, reset, stalled inside a message, or
+    taking nothing written for 2 s): the client's next call opens a new one — routing activation
+    again, the session and security state the ECU had for the old one gone with it. `exchange` is
+    the exchange it ended (UdsClient.last), whose `sent` says whether the request went out whole."""
+
+    def __init__(self, message, code=-10, exchange=None):
+        super().__init__(message, code)
+        self.exchange = exchange
+
+
+class RoutingDenied(BloblyError):
+    """A DoIP entity denied the routing activation of a UdsClient's connection: `routing_code` is
+    the response code, `routing_name` ISO 13400-2's meaning of it, `hint` what to do about it (""
+    where there is nothing to add), `tester` the tester address it was asked for."""
+
+    def __init__(self, message, code=-9, routing_code=0, routing_name="", hint="", tester=0):
+        super().__init__(message, code)
+        self.routing_code, self.routing_name, self.hint, self.tester = routing_code, routing_name, hint, tester
 
 
 BB_ERR = -1
@@ -63,11 +85,13 @@ BB_ERR_TIMEOUT = -5
 BB_ERR_PENDING = -6
 BB_ERR_UNDECODABLE = -7
 BB_ERR_CARRIER = -8
+BB_ERR_ROUTING = -9
+BB_ERR_LOST = -10
 # the exception each code raises; a code not here (BB_ERR_HANDLE, BB_ERR_STATE, a newer library's)
 # raises BloblyError itself
 ERRORS = {BB_ERR: Refused, BB_ERR_NEGATIVE: NegativeResponse, BB_ERR_TIMEOUT: Timeout,
           BB_ERR_PENDING: PendingExpired, BB_ERR_UNDECODABLE: UndecodableAnswer,
-          BB_ERR_CARRIER: CarrierFailed}
+          BB_ERR_CARRIER: CarrierFailed, BB_ERR_ROUTING: RoutingDenied, BB_ERR_LOST: ConnectionLost}
 # answers that are neither success nor an error (bb.h)
 BB_NONE = 1        # bb_bus_recv: no frame in time; bb_decode: no message
 BB_SPENT = 2       # bb_bus_recv(h, 0): no frame yet, records still queued behind the look's bound
@@ -132,6 +156,16 @@ class BbFunctionalReply(ctypes.Structure):
     """bb_functional_reply, field for field."""
     _fields_ = [("outcome", ctypes.c_int32), ("nrc", ctypes.c_uint8), ("pended", ctypes.c_uint8),
                 ("answer_len", ctypes.c_int32)]
+
+
+BB_DOIP_SOURCE_MAX = 96
+
+
+class BbDoipAnnouncement(ctypes.Structure):
+    """bb_doip_announcement, field for field."""
+    _fields_ = [("vin", ctypes.c_char * 18), ("logical_address", ctypes.c_uint16),
+                ("eid", ctypes.c_uint8 * 6), ("gid", ctypes.c_uint8 * 6),
+                ("source", ctypes.c_char * BB_DOIP_SOURCE_MAX)]
 
 
 # enum bb_functional_outcome, as the Lua uds.functional names the outcomes
@@ -215,6 +249,14 @@ def _declare(lib):
         "bb_uds_functional": ([c_int, ctypes.c_int64, P(c_int), c_int, c_char_p, c_int, c_int,
                                P(BbFunctionalReply)], c_int),
         "bb_uds_reply_error": ([c_int, c_char_p, c_int], c_int),
+        "bb_uds_functional_doip": ([c_int, P(ctypes.c_int64), c_char_p, c_int, c_int, P(BbFunctionalReply)],
+                                   c_int),
+        # DoIP (doip.py)
+        "bb_last_routing": ([P(ctypes.c_uint8), P(ctypes.c_uint16)], c_int),
+        "bb_doip_routing_name": ([c_int, c_char_p, c_int], c_int),
+        "bb_doip_routing_hint": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_doip_discover": ([c_int, c_int, P(BbDoipAnnouncement)], c_int),
+        "bb_doip_listen": ([c_int, c_int, c_int, P(c_int), P(BbDoipAnnouncement), c_int], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)
@@ -348,5 +390,13 @@ def check(rc):
 
 def error(rc):
     """The exception for a failed call's code, with bb_last_error's message: read it before the
-    thread's next call, which replaces it."""
-    return ERRORS.get(rc, BloblyError)(text(_lib.bb_last_error()), rc)
+    thread's next call, which replaces it. A denied routing activation carries its code, read with
+    it (bb_last_routing is the thread's too)."""
+    e = ERRORS.get(rc, BloblyError)(text(_lib.bb_last_error()), rc)
+    if isinstance(e, RoutingDenied):
+        code, tester = ctypes.c_uint8(), ctypes.c_uint16()
+        if _lib.bb_last_routing(ctypes.byref(code), ctypes.byref(tester)) == 0:
+            e.routing_code, e.tester = code.value, tester.value
+            e.routing_name = string(_lib.bb_doip_routing_name, code.value)
+            e.hint = string(_lib.bb_doip_routing_hint, code.value, tester.value)
+    return e

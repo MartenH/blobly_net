@@ -324,12 +324,8 @@ fn is_silence(msg string) bool {
 // owes its final answer even so (ISO 14229-1), and it is waited for. Returns whether the server
 // answered positively WITHOUT owing it — that is, ignored the bit.
 pub fn (mut c Client) raw_suppressed(req []u8) !bool {
-	if req.len < 2 {
-		return error('UDS: a suppressed request needs a sub-function')
-	}
-	n, subfn := echo_of(req)
-	if !subfn || n < 2 {
-		return error('UDS: 0x${req[0]:02X} has no sub-function to suppress a positive response with')
+	if why := request_refusal(req, true) {
+		return error(why)
 	}
 	mut r := req.clone()
 	r[1] |= suppress_positive
@@ -377,9 +373,27 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 	return resp, owed
 }
 
-fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
+// request_refusal is why `req` is no request to send (suppressed: with suppress-positive-response
+// set), or none: what a caller may ask before it readies a carrier for it.
+pub fn request_refusal(req []u8, suppressed bool) ?string {
 	if req.len == 0 {
-		return error('empty UDS request')
+		return 'empty UDS request'
+	}
+	if suppressed {
+		if req.len < 2 {
+			return 'UDS: a suppressed request needs a sub-function'
+		}
+		n, subfn := echo_of(req)
+		if !subfn || n < 2 {
+			return 'UDS: 0x${req[0]:02X} has no sub-function to suppress a positive response with'
+		}
+	}
+	return none
+}
+
+fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
+	if why := request_refusal(req, false) {
+		return error(why)
 	}
 	c.last = ExchangeTiming{}
 	mut discarded := c.drain_queued(req[0])!
@@ -573,7 +587,7 @@ fn (mut c Client) drain_queued(sid u8) !int {
 // connection closed or out of step after a stalled message, a CAN bus closed under a held
 // channel, or a bus or channel that was never opened.
 fn carrier_failed(msg string) bool {
-	return msg.starts_with('DoIP connection lost: ') || msg.contains('bus is closed')
+	return connection_lost(msg) || msg.contains('bus is closed')
 		|| msg.contains(transport.bus_not_open) || msg.contains(isotp.channel_not_open)
 }
 

@@ -1,11 +1,13 @@
-// uds.v — bb.h's UDS calls: a client on a CAN row, opened by the rule a Lua script's uds.open
-// uses (blobly/udsconn), and each call one uds.Client helper, so a host reads decoded answers
-// and typed failures and never a UDS payload of its own. Conventions as lib.v's: i32 at the
-// boundary, handles in a table under bb_mu, deleted on close, counted while a call is inside.
+// uds.v — bb.h's UDS calls: a client on a CAN or DoIP row, opened by the rule a Lua script's
+// uds.open uses (blobly/udsconn), and each call one uds.Client helper, so a host reads decoded
+// answers and typed failures and never a UDS payload of its own. Conventions as lib.v's: i32 at
+// the boundary, handles in a table under bb_mu, deleted on close, counted while a call is inside.
 module main
 
+import sync
 import sync.stdatomic
 import time
+import blobly.doip
 import blobly.isotp
 import blobly.transport
 import blobly.uds
@@ -16,6 +18,8 @@ const bb_err_timeout = i32(C.BB_ERR_TIMEOUT)
 const bb_err_pending = i32(C.BB_ERR_PENDING)
 const bb_err_undecodable = i32(C.BB_ERR_UNDECODABLE)
 const bb_err_carrier = i32(C.BB_ERR_CARRIER)
+const bb_err_routing = i32(C.BB_ERR_ROUTING)
+const bb_err_lost = i32(C.BB_ERR_LOST)
 const bb_answered = i32(C.BB_ANSWERED)
 
 // UdsHandle is one UDS client the host opened. Used outside bb_mu, counted (`users`), closed only
@@ -37,8 +41,19 @@ mut:
 	run      u64
 	row      i32
 	row_name string
+	doip     bool // over the row's DoIP connection; else ISO-TP on CAN ids rx (and ext)
 	rx       u32
 	ext      bool
+		// a DoIP handle's connection: where it reconnects (`car`), whether it is gone (`lost`: the next
+	// call that asks the ECU opens another), which it is (`conn_gen`, moved by each reopen; a 0x27
+	// key goes only on the seed's, `seed_gen`), and what the idle service found (`idle_lost`, said
+	// by the next call); `mu` serialises the calls with that service (serve_idle)
+	car       udsconn.Carrier
+	lost      bool
+	conn_gen  u64
+	seed_gen  u64
+	idle_lost string
+	mu        &sync.Mutex = sync.new_mutex()
 	// the last DTC call's decoded answer, for its accessors
 	dtcs     []uds.DtcRecord
 	avail    u8
@@ -62,9 +77,6 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 		return fail(bb_err_state, "not started: a UDS connection opens on a row of the run, whose wire policy (listen-only, framing) start publishes")
 	}
 	ch := row(r) or { return fail(bb_err, 'no channel ${r}') }
-	if ch.is_doip() {
-		return fail(bb_err, 'uds("${ch.name}"): a DoIP channel — UDS over DoIP is not in this library yet; only a CAN row opens')
-	}
 	ask := udsconn.Ask{
 		what:   'uds'
 		has_tx: !isnil(tx)
@@ -74,19 +86,25 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	}
 	car := udsconn.carrier_of(ch)
 	t := udsconn.resolve(ask, ch.name, car) or { return fail(bb_err, err.msg()) }
-	conn := udsconn.open(t, ch.name, ch.iface_with_bitrate(), car, fn (iface string, _ string) !transport.Bus {
-		return transport.open(iface)
-	}) or { return fail(bb_err, err.msg()) }
 	bb_mu.lock()
 	run := bb_run_gen
+	holder := if t.doip { doip_held(run, r) } else { -1 }
 	bb_mu.unlock()
+	if holder >= 0 {
+		return fail(bb_err, 'uds("${ch.name}"): UDS handle ${holder} holds this DoIP channel\'s connection; one tester address holds one connection to its entity (ISO 13400-2) — use that handle, or close it first')
+	}
+	conn := udsconn.open(t, ch.name, ch.iface_with_bitrate(), car, fn (iface string, _ string) !transport.Bus {
+		return transport.open(iface)
+	}) or { return open_failed(err, t.doip) }
 	mut hd := &UdsHandle{
 		conn:     conn
 		run:      run
 		row:      r
 		row_name: ch.name
+		doip:     t.doip
 		rx:       t.rx
 		ext:      t.ext
+		car:      car
 	}
 	closing := &hd.closing
 	stop := fn [closing] () bool {
@@ -95,6 +113,8 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	hd.stop = stop
 	hd.conn.cli.stop_requested = stop
 	if mut hd.conn.ch is isotp.SoftChannel {
+		hd.conn.ch.stop_requested = stop
+	} else if mut hd.conn.ch is doip.DoipClient {
 		hd.conn.ch.stop_requested = stop
 	}
 	last := &hd.last
@@ -110,15 +130,41 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	bb_uds_next++
 	bb_uds[u] = hd
 	bb_mu.unlock()
+	if hd.doip {
+		spawn serve_idle(mut hd)
+	}
 	if !isnil(out) {
 		unsafe {
-			out.tx = t.tx
-			out.rx = t.rx
+			// a DoIP row's are its logical addresses, as its channel names them
+			out.tx = if t.doip { u32(car.tester) } else { t.tx }
+			out.rx = if t.doip { u32(car.ecu) } else { t.rx }
 			out.ext = u8(t.ext)
 		}
 	}
 	ok()
 	return i32(u)
+}
+
+// doip_held is the open handle on DoIP row `r` of run `run`, or -1 (under bb_mu).
+fn doip_held(run u64, r i32) int {
+	for u, hd in bb_uds {
+		if hd.doip && hd.run == run && hd.row == r && stdatomic.load_i64(&hd.closing) == 0 {
+			return u
+		}
+	}
+	return -1
+}
+
+// open_failed answers an open that failed: a routing activation the entity denied with its code;
+// any other failure of a DoIP connection the carrier's; a CAN row's (no such bus) a refusal.
+fn open_failed(err IError, is_doip bool) i32 {
+	cause := if err is uds.ContextError { err.cause } else { err }
+	if cause is doip.RoutingDenied {
+		rc := fail(bb_err_routing, err.msg())
+		C.bb_routing_set(i32(cause.code), i32(cause.tester))
+		return rc
+	}
+	return fail(if is_doip { bb_err_carrier } else { bb_err }, err.msg())
 }
 
 // bb_uds_close: out of the table at once; closed once the call inside it has left, which its
@@ -136,8 +182,111 @@ pub fn bb_uds_close(u i32) i32 {
 	for stdatomic.load_i64(&hd.users) > 0 {
 		time.sleep(time.millisecond)
 	}
-	hd.conn.ch.close()
+	hd.mu.lock() // the idle service out of the connection; it sees `closing` and ends
+	if !hd.lost {
+		hd.conn.ch.close()
+	}
+	hd.mu.unlock()
 	return ok()
+}
+
+// idle_poll_ms: how often a DoIP handle's idle connection is served — well inside the 500 ms an
+// entity gives an alive check (ISO 13400-2).
+const idle_poll_ms = 50
+
+// serve_idle answers what a DoIP entity asks of an idle connection (an alive check, which unanswered
+// closes it) between the host's calls, until the handle closes: doip.DoipClient.idle, under the
+// handle's lock so it never reads inside a call.
+fn serve_idle(mut hd UdsHandle) {
+	for stdatomic.load_i64(&hd.closing) == 0 {
+		time.sleep(idle_poll_ms * time.millisecond)
+		if !hd.mu.try_lock() {
+			continue // a call is in progress: it answers what arrives
+		}
+		if stdatomic.load_i64(&hd.closing) == 0 && !hd.lost && hd.idle_lost == '' {
+			if mut hd.conn.ch is doip.DoipClient {
+				hd.conn.ch.idle() or {
+					if err.msg() != doip.stopped_note {
+						hd.idle_lost = err.msg()
+					}
+				}
+			}
+		}
+		hd.mu.unlock()
+	}
+}
+
+// reconnect opens a lost DoIP handle's connection again, on the same client (its stated sizes,
+// its hooks), ended by a close of the handle as its calls are; a connection the idle service found
+// gone is said first, as the call's ConnectionLost.
+fn (mut hd UdsHandle) reconnect() ! {
+	if !hd.doip {
+		return
+	}
+	if hd.idle_lost != '' {
+		why := hd.idle_lost
+		hd.idle_lost = ''
+		hd.mark_lost()
+		hd.has_last = false // this call's request never went out
+		return uds.CarrierFailed{
+			text: why
+		}
+	}
+	if !hd.lost {
+		return
+	}
+	hd.has_last = false // the exchange of the call that lost it is not this call's
+	stop := hd.stop
+	deadline := time.ticks() + udsconn.doip_open_ms
+	car := hd.car
+	mut c := doip.open_doip_stoppable(car.host, car.port, car.tester, car.ecu, fn [stop, deadline] () bool {
+		return stop() || time.ticks() >= deadline
+	}) or {
+		if err.msg() == doip.stopped_note && !stop() {
+			return uds.CarrierFailed{
+				text: 'doip reconnect failed on ${hd.row_name} (${car.host}:${car.port}): no connection with routing activated within ${udsconn.doip_open_ms} ms'
+			}
+		}
+		if err is doip.RoutingDenied {
+			return err
+		}
+		if err.msg() == doip.stopped_note {
+			return err
+		}
+		return uds.CarrierFailed{
+			text: 'doip reconnect failed on ${hd.row_name} (${car.host}:${car.port}): ${err}'
+		}
+	}
+	c.stop_requested = stop
+	mut cli := uds.new_client(c)
+	cli.did_lens = hd.conn.cli.did_lens.clone()
+	cli.ext_lens = hd.conn.cli.ext_lens.clone()
+	cli.stop_requested = hd.conn.cli.stop_requested
+	cli.on_exchange = hd.conn.cli.on_exchange
+	hd.conn = udsconn.Conn{
+		ch:  c
+		cli: cli
+	}
+	hd.lost = false
+	hd.conn_gen++
+}
+
+// refuse_before_reopen refuses a request no client would send, when sending it would first open a
+// lost connection again; otherwise the client refuses it, and its exchange records the refusal.
+fn (hd &UdsHandle) refuse_before_reopen(req []u8, suppressed bool) ! {
+	if hd.lost || hd.idle_lost != '' {
+		if why := uds.request_refusal(req, suppressed) {
+			return error(why)
+		}
+	}
+}
+
+// mark_lost lets a DoIP handle's connection go once it is gone, so the next call opens another.
+fn (mut hd UdsHandle) mark_lost() {
+	if hd.doip && !hd.lost {
+		hd.conn.ch.close()
+		hd.lost = true
+	}
 }
 
 fn uds_enter(u i32) ?&UdsHandle {
@@ -162,11 +311,20 @@ fn with_uds(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 	if stdatomic.load_i64(&hd.closing) != 0 {
 		return fail(bb_err_handle, 'the UDS handle was closed')
 	}
-	return call(mut hd) or { uds_failed(err) }
+	hd.mu.lock()
+	defer {
+		hd.mu.unlock()
+	}
+	return call(mut hd) or {
+		if uds.failure_of(err) == .lost {
+			hd.mark_lost()
+		}
+		uds_failed(err)
+	}
 }
 
 // exchange is with_uds for a call that asks the ECU: the bytes an earlier call answered are not
-// this one's, whether or not it succeeds.
+// this one's, whether or not it succeeds; a lost DoIP connection is opened again first.
 fn exchange(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 	return with_uds(u, fn [call] (mut hd UdsHandle) !i32 {
 		hd.forget()
@@ -174,16 +332,30 @@ fn exchange(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 	})
 }
 
+// cli is the handle's client for a call that asks the ECU, its arguments checked: a lost DoIP
+// connection opened again first (reconnect).
+fn (mut hd UdsHandle) cli() !&uds.Client {
+	hd.reconnect()!
+	return &hd.conn.cli
+}
+
 // uds_failed is bb.h's code for the way a client call failed (uds.failure_of).
 fn uds_failed(err IError) i32 {
+	if err is doip.RoutingDenied {
+		rc := fail(bb_err_routing, err.msg())
+		C.bb_routing_set(i32(err.code), i32(err.tester))
+		return rc
+	}
 	return match uds.failure_of(err) {
 		.negative { negative(err) }
 		.no_answer { fail(bb_err_timeout, if err is uds.NoAnswer { err.described() } else { err.msg() }) }
 		.pending { fail(bb_err_pending, err.msg()) }
 		.undecodable { fail(bb_err_undecodable, err.msg()) }
 		.carrier { fail(bb_err_carrier, err.msg()) }
+		.lost { fail(bb_err_lost, err.msg()) }
 		.abandoned { fail(bb_err_handle, 'the UDS handle was closed') }
-		.refused { fail(bb_err, err.msg()) }
+		// a state refusal of this library's own keeps its code (bb_uds_functional_doip's run check)
+		.refused { fail(if err.code() == int(bb_err_state) { bb_err_state } else { bb_err }, err.msg()) }
 	}
 }
 
@@ -345,7 +517,9 @@ pub fn bb_uds_raw(u i32, req &u8, n i32, buf &u8, cap i32) i32 {
 	return exchange(u, fn [req, n, buf, cap] (mut hd UdsHandle) !i32 {
 		r := bytes_in('raw', req, n)!
 		out_buf(buf, cap)!
-		return hd.answer(hd.conn.cli.raw(r)!, buf, cap)
+		hd.refuse_before_reopen(r, false)!
+		mut cl := hd.cli()!
+		return hd.answer(cl.raw(r)!, buf, cap)
 	})
 }
 
@@ -353,7 +527,9 @@ pub fn bb_uds_raw(u i32, req &u8, n i32, buf &u8, cap i32) i32 {
 pub fn bb_uds_raw_suppressed(u i32, req &u8, n i32) i32 {
 	return exchange(u, fn [req, n] (mut hd UdsHandle) !i32 {
 		r := bytes_in('raw_suppressed', req, n)!
-		answered := hd.conn.cli.raw_suppressed(r)!
+		hd.refuse_before_reopen(r, true)!
+		mut cl := hd.cli()!
+		answered := cl.raw_suppressed(r)!
 		ok()
 		return if answered { bb_answered } else { bb_ok }
 	})
@@ -364,14 +540,16 @@ pub fn bb_uds_session(u i32, sub i32, buf &u8, cap i32) i32 {
 	return exchange(u, fn [sub, buf, cap] (mut hd UdsHandle) !i32 {
 		s := sub_arg('session', sub)!
 		out_buf(buf, cap)!
-		return hd.answer(hd.conn.cli.diagnostic_session(s)!, buf, cap)
+		mut cl := hd.cli()!
+		return hd.answer(cl.diagnostic_session(s)!, buf, cap)
 	})
 }
 
 @[export: 'bb_uds_tester_present']
 pub fn bb_uds_tester_present(u i32) i32 {
 	return exchange(u, fn (mut hd UdsHandle) !i32 {
-		hd.conn.cli.tester_present()!
+		mut cl := hd.cli()!
+		cl.tester_present()!
 		return ok()
 	})
 }
@@ -381,7 +559,8 @@ pub fn bb_uds_read_did(u i32, did i32, buf &u8, cap i32) i32 {
 	return exchange(u, fn [did, buf, cap] (mut hd UdsHandle) !i32 {
 		id := did_arg(did)!
 		out_buf(buf, cap)!
-		return hd.answer(hd.conn.cli.read_data_by_identifier(id)!, buf, cap)
+		mut cl := hd.cli()!
+		return hd.answer(cl.read_data_by_identifier(id)!, buf, cap)
 	})
 }
 
@@ -390,7 +569,8 @@ pub fn bb_uds_write_did(u i32, did i32, data &u8, n i32) i32 {
 	return exchange(u, fn [did, data, n] (mut hd UdsHandle) !i32 {
 		id := did_arg(did)!
 		value := bytes_in('write_did', data, n)!
-		hd.conn.cli.write_data_by_identifier(id, value)!
+		mut cl := hd.cli()!
+		cl.write_data_by_identifier(id, value)!
 		return ok()
 	})
 }
@@ -400,7 +580,8 @@ pub fn bb_uds_reset(u i32, kind i32, buf &u8, cap i32) i32 {
 	return exchange(u, fn [kind, buf, cap] (mut hd UdsHandle) !i32 {
 		k := sub_arg('reset kind', kind)!
 		out_buf(buf, cap)!
-		return hd.answer(hd.conn.cli.ecu_reset(k)!, buf, cap)
+		mut cl := hd.cli()!
+		return hd.answer(cl.ecu_reset(k)!, buf, cap)
 	})
 }
 
@@ -409,7 +590,8 @@ pub fn bb_uds_comm_control(u i32, control i32, comm_type i32) i32 {
 	return exchange(u, fn [control, comm_type] (mut hd UdsHandle) !i32 {
 		c := sub_arg('control', control)!
 		t := byte_arg('communication type', comm_type)!
-		hd.conn.cli.communication_control(c, t)!
+		mut cl := hd.cli()!
+		cl.communication_control(c, t)!
 		return ok()
 	})
 }
@@ -417,7 +599,8 @@ pub fn bb_uds_comm_control(u i32, control i32, comm_type i32) i32 {
 @[export: 'bb_uds_dtc_setting']
 pub fn bb_uds_dtc_setting(u i32, on i32) i32 {
 	return exchange(u, fn [on] (mut hd UdsHandle) !i32 {
-		hd.conn.cli.control_dtc_setting(on != 0)!
+		mut cl := hd.cli()!
+		cl.control_dtc_setting(on != 0)!
 		return ok()
 	})
 }
@@ -428,7 +611,8 @@ pub fn bb_uds_clear_dtcs(u i32, group i32) i32 {
 		if group < 0 || group > 0xFFFFFF {
 			return error('DTC group ${group} is not a 24-bit value')
 		}
-		hd.conn.cli.clear_dtc(u32(group))!
+		mut cl := hd.cli()!
+		cl.clear_dtc(u32(group))!
 		return ok()
 	})
 }
@@ -438,7 +622,9 @@ pub fn bb_uds_security_seed(u i32, level i32, unlocked &u8, buf &u8, cap i32) i3
 	return exchange(u, fn [level, unlocked, buf, cap] (mut hd UdsHandle) !i32 {
 		l := level_arg(level, true)!
 		out_buf(buf, cap)!
-		seed := hd.conn.cli.security_request_seed(l)!
+		mut cl := hd.cli()!
+		seed := cl.security_request_seed(l)!
+		hd.seed_gen = hd.conn_gen
 		if !isnil(unlocked) {
 			unsafe {
 				*unlocked = u8(uds.already_unlocked(seed))
@@ -453,6 +639,10 @@ pub fn bb_uds_security_key(u i32, level i32, key &u8, n i32) i32 {
 	return exchange(u, fn [level, key, n] (mut hd UdsHandle) !i32 {
 		l := level_arg(level, false)!
 		k := bytes_in('security_key', key, n)!
+		// the key answers the seed of ONE connection: never opened again for it
+		if hd.doip && (hd.lost || hd.idle_lost != '' || hd.conn_gen != hd.seed_gen) {
+			return error('security_key: the connection that gave the seed is gone; request a new seed')
+		}
 		hd.conn.cli.security_send_key(l, k)!
 		return ok()
 	})
@@ -504,7 +694,8 @@ fn held(what string, i i32, n int) !int {
 pub fn bb_uds_dtcs(u i32, mask i32) i32 {
 	return exchange(u, fn [mask] (mut hd UdsHandle) !i32 {
 		m := byte_arg('status mask', mask)!
-		r := hd.conn.cli.dtcs(m)!
+		mut cl := hd.cli()!
+		r := cl.dtcs(m)!
 		hd.dtcs, hd.avail = r.records, r.availability
 		return ok_count(r.records.len)
 	})
@@ -513,7 +704,8 @@ pub fn bb_uds_dtcs(u i32, mask i32) i32 {
 @[export: 'bb_uds_supported_dtcs']
 pub fn bb_uds_supported_dtcs(u i32) i32 {
 	return exchange(u, fn (mut hd UdsHandle) !i32 {
-		r := hd.conn.cli.supported_dtcs()!
+		mut cl := hd.cli()!
+		r := cl.supported_dtcs()!
 		hd.dtcs, hd.avail = r.records, r.availability
 		return ok_count(r.records.len)
 	})
@@ -532,7 +724,8 @@ pub fn bb_uds_dtc(u i32, i i32, out &C.bb_dtc) i32 {
 pub fn bb_uds_dtc_count(u i32, mask i32, availability &u8) i32 {
 	return exchange(u, fn [mask, availability] (mut hd UdsHandle) !i32 {
 		m := byte_arg('status mask', mask)!
-		n := hd.conn.cli.dtc_count(m)!
+		mut cl := hd.cli()!
+		n := cl.dtc_count(m)!
 		if !isnil(availability) {
 			unsafe {
 				*availability = n.availability
@@ -545,7 +738,8 @@ pub fn bb_uds_dtc_count(u i32, mask i32, availability &u8) i32 {
 @[export: 'bb_uds_snapshot_ids']
 pub fn bb_uds_snapshot_ids(u i32) i32 {
 	return exchange(u, fn (mut hd UdsHandle) !i32 {
-		hd.snap_ids = hd.conn.cli.snapshot_ids()!
+		mut cl := hd.cli()!
+		hd.snap_ids = cl.snapshot_ids()!
 		return ok_count(hd.snap_ids.len)
 	})
 }
@@ -571,7 +765,8 @@ pub fn bb_uds_snapshot(u i32, code i32, record i32, dtc &C.bb_dtc) i32 {
 	return exchange(u, fn [code, record, dtc] (mut hd UdsHandle) !i32 {
 		c := dtc_arg(code)!
 		r := byte_arg('snapshot record', record)!
-		hd.snapshot = hd.conn.cli.snapshot(c, r)!
+		mut cl := hd.cli()!
+		hd.snapshot = cl.snapshot(c, r)!
 		dtc_out(dtc, hd.snapshot.dtc, 0xFF)
 		return ok_count(hd.snapshot.records.len)
 	})
@@ -610,7 +805,8 @@ pub fn bb_uds_extended(u i32, code i32, record i32, dtc &C.bb_dtc, counters &C.b
 	return exchange(u, fn [code, record, dtc, counters] (mut hd UdsHandle) !i32 {
 		c := dtc_arg(code)!
 		r := byte_arg('extended data record', record)!
-		hd.extended = hd.conn.cli.extended(c, r)!
+		mut cl := hd.cli()!
+		hd.extended = cl.extended(c, r)!
 		dtc_out(dtc, hd.extended.dtc, 0xFF)
 		if !isnil(counters) {
 			b := hd.extended.blobly_counters()
@@ -646,18 +842,24 @@ pub fn bb_uds_extended_record(u i32, k i32, number &u8, buf &u8, cap i32) i32 {
 	})
 }
 
-// the largest a snapshot DID's value and an extended record can be in one ISO-TP answer: the
-// header (59 sub DTC status, 6 bytes), then a record's number and DID count and the DID (4 more),
-// or the record's number (1)
-const max_snapshot_did = isotp.max_pdu - 10
-const max_ext_record = isotp.max_pdu - 7
+// max_answer is the longest answer the handle's carrier brings: an ISO-TP PDU, or a DoIP diagnostic
+// message's user data (its payload less the two logical addresses)
+fn (hd &UdsHandle) max_answer() int {
+	return if hd.doip { int(doip.max_payload_len) - 4 } else { isotp.max_pdu }
+}
+
+// the largest a snapshot DID's value and an extended record can be in one answer: the header (59
+// sub DTC status, 6 bytes), then a record's number and DID count and the DID (4 more), or the
+// record's number (1)
+const snapshot_did_overhead = 10
+const ext_record_overhead = 7
 
 // bb_uds_did_size states a snapshot DID's size, for one the client cannot learn by reading it.
 @[export: 'bb_uds_did_size']
 pub fn bb_uds_did_size(u i32, did i32, n i32) i32 {
 	return with_uds(u, fn [did, n] (mut hd UdsHandle) !i32 {
 		id := did_arg(did)!
-		if n < 0 || n > max_snapshot_did {
+		if n < 0 || n > hd.max_answer() - snapshot_did_overhead {
 			return error('did_size: ${n} bytes is not a DID size')
 		}
 		hd.conn.cli.set_did_size(id, int(n))
@@ -670,7 +872,7 @@ pub fn bb_uds_did_size(u i32, did i32, n i32) i32 {
 pub fn bb_uds_ext_record_size(u i32, record i32, n i32) i32 {
 	return with_uds(u, fn [record, n] (mut hd UdsHandle) !i32 {
 		r := byte_arg('extended data record', record)!
-		if n < 0 || n > max_ext_record {
+		if n < 0 || n > hd.max_answer() - ext_record_overhead {
 			return error('ext_record_size: ${n} bytes is not a record size')
 		}
 		hd.conn.cli.set_ext_record_size(r, int(n))
@@ -745,8 +947,11 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 		return fail(bb_err_state, "not started: a functional request goes out on a row of the run, whose wire policy (listen-only, framing) start publishes")
 	}
 	ch := row(r) or { return fail(bb_err, 'no channel ${r}') }
+	if ch.is_doip() {
+		return fail(bb_err, 'functional("${ch.name}"): a DoIP channel — its functional request is bb_uds_functional_doip, on its one handle')
+	}
 	if ch.is_eth() {
-		return fail(bb_err, 'functional("${ch.name}"): a DoIP or SOME/IP channel — functional addressing here is CAN only')
+		return fail(bb_err, 'functional("${ch.name}"): a SOME/IP channel — functional addressing is CAN or DoIP only')
 	}
 	if id < 0 || id > 0x1FFF_FFFF {
 		return fail(bb_err, 'functional("${ch.name}"): ${id} is not a CAN identifier')
@@ -777,7 +982,7 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 		if hd.run != run {
 			return fail(bb_err_state, 'functional("${ch.name}"): handle ${u} was opened in an earlier run')
 		}
-		if hd.row != r {
+		if hd.row != r || hd.doip {
 			return fail(bb_err, 'functional("${ch.name}"): handle ${u} was opened on "${hd.row_name}"')
 		}
 		targets << uds.FunctionalTarget{
@@ -833,23 +1038,67 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 	defer {
 		fch.close()
 	}
-	replies := uds.functional(mut fch, mut tap, targets, request, if window_ms > 0 {
-		int(window_ms)
-	} else {
-		1000
-	}) or { return uds_failed(err) }
+	replies := uds.functional(mut fch, mut tap, targets, request, window_or_default(window_ms)) or {
+		return uds_failed(err)
+	}
 	for i, rep in replies {
 		mut hd := hds[i]
-		hd.data = rep.resp.clone()
-		hd.reply_err = rep.err
-		unsafe {
-			out[i].outcome = outcome_code(rep.outcome)
-			out[i].nrc = rep.nrc
-			out[i].pended = u8(rep.pended)
-			out[i].answer_len = i32(rep.resp.len)
-		}
+		reply_out(mut hd, rep, unsafe { &out[i] })
 	}
 	return ok()
+}
+
+fn window_or_default(window_ms i32) int {
+	return if window_ms > 0 { int(window_ms) } else { 1000 }
+}
+
+// reply_out is a functional reply into the host's struct, its answer and failure the handle's.
+fn reply_out(mut hd UdsHandle, rep uds.FunctionalReply, out &C.bb_functional_reply) {
+	hd.data = rep.resp.clone()
+	hd.reply_err = rep.err
+	unsafe {
+		out.outcome = outcome_code(rep.outcome)
+		out.nrc = rep.nrc
+		out.pended = u8(rep.pended)
+		out.answer_len = i32(rep.resp.len)
+	}
+}
+
+// bb_uds_functional_doip: `req` on handle u's DoIP connection to the functional logical address
+// *address (NULL: doip's default, 0xE400), answered by the entity that connection reaches
+// (uds.functional_addressed, the Lua uds.functional's on a DoIP channel).
+@[export: 'bb_uds_functional_doip']
+pub fn bb_uds_functional_doip(u i32, address &i64, req &u8, len i32, window_ms i32, out &C.bb_functional_reply) i32 {
+	if isnil(out) {
+		return fail(bb_err, 'functional: nowhere to put the reply')
+	}
+	fa := if isnil(address) { i64(doip.default_functional_address) } else { unsafe { *address } }
+	return with_uds(u, fn [fa, req, len, window_ms, out] (mut hd UdsHandle) !i32 {
+		if !hd.doip {
+			return error('functional("${hd.row_name}"): a CAN channel — its functional request is bb_uds_functional, on a functional CAN id')
+		}
+		bb_mu.lock()
+		live, run := bb_dbs_live, bb_run_gen
+		bb_mu.unlock()
+		if !live || hd.run != run {
+			return error_with_code('functional("${hd.row_name}"): the handle was opened in an earlier run',
+				int(bb_err_state))
+		}
+		if fa < 0 || fa > 0xFFFF {
+			return error('functional("${hd.row_name}"): ${fa} is not a DoIP logical address')
+		}
+		request := bytes_in('functional', req, len)!
+		if request.len == 0 {
+			return error('empty UDS request') // refused before what the handle holds is let go
+		}
+		hd.forget()
+		hd.reconnect()!
+		hd.has_last = false // the reply says, as on CAN
+		mut via := uds.AddressedSend(hd.conn.ch as doip.DoipClient)
+		rep := uds.functional_addressed(mut hd.conn.cli, mut via, u32(fa), request, window_or_default(window_ms))!
+		reply_out(mut hd, rep, out)
+		return ok()
+	})
 }
 
 // functional_open_failed answers an open of a functional request's taps that failed: a close of a

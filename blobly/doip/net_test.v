@@ -1162,3 +1162,47 @@ fn test_a_retargeted_client_talks_to_the_node_behind_the_gateway() {
 	ch.close()
 	ln.close() or {}
 }
+
+// An entity that activates routing and then reads nothing holds a write no longer than
+// write_timeout_ms (the connection lost), and a stop asked meanwhile ends it within a poll.
+fn test_a_write_the_entity_does_not_read_is_bounded() {
+	for stop_it in [false, true] {
+		mut ln, lport := free_listener() or {
+			assert false, 'listen: ${err}'
+			return
+		}
+		spawn fn (mut ln net.TcpListener) {
+			mut c := ln.accept() or { return }
+			_ := read_message(mut c, 2000) or { return }
+			c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+			time.sleep(4 * time.second) // reads nothing more
+			c.close() or {}
+		}(mut ln)
+		mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+			assert false, 'open: ${err}'
+			return
+		}
+		at := time.ticks() + 300
+		if stop_it {
+			ch.stop_requested = fn [at] () bool {
+				return time.ticks() >= at
+			}
+		}
+		sw := time.new_stopwatch()
+		// more than the socket buffers of both ends hold
+		mut failed := false
+		ch.send([]u8{len: 32 * 1024 * 1024, init: 0x2E}) or {
+			failed = true
+			if stop_it {
+				assert err.msg() == stopped_note, err.msg()
+			} else {
+				assert err.msg().starts_with(doip_connection_lost), err.msg()
+			}
+		}
+		assert failed, 'the whole write went out'
+		limit := if stop_it { 900 } else { write_timeout_ms + 900 }
+		assert sw.elapsed().milliseconds() < limit, 'stop ${stop_it}: the write took ${sw.elapsed().milliseconds()} ms'
+		ch.close()
+		ln.close() or {}
+	}
+}

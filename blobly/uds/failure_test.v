@@ -97,6 +97,21 @@ fn test_each_way_an_exchange_ends_is_told_apart() {
 		send_err: 'send: Network is down'
 	}, [u8(0x3E), 0x00])
 	assert k == .carrier
+	// the DoIP connection gone, under the wait or under the send, and a negative ack that is not
+	k, _ = failure(&FailingChannel{
+		answers: [[]u8{}]
+		errs:    ['${doip.doip_connection_lost}DoIP: connection closed mid-message']
+	}, [u8(0x22), 0xF1, 0x90])
+	assert k == .lost
+	k, _ = failure(&FailingChannel{
+		send_err: '${doip.doip_connection_lost}Broken pipe'
+	}, [u8(0x3E), 0x00])
+	assert k == .lost
+	k, _ = failure(&FailingChannel{
+		answers: [[]u8{}]
+		errs:    ['DoIP: diagnostic message negative ack (0x03)']
+	}, [u8(0x22), 0xF1, 0x90])
+	assert k == .carrier
 	// an answer begun and not finished in time is late, not lost
 	k, _ = failure(&FailingChannel{
 		answers: [[]u8{}]

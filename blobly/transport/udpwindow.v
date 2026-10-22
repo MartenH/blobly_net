@@ -173,3 +173,15 @@ fn udp_window_on(mut c net.UdpConn, window_ms int) []Datagram {
 	}
 	return out
 }
+
+// listen_port is the port a passive listener binds: the port of the channel `from` (`from_port`)
+// decides when one is given, and a `requested` port that disagrees with it is refused rather than
+// overruled — two answers to one question. Without a channel, the request (0: none) or `dflt`.
+// `what` names what is on the channel's port in the refusal. doip.listen and someip.listen alike.
+pub fn listen_port(requested int, from string, from_port ?int, dflt int, what string) !int {
+	fp := from_port or { return if requested == 0 { dflt } else { requested } }
+	if requested != 0 && requested != fp {
+		return error('port ${requested} contradicts from = "${from}", whose ${what} is on port ${fp}; give one or the other')
+	}
+	return fp
+}

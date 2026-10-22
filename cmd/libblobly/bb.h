@@ -118,8 +118,9 @@ typedef struct bb_signal {
 	double  maximum;
 } bb_signal;
 
-/* What bb_uds_open opened: the ids a request goes out and its answer comes back on, as resolved
- * from what was asked (an omitted one is the default, 0x7E0 / 0x7E8). */
+/* What bb_uds_open opened: on a CAN row the ids a request goes out and its answer comes back on,
+ * as resolved from what was asked (an omitted one is the default, 0x7E0 / 0x7E8); on a DoIP row the
+ * logical addresses, tx the tester's (the requests' source) and rx the ECU's (their target), ext 0. */
 typedef struct bb_uds_target {
 	uint32_t tx;
 	uint32_t rx;
@@ -178,6 +179,19 @@ typedef struct bb_functional_reply {
 	                        bb_uds_data */
 } bb_functional_reply;
 
+/* What a DoIP entity says about itself (bb_doip_discover, bb_doip_listen): a vehicle
+ * identification response, or an announcement it sent unasked — the same message (ISO 13400-2). */
+#define BB_DOIP_SOURCE_MAX 96
+typedef struct bb_doip_announcement {
+	char     vin[18];          /* the VIN as text; "" when the entity has none (ISO 13400 fills an
+	                              unconfigured one with 0x00 or 0xFF) or it is not printable ASCII */
+	uint16_t logical_address;
+	uint8_t  eid[6];           /* the entity id (often its MAC address) */
+	uint8_t  gid[6];           /* the group id */
+	char     source[BB_DOIP_SOURCE_MAX]; /* where it came from, "host:port" ("[v6]:port"); a
+	                                        longer one is cut at a byte */
+} bb_doip_announcement;
+
 /* Error codes. The message (bb_last_error) says what; the code says which kind. */
 #define BB_ERR         (-1)  /* refused, with a reason in bb_last_error */
 #define BB_ERR_HANDLE  (-2)  /* no such bus or UDS handle, or a closed one */
@@ -190,7 +204,14 @@ typedef struct bb_functional_reply {
 #define BB_ERR_PENDING      (-6)  /* responsePending (0x78), then nothing within the ECU's P2* */
 #define BB_ERR_UNDECODABLE  (-7)  /* an answer arrived that cannot be read as one */
 #define BB_ERR_CARRIER      (-8)  /* the carrier failed under the request: the bus, or the ISO-TP
-                                     channel (a frame lost mid-transfer) */
+                                     channel (a frame lost mid-transfer); on a DoIP row a
+                                     negative acknowledgement, or a connection that could not be
+                                     opened (refused, no routing activation answer) */
+#define BB_ERR_ROUTING      (-9)  /* bb_uds_open on a DoIP row: the entity denied the routing
+                                     activation; bb_last_routing says with which code */
+#define BB_ERR_LOST         (-10) /* the DoIP connection is gone (closed by the entity, reset, or
+                                     stalled inside a message): nothing more goes over it — close
+                                     the handle, and a new one opens a new connection */
 
 /* Answers that are neither success nor an error. */
 #define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
@@ -290,12 +311,19 @@ int bb_encode(int row, int m, int n, const char *const *signals, const double *v
  * *message set so the host can ask again with arrays of its bb_message.signals. */
 int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t *active, int cap);
 
-/* UDS (ISO 14229) on a CAN row: a client over ISO-TP on the row's bus, opened by the rule a Lua
+/* UDS (ISO 14229) on a row: a client over ISO-TP on a CAN row's bus, or over a DoIP row's
+ * connection to its entity (ISO 13400: TCP, then routing activation), opened by the rule a Lua
  * script's uds.open opens by (blobly/udsconn), each call one of its helpers — so a host reads
- * answers decoded and failures typed, and never a UDS payload of its own. A DoIP row is refused
- * by name: UDS over DoIP is not in this library yet. `row` is a bb_channel_* index; tx / rx point
- * at the ids to use, NULL for the default (0x7E0 / 0x7E8): an id that is not a CAN identifier is
- * refused, and either past 0x7FF makes both 29-bit. `out` (unless NULL) gets the ids opened on.
+ * answers decoded and failures typed, and never a UDS payload of its own. `row` is a bb_channel_*
+ * index. On a CAN row tx / rx point at the ids to use, NULL for the default (0x7E0 / 0x7E8): an
+ * id that is not a CAN identifier is refused, and either past 0x7FF makes both 29-bit. On a DoIP
+ * row the addressing is the row's (tester_address / ecu_address), so tx / rx must be NULL; a
+ * denied routing activation is BB_ERR_ROUTING, and a second handle on a row that has one open in
+ * this run is refused — one tester address holds one connection to its entity (ISO 13400-2), so
+ * the second's routing activation would be denied. The open is bounded: the TCP connect and the
+ * routing activation within 7 s in all, the activation answer within 2 s of the connect; a write
+ * on the connection within 2 s, after which it is lost. `out` (unless NULL) gets what was opened
+ * on (bb_uds_target).
  *
  * ONE THREAD USES A UDS HANDLE at a time, as a bus handle; bb_uds_close may come from another,
  * and ends a call in progress there (BB_ERR_HANDLE) within 20 ms of the wait it is in — a frame
@@ -319,6 +347,15 @@ int bb_uds_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *ou
 int bb_last_nrc(uint8_t *nrc);  /* 0 with *nrc the NRC when the calling thread's last call failed
                                    with BB_ERR_NEGATIVE, BB_NONE otherwise; like bb_last_error it
                                    changes nothing, so it answers after the handle is gone */
+int bb_last_routing(uint8_t *code, uint16_t *tester); /* 0 with the routing activation response
+                                   code and the tester address it was asked for, when the calling
+                                   thread's last call failed with BB_ERR_ROUTING; BB_NONE
+                                   otherwise. Per thread, as bb_last_nrc */
+int bb_doip_routing_name(int code, char *buf, int cap);  /* ISO 13400-2's meaning of a routing
+                                                            activation response code */
+int bb_doip_routing_hint(int code, int tester, char *buf, int cap); /* what a tester asking as
+                                   `tester` can do about a denial with `code`; "" where there is
+                                   nothing to add to its name */
 int bb_uds_close(int u);
 int bb_uds_last(int u, bb_uds_exchange *out, uint8_t *request, int request_cap, uint8_t *answer,
                 int answer_cap);                            /* 0, with the handle's last exchange
@@ -400,13 +437,42 @@ int bb_dtc_status_bit(int k, uint8_t *mask, char *buf, int cap); /* ISO 14229-1'
  * row in this run (BB_ERR_STATE before bb_start, or for a handle of an earlier run) — answers on
  * its own response id, a multi-frame answer included. out[i] is handles[i]'s reply; window_ms
  * bounds each target's first answer (0: 1000), a responsePending its P2* after. One thread uses
- * those handles for the call, and a close of any of them ends it. */
+ * those handles for the call, and a close of any of them ends it. A DoIP row is
+ * bb_uds_functional_doip's. */
 int bb_uds_functional(int row, int64_t id, const int *handles, int n, const uint8_t *req, int len,
                       int window_ms, bb_functional_reply *out);
+/* Functional addressing on a DoIP row (ISO 13400-2): `req` goes out on handle u's connection to
+ * the functional logical address *address (NULL: 0xE400), and the entity the connection reaches
+ * answers from its own address — one connection is one entity, so one reply, *out, its answer the
+ * handle's bb_uds_data. window_ms bounds the first answer (0: 1000), a responsePending its P2*
+ * after; a close of the handle ends it. BB_ERR_STATE for a handle of an earlier run, or after
+ * bb_stop. */
+int bb_uds_functional_doip(int u, const int64_t *address, const uint8_t *req, int len,
+                           int window_ms, bb_functional_reply *out);
 int bb_uds_reply_error(int u, char *buf, int cap);  /* why the handle's last functional reply
                                                       failed; "" when it did not. A functional
                                                       request leaves each target's bb_uds_last
                                                       BB_NONE: its reply is out[i] */
+
+/* DoIP discovery (ISO 13400-2 vehicle identification), as the Lua doip.discover and doip.listen.
+ *
+ * bb_doip_discover asks DoIP row `row`'s endpoint, as the run has it, who it is, and waits at most
+ * timeout_ms for the answer: 0 with *out filled, BB_ERR_TIMEOUT when none came, BB_ERR for a row
+ * that is not DoIP or an endpoint that cannot be asked, BB_ERR_STATE before bb_start (a hosted
+ * entity's row names the run's port only from then).
+ *
+ * bb_doip_listen hears the announcements entities send unasked, for window_ms, on port `port`
+ * (0: 13400) over IPv4, or over IPv6 (joining ff02::1) when ip6 is 1 — or, `from` pointing at a
+ * DoIP row's index, on that row's port in the run and, when its address is IPv6, over IPv6: a
+ * `port` that contradicts the row's is refused, and `from` before bb_start is BB_ERR_STATE. Both
+ * may come from any (attached) thread. Nothing is queued for a listener that is not there, so it hears
+ * only what is sent within its window. Answers how many it heard (>= 0), every one, in the order
+ * heard, the first `cap` of them in out[]. A listener in this process holding the port exclusively
+ * (a SOME/IP row) is a refusal; ISO 13400 puts every tester and entity on one discovery port, so
+ * DoIP listeners share it. */
+int bb_doip_discover(int row, int timeout_ms, bb_doip_announcement *out);
+int bb_doip_listen(int port, int window_ms, int ip6, const int *from, bb_doip_announcement *out,
+                   int cap);
 
 /* Faults and E2E: the rules the Lua prelude's sim.fault and e2e.* ask (cmd/libblobly/sim.v).
  *

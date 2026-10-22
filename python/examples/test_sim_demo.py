@@ -6,8 +6,9 @@
 
 conftest.py beside this file loads the plugin and pytest.ini names the project; a suite of your
 own needs the same two lines. The plugin gives each test the started project (`project`), a
-fixture per channel, named after it (`can1`), and a UDS client (`diag`). A test hears what arrives from its start, and what
-it registers on the project or arms is dropped after it."""
+fixture per channel, named after it (`can1`), and a UDS client (`diag`), on the channel a test names
+by parametrizing it: over CAN and over DoIP below. A test hears what arrives from its start, and
+what it registers on the project or arms is dropped after it."""
 import pytest
 
 
@@ -25,8 +26,13 @@ def test_the_sut_answers_a_request_message(can1):
     can1.expect_signal("Response", "RespCode", 6, timeout_ms=500)
 
 
+@pytest.mark.parametrize("diag", ["CAN1", "DoIP1"], indirect=True)
 def test_the_sut_reports_its_vin(diag):
     assert diag.read_did(0xF190) == b"BLOBLYNETV0SUT001"
+
+
+def test_the_doip_entity_announces_the_vin_it_serves(doip1):
+    assert doip1.discover().vin == "BLOBLYNETV0SUT001"
 
 
 def test_the_sut_holds_its_two_dtcs(diag):

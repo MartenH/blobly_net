@@ -12,6 +12,7 @@ import weakref
 from . import _lib
 from ._lib import BloblyError, Timeout
 from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
+from .doip import discover
 from .uds import UdsClient, _close_orphans, functional
 from .faults import Faults
 
@@ -434,21 +435,32 @@ class Channel:
             return msg, [(s, values[i] if active[i] else None) for i, s in enumerate(msg.signals)]
 
     def uds(self, tx=None, rx=None):
-        """A UdsClient on this row: UDS requests out on CAN id `tx`, answers back on `rx`, by the
-        rule the Lua uds.open opens by — None is the default pair 0x7E0 / 0x7E8, 0 is an id like
-        any other, and either id past 0x7FF makes both 29-bit. Only on a CAN row (a DoIP row is
-        refused by name: UDS over DoIP is not in the package yet), and while the project is
-        started."""
+        """A UdsClient on this row, by the rule the Lua uds.open opens by, while the project is
+        started. On a CAN row UDS requests go out on CAN id `tx` and answers come back on `rx`:
+        None is the default pair 0x7E0 / 0x7E8, 0 is an id like any other, and either id past
+        0x7FF makes both 29-bit. On a DoIP row they ride a TCP connection to its entity, from the
+        row's tester_address to its ecu_address, so tx and rx are refused; RoutingDenied when the
+        entity will not route the tester, and one client at a time holds the row's connection
+        (ISO 13400-2: one tester address, one connection) — a second is refused while it is open."""
         return UdsClient(self, tx, rx)
 
     def uds_functional(self, functional_id, clients, request, window_ms=1000):
-        """UDS functional addressing (ISO 14229-2) on this CAN row, as the Lua uds.functional:
-        `request` goes out ONCE, a Single Frame (7 bytes at most) on CAN id `functional_id`, and
-        each of `clients` — UdsClients of this channel — answers on its own response id, a
-        multi-frame answer included. Returns a FunctionalReply per client, in their order.
-        `window_ms` bounds each one's first answer; one that says responsePending is waited for
-        its P2* after it."""
+        """UDS functional addressing (ISO 14229-2) on this row, as the Lua uds.functional. On a
+        CAN row `request` goes out ONCE, a Single Frame (7 bytes at most) on CAN id
+        `functional_id`, and each of `clients` — UdsClients of this channel — answers on its own
+        response id, a multi-frame answer included. On a DoIP row it goes to the functional
+        logical address `functional_id` (None: 0xE400) on the connection of `clients`' one
+        UdsClient, and the entity answers from its own address. Returns a FunctionalReply per
+        client, in their order. `window_ms` bounds each one's first answer; one that says
+        responsePending is waited for its P2* after it."""
         return functional(self, functional_id, clients, request, window_ms)
+
+    def discover(self, timeout_ms=1200):
+        """A DoIP row's entity asked who it is (ISO 13400-2 vehicle identification, the Lua
+        doip.discover): a DoipAnnouncement — what it ANNOUNCES, which need not be what it serves
+        at DID 0xF190. Timeout when no answer came within timeout_ms; refused on a CAN or
+        SOME/IP row."""
+        return discover(self, timeout_ms)
 
     def close(self):
         """Lets the handle go, and the connections of its UDS clients; the next use opens another."""

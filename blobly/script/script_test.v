@@ -118,24 +118,6 @@ fn test_doip_listen_from_resolves_or_refuses() {
 	assert env.passed() == 4, env.results.filter(!it.ok).map(it.msg).str()
 }
 
-// The port rule itself, every branch, without a VM in between.
-fn test_listen_port_rule() {
-	// no `from`: the request, or the DoIP default
-	assert listen_port(0, '', 0, 13400, 'entity')! == 13400
-	assert listen_port(13555, '', 0, 13400, 'entity')! == 13555
-	// `from`: the channel's port, and a request that agrees is not a contradiction
-	assert listen_port(0, 'Alt', 13555, 13400, 'entity')! == 13555
-	assert listen_port(13555, 'Alt', 13555, 13400, 'entity')! == 13555
-	// a request that disagrees is refused, naming both
-	if p := listen_port(13400, 'Alt', 13555, 13400, 'entity') {
-		assert false, 'accepted a contradicting port: ${p}'
-	} else {
-		assert err.msg().contains('contradicts')
-		assert err.msg().contains('13400')
-		assert err.msg().contains('13555')
-	}
-}
-
 fn test_nrc_assertion_helper() {
 	// check.nrc passes when the wrapped call raises a matching NRC error.
 	mut env := quiet_env()

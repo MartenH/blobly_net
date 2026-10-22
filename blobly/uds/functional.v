@@ -310,7 +310,11 @@ pub fn functional_addressed(mut c Client, mut via AddressedSend, target u32, req
 		return error('empty UDS request')
 	}
 	c.drain_queued(req[0])!
-	via.send_to(target, req)!
+	// a stop asked during the drain sends nothing
+	if c.stopping() {
+		return error(abandoned_note)
+	}
+	via.send_to(target, req) or { return send_failure(err, c.ch, c.stopping(), req[0], 0) }
 	sw := time.new_stopwatch()
 	mut deadline := i64(window_ms)
 	mut pended := false
@@ -322,6 +326,16 @@ pub fn functional_addressed(mut c Client, mut via AddressedSend, target u32, req
 		resp := c.ch.recv(int(left)) or {
 			if is_silence(err.msg()) {
 				continue
+			}
+			// a stop ends the request, and the connection failing under it is the carrier's, as
+			// the listener failing is in `functional`; anything else is this reply's
+			if c.stopping() || abandoned(err.msg()) {
+				return error(abandoned_note)
+			}
+			if carrier_failed(err.msg()) {
+				return CarrierFailed{
+					text: err.msg()
+				}
 			}
 			return FunctionalReply{
 				outcome: .failed

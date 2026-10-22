@@ -25,8 +25,10 @@ Fixtures:
              pytest's own such as tmp_path, another plugin's) gets no fixture, and pytest warns
              which as it starts; reach such a channel as project.channels[...]. The names are read
              from the project (loaded, not started) as pytest configures.
-  diag       a blobly.UdsClient on the first enabled CAN channel at the default ids (0x7E0 out,
-             0x7E8 back), closed after the test; another channel's, or other ids, is
+  diag       a blobly.UdsClient, closed after the test: on the first enabled CAN channel at the
+             default ids (0x7E0 out, 0x7E8 back), else the first DoIP one, or on the channel a test
+             names by parametrizing it — @pytest.mark.parametrize("diag", ["DoIP1"],
+             indirect=True), which with ["CAN1", "DoIP1"] runs the test over both. Other ids are
              canN.uds(tx, rx).
 
 A failed expect or expect_signal is a test failure whose message says what was expected and what
@@ -151,12 +153,21 @@ def project(_blobly_run: Project):
 
 
 @pytest.fixture
-def diag(project: Project):
-    """A UDS client on the project's first enabled CAN channel, at the default ids (0x7E0 out,
-    0x7E8 back), closed after the test; any other is canN.uds(tx, rx)."""
-    ch = next((c for c in project.channels if c.kind == "can"), None)
-    if ch is None:
-        pytest.fail("diag: the project has no enabled CAN channel", pytrace=False)
+def diag(project: Project, request: pytest.FixtureRequest):
+    """A UDS client, closed after the test: on the channel the test names by parametrizing this
+    fixture indirectly, else on the project's first enabled CAN channel at the default ids (0x7E0
+    out, 0x7E8 back), else its first DoIP one; other ids are canN.uds(tx, rx)."""
+    name = getattr(request, "param", None)
+    if name is not None:
+        if not isinstance(name, str) or name not in project.channels.keys():
+            pytest.fail(f"diag: parametrized with {name!r}, which is no enabled channel's name; there are: "
+                        f"{', '.join(project.channels.keys())}", pytrace=False)
+        ch = project.channels[name]
+    else:
+        rows = [(c, c.kind) for c in project.channels]
+        ch = next((c for c, kind in rows if kind == "can"), None) or next((c for c, kind in rows if kind == "doip"), None)
+        if ch is None:
+            pytest.fail("diag: the project has no enabled CAN or DoIP channel", pytrace=False)
     with ch.uds() as client:
         yield client
 
