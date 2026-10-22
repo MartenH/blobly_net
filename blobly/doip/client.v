@@ -12,7 +12,7 @@ import net
 import time
 
 // discover sends a UDP vehicle-identification request to host:port and returns the
-// entity's announcement, or an error on timeout / wrong reply. Unicast — works on
+// entity's announcement, or an error on timeout (0: only an answer already queued) / wrong reply. Unicast — works on
 // loopback and against a known gateway IP; a subnet broadcast scan can layer on
 // later. Driver-free; no TCP connection / routing activation needed.
 pub fn discover(host string, port int, timeout_ms int) !VehicleInfo {
@@ -22,7 +22,9 @@ pub fn discover(host string, port int, timeout_ms int) !VehicleInfo {
 		u.close() or {}
 	}
 	u.write(vehicle_id_request())!
-	u.set_read_timeout(timeout_ms * time.millisecond)
+	u.set_read_timeout(transport.socket_wait(u.sock.handle, timeout_ms) or {
+		return net.err_timed_out
+	})
 	mut buf := []u8{len: 64}
 	n, _ := u.read(mut buf)!
 	msg := parse(buf[..n])!

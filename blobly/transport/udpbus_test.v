@@ -1,5 +1,6 @@
 module transport
 
+import net
 import blobly.testports
 import time
 
@@ -186,5 +187,46 @@ fn test_udp_zero_receive_on_a_closed_bus_says_closed() {
 		assert false
 	} else {
 		assert err.msg() == 'bus is closed', err.msg()
+	}
+}
+
+// An empty datagram is a datagram: the window's read returns it, with its sender, and only a
+// timeout is nothing. A zero timeout is a look: what is queued comes back, and a quiet socket
+// answers none at once — on its own thread, so a read that waits for ever fails the test instead
+// of hanging it.
+fn test_udp_read_returns_what_arrived_and_zero_is_a_look() {
+	_, port := uniq_group(4)
+	mut rx := net.listen_udp('127.0.0.1:${port}') or { panic(err) }
+	defer { rx.close() or {} }
+	mut tx := net.dial_udp('127.0.0.1:${port}') or { panic(err) }
+	defer { tx.close() or {} }
+	tx.write([]u8{}) or { panic(err) }
+	d := udp_read(mut rx, 1000) or {
+		assert false, 'an empty datagram read as nothing'
+		return
+	}
+	assert d.data.len == 0
+	assert d.from.starts_with('127.0.0.1:'), 'from ${d.from}'
+	if _ := udp_read(mut rx, 50) {
+		assert false, 'a quiet socket answered'
+	}
+	tx.write([]u8{len: 3}) or { panic(err) }
+	time.sleep(20 * time.millisecond)
+	q := udp_read(mut rx, 0) or {
+		assert false, 'a queued datagram was not looked at'
+		return
+	}
+	assert q.data.len == 3
+	done := chan bool{cap: 1}
+	spawn fn (mut r net.UdpConn, done chan bool) {
+		done <- udp_read(mut r, 0) != none
+	}(mut rx, done)
+	select {
+		answered := <-done {
+			assert !answered, 'a quiet socket answered a look'
+		}
+		1 * time.second {
+			assert false, 'a look at a quiet socket waited'
+		}
 	}
 }

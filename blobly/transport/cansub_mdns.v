@@ -517,11 +517,11 @@ pub fn cansub_browse(window time.Duration) !CansubBrowse {
 		return error('the mDNS query could not be sent on any interface (tried ${addrs.join(', ')})')
 	}
 	// Each read waits for what is LEFT of the window, so the wall clock is the window and not
-	// the window plus a timeout. V's read deadline is not honoured for UDP
-	// (docs/known_issues.md), which is why the timeout is re-armed per read. Only the timeout
-	// ends the browse: an empty datagram comes back from V as an error too, and a browse ended by
-	// one would be "nothing attached" with nothing to say why. Any other error is waited out
-	// rather than spun on -- the window bounds it.
+	// the window plus a timeout; the timeout is re-armed per read and is never zero, which this V
+	// reads as no timeout (docs/known_issues.md). Only the timeout ends the browse: an empty
+	// datagram reads as n == 0 and is stepped over, since a browse ended by one would be "nothing
+	// attached" with nothing to say why. Any other error is waited out rather than spun on -- the
+	// window bounds it.
 	deadline := time.ticks() + window.milliseconds()
 	mut buf := []u8{len: 9000}
 	mut found := []CansubService{}
