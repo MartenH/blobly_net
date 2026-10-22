@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
@@ -65,6 +66,8 @@ BO_ 514 Twice: 1 A
  SG_ Two : 0|8@1+ (1,0) [0|255] "" B
 
 BO_ 515 Huge: 1000000000 A
+
+BO_ 2048 PastEleven: 1 A
 
 BO_ 516 Words: 8 A
  SG_ self : 0|8@1+ (1,0) [0|255] "" B
@@ -349,6 +352,8 @@ class TestDatabases(unittest.TestCase):
             self.assertIsNone(can1.decode(blobly.Frame(0x7FF, b"\x01")), "a frame of no message")
             self.assertIsNone(can1.decode(blobly.Frame(0x100, ext=True)), "the id of the other kind")
             self.assertIsNone(can1.decode(blobly.Frame(0x100, rtr=True, length=8)), "a remote frame")
+            # a short payload carries the signals it holds whole, and no value it lacks the bits for
+            self.assertEqual(can1.decode(blobly.Frame(0x100, b"\x70\x17")), {"EngineSpeed": 1500})
             heard = can1.recv(1000)
             self.assertIsNotNone(heard)
             self.assertIsInstance(can1.decode(heard), dict, f"the simulation sent {heard}")
@@ -416,6 +421,232 @@ class TestDatabases(unittest.TestCase):
                 self.assertEqual(len(big.labels), 1, "a double holds one of the two")
                 with self.assertRaises(ValueError):
                     words.encode(**{"self\0suffix": 1})
+                past = m.messages.PastEleven  # 0x800 with no extended bit: no frame carries it
+                self.assertEqual((past.id, past.ext), (0x800, False))
+                with self.assertRaises(ValueError) as e:
+                    m.expect(past, 0)
+                self.assertIn("0x800 is not an 11-bit id (its database's PastEleven)", str(e.exception))
+
+
+class TestExpect(unittest.TestCase):
+    """expect / expect_signal: id AND kind, one deadline for the whole wait, the predicate form,
+    and a Timeout that says what came instead."""
+
+    def test_a_frame_is_matched_by_its_id_and_kind(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "duplicates.blobnet")
+            with open(path, "w") as f:
+                f.write(DUPLICATES)
+            with blobly.Project(path) as net:
+                x, y = net.channels[0], net.channels.Y  # one wire: X hears what Y sends
+                x.recv(0)  # X's handle is open before Y sends
+                y.send(0x123, b"\x01", ext=True)
+                y.send(0x123, b"\x02")
+                self.assertEqual(x.expect(0x123, 1000), blobly.Frame(0x123, b"\x02"),
+                                 "the 29-bit 0x123 was taken for the 11-bit one")
+                y.send(0x123, b"\x03", ext=True)
+                self.assertEqual(x.expect(0x123, 1000, ext=True), blobly.Frame(0x123, b"\x03", ext=True))
+                y.send(0x200, b"")
+                y.send(0x123, b"\x04", ext=True)
+                with self.assertRaises(blobly.Timeout) as e:
+                    x.expect(0x123, 100)
+                # the expected id's other kind is named first, ahead of the commoner
+                self.assertIn("expected a frame 0x123 within 100 ms; 2 other frames came: "
+                              "1 of 0x123 (29-bit), 1 of 0x200", str(e.exception))
+                self.assertEqual(e.exception.code, _lib.BB_ERR_TIMEOUT)
+
+    def test_the_timeout_is_one_deadline_on_a_busy_bus(self):
+        with blobly.Project(SIM_DEMO) as net:
+            can1 = net.channels.CAN1  # about 90 frames a second, none of them 0x555
+            t0 = time.monotonic()
+            with self.assertRaises(blobly.Timeout) as e:
+                can1.expect(0x555, timeout_ms=300)
+            took = (time.monotonic() - t0) * 1000
+            # a coarse clock (Windows) may read a little short; a per-frame timeout would never end
+            self.assertGreater(took, 250)
+            self.assertLess(took, 2000, "the wait ran past its deadline")
+            self.assertRegex(str(e.exception), r"\d+ other frames came: \d+ of 0x")
+            t0 = time.monotonic()
+            with self.assertRaises(blobly.Timeout):
+                can1.expect(0x555, timeout_ms=0)  # one look
+            self.assertLess((time.monotonic() - t0) * 1000, 500)
+
+    def test_a_signal_by_value_and_by_predicate(self):
+        with blobly.Project(SIM_DEMO) as net:
+            can1 = net.channels.CAN1
+            msgs = can1.messages
+            msgs.Request.send(ReqCode=5)
+            frame, value = can1.expect_signal("Response", "RespCode", 6, timeout_ms=1000)
+            self.assertEqual((frame.id, frame.data[0], value), (0x102, 6, 6.0))
+            pt = msgs.Powertrain
+            frame, gear = can1.expect_signal(pt, pt.signals.Gear, lambda g: 1 <= g <= 6, timeout_ms=1000)
+            self.assertEqual(can1.decode(frame)["Gear"], gear)
+            msgs.Request.send(ReqCode=5)
+            with self.assertRaises(blobly.Timeout) as e:
+                can1.expect_signal("Response", "RespCode", 7, timeout_ms=300)
+            self.assertIn("expected Response.RespCode == 7 within 300 ms; 1 Response frame came, "
+                          "RespCode was 6.0", str(e.exception))
+            with self.assertRaises(blobly.Timeout) as e:
+                can1.expect_signal(pt, "EngineSpeed", lambda v: v < 0, timeout_ms=900)
+            # a sine at 10 frames a second: more values than are listed one by one
+            self.assertRegex(str(e.exception), r"EngineSpeed to satisfy <lambda> within 900 ms; \d+ "
+                                               r"Powertrain frames came, EngineSpeed went from [\d.]+ to "
+                                               r"[\d.]+, last [\d.]+$")
+            with self.assertRaises(blobly.Timeout) as e:
+                can1.expect_signal("Response", "RespCode", 6, timeout_ms=100)
+            self.assertIn("no Response frame (0x102) came", str(e.exception))
+
+    def test_the_deadline_rule_on_a_synthetic_clock(self):
+        clock = [0.0]
+
+        def sleep(ms):
+            clock[0] += ms
+
+        ch = blobly.Channel(None, 0, "X", 0)  # its reads are the fakes below; no library behind it
+        ch._handle = lambda: 0
+        ch._same_run = lambda run: None
+        asked = []
+
+        def reads(*looks):
+            """_receive answering (frame, spent) after `cost` ms, then nothing after what it asked."""
+            looks = list(looks)
+
+            def fake(ms, h=None):
+                asked.append(ms)
+                frame, spent, cost = looks.pop(0) if looks else (None, False, ms)
+                sleep(cost)
+                return frame, spent
+            return fake
+        answer = blobly.Frame(0x102, b"\x06")
+        with mock.patch.object(blobly.project, "monotonic_ms", lambda: clock[0]), \
+                mock.patch.object(blobly.project, "sleep_ms", sleep):
+            # a look that stopped at its bound with records queued is looked again within the deadline
+            ch._receive = reads((None, True, 0.2), (answer, False, 0))
+            self.assertIs(ch.expect(0x102, 5), answer)
+            self.assertEqual(asked, [5, 4])
+            # and not past it: a wait of 0 is one look
+            asked.clear()
+            ch._receive = reads((None, True, 0), (answer, False, 0))
+            with self.assertRaises(blobly.Timeout):
+                ch.expect(0x102, 0)
+            self.assertEqual(asked, [0])
+            # whole milliseconds are waited for, never past the deadline, and what is left of it
+            # after the last look is slept
+            asked.clear()
+            clock[0] = 0.0
+            ch._receive = reads((None, False, 2), (None, False, 0.3))
+            with self.assertRaises(blobly.Timeout):
+                ch.expect(0x102, 2.5)
+            self.assertEqual(asked, [2, 0])
+            self.assertAlmostEqual(clock[0], 2.5, msg="the wait did not end at its deadline")
+            # nothing is read once the deadline has passed but the first look
+            asked.clear()
+            ch._handle = lambda: 0
+            ch._receive = reads((blobly.Frame(0x100), False, 2), (answer, False, 0))
+            with self.assertRaises(blobly.Timeout):
+                ch.expect(0x102, 1)
+            self.assertEqual(asked, [1])
+            # the channel's first use opens it inside the wait: an open that spent the budget
+            # leaves the one look
+            asked.clear()
+            ch._handle = lambda: sleep(200)
+            ch._receive = reads((answer, False, 0))
+            self.assertIs(ch.expect(0x102, 100), answer)
+            self.assertEqual(asked, [0])
+
+    def test_a_signal_is_its_position_not_its_name(self):
+        dbc = ('VERSION ""\n\nBU_: A\n\nBO_ 517 Dups: 2 A\n SG_ Same : 0|8@1+ (1,0) [0|255] "" A\n'
+               ' SG_ Same : 8|8@1+ (1,0) [0|255] "" A\n')
+        project = ("project:\n  name: dups\n  version: 8\nchannels:\n"
+                   "  - name: A\n    type: can\n    interface: inproc:PY_DUPSIG\n    databases:\n      - dups.dbc\n"
+                   "  - name: B\n    type: can\n    interface: inproc:PY_DUPSIG\n")
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in (("dups.dbc", dbc), ("dups.blobnet", project)):
+                with open(os.path.join(d, name), "w") as f:
+                    f.write(text)
+            with blobly.Project(os.path.join(d, "dups.blobnet")) as net:
+                a, b = net.channels.A, net.channels.B
+                dups = a.messages.Dups
+                first, second = dups.signals[0], dups.signals[1]
+                a.recv(0)  # A's handle is open before B sends
+                b.send(0x205, b"\x01\x02")
+                b.send(0x205, b"\x01\x02")
+                self.assertEqual(a.expect_signal(dups, second, 2, timeout_ms=500)[1], 2)
+                with self.assertRaises(blobly.Timeout) as e:
+                    a.expect_signal(dups, first, 2, timeout_ms=100)
+                self.assertIn("Same was 1.0", str(e.exception))
+                b.send(0x205, b"\x01")  # a short frame: the second Same's bits never came
+                with self.assertRaises(blobly.Timeout) as e:
+                    a.expect_signal(dups, second, 0, timeout_ms=100)
+                self.assertIn("1 Dups frame came, none carrying Same", str(e.exception))
+                with self.assertRaises(blobly.BloblyError):
+                    a.expect_signal(dups, "Same", 2)  # a name two signals answer to
+
+    def test_a_restart_during_the_wait_is_refused(self):
+        with blobly.Project(SIM_DEMO) as net:
+            def restart(gear):  # the run another thread could replace while a test waits
+                net.stop()
+                net.start()
+                return False
+            for found in (restart, lambda gear: restart(gear) or True):  # a match, too
+                with self.assertRaises(blobly.BloblyError) as e:
+                    net.channels.CAN1.expect_signal("Powertrain", "Gear", found, timeout_ms=2000)
+                self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+                self.assertIn("restarted during the wait", str(e.exception))
+            # a stop while another thread waits closes the handle it reads: the wrong state
+            can1, got = net.channels.CAN1, []
+
+            def waiter():
+                try:
+                    can1.expect(0x555, timeout_ms=3000)
+                except blobly.BloblyError as e:
+                    got.append(e.code)
+            t = threading.Thread(target=waiter)
+            t.start()
+            time.sleep(0.2)
+            net.stop()
+            net.start()
+            can1.send(0x101, b"\x05")  # an answer the old wait must not take from the new run
+            t.join()
+            self.assertEqual(got, [_lib.BB_ERR_STATE])
+            self.assertEqual(can1.expect(0x102, 1000).data[:1], b"\x06")
+            # and found before the next read, whatever that read would have been
+            can2 = net.channels.CAN2
+            with mock.patch.object(can2, "_receive", wraps=can2._receive) as reads:
+                at_restart = []
+
+                def restart_counting(locked):
+                    at_restart.append(reads.call_count)
+                    return restart(locked)
+                with self.assertRaises(blobly.BloblyError) as e:
+                    can2.expect_signal("BodyStatus", "Locked", restart_counting, timeout_ms=2000)
+                self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+                self.assertEqual(reads.call_count, at_restart[0], "a frame of the replacement run was read")
+
+    def test_what_no_wait_can_match_is_refused_before_waiting(self):
+        with blobly.Project(SIM_DEMO) as net:
+            can1, can2 = net.channels.CAN1, net.channels.CAN2
+            with self.assertRaises(ValueError) as e:
+                can1.expect(0x18DAF110)
+            self.assertIn("0x18DAF110 is not an 11-bit id; a 29-bit id is ext=True", str(e.exception))
+            for bad in (None, float("nan"), "100"):
+                with self.assertRaises(TypeError, msg=repr(bad)):
+                    can1.expect(0x102, bad)
+            with self.assertRaises(TypeError):
+                can1.expect(can1.messages.Response, ext=True)
+            with self.assertRaises(ValueError) as e:
+                can1.expect_signal(can2.messages.Powertrain, "Gear", 1)
+            self.assertIn("Powertrain is a message of CAN2, not of CAN1", str(e.exception))
+            with self.assertRaises(KeyError) as e:
+                can1.expect_signal("Powertrain", "Gearbox", 1)
+            self.assertIn("; there are: EngineSpeed", str(e.exception), "the error names the signals there are")
+            with self.assertRaises(KeyError):
+                can1.expect_signal("Powertrane", "Gear", 1)
+            with self.assertRaises(TypeError):
+                can1.expect_signal("Powertrain", "Gear", "Third")
+            with self.assertRaises(ValueError) as e:
+                can1.expect_signal("Response", can1.messages.Powertrain.signals.Gear, 1)
+            self.assertIn("Gear is not a signal of Response", str(e.exception))
 
 
 class TestRefusals(unittest.TestCase):

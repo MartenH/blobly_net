@@ -13,7 +13,6 @@ FAIL line otherwise."""
 import argparse
 import os
 import sys
-import time
 from importlib.util import find_spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,19 +69,6 @@ def describe(sig: blobly.Signal) -> str:
     return line
 
 
-def wait_for(ch: blobly.Channel, msg: blobly.Message, timeout_ms: float) -> blobly.Frame | None:
-    """The first frame of `msg` (its id and kind) on `ch` within timeout_ms, else None. Every
-    other frame read on the way is consumed."""
-    deadline = time.monotonic() + timeout_ms / 1000
-    while True:
-        left_ms = (deadline - time.monotonic()) * 1000
-        if left_ms <= 0:
-            return None
-        f = ch.recv(left_ms)
-        if f is not None and f.id == msg.id and f.ext == msg.ext:
-            return f
-
-
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("project", nargs="?", default=SIM_DEMO, help="a .blobnet project (default: sim-demo)")
@@ -119,9 +105,10 @@ def main(argv: list[str]) -> int:
         request, response = message(can, "Request"), message(can, "Response")
         sent = request.send(ReqCode=5)
         print(f"sent {request.name}: {sent}")
-        answer = wait_for(can, response, 1000)
-        if answer is None:
-            fail(f"no {response.name} (0x{response.id:X}) within 1000 ms")
+        try:
+            answer = can.expect(response, timeout_ms=1000)  # its id and kind; other frames are consumed
+        except blobly.Timeout as e:
+            fail(str(e))
         decoded = can.decode(answer)
         print(f"{response.name}: {answer} -> {decoded}")
         if decoded != {"RespCode": 6}:

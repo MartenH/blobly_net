@@ -327,3 +327,19 @@ fn test_raw_from_phys_clamps_to_the_width() {
 	assert sc.raw_from_phys(-41.0) == 0
 	assert sc.raw_from_phys(87.5) == 255
 }
+
+fn test_a_signal_fits_a_payload_only_whole() {
+	intel := Signal{
+		start_bit: 8
+		length:    8
+	}
+	assert intel.fits(2)
+	assert !intel.fits(1)
+	motorola := Signal{
+		start_bit:  7
+		length:     9
+		byte_order: .big_endian
+	}
+	assert motorola.fits(2)
+	assert !motorola.fits(1)
+}

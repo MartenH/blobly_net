@@ -34,7 +34,11 @@ class NegativeResponse(BloblyError):
 
 
 class Timeout(BloblyError):
-    """Nothing answered the UDS request within the wait."""
+    """Nothing came within the wait: no answer to a UDS request, or not the frame or signal value
+    an expect waited for."""
+
+    def __init__(self, message, code=-5):  # BB_ERR_TIMEOUT
+        super().__init__(message, code)
 
 
 class PendingExpired(BloblyError):

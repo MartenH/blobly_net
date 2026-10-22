@@ -1,5 +1,6 @@
 """project — a .blobnet project brought up in this process through libblobly (blobly.headless),
 its enabled channels as objects that complete in a REPL, and the event loop over them."""
+import collections
 import ctypes
 import math
 import numbers
@@ -8,8 +9,8 @@ import warnings
 import weakref
 
 from . import _lib
-from ._lib import BloblyError
-from .events import EventLoop, monotonic_ms, sleep_ms, wait_on
+from ._lib import BloblyError, Timeout
+from .events import MAX_WAIT_MS, EventLoop, _finite, monotonic_ms, sleep_ms, wait_on
 from .uds import UdsClient, _close_orphans
 from .faults import Faults
 
@@ -51,6 +52,38 @@ def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
     for i, b in enumerate(data):
         f.data[i] = b
     return f
+
+
+def _s(n):
+    return "" if n == 1 else "s"
+
+
+def _num(x):
+    """A number as a person writes it: 300, 0.5, 1000000."""
+    return str(int(x)) if float(x).is_integer() else repr(x)
+
+
+def _id_text(id, ext):
+    return f"0x{id:X}" + (" (29-bit)" if ext else "")
+
+
+def _came(others, id):
+    """What an expectation read instead: each id and kind with its count, the expected id's other
+    kind first (the likeliest mistake), then the commonest."""
+    n = sum(others.values())
+    if not n:
+        return "no other frame came"
+    shown = sorted(others.items(), key=lambda kc: (kc[0][0] != id, -kc[1]))
+    text = ", ".join(f"{c} of {_id_text(*k)}" for k, c in shown[:8])
+    return f"{n} other frame{_s(n)} came: {text}" + (", ..." if len(shown) > 8 else "")
+
+
+def _deadline(who, timeout_ms):
+    """When an expectation's wait ends (monotonic_ms): timeout_ms from now, a finite number."""
+    if not _finite(timeout_ms):
+        raise TypeError(f"{who}: timeout_ms must be a finite number of milliseconds; an "
+                        "expectation always ends")
+    return monotonic_ms() + max(0, timeout_ms)
 
 
 def _ms(timeout_ms):
@@ -145,13 +178,173 @@ class Channel:
         rather than sleeping."""
         return self._receive(0)
 
-    def _receive(self, ms):
+    def _receive(self, ms, h=None):
+        """(frame or None, spent) from the channel's handle, or from `h`, one it had."""
         f = _lib.BbFrame()
         lib = _lib.lib()
-        rc = _lib.check(lib.bb_bus_recv(self._handle(), ms, ctypes.byref(f)))
+        rc = _lib.check(lib.bb_bus_recv(self._handle() if h is None else h, ms, ctypes.byref(f)))
         if rc in (_lib.BB_NONE, _lib.BB_SPENT):
             return None, rc == _lib.BB_SPENT
         return frame_of(f), False
+
+    def expect(self, id: "int | Message", timeout_ms: float = 1000, *, ext: bool | None = None) -> Frame:
+        """The first frame another node sends with this id AND kind, waited for at most timeout_ms
+        in all; blobly.Timeout when none came, its message saying what came instead.
+
+        `id` is an int, its kind `ext` (False or None: 11-bit, True: 29-bit), or a Message of this
+        channel, whose id and kind it is (ext left out). timeout_ms is one deadline for the whole
+        wait however many other frames arrive: a finite number of milliseconds, and nothing read
+        once it has passed but the first look (a wait of 0 reads at most one queued frame).
+
+        Every frame read while waiting is consumed, the ones that did not match included: a later
+        recv or expect gets the frame after it."""
+        __tracebackhide__ = True  # a pytest failure points at the test's line, not this one
+        deadline = _deadline("expect", timeout_ms)
+        with _lib.state_lock:
+            want = self._frame_key("expect", id, ext)
+            run = _lib.state["run"]
+        others = collections.Counter()
+        for f in self._frames_until(deadline, run):
+            if (f.id, f.ext) == want:
+                self._same_run(run)
+                return f
+            others[(f.id, f.ext)] += 1
+        raise Timeout(f"{self.name}: expected a frame {_id_text(*want)} within {_num(timeout_ms)} ms; "
+                      + _came(others, want[0]), _lib.BB_ERR_TIMEOUT)
+
+    def expect_signal(self, message: "Message | str", signal: "Signal | str", want: object,
+                      timeout_ms: float = 1000) -> tuple[Frame, float]:
+        """The first frame of `message` whose decoded `signal` matches `want`, and that value,
+        waited for at most timeout_ms in all; blobly.Timeout when none came, its message saying
+        what the signal was instead.
+
+        `message` is a Message of this channel or its name, and its frames are those of its id AND
+        kind. `signal` is a signal of it, or its name. `want` is a callable, a predicate on the
+        decoded physical value, or a value compared with ==: decoded values are floats carrying
+        the rounding of raw x factor + offset, so a value a binary fraction cannot hold (0.1 steps)
+        wants pytest.approx(0.3) or a predicate. timeout_ms is one deadline for the whole wait, as
+        expect's.
+
+        Every frame read while waiting is consumed, the ones that did not match included: a later
+        recv or expect gets the frame after it."""
+        __tracebackhide__ = True  # a pytest failure points at the test's line, not this one
+        deadline = _deadline("expect_signal", timeout_ms)  # what the lookups below take is spent
+        with _lib.state_lock:  # the message and signal of one run, which the wait then holds to
+            msg = self._own("expect_signal", message)
+            key = self._frame_key("expect_signal", msg, None)
+            if isinstance(signal, str):
+                sig = msg.signals[signal]  # an unknown name is refused now, not after the wait
+            elif isinstance(signal, Signal):
+                sig = signal
+            else:
+                raise TypeError(f"expect_signal: a signal is a Signal or its name, not {signal!r}")
+            # the Signal itself, not its name: two signals of one name are two signals
+            if not any(s is sig for s in msg.signals):
+                raise ValueError(f"expect_signal: that {sig.name} is not a signal of {msg.name} in this "
+                                 f"run; take it from {msg.name}.signals, or name it")
+            run = _lib.state["run"]
+        name = sig.name
+        if want is None or isinstance(want, (str, bytes)):
+            raise TypeError(f"expect_signal: want is a number (decoded values are) or a predicate, not "
+                            f"{want!r}; a value table's labels are {msg.name}.signals.{name}.labels")
+        test = want if callable(want) else (lambda v: v == want)
+        others = collections.Counter()
+        frames, values = 0, {}  # its frames read; the signal's first values, in the order seen
+        last = lo = hi = None
+        for f in self._frames_until(deadline, run):
+            if (f.id, f.ext) != key:
+                others[(f.id, f.ext)] += 1
+                continue
+            frames += 1
+            got = self._decode(f, run)
+            v = next((v for s, v in got[1] if s is sig), None) if got is not None and got[0] is msg else None
+            if v is None:
+                continue  # a multiplexed signal the frame does not carry
+            if test(v):
+                self._same_run(run)  # the predicate may have stopped the run it was asked about
+                return f, v
+            last, lo, hi = v, v if lo is None else min(lo, v), v if hi is None else max(hi, v)
+            if len(values) <= 5:
+                values[v] = None
+        wanted = f"to satisfy {getattr(want, '__name__', repr(want))}" if callable(want) else f"== {want!r}"
+        text = f"{self.name}: expected {msg.name}.{name} {wanted} within {_num(timeout_ms)} ms; "
+        if not frames:
+            text += f"no {msg.name} frame ({_id_text(*key)}) came; " + _came(others, key[0])
+        elif last is None:
+            text += f"{frames} {msg.name} frame{_s(frames)} came, none carrying {name}"
+        elif len(values) <= 5:
+            text += f"{frames} {msg.name} frame{_s(frames)} came, {name} was " + ", ".join(map(repr, values))
+        else:
+            text += f"{frames} {msg.name} frames came, {name} went from {lo!r} to {hi!r}, last {last!r}"
+        raise Timeout(text, _lib.BB_ERR_TIMEOUT)
+
+    def _frame_key(self, who, id, ext):
+        """(id, ext) a wait matches: an int and the kind ext names, or a Message's own; either
+        refused where no frame can carry it."""
+        if isinstance(id, Message):
+            if ext is not None:
+                raise TypeError(f"{who}: a Message carries its own kind; leave ext out")
+            msg = self._own(who, id)
+            id, ext, hint = msg.id, msg.ext, f" (its database's {msg.name})"
+        elif isinstance(id, bool) or not isinstance(id, int):
+            raise TypeError(f"{who}: an id is an int or a Message of {self.name}, not {id!r}")
+        else:
+            hint = "; a 29-bit id is ext=True" if not ext and 0 <= id <= 0x1FFF_FFFF else ""
+        wide = bool(ext)
+        if not 0 <= id <= (0x1FFF_FFFF if wide else 0x7FF):
+            shown = f"0x{id:X}" if id >= 0 else str(id)
+            raise ValueError(f"{who}: {shown} is not {'a 29' if wide else 'an 11'}-bit id{hint}")
+        return id, wide
+
+    def _own(self, who, message):
+        """A Message of this row's databases in this run: one of this channel's, or its name."""
+        if isinstance(message, str):
+            return self.messages[message]
+        if not isinstance(message, Message):
+            raise TypeError(f"{who}: a message is a Message or its name, not {message!r}")
+        if message.channel is not self:
+            raise ValueError(f"{who}: {message.name} is a message of {message.channel.name}, not of {self.name}")
+        message._live()
+        return message
+
+    def _frames_until(self, deadline, run):
+        """The frames read from now until `deadline` (monotonic_ms) has passed: each read waits
+        whole milliseconds and never past it, the fraction of one the driver cannot be asked for
+        is slept rather than read, and nothing is read once it has passed but the first look (so a
+        wait of 0 reads at most one queued frame). A look that stopped at its bound with records
+        still queued (look's `spent`) looks again at once, within it. All of it in the project's
+        run `run`, on the handle the channel had in it: a stop closes that handle, and a stop or
+        a start during the wait is refused, never waited through on the next run's handle."""
+        with _lib.state_lock:
+            self._same_run(run)
+            h = self._handle()  # opened inside the wait, not before it: a slow open spends its time
+        first = True
+        while True:
+            self._same_run(run)
+            left = deadline - monotonic_ms()
+            if left <= 0 and not first:
+                return
+            first = False
+            try:
+                f, spent = self._receive(min(max(0, math.floor(left)), MAX_WAIT_MS), h)
+            except BloblyError:
+                with _lib.state_lock:  # a stop closed the handle: said as the stop, once it is done
+                    self._same_run(run)
+                raise
+            self._same_run(run)
+            if f is not None:
+                yield f
+            elif not spent and left < 1:
+                rest = deadline - monotonic_ms()
+                if rest > 0:
+                    sleep_ms(rest)
+                self._same_run(run)
+                return
+
+    def _same_run(self, run):
+        if _lib.state["run"] != run:
+            raise BloblyError(f"{self.name}: the project was stopped or restarted during the wait",
+                              _lib.BB_ERR_STATE)
 
     def health(self):
         """The controller's ladder now: "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF", or ""
@@ -189,19 +382,33 @@ class Channel:
     def decode(self, frame):
         """{signal: physical value} for what `frame` says in this row's databases — the message
         of its id and kind (else, for an extended frame, one of its J1939 PGN), each signal it
-        carries (a multiplexed signal its switch does not select is left out) — as a Lua script's
-        decode() reads it; None for a frame of no message, or a remote frame."""
+        carries (a multiplexed signal its switch does not select is left out, and so is one whose
+        bits a short payload does not all hold, where a Lua script's decode() reads them as 0);
+        None for a frame of no message, or a remote frame."""
+        got = self._decode(frame)
+        if got is None:
+            return None
+        return {s.name: v for s, v in got[1] if v is not None}
+
+    def _decode(self, frame, run=None):
+        """(the Message `frame` decodes as, [(Signal, its value, or None where the frame does not
+        carry it)] in their order), or None: decode's answer by position, values and signals read
+        under one hold of the state lock. With `run`, refused unless the project's run is still
+        that one."""
         f = _bb_frame(self.name, frame.id, frame.data, getattr(frame, "ext", False),
                       rtr=getattr(frame, "rtr", False))
         lib = _lib.lib()
         with _lib.state_lock:
+            if run is not None:
+                self._same_run(run)
             msgs = self.messages
             values, active, m = msgs._decoded  # the lock is held: one decode at a time uses them
             rc = _lib.check(lib.bb_decode(self._index, ctypes.byref(f), ctypes.byref(m), values, active,
                                           msgs._most))
             if rc == _lib.BB_NONE:
                 return None
-            return {s.name: values[i] for i, s in enumerate(msgs[m.value].signals) if active[i]}
+            msg = msgs[m.value]
+            return msg, [(s, values[i] if active[i] else None) for i, s in enumerate(msg.signals)]
 
     def uds(self, tx=None, rx=None):
         """A UdsClient on this row: UDS requests out on CAN id `tx`, answers back on `rx`, by the
@@ -258,7 +465,7 @@ class Named:
             return self._order[key]
         c = self._one(key)
         if c is None:
-            raise KeyError(f"no {self._noun} named {key!r}")
+            raise KeyError(f"no {self._noun} named {key!r}; there are: " + ", ".join(self._by_name))
         return c
 
     def __dir__(self):

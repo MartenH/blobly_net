@@ -12,7 +12,6 @@ otherwise."""
 import argparse
 import os
 import sys
-import time
 from importlib.util import find_spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -45,19 +44,6 @@ def can_channel(net: blobly.Project, name: str | None) -> blobly.Channel:
     return ch
 
 
-def wait_for(ch: blobly.Channel, frame_id: int, timeout_ms: float) -> blobly.Frame | None:
-    """The first standard frame with this id on `ch` within timeout_ms, else None. Every other
-    frame read on the way is consumed: recv takes frames off this channel's handle."""
-    deadline = time.monotonic() + timeout_ms / 1000
-    while True:
-        left_ms = (deadline - time.monotonic()) * 1000
-        if left_ms <= 0:
-            return None
-        f = ch.recv(left_ms)
-        if f is not None and f.id == frame_id and not f.ext:
-            return f
-
-
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("project", nargs="?", default=SIM_DEMO, help="a .blobnet project (default: sim-demo)")
@@ -86,9 +72,11 @@ def main(argv: list[str]) -> int:
         request = bytes([0x05])
         print(f"sending 0x{REQUEST:X} [{request.hex().upper()}] on {can.name}")
         can.send(REQUEST, request)
-        answer = wait_for(can, ANSWER, 1000)
-        if answer is None:
-            fail(f"no 0x{ANSWER:X} on {can.name} within 1000 ms; sim-demo's SUT answers 0x{REQUEST:X} with it")
+        try:
+            # the first 11-bit 0x102 within a second; every other frame read on the way is consumed
+            answer = can.expect(ANSWER, timeout_ms=1000)
+        except blobly.Timeout as e:
+            fail(f"no 0x{ANSWER:X} on {can.name}; sim-demo's SUT answers 0x{REQUEST:X} with it ({e})")
         if answer.data[:1] != bytes([request[0] + 1]):
             fail(f"the answer is {answer}; its first byte should be 0x{request[0] + 1:02X}")
         print(f"answered: {answer}")

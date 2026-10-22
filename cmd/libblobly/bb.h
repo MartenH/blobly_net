@@ -245,8 +245,9 @@ int bb_encode(int row, int m, int n, const char *const *signals, const double *v
 
 /* What a frame says in the row's databases: 0 with *message the message it decodes as (its id and
  * kind, else for an extended frame one of its J1939 PGN), and for each of its signals s < cap
- * values[s] its physical value and active[s] whether the frame carries it (1), or a
- * multiplexed signal its switch does not select (0, values[s] 0); BB_NONE for no message, or a
+ * values[s] its physical value and active[s] whether the frame carries it (1), or not (0,
+ * values[s] 0): a multiplexed signal its switch does not select, or a signal whose bits a short
+ * payload does not all hold (nor its multiplexor's); BB_NONE for no message, or a
  * remote frame (no data). The arrays hold `cap`: a message of more signals is refused, with
  * *message set so the host can ask again with arrays of its bb_message.signals. */
 int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t *active, int cap);

@@ -66,6 +66,12 @@ class EventLoop:
         # handler sees a later frame before an earlier one
         self._pending = collections.deque()
 
+    def _forget(self):
+        """Drops every handler and timer, and what is left of a frame's dispatch: the pytest
+        plugin does this after each test, so one test's handlers never run in the next one's run()."""
+        self._on_msg, self._on_health, self._timers, self._listened = [], [], [], []
+        self._pending.clear()
+
     def _resolve(self, channel):
         return channel
 

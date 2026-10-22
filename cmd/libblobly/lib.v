@@ -781,10 +781,15 @@ pub fn bb_decode(row i32, f &C.bb_frame, message &i32, values &f64, active &u8, 
 		data[k] = f.data[k]
 	}
 	on := msg.carried(data)
+	// a signal the payload does not hold whole is not carried, nor one its multiplexor's missing
+	// bits would select: raw_value reads a missing byte as 0, a value never on the wire
+	mux := msg.multiplexor_index()
+	mux_held := mux < 0 || msg.signals[mux].fits(n)
 	for k, sig in msg.signals {
+		carried := on[k] && sig.fits(n) && (!sig.is_multiplexed || mux_held)
 		unsafe {
-			active[k] = u8(on[k])
-			values[k] = if on[k] { sig.physical(data) } else { 0.0 }
+			active[k] = u8(carried)
+			values[k] = if carried { sig.physical(data) } else { 0.0 }
 		}
 	}
 	return ok()
