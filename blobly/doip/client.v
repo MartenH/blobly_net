@@ -380,7 +380,7 @@ const ra_timeout_ms = 2000
 pub fn (mut c DoipClient) send(data []u8) ! {
 	if c.rx_id > 0xFFFF {
 		// rx_id is writable: a value past 16 bits would otherwise address another ECU
-		return error('DoIP: 0x${c.rx_id:X} is not a logical address')
+		return transport.not_written('DoIP: 0x${c.rx_id:X} is not a logical address')
 	}
 	c.conn.write(diagnostic_message(c.source, u16(c.rx_id), data))!
 }
@@ -390,7 +390,7 @@ pub fn (mut c DoipClient) send(data []u8) ! {
 // its own, so recv() takes the answer as usual. On one TCP connection that is one entity's answer.
 pub fn (mut c DoipClient) send_to(target u32, data []u8) ! {
 	if target > 0xFFFF {
-		return error('DoIP: 0x${target:X} is not a logical address')
+		return transport.not_written('DoIP: 0x${target:X} is not a logical address')
 	}
 	c.conn.write(diagnostic_message(c.source, u16(target), data))!
 }

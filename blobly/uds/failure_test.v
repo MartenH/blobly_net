@@ -1,5 +1,6 @@
 module uds
 
+import blobly.doip
 import blobly.isotp
 import blobly.transport
 
@@ -131,6 +132,7 @@ fn test_a_stop_is_abandoned_whichever_layer_noticed() {
 	assert failure_of(error(abandoned_note)) == .abandoned
 	assert failure_of(error(isotp.abandoned_note)) == .abandoned
 	assert failure_of(error(isotp.abandoned_recv_note)) == .abandoned
+	assert failure_of(error(doip.stopped_note)) == .abandoned
 	// with the context a channel appends to it
 	assert failure_of(error('${isotp.abandoned_recv_note} — after 1 orphan flow control frame(s)')) == .abandoned
 	assert failure_of(error('anything else')) == .refused
@@ -140,4 +142,18 @@ fn test_an_all_zero_seed_says_unlocked() {
 	assert already_unlocked([u8(0), 0, 0, 0])
 	assert !already_unlocked([u8(0), 1])
 	assert !already_unlocked([]u8{})
+}
+
+// a segmented send whose receiver never answered within the transfer's whole allowance is silence
+fn test_a_spent_flow_control_allowance_is_no_answer() {
+	mut ch := isotp.on_bus(transport.open('inproc:FAILURE_FC')!, 'inproc:FAILURE_FC', 0x700, 0x708,
+		false)!
+	ch.total_wait_ms = 20
+	ch.fc_window_ms = 100
+	mut c := new_client(ch)
+	c.raw([u8(0x2E), 0xF1, 0x90, 1, 2, 3, 4, 5]) or {
+		assert failure_of(err) == .no_answer, err.msg()
+		return
+	}
+	assert false
 }

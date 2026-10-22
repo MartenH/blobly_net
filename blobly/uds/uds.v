@@ -387,17 +387,19 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 		return error(abandoned_note)
 	}
 	c.ch.send(req) or {
-		// a peer that never asked for the rest of the request (no Flow Control came) is silence; a
-		// stop, and a send refused before anything reached the wire (a request the channel cannot
-		// carry, a listen-only wire), keep their own error; any other failure is the carrier's
-		if is_silence(err.msg()) {
+		// a peer that never asked for the rest of the request (no Flow Control came, or not
+		// within the transfer's allowance) is silence; a stop, and a send refused before anything
+		// reached the wire (a request the channel cannot carry, a listen-only wire), keep their own
+		// error; any other failure is the carrier's
+		if is_silence(err.msg()) || allowance_spent(c.ch, err.msg()) {
 			return NoAnswer{
 				sid:       req[0]
 				cause:     err.msg()
 				discarded: discarded
 			}
 		}
-		if c.stopping() || err is transport.NotWritten || transport.wire_policy(c.ch.iface).silent {
+		if c.stopping() || abandoned(err.msg()) || err is transport.NotWritten
+			|| transport.wire_policy(c.ch.iface).silent {
 			return err
 		}
 		return CarrierFailed{
@@ -501,6 +503,15 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 		}
 	}
 	return error('unreachable')
+}
+
+// allowance_spent: a segmented send gave up waiting for the receiver's Flow Control once the
+// transfer's whole allowance was spent (isotp.exhausted_note) — the receiver's silence.
+fn allowance_spent(ch isotp.Channel, msg string) bool {
+	if ch is isotp.SoftChannel {
+		return msg == isotp.exhausted_note(ch.total_wait_ms)
+	}
+	return false
 }
 
 // drain_queued empties the channel before a request (a physical one, or a functional one this

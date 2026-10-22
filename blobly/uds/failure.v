@@ -1,5 +1,6 @@
 module uds
 
+import blobly.doip
 import blobly.isotp
 
 // failure.v — what kind of failure a Client call ended in, for a caller that hands the error on
@@ -16,11 +17,11 @@ pub enum Failure {
 	abandoned   // ended by stop_requested (the client's, or its channel's)
 }
 
-// abandoned: an error is a stop's, the client's or its channel's — whatever context the channel
-// appended to the note (the orphan Flow Controls it skipped).
+// abandoned: an error is a stop's, the client's or its channel's (ISO-TP or DoIP) — whatever
+// context the channel appended to the note (the orphan Flow Controls it skipped).
 fn abandoned(msg string) bool {
 	return msg.starts_with(abandoned_note) || msg.starts_with(isotp.abandoned_note)
-		|| msg.starts_with(isotp.abandoned_recv_note)
+		|| msg.starts_with(isotp.abandoned_recv_note) || msg.starts_with(doip.stopped_note)
 }
 
 // failure_of is the kind of `err`, an error a Client call returned.
