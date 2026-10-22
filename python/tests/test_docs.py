@@ -7,7 +7,8 @@
   - every link in those pages and in python/examples/README.md reaches a file of the repository,
     and an anchor a heading of it.
 The public surface is what `blobly.__all__` exports: its functions, its classes, and each class's
-methods, properties, __slots__ and `self.<name>` attributes, its package base classes' included."""
+methods, properties, __slots__ and `self.<name>` attributes, its package base classes' included;
+and for a submodule it exports (blobly.e2e), the functions of that submodule's `__all__`."""
 import ast
 import contextlib
 import io
@@ -16,6 +17,7 @@ import re
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -110,6 +112,13 @@ class TestReference(unittest.TestCase):
         missing = []
         for name in blobly.__all__:
             obj = getattr(blobly, name)
+            if isinstance(obj, types.ModuleType):
+                spans = ref.get(f"Module `blobly.{name}`")
+                if spans is None:
+                    missing.append(f"a '### Module `blobly.{name}`' section")
+                    continue
+                missing += [f"blobly.{name}.{fn}" for fn in obj.__all__ if not mentions(spans, f"blobly.{name}.{fn}")]
+                continue
             if not isinstance(obj, type):
                 if not mentions(ref.get("Module `blobly`", []), "blobly." + name):
                     missing.append(f"blobly.{name}")
@@ -129,7 +138,9 @@ class TestReference(unittest.TestCase):
         # what the check above walks must be real: a parse that found nothing would pass it
         classes = package_classes()
         self.assertLessEqual({"send", "recv", "look", "iface", "kind", "name"}, members(classes["Channel"], classes))
-        self.assertLessEqual({"on_message", "run", "path", "started"}, members(classes["Project"], classes))
+        self.assertLessEqual({"on_message", "run", "path", "started", "fault", "clear_faults"},
+                             members(classes["Project"], classes))
+        self.assertEqual(blobly.e2e.__all__, ["p01_crc", "p01_protect"])
         self.assertLessEqual({"id", "ext", "dlc", "j1939", "channel"}, members(classes["Message"], classes))
         self.assertLessEqual({"raw_labels", "mux_value"}, members(classes["Signal"], classes))
         self.assertIn("code", members(classes["BloblyError"], classes))

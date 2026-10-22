@@ -63,6 +63,23 @@ pub:
 	db  candb.Database
 }
 
+// fault_target is this row as sim.FaultTarget.arm judges a fault on it.
+pub fn (c Channel) fault_target() sim.FaultTarget {
+	return sim.FaultTarget{
+		channel:  c.cfg.name
+		eth_kind: if c.cfg.is_doip() {
+			'DoIP'
+		} else if c.cfg.is_someip() {
+			'SOME/IP'
+		} else {
+			''
+		}
+		iface:    c.cfg.iface
+		db:       c.db
+		nodes:    c.cfg.all_nodes()
+	}
+}
+
 // Ctl is the shared run flag the simulation threads poll; set false to stop them.
 struct Ctl {
 mut:

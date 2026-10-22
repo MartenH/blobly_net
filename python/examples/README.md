@@ -11,6 +11,7 @@ the command line overrides it.
 | [dbc_messages.py](dbc_messages.py) | A channel's database: messages and signals with units, ranges and value labels; encode and decode; send a message by signal name and decode the answer. |
 | [event_loop.py](event_loop.py) | `on_message` by id and by message, `on_timer` for a periodic send, `on_health`, and `run()`. |
 | [signal_monitor.py](signal_monitor.py) | The decoded values of chosen messages, printed twice a second for N seconds. |
+| [fault_injection.py](fault_injection.py) | Faults on sim-demo's simulated ECUs, seen on the bus: Powertrain dropped for a second and back by itself, BrakePedal forced past its declared range until cleared, and `bad_crc` refused where nothing is protected. |
 | [test_sim_demo.py](test_sim_demo.py) | A pytest suite: a module-scoped fixture starts the project, and the tests talk to its simulated ECUs. |
 
 ## Running them

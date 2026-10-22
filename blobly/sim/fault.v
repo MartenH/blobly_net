@@ -283,6 +283,9 @@ pub fn (mut t FaultTable) age_to(now_ms i64) {
 pub fn (mut t FaultTable) clear() {
 	t.mu.lock()
 	t.faults.clear()
+	// the clock too: aged from the last run's last tick, a timed fault armed before a new run's
+	// first pass would expire at once
+	t.last_ms = 0
 	t.mu.unlock()
 }
 

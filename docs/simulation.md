@@ -640,10 +640,14 @@ sim.fault("CAN1", "BCM", "Powertrain", "bad_crc")     -- until cleared
 sim.clear_fault("CAN1", "BCM", "Powertrain")
 ```
 
+From Python the same calls are `net.fault(...)` and `net.clear_fault(...)`, and a refusal is
+`blobly.FaultRefused` ([scripting_python.md](scripting_python.md#9-fault-injection-and-e2e)).
+
 The **channel comes first**: a project may run the same node and message names on two buses, and
 dropping a frame on the wrong one invalidates observations of a network nobody was testing.
 
-A fault that cannot take effect is **refused, loudly** — an unknown node or message, `bad_crc`
+A fault that cannot take effect is **refused, loudly** — an unknown node or message (a node the
+DBC names as the sender but that is not simulated on that channel included), `bad_crc`
 where the node stamps no checksum, `freeze_counter` where it stamps no E2E counter (its
 `protect:` entry or the DBC's E2E declaration, whichever the simulation stamps by),
 `out_of_range` on a signal with no illegal value. Arming a fault that changes nothing is the

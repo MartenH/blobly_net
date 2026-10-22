@@ -300,6 +300,45 @@ pub fn p01_crc_bytes(data []u8, crc_at int, data_id u16, mode string, counter u8
 	return crc8_with(input, 0x1D, 0x00, 0x00)
 }
 
+// p01_frame_crc is Profile 1's CRC for a frame a script built itself, as it stands: the CRC at
+// byte `crc_pos`, the counter in the low nibble of byte `counter_pos` (which ALT mode's byte
+// choice reads). Lua's e2e.p01_crc and the C ABI's bb_e2e_p01_crc ask it.
+pub fn p01_frame_crc(data []u8, data_id i64, crc_pos i64, counter_pos i64, mode string) !u8 {
+	if why := p01_frame_problem(data.len, data_id, crc_pos, counter_pos, mode) {
+		return error(why)
+	}
+	return p01_crc_bytes(data, int(crc_pos), u16(data_id), mode, data[int(counter_pos)] & 0x0F)
+}
+
+// p01_protect is `data` with `counter` (0..14) in the low nibble of byte `counter_pos`, its high
+// nibble kept, and then the CRC of p01_frame_crc stamped at `crc_pos`.
+pub fn p01_protect(data []u8, data_id i64, crc_pos i64, counter_pos i64, counter i64, mode string) ![]u8 {
+	if counter < 0 || counter > 14 {
+		return error('a Profile 1 counter is 0..14, not ${counter}')
+	}
+	if why := p01_frame_problem(data.len, data_id, crc_pos, counter_pos, mode) {
+		return error(why)
+	}
+	mut out := data.clone()
+	out[int(counter_pos)] = (out[int(counter_pos)] & 0xF0) | u8(counter)
+	out[int(crc_pos)] = p01_crc_bytes(out, int(crc_pos), u16(data_id), mode, u8(counter))!
+	return out
+}
+
+// p01_frame_problem: why a frame of `n` bytes cannot carry Profile 1 as asked.
+fn p01_frame_problem(n int, data_id i64, crc_pos i64, counter_pos i64, mode string) ?string {
+	if data_id < 0 || data_id > 0xFFFF_FFFF {
+		return 'data_id ${data_id} is not a Data ID'
+	}
+	if why := p01_params_problem(u32(data_id), mode) {
+		return why
+	}
+	if crc_pos < 0 || crc_pos >= n || counter_pos < 0 || counter_pos >= n || crc_pos == counter_pos {
+		return 'crc_pos ${crc_pos} / counter_pos ${counter_pos} must be distinct bytes of the ${n}-byte frame'
+	}
+	return none
+}
+
 // active reports whether anything is protected — a zero E2e is the common case and must cost
 // nothing on the send path.
 pub fn (e E2e) active() bool {

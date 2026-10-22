@@ -9,7 +9,9 @@
 
 See docs/scripting_python.md."""
 from ._lib import BloblyError
+from . import e2e
 from .events import EventLoop
+from .faults import FaultKind, FaultRefused
 from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
 
 try:
@@ -41,3 +43,5 @@ def wait_released(timeout_ms=None):
 
 __all__ = ["BloblyError", "Channel", "Channels", "EventLoop", "Frame", "Message", "Messages", "Project",
            "Signal", "Signals", "init", "version", "wait_released"]
+# fault injection and E2E Profile 1 (faults.py, e2e.py)
+__all__ += ["FaultKind", "FaultRefused", "e2e"]

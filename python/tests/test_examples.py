@@ -25,6 +25,7 @@ SCRIPTS = {
     "dbc_messages.py": [],
     "event_loop.py": ["--ms", "1000"],
     "signal_monitor.py": ["--seconds", "1.2"],
+    "fault_injection.py": [],
 }
 
 

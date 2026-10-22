@@ -14,8 +14,9 @@ its databases (DBC or ARXML) and the ECUs simulated on it.
 There are two ways to script it:
 
 - **Python** (`pip install blobly`) puts the engine inside your own Python process: load a
-  project, start its simulation, send and receive frames, encode and decode DBC signals, and react
-  to traffic with an event loop. This is the primary interface, and the one this page uses.
+  project, start its simulation, send and receive frames, encode and decode DBC signals, react
+  to traffic with an event loop, and inject faults into the simulated ECUs. This is the primary
+  interface, and the one this page uses.
   The guide is [scripting_python.md](scripting_python.md).
 - **Lua** test scripts run headless (`scripts/runtests.sh`) or in the GUI's Script panel. Today
   Lua is the only way to run diagnostics. See [Python or Lua](#python-or-lua).
@@ -114,8 +115,9 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   `Project` per process, or stop the first one.
 - **Errors.** The engine's refusals are `blobly.BloblyError`, its message the reason and `.code`
   the kind (-1 refused, -2 no such handle, -3 the wrong state). A listen-only row's send is one.
+  A fault that could not take effect (`net.fault`) is `blobly.FaultRefused`, a `BloblyError`.
   Bad arguments are `ValueError` or `TypeError`, unknown names `AttributeError` or `KeyError`.
-  [scripting_python.md](scripting_python.md#10-errors) has the full table.
+  [scripting_python.md](scripting_python.md#11-errors) has the full table.
 - **Exit codes.** Make a script exit non-zero when a check fails, with one line that says what
   was expected (`sys.exit("FAIL: ...")` exits 1). The examples exit 0 when every check held, 1
   on a failed check or an error, and 2 on a bad argument. pytest exits 0 when every test passed
@@ -135,14 +137,15 @@ Complete scripts, each bounded and with a clear exit status, in
 | [dbc_messages.py](../python/examples/dbc_messages.py) | Messages and signals with units, ranges and labels; encode, decode, send by signal name. |
 | [event_loop.py](../python/examples/event_loop.py) | `on_message` by id and by message, `on_timer`, `on_health`, `run()`. |
 | [signal_monitor.py](../python/examples/signal_monitor.py) | Decoded values of chosen messages over N seconds. |
+| [fault_injection.py](../python/examples/fault_injection.py) | Faults on simulated ECUs seen on the bus: a timed drop, a signal out of range, a refusal. |
 | [test_sim_demo.py](../python/examples/test_sim_demo.py) | A pytest suite with a module-scoped fixture that starts the project. |
 
 ## Python or Lua
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health. | Diagnostics: UDS over CAN and DoIP, DTCs, security access, functional addressing. Python gets these in #507 Phase 1. |
-| Tests under pytest, and anything that needs the Python ecosystem. | SOME/IP, flashing, the E2E helpers and fault injection (`sim.fault`). |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health, fault injection, the E2E Profile 1 helpers. | Diagnostics: UDS over CAN and DoIP, DTCs, security access, functional addressing. Python gets these in #507 Phase 1. |
+| Tests under pytest, and anything that needs the Python ecosystem. | SOME/IP and flashing. |
 | An agent's own process: no V toolchain, a `pip install`. | A script in the GUI's Script panel, against a live measurement. |
 | | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 
