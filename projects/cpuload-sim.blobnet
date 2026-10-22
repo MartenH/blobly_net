@@ -6,7 +6,7 @@
 # Graphics panel against a homogeneous, all-"%" frame: select 0x7E0 in the Trace,
 # then "＋ Plot" the cores you want — the shared Y-axis shows 0–100 %.
 #
-# The 500 ms cadence comes from GenMsgCycleTime in dbc/cpuload.dbc; without it the
+# The 500 ms cadence comes from GenMsgCycleTime in ../dbc/cpuload.dbc; without it the
 # sim has no period and never sends.
 #
 # ⚠ Known quirk of THIS sim demo: CpuLoad's id (0x7E0) is also the UDS tester
