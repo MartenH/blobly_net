@@ -9,6 +9,9 @@ raw frames, and DBC signal decode/encode. The same script runs two ways:
 You don't need anything installed: Lua is compiled into Blobly Net, and the headless
 runner brings up a simulated bus + ECU for you (no hardware, no Python, no drivers).
 
+To drive the engine from Python instead (`pip install blobly`), see
+[scripting_python.md](scripting_python.md).
+
 ---
 
 ## 1. Running scripts from the command line
@@ -362,9 +365,9 @@ call `bus.send`, `bus.recv`, `expect`, a `uds` exchange or even `run()` itself.
 where the backend's ladder only moves while the channel is read (SocketCAN, Vector) — from the same
 handle `bus.recv` reads. What is already queued on that handle when `run()` starts — since the line that
 opened it, which may be an earlier `bus.send` or `expect` — is dispatched by `run()`; how much a
-backend keeps for a handle nobody has read yet differs (a socket's buffer; a shared PCAN or CANsub
-wire keeps what arrived since the handle's open, up to its ring — except on a PCAN wire nobody
-else reads, where a handle that has neither read nor sent for over a second keeps only what
+backend keeps for a handle nobody has read yet differs (a socket's buffer; a shared PCAN, CANsub
+or CAN-bridge wire keeps what arrived since the handle's open, up to its ring — except on a PCAN
+wire nobody else reads, where a handle that has neither read nor sent for over a second keeps only what
 arrives after its next read or send), so a test should not count on either. A frame it reads is **consumed** (a later
 `expect` gets the next one), whether or not a handler matched it, and the script's own frames are
 never heard back. With one channel listened it blocks in the driver, so a
@@ -390,7 +393,7 @@ it to them.
 | `on_health(channel, fn)` | On SocketCAN and Vector the ladder moves only while the channel is read, so `run()` reads it — and consumes its frames — as it does for `on_message`. `fn(state)` fires during `run()` when the controller's fault ladder has moved — `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"` — and at its first sample with the state then, however late the handler was registered. Sampled every 100 ms: a state held for less than that between two samples can be missed. A software bus (`inproc:`, `udp:`) has no ladder and never fires. |
 | `on_timer(period_ms, fn)` | `fn()` fires every `period_ms` during `run()`, on its own grid: a late fire does not delay the next one, and periods missed while the script was busy are skipped, not sent in a burst. A timer is never fired again inside its own callback; one whose callback yields stays paused until that coroutine resumes or is closed. The period is a number of milliseconds, at least 1; a fraction is honoured to within a millisecond. |
 | `run(duration_ms)` | Run the event loop for `duration_ms`. |
-| `bus.health(channel)` | The ladder as the backend last saw it, as the strings above; `""` where it cannot say. PCAN, Kvaser and CANsub ask the driver; on SocketCAN and Vector it is the state the channel's last read saw, so outside `run()` it can be stale. |
+| `bus.health(channel)` | The ladder as the backend last saw it, as the strings above; `""` where it cannot say. PCAN, Kvaser and CANsub ask the driver, and the CAN bridge pushes it; on SocketCAN and Vector it is the state the channel's last read saw, so outside `run()` it can be stale. |
 
 ```lua
 local hb = 0

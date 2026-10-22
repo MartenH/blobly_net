@@ -31,7 +31,7 @@ Watch the **release** workflow run. When it finishes, the release is on the
   Python package with the engine inside (`scripts/build_wheel.py`). The Linux one is built on the
   ubuntu-22.04 job for the AppImage's reason: its manylinux tag is the newest glibc its library
   uses, derived from the library and checked by `auditwheel`. The wheel's version is v.mod's
-  (`2026.10.00` is `2026.10.0` in PEP 440's spelling), so there is still nothing to bump.
+  (`2026.10.01` is `2026.10.1` in PEP 440's spelling), so there is still nothing to bump.
 
 The tarball and the zip carry the demo projects, DBCs, samples, docs, `README.txt`,
 `VERSION.txt`, LICENSE and third-party notices under one top-level folder. The AppImage carries

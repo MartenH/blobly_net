@@ -384,7 +384,7 @@ first, a program V3 cannot build is silently rebuilt by a downloaded V1 compiler
 regression passes unseen — set it locally too when checking a V3 result. `ci.yml`, `windows.yml` and `release.yml`
 set `VFLAGS=-nocache` too: V3's module cache, on by default since `ea5156d`, makes this repo's compiles slower, not
 faster (unit tests 13.7 -> 21.9 min in CI when the pin crossed it). The Linux jobs install the V
-named in **`.v-version`** — a V3 commit this repo is known to pass on, not master itself, and the one blobly_emb pins, so one V builds both;
+named in **`.v-version`** — a V3 commit this repo is known to pass on, not master itself. blobly_emb pins one too, and the two are bumped together (one PR in each repo), so one V builds both;
 `release.yml`'s Linux job and `scripts/setup_env.sh` read the same file. **TWO pins, and they
 move together**: V is built from source and `make` bootstraps it by cloning **vlang/vc**, which
 the makefile does with NO ref — so `.vc-version` pins that too, at a vc commit PROVEN TO BUILD

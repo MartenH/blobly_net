@@ -16,6 +16,7 @@ const help_docs = [
 	HelpDoc{'Quick start', ''},
 	HelpDoc{'Simulation', 'docs/simulation.md'},
 	HelpDoc{'Scripting', 'docs/scripting.md'},
+	HelpDoc{'Python', 'docs/scripting_python.md'},
 	HelpDoc{'Project editing', 'docs/project_editing.md'},
 	HelpDoc{'CAN hardware', 'docs/can_hardware.md'},
 	// Listed separately from 'CAN hardware' because it answers a question that only comes up with

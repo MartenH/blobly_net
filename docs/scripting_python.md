@@ -94,7 +94,7 @@ background readers:
   every 0.1 ms (1 ms on Windows), and at once again when a look stopped at its bound with
   records still queued behind it (`Channel.look()`).
 - **Health.** `on_health` reads its channel only where the ladder moves while it is read
-  (SocketCAN, Vector); where it is polled (PCAN, Kvaser, CANsub) or there is none (the software buses), the
+  (SocketCAN, Vector); where it is polled (PCAN, Kvaser, CANsub, the CAN bridge) or there is none (the software buses), the
   channel's frames are left for `recv`.
 - **The deadline is per event** (a frame, a timer, one health handler). None is taken up once
   the deadline has passed. A frame taken up before it reaches every handler it matches.
