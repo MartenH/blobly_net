@@ -21,7 +21,7 @@ BB_ERR = -1
 BB_ERR_HANDLE = -2
 BB_ERR_STATE = -3
 # answers that are neither success nor an error (bb.h)
-BB_NONE = 1        # bb_bus_recv: no frame in time
+BB_NONE = 1        # bb_bus_recv: no frame in time; bb_decode: no message
 BB_SPENT = 2       # bb_bus_recv(h, 0): no frame yet, records still queued behind the look's bound
 BB_RELEASING = 3   # bb_stop / bb_wait_released: a loop is still letting go of its wires
 
@@ -40,9 +40,25 @@ class BbFrame(ctypes.Structure):
                 ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64)]
 
 
+class BbMessage(ctypes.Structure):
+    """bb_message, field for field."""
+    _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("j1939", ctypes.c_uint8),
+                ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32)]
+
+
+class BbSignal(ctypes.Structure):
+    """bb_signal, field for field."""
+    _fields_ = [("start_bit", ctypes.c_int32), ("length", ctypes.c_int32),
+                ("big_endian", ctypes.c_uint8), ("is_signed", ctypes.c_uint8),
+                ("multiplexor", ctypes.c_uint8), ("multiplexed", ctypes.c_uint8),
+                ("mux_value", ctypes.c_int32), ("labels", ctypes.c_int32),
+                ("factor", ctypes.c_double), ("offset", ctypes.c_double),
+                ("minimum", ctypes.c_double), ("maximum", ctypes.c_double)]
+
+
 def _declare(lib):
     """Every bb.h prototype, argtypes and restype. An int-returning call keeps ctypes' default."""
-    c_int, c_char_p = ctypes.c_int, ctypes.c_char_p
+    c_int, c_char_p, P = ctypes.c_int, ctypes.c_char_p, ctypes.POINTER
     sigs = {
         "bb_version": ([], c_char_p),
         "bb_init": ([], c_int),
@@ -63,6 +79,15 @@ def _declare(lib):
         "bb_bus_recv": ([c_int, c_int, ctypes.POINTER(BbFrame)], c_int),
         "bb_bus_health": ([c_int], c_int),
         "bb_bus_close": ([c_int], c_int),
+        "bb_message_count": ([c_int], c_int),
+        "bb_message_info": ([c_int, c_int, P(BbMessage)], c_int),
+        "bb_message_name": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_signal_info": ([c_int, c_int, c_int, P(BbSignal)], c_int),
+        "bb_signal_name": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_signal_unit": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_signal_label": ([c_int, c_int, c_int, c_int, P(ctypes.c_double), c_char_p, c_int], c_int),
+        "bb_encode": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), P(BbFrame)], c_int),
+        "bb_decode": ([c_int, P(BbFrame), P(c_int), P(ctypes.c_double), P(ctypes.c_uint8), c_int], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)
@@ -88,8 +113,10 @@ _tls = threading.local()
 # reads to see that a thread was let go on itself; bounded, so a thread-per-job host keeps nothing
 detached = collections.deque(maxlen=64)
 # which Project's load the library holds now, and which load that was: a channel of another
-# project, or of an earlier load of its own, would reach another row by its index
-state = {"owner": None, "gen": 0}
+# project, or of an earlier load of its own, would reach another row by its index; and which
+# start: a row's databases are the run's, so a message of an earlier run would reach another
+# message by its index
+state = {"owner": None, "gen": 0, "run": 0}
 # bb.h: open, close, load, start and stop are not synchronised against each other, and ctypes
 # releases the GIL inside a call, so every one of them (and the row-name reads a load replaces)
 # runs under this lock, from whichever thread makes it
@@ -150,6 +177,18 @@ def text(b):
     BB_ERROR_MAX bytes, but a project's own names need not be UTF-8: an undecodable byte must not
     hide an error behind a UnicodeDecodeError."""
     return b.decode("utf-8", errors="replace") if b is not None else ""
+
+
+def string(get, *at):
+    """A string a bb_* call copies into the caller's buffer (bb.h), read whole: the call answers
+    the string's length, so one that did not fit is asked for again with room for it."""
+    cap = 256
+    while True:
+        buf = ctypes.create_string_buffer(cap)
+        n = check(get(*at, buf, cap))
+        if n < cap:
+            return text(buf.raw[:n])
+        cap = n + 1
 
 
 def check(rc):

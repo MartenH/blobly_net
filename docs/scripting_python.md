@@ -38,7 +38,12 @@ with blobly.Project("projects/sim-demo.blobnet") as net:      # loaded and start
     print(can1.recv(1000))                                      # Frame(0x300 [E4 17 ...]) or None
     can1.send(0x101, b"\x05")                                   # sim-demo's SUT answers 0x102, 0x06
 
+    msgs = can1.messages                                        # CAN1's database: messages complete too
+    msgs.Request.send(ReqCode=5)                                # encoded by signal name, then sent
+    print(can1.decode(msgs.Powertrain.encode(EngineSpeed=1500)))  # {'EngineSpeed': 1500.0, ...}
+
     net.on_message(can1, 0x102, lambda f: print("answer", f))
+    net.on_message(can1, msgs.Response, lambda f: print(can1.decode(f)))  # {'RespCode': 6.0}
     net.on_health(can1, lambda s: print("CAN1 is", s))          # a software bus never fires
     net.on_timer(100, lambda: can1.send(0x101, b"\x05"))        # a cyclic frame, inside run()
     net.run(1000)
@@ -55,7 +60,12 @@ with blobly.Project("projects/sim-demo.blobnet") as net:      # loaded and start
 | `ch.send(id, data, ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` let the wire's declared format decide. A frame no controller could send is refused by the transport, as for every sender in the app. |
 | `ch.recv(timeout_ms=1000)` | The next frame other nodes sent, waiting at most `timeout_ms` (a fraction is rounded down), or `None` when nothing came; `None` as the timeout waits for ever. Returns a `Frame` (`id`, `data`, `length`, `ext`, `fd`, `brs`, `rtr`, `esi`); for a remote frame `data` is empty and `length` is the length it asks for. |
 | `ch.health()` | The controller's fault ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""` where the backend cannot say (the software buses). On SocketCAN and Vector the ladder advances only on a channel that is being read (`recv`, or `run()` with a handler naming it): a channel that only sends keeps its last state. |
-| `net.on_message(ch, id, fn)` | `fn(frame)` for each frame on `ch` with that `id` (`None`: every frame) received during `run()`. Your own sends are never heard back. |
+| `ch.messages` | The messages of the row's databases, as the run loaded them (the merge of its `databases:`, the one its simulated ECUs encode by): `ch.messages.Powertrain`, `ch.messages["X"]`, by position, iteration in the database's order, `keys()`, and `dir()` for completion. Only while the project is started. A message stays usable across a stop and a start while the database still has it at its place under its name and id. A name two messages share is refused as ambiguous; reach those by position. |
+| `msg.encode(**signals)` | The `Frame` the message sends with the named signals at these physical values and every other signal at raw 0, as the Lua `bus.send_message` encodes it. A name the message does not have is refused. A value is not held to the DBC's range, only to what the signal's width can carry (past that it is clamped to the nearer end), so a test can send an out-of-range value on purpose. `fd`/`brs` are left unset, so a send takes the wire's declared format. |
+| `msg.send(**signals)` | Encodes the message and sends it on its channel; returns the `Frame` sent. |
+| `msg.id`, `ext`, `dlc`, `j1939`, `signals` | The message as its database defines it. `j1939` is whether the database declares it J1939. `msg.signals` is its signals by name, each a `Signal`: `start_bit` (as the DBC numbers it), `length`, `byte_order` (`"little"` Intel, `"big"` Motorola), `signed`, `factor`, `offset`, `minimum`, `maximum` (both 0 where the DBC states no range), `unit`, `multiplexor`, `multiplexed`, `mux_value`, and `labels`, the value table as `{physical value: text}`. |
+| `ch.decode(frame)` | `{signal: physical value}` for what the frame says in the row's databases, as the Lua `decode()` reads it: the message of its id and kind (else, for an extended frame, one of its J1939 PGN), and each signal the frame carries — a multiplexed signal its switch does not select is left out. `None` for a frame of no message, or a remote frame. |
+| `net.on_message(ch, id, fn)` | `fn(frame)` for each frame on `ch` with that `id` (`None`: every frame) received during `run()`. `id` may be a message from `ch.messages`, which matches its id and its kind (an int matches either kind). A J1939 message's frames from another source address do not have its id; `decode()` reads those. Your own sends are never heard back. |
 | `net.on_health(ch, fn)` | `fn(state)` during `run()` when the ladder has moved, and at its first sample with the state then. Sampled every 100 ms, so a state held for less than that can be missed. `run()` reads the channel for it only on SocketCAN and Vector, where the ladder needs that. |
 | `net.on_timer(period_ms, fn)` | `fn()` every `period_ms` during `run()`, on its own grid: a late fire does not delay the next one, and points missed while the script was busy (or a long callback ran) are skipped, not sent in a burst. The period must be at least 1 ms. |
 | `net.run(duration_ms)` | The event loop, for a finite number of milliseconds (zero or more). It reads every channel a handler names, and a frame it reads is consumed, whether or not a handler matched it. |
@@ -77,7 +87,6 @@ background readers:
 
 ## What is not there yet
 
-- **DBC messages and signals.** There is no encoding or decoding by name, so frames are ids and bytes. This needs a decode/encode call in the C ABI.
 - **UDS / diagnostics.** No equivalent of the Lua `uds.open` yet.
 - **Sends that keep going outside `run()`.** There are no cyclic senders and no `on_send`: a periodic frame is `on_timer` + `send`, inside `run()`. Background sends need one owner thread per channel in the engine, which is planned and not built.
 - **The GUI.** A Python console beside a running GUI measurement is not built. This package brings a project up in your own process.

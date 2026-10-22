@@ -299,24 +299,6 @@ fn (mut env Env) bus_for(name string) !transport.Bus {
 	return b
 }
 
-fn find_msg(db candb.Database, name string) ?candb.Message {
-	for m in db.messages {
-		if m.name == name {
-			return m
-		}
-	}
-	return none
-}
-
-fn find_sig(m candb.Message, name string) ?candb.Signal {
-	for s in m.signals {
-		if s.name == name {
-			return s
-		}
-	}
-	return none
-}
-
 // register_all binds every host primitive the prelude relies on.
 fn (mut env Env) register_all() {
 	env.st.register('__report', l_report)
@@ -1482,22 +1464,22 @@ fn l_bus_recv(l lua.State) i32 {
 fn l_msg_template(l lua.State) i32 {
 	mut env := env_of(l)
 	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
-	msg := find_msg(env.chans[ci].db, l.arg_str(2)) or {
+	msg := env.chans[ci].db.message_named(l.arg_str(2)) or {
 		return l.fail('unknown message "${l.arg_str(2)}"')
 	}
 	l.push_int(msg.id)
 	l.push_bool(msg.ext)
-	l.push_bytes([]u8{len: msg.dlc})
+	l.push_bytes(msg.template())
 	return 3
 }
 
 fn l_encode_signal(l lua.State) i32 {
 	mut env := env_of(l)
 	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
-	msg := find_msg(env.chans[ci].db, l.arg_str(2)) or {
+	msg := env.chans[ci].db.message_named(l.arg_str(2)) or {
 		return l.fail('unknown message "${l.arg_str(2)}"')
 	}
-	sig := find_sig(msg, l.arg_str(3)) or {
+	sig := msg.signal_named(l.arg_str(3)) or {
 		return l.fail('unknown signal "${l.arg_str(3)}" in ${l.arg_str(2)}')
 	}
 	mut data := l.arg_bytes(5)

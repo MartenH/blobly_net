@@ -3,14 +3,14 @@
     import blobly
     with blobly.Project("projects/sim-demo.blobnet") as net:
         can1 = net.channels.CAN1
-        net.on_message(can1, 0x102, lambda f: print("answer", f))
-        net.on_timer(100, lambda: can1.send(0x101, b"\\x05"))
+        net.on_message(can1, can1.messages.Response, lambda f: print("answer", can1.decode(f)))
+        net.on_timer(100, lambda: can1.messages.Request.send(ReqCode=5))
         net.run(1000)
 
 See docs/scripting_python.md."""
 from ._lib import BloblyError
 from .events import EventLoop
-from .project import Channel, Channels, Frame, Project
+from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
 
 
 def init():
@@ -34,5 +34,5 @@ def wait_released(timeout_ms=None):
     return _lib.check(_lib.lib().bb_wait_released(_ms(timeout_ms))) == 0
 
 
-__all__ = ["BloblyError", "Channel", "Channels", "EventLoop", "Frame", "Project", "init", "version",
-           "wait_released"]
+__all__ = ["BloblyError", "Channel", "Channels", "EventLoop", "Frame", "Message", "Messages", "Project",
+           "Signal", "Signals", "init", "version", "wait_released"]

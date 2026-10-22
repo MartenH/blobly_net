@@ -101,9 +101,11 @@ class EventLoop:
         return read
 
     def on_message(self, channel, id, fn):
-        """fn(frame) for each frame on `channel` whose id is `id` (None: every frame) received
-        during run() — what other nodes sent."""
-        self._on_msg.append((self._listen_key(channel), id, fn))
+        """fn(frame) for each frame on `channel` received during run() — what other nodes sent —
+        whose id is `id` (an int, of either kind), or None for every frame, or a Message (a
+        channel's .messages): its id AND kind. A J1939 message's frames from another source
+        address are not its id: decode() reads those."""
+        self._on_msg.append((self._listen_key(channel), _want(id), fn))
 
     def on_health(self, channel, fn):
         """fn(state) during run() when the controller's ladder has moved — "ok", "error warning",
@@ -207,11 +209,27 @@ class EventLoop:
             if got is not None:
                 key, frame = got
                 handlers = [fn for ch, want, fn in self._on_msg
-                            if (ch is key or ch == key) and (want is None or want == frame.id)]
+                            if (ch is key or ch == key) and _matches(want, frame)]
                 self._pending.append([frame, handlers, 0])
                 self._dispatch_pending()
             if self._now() >= deadline:
                 break
+
+
+def _want(id):
+    """What on_message matches: None (every frame), or (id, ext) — ext None for an int id, which
+    matches either kind."""
+    if id is None:
+        return None
+    if isinstance(id, int) and not isinstance(id, bool):
+        return (id, None)
+    if isinstance(getattr(id, "id", None), int) and hasattr(id, "ext"):
+        return (id.id, bool(id.ext))
+    raise TypeError(f"on_message: an id is an int, None or a message, not {id!r}")
+
+
+def _matches(want, frame):
+    return want is None or (want[0] == frame.id and (want[1] is None or want[1] == frame.ext))
 
 
 def wait_on(channels, timeout_ms, rr, now, sleep_ms):

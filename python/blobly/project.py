@@ -2,6 +2,7 @@
 its enabled channels as objects that complete in a REPL, and the event loop over them."""
 import ctypes
 import math
+import numbers
 import os
 import warnings
 
@@ -35,6 +36,20 @@ def frame_of(f):
     return Frame(f.id, data, bool(f.ext), bool(f.fd), bool(f.brs), bool(f.rtr), bool(f.esi), f.len)
 
 
+def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
+    """A bb_frame from a frame's parts, refusing what no CAN frame is."""
+    if isinstance(id, bool) or not isinstance(id, int) or not 0 <= id <= 0x1FFF_FFFF:
+        raise ValueError(f"{who}: a CAN id is an integer of at most 29 bits, not {id!r}")
+    data = bytes(data)
+    if len(data) > 64:
+        raise ValueError(f"{who}: {len(data)} bytes is more than a CAN-FD frame carries")
+    f = _lib.BbFrame(id=id, len=len(data), ext=int(bool(ext)), fd=int(bool(fd)), brs=int(bool(brs)),
+                     rtr=int(bool(rtr)))
+    for i, b in enumerate(data):
+        f.data[i] = b
+    return f
+
+
 def _ms(timeout_ms):
     """A timeout as bb_bus_recv takes it: whole milliseconds rounded DOWN (a receive waits at most
     what was asked), None for forever."""
@@ -58,6 +73,7 @@ class Channel:
     def __init__(self, project, index, name, gen):
         self._project, self._index, self.name, self._gen = project, index, name, gen
         self._h = None
+        self._messages, self._messages_run = None, None
 
     def _current(self):
         st = _lib.state
@@ -107,14 +123,7 @@ class Channel:
 
     def send(self, id, data=b"", ext=False, fd=False, brs=False):
         """Puts a frame on the wire. fd/brs left False let the wire's declared format decide."""
-        if isinstance(id, bool) or not isinstance(id, int) or not 0 <= id <= 0x1FFF_FFFF:
-            raise ValueError(f"{self.name}: a CAN id is an integer of at most 29 bits, not {id!r}")
-        data = bytes(data)
-        if len(data) > 64:
-            raise ValueError(f"{self.name}: {len(data)} bytes is more than a CAN-FD frame carries")
-        f = _lib.BbFrame(id=id, len=len(data), ext=int(bool(ext)), fd=int(bool(fd)), brs=int(bool(brs)))
-        for i, b in enumerate(data):
-            f.data[i] = b
+        f = _bb_frame(self.name, id, data, ext, fd, brs)
         lib = _lib.lib()
         _lib.check(lib.bb_bus_send(self._handle(), ctypes.byref(f)))
 
@@ -144,6 +153,51 @@ class Channel:
         lib = _lib.lib()
         return _lib.HEALTH_NAMES.get(_lib.check(lib.bb_bus_health(self._handle())), "")
 
+    @property
+    def messages(self):
+        """The messages of this row's databases, as the run loaded them (start; the merge of its
+        `databases:` its simulated ECUs encode by): `ch.messages.Powertrain`, `ch.messages["X"]`,
+        by position, iterated in the database's order, completed by dir(). Re-read at each start,
+        keeping each Message still at its position under its name and id."""
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self._current()
+            run = _lib.state["run"]
+            if self._messages is not None and self._messages_run == run:
+                return self._messages
+            n = _lib.check(lib.bb_message_count(self._index))
+            old = list(self._messages) if self._messages is not None else []
+            rows = []
+            for m in range(n):
+                info = _lib.BbMessage()
+                _lib.check(lib.bb_message_info(self._index, m, ctypes.byref(info)))
+                name = _lib.string(lib.bb_message_name, self._index, m)
+                keep = old[m] if m < len(old) else None
+                if keep is None or (keep.name, keep.id, keep.ext) != (name, info.id, bool(info.ext)):
+                    keep = Message(self, m, name)
+                keep._fill(info, run)
+                rows.append(keep)
+            self._messages, self._messages_run = Messages(rows), run
+            return self._messages
+
+    def decode(self, frame):
+        """{signal: physical value} for what `frame` says in this row's databases — the message
+        of its id and kind (else, for an extended frame, one of its J1939 PGN), each signal it
+        carries (a multiplexed signal its switch does not select is left out) — as a Lua script's
+        decode() reads it; None for a frame of no message, or a remote frame."""
+        f = _bb_frame(self.name, frame.id, frame.data, getattr(frame, "ext", False),
+                      rtr=getattr(frame, "rtr", False))
+        lib = _lib.lib()
+        with _lib.state_lock:
+            msgs = self.messages
+            cap = msgs._most
+            values, active = (ctypes.c_double * max(cap, 1))(), (ctypes.c_uint8 * max(cap, 1))()
+            m = ctypes.c_int(-1)
+            rc = _lib.check(lib.bb_decode(self._index, ctypes.byref(f), ctypes.byref(m), values, active, cap))
+            if rc == _lib.BB_NONE:
+                return None
+            return {s.name: values[i] for i, s in enumerate(msgs[m.value].signals) if active[i]}
+
     def close(self):
         """Lets the handle go; the next use opens another."""
         lib = _lib.lib()
@@ -156,30 +210,30 @@ class Channel:
         return f"<Channel {self.name}>"
 
 
-class Channels:
-    """The project's enabled rows: `net.channels.CAN1`, `net.channels["CAN-1"]`, `net.channels[0]`
-    (by position), iteration in project order, and dir() for completion. Names are not unique in a
-    project: a name two rows answer to is refused, and such rows are reached by position."""
+class Named:
+    """Items by name: `c.X`, `c["X-1"]`, `c[0]` (by position), iteration in order, and dir() for
+    completion. A name two items answer to is refused, and such items are reached by position."""
+    _noun = "item"
 
-    def __init__(self, channels):
+    def __init__(self, items):
         self._by_name = {}
-        for c in channels:
+        for c in items:
             self._by_name.setdefault(c.name, []).append(c)
-        self._order = channels
+        self._order = items
 
     def _one(self, name):
         rows = self.__dict__["_by_name"].get(name)
         if not rows:
             return None
         if len(rows) > 1:
-            raise BloblyError(f"{name!r} names {len(rows)} channels in this project; reach them by "
-                              "position (net.channels[i]) or rename one")
+            raise BloblyError(f"{name!r} names {len(rows)} {self._noun}s here; reach them by "
+                              f"position ([i]) or rename one")
         return rows[0]
 
     def __getattr__(self, name):
         c = self._one(name)
         if c is None:
-            raise AttributeError(f"no enabled channel named {name!r}; there are: "
+            raise AttributeError(f"no {self._noun} named {name!r}; there are: "
                                  + ", ".join(self.__dict__["_by_name"]))
         return c
 
@@ -188,7 +242,7 @@ class Channels:
             return self._order[key]
         c = self._one(key)
         if c is None:
-            raise KeyError(f"no enabled channel named {key!r}")
+            raise KeyError(f"no {self._noun} named {key!r}")
         return c
 
     def __dir__(self):
@@ -202,6 +256,119 @@ class Channels:
 
     def keys(self):
         return list(self._by_name)
+
+
+class Channels(Named):
+    """The project's enabled rows: `net.channels.CAN1`, `net.channels["CAN-1"]`, `net.channels[0]`.
+    Names are not unique in a project: two rows of one name are reached by position."""
+    _noun = "enabled channel"
+
+
+class Messages(Named):
+    """A row's messages (Channel.messages)."""
+    _noun = "message"
+
+    def __init__(self, items):
+        super().__init__(items)
+        self._most = max((m._count for m in items), default=0)  # the widest decode's arrays
+
+
+class Signals(Named):
+    """A message's signals (Message.signals)."""
+    _noun = "signal"
+
+
+class Signal:
+    """A signal of a message, as its database defines it. physical = raw * factor + offset, the
+    raw value two's complement where `signed`; `byte_order` "little" (Intel) or "big" (Motorola),
+    `start_bit` as the DBC numbers it; `minimum`/`maximum` the DBC's range (both 0 where it states
+    none; encode does not apply it); `labels` the value table, {physical value: text}."""
+    __slots__ = ("name", "start_bit", "length", "byte_order", "signed", "factor", "offset",
+                 "minimum", "maximum", "unit", "multiplexor", "multiplexed", "mux_value", "labels")
+
+    def __repr__(self):
+        unit = f" {self.unit!r}" if self.unit else ""
+        return (f"<Signal {self.name} {self.start_bit}|{self.length} {self.byte_order} "
+                f"x{self.factor:g}{self.offset:+g} [{self.minimum:g}..{self.maximum:g}]{unit}>")
+
+
+class Message:
+    """A message of a row's databases: `id`, `ext`, `dlc`, `j1939` (the database declares it),
+    `signals`; encode / send by signal name. It belongs to the run that listed it: after a stop
+    and a start it goes on working while its row's database still has it at its position, and
+    refuses otherwise."""
+
+    def __init__(self, channel, index, name):
+        self.channel, self._index, self.name = channel, index, name
+        self._signals = None
+
+    def _fill(self, info, run):
+        self.id, self.ext, self.dlc, self.j1939 = info.id, bool(info.ext), info.dlc, bool(info.j1939)
+        self._count, self._run, self._signals = info.signals, run, None
+
+    def _live(self):
+        """Refuses unless this message is in the current run's database of its channel."""
+        self.channel.messages  # re-read after a start: keeps this object if it is still there
+        if self._run != _lib.state["run"]:
+            raise BloblyError(f"{self.name}: not in this run's database of {self.channel.name}; "
+                              "take it from channel.messages again", _lib.BB_ERR_STATE)
+
+    @property
+    def signals(self):
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self._live()
+            if self._signals is None:
+                row, m, rows = self.channel._index, self._index, []
+                for i in range(self._count):
+                    info = _lib.BbSignal()
+                    _lib.check(lib.bb_signal_info(row, m, i, ctypes.byref(info)))
+                    s = Signal()
+                    s.name = _lib.string(lib.bb_signal_name, row, m, i)
+                    s.unit = _lib.string(lib.bb_signal_unit, row, m, i)
+                    s.start_bit, s.length = info.start_bit, info.length
+                    s.byte_order = "big" if info.big_endian else "little"
+                    s.signed, s.factor, s.offset = bool(info.is_signed), info.factor, info.offset
+                    s.minimum, s.maximum = info.minimum, info.maximum
+                    s.multiplexor, s.multiplexed = bool(info.multiplexor), bool(info.multiplexed)
+                    s.mux_value = info.mux_value
+                    s.labels = {}
+                    value = ctypes.c_double()
+                    for k in range(info.labels):
+                        text = _lib.string(lib.bb_signal_label, row, m, i, k, ctypes.byref(value))
+                        s.labels[value.value] = text
+                    rows.append(s)
+                self._signals = Signals(rows)
+            return self._signals
+
+    def encode(self, **signals):
+        """The Frame this message sends with the named signals at these physical values and every
+        other at raw 0, as a Lua script's bus.send_message encodes it: a name the message does not
+        have is refused; a value past what the signal's width holds is clamped to the nearer end.
+        fd/brs are left unset, so a send takes the wire's declared format."""
+        names = [k.encode() for k in signals]
+        values = []
+        for k, v in signals.items():
+            if not isinstance(v, numbers.Real):
+                raise TypeError(f"{self.name}.{k}: a signal's value is a number, not {v!r}")
+            values.append(float(v))
+        n = len(names)
+        f = _lib.BbFrame()
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self._live()
+            _lib.check(lib.bb_encode(self.channel._index, self._index, n, (ctypes.c_char_p * n)(*names),
+                                     (ctypes.c_double * n)(*values), ctypes.byref(f)))
+        return frame_of(f)
+
+    def send(self, **signals):
+        """Encodes this message (encode) and sends it on its channel; returns the Frame sent."""
+        f = self.encode(**signals)
+        self.channel.send(f.id, f.data, ext=f.ext)
+        return f
+
+    def __repr__(self):
+        return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"
 
 
 class Project(EventLoop):
@@ -279,6 +446,7 @@ class Project(EventLoop):
             if st["owner"] is not self or st["gen"] != self._gen:
                 self.load()
             _lib.check(lib.bb_start())
+            st["run"] += 1  # the rows' databases are this run's from here
             self.started = True
         return self
 

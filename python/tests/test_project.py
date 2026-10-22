@@ -34,6 +34,47 @@ channels:
 """
 
 
+# a database with a multiplexed message, a 29-bit one and two messages of one name
+MUX_DBC = """VERSION ""
+
+BU_: A B
+
+BO_ 1024 Muxed: 3 A
+ SG_ Mode M : 0|8@1+ (1,0) [0|255] "" B
+ SG_ TempA m0 : 8|16@1+ (0.1,0) [0|0] "degC" B
+ SG_ PressB m1 : 8|16@1+ (0.5,0) [0|0] "kPa" B
+
+BO_ 2147484160 Wide: 8 A
+ SG_ Level : 0|8@1- (1,0) [-128|127] "" B
+
+BO_ 513 Twice: 1 A
+ SG_ One : 0|8@1+ (1,0) [0|255] "" B
+
+BO_ 514 Twice: 1 A
+ SG_ Two : 0|8@1+ (1,0) [0|255] "" B
+"""
+
+MUX = """project:
+  name: mux
+  version: 8
+channels:
+  - name: M
+    type: can
+    interface: inproc:PY_MUX
+    databases:
+      - mux.dbc
+"""
+
+
+def mux_project(d):
+    with open(os.path.join(d, "mux.dbc"), "w") as f:
+        f.write(MUX_DBC)
+    path = os.path.join(d, "mux.blobnet")
+    with open(path, "w") as f:
+        f.write(MUX)
+    return path
+
+
 def setUpModule():
     try:
         _lib.lib()
@@ -228,6 +269,102 @@ class TestRun(unittest.TestCase):
             with self.assertRaises(blobly.BloblyError) as e:
                 blobly.Project(SIM_DEMO).start()
             self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+
+
+class TestDatabases(unittest.TestCase):
+    """CAN1's database in sim-demo is dbc/blobly_net.dbc: Powertrain 0x100, 8 bytes, EngineSpeed
+    0|16 at 0.25 rpm, Gear 43|4 with a value table; the SUT answers Request 0x101 with Response
+    0x102, ReqCode plus one."""
+
+    def test_the_messages_are_listed_and_complete(self):
+        with blobly.Project(SIM_DEMO) as net:
+            msgs = net.channels.CAN1.messages
+            self.assertIn("Powertrain", dir(msgs))
+            pt = msgs.Powertrain
+            self.assertIs(pt, msgs["Powertrain"])
+            self.assertEqual((pt.id, pt.ext, pt.dlc, pt.j1939), (0x100, False, 8, False))
+            self.assertEqual(pt.signals.keys(), ["EngineSpeed", "VehicleSpeed", "CoolantTemp",
+                                                 "ThrottlePos", "Gear", "CruiseOn"])
+            es = pt.signals.EngineSpeed
+            self.assertEqual((es.start_bit, es.length, es.byte_order, es.signed), (0, 16, "little", False))
+            self.assertEqual((es.factor, es.offset, es.minimum, es.maximum, es.unit), (0.25, 0, 0, 16383.75, "rpm"))
+            self.assertEqual(pt.signals.Gear.labels[3], "Third")
+            self.assertEqual(len(pt.signals.Gear.labels), 7)
+            self.assertEqual(pt.signals.CoolantTemp.offset, -40)
+            with self.assertRaises(AttributeError) as e:
+                msgs.Nope
+            self.assertIn("Powertrain", str(e.exception), "the error names what there is")
+
+    def test_encode_is_send_messages(self):
+        with blobly.Project(SIM_DEMO) as net:
+            pt = net.channels.CAN1.messages.Powertrain
+            f = pt.encode(EngineSpeed=1500, Gear=3, CruiseOn=True)
+            # 1500 / 0.25 = 0x1770; Gear 3 << 43; CruiseOn bit 47; the rest raw 0
+            self.assertEqual(f, blobly.Frame(0x100, bytes([0x70, 0x17, 0, 0, 0, 0x98, 0, 0])))
+            self.assertEqual(pt.encode().data, bytes(8), "every signal unset is raw 0")
+            with self.assertRaises(blobly.BloblyError) as e:
+                pt.encode(Nope=1)
+            self.assertIn('unknown signal "Nope" in Powertrain', str(e.exception))
+            with self.assertRaises(TypeError):
+                pt.encode(Gear="Third")
+
+    def test_decode_reads_back_what_encode_wrote(self):
+        with blobly.Project(SIM_DEMO) as net:
+            can1 = net.channels.CAN1
+            f = can1.messages.Powertrain.encode(EngineSpeed=1500, CoolantTemp=90, Gear=3)
+            self.assertEqual(can1.decode(f), {"EngineSpeed": 1500, "VehicleSpeed": 0, "CoolantTemp": 90,
+                                              "ThrottlePos": 0, "Gear": 3, "CruiseOn": 0})
+            self.assertIsNone(can1.decode(blobly.Frame(0x7FF, b"\x01")), "a frame of no message")
+            self.assertIsNone(can1.decode(blobly.Frame(0x100, ext=True)), "the id of the other kind")
+            self.assertIsNone(can1.decode(blobly.Frame(0x100, rtr=True, length=8)), "a remote frame")
+            heard = can1.recv(1000)
+            self.assertIsNotNone(heard)
+            self.assertIsInstance(can1.decode(heard), dict, f"the simulation sent {heard}")
+
+    def test_a_message_sent_is_answered_and_decoded(self):
+        with blobly.Project(SIM_DEMO) as net:
+            can1 = net.channels.CAN1
+            msgs = can1.messages
+            answers = []
+            net.on_message(can1, msgs.Response, lambda f: answers.append(can1.decode(f)))
+            net.on_timer(50, lambda: msgs.Request.send(ReqCode=5))
+            net.run(300)
+            self.assertTrue(answers)
+            self.assertEqual(answers[0], {"RespCode": 6})
+
+    def test_a_message_outlives_a_restart_while_it_is_there(self):
+        net = blobly.Project(SIM_DEMO)
+        with net:
+            pt = net.channels.CAN1.messages.Powertrain
+        with self.assertRaises(blobly.BloblyError) as e:
+            pt.encode(Gear=1)
+        self.assertEqual(e.exception.code, _lib.BB_ERR_STATE, "a stopped run has no databases")
+        with net:
+            self.assertIs(net.channels.CAN1.messages.Powertrain, pt)
+            self.assertEqual(pt.encode(Gear=1).data[5], 0x08)
+
+    def test_the_messages_need_a_run(self):
+        net = blobly.Project(SIM_DEMO).load()
+        with self.assertRaises(blobly.BloblyError) as e:
+            net.channels.CAN1.messages
+        self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+
+    def test_multiplexing_kinds_and_shared_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            with blobly.Project(mux_project(d)) as net:
+                m = net.channels.M
+                mux = m.messages.Muxed
+                self.assertTrue(mux.signals.Mode.multiplexor)
+                self.assertEqual((mux.signals.PressB.multiplexed, mux.signals.PressB.mux_value), (True, 1))
+                # only the signals the switch selects
+                self.assertEqual(m.decode(mux.encode(Mode=1, PressB=50)), {"Mode": 1, "PressB": 50})
+                self.assertEqual(m.decode(mux.encode(Mode=0, TempA=20)), {"Mode": 0, "TempA": 20})
+                wide = m.messages.Wide
+                self.assertEqual((wide.id, wide.ext, wide.signals.Level.signed), (0x200, True, True))
+                self.assertEqual(m.decode(wide.encode(Level=-3)), {"Level": -3})
+                with self.assertRaises(blobly.BloblyError):
+                    m.messages.Twice  # two messages of one name: by position
+                self.assertEqual([x.id for x in m.messages if x.name == "Twice"], [0x201, 0x202])
 
 
 class TestRefusals(unittest.TestCase):
