@@ -43,6 +43,11 @@ typedef int (*uds_open_fn)(int, const int64_t *, const int64_t *, bb_uds_target 
 typedef int (*uds_did_fn)(int, int, uint8_t *, int);
 typedef int (*uds_last_fn)(int, bb_uds_exchange *, uint8_t *, int, uint8_t *, int);
 typedef int (*uds_data_fn)(int, uint8_t *, int);
+typedef int (*uds_dtc_fn)(int, int, bb_dtc *);
+typedef int (*dtc_name_fn)(int, char *, int);
+static int_int_fn bb_uds_supported_dtcs_p;
+static uds_dtc_fn bb_uds_dtc_p;
+static dtc_name_fn bb_dtc_name_p;
 static uds_open_fn bb_uds_open_p;
 static uds_did_fn bb_uds_read_did_p;
 static uds_last_fn bb_uds_last_p;
@@ -211,8 +216,15 @@ static int uds_steps(int row, int doip) {
 	/* a buffer bb.h does not allow is refused BEFORE the request goes out */
 	CHECK(bb_uds_read_did_p(u, 0xF190, NULL, 4) == BB_ERR, "a NULL buffer of 4 bytes must refuse");
 	CHECK(bb_uds_last_p(u, &x, req, sizeof req, ans, sizeof ans) == 0 && x.nrc == 0x31, "a refused call sent nothing");
+	/* the fault memory as a model: SUT's two DTCs, the first P1234-56, confirmed and failing */
+	bb_dtc d;
+	char name[16];
+	CHECK(bb_uds_supported_dtcs_p(u) == 2 && bb_uds_dtc_p(u, 0, &d) == 0 && d.code == 0x123456 && d.status == 0x09,
+		"0x19 0A: two DTCs, the first 0x123456 status 0x09");
+	CHECK(bb_dtc_name_p((int)d.code, name, sizeof name) == 8 && strcmp(name, "P1234-56") == 0, "its display name: %s", name);
+	CHECK(bb_uds_dtc_p(u, 2, &d) == BB_ERR, "a DTC past the answer must refuse");
 	CHECK(bb_uds_close_p(u) == 0 && bb_uds_close_p(u) == BB_ERR_HANDLE, "a closed UDS handle is gone");
-	printf("ok   UDS on CAN1: the VIN read, a negative response typed with its NRC, a DoIP row refused by name\n");
+	printf("ok   UDS on CAN1: the VIN read, a negative response typed with its NRC, the DTCs, a DoIP row refused by name\n");
 	return 0;
 }
 
@@ -284,6 +296,7 @@ int main(int argc, char **argv) {
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
+	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");

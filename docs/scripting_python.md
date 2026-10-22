@@ -9,8 +9,8 @@ project's buses directly.
 **Python is the primary scripting interface** ([#507](https://github.com/MartenH/blobly_net/issues/507)).
 Each capability is written once in the engine and exposed through the C ABI to Python first. Lua
 ([scripting.md](scripting.md)) stays for the GUI's Script panel, quick bench work and the
-existing suites. Today Lua also has what Python does not have yet: DTCs, functional addressing
-and UDS over DoIP, SOME/IP and flashing.
+existing suites. Today Lua also has what Python does not have yet: UDS over DoIP, SOME/IP and
+flashing.
 [What is not there yet](#15-what-is-not-there-yet) lists those, with #507's phases.
 
 An AI agent driving Blobly Net should start at [agents.md](agents.md). Complete, runnable
@@ -577,6 +577,45 @@ blobly_net's reference key, `blobly.reference_key(seed)` (each byte XOR 0xFF), w
 ECUs accept ([security_access.md](security_access.md)). An all-zero seed is ISO 14229-1's "already
 unlocked", and no key is sent for it. A wrong key raises `NegativeResponse` (NRC 0x35).
 
+**DTCs.** The fault memory reads as a model: no 0x19 payload is parsed in Python. Each `Dtc` has
+its `code`, its display `name` (`P1234-56`), its `status` byte and `bits`, each ISO 14229-1 status
+bit the ECU reports, by name (`testFailed`, `confirmedDTC`, ...). A bit outside the ECU's
+availability mask is left out, since the ECU says nothing about it: `d.bits.get("pendingDTC")` is
+`None` for a bit the ECU does not report. A DTC is given to `snapshot`
+and `extended` by its code or its name. A snapshot DID's size, which the answer does not carry, is
+learned by reading the DID once (0x22); `did_size` states one that cannot be read.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    with net.channels.CAN2.uds() as diag:       # CAN2's built-in server stores a snapshot
+        for d in diag.supported_dtcs():         # 0x19 0A
+            print(d.name, hex(d.status), d.bits["confirmedDTC"])   # P1234-56 0x9 True, ...
+        print(diag.dtc_count(0x01))             # 0x19 01: 1 has testFailed
+        for s in diag.snapshot_ids():           # 0x19 03: P1234-56, record 1
+            print(diag.snapshot(s.code, s.record).records[0].dids)  # {0xF195: b'\x01\x00', ...}
+        e = diag.extended("P1234-56")           # 0x19 06
+        print(e.occurrence, e.aging, e.failed_cycles)   # 3 0 1
+```
+
+**Functional addressing.** `ch.uds_functional(functional_id, clients, request)` sends `request`
+once, a Single Frame (7 bytes at most) on the functional id, and each client answers on its own
+response id, a multi-frame answer included. It returns a `FunctionalReply` per client, in their
+order: `outcome` is `"positive"`, `"negative"`, `"silent"` (nothing within the window, which is
+normal for a functional request: ISO 14229-1 has a server not refuse one with 0x11, 0x12, 0x31,
+0x7E or 0x7F), `"pending"` (responsePending, then nothing within its P2*) or `"failed"`.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can1 = net.channels.CAN1
+    with can1.uds(tx=0x7E0, rx=0x7E8) as sut, can1.uds(tx=0x7E1, rx=0x7E9) as chassis:
+        for r in can1.uds_functional(0x7DF, [sut, chassis], b"\x22\xf1\x90"):
+            print(r.outcome, r.answer[3:])      # positive b'BLOBLYNETV0SUT001', then the chassis's
+```
+
 **Waits.** Every call is bounded by the engine's timing (`blobly/uds`). The first answer is waited
 for 1000 ms, which a 0x10 answer's P2 can lengthen and never shorten. Each responsePending (0x78)
 is then waited for the ECU's P2* plus 1000 ms. One request never takes more than 120 s from its
@@ -592,7 +631,7 @@ message and its code:
 | `blobly.NegativeResponse` | The ECU answered with a negative response. `e.nrc` is its code, `e.nrc_name` ISO 14229-1's name for it, `e.exchange` the `Exchange` it ended. |
 | `blobly.Timeout` | Nothing answered within the wait. |
 | `blobly.PendingExpired` | The ECU said responsePending (0x78), then nothing more within its P2*. |
-| `blobly.UndecodableAnswer` | An answer arrived that cannot be read as one (too short, or a negative response that is not `7F <sid> <nrc>`). The ECU answered, so the connection is not at fault. |
+| `blobly.UndecodableAnswer` | An answer arrived that cannot be read as one (too short, a DTC list that is not whole records, a negative response that is not `7F <sid> <nrc>`, a snapshot DID whose size cannot be learned). The ECU answered, so the connection is not at fault. |
 | `blobly.CarrierFailed` | The carrier failed under the request: the bus (a failed write), or the ISO-TP channel (a frame lost mid-transfer). |
 | `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
 
@@ -870,6 +909,7 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
 | `ch.uds(tx=None, rx=None)` | A `UdsClient` on this CAN row: requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8). |
+| `ch.uds_functional(functional_id, clients, request, window_ms=1000)` | `request` once on the functional id, each of `clients` (one or more `UdsClient`s of this channel) answering on its own id: a `FunctionalReply` each, in their order. `window_ms` bounds each first answer. |
 | `ch.close()` | Lets the bus handle go, and the connections of its UDS clients; the next use opens another. |
 
 ### `Frame`
@@ -938,9 +978,17 @@ A UDS client on a CAN row (`ch.uds()`). See [UDS diagnostics](#10-uds-diagnostic
 | `diag.comm_control(control, comm_type=0x01)` | 0x28 CommunicationControl: `control` 0..3 for messages of `comm_type`. |
 | `diag.dtc_setting(on)` | 0x85 ControlDTCSetting: `True` on, `False` off (anything else is a `TypeError`). |
 | `diag.clear_dtcs(group=0xFFFFFF)` | 0x14 ClearDiagnosticInformation: one DTC or a 24-bit group (the default is all). |
+| `diag.dtcs(mask=0xFF)` | 0x19 02: the DTCs with any of `mask`'s status bits, each a `Dtc`. |
+| `diag.supported_dtcs()` | 0x19 0A: every DTC the ECU supports, each with its whole status. |
+| `diag.dtc_count(mask=0xFF)` | 0x19 01: how many DTCs have any of `mask`'s status bits. |
+| `diag.snapshot_ids()` | 0x19 03: each DTC holding a snapshot, a `SnapshotId`. |
+| `diag.snapshot(dtc, record=0xFF)` | 0x19 04: a `Snapshot` of DTC `dtc` (its code, or its name). |
+| `diag.extended(dtc, record=0xFF)` | 0x19 06: the `Extended` data of DTC `dtc`. |
+| `diag.did_size(did, size)` | States a snapshot DID's size, for one the client cannot read to learn it. |
+| `diag.ext_record_size(record, size)` | States an extended data record's size (blobly_emb's 0x01..0x03 are known). |
 | `diag.raw(request)` | Sends `request`; returns the positive answer, its SID included. |
 | `diag.raw_suppressed(request)` | Sends `request` with suppress-positive-response set on its sub-function: silence is success, a refusal raises. Returns whether a positive answer came anyway. |
-| `diag.last` | The last exchange, an `Exchange`, or `None` before the first (and after a stop let the connection go). |
+| `diag.last` | The last exchange, an `Exchange`, or `None` before the first, after a stop let the connection go, and after a functional request (its `FunctionalReply` is the answer). |
 | `diag.close()`, `with diag:` | Lets the connection go for good; a later call refuses. |
 
 ### `Exchange`
@@ -955,6 +1003,33 @@ One request a `UdsClient` put through, answered or not (`diag.last`).
 | `x.sent` | Whether the request went out whole. `False`: the ECU never had all of it, so repeating it does not ask twice. |
 | `x.rtt_us` | From the send to the final answer, or to the failure, in microseconds. |
 | `x.pending`, `x.pending_us` | How many responsePending (0x78) came, and the time from the first to the end. |
+
+### `Dtc`, `SnapshotId`, `SnapshotRecord`, `Snapshot`, `Extended`
+
+The fault memory as the ECU reported it.
+
+| member | what |
+|---|---|
+| `Dtc.code`, `Dtc.name` | The 24-bit DTC and failure-type byte, and SAE J2012's display (`U0121-00`). |
+| `Dtc.status`, `Dtc.availability` | The status byte, and the bits the ECU reports (0xFF where its answer carries no mask). |
+| `Dtc.bits` | `{name: bool}` for each ISO 14229-1 status bit the ECU reports. |
+| `SnapshotId.code`, `SnapshotId.name`, `SnapshotId.record` | A DTC holding a snapshot, and the record's number. |
+| `SnapshotRecord.number`, `SnapshotRecord.dids` | A snapshot record's number, and `{did: value}` in the ECU's order. |
+| `Snapshot.dtc`, `Snapshot.records` | The DTC with its status, and its records (none: nothing stored). |
+| `Extended.dtc`, `Extended.records` | The DTC with its status, and `{record number: bytes}`. |
+| `Extended.occurrence`, `Extended.aging`, `Extended.failed_cycles` | blobly_emb's counters (records 0x01, 0x02, 0x03), `None` where the answer does not carry one. |
+
+### `FunctionalReply`
+
+One client's reply to a functional request (`ch.uds_functional`).
+
+| member | what |
+|---|---|
+| `r.outcome` | `"positive"`, `"negative"`, `"silent"`, `"pending"` or `"failed"`. |
+| `r.answer` | The answer's bytes (positive, or `7F <sid> <nrc>`); `b""` for none. |
+| `r.nrc` | A negative answer's code, else `None`. |
+| `r.pended` | Whether responsePending came on the way. |
+| `r.error` | Why it failed, else `""`. |
 
 ### `FaultKind`
 
@@ -1012,8 +1087,8 @@ loop, bus health, fault injection, the E2E Profile 1 helpers, UDS over CAN, `exp
 
 **Phase 1: diagnostics from Python.**
 - UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
-  0x14 / 0x28 / 0x85, raw and suppressed requests, the exchange timing and typed errors. DTCs with
-  snapshots and extended data, and functional addressing, are its next part.
+  0x14 / 0x28 / 0x85, DTCs with snapshots and extended data, functional addressing, raw and
+  suppressed requests, the exchange timing and typed errors.
 - The DoIP tester: UDS over DoIP rows, `discover` and `listen`. Today a DoIP row is listed and its
   entity hosted, but Python cannot talk to it.
 

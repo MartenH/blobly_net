@@ -29,6 +29,15 @@ def test_the_sut_reports_its_vin(diag):
     assert diag.read_did(0xF190) == b"BLOBLYNETV0SUT001"
 
 
+def test_the_sut_holds_its_two_dtcs(diag):
+    assert [d.name for d in diag.supported_dtcs()] == ["P1234-56", "B2BCD-EF"]
+
+
+def test_only_one_dtc_is_failing(diag):
+    assert [d.name for d in diag.dtcs(0x01)] == ["P1234-56"]
+    assert diag.dtc_count(0x01) == 1
+
+
 def test_the_gear_steps_each_second(can1):
     _, gear = can1.expect_signal("Powertrain", "Gear", lambda g: 1 <= g <= 6, timeout_ms=500)
     _, after = can1.expect_signal("Powertrain", "Gear", lambda g: g != gear, timeout_ms=1500)

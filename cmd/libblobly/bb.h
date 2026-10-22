@@ -140,6 +140,44 @@ typedef struct bb_uds_exchange {
 	                         one as it came; 0: none came */
 } bb_uds_exchange;
 
+/* A DTC as the ECU reported it (bb_uds_dtc, bb_uds_snapshot, bb_uds_extended). Its status bits
+ * are named by bb_dtc_status_bit; its display name (U0121-00) is bb_dtc_name's. */
+typedef struct bb_dtc {
+	uint32_t code;          /* 24 bits: the DTC and its failure-type byte */
+	uint8_t  status;        /* ISO 14229-1's status byte */
+	uint8_t  availability;  /* the status bits the ECU reports: the 0x19 02 / 0A answer's mask,
+	                           0xFF where an answer carries none (0x19 04 / 06) */
+} bb_dtc;
+
+/* blobly_emb's extended data records as what they count (bb_uds_extended): record 0x01 the
+ * occurrences, 0x02 the aging counter, 0x03 the failed operation cycles. */
+typedef struct bb_counters {
+	uint64_t occurrences;
+	uint64_t aging;
+	uint64_t failed_cycles;
+	uint8_t  has;  /* which the answer carried: bit 0 occurrences, bit 1 aging, bit 2 failed
+	                  cycles (absent is not zero) */
+} bb_counters;
+
+/* What one target answered a functional request (bb_uds_functional). */
+enum bb_functional_outcome {
+	BB_FUNCTIONAL_POSITIVE = 0,
+	BB_FUNCTIONAL_NEGATIVE = 1,  /* nrc says which */
+	BB_FUNCTIONAL_SILENT = 2,    /* nothing within the window: normal for a functional request,
+	                                which ISO 14229-1 has a server not refuse with 0x11, 0x12,
+	                                0x31, 0x7E or 0x7F, and what a suppressed positive response is */
+	BB_FUNCTIONAL_PENDING = 3,   /* responsePending (0x78), then nothing within its P2* */
+	BB_FUNCTIONAL_FAILED = 4     /* an answer that cannot be read, or the channel failing while
+	                                reading one: bb_uds_reply_error says which */
+};
+typedef struct bb_functional_reply {
+	int32_t outcome;     /* an enum bb_functional_outcome */
+	uint8_t nrc;         /* a negative answer's code */
+	uint8_t pended;      /* responsePending (0x78) came on the way */
+	int32_t answer_len;  /* the answer (positive, or 7F <sid> <nrc>): the target handle's
+	                        bb_uds_data */
+} bb_functional_reply;
+
 /* Error codes. The message (bb_last_error) says what; the code says which kind. */
 #define BB_ERR         (-1)  /* refused, with a reason in bb_last_error */
 #define BB_ERR_HANDLE  (-2)  /* no such bus or UDS handle, or a closed one */
@@ -326,6 +364,49 @@ int bb_reference_key(const uint8_t *seed, int n, uint8_t *buf, int cap); /* blob
 int bb_nrc_name(int nrc, char *buf, int cap);  /* ISO 14229-1's name for a negative response
                                                   code, a string into the buffer as
                                                   bb_message_name's */
+
+/* DTCs (0x19) as a model: a call answers how many entries the ECU gave, and its accessors read
+ * them from the handle until its next call that asks the ECU anything (a failed one included).
+ * `mask` is a status mask (0xFF: any bit), `code` a 24-bit DTC (bb_dtc_code from a name),
+ * `record` a record number (0xFF: all). A
+ * snapshot DID's size, which the answer does not carry, is learned by reading the DID (0x22)
+ * once; bb_uds_did_size states it for one that cannot be read. */
+int bb_uds_dtcs(int u, int mask);            /* 0x19 02: >= 0, how many DTCs have a bit of mask */
+int bb_uds_supported_dtcs(int u);            /* 0x19 0A: >= 0, how many the ECU supports */
+int bb_uds_dtc(int u, int i, bb_dtc *out);   /* DTC i of the last 0x19 02 / 0A */
+int bb_uds_dtc_count(int u, int mask, uint8_t *availability); /* 0x19 01: >= 0, the count */
+int bb_uds_snapshot_ids(int u);              /* 0x19 03: >= 0, how many (DTC, record) */
+int bb_uds_snapshot_id(int u, int i, uint32_t *code, uint8_t *record);
+int bb_uds_snapshot(int u, int code, int record, bb_dtc *dtc); /* 0x19 04: >= 0, how many
+                                                                  records; *dtc its status */
+int bb_uds_snapshot_record(int u, int r, uint8_t *number);     /* >= 0, how many DIDs */
+int bb_uds_snapshot_did(int u, int r, int d, uint16_t *id, uint8_t *buf, int cap); /* the value */
+int bb_uds_extended(int u, int code, int record, bb_dtc *dtc, bb_counters *counters);
+                                             /* 0x19 06: >= 0, how many records */
+int bb_uds_extended_record(int u, int k, uint8_t *number, uint8_t *buf, int cap); /* its bytes */
+int bb_uds_did_size(int u, int did, int n);  /* a snapshot DID is n bytes */
+int bb_uds_ext_record_size(int u, int record, int n); /* an extended record is n bytes (blobly_emb's
+                                                         0x01..0x03 are known) */
+int bb_dtc_name(int code, char *buf, int cap);         /* SAE J2012's display: U0121-00 */
+int bb_dtc_code(const char *name, int *code);           /* 0, *code the name's ("U0121-00", or
+                                                           "U0121" for failure type 00, either
+                                                           case); BB_NONE for no DTC name */
+int bb_dtc_status_bit(int k, uint8_t *mask, char *buf, int cap); /* ISO 14229-1's status bit k
+                                                                    of the byte (0 testFailed ..
+                                                                    7), its mask and name */
+
+/* Functional addressing on a CAN row (ISO 14229-2 / 15765-2): `req` goes out ONCE, a Single
+ * Frame (7 bytes at most) on id `id`, and each of the n handles (one at least) — opened on this
+ * row in this run (BB_ERR_STATE before bb_start, or for a handle of an earlier run) — answers on
+ * its own response id, a multi-frame answer included. out[i] is handles[i]'s reply; window_ms
+ * bounds each target's first answer (0: 1000), a responsePending its P2* after. One thread uses
+ * those handles for the call, and a close of any of them ends it. */
+int bb_uds_functional(int row, int64_t id, const int *handles, int n, const uint8_t *req, int len,
+                      int window_ms, bb_functional_reply *out);
+int bb_uds_reply_error(int u, char *buf, int cap);  /* why the handle's last functional reply
+                                                      failed; "" when it did not. A functional
+                                                      request leaves each target's bb_uds_last
+                                                      BB_NONE: its reply is out[i] */
 
 /* Faults and E2E: the rules the Lua prelude's sim.fault and e2e.* ask (cmd/libblobly/sim.v).
  *

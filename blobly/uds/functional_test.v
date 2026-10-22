@@ -2,6 +2,7 @@ module uds
 
 import blobly.isotp
 import blobly.transport
+import time
 
 // A test ECU shaped like blobly_emb's comm/diag.Connection: it answers on its PHYSICAL channel,
 // and a raw tap hands it the functional Single Frames. As ISO 14229-1 has a server do for a
@@ -229,4 +230,95 @@ fn test_the_drain_before_a_request_abandons_a_transfer_it_began() {
 	assert fresh == [u8(0x62), 0xF1, 0x90, 0xBB]
 	c.ch.close()
 	peer.close()
+}
+
+// A stop asked of a target's client ends the whole request at its next slice, whatever window
+// is left; a target without a stop hook keeps the plain wait.
+struct StopFlag {
+mut:
+	on bool
+}
+
+fn raise_after(mut f StopFlag, ms int) {
+	time.sleep(ms * time.millisecond)
+	f.on = true
+}
+
+fn test_a_stop_asked_of_a_target_ends_the_request() {
+	bus := 'inproc:FUNC_STOP'
+	mut c := client_on(bus, 0x7E0, 0x7E8) // nothing answers on this bus
+	mut flag := &StopFlag{}
+	c.stop_requested = fn [flag] () bool {
+		return flag.on
+	}
+	mut fch := isotp.Channel(isotp.open_software(bus, 0x7DF, 0x7DE, false) or { panic(err) })
+	mut tap := transport.open(bus) or { panic(err) }
+	t := spawn raise_after(mut flag, 100)
+	sw := time.new_stopwatch()
+	functional(mut fch, mut tap, [FunctionalTarget{
+		client: c
+		rsp_id: 0x7E8
+	}], [u8(0x3E), 0x00], 5000) or {
+		assert failure_of(err) == .abandoned
+		assert sw.elapsed().milliseconds() < 1000, 'the window was waited out'
+		t.wait()
+		return
+	}
+	assert false, 'a stopped request answered'
+}
+
+// a target stopped before the request goes out sends nothing
+fn test_a_request_stopped_before_its_send_sends_nothing() {
+	bus := 'inproc:FUNC_PRESTOP'
+	mut c := client_on(bus, 0x7E0, 0x7E8)
+	c.stop_requested = fn () bool {
+		return true
+	}
+	mut listener := transport.open(bus) or { panic(err) }
+	mut fch := isotp.Channel(isotp.open_software(bus, 0x7DF, 0x7DE, false) or { panic(err) })
+	mut tap := transport.open(bus) or { panic(err) }
+	functional(mut fch, mut tap, [FunctionalTarget{
+		client: c
+		rsp_id: 0x7E8
+	}], [u8(0x3E), 0x00], 300) or {
+		assert failure_of(err) == .abandoned
+		if f := listener.recv(50) {
+			assert false, 'sent 0x${f.id:X} after the stop'
+		}
+		return
+	}
+	assert false
+}
+
+// a target whose answer began and stalled is read in slices a stop ends
+fn test_a_stop_ends_a_stalled_answer() {
+	bus := 'inproc:FUNC_STALL'
+	mut c := client_on(bus, 0x7E0, 0x7E8)
+	mut flag := &StopFlag{}
+	c.stop_requested = fn [flag] () bool {
+		return flag.on
+	}
+	mut ecu := transport.open(bus) or { panic(err) }
+	mut fch := isotp.Channel(isotp.open_software(bus, 0x7DF, 0x7DE, false) or { panic(err) })
+	mut tap := transport.open(bus) or { panic(err) }
+	t := spawn raise_after(mut flag, 150)
+	// a First Frame of a 20-byte answer, and nothing after it
+	spawn fn [mut ecu] () {
+		time.sleep(50 * time.millisecond)
+		ecu.send(transport.CanFrame{
+			id:   0x7E8
+			data: [u8(0x10), 20, 0x62, 0xF1, 0x90, 1, 2, 3]
+		}) or {}
+	}()
+	sw := time.new_stopwatch()
+	functional(mut fch, mut tap, [FunctionalTarget{
+		client: c
+		rsp_id: 0x7E8
+	}], [u8(0x22), 0xF1, 0x90], 300) or {
+		assert failure_of(err) == .abandoned, err.msg()
+		assert sw.elapsed().milliseconds() < 700, 'waited out N_Cr'
+		t.wait()
+		return
+	}
+	assert false
 }

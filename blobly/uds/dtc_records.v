@@ -262,7 +262,11 @@ fn dtc_request(sub u8, code u32, record u8) ![]u8 {
 
 // snapshot_ids (0x19 03): every DTC holding a snapshot record, with the record's number.
 pub fn (mut c Client) snapshot_ids() ![]SnapshotId {
-	return decode_snapshot_ids(c.raw([sid_read_dtc_information, 0x03])!)!
+	return decode_snapshot_ids(c.raw([sid_read_dtc_information, 0x03])!) or {
+		return UndecodableAnswer{
+			why: err.msg()
+		}
+	}
 }
 
 // snapshot (0x19 04): DTC `code`'s snapshot record `record` (0xFF = every one). A DID whose size
@@ -298,9 +302,7 @@ pub fn (mut c Client) snapshot_timed(code u32, record u8) !(DtcSnapshot, Snapsho
 		snap := decode_snapshot(resp, c.did_lens) or {
 			if err is UnknownDidLength {
 				did := err.did
-				data := c.read_data_by_identifier(did) or {
-					return error('snapshot DID 0x${did:04X}: its size is not known, and reading it (0x22) to learn it failed: ${err.msg()} — give it with set_did_size')
-				}
+				data := c.probe_did_size(did)!
 				probes << SizeProbe{did, c.last}
 				c.did_lens[did] = data.len
 				continue
@@ -312,6 +314,26 @@ pub fn (mut c Client) snapshot_timed(code u32, record u8) !(DtcSnapshot, Snapsho
 		return snap, SnapshotTiming{request, probes}
 	}
 	return error('unreachable') // each pass learns one DID the answer names, or returns
+}
+
+// probe_did_size reads snapshot DID `did` (0x22) to learn its size, a failure told as the
+// snapshot's: the ECU answered the probe and the snapshot cannot be read without the size, or the
+// probe's own failure (a silence, the carrier) keeps its kind.
+// Its own function: inline under `if err is UnknownDidLength`, V3 5f7d4d0 boxed this `err` as that.
+fn (mut c Client) probe_did_size(did u16) ![]u8 {
+	return c.read_data_by_identifier(did) or {
+		why := 'snapshot DID 0x${did:04X}: its size is not known, and reading it (0x22) to learn it failed: ${err.msg()} — give it with set_did_size'
+		kind := failure_of(err)
+		if kind == .negative || kind == .undecodable {
+			return UndecodableAnswer{
+				why: why
+			}
+		}
+		return ContextError{
+			text:  why
+			cause: err
+		}
+	}
 }
 
 // set_did_size states snapshot DID `id`'s size, for one the client cannot read or whose size varies.

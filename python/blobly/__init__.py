@@ -14,7 +14,8 @@ from . import e2e
 from .events import EventLoop
 from .faults import FaultKind, FaultRefused
 from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
-from .uds import Exchange, UdsClient, reference_key
+from .uds import (Dtc, Exchange, Extended, FunctionalReply, Snapshot, SnapshotId, SnapshotRecord, UdsClient,
+                  reference_key)
 
 try:
     from ._version import __version__  # written into a wheel by scripts/build_wheel.py, from v.mod
@@ -43,9 +44,9 @@ def wait_released(timeout_ms=None):
     return _lib.check(_lib.lib().bb_wait_released(_ms(timeout_ms))) == 0
 
 
-__all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "EventLoop", "Exchange", "Frame", "Message",
-           "Messages", "NegativeResponse", "PendingExpired", "Project", "Refused", "Signal", "Signals",
-           "Timeout", "UdsClient", "UndecodableAnswer", "init", "reference_key", "version",
-           "wait_released"]
+__all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventLoop", "Exchange", "Extended",
+           "Frame", "FunctionalReply", "Message", "Messages", "NegativeResponse", "PendingExpired", "Project",
+           "Refused", "Signal", "Signals", "Snapshot", "SnapshotId", "SnapshotRecord", "Timeout", "UdsClient",
+           "UndecodableAnswer", "init", "reference_key", "version", "wait_released"]
 # fault injection and E2E Profile 1 (faults.py, e2e.py)
 __all__ += ["FaultKind", "FaultRefused", "e2e"]

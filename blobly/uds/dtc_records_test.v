@@ -94,6 +94,7 @@ mut:
 	asked   []string
 	queue   [][]u8
 	late    []u8 // arrives after the next request, ahead of its answer (a retransmitted earlier one)
+	silent  []string // requests nothing answers
 }
 
 fn (mut m RecChannel) send(data []u8) ! {
@@ -101,6 +102,9 @@ fn (mut m RecChannel) send(data []u8) ! {
 	if m.late.len > 0 {
 		m.queue << m.late
 		m.late = []u8{}
+	}
+	if data.hex() in m.silent {
+		return
 	}
 	m.queue << m.answers[data.hex()] or { [u8(0x7F), data[0], 0x31] }
 }
@@ -182,10 +186,31 @@ fn test_a_size_can_be_given() {
 	mut c := new_client(m)
 	c.snapshot(0x021900, 0xFF) or {
 		assert err.msg().contains('snapshot DID 0xF1A0: its size is not known, and reading it (0x22) to learn it failed')
+		// the answer arrived and cannot be read without the size: the ECU's, not the connection's
+		assert err is UndecodableAnswer
 		c.set_did_size(0xF1A0, 2)
 		c.set_did_size(0xF190, 19)
 		s := c.snapshot(0x021900, 0xFF) or { panic(err) }
 		assert s.records[0].dids.len == 2
+		return
+	}
+	assert false
+}
+
+// A probe the ECU did not answer keeps its kind (a silence, not an undecodable snapshot), told in
+// the snapshot's words.
+fn test_a_silent_size_probe_is_a_silence() {
+	mut m := &RecChannel{
+		answers: {
+			'1904021900ff': emb_19_04_all
+		}
+		silent:  ['22f1a0']
+	}
+	mut c := new_client(m)
+	c.timeout_ms = 20
+	c.snapshot(0x021900, 0xFF) or {
+		assert failure_of(err) == .no_answer
+		assert err.msg().contains('snapshot DID 0xF1A0: its size is not known')
 		return
 	}
 	assert false
@@ -269,6 +294,9 @@ fn test_an_undecodable_answer_is_told_from_a_silence() {
 		answers: {
 			'1906021900ff': [u8(0x59), 0x06, 0x02, 0x19, 0x00, 0x2F, 0x04, 0x00] // record 0x04: no size
 			'1902ff':       [u8(0x59), 0x02, 0xFF, 0x02, 0x19] // half a record
+			'190a':         [u8(0x59), 0x0A, 0xFF, 0x02, 0x19]
+			'1901ff':       [u8(0x59), 0x01, 0xFF, 0x01] // no count
+			'1903':         [u8(0x59), 0x03, 0x02, 0x19, 0x00] // half an entry
 		}
 	}
 	mut c := new_client(m)
@@ -278,6 +306,21 @@ fn test_an_undecodable_answer_is_told_from_a_silence() {
 		assert err is UndecodableAnswer
 	}
 	if _ := c.dtcs(0xFF) {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	if _ := c.supported_dtcs() {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	if _ := c.dtc_count(0xFF) {
+		assert false
+	} else {
+		assert err is UndecodableAnswer
+	}
+	if _ := c.snapshot_ids() {
 		assert false
 	} else {
 		assert err is UndecodableAnswer

@@ -117,6 +117,27 @@ class BbUdsExchange(ctypes.Structure):
                 ("request_len", ctypes.c_int32), ("answer_len", ctypes.c_int32)]
 
 
+class BbDtc(ctypes.Structure):
+    """bb_dtc, field for field."""
+    _fields_ = [("code", ctypes.c_uint32), ("status", ctypes.c_uint8), ("availability", ctypes.c_uint8)]
+
+
+class BbCounters(ctypes.Structure):
+    """bb_counters, field for field."""
+    _fields_ = [("occurrences", ctypes.c_uint64), ("aging", ctypes.c_uint64),
+                ("failed_cycles", ctypes.c_uint64), ("has", ctypes.c_uint8)]
+
+
+class BbFunctionalReply(ctypes.Structure):
+    """bb_functional_reply, field for field."""
+    _fields_ = [("outcome", ctypes.c_int32), ("nrc", ctypes.c_uint8), ("pended", ctypes.c_uint8),
+                ("answer_len", ctypes.c_int32)]
+
+
+# enum bb_functional_outcome, as the Lua uds.functional names the outcomes
+OUTCOMES = {0: "positive", 1: "negative", 2: "silent", 3: "pending", 4: "failed"}
+
+
 def _declare(lib):
     """Every bb.h prototype, argtypes and restype. An int-returning call keeps ctypes' default."""
     c_int, c_char_p, P = ctypes.c_int, ctypes.c_char_p, ctypes.POINTER
@@ -175,6 +196,25 @@ def _declare(lib):
         "bb_sim_clear_faults": ([], c_int),
         "bb_e2e_p01_crc": ([c_char_p, c_int, c_int, c_int, c_int, c_char_p], c_int),
         "bb_e2e_p01_protect": ([c_char_p, c_int, c_int, c_int, c_int, c_int, c_char_p], c_int),
+        "bb_uds_dtcs": ([c_int, c_int], c_int),
+        "bb_uds_supported_dtcs": ([c_int], c_int),
+        "bb_uds_dtc": ([c_int, c_int, P(BbDtc)], c_int),
+        "bb_uds_dtc_count": ([c_int, c_int, P(ctypes.c_uint8)], c_int),
+        "bb_uds_snapshot_ids": ([c_int], c_int),
+        "bb_uds_snapshot_id": ([c_int, c_int, P(ctypes.c_uint32), P(ctypes.c_uint8)], c_int),
+        "bb_uds_snapshot": ([c_int, c_int, c_int, P(BbDtc)], c_int),
+        "bb_uds_snapshot_record": ([c_int, c_int, P(ctypes.c_uint8)], c_int),
+        "bb_uds_snapshot_did": ([c_int, c_int, c_int, P(ctypes.c_uint16), c_char_p, c_int], c_int),
+        "bb_uds_extended": ([c_int, c_int, c_int, P(BbDtc), P(BbCounters)], c_int),
+        "bb_uds_extended_record": ([c_int, c_int, P(ctypes.c_uint8), c_char_p, c_int], c_int),
+        "bb_uds_did_size": ([c_int, c_int, c_int], c_int),
+        "bb_uds_ext_record_size": ([c_int, c_int, c_int], c_int),
+        "bb_dtc_name": ([c_int, c_char_p, c_int], c_int),
+        "bb_dtc_code": ([c_char_p, P(c_int)], c_int),
+        "bb_dtc_status_bit": ([c_int, P(ctypes.c_uint8), c_char_p, c_int], c_int),
+        "bb_uds_functional": ([c_int, ctypes.c_int64, P(c_int), c_int, c_char_p, c_int, c_int,
+                               P(BbFunctionalReply)], c_int),
+        "bb_uds_reply_error": ([c_int, c_char_p, c_int], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)
@@ -285,6 +325,18 @@ def string(get, *at):
         if n < cap:
             return text(buf.raw[:n])
         cap = n + 1
+
+
+def bytes_of(get, *at):
+    """Bytes a bb_* call copies into the caller's buffer from what the library holds, read whole:
+    the call answers their length, so a cut one is asked for again with room for it."""
+    cap = 256
+    while True:
+        buf = ctypes.create_string_buffer(cap)
+        n = check(get(*at, buf, cap))
+        if n <= cap:
+            return buf.raw[:n]
+        cap = n
 
 
 def check(rc):

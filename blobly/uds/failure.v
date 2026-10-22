@@ -26,6 +26,9 @@ fn abandoned(msg string) bool {
 
 // failure_of is the kind of `err`, an error a Client call returned.
 pub fn failure_of(err IError) Failure {
+	if err is ContextError {
+		return failure_of(err.cause)
+	}
 	if abandoned(err.msg()) {
 		return .abandoned
 	}
