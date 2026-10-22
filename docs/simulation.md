@@ -650,7 +650,9 @@ A fault that cannot take effect is **refused, loudly** — an unknown node or me
 DBC names as the sender but that is not simulated on that channel included), `bad_crc`
 where the node stamps no checksum, `freeze_counter` where it stamps no E2E counter (its
 `protect:` entry or the DBC's E2E declaration, whichever the simulation stamps by),
-`out_of_range` on a signal with no illegal value. Arming a fault that changes nothing is the
+`out_of_range` on a signal with no illegal value, and any of the three on a field the message's
+own length does not hold (or whose multiplexor it does not), which no frame carries. Arming a
+fault that changes nothing is the
 difference between a test that fails and a test that lies.
 
 A fault with a lifetime expires on its own; one without stays until cleared. The distinction
@@ -761,7 +763,7 @@ Violations appear beside the message name in the trace:
 | `!CRC` | the checksum does not match the payload as received |
 | `!CNT stalled` | the alive counter repeated — the sender is stuck |
 | `!CNT skipped` | the counter jumped — frames were lost, or the sender restarted |
-| `!LEN` | shorter than the DBC message, so its protection fields are not all present |
+| `!LEN` | shorter than the DBC message, or too short for a protection field, so its protection fields are not all present |
 
 They are searchable, so typing `!crc` in the trace filter shows only the bad frames, and they
 appear in both the grouped and flat trace views.
