@@ -44,14 +44,12 @@ mut:
 	doip     bool // over the row's DoIP connection; else ISO-TP on CAN ids rx (and ext)
 	rx       u32
 	ext      bool
-		// a DoIP handle's connection: where it reconnects (`car`), whether it is gone (`lost`: the next
-	// call that asks the ECU opens another), which it is (`conn_gen`, moved by each reopen; a 0x27
-	// key goes only on the seed's, `seed_gen`), and what the idle service found (`idle_lost`, said
-	// by the next call); `mu` serialises the calls with that service (serve_idle)
+		// a DoIP handle's connection (a DoipLink, which keeps the 0x27 rule): where it reconnects
+	// (`car`), whether it is gone (`lost`: the next call that asks the ECU opens another), and what
+	// the idle service found (`idle_lost`, said by the next call); `mu` serialises the calls with
+	// that service (serve_idle)
 	car       udsconn.Carrier
 	lost      bool
-	conn_gen  u64
-	seed_gen  u64
 	idle_lost string
 	mu        &sync.Mutex = sync.new_mutex()
 	// the last DTC call's decoded answer, for its accessors
@@ -93,9 +91,16 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	if holder >= 0 {
 		return fail(bb_err, 'uds("${ch.name}"): UDS handle ${holder} holds this DoIP channel\'s connection; one tester address holds one connection to its entity (ISO 13400-2) — use that handle, or close it first')
 	}
-	conn := udsconn.open(t, ch.name, ch.iface_with_bitrate(), car, fn (iface string, _ string) !transport.Bus {
+	mut conn := udsconn.open(t, ch.name, ch.iface_with_bitrate(), car, fn (iface string, _ string) !transport.Bus {
 		return transport.open(iface)
 	}) or { return open_failed(err, t.doip) }
+	if mut conn.ch is doip.DoipClient {
+		link := link_of(conn.ch, .none_)
+		conn = udsconn.Conn{
+			ch:  link
+			cli: uds.new_client(link)
+		}
+	}
 	mut hd := &UdsHandle{
 		conn:     conn
 		run:      run
@@ -114,8 +119,8 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	hd.conn.cli.stop_requested = stop
 	if mut hd.conn.ch is isotp.SoftChannel {
 		hd.conn.ch.stop_requested = stop
-	} else if mut hd.conn.ch is doip.DoipClient {
-		hd.conn.ch.stop_requested = stop
+	} else if mut hd.conn.ch is DoipLink {
+		hd.conn.ch.c.stop_requested = stop
 	}
 	last := &hd.last
 	has := &hd.has_last
@@ -204,8 +209,8 @@ fn serve_idle(mut hd UdsHandle) {
 		// V's try_lock is always false on Windows unless built -d windows_7)
 		hd.mu.lock()
 		if stdatomic.load_i64(&hd.closing) == 0 && !hd.lost && hd.idle_lost == '' {
-			if mut hd.conn.ch is doip.DoipClient {
-				hd.conn.ch.idle() or {
+			if mut hd.conn.ch is DoipLink {
+				hd.conn.ch.c.idle() or {
 					if err.msg() != doip.stopped_note {
 						hd.idle_lost = err.msg()
 					}
@@ -258,42 +263,18 @@ fn (mut hd UdsHandle) reconnect() ! {
 		}
 	}
 	c.stop_requested = stop
-	mut cli := uds.new_client(c)
+	before := if hd.conn.ch is DoipLink { hd.conn.ch.seed } else { SeedState.none_ }
+	link := link_of(c, before)
+	mut cli := uds.new_client(link)
 	cli.did_lens = hd.conn.cli.did_lens.clone()
 	cli.ext_lens = hd.conn.cli.ext_lens.clone()
 	cli.stop_requested = hd.conn.cli.stop_requested
 	cli.on_exchange = hd.conn.cli.on_exchange
 	hd.conn = udsconn.Conn{
-		ch:  c
+		ch:  link
 		cli: cli
 	}
 	hd.lost = false
-	hd.conn_gen++
-}
-
-// 0x27 on a DoIP handle, whichever call carries it: a seed (an odd sub-function) marks the
-// connection it was answered on, and a key (an even one) goes only on that connection, never
-// opened again for it — a key answers the seed of ONE connection.
-fn security_sub(req []u8) ?u8 {
-	if req.len < 2 || req[0] != 0x27 || req[1] & 0x7F == 0 {
-		return none
-	}
-	return req[1] & 0x7F
-}
-
-fn (mut hd UdsHandle) seed_answered(req []u8) {
-	if sub := security_sub(req) {
-		if sub & 1 == 1 {
-			hd.seed_gen = hd.conn_gen
-		}
-	}
-}
-
-fn (hd &UdsHandle) key_refusal(req []u8) ! {
-	sub := security_sub(req) or { return }
-	if hd.doip && sub & 1 == 0 && (hd.lost || hd.idle_lost != '' || hd.conn_gen != hd.seed_gen) {
-		return error('security_key: the connection that gave the seed is gone; request a new seed')
-	}
 }
 
 // refuse_before_reopen refuses a request no client would send, when sending it would first open a
@@ -543,10 +524,8 @@ pub fn bb_uds_raw(u i32, req &u8, n i32, buf &u8, cap i32) i32 {
 		r := bytes_in('raw', req, n)!
 		out_buf(buf, cap)!
 		hd.refuse_before_reopen(r, false)!
-		hd.key_refusal(r)!
 		mut cl := hd.cli()!
 		answer := cl.raw(r)!
-		hd.seed_answered(r)
 		return hd.answer(answer, buf, cap)
 	})
 }
@@ -556,7 +535,6 @@ pub fn bb_uds_raw_suppressed(u i32, req &u8, n i32) i32 {
 	return exchange(u, fn [req, n] (mut hd UdsHandle) !i32 {
 		r := bytes_in('raw_suppressed', req, n)!
 		hd.refuse_before_reopen(r, true)!
-		hd.key_refusal(r)!
 		mut cl := hd.cli()!
 		answered := cl.raw_suppressed(r)!
 		ok()
@@ -653,7 +631,6 @@ pub fn bb_uds_security_seed(u i32, level i32, unlocked &u8, buf &u8, cap i32) i3
 		out_buf(buf, cap)!
 		mut cl := hd.cli()!
 		seed := cl.security_request_seed(l)!
-		hd.seed_answered([u8(0x27), l])
 		if !isnil(unlocked) {
 			unsafe {
 				*unlocked = u8(uds.already_unlocked(seed))
@@ -668,8 +645,8 @@ pub fn bb_uds_security_key(u i32, level i32, key &u8, n i32) i32 {
 	return exchange(u, fn [level, key, n] (mut hd UdsHandle) !i32 {
 		l := level_arg(level, false)!
 		k := bytes_in('security_key', key, n)!
-		hd.key_refusal([u8(0x27), l])!
-		hd.conn.cli.security_send_key(l, k)!
+		mut cl := hd.cli()! // a key on a reopened connection: the link refuses it
+		cl.security_send_key(l, k)!
 		return ok()
 	})
 }
@@ -1120,7 +1097,7 @@ pub fn bb_uds_functional_doip(u i32, address &i64, req &u8, len i32, window_ms i
 		hd.forget()
 		hd.reconnect()!
 		hd.has_last = false // the reply says, as on CAN
-		mut via := uds.AddressedSend(hd.conn.ch as doip.DoipClient)
+		mut via := uds.AddressedSend(hd.conn.ch as DoipLink)
 		rep := uds.functional_addressed(mut hd.conn.cli, mut via, u32(fa), request, window_or_default(window_ms))!
 		reply_out(mut hd, rep, out)
 		return ok()

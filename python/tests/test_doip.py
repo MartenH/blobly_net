@@ -409,9 +409,12 @@ channels:
             seed = diag.raw(b"\x27\x01")[2:]
             with self.assertRaises(blobly.ConnectionLost):
                 diag.read_did(VIN)
+            key = b"\x27\x02" + bytes(b ^ 0xFF for b in seed)
             with self.assertRaises(blobly.Refused) as e:
-                diag.raw(b"\x27\x02" + bytes(b ^ 0xFF for b in seed))
+                diag.raw(key)
             self.assertIn("the connection that gave the seed is gone", str(e.exception))
+            with self.assertRaises(blobly.Refused):  # nor to the functional address
+                fake.uds_functional(None, [diag], key)
             diag.raw(b"\x27\x01")  # a seed on the new connection, and its key goes
             self.assertEqual(diag.raw(b"\x27\x02\xed\xcb"), b"\x67\x02")
 
