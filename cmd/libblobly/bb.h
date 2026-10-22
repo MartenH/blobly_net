@@ -54,8 +54,10 @@ extern "C" {
  * transport, as for every sender in this app. A received frame that does not fit is refused, not
  * truncated. `t_ns` is when a received frame arrived, on the host's monotonic clock (bb_now_ns), in
  * nanoseconds: the frame's own receive stamp where the backend reads one (SocketCAN's kernel stamp;
- * a foreign device clock mapped onto the host's), else its receipt — the time the GUI's trace
- * gives the frame. Ignored on a send; 0 from bb_encode. */
+ * a foreign device clock mapped onto the host's) — the time the GUI's trace gives that frame —
+ * else its receipt, when this call read it. Ignored on a send; 0 from bb_encode. The layout may grow between versions until
+ * the ABI has a stability policy (#507 Phase 3): a host is built against the bb.h of the library
+ * it loads, as the Python package ships with its own. */
 typedef struct bb_frame {
 	uint32_t id;
 	uint8_t  len;

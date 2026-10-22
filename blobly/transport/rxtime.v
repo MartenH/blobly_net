@@ -26,9 +26,24 @@ pub fn received_at(f CanFrame, host_ns i64) i64 {
 	}
 	mut t := host_ns
 	lock rx_clock {
-		t = rx_clock.p.place(f.hw_domain, f.hw_ns, host_ns, host_clock)
+		// a domain whose backend feeds the estimate at ingress is only mapped here: a reader that
+		// left the frame queued would otherwise teach the estimate its own delay
+		t = rx_clock.p.mapped(f.hw_domain, f.hw_ns) or {
+			rx_clock.p.place(f.hw_domain, f.hw_ns, host_ns, host_clock)
+		}
 	}
 	return t
+}
+
+// observe_ingress feeds a foreign clock's estimate a frame as its backend receives it, before any
+// reader has it queued: the backend's prompt receipt is what the estimate is made of.
+pub fn observe_ingress(f CanFrame, host_ns i64) {
+	if f.hw_domain == '' || on_host_clock(f.hw_domain) {
+		return
+	}
+	lock rx_clock {
+		rx_clock.p.observe(f.hw_domain, f.hw_ns, host_ns)
+	}
 }
 
 // received_now is received_at for a frame recv has just returned.

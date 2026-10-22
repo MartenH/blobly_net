@@ -111,3 +111,16 @@ fn test_two_socketcan_wires_carry_one_ordered_timeline() {
 	assert t0 != 0 && t1 != 0, 'a frame never arrived'
 	assert before <= t0 && t0 < t1
 }
+
+fn test_a_reader_that_left_a_frame_queued_does_not_move_its_place() {
+	reset_receive_clock()
+	// the backend receives it 100 us after the wire did and feeds the estimate there; a reader
+	// takes it 11 s later, past the estimate's window, and is told where the wire saw it
+	f := CanFrame{
+		hw_ns:     50_000_000
+		hw_domain: 'rxtime-ingress'
+	}
+	observe_ingress(f, 2_050_100_000)
+	assert received_at(f, 13_050_100_000) == 2_050_100_000
+	assert received_at(f, 13_050_100_000) == 2_050_100_000
+}
