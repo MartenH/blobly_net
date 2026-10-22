@@ -166,6 +166,11 @@ def _declare(lib):
         "bb_reference_key": ([c_char_p, c_int, c_char_p, c_int], c_int),
         "bb_nrc_name": ([c_int, c_char_p, c_int], c_int),
         "bb_last_nrc": ([P(ctypes.c_uint8)], c_int),
+        # faults and E2E (faults.py, e2e.py); a uint8_t * is declared c_char_p, its length beside it
+        "bb_sim_fault": ([c_int, c_char_p, c_char_p, c_char_p, c_int, c_char_p], c_int),
+        "bb_sim_clear_faults": ([], c_int),
+        "bb_e2e_p01_crc": ([c_char_p, c_int, c_int, c_int, c_int, c_char_p], c_int),
+        "bb_e2e_p01_protect": ([c_char_p, c_int, c_int, c_int, c_int, c_int, c_char_p], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

@@ -1,8 +1,8 @@
 /* smoke.c — a C host of libblobly: loads the library at run time, brings sim-demo up, hears
  * its simulated ECUs on inproc:CAN1, sends a frame, and does the same from a thread the HOST
  * created — the one the V runtime's collector did not see born — encodes and decodes through
- * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS, then stops and
- * starts again.
+ * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS, arms and clears a
+ * fault and stamps an E2E Profile 1 frame, then stops and starts again.
  *
  *   gcc -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread   (Linux)
  *   build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
@@ -49,6 +49,13 @@ static uds_last_fn bb_uds_last_p;
 static uds_data_fn bb_uds_data_p;
 typedef int (*last_nrc_fn)(uint8_t *);
 static last_nrc_fn bb_last_nrc_p;
+typedef int (*fault_fn)(int, const char *, const char *, const char *, int, const char *);
+typedef int (*p01_crc_fn)(const uint8_t *, int, int, int, int, const char *);
+typedef int (*p01_protect_fn)(uint8_t *, int, int, int, int, int, const char *);
+static fault_fn bb_sim_fault_p;
+static int_fn bb_sim_clear_faults_p;
+static p01_crc_fn bb_e2e_p01_crc_p;
+static p01_protect_fn bb_e2e_p01_protect_p;
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
 static int_int_fn bb_message_count_p;
 static msg_info_fn bb_message_info_p;
@@ -209,6 +216,26 @@ static int uds_steps(int row, int doip) {
 	return 0;
 }
 
+/* faults on CAN1's simulated ECUs, refused by name where they could not take effect, and E2E
+ * Profile 1 on blobly_emb overspeed's BrakeStatus layout (blobly/sim/e2e_p01_test.v's vectors) */
+static int fault_steps(int row, int doip) {
+	CHECK(bb_sim_fault_p(doip, "SUT", "Powertrain", "drop", 0, NULL) == BB_ERR && strstr(bb_last_error_p(), "DoIP channel"),
+		"a fault on a DoIP row must refuse by name");
+	CHECK(bb_sim_fault_p(row, "SUT", "Powertrain", "bad_crc", 0, NULL) == BB_ERR && strstr(bb_last_error_p(), "no configured checksum"),
+		"bad_crc where nothing is protected must refuse");
+	CHECK(bb_sim_fault_p(row, "SUT", "Powertrain", "drop", 500, NULL) == 0, "drop Powertrain");
+	CHECK(bb_sim_fault_p(row, "SUT", "Powertrain", "clear", 0, "") == 0 && bb_sim_clear_faults_p() == 0, "clear");
+	uint8_t f[6] = {0xE8, 0x03, 0x5A, 0x00, 0x00, 0x03};
+	CHECK(bb_e2e_p01_crc_p(f, 6, 0x1244, 4, 5, NULL) == 0xCF && bb_e2e_p01_crc_p(f, 6, 0x1244, 4, 5, "alt") == 0x78,
+		"the Profile 1 CRC of counter 3");
+	f[5] = 0xA0;
+	CHECK(bb_e2e_p01_protect_p(f, 6, 0x1244, 4, 5, 3, "") == 0 && f[5] == 0xA3 && f[4] == bb_e2e_p01_crc_p(f, 6, 0x1244, 4, 5, ""),
+		"protect writes the counter's nibble and stamps the CRC");
+	CHECK(bb_e2e_p01_protect_p(f, 6, 0x1244, 4, 5, 15, "") == BB_ERR && strstr(bb_last_error_p(), "0..14"), "counter 15 must refuse");
+	printf("ok   faults armed and refused by name; E2E Profile 1 is the reference\n");
+	return 0;
+}
+
 static int can1_row = -1; /* CAN1's row, for the host thread's database read */
 
 #ifndef _WIN32
@@ -256,6 +283,7 @@ int main(int argc, char **argv) {
 	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
+	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -300,12 +328,14 @@ int main(int argc, char **argv) {
 	printf("ok   kinds and health sources; a DoIP row refused by name\n");
 	/* a UDS connection opens on the run's rows: before start no listen-only mark is published */
 	if (bb_uds_open_p(can1, NULL, NULL, NULL) != BB_ERR_STATE) { fprintf(stderr, "FAIL a UDS open before start must refuse\n"); return 1; }
+	if (bb_sim_fault_p(can1, "SUT", "Powertrain", "drop", 0, NULL) != BB_ERR_STATE) { fprintf(stderr, "FAIL a fault before start must refuse\n"); return 1; }
 	if (bb_start_p() != 0) FAIL("start");
 	if (bb_start_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL a second start must refuse\n"); return 1; }
 
 	if (exchange("main thread", 20)) return 1;
 	if (dbc_steps(can1)) return 1;
 	if (uds_steps(can1, doip)) return 1;
+	if (fault_steps(can1, doip)) return 1;
 	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32

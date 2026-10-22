@@ -26,6 +26,7 @@ SCRIPTS = {
     "event_loop.py": ["--ms", "1000"],
     "signal_monitor.py": ["--seconds", "1.2"],
     "uds_diag.py": [],
+    "fault_injection.py": [],
 }
 
 

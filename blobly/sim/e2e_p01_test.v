@@ -400,3 +400,59 @@ BA_ "E2EDataId" BO_ 769 4676;
 		assert e.profile == p01, spelling
 	}
 }
+
+// a frame a script builds itself: the counter read from (or written into) its byte's low nibble
+// and the reference CRC; a high nibble there is kept, and covered like any other bit
+fn test_p01_frame_crc_and_protect_are_the_reference() {
+	for mode, want in p01_vectors {
+		for n in 0 .. 15 {
+			d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, u8(n)]
+			assert p01_frame_crc(d, 0x1244, 4, 5, mode) or { panic(err) } == want[n], '${mode} ${n}'
+			p := p01_protect([u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x07], 0x1244, 4, 5, n, mode) or {
+				panic(err)
+			}
+			assert p == [u8(0xE8), 0x03, 0x5A, 0x00, want[n], u8(n)], '${mode} ${n}'
+		}
+	}
+	p := p01_protect([u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0xA7], 0x1244, 4, 5, 3, 'alt') or { panic(err) }
+	assert p[5] == 0xA3
+	assert p[4] == p01_frame_crc(p, 0x1244, 4, 5, 'alt') or { panic(err) }
+	assert p[4] != p01_vectors['alt'][3]
+}
+
+fn test_p01_frame_helpers_refuse_what_profile_1_cannot_be() {
+	d := [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x00]
+	cases := {
+		'data_id -1 is not a Data ID':                                         fn [d] () ! {
+			p01_frame_crc(d, -1, 4, 5, '')!
+		}
+		'data_id 4294967364 is not a Data ID':                                 fn [d] () ! {
+			p01_frame_crc(d, 0x1_0000_0044, 4, 5, '')!
+		}
+		'autosar_p01 data_id 0x10000 does not fit its 16 bits':               fn [d] () ! {
+			p01_frame_crc(d, 0x10000, 4, 5, '')!
+		}
+		'autosar_p01 data_id_mode "ALT" is not both, low or alt':             fn [d] () ! {
+			p01_frame_crc(d, 0x44, 4, 5, 'ALT')!
+		}
+		'crc_pos 4 / counter_pos 4 must be distinct bytes of the 6-byte frame': fn [d] () ! {
+			p01_frame_crc(d, 0x44, 4, 4, '')!
+		}
+		'crc_pos 6 / counter_pos 5 must be distinct bytes of the 6-byte frame': fn [d] () ! {
+			p01_protect(d, 0x44, 6, 5, 3, '')!
+		}
+		'crc_pos 1 / counter_pos -1 must be distinct bytes of the 6-byte frame': fn [d] () ! {
+			p01_protect(d, 0x44, 1, -1, 3, '')!
+		}
+		'a Profile 1 counter is 0..14, not 15':                                fn [d] () ! {
+			p01_protect(d, 0x44, 4, 5, 15, '')!
+		}
+	}
+	for want, call in cases {
+		call() or {
+			assert err.msg() == want
+			continue
+		}
+		assert false, 'accepted: ${want}'
+	}
+}

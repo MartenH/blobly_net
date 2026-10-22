@@ -10,8 +10,8 @@ project's buses directly.
 Each capability is written once in the engine and exposed through the C ABI to Python first. Lua
 ([scripting.md](scripting.md)) stays for the GUI's Script panel, quick bench work and the
 existing suites. Today Lua also has what Python does not have yet: DTCs, functional addressing
-and UDS over DoIP, SOME/IP, flashing, the E2E helpers, fault injection and `expect`.
-[What is not there yet](#13-what-is-not-there-yet) lists those, with #507's phases.
+and UDS over DoIP, SOME/IP, flashing and `expect`.
+[What is not there yet](#14-what-is-not-there-yet) lists those, with #507's phases.
 
 An AI agent driving Blobly Net should start at [agents.md](agents.md). Complete, runnable
 scripts are in [python/examples](../python/examples/README.md).
@@ -24,11 +24,12 @@ scripts are in [python/examples](../python/examples/README.md).
 6. [DBC messages and signals](#6-dbc-messages-and-signals)
 7. [The event loop](#7-the-event-loop)
 8. [Health](#8-health)
-9. [UDS diagnostics](#9-uds-diagnostics)
-10. [Threads](#10-threads)
-11. [Errors](#11-errors)
-12. [Reference](#12-reference)
-13. [What is not there yet](#13-what-is-not-there-yet)
+9. [Fault injection and E2E](#9-fault-injection-and-e2e)
+10. [UDS diagnostics](#10-uds-diagnostics)
+11. [Threads](#11-threads)
+12. [Errors](#12-errors)
+13. [Reference](#13-reference)
+14. [What is not there yet](#14-what-is-not-there-yet)
 
 Every Python block in this guide runs as written from the root of a repository checkout:
 `python/tests/test_docs.py` runs each one against sim-demo, in CI.
@@ -89,7 +90,7 @@ version.
 **Call `blobly.init()` on the main thread first.** Importing does not load the engine, and the
 first call that needs it loads it. bb.h requires that load to happen on the process's main thread,
 and the package refuses it anywhere else. Any later call may come from any thread (see
-[Threads](#10-threads)).
+[Threads](#11-threads)).
 
 ---
 
@@ -433,7 +434,97 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 9. UDS diagnostics
+## 9. Fault injection and E2E
+
+**Faults** make a running project's simulated ECUs misbehave on purpose, which is how a test
+checks that the ECU under test notices: a message that stops arriving, a checksum that does not
+match, a counter that stops, a signal past its declared range. They are Lua's `sim.fault`, judged
+by the same rule in the engine. [simulation.md](simulation.md#fault-injection) has what each one
+does on the wire and why.
+
+- `net.fault(channel, node, message, kind, ms=None, signal=None)` arms `kind` on the simulated
+  `node`'s `message` on `channel`, for `ms` milliseconds (rounded up) or, with `None`, until it is
+  cleared. `channel` is a `Channel` or its name, `message` a `Message` or its name, `node` the
+  simulated node's name as the project gives it. A fault is keyed by the message's **name**: by
+  name it reaches every message of that name the node sends, and a `Message` whose name another
+  message of its channel shares raises `ValueError` rather than reach more than the one given. `kind` is a `blobly.FaultKind` or its string:
+
+  | `kind` | on the wire |
+  |---|---|
+  | `FaultKind.DROP`, `"drop"` | the message is not sent |
+  | `FaultKind.BAD_CRC`, `"bad_crc"` | sent with its E2E checksum inverted |
+  | `FaultKind.FREEZE_COUNTER`, `"freeze_counter"` | sent, its E2E alive counter stopped |
+  | `FaultKind.OUT_OF_RANGE`, `"out_of_range"` | sent with `signal` (a `Signal` or its name) past its declared range; with `None` the engine picks a signal that can carry it |
+
+- `net.clear_fault(channel, node, message)` lifts that message's fault; `net.clear_faults()` lifts
+  every one. A start clears them too, and a fault armed with `ms` ends by itself.
+- **A fault that could not take effect is refused**, with `blobly.FaultRefused` saying why: a DoIP
+  or SOME/IP channel, an unknown kind, a node not simulated on that channel (a sender the DBC
+  names is not enough), a message the node does not send,
+  `bad_crc` where the node stamps no checksum, `freeze_counter` where it stamps no E2E counter
+  (its `protect:` entry or the DBC's E2E declaration), `out_of_range` where no signal has a value
+  outside its range. Armed, such a fault would change nothing, and a test of it would pass for
+  the wrong reason. sim-demo protects no message, so there `bad_crc` and `freeze_counter` are
+  refused. A fault needs the project started (`BloblyError`, code -3, otherwise).
+
+```python
+import time
+
+import blobly
+from blobly import FaultKind
+
+
+def count(ch, frame_id, seconds):
+    """How many frames of `frame_id` arrive on `ch` in the next `seconds`."""
+    end, n = time.monotonic() + seconds, 0
+    while (left := end - time.monotonic()) > 0:
+        f = ch.recv(left * 1000)
+        n += f is not None and f.id == frame_id
+    return n
+
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can1 = net.channels.CAN1
+    net.fault(can1, "SUT", "Powertrain", FaultKind.DROP, ms=500)   # 500 ms, then it ends by itself
+    print([count(can1, 0x100, 0.25) for _ in range(4)])           # about [0, 0, 2, 3]
+    brake = can1.messages.BrakeStatus
+    net.fault(can1, "ChassisECU", brake, "out_of_range", signal=brake.signals.BrakePedal)
+    try:
+        net.fault(can1, "SUT", "Powertrain", FaultKind.BAD_CRC)
+    except blobly.FaultRefused as e:
+        print(e)            # "Powertrain" on "SUT" has no configured checksum — bad_crc would change nothing
+    net.clear_faults()
+```
+
+**E2E Profile 1 for frames you build** is `blobly.e2e`, Lua's `e2e.p01_crc` and `e2e.p01_protect`.
+The CRC is the engine's own Profile 1, the one the simulation stamps with, pinned to an
+independent implementation: CRC-8 over poly 0x1D with start 0 and no final XOR, over the Data ID
+bytes `mode` names and then every byte of the frame but the CRC's own.
+
+- `e2e.p01_crc(data, data_id, crc_pos, counter_pos, mode="both")` is the CRC byte for `data` as it
+  stands, the counter read from the low nibble of `counter_pos`. Compare it with the frame's CRC
+  byte to check a received frame; the counter is yours to check (15 is never a Profile 1
+  counter).
+- `e2e.p01_protect(data, data_id, crc_pos, counter_pos, counter, mode="both")` returns `data` with
+  `counter` (0..14) in the low nibble of `counter_pos` and the CRC stamped at `crc_pos`.
+- Positions are 0-based bytes, as blobly_emb's `[[frame]].e2e` writes them. `mode` is the Data ID
+  mode: `"both"` (low byte, then high), `"low"`, or `"alt"` (low for an even counter, high for an
+  odd one). `data` is `bytes`, a `bytearray` or a list of byte values.
+- A value Profile 1 cannot have raises `ValueError` with the engine's reason: a counter outside
+  0..14, a `data_id` past 16 bits, an unknown mode, positions that are not two distinct bytes of
+  the frame.
+
+```python
+from blobly import e2e
+
+frame = e2e.p01_protect(bytes.fromhex("E8035A000000"), 0x1244, 4, 5, counter=3)
+print(frame.hex(" ").upper())                            # E8 03 5A 00 CF 03
+print(e2e.p01_crc(frame, 0x1244, 4, 5) == frame[4])      # True
+```
+
+---
+
+## 10. UDS diagnostics
 
 `ch.uds()` opens a UDS (ISO 14229) client on a CAN row, over ISO-TP on the row's bus. It is the
 Lua `uds.open`: the same rule opens both (`blobly/udsconn`), and each call is one of the engine's
@@ -517,7 +608,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 10. Threads
+## 11. Threads
 
 - **Load the engine on the main thread** (`blobly.init()`). After that any thread may call in. A
   thread is attached to the engine on its first call and detached when it ends, without you
@@ -555,13 +646,14 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 11. Errors
+## 12. Errors
 
 | exception | when |
 |---|---|
-| `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
-| `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. |
-| `TypeError` | A timeout that is not a finite number (or `None`), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`. |
+| `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, `FaultRefused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
+| `blobly.FaultRefused` | A `Refused` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
+| `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. |
+| `TypeError` | A timeout that is not a finite number (or `None`), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`. A fault's or an `e2e` call's argument of the wrong type. |
 | `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are. |
 | `KeyError`, `IndexError` | An unknown name by `["NOPE"]`, a position past the end. |
 | `RuntimeWarning` (a warning) | A `with` block's stop found a loop that outlived the stop's bound. |
@@ -575,7 +667,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 | -3 | the wrong state: nothing loaded, not started, already started, a previous run still releasing, a channel or message of an earlier load or run |
 
 A UDS call's failures are subclasses, each with a code of its own: see
-[UDS diagnostics](#9-uds-diagnostics).
+[UDS diagnostics](#10-uds-diagnostics).
 
 | code | exception | meaning |
 |---|---|---|
@@ -602,10 +694,11 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 12. Reference
+## 13. Reference
 
-Import everything from `blobly`. The submodules `blobly.project` and `blobly.events` are the
-implementation, and their other names are not part of the interface.
+Import everything from `blobly`, and the E2E helpers from `blobly.e2e`. The submodules
+`blobly.project`, `blobly.events` and `blobly.faults` are the implementation, and their other
+names are not part of the interface.
 `python/tests/test_docs.py` checks that every public class, method, property and attribute of
 the package is named in this section.
 
@@ -618,6 +711,14 @@ the package is named in this section.
 | `blobly.wait_released(timeout_ms=None)` | Waits until the process is free for a start: `True`, or `False` once `timeout_ms` passed (`None` waits for ever). |
 | `blobly.reference_key(seed)` | blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF), the key the simulated ECUs accept. |
 | `blobly.__version__` | The package's version (`"2026.10.1"`); `"0+source"` in a source checkout. |
+| `blobly.e2e` | The E2E Profile 1 helpers: see Module `blobly.e2e`. |
+
+### Module `blobly.e2e`
+
+| name | what |
+|---|---|
+| `blobly.e2e.p01_crc(data, data_id, crc_pos, counter_pos, mode="both")` | The Profile 1 CRC byte for `data` as it stands, an `int`. |
+| `blobly.e2e.p01_protect(data, data_id, crc_pos, counter_pos, counter, mode="both")` | `data` with `counter` (0..14) written and the CRC stamped, as `bytes`; the input is not changed. |
 
 ### `Project`
 
@@ -634,6 +735,9 @@ raises `ValueError`. It is also an `EventLoop`.
 | `net.path` | The project file's absolute path (bytes when given bytes). |
 | `net.started` | Whether this project is running. |
 | `net.on_message(ch, id, fn)`, `net.on_health(ch, fn)`, `net.on_timer(period_ms, fn)`, `net.run(duration_ms=1000)` | The event loop: see `EventLoop`. |
+| `net.fault(channel, node, message, kind, ms=None, signal=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared. `FaultRefused` where it could not take effect. |
+| `net.clear_fault(channel, node, message)` | Lifts that message's fault. |
+| `net.clear_faults()` | Lifts every fault. |
 
 ### `EventLoop`
 
@@ -729,7 +833,7 @@ A signal of a message (`msg.signals.EngineSpeed`). physical = raw × `factor` + 
 
 ### `UdsClient`
 
-A UDS client on a CAN row (`ch.uds()`). See [UDS diagnostics](#9-uds-diagnostics).
+A UDS client on a CAN row (`ch.uds()`). See [UDS diagnostics](#10-uds-diagnostics).
 
 | member | what |
 |---|---|
@@ -762,11 +866,32 @@ One request a `UdsClient` put through, answered or not (`diag.last`).
 | `x.rtt_us` | From the send to the final answer, or to the failure, in microseconds. |
 | `x.pending`, `x.pending_us` | How many responsePending (0x78) came, and the time from the first to the end. |
 
+### `FaultKind`
+
+`blobly.FaultKind`, a `str` enum: what `net.fault` does to a message. Its plain string works too.
+
+| member | what |
+|---|---|
+| `FaultKind.DROP` | `"drop"`: not sent. |
+| `FaultKind.BAD_CRC` | `"bad_crc"`: sent with its E2E checksum inverted. |
+| `FaultKind.FREEZE_COUNTER` | `"freeze_counter"`: sent, its E2E alive counter stopped. |
+| `FaultKind.OUT_OF_RANGE` | `"out_of_range"`: sent with one signal past its declared range. |
+
+### `FaultRefused`
+
+`blobly.FaultRefused`, a `Refused`: the engine refused a fault that could not take effect,
+and armed nothing.
+
+| member | what |
+|---|---|
+| `str(e)` | Why, in the engine's words. |
+| `e.code` | -1. |
+
 ### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`
 
 `blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused, or a call failed. The
-others are its subclasses (see [Errors](#11-errors) and
-[UDS diagnostics](#9-uds-diagnostics)).
+others are its subclasses (see [Errors](#12-errors) and
+[UDS diagnostics](#10-uds-diagnostics)).
 
 | member | what |
 |---|---|
@@ -777,19 +902,18 @@ others are its subclasses (see [Errors](#11-errors) and
 
 ---
 
-## 13. What is not there yet
+## 14. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
-loop, bus health and UDS over CAN. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+loop, bus health, fault injection, the E2E Profile 1 helpers and UDS over CAN. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
-- UDS over CAN is here ([UDS diagnostics](#9-uds-diagnostics)): sessions, DIDs, 0x27, resets,
+- UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
   0x14 / 0x28 / 0x85, raw and suppressed requests, the exchange timing and typed errors. DTCs with
   snapshots and extended data, and functional addressing, are its next part.
 - The DoIP tester: UDS over DoIP rows, `discover` and `listen`. Today a DoIP row is listed and its
   entity hosted, but Python cannot talk to it.
 - A pytest plugin: `project`, `channel` and `diag` fixtures, `expect` and `expect_signal`.
-- Fault injection (`sim.fault`) and the E2E Profile 1 helpers.
 
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
 - SOME/IP send, call and listen; `flash.program`.

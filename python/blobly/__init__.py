@@ -10,7 +10,9 @@
 See docs/scripting_python.md."""
 from ._lib import (BloblyError, CarrierFailed, NegativeResponse, PendingExpired, Refused, Timeout,
                    UndecodableAnswer)
+from . import e2e
 from .events import EventLoop
+from .faults import FaultKind, FaultRefused
 from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
 from .uds import Exchange, UdsClient, reference_key
 
@@ -45,3 +47,5 @@ __all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "EventLoop", "
            "Messages", "NegativeResponse", "PendingExpired", "Project", "Refused", "Signal", "Signals",
            "Timeout", "UdsClient", "UndecodableAnswer", "init", "reference_key", "version",
            "wait_released"]
+# fault injection and E2E Profile 1 (faults.py, e2e.py)
+__all__ += ["FaultKind", "FaultRefused", "e2e"]

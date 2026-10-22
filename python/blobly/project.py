@@ -11,6 +11,7 @@ from . import _lib
 from ._lib import BloblyError
 from .events import EventLoop, monotonic_ms, sleep_ms, wait_on
 from .uds import UdsClient, _close_orphans
+from .faults import Faults
 
 
 class Frame:
@@ -402,10 +403,11 @@ class Message:
         return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"
 
 
-class Project(EventLoop):
+class Project(EventLoop, Faults):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
-    process, and one thread drives load, start and stop (bb.h); send and recv may run on others."""
+    process, and one thread drives load, start and stop (bb.h); send and recv may run on others.
+    Faults (fault, clear_fault) make its simulated ECUs misbehave on purpose."""
 
     def __init__(self, path):
         super().__init__()
