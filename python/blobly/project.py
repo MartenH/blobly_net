@@ -10,7 +10,7 @@ import weakref
 from . import _lib
 from ._lib import BloblyError
 from .events import EventLoop, monotonic_ms, sleep_ms, wait_on
-from .uds import UdsClient
+from .uds import UdsClient, _close_orphans
 
 
 class Frame:
@@ -214,6 +214,7 @@ class Channel:
         """Lets the handle go, and the connections of its UDS clients; the next use opens another."""
         lib = _lib.lib()
         with _lib.state_lock:
+            _close_orphans()
             for c in list(self._uds):
                 c._let_go()
             if self._h is not None:

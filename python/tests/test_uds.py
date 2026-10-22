@@ -273,6 +273,34 @@ class TestLifecycle(unittest.TestCase):
         with self.assertRaises(blobly.BloblyError):
             d.read_did(0xF18C)
 
+    def test_a_stop_inside_key_fn_fails_the_key_rather_than_reconnect(self):
+        net = blobly.Project(SIM_DEMO)
+        with net:
+            d = net.channels.CAN1.uds()
+            d.session(0x01)
+
+            def restart(seed):
+                net.stop()
+                net.start()
+                return blobly.reference_key(seed)
+            with self.assertRaises(blobly.BloblyError) as e:
+                d.security_access(0x01, restart)
+            self.assertEqual(e.exception.code, _lib.BB_ERR_HANDLE, "the key went out on a new connection")
+            d.close()
+
+    def test_a_collected_client_is_let_go_at_the_next_call(self):
+        import gc
+        from blobly import uds
+        with blobly.Project(SIM_DEMO) as net:
+            net.channels.CAN1.uds().read_did(0xF18C)  # never closed: collected
+            gc.collect()
+            self.assertTrue(uds._orphans, "the finalizer closed it on the spot")
+            with net.channels.CAN1.uds() as d:
+                with self.assertRaises(blobly.NegativeResponse) as e:
+                    d.read_did(0xABCD)
+                self.assertEqual(e.exception.nrc, 0x31)
+            self.assertEqual(uds._orphans, [])
+
     def test_a_project_not_started_opens_nothing(self):
         net = blobly.Project(SIM_DEMO).load()
         with self.assertRaises(blobly.BloblyError) as e:

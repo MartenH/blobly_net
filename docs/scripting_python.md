@@ -472,8 +472,8 @@ bits) is refused. `diag.tx`, `diag.rx` and `diag.ext` are the ids it opened on.
 - **Threads.** Calls on one client are serialised, so threads may share one; `security_access`
   is one call, seed, key function and key together. `close()` from another thread ends a call in
   progress there within 20 ms of the wait it is in, with `BloblyError` (code -2); a frame already
-  handed to the driver is written first. A client nobody closes lets its connection go when it is
-  collected.
+  handed to the driver is written first. A client nobody closes lets its connection go once it is
+  collected, at the next UDS call.
 
 **Security access.** `security_access(level, key_fn=None)` requests the seed for `level` (odd),
 computes the key with `key_fn(seed)` and sends it at `level + 1`. Without `key_fn` the key is

@@ -65,6 +65,19 @@ def _put(fn, *args) -> bytes:
     return whole.raw[:n]
 
 
+# handles of clients collected without close(), let go at the next call that opens or closes one:
+# a finalizer may run between a failed call and the read of its error, and a close there would
+# replace the thread's error text and NRC
+_orphans: list[int] = []
+
+
+def _close_orphans() -> None:
+    """Closes the collected clients' handles (under _lib.state_lock)."""
+    lib = _lib.lib()
+    while _orphans:
+        lib.bb_uds_close(_orphans.pop())
+
+
 def reference_key(seed: bytes) -> bytes:
     """blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF): the key the simulated
     ECUs accept, and a blobly_emb node whose description names it (docs/security_access.md)."""
@@ -117,6 +130,7 @@ class UdsClient:
 
     def _handle(self) -> int:
         with _lib.state_lock:
+            _close_orphans()
             if self._closed:
                 raise BloblyError(f"{self!r} is closed", _lib.BB_ERR_HANDLE)
             if self._h is None:
@@ -147,13 +161,11 @@ class UdsClient:
         return False
 
     def __del__(self):
-        # an unclosed client lets its bus subscription go with it; no lock is taken here, since
-        # the collector may run this on a thread that holds one
+        # an unclosed client lets its bus subscription go with it, at the next call (_orphans):
+        # nothing is called into here, since this may run between another call and its error
         try:
-            lib = _lib._lib
-            if lib is not None and self._h is not None:
-                _lib.attach()
-                lib.bb_uds_close(self._h)
+            if self._h is not None:
+                _orphans.append(self._h)
         except Exception:
             pass
 
@@ -173,19 +185,23 @@ class UdsClient:
 
     def _call(self, fn, *args) -> int:
         with self._lock:
-            h = self._handle()
-            rc = fn(h, *args)
-            if rc < 0:
-                raise self._enrich(h, _lib.error(rc))
-            return rc
+            return self._call_on(self._handle(), fn, *args)
+
+    def _call_on(self, h: int, fn, *args) -> int:
+        rc = fn(h, *args)
+        if rc < 0:
+            raise self._enrich(h, _lib.error(rc))
+        return rc
 
     def _bytes(self, fn, *args) -> bytes:
         with self._lock:
-            h = self._handle()
-            try:
-                return _put(fn, h, *args)
-            except NegativeResponse as e:
-                raise self._enrich(h, e)
+            return self._bytes_on(self._handle(), fn, *args)
+
+    def _bytes_on(self, h: int, fn, *args) -> bytes:
+        try:
+            return _put(fn, h, *args)
+        except NegativeResponse as e:
+            raise self._enrich(h, e)
 
     def _last(self, h: int) -> Exchange | None:
         lib = _lib.lib()
@@ -244,12 +260,15 @@ class UdsClient:
         raises NegativeResponse (NRC 0x35)."""
         level = _int("level", level)
         unlocked = ctypes.c_uint8()
-        with self._lock:  # seed, key and the call between them as one: no other call takes the seed
-            seed = self._bytes(_lib.lib().bb_uds_security_seed, level, ctypes.byref(unlocked))
+        # seed, key and the call between them as one, on one connection: no other call takes the
+        # seed, and a stop meanwhile fails the key rather than send it on a connection of its own
+        with self._lock:
+            h = self._handle()
+            seed = self._bytes_on(h, _lib.lib().bb_uds_security_seed, level, ctypes.byref(unlocked))
             if unlocked.value:
                 return seed
             key = _data("the key key_fn returned", key_fn(seed)) if key_fn is not None else reference_key(seed)
-            self._call(_lib.lib().bb_uds_security_key, level + 1, key, len(key))
+            self._call_on(h, _lib.lib().bb_uds_security_key, level + 1, key, len(key))
             return seed
 
     def reset(self, kind: int = 0x01) -> bytes:
