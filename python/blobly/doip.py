@@ -41,14 +41,12 @@ def _ms(who: str, ms: object) -> int:
     return int(ms)
 
 
-def _row(who: str, channel) -> tuple[int, int]:
-    """(channel's row, the run) of a started project: the library reads the row as the run has it,
-    so neither a stop nor a load waits for the call (checked again after it, _same_run)."""
-    with _lib.state_lock:
-        channel._current()
-        if not channel._project.started:
-            raise BloblyError(f"{who}: {channel.name}: the project is not started", _lib.BB_ERR_STATE)
-        return channel._index, _lib.state["run"]
+def _started(who: str, channel) -> int:
+    """The run of channel's started project; called under _lib.state_lock."""
+    channel._current()
+    if not channel._project.started:
+        raise BloblyError(f"{who}: {channel.name}: the project is not started", _lib.BB_ERR_STATE)
+    return _lib.state["run"]
 
 
 def _waited(call):
@@ -76,9 +74,16 @@ def discover(channel, timeout_ms: float = 1200) -> DoipAnnouncement:
     wait = _ms("discover", timeout_ms)
     lib = _lib.lib()
     out = _lib.BbDoipAnnouncement()
-    index, run = _row("discover", channel)
-    _waited(lambda: _lib.check(lib.bb_doip_discover(index, wait, ctypes.byref(out))))
-    channel._same_run(run)  # a restart meanwhile may have put another row at its index
+    port = ctypes.c_int()
+    with _lib.state_lock:  # the row's endpoint in this run, read once; the wait holds no lock
+        _started("discover", channel)
+        buf = ctypes.create_string_buffer(256)
+        n = _lib.check(lib.bb_doip_endpoint(channel._index, buf, len(buf), ctypes.byref(port)))
+        if n >= len(buf):
+            buf = ctypes.create_string_buffer(n + 1)
+            _lib.check(lib.bb_doip_endpoint(channel._index, buf, len(buf), ctypes.byref(port)))
+        host = buf.value
+    _waited(lambda: _lib.check(lib.bb_doip_discover(host, port.value, wait, ctypes.byref(out))))
     return _announcement(out)
 
 
@@ -103,16 +108,17 @@ def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool =
     p = 0 if port is None else port
     if not 0 <= p <= 0xFFFF:
         raise ValueError(f"doip_listen: {port} is not a port")
-    row = None
+    v6 = int(ip6)
     if channel is not None:
         from .project import Channel  # project imports this module
         if not isinstance(channel, Channel):
             raise TypeError(f"doip_listen: channel is a Channel, not {channel!r}")
-        index, run = _row("doip_listen", channel)
-        row = ctypes.byref(ctypes.c_int(index))
-    n = _waited(lambda: _lib.check(lib.bb_doip_listen(p, window, int(ip6), row, out, _CAP)))
-    if channel is not None:
-        channel._same_run(run)
+        use_port, use_ip6 = ctypes.c_int(), ctypes.c_int()
+        with _lib.state_lock:  # the row's port and family in this run, read once
+            _started("doip_listen", channel)
+            _lib.check(lib.bb_doip_listener(channel._index, p, v6, ctypes.byref(use_port), ctypes.byref(use_ip6)))
+        p, v6 = use_port.value, use_ip6.value
+    n = _waited(lambda: _lib.check(lib.bb_doip_listen(p, window, v6, out, _CAP)))
     if n > _CAP:
         raise BloblyError(f"doip_listen: {n} announcements in {window} ms, more than the {_CAP} kept; "
                           "listen for a shorter window")

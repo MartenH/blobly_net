@@ -398,9 +398,10 @@ channels:
                 diag.security_access(0x01, key_fn)
             self.assertIn("the connection that gave the seed is gone", str(e.exception))
             self.assertEqual(diag.security_access(0x01), b"\x12\x34")  # a new seed, on the new one
-            with self.assertRaises(blobly.BloblyError) as e:  # nor a nested one's seed under it
-                diag.security_access(0x01, lambda seed: diag.security_access(0x01))
-            self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+            for nested in (lambda seed: diag.security_access(0x01), lambda seed: diag.raw(b"\x27\x01")):
+                with self.assertRaises(blobly.BloblyError) as e:  # nor a nested seed under it
+                    diag.security_access(0x01, nested)
+                self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
 
     def test_a_close_from_another_thread_ends_a_call(self):
         _, fake = self.start(mute=True)

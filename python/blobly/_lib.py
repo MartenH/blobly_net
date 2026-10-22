@@ -255,8 +255,10 @@ def _declare(lib):
         "bb_last_routing": ([P(ctypes.c_uint8), P(ctypes.c_uint16)], c_int),
         "bb_doip_routing_name": ([c_int, c_char_p, c_int], c_int),
         "bb_doip_routing_hint": ([c_int, c_int, c_char_p, c_int], c_int),
-        "bb_doip_discover": ([c_int, c_int, P(BbDoipAnnouncement)], c_int),
-        "bb_doip_listen": ([c_int, c_int, c_int, P(c_int), P(BbDoipAnnouncement), c_int], c_int),
+        "bb_doip_endpoint": ([c_int, c_char_p, c_int, P(c_int)], c_int),
+        "bb_doip_listener": ([c_int, c_int, c_int, P(c_int), P(c_int)], c_int),
+        "bb_doip_discover": ([c_char_p, c_int, c_int, P(BbDoipAnnouncement)], c_int),
+        "bb_doip_listen": ([c_int, c_int, c_int, P(BbDoipAnnouncement), c_int], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

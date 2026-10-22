@@ -456,23 +456,27 @@ int bb_uds_reply_error(int u, char *buf, int cap);  /* why the handle's last fun
 
 /* DoIP discovery (ISO 13400-2 vehicle identification), as the Lua doip.discover and doip.listen.
  *
- * bb_doip_discover asks DoIP row `row`'s endpoint, as the run has it, who it is, and waits at most
- * timeout_ms for the answer: 0 with *out filled, BB_ERR_TIMEOUT when none came, BB_ERR for a row
- * that is not DoIP or an endpoint that cannot be asked, BB_ERR_STATE before bb_start (a hosted
- * entity's row names the run's port only from then).
+ * bb_doip_endpoint is DoIP row `row`'s endpoint as the run has it (a hosted entity's port is the
+ * run's): its host into the buffer, as bb_message_name's, its port into *port; BB_ERR_STATE before
+ * bb_start, BB_ERR for a row that is not DoIP. bb_doip_listener is where to listen for that row's
+ * announcements: on its port (a `port` other than 0 that contradicts it is refused) and, when its
+ * address is IPv6 or ip6 is 1, over IPv6. A host resolving a row reads these under its own state
+ * serialisation, then does the waiting below, which touches no state, from any (attached) thread.
+ *
+ * bb_doip_discover asks the entity at host:port who it is and waits at most timeout_ms: 0 with
+ * *out filled (its source the answer's sender), BB_ERR_TIMEOUT when none came, BB_ERR for an
+ * endpoint that cannot be asked.
  *
  * bb_doip_listen hears the announcements entities send unasked, for window_ms, on port `port`
- * (0: 13400) over IPv4, or over IPv6 (joining ff02::1) when ip6 is 1 — or, `from` pointing at a
- * DoIP row's index, on that row's port in the run and, when its address is IPv6, over IPv6: a
- * `port` that contradicts the row's is refused, and `from` before bb_start is BB_ERR_STATE. Both
- * may come from any (attached) thread. Nothing is queued for a listener that is not there, so it hears
- * only what is sent within its window. Answers how many it heard (>= 0), every one, in the order
- * heard, the first `cap` of them in out[]. A listener in this process holding the port exclusively
- * (a SOME/IP row) is a refusal; ISO 13400 puts every tester and entity on one discovery port, so
- * DoIP listeners share it. */
-int bb_doip_discover(int row, int timeout_ms, bb_doip_announcement *out);
-int bb_doip_listen(int port, int window_ms, int ip6, const int *from, bb_doip_announcement *out,
-                   int cap);
+ * (0: 13400) over IPv4, or over IPv6 (joining ff02::1) when ip6 is 1. Nothing is queued for a
+ * listener that is not there, so it hears only what is sent within its window. Answers how many
+ * it heard (>= 0), every one, in the order heard, the first `cap` of them in out[]. A listener in
+ * this process holding the port exclusively (a SOME/IP row) is a refusal; ISO 13400 puts every
+ * tester and entity on one discovery port, so DoIP listeners share it. */
+int bb_doip_endpoint(int row, char *host, int cap, int *port);    /* >= 0: the host's length */
+int bb_doip_listener(int row, int port, int ip6, int *use_port, int *use_ip6);
+int bb_doip_discover(const char *host, int port, int timeout_ms, bb_doip_announcement *out);
+int bb_doip_listen(int port, int window_ms, int ip6, bb_doip_announcement *out, int cap);
 
 /* Faults and E2E: the rules the Lua prelude's sim.fault and e2e.* ask (cmd/libblobly/sim.v).
  *

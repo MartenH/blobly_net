@@ -74,7 +74,8 @@ def bind(lib):
                                     ctypes.POINTER(ctypes.c_double), buf, i]
     lib.bb_encode.argtypes = [i, i, i, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_double),
                               ctypes.POINTER(Frame)]
-    lib.bb_doip_discover.argtypes = [i, i, ctypes.POINTER(DoipAnnouncement)]
+    lib.bb_doip_endpoint.argtypes = [i, buf, i, ctypes.POINTER(ctypes.c_int)]
+    lib.bb_doip_discover.argtypes = [buf, i, i, ctypes.POINTER(DoipAnnouncement)]
     lib.bb_decode.argtypes = [i, ctypes.POINTER(Frame), ctypes.POINTER(ctypes.c_int),
                               ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint8), i]
 
@@ -195,8 +196,9 @@ def main(path, project):
     assert lib.bb_start() == BB_ERR_STATE, "a second start must refuse"
     exchange(lib, "main thread", 20)
     dbc_steps(lib, can1)
-    a = DoipAnnouncement()
-    assert lib.bb_doip_discover(doip[0], 1200, ctypes.byref(a)) == 0, f"discover: {err(lib)}"
+    a, host, port = DoipAnnouncement(), ctypes.create_string_buffer(64), ctypes.c_int()
+    assert lib.bb_doip_endpoint(doip[0], host, 64, ctypes.byref(port)) > 0, f"endpoint: {err(lib)}"
+    assert lib.bb_doip_discover(host.value, port.value, 1200, ctypes.byref(a)) == 0, f"discover: {err(lib)}"
     assert (a.vin, a.logical_address) == (b"BLOBLYNETV0SUT001", 0x1000), (a.vin, a.logical_address)
     assert moved.endswith(a.source.decode()), f"discovered at {a.source} while the row is {moved}"
     print(f"ok   DoIP1 discovered: {a.vin.decode()} at 0x{a.logical_address:04X} from {a.source.decode()}")

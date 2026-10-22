@@ -52,8 +52,10 @@ static uds_open_fn bb_uds_open_p;
 static uds_did_fn bb_uds_read_did_p;
 static uds_last_fn bb_uds_last_p;
 static uds_data_fn bb_uds_data_p;
-typedef int (*doip_discover_fn)(int, int, bb_doip_announcement *);
+typedef int (*doip_discover_fn)(const char *, int, int, bb_doip_announcement *);
+typedef int (*doip_endpoint_fn)(int, char *, int, int *);
 static doip_discover_fn bb_doip_discover_p;
+static doip_endpoint_fn bb_doip_endpoint_p;
 typedef int (*last_nrc_fn)(uint8_t *);
 static last_nrc_fn bb_last_nrc_p;
 typedef int (*fault_fn)(int, const char *, const char *, const char *, int, const char *);
@@ -242,7 +244,10 @@ static int doip_steps(int doip) {
 	CHECK(bb_uds_read_did_p(u, 0xF190, vin, sizeof vin) == 17 && memcmp(vin, "BLOBLYNETV0SUT001", 17) == 0, "the VIN over DoIP");
 	CHECK(bb_uds_close_p(u) == 0, "close the DoIP handle");
 	bb_doip_announcement a;
-	CHECK(bb_doip_discover_p(doip, 1200, &a) == 0 && strcmp(a.vin, "BLOBLYNETV0SUT001") == 0 && a.logical_address == 0x1000,
+	char host[64];
+	int port = 0;
+	CHECK(bb_doip_endpoint_p(doip, host, sizeof host, &port) > 0 && port > 0, "the run's DoIP1 endpoint");
+	CHECK(bb_doip_discover_p(host, port, 1200, &a) == 0 && strcmp(a.vin, "BLOBLYNETV0SUT001") == 0 && a.logical_address == 0x1000,
 		"discover: %s 0x%04X", a.vin, a.logical_address);
 	printf("ok   UDS over DoIP1: the VIN read; discovered %s at 0x%04X from %s\n", a.vin, a.logical_address, a.source);
 	return 0;
@@ -316,7 +321,7 @@ int main(int argc, char **argv) {
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
-	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover);
+	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");

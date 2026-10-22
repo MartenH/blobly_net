@@ -364,6 +364,9 @@ class UdsClient:
         """Sends `request` and returns the positive answer, its SID included. An answer that names
         another request (a late or repeated one) is skipped and the wait goes on."""
         r = _data("request", request)
+        if self._in_key_fn and r[:1] == b"\x27" and len(r) > 1 and r[1] & 1:
+            # its seed would stand in for the one the key_fn's key answers
+            raise BloblyError(f"{self!r}: a 0x27 seed request inside a security_access key_fn", _lib.BB_ERR_STATE)
         return self._bytes(_lib.lib().bb_uds_raw, r, len(r))
 
     def raw_suppressed(self, request: bytes) -> bool:

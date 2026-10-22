@@ -80,38 +80,69 @@ fn announcement_out(out &C.bb_doip_announcement, v doip.VehicleInfo, source stri
 	}
 }
 
-// bb_doip_discover: DoIP row `r`'s entity asked who it is (doip.discover, the Lua doip.discover's).
+// bb_doip_endpoint: DoIP row `r`'s endpoint as the run has it — host into the buffer (put's
+// convention), port into *port.
+@[export: 'bb_doip_endpoint']
+pub fn bb_doip_endpoint(r i32, host &char, cap i32, port &i32) i32 {
+	name, car := run_row('endpoint', r) or { return failed_with(err) }
+	if !car.doip {
+		return fail(bb_err, 'endpoint: "${name}" is not a DoIP channel')
+	}
+	if !isnil(port) {
+		unsafe {
+			*port = i32(car.port)
+		}
+	}
+	return put(car.host, host, cap)
+}
+
+// bb_doip_discover: the entity at host:port asked who it is (doip.discover_from, the Lua
+// doip.discover's exchange).
 @[export: 'bb_doip_discover']
-pub fn bb_doip_discover(r i32, timeout_ms i32, out &C.bb_doip_announcement) i32 {
-	if isnil(out) {
-		return fail(bb_err, 'discover: nowhere to put the answer')
+pub fn bb_doip_discover(host &char, port i32, timeout_ms i32, out &C.bb_doip_announcement) i32 {
+	if isnil(host) || isnil(out) {
+		return fail(bb_err, 'discover: no host, or nowhere to put the answer')
+	}
+	if port < 0 || port > 0xFFFF {
+		return fail(bb_err, 'discover: ${port} is not a port')
 	}
 	if timeout_ms < 0 {
 		return fail(bb_err, 'discover: a wait of ${timeout_ms} ms')
 	}
-	name, car := run_row('discover', r) or { return failed_with(err) }
-	if !car.doip {
-		return fail(bb_err, 'discover: "${name}" is not a DoIP channel')
-	}
-	where := if car.host.contains(':') && !car.host.starts_with('[') {
-		'[${car.host}]:${car.port}'
-	} else {
-		'${car.host}:${car.port}'
-	}
-	a := doip.discover_from(car.host, car.port, int(timeout_ms)) or {
+	h := unsafe { cstring_to_vstring(host) }
+	where := if h.contains(':') && !h.starts_with('[') { '[${h}]:${port}' } else { '${h}:${port}' }
+	a := doip.discover_from(h, int(port), int(timeout_ms)) or {
 		if err.code() == net.err_timed_out_code {
-			return fail(bb_err_timeout, 'discover("${name}"): no answer from ${where} within ${timeout_ms} ms')
+			return fail(bb_err_timeout, 'discover: no answer from ${where} within ${timeout_ms} ms')
 		}
-		return fail(bb_err, 'discover("${name}") on ${where}: ${err}')
+		return fail(bb_err, 'discover on ${where}: ${err}')
 	}
 	announcement_out(out, a.info, a.from)
 	return ok()
 }
 
-// bb_doip_listen: the announcements heard for window_ms (doip.collect_announcements_af), where
-// udsconn.doip_listener says to listen — the Lua doip.listen's rule.
+// bb_doip_listener: where to listen for DoIP row `r`'s announcements, the port asked for (0: the
+// row's) and the family (udsconn.doip_listener, the Lua doip.listen's rule).
+@[export: 'bb_doip_listener']
+pub fn bb_doip_listener(r i32, port i32, ip6 i32, use_port &i32, use_ip6 &i32) i32 {
+	if isnil(use_port) || isnil(use_ip6) {
+		return fail(bb_err, 'listener: nowhere to put the answer')
+	}
+	name, car := run_row('listener', r) or { return failed_with(err) }
+	p, v6 := udsconn.doip_listener(int(port), ip6 != 0, name, ?udsconn.Carrier(car)) or {
+		return fail(bb_err, 'listen: ${err}')
+	}
+	unsafe {
+		*use_port = i32(p)
+		*use_ip6 = i32(v6)
+	}
+	return ok()
+}
+
+// bb_doip_listen: the announcements heard for window_ms on `port` (0: 13400), over IPv6 when ip6
+// (doip.collect_announcements_af).
 @[export: 'bb_doip_listen']
-pub fn bb_doip_listen(port i32, window_ms i32, ip6 i32, from &i32, out &C.bb_doip_announcement, cap i32) i32 {
+pub fn bb_doip_listen(port i32, window_ms i32, ip6 i32, out &C.bb_doip_announcement, cap i32) i32 {
 	if port < 0 || port > 0xFFFF {
 		return fail(bb_err, 'listen: ${port} is not a port')
 	}
@@ -121,13 +152,7 @@ pub fn bb_doip_listen(port i32, window_ms i32, ip6 i32, from &i32, out &C.bb_doi
 	if cap < 0 || (cap > 0 && isnil(out)) {
 		return fail(bb_err, 'listen: an array of ${cap} announcements${if isnil(out) { ', and none given' } else { '' }}')
 	}
-	mut name := ''
-	mut row := ?udsconn.Carrier(none)
-	if !isnil(from) {
-		n, car := run_row('listen', unsafe { *from }) or { return failed_with(err) }
-		name, row = n, ?udsconn.Carrier(car)
-	}
-	use_port, use_ip6 := udsconn.doip_listener(int(port), ip6 != 0, name, row) or {
+	use_port, use_ip6 := udsconn.doip_listener(int(port), ip6 != 0, '', none) or {
 		return fail(bb_err, 'listen: ${err}')
 	}
 	found := doip.collect_announcements_af(use_port, int(window_ms), use_ip6) or {
