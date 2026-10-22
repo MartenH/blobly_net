@@ -180,6 +180,13 @@ pub fn (mut d E2eDecl) forget(name string) {
 	}
 }
 
+// fits is whether every bit of the signal lies in a payload of `len` bytes. raw_value reads a bit
+// past the payload as 0, a value that was never on the wire, so a decoder that reports what a
+// frame carries leaves such a signal out.
+pub fn (s Signal) fits(len int) bool {
+	return signal_fits_frame(s, len)
+}
+
 // raw_value extracts the unsigned raw bits of the signal from `data`. Handles
 // both Intel (little-endian) and Motorola (big-endian) bit ordering. Bits use
 // the LSB-0 numbering: position p -> byte p/8, bit p%8 (bit 0 = byte LSB).

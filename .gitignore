@@ -43,9 +43,10 @@ samples/*
 !samples/both_dirs.mf4
 !samples/j1939-bam.log
 
-# Python bytecode cache
+# Python bytecode cache, and pytest's own
 __pycache__/
 *.pyc
+.pytest_cache/
 heaptrack.*.gz
 massif.out.*
 imgui.ini

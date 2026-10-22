@@ -10,8 +10,8 @@ project's buses directly.
 Each capability is written once in the engine and exposed through the C ABI to Python first. Lua
 ([scripting.md](scripting.md)) stays for the GUI's Script panel, quick bench work and the
 existing suites. Today Lua also has what Python does not have yet: DTCs, functional addressing
-and UDS over DoIP, SOME/IP, flashing and `expect`.
-[What is not there yet](#14-what-is-not-there-yet) lists those, with #507's phases.
+and UDS over DoIP, SOME/IP and flashing.
+[What is not there yet](#15-what-is-not-there-yet) lists those, with #507's phases.
 
 An AI agent driving Blobly Net should start at [agents.md](agents.md). Complete, runnable
 scripts are in [python/examples](../python/examples/README.md).
@@ -26,10 +26,11 @@ scripts are in [python/examples](../python/examples/README.md).
 8. [Health](#8-health)
 9. [Fault injection and E2E](#9-fault-injection-and-e2e)
 10. [UDS diagnostics](#10-uds-diagnostics)
-11. [Threads](#11-threads)
-12. [Errors](#12-errors)
-13. [Reference](#13-reference)
-14. [What is not there yet](#14-what-is-not-there-yet)
+11. [Testing with pytest](#11-testing-with-pytest)
+12. [Threads](#12-threads)
+13. [Errors](#13-errors)
+14. [Reference](#14-reference)
+15. [What is not there yet](#15-what-is-not-there-yet)
 
 Every Python block in this guide runs as written from the root of a repository checkout:
 `python/tests/test_docs.py` runs each one against sim-demo, in CI.
@@ -90,7 +91,7 @@ version.
 **Call `blobly.init()` on the main thread first.** Importing does not load the engine, and the
 first call that needs it loads it. bb.h requires that load to happen on the process's main thread,
 and the package refuses it anywhere else. Any later call may come from any thread (see
-[Threads](#11-threads)).
+[Threads](#12-threads)).
 
 ---
 
@@ -99,20 +100,14 @@ and the package refuses it anywhere else. Any later call may come from any threa
 The smallest useful script sends sim-demo's request and waits, at most a second, for the answer:
 
 ```python
-import time
-
 import blobly
 
 blobly.init()                                                  # load the engine, on the main thread
 with blobly.Project("projects/sim-demo.blobnet") as net:       # loaded and started; stopped at the end
     can1 = net.channels.CAN1
     can1.send(0x101, b"\x05")                                  # sim-demo's SUT answers with 0x102
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:                         # every wait is bounded
-        frame = can1.recv(100)                                 # at most 100 ms; None when nothing came
-        if frame is not None and frame.id == 0x102:
-            print("answer:", frame)                            # Frame(0x102 [06])
-            break
+    answer = can1.expect(0x102, timeout_ms=1000)               # every wait is bounded: blobly.Timeout after a second
+    print("answer:", answer)                                   # Frame(0x102 [06])
 ```
 
 The other blocks in this guide leave `blobly.init()` out: a first call made on the main thread
@@ -134,7 +129,7 @@ pytest python/examples/test_sim_demo.py
 | [dbc_messages.py](../python/examples/dbc_messages.py) | Messages and signals with units, ranges and labels; encode, decode, send by signal name. |
 | [event_loop.py](../python/examples/event_loop.py) | `on_message` by id and by message, `on_timer`, `on_health`, `run()`. |
 | [signal_monitor.py](../python/examples/signal_monitor.py) | Decoded values of chosen messages over N seconds. |
-| [test_sim_demo.py](../python/examples/test_sim_demo.py) | pytest: a module-scoped fixture starts the project. |
+| [test_sim_demo.py](../python/examples/test_sim_demo.py) | pytest on blobly's plugin: the `project` fixture and one per channel, `expect`, `expect_signal`. |
 
 **What the engine prints.** The engine writes its progress and warnings (`project: ...`,
 `channel CAN1 (inproc:CAN1): simulating 2 node(s) ...`) to the process's stdout and stderr, as
@@ -275,37 +270,33 @@ hardware is described in [can_hardware.md](can_hardware.md) and
 - A received **`Frame`** has `id`, `data`, `length`, `ext`, `fd`, `brs`, `rtr` and `esi`. For a
   remote frame `data` is empty and `length` is the length it asks for. Two frames are equal when
   every field is. A received frame carries no timestamp yet.
-- **A frame read is consumed.** `recv` takes it off the channel's handle, so a loop that waits for
-  one id drops every other frame it reads on the way.
+- `ch.expect(id, timeout_ms=1000, *, ext=None)` waits for the first frame another node sends
+  with this id **and** kind, and returns it. When none came it raises `blobly.Timeout`, whose
+  message says what came instead. `id` is an int with `ext` its kind (`False` or `None` for 11-bit,
+  `True` for 29-bit: an 11-bit id past 0x7FF is refused, naming `ext=True`), or a `Message` of the
+  channel, which carries its own. `timeout_ms` is one deadline for the whole wait, however many
+  other frames arrive: a finite number of milliseconds (`None` is refused), and nothing is read
+  once it has passed but the first look, so a wait of `0` reads at most one queued frame. A stop or
+  a start of the project during the wait raises `BloblyError` (code -3).
+- **A frame read is consumed.** `recv` takes it off the channel's handle, and so does `expect`:
+  a wait for one id drops every other frame it reads on the way.
 
 ```python
-import time
-
 import blobly
-
-
-def wait_for(ch, frame_id, timeout_ms):
-    """The first frame with this id within timeout_ms, else None. Other frames are consumed."""
-    deadline = time.monotonic() + timeout_ms / 1000
-    while (left_ms := (deadline - time.monotonic()) * 1000) > 0:
-        frame = ch.recv(left_ms)
-        if frame is not None and frame.id == frame_id:
-            return frame
-    return None
-
 
 with blobly.Project("projects/sim-demo.blobnet") as net:
     can1 = net.channels.CAN1
     can1.send(0x101, [0x05])
-    answer = wait_for(can1, 0x102, 1000)
+    answer = can1.expect(0x102, timeout_ms=1000)               # an 11-bit 0x102, or blobly.Timeout
     print(answer, answer.data.hex(), answer.length, answer.ext, answer.fd)
     can1.send(0x18DAF110, b"\x02\x10\x01", ext=True)          # a 29-bit id
     can1.send(0x123, bytes(range(12)), fd=True, brs=True)      # a CAN-FD frame, 12 bytes
     frame, spent = can1.look()                                 # what is queued now, no wait
+    try:
+        can1.expect(0x102, timeout_ms=200)                     # nobody asked again: nothing comes
+    except blobly.Timeout as e:
+        print(e)  # CAN1: expected a frame 0x102 within 200 ms; 19 other frames came: 9 of 0x300, ...
 ```
-
-`expect`, a wait for one frame or one signal value with the timeout built in, is #507 Phase 1;
-until then the loop above is the pattern.
 
 ---
 
@@ -334,10 +325,21 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   send an out-of-range value on purpose. `fd`/`brs` are left unset.
 - `msg.send(**signals)` encodes and sends on the message's channel, and returns the encoded
   `Frame`.
+- `ch.expect_signal(message, signal, want, timeout_ms=1000)` waits for a frame of `message`
+  whose decoded `signal` matches `want`, and returns `(frame, value)`. When none came it raises
+  `blobly.Timeout`, whose message says what the signal was instead. `message` is a `Message` of
+  the channel or its name, and its frames are those of its id and kind (a J1939 message's frames
+  from another source address are not its id). `signal` is one of that message's `Signal`s, or
+  its name (a name two signals share is refused: pass the `Signal`); an unknown message or signal
+  is refused before the wait. `want` is a predicate on the physical value, or a
+  value compared with `==`. Decoded values are floats with the rounding of raw × factor + offset:
+  on a signal of 0.1 steps, raw 3 decodes as 0.30000000000000004, so want `pytest.approx(0.3)` or
+  a predicate there. The deadline and the consumed frames are `expect`'s.
 - `ch.decode(frame)` returns `{signal: physical value}` for what the frame says in the row's
   databases: the message of its id and kind (else, for an extended frame, one with its J1939
   PGN), and each signal the frame carries. A multiplexed signal its multiplexor does not select is
-  left out. It returns `None` for a frame of no message, and for a remote frame. Which message a
+  left out, and so is a signal whose bits a frame shorter than the message does not all hold (or
+  whose multiplexor's it does not), where Lua's `decode` reads the missing bytes as 0. It returns `None` for a frame of no message, and for a remote frame. Which message a
   frame decoded as is not returned.
 
 ```python
@@ -352,7 +354,10 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     frame = pt.encode(EngineSpeed=1500, Gear=3)                 # Frame(0x100 [70 17 00 00 00 18 00 00])
     print(can1.decode(frame))                                   # {'EngineSpeed': 1500.0, ..., 'Gear': 3.0, ...}
     sent = can1.messages.Request.send(ReqCode=5)                # the SUT answers with Response, RespCode 6
-    print("sent", sent)
+    frame, code = can1.expect_signal("Response", "RespCode", 6, timeout_ms=1000)
+    print("sent", sent, "answered", frame, code)                # ... answered Frame(0x102 [06 ...]) 6.0
+    _, engaged = can1.expect_signal(pt, gear, lambda g: g >= 1, timeout_ms=1000)  # a Signal, or its name
+    print("in gear", engaged)                                   # 1.0 to 6.0: sim-demo steps it each second
 ```
 
 ---
@@ -608,7 +613,83 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 11. Threads
+## 11. Testing with pytest
+
+Tests run on [pytest](https://docs.pytest.org/): plain `assert`, fixtures and pytest's own
+reports. `blobly` brings a pytest plugin, `blobly.pytest_plugin`, whose fixtures start the
+project, and the channels' `expect` and `expect_signal` do the waiting. There is no copy of the
+Lua prelude's `test` and `check.*`. pytest is not a dependency of `blobly`: install it yourself
+(`pip install pytest`, 7.0 or newer).
+
+**A suite asks for the plugin** in its root `conftest.py`:
+
+```python
+pytest_plugins = ["blobly.pytest_plugin"]
+```
+
+and names its project in its ini file (`pytest.ini`, or `[tool.pytest.ini_options]` in
+`pyproject.toml`), relative to that file:
+
+```ini
+[pytest]
+blobly_project = projects/sim-demo.blobnet
+```
+
+`pytest -p blobly.pytest_plugin`, or `addopts = -p blobly.pytest_plugin` in the ini file, loads
+it too. The plugin is never loaded on its own (it registers no pytest entry point): an installed
+`blobly` adds nothing to a suite that has not asked for it, and a source checkout, which has no
+entry points, loads it the same way an installed package does.
+
+`--blobly-project=PATH` on the command line, relative to the working directory, overrides the ini
+value. Write it with `=`: pytest reads a separate `PATH` as a test path before the plugin has
+added the option.
+
+| fixture | what |
+|---|---|
+| `project` | The started `blobly.Project`. Its run is the test module's: started at the module's first test that asks for it and stopped after the module's last test, so a module may also bring up a project of its own. Each test starts with the CAN channels' handles opened fresh as its setup ends: it hears every frame that arrives from then on, one that comes before its first `expect` included, and nothing an earlier test left queued. After each test, the handlers it registered are dropped and the faults it armed cleared. A test that stopped the run finds it started again in the next one. |
+| `can1`, `can2`, ... | One per enabled channel of the project, named after it: the started project's `Channel` of that name. |
+
+**The channel fixtures' names** are the channels' names lowercased, every character that cannot be
+in a Python name made `_`, and `_` put before a leading digit: `CAN1` is `can1`, `CAN-1` is `can_1`,
+`2nd bus` is `_2nd_bus`. They are read from the project, loaded but not started, as pytest
+configures. A name two channels come to, a Python keyword, or another fixture's (the plugin's,
+pytest's own such as `tmp_path`, another plugin's) gets no fixture, and pytest warns at its start which channels those are; a test reaches them as
+`project.channels[...]`. A fixture of the same name in a suite's conftest.py is the suite's.
+
+What a test changes in the simulated ECUs (a UDS session, cleared DTCs) lasts until its module's
+run ends. A test file:
+
+```python
+def test_the_sut_answers(can1):
+    can1.send(0x101, b"\x05")
+    assert can1.expect(0x102, timeout_ms=500).data[0] == 6
+
+
+def test_the_answer_decodes(can1):
+    can1.messages.Request.send(ReqCode=5)
+    can1.expect_signal("Response", "RespCode", 6, timeout_ms=500)
+```
+
+**A failed expectation** is a test failure. Its message says what was expected and what came
+instead, and the traceback ends at the test's own line:
+
+```text
+    def test_late(can1):
+        can1.send(0x101, b"\x05")
+>       can1.expect(0x555, timeout_ms=300)
+E       blobly._lib.Timeout: CAN1: expected a frame 0x555 within 300 ms; 29 other frames came: 16 of 0x300, 6 of 0x301, 3 of 0x100, 3 of 0x700, 1 of 0x102
+```
+
+**Reports** are pytest's own. `--junitxml=report.xml` writes the JUnit XML a CI server reads,
+each failure with the same message; `-x`, `-k`, `-q` and the rest work as usual. The exit
+status is pytest's: 0 when every test passed, 1 when one failed.
+
+The complete suite is [test_sim_demo.py](../python/examples/test_sim_demo.py), with its
+[conftest.py](../python/examples/conftest.py) and [pytest.ini](../python/examples/pytest.ini).
+
+---
+
+## 12. Threads
 
 - **Load the engine on the main thread** (`blobly.init()`). After that any thread may call in. A
   thread is attached to the engine on its first call and detached when it ends, without you
@@ -646,14 +727,15 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 12. Errors
+## 13. Errors
 
 | exception | when |
 |---|---|
 | `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, `FaultRefused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
 | `blobly.FaultRefused` | A `Refused` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
+| `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), or a UDS request nothing answered. A `BloblyError`, code -5. |
 | `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. |
-| `TypeError` | A timeout that is not a finite number (or `None`), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`. A fault's or an `e2e` call's argument of the wrong type. |
+| `TypeError` | A timeout that is not a finite number (or `None`, which `expect` refuses too), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`. A fault's or an `e2e` call's argument of the wrong type. |
 | `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are. |
 | `KeyError`, `IndexError` | An unknown name by `["NOPE"]`, a position past the end. |
 | `RuntimeWarning` (a warning) | A `with` block's stop found a loop that outlived the stop's bound. |
@@ -665,6 +747,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 | -1 | refused, with the reason in the message |
 | -2 | no such bus handle, or a closed one |
 | -3 | the wrong state: nothing loaded, not started, already started, a previous run still releasing, a channel or message of an earlier load or run |
+| -5 | `blobly.Timeout`: nothing came within the wait |
 
 A UDS call's failures are subclasses, each with a code of its own: see
 [UDS diagnostics](#10-uds-diagnostics).
@@ -673,7 +756,7 @@ A UDS call's failures are subclasses, each with a code of its own: see
 |---|---|---|
 | -1 | `blobly.Refused` | refused (every `BloblyError` with code -1 is one) |
 | -4 | `blobly.NegativeResponse` | the ECU answered with a negative response |
-| -5 | `blobly.Timeout` | nothing answered within the wait |
+| -5 | `blobly.Timeout` | nothing came within the wait: no UDS answer, or no match for an expectation |
 | -6 | `blobly.PendingExpired` | responsePending (0x78), then nothing within the ECU's P2* |
 | -7 | `blobly.UndecodableAnswer` | an answer arrived that cannot be read as one |
 | -8 | `blobly.CarrierFailed` | the carrier failed under the request |
@@ -694,7 +777,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 13. Reference
+## 14. Reference
 
 Import everything from `blobly`, and the E2E helpers from `blobly.e2e`. The submodules
 `blobly.project`, `blobly.events` and `blobly.faults` are the implementation, and their other
@@ -776,6 +859,8 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.send(id, data=b"", ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` take the wire's declared format. |
 | `ch.recv(timeout_ms=1000)` | The next frame another node sent, or `None` after `timeout_ms` (rounded down to whole ms; `0` only looks; `None` waits for ever). |
 | `ch.look()` | `(frame or None, spent)`: one look at what is queued, without waiting. |
+| `ch.expect(id, timeout_ms=1000, *, ext=None)` | The first frame another node sends with this id and kind (an int and `ext`, or a `Message`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
+| `ch.expect_signal(message, signal, want, timeout_ms=1000)` | `(frame, value)`: the first frame of `message` whose `signal` matches `want` (a predicate, or a value compared with `==`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
 | `ch.health()` | The controller's ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""`. |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
@@ -890,22 +975,34 @@ and armed nothing.
 ### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`
 
 `blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused, or a call failed. The
-others are its subclasses (see [Errors](#12-errors) and
+others are its subclasses (see [Errors](#13-errors) and
 [UDS diagnostics](#10-uds-diagnostics)).
 
 | member | what |
 |---|---|
-| `str(e)` | The engine's message. |
+| `str(e)` | The engine's message; for an expectation's `Timeout`, what was expected and what came instead. |
 | `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -8 the ways a UDS call fails. |
 | `e.nrc`, `e.nrc_name` | `NegativeResponse` only: the code, and ISO 14229-1's name for it. |
 | `e.exchange` | `NegativeResponse` only: the `Exchange` it ended. |
 
+### `blobly.pytest_plugin`
+
+The pytest plugin ([Testing with pytest](#11-testing-with-pytest)). Not imported by `blobly`: a
+suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.pytest_plugin`.
+
+| name | what |
+|---|---|
+| `project` | Fixture: the started `Project`, its run the test module's; each test hears what arrives from its start, and its handlers and faults go with it. |
+| `can1`, ... | Fixtures: one per enabled channel, named after it (lowercased, `_` for what a Python name cannot hold). |
+| `blobly_project` | Ini value: the project, relative to the ini file. |
+| `--blobly-project=PATH` | Command line: the project, relative to the working directory; overrides the ini value. |
+
 ---
 
-## 14. What is not there yet
+## 15. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
-loop, bus health, fault injection, the E2E Profile 1 helpers and UDS over CAN. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+loop, bus health, fault injection, the E2E Profile 1 helpers, UDS over CAN, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
 - UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
@@ -913,7 +1010,7 @@ loop, bus health, fault injection, the E2E Profile 1 helpers and UDS over CAN. T
   snapshots and extended data, and functional addressing, are its next part.
 - The DoIP tester: UDS over DoIP rows, `discover` and `listen`. Today a DoIP row is listed and its
   entity hosted, but Python cannot talk to it.
-- A pytest plugin: `project`, `channel` and `diag` fixtures, `expect` and `expect_signal`.
+- The pytest plugin's `diag` fixture, which comes with UDS.
 
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
 - SOME/IP send, call and listen; `flash.program`.

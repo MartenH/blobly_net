@@ -44,7 +44,7 @@ def run(*args, timeout=120):
 class TestExamples(unittest.TestCase):
     def test_the_folder_and_its_index_name_the_same_examples(self):
         here = {f for f in os.listdir(EXAMPLES) if f.endswith(".py")}
-        self.assertEqual(here - {"test_sim_demo.py"}, set(SCRIPTS), "an example the test does not run")
+        self.assertEqual(here - {"test_sim_demo.py", "conftest.py"}, set(SCRIPTS), "an example the test does not run")
         with open(os.path.join(EXAMPLES, "README.md"), encoding="utf-8") as f:
             index = f.read()
         for name in sorted(here):
@@ -81,9 +81,10 @@ class TestExamples(unittest.TestCase):
 
     @unittest.skipIf(find_spec("pytest") is None, "pytest is not installed")
     def test_the_pytest_example_passes(self):
-        r = run("-m", "pytest", "-q", "-s", "-p", "no:cacheprovider", os.path.join(EXAMPLES, "test_sim_demo.py"))
+        # not -q: the plugin's header line says which blobly ran
+        r = run("-m", "pytest", "-p", "no:cacheprovider", os.path.join(EXAMPLES, "test_sim_demo.py"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("7 passed", r.stdout)
+        self.assertIn("10 passed", r.stdout)
         self.assert_package(r.stdout, "test_sim_demo.py")
 
     def assert_package(self, out, name):

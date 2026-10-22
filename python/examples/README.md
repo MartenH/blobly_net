@@ -13,7 +13,7 @@ the command line overrides it.
 | [signal_monitor.py](signal_monitor.py) | The decoded values of chosen messages, printed twice a second for N seconds. |
 | [uds_diag.py](uds_diag.py) | UDS over CAN: the default session, the VIN (a multi-frame answer) and other DIDs with the exchange's timing, a negative response caught with its NRC, and a security unlock with the reference key. |
 | [fault_injection.py](fault_injection.py) | Faults on sim-demo's simulated ECUs, seen on the bus: Powertrain dropped for a second and back by itself, BrakePedal forced past its declared range until cleared, and `bad_crc` refused where nothing is protected. |
-| [test_sim_demo.py](test_sim_demo.py) | A pytest suite: a module-scoped fixture starts the project, and the tests talk to its simulated ECUs. |
+| [test_sim_demo.py](test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel (`can1`), `expect` and `expect_signal`. [conftest.py](conftest.py) loads the plugin and [pytest.ini](pytest.ini) names the project, which is all a suite of your own needs. |
 
 ## Running them
 
@@ -36,7 +36,8 @@ The pytest example needs pytest, which `blobly` does not depend on:
 ```sh
 pip install pytest
 pytest python/examples/test_sim_demo.py
-BLOBLY_PROJECT=path/to/your.blobnet pytest python/examples/test_sim_demo.py
+pytest python/examples/test_sim_demo.py --blobly-project=path/to/your.blobnet
+pytest python/examples --junitxml=report.xml      # pytest's own JUnit report
 ```
 
 ## What they promise

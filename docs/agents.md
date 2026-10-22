@@ -109,18 +109,19 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 - **Bound every wait.** `ch.recv(timeout_ms)` returns `None` when nothing came; `run(duration_ms)`
   returns after its duration. Never call `recv(None)`: on a quiet bus it waits for ever, and
-  Ctrl-C cannot end it. A wait for one frame is a loop over `recv` with a deadline
-  ([raw_can.py](../python/examples/raw_can.py) has `wait_for`). `expect` is #507 Phase 1.
-- **A frame read is consumed.** A loop that waits for one id drops what else it reads.
+  Ctrl-C cannot end it. A wait for one frame is `ch.expect(id, timeout_ms)`, and for one signal
+  value `ch.expect_signal(message, signal, want, timeout_ms)`: one deadline for the whole wait,
+  and `blobly.Timeout` when nothing matched, its message saying what came instead.
+- **A frame read is consumed.** `recv` and `expect` drop what else they read on the way.
 - **One run per process.** A second `start()` raises `BloblyError` with code -3. Use one
   `Project` per process, or stop the first one.
 - **Errors.** The engine's refusals are `blobly.BloblyError`, its message the reason and `.code`
   the kind (-1 refused, -2 no such handle, -3 the wrong state). A listen-only row's send is one.
   A fault that could not take effect (`net.fault`) is `blobly.FaultRefused`, a `Refused`. A UDS
   call's failures are subclasses an agent can act on: `NegativeResponse` (with `.nrc`),
-  `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed` and `Refused`.
+  `Timeout` (code -5, also an expectation that ran out), `PendingExpired`, `UndecodableAnswer`, `CarrierFailed` and `Refused`.
   Bad arguments are `ValueError` or `TypeError`, unknown names `AttributeError` or `KeyError`.
-  [scripting_python.md](scripting_python.md#12-errors) has the full table.
+  [scripting_python.md](scripting_python.md#13-errors) has the full table.
 - **Exit codes.** Make a script exit non-zero when a check fails, with one line that says what
   was expected (`sys.exit("FAIL: ...")` exits 1). The examples exit 0 when every check held, 1
   on a failed check or an error, and 2 on a bad argument. pytest exits 0 when every test passed
@@ -128,6 +129,31 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 - **Output.** The engine prints its own lines (`project: ...`, `channel CAN1 ...`) on stdout.
   With stdout on a pipe, `sys.stdout.reconfigure(line_buffering=True)` keeps your lines in order
   with them.
+
+## Writing a test
+
+Tests are pytest files on blobly's plugin. Start from
+[test_sim_demo.py](../python/examples/test_sim_demo.py) and the two files beside it:
+[conftest.py](../python/examples/conftest.py) loads the plugin
+(`pytest_plugins = ["blobly.pytest_plugin"]`) and [pytest.ini](../python/examples/pytest.ini)
+names the project. The rules are in
+[Testing with pytest](scripting_python.md#11-testing-with-pytest).
+
+- The `project` fixture is the started project, and `can1` its channel `CAN1`: a fixture per
+  channel, named after it. A test hears what arrives from its start, and its handlers and faults
+  do not reach the next test; what it changed in a simulated ECU lasts until its module ends.
+- A test is a few lines, and names no project (the ini file or `--blobly-project` does):
+
+  ```python
+  def test_sut_answers(can1):
+      can1.send(0x101, b"\x05")
+      assert can1.expect(0x102, timeout_ms=500).data[0] == 6
+  ```
+- Wait with `expect` and `expect_signal`, and check with plain `assert`. A failed expectation
+  says what was expected and what came instead.
+- Run it as `pytest tests/ --blobly-project=path/to/project.blobnet --junitxml=report.xml`. The
+  exit status is 0 when every test passed and 1 when one failed, and the report carries each
+  failure's message.
 
 ## Examples
 
@@ -142,7 +168,7 @@ Complete scripts, each bounded and with a clear exit status, in
 | [signal_monitor.py](../python/examples/signal_monitor.py) | Decoded values of chosen messages over N seconds. |
 | [uds_diag.py](../python/examples/uds_diag.py) | UDS over CAN: a session, DID reads, a negative response caught, a security unlock. |
 | [fault_injection.py](../python/examples/fault_injection.py) | Faults on simulated ECUs seen on the bus: a timed drop, a signal out of range, a refusal. |
-| [test_sim_demo.py](../python/examples/test_sim_demo.py) | A pytest suite with a module-scoped fixture that starts the project. |
+| [test_sim_demo.py](../python/examples/test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel, `expect`, `expect_signal`. |
 
 ## Python or Lua
 
