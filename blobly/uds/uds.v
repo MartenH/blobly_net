@@ -391,6 +391,9 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 		// within the transfer's allowance) is silence; a stop, and a send refused before anything
 		// reached the wire (a request the channel cannot carry, a listen-only wire), keep their own
 		// error; any other failure is the carrier's
+		if c.stopping() {
+			return error(abandoned_note) // whatever the send then said: the stop came first
+		}
 		if is_silence(err.msg()) || allowance_spent(c.ch, err.msg()) {
 			return NoAnswer{
 				sid:       req[0]
@@ -398,7 +401,7 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 				discarded: discarded
 			}
 		}
-		if c.stopping() || abandoned(err.msg()) || err is transport.NotWritten
+		if abandoned(err.msg()) || err is transport.NotWritten
 			|| transport.wire_policy(c.ch.iface).silent {
 			return err
 		}

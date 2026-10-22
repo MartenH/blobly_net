@@ -157,3 +157,26 @@ fn test_a_spent_flow_control_allowance_is_no_answer() {
 	}
 	assert false
 }
+
+struct Asks {
+mut:
+	n int
+}
+
+// a send that fails while a stop is asked of the client is the stop's, whatever the carrier said
+fn test_a_send_failing_under_a_stop_is_abandoned() {
+	mut c := new_client(&FailingChannel{
+		send_err: 'cansub write timed out'
+	})
+	mut asks := &Asks{}
+	c.stop_requested = fn [mut asks] () bool {
+		asks.n++
+		return asks.n > 1 // not before the send: during it
+	}
+	c.raw([u8(0x3E), 0x00]) or {
+		assert failure_of(err) == .abandoned, err.msg()
+		assert asks.n == 2
+		return
+	}
+	assert false
+}
