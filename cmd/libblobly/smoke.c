@@ -38,7 +38,7 @@ static str_int_fn bb_load_p, bb_bus_open_p;
 static idx_str_fn bb_channel_name_p, bb_channel_iface_p;
 static send_fn bb_bus_send_p;
 static recv_fn bb_bus_recv_p;
-static int_int_fn bb_bus_health_p, bb_bus_close_p;
+static int_int_fn bb_bus_health_p, bb_bus_close_p, bb_channel_kind_p, bb_channel_health_source_p, bb_wait_released_p;
 
 #define FAIL(step) do { fprintf(stderr, "FAIL %s: %s\n", step, bb_last_error_p()); return 1; } while (0)
 
@@ -101,15 +101,47 @@ int main(int argc, char **argv) {
 	SYM(bb_version); SYM(bb_init); SYM(bb_last_error); SYM(bb_thread_attach); SYM(bb_thread_detach); SYM(bb_load); SYM(bb_start); SYM(bb_stop);
 	SYM(bb_channel_count); SYM(bb_channel_name); SYM(bb_channel_iface);
 	SYM(bb_bus_open); SYM(bb_bus_send); SYM(bb_bus_recv); SYM(bb_bus_health); SYM(bb_bus_close);
+	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
 	printf("libblobly %s\n", bb_version_p());
 	if (bb_start_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL start before load must refuse\n"); return 1; }
+	/* an error longer than BB_ERROR_MAX is cut before a whole character: a path of 3000 two-byte
+	 * characters makes one of ~6000 bytes */
+	{
+		static char longpath[3000 * 2 + 1];
+		for (int i = 0; i < 3000; i++) { longpath[2 * i] = (char)0xC3; longpath[2 * i + 1] = (char)0xA9; }
+		if (bb_load_p(longpath) != BB_ERR) { fprintf(stderr, "FAIL a missing project must refuse\n"); return 1; }
+		const char *e = bb_last_error_p();
+		size_t el = strlen(e);
+		if (el == 0 || el > BB_ERROR_MAX) { fprintf(stderr, "FAIL error length %zu\n", el); return 1; }
+		/* the last character is whole: count the trailing continuation bytes behind its lead */
+		size_t k = el;
+		while (k > 0 && ((unsigned char)e[k - 1] & 0xC0) == 0x80) k--;
+		unsigned char lead = k > 0 ? (unsigned char)e[k - 1] : 0;
+		size_t want = (lead & 0xE0) == 0xC0 ? 1 : (lead & 0xF0) == 0xE0 ? 2 : (lead & 0xF8) == 0xF0 ? 3 : 0;
+		if (el - k != want) { fprintf(stderr, "FAIL the error was cut inside a UTF-8 character\n"); return 1; }
+		printf("ok   a %zu-byte error, cut at a character boundary\n", el);
+	}
 	if (bb_load_p(argv[2]) != 0) FAIL("load");
 	int n = bb_channel_count_p();
 	if (n < 2) { fprintf(stderr, "FAIL channels: %d\n", n); return 1; }
-	for (int i = 0; i < n; i++) printf("     channel %s (%s)\n", bb_channel_name_p(i), bb_channel_iface_p(i));
+	int doip = -1;
+	static char doip_iface[256];
+	for (int i = 0; i < n; i++) {
+		int kind = bb_channel_kind_p(i), src = bb_channel_health_source_p(i);
+		printf("     channel %s (%s) kind %d health source %d\n", bb_channel_name_p(i), bb_channel_iface_p(i), kind, src);
+		if (kind < 0 || src < 0) FAIL("channel kind / health source");
+		if (kind == BB_KIND_DOIP) { doip = i; snprintf(doip_iface, sizeof doip_iface, "%s", bb_channel_iface_p(i)); }
+		/* sim-demo's CAN rows are inproc: a software bus has no ladder */
+		if (kind == BB_KIND_CAN && strncmp(bb_channel_iface_p(i), "inproc:", 7) == 0 && src != BB_HEALTH_SOURCE_NONE) { fprintf(stderr, "FAIL inproc health source %d\n", src); return 1; }
+	}
+	if (doip < 0) { fprintf(stderr, "FAIL sim-demo has a DoIP row\n"); return 1; }
+	if (bb_channel_kind_p(n) != BB_ERR) { fprintf(stderr, "FAIL kind of a row past the end\n"); return 1; }
+	/* a DoIP endpoint is not a CAN bus: refused by name, not as a missing SocketCAN device */
+	if (bb_bus_open_p(doip_iface) != BB_ERR || strstr(bb_last_error_p(), "DoIP or SOME/IP") == NULL) { fprintf(stderr, "FAIL open of a DoIP row: %s\n", bb_last_error_p()); return 1; }
+	printf("ok   kinds and health sources; a DoIP row refused by name\n");
 	if (bb_start_p() != 0) FAIL("start");
 	if (bb_start_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL a second start must refuse\n"); return 1; }
 
@@ -140,7 +172,12 @@ int main(int argc, char **argv) {
 	(void)bb_version_p();
 	if (bb_last_error_p()[0] != 0) { fprintf(stderr, "FAIL a success leaves the error empty\n"); return 1; }
 	printf("ok   handle -1 refused by name; a success clears the error\n");
+	/* the run moved the hosted DoIP entity onto a port it could bind; a stop gives the project's back */
+	if (strcmp(bb_channel_iface_p(doip), doip_iface) == 0) { fprintf(stderr, "FAIL the run did not move %s\n", doip_iface); return 1; }
 	if (bb_stop_p() != 0) FAIL("stop");
+	if (strcmp(bb_channel_iface_p(doip), doip_iface) != 0) { fprintf(stderr, "FAIL after stop the DoIP row is %s, not %s\n", bb_channel_iface_p(doip), doip_iface); return 1; }
+	if (bb_wait_released_p(0) != 0) { fprintf(stderr, "FAIL a clean stop must leave the process released\n"); return 1; }
+	printf("ok   stop restores the project's interfaces; released at once\n");
 	if (bb_stop_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL a second stop must refuse\n"); return 1; }
 	/* the process is free again: the same project starts a second time */
 	if (bb_start_p() != 0) FAIL("start again");

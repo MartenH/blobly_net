@@ -7,7 +7,7 @@
 //   (scripts/build_libblobly.sh)
 //
 // Over the merged blobly.headless (load / start / stop) and blobly.transport (a bus handle of the
-// host's own). Nothing of UDS and nothing event-driven yet: those are the next PRs' seams.
+// host's own). Nothing of UDS yet: that is a later PR's seam.
 //
 // EVERY INTEGER AT THE BOUNDARY IS i32. V3's `int` is 64 bits and C's is 32: an export taking
 // `int` reads a C caller's -1 as 4294967295 (local codex review, measured), so bb.h's `int` is
@@ -51,10 +51,14 @@ pub mut:
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
+// the codes as bb.h defines them: read from the header, never restated, so the two cannot drift
 const bb_ok = i32(0)
-const bb_err = i32(-1)
-const bb_err_handle = i32(-2)
-const bb_err_state = i32(-3)
+const bb_err = i32(C.BB_ERR)
+const bb_err_handle = i32(C.BB_ERR_HANDLE)
+const bb_err_state = i32(C.BB_ERR_STATE)
+const bb_none = i32(C.BB_NONE)
+const bb_spent = i32(C.BB_SPENT)
+const bb_releasing = i32(C.BB_RELEASING)
 
 // how long one bus call inside bb_bus_recv waits before it looks at the handle's `closing` again:
 // bounds how long a close waits for a receive on another thread
@@ -64,11 +68,11 @@ const recv_slice_ms = 20
 // (`bb_next`), and a closed handle is DELETED from it, so its bus — an inproc queue is 8192
 // frames — is the collector's again; held, 3000 open/close churns peaked at 2.4 GB and 73 s, let
 // go 35 MB and 1.6 s (self-review).
-// The table is under `bb_mu`, since bb.h lets send and recv run on an attached thread of their
-// own while the driver thread opens and closes; the bus is used outside the lock, COUNTED
-// (`users`), and closed only once nobody is inside it: a SocketCAN read blocked in recvmsg is not
-// woken by a close from another thread, and a closed fd's number may be the next socket's (the
-// served-connection double close on #477).
+// The table is under `bb_mu`, since a handle's thread may be an attached one of its own while the
+// driver thread opens and closes others (bb.h: one thread per handle, and a close from another);
+// the bus is used outside the lock, COUNTED (`users`), and closed only once nobody is inside it: a
+// SocketCAN read blocked in recvmsg is not woken by a close from another thread, and a closed
+// fd's number may be the next socket's (the served-connection double close on #477).
 @[heap]
 struct BusHandle {
 mut:
@@ -84,6 +88,7 @@ __global (
 	bb_loaded  bool
 	bb_run     &headless.Run = unsafe { nil }
 	bb_names   []string // the C strings bb_channel_* handed out, kept alive here
+	bb_rows    []project.Channel // the enabled rows they name, for bb_channel_kind / _health_source
 	bb_handles map[int]&BusHandle
 	bb_next    int
 )
@@ -194,10 +199,12 @@ pub fn bb_load(path &char) i32 {
 // name_rows is the enabled rows' names and interfaces, as C strings that outlive the call.
 fn name_rows(proj project.Project) {
 	bb_names = []string{}
+	bb_rows = []project.Channel{}
 	for ch in proj.channels {
 		if ch.enabled {
 			bb_names << ch.name
 			bb_names << ch.iface_with_bitrate()
+			bb_rows << ch
 		}
 	}
 }
@@ -211,9 +218,12 @@ pub fn bb_start() i32 {
 		return fail(bb_err_state, 'already started; stop first')
 	}
 	r := headless.start(bb_proj, bb_path, headless.Options{}) or {
-		// headless's own state refusal (a previous run's loop still out past stop's bound)
-		code := if err.msg() == headless.active_note { bb_err_state } else { bb_err }
-		return fail(code, err.msg())
+		// headless's own state refusal: with no run of ours, a previous run's loop is still out
+		// past its stop's bound
+		if err.msg() == headless.active_note {
+			return fail(bb_err_state, 'a previous run is still releasing its wires; bb_wait_released, then start')
+		}
+		return fail(bb_err, err.msg())
 	}
 	bb_run = r
 	// as the RUN has them: start moves a hosted DoIP row onto a port this process could bind, and
@@ -231,7 +241,22 @@ pub fn bb_stop() i32 {
 	mut r := bb_run
 	bb_run = unsafe { nil }
 	r.stop()
+	// the rows as the project says again: a moved DoIP port was the stopped run's
+	name_rows(bb_proj)
+	if !headless.released() {
+		ok()
+		return bb_releasing
+	}
 	return ok()
+}
+
+@[export: 'bb_wait_released']
+pub fn bb_wait_released(timeout_ms i32) i32 {
+	if headless.wait_released(int(timeout_ms)) {
+		return ok()
+	}
+	ok()
+	return bb_releasing
 }
 
 @[export: 'bb_channel_count']
@@ -262,12 +287,51 @@ pub fn bb_channel_iface(i i32) &char {
 	return channel_str(int(i), 1)
 }
 
+fn row(i i32) ?project.Channel {
+	if !bb_loaded || i < 0 || int(i) >= bb_rows.len {
+		return none
+	}
+	return bb_rows[int(i)]
+}
+
+@[export: 'bb_channel_kind']
+pub fn bb_channel_kind(i i32) i32 {
+	ch := row(i) or { return fail(bb_err, 'no channel ${i}') }
+	ok()
+	if ch.is_doip() {
+		return i32(C.BB_KIND_DOIP)
+	}
+	if ch.is_someip() {
+		return i32(C.BB_KIND_SOMEIP)
+	}
+	return i32(C.BB_KIND_CAN)
+}
+
+@[export: 'bb_channel_health_source']
+pub fn bb_channel_health_source(i i32) i32 {
+	ch := row(i) or { return fail(bb_err, 'no channel ${i}') }
+	ok()
+	if ch.is_eth() {
+		return i32(C.BB_HEALTH_SOURCE_NONE)
+	}
+	return match transport.health_source(ch.iface_with_bitrate()) {
+		.no_controller { i32(C.BB_HEALTH_SOURCE_NONE) }
+		.polled { i32(C.BB_HEALTH_SOURCE_POLLED) }
+		.needs_reader { i32(C.BB_HEALTH_SOURCE_NEEDS_READER) }
+	}
+}
+
 @[export: 'bb_bus_open']
 pub fn bb_bus_open(iface &char) i32 {
 	if isnil(iface) {
 		return fail(bb_err, 'open: no interface')
 	}
 	name := unsafe { cstring_to_vstring(iface) }
+	// the one rule the model uses: on Linux a DoIP or SOME/IP endpoint would fall through to
+	// SocketCAN and fail as a missing device
+	if project.iface_is_eth(name) {
+		return fail(bb_err, 'open: ${name} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
+	}
 	bus := transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') }
 	bb_mu.lock()
 	h := bb_next
@@ -329,8 +393,9 @@ pub fn bb_bus_send(h i32, f &C.bb_frame) i32 {
 	return ok()
 }
 
-// bb_bus_recv waits in slices of recv_slice_ms, so a close on another thread ends it at the next
-// one; a negative timeout waits until a frame, or that close.
+// bb_bus_recv waits in slices of recv_slice_ms (transport.recv_sliced, the rule isotp's stoppable
+// receive uses), so a close on another thread ends it at the next one; a negative timeout waits
+// until a frame, or that close; zero is one look (Bus.recv's recv(0) contract).
 @[export: 'bb_bus_recv']
 pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 	if isnil(out) {
@@ -340,32 +405,16 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 	defer {
 		hd.leave()
 	}
-	deadline := time.ticks() + i64(timeout_ms)
-	mut fr := transport.CanFrame{}
-	for {
-		if stdatomic.load_i64(&hd.closing) != 0 {
-			return fail(bb_err_handle, 'recv: the handle was closed')
-		}
-		mut slice := recv_slice_ms
-		if timeout_ms >= 0 {
-			left := deadline - time.ticks()
-			slice = if left < recv_slice_ms {
-				int(if left < 0 { 0 } else { left })
-			} else {
-				recv_slice_ms
-			}
-		}
-		fr = hd.bus.recv(slice) or {
-			if err.msg() == 'timeout' {
-				if timeout_ms >= 0 && time.ticks() >= deadline {
-					ok() // nothing in time is not an error
-					return 1
-				}
-				continue
-			}
-			return fail(bb_err, 'recv: ${err.msg()}')
-		}
-		break
+	if stdatomic.load_i64(&hd.closing) != 0 {
+		return fail(bb_err_handle, 'recv: the handle was closed')
+	}
+	fr := if timeout_ms == 0 {
+		hd.bus.recv(0) or { return recv_nothing(err) }
+	} else {
+		closing := &hd.closing
+		transport.recv_sliced(mut hd.bus, int(timeout_ms), recv_slice_ms, fn [closing] () bool {
+			return stdatomic.load_i64(closing) != 0
+		}) or { return recv_nothing(err) }
 	}
 	// a frame bb_frame cannot carry is refused whole: a truncated payload published with its
 	// real length is one a C host reads past the end of
@@ -387,6 +436,22 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 	return ok()
 }
 
+// recv_nothing is what bb_bus_recv answers for a receive that brought no frame.
+fn recv_nothing(err IError) i32 {
+	if err.code() == transport.sliced_stop_code {
+		return fail(bb_err_handle, 'recv: the handle was closed')
+	}
+	if transport.look_was_spent(err) {
+		ok()
+		return bb_spent
+	}
+	if err.msg() == 'timeout' {
+		ok() // nothing in time is not an error
+		return bb_none
+	}
+	return fail(bb_err, 'recv: ${err.msg()}')
+}
+
 @[export: 'bb_bus_health']
 pub fn bb_bus_health(h i32) i32 {
 	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
@@ -394,7 +459,19 @@ pub fn bb_bus_health(h i32) i32 {
 		hd.leave()
 	}
 	ok()
-	return i32(hd.bus.health())
+	return health_code(hd.bus.health())
+}
+
+// health_code is bb.h's enum bb_health for a rung, by NAME: a variant added to transport.BusHealth
+// fails this match, and one reordered there cannot shift what a host reads.
+fn health_code(h transport.BusHealth) i32 {
+	return match h {
+		.unknown { i32(C.BB_HEALTH_UNKNOWN) }
+		.ok { i32(C.BB_HEALTH_OK) }
+		.warning { i32(C.BB_HEALTH_WARNING) }
+		.error_passive { i32(C.BB_HEALTH_ERROR_PASSIVE) }
+		.bus_off { i32(C.BB_HEALTH_BUS_OFF) }
+	}
 }
 
 // bb_bus_close: out of the table at once, so no new call reaches it; closed once the calls

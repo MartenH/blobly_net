@@ -183,6 +183,27 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 // tells a state refusal from a project's can compare rather than parse.
 pub const active_note = 'a run is already active in this process; stop it before starting another'
 
+// released says the process is free for the next start: no run holds it — neither one running
+// nor a stopped one whose loops outlived stop's bound and are still letting go of their wires.
+pub fn released() bool {
+	headless_mu.lock()
+	free := headless_owner == 0
+	headless_mu.unlock()
+	return free
+}
+
+// wait_released waits at most timeout_ms (negative: until it happens) for released().
+pub fn wait_released(timeout_ms int) bool {
+	until := time.ticks() + i64(timeout_ms)
+	for !released() {
+		if timeout_ms >= 0 && time.ticks() >= until {
+			return false
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	return true
+}
+
 // release_process lets the next start in, if `gen` is the run holding the process.
 fn release_process(gen u64) {
 	headless_mu.lock()

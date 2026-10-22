@@ -20,12 +20,19 @@
 #define BB_THREAD_LOCAL _Thread_local
 #endif
 
-static BB_THREAD_LOCAL char bb_err_buf[512];
+static BB_THREAD_LOCAL char bb_err_buf[BB_ERROR_MAX + 1];
 static BB_THREAD_LOCAL int bb_attached_here;
 
+/* a message longer than BB_ERROR_MAX bytes is cut before the character the bound falls in, never
+ * inside its UTF-8 sequence: a host decoding it strictly must not fail on our truncation */
 static inline void bb_err_set(const char *s) {
-	strncpy(bb_err_buf, s, sizeof bb_err_buf - 1);
-	bb_err_buf[sizeof bb_err_buf - 1] = 0;
+	size_t n = strlen(s);
+	if (n > BB_ERROR_MAX) {
+		n = BB_ERROR_MAX;
+		while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) n--;
+	}
+	memcpy(bb_err_buf, s, n);
+	bb_err_buf[n] = 0;
 }
 static inline const char *bb_err_get(void) { return bb_err_buf; }
 static inline int bb_attached(void) { return bb_attached_here; }
