@@ -55,17 +55,19 @@ have to rediscover it:
    statements across 19 files, including a hardware guide that still said the Vector backend
    was not implemented. Fix, do not annotate; a design document that shipped differently gets
    one note at its top saying so.
-3. **One PR**: the audit, then `v.mod` bumped **in its own commit** so `git log v.mod` explains
+3. **Write the highlights** in `packaging/RELEASE_HIGHLIGHTS.md`: a first line naming the tag
+   (`<!-- vX.Y.Z -->`, which `release.yml` refuses to publish without), one sentence, then a
+   handful of one-line items — what is NEW first, in words a user would look for, not PR titles.
+   It opens the release page, above the changelog.
+4. **One PR**: the audit, the highlights, then `v.mod` bumped **in its own commit** so `git log v.mod` explains
    itself. Build the GUI and check `./build/blobly_net --version` prints the new number —
    `release.yml` refuses a tag that disagrees with it. The usual gate: `/code-review high`, then
    `@codex review` until clean, CI green.
-4. **Merge everything meant for the release first**, then that PR last (a PR merged after the
+5. **Merge everything meant for the release first**, then that PR last (a PR merged after the
    bump but before the tag is still in the release; one merged after the tag is not).
-5. **Tag** from `origin/main`, never from a local branch, and push it (the short version above).
+6. **Tag** from `origin/main`, never from a local branch, and push it (the short version above).
    Watch the `release` workflow: the Windows bundle takes the better part of an hour.
-6. **After it publishes**, edit the release description on GitHub if one change deserves a
-   headline above the generated list — the header is a standing statement, not a summary of
-   the version.
+7. **After it publishes**, read the release page; edit it on GitHub if anything needs adding.
 
 ## The number — CalVer, `YYYY.MM.PATCH`
 
@@ -117,34 +119,39 @@ PyPI and by the job itself, so only a tagged release's wheels can reach it.
    bundle publishes for a tag *only* when `release.yml` calls `windows.yml` with
    `publish_bundle=true`, which happens behind this guard — a manual dispatch pointed at a
    tag publishes nothing.
-3. **the built binary answers with the tag** — the Linux job runs
+3. **the highlights name the tag** — the first line of `packaging/RELEASE_HIGHLIGHTS.md` is
+   `<!-- vX.Y.Z -->`, so the previous release's summary cannot open this one's page. CI checks
+   the same line against `v.mod` on every push, so a bump PR that forgot them fails before
+   anything is tagged.
+4. **the built binary answers with the tag** — the Linux job runs
    `./blobly_net --version` and compares. (The Windows exe compiles the same committed
    `v.mod`, so one execution covers both.)
-4. **the tag still is what the guard proved** — re-checked just before publish, because the
+5. **the tag still is what the guard proved** — re-checked just before publish, because the
    Windows build runs for the better part of an hour and a deleted or force-moved tag must
    not associate the binaries with different source (`--verify-tag` blocks gh's silent
    tag re-creation too).
-5. **PyPI only after the GitHub release** — the `pypi` job needs `publish`, so nothing reaches
+6. **PyPI only after the GitHub release** — the `pypi` job needs `publish`, so nothing reaches
    PyPI that the release page does not carry, and it publishes exactly two wheels, neither with
    a local version label.
 
-## Release notes — automatic
+## Release notes
 
-The published notes are `packaging/RELEASE_NOTES_HEADER.md` — the standing statement of what
+The published notes open with `packaging/RELEASE_HIGHLIGHTS.md` (step 3), then the changelog,
+then `packaging/RELEASE_NOTES_HEADER.md` — the standing statement of what
 the version's claims rest on (CI-verified virtual paths, bench-exercised SocketCAN,
 hand-verified Windows vendor backends, the no-vendor-DLL rule, the Linux runtime packages),
-with its evidence link pinned to the released tag — followed by **GitHub's generated
+with its evidence link pinned to the released tag. The changelog is **GitHub's generated
 changelog of every PR merged since the previous product release** (baselined on the highest
 `v[0-9]*` tag that is an ancestor; the first release says "First release" instead). When no
 earlier tag is an ancestor because the history was rewritten after it (as it was after
 `v2026.09.01` — a rewrite keeps every tree), the baseline is the commit on `main` whose tree is
 that of the tag just below the one being released, and the list is the squash-merge subjects since it (`What's Changed since
-<tag>`). Edit the release on GitHub afterwards if you want to add anything by hand.
+<tag>`).
 
 ## If something goes wrong
 
-- **Guard fails** — the message says which invariant broke (tag/version mismatch, or the
-  commit is not on main). Fix, delete the tag **both places** — remote and local, or the
+- **Guard fails** — the message says which invariant broke (tag/version mismatch, the
+  commit is not on main, or highlights that name another tag). Fix it on `main` through a PR, delete the tag **both places** — remote and local, or the
   re-tag fails with "already exists":
   `git push --delete origin vX.Y.Z && git tag -d vX.Y.Z` — then re-tag.
 - **A build fails after the guard** — nothing was published; re-tagging the same name after

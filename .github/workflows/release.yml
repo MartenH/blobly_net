@@ -63,6 +63,13 @@ jobs:
           [ "v$ver" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != v.mod v$ver"; exit 1; }
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "tagged commit is not on origin/main — releases come from reviewed history only"; exit 1; }
+      # the highlights are written for ONE release: a file still naming the previous tag would
+      # publish last release's summary above this release's changelog
+      - name: the highlights name this tag
+        run: |
+          first="$(sed -n 1p packaging/RELEASE_HIGHLIGHTS.md)"
+          [ "$first" = "<!-- $GITHUB_REF_NAME -->" ] \
+            || { echo "packaging/RELEASE_HIGHLIGHTS.md starts '$first', not '<!-- $GITHUB_REF_NAME -->' — write this release's highlights"; exit 1; }
 
   windows:
     needs: guard
@@ -153,8 +160,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      # the checkout is load-bearing three times over: packaging/RELEASE_NOTES_HEADER.md is
-      # read below, gh resolves the repo from it, and the tag revalidation + previous-tag
+      # the checkout is load-bearing three times over: packaging/RELEASE_HIGHLIGHTS.md and
+      # RELEASE_NOTES_HEADER.md are read below, gh resolves the repo from it, and the tag revalidation + previous-tag
       # baseline need the refs — hence full depth with tags. The tarball downloads into the
       # workspace root; its name is untracked, so the two writers cannot collide.
       - uses: actions/checkout@v7
@@ -268,7 +275,9 @@ jobs:
           # the header's evidence link must survive being a RELEASE body, where relative
           # paths resolve under /releases/tag/ — pin it to the released tag (codex #137 r2)
           sed "s|@TAG@|$GITHUB_REF_NAME|g" packaging/RELEASE_NOTES_HEADER.md > header.md
-          cat header.md generated.md > notes.md
+          # what this release brings first, then every change, then the standing statement
+          sed 1d packaging/RELEASE_HIGHLIGHTS.md > highlights.md
+          { cat highlights.md; printf '\n'; cat generated.md; printf '\n---\n\n'; cat header.md; } > notes.md
           gh release create "$GITHUB_REF_NAME" \
             --title "Blobly Net $GITHUB_REF_NAME" \
             --verify-tag \

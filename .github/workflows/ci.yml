@@ -135,6 +135,15 @@ jobs:
       - name: V version
         run: v version
 
+      # release.yml refuses a tag the highlights do not name; asked here against v.mod, so a
+      # version bump without its highlights fails on the PR, not after the tag is pushed
+      - name: Release highlights name v.mod's version
+        run: |
+          ver="$(sed -n "s/^\s*version: '\(.*\)'\s*\$/\1/p" v.mod)"
+          first="$(sed -n 1p packaging/RELEASE_HIGHLIGHTS.md)"
+          [ "$first" = "<!-- v$ver -->" ] \
+            || { echo "packaging/RELEASE_HIGHLIGHTS.md starts '$first', not '<!-- v$ver -->' — write the highlights with the bump"; exit 1; }
+
       # The unit suite's parts cover every module folder exactly once, for any part count: a
       # folder in no part is a suite that silently stops running.
       - name: unit-suite parts (scripts/unit_shard_test.sh)
