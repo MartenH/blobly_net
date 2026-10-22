@@ -112,7 +112,7 @@ jobs:
       # checked by auditwheel, installed into a fresh venv, and the package's tests run against the
       # INSTALLED copy — -I and -t python/tests keep the source tree off sys.path, and
       # TestInstalledWheel asserts that the package and the library it loaded are the wheel's.
-      # From the repository root, where sim-demo's databases resolve.
+      # From the repository root, which the step's own paths (build/, scripts/, python/tests) name.
       - name: Python wheel (built, installed, tested)
         run: |
           python3 -m venv "$RUNNER_TEMP/wheeltools"
