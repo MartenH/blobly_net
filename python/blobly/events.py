@@ -72,9 +72,33 @@ class EventLoop:
     def _listen_key(self, channel):
         key = self._resolve(channel)
         self._listen(key)
+        self._read(key)
+        return key
+
+    def _read(self, key):
+        """run() reads this channel from now on."""
         if not any(k is key or k == key for k in self._listened):
             self._listened.append(key)
-        return key
+
+    def _health_needs_reader(self, key):
+        """Whether a channel's ladder moves only while it is read. Unknown here: read it."""
+        return True
+
+    def _to_read(self, needs):
+        """What one wait reads, built at each wait so a handler registered inside a callback is
+        read in this run(): every channel an on_message names, and a health handler's where its
+        ladder needs a reader (`needs` holds this run()'s answers)."""
+        read = list(self._listened)
+        for h in self._on_health:
+            if any(k is h.channel or k == h.channel for k in read):
+                continue
+            answer = next((a for c, a in needs if c is h.channel or c == h.channel), None)
+            if answer is None:
+                answer = self._health_needs_reader(h.channel)
+                needs.append((h.channel, answer))
+            if answer:
+                read.append(h.channel)
+        return read
 
     def on_message(self, channel, id, fn):
         """fn(frame) for each frame on `channel` whose id is `id` (None: every frame) received
@@ -85,7 +109,9 @@ class EventLoop:
         """fn(state) during run() when the controller's ladder has moved — "ok", "error warning",
         "ERROR-PASSIVE", "BUS-OFF" — and at its first sample with the state then. Sampled every
         100 ms: a state held for less than that can be missed. A software bus never fires."""
-        self._on_health.append(_Health(self._listen_key(channel), fn))
+        key = self._resolve(channel)
+        self._listen(key)
+        self._on_health.append(_Health(key, fn))
 
     def on_timer(self, period_ms, fn):
         """fn() every period_ms during run(), on its own grid. The period must be a positive,
@@ -149,6 +175,9 @@ class EventLoop:
             raise ValueError("run: the duration must be a finite number of milliseconds, zero or more")
         deadline = self._now() + duration_ms
         next_health = self._now()
+        # whether a health handler's channel needs reading, asked once per run() and channel — not
+        # at registration, since a reload can keep a channel while its row's interface changes
+        needs = []  # (channel, answer)
         while True:
             now = self._now()
             for t in list(self._timers):
@@ -174,7 +203,7 @@ class EventLoop:
                 wake = next_health
             # the exact budget, fractions included: the wait never reads past the deadline; and at
             # most a second, so a long run() is many waits
-            got = self._wait_frame(list(self._listened), min(max(0, wake - now), LONGEST_WAIT_MS))
+            got = self._wait_frame(self._to_read(needs), min(max(0, wake - now), LONGEST_WAIT_MS))
             if got is not None:
                 key, frame = got
                 handlers = [fn for ch, want, fn in self._on_msg
@@ -201,7 +230,13 @@ def wait_on(channels, timeout_ms, rr, now, sleep_ms):
             # the floor, so the driver never waits past the deadline; a longer wait than one call can
             # be asked for returns when that call does, and run() waits again
             capped = int(timeout_ms) > MAX_WAIT_MS
-            f = channels[0].recv(min(int(timeout_ms), MAX_WAIT_MS))
+            look = getattr(channels[0], "look", None)
+            if int(timeout_ms) == 0 and look:
+                f, spent = look()
+                if f is None and spent:  # records still queued: run() asks again at once
+                    return None, rr
+            else:
+                f = channels[0].recv(min(int(timeout_ms), MAX_WAIT_MS))
         except Exception:
             rest = min(deadline - now(), ERROR_REST_MS)
             if rest > 0:
@@ -216,18 +251,23 @@ def wait_on(channels, timeout_ms, rr, now, sleep_ms):
         return None, rr
     n = len(channels)
     while True:
+        spent = False
         for k in range(n):
             if k > 0 and timeout_ms > 0 and now() >= deadline:  # a slow look spent the budget
                 return None, rr
             i = (rr + k) % n
             try:
-                f = channels[i].recv(0)
+                look = getattr(channels[i], "look", None)
+                f, s = look() if look else (channels[i].recv(0), False)
+                spent = spent or s
             except Exception:  # an error is a look with nothing in it
                 f = None
             if f is not None:
                 return (channels[i], f), i + 1
         if now() >= deadline:
             return None, rr
+        if spent:
+            continue  # records still queued behind a look's bound: look again at once
         sleep_ms(min(WAIT_SLICE_MS, deadline - now()))  # never a slice past the deadline
         if now() >= deadline:  # what came in the last slice stays for the next reader
             return None, rr

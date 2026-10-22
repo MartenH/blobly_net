@@ -680,42 +680,15 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 // bus_recv is the bus's own recv(ms), read in slices a stop request can end when one can be made
 // (`stop_requested`); the deadline is the caller's either way, and a zero poll is one look.
 fn (mut c SoftChannel) bus_recv(ms int) !transport.CanFrame {
-	if c.stop_requested == unsafe { nil } || ms == 0 {
+	if c.stop_requested == unsafe { nil } {
 		return c.bus.recv(ms)
 	}
-	deadline := time.ticks() + i64(ms)
-	for {
-		if c.stopping() {
+	return transport.recv_sliced(mut c.bus, ms, stop_poll_ms, c.stop_requested) or {
+		if err.code() == transport.sliced_stop_code {
 			return error(abandoned_recv_note)
 		}
-		mut step := stop_poll_ms
-		if ms > 0 {
-			left := deadline - time.ticks()
-			if left <= 0 {
-				return error('timeout')
-			}
-			if left < step {
-				step = int(left)
-			}
-		}
-		t0 := time.sys_mono_now()
-		f := c.bus.recv(step) or {
-			if err.msg() != 'timeout' {
-				return err // the bus is gone (closed, failed): the receive ends with it
-			}
-			// a 'timeout' that did not wait is not a quiet wire: wait the slice out here, so a
-			// bus that answers at once costs one call per slice and not a core (#401). On the
-			// monotonic clock, and never more than the slice, so a stop is still asked per slice.
-			waited := i64(time.sys_mono_now() - t0)
-			left_ns := i64(step) * time.millisecond - waited
-			if left_ns > 0 {
-				time.sleep(left_ns)
-			}
-			continue
-		}
-		return f
+		return err
 	}
-	return error('timeout')
 }
 
 // drain_idle reads away what has arrived on the bus since the last exchange, without waiting,

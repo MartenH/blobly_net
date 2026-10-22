@@ -227,7 +227,8 @@ jobs:
           # GLFW and the GCC runtime stay static by explicit flag, so the set is small and could
           # in principle be empty, and a bare glob fails the whole release when it matches
           # nothing (codex #137 r2, P1).
-          find build -maxdepth 1 -name '*.dll' -exec cp {} dist/ \;
+          # blobly.dll is copied above, by name, so a library that was not built fails loudly
+          find build -maxdepth 1 -name '*.dll' ! -name blobly.dll -exec cp {} dist/ \;
           # THE BUNDLED DLLs' OWN LICENCES, DERIVED FROM WHAT IS ACTUALLY THERE (#318). Every
           # missing notice this branch found was found one at a time, against a list somebody
           # maintained by hand — so this one is not a list. It asks pacman which package owns

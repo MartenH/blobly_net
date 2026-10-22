@@ -20,6 +20,14 @@ class BloblyError(Exception):
 BB_ERR = -1
 BB_ERR_HANDLE = -2
 BB_ERR_STATE = -3
+# answers that are neither success nor an error (bb.h)
+BB_NONE = 1        # bb_bus_recv: no frame in time
+BB_SPENT = 2       # bb_bus_recv(h, 0): no frame yet, records still queued behind the look's bound
+BB_RELEASING = 3   # bb_stop / bb_wait_released: a loop is still letting go of its wires
+
+# enum bb_kind and enum bb_health_source
+KINDS = {0: "can", 1: "doip", 2: "someip"}
+BB_HEALTH_SOURCE_NEEDS_READER = 2
 
 # bb_health, as transport.health_name spells it (the Lua prelude's bus.health strings)
 HEALTH_NAMES = {0: "", 1: "ok", 2: "error warning", 3: "ERROR-PASSIVE", 4: "BUS-OFF"}
@@ -44,9 +52,12 @@ def _declare(lib):
         "bb_load": ([c_char_p], c_int),
         "bb_start": ([], c_int),
         "bb_stop": ([], c_int),
+        "bb_wait_released": ([c_int], c_int),
         "bb_channel_count": ([], c_int),
         "bb_channel_name": ([c_int], c_char_p),
         "bb_channel_iface": ([c_int], c_char_p),
+        "bb_channel_kind": ([c_int], c_int),
+        "bb_channel_health_source": ([c_int], c_int),
         "bb_bus_open": ([c_char_p], c_int),
         "bb_bus_send": ([c_int, ctypes.POINTER(BbFrame)], c_int),
         "bb_bus_recv": ([c_int, c_int, ctypes.POINTER(BbFrame)], c_int),
@@ -135,8 +146,9 @@ def attach():
 
 
 def text(b):
-    """A string from the library. Its error buffer truncates at 512 bytes and may cut a UTF-8
-    sequence in two: a broken tail must not hide the error behind a UnicodeDecodeError."""
+    """A string from the library. Its messages are cut before a whole character past
+    BB_ERROR_MAX bytes, but a project's own names need not be UTF-8: an undecodable byte must not
+    hide an error behind a UnicodeDecodeError."""
     return b.decode("utf-8", errors="replace") if b is not None else ""
 
 

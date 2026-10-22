@@ -16,9 +16,14 @@ class Frame(ctypes.Structure):
                 ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64)]
 
 
+BB_ERR = -1
 BB_ERR_HANDLE = -2
 BB_ERR_STATE = -3
 BB_HEALTH_UNKNOWN = 0
+BB_KIND_CAN = 0
+BB_KIND_DOIP = 1
+BB_HEALTH_SOURCE_NONE = 0
+BB_ERROR_MAX = 4095
 
 
 def bind(lib):
@@ -34,6 +39,9 @@ def bind(lib):
     lib.bb_bus_recv.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(Frame)]
     lib.bb_bus_health.argtypes = [ctypes.c_int]
     lib.bb_bus_close.argtypes = [ctypes.c_int]
+    lib.bb_channel_kind.argtypes = [ctypes.c_int]
+    lib.bb_channel_health_source.argtypes = [ctypes.c_int]
+    lib.bb_wait_released.argtypes = [ctypes.c_int]
 
 
 def err(lib):
@@ -64,12 +72,31 @@ def main(path, project):
     assert lib.bb_thread_attach() == 0, "attach on the loading thread must be harmless"
     print("libblobly", lib.bb_version().decode())
     assert lib.bb_start() == BB_ERR_STATE, "start before load must refuse"
+    # an error past BB_ERROR_MAX is cut before a whole character: strict decoding must hold
+    assert lib.bb_load(("\u00e9" * 3000).encode()) == BB_ERR
+    raw = lib.bb_last_error()
+    assert 0 < len(raw) <= BB_ERROR_MAX, len(raw)
+    raw.decode("utf-8")  # strict: a cut inside a character raises here
+    print(f"ok   a {len(raw)}-byte error, cut at a character boundary")
     assert lib.bb_load(project.encode()) == 0, f"load: {err(lib)}"
     n = lib.bb_channel_count()
     assert n >= 2, f"channels: {n}"
+    doip = None
     for i in range(n):
-        print(f"     channel {lib.bb_channel_name(i).decode()} ({lib.bb_channel_iface(i).decode()})")
+        kind, src = lib.bb_channel_kind(i), lib.bb_channel_health_source(i)
+        iface = lib.bb_channel_iface(i).decode()
+        print(f"     channel {lib.bb_channel_name(i).decode()} ({iface}) kind {kind} health source {src}")
+        assert kind >= 0 and src >= 0, err(lib)
+        if kind == BB_KIND_DOIP:
+            doip = (i, iface)
+        if kind == BB_KIND_CAN and iface.startswith("inproc:"):
+            assert src == BB_HEALTH_SOURCE_NONE, f"inproc health source {src}"
+    assert doip, "sim-demo has a DoIP row"
+    assert lib.bb_bus_open(doip[1].encode()) == BB_ERR and "DoIP or SOME/IP" in err(lib), err(lib)
+    print("ok   kinds and health sources; a DoIP row refused by name")
     assert lib.bb_start() == 0, f"start: {err(lib)}"
+    moved = lib.bb_channel_iface(doip[0]).decode()
+    assert moved != doip[1], f"the run did not move {doip[1]}"
     assert lib.bb_start() == BB_ERR_STATE, "a second start must refuse"
     exchange(lib, "main thread", 20)
     failures = []
@@ -92,6 +119,8 @@ def main(path, project):
     t.join()
     assert not failures, failures[0]
     assert lib.bb_stop() == 0, f"stop: {err(lib)}"
+    assert lib.bb_channel_iface(doip[0]).decode() == doip[1], "stop restores the project's interfaces"
+    assert lib.bb_wait_released(0) == 0, "a clean stop leaves the process released"
     assert lib.bb_stop() == BB_ERR_STATE, "a second stop must refuse"
     assert lib.bb_start() == 0, f"start again: {err(lib)}"
     exchange(lib, "second run", 5)

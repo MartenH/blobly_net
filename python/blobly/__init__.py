@@ -26,4 +26,13 @@ def version():
     return _lib.text(_lib.lib().bb_version())
 
 
-__all__ = ["BloblyError", "Channel", "Channels", "EventLoop", "Frame", "Project", "init", "version"]
+def wait_released(timeout_ms=None):
+    """Waits until the process is free for a start (True), or timeout_ms passes (False; None
+    waits for ever). A stop that returned False left a loop letting go of its wires."""
+    from . import _lib
+    from .project import _ms
+    return _lib.check(_lib.lib().bb_wait_released(_ms(timeout_ms))) == 0
+
+
+__all__ = ["BloblyError", "Channel", "Channels", "EventLoop", "Frame", "Project", "init", "version",
+           "wait_released"]
