@@ -27,6 +27,20 @@ fn look_again(timeout_ms int, skipped int, elapsed_ns i64) bool {
 	return skipped < zero_poll_skip_limit && elapsed_ns < zero_poll_budget_ns
 }
 
+// socket_wait is what a socket wait of `timeout_ms` is armed with — that, and for 0 or less a look
+// (the recv(0) rule): a millisecond when something is already queued on `handle` (a datagram, or a
+// connection to accept), none when nothing is. This V reads a zero socket timeout as no timeout at
+// all (vlang/v#30831), so a zero handed to set_read_timeout or set_accept_timeout waits for ever.
+pub fn socket_wait(handle int, timeout_ms int) ?time.Duration {
+	if timeout_ms > 0 {
+		return timeout_ms * time.millisecond
+	}
+	if !readable_now(handle) {
+		return none
+	}
+	return time.millisecond
+}
+
 // zero_poll_spent_code marks a zero-timeout look that stopped at its bound with filtered records
 // still queued — the message stays 'timeout', so every caller reads it as one, and a caller that
 // must know the queue is EMPTY (a boundary drain) reads the code.

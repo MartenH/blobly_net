@@ -206,9 +206,9 @@ pub fn addr_family(host string) net.AddrFamily {
 	return if host.contains(':') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
 }
 
-// accept_and_serve waits up to timeout_ms for a TCP connection, then serves its
-// request/response loop until the peer disconnects. Returns an error on accept
-// timeout (so callers can poll a shutdown flag between attempts).
+// accept_and_serve waits up to timeout_ms (0: a connection already queued) for a TCP
+// connection, then serves its request/response loop until the peer disconnects. Returns an
+// error on accept timeout (so callers can poll a shutdown flag between attempts).
 //
 // NOTE: one connection is served to completion before the next is accepted, so a
 // stale peer can delay others (see docs/ethernet_architecture.md "Known
@@ -219,7 +219,9 @@ pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
 	if s.stopping {
 		return error('DoIP server stopping')
 	}
-	s.listener.set_accept_timeout(timeout_ms * time.millisecond)
+	s.listener.set_accept_timeout(transport.socket_wait(s.listener.sock.handle, timeout_ms) or {
+		return net.err_timed_out
+	})
 	mut conn := s.listener.accept()!
 	// Publish the accepted connection so close() can tear it down from another
 	// thread (Stop), interrupting an otherwise-blocking per-connection read.
@@ -325,11 +327,13 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 	}
 }
 
-// serve_udp_once waits up to timeout_ms for a UDP datagram; if it's a vehicle
-// identification request (0x0001) it replies to the sender with an announcement
+// serve_udp_once waits up to timeout_ms for a UDP datagram (0: one already queued); if it's a
+// vehicle identification request (0x0001) it replies to the sender with an announcement
 // (0x0004). Returns an error on timeout.
 pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
-	s.udp.set_read_timeout(timeout_ms * time.millisecond)
+	s.udp.set_read_timeout(transport.socket_wait(s.udp.sock.handle, timeout_ms) or {
+		return net.err_timed_out
+	})
 	mut buf := []u8{len: 64}
 	n, addr := s.udp.read(mut buf)!
 	if n < header_len {

@@ -53,7 +53,8 @@ pub fn udp_bind(addr string, group string, iface string) !&net.UdpConn {
 	return c
 }
 
-// udp_read returns the next datagram, or none when `timeout_ms` passes with nothing.
+// udp_read returns the next datagram, or none when `timeout_ms` passes with nothing; 0 is a look
+// at what is already queued.
 //
 // ONLY A TIMEOUT IS none: an empty datagram comes back as a Datagram with no bytes, and any other
 // fault pauses briefly (so a persistent one cannot spin a caller's loop) and reports none,
@@ -69,7 +70,7 @@ pub fn udp_read(mut c net.UdpConn, timeout_ms int) ?Datagram {
 
 // udp_read_into is udp_read with the caller's buffer, for a loop that reads continuously.
 pub fn udp_read_into(mut c net.UdpConn, timeout_ms int, mut buf []u8) ?Datagram {
-	c.set_read_timeout(timeout_ms * time.millisecond)
+	c.set_read_timeout(socket_wait(c.sock.handle, timeout_ms)?)
 	n, peer := c.read(mut buf) or {
 		if err.code() != net.err_timed_out_code {
 			time.sleep(1 * time.millisecond)

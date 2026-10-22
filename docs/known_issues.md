@@ -172,9 +172,15 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   the pin (`5f7d4d0`): a deadline that was set now wins over the connection's timeout
   (vlang/v#30831), and a 0-byte datagram reads as `n == 0` with its sender (vlang/v#30829) — on
   `0535623` it came back as an error with code 0 and no sender, so `udp_read` had a branch for it.
-  The branch is gone and `udpbus_test.v` (`test_an_empty_datagram_is_read_with_its_sender`) pins
-  the new shape; it fails on `0535623`. Collectors still re-arm `set_read_timeout` with what is
-  left of their window before each read (`transport.cansub_browse`), which is right either way.
+  The branch is gone and `udpbus_test.v` (`test_udp_read_returns_what_arrived_and_zero_is_a_look`)
+  pins the new shape; it fails on `0535623`. Collectors still re-arm `set_read_timeout` with what
+  is left of their window before each read (`transport.cansub_browse`), which is right either way.
+- 🟡 **A zero socket timeout waits for ever** (since the same change): with no deadline set,
+  `set_read_timeout(0)` or `set_accept_timeout(0)` is no timeout at all, where `0535623` timed out
+  at once. A wait for a timeout a CALLER gives is armed with `transport.socket_wait`, which makes 0
+  a look, as `recv(0)` is — `udp_read`, `doip.discover`, `DoipServer.serve_udp_once` and
+  `accept_and_serve` do; every other wait here is armed with what is left of a deadline it has
+  already checked is positive.
 - 🟡 **The modules are `blobly/<name>`, imported as `blobly.<name>`.** V3 no longer searches a
   project's `modules/` directory (vlang/v#28575): a module's import path is its folder path under
   the lookup root, the folder holding `v.mod` — as `math.vec` is `vlib/math/vec/`. So the

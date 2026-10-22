@@ -1,5 +1,6 @@
 module transport
 
+import net
 import time
 
 // The one rule every backend applies after it skips a filtered record — and the only test that
@@ -45,4 +46,18 @@ fn test_read_wait_is_what_is_left_and_nothing_once_spent() {
 	if w := read_wait_ms(50, 1, 50_000_000, 200) {
 		assert false, 'a spent wait read again for ${w} ms'
 	}
+}
+
+// A caller's timeout arms the wait as given; 0 is a look at what is queued — here a listener with
+// nothing to accept, then one with a connection waiting.
+fn test_socket_wait_is_the_timeout_and_a_look_at_zero() {
+	mut l := net.listen_tcp(.ip, '127.0.0.1:0') or { panic(err) }
+	defer { l.close() or {} }
+	assert socket_wait(l.sock.handle, 250) or { 0 } == 250 * time.millisecond
+	assert socket_wait(l.sock.handle, 0) == none, 'nothing to accept, yet the look armed a wait'
+	addr := l.addr() or { panic(err) }
+	mut c := net.dial_tcp(addr.str()) or { panic(err) }
+	defer { c.close() or {} }
+	time.sleep(20 * time.millisecond)
+	assert socket_wait(l.sock.handle, 0) or { 0 } == time.millisecond, 'a queued connection was not seen'
 }
