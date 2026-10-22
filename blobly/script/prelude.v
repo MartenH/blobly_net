@@ -181,8 +181,10 @@ function sleep_ms(ms) __sleep(ms) end
 e2e = {}
 -- errors name the function the script called, at the line that called it (not a tail call, so
 -- level 3 is that line)
-local function e2e_call(fname, prim, ...)
-  local ok, v = pcall(prim, ...)
+local function e2e_call(fname, prim, frame, ...)
+  -- a number would be read as its decimal text
+  if type(frame) ~= "string" then error(fname .. ": a frame is a string of bytes, not a " .. type(frame), 3) end
+  local ok, v = pcall(prim, frame, ...)
   if not ok then error(fname .. ": " .. tostring(v), 3) end
   return v
 end
