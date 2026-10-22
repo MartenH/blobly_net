@@ -522,6 +522,9 @@ def functional(channel, functional_id: int, clients: Sequence[UdsClient], reques
         if c.channel is not channel:
             raise BloblyError(f"uds_functional: {c!r} is not a client of {channel.name}")
     lib = _lib.lib()
+    # a client this thread holds already (a key_fn of its security_access): its lock cannot be let
+    # go while waiting for the others, so waiting for one held elsewhere could wait for ever
+    reentered = any(c._lock._is_owned() for c in clients)
     held: list[UdsClient] = []
     try:
         # every client's lock, without waiting on one while holding another: a client held across
@@ -536,6 +539,9 @@ def functional(channel, functional_id: int, clients: Sequence[UdsClient], reques
             for c in reversed(held):
                 c._lock.release()
             held.clear()
+            if reentered:
+                raise BloblyError("uds_functional: called inside a call on one of its clients while "
+                                  "another is busy elsewhere; it would wait for ever", _lib.BB_ERR_STATE)
             time.sleep(0.001)
         with _lib.state_lock:
             channel._current()

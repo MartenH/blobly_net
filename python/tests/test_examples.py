@@ -84,7 +84,7 @@ class TestExamples(unittest.TestCase):
         # not -q: the plugin's header line says which blobly ran
         r = run("-m", "pytest", "-p", "no:cacheprovider", os.path.join(EXAMPLES, "test_sim_demo.py"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("11 passed", r.stdout)
+        self.assertIn("13 passed", r.stdout)
         self.assert_package(r.stdout, "test_sim_demo.py")
 
     def assert_package(self, out, name):
