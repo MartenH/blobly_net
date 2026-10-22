@@ -172,6 +172,53 @@ fn test_truncated_frames_are_rejected_not_silently_accepted() {
 	assert v.check(ok) == .ok
 }
 
+// A message whose DBC length stops short of its own checksum: a frame of that length does not
+// hold the field, so it cannot be judged, and it says so rather than reading as clean.
+fn test_a_field_past_the_payload_is_truncated() {
+	mut m := vmsg()
+	m.dlc = 4
+	mut v := Verifier{
+		msg: m
+		e2e: E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+	}
+	assert v.check([]u8{len: 4}) == .truncated
+	mut whole := []u8{len: 8}
+	v.e2e.apply(m, mut whole, 0)
+	assert v.check(whole) == .ok
+}
+
+// and so does a frame missing the switch that selects the field
+fn test_a_field_whose_switch_is_past_the_payload_is_truncated() {
+	mut v := Verifier{
+		msg: candb.Message{
+		name:    'Muxed'
+		id:      0x125
+		dlc:     1
+		sender:  'ECU'
+		signals: [
+			candb.Signal{
+				name:           'CRC'
+				start_bit:      0
+				length:         8
+				byte_order:     .little_endian
+				factor:         1
+				is_multiplexed: true
+			},
+			candb.Signal{
+				name:           'Mode'
+				start_bit:      8
+				length:         8
+				byte_order:     .little_endian
+				factor:         1
+				is_multiplexor: true
+			},
+		]
+	}
+		e2e: E2e{ crc: 'CRC', profile: 'sum8' }
+	}
+	assert v.check([u8(0x55)]) == .truncated
+}
+
 // The stamping path scopes messages to the configured sender. Verification must do the same, or
 // a merged database with one message name on two transmitters verifies against the wrong id and
 // layout while the configuration validates cleanly.

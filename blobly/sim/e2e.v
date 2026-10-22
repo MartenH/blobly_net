@@ -139,6 +139,9 @@ pub fn declared_problem(m candb.Message, e E2e) string {
 		if sig[0].is_multiplexed {
 			return '"${name}" is multiplexed, so it is written only when its branch is active'
 		}
+		if why := past_payload(m, name) {
+			return why
+		}
 		if name == e.crc && sig[0].length != 8 {
 			return 'its crc "${name}" is ${sig[0].length} bits, and every profile produces 8'
 		}
@@ -180,6 +183,18 @@ pub fn crc_byte(sig candb.Signal) ?int {
 	}
 	aligned := if sig.byte_order == .little_endian { sig.start_bit % 8 == 0 } else { sig.start_bit % 8 == 7 }
 	return if aligned { sig.start_bit / 8 } else { none }
+}
+
+// past_payload says that the signal `name` of `m` does not lie whole in the payload the message
+// is sent in, if it does not: no carried signal is written there, so nothing stamps or forces it.
+pub fn past_payload(m candb.Message, name string) ?string {
+	sig := m.signal_named(name) or { return none }
+	n := m.payload_len()
+	if m.holds(sig, n) {
+		return none
+	}
+	what := if sig.fits(n) { 'the multiplexor selecting "${name}"' } else { '"${name}"' }
+	return '${what} lies past the ${n}-byte payload of ${m.name}, so nothing writes it'
 }
 
 // p01_problem says why `e` cannot be stamped or checked as AUTOSAR Profile 1 on `msg`, if it

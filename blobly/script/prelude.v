@@ -555,13 +555,16 @@ end
 function expect_signal(channel, id, signal, want, timeout_ms)
   timeout_ms = timeout_ms or 1000
   local deadline = __now_ms() + timeout_ms
+  local frames, carried = 0, 0
   repeat
     local left = deadline - __now_ms()
     local f = bus.recv(channel, left > 0 and left or 0)
     if f and f.id == id then
+      frames = frames + 1
       local s = decode(channel, f.id, f.data)
       local v = s and s[signal]
       if v ~= nil then
+        carried = carried + 1
         if type(want) == "function" then
           if want(v) then return v end
         elseif v == want then
@@ -570,6 +573,9 @@ function expect_signal(channel, id, signal, want, timeout_ms)
       end
     end
   until __now_ms() >= deadline
+  if frames > 0 and carried == 0 then
+    error("expect_signal: " .. frames .. " frame(s) came within " .. timeout_ms .. "ms, none carrying " .. signal, 2)
+  end
   error("expect_signal: " .. signal .. " did not match within " .. timeout_ms .. "ms", 2)
 end
 

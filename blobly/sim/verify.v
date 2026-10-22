@@ -47,6 +47,13 @@ pub mut:
 	bad      u64 // frames that failed
 }
 
+// holds is whether `data` holds the protection field `name` whole (and its multiplexor), if the
+// message has one.
+fn (v &Verifier) holds(name string, data []u8) bool {
+	sig := v.msg.signal_named(name) or { return true }
+	return v.msg.holds(sig, data.len)
+}
+
 // check judges one received payload.
 //
 // Order matters here as much as it does when stamping: the checksum is verified against the
@@ -59,7 +66,7 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 	// an EMPTY payload computes zero for every supported checksum — which then matches the
 	// absent checksum field and sails through the first-counter rule as clean. A malformed
 	// frame must not be able to look better than a well-formed one.
-	if data.len < v.msg.dlc {
+	if data.len < v.msg.dlc || !v.holds(v.e2e.crc, data) || !v.holds(v.e2e.counter, data) {
 		v.bad++
 		return .truncated
 	}

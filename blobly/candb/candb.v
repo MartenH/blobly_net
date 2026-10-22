@@ -354,18 +354,17 @@ pub fn (m Message) multiplexor_index() int {
 	return -1
 }
 
-// active_signals returns the signals actually present in `data`: every
-// non-multiplexed signal, plus the multiplexed signals whose selector matches
-// the current value of the multiplexor switch. For a non-multiplexed message it
-// returns all signals unchanged.
+// active_signals returns the signals actually present in `data`: every signal the payload holds
+// whole, less the multiplexed ones whose selector does not match the multiplexor switch's value.
+// For a non-multiplexed message whose payload holds every signal it returns all signals unchanged.
 pub fn (m Message) active_signals(data []u8) []Signal {
-	if m.multiplexor_index() < 0 {
+	sw := m.switch_in(data)
+	if !sw.present && m.signals.all(it.fits(data.len)) {
 		return m.signals
 	}
-	on := m.carried(data)
 	mut out := []Signal{}
-	for i, s in m.signals {
-		if on[i] {
+	for s in m.signals {
+		if sw.selects(s, data.len) {
 			out << s
 		}
 	}
@@ -373,15 +372,81 @@ pub fn (m Message) active_signals(data []u8) []Signal {
 }
 
 // carried is active_signals' answer by position: which of the message's signals `data` carries.
+// A signal the payload does not hold whole is not carried, nor a multiplexed one when the switch
+// itself is cut short: raw_value reads a missing byte as 0, a value never on the wire.
 pub fn (m Message) carried(data []u8) []bool {
-	mut out := []bool{len: m.signals.len, init: true}
-	mux_idx := m.multiplexor_index()
-	if mux_idx < 0 {
-		return out
-	}
-	mux_val := m.signals[mux_idx].raw_value(data)
+	sw := m.switch_in(data)
+	mut out := []bool{len: m.signals.len}
 	for i, s in m.signals {
-		out[i] = !s.is_multiplexed || u64(s.multiplexor_value) == mux_val
+		out[i] = sw.selects(s, data.len)
 	}
 	return out
+}
+
+// holds is whether a payload of `len` bytes holds `s` whole, and the switch that selects it when it
+// is multiplexed: what a payload must hold for `s` to be carried, whichever branch it selects.
+pub fn (m Message) holds(s Signal, len int) bool {
+	if !s.fits(len) {
+		return false
+	}
+	i := m.multiplexor_index()
+	return !s.is_multiplexed || i < 0 || m.signals[i].fits(len)
+}
+
+// Carrier is carried's answer for one signal, its message's switch found once, for a caller that
+// asks of many payloads.
+pub struct Carrier {
+pub:
+	sig     Signal
+	has_mux bool
+	mux     Signal
+}
+
+// carrier is the Carrier of the signal named `name`.
+pub fn (m Message) carrier(name string) ?Carrier {
+	sig := m.signal_named(name)?
+	i := m.multiplexor_index()
+	return Carrier{
+		sig:     sig
+		has_mux: i >= 0
+		mux:     if i >= 0 { m.signals[i] } else { Signal{} }
+	}
+}
+
+// carried_by is whether `data` carries the signal.
+pub fn (c Carrier) carried_by(data []u8) bool {
+	sw := if c.sig.is_multiplexed { read_switch(c.has_mux, c.mux, data) } else { MuxSwitch{} }
+	return sw.selects(c.sig, data.len)
+}
+
+// MuxSwitch is a message's multiplexor switch as one payload holds it.
+struct MuxSwitch {
+	present bool // the message has a switch
+	held    bool // the payload holds the switch whole
+	value   u64
+}
+
+fn (m Message) switch_in(data []u8) MuxSwitch {
+	i := m.multiplexor_index()
+	return read_switch(i >= 0, if i >= 0 { m.signals[i] } else { Signal{} }, data)
+}
+
+fn read_switch(present bool, mux Signal, data []u8) MuxSwitch {
+	if !present {
+		return MuxSwitch{}
+	}
+	held := mux.fits(data.len)
+	return MuxSwitch{
+		present: true
+		held:    held
+		value:   if held { mux.raw_value(data) } else { u64(0) }
+	}
+}
+
+// selects is whether a payload of `len` bytes with this switch carries `s`.
+fn (sw MuxSwitch) selects(s Signal, len int) bool {
+	if !s.fits(len) {
+		return false
+	}
+	return !s.is_multiplexed || !sw.present || (sw.held && u64(s.multiplexor_value) == sw.value)
 }

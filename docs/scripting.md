@@ -327,7 +327,11 @@ local sig = decode(channel, id, data [, ext])               -- DBC-decode -> { N
 
 - `data` is a **byte string** (see helpers below), not a list of numbers.
 - `bus.send_message` / `decode` use the channel's **DBC** (its `databases:`), looking
-  the message up by name (encode) or id (decode). `decode` returns physical values.
+  the message up by name (encode) or id (decode). `decode` returns physical values, one per
+  signal the frame carries: a signal whose bits a frame shorter than its message does not all
+  hold is left out (its key is `nil`), as is a multiplexed one its multiplexor does not select
+  or whose multiplexor the frame does not hold — so `expect_signal` never matches a value that
+  was not on the wire.
 - `bus.recv` defaults to a 1000 ms timeout.
 - `format` states the frame's CAN format: `"classic"`, `"fd"` or `"fd_brs"`. Absent, the
   channel's declaration decides (`type: canfd` frames as FD). It is how a classic frame reaches

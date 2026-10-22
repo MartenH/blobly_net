@@ -312,6 +312,14 @@ fn arm_target() FaultTarget {
 				factor:     1
 				maximum:    255
 			},
+			candb.Signal{
+				name:       'Beyond' // past the one-byte payload
+				start_bit:  8
+				length:     8
+				byte_order: .little_endian
+				factor:     1
+				maximum:    100
+			},
 		]
 	}
 	return FaultTarget{
@@ -369,6 +377,7 @@ fn test_out_of_range_chooses_or_checks_its_signal() {
 	assert refusal(t, 'ECU', 'Protected', 'out_of_range', 'CRC') == '"CRC" on "Protected" has no value outside its declared range'
 	assert refusal(t, 'ECU', 'Protected', 'out_of_range', 'Nope') == '"Nope" on "Protected" has no value outside its declared range'
 	assert refusal(t, 'ECU', 'Plain', 'out_of_range', '') == 'no signal on "Plain" has a value outside its declared range'
+	assert refusal(t, 'ECU', 'Plain', 'out_of_range', 'Beyond') == '"Beyond" lies past the 1-byte payload of Plain, so nothing writes it — out_of_range would change nothing'
 }
 
 // a fault that could not take effect is refused, and nothing is stored
@@ -392,6 +401,74 @@ fn test_a_fault_that_cannot_take_effect_is_refused() {
 	assert refusal(eth, 'ECU', 'Protected', 'drop', '') == '"CAN1" is a DoIP channel — nothing simulates on it, so a fault there could never take effect'
 	assert !injected_fault('inproc:ARM', 'ECU', 'Protected').active()
 	assert !injected_fault('inproc:ARM', 'ECU', 'Plain').active()
+}
+
+// a protection field the message's own length does not hold is never written, so neither is a
+// fault on it
+fn test_a_fault_on_a_field_past_the_payload_is_refused() {
+	t := arm_target()
+	mut short := t.db.messages[0]
+	short.dlc = 4 // AliveCounter in byte 0, CRC in byte 7
+	cut := FaultTarget{
+		...t
+		db: candb.Database{
+			...t.db
+			messages: [short]
+		}
+	}
+	assert refusal(cut, 'ECU', 'Protected', 'bad_crc', '') == '"CRC" lies past the 4-byte payload of Protected, so nothing writes it — bad_crc would change nothing'
+	assert refusal(cut, 'ECU', 'Protected', 'freeze_counter', '') == ''
+	short.dlc = 0
+	empty := FaultTarget{
+		...t
+		db: candb.Database{
+			...t.db
+			messages: [short]
+		}
+	}
+	assert refusal(empty, 'ECU', 'Protected', 'freeze_counter', '') == '"AliveCounter" lies past the 0-byte payload of Protected, so nothing writes it — freeze_counter would change nothing'
+	muxed := FaultTarget{
+		...t
+		db:    candb.Database{
+			...t.db
+			messages: [candb.Message{
+			name:    'Muxed'
+			id:      0x125
+			dlc:     1
+			sender:  'ECU'
+			signals: [
+				candb.Signal{
+					name:           'CRC'
+					start_bit:      0
+					length:         8
+					byte_order:     .little_endian
+					factor:         1
+					is_multiplexed: true
+				},
+				candb.Signal{
+					name:           'Mode'
+					start_bit:      8
+					length:         8
+					byte_order:     .little_endian
+					factor:         1
+					is_multiplexor: true
+				},
+			]
+		}]
+		}
+		nodes: [
+			project.NodeCfg{
+				name:    'ECU'
+				protect: [project.ProtectCfg{
+					message: 'Muxed'
+					crc:     'CRC'
+					profile: 'sum8'
+				}]
+			},
+		]
+	}
+	assert refusal(muxed, 'ECU', 'Muxed', 'bad_crc', '') == 'the multiplexor selecting "CRC" lies past the 1-byte payload of Muxed, so nothing writes it — bad_crc would change nothing'
+	clear_all()
 }
 
 fn test_fault_kinds_are_spelled_as_scripts_spell_them() {

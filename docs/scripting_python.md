@@ -339,8 +339,8 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   databases: the message of its id and kind (else, for an extended frame, one with its J1939
   PGN), and each signal the frame carries. A multiplexed signal its multiplexor does not select is
   left out, and so is a signal whose bits a frame shorter than the message does not all hold (or
-  whose multiplexor's it does not), where Lua's `decode` reads the missing bytes as 0. It returns `None` for a frame of no message, and for a remote frame. Which message a
-  frame decoded as is not returned.
+  whose multiplexor's it does not), as Lua's `decode` leaves them out. It returns `None` for a
+  frame of no message, and for a remote frame. Which message a frame decoded as is not returned.
 
 ```python
 import blobly

@@ -5,7 +5,6 @@ import time
 import blobly.project
 import logfile
 import blobly.transport
-import blobly.candb
 import watchrule
 import vgui
 import panerule
@@ -831,18 +830,7 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	// decides which rows are its. Resolving globally while filtering by wire is the worst of
 	// both: the second wire's series, decoded with the first wire's layout (codex; #330).
 	m := app.watch_message(w) or { return []f32{}, []f32{} }
-	mut sig := candb.Signal{}
-	mut found := false
-	for s in m.signals {
-		if s.name == w.sig {
-			sig = s
-			found = true
-			break
-		}
-	}
-	if !found {
-		return []f32{}, []f32{}
-	}
+	c := m.carrier(w.sig) or { return []f32{}, []f32{} }
 	mut xs := []f32{}
 	mut ys := []f32{}
 	for r in rows {
@@ -850,9 +838,9 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 		// inject a zero sample into the middle of the series
 		// `!r.someip`, for latest_data's reason: a plotted series must not take its points from a
 		// payload that no DBC signal describes; `tp` for the other kind, a rejoined message.
-		if w.covers(watch_row(r)) && r.has_payload() {
+		if w.covers(watch_row(r)) && r.has_payload() && c.carried_by(r.data) {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
-			ys << f32(sig.physical(r.data))
+			ys << f32(c.sig.physical(r.data))
 		}
 	}
 	return xs, ys

@@ -102,8 +102,8 @@ fn draw_sim(mut app App) {
 					// what THIS node stamps on it — its protect: entry or its DBC declaration, the
 					// one answer the simulation itself stamps by
 					mprot := sim.protection_for(node, m) or { sim.E2e{} }
-					has_crc := mprot.crc != ''
-					has_ctr := mprot.counter != ''
+					has_crc := mprot.crc != '' && sim.past_payload(m, mprot.crc) == none
+					has_ctr := mprot.counter != '' && sim.past_payload(m, mprot.counter) == none
 					mut oor_sig := ''
 					for sg in m.signals {
 						if sim.can_force_out_of_range(m, sg.name, mprot) {

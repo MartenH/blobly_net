@@ -66,6 +66,7 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 					return error('no signal on "${msg}" has a value outside its declared range')
 				}
 			}
+			past_payload_refusal(m, sg, 'out_of_range')!
 			if !m.any(can_force_out_of_range(it, sg, prot)) {
 				return error('"${sg}" on "${msg}" has no value outside its declared range')
 			}
@@ -74,12 +75,14 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 			if prot.crc == '' {
 				return error('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing')
 			}
+			past_payload_refusal(m, prot.crc, 'bad_crc')!
 		}
 		.freeze_ctr {
 			// the E2E counter is what freezes; a `counter` generator is an ordinary signal
 			if prot.counter == '' {
 				return error('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing')
 			}
+			past_payload_refusal(m, prot.counter, 'freeze_counter')!
 		}
 		else {}
 	}
@@ -88,6 +91,15 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 		signal:       sg
 		remaining_ms: ms
 	})
+}
+
+// past_payload_refusal refuses a fault `kind` on a field the payload does not hold.
+fn past_payload_refusal(msgs []candb.Message, field string, kind string) ! {
+	for m in msgs {
+		if why := past_payload(m, field) {
+			return error('${why} — ${kind} would change nothing')
+		}
+	}
 }
 
 // protection is what `node` stamps on `msg` here (empty when none): its protect: entry or the

@@ -47,6 +47,9 @@ fn test_decode_and_framework() {
 			local sig = decode("CAN1", 0x100, string.char(0x00, 0x19))
 			check.equal(sig.EngineSpeed, 1600)
 		end)
+		test("a payload too short for a signal leaves it out", function()
+			check.equal(decode("CAN1", 0x100, string.char(0x00)).EngineSpeed, nil)
+		end)
 		test("tohex/fromhex round-trip", function()
 			check.equal(tohex(fromhex("DE AD BE EF")), "DE AD BE EF")
 		end)
@@ -57,8 +60,8 @@ fn test_decode_and_framework() {
 			check.equal(1, 2, "one is not two")
 		end)
 	')!
-	assert env.total() == 4
-	assert env.passed() == 3
+	assert env.total() == 5
+	assert env.passed() == 4
 	assert env.failed() == 1
 }
 
@@ -437,4 +440,34 @@ fn test_bus_send_states_a_frame_format() {
 	if extra := rx.recv(50) {
 		assert false, 'a refused send put 0x${extra.id:x} on the wire'
 	}
+}
+
+// expect_signal on frames too short to hold the signal: it waits them out and says none carried
+// it, where reading the missing byte as 0 matched a value that was never on the wire (#515).
+fn test_expect_signal_matches_no_value_a_short_frame_lacks() {
+	mut env := new_env([
+		ChanInfo{
+			name:  'CAN1'
+			iface: 'inproc:UT_short'
+			db:    sample_db()
+		},
+		ChanInfo{
+			name:  'Peer'
+			iface: 'inproc:UT_short'
+		},
+	]) or { panic(err) }
+	env.on_output = fn (s string) {}
+	defer {
+		env.close()
+	}
+	env.run_source('
+		test("short", function()
+			bus.recv("CAN1", 0) -- subscribed before the peer sends
+			bus.send("Peer", 0x100, string.char(0))
+			local ok, e = pcall(expect_signal, "CAN1", 0x100, "EngineSpeed", 0, 200)
+			check.equal(ok, false)
+			check.equal(string.find(e, "1 frame%(s%) came within 200ms, none carrying EngineSpeed") ~= nil, true, e)
+		end)
+	')!
+	assert env.failed() == 0
 }
