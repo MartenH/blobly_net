@@ -1,6 +1,7 @@
-"""uds — UDS (ISO 14229) diagnostics on a CAN channel, through libblobly: a client over ISO-TP on
-the channel's bus, opened by the rule the Lua uds.open opens by, each call one of the engine's
-helpers. Answers come back decoded and failures typed, so nothing here reads a UDS payload."""
+"""uds — UDS (ISO 14229) diagnostics on a channel, through libblobly: a client over ISO-TP on a CAN
+channel's bus, or over a DoIP channel's connection to its entity, opened by the rule the Lua
+uds.open opens by, each call one of the engine's helpers. Answers come back decoded and failures
+typed, so nothing here reads a UDS payload."""
 import ctypes
 import threading
 import time
@@ -8,7 +9,7 @@ from dataclasses import dataclass
 from collections.abc import Callable, Sequence
 
 from . import _lib
-from ._lib import BloblyError, NegativeResponse
+from ._lib import BloblyError, ConnectionLost, NegativeResponse
 
 # how many key_fn callbacks this thread is inside: each runs holding its client's lock
 _callbacks = threading.local()
@@ -198,28 +199,35 @@ def _nrc_name(nrc: int) -> str:
 
 
 class UdsClient:
-    """A UDS client on a CAN channel (Channel.uds): requests out on `tx`, answers back on `rx`,
-    29-bit when `ext`. Every call is bounded by the engine's timing — the first answer within
-    1000 ms (a 0x10 answer's P2 can lengthen that), each responsePending (0x78) then waited for the
-    ECU's P2* + 1000 ms, one request never longer than 120 s — and fails with a typed error:
-    NegativeResponse (with its NRC), Timeout, PendingExpired, UndecodableAnswer, CarrierFailed, or
-    Refused when nothing was asked of the ECU.
+    """A UDS client on a channel (Channel.uds). On a CAN channel requests go out on `tx` and answers
+    come back on `rx`, 29-bit when `ext`; on a DoIP channel they ride its connection to the entity,
+    from logical address `tester` to `ecu` (tx and rx None). Every call is bounded by the engine's
+    timing — the first answer within 1000 ms (a 0x10 answer's P2 can lengthen that), each
+    responsePending (0x78) then waited for the ECU's P2* + 1000 ms, one request never longer than
+    120 s — and fails with a typed error: NegativeResponse (with its NRC), Timeout, PendingExpired,
+    UndecodableAnswer, CarrierFailed (ConnectionLost when a DoIP connection is gone), or Refused
+    when nothing was asked of the ECU. Opening on a DoIP channel may raise RoutingDenied.
 
     `with ch.uds() as diag:` closes it at the end of the block. A stop and a start of the project
-    let its connection go and the next call opens another on the same ids; a client of a channel
-    a reload did not keep refuses. Calls on one client are serialised, so threads may share it;
-    close() from another thread ends a call in progress there."""
+    let its connection go and the next call opens another on the same ids; so does a
+    ConnectionLost (that reopen ended by a close from another thread, as a call is). A client of a
+    channel a reload did not keep refuses. Calls on one client are
+    serialised, so threads may share it; close() from another thread ends a call in progress
+    there."""
 
     def __init__(self, channel, tx: int | None = None, rx: int | None = None):
         self.channel = channel
         self._ask = (None if tx is None else _int("tx", tx, 64), None if rx is None else _int("rx", rx, 64))
         self.tx = self.rx = None
         self.ext = False
+        self.tester = self.ecu = None  # a DoIP channel's logical addresses
         self._h = None
         self._closed = False
         self._did_sizes: dict[int, int] = {}  # what did_size / ext_record_size stated, for a reopen
         self._ext_sizes: dict[int, int] = {}
         self._lock = threading.RLock()  # re-entered: security_access holds it across two calls
+        self._in_key_fn = False  # security_access is inside its key_fn
+        self._opened = False  # a connection was opened before the current one
         with _lib.state_lock:
             self._open()
 
@@ -233,13 +241,26 @@ class UdsClient:
         ids = [None if v is None else ctypes.byref(ctypes.c_int64(v)) for v in self._ask]
         out = _lib.BbUdsTarget()
         self._h = _lib.check(lib.bb_uds_open(self.channel._index, ids[0], ids[1], ctypes.byref(out)))
-        self.tx, self.rx, self.ext = out.tx, out.rx, bool(out.ext)
+        self.tx = self.rx = self.tester = self.ecu = None
+        self.ext = False
+        if self.channel.kind == "doip":  # bb_uds_target holds the logical addresses there
+            self.tester, self.ecu = out.tx, out.rx
+        else:
+            self.tx, self.rx, self.ext = out.tx, out.rx, bool(out.ext)
         self.channel._uds.add(self)
-        # the sizes stated on an earlier connection hold on this one too
-        for did, size in self._did_sizes.items():
-            _lib.check(lib.bb_uds_did_size(self._h, did, size))
-        for record, size in self._ext_sizes.items():
-            _lib.check(lib.bb_uds_ext_record_size(self._h, record, size))
+        # the sizes stated on an earlier connection hold on this one too, or it is not opened: a
+        # call on it would ask without them; and a seed of an earlier one answers no key here
+        try:
+            if self._opened:
+                _lib.check(lib.bb_uds_replaces(self._h))
+            for did, size in self._did_sizes.items():
+                _lib.check(lib.bb_uds_did_size(self._h, did, size))
+            for record, size in self._ext_sizes.items():
+                _lib.check(lib.bb_uds_ext_record_size(self._h, record, size))
+        except BloblyError:
+            self._let_go()
+            raise
+        self._opened = True
 
     def _handle(self) -> int:
         with _lib.state_lock:
@@ -285,8 +306,14 @@ class UdsClient:
 
     def _enrich(self, h: int, e: BloblyError) -> BloblyError:
         """A negative response given its code (the thread's, so a close since cannot take it) and
-        the exchange it ended, read from handle h (None when the handle was closed since)."""
-        if isinstance(e, NegativeResponse):
+        the exchange it ended, read from handle h (None when the handle was closed since); a lost
+        DoIP connection let go, so the next call opens another."""
+        if isinstance(e, ConnectionLost):
+            try:
+                e.exchange = self._last(h)
+            except BloblyError:
+                e.exchange = None
+        elif isinstance(e, NegativeResponse):
             lib = _lib.lib()
             nrc = ctypes.c_uint8()
             if lib.bb_last_nrc(ctypes.byref(nrc)) == 0:  # before any other call replaces it
@@ -314,7 +341,7 @@ class UdsClient:
     def _bytes_on(self, h: int, fn, *args) -> bytes:
         try:
             return _put(fn, h, *args)
-        except NegativeResponse as e:
+        except BloblyError as e:
             raise self._enrich(h, e)
 
     def _last(self, h: int) -> Exchange | None:
@@ -341,14 +368,25 @@ class UdsClient:
         """Sends `request` and returns the positive answer, its SID included. An answer that names
         another request (a late or repeated one) is skipped and the wait goes on."""
         r = _data("request", request)
-        return self._bytes(_lib.lib().bb_uds_raw, r, len(r))
+        with self._lock:  # the key_fn's own thread holds it: another thread waits its turn
+            self._no_seed_in_key_fn(r)
+            return self._bytes(_lib.lib().bb_uds_raw, r, len(r))
+
+    def _no_seed_in_key_fn(self, r: bytes) -> None:
+        """Refuses a 0x27 seed request inside this client's security_access key_fn, by whichever
+        call it would go out: its seed would stand in for the one the key_fn's key answers. Asked
+        holding the client's lock, which the key_fn's own thread holds."""
+        if self._in_key_fn and r[:1] == b"\x27" and len(r) > 1 and r[1] & 1:
+            raise BloblyError(f"{self!r}: a 0x27 seed request inside a security_access key_fn", _lib.BB_ERR_STATE)
 
     def raw_suppressed(self, request: bytes) -> bool:
         """Sends `request` with suppress-positive-response set on its sub-function: silence is
         success, a refusal raises. Returns whether a positive answer came anyway (the ECU ignored
         the bit); one owed after responsePending is waited for and does not count."""
         r = _data("request", request)
-        return self._call(_lib.lib().bb_uds_raw_suppressed, r, len(r)) == _lib.BB_ANSWERED
+        with self._lock:
+            self._no_seed_in_key_fn(r)
+            return self._call(_lib.lib().bb_uds_raw_suppressed, r, len(r)) == _lib.BB_ANSWERED
 
     def session(self, session: int = 0x01) -> bytes:
         """0x10 DiagnosticSessionControl: returns the answer after its SID — the session, then its
@@ -378,6 +416,9 @@ class UdsClient:
         # seed, key and the call between them as one, on one connection: no other call takes the
         # seed, and a stop meanwhile fails the key rather than send it on a connection of its own
         with self._lock:
+            if self._in_key_fn:
+                # its seed would replace the outer one's, whose key then goes against the wrong seed
+                raise BloblyError(f"{self!r}: security_access inside its own key_fn", _lib.BB_ERR_STATE)
             h = self._handle()
             seed = self._bytes_on(h, _lib.lib().bb_uds_security_seed, level, ctypes.byref(unlocked))
             if unlocked.value:
@@ -386,9 +427,11 @@ class UdsClient:
                 key = reference_key(seed)
             else:
                 _callbacks.depth = getattr(_callbacks, "depth", 0) + 1
+                self._in_key_fn = True
                 try:
                     key = _data("the key key_fn returned", key_fn(seed))
                 finally:
+                    self._in_key_fn = False
                     _callbacks.depth -= 1
             self._call_on(h, _lib.lib().bb_uds_security_key, level + 1, key, len(key))
             return seed
@@ -508,16 +551,21 @@ class UdsClient:
             self._ext_sizes[record] = size  # kept for the next connection
 
     def __repr__(self) -> str:
-        ids = f"0x{self.tx:X}/0x{self.rx:X}" if self.tx is not None else "unopened"
+        if self.tester is not None:
+            ids = f"DoIP 0x{self.tester:04X} -> 0x{self.ecu:04X}"
+        else:
+            ids = f"0x{self.tx:X}/0x{self.rx:X}" if self.tx is not None else "unopened"
         state = " closed" if self._closed else ""
         return f"<UdsClient {self.channel.name} {ids}{state}>"
 
 
-def functional(channel, functional_id: int, clients: Sequence[UdsClient], request: bytes,
+def functional(channel, functional_id: int | None, clients: Sequence[UdsClient], request: bytes,
                window_ms: int = 1000) -> list[FunctionalReply]:
-    """`request` once on `channel`'s functional id, each client answering on its own response id
-    (Channel.uds_functional)."""
-    fid = _int("functional_id", functional_id, 64)
+    """`request` once on `channel`'s functional id, each client answering on its own response id;
+    on a DoIP channel to the functional logical address (None: 0xE400) on its one client's
+    connection (Channel.uds_functional)."""
+    doip = channel.kind == "doip"
+    fid = None if doip and functional_id is None else _int("functional_id", functional_id, 64)
     window = _int("window_ms", window_ms)
     req = _data("request", request)
     clients = list(clients)
@@ -526,6 +574,9 @@ def functional(channel, functional_id: int, clients: Sequence[UdsClient], reques
             raise TypeError(f"uds_functional: {c!r} is not a UdsClient")
     if not clients:
         raise ValueError("uds_functional: no client to answer; a functional request needs one")
+    if doip and len(clients) != 1:
+        raise ValueError(f"uds_functional: {channel.name} is a DoIP channel, one connection to one entity; "
+                         "pass its one UdsClient")
     if len({id(c) for c in clients}) != len(clients):
         raise ValueError("uds_functional: a client is named twice")
     for c in clients:
@@ -557,20 +608,28 @@ def functional(channel, functional_id: int, clients: Sequence[UdsClient], reques
             channel._current()
             if not channel._project.started:
                 raise BloblyError(f"{channel.name}: the project is not started", _lib.BB_ERR_STATE)
+        for c in clients:
+            c._no_seed_in_key_fn(req)
         handles = [c._handle() for c in clients]
+        if doip:
+            out = _lib.BbFunctionalReply()
+            address = None if fid is None else ctypes.byref(ctypes.c_int64(fid))
+            clients[0]._call_on(handles[0], lib.bb_uds_functional_doip, address, req, len(req), window,
+                                ctypes.byref(out))
+            return [_reply(lib, handles[0], out)]
         n = len(handles)
         out = (_lib.BbFunctionalReply * n)()
         _lib.check(lib.bb_uds_functional(channel._index, fid, (ctypes.c_int * n)(*handles), n, req, len(req),
                                          window, out))
-        replies = []
-        for i, h in enumerate(handles):
-            r = out[i]
-            answer = _lib.bytes_of(lib.bb_uds_data, h) if r.answer_len else b""
-            error = _lib.string(lib.bb_uds_reply_error, h)
-            outcome = _lib.OUTCOMES.get(r.outcome, f"unknown ({r.outcome})")
-            replies.append(FunctionalReply(outcome, answer, r.nrc if outcome == "negative" else None,
-                                           bool(r.pended), error))
-        return replies
+        return [_reply(lib, h, out[i]) for i, h in enumerate(handles)]
     finally:
         for c in held:
             c._lock.release()
+
+
+def _reply(lib, h: int, r) -> FunctionalReply:
+    """Handle h's FunctionalReply, from its bb_functional_reply."""
+    answer = _lib.bytes_of(lib.bb_uds_data, h) if r.answer_len else b""
+    error = _lib.string(lib.bb_uds_reply_error, h)
+    outcome = _lib.OUTCOMES.get(r.outcome, f"unknown ({r.outcome})")
+    return FunctionalReply(outcome, answer, r.nrc if outcome == "negative" else None, bool(r.pended), error)

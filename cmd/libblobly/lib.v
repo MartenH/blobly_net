@@ -40,6 +40,9 @@ fn C.bb_attached() i32
 fn C.bb_set_attached(i32)
 fn C.bb_nrc_set(i32)
 fn C.bb_nrc_get() i32
+fn C.bb_routing_set(i32, i32)
+fn C.bb_routing_get() i32
+fn C.bb_routing_tester_get() i32
 
 pub struct C.bb_frame {
 pub mut:
@@ -122,6 +125,15 @@ pub mut:
 	answer_len i32
 }
 
+pub struct C.bb_doip_announcement {
+pub mut:
+	vin             [18]u8
+	logical_address u16
+	eid             [6]u8
+	gid             [6]u8
+	source          [96]u8
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
@@ -171,6 +183,9 @@ __global (
 	// any thread, so a stop on the driver's replaces the array rather than writing into it
 	bb_dbs      []candb.Database
 	bb_dbs_live bool
+	// the run's rows as it has them (a hosted DoIP row on its moved port), under bb_mu beside
+	// bb_dbs, for the calls that may come from any thread (doip.v)
+	bb_run_rows []project.Channel
 	// which run is started, under bb_mu: a UDS handle names the run it was opened in (uds.v), so
 	// a functional request cannot take a handle of an earlier run for one of this run's rows
 	bb_run_gen u64
@@ -315,6 +330,7 @@ pub fn bb_start() i32 {
 	name_rows(r.chans.map(it.cfg))
 	bb_mu.lock()
 	bb_dbs = r.chans.map(it.db)
+	bb_run_rows = r.chans.map(it.cfg)
 	fault_rows_publish(r.chans)
 	bb_dbs_live = true
 	bb_run_gen++
@@ -331,6 +347,7 @@ pub fn bb_stop() i32 {
 	bb_run = unsafe { nil }
 	bb_mu.lock()
 	bb_dbs = []candb.Database{}
+	bb_run_rows = []project.Channel{}
 	fault_rows_retire()
 	bb_dbs_live = false
 	bb_mu.unlock()

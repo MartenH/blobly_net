@@ -157,7 +157,7 @@ class TestFunctional(unittest.TestCase):
             self.can1.uds_functional(0x7DF, [ds[0], twin], b"\x3e\x00")  # one response id twice
         with self.assertRaises(blobly.BloblyError):
             self.can1.uds_functional(0x7DF, [other_row], b"\x3e\x00")  # another row's
-        with self.assertRaises(blobly.BloblyError):  # a DoIP row has no UDS client of its own yet
+        with self.assertRaises(blobly.BloblyError):  # a client of another row
             self.net.channels.DoIP1.uds_functional(0xE400, [ds[0]], b"\x3e\x00")
         with self.assertRaises(ValueError):
             self.can1.uds_functional(0x7DF, [ds[0], ds[0]], b"\x3e\x00")

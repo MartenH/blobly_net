@@ -16,6 +16,12 @@ import time
 // loopback and against a known gateway IP; a subnet broadcast scan can layer on
 // later. Driver-free; no TCP connection / routing activation needed.
 pub fn discover(host string, port int, timeout_ms int) !VehicleInfo {
+	return (discover_from(host, port, timeout_ms)!).info
+}
+
+// discover_from is discover with where the answer came from, which need not be where the request
+// went.
+pub fn discover_from(host string, port int, timeout_ms int) !Announcement {
 	addr := join_host_port(host, port) // brackets an IPv6 literal
 	mut u := net.dial_udp(addr)!
 	defer {
@@ -26,12 +32,15 @@ pub fn discover(host string, port int, timeout_ms int) !VehicleInfo {
 		return net.err_timed_out
 	})
 	mut buf := []u8{len: 64}
-	n, _ := u.read(mut buf)!
+	n, from := u.read(mut buf)!
 	msg := parse(buf[..n])!
 	if msg.payload_type != pt_vehicle_announcement {
 		return error('expected vehicle announcement, got 0x${msg.payload_type:04X}')
 	}
-	return parse_vehicle_announcement(msg.payload)!
+	return Announcement{
+		info: parse_vehicle_announcement(msg.payload)!
+		from: from.str()
+	}
 }
 
 // DoipClient is a connected DoIP tester. The isotp.Channel fields map as:
@@ -346,7 +355,7 @@ fn (mut c DoipClient) await_readable(ms int) !bool {
 // activate_routing sends a routing activation request and validates the response. An alive
 // check asked meanwhile is answered and the wait goes on.
 fn (mut c DoipClient) activate_routing() ! {
-	c.conn.write(routing_activation_request(c.source))!
+	c.write(routing_activation_request(c.source))!
 	deadline := time.ticks() + i64(ra_timeout_ms)
 	mut msg := Message{}
 	for {
@@ -376,13 +385,20 @@ fn (mut c DoipClient) activate_routing() ! {
 
 const ra_timeout_ms = 2000
 
+// write_timeout_ms bounds how long a write waits for the entity to take anything.
+const write_timeout_ms = 2000
+
+// write_chunk is the most one send is handed once the socket is writable: little enough that the
+// send finds room for it rather than blocking.
+const write_chunk = 512
+
 // send wraps `data` (a UDS request) in a 0x8001 diagnostic message and writes it.
 pub fn (mut c DoipClient) send(data []u8) ! {
 	if c.rx_id > 0xFFFF {
 		// rx_id is writable: a value past 16 bits would otherwise address another ECU
 		return transport.not_written('DoIP: 0x${c.rx_id:X} is not a logical address')
 	}
-	c.conn.write(diagnostic_message(c.source, u16(c.rx_id), data))!
+	c.write(diagnostic_message(c.source, u16(c.rx_id), data))!
 }
 
 // send_to wraps `data` in a 0x8001 diagnostic message to `target` instead of the connection's own
@@ -392,7 +408,32 @@ pub fn (mut c DoipClient) send_to(target u32, data []u8) ! {
 	if target > 0xFFFF {
 		return transport.not_written('DoIP: 0x${target:X} is not a logical address')
 	}
-	c.conn.write(diagnostic_message(c.source, u16(target), data))!
+	c.write(diagnostic_message(c.source, u16(target), data))!
+}
+
+// write puts `msg` on the connection, a chunk at a time once the socket can take one, so it never
+// blocks in a send: an entity that reads nothing for write_timeout_ms is the connection lost, and
+// a stop is asked between chunks (a blocking send consults neither). A write that fails is the
+// connection lost.
+fn (mut c DoipClient) write(msg []u8) ! {
+	mut sent := 0
+	for sent < msg.len {
+		deadline := time.ticks() + write_timeout_ms
+		for {
+			if asked_to_stop(c.stop_requested) {
+				return error(stopped_note)
+			}
+			if transport.writable_within(c.conn.sock.handle, stop_poll_ms) {
+				break
+			}
+			if time.ticks() >= deadline {
+				return error('${doip_connection_lost}DoIP: the entity took nothing written for ${write_timeout_ms} ms')
+			}
+		}
+		end := if msg.len - sent > write_chunk { sent + write_chunk } else { msg.len }
+		c.conn.write(msg[sent..end]) or { return error('${doip_connection_lost}${err.msg()}') }
+		sent = end
+	}
 }
 
 // retarget: the logical address this connection's diagnostic messages go to from now on, and whose
@@ -451,7 +492,11 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 			if err.code() == net.err_timed_out_code {
 				return error('DoIP recv timeout')
 			}
-			return err
+			if err.msg() == stopped_note {
+				return err
+			}
+			// closed, reset, or stalled inside a message: the stream cannot be read any further
+			return error('${doip_connection_lost}${err.msg()}')
 		}
 		data, mine := c.own_answer(msg)!
 		if mine {
@@ -499,7 +544,7 @@ fn (mut c DoipClient) serve_control(msg Message) !bool {
 	if msg.payload_type != pt_alive_check_request {
 		return false
 	}
-	c.conn.write(alive_check_response(c.source))!
+	c.write(alive_check_response(c.source))!
 	return true
 }
 
@@ -523,12 +568,13 @@ pub fn (mut c DoipClient) idle() ! {
 			}
 			return error('${doip_connection_lost}${err.msg()}')
 		}
-		c.serve_control(msg) or { return error('${doip_connection_lost}${err.msg()}') }
+		c.serve_control(msg)!
 	}
 }
 
-// doip_connection_lost prefixes the error a poll returns when the connection cannot be read any
-// further — a failure of the carrier, which a pre-send drain must pass on, not count as an answer.
+// doip_connection_lost prefixes the error a read or a write returns when the connection cannot be
+// used any further (closed, reset, or stalled inside a message) — a failure of the carrier, which a
+// pre-send drain must pass on, not count as an answer, and which a new connection is the answer to.
 pub const doip_connection_lost = 'DoIP connection lost: '
 
 // poll_read_ms: how long a zero-timeout recv waits for the REST of a message whose first bytes

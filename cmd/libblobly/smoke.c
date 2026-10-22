@@ -52,6 +52,10 @@ static uds_open_fn bb_uds_open_p;
 static uds_did_fn bb_uds_read_did_p;
 static uds_last_fn bb_uds_last_p;
 static uds_data_fn bb_uds_data_p;
+typedef int (*doip_discover_fn)(const char *, int, int, bb_doip_announcement *);
+typedef int (*doip_endpoint_fn)(int, char *, int, int *);
+static doip_discover_fn bb_doip_discover_p;
+static doip_endpoint_fn bb_doip_endpoint_p;
 typedef int (*last_nrc_fn)(uint8_t *);
 static last_nrc_fn bb_last_nrc_p;
 typedef int (*fault_fn)(int, const char *, const char *, const char *, int, const char *);
@@ -194,9 +198,8 @@ static int dbc_steps(int row) {
 }
 
 /* UDS on CAN1: sim-demo's SUT answers 0x7E0 / 0x7E8, its VIN 17 bytes (a multi-frame answer) */
-static int uds_steps(int row, int doip) {
+static int uds_steps(int row) {
 	bb_uds_target t;
-	CHECK(bb_uds_open_p(doip, NULL, NULL, &t) == BB_ERR && strstr(bb_last_error_p(), "DoIP"), "a DoIP row must refuse by name");
 	int64_t bad = -2;
 	CHECK(bb_uds_open_p(row, &bad, NULL, &t) == BB_ERR && strstr(bb_last_error_p(), "not a CAN identifier"), "tx -2 must refuse");
 	int u = bb_uds_open_p(row, NULL, NULL, &t);
@@ -224,7 +227,29 @@ static int uds_steps(int row, int doip) {
 	CHECK(bb_dtc_name_p((int)d.code, name, sizeof name) == 8 && strcmp(name, "P1234-56") == 0, "its display name: %s", name);
 	CHECK(bb_uds_dtc_p(u, 2, &d) == BB_ERR, "a DTC past the answer must refuse");
 	CHECK(bb_uds_close_p(u) == 0 && bb_uds_close_p(u) == BB_ERR_HANDLE, "a closed UDS handle is gone");
-	printf("ok   UDS on CAN1: the VIN read, a negative response typed with its NRC, the DTCs, a DoIP row refused by name\n");
+	printf("ok   UDS on CAN1: the VIN read, a negative response typed with its NRC, the DTCs\n");
+	return 0;
+}
+
+/* UDS over sim-demo's DoIP1, from tester 0x0E80 to its entity at 0x1000, and the entity asked who
+ * it is */
+static int doip_steps(int doip) {
+	bb_uds_target t;
+	int64_t id = 0x7E0;
+	CHECK(bb_uds_open_p(doip, &id, NULL, &t) == BB_ERR && strstr(bb_last_error_p(), "DoIP addressing"), "CAN ids on a DoIP row must refuse");
+	int u = bb_uds_open_p(doip, NULL, NULL, &t);
+	CHECK(u >= 0 && t.tx == 0x0E80 && t.rx == 0x1000, "open on the row's logical addresses");
+	CHECK(bb_uds_open_p(doip, NULL, NULL, &t) == BB_ERR, "a second handle on the row's connection must refuse");
+	uint8_t vin[32];
+	CHECK(bb_uds_read_did_p(u, 0xF190, vin, sizeof vin) == 17 && memcmp(vin, "BLOBLYNETV0SUT001", 17) == 0, "the VIN over DoIP");
+	CHECK(bb_uds_close_p(u) == 0, "close the DoIP handle");
+	bb_doip_announcement a;
+	char host[64];
+	int port = 0;
+	CHECK(bb_doip_endpoint_p(doip, host, sizeof host, &port) > 0 && port > 0, "the run's DoIP1 endpoint");
+	CHECK(bb_doip_discover_p(host, port, 1200, &a) == 0 && strcmp(a.vin, "BLOBLYNETV0SUT001") == 0 && a.logical_address == 0x1000,
+		"discover: %s 0x%04X", a.vin, a.logical_address);
+	printf("ok   UDS over DoIP1: the VIN read; discovered %s at 0x%04X from %s\n", a.vin, a.logical_address, a.source);
 	return 0;
 }
 
@@ -296,7 +321,7 @@ int main(int argc, char **argv) {
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
-	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name);
+	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -347,7 +372,8 @@ int main(int argc, char **argv) {
 
 	if (exchange("main thread", 20)) return 1;
 	if (dbc_steps(can1)) return 1;
-	if (uds_steps(can1, doip)) return 1;
+	if (uds_steps(can1)) return 1;
+	if (doip_steps(doip)) return 1;
 	if (fault_steps(can1, doip)) return 1;
 	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }

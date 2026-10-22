@@ -14,6 +14,7 @@ pub enum Failure {
 	pending     // a PendingExpired: responsePending (0x78), then nothing within P2*
 	undecodable // an UndecodableAnswer: an answer arrived that cannot be read
 	carrier     // a CarrierFailed: the bus, the ISO-TP channel or the connection failed
+	lost        // a CarrierFailed that is the DoIP connection gone: only a new connection answers
 	abandoned   // ended by stop_requested (the client's, or its channel's)
 }
 
@@ -45,7 +46,13 @@ pub fn failure_of(err IError) Failure {
 		return .undecodable
 	}
 	if err is CarrierFailed {
-		return .carrier
+		return if connection_lost(err.text) { .lost } else { .carrier }
 	}
 	return .refused
+}
+
+// connection_lost: an error is the DoIP connection gone (doip.doip_connection_lost), however much
+// context the exchange put around it.
+fn connection_lost(msg string) bool {
+	return msg.contains(doip.doip_connection_lost)
 }

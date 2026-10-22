@@ -541,20 +541,6 @@ fn (env &Env) doip_chan(name string) !ChanInfo {
 	return info
 }
 
-// listen_port is the port doip.listen binds: the channel `from` names decides when it is given,
-// and a `requested` port that disagrees with it is refused rather than overruled — two answers
-// to one question. Without `from`, the request or the DoIP default. Pure, so the three branches
-// are pinned by direct asserts and not only through a Lua VM and an error string.
-fn listen_port(requested int, from string, from_port int, dflt int, what string) !int {
-	if from == '' {
-		return if requested == 0 { dflt } else { requested }
-	}
-	if requested != 0 && requested != from_port {
-		return error('port ${requested} contradicts from = "${from}", whose ${what} is on port ${from_port}; give one or the other')
-	}
-	return from_port
-}
-
 // someip_chan resolves a channel a SOME/IP primitive names — doip_chan's twin, one wording.
 fn (env &Env) someip_chan(name string) !ChanInfo {
 	ci := env.find_chan(name) or { return err }
@@ -601,27 +587,16 @@ fn probe_says_dead(err IError) bool {
 fn l_doip_listen(l lua.State) i32 {
 	port := int(l.arg_int(1))
 	window := int(l.arg_int(2))
-	mut use_ip6 := l.arg_bool(3)
+	ip6 := l.arg_bool(3)
 	from := l.arg_str(4)
-	mut from_port := 0
+	// `from` names a channel: the listener takes THAT channel's own port, so a suite does not
+	// repeat a number the project already states (#233), and its address family (udsconn's rule)
+	mut car := ?udsconn.Carrier(none)
 	if from != '' {
-		// `from` names a channel: the listener takes THAT channel's own port, so a suite does
-		// not repeat a number the project already states. The prelude documented and passed
-		// this for a release while the host read three arguments and defaulted to 13400 — a
-		// script asking for AltPort's port listened on the default, heard nothing, and failed
-		// as if the entity were silent (#233). Resolved here, refused loudly when it cannot be.
-		info := env_of(l).doip_chan(from) or { return l.fail('doip.listen: ${err}') }
-		from_port = info.carrier.port
-		// AND ITS ADDRESS FAMILY. An IPv6 entity announces to ff02::1, which only a v6 listener
-		// that joined the group can hear — a port taken from the channel with the family left at
-		// the caller's default is #233 again, one family over. THE MODULE'S ONE RULE, the same
-		// one the entity announces by: the family is read off the literal, so a hostname that
-		// resolves to IPv6 only is read as v4 here exactly as it is there (docs/doip.md, the
-		// IPv6 passive-discovery limitation) — a second rule here would make the tester and the
-		// entity disagree about one channel.
-		use_ip6 = use_ip6 || doip.addr_family(info.carrier.host) == .ip6
+		ci := env_of(l).find_chan(from) or { return l.fail('doip.listen: ${err}') }
+		car = ?udsconn.Carrier(env_of(l).chans[ci].carrier)
 	}
-	use_port := listen_port(port, from, from_port, 13400, 'entity') or {
+	use_port, use_ip6 := udsconn.doip_listener(port, ip6, from, car) or {
 		return l.fail('doip.listen: ${err}')
 	}
 	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
@@ -646,7 +621,7 @@ fn l_someip_listen(l lua.State) i32 {
 	window := int(l.arg_int(2))
 	mut group := l.arg_str(3)
 	from := l.arg_str(4)
-	mut from_port := 0
+	mut from_port := ?int(none)
 	// The channel's BIND HOST travels with its port: a row deliberately bound to loopback must
 	// not become a wildcard listener just because a script named it, or the two surfaces report
 	// different traffic for what the project calls one endpoint.
@@ -656,7 +631,7 @@ fn l_someip_listen(l lua.State) i32 {
 		// suite does not repeat what the project already states — doip.listen's rule (#233),
 		// and the same refusal when the two disagree.
 		info := env_of(l).someip_chan(from) or { return l.fail('someip.listen: ${err}') }
-		from_port = info.carrier.port
+		from_port = ?int(info.carrier.port)
 		host = info.carrier.host
 		// EMPTY IS AN ANSWER, not an absence. A channel with no `group:` is configured as a
 		// unicast listener, and accepting a script's group there silently turned it into a
@@ -674,7 +649,7 @@ fn l_someip_listen(l lua.State) i32 {
 			group = info.carrier.group
 		}
 	}
-	use_port := listen_port(port, from, from_port, someip.default_port, 'listener') or {
+	use_port := transport.listen_port(port, from, from_port, someip.default_port, 'listener') or {
 		return l.fail('someip.listen: ${err}')
 	}
 	// The claim inside collect() refuses an endpoint another listener in this process holds,

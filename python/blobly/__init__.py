@@ -8,9 +8,10 @@
         net.run(1000)
 
 See docs/scripting_python.md."""
-from ._lib import (BloblyError, CarrierFailed, NegativeResponse, PendingExpired, Refused, Timeout,
-                   UndecodableAnswer)
+from ._lib import (BloblyError, CarrierFailed, ConnectionLost, NegativeResponse, PendingExpired, Refused,
+                   RoutingDenied, Timeout, UndecodableAnswer)
 from . import e2e
+from .doip import DoipAnnouncement, doip_listen
 from .events import EventLoop
 from .faults import FaultKind, FaultRefused
 from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
@@ -59,3 +60,5 @@ __all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventL
            "UndecodableAnswer", "init", "reference_key", "version", "wait_released"]
 # fault injection and E2E Profile 1 (faults.py, e2e.py)
 __all__ += ["FaultKind", "FaultRefused", "e2e"]
+# DoIP (doip.py; UDS over DoIP is UdsClient)
+__all__ += ["ConnectionLost", "DoipAnnouncement", "RoutingDenied", "doip_listen"]

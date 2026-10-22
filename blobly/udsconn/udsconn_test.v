@@ -130,3 +130,42 @@ fn test_an_open_that_fails_names_the_row() {
 	}
 	assert false, 'opened over a failing opener'
 }
+
+// A DoIP listener on a row: its port, and its address's family as well as the one asked for.
+fn test_doip_listener_takes_the_rows_port_and_family() {
+	p, v6 := doip_listener(0, false, '', none)!
+	assert p == 13400 && !v6
+	p2, v62 := doip_listener(13555, true, '', none)!
+	assert p2 == 13555 && v62
+	alt := Carrier{
+		doip: true
+		host: '127.0.0.4'
+		port: 13555
+	}
+	p3, v63 := doip_listener(0, false, 'Alt', alt)!
+	assert p3 == 13555 && !v63
+	six := Carrier{
+		doip: true
+		host: '::1'
+		port: 13401
+	}
+	_, v64 := doip_listener(0, false, 'Six', six)!
+	assert v64, 'an IPv6 row listens over IPv6'
+	// a row is a row whatever it is called: an unnamed one is not "no row"
+	unnamed := Carrier{
+		doip: true
+		host: '127.0.0.1'
+		port: 13600
+	}
+	p5, _ := doip_listener(0, false, '', unnamed)!
+	assert p5 == 13600
+	doip_listener(13400, false, '', unnamed) or {
+		assert err.msg().contains('contradicts')
+		doip_listener(0, false, 'CAN1', Carrier{}) or {
+			assert err.msg() == '"CAN1" is not a DoIP channel'
+			return
+		}
+		assert false, 'a CAN row gave a DoIP listener'
+	}
+	assert false, 'a port contradicting an unnamed row was accepted'
+}

@@ -108,12 +108,6 @@ class TestSimDemo(unittest.TestCase):
         with self.assertRaises(TypeError):
             self.can1.uds(tx=True)
 
-    def test_a_doip_row_is_refused_by_name(self):
-        with self.assertRaises(blobly.Refused) as e:
-            self.net.channels.DoIP1.uds()
-        self.assertIn("DoIP1", str(e.exception))
-        self.assertIn("not in this library yet", str(e.exception))
-
     def test_write_then_read_back(self):
         self.diag.write_did(0xF1AA, b"\xca\xfe")
         self.assertEqual(self.diag.read_did(0xF1AA), b"\xca\xfe")

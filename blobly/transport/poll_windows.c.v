@@ -27,6 +27,20 @@ pub fn readable_now(fd int) bool {
 	return p.revents & i16(C.POLLRDNORM | C.POLLHUP | C.POLLERR | C.POLLNVAL) != 0
 }
 
+// writable_within: the socket can take data without its send blocking (or has failed, which the
+// send then reports), waiting up to `ms` for it — a bounded write's step on a blocking socket,
+// whose own timeout a blocked send does not consult.
+pub fn writable_within(fd int, ms int) bool {
+	mut p := C.WSAPOLLFD{
+		fd:     u64(fd)
+		events: i16(C.POLLWRNORM)
+	}
+	if C.WSAPoll(&p, 1, ms) <= 0 {
+		return false
+	}
+	return p.revents & i16(C.POLLWRNORM | C.POLLHUP | C.POLLERR | C.POLLNVAL) != 0
+}
+
 // readable_within: as readable_now, waiting up to `ms` for it.
 pub fn readable_within(fd int, ms int) bool {
 	mut p := C.WSAPOLLFD{

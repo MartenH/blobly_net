@@ -15,12 +15,11 @@ There are two ways to script it:
 
 - **Python** (`pip install blobly`) puts the engine inside your own Python process: load a
   project, start its simulation, send and receive frames, encode and decode DBC signals, react
-  to traffic with an event loop, and inject faults into the simulated ECUs. This is the primary
-  interface, and the one this page uses.
+  to traffic with an event loop, inject faults into the simulated ECUs, and run UDS over CAN and
+  DoIP. This is the primary interface, and the one this page uses.
   The guide is [scripting_python.md](scripting_python.md).
-- **Lua** test scripts run headless (`scripts/runtests.sh`) or in the GUI's Script panel. Python
-  runs UDS over CAN; UDS over DoIP is Lua's until #507 Phase 1 brings it. See
-  [Python or Lua](#python-or-lua).
+- **Lua** test scripts run headless (`scripts/runtests.sh`) or in the GUI's Script panel. SOME/IP
+  and flashing are Lua's until #507 Phase 2 brings them. See [Python or Lua](#python-or-lua).
 
 ## Install and run
 
@@ -57,7 +56,9 @@ hardware, the same on Linux and Windows:
   answers Request (0x101) with Response (0x102), the first byte plus one. A ChassisECU sends
   WheelSpeeds (0x300) and BrakeStatus (0x301).
 - CAN2 carries BodyStatus (0x200) and BatteryStatus (0x400).
-- The database of both is `dbc/blobly_net.dbc`.
+- DoIP1 is a DoIP entity serving the SUT's identity over UDS, on a loopback port of the run's own
+  (`ch.iface` says which): `net.channels.DoIP1.uds()` reaches it, `discover()` asks who it is.
+- The database of both CAN buses is `dbc/blobly_net.dbc`.
 
 To test something else in simulation, write a project whose rows use `inproc:` and whose
 `simulation:` block describes the ECUs ([simulation.md](simulation.md)). One row is enough:
@@ -119,9 +120,11 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   the kind (-1 refused, -2 no such handle, -3 the wrong state). A listen-only row's send is one.
   A fault that could not take effect (`net.fault`) is `blobly.FaultRefused`, a `Refused`. A UDS
   call's failures are subclasses an agent can act on: `NegativeResponse` (with `.nrc`),
-  `Timeout` (code -5, also an expectation that ran out), `PendingExpired`, `UndecodableAnswer`, `CarrierFailed` and `Refused`.
+  `Timeout` (code -5, also an expectation that ran out), `PendingExpired`, `UndecodableAnswer`,
+  `CarrierFailed` and `Refused`; on DoIP also `RoutingDenied` (with `.routing_code` and `.hint`)
+  and `ConnectionLost` (a `CarrierFailed`: the next call opens a new connection).
   Bad arguments are `ValueError` or `TypeError`, unknown names `AttributeError` or `KeyError`.
-  [scripting_python.md](scripting_python.md#13-errors) has the full table.
+  [scripting_python.md](scripting_python.md#14-errors) has the full table.
 - **Exit codes.** Make a script exit non-zero when a check fails, with one line that says what
   was expected (`sys.exit("FAIL: ...")` exits 1). The examples exit 0 when every check held, 1
   on a failed check or an error, and 2 on a bad argument. pytest exits 0 when every test passed
@@ -137,10 +140,11 @@ Tests are pytest files on blobly's plugin. Start from
 [conftest.py](../python/examples/conftest.py) loads the plugin
 (`pytest_plugins = ["blobly.pytest_plugin"]`) and [pytest.ini](../python/examples/pytest.ini)
 names the project. The rules are in
-[Testing with pytest](scripting_python.md#11-testing-with-pytest).
+[Testing with pytest](scripting_python.md#12-testing-with-pytest).
 
 - The `project` fixture is the started project, and `can1` its channel `CAN1`: a fixture per
-  channel, named after it; `diag` is a UDS client on the first CAN channel. A test hears what
+  channel, named after it; `diag` is a UDS client on the first CAN channel, or on the one a test
+  names with `@pytest.mark.parametrize("diag", ["DoIP1"], indirect=True)`. A test hears what
   arrives from its start, and its handlers and faults do not reach the next test; what it changed
   in a simulated ECU lasts until its module ends.
 - A test is a few lines, and names no project (the ini file or `--blobly-project` does):
@@ -168,16 +172,16 @@ Complete scripts, each bounded and with a clear exit status, in
 | [event_loop.py](../python/examples/event_loop.py) | `on_message` by id and by message, `on_timer`, `on_health`, `run()`. |
 | [signal_monitor.py](../python/examples/signal_monitor.py) | Decoded values of chosen messages over N seconds. |
 | [uds_diag.py](../python/examples/uds_diag.py) | UDS over CAN: a session, DID reads, a negative response caught, a security unlock, DTCs with a snapshot. |
+| [doip_diag.py](../python/examples/doip_diag.py) | UDS over DoIP: announcements heard, the entity discovered, a session, the VIN, DTCs, a functional request. |
 | [fault_injection.py](../python/examples/fault_injection.py) | Faults on simulated ECUs seen on the bus: a timed drop, a signal out of range, a refusal. |
-| [test_sim_demo.py](../python/examples/test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel, `expect`, `expect_signal`. |
+| [test_sim_demo.py](../python/examples/test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel, `expect`, `expect_signal`, `diag` over CAN and DoIP. |
 
 ## Python or Lua
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health, fault injection, the E2E Profile 1 helpers; UDS over CAN (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests). | UDS over DoIP. Python gets it in #507 Phase 1. |
-| Tests under pytest, and anything that needs the Python ecosystem. | SOME/IP and flashing. |
-| An agent's own process: no V toolchain, a `pip install`. | A script in the GUI's Script panel, against a live measurement. |
-| | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health, fault injection, the E2E Profile 1 helpers; UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests); DoIP discovery. | SOME/IP and flashing. Python gets them in #507 Phase 2. |
+| Tests under pytest, and anything that needs the Python ecosystem. | A script in the GUI's Script panel, against a live measurement. |
+| An agent's own process: no V toolchain, a `pip install`. | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 
 The Lua guide is [scripting.md](scripting.md).

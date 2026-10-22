@@ -260,7 +260,8 @@ local rs = uds.functional("DoIP1", nil, { diag }, "\x22\xF1\x90" [, window_ms])
 The request goes out on that connection with the functional address as its target, of any length
 (DoIP frames it whole), and the entity's answer — from its own address — is read under the same
 outcomes, `answer_to` and P2* rules as above (`uds.functional_addressed`). An address the entity
-does not answer is `"failed"` (a DoIP negative ack), not `"silent"`. A simulated DoIP entity
+does not answer is `"failed"` (a DoIP negative ack), not `"silent"`; the connection lost under the
+request raises, as a bus failing while listening does. A simulated DoIP entity
 answers 0xE400 (`tests/diag_doip_functional.lua`); see `docs/doip.md`.
 
 ### End-to-end protection for frames you build (AUTOSAR E2E Profile 1)
