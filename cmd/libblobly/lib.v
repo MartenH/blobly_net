@@ -155,9 +155,10 @@ pub fn bb_init() i32 {
 	return ok()
 }
 
-// Boehm's registration of a thread it did not create (host.h). V's own C.GC_stack_base came out
-// an incomplete type in this library's C under V3's module cache (a -shared build that cache
-// cannot complete at all now, so not isolated further); the one-field struct is ours instead.
+// Boehm's registration of a thread it did not create (host.h). The stack base is a one-field
+// struct of our own because V declares C.GC_stack_base only where the Boehm collector is compiled
+// in (vlib/builtin/builtin_d_gcboehm.c.v), and check_cmds.sh's cross `-os windows -check` is not
+// such a build.
 struct C.bb_stack_base {
 mut:
 	mem_base voidptr
