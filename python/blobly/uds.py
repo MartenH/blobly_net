@@ -10,6 +10,9 @@ from collections.abc import Callable, Sequence
 from . import _lib
 from ._lib import BloblyError, NegativeResponse
 
+# how many key_fn callbacks this thread is inside: each runs holding its client's lock
+_callbacks = threading.local()
+
 # a whole ISO-TP PDU (4095 bytes) fits, so an answer comes back in one call
 _CAP = 4096
 
@@ -379,7 +382,14 @@ class UdsClient:
             seed = self._bytes_on(h, _lib.lib().bb_uds_security_seed, level, ctypes.byref(unlocked))
             if unlocked.value:
                 return seed
-            key = _data("the key key_fn returned", key_fn(seed)) if key_fn is not None else reference_key(seed)
+            if key_fn is None:
+                key = reference_key(seed)
+            else:
+                _callbacks.depth = getattr(_callbacks, "depth", 0) + 1
+                try:
+                    key = _data("the key key_fn returned", key_fn(seed))
+                finally:
+                    _callbacks.depth -= 1
             self._call_on(h, _lib.lib().bb_uds_security_key, level + 1, key, len(key))
             return seed
 
@@ -522,9 +532,9 @@ def functional(channel, functional_id: int, clients: Sequence[UdsClient], reques
         if c.channel is not channel:
             raise BloblyError(f"uds_functional: {c!r} is not a client of {channel.name}")
     lib = _lib.lib()
-    # a client this thread holds already (a key_fn of its security_access): its lock cannot be let
-    # go while waiting for the others, so waiting for one held elsewhere could wait for ever
-    reentered = any(c._lock._is_owned() for c in clients)
+    # inside a key_fn this thread holds that client's lock, whichever client it is, and cannot let
+    # it go while waiting for others: waiting for one held elsewhere could wait for ever
+    reentered = getattr(_callbacks, "depth", 0) > 0
     held: list[UdsClient] = []
     try:
         # every client's lock, without waiting on one while holding another: a client held across

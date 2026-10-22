@@ -165,6 +165,39 @@ class TestFunctional(unittest.TestCase):
             self.can1.uds_functional(0x7DF, [], b"\x3e\x00")  # nothing to answer it
 
 
+class TestReentry(unittest.TestCase):
+    def test_functional_from_a_key_fn_does_not_wait_on_a_busy_client(self):
+        with blobly.Project(SIM_DEMO) as net:
+            can1 = net.channels.CAN1
+            a, b = can1.uds(tx=0x7E0, rx=0x7E8), can1.uds(tx=0x7E1, rx=0x7E9)
+            a.session(0x01)
+            held, release = threading.Event(), threading.Event()
+
+            def hold_b():  # another thread inside a call on B
+                with b._lock:
+                    held.set()
+                    release.wait(5)
+            t = threading.Thread(target=hold_b)
+            t.start()
+            held.wait(5)
+            errors = []
+
+            def key_fn(seed):
+                try:
+                    can1.uds_functional(0x7DF, [b], b"\x3e\x00", window_ms=100)
+                except blobly.BloblyError as e:
+                    errors.append(e)
+                return blobly.reference_key(seed)
+            try:
+                a.security_access(0x01, key_fn)
+            finally:
+                release.set()
+                t.join(5)
+                a.close()
+                b.close()
+            self.assertEqual([e.code for e in errors], [_lib.BB_ERR_STATE], "it waited, or did not refuse")
+
+
 class FakeEcu:
     """Answers single-frame requests on `ch` (0x700 in, 0x708 out), each with the next of
     `script`'s answers."""
