@@ -20,12 +20,17 @@ from .faults import Faults
 class Frame:
     """A CAN frame. `data` is the payload; `length` its length, or for a remote frame (`rtr`, no
     payload) the length it asks for; `fd`/`brs` CAN-FD and its bit-rate switch; `esi` CAN-FD's
-    error-state indicator. A value: equal frames hash alike, and none is changed once made."""
-    __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi")
+    error-state indicator. `t_ms` is when a received frame arrived, in ms on the host's monotonic
+    clock (`blobly.now_ms()`), the time the GUI's trace gives it: its receive stamp where the
+    backend reads one, else its receipt. None on a frame not received. A value: equal frames hash
+    alike, and none is changed once made; `t_ms` is not part of the value, so a received frame
+    equals the frame built from its content."""
+    __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi", "t_ms")
 
-    def __init__(self, id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None):
+    def __init__(self, id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None,
+                 t_ms=None):
         data = bytes(data)
-        _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi))
+        _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi, t_ms))
 
     def __setattr__(self, name, value):
         raise AttributeError(f"a Frame is a value: make another rather than set {name}")
@@ -36,6 +41,7 @@ class Frame:
     def __setstate__(self, state):
         """copy and pickle restore a frame's slots (a subclass's too) past __setattr__."""
         attrs, slots = state if isinstance(state, tuple) else (state, None)
+        object.__setattr__(self, "t_ms", None)  # a frame pickled before frames carried a time
         for k, v in {**(attrs or {}), **(slots or {})}.items():
             object.__setattr__(self, k, v)
 
@@ -46,11 +52,14 @@ class Frame:
         return hash(self._key())
 
     def _key(self):
-        return tuple(getattr(self, k) for k in Frame.__slots__)
+        return tuple(getattr(self, k) for k in _IDENTITY)
 
     def __repr__(self):
         flags = "".join(f" {k}" for k in ("ext", "fd", "brs", "rtr", "esi") if getattr(self, k))
         return f"Frame(0x{self.id:X} [{self.data.hex(' ').upper()}]{flags})"
+
+
+_IDENTITY = Frame.__slots__[:-1]  # what a frame is: everything but when it was received
 
 
 def _fill(frame, fields):
@@ -58,10 +67,12 @@ def _fill(frame, fields):
         object.__setattr__(frame, k, v)
 
 
-def frame_of(f):
-    """A Frame from a bb_frame: a remote frame's len is the length it asks for, with no payload."""
+def frame_of(f, received=False):
+    """A Frame from a bb_frame: a remote frame's len is the length it asks for, with no payload;
+    a received one carries its t_ns as t_ms."""
     data = b"" if f.rtr else bytes(f.data[:f.len])
-    return Frame(f.id, data, bool(f.ext), bool(f.fd), bool(f.brs), bool(f.rtr), bool(f.esi), f.len)
+    return Frame(f.id, data, bool(f.ext), bool(f.fd), bool(f.brs), bool(f.rtr), bool(f.esi), f.len,
+                 _lib.ms_of(f.t_ns) if received else None)
 
 
 def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
@@ -209,7 +220,7 @@ class Channel:
         rc = _lib.check(lib.bb_bus_recv(self._handle() if h is None else h, ms, ctypes.byref(f)))
         if rc in (_lib.BB_NONE, _lib.BB_SPENT):
             return None, rc == _lib.BB_SPENT
-        return frame_of(f), False
+        return frame_of(f, received=True), False
 
     def expect(self, id: "int | Message", timeout_ms: float = 1000, *, ext: bool | None = None) -> Frame:
         """The first frame another node sends with this id AND kind, waited for at most timeout_ms

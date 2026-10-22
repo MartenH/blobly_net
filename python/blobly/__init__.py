@@ -37,6 +37,12 @@ def version():
     return _lib.text(_lib.lib().bb_version())
 
 
+def now_ms() -> float:
+    """The host's monotonic clock in ms: the clock of a received Frame's t_ms."""
+    from . import _lib
+    return _lib.ms_of(_lib.lib().bb_now_ns())
+
+
 def wait_released(timeout_ms: float | None = None) -> bool:
     """Waits until the process is free for a start (True), or timeout_ms passes (False; None
     waits for ever). A stop that returned False left a loop letting go of its wires. Ctrl-C ends
@@ -57,7 +63,7 @@ def wait_released(timeout_ms: float | None = None) -> bool:
 __all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventLoop", "Exchange", "Extended",
            "Frame", "FunctionalReply", "Message", "Messages", "NegativeResponse", "PendingExpired", "Project",
            "Refused", "Signal", "Signals", "Snapshot", "SnapshotId", "SnapshotRecord", "Timeout", "UdsClient",
-           "UndecodableAnswer", "init", "reference_key", "version", "wait_released"]
+           "UndecodableAnswer", "init", "now_ms", "reference_key", "version", "wait_released"]
 # fault injection and E2E Profile 1 (faults.py, e2e.py)
 __all__ += ["FaultKind", "FaultRefused", "e2e"]
 # DoIP (doip.py; UDS over DoIP is UdsClient)

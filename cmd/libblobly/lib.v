@@ -54,6 +54,7 @@ pub mut:
 	rtr  u8
 	esi  u8
 	data [64]u8
+	t_ns i64
 }
 
 pub struct C.bb_message {
@@ -209,6 +210,13 @@ fn cstr(s string) &char {
 pub fn bb_version() &char {
 	ok()
 	return cstr(lib_version)
+}
+
+// bb_now_ns is the host's monotonic clock (time.sys_mono_now), the clock of a received frame's t_ns
+@[export: 'bb_now_ns']
+pub fn bb_now_ns() i64 {
+	ok()
+	return i64(time.sys_mono_now())
 }
 
 // bb_init: the V runtime (collector, globals) came up in the library's constructor when it was
@@ -552,6 +560,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 		for i in 0 .. 64 {
 			out.data[i] = if i < fr.data.len { fr.data[i] } else { u8(0) }
 		}
+		out.t_ns = transport.received_now(fr)
 	}
 	return ok()
 }
@@ -794,6 +803,7 @@ pub fn bb_encode(row i32, m i32, n i32, signals &&char, values &f64, out &C.bb_f
 		for i in 0 .. 64 {
 			out.data[i] = if i < data.len { data[i] } else { u8(0) }
 		}
+		out.t_ns = 0
 	}
 	return ok()
 }

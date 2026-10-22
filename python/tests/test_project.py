@@ -378,6 +378,77 @@ class TestFrame(unittest.TestCase):
         # Frame(0x7, b"\x09") as the package pickled it before a frame refused assignment
         old = b"\x80\x04\x95f\x00\x00\x00\x00\x00\x00\x00\x8c\x0eblobly.project\x94\x8c\x05Frame\x94\x93\x94)\x81\x94N}\x94(\x8c\x02id\x94K\x07\x8c\x04data\x94C\x01\t\x94\x8c\x06length\x94K\x01\x8c\x03ext\x94\x89\x8c\x02fd\x94\x89\x8c\x03brs\x94\x89\x8c\x03rtr\x94\x89\x8c\x03esi\x94\x89u\x86\x94b."
         self.assertEqual(pickle.loads(old), blobly.Frame(0x7, b"\x09"))
+        self.assertIsNone(pickle.loads(old).t_ms)
+
+    def test_the_receive_time_is_not_part_of_the_value(self):
+        received = blobly.Frame(0x100, b"\x01", t_ms=12.5)
+        self.assertEqual(received, blobly.Frame(0x100, b"\x01"))
+        self.assertEqual(hash(received), hash(blobly.Frame(0x100, b"\x01", t_ms=99.0)))
+        self.assertEqual(pickle.loads(pickle.dumps(received)).t_ms, 12.5)
+        self.assertIsNone(blobly.Frame(0x100).t_ms)
+
+    def test_the_receive_time_in_ms_is_the_ns_divided_once(self):
+        # the Lua binding's clock_ms makes the same division (events_test.v pins the same value)
+        self.assertEqual(_lib.ms_of(1_234_567_890_123_456), 1234567890.123456)
+
+
+# two wires of SocketCAN, each with a row to listen on and one to send from
+VCANS = """project:
+  name: vcans
+  version: 8
+channels:
+  - name: A
+    type: can
+    interface: vcan0
+  - name: TA
+    type: can
+    interface: vcan0
+  - name: B
+    type: can
+    interface: vcan1
+  - name: TB
+    type: can
+    interface: vcan1
+"""
+
+
+class TestReceiveTime(unittest.TestCase):
+    def test_a_received_frame_carries_its_receipt(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "duplicates.blobnet")
+            with open(path, "w") as f:
+                f.write(DUPLICATES)
+            with blobly.Project(path) as net:
+                x, y = net.channels[0], net.channels.Y
+                x.recv(0)
+                y.send(0x123, b"\x01")
+                y.send(0x124, b"\x02")
+                before = blobly.now_ms()
+                first = x.recv(1000)
+                second = x.recv(1000)
+                self.assertTrue(before <= first.t_ms < second.t_ms <= blobly.now_ms(),
+                                (before, first.t_ms, second.t_ms))
+                self.assertIsInstance(first.t_ms, float)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and os.path.exists("/sys/class/net/vcan1"),
+                         "needs vcan0 and vcan1 (scripts/setup_vcan.sh)")
+    def test_frames_on_two_wires_are_placed_by_their_kernel_stamps(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "vcans.blobnet")
+            with open(path, "w") as f:
+                f.write(VCANS)
+            with blobly.Project(path) as net:
+                a, b = net.channels.A, net.channels.B
+                a.recv(0)
+                b.recv(0)
+                before = blobly.now_ms()
+                net.channels.TA.send(0x151, b"\x5e\x07\x11\xa1")
+                net.channels.TB.send(0x151, b"\x5e\x07\x11\xa2")
+                later = b.expect(0x151, 1000)  # the later wire is read first
+                time.sleep(0.002)
+                earlier = a.expect(0x151, 1000)
+                self.assertEqual((earlier.data[-1], later.data[-1]), (0xa1, 0xa2))
+                self.assertTrue(before <= earlier.t_ms < later.t_ms, (before, earlier.t_ms, later.t_ms))
 
 
 # a row nothing sends on, and a script that waits on it until a SIGINT, which a timer thread

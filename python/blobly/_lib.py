@@ -110,7 +110,7 @@ class BbFrame(ctypes.Structure):
     """bb_frame, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("len", ctypes.c_uint8), ("ext", ctypes.c_uint8),
                 ("fd", ctypes.c_uint8), ("brs", ctypes.c_uint8), ("rtr", ctypes.c_uint8),
-                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64)]
+                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("t_ns", ctypes.c_int64)]
 
 
 class BbMessage(ctypes.Structure):
@@ -181,6 +181,7 @@ def _declare(lib):
         "bb_last_error": ([], c_char_p),
         "bb_thread_attach": ([], c_int),
         "bb_thread_detach": ([], c_int),
+        "bb_now_ns": ([], ctypes.c_int64),
         "bb_load": ([c_char_p], c_int),
         "bb_start": ([], c_int),
         "bb_stop": ([], c_int),
@@ -351,6 +352,11 @@ def attach():
     if _lib.bb_thread_attach() != 0:
         raise BloblyError(text(_lib.bb_last_error()))
     _tls.held = _Attachment(_lib)
+
+
+def ms_of(ns):
+    """A host monotonic time in ns as the ms a script sees: the division the Lua binding makes."""
+    return ns / 1_000_000.0
 
 
 def text(b):

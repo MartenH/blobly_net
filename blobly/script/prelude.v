@@ -519,10 +519,14 @@ end
 -- the controller`s ladder now: "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF", or "" where the
 -- backend cannot say (the software buses)
 function bus.health(channel) return __bus_health(channel) end
+-- a received frame: fd/brs/esi/rtr as the wire carried it, t_ms when it was received (now_ms clock)
+function __frame(id, ext, data, fd, brs, esi, rtr, t_ms)
+  return { id = id, ext = ext, data = data, fd = fd, brs = brs, esi = esi, rtr = rtr, t_ms = t_ms }
+end
 function bus.recv(channel, timeout_ms)
-  local id, ext, data = __bus_recv(channel, timeout_ms or 1000)
+  local id, ext, data, fd, brs, esi, rtr, t_ms = __bus_recv(channel, timeout_ms or 1000)
   if id == nil then return nil end
-  return { id = id, ext = ext, data = data }
+  return __frame(id, ext, data, fd, brs, esi, rtr, t_ms)
 end
 -- encode a DBC message by name from a {Signal = value} table and send it
 function bus.send_message(channel, name, sigs)
@@ -752,10 +756,11 @@ function run(duration_ms)
     local wait = math.ceil(wake - now)
     if wait < 0 then wait = 0 end
     if wait > 1000 then wait = 1000 end -- the loop goes on; a run(math.huge) is not one wait
-    local ch, id, ext, data = __wait_frame(wait, table.unpack(__listened))
+    local ch, id, ext, data, fd, brs, esi, rtr, t_ms = __wait_frame(wait, table.unpack(__listened))
     if ch then
       taken = taken + 1
-      inflight[#inflight + 1] = { ch = ch, f = { id = id, ext = ext, data = data }, i = 1, n = taken, callers = {} }
+      inflight[#inflight + 1] = { ch = ch, f = __frame(id, ext, data, fd, brs, esi, rtr, t_ms), i = 1, n = taken,
+        callers = {} }
       deliver_inflight()
     end
   until __now_ms() >= deadline

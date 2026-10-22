@@ -1031,7 +1031,7 @@ fn (mut app App) start() {
 	// previous run had already mentioned it. Reset earlier in start() as well, they had two
 	// owners and only one of them was inside the lock that publishes the run.
 	app.rx_open_failed = map[string]bool{}
-	app.placer.reset()
+	transport.reset_receive_clock() // a new run opens every clock again
 	app.tx_health = map[string]&txhealth.Gate{}
 	app.tx_health_noted = map[string]bool{}
 	app.mu.unlock()
