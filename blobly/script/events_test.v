@@ -65,7 +65,16 @@ fn send_n(iface string, id u32, n int, gap_ms int) {
 //   A6 a timer stays on its grid: its next due time is its first plus whole periods, and later
 //      than when it fired;
 //   A7 the grid points a callback ran over are skipped: between one fire's end and the next fire
-//      of the same timer lies a point of its grid.
+//      of the same timer lies a point of its grid;
+//   A8 every handler, not only the first, sees a channel's frames in arrival order — whether a
+//      handler before it runs run() directly or in a coroutine of its own;
+//   A9 every frame run() took up reaches each handler exactly once — one registered while an
+//      earlier frame was being delivered from that frame on, and nothing before it — except that
+//      a frame whose handler raised reaches none of the handlers after that one;
+//   A10 when a nested run() returns into a handler, the handlers after it already have the frame
+//      that handler is handling (the inner run() finished it first, frame or no frame to take).
+// A2 is asked of EVERY run(), the nested ones included, and nested runs are sometimes in a
+// coroutine and sometimes interrupted by a handler that raises, which their caller catches.
 const model_src = r'
 local s = SEED
 local function rnd(n) s = (s * 1103515245 + 12345) % 2147483648; return s % n end
@@ -128,6 +137,9 @@ local function deliver(ch, sq)
   ndelivered = ndelivered + 1
 end
 local spins = 0
+local dispatched = {}
+local index_of = {} -- frame -> its place among the frames run() took up
+local aborted = {}  -- frame -> the position of the handler that raised on it
 __wait_frame = function(ms, ...)
   spins = spins + 1
   if spins > 200000 then error("A3: run() spins without time moving") end
@@ -151,6 +163,8 @@ __wait_frame = function(ms, ...)
     return nil
   end
   local a = take(bch, t + ms)
+  dispatched[#dispatched + 1] = a
+  index_of[a.seq] = #dispatched
   return bch, a.seq, false, tostring(a.seq)
 end
 __bus_recv = function(ch, timeout)
@@ -164,6 +178,29 @@ end
 
 local spans = {}
 local depth = 0
+-- every run() is held to A2 against its own deadline, the nested ones included
+local real_run = run
+run = function(dd)
+  local t0r = t
+  real_run(dd)
+  local bound = t0r + dd
+  for _, sp in ipairs(spans) do
+    if sp[1] <= t0r + dd and sp[2] > bound and sp[2] >= t0r then bound = sp[2] end
+  end
+  if t > bound then error("A2: run(" .. dd .. ") from " .. t0r .. " returned at " .. t .. ", bound " .. bound) end
+end
+-- a nested run, directly or in a coroutine of its own, its "model raise" caught where it is called
+local function nested_run(x)
+  depth = depth + 1
+  local ok, e
+  if rnd(2) == 0 then
+    ok, e = pcall(run, x)
+  else
+    ok, e = pcall(coroutine.wrap(function() run(x) end))
+  end
+  depth = depth - 1
+  if not ok and not string.find(tostring(e), "model raise", 1, true) then error(e, 0) end
+end
 local function add_health(ch)
   local rec = { last_idx = 0, last_s = nil }
   on_health(ch, function(st)
@@ -180,24 +217,30 @@ local function add_health(ch)
       if k == 0 then
         t = t + rnd(30)
       elseif k == 1 then
-        depth = depth + 1
-        run(1 + rnd(20))
-        depth = depth - 1
+        nested_run(1 + rnd(20))
       end
     end
     spans[#spans + 1] = { start, t }
   end)
 end
 local late = 0
-local function behave()
+local handlers = {}
+local function others_have(ch, me, sq)
+  for _, rec in ipairs(handlers) do
+    local should = rec.pos > me.pos and not rec.late and not (aborted[sq] and rec.pos > aborted[sq])
+    if rec.ch == ch and should and rec.got[sq] ~= 1 then
+      error("A10: a nested run() returned with frame " .. sq .. " not yet given to a later handler")
+    end
+  end
+end
+local function behave(me, ch, sq)
   if depth > 0 then return end
   local k = rnd(10)
   if k == 0 then
     t = t + 1 + rnd(40)
   elseif k == 1 then
-    depth = depth + 1
-    run(1 + rnd(15))
-    depth = depth - 1
+    nested_run(1 + rnd(15))
+    others_have(ch, me, sq)
   elseif k == 2 then
     local ch = chans[rnd(2) + 1]
     local f = bus.recv(ch, rnd(10))
@@ -208,17 +251,55 @@ local function behave()
   end
 end
 local event_start = {}
+local function seen_by(rec, ch, sq)
+  if rec.last[ch] and sq <= rec.last[ch] then
+    error("A8: a handler saw frame " .. sq .. " after frame " .. rec.last[ch] .. " on " .. ch)
+  end
+  rec.last[ch] = sq
+  rec.got[sq] = (rec.got[sq] or 0) + 1
+end
+local function handler(rec)
+  handlers[#handlers + 1] = rec
+  rec.last, rec.got = {}, {}
+  rec.pos = #__on_msg + 1
+  return rec
+end
 for _, ch in ipairs(chans) do
+  local first = handler({ ch = ch })
   on_message(ch, nil, function(f)
     event_start[f.id] = t
+    seen_by(first, ch, f.id)
     deliver(ch, f.id)
-    behave()
+    behave(first, ch, f.id)
     spans[#spans + 1] = { event_start[f.id], t }
   end)
   if rnd(2) == 0 then
+    local second = handler({ ch = ch })
     on_message(ch, nil, function(f)
-      if depth == 0 and rnd(4) == 0 then t = t + rnd(30) end
+      seen_by(second, ch, f.id)
+      local k = rnd(6)
+      if k == 0 and depth < 2 then
+        t = t + rnd(30) -- slow at any depth, the drain of a nested run() included
+      elseif k == 1 and depth == 0 then
+        nested_run(1 + rnd(15))
+        others_have(ch, second, f.id)
+      elseif k == 2 and #handlers < 8 then
+        -- registered mid-delivery, at any depth: from this frame on, in order (A8, A9)
+        local late = handler({ ch = ch, late = true, from = index_of[f.id] })
+        on_message(ch, nil, function(g) seen_by(late, ch, g.id) end)
+      end
       spans[#spans + 1] = { event_start[f.id], t }
+    end)
+  end
+  if rnd(3) == 0 then
+    -- raises inside nested runs only, which their callers catch: ends the frame for the rest
+    local raiser = handler({ ch = ch })
+    on_message(ch, nil, function(f)
+      seen_by(raiser, ch, f.id)
+      if depth > 0 and rnd(4) == 0 then
+        aborted[f.id] = raiser.pos
+        error("model raise")
+      end
     end)
   end
 end
@@ -246,9 +327,7 @@ for i = 1, rnd(3) do
       if rnd(3) == 0 then
         t = t + rnd(2 * period)
       elseif rnd(3) == 0 then
-        depth = depth + 1
-        run(rnd(period))
-        depth = depth - 1
+        nested_run(rnd(period))
       end
     end
     spans[#spans + 1] = { st, t }
@@ -268,6 +347,17 @@ for _, sp in ipairs(spans) do
 end
 if t > bound then error("A2: run(" .. d .. ") from " .. t0 .. " returned at " .. t .. ", bound " .. bound) end
 if popped ~= ndelivered then error("A1: " .. popped .. " frames taken, " .. ndelivered .. " delivered") end
+for k, a in ipairs(dispatched) do
+  for _, rec in ipairs(handlers) do
+    if rec.ch == a.ch then
+      local owed = (not rec.late or k >= rec.from) and not (aborted[a.seq] and rec.pos > aborted[a.seq])
+      local want = owed and 1 or nil
+      if rec.got[a.seq] ~= want then
+        error("A9: frame " .. a.seq .. " reached a handler " .. tostring(rec.got[a.seq] or 0) .. " times, owed " .. tostring(want or 0))
+      end
+    end
+  end
+end
 -- a callback that ran to the deadline leaves what arrived during it queued, for the next reader
 if not reached then
   for _, a in ipairs(all) do
@@ -910,4 +1000,254 @@ fn test_no_channel_is_looked_at_after_the_deadline() {
 	if name, _ := env.wait_frame(['CAN1', 'CAN2'], 20, 100 * time.microsecond) {
 		assert false, 'a frame on ${name} taken after the deadline'
 	}
+}
+
+// A run() inside the first of two handlers does not let the second see the next frame before
+// the current one (#488).
+fn test_a_nested_run_keeps_every_handlers_order() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_Y'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_Y', 0x40, 4, 5)
+	env.run_source('
+		local nested, second = false, {}
+		on_message("CAN1", nil, function(f)
+			if not nested then
+				nested = true
+				run(60)
+			end
+		end)
+		on_message("CAN1", nil, function(f) second[#second + 1] = string.byte(f.data, 1) end)
+		run(200)
+		log("second " .. table.concat(second, ","))
+	')!
+	t.wait()
+	assert said.lines.contains('second 0,1,2,3'), said.lines.str()
+}
+
+// The inner run() of a handler first gives the current frame to the handlers after it, whether or
+// not a frame arrives while it waits: the order does not depend on traffic.
+fn test_a_nested_run_finishes_the_current_frame_first() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_Z'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_Z', 0x41, 1, 0)
+	env.run_source('
+		local trace = {}
+		on_message("CAN1", nil, function(f)
+			run(30) -- no frame arrives while it waits
+			trace[#trace + 1] = "first done"
+		end)
+		on_message("CAN1", nil, function(f) trace[#trace + 1] = "second" end)
+		run(150)
+		log("trace " .. table.concat(trace, ","))
+	')!
+	t.wait()
+	assert said.lines.contains('trace second,first done'), said.lines.str()
+}
+
+// A frame an error left half-delivered goes with the outermost run(): a later run() never hands
+// it to anybody, a handler registered after it included.
+fn test_an_interrupted_frame_does_not_reach_a_later_run() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AA'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_AA', 0x42, 2, 5)
+	env.run_source('
+		local nested = false
+		on_message("CAN1", nil, function(f)
+			if not nested then
+				nested = true
+				run(100)
+			end
+		end)
+		on_message("CAN1", nil, function(f)
+			if string.byte(f.data, 1) == 1 then error("boom") end
+		end)
+		local ok = pcall(run, 200)
+		log("first " .. tostring(ok))
+		local late = 0
+		on_message("CAN1", nil, function(f) late = late + 1 end)
+		run(50)
+		log("late " .. late)
+	')!
+	t.wait()
+	assert said.lines.contains('first false'), said.lines.str()
+	assert said.num('late') == 0, said.lines.str()
+}
+
+// A coroutine suspended in a handler does not hold its frame back: the next run() — here the
+// main thread's — gives it to the handlers after that one.
+fn test_a_suspended_handlers_frame_goes_on_to_the_others() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AB'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_AB', 0x43, 1, 0)
+	env.run_source('
+		local second = 0
+		on_message("CAN1", nil, function(f) coroutine.yield() end)
+		on_message("CAN1", nil, function(f) second = second + 1 end)
+		local co = coroutine.create(function() run(150) end)
+		coroutine.resume(co)
+		run(50)
+		log("second " .. second)
+	')!
+	t.wait()
+	assert said.num('second') == 1, said.lines.str()
+}
+
+// A handler registered inside a nested run() sees what comes after it, in order, and never the
+// frame the outer run() was delivering when the inner one began.
+fn test_a_handler_registered_inside_a_nested_run_keeps_order() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AC'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_AC', 0x44, 3, 10)
+	env.run_source('
+		local nested, added, third = false, false, {}
+		on_message("CAN1", nil, function(f)
+			if not nested then
+				nested = true
+				run(100)
+			end
+		end)
+		on_message("CAN1", nil, function(f)
+			if string.byte(f.data, 1) == 1 and not added then
+				added = true
+				on_message("CAN1", nil, function(g) third[#third + 1] = string.byte(g.data, 1) end)
+			end
+		end)
+		run(250)
+		log("third " .. table.concat(third, ","))
+	')!
+	t.wait()
+	assert said.lines.contains('third 1,2'), said.lines.str()
+}
+
+// A handler that raises ends its frame even when an earlier handler's pcall(run) catches the error:
+// the handlers after it do not get that frame, and the next frame is delivered as ever.
+fn test_a_raising_handler_ends_its_frame_whoever_catches_it() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AD'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_AD', 0x45, 2, 10)
+	env.run_source('
+		local caught, third, nested = false, {}, false
+		on_message("CAN1", nil, function(f)
+			if not nested then
+				nested = true
+				caught = not pcall(run, 100)
+			end
+		end)
+		on_message("CAN1", nil, function(f)
+			if string.byte(f.data, 1) == 0 then error(nil) end
+		end)
+		on_message("CAN1", nil, function(f) third[#third + 1] = string.byte(f.data, 1) end)
+		run(250)
+		log("caught " .. tostring(caught))
+		log("third " .. table.concat(third, ","))
+	')!
+	t.wait()
+	assert said.lines.contains('caught true'), said.lines.str()
+	assert said.lines.contains('third 1'), said.lines.str()
+}
+
+// A run() in a coroutine of its own, started from a handler, keeps every handler's order too.
+fn test_a_coroutine_run_keeps_every_handlers_order() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AE'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_AE', 0x46, 4, 5)
+	env.run_source('
+		local nested, second = false, {}
+		on_message("CAN1", nil, function(f)
+			if not nested then
+				nested = true
+				coroutine.wrap(function() run(60) end)()
+			end
+		end)
+		on_message("CAN1", nil, function(f) second[#second + 1] = string.byte(f.data, 1) end)
+		run(200)
+		log("second " .. table.concat(second, ","))
+	')!
+	t.wait()
+	assert said.lines.contains('second 0,1,2,3'), said.lines.str()
+}
+
+// A handler that raises inside a coroutine started with coroutine.resume — which closes nothing —
+// still ends its frame: the next run() does not hand it to the handlers after it.
+fn test_a_frame_raised_out_of_a_resume_is_ended() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AF'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_AF', 0x47, 1, 0)
+	env.run_source('
+		local second = 0
+		on_message("CAN1", nil, function(f) error("boom") end)
+		on_message("CAN1", nil, function(f) second = second + 1 end)
+		local co = coroutine.create(function() run(150) end)
+		local ok = coroutine.resume(co)
+		log("resumed " .. tostring(ok))
+		run(50)
+		log("second " .. second)
+	')!
+	t.wait()
+	assert said.lines.contains('resumed false'), said.lines.str()
+	assert said.num('second') == 0, said.lines.str()
+}
+
+// A run() past its deadline does not take up a frame an inner coroutine run() took after it: the
+// outer run(10) returns when its own frame is done, not after the later frame's slow handler.
+fn test_a_level_delivers_only_what_was_queued_when_it_began() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AG'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	mut tx := transport.open('inproc:EV_AG')!
+	defer { tx.close() }
+	tx.send(transport.CanFrame{ id: 0x48, data: [u8(0)] })!
+	tx.send(transport.CanFrame{ id: 0x48, data: [u8(1)] })!
+	env.run_source('
+		local co
+		on_message("CAN1", nil, function(f)
+			if string.byte(f.data, 1) == 0 then
+				sleep_ms(30)
+				co = coroutine.create(function() run(200) end)
+				coroutine.resume(co)
+			else
+				coroutine.yield()
+			end
+		end)
+		on_message("CAN1", nil, function(f)
+			if string.byte(f.data, 1) == 1 then sleep_ms(300) end
+		end)
+		local t0 = __now_ms()
+		run(10)
+		log("took " .. (__now_ms() - t0))
+	')!
+	took := said.num('took')
+	assert took >= 30 && took < 250, 'run(10) took ${took} ms: ${said.lines}'
+}
+
+// Two coroutines mid-call on one frame: handler 1 suspended in one, handler 2 raising out of a
+// resume in another. The frame is ended — handler 3 never gets it — even after handler 1 resumes.
+fn test_a_frame_two_coroutines_were_on_ends_when_either_dies() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AH'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_AH', 0x49, 1, 0)
+	env.run_source('
+		local third = 0
+		on_message("CAN1", nil, function(f) coroutine.yield() end)
+		on_message("CAN1", nil, function(f) error("boom") end)
+		on_message("CAN1", nil, function(f) third = third + 1 end)
+		local first = coroutine.create(function() run(150) end)
+		coroutine.resume(first)
+		local second = coroutine.create(function() run(20) end)
+		log("second " .. tostring(coroutine.resume(second)))
+		coroutine.resume(first)
+		log("third " .. third)
+	')!
+	t.wait()
+	assert said.lines.contains('second false'), said.lines.str()
+	assert said.num('third') == 0, said.lines.str()
 }

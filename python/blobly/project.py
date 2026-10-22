@@ -3,6 +3,7 @@ its enabled channels as objects that complete in a REPL, and the event loop over
 import ctypes
 import math
 import os
+import warnings
 
 from . import _lib
 from ._lib import BloblyError
@@ -73,6 +74,23 @@ class Channel:
             self._current()
             return _lib.text(lib.bb_channel_iface(self._index))
 
+    @property
+    def kind(self):
+        """"can", "doip" or "someip": only a CAN row has frames to send and receive."""
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self._current()
+            k = _lib.check(lib.bb_channel_kind(self._index))
+        return _lib.KINDS.get(k, f"unknown ({k})")  # a newer library's kind is not a CAN bus
+
+    def _health_needs_reader(self):
+        """Whether this row's ladder moves only while it is read (SocketCAN, Vector)."""
+        lib = _lib.lib()
+        with _lib.state_lock:
+            self._current()
+            src = _lib.check(lib.bb_channel_health_source(self._index))
+        return src == _lib.BB_HEALTH_SOURCE_NEEDS_READER
+
     def _handle(self):
         h = self._h
         if h is not None:
@@ -103,12 +121,22 @@ class Channel:
     def recv(self, timeout_ms=1000):
         """The next frame other nodes sent, waiting at most timeout_ms (None: forever); None when
         nothing came."""
+        frame, _ = self._receive(_ms(timeout_ms))
+        return frame
+
+    def look(self):
+        """One look at what is already queued: (frame or None, spent). `spent` says the look
+        stopped at its bound with records still queued behind it, so a poller looks again at once
+        rather than sleeping."""
+        return self._receive(0)
+
+    def _receive(self, ms):
         f = _lib.BbFrame()
         lib = _lib.lib()
-        rc = _lib.check(lib.bb_bus_recv(self._handle(), _ms(timeout_ms), ctypes.byref(f)))
-        if rc == 1:
-            return None
-        return frame_of(f)
+        rc = _lib.check(lib.bb_bus_recv(self._handle(), ms, ctypes.byref(f)))
+        if rc in (_lib.BB_NONE, _lib.BB_SPENT):
+            return None, rc == _lib.BB_SPENT
+        return frame_of(f), False
 
     def health(self):
         """The controller's ladder now: "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF", or ""
@@ -255,23 +283,32 @@ class Project(EventLoop):
         return self
 
     def stop(self):
+        """Ends the run. True when the process is free for the next start; False when a loop
+        outlived the stop's bound (a driver call that will not return) — blobly.wait_released
+        waits for it."""
         lib = _lib.lib()
         with _lib.state_lock:
             if not self.started:
-                return
+                # nothing of ours runs; an earlier stop may still be letting go of the process
+                return _lib.check(lib.bb_wait_released(0)) == 0
             for c in self._channels:
                 try:
                     c.close()
                 except BloblyError:
                     pass  # a handle already gone is closed enough
             self.started = False
-            _lib.check(lib.bb_stop())
+            # False: a loop outlived the stop's bound and still holds the process; a start refuses
+            # until blobly.wait_released says it has let go
+            return _lib.check(lib.bb_stop()) != _lib.BB_RELEASING
 
     def __enter__(self):
         return self.start()
 
     def __exit__(self, *exc):
-        self.stop()
+        if not self.stop():
+            warnings.warn(f"{self.path}: a loop outlived the stop's bound and still holds the "
+                          "process; blobly.wait_released() waits for it before the next start",
+                          RuntimeWarning, stacklevel=2)
         return False
 
     @property
@@ -296,6 +333,9 @@ class Project(EventLoop):
 
     def _health(self, c):
         return c.health()
+
+    def _health_needs_reader(self, c):
+        return c._health_needs_reader()
 
     def _wait_frame(self, channels, timeout_ms):
         got, self._rr = wait_on(channels, timeout_ms, self._rr, monotonic_ms, sleep_ms)

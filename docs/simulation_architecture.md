@@ -133,7 +133,7 @@ networks:                       # generalised `channels:`
   - name: CAN1
     type: can                   # can | canfd | lin | eth
     backend: inproc             # inproc (default) | vcan0 | udp:group:port
-    databases: [dbc/blobly_net.dbc]
+    databases: [../dbc/blobly_net.dbc]
 nodes:
   - name: EngineECU
     networks: [CAN1]

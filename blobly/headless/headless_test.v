@@ -54,9 +54,11 @@ fn test_start_runs_the_simulation_and_stop_ends_it() {
 	assert frame.data.len > 0
 	bus.close()
 	assert r.spawned > 0
+	assert !released(), 'a running run holds the process'
 	r.stop()
 	assert r.loops_done == r.spawned, 'every loop counted out: ${r.loops_done} of ${r.spawned}'
 	assert !lines.said('still busy')
+	assert released() && wait_released(0), 'a clean stop frees the process at once'
 	// and the DoIP entity's port is free when stop returns: the same project starts again on
 	// the ports the first run bound (its entity was moved onto one this process could bind)
 	mut again := start(r.proj, path, Options{
@@ -191,4 +193,24 @@ fn test_stop_twice_is_harmless() {
 		assert err.msg().contains('already active'), err.msg()
 	}
 	second.stop()
+}
+
+// A process held past stop (a loop that outlived its bound keeps the slot) is not released until
+// the run that holds it lets go, and wait_released says so within its timeout.
+fn test_wait_released_waits_for_the_holder() {
+	headless_mu.lock()
+	held := headless_owner == 0
+	if held {
+		headless_next++
+		headless_owner = headless_next
+	}
+	gen := headless_owner
+	headless_mu.unlock()
+	assert held, 'another test left the process held'
+	assert !released()
+	t0 := time.ticks()
+	assert !wait_released(30)
+	assert time.ticks() - t0 >= 30
+	release_process(gen)
+	assert released() && wait_released(0)
 }

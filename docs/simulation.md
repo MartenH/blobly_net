@@ -55,7 +55,8 @@ channels:
                                 # `kvaser:0@500000` on Windows.
     mode: normal
     databases:
-      - dbc/blobly_net.dbc      # the NETWORK owns the database, not the ECU
+      - ../dbc/blobly_net.dbc   # relative to this project file; the NETWORK owns the
+                                # database, not the ECU
                                 # an AUTOSAR system description works here too:
                                 # `db/net.arxml`, or `"db/net.arxml#Body"` to name the
                                 # CAN cluster when the file describes several — QUOTED,
