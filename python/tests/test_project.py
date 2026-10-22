@@ -818,22 +818,39 @@ class TestRefusals(unittest.TestCase):
             blobly.wait_released(2**31)  # a C int: wider would wrap to forever or to 0
 
     def test_wait_released_is_asked_in_slices(self):
+        from blobly import events
         lib = _lib.lib()
         real, asked = lib.bb_wait_released, []
+        t = {"now": 0.0, "tick": 0.0, "late": 0.0}
 
-        def releasing(ms, free_at=None):
-            asked.append(ms)
-            time.sleep(ms / 1000)
+        def read():  # the clock as a host reads it: in ticks (Windows: about 15.6 ms)
+            return t["now"] // t["tick"] * t["tick"] if t["tick"] else t["now"]
+
+        def releasing(ms, free_at=None):  # a driver that wakes `late` ms after what it was asked
+            asked.append((read(), ms))
+            t["now"] += ms + t["late"] if ms else 0  # a look waits for nothing
             return 0 if free_at and len(asked) >= free_at else _lib.BB_RELEASING
         try:
-            lib.bb_wait_released = releasing
-            self.assertFalse(blobly.wait_released(250))
-            self.assertEqual(asked[:2], [100, 100])
-            self.assertTrue(sum(asked) <= 250 and max(asked[2:], default=0) <= 50, asked)
-            asked.clear()
-            lib.bb_wait_released = lambda ms: releasing(ms, free_at=3)
-            self.assertTrue(blobly.wait_released(None))
-            self.assertEqual(asked, [100, 100, 100], "a wait for ever is not asked in slices")
+            with mock.patch.object(events, "monotonic_ms", read), \
+                    mock.patch.object(events, "sleep_ms", lambda ms: t.__setitem__("now", t["now"] + ms)):
+                lib.bb_wait_released = releasing
+                for tick in (0.0, 1.0, 15.625):
+                    for late in (0.0, 0.4, 15.6):
+                        asked.clear()
+                        t.update(now=3.3, tick=tick, late=late)
+                        start = read()
+                        self.assertFalse(blobly.wait_released(250))
+                        # each slice at most SLICE_MS and none asked past the deadline (a look,
+                        # 0, waits for nothing); the wait over within a tick and a late wake of it
+                        for at, ms in asked:
+                            self.assertTrue(0 <= ms <= 100 and (ms == 0 or at + ms <= start + 250),
+                                            (tick, late, asked))
+                        self.assertLessEqual(t["now"], 3.3 + 250 + tick + late, (tick, late, asked))
+                asked.clear()
+                t.update(now=0.0, tick=0.0, late=0.0)
+                lib.bb_wait_released = lambda ms: releasing(ms, free_at=3)
+                self.assertTrue(blobly.wait_released(None))
+                self.assertEqual([ms for _, ms in asked], [100, 100, 100], "a wait for ever is not asked in slices")
             lib.bb_wait_released = lambda ms: 7  # an answer this package does not know: not free
             self.assertFalse(blobly.wait_released(None))
         finally:
