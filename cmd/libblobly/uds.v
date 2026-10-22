@@ -519,7 +519,11 @@ pub fn bb_uds_raw(u i32, req &u8, n i32, buf &u8, cap i32) i32 {
 		out_buf(buf, cap)!
 		hd.refuse_before_reopen(r, false)!
 		mut cl := hd.cli()!
-		return hd.answer(cl.raw(r)!, buf, cap)
+		answer := cl.raw(r)!
+		if r.len >= 2 && r[0] == 0x27 && r[1] & 1 == 1 {
+			hd.seed_gen = hd.conn_gen // a seed, whichever call asked for it
+		}
+		return hd.answer(answer, buf, cap)
 	})
 }
 

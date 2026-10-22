@@ -142,8 +142,9 @@ with its traceback.
 
 **Ctrl-C.** A call into the engine is not interrupted: the `KeyboardInterrupt` is raised when the
 call returns. So the package asks for a wait in slices of at most 100 ms: `recv` (`None`
-included), `expect`, `expect_signal`, `run()`, `blobly.wait_released`, a DoIP `discover` (asked again
-each slice) and `blobly.doip_listen` all end within about 100 ms of Ctrl-C. A UDS request is one call into the engine, bounded by its own timing (120 s at
+included), `expect`, `expect_signal`, `run()`, `blobly.wait_released`, a DoIP `discover` and
+`blobly.doip_listen` (one exchange each, on a thread of its own that finishes it) all end within
+about 100 ms of Ctrl-C. A UDS request is one call into the engine, bounded by its own timing (120 s at
 most), and Ctrl-C lands when it returns. A `with` block stops the project on the way out, an
 interrupt included.
 

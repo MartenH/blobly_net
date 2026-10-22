@@ -2,10 +2,11 @@
 a channel's entity asked who it is, and the announcements entities send unasked, heard for a
 window. UDS over a DoIP channel is its UdsClient (Channel.uds)."""
 import ctypes
+import threading
 from dataclasses import dataclass
 
 from . import _lib
-from ._lib import BloblyError, Timeout
+from ._lib import BloblyError
 from .events import _sliced
 
 # room for every announcement a window hears in one call; one past it is said, not dropped silently
@@ -50,25 +51,35 @@ def _row(who: str, channel) -> tuple[int, int]:
         return channel._index, _lib.state["run"]
 
 
+def _waited(call):
+    """call()'s answer, the call made on a thread of its own and waited for in slices
+    (events._sliced), so Ctrl-C ends the wait; the call itself is one native exchange, bounded by
+    its own wait, and an interrupted one finishes on its thread with its answer dropped."""
+    box = {}
+
+    def run():
+        try:
+            _lib.lib()  # attaches this thread
+            box["answer"] = call()
+        except BaseException as e:  # carried to the caller's thread
+            box["error"] = e
+    t = threading.Thread(target=run, name="blobly-doip", daemon=True)
+    t.start()
+    _sliced(lambda part: None if (t.join(part / 1000) or t.is_alive()) else True, -1)
+    if "error" in box:
+        raise box["error"]
+    return box["answer"]
+
+
 def discover(channel, timeout_ms: float = 1200) -> DoipAnnouncement:
     """Channel.discover."""
     wait = _ms("discover", timeout_ms)
     lib = _lib.lib()
     out = _lib.BbDoipAnnouncement()
     index, run = _row("discover", channel)
-
-    def ask(part):
-        # asked again each slice, so Ctrl-C ends the wait between them
-        try:
-            _lib.check(lib.bb_doip_discover(index, part, ctypes.byref(out)))
-        except Timeout:
-            return None
-        return _announcement(out)
-    got = _sliced(ask, wait)
+    _waited(lambda: _lib.check(lib.bb_doip_discover(index, wait, ctypes.byref(out))))
     channel._same_run(run)  # a restart meanwhile may have put another row at its index
-    if got is None:
-        raise Timeout(f"discover({channel.name}): no answer within {wait} ms", _lib.BB_ERR_TIMEOUT)
-    return got
+    return _announcement(out)
 
 
 def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool = False,
@@ -76,8 +87,7 @@ def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool =
     """The announcements DoIP entities send unasked (ISO 13400-2), heard for `window_ms`, in the
     order heard — the way a tester finds ECUs nobody told it about: every one, an entity repeating
     itself included. Nothing is queued for a listener that is not there, so it hears only what is
-    sent within its window. The window is heard in slices of SLICE_MS (100 ms), so Ctrl-C ends it
-    between them; what arrives in the microseconds a slice's socket is replaced is not heard.
+    sent within its window. Ctrl-C ends the wait within 100 ms; the window then runs out on its own.
 
     `port` is the UDP port (None: 13400); `ip6` listens over IPv6, joining ff02::1. `channel`, a
     DoIP Channel of the started project, listens on the port its entity is on in the run, and over
@@ -100,15 +110,10 @@ def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool =
             raise TypeError(f"doip_listen: channel is a Channel, not {channel!r}")
         index, run = _row("doip_listen", channel)
         row = ctypes.byref(ctypes.c_int(index))
-    heard: list[DoipAnnouncement] = []
-
-    def hear(part):
-        n = _lib.check(lib.bb_doip_listen(p, part, int(ip6), row, out, _CAP))
-        if n > _CAP:
-            raise BloblyError(f"doip_listen: {n} announcements in {part} ms, more than the {_CAP} kept")
-        heard.extend(_announcement(out[i]) for i in range(n))
-        return None  # the whole window is heard
-    _sliced(hear, window)
+    n = _waited(lambda: _lib.check(lib.bb_doip_listen(p, window, int(ip6), row, out, _CAP)))
     if channel is not None:
         channel._same_run(run)
-    return heard
+    if n > _CAP:
+        raise BloblyError(f"doip_listen: {n} announcements in {window} ms, more than the {_CAP} kept; "
+                          "listen for a shorter window")
+    return [_announcement(out[i]) for i in range(n)]
