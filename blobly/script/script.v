@@ -283,8 +283,9 @@ fn (mut env Env) register_all() {
 	env.st.register('__msg_template', l_msg_template)
 	env.st.register('__encode_signal', l_encode_signal)
 	env.st.register('__decode', l_decode)
+	// one clock under two names: the prelude's (which the model test replaces) and the script's
 	env.st.register('__now_ms', l_now_ms)
-	env.st.register('now_ms', l_clock_ms)
+	env.st.register('now_ms', l_now_ms)
 	env.st.register('__uds_write_did', l_uds_write_did)
 	env.st.register('__uds_sec_seed', l_uds_sec_seed)
 	env.st.register('__uds_sec_key', l_uds_sec_key)
@@ -1235,15 +1236,9 @@ fn l_uds_read_dtc(l lua.State) i32 {
 	return 1
 }
 
-// l_now_ms returns the host's monotonic clock in whole milliseconds, for the prelude's
-// expect/run/timers: the clock a received frame's t_ms is on.
+// now_ms() -> the host's monotonic clock in milliseconds: the prelude's expect/run/timers and the
+// clock of a received frame's t_ms
 fn l_now_ms(l lua.State) i32 {
-	l.push_int(i64(time.sys_mono_now() / 1_000_000))
-	return 1
-}
-
-// now_ms() -> the host's monotonic clock in milliseconds, the clock of a received frame's t_ms
-fn l_clock_ms(l lua.State) i32 {
 	l.push_num(clock_ms(i64(time.sys_mono_now())))
 	return 1
 }

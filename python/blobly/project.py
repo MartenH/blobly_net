@@ -59,7 +59,8 @@ class Frame:
         return f"Frame(0x{self.id:X} [{self.data.hex(' ').upper()}]{flags})"
 
 
-_IDENTITY = Frame.__slots__[:-1]  # what a frame is: everything but when it was received
+# what a frame is: every field but when it was received
+_IDENTITY = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi")
 
 
 def _fill(frame, fields):

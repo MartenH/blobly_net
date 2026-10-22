@@ -16,12 +16,17 @@ __global (
 )
 
 // received_at is when a received frame arrived, on the host's monotonic clock (time.sys_mono_now)
-// in nanoseconds: its own receive stamp as timebase places it, or `host_ns`, its receipt, where
-// it carries none (a software bus).
+// in nanoseconds: its own receive stamp as timebase places it, or `host_ns`, the caller's receipt,
+// where it carries none (a software bus) — so an unstamped frame's time is when THIS reader read
+// it, and two readers of one such frame each have their own.
 pub fn received_at(f CanFrame, host_ns i64) i64 {
+	host_clock := on_host_clock(f.hw_domain)
+	if t := timebase.unestimated(f.hw_domain, f.hw_ns, host_ns, host_clock) {
+		return t // no estimate to read: no lock to take
+	}
 	mut t := host_ns
 	lock rx_clock {
-		t = rx_clock.p.place(f.hw_domain, f.hw_ns, host_ns, on_host_clock(f.hw_domain))
+		t = rx_clock.p.place(f.hw_domain, f.hw_ns, host_ns, host_clock)
 	}
 	return t
 }

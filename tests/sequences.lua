@@ -13,7 +13,6 @@ test("a received frame says its format and when it was received", function()
   check.equal(a.fd, false)
   check.equal(a.brs, false)
   check.truthy(a.t_ms < b.t_ms and b.t_ms <= now_ms(), "t_ms out of order")
-  log("Powertrain cycle", string.format("%.1f", b.t_ms - a.t_ms), "ms")
 end)
 
 test("expect_signal waits for a decoded value to match", function()

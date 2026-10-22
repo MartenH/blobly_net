@@ -151,11 +151,8 @@ mut:
 // place returns the frame's time on the host monotonic clock, in nanoseconds. `host_clock` says the
 // stamp is already on that clock; `host_ns` is when this host received the frame.
 pub fn (mut p Placer) place(domain string, hw_ns i64, host_ns i64, host_clock bool) i64 {
-	if domain == '' {
-		return host_ns
-	}
-	if host_clock {
-		return hw_ns
+	if t := unestimated(domain, hw_ns, host_ns, host_clock) {
+		return t
 	}
 	mut d := p.domains[domain] or {
 		nd := &Domain{}
@@ -164,6 +161,18 @@ pub fn (mut p Placer) place(domain string, hw_ns i64, host_ns i64, host_clock bo
 	}
 	d.observe(hw_ns, host_ns)
 	return d.map(hw_ns) or { host_ns }
+}
+
+// unestimated is a frame's place where no domain's estimate is needed: its receipt when it has no
+// stamp, the stamp itself when that is already on the host clock; none for a foreign clock.
+pub fn unestimated(domain string, hw_ns i64, host_ns i64, host_clock bool) ?i64 {
+	if domain == '' {
+		return host_ns
+	}
+	if host_clock {
+		return hw_ns
+	}
+	return none
 }
 
 // reset forgets every domain: a new run opens every clock again.

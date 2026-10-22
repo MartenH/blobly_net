@@ -342,8 +342,10 @@ local sig = decode(channel, id, data [, ext])               -- DBC-decode -> { N
   host's monotonic clock, the clock `now_ms()` reads, with an unspecified zero — compare it with
   other frame times or with `now_ms()`. Where the backend stamps a frame (SocketCAN's kernel
   stamp; a device clock mapped onto the host's) it is that stamp, unmoved by the script's own
-  delay, so frames read off two wires order as the wires saw them; elsewhere (`inproc:`, `udp:`)
-  it is the receipt. It is the time the GUI's trace gives the frame, and Python's `Frame.t_ms`.
+  delay, so frames read off two wires order as the wires saw them, and it is the time the GUI's
+  trace and Python's `Frame.t_ms` give the same frame. Elsewhere (`inproc:`, `udp:`, and the
+  vendor adapters until they read their stamps) it is the receipt: when the script read it, so a
+  frame left queued while the script was busy carries the time it was read.
 - `format` states the frame's CAN format: `"classic"`, `"fd"` or `"fd_brs"`. Absent, the
   channel's declaration decides (`type: canfd` frames as FD). It is how a classic frame reaches
   a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
@@ -433,7 +435,7 @@ flows, but `expect` + `on_message`/`run` cover the common test shapes.)
 | `log(...)` | Print a line to the output (tab-separated args). |
 | `print(...)` | Same as `log` (routed to the Blobly Net output). |
 | `sleep_ms(ms)` | Wait `ms` milliseconds. |
-| `now_ms()` | The host's monotonic clock in milliseconds: the clock a received frame's `t_ms` is on, so `f.t_ms - sent_at` is a latency. |
+| `now_ms()` | The host's monotonic clock in milliseconds: the clock a received frame's `t_ms` is on, so `f.t_ms - sent_at` is a latency (on a wire that stamps frames, or one read while the answer arrives). |
 
 Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 
