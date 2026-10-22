@@ -5,12 +5,13 @@ import ctypes
 import math
 import numbers
 import os
+import sys
 import warnings
 import weakref
 
 from . import _lib
 from ._lib import BloblyError, Timeout
-from .events import MAX_WAIT_MS, EventLoop, _finite, monotonic_ms, sleep_ms, wait_on
+from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
 from .uds import UdsClient, _close_orphans, functional
 from .faults import Faults
 
@@ -18,20 +19,42 @@ from .faults import Faults
 class Frame:
     """A CAN frame. `data` is the payload; `length` its length, or for a remote frame (`rtr`, no
     payload) the length it asks for; `fd`/`brs` CAN-FD and its bit-rate switch; `esi` CAN-FD's
-    error-state indicator."""
+    error-state indicator. A value: equal frames hash alike, and none is changed once made."""
     __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi")
 
     def __init__(self, id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None):
-        self.id, self.data, self.ext = id, bytes(data), ext
-        self.fd, self.brs, self.rtr, self.esi = fd, brs, rtr, esi
-        self.length = len(self.data) if length is None else length
+        data = bytes(data)
+        _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi))
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f"a Frame is a value: make another rather than set {name}")
+
+    def __delattr__(self, name):
+        raise AttributeError(f"a Frame is a value: {name} cannot be deleted")
+
+    def __setstate__(self, state):
+        """copy and pickle restore a frame's slots (a subclass's too) past __setattr__."""
+        attrs, slots = state if isinstance(state, tuple) else (state, None)
+        for k, v in {**(attrs or {}), **(slots or {})}.items():
+            object.__setattr__(self, k, v)
 
     def __eq__(self, other):
-        return isinstance(other, Frame) and all(getattr(self, k) == getattr(other, k) for k in self.__slots__)
+        return isinstance(other, Frame) and self._key() == other._key()
+
+    def __hash__(self):
+        return hash(self._key())
+
+    def _key(self):
+        return tuple(getattr(self, k) for k in Frame.__slots__)
 
     def __repr__(self):
         flags = "".join(f" {k}" for k in ("ext", "fd", "brs", "rtr", "esi") if getattr(self, k))
         return f"Frame(0x{self.id:X} [{self.data.hex(' ').upper()}]{flags})"
+
+
+def _fill(frame, fields):
+    for k, v in zip(Frame.__slots__, fields):
+        object.__setattr__(frame, k, v)
 
 
 def frame_of(f):
@@ -49,8 +72,7 @@ def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
         raise ValueError(f"{who}: {len(data)} bytes is more than a CAN-FD frame carries")
     f = _lib.BbFrame(id=id, len=len(data), ext=int(bool(ext)), fd=int(bool(fd)), brs=int(bool(brs)),
                      rtr=int(bool(rtr)))
-    for i, b in enumerate(data):
-        f.data[i] = b
+    ctypes.memmove(f.data, data, len(data))
     return f
 
 
@@ -91,7 +113,7 @@ def _ms(timeout_ms):
     what was asked), None for forever."""
     if timeout_ms is None:
         return -1
-    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, (int, float)) or not math.isfinite(timeout_ms):
+    if not _finite(timeout_ms):
         raise TypeError("timeout_ms must be a finite number of milliseconds, or None")
     ms = max(0, math.floor(timeout_ms))
     if ms > 2**31 - 1:  # a C int: wider would wrap to 'forever' or to 0
@@ -166,11 +188,12 @@ class Channel:
         lib = _lib.lib()
         _lib.check(lib.bb_bus_send(h, ctypes.byref(f)))
 
-    def recv(self, timeout_ms=1000):
+    def recv(self, timeout_ms: float | None = 1000) -> Frame | None:
         """The next frame other nodes sent, waiting at most timeout_ms (None: forever); None when
-        nothing came."""
-        frame, _ = self._receive(_ms(timeout_ms))
-        return frame
+        nothing came. Ctrl-C ends the wait within 100 ms (SLICE_MS)."""
+        ms = _ms(timeout_ms)
+        h = self._handle()  # one handle for the whole wait: a close or stop meanwhile ends it
+        return _sliced(lambda part: self._receive(part, h)[0], ms)
 
     def look(self):
         """One look at what is already queued: (frame or None, spent). `spent` says the look
@@ -309,9 +332,9 @@ class Channel:
 
     def _frames_until(self, deadline, run):
         """The frames read from now until `deadline` (monotonic_ms) has passed: each read waits
-        whole milliseconds and never past it, the fraction of one the driver cannot be asked for
-        is slept rather than read, and nothing is read once it has passed but the first look (so a
-        wait of 0 reads at most one queued frame). A look that stopped at its bound with records
+        whole milliseconds, at most SLICE_MS (so Ctrl-C lands), and never past it, the fraction of
+        one the driver cannot be asked for is slept rather than read, and nothing is read once it
+        has passed but the first look (so a wait of 0 reads at most one queued frame). A look that stopped at its bound with records
         still queued (look's `spent`) looks again at once, within it. All of it in the project's
         run `run`, on the handle the channel had in it: a stop closes that handle, and a stop or
         a start during the wait is refused, never waited through on the next run's handle."""
@@ -326,7 +349,7 @@ class Channel:
                 return
             first = False
             try:
-                f, spent = self._receive(min(max(0, math.floor(left)), MAX_WAIT_MS), h)
+                f, spent = self._receive(min(max(0, math.floor(left)), SLICE_MS), h)
             except BloblyError:
                 with _lib.state_lock:  # a stop closed the handle: said as the stop, once it is done
                     self._same_run(run)
@@ -454,7 +477,7 @@ class Named:
         self._order = items
 
     def _one(self, name):
-        rows = self.__dict__["_by_name"].get(name)
+        rows = self.__dict__.get("_by_name", {}).get(name)
         if not rows:
             return None
         if len(rows) > 1:
@@ -464,9 +487,9 @@ class Named:
 
     def __getattr__(self, name):
         c = self._one(name)
-        if c is None:
+        if c is None:  # also for an object copy or pickle is still building
             raise AttributeError(f"no {self._noun} named {name!r}; there are: "
-                                 + ", ".join(self.__dict__["_by_name"]))
+                                 + ", ".join(self.__dict__.get("_by_name", {})))
         return c
 
     def __getitem__(self, key):
@@ -619,6 +642,18 @@ class Message:
         return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"
 
 
+def _say_dropped(path, gone):
+    """The RuntimeWarning naming the rows whose handlers a reload dropped, said from the first
+    caller outside this module (the line that loaded, started or entered the with block)."""
+    if not gone:
+        return
+    level, f = 2, sys._getframe(1)
+    while f.f_back is not None and f.f_code.co_filename == __file__:
+        f, level = f.f_back, level + 1
+    warnings.warn(f"{path}: handlers dropped, their rows are not in this load of the project ("
+                  + ", ".join(gone) + "); register them again", RuntimeWarning, stacklevel=level)
+
+
 class Project(EventLoop, Faults):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
@@ -640,7 +675,13 @@ class Project(EventLoop, Faults):
         """Reads the project into the library, which holds one load at a time: another project's
         channels refuse from here on. A reload of this project KEEPS each Channel whose row is
         still at its position under its name — so a variable, a timer's closure and a handler all
-        go on working — and drops the handlers of rows that went, naming them."""
+        go on working — and drops the handlers of rows that went, naming them in a
+        RuntimeWarning."""
+        _say_dropped(self.path, self._load())
+        return self
+
+    def _load(self):
+        """load, answering the rows whose handlers it dropped."""
         lib = _lib.lib()
         with _lib.state_lock:
             _lib.check(lib.bb_load(os.fsencode(self.path)))  # the filesystem's bytes, not UTF-8
@@ -665,11 +706,7 @@ class Project(EventLoop, Faults):
                 else:
                     rows.append(Channel(self, i, name, st["gen"]))
             self._channels = Channels(rows)
-        gone = self._drop_gone(rows)
-        if gone:
-            raise BloblyError("handlers dropped: their rows are not in this load of the project ("
-                              + ", ".join(gone) + "); register them again", _lib.BB_ERR_STATE)
-        return self
+        return self._drop_gone(rows)
 
     def _drop_gone(self, rows):
         """Drops the registrations on channels this load did not keep, and names them, rather than
@@ -688,12 +725,12 @@ class Project(EventLoop, Faults):
         return sorted(set(gone))
 
     def start(self):
-        """Starts this project — reloaded first if the library holds another load now."""
+        """Starts this project — reloaded first if the library holds another load now (see load)."""
         lib = _lib.lib()
         with _lib.state_lock:
             st = _lib.state
             if st["owner"] is not self or st["gen"] != self._gen:
-                self.load()
+                _say_dropped(self.path, self._load())  # before bb_start: a failed start still says it
             _lib.check(lib.bb_start())
             st["run"] += 1  # the rows' databases are this run's from here
             self.started = True

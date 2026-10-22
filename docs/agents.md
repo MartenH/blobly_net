@@ -109,7 +109,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 - **Bound every wait.** `ch.recv(timeout_ms)` returns `None` when nothing came; `run(duration_ms)`
   returns after its duration. Never call `recv(None)`: on a quiet bus it waits for ever, and
-  Ctrl-C cannot end it. A wait for one frame is `ch.expect(id, timeout_ms)`, and for one signal
+  nobody presses Ctrl-C for an agent. A wait for one frame is `ch.expect(id, timeout_ms)`, and for one signal
   value `ch.expect_signal(message, signal, want, timeout_ms)`: one deadline for the whole wait,
   and `blobly.Timeout` when nothing matched, its message saying what came instead.
 - **A frame read is consumed.** `recv` and `expect` drop what else they read on the way.
