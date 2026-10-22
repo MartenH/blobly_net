@@ -133,14 +133,11 @@ glibc and checked by `auditwheel`; Windows x64 with its MinGW runtime and those 
 the release and then uploaded to **PyPI** by the `pypi` job through Trusted Publishing (no token;
 the `pypi` environment, set up once — `docs/releasing.md`). A CI wheel carries `+git.<sha>`, which
 PyPI refuses. Bundle payload list:
-`scripts/stage_bundle.sh`, once, for both. (The AppImage, #322, was dropped in v2026.10.01: on
-the 24.04 floor it needed FUSE 2 installed, an `apt install` like the tarball's GLFW, and
-v2026.10.00's had not been downloaded once.) Its Linux job is pinned to **ubuntu-24.04**, not
+`scripts/stage_bundle.sh`, once, for both. Its Linux job is pinned to **ubuntu-24.04**, not
 `ubuntu-latest`: a Linux binary does not bundle glibc, so the build host sets the oldest system it
-runs on, and a floating label raises that floor silently. Ubuntu 24.04 is the supported floor
-(22.04 until v2026.10.01, whose first build failed there: gcc 11 rejects C the pinned V emits,
-vlang/v#31019), and `ci.yml`'s compiling jobs and canbridge are pinned to the same image, so a PR
-is tested with the compiler the release builds with. Notes =
+runs on, and a floating label raises that floor silently. Ubuntu 24.04 is the supported floor,
+and `ci.yml`'s compiling jobs and canbridge are pinned to the same image, so a PR is tested with
+the compiler the release builds with. Notes =
 `packaging/RELEASE_HIGHLIGHTS.md` (written per release, its first line naming the tag) +
 generated changelog + `packaging/RELEASE_NOTES_HEADER.md`. Never bundle a vendor CAN DLL
 (ROADMAP has the list and the reason). The maintainer walkthrough is

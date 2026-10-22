@@ -82,10 +82,9 @@ jobs:
     # PINNED, NOT FLOATING. A Linux binary does not bundle glibc, so it runs on hosts at least as
     # new as the machine that built it; `ubuntu-latest` advancing would silently raise that floor
     # for every user (codex round 2 on #322). Ubuntu 24.04 is the supported floor, and ci.yml's
-    # compiling jobs are pinned to the same image, so a PR is tested with the compiler the release
-    # builds with: on 22.04 v2026.10.01's first build failed, because its gcc 11 rejects C the
-    # pinned V emits (vlang/v#31019) and no PR job ran that gcc. The tarball and the Linux wheel
-    # are both built here and share the floor.
+    # compiling jobs are pinned to the same image, so the compiler the release builds with is the
+    # one every PR is tested with. The tarball and the Linux wheel are both built here and share
+    # the floor.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -100,7 +99,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
-          # the runtime library the binary loads, for the version check below
+          # the runtime library the version check below loads (libglfw3-dev depends on it too)
           sudo apt-get install -y --no-install-recommends libglfw3
           # the wheel's build tools live in a venv (scripts/build_wheel.py's `wheel`, auditwheel)
           sudo apt-get install -y --no-install-recommends python3-venv

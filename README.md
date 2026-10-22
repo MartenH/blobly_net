@@ -76,7 +76,8 @@ Two caveats: downloading an artifact requires being signed in to GitHub, and art
 
 **Between releases (Linux)** — the `ci` workflow builds the app on every push to `main` and
 keeps it: **[Actions](../../actions/workflows/ci.yml)** → the latest `ci` run **on `main`** → the
-**`blobly_net-linux-x64`** artifact. The same signed-in and ~90-day caveats apply. Inside the
+**`blobly_net-linux-x64`** artifact, built on Ubuntu 24.04 like a release, so it has the same
+floor. The same signed-in and ~90-day caveats apply. Inside the
 downloaded zip is a `.tar.gz` — GitHub zips every artifact and strips the executable bit doing
 it, so unpack the tar rather than the binary:
 
