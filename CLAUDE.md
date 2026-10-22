@@ -460,19 +460,24 @@ are now verdict jobs over the parts (`test`, `verdict-msys2`). A new job joins i
   avoid. Sessions run concurrently, and a second one that finds the shared checkout on a
   foreign branch, or mid-rebase, loses work that was not its own. The main checkout stays on
   `main`, clean, for reading and for merges.
-- **The order is: build → `/code-review high` → `scripts/codex_local_review.sh` → `@codex
-  review`.** Not a subset, and not a different order. Each GitHub codex round is a ~10-minute
-  wait, so anything a local review can find is found for free; codex then sees a branch that has
-  already had its obvious problems removed. Every GitHub round is watched by
-  `scripts/codex_review_watch.sh` in a *tracked* background timer — see the note on watchers
-  below.
+- **The order is: build → `/code-review high` → `scripts/codex_local_review.sh`, repeated until
+  a round finds nothing → CI green.** Not a subset, and not a different order. Reviews are local:
+  `@codex review` on GitHub is not requested (the maintainer's decision, 2026-10-22). Measured
+  that day: a local round took 42–145 s and needs no push; a GitHub round took 1.5–15 min
+  (median 3.2, 24 rounds) and queued behind GitHub's own outages — and found a defect a clean
+  local round had missed in 2 of ~10 PRs, which is what `--astra` and the repeat rule below are
+  for. The GitHub tooling below stays for the day the maintainer asks for one.
 - **`scripts/codex_local_review.sh` runs codex on this machine** (`gpt-6.1-sol`, high effort, about
   10 minutes; `--astra` for a risky change) over the committed branch — it refuses a dirty tree,
-  because the review runs the tests in it — and prints its findings. Fix them, then ask GitHub.
-  Its prompt asks for every defect, on purpose: `codex review`'s default prompt reports a short
-  list and misses most of what GitHub's codex finds. It does NOT replace `@codex review`, which
-  still finds defects that need protocol knowledge, and a clean local run proves nothing. Its
-  P3s include out-of-range inputs; an input no caller can produce is not worth code to refuse.
+  because the review runs the tests in it — and prints its findings. Fix what holds, commit, and
+  run it again; a round that finds nothing is the bar, and the last round of a risky change
+  (a new ABI, a lifecycle, a protocol path) runs `--astra`. Its prompt asks for every defect, on
+  purpose: `codex review`'s default prompt reports a short list. A clean round is necessary, not
+  a proof — the tests and the self-review still carry their weight, and protocol semantics are
+  where it has missed things before. Its P3s include out-of-range inputs; an input no caller can
+  produce is not worth code to refuse. Record each round in the PR — its duration (the script's
+  `finished in N s`), its findings and what was done about them — so the switch from GitHub
+  rounds can be judged on numbers.
   It runs the first codex CLI that actually runs (`$CODEX`, else every `codex` on PATH, else the
   VS Code extension's copies newest first); `--check-codex` prints which, or exits 3 when none
   does — reload the Codex extension (pinned by `scripts/codex_local_review_test.sh` in CI).
@@ -504,8 +509,8 @@ are now verdict jobs over the parts (`test`, `verdict-msys2`). A new job joins i
   "iterate until clean" had no way to terminate. Every fact needed was already written down, one
   `git show` away. Re-read it the same way whenever you pick work back up after a gap; other
   sessions land PRs into this file while you are working.
-- **PRs get `@codex review`**; iterate until clean before merging. Before the first request,
-  run `scripts/review_preflight.sh`. Start each round with
+- **A GitHub `@codex review`, when the maintainer asks for one**: iterate it until clean. Before
+  the first request, run `scripts/review_preflight.sh`. Start each round with
   `scripts/request_codex_review.sh <pr> --post`, then run the printed
   `scripts/codex_review_watch.sh --state ...` command as a
   **tracked** background job, never a detached shell (`( ... & )`) — a detached watcher fires
@@ -524,7 +529,7 @@ are now verdict jobs over the parts (`test`, `verdict-msys2`). A new job joins i
   promise the GUI made and the backend could not keep, in the original work, not in any fix.**
   Stopping one round earlier would have shipped it. Judge each finding on its merits; let
   repetition tell you what to test, not when to quit.
-- **React 👍/👎 on every finding.** Codex's footer asks "Useful? React with 👍 / 👎", and that is
+- **React 👍/👎 on every finding of a GitHub review.** Codex's footer asks "Useful? React with 👍 / 👎", and that is
   the only channel the review has for learning what it got right; leaving it empty tells it
   nothing, round after round. `gh api -X POST repos/<o>/<r>/pulls/comments/<id>/reactions -f
   content='+1'` (or `'-1'`). **What the reaction rates is whether the FINDING is true, not
@@ -574,6 +579,8 @@ are now verdict jobs over the parts (`test`, `verdict-msys2`). A new job joins i
   SOME/IP datagrams, telemetry) are pinned by golden vectors on both sides; change them together.
 
 ### Polling a codex review
+
+For a GitHub review, when one is requested; local reviews (above) need none of this.
 
 A watcher that reports "nothing" when something is waiting is worse than no watcher. Every rule
 here exists because a silent version of it lost a review; the incidents are in
