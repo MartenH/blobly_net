@@ -296,10 +296,10 @@ class TestLifecycle(unittest.TestCase):
             gc.collect()
             self.assertTrue(uds._orphans, "the finalizer closed it on the spot")
             with net.channels.CAN1.uds() as d:
+                self.assertEqual(uds._orphans, [], "an open left it")
                 with self.assertRaises(blobly.NegativeResponse) as e:
                     d.read_did(0xABCD)
                 self.assertEqual(e.exception.nrc, 0x31)
-            self.assertEqual(uds._orphans, [])
 
     def test_a_project_not_started_opens_nothing(self):
         net = blobly.Project(SIM_DEMO).load()

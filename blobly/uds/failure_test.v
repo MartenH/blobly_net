@@ -131,6 +131,8 @@ fn test_a_stop_is_abandoned_whichever_layer_noticed() {
 	assert failure_of(error(abandoned_note)) == .abandoned
 	assert failure_of(error(isotp.abandoned_note)) == .abandoned
 	assert failure_of(error(isotp.abandoned_recv_note)) == .abandoned
+	// with the context a channel appends to it
+	assert failure_of(error('${isotp.abandoned_recv_note} — after 1 orphan flow control frame(s)')) == .abandoned
 	assert failure_of(error('anything else')) == .refused
 }
 

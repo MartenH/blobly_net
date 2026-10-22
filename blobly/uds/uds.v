@@ -436,7 +436,7 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 			if suppressed && !pending && is_silence(err.msg()) {
 				return []u8{}, false // nothing to say: what a suppressed positive response looks like
 			}
-			if err.msg() in [isotp.abandoned_note, isotp.abandoned_recv_note] {
+			if abandoned(err.msg()) {
 				return err // a stop only the channel was told of
 			}
 			// the wait ran out: in silence, or with an answer begun and not finished in time

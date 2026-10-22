@@ -16,9 +16,16 @@ pub enum Failure {
 	abandoned   // ended by stop_requested (the client's, or its channel's)
 }
 
+// abandoned: an error is a stop's, the client's or its channel's — whatever context the channel
+// appended to the note (the orphan Flow Controls it skipped).
+fn abandoned(msg string) bool {
+	return msg.starts_with(abandoned_note) || msg.starts_with(isotp.abandoned_note)
+		|| msg.starts_with(isotp.abandoned_recv_note)
+}
+
 // failure_of is the kind of `err`, an error a Client call returned.
 pub fn failure_of(err IError) Failure {
-	if err.msg() in [abandoned_note, isotp.abandoned_note, isotp.abandoned_recv_note] {
+	if abandoned(err.msg()) {
 		return .abandoned
 	}
 	if err is NegativeResponse {

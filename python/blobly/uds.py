@@ -119,6 +119,7 @@ class UdsClient:
     def _open(self):
         """Opens the connection (under _lib.state_lock)."""
         lib = _lib.lib()
+        _close_orphans()
         self.channel._current()
         if not self.channel._project.started:
             raise BloblyError(f"{self.channel.name}: the project is not started", _lib.BB_ERR_STATE)
@@ -149,6 +150,7 @@ class UdsClient:
     def close(self) -> None:
         """Lets the connection go for good: a later call refuses."""
         with _lib.state_lock:
+            _close_orphans()
             self._closed = True
             self._let_go()
             self.channel._uds.discard(self)
