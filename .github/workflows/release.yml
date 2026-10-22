@@ -289,8 +289,25 @@ jobs:
       name: pypi
       url: https://pypi.org/project/blobly/
     permissions:
+      contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # AGAIN, HERE: this job may run long after publish checked — a required reviewer on the
+      # environment, or a re-run of a failed upload — so the tag must still name the commit these
+      # wheels were built from, and that commit must still be on main, at the moment of upload
+      - name: The tag still is what the guard proved
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" \
+            || { echo "tag ${GITHUB_REF_NAME} is gone from origin — not publishing"; exit 1; }
+          now="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          [ "$now" = "$GITHUB_SHA" ] \
+            || { echo "tag moved (now $now, built $GITHUB_SHA) — not publishing"; exit 1; }
+          git fetch --force origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "the tagged commit is no longer on origin/main — not publishing"; exit 1; }
       - uses: actions/download-artifact@v8
         with:
           pattern: blobly-wheel-*
@@ -309,7 +326,24 @@ jobs:
             esac
           done
           ls dist/*manylinux*_x86_64.whl dist/*win_amd64.whl >/dev/null
+      # A RE-RUN AFTER A PARTIAL UPLOAD must finish the release, so the upload skips a file PyPI
+      # already has — but only one that is byte-for-byte this artifact: a file of the same name with
+      # another digest stops the job, since PyPI never replaces a published file.
+      - name: What PyPI already has of this version is these files
+        run: |
+          ver="$(basename dist/*manylinux*.whl | cut -d- -f2)"
+          code="$(curl -s -o pypi.json -w '%{http_code}' "https://pypi.org/pypi/blobly/${ver}/json")"
+          [ "$code" = 404 ] && { echo "nothing of ${ver} on PyPI yet"; exit 0; }
+          [ "$code" = 200 ] || { echo "PyPI answered ${code}"; exit 1; }
+          for w in dist/*.whl; do
+            have="$(python3 -c "import json,sys; d=json.load(open('pypi.json')); print(next((u['digests']['sha256'] for u in d['urls'] if u['filename']==sys.argv[1]), ''))" "$(basename "$w")")"
+            [ -z "$have" ] && { echo "$(basename "$w"): not on PyPI yet"; continue; }
+            mine="$(sha256sum "$w" | cut -d' ' -f1)"
+            [ "$have" = "$mine" ] || { echo "$(basename "$w") is on PyPI with another digest ($have)"; exit 1; }
+            echo "$(basename "$w"): already on PyPI, same digest — skipped by the upload"
+          done
       - name: Publish to PyPI (Trusted Publishing)
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
+          skip-existing: true

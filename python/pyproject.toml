@@ -16,6 +16,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Marten Hildell" }]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Operating System :: POSIX :: Linux",
     "Operating System :: Microsoft :: Windows",
     "Topic :: Software Development :: Testing",

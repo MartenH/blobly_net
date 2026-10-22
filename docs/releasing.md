@@ -102,7 +102,8 @@ should reach PyPI, the maintainer sets up two things (once):
    so a publication waits for a click.
 
 Until both exist the `pypi` job fails at the upload and the GitHub release stands as it is; re-run
-the job once they do. A wheel with a local version label (`+git…`, every CI build) is refused by
+the job once they do. A re-run checks the tag again, and finishes a partial upload: a wheel PyPI
+already has is skipped only when its digest is this artifact's. A wheel with a local version label (`+git…`, every CI build) is refused by
 PyPI and by the job itself, so only a tagged release's wheels can reach it.
 
 ## What the workflow proves before publishing

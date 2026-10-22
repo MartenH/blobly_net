@@ -106,6 +106,12 @@ def lib():
     global _lib, loaded_path
     with _lock:
         if _lib is None:
+            # the thread rule below rests on CPython clearing a thread's local storage ON that
+            # thread as it ends; a tracing collector (PyPy) may finalize later, or elsewhere
+            if sys.implementation.name != "cpython":
+                raise BloblyError("blobly needs CPython: it detaches a thread from the library "
+                                  "as CPython ends it, which " + sys.implementation.name +
+                                  " does not promise")
             if threading.current_thread() is not threading.main_thread():
                 raise BloblyError("load blobly from the main thread first: bb.h requires the "
                                   "library be loaded there (its collector takes the loading thread "
