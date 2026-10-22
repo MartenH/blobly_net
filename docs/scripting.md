@@ -372,7 +372,15 @@ roughly a tenth of a core while it waits. A callback that runs past
 the deadline ends `run()` when it returns, and what arrived meanwhile stays queued for the next
 reader. The rule is per event — a frame, a timer, a health
 sample: none is taken up once the deadline has passed, and a frame taken up before it reaches every
-handler it matches, since a frame read off the bus cannot be read again.
+handler it matches, since a frame read off the bus cannot be read again. A handler may call `run()`
+itself, directly or in a coroutine of its own: that inner `run()` first gives the frame being
+handled to the handlers after the current one, then goes on, so every handler sees a channel's
+frames in the order they arrived. A handler that yields leaves its frame to the next `run()` that begins a delivery
+(a `run()` already part-way through an earlier frame finishes only what it began with). A handler that does not return — it raises (inside a coroutine too, resumed or wrapped), or yields
+into a coroutine that is then closed — ends its frame for the handlers that have not had it yet,
+whoever catches the error; a `run()` it
+called before that (directly, in an `xpcall` handler or a `<close>` cleanup) may already have given
+it to them.
 
 | Call | Meaning |
 |---|---|
