@@ -353,7 +353,7 @@ above is manual, so a regression there is caught only when someone next runs it.
 **Using it**
 - [scripting.md](docs/scripting.md) — Lua scripting + the headless test runner
 - [scripting_python.md](docs/scripting_python.md) — the engine from Python (`pip install blobly`)
-- [agents.md](docs/agents.md) — for an AI agent driving Blobly Net: simulation first, ask before transmitting on hardware
+- [agents.md](docs/agents.md) — for an AI agent driving Blobly Net
 - [dbc_editor.md](docs/dbc_editor.md) — the DBC editor
 - [project_editing.md](docs/project_editing.md) — projects, buses and channels
 - [bus_config_dialog.md](docs/bus_config_dialog.md) — bus/hardware configuration
