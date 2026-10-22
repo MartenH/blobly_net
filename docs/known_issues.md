@@ -141,7 +141,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   matching C declaration`. It comes from **vlib**, not from this repo, and it reproduces on
   untouched files on `main` — so it reads exactly like "the module suite does not run on this
   machine", which cost most of a session on that assumption. It is V's default **tcc**:
-  `v -enable-globals -cc gcc test blobly/` runs the whole suite (127 test programs today). The Linux CI job uses
+  `v -enable-globals -cc gcc test blobly/` runs the whole suite. The Linux CI job uses
   the default compiler and never sees it.
 - 🟢 **A timed `select` could panic `Invalid argument` under starvation (V 0.5.1).** Its
   `channel_select` computed `remaining := timeout - stopwatch.elapsed()` only after its
@@ -160,9 +160,9 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   `bus is closed`; before that a closed inproc bus delivered an endless stream of id-0 empty
   frames, which a stop-sliced ISO-TP receive skipped as not its own and asked again — a spin
   (#401). Where a closed channel is possible, take the `select` as an expression and read its
-  `false`; a plain `<-q` needs its `or` for the same reason. On V3 the expression's result is
-  untyped, so `if ok` and `!ok` work but `println(ok)`, `'${ok}'` and `ok.str()` do not compile;
-  vlang/v#30830 fixes that, open and in no V yet.
+  `false`; a plain `<-q` needs its `or` for the same reason. Since the pin `5f7d4d0` the
+  expression's result is a `bool` like any other (vlang/v#30830); on `0535623` it was untyped, so
+  `if ok` and `!ok` worked but `println(ok)`, `'${ok}'` and `ok.str()` did not compile.
 - 🟢 **`spawn` could pass an `f64` argument as zero (pre-V3 compiler).** `spawn read_passes(path,
   specs, rows, t0, pos, ch)` delivered `pos` = 0.03 to the thread as 0.0, every time, with no
   warning (`-old-compiler`, #172). V3 delivers it intact (checked on `0535623` and master
@@ -329,8 +329,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   holds them all. V3 changes worth knowing: `int` is **64-bit**
   (a C callback or struct that means C's `int` must say `i32`, and so must a C `int*`: V3 copies
   a literal `&local` through a C int and back, but not a forwarded pointer, a local whose address
-  escapes, or an array, so `check_cmds.sh` refuses `&int` in a `fn C.` declaration; through that copy V3 also folds a
-  later comparison of an immutable local as if nothing wrote it, vlang/v#30221), `json` is
+  escapes, or an array, so `check_cmds.sh` refuses `&int` in a `fn C.` declaration; through that copy V3 also folded a
+  later comparison of an immutable local as if nothing wrote it, vlang/v#30221, fixed in the pin), `json` is
   gone (`json2`), an Option's `or` block binds no `err`, and a project's `modules/` directory is
   no longer searched (the engine is `blobly/`, entry above).
   `V_C_ERROR_BUG_REPORT_DISABLED=1` stays: V3 still uploads a source excerpt on a C compilation

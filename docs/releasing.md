@@ -66,7 +66,7 @@ have to rediscover it:
 5. **Merge everything meant for the release first**, then that PR last (a PR merged after the
    bump but before the tag is still in the release; one merged after the tag is not).
 6. **Tag** from `origin/main`, never from a local branch, and push it (the short version above).
-   Watch the `release` workflow: the Windows bundle takes the better part of an hour.
+   Watch the `release` workflow: the Windows bundle takes ten minutes or so.
 7. **After it publishes**, read the release page; edit it on GitHub if anything needs adding.
 
 ## The number — CalVer, `YYYY.MM.PATCH`
@@ -127,7 +127,7 @@ PyPI and by the job itself, so only a tagged release's wheels can reach it.
    `./blobly_net --version` and compares. (The Windows exe compiles the same committed
    `v.mod`, so one execution covers both.)
 5. **the tag still is what the guard proved** — re-checked just before publish, because the
-   Windows build runs for the better part of an hour and a deleted or force-moved tag must
+   Windows build runs for minutes and a deleted or force-moved tag must
    not associate the binaries with different source (`--verify-tag` blocks gh's silent
    tag re-creation too).
 6. **PyPI only after the GitHub release** — the `pypi` job needs `publish`, so nothing reaches
