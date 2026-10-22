@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -14,6 +15,14 @@ if not os.environ.get("BLOBLY_TEST_INSTALLED"):
     sys.path.insert(0, os.path.join(HERE, ".."))
 import blobly  # noqa: E402
 from blobly import _lib  # noqa: E402
+
+
+def run_until(net, got, limit_s=5.0):
+    """run() in 100 ms slices until got() holds or limit_s has passed: a slow runner waits
+    longer, a path that never delivers still fails the assertion after it."""
+    deadline = time.monotonic() + limit_s
+    while not got() and time.monotonic() < deadline:
+        net.run(100)
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 SIM_DEMO = os.path.join(REPO, "projects", "sim-demo.blobnet")
@@ -157,7 +166,7 @@ class TestLoads(unittest.TestCase):
                 heard = []
                 net.on_message(first, None, heard.append)
                 net.on_timer(20, lambda: y.send(0x55, b"\x01"))
-                net.run(200)
+                run_until(net, lambda: heard)
                 self.assertTrue(heard, "the handler listened to the other row named X")
 
     def test_a_path_with_a_nul_is_refused(self):
@@ -181,8 +190,8 @@ class TestLoads(unittest.TestCase):
         try:
             net.start()
             self.assertIs(net.channels.CAN1, can1, "the reload replaced the channel the timer holds")
-            net.run(200)
-            self.assertTrue(answers)
+            run_until(net, lambda: answers)
+            self.assertTrue(answers, "no answer to the timer's request after the reload")
         finally:
             net.stop()
 
@@ -215,7 +224,7 @@ class TestLoads(unittest.TestCase):
         blobly.Project(DEMO).load()  # the library holds another load now
         try:
             net.start()  # reloads its own project; the handler must follow
-            net.run(200)
+            run_until(net, lambda: heard)
             self.assertTrue(heard, "the handler stayed on the earlier load's channel and heard nothing")
         finally:
             net.stop()
