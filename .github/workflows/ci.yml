@@ -24,7 +24,7 @@ name: ci
 # uses). Two pins, not one, and the second is the whole reason this is hand-rolled rather
 # than `vlang/setup-v` — see the note at the install step.
 #
-# V_MACOS_V3_NO_FALLBACK=1, for every `v` in both jobs. The toolchain is V3, and when V3 cannot
+# V_MACOS_V3_NO_FALLBACK=1, for every `v` in every job. The toolchain is V3, and when V3 cannot
 # build a program a V3 `v` silently RETRIES with a downloaded V1 compiler — so without this a
 # V3 regression would pass CI on the old compiler and nobody would know. Despite the name it is
 # read on every platform (vlang/v cmd/v/v.v).
@@ -45,7 +45,7 @@ concurrency:
   cancel-in-progress: true
 
 # PINNED, not latest: `.v-version` names a V3 commit this repo is known to build and pass on
-# (a master commit). One file, read by both jobs here,
+# (a master commit). One file, read by every job here,
 # by release.yml's Linux job and by scripts/setup_env.sh, so the pin is stated once. Moving it is
 # a decision, not a drift.
 #
@@ -198,19 +198,20 @@ jobs:
 
   # THE REQUIRED CHECK. The protect-main ruleset requires a check of this name, so the jobs
   # above report under it here: it passes only if every one of them passed. Renaming it, or
-  # dropping it, leaves every PR waiting on a check that never reports. Skipped only when the
-  # run is cancelled by a newer push, whose own run reports for the new head.
+  # dropping it, leaves every PR waiting on a check that never reports. always(), never
+  # !cancelled(): a skipped required check counts as PASSING, so a cancelled run must fail here.
   test:
     name: linux • modules + headless Lua
     needs: [unit, abi, checks]
-    if: ${{ !cancelled() }}
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Every part passed
         env:
+          NEEDS: ${{ toJSON(needs) }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          echo "unit abi checks: $RESULTS"
+          echo "$NEEDS"
           for r in $RESULTS; do [ "$r" = success ] || exit 1; done
 
   gui-build:

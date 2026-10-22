@@ -273,19 +273,20 @@ jobs:
 
   # THE REQUIRED CHECK. The protect-main ruleset requires a check of this name, so both mingw
   # jobs report under it here: it passes only if both passed. Renaming it, or dropping it, leaves
-  # every PR waiting on a check that never reports. Skipped only when the run is cancelled by a
-  # newer push, whose own run reports for the new head.
+  # every PR waiting on a check that never reports. always(), never !cancelled(): a skipped
+  # required check counts as PASSING, so a cancelled run must fail here.
   verdict-msys2:
     name: mingw (MSYS2) • GUI bundle
     needs: [checks-msys2, build-msys2]
-    if: ${{ !cancelled() }}
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Both mingw jobs passed
         env:
+          NEEDS: ${{ toJSON(needs) }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          echo "checks build: $RESULTS"
+          echo "$NEEDS"
           for r in $RESULTS; do [ "$r" = success ] || exit 1; done
 
   bundle:

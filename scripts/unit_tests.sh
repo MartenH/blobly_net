@@ -11,6 +11,7 @@ set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 if [ "${1:-}" = --shard ]; then
 	part=${2:?--shard I/N}
+	[ $# -eq 2 ] || { echo "unit_tests: --shard takes no paths" >&2; exit 2; }
 	dirs=$("$root/scripts/unit_shard.sh" "${part%/*}" "${part#*/}")
 	echo "shard $part: $(echo $dirs)"
 	set --

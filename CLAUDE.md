@@ -400,7 +400,7 @@ reuses the ImGui/ImPlot archive plus sources (headers and licence texts) on Linu
 keyed by the pinned build script, C++ glue/headers, action, g++ and the freetype/glfw headers.
 Neither key names the runner image's build or its whole package list, which move weekly (MSYS2
 on every run); to flush a bad entry, bump the key's `v-1`/`gui-deps-1` prefix. canbridge builds
-BESIDE the mingw job, and a `bundle` job joins the two where the bundle is published.
+BESIDE the mingw jobs, and a `bundle` job joins them where the bundle is published.
 Both use exact keys, rebuild on a miss and save only after a successful dependency build.
 A valid GUI restore refreshes the archive timestamp: checkout timestamps alone would otherwise
 make `run_gui.sh` rebuild unchanged glue. The app and every test still build/run each time.
