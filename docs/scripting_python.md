@@ -697,7 +697,8 @@ one tester address on one connection (ISO 13400-2), so a second `ch.uds()` is re
 first is open. Close it, or share it. Between calls the library answers the entity's alive checks
 on the connection (ISO 13400-2), so an idle client keeps it. A connection that goes while idle is
 the next call's `ConnectionLost`, its `exchange` `None` since that request never went out, and a
-0x27 key is sent only on the connection that gave its level's seed: across a reconnect it is refused.
+0x27 key is sent only on the connection that gave its level's seed: across a reconnect, or a
+stop and start, it is refused.
 
 **What goes wrong on DoIP**, besides what any UDS call raises:
 

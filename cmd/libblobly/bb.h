@@ -357,6 +357,10 @@ int bb_doip_routing_hint(int code, int tester, char *buf, int cap); /* what a te
                                    `tester` can do about a denial with `code`; "" where there is
                                    nothing to add to its name */
 int bb_uds_close(int u);
+int bb_uds_replaces(int u);  /* u's connection replaces an earlier one the host had (a client
+                                reopened after a stop): on DoIP a 0x27 key is then refused until
+                                its level's seed is answered on this connection, as after the
+                                library reopens a lost one itself; nothing on CAN */
 int bb_uds_last(int u, bb_uds_exchange *out, uint8_t *request, int request_cap, uint8_t *answer,
                 int answer_cap);                            /* 0, with the handle's last exchange
                                                                (its bytes cut at the caps, the

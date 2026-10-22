@@ -5,16 +5,11 @@ module main
 import blobly.doip
 import blobly.transport
 
-// SeedState is where the last 0x27 seed answered on a handle came from.
-enum SeedState {
-	none_   // no seed answered yet: the ECU judges a key
-	current // answered on this connection
-	stale   // answered on a connection since lost
-}
-
-// DoipLink is a DoipClient that remembers its seeds, per security level: a seed answer (67, an odd
-// sub-function L) makes level L's current, and a key (27, L + 1) is refused, never written, when
-// level L's seed came from a connection since lost — a key answers the seed of ONE connection.
+// DoipLink is a DoipClient that remembers which security levels' seeds it answered: a seed answer
+// (67, an odd sub-function L) marks level L, and on a link that `inherits` — opened in place of a
+// connection that may have given seeds (a reconnect, or a host reopening its client) — a key
+// (27, L + 1) is refused, never written, until level L's seed is answered on this one: a key
+// answers the seed of ONE connection. On a first connection the ECU judges every key.
 @[heap]
 struct DoipLink {
 pub:
@@ -22,35 +17,29 @@ pub:
 	tx_id u32
 	rx_id u32
 mut:
-	c     &doip.DoipClient
-	seeds map[u8]SeedState // by level (the seed's sub-function); absent is .none_
+	c        &doip.DoipClient
+	seeds    map[u8]bool // levels whose seed this connection answered
+	inherits bool
 }
 
-// link_of wraps `c`; `before` is the link it replaces (nil for a first connection), whose seeds
-// are all stale on this one.
-fn link_of(c &doip.DoipClient, before &DoipLink) &DoipLink {
-	mut seeds := map[u8]SeedState{}
-	if !isnil(before) {
-		for level, _ in before.seeds {
-			seeds[level] = .stale
-		}
-	}
+// link_of wraps `c`; `inherits` when it replaces a connection.
+fn link_of(c &doip.DoipClient, inherits bool) &DoipLink {
 	return &DoipLink{
-		iface: c.iface
-		tx_id: c.tx_id
-		rx_id: c.rx_id
-		c:     unsafe { c }
-		seeds: seeds
+		iface:    c.iface
+		tx_id:    c.tx_id
+		rx_id:    c.rx_id
+		c:        unsafe { c }
+		inherits: inherits
 	}
 }
 
 fn (l &DoipLink) guard(data []u8) ! {
-	if data.len < 2 || data[0] != 0x27 {
+	if !l.inherits || data.len < 2 || data[0] != 0x27 {
 		return
 	}
 	sub := data[1] & 0x7F
-	if sub != 0 && sub & 1 == 0 && l.seeds[sub - 1] or { SeedState.none_ } == .stale {
-		return transport.not_written('security key: the connection that gave the level ${sub - 1} seed is gone; request a new seed')
+	if sub != 0 && sub & 1 == 0 && !l.seeds[sub - 1] {
+		return transport.not_written('security key: the level ${sub - 1} seed was not answered on this connection, which replaces the one that may have given it; request a new seed')
 	}
 }
 
@@ -67,7 +56,7 @@ fn (mut l DoipLink) send_to(target u32, data []u8) ! {
 fn (mut l DoipLink) recv(timeout_ms int) ![]u8 {
 	d := l.c.recv(timeout_ms)!
 	if d.len >= 2 && d[0] == 0x67 && d[1] & 1 == 1 {
-		l.seeds[d[1] & 0x7F] = .current
+		l.seeds[d[1] & 0x7F] = true
 	}
 	return d
 }

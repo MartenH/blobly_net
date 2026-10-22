@@ -227,6 +227,7 @@ class UdsClient:
         self._ext_sizes: dict[int, int] = {}
         self._lock = threading.RLock()  # re-entered: security_access holds it across two calls
         self._in_key_fn = False  # security_access is inside its key_fn
+        self._opened = False  # a connection was opened before the current one
         with _lib.state_lock:
             self._open()
 
@@ -248,8 +249,10 @@ class UdsClient:
             self.tx, self.rx, self.ext = out.tx, out.rx, bool(out.ext)
         self.channel._uds.add(self)
         # the sizes stated on an earlier connection hold on this one too, or it is not opened: a
-        # call on it would ask without them
+        # call on it would ask without them; and a seed of an earlier one answers no key here
         try:
+            if self._opened:
+                _lib.check(lib.bb_uds_replaces(self._h))
             for did, size in self._did_sizes.items():
                 _lib.check(lib.bb_uds_did_size(self._h, did, size))
             for record, size in self._ext_sizes.items():
@@ -257,6 +260,7 @@ class UdsClient:
         except BloblyError:
             self._let_go()
             raise
+        self._opened = True
 
     def _handle(self) -> int:
         with _lib.state_lock:

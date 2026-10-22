@@ -95,7 +95,7 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 		return transport.open(iface)
 	}) or { return open_failed(err, t.doip) }
 	if mut conn.ch is doip.DoipClient {
-		link := link_of(conn.ch, unsafe { nil })
+		link := link_of(conn.ch, false)
 		conn = udsconn.Conn{
 			ch:  link
 			cli: uds.new_client(link)
@@ -170,6 +170,19 @@ fn open_failed(err IError, is_doip bool) i32 {
 		return rc
 	}
 	return fail(if is_doip { bb_err_carrier } else { bb_err }, err.msg())
+}
+
+// bb_uds_replaces: handle u's connection replaces an earlier one of the host's (a client reopened
+// after a stop): a 0x27 key goes only once its level's seed is answered on this one (DoipLink).
+// Nothing on a CAN handle.
+@[export: 'bb_uds_replaces']
+pub fn bb_uds_replaces(u i32) i32 {
+	return with_uds(u, fn (mut hd UdsHandle) !i32 {
+		if mut hd.conn.ch is DoipLink {
+			hd.conn.ch.inherits = true
+		}
+		return ok()
+	})
 }
 
 // bb_uds_close: out of the table at once; closed once the call inside it has left, which its
@@ -263,8 +276,7 @@ fn (mut hd UdsHandle) reconnect() ! {
 		}
 	}
 	c.stop_requested = stop
-	before := if hd.conn.ch is DoipLink { &DoipLink(hd.conn.ch) } else { unsafe { &DoipLink(nil) } }
-	link := link_of(c, before)
+	link := link_of(c, true)
 	mut cli := uds.new_client(link)
 	cli.did_lens = hd.conn.cli.did_lens.clone()
 	cli.ext_lens = hd.conn.cli.ext_lens.clone()
@@ -320,6 +332,10 @@ fn with_uds(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 	hd.mu.lock()
 	defer {
 		hd.mu.unlock()
+	}
+	// a close while this call waited for the idle service ends it before it starts
+	if stdatomic.load_i64(&hd.closing) != 0 {
+		return fail(bb_err_handle, 'the UDS handle was closed')
 	}
 	return call(mut hd) or {
 		if uds.failure_of(err) == .lost {

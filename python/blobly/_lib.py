@@ -208,6 +208,7 @@ def _declare(lib):
         # a const uint8_t * is declared c_char_p: bytes pass as they are, their length beside them
         "bb_uds_open": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64), P(BbUdsTarget)], c_int),
         "bb_uds_close": ([c_int], c_int),
+        "bb_uds_replaces": ([c_int], c_int),
         "bb_uds_last": ([c_int, P(BbUdsExchange), c_char_p, c_int, c_char_p, c_int], c_int),
         "bb_uds_data": ([c_int, c_char_p, c_int], c_int),
         "bb_uds_raw": ([c_int, c_char_p, c_int, c_char_p, c_int], c_int),

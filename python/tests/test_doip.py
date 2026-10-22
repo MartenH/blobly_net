@@ -396,7 +396,7 @@ channels:
                 return bytes(b ^ 0xFF for b in seed)
             with self.assertRaises(blobly.Refused) as e:
                 diag.security_access(0x01, key_fn)
-            self.assertIn("the connection that gave the level 1 seed is gone", str(e.exception))
+            self.assertIn("the level 1 seed was not answered on this connection", str(e.exception))
             self.assertEqual(diag.security_access(0x01), b"\x12\x34")  # a new seed, on the new one
             for nested in (lambda seed: diag.security_access(0x01), lambda seed: diag.raw(b"\x27\x01"),
                            lambda seed: diag.raw_suppressed(b"\x27\x01"),
@@ -414,7 +414,7 @@ channels:
             key = b"\x27\x02" + bytes(b ^ 0xFF for b in seed)
             with self.assertRaises(blobly.Refused) as e:
                 diag.raw(key)
-            self.assertIn("the connection that gave the level 1 seed is gone", str(e.exception))
+            self.assertIn("the level 1 seed was not answered on this connection", str(e.exception))
             with self.assertRaises(blobly.Refused):  # nor to the functional address
                 fake.uds_functional(None, [diag], key)
             diag.raw(b"\x27\x03")  # another level's seed on the new connection is not level 1's
@@ -422,6 +422,19 @@ channels:
                 diag.raw(key)
             diag.raw(b"\x27\x01")  # a seed on the new connection, and its key goes
             self.assertEqual(diag.raw(b"\x27\x02\xed\xcb"), b"\x67\x02")
+
+    def test_a_seed_before_a_stop_answers_no_key_after_it(self):
+        _, fake = self.start()
+        net = fake._project
+        diag = fake.uds()
+        self.addCleanup(diag.close)
+        seed = diag.raw(b"\x27\x01")[2:]
+        net.stop()
+        net.start()
+        with self.assertRaises(blobly.Refused):
+            diag.raw(b"\x27\x02" + bytes(b ^ 0xFF for b in seed))
+        diag.raw(b"\x27\x01")
+        self.assertEqual(diag.raw(b"\x27\x02\xed\xcb"), b"\x67\x02")
 
     def test_a_close_from_another_thread_ends_a_call(self):
         _, fake = self.start(mute=True)
