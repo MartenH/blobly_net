@@ -137,7 +137,8 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		left := deadline[i] - sw.elapsed().milliseconds()
 		read_ms := if left > c.timeout_ms { left } else { i64(c.timeout_ms) }
 		resp := read_answer(mut c, read_ms, stoppable, targets) or {
-			if stop_asked(targets) {
+			// a stop already seen (by the read, or by the target's channel) ends the request
+			if abandoned(err.msg()) || stop_asked(targets) {
 				return error(abandoned_note)
 			}
 			if is_silence(err.msg()) {
