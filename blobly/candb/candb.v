@@ -358,13 +358,13 @@ pub fn (m Message) multiplexor_index() int {
 // whole, less the multiplexed ones whose selector does not match the multiplexor switch's value.
 // For a non-multiplexed message whose payload holds every signal it returns all signals unchanged.
 pub fn (m Message) active_signals(data []u8) []Signal {
-	if m.multiplexor_index() < 0 && m.signals.all(it.fits(data.len)) {
+	sw := m.switch_in(data)
+	if !sw.present && m.signals.all(it.fits(data.len)) {
 		return m.signals
 	}
-	on := m.carried(data)
 	mut out := []Signal{}
-	for i, s in m.signals {
-		if on[i] {
+	for s in m.signals {
+		if sw.selects(s, data.len) {
 			out << s
 		}
 	}
@@ -383,9 +383,30 @@ pub fn (m Message) carried(data []u8) []bool {
 	return out
 }
 
-// carries is carried's answer for the signal at index `i`, without building the list.
-pub fn (m Message) carries(data []u8, i int) bool {
-	return m.switch_in(data).selects(m.signals[i], data.len)
+// Carrier is carried's answer for one signal, its message's switch found once, for a caller that
+// asks of many payloads.
+pub struct Carrier {
+pub:
+	sig     Signal
+	has_mux bool
+	mux     Signal
+}
+
+// carrier is the Carrier of the signal named `name`.
+pub fn (m Message) carrier(name string) ?Carrier {
+	sig := m.signal_named(name)?
+	i := m.multiplexor_index()
+	return Carrier{
+		sig:     sig
+		has_mux: i >= 0
+		mux:     if i >= 0 { m.signals[i] } else { Signal{} }
+	}
+}
+
+// carried_by is whether `data` carries the signal.
+pub fn (c Carrier) carried_by(data []u8) bool {
+	sw := if c.sig.is_multiplexed { read_switch(c.has_mux, c.mux, data) } else { MuxSwitch{} }
+	return sw.selects(c.sig, data.len)
 }
 
 // MuxSwitch is a message's multiplexor switch as one payload holds it.
@@ -397,14 +418,18 @@ struct MuxSwitch {
 
 fn (m Message) switch_in(data []u8) MuxSwitch {
 	i := m.multiplexor_index()
-	if i < 0 {
+	return read_switch(i >= 0, if i >= 0 { m.signals[i] } else { Signal{} }, data)
+}
+
+fn read_switch(present bool, mux Signal, data []u8) MuxSwitch {
+	if !present {
 		return MuxSwitch{}
 	}
-	held := m.signals[i].fits(data.len)
+	held := mux.fits(data.len)
 	return MuxSwitch{
 		present: true
 		held:    held
-		value:   if held { m.signals[i].raw_value(data) } else { u64(0) }
+		value:   if held { mux.raw_value(data) } else { u64(0) }
 	}
 }
 

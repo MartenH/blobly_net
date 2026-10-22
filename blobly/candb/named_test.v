@@ -106,15 +106,18 @@ fn test_a_short_payload_carries_only_what_it_holds_whole() {
 	// Mode is 16|4: a two-byte payload holds Speed whole and none of Mode
 	assert plain.carried([u8(1), 2]) == [true, false]
 	assert plain.active_signals([u8(1), 2]).map(it.name) == ['Speed']
-	assert plain.carries([u8(1), 2], 0) && !plain.carries([u8(1), 2], 1)
+	assert plain.carrier('Speed')?.carried_by([u8(1), 2])
+	assert !plain.carrier('Mode')?.carried_by([u8(1), 2])
+	assert plain.carrier('Other') == none
 	assert plain.active_signals([u8(1)]) == []
 	muxed := db.message_named('Muxed')?
 	// the switch held, the selected branch cut short
 	assert muxed.carried([u8(0), 0x10]) == [true, false, false]
 	// no switch at all: no branch is selected, not branch 0
 	assert muxed.carried([]u8{}) == [false, false, false]
-	for i in 0 .. 3 {
-		assert !muxed.carries([]u8{}, i)
-		assert muxed.carries([u8(1), 0x10, 0], i) == (i != 1)
+	for i, s in muxed.signals {
+		c := muxed.carrier(s.name)?
+		assert !c.carried_by([]u8{})
+		assert c.carried_by([u8(1), 0x10, 0]) == (i != 1)
 	}
 }
