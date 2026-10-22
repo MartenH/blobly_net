@@ -79,11 +79,14 @@ jobs:
 
   linux:
     needs: guard
-    # PINNED, NOT FLOATING, and the AppImage is why. An AppImage does not bundle glibc, so it runs
-    # on hosts at least as new as the machine that built it; `ubuntu-latest` advancing would
-    # silently raise that floor for every user (codex round 2 on #322). The oldest supported
-    # runner is the widest compatibility. The tarball is built here too and gets the same benefit.
-    runs-on: ubuntu-22.04
+    # PINNED, NOT FLOATING. A Linux binary does not bundle glibc, so it runs on hosts at least as
+    # new as the machine that built it; `ubuntu-latest` advancing would silently raise that floor
+    # for every user (codex round 2 on #322). Ubuntu 24.04 is the supported floor, and ci.yml's
+    # compiling jobs are pinned to the same image, so a PR is tested with the compiler the release
+    # builds with: on 22.04 v2026.10.01's first build failed, because its gcc 11 rejects C the
+    # pinned V emits (vlang/v#31019) and no PR job ran that gcc. The tarball and the Linux wheel
+    # are both built here and share the floor.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       # the same pin as ci.yml, for the same reason: a release built with V master would build
@@ -97,10 +100,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
-          # For the AppImage: the runtime .so files it bundles. The -dev packages above provide
-          # headers and the linker symlink, not the soname the binary actually loads. No FUSE —
-          # build_appimage.sh sets APPIMAGE_EXTRACT_AND_RUN, because libfuse2 is not installable
-          # under that name on ubuntu-24.04 runners.
+          # the runtime library the binary loads, for the version check below
           sudo apt-get install -y --no-install-recommends libglfw3
           # the wheel's build tools live in a venv (scripts/build_wheel.py's `wheel`, auditwheel)
           sudo apt-get install -y --no-install-recommends python3-venv
@@ -121,24 +121,14 @@ jobs:
           sh scripts/build_libblobly.sh build
           cp build/libblobly.so dist/blobly_net/
           tar -C dist -czf "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" blobly_net
-
-      # THE ONE FILE A LINUX USER CAN ACTUALLY RUN (#322). The tarball is dynamically linked, so
-      # a user who downloads it and runs ./blobly_net gets "error while loading shared libraries:
-      # libglfw.so.3" from the dynamic linker, before main(), with the remedy in a README they had
-      # no reason to open. The AppImage carries the libraries instead of asking for them. Both
-      # ship: the tarball is still the right thing for anyone who wants the payload unpacked.
-      - name: Build the AppImage
-        run: sh scripts/build_appimage.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v7
         with:
           name: linux-tarball
-          path: |
-            blobly_net-*.tar.gz
-            blobly_net-*.AppImage
+          path: blobly_net-*.tar.gz
           if-no-files-found: error
 
-      # THE LINUX WHEEL, built HERE for the same reason the AppImage is: a wheel's manylinux tag is
-      # the newest glibc its library uses, so the oldest runner gives the widest wheel. Its tag is
+      # THE LINUX WHEEL, built HERE for the tarball's reason: a wheel's manylinux tag is the newest
+      # glibc its library uses, so the floor's runner gives the widest wheel. Its tag is
       # derived from the library (scripts/build_wheel.py) and auditwheel must agree. --release:
       # v.mod's version alone, refused unless it is this tag.
       - name: Build the Linux wheel
@@ -283,7 +273,6 @@ jobs:
             --verify-tag \
             --notes-file notes.md \
             "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" \
-            "blobly_net-${GITHUB_REF_NAME}-x86_64.AppImage" \
             "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip" \
             wheels/*.whl
 

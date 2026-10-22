@@ -73,7 +73,7 @@ jobs:
   # (blobly/lua + blobly/script pull it via #flag).
   unit:
     name: linux • unit tests ${{ matrix.part }}/${{ strategy.job-total }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # the release floor (release.yml linux)
     strategy:
       # every part reports, so one failure does not hide another part's
       fail-fast: false
@@ -88,7 +88,7 @@ jobs:
 
   abi:
     name: linux • libblobly C ABI + Python
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # the release floor (release.yml linux)
     steps:
       - uses: actions/checkout@v7
       - name: Set up pinned V (cached)
@@ -125,7 +125,7 @@ jobs:
 
   checks:
     name: linux • cmd checks, script tests + headless Lua
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # the release floor (release.yml linux)
     steps:
       - uses: actions/checkout@v7
 
@@ -239,7 +239,7 @@ jobs:
 
   gui-build:
     name: linux • GUI (imgui) compile-link
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # the release floor (release.yml linux)
     steps:
       - uses: actions/checkout@v7
 

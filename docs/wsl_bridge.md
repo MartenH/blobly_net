@@ -41,6 +41,8 @@ Windows folder.
 
 ## Requirements
 
+- **A distribution at least as new as Ubuntu 24.04** (its glibc, precisely): `canbridge` is a
+  Linux program built on Ubuntu 24.04 and runs inside the distribution.
 - **WSL 2 with `networkingMode=mirrored`** in `%UserProfile%\.wslconfig`:
 
   ```
