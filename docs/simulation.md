@@ -640,6 +640,9 @@ sim.fault("CAN1", "BCM", "Powertrain", "bad_crc")     -- until cleared
 sim.clear_fault("CAN1", "BCM", "Powertrain")
 ```
 
+From Python the same calls are `net.fault(...)` and `net.clear_fault(...)`, and a refusal is
+`blobly.FaultRefused` ([scripting_python.md](scripting_python.md#9-fault-injection-and-e2e)).
+
 The **channel comes first**: a project may run the same node and message names on two buses, and
 dropping a frame on the wrong one invalidates observations of a network nobody was testing.
 

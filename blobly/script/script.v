@@ -334,6 +334,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_raw_suppressed', l_uds_raw_suppressed)
 	env.st.register('__uds_functional', l_uds_functional)
 	env.st.register('__e2e_p01_crc', l_e2e_p01_crc)
+	env.st.register('__e2e_p01_protect', l_e2e_p01_protect)
 	env.st.register('__uds_dtcs', l_uds_dtcs)
 	env.st.register('__uds_supported_dtcs', l_uds_supported_dtcs)
 	env.st.register('__uds_dtc_count', l_uds_dtc_count)
@@ -389,112 +390,16 @@ fn l_sleep(l lua.State) i32 {
 	return 0
 }
 
-// l_sim_fault injects (or clears) a fault: sim_fault(node, message, kind [, ms [, signal]]).
+// l_sim_fault injects (or clears) a fault: sim_fault(channel, node, message, kind [, ms [, signal]]).
 //
 // Injecting from a script is the point — a fault a human has to click is a demo, while a fault
 // a test can raise and clear is a regression check: drop the frame, assert the DTC appears,
-// clear it, assert it goes away.
+// clear it, assert it goes away. Which faults may be stored is sim.FaultTarget.arm's to say.
 fn l_sim_fault(l lua.State) i32 {
 	mut env := env_of(l)
-	chan_name := l.arg_str(1)
-	node := l.arg_str(2)
-	msg := l.arg_str(3)
-	kind := l.arg_str(4)
-	ms := l.arg_int(5)
-	signal := l.arg_str(6)
-	ci := env.find_chan(chan_name) or { return l.fail(err.msg()) }
-	// A PASSIVE CHANNEL HAS NOTHING TO INJECT INTO. Faults are consumed by the simulation loop,
-	// and no simulation runs on an Ethernet row — the runner skips it, the GUI never plans one.
-	// Without this the fault was STORED and reported as armed whenever the channel happened to
-	// carry a DBC naming the message, so a fault test could pass while the traffic it claims to
-	// have corrupted was never touched. Refusing a fault that cannot take effect is the rule
-	// ChanInfo.nodes already exists to enforce for the CAN case.
-	if k := env.chans[ci].carrier.eth_kind() {
-		return l.fail('"${chan_name}" is a ${k} channel — nothing simulates on it, so a fault there could never take effect')
-	}
-	iface := env.chans[ci].fault_iface()
-	k := match kind {
-		'none', 'clear', '' { sim.FaultKind.none_ }
-		'drop' { sim.FaultKind.drop }
-		'bad_crc' { sim.FaultKind.bad_crc }
-		'freeze_counter' { sim.FaultKind.freeze_ctr }
-		'out_of_range' { sim.FaultKind.out_of_range }
-		else { return l.fail('unknown fault kind "${kind}"') }
-	}
-
-	// Reject a target nothing will ever read. A misspelled node or message stored under a key
-	// no engine looks at reports success and changes no traffic — which in an automated fault
-	// experiment is indistinguishable from a fault that was armed and had no effect.
-	if k != .none_ {
-		mut known := false
-		for m in env.chans[ci].db.messages_from(node) {
-			if m.name == msg {
-				known = true
-				break
-			}
-		}
-		if !known {
-			return l.fail('"${node}" does not send "${msg}" on ${chan_name}')
-		}
-		if k == .out_of_range {
-			mut sg := signal
-			if sg == '' {
-				// choose one, as the panel does, rather than succeeding and mutating nothing
-				for m in env.chans[ci].db.messages_from(node) {
-					if m.name != msg {
-						continue
-					}
-					for cand in m.signals {
-						if sim.can_force_out_of_range(m, cand.name, prot_of(env.chans[ci].db, env.chans[ci].nodes,
-							node, msg))
-						{
-							sg = cand.name
-							break
-						}
-					}
-					break
-				}
-			}
-			if sg == '' {
-				return l.fail('no signal on "${msg}" has a value outside its declared range')
-			}
-			// Validate a signal the caller NAMED as well. Only the auto-picked case was
-			// checked, so a misspelled or full-width signal was stored happily and then
-			// transmitted an unchanged frame — the exact "armed but does nothing" outcome the
-			// rest of this validation exists to prevent.
-			mut usable := false
-			for m in env.chans[ci].db.messages_from(node) {
-				if m.name == msg
-					&& sim.can_force_out_of_range(m, sg, prot_of(env.chans[ci].db, env.chans[ci].nodes, node, msg)) {
-					usable = true
-				}
-			}
-			if !usable {
-				return l.fail('"${sg}" on "${msg}" has no value outside its declared range')
-			}
-			sim.inject(iface, node, msg, sim.Fault{
-				kind:         k
-				signal:       sg
-				remaining_ms: int(ms)
-			})
-			return 0
-		}
-		if k == .bad_crc && !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'crc') {
-			return l.fail('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing')
-		}
-		if k == .freeze_ctr
-			&& !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'counter') {
-			// The E2E counter is what freezes; a `counter` GENERATOR is an ordinary signal and
-			// keeps running by design. Without protection there is nothing to stall, and
-			// arming it would report success and change nothing.
-			return l.fail('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing')
-		}
-	}
-	sim.inject(iface, node, msg, sim.Fault{
-		kind:         k
-		signal:       signal
-		remaining_ms: int(ms)
-	})
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
+	env.chans[ci].fault_target().arm(l.arg_str(2), l.arg_str(3), l.arg_str(4), int(l.arg_int(5)),
+		l.arg_str(6)) or { return l.fail(err.msg()) }
 	return 0
 }
 
@@ -504,31 +409,15 @@ pub fn (c ChanInfo) fault_iface() string {
 	return if c.key_iface != '' { c.key_iface } else { c.iface }
 }
 
-// has_protection reports whether this message really has the E2E field a fault needs.
-//
-// The named signal must EXIST in the DBC message, not merely be a non-empty string: the engine
-// attaches a misspelled protection entry happily, and then neither the stamper nor the fault
-// finds the signal — so `bad_crc` was accepted and changed no transmitted bits.
-// has_protection: whether `node` stamps `field` ('crc' or 'counter') on `msg` — by its protect:
-// entry or its DBC declaration, the one answer the simulation stamps by (sim.protection_for).
-fn has_protection(db candb.Database, nodes []project.NodeCfg, node string, msg string, field string) bool {
-	e := prot_of(db, nodes, node, msg)
-	return if field == 'crc' { e.crc != '' } else { e.counter != '' }
-}
-
-// prot_of is the protection `node` stamps on `msg` (empty when none).
-fn prot_of(db candb.Database, nodes []project.NodeCfg, node string, msg string) sim.E2e {
-	for n in nodes {
-		if n.name != node {
-			continue
-		}
-		for m in db.messages_from(node) {
-			if m.name == msg {
-				return sim.protection_for(n, m) or { sim.E2e{} }
-			}
-		}
+// fault_target is this channel as sim.FaultTarget.arm judges a fault on it.
+fn (c ChanInfo) fault_target() sim.FaultTarget {
+	return sim.FaultTarget{
+		channel:  c.name
+		eth_kind: c.carrier.eth_kind() or { '' }
+		iface:    c.fault_iface()
+		db:       c.db
+		nodes:    c.nodes
 	}
-	return sim.E2e{}
 }
 
 fn l_uds_open(l lua.State) i32 {
@@ -1192,27 +1081,29 @@ fn push_functional_replies(l lua.State, replies []uds.FunctionalReply) {
 }
 
 // l_e2e_p01_crc(frame, data_id, crc_pos, counter_pos, mode): AUTOSAR E2E Profile 1's CRC for a
-// frame as it stands (sim.p01_crc_bytes, what the simulation stamps with). The counter is read
-// from the low nibble of counter_pos, which ALT mode's byte choice depends on.
+// frame as it stands (sim.p01_frame_crc, what the simulation stamps with).
 fn l_e2e_p01_crc(l lua.State) i32 {
 	data := l.arg_bytes(1)
-	id := l.arg_int_exact(2) or { return l.fail('e2e.p01_crc: data_id is not an integer') }
-	crc_pos := l.arg_int_exact(3) or { return l.fail('e2e.p01_crc: crc_pos is not an integer') }
-	ctr_pos := l.arg_int_exact(4) or { return l.fail('e2e.p01_crc: counter_pos is not an integer') }
-	mode := l.arg_str(5)
-	if id < 0 {
-		return l.fail('data_id ${id} is not a Data ID')
-	}
-	if why := sim.p01_params_problem(u32(id), mode) {
-		return l.fail(why)
-	}
-	if crc_pos < 0 || crc_pos >= data.len || ctr_pos < 0 || ctr_pos >= data.len || crc_pos == ctr_pos {
-		return l.fail('crc_pos ${crc_pos} / counter_pos ${ctr_pos} must be distinct bytes of the ${data.len}-byte frame')
-	}
-	crc := sim.p01_crc_bytes(data, int(crc_pos), u16(id), mode, data[int(ctr_pos)] & 0x0F) or {
+	id := l.arg_int_exact(2) or { return l.fail('data_id is not an integer') }
+	crc_pos := l.arg_int_exact(3) or { return l.fail('crc_pos is not an integer') }
+	ctr_pos := l.arg_int_exact(4) or { return l.fail('counter_pos is not an integer') }
+	crc := sim.p01_frame_crc(data, id, crc_pos, ctr_pos, l.arg_str(5)) or { return l.fail(err.msg()) }
+	l.push_int(crc)
+	return 1
+}
+
+// l_e2e_p01_protect(frame, data_id, crc_pos, counter_pos, counter, mode): the frame with the
+// counter written and the Profile 1 CRC stamped (sim.p01_protect).
+fn l_e2e_p01_protect(l lua.State) i32 {
+	data := l.arg_bytes(1)
+	id := l.arg_int_exact(2) or { return l.fail('data_id is not an integer') }
+	crc_pos := l.arg_int_exact(3) or { return l.fail('crc_pos is not an integer') }
+	ctr_pos := l.arg_int_exact(4) or { return l.fail('counter_pos is not an integer') }
+	counter := l.arg_int_exact(5) or { return l.fail('counter is not an integer') }
+	out := sim.p01_protect(data, id, crc_pos, ctr_pos, counter, l.arg_str(6)) or {
 		return l.fail(err.msg())
 	}
-	l.push_int(crc)
+	l.push_bytes(out)
 	return 1
 }
 

@@ -266,6 +266,7 @@ pub fn bb_start() i32 {
 	name_rows(r.chans.map(it.cfg))
 	bb_mu.lock()
 	bb_dbs = r.chans.map(it.db)
+	fault_rows_publish(r.chans)
 	bb_dbs_live = true
 	bb_mu.unlock()
 	return ok()
@@ -280,6 +281,7 @@ pub fn bb_stop() i32 {
 	bb_run = unsafe { nil }
 	bb_mu.lock()
 	bb_dbs = []candb.Database{}
+	fault_rows_retire()
 	bb_dbs_live = false
 	bb_mu.unlock()
 	r.stop()

@@ -1,6 +1,7 @@
 module sim
 
 import blobly.candb
+import blobly.project
 import blobly.transport
 
 fn faulted_msg() candb.Message {
@@ -293,4 +294,110 @@ fn test_freeze_survives_an_engine_rebuild() {
 	fresh.restore_counters(cache)
 	f := fresh.due_frames(20)[0].data[0] & 0x0F
 	assert f == u8((frozen + 1) % 16), 'after a rebuild, recovery repeated the frozen counter'
+}
+
+// a node sending one protected message and one plain one, on a channel keyed `inproc:ARM`
+fn arm_target() FaultTarget {
+	plain := candb.Message{
+		name:    'Plain'
+		id:      0x124
+		dlc:     1
+		sender:  'ECU'
+		signals: [
+			candb.Signal{
+				name:       'Full'
+				start_bit:  0
+				length:     8
+				byte_order: .little_endian
+				factor:     1
+				maximum:    255
+			},
+		]
+	}
+	return FaultTarget{
+		channel: 'CAN1'
+		iface:   'inproc:ARM'
+		db:      candb.Database{
+			nodes:    ['ECU']
+			messages: [candb.Message{
+				...faulted_msg()
+				sender: 'ECU'
+			}, plain]
+		}
+		nodes:   [
+			project.NodeCfg{
+				name:    'ECU'
+				protect: [project.ProtectCfg{
+					message: 'Protected'
+					counter: 'AliveCounter'
+					crc:     'CRC'
+					profile: 'crc8_j1850'
+				}]
+			},
+		]
+	}
+}
+
+fn refusal(t FaultTarget, node string, msg string, kind string, signal string) string {
+	t.arm(node, msg, kind, 0, signal) or { return err.msg() }
+	return ''
+}
+
+// what is armed lands in the process table under the channel's key, and a clear lifts it
+fn test_an_armed_fault_is_in_the_table_and_a_clear_lifts_it() {
+	t := arm_target()
+	for kind, want in {
+		'drop':           FaultKind.drop
+		'bad_crc':        FaultKind.bad_crc
+		'freeze_counter': FaultKind.freeze_ctr
+	} {
+		t.arm('ECU', 'Protected', kind, 300, '') or { panic(err) }
+		f := injected_fault('inproc:ARM', 'ECU', 'Protected')
+		assert f.kind == want && f.remaining_ms == 300, kind
+	}
+	t.arm('ECU', 'Protected', 'clear', 0, '') or { panic(err) }
+	assert !injected_fault('inproc:ARM', 'ECU', 'Protected').active()
+}
+
+// out_of_range forces a signal that can carry the violation: one is chosen when none is named,
+// never the counter or the checksum, which protection overwrites
+fn test_out_of_range_chooses_or_checks_its_signal() {
+	t := arm_target()
+	t.arm('ECU', 'Protected', 'out_of_range', 0, '') or { panic(err) }
+	assert injected_fault('inproc:ARM', 'ECU', 'Protected').signal == 'Speed'
+	t.arm('ECU', 'Protected', 'out_of_range', 0, 'Speed') or { panic(err) }
+	assert refusal(t, 'ECU', 'Protected', 'out_of_range', 'CRC') == '"CRC" on "Protected" has no value outside its declared range'
+	assert refusal(t, 'ECU', 'Protected', 'out_of_range', 'Nope') == '"Nope" on "Protected" has no value outside its declared range'
+	assert refusal(t, 'ECU', 'Plain', 'out_of_range', '') == 'no signal on "Plain" has a value outside its declared range'
+}
+
+// a fault that could not take effect is refused, and nothing is stored
+fn test_a_fault_that_cannot_take_effect_is_refused() {
+	clear_all()
+	t := arm_target()
+	assert refusal(t, 'ECU', 'Protected', 'nonsense', '') == 'unknown fault kind "nonsense"'
+	assert refusal(t, 'ECU', 'Missing', 'drop', '') == '"ECU" does not send "Missing" on CAN1'
+	assert refusal(t, 'Other', 'Protected', 'drop', '') == '"Other" does not send "Protected" on CAN1'
+	assert refusal(t, 'ECU', 'Plain', 'bad_crc', '') == '"Plain" on "ECU" has no configured checksum — bad_crc would change nothing'
+	assert refusal(t, 'ECU', 'Plain', 'freeze_counter', '') == '"Plain" on "ECU" has no E2E counter — freeze_counter would change nothing'
+	eth := FaultTarget{
+		...t
+		eth_kind: 'DoIP'
+	}
+	assert refusal(eth, 'ECU', 'Protected', 'drop', '') == '"CAN1" is a DoIP channel — nothing simulates on it, so a fault there could never take effect'
+	assert !injected_fault('inproc:ARM', 'ECU', 'Protected').active()
+	assert !injected_fault('inproc:ARM', 'ECU', 'Plain').active()
+}
+
+fn test_fault_kinds_are_spelled_as_scripts_spell_them() {
+	assert fault_kind_of('drop')! == .drop
+	assert fault_kind_of('bad_crc')! == .bad_crc
+	assert fault_kind_of('freeze_counter')! == .freeze_ctr
+	assert fault_kind_of('out_of_range')! == .out_of_range
+	for none_ in ['clear', 'none', ''] {
+		assert fault_kind_of(none_)! == .none_
+	}
+	if _ := fault_kind_of('DROP') {
+		assert false, 'a kind is spelled one way'
+	}
 }

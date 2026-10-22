@@ -216,6 +216,33 @@ int bb_encode(int row, int m, int n, const char *const *signals, const double *v
  * remote frame (no data). The arrays hold `cap`: a message of more signals is refused, with
  * *message set so the host can ask again with arrays of its bb_message.signals. */
 int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t *active, int cap);
+
+/* Faults and E2E: the rules the Lua prelude's sim.fault and e2e.* ask (cmd/libblobly/sim.v).
+ *
+ * bb_sim_fault arms a fault on a simulated node's message on row `row` of the run (from bb_start
+ * until bb_stop, BB_ERR_STATE otherwise; any thread). `kind` is "drop", "bad_crc",
+ * "freeze_counter" or "out_of_range"; "clear" lifts the message's fault. `ms` > 0 ends it after
+ * that long, 0 or less leaves it until cleared. `signal` (NULL or "": one is chosen) is the one
+ * out_of_range forces past its declared range. A fault that could not take effect is refused with
+ * BB_ERR, as Lua refuses it: a DoIP or SOME/IP row, an unknown kind, a message `node` does not
+ * send, bad_crc where it stamps no checksum, freeze_counter where it stamps no E2E counter,
+ * out_of_range where no signal can carry a value outside its range. The faults are the process's,
+ * and a bb_start clears them. bb_sim_clear_faults lifts every one. */
+int bb_sim_fault(int row, const char *node, const char *message, const char *kind, int ms,
+                 const char *signal);
+int bb_sim_clear_faults(void);
+
+/* AUTOSAR E2E Profile 1 for a frame of n bytes the host built, computed as the simulation stamps
+ * it: CRC-8 poly 0x1D, start 0, no final XOR, over the Data ID bytes `mode` names (NULL or "" is
+ * "both": low then high; "low"; "alt": low for an even counter, high for an odd one), then every
+ * byte but the CRC's. `data_id` is 0..0xFFFF; crc_pos and counter_pos are distinct bytes of the
+ * frame, the counter in counter_pos's low nibble. Anything else is refused with BB_ERR. */
+int bb_e2e_p01_crc(const uint8_t *data, int n, int data_id, int crc_pos, int counter_pos,
+                   const char *mode);                            /* >= 0: the CRC byte */
+int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int counter_pos,
+                       int counter, const char *mode);           /* in place: `counter` (0..14)
+                                                                    into counter_pos's low nibble,
+                                                                    then the CRC at crc_pos */
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus
