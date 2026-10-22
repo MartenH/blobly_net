@@ -69,10 +69,10 @@ __global (
 
 @[export: 'bb_uds_open']
 pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
-	// the run publishes the wires' policy (listen-only, framing): a connection opened before it
-	// would transmit on a listen-only row
+	// a row's carrier is the run's (a hosted DoIP row listens on the port the run moved it to), and
+	// a handle is its run's, which a functional request takes this run's of (bb_run_gen)
 	if isnil(bb_run) {
-		return fail(bb_err_state, "not started: a UDS connection opens on a row of the run, whose wire policy (listen-only, framing) start publishes")
+		return fail(bb_err_state, "not started: a UDS connection opens on a row of the run")
 	}
 	ch := row(r) or { return fail(bb_err, 'no channel ${r}') }
 	ask := udsconn.Ask{
@@ -980,9 +980,9 @@ fn outcome_code(o uds.FunctionalOutcome) i32 {
 // reply, its answer that handle's bb_uds_data, a failed reply's reason its bb_uds_reply_error.
 @[export: 'bb_uds_functional']
 pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, window_ms i32, out &C.bb_functional_reply) i32 {
-	// the run publishes the wires' policy (listen-only, framing): nothing goes out before it
+	// its targets are UDS handles of this run's row
 	if isnil(bb_run) {
-		return fail(bb_err_state, "not started: a functional request goes out on a row of the run, whose wire policy (listen-only, framing) start publishes")
+		return fail(bb_err_state, "not started: a functional request goes out on a row of the run")
 	}
 	ch := row(r) or { return fail(bb_err, 'no channel ${r}') }
 	if ch.is_doip() {

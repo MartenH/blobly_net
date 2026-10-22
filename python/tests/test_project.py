@@ -3,6 +3,7 @@ simulated ECUs on inproc buses), its channels, send/recv/health, the event loop 
 simulation, a Python thread attached and let go on itself, and the error paths. Skipped only when
 no library is found and BLOBLY_LIB is unset; CI sets it, so a missing build fails there."""
 import copy
+import ctypes
 import os
 import pickle
 import subprocess
@@ -145,6 +146,60 @@ class TestChannels(unittest.TestCase):
         net = blobly.Project(SIM_DEMO).load()
         with self.assertRaises(blobly.BloblyError):
             net.channels.CAN1.recv(0)
+
+    def test_a_load_polices_every_handle_on_its_listen_only_wire(self):
+        # the native handles, not the package's own: the policy is the loaded project's from the
+        # load on, for a handle opened before it, before bb_start and across a stop
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "silent.blobnet")
+            with open(path, "w") as f:
+                f.write(textwrap.dedent("""\
+                    project:
+                      name: silent
+                      version: 8
+                    channels:
+                      - name: S
+                        type: can
+                        interface: inproc:PY_OPEN_SILENT
+                        listen_only: true
+                    """))
+            lib = _lib.lib()
+
+            def open_bus():
+                with _lib.state_lock:
+                    return _lib.check(lib.bb_bus_open(b"inproc:PY_OPEN_SILENT"))
+
+            def close_bus(h):
+                with _lib.state_lock:
+                    lib.bb_bus_close(h)
+
+            def sends(h):
+                try:
+                    _lib.check(lib.bb_bus_send(h, ctypes.byref(_lib.BbFrame(id=0x100, len=1))))
+                    return True
+                except blobly.BloblyError as e:
+                    self.assertIn("listen-only", str(e))
+                    return False
+
+            blobly.Project(SIM_DEMO).load()
+            early = open_bus()
+            try:
+                self.assertTrue(sends(early))
+                net = blobly.Project(path).load()
+                self.assertFalse(sends(early), "a handle opened before the load")
+                before = open_bus()
+                try:
+                    self.assertFalse(sends(before), "a handle opened before bb_start")
+                finally:
+                    close_bus(before)
+                with net:
+                    self.assertFalse(sends(early), "during the run")
+                self.assertFalse(sends(early), "after the stop")
+                blobly.Project(SIM_DEMO).load()
+                self.assertTrue(sends(early), "the next load's policy replaces it")
+            finally:
+                close_bus(early)
+                blobly.Project(SIM_DEMO).load()  # its policy, for the tests after this one
 
 
 class TestLoads(unittest.TestCase):
