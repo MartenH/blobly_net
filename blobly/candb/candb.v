@@ -383,6 +383,16 @@ pub fn (m Message) carried(data []u8) []bool {
 	return out
 }
 
+// holds is whether a payload of `len` bytes holds `s` whole, and the switch that selects it when it
+// is multiplexed: what a payload must hold for `s` to be carried, whichever branch it selects.
+pub fn (m Message) holds(s Signal, len int) bool {
+	if !s.fits(len) {
+		return false
+	}
+	i := m.multiplexor_index()
+	return !s.is_multiplexed || i < 0 || m.signals[i].fits(len)
+}
+
 // Carrier is carried's answer for one signal, its message's switch found once, for a caller that
 // asks of many payloads.
 pub struct Carrier {

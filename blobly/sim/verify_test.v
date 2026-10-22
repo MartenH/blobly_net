@@ -187,6 +187,38 @@ fn test_a_field_past_the_payload_is_truncated() {
 	assert v.check(whole) == .ok
 }
 
+// and so does a frame missing the switch that selects the field
+fn test_a_field_whose_switch_is_past_the_payload_is_truncated() {
+	mut v := Verifier{
+		msg: candb.Message{
+		name:    'Muxed'
+		id:      0x125
+		dlc:     1
+		sender:  'ECU'
+		signals: [
+			candb.Signal{
+				name:           'CRC'
+				start_bit:      0
+				length:         8
+				byte_order:     .little_endian
+				factor:         1
+				is_multiplexed: true
+			},
+			candb.Signal{
+				name:           'Mode'
+				start_bit:      8
+				length:         8
+				byte_order:     .little_endian
+				factor:         1
+				is_multiplexor: true
+			},
+		]
+	}
+		e2e: E2e{ crc: 'CRC', profile: 'sum8' }
+	}
+	assert v.check([u8(0x55)]) == .truncated
+}
+
 // The stamping path scopes messages to the configured sender. Verification must do the same, or
 // a merged database with one message name on two transmitters verifies against the wrong id and
 // layout while the configuration validates cleanly.

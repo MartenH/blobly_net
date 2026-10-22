@@ -189,10 +189,12 @@ pub fn crc_byte(sig candb.Signal) ?int {
 // is sent in, if it does not: no carried signal is written there, so nothing stamps or forces it.
 pub fn past_payload(m candb.Message, name string) ?string {
 	sig := m.signal_named(name) or { return none }
-	if sig.fits(m.payload_len()) {
+	n := m.payload_len()
+	if m.holds(sig, n) {
 		return none
 	}
-	return '"${name}" lies past the ${m.payload_len()}-byte payload of ${m.name}, so nothing writes it'
+	what := if sig.fits(n) { 'the multiplexor selecting "${name}"' } else { '"${name}"' }
+	return '${what} lies past the ${n}-byte payload of ${m.name}, so nothing writes it'
 }
 
 // p01_problem says why `e` cannot be stamped or checked as AUTOSAR Profile 1 on `msg`, if it

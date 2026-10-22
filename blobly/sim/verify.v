@@ -47,10 +47,11 @@ pub mut:
 	bad      u64 // frames that failed
 }
 
-// holds is whether `data` holds the protection field `name` whole, if the message has one.
+// holds is whether `data` holds the protection field `name` whole (and its multiplexor), if the
+// message has one.
 fn (v &Verifier) holds(name string, data []u8) bool {
 	sig := v.msg.signal_named(name) or { return true }
-	return sig.fits(data.len)
+	return v.msg.holds(sig, data.len)
 }
 
 // check judges one received payload.

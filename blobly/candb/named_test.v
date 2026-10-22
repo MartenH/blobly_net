@@ -121,3 +121,25 @@ fn test_a_short_payload_carries_only_what_it_holds_whole() {
 		assert c.carried_by([u8(1), 0x10, 0]) == (i != 1)
 	}
 }
+
+fn test_a_payload_holds_a_multiplexed_signal_with_its_switch() {
+	m := Message{
+		signals: [
+			Signal{
+				name:      'Crc'
+				start_bit: 0
+				length:    8
+				is_multiplexed: true
+			},
+			Signal{
+				name:           'Mode'
+				start_bit:      8
+				length:         8
+				is_multiplexor: true
+			},
+		]
+	}
+	assert !m.holds(m.signals[0], 1), 'the switch selecting it is past the payload'
+	assert m.holds(m.signals[0], 2)
+	assert m.holds(m.signals[1], 2) && !m.holds(m.signals[1], 1)
+}

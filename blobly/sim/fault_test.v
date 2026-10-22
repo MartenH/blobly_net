@@ -427,6 +427,47 @@ fn test_a_fault_on_a_field_past_the_payload_is_refused() {
 		}
 	}
 	assert refusal(empty, 'ECU', 'Protected', 'freeze_counter', '') == '"AliveCounter" lies past the 0-byte payload of Protected, so nothing writes it — freeze_counter would change nothing'
+	muxed := FaultTarget{
+		...t
+		db:    candb.Database{
+			...t.db
+			messages: [candb.Message{
+			name:    'Muxed'
+			id:      0x125
+			dlc:     1
+			sender:  'ECU'
+			signals: [
+				candb.Signal{
+					name:           'CRC'
+					start_bit:      0
+					length:         8
+					byte_order:     .little_endian
+					factor:         1
+					is_multiplexed: true
+				},
+				candb.Signal{
+					name:           'Mode'
+					start_bit:      8
+					length:         8
+					byte_order:     .little_endian
+					factor:         1
+					is_multiplexor: true
+				},
+			]
+		}]
+		}
+		nodes: [
+			project.NodeCfg{
+				name:    'ECU'
+				protect: [project.ProtectCfg{
+					message: 'Muxed'
+					crc:     'CRC'
+					profile: 'sum8'
+				}]
+			},
+		]
+	}
+	assert refusal(muxed, 'ECU', 'Muxed', 'bad_crc', '') == 'the multiplexor selecting "CRC" lies past the 1-byte payload of Muxed, so nothing writes it — bad_crc would change nothing'
 	clear_all()
 }
 
