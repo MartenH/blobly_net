@@ -102,6 +102,8 @@ jobs:
           # build_appimage.sh sets APPIMAGE_EXTRACT_AND_RUN, because libfuse2 is not installable
           # under that name on ubuntu-24.04 runners.
           sudo apt-get install -y --no-install-recommends libglfw3
+          # the wheel's build tools live in a venv (scripts/build_wheel.py's `wheel`, auditwheel)
+          sudo apt-get install -y --no-install-recommends python3-venv
       - name: Build GUI dependencies (cached)
         uses: ./.github/actions/gui-deps
       - name: Build GUI app
@@ -115,6 +117,9 @@ jobs:
           mkdir -p dist/blobly_net
           sh scripts/stage_bundle.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
           cp build/blobly_net dist/blobly_net/
+          # the C ABI (cmd/libblobly) beside the app; its header is in include/
+          sh scripts/build_libblobly.sh build
+          cp build/libblobly.so dist/blobly_net/
           tar -C dist -czf "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" blobly_net
 
       # THE ONE FILE A LINUX USER CAN ACTUALLY RUN (#322). The tarball is dynamically linked, so
@@ -130,6 +135,23 @@ jobs:
           path: |
             blobly_net-*.tar.gz
             blobly_net-*.AppImage
+          if-no-files-found: error
+
+      # THE LINUX WHEEL, built HERE for the same reason the AppImage is: a wheel's manylinux tag is
+      # the newest glibc its library uses, so the oldest runner gives the widest wheel. Its tag is
+      # derived from the library (scripts/build_wheel.py) and auditwheel must agree. --release:
+      # v.mod's version alone, refused unless it is this tag.
+      - name: Build the Linux wheel
+        run: |
+          python3 -m venv "$RUNNER_TEMP/wheeltools"
+          "$RUNNER_TEMP/wheeltools/bin/pip" install -q wheel auditwheel
+          "$RUNNER_TEMP/wheeltools/bin/python" scripts/build_wheel.py --release \
+            --native build/libblobly.so --out wheels
+          "$RUNNER_TEMP/wheeltools/bin/auditwheel" show wheels/*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: blobly-wheel-linux
+          path: wheels/*.whl
           if-no-files-found: error
 
   publish:
@@ -158,6 +180,12 @@ jobs:
       - name: Zip the Windows bundle
         working-directory: winbundle
         run: zip -qr "../blobly_net-${GITHUB_REF_NAME}-windows-x64.zip" blobly_net
+      # the two wheels PyPI gets, attached here too, so a release page carries what pip installs
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: blobly-wheel-*
+          path: wheels
+          merge-multiple: true
       # The Windows build runs for the better part of an hour, and a tag deleted or force
       # -moved in that window must not publish: gh would silently re-create a missing tag
       # from the DEFAULT BRANCH, associating these binaries with source they were not built
@@ -256,4 +284,75 @@ jobs:
             --notes-file notes.md \
             "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" \
             "blobly_net-${GITHUB_REF_NAME}-x86_64.AppImage" \
-            "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip"
+            "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip" \
+            wheels/*.whl
+
+  # PyPI, AFTER the GitHub release exists: publish re-proved the tag (it still is the guarded
+  # commit, still on main), so nothing reaches PyPI that the release page does not carry. Trusted
+  # Publishing — no token: the `pypi` environment and this workflow are what pypi.org trusts
+  # (docs/releasing.md says what to set up there). This job holds an OIDC token and nothing else.
+  pypi:
+    needs: publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/blobly/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # AGAIN, HERE: this job may run long after publish checked — a required reviewer on the
+      # environment, or a re-run of a failed upload — so the tag must still name the commit these
+      # wheels were built from, and that commit must still be on main, at the moment of upload
+      - name: The tag still is what the guard proved
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" \
+            || { echo "tag ${GITHUB_REF_NAME} is gone from origin — not publishing"; exit 1; }
+          now="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          [ "$now" = "$GITHUB_SHA" ] \
+            || { echo "tag moved (now $now, built $GITHUB_SHA) — not publishing"; exit 1; }
+          git fetch --force origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "the tagged commit is no longer on origin/main — not publishing"; exit 1; }
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: blobly-wheel-*
+          path: dist
+          merge-multiple: true
+      # exactly this tag's two wheels: a local version label (a CI build) or a third file stops it
+      - name: The wheels are this tag's
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          ls -l dist
+          n=$(ls dist/*.whl | wc -l)
+          [ "$n" -eq 2 ] || { echo "expected 2 wheels, found $n"; exit 1; }
+          for w in dist/*.whl; do
+            case "$(basename "$w")" in
+              *+*) echo "$w carries a local version label"; exit 1 ;;
+            esac
+          done
+          ls dist/*manylinux*_x86_64.whl dist/*win_amd64.whl >/dev/null
+      # A RE-RUN AFTER A PARTIAL UPLOAD must finish the release, so the upload skips a file PyPI
+      # already has — but only one that is byte-for-byte this artifact: a file of the same name with
+      # another digest stops the job, since PyPI never replaces a published file.
+      - name: What PyPI already has of this version is these files
+        run: |
+          ver="$(basename dist/*manylinux*.whl | cut -d- -f2)"
+          code="$(curl -s -o pypi.json -w '%{http_code}' "https://pypi.org/pypi/blobly/${ver}/json")"
+          [ "$code" = 404 ] && { echo "nothing of ${ver} on PyPI yet"; exit 0; }
+          [ "$code" = 200 ] || { echo "PyPI answered ${code}"; exit 1; }
+          for w in dist/*.whl; do
+            have="$(python3 -c "import json,sys; d=json.load(open('pypi.json')); print(next((u['digests']['sha256'] for u in d['urls'] if u['filename']==sys.argv[1]), ''))" "$(basename "$w")")"
+            [ -z "$have" ] && { echo "$(basename "$w"): not on PyPI yet"; continue; }
+            mine="$(sha256sum "$w" | cut -d' ' -f1)"
+            [ "$have" = "$mine" ] || { echo "$(basename "$w") is on PyPI with another digest ($have)"; exit 1; }
+            echo "$(basename "$w"): already on PyPI, same digest — skipped by the upload"
+          done
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          skip-existing: true

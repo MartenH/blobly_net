@@ -15,7 +15,8 @@ git push origin vX.Y.Z
 ```
 
 Watch the **release** workflow run. When it finishes, the release is on the
-[Releases page](../../../releases) with three assets:
+[Releases page](../../../releases) with three assets and two wheels, and the wheels are on
+[PyPI](https://pypi.org/project/blobly/) as `blobly` (`pip install blobly`):
 
 - `blobly_net-vX.Y.Z-x86_64.AppImage` — one file, `chmod +x`, runs. Carries GLFW and its
   dependencies; OpenGL comes from the host's driver, as it must. **The one to point people at.**
@@ -26,6 +27,11 @@ Watch the **release** workflow run. When it finishes, the release is on the
 - `blobly_net-vX.Y.Z-linux-x64.tar.gz` — the same application unpacked, for anyone who wants the
   payload on disk. Needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`)
 - `blobly_net-vX.Y.Z-windows-x64.zip` — self-contained
+- `blobly-X.Y.Z-py3-none-manylinux_*_x86_64.whl` and `blobly-X.Y.Z-py3-none-win_amd64.whl` — the
+  Python package with the engine inside (`scripts/build_wheel.py`). The Linux one is built on the
+  ubuntu-22.04 job for the AppImage's reason: its manylinux tag is the newest glibc its library
+  uses, derived from the library and checked by `auditwheel`. The wheel's version is v.mod's
+  (`2026.10.00` is `2026.10.0` in PEP 440's spelling), so there is still nothing to bump.
 
 The tarball and the zip carry the demo projects, DBCs, samples, docs, `README.txt`,
 `VERSION.txt`, LICENSE and third-party notices under one top-level folder. The AppImage carries
@@ -83,6 +89,25 @@ the previous tag by version sort). It does care about direction: a date sorts ab
 `0.x` number, so `v0.1.0` stays the baseline of nothing from now on, and going back to
 `0.x`-style numbers would need the workflow's baseline rule changed first.
 
+## PyPI — set up once
+
+The `pypi` job publishes with **Trusted Publishing**: no token is stored anywhere; pypi.org trusts
+this repository's `release.yml` running in the `pypi` environment. Before the first release that
+should reach PyPI, the maintainer sets up two things (once):
+
+1. **On pypi.org** (signed in as the account that will own `blobly`): *Your projects → Publishing →
+   Add a new pending publisher*, GitHub tab — PyPI project name `blobly`, owner `MartenH`,
+   repository `blobly_net`, workflow name `release.yml`, environment name `pypi`. The project is
+   created by the first upload.
+2. **On GitHub**: *Settings → Environments → New environment* named `pypi`. Restrict it to tags
+   (deployment branches and tags: *Selected*, rule `v[0-9]*`) and, if wanted, a required reviewer,
+   so a publication waits for a click.
+
+Until both exist the `pypi` job fails at the upload and the GitHub release stands as it is; re-run
+the job once they do. A re-run checks the tag again, and finishes a partial upload: a wheel PyPI
+already has is skipped only when its digest is this artifact's. A wheel with a local version label (`+git…`, every CI build) is refused by
+PyPI and by the job itself, so only a tagged release's wheels can reach it.
+
 ## What the workflow proves before publishing
 
 `release.yml` refuses rather than trusts, in this order:
@@ -105,6 +130,9 @@ the previous tag by version sort). It does care about direction: a date sorts ab
    Windows build runs for the better part of an hour and a deleted or force-moved tag must
    not associate the binaries with different source (`--verify-tag` blocks gh's silent
    tag re-creation too).
+6. **PyPI only after the GitHub release** — the `pypi` job needs `publish`, so nothing reaches
+   PyPI that the release page does not carry, and it publishes exactly two wheels, neither with
+   a local version label.
 
 ## Release notes
 

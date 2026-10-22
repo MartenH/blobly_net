@@ -1,8 +1,10 @@
 name: windows-build
 
 # Native Windows build of the Blobly Net GUI (the Dear ImGui app, cmd/blobly_net).
-# Compiles + links + bundles it; does NOT run it. The mingw job builds and stages; the bundle
-# job adds canbridge (built on Linux beside it) and publishes. The old vlang/gui app
+# Compiles + links + bundles it; does NOT run it. Two mingw jobs side by side: one type-checks
+# every tool and runs the platform-dispatching tests, the other builds libblobly and the GUI and
+# stages them; a verdict job reports both under the name protect-main requires, and the bundle
+# job adds canbridge (built on Linux beside them) and publishes. The old vlang/gui app
 # (src/main.v) and its MSVC/vcpkg/pango/vglyph path were retired when the migration landed.
 #
 # Status: VALIDATED ON THE RUNNER. The imgui Windows build (build_deps.sh + the `#flag windows`
@@ -19,8 +21,9 @@ name: windows-build
 # mismatch. GCC either way: CLANG64 would also change the compiler and the C++ library.
 #
 # V acquisition: DOWNLOAD the prebuilt V from this repo's "v-toolchain" release (V's makev.bat
-# self-compile hangs on the runner). It is the V3 of .v-version, cross-built from Linux by
-# scripts/mint_windows_v.sh for exactly C:\v-ct, and drives mingw gcc via -cc gcc.
+# self-compile hangs on the runner), through .github/actions/setup-v-windows. It is the V3 of
+# .v-version, cross-built from Linux by scripts/mint_windows_v.sh for exactly C:\v-ct, and drives
+# mingw gcc via -cc gcc.
 
 on:
   push:
@@ -79,23 +82,56 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  build-msys2:
-    name: mingw (MSYS2) • GUI bundle
+  # What needs no GUI dependency, beside the build that does: gcc alone, so its MSYS2 setup is
+  # the short one.
+  checks-msys2:
+    name: mingw (MSYS2) • cmd checks + platform tests
     runs-on: windows-latest
     timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download prebuilt V (0535623)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
-          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-ct -Force
-          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
-          & C:\v-ct\v.exe version
+      - name: Set up pinned V
+        uses: ./.github/actions/setup-v-windows
+        with:
+          release: ${{ env.V_RELEASE }}
+          asset: ${{ env.V_ASSET }}
+
+      - name: Set up MSYS2 (UCRT64 gcc)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      # Same sweep as the Linux job, from the Windows toolchain: a tool that checks on one
+      # runner and not the other is exactly what the per-platform backend split can produce.
+      - name: Every cmd/ tool type-checks, both targets (scripts/check_cmds.sh)
+        shell: msys2 {0}
+        run: V=/c/v-ct/v.exe sh scripts/check_cmds.sh
+
+      # THE PLATFORM BRANCH ONLY THIS RUNNER CAN EXECUTE. isotp.open dispatches at compile time
+      # (kernel socket on Linux, software channel elsewhere), so the Ubuntu job compiles the
+      # Linux half and the test of the other half passes there without calling anything (codex
+      # round 1 on #225). One module, seconds; the full suite stays the Linux job's.
+      - name: Module tests that dispatch per platform (v test blobly/isotp/)
+        shell: msys2 {0}
+        run: /c/v-ct/v.exe -cc gcc -enable-globals test blobly/isotp/
+
+  build-msys2:
+    name: mingw (MSYS2) • libblobly + GUI build
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up pinned V
+        uses: ./.github/actions/setup-v-windows
+        with:
+          release: ${{ env.V_RELEASE }}
+          asset: ${{ env.V_ASSET }}
 
       # UCRT64 toolchain + the imgui link deps (mirror the `#flag windows` line in vgui.v):
       # gcc/g++ (build_deps.sh), glfw (windowing), freetype/harfbuzz/glib2/fribidi/fontconfig
@@ -121,6 +157,76 @@ jobs:
         with:
           shell: msys2 {0}
 
+      # blobly.dll, the C ABI (cmd/libblobly), driven by the C smoke here and by the runner's own
+      # Python below; the ucrt64 runtime it links lands beside it, as the exe's does, so a host
+      # outside the msys2 shell can load it.
+      - name: libblobly (blobly.dll) + C smoke
+        shell: msys2 {0}
+        run: |
+          V=/c/v-ct/v.exe sh scripts/build_libblobly.sh build
+          ldd build/blobly.dll | awk '/\/ucrt64\/bin\// {print $3}' | sort -u \
+            | while read -r d; do cp -f "$d" build/; done
+          gcc -Wall -o build/bb_smoke.exe cmd/libblobly/smoke.c
+          build/bb_smoke.exe build/blobly.dll projects/sim-demo.blobnet
+      - name: libblobly ctypes smoke (Windows Python)
+        shell: pwsh
+        run: python -I cmd/libblobly/smoke.py build/blobly.dll projects/sim-demo.blobnet
+      - name: Python package (python/blobly, Windows Python)
+        shell: pwsh
+        run: |
+          $env:BLOBLY_LIB = "build/blobly.dll"
+          python -I -m unittest discover -s python/tests -t python -v
+      # The Windows wheel's native payload: blobly.dll, the ucrt64 runtime DLLs it loads, and each
+      # runtime package's licence texts from pacman — derived from what is there, never a list kept
+      # by hand, as the bundle's are. By NAME: the step above already copied the runtime into build/,
+      # so ldd now resolves it there, beside the DLL, and a filter on the /ucrt64/bin/ path matched
+      # nothing (the first CI run shipped blobly.dll alone, and the installed wheel could not load).
+      - name: Python wheel payload (blobly.dll + its runtime and licences)
+        shell: msys2 {0}
+        run: |
+          rm -rf build/wheel-native build/wheel-licenses
+          mkdir -p build/wheel-native build/wheel-licenses
+          cp build/blobly.dll build/wheel-native/
+          ldd build/blobly.dll | awk '{print $1}' | sort -u | while read -r n; do
+            if [ -f "/ucrt64/bin/$n" ]; then echo "/ucrt64/bin/$n"; fi
+          done > build/wheel-deps.txt
+          [ -s build/wheel-deps.txt ] || { echo "no ucrt64 runtime found for blobly.dll"; ldd build/blobly.dll; exit 1; }
+          while read -r d; do
+            cp -f "$d" build/wheel-native/
+            pkg="$(pacman -Qoq "$d")"
+            lic="/ucrt64/share/licenses/${pkg#mingw-w64-ucrt-x86_64-}"
+            [ -d "$lic" ] || { echo "no licence directory for $pkg ($d)"; exit 1; }
+            mkdir -p "build/wheel-licenses/${pkg#mingw-w64-ucrt-x86_64-}"
+            cp -r "$lic/." "build/wheel-licenses/${pkg#mingw-w64-ucrt-x86_64-}/"
+          done < build/wheel-deps.txt
+          echo "wheel payload: $(ls build/wheel-native | tr '\n' ' ')"
+      # Built with the runner's Windows Python, installed into a fresh venv, and the package's tests
+      # run against the INSTALLED copy, as on Linux.
+      - name: Python wheel on Windows (built, installed, tested)
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\wheeltools"
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\pip" install -q wheel
+          $native = @("build/wheel-native/blobly.dll") + (Get-ChildItem build/wheel-native -Filter *.dll |
+            Where-Object Name -ne "blobly.dll" | ForEach-Object { $_.FullName })
+          $nativeArgs = $native | ForEach-Object { "--native", $_ }
+          $release = @()
+          if ("${{ inputs.publish_bundle }}" -eq "true") { $release = @("--release") }
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --licenses build/wheel-licenses --v C:/v-ct/v.exe --out build/wheels @release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -m venv "$env:RUNNER_TEMP\wheeltest"
+          $whl = (Get-ChildItem build/wheels -Filter *.whl).FullName
+          & "$env:RUNNER_TEMP\wheeltest\Scripts\pip" install -q $whl
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $env:BLOBLY_TEST_INSTALLED = "1"
+          & "$env:RUNNER_TEMP\wheeltest\Scripts\python" -I -m unittest discover -s python/tests -t python/tests -v
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: blobly-wheel-windows
+          path: build/wheels/*.whl
+          if-no-files-found: error
+
       # Build cmd/blobly_net through scripts/run_gui.sh — the SAME script developers run and the
       # Linux job (ci.yml) already calls, so this recipe cannot drift from theirs. It once did:
       # this job knew the build needs vlang/markdown and the script did not, so a local Windows
@@ -134,20 +240,6 @@ jobs:
       # user should ever see. That mismatch was a live bug: scripts/register_blobnet_win.ps1 has
       # always searched for blobly_net.exe, so .blobnet file association could never find the
       # executable it was written for.
-      # Same sweep as the Linux job, from the Windows toolchain: a tool that checks on one
-      # runner and not the other is exactly what the per-platform backend split can produce.
-      - name: Every cmd/ tool type-checks, both targets (scripts/check_cmds.sh)
-        shell: msys2 {0}
-        run: V=/c/v-ct/v.exe sh scripts/check_cmds.sh
-
-      # THE PLATFORM BRANCH ONLY THIS RUNNER CAN EXECUTE. isotp.open dispatches at compile time
-      # (kernel socket on Linux, software channel elsewhere), so the Ubuntu job compiles the
-      # Linux half and the test of the other half passes there without calling anything (codex
-      # round 1 on #225). One module, seconds; the full suite stays the Linux job's.
-      - name: Module tests that dispatch per platform (v test blobly/isotp/)
-        shell: msys2 {0}
-        run: /c/v-ct/v.exe -cc gcc -enable-globals test blobly/isotp/
-
       - name: Build the GUI app (RUN=0 scripts/run_gui.sh)
         shell: msys2 {0}
         run: |
@@ -174,6 +266,7 @@ jobs:
           ver="$(sed -n "s/^\s*version: '\(.*\)'\s*$/\1/p" v.mod)"
           V=/c/v-ct/v.exe sh scripts/stage_bundle.sh dist "$ver"
           cp build/blobly_net.exe dist/blobly_net.exe
+          cp build/blobly.dll dist/blobly.dll   # the C ABI (cmd/libblobly); its header is in include/
           # The scripts canbridge's "no vcan module" failure tells the user to run in WSL from
           # this folder; canbridge itself joins in the bundle job.
           mkdir -p dist/scripts
@@ -184,7 +277,8 @@ jobs:
           # GLFW and the GCC runtime stay static by explicit flag, so the set is small and could
           # in principle be empty, and a bare glob fails the whole release when it matches
           # nothing (codex #137 r2, P1).
-          find build -maxdepth 1 -name '*.dll' -exec cp {} dist/ \;
+          # blobly.dll is copied above, by name, so a library that was not built fails loudly
+          find build -maxdepth 1 -name '*.dll' ! -name blobly.dll -exec cp {} dist/ \;
           # THE BUNDLED DLLs' OWN LICENCES, DERIVED FROM WHAT IS ACTUALLY THERE (#318). Every
           # missing notice this branch found was found one at a time, against a list somebody
           # maintained by hand — so this one is not a list. It asks pacman which package owns
@@ -202,6 +296,8 @@ jobs:
           mkdir -p dist/licenses
           for dll in "${dlls[@]}"; do
             base="$(basename "$dll")"
+            # ours (cmd/libblobly): under this repo's LICENSE, not an MSYS2 package's
+            [ "$base" = blobly.dll ] && continue
             pkg="$(pacman -Qoq "/ucrt64/bin/$base" 2>/dev/null || true)"
             [ -n "$pkg" ] || { echo "no owning package for $base"; exit 1; }
             lic="/ucrt64/share/licenses/${pkg#mingw-w64-ucrt-x86_64-}"
@@ -226,9 +322,28 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # THE REQUIRED CHECK. The protect-main ruleset requires a check of this name, so both mingw
+  # jobs report under it here: it passes only if both passed. Renaming it, or dropping it, leaves
+  # every PR waiting on a check that never reports. always(), never !cancelled(): a skipped
+  # required check counts as PASSING, so a cancelled run must fail here.
+  verdict-msys2:
+    name: mingw (MSYS2) • GUI bundle
+    needs: [checks-msys2, build-msys2]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Both mingw jobs passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$NEEDS"
+          for r in $RESULTS; do [ "$r" = success ] || exit 1; done
+
   bundle:
     name: Windows bundle (+ canbridge)
-    needs: [canbridge-linux, build-msys2]
+    # the checks too: a bundle whose tools fail to type-check on Windows is not published
+    needs: [canbridge-linux, checks-msys2, build-msys2]
     # the gate the upload below states, so a PR pays for no artifact round trip
     if: github.ref == 'refs/heads/main' || inputs.publish_bundle == true
     runs-on: ubuntu-latest

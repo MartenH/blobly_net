@@ -62,20 +62,38 @@ pub fn j1939_pgn(id u32) u32 {
 // ones) encode prio+PGN+SA in the BO_ id, so live frames from a different
 // source address never match exactly; the PGN is the stable key.
 pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
+	i := db.frame_index(id, ext) or { return none }
+	return db.messages[i]
+}
+
+// frame_index is lookup_frame's answer as a position in `messages`, for a caller that names
+// messages by position (libblobly's bb_decode).
+pub fn (db Database) frame_index(id u32, ext bool) ?int {
 	// exact match must respect the frame KIND: a standard and an extended
 	// frame may share the numeric id, and decoding std traffic against the
 	// ext definition (or vice versa) is silent corruption
-	for m in db.messages {
+	for i, m in db.messages {
 		if m.id == id && m.ext == ext {
-			return m
+			return i
 		}
 	}
 	if !ext {
 		return none
 	}
 	pgn := j1939_pgn(id)
-	for m in db.messages {
+	for i, m in db.messages {
 		if m.ext && j1939_pgn(m.id) == pgn {
+			return i
+		}
+	}
+	return none
+}
+
+// message_named is the first message called `name` — the one a script's bus.send_message
+// encodes.
+pub fn (db Database) message_named(name string) ?Message {
+	for m in db.messages {
+		if m.name == name {
 			return m
 		}
 	}

@@ -323,6 +323,25 @@ fn test_the_shared_receive_seam_preserves_a_tx_acknowledgement() {
 	assert b.reports_tx_ack()
 }
 
+// A storm of error records cannot hold a zero-timeout look: each re-arms the probe, and only the
+// shared bound (zero_poll.v) ends it.
+fn test_a_zero_timeout_look_past_an_error_storm_is_bounded() {
+	mut b := CansubBus{
+		iface: 'cansub:test/1'
+		rx:    chan CansubRecord{cap: zero_poll_skip_limit + 2000}
+	}
+	for _ in 0 .. zero_poll_skip_limit + 2000 {
+		b.rx <- CansubRecord{
+			is_error: true
+			err:      .ack_err
+		}
+	}
+	if _ := b.recv_shared(0) {
+		assert false, 'an error record is not a frame'
+	}
+	assert b.diagnostics().bus_errors <= u64(zero_poll_skip_limit), 'the look crossed ${b.diagnostics().bus_errors} records'
+}
+
 fn test_public_cansub_recv_still_projects_a_plain_frame() {
 	mut b := CansubBus{
 		iface: 'cansub:test/1'

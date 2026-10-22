@@ -330,7 +330,11 @@ fn (mut c DoipClient) await_readable(ms int) !bool {
 		if left <= 0 {
 			return false
 		}
-		if readable_within(c.conn.sock.handle, if left < stop_poll_ms { int(left) } else { stop_poll_ms }) {
+		if transport.readable_within(c.conn.sock.handle, if left < stop_poll_ms {
+			int(left)
+		} else {
+			stop_poll_ms
+		}) {
 			return true
 		}
 	}
@@ -409,7 +413,7 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 			// Asked before reading, never by reading with a zero deadline, which would stop
 			// partway through a message and desynchronise the stream; once something is there,
 			// the whole message is read with an ordinary deadline, since its rest is in flight.
-			if !readable_now(c.conn.sock.handle) {
+			if !transport.readable_now(c.conn.sock.handle) {
 				return error('DoIP recv timeout')
 			}
 			// what is readable must be read whole; a failure here (the peer closed, or a message
@@ -508,7 +512,7 @@ const idle_max_messages = 16
 // the peer closed or a message stalled), or `stopped_note` when the client's stop ended a read.
 pub fn (mut c DoipClient) idle() ! {
 	for _ in 0 .. idle_max_messages {
-		if !readable_now(c.conn.sock.handle) {
+		if !transport.readable_now(c.conn.sock.handle) {
 			return
 		}
 		msg := read_message_stoppable(mut c.conn, poll_read_ms, c.stop_requested) or {

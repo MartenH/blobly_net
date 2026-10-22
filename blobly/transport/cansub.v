@@ -1107,6 +1107,8 @@ fn (mut b CansubBus) recv_shared(timeout_ms int) !SharedIngress {
 	// then reported `timeout` left a perfectly good frame sitting behind it. That was a defect of
 	// the previous round's recv(0) fix (codex round 4 on #204).
 	mut probe := true
+	started := time.sys_mono_now()
+	mut skipped := 0
 	for {
 		wait := if probe {
 			cansub_first_wait(timeout_ms, deadline, time.ticks()) or { return error('timeout') }
@@ -1136,6 +1138,12 @@ fn (mut b CansubBus) recv_shared(timeout_ms int) !SharedIngress {
 						if b.stop.first_bus_error == '' {
 							b.stop.first_bus_error = rec.err.str()
 						}
+					}
+					// BOUNDED by the shared rule (zero_poll.v): each record re-arms the probe, so a
+					// storm of them would otherwise hold even a bounded receive past its deadline
+					skipped++
+					if !look_again(timeout_ms, skipped, since_ns(started)) {
+						return look_over(timeout_ms)
 					}
 					continue
 				}

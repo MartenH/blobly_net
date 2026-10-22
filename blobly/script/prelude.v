@@ -518,6 +518,9 @@ function bus.send(channel, id, data, opts)
   end
   __bus_send(channel, id, opts.ext or false, data or "", opts.format)
 end
+-- the controller`s ladder now: "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF", or "" where the
+-- backend cannot say (the software buses)
+function bus.health(channel) return __bus_health(channel) end
 function bus.recv(channel, timeout_ms)
   local id, ext, data = __bus_recv(channel, timeout_ms or 1000)
   if id == nil then return nil end
@@ -574,35 +577,183 @@ function expect_signal(channel, id, signal, want, timeout_ms)
 end
 
 -- ============================ reactive callbacks ============================
--- on_message(channel, id, fn): fn(frame) fires for each matching frame during run().
--- id may be nil to match every frame on the channel.
--- on_timer(period_ms, fn): fn() fires every period_ms during run().
--- run(duration_ms): cooperative event loop — pump the listened channels + timers.
+-- on_message(channel, id, fn): fn(frame) fires for each matching frame received during run() —
+-- what other nodes sent; the script`s own sends are never heard back. id may be nil to match
+-- every frame on the channel.
+-- on_health(channel, fn): fn(state) fires during run() when the controller`s ladder has moved —
+-- "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF" — sampled every 100 ms, and at its first
+-- sample with the state then, however late it was registered. A software bus never fires.
+-- on_timer(period_ms, fn): fn() fires every period_ms during run(), on its own grid: a late fire
+-- does not move the next one, and periods missed while the script was busy are skipped.
+-- run(duration_ms): the event loop. It reads every channel a handler names, and a frame it reads
+-- is consumed — a later expect gets the next one — whether or not a handler matched it. No event
+-- (a frame, a timer, a health sample) is taken up once the deadline has passed; a frame taken up
+-- before it reaches every handler it matches.
 __on_msg = {}
+__on_health = {}
 __timers = {}
-function on_message(channel, id, fn) __on_msg[#__on_msg + 1] = { channel = channel, id = id, fn = fn } end
-function on_timer(period_ms, fn) __timers[#__timers + 1] = { due = __now_ms() + period_ms, period = period_ms, fn = fn } end
+__listened = {}
+-- a channel is listened from where a handler names it on; a health handler needs it read only
+-- where the backend`s ladder advances inside recv (SocketCAN, Vector), not where it is polled
+local function listen(channel, for_health)
+  local needs_reader = __listen(channel)
+  if for_health and not needs_reader then return end
+  for _, c in ipairs(__listened) do
+    if c == channel then return end
+  end
+  __listened[#__listened + 1] = channel
+end
+function on_message(channel, id, fn)
+  listen(channel, false)
+  __on_msg[#__on_msg + 1] = { channel = channel, id = id, fn = fn }
+end
+function on_health(channel, fn)
+  listen(channel, true)
+  __on_health[#__on_health + 1] = { channel = channel, fn = fn, said = nil }
+end
+function on_timer(period_ms, fn)
+  -- the clock counts milliseconds: a shorter period could not move a timer`s grid at all
+  if type(period_ms) ~= "number" or period_ms < 1 then
+    error("on_timer: the period must be a number of milliseconds, at least 1", 2)
+  end
+  __timers[#__timers + 1] = { due = __now_ms() + period_ms, period = period_ms, fn = fn, active = false }
+end
 
-function run(duration_ms)
-  local deadline = __now_ms() + (duration_ms or 1000)
-  local chans = {}
-  for _, h in ipairs(__on_msg) do chans[h.channel] = true end
-  repeat
-    local now = __now_ms()
-    for _, t in ipairs(__timers) do
-      if now >= t.due then t.fn(); t.due = now + t.period end
+local health_poll_ms = 100
+-- each health handler is sampled for itself, so a nested run() inside an earlier handler cannot
+-- leave it an older sample, and is told a known state it has not been told: kept per handler, so
+-- one registered late hears the current state; "" (unknown) is never said and resets nothing
+local function poll_health(deadline)
+  for _, h in ipairs(__on_health) do
+    if __now_ms() >= deadline then return end
+    local s = __bus_health(h.channel)
+    if s ~= "" and s ~= h.said then
+      h.said = s
+      h.fn(s)
     end
-    local any = false
-    for ch, _ in pairs(chans) do
-      local f = bus.recv(ch, 5)
-      if f then
-        any = true
-        for _, h in ipairs(__on_msg) do
-          if h.channel == ch and (h.id == nil or h.id == f.id) then h.fn(f) end
+  end
+end
+
+-- past_grid moves a timer to the first point on its grid after `at`
+local function past_grid(t, at)
+  if t.due <= at then
+    t.due = t.due + (math.floor((at - t.due) / t.period) + 1) * t.period
+    while t.due <= at do t.due = t.due + t.period end -- rounding, at most once
+  end
+end
+
+-- fire_timer moves a due timer to its next point on its grid BEFORE calling it, and marks it
+-- running, so a run() inside its callback neither fires it again nor waits on it; and again when
+-- the callback ends, so the points a long callback ran over are skipped, not fired back to back
+local function fire_timer(t)
+  past_grid(t, __now_ms())
+  t.active = true
+  -- however the callback ends: a return, an error, or the coroutine it yielded from closed
+  local _ <close> = setmetatable({}, { __close = function()
+    t.active = false
+    past_grid(t, __now_ms())
+  end })
+  t.fn()
+end
+
+-- the frames being given to their handlers, oldest first — ONE queue for the script: any run(),
+-- nested or in another coroutine, first finishes them and queues what it takes behind them, so
+-- every handler sees a channel`s frames in order, and a coroutine suspended in a handler leaves
+-- its frame to whichever run() comes next
+local inflight = {}
+-- per coroutine, which frame each of its delivery levels is calling a handler for, and one guard
+-- every level closes as it ends: a frame whose handler did not return — it raised (even nil), or
+-- yielded into a coroutine that was closed — is ended for the handlers that have not had it yet
+local calling_of = setmetatable({}, { __mode = "k" })
+local function calling_state()
+  local co = coroutine.running()
+  local s = calling_of[co]
+  if not s then
+    s = { calling = {} }
+    s.guard = setmetatable({}, { __close = function()
+      local d = table.remove(s.calling)
+      if d then
+        for k, e in ipairs(inflight) do
+          if e == d then table.remove(inflight, k) break end
         end
       end
+    end })
+    calling_of[co] = s
+  end
+  return s
+end
+local taken = 0 -- frames run() has taken up, numbering them in the queue
+-- a frame is ended once any coroutine that was mid-call on it is dead: it raised out of a resume,
+-- which closes nothing, so no guard ran for it — however many coroutines are on the frame
+local function died_on(d)
+  for c, n in pairs(d.callers) do
+    if n > 0 and coroutine.status(c) == "dead" then return true end
+  end
+  return false
+end
+local function deliver_inflight()
+  local s = calling_state()
+  local _ <close> = s.guard
+  s.calling[#s.calling + 1] = false
+  local level = #s.calling
+  local q = inflight
+  local co = coroutine.running()
+  -- the frames queued when this level began, and none after: a frame an inner run() takes is
+  -- that run()`s to deliver, or the next one`s — never this level`s, whose run() may be past its
+  -- deadline
+  local upto = #q > 0 and q[#q].n or 0
+  while #q > 0 and q[1].n <= upto do
+    local d = q[1]
+    -- stops as soon as an inner run() has finished this frame (what it delivered came after), or
+    -- a coroutine died on it
+    while q[1] == d and d.i <= #__on_msg and not died_on(d) do
+      local h = __on_msg[d.i]
+      d.i = d.i + 1
+      if h.channel == d.ch and (h.id == nil or h.id == d.f.id) then
+        s.calling[level] = d
+        d.callers[co] = (d.callers[co] or 0) + 1
+        h.fn(d.f)
+        d.callers[co] = d.callers[co] - 1
+        s.calling[level] = false
+      end
     end
-    if not any then sleep_ms(2) end
+    if q[1] == d then table.remove(q, 1) end
+  end
+end
+
+-- run looks __now_ms, __wait_frame and __bus_health up as globals at every call: the model test
+-- (events_test.v) replaces them
+function run(duration_ms)
+  local deadline = __now_ms() + (duration_ms or 1000)
+  local next_health = __now_ms()
+  repeat
+    deliver_inflight() -- the frame an outer run() is delivering reaches its later handlers first
+    local now = __now_ms()
+    for _, t in ipairs(__timers) do
+      if __now_ms() >= deadline then break end
+      if not t.active and now >= t.due then fire_timer(t) end
+    end
+    if #__on_health > 0 and __now_ms() >= next_health and __now_ms() < deadline then
+      next_health = __now_ms() + health_poll_ms
+      poll_health(deadline)
+    end
+    now = __now_ms() -- after the callbacks: the time they took is not waited again
+    if now >= deadline then break end
+    local wake = deadline
+    for _, t in ipairs(__timers) do
+      if not t.active and t.due < wake then wake = t.due end
+    end
+    if #__on_health > 0 and next_health < wake then wake = next_health end
+    -- whole milliseconds, rounded UP: a fractional wait would reach the binding as 0, a busy poll
+    local wait = math.ceil(wake - now)
+    if wait < 0 then wait = 0 end
+    if wait > 1000 then wait = 1000 end -- the loop goes on; a run(math.huge) is not one wait
+    local ch, id, ext, data = __wait_frame(wait, table.unpack(__listened))
+    if ch then
+      taken = taken + 1
+      inflight[#inflight + 1] = { ch = ch, f = { id = id, ext = ext, data = data }, i = 1, n = taken, callers = {} }
+      deliver_inflight()
+    end
   until __now_ms() >= deadline
 end
 '

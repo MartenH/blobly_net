@@ -21,10 +21,10 @@ pub const default_eid = [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x01] // entity id (�
 // ServerCfg is the entity's identity (for routing activation + announcements).
 pub struct ServerCfg {
 pub:
-	logical_address u16 = 0x1000 // this entity's DoIP logical address
+	logical_address u16    = 0x1000 // this entity's DoIP logical address
 	vin             string = default_vin
-	eid             []u8 = default_eid // entity id (≈ MAC)
-	gid             []u8 = default_eid // group id
+	eid             []u8   = default_eid // entity id (≈ MAC)
+	gid             []u8   = default_eid // group id
 	// Power-on announcement (ISO 13400 A_DoIP_Announce_Num / A_DoIP_Announce_Interval). A real
 	// entity announces itself when it gets its IP, three times, 500ms apart — that is how a
 	// tester discovers ECUs it was never told about, by listening rather than asking. 0 = say
@@ -85,8 +85,8 @@ mut:
 	// thread while the UDP loop reads it to answer discovery — replacing a string header
 	// unsynchronised lets an announcement observe a torn value. Only this field is mutable;
 	// the logical address, EID and GID never change, so they stay lock-free in cfg.
-	vin_mu sync.Mutex
-	vin    string
+	vin_mu   sync.Mutex
+	vin      string
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
 	// The UDP endpoint this entity claimed, and the port it claimed it on — released on close.
@@ -99,8 +99,14 @@ mut:
 	// the socket back for it is more indirection than storing the one string.
 	bound_host string
 	bound_port int
-	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
-	stopping bool // set by close(): stop accepting/serving and tear down the active conn
+	active     &net.TcpConn = unsafe { nil } // the in-progress accepted connection (nil between)
+	stopping   bool // set by close(): stop accepting/serving and tear down the active conn
+	// ONE CLOSER of `active`: close() tears it down from another thread (Stop) and the serve
+	// loop closes it when the peer is done, and whichever is second must find nothing. Closed
+	// twice, the second close lands on an fd NUMBER the kernel may already have given the next
+	// connection — the next test's client, on CI, which lost its connection mid-exchange
+	// (doip/net_test.v:820, three times, each with the file at the same millisecond).
+	active_mu sync.Mutex
 }
 
 // new_server builds an entity with the given identity + UDS handler. Returns a
@@ -217,10 +223,28 @@ pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
 	mut conn := s.listener.accept()!
 	// Publish the accepted connection so close() can tear it down from another
 	// thread (Stop), interrupting an otherwise-blocking per-connection read.
+	s.active_mu.lock()
+	if s.stopping {
+		// close() ran between the accept and here, and has nothing to tear down: this one is
+		// ours to close
+		s.active_mu.unlock()
+		conn.close() or {}
+		return error('DoIP server stopping')
+	}
 	s.active = conn
+	s.active_mu.unlock()
 	s.serve_connection(mut conn)
-	s.active = unsafe { nil }
-	conn.close() or {}
+	s.release_active()
+}
+
+// release_active closes the connection being served, if close() has not already.
+fn (mut s DoipServer) release_active() {
+	s.active_mu.lock()
+	if !isnil(s.active) {
+		s.active.close() or {}
+		s.active = unsafe { nil }
+	}
+	s.active_mu.unlock()
 }
 
 // serve_connection handles one client: routing activation, then diagnostic
@@ -421,7 +445,13 @@ fn with_port(dest string, port_ int) string {
 	if d.starts_with('[') {
 		return if d.contains(']:') { d } else { '${d}:${port_}' }
 	}
-	return if d.count(':') == 1 { d } else if d.contains(':') { '[${d}]:${port_}' } else { '${d}:${port_}' }
+	return if d.count(':') == 1 {
+		d
+	} else if d.contains(':') {
+		'[${d}]:${port_}'
+	} else {
+		'${d}:${port_}'
+	}
 }
 
 // set_vin updates the VIN this entity ANNOUNCES, so discovery keeps naming the same ECU the
@@ -438,9 +468,7 @@ pub fn (mut s DoipServer) set_vin(vin string) {
 // a per-connection read is interrupted rather than waiting out the read timeout.
 pub fn (mut s DoipServer) close() {
 	s.stopping = true
-	if !isnil(s.active) {
-		s.active.close() or {}
-	}
+	s.release_active()
 	if !isnil(s.listener) {
 		s.listener.close() or {}
 	}
@@ -513,7 +541,7 @@ fn read_exact(mut conn net.TcpConn, n int, began bool, stop fn () bool, deadline
 				}
 				return error_with_code('DoIP: read timed out', net.err_timed_out_code)
 			}
-			if !readable_within(conn.sock.handle, if left < stop_poll_ms {
+			if !transport.readable_within(conn.sock.handle, if left < stop_poll_ms {
 				int(left)
 			} else {
 				stop_poll_ms

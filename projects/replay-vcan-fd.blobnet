@@ -26,8 +26,8 @@ channels:
     interface: vcan0
     mode: replay
     databases:
-      - dbc/blobly_net.dbc
+      - ../dbc/blobly_net.dbc
     replay:
-      source: samples/demo.mf4
+      source: ../samples/demo.mf4
       speed: 1.0
       loop: false

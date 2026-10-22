@@ -149,6 +149,16 @@ pub fn fd_pad(data []u8) []u8 {
 pub interface Bus {
 mut:
 	send(frame CanFrame) !
+	// recv(0) IS A LOOK at what is already queued: a frame queued now is returned; records the
+	// backend filters (our own echoes, TX confirmations, chip-state, status and error records,
+	// malformed datagrams) are skipped while they are already queued, bounded by count and by
+	// about a millisecond (`look_again`, zero_poll.v) — a look stopped by that bound answers
+	// 'timeout' with zero_poll_spent_code, a plain 'timeout' is an empty queue; nothing new is
+	// waited for; and a shared-hub handle not yet subscribed takes one non-blocking batch as its
+	// boundary. A polling
+	// caller — a script's run() looks at several channels this way every 0.1 ms — turns every
+	// exception into latency or a lost frame. A positive timeout skips filtered records for as
+	// long as it lasts, and never answers timeout early because one was skipped.
 	recv(timeout_ms int) !CanFrame
 	close()
 	// health is the controller's fault ladder (see health.v). Backends whose driver reports
