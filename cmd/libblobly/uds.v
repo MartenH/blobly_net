@@ -200,9 +200,9 @@ const idle_poll_ms = 50
 fn serve_idle(mut hd UdsHandle) {
 	for stdatomic.load_i64(&hd.closing) == 0 {
 		time.sleep(idle_poll_ms * time.millisecond)
-		if !hd.mu.try_lock() {
-			continue // a call is in progress: it answers what arrives
-		}
+		// waits out a call in progress, which answers what arrives meanwhile (a blocking lock:
+		// V's try_lock is always false on Windows unless built -d windows_7)
+		hd.mu.lock()
 		if stdatomic.load_i64(&hd.closing) == 0 && !hd.lost && hd.idle_lost == '' {
 			if mut hd.conn.ch is doip.DoipClient {
 				hd.conn.ch.idle() or {
