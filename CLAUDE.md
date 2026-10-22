@@ -52,8 +52,8 @@ For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated
 ```
 cmd/blobly_net/     the GUI (Dear ImGui + ImPlot)   <- the app
 cmd/*                CLI tools + smoke tests (flash, dbc_decode, arxml2dbc, mf4_dump, restbus, trace_dump, ...)
-python/blobly/       the engine from Python, over cmd/libblobly's C ABI (docs/scripting_python.md)
                      and libblobly, the engine as a SHARED LIBRARY with a C ABI (bb.h) — a Python host's door
+python/blobly/       the engine from Python, over cmd/libblobly's C ABI (docs/scripting_python.md)
 libs/vgui/           the V wrapper around Dear ImGui/ImPlot
 arxmodel/, flatxml/  vendored (`scripts/vendor_arxmodel.sh <commit>`; never edited): AUTOSAR models
                      from many files as one, and the XML parser under it — what candb reads ARXML
