@@ -289,3 +289,36 @@ fn test_a_request_stopped_before_its_send_sends_nothing() {
 	}
 	assert false
 }
+
+// a target whose answer began and stalled is read in slices a stop ends
+fn test_a_stop_ends_a_stalled_answer() {
+	bus := 'inproc:FUNC_STALL'
+	mut c := client_on(bus, 0x7E0, 0x7E8)
+	mut flag := &StopFlag{}
+	c.stop_requested = fn [flag] () bool {
+		return flag.on
+	}
+	mut ecu := transport.open(bus) or { panic(err) }
+	mut fch := isotp.Channel(isotp.open_software(bus, 0x7DF, 0x7DE, false) or { panic(err) })
+	mut tap := transport.open(bus) or { panic(err) }
+	t := spawn raise_after(mut flag, 150)
+	// a First Frame of a 20-byte answer, and nothing after it
+	spawn fn [mut ecu] () {
+		time.sleep(50 * time.millisecond)
+		ecu.send(transport.CanFrame{
+			id:   0x7E8
+			data: [u8(0x10), 20, 0x62, 0xF1, 0x90, 1, 2, 3]
+		}) or {}
+	}()
+	sw := time.new_stopwatch()
+	functional(mut fch, mut tap, [FunctionalTarget{
+		client: c
+		rsp_id: 0x7E8
+	}], [u8(0x22), 0xF1, 0x90], 300) or {
+		assert failure_of(err) == .abandoned, err.msg()
+		assert sw.elapsed().milliseconds() < 700, 'waited out N_Cr'
+		t.wait()
+		return
+	}
+	assert false
+}

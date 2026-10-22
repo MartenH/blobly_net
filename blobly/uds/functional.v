@@ -69,15 +69,22 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 	// what is already queued is no answer to this request: the same drain a physical exchange runs.
 	// The tap FIRST: a frame arriving between the two drains then still has its trigger, and a
 	// trigger whose PDU the channel drain took finds the channel empty — read as silence below.
+	// a stop is asked before each step, so a stopped request drains nothing and sends nothing
 	for {
+		if stop_asked(targets) {
+			return error(abandoned_note)
+		}
 		tap.recv(0) or { break }
 	}
 	for t in targets {
+		if stop_asked(targets) {
+			return error(abandoned_note)
+		}
 		mut c := t.client
 		c.drain_queued(req[0])!
 	}
 	if stop_asked(targets) {
-		return error(abandoned_note) // nothing goes out for a request already stopped
+		return error(abandoned_note)
 	}
 	fch.send(req) or { return send_failure(err, fch, stop_asked(targets), req[0], 0) }
 	// a target's client a stop can be asked of: its waits are sliced, and a stop ends the request
@@ -118,6 +125,9 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 			if is_silence(err.msg()) {
 				continue
 			}
+			if stop_asked(targets) {
+				return error(abandoned_note)
+			}
 			return CarrierFailed{
 				text: 'UDS: the functional listener failed: ${err.msg()}'
 			}
@@ -136,7 +146,10 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		// is left of the window: a First Frame near its end would otherwise abort mid-transfer
 		left := deadline[i] - sw.elapsed().milliseconds()
 		read_ms := if left > c.timeout_ms { left } else { i64(c.timeout_ms) }
-		resp := c.ch.recv(int(read_ms)) or {
+		resp := read_answer(mut c, read_ms, stoppable, targets) or {
+			if stop_asked(targets) {
+				return error(abandoned_note)
+			}
 			if is_silence(err.msg()) {
 				continue // its PDU was taken by the pre-send drain: nothing of this request's yet
 			}
@@ -173,6 +186,34 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		}
 	}
 	return out
+}
+
+// read_answer reads target `c`'s answer within `ms`: in slices a stop of any target can end when
+// one can be asked, a transfer a slice cuts short continuing in the next (the channel keeps it).
+fn read_answer(mut c Client, ms i64, stoppable bool, targets []FunctionalTarget) ![]u8 {
+	if !stoppable {
+		return c.ch.recv(int(ms))
+	}
+	sw := time.new_stopwatch()
+	mut last := IError(error('timeout'))
+	for {
+		if stop_asked(targets) {
+			return error(abandoned_note)
+		}
+		left := ms - sw.elapsed().milliseconds()
+		if left <= 0 {
+			return last
+		}
+		resp := c.ch.recv(int(if left > isotp.stop_poll_ms { i64(isotp.stop_poll_ms) } else { left })) or {
+			if is_silence(err.msg()) || err.msg() == isotp.stall_note {
+				last = err
+				continue
+			}
+			return err
+		}
+		return resp
+	}
+	return error('unreachable')
 }
 
 // stop_asked: a stop was asked of a target's client.
