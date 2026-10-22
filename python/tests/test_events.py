@@ -403,6 +403,18 @@ class Ladder(EventLoop):
         return self.steps[min(self.samples, len(self.steps)) - 1]
 
 
+class TestSpentSingleLook(unittest.TestCase):
+    def test_a_spent_single_look_is_not_slept_on(self):
+        class Busy(FakeChannel):
+            def look(self):
+                return None, True
+
+        clock, sleeps = Clock(), []
+        got, _ = wait_on([Busy("A")], 0.5, 0, clock.now, lambda ms: sleeps.append(ms))
+        self.assertIsNone(got)
+        self.assertEqual(sleeps, [], "slept the fraction on a queue that said it was not empty")
+
+
 class TestHealthReading(unittest.TestCase):
     def test_whether_a_health_channel_is_read_is_asked_at_each_run(self):
         class Asked(Ladder):
@@ -423,6 +435,29 @@ class TestHealthReading(unittest.TestCase):
         loop.needs, loop.waited_on = True, []  # a reload put the row on a wire that needs a reader
         loop.run(5)
         self.assertTrue(loop.waited_on and all("A" in n for n in loop.waited_on))
+
+
+class TestMidRunRegistration(unittest.TestCase):
+    def test_a_handler_registered_inside_a_callback_is_read_in_the_same_run(self):
+        class Two(Ladder):
+            sent = False
+
+            def _wait_frame(self, names, ms):
+                if "B" in names and self.t >= 2 and not self.sent:  # one frame, at its own time
+                    self.sent = True
+                    self.t += 1
+                    return "B", Got("b")
+                return super()._wait_frame(names, ms)
+
+        loop, heard = Two(["ok"]), []
+
+        def register():
+            if not heard and not loop._listened:
+                loop.on_message("B", None, lambda f: heard.append(f.id))
+
+        loop.on_timer(1, register)
+        loop.run(10)
+        self.assertTrue(heard, "a handler registered in a timer callback was not read in that run()")
 
 
 class TestHealth(unittest.TestCase):

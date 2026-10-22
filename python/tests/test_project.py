@@ -273,6 +273,8 @@ class TestRefusals(unittest.TestCase):
         self.assertTrue(net.stop())
         self.assertTrue(blobly.wait_released(0))
         self.assertTrue(net.stop(), "a second stop asks whether the process is free, and it is")
+        with self.assertRaises(ValueError):
+            blobly.wait_released(2**31)  # a C int: wider would wrap to forever or to 0
 
 
 class TestThreads(unittest.TestCase):

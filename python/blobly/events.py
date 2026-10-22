@@ -84,6 +84,22 @@ class EventLoop:
         """Whether a channel's ladder moves only while it is read. Unknown here: read it."""
         return True
 
+    def _to_read(self, needs):
+        """What one wait reads, built at each wait so a handler registered inside a callback is
+        read in this run(): every channel an on_message names, and a health handler's where its
+        ladder needs a reader (`needs` holds this run()'s answers)."""
+        read = list(self._listened)
+        for h in self._on_health:
+            if any(k is h.channel or k == h.channel for k in read):
+                continue
+            answer = next((a for c, a in needs if c is h.channel or c == h.channel), None)
+            if answer is None:
+                answer = self._health_needs_reader(h.channel)
+                needs.append((h.channel, answer))
+            if answer:
+                read.append(h.channel)
+        return read
+
     def on_message(self, channel, id, fn):
         """fn(frame) for each frame on `channel` whose id is `id` (None: every frame) received
         during run() — what other nodes sent."""
@@ -159,14 +175,9 @@ class EventLoop:
             raise ValueError("run: the duration must be a finite number of milliseconds, zero or more")
         deadline = self._now() + duration_ms
         next_health = self._now()
-        # what this run() reads: every channel an on_message names, and a health handler's only
-        # where its ladder moves while it is read — asked now, not at registration, since a reload
-        # can keep a channel while its row's interface changes under it
-        read = list(self._listened)
-        for h in self._on_health:
-            if not any(k is h.channel or k == h.channel for k in read) \
-                    and self._health_needs_reader(h.channel):
-                read.append(h.channel)
+        # whether a health handler's channel needs reading, asked once per run() and channel — not
+        # at registration, since a reload can keep a channel while its row's interface changes
+        needs = []  # (channel, answer)
         while True:
             now = self._now()
             for t in list(self._timers):
@@ -192,7 +203,7 @@ class EventLoop:
                 wake = next_health
             # the exact budget, fractions included: the wait never reads past the deadline; and at
             # most a second, so a long run() is many waits
-            got = self._wait_frame(read, min(max(0, wake - now), LONGEST_WAIT_MS))
+            got = self._wait_frame(self._to_read(needs), min(max(0, wake - now), LONGEST_WAIT_MS))
             if got is not None:
                 key, frame = got
                 handlers = [fn for ch, want, fn in self._on_msg
@@ -219,7 +230,13 @@ def wait_on(channels, timeout_ms, rr, now, sleep_ms):
             # the floor, so the driver never waits past the deadline; a longer wait than one call can
             # be asked for returns when that call does, and run() waits again
             capped = int(timeout_ms) > MAX_WAIT_MS
-            f = channels[0].recv(min(int(timeout_ms), MAX_WAIT_MS))
+            look = getattr(channels[0], "look", None)
+            if int(timeout_ms) == 0 and look:
+                f, spent = look()
+                if f is None and spent:  # records still queued: run() asks again at once
+                    return None, rr
+            else:
+                f = channels[0].recv(min(int(timeout_ms), MAX_WAIT_MS))
         except Exception:
             rest = min(deadline - now(), ERROR_REST_MS)
             if rest > 0:
