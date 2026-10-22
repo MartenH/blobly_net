@@ -20,8 +20,8 @@ class FaultKind(enum.StrEnum):
 
 class FaultRefused(BloblyError):
     """The engine refused a fault that could not take effect, rather than arm one that changes
-    nothing: a DoIP or SOME/IP channel, an unknown kind, a message the node does not send on that
-    channel, bad_crc where the node stamps no checksum, freeze_counter where it stamps no E2E
+    nothing: a DoIP or SOME/IP channel, an unknown kind, a node not simulated on that channel, a
+    message the node does not send, bad_crc where the node stamps no checksum, freeze_counter where it stamps no E2E
     counter, out_of_range where no signal can carry a value outside its range. Nothing was armed."""
 
 

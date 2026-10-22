@@ -377,7 +377,12 @@ fn test_a_fault_that_cannot_take_effect_is_refused() {
 	t := arm_target()
 	assert refusal(t, 'ECU', 'Protected', 'nonsense', '') == 'unknown fault kind "nonsense"'
 	assert refusal(t, 'ECU', 'Missing', 'drop', '') == '"ECU" does not send "Missing" on CAN1'
-	assert refusal(t, 'Other', 'Protected', 'drop', '') == '"Other" does not send "Protected" on CAN1'
+	assert refusal(t, 'Other', 'Protected', 'drop', '') == '"Other" is not simulated on CAN1'
+	no_nodes := FaultTarget{
+		...t
+		nodes: []
+	}
+	assert refusal(no_nodes, 'ECU', 'Protected', 'drop', '') == '"ECU" is not simulated on CAN1'
 	assert refusal(t, 'ECU', 'Plain', 'bad_crc', '') == '"Plain" on "ECU" has no configured checksum — bad_crc would change nothing'
 	assert refusal(t, 'ECU', 'Plain', 'freeze_counter', '') == '"Plain" on "ECU" has no E2E counter — freeze_counter would change nothing'
 	eth := FaultTarget{
@@ -400,4 +405,19 @@ fn test_fault_kinds_are_spelled_as_scripts_spell_them() {
 	if _ := fault_kind_of('DROP') {
 		assert false, 'a kind is spelled one way'
 	}
+}
+
+// a clear restarts the table's clock: a timed fault armed after it is aged from the next pass,
+// not from the last pass before the clear
+fn test_a_clear_restarts_the_clock() {
+	mut t := FaultTable{}
+	t.age_to(1000)
+	t.clear()
+	t.set('k', Fault{ kind: .drop, remaining_ms: 500 })
+	t.age_to(60_000)
+	assert t.get('k').active(), 'aged across the clear'
+	t.age_to(60_400)
+	assert t.get('k').active()
+	t.age_to(60_600)
+	assert !t.get('k').active()
 }

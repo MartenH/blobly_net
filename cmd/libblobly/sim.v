@@ -30,17 +30,19 @@ pub fn bb_sim_fault(row i32, node &char, message &char, kind &char, ms i32, sign
 	if isnil(node) || isnil(message) || isnil(kind) {
 		return fail(bb_err, 'sim_fault: no node, message or kind')
 	}
+	// held through the arm: a stop retires the rows under bb_mu, so a fault armed on a run lands
+	// before its stop, and never after the next start's clear
 	bb_mu.lock()
-	live := bb_dbs_live
-	rows := bb_fault_rows
-	bb_mu.unlock()
-	if !live {
+	defer {
+		bb_mu.unlock()
+	}
+	if !bb_dbs_live {
 		return fail(bb_err_state, 'not started: a fault is armed on the run, from bb_start until bb_stop')
 	}
-	if row < 0 || int(row) >= rows.len {
+	if row < 0 || int(row) >= bb_fault_rows.len {
 		return fail(bb_err, 'no channel ${row}')
 	}
-	rows[int(row)].arm(vstr(node), vstr(message), vstr(kind), int(ms), vstr(signal)) or {
+	bb_fault_rows[int(row)].arm(vstr(node), vstr(message), vstr(kind), int(ms), vstr(signal)) or {
 		return fail(bb_err, err.msg())
 	}
 	return ok()
@@ -54,8 +56,11 @@ pub fn bb_sim_clear_faults() i32 {
 
 // frame_bytes is the host's n bytes at data.
 fn frame_bytes(data &u8, n i32) ![]u8 {
-	if n < 0 || (n > 0 && isnil(data)) {
-		return error('a frame of ${n} bytes, and no bytes')
+	if n < 0 {
+		return error('a frame of ${n} bytes')
+	}
+	if n > 0 && isnil(data) {
+		return error('no bytes for a frame of ${n}')
 	}
 	if n == 0 {
 		return []u8{}

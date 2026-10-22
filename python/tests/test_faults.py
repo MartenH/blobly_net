@@ -138,7 +138,8 @@ class TestOnSimDemo(unittest.TestCase):
             (("CAN1", "SUT", "Heartbeat", "freeze_counter"), "has no E2E counter"),
             (("CAN1", "SUT", "Powertrain", "nonsense"), 'unknown fault kind "nonsense"'),
             (("CAN1", "SUT", "NotAMessage", "drop"), '"SUT" does not send "NotAMessage" on CAN1'),
-            (("CAN1", "NoSuchEcu", "Powertrain", "drop"), '"NoSuchEcu" does not send "Powertrain"'),
+            (("CAN1", "NoSuchEcu", "Powertrain", "drop"), '"NoSuchEcu" is not simulated on CAN1'),
+            (("CAN1", "BodyECU", "BodyStatus", "drop"), '"BodyECU" is not simulated on CAN1'),  # CAN2's
             (("DoIP1", "SUT", "Powertrain", "drop"), "is a DoIP channel"),
             (("CAN1", "SUT", "Powertrain", "out_of_range"), "no signal on \"Powertrain\""),
         ]

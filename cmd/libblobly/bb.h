@@ -224,8 +224,8 @@ int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t 
  * "freeze_counter" or "out_of_range"; "clear" lifts the message's fault. `ms` > 0 ends it after
  * that long, 0 or less leaves it until cleared. `signal` (NULL or "": one is chosen) is the one
  * out_of_range forces past its declared range. A fault that could not take effect is refused with
- * BB_ERR, as Lua refuses it: a DoIP or SOME/IP row, an unknown kind, a message `node` does not
- * send, bad_crc where it stamps no checksum, freeze_counter where it stamps no E2E counter,
+ * BB_ERR, as Lua refuses it: a DoIP or SOME/IP row, an unknown kind, a node not simulated on
+ * the row, a message `node` does not send, bad_crc where it stamps no checksum, freeze_counter where it stamps no E2E counter,
  * out_of_range where no signal can carry a value outside its range. The faults are the process's,
  * and a bb_start clears them. bb_sim_clear_faults lifts every one. */
 int bb_sim_fault(int row, const char *node, const char *message, const char *kind, int ms,

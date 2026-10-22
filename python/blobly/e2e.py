@@ -18,7 +18,8 @@ __all__ = ["p01_crc", "p01_protect"]
 def p01_crc(data: bytes, data_id: int, crc_pos: int, counter_pos: int, mode: str = "both") -> int:
     """The Profile 1 CRC byte for `data` as it stands: CRC-8 (poly 0x1D, start 0, no final XOR)
     over the Data ID bytes `mode` names, then every byte but the CRC's own; the counter is read
-    from the low nibble of `counter_pos` (alt mode's byte choice depends on it). Raises
+    from the low nibble of `counter_pos` (alt mode's byte choice depends on it). It answers the
+    CRC only: a counter of 15, which Profile 1 never sends, is the caller's to catch. Raises
     ValueError for what Profile 1 cannot be: a data_id past 16 bits, an unknown mode, positions
     that are not two distinct bytes of the frame."""
     d = _bytes(data)

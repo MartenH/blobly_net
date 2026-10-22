@@ -32,7 +32,8 @@ pub fn fault_kind_of(kind string) !FaultKind {
 // arm puts `kind` on `node`'s `msg` on this channel for `ms` milliseconds (0 or less: until
 // cleared), forcing `signal` out of range for out_of_range (one chosen when empty, as the
 // Simulation panel offers one); a kind of clear lifts it. Refused: an Ethernet row, an unknown
-// kind, a message `node` does not send, and a kind that would change no bit on the wire.
+// kind, a node not simulated here, a message `node` does not send, and a kind that would change
+// no bit on the wire.
 pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal string) ! {
 	if t.eth_kind != '' {
 		return error('"${t.channel}" is a ${t.eth_kind} channel — nothing simulates on it, so a fault there could never take effect')
@@ -41,6 +42,10 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 	if k == .none_ {
 		inject(t.iface, node, msg, Fault{})
 		return
+	}
+	// the DBC naming `node` a sender is not enough: only a node simulated here transmits
+	if !t.nodes.any(it.name == node) {
+		return error('"${node}" is not simulated on ${t.channel}')
 	}
 	m := t.db.messages_from(node).filter(it.name == msg)
 	if m.len == 0 {

@@ -456,7 +456,8 @@ does on the wire and why.
 - `net.clear_fault(channel, node, message)` lifts that message's fault; `net.clear_faults()` lifts
   every one. A start clears them too, and a fault armed with `ms` ends by itself.
 - **A fault that could not take effect is refused**, with `blobly.FaultRefused` saying why: a DoIP
-  or SOME/IP channel, an unknown kind, a message the node does not send on that channel,
+  or SOME/IP channel, an unknown kind, a node not simulated on that channel (a sender the DBC
+  names is not enough), a message the node does not send,
   `bad_crc` where the node stamps no checksum, `freeze_counter` where it stamps no E2E counter
   (its `protect:` entry or the DBC's E2E declaration), `out_of_range` where no signal has a value
   outside its range. Armed, such a fault would change nothing, and a test of it would pass for
@@ -499,7 +500,8 @@ bytes `mode` names and then every byte of the frame but the CRC's own.
 
 - `e2e.p01_crc(data, data_id, crc_pos, counter_pos, mode="both")` is the CRC byte for `data` as it
   stands, the counter read from the low nibble of `counter_pos`. Compare it with the frame's CRC
-  byte to check a received frame.
+  byte to check a received frame; the counter is yours to check (15 is never a Profile 1
+  counter).
 - `e2e.p01_protect(data, data_id, crc_pos, counter_pos, counter, mode="both")` returns `data` with
   `counter` (0..14) in the low nibble of `counter_pos` and the CRC stamped at `crc_pos`.
 - Positions are 0-based bytes, as blobly_emb's `[[frame]].e2e` writes them. `mode` is the Data ID
