@@ -648,6 +648,7 @@ added the option.
 |---|---|
 | `project` | The started `blobly.Project`. Its run is the test module's: started at the module's first test that asks for it and stopped after the module's last test, so a module may also bring up a project of its own. Each test starts with the CAN channels' handles opened fresh as its setup ends: it hears every frame that arrives from then on, one that comes before its first `expect` included, and nothing an earlier test left queued. After each test, the handlers it registered are dropped and the faults it armed cleared. A test that stopped the run finds it started again in the next one. |
 | `can1`, `can2`, ... | One per enabled channel of the project, named after it: the started project's `Channel` of that name. |
+| `diag` | A `UdsClient` on the project's first enabled CAN channel at the default ids (0x7E0 out, 0x7E8 back), closed after the test. Another channel's, or other ids, is `can2.uds(tx, rx)` in the test. |
 
 **The channel fixtures' names** are the channels' names lowercased, every character that cannot be
 in a Python name made `_`, and `_` put before a leading digit: `CAN1` is `can1`, `CAN-1` is `can_1`,
@@ -668,6 +669,10 @@ def test_the_sut_answers(can1):
 def test_the_answer_decodes(can1):
     can1.messages.Request.send(ReqCode=5)
     can1.expect_signal("Response", "RespCode", 6, timeout_ms=500)
+
+
+def test_the_vin(diag):
+    assert diag.read_did(0xF190) == b"BLOBLYNETV0SUT001"
 ```
 
 **A failed expectation** is a test failure. Its message says what was expected and what came
@@ -994,6 +999,7 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 |---|---|
 | `project` | Fixture: the started `Project`, its run the test module's; each test hears what arrives from its start, and its handlers and faults go with it. |
 | `can1`, ... | Fixtures: one per enabled channel, named after it (lowercased, `_` for what a Python name cannot hold). |
+| `diag` | Fixture: a `UdsClient` on the first enabled CAN channel at 0x7E0 / 0x7E8, closed after the test. |
 | `blobly_project` | Ini value: the project, relative to the ini file. |
 | `--blobly-project=PATH` | Command line: the project, relative to the working directory; overrides the ini value. |
 
@@ -1010,7 +1016,6 @@ loop, bus health, fault injection, the E2E Profile 1 helpers, UDS over CAN, `exp
   snapshots and extended data, and functional addressing, are its next part.
 - The DoIP tester: UDS over DoIP rows, `discover` and `listen`. Today a DoIP row is listed and its
   entity hosted, but Python cannot talk to it.
-- The pytest plugin's `diag` fixture, which comes with UDS.
 
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
 - SOME/IP send, call and listen; `flash.program`.

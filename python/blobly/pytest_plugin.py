@@ -25,6 +25,9 @@ Fixtures:
              pytest's own such as tmp_path, another plugin's) gets no fixture, and pytest warns
              which as it starts; reach such a channel as project.channels[...]. The names are read
              from the project (loaded, not started) as pytest configures.
+  diag       a blobly.UdsClient on the first enabled CAN channel at the default ids (0x7E0 out,
+             0x7E8 back), closed after the test; another channel's, or other ids, is
+             canN.uds(tx, rx).
 
 A failed expect or expect_signal is a test failure whose message says what was expected and what
 came instead. pytest's own --junitxml report carries it."""
@@ -39,7 +42,7 @@ from . import __version__, init, version
 from ._lib import BloblyError
 from .project import Channel, Project
 
-RESERVED = {"project", "request", "_blobly_run"}  # this plugin's fixtures, and pytest's request
+RESERVED = {"project", "diag", "request", "_blobly_run"}  # this plugin's fixtures, and pytest's request
 _PATH = pytest.StashKey[str]()  # the project configure found
 _NAMES = pytest.StashKey[list]()  # its enabled channels' names
 
@@ -145,6 +148,17 @@ def project(_blobly_run: Project):
     net._forget()
     if net.started:
         net.clear_faults()
+
+
+@pytest.fixture
+def diag(project: Project):
+    """A UDS client on the project's first enabled CAN channel, at the default ids (0x7E0 out,
+    0x7E8 back), closed after the test; any other is canN.uds(tx, rx)."""
+    ch = next((c for c in project.channels if c.kind == "can"), None)
+    if ch is None:
+        pytest.fail("diag: the project has no enabled CAN channel", pytrace=False)
+    with ch.uds() as client:
+        yield client
 
 
 def _reopen(net: Project) -> None:

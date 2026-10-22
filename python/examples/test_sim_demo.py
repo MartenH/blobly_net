@@ -5,8 +5,8 @@
     pytest python/examples/test_sim_demo.py --blobly-project=path/to/your.blobnet
 
 conftest.py beside this file loads the plugin and pytest.ini names the project; a suite of your
-own needs the same two lines. The plugin gives each test the started project (`project`) and a
-fixture per channel, named after it (`can1`). A test hears what arrives from its start, and what
+own needs the same two lines. The plugin gives each test the started project (`project`), a
+fixture per channel, named after it (`can1`), and a UDS client (`diag`). A test hears what arrives from its start, and what
 it registers on the project or arms is dropped after it."""
 import pytest
 
@@ -23,6 +23,10 @@ def test_the_sut_answers_a_request(can1):
 def test_the_sut_answers_a_request_message(can1):
     can1.messages.Request.send(ReqCode=5)
     can1.expect_signal("Response", "RespCode", 6, timeout_ms=500)
+
+
+def test_the_sut_reports_its_vin(diag):
+    assert diag.read_did(0xF190) == b"BLOBLYNETV0SUT001"
 
 
 def test_the_gear_steps_each_second(can1):

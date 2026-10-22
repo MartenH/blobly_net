@@ -140,8 +140,9 @@ names the project. The rules are in
 [Testing with pytest](scripting_python.md#11-testing-with-pytest).
 
 - The `project` fixture is the started project, and `can1` its channel `CAN1`: a fixture per
-  channel, named after it. A test hears what arrives from its start, and its handlers and faults
-  do not reach the next test; what it changed in a simulated ECU lasts until its module ends.
+  channel, named after it; `diag` is a UDS client on the first CAN channel. A test hears what
+  arrives from its start, and its handlers and faults do not reach the next test; what it changed
+  in a simulated ECU lasts until its module ends.
 - A test is a few lines, and names no project (the ini file or `--blobly-project` does):
 
   ```python
