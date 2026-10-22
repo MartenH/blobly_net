@@ -1,7 +1,8 @@
 /* smoke.c — a C host of libblobly: loads the library at run time, brings sim-demo up, hears
  * its simulated ECUs on inproc:CAN1, sends a frame, and does the same from a thread the HOST
  * created — the one the V runtime's collector did not see born — encodes and decodes through
- * CAN1's database (dbc/blobly_net.dbc), then stops and starts again.
+ * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS, then stops and
+ * starts again.
  *
  *   gcc -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread   (Linux)
  *   build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
@@ -38,6 +39,14 @@ typedef int (*sig_str_fn)(int, int, int, char *, int);
 typedef int (*sig_label_fn)(int, int, int, int, uint64_t *, double *, char *, int);
 typedef int (*encode_fn)(int, int, int, const char *const *, const double *, bb_frame *);
 typedef int (*decode_fn)(int, const bb_frame *, int *, double *, uint8_t *, int);
+typedef int (*uds_open_fn)(int, const int64_t *, const int64_t *, bb_uds_target *);
+typedef int (*uds_did_fn)(int, int, uint8_t *, int);
+typedef int (*uds_last_fn)(int, bb_uds_exchange *, uint8_t *, int, uint8_t *, int);
+typedef int (*uds_data_fn)(int, uint8_t *, int);
+static uds_open_fn bb_uds_open_p;
+static uds_did_fn bb_uds_read_did_p;
+static uds_last_fn bb_uds_last_p;
+static uds_data_fn bb_uds_data_p;
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
 static int_int_fn bb_message_count_p;
 static msg_info_fn bb_message_info_p;
@@ -54,7 +63,8 @@ static str_int_fn bb_load_p, bb_bus_open_p;
 static idx_str_fn bb_channel_name_p, bb_channel_iface_p;
 static send_fn bb_bus_send_p;
 static recv_fn bb_bus_recv_p;
-static int_int_fn bb_bus_health_p, bb_bus_close_p, bb_channel_kind_p, bb_channel_health_source_p, bb_wait_released_p;
+static int_int_fn bb_bus_health_p, bb_bus_close_p, bb_channel_kind_p, bb_channel_health_source_p, bb_wait_released_p,
+	bb_uds_close_p;
 
 #define FAIL(step) do { fprintf(stderr, "FAIL %s: %s\n", step, bb_last_error_p()); return 1; } while (0)
 
@@ -169,6 +179,32 @@ static int dbc_steps(int row) {
 	return 0;
 }
 
+/* UDS on CAN1: sim-demo's SUT answers 0x7E0 / 0x7E8, its VIN 17 bytes (a multi-frame answer) */
+static int uds_steps(int row, int doip) {
+	bb_uds_target t;
+	CHECK(bb_uds_open_p(doip, NULL, NULL, &t) == BB_ERR && strstr(bb_last_error_p(), "DoIP"), "a DoIP row must refuse by name");
+	int64_t bad = -2;
+	CHECK(bb_uds_open_p(row, &bad, NULL, &t) == BB_ERR && strstr(bb_last_error_p(), "not a CAN identifier"), "tx -2 must refuse");
+	int u = bb_uds_open_p(row, NULL, NULL, &t);
+	CHECK(u >= 0 && t.tx == 0x7E0 && t.rx == 0x7E8 && !t.ext, "open on the default ids");
+	uint8_t cut[4], vin[32];
+	CHECK(bb_uds_read_did_p(u, 0xF190, cut, sizeof cut) == 17 && memcmp(cut, "BLOB", 4) == 0, "a VIN cut at the buffer answers its whole length");
+	CHECK(bb_uds_data_p(u, vin, sizeof vin) == 17 && memcmp(vin, "BLOBLYNETV0SUT001", 17) == 0, "bb_uds_data copies it again, whole");
+	CHECK(bb_uds_read_did_p(u, 0xABCD, vin, sizeof vin) == BB_ERR_NEGATIVE, "an unknown DID is a negative response");
+	CHECK(bb_uds_data_p(u, vin, sizeof vin) == 0, "a failed call holds no bytes of an earlier one");
+	bb_uds_exchange x;
+	uint8_t req[8], ans[8];
+	CHECK(bb_uds_last_p(u, &x, req, sizeof req, ans, sizeof ans) == 0 && x.negative && x.nrc == 0x31 && x.sent
+		&& x.request_len == 3 && x.answer_len == 3 && ans[0] == 0x7F && req[0] == 0x22, "the last exchange names NRC 0x31");
+	CHECK(bb_uds_read_did_p(u, 0x10000, vin, sizeof vin) == BB_ERR, "a DID past 16 bits must refuse");
+	/* a buffer bb.h does not allow is refused BEFORE the request goes out */
+	CHECK(bb_uds_read_did_p(u, 0xF190, NULL, 4) == BB_ERR, "a NULL buffer of 4 bytes must refuse");
+	CHECK(bb_uds_last_p(u, &x, req, sizeof req, ans, sizeof ans) == 0 && x.nrc == 0x31, "a refused call sent nothing");
+	CHECK(bb_uds_close_p(u) == 0 && bb_uds_close_p(u) == BB_ERR_HANDLE, "a closed UDS handle is gone");
+	printf("ok   UDS on CAN1: the VIN read, a negative response typed with its NRC, a DoIP row refused by name\n");
+	return 0;
+}
+
 static int can1_row = -1; /* CAN1's row, for the host thread's database read */
 
 #ifndef _WIN32
@@ -215,6 +251,7 @@ int main(int argc, char **argv) {
 	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released);
 	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
+	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -262,6 +299,7 @@ int main(int argc, char **argv) {
 
 	if (exchange("main thread", 20)) return 1;
 	if (dbc_steps(can1)) return 1;
+	if (uds_steps(can1, doip)) return 1;
 	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32

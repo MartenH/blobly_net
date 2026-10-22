@@ -9,7 +9,8 @@
  *     error (the message belongs to the library; copy it if you keep it; at most BB_ERROR_MAX
  *     bytes, a longer one cut before a whole UTF-8 character). Calls that have a non-error
  *     answer that is not plain success return > 0 for it, one of the BB_* answers below.
- *     bb_bus_open, bb_bus_health and the bb_channel_* enums return their value when >= 0.
+ *     bb_bus_open, bb_uds_open, bb_bus_health and the bb_channel_* enums return their value
+ *     when >= 0.
  *   - LOAD THE LIBRARY FROM THE PROCESS'S MAIN THREAD, and call bb_init() once before anything
  *     else. The V runtime initialises itself when the library is loaded (a constructor) and takes
  *     the loading thread for the main one — loaded from a worker, its collector scans the wrong
@@ -117,10 +118,41 @@ typedef struct bb_signal {
 	double  maximum;
 } bb_signal;
 
+/* What bb_uds_open opened: the ids a request goes out and its answer comes back on, as resolved
+ * from what was asked (an omitted one is the default, 0x7E0 / 0x7E8). */
+typedef struct bb_uds_target {
+	uint32_t tx;
+	uint32_t rx;
+	uint8_t  ext;   /* 29-bit: either id is past 0x7FF */
+} bb_uds_target;
+
+/* One request a UDS handle put through (bb_uds_last), answered or not. */
+typedef struct bb_uds_exchange {
+	uint8_t sent;         /* the request went out whole; 0: it failed before or during its send,
+	                         so the ECU never had all of it, and repeating it does not ask twice */
+	uint8_t negative;     /* the answer was a negative response, ... */
+	uint8_t nrc;          /* ... with this code (0 otherwise) */
+	int32_t pending;      /* how many responsePending (0x78) came before the answer */
+	int64_t rtt_us;       /* from the send to the final answer, or to the failure */
+	int64_t pending_us;   /* from the first 0x78 to the end; 0 without one */
+	int32_t request_len;  /* the request as it went out (a suppressed one with its bit set) */
+	int32_t answer_len;   /* the positive answer, a negative one's 7F <sid> <nrc>, an undecodable
+	                         one as it came; 0: none came */
+} bb_uds_exchange;
+
 /* Error codes. The message (bb_last_error) says what; the code says which kind. */
 #define BB_ERR         (-1)  /* refused, with a reason in bb_last_error */
-#define BB_ERR_HANDLE  (-2)  /* no such bus handle, or a closed one */
+#define BB_ERR_HANDLE  (-2)  /* no such bus or UDS handle, or a closed one */
 #define BB_ERR_STATE   (-3)  /* nothing loaded / not started / already started / still releasing */
+/* how a UDS call failed (bb_uds_*); BB_ERR there is a refusal: the request did not go out whole
+ * (an argument out of range, a request longer than ISO-TP carries, a listen-only wire), or a
+ * reason the message gives */
+#define BB_ERR_NEGATIVE     (-4)  /* the ECU answered with a negative response: bb_uds_last's nrc */
+#define BB_ERR_TIMEOUT      (-5)  /* nothing answered the request within the wait */
+#define BB_ERR_PENDING      (-6)  /* responsePending (0x78), then nothing within the ECU's P2* */
+#define BB_ERR_UNDECODABLE  (-7)  /* an answer arrived that cannot be read as one */
+#define BB_ERR_CARRIER      (-8)  /* the carrier failed under the request: the bus, or the ISO-TP
+                                     channel (a frame lost mid-transfer) */
 
 /* Answers that are neither success nor an error. */
 #define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
@@ -130,6 +162,8 @@ typedef struct bb_signal {
 #define BB_RELEASING   3     /* bb_stop: the run is stopped, but a loop outlived the stop's bound
                                 and is still letting go of its wires; bb_start refuses with
                                 BB_ERR_STATE until bb_wait_released says it is done */
+#define BB_ANSWERED    4     /* bb_uds_raw_suppressed: a positive answer came although none was
+                                asked for (the ECU ignored the suppress bit) */
 
 #define BB_ERROR_MAX   4095  /* the longest bb_last_error message, in bytes */
 
@@ -216,6 +250,69 @@ int bb_encode(int row, int m, int n, const char *const *signals, const double *v
  * remote frame (no data). The arrays hold `cap`: a message of more signals is refused, with
  * *message set so the host can ask again with arrays of its bb_message.signals. */
 int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t *active, int cap);
+
+/* UDS (ISO 14229) on a CAN row: a client over ISO-TP on the row's bus, opened by the rule a Lua
+ * script's uds.open opens by (blobly/udsconn), each call one of its helpers — so a host reads
+ * answers decoded and failures typed, and never a UDS payload of its own. A DoIP row is refused
+ * by name: UDS over DoIP is not in this library yet. `row` is a bb_channel_* index; tx / rx point
+ * at the ids to use, NULL for the default (0x7E0 / 0x7E8): an id that is not a CAN identifier is
+ * refused, and either past 0x7FF makes both 29-bit. `out` (unless NULL) gets the ids opened on.
+ *
+ * ONE THREAD USES A UDS HANDLE at a time, as a bus handle; bb_uds_close may come from another,
+ * and ends a call in progress there (BB_ERR_HANDLE) within 20 ms of the wait it is in — a frame
+ * already handed to the driver is written first, which the backend's own send timeout bounds. A
+ * handle outlives bb_stop (with nothing to answer it, once the run's simulated ECUs are gone):
+ * close it.
+ *
+ * EVERY CALL IS BOUNDED by the client's timing (blobly/uds): the first answer within 1000 ms (a
+ * 0x10 answer's P2 can lengthen that, never shorten it), each responsePending (0x78) then waited
+ * for the ECU's P2* + 1000 ms, and one request never longer than 120 s from its send. A failure
+ * is one of the BB_ERR_* above, its words in bb_last_error.
+ *
+ * Bytes a call answers (a DID's value, a seed, an answer) go into the caller's buffer, `cap`
+ * bytes, and the answer is their whole length: past cap they were cut, and bb_uds_data copies
+ * them again, whole, until the handle's next call. cap 0 (buf may be NULL) asks for the length
+ * alone. */
+int bb_uds_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *out); /* >= 0: the
+                                                                                       handle */
+int bb_uds_close(int u);
+int bb_uds_last(int u, bb_uds_exchange *out, uint8_t *request, int request_cap, uint8_t *answer,
+                int answer_cap);                            /* 0, with the handle's last exchange
+                                                               (its bytes cut at the caps, the
+                                                               struct saying their lengths), or
+                                                               BB_NONE before its first */
+int bb_uds_data(int u, uint8_t *buf, int cap);             /* the last call's bytes, again
+                                                               (none after a call that failed or
+                                                               answers none) */
+int bb_uds_raw(int u, const uint8_t *req, int n, uint8_t *buf, int cap); /* the positive answer,
+                                                                            its SID included */
+int bb_uds_raw_suppressed(int u, const uint8_t *req, int n); /* req's sub-function sent with
+                                                                suppress-positive-response: 0 when
+                                                                no positive answer came (a quiet P2
+                                                                is success), BB_ANSWERED when one
+                                                                did; a refusal is an error */
+int bb_uds_session(int u, int session, uint8_t *buf, int cap); /* 0x10: the answer after its SID —
+                                                                  the session, then its timing */
+int bb_uds_tester_present(int u);                           /* 0x3E 00 */
+int bb_uds_read_did(int u, int did, uint8_t *buf, int cap); /* 0x22: the DID's value */
+int bb_uds_write_did(int u, int did, const uint8_t *data, int n); /* 0x2E */
+int bb_uds_reset(int u, int kind, uint8_t *buf, int cap);   /* 0x11: the answer after its SID */
+int bb_uds_comm_control(int u, int control, int comm_type); /* 0x28 */
+int bb_uds_dtc_setting(int u, int on);                      /* 0x85: on (1) or off (0) */
+int bb_uds_clear_dtcs(int u, int group);                    /* 0x14: a DTC or a group, 24 bits
+                                                               (0xFFFFFF: all) */
+int bb_uds_security_seed(int u, int level, uint8_t *unlocked, uint8_t *buf, int cap);
+                                       /* 0x27 at an odd level: the seed; *unlocked (unless NULL)
+                                          1 when it is all zeros, ISO 14229-1's "already
+                                          unlocked", for which no key is to be sent */
+int bb_uds_security_key(int u, int level, const uint8_t *key, int n); /* 0x27 at level (the
+                                                                         seed's + 1) */
+int bb_reference_key(const uint8_t *seed, int n, uint8_t *buf, int cap); /* blobly_net's
+                                       reference key for a seed (each byte XOR 0xFF): the key the
+                                       simulated ECUs accept */
+int bb_nrc_name(int nrc, char *buf, int cap);  /* ISO 14229-1's name for a negative response
+                                                  code, a string into the buffer as
+                                                  bb_message_name's */
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus
