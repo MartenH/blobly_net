@@ -110,8 +110,11 @@ bench can move an actuator, change an ECU's state or upset a test someone else i
   `listen_only: true`. Do not remove `listen_only` from a user's project on your own.
 
 The check below lists what a project can reach: its enabled rows, and every `bus:` its file
-names. It reads the file as text, so it may list more than a run would reach (a comment, a
-generator that only fires on a key press), never less. When in doubt, ask.
+names. Python cannot list a project's generators, so it reads the file as text, in the
+spellings the engine accepts (`bus: x`, `bus : x`, `"bus": x`, flow style). It may list more than
+a run would reach (a comment, a generator that only fires on a key press), and a spelling it does
+not know would hide a target. For a project you did not write, read its `senders:` yourself, and
+when in doubt, ask.
 
 ```python
 import ipaddress
@@ -141,7 +144,7 @@ def beyond_this_process(path):
     reach = [f"{ch.name} ({ch.iface})" for ch in net.channels
              if not (in_process(ch.iface) if ch.kind == "can" else on_loopback(ch.iface))]
     with open(path, encoding="utf-8") as f:                 # a generator's bus: a channel or an interface
-        targets = re.findall(r"\bbus:\s*[\"']?([^\s,\"'}#]+)", f.read())
+        targets = re.findall(r"(?<![\w-])[\"']?bus[\"']?\s*:\s*[\"']?([^\s,\"'}#]+)", f.read())
     return reach + [f"a generator's bus: {t}" for t in targets if t not in local and not in_process(t)]
 
 
