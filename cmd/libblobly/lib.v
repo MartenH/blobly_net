@@ -79,6 +79,8 @@ mut:
 	bus     transport.Bus
 	users   i64 // calls inside `bus` now
 	closing i64 // bb_bus_close has begun: a receive in progress ends at its next slice
+	// asks `closing`, for transport.recv_sliced: built once at open, not per receive
+	stop fn () bool = unsafe { nil }
 }
 
 __global (
@@ -221,7 +223,7 @@ pub fn bb_start() i32 {
 		// headless's own state refusal: with no run of ours, a previous run's loop is still out
 		// past its stop's bound
 		if err.msg() == headless.active_note {
-			return fail(bb_err_state, 'a previous run is still releasing its wires; bb_wait_released, then start')
+			return fail(bb_err_state, 'a previous run is still releasing its wires; wait until it has (bb_wait_released), then start')
 		}
 		return fail(bb_err, err.msg())
 	}
@@ -327,18 +329,24 @@ pub fn bb_bus_open(iface &char) i32 {
 		return fail(bb_err, 'open: no interface')
 	}
 	name := unsafe { cstring_to_vstring(iface) }
-	// the one rule the model uses: on Linux a DoIP or SOME/IP endpoint would fall through to
-	// SocketCAN and fail as a missing device
-	if project.iface_is_eth(name) {
+	// the rules the model uses — the interface's scheme, and a row's own type: on Linux a DoIP or
+	// SOME/IP endpoint would fall through to SocketCAN and fail as a missing device
+	if project.iface_is_eth(name) || (bb_loaded && bb_rows.any(it.is_eth()
+		&& it.iface_with_bitrate() == name)) {
 		return fail(bb_err, 'open: ${name} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
 	}
 	bus := transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') }
+	mut hd := &BusHandle{
+		bus: bus
+	}
+	closing := &hd.closing
+	hd.stop = fn [closing] () bool {
+		return stdatomic.load_i64(closing) != 0
+	}
 	bb_mu.lock()
 	h := bb_next
 	bb_next++
-	bb_handles[h] = &BusHandle{
-		bus: bus
-	}
+	bb_handles[h] = hd
 	bb_mu.unlock()
 	ok()
 	return i32(h)
@@ -408,13 +416,8 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 	if stdatomic.load_i64(&hd.closing) != 0 {
 		return fail(bb_err_handle, 'recv: the handle was closed')
 	}
-	fr := if timeout_ms == 0 {
-		hd.bus.recv(0) or { return recv_nothing(err) }
-	} else {
-		closing := &hd.closing
-		transport.recv_sliced(mut hd.bus, int(timeout_ms), recv_slice_ms, fn [closing] () bool {
-			return stdatomic.load_i64(closing) != 0
-		}) or { return recv_nothing(err) }
+	fr := transport.recv_sliced(mut hd.bus, int(timeout_ms), recv_slice_ms, hd.stop) or {
+		return recv_nothing(err)
 	}
 	// a frame bb_frame cannot carry is refused whole: a truncated payload published with its
 	// real length is one a C host reads past the end of

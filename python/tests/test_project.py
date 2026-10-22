@@ -266,7 +266,7 @@ class TestRefusals(unittest.TestCase):
         net.start()
         self.assertTrue(net.stop())
         self.assertTrue(blobly.wait_released(0))
-        self.assertTrue(net.stop(), "a stop of nothing started holds nothing")
+        self.assertTrue(net.stop(), "a second stop asks whether the process is free, and it is")
 
 
 class TestThreads(unittest.TestCase):

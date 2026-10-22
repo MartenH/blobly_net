@@ -3,6 +3,7 @@ its enabled channels as objects that complete in a REPL, and the event loop over
 import ctypes
 import math
 import os
+import warnings
 
 from . import _lib
 from ._lib import BloblyError
@@ -79,7 +80,8 @@ class Channel:
         lib = _lib.lib()
         with _lib.state_lock:
             self._current()
-            return _lib.KINDS.get(_lib.check(lib.bb_channel_kind(self._index)), "can")
+            k = _lib.check(lib.bb_channel_kind(self._index))
+        return _lib.KINDS.get(k, f"unknown ({k})")  # a newer library's kind is not a CAN bus
 
     def _health_needs_reader(self):
         """Whether this row's ladder moves only while it is read (SocketCAN, Vector)."""
@@ -287,7 +289,8 @@ class Project(EventLoop):
         lib = _lib.lib()
         with _lib.state_lock:
             if not self.started:
-                return True
+                # nothing of ours runs; an earlier stop may still be letting go of the process
+                return _lib.check(lib.bb_wait_released(0)) == 0
             for c in self._channels:
                 try:
                     c.close()
@@ -302,7 +305,10 @@ class Project(EventLoop):
         return self.start()
 
     def __exit__(self, *exc):
-        self.stop()
+        if not self.stop():
+            warnings.warn(f"{self.path}: a loop outlived the stop's bound and still holds the "
+                          "process; blobly.wait_released() waits for it before the next start",
+                          RuntimeWarning, stacklevel=2)
         return False
 
     @property

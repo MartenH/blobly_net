@@ -10,9 +10,12 @@ pub const sliced_stop_code = 0x5A1
 // asking `stop` before each — a receive another thread must be able to end (a run's Stop, a
 // handle closed under it). A bus error other than a timeout ends it with that error; a 'timeout'
 // a bus answered WITHOUT waiting is waited out to the slice's end on the monotonic clock, so such
-// a bus costs one call per slice and not a core (#401). A zero timeout is not this function's:
-// it is one look (Bus.recv's recv(0) contract), which the caller makes itself.
+// a bus costs one call per slice and not a core (#401). A zero timeout is one look (Bus.recv's
+// recv(0) contract), stop not asked.
 pub fn recv_sliced(mut bus Bus, timeout_ms int, slice_ms int, stop fn () bool) !CanFrame {
+	if timeout_ms == 0 {
+		return bus.recv(0)
+	}
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
 		if stop() {

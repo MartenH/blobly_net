@@ -680,7 +680,7 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 // bus_recv is the bus's own recv(ms), read in slices a stop request can end when one can be made
 // (`stop_requested`); the deadline is the caller's either way, and a zero poll is one look.
 fn (mut c SoftChannel) bus_recv(ms int) !transport.CanFrame {
-	if c.stop_requested == unsafe { nil } || ms == 0 {
+	if c.stop_requested == unsafe { nil } {
 		return c.bus.recv(ms)
 	}
 	return transport.recv_sliced(mut c.bus, ms, stop_poll_ms, c.stop_requested) or {

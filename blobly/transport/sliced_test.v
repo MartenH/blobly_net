@@ -89,3 +89,19 @@ fn test_stop_and_frame() {
 	f := recv_sliced(mut bus2, 1000, 5, never)!
 	assert f.id == 0x42 && b.calls == 3
 }
+
+// Zero is one look, as Bus.recv(0) is: one call, at once, and a stop is not asked.
+fn test_zero_is_one_look() {
+	mut a := &Answers{}
+	mut bus := Bus(a)
+	t0 := time.ticks()
+	if _ := recv_sliced(mut bus, 0, 20, fn () bool {
+		return true
+	})
+	{
+		assert false
+	} else {
+		assert err.msg() == 'timeout'
+	}
+	assert a.calls == 1 && time.ticks() - t0 < 50
+}

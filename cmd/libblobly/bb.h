@@ -30,8 +30,8 @@
  *     is written by recv and read by health), so open a handle per thread instead. The one
  *     call that may come from ANOTHER thread is bb_bus_close, which ends a recv in progress.
  *   - A frame received is copied into the caller's bb_frame; nothing handed out points into the
- *     library except the strings, which stay valid until the next call that replaces them
- *     (bb_last_error, bb_channel_*).
+ *     library except the strings: bb_channel_name / bb_channel_iface's stay valid until the next
+ *     bb_load, bb_start or bb_stop, bb_last_error's until the calling thread's next call.
  *   - the engine's progress and warnings go to the process's stdout and stderr, as the headless
  *     runner's do.
  */

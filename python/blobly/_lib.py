@@ -146,8 +146,9 @@ def attach():
 
 
 def text(b):
-    """A string from the library. Its error buffer truncates at 512 bytes and may cut a UTF-8
-    sequence in two: a broken tail must not hide the error behind a UnicodeDecodeError."""
+    """A string from the library. Its messages are cut before a whole character past
+    BB_ERROR_MAX bytes, but a project's own names need not be UTF-8: an undecodable byte must not
+    hide an error behind a UnicodeDecodeError."""
     return b.decode("utf-8", errors="replace") if b is not None else ""
 
 
