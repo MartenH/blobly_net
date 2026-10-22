@@ -128,7 +128,7 @@ from `main`; `release.yml` verifies both, then publishes THREE assets: the Linux
 Linux tar.gz, and the Windows zip (via `windows.yml`, which publishes for a tag only when called
 with `publish_bundle=true` from behind that guard) — plus the two **`blobly` wheels**
 (`scripts/build_wheel.py`: Linux manylinux from the 22.04 job, its tag derived from the library's
-glibc and checked by `auditwheel`; Windows x64 with its MinGW runtime and licences), attached to
+glibc and checked by `auditwheel`; Windows x64 with its MinGW runtime and those DLLs' licences; both with the notices of what is compiled into the library — V's stdlib and Boehm GC from the toolchain that built it, arxmodel and flatxml — and refused for any architecture but x86-64), attached to
 the release and then uploaded to **PyPI** by the `pypi` job through Trusted Publishing (no token;
 the `pypi` environment, set up once — `docs/releasing.md`). A CI wheel carries `+git.<sha>`, which
 PyPI refuses. Bundle payload list:

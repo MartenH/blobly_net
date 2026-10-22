@@ -15,7 +15,9 @@ pip install blobly
 
 The wheel carries the engine for its platform inside the package (`blobly/_native/`): Linux
 x86_64 (a manylinux wheel built on the release floor, Ubuntu 22.04, so any glibc that new or
-newer) and Windows x64 (with the MinGW runtime DLLs it loads, and their licences). Any CPython 3.8
+newer) and Windows x64 (with the MinGW runtime DLLs it loads, and their licences). The notices
+of what is compiled into the engine — V's standard library, the Boehm GC, arxmodel and flatxml —
+are in `blobly/_native/licenses/`. Any CPython 3.8
 or later; no other packages are needed. Its version is the release's (`v.mod`'s, `2026.10.00`
 installed as `2026.10.0`); `blobly.__version__` says which.
 

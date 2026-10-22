@@ -198,7 +198,7 @@ jobs:
           $nativeArgs = $native | ForEach-Object { "--native", $_ }
           $release = @()
           if ("${{ inputs.publish_bundle }}" -eq "true") { $release = @("--release") }
-          & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --licenses build/wheel-licenses --out build/wheels @release
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --licenses build/wheel-licenses --v C:/v-ct/v.exe --out build/wheels @release
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python -m venv "$env:RUNNER_TEMP\wheeltest"
           $whl = (Get-ChildItem build/wheels -Filter *.whl).FullName

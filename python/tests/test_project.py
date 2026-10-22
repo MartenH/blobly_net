@@ -49,8 +49,9 @@ def setUpModule():
 class TestInstalledWheel(unittest.TestCase):
     def test_the_installed_package_and_its_own_library_are_what_run(self):
         pkg = os.path.dirname(os.path.abspath(blobly.__file__))
-        self.assertFalse(pkg.startswith(os.path.join(REPO, "python")),
-                         f"the source tree was imported ({pkg}), not the installed wheel")
+        source = os.path.join(REPO, "python", "blobly")
+        self.assertNotEqual(os.path.realpath(pkg), os.path.realpath(source),
+                            "the source tree was imported, not the installed wheel")
         self.assertEqual(os.path.dirname(_lib.loaded_path), os.path.join(pkg, "_native"),
                          "the library loaded is not the one the wheel carries")
         self.assertNotIn("+source", blobly.__version__)

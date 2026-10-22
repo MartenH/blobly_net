@@ -2,10 +2,14 @@
 it (blobly/_native/), versioned from v.mod, tagged py3-none-<platform>.
 
     python scripts/build_wheel.py --native build/libblobly.so [--native dep.dll ...]
-                                  [--licenses dir] [--out build/wheels] [--release]
+                                  [--licenses dir] [--v path/to/v] [--out build/wheels] [--release]
 
 --native: the library, then (Windows) the runtime DLLs it loads, all beside it in the package.
---licenses: the bundled runtime's licence texts, one folder per package, carried in the wheel.
+--licenses: the bundled runtime DLLs' licence texts, one folder per package, carried in the wheel.
+--v: the V that built the library (default $V, else `v` on PATH): V's standard library and the
+     Boehm GC are compiled into it, and their notices come from that toolchain, as the app
+     bundle's do (scripts/stage_bundle.sh). arxmodel's and flatxml's (the ARXML reader) are this
+     repository's. Lua and the GUI's components are not in the library and their notices are not.
 --release: the version is v.mod's alone, and must be the tag (GITHUB_REF_NAME) when one is set.
            Without it the version carries a local label (+git.<sha>), which PyPI refuses: a CI
            wheel cannot be published by mistake.
@@ -48,8 +52,63 @@ def git_short():
         return "unknown"
 
 
+def header_notice(src):
+    """A notice kept in a source file's first comment, as stage_bundle.sh's header_notice reads it."""
+    out = []
+    for line in open(src, encoding="utf-8", errors="replace"):
+        line = line.rstrip("\n")
+        if re.match(r"^ \*/", line):
+            break
+        line = re.sub(r"^/\*", "", line)
+        line = re.sub(r"^ \* ?", "", line)
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def stage_notices(dest, vbin):
+    """The notices of what is compiled into the library: V's stdlib, Boehm GC, arxmodel, flatxml."""
+    vroot = os.path.dirname(os.path.realpath(vbin))
+    sources = {
+        "v-stdlib-LICENSE.txt": os.path.join(vroot, "LICENSE"),
+        "arxmodel-LICENSE.txt": os.path.join(ROOT, "arxmodel", "LICENSE"),
+        "flatxml-LICENSE.txt": os.path.join(ROOT, "flatxml", "LICENSE"),
+    }
+    os.makedirs(dest, exist_ok=True)
+    for name, src in sources.items():
+        if not os.path.isfile(src) or os.path.getsize(src) == 0:
+            sys.exit(f"build_wheel: no notice at {src}")
+        shutil.copy(src, os.path.join(dest, name))
+    gc = os.path.join(vroot, "thirdparty", "libgc", "gc.c")
+    if not os.path.isfile(gc):
+        sys.exit(f"build_wheel: no Boehm GC source at {gc}; is {vbin} the V that built the library?")
+    notice = header_notice(gc)
+    if "Copyright" not in notice:
+        sys.exit(f"build_wheel: no copyright notice at the head of {gc}")
+    with open(os.path.join(dest, "boehm-gc-LICENSE.txt"), "w", encoding="utf-8") as f:
+        f.write(notice)
+
+
+def check_elf_x86_64(lib):
+    """Refuses a library a manylinux x86_64 wheel cannot carry: not ELF64, or not x86-64."""
+    head = subprocess.run(["readelf", "-h", lib], capture_output=True, text=True, check=True).stdout
+    if not re.search(r"Class:\s+ELF64", head) or not re.search(r"Machine:\s+Advanced Micro Devices X86-64", head):
+        sys.exit(f"build_wheel: {lib} is not an x86-64 ELF64 library")
+
+
+def check_pe_x86_64(dll):
+    """Refuses a DLL a win_amd64 wheel cannot carry: its PE machine is not x86-64 (0x8664)."""
+    with open(dll, "rb") as f:
+        data = f.read(4096)
+    if data[:2] != b"MZ" or len(data) < 0x40:
+        sys.exit(f"build_wheel: {dll} is not a PE file")
+    pe = int.from_bytes(data[0x3C:0x40], "little")
+    if data[pe:pe + 4] != b"PE\0\0" or int.from_bytes(data[pe + 4:pe + 6], "little") != 0x8664:
+        sys.exit(f"build_wheel: {dll} is not an x86-64 DLL")
+
+
 def linux_platform_tag(lib):
     """manylinux_<major>_<minor>_x86_64 from the newest GLIBC_ symbol version the library needs."""
+    check_elf_x86_64(lib)
     needed = subprocess.run(["readelf", "-d", lib], capture_output=True, text=True, check=True)
     libs = set(re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", needed.stdout))
     extra = libs - MANYLINUX_LIBS
@@ -67,6 +126,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--native", action="append", required=True)
     ap.add_argument("--licenses")
+    ap.add_argument("--v", default=os.environ.get("V") or shutil.which("v"))
     ap.add_argument("--out", default=os.path.join(ROOT, "build", "wheels"))
     ap.add_argument("--release", action="store_true")
     args = ap.parse_args()
@@ -83,6 +143,8 @@ def main():
     if sys.platform == "win32":
         if os.path.basename(lib) != "blobly.dll":
             sys.exit("build_wheel: the first --native is blobly.dll on Windows")
+        for f in args.native:
+            check_pe_x86_64(f)
         plat = "win_amd64"
     elif sys.platform.startswith("linux"):
         if os.path.basename(lib) != "libblobly.so":
@@ -104,6 +166,9 @@ def main():
             shutil.copy(f, native)
         if args.licenses:
             shutil.copytree(args.licenses, os.path.join(native, "licenses"))
+        if not args.v:
+            sys.exit("build_wheel: no V to take its notices from; pass --v or set V")
+        stage_notices(os.path.join(native, "licenses"), args.v)
         with open(os.path.join(pkg, "_version.py"), "w", encoding="utf-8") as f:
             f.write(f'__version__ = "{version}"\n')
         dist = os.path.join(stage, "dist")
