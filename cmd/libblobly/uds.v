@@ -95,7 +95,7 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 		return transport.open(iface)
 	}) or { return open_failed(err, t.doip) }
 	if mut conn.ch is doip.DoipClient {
-		link := link_of(conn.ch, .none_)
+		link := link_of(conn.ch, unsafe { nil })
 		conn = udsconn.Conn{
 			ch:  link
 			cli: uds.new_client(link)
@@ -263,7 +263,7 @@ fn (mut hd UdsHandle) reconnect() ! {
 		}
 	}
 	c.stop_requested = stop
-	before := if hd.conn.ch is DoipLink { hd.conn.ch.seed } else { SeedState.none_ }
+	before := if hd.conn.ch is DoipLink { &DoipLink(hd.conn.ch) } else { unsafe { &DoipLink(nil) } }
 	link := link_of(c, before)
 	mut cli := uds.new_client(link)
 	cli.did_lens = hd.conn.cli.did_lens.clone()

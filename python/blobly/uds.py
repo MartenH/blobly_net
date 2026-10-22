@@ -365,18 +365,24 @@ class UdsClient:
         another request (a late or repeated one) is skipped and the wait goes on."""
         r = _data("request", request)
         with self._lock:  # the key_fn's own thread holds it: another thread waits its turn
-            if self._in_key_fn and r[:1] == b"\x27" and len(r) > 1 and r[1] & 1:
-                # its seed would stand in for the one the key_fn's key answers
-                raise BloblyError(f"{self!r}: a 0x27 seed request inside a security_access key_fn",
-                                  _lib.BB_ERR_STATE)
+            self._no_seed_in_key_fn(r)
             return self._bytes(_lib.lib().bb_uds_raw, r, len(r))
+
+    def _no_seed_in_key_fn(self, r: bytes) -> None:
+        """Refuses a 0x27 seed request inside this client's security_access key_fn, by whichever
+        call it would go out: its seed would stand in for the one the key_fn's key answers. Asked
+        holding the client's lock, which the key_fn's own thread holds."""
+        if self._in_key_fn and r[:1] == b"\x27" and len(r) > 1 and r[1] & 1:
+            raise BloblyError(f"{self!r}: a 0x27 seed request inside a security_access key_fn", _lib.BB_ERR_STATE)
 
     def raw_suppressed(self, request: bytes) -> bool:
         """Sends `request` with suppress-positive-response set on its sub-function: silence is
         success, a refusal raises. Returns whether a positive answer came anyway (the ECU ignored
         the bit); one owed after responsePending is waited for and does not count."""
         r = _data("request", request)
-        return self._call(_lib.lib().bb_uds_raw_suppressed, r, len(r)) == _lib.BB_ANSWERED
+        with self._lock:
+            self._no_seed_in_key_fn(r)
+            return self._call(_lib.lib().bb_uds_raw_suppressed, r, len(r)) == _lib.BB_ANSWERED
 
     def session(self, session: int = 0x01) -> bytes:
         """0x10 DiagnosticSessionControl: returns the answer after its SID — the session, then its
@@ -598,6 +604,8 @@ def functional(channel, functional_id: int | None, clients: Sequence[UdsClient],
             channel._current()
             if not channel._project.started:
                 raise BloblyError(f"{channel.name}: the project is not started", _lib.BB_ERR_STATE)
+        for c in clients:
+            c._no_seed_in_key_fn(req)
         handles = [c._handle() for c in clients]
         if doip:
             out = _lib.BbFunctionalReply()

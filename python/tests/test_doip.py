@@ -396,9 +396,11 @@ channels:
                 return bytes(b ^ 0xFF for b in seed)
             with self.assertRaises(blobly.Refused) as e:
                 diag.security_access(0x01, key_fn)
-            self.assertIn("the connection that gave the seed is gone", str(e.exception))
+            self.assertIn("the connection that gave the level 1 seed is gone", str(e.exception))
             self.assertEqual(diag.security_access(0x01), b"\x12\x34")  # a new seed, on the new one
-            for nested in (lambda seed: diag.security_access(0x01), lambda seed: diag.raw(b"\x27\x01")):
+            for nested in (lambda seed: diag.security_access(0x01), lambda seed: diag.raw(b"\x27\x01"),
+                           lambda seed: diag.raw_suppressed(b"\x27\x01"),
+                           lambda seed: fake.uds_functional(None, [diag], b"\x27\x01")):
                 with self.assertRaises(blobly.BloblyError) as e:  # nor a nested seed under it
                     diag.security_access(0x01, nested)
                 self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
@@ -412,9 +414,12 @@ channels:
             key = b"\x27\x02" + bytes(b ^ 0xFF for b in seed)
             with self.assertRaises(blobly.Refused) as e:
                 diag.raw(key)
-            self.assertIn("the connection that gave the seed is gone", str(e.exception))
+            self.assertIn("the connection that gave the level 1 seed is gone", str(e.exception))
             with self.assertRaises(blobly.Refused):  # nor to the functional address
                 fake.uds_functional(None, [diag], key)
+            diag.raw(b"\x27\x03")  # another level's seed on the new connection is not level 1's
+            with self.assertRaises(blobly.Refused):
+                diag.raw(key)
             diag.raw(b"\x27\x01")  # a seed on the new connection, and its key goes
             self.assertEqual(diag.raw(b"\x27\x02\xed\xcb"), b"\x67\x02")
 
