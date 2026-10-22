@@ -771,9 +771,6 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 		u := unsafe { handles[i] }
 		mut hd := uds_enter(u) or { return fail(bb_err_handle, 'no open UDS handle ${u}') }
 		hds << hd
-		hd.forget()
-		// its last exchange is not the functional one (uds.functional reports none): the reply says
-		hd.has_last = false
 		if stdatomic.load_i64(&hd.closing) != 0 {
 			return fail(bb_err_handle, 'the UDS handle ${u} was closed')
 		}
@@ -788,6 +785,15 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 			rsp_id: hd.rx
 			ext:    hd.ext
 		}
+	}
+	if why := uds.functional_refusal(targets, request) {
+		return fail(bb_err, why)
+	}
+	// what the targets held is an earlier call's from here; and their last exchange is not this
+	// request's (uds.functional reports none): the reply says
+	for mut h in hds {
+		h.forget()
+		h.has_last = false
 	}
 	// a close of any target ends the request, whichever target's transfer is in progress then: each
 	// client and its channel ask every target's closing for the call, their own again after

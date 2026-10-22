@@ -148,8 +148,11 @@ class TestFunctional(unittest.TestCase):
         twin, other_row = self.can1.uds(tx=0x7E0, rx=0x7E8), self.net.channels.CAN2.uds()
         self.addCleanup(twin.close)
         self.addCleanup(other_row.close)
+        ds[0].tester_present()
+        before = ds[0].last
         with self.assertRaises(blobly.Refused):
             self.can1.uds_functional(0x7DF, ds, bytes(8))  # one Single Frame: 7 bytes at most
+        self.assertEqual(ds[0].last, before, "a refused request cleared the last exchange")
         with self.assertRaises(blobly.Refused):
             self.can1.uds_functional(0x7DF, [ds[0], twin], b"\x3e\x00")  # one response id twice
         with self.assertRaises(blobly.BloblyError):

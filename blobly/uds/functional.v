@@ -53,18 +53,8 @@ pub const max_functional_payload = 7
 // missed. `window_ms` bounds the first answer from every target; a target that says 0x78 is waited
 // for its own P2* after it (+ margin), never past its client's pending_budget_ms.
 pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []FunctionalTarget, req []u8, window_ms int) ![]FunctionalReply {
-	if req.len == 0 {
-		return error('empty UDS request')
-	}
-	if req.len > max_functional_payload {
-		return error('UDS: a functional request is one Single Frame (${max_functional_payload} bytes), not ${req.len}')
-	}
-	for i, t in targets {
-		for j in 0 .. i {
-			if targets[j].rsp_id == t.rsp_id && targets[j].ext == t.ext {
-				return error('UDS: two functional targets answer on 0x${t.rsp_id:X}')
-			}
-		}
+	if why := functional_refusal(targets, req) {
+		return error(why)
 	}
 	// what is already queued is no answer to this request: the same drain a physical exchange runs.
 	// The tap FIRST: a frame arriving between the two drains then still has its trigger, and a
@@ -214,6 +204,25 @@ fn read_answer(mut c Client, ms i64, stoppable bool, targets []FunctionalTarget)
 		return resp
 	}
 	return error('unreachable')
+}
+
+// functional_refusal is why `req` to `targets` cannot be a functional request, or none: empty,
+// longer than one Single Frame, or two targets answering on one id.
+pub fn functional_refusal(targets []FunctionalTarget, req []u8) ?string {
+	if req.len == 0 {
+		return 'empty UDS request'
+	}
+	if req.len > max_functional_payload {
+		return 'UDS: a functional request is one Single Frame (${max_functional_payload} bytes), not ${req.len}'
+	}
+	for i, t in targets {
+		for j in 0 .. i {
+			if targets[j].rsp_id == t.rsp_id && targets[j].ext == t.ext {
+				return 'UDS: two functional targets answer on 0x${t.rsp_id:X}'
+			}
+		}
+	}
+	return none
 }
 
 // stop_asked: a stop was asked of a target's client.

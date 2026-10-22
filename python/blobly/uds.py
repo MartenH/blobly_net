@@ -3,6 +3,7 @@ the channel's bus, opened by the rule the Lua uds.open opens by, each call one o
 helpers. Answers come back decoded and failures typed, so nothing here reads a UDS payload."""
 import ctypes
 import threading
+import time
 from dataclasses import dataclass
 from collections.abc import Callable, Sequence
 
@@ -521,12 +522,21 @@ def functional(channel, functional_id: int, clients: Sequence[UdsClient], reques
         if c.channel is not channel:
             raise BloblyError(f"uds_functional: {c!r} is not a client of {channel.name}")
     lib = _lib.lib()
-    # every client's lock, in one order whoever calls, so two calls cannot each hold the other's
-    held = []
+    held: list[UdsClient] = []
     try:
-        for c in sorted(clients, key=id):
-            c._lock.acquire()
-            held.append(c)  # only what was acquired is released, an interrupt in between included
+        # every client's lock, without waiting on one while holding another: a client held across
+        # a key_fn that calls another client would otherwise wait on us as we wait on it
+        while True:
+            for c in clients:
+                if not c._lock.acquire(blocking=False):
+                    break
+                held.append(c)  # only what was acquired is released, an interrupt included
+            else:
+                break
+            for c in reversed(held):
+                c._lock.release()
+            held.clear()
+            time.sleep(0.001)
         with _lib.state_lock:
             channel._current()
             if not channel._project.started:
