@@ -47,6 +47,8 @@ static uds_open_fn bb_uds_open_p;
 static uds_did_fn bb_uds_read_did_p;
 static uds_last_fn bb_uds_last_p;
 static uds_data_fn bb_uds_data_p;
+typedef int (*last_nrc_fn)(uint8_t *);
+static last_nrc_fn bb_last_nrc_p;
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
 static int_int_fn bb_message_count_p;
 static msg_info_fn bb_message_info_p;
@@ -191,6 +193,8 @@ static int uds_steps(int row, int doip) {
 	CHECK(bb_uds_read_did_p(u, 0xF190, cut, sizeof cut) == 17 && memcmp(cut, "BLOB", 4) == 0, "a VIN cut at the buffer answers its whole length");
 	CHECK(bb_uds_data_p(u, vin, sizeof vin) == 17 && memcmp(vin, "BLOBLYNETV0SUT001", 17) == 0, "bb_uds_data copies it again, whole");
 	CHECK(bb_uds_read_did_p(u, 0xABCD, vin, sizeof vin) == BB_ERR_NEGATIVE, "an unknown DID is a negative response");
+	uint8_t nrc = 0;
+	CHECK(bb_last_nrc_p(&nrc) == 0 && nrc == 0x31, "the thread's last NRC is 0x31");
 	CHECK(bb_uds_data_p(u, vin, sizeof vin) == 0, "a failed call holds no bytes of an earlier one");
 	bb_uds_exchange x;
 	uint8_t req[8], ans[8];
@@ -251,7 +255,7 @@ int main(int argc, char **argv) {
 	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released);
 	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
-	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close);
+	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -294,6 +298,8 @@ int main(int argc, char **argv) {
 	/* a DoIP endpoint is not a CAN bus: refused by name, not as a missing SocketCAN device */
 	if (bb_bus_open_p(doip_iface) != BB_ERR || strstr(bb_last_error_p(), "DoIP or SOME/IP") == NULL) { fprintf(stderr, "FAIL open of a DoIP row: %s\n", bb_last_error_p()); return 1; }
 	printf("ok   kinds and health sources; a DoIP row refused by name\n");
+	/* a UDS connection opens on the run's rows: before start no listen-only mark is published */
+	if (bb_uds_open_p(can1, NULL, NULL, NULL) != BB_ERR_STATE) { fprintf(stderr, "FAIL a UDS open before start must refuse\n"); return 1; }
 	if (bb_start_p() != 0) FAIL("start");
 	if (bb_start_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL a second start must refuse\n"); return 1; }
 

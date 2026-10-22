@@ -38,6 +38,8 @@ fn C.bb_err_set(&char)
 fn C.bb_err_get() &char
 fn C.bb_attached() i32
 fn C.bb_set_attached(i32)
+fn C.bb_nrc_set(i32)
+fn C.bb_nrc_get() i32
 
 pub struct C.bb_frame {
 pub mut:

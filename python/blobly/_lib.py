@@ -165,6 +165,7 @@ def _declare(lib):
         "bb_uds_security_key": ([c_int, c_int, c_char_p, c_int], c_int),
         "bb_reference_key": ([c_char_p, c_int, c_char_p, c_int], c_int),
         "bb_nrc_name": ([c_int, c_char_p, c_int], c_int),
+        "bb_last_nrc": ([P(ctypes.c_uint8)], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

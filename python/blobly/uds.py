@@ -158,14 +158,17 @@ class UdsClient:
             pass
 
     def _enrich(self, h: int, e: BloblyError) -> BloblyError:
-        """A negative response given its code and the exchange it ended, read from handle h."""
+        """A negative response given its code (the thread's, so a close since cannot take it) and
+        the exchange it ended, read from handle h (None when the handle was closed since)."""
         if isinstance(e, NegativeResponse):
+            lib = _lib.lib()
+            nrc = ctypes.c_uint8()
+            if lib.bb_last_nrc(ctypes.byref(nrc)) == 0:  # before any other call replaces it
+                e.nrc, e.nrc_name = nrc.value, _nrc_name(nrc.value)
             try:
-                x = self._last(h)
-            except BloblyError:  # closed under the call: the message still names the NRC
-                x = None
-            if x is not None and x.nrc is not None:
-                e.nrc, e.nrc_name, e.exchange = x.nrc, _nrc_name(x.nrc), x
+                e.exchange = self._last(h)
+            except BloblyError:
+                e.exchange = None
         return e
 
     def _call(self, fn, *args) -> int:

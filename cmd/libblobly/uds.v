@@ -39,6 +39,11 @@ __global (
 
 @[export: 'bb_uds_open']
 pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
+	// the run publishes the wires' policy (listen-only, framing): a connection opened before it
+	// would transmit on a listen-only row
+	if isnil(bb_run) {
+		return fail(bb_err_state, "not started: a UDS connection opens on a row of the run, whose wire policy (listen-only, framing) start publishes")
+	}
 	ch := row(r) or { return fail(bb_err, 'no channel ${r}') }
 	if ch.is_doip() {
 		return fail(bb_err, 'uds("${ch.name}"): a DoIP channel — UDS over DoIP is not in this library yet; only a CAN row opens')
@@ -146,7 +151,7 @@ fn exchange(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 // uds_failed is bb.h's code for the way a client call failed (uds.failure_of).
 fn uds_failed(err IError) i32 {
 	return match uds.failure_of(err) {
-		.negative { fail(bb_err_negative, err.msg()) }
+		.negative { negative(err) }
 		.no_answer { fail(bb_err_timeout, if err is uds.NoAnswer { err.described() } else { err.msg() }) }
 		.pending { fail(bb_err_pending, err.msg()) }
 		.undecodable { fail(bb_err_undecodable, err.msg()) }
@@ -154,6 +159,31 @@ fn uds_failed(err IError) i32 {
 		.abandoned { fail(bb_err_handle, 'the UDS handle was closed') }
 		.refused { fail(bb_err, err.msg()) }
 	}
+}
+
+// negative is a negative response's failure, its NRC the thread's for bb_last_nrc.
+fn negative(err IError) i32 {
+	rc := fail(bb_err_negative, err.msg())
+	if err is uds.NegativeResponse {
+		C.bb_nrc_set(i32(err.nrc))
+	}
+	return rc
+}
+
+// bb_last_nrc: the NRC of the calling thread's last call, when it failed with BB_ERR_NEGATIVE. As
+// bb_last_error, it changes nothing: a host reads it whatever became of the handle since.
+@[export: 'bb_last_nrc']
+pub fn bb_last_nrc(nrc &u8) i32 {
+	v := C.bb_nrc_get()
+	if v < 0 {
+		return bb_none
+	}
+	if !isnil(nrc) {
+		unsafe {
+			*nrc = u8(v)
+		}
+	}
+	return bb_ok
 }
 
 // put_bytes copies `b` into the host's buffer of `cap` bytes and answers its whole length: one

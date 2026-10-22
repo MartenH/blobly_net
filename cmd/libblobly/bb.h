@@ -267,14 +267,19 @@ int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t 
  * EVERY CALL IS BOUNDED by the client's timing (blobly/uds): the first answer within 1000 ms (a
  * 0x10 answer's P2 can lengthen that, never shorten it), each responsePending (0x78) then waited
  * for the ECU's P2* + 1000 ms, and one request never longer than 120 s from its send. A failure
- * is one of the BB_ERR_* above, its words in bb_last_error.
+ * is one of the BB_ERR_* above, its words in bb_last_error; a negative response's NRC is
+ * bb_last_nrc's, per thread as the words are.
  *
  * Bytes a call answers (a DID's value, a seed, an answer) go into the caller's buffer, `cap`
  * bytes, and the answer is their whole length: past cap they were cut, and bb_uds_data copies
  * them again, whole, until the handle's next call. cap 0 (buf may be NULL) asks for the length
  * alone. */
-int bb_uds_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *out); /* >= 0: the
-                                                                                       handle */
+int bb_uds_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *out);
+                                       /* >= 0: the handle; BB_ERR_STATE until bb_start, which
+                                          publishes the wires' policy (listen-only, framing) */
+int bb_last_nrc(uint8_t *nrc);  /* 0 with *nrc the NRC when the calling thread's last call failed
+                                   with BB_ERR_NEGATIVE, BB_NONE otherwise; like bb_last_error it
+                                   changes nothing, so it answers after the handle is gone */
 int bb_uds_close(int u);
 int bb_uds_last(int u, bb_uds_exchange *out, uint8_t *request, int request_cap, uint8_t *answer,
                 int answer_cap);                            /* 0, with the handle's last exchange
