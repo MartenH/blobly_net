@@ -132,6 +132,14 @@ class TestSimDemo(unittest.TestCase):
         self.assertEqual(e.exception.nrc, 0x35)
         self.assertEqual(e.exception.exchange.request[:2], b"\x27\x02", "the key went out at level + 1")
         self.assertEqual(blobly.reference_key(b"\x11\x22"), b"\xee\xdd")
+        with self.assertRaises(blobly.Refused):
+            self.diag.security_access(0x02)  # a seed is requested at an odd level
+        before = self.diag.last
+        with self.assertRaises(blobly.Refused):
+            self.diag.reset(0x81)  # suppressed: no answer would come; raw_suppressed is for that
+        with self.assertRaises(blobly.Refused):
+            self.diag.session(0x81)
+        self.assertEqual(self.diag.last, before, "a refused sub-function was sent")
 
     def test_reset_dtc_setting_and_comm_control(self):
         self.assertEqual(self.diag.reset(0x01), b"\x01")

@@ -498,7 +498,7 @@ message and its code:
 | `blobly.PendingExpired` | The ECU said responsePending (0x78), then nothing more within its P2*. |
 | `blobly.UndecodableAnswer` | An answer arrived that cannot be read as one (too short, or a negative response that is not `7F <sid> <nrc>`). The ECU answered, so the connection is not at fault. |
 | `blobly.CarrierFailed` | The carrier failed under the request: the bus (a failed write), or the ISO-TP channel (a frame lost mid-transfer). |
-| `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group), a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
+| `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
 
 `diag.last` is the last exchange, whichever call made it and however it ended: the request as it
 went out, the answer, the NRC, whether it went out whole, and its timing.

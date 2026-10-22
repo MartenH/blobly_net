@@ -236,6 +236,25 @@ fn byte_arg(what string, v i32) !u8 {
 	return u8(v)
 }
 
+// sub_arg is a sub-function a helper awaits the answer to: one with suppress-positive-response
+// (bit 7) set would be carried out and answered with silence, read as no answer at all.
+fn sub_arg(what string, v i32) !u8 {
+	b := byte_arg(what, v)!
+	if b & uds.suppress_positive != 0 {
+		return error('${what} 0x${b:02X} has suppress-positive-response set, so no answer would come; send it with raw_suppressed')
+	}
+	return b
+}
+
+// level_arg is a 0x27 sub-function of the parity its step needs: requestSeed odd, sendKey even.
+fn level_arg(v i32, seed bool) !u8 {
+	l := sub_arg('security level', v)!
+	if (l & 1 == 1) != seed {
+		return error('security level 0x${l:02X} is ${if seed { 'even: a seed is requested at an odd level' } else { 'odd: a key is sent at an even level (the seed\'s + 1)' }}')
+	}
+	return l
+}
+
 fn did_arg(v i32) !u16 {
 	if v < 0 || v > 0xFFFF {
 		return error('DID ${v} is not a 16-bit identifier')
@@ -302,7 +321,7 @@ pub fn bb_uds_raw_suppressed(u i32, req &u8, n i32) i32 {
 @[export: 'bb_uds_session']
 pub fn bb_uds_session(u i32, sub i32, buf &u8, cap i32) i32 {
 	return exchange(u, fn [sub, buf, cap] (mut hd UdsHandle) !i32 {
-		s := byte_arg('session', sub)!
+		s := sub_arg('session', sub)!
 		out_buf(buf, cap)!
 		return hd.answer(hd.conn.cli.diagnostic_session(s)!, buf, cap)
 	})
@@ -338,7 +357,7 @@ pub fn bb_uds_write_did(u i32, did i32, data &u8, n i32) i32 {
 @[export: 'bb_uds_reset']
 pub fn bb_uds_reset(u i32, kind i32, buf &u8, cap i32) i32 {
 	return exchange(u, fn [kind, buf, cap] (mut hd UdsHandle) !i32 {
-		k := byte_arg('reset kind', kind)!
+		k := sub_arg('reset kind', kind)!
 		out_buf(buf, cap)!
 		return hd.answer(hd.conn.cli.ecu_reset(k)!, buf, cap)
 	})
@@ -347,7 +366,7 @@ pub fn bb_uds_reset(u i32, kind i32, buf &u8, cap i32) i32 {
 @[export: 'bb_uds_comm_control']
 pub fn bb_uds_comm_control(u i32, control i32, comm_type i32) i32 {
 	return exchange(u, fn [control, comm_type] (mut hd UdsHandle) !i32 {
-		c := byte_arg('control', control)!
+		c := sub_arg('control', control)!
 		t := byte_arg('communication type', comm_type)!
 		hd.conn.cli.communication_control(c, t)!
 		return ok()
@@ -376,7 +395,7 @@ pub fn bb_uds_clear_dtcs(u i32, group i32) i32 {
 @[export: 'bb_uds_security_seed']
 pub fn bb_uds_security_seed(u i32, level i32, unlocked &u8, buf &u8, cap i32) i32 {
 	return exchange(u, fn [level, unlocked, buf, cap] (mut hd UdsHandle) !i32 {
-		l := byte_arg('security level', level)!
+		l := level_arg(level, true)!
 		out_buf(buf, cap)!
 		seed := hd.conn.cli.security_request_seed(l)!
 		if !isnil(unlocked) {
@@ -391,7 +410,7 @@ pub fn bb_uds_security_seed(u i32, level i32, unlocked &u8, buf &u8, cap i32) i3
 @[export: 'bb_uds_security_key']
 pub fn bb_uds_security_key(u i32, level i32, key &u8, n i32) i32 {
 	return exchange(u, fn [level, key, n] (mut hd UdsHandle) !i32 {
-		l := byte_arg('security level', level)!
+		l := level_arg(level, false)!
 		k := bytes_in('security_key', key, n)!
 		hd.conn.cli.security_send_key(l, k)!
 		return ok()

@@ -297,7 +297,12 @@ int bb_uds_raw_suppressed(int u, const uint8_t *req, int n); /* req's sub-functi
                                                                 is success), BB_ANSWERED when one
                                                                 did; a refusal is an error */
 int bb_uds_session(int u, int session, uint8_t *buf, int cap); /* 0x10: the answer after its SID —
-                                                                  the session, then its timing */
+                                                                  the session, then its timing.
+                                                                  A sub-function with the
+                                                                  suppress bit (0x80) is refused
+                                                                  here and by reset and
+                                                                  comm_control: no answer would
+                                                                  come (bb_uds_raw_suppressed) */
 int bb_uds_tester_present(int u);                           /* 0x3E 00 */
 int bb_uds_read_did(int u, int did, uint8_t *buf, int cap); /* 0x22: the DID's value */
 int bb_uds_write_did(int u, int did, const uint8_t *data, int n); /* 0x2E */
@@ -307,11 +312,13 @@ int bb_uds_dtc_setting(int u, int on);                      /* 0x85: on (1) or o
 int bb_uds_clear_dtcs(int u, int group);                    /* 0x14: a DTC or a group, 24 bits
                                                                (0xFFFFFF: all) */
 int bb_uds_security_seed(int u, int level, uint8_t *unlocked, uint8_t *buf, int cap);
-                                       /* 0x27 at an odd level: the seed; *unlocked (unless NULL)
-                                          1 when it is all zeros, ISO 14229-1's "already
-                                          unlocked", for which no key is to be sent */
-int bb_uds_security_key(int u, int level, const uint8_t *key, int n); /* 0x27 at level (the
-                                                                         seed's + 1) */
+                                       /* 0x27 at an odd level (an even one is refused): the
+                                          seed; *unlocked (unless NULL) 1 when it is all zeros,
+                                          ISO 14229-1's "already unlocked", for which no key is
+                                          to be sent */
+int bb_uds_security_key(int u, int level, const uint8_t *key, int n); /* 0x27 at an even level
+                                                                         (the seed's + 1; odd
+                                                                         refused) */
 int bb_reference_key(const uint8_t *seed, int n, uint8_t *buf, int cap); /* blobly_net's
                                        reference key for a seed (each byte XOR 0xFF): the key the
                                        simulated ECUs accept */
