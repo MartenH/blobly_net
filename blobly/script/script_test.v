@@ -47,6 +47,9 @@ fn test_decode_and_framework() {
 			local sig = decode("CAN1", 0x100, string.char(0x00, 0x19))
 			check.equal(sig.EngineSpeed, 1600)
 		end)
+		test("a payload too short for a signal leaves it out", function()
+			check.equal(decode("CAN1", 0x100, string.char(0x00)).EngineSpeed, nil)
+		end)
 		test("tohex/fromhex round-trip", function()
 			check.equal(tohex(fromhex("DE AD BE EF")), "DE AD BE EF")
 		end)
@@ -57,8 +60,8 @@ fn test_decode_and_framework() {
 			check.equal(1, 2, "one is not two")
 		end)
 	')!
-	assert env.total() == 4
-	assert env.passed() == 3
+	assert env.total() == 5
+	assert env.passed() == 4
 	assert env.failed() == 1
 }
 
