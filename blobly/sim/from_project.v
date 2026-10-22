@@ -237,6 +237,11 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		if p.crc != '' && p.profile !in candb.e2e_profiles {
 			warns << 'protect: unknown profile "${p.profile}" on ${p.message} — falling back to sum8'
 		}
+		for name in [p.counter, p.crc] {
+			if why := past_payload(m, name) {
+				warns << 'protect: ${why}'
+			}
+		}
 		if why := p01_problem(m, e2e_of(p)) {
 			warns << 'protect: ${p.message}: ${why} — protection not applied'
 		}

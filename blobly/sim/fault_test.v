@@ -312,6 +312,14 @@ fn arm_target() FaultTarget {
 				factor:     1
 				maximum:    255
 			},
+			candb.Signal{
+				name:       'Beyond' // past the one-byte payload
+				start_bit:  8
+				length:     8
+				byte_order: .little_endian
+				factor:     1
+				maximum:    100
+			},
 		]
 	}
 	return FaultTarget{
@@ -369,6 +377,7 @@ fn test_out_of_range_chooses_or_checks_its_signal() {
 	assert refusal(t, 'ECU', 'Protected', 'out_of_range', 'CRC') == '"CRC" on "Protected" has no value outside its declared range'
 	assert refusal(t, 'ECU', 'Protected', 'out_of_range', 'Nope') == '"Nope" on "Protected" has no value outside its declared range'
 	assert refusal(t, 'ECU', 'Plain', 'out_of_range', '') == 'no signal on "Plain" has a value outside its declared range'
+	assert refusal(t, 'ECU', 'Plain', 'out_of_range', 'Beyond') == '"Beyond" lies past the 1-byte payload of Plain, so nothing writes it — out_of_range would change nothing'
 }
 
 // a fault that could not take effect is refused, and nothing is stored

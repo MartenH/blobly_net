@@ -66,6 +66,11 @@ pub fn (t FaultTarget) arm(node string, msg string, kind string, ms int, signal 
 					return error('no signal on "${msg}" has a value outside its declared range')
 				}
 			}
+			for mm in m {
+				if why := past_payload(mm, sg) {
+					return error('${why} — out_of_range would change nothing')
+				}
+			}
 			if !m.any(can_force_out_of_range(it, sg, prot)) {
 				return error('"${sg}" on "${msg}" has no value outside its declared range')
 			}

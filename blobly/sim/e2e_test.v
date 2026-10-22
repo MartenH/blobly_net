@@ -322,6 +322,27 @@ fn test_validate_protection_catches_names_that_match_nothing() {
 	assert validate_protection(db, bad_profile)[0].contains('unknown profile')
 }
 
+// A field the message's own length does not hold is never written: said by the protect: check,
+// and a DBC declaration naming it is refused.
+fn test_a_protection_field_past_the_payload_is_said() {
+	short := candb.Message{
+		...protected_msg()
+		sender: 'SUT'
+		dlc:    4
+	}
+	db := candb.Database{
+		nodes:    ['SUT']
+		messages: [short]
+	}
+	cfg := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{ message: 'Protected', counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }]
+	}
+	why := '"CRC" lies past the 4-byte payload of Protected, so nothing writes it'
+	assert validate_protection(db, cfg) == ['protect: ${why}']
+	assert declared_problem(short, e2e_of(cfg.protect[0])) == why
+}
+
 // Two entries for one message: the engine keys protection by message name, so the second
 // replaces the first. Splitting counter and crc across entries reads fine and loses one.
 fn test_validate_protection_catches_duplicates_and_empty_entries() {

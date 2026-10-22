@@ -162,6 +162,9 @@ pub fn can_force_out_of_range(msg candb.Message, name string, e2e E2e) bool {
 			// signals — so this may never reach the wire at all
 			return false
 		}
+		if past_payload(msg, name) != none {
+			return false // apply_pre writes only carried signals
+		}
 		illegal_raw(sig) or { return false }
 		return true
 	}
