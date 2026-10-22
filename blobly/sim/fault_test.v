@@ -403,6 +403,33 @@ fn test_a_fault_that_cannot_take_effect_is_refused() {
 	assert !injected_fault('inproc:ARM', 'ECU', 'Plain').active()
 }
 
+// a protection field the message's own length does not hold is never written, so neither is a
+// fault on it
+fn test_a_fault_on_a_field_past_the_payload_is_refused() {
+	t := arm_target()
+	mut short := t.db.messages[0]
+	short.dlc = 4 // AliveCounter in byte 0, CRC in byte 7
+	cut := FaultTarget{
+		...t
+		db: candb.Database{
+			...t.db
+			messages: [short]
+		}
+	}
+	assert refusal(cut, 'ECU', 'Protected', 'bad_crc', '') == '"CRC" lies past the 4-byte payload of Protected, so nothing writes it — bad_crc would change nothing'
+	assert refusal(cut, 'ECU', 'Protected', 'freeze_counter', '') == ''
+	short.dlc = 0
+	empty := FaultTarget{
+		...t
+		db: candb.Database{
+			...t.db
+			messages: [short]
+		}
+	}
+	assert refusal(empty, 'ECU', 'Protected', 'freeze_counter', '') == '"AliveCounter" lies past the 0-byte payload of Protected, so nothing writes it — freeze_counter would change nothing'
+	clear_all()
+}
+
 fn test_fault_kinds_are_spelled_as_scripts_spell_them() {
 	assert fault_kind_of('drop')! == .drop
 	assert fault_kind_of('bad_crc')! == .bad_crc
