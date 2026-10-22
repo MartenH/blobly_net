@@ -171,11 +171,14 @@ jobs:
       - name: libblobly ctypes smoke (Windows Python)
         shell: pwsh
         run: python -I cmd/libblobly/smoke.py build/blobly.dll projects/sim-demo.blobnet
-      - name: Python package (python/blobly, Windows Python)
+      # The package (python/blobly) from the source tree, under the runner's Windows Python, in a
+      # fresh venv with pytest: its tests, examples, pytest example and docs (scripts/python_tests.py;
+      # ci.yml's abi job has the detail). blobly.dll is beside its runtime DLLs in build/.
+      - name: Python package (python/blobly, Windows Python), source tree
         shell: pwsh
         run: |
-          $env:BLOBLY_LIB = "build/blobly.dll"
-          python -I -m unittest discover -s python/tests -t python -v
+          python scripts/python_tests.py --lib build/blobly.dll python
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       # The Windows wheel's native payload: blobly.dll, the ucrt64 runtime DLLs it loads, and each
       # runtime package's licence texts from pacman — derived from what is there, never a list kept
       # by hand, as the bundle's are. By NAME: the step above already copied the runtime into build/,
@@ -214,12 +217,8 @@ jobs:
           if ("${{ inputs.publish_bundle }}" -eq "true") { $release = @("--release") }
           & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --licenses build/wheel-licenses --v C:/v-ct/v.exe --out build/wheels @release
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          python -m venv "$env:RUNNER_TEMP\wheeltest"
           $whl = (Get-ChildItem build/wheels -Filter *.whl).FullName
-          & "$env:RUNNER_TEMP\wheeltest\Scripts\pip" install -q $whl
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          $env:BLOBLY_TEST_INSTALLED = "1"
-          & "$env:RUNNER_TEMP\wheeltest\Scripts\python" -I -m unittest discover -s python/tests -t python/tests -v
+          python scripts/python_tests.py --wheel $whl python
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/upload-artifact@v7
         with:

@@ -291,9 +291,11 @@ Point it at a different project with `--project projects/<name>.blobnet`. The fu
 in the **[scripting & test guide](docs/scripting.md)**.
 
 **Python** — the engine inside your own Python process (`pip install blobly`; Linux x86_64 and
-Windows x64): load a project, send and receive frames, send and decode DBC messages by signal
-name, and react to traffic with `on_message`, `on_timer` and `run()`. See
-**[scripting_python.md](docs/scripting_python.md)**.
+Windows x64, CPython 3.11 or newer): load a project, send and receive frames, send and decode DBC
+messages by signal name, and react to traffic with `on_message`, `on_timer` and `run()`. See
+**[scripting_python.md](docs/scripting_python.md)** and the runnable
+**[examples](python/examples/README.md)**. An AI agent driving Blobly Net starts at
+**[agents.md](docs/agents.md)**.
 
 **CLI tools** — each runs standalone via
 `v -enable-globals run cmd/<tool>/<file>.v`:
@@ -326,7 +328,7 @@ evidence behind that warning.
 | **Unit tests** | every `_test.v` under `blobly/` — 132 files, ~1,800 test functions and ~7,500 assertions at 2026.10.01 | `v -enable-globals test blobly/` |
 | **Golden byte vectors** | wire formats are pinned to exact bytes — SOME/IP headers, trace records, the simulated ECU's frames — and the same vectors exist on the blobly_emb side, so neither repo can drift alone | inside the unit tests |
 | **Headless integration** | 14 Lua suites — every file in `tests/`, which is what CI runs with no arguments — drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
-| **Python package** | the package's tests from the source tree and against the installed wheel, and libblobly's C and Python smokes, on Linux and Windows | `ci.yml`, `windows.yml` |
+| **Python package** | the package's tests, its examples and its docs (every public name in the reference, every code block run) under CPython 3.12 on Linux and Windows and 3.11 on Linux, from the source tree and against the installed wheel, and libblobly's C and Python smokes | `ci.yml`, `windows.yml` |
 | **GUI build** | the ImGui app compile-links on Linux and Windows | `ci.yml`, `windows.yml` |
 
 **Not automated — done by hand, and worth knowing about:**
@@ -351,6 +353,7 @@ above is manual, so a regression there is caught only when someone next runs it.
 **Using it**
 - [scripting.md](docs/scripting.md) — Lua scripting + the headless test runner
 - [scripting_python.md](docs/scripting_python.md) — the engine from Python (`pip install blobly`)
+- [agents.md](docs/agents.md) — for an AI agent driving Blobly Net: simulation first, ask before transmitting on hardware
 - [dbc_editor.md](docs/dbc_editor.md) — the DBC editor
 - [project_editing.md](docs/project_editing.md) — projects, buses and channels
 - [bus_config_dialog.md](docs/bus_config_dialog.md) — bus/hardware configuration
