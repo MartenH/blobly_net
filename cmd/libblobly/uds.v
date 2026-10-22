@@ -249,6 +249,9 @@ fn sub_arg(what string, v i32) !u8 {
 // level_arg is a 0x27 sub-function of the parity its step needs: requestSeed odd, sendKey even.
 fn level_arg(v i32, seed bool) !u8 {
 	l := sub_arg('security level', v)!
+	if seed && l == 0x7F {
+		return error('security level 0x7F has no key level to answer it (0x80 is the suppress bit)')
+	}
 	if (l & 1 == 1) != seed {
 		return error('security level 0x${l:02X} is ${if seed { 'even: a seed is requested at an odd level' } else { 'odd: a key is sent at an even level (the seed\'s + 1)' }}')
 	}

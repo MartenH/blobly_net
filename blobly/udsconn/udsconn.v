@@ -115,6 +115,9 @@ pub fn resolve(a Ask, name string, car Carrier) !Target {
 	}
 	tx := if a.has_tx { u32(a.tx) } else { a.dtx }
 	rx := if a.has_rx { u32(a.rx) } else { a.drx }
+	if tx > 0x1FFF_FFFF || rx > 0x1FFF_FFFF {
+		return error('${a.what}("${name}"): the default ids 0x${a.dtx:X}/0x${a.drx:X} are not CAN identifiers')
+	}
 	return Target{
 		tx:  tx
 		rx:  rx

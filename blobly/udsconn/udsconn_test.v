@@ -31,6 +31,12 @@ fn test_omitted_ids_take_the_defaults_and_given_ones_are_kept() {
 		drx:  0x7B8
 	}, 'CAN1', Carrier{})!
 	assert f.tx == 0x7B0 && f.rx == 0x7B8
+	// a caller's default is held to the rule an id given is
+	resolve(Ask{
+		what: 'x'
+		drx:  0x2000_0000
+	}, 'CAN1', Carrier{}) or { return }
+	assert false, 'a default past 29 bits resolved'
 }
 
 fn test_29_bit_ids_are_inferred_from_either_id() {

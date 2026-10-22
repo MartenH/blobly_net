@@ -134,6 +134,8 @@ class TestSimDemo(unittest.TestCase):
         self.assertEqual(blobly.reference_key(b"\x11\x22"), b"\xee\xdd")
         with self.assertRaises(blobly.Refused):
             self.diag.security_access(0x02)  # a seed is requested at an odd level
+        with self.assertRaises(blobly.Refused):
+            self.diag.security_access(0x7F)  # no key level answers it
         before = self.diag.last
         with self.assertRaises(blobly.Refused):
             self.diag.reset(0x81)  # suppressed: no answer would come; raw_suppressed is for that
