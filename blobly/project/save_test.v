@@ -574,7 +574,7 @@ channels:
 	assert version_for(q) == 2
 }
 
-// An ARXML cluster fragment survives a Save: unquoted, vlib's yaml reads the `#` as a comment.
+// An ARXML cluster fragment survives a Save (the writer quotes it, as older builds' yaml needed).
 fn test_arxml_fragment_round_trips() {
 	orig := Project{
 		name:     'rt'

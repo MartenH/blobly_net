@@ -3,7 +3,7 @@
 // against 950 µs over loopback TCP). The ABI is bb.h, the ONE statement of it, compiled in here
 // and read by every host; this file is the thin V side of each call and holds no rule of its own.
 //
-//   v -enable-globals -prod -shared -nocache -o build/libblobly.so cmd/libblobly
+//   v -enable-globals -cflags -O1 -shared -o build/libblobly.so cmd/libblobly
 //   (scripts/build_libblobly.sh)
 //
 // Over the merged blobly.headless (load / start / stop), blobly.transport (a bus handle of the
