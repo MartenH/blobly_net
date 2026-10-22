@@ -239,7 +239,13 @@ int         bb_thread_detach(void); /* on that thread, before it ends */
  * servers, generators, DoIP entities — through blobly.headless, one run per process; stop ends
  * the run and frees the process for the next start (0), or answers BB_RELEASING when a loop
  * outlived the stop's bound (a driver call that will not return): then bb_wait_released waits
- * for it, and bb_start refuses with BB_ERR_STATE until it has. */
+ * for it, and bb_start refuses with BB_ERR_STATE until it has. bb_load publishes the project's
+ * wire policy (listen-only rows, CAN-FD framing), which every send — a bus handle's, a UDS
+ * handle's — is checked against from then on, on a handle opened before the load, before bb_start
+ * or across a stop too (a send refused on a listen-only row; the controller's own silence, where
+ * the adapter has one, is set when a handle opens, and Vector and CANsub keep it); it refuses with BB_ERR_STATE while a stopped run is still releasing, whose
+ * loops send under their own. Before the first load nothing is published, and a bus sends as its
+ * backend has it. */
 int bb_load(const char *project_path);
 int bb_start(void);
 int bb_stop(void);
@@ -342,8 +348,8 @@ int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t 
  * them again, whole, until the handle's next call. cap 0 (buf may be NULL) asks for the length
  * alone. */
 int bb_uds_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *out);
-                                       /* >= 0: the handle; BB_ERR_STATE until bb_start, which
-                                          publishes the wires' policy (listen-only, framing) */
+                                       /* >= 0: the handle; BB_ERR_STATE outside a run, whose
+                                          rows it opens on (a hosted DoIP row's moved port) */
 int bb_last_nrc(uint8_t *nrc);  /* 0 with *nrc the NRC when the calling thread's last call failed
                                    with BB_ERR_NEGATIVE, BB_NONE otherwise; like bb_last_error it
                                    changes nothing, so it answers after the handle is gone */

@@ -950,7 +950,7 @@ raises `ValueError`. It is also an `EventLoop`.
 
 | member | what |
 |---|---|
-| `net.load()` | Reads the project into the engine, which holds one load at a time. Returns `net`. A reload keeps each channel still at its position under its name, and names the rows whose handlers it dropped in a `RuntimeWarning`. |
+| `net.load()` | Reads the project into the engine, which holds one load at a time, and makes its listen-only rows and CAN-FD framing the ones every send is checked against. Returns `net`. `BloblyError` with code -3 while a stopped run is still releasing (`blobly.wait_released`). A reload keeps each channel still at its position under its name, and names the rows whose handlers it dropped in a `RuntimeWarning`. |
 | `net.start()` | Brings the enabled rows up (simulated ECUs, UDS servers, generators, DoIP entities). Reloads first if the engine holds another load. Returns `net`. |
 | `net.stop()` | Ends the run. `True` when the process is free for the next start; `False` when a loop outlived the stop's bound (`blobly.wait_released`). Stopping a project that is not started answers whether the process is free. |
 | `with net:` | `start()` on entry, `stop()` on exit; warns (`RuntimeWarning`) when the stop returned `False`. |

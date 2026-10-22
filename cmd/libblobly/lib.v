@@ -279,6 +279,10 @@ pub fn bb_load(path &char) i32 {
 	if !isnil(bb_run) {
 		return fail(bb_err_state, 'a run is active; stop it before loading another project')
 	}
+	// a stopped run's loop still out sends under that run's policy, which the load would replace
+	if !headless.released() {
+		return fail(bb_err_state, 'a previous run is still releasing its wires, under its own wire policy; wait until it has (bb_wait_released)')
+	}
 	p := unsafe { cstring_to_vstring(path) }
 	proj := headless.load(p, headless.Options{}) or { return fail(bb_err, err.msg()) }
 	// a name or an interface the host would receive cut at its first NUL names another row, or
@@ -288,6 +292,10 @@ pub fn bb_load(path &char) i32 {
 			return fail(bb_err, 'load: channel "${ch.name.replace('\0', '\\0')}" has a NUL in its name or interface, which a C string cannot carry')
 		}
 	}
+	// every send is checked against the published wire policy (listen-only, CAN-FD framing), so
+	// it is the loaded project's from here: a handle opened before the load, before bb_start or
+	// across a stop is policed by it
+	project.apply_listen_only(proj.channels)
 	bb_proj = proj
 	bb_path = p
 	bb_loaded = true
