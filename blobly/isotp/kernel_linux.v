@@ -49,11 +49,12 @@ pub fn open_kernel(iface string, tx_id u32, rx_id u32, extended bool) !Channel {
 }
 
 fn (mut c KernelChannel) send(data []u8) ! {
+	// both refused before anything reaches the socket, as the software channel's are
 	if data.len == 0 {
-		return error('isotp send: empty pdu')
+		return transport.not_written('isotp send: empty pdu')
 	}
 	if data.len > max_pdu {
-		return error('isotp send: pdu ${data.len} > ${max_pdu} bytes')
+		return transport.not_written('isotp send: pdu ${data.len} > ${max_pdu} bytes')
 	}
 	rc := C.ct_isotp_send(c.fd, &u8(data.data), data.len)
 	if rc < 0 {

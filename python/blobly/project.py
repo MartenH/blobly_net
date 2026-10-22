@@ -5,10 +5,12 @@ import math
 import numbers
 import os
 import warnings
+import weakref
 
 from . import _lib
 from ._lib import BloblyError
 from .events import EventLoop, monotonic_ms, sleep_ms, wait_on
+from .uds import UdsClient, _close_orphans
 from .faults import Faults
 
 
@@ -75,6 +77,7 @@ class Channel:
         self._project, self._index, self.name, self._gen = project, index, name, gen
         self._h = None
         self._messages, self._messages_run = None, None
+        self._uds = weakref.WeakSet()  # the UDS clients on this row, let go with its handle
 
     def _current(self):
         st = _lib.state
@@ -200,10 +203,21 @@ class Channel:
                 return None
             return {s.name: values[i] for i, s in enumerate(msgs[m.value].signals) if active[i]}
 
+    def uds(self, tx=None, rx=None):
+        """A UdsClient on this row: UDS requests out on CAN id `tx`, answers back on `rx`, by the
+        rule the Lua uds.open opens by — None is the default pair 0x7E0 / 0x7E8, 0 is an id like
+        any other, and either id past 0x7FF makes both 29-bit. Only on a CAN row (a DoIP row is
+        refused by name: UDS over DoIP is not in the package yet), and while the project is
+        started."""
+        return UdsClient(self, tx, rx)
+
     def close(self):
-        """Lets the handle go; the next use opens another."""
+        """Lets the handle go, and the connections of its UDS clients; the next use opens another."""
         lib = _lib.lib()
         with _lib.state_lock:
+            _close_orphans()
+            for c in list(self._uds):
+                c._let_go()
             if self._h is not None:
                 h, self._h = self._h, None
                 _lib.check(lib.bb_bus_close(h))

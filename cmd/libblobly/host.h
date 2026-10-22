@@ -22,12 +22,16 @@
 
 static BB_THREAD_LOCAL char bb_err_buf[BB_ERROR_MAX + 1];
 static BB_THREAD_LOCAL int bb_attached_here;
+/* the NRC of the thread's last call when it failed with a negative response, else -1: reset by
+ * every call (bb_err_set), so it is that call's alone (bb_last_nrc) */
+static BB_THREAD_LOCAL int bb_nrc_here = -1;
 
 /* a message longer than BB_ERROR_MAX bytes is cut before the character the bound falls in, never
  * inside its UTF-8 sequence: a host decoding it strictly must not fail on our truncation. At most
  * three bytes back — a character has no more continuation bytes than that — so bytes that are not
  * UTF-8 at all cannot walk the cut to an empty message */
 static inline void bb_err_set(const char *s) {
+	bb_nrc_here = -1;
 	size_t n = strlen(s);
 	if (n > BB_ERROR_MAX) {
 		n = BB_ERROR_MAX;
@@ -38,6 +42,8 @@ static inline void bb_err_set(const char *s) {
 }
 static inline const char *bb_err_get(void) { return bb_err_buf; }
 static inline int bb_attached(void) { return bb_attached_here; }
+static inline void bb_nrc_set(int v) { bb_nrc_here = v; }
+static inline int bb_nrc_get(void) { return bb_nrc_here; }
 static inline void bb_set_attached(int v) { bb_attached_here = v; }
 
 struct bb_stack_base { void *mem_base; };

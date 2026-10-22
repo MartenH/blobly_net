@@ -21,6 +21,7 @@ import blobly.sim
 import blobly.uds
 import blobly.candb
 import blobly.project
+import blobly.udsconn
 
 // ChanInfo is one channel a script may address by name: its bus interface and
 // the DBC catalog used for decode/encode on it.
@@ -44,55 +45,15 @@ pub:
 	carrier Carrier
 }
 
-// Carrier is the transport UDS rides on this channel. Derived from the project channel by
-// carrier_of() rather than assembled by each caller — the runner and the GUI build ChanInfo
-// separately, and a carrier only one of them filled in would make scripts behave differently
-// depending on which one launched them.
-pub struct Carrier {
-pub:
-	doip   bool
-	someip bool // a SOME/IP listener endpoint: host/port are where it binds, group what it joins
-	group  string
-	host   string
-	port   int
-	tester u16
-	ecu    u16
-}
+// Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
+// channel by carrier_of() rather than assembled by each caller — the runner and the GUI build
+// ChanInfo separately, and a carrier only one of them filled in would make scripts behave
+// differently depending on which one launched them.
+pub type Carrier = udsconn.Carrier
 
-// carrier_of derives the UDS carrier from a project channel.
-// eth_kind names this carrier's Ethernet kind, or none for a CAN channel. One predicate, so a
-// third kind does not become a third `|| c.someip` in every caller.
-pub fn (c Carrier) eth_kind() ?string {
-	if c.doip {
-		return 'DoIP'
-	}
-	if c.someip {
-		return 'SOME/IP'
-	}
-	return none
-}
-
+// carrier_of derives the UDS carrier from a project channel (udsconn.carrier_of).
 pub fn carrier_of(ch project.Channel) Carrier {
-	if ch.is_someip() {
-		host, port := ch.someip_endpoint()
-		return Carrier{
-			someip: true
-			group:  ch.group
-			host:   host
-			port:   port
-		}
-	}
-	if !ch.is_doip() {
-		return Carrier{}
-	}
-	host, port := ch.doip_endpoint()
-	return Carrier{
-		doip:   true
-		host:   host
-		port:   port
-		tester: ch.tester_addr
-		ecu:    ch.ecu_addr
-	}
+	return udsconn.carrier_of(ch)
 }
 
 // TestResult is one test() outcome collected during a run.
@@ -443,36 +404,29 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 	// an erase at an endpoint the script never named
 	txi := if has_tx { l.arg_int_exact(2) or { return l.fail('${what}("${name}"): tx is not an integer') } } else { 0 }
 	rxi := if has_rx { l.arg_int_exact(3) or { return l.fail('${what}("${name}"): rx is not an integer') } } else { 0 }
-	if has_tx && (txi < 0 || txi > 0x1FFF_FFFF) {
-		return l.fail('${what}("${name}"): tx = ${txi} is not a CAN identifier (0..0x1FFFFFFF)')
+	ask := udsconn.Ask{
+		what:   what
+		has_tx: has_tx
+		tx:     txi
+		has_rx: has_rx
+		rx:     rxi
+		dtx:    dtx
+		drx:    drx
 	}
-	if has_rx && (rxi < 0 || rxi > 0x1FFF_FFFF) {
-		return l.fail('${what}("${name}"): rx = ${rxi} is not a CAN identifier (0..0x1FFFFFFF)')
-	}
-	tx := u32(txi)
-	rx := u32(rxi)
+	// a bad id is refused before a bad name; resolve asks it again, for callers that have the row
+	udsconn.check_ids(ask, name) or { return l.fail(err.msg()) }
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
-	// 29-bit addressing is inferred from the ids, exactly as the server side infers it: an
-	// address above 0x7FF cannot be 11-bit. Opened standard, SocketCAN masks 0x18DA10F1 to
-	// 0x0F1, so a script could not reach a 29-bit server the runner had correctly started.
 	info := env.chans[ci]
-	// Not a diagnostics carrier at all: nothing here to open ISO-TP or DoIP on, and the CAN
-	// default would try to open `someip:…` as a CAN interface and fail on whatever that means
-	// to the platform. Named for what it is.
-	if info.carrier.someip {
-		return l.fail('"${name}" is a SOME/IP channel — not a diagnostics carrier; use someip.listen')
+	// the connection's carrier and ids, by the one rule the C ABI's bb_uds_open uses too
+	t := udsconn.resolve(ask, name, info.carrier) or {
+		return l.fail(if info.carrier.someip { '${err.msg()}; use someip.listen' } else { err.msg() })
 	}
 	// A DoIP entity serves ONE TCP connection at a time — accept_and_serve stays inside the
 	// accepted connection until the peer disconnects, and nothing here closes a connection
 	// before the session ends. A second uds.open() on the same channel therefore connected and
 	// then timed out waiting for a routing activation that would never come. Hand back the
 	// live connection instead: it addresses the same entity, from the same tester address.
-	if info.carrier.doip {
-		// Argument check FIRST. Reusing before validating handed a bad call a good connection,
-		// so the refusal below silently stopped applying to every open after the first.
-		if has_tx || has_rx {
-			return l.fail('${what}("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
-		}
+	if t.doip {
 		for i, mut c in env.conns {
 			if c.chan != name || c.closed {
 				continue
@@ -493,8 +447,7 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
 				// holding keeps working rather than being orphaned by the repair.
 				c.ch.close()
-				fresh := doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
-					info.carrier.ecu) or {
+				fresh := udsconn.open_doip(info.carrier) or {
 					return l.fail('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 				}
 				env.conns[i] = UdsConn{
@@ -509,39 +462,26 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 			return 1
 		}
 	}
-	// Omitted, not zero: the caller's physical pair is the CAN default.
-	ctx := if has_tx { tx } else { dtx }
-	crx := if has_rx { rx } else { drx }
-	ext := ctx > 0x7FF || crx > 0x7FF
-	if for_flash && !info.carrier.doip {
+	if for_flash && !t.doip {
 		for i, c in env.conns {
-			if c.flashing && !c.closed && c.chan == name && c.rx == crx && c.ch.tx_id == ctx && c.ext == ext {
+			if c.flashing && !c.closed && c.chan == name && c.rx == t.rx && c.ch.tx_id == t.tx
+				&& c.ext == t.ext {
 				l.push_int(i)
 				return 1
 			}
 		}
 	}
-	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the
-	// tx/rx arguments do not apply — the addresses come from the channel's configuration and
-	// passing ids here is a mistake worth naming rather than ignoring.
-	ch := if info.carrier.doip {
-		isotp.Channel(doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
-			info.carrier.ecu) or {
-			return l.fail('doip open failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
-		})
-	} else {
-		isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
-			return l.fail('isotp open failed on ${name}: ${err}')
-		}, info.iface, ctx, crx, ext) or { return l.fail('isotp open failed on ${name}: ${err}') })
+	conn := udsconn.open(t, name, info.iface, info.carrier, env.opener) or {
+		return l.fail(err.msg())
 	}
 	env.conns << UdsConn{
-		ch:   ch
-		cli:  uds.new_client(ch)
-		chan: name
-		can:  !info.carrier.doip
-		rx:       crx
-		ext:      ext
-		flashing: for_flash && !info.carrier.doip
+		ch:       conn.ch
+		cli:      conn.cli
+		chan:     name
+		can:      !t.doip
+		rx:       t.rx
+		ext:      t.ext
+		flashing: for_flash && !t.doip
 	}
 	l.push_int(env.conns.len - 1)
 	return 1
@@ -1294,12 +1234,14 @@ fn l_uds_write_did(l lua.State) i32 {
 	return 0
 }
 
+// l_uds_sec_seed: the seed, and whether it says the level is unlocked already (no key is sent)
 fn l_uds_sec_seed(l lua.State) i32 {
 	mut env := env_of(l)
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
 	seed := c.cli.security_request_seed(u8(l.arg_int(2))) or { return l.fail(err.msg()) }
 	l.push_bytes(seed)
-	return 1
+	l.push_bool(uds.already_unlocked(seed))
+	return 2
 }
 
 fn l_uds_sec_key(l lua.State) i32 {

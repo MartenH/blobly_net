@@ -7,9 +7,9 @@
 //   (scripts/build_libblobly.sh)
 //
 // Over the merged blobly.headless (load / start / stop), blobly.transport (a bus handle of the
-// host's own) and blobly.candb (the run's row databases: encode and decode through the functions
-// the Lua prelude's bus.send_message and decode use). Nothing of UDS yet: that is a later PR's
-// seam.
+// host's own), blobly.candb (the run's row databases: encode and decode through the functions
+// the Lua prelude's bus.send_message and decode use) and blobly.uds (a UDS client on a CAN row,
+// opened by blobly.udsconn as the Lua uds.open is: uds.v).
 //
 // EVERY INTEGER AT THE BOUNDARY IS i32. V3's `int` is 64 bits and C's is 32: an export taking
 // `int` reads a C caller's -1 as 4294967295 (local codex review, measured), so bb.h's `int` is
@@ -38,6 +38,8 @@ fn C.bb_err_set(&char)
 fn C.bb_err_get() &char
 fn C.bb_attached() i32
 fn C.bb_set_attached(i32)
+fn C.bb_nrc_set(i32)
+fn C.bb_nrc_get() i32
 
 pub struct C.bb_frame {
 pub mut:
@@ -74,6 +76,27 @@ pub mut:
 	offset      f64
 	minimum     f64
 	maximum     f64
+}
+
+// bb.h's UDS structs, used by uds.v but declared here: in a file without the #include, V emits a
+// definition of its own, which the header's then redefines
+pub struct C.bb_uds_target {
+pub mut:
+	tx  u32
+	rx  u32
+	ext u8
+}
+
+pub struct C.bb_uds_exchange {
+pub mut:
+	sent        u8
+	negative    u8
+	nrc         u8
+	pending     i32
+	rtt_us      i64
+	pending_us  i64
+	request_len i32
+	answer_len  i32
 }
 
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)

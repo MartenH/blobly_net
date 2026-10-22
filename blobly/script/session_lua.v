@@ -153,7 +153,7 @@ pub fn lua_from_log(entries []uds.LogEntry, opts LuaOpts) string {
 // have skipped what came between.
 fn key_after(entries []uds.LogEntry, i int, e uds.LogEntry) ?uds.LogEntry {
 	if e.req.len != 2 || e.req[0] != 0x27 || e.req[1] & 1 == 0 || e.outcome != .positive
-		|| e.resp.len < 3 || e.resp[2..].all(it == 0) || i + 1 >= entries.len {
+		|| e.resp.len < 3 || uds.already_unlocked(e.resp[2..]) || i + 1 >= entries.len {
 		return none
 	}
 	k := entries[i + 1]

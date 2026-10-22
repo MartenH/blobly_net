@@ -7,7 +7,7 @@ import math
 import numbers
 
 from . import _lib
-from ._lib import BloblyError
+from ._lib import Refused
 
 
 class FaultKind(enum.StrEnum):
@@ -18,7 +18,7 @@ class FaultKind(enum.StrEnum):
     OUT_OF_RANGE = "out_of_range"      # sent with one signal past its declared range
 
 
-class FaultRefused(BloblyError):
+class FaultRefused(Refused):
     """The engine refused a fault that could not take effect, rather than arm one that changes
     nothing: a DoIP or SOME/IP channel, an unknown kind, a node not simulated on that channel, a
     message the node does not send, bad_crc where the node stamps no checksum, freeze_counter where it stamps no E2E
