@@ -18,11 +18,13 @@ import os
 import random
 import sys
 import unittest
+from unittest import mock
 
 # the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
 if not os.environ.get("BLOBLY_TEST_INSTALLED"):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from blobly import _lib  # noqa: E402
+from blobly import events  # noqa: E402
 from blobly.events import EventLoop, wait_on  # noqa: E402
 
 
@@ -371,6 +373,23 @@ class TestWaitOn(unittest.TestCase):
                 bad, clock = FakeChannel("A", fail=fail), Clock()
                 with self.assertRaises(type(fail), msg=f"{fail!r} beside {len(others)}"):
                     wait_on([bad, *others], 1000, 0, clock.now, clock.sleep)
+
+
+class TestSliced(unittest.TestCase):
+    def test_a_wait_is_asked_in_slices_and_nothing_after_its_deadline(self):
+        clock, asked = Clock(), []
+
+        def early(part):  # a driver that returns a little before the wait it was asked for
+            asked.append(part)
+            clock.t += part - 0.4
+        with mock.patch.object(events, "monotonic_ms", clock.now), mock.patch.object(events, "sleep_ms", clock.sleep):
+            self.assertIsNone(events._sliced(early, 250))
+            self.assertEqual(asked, [100, 100, 50, 1])
+            self.assertAlmostEqual(clock.t, 250, msg="ended early, or waited past the deadline")
+            answers = iter([None, None, "frame"])
+            asked.clear()
+            self.assertEqual(events._sliced(lambda part: asked.append(part) or next(answers), -1), "frame")
+            self.assertEqual(asked, [100, 100, 100], "a wait for ever is not asked in slices")
 
 
 class TestSpentLook(unittest.TestCase):

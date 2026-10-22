@@ -259,8 +259,9 @@ def _sliced(wait, ms):
             left = end - monotonic_ms()
             if left <= 0:
                 return None
-            if left < 1:  # what the library cannot be asked for is slept, then looked at once
+            if left < 1:  # what the library cannot be asked for is slept, not read
                 sleep_ms(left)
+                return None
             part = min(math.floor(left), SLICE_MS)
 
 
