@@ -76,7 +76,9 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		mut c := t.client
 		c.drain_queued(req[0])!
 	}
-	fch.send(req)!
+	fch.send(req) or { return send_failure(err, fch, stop_asked(targets), req[0], 0) }
+	// a target's client a stop can be asked of: its waits are sliced, and a stop ends the request
+	stoppable := targets.any(it.client.stop_requested != unsafe { nil })
 	sw := time.new_stopwatch()
 	mut deadline := []i64{len: targets.len, init: i64(window_ms)}
 	mut pended := []bool{len: targets.len}
@@ -103,11 +105,17 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		if until < 0 {
 			break
 		}
-		f := tap.recv(int(until - now)) or {
+		if stop_asked(targets) {
+			return error(abandoned_note)
+		}
+		wait := if stoppable && until - now > isotp.stop_poll_ms { i64(isotp.stop_poll_ms) } else { until - now }
+		f := tap.recv(int(wait)) or {
 			if is_silence(err.msg()) {
 				continue
 			}
-			return error('UDS: the functional listener failed: ${err.msg()}')
+			return CarrierFailed{
+				text: 'UDS: the functional listener failed: ${err.msg()}'
+			}
 		}
 		// the START of an answer: a Single Frame (0x0_) or a First Frame (0x1_); consecutive
 		// frames belong to a reassembly a channel is already running
@@ -160,6 +168,11 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		}
 	}
 	return out
+}
+
+// stop_asked: a stop was asked of a target's client.
+fn stop_asked(targets []FunctionalTarget) bool {
+	return targets.any(it.client.stopping())
 }
 
 fn target_of(targets []FunctionalTarget, f transport.CanFrame) ?int {

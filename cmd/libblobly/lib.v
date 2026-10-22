@@ -99,6 +99,29 @@ pub mut:
 	answer_len  i32
 }
 
+pub struct C.bb_dtc {
+pub mut:
+	code         u32
+	status       u8
+	availability u8
+}
+
+pub struct C.bb_counters {
+pub mut:
+	occurrences   u64
+	aging         u64
+	failed_cycles u64
+	has           u8
+}
+
+pub struct C.bb_functional_reply {
+pub mut:
+	outcome    i32
+	nrc        u8
+	pended     u8
+	answer_len i32
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
@@ -148,6 +171,9 @@ __global (
 	// any thread, so a stop on the driver's replaces the array rather than writing into it
 	bb_dbs      []candb.Database
 	bb_dbs_live bool
+	// which run is started, under bb_mu: a UDS handle names the run it was opened in (uds.v), so
+	// a functional request cannot take a handle of an earlier run for one of this run's rows
+	bb_run_gen u64
 )
 
 fn fail(code i32, msg string) i32 {
@@ -291,6 +317,7 @@ pub fn bb_start() i32 {
 	bb_dbs = r.chans.map(it.db)
 	fault_rows_publish(r.chans)
 	bb_dbs_live = true
+	bb_run_gen++
 	bb_mu.unlock()
 	return ok()
 }

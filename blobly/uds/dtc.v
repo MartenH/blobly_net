@@ -174,7 +174,11 @@ pub fn decode_dtc_count(resp []u8) !DtcCount {
 
 // dtc_count (0x19 01): how many DTCs have any of `mask`'s status bits.
 pub fn (mut c Client) dtc_count(mask u8) !DtcCount {
-	return decode_dtc_count(c.raw([sid_read_dtc_information, 0x01, mask])!)!
+	return decode_dtc_count(c.raw([sid_read_dtc_information, 0x01, mask])!) or {
+		return UndecodableAnswer{
+			why: err.msg()
+		}
+	}
 }
 
 // dtcs (0x19 02): the DTCs with any of `mask`'s status bits.
@@ -188,5 +192,9 @@ pub fn (mut c Client) dtcs(mask u8) !DtcReport {
 
 // supported_dtcs (0x19 0A): every DTC the server supports, each with its whole status.
 pub fn (mut c Client) supported_dtcs() !DtcReport {
-	return decode_dtc_list(c.raw([sid_read_dtc_information, 0x0A])!)!
+	return decode_dtc_list(c.raw([sid_read_dtc_information, 0x0A])!) or {
+		return UndecodableAnswer{
+			why: err.msg()
+		}
+	}
 }

@@ -2,6 +2,7 @@ module uds
 
 import blobly.isotp
 import blobly.transport
+import time
 
 // A test ECU shaped like blobly_emb's comm/diag.Connection: it answers on its PHYSICAL channel,
 // and a raw tap hands it the functional Single Frames. As ISO 14229-1 has a server do for a
@@ -229,4 +230,39 @@ fn test_the_drain_before_a_request_abandons_a_transfer_it_began() {
 	assert fresh == [u8(0x62), 0xF1, 0x90, 0xBB]
 	c.ch.close()
 	peer.close()
+}
+
+// A stop asked of a target's client ends the whole request at its next slice, whatever window
+// is left; a target without a stop hook keeps the plain wait.
+struct StopFlag {
+mut:
+	on bool
+}
+
+fn raise_after(mut f StopFlag, ms int) {
+	time.sleep(ms * time.millisecond)
+	f.on = true
+}
+
+fn test_a_stop_asked_of_a_target_ends_the_request() {
+	bus := 'inproc:FUNC_STOP'
+	mut c := client_on(bus, 0x7E0, 0x7E8) // nothing answers on this bus
+	mut flag := &StopFlag{}
+	c.stop_requested = fn [flag] () bool {
+		return flag.on
+	}
+	mut fch := isotp.Channel(isotp.open_software(bus, 0x7DF, 0x7DE, false) or { panic(err) })
+	mut tap := transport.open(bus) or { panic(err) }
+	t := spawn raise_after(mut flag, 100)
+	sw := time.new_stopwatch()
+	functional(mut fch, mut tap, [FunctionalTarget{
+		client: c
+		rsp_id: 0x7E8
+	}], [u8(0x3E), 0x00], 5000) or {
+		assert failure_of(err) == .abandoned
+		assert sw.elapsed().milliseconds() < 1000, 'the window was waited out'
+		t.wait()
+		return
+	}
+	assert false, 'a stopped request answered'
 }

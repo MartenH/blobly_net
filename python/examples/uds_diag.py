@@ -1,16 +1,18 @@
-"""UDS diagnostics over CAN: a session, DID reads, a refused request, and a security unlock.
+"""UDS diagnostics over CAN: a session, DID reads, a refused request, a security unlock, and the
+fault memory with a snapshot.
 
 Starts the project, which brings its simulated ECUs up inside this process, and talks to one of
 them over UDS (ISO 14229) on ISO-TP: switches to the default session, reads the VIN (17 bytes, a
 multi-frame answer), the serial number and the software version, shows how long the last exchange
-took, asks for a DID the ECU does not have and catches the negative response, then unlocks
-security level 1 with blobly_net's reference key and asks again (an all-zero seed: unlocked).
+took, asks for a DID the ECU does not have and catches the negative response, unlocks security
+level 1 with blobly_net's reference key and asks again (an all-zero seed: unlocked), then reads the
+DTCs with their status bits, and the snapshot and extended data of each DTC that stored one.
 
     python uds_diag.py [project.blobnet] [--channel NAME] [--tx ID] [--rx ID]
 
-The project defaults to the repository's projects/sim-demo.blobnet, whose SUT answers on CAN1 at
-0x7E0 / 0x7E8 (the defaults here too). Exits 0 when every check held, and 1 with a FAIL line
-otherwise."""
+The project defaults to the repository's projects/sim-demo.blobnet, whose CAN2 runs the built-in
+UDS server on 0x7E0 / 0x7E8 (the defaults here too), the one that stores a snapshot. Exits 0 when
+every check held, and 1 with a FAIL line otherwise."""
 import argparse
 import os
 import sys
@@ -35,7 +37,7 @@ def fail(why: str) -> None:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("project", nargs="?", default=SIM_DEMO, help="a .blobnet project (default: sim-demo)")
-    ap.add_argument("--channel", default="CAN1", help="the CAN channel the ECU is on (default: CAN1)")
+    ap.add_argument("--channel", default="CAN2", help="the CAN channel the ECU is on (default: CAN2)")
     ap.add_argument("--tx", type=lambda s: int(s, 0), default=0x7E0, help="the request id (default: 0x7E0)")
     ap.add_argument("--rx", type=lambda s: int(s, 0), default=0x7E8, help="the response id (default: 0x7E8)")
     args = ap.parse_args(argv)
@@ -72,6 +74,23 @@ def main(argv: list[str]) -> int:
             if any(again):
                 fail(f"a second seed request answered {again.hex(' ').upper()}, not all zeros")
             print("asked again: an all-zero seed, already unlocked, no key sent")
+
+            dtcs = diag.supported_dtcs()  # 0x19 0A: every DTC, each with its whole status
+            print(f"{len(dtcs)} DTC(s):")
+            for d in dtcs:
+                on = [name for name, set_ in d.bits.items() if set_]  # the bits the ECU reports
+                print(f"  {d.name} status 0x{d.status:02X} {', '.join(on) or '(none set)'}")
+            stored = diag.snapshot_ids()  # 0x19 03: which DTCs hold a snapshot
+            if not stored:
+                fail("no DTC holds a snapshot; sim-demo's CAN2 server stores one for P1234-56")
+            for s in stored:
+                snap = diag.snapshot(s.code, s.record)  # 0x19 04; each DID's size learned by reading it
+                for rec in snap.records:
+                    values = ", ".join(f"0x{did:04X} = {v.hex(' ').upper()}" for did, v in rec.dids.items())
+                    print(f"  {s.name} snapshot {rec.number}: {values}")
+                ext = diag.extended(s.code)  # 0x19 06: blobly_emb's counters
+                print(f"  {s.name} occurred {ext.occurrence} time(s), aging {ext.aging}, "
+                      f"failed cycles {ext.failed_cycles}")
     return 0
 
 

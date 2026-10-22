@@ -4,7 +4,7 @@ helpers. Answers come back decoded and failures typed, so nothing here reads a U
 import ctypes
 import threading
 from dataclasses import dataclass
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from . import _lib
 from ._lib import BloblyError, NegativeResponse
@@ -32,6 +32,110 @@ class Exchange:
     pending_us: int
 
 
+@dataclass(frozen=True)
+class Dtc:
+    """A DTC as the ECU reported it: `code` (24 bits, the DTC and its failure-type byte), `name`
+    (SAE J2012's display, U0121-00), `status` (ISO 14229-1's status byte), `availability` (the
+    status bits the ECU reports; 0xFF where its answer carries no mask, 0x19 04 / 06), and `bits`,
+    each status bit the ECU reports by ISO's name (testFailed, testFailedThisOperationCycle,
+    pendingDTC, confirmedDTC, testNotCompletedSinceLastClear, testFailedSinceLastClear,
+    testNotCompletedThisOperationCycle, warningIndicatorRequested): a bit outside `availability`
+    is left out, since the ECU says nothing about it, so ask `bits.get(name)` of an ECU that may not
+    report every bit (None: not reported). A 0x19 04 / 06 answer carries no mask: every bit is
+    read as it gives it."""
+    code: int
+    name: str
+    status: int
+    availability: int
+    bits: dict[str, bool]
+
+
+@dataclass(frozen=True)
+class SnapshotId:
+    """A DTC holding a snapshot (0x19 03), and the snapshot record's number."""
+    code: int
+    name: str
+    record: int
+
+
+@dataclass(frozen=True)
+class SnapshotRecord:
+    """One snapshot record of a DTC: its number, and each DID it captured with its value then, in
+    the ECU's order (a DID listed twice keeps its first value)."""
+    number: int
+    dids: dict[int, bytes]
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """A DTC's snapshots (0x19 04): the DTC with its status, and its records (none is a valid
+    answer: nothing stored)."""
+    dtc: Dtc
+    records: list[SnapshotRecord]
+
+
+@dataclass(frozen=True)
+class Extended:
+    """A DTC's extended data (0x19 06): the DTC with its status, its records by number (the
+    bytes), and blobly_emb's counters where the answer carries them — `occurrence` (record 0x01),
+    `aging` (0x02), `failed_cycles` (0x03), None where it does not (absent is not zero)."""
+    dtc: Dtc
+    records: dict[int, bytes]
+    occurrence: int | None
+    aging: int | None
+    failed_cycles: int | None
+
+
+@dataclass(frozen=True)
+class FunctionalReply:
+    """One target's reply to a functional request (Channel.uds_functional): `outcome` "positive",
+    "negative", "silent" (nothing within the window: normal for a functional request, and what a
+    suppressed positive response looks like), "pending" (responsePending, then nothing within its
+    P2*) or "failed"; `answer` the answer's bytes (positive, or 7F <sid> <nrc>); `nrc` a negative
+    answer's code, else None; `pended` whether responsePending came on the way; `error` why it
+    failed, else ""."""
+    outcome: str
+    answer: bytes
+    nrc: int | None
+    pended: bool
+    error: str
+
+
+_bits: tuple[tuple[int, str], ...] | None = None
+
+
+def _status_bits() -> tuple[tuple[int, str], ...]:
+    """ISO 14229-1's status bits as the engine names them, (mask, name) low to high: read once,
+    and published whole, so a thread never sees part of the list."""
+    global _bits
+    if _bits is None:
+        lib, bits, mask = _lib.lib(), [], ctypes.c_uint8()
+        for k in range(8):  # the status byte's bits, low to high
+            name = _lib.string(lib.bb_dtc_status_bit, k, ctypes.byref(mask))
+            bits.append((mask.value, name))
+        _bits = tuple(bits)
+    return _bits
+
+
+def _dtc(d) -> Dtc:
+    """A Dtc from a bb_dtc."""
+    bits = {name: bool(d.status & mask) for mask, name in _status_bits() if d.availability & mask}
+    return Dtc(d.code, _lib.string(_lib.lib().bb_dtc_name, d.code), d.status, d.availability, bits)
+
+
+def _dtc_code(dtc: int | str) -> int:
+    """A DTC given by its code, or by its display name ("U0401-00", or "U0401" for failure type
+    00, either case)."""
+    if isinstance(dtc, str):
+        if "\0" in dtc:
+            raise ValueError(f"not a DTC name: {dtc!r}")
+        code = ctypes.c_int()
+        if _lib.check(_lib.lib().bb_dtc_code(dtc.encode(), ctypes.byref(code))) == _lib.BB_NONE:
+            raise ValueError(f"not a DTC name: {dtc!r}")
+        return code.value
+    return _int("dtc", dtc)
+
+
 def _int(name: str, v: object, bits: int = 32) -> int:
     """An integer argument, refused before ctypes would wrap it: its range is the engine's to
     refuse (a byte, a DID, 24 bits), but past the C type it would arrive as another number."""
@@ -55,14 +159,11 @@ def _data(name: str, v: object) -> bytes:
 def _put(fn, *args) -> bytes:
     """The bytes a library call copies into a buffer (bb.h: one past cap is fetched whole again
     with bb_uds_data's handle, args[0]). Raises the call's error."""
-    lib = _lib.lib()
     buf = ctypes.create_string_buffer(_CAP)
     n = _lib.check(fn(*args, buf, _CAP))
     if n <= _CAP:
         return buf.raw[:n]
-    whole = ctypes.create_string_buffer(n)
-    _lib.check(lib.bb_uds_data(args[0], whole, n))
-    return whole.raw[:n]
+    return _lib.bytes_of(_lib.lib().bb_uds_data, args[0])
 
 
 # handles of clients collected without close(), let go at the next call that opens or closes one:
@@ -112,6 +213,8 @@ class UdsClient:
         self.ext = False
         self._h = None
         self._closed = False
+        self._did_sizes: dict[int, int] = {}  # what did_size / ext_record_size stated, for a reopen
+        self._ext_sizes: dict[int, int] = {}
         self._lock = threading.RLock()  # re-entered: security_access holds it across two calls
         with _lib.state_lock:
             self._open()
@@ -128,6 +231,11 @@ class UdsClient:
         self._h = _lib.check(lib.bb_uds_open(self.channel._index, ids[0], ids[1], ctypes.byref(out)))
         self.tx, self.rx, self.ext = out.tx, out.rx, bool(out.ext)
         self.channel._uds.add(self)
+        # the sizes stated on an earlier connection hold on this one too
+        for did, size in self._did_sizes.items():
+            _lib.check(lib.bb_uds_did_size(self._h, did, size))
+        for record, size in self._ext_sizes.items():
+            _lib.check(lib.bb_uds_ext_record_size(self._h, record, size))
 
     def _handle(self) -> int:
         with _lib.state_lock:
@@ -293,7 +401,149 @@ class UdsClient:
         all)."""
         self._call(_lib.lib().bb_uds_clear_dtcs, _int("group", group))
 
+    def _list(self, fn, *args) -> list[Dtc]:
+        """A 0x19 02 / 0A answer: the call, then each DTC it held, under one hold of the lock."""
+        lib = _lib.lib()
+        with self._lock:
+            h = self._handle()
+            n = self._checked(h, fn(h, *args))
+            out = []
+            for i in range(n):
+                d = _lib.BbDtc()
+                _lib.check(lib.bb_uds_dtc(h, i, ctypes.byref(d)))
+                out.append(_dtc(d))
+            return out
+
+    def _checked(self, h: int, rc: int) -> int:
+        if rc < 0:
+            raise self._enrich(h, _lib.error(rc))
+        return rc
+
+    def dtcs(self, mask: int = 0xFF) -> list[Dtc]:
+        """0x19 02 ReadDTCInformation: the DTCs with any of `mask`'s status bits (0xFF: any)."""
+        return self._list(_lib.lib().bb_uds_dtcs, _int("mask", mask))
+
+    def supported_dtcs(self) -> list[Dtc]:
+        """0x19 0A: every DTC the ECU supports, each with its whole status."""
+        return self._list(_lib.lib().bb_uds_supported_dtcs)
+
+    def dtc_count(self, mask: int = 0xFF) -> int:
+        """0x19 01: how many DTCs have any of `mask`'s status bits."""
+        return self._call(_lib.lib().bb_uds_dtc_count, _int("mask", mask), None)
+
+    def snapshot_ids(self) -> list[SnapshotId]:
+        """0x19 03: every DTC holding a snapshot, with the snapshot record's number."""
+        lib = _lib.lib()
+        with self._lock:
+            h = self._handle()
+            n = self._checked(h, lib.bb_uds_snapshot_ids(h))
+            out, code, record = [], ctypes.c_uint32(), ctypes.c_uint8()
+            for i in range(n):
+                _lib.check(lib.bb_uds_snapshot_id(h, i, ctypes.byref(code), ctypes.byref(record)))
+                out.append(SnapshotId(code.value, _lib.string(lib.bb_dtc_name, code.value), record.value))
+            return out
+
+    def snapshot(self, dtc: int | str, record: int = 0xFF) -> Snapshot:
+        """0x19 04: DTC `dtc`'s snapshot record `record` (0xFF: every one). `dtc` is its code or
+        its name ("P1234-56"). A snapshot DID whose size the client does not know is read once
+        (0x22) to learn it; did_size states one that cannot be read."""
+        code, rec = _dtc_code(dtc), _int("record", record)
+        lib = _lib.lib()
+        with self._lock:
+            h = self._handle()
+            d = _lib.BbDtc()
+            n = self._checked(h, lib.bb_uds_snapshot(h, code, rec, ctypes.byref(d)))
+            records, number, did = [], ctypes.c_uint8(), ctypes.c_uint16()
+            for r in range(n):
+                count = _lib.check(lib.bb_uds_snapshot_record(h, r, ctypes.byref(number)))
+                dids: dict[int, bytes] = {}
+                for k in range(count):
+                    value = _lib.bytes_of(lib.bb_uds_snapshot_did, h, r, k, ctypes.byref(did))
+                    dids.setdefault(did.value, value)
+                records.append(SnapshotRecord(number.value, dids))
+            return Snapshot(_dtc(d), records)
+
+    def extended(self, dtc: int | str, record: int = 0xFF) -> Extended:
+        """0x19 06: DTC `dtc`'s extended data record `record` (0xFF: every one), sized as
+        blobly_emb's (ext_record_size states another's)."""
+        code, rec = _dtc_code(dtc), _int("record", record)
+        lib = _lib.lib()
+        with self._lock:
+            h = self._handle()
+            d, c = _lib.BbDtc(), _lib.BbCounters()
+            n = self._checked(h, lib.bb_uds_extended(h, code, rec, ctypes.byref(d), ctypes.byref(c)))
+            records, number = {}, ctypes.c_uint8()
+            for k in range(n):
+                value = _lib.bytes_of(lib.bb_uds_extended_record, h, k, ctypes.byref(number))
+                records.setdefault(number.value, value)  # a record listed twice keeps its first
+            has = c.has
+            return Extended(_dtc(d), records, c.occurrences if has & 1 else None, c.aging if has & 2 else None,
+                            c.failed_cycles if has & 4 else None)
+
+    def did_size(self, did: int, size: int) -> None:
+        """States a snapshot DID's size, for one the client cannot learn by reading it (or whose
+        size varies)."""
+        did, size = _int("did", did), _int("size", size)
+        with self._lock:
+            self._call(_lib.lib().bb_uds_did_size, did, size)
+            self._did_sizes[did] = size  # kept for the next connection
+
+    def ext_record_size(self, record: int, size: int) -> None:
+        """States an extended data record's size (blobly_emb's 0x01..0x03 are known)."""
+        record, size = _int("record", record), _int("size", size)
+        with self._lock:
+            self._call(_lib.lib().bb_uds_ext_record_size, record, size)
+            self._ext_sizes[record] = size  # kept for the next connection
+
     def __repr__(self) -> str:
         ids = f"0x{self.tx:X}/0x{self.rx:X}" if self.tx is not None else "unopened"
         state = " closed" if self._closed else ""
         return f"<UdsClient {self.channel.name} {ids}{state}>"
+
+
+def functional(channel, functional_id: int, clients: Sequence[UdsClient], request: bytes,
+               window_ms: int = 1000) -> list[FunctionalReply]:
+    """`request` once on `channel`'s functional id, each client answering on its own response id
+    (Channel.uds_functional)."""
+    fid = _int("functional_id", functional_id, 64)
+    window = _int("window_ms", window_ms)
+    req = _data("request", request)
+    clients = list(clients)
+    for c in clients:
+        if not isinstance(c, UdsClient):
+            raise TypeError(f"uds_functional: {c!r} is not a UdsClient")
+    if not clients:
+        raise ValueError("uds_functional: no client to answer; a functional request needs one")
+    if len({id(c) for c in clients}) != len(clients):
+        raise ValueError("uds_functional: a client is named twice")
+    for c in clients:
+        if c.channel is not channel:
+            raise BloblyError(f"uds_functional: {c!r} is not a client of {channel.name}")
+    lib = _lib.lib()
+    # every client's lock, in one order whoever calls, so two calls cannot each hold the other's
+    held = []
+    try:
+        for c in sorted(clients, key=id):
+            c._lock.acquire()
+            held.append(c)  # only what was acquired is released, an interrupt in between included
+        with _lib.state_lock:
+            channel._current()
+            if not channel._project.started:
+                raise BloblyError(f"{channel.name}: the project is not started", _lib.BB_ERR_STATE)
+        handles = [c._handle() for c in clients]
+        n = len(handles)
+        out = (_lib.BbFunctionalReply * n)()
+        _lib.check(lib.bb_uds_functional(channel._index, fid, (ctypes.c_int * n)(*handles), n, req, len(req),
+                                         window, out))
+        replies = []
+        for i, h in enumerate(handles):
+            r = out[i]
+            answer = _lib.bytes_of(lib.bb_uds_data, h) if r.answer_len else b""
+            error = _lib.string(lib.bb_uds_reply_error, h)
+            outcome = _lib.OUTCOMES.get(r.outcome, f"unknown ({r.outcome})")
+            replies.append(FunctionalReply(outcome, answer, r.nrc if outcome == "negative" else None,
+                                           bool(r.pended), error))
+        return replies
+    finally:
+        for c in held:
+            c._lock.release()

@@ -192,6 +192,19 @@ pub fn (e CarrierFailed) msg() string {
 	return e.text
 }
 
+// ContextError is an error told in the words of the call it ended, of its cause's kind (failure_of
+// reads the cause): a snapshot's DID probe that failed, told as the snapshot's failure.
+pub struct ContextError {
+	Error
+pub:
+	text  string
+	cause IError
+}
+
+pub fn (e ContextError) msg() string {
+	return e.text
+}
+
 // Answer is what a received PDU is to the request in flight.
 pub enum Answer {
 	positive // its positive response
@@ -386,29 +399,7 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 	if c.stopping() {
 		return error(abandoned_note)
 	}
-	c.ch.send(req) or {
-		// a peer that never asked for the rest of the request (no Flow Control came, or not
-		// within the transfer's allowance) is silence; a stop, and a send refused before anything
-		// reached the wire (a request the channel cannot carry, a listen-only wire), keep their own
-		// error; any other failure is the carrier's
-		if c.stopping() {
-			return error(abandoned_note) // whatever the send then said: the stop came first
-		}
-		if is_silence(err.msg()) || allowance_spent(c.ch, err.msg()) {
-			return NoAnswer{
-				sid:       req[0]
-				cause:     err.msg()
-				discarded: discarded
-			}
-		}
-		if abandoned(err.msg()) || err is transport.NotWritten
-			|| transport.wire_policy(c.ch.iface).silent {
-			return err
-		}
-		return CarrierFailed{
-			text: err.msg()
-		}
-	}
+	c.ch.send(req) or { return send_failure(err, c.ch, c.stopping(), req[0], discarded) }
 	sent = true
 	c.sent_count++
 	sw := time.new_stopwatch()
@@ -506,6 +497,30 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 		}
 	}
 	return error('unreachable')
+}
+
+// send_failure is what a request's failed send is: a stop asked meanwhile is the stop's, whatever
+// the send then said; a peer that never asked for the rest of it (no Flow Control came, or not
+// within the transfer's allowance) is silence; a send refused before anything reached the wire (a
+// request the channel cannot carry, a listen-only wire) keeps its own error; any other failure is
+// the carrier's.
+fn send_failure(err IError, ch isotp.Channel, stopping bool, sid u8, discarded int) IError {
+	if stopping {
+		return error(abandoned_note)
+	}
+	if is_silence(err.msg()) || allowance_spent(ch, err.msg()) {
+		return NoAnswer{
+			sid:       sid
+			cause:     err.msg()
+			discarded: discarded
+		}
+	}
+	if abandoned(err.msg()) || err is transport.NotWritten || transport.wire_policy(ch.iface).silent {
+		return err
+	}
+	return CarrierFailed{
+		text: err.msg()
+	}
 }
 
 // allowance_spent: a segmented send gave up waiting for the receiver's Flow Control once the

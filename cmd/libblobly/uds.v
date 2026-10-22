@@ -27,9 +27,26 @@ mut:
 	conn     udsconn.Conn
 	users    i64
 	closing  i64
+	// asks `closing`: the client's and its channel's stop_requested, put back after a functional
+	// request has them ask every target's
+	stop     fn () bool = unsafe { nil }
 	last     uds.Exchange // the last exchange the client put through (on_exchange)
 	has_last bool
 	data     []u8 // the bytes the last call answered, for bb_uds_data
+	// where the handle reaches its ECU, for a functional request on the same row of the same run
+	run      u64
+	row      i32
+	row_name string
+	rx       u32
+	ext      bool
+	// the last DTC call's decoded answer, for its accessors
+	dtcs     []uds.DtcRecord
+	avail    u8
+	snap_ids []uds.SnapshotId
+	snapshot uds.DtcSnapshot
+	extended uds.DtcExtended
+	// why the handle's last functional reply failed, for bb_uds_reply_error
+	reply_err string
 }
 
 __global (
@@ -60,13 +77,22 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	conn := udsconn.open(t, ch.name, ch.iface_with_bitrate(), car, fn (iface string, _ string) !transport.Bus {
 		return transport.open(iface)
 	}) or { return fail(bb_err, err.msg()) }
+	bb_mu.lock()
+	run := bb_run_gen
+	bb_mu.unlock()
 	mut hd := &UdsHandle{
-		conn: conn
+		conn:     conn
+		run:      run
+		row:      r
+		row_name: ch.name
+		rx:       t.rx
+		ext:      t.ext
 	}
 	closing := &hd.closing
 	stop := fn [closing] () bool {
 		return stdatomic.load_i64(closing) != 0
 	}
+	hd.stop = stop
 	hd.conn.cli.stop_requested = stop
 	if mut hd.conn.ch is isotp.SoftChannel {
 		hd.conn.ch.stop_requested = stop
@@ -143,7 +169,7 @@ fn with_uds(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 // this one's, whether or not it succeeds.
 fn exchange(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 	return with_uds(u, fn [call] (mut hd UdsHandle) !i32 {
-		hd.data = []u8{}
+		hd.forget()
 		return call(mut hd)
 	})
 }
@@ -201,6 +227,18 @@ fn put_bytes(b []u8, buf &u8, cap i32) i32 {
 	}
 	ok()
 	return i32(b.len)
+}
+
+// forget drops what earlier calls answered: a call that asks the ECU replaces it, whether or not it
+// succeeds, so no accessor reads an older call's answer as this one's.
+fn (mut hd UdsHandle) forget() {
+	hd.data = []u8{}
+	hd.dtcs = []uds.DtcRecord{}
+	hd.avail = 0
+	hd.snap_ids = []uds.SnapshotId{}
+	hd.snapshot = uds.DtcSnapshot{}
+	hd.extended = uds.DtcExtended{}
+	hd.reply_err = ''
 }
 
 // out_buf refuses a buffer bb.h does not allow, before anything is asked of the ECU: refused
@@ -433,4 +471,372 @@ pub fn bb_reference_key(seed &u8, n i32, buf &u8, cap i32) i32 {
 pub fn bb_nrc_name(nrc i32, buf &char, cap i32) i32 {
 	code := byte_arg('NRC', nrc) or { return fail(bb_err, err.msg()) }
 	return put(uds.nrc_name(code), buf, cap)
+}
+
+// dtc_out fills a bb_dtc.
+fn dtc_out(out &C.bb_dtc, rec uds.DtcRecord, avail u8) {
+	if isnil(out) {
+		return
+	}
+	unsafe {
+		out.code = rec.code
+		out.status = rec.status
+		out.availability = avail
+	}
+}
+
+fn dtc_arg(code i32) !u32 {
+	if code < 0 || code > 0xFFFFFF {
+		return error('DTC ${code} is not a 24-bit code')
+	}
+	return u32(code)
+}
+
+// held is index `i` of a held answer of `n` entries, refused by name past it.
+fn held(what string, i i32, n int) !int {
+	if i < 0 || int(i) >= n {
+		return error('${what} ${i}: the last answer has ${n}')
+	}
+	return int(i)
+}
+
+@[export: 'bb_uds_dtcs']
+pub fn bb_uds_dtcs(u i32, mask i32) i32 {
+	return exchange(u, fn [mask] (mut hd UdsHandle) !i32 {
+		m := byte_arg('status mask', mask)!
+		r := hd.conn.cli.dtcs(m)!
+		hd.dtcs, hd.avail = r.records, r.availability
+		return ok_count(r.records.len)
+	})
+}
+
+@[export: 'bb_uds_supported_dtcs']
+pub fn bb_uds_supported_dtcs(u i32) i32 {
+	return exchange(u, fn (mut hd UdsHandle) !i32 {
+		r := hd.conn.cli.supported_dtcs()!
+		hd.dtcs, hd.avail = r.records, r.availability
+		return ok_count(r.records.len)
+	})
+}
+
+@[export: 'bb_uds_dtc']
+pub fn bb_uds_dtc(u i32, i i32, out &C.bb_dtc) i32 {
+	return with_uds(u, fn [i, out] (mut hd UdsHandle) !i32 {
+		k := held('DTC', i, hd.dtcs.len)!
+		dtc_out(out, hd.dtcs[k], hd.avail)
+		return ok()
+	})
+}
+
+@[export: 'bb_uds_dtc_count']
+pub fn bb_uds_dtc_count(u i32, mask i32, availability &u8) i32 {
+	return exchange(u, fn [mask, availability] (mut hd UdsHandle) !i32 {
+		m := byte_arg('status mask', mask)!
+		n := hd.conn.cli.dtc_count(m)!
+		if !isnil(availability) {
+			unsafe {
+				*availability = n.availability
+			}
+		}
+		return ok_count(n.count)
+	})
+}
+
+@[export: 'bb_uds_snapshot_ids']
+pub fn bb_uds_snapshot_ids(u i32) i32 {
+	return exchange(u, fn (mut hd UdsHandle) !i32 {
+		hd.snap_ids = hd.conn.cli.snapshot_ids()!
+		return ok_count(hd.snap_ids.len)
+	})
+}
+
+@[export: 'bb_uds_snapshot_id']
+pub fn bb_uds_snapshot_id(u i32, i i32, code &u32, record &u8) i32 {
+	return with_uds(u, fn [i, code, record] (mut hd UdsHandle) !i32 {
+		k := held('snapshot id', i, hd.snap_ids.len)!
+		unsafe {
+			if !isnil(code) {
+				*code = hd.snap_ids[k].code
+			}
+			if !isnil(record) {
+				*record = hd.snap_ids[k].record
+			}
+		}
+		return ok()
+	})
+}
+
+@[export: 'bb_uds_snapshot']
+pub fn bb_uds_snapshot(u i32, code i32, record i32, dtc &C.bb_dtc) i32 {
+	return exchange(u, fn [code, record, dtc] (mut hd UdsHandle) !i32 {
+		c := dtc_arg(code)!
+		r := byte_arg('snapshot record', record)!
+		hd.snapshot = hd.conn.cli.snapshot(c, r)!
+		dtc_out(dtc, hd.snapshot.dtc, 0xFF)
+		return ok_count(hd.snapshot.records.len)
+	})
+}
+
+@[export: 'bb_uds_snapshot_record']
+pub fn bb_uds_snapshot_record(u i32, r i32, number &u8) i32 {
+	return with_uds(u, fn [r, number] (mut hd UdsHandle) !i32 {
+		k := held('snapshot record', r, hd.snapshot.records.len)!
+		if !isnil(number) {
+			unsafe {
+				*number = hd.snapshot.records[k].number
+			}
+		}
+		return ok_count(hd.snapshot.records[k].dids.len)
+	})
+}
+
+@[export: 'bb_uds_snapshot_did']
+pub fn bb_uds_snapshot_did(u i32, r i32, d i32, id &u16, buf &u8, cap i32) i32 {
+	return with_uds(u, fn [r, d, id, buf, cap] (mut hd UdsHandle) !i32 {
+		k := held('snapshot record', r, hd.snapshot.records.len)!
+		rec := hd.snapshot.records[k]
+		j := held('snapshot DID', d, rec.dids.len)!
+		if !isnil(id) {
+			unsafe {
+				*id = rec.dids[j].id
+			}
+		}
+		return put_bytes(rec.dids[j].data, buf, cap)
+	})
+}
+
+@[export: 'bb_uds_extended']
+pub fn bb_uds_extended(u i32, code i32, record i32, dtc &C.bb_dtc, counters &C.bb_counters) i32 {
+	return exchange(u, fn [code, record, dtc, counters] (mut hd UdsHandle) !i32 {
+		c := dtc_arg(code)!
+		r := byte_arg('extended data record', record)!
+		hd.extended = hd.conn.cli.extended(c, r)!
+		dtc_out(dtc, hd.extended.dtc, 0xFF)
+		if !isnil(counters) {
+			b := hd.extended.blobly_counters()
+			mut has := u8(0)
+			for i, number in [u8(0x01), 0x02, 0x03] {
+				if number in b.has {
+					has |= u8(1) << i
+				}
+			}
+			unsafe {
+				counters.occurrences = b.occurrences
+				counters.aging = b.aging
+				counters.failed_cycles = b.failed_cycles
+				counters.has = has
+			}
+		}
+		return ok_count(hd.extended.records.len)
+	})
+}
+
+@[export: 'bb_uds_extended_record']
+pub fn bb_uds_extended_record(u i32, k i32, number &u8, buf &u8, cap i32) i32 {
+	return with_uds(u, fn [k, number, buf, cap] (mut hd UdsHandle) !i32 {
+		j := held('extended data record', k, hd.extended.records.len)!
+		if !isnil(number) {
+			unsafe {
+				*number = hd.extended.records[j].number
+			}
+		}
+		return put_bytes(hd.extended.records[j].data, buf, cap)
+	})
+}
+
+// bb_uds_did_size states a snapshot DID's size, for one the client cannot learn by reading it.
+@[export: 'bb_uds_did_size']
+pub fn bb_uds_did_size(u i32, did i32, n i32) i32 {
+	return with_uds(u, fn [did, n] (mut hd UdsHandle) !i32 {
+		id := did_arg(did)!
+		if n < 0 || n > isotp.max_pdu {
+			return error('did_size: ${n} bytes is not a DID size')
+		}
+		hd.conn.cli.set_did_size(id, int(n))
+		return ok()
+	})
+}
+
+// bb_uds_ext_record_size states an extended data record's size (blobly_emb's otherwise).
+@[export: 'bb_uds_ext_record_size']
+pub fn bb_uds_ext_record_size(u i32, record i32, n i32) i32 {
+	return with_uds(u, fn [record, n] (mut hd UdsHandle) !i32 {
+		r := byte_arg('extended data record', record)!
+		if n < 0 || n > isotp.max_pdu {
+			return error('ext_record_size: ${n} bytes is not a record size')
+		}
+		hd.conn.cli.set_ext_record_size(r, int(n))
+		return ok()
+	})
+}
+
+// ok_count is a count as a call's answer.
+fn ok_count(n int) i32 {
+	ok()
+	return i32(n)
+}
+
+// bb_dtc_name: a DTC's SAE J2012 display name (U0121-00).
+@[export: 'bb_dtc_name']
+pub fn bb_dtc_name(code i32, buf &char, cap i32) i32 {
+	c := dtc_arg(code) or { return fail(bb_err, err.msg()) }
+	return put(uds.dtc_name(c), buf, cap)
+}
+
+// bb_dtc_code: a display name ("U0121-00", or "U0121" for failure type 00, either case) as its
+// 24-bit code; BB_NONE for a text that is not one.
+@[export: 'bb_dtc_code']
+pub fn bb_dtc_code(name &char, code &i32) i32 {
+	if isnil(name) || isnil(code) {
+		return fail(bb_err, 'dtc_code: no name, or nowhere to put its code')
+	}
+	c := uds.dtc_code(unsafe { cstring_to_vstring(name) }) or {
+		ok()
+		return bb_none
+	}
+	unsafe {
+		*code = i32(c)
+	}
+	return ok()
+}
+
+// bb_dtc_status_bit: ISO 14229-1's status bit k of the status byte (0 = testFailed .. 7), its
+// mask and its name.
+@[export: 'bb_dtc_status_bit']
+pub fn bb_dtc_status_bit(k i32, mask &u8, buf &char, cap i32) i32 {
+	if k < 0 || int(k) >= uds.dtc_status_bits.len {
+		return fail(bb_err, 'status bit ${k}: the status byte has bits 0 .. ${uds.dtc_status_bits.len - 1}')
+	}
+	bit := uds.dtc_status_bits[int(k)]
+	if !isnil(mask) {
+		unsafe {
+			*mask = bit.mask
+		}
+	}
+	return put(bit.name, buf, cap)
+}
+
+// outcome_code is bb.h's enum bb_functional_outcome for an outcome, by name.
+fn outcome_code(o uds.FunctionalOutcome) i32 {
+	return match o {
+		.positive { i32(C.BB_FUNCTIONAL_POSITIVE) }
+		.negative { i32(C.BB_FUNCTIONAL_NEGATIVE) }
+		.silent { i32(C.BB_FUNCTIONAL_SILENT) }
+		.pending { i32(C.BB_FUNCTIONAL_PENDING) }
+		.failed { i32(C.BB_FUNCTIONAL_FAILED) }
+	}
+}
+
+// bb_uds_functional: `req` once on row `r`'s functional id `id`, each of the n handles answering
+// on its own response id (uds.functional, the Lua uds.functional's): out[i] is handles[i]'s
+// reply, its answer that handle's bb_uds_data, a failed reply's reason its bb_uds_reply_error.
+@[export: 'bb_uds_functional']
+pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, window_ms i32, out &C.bb_functional_reply) i32 {
+	// the run publishes the wires' policy (listen-only, framing): nothing goes out before it
+	if isnil(bb_run) {
+		return fail(bb_err_state, "not started: a functional request goes out on a row of the run, whose wire policy (listen-only, framing) start publishes")
+	}
+	ch := row(r) or { return fail(bb_err, 'no channel ${r}') }
+	if ch.is_eth() {
+		return fail(bb_err, 'functional("${ch.name}"): a DoIP or SOME/IP channel — functional addressing here is CAN only')
+	}
+	if id < 0 || id > 0x1FFF_FFFF {
+		return fail(bb_err, 'functional("${ch.name}"): ${id} is not a CAN identifier')
+	}
+	// one target at least: its handle is what ties the request to this run's row
+	if n < 1 || isnil(handles) || isnil(out) {
+		return fail(bb_err, 'functional: ${n} handles, or no arrays of them; a functional request needs a UDS handle to answer it')
+	}
+	bb_mu.lock()
+	run := bb_run_gen
+	bb_mu.unlock()
+	request := bytes_in('functional', req, len) or { return fail(bb_err, err.msg()) }
+	// every target entered, so a close waits for this call; left whatever happens
+	mut hds := []&UdsHandle{}
+	defer {
+		for mut h in hds {
+			stdatomic.add_i64(&h.users, -1)
+		}
+	}
+	mut targets := []uds.FunctionalTarget{}
+	for i in 0 .. int(n) {
+		u := unsafe { handles[i] }
+		mut hd := uds_enter(u) or { return fail(bb_err_handle, 'no open UDS handle ${u}') }
+		hds << hd
+		hd.forget()
+		if stdatomic.load_i64(&hd.closing) != 0 {
+			return fail(bb_err_handle, 'the UDS handle ${u} was closed')
+		}
+		if hd.run != run {
+			return fail(bb_err_state, 'functional("${ch.name}"): handle ${u} was opened in an earlier run')
+		}
+		if hd.row != r {
+			return fail(bb_err, 'functional("${ch.name}"): handle ${u} was opened on "${hd.row_name}"')
+		}
+		targets << uds.FunctionalTarget{
+			client: &hd.conn.cli
+			rsp_id: hd.rx
+			ext:    hd.ext
+		}
+	}
+	// a close of any target ends the request, whichever target's transfer is in progress then: each
+	// client and its channel ask every target's closing for the call, their own again after
+	mut flags := []&i64{}
+	for h in hds {
+		flags << &h.closing
+	}
+	any_closing := fn [flags] () bool {
+		return flags.any(stdatomic.load_i64(it) != 0)
+	}
+	for mut h in hds {
+		h.conn.cli.stop_requested = any_closing
+		if mut h.conn.ch is isotp.SoftChannel {
+			h.conn.ch.stop_requested = any_closing
+		}
+	}
+	defer {
+		for mut h in hds {
+			h.conn.cli.stop_requested = h.stop
+			if mut h.conn.ch is isotp.SoftChannel {
+				h.conn.ch.stop_requested = h.stop
+			}
+		}
+	}
+	iface := ch.iface_with_bitrate()
+	mut tap := transport.open(iface) or { return fail(bb_err, 'functional: ${err.msg()}') }
+	defer {
+		tap.close()
+	}
+	mut fch := isotp.Channel(isotp.on_bus(transport.open(iface) or {
+		return fail(bb_err, 'functional: ${err.msg()}')
+	}, iface, u32(id), u32(id), u32(id) > 0x7FF) or { return fail(bb_err, 'functional: ${err.msg()}') })
+	defer {
+		fch.close()
+	}
+	replies := uds.functional(mut fch, mut tap, targets, request, if window_ms > 0 {
+		int(window_ms)
+	} else {
+		1000
+	}) or { return uds_failed(err) }
+	for i, rep in replies {
+		mut hd := hds[i]
+		hd.data = rep.resp.clone()
+		hd.reply_err = rep.err
+		unsafe {
+			out[i].outcome = outcome_code(rep.outcome)
+			out[i].nrc = rep.nrc
+			out[i].pended = u8(rep.pended)
+			out[i].answer_len = i32(rep.resp.len)
+		}
+	}
+	return ok()
+}
+
+// bb_uds_reply_error: why the handle's reply to the last functional request failed ('' when it
+// did not).
+@[export: 'bb_uds_reply_error']
+pub fn bb_uds_reply_error(u i32, buf &char, cap i32) i32 {
+	return with_uds(u, fn [buf, cap] (mut hd UdsHandle) !i32 {
+		return put(hd.reply_err, buf, cap)
+	})
 }
