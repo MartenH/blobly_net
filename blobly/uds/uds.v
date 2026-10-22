@@ -153,6 +153,45 @@ pub fn (e PendingExpired) msg() string {
 	return 'UDS: 0x${e.sid:02X} still pending after ${e.ms} ms${tail}'
 }
 
+// NoAnswer is a request nothing answered within the wait: the carrier's silence (`cause`, its
+// words; '' when the deadline ran out between reads), with `discarded` answers to other requests
+// skipped on the way.
+pub struct NoAnswer {
+	Error
+pub:
+	sid       u8
+	cause     string
+	discarded int
+}
+
+// msg is the words a plain error carried before the type existed: the carrier's own when it fell
+// silent, else the client's.
+pub fn (e NoAnswer) msg() string {
+	if e.cause == '' {
+		return no_answer(e.sid, e.discarded)
+	}
+	return if e.discarded > 0 { '${e.cause} (${no_answer(e.sid, e.discarded)})' } else { e.cause }
+}
+
+// described says which request went unanswered whichever way it fell silent, for a reader that
+// sees the error without the request.
+pub fn (e NoAnswer) described() string {
+	return if e.cause == '' { e.msg() } else { '${no_answer(e.sid, e.discarded)} (${e.cause})' }
+}
+
+// CarrierFailed is the carrier failing under a request — the bus, the ISO-TP channel (a frame
+// lost mid-transfer included) or the DoIP connection — told apart from the server's silence and
+// from its answers.
+pub struct CarrierFailed {
+	Error
+pub:
+	text string
+}
+
+pub fn (e CarrierFailed) msg() string {
+	return e.text
+}
+
 // Answer is what a received PDU is to the request in flight.
 pub enum Answer {
 	positive // its positive response
@@ -347,7 +386,24 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 	if c.stopping() {
 		return error(abandoned_note)
 	}
-	c.ch.send(req)!
+	c.ch.send(req) or {
+		// a peer that never asked for the rest of the request (no Flow Control came) is silence; a
+		// stop, and a send refused before anything reached the wire (a request the channel cannot
+		// carry, a listen-only wire), keep their own error; any other failure is the carrier's
+		if is_silence(err.msg()) {
+			return NoAnswer{
+				sid:       req[0]
+				cause:     err.msg()
+				discarded: discarded
+			}
+		}
+		if c.stopping() || err is transport.NotWritten || transport.wire_policy(c.ch.iface).silent {
+			return err
+		}
+		return CarrierFailed{
+			text: err.msg()
+		}
+	}
 	sent = true
 	c.sent_count++
 	sw := time.new_stopwatch()
@@ -368,7 +424,10 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 					ms:  sw.elapsed().milliseconds()
 				}
 			}
-			return error(no_answer(req, discarded))
+			return NoAnswer{
+				sid:       req[0]
+				discarded: discarded
+			}
 		}
 		resp := c.ch.recv(int(left)) or {
 			if c.stopping() {
@@ -377,8 +436,13 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 			if suppressed && !pending && is_silence(err.msg()) {
 				return []u8{}, false // nothing to say: what a suppressed positive response looks like
 			}
+			if err.msg() in [isotp.abandoned_note, isotp.abandoned_recv_note] {
+				return err // a stop only the channel was told of
+			}
+			// the wait ran out: in silence, or with an answer begun and not finished in time
+			late := is_silence(err.msg()) || err.msg() == isotp.stall_note
 			if pending {
-				if is_silence(err.msg()) {
+				if late {
 					return PendingExpired{
 						sid:   req[0]
 						ms:    sw.elapsed().milliseconds()
@@ -386,12 +450,20 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 					}
 				}
 				// the carrier failed under the wait: not the server's silence
-				return error('UDS: 0x${req[0]:02X} still pending after ${sw.elapsed().milliseconds()} ms (${err.msg()})')
+				return CarrierFailed{
+					text: 'UDS: 0x${req[0]:02X} still pending after ${sw.elapsed().milliseconds()} ms (${err.msg()})'
+				}
 			}
-			if discarded > 0 {
-				return error('${err.msg()} (${no_answer(req, discarded)})')
+			if late {
+				return NoAnswer{
+					sid:       req[0]
+					cause:     err.msg()
+					discarded: discarded
+				}
 			}
-			return err
+			return CarrierFailed{
+				text: if discarded > 0 { '${err.msg()} (${no_answer(req[0], discarded)})' } else { err.msg() }
+			}
 		}
 		match answer_to(req, resp) {
 			.positive {
@@ -452,7 +524,9 @@ fn (mut c Client) drain_queued(sid u8) !int {
 			}
 			// but a carrier that failed has nothing more to drain, and is the caller's news
 			if carrier_failed(err.msg()) {
-				return err
+				return CarrierFailed{
+					text: err.msg()
+				}
 			}
 			// anything else was a PDU taken off the channel: count it like one
 			[]u8{}
@@ -478,8 +552,8 @@ fn carrier_failed(msg string) bool {
 // back forever — and a channel not seen empty is refused rather than trusted.
 const max_drain = 64
 
-fn no_answer(req []u8, discarded int) string {
-	mut m := 'UDS: no answer to 0x${req[0]:02X}'
+fn no_answer(sid u8, discarded int) string {
+	mut m := 'UDS: no answer to 0x${sid:02X}'
 	if discarded > 0 {
 		m += '; ${discarded} response(s) to other requests discarded'
 	}
@@ -636,6 +710,12 @@ pub fn (mut c Client) read_dtc_by_status_mask(mask u8) ![]u8 {
 // shared secret between blobly/uds' Server and a test that wants to unlock it.
 pub fn security_key(seed []u8) []u8 {
 	return seed.map(it ^ u8(0xFF))
+}
+
+// already_unlocked: a seed of all zeros, which ISO 14229-1 gives for a level that is unlocked
+// already — no key is to be sent for it.
+pub fn already_unlocked(seed []u8) bool {
+	return seed.len > 0 && seed.all(it == 0)
 }
 
 // nrc_name maps a negative response code to its ISO 14229-1 name.

@@ -153,11 +153,12 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	// AN EMPTY PDU IS REFUSED HERE AS THE KERNEL REFUSES IT: encoded, it is a Single Frame with
 	// SF_DL 0, which no receiver accepts, and a platform-transparent open() must not transmit it
 	// on one platform only (codex round 2 on #225).
+	// both refused before anything reaches the bus: NotWritten says so to a caller that reads it
 	if data.len == 0 {
-		return error('isotp send: empty pdu')
+		return transport.not_written('isotp send: empty pdu')
 	}
 	if data.len > max_pdu {
-		return error('ISO-TP PDU too large: ${data.len} > ${max_pdu}')
+		return transport.not_written('ISO-TP PDU too large: ${data.len} > ${max_pdu}')
 	}
 	// a channel that sends has moved on from a transfer a recv cut short; its late frames are a
 	// stale tail from here (and the Flow Control wait below would read them away). After the
