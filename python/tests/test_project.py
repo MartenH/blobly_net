@@ -2,9 +2,12 @@
 simulated ECUs on inproc buses), its channels, send/recv/health, the event loop against the
 simulation, a Python thread attached and let go on itself, and the error paths. Skipped only when
 no library is found and BLOBLY_LIB is unset; CI sets it, so a missing build fails there."""
+import copy
 import os
+import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -129,6 +132,13 @@ class TestChannels(unittest.TestCase):
             net.channels.NOPE
         self.assertIn("CAN1", str(e.exception), "the error names what there is")
 
+    def test_a_missing_name_is_an_attribute_error_to_every_asker(self):
+        chans = blobly.Project(SIM_DEMO).load().channels
+        self.assertFalse(hasattr(chans, "NOPE"))
+        self.assertIsNone(getattr(chans, "NOPE", None))
+        twin = copy.copy(chans)  # copy asks the half-built copy for __setstate__
+        self.assertIs(twin.CAN1, chans.CAN1)
+
     def test_a_channel_needs_a_started_project(self):
         net = blobly.Project(SIM_DEMO).load()
         with self.assertRaises(blobly.BloblyError):
@@ -242,10 +252,25 @@ class TestLoads(unittest.TestCase):
                 net.on_message(net.channels.Z, None, lambda f: None)
             with open(path, "w") as f:
                 f.write(DUPLICATES)  # row 2 is Y now
-            with self.assertRaises(blobly.BloblyError) as e:
+            with self.assertWarns(RuntimeWarning) as w:
                 net.load()
-            self.assertIn("Z", str(e.exception))
+            self.assertIn("Z (row 2)", str(w.warning))
+            self.assertEqual(w.filename, __file__, "said from the line that loaded")
             self.assertEqual(net._on_msg, [])
+            with net:
+                net.on_message(net.channels.Y, None, lambda f: None)
+            with open(path, "w") as f:
+                f.write(DUPLICATES.replace("  - name: Y", "  - name: Z"))
+            blobly.Project(SIM_DEMO).load()  # so start() reloads, and drops Y's handler
+            with self.assertWarns(RuntimeWarning) as w:
+                net.start()
+            try:
+                self.assertIn("Y (row 2)", str(w.warning))
+                self.assertEqual(w.filename, __file__)
+                self.assertTrue(net.started, "start() said the dropped handlers and did not start")
+                net.channels.Z.recv(0)
+            finally:
+                net.stop()
 
     @unittest.skipIf(sys.platform == "win32", "a non-UTF-8 file name is a POSIX case")
     def test_a_file_name_that_is_not_utf8_loads(self):
@@ -255,6 +280,67 @@ class TestLoads(unittest.TestCase):
                 f.write(DUPLICATES)
             net = blobly.Project(os.fsdecode(raw)).load()
             self.assertEqual(len(net.channels), 3)
+
+
+class TestFrame(unittest.TestCase):
+    def test_equal_frames_are_one_key(self):
+        a, b = blobly.Frame(0x100, b"\x01"), blobly.Frame(0x100, b"\x01")
+        self.assertEqual(len({a, b, blobly.Frame(0x100, b"\x01", ext=True)}), 2)
+        self.assertEqual({a: 1}[b], 1)
+
+
+# a row nothing sends on, and a script that waits on it until a SIGINT, which a timer thread
+# raises as Ctrl-C does: from outside the main thread, while the main thread is in the library
+QUIET = """project:
+  name: quiet
+  version: 8
+channels:
+  - name: Q
+    type: can
+    interface: inproc:PY_QUIET
+"""
+INTERRUPTED = textwrap.dedent("""
+    import os, signal, sys, threading, time
+    sys.path.insert(0, sys.argv[1])
+    import blobly
+    sent = []
+
+    def ctrl_c():
+        sent.append(time.monotonic())
+        if sys.platform == "win32":
+            signal.raise_signal(signal.SIGINT)  # the console's Ctrl-C handler runs on a thread too
+        else:
+            os.kill(os.getpid(), signal.SIGINT)
+    with blobly.Project(sys.argv[2]) as net:
+        q = net.channels.Q
+        net.on_message(q, None, print)
+        threading.Timer(0.3, ctrl_c).start()
+        try:
+            {"recv": lambda: q.recv(None), "expect": lambda: q.expect(1, 3_600_000),
+             "run": lambda: net.run(3_600_000)}[sys.argv[3]]()
+        except KeyboardInterrupt:
+            print(f"interrupted {time.monotonic() - sent[0]:.3f} s after Ctrl-C")
+""")
+
+
+class TestInterrupt(unittest.TestCase):
+    def test_ctrl_c_ends_a_long_wait(self):
+        env = dict(os.environ)
+        if env.get("BLOBLY_LIB"):
+            env["BLOBLY_LIB"] = os.path.abspath(env["BLOBLY_LIB"])
+        pkg = os.path.dirname(os.path.dirname(os.path.abspath(blobly.__file__)))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "quiet.blobnet")
+            with open(path, "w") as f:
+                f.write(QUIET)
+            for wait in ("recv", "expect", "run"):
+                with self.subTest(wait):
+                    out = subprocess.run([sys.executable, "-I", "-c", INTERRUPTED, pkg, path, wait], env=env,
+                                         cwd=d, capture_output=True, text=True, timeout=60)
+                    late = [float(line.split()[1]) for line in out.stdout.splitlines()
+                            if line.startswith("interrupted")]
+                    self.assertTrue(late, out.stdout + out.stderr)
+                    self.assertLess(late[0], 0.5, "Ctrl-C waited for the wait, or a second of run(), to end")
 
 
 class TestRun(unittest.TestCase):
@@ -694,6 +780,40 @@ class TestRefusals(unittest.TestCase):
         self.assertTrue(net.stop(), "a second stop asks whether the process is free, and it is")
         with self.assertRaises(ValueError):
             blobly.wait_released(2**31)  # a C int: wider would wrap to forever or to 0
+
+    def test_wait_released_is_asked_in_slices(self):
+        lib = _lib.lib()
+        real, asked = lib.bb_wait_released, []
+
+        def releasing(ms, free_at=None):
+            asked.append(ms)
+            time.sleep(ms / 1000)
+            return 0 if free_at and len(asked) >= free_at else _lib.BB_RELEASING
+        try:
+            lib.bb_wait_released = releasing
+            self.assertFalse(blobly.wait_released(250))
+            self.assertEqual(asked[:2], [100, 100])
+            self.assertTrue(sum(asked) <= 250 and max(asked[2:], default=0) <= 50, asked)
+            asked.clear()
+            lib.bb_wait_released = lambda ms: releasing(ms, free_at=3)
+            self.assertTrue(blobly.wait_released(None))
+            self.assertEqual(asked, [100, 100, 100], "a wait for ever is not asked in slices")
+        finally:
+            lib.bb_wait_released = real
+
+    def test_a_close_ends_a_wait_on_its_handle(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "quiet.blobnet")
+            with open(path, "w") as f:
+                f.write(QUIET)
+            with blobly.Project(path) as net:
+                q = net.channels.Q
+                q.recv(0)
+                threading.Timer(0.2, q.close).start()
+                t0 = time.monotonic()
+                with self.assertRaises(blobly.BloblyError):
+                    q.recv(5000)  # a wait in slices still ends on a close from another thread
+                self.assertLess(time.monotonic() - t0, 2.0)
 
 
 class TestThreads(unittest.TestCase):

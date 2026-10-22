@@ -141,9 +141,11 @@ in order.
 with its traceback.
 
 **Ctrl-C.** A call into the engine is not interrupted: the `KeyboardInterrupt` is raised when the
-call returns. `recv(timeout_ms)` returns within its timeout, and `run()` waits at most a second at
-a time, so Ctrl-C ends either within its wait. `recv(None)` on a quiet bus never returns, and
-Ctrl-C cannot end it. A `with` block stops the project on the way out, an interrupt included.
+call returns. So the package asks for a wait in slices of at most 100 ms: `recv` (`None`
+included), `expect`, `expect_signal`, `run()` and `blobly.wait_released` all end within about
+100 ms of Ctrl-C. A UDS request is one call into the engine, bounded by its own timing (120 s at
+most), and Ctrl-C lands when it returns. A `with` block stops the project on the way out, an
+interrupt included.
 
 ---
 
@@ -169,8 +171,8 @@ with an interface, its databases and the ECUs simulated on it.
   rather than reach whatever row now has their position. `start()` reloads its own project if
   another was loaded since. A reload keeps each `Channel` whose row is still at its position
   under its name, so a variable, a timer's closure and a handler go on working. The handlers of
-  rows that went are dropped, and the reload raises `BloblyError` naming them (from `start()` too,
-  which then has not started: call it again).
+  rows that went are dropped, and the reload names them in a `RuntimeWarning` (from `start()`
+  too, which goes on to start).
 
 ```python
 import blobly
@@ -263,7 +265,7 @@ hardware is described in [can_hardware.md](can_hardware.md) and
   the app. A classic frame cannot yet be stated on a CAN-FD wire.
 - `ch.recv(timeout_ms=1000)` returns the next frame another node sent, or `None` when nothing
   came within `timeout_ms`. The timeout is rounded down to whole milliseconds; `0` only looks at
-  what is queued; `None` waits for ever (avoid it: see Ctrl-C above).
+  what is queued; `None` waits for ever (Ctrl-C ends it: see above).
 - `ch.look()` is one look at what is already queued: `(frame or None, spent)`. `spent` says the
   look stopped at its bound with records still queued behind it, so a poller looks again at once
   rather than sleeping.
@@ -367,7 +369,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 Register handlers on the project, then run the loop for a while:
 
 - `net.on_message(ch, id, fn)` calls `fn(frame)` for each frame on `ch` received during `run()`
-  whose id is `id`. An int matches that id of either kind (11- or 29-bit). A `Message` matches its
+  whose id is `id`. An int matches that id of either kind (11- or 29-bit), or of the one kind
+  `ext=False` or `ext=True` names. A `Message` matches its
   id **and** kind, as they were when the handler was registered. `None` matches every frame. A
   J1939 message's frames from another source address do not carry its id; `decode()` reads those.
 - `net.on_timer(period_ms, fn)` calls `fn()` every `period_ms` during `run()`, on its own grid: a
@@ -387,12 +390,15 @@ background readers:
 - **The deadline is per event** (a frame, a timer, one health handler): none is taken up once
   the deadline has passed. A callback that runs past it ends `run()` when it returns, and what
   arrived meanwhile stays queued for the next reader.
-- **Waiting.** With one channel it blocks in the driver, at most a second at a time. With several
+- **Waiting.** With one channel it blocks in the driver, at most 100 ms at a time. With several
   it looks at each in turn every 0.1 ms (1 ms on Windows).
 - **Nesting.** A handler may call `send`, `recv` or `run()` itself. An inner `run()` first gives
   the frame being handled to the handlers after the current one. A timer is never called again
   inside its own callback.
 - **An exception in a handler** ends that frame's dispatch and propagates out of `run()`.
+- **A channel's error** is a wait with nothing in it, so a bus that fails and comes back is read
+  again. One that will not clear while `run()` goes on is raised: the project stopped or
+  reloaded (`BloblyError`, code -3), or an error that is not the engine's.
 - **Handlers cannot be removed.** They last as long as their `Project`. Sends that go on outside
   `run()` are not built either: a periodic frame is `on_timer` plus `send`, inside `run()`, or a
   generator in the project (`senders:`).
@@ -779,10 +785,10 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 | `blobly.FaultRefused` | A `Refused` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
 | `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), or a UDS request nothing answered. A `BloblyError`, code -5. |
 | `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. |
-| `TypeError` | A timeout that is not a finite number (or `None`, which `expect` refuses too), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`. A fault's or an `e2e` call's argument of the wrong type. |
-| `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are. |
+| `TypeError` | A timeout that is not a finite number (or `None`, which `expect` refuses too), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`, or an `ext` that is not a bool or is given beside a `Message` or `None`. A fault's or an `e2e` call's argument of the wrong type. |
+| `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are; `hasattr` and `getattr(c, name, default)` read it as absent. |
 | `KeyError`, `IndexError` | An unknown name by `["NOPE"]`, a position past the end. |
-| `RuntimeWarning` (a warning) | A `with` block's stop found a loop that outlived the stop's bound. |
+| `RuntimeWarning` (a warning) | A `with` block's stop found a loop that outlived the stop's bound. A reload (`load()`, or `start()` reloading) dropped the handlers of rows that went, named in it. |
 
 `BloblyError.code` is bb.h's:
 
@@ -835,7 +841,7 @@ the package is named in this section.
 |---|---|
 | `blobly.init()` | Loads the engine. Call it on the main thread before any other thread calls in. |
 | `blobly.version()` | The engine's version, v.mod's spelling (`"2026.10.01"`). |
-| `blobly.wait_released(timeout_ms=None)` | Waits until the process is free for a start: `True`, or `False` once `timeout_ms` passed (`None` waits for ever). |
+| `blobly.wait_released(timeout_ms=None)` | Waits until the process is free for a start: `True`, or `False` once `timeout_ms` passed (`None` waits for ever). Ctrl-C ends the wait within 100 ms. |
 | `blobly.reference_key(seed)` | blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF), the key the simulated ECUs accept. |
 | `blobly.__version__` | The package's version (`"2026.10.1"`); `"0+source"` in a source checkout. |
 | `blobly.e2e` | The E2E Profile 1 helpers: see Module `blobly.e2e`. |
@@ -854,14 +860,14 @@ raises `ValueError`. It is also an `EventLoop`.
 
 | member | what |
 |---|---|
-| `net.load()` | Reads the project into the engine, which holds one load at a time. Returns `net`. A reload keeps each channel still at its position under its name, and raises `BloblyError` naming the rows whose handlers it dropped. |
+| `net.load()` | Reads the project into the engine, which holds one load at a time. Returns `net`. A reload keeps each channel still at its position under its name, and names the rows whose handlers it dropped in a `RuntimeWarning`. |
 | `net.start()` | Brings the enabled rows up (simulated ECUs, UDS servers, generators, DoIP entities). Reloads first if the engine holds another load. Returns `net`. |
 | `net.stop()` | Ends the run. `True` when the process is free for the next start; `False` when a loop outlived the stop's bound (`blobly.wait_released`). Stopping a project that is not started answers whether the process is free. |
 | `with net:` | `start()` on entry, `stop()` on exit; warns (`RuntimeWarning`) when the stop returned `False`. |
 | `net.channels` | The enabled rows, a `Channels`. `BloblyError` before `load()`. |
 | `net.path` | The project file's absolute path (bytes when given bytes). |
 | `net.started` | Whether this project is running. |
-| `net.on_message(ch, id, fn)`, `net.on_health(ch, fn)`, `net.on_timer(period_ms, fn)`, `net.run(duration_ms=1000)` | The event loop: see `EventLoop`. |
+| `net.on_message(ch, id, fn, *, ext=None)`, `net.on_health(ch, fn)`, `net.on_timer(period_ms, fn)`, `net.run(duration_ms=1000)` | The event loop: see `EventLoop`. |
 | `net.fault(channel, node, message, kind, ms=None, signal=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared. `FaultRefused` where it could not take effect. |
 | `net.clear_fault(channel, node, message)` | Lifts that message's fault. |
 | `net.clear_faults()` | Lifts every fault. |
@@ -874,7 +880,7 @@ rules with fakes (`python/tests/test_events.py` does).
 
 | member | what |
 |---|---|
-| `on_message(channel, id, fn)` | `fn(frame)` for each frame on `channel` (a `Channel` or its name) received during `run()` whose id is `id`: an int (either kind), a `Message` (its id and kind), or `None` (every frame). |
+| `on_message(channel, id, fn, *, ext=None)` | `fn(frame)` for each frame on `channel` (a `Channel` or its name) received during `run()` whose id is `id`: an int (of the kind `ext` names: `None` either, `False` 11-bit, `True` 29-bit), a `Message` (its id and kind), or `None` (every frame). |
 | `on_health(channel, fn)` | `fn(state)` during `run()` when the controller's ladder moves, and at its first sample. Sampled every 100 ms; never `""`. |
 | `on_timer(period_ms, fn)` | `fn()` every `period_ms` (at least 1) during `run()`, on its own grid. |
 | `run(duration_ms=1000)` | The loop, for a finite number of milliseconds, zero or more. |
@@ -901,7 +907,7 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.kind` | `"can"`, `"doip"` or `"someip"`. Only a CAN row carries frames. |
 | `ch.iface` | The interface the row opens: as the project composes it, and while started, as the run has it. |
 | `ch.send(id, data=b"", ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` take the wire's declared format. |
-| `ch.recv(timeout_ms=1000)` | The next frame another node sent, or `None` after `timeout_ms` (rounded down to whole ms; `0` only looks; `None` waits for ever). |
+| `ch.recv(timeout_ms=1000)` | The next frame another node sent, or `None` after `timeout_ms` (rounded down to whole ms; `0` only looks; `None` waits for ever). Ctrl-C ends the wait within 100 ms. |
 | `ch.look()` | `(frame or None, spent)`: one look at what is queued, without waiting. |
 | `ch.expect(id, timeout_ms=1000, *, ext=None)` | The first frame another node sends with this id and kind (an int and `ext`, or a `Message`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
 | `ch.expect_signal(message, signal, want, timeout_ms=1000)` | `(frame, value)`: the first frame of `message` whose `signal` matches `want` (a predicate, or a value compared with `==`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
@@ -926,7 +932,7 @@ a CAN frame, as `recv` returns it and as `encode` builds it.
 | `f.fd`, `f.brs` | CAN-FD, and its bit-rate switch. |
 | `f.rtr` | A remote frame (no payload). |
 | `f.esi` | CAN-FD's error-state indicator. |
-| `f == g` | Every field equal. |
+| `f == g`, `hash(f)` | Every field equal; equal frames hash alike, so a frame can be a set member or a dict key. |
 
 ### `Message`
 

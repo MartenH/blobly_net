@@ -267,13 +267,13 @@ class TestModel(unittest.TestCase):
 class FakeChannel:
     """A channel whose frames are queued, and whose recv(0) is a look."""
 
-    def __init__(self, name, frames=(), fail=False):
+    def __init__(self, name, frames=(), fail=None):
         self.name, self.frames, self.fail, self.calls = name, list(frames), fail, 0
 
     def recv(self, timeout_ms):
         self.calls += 1
         if self.fail:
-            raise RuntimeError("bus is closed")
+            raise self.fail
         return self.frames.pop(0) if self.frames else None
 
 
@@ -358,11 +358,19 @@ class TestWaitOn(unittest.TestCase):
         self.assertIsNone(got, "a frame was taken after the deadline")
 
     def test_a_failing_single_channel_rests_and_does_not_spin(self):
-        bad, clock = FakeChannel("A", fail=True), Clock()
+        bad, clock = FakeChannel("A", fail=_lib.BloblyError("bus is closed")), Clock()
         got, _ = wait_on([bad], 1000, 0, clock.now, clock.sleep)
         self.assertIsNone(got)
         self.assertEqual(bad.calls, 1)
         self.assertEqual(clock.t, 20, "rested neither a spin nor the whole wait")
+
+    def test_an_error_that_will_not_clear_is_raised(self):
+        for fail in (_lib.BloblyError("the project is not started", _lib.BB_ERR_STATE),
+                     AttributeError("a defect")):
+            for others in ([], [FakeChannel("B")]):
+                bad, clock = FakeChannel("A", fail=fail), Clock()
+                with self.assertRaises(type(fail), msg=f"{fail!r} beside {len(others)}"):
+                    wait_on([bad, *others], 1000, 0, clock.now, clock.sleep)
 
 
 class TestSpentLook(unittest.TestCase):
@@ -617,10 +625,16 @@ class TestMessageHandlers(unittest.TestCase):
         m.run(20)
         self.assertEqual(by_msg, [False], "a message's handler took the other kind")
         self.assertEqual(by_int, [False, True])
+        m = Frames([Frame(0x102), Frame(0x102, ext=True)] * 2)
+        narrow, wide = [], []
+        m.on_message("A", 0x102, lambda f: narrow.append(f.ext), ext=False)
+        m.on_message("A", 0x102, lambda f: wide.append(f.ext), ext=True)
+        m.run(20)
+        self.assertEqual((narrow, wide), ([False, False], [True, True]))
         fresh = Frames([])
-        for bad in ("0x102", True, 1.5):
-            with self.assertRaises(TypeError, msg=repr(bad)):
-                fresh.on_message("A", bad, by_int.append)
+        for bad, ext in (("0x102", None), (True, None), (1.5, None), (0x102, 1), (Msg(), False), (None, True)):
+            with self.assertRaises(TypeError, msg=repr((bad, ext))):
+                fresh.on_message("A", bad, by_int.append, ext=ext)
         self.assertEqual(fresh._listened, [], "a refused filter subscribed its channel")
 
 

@@ -19,6 +19,8 @@ import math
 import sys
 import time
 
+from ._lib import BB_ERR_STATE, BloblyError
+
 HEALTH_POLL_MS = 100
 # how long a wait on several channels sleeps between looks: Windows' default timer granularity
 # cannot sleep 0.1 ms
@@ -106,12 +108,13 @@ class EventLoop:
                 read.append(h.channel)
         return read
 
-    def on_message(self, channel, id, fn):
+    def on_message(self, channel, id, fn, *, ext: bool | None = None):
         """fn(frame) for each frame on `channel` received during run() — what other nodes sent —
-        whose id is `id` (an int, of either kind), or None for every frame, or a Message (a
-        channel's .messages): its id AND kind, as they were at registration. A J1939 message's
-        frames from another source address are not its id: decode() reads those."""
-        want = _want(id)  # refused before the channel is read: a bad filter subscribes nothing
+        whose id is `id`: an int, of the kind `ext` names (None: either kind, False: 11-bit, True:
+        29-bit), or None for every frame, or a Message (a channel's .messages): its id AND kind, as
+        they were at registration. A J1939 message's frames from another source address are not
+        its id: decode() reads those."""
+        want = _want(id, ext)  # refused before the channel is read: a bad filter subscribes nothing
         self._on_msg.append((self._listen_key(channel), want, fn))
 
     def on_health(self, channel, fn):
@@ -223,13 +226,16 @@ class EventLoop:
                 break
 
 
-def _want(id):
-    """What on_message matches: None (every frame), or (id, ext) — ext None for an int id, which
-    matches either kind."""
+def _want(id, ext=None):
+    """What on_message matches: None (every frame), or (id, ext) — ext None for either kind."""
+    if ext is not None and not isinstance(ext, bool):
+        raise TypeError(f"on_message: ext is True, False or None, not {ext!r}")
+    if isinstance(id, int) and not isinstance(id, bool):
+        return (id, ext)
+    if ext is not None:
+        raise TypeError("on_message: ext goes with an int id; a message carries its own kind")
     if id is None:
         return None
-    if isinstance(id, int) and not isinstance(id, bool):
-        return (id, None)
     if isinstance(getattr(id, "id", None), int) and hasattr(id, "ext"):
         return (id.id, bool(id.ext))
     raise TypeError(f"on_message: an id is an int, None or a message, not {id!r}")
@@ -239,11 +245,19 @@ def _matches(want, frame):
     return want is None or (want[0] == frame.id and (want[1] is None or want[1] == frame.ext))
 
 
+def _passing(e):
+    """Whether a channel's error may clear while run() goes on (the bus failing, its handle closed
+    under the wait), so the wait reads on; the project stopped or reloaded (BB_ERR_STATE), or an
+    error that is not the library's, will not, and is raised."""
+    return isinstance(e, BloblyError) and e.code != BB_ERR_STATE
+
+
 def wait_on(channels, timeout_ms, rr, now, sleep_ms):
     """The next frame on any of `channels` (objects with .recv(timeout_ms) in whole ms), waiting
     at most timeout_ms (a fraction allowed); with several, a look at each in turn from `rr` and one
     slice of sleep between looks. Nothing is taken off a channel after the deadline: a wait the
-    driver cannot express (a fraction of a millisecond) is slept, not read. Returns
+    driver cannot express (a fraction of a millisecond) is slept, not read. A channel's error is a
+    look with nothing in it, unless it will not clear (_passing). Returns
     ((channel, frame) | None, rr)."""
     if not channels:
         if timeout_ms > 0:
@@ -262,7 +276,9 @@ def wait_on(channels, timeout_ms, rr, now, sleep_ms):
                     return None, rr
             else:
                 f = channels[0].recv(min(int(timeout_ms), MAX_WAIT_MS))
-        except Exception:
+        except Exception as e:
+            if not _passing(e):
+                raise
             rest = min(deadline - now(), ERROR_REST_MS)
             if rest > 0:
                 sleep_ms(rest)
@@ -285,7 +301,9 @@ def wait_on(channels, timeout_ms, rr, now, sleep_ms):
                 look = getattr(channels[i], "look", None)
                 f, s = look() if look else (channels[i].recv(0), False)
                 spent = spent or s
-            except Exception:  # an error is a look with nothing in it
+            except Exception as e:  # an error is a look with nothing in it
+                if not _passing(e):
+                    raise
                 f = None
             if f is not None:
                 return (channels[i], f), i + 1

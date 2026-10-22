@@ -36,12 +36,15 @@ def version():
     return _lib.text(_lib.lib().bb_version())
 
 
-def wait_released(timeout_ms=None):
+def wait_released(timeout_ms: float | None = None) -> bool:
     """Waits until the process is free for a start (True), or timeout_ms passes (False; None
-    waits for ever). A stop that returned False left a loop letting go of its wires."""
+    waits for ever). A stop that returned False left a loop letting go of its wires. Ctrl-C ends
+    the wait within 100 ms."""
     from . import _lib
-    from .project import _ms
-    return _lib.check(_lib.lib().bb_wait_released(_ms(timeout_ms))) == 0
+    from .project import _ms, _sliced
+    ms = _ms(timeout_ms)
+    lib = _lib.lib()
+    return _sliced(lambda part: _lib.check(lib.bb_wait_released(part)) == 0 or None, ms) is True
 
 
 __all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventLoop", "Exchange", "Extended",
