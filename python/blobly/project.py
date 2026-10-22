@@ -5,6 +5,7 @@ import ctypes
 import math
 import numbers
 import os
+import sys
 import warnings
 import weakref
 
@@ -23,15 +24,16 @@ class Frame:
 
     def __init__(self, id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None):
         data = bytes(data)
-        for k, v in zip(self.__slots__, (id, data, len(data) if length is None else length, ext, fd, brs,
-                                         rtr, esi)):
-            object.__setattr__(self, k, v)
+        _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi))
 
     def __setattr__(self, name, value):
         raise AttributeError(f"a Frame is a value: make another rather than set {name}")
 
-    def __reduce__(self):  # copy and pickle make it through __init__, as __setattr__ refuses
-        return Frame, (self.id, self.data, self.ext, self.fd, self.brs, self.rtr, self.esi, self.length)
+    def __delattr__(self, name):
+        raise AttributeError(f"a Frame is a value: {name} cannot be deleted")
+
+    def __reduce__(self):  # copy and pickle rebuild it field by field, as __setattr__ refuses
+        return _rebuilt, (type(self), self._key())
 
     def __eq__(self, other):
         return isinstance(other, Frame) and self._key() == other._key()
@@ -40,11 +42,22 @@ class Frame:
         return hash(self._key())
 
     def _key(self):
-        return tuple(getattr(self, k) for k in self.__slots__)
+        return tuple(getattr(self, k) for k in Frame.__slots__)
 
     def __repr__(self):
         flags = "".join(f" {k}" for k in ("ext", "fd", "brs", "rtr", "esi") if getattr(self, k))
         return f"Frame(0x{self.id:X} [{self.data.hex(' ').upper()}]{flags})"
+
+
+def _fill(frame, fields):
+    for k, v in zip(Frame.__slots__, fields):
+        object.__setattr__(frame, k, v)
+
+
+def _rebuilt(cls, fields):
+    frame = cls.__new__(cls)
+    _fill(frame, fields)
+    return frame
 
 
 def frame_of(f):
@@ -632,9 +645,16 @@ class Message:
         return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"
 
 
-def _dropped(path, gone):
-    return (f"{path}: handlers dropped, their rows are not in this load of the project ("
-            + ", ".join(gone) + "); register them again")
+def _say_dropped(path, gone):
+    """The RuntimeWarning naming the rows whose handlers a reload dropped, said from the first
+    caller outside this module (the line that loaded, started or entered the with block)."""
+    if not gone:
+        return
+    level, f = 2, sys._getframe(1)
+    while f.f_back is not None and f.f_code.co_filename == __file__:
+        f, level = f.f_back, level + 1
+    warnings.warn(f"{path}: handlers dropped, their rows are not in this load of the project ("
+                  + ", ".join(gone) + "); register them again", RuntimeWarning, stacklevel=level)
 
 
 class Project(EventLoop, Faults):
@@ -660,9 +680,7 @@ class Project(EventLoop, Faults):
         still at its position under its name — so a variable, a timer's closure and a handler all
         go on working — and drops the handlers of rows that went, naming them in a
         RuntimeWarning."""
-        gone = self._load()
-        if gone:
-            warnings.warn(_dropped(self.path, gone), RuntimeWarning, stacklevel=2)
+        _say_dropped(self.path, self._load())
         return self
 
     def _load(self):
@@ -711,20 +729,14 @@ class Project(EventLoop, Faults):
 
     def start(self):
         """Starts this project — reloaded first if the library holds another load now (see load)."""
-        return self._start()
-
-    def _start(self):
         lib = _lib.lib()
-        gone = []
         with _lib.state_lock:
             st = _lib.state
             if st["owner"] is not self or st["gen"] != self._gen:
-                gone = self._load()
+                _say_dropped(self.path, self._load())  # before bb_start: a failed start still says it
             _lib.check(lib.bb_start())
             st["run"] += 1  # the rows' databases are this run's from here
             self.started = True
-        if gone:  # once started, from the line that called start or entered the with block
-            warnings.warn(_dropped(self.path, gone), RuntimeWarning, stacklevel=3)
         return self
 
     def stop(self):
@@ -748,7 +760,7 @@ class Project(EventLoop, Faults):
             return _lib.check(lib.bb_stop()) != _lib.BB_RELEASING
 
     def __enter__(self):
-        return self._start()
+        return self.start()
 
     def __exit__(self, *exc):
         if not self.stop():

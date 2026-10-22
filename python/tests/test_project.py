@@ -12,6 +12,7 @@ import textwrap
 import threading
 import time
 import unittest
+import warnings
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -270,8 +271,18 @@ class TestLoads(unittest.TestCase):
                 self.assertEqual(w.filename, __file__)
                 self.assertTrue(net.started, "start() said the dropped handlers and did not start")
                 net.channels.Z.recv(0)
+                net.on_message(net.channels.Z, None, lambda f: None)
             finally:
                 net.stop()
+            with open(path, "w") as f:
+                f.write(DUPLICATES)
+            blobly.Project(SIM_DEMO).load()
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                with self.assertRaises(RuntimeWarning):
+                    net.start()
+            self.assertFalse(net.started, "a warning made an error left a run behind it")
+            self.assertTrue(blobly.wait_released(0))
 
     @unittest.skipIf(sys.platform == "win32", "a non-UTF-8 file name is a POSIX case")
     def test_a_file_name_that_is_not_utf8_loads(self):
@@ -294,6 +305,14 @@ class TestFrame(unittest.TestCase):
             self.assertEqual(twin, a)
         remote = blobly.Frame(0x100, rtr=True, length=4)
         self.assertEqual(copy.copy(remote).length, 4)
+        with self.assertRaises(AttributeError):
+            del a.data
+
+        class Tagged(blobly.Frame):
+            __slots__ = ()
+        t = Tagged(0x7, b"\x09")
+        self.assertEqual((t.id, t.data), (0x7, b"\x09"))
+        self.assertIs(type(copy.copy(t)), Tagged)
 
 
 # a row nothing sends on, and a script that waits on it until a SIGINT, which a timer thread
