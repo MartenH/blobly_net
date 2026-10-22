@@ -52,9 +52,10 @@ other package, no V toolchain and, for the software buses, no driver.
 | macOS, Linux on ARM, 32-bit | No wheel. Build the library from a source checkout (below). Nothing here tests those platforms. |
 
 **Python versions.** CPython **3.11 or newer** (`requires-python = ">=3.11"`). CI runs the
-package's tests, every example and the pytest example under CPython 3.12 on Linux and on
-Windows, from the source tree and from the installed wheel, and under 3.11 on Linux from the
-source tree, which holds the floor. Newer versions are not run in CI. The wheel is tagged
+package's tests, every example and the pytest example under the runners' own Python (3.12 on
+both today) on Linux and on Windows, from the source tree and from the installed wheel, and
+under 3.11 on Linux from the source tree, which holds the floor. Newer versions are not run in
+CI. The wheel is tagged
 `py3-none-<platform>`: it holds no compiled Python code, so one wheel serves every version.
 Other implementations are refused when the library loads (PyPy included). The package detaches a
 thread from the engine as CPython ends the thread, and only CPython promises to do that on the
@@ -216,7 +217,7 @@ exactly what the GUI and the headless runner open.
 | interface (`ch.iface`) | what it is | Linux | Windows |
 |---|---|---|---|
 | `inproc:<name>` | A software bus inside this process. Only the project's simulated ECUs and this script are on it. | yes | yes |
-| `udp` or `udp:<group>:<port>` | A software bus over UDP multicast on this host (default `239.63.42.1:20000`), shared with other processes. | yes | yes |
+| `udp` or `udp:<group>:<port>` | A software bus over UDP multicast (default `239.63.42.1:20000`), shared with other processes. It joins the group on the default interface, so other hosts on the local network segment share it too. | yes | yes |
 | `vcan0`, `can0`, ... | SocketCAN: a virtual `vcan` or an adapter's kernel driver. CAN-FD needs the interface at MTU 72 (`scripts/setup_vcan.sh` brings `vcan0` and `vcan1` up that way). | yes | no: there is no SocketCAN on Windows |
 | `pcan:<channel>@<rate>[/<data rate>]` | PEAK PCAN, through `PCANBasic.dll`. | no | yes |
 | `kvaser:<n>@<rate>[/<data rate>]` | Kvaser, through `canlib32.dll`. | no | yes |

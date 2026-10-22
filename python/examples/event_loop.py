@@ -84,7 +84,9 @@ def main(argv: list[str]) -> int:
             tally.by_id += 1
 
         def on_response(frame: blobly.Frame) -> None:
-            tally.answers.append(int(can.decode(frame)["RespCode"]))
+            values = can.decode(frame)  # None for a remote frame, which carries no signals
+            if values is not None:
+                tally.answers.append(int(values["RespCode"]))
 
         def on_own(frame: blobly.Frame) -> None:
             tally.own += 1

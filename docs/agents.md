@@ -49,7 +49,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:   # loaded and started
 
 Work against a simulation unless the user asks for hardware. `projects/sim-demo.blobnet` is two
 in-process CAN buses (`inproc:CAN1`, `inproc:CAN2`) with simulated ECUs on them, and a DoIP
-entity on loopback. Nothing leaves your process, and the run is the same on Linux and Windows:
+entity on loopback. No frame leaves your process, nothing listens beyond this host, and the run
+is the same on Linux and Windows:
 
 - CAN1 carries the SUT, which sends Powertrain (0x100) and Heartbeat (0x700) every 100 ms and
   answers Request (0x101) with Response (0x102), the first byte plus one. A ChassisECU sends
@@ -86,40 +87,43 @@ bench can move an actuator, change an ECU's state or upset a test someone else i
 - **Starting a project transmits.** From `start()` on, the simulated ECUs and the cyclic
   generators send on their rows. Loading a project (`Project(path).load()`) transmits nothing, so
   load it and look before you start it.
-- **Software buses need no consent.** `inproc:` stays inside your process, and `udp:` stays on
-  this host. A `vcan` interface is virtual too, unless something on the host forwards it to
-  hardware (`cangw`, or a `canbridge`): if you did not create it, ask. Every other CAN interface
-  (`can0`, `pcan:`, `kvaser:`, `vector:`, `cansub:`, `bridge:`) reaches hardware.
-- **Ethernet.** A DoIP row that simulates nodes hosts an entity on its address. On an address
-  other than loopback, the network can reach it.
+- **Only `inproc:` needs no consent.** An `inproc:` bus exists inside your process, and nothing
+  else can see it. Everything else can reach beyond it: `udp:` multicasts on the local network
+  segment, a `vcan` interface can be forwarded to hardware (`cangw`, a `canbridge`), and every
+  other CAN interface (`can0`, `pcan:`, `kvaser:`, `vector:`, `cansub:`, `bridge:`) is hardware.
+  A `udp:` or `vcan` setup the user made for this task is theirs to approve once; ask.
+- **Ethernet.** A DoIP row that simulates nodes hosts an entity on its address, and the network
+  can reach any address but loopback.
 - **What exists today:** a row with `listen_only: true` refuses every send, from Python, from
   the simulation and from every other sender in the process. On PCAN, Kvaser, Vector and CANsub
   the adapter is silenced too, so it does not acknowledge frames either. There is no transmit
   opt-in yet. #507 Phase 1 adds one (a runner flag or a `Project` argument), and until then a
   project transmits on every row that is not listen-only.
-- **What you must do:** before you start a project with a row that reaches hardware, stop and
-  ask the user. Name the rows and their interfaces, and say what would be sent (the simulated
-  ECUs, the generators, your own frames). To only watch a real bus, use rows with
+- **What you must do:** before you start a project with a row that can reach beyond your
+  process, stop and ask the user. Name the rows and their interfaces, and say what would be sent
+  (the simulated ECUs, the generators, your own frames). To only watch a real bus, use rows with
   `listen_only: true`. Do not remove `listen_only` from a user's project on your own.
 
 ```python
 import blobly
 
-SOFTWARE = ("inproc", "udp", "vcan")   # in this process, on this host, a virtual interface
+LOOPBACK = ("127.", "localhost", "[::1]")
 
 
-def hardware_rows(net):
-    """The enabled CAN rows whose interface reaches a physical bus."""
-    return [ch for ch in net.channels if ch.kind == "can" and not ch.iface.startswith(SOFTWARE)]
+def needs_consent(ch):
+    """Whether starting the project, or sending on this row, can reach beyond this process."""
+    if ch.kind == "can":
+        return not ch.iface.startswith("inproc")
+    return not ch.iface.split(":", 1)[1].startswith(LOOPBACK)   # "doip:127.0.0.1:13400"
 
 
 net = blobly.Project("projects/sim-demo.blobnet").load()   # loading transmits nothing
-real = hardware_rows(net)
-if real:
-    raise SystemExit("ask the user first: " + ", ".join(f"{ch.name} ({ch.iface})" for ch in real))
+rows = [ch for ch in net.channels if needs_consent(ch)]
+if rows:
+    raise SystemExit("ask the user first: " + ", ".join(f"{ch.name} ({ch.iface})" for ch in rows))
 net.start()
 try:
-    print("simulation only:", [ch.iface for ch in net.channels])
+    print("inside this process only:", [ch.iface for ch in net.channels])
 finally:
     net.stop()
 ```

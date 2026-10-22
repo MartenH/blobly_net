@@ -46,8 +46,9 @@ BLOBLY_PROJECT=path/to/your.blobnet pytest python/examples/test_sim_demo.py
 - The engine writes its own lines (`project: ...`, `channel CAN1 ...`) to the same stdout. The
   examples make Python's output line-buffered, so the two stay in order when stdout is a pipe.
 
-CI runs every example and the pytest example (`python/tests/test_examples.py`) under CPython 3.12
-on Linux and Windows, from the source tree and from the installed wheel, and under 3.11 on Linux.
+CI runs every example and the pytest example (`python/tests/test_examples.py`) under the runners'
+own Python (3.12 today) on Linux and Windows, from the source tree and from the installed wheel,
+and under 3.11 on Linux from the source tree.
 
 The guide is [docs/scripting_python.md](../../docs/scripting_python.md). An AI agent should start
 at [docs/agents.md](../../docs/agents.md).

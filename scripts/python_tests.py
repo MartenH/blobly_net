@@ -82,6 +82,9 @@ def main():
     args = ap.parse_args()
     if not args.lib and not args.wheel:
         ap.error("nothing to test: give --lib, --wheel or both")
+    wheels = [i for i in args.interpreters if i.endswith(".whl")]
+    if wheels:
+        ap.error(f"{', '.join(wheels)}: a wheel where an interpreter goes (one --wheel at a time)")
     results = [(i, run(i, args.lib, args.wheel)) for i in args.interpreters]
     print(", ".join(f"{i}: {'ok' if ok else 'FAILED'}" for i, ok in results))
     return 0 if all(ok for _, ok in results) else 1

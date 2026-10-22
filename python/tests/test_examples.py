@@ -54,8 +54,7 @@ class TestExamples(unittest.TestCase):
                 r = run(os.path.join(EXAMPLES, name), *args)
                 self.assertEqual(r.returncode, 0, f"{name}:\n{r.stdout}\n{r.stderr}")
                 self.assertIn("engine ", r.stdout)
-                if INSTALLED:
-                    self.assertNotIn("blobly 0+source", r.stdout, f"{name} imported the source tree")
+                self.assert_package(r.stdout, name)
 
     def test_a_project_named_on_the_command_line_is_used(self):
         r = run(os.path.join(EXAMPLES, "raw_can.py"), SIM_DEMO, "--channel", "CAN2")
@@ -71,9 +70,18 @@ class TestExamples(unittest.TestCase):
 
     @unittest.skipIf(find_spec("pytest") is None, "pytest is not installed")
     def test_the_pytest_example_passes(self):
-        r = run("-m", "pytest", "-q", "-p", "no:cacheprovider", os.path.join(EXAMPLES, "test_sim_demo.py"))
+        r = run("-m", "pytest", "-q", "-s", "-p", "no:cacheprovider", os.path.join(EXAMPLES, "test_sim_demo.py"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("7 passed", r.stdout)
+        self.assert_package(r.stdout, "test_sim_demo.py")
+
+    def assert_package(self, out, name):
+        """The example ran on the package this run tests: the installed wheel, or the checkout's
+        (which an installed blobly would shadow, since the examples prefer one)."""
+        if INSTALLED:
+            self.assertNotIn("blobly 0+source", out, f"{name} imported the source tree")
+        else:
+            self.assertIn("blobly 0+source", out, f"{name} imported an installed blobly, not the checkout's")
 
 
 if __name__ == "__main__":

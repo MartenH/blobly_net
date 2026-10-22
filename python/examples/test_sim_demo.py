@@ -35,6 +35,7 @@ PROJECT = os.environ.get("BLOBLY_PROJECT") or os.path.join(HERE, os.pardir, os.p
 def net() -> Iterator[blobly.Project]:
     """The project, started for this module and stopped after its last test."""
     blobly.init()  # pytest runs tests on the main thread, where the library must be loaded
+    print(f"blobly {blobly.__version__}, engine {blobly.version()}")  # shown with pytest -s
     with blobly.Project(PROJECT) as project:
         yield project
 
@@ -44,10 +45,14 @@ def can1(net: blobly.Project) -> blobly.Channel:
     return net.channels.CAN1
 
 
-def drain(ch: blobly.Channel) -> None:
-    """Drops what is already queued on the channel: frames sent before this test began."""
-    while ch.recv(0) is not None:
-        pass
+def drain(ch: blobly.Channel, limit_ms: float = 200) -> None:
+    """Drops what is queued on the channel now (frames sent before this test began), for at most
+    limit_ms: a look that stopped at its bound with records still queued (`spent`) looks again."""
+    deadline = time.monotonic() + limit_ms / 1000
+    while time.monotonic() < deadline:
+        frame, spent = ch.look()
+        if frame is None and not spent:
+            return
 
 
 def wait_for(ch: blobly.Channel, frame_id: int, timeout_ms: float, ext: bool = False) -> blobly.Frame | None:

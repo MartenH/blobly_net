@@ -104,33 +104,33 @@ jobs:
           gcc -Wall -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread
           build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
           python3 -I cmd/libblobly/smoke.py build/libblobly.so projects/sim-demo.blobnet
-      # The wheel PyPI gets (scripts/build_wheel.py), built from the library above, its platform tag
-      # checked by auditwheel. py3-none: one wheel serves every Python version.
-      - name: Python wheel (built)
-        run: |
-          python3 -m venv "$RUNNER_TEMP/wheeltools"
-          "$RUNNER_TEMP/wheeltools/bin/pip" install -q wheel auditwheel
-          "$RUNNER_TEMP/wheeltools/bin/python" scripts/build_wheel.py --native build/libblobly.so --out build/wheels
-          "$RUNNER_TEMP/wheeltools/bin/auditwheel" show build/wheels/*.whl
-      # The package over that library (python/blobly), under the runner's Python (3.12), in a fresh
-      # venv with pytest (scripts/python_tests.py): its event loop's model, the package against
-      # sim-demo, every example and the pytest example (test_examples.py), and the docs against the
-      # code (test_docs.py). First from the source tree with BLOBLY_LIB set, so a missing library
-      # fails rather than skips; then against the INSTALLED wheel, where -I and -t python/tests keep
-      # the source tree off sys.path and TestInstalledWheel asserts that the package and the library
-      # it loaded are the wheel's.
-      - name: Python package (python/blobly), source tree and installed wheel
-        run: python3 scripts/python_tests.py --lib build/libblobly.so --wheel build/wheels/*.whl python3
-      # The floor requires-python states: the same suite from the source tree under CPython 3.11,
-      # installed beside the runner's Python without replacing it on PATH.
+      # The floor requires-python states, CPython 3.11, installed beside the runner's Python (3.12)
+      # without replacing it on PATH.
       - name: CPython 3.11
         id: py311
         uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           update-environment: false
-      - name: Python package under CPython 3.11 (source tree)
-        run: python3 scripts/python_tests.py --lib build/libblobly.so "${{ steps.py311.outputs.python-path }}"
+      # The package over that library (python/blobly), from the source tree, under the runner's
+      # Python and under 3.11, each in a fresh venv with pytest (scripts/python_tests.py): its event
+      # loop's model, the package against sim-demo, every example and the pytest example
+      # (test_examples.py), and the docs against the code (test_docs.py). BLOBLY_LIB set, so a
+      # missing library fails rather than skips.
+      - name: Python package (python/blobly), source tree, runner's Python and 3.11
+        run: python3 scripts/python_tests.py --lib build/libblobly.so python3 "${{ steps.py311.outputs.python-path }}"
+      # The wheel PyPI gets (scripts/build_wheel.py): built from the library above, its platform tag
+      # checked by auditwheel, installed into a fresh venv, and the package's tests run against the
+      # INSTALLED copy — -I and -t python/tests keep the source tree off sys.path, and
+      # TestInstalledWheel asserts that the package and the library it loaded are the wheel's.
+      # From the repository root, which the step's own paths (build/, scripts/, python/tests) name.
+      - name: Python wheel (built, installed, tested)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/wheeltools"
+          "$RUNNER_TEMP/wheeltools/bin/pip" install -q wheel auditwheel
+          "$RUNNER_TEMP/wheeltools/bin/python" scripts/build_wheel.py --native build/libblobly.so --out build/wheels
+          "$RUNNER_TEMP/wheeltools/bin/auditwheel" show build/wheels/*.whl
+          python3 scripts/python_tests.py --wheel build/wheels/*.whl python3
 
   checks:
     name: linux • cmd checks, script tests + headless Lua
