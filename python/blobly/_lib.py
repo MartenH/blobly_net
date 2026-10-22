@@ -97,18 +97,20 @@ def _declare(lib):
 
 
 def _candidates():
-    """Where the library may be: BLOBLY_LIB, beside this package, then the repository's build/."""
+    """Where the library may be: BLOBLY_LIB, else the copy an installed wheel carries (_native/),
+    else beside this package, else the repository's build/ (a source checkout)."""
     names = ["blobly.dll"] if sys.platform == "win32" else ["libblobly.so"]
     env = os.environ.get("BLOBLY_LIB")
     if env:
         return [os.path.abspath(env)]
     here = os.path.dirname(os.path.abspath(__file__))
     repo_build = os.path.join(os.path.dirname(os.path.dirname(here)), "build")
-    return [os.path.join(d, n) for d in (here, repo_build) for n in names]
+    return [os.path.join(d, n) for d in (os.path.join(here, "_native"), here, repo_build) for n in names]
 
 
 _lock = threading.Lock()
 _lib = None
+loaded_path = None  # which file lib() loaded
 _tls = threading.local()
 # the last detaches the finalizer did, as (thread ident, bb_thread_detach's answer): what a test
 # reads to see that a thread was let go on itself; bounded, so a thread-per-job host keeps nothing
@@ -140,9 +142,15 @@ class _Attachment:
 
 def lib():
     """The loaded library, bb_init done; refused from any thread but the main one the first time."""
-    global _lib
+    global _lib, loaded_path
     with _lock:
         if _lib is None:
+            # the thread rule below rests on CPython clearing a thread's local storage ON that
+            # thread as it ends; a tracing collector (PyPy) may finalize later, or elsewhere
+            if sys.implementation.name != "cpython":
+                raise BloblyError("blobly needs CPython: it detaches a thread from the library "
+                                  "as CPython ends it, which " + sys.implementation.name +
+                                  " does not promise")
             if threading.current_thread() is not threading.main_thread():
                 raise BloblyError("load blobly from the main thread first: bb.h requires the "
                                   "library be loaded there (its collector takes the loading thread "
@@ -155,6 +163,7 @@ def lib():
                     if loaded.bb_init() != 0:
                         raise BloblyError(text(loaded.bb_last_error()))
                     _lib = loaded
+                    loaded_path = path
                     break
                 tried.append(path)
             if _lib is None:

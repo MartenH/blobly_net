@@ -12,6 +12,11 @@ from ._lib import BloblyError
 from .events import EventLoop
 from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
 
+try:
+    from ._version import __version__  # written into a wheel by scripts/build_wheel.py, from v.mod
+except ImportError:  # a source checkout: version() says which engine it loaded
+    __version__ = "0+source"
+
 
 def init():
     """Loads the library. Call it on the main thread before any other thread calls in: bb.h

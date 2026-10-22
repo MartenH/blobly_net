@@ -176,6 +176,56 @@ jobs:
         run: |
           $env:BLOBLY_LIB = "build/blobly.dll"
           python -I -m unittest discover -s python/tests -t python -v
+      # The Windows wheel's native payload: blobly.dll, the ucrt64 runtime DLLs it loads, and each
+      # runtime package's licence texts from pacman — derived from what is there, never a list kept
+      # by hand, as the bundle's are. By NAME: the step above already copied the runtime into build/,
+      # so ldd now resolves it there, beside the DLL, and a filter on the /ucrt64/bin/ path matched
+      # nothing (the first CI run shipped blobly.dll alone, and the installed wheel could not load).
+      - name: Python wheel payload (blobly.dll + its runtime and licences)
+        shell: msys2 {0}
+        run: |
+          rm -rf build/wheel-native build/wheel-licenses
+          mkdir -p build/wheel-native build/wheel-licenses
+          cp build/blobly.dll build/wheel-native/
+          ldd build/blobly.dll | awk '{print $1}' | sort -u | while read -r n; do
+            if [ -f "/ucrt64/bin/$n" ]; then echo "/ucrt64/bin/$n"; fi
+          done > build/wheel-deps.txt
+          [ -s build/wheel-deps.txt ] || { echo "no ucrt64 runtime found for blobly.dll"; ldd build/blobly.dll; exit 1; }
+          while read -r d; do
+            cp -f "$d" build/wheel-native/
+            pkg="$(pacman -Qoq "$d")"
+            lic="/ucrt64/share/licenses/${pkg#mingw-w64-ucrt-x86_64-}"
+            [ -d "$lic" ] || { echo "no licence directory for $pkg ($d)"; exit 1; }
+            mkdir -p "build/wheel-licenses/${pkg#mingw-w64-ucrt-x86_64-}"
+            cp -r "$lic/." "build/wheel-licenses/${pkg#mingw-w64-ucrt-x86_64-}/"
+          done < build/wheel-deps.txt
+          echo "wheel payload: $(ls build/wheel-native | tr '\n' ' ')"
+      # Built with the runner's Windows Python, installed into a fresh venv, and the package's tests
+      # run against the INSTALLED copy, as on Linux.
+      - name: Python wheel on Windows (built, installed, tested)
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\wheeltools"
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\pip" install -q wheel
+          $native = @("build/wheel-native/blobly.dll") + (Get-ChildItem build/wheel-native -Filter *.dll |
+            Where-Object Name -ne "blobly.dll" | ForEach-Object { $_.FullName })
+          $nativeArgs = $native | ForEach-Object { "--native", $_ }
+          $release = @()
+          if ("${{ inputs.publish_bundle }}" -eq "true") { $release = @("--release") }
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --licenses build/wheel-licenses --v C:/v-ct/v.exe --out build/wheels @release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -m venv "$env:RUNNER_TEMP\wheeltest"
+          $whl = (Get-ChildItem build/wheels -Filter *.whl).FullName
+          & "$env:RUNNER_TEMP\wheeltest\Scripts\pip" install -q $whl
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $env:BLOBLY_TEST_INSTALLED = "1"
+          & "$env:RUNNER_TEMP\wheeltest\Scripts\python" -I -m unittest discover -s python/tests -t python/tests -v
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: blobly-wheel-windows
+          path: build/wheels/*.whl
+          if-no-files-found: error
 
       # Build cmd/blobly_net through scripts/run_gui.sh — the SAME script developers run and the
       # Linux job (ci.yml) already calls, so this recipe cannot drift from theirs. It once did:
