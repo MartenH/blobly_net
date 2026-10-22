@@ -616,7 +616,9 @@ pub fn bb_uds_extended(u i32, code i32, record i32, dtc &C.bb_dtc, counters &C.b
 			b := hd.extended.blobly_counters()
 			mut has := u8(0)
 			for i, number in [u8(0x01), 0x02, 0x03] {
-				if number in b.has {
+				// a record wider than a u64 has no counter value: its bytes are the record's alone
+				rec := hd.extended.find(number) or { continue }
+				if rec.data.len <= 8 {
 					has |= u8(1) << i
 				}
 			}
@@ -644,12 +646,18 @@ pub fn bb_uds_extended_record(u i32, k i32, number &u8, buf &u8, cap i32) i32 {
 	})
 }
 
+// the largest a snapshot DID's value and an extended record can be in one ISO-TP answer: the
+// header (59 sub DTC status, 6 bytes), then a record's number and DID count and the DID (4 more),
+// or the record's number (1)
+const max_snapshot_did = isotp.max_pdu - 10
+const max_ext_record = isotp.max_pdu - 7
+
 // bb_uds_did_size states a snapshot DID's size, for one the client cannot learn by reading it.
 @[export: 'bb_uds_did_size']
 pub fn bb_uds_did_size(u i32, did i32, n i32) i32 {
 	return with_uds(u, fn [did, n] (mut hd UdsHandle) !i32 {
 		id := did_arg(did)!
-		if n < 0 || n > isotp.max_pdu {
+		if n < 0 || n > max_snapshot_did {
 			return error('did_size: ${n} bytes is not a DID size')
 		}
 		hd.conn.cli.set_did_size(id, int(n))
@@ -662,7 +670,7 @@ pub fn bb_uds_did_size(u i32, did i32, n i32) i32 {
 pub fn bb_uds_ext_record_size(u i32, record i32, n i32) i32 {
 	return with_uds(u, fn [record, n] (mut hd UdsHandle) !i32 {
 		r := byte_arg('extended data record', record)!
-		if n < 0 || n > isotp.max_pdu {
+		if n < 0 || n > max_ext_record {
 			return error('ext_record_size: ${n} bytes is not a record size')
 		}
 		hd.conn.cli.set_ext_record_size(r, int(n))
@@ -764,6 +772,8 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 		mut hd := uds_enter(u) or { return fail(bb_err_handle, 'no open UDS handle ${u}') }
 		hds << hd
 		hd.forget()
+		// its last exchange is not the functional one (uds.functional reports none): the reply says
+		hd.has_last = false
 		if stdatomic.load_i64(&hd.closing) != 0 {
 			return fail(bb_err_handle, 'the UDS handle ${u} was closed')
 		}

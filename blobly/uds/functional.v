@@ -76,6 +76,9 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		mut c := t.client
 		c.drain_queued(req[0])!
 	}
+	if stop_asked(targets) {
+		return error(abandoned_note) // nothing goes out for a request already stopped
+	}
 	fch.send(req) or { return send_failure(err, fch, stop_asked(targets), req[0], 0) }
 	// a target's client a stop can be asked of: its waits are sliced, and a stop ends the request
 	stoppable := targets.any(it.client.stop_requested != unsafe { nil })
@@ -102,11 +105,13 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 				until = deadline[i]
 			}
 		}
-		if until < 0 {
-			break
-		}
+		// a stop ends the request even when every target has finished: one that ended in it is
+		// no reply
 		if stop_asked(targets) {
 			return error(abandoned_note)
+		}
+		if until < 0 {
+			break
 		}
 		wait := if stoppable && until - now > isotp.stop_poll_ms { i64(isotp.stop_poll_ms) } else { until - now }
 		f := tap.recv(int(wait)) or {

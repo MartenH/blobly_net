@@ -121,7 +121,10 @@ class TestFunctional(unittest.TestCase):
         return [a, b]
 
     def test_both_ecus_answer_one_request_each_multi_frame(self):
-        rs = self.can1.uds_functional(0x7DF, self.ecus(), b"\x22\xf1\x90")
+        ds = self.ecus()
+        ds[0].tester_present()
+        rs = self.can1.uds_functional(0x7DF, ds, b"\x22\xf1\x90")
+        self.assertIsNone(ds[0].last, "last still described the request before the functional one")
         self.assertEqual([r.outcome for r in rs], ["positive", "positive"])
         self.assertEqual(rs[0].answer[3:], b"BLOBLYNETV0SUT001")
         self.assertEqual(rs[1].answer[3:], b"BLOBLY-CHASSIS-01")
@@ -207,6 +210,10 @@ class TestUnreadable(unittest.TestCase):
             self.diag.extended(0x123456)
         self.diag.ext_record_size(0x10, 0)
         self.assertEqual(self.diag.extended(0x123456).records, {0x10: b""})
+        with self.assertRaises(blobly.Refused):
+            self.diag.ext_record_size(0x10, 4089)  # no ISO-TP answer could carry it
+        with self.assertRaises(blobly.Refused):
+            self.diag.did_size(0xF190, 4086)
 
     def test_a_stated_size_holds_on_the_next_connection(self):
         self.diag.ext_record_size(0x10, 0)

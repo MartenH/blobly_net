@@ -266,3 +266,26 @@ fn test_a_stop_asked_of_a_target_ends_the_request() {
 	}
 	assert false, 'a stopped request answered'
 }
+
+// a target stopped before the request goes out sends nothing
+fn test_a_request_stopped_before_its_send_sends_nothing() {
+	bus := 'inproc:FUNC_PRESTOP'
+	mut c := client_on(bus, 0x7E0, 0x7E8)
+	c.stop_requested = fn () bool {
+		return true
+	}
+	mut listener := transport.open(bus) or { panic(err) }
+	mut fch := isotp.Channel(isotp.open_software(bus, 0x7DF, 0x7DE, false) or { panic(err) })
+	mut tap := transport.open(bus) or { panic(err) }
+	functional(mut fch, mut tap, [FunctionalTarget{
+		client: c
+		rsp_id: 0x7E8
+	}], [u8(0x3E), 0x00], 300) or {
+		assert failure_of(err) == .abandoned
+		if f := listener.recv(50) {
+			assert false, 'sent 0x${f.id:X} after the stop'
+		}
+		return
+	}
+	assert false
+}

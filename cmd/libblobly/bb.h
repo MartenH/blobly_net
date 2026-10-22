@@ -404,7 +404,9 @@ int bb_dtc_status_bit(int k, uint8_t *mask, char *buf, int cap); /* ISO 14229-1'
 int bb_uds_functional(int row, int64_t id, const int *handles, int n, const uint8_t *req, int len,
                       int window_ms, bb_functional_reply *out);
 int bb_uds_reply_error(int u, char *buf, int cap);  /* why the handle's last functional reply
-                                                      failed; "" when it did not */
+                                                      failed; "" when it did not. A functional
+                                                      request leaves each target's bb_uds_last
+                                                      BB_NONE: its reply is out[i] */
 
 /* Faults and E2E: the rules the Lua prelude's sim.fault and e2e.* ask (cmd/libblobly/sim.v).
  *

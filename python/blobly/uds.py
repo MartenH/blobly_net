@@ -328,7 +328,8 @@ class UdsClient:
     @property
     def last(self) -> Exchange | None:
         """The last request this client put through, whichever call made it, answered or not;
-        None before the first (and after a stop let the connection go)."""
+        None before the first, after a stop let the connection go, and after a functional request
+        (Channel.uds_functional), whose FunctionalReply is the client's answer."""
         with self._lock, _lib.state_lock:  # a stop on another thread cannot close it under the read
             return None if self._h is None else self._last(self._h)
 

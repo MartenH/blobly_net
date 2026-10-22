@@ -988,7 +988,7 @@ A UDS client on a CAN row (`ch.uds()`). See [UDS diagnostics](#10-uds-diagnostic
 | `diag.ext_record_size(record, size)` | States an extended data record's size (blobly_emb's 0x01..0x03 are known). |
 | `diag.raw(request)` | Sends `request`; returns the positive answer, its SID included. |
 | `diag.raw_suppressed(request)` | Sends `request` with suppress-positive-response set on its sub-function: silence is success, a refusal raises. Returns whether a positive answer came anyway. |
-| `diag.last` | The last exchange, an `Exchange`, or `None` before the first (and after a stop let the connection go). |
+| `diag.last` | The last exchange, an `Exchange`, or `None` before the first, after a stop let the connection go, and after a functional request (its `FunctionalReply` is the answer). |
 | `diag.close()`, `with diag:` | Lets the connection go for good; a later call refuses. |
 
 ### `Exchange`
