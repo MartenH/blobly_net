@@ -124,11 +124,14 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	}
 	last := &hd.last
 	has := &hd.has_last
-	hd.conn.cli.on_exchange = fn [last, has] (x uds.Exchange) {
+	h := hd
+	hd.conn.cli.on_exchange = fn [last, has, h] (x uds.Exchange) {
 		unsafe {
 			*last = x
 			*has = true
 		}
+		mut hh := unsafe { h }
+		hh.seed_heard(x.req, if x.err == '' && !x.negative && !x.malformed { x.resp } else { []u8{} })
 	}
 	bb_mu.lock()
 	u := bb_uds_next
@@ -170,6 +173,17 @@ fn open_failed(err IError, is_doip bool) i32 {
 		return rc
 	}
 	return fail(if is_doip { bb_err_carrier } else { bb_err }, err.msg())
+}
+
+// seed_heard marks a security level's seed on a DoIP handle's link when `answer` is the accepted
+// positive answer to the seed request `req` (an exchange the client matched, never a stray frame).
+fn (mut hd UdsHandle) seed_heard(req []u8, answer []u8) {
+	if req.len < 2 || req[0] != 0x27 || req[1] & 1 == 0 || answer.len < 2 || answer[0] != 0x67 {
+		return
+	}
+	if mut hd.conn.ch is DoipLink {
+		hd.conn.ch.seeds[req[1] & 0x7F] = true
+	}
 }
 
 // bb_uds_replaces: handle u's connection replaces an earlier one of the host's (a client reopened
@@ -282,6 +296,11 @@ fn (mut hd UdsHandle) reconnect() ! {
 	cli.ext_lens = hd.conn.cli.ext_lens.clone()
 	cli.stop_requested = hd.conn.cli.stop_requested
 	cli.on_exchange = hd.conn.cli.on_exchange
+	// what the ECU told the old client of its timing holds on this connection: only loosened
+	cli.timeout_ms = hd.conn.cli.timeout_ms
+	cli.loosen_p2_star(hd.conn.cli.p2_star_ms)
+	cli.margin_ms = hd.conn.cli.margin_ms
+	cli.pending_budget_ms = hd.conn.cli.pending_budget_ms
 	hd.conn = udsconn.Conn{
 		ch:  link
 		cli: cli
@@ -1115,6 +1134,7 @@ pub fn bb_uds_functional_doip(u i32, address &i64, req &u8, len i32, window_ms i
 		hd.has_last = false // the reply says, as on CAN
 		mut via := uds.AddressedSend(hd.conn.ch as DoipLink)
 		rep := uds.functional_addressed(mut hd.conn.cli, mut via, u32(fa), request, window_or_default(window_ms))!
+		hd.seed_heard(request, if rep.outcome == .positive { rep.resp } else { []u8{} })
 		reply_out(mut hd, rep, out)
 		return ok()
 	})

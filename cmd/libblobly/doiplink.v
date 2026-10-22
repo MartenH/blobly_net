@@ -5,8 +5,9 @@ module main
 import blobly.doip
 import blobly.transport
 
-// DoipLink is a DoipClient that remembers which security levels' seeds it answered: a seed answer
-// (67, an odd sub-function L) marks level L, and on a link that `inherits` — opened in place of a
+// DoipLink is a DoipClient that remembers which security levels' seeds it answered: a seed request
+// (27, an odd sub-function L) whose exchange accepted its answer marks level L (UdsHandle.seed_heard,
+// never a stray 67 on the stream), and on a link that `inherits` — opened in place of a
 // connection that may have given seeds (a reconnect, or a host reopening its client) — a key
 // (27, L + 1) is refused, never written, until level L's seed is answered on this one: a key
 // answers the seed of ONE connection. On a first connection the ECU judges every key.
@@ -54,11 +55,7 @@ fn (mut l DoipLink) send_to(target u32, data []u8) ! {
 }
 
 fn (mut l DoipLink) recv(timeout_ms int) ![]u8 {
-	d := l.c.recv(timeout_ms)!
-	if d.len >= 2 && d[0] == 0x67 && d[1] & 1 == 1 {
-		l.seeds[d[1] & 0x7F] = true
-	}
-	return d
+	return l.c.recv(timeout_ms)!
 }
 
 fn (mut l DoipLink) close() {
