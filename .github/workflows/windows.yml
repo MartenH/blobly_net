@@ -167,16 +167,21 @@ jobs:
         run: |
           $env:BLOBLY_LIB = "build/blobly.dll"
           python -I -m unittest discover -s python/tests -t python -v
-      # The Windows wheel's native payload: blobly.dll, the ucrt64 runtime DLLs it loads (as ldd
-      # resolves them, the same sweep as the step above), and each runtime package's licence texts
-      # from pacman — derived from what is there, never a list kept by hand, as the bundle's are.
+      # The Windows wheel's native payload: blobly.dll, the ucrt64 runtime DLLs it loads, and each
+      # runtime package's licence texts from pacman — derived from what is there, never a list kept
+      # by hand, as the bundle's are. By NAME: the step above already copied the runtime into build/,
+      # so ldd now resolves it there, beside the DLL, and a filter on the /ucrt64/bin/ path matched
+      # nothing (the first CI run shipped blobly.dll alone, and the installed wheel could not load).
       - name: Python wheel payload (blobly.dll + its runtime and licences)
         shell: msys2 {0}
         run: |
           rm -rf build/wheel-native build/wheel-licenses
           mkdir -p build/wheel-native build/wheel-licenses
           cp build/blobly.dll build/wheel-native/
-          ldd build/blobly.dll | awk '/\/ucrt64\/bin\// {print $3}' | sort -u > build/wheel-deps.txt
+          ldd build/blobly.dll | awk '{print $1}' | sort -u | while read -r n; do
+            if [ -f "/ucrt64/bin/$n" ]; then echo "/ucrt64/bin/$n"; fi
+          done > build/wheel-deps.txt
+          [ -s build/wheel-deps.txt ] || { echo "no ucrt64 runtime found for blobly.dll"; ldd build/blobly.dll; exit 1; }
           while read -r d; do
             cp -f "$d" build/wheel-native/
             pkg="$(pacman -Qoq "$d")"
