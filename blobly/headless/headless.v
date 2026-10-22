@@ -192,14 +192,20 @@ pub fn released() bool {
 	return free
 }
 
-// wait_released waits at most timeout_ms (negative: until it happens) for released().
+// wait_released waits at most timeout_ms (negative: until it happens) for released(), on the
+// monotonic clock, never sleeping past what is left.
 pub fn wait_released(timeout_ms int) bool {
-	until := time.ticks() + i64(timeout_ms)
+	until := time.sys_mono_now() + u64(if timeout_ms > 0 { timeout_ms } else { 0 }) * 1_000_000
 	for !released() {
-		if timeout_ms >= 0 && time.ticks() >= until {
+		now := time.sys_mono_now()
+		if timeout_ms >= 0 && now >= until {
 			return false
 		}
-		time.sleep(10 * time.millisecond)
+		mut step := i64(10) * time.millisecond
+		if timeout_ms >= 0 && i64(until - now) < step {
+			step = i64(until - now)
+		}
+		time.sleep(step)
 	}
 	return true
 }

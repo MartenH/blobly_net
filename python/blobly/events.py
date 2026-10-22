@@ -95,8 +95,6 @@ class EventLoop:
         100 ms: a state held for less than that can be missed. A software bus never fires."""
         key = self._resolve(channel)
         self._listen(key)
-        if self._health_needs_reader(key):  # where it is polled, its frames are left alone
-            self._read(key)
         self._on_health.append(_Health(key, fn))
 
     def on_timer(self, period_ms, fn):
@@ -161,6 +159,14 @@ class EventLoop:
             raise ValueError("run: the duration must be a finite number of milliseconds, zero or more")
         deadline = self._now() + duration_ms
         next_health = self._now()
+        # what this run() reads: every channel an on_message names, and a health handler's only
+        # where its ladder moves while it is read — asked now, not at registration, since a reload
+        # can keep a channel while its row's interface changes under it
+        read = list(self._listened)
+        for h in self._on_health:
+            if not any(k is h.channel or k == h.channel for k in read) \
+                    and self._health_needs_reader(h.channel):
+                read.append(h.channel)
         while True:
             now = self._now()
             for t in list(self._timers):
@@ -186,7 +192,7 @@ class EventLoop:
                 wake = next_health
             # the exact budget, fractions included: the wait never reads past the deadline; and at
             # most a second, so a long run() is many waits
-            got = self._wait_frame(list(self._listened), min(max(0, wake - now), LONGEST_WAIT_MS))
+            got = self._wait_frame(read, min(max(0, wake - now), LONGEST_WAIT_MS))
             if got is not None:
                 key, frame = got
                 handlers = [fn for ch, want, fn in self._on_msg

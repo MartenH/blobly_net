@@ -403,6 +403,28 @@ class Ladder(EventLoop):
         return self.steps[min(self.samples, len(self.steps)) - 1]
 
 
+class TestHealthReading(unittest.TestCase):
+    def test_whether_a_health_channel_is_read_is_asked_at_each_run(self):
+        class Asked(Ladder):
+            needs = False
+            waited_on = []
+
+            def _health_needs_reader(self, name):
+                return self.needs
+
+            def _wait_frame(self, names, ms):
+                self.waited_on.append(list(names))
+                return super()._wait_frame(names, ms)
+
+        loop = Asked(["ok"])
+        loop.on_health("A", lambda s: None)
+        loop.run(5)
+        self.assertTrue(loop.waited_on and all("A" not in n for n in loop.waited_on))
+        loop.needs, loop.waited_on = True, []  # a reload put the row on a wire that needs a reader
+        loop.run(5)
+        self.assertTrue(loop.waited_on and all("A" in n for n in loop.waited_on))
+
+
 class TestHealth(unittest.TestCase):
     def test_every_transition_is_told_once(self):
         m, seen = Ladder(["ok", "ok", "", "BUS-OFF", "BUS-OFF", "ok"]), []

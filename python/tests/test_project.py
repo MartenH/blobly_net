@@ -256,10 +256,16 @@ class TestRefusals(unittest.TestCase):
     def test_on_health_alone_leaves_a_polled_channel_unread(self):
         with blobly.Project(SIM_DEMO) as net:
             can1 = net.channels.CAN1  # inproc: no controller, so nothing for a reader to advance
+            waited_on = []
+            real = net._wait_frame
+            net._wait_frame = lambda chans, ms: (waited_on.append(list(chans)), real(chans, ms))[1]
             net.on_health(can1, lambda s: None)
-            self.assertFalse(any(k is can1 for k in net._listened))
+            net.run(30)
+            self.assertTrue(waited_on and all(can1 not in c for c in waited_on))
             net.on_message(can1, None, lambda f: None)
-            self.assertTrue(any(k is can1 for k in net._listened))
+            waited_on.clear()
+            net.run(30)
+            self.assertTrue(waited_on and all(can1 in c for c in waited_on))
 
     def test_a_clean_stop_frees_the_process(self):
         net = blobly.Project(SIM_DEMO)
