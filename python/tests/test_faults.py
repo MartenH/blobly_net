@@ -51,6 +51,39 @@ channels:
 """
 DATA_ID = 0x1244
 
+# one node sending two messages of one name, and a third whose id the second database moves
+TWINS_DBC = """VERSION ""
+
+BU_: ECU Tester
+
+BO_ 256 Status: 1 ECU
+ SG_ A : 0|8@1+ (1,0) [0|255] "" Tester
+
+BO_ 257 Status: 1 ECU
+ SG_ B : 0|8@1+ (1,0) [0|255] "" Tester
+
+BO_ {other_id} Other: 1 ECU
+ SG_ C : 0|8@1+ (1,0) [0|255] "" Tester
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_ "GenMsgCycleTime" BO_ 256 20;
+BA_ "GenMsgCycleTime" BO_ 257 20;
+BA_ "GenMsgCycleTime" BO_ {other_id} 20;
+"""
+
+TWINS = """project:
+  name: twins
+  version: 8
+channels:
+  - name: T
+    type: can
+    interface: inproc:PY_TWINS
+    databases:
+      - twins.dbc
+    simulation:
+      - name: ECU
+"""
+
 
 def setUpModule():
     try:
@@ -241,6 +274,47 @@ class TestOnProtectedTraffic(unittest.TestCase):
         self.net.fault(self.ch, "Chassis", "BrakeStatus", "bad_crc", ms=300)
         self.assertTrue(settles(self.ch, BRAKE_STATUS, lambda f: not self.verifies(f), n=3))
         self.assertTrue(self.counters_advance(), "the CRC does not verify once the fault ran out")
+
+
+
+class TestMessageIdentity(unittest.TestCase):
+    """A fault is keyed by the message's name: a Message stands for itself, or is refused."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.dbc = os.path.join(self.dir.name, "twins.dbc")
+        self.write_dbc(0x102)
+        with open(os.path.join(self.dir.name, "twins.blobnet"), "w") as f:
+            f.write(TWINS)
+        self.net = blobly.Project(os.path.join(self.dir.name, "twins.blobnet")).start()
+        self.ch = self.net.channels.T
+
+    def tearDown(self):
+        self.net.stop()
+        self.dir.cleanup()
+
+    def write_dbc(self, other_id):
+        with open(self.dbc, "w") as f:
+            f.write(TWINS_DBC.replace("{other_id}", str(other_id)))
+
+    def test_a_message_whose_name_is_shared_is_refused_and_the_name_reaches_both(self):
+        with self.assertRaises(ValueError) as e:
+            self.net.fault(self.ch, "ECU", self.ch.messages[0], "drop")
+        self.assertIn("more than one message named Status", str(e.exception))
+        self.net.fault(self.ch, "ECU", "Status", "drop")
+        for frame_id in (0x100, 0x101):
+            self.assertTrue(quiet(self.ch, frame_id), f"0x{frame_id:X} still arriving")
+
+    def test_a_message_its_run_no_longer_has_is_refused(self):
+        other = self.ch.messages.Other
+        self.net.stop()
+        self.write_dbc(0x103)  # Other moves: the old object is not this run's
+        self.net.start()
+        with self.assertRaises(blobly.BloblyError) as e:
+            self.net.fault(self.ch, "ECU", other, "drop")
+        self.assertEqual(e.exception.code, -3)
+        self.net.fault(self.ch, "ECU", self.ch.messages.Other, "drop")
+        self.assertTrue(quiet(self.ch, 0x103), "the current Other still arriving")
 
 
 if __name__ == "__main__":

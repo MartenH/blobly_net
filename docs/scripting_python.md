@@ -444,7 +444,9 @@ does on the wire and why.
 - `net.fault(channel, node, message, kind, ms=None, signal=None)` arms `kind` on the simulated
   `node`'s `message` on `channel`, for `ms` milliseconds (rounded up) or, with `None`, until it is
   cleared. `channel` is a `Channel` or its name, `message` a `Message` or its name, `node` the
-  simulated node's name as the project gives it. `kind` is a `blobly.FaultKind` or its string:
+  simulated node's name as the project gives it. A fault is keyed by the message's **name**: by
+  name it reaches every message of that name the node sends, and a `Message` whose name another
+  message of its channel shares raises `ValueError` rather than reach more than the one given. `kind` is a `blobly.FaultKind` or its string:
 
   | `kind` | on the wire |
   |---|---|
@@ -565,7 +567,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 |---|---|
 | `blobly.BloblyError` | The engine refused: a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
 | `blobly.FaultRefused` | A `BloblyError` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
-| `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel. What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. |
+| `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. |
 | `TypeError` | A timeout that is not a finite number (or `None`), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`. A fault's or an `e2e` call's argument of the wrong type. |
 | `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are. |
 | `KeyError`, `IndexError` | An unknown name by `["NOPE"]`, a position past the end. |
