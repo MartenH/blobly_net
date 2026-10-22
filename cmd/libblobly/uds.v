@@ -812,13 +812,17 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 			}
 		}
 	}
+	// the request's own taps, opened so a close of a target ends a slow open too
 	iface := ch.iface_with_bitrate()
-	mut tap := transport.open(iface) or { return fail(bb_err, 'functional: ${err.msg()}') }
+	opener := fn [iface] () !transport.Bus {
+		return transport.open(iface)
+	}
+	mut tap := transport.open_stoppable(opener, any_closing) or { return functional_open_failed(err) }
 	defer {
 		tap.close()
 	}
-	mut fch := isotp.Channel(isotp.on_bus(transport.open(iface) or {
-		return fail(bb_err, 'functional: ${err.msg()}')
+	mut fch := isotp.Channel(isotp.on_bus(transport.open_stoppable(opener, any_closing) or {
+		return functional_open_failed(err)
 	}, iface, u32(id), u32(id), u32(id) > 0x7FF) or { return fail(bb_err, 'functional: ${err.msg()}') })
 	defer {
 		fch.close()
@@ -840,6 +844,15 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 		}
 	}
 	return ok()
+}
+
+// functional_open_failed answers an open of a functional request's taps that failed: a close of a
+// target that ended it is the handle's.
+fn functional_open_failed(err IError) i32 {
+	if err.msg() == transport.open_stopped_note {
+		return fail(bb_err_handle, 'the UDS handle was closed')
+	}
+	return fail(bb_err, 'functional: ${err.msg()}')
 }
 
 // bb_uds_reply_error: why the handle's reply to the last functional request failed ('' when it
