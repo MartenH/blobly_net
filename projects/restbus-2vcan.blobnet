@@ -24,7 +24,7 @@ buses:
     bitrate: 500000
     mode: monitor
     databases:
-      - dbc/blobly_net.dbc
+      - ../dbc/blobly_net.dbc
     simulation:
       - name: SUT
         signals:
@@ -45,7 +45,7 @@ buses:
     bitrate: 500000
     mode: monitor
     databases:
-      - dbc/blobly_net.dbc
+      - ../dbc/blobly_net.dbc
     simulation:
       - name: BodyECU
         signals:

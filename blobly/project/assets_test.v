@@ -1,6 +1,7 @@
 module project
 
 import os
+import blobly.candb
 
 // a scratch tree: <root>/proj (the project), <root>/dbc/x.dbc, <root>/net.arxml, <root>/proj/sub/m.csv
 fn asset_tree() !string {
@@ -106,8 +107,9 @@ fn test_rebase_from_an_unsaved_project() {
 	assert rebase_ref('', proj, os.join_path(root, 'dbc', 'x.dbc')) == '../dbc/x.dbc'
 }
 
-// The working directory's spelling (every shipped project's `dbc/…`) is rebased too, since
-// resolve_asset says where it resolves now; a saved project's absolute reference is left alone.
+// A reference that resolves only from the working directory (`dbc/…` written against the folder
+// the program was started in) is rebased too, since resolve_asset says where it resolves now; a
+// saved project's absolute reference is left alone.
 fn test_rebase_follows_resolve_asset() {
 	root := asset_tree()!
 	was := os.getwd()
@@ -254,4 +256,40 @@ fn test_missing_nested_reference_through_a_symlinked_project() {
 	os.symlink(os.join_path(root, 'proj'), os.join_path(root, 'link'))!
 	moved := rebase_ref(os.join_path(root, 'link'), os.join_path(root, 'other'), 'gen/db/net.dbc')
 	assert moved == '../proj/gen/db/net.dbc'
+}
+
+// Every reference a shipped project makes into this repository resolves from the project's own
+// directory, never only through resolve_asset's working-directory fallback: CI and the suites run
+// from the repository root, where that fallback hides a wrong spelling, and a bundle opened from a
+// shortcut loads an empty database through it. A reference leaving the repository (a sibling
+// checkout's generated file) is not this repository's to check.
+fn test_shipped_projects_resolve_from_their_own_directory() {
+	root := os.norm_path(@VMODROOT)
+	mut seen := 0
+	for path in os.walk_ext(os.join_path(root, 'projects'), '.blobnet') {
+		dir := os.dir(path)
+		p := parse(os.read_file(path)!)!
+		for ch in p.channels {
+			mut refs := [ch.manifest]
+			for db in ch.databases {
+				file, _ := candb.split_database_ref(db)
+				refs << file
+			}
+			if r := ch.replay {
+				refs << r.source
+			}
+			for ref in refs {
+				if ref == '' {
+					continue
+				}
+				assert !os.is_abs_path(ref), '${path}: ${ref} is absolute'
+				full := os.norm_path(os.join_path(dir, ref))
+				if full.starts_with(root + os.path_separator) {
+					assert os.exists(full), '${path}: ${ref} does not resolve from the project file'
+					seen++
+				}
+			}
+		}
+	}
+	assert seen > 0, 'no shipped project references were checked'
 }

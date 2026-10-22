@@ -34,4 +34,4 @@ channels:
                          # be a normal node here so the board's frames are acknowledged.
     enabled: true
     databases:
-      - dbc/cpuload.dbc
+      - ../dbc/cpuload.dbc

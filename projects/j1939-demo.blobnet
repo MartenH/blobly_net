@@ -3,7 +3,7 @@
 # One CAN row, ticked J1939. Nothing here transmits: the demo is the RECORDING beside it.
 #
 #   BLOBLY_PROJECT=projects/j1939-demo.blobnet ./scripts/run_gui.sh
-#   → Trace ▸ Open Recording ▸ samples/j1939-bam.log
+#   → Trace ▸ Open Recording ▸ the repository's samples/j1939-bam.log
 #
 # and the trace reads what a truck bus actually looks like, with no database loaded at all:
 #
