@@ -94,7 +94,7 @@ jobs:
       - name: Set up pinned V (cached)
         uses: ./.github/actions/setup-v
 
-      # The engine as a shared library with a C ABI (cmd/libblobly, bb.h): built -prod -shared,
+      # The engine as a shared library with a C ABI (cmd/libblobly, bb.h): built -O1 -shared,
       # then driven by a C host and by a ctypes host — each on a thread of the HOST's own as
       # well, with enough allocation on it to collect there, since a thread the collector did
       # not see born is the one way an embedded V runtime differs from a program.
