@@ -106,6 +106,20 @@ jobs:
       # package against sim-demo. BLOBLY_LIB set, so a missing library fails rather than skips.
       - name: Python package (python/blobly)
         run: BLOBLY_LIB=build/libblobly.so python3 -I -m unittest discover -s python/tests -t python -v
+      # The wheel PyPI gets (scripts/build_wheel.py): built from the library above, its platform tag
+      # checked by auditwheel, installed into a fresh venv, and the package's tests run against the
+      # INSTALLED copy — -I and -t python/tests keep the source tree off sys.path, and
+      # TestInstalledWheel asserts that the package and the library it loaded are the wheel's.
+      # From the repository root, where sim-demo's databases resolve.
+      - name: Python wheel (built, installed, tested)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/wheeltools"
+          "$RUNNER_TEMP/wheeltools/bin/pip" install -q wheel auditwheel
+          "$RUNNER_TEMP/wheeltools/bin/python" scripts/build_wheel.py --native build/libblobly.so --out build/wheels
+          "$RUNNER_TEMP/wheeltools/bin/auditwheel" show build/wheels/*.whl
+          python3 -m venv "$RUNNER_TEMP/wheeltest"
+          "$RUNNER_TEMP/wheeltest/bin/pip" install -q build/wheels/*.whl
+          BLOBLY_TEST_INSTALLED=1 "$RUNNER_TEMP/wheeltest/bin/python" -I -m unittest discover -s python/tests -t python/tests -v
 
       # The shared answers behind setup_vcan.sh / build_vcan_module.sh. Pure functions of the
       # environment (whose home under sudo, is vcan available, may we even ask), driven through

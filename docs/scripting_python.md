@@ -9,15 +9,28 @@ This is a **first cut**. What it covers and what it does not are both listed bel
 
 ## Setting up
 
-You need the library and the package:
+```sh
+pip install blobly
+```
+
+The wheel carries the engine for its platform inside the package (`blobly/_native/`): Linux
+x86_64 (a manylinux wheel built on the release floor, Ubuntu 22.04, so any glibc that new or
+newer) and Windows x64 (with the MinGW runtime DLLs it loads, and their licences). Any CPython 3.8
+or later; no other packages are needed. Its version is the release's (`v.mod`'s, `2026.10.00`
+installed as `2026.10.0`); `blobly.__version__` says which.
+
+From a source checkout instead:
 
 ```sh
 ./scripts/build_libblobly.sh build        # build/libblobly.so (Linux) or build/blobly.dll (Windows)
 export PYTHONPATH=$PWD/python             # or add python/ to sys.path
 ```
 
-The package finds the library through `BLOBLY_LIB` if set, else beside the package, else in the
-repository's `build/`. Any CPython 3.8 or later; no other packages are needed.
+The package finds the library through `BLOBLY_LIB` if set, else the copy a wheel carries, else
+beside the package, else in the repository's `build/`. A wheel built from a checkout
+(`python scripts/build_wheel.py --native build/libblobly.so`) is versioned v.mod's version plus a
+local label naming the commit (`2026.10.0+git.8027a81`), which PyPI refuses — only a release
+build (`--release`, from the tagged commit) carries the plain version.
 
 **Call `blobly.init()` on the main thread first** (any first call on the main thread does the
 same: importing does not load the library). The library must be loaded on the process's main
@@ -75,6 +88,6 @@ background readers:
 - **UDS / diagnostics.** No equivalent of the Lua `uds.open` yet.
 - **Sends that keep going outside `run()`.** There are no cyclic senders and no `on_send`: a periodic frame is `on_timer` + `send`, inside `run()`. Background sends need one owner thread per channel in the engine, which is planned and not built.
 - **The GUI.** A Python console beside a running GUI measurement is not built. This package brings a project up in your own process.
-- **Packaging.** There is no `pip install` yet: the package is used from the repository (`PYTHONPATH`). How it is distributed is still to be decided.
+- **Other platforms.** Wheels exist for Linux x86_64 and Windows x64 only; elsewhere, build the library and use the source checkout.
 - **Two rules of the Lua `run()` the ABI cannot carry yet.** A look that spent its bound skipping queued records (`transport.look_was_spent`) is answered as "nothing", so the loop sleeps a slice before looking again rather than at once (slower, never lossy). And a channel named only by `on_health` is always read, because the ABI does not say whether its ladder needs a reader.
 - **Which kind of channel a row is.** The ABI does not say whether a row is CAN, DoIP or SOME/IP. A send on a DoIP row fails with the transport's error, not with "not a CAN bus".

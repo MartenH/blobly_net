@@ -9,7 +9,9 @@ import threading
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, ".."))
+# the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
+if not os.environ.get("BLOBLY_TEST_INSTALLED"):
+    sys.path.insert(0, os.path.join(HERE, ".."))
 import blobly  # noqa: E402
 from blobly import _lib  # noqa: E402
 
@@ -38,9 +40,20 @@ def setUpModule():
     try:
         _lib.lib()
     except blobly.BloblyError as e:
-        if os.environ.get("BLOBLY_LIB"):
+        if os.environ.get("BLOBLY_LIB") or os.environ.get("BLOBLY_TEST_INSTALLED"):
             raise
         raise unittest.SkipTest(str(e))
+
+
+@unittest.skipUnless(os.environ.get("BLOBLY_TEST_INSTALLED"), "a run of an installed wheel")
+class TestInstalledWheel(unittest.TestCase):
+    def test_the_installed_package_and_its_own_library_are_what_run(self):
+        pkg = os.path.dirname(os.path.abspath(blobly.__file__))
+        self.assertFalse(pkg.startswith(os.path.join(REPO, "python")),
+                         f"the source tree was imported ({pkg}), not the installed wheel")
+        self.assertEqual(os.path.dirname(_lib.loaded_path), os.path.join(pkg, "_native"),
+                         "the library loaded is not the one the wheel carries")
+        self.assertNotIn("+source", blobly.__version__)
 
 
 class TestChannels(unittest.TestCase):

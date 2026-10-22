@@ -167,6 +167,51 @@ jobs:
         run: |
           $env:BLOBLY_LIB = "build/blobly.dll"
           python -I -m unittest discover -s python/tests -t python -v
+      # The Windows wheel's native payload: blobly.dll, the ucrt64 runtime DLLs it loads (as ldd
+      # resolves them, the same sweep as the step above), and each runtime package's licence texts
+      # from pacman — derived from what is there, never a list kept by hand, as the bundle's are.
+      - name: Python wheel payload (blobly.dll + its runtime and licences)
+        shell: msys2 {0}
+        run: |
+          rm -rf build/wheel-native build/wheel-licenses
+          mkdir -p build/wheel-native build/wheel-licenses
+          cp build/blobly.dll build/wheel-native/
+          ldd build/blobly.dll | awk '/\/ucrt64\/bin\// {print $3}' | sort -u > build/wheel-deps.txt
+          while read -r d; do
+            cp -f "$d" build/wheel-native/
+            pkg="$(pacman -Qoq "$d")"
+            lic="/ucrt64/share/licenses/${pkg#mingw-w64-ucrt-x86_64-}"
+            [ -d "$lic" ] || { echo "no licence directory for $pkg ($d)"; exit 1; }
+            mkdir -p "build/wheel-licenses/${pkg#mingw-w64-ucrt-x86_64-}"
+            cp -r "$lic/." "build/wheel-licenses/${pkg#mingw-w64-ucrt-x86_64-}/"
+          done < build/wheel-deps.txt
+          echo "wheel payload: $(ls build/wheel-native | tr '\n' ' ')"
+      # Built with the runner's Windows Python, installed into a fresh venv, and the package's tests
+      # run against the INSTALLED copy, as on Linux.
+      - name: Python wheel on Windows (built, installed, tested)
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\wheeltools"
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\pip" install -q wheel
+          $native = @("build/wheel-native/blobly.dll") + (Get-ChildItem build/wheel-native -Filter *.dll |
+            Where-Object Name -ne "blobly.dll" | ForEach-Object { $_.FullName })
+          $nativeArgs = $native | ForEach-Object { "--native", $_ }
+          $release = @()
+          if ("${{ inputs.publish_bundle }}" -eq "true") { $release = @("--release") }
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --licenses build/wheel-licenses --out build/wheels @release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -m venv "$env:RUNNER_TEMP\wheeltest"
+          $whl = (Get-ChildItem build/wheels -Filter *.whl).FullName
+          & "$env:RUNNER_TEMP\wheeltest\Scripts\pip" install -q $whl
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $env:BLOBLY_TEST_INSTALLED = "1"
+          & "$env:RUNNER_TEMP\wheeltest\Scripts\python" -I -m unittest discover -s python/tests -t python/tests -v
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: blobly-wheel-windows
+          path: build/wheels/*.whl
+          if-no-files-found: error
 
       - name: Build the GUI app (RUN=0 scripts/run_gui.sh)
         shell: msys2 {0}
