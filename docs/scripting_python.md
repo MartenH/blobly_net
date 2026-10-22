@@ -19,8 +19,8 @@ newer) and Windows x64 (with the MinGW runtime DLLs it loads, and their licences
 of what is compiled into the engine — V's standard library, the Boehm GC, arxmodel and flatxml —
 are in `blobly/_native/licenses/`. CPython 3.8
 or later (not PyPy: the package detaches a thread from the library as CPython ends it); no other
-packages are needed. Its version is the release's (`v.mod`'s, `2026.10.00`
-installed as `2026.10.0`); `blobly.__version__` says which.
+packages are needed. Its version is the release's (`v.mod`'s, in PEP 440's spelling: `2026.10.01`
+installs as `2026.10.1`); `blobly.__version__` says which.
 
 From a source checkout instead:
 
@@ -94,7 +94,7 @@ background readers:
   every 0.1 ms (1 ms on Windows), and at once again when a look stopped at its bound with
   records still queued behind it (`Channel.look()`).
 - **Health.** `on_health` reads its channel only where the ladder moves while it is read
-  (SocketCAN, Vector); where it is polled (PCAN, Kvaser, CANsub, the software buses) the
+  (SocketCAN, Vector); where it is polled (PCAN, Kvaser, CANsub, the CAN bridge) or there is none (the software buses), the
   channel's frames are left for `recv`.
 - **The deadline is per event** (a frame, a timer, one health handler). None is taken up once
   the deadline has passed. A frame taken up before it reaches every handler it matches.

@@ -31,8 +31,8 @@ driver at all. All four vendors are hand-verified on the bench, CAN-FD included.
 > things, and please [open an issue](../../issues) when you do.
 
 **Two ways to drive it, over the same engine:** the **GUI** for interactive work, and
-**[headless](#headless--scripted-no-gui)** — Lua test scripts and CLI tools with no window and
-no display, which is how it runs in CI. The protocol engine lives in `blobly/` and imports no
+**[headless](#headless--scripted-no-gui)** — Lua test scripts, a Python package and CLI tools
+with no window and no display, which is how it runs in CI. The protocol engine lives in `blobly/` and imports no
 GUI code, so scripted use is a first-class path, not a cut-down one. (The reverse isn't claimed:
 editing a DBC or watching a live plot needs the GUI.)
 
@@ -48,11 +48,12 @@ on one timeline.*
 
 ## Get it
 
-**[Releases](../../releases)** carry three assets per version — a Linux **AppImage**, a Linux
-**tar.gz** and a Windows **zip** — with no GitHub sign-in and no expiry. (Ignore the
+**[Releases](../../releases)** carry three bundles per version — a Linux **AppImage**, a Linux
+**tar.gz** and a Windows **zip** — with no GitHub sign-in and no expiry, plus the two Python
+wheels (Linux x86_64, Windows x64) that `pip install blobly` takes from PyPI. (Ignore the
 `v-toolchain` entry — that is CI's prebuilt compiler; releases from `v0.1.0` onward are the
-product.) All three bundle the demo projects, DBCs, sample logs, the docs the Help panel renders
-and a `VERSION.txt`. The tar.gz and the zip put them under one top-level folder beside a
+product.) The three bundles carry the demo projects, DBCs, sample logs, the docs the Help panel
+renders and a `VERSION.txt`. The tar.gz and the zip put them under one top-level folder beside a
 `README.txt`; the AppImage is a single file and carries them inside it, without the `README.txt`
 — which tells a tarball user to unpack and `cd`, and is noise in a file you just run. The **Windows zip is self-contained**
 (mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
@@ -228,7 +229,7 @@ on-target DWT benchmark: cycles, CPI, stalls).*
 > against any target, or against no hardware at all.
 
 **Scripting** — **Lua** test scripts with a small test framework, runnable headless in
-CI or live in the GUI.
+CI or live in the GUI, and the engine from **Python** (`pip install blobly`), in your own process.
 
 The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_net`). The **protocol
 engine** underneath it is equally reachable without a display — see
@@ -297,6 +298,11 @@ scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
 Point it at a different project with `--project projects/<name>.blobnet`. The full Lua API is
 in the **[scripting & test guide](docs/scripting.md)**.
 
+**Python** — the engine inside your own Python process (`pip install blobly`; Linux x86_64 and
+Windows x64): load a project, send and receive frames, send and decode DBC messages by signal
+name, and react to traffic with `on_message`, `on_timer` and `run()`. See
+**[scripting_python.md](docs/scripting_python.md)**.
+
 **CLI tools** — each runs standalone via
 `v -enable-globals run cmd/<tool>/<file>.v`:
 
@@ -325,9 +331,10 @@ evidence behind that warning.
 
 | layer | what | where |
 |---|---|---|
-| **Unit tests** | every `_test.v` under `blobly/` — 127 files, ~1,700 test functions and ~7,300 assertions at 2026.10.00 | `v -enable-globals test blobly/` |
+| **Unit tests** | every `_test.v` under `blobly/` — 132 files, ~1,800 test functions and ~7,500 assertions at 2026.10.01 | `v -enable-globals test blobly/` |
 | **Golden byte vectors** | wire formats are pinned to exact bytes — SOME/IP headers, trace records, the simulated ECU's frames — and the same vectors exist on the blobly_emb side, so neither repo can drift alone | inside the unit tests |
 | **Headless integration** | 14 Lua suites — every file in `tests/`, which is what CI runs with no arguments — drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
+| **Python package** | the package's tests from the source tree and against the installed wheel, and libblobly's C and Python smokes, on Linux and Windows | `ci.yml`, `windows.yml` |
 | **GUI build** | the ImGui app compile-links on Linux and Windows | `ci.yml`, `windows.yml` |
 
 **Not automated — done by hand, and worth knowing about:**
@@ -351,6 +358,7 @@ above is manual, so a regression there is caught only when someone next runs it.
 
 **Using it**
 - [scripting.md](docs/scripting.md) — Lua scripting + the headless test runner
+- [scripting_python.md](docs/scripting_python.md) — the engine from Python (`pip install blobly`)
 - [dbc_editor.md](docs/dbc_editor.md) — the DBC editor
 - [project_editing.md](docs/project_editing.md) — projects, buses and channels
 - [bus_config_dialog.md](docs/bus_config_dialog.md) — bus/hardware configuration

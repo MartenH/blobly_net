@@ -186,7 +186,7 @@ jobs:
           pattern: blobly-wheel-*
           path: wheels
           merge-multiple: true
-      # The Windows build runs for the better part of an hour, and a tag deleted or force
+      # The Windows build runs for minutes, and a tag deleted or force
       # -moved in that window must not publish: gh would silently re-create a missing tag
       # from the DEFAULT BRANCH, associating these binaries with source they were not built
       # from. Re-fetch the tag and require its peeled commit to still be the one the guard
@@ -201,7 +201,7 @@ jobs:
             || { echo "tag moved during the build (now $now, built $GITHUB_SHA) — not publishing"; exit 1; }
           # ... and the ANCESTRY too: a main force-pushed during the build to recall this
           # very commit makes the guard's proof stale, and the reviewed-history gate must
-          # hold at publication time, not only an hour earlier (codex #137 r4)
+          # hold at publication time, not only when the guard ran (codex #137 r4)
           git fetch --force origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "the tagged commit is no longer on origin/main — not publishing"; exit 1; }
@@ -254,7 +254,7 @@ jobs:
             # v-toolchain tooling release), so the changelog is built from the merged PRs
             # directly (codex #137 r4)
             # bounded by the TAGGED commit's history, not "merged by publication time": a
-            # PR landing during the hour-long build is not in these binaries and must not
+            # PR landing during the build is not in these binaries and must not
             # be advertised by them (codex #137 r5) — hence the ancestry filter per merge
             # commit (PRs merged by other means may carry no mergeCommit; skipped, since
             # nothing proves they are in this history)

@@ -175,6 +175,14 @@ a wire-visible feature, the matching host support usually lands here in the same
 
 ## Already shipped
 
+- ✅ **The engine from Python** (`pip install blobly`; `python/blobly`,
+  [docs/scripting_python.md](docs/scripting_python.md)): a ctypes package over **libblobly**
+  (`cmd/libblobly`), the engine built as a shared library with a C ABI stated once in `bb.h`. A
+  project comes up in the caller's process as the headless Lua runner brings it up; channels and
+  DBC messages complete in a REPL, frames are sent and received directly, messages are encoded
+  and decoded by signal name, and `on_message` / `on_timer` / `on_health` with `run()` follow the
+  rules of the Lua `run()`. Wheels for Linux x86_64 (manylinux) and Windows x64, published to
+  PyPI by the release workflow. Not yet: UDS, background senders, a console beside the GUI.
 - ✅ **J1939 understood, read-side** (#171, `blobly/j1939`, [docs/j1939.md](docs/j1939.md)): the
   trace's name column reads a 29-bit id as PGN / source (and destination) address, BAM and RTS/CTS
   transfers are rejoined into rows of their own (flags `TP`, the whole parameter group as data,
