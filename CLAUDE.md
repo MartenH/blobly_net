@@ -373,7 +373,7 @@ evidence that it was built — a stamp naming both pins, written only after `mak
 #285 found the same shape three rounds running, a check on the state of the inputs standing
 in for a successful build). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
-release or its `v-0535623-windows.zip` asset disappears, the Windows job breaks — and runs
+release or its `v-5f7d4d0-windows.zip` asset disappears, the Windows job breaks — and runs
 `v test blobly/isotp/` plus the cmd sweep there. The asset is the V3 of `.v-version`
 cross-built from Linux by `scripts/mint_windows_v.sh`; re-mint it whenever the pin moves.
 **The toolchain is V3.** Every job sets
