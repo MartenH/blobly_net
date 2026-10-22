@@ -1227,3 +1227,27 @@ fn test_a_level_delivers_only_what_was_queued_when_it_began() {
 	took := said.num('took')
 	assert took >= 30 && took < 250, 'run(10) took ${took} ms: ${said.lines}'
 }
+
+// Two coroutines mid-call on one frame: handler 1 suspended in one, handler 2 raising out of a
+// resume in another. The frame is ended — handler 3 never gets it — even after handler 1 resumes.
+fn test_a_frame_two_coroutines_were_on_ends_when_either_dies() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_AH'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	t := spawn send_n('inproc:EV_AH', 0x49, 1, 0)
+	env.run_source('
+		local third = 0
+		on_message("CAN1", nil, function(f) coroutine.yield() end)
+		on_message("CAN1", nil, function(f) error("boom") end)
+		on_message("CAN1", nil, function(f) third = third + 1 end)
+		local first = coroutine.create(function() run(150) end)
+		coroutine.resume(first)
+		local second = coroutine.create(function() run(20) end)
+		log("second " .. tostring(coroutine.resume(second)))
+		coroutine.resume(first)
+		log("third " .. third)
+	')!
+	t.wait()
+	assert said.lines.contains('second false'), said.lines.str()
+	assert said.num('third') == 0, said.lines.str()
+}

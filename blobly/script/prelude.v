@@ -683,6 +683,14 @@ local function calling_state()
   return s
 end
 local taken = 0 -- frames run() has taken up, numbering them in the queue
+-- a frame is ended once any coroutine that was mid-call on it is dead: it raised out of a resume,
+-- which closes nothing, so no guard ran for it — however many coroutines are on the frame
+local function died_on(d)
+  for c, n in pairs(d.callers) do
+    if n > 0 and coroutine.status(c) == "dead" then return true end
+  end
+  return false
+end
 local function deliver_inflight()
   local s = calling_state()
   local _ <close> = s.guard
@@ -696,25 +704,20 @@ local function deliver_inflight()
   local upto = #q > 0 and q[#q].n or 0
   while #q > 0 and q[1].n <= upto do
     local d = q[1]
-    -- a frame whose handler is mid-call in a coroutine that DIED there raised out of a resume,
-    -- which closes nothing: it is ended as the guard would have ended it
-    if d.caller and d.caller ~= co and coroutine.status(d.caller) == "dead" then
-      table.remove(q, 1)
-    else
-      -- stops as soon as an inner run() has finished this frame: what it delivered came after
-      while q[1] == d and d.i <= #__on_msg do
-        local h = __on_msg[d.i]
-        d.i = d.i + 1
-        if h.channel == d.ch and (h.id == nil or h.id == d.f.id) then
-          s.calling[level] = d
-          d.caller = co
-          h.fn(d.f)
-          d.caller = nil
-          s.calling[level] = false
-        end
+    -- stops as soon as an inner run() has finished this frame (what it delivered came after), or
+    -- a coroutine died on it
+    while q[1] == d and d.i <= #__on_msg and not died_on(d) do
+      local h = __on_msg[d.i]
+      d.i = d.i + 1
+      if h.channel == d.ch and (h.id == nil or h.id == d.f.id) then
+        s.calling[level] = d
+        d.callers[co] = (d.callers[co] or 0) + 1
+        h.fn(d.f)
+        d.callers[co] = d.callers[co] - 1
+        s.calling[level] = false
       end
-      if q[1] == d then table.remove(q, 1) end
     end
+    if q[1] == d then table.remove(q, 1) end
   end
 end
 
@@ -748,7 +751,7 @@ function run(duration_ms)
     local ch, id, ext, data = __wait_frame(wait, table.unpack(__listened))
     if ch then
       taken = taken + 1
-      inflight[#inflight + 1] = { ch = ch, f = { id = id, ext = ext, data = data }, i = 1, n = taken }
+      inflight[#inflight + 1] = { ch = ch, f = { id = id, ext = ext, data = data }, i = 1, n = taken, callers = {} }
       deliver_inflight()
     end
   until __now_ms() >= deadline
