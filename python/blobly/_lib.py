@@ -10,20 +10,65 @@ import threading
 
 
 class BloblyError(Exception):
-    """A call into libblobly refused: the message is bb_last_error's, the code bb.h's."""
+    """A call into libblobly failed: the message is bb_last_error's, the code bb.h's. The kinds a
+    caller acts on differently are subclasses: Refused, and the ways a UDS call fails."""
 
     def __init__(self, message, code=-1):
         super().__init__(message)
         self.code = code
 
 
+class Refused(BloblyError):
+    """The library refused the call (BB_ERR): an argument out of range, a request it cannot carry,
+    or another reason the message gives. A UDS request refused did not go out whole: the ECU was
+    not asked."""
+
+
+class NegativeResponse(BloblyError):
+    """The ECU answered a UDS request with a negative response: `nrc` is its code, `nrc_name`
+    ISO 14229-1's name for it, `exchange` the exchange it ended (UdsClient.last)."""
+
+    def __init__(self, message, code=-4, nrc=0, nrc_name="", exchange=None):
+        super().__init__(message, code)
+        self.nrc, self.nrc_name, self.exchange = nrc, nrc_name, exchange
+
+
+class Timeout(BloblyError):
+    """Nothing answered the UDS request within the wait."""
+
+
+class PendingExpired(BloblyError):
+    """The ECU said responsePending (0x78), then nothing more within its P2*."""
+
+
+class UndecodableAnswer(BloblyError):
+    """An answer arrived that cannot be read as the answer to the request: the ECU answered, and
+    the connection is not at fault."""
+
+
+class CarrierFailed(BloblyError):
+    """The carrier failed under the UDS request: the bus, or the ISO-TP channel (a frame lost
+    mid-transfer)."""
+
+
 BB_ERR = -1
 BB_ERR_HANDLE = -2
 BB_ERR_STATE = -3
+BB_ERR_NEGATIVE = -4
+BB_ERR_TIMEOUT = -5
+BB_ERR_PENDING = -6
+BB_ERR_UNDECODABLE = -7
+BB_ERR_CARRIER = -8
+# the exception each code raises; a code not here (BB_ERR_HANDLE, BB_ERR_STATE, a newer library's)
+# raises BloblyError itself
+ERRORS = {BB_ERR: Refused, BB_ERR_NEGATIVE: NegativeResponse, BB_ERR_TIMEOUT: Timeout,
+          BB_ERR_PENDING: PendingExpired, BB_ERR_UNDECODABLE: UndecodableAnswer,
+          BB_ERR_CARRIER: CarrierFailed}
 # answers that are neither success nor an error (bb.h)
 BB_NONE = 1        # bb_bus_recv: no frame in time; bb_decode: no message
 BB_SPENT = 2       # bb_bus_recv(h, 0): no frame yet, records still queued behind the look's bound
 BB_RELEASING = 3   # bb_stop / bb_wait_released: a loop is still letting go of its wires
+BB_ANSWERED = 4    # bb_uds_raw_suppressed: a positive answer came although none was asked for
 
 # enum bb_kind and enum bb_health_source
 KINDS = {0: "can", 1: "doip", 2: "someip"}
@@ -54,6 +99,18 @@ class BbSignal(ctypes.Structure):
                 ("mux_value", ctypes.c_int32), ("labels", ctypes.c_int32),
                 ("factor", ctypes.c_double), ("offset", ctypes.c_double),
                 ("minimum", ctypes.c_double), ("maximum", ctypes.c_double)]
+
+
+class BbUdsTarget(ctypes.Structure):
+    """bb_uds_target, field for field."""
+    _fields_ = [("tx", ctypes.c_uint32), ("rx", ctypes.c_uint32), ("ext", ctypes.c_uint8)]
+
+
+class BbUdsExchange(ctypes.Structure):
+    """bb_uds_exchange, field for field."""
+    _fields_ = [("sent", ctypes.c_uint8), ("negative", ctypes.c_uint8), ("nrc", ctypes.c_uint8),
+                ("pending", ctypes.c_int32), ("rtt_us", ctypes.c_int64), ("pending_us", ctypes.c_int64),
+                ("request_len", ctypes.c_int32), ("answer_len", ctypes.c_int32)]
 
 
 def _declare(lib):
@@ -89,6 +146,25 @@ def _declare(lib):
                              c_int], c_int),
         "bb_encode": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), P(BbFrame)], c_int),
         "bb_decode": ([c_int, P(BbFrame), P(c_int), P(ctypes.c_double), P(ctypes.c_uint8), c_int], c_int),
+        # a const uint8_t * is declared c_char_p: bytes pass as they are, their length beside them
+        "bb_uds_open": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64), P(BbUdsTarget)], c_int),
+        "bb_uds_close": ([c_int], c_int),
+        "bb_uds_last": ([c_int, P(BbUdsExchange), c_char_p, c_int, c_char_p, c_int], c_int),
+        "bb_uds_data": ([c_int, c_char_p, c_int], c_int),
+        "bb_uds_raw": ([c_int, c_char_p, c_int, c_char_p, c_int], c_int),
+        "bb_uds_raw_suppressed": ([c_int, c_char_p, c_int], c_int),
+        "bb_uds_session": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_uds_tester_present": ([c_int], c_int),
+        "bb_uds_read_did": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_uds_write_did": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_uds_reset": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_uds_comm_control": ([c_int, c_int, c_int], c_int),
+        "bb_uds_dtc_setting": ([c_int, c_int], c_int),
+        "bb_uds_clear_dtcs": ([c_int, c_int], c_int),
+        "bb_uds_security_seed": ([c_int, c_int, P(ctypes.c_uint8), c_char_p, c_int], c_int),
+        "bb_uds_security_key": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_reference_key": ([c_char_p, c_int, c_char_p, c_int], c_int),
+        "bb_nrc_name": ([c_int, c_char_p, c_int], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)
@@ -202,7 +278,13 @@ def string(get, *at):
 
 
 def check(rc):
-    """A bb_* return value: itself when >= 0, a BloblyError with bb_last_error's message otherwise."""
+    """A bb_* return value: itself when >= 0, otherwise the error its code names (error())."""
     if rc < 0:
-        raise BloblyError(text(_lib.bb_last_error()), rc)
+        raise error(rc)
     return rc
+
+
+def error(rc):
+    """The exception for a failed call's code, with bb_last_error's message: read it before the
+    thread's next call, which replaces it."""
+    return ERRORS.get(rc, BloblyError)(text(_lib.bb_last_error()), rc)

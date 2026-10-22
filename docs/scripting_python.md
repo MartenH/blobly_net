@@ -9,9 +9,9 @@ project's buses directly.
 **Python is the primary scripting interface** ([#507](https://github.com/MartenH/blobly_net/issues/507)).
 Each capability is written once in the engine and exposed through the C ABI to Python first. Lua
 ([scripting.md](scripting.md)) stays for the GUI's Script panel, quick bench work and the
-existing suites. Today Lua also has what Python does not have yet: diagnostics (UDS over CAN and
-DoIP), SOME/IP, flashing, the E2E helpers, fault injection and `expect`.
-[What is not there yet](#12-what-is-not-there-yet) lists those, with #507's phases.
+existing suites. Today Lua also has what Python does not have yet: DTCs, functional addressing
+and UDS over DoIP, SOME/IP, flashing, the E2E helpers, fault injection and `expect`.
+[What is not there yet](#13-what-is-not-there-yet) lists those, with #507's phases.
 
 An AI agent driving Blobly Net should start at [agents.md](agents.md). Complete, runnable
 scripts are in [python/examples](../python/examples/README.md).
@@ -24,10 +24,11 @@ scripts are in [python/examples](../python/examples/README.md).
 6. [DBC messages and signals](#6-dbc-messages-and-signals)
 7. [The event loop](#7-the-event-loop)
 8. [Health](#8-health)
-9. [Threads](#9-threads)
-10. [Errors](#10-errors)
-11. [Reference](#11-reference)
-12. [What is not there yet](#12-what-is-not-there-yet)
+9. [UDS diagnostics](#9-uds-diagnostics)
+10. [Threads](#10-threads)
+11. [Errors](#11-errors)
+12. [Reference](#12-reference)
+13. [What is not there yet](#13-what-is-not-there-yet)
 
 Every Python block in this guide runs as written from the root of a repository checkout:
 `python/tests/test_docs.py` runs each one against sim-demo, in CI.
@@ -88,7 +89,7 @@ version.
 **Call `blobly.init()` on the main thread first.** Importing does not load the engine, and the
 first call that needs it loads it. bb.h requires that load to happen on the process's main thread,
 and the package refuses it anywhere else. Any later call may come from any thread (see
-[Threads](#9-threads)).
+[Threads](#10-threads)).
 
 ---
 
@@ -432,7 +433,91 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 9. Threads
+## 9. UDS diagnostics
+
+`ch.uds()` opens a UDS (ISO 14229) client on a CAN row, over ISO-TP on the row's bus. It is the
+Lua `uds.open`: the same rule opens both (`blobly/udsconn`), and each call is one of the engine's
+helpers. Answers come back decoded and failures come back typed, so a script parses no UDS
+payload of its own. `with` closes the client at the end of the block.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    with net.channels.CAN1.uds(tx=0x7E0, rx=0x7E8) as diag:  # sim-demo's SUT
+        diag.session(0x01)                                    # b'\x01\x00\x32\x01\xf4'
+        print(diag.read_did(0xF190))                          # b'BLOBLYNETV0SUT001', multi-frame
+        print(diag.last.rtt_us, "us")                         # the timing of that exchange
+        try:
+            diag.read_did(0xABCD)
+        except blobly.NegativeResponse as e:
+            print(hex(e.nrc), e.nrc_name)                     # 0x31 requestOutOfRange
+        diag.security_access(0x01)                            # seed, reference key, unlocked
+        diag.write_did(0xF1AA, b"\xca\xfe")
+        print(diag.raw(b"\x22\xf1\xaa"))                      # b'b\xf1\xaa\xca\xfe', SID included
+```
+
+[uds_diag.py](../python/examples/uds_diag.py) is a complete script.
+
+**Opening a client.** `ch.uds(tx=None, rx=None)` takes the CAN ids as the Lua `uds.open` does.
+`None` is the default, 0x7E0 for `tx` and 0x7E8 for `rx`; 0 is an id like any other. Either id
+past 0x7FF makes both 29-bit. An id that is not a CAN identifier (a negative one, or one past 29
+bits) is refused. `diag.tx`, `diag.rx` and `diag.ext` are the ids it opened on.
+
+- **CAN rows only, for now.** A DoIP row is refused by name: UDS over DoIP is the next step. A
+  SOME/IP row is not a diagnostics carrier, and is refused too.
+- **The project must be started.** A stop lets the client's connection go. The next call after a
+  start opens another on the same ids, so a client kept in a variable goes on working. A client
+  of a channel that another load did not keep refuses.
+- **Threads.** Calls on one client are serialised, so threads may share one; `security_access`
+  is one call, seed, key function and key together. `close()` from another thread ends a call in
+  progress there within 20 ms of the wait it is in, with `BloblyError` (code -2); a frame already
+  handed to the driver is written first. A client nobody closes lets its connection go when it is
+  collected.
+
+**Security access.** `security_access(level, key_fn=None)` requests the seed for `level` (odd),
+computes the key with `key_fn(seed)` and sends it at `level + 1`. Without `key_fn` the key is
+blobly_net's reference key, `blobly.reference_key(seed)` (each byte XOR 0xFF), which the simulated
+ECUs accept ([security_access.md](security_access.md)). An all-zero seed is ISO 14229-1's "already
+unlocked", and no key is sent for it. A wrong key raises `NegativeResponse` (NRC 0x35).
+
+**Waits.** Every call is bounded by the engine's timing (`blobly/uds`). The first answer is waited
+for 1000 ms, which a 0x10 answer's P2 can lengthen and never shorten. Each responsePending (0x78)
+is then waited for the ECU's P2* plus 1000 ms. One request never takes more than 120 s from its
+send, however often the ECU says pending. An answer that names another request (a late or
+repeated one, which a real bus can deliver) is skipped and the wait goes on. What is already
+queued when a request goes out is drained first, so it cannot be taken for the answer.
+
+**What went wrong.** A failed call raises one of these, each a `BloblyError` with the engine's
+message and its code:
+
+| exception | when |
+|---|---|
+| `blobly.NegativeResponse` | The ECU answered with a negative response. `e.nrc` is its code, `e.nrc_name` ISO 14229-1's name for it, `e.exchange` the `Exchange` it ended. |
+| `blobly.Timeout` | Nothing answered within the wait. |
+| `blobly.PendingExpired` | The ECU said responsePending (0x78), then nothing more within its P2*. |
+| `blobly.UndecodableAnswer` | An answer arrived that cannot be read as one (too short, or a negative response that is not `7F <sid> <nrc>`). The ECU answered, so the connection is not at fault. |
+| `blobly.CarrierFailed` | The carrier failed under the request: the bus (a failed write), or the ISO-TP channel (a frame lost mid-transfer). |
+| `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group), a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
+
+`diag.last` is the last exchange, whichever call made it and however it ended: the request as it
+went out, the answer, the NRC, whether it went out whole, and its timing.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    with net.channels.CAN1.uds(tx=0x6F0, rx=0x6F8) as nobody:   # nothing answers there
+        try:
+            nobody.tester_present()
+        except blobly.Timeout as e:
+            print(e)                                            # UDS: no answer to 0x3E (timeout)
+        print(nobody.last.sent, nobody.last.answer)             # True b''
+```
+
+---
+
+## 10. Threads
 
 - **Load the engine on the main thread** (`blobly.init()`). After that any thread may call in. A
   thread is attached to the engine on its first call and detached when it ends, without you
@@ -470,11 +555,11 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 10. Errors
+## 11. Errors
 
 | exception | when |
 |---|---|
-| `blobly.BloblyError` | The engine refused: a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
+| `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
 | `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. |
 | `TypeError` | A timeout that is not a finite number (or `None`), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`. |
 | `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are. |
@@ -489,7 +574,17 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 | -2 | no such bus handle, or a closed one |
 | -3 | the wrong state: nothing loaded, not started, already started, a previous run still releasing, a channel or message of an earlier load or run |
 
-Diagnostic errors (a negative response, a timeout) arrive with diagnostics in #507 Phase 1.
+A UDS call's failures are subclasses, each with a code of its own: see
+[UDS diagnostics](#9-uds-diagnostics).
+
+| code | exception | meaning |
+|---|---|---|
+| -1 | `blobly.Refused` | refused (every `BloblyError` with code -1 is one) |
+| -4 | `blobly.NegativeResponse` | the ECU answered with a negative response |
+| -5 | `blobly.Timeout` | nothing answered within the wait |
+| -6 | `blobly.PendingExpired` | responsePending (0x78), then nothing within the ECU's P2* |
+| -7 | `blobly.UndecodableAnswer` | an answer arrived that cannot be read as one |
+| -8 | `blobly.CarrierFailed` | the carrier failed under the request |
 
 ```python
 import blobly
@@ -507,7 +602,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 11. Reference
+## 12. Reference
 
 Import everything from `blobly`. The submodules `blobly.project` and `blobly.events` are the
 implementation, and their other names are not part of the interface.
@@ -521,6 +616,7 @@ the package is named in this section.
 | `blobly.init()` | Loads the engine. Call it on the main thread before any other thread calls in. |
 | `blobly.version()` | The engine's version, v.mod's spelling (`"2026.10.01"`). |
 | `blobly.wait_released(timeout_ms=None)` | Waits until the process is free for a start: `True`, or `False` once `timeout_ms` passed (`None` waits for ever). |
+| `blobly.reference_key(seed)` | blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF), the key the simulated ECUs accept. |
 | `blobly.__version__` | The package's version (`"2026.10.1"`); `"0+source"` in a source checkout. |
 
 ### `Project`
@@ -579,7 +675,8 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.health()` | The controller's ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""`. |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
-| `ch.close()` | Lets the bus handle go; the next use opens another. |
+| `ch.uds(tx=None, rx=None)` | A `UdsClient` on this CAN row: requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8). |
+| `ch.close()` | Lets the bus handle go, and the connections of its UDS clients; the next use opens another. |
 
 ### `Frame`
 
@@ -630,26 +727,65 @@ A signal of a message (`msg.signals.EngineSpeed`). physical = raw × `factor` + 
 | `sig.labels` | The value table as `{physical value: text}`. |
 | `sig.raw_labels` | The value table as `{raw key: text}`, every entry. |
 
-### `BloblyError`
+### `UdsClient`
 
-`blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused.
+A UDS client on a CAN row (`ch.uds()`). See [UDS diagnostics](#9-uds-diagnostics).
+
+| member | what |
+|---|---|
+| `diag.channel` | The `Channel` it is on. |
+| `diag.tx`, `diag.rx`, `diag.ext` | The ids it opened on, and whether they are 29-bit. |
+| `diag.session(session=0x01)` | 0x10 DiagnosticSessionControl. Returns the answer after its SID: the session, then its timing record, whose P2 and P2* the client adopts. |
+| `diag.tester_present()` | 0x3E 00 TesterPresent. |
+| `diag.read_did(did)` | 0x22 ReadDataByIdentifier: the DID's value. |
+| `diag.write_did(did, data)` | 0x2E WriteDataByIdentifier. |
+| `diag.security_access(level, key_fn=None)` | 0x27: the seed for `level`, the key from `key_fn(seed)` (the reference key without one) at `level + 1`. Returns the seed; an all-zero seed (unlocked already) sends no key. |
+| `diag.reset(kind=0x01)` | 0x11 ECUReset (1 hard, 2 key-off-on, 3 soft). Returns the answer after its SID. |
+| `diag.comm_control(control, comm_type=0x01)` | 0x28 CommunicationControl: `control` 0..3 for messages of `comm_type`. |
+| `diag.dtc_setting(on)` | 0x85 ControlDTCSetting: `True` on, `False` off (anything else is a `TypeError`). |
+| `diag.clear_dtcs(group=0xFFFFFF)` | 0x14 ClearDiagnosticInformation: one DTC or a 24-bit group (the default is all). |
+| `diag.raw(request)` | Sends `request`; returns the positive answer, its SID included. |
+| `diag.raw_suppressed(request)` | Sends `request` with suppress-positive-response set on its sub-function: silence is success, a refusal raises. Returns whether a positive answer came anyway. |
+| `diag.last` | The last exchange, an `Exchange`, or `None` before the first (and after a stop let the connection go). |
+| `diag.close()`, `with diag:` | Lets the connection go for good; a later call refuses. |
+
+### `Exchange`
+
+One request a `UdsClient` put through, answered or not (`diag.last`).
+
+| member | what |
+|---|---|
+| `x.request` | The request as it went out (a suppressed one with its bit set). |
+| `x.answer` | The positive answer, a negative one's `7F <sid> <nrc>`, an undecodable one as it came, or `b""` when none came. |
+| `x.nrc` | The negative response's code, else `None`. |
+| `x.sent` | Whether the request went out whole. `False`: the ECU never had all of it, so repeating it does not ask twice. |
+| `x.rtt_us` | From the send to the final answer, or to the failure, in microseconds. |
+| `x.pending`, `x.pending_us` | How many responsePending (0x78) came, and the time from the first to the end. |
+
+### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`
+
+`blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused, or a call failed. The
+others are its subclasses (see [Errors](#11-errors) and
+[UDS diagnostics](#9-uds-diagnostics)).
 
 | member | what |
 |---|---|
 | `str(e)` | The engine's message. |
-| `e.code` | -1 refused, -2 no such handle, -3 the wrong state (see [Errors](#10-errors)). |
+| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -8 the ways a UDS call fails. |
+| `e.nrc`, `e.nrc_name` | `NegativeResponse` only: the code, and ISO 14229-1's name for it. |
+| `e.exchange` | `NegativeResponse` only: the `Exchange` it ended. |
 
 ---
 
-## 12. What is not there yet
+## 13. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
-loop and bus health. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+loop, bus health and UDS over CAN. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
-- UDS over CAN, with Lua's helpers (sessions, DIDs, 0x27, DTCs with snapshots and extended data,
-  functional addressing, raw and suppressed requests), the exchange timing returned as data, and
-  typed `NegativeResponse` and `Timeout` errors.
+- UDS over CAN is here ([UDS diagnostics](#9-uds-diagnostics)): sessions, DIDs, 0x27, resets,
+  0x14 / 0x28 / 0x85, raw and suppressed requests, the exchange timing and typed errors. DTCs with
+  snapshots and extended data, and functional addressing, are its next part.
 - The DoIP tester: UDS over DoIP rows, `discover` and `listen`. Today a DoIP row is listed and its
   entity hosted, but Python cannot talk to it.
 - A pytest plugin: `project`, `channel` and `diag` fixtures, `expect` and `expect_signal`.

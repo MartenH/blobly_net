@@ -8,9 +8,11 @@
         net.run(1000)
 
 See docs/scripting_python.md."""
-from ._lib import BloblyError
+from ._lib import (BloblyError, CarrierFailed, NegativeResponse, PendingExpired, Refused, Timeout,
+                   UndecodableAnswer)
 from .events import EventLoop
 from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
+from .uds import Exchange, UdsClient, reference_key
 
 try:
     from ._version import __version__  # written into a wheel by scripts/build_wheel.py, from v.mod
@@ -39,5 +41,7 @@ def wait_released(timeout_ms=None):
     return _lib.check(_lib.lib().bb_wait_released(_ms(timeout_ms))) == 0
 
 
-__all__ = ["BloblyError", "Channel", "Channels", "EventLoop", "Frame", "Message", "Messages", "Project",
-           "Signal", "Signals", "init", "version", "wait_released"]
+__all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "EventLoop", "Exchange", "Frame", "Message",
+           "Messages", "NegativeResponse", "PendingExpired", "Project", "Refused", "Signal", "Signals",
+           "Timeout", "UdsClient", "UndecodableAnswer", "init", "reference_key", "version",
+           "wait_released"]
