@@ -1,6 +1,6 @@
 # Blobly Net project — replay demo (Phase 8), zero drivers.
 #
-# Replays samples/demo.log onto an in-process bus at its recorded cadence
+# Replays ../samples/demo.log onto an in-process bus at its recorded cadence
 # (10 Hz Powertrain 0x100 + Heartbeat 0x700), looping forever. No vcan, no
 # Python, no kernel modules — runs identically on Linux and Windows.
 #
@@ -22,8 +22,8 @@ channels:
     mode: replay
     enabled: true
     databases:
-      - dbc/blobly_net.dbc
+      - ../dbc/blobly_net.dbc
     replay:
-      source: samples/demo.log
+      source: ../samples/demo.log
       speed: 1.0
       loop: true

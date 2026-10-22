@@ -656,12 +656,78 @@ local function fire_timer(t)
   t.fn()
 end
 
+-- the frames being given to their handlers, oldest first — ONE queue for the script: any run(),
+-- nested or in another coroutine, first finishes them and queues what it takes behind them, so
+-- every handler sees a channel`s frames in order, and a coroutine suspended in a handler leaves
+-- its frame to whichever run() comes next
+local inflight = {}
+-- per coroutine, which frame each of its delivery levels is calling a handler for, and one guard
+-- every level closes as it ends: a frame whose handler did not return — it raised (even nil), or
+-- yielded into a coroutine that was closed — is ended for the handlers that have not had it yet
+local calling_of = setmetatable({}, { __mode = "k" })
+local function calling_state()
+  local co = coroutine.running()
+  local s = calling_of[co]
+  if not s then
+    s = { calling = {} }
+    s.guard = setmetatable({}, { __close = function()
+      local d = table.remove(s.calling)
+      if d then
+        for k, e in ipairs(inflight) do
+          if e == d then table.remove(inflight, k) break end
+        end
+      end
+    end })
+    calling_of[co] = s
+  end
+  return s
+end
+local taken = 0 -- frames run() has taken up, numbering them in the queue
+-- a frame is ended once any coroutine that was mid-call on it is dead: it raised out of a resume,
+-- which closes nothing, so no guard ran for it — however many coroutines are on the frame
+local function died_on(d)
+  for c, n in pairs(d.callers) do
+    if n > 0 and coroutine.status(c) == "dead" then return true end
+  end
+  return false
+end
+local function deliver_inflight()
+  local s = calling_state()
+  local _ <close> = s.guard
+  s.calling[#s.calling + 1] = false
+  local level = #s.calling
+  local q = inflight
+  local co = coroutine.running()
+  -- the frames queued when this level began, and none after: a frame an inner run() takes is
+  -- that run()`s to deliver, or the next one`s — never this level`s, whose run() may be past its
+  -- deadline
+  local upto = #q > 0 and q[#q].n or 0
+  while #q > 0 and q[1].n <= upto do
+    local d = q[1]
+    -- stops as soon as an inner run() has finished this frame (what it delivered came after), or
+    -- a coroutine died on it
+    while q[1] == d and d.i <= #__on_msg and not died_on(d) do
+      local h = __on_msg[d.i]
+      d.i = d.i + 1
+      if h.channel == d.ch and (h.id == nil or h.id == d.f.id) then
+        s.calling[level] = d
+        d.callers[co] = (d.callers[co] or 0) + 1
+        h.fn(d.f)
+        d.callers[co] = d.callers[co] - 1
+        s.calling[level] = false
+      end
+    end
+    if q[1] == d then table.remove(q, 1) end
+  end
+end
+
 -- run looks __now_ms, __wait_frame and __bus_health up as globals at every call: the model test
 -- (events_test.v) replaces them
 function run(duration_ms)
   local deadline = __now_ms() + (duration_ms or 1000)
   local next_health = __now_ms()
   repeat
+    deliver_inflight() -- the frame an outer run() is delivering reaches its later handlers first
     local now = __now_ms()
     for _, t in ipairs(__timers) do
       if __now_ms() >= deadline then break end
@@ -684,10 +750,9 @@ function run(duration_ms)
     if wait > 1000 then wait = 1000 end -- the loop goes on; a run(math.huge) is not one wait
     local ch, id, ext, data = __wait_frame(wait, table.unpack(__listened))
     if ch then
-      local f = { id = id, ext = ext, data = data }
-      for _, h in ipairs(__on_msg) do
-        if h.channel == ch and (h.id == nil or h.id == f.id) then h.fn(f) end
-      end
+      taken = taken + 1
+      inflight[#inflight + 1] = { ch = ch, f = { id = id, ext = ext, data = data }, i = 1, n = taken, callers = {} }
+      deliver_inflight()
     end
   until __now_ms() >= deadline
 end

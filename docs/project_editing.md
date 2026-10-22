@@ -109,7 +109,7 @@ buses:
     protocol: can                # can | canfd
     bitrate: 500000
     mode: normal                 # normal | replay
-    databases: [dbc/blobly_net.dbc]
+    databases: [../dbc/blobly_net.dbc]   # relative to this project file
     simulate: [Engine]
 ```
 
@@ -337,7 +337,7 @@ saved, relative to the working directory as before. Computed over real paths, si
 walks `../` physically through a symlinked directory. **Save As rebases** every relative
 reference (`Project.rebase_assets`: databases with their `#Cluster`, the manifest, a replay
 source) by `resolve_asset`'s own rule, so it names the same file from the new directory — one
-that resolves only from the working directory too (the shipped projects' `dbc/…`), and one that
+that resolves only from the working directory too (a `dbc/…` written against the folder the program was started in), and one that
 resolves nowhere today keeps naming where it would be looked for first. A saved project's
 absolute reference is left as written. A Save As that does not write puts the references back.
 

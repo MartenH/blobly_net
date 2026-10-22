@@ -6,8 +6,9 @@
 # until you ask: in the Trace Chart (≣): Record to arm (clears the recorder), Stop to
 # freeze + import the window, Dump to read it out as one ISO-TP block. The swimlane shows
 # comm (t1), app_main (t2), the ThreadX System Timer Thread (t3), the FDCAN Rx ISR (v35)
-# and SysTick (v15), resolved via the GENERATED manifest (absolute path below, so a
-# `make` in blobly_emb keeps it current — no stale copy).
+# and SysTick (v15), resolved via the GENERATED manifest in a blobly_emb checkout beside this
+# one (the path below, relative to this file, so a `make` in blobly_emb keeps it current — no
+# stale copy).
 #
 # WIRING (this bench): the H755 FDCAN1 (through the TLE9251V click) is on the PCAN connector
 # silk-screened "can1", which enumerates as SocketCAN `can0`;
@@ -30,6 +31,6 @@ buses:
     bitrate: 500000
     mode: monitor            # RX + on-demand trace tx; listen_only stays false so it ACKs the board
     enabled: true
-    manifest: /home/mahi/repos/blobly_emb/examples/h755_threadx/gen/trace-manifest.csv
+    manifest: ../../blobly_emb/examples/h755_threadx/gen/trace-manifest.csv
     databases:
-      - dbc/trace.dbc
+      - ../dbc/trace.dbc

@@ -17,7 +17,7 @@ channels:
     listen_only: false   # silent / no-ACK read-only tap
     enabled: true
     databases:
-      - dbc/blobly_net.dbc
+      - ../dbc/blobly_net.dbc
 
   # A second, disabled channel to show the Buses panel with >1 bus. Enable it
   # (and bring up vcan1) to attach it. Configured for replay of the demo MF4.
@@ -28,8 +28,8 @@ channels:
     mode: replay
     enabled: false
     databases:
-      - dbc/blobly_net.dbc
+      - ../dbc/blobly_net.dbc
     replay:
-      source: samples/demo.mf4
+      source: ../samples/demo.mf4
       speed: 1.0
       loop: false
