@@ -56,5 +56,5 @@ and ECUs that answer requests. The examples run against it:
   setting up, adapters per OS, frames, databases, the event loop, threads, errors, the complete
   reference, and what is not there yet.
 - [For AI agents](https://github.com/MartenH/blobly_net/blob/main/docs/agents.md): how an agent
-  should drive Blobly Net, including the rule for real hardware (ask the user first).
+  drives Blobly Net: running it, finding out what a project offers, bounded waits and errors.
 - [Blobly Net](https://github.com/MartenH/blobly_net): the GUI, the Lua runner and the rest.

@@ -654,9 +654,6 @@ loop and bus health. The rest is planned in [#507](https://github.com/MartenH/bl
   entity hosted, but Python cannot talk to it.
 - A pytest plugin: `project`, `channel` and `diag` fixtures, `expect` and `expect_signal`.
 - Fault injection (`sim.fault`) and the E2E Profile 1 helpers.
-- **The real-hardware transmit opt-in**: transmitting on a hardware adapter will need an explicit
-  allow. Today a project transmits on every CAN row that is not `listen_only`, and on whatever
-  interface a generator's `bus:` names; see [agents.md](agents.md).
 
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
 - SOME/IP send, call and listen; `flash.program`.
