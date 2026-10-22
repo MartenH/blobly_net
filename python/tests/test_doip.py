@@ -403,6 +403,18 @@ channels:
                     diag.security_access(0x01, nested)
                 self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
 
+    def test_a_raw_key_goes_only_on_the_seeds_connection(self):
+        _, fake = self.start(drop=1, drop_sids={0x22})
+        with fake.uds() as diag:
+            seed = diag.raw(b"\x27\x01")[2:]
+            with self.assertRaises(blobly.ConnectionLost):
+                diag.read_did(VIN)
+            with self.assertRaises(blobly.Refused) as e:
+                diag.raw(b"\x27\x02" + bytes(b ^ 0xFF for b in seed))
+            self.assertIn("the connection that gave the seed is gone", str(e.exception))
+            diag.raw(b"\x27\x01")  # a seed on the new connection, and its key goes
+            self.assertEqual(diag.raw(b"\x27\x02\xed\xcb"), b"\x67\x02")
+
     def test_a_close_from_another_thread_ends_a_call(self):
         _, fake = self.start(mute=True)
         diag = fake.uds()

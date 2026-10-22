@@ -271,6 +271,31 @@ fn (mut hd UdsHandle) reconnect() ! {
 	hd.conn_gen++
 }
 
+// 0x27 on a DoIP handle, whichever call carries it: a seed (an odd sub-function) marks the
+// connection it was answered on, and a key (an even one) goes only on that connection, never
+// opened again for it — a key answers the seed of ONE connection.
+fn security_sub(req []u8) ?u8 {
+	if req.len < 2 || req[0] != 0x27 || req[1] & 0x7F == 0 {
+		return none
+	}
+	return req[1] & 0x7F
+}
+
+fn (mut hd UdsHandle) seed_answered(req []u8) {
+	if sub := security_sub(req) {
+		if sub & 1 == 1 {
+			hd.seed_gen = hd.conn_gen
+		}
+	}
+}
+
+fn (hd &UdsHandle) key_refusal(req []u8) ! {
+	sub := security_sub(req) or { return }
+	if hd.doip && sub & 1 == 0 && (hd.lost || hd.idle_lost != '' || hd.conn_gen != hd.seed_gen) {
+		return error('security_key: the connection that gave the seed is gone; request a new seed')
+	}
+}
+
 // refuse_before_reopen refuses a request no client would send, when sending it would first open a
 // lost connection again; otherwise the client refuses it, and its exchange records the refusal.
 fn (hd &UdsHandle) refuse_before_reopen(req []u8, suppressed bool) ! {
@@ -518,11 +543,10 @@ pub fn bb_uds_raw(u i32, req &u8, n i32, buf &u8, cap i32) i32 {
 		r := bytes_in('raw', req, n)!
 		out_buf(buf, cap)!
 		hd.refuse_before_reopen(r, false)!
+		hd.key_refusal(r)!
 		mut cl := hd.cli()!
 		answer := cl.raw(r)!
-		if r.len >= 2 && r[0] == 0x27 && r[1] & 1 == 1 {
-			hd.seed_gen = hd.conn_gen // a seed, whichever call asked for it
-		}
+		hd.seed_answered(r)
 		return hd.answer(answer, buf, cap)
 	})
 }
@@ -532,6 +556,7 @@ pub fn bb_uds_raw_suppressed(u i32, req &u8, n i32) i32 {
 	return exchange(u, fn [req, n] (mut hd UdsHandle) !i32 {
 		r := bytes_in('raw_suppressed', req, n)!
 		hd.refuse_before_reopen(r, true)!
+		hd.key_refusal(r)!
 		mut cl := hd.cli()!
 		answered := cl.raw_suppressed(r)!
 		ok()
@@ -628,7 +653,7 @@ pub fn bb_uds_security_seed(u i32, level i32, unlocked &u8, buf &u8, cap i32) i3
 		out_buf(buf, cap)!
 		mut cl := hd.cli()!
 		seed := cl.security_request_seed(l)!
-		hd.seed_gen = hd.conn_gen
+		hd.seed_answered([u8(0x27), l])
 		if !isnil(unlocked) {
 			unsafe {
 				*unlocked = u8(uds.already_unlocked(seed))
@@ -643,10 +668,7 @@ pub fn bb_uds_security_key(u i32, level i32, key &u8, n i32) i32 {
 	return exchange(u, fn [level, key, n] (mut hd UdsHandle) !i32 {
 		l := level_arg(level, false)!
 		k := bytes_in('security_key', key, n)!
-		// the key answers the seed of ONE connection: never opened again for it
-		if hd.doip && (hd.lost || hd.idle_lost != '' || hd.conn_gen != hd.seed_gen) {
-			return error('security_key: the connection that gave the seed is gone; request a new seed')
-		}
+		hd.key_refusal([u8(0x27), l])!
 		hd.conn.cli.security_send_key(l, k)!
 		return ok()
 	})
