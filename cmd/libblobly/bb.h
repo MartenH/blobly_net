@@ -190,10 +190,16 @@ int bb_message_name(int row, int m, char *buf, int cap);        /* >= 0: the len
 int bb_signal_info(int row, int m, int s, bb_signal *out);
 int bb_signal_name(int row, int m, int s, char *buf, int cap);  /* >= 0: the length */
 int bb_signal_unit(int row, int m, int s, char *buf, int cap);  /* >= 0: the length */
-int bb_signal_label(int row, int m, int s, int k, double *value, char *buf, int cap);
-                                                                /* >= 0: the label's length;
-                                                                   *value (unless NULL) the
-                                                                   physical value it names */
+int bb_signal_label(int row, int m, int s, int k, uint64_t *raw, double *value, char *buf,
+                    int cap);                                   /* >= 0: the label's length;
+                                                                   *raw (unless NULL) the key the
+                                                                   table gives it — the field's
+                                                                   bits, two's complement for a
+                                                                   signed signal — and *value
+                                                                   (unless NULL) the physical
+                                                                   value it names, which a double
+                                                                   may not tell from another's
+                                                                   past 2^53 */
 
 /* The frame message m sends with signals[i] at the physical values[i] (i < n) and every other
  * signal at raw 0, as bus.send_message encodes it: a name the message does not have is refused;

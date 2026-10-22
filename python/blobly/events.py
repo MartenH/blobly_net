@@ -105,7 +105,8 @@ class EventLoop:
         whose id is `id` (an int, of either kind), or None for every frame, or a Message (a
         channel's .messages): its id AND kind, as they were at registration. A J1939 message's
         frames from another source address are not its id: decode() reads those."""
-        self._on_msg.append((self._listen_key(channel), _want(id), fn))
+        want = _want(id)  # refused before the channel is read: a bad filter subscribes nothing
+        self._on_msg.append((self._listen_key(channel), want, fn))
 
     def on_health(self, channel, fn):
         """fn(state) during run() when the controller's ladder has moved — "ok", "error warning",

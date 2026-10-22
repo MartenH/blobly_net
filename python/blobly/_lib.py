@@ -85,7 +85,8 @@ def _declare(lib):
         "bb_signal_info": ([c_int, c_int, c_int, P(BbSignal)], c_int),
         "bb_signal_name": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
         "bb_signal_unit": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
-        "bb_signal_label": ([c_int, c_int, c_int, c_int, P(ctypes.c_double), c_char_p, c_int], c_int),
+        "bb_signal_label": ([c_int, c_int, c_int, c_int, P(ctypes.c_uint64), P(ctypes.c_double), c_char_p,
+                             c_int], c_int),
         "bb_encode": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), P(BbFrame)], c_int),
         "bb_decode": ([c_int, P(BbFrame), P(c_int), P(ctypes.c_double), P(ctypes.c_uint8), c_int], c_int),
     }

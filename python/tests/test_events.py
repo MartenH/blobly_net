@@ -615,9 +615,11 @@ class TestMessageHandlers(unittest.TestCase):
         m.run(20)
         self.assertEqual(by_msg, [False], "a message's handler took the other kind")
         self.assertEqual(by_int, [False, True])
+        fresh = Frames([])
         for bad in ("0x102", True, 1.5):
             with self.assertRaises(TypeError, msg=repr(bad)):
-                m.on_message("A", bad, by_int.append)
+                fresh.on_message("A", bad, by_int.append)
+        self.assertEqual(fresh._listened, [], "a refused filter subscribed its channel")
 
 
 class TestTimeout(unittest.TestCase):

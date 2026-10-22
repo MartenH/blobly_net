@@ -72,6 +72,8 @@ fn test_the_template_is_the_dlc_at_zero() {
 	db := named_db()
 	assert db.message_named('Status')?.template() == [u8(0), 0, 0, 0]
 	assert db.message_named('Odd')?.template() == []u8{} // a negative DLC is none, not a panic
+	assert db.message_named('Odd')?.payload_len() == 0
+	assert db.message_named('Status')?.payload_len() == 4
 	// an encoding is the template with the named signals set, every other at raw 0
 	m := db.message_named('Status')?
 	mut data := m.template()

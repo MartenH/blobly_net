@@ -35,7 +35,7 @@ typedef int (*msg_info_fn)(int, int, bb_message *);
 typedef int (*msg_str_fn)(int, int, char *, int);
 typedef int (*sig_info_fn)(int, int, int, bb_signal *);
 typedef int (*sig_str_fn)(int, int, int, char *, int);
-typedef int (*sig_label_fn)(int, int, int, int, double *, char *, int);
+typedef int (*sig_label_fn)(int, int, int, int, uint64_t *, double *, char *, int);
 typedef int (*encode_fn)(int, int, int, const char *const *, const double *, bb_frame *);
 typedef int (*decode_fn)(int, const bb_frame *, int *, double *, uint8_t *, int);
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
@@ -122,10 +122,11 @@ static int dbc_steps(int row) {
 	CHECK(bb_signal_info_p(row, pt, gear, &si) == 0 && si.labels == 7, "Gear's value table: %d labels", si.labels);
 	char label[32];
 	double value = -1;
-	CHECK(bb_signal_label_p(row, pt, gear, 3, &value, label, sizeof label) == 5 && strcmp(label, "Third") == 0 && value == 3,
-		"Gear's label 3: %s = %g", label, value);
-	CHECK(bb_signal_label_p(row, pt, gear, 3, NULL, NULL, 0) == 5, "a label's length alone");
-	CHECK(bb_signal_label_p(row, pt, gear, 7, &value, label, sizeof label) == BB_ERR, "a label past the table must refuse");
+	uint64_t raw = 99;
+	CHECK(bb_signal_label_p(row, pt, gear, 3, &raw, &value, label, sizeof label) == 5 && strcmp(label, "Third") == 0
+		&& raw == 3 && value == 3, "Gear's label 3: %s = %g", label, value);
+	CHECK(bb_signal_label_p(row, pt, gear, 3, NULL, NULL, NULL, 0) == 5, "a label's length alone");
+	CHECK(bb_signal_label_p(row, pt, gear, 7, &raw, &value, label, sizeof label) == BB_ERR, "a label past the table must refuse");
 
 	/* encode as bus.send_message does: the named signals set, every other at raw 0 */
 	const char *names[] = {"EngineSpeed", "Gear"};

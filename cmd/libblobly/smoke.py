@@ -65,7 +65,8 @@ def bind(lib):
     lib.bb_signal_info.argtypes = [i, i, i, ctypes.POINTER(Signal)]
     lib.bb_signal_name.argtypes = [i, i, i, buf, i]
     lib.bb_signal_unit.argtypes = [i, i, i, buf, i]
-    lib.bb_signal_label.argtypes = [i, i, i, i, ctypes.POINTER(ctypes.c_double), buf, i]
+    lib.bb_signal_label.argtypes = [i, i, i, i, ctypes.POINTER(ctypes.c_uint64),
+                                    ctypes.POINTER(ctypes.c_double), buf, i]
     lib.bb_encode.argtypes = [i, i, i, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_double),
                               ctypes.POINTER(Frame)]
     lib.bb_decode.argtypes = [i, ctypes.POINTER(Frame), ctypes.POINTER(ctypes.c_int),
@@ -119,14 +120,14 @@ def dbc_steps(lib, row):
     assert (es.start_bit, es.length, es.factor, es.maximum) == (0, 16, 0.25, 16383.75)
     assert name_of(lib.bb_signal_unit, row, pt, s) == "rpm"
     g, gear = sigs["Gear"]
-    value = ctypes.c_double()
+    raw, value = ctypes.c_uint64(), ctypes.c_double()
     labels = {}
     for k in range(gear.labels):
-        n = lib.bb_signal_label(row, pt, g, k, ctypes.byref(value), None, 0)
+        n = lib.bb_signal_label(row, pt, g, k, None, None, None, 0)
         b = ctypes.create_string_buffer(n + 1)
-        assert lib.bb_signal_label(row, pt, g, k, ctypes.byref(value), b, n + 1) == n
-        labels[value.value] = b.value.decode()
-    assert labels[3.0] == "Third", labels
+        assert lib.bb_signal_label(row, pt, g, k, ctypes.byref(raw), ctypes.byref(value), b, n + 1) == n
+        labels[raw.value] = (value.value, b.value.decode())
+    assert labels[3] == (3.0, "Third"), labels
     f = Frame()
     keys = (ctypes.c_char_p * 2)(b"EngineSpeed", b"Gear")
     vals = (ctypes.c_double * 2)(1500, 3)

@@ -52,6 +52,14 @@ BO_ 513 Twice: 1 A
 
 BO_ 514 Twice: 1 A
  SG_ Two : 0|8@1+ (1,0) [0|255] "" B
+
+BO_ 515 Huge: 1000000000 A
+
+BO_ 516 Words: 8 A
+ SG_ self : 0|8@1+ (1,0) [0|255] "" B
+ SG_ Big : 0|64@1+ (1,0) [0|0] "" B
+
+VAL_ 516 Big 9007199254740992 "two to the 53" 9007199254740993 "and one" ;
 """
 
 MUX = """project:
@@ -289,6 +297,7 @@ class TestDatabases(unittest.TestCase):
             self.assertEqual((es.start_bit, es.length, es.byte_order, es.signed), (0, 16, "little", False))
             self.assertEqual((es.factor, es.offset, es.minimum, es.maximum, es.unit), (0.25, 0, 0, 16383.75, "rpm"))
             self.assertEqual(pt.signals.Gear.labels[3], "Third")
+            self.assertEqual(pt.signals.Gear.raw_labels[3], "Third")
             self.assertEqual(len(pt.signals.Gear.labels), 7)
             self.assertEqual(pt.signals.CoolantTemp.offset, -40)
             with self.assertRaises(AttributeError) as e:
@@ -368,6 +377,22 @@ class TestDatabases(unittest.TestCase):
                 with self.assertRaises(blobly.BloblyError):
                     m.messages.Twice  # two messages of one name: by position
                 self.assertEqual([x.id for x in m.messages if x.name == "Twice"], [0x201, 0x202])
+
+    def test_awkward_definitions(self):
+        with tempfile.TemporaryDirectory() as d:
+            with blobly.Project(mux_project(d)) as net:
+                m = net.channels.M
+                huge = m.messages.Huge  # listed without a payload of its DLC being made
+                self.assertEqual(huge.dlc, 1000000000)
+                with self.assertRaises(blobly.BloblyError):
+                    huge.encode()
+                words = m.messages.Words
+                self.assertEqual(words.encode(self=5).data[0], 5, "a signal named self")
+                big = words.signals.Big
+                self.assertEqual(big.raw_labels, {2**53: "two to the 53", 2**53 + 1: "and one"})
+                self.assertEqual(len(big.labels), 1, "a double holds one of the two")
+                with self.assertRaises(ValueError):
+                    words.encode(**{"self\0suffix": 1})
 
 
 class TestRefusals(unittest.TestCase):

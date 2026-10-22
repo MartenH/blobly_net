@@ -609,7 +609,7 @@ pub fn bb_message_info(row i32, m i32, out &C.bb_message) i32 {
 		out.id = msg.id
 		out.ext = u8(msg.ext)
 		out.j1939 = u8(msg.j1939)
-		out.dlc = i32(msg.template().len)
+		out.dlc = i32(msg.payload_len())
 		out.signals = i32(msg.signals.len)
 	}
 	return ok()
@@ -656,16 +656,21 @@ pub fn bb_signal_unit(row i32, m i32, s i32, buf &char, cap i32) i32 {
 	return put(sig.unit, buf, cap)
 }
 
-// bb_signal_label: the value table in the database's order, each entry as the physical value it
-// names (phys_from_raw of its raw key, as decode reads that raw value).
+// bb_signal_label: the value table in the database's order, each entry its raw key (lossless)
+// and the physical value it names (phys_from_raw, as decode reads that raw value).
 @[export: 'bb_signal_label']
-pub fn bb_signal_label(row i32, m i32, s i32, k i32, value &f64, buf &char, cap i32) i32 {
+pub fn bb_signal_label(row i32, m i32, s i32, k i32, raw_out &u64, value &f64, buf &char, cap i32) i32 {
 	sig := signal(row, m, s) or { return refused(err) }
 	keys := sig.values.keys()
 	if k < 0 || int(k) >= keys.len {
 		return fail(bb_err, '${sig.name} has no label ${k} (it has ${keys.len})')
 	}
 	raw := keys[int(k)]
+	if !isnil(raw_out) {
+		unsafe {
+			*raw_out = raw
+		}
+	}
 	if !isnil(value) {
 		unsafe {
 			*value = sig.phys_from_raw(raw)

@@ -123,9 +123,11 @@ class Channel:
 
     def send(self, id, data=b"", ext=False, fd=False, brs=False):
         """Puts a frame on the wire. fd/brs left False let the wire's declared format decide."""
-        f = _bb_frame(self.name, id, data, ext, fd, brs)
+        self._send_on(self._handle(), _bb_frame(self.name, id, data, ext, fd, brs))
+
+    def _send_on(self, h, f):
         lib = _lib.lib()
-        _lib.check(lib.bb_bus_send(self._handle(), ctypes.byref(f)))
+        _lib.check(lib.bb_bus_send(h, ctypes.byref(f)))
 
     def recv(self, timeout_ms=1000):
         """The next frame other nodes sent, waiting at most timeout_ms (None: forever); None when
@@ -284,9 +286,13 @@ class Signal:
     """A signal of a message, as its database defines it. physical = raw * factor + offset, the
     raw value two's complement where `signed`; `byte_order` "little" (Intel) or "big" (Motorola),
     `start_bit` as the DBC numbers it; `minimum`/`maximum` the DBC's range (both 0 where it states
-    none; encode does not apply it); `labels` the value table, {physical value: text}."""
+    none; encode does not apply it); `labels` the value table as decode's values name it,
+    {physical value: text}, and `raw_labels` as the database keys it, {raw key: text} — the field's
+    bits, two's complement for a signed signal; every entry is there, where two keys a double
+    cannot tell apart (past 2**53) are one entry of `labels`."""
     __slots__ = ("name", "start_bit", "length", "byte_order", "signed", "factor", "offset",
-                 "minimum", "maximum", "unit", "multiplexor", "multiplexed", "mux_value", "labels")
+                 "minimum", "maximum", "unit", "multiplexor", "multiplexed", "mux_value", "labels",
+                 "raw_labels")
 
     def __repr__(self):
         unit = f" {self.unit!r}" if self.unit else ""
@@ -334,23 +340,27 @@ class Message:
                     s.minimum, s.maximum = info.minimum, info.maximum
                     s.multiplexor, s.multiplexed = bool(info.multiplexor), bool(info.multiplexed)
                     s.mux_value = info.mux_value
-                    s.labels = {}
-                    value = ctypes.c_double()
+                    s.labels, s.raw_labels = {}, {}
+                    raw, value = ctypes.c_uint64(), ctypes.c_double()
                     for k in range(info.labels):
-                        text = _lib.string(lib.bb_signal_label, row, m, i, k, ctypes.byref(value))
-                        s.labels[value.value] = text
+                        text = _lib.string(lib.bb_signal_label, row, m, i, k, ctypes.byref(raw), ctypes.byref(value))
+                        s.raw_labels[raw.value] = text
+                        s.labels.setdefault(value.value, text)
                     rows.append(s)
                 self._signals = Signals(rows)
             return self._signals
 
-    def encode(self, **signals):
+    def encode(self, /, **signals):
         """The Frame this message sends with the named signals at these physical values and every
         other at raw 0, as a Lua script's bus.send_message encodes it: a name the message does not
         have is refused; a value past what the signal's width holds is clamped to the nearer end.
         fd/brs are left unset, so a send takes the wire's declared format."""
-        names = [k.encode() for k in signals]
+        names = []
         values = []
         for k, v in signals.items():
+            if "\0" in k:
+                raise ValueError(f"{self.name}: a signal name cannot carry a NUL: C would read it cut short")
+            names.append(k.encode())
             if not isinstance(v, numbers.Real):
                 raise TypeError(f"{self.name}.{k}: a signal's value is a number, not {v!r}")
             values.append(float(v))
@@ -363,10 +373,15 @@ class Message:
                                      (ctypes.c_double * n)(*values), ctypes.byref(f)))
         return frame_of(f)
 
-    def send(self, **signals):
-        """Encodes this message (encode) and sends it on its channel; returns the Frame sent."""
-        f = self.encode(**signals)
-        self.channel.send(f.id, f.data, ext=f.ext)
+    def send(self, /, **signals):
+        """Encodes this message (encode) and sends it on its channel; returns the encoded Frame. Its
+        fd/brs are unset, so what goes out takes the wire's declared format. Encoded and the
+        channel's handle taken under one hold of the state lock, so a stop and start on another
+        thread cannot put this run's encoding on the next run's wire."""
+        with _lib.state_lock:
+            f = self.encode(**signals)
+            h = self.channel._handle()
+        self.channel._send_on(h, _bb_frame(self.channel.name, f.id, f.data, f.ext))
         return f
 
     def __repr__(self):

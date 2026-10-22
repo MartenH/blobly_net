@@ -72,10 +72,16 @@ pub fn (m Message) signal_named(name string) ?Signal {
 	return none
 }
 
-// template is the payload a message is encoded into: its DLC in bytes, every signal at raw 0, so
-// a signal the caller does not set goes out as 0 (a DLC a file wrote negative, as none).
+// payload_len is the length an encoding of the message has: its DLC, none for a DLC a file wrote
+// negative.
+pub fn (m Message) payload_len() int {
+	return if m.dlc > 0 { m.dlc } else { 0 }
+}
+
+// template is the payload a message is encoded into: payload_len bytes, every signal at raw 0, so
+// a signal the caller does not set goes out as 0.
 pub fn (m Message) template() []u8 {
-	return []u8{len: if m.dlc > 0 { m.dlc } else { 0 }}
+	return []u8{len: m.payload_len()}
 }
 
 pub struct Message {
