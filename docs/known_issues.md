@@ -24,13 +24,12 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   the panic was invisible: the GUI exe is `-mwindows`, and it writes NOTHING to a redirected
   stdout/stderr either (`blobly_net.exe --version > out.txt` leaves it empty) — `gdb` with
   `break v_panic` is what showed it.
-- 🟡 **vlib's `yaml` reads `#` as a comment even with no space before it.** `- net.arxml#Body`
-  parses as `net.arxml`, where YAML says a comment needs whitespace before the `#`. So an ARXML
-  cluster reference in a `.blobnet` must be quoted (`- "net.arxml#Body"`), and the project writer
-  quotes every value containing a `#` (`project.yaml_scalar`). An unquoted one written by hand
-  loses its cluster and, on a multi-cluster file, is refused at load as naming none. Still so on
-  V3 (`0535623`, master `6ebd90a`); vlang/v#30828 fixes it, open and in no V yet. Keep the
-  quoting either way: an older V reads the file too.
+- 🟢 **vlib's `yaml` read `#` as a comment even with no space before it.** `- net.arxml#Body`
+  parsed as `net.arxml`, where YAML says a comment needs whitespace before the `#`. Fixed in the
+  pin (`5f7d4d0`, vlang/v#30828): an unquoted cluster reference reads whole, and a `#` after
+  whitespace is still a comment (`save_test.v`, `test_an_unquoted_fragment_is_read_whole`). The
+  project writer still quotes every value containing a `#` (`project.yaml_scalar`), since a file
+  may be read by an older build.
 - 🟢 **Binding `&x` of a `mut x T` receiver, or capturing it by value in a closure, made a COPY
   of the struct — before V3.** On the pre-V3 compiler, inside `fn (mut app App) f()`,
   `ap := &app` had type `App` at a new address and `fn [app] () { ... }` captured a copy, so a
