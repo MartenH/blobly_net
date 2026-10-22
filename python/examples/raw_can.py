@@ -16,7 +16,9 @@ import time
 from importlib.util import find_spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if find_spec("blobly") is None:  # not installed: use this checkout's python/blobly
+# an installed blobly, else this checkout's python/blobly (the repository root's blobly/ is the V
+# engine's source, which Python would take for a namespace package)
+if getattr(find_spec("blobly"), "origin", None) is None:
     sys.path.insert(0, os.path.join(HERE, os.pardir))
 import blobly  # noqa: E402
 

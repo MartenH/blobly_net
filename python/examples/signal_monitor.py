@@ -18,7 +18,9 @@ from collections.abc import Callable
 from importlib.util import find_spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if find_spec("blobly") is None:  # not installed: use this checkout's python/blobly
+# an installed blobly, else this checkout's python/blobly (the repository root's blobly/ is the V
+# engine's source, which Python would take for a namespace package)
+if getattr(find_spec("blobly"), "origin", None) is None:
     sys.path.insert(0, os.path.join(HERE, os.pardir))
 import blobly  # noqa: E402
 
@@ -73,7 +75,7 @@ def main(argv: list[str]) -> int:
     print(f"blobly {blobly.__version__}, engine {blobly.version()}")
     with blobly.Project(args.project) as net:
         can = db_channel(net, args.channel)
-        names = args.messages or ["Powertrain", "WheelSpeeds"]
+        names = list(dict.fromkeys(args.messages or ["Powertrain", "WheelSpeeds"]))  # each once
         missing = [n for n in names if n not in can.messages.keys()]
         if missing:
             fail(f"{can.name} has no message {', '.join(missing)}; there are: {', '.join(can.messages.keys())}")

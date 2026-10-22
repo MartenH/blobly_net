@@ -84,48 +84,72 @@ Paths in a project are relative to the project file.
 **Never put frames on a real bus without the user's explicit consent.** A frame on a vehicle or a
 bench can move an actuator, change an ECU's state or upset a test someone else is running.
 
-- **Starting a project transmits.** From `start()` on, the simulated ECUs and the cyclic
-  generators send on their rows. Loading a project (`Project(path).load()`) transmits nothing, so
+- **Starting a project transmits.** From `start()` on, the simulated ECUs send on their rows and
+  the cyclic generators on theirs. A generator (`senders:` of any row, a disabled one included)
+  may name in its `bus:` an interface that no row configures, so the rows `net.channels` lists
+  are not all a start can reach. Loading a project (`Project(path).load()`) transmits nothing:
   load it and look before you start it.
-- **Only `inproc:` needs no consent.** An `inproc:` bus exists inside your process, and nothing
-  else can see it. Everything else can reach beyond it: `udp:` multicasts on the local network
-  segment, a `vcan` interface can be forwarded to hardware (`cangw`, a `canbridge`), and every
-  other CAN interface (`can0`, `pcan:`, `kvaser:`, `vector:`, `cansub:`, `bridge:`) is hardware.
-  A `udp:` or `vcan` setup the user made for this task is theirs to approve once; ask.
-- **Ethernet.** A DoIP row that simulates nodes hosts an entity on its address, and the network
-  can reach any address but loopback.
-- **What exists today:** a row with `listen_only: true` refuses every send, from Python, from
-  the simulation and from every other sender in the process. On PCAN, Kvaser, Vector and CANsub
-  the adapter is silenced too, so it does not acknowledge frames either. There is no transmit
-  opt-in yet. #507 Phase 1 adds one (a runner flag or a `Project` argument), and until then a
-  project transmits on every row that is not listen-only.
-- **What you must do:** before you start a project with a row that can reach beyond your
-  process, stop and ask the user. Name the rows and their interfaces, and say what would be sent
-  (the simulated ECUs, the generators, your own frames). To only watch a real bus, use rows with
+- **Only an in-process bus needs no consent.** `inproc` or `inproc:<name>` exists inside your
+  process, and nothing else can see it (`inproc0` is not one: it is a SocketCAN name). Everything
+  else can reach beyond it: `udp:` multicasts on the local network segment, a `vcan` interface
+  can be forwarded to hardware (`cangw`, a `canbridge`), and every other CAN interface (`can0`,
+  `pcan:`, `kvaser:`, `vector:`, `cansub:`, `bridge:`) is hardware. A `udp:` or `vcan` setup the
+  user made for this task is theirs to approve; ask.
+- **Ethernet.** A DoIP row that simulates nodes hosts an entity on its address, which announces
+  itself and answers there. Only a loopback address (127.0.0.0/8, `::1`) keeps it on this host;
+  a host name may resolve anywhere.
+- **What exists today:** a CAN row with `listen_only: true` refuses every send on its wire, from
+  Python, from the simulation and from every other sender in the process. On PCAN, Kvaser,
+  Vector and CANsub the adapter is silenced too, so it does not acknowledge frames either. It
+  does nothing for a DoIP or SOME/IP row: an entity hosted there still announces and answers.
+  There is no transmit opt-in yet. #507 Phase 1 adds one (a runner flag or a `Project`
+  argument), and until then a project transmits on every CAN row that is not listen-only.
+- **What you must do:** before you start a project that can reach beyond your process, stop and
+  ask the user. Name the rows, interfaces and generator targets, and say what would be sent (the
+  simulated ECUs, the generators, your own frames). To only watch a real bus, use CAN rows with
   `listen_only: true`. Do not remove `listen_only` from a user's project on your own.
 
+The check below lists what a project can reach: its enabled rows, and every `bus:` its file
+names. It reads the file as text, so it may list more than a run would reach (a comment, a
+generator that only fires on a key press), never less. When in doubt, ask.
+
 ```python
+import ipaddress
+import re
+
 import blobly
 
-LOOPBACK = ("127.", "localhost", "[::1]")
+
+def in_process(iface):
+    """An in-process CAN bus: `inproc` or `inproc:<name>`."""
+    return iface == "inproc" or iface.startswith("inproc:")
 
 
-def needs_consent(ch):
-    """Whether starting the project, or sending on this row, can reach beyond this process."""
-    if ch.kind == "can":
-        return not ch.iface.startswith("inproc")
-    return not ch.iface.split(":", 1)[1].startswith(LOOPBACK)   # "doip:127.0.0.1:13400"
+def on_loopback(iface):
+    """An Ethernet row on this host's loopback: "doip:127.0.0.1:13400", "doip:[::1]:13400"."""
+    host = iface.split(":", 1)[1].rsplit(":", 1)[0].strip("[]")
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False                                        # a host name may resolve anywhere
 
 
-net = blobly.Project("projects/sim-demo.blobnet").load()   # loading transmits nothing
-rows = [ch for ch in net.channels if needs_consent(ch)]
-if rows:
-    raise SystemExit("ask the user first: " + ", ".join(f"{ch.name} ({ch.iface})" for ch in rows))
-net.start()
-try:
+def beyond_this_process(path):
+    """What starting this project could reach outside this process, as lines to show the user."""
+    net = blobly.Project(path).load()                       # loading transmits nothing
+    local = {ch.name for ch in net.channels if ch.kind == "can" and in_process(ch.iface)}
+    reach = [f"{ch.name} ({ch.iface})" for ch in net.channels
+             if not (in_process(ch.iface) if ch.kind == "can" else on_loopback(ch.iface))]
+    with open(path, encoding="utf-8") as f:                 # a generator's bus: a channel or an interface
+        targets = re.findall(r"\bbus:\s*[\"']?([^\s,\"'}#]+)", f.read())
+    return reach + [f"a generator's bus: {t}" for t in targets if t not in local and not in_process(t)]
+
+
+reach = beyond_this_process("projects/sim-demo.blobnet")
+if reach:
+    raise SystemExit("ask the user first: " + "; ".join(reach))
+with blobly.Project("projects/sim-demo.blobnet") as net:
     print("inside this process only:", [ch.iface for ch in net.channels])
-finally:
-    net.stop()
 ```
 
 A row that only listens:

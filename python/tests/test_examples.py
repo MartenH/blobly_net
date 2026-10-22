@@ -62,6 +62,15 @@ class TestExamples(unittest.TestCase):
         self.assertIn("receiving on CAN2", r.stdout)
         self.assertIn("FAIL: no 0x102 on CAN2", r.stderr)
 
+    def test_the_repository_root_on_sys_path_is_no_package(self):
+        # `python -m pytest` from the root puts it on sys.path, where its V blobly/ is a namespace
+        script = os.path.join(EXAMPLES, "raw_can.py")
+        boot = (f"import runpy, sys; sys.path.insert(0, {REPO!r}); sys.argv = [{script!r}]; "
+                f"runpy.run_path({script!r}, run_name='__main__')")
+        r = run("-c", boot)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_package(r.stdout, "raw_can.py")
+
     def test_a_missing_project_is_a_clear_failure(self):
         missing = os.path.join(REPO, "projects", "no-such.blobnet")
         r = run(os.path.join(EXAMPLES, "dbc_messages.py"), missing)

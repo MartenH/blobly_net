@@ -246,9 +246,10 @@ hardware is described in [can_hardware.md](can_hardware.md) and
   the Windows bundle). WSL needs mirrored networking, and the open can block up to 20 s while
   the bridge starts. Untested from Python.
 - **CANsub: name the device.** The row must carry the device id: Python cannot discover one.
-- **Listen-only rows** (`listen_only: true` in the project) refuse every send with `BloblyError`,
-  and PCAN, Kvaser, Vector and CANsub also silence the controller, so the adapter does not
-  acknowledge frames either.
+- **Listen-only rows** (`listen_only: true` on a CAN row) refuse every send on their wire with
+  `BloblyError`, and PCAN, Kvaser, Vector and CANsub also silence the controller, so the adapter
+  does not acknowledge frames either. On SocketCAN the controller still acknowledges unless the
+  interface itself is listen-only. The flag does nothing for a DoIP or SOME/IP row.
 - **What CI exercises from Python is `inproc:` only.** Every other backend is the same code the
   app runs and is verified on hardware there ([windows_can_hardware.md](windows_can_hardware.md)),
   but not from a Python host.
@@ -654,8 +655,8 @@ loop and bus health. The rest is planned in [#507](https://github.com/MartenH/bl
 - A pytest plugin: `project`, `channel` and `diag` fixtures, `expect` and `expect_signal`.
 - Fault injection (`sim.fault`) and the E2E Profile 1 helpers.
 - **The real-hardware transmit opt-in**: transmitting on a hardware adapter will need an explicit
-  allow. Today a project transmits on every row that is not `listen_only`; see
-  [agents.md](agents.md).
+  allow. Today a project transmits on every CAN row that is not `listen_only`, and on whatever
+  interface a generator's `bus:` names; see [agents.md](agents.md).
 
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
 - SOME/IP send, call and listen; `flash.program`.

@@ -44,6 +44,9 @@ def run(interpreter, lib, wheel):
         except subprocess.TimeoutExpired:
             print(f"[{title}: no exit within {STEP_TIMEOUT_S} s]", flush=True)
             return False
+        except OSError as e:  # the interpreter would not start
+            print(f"[{title}: {e}]", flush=True)
+            return False
         print(f"[{title}: exit {r.returncode}, {time.monotonic() - t0:.1f} s]", flush=True)
         return r.returncode == 0
 
