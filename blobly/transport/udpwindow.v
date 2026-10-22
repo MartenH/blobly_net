@@ -54,7 +54,8 @@ pub fn udp_bind(addr string, group string, iface string) !&net.UdpConn {
 }
 
 // udp_read returns the next datagram, or none when `timeout_ms` passes with nothing; 0 is a look
-// at what is already queued.
+// at what is already queued. A read deadline set on `c` wins over `timeout_ms` (V's rule since
+// vlang/v#30831); no socket here has one.
 //
 // ONLY A TIMEOUT IS none: an empty datagram comes back as a Datagram with no bytes, and any other
 // fault pauses briefly (so a persistent one cannot spin a caller's loop) and reports none,
