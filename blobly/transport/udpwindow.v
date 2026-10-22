@@ -2,19 +2,15 @@
 // until the deadline, hand back what arrived (`udp_exchange` sends from that socket first). doip's announcement collector and
 // someip's listener both sit on this, so the policy of what ends a window lives in one place.
 //
-// Only the DEADLINE ends the window. This V reports a zero-byte read as an error (`error('none')`,
-// code 0), and a legal empty datagram is exactly that — a loop that broke on any read error
-// returned early with a partial, successful-looking result: heard nothing, reported nothing
-// wrong. An empty datagram is returned as an empty Datagram (its sender is not available on
-// that path); any other fault is waited out, since the window is the bound the caller asked for.
+// Only the DEADLINE ends the window: an empty datagram is a datagram (zero bytes, with its
+// sender), and any other fault is waited out, since the window is the bound the caller asked for.
 module transport
 
 import net
 import time
 
 // Datagram is one UDP datagram as a listening window saw it: when (ms into the window), from
-// whom (host:port; empty for a zero-byte datagram, which this V reports without its sender),
-// and the bytes.
+// whom (host:port), and the bytes.
 pub struct Datagram {
 pub:
 	at_ms i64
@@ -59,12 +55,9 @@ pub fn udp_bind(addr string, group string, iface string) !&net.UdpConn {
 
 // udp_read returns the next datagram, or none when `timeout_ms` passes with nothing.
 //
-// ONLY A TIMEOUT IS none. This V reports a zero-byte read as an error (`error('none')`, code 0),
-// and a legal empty datagram is exactly that — a caller that treated any read error as the end
-// returned early with a partial, successful-looking result: heard nothing, reported nothing
-// wrong. An empty datagram comes back as an empty Datagram; any other fault pauses briefly (so a
-// persistent one cannot spin a caller's loop) and reports none, leaving the caller's own clock
-// to decide when to stop.
+// ONLY A TIMEOUT IS none: an empty datagram comes back as a Datagram with no bytes, and any other
+// fault pauses briefly (so a persistent one cannot spin a caller's loop) and reports none,
+// leaving the caller's own clock to decide when to stop.
 pub fn udp_read(mut c net.UdpConn, timeout_ms int) ?Datagram {
 	// One datagram. 64 KiB is the UDP maximum: `recvfrom` gives no MSG_TRUNC here, so a buffer
 	// smaller than the largest datagram silently cuts it, and the cut then reads as a malformed
@@ -78,9 +71,6 @@ pub fn udp_read(mut c net.UdpConn, timeout_ms int) ?Datagram {
 pub fn udp_read_into(mut c net.UdpConn, timeout_ms int, mut buf []u8) ?Datagram {
 	c.set_read_timeout(timeout_ms * time.millisecond)
 	n, peer := c.read(mut buf) or {
-		if err.code() == 0 {
-			return Datagram{} // a legal empty datagram, not the end of anything
-		}
 		if err.code() != net.err_timed_out_code {
 			time.sleep(1 * time.millisecond)
 		}

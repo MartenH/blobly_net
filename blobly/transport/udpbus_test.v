@@ -1,5 +1,6 @@
 module transport
 
+import net
 import blobly.testports
 import time
 
@@ -186,5 +187,25 @@ fn test_udp_zero_receive_on_a_closed_bus_says_closed() {
 		assert false
 	} else {
 		assert err.msg() == 'bus is closed', err.msg()
+	}
+}
+
+// An empty datagram is a datagram: the window's read returns it, with its sender, and only a
+// timeout is nothing.
+fn test_an_empty_datagram_is_read_with_its_sender() {
+	_, port := uniq_group(4)
+	mut rx := net.listen_udp('127.0.0.1:${port}') or { panic(err) }
+	defer { rx.close() or {} }
+	mut tx := net.dial_udp('127.0.0.1:${port}') or { panic(err) }
+	defer { tx.close() or {} }
+	tx.write([]u8{}) or { panic(err) }
+	d := udp_read(mut rx, 1000) or {
+		assert false, 'an empty datagram read as nothing'
+		return
+	}
+	assert d.data.len == 0
+	assert d.from.starts_with('127.0.0.1:'), 'from ${d.from}'
+	if _ := udp_read(mut rx, 50) {
+		assert false, 'a quiet socket answered'
 	}
 }

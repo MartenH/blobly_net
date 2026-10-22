@@ -168,16 +168,13 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   warning (`-old-compiler`, #172). V3 delivers it intact (checked on `0535623` and master
   `6ebd90a`). The workaround stays because it is no worse: a thread's inputs travel in ONE struct
   (`player.ReadJob`).
-- 🟡 **A UDP read deadline is not honoured.** `net.UdpConn.set_read_deadline` followed by
-  `read` returns after ~100 ms every time: `wait_for_common` uses a deadline only when the
-  timeout is 0, and a `UdpConn`'s read timeout is 100 ms by default (`udp_default_read_timeout`).
-  What works is `set_read_timeout` re-armed before each read with what is left of the window,
-  which is what `transport.cansub_browse` does. `set_read_timeout(0)` plus a deadline also
-  works, but is a trap: with the timeout 0 and no deadline set, `read` returns `timed out` at
-  once instead of blocking (measured on `0535623`). And a 0-byte datagram comes back from `read` as
-  an ERROR (`none`), not as `n == 0`, so a collector must break only on
-  `net.err_timed_out_code`. Both still so on V3 (`0535623`, master `6ebd90a`); vlang/v#30831
-  (the deadline) and vlang/v#30829 (the empty datagram) fix them, open and in no V yet.
+- 🟢 **A UDP read deadline was not honoured, and an empty datagram read as an error.** Both fixed in
+  the pin (`5f7d4d0`): a deadline that was set now wins over the connection's timeout
+  (vlang/v#30831), and a 0-byte datagram reads as `n == 0` with its sender (vlang/v#30829) — on
+  `0535623` it came back as an error with code 0 and no sender, so `udp_read` had a branch for it.
+  The branch is gone and `udpbus_test.v` (`test_an_empty_datagram_is_read_with_its_sender`) pins
+  the new shape; it fails on `0535623`. Collectors still re-arm `set_read_timeout` with what is
+  left of their window before each read (`transport.cansub_browse`), which is right either way.
 - 🟡 **The modules are `blobly/<name>`, imported as `blobly.<name>`.** V3 no longer searches a
   project's `modules/` directory (vlang/v#28575): a module's import path is its folder path under
   the lookup root, the folder holding `v.mod` — as `math.vec` is `vlib/math/vec/`. So the
