@@ -754,18 +754,25 @@ fn test_wait_frame_rests_on_a_failing_bus() {
 	assert el >= 15 && el < 500, 'rested ${el} ms: neither a spin nor the whole wait'
 }
 
-// Late is a bus whose one frame becomes readable at a set time.
+// Late is a bus whose one frame becomes readable `after` its first look, on the clock wait_frame's
+// deadline is on: that look comes after the deadline is fixed, so a runner's load cannot make the
+// frame ready early.
 @[heap]
 struct Late {
 mut:
-	ready_at i64
-	taken    bool
+	after time.Duration
+	first u64
+	taken bool
 }
 
 fn (mut b Late) send(frame transport.CanFrame) ! {}
 
 fn (mut b Late) recv(timeout_ms int) !transport.CanFrame {
-	if !b.taken && time.ticks() >= b.ready_at {
+	now := time.sys_mono_now()
+	if b.first == 0 {
+		b.first = now
+	}
+	if !b.taken && now >= b.first + u64(b.after) {
 		b.taken = true
 		return transport.CanFrame{
 			id: 0x77
@@ -787,21 +794,22 @@ fn (mut b Late) diagnostics() transport.BusDiagnostics {
 fn (mut b Late) reconcile_silence(_ bool) ! {}
 
 // A frame that becomes readable during the last slice of a wait on several channels is left on
-// its handle: nothing is taken off one after the deadline.
+// its handle: nothing is taken off one after the deadline. The slice is longer than the wait, so
+// the one slice crosses the deadline and a look after it would find the frame ready, however long
+// the runner stalls before the first look (short of the whole wait).
 fn test_wait_frame_takes_nothing_after_its_deadline() {
 	mut env, _ := events_env(['CAN1', 'CAN2'], ['late', 'late2'])
 	defer { env.close() }
-	t0 := time.ticks()
 	mut late := &Late{
-		ready_at: t0 + 20 // the deadline: the look after the slice that crosses it would take it
+		after: 20 * time.millisecond // the wait's length: ready no earlier than its deadline
 	}
 	quiet := &Late{
-		ready_at: t0 + 1_000_000
+		after: 1000 * time.second
 	}
 	env.opener = fn [late, quiet] (iface string, _ string) !transport.Bus {
 		return if iface == 'late' { late } else { quiet }
 	}
-	if name, _ := env.wait_frame(['CAN1', 'CAN2'], 20, 7 * time.millisecond) {
+	if name, _ := env.wait_frame(['CAN1', 'CAN2'], 20, 25 * time.millisecond) {
 		assert false, 'a frame on ${name} taken after the deadline'
 	}
 	time.sleep(10 * time.millisecond)
@@ -925,7 +933,7 @@ fn test_wait_frame_looks_again_after_a_spent_look() {
 		spent: 10
 	}
 	quiet := &Late{
-		ready_at: time.ticks() + 1_000_000
+		after: 1000 * time.second
 	}
 	env.opener = fn [busy, quiet] (iface string, _ string) !transport.Bus {
 		return if iface == 'busy' { busy } else { quiet }
