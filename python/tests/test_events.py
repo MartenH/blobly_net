@@ -19,7 +19,9 @@ import random
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+# the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
+if not os.environ.get("BLOBLY_TEST_INSTALLED"):
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from blobly import _lib  # noqa: E402
 from blobly.events import EventLoop, wait_on  # noqa: E402
 

@@ -1,0 +1,38 @@
+# The `blobly` package on PyPI. Built by scripts/build_wheel.py, never from this directory alone:
+# the wheel carries the platform's libblobly inside the package (blobly/_native/), and its version
+# comes from v.mod, which the build writes into blobly/_version.py.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blobly"
+dynamic = ["version"]
+description = "Blobly Net's CAN test engine from Python: projects, buses and an event loop over libblobly"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Marten Hildell" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Hardware",
+]
+
+[project.urls]
+Homepage = "https://github.com/MartenH/blobly_net"
+Documentation = "https://github.com/MartenH/blobly_net/blob/main/docs/scripting_python.md"
+
+[tool.setuptools]
+packages = ["blobly"]
+
+[tool.setuptools.package-data]
+# the native library, its runtime DLLs on Windows, and those DLLs' licence texts beside them
+blobly = ["_native/*.so", "_native/*.dll", "_native/licenses/**/*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "blobly._version.__version__" }
