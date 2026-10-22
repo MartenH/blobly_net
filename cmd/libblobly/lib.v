@@ -6,8 +6,10 @@
 //   v -enable-globals -prod -shared -nocache -o build/libblobly.so cmd/libblobly
 //   (scripts/build_libblobly.sh)
 //
-// Over the merged blobly.headless (load / start / stop) and blobly.transport (a bus handle of the
-// host's own). Nothing of UDS yet: that is a later PR's seam.
+// Over the merged blobly.headless (load / start / stop), blobly.transport (a bus handle of the
+// host's own) and blobly.candb (the run's row databases: encode and decode through the functions
+// the Lua prelude's bus.send_message and decode use). Nothing of UDS yet: that is a later PR's
+// seam.
 //
 // EVERY INTEGER AT THE BOUNDARY IS i32. V3's `int` is 64 bits and C's is 32: an export taking
 // `int` reads a C caller's -1 as 4294967295 (local codex review, measured), so bb.h's `int` is
@@ -26,6 +28,7 @@ import sync
 import sync.stdatomic
 import time
 import v.vmod
+import blobly.candb
 import blobly.headless
 import blobly.project
 import blobly.transport
@@ -46,6 +49,31 @@ pub mut:
 	rtr  u8
 	esi  u8
 	data [64]u8
+}
+
+pub struct C.bb_message {
+pub mut:
+	id      u32
+	ext     u8
+	j1939   u8
+	dlc     i32
+	signals i32
+}
+
+pub struct C.bb_signal {
+pub mut:
+	start_bit   i32
+	length      i32
+	big_endian  u8
+	is_signed   u8
+	multiplexor u8
+	multiplexed u8
+	mux_value   i32
+	labels      i32
+	factor      f64
+	offset      f64
+	minimum     f64
+	maximum     f64
 }
 
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
@@ -84,15 +112,19 @@ mut:
 }
 
 __global (
-	bb_mu      sync.Mutex
-	bb_proj    project.Project
-	bb_path    string
-	bb_loaded  bool
-	bb_run     &headless.Run = unsafe { nil }
-	bb_names   []string // the C strings bb_channel_* handed out, kept alive here
-	bb_rows    []project.Channel // the enabled rows they name, for bb_channel_kind / _health_source
-	bb_handles map[int]&BusHandle
-	bb_next    int
+	bb_mu       sync.Mutex
+	bb_proj     project.Project
+	bb_path     string
+	bb_loaded   bool
+	bb_run      &headless.Run = unsafe { nil }
+	bb_names    []string // the C strings bb_channel_* handed out, kept alive here
+	bb_rows     []project.Channel // the enabled rows they name, for bb_channel_kind / _health_source
+	bb_handles  map[int]&BusHandle
+	bb_next     int
+	// the run's row databases, aligned with bb_rows, under bb_mu: a database call may come from
+	// any thread, so a stop on the driver's replaces the array rather than writing into it
+	bb_dbs      []candb.Database
+	bb_dbs_live bool
 )
 
 fn fail(code i32, msg string) i32 {
@@ -194,21 +226,19 @@ pub fn bb_load(path &char) i32 {
 	bb_proj = proj
 	bb_path = p
 	bb_loaded = true
-	name_rows(proj)
+	name_rows(proj.channels.filter(it.enabled))
 	return ok()
 }
 
-// name_rows is the enabled rows' names and interfaces, as C strings that outlive the call.
-fn name_rows(proj project.Project) {
+// name_rows is the enabled rows and their names and interfaces, as C strings that outlive the
+// call.
+fn name_rows(rows []project.Channel) {
 	bb_names = []string{}
-	bb_rows = []project.Channel{}
-	for ch in proj.channels {
-		if ch.enabled {
-			bb_names << ch.name
-			bb_names << ch.iface_with_bitrate()
-			bb_rows << ch
-		}
+	for ch in rows {
+		bb_names << ch.name
+		bb_names << ch.iface_with_bitrate()
 	}
+	bb_rows = rows.clone()
 }
 
 @[export: 'bb_start']
@@ -230,8 +260,13 @@ pub fn bb_start() i32 {
 	bb_run = r
 	// as the RUN has them: start moves a hosted DoIP row onto a port this process could bind, and
 	// the address a host dials must be that one (self-review: the smoke printed 13400 while the
-	// entity listened on 30342)
-	name_rows(r.proj)
+	// entity listened on 30342). The rows and their databases from one array, so a row's index
+	// is its databases' by construction.
+	name_rows(r.chans.map(it.cfg))
+	bb_mu.lock()
+	bb_dbs = r.chans.map(it.db)
+	bb_dbs_live = true
+	bb_mu.unlock()
 	return ok()
 }
 
@@ -242,9 +277,13 @@ pub fn bb_stop() i32 {
 	}
 	mut r := bb_run
 	bb_run = unsafe { nil }
+	bb_mu.lock()
+	bb_dbs = []candb.Database{}
+	bb_dbs_live = false
+	bb_mu.unlock()
 	r.stop()
 	// the rows as the project says again: a moved DoIP port was the stopped run's
-	name_rows(bb_proj)
+	name_rows(bb_proj.channels.filter(it.enabled))
 	if !headless.released() {
 		ok()
 		return bb_releasing
@@ -493,5 +532,234 @@ pub fn bb_bus_close(h i32) i32 {
 		time.sleep(time.millisecond)
 	}
 	hd.bus.close()
+	return ok()
+}
+
+// refused is a lookup's error as a bb.h answer: its own code where it carries one of bb.h's.
+fn refused(err IError) i32 {
+	return fail(if err.code() < 0 { i32(err.code()) } else { bb_err }, err.msg())
+}
+
+// run_db is row `row`'s databases as the run loaded them.
+fn run_db(row i32) !candb.Database {
+	bb_mu.lock()
+	live := bb_dbs_live
+	dbs := bb_dbs
+	bb_mu.unlock()
+	if !live {
+		return error_with_code("not started: a row's databases are the run's, from bb_start until bb_stop",
+			int(bb_err_state))
+	}
+	if row < 0 || int(row) >= dbs.len {
+		return error('no channel ${row}')
+	}
+	return dbs[int(row)]
+}
+
+fn message(row i32, m i32) !candb.Message {
+	db := run_db(row)!
+	if m < 0 || int(m) >= db.messages.len {
+		return error('channel ${row} has no message ${m} (it has ${db.messages.len})')
+	}
+	return db.messages[int(m)]
+}
+
+fn signal(row i32, m i32, s i32) !candb.Signal {
+	msg := message(row, m)!
+	if s < 0 || int(s) >= msg.signals.len {
+		return error('${msg.name} has no signal ${s} (it has ${msg.signals.len})')
+	}
+	return msg.signals[int(s)]
+}
+
+// put copies `s` into the host's buffer of `cap` bytes, its NUL included, and answers the whole
+// length: one at or past cap was cut.
+fn put(s string, buf &char, cap i32) i32 {
+	if cap < 0 {
+		return fail(bb_err, 'a buffer of ${cap} bytes')
+	}
+	if cap > 0 {
+		if isnil(buf) {
+			return fail(bb_err, 'no buffer for its ${cap} bytes')
+		}
+		n := if s.len < int(cap) { s.len } else { int(cap) - 1 }
+		unsafe {
+			vmemcpy(buf, s.str, n)
+			buf[n] = 0
+		}
+	}
+	ok()
+	return i32(s.len)
+}
+
+@[export: 'bb_message_count']
+pub fn bb_message_count(row i32) i32 {
+	db := run_db(row) or { return refused(err) }
+	ok()
+	return i32(db.messages.len)
+}
+
+@[export: 'bb_message_info']
+pub fn bb_message_info(row i32, m i32, out &C.bb_message) i32 {
+	if isnil(out) {
+		return fail(bb_err, 'message_info: nowhere to put it')
+	}
+	msg := message(row, m) or { return refused(err) }
+	unsafe {
+		out.id = msg.id
+		out.ext = u8(msg.ext)
+		out.j1939 = u8(msg.j1939)
+		out.dlc = i32(msg.payload_len())
+		out.signals = i32(msg.signals.len)
+	}
+	return ok()
+}
+
+@[export: 'bb_message_name']
+pub fn bb_message_name(row i32, m i32, buf &char, cap i32) i32 {
+	msg := message(row, m) or { return refused(err) }
+	return put(msg.name, buf, cap)
+}
+
+@[export: 'bb_signal_info']
+pub fn bb_signal_info(row i32, m i32, s i32, out &C.bb_signal) i32 {
+	if isnil(out) {
+		return fail(bb_err, 'signal_info: nowhere to put it')
+	}
+	sig := signal(row, m, s) or { return refused(err) }
+	unsafe {
+		out.start_bit = i32(sig.start_bit)
+		out.length = i32(sig.length)
+		out.big_endian = u8(sig.byte_order == .big_endian)
+		out.is_signed = u8(sig.is_signed)
+		out.multiplexor = u8(sig.is_multiplexor)
+		out.multiplexed = u8(sig.is_multiplexed)
+		out.mux_value = i32(sig.multiplexor_value)
+		out.labels = i32(sig.values.len)
+		out.factor = sig.factor
+		out.offset = sig.offset
+		out.minimum = sig.minimum
+		out.maximum = sig.maximum
+	}
+	return ok()
+}
+
+@[export: 'bb_signal_name']
+pub fn bb_signal_name(row i32, m i32, s i32, buf &char, cap i32) i32 {
+	sig := signal(row, m, s) or { return refused(err) }
+	return put(sig.name, buf, cap)
+}
+
+@[export: 'bb_signal_unit']
+pub fn bb_signal_unit(row i32, m i32, s i32, buf &char, cap i32) i32 {
+	sig := signal(row, m, s) or { return refused(err) }
+	return put(sig.unit, buf, cap)
+}
+
+// bb_signal_label: the value table in the database's order, each entry its raw key (lossless)
+// and the physical value it names (phys_from_raw, as decode reads that raw value).
+@[export: 'bb_signal_label']
+pub fn bb_signal_label(row i32, m i32, s i32, k i32, raw_out &u64, value &f64, buf &char, cap i32) i32 {
+	sig := signal(row, m, s) or { return refused(err) }
+	keys := sig.values.keys()
+	if k < 0 || int(k) >= keys.len {
+		return fail(bb_err, '${sig.name} has no label ${k} (it has ${keys.len})')
+	}
+	raw := keys[int(k)]
+	if !isnil(raw_out) {
+		unsafe {
+			*raw_out = raw
+		}
+	}
+	if !isnil(value) {
+		unsafe {
+			*value = sig.phys_from_raw(raw)
+		}
+	}
+	return put(sig.values[raw], buf, cap)
+}
+
+// bb_encode is bus.send_message's encoding (the Lua prelude): the message's template, then each
+// named signal through Signal.encode.
+@[export: 'bb_encode']
+pub fn bb_encode(row i32, m i32, n i32, signals &&char, values &f64, out &C.bb_frame) i32 {
+	if isnil(out) {
+		return fail(bb_err, 'encode: nowhere to put the frame')
+	}
+	if n < 0 || (n > 0 && (isnil(signals) || isnil(values))) {
+		return fail(bb_err, 'encode: ${n} signals, and no arrays of them')
+	}
+	msg := message(row, m) or { return refused(err) }
+	if msg.dlc > 64 {
+		return fail(bb_err, 'encode: ${msg.name} has a DLC of ${msg.dlc}, past what bb_frame carries (64)')
+	}
+	mut data := msg.template()
+	for i in 0 .. int(n) {
+		p := unsafe { signals[i] }
+		if isnil(p) {
+			return fail(bb_err, 'encode: signal name ${i} is NULL')
+		}
+		name := unsafe { cstring_to_vstring(p) }
+		sig := msg.signal_named(name) or {
+			return fail(bb_err, 'unknown signal "${name}" in ${msg.name}')
+		}
+		sig.encode(mut data, unsafe { values[i] })
+	}
+	unsafe {
+		out.id = msg.id
+		out.len = u8(data.len)
+		out.ext = u8(msg.ext)
+		out.fd = 0
+		out.brs = 0
+		out.rtr = 0
+		out.esi = 0
+		for i in 0 .. 64 {
+			out.data[i] = if i < data.len { data[i] } else { u8(0) }
+		}
+	}
+	return ok()
+}
+
+// bb_decode is the Lua prelude's decode: the message by Database.frame_index (lookup_frame's
+// rule), each signal through Signal.physical, the ones the frame carries by Message.carried.
+@[export: 'bb_decode']
+pub fn bb_decode(row i32, f &C.bb_frame, message &i32, values &f64, active &u8, cap i32) i32 {
+	if isnil(f) || isnil(message) {
+		return fail(bb_err, 'decode: no frame, or nowhere to put its message')
+	}
+	if cap < 0 || (cap > 0 && (isnil(values) || isnil(active))) {
+		return fail(bb_err, 'decode: arrays of ${cap}, and no arrays')
+	}
+	db := run_db(row) or { return refused(err) }
+	if f.rtr != 0 {
+		ok() // a remote frame carries no data to decode
+		return bb_none
+	}
+	n := int(f.len)
+	if n > 64 {
+		return fail(bb_err, 'decode: a payload is at most 64 bytes, not ${n}')
+	}
+	i := db.frame_index(f.id, f.ext != 0) or {
+		ok()
+		return bb_none
+	}
+	msg := db.messages[i]
+	unsafe {
+		*message = i32(i)
+	}
+	if msg.signals.len > int(cap) {
+		return fail(bb_err, 'decode: ${msg.name} has ${msg.signals.len} signals, and the arrays hold ${cap}')
+	}
+	mut data := []u8{len: n}
+	for k in 0 .. n {
+		data[k] = f.data[k]
+	}
+	on := msg.carried(data)
+	for k, sig in msg.signals {
+		unsafe {
+			active[k] = u8(on[k])
+			values[k] = if on[k] { sig.physical(data) } else { 0.0 }
+		}
+	}
 	return ok()
 }

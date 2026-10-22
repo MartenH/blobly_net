@@ -62,6 +62,28 @@ pub fn (s Signal) label(data []u8) string {
 	return s.values[s.raw_value(data)]
 }
 
+// signal_named is the message's signal called `name`.
+pub fn (m Message) signal_named(name string) ?Signal {
+	for s in m.signals {
+		if s.name == name {
+			return s
+		}
+	}
+	return none
+}
+
+// payload_len is the length an encoding of the message has: its DLC, none for a DLC a file wrote
+// negative.
+pub fn (m Message) payload_len() int {
+	return if m.dlc > 0 { m.dlc } else { 0 }
+}
+
+// template is the payload a message is encoded into: payload_len bytes, every signal at raw 0, so
+// a signal the caller does not set goes out as 0.
+pub fn (m Message) template() []u8 {
+	return []u8{len: m.payload_len()}
+}
+
 pub struct Message {
 pub mut:
 	name     string
@@ -330,16 +352,29 @@ pub fn (m Message) multiplexor_index() int {
 // the current value of the multiplexor switch. For a non-multiplexed message it
 // returns all signals unchanged.
 pub fn (m Message) active_signals(data []u8) []Signal {
-	mux_idx := m.multiplexor_index()
-	if mux_idx < 0 {
+	if m.multiplexor_index() < 0 {
 		return m.signals
 	}
-	mux_val := m.signals[mux_idx].raw_value(data)
+	on := m.carried(data)
 	mut out := []Signal{}
-	for s in m.signals {
-		if !s.is_multiplexed || u64(s.multiplexor_value) == mux_val {
+	for i, s in m.signals {
+		if on[i] {
 			out << s
 		}
+	}
+	return out
+}
+
+// carried is active_signals' answer by position: which of the message's signals `data` carries.
+pub fn (m Message) carried(data []u8) []bool {
+	mut out := []bool{len: m.signals.len, init: true}
+	mux_idx := m.multiplexor_index()
+	if mux_idx < 0 {
+		return out
+	}
+	mux_val := m.signals[mux_idx].raw_value(data)
+	for i, s in m.signals {
+		out[i] = !s.is_multiplexed || u64(s.multiplexor_value) == mux_val
 	}
 	return out
 }

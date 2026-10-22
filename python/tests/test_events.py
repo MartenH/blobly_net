@@ -596,6 +596,34 @@ class TestOrder(unittest.TestCase):
         self.assertEqual(first, [1, 2])
 
 
+class TestMessageHandlers(unittest.TestCase):
+    def test_a_message_matches_its_id_and_kind_an_int_either(self):
+        from blobly import Frame
+
+        class Msg:  # what a channel's .messages hands out, as on_message reads it
+            id, ext = 0x102, False
+
+        class Frames(Queued):
+            def _wait_frame(self, names, ms):
+                if self.frames:
+                    return "A", self.frames.pop(0)
+                self.t += ms
+                return None
+
+        m = Frames([Frame(0x102), Frame(0x102, ext=True), Frame(0x103)])
+        by_msg, by_int = [], []
+        m.on_message("A", Msg(), lambda f: by_msg.append(f.ext))
+        m.on_message("A", 0x102, lambda f: by_int.append(f.ext))
+        m.run(20)
+        self.assertEqual(by_msg, [False], "a message's handler took the other kind")
+        self.assertEqual(by_int, [False, True])
+        fresh = Frames([])
+        for bad in ("0x102", True, 1.5):
+            with self.assertRaises(TypeError, msg=repr(bad)):
+                fresh.on_message("A", bad, by_int.append)
+        self.assertEqual(fresh._listened, [], "a refused filter subscribed its channel")
+
+
 class TestTimeout(unittest.TestCase):
     def test_a_receive_waits_at_most_what_was_asked(self):
         from blobly.project import _ms

@@ -1,6 +1,7 @@
 /* smoke.c — a C host of libblobly: loads the library at run time, brings sim-demo up, hears
  * its simulated ECUs on inproc:CAN1, sends a frame, and does the same from a thread the HOST
- * created — the one the V runtime's collector did not see born — then stops and starts again.
+ * created — the one the V runtime's collector did not see born — encodes and decodes through
+ * CAN1's database (dbc/blobly_net.dbc), then stops and starts again.
  *
  *   gcc -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread   (Linux)
  *   build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
@@ -30,7 +31,22 @@ typedef const char *(*idx_str_fn)(int);
 typedef int (*send_fn)(int, const bb_frame *);
 typedef int (*recv_fn)(int, int, bb_frame *);
 typedef int (*int_int_fn)(int);
+typedef int (*msg_info_fn)(int, int, bb_message *);
+typedef int (*msg_str_fn)(int, int, char *, int);
+typedef int (*sig_info_fn)(int, int, int, bb_signal *);
+typedef int (*sig_str_fn)(int, int, int, char *, int);
+typedef int (*sig_label_fn)(int, int, int, int, uint64_t *, double *, char *, int);
+typedef int (*encode_fn)(int, int, int, const char *const *, const double *, bb_frame *);
+typedef int (*decode_fn)(int, const bb_frame *, int *, double *, uint8_t *, int);
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
+static int_int_fn bb_message_count_p;
+static msg_info_fn bb_message_info_p;
+static msg_str_fn bb_message_name_p;
+static sig_info_fn bb_signal_info_p;
+static sig_str_fn bb_signal_name_p, bb_signal_unit_p;
+static sig_label_fn bb_signal_label_p;
+static encode_fn bb_encode_p;
+static decode_fn bb_decode_p;
 
 static str_fn bb_version_p, bb_last_error_p;
 static int_fn bb_init_p, bb_start_p, bb_stop_p, bb_channel_count_p;
@@ -61,6 +77,100 @@ static int exchange(const char *who, int n) {
 	return 0;
 }
 
+/* the row's message called `name`, by its index; -1 when there is none */
+static int message_named(int row, const char *name) {
+	char buf[256];
+	int n = bb_message_count_p(row);
+	for (int m = 0; m < n; m++) {
+		int len = bb_message_name_p(row, m, buf, sizeof buf);
+		if (len >= 0 && len < (int)sizeof buf && strcmp(buf, name) == 0) return m;
+	}
+	return -1;
+}
+
+static int signal_named(int row, int m, const char *name) {
+	char buf[256];
+	bb_message mi;
+	if (bb_message_info_p(row, m, &mi) != 0) return -1;
+	for (int s = 0; s < mi.signals; s++) {
+		int len = bb_signal_name_p(row, m, s, buf, sizeof buf);
+		if (len >= 0 && len < (int)sizeof buf && strcmp(buf, name) == 0) return s;
+	}
+	return -1;
+}
+
+#define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "FAIL " __VA_ARGS__); fprintf(stderr, " (%s)\n", bb_last_error_p()); return 1; } } while (0)
+
+/* CAN1's database, dbc/blobly_net.dbc: Powertrain is 0x100, 8 bytes, EngineSpeed 0|16 at 0.25 rpm,
+ * Gear 43|4 with a value table (3 "Third") */
+static int dbc_steps(int row) {
+	int pt = message_named(row, "Powertrain");
+	CHECK(pt >= 0, "no Powertrain in CAN1's database");
+	bb_message mi;
+	CHECK(bb_message_info_p(row, pt, &mi) == 0 && mi.id == 0x100 && !mi.ext && mi.dlc == 8 && mi.signals == 6 && !mi.j1939,
+		"Powertrain's info: id 0x%X dlc %d signals %d", mi.id, mi.dlc, mi.signals);
+	char cut[4];
+	CHECK(bb_message_name_p(row, pt, cut, sizeof cut) == 10 && strcmp(cut, "Pow") == 0, "a cut name answers its whole length");
+	CHECK(bb_message_name_p(row, pt, NULL, 0) == 10, "cap 0 asks for the length alone");
+	int es = signal_named(row, pt, "EngineSpeed"), gear = signal_named(row, pt, "Gear");
+	CHECK(es >= 0 && gear >= 0, "Powertrain's signals");
+	bb_signal si;
+	char unit[16];
+	CHECK(bb_signal_info_p(row, pt, es, &si) == 0 && si.start_bit == 0 && si.length == 16 && si.factor == 0.25
+		&& !si.big_endian && !si.is_signed && si.labels == 0 && si.maximum == 16383.75, "EngineSpeed's info");
+	CHECK(bb_signal_unit_p(row, pt, es, unit, sizeof unit) == 3 && strcmp(unit, "rpm") == 0, "EngineSpeed's unit: %s", unit);
+	CHECK(bb_signal_info_p(row, pt, gear, &si) == 0 && si.labels == 7, "Gear's value table: %d labels", si.labels);
+	char label[32];
+	double value = -1;
+	uint64_t raw = 99;
+	CHECK(bb_signal_label_p(row, pt, gear, 3, &raw, &value, label, sizeof label) == 5 && strcmp(label, "Third") == 0
+		&& raw == 3 && value == 3, "Gear's label 3: %s = %g", label, value);
+	CHECK(bb_signal_label_p(row, pt, gear, 3, NULL, NULL, NULL, 0) == 5, "a label's length alone");
+	CHECK(bb_signal_label_p(row, pt, gear, 7, &raw, &value, label, sizeof label) == BB_ERR, "a label past the table must refuse");
+
+	/* encode as bus.send_message does: the named signals set, every other at raw 0 */
+	const char *names[] = {"EngineSpeed", "Gear"};
+	const double values[] = {1500, 3};
+	bb_frame f;
+	memset(&f, 0xAA, sizeof f);
+	CHECK(bb_encode_p(row, pt, 2, names, values, &f) == 0, "encode");
+	const uint8_t want[8] = {0x70, 0x17, 0, 0, 0, 0x18, 0, 0}; /* 1500 / 0.25 = 0x1770; 3 << 43 */
+	CHECK(f.id == 0x100 && f.len == 8 && !f.ext && !f.fd && !f.brs && memcmp(f.data, want, 8) == 0 && f.data[8] == 0,
+		"Powertrain encoded as %02X %02X .. %02X", f.data[0], f.data[1], f.data[5]);
+	const char *bad[] = {"Nope"};
+	CHECK(bb_encode_p(row, pt, 1, bad, values, &f) == BB_ERR && strstr(bb_last_error_p(), "unknown signal \"Nope\" in Powertrain"),
+		"an unknown signal must refuse by name");
+
+	/* decode it back: the message, each signal's physical value, every one carried */
+	bb_encode_p(row, pt, 2, names, values, &f);
+	int m = -1;
+	double got[16];
+	uint8_t on[16];
+	CHECK(bb_decode_p(row, &f, &m, got, on, 16) == 0 && m == pt && got[es] == 1500 && got[gear] == 3 && on[es] && on[gear],
+		"decode: message %d, EngineSpeed %g, Gear %g", m, got[es], got[gear]);
+	m = -1;
+	CHECK(bb_decode_p(row, &f, &m, got, on, 2) == BB_ERR && m == pt, "arrays too short must refuse, naming the message");
+	bb_frame other = {.id = 0x7FF, .len = 1};
+	CHECK(bb_decode_p(row, &other, &m, got, on, 16) == BB_NONE, "a frame of no message is BB_NONE");
+	bb_frame remote = {.id = 0x100, .len = 8, .rtr = 1};
+	CHECK(bb_decode_p(row, &remote, &m, got, on, 16) == BB_NONE, "a remote frame carries nothing to decode");
+
+	/* what the simulated SUT sends decodes too */
+	int h = bb_bus_open_p("inproc:CAN1");
+	CHECK(h >= 0, "open for decode");
+	int decoded = 0;
+	for (int i = 0; i < 20 && !decoded; i++) {
+		CHECK(bb_bus_recv_p(h, 1000, &f) == 0, "recv for decode");
+		decoded = bb_decode_p(row, &f, &m, got, on, 16) == 0;
+	}
+	bb_bus_close_p(h);
+	CHECK(decoded, "nothing the simulation sent decoded");
+	printf("ok   CAN1's database: Powertrain listed, encoded, decoded; a frame the simulation sent decoded\n");
+	return 0;
+}
+
+static int can1_row = -1; /* CAN1's row, for the host thread's database read */
+
 #ifndef _WIN32
 #include <time.h>
 /* blocks in an unbounded recv on a quiet wire until the main thread closes the handle */
@@ -88,6 +198,7 @@ static void *host_thread(void *arg) {
 		if (h < 0 || bb_bus_close_p(h) != 0) { fprintf(stderr, "FAIL host thread churn %d: %s\n", i, bb_last_error_p()); rc = 1; return &rc; }
 	}
 	rc = exchange("host thread", 20);
+	if (!rc && bb_message_count_p(can1_row) <= 0) { fprintf(stderr, "FAIL a database read on the host thread: %s\n", bb_last_error_p()); rc = 1; }
 	if (bb_thread_detach_p() != 0) { fprintf(stderr, "FAIL detach: %s\n", bb_last_error_p()); rc = 1; }
 	return &rc;
 }
@@ -102,6 +213,8 @@ int main(int argc, char **argv) {
 	SYM(bb_channel_count); SYM(bb_channel_name); SYM(bb_channel_iface);
 	SYM(bb_bus_open); SYM(bb_bus_send); SYM(bb_bus_recv); SYM(bb_bus_health); SYM(bb_bus_close);
 	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released);
+	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
+	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -127,17 +240,19 @@ int main(int argc, char **argv) {
 	if (bb_load_p(argv[2]) != 0) FAIL("load");
 	int n = bb_channel_count_p();
 	if (n < 2) { fprintf(stderr, "FAIL channels: %d\n", n); return 1; }
-	int doip = -1;
+	int doip = -1, can1 = -1;
 	static char doip_iface[256];
 	for (int i = 0; i < n; i++) {
 		int kind = bb_channel_kind_p(i), src = bb_channel_health_source_p(i);
+		if (strcmp(bb_channel_name_p(i), "CAN1") == 0) can1 = i;
 		printf("     channel %s (%s) kind %d health source %d\n", bb_channel_name_p(i), bb_channel_iface_p(i), kind, src);
 		if (kind < 0 || src < 0) FAIL("channel kind / health source");
 		if (kind == BB_KIND_DOIP) { doip = i; snprintf(doip_iface, sizeof doip_iface, "%s", bb_channel_iface_p(i)); }
 		/* sim-demo's CAN rows are inproc: a software bus has no ladder */
 		if (kind == BB_KIND_CAN && strncmp(bb_channel_iface_p(i), "inproc:", 7) == 0 && src != BB_HEALTH_SOURCE_NONE) { fprintf(stderr, "FAIL inproc health source %d\n", src); return 1; }
 	}
-	if (doip < 0) { fprintf(stderr, "FAIL sim-demo has a DoIP row\n"); return 1; }
+	if (doip < 0 || can1 < 0) { fprintf(stderr, "FAIL sim-demo has a DoIP row and a CAN1\n"); return 1; }
+	if (bb_message_count_p(can1) != BB_ERR_STATE) { fprintf(stderr, "FAIL a row's databases are the run's: none before start\n"); return 1; }
 	if (bb_channel_kind_p(n) != BB_ERR) { fprintf(stderr, "FAIL kind of a row past the end\n"); return 1; }
 	/* a DoIP endpoint is not a CAN bus: refused by name, not as a missing SocketCAN device */
 	if (bb_bus_open_p(doip_iface) != BB_ERR || strstr(bb_last_error_p(), "DoIP or SOME/IP") == NULL) { fprintf(stderr, "FAIL open of a DoIP row: %s\n", bb_last_error_p()); return 1; }
@@ -146,6 +261,9 @@ int main(int argc, char **argv) {
 	if (bb_start_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL a second start must refuse\n"); return 1; }
 
 	if (exchange("main thread", 20)) return 1;
+	if (dbc_steps(can1)) return 1;
+	can1_row = can1;
+	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32
 	pthread_t t;
 	if (pthread_create(&t, NULL, host_thread, NULL) != 0) { fprintf(stderr, "FAIL pthread_create\n"); return 1; }
@@ -175,6 +293,7 @@ int main(int argc, char **argv) {
 	/* the run moved the hosted DoIP entity onto a port it could bind; a stop gives the project's back */
 	if (strcmp(bb_channel_iface_p(doip), doip_iface) == 0) { fprintf(stderr, "FAIL the run did not move %s\n", doip_iface); return 1; }
 	if (bb_stop_p() != 0) FAIL("stop");
+	if (bb_message_count_p(can1) != BB_ERR_STATE) { fprintf(stderr, "FAIL the databases outlived the run\n"); return 1; }
 	if (strcmp(bb_channel_iface_p(doip), doip_iface) != 0) { fprintf(stderr, "FAIL after stop the DoIP row is %s, not %s\n", bb_channel_iface_p(doip), doip_iface); return 1; }
 	if (bb_wait_released_p(0) != 0) { fprintf(stderr, "FAIL a clean stop must leave the process released\n"); return 1; }
 	printf("ok   stop restores the project's interfaces; released at once\n");

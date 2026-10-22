@@ -31,7 +31,8 @@
  *     call that may come from ANOTHER thread is bb_bus_close, which ends a recv in progress.
  *   - A frame received is copied into the caller's bb_frame; nothing handed out points into the
  *     library except the strings: bb_channel_name / bb_channel_iface's stay valid until the next
- *     bb_load, bb_start or bb_stop, bb_last_error's until the calling thread's next call.
+ *     bb_load, bb_start or bb_stop, bb_last_error's until the calling thread's next call. A
+ *     database's strings are copied into the caller's buffer instead (see "A row's databases").
  *   - the engine's progress and warnings go to the process's stdout and stderr, as the headless
  *     runner's do.
  */
@@ -87,13 +88,42 @@ enum bb_health_source {
 	                                       where it was */
 };
 
+/* A message of a row's databases (bb_message_info). Its name is bb_message_name's. */
+typedef struct bb_message {
+	uint32_t id;
+	uint8_t  ext;      /* a 29-bit identifier */
+	uint8_t  j1939;    /* the database declares it J1939 (VFrameFormat J1939PG) */
+	int32_t  dlc;      /* the payload length bb_encode gives it: the DBC's DLC, 0 for a negative
+	                      one (one past 64 bb_encode refuses) */
+	int32_t  signals;  /* how many signals it has: bb_signal_info's s is 0 .. signals - 1 */
+} bb_message;
+
+/* A signal of a message (bb_signal_info). Its name and unit are bb_signal_name's and
+ * bb_signal_unit's, its value table bb_signal_label's. physical = raw * factor + offset, the raw
+ * value read as two's complement where is_signed. */
+typedef struct bb_signal {
+	int32_t start_bit;    /* as the DBC numbers it: Intel's least significant bit, Motorola's most */
+	int32_t length;       /* in bits */
+	uint8_t big_endian;   /* Motorola (@0); 0 is Intel (@1) */
+	uint8_t is_signed;
+	uint8_t multiplexor;  /* the message's switch: which multiplexed signals the frame carries */
+	uint8_t multiplexed;  /* present only where the switch reads mux_value */
+	int32_t mux_value;
+	int32_t labels;       /* value-table entries: bb_signal_label's k is 0 .. labels - 1 */
+	double  factor;
+	double  offset;
+	double  minimum;      /* the DBC's [min|max], both 0 where it states none; NOT applied by
+	                         bb_encode, which only keeps a value within the signal's width */
+	double  maximum;
+} bb_signal;
+
 /* Error codes. The message (bb_last_error) says what; the code says which kind. */
 #define BB_ERR         (-1)  /* refused, with a reason in bb_last_error */
 #define BB_ERR_HANDLE  (-2)  /* no such bus handle, or a closed one */
 #define BB_ERR_STATE   (-3)  /* nothing loaded / not started / already started / still releasing */
 
 /* Answers that are neither success nor an error. */
-#define BB_NONE        1     /* bb_bus_recv: no frame in time */
+#define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
 #define BB_SPENT       2     /* bb_bus_recv with timeout 0: no frame yet, but the look stopped at
                                 its bound with records still queued — look again at once rather
                                 than sleeping (transport.look_was_spent) */
@@ -144,6 +174,48 @@ int bb_bus_health(int h);                                    /* >= 0: an enum bb
 int bb_bus_close(int h);  /* a send or recv on another thread ends first (a recv within 20 ms,
                              with BB_ERR_HANDLE); the handle is then closed and its index never
                              reused */
+
+/* A row's databases: the merge of its `databases:` that the RUN loaded — the one its simulated
+ * ECUs encode by and a Lua script's bus.send_message and decode read — from bb_start until
+ * bb_stop (BB_ERR_STATE otherwise). `row` is a bb_channel_* index; m is 0 .. bb_message_count - 1,
+ * s 0 .. that message's signals - 1. Every call here only reads, and may come from any thread
+ * (attached, as ever): one racing bb_stop answers from the run's databases or BB_ERR_STATE.
+ *
+ * A string goes into the caller's buffer, `cap` bytes with its NUL: the answer is the string's
+ * whole length in bytes, so one at or past cap was cut (at a byte) and wants a buffer of the
+ * answer + 1. cap 0 (buf may be NULL) asks for the length alone. */
+int bb_message_count(int row);                                  /* >= 0: how many */
+int bb_message_info(int row, int m, bb_message *out);
+int bb_message_name(int row, int m, char *buf, int cap);        /* >= 0: the length */
+int bb_signal_info(int row, int m, int s, bb_signal *out);
+int bb_signal_name(int row, int m, int s, char *buf, int cap);  /* >= 0: the length */
+int bb_signal_unit(int row, int m, int s, char *buf, int cap);  /* >= 0: the length */
+int bb_signal_label(int row, int m, int s, int k, uint64_t *raw, double *value, char *buf,
+                    int cap);                                   /* >= 0: the label's length;
+                                                                   *raw (unless NULL) the key the
+                                                                   table gives it — the field's
+                                                                   bits, two's complement for a
+                                                                   signed signal — and *value
+                                                                   (unless NULL) the physical
+                                                                   value it names, which a double
+                                                                   may not tell from another's
+                                                                   past 2^53 */
+
+/* The frame message m sends with signals[i] at the physical values[i] (i < n) and every other
+ * signal at raw 0, as bus.send_message encodes it: a name the message does not have is refused;
+ * a value past what the signal's width holds is clamped to the nearer end, NaN encodes as raw 0.
+ * out gets the message's id, ext and dlc as len; fd and brs are left unset, so a send takes the
+ * wire's declared format. */
+int bb_encode(int row, int m, int n, const char *const *signals, const double *values,
+              bb_frame *out);
+
+/* What a frame says in the row's databases: 0 with *message the message it decodes as (its id and
+ * kind, else for an extended frame one of its J1939 PGN), and for each of its signals s < cap
+ * values[s] its physical value and active[s] whether the frame carries it (1), or a
+ * multiplexed signal its switch does not select (0, values[s] 0); BB_NONE for no message, or a
+ * remote frame (no data). The arrays hold `cap`: a message of more signals is refused, with
+ * *message set so the host can ask again with arrays of its bb_message.signals. */
+int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t *active, int cap);
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus
