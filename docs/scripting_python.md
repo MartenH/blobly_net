@@ -14,7 +14,7 @@ pip install blobly
 ```
 
 The wheel carries the engine for its platform inside the package (`blobly/_native/`): Linux
-x86_64 (a manylinux wheel built on the release floor, Ubuntu 22.04, so any glibc that new or
+x86_64 (a manylinux wheel built on the release floor, Ubuntu 24.04, so any glibc that new or
 newer) and Windows x64 (with the MinGW runtime DLLs it loads, and their licences). The notices
 of what is compiled into the engine — V's standard library, the Boehm GC, arxmodel and flatxml —
 are in `blobly/_native/licenses/`. CPython 3.8

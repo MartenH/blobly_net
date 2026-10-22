@@ -15,28 +15,21 @@ git push origin vX.Y.Z
 ```
 
 Watch the **release** workflow run. When it finishes, the release is on the
-[Releases page](../../../releases) with three assets and two wheels, and the wheels are on
+[Releases page](../../../releases) with two bundles and two wheels, and the wheels are on
 [PyPI](https://pypi.org/project/blobly/) as `blobly` (`pip install blobly`):
 
-- `blobly_net-vX.Y.Z-x86_64.AppImage` — one file, `chmod +x`, runs. Carries GLFW and its
-  dependencies; OpenGL comes from the host's driver, as it must. **The one to point people at.**
-  It mounts itself, so it needs FUSE 2 — `libfuse2t64` on Ubuntu 24.04, where the old package name
-  went away — or `--appimage-extract-and-run` for a host without it. The build itself needs no
-  FUSE (`APPIMAGE_EXTRACT_AND_RUN` in `scripts/build_appimage.sh`), which is a different thing and
-  was worth separating: the runner has no libfuse2 either.
-- `blobly_net-vX.Y.Z-linux-x64.tar.gz` — the same application unpacked, for anyone who wants the
-  payload on disk. Needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`)
+- `blobly_net-vX.Y.Z-linux-x64.tar.gz` — the application and its payload, for Ubuntu 24.04 or
+  newer. Needs the distro runtime (`sudo apt install libglfw3 libfreetype6 libgl1`)
 - `blobly_net-vX.Y.Z-windows-x64.zip` — self-contained
 - `blobly-X.Y.Z-py3-none-manylinux_*_x86_64.whl` and `blobly-X.Y.Z-py3-none-win_amd64.whl` — the
   Python package with the engine inside (`scripts/build_wheel.py`). The Linux one is built on the
-  ubuntu-22.04 job for the AppImage's reason: its manylinux tag is the newest glibc its library
+  ubuntu-24.04 job for the tarball's reason: its manylinux tag is the newest glibc its library
   uses, derived from the library and checked by `auditwheel`. The wheel's version is v.mod's
   (`2026.10.01` is `2026.10.1` in PEP 440's spelling), so there is still nothing to bump.
 
 The tarball and the zip carry the demo projects, DBCs, samples, docs, `README.txt`,
-`VERSION.txt`, LICENSE and third-party notices under one top-level folder. The AppImage carries
-the same payload INSIDE the image, minus `README.txt` — which tells a tarball user to unpack and
-`cd`, and is noise in a single file. **No vendor CAN DLL is ever included** —
+`VERSION.txt`, LICENSE and third-party notices under one top-level folder. **No vendor CAN DLL is
+ever included** —
 `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll` come with the vendor's driver installs, and
 the Vector XL terms forbid redistributing theirs.
 

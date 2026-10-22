@@ -48,26 +48,17 @@ on one timeline.*
 
 ## Get it
 
-**[Releases](../../releases)** carry three bundles per version — a Linux **AppImage**, a Linux
-**tar.gz** and a Windows **zip** — with no GitHub sign-in and no expiry, plus the two Python
-wheels (Linux x86_64, Windows x64) that `pip install blobly` takes from PyPI. (Ignore the
-`v-toolchain` entry — that is CI's prebuilt compiler; releases from `v0.1.0` onward are the
-product.) The three bundles carry the demo projects, DBCs, sample logs, the docs the Help panel
-renders and a `VERSION.txt`. The tar.gz and the zip put them under one top-level folder beside a
-`README.txt`; the AppImage is a single file and carries them inside it, without the `README.txt`
-— which tells a tarball user to unpack and `cd`, and is noise in a file you just run. The **Windows zip is self-contained**
-(mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
-files open in the app). On Linux take the **AppImage** — one file, `chmod +x`, run it; it carries GLFW, which is the
-dependency that is actually missing on a normal machine. The rest still comes from the host, on
-purpose: the **graphics driver** (`libGL`, `libGLX`, `libGLdispatch` — it has to match the GPU),
-**X11** (`libX11`, `libxcb`), **FreeType** (`libfreetype`) and **zlib** (`libz`). Every desktop has those; bundling the
-driver would be wrong and bundling FreeType breaks the host's fonts. `scripts/build_appimage.sh`
-prints that list at build time, derived from the image, so it cannot quietly drift. An AppImage mounts itself and
-so needs FUSE 2, which almost every desktop has; **Ubuntu 24.04 dropped the old package name**, so
-if it refuses to start there either `sudo apt install libfuse2t64` or run it without mounting:
-`./blobly_net-*.AppImage --appimage-extract-and-run`. The **tar.gz** is the same
-application with the payload unpacked, and *that* one needs the distro runtime:
-`sudo apt install libglfw3 libfreetype6 libgl1`. Which version you have: `VERSION.txt`, the
+**[Releases](../../releases)** carry two bundles per version — a Linux **tar.gz** and a Windows
+**zip** — with no GitHub sign-in and no expiry, plus the two Python wheels (Linux x86_64,
+Windows x64) that `pip install blobly` takes from PyPI. (Ignore the `v-toolchain` entry — that is
+CI's prebuilt compiler; releases from `v0.1.0` onward are the product.) Both bundles carry the
+demo projects, DBCs, sample logs, the docs the Help panel renders, a `README.txt` and a
+`VERSION.txt` under one top-level folder. The **Windows zip is self-contained** (mingw runtime
+DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet` files open in the
+app). On Linux (**Ubuntu 24.04 or newer**, or another Linux whose glibc is at least as new as
+24.04's) unpack the **tar.gz** and install the runtime it links against —
+`sudo apt install libglfw3 libfreetype6 libgl1`, of which GLFW is usually the only one missing —
+then run `./blobly_net`. Which version you have: `VERSION.txt`, the
 window title, or `./blobly_net --version` — on Windows the exe is a GUI-subsystem program, so
 pipe it (`blobly_net.exe --version | more`).
 **Vendor CAN libraries are never bundled** — `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll`
@@ -85,7 +76,8 @@ Two caveats: downloading an artifact requires being signed in to GitHub, and art
 
 **Between releases (Linux)** — the `ci` workflow builds the app on every push to `main` and
 keeps it: **[Actions](../../actions/workflows/ci.yml)** → the latest `ci` run **on `main`** → the
-**`blobly_net-linux-x64`** artifact. The same signed-in and ~90-day caveats apply. Inside the
+**`blobly_net-linux-x64`** artifact, built on Ubuntu 24.04 like a release, so it has the same
+floor. The same signed-in and ~90-day caveats apply. Inside the
 downloaded zip is a `.tar.gz` — GitHub zips every artifact and strips the executable bit doing
 it, so unpack the tar rather than the binary:
 

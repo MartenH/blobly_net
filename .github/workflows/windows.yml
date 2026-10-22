@@ -60,12 +60,12 @@ env:
 jobs:
   # THE BUNDLE CARRIES A LINUX PROGRAM (#451): canbridge, which the Windows app starts inside a WSL
   # distribution through wsl.exe to reach its vcans. It is a Linux ELF, so it is built on Linux —
-  # on 22.04, the oldest supported glibc, for the reason release.yml's AppImage is — and handed to
+  # on 24.04, the supported floor, for the reason release.yml's Linux build is — and handed to
   # the bundle job below as a short-lived artifact, never published on its own. Built IN PARALLEL
   # with the mingw job, not ahead of it: a cold V cache makes this job the long one.
   canbridge-linux:
     name: canbridge (Linux, for the WSL bridge)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7

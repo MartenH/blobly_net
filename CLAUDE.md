@@ -125,19 +125,19 @@ v -enable-globals run cmd/<tool>/<file>.v   # any other target
 
 Releases: push a `v0.1.0`-style tag matching the version in `v.mod` (the ONE version
 statement — the binary decodes it for `--version` and the title bar) on a commit reachable
-from `main`; `release.yml` verifies both, then publishes THREE assets: the Linux AppImage, the
-Linux tar.gz, and the Windows zip (via `windows.yml`, which publishes for a tag only when called
+from `main`; `release.yml` verifies both, then publishes TWO bundles: the Linux tar.gz and the
+Windows zip (via `windows.yml`, which publishes for a tag only when called
 with `publish_bundle=true` from behind that guard) — plus the two **`blobly` wheels**
-(`scripts/build_wheel.py`: Linux manylinux from the 22.04 job, its tag derived from the library's
+(`scripts/build_wheel.py`: Linux manylinux from the 24.04 job, its tag derived from the library's
 glibc and checked by `auditwheel`; Windows x64 with its MinGW runtime and those DLLs' licences; both with the notices of what is compiled into the library — V's stdlib and Boehm GC from the toolchain that built it, arxmodel and flatxml — and refused for any architecture but x86-64), attached to
 the release and then uploaded to **PyPI** by the `pypi` job through Trusted Publishing (no token;
 the `pypi` environment, set up once — `docs/releasing.md`). A CI wheel carries `+git.<sha>`, which
 PyPI refuses. Bundle payload list:
-`scripts/stage_bundle.sh`, once, for all three — the AppImage wraps that same payload
-(`scripts/build_appimage.sh`, #322), which is why a Linux user does not have to `apt install`
-GLFW before a downloaded release will start. Its Linux job is pinned to **ubuntu-22.04**, not
-`ubuntu-latest`: an AppImage does not bundle glibc, so the build host sets the oldest system it
-runs on, and a floating label raises that floor silently. Notes =
+`scripts/stage_bundle.sh`, once, for both. Its Linux job is pinned to **ubuntu-24.04**, not
+`ubuntu-latest`: a Linux binary does not bundle glibc, so the build host sets the oldest system it
+runs on, and a floating label raises that floor silently. Ubuntu 24.04 is the supported floor,
+and `ci.yml`'s compiling jobs and canbridge are pinned to the same image, so a PR is tested with
+the compiler the release builds with. Notes =
 `packaging/RELEASE_HIGHLIGHTS.md` (written per release, its first line naming the tag) +
 generated changelog + `packaging/RELEASE_NOTES_HEADER.md`. Never bundle a vendor CAN DLL
 (ROADMAP has the list and the reason). The maintainer walkthrough is
@@ -411,7 +411,7 @@ BESIDE the mingw jobs, and a `bundle` job joins them where the bundle is publish
 Both use exact keys, rebuild on a miss and save only after a successful dependency build.
 A valid GUI restore refreshes the archive timestamp: checkout timestamps alone would otherwise
 make `run_gui.sh` rebuild unchanged glue. The app and every test still build/run each time.
-The Linux release uses the same actions, with separate caches for its Ubuntu 22.04 environment.
+The Linux release runs on the same `ubuntu-24.04` image as CI's compiling jobs, so it restores the same caches.
 
 **CI runs as parallel jobs, and two required checks are verdict jobs.** The time is compiling
 (the unit suite was 18 CPU-minutes on a four-core runner), so the Linux backbone is `unit` —
