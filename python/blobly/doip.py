@@ -5,7 +5,8 @@ import ctypes
 from dataclasses import dataclass
 
 from . import _lib
-from ._lib import BloblyError
+from ._lib import BloblyError, Timeout
+from .events import _sliced
 
 # room for every announcement a window hears in one call; one past it is said, not dropped silently
 _CAP = 1024
@@ -55,9 +56,19 @@ def discover(channel, timeout_ms: float = 1200) -> DoipAnnouncement:
     lib = _lib.lib()
     out = _lib.BbDoipAnnouncement()
     index, run = _row("discover", channel)
-    _lib.check(lib.bb_doip_discover(index, wait, ctypes.byref(out)))
+
+    def ask(part):
+        # asked again each slice, so Ctrl-C ends the wait between them
+        try:
+            _lib.check(lib.bb_doip_discover(index, part, ctypes.byref(out)))
+        except Timeout:
+            return None
+        return _announcement(out)
+    got = _sliced(ask, wait)
     channel._same_run(run)  # a restart meanwhile may have put another row at its index
-    return _announcement(out)
+    if got is None:
+        raise Timeout(f"discover({channel.name}): no answer within {wait} ms", _lib.BB_ERR_TIMEOUT)
+    return got
 
 
 def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool = False,
@@ -65,7 +76,8 @@ def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool =
     """The announcements DoIP entities send unasked (ISO 13400-2), heard for `window_ms`, in the
     order heard — the way a tester finds ECUs nobody told it about: every one, an entity repeating
     itself included. Nothing is queued for a listener that is not there, so it hears only what is
-    sent within its window.
+    sent within its window. The window is heard in slices of SLICE_MS (100 ms), so Ctrl-C ends it
+    between them; what arrives in the microseconds a slice's socket is replaced is not heard.
 
     `port` is the UDP port (None: 13400); `ip6` listens over IPv6, joining ff02::1. `channel`, a
     DoIP Channel of the started project, listens on the port its entity is on in the run, and over
@@ -81,16 +93,22 @@ def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool =
     p = 0 if port is None else port
     if not 0 <= p <= 0xFFFF:
         raise ValueError(f"doip_listen: {port} is not a port")
-    if channel is None:
-        n = _lib.check(lib.bb_doip_listen(p, window, int(ip6), None, out, _CAP))
-    else:
+    row = None
+    if channel is not None:
         from .project import Channel  # project imports this module
         if not isinstance(channel, Channel):
             raise TypeError(f"doip_listen: channel is a Channel, not {channel!r}")
         index, run = _row("doip_listen", channel)
-        n = _lib.check(lib.bb_doip_listen(p, window, int(ip6), ctypes.byref(ctypes.c_int(index)), out, _CAP))
+        row = ctypes.byref(ctypes.c_int(index))
+    heard: list[DoipAnnouncement] = []
+
+    def hear(part):
+        n = _lib.check(lib.bb_doip_listen(p, part, int(ip6), row, out, _CAP))
+        if n > _CAP:
+            raise BloblyError(f"doip_listen: {n} announcements in {part} ms, more than the {_CAP} kept")
+        heard.extend(_announcement(out[i]) for i in range(n))
+        return None  # the whole window is heard
+    _sliced(hear, window)
+    if channel is not None:
         channel._same_run(run)
-    if n > _CAP:
-        raise BloblyError(f"doip_listen: {n} announcements in {window} ms, more than the {_CAP} kept; "
-                          "listen for a shorter window")
-    return [_announcement(out[i]) for i in range(n)]
+    return heard
