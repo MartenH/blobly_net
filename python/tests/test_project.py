@@ -314,6 +314,16 @@ class TestFrame(unittest.TestCase):
         self.assertEqual((t.id, t.data), (0x7, b"\x09"))
         self.assertIs(type(copy.copy(t)), Tagged)
 
+        class Stamped(blobly.Frame):
+            __slots__ = ("t",)
+        s = Stamped(0x8)
+        object.__setattr__(s, "t", 1.5)
+        for twin in (copy.copy(s), copy.deepcopy(s)):  # deepcopy goes the way pickle does
+            self.assertEqual((type(twin), twin.t, twin.id), (Stamped, 1.5, 0x8))
+        # Frame(0x7, b"\x09") as the package pickled it before a frame refused assignment
+        old = b"\x80\x04\x95f\x00\x00\x00\x00\x00\x00\x00\x8c\x0eblobly.project\x94\x8c\x05Frame\x94\x93\x94)\x81\x94N}\x94(\x8c\x02id\x94K\x07\x8c\x04data\x94C\x01\t\x94\x8c\x06length\x94K\x01\x8c\x03ext\x94\x89\x8c\x02fd\x94\x89\x8c\x03brs\x94\x89\x8c\x03rtr\x94\x89\x8c\x03esi\x94\x89u\x86\x94b."
+        self.assertEqual(pickle.loads(old), blobly.Frame(0x7, b"\x09"))
+
 
 # a row nothing sends on, and a script that waits on it until a SIGINT, which a timer thread
 # raises as Ctrl-C does: from outside the main thread, while the main thread is in the library

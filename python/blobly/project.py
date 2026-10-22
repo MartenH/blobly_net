@@ -32,8 +32,11 @@ class Frame:
     def __delattr__(self, name):
         raise AttributeError(f"a Frame is a value: {name} cannot be deleted")
 
-    def __reduce__(self):  # copy and pickle rebuild it field by field, as __setattr__ refuses
-        return _rebuilt, (type(self), self._key())
+    def __setstate__(self, state):
+        """copy and pickle restore a frame's slots (a subclass's too) past __setattr__."""
+        attrs, slots = state if isinstance(state, tuple) else (state, None)
+        for k, v in {**(attrs or {}), **(slots or {})}.items():
+            object.__setattr__(self, k, v)
 
     def __eq__(self, other):
         return isinstance(other, Frame) and self._key() == other._key()
@@ -52,12 +55,6 @@ class Frame:
 def _fill(frame, fields):
     for k, v in zip(Frame.__slots__, fields):
         object.__setattr__(frame, k, v)
-
-
-def _rebuilt(cls, fields):
-    frame = cls.__new__(cls)
-    _fill(frame, fields)
-    return frame
 
 
 def frame_of(f):

@@ -256,10 +256,12 @@ def _sliced(wait, ms):
         if got is not None:
             return got
         if end is not None:
-            left = math.floor(end - monotonic_ms())
+            left = end - monotonic_ms()
             if left <= 0:
                 return None
-            part = min(left, SLICE_MS)
+            if left < 1:  # what the library cannot be asked for is slept, then looked at once
+                sleep_ms(left)
+            part = min(math.floor(left), SLICE_MS)
 
 
 def _matches(want, frame):
