@@ -635,6 +635,9 @@ class TestMessageHandlers(unittest.TestCase):
         for bad, ext in (("0x102", None), (True, None), (1.5, None), (0x102, 1), (Msg(), False), (None, True)):
             with self.assertRaises(TypeError, msg=repr((bad, ext))):
                 fresh.on_message("A", bad, by_int.append, ext=ext)
+        for bad, ext in ((0x800, False), (0x2000_0000, None), (-1, True)):
+            with self.assertRaises(ValueError, msg=repr((bad, ext))):
+                fresh.on_message("A", bad, by_int.append, ext=ext)
         self.assertEqual(fresh._listened, [], "a refused filter subscribed its channel")
 
 

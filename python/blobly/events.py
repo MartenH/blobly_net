@@ -32,6 +32,9 @@ ERROR_REST_MS = 20
 MAX_WAIT_MS = 2**31 - 1
 # the longest one wait inside run() is, as the Lua run(): the loop goes on, a long run() is many
 LONGEST_WAIT_MS = 1000
+# the longest one call into the library of a wait is: Python raises a KeyboardInterrupt only
+# between calls, so Ctrl-C ends a wait within this
+SLICE_MS = 100
 
 
 def _finite(x):
@@ -231,6 +234,8 @@ def _want(id, ext=None):
     if ext is not None and not isinstance(ext, bool):
         raise TypeError(f"on_message: ext is True, False or None, not {ext!r}")
     if isinstance(id, int) and not isinstance(id, bool):
+        if not 0 <= id <= (0x7FF if ext is False else 0x1FFF_FFFF):
+            raise ValueError(f"on_message: {id:#x} is not {'an 11' if ext is False else 'a 29'}-bit id")
         return (id, ext)
     if ext is not None:
         raise TypeError("on_message: ext goes with an int id; a message carries its own kind")
@@ -239,6 +244,22 @@ def _want(id, ext=None):
     if isinstance(getattr(id, "id", None), int) and hasattr(id, "ext"):
         return (id.id, bool(id.ext))
     raise TypeError(f"on_message: an id is an int, None or a message, not {id!r}")
+
+
+def _sliced(wait, ms):
+    """wait(part) asked in parts of at most SLICE_MS ms, until it answers (anything but None) or
+    `ms` (whole ms; -1 for ever) has passed; None then."""
+    end = None if ms < 0 else monotonic_ms() + ms
+    part = SLICE_MS if ms < 0 else min(ms, SLICE_MS)
+    while True:
+        got = wait(part)
+        if got is not None:
+            return got
+        if end is not None:
+            left = math.floor(end - monotonic_ms())
+            if left <= 0:
+                return None
+            part = min(left, SLICE_MS)
 
 
 def _matches(want, frame):

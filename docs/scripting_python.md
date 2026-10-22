@@ -784,7 +784,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 | `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, `FaultRefused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
 | `blobly.FaultRefused` | A `Refused` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
 | `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), or a UDS request nothing answered. A `BloblyError`, code -5. |
-| `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. |
+| `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. An `on_message` id past the width its `ext` names (29 bits when `None`). What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. |
 | `TypeError` | A timeout that is not a finite number (or `None`, which `expect` refuses too), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`, or an `ext` that is not a bool or is given beside a `Message` or `None`. A fault's or an `e2e` call's argument of the wrong type. |
 | `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are; `hasattr` and `getattr(c, name, default)` read it as absent. |
 | `KeyError`, `IndexError` | An unknown name by `["NOPE"]`, a position past the end. |
@@ -932,7 +932,7 @@ a CAN frame, as `recv` returns it and as `encode` builds it.
 | `f.fd`, `f.brs` | CAN-FD, and its bit-rate switch. |
 | `f.rtr` | A remote frame (no payload). |
 | `f.esi` | CAN-FD's error-state indicator. |
-| `f == g`, `hash(f)` | Every field equal; equal frames hash alike, so a frame can be a set member or a dict key. |
+| `f == g`, `hash(f)` | Every field equal; equal frames hash alike, so a frame can be a set member or a dict key. A frame is a value: setting a field raises `AttributeError`. |
 
 ### `Message`
 

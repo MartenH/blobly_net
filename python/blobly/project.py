@@ -10,7 +10,7 @@ import weakref
 
 from . import _lib
 from ._lib import BloblyError, Timeout
-from .events import EventLoop, _finite, monotonic_ms, sleep_ms, wait_on
+from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
 from .uds import UdsClient, _close_orphans, functional
 from .faults import Faults
 
@@ -18,13 +18,20 @@ from .faults import Faults
 class Frame:
     """A CAN frame. `data` is the payload; `length` its length, or for a remote frame (`rtr`, no
     payload) the length it asks for; `fd`/`brs` CAN-FD and its bit-rate switch; `esi` CAN-FD's
-    error-state indicator."""
+    error-state indicator. A value: equal frames hash alike, and none is changed once made."""
     __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi")
 
     def __init__(self, id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None):
-        self.id, self.data, self.ext = id, bytes(data), ext
-        self.fd, self.brs, self.rtr, self.esi = fd, brs, rtr, esi
-        self.length = len(self.data) if length is None else length
+        data = bytes(data)
+        for k, v in zip(self.__slots__, (id, data, len(data) if length is None else length, ext, fd, brs,
+                                         rtr, esi)):
+            object.__setattr__(self, k, v)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f"a Frame is a value: make another rather than set {name}")
+
+    def __reduce__(self):  # copy and pickle make it through __init__, as __setattr__ refuses
+        return Frame, (self.id, self.data, self.ext, self.fd, self.brs, self.rtr, self.esi, self.length)
 
     def __eq__(self, other):
         return isinstance(other, Frame) and self._key() == other._key()
@@ -102,27 +109,6 @@ def _ms(timeout_ms):
     if ms > 2**31 - 1:  # a C int: wider would wrap to 'forever' or to 0
         raise ValueError(f"timeout_ms {timeout_ms} is longer than one wait can be (2**31 - 1 ms); use None to wait for ever")
     return ms
-
-
-# the longest one call into the library of a wait is: Python raises a KeyboardInterrupt only
-# between calls, so Ctrl-C ends a wait within this
-SLICE_MS = 100
-
-
-def _sliced(wait, ms):
-    """wait(part) asked in parts of at most SLICE_MS ms, until it answers (anything but None) or
-    `ms` (whole ms; -1 for ever) has passed; None then."""
-    end = None if ms < 0 else monotonic_ms() + ms
-    part = SLICE_MS if ms < 0 else min(ms, SLICE_MS)
-    while True:
-        got = wait(part)
-        if got is not None:
-            return got
-        if end is not None:
-            left = math.floor(end - monotonic_ms())
-            if left <= 0:
-                return None
-            part = min(left, SLICE_MS)
 
 
 class Channel:
@@ -646,6 +632,11 @@ class Message:
         return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"
 
 
+def _dropped(path, gone):
+    return (f"{path}: handlers dropped, their rows are not in this load of the project ("
+            + ", ".join(gone) + "); register them again")
+
+
 class Project(EventLoop, Faults):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
@@ -669,9 +660,13 @@ class Project(EventLoop, Faults):
         still at its position under its name — so a variable, a timer's closure and a handler all
         go on working — and drops the handlers of rows that went, naming them in a
         RuntimeWarning."""
-        return self._load()
+        gone = self._load()
+        if gone:
+            warnings.warn(_dropped(self.path, gone), RuntimeWarning, stacklevel=2)
+        return self
 
     def _load(self):
+        """load, answering the rows whose handlers it dropped."""
         lib = _lib.lib()
         with _lib.state_lock:
             _lib.check(lib.bb_load(os.fsencode(self.path)))  # the filesystem's bytes, not UTF-8
@@ -696,11 +691,7 @@ class Project(EventLoop, Faults):
                 else:
                     rows.append(Channel(self, i, name, st["gen"]))
             self._channels = Channels(rows)
-        gone = self._drop_gone(rows)
-        if gone:  # said from the caller of load or start
-            warnings.warn(f"{self.path}: handlers dropped, their rows are not in this load of the project ("
-                          + ", ".join(gone) + "); register them again", RuntimeWarning, stacklevel=3)
-        return self
+        return self._drop_gone(rows)
 
     def _drop_gone(self, rows):
         """Drops the registrations on channels this load did not keep, and names them, rather than
@@ -720,14 +711,20 @@ class Project(EventLoop, Faults):
 
     def start(self):
         """Starts this project — reloaded first if the library holds another load now (see load)."""
+        return self._start()
+
+    def _start(self):
         lib = _lib.lib()
+        gone = []
         with _lib.state_lock:
             st = _lib.state
             if st["owner"] is not self or st["gen"] != self._gen:
-                self._load()
+                gone = self._load()
             _lib.check(lib.bb_start())
             st["run"] += 1  # the rows' databases are this run's from here
             self.started = True
+        if gone:  # once started, from the line that called start or entered the with block
+            warnings.warn(_dropped(self.path, gone), RuntimeWarning, stacklevel=3)
         return self
 
     def stop(self):
@@ -751,7 +748,7 @@ class Project(EventLoop, Faults):
             return _lib.check(lib.bb_stop()) != _lib.BB_RELEASING
 
     def __enter__(self):
-        return self.start()
+        return self._start()
 
     def __exit__(self, *exc):
         if not self.stop():

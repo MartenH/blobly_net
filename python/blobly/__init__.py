@@ -41,10 +41,15 @@ def wait_released(timeout_ms: float | None = None) -> bool:
     waits for ever). A stop that returned False left a loop letting go of its wires. Ctrl-C ends
     the wait within 100 ms."""
     from . import _lib
-    from .project import _ms, _sliced
+    from .events import _sliced
+    from .project import _ms
     ms = _ms(timeout_ms)
     lib = _lib.lib()
-    return _sliced(lambda part: _lib.check(lib.bb_wait_released(part)) == 0 or None, ms) is True
+
+    def free(part):  # True, or None while a loop is still letting go; any other answer is False
+        rc = _lib.check(lib.bb_wait_released(part))
+        return None if rc == _lib.BB_RELEASING else rc == 0
+    return _sliced(free, ms) is True
 
 
 __all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventLoop", "Exchange", "Extended",

@@ -4,6 +4,7 @@ simulation, a Python thread attached and let go on itself, and the error paths. 
 no library is found and BLOBLY_LIB is unset; CI sets it, so a missing build fails there."""
 import copy
 import os
+import pickle
 import subprocess
 import sys
 import tempfile
@@ -261,9 +262,9 @@ class TestLoads(unittest.TestCase):
                 net.on_message(net.channels.Y, None, lambda f: None)
             with open(path, "w") as f:
                 f.write(DUPLICATES.replace("  - name: Y", "  - name: Z"))
-            blobly.Project(SIM_DEMO).load()  # so start() reloads, and drops Y's handler
+            blobly.Project(SIM_DEMO).load()  # so the with block's start reloads, and drops Y's handler
             with self.assertWarns(RuntimeWarning) as w:
-                net.start()
+                net.__enter__()
             try:
                 self.assertIn("Y (row 2)", str(w.warning))
                 self.assertEqual(w.filename, __file__)
@@ -283,10 +284,16 @@ class TestLoads(unittest.TestCase):
 
 
 class TestFrame(unittest.TestCase):
-    def test_equal_frames_are_one_key(self):
-        a, b = blobly.Frame(0x100, b"\x01"), blobly.Frame(0x100, b"\x01")
+    def test_a_frame_is_a_value(self):
+        a, b = blobly.Frame(0x100, b"\x01"), blobly.Frame(0x100, bytearray(b"\x01"))
         self.assertEqual(len({a, b, blobly.Frame(0x100, b"\x01", ext=True)}), 2)
         self.assertEqual({a: 1}[b], 1)
+        with self.assertRaises(AttributeError):
+            a.data = b"\x02"
+        for twin in (copy.copy(a), copy.deepcopy(a), pickle.loads(pickle.dumps(a))):
+            self.assertEqual(twin, a)
+        remote = blobly.Frame(0x100, rtr=True, length=4)
+        self.assertEqual(copy.copy(remote).length, 4)
 
 
 # a row nothing sends on, and a script that waits on it until a SIGINT, which a timer thread
@@ -798,6 +805,8 @@ class TestRefusals(unittest.TestCase):
             lib.bb_wait_released = lambda ms: releasing(ms, free_at=3)
             self.assertTrue(blobly.wait_released(None))
             self.assertEqual(asked, [100, 100, 100], "a wait for ever is not asked in slices")
+            lib.bb_wait_released = lambda ms: 7  # an answer this package does not know: not free
+            self.assertFalse(blobly.wait_released(None))
         finally:
             lib.bb_wait_released = real
 
