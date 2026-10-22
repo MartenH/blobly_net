@@ -93,7 +93,8 @@ typedef struct bb_message {
 	uint32_t id;
 	uint8_t  ext;      /* a 29-bit identifier */
 	uint8_t  j1939;    /* the database declares it J1939 (VFrameFormat J1939PG) */
-	int32_t  dlc;      /* the payload length bb_encode gives it */
+	int32_t  dlc;      /* the payload length bb_encode gives it: the DBC's DLC, 0 for a negative
+	                      one (one past 64 bb_encode refuses) */
 	int32_t  signals;  /* how many signals it has: bb_signal_info's s is 0 .. signals - 1 */
 } bb_message;
 
@@ -191,8 +192,8 @@ int bb_signal_name(int row, int m, int s, char *buf, int cap);  /* >= 0: the len
 int bb_signal_unit(int row, int m, int s, char *buf, int cap);  /* >= 0: the length */
 int bb_signal_label(int row, int m, int s, int k, double *value, char *buf, int cap);
                                                                 /* >= 0: the label's length;
-                                                                   *value the physical value it
-                                                                   names */
+                                                                   *value (unless NULL) the
+                                                                   physical value it names */
 
 /* The frame message m sends with signals[i] at the physical values[i] (i < n) and every other
  * signal at raw 0, as bus.send_message encodes it: a name the message does not have is refused;

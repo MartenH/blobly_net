@@ -124,6 +124,7 @@ static int dbc_steps(int row) {
 	double value = -1;
 	CHECK(bb_signal_label_p(row, pt, gear, 3, &value, label, sizeof label) == 5 && strcmp(label, "Third") == 0 && value == 3,
 		"Gear's label 3: %s = %g", label, value);
+	CHECK(bb_signal_label_p(row, pt, gear, 3, NULL, NULL, 0) == 5, "a label's length alone");
 	CHECK(bb_signal_label_p(row, pt, gear, 7, &value, label, sizeof label) == BB_ERR, "a label past the table must refuse");
 
 	/* encode as bus.send_message does: the named signals set, every other at raw 0 */
@@ -167,6 +168,8 @@ static int dbc_steps(int row) {
 	return 0;
 }
 
+static int can1_row = -1; /* CAN1's row, for the host thread's database read */
+
 #ifndef _WIN32
 #include <time.h>
 /* blocks in an unbounded recv on a quiet wire until the main thread closes the handle */
@@ -194,7 +197,7 @@ static void *host_thread(void *arg) {
 		if (h < 0 || bb_bus_close_p(h) != 0) { fprintf(stderr, "FAIL host thread churn %d: %s\n", i, bb_last_error_p()); rc = 1; return &rc; }
 	}
 	rc = exchange("host thread", 20);
-	if (!rc && bb_message_count_p(0) <= 0) { fprintf(stderr, "FAIL a database read on the host thread: %s\n", bb_last_error_p()); rc = 1; }
+	if (!rc && bb_message_count_p(can1_row) <= 0) { fprintf(stderr, "FAIL a database read on the host thread: %s\n", bb_last_error_p()); rc = 1; }
 	if (bb_thread_detach_p() != 0) { fprintf(stderr, "FAIL detach: %s\n", bb_last_error_p()); rc = 1; }
 	return &rc;
 }
@@ -258,6 +261,7 @@ int main(int argc, char **argv) {
 
 	if (exchange("main thread", 20)) return 1;
 	if (dbc_steps(can1)) return 1;
+	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32
 	pthread_t t;

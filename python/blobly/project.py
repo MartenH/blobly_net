@@ -190,10 +190,9 @@ class Channel:
         lib = _lib.lib()
         with _lib.state_lock:
             msgs = self.messages
-            cap = msgs._most
-            values, active = (ctypes.c_double * max(cap, 1))(), (ctypes.c_uint8 * max(cap, 1))()
-            m = ctypes.c_int(-1)
-            rc = _lib.check(lib.bb_decode(self._index, ctypes.byref(f), ctypes.byref(m), values, active, cap))
+            values, active, m = msgs._decoded  # the lock is held: one decode at a time uses them
+            rc = _lib.check(lib.bb_decode(self._index, ctypes.byref(f), ctypes.byref(m), values, active,
+                                          msgs._most))
             if rc == _lib.BB_NONE:
                 return None
             return {s.name: values[i] for i, s in enumerate(msgs[m.value].signals) if active[i]}
@@ -270,7 +269,10 @@ class Messages(Named):
 
     def __init__(self, items):
         super().__init__(items)
-        self._most = max((m._count for m in items), default=0)  # the widest decode's arrays
+        self._most = max((m._count for m in items), default=0)
+        # bb_decode's out arrays, as wide as the widest message, made once
+        n = max(self._most, 1)
+        self._decoded = ((ctypes.c_double * n)(), (ctypes.c_uint8 * n)(), ctypes.c_int(-1))
 
 
 class Signals(Named):
@@ -465,6 +467,7 @@ class Project(EventLoop):
                 except BloblyError:
                     pass  # a handle already gone is closed enough
             self.started = False
+            _lib.state["run"] += 1  # the run's databases end with it
             # False: a loop outlived the stop's bound and still holds the process; a start refuses
             # until blobly.wait_released says it has let go
             return _lib.check(lib.bb_stop()) != _lib.BB_RELEASING

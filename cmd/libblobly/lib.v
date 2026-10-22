@@ -609,7 +609,7 @@ pub fn bb_message_info(row i32, m i32, out &C.bb_message) i32 {
 		out.id = msg.id
 		out.ext = u8(msg.ext)
 		out.j1939 = u8(msg.j1939)
-		out.dlc = i32(msg.dlc)
+		out.dlc = i32(msg.template().len)
 		out.signals = i32(msg.signals.len)
 	}
 	return ok()
@@ -660,17 +660,16 @@ pub fn bb_signal_unit(row i32, m i32, s i32, buf &char, cap i32) i32 {
 // names (phys_from_raw of its raw key, as decode reads that raw value).
 @[export: 'bb_signal_label']
 pub fn bb_signal_label(row i32, m i32, s i32, k i32, value &f64, buf &char, cap i32) i32 {
-	if isnil(value) {
-		return fail(bb_err, 'signal_label: nowhere to put the value')
-	}
 	sig := signal(row, m, s) or { return refused(err) }
 	keys := sig.values.keys()
 	if k < 0 || int(k) >= keys.len {
 		return fail(bb_err, '${sig.name} has no label ${k} (it has ${keys.len})')
 	}
 	raw := keys[int(k)]
-	unsafe {
-		*value = sig.phys_from_raw(raw)
+	if !isnil(value) {
+		unsafe {
+			*value = sig.phys_from_raw(raw)
+		}
 	}
 	return put(sig.values[raw], buf, cap)
 }

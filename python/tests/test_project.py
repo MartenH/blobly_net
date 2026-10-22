@@ -339,6 +339,9 @@ class TestDatabases(unittest.TestCase):
         with self.assertRaises(blobly.BloblyError) as e:
             pt.encode(Gear=1)
         self.assertEqual(e.exception.code, _lib.BB_ERR_STATE, "a stopped run has no databases")
+        with self.assertRaises(blobly.BloblyError) as e:
+            net.channels.CAN1.messages
+        self.assertEqual(e.exception.code, _lib.BB_ERR_STATE, "the stopped run's list was handed out")
         with net:
             self.assertIs(net.channels.CAN1.messages.Powertrain, pt)
             self.assertEqual(pt.encode(Gear=1).data[5], 0x08)

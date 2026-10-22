@@ -103,8 +103,8 @@ class EventLoop:
     def on_message(self, channel, id, fn):
         """fn(frame) for each frame on `channel` received during run() — what other nodes sent —
         whose id is `id` (an int, of either kind), or None for every frame, or a Message (a
-        channel's .messages): its id AND kind. A J1939 message's frames from another source
-        address are not its id: decode() reads those."""
+        channel's .messages): its id AND kind, as they were at registration. A J1939 message's
+        frames from another source address are not its id: decode() reads those."""
         self._on_msg.append((self._listen_key(channel), _want(id), fn))
 
     def on_health(self, channel, fn):
