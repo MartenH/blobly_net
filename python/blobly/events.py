@@ -72,9 +72,17 @@ class EventLoop:
     def _listen_key(self, channel):
         key = self._resolve(channel)
         self._listen(key)
+        self._read(key)
+        return key
+
+    def _read(self, key):
+        """run() reads this channel from now on."""
         if not any(k is key or k == key for k in self._listened):
             self._listened.append(key)
-        return key
+
+    def _health_needs_reader(self, key):
+        """Whether a channel's ladder moves only while it is read. Unknown here: read it."""
+        return True
 
     def on_message(self, channel, id, fn):
         """fn(frame) for each frame on `channel` whose id is `id` (None: every frame) received
@@ -85,7 +93,11 @@ class EventLoop:
         """fn(state) during run() when the controller's ladder has moved — "ok", "error warning",
         "ERROR-PASSIVE", "BUS-OFF" — and at its first sample with the state then. Sampled every
         100 ms: a state held for less than that can be missed. A software bus never fires."""
-        self._on_health.append(_Health(self._listen_key(channel), fn))
+        key = self._resolve(channel)
+        self._listen(key)
+        if self._health_needs_reader(key):  # where it is polled, its frames are left alone
+            self._read(key)
+        self._on_health.append(_Health(key, fn))
 
     def on_timer(self, period_ms, fn):
         """fn() every period_ms during run(), on its own grid. The period must be a positive,
@@ -216,18 +228,23 @@ def wait_on(channels, timeout_ms, rr, now, sleep_ms):
         return None, rr
     n = len(channels)
     while True:
+        spent = False
         for k in range(n):
             if k > 0 and timeout_ms > 0 and now() >= deadline:  # a slow look spent the budget
                 return None, rr
             i = (rr + k) % n
             try:
-                f = channels[i].recv(0)
+                look = getattr(channels[i], "look", None)
+                f, s = look() if look else (channels[i].recv(0), False)
+                spent = spent or s
             except Exception:  # an error is a look with nothing in it
                 f = None
             if f is not None:
                 return (channels[i], f), i + 1
         if now() >= deadline:
             return None, rr
+        if spent:
+            continue  # records still queued behind a look's bound: look again at once
         sleep_ms(min(WAIT_SLICE_MS, deadline - now()))  # never a slice past the deadline
         if now() >= deadline:  # what came in the last slice stays for the next reader
             return None, rr

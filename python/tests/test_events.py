@@ -363,6 +363,24 @@ class TestWaitOn(unittest.TestCase):
         self.assertEqual(clock.t, 20, "rested neither a spin nor the whole wait")
 
 
+class TestSpentLook(unittest.TestCase):
+    def test_a_spent_look_is_looked_again_at_once(self):
+        class Busy(FakeChannel):
+            spent = 5
+
+            def look(self):
+                if self.spent:
+                    self.spent -= 1
+                    return None, True
+                return Got("0x42"), False
+
+        clock = Clock()
+        sleeps = []
+        got, _ = wait_on([Busy("A"), FakeChannel("B")], 50, 0, clock.now, lambda ms: sleeps.append(ms))
+        self.assertIsNotNone(got)
+        self.assertEqual(sleeps, [], "slept on a queue that said it was not empty")
+
+
 class Ladder(EventLoop):
     """A channel with no frames and a ladder that moves by sample count, over synthetic time."""
 

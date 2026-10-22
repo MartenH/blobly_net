@@ -247,8 +247,26 @@ class TestRefusals(unittest.TestCase):
 
     def test_an_ethernet_row_is_not_a_bus(self):
         with blobly.Project(SIM_DEMO) as net:
-            with self.assertRaises(blobly.BloblyError):
+            self.assertEqual(net.channels.DoIP1.kind, "doip")
+            self.assertEqual(net.channels.CAN1.kind, "can")
+            with self.assertRaises(blobly.BloblyError) as e:
                 net.channels.DoIP1.send(0x100, b"")
+            self.assertIn("DoIP or SOME/IP", str(e.exception))
+
+    def test_on_health_alone_leaves_a_polled_channel_unread(self):
+        with blobly.Project(SIM_DEMO) as net:
+            can1 = net.channels.CAN1  # inproc: no controller, so nothing for a reader to advance
+            net.on_health(can1, lambda s: None)
+            self.assertFalse(any(k is can1 for k in net._listened))
+            net.on_message(can1, None, lambda f: None)
+            self.assertTrue(any(k is can1 for k in net._listened))
+
+    def test_a_clean_stop_frees_the_process(self):
+        net = blobly.Project(SIM_DEMO)
+        net.start()
+        self.assertTrue(net.stop())
+        self.assertTrue(blobly.wait_released(0))
+        self.assertTrue(net.stop(), "a stop of nothing started holds nothing")
 
 
 class TestThreads(unittest.TestCase):
