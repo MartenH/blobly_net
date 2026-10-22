@@ -49,7 +49,8 @@ def wait_released(timeout_ms: float | None = None) -> bool:
     def free(part):  # True, or None while a loop is still letting go; any other answer is False
         rc = _lib.check(lib.bb_wait_released(part))
         return None if rc == _lib.BB_RELEASING else rc == 0
-    return _sliced(free, ms) is True
+    # a last look once the wait is over: unlike a frame, a release is not consumed by asking
+    return _sliced(free, ms) is True or free(0) is True
 
 
 __all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventLoop", "Exchange", "Extended",
