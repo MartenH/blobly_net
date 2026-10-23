@@ -12,10 +12,20 @@ the ECU under test subtracted by DBC sender as each row's `replay:` block says."
 import ctypes
 import math
 import os
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from . import _lib
 from .events import _sliced
+
+if TYPE_CHECKING:
+    from .project import Channel, Project
+
+# what a replay or a recording takes as its channels: a Channel or its name, or several
+Targets: TypeAlias = "Channel | str | Sequence[Channel | str]"
+# a file's path, as open() takes it
+Path: TypeAlias = "str | os.PathLike[str]"
 
 
 @dataclass(frozen=True)
@@ -50,7 +60,7 @@ class RecordCounts:
     dropped: int
 
 
-def _rows(project, channels):
+def _rows(project: "Project", channels: Targets) -> "tuple[list[Channel], ctypes.Array[ctypes.c_int]]":
     """The Channels `channels` names (a Channel, a name, or a list of them) and their row indexes."""
     many = channels if isinstance(channels, (list, tuple)) else [channels]
     if not many:
@@ -59,14 +69,14 @@ def _rows(project, channels):
     return chans, (ctypes.c_int * len(chans))(*[c._index for c in chans])
 
 
-def _absolute(path):
+def _absolute(path: Path) -> str:
     """`path` made absolute by joining, not normalising: `link/..` stays for the filesystem to walk,
     which goes to the link's target's parent."""
     p = os.fspath(path)
     return p if os.path.isabs(p) else os.path.join(os.getcwd(), p)
 
 
-def _text(name, v):
+def _text(name: str, v: "Path | None") -> bytes | None:
     if v is None:
         return None
     if not isinstance(v, (str, os.PathLike)):
@@ -77,7 +87,7 @@ def _text(name, v):
     return b
 
 
-def _rate(v):
+def _rate(v: object) -> float:
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
         raise ValueError(f"speed {v!r}: a finite rate above 0")
     return float(v)
@@ -89,7 +99,11 @@ class Replay:
     `notes` is what the plan kept and withheld per channel. `with` stops it at the end of the
     block, and so does a stop of the project."""
 
-    def __init__(self, project, channels, source, speed, loop, paused, exclude, bus):
+    channels: "list[Channel]"
+    notes: list[str]
+
+    def __init__(self, project: "Project", channels: Targets, source: "Path | None", speed: float | None,
+                 loop: bool | None, paused: bool, exclude: Iterable[str] | None, bus: str | None):
         self.channels, rows = _rows(project, channels)
         o = _lib.BbReplayOpts()
         lib = _lib.lib()
@@ -114,7 +128,7 @@ class Replay:
             self._h = _lib.check(lib.bb_replay_start(rows, len(rows), ctypes.byref(o)))
         self.notes = _lib.string(lib.bb_replay_notes, self._h).split("\n")
 
-    def _call(self, fn, *args):
+    def _call(self, fn: str, *args: int | float) -> None:
         _lib.check(getattr(_lib.lib(), fn)(self._h, *args))
 
     def pause(self) -> None:
@@ -165,7 +179,7 @@ class Replay:
     def __enter__(self) -> "Replay":
         return self
 
-    def __exit__(self, *exc) -> bool:
+    def __exit__(self, *exc: object) -> Literal[False]:
         self.stop()
         return False
 
@@ -179,7 +193,10 @@ class Recording:
     host's monotonic clock in seconds (blobly.now_ms() / 1000). `with` stops it at the end of the
     block."""
 
-    def __init__(self, project, path, channels):
+    channels: "list[Channel]"
+    path: str
+
+    def __init__(self, project: "Project", path: Path, channels: Targets):
         self._project = project
         self.channels, rows = _rows(project, channels)
         self.path = _absolute(path)
@@ -191,7 +208,7 @@ class Recording:
         self._last = None
 
     @staticmethod
-    def _counts(r):
+    def _counts(r: _lib.BbRecordReport) -> RecordCounts:
         return RecordCounts(r.frames, r.ours, r.theirs, r.missed, r.dropped)
 
     def counts(self) -> RecordCounts:
@@ -219,7 +236,7 @@ class Recording:
     def __enter__(self) -> "Recording":
         return self
 
-    def __exit__(self, *exc) -> bool:
+    def __exit__(self, *exc: object) -> Literal[False]:
         self.stop()
         return False
 
@@ -230,8 +247,8 @@ class Recording:
 class Replays:
     """Replay and recording on the project's run, for Project (it supplies _resolve)."""
 
-    def replay(self, channels, source: str | os.PathLike | None = None, *, speed: float | None = None,
-               loop: bool | None = None, paused: bool = False, exclude: list[str] | None = None,
+    def replay(self, channels: Targets, source: "Path | None" = None, *, speed: float | None = None,
+               loop: bool | None = None, paused: bool = False, exclude: Iterable[str] | None = None,
                bus: str | None = None) -> Replay:
         """Plays a recording onto `channels` (a Channel or its name, or a list of them, on one
         clock) of the started project, and returns its Replay. What is left None their rows'
@@ -243,7 +260,7 @@ class Replays:
         disagreeing about what was left None."""
         return Replay(self, channels, source, speed, loop, paused, exclude, bus)
 
-    def record(self, path: str | os.PathLike, channels) -> Recording:
+    def record(self, path: Path, channels: Targets) -> Recording:
         """Records what `channels` (a Channel or its name, or a list of them, one per wire) of the
         started project carry to the candump .log at `path`, created or truncated, and returns
         its Recording."""
