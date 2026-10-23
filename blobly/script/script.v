@@ -23,6 +23,7 @@ import blobly.candb
 import blobly.project
 import blobly.udsconn
 import blobly.sysview
+import blobly.replay
 
 // ChanInfo is one channel a script may address by name: its bus interface and
 // the DBC catalog used for decode/encode on it.
@@ -40,6 +41,8 @@ pub:
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
 	nodes []project.NodeCfg
+	// the row's verify: entries: what a received frame's E2E is judged by first (e2e.v)
+	verify []project.ProtectCfg
 	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
 	// channel whatever its type, so a DoIP channel failed with "No such device" from the CAN
 	// layer: the tool could simulate a DoIP ECU it could not then test.
@@ -48,6 +51,9 @@ pub:
 	// 0 is project.default_bitrate, and no data rate is the nominal one
 	nominal   int
 	data_rate int
+	// the row's `replay:` block, its source resolved against the project: what replay.start
+	// plays when the script names no source
+	replay ?project.Replay
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
@@ -105,6 +111,8 @@ mut:
 	chans []ChanInfo
 	conns []UdsConn
 	buses map[string]&transport.MeteredBus
+	// the raw ISO-TP channels isotp.open opened (isotp.v)
+	isotps []IsotpConn
 	// every SOME/IP request session this run has sent: none is sent twice, so a late reply to a
 	// timed-out call cannot complete a later one
 	someip_sessions someip.Sessions
@@ -119,8 +127,15 @@ mut:
 	running []Running
 	// sys_mono_now when the run ends (set_deadline); 0 is none
 	deadline u64
+	// per channel: the E2E verdicts on what its handle reads, and the declared E2E counters of
+	// what the script sends by name (e2e.v)
+	e2e_rx map[string]&sim.E2eReader
+	e2e_tx map[string]&sim.E2eStamper
 	// the coroutine (its lua_State) the deadline was first raised in; 0 before
 	timeout_co u64
+	// the replays and recordings the script started, stopped by close (replay.v)
+	replays []&replay.Session
+	records []&replay.Recorder
 pub mut:
 	// The run's generators, which gen.* controls (generators.v): cmd/script's headless run; none in
 	// the GUI, whose generators are its panel's.
@@ -130,6 +145,9 @@ pub mut:
 	sys sysview.System
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
+	// How a replay's buses are opened (replay.start): they REPRODUCE a recording, framed as it was
+	// recorded. Unset, `opener`; the GUI supplies a tap that files them as its simulation's.
+	reproducer BusOpener = unsafe { nil }
 	results   []TestResult
 	on_output fn (string) = fn (s string) {
 		println(s)
@@ -199,6 +217,9 @@ pub fn (env &Env) total() int {
 // close, the loss booked by the close itself was never reported.
 pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 	mut out := map[string]transport.BusDiagnostics{}
+	for e in env.stop_replays() {
+		env.emit('record: ${e}')
+	}
 	for i, mut c in env.conns {
 		if !c.closed {
 			c.ch.close()
@@ -209,6 +230,15 @@ pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 			// on one channel are two answers, and so are two opens of one address pair
 			// (codex rounds 10 and 13 on #231).
 			out['${c.chan} (uds #${i} 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
+		}
+	}
+	for i, mut c in env.isotps {
+		if !c.closed {
+			c.ch.close()
+		}
+		d := c.ch.diagnostics()
+		if !d.is_empty() {
+			out['${c.chan} (isotp #${i} 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
 		}
 	}
 	for name, mut b in env.buses {
@@ -347,6 +377,9 @@ fn (mut env Env) register_all() {
 	env.register_metrics()
 	env.register_gens()
 	env.register_nodes()
+	env.register_isotp()
+	env.register_replay()
+	env.register_e2e()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -514,20 +547,22 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 					return Expired{}
 				}
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
-				// holding keeps working rather than being orphaned by the repair.
+				// holding keeps working rather than being orphaned by the repair; its requests go
+				// where they went (a retarget) and the client keeps what it knew of the ECU.
+				target := u16(c.ch.rx_id)
 				c.ch.close()
-				fresh := udsconn.open_doip(info.carrier) or {
+				mut fresh := udsconn.open_doip(info.carrier) or {
 					return error('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 				}
+				fresh.retarget(target)
 				mut fresh_ch := isotp.Channel(fresh)
-				// the sizes stated on the old connection (did_size, a node's description) hold on
-				// the new one; what it established does not
-				mut cli := uds.new_client(fresh_ch)
-				cli.did_lens = c.cli.did_lens.clone()
-				cli.ext_lens = c.cli.ext_lens.clone()
+				// what was stated on the old connection (its sizes, a node's description, its timing)
+				// holds on the new one; what it established does not
+				mut fresh_cli := uds.new_client(fresh_ch)
+				fresh_cli.carry_from(&c.cli)
 				env.conns[i] = UdsConn{
 					ch:   fresh_ch
-					cli:  env.bound_client(mut fresh_ch, cli)
+					cli:  env.bound_client(mut fresh_ch, fresh_cli)
 					chan: name
 				}
 				return i
@@ -651,7 +686,9 @@ fn l_doip_discover(l lua.State) i32 {
 // can reach this from a Lua suite: it fires against a real ECU on a bench, where it cannot be
 // caught by CI. The distinction is at least pinned by a unit test.
 fn probe_says_dead(err IError) bool {
-	return err !is uds.NegativeResponse
+	// a DoIP negative acknowledgement the entity keeps the connection after is it answering too: a
+	// target it does not route (a node behind a gateway the probe was retargeted to)
+	return err !is uds.NegativeResponse && !doip.nack_alive(err.msg())
 }
 
 // l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,
@@ -1315,7 +1352,8 @@ fn l_bus_recv(l lua.State) i32 {
 	l.push_bool(frame.extended)
 	l.push_bytes(frame.data)
 	push_received(l, frame)
-	return 8
+	push_e2e(l, env.e2e_verdict(name, frame))
+	return 9
 }
 
 fn l_msg_template(l lua.State) i32 {

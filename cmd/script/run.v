@@ -195,9 +195,11 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 			key_iface: c.cfg.iface
 			db:        c.db
 			nodes:     c.cfg.all_nodes() // so a fault that cannot take effect can be refused
+			verify:    c.cfg.verify // what a received frame's E2E is judged by first
 			carrier:   script.carrier_of(c.cfg)
 			nominal:   nominal
 			data_rate: data_rate
+			replay:    c.replay_cfg(os.dir(hrun.path))
 		}
 	}
 	mut env := script.new_env(chans) or {
@@ -223,6 +225,10 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		w.mu.unlock()
 		mut failure := ''
 		env.run_file(s) or { failure = err.msg() }
+		// what this script left playing or recording ends with it; a recording that failed is its error
+		for e in env.stop_replays() {
+			failure = if failure == '' { e } else { '${failure}; ${e}' }
+		}
 		if env.expired() {
 			o.timed_out = true
 			o.script = s

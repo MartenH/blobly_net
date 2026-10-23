@@ -1,7 +1,8 @@
 /* smoke.c — a C host of libblobly: loads the library at run time, brings sim-demo up, hears
  * its simulated ECUs on inproc:CAN1, sends a frame, and does the same from a thread the HOST
  * created — the one the V runtime's collector did not see born — encodes and decodes through
- * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS, arms and clears a
+ * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS and over raw ISO-TP,
+ * states a UDS handle's timing, retargets a DoIP handle, arms and clears a
  * fault and stamps an E2E Profile 1 frame, flashes a simulated bootloader on CAN1 with C
  * callbacks, fires and cycles a generator, then stops and starts again.
  *
@@ -10,6 +11,7 @@
  *
  * Exit 0 only when every step held; each failure names the step and bb_last_error. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "bb.h"
 
@@ -21,6 +23,7 @@ static void *lib_sym(lib_t l, const char *n) { return (void *)GetProcAddress(l, 
 #else
 #include <dlfcn.h>
 #include <pthread.h>
+#include <unistd.h>
 typedef void *lib_t;
 static lib_t lib_open(const char *p) { return dlopen(p, RTLD_NOW); }
 static void *lib_sym(lib_t l, const char *n) { return dlsym(l, n); }
@@ -67,6 +70,10 @@ static fault_fn bb_sim_fault_p;
 static int_fn bb_sim_clear_faults_p;
 static p01_crc_fn bb_e2e_p01_crc_p;
 static p01_protect_fn bb_e2e_p01_protect_p;
+typedef int (*e2e_attach_fn)(int, int);
+typedef int (*e2e_stamp_fn)(int, int, bb_frame *);
+static e2e_attach_fn bb_e2e_attach_p;
+static e2e_stamp_fn bb_e2e_stamp_p;
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
 typedef int (*flash_defaults_fn)(bb_flash_opts *);
 typedef int (*flash_program_fn)(int, const uint8_t *, int, const bb_flash_opts *, bb_flash_report *);
@@ -98,6 +105,18 @@ static int (*bb_gen_fire_p)(int, int64_t, int64_t);
 static int (*bb_gen_stop_p)(int);
 static int (*bb_gen_count_p)(void);
 static int (*bb_gen_run_p)(int64_t *);
+typedef int (*replay_defaults_fn)(bb_replay_opts *);
+typedef int (*replay_start_fn)(const int *, int, const bb_replay_opts *);
+typedef int (*replay_info_fn)(int, bb_replay_info *);
+typedef int (*record_start_fn)(const int *, int, const char *);
+typedef int (*record_report_fn)(int, bb_record_report *);
+typedef int (*int2_fn)(int, int);
+static replay_defaults_fn bb_replay_defaults_p;
+static replay_start_fn bb_replay_start_p;
+static replay_info_fn bb_replay_status_p, bb_replay_stop_p;
+static int2_fn bb_replay_wait_p;
+static record_start_fn bb_record_start_p;
+static record_report_fn bb_record_stop_p;
 static int_int_fn bb_message_count_p;
 static msg_info_fn bb_message_info_p;
 static msg_str_fn bb_message_name_p;
@@ -116,6 +135,16 @@ static recv_fn bb_bus_recv_p;
 static i64_fn bb_now_ns_p;
 static int_int_fn bb_bus_health_p, bb_bus_close_p, bb_channel_kind_p, bb_channel_health_source_p, bb_wait_released_p,
 	bb_uds_close_p;
+
+/* raw ISO-TP, UDS timing and the DoIP retarget */
+static int (*bb_isotp_open_p)(int, int64_t, int64_t, bb_uds_target *);
+static int (*bb_isotp_send_p)(int, const uint8_t *, int);
+static int (*bb_isotp_recv_p)(int, int, uint8_t *, int);
+static int_int_fn bb_isotp_close_p, bb_uds_tester_present_p;
+static int (*bb_uds_get_timing_p)(int, bb_uds_timing *);
+static int (*bb_uds_set_wait_p)(int, int, int);
+static int (*bb_uds_check_wait_p)(int, int);
+static int (*bb_uds_retarget_p)(int, const int64_t *);
 
 typedef int (*load_fn)(int, bb_busload *);
 typedef int (*diag_fn)(int, bb_diagnostics *);
@@ -213,6 +242,11 @@ static int dbc_steps(int row) {
 	const char *bad[] = {"Nope"};
 	CHECK(bb_encode_p(row, pt, 1, bad, values, &f) == BB_ERR && strstr(bb_last_error_p(), "unknown signal \"Nope\" in Powertrain"),
 		"an unknown signal must refuse by name");
+	/* sim-demo declares no E2E: a stamp leaves the frame as encoded, and a short one is refused */
+	bb_encode_p(row, pt, 2, names, values, &f);
+	CHECK(bb_e2e_stamp_p(row, pt, &f) == BB_NONE && memcmp(f.data, want, 8) == 0, "Powertrain declares no E2E to stamp");
+	f.len = 4;
+	CHECK(bb_e2e_stamp_p(row, pt, &f) == BB_ERR && strstr(bb_last_error_p(), "shorter than Powertrain"), "a short frame must refuse");
 
 	/* decode it back: the message, each signal's physical value, every one carried */
 	bb_encode_p(row, pt, 2, names, values, &f);
@@ -231,9 +265,10 @@ static int dbc_steps(int row) {
 	/* what the simulated SUT sends decodes too */
 	int h = bb_bus_open_p("inproc:CAN1");
 	CHECK(h >= 0, "open for decode");
+	CHECK(bb_e2e_attach_p(h, row) == 0, "sim-demo's CAN1 has no message with E2E to judge");
 	int decoded = 0;
 	for (int i = 0; i < 20 && !decoded; i++) {
-		CHECK(bb_bus_recv_p(h, 1000, &f) == 0, "recv for decode");
+		CHECK(bb_bus_recv_p(h, 1000, &f) == 0 && f.e2e == BB_E2E_NONE, "recv for decode");
 		decoded = bb_decode_p(row, &f, &m, got, on, 16) == 0;
 	}
 	bb_bus_close_p(h);
@@ -298,6 +333,52 @@ static int doip_steps(int doip) {
 	return 0;
 }
 
+/* raw ISO-TP on CAN1 (sim-demo's SUT answers 0x7E0 / 0x7E8), a UDS handle's timing, and a DoIP
+ * handle moved to another target (sim-demo's entity routes to none: it refuses one) and back */
+static int isotp_steps(int row, int doip) {
+	bb_uds_target t;
+	CHECK(bb_isotp_open_p(doip, 0x7E0, 0x7E8, &t) == BB_ERR && strstr(bb_last_error_p(), "carries no ISO-TP"), "raw ISO-TP on a DoIP row must refuse");
+	int h = bb_isotp_open_p(row, 0x7E0, 0x7E8, &t);
+	CHECK(h >= 0 && t.tx == 0x7E0 && t.rx == 0x7E8 && !t.ext, "open raw ISO-TP on CAN1");
+	uint8_t msg[64];
+	CHECK(bb_isotp_send_p(h, (const uint8_t *)"\x22\xF1\x90", 3) == 0, "send 22 F1 90");
+	CHECK(bb_isotp_recv_p(h, 1000, msg, sizeof msg) == 20 && msg[0] == 0x62 && memcmp(msg + 3, "BLOBLYNETV0SUT001", 17) == 0,
+		"the VIN answer, reassembled");
+	CHECK(bb_isotp_send_p(h, (const uint8_t *)"\x22\xF1", 2) == 0 && bb_isotp_recv_p(h, 1000, msg, sizeof msg) == 3
+		&& msg[0] == 0x7F && msg[2] == 0x13, "a malformed request answered 7F 22 13");
+	CHECK(bb_isotp_recv_p(h, 50, msg, sizeof msg) == BB_ERR_TIMEOUT, "nothing more is a timeout");
+	CHECK(bb_isotp_send_p(h, msg, 0) == BB_ERR && bb_isotp_recv_p(h, -1, msg, sizeof msg) == BB_ERR, "an empty message and a negative wait refused");
+	CHECK(bb_isotp_close_p(h) == 0 && bb_isotp_close_p(h) == BB_ERR_HANDLE, "a closed ISO-TP handle is gone");
+
+	CHECK(bb_uds_check_wait_p(BB_WAIT_MARGIN, 0) == 0 && bb_uds_check_wait_p(BB_WAIT_PENDING_BUDGET, 0) == BB_ERR,
+		"a wait checked of no handle");
+	int64_t tx = 0x6F0, rx = 0x6F8;  /* nothing answers there */
+	int u = bb_uds_open_p(row, &tx, &rx, &t);
+	bb_uds_timing tm;
+	CHECK(u >= 0 && bb_uds_get_timing_p(u, &tm) == 0 && tm.timeout_ms == 1000 && tm.p2_star_ms == 5000 && tm.margin_ms == 1000
+		&& tm.pending_budget_ms == 120000, "the default timing");
+	CHECK(bb_uds_set_wait_p(u, BB_WAIT_TIMEOUT, 0) == BB_ERR && bb_uds_set_wait_p(u, 4, 100) == BB_ERR,
+		"a first wait of 0 ms, and a wait bb.h does not name, must refuse");
+	CHECK(bb_uds_set_wait_p(u, BB_WAIT_TIMEOUT, 100) == 0 && bb_uds_get_timing_p(u, &tm) == 0 && tm.timeout_ms == 100
+		&& tm.margin_ms == 1000, "a first wait of 100 ms, the others kept");
+	int64_t t0 = bb_now_ns_p();
+	CHECK(bb_uds_tester_present_p(u) == BB_ERR_TIMEOUT && bb_now_ns_p() - t0 < 600000000LL, "nobody answers within the 100 ms");
+	int64_t node = 0x2000;
+	CHECK(bb_uds_retarget_p(u, &node) == BB_ERR, "a CAN handle has no target to move");
+	CHECK(bb_uds_close_p(u) == 0, "close the CAN handle");
+
+	u = bb_uds_open_p(doip, NULL, NULL, &t);
+	CHECK(u >= 0 && bb_uds_retarget_p(u, &node) == 0, "retarget the DoIP handle");
+	CHECK(bb_uds_read_did_p(u, 0xF190, msg, sizeof msg) == BB_ERR_CARRIER && strstr(bb_last_error_p(), "negative ack"),
+		"an entity with nothing behind it refuses the target");
+	int64_t past16 = 0x10000;  /* not `far`: windows.h defines that away */
+	CHECK(bb_uds_retarget_p(u, &past16) == BB_ERR && bb_uds_retarget_p(u, NULL) == 0, "past 16 bits refused; back to the row's address");
+	CHECK(bb_uds_read_did_p(u, 0xF190, msg, sizeof msg) == 17, "the VIN again");
+	CHECK(bb_uds_close_p(u) == 0, "close the DoIP handle");
+	printf("ok   raw ISO-TP on CAN1, a UDS handle's timing, a DoIP handle retargeted and back\n");
+	return 0;
+}
+
 /* faults on CAN1's simulated ECUs, refused by name where they could not take effect, and E2E
  * Profile 1 on blobly_emb overspeed's BrakeStatus layout (blobly/sim/e2e_p01_test.v's vectors) */
 static int fault_steps(int row, int doip) {
@@ -353,6 +434,43 @@ static int gen_steps(void) {
 	CHECK(bb_gen_set_p(wake, "Counter", 1) == BB_ERR && strstr(bb_last_error_p(), "raw frame"), "a raw frame has no signals");
 	CHECK(bb_gen_find_p("nope") == BB_ERR, "an unknown generator must refuse");
 	printf("ok   generators fired, cycled and refused by name\n");
+	return 0;
+}
+
+/* samples/demo.log replayed onto CAN1 at 50x while CAN1 is recorded: every frame the replay sent
+ * is in the file as ours */
+static int replay_steps(int row, const char *project) {
+	static char source[4096], out[4096];
+	const char *slash = strrchr(project, '/'), *back = strrchr(project, '\\');
+	if (back > slash) slash = back;
+	if (slash) snprintf(source, sizeof source, "%.*s/../samples/demo.log", (int)(slash - project), project);
+	else snprintf(source, sizeof source, "../samples/demo.log");
+	const char *tmp = getenv("TMPDIR") ? getenv("TMPDIR") : getenv("TEMP") ? getenv("TEMP") : ".";
+#ifdef _WIN32
+	long pid = (long)GetCurrentProcessId();
+#else
+	long pid = (long)getpid();
+#endif
+	snprintf(out, sizeof out, "%s/bb_smoke_replay_%ld.log", tmp, pid);
+	int rows[1] = {row};
+	int rec = bb_record_start_p(rows, 1, out);
+	CHECK(rec >= 0, "record start");
+	bb_replay_opts o;
+	CHECK(bb_replay_defaults_p(&o) == 0 && o.loop == -1 && o.source == NULL, "replay defaults");
+	o.source = source;
+	o.speed = 50;
+	o.loop = 0;
+	int r = bb_replay_start_p(rows, 1, &o);
+	CHECK(r >= 0, "replay start");
+	CHECK(bb_replay_wait_p(r, 5000) == 0, "replay runs out");
+	bb_replay_info st;
+	CHECK(bb_replay_stop_p(r, &st) == 0 && st.state == BB_REPLAY_FINISHED && st.sent == 60 && st.ended, "replay status");
+	CHECK(bb_replay_status_p(r, &st) == 0 && st.ended && st.sent == 60, "a stopped replay's handle stays readable");
+	bb_record_report c;
+	CHECK(bb_record_stop_p(rec, &c) == 0 && c.ours >= 60 && c.frames == c.ours + c.theirs, "record report");
+	remove(out);
+	printf("ok   a replay of %lld frames recorded, %lld of %lld lines ours\n", (long long)st.sent, (long long)c.ours,
+	       (long long)c.frames);
 	return 0;
 }
 
@@ -430,11 +548,16 @@ int main(int argc, char **argv) {
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
+	SYM(bb_e2e_attach); SYM(bb_e2e_stamp);
 	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
 	SYM(bb_node_count); SYM(bb_node_info); SYM(bb_system_path);
+	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present);
+	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_check_wait); SYM(bb_uds_retarget);
+	SYM(bb_replay_defaults); SYM(bb_replay_start); SYM(bb_replay_wait); SYM(bb_replay_status); SYM(bb_replay_stop);
+	SYM(bb_record_start); SYM(bb_record_stop);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -488,10 +611,12 @@ int main(int argc, char **argv) {
 	if (dbc_steps(can1)) return 1;
 	if (uds_steps(can1)) return 1;
 	if (doip_steps(doip)) return 1;
+	if (isotp_steps(can1, doip)) return 1;
 	if (fault_steps(can1, doip)) return 1;
 	if (flash_steps(can1)) return 1;
 	if (gen_steps()) return 1;
 	if (node_steps()) return 1;
+	if (replay_steps(can1, argv[2])) return 1;
 	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32

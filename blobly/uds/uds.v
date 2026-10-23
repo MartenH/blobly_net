@@ -56,14 +56,18 @@ pub struct Client {
 mut:
 	ch isotp.Channel = isotp.UnopenedChannel{}
 pub mut:
-	timeout_ms        int = 1000
-	p2_star_ms        int = default_p2_star_ms
-	margin_ms         int = 1000
-	pending_budget_ms int = 120_000
-	// snapshot DID sizes learned by reading them (dtc_records.v), and the extended data records'
-	// sizes (empty = blobly_ext_records)
+	timeout_ms        int = default_timing.timeout_ms
+	p2_star_ms        int = default_timing.p2_star_ms
+	margin_ms         int = default_timing.margin_ms
+	pending_budget_ms int = default_timing.pending_budget_ms
+	// snapshot DID sizes learned by reading them (dtc_records.v) or stated, and the extended data
+	// records' sizes (empty = blobly_ext_records)
 	did_lens map[u16]int
 	ext_lens map[u8]int
+	// what the host stated (set_timing, set_did_size): a client that moves to another ECU on its
+	// carrier starts again from it (another_ecu, timing.v)
+	stated          Timing = default_timing
+	stated_did_lens map[u16]int
 	// how the last request went, on the monotonic clock: set by every exchange, answered or not
 	last ExchangeTiming
 	// how many requests this client has put on the carrier: a caller running several exchanges as
@@ -686,7 +690,12 @@ fn (mut c Client) adopt(resp []u8) {
 		c.p2_star_ms = t.p2_star_ms
 	}
 	if t.p2_ms + c.margin_ms > c.timeout_ms {
-		c.timeout_ms = t.p2_ms + c.margin_ms
+		// never past what a host may state, so a later partial set_timing still validates
+		c.timeout_ms = if t.p2_ms + c.margin_ms < max_timing_ms {
+			t.p2_ms + c.margin_ms
+		} else {
+			max_timing_ms
+		}
 	}
 }
 

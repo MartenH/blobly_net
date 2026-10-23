@@ -55,9 +55,11 @@ extern "C" {
  * truncated. `t_ns` is when a received frame arrived, on the host's monotonic clock (bb_now_ns), in
  * nanoseconds: the frame's own receive stamp where the backend reads one (SocketCAN's kernel stamp;
  * a foreign device clock mapped onto the host's) — the time the GUI's trace gives that frame —
- * else its receipt, when this call read it. Ignored on a send; 0 from bb_encode. The layout may grow between versions until
- * the ABI has a stability policy (#507 Phase 3): a host is built against the bb.h of the library
- * it loads, as the Python package ships with its own. */
+ * else its receipt, when this call read it. Ignored on a send; 0 from bb_encode. `e2e` is a
+ * received frame's E2E verdict, an enum bb_e2e: BB_E2E_NONE (0) unless the handle that read it was
+ * bound to a row by bb_e2e_attach and the frame's message has E2E there; ignored on a send. The
+ * layout may grow between versions until the ABI has a stability policy (#507 Phase 3): a host is
+ * built against the bb.h of the library it loads, as the Python package ships with its own. */
 typedef struct bb_frame {
 	uint32_t id;
 	uint8_t  len;
@@ -67,8 +69,21 @@ typedef struct bb_frame {
 	uint8_t  rtr;
 	uint8_t  esi;
 	uint8_t  data[64];
+	uint8_t  e2e;
 	int64_t  t_ns;
 } bb_frame;
+
+/* A received frame's E2E verdict (bb_frame.e2e, "E2E on a row's frames" below). */
+enum bb_e2e {
+	BB_E2E_NONE = 0,       /* not judged: no E2E for its message on the row, or a remote frame */
+	BB_E2E_OK = 1,
+	BB_E2E_BAD_CRC = 2,    /* the CRC does not match the frame's bytes */
+	BB_E2E_REPEATED = 3,   /* the counter repeated the previous frame's: no new data */
+	BB_E2E_SKIPPED = 4,    /* the counter jumped (frames lost, or the sender restarted), or holds a
+	                          value the profile never sends (Profile 1's 15) */
+	BB_E2E_TRUNCATED = 5,  /* shorter than its message: its E2E fields are not all there */
+	BB_E2E_TIMEOUT = 6     /* later than its message's E2ETimeout after the last valid frame */
+};
 
 /* The controller's fault ladder (transport.BusHealth), as bb_bus_health returns it. */
 enum bb_health {
@@ -342,6 +357,46 @@ typedef struct bb_wave {
 	double value, offset, amplitude, freq, phase, min, max, period, start, step, modulo, count, base;
 } bb_wave;
 
+/* Replay and recording (bb_replay_*, bb_record_*). */
+enum bb_replay_state {   /* player.State */
+	BB_REPLAY_STOPPED = 0,   /* not reported: a replay starts playing or paused, and `ended` says it was stopped */
+	BB_REPLAY_PLAYING = 1,
+	BB_REPLAY_PAUSED = 2,
+	BB_REPLAY_FINISHED = 3   /* a non-looping replay ran out; resuming starts it again */
+};
+
+/* How a replay starts (bb_replay_start); bb_replay_defaults fills every field with "the rows'". */
+typedef struct bb_replay_opts {
+	const char *source;   /* the recording (.log or .mf4); NULL or "": the rows' replay: source */
+	double      speed;    /* the rate; 0 or less: the rows' (1 for a row without a replay: block) */
+	int32_t     loop;     /* 1 loop, 0 play once, -1 the rows' */
+	int32_t     paused;   /* 1: start paused at the beginning */
+	const char *exclude;  /* the nodes subtracted by DBC sender, one per line, in place of each
+	                         row's own; NULL: the rows' */
+	const char *bus;      /* the recorded bus, for one row; NULL or "": the row's */
+} bb_replay_opts;
+
+/* What a replay is doing (bb_replay_status, bb_replay_stop). */
+typedef struct bb_replay_info {
+	int32_t state;       /* an enum bb_replay_state */
+	uint8_t loop;
+	uint8_t ended;       /* stopped: its buses are let go */
+	int32_t passes;      /* complete passes, the last of a non-looping replay included */
+	double  position_s;  /* seconds into the recording */
+	double  duration_s;
+	double  speed;
+	int64_t sent;        /* frames the drivers took since the replay (re)started */
+	int64_t failed;      /* frames a driver refused: bb_replay_error names the first */
+} bb_replay_info;
+
+/* What a recording holds (bb_record_counts, bb_record_stop). */
+typedef struct bb_record_report {
+	int64_t frames;  /* lines written */
+	int64_t ours;    /* frames this process sent (the tester, a simulated ECU, a replay): " T" */
+	int64_t theirs;  /* frames nobody here sent: " R" */
+	int64_t missed;  /* frames this process sent that never came back to the recorder (not written) */
+	int64_t dropped; /* frames the recorder's own handles lost before it read them (Bus.diagnostics) */
+} bb_record_report;
 /* The system model: a node of the run's system.toml (bb_node_info). Its name is bb_node_name's. */
 typedef struct bb_node {
 	int32_t dids;           /* the DIDs it lists, bb_did_*'s d 0 .. dids - 1: its description's own,
@@ -433,7 +488,10 @@ typedef struct bb_write_needs {
                                      routine's result, a malformed download answer), or it was
                                      cancelled; a step the bootloader refused or did not answer is
                                      that step's UDS failure (BB_ERR_NEGATIVE, BB_ERR_TIMEOUT ...) */
-#define BB_ERR_GATED        (-12) /* bb_uds_write_described: not sent, since the connection has not
+#define BB_ERR_E2E          (-12) /* returned by no call: the code a host gives a received frame
+                                     that failed its E2E check (bb_frame.e2e) where it required it to
+                                     pass, so every host's codes are one list */
+#define BB_ERR_GATED        (-13) /* bb_uds_write_described: not sent, since the connection has not
                                      established the session or the security level the DID's
                                      write gate needs; bb_write_needs says which */
 
@@ -739,6 +797,33 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
                        int counter, const char *mode);           /* in place: `counter` (0..14)
                                                                     into counter_pos's low nibble,
                                                                     then the CRC at crc_pos */
+/* E2E on a row's frames (cmd/libblobly/e2e.v), the rules the Lua prelude's frame.e2e and
+ * bus.send_message follow (blobly/sim e2e_script.v). From bb_start until bb_stop (BB_ERR_STATE
+ * otherwise).
+ *
+ * bb_e2e_attach binds handle h to row `row` of the run: each frame bb_bus_recv reads on it from then
+ * on carries its verdict in bb_frame.e2e, by its message's E2E on the row — the row's verify: entry
+ * for it, else what its database declares (E2ECounterSignal, E2ECrcSignal, E2EProfile, E2EDataId);
+ * a simulated node's protect: entry is its own word as a sender, not a receiver's contract. The
+ * CRC; the counter against the frame of that id the handle read before it (so one it missed makes
+ * the next a skip); and the time since the last valid frame (its CRC right, its counter new: not a
+ * repeat, nor Profile 1's 15) against the message's E2ETimeout, measured between the frames' own
+ * receive stamps in one clock domain (SocketCAN's kernel stamp, the CAN bridge's clock), never
+ * their placement on the host's clock — a frame with no stamp (a software bus, an adapter that
+ * reads none) is never late, and a valid one ends the gap being measured. Answers how many of the
+ * row's messages are judged; 0 binds nothing. On the thread that uses the handle; the binding is
+ * the run's, and a handle kept past bb_stop reads BB_E2E_NONE until it is attached again.
+ *
+ * bb_e2e_stamp writes message m's DECLARED E2E (its database's, as a simulated sender stamps it)
+ * into f, m's frame from bb_encode: the counter the next of the run's sends of m by name on the row,
+ * from 0, then the CRC over f's bytes; BB_NONE, f unchanged, where m declares none. A declaration
+ * that cannot be applied (an unknown profile, a CRC signal that is not one byte ...) is refused with
+ * BB_ERR rather than left unstamped, and so is a frame shorter than m's payload. A send that fails
+ * after its stamp has still used its counter, as AUTOSAR's protect counts each frame it protects.
+ * Any thread. */
+int bb_e2e_attach(int h, int row);               /* >= 0: how many messages are judged */
+int bb_e2e_stamp(int row, int m, bb_frame *f);
+
 /* SOME/IP, as the Lua someip.send, someip.call and someip.listen (blobly/someip). None needs a
  * started project but listening on a row's endpoint; each blocks for its window or wait, touches
  * no state, and may come from any (attached) thread. A destination is an IPv4 "host:port"; the
@@ -863,6 +948,121 @@ int bb_gen_stop(int g);
 int bb_gen_cycle(int g, int cycle_ms);
 int bb_gen_set(int g, const char *signal, double value);
 int bb_gen_source(int g, const char *signal, const bb_wave *w);
+
+/* Replay and recording to a file (blobly/replay), as the Lua replay.start and record.start.
+ *
+ * bb_replay_start plays a recording onto CAN rows rows[0..n-1] of the run, on one clock, by
+ * blobly/player: the ECU under test subtracted by DBC sender as each row's replay: block (or
+ * opts->exclude) says, what *opts leaves to the rows their replay: blocks deciding. Refused with
+ * BB_ERR where it would play something else than asked (no source, a recorded bus that does not
+ * resolve, an exclusion no row's database declares, two rows on one recorded or live bus, nothing
+ * left to play, rows disagreeing about a source, speed or loop *opts does not settle);
+ * BB_ERR_STATE before bb_start. Answers a handle. bb_replay_pause, _seek, _speed and _loop are
+ * applied before they return (bb_replay_status then says so); bb_replay_wait waits at most
+ * timeout_ms (negative: for ever) for a non-looping replay to run out or the replay to be stopped:
+ * 0 when it did, BB_NONE when not. bb_replay_stop stops it, lets its buses go and reads its last
+ * status; the handle stays readable (status, error, notes) and refuses a control. bb_stop stops
+ * every replay too, so none plays into the next run. Start and stop are state calls; the rest may
+ * come from any (attached) thread.
+ *
+ * bb_record_start writes what rows rows[0..n-1] carry to the candump .log at `path` (created or
+ * truncated), a line per frame as it is read: `(t) <row name> <id>#<data> T` for a frame this
+ * process sent, R for the rest, t the host's monotonic clock in seconds. Two rows on one wire are
+ * refused (each frame would be written twice), and so are two rows of one name (their lines could
+ * not be told apart); an existing file is truncated only once the rows' buses are open.
+ * bb_record_stop ends it and fills *out, the handle staying readable; BB_ERR when a write or a
+ * receive failed on the way, or a reader or a send did not finish within 2 s (the file keeps what
+ * was written before), *out still filled. bb_stop stops every recording too (what went wrong with
+ * one is then its bb_record_stop's to say: the error is kept on its handle), and a replay or a
+ * recording still letting go of its buses holds the process as a run's loop does (BB_RELEASING,
+ * bb_wait_released). */
+int bb_replay_defaults(bb_replay_opts *opts);
+int bb_replay_start(const int *rows, int n, const bb_replay_opts *opts);
+int bb_replay_notes(int r, char *buf, int cap);   /* >= 0: the length; what the plan kept and
+                                                     withheld per row, a line each */
+int bb_replay_pause(int r, int paused);           /* 1 pause, 0 resume */
+int bb_replay_seek(int r, double position_s);
+int bb_replay_speed(int r, double speed);
+int bb_replay_loop(int r, int on);
+int bb_replay_status(int r, bb_replay_info *out);
+int bb_replay_error(int r, char *buf, int cap);   /* >= 0: the length; the first failed send */
+int bb_replay_wait(int r, int timeout_ms);
+int bb_replay_stop(int r, bb_replay_info *out);
+int bb_record_start(const int *rows, int n, const char *path);
+int bb_record_counts(int h, bb_record_report *out);
+int bb_record_stop(int h, bb_record_report *out);
+#endif /* BB_FROM_V */
+
+/* Raw ISO-TP, UDS timing and the DoIP retarget (isotp.v, udstiming.v).
+ *
+ * A raw ISO-TP channel (ISO 15765-2) carries whole messages on a CAN row's request / response id
+ * pair with no UDS on top — a proprietary protocol over ISO-TP, or a malformed UDS request and the
+ * bytes that come back: the engine's software ISO-TP (blobly/isotp), the channel a UDS handle rides,
+ * opened by the same rule (blobly/udsconn) on a CAN row of the run (BB_ERR_STATE before bb_start).
+ * Both ids are given (no default pair), either past 0x7FF makes both 29-bit, and `out` (unless NULL)
+ * gets them. Classic addressing in 8-byte frames (sent FD on a row the project declares CAN-FD): a
+ * message is 1 .. 4095 bytes. As a receiver it asks for no pacing (Flow Control CTS, block size 0,
+ * STmin 0); as a sender it honours the receiver's.
+ * Handles as a UDS handle's: one thread uses one at a time, bb_isotp_close may come from another and
+ * ends a send or receive in progress there (BB_ERR_HANDLE) within 20 ms of the wait it is in; a
+ * handle outlives bb_stop. Open one handle per id pair: two on one rx (a UDS handle's included) each
+ * answer a First Frame with a Flow Control of their own.
+ *
+ * bb_isotp_send returns once the message is on the wire: a Single Frame at once, a longer one after
+ * the receiver's Flow Control, each awaited for 1000 ms (N_Bs) and the transfer 120 s in all —
+ * BB_ERR_TIMEOUT when none came, BB_ERR for a message it cannot carry (empty, past 4095 bytes) or a
+ * listen-only row, BB_ERR_CARRIER for the bus or the transfer failing (the receiver's overflow, too
+ * many waits). bb_isotp_recv waits at most timeout_ms (0: one look at what is queued; less than 0 is
+ * refused) for the next whole message on rx and answers its length, its bytes into the buffer as
+ * bb_uds_data's (bb_isotp_data copies them again, whole, until the next receive); BB_ERR_TIMEOUT when
+ * nothing whole came — a transfer begun is kept, and the next receive goes on with it, given up after
+ * 1000 ms with no Consecutive Frame (N_Cr: BB_ERR_CARRIER, as for a frame lost or not ISO-TP).
+ *
+ * A UDS handle's timing (blobly/uds Client) is the waits above bb_uds_open's: the first answer's
+ * (timeout_ms, 1000), the ECU's P2* after each responsePending (p2_star_ms, 5000 until a 0x10 answer
+ * names one) plus margin_ms (1000), and one request's whole allowance from its send
+ * (pending_budget_ms, 120000). bb_uds_get_timing reads them as they stand (a 0x10 answer adopts its
+ * P2*, and lengthens timeout_ms where its P2 needs more); bb_uds_set_wait states one of them, `which`
+ * an enum bb_uds_wait, from the next request on — refused with BB_ERR, nothing changed, for
+ * timeout_ms or pending_budget_ms outside 1 .. 3600000, or p2_star_ms or margin_ms outside
+ * 0 .. 3600000; bb_uds_check_wait answers the same of no handle (any thread), so a host refuses a
+ * wait before it opens a connection to state it on. They hold across the library's own reopen of a lost DoIP connection (P2* only where
+ * it loosens the new one's). Every call above is then bounded by them in place of the 1000 / P2* +
+ * 1000 / 120 s bb_uds_open states.
+ *
+ * bb_uds_retarget moves a DoIP handle's requests, and the answers it takes, to logical address
+ * *address (0 .. 0xFFFF; NULL: the row's ecu_address): a node behind the gateway the row's entity is
+ * (ISO 13400-2), on the one connection, so what the tester unlocked on the gateway there holds for
+ * the node. The target holds across a reopen of a lost connection, whose new routing activation
+ * carries no unlock: a gateway that routes only an unlocked tester refuses the node's requests again
+ * (a negative acknowledgement, BB_ERR_CARRIER) until it is unlocked on the new one. Another target is
+ * another ECU: the handle's waits go back to what was stated with bb_uds_set_wait (the rest to
+ * bb_uds_open's), and the snapshot DID sizes it learned are forgotten (bb_uds_did_size's are kept).
+ * On a connection
+ * that replaces another (bb_uds_replaces, or the library's reopen), a 0x27 key goes only to a target
+ * whose seed of its level was answered on it. BB_ERR on a CAN handle, whose target is its ids. */
+typedef struct bb_uds_timing {
+	int32_t timeout_ms;
+	int32_t p2_star_ms;
+	int32_t margin_ms;
+	int32_t pending_budget_ms;
+} bb_uds_timing;
+enum bb_uds_wait {
+	BB_WAIT_TIMEOUT = 0,         /* timeout_ms */
+	BB_WAIT_P2_STAR = 1,         /* p2_star_ms */
+	BB_WAIT_MARGIN = 2,          /* margin_ms */
+	BB_WAIT_PENDING_BUDGET = 3   /* pending_budget_ms */
+};
+#ifndef BB_FROM_V
+int bb_isotp_open(int row, int64_t tx, int64_t rx, bb_uds_target *out); /* >= 0: the handle */
+int bb_isotp_send(int h, const uint8_t *data, int n);
+int bb_isotp_recv(int h, int timeout_ms, uint8_t *buf, int cap);        /* >= 0: the length */
+int bb_isotp_data(int h, uint8_t *buf, int cap);
+int bb_isotp_close(int h);
+int bb_uds_get_timing(int u, bb_uds_timing *out);
+int bb_uds_set_wait(int u, int which, int ms);
+int bb_uds_check_wait(int which, int ms);
+int bb_uds_retarget(int u, const int64_t *address);
 /* The system model (docs/scripting.md, "Nodes"): blobly_emb's system.toml beside the project (or
  * beside one of its databases, or in its folder's parent) and each node's ecu.toml, as the RUN read
  * them — the description its simulated diagnostic servers answer by — from bb_start until bb_stop

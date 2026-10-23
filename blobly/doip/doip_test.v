@@ -186,3 +186,13 @@ fn test_routing_activation_codes_by_name() {
 		tester: 0x0E00
 	}.msg() == 'DoIP: routing activation denied: 0x06 unsupported activation type'
 }
+
+// which negative acknowledgement leaves the connection alive: every code but invalid source address
+fn test_nack_alive_reads_the_code() {
+	assert nack_alive('${nack_note} (0x03)')
+	assert nack_alive('UDS: ${nack_note} (0x06) (2 response(s) to other requests discarded)')
+	assert !nack_alive('${nack_note} (0x02)')
+	assert !nack_alive('${nack_note}')
+	assert !nack_alive('${nack_note} (0xZZ)')
+	assert !nack_alive('DoIP recv timeout')
+}

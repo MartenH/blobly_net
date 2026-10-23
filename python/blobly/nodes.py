@@ -338,8 +338,8 @@ class NodeClient(UdsClient):
                 ch._current()
                 self._row = ch._index
             self.node = node
-            self._target = self._reach()
-            super().__init__(self._target.channel, self._target.tx, self._target.rx)
+            self._reached = self._reach()
+            super().__init__(self._reached.channel, self._reached.tx, self._reached.rx)
 
     def _reach(self) -> NodeTarget:
         """Where the node is reached in this run (under _lib.state_lock)."""
@@ -352,7 +352,7 @@ class NodeClient(UdsClient):
         refused when a start moved it from where this client was opened — and states the
         description's DID sizes and fault names as this run's (a size stated with did_size wins)."""
         self.node._live()
-        if self._reach() != self._target:
+        if self._reach() != self._reached:
             raise BloblyError(f"{self.node.name} is reached elsewhere in this run than this client was opened "
                               "on; open another with node.uds()", _lib.BB_ERR_STATE)
         super()._open()
@@ -420,6 +420,12 @@ class NodeClient(UdsClient):
                 if isinstance(e, WriteGated):
                     e.session, e.level = needs.session, needs.level
                 raise e
+
+    def retarget(self, address: int | None = None) -> None:
+        """Refused: a NodeClient addresses its node, whose description its reads and writes are
+        laid out by; a UdsClient of the channel (Channel.uds) reaches a node behind a gateway."""
+        raise Refused(f"{self.node.name}: a NodeClient addresses its node; retarget a UdsClient of "
+                      f"{self.channel.name} instead")
 
     def __repr__(self) -> str:
         return super().__repr__().replace("<UdsClient", f"<NodeClient {self.node.name} on", 1)

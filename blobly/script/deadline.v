@@ -104,15 +104,21 @@ fn (env &Env) bounded_window(ms i64) i64 {
 	return if ms <= 0 { ms } else { env.bounded(ms) }
 }
 
+// deadline_stop is the stop a script's client or channel asks to end at the run's deadline; none
+// when the run has no deadline.
+fn (env &Env) deadline_stop() ?fn () bool {
+	if env.deadline == 0 {
+		return none
+	}
+	return fn [env] () bool {
+		return env.expired()
+	}
+}
+
 // bound_client is `c` on `ch` abandoning a request once the deadline has passed: the client
 // between its answers, the carrier inside its own wait.
 fn (env &Env) bound_client(mut ch isotp.Channel, c uds.Client) uds.Client {
-	if env.deadline == 0 {
-		return c
-	}
-	stop := fn [env] () bool {
-		return env.expired()
-	}
+	stop := env.deadline_stop() or { return c }
 	if mut ch is isotp.SoftChannel {
 		ch.stop_requested = stop
 	} else if mut ch is doip.DoipClient {

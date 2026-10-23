@@ -200,6 +200,7 @@ scripts/runtests.sh hello.lua
 | `check.snapshot(diag, name[, want])` | Expect DTC `name` to hold a snapshot (`0x19 04`) and each DID `want` names to have been captured with the value it gives (bytes; `true` = only present), e.g. `{ [0xF1A0] = fromhex("00 00 00 2A") }`. Returns the snapshot. |
 | `check.extended(diag, name, want)` | Expect DTC `name`s extended data (`0x19 06`) to carry the counters `want` gives — `occurrence`, `aging`, `failed_cycles` — or, by record number, the bytes. Returns the answer. |
 | `check.nrc(code, fn)` | Expect `fn` to raise a UDS **negative response** with NRC `code` (e.g. `0x31`). |
+| `check.e2e(frame [, msg])` | Fail unless the received `frame` passed its E2E check (`frame.e2e == "ok"`), naming the verdict, or saying its message has no E2E. Returns the frame: `check.e2e(expect("CAN1", 0x301, 500))`. See [E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends). |
 
 A failing `check` aborts only its own `test`; other tests still run. A Lua error
 outside a `test` aborts the script (and the runner reports it).
@@ -209,6 +210,7 @@ outside a `test` aborts the script (and the runner reports it).
 ```lua
 local diag = uds.open(channel [, { tx = 0x7E0, rx = 0x7E8 }])   -- CAN / CAN-FD
 local diag = uds.open(channel)                                   -- DoIP
+local diag = uds.open(channel, { timeout_ms = 300 })            -- with its waits stated
 ```
 
 Opens a UDS tester on `channel`. **The carrier follows the channel**, so the same
@@ -236,6 +238,17 @@ received twice after a bus error — is discarded and the wait goes on, and on C
 whatever is already queued when a request goes out is drained first; an error that follows
 says how many were discarded.
 
+Those waits are the connection's, in ms: `timeout_ms` (the first answer), `p2_star_ms` (the
+server's P2*), `margin_ms` (added to it) and `pending_budget_ms` (one request from its send).
+`diag:timing()` reads them as they stand, a session answer's adoption included;
+`diag:set_timing({ margin_ms = 200 })` states the ones the table names from the next request on,
+and `uds.open` takes them among its options (checked before it opens anything). `timeout_ms` and `pending_budget_ms` are 1 to 3600000,
+`p2_star_ms` and `margin_ms` 0 to 3600000; anything else raises and changes nothing. A session
+answer still adopts its P2* over one stated, and lengthens `timeout_ms` where its P2 needs more. On
+a DoIP channel `uds.open` hands back the channel's one connection, so its options and
+`set_timing` apply to every handle of it; a reconnect keeps them (P2* only where it loosens the new
+connection's).
+
 On a DoIP channel the entity's ANNOUNCED identity is a separate value from the one
 it serves at DID 0xF190, so both are observable:
 
@@ -245,6 +258,17 @@ local ann = doip.discover(channel)   -- { vin = "...", logical_address = 0x1000 
 
 A tester that discovers one ECU and reads a different VIN out of it has no way to
 tell which is the lie, so a suite should check they agree.
+
+A DoIP entity may be a gateway to nodes behind it (ISO 13400-2 routing). `diag:retarget(address)`
+moves the connection's requests, and the answers it takes, to that node's logical address;
+`diag:retarget()` goes back to the channel's `ecu_address`. One connection, so what the tester
+unlocked on the gateway there holds for the node (blobly_emb's sysnode routes only for such a
+tester): unlock the gateway, then retarget. Every handle of the channel's connection moves with it,
+and a reconnect keeps the target but not the gateway's unlock. Another target is another ECU: the
+connection's waits go back to what the script set, without what a session answer of the old target
+adopted, and the snapshot DID sizes it learned are forgotten (`did_size`'s are kept). A retarget
+inside a `security_access` keyfn sends no key (it raises), since the key answers the old target's
+seed. On a CAN channel it raises.
 
 The returned object has:
 
@@ -270,6 +294,8 @@ The returned object has:
 | `diag:raw(req)` | send any request PDU | the response (bytes) |
 | `diag:close()` | let the connection go: the handle refuses from then on, and the next `uds.open` on the channel opens a new one (a DoIP entity serves one connection at a time) | — |
 | `diag:raw_suppressed(req)` | send a sub-function request with suppress-positive-response set: no positive answer is expected, a refusal raises, and a server that said `0x78` owes its final answer | `true` if a positive answer came anyway |
+| `diag:timing()` / `diag:set_timing(t)` | the connection's waits (`timeout_ms`, `p2_star_ms`, `margin_ms`, `pending_budget_ms`), read as they stand / stated where `t` names them | a table / — |
+| `diag:retarget([address])` | DoIP: the requests go to logical address `address`, a node behind the gateway (`nil`: the channel's `ecu_address`) | — |
 
 A negative response **raises a Lua error** (so it aborts the `test`, or is caught by
 `check.nrc` — e.g. `check.nrc(0x35, …)` for an invalid security key). Multi-frame
@@ -371,6 +397,77 @@ unlocks on its own. A snapshot DID's size is the description's, so `d:snapshot` 
 DID to learn it. `tests/diag_nodes.lua` runs all of it against the described zone_a of
 `projects/described-ecu-demo`.
 
+### Raw ISO-TP
+
+```lua
+local tp = isotp.open("CAN1", { tx = 0x7E0, rx = 0x7E8 })
+tp:send("\x22\xF1")                 -- a request the UDS helpers would never build
+local answer = tp:recv(1000)         -- "\x7F\x22\x13", or nil when nothing came in time
+tp:close()
+```
+
+Whole messages on a CAN channel's id pair, segmented and reassembled by the ISO-TP a `uds.open`
+connection rides, with no UDS on top: a protocol of your own over ISO-TP, or a malformed UDS request
+and the bytes that come back. Both ids are needed (there is no default pair), and either past
+0x7FF makes both 29-bit; a DoIP or SOME/IP channel raises. A message is 1 to 4095 bytes in 8-byte
+frames, sent FD on a channel the project declares CAN-FD. `tp:send(data)` returns once the message is on the wire, a long one after the
+receiver's Flow Control (1000 ms each, N_Bs; it raises when none came). `tp:recv(timeout_ms)`
+(default 1000; `0` only looks) returns the next whole message, or `nil` when none came in time; a
+transfer begun is kept for the next `recv`, until 1000 ms pass with no Consecutive Frame, which
+raises. A send on a listen-only channel raises. Open one per id pair: two on one `rx` (a `uds.open`
+connection on it included) each answer a First Frame with a Flow Control of their own.
+`tests/isotp_timing.lua` is the suite.
+
+### E2E on what a script reads and sends
+
+Every frame a script reads (`bus.recv`, `expect`, an `on_message` handler) carries **`e2e`**, its
+E2E verdict, wherever its message has E2E on the channel: the channel's `verify:` entry for it,
+else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`, `E2EProfile`, `E2EDataId`:
+[dbc_attributes.md](dbc_attributes.md)). The check is the one the trace's `verify:` runs
+(`sim.Verifier`).
+
+| `f.e2e` | the frame |
+|---|---|
+| `"ok"` | its CRC matches its bytes, and its counter is the next one |
+| `"bad_crc"` | its CRC does not match its bytes |
+| `"repeated"` | its counter repeated the previous frame's: no new data |
+| `"skipped"` | its counter jumped (frames lost, or the sender restarted), or holds a value the profile never sends (Profile 1's 15) |
+| `"truncated"` | it is shorter than its message, so its E2E fields are not all there |
+| `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter new: not a repeat, nor a value the profile never sends) |
+| `nil` | its message has no E2E here, or it is a remote frame |
+
+- The counter is judged against the frame of that id the script's handle read before it (the
+  first one read is judged on its CRC alone), so a frame lost before reaching the script makes
+  the next one a skip, as it would for any receiver; so does the first good frame after a run of
+  `bad_crc` ones, whose counters were not trusted.
+- `"timeout"` is measured between the stamps the bus gave the frames (SocketCAN's kernel stamp,
+  the CAN bridge's clock). A frame with no stamp, whose time is when it was read (`inproc:`,
+  `udp:`, and the vendor adapters until they read their stamps), is never late, because a script
+  that paused would read as a sender that stopped; and a valid one ends the gap being measured.
+- **`bus.send_message` stamps the declared E2E**: the counter the next of this run's sends of that
+  message, from 0, then the CRC — over whatever `sigs` gave those two signals — as a simulated
+  sender stamps it. A declaration that cannot be applied (an unknown profile, a CRC signal that is
+  not one byte) raises rather than go out unprotected, and a send that fails after its stamp has
+  used its counter, as a frame lost on the wire does.
+  `bus.send_message(channel, name, sigs, { e2e = false })` sends it as encoded, its counter and
+  CRC as `sigs` gave them (raw 0 otherwise); `sim.fault` breaks a simulated sender's protection
+  instead.
+- A simulated node's `protect:` entry is that sender's own word, not a contract a receiver holds it
+  to: a message only a `protect:` entry protects is not judged (a `verify:` entry judges it), and
+  one that deviates from the declaration on purpose (a wrong Data ID, to test a receiver's
+  rejection path) reads as a receiver would read it: `bad_crc`.
+
+```lua
+check.e2e(expect("CAN1", 0x301, 500))                    -- passes, or fails naming the verdict
+sim.fault("CAN1", "Chassis", "BrakeStatus", "bad_crc")
+local f = expect("CAN1", 0x301, 500)                     -- f.e2e == "bad_crc" once it lands
+bus.send_message("CAN1", "BrakeCommand", { Demand = 300 })               -- stamped
+bus.send_message("CAN1", "BrakeCommand", { Demand = 300 }, { e2e = false })  -- as encoded
+```
+
+`tests/e2e_verify.lua` runs this against `projects/e2e-demo.blobnet`, whose DBC declares two
+protected messages.
+
 ### End-to-end protection for frames you build (AUTOSAR E2E Profile 1)
 
 ```lua
@@ -422,16 +519,63 @@ boot refuses an unmarked image, and a re-run recovers. A progress callback that 
 transfer there, before the check — the image is not marked valid — and `flash.program` raises with
 its error. Flashing a channel by name twice on the same ids reuses the first call's connection.
 
+### Replay and recording
+
+```lua
+local r = replay.start("REPLAY1", { speed = 4, loop = false })   -- the row's replay: block decides the rest
+r:wait_done(5000)                                -- true once it ran out
+local rec = record.start("CAN1", "capture.log")   -- relative to the script
+-- ... traffic ...
+local c = rec:stop()                              -- { frames, ours, theirs, missed, dropped }
+```
+
+`replay.start(channels, opts)` plays a recording onto one channel, or a list of them on one clock,
+through `blobly/player` — the player, rest-bus subtraction and command protocol the GUI's Replay
+panel uses. What `opts` leave out, the rows' `replay:` blocks say:
+
+| option | meaning |
+|---|---|
+| `source` | the recording, a candump `.log` or an `.mf4`, **relative to the script** |
+| `speed` | the rate, above 0 |
+| `loop` | whether the end starts it again |
+| `paused` | `true`: start paused at the beginning |
+| `exclude` | a list of nodes subtracted by DBC sender, in place of each row's own |
+| `bus` | the recorded bus, for one channel, where the recording holds several |
+
+A request that would play something other than asked raises: no source, a recorded bus that does
+not resolve, an exclusion no channel's database declares, two channels on one wire, nothing left
+after the subtraction, rows disagreeing about a source, speed or loop the options do not settle.
+`r.notes` says what the plan kept and withheld per channel. `r:pause()`, `r:resume()`, `r:seek(s)`
+(seconds into the recording), `r:speed(x)` and `r:loop(on)` are applied before they return.
+`r:status()` is `{ state, position, duration, speed, loop, passes, sent, failed, error, ended }`,
+`state` one of `playing`, `paused` and `finished` (a non-looping replay ran out), `ended` true once
+it is stopped. `r:wait_done(ms)` (default 10000, negative for ever) is true once it finished or was
+stopped. `r:stop()` stops it and returns its last status; its controls then raise and `r:status()`
+still says what it did. A replay sends through handles of its own, not the channel's: its frames
+reach the channel's handle as any other node's do, so `bus.load` counts them as they are read. The end of each script stops whatever it left playing or recording. In the
+GUI a script's replay is filed `TX-S` like Start's, and plays beside it: a row Start already
+replays is then played twice.
+
+`record.start(channels, path)` writes what the channels (one per wire, no two of one name) carry to
+a candump `.log`, created or truncated once their buses are open, a line per frame: `(t) <channel>
+<id>#<data> T`, `t` the host monotonic clock in seconds. The last token is the origin, as `candump
+-x` and python-can write a direction: `T` for a frame this process sent (tester, simulated ECU or
+replay alike: the format has no third value), `R` for the rest. The file replays as it is, and is
+what the GUI's Record writes. `rec:counts()` and `rec:stop()` answer `{ frames, ours, theirs,
+missed, dropped }` (`missed`: sent here but never seen back, so not written; `dropped`: lost by the
+recorder's own handles, behind); `rec:stop()` writes what is queued, lets the sends in flight
+settle (2 s at most) and raises when a write failed on the way, or that did not finish in time.
+
 ### Raw frames & signals
 
 ```lua
 bus.send(channel, id, data [, { ext = false, format = "classic" }])   -- send a raw frame
 local f = bus.recv(channel [, timeout_ms])          -- receive one frame, or nil on timeout
 -- f = { id = <number>, ext = <bool>, data = <byte string>,
---       fd, brs, esi, rtr = <bool>, t_ms = <number> }
+--       fd, brs, esi, rtr = <bool>, t_ms = <number>, e2e = <string or nil> }
 local t = now_ms()                                  -- the clock f.t_ms is on
 
-bus.send_message(channel, "MsgName", { Sig = value, ... })  -- DBC-encode + send
+bus.send_message(channel, "MsgName", { Sig = value, ... } [, { e2e = false }])  -- DBC-encode + send
 local sig = decode(channel, id, data [, ext [, as]])       -- DBC-decode -> { Name = value, ... }
 ```
 
@@ -449,6 +593,8 @@ local sig = decode(channel, id, data [, ext [, as]])       -- DBC-decode -> { Na
   not carry). Any other value raises. One argument rather than a helper per kind: a script
   asking for a label already holds the frame, and one call answers every signal at once.
 - `bus.recv` defaults to a 1000 ms timeout.
+- `f.e2e` is the frame's E2E verdict, and `bus.send_message` stamps a message's declared E2E: see
+  [E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends).
 - A received frame (from `bus.recv`, `expect` or an `on_message` handler) carries `fd`/`brs`
   (CAN-FD and its bit-rate switch), `esi` (CAN-FD's error-state indicator) and `rtr` (a remote
   frame) as the wire carried them, and **`t_ms`**, when it was received: milliseconds on the
@@ -540,7 +686,7 @@ the script until the condition or the timeout, then return or raise.
 
 | Call | Meaning |
 |---|---|
-| `expect(channel, id, timeout_ms)` | Wait for a frame with CAN `id`; returns the frame (`{id, ext, data, fd, brs, esi, rtr, t_ms}`, as `bus.recv`), or raises on timeout. |
+| `expect(channel, id, timeout_ms)` | Wait for a frame with CAN `id`; returns the frame (`{id, ext, data, fd, brs, esi, rtr, t_ms, e2e}`, as `bus.recv`), or raises on timeout. |
 | `expect_signal(channel, id, signal, want, timeout_ms)` | Wait until decoded `signal` of message `id` matches `want` (a value, or a `function(v)->bool` predicate); returns the matching value, or raises. |
 
 ### Reactive callbacks — on_message / on_health / on_timer / run

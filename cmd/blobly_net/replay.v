@@ -10,6 +10,7 @@ import blobly.j1939
 import gaterule
 import blobly.mf4
 import blobly.player
+import blobly.replay
 import vgui
 
 // ReplayState is one recording's lifecycle within a run.
@@ -1240,54 +1241,15 @@ fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 	}
 }
 
-// load_recording_for_replay decodes a `.mf4` or candump `.log` once. The bus list is part of
-// the decode for BOTH formats: an .mf4 carries its own table, and a .log's is synthesized here
-// from the interface names its lines carry — in the loader and nowhere else, so Start's
-// resolver and the Configure row's Scan match against ONE list by construction (they briefly
-// each derived their own; self-review of the Scan work).
+// load_recording_for_replay decodes a `.mf4` or candump `.log` once, with its buses
+// (replay.load): Start's resolver and the Configure row's Scan match against ONE list.
 fn load_recording_for_replay(source string) !(canlog.Log, []mf4.BusInfo) {
-	if source.to_lower().ends_with('.mf4') {
-		rec := mf4.load_recording(source)!
-		if rec.log.len() == 0 {
-			return error('${os.base(source)} holds no frames')
-		}
-		return rec.log, rec.buses.clone()
-	}
-	log := canlog.load_log(source)!
-	if log.len() == 0 {
-		return error('${os.base(source)} holds no frames')
-	}
-	mut counts := map[string]int{}
-	for i in 0 .. log.len() {
-		counts[log.iface(i)]++
-	}
-	mut ifs := counts.keys()
-	ifs.sort()
-	mut buses := []mf4.BusInfo{}
-	for name in ifs {
-		buses << mf4.BusInfo{
-			iface:  name
-			frames: counts[name]
-		}
-	}
-	return log, buses
+	return replay.load(source)
 }
 
-// resolve_replay_bus asks blobly/player, which owns the rule. The GUI and cmd/restbus each had
-// their own copy and had already drifted; which bus a recording means is a fact about the file.
+// resolve_replay_bus asks blobly/player, which owns the rule, through replay.resolve_bus.
 fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
-	mut names := []player.BusName{}
-	mut labels := []string{}
-	for b in buses {
-		names << player.BusName{
-			iface: b.iface
-			name:  b.name
-		}
-		labels << b.iface
-	}
-	return player.resolve_bus(names, labels, ch.replay_bus) or {
-		error('${err} (${os.base(ch.replay_src)})')
-	}
+	return replay.resolve_bus(buses, ch.replay_bus) or { error('${err} (${os.base(ch.replay_src)})') }
 }
 
 // replay_db merges the channel's databases. resolve_asset AND real_path: app.dbs_paths is keyed

@@ -1020,6 +1020,15 @@ the real source address and the DBC's a placeholder ([docs/j1939.md](j1939.md)).
 as our simulation, `TX-S`, not as `REP`, which means "a file on screen" where nothing was
 transmitted.
 
+**From a script.** A replay is not only Start's: Lua's `replay.start` and Python's
+`net.replay` play a recording onto a row of a running project through the same player and the same
+subtraction, and pause, seek, change speed and loop it from the script
+([scripting.md](scripting.md#replay-and-recording), [scripting_python.md](scripting_python.md#14-replay-and-recording)).
+The headless runner and the Python package bring a `mode: replay` row up as a plain bus — it plays
+when the script says so. `record.start` / `net.record` write a row's traffic to a candump `.log`
+with each line's origin, `T` for a frame this process sent and `R` for the rest; the GUI's Record
+writes the same.
+
 ## Running it without the GUI
 
 ```bash

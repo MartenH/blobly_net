@@ -147,21 +147,12 @@ fn (t &TapBus) reached_the_driver(err IError, wire transport.CanFrame) bool {
 	if transport.wire_policy(t.iface).silent {
 		return false // SilentBus refused it; the transceiver never saw a thing
 	}
-	// THE FRAME RULES OF THIS WIRE'S OWN TIER. `frame_send_refusal` is the impossible-frame set
-	// that every backend shares; the VENDOR backends additionally refuse a length rather than
-	// clamping it, and that whole tier is `frame_shape_error` (frame_rules.v names it as such).
-	// Asking the shared set alone read a PCAN/Kvaser/Vector length refusal as a fault of the
-	// controller, which polled a healthy wire and could narrate `bus ok` at it (codex).
-	//
-	// `vendor_iface` is $if windows, which is exactly right here and not a platform bug: on Linux
-	// `vector:1` opens as SocketCAN, which CLAMPS an over-wide length instead of refusing it, so
-	// the shared set really is the whole of that wire's tier.
-	refusal := if transport.vendor_iface(t.iface) {
-		transport.frame_shape_error(wire)
-	} else {
-		transport.frame_send_refusal(wire)
-	}
-	if _ := refusal {
+	// THE FRAME RULES OF THIS WIRE'S OWN TIER (transport.tier_refusal): the impossible-frame set
+	// every backend shares, plus the lengths the VENDOR backends refuse rather than clamp. Asking
+	// the shared set alone read a PCAN/Kvaser/Vector length refusal as a fault of the controller,
+	// which polled a healthy wire and could narrate `bus ok` at it (codex). The recorder's send
+	// watch asks the same rule (SilentBus.send).
+	if _ := transport.tier_refusal(t.iface, wire) {
 		return false
 	}
 	return true

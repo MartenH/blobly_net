@@ -358,6 +358,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			t_s:   app.since_s()
 			iface: chn
 			frame: f
+			dir:   .tx
 		})
 		recorded_here = true
 	}

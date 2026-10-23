@@ -74,7 +74,7 @@ class TestDescribedNode:
     def test_a_gated_write_says_what_it_needs(self, diag):
         with pytest.raises(blobly.WriteGated) as e:
             diag.write("SteerLimit", 300)
-        assert (e.value.session, e.value.level, e.value.code) == (0x03, 1, -12)
+        assert (e.value.session, e.value.level, e.value.code) == (0x03, 1, -13)
         assert "switch to the extended session (0x10 03), then unlock level 1 (0x27 01/02)" in str(e.value)
         assert isinstance(e.value, blobly.Refused), "nothing was sent"
         diag.session(0x03)

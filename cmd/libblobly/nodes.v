@@ -309,7 +309,9 @@ pub fn bb_uds_write_described(u i32, n i32, d i32, texts &&char, k i32, needs &C
 	ts := v.sys.targets(int(n), v.refs())
 	node := v.sys.nodes[int(n)].name
 	run := v.run
-	return exchange(u, fn [x, parts, ts, node, run, needs] (mut hd UdsHandle) !i32 {
+	// the logical address a DoIP row's entity has: a handle retargeted elsewhere reaches another ECU
+	ecus := v.rows.map(u32(udsconn.carrier_of(it).ecu))
+	return exchange(u, fn [x, parts, ts, node, run, ecus, needs] (mut hd UdsHandle) !i32 {
 		// bytes laid out by one node's description go to that node: a handle of this run on one of
 		// its targets
 		if hd.run != run || !ts.any(it.row == int(hd.row) && it.doip == hd.doip
@@ -319,6 +321,9 @@ pub fn bb_uds_write_described(u i32, n i32, d i32, texts &&char, k i32, needs &C
 		// a text the layout refuses is refused before a lost connection is opened again
 		x.encode(parts) or { return error('0x2E ${x.label()}: not written — ${err.msg()}') }
 		mut cl := hd.cli()!
+		if hd.doip && hd.conn.ch.rx_id != ecus[int(hd.row)] {
+			return error('UDS handle on ${hd.row_name} is retargeted to 0x${hd.conn.ch.rx_id:04X}, not ${node}; retarget it back first')
+		}
 		sysview.write_described(mut cl, x, parts) or {
 			if err is sysview.WriteGated {
 				if !isnil(needs) {

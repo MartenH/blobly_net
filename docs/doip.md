@@ -39,7 +39,9 @@ does the same without a project. Either way the point of the design holds — th
 A node *behind* a DoIP gateway (ISO 13400-2 routing — a CAN node with no network of its own) is
 the same: `retarget(node)` moves the connection's target from the gateway to the node, after the
 tester has done what the gateway asks on that connection first (blobly_emb's sysnode routes only
-for a tester holding its own 0x27 unlock, kept for the connection).
+for a tester holding its own 0x27 unlock, kept for the connection). A script does it with
+`diag.retarget(node)` in Python and `diag:retarget(node)` in Lua
+([scripting_python.md](scripting_python.md#11-doip), [scripting.md](scripting.md)).
 
 The GUI does the same on ▶ Start, and the Diagnostics panel talks to it as another target.
 

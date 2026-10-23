@@ -80,6 +80,16 @@ pub fn (c Channel) fault_target() sim.FaultTarget {
 	}
 }
 
+// replay_cfg is this row's `replay:` block with its source resolved against the project's
+// directory, as the GUI's Start resolves it; none for a row without one.
+pub fn (c Channel) replay_cfg(proj_dir string) ?project.Replay {
+	r := c.cfg.replay?
+	return project.Replay{
+		...r
+		source: project.resolve_asset(proj_dir, r.source)
+	}
+}
+
 // Ctl is the shared run flag the simulation threads poll; set false to stop them.
 struct Ctl {
 mut:

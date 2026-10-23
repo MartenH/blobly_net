@@ -227,7 +227,47 @@ class TestSimDemo:
         assert out[0].code == _lib.BB_ERR_HANDLE
 
 
+    def test_the_timing_reads_as_it_stands_and_is_stated(self, can1, diag):
+        assert (diag.timeout_ms, diag.p2_star_ms, diag.margin_ms, diag.pending_budget_ms) == (1000, 5000, 1000, 120000)
+        diag.session(0x01)  # P2 50 ms, P2* 5000 ms
+        assert diag.timeout_ms == 1050, "a P2 that needs more lengthens the first wait"
+        diag.margin_ms = 200
+        diag.pending_budget_ms = 9000
+        assert (diag.timeout_ms, diag.margin_ms, diag.pending_budget_ms) == (1050, 200, 9000)
+        for name, bad in (("timeout_ms", 0), ("pending_budget_ms", 0), ("p2_star_ms", -1), ("margin_ms", 3_600_001)):
+            with pytest.raises(blobly.Refused, match=name):
+                setattr(diag, name, bad)
+        assert diag.margin_ms == 200, "a refused wait changed one"
+        for bad in (1.5, True, "100"):
+            with pytest.raises(TypeError):
+                diag.timeout_ms = bad
+        with pytest.raises(ValueError):
+            diag.timeout_ms = 2**31
+        with pytest.raises(blobly.Refused, match="pending_budget_ms"):
+            can1.uds(pending_budget_ms=0)
+
+    def test_a_short_first_wait_ends_a_silent_request_sooner(self, can1):
+        with can1.uds(tx=0x6F0, rx=0x6F8, timeout_ms=100) as nobody:  # nothing answers there
+            assert nobody.timeout_ms == 100
+            t = time.monotonic()
+            with pytest.raises(blobly.Timeout):
+                nobody.tester_present()
+            assert time.monotonic() - t < 0.6
+            assert nobody.last.rtt_us < 600_000
+
+
 class TestLifecycle:
+    def test_stated_waits_hold_on_the_next_connection(self):
+        net = blobly.Project(SIM_DEMO)
+        with net:
+            d = net.channels.CAN1.uds(timeout_ms=150)
+            d.margin_ms = 300
+            d.session(0x01)  # lengthens the first wait to P2 + margin
+            assert d.timeout_ms == 350
+        with net:
+            assert (d.timeout_ms, d.margin_ms) == (150, 300), "the stated waits were not stated again"
+            d.close()
+
     def test_a_stop_and_start_reopen_the_connection(self):
         net = blobly.Project(SIM_DEMO)
         with net:
@@ -357,6 +397,23 @@ class TestFailures:
                 quiet.tester_present()
             assert not quiet.last.sent
         net.start()
+
+    def test_the_margin_and_the_allowance_bound_a_pending_wait(self, ch, diag):
+        # P2* 10 ms: the wait after 0x78 is P2* plus the margin, 1010 ms by default
+        FakeEcu(ch, [[b"\x50\x01\x00\x32\x00\x01"], [b"\x7f\x31\x78"]])
+        diag.session(0x01)
+        diag.margin_ms = 50
+        t = time.monotonic()
+        with pytest.raises(blobly.PendingExpired):
+            diag.raw(b"\x31\x01\x02\x03")
+        assert time.monotonic() - t < 0.5, "the margin set did not shorten the wait"
+        # an ECU that says pending for ever is cut at the request's allowance, whatever its P2*
+        FakeEcu(ch, [[b"\x7f\x31\x78"] * 10])
+        diag.margin_ms, diag.p2_star_ms, diag.pending_budget_ms = 1000, 5000, 200
+        t = time.monotonic()
+        with pytest.raises(blobly.PendingExpired):
+            diag.raw(b"\x31\x01\x02\x03")
+        assert 0.15 <= time.monotonic() - t < 0.8
 
     def test_a_late_answer_to_another_request_is_skipped(self, ch, diag):
         FakeEcu(ch, [[b"\x62\xf1\x8cOLD", b"\x62\xf1\x90NEW"]])

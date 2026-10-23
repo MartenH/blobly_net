@@ -63,7 +63,7 @@ which says what was expected and what came instead.
 
 The suite asks for the plugin in [conftest.py](../python/examples/conftest.py) and names its
 project in [pytest.ini](../python/examples/pytest.ini), as any suite does
-([Testing with pytest](scripting_python.md#14-testing-with-pytest)). To test another project,
+([Testing with pytest](scripting_python.md#15-testing-with-pytest)). To test another project,
 add `"--blobly-project=path/to/your.blobnet"` to `python.testing.pytestArgs` in
 `settings.json`. Keep the `=`.
 

@@ -183,6 +183,7 @@ fn l_node_read(l lua.State) i32 {
 	node := node_arg(l, 2) or { return l.fail(err.msg()) }
 	x := did_arg(l, node, 3) or { return l.fail('${node.name}: ${err.msg()}') }
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	env.on_node(c, node.name) or { return l.fail(err.msg()) }
 	data := c.cli.read_data_by_identifier(x.id) or { return l.fail(err.msg()) }
 	texts := x.read_texts(data) or { return l.fail(err.msg()) }
 	parts := x.parts()
@@ -233,6 +234,7 @@ fn l_node_write(l lua.State) i32 {
 		texts << l.arg_str(i)
 	}
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	env.on_node(c, node.name) or { return l.fail(err.msg()) }
 	sysview.write_described(mut c.cli, x, texts) or { return l.fail(err.msg()) }
 	return 0
 }
@@ -242,4 +244,14 @@ fn l_node_write(l lua.State) i32 {
 fn lua_int(text string) ?i64 {
 	v := strconv.parse_int(text, 10, 64) or { return none }
 	return if '${v}' == text { v } else { none }
+}
+
+// on_node refuses a DoIP connection retargeted away from its channel's entity (a uds.open one that
+// uds.node took up): bytes laid out by the node's description would go to another ECU.
+fn (env &Env) on_node(c &UdsConn, node string) ! {
+	ci := env.find_chan(c.chan) or { return }
+	car := env.chans[ci].carrier
+	if car.doip && c.ch.rx_id != u32(car.ecu) {
+		return error('${node}: the connection on ${c.chan} is retargeted to 0x${c.ch.rx_id:04X}; retarget it back first')
+	}
 }
