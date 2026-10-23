@@ -2,22 +2,16 @@
 blobly/script/flash_test.v flashes) on projects/sim-demo.blobnet's CAN1: the coverage of the Lua
 flash suite — progress, a wrong key, a failing check, a raising callback, the arguments — through
 the C ABI."""
-import os
 import struct
-import sys
 import zlib
 
 import pytest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-# the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
-if not os.environ.get("BLOBLY_TEST_INSTALLED"):
-    sys.path.insert(0, os.path.join(HERE, ".."))
-import blobly  # noqa: E402
-from blobly import _lib, flash  # noqa: E402
+import blobly
+from blobly import _lib, flash
+from conftest import SIM_DEMO
 
-REPO = os.path.dirname(os.path.dirname(HERE))
-SIM_DEMO = os.path.join(REPO, "projects", "sim-demo.blobnet")
+pytestmark = pytest.mark.usefixtures("engine")
 
 
 def blbt(body: bytes, crc_ok: bool = True) -> bytes:
@@ -32,12 +26,6 @@ def blbt(body: bytes, crc_ok: bool = True) -> bytes:
 
 @pytest.fixture(scope="module")
 def net():
-    try:
-        _lib.lib()
-    except blobly.BloblyError as e:
-        if os.environ.get("BLOBLY_LIB") or os.environ.get("BLOBLY_TEST_INSTALLED"):
-            raise
-        pytest.skip(str(e))
     p = blobly.Project(SIM_DEMO).start()
     yield p
     p.stop()

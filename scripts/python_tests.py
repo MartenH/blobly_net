@@ -1,19 +1,19 @@
 """python_tests.py — the Python package's tests (python/tests: the package, its examples, the pytest
-example and its docs) under one or more interpreters, each in a fresh virtual environment with
-pytest: from the source tree against a built engine, then from the installed wheel.
+example and its docs) under one or more interpreters, each run by pytest in a fresh virtual
+environment: from the source tree against a built engine, then from the installed wheel.
 
     python3 scripts/python_tests.py [--lib build/libblobly.so] [--wheel build/wheels/blobly-*.whl]
                                     python3 [/path/to/python3.11 ...]
 
 --lib    the engine the source-tree run loads (BLOBLY_LIB); without it, no source-tree run.
 --wheel  the wheel to install and test (py3-none: one wheel serves every version); without it,
-         no installed run. The installed run sets BLOBLY_TEST_INSTALLED and keeps the source tree
-         off sys.path, so the package and the engine it loads are the wheel's.
+         no installed run. The installed run sets BLOBLY_TEST_INSTALLED, and python/tests/pytest.ini
+         makes that folder the run's root, so the source tree stays off sys.path and the package
+         and the engine it loads are the wheel's.
 
-The suite runs under pytest (pinned below), which is not a dependency of the package: each
-environment installs it and checks that it imports. A virtual environment
-because a system Python may refuse a pip install (PEP 668). Exits 1 if any run failed, after
-reporting all of them."""
+pytest (pinned below) is not a dependency of the package: the suite is written for it, so each
+environment installs it. A virtual environment because a system Python may refuse a pip install
+(PEP 668). Exits 1 if any run failed, after reporting all of them."""
 import argparse
 import os
 import shutil
@@ -24,10 +24,6 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYTEST = "pytest==9.1.1"
-# the suite under pytest, which runs its unittest classes and its pytest tests alike: importlib
-# mode puts nothing on sys.path, so in the installed run the package is the wheel's, and no
-# cache directory is written into the tree
-PYTEST_ARGS = ["-v", "-p", "no:cacheprovider", "--import-mode=importlib"]
 STEP_TIMEOUT_S = 900
 
 
@@ -70,12 +66,12 @@ def run(interpreter, lib, wheel):
         ok = True
         if lib:
             env = dict(base, BLOBLY_LIB=os.path.abspath(lib))
-            ok &= step("source tree", [py, "-I", "-m", "pytest", *PYTEST_ARGS, "python/tests"], env)
+            ok &= step("source tree", [py, "-I", "-m", "pytest", "-v", "python/tests"], env)
         if wheel:
             if not step("install the wheel", pip + [os.path.abspath(wheel)], base):
                 return False
             env = dict(base, BLOBLY_TEST_INSTALLED="1")
-            ok &= step("installed wheel", [py, "-I", "-m", "pytest", *PYTEST_ARGS, "python/tests"], env)
+            ok &= step("installed wheel", [py, "-I", "-m", "pytest", "-v", "python/tests"], env)
     return ok
 
 

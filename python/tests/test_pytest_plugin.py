@@ -3,23 +3,12 @@ as their own process, as a user runs them. They check that the project comes fro
 (relative to it) or from --blobly-project (which wins), that a test hears what arrives from its
 start and neither the frames an earlier test left queued nor its handlers or faults, that a test which
 stopped the run leaves it started for the next, that the run ends with its module, that a failed expectation is a clean failure in
-pytest's output and in its --junitxml report, and that a run from the repository's root collects.
-
-pytest is not a dependency of the package: these are skipped where it is missing.
-scripts/python_tests.py, which CI runs, installs it, so there they run."""
+pytest's output and in its --junitxml report, and that a run from the repository's root collects."""
 import os
 import re
-import subprocess
-import sys
-import tempfile
-import unittest
 import xml.etree.ElementTree as ET
-from importlib.util import find_spec
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(os.path.dirname(HERE))
-SIM_DEMO = os.path.join(REPO, "projects", "sim-demo.blobnet")
-INSTALLED = bool(os.environ.get("BLOBLY_TEST_INSTALLED"))
+from conftest import INSTALLED, REPO, SIM_DEMO, run_python, write
 
 # the plugin from the package this run tests: the installed wheel, or the source tree (an isolated
 # child ignores PYTHONPATH, so the conftest puts it on sys.path)
@@ -108,98 +97,83 @@ def test_is_not_the_next_tests(can1):
 '''
 
 
-def write(d, files):
+def write_all(d, files):
     for name, text in files.items():
-        with open(os.path.join(d, name), "w", encoding="utf-8") as f:
-            f.write(text)
+        write(d, name, text)
 
 
-def pytest_run(*args, **env_overrides):
+def pytest_run(*args, **env):
     """pytest as its own process, isolated as this one is, from a scratch working directory."""
-    env = dict(os.environ, **env_overrides)
-    if env.get("BLOBLY_LIB"):
-        env["BLOBLY_LIB"] = os.path.abspath(env["BLOBLY_LIB"])  # the child's directory is not ours
-    flags = ["-B"] + (["-I"] if sys.flags.isolated else [])
-    with tempfile.TemporaryDirectory() as cwd:
-        return subprocess.run([sys.executable, *flags, "-m", "pytest", "-p", "no:cacheprovider", *args], cwd=cwd,
-                              env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=120)
+    return run_python("-m", "pytest", "-p", "no:cacheprovider", *map(os.fspath, args), env=env)
 
 
-@unittest.skipIf(find_spec("pytest") is None, "pytest is not installed")
-class TestPlugin(unittest.TestCase):
-    def test_a_suite_on_the_plugin(self):
-        with tempfile.TemporaryDirectory() as d:
-            write(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = suite.blobnet\n",
-                      "suite.blobnet": PROJECT, "test_1_plugin.py": PLUGIN_SUITE,
-                      "test_2_own_run.py": OWN_RUN_SUITE})
-            junit = os.path.join(d, "report.xml")
-            r = pytest_run(d, f"--junitxml={junit}")
-            out = r.stdout + r.stderr
-            self.assertEqual(r.returncode, 1, out)
-            self.assertIn("1 failed, 6 passed", out)
-            self.assertRegex(out, r"FAILED \S*test_1_plugin\.py::test_a_failed_expectation")
-            expected = "CAN1: expected a frame 0x555 within 200 ms; "
-            self.assertRegex(out, re.escape(expected) + r"\d+ other frames came: \d+ of 0x300")
-            # the failure points at the test's line; no frame of the package is shown
-            self.assertIn('>       can1.expect(0x555, timeout_ms=200)', out)
-            self.assertNotRegex(out, r"project\.py:\d+")
-            failures = [f.get("message") for f in ET.parse(junit).iter("failure")]
-            self.assertEqual(len(failures), 1, failures)
-            self.assertIn(expected, failures[0])
+class TestPlugin:
+    def test_a_suite_on_the_plugin(self, tmp_path):
+        d = tmp_path
+        write_all(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = suite.blobnet\n",
+                  "suite.blobnet": PROJECT, "test_1_plugin.py": PLUGIN_SUITE,
+                  "test_2_own_run.py": OWN_RUN_SUITE})
+        junit = d / "report.xml"
+        r = pytest_run(d, f"--junitxml={junit}")
+        out = r.stdout + r.stderr
+        assert r.returncode == 1, out
+        assert "1 failed, 6 passed" in out
+        assert re.search(r"FAILED \S*test_1_plugin\.py::test_a_failed_expectation", out)
+        expected = "CAN1: expected a frame 0x555 within 200 ms; "
+        assert re.search(re.escape(expected) + r"\d+ other frames came: \d+ of 0x300", out)
+        # the failure points at the test's line; no frame of the package is shown
+        assert '>       can1.expect(0x555, timeout_ms=200)' in out
+        assert not re.search(r"project\.py:\d+", out)
+        failures = [f.get("message") for f in ET.parse(junit).iter("failure")]
+        assert len(failures) == 1, failures
+        assert expected in failures[0]
 
-    def test_where_the_project_comes_from(self):
-        with tempfile.TemporaryDirectory() as d:
-            write(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = missing.blobnet\n",
-                      "test_it.py": SIM_DEMO_SUITE})
-            r = pytest_run(d)
-            self.assertEqual(r.returncode, 4, r.stdout + r.stderr)  # pytest's usage error
-            self.assertIn(f"no Blobly Net project at {os.path.join(d, 'missing.blobnet')} (from "
-                          "blobly_project in the ini file)", r.stdout + r.stderr)
-            r = pytest_run(d, f"--blobly-project={SIM_DEMO}")
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            r = pytest_run(d, "--blobly-project=", "-o", f"blobly_project={SIM_DEMO}")
-            self.assertEqual(r.returncode, 4, r.stdout + r.stderr)  # an empty override is not the ini's
-            self.assertIn("(from --blobly-project)", r.stdout + r.stderr)
-            r = pytest_run(d, "-o", "blobly_project=")
-            self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
-            self.assertIn("no Blobly Net project: give --blobly-project=PATH, or set blobly_project in the "
-                          "ini file", r.stdout + r.stderr)
-            self.assertEqual(pytest_run(d, "-o", "blobly_project=", "--help").returncode, 0)
-            self.assertEqual(pytest_run(d, "--help").returncode, 0, "help needs no project that loads")
-            r = pytest_run(d, f"--blobly-project={SIM_DEMO}", BLOBLY_LIB=os.path.join(d, "no-such-library"))
-            self.assertEqual(r.returncode, 4, r.stdout + r.stderr)  # a usage error, not an INTERNALERROR
-            self.assertIn("libblobly not found", r.stdout + r.stderr)
+    def test_where_the_project_comes_from(self, tmp_path):
+        d = tmp_path
+        write_all(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = missing.blobnet\n",
+                  "test_it.py": SIM_DEMO_SUITE})
+        r = pytest_run(d)
+        assert r.returncode == 4, r.stdout + r.stderr  # pytest's usage error
+        assert (f"no Blobly Net project at {d / 'missing.blobnet'} (from blobly_project in the ini file)"
+                in r.stdout + r.stderr)
+        r = pytest_run(d, f"--blobly-project={SIM_DEMO}")
+        assert r.returncode == 0, r.stdout + r.stderr
+        r = pytest_run(d, "--blobly-project=", "-o", f"blobly_project={SIM_DEMO}")
+        assert r.returncode == 4, r.stdout + r.stderr  # an empty override is not the ini's
+        assert "(from --blobly-project)" in r.stdout + r.stderr
+        r = pytest_run(d, "-o", "blobly_project=")
+        assert r.returncode == 4, r.stdout + r.stderr
+        assert ("no Blobly Net project: give --blobly-project=PATH, or set blobly_project in the ini file"
+                in r.stdout + r.stderr)
+        assert pytest_run(d, "-o", "blobly_project=", "--help").returncode == 0
+        assert pytest_run(d, "--help").returncode == 0, "help needs no project that loads"
+        r = pytest_run(d, f"--blobly-project={SIM_DEMO}", BLOBLY_LIB=os.fspath(d / "no-such-library"))
+        assert r.returncode == 4, r.stdout + r.stderr  # a usage error, not an INTERNALERROR
+        assert "libblobly not found" in r.stdout + r.stderr
 
-    def test_a_fixture_per_channel_named_after_it(self):
-        with tempfile.TemporaryDirectory() as d:
-            rows = ["CAN-1", "2nd bus", "Body Bus", "body-bus", "class", "project", "_blobly_run", "__slots__",
-                    "pytest_configure", "tmp_path"]
-            write(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = names.blobnet\n",
-                      "names.blobnet": "project:\n  name: names\n  version: 8\nchannels:\n" + "".join(
-                          f"  - name: {n}\n    type: can\n    interface: inproc:PY_NAMES_{i}\n"
-                          for i, n in enumerate(rows)),
-                      "test_names.py": "def test_names(can_1, _2nd_bus, __slots__, pytest_configure, tmp_path, project):\n"
-                                       "    assert tmp_path.is_dir(), 'a channel took pytest\\'s tmp_path'\n"
-                                       "    assert (can_1.name, _2nd_bus.name) == ('CAN-1', '2nd bus')\n"
-                                       "    assert (__slots__.name, pytest_configure.name) == ('__slots__', "
-                                       "'pytest_configure')\n"})
-            r = pytest_run(d)
-            out = r.stdout + r.stderr
-            self.assertEqual(r.returncode, 0, out)
-            # one warning names every channel that got no fixture, and why
-            self.assertIn("blobly: no fixture for 'Body Bus', 'body-bus' (as 'body_bus'); 'class' (as "
-                          "'class'); 'project' (as 'project'); '_blobly_run' (as '_blobly_run'); 'tmp_path' (as "
-                          "'tmp_path')", out)
+    def test_a_fixture_per_channel_named_after_it(self, tmp_path):
+        rows = ["CAN-1", "2nd bus", "Body Bus", "body-bus", "class", "project", "_blobly_run", "__slots__",
+                "pytest_configure", "tmp_path"]
+        write_all(tmp_path, {
+            "conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = names.blobnet\n",
+            "names.blobnet": "project:\n  name: names\n  version: 8\nchannels:\n" + "".join(
+                f"  - name: {n}\n    type: can\n    interface: inproc:PY_NAMES_{i}\n" for i, n in enumerate(rows)),
+            "test_names.py": "def test_names(can_1, _2nd_bus, __slots__, pytest_configure, tmp_path, project):\n"
+                             "    assert tmp_path.is_dir(), 'a channel took pytest\\'s tmp_path'\n"
+                             "    assert (can_1.name, _2nd_bus.name) == ('CAN-1', '2nd bus')\n"
+                             "    assert (__slots__.name, pytest_configure.name) == ('__slots__', "
+                             "'pytest_configure')\n"})
+        r = pytest_run(tmp_path)
+        out = r.stdout + r.stderr
+        assert r.returncode == 0, out
+        # one warning names every channel that got no fixture, and why
+        assert ("blobly: no fixture for 'Body Bus', 'body-bus' (as 'body_bus'); 'class' (as 'class'); "
+                "'project' (as 'project'); '_blobly_run' (as '_blobly_run'); 'tmp_path' (as 'tmp_path')") in out
 
     def test_a_run_from_the_repository_root_leaves_the_examples_suite_out(self):
         # its conftest's pytest_plugins is refused below a run's root, so python/conftest.py
         # leaves python/examples to its own runs (test_examples.py)
         r = pytest_run("--collect-only", "-q", REPO)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("test_pytest_plugin.py::TestPlugin", r.stdout)
-        self.assertNotIn("test_sim_demo.py", r.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "test_pytest_plugin.py::TestPlugin" in r.stdout
+        assert "test_sim_demo.py" not in r.stdout

@@ -2,15 +2,13 @@
 independent implementation (autosar-e2e, sut/e2e_oracle.py), on blobly_emb overspeed's BrakeStatus
 layout — payload E8 03 5A 00, the CRC in byte 4, the counter in byte 5's low nibble, Data ID 0x1244
 (distinct bytes, so alt's choice of byte shows), counters 0..14. No project is needed."""
-import os
-import sys
-import unittest
+import re
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-if not os.environ.get("BLOBLY_TEST_INSTALLED"):
-    sys.path.insert(0, os.path.join(HERE, ".."))
-import blobly  # noqa: E402
-from blobly import _lib, e2e  # noqa: E402
+import pytest
+
+from blobly import e2e
+
+pytestmark = pytest.mark.usefixtures("engine")
 
 VECTORS = {
     "both": [0xE8, 0xF5, 0xD2, 0xCF, 0x9C, 0x81, 0xA6, 0xBB, 0x00, 0x1D, 0x3A, 0x27, 0x74, 0x69, 0x4E],
@@ -21,40 +19,30 @@ BASE = bytes([0xE8, 0x03, 0x5A, 0x00, 0x00, 0x00])
 DATA_ID = 0x1244
 
 
-def setUpModule():
-    try:
-        _lib.lib()
-    except blobly.BloblyError as e:
-        if os.environ.get("BLOBLY_LIB") or os.environ.get("BLOBLY_TEST_INSTALLED"):
-            raise
-        raise unittest.SkipTest(str(e))
-
-
-class TestReference(unittest.TestCase):
+class TestReference:
     def test_crc_and_protect_are_the_reference_in_every_mode(self):
         for mode, want in VECTORS.items():
             for n in range(15):
-                with self.subTest(mode=mode, counter=n):
-                    frame = BASE[:5] + bytes([n])
-                    self.assertEqual(e2e.p01_crc(frame, DATA_ID, 4, 5, mode), want[n])
-                    self.assertEqual(e2e.p01_protect(BASE, DATA_ID, 4, 5, n, mode),
-                                     BASE[:4] + bytes([want[n], n]))
+                frame = BASE[:5] + bytes([n])
+                assert e2e.p01_crc(frame, DATA_ID, 4, 5, mode) == want[n], f"{mode}, counter {n}"
+                assert e2e.p01_protect(BASE, DATA_ID, 4, 5, n, mode) == BASE[:4] + bytes([want[n], n]), \
+                    f"{mode}, counter {n}"
 
     def test_both_is_the_default_mode(self):
-        self.assertEqual(e2e.p01_crc(BASE[:5] + b"\x03", DATA_ID, 4, 5), VECTORS["both"][3])
-        self.assertEqual(e2e.p01_protect(BASE, DATA_ID, 4, 5, 3)[4], VECTORS["both"][3])
+        assert e2e.p01_crc(BASE[:5] + b"\x03", DATA_ID, 4, 5) == VECTORS["both"][3]
+        assert e2e.p01_protect(BASE, DATA_ID, 4, 5, 3)[4] == VECTORS["both"][3]
 
     def test_protect_keeps_the_counter_bytes_high_nibble_and_leaves_its_input(self):
         src = bytearray(BASE[:5] + b"\xA7")
         out = e2e.p01_protect(src, DATA_ID, 4, 5, 3, "alt")
-        self.assertIsInstance(out, bytes)
-        self.assertEqual(out[5], 0xA3)
-        self.assertEqual(out[4], e2e.p01_crc(out, DATA_ID, 4, 5, "alt"))
-        self.assertEqual(src, bytearray(BASE[:5] + b"\xA7"), "the caller's bytes were written")
-        self.assertEqual(e2e.p01_protect(list(BASE), DATA_ID, 4, 5, 0), BASE[:4] + bytes([VECTORS["both"][0], 0]))
+        assert isinstance(out, bytes)
+        assert out[5] == 0xA3
+        assert out[4] == e2e.p01_crc(out, DATA_ID, 4, 5, "alt")
+        assert src == bytearray(BASE[:5] + b"\xA7"), "the caller's bytes were written"
+        assert e2e.p01_protect(list(BASE), DATA_ID, 4, 5, 0) == BASE[:4] + bytes([VECTORS["both"][0], 0])
 
 
-class TestRefusals(unittest.TestCase):
+class TestRefusals:
     def test_what_profile_1_cannot_be_is_a_value_error_naming_it(self):
         cases = [
             (lambda: e2e.p01_protect(BASE, DATA_ID, 4, 5, 15), "a Profile 1 counter is 0..14, not 15"),
@@ -69,10 +57,8 @@ class TestRefusals(unittest.TestCase):
             (lambda: e2e.p01_crc(BASE, DATA_ID, 4, 5, "alt\0x"), "NUL"),
         ]
         for call, want in cases:
-            with self.subTest(want):
-                with self.assertRaises(ValueError) as e:
-                    call()
-                self.assertIn(want, str(e.exception))
+            with pytest.raises(ValueError, match=re.escape(want)):
+                call()
 
     def test_an_argument_of_the_wrong_type_is_a_type_error(self):
         for call in (lambda: e2e.p01_crc("E8035A000000", DATA_ID, 4, 5),
@@ -81,9 +67,5 @@ class TestRefusals(unittest.TestCase):
                      lambda: e2e.p01_crc(BASE, DATA_ID, True, 5),
                      lambda: e2e.p01_protect(BASE, DATA_ID, 4, 5, None),
                      lambda: e2e.p01_crc(BASE, DATA_ID, 4, 5, None)):
-            with self.assertRaises(TypeError):
+            with pytest.raises(TypeError):
                 call()
-
-
-if __name__ == "__main__":
-    unittest.main()

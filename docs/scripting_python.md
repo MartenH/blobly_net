@@ -60,7 +60,8 @@ other package, no V toolchain and, for the software buses, no driver.
 package's tests, every example and the pytest example under the runners' own Python (3.12 on
 both today) on Linux and on Windows, from the source tree and from the installed wheel, and
 under 3.11 on Linux from the source tree, which holds the floor. Newer versions are not run in
-CI. The wheel is tagged
+CI. Those tests (`python/tests`) are a pytest suite, so CI installs pytest (pinned) beside the
+package; `blobly` itself still depends on nothing. The wheel is tagged
 `py3-none-<platform>`: it holds no compiled Python code, so one wheel serves every version.
 Other implementations are refused when the library loads (PyPy included). The package detaches a
 thread from the engine as CPython ends the thread, and only CPython promises to do that on the

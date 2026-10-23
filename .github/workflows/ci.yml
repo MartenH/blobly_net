@@ -113,7 +113,7 @@ jobs:
           python-version: "3.11"
           update-environment: false
       # The package over that library (python/blobly), from the source tree, under the runner's
-      # Python and under 3.11, each in a fresh venv with pytest (scripts/python_tests.py): its event
+      # Python and under 3.11, each run by pytest in a fresh venv (scripts/python_tests.py): its event
       # loop's model, the package against sim-demo, every example and the pytest example
       # (test_examples.py), and the docs against the code (test_docs.py). BLOBLY_LIB set, so a
       # missing library fails rather than skips.
@@ -121,8 +121,8 @@ jobs:
         run: python3 scripts/python_tests.py --lib build/libblobly.so python3 "${{ steps.py311.outputs.python-path }}"
       # The wheel PyPI gets (scripts/build_wheel.py): built from the library above, its platform tag
       # checked by auditwheel, installed into a fresh venv, and the package's tests run against the
-      # INSTALLED copy — -I and -t python/tests keep the source tree off sys.path, and
-      # TestInstalledWheel asserts that the package and the library it loaded are the wheel's.
+      # INSTALLED copy — -I and python/tests/pytest.ini (the run's root) keep the source tree off
+      # sys.path, and TestInstalledWheel asserts that the package and the library it loaded are the wheel's.
       # From the repository root, which the step's own paths (build/, scripts/, python/tests) name.
       - name: Python wheel (built, installed, tested)
         run: |

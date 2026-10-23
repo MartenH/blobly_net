@@ -172,7 +172,7 @@ jobs:
         shell: pwsh
         run: python -I cmd/libblobly/smoke.py build/blobly.dll projects/sim-demo.blobnet
       # The package (python/blobly) from the source tree, under the runner's Windows Python, in a
-      # fresh venv with pytest: its tests, examples, pytest example and docs (scripts/python_tests.py;
+      # fresh venv, run by pytest: its tests, examples, pytest example and docs (scripts/python_tests.py;
       # ci.yml's abi job has the detail). blobly.dll is beside its runtime DLLs in build/.
       - name: Python package (python/blobly, Windows Python), source tree
         shell: pwsh
