@@ -61,8 +61,9 @@ class SomeipNode:
             svc, mth, _, client, session, _, iface, mtype, _ = struct.unpack(">HHIHHBBBB", data[:16])
             if mtype == 0x00:
                 self.sock.sendto(struct.pack(">HHIHHBBBB", svc, 0x8001, 8, 0, 0, 1, iface, 0x02, 0), src)
-                self.sock.sendto(struct.pack(">HHIHHBBBB", svc, mth, 8 + 2, client, session, 1, iface, 0x80, 0)
-                                 + data[16:][::-1], src)
+                payload = data[16:][::-1]
+                self.sock.sendto(struct.pack(">HHIHHBBBB", svc, mth, 8 + len(payload), client, session, 1, iface,
+                                             0x80, 0) + payload, src)
 
     def close(self):
         self.done.set()

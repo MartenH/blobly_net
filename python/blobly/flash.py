@@ -120,7 +120,10 @@ def _program(client, image, base, sw_version, auth, seed, seed_file, progress, q
         opts.sw_version = _u32("sw_version", sw_version)
     opts.auth, opts.quiet = int(auth), int(quiet)
     opts.seed = _text("seed", seed)
-    opts.seed_file = None if seed_file is None else os.fsencode(seed_file)
+    path = None if seed_file is None else os.fsencode(seed_file)
+    if path is not None and b"\0" in path:
+        raise ValueError(f"flash.program: a NUL in seed_file {seed_file!r}")
+    opts.seed_file = path
     # the engine calls these on the flashing thread, and this thread reports: a note is queued, a
     # progress call waits until it was made here, so a progress that raises (cancelling) stops the
     # transfer before the next block

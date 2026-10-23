@@ -73,8 +73,9 @@ pub mut:
 	// with the boot's challenge/response before erasing. Empty = skip auth (a
 	// boot with no key baked; legacy / unsigned targets).
 	auth_seed []u8
-	// asked by the session's client before each request goes out and while it waits: true
-	// abandons the session there (a host's cancel); nil never
+	// asked by the session's client before each request goes out and between answers: true
+	// abandons the session there (a host's cancel); nil never. A wait inside the channel ends
+	// only by the channel's own stop (isotp.SoftChannel.stop_requested), which is the caller's
 	stop fn () bool = unsafe { nil }
 	// told of every request the session puts through (uds.Client.on_exchange); nil never
 	on_exchange fn (uds.Exchange) = unsafe { nil }

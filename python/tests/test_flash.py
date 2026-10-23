@@ -151,7 +151,8 @@ class TestFlash(unittest.TestCase):
         for kw, err, why in (({"seed": "a", "seed_file": "b"}, blobly.Refused, "seed and seed_file"),
                              ({"auth": False, "seed": "11" * 32}, blobly.Refused, "auth = false"),
                              ({"seed": "0x1234"}, blobly.Refused, "seed must be 64 hex"),
-                             ({"base": -1}, ValueError, "32-bit"), ({"progress": 5}, TypeError, "progress")):
+                             ({"base": -1}, ValueError, "32-bit"), ({"seed_file": "a\0b"}, ValueError, "NUL"),
+                             ({"progress": 5}, TypeError, "progress")):
             with self.subTest(kw), self.assertRaises(err) as e:
                 flash.program(self.can1, bytes(10), quiet=True, **kw)
             self.assertIn(why, str(e.exception))

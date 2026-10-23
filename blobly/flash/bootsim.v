@@ -10,7 +10,7 @@ import crypto.ed25519 as ed
 // reset relocking it, 0x29 a one-shot challenge whose proof is verified against the dev tester key,
 // a download only after an erase and its blocks in sequence within the size 0x34 asked for, the
 // check routine refused while a download is open and passing only for a header that is BLBT,
-// version 1, 64 bytes, its own CRC right and the body's CRC as it states, and a suppressed
+// version 1, 64 bytes, a body of at most 16 MiB, its own CRC right and the body's CRC as it states, and a suppressed
 // positive answer withheld. Its own: 64-byte blocks, and an erase answered at once. Nothing is
 // written anywhere; what it was sent is counted (BootReport).
 
@@ -46,6 +46,9 @@ mut:
 	next        u8
 	got         []u8
 }
+
+// max_image_len is the longest body blobly_emb's check accepts (boot/boot.v).
+const max_image_len = 0x0100_0000
 
 // boot_challenge is the challenge the simulated bootloader signs against.
 const boot_challenge = []u8{len: 32, init: u8(0xA0 + index)}
@@ -120,11 +123,12 @@ fn be32_at(r []u8, off int) u32 {
 // body its length and CRC state.
 fn (b &BootSim) header_ok() bool {
 	g := b.got
-	if g.len < hdr_size || rd32(g, 0) != boot_magic || g[4] != 1 || rd32(g, 20) != u32(hdr_size) {
+	if g.len < hdr_size || rd32(g, 0) != boot_magic || g[4] != 1 || g[5] != 0
+		|| rd32(g, 20) != u32(hdr_size) {
 		return false
 	}
 	n := int(rd32(g, 8))
-	if n == 0 || g.len < hdr_size + n || crc32(g[..28]) != rd32(g, 28) {
+	if n == 0 || n > max_image_len || g.len < hdr_size + n || crc32(g[..28]) != rd32(g, 28) {
 		return false
 	}
 	return crc32(g[hdr_size..hdr_size + n]) == rd32(g, 12)
@@ -171,9 +175,13 @@ fn (mut b BootSim) answer(req []u8, public ed.PublicKey) []u8 {
 						return nrc(0x13)
 					}
 					b.challenge = false // one-shot: a fresh challenge per attempt
-					b.unlocked = ed.verify(public, boot_challenge, req[2..2 + 64]) or { false }
-					b.rep.authenticated = b.unlocked
-					return if b.unlocked { [u8(0x69), 0x02] } else { nrc(0x35) }
+					ok := ed.verify(public, boot_challenge, req[2..2 + 64]) or { false }
+					b.rep.authenticated = ok
+					if !ok {
+						return nrc(0x35) // an unlock already earned stands
+					}
+					b.unlocked = true
+					return [u8(0x69), 0x02]
 				}
 				else {
 					return nrc(0x31)

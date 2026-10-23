@@ -53,6 +53,8 @@ def main(argv: list[str]) -> int:
         print(f"  heard {m.type} 0x{m.service:04X}:0x{m.method:04X} from {m.source} at {m.at_ms} ms: "
               f"{m.payload.hex(' ') or '-'}")
     print(f"send: {len(heard)} message(s), {malformed} malformed datagram(s)")
+    if malformed:
+        fail(f"{malformed} datagram(s) from {args.to} were not SOME/IP to their end")
 
     # what the node publishes to its peer, nothing sent
     events, malformed = someip.listen(500, port=args.port)
