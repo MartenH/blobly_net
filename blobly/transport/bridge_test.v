@@ -1,6 +1,7 @@
 module transport
 
 import net
+import os
 import time
 
 // A bridge over in-process buses, dialled into this process's listener: the whole path a vcan in
@@ -677,5 +678,54 @@ fn test_an_address_no_bridge_could_answer_is_refused_in_the_editor() {
 	for bad in ['bridge:a/b/vcan0', 'bridge:${'x'.repeat(bridge_max_label + 1)}/vcan0', 'bridge:x',
 		'bridge:x/vcan0@500000'] {
 		assert bridge_address_error(bad) != none, bad
+	}
+}
+
+fn test_canbridge_is_the_first_folder_that_holds_one() {
+	have := [os.join_path('lib', 'canbridge'), os.join_path('exe', 'canbridge')]
+	is_file := fn [have] (p string) bool {
+		return p in have
+	}
+	assert canbridge_in(['lib', 'exe'], is_file) or { '' } == os.join_path('lib', 'canbridge')
+	assert canbridge_in(['', 'nothing', 'exe'], is_file) or { '' } == os.join_path('exe', 'canbridge')
+	assert canbridge_in(['nothing'], is_file) == none
+	assert canbridge_in([], is_file) == none
+}
+
+fn test_a_stopped_bridge_is_gone_and_may_be_started_again() {
+	start_bridge('b-stop', ['A'], inproc_opener('bst-'))!
+	mut app := open('bridge:b-stop/A')!
+	defer {
+		app.close()
+	}
+	bridge_stop('b-stop', 2000)!
+	// gone when the call returns, not some time after it
+	assert bridge_session('b-stop') == none
+	st, _ := bridge_state('b-stop')
+	assert st == .idle
+	assert bridge_channels('b-stop') == []
+	if _ := app.send(CanFrame{ id: 1 }) {
+		assert false, 'sent on a stopped bridge'
+	} else {
+		assert err.msg().contains('disconnected by this app'), err.msg()
+	}
+	if _ := bridge_stop('b-stop', 2000) {
+		assert false, 'stopped a bridge that is not connected'
+	} else {
+		assert err.msg().contains('no bridge named "b-stop" is connected'), err.msg()
+	}
+	start_bridge('b-stop', ['A'], inproc_opener('bst-'))!
+	assert bridge_channels('b-stop') == ['A']
+}
+
+fn test_a_bridge_is_started_from_windows_only() {
+	$if !windows {
+		assert wsl_distros() == []
+		assert bridge_program() == none
+		if _ := bridge_start('Ubuntu-24.04') {
+			assert false, 'started a WSL bridge from Linux'
+		} else {
+			assert err.msg().contains('the Windows build'), err.msg()
+		}
 	}
 }

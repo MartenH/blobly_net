@@ -73,3 +73,6 @@ __all__ += ["ConnectionLost", "DoipAnnouncement", "RoutingDenied", "doip_listen"
 # SOME/IP (someip.py) and flashing (flash.py)
 __all__ += ["SomeipHeard", "SomeipMessage", "someip"]
 __all__ += ["BootReport", "BootSim", "FlashFailed", "FlashReport", "flash"]
+# the CAN bridge into WSL (bridge.py)
+from . import bridge  # noqa: E402
+__all__ += ["bridge"]

@@ -52,16 +52,44 @@ pub fn wsl_distros() []string {
 	return out
 }
 
+fn C.GetModuleHandleExW(flags u32, addr voidptr, h &voidptr) int
+
+// bridge_start_refusal is none here: Windows is where a bridge into WSL is started from.
+fn bridge_start_refusal() ?string {
+	return none
+}
+
+// bridge_program_dirs is where a shipped `canbridge` may be: beside the module this code is in —
+// blobly.dll for a library host such as Python, whose executable is python.exe — then beside the
+// executable, which is the GUI's bundle folder.
+fn bridge_program_dirs() []string {
+	return [bridge_module_dir(), os.dir(os.executable())]
+}
+
+// bridge_module_dir is the folder of the module holding this function: the DLL when the engine
+// is loaded as a library, the executable otherwise; '' if Windows cannot say.
+fn bridge_module_dir() string {
+	mut h := unsafe { nil }
+	// GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS (4) | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT (2)
+	if C.GetModuleHandleExW(u32(6), voidptr(bridge_module_dir), &h) == 0 {
+		return ''
+	}
+	mut buf := [4096]u16{}
+	n := C.GetModuleFileNameW(h, &buf[0], 4096)
+	if n == 0 || n >= 4096 {
+		return ''
+	}
+	return os.dir(unsafe { string_from_wide2(&buf[0], int(n)) })
+}
+
 // bridge_launch_wsl starts `canbridge` in a WSL distribution, as root (so it can create the vcan
 // interfaces) and with no console window, telling it where to dial and the token to present.
-// The bridge's own `canbridge` is the one shipped beside this executable, else one on the
-// distribution's PATH. Whether it then dials in is the caller's to wait for: a bridge that cannot
-// start says why in its hello.
+// The bridge's own `canbridge` is bridge_program's, else one on the distribution's PATH. Whether
+// it then dials in is the caller's to wait for: a bridge that cannot start says why in its hello.
 fn bridge_launch_wsl(distro string, ep BridgeEndpoint) ! {
-	dir := os.dir(os.executable())
 	mut args := ['-d', distro, '-u', 'root']
-	if os.is_file(os.join_path(dir, 'canbridge')) {
-		args << ['--cd', dir, '--', './canbridge']
+	if prog := bridge_program() {
+		args << ['--cd', os.dir(prog), '--', './canbridge']
 	} else {
 		args << ['--', 'canbridge']
 	}

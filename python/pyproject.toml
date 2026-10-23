@@ -33,8 +33,9 @@ Documentation = "https://github.com/MartenH/blobly_net/blob/main/docs/scripting_
 packages = ["blobly"]
 
 [tool.setuptools.package-data]
-# the native library, its runtime DLLs on Windows, and those DLLs' licence texts beside them
-blobly = ["_native/*.so", "_native/*.dll", "_native/licenses/**/*"]
+# the native library, its runtime DLLs on Windows, and those DLLs' licence texts beside them; on
+# Windows also canbridge, the Linux program the library starts inside WSL
+blobly = ["_native/*.so", "_native/*.dll", "_native/canbridge", "_native/licenses/**/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "blobly._version.__version__" }

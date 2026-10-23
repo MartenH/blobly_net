@@ -242,12 +242,8 @@ hardware is described in [can_hardware.md](can_hardware.md) and
   `vxlapi64.dll` by name when a channel first opens, and the wheel ships none of them. Under
   Python the "application directory" in Windows' DLL search is `python.exe`'s, not
   `blobly_net.exe`'s. Loading them from a CPython host is untested.
-- **The WSL bridge does not start from a pip install.** Opening a `bridge:` channel starts
-  `canbridge` in the distribution. The engine looks for `canbridge` beside the host executable
-  (here `python.exe`), else on the distribution's PATH. A pip install ships no `canbridge`, so
-  from Python the bridge starts only where `canbridge` is on the distribution's PATH (copy it from
-  the Windows bundle). WSL needs mirrored networking, and the open can block up to 20 s while
-  the bridge starts. Untested from Python.
+- **The WSL bridge starts by itself.** Opening a `bridge:` channel starts `canbridge` in the
+  distribution and waits for it, up to 20 s ([The WSL bridge](#the-wsl-bridge)).
 - **CANsub: name the device.** The row must carry the device id: Python cannot discover one.
 - **Listen-only rows** (`listen_only: true` on a CAN row) refuse every send on their wire with
   `BloblyError`, and PCAN, Kvaser, Vector and CANsub also silence the controller, so the adapter
@@ -256,6 +252,46 @@ hardware is described in [can_hardware.md](can_hardware.md) and
 - **What CI exercises from Python is `inproc:` only.** Every other backend is the same code the
   app runs and is verified on hardware there ([windows_can_hardware.md](windows_can_hardware.md)),
   but not from a Python host.
+
+### The WSL bridge
+
+On Windows, `canbridge` run inside a WSL distribution carries that distribution's CAN interfaces
+(`vcan0`, `vcan1`, a real `can0` behind USB/IP) to this process as `bridge:<distribution>/<interface>`
+channels ([wsl_bridge.md](wsl_bridge.md)). A project row naming one starts its bridge when it
+opens. `blobly.bridge` does it explicitly, as the GUI's Discover dialog does:
+
+```python
+from blobly import bridge
+
+for distro in bridge.distributions():  # the installed WSL distributions; [] on Linux
+    print(distro, bridge.state(distro))  # ('idle', ''), ('connected', ''), ('failed', why) ...
+```
+
+```python
+import sys
+from blobly import bridge
+
+if sys.platform == "win32" and "Ubuntu-24.04" in bridge.distributions():
+    print(bridge.start("Ubuntu-24.04"))  # ['bridge:Ubuntu-24.04/vcan0', 'bridge:Ubuntu-24.04/vcan1']
+    bridge.stop("Ubuntu-24.04")
+```
+
+- **`start` waits** until the bridge has dialled in and returns its channels, or raises
+  `BloblyError` with the bridge's own reason (no vcan module, WSL not in mirrored networking, a
+  bridge that did not dial in within 20 s). `start(distro, wait=False)` returns once it is
+  launched, and `state(distro)` follows it.
+- **The wheel carries `canbridge`** (Windows), in `blobly/_native/` beside the engine, which is
+  where a start looks first, then beside the executable (`blobly_net.exe`'s bundle), then on the
+  distribution's PATH. `bridge.program()` says which file a start runs. It is a Linux program built
+  on Ubuntu 24.04, so the distribution must be at least that new, and WSL needs
+  `networkingMode=mirrored` ([wsl_bridge.md](wsl_bridge.md#requirements)).
+- **`stop` ends a connected bridge** and every channel open on it. It is refused while a project
+  is started, as the GUI offers Disconnect only while stopped, and for a bridge still starting.
+  A bridge also exits when this process does.
+- **On Linux** there are no distributions, `program()` is `None`, and `start` is refused, saying
+  so: use the CAN interface directly.
+- **Not verified by CI**: no runner has WSL. A start, its channels and a stop are checked by hand
+  on a Windows machine with WSL ([wsl_bridge.md](wsl_bridge.md#from-python)).
 
 ---
 
@@ -1045,9 +1081,10 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ## 17. Reference
 
-Import everything from `blobly`, and the E2E helpers, SOME/IP and flashing from `blobly.e2e`,
-`blobly.someip` and `blobly.flash`. The submodules `blobly.project`, `blobly.events` and
-`blobly.faults` are the implementation, and their other names are not part of the interface.
+Import everything from `blobly`, and the E2E helpers, SOME/IP, flashing and the WSL bridge from
+`blobly.e2e`, `blobly.someip`, `blobly.flash` and `blobly.bridge`. The submodules
+`blobly.project`, `blobly.events` and `blobly.faults` are the implementation, and their other
+names are not part of the interface.
 `python/tests/test_docs.py` checks that every public class, method, property and attribute of
 the package is named in this section.
 
@@ -1065,6 +1102,7 @@ the package is named in this section.
 | `blobly.e2e` | The E2E Profile 1 helpers: see Module `blobly.e2e`. |
 | `blobly.someip` | SOME/IP send, call and listen: see Module `blobly.someip`. |
 | `blobly.flash` | Flashing a blobly_emb bootloader: see Module `blobly.flash`. |
+| `blobly.bridge` | The CAN bridge into WSL: see Module `blobly.bridge`. |
 
 ### Module `blobly.e2e`
 
@@ -1142,6 +1180,16 @@ the block.
 | `BootReport.erases`, `BootReport.blocks`, `BootReport.checks`, `BootReport.resets` | How many erases, 0x36 blocks, check routines and resets it answered. |
 | `BootReport.bytes` | What the last download was sent, header included. |
 | `BootReport.verified` | The last check routine passed: the CRC the image header states. |
+### Module `blobly.bridge`
+
+| name | what |
+|---|---|
+| `blobly.bridge.distributions()` | The WSL distributions installed for this user, sorted; `[]` where there is no WSL, and on Linux. |
+| `blobly.bridge.start(distro, wait=True)` | Starts the bridge in `distro` unless it is connected or starting. With `wait`, returns its `rows()` once it has dialled in, and raises `BloblyError` with its reason if it fails; without, returns `None` once launched. `Refused` where it cannot be launched: no such distribution, or not on Windows. |
+| `blobly.bridge.state(distro)` | `(state, reason)`: `"idle"`, `"starting"`, `"connected"` or `"failed"`, and why it failed (`""` otherwise). |
+| `blobly.bridge.rows(distro)` | A connected bridge's channels as interfaces (`"bridge:Ubuntu-24.04/vcan0"`); `[]` when it is not connected. |
+| `blobly.bridge.stop(distro)` | Disconnects a connected bridge, which ends it, and returns once it has gone. `BloblyError` (code -3) when it is not connected, or while a project is started; `Timeout` when it was cut but had not gone within 2 s. |
+| `blobly.bridge.program()` | The `canbridge` a start runs: beside the engine (the Windows wheel's), else beside the executable; `None` when there is none (a start then runs the distribution's own) and on Linux. |
 
 ### `Project`
 
@@ -1396,7 +1444,7 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
 loop, bus health, fault injection, the E2E Profile 1 helpers, UDS over CAN and DoIP, DoIP
-discovery, SOME/IP send, call and listen, flashing, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
 - UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,

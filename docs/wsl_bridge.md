@@ -25,7 +25,7 @@ when the app closes.
 It runs `canbridge` in the distribution **as root**, with no console window:
 
 ```
-wsl.exe -d <distribution> -u root --cd <the app's folder> -- ./canbridge --vcan 2 --connect 127.0.0.1:<port> --token <token> --name <distribution>
+wsl.exe -d <distribution> -u root --cd <canbridge's folder> -- ./canbridge --vcan 2 --connect 127.0.0.1:<port> --token <token> --name <distribution>
 ```
 
 - `--vcan 2` makes sure `vcan0` and `vcan1` exist and are up (at MTU 72, so they carry CAN-FD),
@@ -37,7 +37,37 @@ wsl.exe -d <distribution> -u root --cd <the app's folder> -- ./canbridge --vcan 
   lets connections *out* through, so this direction needs no firewall rule and no admin rights.
 
 The `canbridge` beside `blobly_net.exe` is a Linux program. WSL runs it straight from the
-Windows folder.
+Windows folder. The engine looks for it beside itself first (`blobly.dll`, for a library host
+such as Python), then beside the executable; with neither, it runs the `canbridge` on the
+distribution's PATH.
+
+## From Python
+
+The Windows wheel (`pip install blobly`) carries `canbridge` beside the engine, so a project row
+`bridge:Ubuntu-24.04/vcan0` opens from Python as it does in the app. `blobly.bridge` starts, follows
+and stops a bridge explicitly ([scripting_python.md](scripting_python.md#the-wsl-bridge)):
+
+```python
+from blobly import bridge
+
+print(bridge.distributions())        # ['Ubuntu-24.04']
+print(bridge.program())              # ...\site-packages\blobly\_native\canbridge
+print(bridge.start("Ubuntu-24.04"))  # ['bridge:Ubuntu-24.04/vcan0', 'bridge:Ubuntu-24.04/vcan1']
+bridge.stop("Ubuntu-24.04")
+```
+
+No CI runner has WSL, so this is checked by hand, on a Windows machine whose WSL meets the
+requirements below:
+
+1. `pip install blobly` (or the wheel CI built) into a fresh venv, and run the lines above. The
+   start returns the two vcans, and `bridge.state("Ubuntu-24.04")` is `('connected', '')`.
+2. In a WSL terminal run `candump vcan0`, and from Python open the row and send a frame:
+   `blobly.Project` over a project with a `bridge:Ubuntu-24.04/vcan0` row, then `ch.send(0x123, b"\x01")`.
+   `candump` prints it; a `cansend vcan0 321#02` arrives at `ch.recv(1000)`.
+3. `bridge.stop("Ubuntu-24.04")` returns, `state` reads `('idle', '')`, and `ps -e | grep canbridge`
+   in WSL finds nothing.
+4. In a WSL distribution with no vcan module, `bridge.start` raises with the bridge's own reason
+   (*cannot create vcan0 …*).
 
 ## Requirements
 
