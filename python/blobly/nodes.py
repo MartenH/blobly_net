@@ -143,7 +143,9 @@ class Node:
             name = _lib.string(lib.bb_node_fault, n, k, ctypes.byref(code))
             faults.append(Fault(name, code.value, _lib.string(lib.bb_dtc_name, code.value)))
         self._faults = NodeFaults(faults)
-        self._names = {f.dtc: f.name for f in faults}
+        self._names = {}  # the first of a DTC declared twice names it, as EcuDesc.fault does
+        for f in faults:
+            self._names.setdefault(f.dtc, f.name)
         channels = self._project.channels
         out, t = [], _lib.BbReach()
         for k in range(info.targets):

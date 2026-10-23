@@ -91,11 +91,34 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 	assert same_host('::ffff:192.0.2.1', '::ffff:c000:201') && same_host('::ffff:192.0.2.1', '192.0.2.1')
 	assert !same_host('192.0.2.1', 'c0000201') && !same_host('010.0.0.1', '10.0.0.1')
 	assert loopback('::ffff:127.0.0.1')
+	assert !same_host('192.0.2.1::', 'c000:201::') && !same_host('[2001:db8::1', '2001:db8::1')
 	assert !same_host('fe80::1%eth0', 'fe80::1%ETH0')
 	assert same_host('Board.local', 'board.local') && !same_host('10.0.0.1', '10.0.0.2')
 	assert loopback('[0:0:0:0:0:0:0:1]') && loopback('127.0.0.2') && !loopback('::2')
 	sys.nodes[0].doip = 0
 	sys.reach(0, rows, -1) or { assert !err.msg().contains('DoIP'), err.msg() }
+	// two simulated entities of one logical address, told apart by their bus, not their real hosts
+	mut sim := demo_system()
+	sim.nodes[0].doip = 0x0710
+	sim.nodes[0].address = '192.0.2.1'
+	sim.nodes << SysNode{
+		...sim.nodes[0]
+		name:    'zone_b'
+		buses:   ['rear']
+		address: '192.0.2.2'
+	}
+	lo := [RowRef{
+		name:    'edge'
+		doip:    true
+		host:    '127.0.0.1'
+		logical: 0x0710
+	}, RowRef{
+		name:    'rear'
+		doip:    true
+		host:    '127.0.0.1'
+		logical: 0x0710
+	}]
+	assert sim.targets(0, lo).map(it.row) == [0] && sim.targets(1, lo).map(it.row) == [1]
 	// two nodes at one pair of ids on one bus: neither is reached there
 	mut two := demo_system()
 	two.nodes << SysNode{

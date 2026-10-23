@@ -78,7 +78,9 @@ pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 			link := sys.node_for(TargetAddr{
 				doip:    true
 				logical: r.logical
-				host:    r.host
+				// a loopback row simulates an entity whose address in the model is the real one: told
+				// apart by its bus, never by the host
+				host:    if loopback(r.host) { '' } else { r.host }
 				bus:     r.name
 			})
 			if link.node == n && (node.address == '' || r.host == '' || loopback(r.host)
@@ -117,7 +119,7 @@ pub fn same_host(a string, b string) bool {
 }
 
 fn canonical_host(h string) string {
-	s := h.trim('[]')
+	s := if h.len > 1 && h[0] == `[` && h[h.len - 1] == `]` { h[1..h.len - 1] } else { h }
 	addr, zone := if i := s.index('%') { s[..i], s[i..] } else { s, '' }
 	if b := ip_bytes(addr) {
 		// an IPv4-mapped IPv6 address is that IPv4 address
@@ -153,8 +155,9 @@ fn ip_bytes(s string) ?[]u8 {
 	if halves.len > 2 {
 		return none
 	}
-	head := groups_of(halves[0])?
-	tail := if halves.len == 2 { groups_of(halves[1])? } else { []u8{} }
+	// a dotted IPv4 part ends the whole address, never the run before `::`
+	head := groups_of(halves[0], halves.len == 1)?
+	tail := if halves.len == 2 { groups_of(halves[1], true)? } else { []u8{} }
 	if (halves.len == 1 && head.len != 16) || head.len + tail.len > 16
 		|| (halves.len == 2 && head.len + tail.len == 16) {
 		return none
@@ -166,14 +169,14 @@ fn ip_bytes(s string) ?[]u8 {
 }
 
 // groups_of is a run of IPv6 groups' bytes, the last of them a dotted IPv4 address if it is one.
-fn groups_of(s string) ?[]u8 {
+fn groups_of(s string, last bool) ?[]u8 {
 	if s == '' {
 		return []u8{}
 	}
 	parts := s.split(':')
 	mut out := []u8{}
 	for i, g in parts {
-		if i == parts.len - 1 && g.contains('.') {
+		if last && i == parts.len - 1 && g.contains('.') {
 			out << ip_bytes(g)?
 			continue
 		}
@@ -190,11 +193,10 @@ fn groups_of(s string) ?[]u8 {
 // loopback: `host` is this machine — an entity a project hosts for a node in simulation, whose
 // system.toml address is the real ECU's.
 fn loopback(host string) bool {
-	s := host.trim('[]').all_before('%')
-	if s.to_lower() == 'localhost' {
+	if host.to_lower() == 'localhost' {
 		return true
 	}
-	c := canonical_host(s)
+	c := canonical_host(host).all_before('%')
 	return (c.starts_with('ip:7f') && c.len == 11) || c == 'ip:' + '0'.repeat(30) + '01'
 }
 

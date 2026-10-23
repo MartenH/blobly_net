@@ -167,7 +167,8 @@ fn l_node_did(l lua.State) i32 {
 fn l_node_faults(l lua.State) i32 {
 	node := node_arg(l, 1) or { return l.fail(err.msg()) }
 	l.new_table()
-	for f in node.desc.faults {
+	// the first of a DTC declared twice names it, as EcuDesc.fault does: set last
+	for f in node.desc.faults.reverse() {
 		l.push_str(f.name)
 		l.set_numkey(f64(f.dtc))
 	}
