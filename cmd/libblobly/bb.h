@@ -898,7 +898,8 @@ int bb_did_session(int n, int d, int write, int k, char *buf, int cap); /* the k
 int bb_did_part(int n, int d, int p, int *kind, char *buf, int cap); /* >= 0: the length of its
                                                         label; *kind an enum bb_part_kind */
 int bb_did_hint(int n, int d, int p, char *buf, int cap); /* what the part accepts: "u16 0..360" */
-int bb_did_text(int n, int d, const uint8_t *data, int len, int p, char *buf, int cap);
+int bb_did_text(int n, int d, const uint8_t *data, int len, int p, char *buf, int cap); /* p -1:
+                                                        the value checked alone, answering "" */
 int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
                            bb_write_needs *needs);
 #endif /* BB_FROM_V */

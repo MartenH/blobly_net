@@ -113,10 +113,6 @@ class Node:
     the run reaches it. It belongs to the run that listed it: after a stop and a start it goes on
     working while the run's model has a node of its name at its position, and refuses otherwise."""
     name: str
-    described: bool
-    server: bool
-    reference_key: bool
-    problem: str
 
     def __init__(self, project: "Project", index: int, name: str) -> None:
         self._project, self._index, self.name = project, index, name
@@ -126,9 +122,8 @@ class Node:
         lib, n = _lib.lib(), self._index
         info = _lib.BbNode()
         _lib.check(lib.bb_node_info(n, ctypes.byref(info)))
-        self.described, self.server = bool(info.described), bool(info.server)
-        self.reference_key = bool(info.reference_key)
-        self.problem = _lib.string(lib.bb_node_problem, n)
+        self._info = (bool(info.described), bool(info.server), bool(info.reference_key),
+                      _lib.string(lib.bb_node_problem, n))
         dids = []
         for d in range(info.dids):
             x = _lib.BbDid()
@@ -163,6 +158,31 @@ class Node:
         if self._run != _lib.state["run"]:
             raise BloblyError(f"node {self.name!r} is not in this run's system model; take it from "
                               "project.nodes again", _lib.BB_ERR_STATE)
+
+    def _current(self) -> tuple[bool, bool, bool, str]:
+        with _lib.state_lock:
+            self._live()
+            return self._info
+
+    @property
+    def described(self) -> bool:
+        """Its ecu.toml was read in this run."""
+        return self._current()[0]
+
+    @property
+    def server(self) -> bool:
+        """Its ecu.toml declares a diagnostic server."""
+        return self._current()[1]
+
+    @property
+    def reference_key(self) -> bool:
+        """Its [uds] security_key is blobly_net's reference key."""
+        return self._current()[2]
+
+    @property
+    def problem(self) -> str:
+        """Why its ecu.toml was not read, "" when it was."""
+        return self._current()[3]
 
     @property
     def dids(self) -> Dids:
@@ -362,6 +382,8 @@ class NodeClient(UdsClient):
                                   "was read; read it again", _lib.BB_ERR_STATE)
             if d is None:
                 return data
+            if not d.parts:  # a layout of no parts: the value is checked all the same
+                _lib.string(lib.bb_did_text, n, d.index, data, len(data), -1)
             texts = [_lib.string(lib.bb_did_text, n, d.index, data, len(data), p) for p in range(len(d.parts))]
         values = [_value(p, t) for p, t in zip(d.parts, texts)]
         if not d.by_label:

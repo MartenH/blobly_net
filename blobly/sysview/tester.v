@@ -82,7 +82,7 @@ pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 				bus:     r.name
 			})
 			if link.node == n && (node.address == '' || r.host == '' || loopback(r.host)
-				|| node.address.to_lower() == r.host.to_lower()) {
+				|| same_host(node.address, r.host)) {
 				out << RowTarget{
 					row:  i
 					doip: true
@@ -107,6 +107,35 @@ pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 		}
 	}
 	return out
+}
+
+// same_host: two spellings of one address — a name compared without case, an IPv6 address by its
+// eight groups (`2001:db8::1` is `[2001:0db8:0:0:0:0:0:1]`).
+fn same_host(a string, b string) bool {
+	return canonical_host(a) == canonical_host(b)
+}
+
+fn canonical_host(h string) string {
+	s := h.trim('[]').to_lower()
+	if !s.contains(':') {
+		return s
+	}
+	halves := s.split('::')
+	if halves.len > 2 {
+		return s
+	}
+	head := if halves[0] == '' { []string{} } else { halves[0].split(':') }
+	tail := if halves.len < 2 || halves[1] == '' { []string{} } else { halves[1].split(':') }
+	missing := 8 - head.len - tail.len
+	if missing < 0 || (halves.len == 1 && missing != 0) {
+		return s
+	}
+	mut groups := head.clone()
+	for _ in 0 .. missing {
+		groups << '0'
+	}
+	groups << tail
+	return groups.map(it.trim_left('0')).map(if it == '' { '0' } else { it }).join(':')
 }
 
 // loopback: `host` is this machine — an entity a project hosts for a node in simulation, whose

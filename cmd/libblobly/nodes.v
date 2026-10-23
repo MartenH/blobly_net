@@ -279,6 +279,11 @@ pub fn bb_did_hint(n i32, d i32, p i32, buf &char, cap i32) i32 {
 pub fn bb_did_text(n i32, d i32, data &u8, len i32, p i32, buf &char, cap i32) i32 {
 	x := node_did(n, d) or { return refused(err) }
 	value := bytes_in('did_text', data, len) or { return fail(bb_err, err.msg()) }
+	if p == -1 {
+		// the value checked alone: what a layout of no parts answers
+		x.read_texts(value) or { return uds_failed(err) }
+		return put('', buf, cap)
+	}
 	text := x.read_part(value, int(p)) or { return uds_failed(err) }
 	return put(text, buf, cap)
 }

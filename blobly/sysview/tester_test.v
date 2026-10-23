@@ -81,6 +81,13 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 		logical: 0x0710
 	}]) == []
 	assert sys.targets(0, rows).len == 1
+	sys.nodes[0].address = '2001:db8::1'
+	assert sys.targets(0, [RowRef{
+		name:    'D'
+		doip:    true
+		host:    '[2001:0db8:0:0:0:0:0:1]'
+		logical: 0x0710
+	}]).len == 1
 	sys.nodes[0].doip = 0
 	sys.reach(0, rows, -1) or { assert !err.msg().contains('DoIP'), err.msg() }
 	// two nodes at one pair of ids on one bus: neither is reached there
