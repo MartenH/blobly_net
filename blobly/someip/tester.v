@@ -1,7 +1,6 @@
 module someip
 
 import sync
-import time
 
 // tester — the rules a script's SOME/IP tester follows, for every binding (the Lua someip.send and
 // someip.call, the C ABI's bb_someip_send and bb_someip_call): what a message left unstated goes
@@ -123,12 +122,13 @@ pub fn (mut s Sessions) send_messages(port int, to string, msgs []Outgoing, wind
 }
 
 // Answer is what one call ended with: the RESPONSE or ERROR mirroring the request's Request ID
-// (an ERROR is an answer, its return code in the header), `at_ms` after the send; `timed_out`
+// (an ERROR is an answer, its return code in the header) from `from`, `at_ms` after the send; `timed_out`
 // when nothing did within the deadline, the header then the request's own.
 pub struct Answer {
 pub:
 	header    Header
 	payload   []u8
+	from      string // who answered, "host:port"
 	at_ms     i64
 	timed_out bool
 }
@@ -163,9 +163,7 @@ pub fn (mut s Sessions) call_once(port int, to string, m Outgoing, timeout_ms in
 		timeout_us: u64(timeout_ms) * 1000
 		session:    if want == 1 { u16(0xFFFF) } else { want - 1 }
 	}
-	sw := time.new_stopwatch()
 	call(port, to, mut cli, m.payload, owner)!
-	at := sw.elapsed().milliseconds()
 	if cli.state != .done && cli.result.timed_out {
 		return Answer{
 			header:    Header{
@@ -177,7 +175,6 @@ pub fn (mut s Sessions) call_once(port int, to string, m Outgoing, timeout_ms in
 				interface_version: cli.iface
 				msg_type:          mt_request
 			}
-			at_ms:     at
 			timed_out: true
 		}
 	}
@@ -193,6 +190,7 @@ pub fn (mut s Sessions) call_once(port int, to string, m Outgoing, timeout_ms in
 			return_code:       cli.result.rc
 		}
 		payload: cli.result.payload
-		at_ms:   at
+		from:    cli.result.from
+		at_ms:   i64(cli.result.at_us / 1000)
 	}
 }

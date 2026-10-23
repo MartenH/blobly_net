@@ -127,6 +127,15 @@ class TestFlash(unittest.TestCase):
             self.assertEqual(flash.program(diag, bytes(100), quiet=True).auth, "authenticated")
         self.assertEqual(self.boot.stop().checks, 1, "the refused one stopped before its check")
 
+    def test_a_progress_may_not_call_into_blobly(self):
+        with self.can1.uds(0x7B0, 0x7B8) as diag:
+            for call in (lambda: diag.last, diag.close, self.net.stop, self.can1.close):
+                with self.subTest(call), self.assertRaises(blobly.BloblyError) as e:
+                    flash.program(diag, bytes(300), progress=lambda done, total: call(), quiet=True)
+                self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+        self.assertTrue(self.net.started)
+        self.assertEqual(self.boot.stop().checks, 0)
+
     def test_bad_arguments_are_named(self):
         with self.can1.uds(0x7B0, 0x7B8) as diag:
             with self.assertRaises(blobly.Refused):

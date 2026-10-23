@@ -89,6 +89,11 @@ class TestSendAndCall(unittest.TestCase):
         self.assertFalse(r.event)
         self.assertGreaterEqual(r.at_ms, 0)
 
+    def test_the_answer_names_who_sent_it(self):
+        port = self.peer.to.split(":")[1]
+        r = someip.call(f"localhost:{port}", SomeipMessage(0x0100, 0x0001), port=self.port)
+        self.assertEqual(r.source, f"127.0.0.1:{port}")
+
     def test_an_error_is_an_answer(self):
         r = someip.call(self.peer.to, SomeipMessage(0x0100, 0x0099), port=self.port)
         self.assertEqual((r.type, r.return_code, r.client), ("error", 3, 0x1234))

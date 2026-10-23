@@ -125,6 +125,7 @@ pub fn bb_flash_program(u i32, image &u8, n i32, opts &C.bb_flash_opts, out &C.b
 			base:       o.base
 			sw_version: o.sw_version
 			auth_seed:  seed
+			stop:       hd.stop
 		}, mut sink) or {
 			if stdatomic.load_i64(&hd.cancel) != 0 {
 				return flash.Failed{

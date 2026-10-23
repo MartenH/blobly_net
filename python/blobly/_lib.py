@@ -363,7 +363,32 @@ state = {"owner": None, "gen": 0, "run": 0}
 # bb.h: open, close, load, start and stop are not synchronised against each other, and ctypes
 # releases the GIL inside a call, so every one of them (and the row-name reads a load replaces)
 # runs under this lock, from whichever thread makes it
-state_lock = threading.RLock()
+class _StateLock:
+    """state_lock: re-entrant, and refused on a thread inside a flash's progress callback
+    (`in_progress`), where the flash holds the engine until it ends: waiting for it there would
+    wait for ever."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+
+    def __enter__(self):
+        if getattr(_tls, "in_progress", False):
+            raise BloblyError("a call into blobly from a flash's progress callback: the flash holds the "
+                              "engine until it ends", BB_ERR_STATE)
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+        return False
+
+
+state_lock = _StateLock()
+
+
+def in_progress(on: bool) -> None:
+    """Marks the calling thread as inside a flash's progress callback (state_lock refuses it)."""
+    _tls.in_progress = on
 
 
 class _Attachment:

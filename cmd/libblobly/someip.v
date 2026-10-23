@@ -102,7 +102,7 @@ pub fn bb_someip_call(port i32, to &char, req &C.bb_someip_out, timeout_ms i32) 
 		messages: [
 			someip.Observed{
 				at_ms:   a.at_ms
-				from:    dest
+				from:    a.from
 				header:  a.header
 				payload: a.payload
 			},

@@ -180,6 +180,7 @@ fn test_the_simulated_bootloader_holds_the_session_to_its_order() {
 	assert ask([u8(0x34), 0x00, 0x44, 0, 0, 0, 0, 0, 0, 0, 0])[0] == 0x74
 	assert ask([u8(0x36), 0x02, 0xAA]) == [u8(0x7F), 0x36, 0x73], 'a block out of sequence'
 	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x76), 0x01]
+	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x76), 0x01], 'a retried block, taken once'
 	rep := sim.stop()
 	assert rep.authenticated && rep.blocks == 1 && rep.image == [u8(0xAA)]
 }

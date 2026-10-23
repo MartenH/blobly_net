@@ -1,5 +1,6 @@
 module flash
 
+import sync.stdatomic
 import blobly.isotp
 import crypto.ed25519 as ed
 
@@ -34,6 +35,8 @@ mut:
 	authed  bool
 	stopped bool
 	next    int = -1 // the block counter the download in progress expects; -1: none in progress
+	last    int = -1 // the counter of the block taken last, which a retry repeats
+	halt    i64      // set by stop: the channel's waits end
 }
 
 // boot_challenge is the challenge the simulated bootloader signs against.
@@ -45,6 +48,12 @@ pub fn start_boot_sim(ch isotp.Channel) &BootSim {
 		ch:   ch
 		stop: chan bool{cap: 1}
 	}
+	halt := &b.halt
+	if mut b.ch is isotp.SoftChannel {
+		b.ch.stop_requested = fn [halt] () bool {
+			return stdatomic.load_i64(halt) != 0
+		}
+	}
 	b.t = spawn serve_boot(mut b)
 	return b
 }
@@ -54,6 +63,7 @@ pub fn start_boot_sim(ch isotp.Channel) &BootSim {
 pub fn (mut b BootSim) stop() BootReport {
 	if !b.stopped {
 		b.stopped = true
+		stdatomic.store_i64(&b.halt, 1)
 		b.stop <- true
 		b.t.wait()
 		b.rep.image = b.got.clone()
@@ -140,6 +150,7 @@ fn (mut b BootSim) answer(req []u8, public ed.PublicKey) []u8 {
 			}
 			b.got = []u8{} // a download starts the slot over
 			b.next = 1
+			b.last = -1
 			return [u8(0x74), 0x20, 0x00, 0x42] // 64-byte blocks
 		}
 		0x36 {
@@ -149,9 +160,13 @@ fn (mut b BootSim) answer(req []u8, public ed.PublicKey) []u8 {
 			if req.len < 2 {
 				return nrc(0x13)
 			}
+			if int(req[1]) == b.last {
+				return [u8(0x76), req[1]] // a retry of the block taken last: taken once
+			}
 			if int(req[1]) != b.next {
 				return nrc(0x73) // wrongBlockSequenceCounter
 			}
+			b.last = b.next
 			b.next = (b.next + 1) & 0xFF
 			b.got << req[2..]
 			b.rep.blocks++
@@ -162,6 +177,7 @@ fn (mut b BootSim) answer(req []u8, public ed.PublicKey) []u8 {
 				return nrc(0x24)
 			}
 			b.next = -1
+			b.last = -1
 			return [u8(0x77)]
 		}
 		0x11 {

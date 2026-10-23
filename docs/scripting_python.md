@@ -846,7 +846,8 @@ With `auth` the session signs the bootloader's 0x29 challenge with the tester se
 hex characters), else the file `seed_file` names, else `$BLOBLY_FLASH_SEED`, else the dev tester
 seed. Both, a malformed seed, or a seed with `auth=False`, are refused before anything is sent.
 `progress(done, total)`, in blocks, is called at each whole percent and the last block, on the
-calling thread; without it a `flash: transfer ...` line is printed per tenth. Each milestone
+calling thread, while the flash holds the engine: it may print or record, and a call into blobly
+from it is refused (`BloblyError`, code -3). Without it a `flash: transfer ...` line is printed per tenth. Each milestone
 prints a `flash: ...` line; `quiet` prints none.
 
 **What goes wrong.** A step the bootloader refused raises `NegativeResponse` with its NRC (a wrong

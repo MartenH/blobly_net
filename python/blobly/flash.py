@@ -84,8 +84,9 @@ def program(target, image, *, base: int | None = None, sw_version: int | None = 
     on). `base` is where the image goes (None: 0x08020000), `sw_version` a raw image's header
     version (None: 1). With `auth` the session signs the bootloader's 0x29 challenge with `seed`
     (64 hex characters), else the file `seed_file` names, else $BLOBLY_FLASH_SEED, else the dev
-    tester seed. `progress(done, total)`, in blocks, is called at each whole percent; without it
-    a `flash: transfer ...` line is printed per tenth. Each milestone prints a `flash: ...` line;
+    tester seed. `progress(done, total)`, in blocks, is called at each whole percent, while the
+    flash holds the engine: it may print or record, and a call into blobly from it is refused.
+    Without it a `flash: transfer ...` line is printed per tenth. Each milestone prints a `flash: ...` line;
     `quiet` prints none.
 
     A step the bootloader refused raises NegativeResponse (its NRC), one it did not answer
@@ -109,6 +110,8 @@ def _program(client, image, base, sw_version, auth, seed, seed_file, progress, q
     if not isinstance(auth, bool) or not isinstance(quiet, bool):
         raise TypeError("flash.program: auth and quiet are True or False")
     img = _image(image)
+    if len(img) > 0x7FFF_FFFF:
+        raise ValueError(f"flash.program: an image of {len(img)} bytes, past what the C ABI carries")
     lib = _lib.lib()
     opts = _lib.BbFlashOpts()
     _lib.check(lib.bb_flash_defaults(ctypes.byref(opts)))
@@ -148,12 +151,15 @@ def _program(client, image, base, sw_version, auth, seed, seed_file, progress, q
             if e[0] == "note":
                 print(f"flash: {e[1]}", flush=True)
                 continue
+            _lib.in_progress(True)
             try:
                 progress(e[1], e[2])
             except BaseException:
+                _lib.in_progress(False)
                 lib.bb_flash_cancel(h)  # before the flashing thread goes on
                 raise
             finally:
+                _lib.in_progress(False)
                 e[3].set()
 
     with client._lock:  # calls on one client are serialised: the session holds it throughout
@@ -218,7 +224,9 @@ class BootSim:
 
     def stop(self) -> BootReport:
         """Stops it, once, and returns what it was asked."""
-        if self._h is not None:
+        with _lib.state_lock:  # a stop of the project cannot overtake it
+            if self._h is None:
+                return self.report
             h, self._h = self._h, None
             r = _lib.BbBootReport()
             _lib.check(_lib.lib().bb_boot_sim_stop(h, ctypes.byref(r)))

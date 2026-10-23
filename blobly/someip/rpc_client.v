@@ -25,6 +25,8 @@ pub mut:
 	rc        u8   // return code (0 = ok; the server's rc on an error reply)
 	timed_out bool // deadline passed with no correlated answer
 	payload   []u8 // the answer's payload, RESPONSE or ERROR (empty on timeout)
+	from      string // who answered, "host:port" (call: the peer it heard)
+	at_us     u64    // when, after the send (call)
 }
 
 pub struct RpcClient {

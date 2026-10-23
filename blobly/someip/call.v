@@ -57,6 +57,8 @@ pub fn call(port int, to string, mut cli RpcClient, payload []u8, owner string) 
 			msgs, _ := split(buf[..n])
 			for msg in msgs {
 				if cli.on_message(msg) {
+					cli.result.from = from.str()
+					cli.result.at_us = u64(sw.elapsed().microseconds())
 					break
 				}
 			}

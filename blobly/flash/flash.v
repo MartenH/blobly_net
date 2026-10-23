@@ -73,6 +73,9 @@ pub mut:
 	// with the boot's challenge/response before erasing. Empty = skip auth (a
 	// boot with no key baked; legacy / unsigned targets).
 	auth_seed []u8
+	// asked by the session's client before each request goes out and while it waits: true
+	// abandons the session there (a host's cancel); nil never
+	stop fn () bool = unsafe { nil }
 }
 
 // tester_tx and boot_tx are the CAN ids a blobly_emb bootloader is reached on when none are named:
@@ -307,6 +310,7 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 
 	mut c := uds.new_client(ch)
 	c.timeout_ms = first_answer_ms
+	c.stop_requested = opts.stop
 	ask(mut c, [u8(0x10), 0x02], 'programming session')!
 	if opts.auth_seed.len == 32 {
 		rep.auth = authenticate(mut c, opts.auth_seed, mut sink)!
