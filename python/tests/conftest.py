@@ -1,11 +1,11 @@
-"""What python/tests share: the repository's paths, the package under test, the engine fixture and a
-child Python run as this one is.
+"""What python/tests share: the repository's paths, the package under test, the engine fixture, a
+started sim-demo, a scratch file writer and a child Python run as this one is.
 
 The package is the source tree's (python/blobly, put first on sys.path here, before any test module
-imports it), unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED): then nothing of the
-source tree is on sys.path, since pytest.ini makes this folder the run's root and so leaves
-python/conftest.py out, and test_project.py's test_the_installed_package_and_its_own_library_are_what_run
-asserts that the wheel's copy was loaded."""
+imports it), unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED). Then nothing of the
+source tree is on sys.path in a run of python/tests: pytest.ini makes this folder the run's root, so
+python/conftest.py (loaded by a run from above, which would put python/ on sys.path) is not, and
+test_project.py's TestInstalledWheel asserts that the wheel's copy was loaded."""
 import os
 import subprocess
 import sys
@@ -39,12 +39,20 @@ def engine():
 
 @pytest.fixture(scope="class")
 def sim_demo(engine):
-    """projects/sim-demo.blobnet started for a class's tests (or a module's, outside a class) and
-    stopped after them: one run per process, so a test that brings up its own project runs in
+    """projects/sim-demo.blobnet started for a class's tests and stopped after them (outside a class,
+    for the one test): one run per process, so a test that brings up its own project runs in
     another class."""
     net = blobly.Project(SIM_DEMO).start()
     yield net
     net.stop()
+
+
+def write(d, name, text):
+    """`text` written to d/name; its path, as a string."""
+    path = os.path.join(d, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
 
 
 def run_python(*args, env=None, timeout=120):

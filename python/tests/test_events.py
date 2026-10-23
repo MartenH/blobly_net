@@ -320,7 +320,7 @@ class TestWaitOn:
         clock = Clock()
         got, _ = wait_on([FakeChannel("A"), FakeChannel("B")], 0.05, 0, clock.now, clock.sleep)
         assert got is None
-        assert clock.t == pytest.approx(0.05), "slept a whole slice past the deadline"
+        assert clock.t == pytest.approx(0.05, abs=1e-7), "slept a whole slice past the deadline"
 
     def test_a_wait_longer_than_a_c_int_is_asked_in_pieces(self):
         asked = []
@@ -382,7 +382,7 @@ class TestSliced:
         with mock.patch.object(events, "monotonic_ms", clock.now), mock.patch.object(events, "sleep_ms", clock.sleep):
             assert events._sliced(early, 250) is None
             assert asked == [100, 100, 50, 1]
-            assert clock.t == pytest.approx(250), "ended early, or waited past the deadline"
+            assert clock.t == pytest.approx(250, abs=1e-7), "ended early, or waited past the deadline"
             answers = iter([None, None, "frame"])
             asked.clear()
             assert events._sliced(lambda part: asked.append(part) or next(answers), -1) == "frame"

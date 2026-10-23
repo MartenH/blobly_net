@@ -2,7 +2,6 @@
 out_of_range and for the refusals (it protects nothing, so bad_crc and freeze_counter are refused
 there), and a project of one Profile 1 protected message for bad_crc and freeze_counter, checked
 with blobly.e2e. Every fault is then cleared and the traffic seen to recover."""
-import os
 import re
 import time
 
@@ -10,7 +9,7 @@ import pytest
 
 import blobly
 from blobly import FaultKind, FaultRefused, e2e
-from conftest import SIM_DEMO
+from conftest import SIM_DEMO, write
 
 pytestmark = pytest.mark.usefixtures("engine")
 
@@ -117,11 +116,6 @@ def quiet(ch, frame_id, span_s=0.5, within_s=3.0):
     return False
 
 
-def write(path, text):
-    with open(path, "w") as f:
-        f.write(text)
-
-
 class TestOnSimDemo:
     @pytest.fixture
     def net(self, sim_demo):
@@ -206,12 +200,11 @@ def verifies(f):
 
 
 @pytest.fixture(scope="class")
-def protected(engine, tmp_path_factory):
+def protected(tmp_path_factory):
     """The Profile 1 project started for a class's tests."""
     d = tmp_path_factory.mktemp("e2e")
-    write(d / "e2e.dbc", E2E_DBC)
-    write(d / "e2e.blobnet", E2E)
-    net = blobly.Project(os.fspath(d / "e2e.blobnet")).start()
+    write(d, "e2e.dbc", E2E_DBC)
+    net = blobly.Project(write(d, "e2e.blobnet", E2E)).start()
     yield net
     net.stop()
 
@@ -272,13 +265,12 @@ class TestMessageIdentity:
     """A fault is keyed by the message's name: a Message stands for itself, or is refused."""
 
     @pytest.fixture
-    def twins(self, engine, tmp_path):
+    def twins(self, tmp_path):
         """The project started, and a function that rewrites its database with Other at an id."""
         def write_dbc(other_id):
-            write(tmp_path / "twins.dbc", TWINS_DBC.replace("{other_id}", str(other_id)))
+            write(tmp_path, "twins.dbc", TWINS_DBC.replace("{other_id}", str(other_id)))
         write_dbc(0x102)
-        write(tmp_path / "twins.blobnet", TWINS)
-        net = blobly.Project(os.fspath(tmp_path / "twins.blobnet")).start()
+        net = blobly.Project(write(tmp_path, "twins.blobnet", TWINS)).start()
         yield net, write_dbc
         net.stop()
 

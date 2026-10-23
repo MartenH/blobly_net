@@ -19,7 +19,7 @@ import pytest
 
 import blobly
 from blobly import _lib
-from conftest import DEMO, INSTALLED, REPO, SIM_DEMO, run_python
+from conftest import DEMO, INSTALLED, REPO, SIM_DEMO, run_python, write
 
 pytestmark = pytest.mark.usefixtures("engine")
 
@@ -30,14 +30,6 @@ def run_until(net, got, limit_s=5.0):
     deadline = time.monotonic() + limit_s
     while not got() and time.monotonic() < deadline:
         net.run(100)
-
-
-def write(d, name, text):
-    """`text` written to d/name; its path, as a string."""
-    path = os.path.join(d, name)
-    with open(path, "w") as f:
-        f.write(text)
-    return path
 
 
 # two rows named X on two wires, and a Y on X's first wire to put frames there
@@ -309,8 +301,9 @@ class TestLoads:
         write(tmp_path, "moving.blobnet", DUPLICATES)  # row 2 is Y now
         with pytest.warns(RuntimeWarning) as w:
             net.load()
-        assert "Z (row 2)" in str(w[0].message)
-        assert w[0].filename == __file__, "said from the line that loaded"
+        said = w.pop(RuntimeWarning)
+        assert "Z (row 2)" in str(said.message)
+        assert said.filename == __file__, "said from the line that loaded"
         assert net._on_msg == []
         with net:
             net.on_message(net.channels.Y, None, lambda f: None)
@@ -319,8 +312,9 @@ class TestLoads:
         with pytest.warns(RuntimeWarning) as w:
             net.__enter__()
         try:
-            assert "Y (row 2)" in str(w[0].message)
-            assert w[0].filename == __file__
+            said = w.pop(RuntimeWarning)
+            assert "Y (row 2)" in str(said.message)
+            assert said.filename == __file__
             assert net.started, "start() said the dropped handlers and did not start"
             net.channels.Z.recv(0)
             net.on_message(net.channels.Z, None, lambda f: None)
@@ -480,7 +474,7 @@ class TestInterrupt:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.bind(("127.0.0.1", 0))  # a port for the SOME/IP listen, free now
             port = str(s.getsockname()[1])
-        out = run_python("-c", INTERRUPTED, pkg, write(tmp_path, "quiet.blobnet", QUIET), wait, port, timeout=60)
+        out = run_python("-I", "-c", INTERRUPTED, pkg, write(tmp_path, "quiet.blobnet", QUIET), wait, port, timeout=60)
         late = [float(line.split()[1]) for line in out.stdout.splitlines() if line.startswith("interrupted")]
         assert late, out.stdout + out.stderr
         assert late[0] < 0.5, "Ctrl-C waited for the wait, or a second of run(), to end"
@@ -755,7 +749,7 @@ class TestExpect:
             with pytest.raises(blobly.Timeout):
                 ch.expect(0x102, 2.5)
             assert asked == [2, 0]
-            assert clock[0] == pytest.approx(2.5), "the wait did not end at its deadline"
+            assert clock[0] == pytest.approx(2.5, abs=1e-7), "the wait did not end at its deadline"
             # nothing is read once the deadline has passed but the first look
             asked.clear()
             ch._handle = lambda: 0

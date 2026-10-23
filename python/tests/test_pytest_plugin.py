@@ -8,7 +8,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
-from conftest import INSTALLED, REPO, SIM_DEMO, run_python
+from conftest import INSTALLED, REPO, SIM_DEMO, run_python, write
 
 # the plugin from the package this run tests: the installed wheel, or the source tree (an isolated
 # child ignores PYTHONPATH, so the conftest puts it on sys.path)
@@ -97,9 +97,9 @@ def test_is_not_the_next_tests(can1):
 '''
 
 
-def write(d, files):
+def write_all(d, files):
     for name, text in files.items():
-        (d / name).write_text(text, encoding="utf-8")
+        write(d, name, text)
 
 
 def pytest_run(*args, **env):
@@ -110,7 +110,7 @@ def pytest_run(*args, **env):
 class TestPlugin:
     def test_a_suite_on_the_plugin(self, tmp_path):
         d = tmp_path
-        write(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = suite.blobnet\n",
+        write_all(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = suite.blobnet\n",
                   "suite.blobnet": PROJECT, "test_1_plugin.py": PLUGIN_SUITE,
                   "test_2_own_run.py": OWN_RUN_SUITE})
         junit = d / "report.xml"
@@ -130,7 +130,7 @@ class TestPlugin:
 
     def test_where_the_project_comes_from(self, tmp_path):
         d = tmp_path
-        write(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = missing.blobnet\n",
+        write_all(d, {"conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = missing.blobnet\n",
                   "test_it.py": SIM_DEMO_SUITE})
         r = pytest_run(d)
         assert r.returncode == 4, r.stdout + r.stderr  # pytest's usage error
@@ -154,7 +154,7 @@ class TestPlugin:
     def test_a_fixture_per_channel_named_after_it(self, tmp_path):
         rows = ["CAN-1", "2nd bus", "Body Bus", "body-bus", "class", "project", "_blobly_run", "__slots__",
                 "pytest_configure", "tmp_path"]
-        write(tmp_path, {
+        write_all(tmp_path, {
             "conftest.py": CONFTEST, "pytest.ini": "[pytest]\nblobly_project = names.blobnet\n",
             "names.blobnet": "project:\n  name: names\n  version: 8\nchannels:\n" + "".join(
                 f"  - name: {n}\n    type: can\n    interface: inproc:PY_NAMES_{i}\n" for i, n in enumerate(rows)),

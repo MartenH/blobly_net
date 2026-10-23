@@ -2,14 +2,13 @@
 the coverage of the Lua suites tests/diag_advanced.lua (0x19 01 / 02 / 0A), tests/diag_functional.lua
 and blobly/script/records_test.v (0x19 03 / 04 / 06 against CAN2's built-in server), plus answers
 sim-demo never gives, from a fake ECU on an in-process bus."""
-import os
 import threading
 
 import pytest
 
 import blobly
 from blobly import _lib
-from conftest import SIM_DEMO
+from conftest import SIM_DEMO, write
 
 pytestmark = pytest.mark.usefixtures("engine")
 
@@ -196,11 +195,8 @@ class FakeEcu:
 
 class TestUnreadable:
     @pytest.fixture
-    def net(self, engine, tmp_path):
-        path = os.fspath(tmp_path / "bare.blobnet")
-        with open(path, "w") as f:
-            f.write(BARE)
-        net = blobly.Project(path).start()
+    def net(self, tmp_path):
+        net = blobly.Project(write(tmp_path, "bare.blobnet", BARE)).start()
         yield net
         net.stop()
 

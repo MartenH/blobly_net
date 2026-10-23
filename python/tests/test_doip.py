@@ -4,6 +4,7 @@ plus its DTCs and functional addressing (tests/diag_doip_functional.lua); discov
 against projects/doip-announce-demo.blobnet, tests/doip_announce.lua's; and what only a fake entity
 produces: a routing activation denied, a connection lost and opened again, a close from another
 thread ending a call."""
+import contextlib
 import os
 import socket
 import struct
@@ -282,17 +283,19 @@ class Fakes:
 
     def __init__(self, tmp_path):
         self.tmp_path = tmp_path
-        self.cleanups = []
+        self.cleanups = contextlib.ExitStack()
+        self.dials = 0
 
     def start(self, **fake):
         entity = FakeEntity(**fake)
-        self.cleanups.append(entity.close)
+        self.cleanups.callback(entity.close)
         return entity, self.dial(entity.port).channels.Fake
 
     def dial(self, port, start=True):
         """A project of one tester-only DoIP row, Fake, dialling 127.0.0.1:port; started unless
         `start` is False."""
-        path = os.path.join(self.tmp_path, f"fake{len(self.cleanups)}.blobnet")
+        self.dials += 1
+        path = os.path.join(self.tmp_path, f"fake{self.dials}.blobnet")
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"""project:
   name: fake DoIP entity
@@ -307,16 +310,15 @@ channels:
         net = blobly.Project(path).load()
         if start:
             net.start()
-            self.cleanups.append(net.stop)
+            self.cleanups.callback(net.stop)
         return net
 
 
 @pytest.fixture
 def fakes(tmp_path):
     f = Fakes(tmp_path)
-    yield f
-    for cleanup in reversed(f.cleanups):
-        cleanup()
+    with f.cleanups:
+        yield f
 
 
 class TestFakeEntity:
