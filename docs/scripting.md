@@ -355,7 +355,7 @@ enabled row of the project: it is reached at 0x7C0/0x7C8 on a CAN row named edge
 |---|---|---|
 | `d.node` | the node's name | string |
 | `d:dids()` | its DIDs: those its ecu.toml declares, then the ISO identification DIDs it does not | array of `{id, name, kind, size, by_label, parts = { {label, kind, hint} }, read, write}` — `kind` `"ascii"`, `"bytes"`, `"signal"`, `"param"`, `"param_status"`, `"tx_saturations"` or `"unknown"` (no layout: bytes); `size` nil when not known; a part's `kind` `"int"`, `"bool"`, `"text"` or `"bytes"` and its `hint` what it accepts (`"u16 0..360"`); `read` / `write` the gate `{sessions, level}`, nil where none is declared (`write` nil: not writable) |
-| `d:did(did)` | one DID: `did` its name (`"SteerLimit"`, ISO's `"ECU serial number"`) or its identifier (a number, or `"0x0110"`) | as `dids` |
+| `d:did(did)` | one DID: `did` its name (a string: `"SteerLimit"`, ISO's `"ECU serial number"`) or its identifier (a number: `0x0110`) | as `dids` |
 | `d:read(did)` | `0x22`, decoded by the layout | its one part's value (an integer, a boolean, a string for a text, bytes), or a table by part label when `by_label` (several fields, or a parameter status, whose parts are its parameters) |
 | `d:write(did, value)` | `0x2E`, encoded by the layout; `value` as `read` returns it | — |
 | `d:dtcs()`, `d:supported_dtcs()`, `d:snapshot_ids()`, `d:snapshot(...)`, `d:extended(...)` | as on `uds.open`, each record also carrying `fault`, the name of its `[[fault]]` (nil for a DTC the description does not declare) | |

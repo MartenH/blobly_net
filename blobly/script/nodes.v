@@ -8,8 +8,8 @@ import blobly.udsconn
 // nodes.v — uds.nodes and uds.node: a connection by the node's name in the system model
 // (Env.sys, sysview.System.reach), its DIDs listed, read and written by name through the node's
 // layout (sysview's codec and write_described), its DTCs named by its faults — the rules the C
-// ABI's bb_node_* answer by. A DID is argument `key`: a number is its identifier, a string its
-// name or its identifier in hex (sysview.EcuDesc.listed_did).
+// ABI's bb_node_* answer by. A DID argument is its identifier when a number
+// (sysview.EcuDesc.listed_id), else its name (listed_did).
 
 fn (mut env Env) register_nodes() {
 	env.st.register('__uds_nodes', l_uds_nodes)
@@ -83,9 +83,10 @@ fn node_arg(l lua.State, i int) !sysview.SysNode {
 	return env.sys.nodes[int(n)]
 }
 
-// did_arg is the DID argument `i` names among node's (a number is an identifier).
+// did_arg is the DID argument `i` names among node's: an identifier when argument i + 1 says the
+// prelude was given a number (a numeric string is a name all the same), else a name.
 fn did_arg(l lua.State, node sysview.SysNode, i int) !sysview.DidDesc {
-	if l.arg_is_num(i) {
+	if l.arg_bool(i + 1) {
 		id := l.arg_int_exact(i) or { return error('DID ${l.arg_num(i)} is not an identifier') }
 		if id < 0 || id > 0xFFFF {
 			return error('DID ${id} is not a 16-bit identifier')
@@ -171,7 +172,7 @@ fn l_node_faults(l lua.State) i32 {
 	return 1
 }
 
-// l_node_read (handle, node, did): 0x22 decoded by the layout — one field's value (an integer, a
+// l_node_read (handle, node, did, by_id): 0x22 decoded by the layout — one field's value (an integer, a
 // boolean), a text, bytes, or a table by label for several fields and for a parameter status
 // (whose fields are its parameters).
 fn l_node_read(l lua.State) i32 {
@@ -217,14 +218,14 @@ fn push_part(l lua.State, p sysview.Part, text string) {
 	}
 }
 
-// l_node_write (handle, node, did, text...): 0x2E of the texts of every part (the prelude spells a
-// value as them), as sysview.write_described writes it.
+// l_node_write (handle, node, did, by_id, text...): 0x2E of the texts of every part (the prelude
+// spells a value as them), as sysview.write_described writes it.
 fn l_node_write(l lua.State) i32 {
 	mut env := env_of(l)
 	node := node_arg(l, 2) or { return l.fail(err.msg()) }
 	x := did_arg(l, node, 3) or { return l.fail('${node.name}: ${err.msg()}') }
 	mut texts := []string{}
-	for i in 4 .. l.nargs() + 1 {
+	for i in 5 .. l.nargs() + 1 {
 		texts << l.arg_str(i)
 	}
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }

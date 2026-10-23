@@ -79,9 +79,16 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 fn test_a_node_without_a_server_says_so() {
 	mut sys := demo_system()
 	sys.nodes[0].desc.server = false
-	sys.reach(0, [RowRef{
+	sys.nodes[0].doip = 0x0710
+	rows := [RowRef{
 		name: 'edge'
-	}], -1) or { assert err.msg().contains('declares no diagnostic server') }
+	}, RowRef{
+		name:    'DoIP1'
+		doip:    true
+		logical: 0x0710
+	}]
+	assert sys.targets(0, rows) == [], 'reached on neither carrier'
+	sys.reach(0, rows, -1) or { assert err.msg().contains('declares no diagnostic server') }
 }
 
 fn test_dids_are_listed_and_found_by_name_or_identifier() {
@@ -90,15 +97,15 @@ fn test_dids_are_listed_and_found_by_name_or_identifier() {
 	assert listed.len == d.dids.len + d.iso_dids().len
 	assert listed[..d.dids.len].map(it.id) == d.dids.map(it.id)
 	assert d.listed_did('SteerLimit') or { panic(err) }.id == 0x0110
-	assert d.listed_did('0x0110') or { panic(err) }.kind == .param
-	assert d.listed_did('272') or { panic(err) }.kind == .param
+	assert d.listed_id(0x0110).kind == .param
 	// an ISO identification DID the description does not declare, by ISO's name
 	assert d.listed_did('ECU serial number') or { panic(err) }.id == 0xF18C
 	// an identifier nobody lists: a DID of no layout
-	x := d.listed_did('0x1234') or { panic(err) }
+	x := d.listed_id(0x1234)
 	assert x.kind == .unknown && x.parts().map(it.kind) == [PartKind.bytes]
 	d.listed_did('SteerLimt') or { assert err.msg().contains('no DID "SteerLimt"') }
-	d.listed_did('0x12345') or { assert err.msg().contains('no DID') }
+	// a name is a name: an identifier written as text names nothing
+	d.listed_did('0x0110') or { assert err.msg().contains('no DID "0x0110"') }
 }
 
 fn test_a_part_says_what_its_text_holds() {
@@ -163,7 +170,7 @@ fn test_a_gated_write_says_what_the_connection_lacks_until_it_has_it() {
 		'300',
 	]
 	// a DID with no write gate
-	vin := d.listed_did('0xF190') or { panic(err) }
+	vin := d.listed_id(0xF190)
 	write_described(mut cli, vin, ['X']) or { assert err.msg().contains('not writable') }
 	// back to the default session: relocked, so the next write is gated again
 	cli.diagnostic_session(uds.default_session) or { panic(err) }

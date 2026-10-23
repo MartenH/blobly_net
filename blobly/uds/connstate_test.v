@@ -199,6 +199,9 @@ fn test_a_granted_key_or_a_zero_seed_unlocks_its_level() {
 	// level 2's all-zero seed: already unlocked
 	s.observe(ok_x([u8(0x27), 0x03], [u8(0x67), 0x03, 0, 0]))
 	assert s.security == security_unlocked(2)
+	// an answer with no seed to answer: the level is not known
+	s.observe(ok_x([u8(0x27), 0x05], [u8(0x67), 0x05]))
+	assert !s.security.known && s.session == 0x03
 }
 
 fn test_a_refused_unlock_or_write_forgets_what_its_code_says() {
@@ -240,4 +243,34 @@ fn test_a_request_that_never_went_out_changes_nothing() {
 	// nor does any other service
 	s.observe(ok_x([u8(0x22), 0xF1, 0x90], [u8(0x62), 0xF1, 0x90, 0x41]))
 	assert s == base
+}
+
+fn test_a_functional_request_is_observed_on_each_target() {
+	mut c := Client{}
+	c.state = ConnState{
+		session:  0x03
+		security: security_unlocked(1)
+	}
+	// answered: as a physical exchange
+	c.observe_functional([u8(0x10), 0x01], FunctionalReply{
+		outcome: .positive
+		resp:    [u8(0x50), 0x01, 0, 0x32, 0x01, 0xF4]
+	})
+	assert c.state.session == 0x01 && c.state.security == security_locked()
+	// silent: the server may have done it or suppressed a refusal, so nothing is known
+	c.observe_functional([u8(0x10), 0x83], FunctionalReply{
+		outcome: .silent
+	})
+	assert c.state.session == 0 && !c.state.security.known
+	c.state = ConnState{
+		session:  0x03
+		security: security_unlocked(1)
+	}
+	// refused: what its code says
+	c.observe_functional([u8(0x2E), 0x01, 0x10, 0], FunctionalReply{
+		outcome: .negative
+		resp:    [u8(0x7F), 0x2E, 0x33]
+		nrc:     0x33
+	})
+	assert c.state.session == 0x03 && !c.state.security.known
 }

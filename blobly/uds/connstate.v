@@ -181,6 +181,8 @@ pub fn (mut s ConnState) observe(x Exchange) {
 					s.security = security_unlocked(sub / 2)
 				} else if x.resp.len > 2 && already_unlocked(x.resp[2..]) {
 					s.security = security_unlocked((sub + 1) / 2)
+				} else if x.resp.len <= 2 {
+					s.forget(.security) // no seed to answer: the level is not known (unlock_refusal_forgets)
 				}
 			} else if x.negative && x.resp.len == 3 {
 				s.forget(unlock_refusal_forgets(x.resp[2]))

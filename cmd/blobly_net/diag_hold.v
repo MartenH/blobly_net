@@ -91,9 +91,9 @@ mut:
 	dc       &doip.DoipClient = unsafe { nil } // DoIP: the same connection, for its idle service
 	sc       &isotp.SoftChannel = unsafe { nil } // CAN: the same channel, for its idle drain
 	attached bool // CAN only: the channel and its tap are open
-	cli      uds.Client
-	session  u8
-	security uds.Security // unknown, locked (a session change answered) or the level a 0x27 granted
+	// its session and security state are the client's (uds.Client.state): what its own exchanges
+	// established, by the rules a script's client goes by
+	cli uds.Client
 	// how many requests the press in progress put on the carrier (diag_request): what the
 	// unsent-request retry asks, since `cli.last` is the last exchange of a press of several
 	press_sent int
@@ -266,7 +266,7 @@ fn diag_holder(app &App, gen u64, q chan DiagReq) {
 		if !v.run_live {
 			break
 		}
-		if diaghold.keepalive_due(h.open, h.session, h.last_ms, time.ticks()) {
+		if diaghold.keepalive_due(h.open, h.session(), h.last_ms, time.ticks()) {
 			ctx.work_key = h.target.key
 			a.diag_keepalive(gen, mut h)
 		}
@@ -683,8 +683,18 @@ fn (mut app App) diag_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bo
 	}
 }
 
-// diag_session_change sends 0x10 `session` on the held connection and records what the answer
-// established, on the connection and on the strip.
+// session is the session the held connection's exchanges established (0 = none), security what
+// they say of its security (uds.Client.state, observed on every exchange).
+fn (h &HeldConn) session() u8 {
+	return h.cli.state.session
+}
+
+fn (h &HeldConn) security() uds.Security {
+	return h.cli.state.security
+}
+
+// diag_session_change sends 0x10 `session` on the held connection and puts what the answer
+// established (the client's state: the session, relocked) on the strip.
 fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagOut, bool) {
 	resp := h.cli.raw([u8(0x10), session]) or {
 		return DiagOut{
@@ -692,13 +702,11 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 			err:  true
 		}, err is uds.NegativeResponse
 	}
-	h.session = if resp.len > 1 { resp[1] } else { u8(0) }
-	h.security = uds.security_locked() // ISO 14229-1: a session transition locks the server again
 	mut s := app.diag_status_copy()
-	s.session = h.session
-	s.security = h.security
+	s.session = h.session()
+	s.security = h.security()
 	s.unlock_why = ''
-	if h.session == diaghold.default_session {
+	if h.session() == diaghold.default_session {
 		s.dtc_off = false // ISO 14229-1: entering the default session turns DTC setting back on
 	}
 	mut timing := ''
@@ -709,7 +717,7 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 	}
 	app.diag_set_status(gen, s)
 	return DiagOut{
-		line: 'session 0x${h.session:02X} (${uds.session_name(h.session)}) OK${timing}'
+		line: 'session 0x${h.session():02X} (${uds.session_name(h.session())}) OK${timing}'
 	}, false
 }
 
@@ -717,11 +725,10 @@ fn (mut app App) diag_session_change(gen u64, mut h HeldConn, session u8) (DiagO
 // on the strip — the security state always (unknown: the ECU may have relocked, or not), and with
 // `session` the session and the DTC setting it carried too (no session known stops the keep-alive).
 fn (mut app App) diag_forget(gen u64, mut h HeldConn, session bool) {
-	h.security = uds.Security{}
+	h.cli.state.forget(if session { uds.Forget.session } else { uds.Forget.security })
 	mut s := app.diag_status_copy()
-	s.security = h.security
+	s.security = h.security()
 	if session {
-		h.session = 0
 		s.session = 0
 		s.dtc_off = false
 	}

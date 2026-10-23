@@ -149,7 +149,7 @@ fn (mut app App) did_read_all(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 // write changes (a parameter's status DID). Each step is its own timed line.
 fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	name := did_label(req.desc, req.did)
-	plan := uds.write_plan(req.writable, h.session, req.sessions, req.level, h.security.unlocked(),
+	plan := uds.write_plan(req.writable, h.session(), req.sessions, req.level, h.security().unlocked(),
 		req.ref_key)
 	if plan.refusal != '' {
 		// nothing sent: the connection is as it was

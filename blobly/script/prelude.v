@@ -573,11 +573,13 @@ function uds.node(name, opts)
   local h, n, channel = __uds_node(name, opts.channel)
   local self = connection(h, channel)
   self.node = name
+  -- a DID is its identifier when a number, else its name (a numeric string is a name)
+  local function by_id(did) return math.type(did) == "integer" end
   function self:dids() return __node_dids(n) end
-  function self:did(did) return __node_did(n, did) end
-  function self:read(did) return __node_read(self.handle, n, did) end
+  function self:did(did) return __node_did(n, did, by_id(did)) end
+  function self:read(did) return __node_read(self.handle, n, did, by_id(did)) end
   function self:write(did, value)
-    local d = __node_did(n, did)
+    local d = __node_did(n, did, by_id(did))
     local texts = {}
     if d.by_label or type(value) == "table" then
       if type(value) ~= "table" then error("write(" .. tostring(did) .. "): its parts go in a table by label", 2) end
@@ -593,7 +595,7 @@ function uds.node(name, opts)
     else
       texts[1] = part_text(d, d.parts[1], value)
     end
-    __node_write(self.handle, n, did, table.unpack(texts))
+    __node_write(self.handle, n, did, by_id(did), table.unpack(texts))
   end
   local faults = __node_faults(n)
   local function named(r) if r ~= nil and r.code ~= nil then r.fault = faults[r.code] end return r end

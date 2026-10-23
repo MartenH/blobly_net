@@ -303,7 +303,7 @@ fn (mut app App) diag_dtc_request(gen u64, mut h HeldConn, req DiagReq) (DiagOut
 			})
 		}
 		'dtc_setting' {
-			s := diaghold.dtc_setting_session(h.session, req.on)
+			s := diaghold.dtc_setting_session(uds.unlock_session(h.session()), req.on)
 			if s != 0 {
 				out, negative := app.diag_session_change(gen, mut h, s)
 				if out.err {

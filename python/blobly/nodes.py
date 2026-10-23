@@ -305,53 +305,55 @@ class NodeClient(UdsClient):
             if d.size is not None and lib.bb_uds_did_size(self._h, d.id, d.size) == 0:
                 self._did_sizes[d.id] = d.size
 
-    def _did(self, did: int | str) -> Did | None:
-        """The node's DID `did`, its model the current run's (under the state lock)."""
+    def _resolved(self, did: int | str) -> tuple[int, Did | None, int]:
+        """(the node's index, DID `did` as the current run lists it, the run), read under one hold
+        of the state lock: what the native call that follows is held to."""
         with _lib.state_lock:
             self.node._live()
             self._faults = self.node._names
-            return self.node.did(did)
+            return self.node._index, self.node.did(did), _lib.state["run"]
 
     def read(self, did: int | str) -> DidValue:
-        """0x22 of DID `did` (its name or its identifier), decoded by the node's layout: an
+        """0x22 of DID `did` (its name, or its identifier), decoded by the node's layout: an
         integer or a bool for a value of one field, a str for a text, bytes for fixed bytes or a DID
-        of no known layout, and {label: value} for a value of several fields. UndecodableAnswer
-        when the answer is not the size the description lays out."""
-        d = self._did(did)
+        of no known layout, and {label: value} where the Did is by_label. UndecodableAnswer when
+        the answer is not the size the description lays out."""
+        n, d, run = self._resolved(did)
         if d is None:
             return self.read_did(_int("did", did))
         data = self.read_did(d.id)
         lib = _lib.lib()
         with _lib.state_lock:
-            self.node._live()
-            texts = [_lib.string(lib.bb_did_text, self.node._index, d.index, data, len(data), p)
-                     for p in range(len(d.parts))]
+            if _lib.state["run"] != run:  # another run's model may list another DID at d.index
+                raise BloblyError(f"{self.node.name}: the project was stopped or started while 0x{d.id:04X} "
+                                  "was read; read it again", _lib.BB_ERR_STATE)
+            texts = [_lib.string(lib.bb_did_text, n, d.index, data, len(data), p) for p in range(len(d.parts))]
         values = [_value(p, t) for p, t in zip(d.parts, texts)]
         if not d.by_label:
             return values[0]
         return {p.label: v for p, v in zip(d.parts, values)}
 
     def write(self, did: int | str, value: object = _UNSET, /, **fields: object) -> None:
-        """0x2E of DID `did` (its name or its identifier) with `value` — one field's integer or
+        """0x2E of DID `did` (its name, or its identifier) with `value` — one field's integer or
         bool, a text, bytes, or a mapping of every part by label (or the parts as keywords: `x=1,
-        y=2`) — encoded by the node's layout. Nothing is sent, and Refused raised, for a value the
-        layout does not hold or a DID with no write gate; WriteGated (its `session` and `level`)
-        when this client's connection has not established what the gate needs — switch and unlock
-        first (session, security_access): nothing here does it for you."""
-        d = self._did(did)
-        if d is None:
-            raise Refused(f"0x2E 0x{_int('did', did):04X}: not writable: {self.node.name} does not list it")
-        texts = [t.encode() for t in _texts(d, value, fields)]
-        n = len(texts)
+        y=2`) — encoded by the node's layout. Nothing is sent, and Refused raised, for a DID with
+        no write gate or a value the layout does not hold (a TypeError for one of the wrong type);
+        WriteGated (its `session` and `level`) when this client's connection has not established
+        what the gate needs — switch and unlock first (session, security_access): nothing here
+        does it for you."""
         lib = _lib.lib()
         needs = _lib.BbWriteNeeds()
         with self._lock:
+            # the handle first, then the model it is held to: a stop and a start between them
+            # leave a handle the engine refuses rather than a DID of another listing
             h = self._handle()
-            with _lib.state_lock:
-                self.node._live()
-                node = self.node._index
-            # the engine refuses a handle that does not reach the node in this run
-            rc = lib.bb_uds_write_described(h, node, d.index, (ctypes.c_char_p * n)(*texts), n, ctypes.byref(needs))
+            n, d, _ = self._resolved(did)
+            if d is None:
+                raise Refused(f"0x2E 0x{_int('did', did):04X}: not writable: {self.node.name} does not list it")
+            # a DID with no write gate is the engine's to refuse, in its words, whatever the value
+            texts = [] if d.write_gate is None else [t.encode() for t in _texts(d, value, fields)]
+            rc = lib.bb_uds_write_described(h, n, d.index, (ctypes.c_char_p * len(texts))(*texts), len(texts),
+                                            ctypes.byref(needs))
             if rc < 0:
                 e = self._enrich(h, _lib.error(rc))
                 if isinstance(e, WriteGated):

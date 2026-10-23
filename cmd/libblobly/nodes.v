@@ -12,62 +12,76 @@ import blobly.udsconn
 const bb_err_gated = i32(C.BB_ERR_GATED)
 
 __global (
-	// the started run's system model, under bb_mu beside bb_dbs; a stop replaces it, never
-	// writes into it, so a call holding a copy reads what it took
-	bb_sys sysview.System
+	// the started run's system model and each node's listed DIDs (listed once, at the start), under
+	// bb_mu beside bb_dbs; a stop replaces them, never writes into them, so a call holding a copy
+	// reads what it took
+	bb_sys      sysview.System
+	bb_sys_dids [][]sysview.DidDesc
 )
 
 // sys_publish / sys_retire keep bb_sys the run's; the caller holds bb_mu.
 fn sys_publish(r &headless.Run) {
 	bb_sys = r.sys
+	bb_sys_dids = r.sys.nodes.map(it.desc.listed_dids())
 }
 
 fn sys_retire() {
 	bb_sys = sysview.System{}
+	bb_sys_dids = [][]sysview.DidDesc{}
 }
 
-// run_sys is the run's system model and its rows (as the run has them), or BB_ERR_STATE's refusal.
-fn run_sys() !(sysview.System, []project.Channel) {
-	sys, rows, _ := run_sys_numbered()!
-	return sys, rows
+// SysView is ONE read of the run's model: every call answers from one, so a stop and a start on
+// another thread cannot hand it a node of one run and a DID of the next.
+struct SysView {
+	sys  sysview.System
+	dids [][]sysview.DidDesc
+	rows []project.Channel // the run's rows, as the run has them
+	run  u64               // bb_run_gen
 }
 
-// run_sys_numbered is run_sys and the run's number (bb_run_gen), read together.
-fn run_sys_numbered() !(sysview.System, []project.Channel, u64) {
+// run_sys is the run's model now, or BB_ERR_STATE's refusal.
+fn run_sys() !SysView {
 	bb_mu.lock()
 	live := bb_dbs_live
-	sys := bb_sys
-	rows := bb_run_rows
-	gen := bb_run_gen
+	v := SysView{
+		sys:  bb_sys
+		dids: bb_sys_dids
+		rows: bb_run_rows
+		run:  bb_run_gen
+	}
 	bb_mu.unlock()
 	if !live {
 		return error_with_code("not started: the system model is the run's, from bb_start until bb_stop",
 			int(bb_err_state))
 	}
-	return sys, rows, gen
+	return v
 }
 
-// row_refs are the run's rows as the system model reaches a node on them.
-fn row_refs(rows []project.Channel) []sysview.RowRef {
-	return rows.map(udsconn.row_ref(it.name, udsconn.carrier_of(it)))
+// refs are the run's rows as the system model reaches a node on them.
+fn (v SysView) refs() []sysview.RowRef {
+	return v.rows.map(udsconn.row_ref(it.name, udsconn.carrier_of(it)))
 }
 
-fn sys_node(n i32) !(sysview.System, sysview.SysNode) {
-	sys, _ := run_sys()!
-	if n < 0 || int(n) >= sys.nodes.len {
-		return error('no node ${n} (the system has ${sys.nodes.len})')
+fn (v SysView) node(n i32) !sysview.SysNode {
+	if n < 0 || int(n) >= v.sys.nodes.len {
+		return error('no node ${n} (the system has ${v.sys.nodes.len})')
 	}
-	return sys, sys.nodes[int(n)]
+	return v.sys.nodes[int(n)]
 }
 
-// node_did is DID d of the DIDs node n lists (sysview.EcuDesc.listed_dids).
-fn node_did(n i32, d i32) !sysview.DidDesc {
-	_, node := sys_node(n)!
-	dids := node.desc.listed_dids()
+// did is DID d of the DIDs node n lists (sysview.EcuDesc.listed_dids).
+fn (v SysView) did(n i32, d i32) !sysview.DidDesc {
+	node := v.node(n)!
+	dids := v.dids[int(n)]
 	if d < 0 || int(d) >= dids.len {
 		return error('${node.name} has no DID ${d} (it lists ${dids.len})')
 	}
 	return dids[int(d)]
+}
+
+fn node_did(n i32, d i32) !sysview.DidDesc {
+	v := run_sys()!
+	return v.did(n, d)
 }
 
 fn did_part(n i32, d i32, p i32) !sysview.Part {
@@ -91,15 +105,15 @@ fn put_target(t sysview.RowTarget, out &C.bb_reach) {
 
 @[export: 'bb_system_path']
 pub fn bb_system_path(buf &char, cap i32) i32 {
-	sys, _ := run_sys() or { return refused(err) }
-	return put(sys.path, buf, cap)
+	v := run_sys() or { return refused(err) }
+	return put(v.sys.path, buf, cap)
 }
 
 @[export: 'bb_node_count']
 pub fn bb_node_count() i32 {
-	sys, _ := run_sys() or { return refused(err) }
+	v := run_sys() or { return refused(err) }
 	ok()
-	return i32(sys.nodes.len)
+	return i32(v.sys.nodes.len)
 }
 
 @[export: 'bb_node_info']
@@ -107,12 +121,12 @@ pub fn bb_node_info(n i32, out &C.bb_node) i32 {
 	if isnil(out) {
 		return fail(bb_err, 'node_info: nowhere to put it')
 	}
-	sys, rows := run_sys() or { return refused(err) }
-	_, node := sys_node(n) or { return refused(err) }
+	v := run_sys() or { return refused(err) }
+	node := v.node(n) or { return refused(err) }
 	unsafe {
-		out.dids = i32(node.desc.listed_dids().len)
+		out.dids = i32(v.dids[int(n)].len)
 		out.faults = i32(node.desc.faults.len)
-		out.targets = i32(sys.targets(int(n), row_refs(rows)).len)
+		out.targets = i32(v.sys.targets(int(n), v.refs()).len)
 		out.described = u8(node.ecu_err == '')
 		out.server = u8(node.ecu_err == '' && node.desc.server)
 		out.reference_key = u8(node.desc.security_key == 'reference')
@@ -122,13 +136,15 @@ pub fn bb_node_info(n i32, out &C.bb_node) i32 {
 
 @[export: 'bb_node_name']
 pub fn bb_node_name(n i32, buf &char, cap i32) i32 {
-	_, node := sys_node(n) or { return refused(err) }
+	v := run_sys() or { return refused(err) }
+	node := v.node(n) or { return refused(err) }
 	return put(node.name, buf, cap)
 }
 
 @[export: 'bb_node_problem']
 pub fn bb_node_problem(n i32, buf &char, cap i32) i32 {
-	_, node := sys_node(n) or { return refused(err) }
+	v := run_sys() or { return refused(err) }
+	node := v.node(n) or { return refused(err) }
 	return put(node.ecu_err, buf, cap)
 }
 
@@ -137,9 +153,9 @@ pub fn bb_node_target(n i32, k i32, out &C.bb_reach) i32 {
 	if isnil(out) {
 		return fail(bb_err, 'node_target: nowhere to put it')
 	}
-	sys, rows := run_sys() or { return refused(err) }
-	_, node := sys_node(n) or { return refused(err) }
-	ts := sys.targets(int(n), row_refs(rows))
+	v := run_sys() or { return refused(err) }
+	node := v.node(n) or { return refused(err) }
+	ts := v.sys.targets(int(n), v.refs())
 	if k < 0 || int(k) >= ts.len {
 		return fail(bb_err, '${node.name} has no target ${k} (it is reached on ${ts.len} rows)')
 	}
@@ -152,19 +168,20 @@ pub fn bb_node_reach(n i32, r i32, out &C.bb_reach) i32 {
 	if isnil(out) {
 		return fail(bb_err, 'node_reach: nowhere to put it')
 	}
-	sys, rows := run_sys() or { return refused(err) }
-	sys_node(n) or { return refused(err) }
-	if r < -1 || int(r) >= rows.len {
+	v := run_sys() or { return refused(err) }
+	v.node(n) or { return refused(err) }
+	if r < -1 || int(r) >= v.rows.len {
 		return fail(bb_err, 'no channel ${r}')
 	}
-	t := sys.reach(int(n), row_refs(rows), int(r)) or { return fail(bb_err, err.msg()) }
+	t := v.sys.reach(int(n), v.refs(), int(r)) or { return fail(bb_err, err.msg()) }
 	put_target(t, out)
 	return ok()
 }
 
 @[export: 'bb_node_fault']
 pub fn bb_node_fault(n i32, k i32, dtc &u32, buf &char, cap i32) i32 {
-	_, node := sys_node(n) or { return refused(err) }
+	v := run_sys() or { return refused(err) }
+	node := v.node(n) or { return refused(err) }
 	fs := node.desc.faults
 	if k < 0 || int(k) >= fs.len {
 		return fail(bb_err, '${node.name} has no fault ${k} (it declares ${fs.len})')
@@ -275,10 +292,14 @@ pub fn bb_uds_write_described(u i32, n i32, d i32, texts &&char, k i32, needs &C
 		}
 		parts << unsafe { cstring_to_vstring(t) }
 	}
-	sys, rows, run := run_sys_numbered() or { return refused(err) }
-	x := node_did(n, d) or { return refused(err) }
-	ts := sys.targets(int(n), row_refs(rows))
-	node := sys.nodes[int(n)].name
+	v := run_sys() or { return refused(err) }
+	x := v.did(n, d) or { return refused(err) }
+	if why := x.write_refusal() {
+		return fail(bb_err, '0x2E ${x.label()}: ${why}')
+	}
+	ts := v.sys.targets(int(n), v.refs())
+	node := v.sys.nodes[int(n)].name
+	run := v.run
 	return exchange(u, fn [x, parts, ts, node, run, needs] (mut hd UdsHandle) !i32 {
 		// bytes laid out by one node's description go to that node: a handle of this run on one of
 		// its targets

@@ -520,9 +520,14 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 					return error('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 				}
 				mut fresh_ch := isotp.Channel(fresh)
+				// the sizes stated on the old connection (did_size, a node's description) hold on
+				// the new one; what it established does not
+				mut cli := uds.new_client(fresh_ch)
+				cli.did_lens = c.cli.did_lens.clone()
+				cli.ext_lens = c.cli.ext_lens.clone()
 				env.conns[i] = UdsConn{
 					ch:   fresh_ch
-					cli:  env.bound_client(mut fresh_ch, uds.new_client(fresh_ch))
+					cli:  env.bound_client(mut fresh_ch, cli)
 					chan: name
 				}
 				return i

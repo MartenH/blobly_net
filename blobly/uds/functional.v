@@ -77,6 +77,16 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		return error(abandoned_note)
 	}
 	fch.send(req) or { return send_failure(err, fch, stop_asked(targets), req[0], 0) }
+	// what each target's state takes from the request (observe_functional), however this ends
+	mut replies := []FunctionalReply{}
+	defer {
+		for i, t in targets {
+			mut c := t.client
+			c.observe_functional(req, replies[i] or { FunctionalReply{
+				outcome: .failed
+			} })
+		}
+	}
 	// a target's client a stop can be asked of: its waits are sliced, and a stop ends the request
 	stoppable := targets.any(it.client.stop_requested != unsafe { nil })
 	sw := time.new_stopwatch()
@@ -165,9 +175,8 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 			.stale {}
 		}
 	}
-	mut out := []FunctionalReply{cap: targets.len}
 	for i, d in done {
-		out << if finished[i] {
+		replies << if finished[i] {
 			d
 		} else {
 			FunctionalReply{
@@ -176,7 +185,23 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 			}
 		}
 	}
-	return out
+	return replies
+}
+
+// observe_functional records on the client's state (Client.state) what the functional request
+// `req` got from its server: a positive or negative answer as a physical exchange records it, and
+// anything else as a request sent and not answered — silence included, since ISO 14229-1 has a
+// server suppress some refusals of a functional request, so it does not say the request was done.
+fn (mut c Client) observe_functional(req []u8, r FunctionalReply) {
+	c.state.observe(Exchange{
+		req:      req
+		resp:     r.resp
+		err:      if r.outcome == .positive { '' } else { 'functional request: ${r.outcome}' }
+		negative: r.outcome == .negative
+		timing:   ExchangeTiming{
+			sent: true
+		}
+	})
 }
 
 // read_answer reads target `c`'s answer within `ms`: in slices a stop of any target can end when
@@ -315,6 +340,13 @@ pub fn functional_addressed(mut c Client, mut via AddressedSend, target u32, req
 		return error(abandoned_note)
 	}
 	via.send_to(target, req) or { return send_failure(err, c.ch, c.stopping(), req[0], 0) }
+	// what the client's state takes from the request (observe_functional), however this ends
+	mut reply := FunctionalReply{
+		outcome: .failed
+	}
+	defer {
+		c.observe_functional(req, reply)
+	}
 	sw := time.new_stopwatch()
 	mut deadline := i64(window_ms)
 	mut pended := false
@@ -337,15 +369,17 @@ pub fn functional_addressed(mut c Client, mut via AddressedSend, target u32, req
 					text: err.msg()
 				}
 			}
-			return FunctionalReply{
+			reply = FunctionalReply{
 				outcome: .failed
 				pended:  pended
 				err:     err.msg()
 			}
+			return reply
 		}
-		verdict, reply := heard(mut c, req, resp, pended)
+		verdict, heard_reply := heard(mut c, req, resp, pended)
 		match verdict {
 			.settled {
+				reply = heard_reply
 				return reply
 			}
 			.pending {
@@ -355,8 +389,9 @@ pub fn functional_addressed(mut c Client, mut via AddressedSend, target u32, req
 			.stale {}
 		}
 	}
-	return FunctionalReply{
+	reply = FunctionalReply{
 		outcome: if pended { .pending } else { .silent }
 		pended:  pended
 	}
+	return reply
 }

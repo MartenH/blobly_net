@@ -23,16 +23,14 @@ pub fn autorefresh_logged(auto bool, failed bool, prev string, now string) bool 
 	return !auto || failed || prev != now
 }
 
-// dtc_setting_session is the session a ControlDTCSetting (0x85) press switches to first: the
-// extended one, for turning the setting OFF when the connection is in the default session or none
-// is known — the service is served in the non-default sessions only (ISO 14229-1's default, and
-// blobly_emb's). Turning it ON never switches: entering the default session turns it on already,
-// so in the default session there is nothing to turn on, and the ECU's refusal says so. 0 = stay.
-pub fn dtc_setting_session(session u8, on bool) u8 {
-	if on {
-		return 0
-	}
-	return if session == 0 || session == default_session { u8(0x03) } else { u8(0) }
+// dtc_setting_session is the session a ControlDTCSetting (0x85) press switches to first: for
+// turning the setting OFF, `leave` — the session the connection's is left for, as for a 0x27
+// (uds.unlock_session: the extended one from the default session or none known), since the
+// service is served in the non-default sessions only (ISO 14229-1's default, and blobly_emb's).
+// Turning it ON never switches: entering the default session turns it on already, so in the
+// default session there is nothing to turn on, and the ECU's refusal says so. 0 = stay.
+pub fn dtc_setting_session(leave u8, on bool) u8 {
+	return if on { u8(0) } else { leave }
 }
 
 // Deferred is what becomes of a DTC row clicked while a press was in flight.

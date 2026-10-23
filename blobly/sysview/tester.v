@@ -60,15 +60,19 @@ pub:
 // targets: every row of `rows` that reaches node `n`, in their order — a CAN row named after a bus
 // its server is on, at its diagnostic ids (can_server, can_targets' rule), and a DoIP row whose
 // entity is the node (node_for by the row's logical address and host, the rule the Diagnostics
-// panel describes a DoIP target by).
+// panel describes a DoIP target by). None for a node whose ecu.toml declares no server.
 pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 	if n < 0 || n >= sys.nodes.len {
 		return []RowTarget{}
 	}
-	server := sys.can_server(sys.nodes[n])
+	node := sys.nodes[n]
+	server := sys.can_server(node)
+	// one whose ecu.toml declares no server (the tester's own declaration) is reached nowhere, on
+	// either carrier; one whose ecu.toml could not be read keeps what system.toml says
+	serves := node.ecu_err != '' || node.desc.server
 	mut out := []RowTarget{}
 	for i, r in rows {
-		if r.doip {
+		if r.doip && serves {
 			link := sys.node_for(TargetAddr{
 				doip:    true
 				logical: r.logical
@@ -160,24 +164,20 @@ pub fn (d &EcuDesc) listed_dids() []DidDesc {
 	return out
 }
 
-// listed_did is the listed DID `key` names: its identifier in hex (`0x0110`) or decimal, else its
-// name (a signal's or parameter's, or ISO's for a standard identifier). Refused for a name no
-// listed DID has or two share; an identifier the description does not list is a DID of no layout,
-// read and written as its bytes.
-pub fn (d &EcuDesc) listed_did(key string) !DidDesc {
+// listed_did is the listed DID called `name` (a signal's or parameter's name, or ISO's for a
+// standard identifier; an identifier is listed_id's): refused for a name no listed DID has (naming
+// those there are) or two share.
+pub fn (d &EcuDesc) listed_did(name string) !DidDesc {
 	listed := d.listed_dids()
-	mut hits := listed.filter(it.name == key)
+	hits := listed.filter(it.name == name)
 	if hits.len == 1 {
 		return hits[0]
 	}
 	if hits.len > 1 {
-		return error('${hits.len} DIDs are called "${key}" (${hits.map('0x${it.id:04X}').join(', ')}); name it by its identifier')
-	}
-	if id := did_number(key) {
-		return d.listed_id(id)
+		return error('${hits.len} DIDs are called "${name}" (${hits.map('0x${it.id:04X}').join(', ')}); name it by its identifier')
 	}
 	names := listed.filter(it.name != '').map('"${it.name}"')
-	return error('no DID "${key}" in the description; there are: ${names.join(', ')}')
+	return error('no DID "${name}" in the description; there are: ${names.join(', ')}')
 }
 
 // listed_id is DID `id` as the description lists it, or one of no layout when it does not.
@@ -192,22 +192,6 @@ pub fn (d &EcuDesc) listed_id(id u16) DidDesc {
 		kind: .unknown
 		name: uds.standard_did_name(id)
 	}
-}
-
-// did_number reads a DID's identifier: `0x` and one to four hex digits, or a decimal 0..65535.
-fn did_number(t string) ?u16 {
-	if t.starts_with('0x') || t.starts_with('0X') {
-		h := t[2..]
-		if h.len < 1 || h.len > 4 || !h.bytes().all(it.is_hex_digit()) {
-			return none
-		}
-		return u16(h.parse_uint(16, 16) or { return none })
-	}
-	if t.len < 1 || t.len > 5 || !t.bytes().all(it.is_digit()) {
-		return none
-	}
-	v := t.parse_uint(10, 32) or { return none }
-	return if v <= 0xFFFF { u16(v) } else { none }
 }
 
 // by_label: a value of this DID is read part by part, each under its label — it has several parts,
@@ -247,6 +231,16 @@ pub fn (x DidDesc) plan_write(st uds.ConnState, can_unlock bool) uds.WritePlan {
 		can_unlock)
 }
 
+// write_refusal is why the DID cannot be written whatever a connection establishes (no write
+// gate, one that contradicts itself, a session no tester here knows), or none.
+pub fn (x DidDesc) write_refusal() ?string {
+	plan := x.plan_write(uds.ConnState{}, true)
+	if plan.refusal == '' {
+		return none
+	}
+	return plan.refusal
+}
+
 // WriteGated is a write not sent because the connection has not established what the DID's write
 // gate needs: `session` the session to switch to (0 = the one it is in will do), `level` the
 // security level to unlock (0 = none), `state` what the connection has.
@@ -270,17 +264,17 @@ pub fn (e WriteGated) msg() string {
 }
 
 // write_described writes `texts` (one per part, DidDesc.parts) to DID `x` as its description lays
-// out and gates it: refused before anything is sent when the codec refuses a part, the description
-// gives the DID no write gate (or one that cannot be met), or the connection has not established
+// out and gates it: refused before anything is sent when the description gives the DID no write
+// gate (or one that cannot be met), the codec refuses a part, or the connection has not established
 // the session and level the gate needs (WriteGated — this connection's own exchanges are what say
 // so, Client.state). A script may unlock with a key of its own, so the level is always the
 // script's to unlock: nothing is switched or unlocked here.
 pub fn write_described(mut cli uds.Client, x DidDesc, texts []string) ! {
+	if why := x.write_refusal() {
+		return error('0x2E ${x.label()}: ${why}')
+	}
 	data := x.encode(texts) or { return error('0x2E ${x.label()}: not written — ${err.msg()}') }
 	plan := x.plan_write(cli.state, true)
-	if plan.refusal != '' {
-		return error('0x2E ${x.label()}: ${plan.refusal}')
-	}
 	if plan.session != 0 || plan.unlock != 0 {
 		return WriteGated{
 			did:     x.id

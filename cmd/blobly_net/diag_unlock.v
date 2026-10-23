@@ -48,9 +48,8 @@ fn (mut app App) diag_unlock(gen u64, mut h HeldConn, level u8) (DiagOut, bool) 
 			line = 'level ${level} unlocked (reference key)'
 		}
 	}
-	h.security = uds.security_unlocked(level)
 	mut st := app.diag_status_copy()
-	st.security = h.security
+	st.security = h.security() // the level the 0x27 granted, as the client observed it
 	st.unlock_why = ''
 	app.diag_set_status(gen, st)
 	return DiagOut{
@@ -100,7 +99,7 @@ fn (mut app App) diag_unlock_request(gen u64, mut h HeldConn, req DiagReq) (Diag
 // the session switch it asks for, the gate again — a reload may land during a slow switch — and
 // then diag_unlock. `what` names the press in a refusal.
 fn (mut app App) diag_secure(gen u64, mut h HeldConn, req DiagReq, level u8, what string) (DiagOut, bool) {
-	first := app.unlock_step(req, h.session)
+	first := app.unlock_step(req, h.session())
 	if first.refusal != '' {
 		return unlock_refused(what, first.refusal)
 	}
@@ -111,7 +110,7 @@ fn (mut app App) diag_secure(gen u64, mut h HeldConn, req DiagReq, level u8, wha
 		}
 		app.diag_say_for(req, 'for 0x27, which the default session does not serve', false)
 		// a reload may have landed during the switch
-		again := app.unlock_step(req, h.session)
+		again := app.unlock_step(req, h.session())
 		if again.refusal != '' {
 			return unlock_refused(what, again.refusal)
 		}
