@@ -85,7 +85,11 @@ def _out(m: SomeipMessage, keep: list) -> _lib.BbSomeipOut:
         raise ValueError(f"type {m.type!r}: one of {', '.join(_TYPES)}")
     if isinstance(m.payload, (str, int)):
         raise TypeError(f"payload must be bytes, not {type(m.payload).__name__}")
+    if m.return_code:
+        raise ValueError(f"return_code {m.return_code}: a request or a notification is sent with 0")
     payload = bytes(m.payload)
+    if len(payload) > 65507 - 16:
+        raise ValueError(f"a payload of {len(payload)} bytes does not fit one UDP datagram")
     keep.append(payload)
     return _lib.BbSomeipOut(_field("service", m.service, 16), _field("method", m.method, 16),
                             -1 if m.type is None else _TYPES[m.type], _field("iface", m.iface, 8),
@@ -151,9 +155,11 @@ def call(to: str, request: SomeipMessage, *, port: int | None = None, timeout_ms
     `port` (None: 30491) and returns the RESPONSE or ERROR mirroring its Request ID as soon as it
     arrives from `to` — an ERROR is an answer (`type` "error", its `return_code`). Events, other
     senders and stale replies to an earlier session are skipped. Raises Timeout when nothing
-    answered within `timeout_ms` (more than 0), Refused for what is no request (an event id,
+    answered within `timeout_ms` (at least 1), Refused for what is no request (an event id,
     client 0, another type) and for a session this run already sent."""
     wait = _ms("someip.call", timeout_ms)
+    if wait < 1:
+        raise ValueError(f"someip.call: a timeout of {timeout_ms} ms; a call waits at least 1 ms")
     p = _port("someip.call", port)
     dest = _to("someip.call", to)
     keep: list = []

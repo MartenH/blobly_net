@@ -146,8 +146,11 @@ class TestSendAndCall(unittest.TestCase):
             someip.call(self.peer.to, SomeipMessage(1, 1), port=0)
 
     def test_a_call_waits(self):
-        with self.assertRaises(blobly.Refused):
-            someip.call(self.peer.to, SomeipMessage(0x0100, 0x0001), port=self.port, timeout_ms=0)
+        for ms in (0, 0.9):
+            with self.subTest(ms), self.assertRaises(ValueError):
+                someip.call(self.peer.to, SomeipMessage(0x0100, 0x0001), port=self.port, timeout_ms=ms)
+        with self.assertRaises(ValueError):
+            someip.send(self.peer.to, SomeipMessage(0x0100, 0x8001, return_code=3), port=self.port)
         with self.assertRaises(TypeError):
             someip.send(self.peer.to, SomeipMessage(None, 1), port=self.port)
 

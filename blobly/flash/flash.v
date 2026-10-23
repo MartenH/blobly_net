@@ -395,7 +395,11 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 			return step_error('ecu reset', err)
 		}
 		if opts.stop != unsafe { nil } && opts.stop() {
-			return failed('ecu reset: stopped before it was sent; the image is marked valid')
+			return failed(if c.last.sent {
+				'ecu reset: sent, then stopped before its answer; the image is marked valid'
+			} else {
+				'ecu reset: stopped before it was sent; the image is marked valid'
+			})
 		}
 		sink.note('ECU reset sent (response lost to the reset — normal)')
 		return rep

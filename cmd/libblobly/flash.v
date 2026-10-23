@@ -142,6 +142,7 @@ pub fn bb_flash_program(u i32, image &u8, n i32, opts &C.bb_flash_opts, out &C.b
 			}
 			return e
 		}
+		hd.mark_lost() // the bootloader has reset: a DoIP connection went with it
 		unsafe {
 			out.bytes = i32(rep.bytes)
 			out.blocks = i32(rep.blocks)
