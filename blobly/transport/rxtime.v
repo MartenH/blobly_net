@@ -20,29 +20,27 @@ __global (
 // where it carries none (a software bus) — so an unstamped frame's time is when THIS reader read
 // it, and two readers of one such frame each have their own.
 pub fn received_at(f CanFrame, host_ns i64) i64 {
+	if f.placed_ns != 0 {
+		return f.placed_ns // placed once at ingress, the same for every reader
+	}
 	host_clock := on_host_clock(f.hw_domain)
 	if t := timebase.unestimated(f.hw_domain, f.hw_ns, host_ns, host_clock) {
 		return t // no estimate to read: no lock to take
 	}
 	mut t := host_ns
 	lock rx_clock {
-		// a domain whose backend feeds the estimate at ingress is only mapped here: a reader that
-		// left the frame queued would otherwise teach the estimate its own delay
-		t = rx_clock.p.mapped(f.hw_domain, f.hw_ns) or {
-			rx_clock.p.place(f.hw_domain, f.hw_ns, host_ns, host_clock)
-		}
+		t = rx_clock.p.place(f.hw_domain, f.hw_ns, host_ns, host_clock)
 	}
 	return t
 }
 
-// observe_ingress feeds a foreign clock's estimate a frame as its backend receives it, before any
-// reader has it queued: the backend's prompt receipt is what the estimate is made of.
-pub fn observe_ingress(f CanFrame, host_ns i64) {
-	if f.hw_domain == '' || on_host_clock(f.hw_domain) {
-		return
-	}
-	lock rx_clock {
-		rx_clock.p.observe(f.hw_domain, f.hw_ns, host_ns)
+// placed_at_ingress is a received frame with its place fixed (`placed_ns`) by the backend's own
+// prompt receipt `host_ns`, before any reader has it queued: every reader then gives it that time,
+// and a reader's delay never reaches the estimate.
+pub fn placed_at_ingress(f CanFrame, host_ns i64) CanFrame {
+	return CanFrame{
+		...f
+		placed_ns: received_at(f, host_ns)
 	}
 }
 

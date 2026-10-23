@@ -154,25 +154,13 @@ pub fn (mut p Placer) place(domain string, hw_ns i64, host_ns i64, host_clock bo
 	if t := unestimated(domain, hw_ns, host_ns, host_clock) {
 		return t
 	}
-	p.observe(domain, hw_ns, host_ns)
-	return p.mapped(domain, hw_ns) or { host_ns }
-}
-
-// observe feeds a foreign domain's estimate one frame: its stamp and when this host received it.
-pub fn (mut p Placer) observe(domain string, hw_ns i64, host_ns i64) {
 	mut d := p.domains[domain] or {
 		nd := &Domain{}
 		p.domains[domain] = nd
 		nd
 	}
 	d.observe(hw_ns, host_ns)
-}
-
-// mapped places a foreign domain's stamp by the estimate it has, learning nothing from the call;
-// none before the domain has been observed.
-pub fn (p &Placer) mapped(domain string, hw_ns i64) ?i64 {
-	d := p.domains[domain] or { return none }
-	return d.map(hw_ns)
+	return d.map(hw_ns) or { host_ns }
 }
 
 // unestimated is a frame's place where no domain's estimate is needed: its receipt when it has no

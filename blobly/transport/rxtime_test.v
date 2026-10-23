@@ -112,15 +112,47 @@ fn test_two_socketcan_wires_carry_one_ordered_timeline() {
 	assert before <= t0 && t0 < t1
 }
 
-fn test_a_reader_that_left_a_frame_queued_does_not_move_its_place() {
+fn test_a_frame_placed_at_ingress_has_that_place_for_every_reader() {
 	reset_receive_clock()
-	// the backend receives it 100 us after the wire did and feeds the estimate there; a reader
-	// takes it 11 s later, past the estimate's window, and is told where the wire saw it
-	f := CanFrame{
-		hw_ns:     50_000_000
-		hw_domain: 'rxtime-ingress'
+	// the backend receives it 20 ms after the wire did; a prompt frame then lowers the estimate,
+	// and a reader takes the first one 11 s later, after Start reset the clock: its place is the
+	// one ingress gave it
+	late := placed_at_ingress(CanFrame{ hw_ns: 50_000_000, hw_domain: 'rxtime-ingress' },
+		2_070_000_000)
+	prompt := placed_at_ingress(CanFrame{ hw_ns: 60_000_000, hw_domain: 'rxtime-ingress' },
+		2_060_100_000)
+	assert prompt.placed_ns == 2_060_100_000
+	reset_receive_clock()
+	assert received_at(late, 2_070_000_000) == 2_070_000_000
+	assert received_at(late, 13_070_000_000) == 2_070_000_000
+}
+
+fn test_a_reader_fed_clock_keeps_learning() {
+	reset_receive_clock()
+	// no backend places these at ingress: each read feeds the estimate, so a first frame read
+	// late does not fix the offset for good
+	first := CanFrame{
+		hw_ns:     10_000_000
+		hw_domain: 'rxtime-reader'
 	}
-	observe_ingress(f, 2_050_100_000)
-	assert received_at(f, 13_050_100_000) == 2_050_100_000
-	assert received_at(f, 13_050_100_000) == 2_050_100_000
+	assert received_at(first, 1_030_000_000) == 1_030_000_000
+	prompt := CanFrame{
+		hw_ns:     20_000_000
+		hw_domain: 'rxtime-reader'
+	}
+	assert received_at(prompt, 1_020_100_000) == 1_020_100_000
+}
+
+fn test_the_in_process_bus_clears_a_placement_with_the_stamp() {
+	mut rx := open('inproc:rxtime_placed') or { panic(err) }
+	defer {
+		rx.close()
+	}
+	mut tx := open('inproc:rxtime_placed') or { panic(err) }
+	defer {
+		tx.close()
+	}
+	tx.send(CanFrame{ id: 1, hw_ns: 5, hw_domain: 'x', placed_ns: 7 }) or { panic(err) }
+	f := rx.recv(1000) or { panic(err) }
+	assert f.placed_ns == 0
 }
