@@ -113,11 +113,15 @@ pub fn frame_send_refusal(f CanFrame) ?string {
 }
 
 // tier_refusal is the refusal `iface`'s own tier makes before its driver is asked: the vendor
-// backends refuse a length (frame_shape_error), the rest clamp it and refuse only what no
-// controller could send (frame_send_refusal). `vendor_iface` is $if windows, and rightly: on Linux
-// `vector:1` opens as SocketCAN, which clamps.
+// backends and the CAN bridge refuse a length (frame_shape_error), the rest clamp it and refuse
+// only what no controller could send (frame_send_refusal). `vendor_iface` is $if windows, and
+// rightly: on Linux `vector:1` opens as SocketCAN, which clamps.
 pub fn tier_refusal(iface string, f CanFrame) ?string {
-	return if vendor_iface(iface) { frame_shape_error(f) } else { frame_send_refusal(f) }
+	return if vendor_iface(iface) || iface.starts_with('bridge:') {
+		frame_shape_error(f)
+	} else {
+		frame_send_refusal(f)
+	}
 }
 
 // frame_shape_error is the full rule set: everything impossible, plus the lengths a backend that

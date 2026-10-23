@@ -53,6 +53,8 @@ pub:
 	repeat bool
 	paused bool // start paused at the beginning
 	open   Opener = default_open
+	// true ends the replay as a stop does, before anything goes out: a script's deadline
+	give_up fn () bool = unsafe { nil }
 }
 
 // Status is what a replay is doing.
@@ -262,8 +264,9 @@ pub fn start(source string, targets []Target, o Options) !&Session {
 		buses[t.iface] = transport.verbatim(mut b)
 	}
 	mut s := &Session{
-		source: source
-		notes:  pl.notes
+		source:  source
+		give_up: o.give_up
+		notes:   pl.notes
 		st:     Status{
 			state:  if o.paused { player.State.paused } else { player.State.playing }
 			dur_s:  pl.plan.end_s - pl.plan.t0_s
@@ -317,7 +320,7 @@ fn (mut s Session) run(j Job) {
 	mut first_err := ''
 	for {
 		s.mu.lock()
-		stop := s.stopping
+		stop := s.stopping || (!isnil(s.give_up) && s.give_up())
 		cmd := s.cmds.take()
 		asked := s.asked
 		s.mu.unlock()
@@ -391,7 +394,7 @@ fn (mut s Session) is_stopping() bool {
 	s.mu.lock()
 	v := s.stopping
 	s.mu.unlock()
-	return v
+	return v || (!isnil(s.give_up) && s.give_up())
 }
 
 // ask queues `c` and waits until the worker has applied it and published the status it leads to,
@@ -549,6 +552,7 @@ pub:
 	exclude ?[]string // none: each row's own
 	bus     string    // the recorded bus, for one row; '': the row's
 	open    Opener = default_open
+	give_up fn () bool = unsafe { nil } // Options.give_up
 }
 
 // start_rows is start over project rows, by the one rule both bindings ask: refused where the rows
@@ -597,7 +601,8 @@ pub fn start_rows(rows []Row, a Ask) !&Session {
 	return start(source, targets,
 		speed:  speed
 		repeat: repeat == 1
-		paused: a.paused
-		open:   a.open
+		paused:  a.paused
+		open:    a.open
+		give_up: a.give_up
 	)
 }

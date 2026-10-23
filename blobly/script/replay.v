@@ -103,13 +103,15 @@ fn l_replay_start(l lua.State) i32 {
 			?[]string(l.arg_str(5).split('\n').filter(it != ''))
 		}
 		bus:     if l.arg_is_nil(6) { '' } else { l.arg_str(6) }
+		give_up: if env.deadline != 0 {
+			fn [env] () bool {
+				return env.expired()
+			}
+		} else {
+			unsafe { nil }
+		}
 		open:    if isnil(env.reproducer) { env.opener } else { env.reproducer }
 	) or { return l.fail(err.msg()) }
-	if env.deadline != 0 {
-		s.give_up = fn [env] () bool {
-			return env.expired()
-		}
-	}
 	env.replays << s
 	if env.expired() {
 		s.stop() // a start that outlasted the run's deadline plays nothing past it

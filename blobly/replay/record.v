@@ -367,6 +367,10 @@ fn (mut r Recorder) release() {
 fn (mut r Recorder) read(i int, t Target, bus transport.Bus) {
 	mut b := bus
 	defer {
+		// its watch goes with it: a send it can no longer read back is not noted as one
+		if i < r.watches.len {
+			transport.unwatch_sends(r.watches[i])
+		}
 		b.close()
 		d := b.diagnostics() // after the close, which books a shared wire's last gap
 		r.mu.lock()
@@ -454,8 +458,9 @@ fn (mut r Recorder) take(i int, t Target, f transport.CanFrame) {
 		return
 	}
 	mut ours := false
-	if _ := r.rings[i].claim(i, t.iface, f, at) {
+	if c := r.rings[i].claim(i, t.iface, f, at) {
 		ours = true
+		r.rings[i].forget(c.seq) // one reader per ring: a claimed note is done, and kept it is scanned
 	}
 	r.lines << Line{
 		e: canlog.LogEntry{

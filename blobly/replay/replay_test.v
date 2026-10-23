@@ -194,12 +194,12 @@ fn test_a_burst_of_our_frames_is_ours_to_the_last() {
 		iface: 'inproc:RPT14'
 	}]) or { panic(err) }
 	mut tx := transport.open('inproc:RPT14') or { panic(err) }
-	for k in 0 .. 4000 {
+	for k in 0 .. 8000 {
 		tx.send(transport.CanFrame{ id: 0x100, data: [u8(k), u8(k >> 8)] }) or { panic(err) }
 	}
 	tx.close()
 	c := r.stop() or { panic(err) }
-	assert c.frames == 4000 && c.ours == 4000 && c.missed == 0, c.str()
+	assert c.frames == 8000 && c.ours == 8000 && c.missed == 0, c.str()
 }
 
 fn test_a_frame_no_candump_line_carries_is_said() {
