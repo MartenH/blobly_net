@@ -551,6 +551,12 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			d.errs << 'did ${id}: not a 16-bit identifier; not read'
 			continue
 		}
+		if d.dids.any(it.id == u16(id)) {
+			// one identifier, one value: a server serves the first, and a tester must not name a
+			// second layout for the same bytes
+			d.errs << 'did 0x${id:04X}: declared twice; the second not read'
+			continue
+		}
 		gate_err := ['read', 'write'].map(gate_level_refusal(xm, it)).filter(it != '')
 		if gate_err.len > 0 {
 			d.errs << 'did 0x${id:04X}: ${gate_err.join('; ')}; not read'

@@ -60,7 +60,9 @@ pub:
 // targets: every row of `rows` that reaches node `n`, in their order — a CAN row named after a bus
 // its server is on, at its diagnostic ids (can_server, can_targets' rule), and a DoIP row whose
 // entity is the node (node_for by the row's logical address and host, the rule the Diagnostics
-// panel describes a DoIP target by). None for a node whose ecu.toml declares no server.
+// panel describes a DoIP target by) at the node's address where both state one (a loopback row
+// excepted: a simulated entity). None for a node whose ecu.toml declares no server, nor on a CAN
+// bus where another node answers to its ids.
 pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 	if n < 0 || n >= sys.nodes.len {
 		return []RowTarget{}
@@ -79,7 +81,8 @@ pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 				host:    r.host
 				bus:     r.name
 			})
-			if link.node == n {
+			if link.node == n && (node.address == '' || r.host == '' || loopback(r.host)
+				|| node.address.to_lower() == r.host.to_lower()) {
 				out << RowTarget{
 					row:  i
 					doip: true
@@ -87,7 +90,12 @@ pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 			}
 		} else if !r.eth {
 			if s := server {
-				if r.name in s.buses {
+				// and on that bus no other node answers to the same ids (node_for's rule)
+				if r.name in s.buses && sys.node_for(TargetAddr{
+					req: s.req
+					rsp: s.rsp
+					bus: r.name
+				}).node == n {
 					out << RowTarget{
 						row: i
 						req: s.req
@@ -99,6 +107,13 @@ pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 		}
 	}
 	return out
+}
+
+// loopback: `host` is this machine — an entity a project hosts for a node in simulation, whose
+// system.toml address is the real ECU's.
+fn loopback(host string) bool {
+	h := host.to_lower()
+	return h == 'localhost' || h == '::1' || h.starts_with('127.')
 }
 
 // reach is the one target a tester opens on for node `n`: the one on row `row` when it names one

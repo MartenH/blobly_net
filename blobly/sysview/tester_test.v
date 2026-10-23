@@ -72,8 +72,26 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 		row:  0
 		doip: true
 	}]
+	// a row dialing another address than the node's is another entity; a loopback one simulates it
+	sys.nodes[0].address = '192.0.2.1'
+	assert sys.targets(0, [RowRef{
+		name:    'D'
+		doip:    true
+		host:    '192.0.2.2'
+		logical: 0x0710
+	}]) == []
+	assert sys.targets(0, rows).len == 1
 	sys.nodes[0].doip = 0
 	sys.reach(0, rows, -1) or { assert !err.msg().contains('DoIP'), err.msg() }
+	// two nodes at one pair of ids on one bus: neither is reached there
+	mut two := demo_system()
+	two.nodes << SysNode{
+		...two.nodes[0]
+		name: 'zone_b'
+	}
+	assert two.targets(0, [RowRef{
+		name: 'edge'
+	}]) == []
 }
 
 fn test_a_node_without_a_server_says_so() {

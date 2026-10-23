@@ -117,9 +117,6 @@ class Node:
     server: bool
     reference_key: bool
     problem: str
-    dids: Dids
-    faults: NodeFaults
-    targets: list[NodeTarget]
 
     def __init__(self, project: "Project", index: int, name: str) -> None:
         self._project, self._index, self.name = project, index, name
@@ -145,19 +142,19 @@ class Node:
                             None if x.size < 0 else x.size, tuple(parts), bool(x.by_label),
                             _gate(lib, n, d, 0, x.read_sessions, x.read_level) if x.read_gated else None,
                             _gate(lib, n, d, 1, x.write_sessions, x.write_level) if x.writable else None, d))
-        self.dids = Dids(dids)
+        self._dids = Dids(dids)
         faults, code = [], ctypes.c_uint32()
         for k in range(info.faults):
             name = _lib.string(lib.bb_node_fault, n, k, ctypes.byref(code))
             faults.append(Fault(name, code.value, _lib.string(lib.bb_dtc_name, code.value)))
-        self.faults = NodeFaults(faults)
+        self._faults = NodeFaults(faults)
         self._names = {f.dtc: f.name for f in faults}
         channels = self._project.channels
         out, t = [], _lib.BbReach()
         for k in range(info.targets):
             _lib.check(lib.bb_node_target(n, k, ctypes.byref(t)))
             out.append(_target(channels[t.row], t))
-        self.targets = out
+        self._targets = out
         self._run = run
 
     def _live(self):
@@ -167,6 +164,28 @@ class Node:
             raise BloblyError(f"node {self.name!r} is not in this run's system model; take it from "
                               "project.nodes again", _lib.BB_ERR_STATE)
 
+    @property
+    def dids(self) -> Dids:
+        """Its DIDs as this run lists them: its own, then the ISO identification DIDs it does not
+        declare."""
+        with _lib.state_lock:
+            self._live()
+            return self._dids
+
+    @property
+    def faults(self) -> NodeFaults:
+        """Its [[fault]]s as this run's description declares them."""
+        with _lib.state_lock:
+            self._live()
+            return self._faults
+
+    @property
+    def targets(self) -> list[NodeTarget]:
+        """Where this run reaches it."""
+        with _lib.state_lock:
+            self._live()
+            return list(self._targets)
+
     def did(self, key: int | str) -> Did | None:
         """The listed DID `key` names — its identifier, or its name (a signal's or parameter's, or
         ISO's for a standard identifier) — or None for an identifier the node does not list (a DID
@@ -174,9 +193,9 @@ class Node:
         with _lib.state_lock:
             self._live()  # this run's listing
             if isinstance(key, str):
-                return self.dids[key]
+                return self._dids[key]
             key = _int("did", key)
-            return next((d for d in self.dids if d.id == key), None)
+            return next((d for d in self._dids if d.id == key), None)
 
     def uds(self, channel: "Channel | str | None" = None) -> "NodeClient":
         """A NodeClient on this node, while the project is started: on the channel of the run that
@@ -334,14 +353,15 @@ class NodeClient(UdsClient):
         of no known layout, and {label: value} where the Did is by_label. UndecodableAnswer when
         the answer is not the size the description lays out."""
         n, d, run = self._resolved(did)
-        if d is None:
-            return self.read_did(_int("did", did))
-        data = self.read_did(d.id)
+        data = self.read_did(_int("did", did) if d is None else d.id)
         lib = _lib.lib()
         with _lib.state_lock:
-            if _lib.state["run"] != run:  # another run's model may list another DID at d.index
-                raise BloblyError(f"{self.node.name}: the project was stopped or started while 0x{d.id:04X} "
+            # another run's model may list another DID at d.index, or describe one this run did not
+            if _lib.state["run"] != run:
+                raise BloblyError(f"{self.node.name}: the project was stopped or started while DID {did!r} "
                                   "was read; read it again", _lib.BB_ERR_STATE)
+            if d is None:
+                return data
             texts = [_lib.string(lib.bb_did_text, n, d.index, data, len(data), p) for p in range(len(d.parts))]
         values = [_value(p, t) for p, t in zip(d.parts, texts)]
         if not d.by_label:

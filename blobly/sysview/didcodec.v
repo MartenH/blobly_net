@@ -31,9 +31,10 @@ pub enum PartKind {
 }
 
 // laid_out: the value is its fields, back to back.
+// A parameter status of no parameters is laid out too: zero fields, zero bytes.
 fn (x DidDesc) laid_out() bool {
-	return x.kind in [.signal, .param, .param_status, .tx_saturations] && x.fields.len > 0
-		&& x.fields.all(it.width() > 0)
+	return (x.kind == .param_status || (x.kind in [.signal, .param, .tx_saturations]
+		&& x.fields.len > 0)) && x.fields.all(it.width() > 0)
 }
 
 // parts are the value's editable parts, in order.
