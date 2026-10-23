@@ -441,8 +441,7 @@ local d = bus.diagnostics(channel)
   lands in the second it is read.
 - `bus.diagnostics` is what the backend counted that no frame carried: `dropped` frames lost
   before delivery (the handle's queue full, a driver overrun, a shared ring overwritten),
-  `bus_errors` controller error records, `decode_errors` records it could not decode. The
-  runner prints the non-empty ones at close, as before.
+  `bus_errors` controller error records, `decode_errors` records it could not decode — on a wire shared through one driver handle (PCAN, CANsub, the CAN bridge) they are the wire's since it opened, its other handles' ring gaps included. The runner prints the non-empty ones at close, as before.
 
 ### The DBC catalog
 

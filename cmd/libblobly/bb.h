@@ -296,7 +296,9 @@ typedef struct bb_busload {
 
 /* What the backend counted since the handle opened that no frame carried (transport.BusDiagnostics):
  * records dropped before delivery (a receiver that fell behind, a driver overrun, a shared ring
- * overwritten), controller error records, records it could not decode. */
+ * overwritten), controller error records, records it could not decode. On a wire shared through
+ * one driver handle (PCAN, CANsub, the CAN bridge) they are the wire's since it opened, its other
+ * handles' ring gaps included. */
 typedef struct bb_diagnostics {
 	uint64_t dropped;
 	uint64_t bus_errors;

@@ -513,8 +513,11 @@ load, computed by the same code, with two things to know:
 `ch.diagnostics()` is a `BusDiagnostics`: what the backend counted since the handle opened that no
 frame carried. `dropped` is frames lost before delivery (this handle's queue full, a driver
 overrun, a shared ring overwritten), `bus_errors` controller error records, `decode_errors`
-records the backend could not decode. Counts only grow while the handle is open; `ch.close()`
-starts both again at zero.
+records the backend could not decode. Counts only grow while the handle is open, and
+`ch.close()` starts the load again at zero. The diagnostics count from the handle's open too,
+except on a wire shared through one driver handle (PCAN, CANsub, the CAN bridge): there they are
+the wire's, its other handles' ring gaps included, and start again only once the last handle on
+the wire closes.
 
 ```python
 import blobly
@@ -1285,7 +1288,7 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.expect_signal(message, signal, want, timeout_ms=1000)` | `(frame, value)`: the first frame of `message` whose `signal` matches `want` (a predicate, or a value compared with `==`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
 | `ch.health()` | The controller's ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""`. |
 | `ch.load()` | A `BusLoad`: the load of the decoded frames this channel's handle sent and read since it opened ([Bus metrics](#bus-metrics)). |
-| `ch.diagnostics()` | A `BusDiagnostics`: the backend's dropped, controller-error and undecodable counts since the handle opened. |
+| `ch.diagnostics()` | A `BusDiagnostics`: the backend's dropped, controller-error and undecodable counts since the handle opened (on PCAN, CANsub and the CAN bridge, the shared wire's). |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
 | `ch.uds(tx=None, rx=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. |

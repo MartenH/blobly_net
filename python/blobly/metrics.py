@@ -19,7 +19,8 @@ class BusLoad(NamedTuple):
 
 
 class BusDiagnostics(NamedTuple):
-    """What the backend counted since the handle opened that no frame carried."""
+    """What the backend counted since the handle opened that no frame carried; on a wire shared
+    through one driver handle (PCAN, CANsub, the CAN bridge), the wire's since it opened."""
     dropped: int  # records lost before delivery: a reader that fell behind, a driver overrun
     bus_errors: int  # controller error records the device reported
     decode_errors: int  # records the backend could not decode
