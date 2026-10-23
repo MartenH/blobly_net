@@ -8,6 +8,7 @@ import numbers
 
 from . import _lib
 from ._lib import BloblyError, Refused
+from .events import _on_thread
 
 
 class GeneratorRefused(Refused):
@@ -96,16 +97,33 @@ class Generator:
 
     def fire(self, timeout_ms: float = 5000) -> None:
         """Sends its current frame once, returning once the bus took it. Raises GeneratorRefused
-        for a bus that refused it, Timeout when the bus took nothing within timeout_ms (at most
-        5000; a first fire opens the bus). The message says whether the frame may still go out:
-        one the generator had not taken up when the wait ended is never sent. It holds the
-        project's state while it waits, so a stop on another thread waits for it, and never
-        reaches the next run's generators."""
+        for a bus that refused it, Timeout when the bus did not take it within timeout_ms (at most
+        5000, from this call; a first fire opens the bus), BloblyError (code -3) when a stop
+        overtook it. The message says whether the frame went out: one the generator had not taken
+        up by the deadline is never sent. Ctrl-C ends the wait within 100 ms; the fire then ends
+        on its own, within its deadline."""
         if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, numbers.Real) or not math.isfinite(timeout_ms):
             raise TypeError(f"timeout_ms is a finite number of ms, not {timeout_ms!r}")
         if not 0 < timeout_ms <= 5000:
             raise ValueError(f"timeout_ms {timeout_ms}: a fire waits more than 0 and at most 5000 ms")
-        self._call(lambda lib: lib.bb_gen_fire, math.ceil(timeout_ms))
+        lib = _lib.lib()
+        until = lib.bb_now_ns() + int(timeout_ms * 1_000_000)  # one deadline for all of it
+
+        def call():
+            # the state lock (a stop and start cannot move this index) is waited for within it too
+            left = (until - lib.bb_now_ns()) / 1e9
+            if left <= 0 or not _lib.state_lock.acquire(timeout=left):
+                raise _lib.Timeout(f"generator {self.name!r}: the project was busy on another thread "
+                                   "past the wait; nothing was sent")
+            try:
+                self._live()
+                rc = lib.bb_gen_fire(self._index, until)
+                if rc == _lib.BB_ERR:
+                    raise GeneratorRefused(_lib.text(lib.bb_last_error()), rc)
+                _lib.check(rc)
+            finally:
+                _lib.state_lock.release()
+        _on_thread(call, "blobly-fire")
 
     def start(self, cycle_ms: int | None = None) -> None:
         """Sends it on its cycle from now: `cycle_ms`, or its own for None or 0 (refused when it has

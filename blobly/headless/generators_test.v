@@ -245,3 +245,34 @@ fn test_a_fire_outcome_is_decided_in_one_order() {
 		assert got == c[3], '${c}: ${got}'
 	}
 }
+
+// fires that timed out while the open held the loop up hold no place in its queue
+fn test_fires_given_up_on_free_their_place() {
+	mut r, mut bus := gen_run()!
+	defer {
+		bus.close()
+		r.stop()
+	}
+	release := chan bool{cap: 1}
+	r.gen_opener = fn [release] (iface string) !transport.Bus {
+		_ := <-release
+		return transport.open(iface)
+	}
+	ping := sim.gen_find(r.generators(), 'Ping')!
+	mut timeouts := 0
+	for _ in 0 .. fires_waiting + 1 {
+		r.gen_fire(ping, time.sys_mono_now() + 20 * 1_000_000) or {
+			assert kind_of(err) == .timeout && err.msg().contains('nothing was sent'), err.msg()
+			timeouts++
+		}
+	}
+	assert timeouts == fires_waiting + 1
+	spawn fn [release] () {
+		time.sleep(50 * time.millisecond)
+		release <- true
+	}()
+	r.gen_fire(ping, 0)!
+	f := next_of(mut bus, 0x101, 500) or { panic('the fire did not go out') }
+	assert f.data[0] == 1
+	assert next_of(mut bus, 0x101, 100) == none, 'a fire given up on went out'
+}

@@ -2,7 +2,6 @@
 // gen.* reaches too.
 module main
 
-import time
 import blobly.headless
 import blobly.project
 import blobly.sim
@@ -116,10 +115,11 @@ pub fn bb_gen_text(g i32, which i32, buf &char, cap i32) i32 {
 }
 
 @[export: 'bb_gen_fire']
-pub fn bb_gen_fire(g i32, timeout_ms i32) i32 {
+pub fn bb_gen_fire(g i32, until_ns i64) i32 {
 	mut r := gen_run() or { return refused(err) }
-	until := if timeout_ms > 0 { time.sys_mono_now() + u64(timeout_ms) * 1_000_000 } else { u64(0) }
-	r.gen_fire(int(g), until) or { return gen_failed(err) }
+	r.gen_fire(int(g), if until_ns > 0 { u64(until_ns) } else { u64(0) }) or {
+		return gen_failed(err)
+	}
 	return ok()
 }
 

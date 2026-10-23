@@ -174,6 +174,10 @@ fn gen_signal_slot(mut s project.Sender, dbs []candb.Database, cap int, signal s
 	sig := m.signal_named(signal) or {
 		return gen_error(.refused, '${m.name} has no signal "${signal}"')
 	}
+	// a generator names its signals by name, which two of one name do not tell apart
+	if m.signals.filter(it.name == signal).len > 1 {
+		return gen_error(.refused, '${m.name} has ${m.signals.filter(it.name == signal).len} signals named "${signal}": a generator cannot tell them apart')
+	}
 	// what a frame on the generator's wire carries of the message
 	n := if m.payload_len() > cap { cap } else { m.payload_len() }
 	if !m.holds(sig, n) {

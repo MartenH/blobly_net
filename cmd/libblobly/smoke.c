@@ -89,7 +89,7 @@ static gen_text_fn bb_gen_text_p;
 static gen_cycle_fn bb_gen_start_p, bb_gen_cycle_p;
 static gen_set_fn bb_gen_set_p;
 static gen_source_fn bb_gen_source_p;
-static int (*bb_gen_fire_p)(int, int);
+static int (*bb_gen_fire_p)(int, int64_t);
 static int (*bb_gen_stop_p)(int);
 static int (*bb_gen_count_p)(void);
 static int_int_fn bb_message_count_p;

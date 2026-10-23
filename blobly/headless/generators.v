@@ -35,8 +35,13 @@ mut:
 	sent    i64
 	spawned bool // its loop was started
 	ended   bool // its loop is out: a fire is not queued for it
-	fires   chan &Fire = chan &Fire{cap: 4}
+	// the fires waiting for the loop, oldest first, and its wake-up when one is queued
+	queue []&Fire
+	wake  chan bool = chan bool{cap: 1}
 }
+
+// fires_waiting is how many fires may wait for one generator's loop at once.
+const fires_waiting = 4
 
 // Fire is one fire request: sent by the loop only when it takes it before `until` (the
 // monotonic clock, ns) and before the caller gave up on it.
@@ -78,6 +83,15 @@ fn (mut f Fire) take(now u64) bool {
 	}
 	f.taken = true
 	return true
+}
+
+// is_dropped says it was given up on.
+fn (mut f Fire) is_dropped() bool {
+	f.mu.lock()
+	defer {
+		f.mu.unlock()
+	}
+	return f.dropped
 }
 
 // given is the loop's answer if it has given one, without waiting.
@@ -210,7 +224,6 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 	mut was := false
 	mut fresh := true // the cycle sends at once: started, or started again
 	mut last := u64(0) // when the cycle last sent
-	mut fire := &Fire{}
 	for r.ctl.running {
 		g.mu.lock()
 		cyc := g.cyclic
@@ -242,13 +255,14 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 			wait = if due <= after { 0 } else if due - after < wait { due - after } else { wait }
 		}
 		select {
-			fire = <-g.fires {
-				// one taken after a stop began is not sent
-				if fire.take(time.sys_mono_now()) {
-					fire.reply <- answered(if r.ctl.running { g.send(mut bus, run_t0) } else { run_stopped })
-				}
-			}
-			i64(wait) * time.millisecond {
+			_ := <-g.wake {}
+			i64(wait) * time.millisecond {}
+		}
+		// every fire waiting, in order; one taken after a stop began is not sent
+		for {
+			mut fire := g.next_fire() or { break }
+			if fire.take(time.sys_mono_now()) {
+				fire.reply <- answered(if r.ctl.running { g.send(mut bus, run_t0) } else { run_stopped })
 			}
 		}
 	}
@@ -291,20 +305,26 @@ fn (mut g Gen) end(why string) {
 	g.ended = true
 	g.cyclic = false
 	g.mu.unlock()
-	mut f := &Fire{}
-	mut more := true
-	for more {
-		select {
-			f = <-g.fires {
-				if f.take(0) {
-					f.reply <- answered(why)
-				}
-			}
-			else {
-				more = false
-			}
+	for {
+		mut f := g.next_fire() or { break }
+		if f.take(0) {
+			f.reply <- answered(why)
 		}
 	}
+}
+
+// next_fire is the oldest fire waiting, taken off the queue; none when none waits.
+fn (mut g Gen) next_fire() ?&Fire {
+	g.mu.lock()
+	defer {
+		g.mu.unlock()
+	}
+	if g.queue.len == 0 {
+		return none
+	}
+	f := g.queue[0]
+	g.queue.delete(0)
+	return f
 }
 
 // gen is generator i, or the refusal for a run that has no such one or is stopping.
@@ -400,11 +420,21 @@ pub fn (mut r Run) gen_fire(i int, until u64) ! {
 		return fire_outcome(g.s.name, answered(if note != '' { note } else { run_stopped }), due,
 			r.is_stopping())
 	}
-	queued := g.fires.try_push(f) == .success
-	g.mu.unlock()
-	if !queued {
-		return sim.gen_error(.refused, 'generator "${g.s.name}": ${g.fires.cap} fires are already waiting for its bus')
+	// a fire its caller gave up on holds no place
+	mut live := []&Fire{}
+	for mut q in g.queue {
+		if !q.is_dropped() {
+			live << q
+		}
 	}
+	g.queue = live
+	if g.queue.len >= fires_waiting {
+		g.mu.unlock()
+		return sim.gen_error(.refused, 'generator "${g.s.name}": ${fires_waiting} fires are already waiting for its bus')
+	}
+	g.queue << f
+	g.mu.unlock()
+	g.wake.try_push(true)
 	// in slices, so a stop is seen while the loop is held up (an open stalled in its driver)
 	for {
 		now := time.sys_mono_now()

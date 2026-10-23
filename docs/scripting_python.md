@@ -205,8 +205,10 @@ what the Generators panel lets a person do.
   `net.generators[0]` by position, which reaches any of them.
 - `g.fire(timeout_ms=5000)` sends its current frame once and returns once the bus took it. A
   cyclic one's bus is opened as the run starts, any other's at its first fire or start, which a
-  first `fire` waits for; `Timeout` when the bus took nothing within `timeout_ms` (at most 5000),
-  saying whether the frame may still go out — one the generator had not taken up is never sent.
+  first `fire` waits for; `Timeout` when the bus did not take it within `timeout_ms` (at most
+  5000, from the call), saying whether the frame went out — one the generator had not taken up
+  by then is never sent. A stop that overtakes it raises `BloblyError` (code -3). Ctrl-C ends
+  the wait within 100 ms, and the fire then ends on its own, within its deadline.
 - `g.start(cycle_ms=None)` sends it on its cycle from now (its own for `None`; refused when it
   has none), `g.stop()` ends that, and `g.cycle_ms = 50` changes the cycle from its next frame.
 - `g.set(signal, value)` sends a signal at a static value from the next frame, and

@@ -378,7 +378,7 @@ def _declare(lib):
         "bb_gen_find": ([c_char_p], c_int),
         "bb_gen_info": ([c_int, P(BbGenerator)], c_int),
         "bb_gen_text": ([c_int, c_int, c_char_p, c_int], c_int),
-        "bb_gen_fire": ([c_int, c_int], c_int),
+        "bb_gen_fire": ([c_int, ctypes.c_int64], c_int),
         "bb_gen_start": ([c_int, c_int], c_int),
         "bb_gen_stop": ([c_int], c_int),
         "bb_gen_cycle": ([c_int, c_int], c_int),

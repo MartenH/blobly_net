@@ -764,9 +764,11 @@ int bb_bus_diagnostics(int h, bb_diagnostics *out);
  *
  * bb_gen_fire sends its current frame once and returns once the bus took it: BB_ERR for a bus
  * that refused it (a listen-only row) or a generator with nothing to send on, BB_ERR_TIMEOUT when
- * its bus did not take it within timeout_ms (0 or less, or past 5000: 5000; a first fire opens the
- * bus) — the message says whether it may still go out: a fire its loop had not taken when the
- * wait ended is never sent. bb_gen_start sends it on its
+ * its bus did not take it by until_ns (bb_now_ns's clock: an absolute deadline, so time spent
+ * reaching the call counts; 0 or less, or past 5 s from now: 5 s from now; a first fire opens the
+ * bus) — the message says whether it went out: a fire its loop had not taken by the deadline is
+ * never sent, one it answered past it did go out. A stop that overtakes a fire is BB_ERR_STATE,
+ * whatever became of the frame. bb_gen_start sends it on its
  * cycle from now — `cycle_ms`, or its own when 0 (refused when it has none) — and bb_gen_stop ends
  * that. bb_gen_cycle sets the cycle (1 .. 3600000 ms), from its next frame. bb_gen_set sends
  * `signal` at the static `value` from its next frame (its value source dropped), bb_gen_source
@@ -782,7 +784,7 @@ int bb_gen_find(const char *name);                       /* >= 0: the generator 
 int bb_gen_info(int g, bb_generator *out);
 int bb_gen_text(int g, int which, char *buf, int cap);   /* >= 0: the length; which is an enum
                                                             bb_gen_text */
-int bb_gen_fire(int g, int timeout_ms);
+int bb_gen_fire(int g, int64_t until_ns);
 int bb_gen_start(int g, int cycle_ms);
 int bb_gen_stop(int g);
 int bb_gen_cycle(int g, int cycle_ms);

@@ -101,6 +101,15 @@ fn test_an_edit_reaches_only_a_signal_the_message_has() {
 	gen_cycle_check(0) or { refusals++ }
 	gen_cycle_check(gen_cycle_max_ms + 1) or { refusals++ }
 	assert refusals == 10
+	twins := candb.parse_dbc('BO_ 258 Twins: 2 Tester\n SG_ A : 0|8@1+ (1,0) [0|255] "" SUT\n SG_ A : 8|8@1+ (1,0) [0|255] "" SUT\n')!
+	mut t := project.Sender{
+		message: 'Twins'
+	}
+	gen_set_value(mut t, [twins], 64, 'A', 1) or {
+		assert err.msg().contains('cannot tell them apart'), err.msg()
+		refusals++
+	}
+	assert refusals == 11
 }
 
 fn test_a_host_with_no_run_refuses_every_call() {

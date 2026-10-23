@@ -78,6 +78,15 @@ class TestSimDemo:
         wake.cycle_ms = 500
         assert wake.cycle_ms == 500 and wake.running
 
+    def test_a_fire_waits_for_the_project_within_its_deadline(self, sim_demo, can1):
+        from blobly import _lib
+        hb = sim_demo.generators["Heartbeat pulse"]
+        sent = hb.sent
+        with _lib.state_lock:  # another thread's hold, as the fire's own thread sees it
+            with pytest.raises(blobly.Timeout, match="nothing was sent"):
+                hb.fire(timeout_ms=50)
+        assert hb.sent == sent
+
     def test_refusals_are_typed(self, sim_demo):
         gens = sim_demo.generators
         hb, wake = gens["Heartbeat pulse"], gens["Cyclic wake (0x123)"]
