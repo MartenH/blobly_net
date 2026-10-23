@@ -3,8 +3,9 @@ name: windows-build
 # Native Windows build of the Blobly Net GUI (the Dear ImGui app, cmd/blobly_net).
 # Compiles + links + bundles it; does NOT run it. Two mingw jobs side by side: one type-checks
 # every tool and runs the platform-dispatching tests, the other builds libblobly and the GUI and
-# stages them; a verdict job reports both under the name protect-main requires, and the bundle
-# job adds canbridge (built on Linux beside them) and publishes. The old vlang/gui app
+# stages them, and a wheel job packs the Python wheel; a verdict job reports them under the name
+# protect-main requires, and the bundle job adds canbridge (built on Linux beside them, and carried
+# by the wheel too) and publishes. The old vlang/gui app
 # (src/main.v) and its MSVC/vcpkg/pango/vglyph path were retired when the migration landed.
 #
 # Status: VALIDATED ON THE RUNNER. The imgui Windows build (build_deps.sh + the `#flag windows`
@@ -61,7 +62,7 @@ jobs:
   # THE BUNDLE CARRIES A LINUX PROGRAM (#451): canbridge, which the Windows app starts inside a WSL
   # distribution through wsl.exe to reach its vcans. It is a Linux ELF, so it is built on Linux —
   # on 24.04, the supported floor, for the reason release.yml's Linux build is — and handed to
-  # the bundle job below as a short-lived artifact, never published on its own. Built IN PARALLEL
+  # the bundle and wheel jobs below as a short-lived artifact, never published on its own. Built IN PARALLEL
   # with the mingw job, not ahead of it: a cold V cache makes this job the long one.
   canbridge-linux:
     name: canbridge (Linux, for the WSL bridge)
@@ -203,27 +204,14 @@ jobs:
             cp -r "$lic/." "build/wheel-licenses/${pkg#mingw-w64-ucrt-x86_64-}/"
           done < build/wheel-deps.txt
           echo "wheel payload: $(ls build/wheel-native | tr '\n' ' ')"
-      # Built with the runner's Windows Python, installed into a fresh venv, and the package's tests
-      # run against the INSTALLED copy, as on Linux.
-      - name: Python wheel on Windows (built, installed, tested)
-        shell: pwsh
-        run: |
-          python -m venv "$env:RUNNER_TEMP\wheeltools"
-          & "$env:RUNNER_TEMP\wheeltools\Scripts\pip" install -q wheel
-          $native = @("build/wheel-native/blobly.dll") + (Get-ChildItem build/wheel-native -Filter *.dll |
-            Where-Object Name -ne "blobly.dll" | ForEach-Object { $_.FullName })
-          $nativeArgs = $native | ForEach-Object { "--native", $_ }
-          $release = @()
-          if ("${{ inputs.publish_bundle }}" -eq "true") { $release = @("--release") }
-          & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --licenses build/wheel-licenses --v C:/v-ct/v.exe --out build/wheels @release
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          $whl = (Get-ChildItem build/wheels -Filter *.whl).FullName
-          python scripts/python_tests.py --wheel $whl python
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+      # Handed to the wheel job below, which adds canbridge (built on Linux beside this job).
       - uses: actions/upload-artifact@v7
         with:
-          name: blobly-wheel-windows
-          path: build/wheels/*.whl
+          name: wheel-payload-windows
+          path: |
+            build/wheel-native
+            build/wheel-licenses
+          retention-days: 1
           if-no-files-found: error
 
       # Build cmd/blobly_net through scripts/run_gui.sh — the SAME script developers run and the
@@ -321,17 +309,65 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # THE REQUIRED CHECK. The protect-main ruleset requires a check of this name, so both mingw
-  # jobs report under it here: it passes only if both passed. Renaming it, or dropping it, leaves
+  # THE WINDOWS WHEEL: the payload build-msys2 staged (blobly.dll, its runtime and licences) plus
+  # the Linux canbridge, which the library starts inside WSL for a `bridge:` channel and finds
+  # beside itself in _native/ (transport.bridge_program). Its own job, so canbridge is built in
+  # parallel with the mingw build rather than ahead of it. Built with the runner's Windows Python,
+  # installed into a fresh venv, and the package's tests run against the INSTALLED copy, as on
+  # Linux; one of them checks the canbridge it carries is the one a start runs.
+  wheel-windows:
+    name: Python wheel (Windows, + canbridge)
+    needs: [canbridge-linux, build-msys2]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # the V that built blobly.dll: its stdlib and Boehm GC notices go into the wheel
+      - name: Set up pinned V
+        uses: ./.github/actions/setup-v-windows
+        with:
+          release: ${{ env.V_RELEASE }}
+          asset: ${{ env.V_ASSET }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheel-payload-windows
+          path: build
+      - uses: actions/download-artifact@v8
+        with:
+          name: canbridge-linux
+          path: build/canbridge-linux
+      - name: Python wheel on Windows (built, installed, tested)
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\wheeltools"
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\pip" install -q wheel
+          $native = @("build/wheel-native/blobly.dll") + (Get-ChildItem build/wheel-native -Filter *.dll |
+            Where-Object Name -ne "blobly.dll" | ForEach-Object { $_.FullName })
+          $nativeArgs = $native | ForEach-Object { "--native", $_ }
+          $release = @()
+          if ("${{ inputs.publish_bundle }}" -eq "true") { $release = @("--release") }
+          & "$env:RUNNER_TEMP\wheeltools\Scripts\python" scripts/build_wheel.py @nativeArgs --canbridge build/canbridge-linux/canbridge --licenses build/wheel-licenses --v C:/v-ct/v.exe --out build/wheels @release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $whl = (Get-ChildItem build/wheels -Filter *.whl).FullName
+          python scripts/python_tests.py --wheel $whl python
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: blobly-wheel-windows
+          path: build/wheels/*.whl
+          if-no-files-found: error
+
+  # THE REQUIRED CHECK. The protect-main ruleset requires a check of this name, so the mingw
+  # jobs and the wheel job report under it here: it passes only if all passed. Renaming it, or dropping it, leaves
   # every PR waiting on a check that never reports. always(), never !cancelled(): a skipped
   # required check counts as PASSING, so a cancelled run must fail here.
   verdict-msys2:
     name: mingw (MSYS2) • GUI bundle
-    needs: [checks-msys2, build-msys2]
+    needs: [checks-msys2, build-msys2, wheel-windows]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Both mingw jobs passed
+      - name: Every mingw job passed
         env:
           NEEDS: ${{ toJSON(needs) }}
           RESULTS: ${{ join(needs.*.result, ' ') }}

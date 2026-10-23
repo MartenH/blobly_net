@@ -3,9 +3,14 @@ it (blobly/_native/), versioned from v.mod, tagged py3-none-<platform>.
 
     python scripts/build_wheel.py --native build/libblobly.so [--native dep.dll ...]
                                   [--licenses dir] [--v path/to/v] [--out build/wheels] [--release]
+                                  [--canbridge path/to/canbridge]
 
 --native: the library, then (Windows) the runtime DLLs it loads, all beside it in the package.
 --licenses: the bundled runtime DLLs' licence texts, one folder per package, carried in the wheel.
+--canbridge: (Windows, required there) the Linux canbridge the library starts inside WSL for a
+     `bridge:` channel, beside the library in _native/, where transport.bridge_program finds it.
+     A V program like the library, built by the same pinned V, so the V stdlib and Boehm GC
+     notices below cover it; it links nothing else but the distribution's own glibc.
 --v: the V that built the library (default $V, else `v` on PATH): V's standard library and the
      Boehm GC are compiled into it, and their notices come from that toolchain, as the app
      bundle's do (scripts/stage_bundle.sh). arxmodel's and flatxml's (the ARXML reader) are this
@@ -106,6 +111,15 @@ def check_pe_x86_64(dll):
         sys.exit(f"build_wheel: {dll} is not an x86-64 DLL")
 
 
+def check_canbridge(path):
+    """Refuses a canbridge WSL cannot run: not an x86-64 ELF64 program. Read by its header, so
+    the check runs on Windows, where there is no readelf."""
+    with open(path, "rb") as f:
+        head = f.read(20)
+    if head[:4] != b"\x7fELF" or head[4] != 2 or head[5] != 1 or head[18:20] != b"\x3e\x00":
+        sys.exit(f"build_wheel: {path} is not an x86-64 ELF64 program")
+
+
 def linux_platform_tag(lib):
     """manylinux_<major>_<minor>_x86_64 from the newest GLIBC_ symbol version the library needs."""
     check_elf_x86_64(lib)
@@ -129,6 +143,7 @@ def main():
     ap.add_argument("--v", default=os.environ.get("V") or shutil.which("v"))
     ap.add_argument("--out", default=os.path.join(ROOT, "build", "wheels"))
     ap.add_argument("--release", action="store_true")
+    ap.add_argument("--canbridge")
     args = ap.parse_args()
 
     raw, version = vmod_version()
@@ -145,10 +160,15 @@ def main():
             sys.exit("build_wheel: the first --native is blobly.dll on Windows")
         for f in args.native:
             check_pe_x86_64(f)
+        if not args.canbridge:
+            sys.exit("build_wheel: a Windows wheel carries canbridge for the WSL bridge; pass --canbridge")
+        check_canbridge(args.canbridge)
         plat = "win_amd64"
     elif sys.platform.startswith("linux"):
         if os.path.basename(lib) != "libblobly.so":
             sys.exit("build_wheel: the first --native is libblobly.so on Linux")
+        if args.canbridge:
+            sys.exit("build_wheel: canbridge is for the Windows wheel (a bridge is started from Windows into WSL)")
         plat = linux_platform_tag(lib)
     else:
         sys.exit(f"build_wheel: no wheel for {sys.platform}")
@@ -164,6 +184,8 @@ def main():
         os.makedirs(native)
         for f in args.native:
             shutil.copy(f, native)
+        if args.canbridge:
+            shutil.copy(args.canbridge, os.path.join(native, "canbridge"))
         if args.licenses:
             shutil.copytree(args.licenses, os.path.join(native, "licenses"))
         if not args.v:

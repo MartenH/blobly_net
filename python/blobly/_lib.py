@@ -331,6 +331,13 @@ def _declare(lib):
         "bb_flash_cancel": ([c_int], c_int),
         "bb_boot_sim": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64)], c_int),
         "bb_boot_sim_stop": ([c_int, P(BbBootReport)], c_int),
+        # the CAN bridge into WSL (bridge.py)
+        "bb_wsl_distros": ([c_char_p, c_int], c_int),
+        "bb_bridge_program": ([c_char_p, c_int], c_int),
+        "bb_bridge_start": ([c_char_p], c_int),
+        "bb_bridge_state": ([c_char_p, P(c_int), c_char_p, c_int], c_int),
+        "bb_bridge_rows": ([c_char_p, c_char_p, c_int], c_int),
+        "bb_bridge_stop": ([c_char_p], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

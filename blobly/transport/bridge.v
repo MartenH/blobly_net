@@ -25,6 +25,7 @@ module transport
 import crypto.rand as crypto_rand
 import io
 import net
+import os
 import sync
 import time
 
@@ -302,10 +303,55 @@ pub fn bridge_launch_args(distro string, ep BridgeEndpoint) []string {
 		'--name', distro]
 }
 
+// canbridge_in is the `canbridge` a bridge started from here runs: the first of `dirs` that holds
+// one, or none, when the launcher falls back to the distribution's PATH.
+pub fn canbridge_in(dirs []string, is_file fn (string) bool) ?string {
+	for d in dirs {
+		if d == '' {
+			continue
+		}
+		p := os.join_path(d, 'canbridge')
+		if is_file(p) {
+			return p
+		}
+	}
+	return none
+}
+
+// bridge_program is the `canbridge` bridge_start would run, from the folders bridge_program_dirs
+// names: beside the module this code is in (blobly.dll for a library host), then beside the
+// executable. None where there is none, or where bridges are not started from this platform.
+pub fn bridge_program() ?string {
+	return canbridge_in(bridge_program_dirs(), os.is_file)
+}
+
+// bridge_stop disconnects the connected bridge of that name, which ends it (a bridge exits when
+// its connection closes; every channel open on it fails), and returns once its session has left
+// the registry, so a bridge_start after it launches a new one. A bridge that is not connected is
+// refused: one still starting is not reachable until it dials in.
+pub fn bridge_stop(name string, timeout_ms int) ! {
+	mut s := bridge_session(name) or { return error('no bridge named "${name}" is connected') }
+	s.cut('disconnected by this app')
+	deadline := time.ticks() + timeout_ms
+	for {
+		cur := bridge_session(name) or { return }
+		if voidptr(cur) != voidptr(s) {
+			return
+		}
+		if time.ticks() >= deadline {
+			return error('bridge "${name}" did not let go of its connection within ${timeout_ms} ms')
+		}
+		time.sleep(10 * time.millisecond)
+	}
+}
+
 // bridge_start starts the bridge in WSL distribution `name`, unless it is connected or already
 // starting. It returns once the bridge has been launched, not once it has dialled in:
 // bridge_state follows it from there.
 pub fn bridge_start(name string) ! {
+	if why := bridge_start_refusal() {
+		return error(why)
+	}
 	if name !in wsl_distros() {
 		return error('there is no WSL distribution named "${name}" to start a bridge in')
 	}

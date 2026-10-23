@@ -278,6 +278,14 @@ typedef struct bb_boot_report {
 	int32_t resets;         /* 0x11 answered */
 } bb_boot_report;
 
+/* Where the CAN bridge of a WSL distribution stands (bb_bridge_state). */
+enum bb_bridge_state {
+	BB_BRIDGE_IDLE = 0,       /* not connected, not starting */
+	BB_BRIDGE_STARTING = 1,   /* started; not dialled in yet */
+	BB_BRIDGE_CONNECTED = 2,  /* dialled in: its channels open (bb_bridge_rows) */
+	BB_BRIDGE_FAILED = 3      /* could not start, or did not dial in within 20 s: the reason says why */
+};
+
 /* Error codes. The message (bb_last_error) says what; the code says which kind. */
 #define BB_ERR         (-1)  /* refused, with a reason in bb_last_error */
 #define BB_ERR_HANDLE  (-2)  /* no such bus or UDS handle, or a closed one */
@@ -664,6 +672,31 @@ int bb_flash_program(int u, const uint8_t *image, int n, const bb_flash_opts *op
 int bb_flash_cancel(int u);
 int bb_boot_sim(int row, const int64_t *tx, const int64_t *rx);
 int bb_boot_sim_stop(int sim, bb_boot_report *out);
+/* The CAN bridge (docs/wsl_bridge.md): on Windows, `canbridge` run inside a WSL distribution
+ * carries that distribution's CAN interfaces to this process, as `bridge:<distribution>/<interface>`
+ * rows. Opening such a row (bb_bus_open, bb_start) starts its bridge and waits for it; these calls
+ * do it explicitly, as the GUI's Discover dialog does. A bridge is Windows-to-WSL: elsewhere there
+ * are no distributions and bb_bridge_start is refused, saying so. Lists are one string, an entry per
+ * line, into the caller's buffer as bb_message_name's. Every call but bb_bridge_stop may come from
+ * any (attached) thread.
+ *
+ * bb_bridge_start launches the bridge (as root, so it can create vcan0/vcan1) unless it is
+ * connected or starting, and returns once it is launched: bb_bridge_state follows it from there.
+ * The `canbridge` it runs is bb_bridge_program's, else one on the distribution's PATH.
+ * bb_bridge_stop disconnects a connected bridge, which ends it, and returns once it has gone (every
+ * handle open on it fails); a bridge that is not connected, or a run that is started, is
+ * BB_ERR_STATE. A bridge still starting cannot be stopped: it is reachable only once it dials in. */
+int bb_wsl_distros(char *buf, int cap);           /* >= 0: the length; the installed distributions */
+int bb_bridge_program(char *buf, int cap);        /* >= 0: the length of the path of the canbridge a
+                                                     start runs (beside the library, then beside the
+                                                     executable); "" when there is none */
+int bb_bridge_start(const char *distro);
+int bb_bridge_state(const char *distro, int *state, char *why, int cap); /* >= 0: the length of
+                                                     the reason (failed only, "" otherwise);
+                                                     *state an enum bb_bridge_state */
+int bb_bridge_rows(const char *distro, char *buf, int cap); /* >= 0: the length; the connected
+                                                     bridge's interfaces, "bridge:<distro>/vcan0" */
+int bb_bridge_stop(const char *distro);
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus
