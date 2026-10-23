@@ -36,12 +36,11 @@ end
 function test(name, fn)
   if __expired() then error("run timeout", 0) end
   __tests_total = __tests_total + 1
-  local co = tostring(coroutine.running())
-  __test_begin(name, co)
+  __test_begin(name)
   local line = 0
   local ok, err = test_xpcall(fn, function(e) line = failure_line() return e end)
   if not ok then __tests_failed = __tests_failed + 1 end
-  __report(name, ok, ok and "" or tostring(err), line, co)
+  __report(name, ok, ok and "" or tostring(err), line)
   -- past the run deadline the script ends here rather than starting its next test
   if __expired() then error(ok and "run timeout" or err, 0) end
 end

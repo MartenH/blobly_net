@@ -230,3 +230,34 @@ fn test_a_returned_value_is_not_the_timeout_message() {
 	}
 	assert env.results.map(it.msg) == [timeout_note, timeout_note]
 }
+
+// A test suspended in a coroutine is not the one a deadline reached elsewhere ended.
+fn test_a_suspended_test_is_not_the_timed_out_one() {
+	mut env := new_env([]) or { panic(err) }
+	defer {
+		env.close()
+	}
+	env.set_deadline(100)
+	env.run_source('
+		local c = coroutine.create(function() test("suspended", function() coroutine.yield() end) end)
+		coroutine.resume(c)
+		while true do end
+	') or {}
+	assert env.running_test() == ''
+	mut env2 := new_env([]) or { panic(err) }
+	defer {
+		env2.close()
+	}
+	env2.set_deadline(100)
+	env2.run_source('
+		local c = coroutine.create(function() test("suspended", function() coroutine.yield() end) end)
+		coroutine.resume(c)
+		test("active", function() while true do end end)
+	') or {}
+	assert env2.results.map(it.name) == ['active']
+	assert Outcome{
+		timed_out: true
+		test:      env2.running_test()
+		results:   env2.results
+	}.timeout_test() == 'active'
+}

@@ -32,7 +32,7 @@ coroutine.resume = function(...) return past(raw_resume(...)) end
 // Running is a test() begun in `script` and not yet reported, in the coroutine `co`.
 struct Running {
 	name   string
-	co     string
+	co     u64
 	script string
 	t0     u64
 }
@@ -55,9 +55,32 @@ pub fn (env &Env) expired() bool {
 	return env.deadline != 0 && time.sys_mono_now() >= env.deadline
 }
 
-// running_test is the test() the script was inside when it ended: '' when it was in none.
+// running_test is the test() the deadline was raised inside — the innermost begun in the
+// coroutine it was raised in, not one suspended in another; '' when it was in none.
 pub fn (env &Env) running_test() string {
-	return if env.running.len > 0 { env.running.last().name } else { '' }
+	if env.timeout_co == 0 {
+		return ''
+	}
+	for i := env.running.len - 1; i >= 0; i-- {
+		if env.running[i].co == env.timeout_co {
+			return env.running[i].name
+		}
+	}
+	return ''
+}
+
+// thread_of is the coroutine a host function was called from: its own lua_State.
+fn thread_of(l lua.State) u64 {
+	return u64(voidptr(l))
+}
+
+// timeout_at raises the deadline's error in `l`, noting the first coroutine it was raised in.
+fn timeout_at(l lua.State) i32 {
+	mut env := env_of(l)
+	if env.timeout_co == 0 {
+		env.timeout_co = thread_of(l)
+	}
+	return l.fail(timeout_note)
 }
 
 // bounded is a wait of `ms` cut to what is left before the deadline; a negative one (wait for
@@ -103,17 +126,17 @@ fn (env &Env) bound_client(mut ch isotp.Channel, c uds.Client) uds.Client {
 
 fn l_deadline_hook(l lua.State) i32 {
 	if env_of(l).expired() {
-		return l.fail(timeout_note)
+		return timeout_at(l)
 	}
 	return 0
 }
 
-// __test_begin(name, coroutine): a test() starts
+// __test_begin(name): a test() starts, in the coroutine that calls it
 fn l_test_begin(l lua.State) i32 {
 	mut env := env_of(l)
 	env.running << Running{
-		name: l.arg_str(1)
-		co:     l.arg_str(2)
+		name:   l.arg_str(1)
+		co:     thread_of(l)
 		script: env.script_arg
 		t0:     time.sys_mono_now()
 	}
@@ -121,7 +144,7 @@ fn l_test_begin(l lua.State) i32 {
 }
 
 // test_ended is the innermost test() running in coroutine `co`, which has ended.
-fn (mut env Env) test_ended(co string) Running {
+fn (mut env Env) test_ended(co u64) Running {
 	for i := env.running.len - 1; i >= 0; i-- {
 		if env.running[i].co == co {
 			r := env.running[i]

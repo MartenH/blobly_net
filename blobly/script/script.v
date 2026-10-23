@@ -114,6 +114,8 @@ mut:
 	running []Running
 	// sys_mono_now when the run ends (set_deadline); 0 is none
 	deadline u64
+	// the coroutine (its lua_State) the deadline was first raised in; 0 before
+	timeout_co u64
 pub mut:
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
@@ -345,7 +347,7 @@ fn l_report(l lua.State) i32 {
 	timed_out := env.expired()
 	ok := l.arg_bool(2) && !timed_out
 	msg := if l.arg_bool(2) && timed_out { timeout_note } else { l.arg_str(3) }
-	begun := env.test_ended(l.arg_str(5))
+	begun := env.test_ended(thread_of(l))
 	env.results << TestResult{
 		name:      name
 		ok:        ok
@@ -375,7 +377,7 @@ fn l_sleep(l lua.State) i32 {
 		time.sleep(ms * time.millisecond)
 	}
 	if env_of(l).expired() {
-		return l.fail(timeout_note) // the sleep was cut
+		return timeout_at(l) // the sleep was cut
 	}
 	return 0
 }
@@ -475,7 +477,7 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 				}
 				// Past the run's deadline the probe was abandoned, not refused: no reconnect.
 				if env.expired() {
-					return l.fail(timeout_note)
+					return timeout_at(l)
 				}
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
 				// holding keeps working rather than being orphaned by the repair.
@@ -637,7 +639,7 @@ fn l_doip_listen(l lua.State) i32 {
 		return l.fail('doip.listen(${use_port}): ${err}')
 	}
 	if env_of(l).expired() {
-		return l.fail(timeout_note) // the wait was cut
+		return timeout_at(l) // the wait was cut
 	}
 	mut out := []string{}
 	for f in found {
@@ -672,7 +674,7 @@ fn l_someip_listen(l lua.State) i32 {
 		return l.fail('someip.listen(${use_port}): ${err}')
 	}
 	if env_of(l).expired() {
-		return l.fail(timeout_note) // the wait was cut
+		return timeout_at(l) // the wait was cut
 	}
 	l.push_str(capture_lines(cap))
 	l.push_int(i64(cap.malformed))
@@ -723,7 +725,7 @@ fn l_someip_send(l lua.State) i32 {
 		return l.fail('someip.send(${to}): ${err}')
 	}
 	if env_of(l).expired() {
-		return l.fail(timeout_note) // the wait was cut
+		return timeout_at(l) // the wait was cut
 	}
 	l.push_str(capture_lines(cap))
 	l.push_int(i64(cap.malformed))
@@ -755,7 +757,7 @@ fn l_someip_call(l lua.State) i32 {
 	payload := hex_bytes(l.arg_str(8)) or { return l.fail('someip.call: payload is not hex') }
 	timeout := int(env.bounded_window(l.arg_int(9)))
 	if env.expired() {
-		return l.fail(timeout_note)
+		return timeout_at(l)
 	}
 	m := someip.Outgoing{
 		service: u16(vals[0] or { 0 })
@@ -769,7 +771,7 @@ fn l_someip_call(l lua.State) i32 {
 		return l.fail('someip.call(${to}): ${err}')
 	}
 	if env.expired() {
-		return l.fail(timeout_note) // the wait was cut
+		return timeout_at(l) // the wait was cut
 	}
 	l.push_str(if a.timed_out {
 		'timeout'
@@ -1268,7 +1270,7 @@ fn l_bus_recv(l lua.State) i32 {
 	mut bus := env.bus_for(name) or { return l.fail(err.msg()) }
 	frame := bus.recv(int(env.bounded(l.arg_int(2)))) or {
 		if env.expired() {
-			return l.fail(timeout_note) // the wait was cut
+			return timeout_at(l) // the wait was cut
 		}
 		l.push_nil()
 		return 1
