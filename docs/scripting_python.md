@@ -669,7 +669,7 @@ node simulated on the row stamps (`protect:`). The check is the engine's, the on
 | `E2eStatus.REPEATED`, `"repeated"` | its counter repeated the previous frame's: no new data |
 | `E2eStatus.SKIPPED`, `"skipped"` | its counter jumped (frames lost, or the sender restarted), or holds a value the profile never sends (Profile 1's 15) |
 | `E2eStatus.TRUNCATED`, `"truncated"` | it is shorter than its message, so its E2E fields are not all there |
-| `E2eStatus.TIMEOUT`, `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter not a repeat) |
+| `E2eStatus.TIMEOUT`, `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter new: not a repeat, nor a value the profile never sends) |
 | `None` | its message has no E2E on the channel, or it is a remote frame |
 
 - **Which contract, when two say different things**: the `verify:` entry is the row's own word for

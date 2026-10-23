@@ -342,7 +342,7 @@ else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`, `E2EProfile`, `E
 | `"repeated"` | its counter repeated the previous frame's: no new data |
 | `"skipped"` | its counter jumped (frames lost, or the sender restarted), or holds a value the profile never sends (Profile 1's 15) |
 | `"truncated"` | it is shorter than its message, so its E2E fields are not all there |
-| `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter not a repeat) |
+| `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter new: not a repeat, nor a value the profile never sends) |
 | `nil` | its message has no E2E here, or it is a remote frame |
 
 - The counter is judged against the frame of that id the script's handle read before it (the

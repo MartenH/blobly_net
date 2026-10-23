@@ -175,6 +175,24 @@ fn test_a_frame_without_a_stamp_is_never_late_and_ends_the_gap() {
 	assert q.judge(brake_frame(next(mut st), 650, 'bridge:wsl#2')) or { panic('') } == .timeout
 }
 
+// a counter the profile never sends (Profile 1's 15) is not new data: the gap runs on across it
+fn test_a_reserved_counter_does_not_restart_the_gap() {
+	db := script_db()
+	m := db.message_named('BrakeStatus') or { panic('no BrakeStatus') }
+	mut st := E2eStamper{}
+	mut r := new_e2e_reader(db, [], [])
+	mut first := brake_payload()
+	st.stamp(m, mut first) or { panic(err) }
+	assert r.judge(brake_frame(first, 0, kernel)) or { panic('') } == .ok
+	mut reserved := brake_payload()
+	reserved[5] = 0x0F
+	reserved[4] = p01_crc_bytes(reserved, 4, 0x1244, '', 15) or { panic(err) }
+	assert r.judge(brake_frame(reserved, 90, kernel)) or { panic('') } == .skipped_ctr
+	mut next := brake_payload()
+	st.stamp(m, mut next) or { panic(err) }
+	assert r.judge(brake_frame(next, 150, kernel)) or { panic('') } == .timeout
+}
+
 // the gap is the frames' own stamps, never their placement on the host clock, which an
 // improving estimate can move: 150 ms apart on the wire is late, however close they were placed
 fn test_the_gap_is_measured_between_raw_stamps() {

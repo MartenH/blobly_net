@@ -166,7 +166,9 @@ pub fn (mut v Verifier) check_at(data []u8, clock string, t_ns i64) Violation {
 	}
 	late := clock != '' && v.have_valid && v.valid_clock == clock
 		&& t_ns - v.last_valid_ns > limit_ms * 1_000_000
-	if got != .stalled_ctr {
+	// new data: neither a repeat nor a value the counter never holds (check forgets the counter
+	// for one of those, where a jump keeps it)
+	if got != .stalled_ctr && !(got == .skipped_ctr && !v.have_ctr) {
 		v.have_valid = clock != ''
 		v.valid_clock = clock
 		v.last_valid_ns = t_ns
