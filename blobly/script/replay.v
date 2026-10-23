@@ -177,12 +177,13 @@ fn l_replay_wait(l lua.State) i32 {
 	for {
 		left := if ms < 0 { i64(100) } else { i64(until - time.sys_mono_now()) / 1_000_000 }
 		part := if left > 0 { env.bounded(if left > 100 { 100 } else { left }) } else { 0 }
-		if s.wait_done(int(part)) {
+		done := s.wait_done(int(part))
+		if env.expired() {
+			return timeout_at(l) // asked first: a replay the deadline ended is not one that finished
+		}
+		if done {
 			l.push_bool(true)
 			return 1
-		}
-		if env.expired() {
-			return timeout_at(l)
 		}
 		if ms >= 0 && time.sys_mono_now() >= until {
 			l.push_bool(false)

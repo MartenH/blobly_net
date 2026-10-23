@@ -271,9 +271,10 @@ class Replays:
         """Records what `channels` (a Channel or its name, or a list of them, one per wire) of the
         started project carry to the candump .log at `path`, created or truncated, and returns
         its Recording."""
-        rec = Recording(self, path, channels)
-        # held until stopped, so a stop of the project can say what went wrong with one nobody kept
-        self.__dict__.setdefault("_recordings", set()).add(rec)
+        with _lib.state_lock:  # started and held in one hold: a stop on another thread sees it
+            rec = Recording(self, path, channels)
+            # held until stopped, so a stop of the project can say what went wrong with one nobody kept
+            self.__dict__.setdefault("_recordings", set()).add(rec)
         return rec
 
     def _stop_recordings(self) -> list[str]:

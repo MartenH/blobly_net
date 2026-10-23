@@ -106,7 +106,8 @@ pub fn record(path string, targets []Target) !&Recorder {
 	// existing file by its identity too, so a hard link to an active capture is that capture
 	// joined, not normalised: `link/..` is the link target's parent, as the filesystem walks it
 	joined := if os.is_abs_path(path) { path } else { os.getwd() + os.path_separator + path }
-	mut first := os.join_path(os.real_path(os.dir(joined)), os.base(joined))
+	// concatenated: os.join_path would turn a `\` in a Unix name into a separator
+	mut first := os.real_path(os.dir(joined)) + os.path_separator + os.base(joined)
 	$if windows {
 		first = first.to_lower() // one file, whatever the case it is named in
 	}

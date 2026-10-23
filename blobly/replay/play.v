@@ -38,7 +38,9 @@ pub:
 }
 
 // Opener opens a target's bus (`iface`, for the row `name`): transport.open by default; the GUI's
-// Script panel supplies its tap, so a replay's frames are filed as ours.
+// Script panel supplies its reproducing tap, so a replay's frames are filed as ours. The bus must
+// send frames as handed (open's, marked here by transport.verbatim, or a tap that reproduces): a
+// wrapper of its own around open's would frame them for the wire.
 pub type Opener = fn (iface string, name string) !transport.Bus
 
 fn default_open(iface string, _ string) !transport.Bus {
