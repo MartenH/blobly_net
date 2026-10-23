@@ -190,7 +190,7 @@ pub fn record(path string, targets []Target) !&Recorder {
 		}
 	}
 	for i, t in targets {
-		spawn r.read(i, t, buses[i])
+		spawn r.read(i, t, buses[i], r.watches[i])
 	}
 	return r
 }
@@ -365,13 +365,12 @@ fn (mut r Recorder) release() {
 
 // read is target `i`'s receive loop: every frame read, ours if it matches a send noted on its
 // wire; once stopping, what is queued is still read (its sends are still noted), then it ends.
-fn (mut r Recorder) read(i int, t Target, bus transport.Bus) {
+// `watch` is its watch's id, handed over at the spawn: stop() replaces `r.watches` under `mu`.
+fn (mut r Recorder) read(i int, t Target, bus transport.Bus, watch int) {
 	mut b := bus
 	defer {
 		// its watch goes with it: a send it can no longer read back is not noted as one
-		if i < r.watches.len {
-			transport.unwatch_sends(r.watches[i])
-		}
+		transport.unwatch_sends(watch)
 		b.close()
 		d := b.diagnostics() // after the close, which books a shared wire's last gap
 		r.mu.lock()
