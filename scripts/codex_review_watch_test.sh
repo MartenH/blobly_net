@@ -318,6 +318,9 @@ case "${FAKE_GH_CASE:-}:$endpoint" in
 	marker_failed_old:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"status\\":\\"failed\\"}} -->"}]\n' "$bot"
 		;;
+	marker_failed_same_second:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:01Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"status\\":\\"failed\\"}} -->"}]\n' "$bot"
+		;;
 	marker_failed_other_sha:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:03Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"0123456789abcdef0123456789abcdef01234567\\",\\"status\\":\\"failed\\"}} -->"}]\n' "$bot"
 		;;
@@ -474,6 +477,9 @@ ok "summary marker failure names its reason" "$(grep -c '^REASON=marker_failed$'
 
 rc=$(run_case marker_failed_old "$out")
 ok "a failed marker last updated before the request is pending" "$rc" "1"
+
+rc=$(run_case marker_failed_same_second "$out")
+ok "a failed marker updated in the request's own second is pending" "$rc" "1"
 
 rc=$(run_case marker_failed_other_sha "$out")
 ok "a failed marker for another commit is pending" "$rc" "1"

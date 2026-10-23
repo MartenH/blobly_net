@@ -642,8 +642,9 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
         }
 
     # A failure is a fresh error or usage-limit reply, or the summary marker saying `failed`
-    # for this SHA. The summary is edited in place, so its freshness is `updated_at` after
-    # the request; without a request time it cannot be told from an earlier round's.
+    # for this SHA. The summary is edited in place, so its freshness is `updated_at` STRICTLY
+    # after the request (second resolution: an edit in the request's second may be the previous
+    # round's); without a request time it cannot be told from an earlier round's.
     failed_comments = [
         (item, "usage_limit" if is_usage_limit(body(item)) else "error")
         for item in issues
@@ -655,7 +656,7 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
         item
         for item in issues
         if actor(item) == config.actor and config.requested_at
-        and str(item.get("updated_at") or "") >= config.requested_at
+        and str(item.get("updated_at") or "") > config.requested_at
         and summary_status(item, config.sha)
     ]
     summary = max(summaries, key=lambda item: str(item.get("updated_at") or ""), default=None)
