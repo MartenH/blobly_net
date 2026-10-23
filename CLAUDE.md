@@ -628,7 +628,7 @@ response shape changes.
   |---|---|---|
   | findings | `pulls/N/reviews` | the review's `commit_id` when GitHub supplies one (it decides, whatever the text says); else `**Reviewed commit:** \`<sha>\`` or a `/blob/<sha>/…` link in its body (`review_is_for`) |
   | **clean** | `issues/N/comments` or `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
-  | failed | `issues/N/comments` | "Something went wrong" — re-request, do not wait |
+  | failed | `issues/N/comments` | "Something went wrong", the **usage-limit** reply (its `chatgpt.com/codex/cloud/settings/usage` link), or the summary comment's `codex-review-state:v1` marker saying `"status":"failed"` for this SHA (`REASON=` says which) — re-request, do not wait |
 
   Watching either endpoint alone is silent about the other's outcomes, and both failures look
   identical from outside: nothing arrives. `pulls/N/comments` holds the findings themselves
@@ -644,6 +644,11 @@ response shape changes.
   reviewed commit on the review object (`commit_id`; every codex review on #273 carries it and
   agrees with its marker), so that is the identity and the body text is the fallback
   (`review_is_for`). The clean channel keeps the marker: an issue comment has no `commit_id`.
+- **The summary comment is EDITED in place**, so its id predates every request and its
+  freshness is `updated_at` after the request; the marker is the signal, never the table text.
+  A same-SHA request still pending after `CODEX_REVIEW_STALE_MINUTES` (60, the watcher's
+  timeout) may be re-requested — codex has left a review `running` for over an hour while a
+  fresh request answered in four minutes.
 - **Review-comment ids and issue-comment ids are different id spaces.** A baseline taken from one
   and compared against the other never matches, so the count sits at 0 forever.
 - **A "review failed" scan needs its own baseline too**, or one historical failure fires on every
