@@ -29,6 +29,14 @@ EXIT_STALE_HEAD = 40
 EXIT_USAGE = 64
 EXIT_API = 70
 CODEX_ACTOR = "chatgpt-codex-connector[bot]"
+# The summary comment codex keeps on a PR (edited in place, so its id predates every request)
+# carries its state as JSON: `<!-- codex-review-state:v1 {"code_review":{"commit_sha":...,
+# "status":"running"|"completed"|"failed"}, ...} -->`. That is the primary failure signal.
+STATE_MARKER = re.compile(r"<!--\s*codex-review-state:v1\s+(\{.*?\})\s*-->", re.DOTALL)
+# The usage-limit reply names no commit and has no marker; it is matched by the link to the
+# usage dashboard it always carries (both wordings seen so far do), and freshness does the rest.
+USAGE_LIMIT_FRAGMENTS = ("chatgpt.com/codex/cloud/settings/usage", "Codex usage limits")
+STALE_MINUTES_DEFAULT = 30
 
 
 class CodexReviewError(Exception):
@@ -474,6 +482,61 @@ def body_has_finding(text: str, sha: str) -> bool:
     return bool(re.search(r"!\[P[0-9] Badge\]", text)) or links_head(text, sha)
 
 
+def summary_status(item: dict[str, Any], sha: str) -> str:
+    """The code-review status codex's summary marker states for `sha`, or '' if it names none."""
+    match = STATE_MARKER.search(raw_body(item))
+    if not match:
+        return ""
+    try:
+        state = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return ""
+    review = state.get("code_review") if isinstance(state, dict) else None
+    if not isinstance(review, dict):
+        return ""
+    commit = str(review.get("commit_sha") or "")
+    if not commit or not commit.startswith(sha[:10]):
+        return ""
+    return str(review.get("status") or "")
+
+
+def is_usage_limit(text: str) -> bool:
+    return any(fragment in text for fragment in USAGE_LIMIT_FRAGMENTS)
+
+
+def parse_time(text: str) -> _dt.datetime | None:
+    try:
+        return _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def now_utc() -> _dt.datetime:
+    # CODEX_REVIEW_NOW lets the fixtures fix the clock the stale-request rule reads.
+    fixed = parse_time(os.environ.get("CODEX_REVIEW_NOW", ""))
+    return fixed or _dt.datetime.now(_dt.UTC)
+
+
+def stale_minutes() -> int:
+    value = os.environ.get("CODEX_REVIEW_STALE_MINUTES", str(STALE_MINUTES_DEFAULT))
+    try:
+        minutes = int(value)
+    except ValueError:
+        die("CODEX_REVIEW_STALE_MINUTES must be an integer")
+    if minutes <= 0:
+        die("CODEX_REVIEW_STALE_MINUTES must be positive")
+    return minutes
+
+
+def pending_is_stale(requested_at: str) -> int:
+    """Minutes a pending request has waited, if past the stale bound; else 0."""
+    requested = parse_time(requested_at)
+    if requested is None:
+        return 0
+    waited = int((now_utc() - requested).total_seconds() // 60)
+    return waited if waited >= stale_minutes() else 0
+
+
 def links_head(text: str, sha: str) -> bool:
     return f"/blob/{sha[:10]}" in text
 
@@ -576,15 +639,31 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
             "ISSUE_COMMENT_ID": item_id(clean),
         }
 
+    # A failure is a fresh error or usage-limit reply, or the summary marker saying `failed`
+    # for this SHA. The summary is edited in place, so its freshness is `updated_at` after
+    # the request; without a request time it cannot be told from an earlier round's.
     failed_comments = [
-        item
+        (item, "usage_limit" if is_usage_limit(body(item)) else "error")
         for item in issues
         if actor(item) == config.actor
         and is_fresh(item, config.baseline_failure_comment_id, config.requested_at, "created_at")
-        and "Something went wrong" in body(item)
+        and ("Something went wrong" in body(item) or is_usage_limit(body(item)))
     ]
-    failed = max(failed_comments, key=item_id, default=None)
-    if failed:
+    summaries = [
+        (item, summary_status(item, config.sha))
+        for item in issues
+        if actor(item) == config.actor and config.requested_at
+        and str(item.get("updated_at") or "") >= config.requested_at
+    ]
+    marker_status = max(
+        ((str(item.get("updated_at") or ""), status) for item, status in summaries if status),
+        default=("", ""),
+    )[1]
+    if marker_status == "failed":
+        failed_comments += [(item, "marker_failed") for item, status in summaries if status == "failed"]
+    failed_pair = max(failed_comments, key=lambda pair: item_id(pair[0]), default=None)
+    if failed_pair:
+        failed, reason = failed_pair
         head = current_head(config.repo, config.pr, timeout=remaining_timeout(deadline))
         if head != config.sha:
             return EXIT_STALE_HEAD, {"RESULT": "stale_head", "PR": config.pr, "SHA": config.sha, "CURRENT_SHA": head}
@@ -593,10 +672,11 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
             "PR": config.pr,
             "SHA": config.sha,
             "SHA_PREFIX": config.sha[:10],
+            "REASON": reason,
             "ISSUE_COMMENT_ID": item_id(failed),
         }
 
-    return EXIT_PENDING, {
+    pending: dict[str, Any] = {
         "RESULT": "pending",
         "PR": config.pr,
         "SHA": config.sha,
@@ -604,6 +684,9 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
         "REVIEWS_AFTER_BASELINE": sum(1 for item in reviews if item_id(item) > config.baseline_review_id),
         "ISSUE_COMMENTS_AFTER_BASELINE": sum(1 for item in issues if item_id(item) > config.baseline_issue_comment_id),
     }
+    if marker_status:
+        pending["MARKER_STATUS"] = marker_status
+    return EXIT_PENDING, pending
 
 
 def watch_config(argv: list[str]) -> WatchConfig:
@@ -702,6 +785,19 @@ def max_id(repo: str, path: str) -> int:
     return max((item_id(item) for item in gh_items(repo, path)), default=0)
 
 
+def allow_stale(requested_at: str, what: str) -> bool:
+    """A pending request older than the stale bound may be re-requested: codex has been seen
+    to mark a review `running` and never finish, while a fresh request answered in minutes."""
+    waited = pending_is_stale(requested_at)
+    if waited:
+        print(
+            f"codex-review: {what} has been pending {waited} min (bound {stale_minutes()} min,"
+            " CODEX_REVIEW_STALE_MINUTES); treating it as stale and requesting again",
+            file=sys.stderr,
+        )
+    return bool(waited)
+
+
 def check_existing_state(path: Path, requested_pr: str, requested_repo: str, current_sha: str, review_actor: str) -> None:
     if not path.is_file():
         return
@@ -733,6 +829,8 @@ def check_existing_state(path: Path, requested_pr: str, requested_repo: str, cur
         die("could not determine whether the same-SHA review is still pending", EXIT_API)
     if rc == EXIT_PENDING:
         print(result_lines(result), end="", file=sys.stderr, flush=True)
+        if allow_stale(config.requested_at, f"the same-SHA request in {path}"):
+            return
         die("same-SHA review is still pending; wait for it before requesting another round")
 
 
@@ -764,6 +862,8 @@ def check_remote_pending(repo: str, pr: str, sha: str, requester: str, review_ac
         die(f"could not determine whether remote same-SHA request {marker_id} is still pending", EXIT_API)
     if rc == EXIT_PENDING:
         print(result_lines(result), end="", file=sys.stderr, flush=True)
+        if allow_stale(config.requested_at, f"request comment {marker_id}"):
+            return
         die(f"same-SHA review is already pending from request comment {marker_id}")
 
 

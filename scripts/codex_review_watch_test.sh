@@ -21,6 +21,9 @@ ok() {
 stub=$(mktemp -d)
 trap 'rm -rf "$stub"' EXIT
 
+# A fixed clock for the stale-request rule: ten minutes after every fixture's request.
+export CODEX_REVIEW_NOW=2026-01-01T00:10:00Z
+
 cat >"$stub/git" <<'GIT'
 #!/usr/bin/env bash
 if [ "$1" = rev-parse ] && [ "${2:-}" = HEAD ]; then
@@ -56,7 +59,9 @@ fi
 
 if [ "$1" = pr ] && [ "$2" = comment ]; then
 	if [ "${FAKE_GH_CASE:-}" = request_success ] || [ "${FAKE_GH_CASE:-}" = request_timestamp_fail ] ||
-		[ "${FAKE_GH_CASE:-}" = remote_spoof ] || [ "${FAKE_GH_CASE:-}" = alt_actor_clean ]; then
+		[ "${FAKE_GH_CASE:-}" = remote_spoof ] || [ "${FAKE_GH_CASE:-}" = alt_actor_clean ] ||
+		[ "${FAKE_GH_CASE:-}" = usage_limit ] || [ "${FAKE_GH_CASE:-}" = marker_running ] ||
+		[ "${FAKE_GH_CASE:-}" = remote_stale ]; then
 		repo=
 		while [ "$#" -gt 0 ]; do
 			case "$1" in
@@ -292,6 +297,33 @@ case "${FAKE_GH_CASE:-}:$endpoint" in
 	failed:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[{"id":42,"created_at":"2026-01-01T00:00:02Z","user":%s,"body":"Something went wrong while reviewing this pull request."}]\n' "$bot"
 		;;
+	usage_limit:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":47,"created_at":"2026-01-01T00:00:03Z","user":%s,"body":"You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).\\nTo continue using code reviews, you can upgrade your account."}]\n' "$bot"
+		;;
+	usage_limit_short:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":47,"created_at":"2026-01-01T00:00:03Z","user":%s,"body":"You have reached your limits. See the [dashboard](https://chatgpt.com/codex/cloud/settings/usage)."}]\n' "$bot"
+		;;
+	usage_limit_old:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":39,"created_at":"2026-01-01T00:00:00Z","user":%s,"body":"You have reached your Codex usage limits. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage)."}]\n' "$bot"
+		;;
+	usage_limit_human:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":47,"created_at":"2026-01-01T00:00:03Z","user":%s,"body":"Did we hit the Codex usage limits again?"}]\n' "$human"
+		;;
+	marker_failed:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:03Z","user":%s,"body":"<!-- codex-pull-request-review-summary -->\\n<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"has_any_findings\\":false,\\"status\\":\\"failed\\"},\\"security_review\\":{\\"commit_sha\\":null,\\"status\\":null}} -->\\n## Codex Review Summary"}]\n' "$bot"
+		;;
+	marker_failed_old:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"status\\":\\"failed\\"}} -->"}]\n' "$bot"
+		;;
+	marker_failed_other_sha:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:03Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"0123456789abcdef0123456789abcdef01234567\\",\\"status\\":\\"failed\\"}} -->"}]\n' "$bot"
+		;;
+	marker_running:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:03Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"status\\":\\"running\\"}} -->"}]\n' "$bot"
+		;;
+	remote_stale:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":998,"created_at":"2026-01-01T00:00:02Z","user":{"login":"MartenH"},"body":"@codex review\\n\\ncodex-review-state: abcdef1234567890abcdef1234567890abcdef12"}]\n'
+		;;
 	ghfail:repos/MartenH/blobly_net/pulls/123/reviews)
 		exit 4
 		;;
@@ -413,6 +445,36 @@ ok "changed PR head result" "$(grep -c '^RESULT=stale_head$' "$out")" "1"
 rc=$(run_case failed "$out")
 ok "fresh failure exits 30" "$rc" "30"
 ok "fresh failure result" "$(grep -c '^RESULT=failed$' "$out")" "1"
+
+# the usage-limit reply: a failed round, so the watcher stops and a re-request is allowed
+rc=$(run_case usage_limit "$out")
+ok "usage-limit reply exits 30" "$rc" "30"
+ok "usage-limit reply is a failure" "$(grep -c '^RESULT=failed$' "$out")" "1"
+ok "usage-limit reply names its reason" "$(grep -c '^REASON=usage_limit$' "$out")" "1"
+
+rc=$(run_case usage_limit_short "$out")
+ok "usage-limit reply is matched by its dashboard link, whatever the wording" "$rc" "30"
+
+rc=$(run_case usage_limit_old "$out")
+ok "a usage-limit reply before the request is not this round's" "$rc" "1"
+
+rc=$(run_case usage_limit_human "$out")
+ok "a human mentioning usage limits is not a failure" "$rc" "1"
+
+# the summary marker, edited in place: its state for THIS sha, updated after the request
+rc=$(run_case marker_failed "$out")
+ok "summary marker status failed exits 30" "$rc" "30"
+ok "summary marker failure names its reason" "$(grep -c '^REASON=marker_failed$' "$out")" "1"
+
+rc=$(run_case marker_failed_old "$out")
+ok "a failed marker last updated before the request is pending" "$rc" "1"
+
+rc=$(run_case marker_failed_other_sha "$out")
+ok "a failed marker for another commit is pending" "$rc" "1"
+
+rc=$(run_case marker_running "$out")
+ok "a running marker is pending" "$rc" "1"
+ok "a running marker is reported" "$(grep -c '^MARKER_STATUS=running$' "$out")" "1"
 
 rc=$(run_case ghfail "$out")
 ok "gh API failure exits 70" "$rc" "70"
@@ -541,6 +603,32 @@ FAKE_GH_CASE=manual_pending PATH="$stub:/usr/bin:/bin" \
 	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$state_dir" >"$out" 2>&1
 ok "same-SHA pending request is rejected" "$?" "64"
 ok "same-SHA pending request is explained" "$(grep -c 'same-SHA review is still pending' "$out")" "1"
+
+# a failed round (usage limit) does not block the next request for the same SHA
+limit_state=$(mktemp -d)
+cp "$state_dir/pr-123.env" "$limit_state/pr-123.env"
+FAKE_GH_CASE=usage_limit PATH="$stub:/usr/bin:/bin" \
+	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$limit_state" >"$out" 2>&1
+ok "same-SHA request after a usage-limit reply is allowed" "$?" "0"
+ok "same-SHA request after a usage-limit reply is posted" "$(grep -c 'issuecomment-999' "$out")" "1"
+
+# a review left running: refused within the stale bound, re-requested past it
+running_state=$(mktemp -d)
+cp "$state_dir/pr-123.env" "$running_state/pr-123.env"
+FAKE_GH_CASE=marker_running PATH="$stub:/usr/bin:/bin" \
+	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$running_state" >"$out" 2>&1
+ok "a running review within the stale bound blocks a re-request" "$?" "64"
+CODEX_REVIEW_NOW=2026-01-01T01:00:00Z FAKE_GH_CASE=marker_running PATH="$stub:/usr/bin:/bin" \
+	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$running_state" >"$out" 2>&1
+ok "a running review past the stale bound is re-requested" "$?" "0"
+ok "a stale re-request says why" "$(grep -c 'treating it as stale' "$out")" "1"
+ok "a stale re-request is posted" "$(grep -c 'issuecomment-999' "$out")" "1"
+
+remote_stale_state=$(mktemp -d)
+CODEX_REVIEW_NOW=2026-01-01T01:00:00Z FAKE_GH_CASE=remote_stale PATH="$stub:/usr/bin:/bin" \
+	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$remote_stale_state" >"$out" 2>&1
+ok "a stale remote request is re-requested" "$?" "0"
+ok "a stale remote re-request says why" "$(grep -c 'request comment 998 has been pending 59 min' "$out")" "1"
 
 dirty_state=$(mktemp -d)
 FAKE_GIT_DIRTY=1 FAKE_GH_CASE=request_success PATH="$stub:/usr/bin:/bin" \
