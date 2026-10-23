@@ -44,13 +44,6 @@ pub fn placed_at_ingress(f CanFrame, host_ns i64) CanFrame {
 	}
 }
 
-// stamped says a received frame's time is the bus's own (a receive stamp, its domain placed on
-// the host's clock) rather than when a reader read it, which is all received_at has for a frame
-// that carries none.
-pub fn stamped(f CanFrame) bool {
-	return f.placed_ns != 0 || f.hw_domain != ''
-}
-
 // received_now is received_at for a frame recv has just returned.
 pub fn received_now(f CanFrame) i64 {
 	return received_at(f, i64(time.sys_mono_now()))

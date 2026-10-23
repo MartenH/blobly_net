@@ -698,8 +698,10 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
  * else what a node simulated on the row stamps (protect:). The CRC; the counter against the frame of
  * that id the handle read before it (so one it missed makes the next a skip); and the time since
  * the last valid frame (its CRC right, its counter not a repeat) against the message's E2ETimeout,
- * judged only where t_ns is the bus's own stamp — a frame timed by its reading (a software bus, and
- * an adapter whose frames carry no stamp) is never late. Answers how many of the row's messages
+ * measured between the frames' own receive stamps in one clock domain (SocketCAN's kernel stamp,
+ * the CAN bridge's clock), never their placement on the host's clock — a frame with no stamp (a
+ * software bus, an adapter that reads none) is never late, and a valid one ends the gap being
+ * measured. Answers how many of the row's messages
  * are judged; 0 binds nothing. On the thread that uses the handle; the binding is the run's, and a
  * handle kept past bb_stop reads BB_E2E_NONE until it is attached again.
  *

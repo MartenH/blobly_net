@@ -60,8 +60,9 @@ pub mut:
 	have_ctr bool
 	seen     u64 // frames checked
 	bad      u64 // frames that failed
-	// when the last valid frame came (check_at), host monotonic ns
+	// when the last valid frame came (check_at): its raw stamp, in the clock domain `valid_clock`
 	last_valid_ns i64
+	valid_clock   string
 	have_valid    bool
 }
 
@@ -149,22 +150,26 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 	return .ok
 }
 
-// check_at judges a received payload as check does, and its time `t_ns` (host monotonic ns)
-// against the message's E2ETimeout (its receiver's sender-loss timeout, 0 or absent for none): a
+// check_at judges a received payload as check does, and its receive stamp `t_ns` in the clock
+// domain `clock` (CanFrame.hw_ns / hw_domain: raw stamps of one domain are exactly comparable)
+// against the message's E2ETimeout, its receiver's sender-loss timeout (0 or absent for none): a
 // frame whose CRC passes more than that after the last valid frame — its CRC right, its counter
 // not a repeat — is `.timeout`, ahead of its counter's verdict, and the counter is judged against
-// it from there. `timed` false is a frame whose time is when it was read rather than the bus's:
-// its lateness says nothing, so none is judged.
-pub fn (mut v Verifier) check_at(data []u8, t_ns i64, timed bool) Violation {
+// it from there. `clock` '' is a frame with no stamp, whose time is only when it was read: valid,
+// it ends the baseline rather than moving it, and a frame of another domain starts a new one, so
+// no gap is measured across a time that is not the bus's.
+pub fn (mut v Verifier) check_at(data []u8, clock string, t_ns i64) Violation {
 	got := v.check(data)
 	limit_ms := if v.msg.e2e.has_timeout { i64(v.msg.e2e.timeout_ms) } else { 0 }
-	if !timed || limit_ms == 0 || got in [.truncated, .bad_crc] {
+	if limit_ms == 0 || got in [.truncated, .bad_crc] {
 		return got
 	}
-	late := v.have_valid && t_ns - v.last_valid_ns > limit_ms * 1_000_000
+	late := clock != '' && v.have_valid && v.valid_clock == clock
+		&& t_ns - v.last_valid_ns > limit_ms * 1_000_000
 	if got != .stalled_ctr {
+		v.have_valid = clock != ''
+		v.valid_clock = clock
 		v.last_valid_ns = t_ns
-		v.have_valid = true
 	}
 	if !late {
 		return got

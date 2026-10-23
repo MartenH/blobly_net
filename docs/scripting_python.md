@@ -680,9 +680,10 @@ node simulated on the row stamps (`protect:`). The check is the engine's, the on
   handle: the first frame after the handle opens (each test, under the pytest plugin) is judged on
   its CRC alone. A frame lost before the channel read it makes the next one a skip, as it would
   for any receiver, and so does the first good frame after a run of `bad_crc` ones.
-- `timeout` is judged only where `t_ms` is the bus's own stamp (SocketCAN, the CAN bridge). A
-  frame timed by its reading (`inproc:`, `udp:`, and the vendor adapters until they read their
-  stamps) is never late, because a script that paused would read as a sender that stopped.
+- `timeout` is measured between the stamps the bus gave the frames (SocketCAN's kernel stamp, the
+  CAN bridge's clock). A frame with no stamp, whose time is when it was read (`inproc:`, `udp:`,
+  and the vendor adapters until they read their stamps), is never late, because a script that
+  paused would read as a sender that stopped; and a valid one ends the gap being measured.
 - `ch.expect(..., e2e=True)` and `ch.expect_signal(..., e2e=True)` raise **`blobly.E2eError`**
   (code -12) for a frame of the expected message that fails: `e.status` is its verdict and
   `e.frame` the frame. A frame whose message has no E2E raises it too, with `e.status` `None`.

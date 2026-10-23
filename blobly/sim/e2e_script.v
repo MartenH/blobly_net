@@ -71,10 +71,11 @@ pub fn (r &E2eReader) judges() int {
 	return r.set.by_key.len
 }
 
-// judge is the verdict on a frame received at `t_ns` (transport.received_at), none for a frame
-// of no checked message or a remote frame (no payload). Its time is judged against E2ETimeout
-// only where it is the bus's own (transport.stamped).
-pub fn (mut r E2eReader) judge(f transport.CanFrame, t_ns i64) ?Violation {
+// judge is the verdict on a received frame, none for a frame of no checked message or a remote
+// frame (no payload). Its time against E2ETimeout is its raw receive stamp (hw_ns in hw_domain),
+// not its placement on the host's clock, which an estimate that improves can move between two
+// frames; a frame with no stamp is timed only by its reading, and judged on its bytes alone.
+pub fn (mut r E2eReader) judge(f transport.CanFrame) ?Violation {
 	if f.rtr || r.set.by_key.len == 0 {
 		return none
 	}
@@ -90,7 +91,7 @@ pub fn (mut r E2eReader) judge(f transport.CanFrame, t_ns i64) ?Violation {
 		return none
 	}
 	mut v := r.set.by_key[key] or { return none }
-	got := v.check_at(f.data, t_ns, transport.stamped(f))
+	got := v.check_at(f.data, f.hw_domain, f.hw_ns)
 	r.set.by_key[key] = v
 	return got
 }

@@ -349,10 +349,10 @@ else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`, `E2EProfile`, `E
   first one read is judged on its CRC alone), so a frame lost before reaching the script makes
   the next one a skip, as it would for any receiver; so does the first good frame after a run of
   `bad_crc` ones, whose counters were not trusted.
-- `"timeout"` is judged only where the frame's time is the bus's own (`t_ms` a receive stamp:
-  SocketCAN, the CAN bridge). A frame timed by its reading (`inproc:`, `udp:`, and the vendor
-  adapters until they read their stamps) is never late, because a script that paused would read
-  as a sender that stopped.
+- `"timeout"` is measured between the stamps the bus gave the frames (SocketCAN's kernel stamp,
+  the CAN bridge's clock). A frame with no stamp, whose time is when it was read (`inproc:`,
+  `udp:`, and the vendor adapters until they read their stamps), is never late, because a script
+  that paused would read as a sender that stopped; and a valid one ends the gap being measured.
 - **`bus.send_message` stamps the declared E2E**: the counter the next of this run's sends of that
   message, from 0, then the CRC — over whatever `sigs` gave those two signals — as a simulated
   sender stamps it. A declaration that cannot be applied (an unknown profile, a CRC signal that is

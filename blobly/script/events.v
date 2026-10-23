@@ -99,8 +99,8 @@ fn l_wait_frame(l lua.State) i32 {
 	l.push_int(f.id)
 	l.push_bool(f.extended)
 	l.push_bytes(f.data)
-	t := push_received(l, f)
-	push_e2e(l, env.e2e_verdict(name, f, t))
+	push_received(l, f)
+	push_e2e(l, env.e2e_verdict(name, f))
 	return 10
 }
 

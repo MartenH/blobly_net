@@ -38,15 +38,17 @@ fn brake_payload() []u8 {
 	return [u8(0xE8), 0x03, 0x5A, 0x00, 0x00, 0x00]
 }
 
-// a frame of BrakeStatus at `t_ms`, stamped by the bus (placed) or timed by its reading
-fn brake_frame(data []u8, t_ms i64, by_bus bool) (transport.CanFrame, i64) {
-	t := t_ms * 1_000_000
+// a frame of BrakeStatus the bus stamped at `t_ms` in clock domain `clock` ('' for none)
+fn brake_frame(data []u8, t_ms i64, clock string) transport.CanFrame {
 	return transport.CanFrame{
 		id:        0x301
 		data:      data
-		placed_ns: if by_bus { t } else { i64(0) }
-	}, t
+		hw_ns:     if clock == '' { i64(0) } else { t_ms * 1_000_000 }
+		hw_domain: clock
+	}
 }
+
+const kernel = 'socketcan'
 
 // a send by name carries the declared counter from 0 and the reference CRC, wrapping at 15
 fn test_a_send_by_name_is_stamped_as_declared() {
@@ -95,23 +97,23 @@ fn test_a_reader_judges_by_the_declaration() {
 		st.stamp(m, mut d) or { panic(err) }
 		sent << d
 		t += 10
-		f, at := brake_frame(d, t, true)
-		assert r.judge(f, at) or { panic('not judged') } == .ok
+		f := brake_frame(d, t, kernel)
+		assert r.judge(f) or { panic('not judged') } == .ok
 	}
 	// the last frame again: its counter repeated
-	f1, at1 := brake_frame(sent[3], t + 10, true)
-	assert r.judge(f1, at1) or { panic('') } == .stalled_ctr
+	f1 := brake_frame(sent[3], t + 10, kernel)
+	assert r.judge(f1) or { panic('') } == .stalled_ctr
 	mut bad := sent[3].clone()
 	bad[4] ^= 0xFF
-	f2, at2 := brake_frame(bad, t + 20, true)
-	assert r.judge(f2, at2) or { panic('') } == .bad_crc
-	f3, at3 := brake_frame(sent[3][..5], t + 30, true)
-	assert r.judge(f3, at3) or { panic('') } == .truncated
+	f2 := brake_frame(bad, t + 20, kernel)
+	assert r.judge(f2) or { panic('') } == .bad_crc
+	f3 := brake_frame(sent[3][..5], t + 30, kernel)
+	assert r.judge(f3) or { panic('') } == .truncated
 	// no message of the id, a message with no E2E, a remote frame: no verdict
-	assert r.judge(transport.CanFrame{ id: 0x7FF, data: [u8(0)] }, 0) == none
-	assert r.judge(transport.CanFrame{ id: 0x302, data: [u8(0), 0] }, 0) == none
-	assert r.judge(transport.CanFrame{ id: 0x301, rtr: true }, 0) == none
-	assert r.judge(transport.CanFrame{ id: 0x7FF, data: [u8(0)] }, 0) == none, 'the remembered miss changed its answer'
+	assert r.judge(transport.CanFrame{ id: 0x7FF, data: [u8(0)] }) == none
+	assert r.judge(transport.CanFrame{ id: 0x302, data: [u8(0), 0] }) == none
+	assert r.judge(transport.CanFrame{ id: 0x301, rtr: true }) == none
+	assert r.judge(transport.CanFrame{ id: 0x7FF, data: [u8(0)] }) == none, 'the remembered miss changed its answer'
 }
 
 // E2ETimeout: a frame later than it after the last valid one is `timeout`; a repeat is not a
@@ -126,40 +128,99 @@ fn test_a_late_frame_is_a_timeout_by_the_bus_time() {
 		st.stamp(m, mut d) or { panic(err) }
 		return d
 	}
-	f0, t0 := brake_frame(next(mut st), 0, true)
-	assert r.judge(f0, t0) or { panic('') } == .ok
-	f1, t1 := brake_frame(next(mut st), 100, true) // at the limit: not late
-	assert r.judge(f1, t1) or { panic('') } == .ok
+	f0 := brake_frame(next(mut st), 0, kernel)
+	assert r.judge(f0) or { panic('') } == .ok
+	f1 := brake_frame(next(mut st), 100, kernel) // at the limit: not late
+	assert r.judge(f1) or { panic('') } == .ok
 	d2 := next(mut st)
-	f2, t2 := brake_frame(d2, 201, true)
-	assert r.judge(f2, t2) or { panic('') } == .timeout
+	f2 := brake_frame(d2, 201, kernel)
+	assert r.judge(f2) or { panic('') } == .timeout
 	// judged from the late frame on
-	f3, t3 := brake_frame(next(mut st), 210, true)
-	assert r.judge(f3, t3) or { panic('') } == .ok
+	f3 := brake_frame(next(mut st), 210, kernel)
+	assert r.judge(f3) or { panic('') } == .ok
 	// a repeat restarts nothing: the sender is stuck, and stays timed out
-	f4, t4 := brake_frame(f3.data, 300, true)
-	assert r.judge(f4, t4) or { panic('') } == .stalled_ctr
-	f5, t5 := brake_frame(f3.data, 311, true)
-	assert r.judge(f5, t5) or { panic('') } == .timeout
+	f4 := brake_frame(f3.data, 300, kernel)
+	assert r.judge(f4) or { panic('') } == .stalled_ctr
+	f5 := brake_frame(f3.data, 311, kernel)
+	assert r.judge(f5) or { panic('') } == .timeout
 	// a bad CRC is that, however late
 	mut bad := next(mut st)
 	bad[4] ^= 0xFF
-	f6, t6 := brake_frame(bad, 900, true)
-	assert r.judge(f6, t6) or { panic('') } == .bad_crc
+	f6 := brake_frame(bad, 900, kernel)
+	assert r.judge(f6) or { panic('') } == .bad_crc
 }
 
-// a frame timed by its reading (a software bus) says nothing about when it was sent: a reader
-// that paused is never read as a sender that stopped
-fn test_a_frame_timed_by_its_reading_is_never_late() {
+// a frame with no stamp (a software bus) says nothing about when it was sent: a reader that
+// paused is never read as a sender that stopped, and a valid one ends the gap being measured
+fn test_a_frame_without_a_stamp_is_never_late_and_ends_the_gap() {
 	db := script_db()
 	m := db.message_named('BrakeStatus') or { panic('no BrakeStatus') }
-	mut r := new_e2e_reader(db, [], [])
 	mut st := E2eStamper{}
-	for i, at in [i64(0), 500, 1000, 5000] {
+	mut next := fn [m] (mut st E2eStamper) []u8 {
 		mut d := brake_payload()
 		st.stamp(m, mut d) or { panic(err) }
-		f, t := brake_frame(d, at, false)
-		assert r.judge(f, t) or { panic('') } == .ok, 'frame ${i}'
+		return d
+	}
+	mut r := new_e2e_reader(db, [], [])
+	for i, at in [i64(0), 500, 1000, 5000] {
+		assert r.judge(brake_frame(next(mut st), at, '')) or { panic('') } == .ok, 'frame ${i}'
+	}
+	// stamped, unstamped, stamped 120 ms after the first: the gap is not measured across it
+	mut q := new_e2e_reader(db, [], [])
+	assert q.judge(brake_frame(next(mut st), 0, kernel)) or { panic('') } == .ok
+	assert q.judge(brake_frame(next(mut st), 60, '')) or { panic('') } == .ok
+	assert q.judge(brake_frame(next(mut st), 120, kernel)) or { panic('') } == .ok
+	// nor across two clock domains
+	assert q.judge(brake_frame(next(mut st), 500, 'bridge:wsl#2')) or { panic('') } == .ok
+	assert q.judge(brake_frame(next(mut st), 650, 'bridge:wsl#2')) or { panic('') } == .timeout
+}
+
+// the gap is the frames' own stamps, never their placement on the host clock, which an
+// improving estimate can move: 150 ms apart on the wire is late, however close they were placed
+fn test_the_gap_is_measured_between_raw_stamps() {
+	db := script_db()
+	m := db.message_named('BrakeStatus') or { panic('no BrakeStatus') }
+	mut st := E2eStamper{}
+	mut r := new_e2e_reader(db, [], [])
+	mut a := brake_payload()
+	st.stamp(m, mut a) or { panic(err) }
+	mut b := brake_payload()
+	st.stamp(m, mut b) or { panic(err) }
+	f0 := transport.CanFrame{
+		...brake_frame(a, 0, 'bridge:wsl#1')
+		placed_ns: 140_000_000
+	}
+	f1 := transport.CanFrame{
+		...brake_frame(b, 150, 'bridge:wsl#1')
+		placed_ns: 151_000_000
+	}
+	assert r.judge(f0) or { panic('') } == .ok
+	assert r.judge(f1) or { panic('') } == .timeout
+}
+
+// a primitive checksum covers the message's payload, never the padding an FD length rounds a
+// 9-byte message up to
+fn test_a_primitive_checksum_does_not_cover_fd_padding() {
+	db := candb.parse_dbc('BU_: Chassis
+BO_ 800 Long: 9 Chassis
+ SG_ LongCrc : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ LongCounter : 8|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ Value : 16|16@1+ (1,0) [0|65535] "" Vector__XXX
+BA_ "E2ECounterSignal" BO_ 800 "LongCounter";
+BA_ "E2ECrcSignal" BO_ 800 "LongCrc";
+BA_ "E2EProfile" BO_ 800 "crc8_j1850";
+') or {
+		panic(err)
+	}
+	m := db.messages[0]
+	mut st := E2eStamper{}
+	mut r := new_e2e_reader(db, [], [])
+	for n in 0 .. 3 {
+		mut d := m.template()
+		d[2] = u8(0x40 + n)
+		st.stamp(m, mut d) or { panic(err) }
+		d << [u8(0), 0, 0] // as the wire pads it to 12
+		assert r.judge(transport.CanFrame{ id: 800, data: d, fd: true }) or { panic('') } == .ok, 'frame ${n}'
 	}
 }
 
@@ -213,9 +274,9 @@ fn test_receive_checks_take_the_contract_in_order() {
 	// judged by the message's E2ETimeout all the same
 	mut d := brake_payload()
 	brake2.e2e.apply(brake2.msg, mut d, 0)
-	assert brake2.check_at(d, 0, true) == .ok
+	assert brake2.check_at(d, kernel, 0) == .ok
 	brake2.e2e.apply(brake2.msg, mut d, 1)
-	assert brake2.check_at(d, 101_000_000, true) == .timeout, 'the verify: entry lost the message timeout'
+	assert brake2.check_at(d, kernel, 101_000_000) == .timeout, 'the verify: entry lost the message timeout'
 	assert receive_checks(candb.Database{}, [], []).by_key.len == 0
 }
 

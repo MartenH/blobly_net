@@ -12,9 +12,9 @@ fn (mut env Env) register_e2e() {
 	env.st.register('__e2e_stamp', l_e2e_stamp)
 }
 
-// e2e_verdict is the verdict on a frame the script's handle on `name` received at `t_ns`, none
-// for one its message has no E2E for.
-fn (mut env Env) e2e_verdict(name string, f transport.CanFrame, t_ns i64) ?string {
+// e2e_verdict is the verdict on a frame the script's handle on `name` received, none for one its
+// message has no E2E for.
+fn (mut env Env) e2e_verdict(name string, f transport.CanFrame) ?string {
 	mut r := env.e2e_rx[name] or {
 		ci := env.find_chan(name) or { return none }
 		c := env.chans[ci]
@@ -22,7 +22,7 @@ fn (mut env Env) e2e_verdict(name string, f transport.CanFrame, t_ns i64) ?strin
 		env.e2e_rx[name] = r
 		r
 	}
-	v := r.judge(f, t_ns) or { return none }
+	v := r.judge(f) or { return none }
 	return v.name()
 }
 

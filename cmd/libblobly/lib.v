@@ -678,7 +678,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 			out.data[i] = if i < fr.data.len { fr.data[i] } else { u8(0) }
 		}
 		out.t_ns = transport.received_now(fr)
-		out.e2e = hd.e2e_verdict(fr, out.t_ns)
+		out.e2e = hd.e2e_verdict(fr)
 	}
 	return ok()
 }

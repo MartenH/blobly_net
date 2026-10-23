@@ -1261,15 +1261,13 @@ fn clock_ms(ns i64) f64 {
 }
 
 // push_received pushes what a received frame carries after its id, ext and data: fd, brs, esi,
-// rtr and t_ms, when it was received (transport.received_now), which it answers in ns
-fn push_received(l lua.State, f transport.CanFrame) i64 {
+// rtr and t_ms, when it was received (transport.received_now)
+fn push_received(l lua.State, f transport.CanFrame) {
 	l.push_bool(f.fd)
 	l.push_bool(f.brs)
 	l.push_bool(f.esi)
 	l.push_bool(f.rtr)
-	t := transport.received_now(f)
-	l.push_num(clock_ms(t))
-	return t
+	l.push_num(clock_ms(transport.received_now(f)))
 }
 
 fn l_bus_send(l lua.State) i32 {
@@ -1301,8 +1299,8 @@ fn l_bus_recv(l lua.State) i32 {
 	l.push_int(frame.id)
 	l.push_bool(frame.extended)
 	l.push_bytes(frame.data)
-	t := push_received(l, frame)
-	push_e2e(l, env.e2e_verdict(name, frame, t))
+	push_received(l, frame)
+	push_e2e(l, env.e2e_verdict(name, frame))
 	return 9
 }
 

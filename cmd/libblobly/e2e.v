@@ -39,6 +39,22 @@ fn e2e_row(row i32) !(candb.Database, project.Channel, u64) {
 	return bb_dbs[int(row)], bb_run_rows[int(row)], bb_run_gen
 }
 
+// message_locked is message(row, m) for a caller that holds bb_mu.
+fn message_locked(row i32, m i32) !candb.Message {
+	if !bb_dbs_live {
+		return error_with_code("not started: a row's databases are the run's, from bb_start until bb_stop",
+			int(bb_err_state))
+	}
+	if row < 0 || int(row) >= bb_dbs.len {
+		return error('no channel ${row}')
+	}
+	msgs := bb_dbs[int(row)].messages
+	if m < 0 || int(m) >= msgs.len {
+		return error('channel ${row} has no message ${m} (it has ${msgs.len})')
+	}
+	return msgs[int(m)]
+}
+
 @[export: 'bb_e2e_attach']
 pub fn bb_e2e_attach(h i32, row i32) i32 {
 	mut hd := enter(h) or { return fail(bb_err_handle, 'no open bus handle ${h}') }
@@ -56,9 +72,9 @@ pub fn bb_e2e_attach(h i32, row i32) i32 {
 	return i32(n)
 }
 
-// e2e_verdict is bb_frame.e2e for a frame the handle received at t_ns: its row's verdict while the
-// run it was attached in is the one started, BB_E2E_NONE otherwise.
-fn (mut hd BusHandle) e2e_verdict(fr transport.CanFrame, t_ns i64) u8 {
+// e2e_verdict is bb_frame.e2e for a frame the handle received: its row's verdict while the run it
+// was attached in is the one started, BB_E2E_NONE otherwise.
+fn (mut hd BusHandle) e2e_verdict(fr transport.CanFrame) u8 {
 	if isnil(hd.judge.reader) {
 		return u8(C.BB_E2E_NONE)
 	}
@@ -68,7 +84,7 @@ fn (mut hd BusHandle) e2e_verdict(fr transport.CanFrame, t_ns i64) u8 {
 	if !current {
 		return u8(C.BB_E2E_NONE)
 	}
-	v := hd.judge.reader.judge(fr, t_ns) or { return u8(C.BB_E2E_NONE) }
+	v := hd.judge.reader.judge(fr) or { return u8(C.BB_E2E_NONE) }
 	return e2e_code(v)
 }
 
@@ -94,18 +110,20 @@ pub fn bb_e2e_stamp(row i32, m i32, f &C.bb_frame) i32 {
 	if n > 64 {
 		return fail(bb_err, 'e2e_stamp: a payload is at most 64 bytes, not ${n}')
 	}
-	msg := message(row, m) or { return refused(err) }
-	if n < msg.payload_len() {
-		return fail(bb_err, 'e2e_stamp: a frame of ${n} bytes is shorter than ${msg.name} (${msg.payload_len()})')
-	}
 	mut data := []u8{len: n}
 	for i in 0 .. n {
 		data[i] = f.data[i]
 	}
+	// the message, its run and that run's counters under one hold: a stop and start between the
+	// lookup and the stamp would count an old run's message in the new run
 	bb_mu.lock()
-	if !bb_dbs_live {
+	msg := message_locked(row, m) or {
 		bb_mu.unlock()
-		return fail(bb_err_state, 'not started: a stop came while the frame was stamped')
+		return refused(err)
+	}
+	if n < msg.payload_len() {
+		bb_mu.unlock()
+		return fail(bb_err, 'e2e_stamp: a frame of ${n} bytes is shorter than ${msg.name} (${msg.payload_len()})')
 	}
 	if bb_e2e_gen != bb_run_gen {
 		bb_e2e_stampers = map[int]&sim.E2eStamper{}
