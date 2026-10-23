@@ -8,9 +8,10 @@ more. Then a UDS client with a short first wait, on ids nothing answers, fails i
 than the default second, and a client on the SUT shows the timing a session answer adopted.
 
     python isotp_raw.py [project.blobnet] [--channel NAME] [--tx 0x7E0] [--rx 0x7E8]
+                        [--silent-tx 0x6F0] [--silent-rx 0x6F8]
 
 The project defaults to the repository's projects/sim-demo.blobnet, whose CAN1 has the SUT at
-0x7E0 / 0x7E8. Exits 0 when every check held, and 1 with a FAIL line otherwise."""
+0x7E0 / 0x7E8 and nothing at 0x6F0 / 0x6F8. Exits 0 when every check held, and 1 with a FAIL line otherwise."""
 import argparse
 import os
 import sys
@@ -36,6 +37,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--channel", default="CAN1", help="the CAN channel (default: CAN1)")
     ap.add_argument("--tx", type=lambda v: int(v, 0), default=0x7E0, help="the request id (default: 0x7E0)")
     ap.add_argument("--rx", type=lambda v: int(v, 0), default=0x7E8, help="the response id (default: 0x7E8)")
+    ap.add_argument("--silent-tx", type=lambda v: int(v, 0), default=0x6F0,
+                    help="a request id nothing answers, for the short wait (default: 0x6F0)")
+    ap.add_argument("--silent-rx", type=lambda v: int(v, 0), default=0x6F8,
+                    help="its response id (default: 0x6F8)")
     args = ap.parse_args(argv)
     if not os.path.isfile(args.project):
         fail(f"no project at {args.project}; pass the path of a .blobnet file")
@@ -68,12 +73,12 @@ def main(argv: list[str]) -> int:
             print("nothing more within 100 ms")
 
         # a UDS client's waits: a first wait of 100 ms on ids nothing answers fails in 100 ms
-        with ch.uds(tx=0x6F0, rx=0x6F8, timeout_ms=100) as nobody:
+        with ch.uds(tx=args.silent_tx, rx=args.silent_rx, timeout_ms=100) as nobody:
             try:
                 nobody.tester_present()
-                fail("something answered 0x6F0")
+                fail(f"something answered 0x{args.silent_tx:X}; name a pair nothing answers with --silent-tx/--silent-rx")
             except blobly.Timeout:
-                print(f"no answer on 0x6F0, given up after {nobody.last.rtt_us // 1000} ms")
+                print(f"no answer on 0x{args.silent_tx:X}, given up after {nobody.last.rtt_us // 1000} ms")
         with ch.uds(tx=args.tx, rx=args.rx) as diag:
             diag.session(0x01)  # its timing record: P2 and P2*, which the client adopts
             print(f"after the session: first wait {diag.timeout_ms} ms, P2* {diag.p2_star_ms} ms, "

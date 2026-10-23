@@ -436,6 +436,10 @@ fn (mut c DoipClient) write(msg []u8) ! {
 	}
 }
 
+// nack_note begins the error of a request the entity negatively acknowledged (an unknown or
+// unreachable target, ISO 13400-2): the entity answered, and the connection is alive.
+pub const nack_note = 'DoIP: diagnostic message negative ack'
+
 // retarget: the logical address this connection's diagnostic messages go to from now on, and whose
 // answers recv takes — the entity itself, or a node behind it that a DoIP gateway routes to (ISO
 // 13400-2). One TCP connection: a gateway may tie what a tester reaches through it to what the
@@ -527,7 +531,7 @@ fn (mut c DoipClient) own_answer(msg Message) !([]u8, bool) {
 		}
 		pt_diagnostic_message_nack {
 			nack := if msg.payload.len >= 5 { msg.payload[4] } else { u8(0xFF) }
-			return error('DoIP: diagnostic message negative ack (0x${nack:02X})')
+			return error('${nack_note} (0x${nack:02X})')
 		}
 		else {
 			return []u8{}, false // ignore anything else on this connection
