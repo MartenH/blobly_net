@@ -258,6 +258,10 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	s.sent = out
 }
 
+fn (s &SilentBus) sent_frame() CanFrame {
+	return s.sent
+}
+
 fn (mut s SilentBus) recv(timeout_ms int) !CanFrame {
 	return s.inner.recv(timeout_ms)!
 }

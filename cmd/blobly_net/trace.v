@@ -538,12 +538,17 @@ fn (mut app App) wire_rates_locked(i int) (int, int) {
 }
 
 // wire_rates_now_locked is wire_rates_locked's answer without keeping it: the run's, once kept,
-// else the engine's rule (project.wire_rates) over the rows that read a wire, a wire none reads
-// priced at row `i`'s own rate.
+// else wire_rates_rule_locked's.
 fn (app &App) wire_rates_now_locked(i int) (int, int) {
 	if app.chans[i].load_nominal > 0 {
 		return app.chans[i].load_nominal, app.chans[i].load_data
 	}
+	return app.wire_rates_rule_locked(i)
+}
+
+// wire_rates_rule_locked is the engine's rule (project.wire_rates) over the rows that read a wire
+// now, a wire none reads priced at row `i`'s own rate.
+fn (app &App) wire_rates_rule_locked(i int) (int, int) {
 	rows := app.chans.filter(it.monitorable()).map(project.Channel{
 		iface:        it.iface
 		bitrate:      it.bitrate

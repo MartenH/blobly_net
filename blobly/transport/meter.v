@@ -79,6 +79,12 @@ pub fn (mut m LoadMeter) read(now_ns i64) BusLoad {
 	}
 }
 
+// SentFrame is a bus that says what its last accepted send handed on — open's SilentBus, and a
+// host's own wrapper that frames (the GUI's tap) — so a metered send is priced as it was framed.
+pub interface SentFrame {
+	sent_frame() CanFrame
+}
+
 // MeteredBus is a bus whose frames a LoadMeter counts, both directions: what it receives, and
 // what it sends once the driver accepted it. Its own sends do not come back to it (an echo goes
 // to the wire's other handles), so no frame is counted twice.
@@ -91,8 +97,8 @@ pub mut:
 	meter LoadMeter
 }
 
-// metered wraps `b` — a bus `open` returned on `iface`, or a host's own that frames its sends as
-// open's do — its frames priced at `nominal` and `data` bit/s (project.wire_rates).
+// metered wraps `b`, opened on `iface`, its frames priced at `nominal` and `data` bit/s
+// (project.wire_rates).
 pub fn metered(b Bus, iface string, nominal int, data int) &MeteredBus {
 	return &MeteredBus{
 		iface: iface
@@ -103,11 +109,10 @@ pub fn metered(b Bus, iface string, nominal int, data int) &MeteredBus {
 
 pub fn (mut m MeteredBus) send(f CanFrame) ! {
 	m.inner.send(f)!
-	// priced as it went out: what open's SilentBus handed the backend (framed by its one policy
-	// read), else framed as open's buses frame it — a host's own bus, the GUI's tap, does — then
-	// padded or clamped by the backend as wire_frame says
-	mut inner := m.inner
-	sent := if mut inner is SilentBus { inner.sent } else { framed_for_wire(m.iface, f) }
+	// priced as it went out: what the bus says it handed on (framed by ITS one policy read), else
+	// the frame as given; then padded or clamped by the backend as wire_frame says
+	inner := m.inner
+	sent := if inner is SentFrame { inner.sent_frame() } else { f.unstated() }
 	m.meter.note(wire_frame(m.iface, sent), i64(time.sys_mono_now()))
 }
 

@@ -202,6 +202,8 @@ mut:
 	// trace, and the frame then lands in a measurement that had already begun. tx_mu is the lock
 	// Start drains, so a decision made while holding it is a decision Start cannot overtake.
 	guard_gen u64
+	// the frame the last accepted send put on the wire (sent_frame), written under tx_mu
+	sent transport.CanFrame
 	// Whether the run this tap belongs to has ended — what send_waiting_for_room asks between
 	// retries. Built ONCE here: as a closure literal inside send it was rebuilt per frame, and
 	// V's closures bump-allocate a trampoline slot the runtime never frees, so a replay leaked
@@ -313,6 +315,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	}
 	probe_alloc_note(.inner, pb)
 	pc := probe_alloc_mark()
+	t.sent = wire
 	// The driver has it: it is on the wire, and the wire's load.
 	t.app.count_tx_load(t.iface, wire)
 	// …and only now is it a frame we PUT on the wire, which is what the `verify:` self-send
@@ -326,6 +329,12 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// so a replay at full rate pays a single bool test per frame.
 	t.note_health(.success)
 	probe_alloc_note(.after, pc)
+}
+
+// sent_frame is the frame the last accepted send put on the wire, for a script's bus load
+// (transport.SentFrame).
+fn (t &TapBus) sent_frame() transport.CanFrame {
+	return t.sent
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {

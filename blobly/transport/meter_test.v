@@ -143,3 +143,22 @@ fn test_a_framed_wire_prices_what_it_sends() {
 	assert !kept.fd && !kept.format_stated
 	assert b.load().bits == frame_bits(promoted, 500000, 500000) + 135.0
 }
+
+// a bus that frames nothing is priced as it was given the frame
+fn test_a_raw_bus_is_priced_as_it_sends() {
+	name := 'inproc:meter_raw'
+	mut b := metered(open_inproc('meter_raw')!, name, 500000, 0)
+	defer {
+		b.close()
+	}
+	replace_wire_policy([], {
+		name: Framing{
+			fd: true
+		}
+	})
+	defer {
+		replace_wire_policy([], map[string]Framing{})
+	}
+	b.send(std8())!
+	assert b.load().bits == 135.0
+}
