@@ -685,7 +685,7 @@ int bb_boot_sim_stop(int sim, bb_boot_report *out);
  * The `canbridge` it runs is bb_bridge_program's, else one on the distribution's PATH.
  * bb_bridge_stop disconnects a connected bridge, which ends it, and returns once it has gone (every
  * handle open on it fails); a bridge that is not connected, or a run that is started, is
- * BB_ERR_STATE. A bridge still starting cannot be stopped: it is reachable only once it dials in. */
+ * BB_ERR_STATE, and a bridge whose connection was cut but did not end within 2 s BB_ERR_TIMEOUT. A bridge still starting cannot be stopped: it is reachable only once it dials in. */
 int bb_wsl_distros(char *buf, int cap);           /* >= 0: the length; the installed distributions */
 int bb_bridge_program(char *buf, int cap);        /* >= 0: the length of the path of the canbridge a
                                                      start runs (beside the library, then beside the

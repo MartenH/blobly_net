@@ -245,6 +245,13 @@ pub fn bridge_names() []string {
 	return out
 }
 
+// bridge_channels is the channels the connected bridge of that name offers; [] when it is not
+// connected.
+pub fn bridge_channels(name string) []string {
+	s := bridge_session(name) or { return [] }
+	return s.channels.clone()
+}
+
 // bridge_rows is one Discover row per channel of every connected bridge.
 pub fn bridge_rows() []Iface {
 	mut out := []Iface{}
@@ -336,7 +343,7 @@ pub fn bridge_stop(name string, timeout_ms int) ! {
 	for {
 		cur := bridge_session(name) or { return }
 		if voidptr(cur) != voidptr(s) {
-			return
+			return error('bridge "${name}" dialled in again while it was being stopped')
 		}
 		if time.ticks() >= deadline {
 			return error('bridge "${name}" did not let go of its connection within ${timeout_ms} ms')

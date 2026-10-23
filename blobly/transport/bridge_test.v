@@ -703,6 +703,7 @@ fn test_a_stopped_bridge_is_gone_and_may_be_started_again() {
 	assert bridge_session('b-stop') == none
 	st, _ := bridge_state('b-stop')
 	assert st == .idle
+	assert bridge_channels('b-stop') == []
 	if _ := app.send(CanFrame{ id: 1 }) {
 		assert false, 'sent on a stopped bridge'
 	} else {
@@ -714,6 +715,7 @@ fn test_a_stopped_bridge_is_gone_and_may_be_started_again() {
 		assert err.msg().contains('no bridge named "b-stop" is connected'), err.msg()
 	}
 	start_bridge('b-stop', ['A'], inproc_opener('bst-'))!
+	assert bridge_channels('b-stop') == ['A']
 }
 
 fn test_a_bridge_is_started_from_windows_only() {

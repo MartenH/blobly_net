@@ -1188,7 +1188,7 @@ the block.
 | `blobly.bridge.start(distro, wait=True)` | Starts the bridge in `distro` unless it is connected or starting. With `wait`, returns its `rows()` once it has dialled in, and raises `BloblyError` with its reason if it fails; without, returns `None` once launched. `Refused` where it cannot be launched: no such distribution, or not on Windows. |
 | `blobly.bridge.state(distro)` | `(state, reason)`: `"idle"`, `"starting"`, `"connected"` or `"failed"`, and why it failed (`""` otherwise). |
 | `blobly.bridge.rows(distro)` | A connected bridge's channels as interfaces (`"bridge:Ubuntu-24.04/vcan0"`); `[]` when it is not connected. |
-| `blobly.bridge.stop(distro)` | Disconnects a connected bridge, which ends it, and returns once it has gone. `BloblyError` (code -3) when it is not connected, or while a project is started. |
+| `blobly.bridge.stop(distro)` | Disconnects a connected bridge, which ends it, and returns once it has gone. `BloblyError` (code -3) when it is not connected, or while a project is started; `Timeout` when it was cut but had not gone within 2 s. |
 | `blobly.bridge.program()` | The `canbridge` a start runs: beside the engine (the Windows wheel's), else beside the executable; `None` when there is none (a start then runs the distribution's own) and on Linux. |
 
 ### `Project`

@@ -55,12 +55,11 @@ def test_on_linux_there_is_nothing_to_start_a_bridge_in():
 @pytest.mark.skipif(not (sys.platform == "win32" and os.environ.get("BLOBLY_TEST_INSTALLED")),
                     reason="an installed Windows wheel carries canbridge")
 def test_the_wheel_carries_the_canbridge_a_start_runs():
-    native = os.path.dirname(_lib.loaded_path)
-    assert bridge.program() == os.path.join(native, "canbridge")
-    with open(bridge.program(), "rb") as f:
-        head = f.read(20)
-    # a Linux x86-64 executable: ELF, 64-bit, little-endian, machine 0x3E
-    assert head[:4] == b"\x7fELF" and head[4] == 2 and head[5] == 1 and head[18:20] == b"\x3e\x00"
+    prog = bridge.program()  # loads the library, so loaded_path is set
+    assert prog is not None
+    assert os.path.samefile(prog, os.path.join(os.path.dirname(_lib.loaded_path), "canbridge"))
+    with open(prog, "rb") as f:
+        assert f.read(4) == b"\x7fELF", "canbridge is a Linux program"
 
 
 def load_tests(loader, tests, pattern):

@@ -77,15 +77,16 @@ def start(distro: str, wait: bool = True) -> list[str] | None:
             return rows(distro)
         if st == "failed":
             raise BloblyError(f'bridge "{distro}": {why}')
-        if st == "idle":  # stopped from another thread while it started
-            raise BloblyError(f'bridge "{distro}" is not connected')
+        if st == "idle":  # dialled in and went again between two looks, or stopped elsewhere
+            raise BloblyError(f'bridge "{distro}" dialled in and is gone again')
         time.sleep(_POLL_S)
 
 
 def stop(distro: str) -> None:
     """Disconnects the bridge of `distro`, which ends it, and returns once it has gone: every
     channel open on it fails. Raises BloblyError (code -3) when it is not connected (one still
-    starting cannot be reached until it dials in), or while a project is started."""
+    starting cannot be reached until it dials in), or while a project is started; Timeout when its
+    connection was cut but it had not gone within 2 s."""
     lib, name = _lib.lib(), _name(distro)
     with _lib.state_lock:
         _lib.check(lib.bb_bridge_stop(name))

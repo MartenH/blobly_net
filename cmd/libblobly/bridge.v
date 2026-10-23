@@ -55,8 +55,7 @@ pub fn bb_bridge_state(distro &char, state &i32, why &char, cap i32) i32 {
 @[export: 'bb_bridge_rows']
 pub fn bb_bridge_rows(distro &char, buf &char, cap i32) i32 {
 	name := bridge_name(distro) or { return fail(bb_err, 'bridge_rows: no distribution') }
-	prefix := 'bridge:${name}/'
-	rows := transport.bridge_rows().filter(it.iface.starts_with(prefix)).map(it.iface)
+	rows := transport.bridge_channels(name).map('bridge:${name}/${it}')
 	return put(rows.join('\n'), buf, cap)
 }
 
@@ -67,6 +66,11 @@ pub fn bb_bridge_stop(distro &char) i32 {
 	if !isnil(bb_run) {
 		return fail(bb_err_state, 'a run is active; stop it before stopping a bridge its channels may use')
 	}
-	transport.bridge_stop(name, bridge_stop_ms) or { return fail(bb_err_state, err.msg()) }
+	st, _ := transport.bridge_state(name)
+	if st != .connected {
+		return fail(bb_err_state, 'no bridge named "${name}" is connected')
+	}
+	// cut, but its session did not end within the wait
+	transport.bridge_stop(name, bridge_stop_ms) or { return fail(i32(C.BB_ERR_TIMEOUT), err.msg()) }
 	return ok()
 }
