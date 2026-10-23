@@ -174,6 +174,10 @@ fn gen_signal_slot(mut s project.Sender, dbs []candb.Database, cap int, signal s
 	sig := m.signal_named(signal) or {
 		return gen_error(.refused, '${m.name} has no signal "${signal}"')
 	}
+	// a value is encoded as a 64-bit scalar: a wider signal cannot carry one
+	if sig.length < 1 || sig.length > 64 {
+		return gen_error(.refused, '${signal} is ${sig.length} bits wide: a value is encoded into 1 .. 64')
+	}
 	// a generator names its signals by name, which two of one name do not tell apart
 	if m.signals.filter(it.name == signal).len > 1 {
 		return gen_error(.refused, '${m.name} has ${m.signals.filter(it.name == signal).len} signals named "${signal}": a generator cannot tell them apart')

@@ -110,6 +110,15 @@ fn test_an_edit_reaches_only_a_signal_the_message_has() {
 		refusals++
 	}
 	assert refusals == 11
+	wide65 := candb.parse_dbc('BO_ 259 Wide: 16 Tester\n SG_ W : 0|65@1- (1,0) [0|0] "" SUT\n')!
+	mut w := project.Sender{
+		message: 'Wide'
+	}
+	gen_set_value(mut w, [wide65], 64, 'W', -1) or {
+		assert err.msg().contains('65 bits wide'), err.msg()
+		refusals++
+	}
+	assert refusals == 12
 }
 
 fn test_a_host_with_no_run_refuses_every_call() {
