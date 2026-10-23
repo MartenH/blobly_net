@@ -92,12 +92,9 @@ pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 			}
 		} else if !r.eth {
 			if s := server {
-				// and on that bus no other node answers to the same ids (node_for's rule)
-				if r.name in s.buses && sys.node_for(TargetAddr{
-					req: s.req
-					rsp: s.rsp
-					bus: r.name
-				}).node == n {
+				// and on that bus no other node uses either id: a request another node hears too
+				// would be acted on by both, an answer on another's id taken for this one's
+				if r.name in s.buses && !sys.can_collides(n, s, r.name) {
 					out << RowTarget{
 						row: i
 						req: s.req
@@ -188,6 +185,20 @@ fn groups_of(s string, last bool) ?[]u8 {
 		out << u8(v)
 	}
 	return out
+}
+
+// can_collides: another node serving on `bus` (can_server) shares node n's request or response id.
+fn (sys &System) can_collides(n int, s CanServer, bus string) bool {
+	for i, m in sys.nodes {
+		if i == n {
+			continue
+		}
+		o := sys.can_server(m) or { continue }
+		if bus in o.buses && (o.req == s.req || o.rsp == s.rsp) {
+			return true
+		}
+	}
+	return false
 }
 
 // loopback: `host` is this machine — an entity a project hosts for a node in simulation, whose

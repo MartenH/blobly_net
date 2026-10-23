@@ -116,4 +116,5 @@ pub fn (mut c Client) carry_from(from &Client) {
 pub fn (mut c Client) another_ecu() {
 	c.apply(c.stated)
 	c.did_lens = c.stated_did_lens.clone()
+	c.state = ConnState{} // its session and security are that ECU's
 }

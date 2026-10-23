@@ -128,6 +128,13 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 	assert two.targets(0, [RowRef{
 		name: 'edge'
 	}]) == []
+	// one id shared is enough: a request both hear
+	two.nodes[1].diag_rsp = 0x7C9
+	assert two.targets(0, [RowRef{
+		name: 'edge'
+	}]) == [] && two.targets(1, [RowRef{
+		name: 'edge'
+	}]) == []
 }
 
 fn test_a_node_without_a_server_says_so() {

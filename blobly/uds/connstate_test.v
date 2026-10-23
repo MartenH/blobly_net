@@ -283,3 +283,13 @@ fn test_a_functional_request_is_observed_on_each_target() {
 	})
 	assert c.state.session == 0x03 && !c.state.security.known
 }
+
+fn test_another_ecu_knows_nothing_of_its_state() {
+	mut c := Client{}
+	c.state = ConnState{
+		session:  0x03
+		security: security_unlocked(1)
+	}
+	c.another_ecu()
+	assert c.state == ConnState{}
+}
