@@ -114,6 +114,11 @@ mut:
 	entities []&doip.DoipServer
 	mu       sync.Mutex
 	err      fn (string) @[required]
+	// the run's generators, every CAN row's in project order (generators.v); filled by start
+	gens   []&Gen
+	run_t0 u64 // the ONE epoch every generator's time-based source runs from
+	// how a generator's loop opens its bus: transport.open; a test stalls it
+	gen_opener fn (string) !transport.Bus = transport.open
 pub:
 	path string
 	// the project as the run uses it: the DoIP rows moved onto this process's ports
@@ -453,47 +458,45 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		}
 	}
 	probes.release_all()
-	// Cyclic generators (`senders:` with trigger: cyclic), sent while the run lasts as the GUI
-	// sends them during a measurement, by the GUI's rules: every row's generators (a disabled
-	// row's too — its generator may target an enabled channel), sent only where a target row is
-	// still in the run or the target is a wire no row configures, with the target rows'
-	// databases. Without it a project behaved differently headless.
+	// Generators (`senders:`), by the GUI's rules: every row's generators (a disabled row's too —
+	// its generator may target an enabled channel), sendable only where a target row is still in
+	// the run or the target is a wire no row configures, with the target rows' databases. A cyclic
+	// one is sent while the run lasts as the GUI sends it during a measurement; any of them on a
+	// script's fire or start (generators.v). Without it a project behaved differently headless.
 	for w in project.sender_bus_warnings(proj.channels) {
 		o.err(w)
 	}
 	for w in project.generator_source_warnings(proj.channels) {
 		o.err(w)
 	}
+	r.run_t0 = run_t0
 	for ci, ch in proj.channels {
 		if ch.is_doip() || ch.is_someip() {
 			continue
 		}
 		for s in ch.senders {
-			if s.trigger != 'cyclic' || s.cycle_ms <= 0 {
-				continue
+			r.add_gen(ci, s, mut row_dbs, os.dir(proj_path), db_files)
+		}
+	}
+	for mut g in r.gens {
+		if g.s.trigger != 'cyclic' {
+			continue
+		}
+		if g.cycle_note != '' {
+			o.err('${g.channel}: generator "${g.s.name}": ${g.cycle_note} — not sent on a cycle')
+			continue
+		}
+		if g.s.cycle_ms <= 0 {
+			continue
+		}
+		if g.note != '' {
+			if !g.left {
+				o.err('${g.channel}: generator "${g.s.name}": ${g.note} — not sent')
 			}
-			sb := project.resolve_sender_bus(s.bus, ch, proj.channels)
-			if sb.iface == '' {
-				o.err('${ch.name}: generator "${s.name}": ${sb.note} — not sent')
-				continue
-			}
-			rows := project.sender_target_rows(sb, ci, proj.channels)
-			enabled := rows.filter(proj.channels[it].enabled)
-			if rows.len > 0 && enabled.len == 0 {
-				continue // every row on its target has left the run: nothing is sent there
-			}
-			open_iface := if enabled.len > 0 {
-				proj.channels[enabled[0]].iface_with_bitrate()
-			} else {
-				sb.iface
-			}
-			mut sdb := []candb.Database{}
-			for row in rows {
-				sdb << row_db(mut row_dbs, proj.channels, row, os.dir(proj_path), db_files)
-			}
-			r.counted()
-			spawn r.sender_loop(open_iface, s, sdb, run_t0)
-			o.out('channel ${ch.name}: cyclic generator "${s.name}" every ${s.cycle_ms} ms on ${sb.iface}')
+		} else {
+			g.cyclic = true
+			r.spawn_gen(mut g, run_t0)
+			o.out('channel ${g.channel}: cyclic generator "${g.s.name}" every ${g.s.cycle_ms} ms on ${g.open}')
 		}
 	}
 	// Let the sims start emitting / the UDS server start polling before scripts run.
@@ -623,50 +626,6 @@ fn (mut r Run) sim_loop(open_iface string, fault_iface string, chan_name string,
 	// handle still answers with the wire's totals (codex round 12 on #231).
 	bus.close()
 	r.report_diag('${open_iface} (sim)', bus.diagnostics())
-}
-
-// sender_loop sends one cyclic generator's frame every `cycle_ms` until stopped — the headless
-// counterpart of the GUI's gen_loop, building the frame with the same sim.sender_message_frame.
-// The send index counts DELIVERED frames only, as the GUI's does, so a counter source never
-// skips a value a refused send did not put on the wire.
-fn (mut r Run) sender_loop(iface string, s project.Sender, dbs []candb.Database, run_t0 u64) {
-	defer {
-		r.done()
-	}
-	mut bus := transport.open(iface) or {
-		r.say('generator "${s.name}": cannot open ${iface}: ${err}')
-		return
-	}
-	mut n := 0
-	mut next := time.ticks()
-	for r.ctl.running {
-		now := time.ticks()
-		if now < next {
-			time.sleep(time.Duration(i64(if next - now > 20 { 20 } else { next - now }) * time.millisecond))
-			continue
-		}
-		next += s.cycle_ms
-		if next < now {
-			next = now + s.cycle_ms // a stall does not become a burst of catch-up frames
-		}
-		el := f64(time.sys_mono_now() - run_t0) / 1_000_000_000.0
-		frame := if s.message != '' {
-			sim.sender_message_frame(s, dbs, n, el) or {
-				r.say('generator "${s.name}": message "${s.message}" not in the channel databases — not sent')
-				break
-			}
-		} else {
-			transport.CanFrame{
-				id:       s.id
-				extended: s.ext
-				data:     s.data.clone()
-			}
-		}
-		bus.send(frame) or { continue }
-		n++
-	}
-	bus.close()
-	r.report_diag('${iface} (generator ${s.name})', bus.diagnostics())
 }
 
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.

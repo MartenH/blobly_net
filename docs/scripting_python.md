@@ -163,7 +163,8 @@ with an interface, its databases and the ECUs simulated on it.
   ends the run. `with blobly.Project(path) as net:` loads and starts it, and stops it when the
   block ends.
 - **What `start()` brings up**, for every enabled row: the simulated ECUs (`simulation:`) and
-  their UDS servers, the cyclic generators (`senders:` with `trigger: cyclic`), and a DoIP
+  their UDS servers, the cyclic generators (`senders:` with `trigger: cyclic`; every generator is
+  then the script's to drive, [Generators](#generators)), and a DoIP
   entity for a DoIP row that simulates nodes. An entity on a loopback address is moved off the
   project's port onto a free one in 30000..31999, as the headless runner moves it, and `ch.iface`
   says where. A SOME/IP row gets nothing.
@@ -190,6 +191,52 @@ try:
     print("DoIP1 is served at", net.channels.DoIP1.iface)     # where this run hosts the entity
 finally:
     print("free for the next start:", net.stop())
+```
+
+### Generators
+
+A started project's generators (its `senders:`, [simulation.md](simulation.md#interactive-senders)) are
+`net.generators`, as Lua's `gen.*` has them: every CAN channel's, in project order, a disabled
+channel's included (its generator may send on an enabled one). What a script can do with one is
+what the Generators panel lets a person do.
+
+- `net.generators["Heartbeat pulse"]` is one by name, or by `"channel/name"` (a name two
+  generators answer to raises `KeyError` naming the forms that tell them apart);
+  `net.generators[0]` by position, which reaches any of them.
+- `g.fire(timeout_ms=5000)` sends its current frame once and returns once the bus took it. A
+  cyclic one's bus is opened as the run starts, any other's at its first fire or start, which a
+  first `fire` waits for; `Timeout` when the bus took nothing within `timeout_ms` (at most 5000),
+  saying whether the frame may still go out — one the generator had not taken up is never sent.
+- `g.start(cycle_ms=None)` sends it on its cycle from now (its own for `None`; refused when it
+  has none), `g.stop()` ends that, and `g.cycle_ms = 50` changes the cycle from its next frame.
+- `g.set(signal, value)` sends a signal at a static value from the next frame, and
+  `g.source(signal, kind, **params)` on a value source: `"const"`, `"sine"`, `"sawtooth"`,
+  `"counter"` or `"stepmod"`, with the parameters a project writes for it. `signal` is a `Signal`
+  or its name; one the generator did not list is added.
+- **What could not take effect is refused** with `blobly.GeneratorRefused`: a cycle outside 1 ..
+  3600000 ms, a signal its message does not have or its payload does not hold (or any signal of a
+  raw frame), a value that is
+  not finite, a source that cannot be evaluated (a zero period or count), a generator with
+  nothing to send on (its `note` says why), and a send its bus refused (a listen-only row).
+- Edits last for the run: a new start brings the generators up as the project writes them. A
+  `Generator` goes on working across a stop and start while the run has one of its name and
+  channel at its position.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can1 = net.channels.CAN1
+    hb = net.generators["Heartbeat pulse"]                 # manual: sends only when fired
+    hb.set("Counter", 42)
+    hb.fire()
+    wake = net.generators["CAN1/Cyclic wake (0x123)"]      # cyclic, every 500 ms
+    wake.cycle_ms = 100
+    wake.stop()
+    hb.source("Counter", "counter", start=0, modulo=16)
+    hb.start(20)                                           # a manual one runs on a cycle too
+    net.run(200)
+    print(hb.sent, wake.running)                           # about 11, False
 ```
 
 ---
@@ -1068,6 +1115,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 |---|---|
 | `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, `FaultRefused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
 | `blobly.FaultRefused` | A `Refused` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
+| `blobly.GeneratorRefused` | A `Refused` (code -1): the engine refused a generator call that could not take effect (see [Generators](#generators)). |
 | `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), a UDS request or a SOME/IP call nothing answered. A `BloblyError`, code -5. |
 | `blobly.FlashFailed` | A flash's own verdict: the bootloader's answers say the flash did not happen (see [Flashing](#13-flashing)). A `BloblyError`, code -11. |
 | `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. An `on_message` id past the width its `ext` names (29 bits when `None`). What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. A SOME/IP header field past its width, a nonzero `return_code` or a payload past one datagram on a message sent, a call's timeout under 1 ms. A flash's `base` past 32 bits, a NUL in its `seed_file`, an image past 2 GiB. |
@@ -1246,6 +1294,7 @@ raises `ValueError`. It is also an `EventLoop`.
 | `net.fault(channel, node, message, kind, ms=None, signal=None)` | Arms a fault on a simulated node's message while the project is started: `kind` a `FaultKind` or its string, for `ms` milliseconds or until cleared. `FaultRefused` where it could not take effect. |
 | `net.clear_fault(channel, node, message)` | Lifts that message's fault. |
 | `net.clear_faults()` | Lifts every fault. |
+| `net.generators` | The run's generators, a `Generators` ([Generators](#generators)). `BloblyError` (code -3) when not started. |
 
 ### `EventLoop`
 
@@ -1465,6 +1514,35 @@ and armed nothing.
 | `str(e)` | Why, in the engine's words. |
 | `e.code` | -1. |
 
+### `Generators`, `Generator`
+
+`net.generators` is a `Generators`: the run's generators, every CAN channel's in project order.
+
+| member | what |
+|---|---|
+| `gens["Name"]`, `gens["CAN1/Name"]`, `gens[i]` | By name, else by channel and name (`KeyError` for none, or for a name two share); by position (`IndexError` past the end). |
+| `for g in gens`, `len(gens)` | In project order. |
+| `g.name`, `g.channel`, `g.message`, `g.trigger` | Its name, the name of the channel it is written under, its DBC message (`""` for a raw frame), and `"manual"`, `"key"` or `"cyclic"` as the project writes it. |
+| `g.id`, `g.ext` | The frame's id (its message's) and whether it is 29-bit. |
+| `g.running` | Sending on its cycle now. |
+| `g.cycle_ms` | Its cycle, 0 for none; set it (1 .. 3600000) to change it from the next frame. |
+| `g.sent` | Frames its bus took, fired and cyclic alike. |
+| `g.target`, `g.note` | The interface it sends on, and why it cannot send (`""` when it can). |
+| `g.fire(timeout_ms=5000)` | Sends its current frame once; returns once the bus took it. `Timeout` after `timeout_ms` (at most 5000). |
+| `g.start(cycle_ms=None)`, `g.stop()` | Sends it on its cycle (its own for `None` or 0); ends that. |
+| `g.set(signal, value)` | `signal` at a static value from the next frame. |
+| `g.source(signal, kind, **params)` | `signal` on a value source from the next frame: `kind` one of `"const"`, `"sine"`, `"sawtooth"`, `"counter"`, `"stepmod"`; `params` from `value`, `offset`, `amplitude`, `freq`, `phase`, `min`, `max`, `period`, `start`, `step` (1 when omitted), `modulo`, `count`, `base`, every other 0. |
+
+### `GeneratorRefused`
+
+`blobly.GeneratorRefused`, a `Refused`: the engine refused a generator call that could not take
+effect, and nothing changed.
+
+| member | what |
+|---|---|
+| `str(e)` | Why, in the engine's words. |
+| `e.code` | -1. |
+
 ### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`, `ConnectionLost`, `RoutingDenied`, `FlashFailed`
 
 `blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused, or a call failed. The
@@ -1497,7 +1575,7 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 ## 18. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
-loop, bus health and metrics, fault injection, the E2E Profile 1 helpers, UDS over CAN and DoIP, DoIP
+loop, bus health and metrics, fault injection, generator control, the E2E Profile 1 helpers, UDS over CAN and DoIP, DoIP
 discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
@@ -1512,7 +1590,9 @@ discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and
 - SOME/IP send, call and listen are here ([SOME/IP](#12-someip)), and so is `flash.program`
   ([Flashing](#13-flashing)), with a simulated bootloader to rehearse it against.
 - Stating a frame's format (a classic frame on a CAN-FD wire).
-- Replay control and recording to a file; generator control (fire, start, stop, cycle).
+- Generator control is here ([Generators](#generators)): fire, start, stop, the cycle, a signal's
+  value or source.
+- Replay control and recording to a file.
 - E2E verify on receive, and E2E declared in the DBC applied on send.
 - Background cyclic senders and a session keep-alive (one owner thread per channel).
 - Bus metrics are here ([Bus metrics](#bus-metrics)): load, and the dropped, error and

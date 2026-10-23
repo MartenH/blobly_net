@@ -118,5 +118,5 @@ class TestExamples:
         # not -q: the plugin's header line says which blobly ran
         r = run("-m", "pytest", "-p", "no:cacheprovider", os.path.join(EXAMPLES, "test_sim_demo.py"))
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "15 passed" in r.stdout
+        assert "16 passed" in r.stdout
         assert_package(r.stdout, "test_sim_demo.py")

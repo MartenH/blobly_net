@@ -34,3 +34,30 @@ fn test_sender_message_frame_encodes_and_evaluates_sources() {
 	assert f.data == [u8(7), 13] // the counter at send 3: 10 + 3
 	assert sender_message_frame(project.Sender{ message: 'Nope' }, [db], 0, 0.0) == none
 }
+
+// a multiplexed signal is encoded only where the switch selects its branch: a value kept for the
+// other branch does not land on the shared bits
+fn test_sender_message_frame_encodes_the_selected_branch_only() {
+	db := candb.parse_dbc('BO_ 256 M: 2 T
+ SG_ Mux M : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ A m1 : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ B m2 : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+') or { panic(err) }
+	mut s := project.Sender{
+		name:    'g'
+		message: 'M'
+		signals: [project.SenderSig{
+			name:  'A'
+			value: 10
+		}, project.SenderSig{
+			name:  'Mux'
+			value: 1
+		}, project.SenderSig{
+			name:  'B'
+			value: 20
+		}]
+	}
+	assert (sender_message_frame(s, [db], 0, 0.0) or { panic('M') }).data == [u8(1), 10]
+	s.signals[1].value = 2
+	assert (sender_message_frame(s, [db], 0, 0.0) or { panic('M') }).data == [u8(2), 20]
+}

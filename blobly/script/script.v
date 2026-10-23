@@ -121,6 +121,9 @@ mut:
 	// the coroutine (its lua_State) the deadline was first raised in; 0 before
 	timeout_co u64
 pub mut:
+	// The run's generators, which gen.* controls (generators.v): cmd/script's headless run; none in
+	// the GUI, whose generators are its panel's.
+	gens sim.GenControl = sim.NoGens{}
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
 	results   []TestResult
@@ -338,6 +341,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__listen', l_listen)
 	env.st.register('__bus_health', l_bus_health)
 	env.register_metrics()
+	env.register_gens()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.

@@ -71,3 +71,10 @@ def test_requests_are_answered_during_run(project, can1):
     project.on_timer(50, lambda: can1.messages.Request.send(ReqCode=5))
     project.run(500)
     assert len(answers) >= 3
+
+
+def test_a_fired_generator_is_answered(project, can1):
+    ping = project.generators["Ping ECU (Request)"]  # the project's own generator, edited for the run
+    ping.set("ReqCode", 9)
+    ping.fire()
+    can1.expect_signal("Response", "RespCode", 10, timeout_ms=500)

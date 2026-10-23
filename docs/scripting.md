@@ -148,7 +148,8 @@ For every **enabled** channel that declares simulated ECUs it starts:
   ids, or a single built-in server on `0x7E0` → `0x7E8` if none does.
 
 and every **cyclic generator** (`senders:` with `trigger: cyclic`), sent as the GUI sends it
-during a measurement.
+during a measurement. Every generator, cyclic or not, is then the script's to drive
+([Generators](#generators)).
 
 A `type: doip` channel with simulated nodes gets a real DoIP entity bound on its host:port
 instead of a bus. A channel without simulated nodes is monitor-only: nothing is started for it,
@@ -548,10 +549,45 @@ run(3000)
 
 A frame sent periodically from `on_timer` goes out only while `run()` runs; one that must keep
 going while the script waits in `expect` or a diagnostic exchange belongs in the project's
-generators (`senders:`, docs/simulation.md).
+generators (`senders:`, docs/simulation.md), which a script drives with [`gen.*`](#generators).
 
 (Lua's own coroutines are available too if you want to hand-roll more elaborate
 flows, but `expect` + `on_message`/`run` cover the common test shapes.)
+
+### Generators
+
+The project's generators (`senders:`, [simulation.md](simulation.md#interactive-senders)), in a
+headless run: what the Generators panel lets a person do. Each is named by its name, or by
+`"channel/name"` where two share one (a shared name alone is an error naming the forms that tell
+them apart), or by its position in `gen.list()`, a number — the one way to reach two generators
+of one name on two channels of one name. Every
+CAN channel's generators are there, a disabled channel's included (its generator may send on an
+enabled one); in the GUI's Script panel `gen.*` is an error, the generators being the panel's.
+
+| Call | Meaning |
+|---|---|
+| `gen.list()` | every generator: `{ name, channel, message, id, ext, trigger, cycle_ms, running, sent, target, note }` — `message` `""` for a raw frame, `trigger` as the project writes it, `running` sending on its cycle now, `sent` the frames its bus took, `target` the interface it sends on, `note` why it cannot send (`""` when it can) |
+| `gen.fire(name)` | send its current frame once, returning once the bus took it — a first fire of a non-cyclic one opens its bus — within 5 s and the run deadline, or an error; a frame the generator had not taken up when the wait ended is never sent |
+| `gen.start(name [, cycle_ms])` | send it on its cycle from now (its own when omitted; an error when it has none) |
+| `gen.stop(name)` | end its cycle; `gen.fire` still sends it |
+| `gen.cycle(name, cycle_ms)` | a new cycle (1 .. 3600000 ms), from its next frame |
+| `gen.set(name, signal, value)` | the signal at a static value from the next frame, its value source dropped; a signal the generator did not list is added; a multiplexed one is sent where the switch selects its branch |
+| `gen.source(name, signal, src)` | the signal on a value source from the next frame: `src` is `{ type = "sine", offset = 50, amplitude = 10, freq = 1 }`, `type` one of `const`, `sine`, `sawtooth`, `counter`, `stepmod` with the parameters a project writes for it (`step` 1 when omitted, every other 0) |
+
+A call that cannot take effect is an error saying why: a cycle out of range, a signal the message
+does not have or its payload does not hold (or any signal of a raw frame), a value that is not finite, a source that cannot be
+evaluated (a zero period or count, an unknown parameter), a generator with nothing to send on,
+or a send its bus refused (a listen-only row). An edit lasts for the run: the next start brings
+the generators up as the project writes them. `tests/generator_control.lua` is the suite.
+
+```lua
+gen.set("Heartbeat pulse", "Counter", 42)
+gen.fire("Heartbeat pulse")
+gen.fire(3)                                -- the third of gen.list()
+gen.source("Ping ECU (Request)", "ReqCode", { type = "counter", start = 100, modulo = 256 })
+gen.start("Ping ECU (Request)", 20)        -- a manual generator on a cycle of its own
+gen.stop("Cyclic wake (0x123)")
+```
 
 ### Logging & timing
 

@@ -44,6 +44,35 @@ fn C.bb_routing_set(i32, i32)
 fn C.bb_routing_get() i32
 fn C.bb_routing_tester_get() i32
 
+// a generator and a value source, for the generator calls (gen.v)
+pub struct C.bb_generator {
+pub mut:
+	id       u32
+	ext      u8
+	running  u8
+	sendable u8
+	cycle_ms i32
+	sent     i64
+}
+
+pub struct C.bb_wave {
+pub mut:
+	kind      &char
+	value     f64
+	offset    f64
+	amplitude f64
+	freq      f64
+	phase     f64
+	min       f64
+	max       f64
+	period    f64
+	start     f64
+	step      f64
+	modulo    f64
+	count     f64
+	base      f64
+}
+
 pub struct C.bb_frame {
 pub mut:
 	id   u32
@@ -377,6 +406,7 @@ pub fn bb_load(path &char) i32 {
 			return fail(bb_err, 'load: channel "${ch.name.replace('\0', '\\0')}" has a NUL in its name or interface, which a C string cannot carry')
 		}
 	}
+	gens_nul_refusal(proj) or { return fail(bb_err, err.msg()) }
 	// every send is checked against the published wire policy (listen-only, CAN-FD framing), so
 	// it is the loaded project's from here: a handle opened before the load, before bb_start or
 	// across a stop is policed by it
@@ -426,6 +456,7 @@ pub fn bb_start() i32 {
 	bb_dbs = r.chans.map(it.db)
 	bb_run_rows = r.chans.map(it.cfg)
 	fault_rows_publish(r.chans)
+	gens_publish(r)
 	bb_dbs_live = true
 	bb_run_gen++
 	bb_mu.unlock()
@@ -443,6 +474,7 @@ pub fn bb_stop() i32 {
 	bb_dbs = []candb.Database{}
 	bb_run_rows = []project.Channel{}
 	fault_rows_retire()
+	gens_retire()
 	bb_dbs_live = false
 	bb_mu.unlock()
 	r.stop()

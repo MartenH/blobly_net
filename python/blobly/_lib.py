@@ -235,6 +235,26 @@ class BbDiagnostics(ctypes.Structure):
 # enum bb_flash_auth, as the Lua flash.program's report names it
 FLASH_AUTH = {0: "skipped", 1: "authenticated", 2: "not required"}
 
+class BbGenerator(ctypes.Structure):
+    """bb_generator, field for field."""
+    _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("running", ctypes.c_uint8),
+                ("sendable", ctypes.c_uint8), ("cycle_ms", ctypes.c_int32), ("sent", ctypes.c_int64)]
+
+
+# bb_wave's parameters after its kind, in its order
+WAVE_PARAMS = ("value", "offset", "amplitude", "freq", "phase", "min", "max", "period", "start", "step",
+               "modulo", "count", "base")
+
+
+class BbWave(ctypes.Structure):
+    """bb_wave, field for field."""
+    _fields_ = [("kind", ctypes.c_char_p)] + [(p, ctypes.c_double) for p in WAVE_PARAMS]
+
+
+# enum bb_gen_text
+GEN_NAME, GEN_CHANNEL, GEN_MESSAGE, GEN_TRIGGER, GEN_TARGET, GEN_NOTE = range(6)
+
+
 # enum bb_functional_outcome, as the Lua uds.functional names the outcomes
 OUTCOMES = {0: "positive", 1: "negative", 2: "silent", 3: "pending", 4: "failed"}
 
@@ -353,6 +373,17 @@ def _declare(lib):
         # bus metrics (project.py)
         "bb_bus_load": ([c_int, P(BbBusload)], c_int),
         "bb_bus_diagnostics": ([c_int, P(BbDiagnostics)], c_int),
+        # generators (generators.py)
+        "bb_gen_count": ([], c_int),
+        "bb_gen_find": ([c_char_p], c_int),
+        "bb_gen_info": ([c_int, P(BbGenerator)], c_int),
+        "bb_gen_text": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_gen_fire": ([c_int, c_int], c_int),
+        "bb_gen_start": ([c_int, c_int], c_int),
+        "bb_gen_stop": ([c_int], c_int),
+        "bb_gen_cycle": ([c_int, c_int], c_int),
+        "bb_gen_set": ([c_int, c_char_p, ctypes.c_double], c_int),
+        "bb_gen_source": ([c_int, c_char_p, P(BbWave)], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

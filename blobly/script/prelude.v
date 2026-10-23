@@ -230,6 +230,51 @@ function sim.clear_fault(channel, node, message)
   __sim_fault(channel, node, message, "clear", 0, "")
 end
 
+-- Generators: the run of the project (its `senders:`), each named by its name or "channel/name",
+-- or by its position in gen.list() (a number).
+--   gen.list()                   -> { { name, channel, message, id, ext, trigger, cycle_ms,
+--                                       running, sent, target, note }, ... }
+--   gen.fire(g)                  sends its frame once, returning once the bus took it
+--   gen.start(g [, cycle_ms])    sends it on its cycle (its own when omitted)
+--   gen.stop(g)                  ends the cycle; gen.fire still sends it
+--   gen.cycle(g, cycle_ms)       a new cycle, from its next frame
+--   gen.set(g, signal, value)    the signal at a static value, from the next frame
+--   gen.source(g, signal, { type = "sine", offset = 50, amplitude = 10, freq = 1 })
+--                                the signal from a value source (const, sine, sawtooth, counter,
+--                                stepmod; the parameters a project writes), from the next frame
+gen = {}
+local gen_params = { "value", "offset", "amplitude", "freq", "phase", "min", "max", "period",
+  "start", "step", "modulo", "count", "base" }
+-- a generator as the primitives take it: a name and a position (0: none)
+local function gsel(g)
+  if type(g) == "string" then return g, 0 end
+  if math.type(g) ~= "integer" or g < 1 then
+    error("gen: a generator is its name or its position in gen.list() (1, 2, ...), not " .. tostring(g), 3)
+  end
+  return "", g
+end
+function gen.list() return __gen_list() end
+function gen.fire(g) local n, p = gsel(g); __gen_fire(n, p) end
+function gen.start(g, cycle_ms) local n, p = gsel(g); __gen_start(n, p, cycle_ms or 0) end
+function gen.stop(g) local n, p = gsel(g); __gen_stop(n, p) end
+function gen.cycle(g, cycle_ms) local n, p = gsel(g); __gen_cycle(n, p, cycle_ms) end
+function gen.set(g, signal, value) local n, p = gsel(g); __gen_set(n, p, signal, value) end
+function gen.source(g, signal, src)
+  if type(src) ~= "table" or type(src.type) ~= "string" then
+    error("gen.source: a source is a table naming its type, { type = \"sine\", ... }", 2)
+  end
+  local known = { type = true }
+  for _, k in ipairs(gen_params) do known[k] = true end
+  for k, v in pairs(src) do
+    if not known[k] then error("gen.source: no parameter " .. tostring(k), 2) end
+    if k ~= "type" and type(v) ~= "number" then error("gen.source: " .. k .. " is a number", 2) end
+  end
+  local args = {}
+  for i, k in ipairs(gen_params) do args[i] = src[k] or (k == "step" and 1 or 0) end
+  local n, p = gsel(g)
+  __gen_source(n, p, signal, src.type, table.unpack(args))
+end
+
 -- ============================ discovery (DoIP) =============================
 doip = {}
 

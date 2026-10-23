@@ -79,3 +79,6 @@ __all__ += ["bridge"]
 # bus metrics (metrics.py; Channel.load, Channel.diagnostics)
 from .metrics import BusDiagnostics, BusLoad  # noqa: E402
 __all__ += ["BusDiagnostics", "BusLoad"]
+# generator control (generators.py)
+from .generators import Generator, GeneratorRefused, Generators  # noqa: E402
+__all__ += ["Generator", "GeneratorRefused", "Generators"]
