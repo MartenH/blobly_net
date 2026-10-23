@@ -5,15 +5,14 @@ and refused a stop; and in an installed Windows wheel, the canbridge it carries 
 being the one a start runs. Starting a real bridge is checked by hand (docs/wsl_bridge.md)."""
 import os
 import sys
-import unittest
 
 import pytest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-if not os.environ.get("BLOBLY_TEST_INSTALLED"):
-    sys.path.insert(0, os.path.join(HERE, ".."))
-import blobly  # noqa: E402
-from blobly import _lib, bridge  # noqa: E402
+import blobly
+from blobly import _lib, bridge
+from conftest import INSTALLED
+
+pytestmark = pytest.mark.usefixtures("engine")
 
 NOBODY = "blobly-no-such-distribution"
 
@@ -33,13 +32,16 @@ def test_a_bridge_that_is_not_connected_is_idle_without_rows_and_cannot_be_stopp
     assert f'no bridge named "{NOBODY}" is connected' in str(e.value)
 
 
-def test_a_distribution_is_a_name():
-    for bad in ("", None, 3):
-        with pytest.raises(TypeError):
-            bridge.state(bad)
-    for call in (bridge.start, bridge.state, bridge.rows, bridge.stop):
-        with pytest.raises(ValueError, match="NUL"):
-            call("Ubuntu\0other")
+@pytest.mark.parametrize("bad", ["", None, 3])
+def test_a_distribution_is_a_name(bad):
+    with pytest.raises(TypeError):
+        bridge.state(bad)
+
+
+@pytest.mark.parametrize("call", [bridge.start, bridge.state, bridge.rows, bridge.stop])
+def test_a_name_with_a_nul_is_refused_before_it_reaches_another_bridge(call):
+    with pytest.raises(ValueError, match="NUL"):
+        call("Ubuntu\0other")
 
 
 def test_the_distributions_are_names():
@@ -55,33 +57,10 @@ def test_on_linux_there_is_nothing_to_start_a_bridge_in():
         bridge.start("Ubuntu-24.04")
 
 
-@pytest.mark.skipif(not (sys.platform == "win32" and os.environ.get("BLOBLY_TEST_INSTALLED")),
-                    reason="an installed Windows wheel carries canbridge")
+@pytest.mark.skipif(not (sys.platform == "win32" and INSTALLED), reason="an installed Windows wheel carries canbridge")
 def test_the_wheel_carries_the_canbridge_a_start_runs():
-    prog = bridge.program()  # loads the library, so loaded_path is set
+    prog = bridge.program()
     assert prog is not None
     assert os.path.samefile(prog, os.path.join(os.path.dirname(_lib.loaded_path), "canbridge"))
     with open(prog, "rb") as f:
         assert f.read(4) == b"\x7fELF", "canbridge is a Linux program"
-
-
-def load_tests(loader, tests, pattern):
-    """These are pytest tests; under `unittest discover` each runs as a FunctionTestCase, a
-    pytest skip (raised or marked) as a unittest skip."""
-    suite = unittest.TestSuite()
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            suite.addTest(unittest.FunctionTestCase(_unittest_body(fn), description=name))
-    return suite
-
-
-def _unittest_body(fn):
-    def body():
-        for mark in getattr(fn, "pytestmark", []):
-            if mark.name == "skipif" and mark.args and mark.args[0]:
-                raise unittest.SkipTest(mark.kwargs.get("reason", ""))
-        try:
-            fn()
-        except pytest.skip.Exception as e:
-            raise unittest.SkipTest(str(e)) from e
-    return body
