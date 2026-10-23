@@ -645,8 +645,7 @@ response shape changes.
   agrees with its marker), so that is the identity and the body text is the fallback
   (`review_is_for`). The clean channel keeps the marker: an issue comment has no `commit_id`.
 - **The summary comment is EDITED in place**, so its id predates every request and its
-  freshness is `updated_at` after the request; the marker is the signal, never the table text,
-  and a `failed` it already stated at the request (`BASELINE_SUMMARY_STATUS`) is not a new one.
+  freshness is `updated_at` after the request; the marker is the signal, never the table text.
   A same-SHA request still pending after `CODEX_REVIEW_STALE_MINUTES` (60, the watcher's
   timeout) may be re-requested — codex has left a review `running` for over an hour while a
   fresh request answered in four minutes.
