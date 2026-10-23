@@ -286,6 +286,10 @@ class BbUdsTiming(ctypes.Structure):
                 ("pending_budget_ms", ctypes.c_int32)]
 
 
+# enum bb_uds_wait, by bb_uds_timing's field names
+WAITS = {"timeout_ms": 0, "p2_star_ms": 1, "margin_ms": 2, "pending_budget_ms": 3}
+
+
 def _declare(lib):
     """Every bb.h prototype, argtypes and restype. An int-returning call keeps ctypes' default."""
     c_int, c_char_p, P = ctypes.c_int, ctypes.c_char_p, ctypes.POINTER
@@ -419,7 +423,7 @@ def _declare(lib):
         "bb_isotp_data": ([c_int, c_char_p, c_int], c_int),
         "bb_isotp_close": ([c_int], c_int),
         "bb_uds_get_timing": ([c_int, P(BbUdsTiming)], c_int),
-        "bb_uds_set_timing": ([c_int, P(BbUdsTiming)], c_int),
+        "bb_uds_set_wait": ([c_int, c_int, c_int], c_int),
         "bb_uds_retarget": ([c_int, P(ctypes.c_int64)], c_int),
     }
     for name, (args, res) in sigs.items():

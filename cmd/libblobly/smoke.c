@@ -119,7 +119,7 @@ static int (*bb_isotp_send_p)(int, const uint8_t *, int);
 static int (*bb_isotp_recv_p)(int, int, uint8_t *, int);
 static int_int_fn bb_isotp_close_p, bb_uds_tester_present_p;
 static int (*bb_uds_get_timing_p)(int, bb_uds_timing *);
-static int (*bb_uds_set_timing_p)(int, const bb_uds_timing *);
+static int (*bb_uds_set_wait_p)(int, int, int);
 static int (*bb_uds_retarget_p)(int, const int64_t *);
 
 typedef int (*load_fn)(int, bb_busload *);
@@ -325,10 +325,10 @@ static int isotp_steps(int row, int doip) {
 	bb_uds_timing tm;
 	CHECK(u >= 0 && bb_uds_get_timing_p(u, &tm) == 0 && tm.timeout_ms == 1000 && tm.p2_star_ms == 5000 && tm.margin_ms == 1000
 		&& tm.pending_budget_ms == 120000, "the default timing");
-	tm.timeout_ms = 0;
-	CHECK(bb_uds_set_timing_p(u, &tm) == BB_ERR, "a first wait of 0 ms must refuse");
-	tm.timeout_ms = 100;
-	CHECK(bb_uds_set_timing_p(u, &tm) == 0, "a first wait of 100 ms");
+	CHECK(bb_uds_set_wait_p(u, BB_WAIT_TIMEOUT, 0) == BB_ERR && bb_uds_set_wait_p(u, 4, 100) == BB_ERR,
+		"a first wait of 0 ms, and a wait bb.h does not name, must refuse");
+	CHECK(bb_uds_set_wait_p(u, BB_WAIT_TIMEOUT, 100) == 0 && bb_uds_get_timing_p(u, &tm) == 0 && tm.timeout_ms == 100
+		&& tm.margin_ms == 1000, "a first wait of 100 ms, the others kept");
 	int64_t t0 = bb_now_ns_p();
 	CHECK(bb_uds_tester_present_p(u) == BB_ERR_TIMEOUT && bb_now_ns_p() - t0 < 600000000LL, "nobody answers within the 100 ms");
 	int64_t node = 0x2000;
@@ -472,7 +472,7 @@ int main(int argc, char **argv) {
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
 	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present);
-	SYM(bb_uds_get_timing); SYM(bb_uds_set_timing); SYM(bb_uds_retarget);
+	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_retarget);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");

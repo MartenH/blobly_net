@@ -339,6 +339,7 @@ fn (mut c Client) probe_did_size(did u16) ![]u8 {
 // set_did_size states snapshot DID `id`'s size, for one the client cannot read or whose size varies.
 pub fn (mut c Client) set_did_size(id u16, n int) {
 	c.did_lens[id] = n
+	c.stated_did_lens[id] = n
 }
 
 // set_ext_record_size states extended data record `number`'s size (blobly_ext_records otherwise).

@@ -241,7 +241,7 @@ Those waits are the connection's, in ms: `timeout_ms` (the first answer), `p2_st
 server's P2*), `margin_ms` (added to it) and `pending_budget_ms` (one request from its send).
 `diag:timing()` reads them as they stand, a session answer's adoption included;
 `diag:set_timing({ margin_ms = 200 })` states the ones the table names from the next request on,
-and `uds.open` takes them among its options. `timeout_ms` and `pending_budget_ms` are 1 to 3600000,
+and `uds.open` takes them among its options (checked before it opens anything). `timeout_ms` and `pending_budget_ms` are 1 to 3600000,
 `p2_star_ms` and `margin_ms` 0 to 3600000; anything else raises and changes nothing. A session
 answer still adopts its P2* over one stated, and lengthens `timeout_ms` where its P2 needs more. On
 a DoIP channel `uds.open` hands back the channel's one connection, so its options and
@@ -263,7 +263,11 @@ moves the connection's requests, and the answers it takes, to that node's logica
 `diag:retarget()` goes back to the channel's `ecu_address`. One connection, so what the tester
 unlocked on the gateway there holds for the node (blobly_emb's sysnode routes only for such a
 tester): unlock the gateway, then retarget. Every handle of the channel's connection moves with it,
-and a reconnect keeps the target but not the gateway's unlock. On a CAN channel it raises.
+and a reconnect keeps the target but not the gateway's unlock. Another target is another ECU: the
+connection's waits go back to what the script set, without what a session answer of the old target
+adopted, and the snapshot DID sizes it learned are forgotten (`did_size`'s are kept). A retarget
+inside a `security_access` keyfn sends no key (it raises), since the key answers the old target's
+seed. On a CAN channel it raises.
 
 The returned object has:
 

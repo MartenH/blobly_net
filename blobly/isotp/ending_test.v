@@ -74,4 +74,7 @@ fn test_a_listen_only_wire_refuses_the_send() {
 	}
 	assert ending_of_send(mut c, [u8(0x3E), 0x00]) == .refused
 	assert ending_of_send(mut c, []u8{len: 20}) == .refused
+	// a receive whose Flow Control the wire refused failed: nothing of the caller's was refused
+	assert c.ending_of(transport.not_written('${c.iface}: listen-only — nothing is transmitted on this wire'),
+		false) == .failed
 }

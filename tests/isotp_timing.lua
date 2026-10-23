@@ -73,6 +73,8 @@ test("a UDS connection reads and states its timing", function()
   check.truthy(not ok and tostring(err):find("timeout_ms 0", 1, true), tostring(err))
   check.equal(diag:timing().margin_ms, 200, "a refused timing changed something")
   diag:close()
+  ok, err = pcall(uds.open, "CAN1", { pending_budget_ms = 0 })   -- refused before it opens
+  check.truthy(not ok and tostring(err):find("pending_budget_ms 0", 1, true), tostring(err))
 end)
 
 test("a short first wait ends a request nothing answers sooner", function()
@@ -92,6 +94,18 @@ test("a DoIP connection moves to another target and back", function()
   check.truthy(not ok and tostring(err):find("negative ack", 1, true), tostring(err))
   diag:retarget()                      -- back to the channel ecu_address
   check.equal(diag:read_did(0xF190), "BLOBLYNETV0SUT001")
+  diag:set_timing({ margin_ms = 2000 })
+  diag:session(0x01)                   -- P2 50 ms: the first wait is P2 plus the margin
+  check.equal(diag:timing().timeout_ms, 2050)
+  diag:retarget(0x2000)                -- another ECU: the adopted wait goes, the margin set stays
+  check.equal(diag:timing().timeout_ms, 1000)
+  check.equal(diag:timing().margin_ms, 2000)
+  diag:retarget()
+  ok, err = pcall(function()           -- a retarget inside keyfn sends no key
+    diag:security_access(0x01, function(seed) diag:retarget(0x2000) return seed end)
+  end)
+  check.truthy(not ok and tostring(err):find("retargeted inside keyfn", 1, true), tostring(err))
+  diag:retarget()
   ok, err = pcall(function() diag:retarget(0x10000) end)
   check.truthy(not ok and tostring(err):find("not a logical address", 1, true), tostring(err))
   diag:close()

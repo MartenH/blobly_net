@@ -919,8 +919,12 @@ does), so unlock the gateway first and retarget after. A new connection (a lost 
 stop and start) keeps the target, but not the gateway's unlock: a gateway that routes only an
 unlocked tester then refuses the node's requests with a negative acknowledgement
 (`CarrierFailed`) until it is unlocked again. On such a new connection a 0x27 key goes only to a
-target that answered its seed there: the gateway's seed is not the node's. On a CAN row a client's
-target is its ids, and `retarget` is refused.
+target that answered its seed there: the gateway's seed is not the node's. Another target is another
+ECU, so the client's waits go back to what the script set (the rest to the engine's), without what
+a 0x10 answer of the old target adopted, and the snapshot DID sizes it learned are forgotten (the
+ones `did_size` stated are kept). `retarget` is refused inside a `security_access` key function,
+whose key answers the old target's seed. On a CAN row a client's target is its ids, and `retarget`
+is refused.
 
 ```python
 import blobly
@@ -1549,7 +1553,7 @@ A UDS client on a CAN or DoIP row (`ch.uds()`). See [UDS diagnostics](#10-uds-di
 | `diag.raw_suppressed(request)` | Sends `request` with suppress-positive-response set on its sub-function: silence is success, a refusal raises. Returns whether a positive answer came anyway. |
 | `diag.last` | The last exchange, an `Exchange`, or `None` before the first, after a stop let the connection go, and after a functional request (its `FunctionalReply` is the answer). |
 | `diag.timeout_ms`, `diag.p2_star_ms`, `diag.margin_ms`, `diag.pending_budget_ms` | Its waits in ms, as they stand (1000, 5000, 1000, 120000 until set or a 0x10 answer adopts): the first answer, the ECU's P2* after each 0x78 plus the margin, one request from its send. Settable, from the next request on, and held on every connection the client opens ([UDS diagnostics](#10-uds-diagnostics)). |
-| `diag.retarget(address=None)` | DoIP: requests go to logical address `address`, a node behind the gateway the entity is, on the same connection; `None` goes back to the row's `ecu_address`. Refused on a CAN row ([DoIP](#11-doip)). |
+| `diag.retarget(address=None)` | DoIP: requests go to logical address `address`, a node behind the gateway the entity is, on the same connection; `None` goes back to the row's `ecu_address`. Another target starts again from the waits and sizes the script set. Refused on a CAN row, and inside a `security_access` key function ([DoIP](#11-doip)). |
 | `diag.close()`, `with diag:` | Lets the connection go for good; a later call refuses. |
 
 ### `IsoTp`

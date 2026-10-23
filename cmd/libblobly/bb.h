@@ -825,18 +825,22 @@ int bb_gen_source(int g, const char *signal, const bb_wave *w);
  * (timeout_ms, 1000), the ECU's P2* after each responsePending (p2_star_ms, 5000 until a 0x10 answer
  * names one) plus margin_ms (1000), and one request's whole allowance from its send
  * (pending_budget_ms, 120000). bb_uds_get_timing reads them as they stand (a 0x10 answer adopts its
- * P2*, and lengthens timeout_ms where its P2 needs more); bb_uds_set_timing states all four from the
- * next request on, refused with BB_ERR — nothing changed — for timeout_ms or pending_budget_ms outside
- * 1 .. 3600000, or p2_star_ms or margin_ms outside 0 .. 3600000. They hold across the library's own
- * reopen of a lost DoIP connection (P2* only where it loosens the new one's). Every call above is
- * then bounded by them in place of the 1000 / P2* + 1000 / 120 s bb_uds_open states.
+ * P2*, and lengthens timeout_ms where its P2 needs more); bb_uds_set_wait states one of them, `which`
+ * an enum bb_uds_wait, from the next request on — refused with BB_ERR, nothing changed, for
+ * timeout_ms or pending_budget_ms outside 1 .. 3600000, or p2_star_ms or margin_ms outside
+ * 0 .. 3600000. They hold across the library's own reopen of a lost DoIP connection (P2* only where
+ * it loosens the new one's). Every call above is then bounded by them in place of the 1000 / P2* +
+ * 1000 / 120 s bb_uds_open states.
  *
  * bb_uds_retarget moves a DoIP handle's requests, and the answers it takes, to logical address
  * *address (0 .. 0xFFFF; NULL: the row's ecu_address): a node behind the gateway the row's entity is
  * (ISO 13400-2), on the one connection, so what the tester unlocked on the gateway there holds for
  * the node. The target holds across a reopen of a lost connection, whose new routing activation
  * carries no unlock: a gateway that routes only an unlocked tester refuses the node's requests again
- * (a negative acknowledgement, BB_ERR_CARRIER) until it is unlocked on the new one. On a connection
+ * (a negative acknowledgement, BB_ERR_CARRIER) until it is unlocked on the new one. Another target is
+ * another ECU: the handle's waits go back to what was stated with bb_uds_set_wait (the rest to
+ * bb_uds_open's), and the snapshot DID sizes it learned are forgotten (bb_uds_did_size's are kept).
+ * On a connection
  * that replaces another (bb_uds_replaces, or the library's reopen), a 0x27 key goes only to a target
  * whose seed of its level was answered on it. BB_ERR on a CAN handle, whose target is its ids. */
 typedef struct bb_uds_timing {
@@ -845,6 +849,12 @@ typedef struct bb_uds_timing {
 	int32_t margin_ms;
 	int32_t pending_budget_ms;
 } bb_uds_timing;
+enum bb_uds_wait {
+	BB_WAIT_TIMEOUT = 0,         /* timeout_ms */
+	BB_WAIT_P2_STAR = 1,         /* p2_star_ms */
+	BB_WAIT_MARGIN = 2,          /* margin_ms */
+	BB_WAIT_PENDING_BUDGET = 3   /* pending_budget_ms */
+};
 #ifndef BB_FROM_V
 int bb_isotp_open(int row, int64_t tx, int64_t rx, bb_uds_target *out); /* >= 0: the handle */
 int bb_isotp_send(int h, const uint8_t *data, int n);
@@ -852,7 +862,7 @@ int bb_isotp_recv(int h, int timeout_ms, uint8_t *buf, int cap);        /* >= 0:
 int bb_isotp_data(int h, uint8_t *buf, int cap);
 int bb_isotp_close(int h);
 int bb_uds_get_timing(int u, bb_uds_timing *out);
-int bb_uds_set_timing(int u, const bb_uds_timing *t);
+int bb_uds_set_wait(int u, int which, int ms);
 int bb_uds_retarget(int u, const int64_t *address);
 #endif /* BB_FROM_V */
 

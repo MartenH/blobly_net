@@ -469,6 +469,8 @@ function uds.open(channel, opts)
   -- a pair of CAN ids that DoIP has no use for. No sentinel value is used, because every
   -- sentinel is also a number a script might mean -- 0 is a valid arbitration id, and a
   -- negative one is a mistake that must be reported rather than read as "omitted".
+  local timed = opts.timeout_ms ~= nil or opts.p2_star_ms ~= nil or opts.margin_ms ~= nil or opts.pending_budget_ms ~= nil
+  if timed then __uds_timing_check(opts.timeout_ms, opts.p2_star_ms, opts.margin_ms, opts.pending_budget_ms) end
   local h = __uds_open(channel, opts.tx, opts.rx)
   local self = { handle = h, channel = channel }
   function self:session(sub) return __uds_session(self.handle, sub or 0x01) end
@@ -524,7 +526,13 @@ function uds.open(channel, opts)
     keyfn = keyfn or function(s)
       return (s:gsub(".", function(c) return string.char(string.byte(c) ~ 0xFF) end))
     end
-    __uds_sec_key(self.handle, level + 1, keyfn(seed))
+    local target = __uds_target(self.handle)
+    local key = keyfn(seed)
+    -- a retarget inside keyfn would send this seed key to another ECU
+    if __uds_target(self.handle) ~= target then
+      error("security_access: the connection was retargeted inside keyfn; no key sent", 2)
+    end
+    __uds_sec_key(self.handle, level + 1, key)
     return seed
   end
   -- the waits, in ms: timeout_ms (the first answer), p2_star_ms (after each 0x78, plus margin_ms)
@@ -541,9 +549,7 @@ function uds.open(channel, opts)
   -- DoIP: requests go to logical address `address` (nil: the channel ecu_address), a node behind
   -- the gateway the entity is, on the same connection
   function self:retarget(address) __uds_retarget(self.handle, address) end
-  if opts.timeout_ms ~= nil or opts.p2_star_ms ~= nil or opts.margin_ms ~= nil or opts.pending_budget_ms ~= nil then
-    self:set_timing(opts)
-  end
+  if timed then self:set_timing(opts) end
   return self
 end
 

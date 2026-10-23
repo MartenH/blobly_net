@@ -281,8 +281,7 @@ class UdsClient:
         try:
             if self._opened:
                 _lib.check(lib.bb_uds_replaces(self._h))
-            if self._timing:
-                self._state_timing(self._h, self._timing)
+            self._state_waits(self._h, self._timing)
             if self._target is not None:
                 _lib.check(lib.bb_uds_retarget(self._h, ctypes.byref(ctypes.c_int64(self._target))))
                 self.ecu = self._target
@@ -583,15 +582,11 @@ class UdsClient:
             self._call(_lib.lib().bb_uds_ext_record_size, record, size)
             self._ext_sizes[record] = size  # kept for the next connection
 
-    def _state_timing(self, h: int, stated: dict[str, int]) -> None:
-        """Handle h's timing with `stated` over it, set: refused whole, nothing changed, when a wait
-        is out of range."""
+    def _state_waits(self, h: int, stated: dict[str, int]) -> None:
+        """States the waits `stated` names on handle h, one by one."""
         lib = _lib.lib()
-        t = _lib.BbUdsTiming()
-        self._call_on(h, lib.bb_uds_get_timing, ctypes.byref(t))
         for name, ms in stated.items():
-            setattr(t, name, ms)
-        self._call_on(h, lib.bb_uds_set_timing, ctypes.byref(t))
+            self._call_on(h, lib.bb_uds_set_wait, _lib.WAITS[name], ms)
 
     def _get_timing(self, name: str) -> int:
         t = _lib.BbUdsTiming()
@@ -601,7 +596,7 @@ class UdsClient:
     def _set_timing(self, name: str, ms: int) -> None:
         ms = _int(name, ms)
         with self._lock:
-            self._state_timing(self._handle(), {name: ms})
+            self._state_waits(self._handle(), {name: ms})
             self._timing[name] = ms  # kept for the next connection
 
     @property
@@ -652,9 +647,14 @@ class UdsClient:
         channel's ecu_address; `ecu` follows it. A new connection (a lost one reopened, a stop and
         start) keeps the target but not the gateway's unlock: a gateway that routes only an
         unlocked tester refuses the node's requests (CarrierFailed, a negative acknowledgement)
-        until it is unlocked again. Refused on a CAN channel."""
+        until it is unlocked again. Another target is another ECU: the client starts again from the
+        waits and sizes the script set, without what it learned of the one before. Refused on a CAN
+        channel, and inside a security_access key_fn."""
         a = None if address is None else _int("address", address, 64)
         with self._lock:
+            if self._in_key_fn:
+                # the key would go to the new target, answering the old one's seed
+                raise BloblyError(f"{self!r}: retarget inside a security_access key_fn", _lib.BB_ERR_STATE)
             h = self._handle()
             self._call_on(h, _lib.lib().bb_uds_retarget, None if a is None else ctypes.byref(ctypes.c_int64(a)))
             self._target = a

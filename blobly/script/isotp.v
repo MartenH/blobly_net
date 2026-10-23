@@ -23,7 +23,9 @@ fn (mut env Env) register_isotp() {
 	env.st.register('__isotp_close', l_isotp_close)
 	env.st.register('__uds_timing', l_uds_timing)
 	env.st.register('__uds_set_timing', l_uds_set_timing)
+	env.st.register('__uds_timing_check', l_uds_timing_check)
 	env.st.register('__uds_retarget', l_uds_retarget)
+	env.st.register('__uds_target', l_uds_target)
 }
 
 // __isotp_open(channel, tx, rx): a raw ISO-TP channel on the channel named, by udsconn's rule (a
@@ -129,34 +131,60 @@ fn l_uds_timing(l lua.State) i32 {
 	return 4
 }
 
+// waits_args is the waits given in arguments first .. first + 3 (timeout_ms, p2_star_ms,
+// margin_ms, pending_budget_ms; nil gives none).
+fn waits_args(l lua.State, first int) !uds.Waits {
+	mut given := []bool{len: 4}
+	mut v := []int{len: 4}
+	for i, name in ['timeout_ms', 'p2_star_ms', 'margin_ms', 'pending_budget_ms'] {
+		if l.arg_is_nil(first + i) {
+			continue
+		}
+		ms := l.arg_int_exact(first + i) or { return error('set_timing: ${name} is not an integer') }
+		if ms < min_i32 || ms > max_i32 {
+			return error('set_timing: ${name} ${ms} ms')
+		}
+		given[i] = true
+		v[i] = int(ms)
+	}
+	return uds.Waits{
+		timeout_ms:        if given[0] { ?int(v[0]) } else { none }
+		p2_star_ms:        if given[1] { ?int(v[1]) } else { none }
+		margin_ms:         if given[2] { ?int(v[2]) } else { none }
+		pending_budget_ms: if given[3] { ?int(v[3]) } else { none }
+	}
+}
+
 // __uds_set_timing(h, timeout_ms, p2_star_ms, margin_ms, pending_budget_ms): the waits given (nil
-// keeps one), from the next request on; refused whole by uds.timing_refusal
+// keeps one), from the next request on; refused whole (uds.Client.state)
 fn l_uds_set_timing(l lua.State) i32 {
 	mut env := env_of(l)
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
-	now := c.cli.timing()
-	mut v := [now.timeout_ms, now.p2_star_ms, now.margin_ms, now.pending_budget_ms]
-	for i, name in ['timeout_ms', 'p2_star_ms', 'margin_ms', 'pending_budget_ms'] {
-		if l.arg_is_nil(i + 2) {
-			continue
-		}
-		ms := l.arg_int_exact(i + 2) or { return l.fail('set_timing: ${name} is not an integer') }
-		if ms < min_i32 || ms > max_i32 {
-			return l.fail('set_timing: ${name} ${ms} ms')
-		}
-		v[i] = int(ms)
-	}
-	c.cli.set_timing(uds.Timing{
-		timeout_ms:        v[0]
-		p2_star_ms:        v[1]
-		margin_ms:         v[2]
-		pending_budget_ms: v[3]
-	}) or { return l.fail(err.msg()) }
+	w := waits_args(l, 2) or { return l.fail(err.msg()) }
+	c.cli.state(w) or { return l.fail(err.msg()) }
 	return 0
 }
 
+// __uds_timing_check(timeout_ms, p2_star_ms, margin_ms, pending_budget_ms): raises for waits a
+// connection would refuse, each given one held to its range: uds.open asks before it opens
+fn l_uds_timing_check(l lua.State) i32 {
+	w := waits_args(l, 1) or { return l.fail(err.msg()) }
+	mut probe := uds.Client{}
+	probe.state(w) or { return l.fail(err.msg()) }
+	return 0
+}
+
+// __uds_target(h): the logical address a DoIP connection's requests go to, a CAN one's request id
+fn l_uds_target(l lua.State) i32 {
+	mut env := env_of(l)
+	c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	l.push_int(i64(c.ch.rx_id))
+	return 1
+}
+
 // __uds_retarget(h, address): a DoIP connection's requests, and the answers it takes, to logical
-// address `address` (nil: the channel's ecu_address); every handle of the connection moves with it
+// address `address` (nil: the channel's ecu_address); every handle of the connection moves with it,
+// and another target starts again from the waits and sizes the script stated
 fn l_uds_retarget(l lua.State) i32 {
 	mut env := env_of(l)
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
@@ -171,6 +199,9 @@ fn l_uds_retarget(l lua.State) i32 {
 				return l.fail('retarget: ${a} is not a logical address (0 .. 0xFFFF)')
 			}
 			target = u16(a)
+		}
+		if u32(target) != c.ch.rx_id {
+			c.cli.another_ecu() // what it learned of the ECU before is that ECU's
 		}
 		c.ch.retarget(target)
 		return 0

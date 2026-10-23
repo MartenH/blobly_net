@@ -133,6 +133,18 @@ class TestSimDemo:
             with pytest.raises(kind):
                 diag.retarget(bad)
         assert diag.ecu == 0x1000, "a refused retarget moved it"
+        # another target is another ECU: what a session answer adopted goes, what was set stays
+        diag.margin_ms = 2000
+        diag.session(0x01)  # P2 50 ms: the first wait is P2 plus the margin
+        assert diag.timeout_ms == 2050
+        diag.retarget(0x2000)
+        assert (diag.timeout_ms, diag.margin_ms) == (1000, 2000)
+        diag.retarget(0x2000)  # the same target: nothing to forget
+        diag.timeout_ms = 300
+        diag.retarget(0x2000)
+        assert diag.timeout_ms == 300
+        diag.retarget()
+        assert diag.timeout_ms == 300, "a wait set was dropped"
         with sim_demo.channels.CAN1.uds() as can, pytest.raises(blobly.Refused, match="DoIP connection"):
             can.retarget(0x2000)
 
@@ -473,6 +485,15 @@ class TestFakeEntity:
             assert diag.read_did(VIN) == b"NODE"
             diag.retarget()
             assert diag.read_did(VIN) == b"FAKE"
+
+            def moves(seed):
+                diag.retarget()  # the key would go to the gateway, answering the node's seed
+                return seed
+            diag.retarget(0x2000)
+            with pytest.raises(blobly.BloblyError, match="inside a security_access key_fn") as e:
+                diag.security_access(0x01, moves)
+            assert e.value.code == _lib.BB_ERR_STATE
+            assert diag.ecu == 0x2000, "the refused retarget moved it"
 
     def test_a_new_connection_keeps_the_target_but_not_the_unlock(self, fakes):
         entity, fake = fakes.start(node=0x2000, drop=1, drop_sids={0x3E})

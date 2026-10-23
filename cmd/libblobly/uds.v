@@ -310,11 +310,9 @@ fn (mut hd UdsHandle) reconnect() ! {
 	mut link := link_of(c, true)
 	link.retarget(hd.target) // the target the host named; a gateway's unlock went with the old connection
 	mut cli := uds.new_client(link)
-	cli.did_lens = hd.conn.cli.did_lens.clone()
-	cli.ext_lens = hd.conn.cli.ext_lens.clone()
+	cli.carry_from(&hd.conn.cli)
 	cli.stop_requested = hd.conn.cli.stop_requested
 	cli.on_exchange = hd.conn.cli.on_exchange
-	cli.carry_timing(&hd.conn.cli)
 	hd.conn = udsconn.Conn{
 		ch:  link
 		cli: cli

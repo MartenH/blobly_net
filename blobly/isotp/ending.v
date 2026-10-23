@@ -19,9 +19,9 @@ pub enum Ending {
 	failed
 }
 
-// ending_of is how `err`, the failure of a send (`sending`) or a receive on `c`, ended. A receive
-// that cannot answer a First Frame's Flow Control on a listen-only wire failed: the refusal is the
-// Flow Control's, and the message says so.
+// ending_of is how `err`, the failure of a send (`sending`) or a receive on `c`, ended. Only a send
+// is refused: a receive that cannot answer a First Frame's Flow Control on a listen-only wire
+// failed, its message saying why.
 pub fn (c &SoftChannel) ending_of(err IError, sending bool) Ending {
 	m := err.msg()
 	// prefixes: a receive that skipped an orphan Flow Control says so after the note (orphan_note)
@@ -31,7 +31,7 @@ pub fn (c &SoftChannel) ending_of(err IError, sending bool) Ending {
 	if m.starts_with('timeout') || m == stall_note || m == exhausted_note(c.total_wait_ms) {
 		return .waited_out
 	}
-	if err is transport.NotWritten || (sending && transport.wire_policy(c.iface).silent) {
+	if sending && (err is transport.NotWritten || transport.wire_policy(c.iface).silent) {
 		return .refused
 	}
 	return .failed
