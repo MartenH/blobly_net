@@ -204,9 +204,10 @@ def _u32(name: str, v) -> int:
 class BootSim:
     """A simulated blobly_emb bootloader on a CAN channel of the started project, to rehearse a
     flash with no board: it hears requests on `tx` and answers on `rx` (the tester's ids; None:
-    0x7B0 / 0x7B8), strict where a real one is — 0x29 verifies the proof against the dev tester
-    key, erase is refused before it, and the check routine answers from the CRC the image header
-    states over the bytes it was sent. Nothing is written anywhere.
+    0x7B0 / 0x7B8), by the rules of blobly_emb's boot/prog.v: 0x29, erase and download only in the
+    programming session, relocked by a session change or a reset; the 0x29 proof verified against
+    the dev tester key; a download only after an erase, its blocks in sequence; the check routine
+    passing only for a valid BLBT header and the body CRC it states. Nothing is written anywhere.
 
     `with BootSim(can1) as boot:` stops it at the end of the block, and `report` (a BootReport)
     says what it was asked; stop() does the same and returns it. Stop it before the project."""

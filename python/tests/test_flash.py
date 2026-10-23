@@ -30,11 +30,14 @@ def setUpModule():
 
 
 def blbt(body: bytes, crc_ok: bool = True) -> bytes:
-    """A wrapped image as mkimage writes one: the header states the body's length and CRC."""
+    """A wrapped image as mkimage writes one: the header states the body's length and CRC, and its
+    first 28 bytes carry their own CRC."""
     import struct
     import zlib
     h = bytearray(b"\xff" * 64)
-    struct.pack_into("<IBBBBIII", h, 0, 0x54424C42, 1, 0, 0, 0, len(body), zlib.crc32(body) ^ (0 if crc_ok else 0xFF), 1)
+    struct.pack_into("<IBBBBIIIII", h, 0, 0x54424C42, 1, 0, 0, 0, len(body),
+                     zlib.crc32(body) ^ (0 if crc_ok else 0xFF), 1, 64, 0)
+    struct.pack_into("<I", h, 28, zlib.crc32(bytes(h[:28])))
     return bytes(h) + body
 
 
@@ -87,6 +90,7 @@ class TestFlash(unittest.TestCase):
             flash.program(self.can1, bytes(100), seed="11" * 32, quiet=True)
         self.assertEqual(e.exception.nrc, 0x35)
         self.assertIn("send proof: NRC 0x35", str(e.exception))
+        self.assertEqual(e.exception.exchange.nrc, 0x35)
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "other.seed")
             with open(path, "w") as f:
@@ -94,6 +98,16 @@ class TestFlash(unittest.TestCase):
             with self.assertRaises(blobly.NegativeResponse):
                 flash.program(self.can1, bytes(100), seed_file=path, quiet=True)
         self.assertEqual((self.boot.stop().erases, self.boot.report.blocks), (0, 0))
+
+    def test_a_wrapped_image_goes_as_it_is_and_the_exchanges_are_the_clients(self):
+        img = blbt(bytes(range(200)))
+        with self.can1.uds(0x7B0, 0x7B8) as diag:
+            r = flash.program(diag, img, quiet=True)
+            self.assertEqual((r.wrapped, r.bytes), (True, len(img)))
+            self.assertEqual(diag.last.request, b"\x11\x01", "the session's last request is the client's last")
+        b = self.boot.stop()
+        self.assertTrue(b.verified)
+        self.assertEqual(b.bytes, len(img))
 
     def test_a_failing_check_is_a_flash_failure_and_no_reset(self):
         img = blbt(bytes(range(250)) * 2, crc_ok=False)

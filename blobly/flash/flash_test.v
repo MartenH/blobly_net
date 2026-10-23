@@ -172,15 +172,33 @@ fn test_the_simulated_bootloader_holds_the_session_to_its_order() {
 		ch.send(req) or { panic(err) }
 		return ch.recv(1000) or { panic(err) }
 	}
-	assert ask([u8(0x34), 0x00, 0x44, 0, 0, 0, 0, 0, 0, 0, 0]) == [u8(0x7F), 0x34, 0x33], 'a download before 0x29'
-	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x7F), 0x36, 0x24], 'a block with no download'
+	dl := [u8(0x34), 0x00, 0x44, 0x08, 0x02, 0, 0, 0, 0, 0, 2]
+	erase := [u8(0x31), 0x01, 0xFF, 0x00, 0x08, 0x02, 0, 0, 0, 0, 0, 2]
 	mut c := uds.new_client(ch)
+	assert ask([u8(0x29), 0x01]) == [u8(0x7F), 0x29, 0x22], '0x29 outside the programming session'
+	assert ask([u8(0x10), 0x02])[0] == 0x50
+	assert ask([u8(0x29), 0x02]) == [u8(0x7F), 0x29, 0x24], 'a proof with no challenge'
+	assert ask(dl) == [u8(0x7F), 0x34, 0x33], 'a download before 0x29'
 	authenticate(mut c, tester_seed('')!, mut Notes{})!
+	assert ask(dl) == [u8(0x7F), 0x34, 0x24], 'a download before an erase'
+	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x7F), 0x36, 0x24], 'a block with no download'
 	assert ask([u8(0x31), 0x01, 0x02, 0x03]) == [u8(0x7F), 0x31, 0x31], 'a routine it does not have'
-	assert ask([u8(0x34), 0x00, 0x44, 0, 0, 0, 0, 0, 0, 0, 0])[0] == 0x74
+	assert ask([u8(0x31), 0x02, 0xFF, 0x00]) == [u8(0x7F), 0x31, 0x31], 'a sub-function other than start'
+	assert ask(erase)[..5] == [u8(0x71), 0x01, 0xFF, 0x00, 0x00]
+	assert ask(dl)[0] == 0x74
 	assert ask([u8(0x36), 0x02, 0xAA]) == [u8(0x7F), 0x36, 0x73], 'a block out of sequence'
 	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x76), 0x01]
-	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x76), 0x01], 'a retried block, taken once'
+	assert ask([u8(0x36), 0x02, 0xBB, 0xCC]) == [u8(0x7F), 0x36, 0x31], 'past the size 0x34 asked for'
+	assert ask([u8(0x31), 0x01, 0xFF, 0x01]) == [u8(0x7F), 0x31, 0x24], 'a check while a download is open'
+	assert ask([u8(0x37)]) == [u8(0x77)]
+	assert ask([u8(0x31), 0x01, 0xFF, 0x01])[4] == 1, 'a body that is no image fails the check'
+	assert ask([u8(0x10), 0x02])[0] == 0x50
+	assert ask(dl) == [u8(0x7F), 0x34, 0x33], 'a session change relocks'
+	ch.send([u8(0x11), 0x81])!
+	if got := ch.recv(200) {
+		assert false, 'a suppressed reset answered ${got}'
+	}
 	rep := sim.stop()
-	assert rep.authenticated && rep.blocks == 1 && rep.image == [u8(0xAA)]
+	assert rep.authenticated && rep.blocks == 1 && rep.image == [u8(0xAA)] && rep.resets == 1
+	assert rep.checks == 1 && !rep.verified
 }

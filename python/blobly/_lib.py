@@ -318,7 +318,8 @@ def _declare(lib):
         # SOME/IP (someip.py)
         "bb_someip_send": ([c_int, c_char_p, P(BbSomeipOut), c_int, c_int], c_int),
         "bb_someip_call": ([c_int, c_char_p, P(BbSomeipOut), c_int], c_int),
-        "bb_someip_listen": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_someip_listener": ([c_int, c_int, c_char_p, c_char_p, c_int, P(c_int), c_char_p, c_int], c_int),
+        "bb_someip_listen": ([c_char_p, c_int, c_char_p, c_int], c_int),
         "bb_someip_count": ([c_int, P(c_int)], c_int),
         "bb_someip_message": ([c_int, c_int, P(BbSomeipMsg), c_char_p, c_int], c_int),
         "bb_someip_free": ([c_int], c_int),
@@ -381,6 +382,9 @@ class _StateLock:
     def __exit__(self, *exc):
         self._lock.release()
         return False
+
+    def _is_owned(self):
+        return self._lock._is_owned()
 
 
 state_lock = _StateLock()

@@ -169,6 +169,7 @@ pub fn (mut s Sessions) call_once(port int, to string, m Outgoing, timeout_ms in
 			header:    Header{
 				service:           m.service
 				method:            m.method
+				length:            length_base + u32(m.payload.len)
 				client:            cid
 				session:           cli.session
 				protocol_version:  protocol_version
@@ -182,6 +183,7 @@ pub fn (mut s Sessions) call_once(port int, to string, m Outgoing, timeout_ms in
 		header:  Header{
 			service:           m.service
 			method:            m.method
+			length:            length_base + u32(cli.result.payload.len)
 			client:            cid
 			session:           cli.session
 			protocol_version:  protocol_version

@@ -859,9 +859,10 @@ raised; Ctrl-C does the same within 100 ms. The client is usable again after eit
 
 **`flash.BootSim(channel, tx=None, rx=None)`** serves a CAN row of the started project as a
 blobly_emb bootloader, hearing requests on `tx` and answering on `rx` (the tester's ids, 0x7B0 /
-0x7B8 by default), strict where a real one is: the 0x29 proof is verified against the dev tester
-key, erase is refused before it, and the check routine answers from the CRC the image header
-states over the bytes it was sent. `boot.stop()` (or the end of its `with` block) stops it and
+0x7B8 by default), by the rules of blobly_emb's `boot/prog.v`: 0x29, erase and download only in
+the programming session, a session change or a reset relocking it, the 0x29 proof verified
+against the dev tester key, a download only after an erase and its blocks in sequence, and the
+check routine passing only for a valid BLBT header and the body CRC it states. `boot.stop()` (or the end of its `with` block) stops it and
 returns a `BootReport`, kept as `boot.report`. Stop it before the project.
 
 ---

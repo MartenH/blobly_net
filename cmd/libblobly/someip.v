@@ -110,26 +110,49 @@ pub fn bb_someip_call(port i32, to &char, req &C.bb_someip_out, timeout_ms i32) 
 	})
 }
 
+// bb_someip_listener: where SOME/IP row `r` of the run listens — its bind host into `host` (put's
+// convention: the answer is its length), its port, and its group into `group` (refused when it does
+// not fit) — given the port and group a host asked for, which must not contradict it.
+@[export: 'bb_someip_listener']
+pub fn bb_someip_listener(r i32, port i32, group &char, host &char, hcap i32, use_port &i32, use_group &char, gcap i32) i32 {
+	if isnil(use_port) || isnil(use_group) || gcap <= 0 {
+		return fail(bb_err, 'someip listener: nowhere to put the answer')
+	}
+	if port < 0 || port > 0xFFFF {
+		return fail(bb_err, 'someip listener: ${port} is not a port')
+	}
+	g := if isnil(group) { '' } else { unsafe { cstring_to_vstring(group) } }
+	name, c := run_row('someip listener', r) or { return failed_with(err) }
+	h, p, ug := udsconn.someip_listener(int(port), g, name, ?udsconn.Carrier(c)) or {
+		return fail(bb_err, 'someip listen: ${err}')
+	}
+	if ug.len >= int(gcap) {
+		return fail(bb_err, 'someip listener: the group ${ug} does not fit ${gcap} bytes')
+	}
+	unsafe {
+		*use_port = i32(p)
+		vmemcpy(use_group, ug.str, ug.len)
+		use_group[ug.len] = 0
+	}
+	return put(h, host, hcap)
+}
+
+// bb_someip_listen: what `port` (0: 30490) on `host` (NULL or "": the wildcard) heard for
+// window_ms, joining `group` (NULL or "": none) — a capture.
 @[export: 'bb_someip_listen']
-pub fn bb_someip_listen(r i32, port i32, group &char, window_ms i32) i32 {
+pub fn bb_someip_listen(host &char, port i32, group &char, window_ms i32) i32 {
 	if window_ms < 0 {
 		return fail(bb_err, 'someip listen: a window of ${window_ms} ms')
 	}
 	if port < 0 || port > 0xFFFF {
 		return fail(bb_err, 'someip listen: ${port} is not a port')
 	}
+	h := if isnil(host) { '' } else { unsafe { cstring_to_vstring(host) } }
 	g := if isnil(group) { '' } else { unsafe { cstring_to_vstring(group) } }
-	mut from := ''
-	mut car := ?udsconn.Carrier(none)
-	if r >= 0 {
-		name, c := run_row('someip listen', r) or { return failed_with(err) }
-		from = name
-		car = ?udsconn.Carrier(c)
-	}
-	host, use_port, use_group := udsconn.someip_listener(int(port), g, from, car) or {
+	_, use_port, _ := udsconn.someip_listener(int(port), g, '', none) or {
 		return fail(bb_err, 'someip listen: ${err}')
 	}
-	cap := someip.collect(host, use_port, int(window_ms), use_group) or {
+	cap := someip.collect(h, use_port, int(window_ms), g) or {
 		return fail(bb_err, 'someip listen(${use_port}): ${err}')
 	}
 	return keep(cap)

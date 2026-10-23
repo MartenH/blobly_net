@@ -5,11 +5,14 @@ import blobly.isotp
 import crypto.ed25519 as ed
 
 // bootsim — a simulated blobly_emb bootloader, to rehearse a flash with no board: the session
-// `program` runs, answered on an ISO-TP channel and strict where a real one is — 0x29 verifies
-// the proof against the dev tester key, erase is refused until it has, the download gives 64-byte
-// blocks and the check routine answers from the CRC the image header states over the bytes it was
-// sent, a download taking its blocks in sequence after 0x34. Nothing is written anywhere; what it
-// was sent is counted (BootReport).
+// `program` runs, answered on an ISO-TP channel by the rules of blobly_emb's boot/prog.v for what
+// it serves — the programming session (0x10 02) gating 0x29, 0x31 and 0x34, a session change or a
+// reset relocking it, 0x29 a one-shot challenge whose proof is verified against the dev tester key,
+// a download only after an erase and its blocks in sequence within the size 0x34 asked for, the
+// check routine refused while a download is open and passing only for a header that is BLBT,
+// version 1, 64 bytes, its own CRC right and the body's CRC as it states, and a suppressed
+// positive answer withheld. Its own: 64-byte blocks, and an erase answered at once. Nothing is
+// written anywhere; what it was sent is counted (BootReport).
 
 // BootReport is what a simulated bootloader was asked to do, read once it is stopped.
 pub struct BootReport {
@@ -27,16 +30,21 @@ pub mut:
 @[heap]
 pub struct BootSim {
 mut:
-	ch     isotp.Channel
-	stop   chan bool
-	t      thread
-	rep    BootReport
-	got     []u8
-	authed  bool
+	ch      isotp.Channel
+	stop    chan bool
+	t       thread
+	rep     BootReport
 	stopped bool
-	next    int = -1 // the block counter the download in progress expects; -1: none in progress
-	last    int = -1 // the counter of the block taken last, which a retry repeats
-	halt    i64      // set by stop: the channel's waits end
+	halt    i64 // set by stop: the channel's waits end
+	// the session, as boot/prog.v keeps it
+	session     u8 = 0x01
+	unlocked    bool
+	challenge   bool // a challenge was given and not yet answered
+	erased      bool
+	downloading bool
+	dl_size     int
+	next        u8
+	got         []u8
 }
 
 // boot_challenge is the challenge the simulated bootloader signs against.
@@ -89,100 +97,177 @@ fn serve_boot(mut b BootSim) {
 		if req.len == 0 {
 			continue
 		}
-		b.ch.send(b.answer(req, public)) or {}
+		a := b.answer(req, public)
+		if a.len > 0 {
+			b.ch.send(a) or {}
+		}
 	}
 }
 
-// answer is the bootloader's answer to `req`.
+// relock ends what a session holds: a session change and a reset both do.
+fn (mut b BootSim) relock() {
+	b.unlocked = false
+	b.challenge = false
+	b.erased = false
+	b.downloading = false
+}
+
+fn be32_at(r []u8, off int) u32 {
+	return u32(r[off]) << 24 | u32(r[off + 1]) << 16 | u32(r[off + 2]) << 8 | u32(r[off + 3])
+}
+
+// header_ok is boot/prog.v's check_and_mark over what the download was sent: the header, then the
+// body its length and CRC state.
+fn (b &BootSim) header_ok() bool {
+	g := b.got
+	if g.len < hdr_size || rd32(g, 0) != boot_magic || g[4] != 1 || rd32(g, 20) != u32(hdr_size) {
+		return false
+	}
+	n := int(rd32(g, 8))
+	if n == 0 || g.len < hdr_size + n || crc32(g[..28]) != rd32(g, 28) {
+		return false
+	}
+	return crc32(g[hdr_size..hdr_size + n]) == rd32(g, 12)
+}
+
+// answer is the bootloader's answer to `req`, empty for a suppressed positive one.
 fn (mut b BootSim) answer(req []u8, public ed.PublicKey) []u8 {
 	nrc := fn [req] (code u8) []u8 {
 		return [u8(0x7F), req[0], code]
 	}
+	programming := b.session == 0x02
 	match req[0] {
 		0x10 {
-			if req.len < 2 {
+			if req.len != 2 {
 				return nrc(0x13)
 			}
-			return [u8(0x50), req[1], 0x00, 0x32, 0x01, 0xF4]
+			s := req[1] & 0x7F
+			if s != 0x01 && s != 0x02 {
+				return nrc(0x12)
+			}
+			b.relock()
+			b.session = s
+			return if req[1] & 0x80 != 0 { []u8{} } else { [u8(0x50), s, 0x00, 0x32, 0x01, 0xF4] }
 		}
 		0x29 {
 			if req.len < 2 {
 				return nrc(0x13)
 			}
-			if req[1] == 0x01 {
-				mut r := [u8(0x69), 0x01]
-				r << boot_challenge
-				return r
+			if !programming {
+				return nrc(0x22)
 			}
-			b.authed = req.len == 2 + 64 && (ed.verify(public, boot_challenge, req[2..]) or { false })
-			b.rep.authenticated = b.authed
-			return if b.authed { [u8(0x69), 0x02] } else { nrc(0x35) }
+			match req[1] {
+				0x01 {
+					b.challenge = true
+					mut r := [u8(0x69), 0x01]
+					r << boot_challenge
+					return r
+				}
+				0x02 {
+					if !b.challenge {
+						return nrc(0x24)
+					}
+					if req.len < 2 + 64 {
+						return nrc(0x13)
+					}
+					b.challenge = false // one-shot: a fresh challenge per attempt
+					b.unlocked = ed.verify(public, boot_challenge, req[2..2 + 64]) or { false }
+					b.rep.authenticated = b.unlocked
+					return if b.unlocked { [u8(0x69), 0x02] } else { nrc(0x35) }
+				}
+				else {
+					return nrc(0x31)
+				}
+			}
 		}
 		0x31 {
 			if req.len < 4 {
 				return nrc(0x13)
 			}
-			if !b.authed {
+			if req[1] != 0x01 {
+				return nrc(0x31)
+			}
+			if !programming || !b.unlocked {
 				return nrc(0x33)
 			}
-			if req[2] != 0xFF || req[3] > 0x01 {
-				return nrc(0x31) // erase (FF00) and check (FF01) are its routines
-			}
-			mut result := u8(0)
-			if req[3] == 0x00 {
-				b.rep.erases++
-			} else {
-				// the header states the body length and its CRC
-				n := if b.got.len >= hdr_size { int(rd32(b.got, 8)) } else { -1 }
-				ok := n >= 0 && b.got.len >= hdr_size + n
-					&& crc32(b.got[hdr_size..hdr_size + n]) == rd32(b.got, 12)
-				if !ok {
-					result = 1
+			rid := u16(req[2]) << 8 | u16(req[3])
+			if rid == 0xFF00 {
+				if req.len < 12 || be32_at(req, 8) == 0 {
+					return nrc(if req.len < 12 { u8(0x13) } else { u8(0x31) })
 				}
+				b.erased = true
+				b.downloading = false
+				b.rep.erases++
+				return [u8(0x71), 0x01, 0xFF, 0x00, 0x00]
+			}
+			if rid == 0xFF01 {
+				if b.downloading {
+					return nrc(0x24)
+				}
+				ok := b.header_ok()
 				b.rep.checks++
 				b.rep.verified = ok
+				return [u8(0x71), 0x01, 0xFF, 0x01, if ok { u8(0) } else { u8(1) }]
 			}
-			return [u8(0x71), 0x01, req[2], req[3], result]
+			return nrc(0x31)
 		}
 		0x34 {
-			if !b.authed {
+			if req.len < 11 {
+				return nrc(0x13)
+			}
+			if !programming || !b.unlocked {
 				return nrc(0x33)
 			}
+			if !b.erased {
+				return nrc(0x24)
+			}
+			size := be32_at(req, 7)
+			if req[1] != 0x00 || req[2] != 0x44 || size == 0 || be32_at(req, 3) % 32 != 0 {
+				return nrc(0x31)
+			}
 			b.got = []u8{} // a download starts the slot over
+			b.downloading = true
+			b.dl_size = int(size)
 			b.next = 1
-			b.last = -1
 			return [u8(0x74), 0x20, 0x00, 0x42] // 64-byte blocks
 		}
 		0x36 {
-			if b.next < 0 {
-				return nrc(0x24) // requestSequenceError: no download in progress
+			if !b.downloading {
+				return nrc(0x24)
 			}
 			if req.len < 2 {
 				return nrc(0x13)
 			}
-			if int(req[1]) == b.last {
-				return [u8(0x76), req[1]] // a retry of the block taken last: taken once
+			if req[1] != b.next {
+				return nrc(0x73)
 			}
-			if int(req[1]) != b.next {
-				return nrc(0x73) // wrongBlockSequenceCounter
+			n := req.len - 2
+			if n == 0 || n > 64 {
+				return nrc(0x13)
 			}
-			b.last = b.next
-			b.next = (b.next + 1) & 0xFF
+			if b.got.len + n > b.dl_size {
+				return nrc(0x31)
+			}
 			b.got << req[2..]
+			b.next++
 			b.rep.blocks++
 			return [u8(0x76), req[1]]
 		}
 		0x37 {
-			if b.next < 0 {
+			if !b.downloading {
 				return nrc(0x24)
 			}
-			b.next = -1
-			b.last = -1
+			b.downloading = false
 			return [u8(0x77)]
 		}
 		0x11 {
+			if req.len < 2 {
+				return nrc(0x13)
+			}
 			b.rep.resets++
-			return [u8(0x51), if req.len > 1 { req[1] } else { u8(0x01) }]
+			b.relock() // the reset: what the session held is gone
+			b.session = 0x01
+			return if req[1] & 0x80 != 0 { []u8{} } else { [u8(0x51), req[1] & 0x7F] }
 		}
 		else {
 			return nrc(0x11)

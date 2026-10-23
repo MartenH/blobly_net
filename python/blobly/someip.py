@@ -178,12 +178,15 @@ def listen(window_ms: float = 1000, *, port: int | None = None, group: str | Non
         raise TypeError(f"someip.listen: group is a multicast address, not {group!r}")
     g = None if group is None else group.encode()
     lib = _lib.lib()
-    r = -1
+    host = None
     if channel is not None:
         from .project import Channel  # project imports this module
         if not isinstance(channel, Channel):
             raise TypeError(f"someip.listen: channel is a Channel, not {channel!r}")
-        with _lib.state_lock:  # the row of this run; the wait holds no lock
+        use_port, use_group = ctypes.c_int(), ctypes.create_string_buffer(256)
+        with _lib.state_lock:  # the row's endpoint in this run, read once; the wait holds no lock
             _started("someip.listen", channel)
-            r = channel._index
-    return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_listen(r, p, g, window))), "blobly-someip")
+            host = _lib.string(lambda buf, cap: lib.bb_someip_listener(channel._index, p, g, buf, cap,
+                                                                       ctypes.byref(use_port), use_group, 256))
+        host, p, g = host.encode(), use_port.value, use_group.value
+    return _on_thread(lambda: _capture(lib, _lib.check(lib.bb_someip_listen(host, p, g, window))), "blobly-someip")

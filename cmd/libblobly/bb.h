@@ -619,10 +619,13 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
  * is an answer, its return code in the message; events, other senders and stale replies are
  * skipped; BB_ERR_TIMEOUT when none came.
  * A call refuses an event id, client 0 and any type but a request. bb_someip_listen hears for
- * window_ms what the network already carries on `port` (0: 30490), joining `group` (NULL or "":
- * none) — or, for row >= 0, on SOME/IP row `row`'s bind host, port and group (a port or a group
- * that contradicts the row's is refused; BB_ERR_STATE before bb_start). Nothing is sent or
- * subscribed to.
+ * window_ms what the network already carries on `host` (NULL or "": the wildcard) and `port` (0:
+ * 30490), joining `group` (NULL or "": none). Nothing is sent or subscribed to. bb_someip_listener
+ * is where SOME/IP row `row` of the run listens: its bind host into `host` (as bb_message_name's),
+ * its port into *use_port and its group into `use_group` (refused when it does not fit gcap) — a
+ * `port` (0: the row's) or `group` (NULL or "": the row's) that contradicts the row is refused;
+ * BB_ERR_STATE before bb_start. A host resolves a row under its own state serialisation, then
+ * listens outside it, as for DoIP.
  *
  * Each answers a CAPTURE (>= 0): bb_someip_count says how many messages it holds (and, into
  * *malformed, how many datagrams could not be read to the end), bb_someip_message copies message
@@ -630,7 +633,9 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
  * go. A call's capture holds its answer. */
 int bb_someip_send(int port, const char *to, const bb_someip_out *msgs, int n, int window_ms);
 int bb_someip_call(int port, const char *to, const bb_someip_out *req, int timeout_ms);
-int bb_someip_listen(int row, int port, const char *group, int window_ms);
+int bb_someip_listener(int row, int port, const char *group, char *host, int hcap, int *use_port,
+                       char *use_group, int gcap);                /* >= 0: the host's length */
+int bb_someip_listen(const char *host, int port, const char *group, int window_ms);
 int bb_someip_count(int capture, int *malformed);                 /* >= 0: the messages */
 int bb_someip_message(int capture, int i, bb_someip_msg *out, uint8_t *buf, int cap);
 int bb_someip_free(int capture);

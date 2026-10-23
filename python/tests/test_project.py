@@ -269,22 +269,31 @@ class TestLoads(unittest.TestCase):
     def test_native_state_calls_run_under_the_lock(self):
         lib = _lib.lib()
         real = lib.bb_bus_open
-        unlocked = []
+        unlocked, opened, failed = [], [], []
 
         def checked(iface):
+            opened.append(iface)
             if not _lib.state_lock._is_owned():
                 unlocked.append(iface)
             return real(iface)
+
+        def recv(c):
+            try:
+                c.recv(0)
+            except BaseException as e:  # the check is only as good as the threads that ran it
+                failed.append(e)
         lib.bb_bus_open = checked
         try:
             with blobly.Project(SIM_DEMO) as net:
-                ts = [threading.Thread(target=lambda c=c: c.recv(0)) for c in (net.channels.CAN1, net.channels.CAN2)]
+                ts = [threading.Thread(target=recv, args=(c,)) for c in (net.channels.CAN1, net.channels.CAN2)]
                 for th in ts:
                     th.start()
                 for th in ts:
                     th.join()
         finally:
             lib.bb_bus_open = real
+        self.assertEqual(failed, [])
+        self.assertEqual(len(opened), 2, opened)
         self.assertEqual(unlocked, [], "a bus was opened outside the state lock")
 
     def test_handlers_follow_a_reload(self):

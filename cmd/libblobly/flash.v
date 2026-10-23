@@ -110,8 +110,16 @@ pub fn bb_flash_program(u i32, image &u8, n i32, opts &C.bb_flash_opts, out &C.b
 			stdatomic.store_i64(&hd.cancel, 0)
 			hd.fmu.unlock()
 		}
-		hd.cli()!
-		hd.has_last = false // the session's exchanges are its own client's, not the handle's
+		cancel := &hd.cancel
+		cancelled := fn [cancel] (err IError) IError {
+			if stdatomic.load_i64(cancel) != 0 {
+				return flash.Failed{
+					text: 'flash cancelled (bb_flash_cancel): ${err}'
+				}
+			}
+			return err
+		}
+		hd.cli() or { return cancelled(err) }
 		mut sink := AbiSink{
 			note:     o.note
 			progress: o.progress
@@ -125,15 +133,9 @@ pub fn bb_flash_program(u i32, image &u8, n i32, opts &C.bb_flash_opts, out &C.b
 			base:       o.base
 			sw_version: o.sw_version
 			auth_seed:  seed
-			stop:       hd.stop
-		}, mut sink) or {
-			if stdatomic.load_i64(&hd.cancel) != 0 {
-				return flash.Failed{
-					text: 'flash cancelled (bb_flash_cancel): ${err}'
-				}
-			}
-			return err
-		}
+			stop:        hd.stop
+			on_exchange: hd.conn.cli.on_exchange // the handle's last exchange is the session's
+		}, mut sink) or { return cancelled(err) }
 		unsafe {
 			out.bytes = i32(rep.bytes)
 			out.blocks = i32(rep.blocks)
