@@ -166,6 +166,13 @@ fn test_a_fire_given_up_is_not_sent_later() {
 		until: 100
 	}
 	assert !late.take(100) && late.drop()
+	// an answer the loop gave is read whenever its caller looks, without waiting
+	assert late.given() == none
+	late.reply <- Answer{
+		at: 50
+	}
+	a := late.given() or { panic('the answer given was not read') }
+	assert a.at == 50 && a.why == ''
 }
 
 // a fire held up by its bus's open (a driver that stalls) ends when the run stops, and its frame

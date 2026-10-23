@@ -80,6 +80,19 @@ fn (mut f Fire) take(now u64) bool {
 	return true
 }
 
+// given is the loop's answer if it has given one, without waiting.
+fn (f &Fire) given() ?Answer {
+	select {
+		a := <-f.reply {
+			return a
+		}
+		else {
+			return none
+		}
+	}
+	return none
+}
+
 // drop gives it up: false when the loop has taken it already.
 fn (mut f Fire) drop() bool {
 	f.mu.lock()
@@ -397,6 +410,10 @@ pub fn (mut r Run) gen_fire(i int, until u64) ! {
 		now := time.sys_mono_now()
 		stopping := r.is_stopping()
 		if now >= f.until || stopping {
+			// an answer already given is the answer, though this caller was late to read it
+			if a := f.given() {
+				return fire_outcome(g.s.name, a, f.until, stopping)
+			}
 			// given up on here unless the loop has it, in which case its bus may yet send it
 			fate := if f.drop() { 'nothing was sent' } else { 'it may still go out' }
 			if stopping {
