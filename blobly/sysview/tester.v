@@ -109,40 +109,85 @@ pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 	return out
 }
 
-// same_host: two spellings of one address — a name compared without case, an IPv6 address by its
-// eight groups (`2001:db8::1` is `[2001:0db8:0:0:0:0:0:1]`).
-fn same_host(a string, b string) bool {
+// same_host: two spellings of one endpoint address — numeric addresses by their bytes (`2001:db8::1`
+// is `[2001:0db8:0:0:0:0:0:1]`, `::ffff:192.0.2.1` is `::ffff:c000:201`) and an IPv6 zone as written,
+// a host name without case.
+pub fn same_host(a string, b string) bool {
 	return canonical_host(a) == canonical_host(b)
 }
 
 fn canonical_host(h string) string {
-	s := h.trim('[]').to_lower()
+	s := h.trim('[]')
+	addr, zone := if i := s.index('%') { s[..i], s[i..] } else { s, '' }
+	if b := ip_bytes(addr) {
+		return b.hex() + zone
+	}
+	return s.to_lower()
+}
+
+// ip_bytes is a numeric IPv4 or IPv6 address's bytes (4 or 16), none for anything else.
+fn ip_bytes(s string) ?[]u8 {
 	if !s.contains(':') {
-		return s
+		parts := s.split('.')
+		if parts.len != 4 {
+			return none
+		}
+		mut out := []u8{}
+		for p in parts {
+			if p.len < 1 || p.len > 3 || !p.bytes().all(it.is_digit()) || p.int() > 255 {
+				return none
+			}
+			out << u8(p.int())
+		}
+		return out
 	}
 	halves := s.split('::')
 	if halves.len > 2 {
-		return s
+		return none
 	}
-	head := if halves[0] == '' { []string{} } else { halves[0].split(':') }
-	tail := if halves.len < 2 || halves[1] == '' { []string{} } else { halves[1].split(':') }
-	missing := 8 - head.len - tail.len
-	if missing < 0 || (halves.len == 1 && missing != 0) {
-		return s
+	head := groups_of(halves[0])?
+	tail := if halves.len == 2 { groups_of(halves[1])? } else { []u8{} }
+	if (halves.len == 1 && head.len != 16) || head.len + tail.len > 16
+		|| (halves.len == 2 && head.len + tail.len == 16) {
+		return none
 	}
-	mut groups := head.clone()
-	for _ in 0 .. missing {
-		groups << '0'
+	mut out := head.clone()
+	out << []u8{len: 16 - head.len - tail.len}
+	out << tail
+	return out
+}
+
+// groups_of is a run of IPv6 groups' bytes, the last of them a dotted IPv4 address if it is one.
+fn groups_of(s string) ?[]u8 {
+	if s == '' {
+		return []u8{}
 	}
-	groups << tail
-	return groups.map(it.trim_left('0')).map(if it == '' { '0' } else { it }).join(':')
+	parts := s.split(':')
+	mut out := []u8{}
+	for i, g in parts {
+		if i == parts.len - 1 && g.contains('.') {
+			out << ip_bytes(g)?
+			continue
+		}
+		if g.len < 1 || g.len > 4 || !g.bytes().all(it.is_hex_digit()) {
+			return none
+		}
+		v := u16(g.parse_uint(16, 16) or { return none })
+		out << u8(v >> 8)
+		out << u8(v)
+	}
+	return out
 }
 
 // loopback: `host` is this machine — an entity a project hosts for a node in simulation, whose
 // system.toml address is the real ECU's.
 fn loopback(host string) bool {
-	h := host.to_lower()
-	return h == 'localhost' || h == '::1' || h.starts_with('127.')
+	s := host.trim('[]').all_before('%')
+	if s.to_lower() == 'localhost' {
+		return true
+	}
+	b := ip_bytes(s) or { return false }
+	return (b.len == 4 && b[0] == 127) || (b.len == 16 && b[..15].all(it == 0) && b[15] == 1)
 }
 
 // reach is the one target a tester opens on for node `n`: the one on row `row` when it names one

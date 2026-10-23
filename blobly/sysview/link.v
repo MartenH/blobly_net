@@ -38,7 +38,7 @@ pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 	if hits.len > 1 && t.doip && t.host != '' {
 		// the node at that endpoint; else one whose endpoint is unknown may still be it, while a
 		// node at another endpoint is not
-		exact := hits.filter(sys.nodes[it].address.to_lower() == t.host.to_lower())
+		exact := hits.filter(same_host(sys.nodes[it].address, t.host))
 		hits = if exact.len > 0 { exact } else { hits.filter(sys.nodes[it].address == '') }
 	}
 	addr := if t.doip { 'DoIP 0x${t.logical:04X}' } else { '0x${t.req:X}/0x${t.rsp:X}' }
@@ -293,7 +293,7 @@ pub fn (sys &System) doip_tester_for(logical u16, host string) ?u16 {
 	})
 	if hits.len > 1 && host != '' {
 		hits = hits.filter(sys.nodes[it].address != ''
-			&& sys.nodes[it].address.to_lower() == host.to_lower())
+			&& same_host(sys.nodes[it].address, host))
 	}
 	if hits.len != 1 {
 		return none
@@ -302,7 +302,7 @@ pub fn (sys &System) doip_tester_for(logical u16, host string) ?u16 {
 	if n.has_host && n.address == '' {
 		return none // its address could not be derived: nothing says the entity found is this one
 	}
-	if n.address != '' && host != '' && n.address.to_lower() != host.to_lower() {
+	if n.address != '' && host != '' && !same_host(n.address, host) {
 		return none // the description's entity is at another address: not this one
 	}
 	return n.testers[0] or { return none }

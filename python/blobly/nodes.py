@@ -296,6 +296,8 @@ def _texts(did: Did, value: object, fields: dict[str, object]) -> list[str]:
         raise TypeError(f"write({did.name or hex(did.id)}): a value or fields by name, not both")
     if value is _UNSET and not fields:
         raise TypeError(f"write({did.name or hex(did.id)}): no value")
+    if did.by_label and value is not _UNSET and not isinstance(value, Mapping):
+        raise TypeError(f"write({did.name or hex(did.id)}): its parts go in a mapping by label")
     if not did.by_label and value is not _UNSET and not isinstance(value, Mapping):
         return [_text(did, parts[0], value)]
     given = dict(value) if isinstance(value, Mapping) else fields
