@@ -7,7 +7,7 @@ import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 from . import _lib
 from ._lib import BloblyError, ByteData, ConnectionLost, NegativeResponse
@@ -305,7 +305,7 @@ class UdsClient:
             self._let_go()
             self.channel._uds.discard(self)
 
-    def __enter__(self) -> "UdsClient":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> Literal[False]:
