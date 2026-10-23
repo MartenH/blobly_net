@@ -119,6 +119,7 @@ fn test_a_value_that_is_not_the_described_size_is_undecodable() {
 	x := demo_system().nodes[0].desc.did(0x0110) or { panic('no DID') }
 	assert x.read_texts([u8(0x01), 0x68]) or { panic(err) } == ['360']
 	vin := demo_system().nodes[0].desc.listed_id(0xF190)
+	assert x.read_part([u8(0x01), 0x68], 0) or { panic(err) } == '360'
 	mut padded := 'BLOBLY-ZONE_A-H72'.bytes()
 	padded << 0
 	assert vin.read_texts(padded) or { panic(err) } == ['BLOBLY-ZONE_A-H72']

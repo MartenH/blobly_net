@@ -1488,9 +1488,9 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 	}
 }
 
-// script_worker runs the script at `path`; `sys_path` is the system.toml its uds.node reaches nodes
-// by (App.described_path, read on the GUI thread), loaded here.
-fn script_worker(app &App, path string, sys_path string) {
+// script_worker runs the script at `path`; `ss` is the system model its uds.node reaches nodes by
+// (App.script_system, read on the GUI thread): the run's, else a file loaded here.
+fn script_worker(app &App, path string, ss ScriptSys) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.script_busy {
@@ -1592,9 +1592,10 @@ fn script_worker(app &App, path string, sys_path string) {
 		mut ap := unsafe { a }
 		ap.script_push(s)
 	}
-	if sys_path != '' {
-		env.sys = sysview.load(sys_path) or {
-			a.script_push('${sys_path} could not be read (${err}); uds.node names no nodes')
+	env.sys = ss.sys
+	if ss.path != '' {
+		env.sys = sysview.load(ss.path) or {
+			a.script_push('${ss.path} could not be read (${err}); uds.node names no nodes')
 			sysview.System{}
 		}
 	}

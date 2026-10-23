@@ -110,6 +110,9 @@ fn l_flash_program(l lua.State) i32 {
 		}
 	}
 	h := int(l.arg_int(1))
+	// unknown from the start: a progress callback that uses the connection meets the session the
+	// flash put it in, not what it had before
+	env.flashed(h)
 	rep := flash.program(mut ch, image, opts, mut sink) or {
 		env.flashed(h)
 		if env.expired() {

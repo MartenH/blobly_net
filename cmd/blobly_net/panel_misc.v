@@ -1543,7 +1543,7 @@ fn draw_script(mut app App) {
 		// may run for minutes, and stop() waiting for one would hang on the operator's own
 		// script (see App.run_workers).
 		app.reserve_tool_reader()
-		spawn script_worker(app, vgui.buf_str(app.script_path_buf), app.described_path())
+		spawn script_worker(app, vgui.buf_str(app.script_path_buf), app.script_system())
 	}
 	vgui.same_line()
 	// Closing keeps a dirty buffer (TextFile: load returns .cached while dirty), Run stays

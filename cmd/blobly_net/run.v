@@ -1360,6 +1360,26 @@ fn (app &App) described_path() string {
 	return sysview.find_system(app.proj_path, app.proj_db_refs()) or { '' }
 }
 
+// ScriptSys is the system model a script's uds.node reaches nodes by: the running measurement's
+// own (`sys`, what its simulated servers answer by), or with none running the file to load.
+struct ScriptSys {
+	sys  sysview.System
+	path string
+}
+
+// script_system is the model for a script started now. GUI thread: diag_sys is written there, and
+// replaced rather than written into, so the worker's copy stays what it took.
+fn (app &App) script_system() ScriptSys {
+	if app.running {
+		return ScriptSys{
+			sys: if app.diag_sys_ok { app.diag_sys } else { sysview.System{} }
+		}
+	}
+	return ScriptSys{
+		path: app.described_path()
+	}
+}
+
 // adopt_diag_sys hands the Diagnostics panel the model this run reads (or its absence), so the
 // panel never names nodes from files the run did not use.
 fn (mut app App) adopt_diag_sys(sy sysview.System, ok bool, key string) {

@@ -15,27 +15,31 @@ __global (
 	// the started run's system model and each node's listed DIDs (listed once, at the start), under
 	// bb_mu beside bb_dbs; a stop replaces them, never writes into them, so a call holding a copy
 	// reads what it took
-	bb_sys      sysview.System
-	bb_sys_dids [][]sysview.DidDesc
+	bb_sys       sysview.System
+	bb_sys_dids  [][]sysview.DidDesc
+	bb_sys_parts [][][]sysview.Part // each listed DID's parts
 )
 
 // sys_publish / sys_retire keep bb_sys the run's; the caller holds bb_mu.
 fn sys_publish(r &headless.Run) {
 	bb_sys = r.sys
 	bb_sys_dids = r.sys.nodes.map(it.desc.listed_dids())
+	bb_sys_parts = bb_sys_dids.map(it.map(it.parts()))
 }
 
 fn sys_retire() {
 	bb_sys = sysview.System{}
 	bb_sys_dids = [][]sysview.DidDesc{}
+	bb_sys_parts = [][][]sysview.Part{}
 }
 
 // SysView is ONE read of the run's model: every call answers from one, so a stop and a start on
 // another thread cannot hand it a node of one run and a DID of the next.
 struct SysView {
 	sys  sysview.System
-	dids [][]sysview.DidDesc
-	rows []project.Channel // the run's rows, as the run has them
+	dids  [][]sysview.DidDesc
+	parts [][][]sysview.Part
+	rows  []project.Channel // the run's rows, as the run has them
 	run  u64               // bb_run_gen
 }
 
@@ -45,7 +49,8 @@ fn run_sys() !SysView {
 	live := bb_dbs_live
 	v := SysView{
 		sys:  bb_sys
-		dids: bb_sys_dids
+		dids:  bb_sys_dids
+		parts: bb_sys_parts
 		rows: bb_run_rows
 		run:  bb_run_gen
 	}
@@ -85,8 +90,9 @@ fn node_did(n i32, d i32) !sysview.DidDesc {
 }
 
 fn did_part(n i32, d i32, p i32) !sysview.Part {
-	x := node_did(n, d)!
-	ps := x.parts()
+	v := run_sys()!
+	x := v.did(n, d)!
+	ps := v.parts[int(n)][int(d)]
 	if p < 0 || int(p) >= ps.len {
 		return error('DID ${x.label()} has no part ${p} (it has ${ps.len})')
 	}
@@ -199,12 +205,13 @@ pub fn bb_did_info(n i32, d i32, out &C.bb_did) i32 {
 	if isnil(out) {
 		return fail(bb_err, 'did_info: nowhere to put it')
 	}
-	x := node_did(n, d) or { return refused(err) }
+	v := run_sys() or { return refused(err) }
+	x := v.did(n, d) or { return refused(err) }
 	unsafe {
 		out.id = x.id
 		out.kind = did_kind_code(x.kind)
 		out.size = i32(x.size)
-		out.parts = i32(x.parts().len)
+		out.parts = i32(v.parts[int(n)][int(d)].len)
 		out.by_label = u8(x.by_label())
 		out.read_gated = u8(x.read_gate.declared)
 		out.read_sessions = i32(x.read_gate.sessions.len)
@@ -272,11 +279,8 @@ pub fn bb_did_hint(n i32, d i32, p i32, buf &char, cap i32) i32 {
 pub fn bb_did_text(n i32, d i32, data &u8, len i32, p i32, buf &char, cap i32) i32 {
 	x := node_did(n, d) or { return refused(err) }
 	value := bytes_in('did_text', data, len) or { return fail(bb_err, err.msg()) }
-	texts := x.read_texts(value) or { return uds_failed(err) }
-	if p < 0 || int(p) >= texts.len {
-		return fail(bb_err, 'DID ${x.label()} has no part ${p} (it has ${texts.len})')
-	}
-	return put(texts[int(p)], buf, cap)
+	text := x.read_part(value, int(p)) or { return uds_failed(err) }
+	return put(text, buf, cap)
 }
 
 @[export: 'bb_uds_write_described']

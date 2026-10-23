@@ -291,22 +291,62 @@ pub fn write_described(mut cli uds.Client, x DidDesc, texts []string) ! {
 // cannot lay out (not its declared size) is uds.UndecodableAnswer — the ECU answered, and its answer
 // is not what its description says.
 pub fn (x DidDesc) read_texts(data []u8) ![]string {
+	x.readable(data)!
+	return x.texts(data) or {
+		return uds.UndecodableAnswer{
+			why:  'DID ${x.label()}: ${err.msg()}'
+			resp: data.clone()
+		}
+	}
+}
+
+// read_part is part `p` of read_texts(data), decoding that part alone.
+pub fn (x DidDesc) read_part(data []u8, p int) !string {
+	x.readable(data)!
+	if !x.laid_out() {
+		if p != 0 {
+			return error('DID ${x.label()} has no part ${p} (it has 1)')
+		}
+		return x.read_texts(data)![0]
+	}
+	if p < 0 || p >= x.fields.len {
+		return error('DID ${x.label()} has no part ${p} (it has ${x.fields.len})')
+	}
+	mut at := 0
+	for f in x.fields[..p] {
+		at += f.width()
+	}
+	w := x.fields[p].width()
+	if at + w > data.len {
+		return uds.UndecodableAnswer{
+			why:  'DID ${x.label()}: ${data.len} byte(s), too few for its fields'
+			resp: data.clone()
+		}
+	}
+	return field_value(x.fields[p], data[at..at + w])
+}
+
+// readable refuses a value that is not what the description says: not its declared size, or a text
+// DID that is not printable ASCII (as encode writes it; its NUL padding apart).
+fn (x DidDesc) readable(data []u8) ! {
+	if x.size >= 0 && data.len != x.size {
+		return uds.UndecodableAnswer{
+			why:  'DID ${x.label()}: ${data.len} byte(s), the description says ${x.size}'
+			resp: data.clone()
+		}
+	}
 	if x.kind == .ascii {
-		// a text DID is printable ASCII, as encode writes it: anything else (its NUL padding apart)
-		// is not the text the description says
-		for i, b in data {
-			if (b < 0x20 || b > 0x7E) && !data[i..].all(it == 0) {
+		mut n := data.len
+		for n > 0 && data[n - 1] == 0 {
+			n--
+		}
+		for i, b in data[..n] {
+			if b < 0x20 || b > 0x7E {
 				return uds.UndecodableAnswer{
 					why:  'DID ${x.label()}: byte ${i + 1} (0x${b:02X}) is not printable ASCII'
 					resp: data.clone()
 				}
 			}
-		}
-	}
-	return x.texts(data) or {
-		return uds.UndecodableAnswer{
-			why:  'DID ${x.label()}: ${err.msg()}'
-			resp: data.clone()
 		}
 	}
 }

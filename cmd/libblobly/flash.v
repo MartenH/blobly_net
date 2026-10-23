@@ -105,6 +105,7 @@ pub fn bb_flash_program(u i32, image &u8, n i32, opts &C.bb_flash_opts, out &C.b
 		hd.fmu.lock()
 		hd.flashing = true
 		hd.fmu.unlock()
+		hd.conn.cli.state = uds.ConnState{}
 		defer {
 			// the session ran on the connection (the programming session, a reset), whatever it
 			// got to: what the client had established is no longer known
