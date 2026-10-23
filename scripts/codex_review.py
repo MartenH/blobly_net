@@ -33,10 +33,11 @@ CODEX_ACTOR = "chatgpt-codex-connector[bot]"
 # carries its state as JSON: `<!-- codex-review-state:v1 {"code_review":{"commit_sha":...,
 # "status":"running"|"completed"|"failed"}, ...} -->`. That is the primary failure signal.
 STATE_MARKER = re.compile(r"<!--\s*codex-review-state:v1\s+(\{.*?\})\s*-->", re.DOTALL)
-# The usage-limit reply names no commit and has no marker; it is matched by the link to the
-# usage dashboard it always carries (both wordings seen so far do), and freshness does the rest.
-USAGE_LIMIT_FRAGMENTS = ("chatgpt.com/codex/cloud/settings/usage", "Codex usage limits")
-STALE_MINUTES_DEFAULT = 30
+# The usage-limit reply names no commit and has no marker: it is matched by the usage-dashboard
+# link it carries, and the failure baseline decides which round it belongs to.
+USAGE_LIMIT_LINK = "chatgpt.com/codex/cloud/settings/usage"
+# A same-SHA request pending this long may be requested again: the watcher's default timeout.
+STALE_MINUTES_DEFAULT = 60
 
 
 class CodexReviewError(Exception):
@@ -501,14 +502,15 @@ def summary_status(item: dict[str, Any], sha: str) -> str:
 
 
 def is_usage_limit(text: str) -> bool:
-    return any(fragment in text for fragment in USAGE_LIMIT_FRAGMENTS)
+    return USAGE_LIMIT_LINK in text
 
 
 def parse_time(text: str) -> _dt.datetime | None:
     try:
-        return _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=_dt.UTC)
 
 
 def now_utc() -> _dt.datetime:
@@ -650,17 +652,16 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
         and ("Something went wrong" in body(item) or is_usage_limit(body(item)))
     ]
     summaries = [
-        (item, summary_status(item, config.sha))
+        item
         for item in issues
         if actor(item) == config.actor and config.requested_at
         and str(item.get("updated_at") or "") >= config.requested_at
+        and summary_status(item, config.sha)
     ]
-    marker_status = max(
-        ((str(item.get("updated_at") or ""), status) for item, status in summaries if status),
-        default=("", ""),
-    )[1]
-    if marker_status == "failed":
-        failed_comments += [(item, "marker_failed") for item, status in summaries if status == "failed"]
+    summary = max(summaries, key=lambda item: str(item.get("updated_at") or ""), default=None)
+    marker_status = summary_status(summary, config.sha) if summary else ""
+    if summary and marker_status == "failed":
+        failed_comments.append((summary, "marker_failed"))
     failed_pair = max(failed_comments, key=lambda pair: item_id(pair[0]), default=None)
     if failed_pair:
         failed, reason = failed_pair
@@ -786,8 +787,7 @@ def max_id(repo: str, path: str) -> int:
 
 
 def allow_stale(requested_at: str, what: str) -> bool:
-    """A pending request older than the stale bound may be re-requested: codex has been seen
-    to mark a review `running` and never finish, while a fresh request answered in minutes."""
+    """May a same-SHA request still pending be requested again? Only past the stale bound."""
     waited = pending_is_stale(requested_at)
     if waited:
         print(

@@ -646,8 +646,9 @@ response shape changes.
   (`review_is_for`). The clean channel keeps the marker: an issue comment has no `commit_id`.
 - **The summary comment is EDITED in place**, so its id predates every request and its
   freshness is `updated_at` after the request; the marker is the signal, never the table text.
-  A request still pending after `CODEX_REVIEW_STALE_MINUTES` (30) may be re-requested — codex
-  has left a review `running` for over an hour while a fresh request answered in four minutes.
+  A same-SHA request still pending after `CODEX_REVIEW_STALE_MINUTES` (60, the watcher's
+  timeout) may be re-requested — codex has left a review `running` for over an hour while a
+  fresh request answered in four minutes.
 - **Review-comment ids and issue-comment ids are different id spaces.** A baseline taken from one
   and compared against the other never matches, so the count sits at 0 forever.
 - **A "review failed" scan needs its own baseline too**, or one historical failure fires on every

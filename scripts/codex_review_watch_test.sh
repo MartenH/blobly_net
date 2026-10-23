@@ -306,6 +306,9 @@ case "${FAKE_GH_CASE:-}:$endpoint" in
 	usage_limit_old:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[{"id":39,"created_at":"2026-01-01T00:00:00Z","user":%s,"body":"You have reached your Codex usage limits. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage)."}]\n' "$bot"
 		;;
+	usage_limit_words:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":47,"created_at":"2026-01-01T00:00:03Z","user":%s,"body":"Note: Codex usage limits apply to this repository."}]\n' "$bot"
+		;;
 	usage_limit_human:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[{"id":47,"created_at":"2026-01-01T00:00:03Z","user":%s,"body":"Did we hit the Codex usage limits again?"}]\n' "$human"
 		;;
@@ -457,6 +460,9 @@ ok "usage-limit reply is matched by its dashboard link, whatever the wording" "$
 
 rc=$(run_case usage_limit_old "$out")
 ok "a usage-limit reply before the request is not this round's" "$rc" "1"
+
+rc=$(run_case usage_limit_words "$out")
+ok "a bot comment naming usage limits without the dashboard link is not a failure" "$rc" "1"
 
 rc=$(run_case usage_limit_human "$out")
 ok "a human mentioning usage limits is not a failure" "$rc" "1"
@@ -618,17 +624,20 @@ cp "$state_dir/pr-123.env" "$running_state/pr-123.env"
 FAKE_GH_CASE=marker_running PATH="$stub:/usr/bin:/bin" \
 	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$running_state" >"$out" 2>&1
 ok "a running review within the stale bound blocks a re-request" "$?" "64"
-CODEX_REVIEW_NOW=2026-01-01T01:00:00Z FAKE_GH_CASE=marker_running PATH="$stub:/usr/bin:/bin" \
+CODEX_REVIEW_NOW=2026-01-01T00:50:00Z FAKE_GH_CASE=marker_running PATH="$stub:/usr/bin:/bin" \
+	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$running_state" >"$out" 2>&1
+ok "a running review fifty minutes old still blocks a re-request" "$?" "64"
+CODEX_REVIEW_NOW=2026-01-01T01:30:00Z FAKE_GH_CASE=marker_running PATH="$stub:/usr/bin:/bin" \
 	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$running_state" >"$out" 2>&1
 ok "a running review past the stale bound is re-requested" "$?" "0"
 ok "a stale re-request says why" "$(grep -c 'treating it as stale' "$out")" "1"
 ok "a stale re-request is posted" "$(grep -c 'issuecomment-999' "$out")" "1"
 
 remote_stale_state=$(mktemp -d)
-CODEX_REVIEW_NOW=2026-01-01T01:00:00Z FAKE_GH_CASE=remote_stale PATH="$stub:/usr/bin:/bin" \
+CODEX_REVIEW_NOW=2026-01-01T01:30:00 FAKE_GH_CASE=remote_stale PATH="$stub:/usr/bin:/bin" \
 	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$remote_stale_state" >"$out" 2>&1
 ok "a stale remote request is re-requested" "$?" "0"
-ok "a stale remote re-request says why" "$(grep -c 'request comment 998 has been pending 59 min' "$out")" "1"
+ok "a stale remote re-request says why" "$(grep -c 'request comment 998 has been pending 89 min' "$out")" "1"
 
 dirty_state=$(mktemp -d)
 FAKE_GIT_DIRTY=1 FAKE_GH_CASE=request_success PATH="$stub:/usr/bin:/bin" \
