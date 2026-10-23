@@ -1259,3 +1259,50 @@ fn test_a_frame_two_coroutines_were_on_ends_when_either_dies() {
 	assert said.lines.contains('second false'), said.lines.str()
 	assert said.num('third') == 0, said.lines.str()
 }
+
+// What arrives with a received frame, on every path a script reads one: its format flags as the
+// wire carried them and t_ms, when it was received, on the now_ms clock; frames read in turn off
+// two channels carry rising times.
+fn test_a_received_frame_carries_its_format_and_its_receive_time() {
+	mut env, said := events_env(['CAN1', 'CAN2'], ['inproc:EV_T1', 'inproc:EV_T2'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	env.bus_for('CAN2')!
+	mut tx1 := transport.open('inproc:EV_T1')!
+	defer { tx1.close() }
+	mut tx2 := transport.open('inproc:EV_T2')!
+	defer { tx2.close() }
+	fd := transport.CanFrame{
+		id:   0x71
+		fd:   true
+		brs:  true
+		data: []u8{len: 12}
+	}
+	tx1.send(fd)!
+	tx1.send(fd)!
+	tx1.send(transport.CanFrame{ id: 0x72, data: [u8(1)] })!
+	tx2.send(transport.CanFrame{ id: 0x73, data: [u8(2)] })!
+	env.run_source('
+		local function says(how, f, t0)
+			log(how .. " " .. tostring(f.fd) .. " " .. tostring(f.brs) .. " " .. tostring(f.esi) .. " " ..
+				tostring(f.rtr) .. " " .. tostring(math.type(f.t_ms) == "float" and f.t_ms >= t0 and f.t_ms <= now_ms()))
+		end
+		local t0 = now_ms()
+		says("recv", bus.recv("CAN1", 500), t0)
+		says("expect", expect("CAN1", 0x71, 500), t0)
+		local times = {}
+		on_message("CAN1", 0x72, function(f) says("message", f, t0); times[#times + 1] = f.t_ms end)
+		on_message("CAN2", 0x73, function(f) times[#times + 1] = f.t_ms end)
+		run(200)
+		log("rising " .. tostring(#times == 2 and times[1] < times[2]))
+	')!
+	assert said.lines.contains('recv true true false false true'), said.lines.str()
+	assert said.lines.contains('expect true true false false true'), said.lines.str()
+	assert said.lines.contains('message false false false false true'), said.lines.str()
+	assert said.lines.contains('rising true'), said.lines.str()
+}
+
+// One frame time reads the same in both languages: Lua divides the ns as Python's ms_of does.
+fn test_the_receive_time_in_ms_is_the_ns_divided_once() {
+	assert clock_ms(1_234_567_890_123_456) == 1234567890.123456
+}

@@ -320,7 +320,9 @@ its error. Flashing a channel by name twice on the same ids reuses the first cal
 ```lua
 bus.send(channel, id, data [, { ext = false, format = "classic" }])   -- send a raw frame
 local f = bus.recv(channel [, timeout_ms])          -- receive one frame, or nil on timeout
--- f = { id = <number>, ext = <bool>, data = <byte string> }
+-- f = { id = <number>, ext = <bool>, data = <byte string>,
+--       fd, brs, esi, rtr = <bool>, t_ms = <number> }
+local t = now_ms()                                  -- the clock f.t_ms is on
 
 bus.send_message(channel, "MsgName", { Sig = value, ... })  -- DBC-encode + send
 local sig = decode(channel, id, data [, ext])               -- DBC-decode -> { Name = value, ... }
@@ -334,6 +336,16 @@ local sig = decode(channel, id, data [, ext])               -- DBC-decode -> { N
   or whose multiplexor the frame does not hold — so `expect_signal` never matches a value that
   was not on the wire.
 - `bus.recv` defaults to a 1000 ms timeout.
+- A received frame (from `bus.recv`, `expect` or an `on_message` handler) carries `fd`/`brs`
+  (CAN-FD and its bit-rate switch), `esi` (CAN-FD's error-state indicator) and `rtr` (a remote
+  frame) as the wire carried them, and **`t_ms`**, when it was received: milliseconds on the
+  host's monotonic clock, the clock `now_ms()` reads, with an unspecified zero — compare it with
+  other frame times or with `now_ms()`. Where the backend stamps a frame (SocketCAN's kernel
+  stamp; a device clock mapped onto the host's) it is that stamp, unmoved by the script's own
+  delay, so frames read off two wires order as the wires saw them, and it is the time the GUI's
+  trace and Python's `Frame.t_ms` give the same frame. Elsewhere (`inproc:`, `udp:`, and the
+  vendor adapters until they read their stamps) it is the receipt: when the script read it, so a
+  frame left queued while the script was busy carries the time it was read.
 - `format` states the frame's CAN format: `"classic"`, `"fd"` or `"fd_brs"`. Absent, the
   channel's declaration decides (`type: canfd` frames as FD). It is how a classic frame reaches
   a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
@@ -357,7 +369,7 @@ the script until the condition or the timeout, then return or raise.
 
 | Call | Meaning |
 |---|---|
-| `expect(channel, id, timeout_ms)` | Wait for a frame with CAN `id`; returns the frame `{id,ext,data}`, or raises on timeout. |
+| `expect(channel, id, timeout_ms)` | Wait for a frame with CAN `id`; returns the frame (`{id, ext, data, fd, brs, esi, rtr, t_ms}`, as `bus.recv`), or raises on timeout. |
 | `expect_signal(channel, id, signal, want, timeout_ms)` | Wait until decoded `signal` of message `id` matches `want` (a value, or a `function(v)->bool` predicate); returns the matching value, or raises. |
 
 ### Reactive callbacks — on_message / on_health / on_timer / run
@@ -423,6 +435,7 @@ flows, but `expect` + `on_message`/`run` cover the common test shapes.)
 | `log(...)` | Print a line to the output (tab-separated args). |
 | `print(...)` | Same as `log` (routed to the Blobly Net output). |
 | `sleep_ms(ms)` | Wait `ms` milliseconds. |
+| `now_ms()` | The host's monotonic clock in milliseconds: the clock a received frame's `t_ms` is on, so `f.t_ms - sent_at` is a latency (on a wire that stamps frames, or one read while the answer arrives). |
 
 Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 

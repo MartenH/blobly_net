@@ -39,6 +39,10 @@ pub mut:
 	// send, and cleared by the in-process bus, which hands the sender's struct to its subscribers.
 	hw_ns     i64
 	hw_domain string
+	// where `hw_ns` was placed on the host's monotonic clock, by a backend that places its foreign
+	// stamp once at ingress (transport.placed_at_ingress), so every reader gives the frame one time;
+	// 0 where nothing placed it. A received fact, cleared with the stamp by the in-process bus.
+	placed_ns i64
 	// 0..8 payload bytes for a classic frame; 0..64 for an FD one, and only the lengths a DLC
 	// can encode (0..8, 12, 16, 20, 24, 32, 48, 64) — anything else is padded on the way out.
 	// A payload RECEIVED off a software bus may be BORROWED: the in-process bus hands every

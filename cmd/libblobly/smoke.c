@@ -27,6 +27,7 @@ static void *lib_sym(lib_t l, const char *n) { return dlsym(l, n); }
 
 typedef const char *(*str_fn)(void);
 typedef int (*int_fn)(void);
+typedef int64_t (*i64_fn)(void);
 typedef int (*str_int_fn)(const char *);
 typedef const char *(*idx_str_fn)(int);
 typedef int (*send_fn)(int, const bb_frame *);
@@ -81,6 +82,7 @@ static str_int_fn bb_load_p, bb_bus_open_p;
 static idx_str_fn bb_channel_name_p, bb_channel_iface_p;
 static send_fn bb_bus_send_p;
 static recv_fn bb_bus_recv_p;
+static i64_fn bb_now_ns_p;
 static int_int_fn bb_bus_health_p, bb_bus_close_p, bb_channel_kind_p, bb_channel_health_source_p, bb_wait_released_p,
 	bb_uds_close_p;
 
@@ -92,8 +94,11 @@ static int exchange(const char *who, int n) {
 	if (h < 0) { fprintf(stderr, "FAIL %s open: %s\n", who, bb_last_error_p()); return 1; }
 	bb_frame f;
 	for (int i = 0; i < n; i++) {
+		int64_t before = bb_now_ns_p();
 		int rc = bb_bus_recv_p(h, 1000, &f);
 		if (rc != 0) { fprintf(stderr, "FAIL %s recv %d: rc=%d %s\n", who, i, rc, bb_last_error_p()); return 1; }
+		/* a software bus has no stamp: the frame carries its receipt, inside the call */
+		if (f.t_ns < before || f.t_ns > bb_now_ns_p()) { fprintf(stderr, "FAIL %s recv %d: t_ns outside the call\n", who, i); return 1; }
 	}
 	memset(&f, 0, sizeof f);
 	f.id = 0x123; f.len = 3; f.data[0] = 1; f.data[1] = 2; f.data[2] = 3;
@@ -315,7 +320,7 @@ int main(int argc, char **argv) {
 #define SYM(name) do { name##_p = lib_sym(lib, #name); if (!name##_p) { fprintf(stderr, "FAIL symbol %s\n", #name); return 1; } } while (0)
 	SYM(bb_version); SYM(bb_init); SYM(bb_last_error); SYM(bb_thread_attach); SYM(bb_thread_detach); SYM(bb_load); SYM(bb_start); SYM(bb_stop);
 	SYM(bb_channel_count); SYM(bb_channel_name); SYM(bb_channel_iface);
-	SYM(bb_bus_open); SYM(bb_bus_send); SYM(bb_bus_recv); SYM(bb_bus_health); SYM(bb_bus_close);
+	SYM(bb_bus_open); SYM(bb_bus_send); SYM(bb_bus_recv); SYM(bb_now_ns); SYM(bb_bus_health); SYM(bb_bus_close);
 	SYM(bb_channel_kind); SYM(bb_channel_health_source); SYM(bb_wait_released);
 	SYM(bb_message_count); SYM(bb_message_info); SYM(bb_message_name); SYM(bb_signal_info);
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);

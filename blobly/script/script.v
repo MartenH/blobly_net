@@ -284,6 +284,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__encode_signal', l_encode_signal)
 	env.st.register('__decode', l_decode)
 	env.st.register('__now_ms', l_now_ms)
+	env.st.register('now_ms', l_clock_ms)
 	env.st.register('__uds_write_did', l_uds_write_did)
 	env.st.register('__uds_sec_seed', l_uds_sec_seed)
 	env.st.register('__uds_sec_key', l_uds_sec_key)
@@ -1234,10 +1235,32 @@ fn l_uds_read_dtc(l lua.State) i32 {
 	return 1
 }
 
-// l_now_ms returns a monotonic millisecond clock for the prelude's expect/run/timers.
+// __now_ms() -> now_ms() in WHOLE milliseconds, for the prelude's expect/run/timers: the budgets
+// they compute reach recv as integers, and a fractional one would be read as 0, a busy poll
 fn l_now_ms(l lua.State) i32 {
-	l.push_int(time.ticks())
+	l.push_int(i64(time.sys_mono_now() / 1_000_000))
 	return 1
+}
+
+// now_ms() -> the host's monotonic clock in milliseconds, the clock of a received frame's t_ms
+fn l_clock_ms(l lua.State) i32 {
+	l.push_num(clock_ms(i64(time.sys_mono_now())))
+	return 1
+}
+
+// clock_ms is a host monotonic time in nanoseconds as the milliseconds a script sees
+fn clock_ms(ns i64) f64 {
+	return f64(ns) / 1_000_000.0
+}
+
+// push_received pushes what a received frame carries after its id, ext and data: fd, brs, esi,
+// rtr and t_ms, when it was received (transport.received_now)
+fn push_received(l lua.State, f transport.CanFrame) {
+	l.push_bool(f.fd)
+	l.push_bool(f.brs)
+	l.push_bool(f.esi)
+	l.push_bool(f.rtr)
+	l.push_num(clock_ms(transport.received_now(f)))
 }
 
 fn l_bus_send(l lua.State) i32 {
@@ -1266,7 +1289,8 @@ fn l_bus_recv(l lua.State) i32 {
 	l.push_int(frame.id)
 	l.push_bool(frame.extended)
 	l.push_bytes(frame.data)
-	return 3
+	push_received(l, frame)
+	return 8
 }
 
 fn l_msg_template(l lua.State) i32 {

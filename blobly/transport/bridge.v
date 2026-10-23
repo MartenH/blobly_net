@@ -535,11 +535,11 @@ fn (mut s BridgeSession) dispatch(rec BridgeRecord) ! {
 	match rec.kind {
 		.frame {
 			ingress := SharedIngress{
-				frame:  CanFrame{
+				frame:  placed_at_ingress(CanFrame{
 					...rec.frame
 					hw_ns:     rec.stamp_ns
 					hw_domain: s.domain
-				}
+				}, i64(time.sys_mono_now()))
 				tx_ack: rec.tx
 			}
 			// One producer, this thread, so the length read and the push cannot be overtaken.

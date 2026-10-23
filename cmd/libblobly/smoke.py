@@ -14,7 +14,7 @@ import threading
 class Frame(ctypes.Structure):
     _fields_ = [("id", ctypes.c_uint32), ("len", ctypes.c_uint8), ("ext", ctypes.c_uint8),
                 ("fd", ctypes.c_uint8), ("brs", ctypes.c_uint8), ("rtr", ctypes.c_uint8),
-                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64)]
+                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("t_ns", ctypes.c_int64)]
 
 
 class Message(ctypes.Structure):
@@ -59,6 +59,7 @@ def bind(lib):
     lib.bb_bus_send.argtypes = [ctypes.c_int, ctypes.POINTER(Frame)]
     lib.bb_bus_recv.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(Frame)]
     lib.bb_bus_health.argtypes = [ctypes.c_int]
+    lib.bb_now_ns.restype = ctypes.c_int64
     lib.bb_bus_close.argtypes = [ctypes.c_int]
     lib.bb_channel_kind.argtypes = [ctypes.c_int]
     lib.bb_channel_health_source.argtypes = [ctypes.c_int]
@@ -89,9 +90,12 @@ def exchange(lib, who, n):
     assert h >= 0, f"{who} open: {err(lib)}"
     f = Frame()
     for i in range(n):
+        before = lib.bb_now_ns()
         rc = lib.bb_bus_recv(h, 1000, ctypes.byref(f))
         assert rc == 0, f"{who} recv {i}: rc={rc} {err(lib)}"
         assert 0 < f.len <= 8
+        assert before <= f.t_ns <= lib.bb_now_ns(), f"{who} recv {i}: a software bus frame carries its receipt"
+
     f = Frame(id=0x123, len=3)
     f.data[0], f.data[1], f.data[2] = 1, 2, 3
     assert lib.bb_bus_send(h, ctypes.byref(f)) == 0, f"{who} send: {err(lib)}"

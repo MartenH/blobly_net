@@ -934,7 +934,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// THE ROW'S TIME: the frame's own receive stamp (#149), except for our own echo — its row was
 		// written at emit on host time, and a transfer it completes follows that row. Placed for EVERY
 		// frame, echoes and paused ones included, so a foreign clock's estimate keeps learning.
-		placed := a.placer.place(f.hw_domain, f.hw_ns, i64(host_ns), transport.on_host_clock(f.hw_domain))
+		placed := transport.received_at(f, i64(host_ns))
 		row_t_ms := if ours { t_ms } else { f64(placed - i64(a.t0_ns)) / 1_000_000.0 }
 		// The recording follows the WIRE, so its order is observation order — the only order
 		// that is actually true. Our own frame is written HERE, when it comes back, under the

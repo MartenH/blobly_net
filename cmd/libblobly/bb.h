@@ -52,7 +52,12 @@ extern "C" {
  * brs unset mean "not stated": the frame takes the wire's declared format; a frame no controller
  * could send (brs or esi without fd, an id past its width) and a remote frame are refused by the
  * transport, as for every sender in this app. A received frame that does not fit is refused, not
- * truncated. */
+ * truncated. `t_ns` is when a received frame arrived, on the host's monotonic clock (bb_now_ns), in
+ * nanoseconds: the frame's own receive stamp where the backend reads one (SocketCAN's kernel stamp;
+ * a foreign device clock mapped onto the host's) — the time the GUI's trace gives that frame —
+ * else its receipt, when this call read it. Ignored on a send; 0 from bb_encode. The layout may grow between versions until
+ * the ABI has a stability policy (#507 Phase 3): a host is built against the bb.h of the library
+ * it loads, as the Python package ships with its own. */
 typedef struct bb_frame {
 	uint32_t id;
 	uint8_t  len;
@@ -62,6 +67,7 @@ typedef struct bb_frame {
 	uint8_t  rtr;
 	uint8_t  esi;
 	uint8_t  data[64];
+	int64_t  t_ns;
 } bb_frame;
 
 /* The controller's fault ladder (transport.BusHealth), as bb_bus_health returns it. */
@@ -234,6 +240,7 @@ int         bb_init(void);
 const char *bb_last_error(void);   /* "" when the last call succeeded */
 int         bb_thread_attach(void); /* on a host-created thread, before its first other call */
 int         bb_thread_detach(void); /* on that thread, before it ends */
+int64_t     bb_now_ns(void);       /* the host's monotonic clock, in ns: a received frame's t_ns */
 
 /* A project (.blobnet): load reads it; start brings its enabled rows up — simulated ECUs, UDS
  * servers, generators, DoIP entities — through blobly.headless, one run per process; stop ends

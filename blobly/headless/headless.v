@@ -154,6 +154,7 @@ pub fn start(loaded project.Project, proj_path string, o Options) !&Run {
 	// project load / Start).
 	sim.clear_all()
 	sim.clear_live()
+	transport.reset_receive_clock() // a new run opens every clock again, as the GUI's Start does
 	// The run's simulated loopback DoIP entities move off the project's ports (13400 in every
 	// demo) onto ports this process can bind, and every row dialing them moves with them, so two
 	// runs on one machine do not collide (#411). Held until each entity binds, below.

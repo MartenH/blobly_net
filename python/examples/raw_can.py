@@ -2,7 +2,8 @@
 
 Starts the project, which brings its simulated ECUs up inside this process. Prints every enabled
 channel with its name, kind and interface, receives a few frames on a CAN channel, then sends
-0x101 and waits for 0x102: sim-demo's SUT answers 0x101 with 0x102, the first byte plus one.
+0x101 and waits for 0x102: sim-demo's SUT answers 0x101 with 0x102, the first byte plus one,
+and says how long after the request the answer was received (its t_ms on the now_ms clock).
 
     python raw_can.py [project.blobnet] [--channel NAME]
 
@@ -71,6 +72,7 @@ def main(argv: list[str]) -> int:
 
         request = bytes([0x05])
         print(f"sending 0x{REQUEST:X} [{request.hex().upper()}] on {can.name}")
+        sent_at = blobly.now_ms()
         can.send(REQUEST, request)
         try:
             # the first 11-bit 0x102 within a second; every other frame read on the way is consumed
@@ -79,7 +81,7 @@ def main(argv: list[str]) -> int:
             fail(f"no 0x{ANSWER:X} on {can.name}; sim-demo's SUT answers 0x{REQUEST:X} with it ({e})")
         if answer.data[:1] != bytes([request[0] + 1]):
             fail(f"the answer is {answer}; its first byte should be 0x{request[0] + 1:02X}")
-        print(f"answered: {answer}")
+        print(f"answered: {answer}, {answer.t_ms - sent_at:.3f} ms after the request")
     return 0
 
 

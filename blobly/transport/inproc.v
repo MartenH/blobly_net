@@ -110,6 +110,7 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	// clock of its own, so every frame it delivers says so (#149).
 	f.hw_ns = 0
 	f.hw_domain = ''
+	f.placed_ns = 0
 	// UNDER the registry's read lock, and through try_push: a non-blocking push either lands
 	// the frame or reports the queue full, so nothing here can wait while holding the lock —
 	// which is what lets the fan-out skip the target list a send used to build first. That

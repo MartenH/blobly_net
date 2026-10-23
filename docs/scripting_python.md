@@ -272,7 +272,17 @@ hardware is described in [can_hardware.md](can_hardware.md) and
   rather than sleeping.
 - A received **`Frame`** has `id`, `data`, `length`, `ext`, `fd`, `brs`, `rtr` and `esi`. For a
   remote frame `data` is empty and `length` is the length it asks for. Two frames are equal when
-  every field is. A received frame carries no timestamp yet.
+  every one of those fields is.
+- It also has **`t_ms`**, when it was received: milliseconds on the host's monotonic clock, the
+  clock `blobly.now_ms()` reads, with an unspecified zero, so it is compared with other frame
+  times and with `now_ms()`, never read as a date. Where the backend stamps a frame (SocketCAN's
+  kernel stamp at device receive; a device clock mapped onto the host's) it is that stamp, which
+  our reader's delay does not move, so frames read off two wires order as the wires saw them, and
+  it is the time the GUI's trace and a Lua script give the same frame. Elsewhere (`inproc:`,
+  `udp:`, and the vendor adapters until they read their stamps) it is the receipt: when this
+  channel's `recv` read it, so a frame left queued while the script slept carries the time it was
+  read, not the time it arrived. It is not part of a frame's value: a received frame equals the
+  `Frame` built from its content. `None` on a frame not received.
 - `ch.expect(id, timeout_ms=1000, *, ext=None)` waits for the first frame another node sends
   with this id **and** kind, and returns it. When none came it raises `blobly.Timeout`, whose
   message says what came instead. `id` is an int with `ext` its kind (`False` or `None` for 11-bit,
@@ -930,6 +940,7 @@ the package is named in this section.
 |---|---|
 | `blobly.init()` | Loads the engine. Call it on the main thread before any other thread calls in. |
 | `blobly.version()` | The engine's version, v.mod's spelling (`"2026.10.01"`). |
+| `blobly.now_ms()` | The host's monotonic clock in ms (a float): the clock of a received frame's `t_ms`, so `f.t_ms - sent_at` is a latency (on a wire that stamps frames, or one read while the answer arrives). |
 | `blobly.wait_released(timeout_ms=None)` | Waits until the process is free for a start: `True`, or `False` once `timeout_ms` passed (`None` waits for ever). Ctrl-C ends the wait within 100 ms. |
 | `blobly.reference_key(seed)` | blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF), the key the simulated ECUs accept. |
 | `blobly.doip_listen(window_ms=1000, *, port=None, ip6=False, channel=None)` | The DoIP announcements heard for `window_ms`, each a `DoipAnnouncement`: on `port` (13400), or on the port of DoIP `channel`'s entity. |
@@ -1011,7 +1022,7 @@ One enabled row of the project (`net.channels.CAN1`).
 
 ### `Frame`
 
-`blobly.Frame(id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None)`:
+`blobly.Frame(id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None, t_ms=None)`:
 a CAN frame, as `recv` returns it and as `encode` builds it.
 
 | member | what |
@@ -1023,7 +1034,8 @@ a CAN frame, as `recv` returns it and as `encode` builds it.
 | `f.fd`, `f.brs` | CAN-FD, and its bit-rate switch. |
 | `f.rtr` | A remote frame (no payload). |
 | `f.esi` | CAN-FD's error-state indicator. |
-| `f == g`, `hash(f)` | Every field equal; equal frames hash alike, so a frame can be a set member or a dict key. A frame is a value: setting a field raises `AttributeError`. |
+| `f.t_ms` | When a received frame arrived, in ms on the `blobly.now_ms()` clock: its receive stamp where the backend has one, else when `recv` read it; `None` on a frame not received. Not part of the value. |
+| `f == g`, `hash(f)` | Every field but `t_ms` equal; equal frames hash alike, so a frame can be a set member or a dict key. A frame is a value: setting a field raises `AttributeError`. |
 
 ### `Message`
 
@@ -1207,7 +1219,7 @@ discovery, `expect` and a pytest plugin. The rest is planned in [#507](https://g
 
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
 - SOME/IP send, call and listen; `flash.program`.
-- A received frame's timestamp, and stating a frame's format (a classic frame on a CAN-FD wire).
+- Stating a frame's format (a classic frame on a CAN-FD wire).
 - Replay control and recording to a file; generator control (fire, start, stop, cycle).
 - E2E verify on receive, and E2E declared in the DBC applied on send.
 - Background cyclic senders and a session keep-alive (one owner thread per channel).
