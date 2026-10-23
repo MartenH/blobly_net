@@ -291,6 +291,18 @@ pub fn write_described(mut cli uds.Client, x DidDesc, texts []string) ! {
 // cannot lay out (not its declared size) is uds.UndecodableAnswer — the ECU answered, and its answer
 // is not what its description says.
 pub fn (x DidDesc) read_texts(data []u8) ![]string {
+	if x.kind == .ascii {
+		// a text DID is printable ASCII, as encode writes it: anything else (its NUL padding apart)
+		// is not the text the description says
+		for i, b in data {
+			if (b < 0x20 || b > 0x7E) && !data[i..].all(it == 0) {
+				return uds.UndecodableAnswer{
+					why:  'DID ${x.label()}: byte ${i + 1} (0x${b:02X}) is not printable ASCII'
+					resp: data.clone()
+				}
+			}
+		}
+	}
 	return x.texts(data) or {
 		return uds.UndecodableAnswer{
 			why:  'DID ${x.label()}: ${err.msg()}'

@@ -171,10 +171,12 @@ class Node:
         """The listed DID `key` names — its identifier, or its name (a signal's or parameter's, or
         ISO's for a standard identifier) — or None for an identifier the node does not list (a DID
         of no layout, read as its bytes). A name no DID has is a KeyError."""
-        if isinstance(key, str):
-            return self.dids[key]
-        key = _int("did", key)
-        return next((d for d in self.dids if d.id == key), None)
+        with _lib.state_lock:
+            self._live()  # this run's listing
+            if isinstance(key, str):
+                return self.dids[key]
+            key = _int("did", key)
+            return next((d for d in self.dids if d.id == key), None)
 
     def uds(self, channel: "Channel | str | None" = None) -> "NodeClient":
         """A NodeClient on this node, while the project is started: on the channel of the run that

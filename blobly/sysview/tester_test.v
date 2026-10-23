@@ -118,6 +118,15 @@ fn test_a_part_says_what_its_text_holds() {
 fn test_a_value_that_is_not_the_described_size_is_undecodable() {
 	x := demo_system().nodes[0].desc.did(0x0110) or { panic('no DID') }
 	assert x.read_texts([u8(0x01), 0x68]) or { panic(err) } == ['360']
+	vin := demo_system().nodes[0].desc.listed_id(0xF190)
+	mut padded := 'BLOBLY-ZONE_A-H72'.bytes()
+	padded << 0
+	assert vin.read_texts(padded) or { panic(err) } == ['BLOBLY-ZONE_A-H72']
+	mut bad := 'BLOBLY-ZONE_A-H72'.bytes()
+	bad << 0xFF
+	vin.read_texts(bad) or {
+		assert err is uds.UndecodableAnswer && err.msg().contains('byte 18 (0xFF)')
+	}
 	x.read_texts([u8(0x01)]) or {
 		assert err is uds.UndecodableAnswer
 		assert err.msg() == 'DID 0x0110 SteerLimit: 1 byte(s), the description says 2'
