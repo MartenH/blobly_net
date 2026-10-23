@@ -283,6 +283,8 @@ fn (mut env Env) register_all() {
 	env.st.register('__msg_template', l_msg_template)
 	env.st.register('__encode_signal', l_encode_signal)
 	env.st.register('__decode', l_decode)
+	env.st.register('__dbc_messages', l_dbc_messages)
+	env.st.register('__dbc_message', l_dbc_message)
 	env.st.register('__now_ms', l_now_ms)
 	env.st.register('now_ms', l_clock_ms)
 	env.st.register('__uds_write_did', l_uds_write_did)
@@ -1317,20 +1319,5 @@ fn l_encode_signal(l lua.State) i32 {
 	mut data := l.arg_bytes(5)
 	sig.encode(mut data, l.arg_num(4))
 	l.push_bytes(data)
-	return 1
-}
-
-fn l_decode(l lua.State) i32 {
-	mut env := env_of(l)
-	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
-	data := l.arg_bytes(4)
-	msg := env.chans[ci].db.lookup_frame(u32(l.arg_int(2)), l.arg_bool(3)) or {
-		l.push_nil()
-		return 1
-	}
-	l.new_table()
-	for s in msg.active_signals(data) {
-		l.set_num(s.name, s.physical(data))
-	}
 	return 1
 }

@@ -325,7 +325,7 @@ local f = bus.recv(channel [, timeout_ms])          -- receive one frame, or nil
 local t = now_ms()                                  -- the clock f.t_ms is on
 
 bus.send_message(channel, "MsgName", { Sig = value, ... })  -- DBC-encode + send
-local sig = decode(channel, id, data [, ext])               -- DBC-decode -> { Name = value, ... }
+local sig = decode(channel, id, data [, ext [, as]])       -- DBC-decode -> { Name = value, ... }
 ```
 
 - `data` is a **byte string** (see helpers below), not a list of numbers.
@@ -335,6 +335,12 @@ local sig = decode(channel, id, data [, ext])               -- DBC-decode -> { N
   hold is left out (its key is `nil`), as is a multiplexed one its multiplexor does not select
   or whose multiplexor the frame does not hold — so `expect_signal` never matches a value that
   was not on the wire.
+- `as` picks what `decode` reports for each signal the frame carries: `"physical"` (the
+  default: raw × factor + offset), `"raw"` (the field's bits as a Lua integer, two's complement
+  for a signed signal — the key `raw_labels` is keyed by) or `"label"` (the value table's text
+  for the raw value; a signal with no text for its value is left out, like one the frame does
+  not carry). Any other value raises. One argument rather than a helper per kind: a script
+  asking for a label already holds the frame, and one call answers every signal at once.
 - `bus.recv` defaults to a 1000 ms timeout.
 - A received frame (from `bus.recv`, `expect` or an `on_message` handler) carries `fd`/`brs`
   (CAN-FD and its bit-rate switch), `esi` (CAN-FD's error-state indicator) and `rtr` (a remote
@@ -349,6 +355,38 @@ local sig = decode(channel, id, data [, ext])               -- DBC-decode -> { N
 - `format` states the frame's CAN format: `"classic"`, `"fd"` or `"fd_brs"`. Absent, the
   channel's declaration decides (`type: canfd` frames as FD). It is how a classic frame reaches
   a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
+
+### The DBC catalog
+
+What a channel's databases (its `databases:`) define, read from the same model `decode` and
+`bus.send_message` use:
+
+| Call | Returns |
+|---|---|
+| `dbc.messages(channel)` | every message, in the database's order: `{ name, id, ext, dlc, j1939, signals }` (`dlc` the length an encoding has, `j1939` whether the database declares it), `signals` in their order |
+| `dbc.message(channel, name_or_id [, ext])` | one message, or `nil`. An integer is an id, found as `decode` finds it (an extended id may match its J1939 PGN); `ext` defaults `false` |
+| `dbc.signal(channel, message, name)` | one signal of a message (by name or id), or `nil` |
+
+A signal is:
+
+| Field | Meaning |
+|---|---|
+| `name`, `unit` | as the DBC writes them (`unit` `""` where it states none) |
+| `start_bit`, `length` | the DBC's numbering: the LSB for `"little"`, the MSB for `"big"` |
+| `byte_order` | `"little"` (Intel) or `"big"` (Motorola) |
+| `signed` | the raw value is two's complement |
+| `factor`, `offset` | physical = raw × factor + offset |
+| `minimum`, `maximum` | the DBC's range, both `0` where it states none; nothing applies it |
+| `multiplexor`, `multiplexed`, `mux_value` | the mux role: the switch, or a signal present only when the switch reads `mux_value` (set on a multiplexed signal only) |
+| `labels` | the value table by the physical value `decode` returns: `labels[3] == "Third"` |
+| `raw_labels` | the value table by raw key, the value `decode(..., "raw")` returns. Lossless where `labels` is not: two keys whose physical values one double cannot tell apart are one entry there, the first |
+
+```lua
+local gear = dbc.signal("CAN1", "Powertrain", "Gear")
+local f = expect("CAN1", 0x100, 1000)
+log(gear.labels[decode("CAN1", f.id, f.data).Gear])     -- "Third"
+log(decode("CAN1", f.id, f.data, f.ext, "label").Gear)  -- the same, in one call
+```
 
 ### Byte payloads & helpers
 

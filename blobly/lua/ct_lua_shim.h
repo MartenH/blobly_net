@@ -113,6 +113,14 @@ static inline void ctlua_setfield_top(lua_State *L, const char *k) { lua_setfiel
 /* ctlua_seti: pop the value on top into the table just below it, at integer index i */
 static inline void ctlua_seti(lua_State *L, long long i) { lua_seti(L, -2, (lua_Integer)i); }
 
+/* ctlua_set_numkey: pop the value on top into the table just below it, under number key k (an
+ * integral float is the integer key, as Lua itself normalises it) */
+static inline void ctlua_set_numkey(lua_State *L, double k) {
+	lua_pushnumber(L, (lua_Number)k);
+	lua_insert(L, -2);
+	lua_settable(L, -3);
+}
+
 /* raise a Lua error with the given message (does not return). */
 static inline int ctlua_error(lua_State *L, const char *msg) {
 	lua_pushstring(L, msg);

@@ -537,9 +537,38 @@ function bus.send_message(channel, name, sigs)
   __bus_send(channel, id, ext, data)
   return { id = id, ext = ext, data = data }
 end
--- decode raw bytes against the channel`s DBC -> { SignalName = physical_value }
-function decode(channel, id, data, ext)
-  return __decode(channel, id, ext or false, data)
+-- decode raw bytes against the channel`s DBC -> { SignalName = value } for each signal the frame
+-- carries: physical values, or with as = "raw" the field bits, or "label" the value table text
+-- (a signal with no text for its value left out)
+function decode(channel, id, data, ext, as)
+  if as ~= nil and type(as) ~= "string" then error("decode: as is a string (physical, raw or label)", 2) end
+  return __decode(channel, id, ext or false, data, as)
+end
+
+-- ============================ the DBC catalog ============================
+-- dbc.messages(channel): every message of the channel`s databases, in their order, each
+-- { name, id, ext, dlc, j1939, signals = { ... } }; a signal is { name, start_bit, length,
+-- byte_order = "little"|"big", signed, factor, offset, minimum, maximum, unit, multiplexor,
+-- multiplexed, mux_value (multiplexed only), labels = { [physical] = text },
+-- raw_labels = { [raw] = text } }.
+-- dbc.message(channel, name_or_id [, ext]): one message, a number found as decode finds it; nil
+-- for none. dbc.signal(channel, message, name): one signal of it; nil for none.
+dbc = {}
+function dbc.messages(channel) return __dbc_messages(channel) end
+function dbc.message(channel, key, ext)
+  if type(key) == "number" then
+    if math.type(key) ~= "integer" then error("dbc.message: an id is an integer, not " .. key, 2) end
+    return __dbc_message(channel, true, key, ext or false)
+  end
+  return __dbc_message(channel, false, key, false)
+end
+function dbc.signal(channel, message, name)
+  local m = dbc.message(channel, message)
+  if m == nil then return nil end
+  for _, s in ipairs(m.signals) do
+    if s.name == name then return s end
+  end
+  return nil
 end
 
 -- ============================ sequences (wait / expect) ============================
