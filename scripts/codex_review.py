@@ -71,6 +71,7 @@ class WatchConfig:
     baseline_issue_comment_id: int = 0
     baseline_failure_comment_id: int = 0
     baseline_pull_comment_id: int = 0
+    baseline_summary_status: str = ""
     requested_at: str = ""
     request_comment_id: str = ""
     interval: int = 60
@@ -390,6 +391,7 @@ def write_state(path: Path, values: dict[str, Any]) -> None:
         "BASELINE_FAILURE_COMMENT_ID",
         "REQUEST_COMMENT_ID",
         "REQUESTED_AT",
+        "BASELINE_SUMMARY_STATUS",
     ]
     lines = [f"{key}={values.get(key, '')}" for key in keys]
     lines.append(f"CREATED_AT={created_at}")
@@ -409,6 +411,7 @@ def state_values(state: dict[str, str]) -> dict[str, Any]:
         "BASELINE_FAILURE_COMMENT_ID": state.get("BASELINE_FAILURE_COMMENT_ID", 0),
         "REQUEST_COMMENT_ID": state.get("REQUEST_COMMENT_ID", ""),
         "REQUESTED_AT": state.get("REQUESTED_AT", ""),
+        "BASELINE_SUMMARY_STATUS": state.get("BASELINE_SUMMARY_STATUS", ""),
     }
 
 
@@ -499,6 +502,21 @@ def summary_status(item: dict[str, Any], sha: str) -> str:
     if not commit or not commit.startswith(sha[:10]):
         return ""
     return str(review.get("status") or "")
+
+
+def latest_summary_status(items: list[dict[str, Any]], review_actor: str, sha: str, after: str = "") -> str:
+    """The status the most recently edited summary marker states for `sha`, or ''. With
+    `after`, only a summary edited STRICTLY later counts (GitHub stamps to the second, so an
+    edit in the request's own second may be the previous round's)."""
+    summaries = [
+        item
+        for item in items
+        if actor(item) == review_actor
+        and str(item.get("updated_at") or "") > after
+        and summary_status(item, sha)
+    ]
+    summary = max(summaries, key=lambda item: str(item.get("updated_at") or ""), default=None)
+    return summary_status(summary, sha) if summary else ""
 
 
 def is_usage_limit(text: str) -> bool:
@@ -652,31 +670,28 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
         and is_fresh(item, config.baseline_failure_comment_id, config.requested_at, "created_at")
         and ("Something went wrong" in body(item) or is_usage_limit(body(item)))
     ]
-    summaries = [
-        item
-        for item in issues
-        if actor(item) == config.actor and config.requested_at
-        and str(item.get("updated_at") or "") > config.requested_at
-        and summary_status(item, config.sha)
-    ]
-    summary = max(summaries, key=lambda item: str(item.get("updated_at") or ""), default=None)
-    marker_status = summary_status(summary, config.sha) if summary else ""
-    if summary and marker_status == "failed":
-        failed_comments.append((summary, "marker_failed"))
+    marker_status = (
+        latest_summary_status(issues, config.actor, config.sha, after=config.requested_at)
+        if config.requested_at else ""
+    )
+    # A marker that already said `failed` for this SHA when the request went out may simply not
+    # have been rewritten yet (another part of the summary edited); only a reply then says so.
+    marker_failed = marker_status == "failed" and config.baseline_summary_status != "failed"
     failed_pair = max(failed_comments, key=lambda pair: item_id(pair[0]), default=None)
-    if failed_pair:
-        failed, reason = failed_pair
+    if failed_pair or marker_failed:
         head = current_head(config.repo, config.pr, timeout=remaining_timeout(deadline))
         if head != config.sha:
             return EXIT_STALE_HEAD, {"RESULT": "stale_head", "PR": config.pr, "SHA": config.sha, "CURRENT_SHA": head}
-        return EXIT_FAILED, {
+        result: dict[str, Any] = {
             "RESULT": "failed",
             "PR": config.pr,
             "SHA": config.sha,
             "SHA_PREFIX": config.sha[:10],
-            "REASON": reason,
-            "ISSUE_COMMENT_ID": item_id(failed),
+            "REASON": failed_pair[1] if failed_pair else "marker_failed",
         }
+        if failed_pair:
+            result["ISSUE_COMMENT_ID"] = item_id(failed_pair[0])
+        return EXIT_FAILED, result
 
     pending: dict[str, Any] = {
         "RESULT": "pending",
@@ -751,6 +766,7 @@ def watch_config(argv: list[str]) -> WatchConfig:
         baseline_pull_comment_id=int_value(ns.baseline_pull_comment_id or 0, "--baseline-pull-comment-id"),
         requested_at=requested_at,
         request_comment_id=request_comment_id,
+        baseline_summary_status=state.get("BASELINE_SUMMARY_STATUS", ""),
         interval=int_value(ns.interval, "--interval", positive=True),
         timeout=int_value(ns.timeout, "--timeout", positive=True),
         once=bool(ns.once),
@@ -820,6 +836,7 @@ def check_existing_state(path: Path, requested_pr: str, requested_repo: str, cur
         baseline_failure_comment_id=int_value(state.get("BASELINE_FAILURE_COMMENT_ID", 0), "BASELINE_FAILURE_COMMENT_ID"),
         requested_at=state.get("REQUESTED_AT", ""),
         request_comment_id=state.get("REQUEST_COMMENT_ID", ""),
+        baseline_summary_status=state.get("BASELINE_SUMMARY_STATUS", ""),
         once=True,
         actor=review_actor,
     )
@@ -904,7 +921,9 @@ def request(argv: list[str]) -> int:
 
         baseline_review_id = max_id(repo, f"pulls/{ns.pr}/reviews")
         baseline_pull_comment_id = max_id(repo, f"pulls/{ns.pr}/comments")
-        baseline_issue_comment_id = max_id(repo, f"issues/{ns.pr}/comments")
+        issue_comments = gh_items(repo, f"issues/{ns.pr}/comments")
+        baseline_issue_comment_id = max((item_id(item) for item in issue_comments), default=0)
+        baseline_summary_status = latest_summary_status(issue_comments, review_actor, sha)
 
         latest_sha = gh_pr_head(repo, ns.pr)
         if latest_sha != sha:
@@ -926,6 +945,7 @@ def request(argv: list[str]) -> int:
             "BASELINE_FAILURE_COMMENT_ID": request_comment_id,
             "REQUEST_COMMENT_ID": request_comment_id,
             "REQUESTED_AT": "",
+            "BASELINE_SUMMARY_STATUS": baseline_summary_status,
         }
         write_state(state_path, values)
         try:

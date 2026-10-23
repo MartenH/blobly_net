@@ -638,6 +638,15 @@ CODEX_REVIEW_NOW=2026-01-01T01:30:00Z FAKE_GH_CASE=marker_running PATH="$stub:/u
 ok "a running review past the stale bound is re-requested" "$?" "0"
 ok "a stale re-request says why" "$(grep -c 'treating it as stale' "$out")" "1"
 ok "a stale re-request is posted" "$(grep -c 'issuecomment-999' "$out")" "1"
+ok "a request records the summary's status for its SHA" "$(grep -c '^BASELINE_SUMMARY_STATUS=running$' "$running_state/pr-123.env")" "1"
+
+# a marker already failed for this SHA at request time is not this round's failure by itself
+prior_failed=$(mktemp -d)
+sed 's/^REQUESTED_AT=.*/REQUESTED_AT=2026-01-01T00:00:01Z/' "$state_dir/pr-123.env" >"$prior_failed/pr-123.env"
+echo "BASELINE_SUMMARY_STATUS=failed" >>"$prior_failed/pr-123.env"
+FAKE_GH_CASE=marker_failed PATH="$stub:/usr/bin:/bin" \
+	bash scripts/codex_review_watch.sh --state "$prior_failed/pr-123.env" --once >"$out" 2>&1
+ok "a marker failed before the request and still failed is pending" "$?" "1"
 
 remote_stale_state=$(mktemp -d)
 CODEX_REVIEW_NOW=2026-01-01T01:30:00 FAKE_GH_CASE=remote_stale PATH="$stub:/usr/bin:/bin" \
