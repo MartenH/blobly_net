@@ -159,7 +159,8 @@ pub fn (mut s ConnState) observe(x Exchange) {
 	match sid {
 		sid_diagnostic_session_control {
 			if answered {
-				s.session = if x.resp.len > 1 { x.resp[1] } else { sub }
+				// the echo may carry the suppress bit (answer_to accepts it): the session is without it
+				s.session = if x.resp.len > 1 { x.resp[1] & ~suppress_positive } else { sub }
 				s.security = security_locked()
 			} else if !x.negative {
 				s.session = 0
@@ -167,10 +168,13 @@ pub fn (mut s ConnState) observe(x Exchange) {
 			}
 		}
 		sid_ecu_reset {
-			if answered {
+			if sub == 0x04 || sub == 0x05 {
+				// enable / disable rapid power shutdown: no reset, nothing changes
+			} else if answered && sub >= reset_hard && sub <= reset_soft {
 				s.session = default_session
 				s.security = security_locked()
 			} else if !x.negative {
+				// a reset of a kind ISO does not define, or one sent and unanswered: not known
 				s.session = 0
 				s.security = Security{}
 			}
@@ -183,6 +187,8 @@ pub fn (mut s ConnState) observe(x Exchange) {
 					s.security = security_unlocked((sub + 1) / 2)
 				} else if x.resp.len <= 2 {
 					s.forget(.security) // no seed to answer: the level is not known (unlock_refusal_forgets)
+				} else if s.security.unlocked() == (sub + 1) / 2 {
+					s.forget(.security) // a seed to answer: that level is locked again
 				}
 			} else if x.negative && x.resp.len == 3 {
 				s.forget(unlock_refusal_forgets(x.resp[2]))

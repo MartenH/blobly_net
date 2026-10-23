@@ -573,8 +573,9 @@ function uds.node(name, opts)
   local h, n, channel = __uds_node(name, opts.channel)
   local self = connection(h, channel)
   self.node = name
-  -- a DID is its identifier when a number, else its name (a numeric string is a name)
-  local function by_id(did) return math.type(did) == "integer" end
+  -- a DID is its identifier when a number (one that is not an integer is refused), else its name
+  -- (a numeric string is a name)
+  local function by_id(did) return type(did) == "number" end
   function self:dids() return __node_dids(n) end
   function self:did(did) return __node_did(n, did, by_id(did)) end
   function self:read(did) return __node_read(self.handle, n, did, by_id(did)) end

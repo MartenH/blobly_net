@@ -304,7 +304,7 @@ pub fn bb_uds_write_described(u i32, n i32, d i32, texts &&char, k i32, needs &C
 		// bytes laid out by one node's description go to that node: a handle of this run on one of
 		// its targets
 		if hd.run != run || !ts.any(it.row == int(hd.row) && it.doip == hd.doip
-			&& (it.doip || (it.rsp == hd.rx && it.ext == hd.ext))) {
+			&& (it.doip || (it.req == hd.conn.ch.tx_id && it.rsp == hd.rx && it.ext == hd.ext))) {
 			return error("UDS handle on ${hd.row_name} does not reach ${node} in this run; open it with ${node}'s target (bb_node_reach)")
 		}
 		// a text the layout refuses is refused before a lost connection is opened again

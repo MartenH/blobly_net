@@ -183,6 +183,11 @@ fn l_node_read(l lua.State) i32 {
 	data := c.cli.read_data_by_identifier(x.id) or { return l.fail(err.msg()) }
 	texts := x.read_texts(data) or { return l.fail(err.msg()) }
 	parts := x.parts()
+	for i, p in parts {
+		if p.kind == .integer && lua_int(texts[i]) == none {
+			return l.fail('DID ${x.label()}: ${p.label} is ${texts[i]}, past what a Lua integer holds; read_did gives its bytes')
+		}
+	}
 	if !x.by_label() {
 		push_part(l, parts[0], texts[0])
 		return 1
@@ -195,16 +200,12 @@ fn l_node_read(l lua.State) i32 {
 	return 1
 }
 
-// push_part pushes one part's text as the Lua value it is: an integer (a number past 2^63), a
-// boolean, a string, or bytes.
+// push_part pushes one part's text as the Lua value it is: an integer (lua_int's; the caller
+// refuses one past it), a boolean, a string, or bytes.
 fn push_part(l lua.State, p sysview.Part, text string) {
 	match p.kind {
 		.integer {
-			if v := strconv.parse_int(text, 10, 64) {
-				l.push_int(v)
-			} else {
-				l.push_num(strconv.atof64(text) or { 0 })
-			}
+			l.push_int(lua_int(text) or { 0 })
 		}
 		.boolean {
 			l.push_bool(text == 'true')
@@ -231,4 +232,11 @@ fn l_node_write(l lua.State) i32 {
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
 	sysview.write_described(mut c.cli, x, texts) or { return l.fail(err.msg()) }
 	return 0
+}
+
+// lua_int is an integer part's text as a Lua integer (64-bit signed), none past it: a u64's upper
+// half has no exact Lua value.
+fn lua_int(text string) ?i64 {
+	v := strconv.parse_int(text, 10, 64) or { return none }
+	return if '${v}' == text { v } else { none }
 }

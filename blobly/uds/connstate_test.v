@@ -167,9 +167,12 @@ fn test_a_session_change_establishes_its_session_locked() {
 	// a suppressed one's quiet success is the session it asked for
 	s.observe(ok_x([u8(0x10), 0x81], []))
 	assert s.session == 0x01 && s.security.known
+	// and an echo that carries the suppress bit, the session without it
+	s.observe(ok_x([u8(0x10), 0x83], [u8(0x50), 0x83]))
+	assert s.session == 0x03
 	// refused: nothing changed
 	s.observe(nrc_x([u8(0x10), 0x02], 0x22))
-	assert s.session == 0x01
+	assert s.session == 0x03
 	// sent and unanswered: the ECU may have changed, so nothing is known
 	s.observe(silent_x([u8(0x10), 0x03], true))
 	assert s.session == 0 && !s.security.known
@@ -181,6 +184,9 @@ fn test_a_reset_is_the_default_session_locked() {
 		session:  0x03
 		security: security_unlocked(1)
 	}
+	// rapid power shutdown on / off resets nothing
+	s.observe(ok_x([u8(0x11), 0x04], [u8(0x51), 0x04, 0x05]))
+	assert s.session == 0x03 && s.security == security_unlocked(1)
 	s.observe(ok_x([u8(0x11), 0x01], [u8(0x51), 0x01]))
 	assert s.session == default_session && s.security == security_locked()
 }
@@ -199,6 +205,9 @@ fn test_a_granted_key_or_a_zero_seed_unlocks_its_level() {
 	// level 2's all-zero seed: already unlocked
 	s.observe(ok_x([u8(0x27), 0x03], [u8(0x67), 0x03, 0, 0]))
 	assert s.security == security_unlocked(2)
+	// level 2 asked again and answered with a seed: it is locked again
+	s.observe(ok_x([u8(0x27), 0x03], [u8(0x67), 0x03, 0x12, 0x34]))
+	assert s.security.unlocked() == 0
 	// an answer with no seed to answer: the level is not known
 	s.observe(ok_x([u8(0x27), 0x05], [u8(0x67), 0x05]))
 	assert !s.security.known && s.session == 0x03

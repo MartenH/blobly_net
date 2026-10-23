@@ -77,16 +77,6 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		return error(abandoned_note)
 	}
 	fch.send(req) or { return send_failure(err, fch, stop_asked(targets), req[0], 0) }
-	// what each target's state takes from the request (observe_functional), however this ends
-	mut replies := []FunctionalReply{}
-	defer {
-		for i, t in targets {
-			mut c := t.client
-			c.observe_functional(req, replies[i] or { FunctionalReply{
-				outcome: .failed
-			} })
-		}
-	}
 	// a target's client a stop can be asked of: its waits are sliced, and a stop ends the request
 	stoppable := targets.any(it.client.stop_requested != unsafe { nil })
 	sw := time.new_stopwatch()
@@ -94,6 +84,24 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 	mut pended := []bool{len: targets.len}
 	mut done := []FunctionalReply{len: targets.len}
 	mut finished := []bool{len: targets.len}
+	// what each target's state takes from the request (observe_functional), however this ends: a
+	// reply settled before a failure is the target's all the same
+	mut replies := []FunctionalReply{}
+	defer {
+		for i, t in targets {
+			mut c := t.client
+			r := if i < replies.len {
+				replies[i]
+			} else if finished[i] {
+				done[i]
+			} else {
+				FunctionalReply{
+					outcome: .failed
+				}
+			}
+			c.observe_functional(req, r)
+		}
+	}
 	for {
 		now := sw.elapsed().milliseconds()
 		mut until := i64(-1)

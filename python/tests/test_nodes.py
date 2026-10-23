@@ -142,6 +142,28 @@ class TestReachedNowhere:
             with pytest.raises(blobly.Refused, match="reached at 0x7C0/0x7C8 on a CAN row named edge"):
                 zone_a.uds()
 
+    def test_a_kept_client_follows_its_node_across_a_restart(self, tmp_path):
+        shutil.copytree(DEMO_DIR, tmp_path / "demo")
+        d = tmp_path / "demo"
+        ecu, system = d / "nodes" / "zone_a" / "ecu.toml", d / "system.toml"
+        with blobly.Project(d / "described-ecu-demo.blobnet") as net:
+            diag = net.nodes.zone_a.uds()
+            assert diag.dtcs()[0].fault == "SpeedImplausible"
+            net.stop()
+            # the description's names are the next run's
+            ecu.write_text(ecu.read_text(encoding="utf-8").replace("SpeedImplausible", "SpeedWrong"), encoding="utf-8")
+            net.start()
+            assert diag.dtcs()[0].fault == "SpeedWrong"
+            net.stop()
+            # reached elsewhere: the kept client refuses rather than address the old ids
+            system.write_text(system.read_text(encoding="utf-8").replace("0x7C0", "0x7C1").replace("0x7C8", "0x7C9"),
+                              encoding="utf-8")
+            net.start()
+            with pytest.raises(blobly.BloblyError, match="reached elsewhere") as e:
+                diag.read("VIN")
+            assert e.value.code == _lib.BB_ERR_STATE
+            diag.close()
+
     def test_no_system_toml_means_no_nodes(self):
         with blobly.Project(SIM_DEMO) as net:
             assert net.system is None

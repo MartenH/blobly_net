@@ -504,6 +504,11 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 	}
 	for p in tarr(doc, 'param') {
 		pm := p.as_map()
+		if d.params.any(it.name == tstr(pm, 'name')) {
+			// a parameter is its name: the status DID's parts and a tester's lookup both key on it
+			d.errs << 'param ${tstr(pm, 'name')}: declared twice; the second not read'
+			continue
+		}
 		d.params << ParamDesc{
 			name:   tstr(pm, 'name')
 			fields: fields_of(pm)

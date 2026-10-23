@@ -281,29 +281,42 @@ class NodeClient(UdsClient):
     def __init__(self, node: Node, channel: "Channel | str | None" = None) -> None:
         from .project import Channel
         project = node._project
-        lib = _lib.lib()
         with _lib.state_lock:
             node._live()
             if not project.started:
                 raise BloblyError(f"{node.name}: the project is not started", _lib.BB_ERR_STATE)
-            row = -1
+            self._row = -1  # the channel asked for, -1: wherever the node is reached
             if channel is not None:
                 ch = project.channels[channel] if isinstance(channel, str) else channel
                 if not isinstance(ch, Channel) or ch._project is not project:
                     raise BloblyError(f"{channel!r} is not a channel of this project")
                 ch._current()
-                row = ch._index
-            t = _lib.BbReach()
-            _lib.check(lib.bb_node_reach(node._index, row, ctypes.byref(t)))
-            target = _target(project.channels[t.row], t)
-            super().__init__(target.channel, target.tx, target.rx)
-        self.node = node
-        self._faults = node._names
-        # the description's DID sizes, stated as did_size states one (kept for the next connection);
-        # one past what the carrier answers is left for the client to learn by reading it
-        for d in node.dids:
-            if d.size is not None and lib.bb_uds_did_size(self._h, d.id, d.size) == 0:
-                self._did_sizes[d.id] = d.size
+                self._row = ch._index
+            self.node = node
+            self._target = self._reach()
+            super().__init__(self._target.channel, self._target.tx, self._target.rx)
+
+    def _reach(self) -> NodeTarget:
+        """Where the node is reached in this run (under _lib.state_lock)."""
+        t = _lib.BbReach()
+        _lib.check(_lib.lib().bb_node_reach(self.node._index, self._row, ctypes.byref(t)))
+        return _target(self.node._project.channels[t.row], t)
+
+    def _open(self):
+        """Opens the connection where the node is reached in this run (under _lib.state_lock) —
+        refused when a start moved it from where this client was opened — and states the
+        description's DID sizes and fault names as this run's (a size stated with did_size wins)."""
+        self.node._live()
+        if self._reach() != self._target:
+            raise BloblyError(f"{self.node.name} is reached elsewhere in this run than this client was opened "
+                              "on; open another with node.uds()", _lib.BB_ERR_STATE)
+        super()._open()
+        lib = _lib.lib()
+        self._faults = self.node._names
+        # one past what the carrier answers is left for the client to learn by reading the DID
+        for d in self.node.dids:
+            if d.size is not None and d.id not in self._did_sizes:
+                lib.bb_uds_did_size(self._h, d.id, d.size)
 
     def _resolved(self, did: int | str) -> tuple[int, Did | None, int]:
         """(the node's index, DID `did` as the current run lists it, the run), read under one hold
