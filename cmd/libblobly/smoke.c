@@ -342,8 +342,8 @@ static int isotp_steps(int row, int doip) {
 	CHECK(u >= 0 && bb_uds_retarget_p(u, &node) == 0, "retarget the DoIP handle");
 	CHECK(bb_uds_read_did_p(u, 0xF190, msg, sizeof msg) == BB_ERR_CARRIER && strstr(bb_last_error_p(), "negative ack"),
 		"an entity with nothing behind it refuses the target");
-	int64_t far = 0x10000;
-	CHECK(bb_uds_retarget_p(u, &far) == BB_ERR && bb_uds_retarget_p(u, NULL) == 0, "past 16 bits refused; back to the row's address");
+	int64_t past16 = 0x10000;  /* not `far`: windows.h defines that away */
+	CHECK(bb_uds_retarget_p(u, &past16) == BB_ERR && bb_uds_retarget_p(u, NULL) == 0, "past 16 bits refused; back to the row's address");
 	CHECK(bb_uds_read_did_p(u, 0xF190, msg, sizeof msg) == 17, "the VIN again");
 	CHECK(bb_uds_close_p(u) == 0, "close the DoIP handle");
 	printf("ok   raw ISO-TP on CAN1, a UDS handle's timing, a DoIP handle retargeted and back\n");
