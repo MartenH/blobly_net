@@ -23,6 +23,7 @@ SCRIPTS = {
     "uds_diag.py": [],
     "doip_diag.py": [],
     "fault_injection.py": [],
+    "e2e_check.py": [],
     "flash_ecu.py": [],
     "someip_node.py": None,  # against a node: SomeipNode's
 }

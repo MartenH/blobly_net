@@ -115,6 +115,7 @@ BB_ERR_CARRIER = -8
 BB_ERR_ROUTING = -9
 BB_ERR_LOST = -10
 BB_ERR_FLASH = -11
+BB_ERR_E2E = -12  # returned by no call: E2eError's code
 # the exception each code raises; a code not here (BB_ERR_HANDLE, BB_ERR_STATE, a newer library's)
 # raises BloblyError itself
 ERRORS = {BB_ERR: Refused, BB_ERR_NEGATIVE: NegativeResponse, BB_ERR_TIMEOUT: Timeout,
@@ -139,7 +140,8 @@ class BbFrame(ctypes.Structure):
     """bb_frame, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("len", ctypes.c_uint8), ("ext", ctypes.c_uint8),
                 ("fd", ctypes.c_uint8), ("brs", ctypes.c_uint8), ("rtr", ctypes.c_uint8),
-                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("t_ns", ctypes.c_int64)]
+                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("e2e", ctypes.c_uint8),
+                ("t_ns", ctypes.c_int64)]
 
 
 class BbMessage(ctypes.Structure):
@@ -405,6 +407,9 @@ def _declare(lib):
         "bb_gen_cycle": ([c_int, c_int], c_int),
         "bb_gen_set": ([c_int, c_char_p, ctypes.c_double], c_int),
         "bb_gen_source": ([c_int, c_char_p, P(BbWave)], c_int),
+        # E2E on a row's frames (project.py, e2e.py)
+        "bb_e2e_attach": ([c_int, c_int], c_int),
+        "bb_e2e_stamp": ([c_int, c_int, P(BbFrame)], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

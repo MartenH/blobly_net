@@ -18,7 +18,10 @@ carrying these attributes is:
 - stamped by blobly_net's simulated sender of it;
 - stamped by blobly_emb's generated bridge when the ECU sends it, and checked when it receives it.
 
-blobly_net checks a received frame only for messages a `verify:` entry names.
+blobly_net checks a received frame in the GUI's trace only for messages a `verify:` entry names. A
+script (Python or Lua) judges every frame it reads by the declaration (unless a `verify:` entry for
+the message says otherwise), `E2ETimeout` included, and stamps the declaration on a message it
+sends by name ([scripting_python.md](scripting_python.md#e2e-on-what-a-script-reads-and-sends)).
 
 ```
 BA_DEF_ BO_ "E2ECounterSignal" STRING;

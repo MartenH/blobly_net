@@ -19,6 +19,7 @@ pub enum Violation {
 	bad_crc     // the checksum does not match the payload
 	stalled_ctr // the alive counter repeated
 	skipped_ctr // the counter jumped — frames were lost, or the sender restarted
+	timeout     // later than its message's E2ETimeout after the last valid frame (check_at)
 }
 
 // str is the short form used in the trace, where space is scarce and the reader is scanning.
@@ -29,6 +30,20 @@ pub fn (v Violation) str() string {
 		.bad_crc { '!CRC' }
 		.stalled_ctr { '!CNT stalled' }
 		.skipped_ctr { '!CNT skipped' }
+		.timeout { '!TIMEOUT' }
+	}
+}
+
+// name is the verdict as a script reads it: Lua's frame.e2e, and what the C ABI's enum bb_e2e
+// names (cmd/libblobly e2e.v maps it by variant).
+pub fn (v Violation) name() string {
+	return match v {
+		.ok { 'ok' }
+		.truncated { 'truncated' }
+		.bad_crc { 'bad_crc' }
+		.stalled_ctr { 'repeated' }
+		.skipped_ctr { 'skipped' }
+		.timeout { 'timeout' }
 	}
 }
 
@@ -37,6 +52,8 @@ pub struct Verifier {
 pub:
 	msg candb.Message
 	e2e E2e
+	// the message's E2ETimeout (its receiver's sender-loss timeout), judged by check_at; 0 is none
+	timeout_ms u32
 pub mut:
 	// u64 with an explicit "nothing yet" flag rather than a signed sentinel: a counter may be
 	// wide, and narrowing it into an int made a high-bit value look negative — which read as
@@ -45,6 +62,9 @@ pub mut:
 	have_ctr bool
 	seen     u64 // frames checked
 	bad      u64 // frames that failed
+	// when the last valid frame came (check_at), host monotonic ns
+	last_valid_ns i64
+	have_valid    bool
 }
 
 // holds is whether `data` holds the protection field `name` whole (and its multiplexor), if the
@@ -129,6 +149,30 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 		break
 	}
 	return .ok
+}
+
+// check_at judges a received payload as check does, and its time `t_ns` (host monotonic ns)
+// against the message's E2ETimeout: a frame whose CRC passes more than timeout_ms after the last
+// valid frame — its CRC right, its counter not a repeat — is `.timeout`, ahead of its counter's
+// verdict, and the counter is judged against it from there. `timed` false is a frame whose time
+// is when it was read rather than the bus's: its lateness says nothing, so none is judged.
+pub fn (mut v Verifier) check_at(data []u8, t_ns i64, timed bool) Violation {
+	got := v.check(data)
+	if !timed || v.timeout_ms == 0 || got in [.truncated, .bad_crc] {
+		return got
+	}
+	late := v.have_valid && t_ns - v.last_valid_ns > i64(v.timeout_ms) * 1_000_000
+	if got != .stalled_ctr {
+		v.last_valid_ns = t_ns
+		v.have_valid = true
+	}
+	if !late {
+		return got
+	}
+	if got == .ok {
+		v.bad++
+	}
+	return .timeout
 }
 
 fn mask_of_bits(bits int) u64 {
@@ -344,8 +388,9 @@ pub fn (mut s VerifySet) resolve(dbs []candb.Database, id u32, ext bool) ?string
 		}
 		proto := s.by_key[src] or { continue }
 		s.by_key[k] = Verifier{
-			msg: proto.msg
-			e2e: proto.e2e
+			msg:        proto.msg
+			e2e:        proto.e2e
+			timeout_ms: proto.timeout_ms
 		}
 		// DELIBERATELY NOT marking the adopted key as verify:-sourced (#95). It was, briefly,
 		// to reach the J1939 case — but verify_covers' own PGN walk already resolves a live

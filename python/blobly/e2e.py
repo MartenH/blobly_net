@@ -6,14 +6,76 @@ the one the simulation stamps with, pinned to vectors from an independent implem
     frame = e2e.p01_protect(bytes.fromhex("E8035A000000"), 0x1244, 4, 5, counter=3)
 
 Positions are 0-based bytes, as blobly_emb's [[frame]].e2e writes them. `mode` is the Data ID
-mode: "both" (low byte, then high), "low", or "alt" (low for an even counter, high for an odd)."""
+mode: "both" (low byte, then high), "low", or "alt" (low for an even counter, high for an odd).
+
+Also here, exported from blobly: E2eStatus, a received frame's verdict (Frame.e2e), and E2eError,
+what an expectation raises for a frame that fails it."""
 import ctypes
+import enum
 import numbers
+from typing import TYPE_CHECKING
 
 from . import _lib
-from ._lib import ByteData
+from ._lib import BloblyError, ByteData
+
+if TYPE_CHECKING:
+    from .project import Frame
 
 __all__ = ["p01_crc", "p01_protect"]
+
+
+class E2eStatus(enum.StrEnum):
+    """A received frame's E2E verdict (Frame.e2e), by its message's E2E on its channel: the
+    channel's verify: entry for it, else what its database declares, else what a simulated node
+    stamps (protect:). Its plain string ("ok", ...) works as well."""
+    OK = "ok"                # the CRC matches, and the counter is the next one
+    BAD_CRC = "bad_crc"      # the CRC does not match the frame's bytes
+    REPEATED = "repeated"    # the counter repeated the previous frame's: no new data
+    SKIPPED = "skipped"      # the counter jumped (frames lost, the sender restarted), or is one never sent (15)
+    TRUNCATED = "truncated"  # shorter than its message: its E2E fields are not all there
+    TIMEOUT = "timeout"      # later than its message's E2ETimeout after the last valid frame
+
+
+# enum bb_e2e by code; BB_E2E_NONE (0) is no verdict
+_BY_CODE = {1: E2eStatus.OK, 2: E2eStatus.BAD_CRC, 3: E2eStatus.REPEATED, 4: E2eStatus.SKIPPED,
+            5: E2eStatus.TRUNCATED, 6: E2eStatus.TIMEOUT}
+
+# what each failing verdict means, for an E2eError's message
+_MEANING = {E2eStatus.BAD_CRC: "its CRC does not match its bytes",
+            E2eStatus.REPEATED: "its counter repeated the previous frame's",
+            E2eStatus.SKIPPED: "its counter jumped: frames were lost, or the sender restarted",
+            E2eStatus.TRUNCATED: "it is shorter than its message, so its E2E fields are not all there",
+            E2eStatus.TIMEOUT: "it came later than its message's E2ETimeout after the last valid frame"}
+
+
+def status_of(code: int) -> E2eStatus | None:
+    """A bb_frame's e2e as the E2eStatus it names; None for no verdict."""
+    return _BY_CODE.get(code)
+
+
+class E2eError(BloblyError):
+    """A received frame failed its E2E check where an expectation required it to pass
+    (expect(..., e2e=True), expect_signal(..., e2e=True)): `status` is its verdict, None where its
+    message has no E2E to check, and `frame` the frame. Code -12."""
+    status: E2eStatus | None
+    frame: "Frame | None"
+
+    def __init__(self, message: str, code: int = _lib.BB_ERR_E2E, status: E2eStatus | None = None,
+                 frame: "Frame | None" = None) -> None:
+        super().__init__(message, code)
+        self.status, self.frame = status, frame
+
+
+def _passed(who: str, f: "Frame") -> None:
+    """Raises E2eError unless `f` passed its E2E check."""
+    __tracebackhide__ = True
+    if f.e2e is E2eStatus.OK:
+        return
+    if f.e2e is None:
+        raise E2eError(f"{who}: {f!r} has no E2E to check: no verify: entry, database declaration or "
+                       "protect: entry describes its message", frame=f)
+    raise E2eError(f"{who}: {f!r} failed its E2E check: {f.e2e.value} ({_MEANING[f.e2e]})",
+                   status=f.e2e, frame=f)
 
 
 def p01_crc(data: ByteData, data_id: int, crc_pos: int, counter_pos: int, mode: str = "both") -> int:

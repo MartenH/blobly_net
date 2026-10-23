@@ -375,14 +375,18 @@ if sys.platform == "win32" and "Ubuntu-24.04" in bridge.distributions():
   channel's `recv` read it, so a frame left queued while the script slept carries the time it was
   read, not the time it arrived. It is not part of a frame's value: a received frame equals the
   `Frame` built from its content. `None` on a frame not received.
-- `ch.expect(id, timeout_ms=1000, *, ext=None)` waits for the first frame another node sends
+- And **`e2e`**, its E2E verdict where its message has E2E on the channel (`"ok"`, `"bad_crc"`,
+  ...: [E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)). Not part
+  of its value either; `None` on a frame not received.
+- `ch.expect(id, timeout_ms=1000, *, ext=None, e2e=False)` waits for the first frame another node sends
   with this id **and** kind, and returns it. When none came it raises `blobly.Timeout`, whose
   message says what came instead. `id` is an int with `ext` its kind (`False` or `None` for 11-bit,
   `True` for 29-bit: an 11-bit id past 0x7FF is refused, naming `ext=True`), or a `Message` of the
   channel, which carries its own. `timeout_ms` is one deadline for the whole wait, however many
   other frames arrive: a finite number of milliseconds (`None` is refused), and nothing is read
   once it has passed but the first look, so a wait of `0` reads at most one queued frame. A stop or
-  a start of the project during the wait raises `BloblyError` (code -3).
+  a start of the project during the wait raises `BloblyError` (code -3). With `e2e=True` the frame
+  must pass its E2E check, or `blobly.E2eError` is raised.
 - **A frame read is consumed.** `recv` takes it off the channel's handle, and so does `expect`:
   a wait for one id drops every other frame it reads on the way.
 
@@ -427,10 +431,11 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   physical values and every other at raw 0. A name the message does not have raises
   `BloblyError`, and a value that is not a number raises `TypeError`. The DBC's range is not
   applied, only the signal's width (a value past it is clamped to the nearer end), so a test can
-  send an out-of-range value on purpose. `fd`/`brs` are left unset.
-- `msg.send(**signals)` encodes and sends on the message's channel, and returns the encoded
-  `Frame`.
-- `ch.expect_signal(message, signal, want, timeout_ms=1000)` waits for a frame of `message`
+  send an out-of-range value on purpose. `fd`/`brs` are left unset. Its E2E is not stamped.
+- `msg.send(**signals)` encodes, stamps the E2E the message's database declares (its counter and
+  CRC: [E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)), sends on
+  the message's channel, and returns the `Frame` sent.
+- `ch.expect_signal(message, signal, want, timeout_ms=1000, *, e2e=False)` waits for a frame of `message`
   whose decoded `signal` matches `want`, and returns `(frame, value)`. When none came it raises
   `blobly.Timeout`, whose message says what the signal was instead. `message` is a `Message` of
   the channel or its name, and its frames are those of its id and kind (a J1939 message's frames
@@ -439,7 +444,9 @@ like the channels: `ch.messages.Powertrain`, `["X"]`, by position, iteration, `k
   is refused before the wait. `want` is a predicate on the physical value, or a
   value compared with `==`. Decoded values are floats with the rounding of raw × factor + offset:
   on a signal of 0.1 steps, raw 3 decodes as 0.30000000000000004, so want `pytest.approx(0.3)` or
-  a predicate there. The deadline and the consumed frames are `expect`'s.
+  a predicate there. The deadline and the consumed frames are `expect`'s. With `e2e=True` every frame
+  of `message` read while waiting must pass its E2E check: the first that does not raises
+  `blobly.E2eError`, rather than the wait going on past it.
 - `ch.decode(frame)` returns `{signal: physical value}` for what the frame says in the row's
   databases: the message of its id and kind (else, for an extended frame, one with its J1939
   PGN), and each signal the frame carries. A multiplexed signal its multiplexor does not select is
@@ -646,15 +653,79 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     net.clear_faults()
 ```
 
-**E2E Profile 1 for frames you build** is `blobly.e2e`, Lua's `e2e.p01_crc` and `e2e.p01_protect`.
+### E2E on what a script reads and sends
+
+Every frame a channel reads (`recv`, `expect`, a handler) carries **`f.e2e`**, its E2E verdict, a
+`blobly.E2eStatus` (equal to its string), wherever its message has E2E on the channel: the row's
+`verify:` entry for it, else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`,
+`E2EProfile`, `E2EDataId`, `E2ETimeout`: [dbc_attributes.md](dbc_attributes.md)), else what a
+node simulated on the row stamps (`protect:`). The check is the engine's, the one the trace's
+`verify:` runs, and Lua's `frame.e2e` is the same.
+
+| `f.e2e` | the frame |
+|---|---|
+| `E2eStatus.OK`, `"ok"` | its CRC matches its bytes, and its counter is the next one |
+| `E2eStatus.BAD_CRC`, `"bad_crc"` | its CRC does not match its bytes |
+| `E2eStatus.REPEATED`, `"repeated"` | its counter repeated the previous frame's: no new data |
+| `E2eStatus.SKIPPED`, `"skipped"` | its counter jumped (frames lost, or the sender restarted), or holds a value the profile never sends (Profile 1's 15) |
+| `E2eStatus.TRUNCATED`, `"truncated"` | it is shorter than its message, so its E2E fields are not all there |
+| `E2eStatus.TIMEOUT`, `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter not a repeat) |
+| `None` | its message has no E2E on the channel, or it is a remote frame |
+
+- The counter is judged against the frame of that id the channel read before it, on the same
+  handle: the first frame after the handle opens (each test, under the pytest plugin) is judged on
+  its CRC alone. A frame lost before the channel read it makes the next one a skip, as it would
+  for any receiver, and so does the first good frame after a run of `bad_crc` ones.
+- `timeout` is judged only where `t_ms` is the bus's own stamp (SocketCAN, the CAN bridge). A
+  frame timed by its reading (`inproc:`, `udp:`, and the vendor adapters until they read their
+  stamps) is never late, because a script that paused would read as a sender that stopped.
+- `ch.expect(..., e2e=True)` and `ch.expect_signal(..., e2e=True)` raise **`blobly.E2eError`**
+  (code -12) for a frame of the expected message that fails: `e.status` is its verdict and
+  `e.frame` the frame. A frame whose message has no E2E raises it too, with `e.status` `None`.
+- **`msg.send(**signals)` stamps the E2E the message's DBC declares**: the counter the next of
+  the run's sends of that message by name on the channel (0 after each start), then the CRC, over
+  whatever `signals` gave those two, as a simulated sender stamps them. The declaration alone: a
+  `verify:` or `protect:` entry is not the script's to send by. To send the message unstamped on
+  purpose, encode it and send the frame: `f = msg.encode(...)`, then
+  `ch.send(f.id, f.data, ext=f.ext)`. `net.fault` breaks a simulated sender's protection instead.
+
+`projects/e2e-demo.blobnet` declares two protected messages: BrakeStatus, which its simulated
+Chassis sends, and BrakeCommand, which nothing simulated sends. Its rows E2E and E2E_TAP are one
+wire, so what one sends the other hears.
+
+```python
+import blobly
+from blobly import E2eStatus
+
+with blobly.Project("projects/e2e-demo.blobnet") as net:
+    can, tap = net.channels.E2E, net.channels.E2E_TAP
+    assert can.expect(0x301, timeout_ms=500, e2e=True).e2e == "ok"   # BrakeStatus, from Chassis
+    net.fault(can, "Chassis", "BrakeStatus", "bad_crc")
+    try:
+        for _ in range(100):                       # the frames sent before the fault still pass
+            can.expect(0x301, timeout_ms=500, e2e=True)
+    except blobly.E2eError as e:
+        print(e.status, e.frame)                   # bad_crc Frame(0x301 [...])
+    net.clear_faults()
+    tap.recv(0)                                    # opened: it hears what is sent from here on
+    can.messages.BrakeCommand.send(Demand=300)     # the declared counter and CRC stamped
+    assert tap.expect(0x302, timeout_ms=500).e2e is E2eStatus.OK
+    raw = can.messages.BrakeCommand.encode(Demand=300)
+    can.send(raw.id, raw.data, ext=raw.ext)        # as encoded: CRC and counter 0
+    assert tap.expect(0x302, timeout_ms=500).e2e == "bad_crc"
+```
+
+### E2E Profile 1 for frames you build
+
+`blobly.e2e` is Lua's `e2e.p01_crc` and `e2e.p01_protect`, for a frame no database describes.
 The CRC is the engine's own Profile 1, the one the simulation stamps with, pinned to an
 independent implementation: CRC-8 over poly 0x1D with start 0 and no final XOR, over the Data ID
 bytes `mode` names and then every byte of the frame but the CRC's own.
 
 - `e2e.p01_crc(data, data_id, crc_pos, counter_pos, mode="both")` is the CRC byte for `data` as it
   stands, the counter read from the low nibble of `counter_pos`. Compare it with the frame's CRC
-  byte to check a received frame; the counter is yours to check (15 is never a Profile 1
-  counter).
+  byte to check a frame `f.e2e` does not judge; the counter is yours to check then (15 is never a
+  Profile 1 counter).
 - `e2e.p01_protect(data, data_id, crc_pos, counter_pos, counter, mode="both")` returns `data` with
   `counter` (0..14) in the low nibble of `counter_pos` and the CRC stamped at `crc_pos`.
 - Positions are 0-based bytes, as blobly_emb's `[[frame]].e2e` writes them. `mode` is the Data ID
@@ -1057,6 +1128,14 @@ def test_the_vin(diag):
     assert diag.read_did(0xF190) == b"BLOBLYNETV0SUT001"
 ```
 
+On a message with E2E, `e2e=True` adds its check to the wait, so a frame that a receiver would
+reject fails the test ([E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)):
+
+```python
+def test_brake_status_is_protected(e2e):     # e2e-demo's channel E2E
+    assert e2e.expect(0x301, timeout_ms=500, e2e=True).e2e == "ok"
+```
+
 **A failed expectation** is a test failure. Its message says what was expected and what came
 instead, and the traceback ends at the test's own line:
 
@@ -1126,6 +1205,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 | `blobly.GeneratorRefused` | A `Refused` (code -1): the engine refused a generator call that could not take effect (see [Generators](#generators)). |
 | `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), a UDS request or a SOME/IP call nothing answered. A `BloblyError`, code -5. |
 | `blobly.FlashFailed` | A flash's own verdict: the bootloader's answers say the flash did not happen (see [Flashing](#13-flashing)). A `BloblyError`, code -11. |
+| `blobly.E2eError` | An `expect` or `expect_signal` with `e2e=True` read a frame of its message that failed its E2E check, or whose message has no E2E (`e.status` `None`): see [E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends). A `BloblyError`, code -12. |
 | `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. An `on_message` id past the width its `ext` names (29 bits when `None`). What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. A SOME/IP header field past its width, a nonzero `return_code` or a payload past one datagram on a message sent, a call's timeout under 1 ms. A flash's `base` past 32 bits, a NUL in its `seed_file`, an image past 2 GiB. |
 | `TypeError` | A timeout that is not a finite number (or `None`, which `expect` refuses too), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`, or an `ext` that is not a bool or is given beside a `Message` or `None`. A fault's or an `e2e` call's argument of the wrong type. |
 | `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are; `hasattr` and `getattr(c, name, default)` read it as absent. |
@@ -1155,6 +1235,7 @@ A UDS call's failures are subclasses, each with a code of its own: see
 | -9 | `blobly.RoutingDenied` | a DoIP entity denied the routing activation |
 | -10 | `blobly.ConnectionLost` | the DoIP connection is gone (a `CarrierFailed`) |
 | -11 | `blobly.FlashFailed` | a flash ran, and the bootloader's answers say it did not happen |
+| -12 | `blobly.E2eError` | a frame an expectation required to pass its E2E check did not |
 
 ```python
 import blobly
@@ -1341,8 +1422,8 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.send(id, data=b"", ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` take the wire's declared format. |
 | `ch.recv(timeout_ms=1000)` | The next frame another node sent, or `None` after `timeout_ms` (rounded down to whole ms; `0` only looks; `None` waits for ever). Ctrl-C ends the wait within 100 ms. |
 | `ch.look()` | `(frame or None, spent)`: one look at what is queued, without waiting. |
-| `ch.expect(id, timeout_ms=1000, *, ext=None)` | The first frame another node sends with this id and kind (an int and `ext`, or a `Message`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
-| `ch.expect_signal(message, signal, want, timeout_ms=1000)` | `(frame, value)`: the first frame of `message` whose `signal` matches `want` (a predicate, or a value compared with `==`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
+| `ch.expect(id, timeout_ms=1000, *, ext=None, e2e=False)` | The first frame another node sends with this id and kind (an int and `ext`, or a `Message`), within one deadline; `Timeout` otherwise. With `e2e=True` it must pass its E2E check, else `E2eError`. Frames read meanwhile are consumed. |
+| `ch.expect_signal(message, signal, want, timeout_ms=1000, *, e2e=False)` | `(frame, value)`: the first frame of `message` whose `signal` matches `want` (a predicate, or a value compared with `==`), within one deadline; `Timeout` otherwise. With `e2e=True` every frame of `message` read must pass its E2E check, else `E2eError`. Frames read meanwhile are consumed. |
 | `ch.health()` | The controller's ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""`. |
 | `ch.load()` | A `BusLoad`: the load of the decoded frames this channel's handle sent and read since it opened ([Bus metrics](#bus-metrics)). |
 | `ch.diagnostics()` | A `BusDiagnostics`: the backend's dropped, controller-error and undecodable counts since the handle opened (on PCAN, CANsub and the CAN bridge, the shared wire's). |
@@ -1370,7 +1451,7 @@ What `ch.load()` and `ch.diagnostics()` return: named tuples ([Bus metrics](#bus
 
 ### `Frame`
 
-`blobly.Frame(id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None, t_ms=None)`:
+`blobly.Frame(id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None, t_ms=None, e2e=None)`:
 a CAN frame, as `recv` returns it and as `encode` builds it.
 
 | member | what |
@@ -1383,7 +1464,8 @@ a CAN frame, as `recv` returns it and as `encode` builds it.
 | `f.rtr` | A remote frame (no payload). |
 | `f.esi` | CAN-FD's error-state indicator. |
 | `f.t_ms` | When a received frame arrived, in ms on the `blobly.now_ms()` clock: its receive stamp where the backend has one, else when `recv` read it; `None` on a frame not received. Not part of the value. |
-| `f == g`, `hash(f)` | Every field but `t_ms` equal; equal frames hash alike, so a frame can be a set member or a dict key. A frame is a value: setting a field raises `AttributeError`. |
+| `f.e2e` | A received frame's E2E verdict, an `E2eStatus`, where its message has E2E on its channel; `None` otherwise, and on a frame not received. Not part of the value. |
+| `f == g`, `hash(f)` | Every field but `t_ms` and `e2e` equal; equal frames hash alike, so a frame can be a set member or a dict key. A frame is a value: setting a field raises `AttributeError`. |
 
 ### `Message`
 
@@ -1397,8 +1479,8 @@ A message of a row's databases (`ch.messages.Powertrain`).
 | `msg.j1939` | Whether the database declares it J1939. |
 | `msg.channel` | The `Channel` it belongs to. |
 | `msg.signals` | Its signals, a `Signals`. |
-| `msg.encode(**signals)` | The `Frame` with these signals at these physical values, every other at raw 0. |
-| `msg.send(**signals)` | Encodes and sends on its channel; returns the `Frame`. |
+| `msg.encode(**signals)` | The `Frame` with these signals at these physical values, every other at raw 0; its E2E not stamped. |
+| `msg.send(**signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. |
 
 ### `Signal`
 
@@ -1501,6 +1583,32 @@ What a DoIP entity says about itself (`ch.discover`, `blobly.doip_listen`).
 | `a.eid`, `a.gid` | Its entity id and group id, 6 bytes each. |
 | `a.source` | `"host:port"` it came from, which a tester dials. |
 
+### `E2eStatus`
+
+A received frame's E2E verdict (`f.e2e`), a `str` enum: each member equals its string
+([E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)).
+
+| member | what |
+|---|---|
+| `E2eStatus.OK` | `"ok"`: its CRC matches, and its counter is the next one. |
+| `E2eStatus.BAD_CRC` | `"bad_crc"`: its CRC does not match its bytes. |
+| `E2eStatus.REPEATED` | `"repeated"`: its counter repeated the previous frame's. |
+| `E2eStatus.SKIPPED` | `"skipped"`: its counter jumped, or holds a value the profile never sends. |
+| `E2eStatus.TRUNCATED` | `"truncated"`: shorter than its message. |
+| `E2eStatus.TIMEOUT` | `"timeout"`: later than its message's `E2ETimeout` after the last valid frame. |
+
+### `E2eError`
+
+`blobly.E2eError(message, code=-12, status=None, frame=None)`, a `BloblyError`: what `expect` and
+`expect_signal` with `e2e=True` raise for a frame of their message that does not pass.
+
+| member | what |
+|---|---|
+| `str(e)` | The frame, and its verdict with what it means. |
+| `e.status` | The verdict, an `E2eStatus`; `None` where the frame's message has no E2E to check. |
+| `e.frame` | The `Frame`. |
+| `e.code` | -12. |
+
 ### `FaultKind`
 
 `blobly.FaultKind`, a `str` enum: what `net.fault` does to a message. Its plain string works too.
@@ -1560,7 +1668,7 @@ others are its subclasses (see [Errors](#16-errors) and
 | member | what |
 |---|---|
 | `str(e)` | The engine's message; for an expectation's `Timeout`, what was expected and what came instead. |
-| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -10 the ways a UDS call fails; -11 a flash's own verdict. |
+| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -10 the ways a UDS call fails; -11 a flash's own verdict; -12 a frame that failed its E2E check (`E2eError`). |
 | `e.nrc`, `e.nrc_name` | `NegativeResponse` only: the code, and ISO 14229-1's name for it. |
 | `e.exchange` | `NegativeResponse` and `ConnectionLost`: the `Exchange` it ended. |
 | `e.routing_code`, `e.routing_name`, `e.hint`, `e.tester` | `RoutingDenied` only: the routing activation response code, ISO 13400-2's meaning, what to do about it, and the tester address asked for. |
@@ -1583,7 +1691,8 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 ## 18. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
-loop, bus health and metrics, fault injection, generator control, the E2E Profile 1 helpers, UDS over CAN and DoIP, DoIP
+loop, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
+the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP, DoIP
 discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
@@ -1601,7 +1710,8 @@ discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and
 - Generator control is here ([Generators](#generators)): fire, start, stop, the cycle, a signal's
   value or source.
 - Replay control and recording to a file.
-- E2E verify on receive, and E2E declared in the DBC applied on send.
+- E2E verify on receive, and E2E declared in the DBC applied on send, are here
+  ([E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)).
 - Background cyclic senders and a session keep-alive (one owner thread per channel).
 - Bus metrics are here ([Bus metrics](#bus-metrics)): load, and the dropped, error and
   undecodable counters, during a run.

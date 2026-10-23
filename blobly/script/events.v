@@ -81,7 +81,7 @@ fn (mut env Env) wait_frame(names []string, timeout_ms int, slice time.Duration)
 	return none
 }
 
-// __wait_frame(timeout_ms, channel...) -> channel, id, ext, data, fd, brs, esi, rtr, t_ms | nil
+// __wait_frame(timeout_ms, channel...) -> channel, id, ext, data, fd, brs, esi, rtr, t_ms, e2e | nil
 fn l_wait_frame(l lua.State) i32 {
 	mut env := env_of(l)
 	mut names := []string{}
@@ -99,8 +99,9 @@ fn l_wait_frame(l lua.State) i32 {
 	l.push_int(f.id)
 	l.push_bool(f.extended)
 	l.push_bytes(f.data)
-	push_received(l, f)
-	return 9
+	t := push_received(l, f)
+	push_e2e(l, env.e2e_verdict(name, f, t))
+	return 10
 }
 
 // __listen(channel) -> whether the channel's ladder needs its recv read: a channel a handler names

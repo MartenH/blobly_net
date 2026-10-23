@@ -19,6 +19,14 @@ fn test_a_frame_without_a_stamp_is_placed_at_its_receipt() {
 	t := received_now(f)
 	assert t >= before && t <= i64(time.sys_mono_now())
 	assert received_at(f, 42) == 42
+	assert !stamped(f), 'a software bus frame is timed by its reading'
+}
+
+// a frame's time is the bus's where it carries a stamp, or was placed at ingress
+fn test_stamped_is_a_stamp_or_a_placement() {
+	assert stamped(CanFrame{ hw_ns: 1, hw_domain: socketcan_domain })
+	assert stamped(CanFrame{ placed_ns: 1 })
+	assert !stamped(CanFrame{ hw_ns: 1 })
 }
 
 fn test_a_host_clock_stamp_is_the_time_itself() {
