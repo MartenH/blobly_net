@@ -44,3 +44,20 @@ fn test_byte_clean_payload() {
 		assert(#concat(s) == 7)   -- "got:" (4) + 3 bytes
 	')!
 }
+
+fn t_hook_fail(l State) i32 {
+	return l.fail('hook says stop')
+}
+
+fn test_count_hook_ends_a_loop() {
+	mut st := new()
+	defer { st.close() }
+	st.set_count_hook(t_hook_fail, 1000)
+	if _ := st.do_string('while true do end') {
+		assert false, 'an endless loop returned'
+	} else {
+		assert err.msg().contains('hook says stop')
+	}
+	st.clear_hook()
+	st.do_string('local n = 0 for i = 1, 100000 do n = n + i end')!
+}

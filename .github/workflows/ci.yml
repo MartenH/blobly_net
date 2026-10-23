@@ -226,7 +226,12 @@ jobs:
           # (`-- @project`, see blobly/script/project_decl.v), so this list cannot drift out of
           # step with what the tests actually require, and the runner refuses a project that
           # contradicts a declaration rather than reporting it as failing tests.
-          ./scripts/runtests.sh
+          ./scripts/runtests.sh --timeout 600   # a suite that hangs ends (exit 4), naming its test
+
+      # The runner's exit statuses and --report file: passing, failing, erroring and hanging
+      # suites (tests/runner/), a refused project, a bad argument.
+      - name: Lua runner report and timeout (scripts/runner_report_test.sh)
+        run: bash scripts/runner_report_test.sh
 
   # THE REQUIRED CHECK. The protect-main ruleset requires a check of this name, so the jobs
   # above report under it here: it passes only if every one of them passed. Renaming it, or

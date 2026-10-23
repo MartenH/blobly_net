@@ -138,6 +138,16 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   With stdout on a pipe, `sys.stdout.reconfigure(line_buffering=True)` keeps your lines in order
   with them.
 
+## Reading a Lua run's result
+
+`scripts/runtests.sh --report run.json --timeout 120 tests/my_suite.lua` writes the result as
+JSON: `status` and `exit_code` for the verdict, then each test's `status`, `message` and
+`line`, and `timeout.test` naming the test that was running when a run timed out. Read the exit
+status first — 0 passed, 1 a test failed, 2 refused (fix the arguments or the project; nothing
+ran), 3 a script error, 4 timeout — and the file for the detail. Always pass `--timeout`: without it a
+script stuck in a loop never ends, and one waiting on a silent ECU ends only when its own waits do.
+The schema is in [scripting.md](scripting.md#exit-status-and-the-run-report).
+
 ## Writing a test
 
 Tests are pytest files on blobly's plugin. Start from

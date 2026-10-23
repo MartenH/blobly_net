@@ -13,11 +13,37 @@ const prelude = r'
 __tests_total = 0
 __tests_failed = 0
 
+-- the line of the running script a failure was raised at: the innermost frame in that file, else
+-- the innermost in any file, else 0
+local getinfo = debug.getinfo
+local test_xpcall = xpcall -- the one protected call a deadline does not see through (set_deadline)
+local function failure_line()
+  local chunk = __script_chunk()
+  local first = 0
+  local level = 3
+  while true do
+    local info = getinfo(level, "Sl")
+    if not info then break end
+    if info.currentline > 0 and string.sub(info.source, 1, 1) == "@" then
+      if info.source == chunk then return info.currentline end
+      if first == 0 then first = info.currentline end
+    end
+    level = level + 1
+  end
+  return first
+end
+
 function test(name, fn)
+  if __expired() then error("run timeout", 0) end
   __tests_total = __tests_total + 1
-  local ok, err = pcall(fn)
+  local co = tostring(coroutine.running())
+  __test_begin(name, co)
+  local line = 0
+  local ok, err = test_xpcall(fn, function(e) line = failure_line() return e end)
   if not ok then __tests_failed = __tests_failed + 1 end
-  __report(name, ok, ok and "" or tostring(err))
+  __report(name, ok, ok and "" or tostring(err), line, co)
+  -- past the run deadline the script ends here rather than starting its next test
+  if __expired() then error(ok and "run timeout" or err, 0) end
 end
 
 -- assertions live under `check` so they do not shadow Lua`s built-in assert

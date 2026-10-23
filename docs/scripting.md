@@ -45,12 +45,14 @@ frame carried — dropped, controller-error or undecodable records — and waits
 for its bus loops, warning `N bus loop(s) still busy at exit` if one is stuck. Neither is a
 failure.)
 
-The runner **exits non-zero if any test fails**, so it drops straight into CI.
+The runner **exits non-zero if any test fails**, so it drops straight into CI; its exit
+statuses and its `--report` file are [below](#exit-status-and-the-run-report).
 
 ### Usage
 
 ```sh
-scripts/runtests.sh [--project <file.blobnet>] [--project-ports] <script.lua> [more.lua ...]
+scripts/runtests.sh [--project <file.blobnet>] [--project-ports] [--report <file.json>]
+                    [--timeout <s>] <script.lua> [more.lua ...]
 ```
 
 - `--project <file.blobnet>` (or `-p`) — the project that defines the bus setup.
@@ -68,8 +70,11 @@ scripts/runtests.sh [--project <file.blobnet>] [--project-ports] <script.lua> [m
   address. `doip.listen` without `from` still listens on 13400, which no moved entity announces
   to: name the channel (`{ from = "DoIP1" }`). `--project-ports` keeps the project's ports, for
   a tool outside the run that dials the entity where the project says it is.
+- `--report <file.json>` — write the run's result as JSON ([below](#exit-status-and-the-run-report)).
+- `--timeout <s>` — end the run this many seconds after its scripts start (exit 4); up to 1000000.
 - One or more `.lua` scripts, run in order. With none named, `scripts/runtests.sh` runs every
-  file in `tests/`, one invocation per file — which is what CI does.
+  file in `tests/`, one invocation per file — which is what CI does. Then `--report` names a
+  directory, which gets one `<suite>.json` per file, and `--timeout` bounds each file.
 
 Raw form (what the wrapper runs):
 
@@ -77,6 +82,63 @@ Raw form (what the wrapper runs):
 v -enable-globals run cmd/script/run.v \
     --project projects/sim-demo.blobnet tests/diag_basic.lua
 ```
+
+### Exit status and the run report
+
+| exit | `status` | meaning |
+|---|---|---|
+| 0 | `passed` | every test passed |
+| 1 | `failed` | a test failed |
+| 2 | `refused` | bad arguments, or a project that cannot be loaded or started; nothing ran |
+| 3 | `error` | a script raised outside any `test()`, or could not be loaded |
+| 4 | `timeout` | `--timeout` passed |
+
+The first that applies wins, in the order refused, timeout, error, failed. `--report` writes the
+same verdict and the detail behind it, schema 1 (a field is only ever added):
+
+```json
+{
+  "schema": 1,
+  "status": "failed",
+  "exit_code": 1,
+  "message": "",
+  "project": "projects/sim-demo.blobnet",
+  "duration_ms": 245.5,
+  "counts": { "passed": 1, "failed": 1, "timed_out": 0, "script_errors": 0 },
+  "tests": [
+    { "name": "passes", "script": "tests/runner/fail.lua", "status": "passed",
+      "message": "", "line": 0, "duration_ms": 0 },
+    { "name": "fails", "script": "tests/runner/fail.lua", "status": "failed",
+      "message": "tests/runner/fail.lua:7: one is two: got 1, want 2", "line": 7, "duration_ms": 0.1 }
+  ],
+  "script_errors": [],
+  "diagnostics": {}
+}
+```
+
+- `tests[]`: one per `test()`, in the order they ran. `status` is `passed`, `failed` or
+  `timeout`; `line` is the line of the test's own script the failure was raised at (the
+  innermost frame in that file, so a helper function's line when the helper raised), 0 when
+  none is known; `duration_ms` is the test's wall time.
+- `script_errors[]`: `{script, message}` for each script that raised outside a `test()`.
+- `message`: why the run was refused, or that a timed-out run was exited by the watchdog (below);
+  `""` otherwise.
+- `timeout`, present only when the run timed out: `{after_s, script, test}`, the test that was
+  running (`""` if the script was outside any test). The tests after it, and the scripts after
+  that one, do not run.
+- `diagnostics`: what each bus or connection the scripts held counted that no frame carried, by
+  name, as the runner prints at exit — `{dropped, bus_errors, decode_errors}`; only the
+  non-empty ones.
+
+**How a timeout ends a run.** Lua code is stopped between instructions, so a loop that never
+yields ends at the deadline, and `pcall` cannot catch it for good; no `test()` starts after it; a wait — `sleep_ms`, `bus.recv`, `expect`, `run()`, a `doip.listen`
+or `someip.listen` window, a `someip.call` — is cut to what is left (a wait for ever included);
+a UDS request is abandoned, in its carrier's wait or between its answers. One host call in
+progress (a DoIP connection being opened, at most 7 s; a `flash.program` without a `progress`
+callback) finishes its own bounded wait first. Then the project is stopped
+and every bus closed as on any other exit, and the report is written. What the deadline cannot
+reach — a Lua finalizer, a script that replaced the debug hook — is ended by a watchdog 5 s after
+the deadline: exit 4 again, with a report that has no tests and says so in `message`.
 
 ### What the runner does for you
 

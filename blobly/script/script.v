@@ -59,9 +59,16 @@ pub fn carrier_of(ch project.Channel) Carrier {
 // TestResult is one test() outcome collected during a run.
 pub struct TestResult {
 pub:
-	name string
-	ok   bool
-	msg  string
+	name   string
+	ok     bool
+	msg    string
+	script string // the file run_file was given, '' for source text
+	// the line of the script the failure was raised at (the innermost frame in that file), 0 when
+	// none is known
+	line int
+	ms   f64 // from test() to its verdict
+	// the run's deadline passed while the test ran (set_deadline); `ok` is then false
+	timed_out bool
 }
 
 struct UdsConn {
@@ -101,6 +108,12 @@ mut:
 	script_path string
 	// the channel after the one run() served last, so a flooding channel cannot starve the others
 	rr int
+	// the script file as run_file was given it, which is its chunk name; '' for source text
+	script_arg string
+	// the test() calls begun and not yet reported, innermost last
+	running []Running
+	// sys_mono_now when the run ends (set_deadline); 0 is none
+	deadline u64
 pub mut:
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
@@ -140,8 +153,10 @@ pub fn new_env(chans []ChanInfo) !&Env {
 // run_file loads and executes a Lua script file (after the prelude).
 pub fn (mut env Env) run_file(path string) ! {
 	env.script_path = os.abs_path(path)
+	env.script_arg = path
 	defer {
 		env.script_path = ''
+		env.script_arg = ''
 	}
 	env.st.do_file(path)!
 }
@@ -261,6 +276,9 @@ fn (mut env Env) bus_for(name string) !transport.Bus {
 // register_all binds every host primitive the prelude relies on.
 fn (mut env Env) register_all() {
 	env.st.register('__report', l_report)
+	env.st.register('__test_begin', l_test_begin)
+	env.st.register('__expired', l_expired)
+	env.st.register('__script_chunk', l_script_chunk)
 	env.st.register('__log', l_log)
 	env.st.register('__sleep', l_sleep)
 	env.st.register('__sim_fault', l_sim_fault)
@@ -323,12 +341,19 @@ fn env_of(l lua.State) &Env {
 fn l_report(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	ok := l.arg_bool(2)
-	msg := l.arg_str(3)
+	// a test still running at the deadline is the timeout's, with its own message when it failed
+	timed_out := env.expired()
+	ok := l.arg_bool(2) && !timed_out
+	msg := if l.arg_bool(2) && timed_out { timeout_note } else { l.arg_str(3) }
+	begun := env.test_ended(l.arg_str(5))
 	env.results << TestResult{
-		name: name
-		ok:   ok
-		msg:  msg
+		name:      name
+		ok:        ok
+		msg:       msg
+		script:    begun.script
+		line:      int(l.arg_int(4))
+		ms:        f64(time.sys_mono_now() - begun.t0) / 1_000_000.0
+		timed_out: timed_out
 	}
 	if ok {
 		env.emit('  ok   ${name}')
@@ -345,9 +370,12 @@ fn l_log(l lua.State) i32 {
 }
 
 fn l_sleep(l lua.State) i32 {
-	ms := l.arg_int(1)
+	ms := env_of(l).bounded(if l.arg_int(1) > 0 { l.arg_int(1) } else { 0 })
 	if ms > 0 {
 		time.sleep(ms * time.millisecond)
+	}
+	if env_of(l).expired() {
+		return l.fail(timeout_note) // the sleep was cut
 	}
 	return 0
 }
@@ -445,15 +473,20 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 					l.push_int(i)
 					return 1
 				}
+				// Past the run's deadline the probe was abandoned, not refused: no reconnect.
+				if env.expired() {
+					return l.fail(timeout_note)
+				}
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
 				// holding keeps working rather than being orphaned by the repair.
 				c.ch.close()
 				fresh := udsconn.open_doip(info.carrier) or {
 					return l.fail('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 				}
+				mut fresh_ch := isotp.Channel(fresh)
 				env.conns[i] = UdsConn{
-					ch:   fresh
-					cli:  uds.new_client(fresh)
+					ch:   fresh_ch
+					cli:  env.bound_client(mut fresh_ch, uds.new_client(fresh_ch))
 					chan: name
 				}
 				l.push_int(i)
@@ -472,12 +505,12 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 			}
 		}
 	}
-	conn := udsconn.open(t, name, info.iface, info.carrier, env.opener) or {
+	mut conn := udsconn.open(t, name, info.iface, info.carrier, env.opener) or {
 		return l.fail(err.msg())
 	}
 	env.conns << UdsConn{
 		ch:       conn.ch
-		cli:      conn.cli
+		cli:      env.bound_client(mut conn.ch, conn.cli)
 		chan:     name
 		can:      !t.doip
 		rx:       t.rx
@@ -587,7 +620,7 @@ fn probe_says_dead(err IError) bool {
 // by listening rather than asking. Returns "vin|0xADDR" lines; the prelude shapes them.
 fn l_doip_listen(l lua.State) i32 {
 	port := int(l.arg_int(1))
-	window := int(l.arg_int(2))
+	window := int(env_of(l).bounded_window(l.arg_int(2)))
 	ip6 := l.arg_bool(3)
 	from := l.arg_str(4)
 	// `from` names a channel: the listener takes THAT channel's own port, so a suite does not
@@ -602,6 +635,9 @@ fn l_doip_listen(l lua.State) i32 {
 	}
 	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
 		return l.fail('doip.listen(${use_port}): ${err}')
+	}
+	if env_of(l).expired() {
+		return l.fail(timeout_note) // the wait was cut
 	}
 	mut out := []string{}
 	for f in found {
@@ -619,7 +655,7 @@ fn l_doip_listen(l lua.State) i32 {
 // format is delimited text, and a payload byte can be anything.
 fn l_someip_listen(l lua.State) i32 {
 	port := int(l.arg_int(1))
-	window := int(l.arg_int(2))
+	window := int(env_of(l).bounded_window(l.arg_int(2)))
 	group := l.arg_str(3)
 	from := l.arg_str(4)
 	mut car := ?udsconn.Carrier(none)
@@ -635,6 +671,9 @@ fn l_someip_listen(l lua.State) i32 {
 	cap := someip.collect(host, use_port, window, use_group) or {
 		return l.fail('someip.listen(${use_port}): ${err}')
 	}
+	if env_of(l).expired() {
+		return l.fail(timeout_note) // the wait was cut
+	}
 	l.push_str(capture_lines(cap))
 	l.push_int(i64(cap.malformed))
 	return 2
@@ -648,7 +687,7 @@ fn l_someip_send(l lua.State) i32 {
 	port := int(l.arg_int(1))
 	to := l.arg_str(2)
 	spec := l.arg_str(3)
-	window := int(l.arg_int(4))
+	window := int(env_of(l).bounded_window(l.arg_int(4)))
 	mut msgs := []someip.Outgoing{}
 	for line in spec.split_into_lines() {
 		f := line.split('|')
@@ -683,6 +722,9 @@ fn l_someip_send(l lua.State) i32 {
 	cap := env.someip_sessions.send_messages(port, to, msgs, window) or {
 		return l.fail('someip.send(${to}): ${err}')
 	}
+	if env_of(l).expired() {
+		return l.fail(timeout_note) // the wait was cut
+	}
 	l.push_str(capture_lines(cap))
 	l.push_int(i64(cap.malformed))
 	return 2
@@ -711,7 +753,10 @@ fn l_someip_call(l lua.State) i32 {
 		vals << v
 	}
 	payload := hex_bytes(l.arg_str(8)) or { return l.fail('someip.call: payload is not hex') }
-	timeout := int(l.arg_int(9))
+	timeout := int(env.bounded_window(l.arg_int(9)))
+	if env.expired() {
+		return l.fail(timeout_note)
+	}
 	m := someip.Outgoing{
 		service: u16(vals[0] or { 0 })
 		method:  u16(vals[1] or { 0 })
@@ -722,6 +767,9 @@ fn l_someip_call(l lua.State) i32 {
 	}
 	a := env.someip_sessions.call_once(port, to, m, timeout, 'a script') or {
 		return l.fail('someip.call(${to}): ${err}')
+	}
+	if env.expired() {
+		return l.fail(timeout_note) // the wait was cut
 	}
 	l.push_str(if a.timed_out {
 		'timeout'
@@ -1218,7 +1266,10 @@ fn l_bus_recv(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
 	mut bus := env.bus_for(name) or { return l.fail(err.msg()) }
-	frame := bus.recv(int(l.arg_int(2))) or {
+	frame := bus.recv(int(env.bounded(l.arg_int(2)))) or {
+		if env.expired() {
+			return l.fail(timeout_note) // the wait was cut
+		}
 		l.push_nil()
 		return 1
 	}

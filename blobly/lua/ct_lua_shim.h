@@ -127,4 +127,22 @@ static inline int ctlua_error(lua_State *L, const char *msg) {
 	return lua_error(L);
 }
 
+/* ---- count hook: every `every` VM instructions the C function stored under "ctlua.hook" in the
+ * registry is called; an error it raises unwinds the script as one raised by the script would.
+ * Inherited by coroutines the script creates. fn NULL removes it. ---- */
+static void ctlua_hook_trampoline(lua_State *L, lua_Debug *ar) {
+	(void)ar;
+	lua_getfield(L, LUA_REGISTRYINDEX, "ctlua.hook");
+	lua_call(L, 0, 0);
+}
+static inline void ctlua_set_count_hook(lua_State *L, ctlua_CFunction fn, int every) {
+	if (fn) {
+		lua_pushcfunction(L, fn);
+		lua_setfield(L, LUA_REGISTRYINDEX, "ctlua.hook");
+		lua_sethook(L, ctlua_hook_trampoline, LUA_MASKCOUNT, every);
+	} else {
+		lua_sethook(L, NULL, 0, 0);
+	}
+}
+
 #endif /* BLOBLY_LUA_SHIM_H */
