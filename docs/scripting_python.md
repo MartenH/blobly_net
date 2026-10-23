@@ -13,7 +13,10 @@ existing suites. [What is not there yet](#18-what-is-not-there-yet) lists what P
 have yet, with #507's phases.
 
 An AI agent driving Blobly Net should start at [agents.md](agents.md). Complete, runnable
-scripts are in [python/examples](../python/examples/README.md).
+scripts are in [python/examples](../python/examples/README.md). VS Code is the console for all of
+it ([vscode.md](vscode.md)): completion from the package's type annotations (it ships
+`py.typed`), breakpoints, the Debug Console against a live project, the Testing panel and
+`# %%` cells.
 
 1. [Setting up](#1-setting-up)
 2. [Running](#2-running)
@@ -1070,6 +1073,9 @@ status is pytest's: 0 when every test passed, 1 when one failed.
 
 The complete suite is [test_sim_demo.py](../python/examples/test_sim_demo.py), with its
 [conftest.py](../python/examples/conftest.py) and [pytest.ini](../python/examples/pytest.ini).
+VS Code's Testing panel runs and debugs it ([vscode.md](vscode.md#the-testing-panel)). The
+plugin makes the fixtures at run time, so annotate a test's parameters (`can1: Channel`,
+`diag: UdsClient`) for an editor to complete them.
 
 ---
 
@@ -1608,7 +1614,7 @@ discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and
 **Phase 3: hardening for AI.** A JSON run report and an overall run timeout, an API stability
 policy for this package, and possibly an MCP server.
 
-Also not built: a Python console beside a running GUI measurement (this package brings a project
-up in your own process), removing a handler, and wheels for platforms other than Linux x86_64 and
-Windows x64. Review findings on the package that are still being checked against `main` are in
+Not planned: Python inside the GUI, or a console panel there. VS Code is the console
+([vscode.md](vscode.md)), and this package brings a project up in your own process. Also not
+built: removing a handler, and wheels for platforms other than Linux x86_64 and Windows x64. Review findings on the package that are still being checked against `main` are in
 [#506](https://github.com/MartenH/blobly_net/issues/506).

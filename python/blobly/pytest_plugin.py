@@ -37,12 +37,14 @@ import collections
 import keyword
 import os
 import re
+from collections.abc import Iterator
 
 import pytest
 
 from . import __version__, init, version
 from ._lib import BloblyError
 from .project import Channel, Project
+from .uds import UdsClient
 
 RESERVED = {"project", "diag", "request", "_blobly_run"}  # this plugin's fixtures, and pytest's request
 _PATH = pytest.StashKey[str]()  # the project configure found
@@ -133,14 +135,14 @@ def pytest_report_header(config: pytest.Config) -> str:
 
 
 @pytest.fixture(scope="module")
-def _blobly_run(request: pytest.FixtureRequest):
+def _blobly_run(request: pytest.FixtureRequest) -> Iterator[Project]:
     """The module's run of the suite's project."""
     with Project(request.config.stash[_PATH]) as net:
         yield net
 
 
 @pytest.fixture
-def project(_blobly_run: Project):
+def project(_blobly_run: Project) -> Iterator[Project]:
     """The started project; what a test registers on it and leaves queued goes with the test."""
     net = _blobly_run
     if not net.started:  # an earlier test of the module stopped it
@@ -153,7 +155,7 @@ def project(_blobly_run: Project):
 
 
 @pytest.fixture
-def diag(project: Project, request: pytest.FixtureRequest):
+def diag(project: Project, request: pytest.FixtureRequest) -> Iterator[UdsClient]:
     """A UDS client, closed after the test: on the channel the test names by parametrizing this
     fixture indirectly, else on the project's first enabled CAN channel at the default ids (0x7E0
     out, 0x7E8 back), else its first DoIP one; other ids are canN.uds(tx, rx)."""

@@ -1,9 +1,9 @@
 """The Python documentation against the package it describes:
   - every public class, method, property and attribute of `blobly` is named in the reference
     section of docs/scripting_python.md, so the reference cannot silently fall behind the code;
-  - every Python block in the guide, in docs/agents.md and in python/README.md (the PyPI page)
-    runs as written, from the repository root, and every YAML block there is a project that loads
-    (and, when every row is an in-process bus, starts);
+  - every Python block in the guide, in docs/agents.md, docs/vscode.md and python/README.md (the
+    PyPI page) runs as written, from the repository root, and every YAML block there is a project
+    that loads (and, when every row is an in-process bus, starts);
   - every link in those pages and in python/examples/README.md reaches a file of the repository,
     and an anchor a heading of it.
 The public surface is what `blobly.__all__` exports: its functions, its classes, and each class's
@@ -25,7 +25,8 @@ from conftest import REPO
 pytestmark = pytest.mark.usefixtures("engine")
 
 GUIDE = os.path.join(REPO, "docs", "scripting_python.md")
-RUN = [GUIDE, os.path.join(REPO, "docs", "agents.md"), os.path.join(REPO, "python", "README.md")]
+RUN = [GUIDE, os.path.join(REPO, "docs", "agents.md"), os.path.join(REPO, "docs", "vscode.md"),
+       os.path.join(REPO, "python", "README.md")]
 LINKED = RUN + [os.path.join(REPO, "python", "examples", "README.md")]
 GITHUB = "https://github.com/MartenH/blobly_net/"
 
@@ -56,6 +57,8 @@ def members(node, classes):
     self, with those of its base classes that the package defines."""
     names = set()
     for base in node.bases:
+        if isinstance(base, ast.Subscript):  # a generic base: Named[Channel] is Named
+            base = base.value
         if isinstance(base, ast.Name) and base.id in classes:
             names |= members(classes[base.id], classes)
     for item in node.body:

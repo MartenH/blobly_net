@@ -12,11 +12,14 @@ its window or timeout, and Ctrl-C ends it within 100 ms (the exchange then finis
 import ctypes
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from . import _lib
 from .doip import _ms, _started
 from .events import _on_thread
+
+if TYPE_CHECKING:
+    from .project import Channel
 
 __all__ = ["call", "listen", "send"]
 
@@ -171,7 +174,7 @@ def call(to: str, request: SomeipMessage, *, port: int | None = None, timeout_ms
 
 
 def listen(window_ms: float = 1000, *, port: int | None = None, group: str | None = None,
-           channel=None) -> SomeipHeard:
+           channel: "Channel | None" = None) -> SomeipHeard:
     """Hears for `window_ms` what the network already carries on `port` (None: 30490): a
     blobly_emb node's events to its peer (bind the peer port), a service's events on a multicast
     `group` (joined on the port), SD offers (join the SD group). Nothing is sent and nothing is

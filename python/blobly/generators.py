@@ -5,10 +5,15 @@ the calls and types the refusals."""
 import ctypes
 import math
 import numbers
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from . import _lib
 from ._lib import BloblyError, Refused
 from .events import _on_thread
+
+if TYPE_CHECKING:
+    from .project import Project, Signal
 
 
 class GeneratorRefused(Refused):
@@ -26,8 +31,12 @@ class Generator:
     read from the run as they are now. It belongs to the run that listed it: after a stop and a
     start it goes on working while the run has a generator of its name and channel at its
     position, and refuses otherwise."""
+    name: str
+    channel: str
+    message: str
+    trigger: str
 
-    def __init__(self, project, index, name, channel, run):
+    def __init__(self, project: "Project", index: int, name: str, channel: str, run: int) -> None:
         self._project, self._index, self.name, self.channel, self._run = project, index, name, channel, run
         lib = _lib.lib()
         self.message = _lib.string(lib.bb_gen_text, index, _lib.GEN_MESSAGE)
@@ -137,14 +146,14 @@ class Generator:
         """Ends its cycle; fire still sends it."""
         self._call(lambda lib: lib.bb_gen_stop)
 
-    def set(self, signal, value: float) -> None:
+    def set(self, signal: "Signal | str", value: float) -> None:
         """Sends `signal` (a Signal or its name) at the static `value` from the next frame, its value
         source (if it had one) dropped. A signal the generator did not list is added."""
         if isinstance(value, bool) or not isinstance(value, numbers.Real):
             raise TypeError(f"{self.name}: a signal's value is a number, not {value!r}")
         self._call(lambda lib: lib.bb_gen_set, _name(signal), float(value))
 
-    def source(self, signal, kind: str, **params: float) -> None:
+    def source(self, signal: "Signal | str", kind: str, **params: float) -> None:
         """Puts `signal` (a Signal or its name) on a value source from the next frame: `kind` is
         "const", "sine", "sawtooth", "counter" or "stepmod", with the parameters a project writes
         (const: value; sine: offset, amplitude, freq, phase; sawtooth: min, max, period in s;
@@ -160,7 +169,7 @@ class Generator:
             setattr(w, k, float(v))
         self._call(lambda lib: lib.bb_gen_source, _name(signal), ctypes.byref(w))
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         what = self.message or "raw"
         return f"<Generator {self.name!r} {what} on {self.channel} ({self.trigger})>"
 
@@ -170,10 +179,10 @@ class Generators:
     generator may send on an enabled one): `gens["Ping ECU"]` by name, else "channel/name" (a name
     two generators share is refused, naming both forms), `gens[0]` by position, iteration, len."""
 
-    def __init__(self, items, run):
+    def __init__(self, items: list[Generator], run: int) -> None:
         self._order, self._run = items, run
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: int | str) -> Generator:
         if isinstance(key, int):
             return self._order[key]
         lib = _lib.lib()
@@ -186,17 +195,17 @@ class Generators:
                 raise KeyError(_lib.text(lib.bb_last_error()))
             return self._order[_lib.check(rc)]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Generator]:
         return iter(self._order)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._order)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "<Generators " + ", ".join(repr(g.name) for g in self._order) + ">"
 
 
-def listed(project, old):
+def listed(project: "Project", old: list[Generator] | None) -> Generators:
     """The current run's generators, keeping each of `old` still at its position under its name and
     channel; the caller holds the state lock."""
     lib = _lib.lib()

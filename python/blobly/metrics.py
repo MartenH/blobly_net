@@ -26,14 +26,14 @@ class BusDiagnostics(NamedTuple):
     decode_errors: int  # records the backend could not decode
 
 
-def load_of(h):
+def load_of(h: int) -> BusLoad:
     """BusLoad of bus handle h."""
     out = _lib.BbBusload()
     _lib.check(_lib.lib().bb_bus_load(h, ctypes.byref(out)))
     return BusLoad(None if out.percent < 0 else out.percent, None if out.average < 0 else out.average, out.frames, out.bits, out.nominal)
 
 
-def diagnostics_of(h):
+def diagnostics_of(h: int) -> BusDiagnostics:
     """BusDiagnostics of bus handle h."""
     out = _lib.BbDiagnostics()
     _lib.check(_lib.lib().bb_bus_diagnostics(h, ctypes.byref(out)))

@@ -5,9 +5,13 @@ this module carries the call and types the refusal."""
 import enum
 import math
 import numbers
+from typing import TYPE_CHECKING
 
 from . import _lib
 from ._lib import Refused
+
+if TYPE_CHECKING:
+    from .project import Channel, Message, Signal
 
 
 class FaultKind(enum.StrEnum):
@@ -30,8 +34,8 @@ class Faults:
     process's: a start clears them, and otherwise they last until cleared or their time runs
     out."""
 
-    def fault(self, channel, node: str, message, kind: FaultKind | str, ms: float | None = None,
-              signal=None) -> None:
+    def fault(self, channel: "Channel | str", node: str, message: "Message | str", kind: FaultKind | str,
+              ms: float | None = None, signal: "Signal | str | None" = None) -> None:
         """Arms `kind` on the simulated `node`'s `message` on `channel` (a Channel or its name; a
         Message or its name): for `ms` milliseconds, rounded up, or until cleared (None). A fault
         is keyed by the message's name, so a name the node sends at two ids reaches both: a Message
@@ -42,7 +46,7 @@ class Faults:
         effect, and BloblyError (code -3) when the project is not started."""
         self._arm(channel, node, message, kind, _duration(ms), signal)
 
-    def clear_fault(self, channel, node: str, message) -> None:
+    def clear_fault(self, channel: "Channel | str", node: str, message: "Message | str") -> None:
         """Lifts the fault on the simulated `node`'s `message` on `channel`."""
         self._arm(channel, node, message, "clear", 0, None)
 

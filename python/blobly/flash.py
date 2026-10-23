@@ -12,11 +12,15 @@ import queue
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from . import _lib
-from ._lib import Refused
+from ._lib import ByteData, Refused
 from .events import _sliced
 from .uds import UdsClient, _data, _int
+
+if TYPE_CHECKING:
+    from .project import Channel
 
 __all__ = ["program"]
 
@@ -70,9 +74,10 @@ def _text(name: str, v) -> bytes | None:
     return v.encode()
 
 
-def program(target, image, *, base: int | None = None, sw_version: int | None = None, auth: bool = True,
-            seed: str | None = None, seed_file: str | os.PathLike | None = None,
-            progress: Callable[[int, int], None] | None = None, quiet: bool = False,
+def program(target: "Channel | UdsClient", image: "ByteData | str | os.PathLike[str] | os.PathLike[bytes]", *,
+            base: int | None = None, sw_version: int | None = None, auth: bool = True, seed: str | None = None,
+            seed_file: "str | bytes | os.PathLike[str] | os.PathLike[bytes] | None" = None,
+            progress: Callable[[int, int], object] | None = None, quiet: bool = False,
             tx: int | None = None, rx: int | None = None) -> FlashReport:
     """Flashes `image` (bytes, or the path of a raw .bin, which gets its header here, or a BLBT
     .img, sent as it is) into a blobly_emb bootloader and returns a FlashReport.
@@ -211,8 +216,9 @@ class BootSim:
 
     `with BootSim(can1) as boot:` stops it at the end of the block, and `report` (a BootReport)
     says what it was asked; stop() does the same and returns it. Stop it before the project."""
+    channel: "Channel"
 
-    def __init__(self, channel, tx: int | None = None, rx: int | None = None):
+    def __init__(self, channel: "Channel", tx: int | None = None, rx: int | None = None) -> None:
         from .project import Channel
         if not isinstance(channel, Channel):
             raise TypeError(f"BootSim: channel is a Channel, not {channel!r}")
@@ -238,7 +244,7 @@ class BootSim:
     def __enter__(self) -> "BootSim":
         return self
 
-    def __exit__(self, *exc) -> bool:
+    def __exit__(self, *exc: object) -> Literal[False]:
         self.stop()
         return False
 

@@ -20,20 +20,22 @@ from .project import Channel, Channels, Frame, Message, Messages, Project, Signa
 from .uds import (Dtc, Exchange, Extended, FunctionalReply, Snapshot, SnapshotId, SnapshotRecord, UdsClient,
                   reference_key)
 
+__version__: str
 try:
-    from ._version import __version__  # written into a wheel by scripts/build_wheel.py, from v.mod
+    # written into a wheel by scripts/build_wheel.py, from v.mod; `as` re-exports it to a type checker
+    from ._version import __version__ as __version__
 except ImportError:  # a source checkout: version() says which engine it loaded
     __version__ = "0+source"
 
 
-def init():
+def init() -> None:
     """Loads the library. Call it on the main thread before any other thread calls in: bb.h
     requires the library be loaded there (any first call on the main thread does the same)."""
     from . import _lib
     _lib.lib()
 
 
-def version():
+def version() -> str:
     """libblobly's version (v.mod's)."""
     from . import _lib
     return _lib.text(_lib.lib().bb_version())

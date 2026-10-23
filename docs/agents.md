@@ -108,6 +108,10 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 - Names come from `keys()`, and every collection completes with `dir()`. An unknown name raises
   `AttributeError` listing the names there are.
 - `ch.decode(frame)` names the signals of any frame you receive.
+- The package is typed (it ships `py.typed`), so a type checker (pyright, mypy) resolves every
+  method and what it returns in a script you write. It cannot know a project's names (channels,
+  messages, signals): only the running project does
+  ([vscode.md](vscode.md#what-completion-knows)).
 
 ## Bounded waits, errors and exit codes
 
