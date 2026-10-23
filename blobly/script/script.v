@@ -596,7 +596,10 @@ fn l_doip_discover(l lua.State) i32 {
 	env := env_of(l)
 	name := l.arg_str(1)
 	info := env.doip_chan(name) or { return l.fail('doip.discover: ${err}') }
-	v := doip.discover(info.carrier.host, info.carrier.port, 1200) or {
+	v := doip.discover(info.carrier.host, info.carrier.port, int(env.bounded(1200))) or {
+		if env.expired() {
+			return timeout_at(l) // the wait was cut
+		}
 		return l.fail('doip.discover("${name}") on ${info.carrier.host}:${info.carrier.port}: ${err}')
 	}
 	l.push_str(v.vin)
@@ -895,7 +898,7 @@ fn l_uds_functional(l lua.State) i32 {
 		l.arg_int_exact(2) or { return l.fail('uds.functional: the functional id is not an integer') }
 	}
 	req := l.arg_bytes(3)
-	window := int(l.arg_int(4))
+	window := int(env.bounded_window(l.arg_int(4)))
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	info := env.chans[ci]
 	if info.carrier.doip {
