@@ -102,11 +102,11 @@ pub fn metered(b Bus, iface string, nominal int, data int) &MeteredBus {
 }
 
 pub fn (mut m MeteredBus) send(f CanFrame) ! {
-	m.inner.send(f)!
-	// priced as it went out: framed as open's SilentBus frames it (the policy read beside that
-	// send's own, which moves only when a project is applied), then padded or clamped by the
-	// backend (wire_frame), as the GUI's tap records it
-	m.meter.note(wire_frame(m.iface, wire_policy(m.iface).framing.apply(f)), i64(time.sys_mono_now()))
+	// framed HERE, once, and sent stated so nothing beneath frames it again: the frame priced is
+	// the frame sent, padded or clamped by the backend as wire_frame says (the GUI tap's shape)
+	framed := framed_for_wire(m.iface, f)
+	m.inner.send(CanFrame{ ...framed, format_stated: true })!
+	m.meter.note(wire_frame(m.iface, framed), i64(time.sys_mono_now()))
 }
 
 pub fn (mut m MeteredBus) recv(timeout_ms int) !CanFrame {

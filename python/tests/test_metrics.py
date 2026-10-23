@@ -52,8 +52,11 @@ class TestMetrics:
         assert sent.nominal == read.nominal == 250000, "the wire's first row prices it"
 
     def test_a_whole_second_has_a_percent(self, net):
-        b = net.channels.B
+        a, b = net.channels.A, net.channels.B
+        b.load()  # opened by now: its second runs from here at the latest
+        a.send(0x557, FRAME)
         time.sleep(1.05)
+        assert b.recv(1000) is not None
         l = b.load()
         assert l.percent is not None and 0 < l.average <= 100, l
 
