@@ -7,186 +7,171 @@ thread ending a call."""
 import os
 import socket
 import struct
-import sys
-import tempfile
 import threading
 import time
-import unittest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-# the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
-if not os.environ.get("BLOBLY_TEST_INSTALLED"):
-    sys.path.insert(0, os.path.join(HERE, ".."))
-import blobly  # noqa: E402
-from blobly import _lib  # noqa: E402
+import pytest
 
-REPO = os.path.dirname(os.path.dirname(HERE))
-SIM_DEMO = os.path.join(REPO, "projects", "sim-demo.blobnet")
+import blobly
+from blobly import _lib
+from conftest import REPO
+
 ANNOUNCE_DEMO = os.path.join(REPO, "projects", "doip-announce-demo.blobnet")
 VIN = 0xF190
 
-
-def setUpModule():
-    try:
-        _lib.lib()
-    except blobly.BloblyError as e:
-        if os.environ.get("BLOBLY_LIB") or os.environ.get("BLOBLY_TEST_INSTALLED"):
-            raise
-        raise unittest.SkipTest(str(e))
+pytestmark = pytest.mark.usefixtures("engine")
 
 
-class TestSimDemo(unittest.TestCase):
+@pytest.fixture(scope="class")
+def doip(sim_demo):
+    return sim_demo.channels.DoIP1
+
+
+@pytest.fixture
+def diag(doip):
+    with doip.uds() as client:
+        yield client
+
+
+class TestSimDemo:
     """diag_doip.lua, from Python, on sim-demo's DoIP1."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.net = blobly.Project(SIM_DEMO).start()
-        cls.doip = cls.net.channels.DoIP1
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.net.stop()
-
-    def setUp(self):
-        self.diag = self.doip.uds()
-        self.addCleanup(self.diag.close)
-
-    def test_session_and_dids(self):
-        self.assertEqual(self.diag.session(0x01)[:1], b"\x01")
-        self.assertEqual(self.diag.read_did(VIN), b"BLOBLYNETV0SUT001")
-        self.assertEqual(self.diag.read_did(0xF18C), b"SN-0001")
-        self.assertEqual(self.diag.read_did(0xF195), b"\x01\x00")
-        self.diag.tester_present()
+    def test_session_and_dids(self, diag):
+        assert diag.session(0x01)[:1] == b"\x01"
+        assert diag.read_did(VIN) == b"BLOBLYNETV0SUT001"
+        assert diag.read_did(0xF18C) == b"SN-0001"
+        assert diag.read_did(0xF195) == b"\x01\x00"
+        diag.tester_present()
         time.sleep(0.02)
-        self.diag.tester_present()
+        diag.tester_present()
 
-    def test_the_addressing_is_the_channels(self):
-        self.assertEqual((self.diag.tester, self.diag.ecu), (0x0E80, 0x1000))
-        self.assertIsNone(self.diag.tx)
-        self.assertIn("DoIP 0x0E80 -> 0x1000", repr(self.diag))
+    def test_the_addressing_is_the_channels(self, diag):
+        assert (diag.tester, diag.ecu) == (0x0E80, 0x1000)
+        assert diag.tx is None
+        assert "DoIP 0x0E80 -> 0x1000" in repr(diag)
 
-    def test_a_negative_response_is_typed(self):
-        with self.assertRaises(blobly.NegativeResponse) as e:
-            self.diag.read_did(0xABCD)
-        self.assertEqual((e.exception.nrc, e.exception.nrc_name), (0x31, "requestOutOfRange"))
+    def test_a_negative_response_is_typed(self, diag):
+        with pytest.raises(blobly.NegativeResponse) as e:
+            diag.read_did(0xABCD)
+        assert (e.value.nrc, e.value.nrc_name) == (0x31, "requestOutOfRange")
 
-    def test_can_ids_are_refused_on_a_doip_channel(self):
+    def test_can_ids_are_refused_on_a_doip_channel(self, doip, diag):
         for ids in ({"tx": 0x7E0}, {"rx": 0x7E8}):
-            with self.subTest(ids), self.assertRaises(blobly.Refused) as e:
-                self.doip.uds(**ids)
-            self.assertIn("DoIP addressing comes from the channel", str(e.exception))
+            with pytest.raises(blobly.Refused, match="DoIP addressing comes from the channel"):
+                doip.uds(**ids)
 
-    def test_one_client_holds_the_connection(self):
-        with self.assertRaises(blobly.Refused) as e:
-            self.doip.uds()
-        self.assertIn("one tester address holds one connection", str(e.exception))
-        self.diag.close()
-        with self.doip.uds() as again:  # once it is let go, the next opens
-            self.assertEqual(again.read_did(VIN), b"BLOBLYNETV0SUT001")
+    def test_one_client_holds_the_connection(self, doip, diag):
+        with pytest.raises(blobly.Refused, match="one tester address holds one connection"):
+            doip.uds()
+        diag.close()
+        with doip.uds() as again:  # once it is let go, the next opens
+            assert again.read_did(VIN) == b"BLOBLYNETV0SUT001"
 
-    def test_writing_the_vin_moves_the_announcement_with_it(self):
-        before = self.diag.read_did(VIN)
-        self.assertEqual(self.doip.discover().vin, before.decode())
+    def test_writing_the_vin_moves_the_announcement_with_it(self, doip, diag):
+        before = diag.read_did(VIN)
+        assert doip.discover().vin == before.decode()
         try:
-            self.diag.write_did(VIN, b"REWRITTENVIN00001")
-            self.assertEqual(self.diag.read_did(VIN), b"REWRITTENVIN00001")
-            self.assertEqual(self.doip.discover().vin, "REWRITTENVIN00001")
+            diag.write_did(VIN, b"REWRITTENVIN00001")
+            assert diag.read_did(VIN) == b"REWRITTENVIN00001"
+            assert doip.discover().vin == "REWRITTENVIN00001"
         finally:
-            self.diag.write_did(VIN, before)
+            diag.write_did(VIN, before)
 
-    def test_a_vin_the_announcement_cannot_carry_is_refused(self):
-        before = self.diag.read_did(VIN)
-        with self.assertRaises(blobly.NegativeResponse) as e:
-            self.diag.write_did(VIN, b"TOOSHORT")
-        self.assertEqual(e.exception.nrc, 0x31)
-        with self.assertRaises(blobly.NegativeResponse):
-            self.diag.raw(b"\x2e\xf1\x90")  # zero-length: refused, not applied
-        self.assertEqual(self.diag.read_did(VIN), before)
-        self.assertEqual(self.doip.discover().vin, before.decode())
+    def test_a_vin_the_announcement_cannot_carry_is_refused(self, doip, diag):
+        before = diag.read_did(VIN)
+        with pytest.raises(blobly.NegativeResponse) as e:
+            diag.write_did(VIN, b"TOOSHORT")
+        assert e.value.nrc == 0x31
+        with pytest.raises(blobly.NegativeResponse):
+            diag.raw(b"\x2e\xf1\x90")  # zero-length: refused, not applied
+        assert diag.read_did(VIN) == before
+        assert doip.discover().vin == before.decode()
 
-    def test_a_suppressed_positive_response_is_silence(self):
-        self.assertFalse(self.diag.raw_suppressed(b"\x3e\x00"))
+    def test_a_suppressed_positive_response_is_silence(self, diag):
+        assert not diag.raw_suppressed(b"\x3e\x00")
 
-    def test_the_dtcs_over_doip(self):
-        self.assertEqual([d.name for d in self.diag.supported_dtcs()], ["P1234-56", "B2BCD-EF"])
-        self.assertEqual([d.name for d in self.diag.dtcs(0x01)], ["P1234-56"])
+    def test_the_dtcs_over_doip(self, diag):
+        assert [d.name for d in diag.supported_dtcs()] == ["P1234-56", "B2BCD-EF"]
+        assert [d.name for d in diag.dtcs(0x01)] == ["P1234-56"]
 
-    def test_functional_addressing_reaches_the_entity(self):
-        reply, = self.doip.uds_functional(None, [self.diag], b"\x22\xf1\x90")  # 0xE400
-        self.assertEqual(reply.outcome, "positive")
-        self.assertEqual(reply.answer, b"\x62\xf1\x90BLOBLYNETV0SUT001")
-        self.assertIsNone(self.diag.last, "a functional request's reply is its own")
-        quiet, = self.doip.uds_functional(0xE400, [self.diag], b"\x3e\x80")
-        self.assertEqual(quiet.outcome, "silent")
+    def test_functional_addressing_reaches_the_entity(self, doip, diag):
+        reply, = doip.uds_functional(None, [diag], b"\x22\xf1\x90")  # 0xE400
+        assert reply.outcome == "positive"
+        assert reply.answer == b"\x62\xf1\x90BLOBLYNETV0SUT001"
+        assert diag.last is None, "a functional request's reply is its own"
+        quiet, = doip.uds_functional(0xE400, [diag], b"\x3e\x80")
+        assert quiet.outcome == "silent"
         # an address the entity does not answer is negatively acknowledged: the reply says so
-        nacked, = self.doip.uds_functional(0xE401, [self.diag], b"\x3e\x00", window_ms=300)
-        self.assertEqual(nacked.outcome, "failed")
-        self.assertIn("negative ack", nacked.error)
+        nacked, = doip.uds_functional(0xE401, [diag], b"\x3e\x00", window_ms=300)
+        assert nacked.outcome == "failed"
+        assert "negative ack" in nacked.error
 
-    def test_functional_refusals(self):
-        self.diag.tester_present()
-        before = self.diag.last
-        with self.assertRaises(blobly.Refused):
-            self.doip.uds_functional(None, [self.diag], b"")
-        self.assertEqual(self.diag.last, before, "a refused request let go of the last exchange")
-        with self.assertRaises(ValueError):
-            self.doip.uds_functional(None, [], b"\x3e\x00")
-        with self.assertRaises(blobly.Refused):
-            self.doip.uds_functional(0x10000, [self.diag], b"\x3e\x00")
-        with self.assertRaises(TypeError):  # None is the DoIP default, not a CAN id
-            self.net.channels.CAN1.uds_functional(None, [], b"\x3e\x00")
+    def test_functional_refusals(self, sim_demo, doip, diag):
+        diag.tester_present()
+        before = diag.last
+        with pytest.raises(blobly.Refused):
+            doip.uds_functional(None, [diag], b"")
+        assert diag.last == before, "a refused request let go of the last exchange"
+        with pytest.raises(ValueError):
+            doip.uds_functional(None, [], b"\x3e\x00")
+        with pytest.raises(blobly.Refused):
+            doip.uds_functional(0x10000, [diag], b"\x3e\x00")
+        with pytest.raises(TypeError):  # None is the DoIP default, not a CAN id
+            sim_demo.channels.CAN1.uds_functional(None, [], b"\x3e\x00")
 
-    def test_discover(self):
-        a = self.doip.discover()
-        self.assertEqual((a.vin, a.logical_address), ("BLOBLYNETV0SUT001", 0x1000))
-        self.assertEqual(a.eid, bytes([0x02, 0, 0, 0, 0, 0x01]))
-        self.assertEqual(len(a.gid), 6)
-        self.assertEqual("doip:" + a.source, self.doip.iface, "asked where the run moved the entity")
+    def test_discover(self, doip, diag):
+        a = doip.discover()
+        assert (a.vin, a.logical_address) == ("BLOBLYNETV0SUT001", 0x1000)
+        assert a.eid == bytes([0x02, 0, 0, 0, 0, 0x01])
+        assert len(a.gid) == 6
+        assert "doip:" + a.source == doip.iface, "asked where the run moved the entity"
 
-    def test_discover_and_listen_refuse_what_is_not_doip(self):
-        with self.assertRaises(blobly.Refused) as e:
-            self.net.channels.CAN1.discover()
-        self.assertIn("not a DoIP channel", str(e.exception))
-        with self.assertRaises(blobly.Refused):
-            blobly.doip_listen(10, channel=self.net.channels.CAN1)
-        with self.assertRaises(TypeError):
+    def test_discover_and_listen_refuse_what_is_not_doip(self, sim_demo, diag):
+        with pytest.raises(blobly.Refused, match="not a DoIP channel"):
+            sim_demo.channels.CAN1.discover()
+        with pytest.raises(blobly.Refused):
+            blobly.doip_listen(10, channel=sim_demo.channels.CAN1)
+        with pytest.raises(TypeError):
             blobly.doip_listen(float("inf"))
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             blobly.doip_listen(-1)
 
 
-class TestAnnouncements(unittest.TestCase):
-    """doip_announce.lua, from Python: each test starts the project, so it hears an announcement
-    sequence from its beginning (Talker and AltPort announce 20 times, 200 ms apart)."""
+@pytest.fixture
+def announcing():
+    """doip-announce-demo started for one test, so it hears an announcement sequence from its
+    beginning (Talker and AltPort announce 20 times, 200 ms apart)."""
+    net = blobly.Project(ANNOUNCE_DEMO).start()
+    yield net
+    net.stop()
 
-    def setUp(self):
-        self.net = blobly.Project(ANNOUNCE_DEMO).start()
-        self.addCleanup(self.net.stop)
 
-    def test_a_listening_tester_hears_an_entity_announce_itself(self):
-        talker = self.net.channels.Talker
+class TestAnnouncements:
+    """doip_announce.lua, from Python."""
+
+    def test_a_listening_tester_hears_an_entity_announce_itself(self, announcing):
+        talker = announcing.channels.Talker
         seen = blobly.doip_listen(1200, channel=talker)
         mine = [a for a in seen if a.vin == "ANNOUNCERVIN00001"]
-        self.assertTrue(mine, f"heard {seen}")
-        self.assertEqual(mine[0].logical_address, 0x1000)
-        self.assertTrue(mine[0].source.startswith("127.0.0.1:"), mine[0].source)
+        assert mine, f"heard {seen}"
+        assert mine[0].logical_address == 0x1000
+        assert mine[0].source.startswith("127.0.0.1:"), mine[0].source
 
-    def test_announcements_arrive_on_the_entitys_own_port(self):
-        seen = blobly.doip_listen(1200, channel=self.net.channels.AltPort)
-        self.assertIn(("ALTPORTVIN0000001", 0x4000), {(a.vin, a.logical_address) for a in seen})
+    def test_announcements_arrive_on_the_entitys_own_port(self, announcing):
+        seen = blobly.doip_listen(1200, channel=announcing.channels.AltPort)
+        assert ("ALTPORTVIN0000001", 0x4000) in {(a.vin, a.logical_address) for a in seen}
 
-    def test_a_port_that_contradicts_the_channel_is_refused(self):
-        with self.assertRaises(blobly.Refused) as e:
-            blobly.doip_listen(100, channel=self.net.channels.AltPort, port=13400)
-        self.assertIn("contradicts", str(e.exception))
+    def test_a_port_that_contradicts_the_channel_is_refused(self, announcing):
+        with pytest.raises(blobly.Refused, match="contradicts"):
+            blobly.doip_listen(100, channel=announcing.channels.AltPort, port=13400)
 
-    def test_a_silent_ecu_never_announces_but_answers_when_asked(self):
-        silent = self.net.channels.Silent
+    def test_a_silent_ecu_never_announces_but_answers_when_asked(self, announcing):
+        silent = announcing.channels.Silent
         seen = blobly.doip_listen(800, channel=silent)
-        self.assertNotIn("SILENTECUVIN00001", [a.vin for a in seen])
-        self.assertEqual(silent.discover().vin, "SILENTECUVIN00001")
+        assert "SILENTECUVIN00001" not in [a.vin for a in seen]
+        assert silent.discover().vin == "SILENTECUVIN00001"
         with silent.uds() as diag:
-            self.assertEqual(diag.read_did(VIN), b"SILENTECUVIN00001")
+            assert diag.read_did(VIN) == b"SILENTECUVIN00001"
 
 
 def _msg(ptype, payload):
@@ -291,20 +276,23 @@ class FakeEntity:
         self.sock.close()
 
 
-class TestFakeEntity(unittest.TestCase):
-    """What sim-demo's entity never does, from a fake one a tester-only DoIP row dials."""
+class Fakes:
+    """Fake entities and the projects that dial them, let go in the reverse order at the end of
+    the test."""
+
+    def __init__(self, tmp_path):
+        self.tmp_path = tmp_path
+        self.cleanups = []
 
     def start(self, **fake):
         entity = FakeEntity(**fake)
-        self.addCleanup(entity.close)
+        self.cleanups.append(entity.close)
         return entity, self.dial(entity.port).channels.Fake
 
     def dial(self, port, start=True):
         """A project of one tester-only DoIP row, Fake, dialling 127.0.0.1:port; started unless
         `start` is False."""
-        d = tempfile.TemporaryDirectory()
-        self.addCleanup(d.cleanup)
-        path = os.path.join(d.name, "fake.blobnet")
+        path = os.path.join(self.tmp_path, f"fake{len(self.cleanups)}.blobnet")
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"""project:
   name: fake DoIP entity
@@ -319,153 +307,159 @@ channels:
         net = blobly.Project(path).load()
         if start:
             net.start()
-            self.addCleanup(net.stop)
+            self.cleanups.append(net.stop)
         return net
 
-    def test_a_denied_routing_activation_says_why(self):
-        _, fake = self.start(deny=0x00)
-        with self.assertRaises(blobly.RoutingDenied) as e:
+
+@pytest.fixture
+def fakes(tmp_path):
+    f = Fakes(tmp_path)
+    yield f
+    for cleanup in reversed(f.cleanups):
+        cleanup()
+
+
+class TestFakeEntity:
+    """What sim-demo's entity never does, from a fake one a tester-only DoIP row dials."""
+
+    def test_a_denied_routing_activation_says_why(self, fakes):
+        _, fake = fakes.start(deny=0x00)
+        with pytest.raises(blobly.RoutingDenied) as e:
             fake.uds()
-        x = e.exception
-        self.assertEqual((x.routing_code, x.tester, x.code), (0x00, 0x0E80, _lib.BB_ERR_ROUTING))
-        self.assertEqual(x.routing_name, "unknown source address")
-        self.assertIn("does not accept tester 0x0E80", x.hint)
-        self.assertIn("routing activation denied", str(x))
+        x = e.value
+        assert (x.routing_code, x.tester, x.code) == (0x00, 0x0E80, _lib.BB_ERR_ROUTING)
+        assert x.routing_name == "unknown source address"
+        assert "does not accept tester 0x0E80" in x.hint
+        assert "routing activation denied" in str(x)
 
-    def test_a_lost_connection_is_typed_and_the_next_call_opens_another(self):
-        entity, fake = self.start(drop=1)
+    def test_a_lost_connection_is_typed_and_the_next_call_opens_another(self, fakes):
+        entity, fake = fakes.start(drop=1)
         with fake.uds() as diag:
-            with self.assertRaises(blobly.ConnectionLost) as e:
+            with pytest.raises(blobly.ConnectionLost) as e:
                 diag.read_did(VIN)
-            self.assertIsInstance(e.exception, blobly.CarrierFailed)
-            self.assertEqual(e.exception.code, _lib.BB_ERR_LOST)
-            self.assertTrue(e.exception.exchange.sent, "the request went out before the entity closed")
-            self.assertEqual(e.exception.exchange.request, b"\x22\xf1\x90")
-            self.assertEqual(diag.read_did(VIN), b"FAKE")
-            self.assertEqual(entity.connections, 2)
+            assert isinstance(e.value, blobly.CarrierFailed)
+            assert e.value.code == _lib.BB_ERR_LOST
+            assert e.value.exchange.sent, "the request went out before the entity closed"
+            assert e.value.exchange.request == b"\x22\xf1\x90"
+            assert diag.read_did(VIN) == b"FAKE"
+            assert entity.connections == 2
 
-    def test_an_idle_connection_answers_alive_checks(self):
-        entity, fake = self.start(alive=True)
+    def test_an_idle_connection_answers_alive_checks(self, fakes):
+        entity, fake = fakes.start(alive=True)
         with fake.uds() as diag:
-            self.assertTrue(entity.alive_answered.wait(0.5), "the alive check went unanswered while idle")
-            self.assertEqual(diag.read_did(VIN), b"FAKE")
+            assert entity.alive_answered.wait(0.5), "the alive check went unanswered while idle"
+            assert diag.read_did(VIN) == b"FAKE"
 
-    def test_a_close_ends_the_reopen_after_a_lost_connection(self):
-        _, fake = self.start(drop=1, hold=2)  # the second connection is never activated
+    def test_a_close_ends_the_reopen_after_a_lost_connection(self, fakes):
+        _, fake = fakes.start(drop=1, hold=2)  # the second connection is never activated
         diag = fake.uds()
-        with self.assertRaises(blobly.ConnectionLost):
+        with pytest.raises(blobly.ConnectionLost):
             diag.read_did(VIN)
         threading.Timer(0.2, diag.close).start()
         t = time.monotonic()
-        with self.assertRaises(blobly.BloblyError) as e:
+        with pytest.raises(blobly.BloblyError) as e:
             diag.read_did(VIN)  # reopens, and waits for the activation
-        self.assertLess(time.monotonic() - t, 1.0, "the close waited out the reopen")
-        self.assertEqual(e.exception.code, _lib.BB_ERR_HANDLE)
+        assert time.monotonic() - t < 1.0, "the close waited out the reopen"
+        assert e.value.code == _lib.BB_ERR_HANDLE
 
-    def test_a_connection_gone_while_idle_is_the_next_calls_and_unsent(self):
-        _, fake = self.start(idle_close=True)
+    def test_a_connection_gone_while_idle_is_the_next_calls_and_unsent(self, fakes):
+        _, fake = fakes.start(idle_close=True)
         with fake.uds() as diag:
-            self.assertEqual(diag.read_did(VIN), b"FAKE")
+            assert diag.read_did(VIN) == b"FAKE"
             time.sleep(0.4)  # the entity closes; the idle service sees it
-            with self.assertRaises(blobly.ConnectionLost) as e:
+            with pytest.raises(blobly.ConnectionLost) as e:
                 diag.read_did(0xF18C)
-            self.assertIsNone(e.exception.exchange, "the request of an earlier call was reported as this one's")
-            self.assertEqual(diag.read_did(VIN), b"FAKE")
+            assert e.value.exchange is None, "the request of an earlier call was reported as this one's"
+            assert diag.read_did(VIN) == b"FAKE"
 
-    def test_an_argument_is_refused_before_a_reopen(self):
-        _, fake = self.start(drop=1, hold=2)
+    def test_an_argument_is_refused_before_a_reopen(self, fakes):
+        _, fake = fakes.start(drop=1, hold=2)
         with fake.uds() as diag:
-            with self.assertRaises(blobly.ConnectionLost):
+            with pytest.raises(blobly.ConnectionLost):
                 diag.read_did(VIN)
             t = time.monotonic()
             for bad in (lambda: diag.read_did(0x10000), lambda: diag.raw(b""),
                         lambda: diag.raw_suppressed(b"\x22\xf1")):
-                with self.assertRaises(blobly.Refused):
+                with pytest.raises(blobly.Refused):
                     bad()
-            self.assertLess(time.monotonic() - t, 0.5, "a bad request waited for a reopen")
-            with self.assertRaises(blobly.CarrierFailed) as e:  # the reopen is never activated
+            assert time.monotonic() - t < 0.5, "a bad request waited for a reopen"
+            with pytest.raises(blobly.CarrierFailed):  # the reopen is never activated
                 diag.read_did(VIN)
-            self.assertIsNone(diag.last, "the lost call's exchange was kept as the failed reopen's")
+            assert diag.last is None, "the lost call's exchange was kept as the failed reopen's"
 
-    def test_a_key_goes_only_on_the_seeds_connection(self):
-        _, fake = self.start(drop=1, drop_sids={0x22})
+    def test_a_key_goes_only_on_the_seeds_connection(self, fakes):
+        _, fake = fakes.start(drop=1, drop_sids={0x22})
         with fake.uds() as diag:
             def key_fn(seed):
-                with self.assertRaises(blobly.ConnectionLost):
+                with pytest.raises(blobly.ConnectionLost):
                     diag.read_did(VIN)  # the connection that gave the seed goes
                 return bytes(b ^ 0xFF for b in seed)
-            with self.assertRaises(blobly.Refused) as e:
+            with pytest.raises(blobly.Refused, match="the level 1 seed was not answered on this connection"):
                 diag.security_access(0x01, key_fn)
-            self.assertIn("the level 1 seed was not answered on this connection", str(e.exception))
-            self.assertEqual(diag.security_access(0x01), b"\x12\x34")  # a new seed, on the new one
+            assert diag.security_access(0x01) == b"\x12\x34"  # a new seed, on the new one
             for nested in (lambda seed: diag.security_access(0x01), lambda seed: diag.raw(b"\x27\x01"),
                            lambda seed: diag.raw_suppressed(b"\x27\x01"),
                            lambda seed: fake.uds_functional(None, [diag], b"\x27\x01")):
-                with self.assertRaises(blobly.BloblyError) as e:  # nor a nested seed under it
+                with pytest.raises(blobly.BloblyError) as e:  # nor a nested seed under it
                     diag.security_access(0x01, nested)
-                self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+                assert e.value.code == _lib.BB_ERR_STATE
 
-    def test_a_raw_key_goes_only_on_the_seeds_connection(self):
-        _, fake = self.start(drop=1, drop_sids={0x22})
+    def test_a_raw_key_goes_only_on_the_seeds_connection(self, fakes):
+        _, fake = fakes.start(drop=1, drop_sids={0x22})
         with fake.uds() as diag:
             seed = diag.raw(b"\x27\x01")[2:]
-            with self.assertRaises(blobly.ConnectionLost):
+            with pytest.raises(blobly.ConnectionLost):
                 diag.read_did(VIN)
             key = b"\x27\x02" + bytes(b ^ 0xFF for b in seed)
-            with self.assertRaises(blobly.Refused) as e:
+            with pytest.raises(blobly.Refused, match="the level 1 seed was not answered on this connection"):
                 diag.raw(key)
-            self.assertIn("the level 1 seed was not answered on this connection", str(e.exception))
-            with self.assertRaises(blobly.Refused):  # nor to the functional address
+            with pytest.raises(blobly.Refused):  # nor to the functional address
                 fake.uds_functional(None, [diag], key)
             diag.raw(b"\x27\x03")  # another level's seed on the new connection is not level 1's
-            with self.assertRaises(blobly.Refused):
+            with pytest.raises(blobly.Refused):
                 diag.raw(key)
             diag.raw(b"\x27\x01")  # a seed on the new connection, and its key goes
-            self.assertEqual(diag.raw(b"\x27\x02\xed\xcb"), b"\x67\x02")
+            assert diag.raw(b"\x27\x02\xed\xcb") == b"\x67\x02"
 
-    def test_a_seed_before_a_stop_answers_no_key_after_it(self):
-        _, fake = self.start()
+    def test_a_seed_before_a_stop_answers_no_key_after_it(self, fakes):
+        _, fake = fakes.start()
         net = fake._project
-        diag = fake.uds()
-        self.addCleanup(diag.close)
-        seed = diag.raw(b"\x27\x01")[2:]
-        net.stop()
-        net.start()
-        with self.assertRaises(blobly.Refused):
-            diag.raw(b"\x27\x02" + bytes(b ^ 0xFF for b in seed))
-        diag.raw(b"\x27\x01")
-        self.assertEqual(diag.raw(b"\x27\x02\xed\xcb"), b"\x67\x02")
+        with fake.uds() as diag:
+            seed = diag.raw(b"\x27\x01")[2:]
+            net.stop()
+            net.start()
+            with pytest.raises(blobly.Refused):
+                diag.raw(b"\x27\x02" + bytes(b ^ 0xFF for b in seed))
+            diag.raw(b"\x27\x01")
+            assert diag.raw(b"\x27\x02\xed\xcb") == b"\x67\x02"
 
-    def test_a_close_from_another_thread_ends_a_call(self):
-        _, fake = self.start(mute=True)
+    def test_a_close_from_another_thread_ends_a_call(self, fakes):
+        _, fake = fakes.start(mute=True)
         diag = fake.uds()
         threading.Timer(0.1, diag.close).start()
         t = time.monotonic()
-        with self.assertRaises(blobly.BloblyError) as e:
+        with pytest.raises(blobly.BloblyError) as e:
             diag.read_did(VIN)
-        self.assertLess(time.monotonic() - t, 0.6, "the close waited out the answer's 1000 ms")
-        self.assertEqual(e.exception.code, _lib.BB_ERR_HANDLE)
+        assert time.monotonic() - t < 0.6, "the close waited out the answer's 1000 ms"
+        assert e.value.code == _lib.BB_ERR_HANDLE
 
-    def test_discovery_on_a_row_needs_the_run(self):
-        fake = self.dial(13400, start=False).channels.Fake
+    def test_discovery_on_a_row_needs_the_run(self, fakes):
+        fake = fakes.dial(13400, start=False).channels.Fake
         for call in (fake.discover, lambda: blobly.doip_listen(10, channel=fake)):
-            with self.assertRaises(blobly.BloblyError) as e:
+            with pytest.raises(blobly.BloblyError) as e:
                 call()
-            self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+            assert e.value.code == _lib.BB_ERR_STATE
 
-    def test_a_refused_connection_is_the_carriers(self):
+    def test_a_refused_connection_is_the_carriers(self, fakes):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         free = listener.getsockname()[1]
         listener.close()  # nothing listens on `free` now
-        nobody = self.dial(free).channels.Fake
-        with self.assertRaises(blobly.CarrierFailed) as e:
+        nobody = fakes.dial(free).channels.Fake
+        with pytest.raises(blobly.CarrierFailed) as e:
             nobody.uds()
-        self.assertNotIsInstance(e.exception, blobly.ConnectionLost)
+        assert not isinstance(e.value, blobly.ConnectionLost)
         t = time.monotonic()
-        with self.assertRaises(blobly.BloblyError):  # silence, or the port's refusal
+        with pytest.raises(blobly.BloblyError):  # silence, or the port's refusal
             nobody.discover(timeout_ms=200)
-        self.assertLess(time.monotonic() - t, 2)
-
-if __name__ == "__main__":
-    unittest.main()
+        assert time.monotonic() - t < 2

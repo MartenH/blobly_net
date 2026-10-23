@@ -3,20 +3,19 @@ out_of_range and for the refusals (it protects nothing, so bad_crc and freeze_co
 there), and a project of one Profile 1 protected message for bad_crc and freeze_counter, checked
 with blobly.e2e. Every fault is then cleared and the traffic seen to recover."""
 import os
-import sys
-import tempfile
+import re
 import time
-import unittest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-if not os.environ.get("BLOBLY_TEST_INSTALLED"):
-    sys.path.insert(0, os.path.join(HERE, ".."))
-import blobly  # noqa: E402
-from blobly import FaultKind, FaultRefused, _lib, e2e  # noqa: E402
+import pytest
 
-REPO = os.path.dirname(os.path.dirname(HERE))
-SIM_DEMO = os.path.join(REPO, "projects", "sim-demo.blobnet")
+import blobly
+from blobly import FaultKind, FaultRefused, e2e
+from conftest import SIM_DEMO
+
+pytestmark = pytest.mark.usefixtures("engine")
+
 POWERTRAIN, HEARTBEAT, BRAKE_STATUS = 0x100, 0x700, 0x301
+
 
 # BrakeStatus as blobly_emb overspeed lays it out, protected with Profile 1 and sent every 10 ms
 E2E_DBC = """VERSION ""
@@ -85,15 +84,6 @@ channels:
 """
 
 
-def setUpModule():
-    try:
-        _lib.lib()
-    except blobly.BloblyError as e:
-        if os.environ.get("BLOBLY_LIB") or os.environ.get("BLOBLY_TEST_INSTALLED"):
-            raise
-        raise unittest.SkipTest(str(e))
-
-
 def frames(ch, frame_id, within_s=3.0):
     """The frames of `frame_id` on `ch` as they arrive, until within_s has passed."""
     end = time.monotonic() + within_s
@@ -127,45 +117,45 @@ def quiet(ch, frame_id, span_s=0.5, within_s=3.0):
     return False
 
 
-class TestOnSimDemo(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.net = blobly.Project(SIM_DEMO).start()
-        cls.can1 = cls.net.channels.CAN1
+def write(path, text):
+    with open(path, "w") as f:
+        f.write(text)
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.net.stop()
 
-    def tearDown(self):
-        self.net.clear_faults()
+class TestOnSimDemo:
+    @pytest.fixture
+    def net(self, sim_demo):
+        yield sim_demo
+        sim_demo.clear_faults()
 
-    def test_drop_takes_a_message_off_the_bus_and_clearing_brings_it_back(self):
-        self.net.fault(self.can1, "SUT", "Powertrain", FaultKind.DROP)
-        self.assertTrue(quiet(self.can1, POWERTRAIN), "Powertrain still arriving while dropped")
-        self.net.clear_fault("CAN1", "SUT", self.can1.messages.Powertrain)
-        self.assertIsNotNone(next(frames(self.can1, POWERTRAIN), None), "Powertrain did not come back")
+    @pytest.fixture
+    def can1(self, net):
+        return net.channels.CAN1
 
-    def test_a_timed_drop_ends_by_itself(self):
-        self.net.fault("CAN1", "SUT", "Heartbeat", "drop", ms=800)
+    def test_drop_takes_a_message_off_the_bus_and_clearing_brings_it_back(self, net, can1):
+        net.fault(can1, "SUT", "Powertrain", FaultKind.DROP)
+        assert quiet(can1, POWERTRAIN), "Powertrain still arriving while dropped"
+        net.clear_fault("CAN1", "SUT", can1.messages.Powertrain)
+        assert next(frames(can1, POWERTRAIN), None) is not None, "Powertrain did not come back"
+
+    def test_a_timed_drop_ends_by_itself(self, net, can1):
+        net.fault("CAN1", "SUT", "Heartbeat", "drop", ms=800)
         # a 300 ms silence happens only while the 800 ms drop holds: Heartbeat comes every 100 ms
-        self.assertTrue(quiet(self.can1, HEARTBEAT, span_s=0.3), "Heartbeat still arriving")
-        self.assertIsNotNone(next(frames(self.can1, HEARTBEAT), None), "Heartbeat did not resume")
+        assert quiet(can1, HEARTBEAT, span_s=0.3), "Heartbeat still arriving"
+        assert next(frames(can1, HEARTBEAT), None) is not None, "Heartbeat did not resume"
 
-    def test_out_of_range_forces_a_signal_past_its_range_until_cleared(self):
-        brake = self.can1.messages.BrakeStatus
+    def test_out_of_range_forces_a_signal_past_its_range_until_cleared(self, net, can1):
+        brake = can1.messages.BrakeStatus
         pedal = brake.signals.BrakePedal  # 7 bits, declared [0|100]
-        outside = lambda f: self.can1.decode(f)["BrakePedal"] > pedal.maximum  # noqa: E731
+        outside = lambda f: can1.decode(f)["BrakePedal"] > pedal.maximum  # noqa: E731
         for signal in (pedal, None):  # named, or chosen by the engine: the one that can carry it
-            with self.subTest(signal=signal):
-                self.net.fault(self.can1, "ChassisECU", brake, "out_of_range", signal=signal)
-                self.assertTrue(settles(self.can1, BRAKE_STATUS, outside), "no BrakePedal past its range")
-                self.net.clear_fault(self.can1, "ChassisECU", brake)
-                self.assertTrue(settles(self.can1, BRAKE_STATUS, lambda f: not outside(f)),
-                                "BrakePedal still out of range after the clear")
+            net.fault(can1, "ChassisECU", brake, "out_of_range", signal=signal)
+            assert settles(can1, BRAKE_STATUS, outside), f"no BrakePedal past its range (signal={signal})"
+            net.clear_fault(can1, "ChassisECU", brake)
+            assert settles(can1, BRAKE_STATUS, lambda f: not outside(f)), \
+                f"BrakePedal still out of range after the clear (signal={signal})"
 
-    def test_a_fault_that_cannot_take_effect_is_refused_and_says_why(self):
-        net = self.net
+    def test_a_fault_that_cannot_take_effect_is_refused_and_says_why(self, net, can1):
         cases = [
             (("CAN1", "SUT", "Powertrain", FaultKind.BAD_CRC), "has no configured checksum"),
             (("CAN1", "SUT", "Heartbeat", "freeze_counter"), "has no E2E counter"),
@@ -177,145 +167,139 @@ class TestOnSimDemo(unittest.TestCase):
             (("CAN1", "SUT", "Powertrain", "out_of_range"), "no signal on \"Powertrain\""),
         ]
         for args, want in cases:
-            with self.subTest(args=args):
-                with self.assertRaises(FaultRefused) as e:
-                    net.fault(*args)
-                self.assertIn(want, str(e.exception))
-                self.assertEqual(e.exception.code, -1)
-        with self.assertRaises(FaultRefused):
-            net.fault("CAN1", "SUT", "Powertrain", "out_of_range", signal=self.can1.messages.Powertrain.signals.EngineSpeed)
-        self.assertTrue(issubclass(FaultRefused, blobly.BloblyError))
+            with pytest.raises(FaultRefused, match=re.escape(want)) as e:
+                net.fault(*args)
+            assert e.value.code == -1, args
+        with pytest.raises(FaultRefused):
+            net.fault("CAN1", "SUT", "Powertrain", "out_of_range", signal=can1.messages.Powertrain.signals.EngineSpeed)
+        assert issubclass(FaultRefused, blobly.BloblyError)
 
-    def test_arguments_no_fault_can_have_are_python_errors(self):
-        net, can2 = self.net, self.net.channels.CAN2
-        with self.assertRaises(ValueError):
+    def test_arguments_no_fault_can_have_are_python_errors(self, net):
+        can2 = net.channels.CAN2
+        with pytest.raises(ValueError):
             net.fault("CAN1", "BatteryECU", can2.messages.BatteryStatus, "drop")  # CAN2's message
         for ms in (0, -5):
-            with self.assertRaises(ValueError):
+            with pytest.raises(ValueError):
                 net.fault("CAN1", "SUT", "Powertrain", "drop", ms=ms)
         for ms in ("100", float("inf"), True):
-            with self.assertRaises(TypeError):
+            with pytest.raises(TypeError):
                 net.fault("CAN1", "SUT", "Powertrain", "drop", ms=ms)
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             net.fault("CAN1", None, "Powertrain", "drop")
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             net.fault("CAN1", "SUT\0x", "Powertrain", "drop")
-        with self.assertRaises(KeyError):
+        with pytest.raises(KeyError):
             net.fault("NOPE", "SUT", "Powertrain", "drop")
 
 
-class TestNotStarted(unittest.TestCase):
+class TestNotStarted:
     def test_a_fault_needs_a_started_project(self):
         net = blobly.Project(SIM_DEMO).load()
-        with self.assertRaises(blobly.BloblyError) as e:
+        with pytest.raises(blobly.BloblyError) as e:
             net.fault("CAN1", "SUT", "Powertrain", "drop")
-        self.assertNotIsInstance(e.exception, FaultRefused)
-        self.assertEqual(e.exception.code, -3)
+        assert not isinstance(e.value, FaultRefused)
+        assert e.value.code == -3
 
 
-class TestOnProtectedTraffic(unittest.TestCase):
+def verifies(f):
+    return f.data[4] == e2e.p01_crc(f.data, DATA_ID, 4, 5)
+
+
+@pytest.fixture(scope="class")
+def protected(engine, tmp_path_factory):
+    """The Profile 1 project started for a class's tests."""
+    d = tmp_path_factory.mktemp("e2e")
+    write(d / "e2e.dbc", E2E_DBC)
+    write(d / "e2e.blobnet", E2E)
+    net = blobly.Project(os.fspath(d / "e2e.blobnet")).start()
+    yield net
+    net.stop()
+
+
+class TestOnProtectedTraffic:
     """Chassis sends BrakeStatus with AUTOSAR E2E Profile 1: the CRC in byte 4, the counter in
     byte 5's low nibble."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.dir = tempfile.TemporaryDirectory()
-        for name, text in (("e2e.dbc", E2E_DBC), ("e2e.blobnet", E2E)):
-            with open(os.path.join(cls.dir.name, name), "w") as f:
-                f.write(text)
-        cls.net = blobly.Project(os.path.join(cls.dir.name, "e2e.blobnet")).start()
-        cls.ch = cls.net.channels.E2E
+    @pytest.fixture
+    def net(self, protected):
+        yield protected
+        protected.clear_faults()
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.net.stop()
-        cls.dir.cleanup()
-
-    def tearDown(self):
-        self.net.clear_faults()
+    @pytest.fixture
+    def ch(self, net):
+        return net.channels.E2E
 
     @staticmethod
-    def verifies(f):
-        return f.data[4] == e2e.p01_crc(f.data, DATA_ID, 4, 5)
-
-    def counters_advance(self, n=6):
+    def counters_advance(ch, n=6):
         """Whether n frames in a row each carry the counter after the last's (0..14, wrapping)."""
         last, run = None, 0
-        for f in frames(self.ch, BRAKE_STATUS):
+        for f in frames(ch, BRAKE_STATUS):
             c = f.data[5] & 0x0F
-            run = run + 1 if last is not None and c == (last + 1) % 15 and self.verifies(f) else 0
+            run = run + 1 if last is not None and c == (last + 1) % 15 and verifies(f) else 0
             last = c
             if run == n:
                 return True
         return False
 
-    def test_the_simulation_stamps_profile_1_as_e2e_computes_it(self):
-        self.assertTrue(self.counters_advance())
+    def test_the_simulation_stamps_profile_1_as_e2e_computes_it(self, ch):
+        assert self.counters_advance(ch)
 
-    def test_bad_crc_breaks_the_crc_until_cleared(self):
-        self.net.fault(self.ch, "Chassis", "BrakeStatus", FaultKind.BAD_CRC)
+    def test_bad_crc_breaks_the_crc_until_cleared(self, net, ch):
+        net.fault(ch, "Chassis", "BrakeStatus", FaultKind.BAD_CRC)
         inverted = lambda f: f.data[4] == e2e.p01_crc(f.data, DATA_ID, 4, 5) ^ 0xFF  # noqa: E731
-        self.assertTrue(settles(self.ch, BRAKE_STATUS, inverted), "the CRC still verifies under bad_crc")
-        self.net.clear_fault(self.ch, "Chassis", "BrakeStatus")
-        self.assertTrue(self.counters_advance(), "the CRC does not verify after the clear")
+        assert settles(ch, BRAKE_STATUS, inverted), "the CRC still verifies under bad_crc"
+        net.clear_fault(ch, "Chassis", "BrakeStatus")
+        assert self.counters_advance(ch), "the CRC does not verify after the clear"
 
-    def test_freeze_counter_stops_the_counter_until_cleared(self):
-        self.net.fault(self.ch, "Chassis", "BrakeStatus", "freeze_counter")
+    def test_freeze_counter_stops_the_counter_until_cleared(self, net, ch):
+        net.fault(ch, "Chassis", "BrakeStatus", "freeze_counter")
         seen = []
 
         def frozen(f):
             seen.append(f.data[5] & 0x0F)
-            return self.verifies(f) and len(seen) > 1 and seen[-1] == seen[-2]
-        self.assertTrue(settles(self.ch, BRAKE_STATUS, frozen), "the counter still advances")
-        self.net.clear_fault(self.ch, "Chassis", "BrakeStatus")
-        self.assertTrue(self.counters_advance(), "the counter does not advance after the clear")
+            return verifies(f) and len(seen) > 1 and seen[-1] == seen[-2]
+        assert settles(ch, BRAKE_STATUS, frozen), "the counter still advances"
+        net.clear_fault(ch, "Chassis", "BrakeStatus")
+        assert self.counters_advance(ch), "the counter does not advance after the clear"
 
-    def test_a_timed_fault_on_protected_traffic_ends_by_itself(self):
-        self.net.fault(self.ch, "Chassis", "BrakeStatus", "bad_crc", ms=300)
-        self.assertTrue(settles(self.ch, BRAKE_STATUS, lambda f: not self.verifies(f), n=3))
-        self.assertTrue(self.counters_advance(), "the CRC does not verify once the fault ran out")
+    def test_a_timed_fault_on_protected_traffic_ends_by_itself(self, net, ch):
+        net.fault(ch, "Chassis", "BrakeStatus", "bad_crc", ms=300)
+        assert settles(ch, BRAKE_STATUS, lambda f: not verifies(f), n=3)
+        assert self.counters_advance(ch), "the CRC does not verify once the fault ran out"
 
 
-
-class TestMessageIdentity(unittest.TestCase):
+class TestMessageIdentity:
     """A fault is keyed by the message's name: a Message stands for itself, or is refused."""
 
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.dbc = os.path.join(self.dir.name, "twins.dbc")
-        self.write_dbc(0x102)
-        with open(os.path.join(self.dir.name, "twins.blobnet"), "w") as f:
-            f.write(TWINS)
-        self.net = blobly.Project(os.path.join(self.dir.name, "twins.blobnet")).start()
-        self.ch = self.net.channels.T
+    @pytest.fixture
+    def twins(self, engine, tmp_path):
+        """The project started, and a function that rewrites its database with Other at an id."""
+        def write_dbc(other_id):
+            write(tmp_path / "twins.dbc", TWINS_DBC.replace("{other_id}", str(other_id)))
+        write_dbc(0x102)
+        write(tmp_path / "twins.blobnet", TWINS)
+        net = blobly.Project(os.fspath(tmp_path / "twins.blobnet")).start()
+        yield net, write_dbc
+        net.stop()
 
-    def tearDown(self):
-        self.net.stop()
-        self.dir.cleanup()
-
-    def write_dbc(self, other_id):
-        with open(self.dbc, "w") as f:
-            f.write(TWINS_DBC.replace("{other_id}", str(other_id)))
-
-    def test_a_message_whose_name_is_shared_is_refused_and_the_name_reaches_both(self):
-        with self.assertRaises(ValueError) as e:
-            self.net.fault(self.ch, "ECU", self.ch.messages[0], "drop")
-        self.assertIn("more than one message named Status", str(e.exception))
-        self.net.fault(self.ch, "ECU", "Status", "drop")
+    def test_a_message_whose_name_is_shared_is_refused_and_the_name_reaches_both(self, twins):
+        net, _ = twins
+        ch = net.channels.T
+        with pytest.raises(ValueError, match="more than one message named Status"):
+            net.fault(ch, "ECU", ch.messages[0], "drop")
+        net.fault(ch, "ECU", "Status", "drop")
         for frame_id in (0x100, 0x101):
-            self.assertTrue(quiet(self.ch, frame_id), f"0x{frame_id:X} still arriving")
+            assert quiet(ch, frame_id), f"0x{frame_id:X} still arriving"
 
-    def test_a_message_its_run_no_longer_has_is_refused(self):
-        other = self.ch.messages.Other
-        self.net.stop()
-        self.write_dbc(0x103)  # Other moves: the old object is not this run's
-        self.net.start()
-        with self.assertRaises(blobly.BloblyError) as e:
-            self.net.fault(self.ch, "ECU", other, "drop")
-        self.assertEqual(e.exception.code, -3)
-        self.net.fault(self.ch, "ECU", self.ch.messages.Other, "drop")
-        self.assertTrue(quiet(self.ch, 0x103), "the current Other still arriving")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_a_message_its_run_no_longer_has_is_refused(self, twins):
+        net, write_dbc = twins
+        ch = net.channels.T
+        other = ch.messages.Other
+        net.stop()
+        write_dbc(0x103)  # Other moves: the old object is not this run's
+        net.start()
+        with pytest.raises(blobly.BloblyError) as e:
+            net.fault(ch, "ECU", other, "drop")
+        assert e.value.code == -3
+        net.fault(ch, "ECU", ch.messages.Other, "drop")
+        assert quiet(ch, 0x103), "the current Other still arriving"

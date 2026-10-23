@@ -14,18 +14,15 @@ late, timers whose callbacks are slow or run() themselves). It asserts:
   A6 a timer stays on its grid: its next due time is its first plus whole periods, and later than
      when it fired.
 The same rules, and the same model, as the Lua run() (blobly/script/events_test.v)."""
-import os
 import random
-import sys
-import unittest
+import time
 from unittest import mock
 
-# the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
-if not os.environ.get("BLOBLY_TEST_INSTALLED"):
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from blobly import _lib  # noqa: E402
-from blobly import events  # noqa: E402
-from blobly.events import EventLoop, wait_on  # noqa: E402
+import pytest
+
+from blobly import Frame, _lib, events
+from blobly.events import EventLoop, wait_on
+from blobly.project import _ms, frame_of
 
 
 class Arrival:
@@ -257,13 +254,13 @@ def scenario(seed):
                 raise AssertionError(f"A1: frame {a.seq} at {a.at} never delivered")
 
 
-class TestModel(unittest.TestCase):
+class TestModel:
     def test_model_of_run(self):
         for seed in range(1, 400):
             try:
                 scenario(seed)
             except AssertionError as e:
-                self.fail(f"seed {seed}: {e}")
+                pytest.fail(f"seed {seed}: {e}")
 
 
 class FakeChannel:
@@ -290,20 +287,20 @@ class Clock:
         self.t += ms
 
 
-class TestWaitOn(unittest.TestCase):
+class TestWaitOn:
     def test_takes_turns_between_flooded_channels(self):
         a, b = FakeChannel("A", range(10)), FakeChannel("B", range(10))
         c, rr, order = Clock(), 0, []
         for _ in range(8):
             got, rr = wait_on([a, b], 0, rr, c.now, c.sleep)
             order.append(got[0].name)
-        self.assertEqual(order, ["A", "B"] * 4)
+        assert order == ["A", "B"] * 4
 
     def test_reads_the_second_channel(self):
         a, b = FakeChannel("A"), FakeChannel("B", [7])
         got, _ = wait_on([a, b], 50, 0, Clock().now, Clock().sleep)
-        self.assertIs(got[0], b)
-        self.assertEqual(got[1], 7)
+        assert got[0] is b
+        assert got[1] == 7
 
     def test_a_fraction_of_a_millisecond_is_slept_not_read(self):
         clock = Clock()
@@ -315,15 +312,15 @@ class TestWaitOn(unittest.TestCase):
                 return "late" if clock.t >= 0.3 else None
         late = Late("A")
         got, _ = wait_on([late], 0.5, 0, clock.now, clock.sleep)
-        self.assertIsNone(got)
-        self.assertEqual(late.calls, 1, "looked again after the driver's whole-millisecond wait")
-        self.assertEqual(clock.t, 0.5)
+        assert got is None
+        assert late.calls == 1, "looked again after the driver's whole-millisecond wait"
+        assert clock.t == 0.5
 
     def test_the_last_sleep_is_capped_at_the_deadline(self):
         clock = Clock()
         got, _ = wait_on([FakeChannel("A"), FakeChannel("B")], 0.05, 0, clock.now, clock.sleep)
-        self.assertIsNone(got)
-        self.assertAlmostEqual(clock.t, 0.05, msg="slept a whole slice past the deadline")
+        assert got is None
+        assert clock.t == pytest.approx(0.05), "slept a whole slice past the deadline"
 
     def test_a_wait_longer_than_a_c_int_is_asked_in_pieces(self):
         asked = []
@@ -334,8 +331,8 @@ class TestWaitOn(unittest.TestCase):
                 return None
         clock = Clock()
         wait_on([Spy("A")], 2**40, 0, clock.now, clock.sleep)
-        self.assertLessEqual(asked[0], 2**31 - 1)
-        self.assertEqual(clock.t, 0, "slept the rest of the budget instead of returning to wait again")
+        assert asked[0] <= 2**31 - 1
+        assert clock.t == 0, "slept the rest of the budget instead of returning to wait again"
 
     def test_a_slow_look_ends_the_scan(self):
         clock = Clock()
@@ -346,8 +343,8 @@ class TestWaitOn(unittest.TestCase):
                 return None
         b = FakeChannel("B", [7])
         got, _ = wait_on([Slow("A"), b], 5, 0, clock.now, clock.sleep)
-        self.assertIsNone(got)
-        self.assertEqual(b.frames, [7], "a frame was taken after the deadline")
+        assert got is None
+        assert b.frames == [7], "a frame was taken after the deadline"
 
     def test_times_out_without_looking_after_the_deadline(self):
         class Late(FakeChannel):
@@ -357,25 +354,25 @@ class TestWaitOn(unittest.TestCase):
         clock = Clock()
         late = Late("A")
         got, _ = wait_on([late, FakeChannel("B")], 20, 0, clock.now, lambda ms: setattr(clock, "t", clock.t + 7))
-        self.assertIsNone(got, "a frame was taken after the deadline")
+        assert got is None, "a frame was taken after the deadline"
 
     def test_a_failing_single_channel_rests_and_does_not_spin(self):
         bad, clock = FakeChannel("A", fail=_lib.BloblyError("bus is closed")), Clock()
         got, _ = wait_on([bad], 1000, 0, clock.now, clock.sleep)
-        self.assertIsNone(got)
-        self.assertEqual(bad.calls, 1)
-        self.assertEqual(clock.t, 20, "rested neither a spin nor the whole wait")
+        assert got is None
+        assert bad.calls == 1
+        assert clock.t == 20, "rested neither a spin nor the whole wait"
 
     def test_an_error_that_will_not_clear_is_raised(self):
         for fail in (_lib.BloblyError("the project is not started", _lib.BB_ERR_STATE),
                      AttributeError("a defect")):
             for others in ([], [FakeChannel("B")]):
                 bad, clock = FakeChannel("A", fail=fail), Clock()
-                with self.assertRaises(type(fail), msg=f"{fail!r} beside {len(others)}"):
+                with pytest.raises(type(fail)):
                     wait_on([bad, *others], 1000, 0, clock.now, clock.sleep)
 
 
-class TestSliced(unittest.TestCase):
+class TestSliced:
     def test_a_wait_is_asked_in_slices_and_nothing_after_its_deadline(self):
         clock, asked = Clock(), []
 
@@ -383,16 +380,16 @@ class TestSliced(unittest.TestCase):
             asked.append(part)
             clock.t += part - 0.4
         with mock.patch.object(events, "monotonic_ms", clock.now), mock.patch.object(events, "sleep_ms", clock.sleep):
-            self.assertIsNone(events._sliced(early, 250))
-            self.assertEqual(asked, [100, 100, 50, 1])
-            self.assertAlmostEqual(clock.t, 250, msg="ended early, or waited past the deadline")
+            assert events._sliced(early, 250) is None
+            assert asked == [100, 100, 50, 1]
+            assert clock.t == pytest.approx(250), "ended early, or waited past the deadline"
             answers = iter([None, None, "frame"])
             asked.clear()
-            self.assertEqual(events._sliced(lambda part: asked.append(part) or next(answers), -1), "frame")
-            self.assertEqual(asked, [100, 100, 100], "a wait for ever is not asked in slices")
+            assert events._sliced(lambda part: asked.append(part) or next(answers), -1) == "frame"
+            assert asked == [100, 100, 100], "a wait for ever is not asked in slices"
 
 
-class TestSpentLook(unittest.TestCase):
+class TestSpentLook:
     def test_a_spent_look_is_looked_again_at_once(self):
         class Busy(FakeChannel):
             spent = 5
@@ -406,8 +403,8 @@ class TestSpentLook(unittest.TestCase):
         clock = Clock()
         sleeps = []
         got, _ = wait_on([Busy("A"), FakeChannel("B")], 50, 0, clock.now, lambda ms: sleeps.append(ms))
-        self.assertIsNotNone(got)
-        self.assertEqual(sleeps, [], "slept on a queue that said it was not empty")
+        assert got is not None
+        assert sleeps == [], "slept on a queue that said it was not empty"
 
 
 class Ladder(EventLoop):
@@ -432,7 +429,7 @@ class Ladder(EventLoop):
         return self.steps[min(self.samples, len(self.steps)) - 1]
 
 
-class TestSpentSingleLook(unittest.TestCase):
+class TestSpentSingleLook:
     def test_a_spent_single_look_is_not_slept_on(self):
         class Busy(FakeChannel):
             def look(self):
@@ -440,11 +437,11 @@ class TestSpentSingleLook(unittest.TestCase):
 
         clock, sleeps = Clock(), []
         got, _ = wait_on([Busy("A")], 0.5, 0, clock.now, lambda ms: sleeps.append(ms))
-        self.assertIsNone(got)
-        self.assertEqual(sleeps, [], "slept the fraction on a queue that said it was not empty")
+        assert got is None
+        assert sleeps == [], "slept the fraction on a queue that said it was not empty"
 
 
-class TestHealthReading(unittest.TestCase):
+class TestHealthReading:
     def test_whether_a_health_channel_is_read_is_asked_at_each_run(self):
         class Asked(Ladder):
             needs = False
@@ -460,13 +457,13 @@ class TestHealthReading(unittest.TestCase):
         loop = Asked(["ok"])
         loop.on_health("A", lambda s: None)
         loop.run(5)
-        self.assertTrue(loop.waited_on and all("A" not in n for n in loop.waited_on))
+        assert loop.waited_on and all("A" not in n for n in loop.waited_on)
         loop.needs, loop.waited_on = True, []  # a reload put the row on a wire that needs a reader
         loop.run(5)
-        self.assertTrue(loop.waited_on and all("A" in n for n in loop.waited_on))
+        assert loop.waited_on and all("A" in n for n in loop.waited_on)
 
 
-class TestMidRunRegistration(unittest.TestCase):
+class TestMidRunRegistration:
     def test_a_handler_registered_inside_a_callback_is_read_in_the_same_run(self):
         class Two(Ladder):
             sent = False
@@ -486,15 +483,15 @@ class TestMidRunRegistration(unittest.TestCase):
 
         loop.on_timer(1, register)
         loop.run(10)
-        self.assertTrue(heard, "a handler registered in a timer callback was not read in that run()")
+        assert heard, "a handler registered in a timer callback was not read in that run()"
 
 
-class TestHealth(unittest.TestCase):
+class TestHealth:
     def test_every_transition_is_told_once(self):
         m, seen = Ladder(["ok", "ok", "", "BUS-OFF", "BUS-OFF", "ok"]), []
         m.on_health("A", seen.append)
         m.run(750)
-        self.assertEqual(seen, ["ok", "BUS-OFF", "ok"])
+        assert seen == ["ok", "BUS-OFF", "ok"]
 
     def test_a_handler_registered_late_hears_the_current_state(self):
         m, first, late = Ladder(["BUS-OFF"]), [], []
@@ -502,8 +499,8 @@ class TestHealth(unittest.TestCase):
         m.run(150)
         m.on_health("A", late.append)
         m.run(150)
-        self.assertEqual(first, ["BUS-OFF"])
-        self.assertEqual(late, ["BUS-OFF"], "a handler registered after another was told nothing")
+        assert first == ["BUS-OFF"]
+        assert late == ["BUS-OFF"], "a handler registered after another was told nothing"
 
     def test_a_nested_run_does_not_leave_an_older_sample(self):
         m, a, b = Ladder(["ok", "BUS-OFF"]), [], []
@@ -517,7 +514,7 @@ class TestHealth(unittest.TestCase):
         m.on_health("A", first)
         m.on_health("A", b.append)
         m.run(350)
-        self.assertEqual(b, ["BUS-OFF"], "a false recovery: an older sample after a newer one")
+        assert b == ["BUS-OFF"], "a false recovery: an older sample after a newer one"
 
     def test_no_health_handler_starts_past_the_deadline(self):
         m, second = Ladder(["ok"]), []
@@ -527,21 +524,20 @@ class TestHealth(unittest.TestCase):
         m.on_health("A", slow)
         m.on_health("A", second.append)
         m.run(20)
-        self.assertEqual(second, [])
+        assert second == []
 
 
-class TestTimers(unittest.TestCase):
+class TestTimers:
     def test_a_day_of_missed_periods_is_skipped_in_one_step(self):
-        import time as _time
         m, fired = Ladder([""]), []
         m.on_timer(1, lambda: fired.append(m.t))
         m.t = 86_400_000.0  # a day idle in a REPL
-        t0 = _time.monotonic()
+        t0 = time.monotonic()
         m.run(5)
-        self.assertLess(_time.monotonic() - t0, 0.5, "the missed periods were walked one by one")
-        self.assertTrue(fired)
-        self.assertEqual((m._timers[0].due - 1) % 1, 0)
-        self.assertGreater(m._timers[0].due, fired[0])
+        assert time.monotonic() - t0 < 0.5, "the missed periods were walked one by one"
+        assert fired
+        assert (m._timers[0].due - 1) % 1 == 0
+        assert m._timers[0].due > fired[0]
 
     def test_a_long_callback_skips_the_points_it_ran_over(self):
         m, fired = Ladder([""]), []
@@ -552,37 +548,36 @@ class TestTimers(unittest.TestCase):
                 m.t += 35  # ran over three more points of a 10 ms grid
         m.on_timer(10, slow)
         m.run(60)
-        self.assertEqual(fired[:2], [10, 50], "the points the callback ran over were fired back to back")
+        assert fired[:2] == [10, 50], "the points the callback ran over were fired back to back"
 
     def test_one_wait_is_at_most_a_second(self):
         m, asked = Ladder([""]), []
         real = m._wait_frame
         m._wait_frame = lambda names, ms: (asked.append(ms), real(names, ms))[1]
         m.run(5000)
-        self.assertLessEqual(max(asked), 1000)
+        assert max(asked) <= 1000
 
     def test_a_duration_that_is_not_a_finite_number_is_refused(self):
         m = Ladder([""])
         for bad in (float("nan"), float("inf"), -1, "10", True, None):
-            with self.assertRaises(ValueError, msg=repr(bad)):
+            with pytest.raises(ValueError):
                 m.run(bad)
         m.run(0)  # zero is a look at nothing, not an error
 
     def test_a_period_that_is_not_positive_is_refused(self):
         m = Model(1)
         for bad in (0, 0.5, -5, "10", True, None, float("nan"), float("inf")):
-            with self.assertRaises(ValueError, msg=repr(bad)):
+            with pytest.raises(ValueError):
                 m.on_timer(bad, lambda: None)
 
 
-class TestFrame(unittest.TestCase):
+class TestFrame:
     def test_a_remote_frame_keeps_the_length_it_asks_for(self):
-        from blobly.project import frame_of
         f = frame_of(_lib.BbFrame(id=0x123, len=8, rtr=1))
-        self.assertTrue(f.rtr)
-        self.assertEqual(f.data, b"")
-        self.assertEqual(f.length, 8)
-        self.assertNotEqual(f, frame_of(_lib.BbFrame(id=0x123, len=0, rtr=1)))
+        assert f.rtr
+        assert f.data == b""
+        assert f.length == 8
+        assert f != frame_of(_lib.BbFrame(id=0x123, len=0, rtr=1))
 
 
 class Queued(EventLoop):
@@ -608,7 +603,7 @@ class Queued(EventLoop):
         return ""
 
 
-class TestOrder(unittest.TestCase):
+class TestOrder:
     def test_a_nested_run_does_not_overtake_the_frame_being_dispatched(self):
         m, first, second = Queued([1, 2]), [], []
 
@@ -619,14 +614,12 @@ class TestOrder(unittest.TestCase):
         m.on_message("A", None, outer)
         m.on_message("A", None, lambda f: second.append(f.id))
         m.run(20)
-        self.assertEqual(second, [1, 2], "the second handler saw frame 2 before frame 1")
-        self.assertEqual(first, [1, 2])
+        assert second == [1, 2], "the second handler saw frame 2 before frame 1"
+        assert first == [1, 2]
 
 
-class TestMessageHandlers(unittest.TestCase):
+class TestMessageHandlers:
     def test_a_message_matches_its_id_and_kind_an_int_either(self):
-        from blobly import Frame
-
         class Msg:  # what a channel's .messages hands out, as on_message reads it
             id, ext = 0x102, False
 
@@ -642,41 +635,37 @@ class TestMessageHandlers(unittest.TestCase):
         m.on_message("A", Msg(), lambda f: by_msg.append(f.ext))
         m.on_message("A", 0x102, lambda f: by_int.append(f.ext))
         m.run(20)
-        self.assertEqual(by_msg, [False], "a message's handler took the other kind")
-        self.assertEqual(by_int, [False, True])
+        assert by_msg == [False], "a message's handler took the other kind"
+        assert by_int == [False, True]
         m = Frames([Frame(0x102), Frame(0x102, ext=True)] * 2)
         narrow, wide = [], []
         m.on_message("A", 0x102, lambda f: narrow.append(f.ext), ext=False)
         m.on_message("A", 0x102, lambda f: wide.append(f.ext), ext=True)
         m.run(20)
-        self.assertEqual((narrow, wide), ([False, False], [True, True]))
+        assert (narrow, wide) == ([False, False], [True, True])
         fresh = Frames([])
         for bad, ext in (("0x102", None), (True, None), (1.5, None), (0x102, 1), (Msg(), False), (None, True)):
-            with self.assertRaises(TypeError, msg=repr((bad, ext))):
+            with pytest.raises(TypeError):
                 fresh.on_message("A", bad, by_int.append, ext=ext)
         for bad, ext in ((0x800, False), (0x2000_0000, None), (-1, True)):
-            with self.assertRaises(ValueError, msg=repr((bad, ext))):
+            with pytest.raises(ValueError):
                 fresh.on_message("A", bad, by_int.append, ext=ext)
-        self.assertEqual(fresh._listened, [], "a refused filter subscribed its channel")
+        assert fresh._listened == [], "a refused filter subscribed its channel"
 
 
-class TestTimeout(unittest.TestCase):
+class TestTimeout:
     def test_a_receive_waits_at_most_what_was_asked(self):
-        from blobly.project import _ms
-        self.assertEqual(_ms(0.01), 0)
-        self.assertEqual(_ms(1.99), 1)
-        self.assertEqual(_ms(None), -1)
+        assert _ms(0.01) == 0
+        assert _ms(1.99) == 1
+        assert _ms(None) == -1
         for bad in (float("nan"), float("inf"), True, "5"):
-            with self.assertRaises(TypeError, msg=repr(bad)):
+            with pytest.raises(TypeError):
                 _ms(bad)
 
 
-class TestText(unittest.TestCase):
+class TestText:
     def test_a_message_cut_inside_a_utf8_sequence_still_reads(self):
         # the library truncates its error buffer at 512 bytes, possibly inside a character
-        self.assertEqual(_lib.text(b"cannot load /home/M\xc3"), "cannot load /home/M\ufffd")
-        self.assertEqual(_lib.text(None), "")
+        assert _lib.text(b"cannot load /home/M\xc3") == "cannot load /home/M\ufffd"
+        assert _lib.text(None) == ""
 
-
-if __name__ == "__main__":
-    unittest.main()

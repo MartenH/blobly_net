@@ -15,19 +15,15 @@ import io
 import os
 import re
 import shutil
-import sys
-import tempfile
 import types
-import unittest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-# the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
-if not os.environ.get("BLOBLY_TEST_INSTALLED"):
-    sys.path.insert(0, os.path.join(HERE, ".."))
-import blobly  # noqa: E402
-from blobly import _lib  # noqa: E402
+import pytest
 
-REPO = os.path.dirname(os.path.dirname(HERE))
+import blobly
+from conftest import REPO
+
+pytestmark = pytest.mark.usefixtures("engine")
+
 GUIDE = os.path.join(REPO, "docs", "scripting_python.md")
 RUN = [GUIDE, os.path.join(REPO, "docs", "agents.md"), os.path.join(REPO, "python", "README.md")]
 LINKED = RUN + [os.path.join(REPO, "python", "examples", "README.md")]
@@ -97,16 +93,7 @@ def anchor(heading):
     return slug.replace(" ", "-")
 
 
-def setUpModule():
-    try:
-        _lib.lib()
-    except blobly.BloblyError as e:
-        if os.environ.get("BLOBLY_LIB") or os.environ.get("BLOBLY_TEST_INSTALLED"):
-            raise
-        raise unittest.SkipTest(str(e))
-
-
-class TestReference(unittest.TestCase):
+class TestReference:
     def test_every_public_name_is_in_the_reference(self):
         classes, ref = package_classes(), reference()
         missing = []
@@ -132,53 +119,46 @@ class TestReference(unittest.TestCase):
                     missing.append(f"{name}.{member}")
         if not mentions(ref.get("Module `blobly`", []), "blobly.__version__"):
             missing.append("blobly.__version__")
-        self.assertEqual(missing, [], "named nowhere in the reference of docs/scripting_python.md")
+        assert missing == [], "named nowhere in the reference of docs/scripting_python.md"
 
     def test_the_enumeration_sees_what_the_package_has(self):
         # what the check above walks must be real: a parse that found nothing would pass it
         classes = package_classes()
-        self.assertLessEqual({"send", "recv", "look", "iface", "kind", "name"}, members(classes["Channel"], classes))
-        self.assertLessEqual({"on_message", "run", "path", "started", "fault", "clear_faults"},
-                             members(classes["Project"], classes))
-        self.assertEqual(blobly.e2e.__all__, ["p01_crc", "p01_protect"])
-        self.assertLessEqual({"id", "ext", "dlc", "j1939", "channel"}, members(classes["Message"], classes))
-        self.assertLessEqual({"raw_labels", "mux_value"}, members(classes["Signal"], classes))
-        self.assertIn("code", members(classes["BloblyError"], classes))
-        self.assertIn("keys", members(classes["Messages"], classes))
+        assert {"send", "recv", "look", "iface", "kind", "name"} <= members(classes["Channel"], classes)
+        assert {"on_message", "run", "path", "started", "fault", "clear_faults"} <= members(classes["Project"], classes)
+        assert blobly.e2e.__all__ == ["p01_crc", "p01_protect"]
+        assert {"id", "ext", "dlc", "j1939", "channel"} <= members(classes["Message"], classes)
+        assert {"raw_labels", "mux_value"} <= members(classes["Signal"], classes)
+        assert "code" in members(classes["BloblyError"], classes)
+        assert "keys" in members(classes["Messages"], classes)
 
 
-class TestBlocks(unittest.TestCase):
-    def test_every_python_block_runs(self):
-        here = os.getcwd()
-        os.chdir(REPO)  # the blocks run from the root of a checkout
-        try:
-            for doc in RUN:
-                for i, code in enumerate(blocks(doc, "python")):
-                    with self.subTest(f"{os.path.relpath(doc, REPO)} python block {i + 1}"):
-                        with contextlib.redirect_stdout(io.StringIO()):
-                            exec(compile(code, f"{doc}#{i + 1}", "exec"), {"__name__": "__doc_block__"})
-        finally:
-            os.chdir(here)
+class TestBlocks:
+    def test_every_python_block_runs(self, monkeypatch):
+        monkeypatch.chdir(REPO)  # the blocks run from the root of a checkout
+        for doc in RUN:
+            for i, code in enumerate(blocks(doc, "python")):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exec(compile(code, f"{doc}#{i + 1}", "exec"), {"__name__": "__doc_block__"})
 
-    def test_every_yaml_block_is_a_project(self):
-        with tempfile.TemporaryDirectory() as d:
-            # a project names its databases relative to itself: projects/ beside dbc/, as here
-            shutil.copytree(os.path.join(REPO, "dbc"), os.path.join(d, "dbc"))
-            os.mkdir(os.path.join(d, "projects"))
-            for doc in RUN:
-                for i, text in enumerate(blocks(doc, "yaml")):
-                    with self.subTest(f"{os.path.relpath(doc, REPO)} yaml block {i + 1}"):
-                        path = os.path.join(d, "projects", f"block{i}.blobnet")
-                        with open(path, "w", encoding="utf-8") as f:
-                            f.write(text)
-                        net = blobly.Project(path).load()
-                        self.assertGreater(len(net.channels), 0)
-                        if all(ch.iface.startswith("inproc") for ch in net.channels):
-                            net.start()
-                            self.assertTrue(net.stop())
+    def test_every_yaml_block_is_a_project(self, tmp_path):
+        # a project names its databases relative to itself: projects/ beside dbc/, as here
+        shutil.copytree(os.path.join(REPO, "dbc"), tmp_path / "dbc")
+        (tmp_path / "projects").mkdir()
+        for doc in RUN:
+            for i, text in enumerate(blocks(doc, "yaml")):
+                where = f"{os.path.relpath(doc, REPO)} yaml block {i + 1}"
+                path = os.fspath(tmp_path / "projects" / f"block{i}.blobnet")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                net = blobly.Project(path).load()
+                assert len(net.channels) > 0, where
+                if all(ch.iface.startswith("inproc") for ch in net.channels):
+                    net.start()
+                    assert net.stop(), where
 
 
-class TestLinks(unittest.TestCase):
+class TestLinks:
     def test_every_link_reaches_a_file_and_a_heading(self):
         broken = []
         for doc in LINKED:
@@ -200,8 +180,4 @@ class TestLinks(unittest.TestCase):
                     headings = re.findall(r"^#+ (.*)$", read(full), re.M)
                     if frag not in {anchor(h) for h in headings}:
                         broken.append(f"{os.path.relpath(doc, REPO)}: {target} (no such heading)")
-        self.assertEqual(broken, [])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert broken == []
