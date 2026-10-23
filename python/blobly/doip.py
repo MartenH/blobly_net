@@ -2,12 +2,11 @@
 a channel's entity asked who it is, and the announcements entities send unasked, heard for a
 window. UDS over a DoIP channel is its UdsClient (Channel.uds)."""
 import ctypes
-import threading
 from dataclasses import dataclass
 
 from . import _lib
 from ._lib import BloblyError
-from .events import _sliced
+from .events import _on_thread
 
 # room for every announcement a window hears in one call; one past it is said, not dropped silently
 _CAP = 1024
@@ -49,26 +48,6 @@ def _started(who: str, channel) -> int:
     return _lib.state["run"]
 
 
-def _waited(call):
-    """call()'s answer, the call made on a thread of its own and waited for in slices
-    (events._sliced), so Ctrl-C ends the wait; the call itself is one native exchange, bounded by
-    its own wait, and an interrupted one finishes on its thread with its answer dropped."""
-    box = {}
-
-    def run():
-        try:
-            _lib.lib()  # attaches this thread
-            box["answer"] = call()
-        except BaseException as e:  # carried to the caller's thread
-            box["error"] = e
-    t = threading.Thread(target=run, name="blobly-doip", daemon=True)
-    t.start()
-    _sliced(lambda part: None if (t.join(part / 1000) or t.is_alive()) else True, -1)
-    if "error" in box:
-        raise box["error"]
-    return box["answer"]
-
-
 def discover(channel, timeout_ms: float = 1200) -> DoipAnnouncement:
     """Channel.discover."""
     wait = _ms("discover", timeout_ms)
@@ -83,7 +62,7 @@ def discover(channel, timeout_ms: float = 1200) -> DoipAnnouncement:
             buf = ctypes.create_string_buffer(n + 1)
             _lib.check(lib.bb_doip_endpoint(channel._index, buf, len(buf), ctypes.byref(port)))
         host = buf.value
-    _waited(lambda: _lib.check(lib.bb_doip_discover(host, port.value, wait, ctypes.byref(out))))
+    _on_thread(lambda: _lib.check(lib.bb_doip_discover(host, port.value, wait, ctypes.byref(out))))
     return _announcement(out)
 
 
@@ -118,7 +97,7 @@ def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool =
             _started("doip_listen", channel)
             _lib.check(lib.bb_doip_listener(channel._index, p, v6, ctypes.byref(use_port), ctypes.byref(use_ip6)))
         p, v6 = use_port.value, use_ip6.value
-    n = _waited(lambda: _lib.check(lib.bb_doip_listen(p, window, v6, out, _CAP)))
+    n = _on_thread(lambda: _lib.check(lib.bb_doip_listen(p, window, v6, out, _CAP)))
     if n > _CAP:
         raise BloblyError(f"doip_listen: {n} announcements in {window} ms, more than the {_CAP} kept; "
                           "listen for a shorter window")

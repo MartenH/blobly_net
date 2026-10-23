@@ -37,14 +37,14 @@ fn main() {
 		exit(1)
 	}
 	base := u32('0x${if os.args.len > 3 { os.args[3] } else { '08020000' }}'.u64())
-	req_id := u32('0x${if os.args.len > 4 { os.args[4] } else { '7B0' }}'.u64())
-	rsp_id := u32('0x${if os.args.len > 5 { os.args[5] } else { '7B8' }}'.u64())
+	req_id := u32('0x${if os.args.len > 4 { os.args[4] } else { '${flash.tester_tx:X}' }}'.u64())
+	rsp_id := u32('0x${if os.args.len > 5 { os.args[5] } else { '${flash.boot_tx:X}' }}'.u64())
 	sw_version := u32(if os.args.len > 6 { os.args[6].u64() } else { 1 })
 
 	// 0x29 tester private seed: $BLOBLY_FLASH_SEED (64 hex chars) or the dev seed.
 	// A malformed env value is an error (never a silent fall-through to the dev key).
-	seed := flash.tester_seed(os.getenv('BLOBLY_FLASH_SEED')) or {
-		eprintln('flash: BLOBLY_FLASH_SEED: ${err}')
+	seed := flash.auth_seed(true, none, none) or {
+		eprintln('flash: ${err}')
 		exit(2)
 	}
 

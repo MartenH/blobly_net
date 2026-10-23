@@ -30,6 +30,24 @@ mut:
 	block(done int, total int) !
 }
 
+// Percent is the progress a callback is given: a call when the transfer crosses a whole percent,
+// and at the last block — at most 101 however many blocks the image takes. One rule for every
+// binding's progress callback.
+pub struct Percent {
+mut:
+	last int = -1
+}
+
+// due answers the whole percent to report for this block, or none when no call is due.
+pub fn (mut p Percent) due(done int, total int) ?int {
+	pct := if total > 0 { done * 100 / total } else { 100 }
+	if pct == p.last && done != total {
+		return none
+	}
+	p.last = pct
+	return pct
+}
+
 // Tenths is the progress a line-per-update sink prints: a line when the transfer crosses a tenth,
 // and at the last block. One rule for cmd/flash and a script's default progress.
 pub struct Tenths {
@@ -55,6 +73,37 @@ pub mut:
 	// with the boot's challenge/response before erasing. Empty = skip auth (a
 	// boot with no key baked; legacy / unsigned targets).
 	auth_seed []u8
+	// asked by the session's client before each request goes out and between answers: true
+	// abandons the session there (a host's cancel); nil never. A wait inside the channel ends
+	// only by the channel's own stop (isotp.SoftChannel.stop_requested), which is the caller's
+	stop fn () bool = unsafe { nil }
+	// told of every request the session puts through (uds.Client.on_exchange); nil never
+	on_exchange fn (uds.Exchange) = unsafe { nil }
+}
+
+// tester_tx and boot_tx are the CAN ids a blobly_emb bootloader is reached on when none are named:
+// requests go out on tester_tx and its answers come back on boot_tx.
+pub const tester_tx = u32(0x7B0)
+pub const boot_tx = u32(0x7B8)
+
+// Failed is the session's own verdict: a step the bootloader answered whose answer says the flash
+// did not happen (an erase or check routine's result, a malformed download answer), or a transfer
+// a progress sink stopped. A step the bootloader refused or did not answer is that step's UDS
+// failure instead (step_error).
+pub struct Failed {
+	Error
+pub:
+	text string
+}
+
+pub fn (e Failed) msg() string {
+	return e.text
+}
+
+fn failed(text string) IError {
+	return Failed{
+		text: text
+	}
 }
 
 // Report is what a completed session did, for a caller that wants more than the sink's lines
@@ -96,6 +145,34 @@ pub fn tester_seed(env_val string) ![]u8 {
 		s[i] = u8(('0x' + hb).u8())
 	}
 	return s
+}
+
+// auth_seed is the 0x29 seed a session signs with, by the one rule every front end states: with
+// `auth`, the seed given (64 hex characters), else the seed file named, else $BLOBLY_FLASH_SEED,
+// else the dev tester seed; without it none (0x29 skipped). A malformed seed is an error, never a
+// silent fall-through to the dev key, and so are a seed and a file both, or either without auth.
+pub fn auth_seed(auth bool, seed ?string, seed_file ?string) ![]u8 {
+	if seed != none && seed_file != none {
+		return error('seed and seed_file both given; name one')
+	}
+	if !auth {
+		if seed != none || seed_file != none {
+			return error('auth = false with a seed; drop one')
+		}
+		return []u8{}
+	}
+	if s := seed {
+		if s.trim_space() == '' {
+			return error('seed is empty')
+		}
+		return tester_seed(s) or { return error('seed: ${err}') }
+	}
+	if f := seed_file {
+		return tester_seed_file(f)
+	}
+	return tester_seed(os.getenv('BLOBLY_FLASH_SEED')) or {
+		return error('BLOBLY_FLASH_SEED: ${err}')
+	}
 }
 
 // tester_seed_file reads a seed file as blobly_emb keeps one (examples/keys/tester.seed: the 64 hex
@@ -147,7 +224,7 @@ fn authenticate(mut c uds.Client, seed []u8, mut sink Sink) !string {
 		return step_error('request challenge', err)
 	}
 	if cr.len < 2 + 32 {
-		return error('request challenge: unexpected response ${cr.hex()}')
+		return failed('request challenge: unexpected response ${cr.hex()}')
 	}
 	challenge := cr[2..34].clone()
 	priv := ed.new_key_from_seed(seed)
@@ -195,12 +272,17 @@ fn ask(mut c uds.Client, req []u8, what string) ![]u8 {
 	return c.raw(req) or { return step_error(what, err) }
 }
 
-// step_error names the step a request failed in; a negative answer as its NRC.
+// step_error names the step a request failed in; a negative answer as its NRC. The failure keeps
+// its kind (uds.failure_of reads the cause), so a caller tells a refusal from a silence.
 fn step_error(what string, err IError) IError {
-	if err is uds.NegativeResponse {
-		return error('${what}: NRC 0x${err.nrc.hex()}')
+	return uds.ContextError{
+		text:  if err is uds.NegativeResponse {
+			'${what}: NRC 0x${err.nrc.hex()}'
+		} else {
+			'${what}: ${err}'
+		}
+		cause: err
 	}
-	return error('${what}: ${err}')
 }
 
 // first_answer_ms: the wait for each step's first answer (the timeout this session always had);
@@ -231,6 +313,8 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 
 	mut c := uds.new_client(ch)
 	c.timeout_ms = first_answer_ms
+	c.stop_requested = opts.stop
+	c.on_exchange = opts.on_exchange
 	ask(mut c, [u8(0x10), 0x02], 'programming session')!
 	if opts.auth_seed.len == 32 {
 		rep.auth = authenticate(mut c, opts.auth_seed, mut sink)!
@@ -245,10 +329,10 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 	err_rsp := ask(mut c, er, 'erase')!
 	// 71 01 FF 00 <result>: an answer without its result has not said the erase worked
 	if err_rsp.len < 5 {
-		return error('erase: no routine result in ${err_rsp.hex()}')
+		return failed('erase: no routine result in ${err_rsp.hex()}')
 	}
 	if err_rsp[4] != 0 {
-		return error('erase routine failed (result ${err_rsp[4]})')
+		return failed('erase routine failed (result ${err_rsp[4]})')
 	}
 	sink.note('erased 0x${opts.base.hex()} +${total}')
 
@@ -260,7 +344,7 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 	// length counts the 0x36 SID and the block counter, so the data per block is two fewer
 	width := if dr.len >= 2 { int(dr[1] >> 4) } else { 0 }
 	if width < 1 || width > 4 || dr.len < 2 + width {
-		return error('request download: bad block length field in ${dr.hex()}')
+		return failed('request download: bad block length field in ${dr.hex()}')
 	}
 	mut block_len := u32(0)
 	for i in 0 .. width {
@@ -268,7 +352,7 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 	}
 	max_block := int(block_len) - 2
 	if max_block <= 0 {
-		return error('request download: bad block size ${block_len}')
+		return failed('request download: bad block size ${block_len}')
 	}
 	nblocks := (blob.len + max_block - 1) / max_block
 
@@ -289,7 +373,7 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 		blk++
 		done++
 		sink.block(done, nblocks) or {
-			return error('transfer stopped after block ${done} of ${nblocks}, before the check — the image is not marked valid: ${err}')
+			return failed('transfer stopped after block ${done} of ${nblocks}, before the check — the image is not marked valid: ${err}')
 		}
 	}
 	ask(mut c, [u8(0x37)], 'transfer exit')!
@@ -299,7 +383,7 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 
 	cr := ask(mut c, [u8(0x31), 0x01, 0xFF, 0x01], 'check image')!
 	if cr.len < 5 || cr[4] != 0 {
-		return error('image check FAILED on the ECU — not marked valid')
+		return failed('image check FAILED on the ECU — not marked valid')
 	}
 	sink.note('image verified + marked valid')
 
@@ -309,6 +393,13 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 		// and is still in the boot manager.
 		if err is uds.NegativeResponse {
 			return step_error('ecu reset', err)
+		}
+		if opts.stop != unsafe { nil } && opts.stop() {
+			return failed(if c.last.sent {
+				'ecu reset: sent, then stopped before its answer; the image is marked valid'
+			} else {
+				'ecu reset: stopped before it was sent; the image is marked valid'
+			})
 		}
 		sink.note('ECU reset sent (response lost to the reset — normal)')
 		return rep

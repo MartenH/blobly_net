@@ -17,6 +17,7 @@ for a Project, so two rows that share a name stay two rows."""
 import collections
 import math
 import sys
+import threading
 import time
 
 from ._lib import BB_ERR_STATE, BloblyError
@@ -263,6 +264,27 @@ def _sliced(wait, ms):
                 sleep_ms(left)
                 return None
             part = min(math.floor(left), SLICE_MS)
+
+
+def _on_thread(call, name="blobly"):
+    """call()'s answer, the call made on a thread of its own and waited for in slices (_sliced),
+    so Ctrl-C ends the wait; the call itself is one native exchange, bounded by its own wait, and
+    an interrupted one finishes on its thread with its answer dropped."""
+    from . import _lib  # this module's rules need no library; the call does
+    box = {}
+
+    def run():
+        try:
+            _lib.lib()  # attaches this thread
+            box["answer"] = call()
+        except BaseException as e:  # carried to the caller's thread
+            box["error"] = e
+    t = threading.Thread(target=run, name=name, daemon=True)
+    t.start()
+    _sliced(lambda part: None if (t.join(part / 1000) or t.is_alive()) else True, -1)
+    if "error" in box:
+        raise box["error"]
+    return box["answer"]
 
 
 def _matches(want, frame):

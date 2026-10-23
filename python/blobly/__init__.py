@@ -8,10 +8,12 @@
         net.run(1000)
 
 See docs/scripting_python.md."""
-from ._lib import (BloblyError, CarrierFailed, ConnectionLost, NegativeResponse, PendingExpired, Refused,
-                   RoutingDenied, Timeout, UndecodableAnswer)
-from . import e2e
+from ._lib import (BloblyError, CarrierFailed, ConnectionLost, FlashFailed, NegativeResponse, PendingExpired,
+                   Refused, RoutingDenied, Timeout, UndecodableAnswer)
+from . import e2e, flash, someip
 from .doip import DoipAnnouncement, doip_listen
+from .flash import BootReport, BootSim, FlashReport
+from .someip import SomeipHeard, SomeipMessage
 from .events import EventLoop
 from .faults import FaultKind, FaultRefused
 from .project import Channel, Channels, Frame, Message, Messages, Project, Signal, Signals
@@ -68,3 +70,6 @@ __all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventL
 __all__ += ["FaultKind", "FaultRefused", "e2e"]
 # DoIP (doip.py; UDS over DoIP is UdsClient)
 __all__ += ["ConnectionLost", "DoipAnnouncement", "RoutingDenied", "doip_listen"]
+# SOME/IP (someip.py) and flashing (flash.py)
+__all__ += ["SomeipHeard", "SomeipMessage", "someip"]
+__all__ += ["BootReport", "BootSim", "FlashFailed", "FlashReport", "flash"]

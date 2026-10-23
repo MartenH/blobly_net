@@ -169,3 +169,27 @@ fn test_doip_listener_takes_the_rows_port_and_family() {
 	}
 	assert false, 'a port contradicting an unnamed row was accepted'
 }
+
+fn test_a_someip_listener_takes_its_row_or_refuses_a_contradiction() {
+	h, p, g := someip_listener(0, '', '', none)!
+	assert h == '' && p == 30490 && g == ''
+	_, p2, g2 := someip_listener(4000, '239.1.1.1', '', none)!
+	assert p2 == 4000 && g2 == '239.1.1.1'
+	row := Carrier{
+		someip: true
+		host:   '127.0.0.1'
+		port:   30509
+		group:  ''
+	}
+	h3, p3, g3 := someip_listener(0, '', 'ETH1', row)!
+	assert h3 == '127.0.0.1' && p3 == 30509 && g3 == ''
+	if _, _, _ := someip_listener(0, '239.1.1.1', 'ETH1', row) {
+		assert false, 'a group on a unicast row'
+	}
+	if _, _, _ := someip_listener(4000, '', 'ETH1', row) {
+		assert false, 'another port than the row'
+	}
+	if _, _, _ := someip_listener(0, '', 'DoIP1', Carrier{ doip: true }) {
+		assert false, 'a DoIP row'
+	}
+}

@@ -77,6 +77,13 @@ class RoutingDenied(BloblyError):
         self.routing_code, self.routing_name, self.hint, self.tester = routing_code, routing_name, hint, tester
 
 
+class FlashFailed(BloblyError):
+    """A flash ran and the bootloader's own answers say it did not happen: an erase or check
+    routine's result (the image is not marked valid), a malformed download answer, or a transfer
+    stopped (a progress callback that raised, Ctrl-C). A step the bootloader refused raises
+    NegativeResponse instead, and one it did not answer Timeout."""
+
+
 BB_ERR = -1
 BB_ERR_HANDLE = -2
 BB_ERR_STATE = -3
@@ -87,11 +94,13 @@ BB_ERR_UNDECODABLE = -7
 BB_ERR_CARRIER = -8
 BB_ERR_ROUTING = -9
 BB_ERR_LOST = -10
+BB_ERR_FLASH = -11
 # the exception each code raises; a code not here (BB_ERR_HANDLE, BB_ERR_STATE, a newer library's)
 # raises BloblyError itself
 ERRORS = {BB_ERR: Refused, BB_ERR_NEGATIVE: NegativeResponse, BB_ERR_TIMEOUT: Timeout,
           BB_ERR_PENDING: PendingExpired, BB_ERR_UNDECODABLE: UndecodableAnswer,
-          BB_ERR_CARRIER: CarrierFailed, BB_ERR_ROUTING: RoutingDenied, BB_ERR_LOST: ConnectionLost}
+          BB_ERR_CARRIER: CarrierFailed, BB_ERR_ROUTING: RoutingDenied, BB_ERR_LOST: ConnectionLost,
+          BB_ERR_FLASH: FlashFailed}
 # answers that are neither success nor an error (bb.h)
 BB_NONE = 1        # bb_bus_recv: no frame in time; bb_decode: no message
 BB_SPENT = 2       # bb_bus_recv(h, 0): no frame yet, records still queued behind the look's bound
@@ -167,6 +176,52 @@ class BbDoipAnnouncement(ctypes.Structure):
                 ("eid", ctypes.c_uint8 * 6), ("gid", ctypes.c_uint8 * 6),
                 ("source", ctypes.c_char * BB_DOIP_SOURCE_MAX)]
 
+
+class BbSomeipOut(ctypes.Structure):
+    """bb_someip_out, field for field."""
+    _fields_ = [("service", ctypes.c_uint16), ("method", ctypes.c_uint16), ("msg_type", ctypes.c_int32),
+                ("iface", ctypes.c_int32), ("client", ctypes.c_int32), ("session", ctypes.c_int32),
+                ("payload", ctypes.c_char_p), ("payload_len", ctypes.c_int32)]
+
+
+BB_SOMEIP_FROM_MAX = 64
+
+
+class BbSomeipMsg(ctypes.Structure):
+    """bb_someip_msg, field for field."""
+    _fields_ = [("service", ctypes.c_uint16), ("method", ctypes.c_uint16), ("client", ctypes.c_uint16),
+                ("session", ctypes.c_uint16), ("iface", ctypes.c_uint8), ("msg_type", ctypes.c_uint8),
+                ("return_code", ctypes.c_uint8), ("protocol", ctypes.c_uint8), ("payload_len", ctypes.c_int32),
+                ("at_ms", ctypes.c_int64),
+                ("source", ctypes.c_char * BB_SOMEIP_FROM_MAX)]
+
+
+FLASH_NOTE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p)
+FLASH_PROGRESS = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32)
+
+
+class BbFlashOpts(ctypes.Structure):
+    """bb_flash_opts, field for field."""
+    _fields_ = [("base", ctypes.c_uint32), ("sw_version", ctypes.c_uint32), ("auth", ctypes.c_int32),
+                ("seed", ctypes.c_char_p), ("seed_file", ctypes.c_char_p), ("quiet", ctypes.c_int32),
+                ("note", FLASH_NOTE), ("progress", FLASH_PROGRESS), ("ctx", ctypes.c_void_p)]
+
+
+class BbFlashReport(ctypes.Structure):
+    """bb_flash_report, field for field."""
+    _fields_ = [("bytes", ctypes.c_int32), ("blocks", ctypes.c_int32), ("wrapped", ctypes.c_uint8),
+                ("reset_acknowledged", ctypes.c_uint8), ("auth", ctypes.c_int32)]
+
+
+class BbBootReport(ctypes.Structure):
+    """bb_boot_report, field for field."""
+    _fields_ = [("authenticated", ctypes.c_uint8), ("verified", ctypes.c_uint8), ("erases", ctypes.c_int32),
+                ("blocks", ctypes.c_int32), ("bytes", ctypes.c_int32), ("checks", ctypes.c_int32),
+                ("resets", ctypes.c_int32)]
+
+
+# enum bb_flash_auth, as the Lua flash.program's report names it
+FLASH_AUTH = {0: "skipped", 1: "authenticated", 2: "not required"}
 
 # enum bb_functional_outcome, as the Lua uds.functional names the outcomes
 OUTCOMES = {0: "positive", 1: "negative", 2: "silent", 3: "pending", 4: "failed"}
@@ -261,6 +316,21 @@ def _declare(lib):
         "bb_doip_listener": ([c_int, c_int, c_int, P(c_int), P(c_int)], c_int),
         "bb_doip_discover": ([c_char_p, c_int, c_int, P(BbDoipAnnouncement)], c_int),
         "bb_doip_listen": ([c_int, c_int, c_int, P(BbDoipAnnouncement), c_int], c_int),
+        # SOME/IP (someip.py)
+        "bb_someip_send": ([c_int, c_char_p, P(BbSomeipOut), c_int, c_int], c_int),
+        "bb_someip_call": ([c_int, c_char_p, P(BbSomeipOut), c_int], c_int),
+        "bb_someip_listener": ([c_int, c_int, c_char_p, c_char_p, c_int, P(c_int), c_char_p, c_int], c_int),
+        "bb_someip_listen": ([c_char_p, c_int, c_char_p, c_int], c_int),
+        "bb_someip_count": ([c_int, P(c_int)], c_int),
+        "bb_someip_message": ([c_int, c_int, P(BbSomeipMsg), c_char_p, c_int], c_int),
+        "bb_someip_free": ([c_int], c_int),
+        # flashing (flash.py)
+        "bb_flash_defaults": ([P(BbFlashOpts)], c_int),
+        "bb_flash_open": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64), P(BbUdsTarget)], c_int),
+        "bb_flash_program": ([c_int, c_char_p, c_int, P(BbFlashOpts), P(BbFlashReport)], c_int),
+        "bb_flash_cancel": ([c_int], c_int),
+        "bb_boot_sim": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64)], c_int),
+        "bb_boot_sim_stop": ([c_int, P(BbBootReport)], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)
@@ -298,6 +368,12 @@ state = {"owner": None, "gen": 0, "run": 0}
 state_lock = threading.RLock()
 
 
+def in_progress(on: bool) -> None:
+    """Marks the calling thread as inside a flash's progress callback, where lib() refuses it: the
+    flash holds the engine until it ends, and a call waiting for it there would wait for ever."""
+    _tls.in_progress = on
+
+
 class _Attachment:
     """Held in the thread's local storage: CPython clears that storage on the ending thread itself,
     so this finalizer runs there and detaches the thread it attached."""
@@ -315,6 +391,9 @@ class _Attachment:
 def lib():
     """The loaded library, bb_init done; refused from any thread but the main one the first time."""
     global _lib, loaded_path
+    if getattr(_tls, "in_progress", False):
+        raise BloblyError("a call into blobly from a flash's progress callback: the flash holds the "
+                          "engine until it ends", BB_ERR_STATE)
     with _lock:
         if _lib is None:
             # the thread rule below rests on CPython clearing a thread's local storage ON that

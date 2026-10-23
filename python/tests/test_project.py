@@ -6,6 +6,7 @@ import copy
 import ctypes
 import os
 import pickle
+import socket
 import subprocess
 import sys
 import tempfile
@@ -268,22 +269,31 @@ class TestLoads(unittest.TestCase):
     def test_native_state_calls_run_under_the_lock(self):
         lib = _lib.lib()
         real = lib.bb_bus_open
-        unlocked = []
+        unlocked, opened, failed = [], [], []
 
         def checked(iface):
+            opened.append(iface)
             if not _lib.state_lock._is_owned():
                 unlocked.append(iface)
             return real(iface)
+
+        def recv(c):
+            try:
+                c.recv(0)
+            except BaseException as e:  # the check is only as good as the threads that ran it
+                failed.append(e)
         lib.bb_bus_open = checked
         try:
             with blobly.Project(SIM_DEMO) as net:
-                ts = [threading.Thread(target=lambda c=c: c.recv(0)) for c in (net.channels.CAN1, net.channels.CAN2)]
+                ts = [threading.Thread(target=recv, args=(c,)) for c in (net.channels.CAN1, net.channels.CAN2)]
                 for th in ts:
                     th.start()
                 for th in ts:
                     th.join()
         finally:
             lib.bb_bus_open = real
+        self.assertEqual(failed, [])
+        self.assertEqual(len(opened), 2, opened)
         self.assertEqual(unlocked, [], "a bus was opened outside the state lock")
 
     def test_handlers_follow_a_reload(self):
@@ -451,8 +461,9 @@ class TestReceiveTime(unittest.TestCase):
                 self.assertTrue(before <= earlier.t_ms < later.t_ms, (before, earlier.t_ms, later.t_ms))
 
 
-# a row nothing sends on, and a script that waits on it until a SIGINT, which a timer thread
-# raises as Ctrl-C does: from outside the main thread, while the main thread is in the library
+# a row nothing sends on (or answers a flash on), and a script that waits on it — or on a SOME/IP
+# port — until a SIGINT, which a timer thread raises as Ctrl-C does: from outside the main thread,
+# while the main thread is in the library
 QUIET = """project:
   name: quiet
   version: 8
@@ -479,7 +490,8 @@ INTERRUPTED = textwrap.dedent("""
         threading.Timer(0.3, ctrl_c).start()
         try:
             {"recv": lambda: q.recv(None), "expect": lambda: q.expect(1, 3_600_000),
-             "run": lambda: net.run(3_600_000)}[sys.argv[3]]()
+             "run": lambda: net.run(3_600_000), "someip": lambda: blobly.someip.listen(3_600_000, port=int(sys.argv[4])),
+             "flash": lambda: blobly.flash.program(q, bytes(64), quiet=True)}[sys.argv[3]]()
         except KeyboardInterrupt:
             print(f"interrupted {time.monotonic() - sent[0]:.3f} s after Ctrl-C")
 """)
@@ -495,9 +507,12 @@ class TestInterrupt(unittest.TestCase):
             path = os.path.join(d, "quiet.blobnet")
             with open(path, "w") as f:
                 f.write(QUIET)
-            for wait in ("recv", "expect", "run"):
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.bind(("127.0.0.1", 0))  # a port for the SOME/IP listen, free now
+                port = str(s.getsockname()[1])
+            for wait in ("recv", "expect", "run", "someip", "flash"):
                 with self.subTest(wait):
-                    out = subprocess.run([sys.executable, "-I", "-c", INTERRUPTED, pkg, path, wait], env=env,
+                    out = subprocess.run([sys.executable, "-I", "-c", INTERRUPTED, pkg, path, wait, port], env=env,
                                          cwd=d, capture_output=True, text=True, timeout=60)
                     late = [float(line.split()[1]) for line in out.stdout.splitlines()
                             if line.startswith("interrupted")]

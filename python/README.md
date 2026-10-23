@@ -4,7 +4,8 @@ Blobly Net's CAN test engine from Python. `blobly` loads a Blobly Net project (`
 up its simulated ECUs inside your process, and gives you its channels: send and receive frames,
 encode and decode DBC messages by signal name, read the controller's health, react to traffic
 with an event loop of frame, timer and health handlers, inject faults into the simulated ECUs,
-protect frames with AUTOSAR E2E Profile 1, and run UDS diagnostics over CAN and DoIP.
+protect frames with AUTOSAR E2E Profile 1, run UDS diagnostics over CAN and DoIP, talk SOME/IP,
+and flash a blobly_emb bootloader.
 
 ```sh
 pip install blobly

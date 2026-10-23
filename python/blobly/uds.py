@@ -215,6 +215,8 @@ class UdsClient:
     serialised, so threads may share it; close() from another thread ends a call in progress
     there."""
 
+    _opener = "bb_uds_open"  # the call that opens its connection, the ids it defaults to
+
     def __init__(self, channel, tx: int | None = None, rx: int | None = None):
         self.channel = channel
         self._ask = (None if tx is None else _int("tx", tx, 64), None if rx is None else _int("rx", rx, 64))
@@ -240,7 +242,7 @@ class UdsClient:
             raise BloblyError(f"{self.channel.name}: the project is not started", _lib.BB_ERR_STATE)
         ids = [None if v is None else ctypes.byref(ctypes.c_int64(v)) for v in self._ask]
         out = _lib.BbUdsTarget()
-        self._h = _lib.check(lib.bb_uds_open(self.channel._index, ids[0], ids[1], ctypes.byref(out)))
+        self._h = _lib.check(getattr(lib, self._opener)(self.channel._index, ids[0], ids[1], ctypes.byref(out)))
         self.tx = self.rx = self.tester = self.ecu = None
         self.ext = False
         if self.channel.kind == "doip":  # bb_uds_target holds the logical addresses there

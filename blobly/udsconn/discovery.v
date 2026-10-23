@@ -1,6 +1,7 @@
 module udsconn
 
 import blobly.doip
+import blobly.someip
 import blobly.transport
 
 // doip_listener is where a DoIP announcement listener listens, and whether over IPv6: the port
@@ -16,4 +17,23 @@ pub fn doip_listener(port int, ip6 bool, from string, row ?Carrier) !(int, bool)
 	}
 	return transport.listen_port(port, from, car.port, doip.port, 'entity')!, ip6
 		|| doip.addr_family(car.host) == .ip6
+}
+
+// someip_listener is where a SOME/IP listener listens — bind host, port and multicast group: the
+// port asked for (0: 30490) and the group asked for on the wildcard, or — given `row`, the carrier
+// of the SOME/IP row named `from` — that row's bind host, port and group. A port, or a group,
+// differing from the row's is refused, not overruled; a row with no group is a unicast listener,
+// so a group asked of it differs too.
+pub fn someip_listener(port int, group string, from string, row ?Carrier) !(string, int, string) {
+	car := row or {
+		return '', transport.listen_port(port, '', none, someip.default_port, 'listener')!, group
+	}
+	if !car.someip {
+		return error('"${from}" is not a SOME/IP channel')
+	}
+	if group != '' && group != car.group {
+		joins := if car.group == '' { 'joins no multicast group' } else { 'joins ${car.group}' }
+		return error('group ${group} contradicts from = "${from}", whose listener ${joins}; give one or the other')
+	}
+	return car.host, transport.listen_port(port, from, car.port, someip.default_port, 'listener')!, car.group
 }

@@ -1,6 +1,7 @@
 module flash
 
 import blobly.isotp
+import blobly.uds
 
 // A fake blobly bootloader on the in-process bus, doing the two things a real one does that the
 // flasher's old request loop could not take: it answers the erase with responsePending (0x78)
@@ -124,4 +125,80 @@ fn test_a_secured_boot_refusing_the_challenge_stops_the_flash() {
 	ch.close()
 	assert msg == 'request challenge: NRC 0x31', 'a refused challenge was flashed through'
 	assert boot.blocks == 0
+}
+
+fn test_the_auth_seed_rule() {
+	assert auth_seed(false, none, none)!.len == 0
+	assert auth_seed(true, '11'.repeat(32), none)! == []u8{len: 32, init: 0x11}
+	for args in [[true, true, true], [false, true, false], [true, false, false]] {
+		seed := if args[1] { ?string('11'.repeat(32)) } else { ?string(none) }
+		file := if args[2] { ?string('x.seed') } else { ?string(none) }
+		if args[0] && !args[1] && !args[2] {
+			continue
+		}
+		if _ := auth_seed(args[0], seed, file) {
+			assert false, '${args}'
+		}
+	}
+	if _ := auth_seed(true, ' ', none) {
+		assert false, 'an empty seed'
+	}
+	if _ := auth_seed(true, '0x1234', none) {
+		assert false, 'a malformed seed'
+	}
+}
+
+fn test_progress_is_a_call_per_whole_percent_and_the_last_block() {
+	mut p := Percent{}
+	mut calls := 0
+	for done in 1 .. 1001 {
+		if _ := p.due(done, 1000) {
+			calls++
+		}
+	}
+	assert calls == 101, 'every whole percent from 0 to 100'
+	mut q := Percent{}
+	assert q.due(1, 3)? == 33
+	assert q.due(3, 3)? == 100
+}
+
+fn test_the_simulated_bootloader_holds_the_session_to_its_order() {
+	mut sim := start_boot_sim(isotp.open_software('inproc:BOOTSIM_ORDER', boot_tx, tester_tx, false)!)
+	mut ch := isotp.open_software('inproc:BOOTSIM_ORDER', tester_tx, boot_tx, false)!
+	defer {
+		ch.close()
+	}
+	ask := fn [mut ch] (req []u8) []u8 {
+		ch.send(req) or { panic(err) }
+		return ch.recv(1000) or { panic(err) }
+	}
+	dl := [u8(0x34), 0x00, 0x44, 0x08, 0x02, 0, 0, 0, 0, 0, 2]
+	erase := [u8(0x31), 0x01, 0xFF, 0x00, 0x08, 0x02, 0, 0, 0, 0, 0, 2]
+	mut c := uds.new_client(ch)
+	assert ask([u8(0x29), 0x01]) == [u8(0x7F), 0x29, 0x22], '0x29 outside the programming session'
+	assert ask([u8(0x10), 0x02])[0] == 0x50
+	assert ask([u8(0x29), 0x02]) == [u8(0x7F), 0x29, 0x24], 'a proof with no challenge'
+	assert ask(dl) == [u8(0x7F), 0x34, 0x33], 'a download before 0x29'
+	authenticate(mut c, tester_seed('')!, mut Notes{})!
+	assert ask(dl) == [u8(0x7F), 0x34, 0x24], 'a download before an erase'
+	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x7F), 0x36, 0x24], 'a block with no download'
+	assert ask([u8(0x31), 0x01, 0x02, 0x03]) == [u8(0x7F), 0x31, 0x31], 'a routine it does not have'
+	assert ask([u8(0x31), 0x02, 0xFF, 0x00]) == [u8(0x7F), 0x31, 0x31], 'a sub-function other than start'
+	assert ask(erase)[..5] == [u8(0x71), 0x01, 0xFF, 0x00, 0x00]
+	assert ask(dl)[0] == 0x74
+	assert ask([u8(0x36), 0x02, 0xAA]) == [u8(0x7F), 0x36, 0x73], 'a block out of sequence'
+	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x76), 0x01]
+	assert ask([u8(0x36), 0x02, 0xBB, 0xCC]) == [u8(0x7F), 0x36, 0x31], 'past the size 0x34 asked for'
+	assert ask([u8(0x31), 0x01, 0xFF, 0x01]) == [u8(0x7F), 0x31, 0x24], 'a check while a download is open'
+	assert ask([u8(0x37)]) == [u8(0x77)]
+	assert ask([u8(0x31), 0x01, 0xFF, 0x01])[4] == 1, 'a body that is no image fails the check'
+	assert ask([u8(0x10), 0x02])[0] == 0x50
+	assert ask(dl) == [u8(0x7F), 0x34, 0x33], 'a session change relocks'
+	ch.send([u8(0x11), 0x81])!
+	if got := ch.recv(200) {
+		assert false, 'a suppressed reset answered ${got}'
+	}
+	rep := sim.stop()
+	assert rep.authenticated && rep.blocks == 1 && rep.image == [u8(0xAA)] && rep.resets == 1
+	assert rep.checks == 1 && !rep.verified
 }

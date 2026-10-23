@@ -308,26 +308,26 @@ end
 
 local someip_types = { request = 0x00, notification = 0x02 }
 
--- someip_to checks a destination is "host:port", IPv4: the local port is bound on the IPv4
--- wildcard, which is the claim every other listener here makes.
-local function someip_to(fname, to)
-  if type(to) ~= "string" or not to:match("^[^:%[%]]+:%d+$") then
-    error(fname .. ": to must be an IPv4 \"host:port\", got " .. tostring(to), 3)
-  end
+-- someip_hex is a header field as the binding reads it: hex, or empty for one left to its default.
+local function someip_hex(v)
+  if v == nil then return "" end
+  return string.format("%x", v)
 end
 
 -- someip.send(to, msgs [, opts]) -> messages, malformed
 --
--- Send SOME/IP messages to `to` ("host:port") FROM a local port, then hear that port for a
+-- Send SOME/IP messages to `to` ("host:port", IPv4) FROM a local port, then hear that port for a
 -- window -- one socket both ways, because a node with a static peer endpoint (a blobly_emb SOME/IP
 -- node) accepts datagrams only from its configured peer and answers that same endpoint.
 -- msgs: one message table or a list of them, each { service=, method=, payload=<bytes>,
 -- type="notification"|"request" (default: notification for an event id, request otherwise),
--- iface=1, client=0, session=0 }. opts = { port = 30491, window_ms = 1000 }.
+-- iface=1, client=, session= }. A request goes out with a live Request ID by default (client
+-- 0x1234 -- a blobly_emb node refuses client 0 -- and the run`s next session); a notification
+-- with client and session 0. A request`s session, given or not, is reserved for the run like a
+-- someip.call one. opts = { port = 30491, window_ms = 1000 }.
 -- Returns what someip.listen returns for the window that follows the send.
 function someip.send(to, msgs, opts)
   opts = opts or {}
-  someip_to("someip.send", to)
   if type(msgs) ~= "table" then error("someip.send: msgs must be a message or a list of them", 2) end
   if msgs[1] == nil then msgs = { msgs } end
   local lines = {}
@@ -335,18 +335,16 @@ function someip.send(to, msgs, opts)
     if math.type(m.service) ~= "integer" or math.type(m.method) ~= "integer" then
       error("someip.send: message " .. i .. " needs an integer service and method", 2)
     end
-    local mt = m.type or (m.method >= 0x8000 and "notification" or "request")
-    local code = someip_types[mt]
-    if code == nil then error("someip.send: type must be notification or request, got " .. tostring(mt), 2) end
-    -- a request goes out with a live Request ID by default (a blobly_emb node refuses client 0
-    -- and treats session 0 as dead), its session reserved for the run like a someip.call one
-    local req = code == 0
-    local session = m.session or 0
-    if req then session = __someip_session(m.session or 0) end
-    lines[#lines+1] = string.format("%x|%x|%x|%x|%x|%x|%s", m.service, m.method, m.iface or 1,
-      code, m.client or (req and 0x1234 or 0), session, tohex(m.payload or ""):gsub(" ", ""))
+    local code = nil
+    if m.type ~= nil then
+      code = someip_types[m.type]
+      if code == nil then error("someip.send: type must be notification or request, got " .. tostring(m.type), 2) end
+    end
+    local payload = tohex(m.payload or ""):gsub(" ", "")
+    lines[#lines+1] = table.concat({ someip_hex(m.service), someip_hex(m.method), someip_hex(m.iface),
+      someip_hex(code), someip_hex(m.client), someip_hex(m.session), payload }, "|")
   end
-  local raw, malformed = __someip_send(opts.port or 30491, to, table.concat(lines, "\n"),
+  local raw, malformed = __someip_send(opts.port or 30491, tostring(to), table.concat(lines, "\n"),
                                        opts.window_ms or 1000)
   return shape_someip(raw), malformed
 end
@@ -361,16 +359,15 @@ end
 -- timeout_ms = 1000 }. nil, "no answer" when the deadline passes.
 function someip.call(to, req, opts)
   opts = opts or {}
-  someip_to("someip.call", to)
   if type(req) ~= "table" or type(req.service) ~= "number" or type(req.method) ~= "number" then
     error("someip.call: req needs an integer service and method", 2)
   end
-  local outcome, rc, payload, session = __someip_call(opts.port or 30491, to, req.service,
-    req.method, req.iface or 1, req.client or 0x1234, req.session or 0,
-    tohex(req.payload or ""):gsub(" ", ""), opts.timeout_ms or 1000)
+  local outcome, rc, payload, session, client = __someip_call(opts.port or 30491, tostring(to),
+    req.service, req.method, req.iface, req.client, req.session,
+    (tohex(req.payload or ""):gsub(" ", "")), opts.timeout_ms or 1000)
   if outcome == "timeout" then return nil, "no answer" end
   return { type = outcome, rc = rc, payload = payload, service = req.service,
-           method = req.method, client = req.client or 0x1234, session = session }
+           method = req.method, client = client, session = session }
 end
 
 -- ============================ diagnostics (UDS) ============================
