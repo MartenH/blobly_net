@@ -279,6 +279,13 @@ GEN_NAME, GEN_CHANNEL, GEN_MESSAGE, GEN_TRIGGER, GEN_TARGET, GEN_NOTE = range(6)
 OUTCOMES = {0: "positive", 1: "negative", 2: "silent", 3: "pending", 4: "failed"}
 
 
+# a UDS client's timing (uds.py)
+class BbUdsTiming(ctypes.Structure):
+    """bb_uds_timing, field for field."""
+    _fields_ = [("timeout_ms", ctypes.c_int32), ("p2_star_ms", ctypes.c_int32), ("margin_ms", ctypes.c_int32),
+                ("pending_budget_ms", ctypes.c_int32)]
+
+
 def _declare(lib):
     """Every bb.h prototype, argtypes and restype. An int-returning call keeps ctypes' default."""
     c_int, c_char_p, P = ctypes.c_int, ctypes.c_char_p, ctypes.POINTER
@@ -405,6 +412,15 @@ def _declare(lib):
         "bb_gen_cycle": ([c_int, c_int], c_int),
         "bb_gen_set": ([c_int, c_char_p, ctypes.c_double], c_int),
         "bb_gen_source": ([c_int, c_char_p, P(BbWave)], c_int),
+        # raw ISO-TP (isotp.py), UDS timing and the DoIP retarget (uds.py)
+        "bb_isotp_open": ([c_int, ctypes.c_int64, ctypes.c_int64, P(BbUdsTarget)], c_int),
+        "bb_isotp_send": ([c_int, c_char_p, c_int], c_int),
+        "bb_isotp_recv": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_isotp_data": ([c_int, c_char_p, c_int], c_int),
+        "bb_isotp_close": ([c_int], c_int),
+        "bb_uds_get_timing": ([c_int, P(BbUdsTiming)], c_int),
+        "bb_uds_set_timing": ([c_int, P(BbUdsTiming)], c_int),
+        "bb_uds_retarget": ([c_int, P(ctypes.c_int64)], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

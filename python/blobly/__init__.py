@@ -84,3 +84,6 @@ __all__ += ["BusDiagnostics", "BusLoad"]
 # generator control (generators.py)
 from .generators import Generator, GeneratorRefused, Generators  # noqa: E402
 __all__ += ["Generator", "GeneratorRefused", "Generators"]
+# raw ISO-TP (isotp.py; Channel.isotp)
+from .isotp import IsoTp  # noqa: E402
+__all__ += ["IsoTp"]

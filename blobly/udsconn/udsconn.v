@@ -148,9 +148,7 @@ pub fn open(t Target, name string, iface string, car Carrier, opener fn (string,
 			}
 		})
 	} else {
-		isotp.Channel(isotp.on_bus(opener(iface, name) or {
-			return error('isotp open failed on ${name}: ${err}')
-		}, iface, t.tx, t.rx, t.ext) or { return error('isotp open failed on ${name}: ${err}') })
+		isotp.Channel(open_isotp(t, name, iface, opener)!)
 	}
 	return Conn{
 		ch:  ch

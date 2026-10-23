@@ -193,3 +193,58 @@ fn test_a_someip_listener_takes_its_row_or_refuses_a_contradiction() {
 		assert false, 'a DoIP row'
 	}
 }
+
+// a raw ISO-TP channel: a CAN row only, both ids given, 29-bit as a UDS connection's
+fn test_a_raw_isotp_channel_needs_both_ids_on_a_can_row() {
+	for car in [Carrier{
+		doip: true
+	}, Carrier{
+		someip: true
+	}] {
+		resolve_isotp(ask(true, 0x700, true, 0x708), 'E', car) or {
+			assert err.msg().contains('carries no ISO-TP; a raw ISO-TP channel opens on a CAN row'), err.msg()
+			continue
+		}
+		assert false, 'a raw ISO-TP channel resolved on ${car}'
+	}
+	for a in [ask(false, 0, true, 0x708), ask(true, 0x700, false, 0)] {
+		resolve_isotp(a, 'CAN1', Carrier{}) or {
+			assert err.msg() == 'uds.open("CAN1"): give both tx and rx; a raw ISO-TP channel has no default pair'
+			continue
+		}
+		assert false, 'an omitted id resolved'
+	}
+	resolve_isotp(ask(true, -1, true, 0x708), 'CAN1', Carrier{}) or {
+		assert err.msg().contains('is not a CAN identifier')
+		t := resolve_isotp(ask(true, 0, true, 0x18DAF110), 'CAN1', Carrier{})!
+		assert t == Target{
+			tx:  0
+			rx:  0x18DAF110
+			ext: true
+		}
+		return
+	}
+	assert false, 'tx -1 resolved'
+}
+
+// what a UDS client rides is the raw channel: a request's whole answer comes back reassembled
+fn test_a_raw_isotp_channel_carries_whole_messages() {
+	mut ecu := isotp.open_software('inproc:UDSCONN-RAW', 0x7E8, 0x7E0, false)!
+	done := chan bool{cap: 1}
+	spawn serve(mut ecu, done)
+	t := resolve_isotp(ask(true, 0x7E0, true, 0x7E8), 'CAN1', Carrier{})!
+	mut c := open_isotp(t, 'CAN1', 'inproc:UDSCONN-RAW', opener)!
+	c.send([u8(0x22), 0xF1, 0x90])!
+	mut want := [u8(0x62), 0xF1, 0x90]
+	want << 'BLOBLYNETV0SUT001'.bytes()
+	assert c.recv(2000)! == want
+	assert <-done
+	c.close()
+	open_isotp(t, 'CAN9', 'vcan99', fn (iface string, name string) !transport.Bus {
+		return error('no such device')
+	}) or {
+		assert err.msg() == 'isotp open failed on CAN9: no such device'
+		return
+	}
+	assert false, 'opened over a failing opener'
+}

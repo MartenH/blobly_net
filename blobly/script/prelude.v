@@ -527,6 +527,42 @@ function uds.open(channel, opts)
     __uds_sec_key(self.handle, level + 1, keyfn(seed))
     return seed
   end
+  -- the waits, in ms: timeout_ms (the first answer), p2_star_ms (after each 0x78, plus margin_ms)
+  -- and pending_budget_ms (one request from its send). timing() reads them as they stand;
+  -- set_timing(t) states the ones t names, from the next request on
+  function self:timing()
+    local t, p, m, b = __uds_timing(self.handle)
+    return { timeout_ms = t, p2_star_ms = p, margin_ms = m, pending_budget_ms = b }
+  end
+  function self:set_timing(t)
+    if type(t) ~= "table" then error("set_timing(t): t is a table of waits in ms", 2) end
+    __uds_set_timing(self.handle, t.timeout_ms, t.p2_star_ms, t.margin_ms, t.pending_budget_ms)
+  end
+  -- DoIP: requests go to logical address `address` (nil: the channel ecu_address), a node behind
+  -- the gateway the entity is, on the same connection
+  function self:retarget(address) __uds_retarget(self.handle, address) end
+  if opts.timeout_ms ~= nil or opts.p2_star_ms ~= nil or opts.margin_ms ~= nil or opts.pending_budget_ms ~= nil then
+    self:set_timing(opts)
+  end
+  return self
+end
+
+-- ============================ raw ISO-TP ============================
+-- isotp.open(channel, {tx = ..., rx = ...}): whole messages on a CAN channel, sent on tx and
+-- received on rx (both needed), segmented and reassembled by the ISO-TP a uds.open connection
+-- rides, with no UDS on top. :send(data) returns once the message is on the wire; :recv(timeout_ms)
+-- the next whole message, or nil after timeout_ms (default 1000); :close() lets it go.
+isotp = {}
+function isotp.open(channel, opts)
+  opts = opts or {}
+  local h = __isotp_open(channel, opts.tx, opts.rx)
+  local self = { handle = h, channel = channel }
+  function self:send(data) __isotp_send(self.handle, data) end
+  function self:recv(timeout_ms)
+    if timeout_ms == nil then timeout_ms = 1000 end
+    return __isotp_recv(self.handle, timeout_ms)
+  end
+  function self:close() __isotp_close(self.handle) end
   return self
 end
 

@@ -1,7 +1,8 @@
 /* smoke.c — a C host of libblobly: loads the library at run time, brings sim-demo up, hears
  * its simulated ECUs on inproc:CAN1, sends a frame, and does the same from a thread the HOST
  * created — the one the V runtime's collector did not see born — encodes and decodes through
- * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS, arms and clears a
+ * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS and over raw ISO-TP,
+ * states a UDS handle's timing, retargets a DoIP handle, arms and clears a
  * fault and stamps an E2E Profile 1 frame, flashes a simulated bootloader on CAN1 with C
  * callbacks, fires and cycles a generator, then stops and starts again.
  *
@@ -111,6 +112,15 @@ static recv_fn bb_bus_recv_p;
 static i64_fn bb_now_ns_p;
 static int_int_fn bb_bus_health_p, bb_bus_close_p, bb_channel_kind_p, bb_channel_health_source_p, bb_wait_released_p,
 	bb_uds_close_p;
+
+/* raw ISO-TP, UDS timing and the DoIP retarget */
+static int (*bb_isotp_open_p)(int, int64_t, int64_t, bb_uds_target *);
+static int (*bb_isotp_send_p)(int, const uint8_t *, int);
+static int (*bb_isotp_recv_p)(int, int, uint8_t *, int);
+static int_int_fn bb_isotp_close_p, bb_uds_tester_present_p;
+static int (*bb_uds_get_timing_p)(int, bb_uds_timing *);
+static int (*bb_uds_set_timing_p)(int, const bb_uds_timing *);
+static int (*bb_uds_retarget_p)(int, const int64_t *);
 
 typedef int (*load_fn)(int, bb_busload *);
 typedef int (*diag_fn)(int, bb_diagnostics *);
@@ -293,6 +303,50 @@ static int doip_steps(int doip) {
 	return 0;
 }
 
+/* raw ISO-TP on CAN1 (sim-demo's SUT answers 0x7E0 / 0x7E8), a UDS handle's timing, and a DoIP
+ * handle moved to another target (sim-demo's entity routes to none: it refuses one) and back */
+static int isotp_steps(int row, int doip) {
+	bb_uds_target t;
+	CHECK(bb_isotp_open_p(doip, 0x7E0, 0x7E8, &t) == BB_ERR && strstr(bb_last_error_p(), "carries no ISO-TP"), "raw ISO-TP on a DoIP row must refuse");
+	int h = bb_isotp_open_p(row, 0x7E0, 0x7E8, &t);
+	CHECK(h >= 0 && t.tx == 0x7E0 && t.rx == 0x7E8 && !t.ext, "open raw ISO-TP on CAN1");
+	uint8_t msg[64];
+	CHECK(bb_isotp_send_p(h, (const uint8_t *)"\x22\xF1\x90", 3) == 0, "send 22 F1 90");
+	CHECK(bb_isotp_recv_p(h, 1000, msg, sizeof msg) == 20 && msg[0] == 0x62 && memcmp(msg + 3, "BLOBLYNETV0SUT001", 17) == 0,
+		"the VIN answer, reassembled");
+	CHECK(bb_isotp_send_p(h, (const uint8_t *)"\x22\xF1", 2) == 0 && bb_isotp_recv_p(h, 1000, msg, sizeof msg) == 3
+		&& msg[0] == 0x7F && msg[2] == 0x13, "a malformed request answered 7F 22 13");
+	CHECK(bb_isotp_recv_p(h, 50, msg, sizeof msg) == BB_ERR_TIMEOUT, "nothing more is a timeout");
+	CHECK(bb_isotp_send_p(h, msg, 0) == BB_ERR && bb_isotp_recv_p(h, -1, msg, sizeof msg) == BB_ERR, "an empty message and a negative wait refused");
+	CHECK(bb_isotp_close_p(h) == 0 && bb_isotp_close_p(h) == BB_ERR_HANDLE, "a closed ISO-TP handle is gone");
+
+	int64_t tx = 0x6F0, rx = 0x6F8;  /* nothing answers there */
+	int u = bb_uds_open_p(row, &tx, &rx, &t);
+	bb_uds_timing tm;
+	CHECK(u >= 0 && bb_uds_get_timing_p(u, &tm) == 0 && tm.timeout_ms == 1000 && tm.p2_star_ms == 5000 && tm.margin_ms == 1000
+		&& tm.pending_budget_ms == 120000, "the default timing");
+	tm.timeout_ms = 0;
+	CHECK(bb_uds_set_timing_p(u, &tm) == BB_ERR, "a first wait of 0 ms must refuse");
+	tm.timeout_ms = 100;
+	CHECK(bb_uds_set_timing_p(u, &tm) == 0, "a first wait of 100 ms");
+	int64_t t0 = bb_now_ns_p();
+	CHECK(bb_uds_tester_present_p(u) == BB_ERR_TIMEOUT && bb_now_ns_p() - t0 < 600000000LL, "nobody answers within the 100 ms");
+	int64_t node = 0x2000;
+	CHECK(bb_uds_retarget_p(u, &node) == BB_ERR, "a CAN handle has no target to move");
+	CHECK(bb_uds_close_p(u) == 0, "close the CAN handle");
+
+	u = bb_uds_open_p(doip, NULL, NULL, &t);
+	CHECK(u >= 0 && bb_uds_retarget_p(u, &node) == 0, "retarget the DoIP handle");
+	CHECK(bb_uds_read_did_p(u, 0xF190, msg, sizeof msg) == BB_ERR_CARRIER && strstr(bb_last_error_p(), "negative ack"),
+		"an entity with nothing behind it refuses the target");
+	int64_t far = 0x10000;
+	CHECK(bb_uds_retarget_p(u, &far) == BB_ERR && bb_uds_retarget_p(u, NULL) == 0, "past 16 bits refused; back to the row's address");
+	CHECK(bb_uds_read_did_p(u, 0xF190, msg, sizeof msg) == 17, "the VIN again");
+	CHECK(bb_uds_close_p(u) == 0, "close the DoIP handle");
+	printf("ok   raw ISO-TP on CAN1, a UDS handle's timing, a DoIP handle retargeted and back\n");
+	return 0;
+}
+
 /* faults on CAN1's simulated ECUs, refused by name where they could not take effect, and E2E
  * Profile 1 on blobly_emb overspeed's BrakeStatus layout (blobly/sim/e2e_p01_test.v's vectors) */
 static int fault_steps(int row, int doip) {
@@ -417,6 +471,8 @@ int main(int argc, char **argv) {
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
+	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present);
+	SYM(bb_uds_get_timing); SYM(bb_uds_set_timing); SYM(bb_uds_retarget);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -469,6 +525,7 @@ int main(int argc, char **argv) {
 	if (dbc_steps(can1)) return 1;
 	if (uds_steps(can1)) return 1;
 	if (doip_steps(doip)) return 1;
+	if (isotp_steps(can1, doip)) return 1;
 	if (fault_steps(can1, doip)) return 1;
 	if (flash_steps(can1)) return 1;
 	if (gen_steps()) return 1;

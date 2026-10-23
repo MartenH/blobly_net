@@ -241,6 +241,15 @@ pub mut:
 	decode_errors u64
 }
 
+// a UDS handle's timing (udstiming.v)
+pub struct C.bb_uds_timing {
+pub mut:
+	timeout_ms        i32
+	p2_star_ms        i32
+	margin_ms         i32
+	pending_budget_ms i32
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 

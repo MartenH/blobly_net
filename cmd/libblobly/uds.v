@@ -51,10 +51,12 @@ mut:
 	rx       u32
 	ext      bool
 		// a DoIP handle's connection (a DoipLink, which keeps the 0x27 rule): where it reconnects
-	// (`car`), whether it is gone (`lost`: the next call that asks the ECU opens another), and what
-	// the idle service found (`idle_lost`, said by the next call); `mu` serialises the calls with
-	// that service (serve_idle)
+	// (`car`), the logical address its requests go to (`target`: the entity's, or a node behind it
+	// that bb_uds_retarget named, kept across a reconnect), whether it is gone (`lost`: the next call
+	// that asks the ECU opens another), and what the idle service found (`idle_lost`, said by the
+	// next call); `mu` serialises the calls with that service (serve_idle)
 	car       udsconn.Carrier
+	target    u16
 	lost      bool
 	idle_lost string
 	mu        &sync.Mutex = sync.new_mutex()
@@ -123,6 +125,7 @@ fn uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target, dflt udsconn.Ask) i32
 		rx:       t.rx
 		ext:      t.ext
 		car:      car
+		target:   car.ecu
 	}
 	closing := &hd.closing
 	cancel := &hd.cancel
@@ -196,7 +199,7 @@ fn (mut hd UdsHandle) seed_heard(req []u8, answer []u8) {
 		return
 	}
 	if mut hd.conn.ch is DoipLink {
-		hd.conn.ch.seeds[req[1] & 0x7F] = true
+		hd.conn.ch.seeds[seed_key(hd.conn.ch.rx_id, req[1] & 0x7F)] = true
 	}
 }
 
@@ -304,17 +307,14 @@ fn (mut hd UdsHandle) reconnect() ! {
 		}
 	}
 	c.stop_requested = stop
-	link := link_of(c, true)
+	mut link := link_of(c, true)
+	link.retarget(hd.target) // the target the host named; a gateway's unlock went with the old connection
 	mut cli := uds.new_client(link)
 	cli.did_lens = hd.conn.cli.did_lens.clone()
 	cli.ext_lens = hd.conn.cli.ext_lens.clone()
 	cli.stop_requested = hd.conn.cli.stop_requested
 	cli.on_exchange = hd.conn.cli.on_exchange
-	// what the ECU told the old client of its timing holds on this connection: only loosened
-	cli.timeout_ms = hd.conn.cli.timeout_ms
-	cli.loosen_p2_star(hd.conn.cli.p2_star_ms)
-	cli.margin_ms = hd.conn.cli.margin_ms
-	cli.pending_budget_ms = hd.conn.cli.pending_budget_ms
+	cli.carry_timing(hd.conn.cli)
 	hd.conn = udsconn.Conn{
 		ch:  link
 		cli: cli

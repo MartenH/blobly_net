@@ -768,6 +768,35 @@ send, however often the ECU says pending. An answer that names another request (
 repeated one, which a real bus can deliver) is skipped and the wait goes on. What is already
 queued when a request goes out is drained first, so it cannot be taken for the answer.
 
+**Timing.** Those waits are the client's attributes, in ms: `timeout_ms` (the first answer, 1000),
+`p2_star_ms` (the ECU's P2*, 5000 until a 0x10 answer names its own), `margin_ms` (added to P2*,
+1000) and `pending_budget_ms` (one request from its send, 120000). Read, each is the wait as it
+stands, a 0x10 answer's adoption included. Set, it holds from the next request on. `ch.uds()`
+takes them as keywords too. `timeout_ms` and `pending_budget_ms` are 1 to 3600000, `p2_star_ms` and
+`margin_ms` 0 to 3600000; anything else is `Refused`, and nothing changes. A 0x10 answer still
+adopts its P2* over one you set, and lengthens `timeout_ms` where its P2 needs more, so set P2*
+after the session change if the ECU announces the wrong one. What a script set holds on every
+connection the client opens. A connection opened after a stop and start begins from it again,
+without what a 0x10 answer adopted; one the library opens in place of a lost DoIP connection keeps
+the waits as they stood (P2* only where it loosens the new one's). A flash runs a session of its
+own, with its own waits.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can1 = net.channels.CAN1
+    with can1.uds(tx=0x6F0, rx=0x6F8, timeout_ms=100) as nobody:   # nothing answers there
+        try:
+            nobody.tester_present()
+        except blobly.Timeout:
+            print(nobody.last.rtt_us // 1000, "ms")    # about 100, not 1000
+    with can1.uds() as diag:
+        diag.session(0x01)                            # P2 50 ms and P2* 5000 ms, adopted
+        print(diag.timeout_ms, diag.p2_star_ms)       # 1050 5000: P2 plus the margin
+        diag.pending_budget_ms = 10_000               # no request past 10 s, however often 0x78 comes
+```
+
 **What went wrong.** A failed call raises one of these, each a `BloblyError` with the engine's
 message and its code:
 
@@ -795,6 +824,47 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
             print(e)                                            # UDS: no answer to 0x3E (timeout)
         print(nobody.last.sent, nobody.last.answer)             # True b''
 ```
+
+### Raw ISO-TP
+
+`ch.isotp(tx, rx)` opens a raw ISO-TP (ISO 15765-2) channel on a CAN row: whole messages sent on
+CAN id `tx` and received on `rx`, segmented and reassembled by the ISO-TP a `UdsClient` rides, with
+no UDS on top. It is for a protocol of your own over ISO-TP, or for a request the UDS helpers would
+never build (a malformed one) and the bytes that come back. It is the Lua `isotp.open`, opened by
+the same rule (`blobly/udsconn`).
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    with net.channels.CAN1.isotp(0x7E0, 0x7E8) as tp:   # sim-demo's SUT, with no UDS on top
+        tp.send(b"\x22\xf1\x90")
+        print(tp.recv())                    # b'b\xf1\x90BLOBLYNETV0SUT001', reassembled
+        tp.send(b"\x22\xf1")                # a DID cut short
+        print(tp.recv().hex(" "))           # 7f 22 13: incorrectMessageLengthOrInvalidFormat
+        print(tp.recv(100))                 # None: nothing more within 100 ms
+```
+
+- **Ids.** Both are given: a raw channel has no default pair. Either past 0x7FF makes both 29-bit,
+  as for `ch.uds()`. A DoIP or SOME/IP row is refused: ISO-TP is a CAN transport.
+- **What it carries.** Messages of 1 to 4095 bytes in 8-byte frames, sent FD on a row the project
+  declares CAN-FD. As a sender it honours the receiver's Flow Control (block size, STmin, WAIT); as
+  a receiver it asks for no pacing.
+- **`send(data)`** returns once the message is on the wire. A long one waits for the receiver's
+  Flow Control, 1000 ms each (N_Bs) and 120 s for the transfer, and raises `Timeout` when none came.
+  It is one call, so Ctrl-C ends it only once it returns.
+- **`recv(timeout_ms=1000)`** returns the next whole message, or `None` when none came in time
+  (`0` only looks). A transfer begun is kept, and the next `recv` goes on with it, until 1000 ms
+  pass with no Consecutive Frame (N_Cr), which raises `CarrierFailed`. Ctrl-C ends the wait within
+  100 ms.
+- **Errors.** `Refused` for a message it cannot carry (empty, past 4095 bytes) or a send on a
+  listen-only row; `CarrierFailed` for the bus or the transfer failing (a frame lost, a frame that
+  is not ISO-TP, the receiver reporting overflow).
+- **Lifecycle and threads** are a `UdsClient`'s: `with` closes it, a stop and a start let its
+  handle go and the next call opens another, calls are serialised, and `close()` from another
+  thread ends a call in progress within 20 ms.
+- **One per id pair.** Two channels on one `rx`, a `UdsClient` on it included, each answer a First
+  Frame with a Flow Control of their own.
 
 ---
 
@@ -837,6 +907,32 @@ on the connection (ISO 13400-2), so an idle client keeps it. A connection that g
 the next call's `ConnectionLost`, its `exchange` `None` since that request never went out, and a
 0x27 key is sent only on the connection that gave its level's seed: across a reconnect, or a
 stop and start, it is refused.
+
+**A node behind a gateway.** A DoIP entity may be a gateway to nodes behind it, a CAN node with no
+network of its own (ISO 13400-2 routing). `diag.retarget(address)` moves the client's requests to
+that node's logical address, and the answers it takes to the node's, on the same connection.
+`diag.retarget()` goes back to the row's `ecu_address`, and `diag.ecu` follows either way. A
+gateway may route only for a tester that unlocked it on that connection (blobly_emb's sysnode
+does), so unlock the gateway first and retarget after. A new connection (a lost one reopened, a
+stop and start) keeps the target, but not the gateway's unlock: a gateway that routes only an
+unlocked tester then refuses the node's requests with a negative acknowledgement
+(`CarrierFailed`) until it is unlocked again. A 0x27 key goes only to the target that gave its
+seed. On a CAN row a client's target is its ids, and `retarget` is refused.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    with net.channels.DoIP1.uds() as diag:
+        diag.security_access(0x01)          # unlock the gateway, on this connection
+        diag.retarget(0x2000)               # its node, on the same connection
+        try:
+            diag.read_did(0xF190)
+        except blobly.CarrierFailed as e:   # sim-demo's entity has no node behind it
+            print(e)                        # DoIP: diagnostic message negative ack (0x03)
+        diag.retarget()                     # back to the entity, the row's ecu_address
+        print(hex(diag.ecu), diag.read_did(0xF190))   # 0x1000 b'BLOBLYNETV0SUT001'
+```
 
 **What goes wrong on DoIP**, besides what any UDS call raises:
 
@@ -1124,7 +1220,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 | `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, `FaultRefused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
 | `blobly.FaultRefused` | A `Refused` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
 | `blobly.GeneratorRefused` | A `Refused` (code -1): the engine refused a generator call that could not take effect (see [Generators](#generators)). |
-| `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), a UDS request or a SOME/IP call nothing answered. A `BloblyError`, code -5. |
+| `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), a UDS request or a SOME/IP call nothing answered, a raw ISO-TP send whose receiver sent no Flow Control. A `BloblyError`, code -5. |
 | `blobly.FlashFailed` | A flash's own verdict: the bootloader's answers say the flash did not happen (see [Flashing](#13-flashing)). A `BloblyError`, code -11. |
 | `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. An `on_message` id past the width its `ext` names (29 bits when `None`). What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. A SOME/IP header field past its width, a nonzero `return_code` or a payload past one datagram on a message sent, a call's timeout under 1 ms. A flash's `base` past 32 bits, a NUL in its `seed_file`, an image past 2 GiB. |
 | `TypeError` | A timeout that is not a finite number (or `None`, which `expect` refuses too), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`, or an `ext` that is not a bool or is given beside a `Message` or `None`. A fault's or an `e2e` call's argument of the wrong type. |
@@ -1348,7 +1444,8 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.diagnostics()` | A `BusDiagnostics`: the backend's dropped, controller-error and undecodable counts since the handle opened (on PCAN, CANsub and the CAN bridge, the shared wire's). |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
-| `ch.uds(tx=None, rx=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. |
+| `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)). |
+| `ch.isotp(tx, rx)` | An `IsoTp` on this CAN row: whole messages on `tx` and `rx`, with no UDS on top ([Raw ISO-TP](#raw-iso-tp)). |
 | `ch.uds_functional(functional_id, clients, request, window_ms=1000)` | `request` once on the functional id, each of `clients` (one or more `UdsClient`s of this channel) answering on its own id: a `FunctionalReply` each, in their order. On a DoIP row the functional logical address (`None`: 0xE400) and the row's one client. `window_ms` bounds each first answer. |
 | `ch.discover(timeout_ms=1200)` | A DoIP row's entity asked who it is: a `DoipAnnouncement`; `Timeout` when none came. |
 | `ch.close()` | Lets the bus handle go, and the connections of its UDS clients; the next use opens another. |
@@ -1448,7 +1545,21 @@ A UDS client on a CAN or DoIP row (`ch.uds()`). See [UDS diagnostics](#10-uds-di
 | `diag.raw(request)` | Sends `request`; returns the positive answer, its SID included. |
 | `diag.raw_suppressed(request)` | Sends `request` with suppress-positive-response set on its sub-function: silence is success, a refusal raises. Returns whether a positive answer came anyway. |
 | `diag.last` | The last exchange, an `Exchange`, or `None` before the first, after a stop let the connection go, and after a functional request (its `FunctionalReply` is the answer). |
+| `diag.timeout_ms`, `diag.p2_star_ms`, `diag.margin_ms`, `diag.pending_budget_ms` | Its waits in ms, as they stand (1000, 5000, 1000, 120000 until set or a 0x10 answer adopts): the first answer, the ECU's P2* after each 0x78 plus the margin, one request from its send. Settable, from the next request on, and held on every connection the client opens ([UDS diagnostics](#10-uds-diagnostics)). |
+| `diag.retarget(address=None)` | DoIP: requests go to logical address `address`, a node behind the gateway the entity is, on the same connection; `None` goes back to the row's `ecu_address`. Refused on a CAN row ([DoIP](#11-doip)). |
 | `diag.close()`, `with diag:` | Lets the connection go for good; a later call refuses. |
+
+### `IsoTp`
+
+A raw ISO-TP channel on a CAN row (`ch.isotp(tx, rx)`). See [Raw ISO-TP](#raw-iso-tp).
+
+| member | what |
+|---|---|
+| `tp.channel` | The `Channel` it is on. |
+| `tp.tx`, `tp.rx`, `tp.ext` | The CAN ids it sends and receives on, and whether they are 29-bit. |
+| `tp.send(data)` | Sends one whole message (1 to 4095 bytes); returns once it is on the wire. `Timeout` when the receiver sent no Flow Control. |
+| `tp.recv(timeout_ms=1000)` | The next whole message on `rx`, or `None` when none came within `timeout_ms` (`0` only looks). Ctrl-C ends the wait within 100 ms. |
+| `tp.close()`, `with tp:` | Lets the handle go for good; a later call refuses. |
 
 ### `Exchange`
 
@@ -1583,8 +1694,8 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 ## 18. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
-loop, bus health and metrics, fault injection, generator control, the E2E Profile 1 helpers, UDS over CAN and DoIP, DoIP
-discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+loop, bus health and metrics, fault injection, generator control, the E2E Profile 1 helpers, UDS over CAN and DoIP
+(its timing, and a node behind a DoIP gateway), raw ISO-TP, DoIP discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
 - UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
@@ -1605,7 +1716,8 @@ discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and
 - Background cyclic senders and a session keep-alive (one owner thread per channel).
 - Bus metrics are here ([Bus metrics](#bus-metrics)): load, and the dropped, error and
   undecodable counters, during a run.
-- Raw ISO-TP; UDS timing and P2 configuration; the DoIP gateway retarget.
+- Raw ISO-TP, UDS timing and the DoIP gateway retarget are here ([Raw ISO-TP](#raw-iso-tp),
+  [UDS diagnostics](#10-uds-diagnostics), [DoIP](#11-doip)).
 - Targets by node name from `system.toml`, and the DID codec from `ecu.toml`.
 - Opening an interface that is not a project row, interface discovery, Vector channel
   assignment.
