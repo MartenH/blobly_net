@@ -65,8 +65,6 @@ def _image(image) -> bytes:
 def _text(name: str, v) -> bytes | None:
     if v is None:
         return None
-    if isinstance(v, os.PathLike):
-        v = os.fspath(v)
     if not isinstance(v, str) or "\0" in v:
         raise TypeError(f"{name} must be a string, not {v!r}")
     return v.encode()
@@ -92,7 +90,8 @@ def program(target, image, *, base: int | None = None, sw_version: int | None = 
     A step the bootloader refused raises NegativeResponse (its NRC), one it did not answer
     Timeout; FlashFailed when its own answers say the flash did not happen (the check routine
     failing: the image is not marked valid). A `progress` that raises stops the transfer before
-    the check and its exception is raised; so does Ctrl-C, within 100 ms."""
+    the check and its exception is raised; so does Ctrl-C, within 100 ms once the session runs
+    (opening a Channel's connection first is bounded as Channel.uds()'s open is)."""
     if isinstance(target, UdsClient):
         if tx is not None or rx is not None:
             raise Refused("flash.program: a UdsClient brings its own ids; drop tx/rx")
@@ -110,7 +109,7 @@ def _program(client, image, base, sw_version, auth, seed, seed_file, progress, q
     if not isinstance(auth, bool) or not isinstance(quiet, bool):
         raise TypeError("flash.program: auth and quiet are True or False")
     img = _image(image)
-    if len(img) > 0x7FFF_FFFF:
+    if len(img) > 0x7FFF_FFFF - 64:  # with the header a raw image gets, as the report counts it
         raise ValueError(f"flash.program: an image of {len(img)} bytes, past what the C ABI carries")
     lib = _lib.lib()
     opts = _lib.BbFlashOpts()
@@ -120,7 +119,8 @@ def _program(client, image, base, sw_version, auth, seed, seed_file, progress, q
     if sw_version is not None:
         opts.sw_version = _u32("sw_version", sw_version)
     opts.auth, opts.quiet = int(auth), int(quiet)
-    opts.seed, opts.seed_file = _text("seed", seed), _text("seed_file", seed_file)
+    opts.seed = _text("seed", seed)
+    opts.seed_file = None if seed_file is None else os.fsencode(seed_file)
     # the engine calls these on the flashing thread, and this thread reports: a note is queued, a
     # progress call waits until it was made here, so a progress that raises (cancelling) stops the
     # transfer before the next block
@@ -176,7 +176,6 @@ def _program(client, image, base, sw_version, auth, seed, seed_file, progress, q
             events.put(("end",))
         t = threading.Thread(target=run, name="blobly-flash", daemon=True)
         try:
-            client._flashing = True  # a call on it from `progress` would wait for the session: refused
             t.start()
             _sliced(report, -1)
         except BaseException:  # Ctrl-C, or progress raising: stop before the check, then say it
@@ -185,8 +184,6 @@ def _program(client, image, base, sw_version, auth, seed, seed_file, progress, q
                 lib.bb_flash_cancel(h)
                 t.join(0.02)
             raise
-        finally:
-            client._flashing = False
         t.join()
     if "error" in box:
         raise box["error"]

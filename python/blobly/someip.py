@@ -36,7 +36,8 @@ class SomeipMessage:
 
     A message heard has every field: `type` one of "request", "notification", "response",
     "error" (or "type nn" for another code), `return_code`, `at_ms` (ms into the window it was
-    heard in; for a call's answer, ms after the send) and `source`, the "host:port" it came from."""
+    heard in; for a call's answer, ms after the send), `source`, the "host:port" it came from, and
+    `protocol`, the protocol version (0x01 is the only one SOME/IP defines)."""
     service: int
     method: int
     payload: bytes = b""
@@ -47,6 +48,7 @@ class SomeipMessage:
     return_code: int = 0
     at_ms: int | None = None
     source: str | None = None
+    protocol: int | None = None
 
     @property
     def event(self) -> bool:
@@ -93,7 +95,7 @@ def _out(m: SomeipMessage, keep: list) -> _lib.BbSomeipOut:
 
 def _message(m: _lib.BbSomeipMsg, payload: bytes) -> SomeipMessage:
     return SomeipMessage(m.service, m.method, payload, _NAMES.get(m.msg_type, f"type {m.msg_type:02x}"),
-                         m.iface, m.client, m.session, m.return_code, m.at_ms, _lib.text(m.source))
+                         m.iface, m.client, m.session, m.return_code, m.at_ms, _lib.text(m.source), m.protocol)
 
 
 def _capture(lib, c: int) -> SomeipHeard:

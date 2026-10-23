@@ -393,6 +393,9 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) !Repo
 		if err is uds.NegativeResponse {
 			return step_error('ecu reset', err)
 		}
+		if opts.stop != unsafe { nil } && opts.stop() {
+			return failed('ecu reset: stopped before it was sent; the image is marked valid')
+		}
 		sink.note('ECU reset sent (response lost to the reset — normal)')
 		return rep
 	}

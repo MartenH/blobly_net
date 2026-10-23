@@ -135,7 +135,13 @@ pub fn bb_flash_program(u i32, image &u8, n i32, opts &C.bb_flash_opts, out &C.b
 			auth_seed:  seed
 			stop:        hd.stop
 			on_exchange: hd.conn.cli.on_exchange // the handle's last exchange is the session's
-		}, mut sink) or { return cancelled(err) }
+		}, mut sink) or {
+			e := cancelled(err)
+			if e is flash.Failed && stdatomic.load_i64(cancel) != 0 {
+				hd.mark_lost() // a DoIP read it cut may have left the stream mid-message
+			}
+			return e
+		}
 		unsafe {
 			out.bytes = i32(rep.bytes)
 			out.blocks = i32(rep.blocks)

@@ -191,7 +191,8 @@ class BbSomeipMsg(ctypes.Structure):
     """bb_someip_msg, field for field."""
     _fields_ = [("service", ctypes.c_uint16), ("method", ctypes.c_uint16), ("client", ctypes.c_uint16),
                 ("session", ctypes.c_uint16), ("iface", ctypes.c_uint8), ("msg_type", ctypes.c_uint8),
-                ("return_code", ctypes.c_uint8), ("payload_len", ctypes.c_int32), ("at_ms", ctypes.c_int64),
+                ("return_code", ctypes.c_uint8), ("protocol", ctypes.c_uint8), ("payload_len", ctypes.c_int32),
+                ("at_ms", ctypes.c_int64),
                 ("source", ctypes.c_char * BB_SOMEIP_FROM_MAX)]
 
 
@@ -412,6 +413,9 @@ class _Attachment:
 def lib():
     """The loaded library, bb_init done; refused from any thread but the main one the first time."""
     global _lib, loaded_path
+    if getattr(_tls, "in_progress", False):
+        raise BloblyError("a call into blobly from a flash's progress callback: the flash holds the "
+                          "engine until it ends", BB_ERR_STATE)
     with _lock:
         if _lib is None:
             # the thread rule below rests on CPython clearing a thread's local storage ON that

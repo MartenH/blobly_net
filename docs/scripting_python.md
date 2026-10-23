@@ -855,7 +855,8 @@ key is 0x35 at `send proof`, and nothing is erased); one it did not answer `Time
 `blobly.FlashFailed` (code -11) is the session's own verdict: an erase or check routine that
 failed (the image is not marked valid), a malformed download answer. A `progress` that raises
 stops the transfer before the check, so the image is never marked valid, and its exception is
-raised; Ctrl-C does the same within 100 ms. The client is usable again after either.
+raised; Ctrl-C does the same within 100 ms once the session runs (opening a `Channel`'s connection
+first is bounded as `ch.uds()`'s open is). The client is usable again after either.
 
 **`flash.BootSim(channel, tx=None, rx=None)`** serves a CAN row of the started project as a
 blobly_emb bootloader, hearing requests on `tx` and answering on `rx` (the tester's ids, 0x7B0 /
@@ -1088,7 +1089,7 @@ the package is named in this section.
 ### `SomeipMessage`
 
 `blobly.SomeipMessage(service, method, payload=b"", type=None, iface=None, client=None,
-session=None, return_code=0, at_ms=None, source=None)`: a SOME/IP message, its header's fields and
+session=None, return_code=0, at_ms=None, source=None, protocol=None)`: a SOME/IP message, its header's fields and
 its payload. A value: frozen, compared field by field.
 
 | member | what |
@@ -1101,6 +1102,7 @@ its payload. A value: frozen, compared field by field.
 | `m.return_code` | The return code (an ERROR's says why). |
 | `m.at_ms` | Heard: ms into the window; a call's answer, ms after the send. `None` on one not heard. |
 | `m.source` | Heard: the `"host:port"` it came from. |
+| `m.protocol` | Heard: the protocol version (0x01 is the only one SOME/IP defines). |
 | `m.event` | Whether `method` is an event id (bit 15 set). |
 
 ### `SomeipHeard`

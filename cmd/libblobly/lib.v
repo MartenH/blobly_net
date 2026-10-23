@@ -156,6 +156,7 @@ pub mut:
 	iface       u8
 	msg_type    u8
 	return_code u8
+	protocol    u8
 	payload_len i32
 	at_ms       i64
 	from        [64]u8

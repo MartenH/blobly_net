@@ -197,6 +197,7 @@ fn (mut b BootSim) answer(req []u8, public ed.PublicKey) []u8 {
 				}
 				b.erased = true
 				b.downloading = false
+				b.got = []u8{} // the slot is blank
 				b.rep.erases++
 				return [u8(0x71), 0x01, 0xFF, 0x00, 0x00]
 			}

@@ -230,7 +230,6 @@ class UdsClient:
         self._lock = threading.RLock()  # re-entered: security_access holds it across two calls
         self._in_key_fn = False  # security_access is inside its key_fn
         self._opened = False  # a connection was opened before the current one
-        self._flashing = False  # a flash.program session holds it
         with _lib.state_lock:
             self._open()
 
@@ -266,8 +265,6 @@ class UdsClient:
         self._opened = True
 
     def _handle(self) -> int:
-        if self._flashing:
-            raise BloblyError(f"{self!r} is flashing: its session holds it until the flash ends", _lib.BB_ERR_STATE)
         with _lib.state_lock:
             _close_orphans()
             if self._closed:

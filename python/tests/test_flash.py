@@ -133,22 +133,16 @@ class TestFlash(unittest.TestCase):
         b = self.boot.stop()
         self.assertEqual((b.erases, b.checks), (2, 1), "the stopped transfer was never checked")
 
-    def test_a_progress_that_calls_the_flashing_client_is_refused(self):
-        with self.can1.uds(0x7B0, 0x7B8) as diag:
-            with self.assertRaises(blobly.BloblyError) as e:
-                flash.program(diag, bytes(3000), progress=lambda done, total: diag.tester_present(), quiet=True)
-            self.assertIn("is flashing", str(e.exception))
-            self.assertEqual(flash.program(diag, bytes(100), quiet=True).auth, "authenticated")
-        self.assertEqual(self.boot.stop().checks, 1, "the refused one stopped before its check")
-
     def test_a_progress_may_not_call_into_blobly(self):
         with self.can1.uds(0x7B0, 0x7B8) as diag:
-            for call in (lambda: diag.last, diag.close, self.net.stop, self.can1.close):
+            for call in (diag.tester_present, lambda: diag.last, diag.close, self.net.stop, self.can1.close,
+                         lambda: self.can1.recv(None)):
                 with self.subTest(call), self.assertRaises(blobly.BloblyError) as e:
                     flash.program(diag, bytes(300), progress=lambda done, total: call(), quiet=True)
                 self.assertEqual(e.exception.code, _lib.BB_ERR_STATE)
+            self.assertEqual(flash.program(diag, bytes(100), quiet=True).auth, "authenticated")
         self.assertTrue(self.net.started)
-        self.assertEqual(self.boot.stop().checks, 0)
+        self.assertEqual(self.boot.stop().checks, 1, "only the flash nothing interrupted was checked")
 
     def test_bad_arguments_are_named(self):
         with self.can1.uds(0x7B0, 0x7B8) as diag:

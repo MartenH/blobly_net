@@ -225,6 +225,7 @@ typedef struct bb_someip_msg {
 	uint8_t  iface;        /* the interface version */
 	uint8_t  msg_type;     /* 0x00 request, 0x02 notification, 0x80 response, 0x81 error */
 	uint8_t  return_code;
+	uint8_t  protocol;     /* the protocol version (0x01 is the only one SOME/IP defines) */
 	int32_t  payload_len;
 	int64_t  at_ms;        /* ms into the window it was heard in; a call's answer, ms after the send */
 	char     from[BB_SOMEIP_FROM_MAX]; /* where it came from, "host:port"; a longer one is cut */

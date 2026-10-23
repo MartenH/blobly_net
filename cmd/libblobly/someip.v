@@ -197,6 +197,7 @@ pub fn bb_someip_message(c i32, i i32, out &C.bb_someip_msg, buf &u8, cap i32) i
 		out.iface = h.interface_version
 		out.msg_type = h.msg_type
 		out.return_code = h.return_code
+		out.protocol = h.protocol_version
 		out.payload_len = i32(m.payload.len)
 		out.at_ms = m.at_ms
 		max := int(C.BB_SOMEIP_FROM_MAX) - 1
