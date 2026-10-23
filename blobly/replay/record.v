@@ -47,7 +47,7 @@ mut:
 	mu       sync.Mutex
 	f        os.File
 	open     bool
-	out      chan Chunk = chan Chunk{cap: 4096} // flushed text, for the writer
+	out      chan Chunk = chan Chunk{cap: 1024} // flushed text, for the writer
 	writing  bool // the writer runs: it closes the file when it ends
 	rings    []wiretap.Ring // per target: its sends noted, waiting to come back
 	seq      u64
@@ -347,6 +347,7 @@ fn (mut r Recorder) write_out() {
 	r.f.close()
 	r.mu.lock()
 	r.writing = false
+	r.out = chan Chunk{} // its slots let go: a stopped recorder's handle is kept for its counts
 	r.mu.unlock()
 	r.release() // the file is free only once it is closed
 }
@@ -444,6 +445,14 @@ fn (mut r Recorder) take(i int, t Target, f transport.CanFrame) {
 	// and its times rise with it, across wires whose receive stamps differ (the trace's rule)
 	t_s := f64(time.sys_mono_now()) / 1e9
 	r.missed(r.rings[i].expire(at).len)
+	if f.data.len > canlog.max_row_payload {
+		// no candump line can carry it (a software bus carries what it is handed): said, not written
+		if r.err == '' {
+			r.err = 'record ${t.name}: a frame of ${f.data.len} bytes (id 0x${f.id:X}) cannot be written to a candump line'
+		}
+		r.rings[i].claim(i, t.iface, f, at)
+		return
+	}
 	mut ours := false
 	if _ := r.rings[i].claim(i, t.iface, f, at) {
 		ours = true

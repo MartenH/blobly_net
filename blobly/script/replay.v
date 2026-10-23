@@ -3,6 +3,7 @@
 // the same).
 module script
 
+import os
 import time
 import blobly.lua
 import blobly.replay
@@ -53,6 +54,15 @@ pub fn (mut env Env) replays_ended() bool {
 	return true
 }
 
+// script_file is a path a script names, relative to its own directory, joined but not normalised:
+// `link/..` is the link target's parent, as the filesystem walks it, not the link's.
+fn (env &Env) script_file(p string) string {
+	if env.script_path == '' || os.is_abs_path(p) {
+		return p
+	}
+	return os.dir(env.script_path) + os.path_separator + p
+}
+
 fn (env &Env) rows_named(l lua.State, what string, first int) ![]replay.Row {
 	mut rows := []replay.Row{}
 	for a in first .. l.nargs() + 1 {
@@ -83,7 +93,7 @@ fn l_replay_start(l lua.State) i32 {
 		return l.fail('replay.start: speed ${l.arg_num(2)} — a rate above 0')
 	}
 	mut s := replay.start_rows(rows,
-		source:  if l.arg_is_nil(1) { '' } else { env.script_relative(l.arg_str(1)) }
+		source:  if l.arg_is_nil(1) { '' } else { env.script_file(l.arg_str(1)) }
 		speed:   if l.arg_is_nil(2) { 0.0 } else { l.arg_num(2) }
 		repeat:  if l.arg_is_nil(3) { i8(-1) } else { i8(if l.arg_bool(3) { 1 } else { 0 }) }
 		paused:  l.arg_bool(4)
@@ -208,7 +218,7 @@ fn l_record_start(l lua.State) i32 {
 	if l.arg_str(1).contains_u8(0) {
 		return l.fail('record.start: a path cannot carry a NUL')
 	}
-	mut r := replay.record(env.script_relative(l.arg_str(1)), rows.map(replay.Target{
+	mut r := replay.record(env.script_file(l.arg_str(1)), rows.map(replay.Target{
 		name:  it.name
 		iface: it.iface
 	})) or { return l.fail(err.msg()) }

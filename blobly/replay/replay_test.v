@@ -202,6 +202,25 @@ fn test_a_burst_of_our_frames_is_ours_to_the_last() {
 	assert c.frames == 4000 && c.ours == 4000 && c.missed == 0, c.str()
 }
 
+fn test_a_frame_no_candump_line_carries_is_said() {
+	path := os.join_path(os.temp_dir(), 'replay_long_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	mut r := record(path, [Target{
+		name:  'L'
+		iface: 'inproc:RPT15'
+	}]) or { panic(err) }
+	mut tx := transport.open('inproc:RPT15') or { panic(err) }
+	tx.send(transport.CanFrame{ id: 0x123, data: []u8{len: 65} }) or { panic(err) }
+	tx.close()
+	r.stop() or {
+		assert err.msg().contains('65 bytes')
+		return
+	}
+	assert false, 'a frame the file cannot hold is not a clean recording'
+}
+
 fn test_a_replay_is_recorded_as_ours() {
 	path := os.join_path(os.temp_dir(), 'replay_rec2_${os.getpid()}.log')
 	defer {
