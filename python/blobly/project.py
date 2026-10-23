@@ -8,12 +8,14 @@ import os
 import sys
 import warnings
 import weakref
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import Generic, Literal, Protocol, Self, TypeVar
 
 from . import _lib
 from ._lib import BloblyError, Timeout
 from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
-from .doip import discover
-from .uds import UdsClient, _close_orphans, functional
+from .doip import DoipAnnouncement, discover
+from .uds import FunctionalReply, UdsClient, _close_orphans, functional
 from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import listed as _listed_generators
@@ -28,35 +30,45 @@ class Frame:
     alike, and none is changed once made; `t_ms` is not part of the value, so a received frame
     equals the frame built from its content."""
     __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi", "t_ms")
+    id: int
+    data: bytes
+    length: int
+    ext: bool
+    fd: bool
+    brs: bool
+    rtr: bool
+    esi: bool
+    t_ms: float | None
 
-    def __init__(self, id, data=b"", ext=False, fd=False, brs=False, rtr=False, esi=False, length=None,
-                 t_ms=None):
+    def __init__(self, id: int, data: bytes | Iterable[int] = b"", ext: bool = False, fd: bool = False,
+                 brs: bool = False, rtr: bool = False, esi: bool = False, length: int | None = None,
+                 t_ms: float | None = None) -> None:
         data = bytes(data)
         _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi, t_ms))
 
-    def __setattr__(self, name, value):
+    def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError(f"a Frame is a value: make another rather than set {name}")
 
-    def __delattr__(self, name):
+    def __delattr__(self, name: str) -> None:
         raise AttributeError(f"a Frame is a value: {name} cannot be deleted")
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: object) -> None:
         """copy and pickle restore a frame's slots (a subclass's too) past __setattr__."""
         attrs, slots = state if isinstance(state, tuple) else (state, None)
         object.__setattr__(self, "t_ms", None)  # a frame pickled before frames carried a time
         for k, v in {**(attrs or {}), **(slots or {})}.items():
             object.__setattr__(self, k, v)
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         return isinstance(other, Frame) and self._key() == other._key()
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self._key())
 
     def _key(self):
         return tuple(getattr(self, k) for k in _IDENTITY)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         flags = "".join(f" {k}" for k in ("ext", "fd", "brs", "rtr", "esi") if getattr(self, k))
         return f"Frame(0x{self.id:X} [{self.data.hex(' ').upper()}]{flags})"
 
@@ -70,7 +82,7 @@ def _fill(frame, fields):
         object.__setattr__(frame, k, v)
 
 
-def frame_of(f, received=False):
+def frame_of(f: _lib.BbFrame, received: bool = False) -> Frame:
     """A Frame from a bb_frame: a remote frame's len is the length it asks for, with no payload;
     a received one carries its t_ns as t_ms."""
     data = b"" if f.rtr else bytes(f.data[:f.len])
@@ -142,8 +154,9 @@ class Channel:
     belongs to its project: after another project's load it refuses, rather than reach whatever
     row now has its index, and a reload of its own project keeps it if its row is still there.
     Native state calls (open, close) run under _lib.state_lock, so threads may share a project."""
+    name: str
 
-    def __init__(self, project, index, name, gen):
+    def __init__(self, project: "Project", index: int, name: str, gen: int) -> None:
         self._project, self._index, self.name, self._gen = project, index, name, gen
         self._h = None
         self._messages, self._messages_run = None, None
@@ -156,7 +169,7 @@ class Channel:
                               "from net.channels again", _lib.BB_ERR_STATE)
 
     @property
-    def iface(self):
+    def iface(self) -> str:
         """What the row opens: after start, as the run has it (a hosted DoIP row moves onto a port
         this process could bind)."""
         lib = _lib.lib()
@@ -165,7 +178,7 @@ class Channel:
             return _lib.text(lib.bb_channel_iface(self._index))
 
     @property
-    def kind(self):
+    def kind(self) -> str:
         """"can", "doip" or "someip": only a CAN row has frames to send and receive."""
         lib = _lib.lib()
         with _lib.state_lock:
@@ -195,7 +208,8 @@ class Channel:
                 self._h = _lib.check(lib.bb_bus_open(lib.bb_channel_iface(self._index)))
             return self._h
 
-    def send(self, id, data=b"", ext=False, fd=False, brs=False):
+    def send(self, id: int, data: bytes | Iterable[int] = b"", ext: bool = False, fd: bool = False,
+             brs: bool = False) -> None:
         """Puts a frame on the wire. fd/brs left False let the wire's declared format decide."""
         self._send_on(self._handle(), _bb_frame(self.name, id, data, ext, fd, brs))
 
@@ -210,7 +224,7 @@ class Channel:
         h = self._handle()  # one handle for the whole wait: a close or stop meanwhile ends it
         return _sliced(lambda part: self._receive(part, h)[0], ms)
 
-    def look(self):
+    def look(self) -> tuple[Frame | None, bool]:
         """One look at what is already queued: (frame or None, spent). `spent` says the look
         stopped at its bound with records still queued behind it, so a poller looks again at once
         rather than sleeping."""
@@ -384,7 +398,7 @@ class Channel:
             raise BloblyError(f"{self.name}: the project was stopped or restarted during the wait",
                               _lib.BB_ERR_STATE)
 
-    def health(self):
+    def health(self) -> str:
         """The controller's ladder now: "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF", or ""
         where the backend cannot say (the software buses)."""
         lib = _lib.lib()
@@ -402,7 +416,7 @@ class Channel:
         return diagnostics_of(self._handle())
 
     @property
-    def messages(self):
+    def messages(self) -> "Messages":
         """The messages of this row's databases, as the run loaded them (start; the merge of its
         `databases:` its simulated ECUs encode by): `ch.messages.Powertrain`, `ch.messages["X"]`,
         by position, iterated in the database's order, completed by dir(). Re-read at each start,
@@ -428,7 +442,7 @@ class Channel:
             self._messages, self._messages_run = Messages(rows), run
             return self._messages
 
-    def decode(self, frame):
+    def decode(self, frame: Frame) -> dict[str, float] | None:
         """{signal: physical value} for what `frame` says in this row's databases — the message
         of its id and kind (else, for an extended frame, one of its J1939 PGN), each signal it
         carries (a multiplexed signal its switch does not select is left out, and so is one whose
@@ -459,7 +473,7 @@ class Channel:
             msg = msgs[m.value]
             return msg, [(s, values[i] if active[i] else None) for i, s in enumerate(msg.signals)]
 
-    def uds(self, tx=None, rx=None):
+    def uds(self, tx: int | None = None, rx: int | None = None) -> UdsClient:
         """A UdsClient on this row, by the rule the Lua uds.open opens by, while the project is
         started. On a CAN row UDS requests go out on CAN id `tx` and answers come back on `rx`:
         None is the default pair 0x7E0 / 0x7E8, 0 is an id like any other, and either id past
@@ -469,7 +483,8 @@ class Channel:
         (ISO 13400-2: one tester address, one connection) — a second is refused while it is open."""
         return UdsClient(self, tx, rx)
 
-    def uds_functional(self, functional_id, clients, request, window_ms=1000):
+    def uds_functional(self, functional_id: int | None, clients: Sequence[UdsClient], request: bytes,
+                       window_ms: int = 1000) -> list[FunctionalReply]:
         """UDS functional addressing (ISO 14229-2) on this row, as the Lua uds.functional. On a
         CAN row `request` goes out ONCE, a Single Frame (7 bytes at most) on CAN id
         `functional_id`, and each of `clients` — UdsClients of this channel — answers on its own
@@ -480,14 +495,14 @@ class Channel:
         responsePending is waited for its P2* after it."""
         return functional(self, functional_id, clients, request, window_ms)
 
-    def discover(self, timeout_ms=1200):
+    def discover(self, timeout_ms: float = 1200) -> DoipAnnouncement:
         """A DoIP row's entity asked who it is (ISO 13400-2 vehicle identification, the Lua
         doip.discover): a DoipAnnouncement — what it ANNOUNCES, which need not be what it serves
         at DID 0xF190. Timeout when no answer came within timeout_ms; refused on a CAN or
         SOME/IP row."""
         return discover(self, timeout_ms)
 
-    def close(self):
+    def close(self) -> None:
         """Lets the handle go, and the connections of its UDS clients; the next use opens another."""
         lib = _lib.lib()
         with _lib.state_lock:
@@ -498,22 +513,29 @@ class Channel:
                 h, self._h = self._h, None
                 _lib.check(lib.bb_bus_close(h))
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Channel {self.name}>"
 
 
-class Named:
+class _HasName(Protocol):
+    name: str
+
+
+_T = TypeVar("_T", bound=_HasName)
+
+
+class Named(Generic[_T]):
     """Items by name: `c.X`, `c["X-1"]`, `c[0]` (by position), iteration in order, and dir() for
     completion. A name two items answer to is refused, and such items are reached by position."""
     _noun = "item"
 
-    def __init__(self, items):
+    def __init__(self, items: list[_T]) -> None:
         self._by_name = {}
         for c in items:
             self._by_name.setdefault(c.name, []).append(c)
         self._order = items
 
-    def _one(self, name):
+    def _one(self, name: str) -> _T | None:
         rows = self.__dict__.get("_by_name", {}).get(name)
         if not rows:
             return None
@@ -522,14 +544,14 @@ class Named:
                               f"position ([i]) or rename one")
         return rows[0]
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> _T:
         c = self._one(name)
         if c is None:  # also for an object copy or pickle is still building
             raise AttributeError(f"no {self._noun} named {name!r}; there are: "
                                  + ", ".join(self.__dict__.get("_by_name", {})))
         return c
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: int | str) -> _T:
         if isinstance(key, int):
             return self._order[key]
         c = self._one(key)
@@ -537,30 +559,31 @@ class Named:
             raise KeyError(f"no {self._noun} named {key!r}; there are: " + ", ".join(self._by_name))
         return c
 
-    def __dir__(self):
+    def __dir__(self) -> list[str]:
         return [n for n, rows in self._by_name.items() if n.isidentifier() and len(rows) == 1] + ["keys"]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[_T]:
         return iter(self._order)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._order)
 
-    def keys(self):
+    def keys(self) -> list[str]:
+        """The names, in order, each once."""
         return list(self._by_name)
 
 
-class Channels(Named):
+class Channels(Named[Channel]):
     """The project's enabled rows: `net.channels.CAN1`, `net.channels["CAN-1"]`, `net.channels[0]`.
     Names are not unique in a project: two rows of one name are reached by position."""
     _noun = "enabled channel"
 
 
-class Messages(Named):
+class Messages(Named["Message"]):
     """A row's messages (Channel.messages)."""
     _noun = "message"
 
-    def __init__(self, items):
+    def __init__(self, items: list["Message"]) -> None:
         super().__init__(items)
         self._most = max((m._count for m in items), default=0)
         # bb_decode's out arrays, as wide as the widest message, made once
@@ -568,7 +591,7 @@ class Messages(Named):
         self._decoded = ((ctypes.c_double * n)(), (ctypes.c_uint8 * n)(), ctypes.c_int(-1))
 
 
-class Signals(Named):
+class Signals(Named["Signal"]):
     """A message's signals (Message.signals)."""
     _noun = "signal"
 
@@ -584,8 +607,23 @@ class Signal:
     __slots__ = ("name", "start_bit", "length", "byte_order", "signed", "factor", "offset",
                  "minimum", "maximum", "unit", "multiplexor", "multiplexed", "mux_value", "labels",
                  "raw_labels")
+    name: str
+    start_bit: int
+    length: int
+    byte_order: Literal["little", "big"]
+    signed: bool
+    factor: float
+    offset: float
+    minimum: float
+    maximum: float
+    unit: str
+    multiplexor: bool
+    multiplexed: bool
+    mux_value: int
+    labels: dict[float, str]
+    raw_labels: dict[int, str]
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         unit = f" {self.unit!r}" if self.unit else ""
         return (f"<Signal {self.name} {self.start_bit}|{self.length} {self.byte_order} "
                 f"x{self.factor:g}{self.offset:+g} [{self.minimum:g}..{self.maximum:g}]{unit}>")
@@ -596,8 +634,14 @@ class Message:
     `signals`; encode / send by signal name. It belongs to the run that listed it: after a stop
     and a start it goes on working while its row's database still has it at its position, and
     refuses otherwise."""
+    name: str
+    id: int
+    ext: bool
+    dlc: int
+    j1939: bool
+    channel: Channel
 
-    def __init__(self, channel, index, name):
+    def __init__(self, channel: Channel, index: int, name: str) -> None:
         self.channel, self._index, self.name = channel, index, name
         self._signals = None
 
@@ -613,7 +657,8 @@ class Message:
                               "take it from channel.messages again", _lib.BB_ERR_STATE)
 
     @property
-    def signals(self):
+    def signals(self) -> Signals:
+        """Its signals, as its database defines them."""
         lib = _lib.lib()
         with _lib.state_lock:
             self._live()
@@ -641,7 +686,7 @@ class Message:
                 self._signals = Signals(rows)
             return self._signals
 
-    def encode(self, /, **signals):
+    def encode(self, /, **signals: float) -> Frame:
         """The Frame this message sends with the named signals at these physical values and every
         other at raw 0, as a Lua script's bus.send_message encodes it: a name the message does not
         have is refused; a value past what the signal's width holds is clamped to the nearer end.
@@ -664,7 +709,7 @@ class Message:
                                      (ctypes.c_double * n)(*values), ctypes.byref(f)))
         return frame_of(f)
 
-    def send(self, /, **signals):
+    def send(self, /, **signals: float) -> Frame:
         """Encodes this message (encode) and sends it on its channel; returns the encoded Frame. Its
         fd/brs are unset, so what goes out takes the wire's declared format. Encoded and the
         channel's handle taken under one hold of the state lock, so a stop and start on another
@@ -675,7 +720,7 @@ class Message:
         self.channel._send_on(h, _bb_frame(self.channel.name, f.id, f.data, f.ext))
         return f
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"
 
 
@@ -697,8 +742,10 @@ class Project(EventLoop, Faults):
     process, and one thread drives load, start and stop (bb.h); send and recv may run on others.
     Faults (fault, clear_fault) make its simulated ECUs misbehave on purpose; `generators` fires and
     cycles its generators."""
+    path: str | bytes
+    started: bool
 
-    def __init__(self, path):
+    def __init__(self, path: "str | bytes | os.PathLike[str] | os.PathLike[bytes]") -> None:
         super().__init__()
         p = os.fspath(path)
         if (b"\0" if isinstance(p, bytes) else "\0") in p:
@@ -710,7 +757,7 @@ class Project(EventLoop, Faults):
         self._rr = 0
         self._gens, self._gens_run = None, None  # the generators, as the run of _gens_run lists them
 
-    def load(self):
+    def load(self) -> Self:
         """Reads the project into the library, which holds one load at a time: another project's
         channels refuse from here on. A reload of this project KEEPS each Channel whose row is
         still at its position under its name — so a variable, a timer's closure and a handler all
@@ -763,7 +810,7 @@ class Project(EventLoop, Faults):
         self._on_health = [h for h in self._on_health if kept(h.channel)]
         return sorted(set(gone))
 
-    def start(self):
+    def start(self) -> Self:
         """Starts this project — reloaded first if the library holds another load now (see load)."""
         lib = _lib.lib()
         with _lib.state_lock:
@@ -775,7 +822,7 @@ class Project(EventLoop, Faults):
             self.started = True
         return self
 
-    def stop(self):
+    def stop(self) -> bool:
         """Ends the run. True when the process is free for the next start; False when a loop
         outlived the stop's bound (a driver call that will not return) — blobly.wait_released
         waits for it."""
@@ -795,10 +842,10 @@ class Project(EventLoop, Faults):
             # until blobly.wait_released says it has let go
             return _lib.check(lib.bb_stop()) != _lib.BB_RELEASING
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self.start()
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> Literal[False]:
         if not self.stop():
             warnings.warn(f"{self.path}: a loop outlived the stop's bound and still holds the "
                           "process; blobly.wait_released() waits for it before the next start",
@@ -806,7 +853,8 @@ class Project(EventLoop, Faults):
         return False
 
     @property
-    def channels(self):
+    def channels(self) -> Channels:
+        """The enabled rows; BloblyError before load()."""
         if self._channels is None:
             raise BloblyError("the project is not loaded", _lib.BB_ERR_STATE)
         return self._channels
@@ -847,5 +895,5 @@ class Project(EventLoop, Faults):
         got, self._rr = wait_on(channels, timeout_ms, self._rr, monotonic_ms, sleep_ms)
         return got
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Project {self.path}{' started' if self.started else ''}>"

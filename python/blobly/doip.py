@@ -3,10 +3,14 @@ a channel's entity asked who it is, and the announcements entities send unasked,
 window. UDS over a DoIP channel is its UdsClient (Channel.uds)."""
 import ctypes
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from . import _lib
 from ._lib import BloblyError
 from .events import _on_thread
+
+if TYPE_CHECKING:
+    from .project import Channel
 
 # room for every announcement a window hears in one call; one past it is said, not dropped silently
 _CAP = 1024
@@ -48,7 +52,7 @@ def _started(who: str, channel) -> int:
     return _lib.state["run"]
 
 
-def discover(channel, timeout_ms: float = 1200) -> DoipAnnouncement:
+def discover(channel: "Channel", timeout_ms: float = 1200) -> DoipAnnouncement:
     """Channel.discover."""
     wait = _ms("discover", timeout_ms)
     lib = _lib.lib()
@@ -67,7 +71,7 @@ def discover(channel, timeout_ms: float = 1200) -> DoipAnnouncement:
 
 
 def doip_listen(window_ms: float = 1000, *, port: int | None = None, ip6: bool = False,
-                channel=None) -> list[DoipAnnouncement]:
+                channel: "Channel | None" = None) -> list[DoipAnnouncement]:
     """The announcements DoIP entities send unasked (ISO 13400-2), heard for `window_ms`, in the
     order heard — the way a tester finds ECUs nobody told it about: every one, an entity repeating
     itself included. Nothing is queued for a listener that is not there, so it hears only what is

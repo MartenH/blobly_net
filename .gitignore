@@ -22,6 +22,8 @@ cmd/blobly_net/main
 .venv-tools/
 # Python DoIP oracle venv (scapy) — dev-only, not committed
 .venv-doip/
+# a virtual environment made where docs/vscode.md says, in the folder VS Code opens
+.venv/
 
 # Private external DBCs copied in locally for simulation — NOT ours to commit.
 dbc/ecu_vcm/

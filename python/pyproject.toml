@@ -34,8 +34,9 @@ packages = ["blobly"]
 
 [tool.setuptools.package-data]
 # the native library, its runtime DLLs on Windows, and those DLLs' licence texts beside them; on
-# Windows also canbridge, the Linux program the library starts inside WSL
-blobly = ["_native/*.so", "_native/*.dll", "_native/canbridge", "_native/licenses/**/*"]
+# Windows also canbridge, the Linux program the library starts inside WSL; and py.typed, PEP 561's
+# marker that the package's annotations are complete (docs/vscode.md)
+blobly = ["_native/*.so", "_native/*.dll", "_native/canbridge", "_native/licenses/**/*", "py.typed"]
 
 [tool.setuptools.dynamic]
 version = { attr = "blobly._version.__version__" }

@@ -7,13 +7,18 @@ import ctypes
 import os
 import sys
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .uds import Exchange
 
 
 class BloblyError(Exception):
     """A call into libblobly failed: the message is bb_last_error's, the code bb.h's. The kinds a
     caller acts on differently are subclasses: Refused, and the ways a UDS call fails."""
+    code: int
 
-    def __init__(self, message, code=-1):
+    def __init__(self, message: str, code: int = -1) -> None:
         super().__init__(message)
         self.code = code
 
@@ -27,8 +32,12 @@ class Refused(BloblyError):
 class NegativeResponse(BloblyError):
     """The ECU answered a UDS request with a negative response: `nrc` is its code, `nrc_name`
     ISO 14229-1's name for it, `exchange` the exchange it ended (UdsClient.last)."""
+    nrc: int
+    nrc_name: str
+    exchange: "Exchange | None"
 
-    def __init__(self, message, code=-4, nrc=0, nrc_name="", exchange=None):
+    def __init__(self, message: str, code: int = -4, nrc: int = 0, nrc_name: str = "",
+                 exchange: "Exchange | None" = None) -> None:
         super().__init__(message, code)
         self.nrc, self.nrc_name, self.exchange = nrc, nrc_name, exchange
 
@@ -37,7 +46,7 @@ class Timeout(BloblyError):
     """Nothing came within the wait: no answer to a UDS request, or not the frame or signal value
     an expect waited for."""
 
-    def __init__(self, message, code=-5):  # BB_ERR_TIMEOUT
+    def __init__(self, message: str, code: int = -5) -> None:  # BB_ERR_TIMEOUT
         super().__init__(message, code)
 
 
@@ -61,8 +70,9 @@ class ConnectionLost(CarrierFailed):
     taking nothing written for 2 s): the client's next call opens a new one — routing activation
     again, the session and security state the ECU had for the old one gone with it. `exchange` is
     the exchange it ended (UdsClient.last), whose `sent` says whether the request went out whole."""
+    exchange: "Exchange | None"
 
-    def __init__(self, message, code=-10, exchange=None):
+    def __init__(self, message: str, code: int = -10, exchange: "Exchange | None" = None) -> None:
         super().__init__(message, code)
         self.exchange = exchange
 
@@ -71,8 +81,13 @@ class RoutingDenied(BloblyError):
     """A DoIP entity denied the routing activation of a UdsClient's connection: `routing_code` is
     the response code, `routing_name` ISO 13400-2's meaning of it, `hint` what to do about it (""
     where there is nothing to add), `tester` the tester address it was asked for."""
+    routing_code: int
+    routing_name: str
+    hint: str
+    tester: int
 
-    def __init__(self, message, code=-9, routing_code=0, routing_name="", hint="", tester=0):
+    def __init__(self, message: str, code: int = -9, routing_code: int = 0, routing_name: str = "",
+                 hint: str = "", tester: int = 0) -> None:
         super().__init__(message, code)
         self.routing_code, self.routing_name, self.hint, self.tester = routing_code, routing_name, hint, tester
 

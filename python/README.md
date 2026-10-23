@@ -58,6 +58,9 @@ and ECUs that answer requests. The examples run against it:
 - [The Python guide](https://github.com/MartenH/blobly_net/blob/main/docs/scripting_python.md):
   setting up, adapters per OS, frames, databases, the event loop, fault injection and E2E,
   threads, errors, the complete reference, and what is not there yet.
+- [Using it from VS Code](https://github.com/MartenH/blobly_net/blob/main/docs/vscode.md):
+  completion from the package's type annotations, breakpoints, the Debug Console against a live
+  project, the Testing panel and `# %%` cells.
 - [For AI agents](https://github.com/MartenH/blobly_net/blob/main/docs/agents.md): how an agent
   drives Blobly Net: running it, finding out what a project offers, bounded waits and errors.
 - [Blobly Net](https://github.com/MartenH/blobly_net): the GUI, the Lua runner and the rest.

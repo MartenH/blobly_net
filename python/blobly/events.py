@@ -19,8 +19,13 @@ import math
 import sys
 import threading
 import time
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any
 
 from ._lib import BB_ERR_STATE, BloblyError
+
+if TYPE_CHECKING:
+    from .project import Channel, Frame, Message
 
 HEALTH_POLL_MS = 100
 # how long a wait on several channels sleeps between looks: Windows' default timer granularity
@@ -112,7 +117,8 @@ class EventLoop:
                 read.append(h.channel)
         return read
 
-    def on_message(self, channel, id, fn, *, ext: bool | None = None):
+    def on_message(self, channel: "Channel | str", id: "int | Message | None", fn: "Callable[[Frame], object]",
+                   *, ext: bool | None = None) -> None:
         """fn(frame) for each frame on `channel` received during run() — what other nodes sent —
         whose id is `id`: an int, of the kind `ext` names (None: either kind, False: 11-bit, True:
         29-bit), or None for every frame, or a Message (a channel's .messages): its id AND kind, as
@@ -121,7 +127,7 @@ class EventLoop:
         want = _want(id, ext)  # refused before the channel is read: a bad filter subscribes nothing
         self._on_msg.append((self._listen_key(channel), want, fn))
 
-    def on_health(self, channel, fn):
+    def on_health(self, channel: "Channel | str", fn: Callable[[str], object]) -> None:
         """fn(state) during run() when the controller's ladder has moved — "ok", "error warning",
         "ERROR-PASSIVE", "BUS-OFF" — and at its first sample with the state then. Sampled every
         100 ms: a state held for less than that can be missed. A software bus never fires."""
@@ -129,7 +135,7 @@ class EventLoop:
         self._listen(key)
         self._on_health.append(_Health(key, fn))
 
-    def on_timer(self, period_ms, fn):
+    def on_timer(self, period_ms: float, fn: Callable[[], object]) -> None:
         """fn() every period_ms during run(), on its own grid. The period must be a positive,
         finite number of milliseconds."""
         if not _finite(period_ms) or not period_ms >= 1:
@@ -183,7 +189,7 @@ class EventLoop:
             t.active = False
             self._past_grid(t, self._now())
 
-    def run(self, duration_ms=1000):
+    def run(self, duration_ms: float = 1000) -> None:
         """The event loop for duration_ms (a finite number, zero or more). It reads every channel a
         handler names; a frame it reads is consumed, whether or not a handler matched it."""
         if not _finite(duration_ms) or duration_ms < 0:
@@ -298,7 +304,8 @@ def _passing(e):
     return isinstance(e, BloblyError) and e.code != BB_ERR_STATE
 
 
-def wait_on(channels, timeout_ms, rr, now, sleep_ms):
+def wait_on(channels: Sequence[Any], timeout_ms: float, rr: int, now: Callable[[], float],
+            sleep_ms: Callable[[float], object]) -> tuple[tuple[Any, Any] | None, int]:
     """The next frame on any of `channels` (objects with .recv(timeout_ms) in whole ms), waiting
     at most timeout_ms (a fraction allowed); with several, a look at each in turn from `rr` and one
     slice of sleep between looks. Nothing is taken off a channel after the deadline: a wait the
@@ -362,9 +369,9 @@ def wait_on(channels, timeout_ms, rr, now, sleep_ms):
             return None, rr
 
 
-def monotonic_ms():
+def monotonic_ms() -> float:
     return time.monotonic() * 1000.0
 
 
-def sleep_ms(ms):
+def sleep_ms(ms: float) -> None:
     time.sleep(ms / 1000.0)

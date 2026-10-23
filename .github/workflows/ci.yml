@@ -131,6 +131,16 @@ jobs:
           "$RUNNER_TEMP/wheeltools/bin/python" scripts/build_wheel.py --native build/libblobly.so --out build/wheels
           "$RUNNER_TEMP/wheeltools/bin/auditwheel" show build/wheels/*.whl
           python3 scripts/python_tests.py --wheel build/wheels/*.whl python3
+      # What the wheel's py.typed promises a type checker: every public name of the INSTALLED
+      # package typed, as pyright --verifytypes counts it (exit 1 below 100%, or without py.typed).
+      # pyright is the checker under VS Code's Pylance (docs/vscode.md). Pinned; its wheel carries
+      # its JavaScript, so this is one small install and under a second. verifytypes reads the
+      # ACTIVE environment and ignores --pythonpath, hence the venv on PATH.
+      - name: Python type completeness (pyright --verifytypes, the installed wheel)
+        run: |
+          export VIRTUAL_ENV="$RUNNER_TEMP/wheeltools" PATH="$RUNNER_TEMP/wheeltools/bin:$PATH"
+          pip install -q pyright==1.1.414 build/wheels/*.whl
+          pyright --verifytypes blobly --ignoreexternal
 
   checks:
     name: linux • cmd checks, script tests + headless Lua

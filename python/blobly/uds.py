@@ -7,9 +7,13 @@ import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Literal
 
 from . import _lib
 from ._lib import BloblyError, ConnectionLost, NegativeResponse
+
+if TYPE_CHECKING:
+    from .project import Channel
 
 # how many key_fn callbacks this thread is inside: each runs holding its client's lock
 _callbacks = threading.local()
@@ -216,8 +220,14 @@ class UdsClient:
     there."""
 
     _opener = "bb_uds_open"  # the call that opens its connection, the ids it defaults to
+    channel: "Channel"
+    tx: int | None
+    rx: int | None
+    ext: bool
+    tester: int | None
+    ecu: int | None
 
-    def __init__(self, channel, tx: int | None = None, rx: int | None = None):
+    def __init__(self, channel: "Channel", tx: int | None = None, rx: int | None = None) -> None:
         self.channel = channel
         self._ask = (None if tx is None else _int("tx", tx, 64), None if rx is None else _int("rx", rx, 64))
         self.tx = self.rx = None
@@ -293,11 +303,11 @@ class UdsClient:
     def __enter__(self) -> "UdsClient":
         return self
 
-    def __exit__(self, *exc) -> bool:
+    def __exit__(self, *exc: object) -> Literal[False]:
         self.close()
         return False
 
-    def __del__(self):
+    def __del__(self) -> None:
         # an unclosed client lets its bus subscription go with it, at the next call (_orphans):
         # nothing is called into here, since this may run between another call and its error
         try:
@@ -561,7 +571,7 @@ class UdsClient:
         return f"<UdsClient {self.channel.name} {ids}{state}>"
 
 
-def functional(channel, functional_id: int | None, clients: Sequence[UdsClient], request: bytes,
+def functional(channel: "Channel", functional_id: int | None, clients: Sequence[UdsClient], request: bytes,
                window_ms: int = 1000) -> list[FunctionalReply]:
     """`request` once on `channel`'s functional id, each client answering on its own response id;
     on a DoIP channel to the functional logical address (None: 0xE400) on its one client's

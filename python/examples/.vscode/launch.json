@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Example: current file",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Example: current file, with arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "args": "${command:pickArgs}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pytest: the selected test",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["${file}::${selectedText}", "-q"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        }
+    ]
+}

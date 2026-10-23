@@ -30,6 +30,9 @@ python3 python/examples/signal_monitor.py --seconds 5 --message BrakeStatus
 python3 python/examples/raw_can.py path/to/your.blobnet --channel CAN1
 ```
 
+Opened as a folder in VS Code, this one's [`.vscode/`](.vscode) runs and debugs the examples and
+the tests ([docs/vscode.md](../../docs/vscode.md)).
+
 With `pip install blobly`, the same files run against the installed package. Copy them anywhere;
 outside the repository, name the project on the command line. An example uses the installed
 package when there is one, and the checkout's `python/blobly` otherwise. Its first line says which
