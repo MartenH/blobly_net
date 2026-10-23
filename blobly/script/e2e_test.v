@@ -15,6 +15,10 @@ BO_ 771 Plain: 2 Tester
 BO_ 772 Broken: 2 Tester
  SG_ BrokenCrc : 0|8@1+ (1,0) [0|255] "" Chassis
  SG_ BrokenCounter : 8|4@1+ (1,0) [0|15] "" Chassis
+BO_ 773 Guarded: 3 Tester
+ SG_ GuardCrc : 0|8@1+ (1,0) [0|255] "" Chassis
+ SG_ GuardCounter : 8|4@1+ (1,0) [0|15] "" Chassis
+ SG_ Level : 16|8@1+ (1,0) [0|255] "" Chassis
 BA_DEF_ BO_ "E2EDataId" INT 0 65535;
 BA_ "E2ECounterSignal" BO_ 770 "CommandCounter";
 BA_ "E2ECrcSignal" BO_ 770 "CommandCrc";
@@ -27,6 +31,10 @@ BA_ "E2EProfile" BO_ 772 "P02";
 
 // two channels on one in-process wire: what the script sends on A is heard on B
 fn e2e_env(wire string, b_verify []project.ProtectCfg) &Env {
+	return e2e_env_nodes(wire, b_verify, [])
+}
+
+fn e2e_env_nodes(wire string, b_verify []project.ProtectCfg, b_nodes []project.NodeCfg) &Env {
 	db := candb.parse_dbc(e2e_dbc) or { panic(err) }
 	mut env := new_env([
 		ChanInfo{
@@ -39,6 +47,7 @@ fn e2e_env(wire string, b_verify []project.ProtectCfg) &Env {
 			iface:  wire
 			db:     db
 			verify: b_verify
+			nodes:  b_nodes
 		},
 	]) or { panic(err) }
 	env.on_output = fn (s string) {}
@@ -82,6 +91,31 @@ fn test_a_send_by_name_is_stamped_and_judged_where_it_is_heard() {
 	')!
 	assert env.total() == 4
 	assert env.passed() == 4, '${env.results}'
+}
+
+// a node simulated on the wire protects what it sends wherever the wire is read: B simulates the
+// sender of Guarded (protect: only, no declaration), and A, on the same wire, judges it by that
+fn test_a_protect_entry_on_the_wire_judges_every_channel_of_it() {
+	mut env := e2e_env_nodes('inproc:UTE2EW', [], [
+		project.NodeCfg{
+			name:    'Tester'
+			protect: [project.ProtectCfg{
+				message: 'Guarded'
+				counter: 'GuardCounter'
+				crc:     'GuardCrc'
+				profile: 'crc8_j1850'
+			}]
+		},
+	])
+	defer { env.close() }
+	env.run_source('
+		test("judged on A by the node B simulates", function()
+			bus.recv("A", 0)
+			bus.send_message("B", "Guarded", { Level = 9 })
+			check.equal(bus.recv("A", 500).e2e, "bad_crc")
+		end)
+	')!
+	assert env.passed() == 1, '${env.results}'
 }
 
 // the channel verify: entry is what its frames are judged by first: here a checksum the sender

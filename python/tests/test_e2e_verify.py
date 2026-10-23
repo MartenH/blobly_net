@@ -198,6 +198,49 @@ class TestUnappliable:
             assert rx.expect(broken.id, 500).e2e is None  # nothing judges it either
 
 
+# a message protected only by the simulated node's protect: entry, on a wire two rows share
+GUARDED_DBC = """VERSION ""
+
+BU_: Chassis Tester
+
+BO_ 773 Guarded: 3 Chassis
+ SG_ GuardCrc : 0|8@1+ (1,0) [0|255] "" Tester
+ SG_ GuardCounter : 8|4@1+ (1,0) [0|15] "" Tester
+ SG_ Level : 16|8@1+ (1,0) [0|255] "" Tester
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_ "GenMsgCycleTime" BO_ 773 10;
+"""
+
+GUARDED = """project:
+  name: e2e-guarded
+  version: 8
+channels:
+  - name: SIM
+    type: can
+    interface: inproc:PY_E2E_GUARDED
+    databases: [guarded.dbc]
+    simulation:
+      - name: Chassis
+        signals:
+          - { name: Level, type: sawtooth, min: 0, max: 200, period: 1 }
+        protect:
+          - { message: Guarded, counter: GuardCounter, crc: GuardCrc, profile: crc8_j1850 }
+  - name: TAP
+    type: can
+    interface: inproc:PY_E2E_GUARDED
+    databases: [guarded.dbc]
+"""
+
+
+class TestProtectOnTheWire:
+    def test_a_node_simulated_on_the_wire_protects_what_every_row_of_it_reads(self, tmp_path):
+        write(tmp_path, "guarded.dbc", GUARDED_DBC)
+        with blobly.Project(write(tmp_path, "guarded.blobnet", GUARDED)) as net:
+            for ch in net.channels:  # the row that simulates it, and the one that only listens
+                assert [f.e2e for f in frames(ch, 773, 5)] == ["ok"] * 5, ch.name
+
+
 class TestFrame:
     def test_the_verdict_is_not_part_of_the_value(self):
         judged = blobly.Frame(0x301, b"\x01", e2e="bad_crc")

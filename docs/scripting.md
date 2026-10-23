@@ -332,8 +332,9 @@ answers 0xE400 (`tests/diag_doip_functional.lua`); see `docs/doip.md`.
 Every frame a script reads (`bus.recv`, `expect`, an `on_message` handler) carries **`e2e`**, its
 E2E verdict, wherever its message has E2E on the channel: the channel's `verify:` entry for it,
 else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`, `E2EProfile`, `E2EDataId`:
-[dbc_attributes.md](dbc_attributes.md)), else what a simulated node on the channel stamps
-(`protect:`). The check is the one the trace's `verify:` runs (`sim.Verifier`).
+[dbc_attributes.md](dbc_attributes.md)), else what a node simulated on the channel's wire stamps
+(`protect:`, whichever channel of that wire simulates it). The check is the one the trace's
+`verify:` runs (`sim.Verifier`).
 
 | `f.e2e` | the frame |
 |---|---|

@@ -695,15 +695,15 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
  * bb_e2e_attach binds handle h to row `row` of the run: each frame bb_bus_recv reads on it from then
  * on carries its verdict in bb_frame.e2e, by its message's E2E on the row — the row's verify: entry
  * for it, else what its database declares (E2ECounterSignal, E2ECrcSignal, E2EProfile, E2EDataId),
- * else what a node simulated on the row stamps (protect:). The CRC; the counter against the frame of
- * that id the handle read before it (so one it missed makes the next a skip); and the time since
- * the last valid frame (its CRC right, its counter new: not a repeat, nor Profile 1's 15) against
- * the message's E2ETimeout, measured between the frames' own receive stamps in one clock domain
- * (SocketCAN's kernel stamp, the CAN bridge's clock), never their placement on the host's clock —
- * a frame with no stamp (a software bus, an adapter that reads none) is never late, and a valid
- * one ends the gap being measured. Answers how many of the row's messages are judged; 0 binds
- * nothing. On the thread that uses the handle; the binding is the run's, and a handle kept past
- * bb_stop reads BB_E2E_NONE until it is attached again.
+ * else what a node simulated on its wire stamps (protect:, whichever row of that wire simulates it).
+ * The CRC; the counter against the frame of that id the handle read before it (so one it missed
+ * makes the next a skip); and the time since the last valid frame (its CRC right, its counter new:
+ * not a repeat, nor Profile 1's 15) against the message's E2ETimeout, measured between the frames'
+ * own receive stamps in one clock domain (SocketCAN's kernel stamp, the CAN bridge's clock), never
+ * their placement on the host's clock — a frame with no stamp (a software bus, an adapter that
+ * reads none) is never late, and a valid one ends the gap being measured. Answers how many of the
+ * row's messages are judged; 0 binds nothing. On the thread that uses the handle; the binding is
+ * the run's, and a handle kept past bb_stop reads BB_E2E_NONE until it is attached again.
  *
  * bb_e2e_stamp writes message m's DECLARED E2E (its database's, as a simulated sender stamps it)
  * into f, m's frame from bb_encode: the counter the next of the run's sends of m by name on the row,

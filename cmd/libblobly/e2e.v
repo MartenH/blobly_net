@@ -23,8 +23,10 @@ __global (
 	bb_e2e_gen      u64
 )
 
-// e2e_row is row `row`'s databases and configuration as the run has them, and the run's number.
-fn e2e_row(row i32) !(candb.Database, project.Channel, u64) {
+// e2e_row is row `row`'s databases and verify: entries as the run has them, every node simulated on
+// its wire (whichever row simulates it: what a handle hears from the wire is theirs, as the trace's
+// verifiers take them), and the run's number.
+fn e2e_row(row i32) !(candb.Database, []project.ProtectCfg, []project.NodeCfg, u64) {
 	bb_mu.lock()
 	defer {
 		bb_mu.unlock()
@@ -36,7 +38,22 @@ fn e2e_row(row i32) !(candb.Database, project.Channel, u64) {
 	if row < 0 || int(row) >= bb_dbs.len {
 		return error('no channel ${row}')
 	}
-	return bb_dbs[int(row)], bb_run_rows[int(row)], bb_run_gen
+	cfg := bb_run_rows[int(row)]
+	dest := transport.destination_key(cfg.iface_with_bitrate())
+	mut nodes := []project.NodeCfg{}
+	mut have := map[string]bool{}
+	for r in bb_run_rows {
+		if transport.destination_key(r.iface_with_bitrate()) != dest {
+			continue
+		}
+		for n in r.all_nodes() {
+			if n.name !in have {
+				have[n.name] = true
+				nodes << n
+			}
+		}
+	}
+	return bb_dbs[int(row)], cfg.verify, nodes, bb_run_gen
 }
 
 // message_locked is message(row, m) for a caller that holds bb_mu.
@@ -61,8 +78,8 @@ pub fn bb_e2e_attach(h i32, row i32) i32 {
 	defer {
 		hd.leave()
 	}
-	db, cfg, gen := e2e_row(row) or { return refused(err) }
-	r := sim.new_e2e_reader(db, cfg.all_nodes(), cfg.verify)
+	db, verify, nodes, gen := e2e_row(row) or { return refused(err) }
+	r := sim.new_e2e_reader(db, nodes, verify)
 	n := r.judges()
 	hd.judge = E2eJudge{
 		reader: if n > 0 { r } else { unsafe { nil } }

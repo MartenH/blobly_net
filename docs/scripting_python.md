@@ -659,7 +659,8 @@ Every frame a channel reads (`recv`, `expect`, a handler) carries **`f.e2e`**, i
 `blobly.E2eStatus` (equal to its string), wherever its message has E2E on the channel: the row's
 `verify:` entry for it, else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`,
 `E2EProfile`, `E2EDataId`, `E2ETimeout`: [dbc_attributes.md](dbc_attributes.md)), else what a
-node simulated on the row stamps (`protect:`). The check is the engine's, the one the trace's
+node simulated on the row's wire stamps (`protect:`, whichever row of that wire simulates it). The
+check is the engine's, the one the trace's
 `verify:` runs, and Lua's `frame.e2e` is the same.
 
 | `f.e2e` | the frame |
