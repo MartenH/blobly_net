@@ -5,22 +5,36 @@ module main
 import blobly.doip
 import blobly.transport
 
-// DoipLink is a DoipClient that remembers which security levels' seeds it answered: a seed request
-// (27, an odd sub-function L) whose exchange accepted its answer marks level L (UdsHandle.seed_heard,
-// never a stray 67 on the stream), and on a link that `inherits` — opened in place of a
-// connection that may have given seeds (a reconnect, or a host reopening its client) — a key
-// (27, L + 1) is refused, never written, until level L's seed is answered on this one: a key
-// answers the seed of ONE connection. On a first connection the ECU judges every key.
+// DoipLink is a DoipClient that remembers which security levels' seeds it answered, and of which
+// target: a seed request (27, an odd sub-function L) whose exchange accepted its answer marks level
+// L of the target it went to (UdsHandle.seed_heard, never a stray 67 on the stream), and on a link
+// that `inherits` — opened in place of a connection that may have given seeds (a reconnect, or a
+// host reopening its client) — a key (27, L + 1) is refused, never written, until level L's seed is
+// answered on this one by the target the key goes to: a key answers the seed of ONE connection, and
+// a gateway's seed is not a node's behind it. On a first connection the ECU judges every key.
 @[heap]
 struct DoipLink {
 pub:
 	iface string
 	tx_id u32
-	rx_id u32
+pub mut:
+	rx_id u32 // the target: the entity, or a node behind it (retarget)
 mut:
 	c        &doip.DoipClient
-	seeds    map[u8]bool // levels whose seed this connection answered
+	seeds    map[u32]bool // seed_key(target, level) of the seeds this connection answered
 	inherits bool
+}
+
+// seed_key is level `level`'s seed of target `target`.
+fn seed_key(target u32, level u8) u32 {
+	return target << 8 | u32(level)
+}
+
+// retarget moves the link's requests and the answers it takes to logical address `target`
+// (doip.DoipClient.retarget).
+fn (mut l DoipLink) retarget(target u16) {
+	l.c.retarget(target)
+	l.rx_id = target
 }
 
 // link_of wraps `c`; `inherits` when it replaces a connection.
@@ -39,7 +53,7 @@ fn (l &DoipLink) guard(data []u8) ! {
 		return
 	}
 	sub := data[1] & 0x7F
-	if sub != 0 && sub & 1 == 0 && !l.seeds[sub - 1] {
+	if sub != 0 && sub & 1 == 0 && !l.seeds[seed_key(l.rx_id, sub - 1)] {
 		return transport.not_written('security key: the level ${sub - 1} seed was not answered on this connection, which replaces the one that may have given it; request a new seed')
 	}
 }

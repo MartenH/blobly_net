@@ -195,6 +195,7 @@ Complete scripts, each bounded and with a clear exit status, in
 | [bus_metrics.py](../python/examples/bus_metrics.py) | A channel's bus load and diagnostics counts over N seconds. |
 | [uds_diag.py](../python/examples/uds_diag.py) | UDS over CAN: a session, DID reads, a negative response caught, a security unlock, DTCs with a snapshot. |
 | [doip_diag.py](../python/examples/doip_diag.py) | UDS over DoIP: announcements heard, the entity discovered, a session, the VIN, DTCs, a functional request. |
+| [isotp_raw.py](../python/examples/isotp_raw.py) | Raw ISO-TP with no UDS on top: a multi-frame answer, a malformed request and its bytes; a UDS client's waits read and stated. |
 | [fault_injection.py](../python/examples/fault_injection.py) | Faults on simulated ECUs seen on the bus: a timed drop, a signal out of range, a refusal. |
 | [e2e_check.py](../python/examples/e2e_check.py) | E2E Profile 1 as a DBC declares it: each received frame's verdict, a broken sender caught by `expect(..., e2e=True)`, a send by name stamped. |
 | [flash_ecu.py](../python/examples/flash_ecu.py) | Flashing a blobly_emb bootloader with progress and a report, against a simulated one (`--board` for a real one). |
@@ -205,7 +206,7 @@ Complete scripts, each bounded and with a clear exit status, in
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 helpers); UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests); DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#19-what-is-not-there-yet)). |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 helpers); UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests, the waits, a node behind a DoIP gateway); raw ISO-TP; DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#19-what-is-not-there-yet)). |
 | Tests under pytest, and anything that needs the Python ecosystem. | A script in the GUI's Script panel, against a live measurement. |
 | An agent's own process: no V toolchain, a `pip install`. | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 

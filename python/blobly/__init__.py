@@ -87,6 +87,9 @@ __all__ += ["BusDiagnostics", "BusLoad"]
 # generator control (generators.py)
 from .generators import Generator, GeneratorRefused, Generators  # noqa: E402
 __all__ += ["Generator", "GeneratorRefused", "Generators"]
+# raw ISO-TP (isotp.py; Channel.isotp)
+from .isotp import IsoTp  # noqa: E402
+__all__ += ["IsoTp"]
 # E2E verdicts on received frames (e2e.py; Frame.e2e, expect(..., e2e=True))
 from .e2e import E2eError, E2eStatus  # noqa: E402
 __all__ += ["E2eError", "E2eStatus"]

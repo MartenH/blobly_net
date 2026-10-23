@@ -210,6 +210,7 @@ outside a `test` aborts the script (and the runner reports it).
 ```lua
 local diag = uds.open(channel [, { tx = 0x7E0, rx = 0x7E8 }])   -- CAN / CAN-FD
 local diag = uds.open(channel)                                   -- DoIP
+local diag = uds.open(channel, { timeout_ms = 300 })            -- with its waits stated
 ```
 
 Opens a UDS tester on `channel`. **The carrier follows the channel**, so the same
@@ -237,6 +238,17 @@ received twice after a bus error — is discarded and the wait goes on, and on C
 whatever is already queued when a request goes out is drained first; an error that follows
 says how many were discarded.
 
+Those waits are the connection's, in ms: `timeout_ms` (the first answer), `p2_star_ms` (the
+server's P2*), `margin_ms` (added to it) and `pending_budget_ms` (one request from its send).
+`diag:timing()` reads them as they stand, a session answer's adoption included;
+`diag:set_timing({ margin_ms = 200 })` states the ones the table names from the next request on,
+and `uds.open` takes them among its options (checked before it opens anything). `timeout_ms` and `pending_budget_ms` are 1 to 3600000,
+`p2_star_ms` and `margin_ms` 0 to 3600000; anything else raises and changes nothing. A session
+answer still adopts its P2* over one stated, and lengthens `timeout_ms` where its P2 needs more. On
+a DoIP channel `uds.open` hands back the channel's one connection, so its options and
+`set_timing` apply to every handle of it; a reconnect keeps them (P2* only where it loosens the new
+connection's).
+
 On a DoIP channel the entity's ANNOUNCED identity is a separate value from the one
 it serves at DID 0xF190, so both are observable:
 
@@ -246,6 +258,17 @@ local ann = doip.discover(channel)   -- { vin = "...", logical_address = 0x1000 
 
 A tester that discovers one ECU and reads a different VIN out of it has no way to
 tell which is the lie, so a suite should check they agree.
+
+A DoIP entity may be a gateway to nodes behind it (ISO 13400-2 routing). `diag:retarget(address)`
+moves the connection's requests, and the answers it takes, to that node's logical address;
+`diag:retarget()` goes back to the channel's `ecu_address`. One connection, so what the tester
+unlocked on the gateway there holds for the node (blobly_emb's sysnode routes only for such a
+tester): unlock the gateway, then retarget. Every handle of the channel's connection moves with it,
+and a reconnect keeps the target but not the gateway's unlock. Another target is another ECU: the
+connection's waits go back to what the script set, without what a session answer of the old target
+adopted, and the snapshot DID sizes it learned are forgotten (`did_size`'s are kept). A retarget
+inside a `security_access` keyfn sends no key (it raises), since the key answers the old target's
+seed. On a CAN channel it raises.
 
 The returned object has:
 
@@ -271,6 +294,8 @@ The returned object has:
 | `diag:raw(req)` | send any request PDU | the response (bytes) |
 | `diag:close()` | let the connection go: the handle refuses from then on, and the next `uds.open` on the channel opens a new one (a DoIP entity serves one connection at a time) | — |
 | `diag:raw_suppressed(req)` | send a sub-function request with suppress-positive-response set: no positive answer is expected, a refusal raises, and a server that said `0x78` owes its final answer | `true` if a positive answer came anyway |
+| `diag:timing()` / `diag:set_timing(t)` | the connection's waits (`timeout_ms`, `p2_star_ms`, `margin_ms`, `pending_budget_ms`), read as they stand / stated where `t` names them | a table / — |
+| `diag:retarget([address])` | DoIP: the requests go to logical address `address`, a node behind the gateway (`nil`: the channel's `ecu_address`) | — |
 
 A negative response **raises a Lua error** (so it aborts the `test`, or is caught by
 `check.nrc` — e.g. `check.nrc(0x35, …)` for an invalid security key). Multi-frame
@@ -326,6 +351,27 @@ outcomes, `answer_to` and P2* rules as above (`uds.functional_addressed`). An ad
 does not answer is `"failed"` (a DoIP negative ack), not `"silent"`; the connection lost under the
 request raises, as a bus failing while listening does. A simulated DoIP entity
 answers 0xE400 (`tests/diag_doip_functional.lua`); see `docs/doip.md`.
+
+### Raw ISO-TP
+
+```lua
+local tp = isotp.open("CAN1", { tx = 0x7E0, rx = 0x7E8 })
+tp:send("\x22\xF1")                 -- a request the UDS helpers would never build
+local answer = tp:recv(1000)         -- "\x7F\x22\x13", or nil when nothing came in time
+tp:close()
+```
+
+Whole messages on a CAN channel's id pair, segmented and reassembled by the ISO-TP a `uds.open`
+connection rides, with no UDS on top: a protocol of your own over ISO-TP, or a malformed UDS request
+and the bytes that come back. Both ids are needed (there is no default pair), and either past
+0x7FF makes both 29-bit; a DoIP or SOME/IP channel raises. A message is 1 to 4095 bytes in 8-byte
+frames, sent FD on a channel the project declares CAN-FD. `tp:send(data)` returns once the message is on the wire, a long one after the
+receiver's Flow Control (1000 ms each, N_Bs; it raises when none came). `tp:recv(timeout_ms)`
+(default 1000; `0` only looks) returns the next whole message, or `nil` when none came in time; a
+transfer begun is kept for the next `recv`, until 1000 ms pass with no Consecutive Frame, which
+raises. A send on a listen-only channel raises. Open one per id pair: two on one `rx` (a `uds.open`
+connection on it included) each answer a First Frame with a Flow Control of their own.
+`tests/isotp_timing.lua` is the suite.
 
 ### E2E on what a script reads and sends
 

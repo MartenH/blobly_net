@@ -19,6 +19,7 @@ from .uds import FunctionalReply, UdsClient, _close_orphans, functional
 from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import Generators, listed as _listed_generators
+from .isotp import IsoTp
 from .replay import Replays
 from .e2e import E2eStatus, _passed, status_of
 
@@ -166,7 +167,7 @@ class Channel:
         self._project, self._index, self.name, self._gen = project, index, name, gen
         self._h = None
         self._messages, self._messages_run = None, None
-        self._uds = weakref.WeakSet()  # the UDS clients on this row, let go with its handle
+        self._uds = weakref.WeakSet()  # the UDS clients and ISO-TP channels on this row, let go with its handle
 
     def _current(self):
         st = _lib.state
@@ -494,15 +495,26 @@ class Channel:
             msg = msgs[m.value]
             return msg, [(s, values[i] if active[i] else None) for i, s in enumerate(msg.signals)]
 
-    def uds(self, tx: int | None = None, rx: int | None = None) -> UdsClient:
+    def uds(self, tx: int | None = None, rx: int | None = None, *, timeout_ms: int | None = None,
+            p2_star_ms: int | None = None, margin_ms: int | None = None,
+            pending_budget_ms: int | None = None) -> UdsClient:
         """A UdsClient on this row, by the rule the Lua uds.open opens by, while the project is
         started. On a CAN row UDS requests go out on CAN id `tx` and answers come back on `rx`:
         None is the default pair 0x7E0 / 0x7E8, 0 is an id like any other, and either id past
         0x7FF makes both 29-bit. On a DoIP row they ride a TCP connection to its entity, from the
         row's tester_address to its ecu_address, so tx and rx are refused; RoutingDenied when the
         entity will not route the tester, and one client at a time holds the row's connection
-        (ISO 13400-2: one tester address, one connection) — a second is refused while it is open."""
-        return UdsClient(self, tx, rx)
+        (ISO 13400-2: one tester address, one connection) — a second is refused while it is open.
+        The timing keywords state the client's waits (UdsClient.timeout_ms ...); None keeps the
+        engine's."""
+        return UdsClient(self, tx, rx, timeout_ms=timeout_ms, p2_star_ms=p2_star_ms, margin_ms=margin_ms,
+                         pending_budget_ms=pending_budget_ms)
+
+    def isotp(self, tx: int, rx: int) -> IsoTp:
+        """A raw ISO-TP channel on this CAN row while the project is started: whole messages sent on
+        CAN id `tx` and received on `rx`, either past 0x7FF making both 29-bit, with no UDS on top.
+        Both ids are given: there is no default pair. Refused on a DoIP or SOME/IP row."""
+        return IsoTp(self, tx, rx)
 
     def uds_functional(self, functional_id: int | None, clients: Sequence[UdsClient], request: ByteData,
                        window_ms: int = 1000) -> list[FunctionalReply]:

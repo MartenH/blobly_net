@@ -110,6 +110,8 @@ mut:
 	chans []ChanInfo
 	conns []UdsConn
 	buses map[string]&transport.MeteredBus
+	// the raw ISO-TP channels isotp.open opened (isotp.v)
+	isotps []IsotpConn
 	// every SOME/IP request session this run has sent: none is sent twice, so a late reply to a
 	// timed-out call cannot complete a later one
 	someip_sessions someip.Sessions
@@ -224,6 +226,15 @@ pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 			// on one channel are two answers, and so are two opens of one address pair
 			// (codex rounds 10 and 13 on #231).
 			out['${c.chan} (uds #${i} 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
+		}
+	}
+	for i, mut c in env.isotps {
+		if !c.closed {
+			c.ch.close()
+		}
+		d := c.ch.diagnostics()
+		if !d.is_empty() {
+			out['${c.chan} (isotp #${i} 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
 		}
 	}
 	for name, mut b in env.buses {
@@ -361,6 +372,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__bus_health', l_bus_health)
 	env.register_metrics()
 	env.register_gens()
+	env.register_isotp()
 	env.register_replay()
 	env.register_e2e()
 }
@@ -512,15 +524,20 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 					return timeout_at(l)
 				}
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
-				// holding keeps working rather than being orphaned by the repair.
+				// holding keeps working rather than being orphaned by the repair; its requests go
+				// where they went (a retarget) and the client keeps what it knew of the ECU.
+				target := u16(c.ch.rx_id)
 				c.ch.close()
-				fresh := udsconn.open_doip(info.carrier) or {
+				mut fresh := udsconn.open_doip(info.carrier) or {
 					return l.fail('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 				}
+				fresh.retarget(target)
 				mut fresh_ch := isotp.Channel(fresh)
+				mut fresh_cli := uds.new_client(fresh_ch)
+				fresh_cli.carry_from(&c.cli)
 				env.conns[i] = UdsConn{
 					ch:   fresh_ch
-					cli:  env.bound_client(mut fresh_ch, uds.new_client(fresh_ch))
+					cli:  env.bound_client(mut fresh_ch, fresh_cli)
 					chan: name
 				}
 				l.push_int(i)
@@ -650,7 +667,9 @@ fn l_doip_discover(l lua.State) i32 {
 // can reach this from a Lua suite: it fires against a real ECU on a bench, where it cannot be
 // caught by CI. The distinction is at least pinned by a unit test.
 fn probe_says_dead(err IError) bool {
-	return err !is uds.NegativeResponse
+	// a DoIP negative acknowledgement the entity keeps the connection after is it answering too: a
+	// target it does not route (a node behind a gateway the probe was retargeted to)
+	return err !is uds.NegativeResponse && !doip.nack_alive(err.msg())
 }
 
 // l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,

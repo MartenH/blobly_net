@@ -175,17 +175,18 @@ def _put(fn, *args) -> bytes:
     return _lib.bytes_of(_lib.lib().bb_uds_data, args[0])
 
 
-# handles of clients collected without close(), let go at the next call that opens or closes one:
-# a finalizer may run between a failed call and the read of its error, and a close there would
-# replace the thread's error text and NRC
-_orphans: list[int] = []
+# handles of clients and ISO-TP channels collected without close(), each with the bb.h call that
+# closes it, let go at the next call that opens or closes one: a finalizer may run between a failed
+# call and the read of its error, and a close there would replace the thread's error text and NRC
+_orphans: list[tuple[str, int]] = []
 
 
 def _close_orphans() -> None:
-    """Closes the collected clients' handles (under _lib.state_lock)."""
+    """Closes the collected handles (under _lib.state_lock)."""
     lib = _lib.lib()
     while _orphans:
-        lib.bb_uds_close(_orphans.pop())
+        closer, h = _orphans.pop()
+        getattr(lib, closer)(h)
 
 
 def reference_key(seed: ByteData) -> bytes:
@@ -217,7 +218,13 @@ class UdsClient:
     ConnectionLost (that reopen ended by a close from another thread, as a call is). A client of a
     channel a reload did not keep refuses. Calls on one client are
     serialised, so threads may share it; close() from another thread ends a call in progress
-    there."""
+    there.
+
+    The waits are its attributes, `timeout_ms`, `p2_star_ms`, `margin_ms` and `pending_budget_ms`:
+    read as they stand, set from the next request on (ch.uds takes them as keywords too). What a
+    script set holds on every connection the client opens; one opened after a stop and start begins
+    from it again, without what a 0x10 answer adopted.
+    On a DoIP channel `retarget` moves the connection to a node behind the gateway its entity is."""
 
     _opener = "bb_uds_open"  # the call that opens its connection, the ids it defaults to
     channel: "Channel"
@@ -227,9 +234,19 @@ class UdsClient:
     tester: int | None
     ecu: int | None
 
-    def __init__(self, channel: "Channel", tx: int | None = None, rx: int | None = None) -> None:
+    def __init__(self, channel: "Channel", tx: int | None = None, rx: int | None = None, *,
+                 timeout_ms: int | None = None, p2_star_ms: int | None = None, margin_ms: int | None = None,
+                 pending_budget_ms: int | None = None) -> None:
         self.channel = channel
         self._ask = (None if tx is None else _int("tx", tx, 64), None if rx is None else _int("rx", rx, 64))
+        # the waits a script stated, stated again on each connection the client opens
+        stated = (("timeout_ms", timeout_ms), ("p2_star_ms", p2_star_ms), ("margin_ms", margin_ms),
+                  ("pending_budget_ms", pending_budget_ms))
+        self._timing = {name: _int(name, ms) for name, ms in stated if ms is not None}
+        for name, ms in self._timing.items():  # refused before anything opens
+            _lib.check(_lib.lib().bb_uds_check_wait(_lib.WAITS[name], ms))
+        self._target: int | None = None  # retarget's address, named again on each DoIP connection
+        self._entity: int | None = None  # the DoIP channel's ecu_address
         self.tx = self.rx = None
         self.ext = False
         self.tester = self.ecu = None  # a DoIP channel's logical addresses
@@ -257,6 +274,7 @@ class UdsClient:
         self.ext = False
         if self.channel.kind == "doip":  # bb_uds_target holds the logical addresses there
             self.tester, self.ecu = out.tx, out.rx
+            self._entity = out.rx
         else:
             self.tx, self.rx, self.ext = out.tx, out.rx, bool(out.ext)
         self.channel._uds.add(self)
@@ -265,6 +283,10 @@ class UdsClient:
         try:
             if self._opened:
                 _lib.check(lib.bb_uds_replaces(self._h))
+            self._state_waits(self._h, self._timing)
+            if self._target is not None:
+                _lib.check(lib.bb_uds_retarget(self._h, ctypes.byref(ctypes.c_int64(self._target))))
+                self.ecu = self._target
             for did, size in self._did_sizes.items():
                 _lib.check(lib.bb_uds_did_size(self._h, did, size))
             for record, size in self._ext_sizes.items():
@@ -312,7 +334,7 @@ class UdsClient:
         # nothing is called into here, since this may run between another call and its error
         try:
             if self._h is not None:
-                _orphans.append(self._h)
+                _orphans.append(("bb_uds_close", self._h))
         except Exception:
             pass
 
@@ -561,6 +583,84 @@ class UdsClient:
         with self._lock:
             self._call(_lib.lib().bb_uds_ext_record_size, record, size)
             self._ext_sizes[record] = size  # kept for the next connection
+
+    def _state_waits(self, h: int, stated: dict[str, int]) -> None:
+        """States the waits `stated` names on handle h, one by one."""
+        lib = _lib.lib()
+        for name, ms in stated.items():
+            self._call_on(h, lib.bb_uds_set_wait, _lib.WAITS[name], ms)
+
+    def _get_timing(self, name: str) -> int:
+        t = _lib.BbUdsTiming()
+        self._call(_lib.lib().bb_uds_get_timing, ctypes.byref(t))
+        return getattr(t, name)
+
+    def _set_timing(self, name: str, ms: int) -> None:
+        ms = _int(name, ms)
+        with self._lock:
+            self._state_waits(self._handle(), {name: ms})
+            self._timing[name] = ms  # kept for the next connection
+
+    @property
+    def timeout_ms(self) -> int:
+        """How long the first answer to a request is waited for (1000; a 0x10 answer's P2 can
+        lengthen it). Set: 1 .. 3600000."""
+        return self._get_timing("timeout_ms")
+
+    @timeout_ms.setter
+    def timeout_ms(self, ms: int) -> None:
+        self._set_timing("timeout_ms", ms)
+
+    @property
+    def p2_star_ms(self) -> int:
+        """The ECU's P2*: after each responsePending (0x78) the next answer is waited for this plus
+        margin_ms (5000 until a 0x10 answer names the ECU's, which replaces one set). Set:
+        0 .. 3600000."""
+        return self._get_timing("p2_star_ms")
+
+    @p2_star_ms.setter
+    def p2_star_ms(self, ms: int) -> None:
+        self._set_timing("p2_star_ms", ms)
+
+    @property
+    def margin_ms(self) -> int:
+        """What is added to the P2* wait (1000): P2* bounds an answer's start, and a multi-frame
+        answer must also arrive whole. Set: 0 .. 3600000."""
+        return self._get_timing("margin_ms")
+
+    @margin_ms.setter
+    def margin_ms(self, ms: int) -> None:
+        self._set_timing("margin_ms", ms)
+
+    @property
+    def pending_budget_ms(self) -> int:
+        """The longest one request may take from its send, however often the ECU says
+        responsePending (120000). Set: 1 .. 3600000."""
+        return self._get_timing("pending_budget_ms")
+
+    @pending_budget_ms.setter
+    def pending_budget_ms(self, ms: int) -> None:
+        self._set_timing("pending_budget_ms", ms)
+
+    def retarget(self, address: int | None = None) -> None:
+        """DoIP: requests go to logical address `address` from now on, and the answers taken are
+        its — a node behind the gateway the channel's entity is (ISO 13400-2), on the same
+        connection, so what was unlocked on the gateway holds for the node. None goes back to the
+        channel's ecu_address; `ecu` follows it. A new connection (a lost one reopened, a stop and
+        start) keeps the target but not the gateway's unlock: a gateway that routes only an
+        unlocked tester refuses the node's requests (CarrierFailed, a negative acknowledgement)
+        until it is unlocked again. Another target is another ECU: the client starts again from the
+        waits and sizes the script set, without what it learned of the one before. Refused on a CAN
+        channel, and inside a security_access key_fn."""
+        a = None if address is None else _int("address", address, 64)
+        with self._lock:
+            if self._in_key_fn:
+                # the key would go to the new target, answering the old one's seed
+                raise BloblyError(f"{self!r}: retarget inside a security_access key_fn", _lib.BB_ERR_STATE)
+            h = self._handle()
+            self._call_on(h, _lib.lib().bb_uds_retarget, None if a is None else ctypes.byref(ctypes.c_int64(a)))
+            self._target = a
+            self.ecu = self._entity if a is None else a
 
     def __repr__(self) -> str:
         if self.tester is not None:

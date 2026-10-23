@@ -9,6 +9,7 @@ module doip
 
 import blobly.transport
 import net
+import strconv
 import time
 
 // discover sends a UDP vehicle-identification request to host:port and returns the
@@ -436,6 +437,23 @@ fn (mut c DoipClient) write(msg []u8) ! {
 	}
 }
 
+// nack_note begins the error of a request the entity negatively acknowledged (ISO 13400-2),
+// followed by its code: ` (0x03)`.
+pub const nack_note = 'DoIP: diagnostic message negative ack'
+
+// nack_alive: `msg` says a request was negatively acknowledged by an entity that keeps the
+// connection — any code but 0x02, invalid source address, on which ISO 13400-2 has it close the
+// socket (an unknown or unreachable target, a message too large, ...): the entity answered.
+pub fn nack_alive(msg string) bool {
+	i := msg.index(nack_note) or { return false }
+	rest := msg[i + nack_note.len..]
+	if rest.len < 7 || !rest.starts_with(' (0x') || rest[6] != `)` {
+		return false
+	}
+	code := strconv.parse_uint(rest[4..6], 16, 8) or { return false }
+	return u8(code) != diag_nack_invalid_source
+}
+
 // retarget: the logical address this connection's diagnostic messages go to from now on, and whose
 // answers recv takes — the entity itself, or a node behind it that a DoIP gateway routes to (ISO
 // 13400-2). One TCP connection: a gateway may tie what a tester reaches through it to what the
@@ -527,7 +545,7 @@ fn (mut c DoipClient) own_answer(msg Message) !([]u8, bool) {
 		}
 		pt_diagnostic_message_nack {
 			nack := if msg.payload.len >= 5 { msg.payload[4] } else { u8(0xFF) }
-			return error('DoIP: diagnostic message negative ack (0x${nack:02X})')
+			return error('${nack_note} (0x${nack:02X})')
 		}
 		else {
 			return []u8{}, false // ignore anything else on this connection

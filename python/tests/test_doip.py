@@ -120,6 +120,34 @@ class TestSimDemo:
         with pytest.raises(TypeError):  # None is the DoIP default, not a CAN id
             sim_demo.channels.CAN1.uds_functional(None, [], b"\x3e\x00")
 
+    def test_retarget_moves_the_connection_and_back(self, sim_demo, doip, diag):
+        diag.retarget(0x2000)  # no node behind this entity: it refuses the target
+        assert diag.ecu == 0x2000
+        assert "DoIP 0x0E80 -> 0x2000" in repr(diag)
+        with pytest.raises(blobly.CarrierFailed, match="negative ack"):
+            diag.read_did(VIN)
+        diag.retarget()
+        assert diag.ecu == 0x1000
+        assert diag.read_did(VIN) == b"BLOBLYNETV0SUT001"
+        for bad, kind in ((0x10000, blobly.Refused), (-1, blobly.Refused), ("0x2000", TypeError)):
+            with pytest.raises(kind):
+                diag.retarget(bad)
+        assert diag.ecu == 0x1000, "a refused retarget moved it"
+        # another target is another ECU: what a session answer adopted goes, what was set stays
+        diag.margin_ms = 2000
+        diag.session(0x01)  # P2 50 ms: the first wait is P2 plus the margin
+        assert diag.timeout_ms == 2050
+        diag.retarget(0x2000)
+        assert (diag.timeout_ms, diag.margin_ms) == (1000, 2000)
+        diag.retarget(0x2000)  # the same target: nothing to forget
+        diag.timeout_ms = 300
+        diag.retarget(0x2000)
+        assert diag.timeout_ms == 300
+        diag.retarget()
+        assert diag.timeout_ms == 300, "a wait set was dropped"
+        with sim_demo.channels.CAN1.uds() as can, pytest.raises(blobly.Refused, match="DoIP connection"):
+            can.retarget(0x2000)
+
     def test_discover(self, doip, diag):
         a = doip.discover()
         assert (a.vin, a.logical_address) == ("BLOBLYNETV0SUT001", 0x1000)
@@ -204,11 +232,15 @@ class FakeEntity:
     connection `hold` on none is activated (the request unanswered); `mute` acknowledges a
     request and never answers it; `idle_close` closes the first connection 100 ms after it
     answered its first request. With `alive`, it asks an activated connection an alive check at
-    once, and `alive_answered` says whether it came back."""
+    once, and `alive_answered` says whether it came back. With `node`, it is a gateway to a node at
+    that logical address, which answers 0x22 with b"NODE" and 0x27 as the gateway does, routed only
+    once 0x27 02 was answered by the gateway itself on the connection; before that a request to the
+    node is negatively acknowledged (0x06, target unreachable)."""
 
-    def __init__(self, deny=None, drop=0, drop_sids=None, mute=False, hold=None, alive=False, idle_close=False):
+    def __init__(self, deny=None, drop=0, drop_sids=None, mute=False, hold=None, alive=False, idle_close=False,
+                 node=None):
         self.deny, self.drop, self.drop_sids, self.mute = deny, drop, drop_sids, mute
-        self.hold, self.alive, self.idle_close = hold, alive, idle_close
+        self.hold, self.alive, self.idle_close, self.node = hold, alive, idle_close, node
         self.alive_answered = threading.Event()
         self.connections = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -235,6 +267,7 @@ class FakeEntity:
                     pass
 
     def _connection(self, conn, n):
+        unlocked = False  # the gateway's 0x27 02 answered on this connection
         while True:
             ptype, body = _read(conn)
             if ptype is None:
@@ -255,15 +288,20 @@ class FakeEntity:
                 source, target, data = body[:2], body[2:4], body[4:]
                 if n <= self.drop and (self.drop_sids is None or data[0] in self.drop_sids):
                     return
+                to_node = self.node is not None and target == struct.pack(">H", self.node)
+                if to_node and not unlocked:
+                    conn.sendall(_msg(0x8003, target + source + b"\x06"))
+                    continue
                 conn.sendall(_msg(0x8002, target + source + b"\x00"))
                 if self.mute:
                     continue
                 if data[:1] == b"\x22":
-                    answer = b"\x62" + data[1:3] + b"FAKE"
+                    answer = b"\x62" + data[1:3] + (b"NODE" if to_node else b"FAKE")
                 elif data[:2] == b"\x27\x01":
                     answer = b"\x67\x01\x12\x34"
                 elif data[:1] == b"\x27":
                     answer = b"\x67" + data[1:2]
+                    unlocked = unlocked or (data[1:2] == b"\x02" and not to_node)
                 else:
                     continue
                 conn.sendall(_msg(0x8001, target + source + answer))
@@ -333,6 +371,12 @@ class TestFakeEntity:
         assert x.routing_name == "unknown source address"
         assert "does not accept tester 0x0E80" in x.hint
         assert "routing activation denied" in str(x)
+
+    def test_a_wait_out_of_range_is_refused_before_anything_opens(self, fakes):
+        entity, fake = fakes.start(deny=0x00)
+        with pytest.raises(blobly.Refused, match="timeout_ms 0"):
+            fake.uds(timeout_ms=0)
+        assert entity.connections == 0, "a refused wait dialled the entity"
 
     def test_a_lost_connection_is_typed_and_the_next_call_opens_another(self, fakes):
         entity, fake = fakes.start(drop=1)
@@ -434,6 +478,58 @@ class TestFakeEntity:
                 diag.raw(b"\x27\x02" + bytes(b ^ 0xFF for b in seed))
             diag.raw(b"\x27\x01")
             assert diag.raw(b"\x27\x02\xed\xcb") == b"\x67\x02"
+
+    def test_a_node_behind_the_gateway_is_reached_once_it_is_unlocked(self, fakes):
+        _, fake = fakes.start(node=0x2000)
+        with fake.uds() as diag:
+            diag.retarget(0x2000)
+            with pytest.raises(blobly.CarrierFailed, match="negative ack .0x06"):
+                diag.read_did(VIN)  # the gateway routes only an unlocked tester
+            diag.retarget()
+            diag.security_access(0x01)  # on the gateway, on this connection
+            diag.retarget(0x2000)
+            assert diag.read_did(VIN) == b"NODE"
+            diag.retarget()
+            assert diag.read_did(VIN) == b"FAKE"
+
+            def moves(seed):
+                diag.retarget()  # the key would go to the gateway, answering the node's seed
+                return seed
+            diag.retarget(0x2000)
+            with pytest.raises(blobly.BloblyError, match="inside a security_access key_fn") as e:
+                diag.security_access(0x01, moves)
+            assert e.value.code == _lib.BB_ERR_STATE
+            assert diag.ecu == 0x2000, "the refused retarget moved it"
+
+    def test_a_new_connection_keeps_the_target_but_not_the_unlock(self, fakes):
+        entity, fake = fakes.start(node=0x2000, drop=1, drop_sids={0x3E})
+        net = fake._project
+        with fake.uds() as diag:
+            diag.security_access(0x01)
+            diag.retarget(0x2000)
+            assert diag.read_did(VIN) == b"NODE"
+            with pytest.raises(blobly.ConnectionLost):
+                diag.tester_present()  # the entity closes the connection
+            with pytest.raises(blobly.CarrierFailed, match="negative ack"):
+                diag.read_did(VIN)  # the reopen went to the node, which the gateway no longer routes
+            assert (entity.connections, diag.ecu) == (2, 0x2000)
+            diag.retarget()
+            diag.security_access(0x01)  # the gateway's seed and key, on the new connection
+            diag.retarget(0x2000)
+            assert diag.read_did(VIN) == b"NODE"
+            with pytest.raises(blobly.Refused, match="seed was not answered on this connection"):
+                diag.raw(b"\x27\x02\xed\xcb")  # the gateway's seed is not the node's
+            diag.raw(b"\x27\x01")  # the node's own, on this connection
+            assert diag.raw(b"\x27\x02\xed\xcb") == b"\x67\x02"
+            net.stop()
+            net.start()
+            assert diag.ecu == 0x2000, "a stop and start forgot the target"
+            with pytest.raises(blobly.CarrierFailed, match="negative ack"):
+                diag.read_did(VIN)
+            diag.retarget()
+            diag.security_access(0x01)
+            diag.retarget(0x2000)
+            assert diag.read_did(VIN) == b"NODE"
 
     def test_a_close_from_another_thread_ends_a_call(self, fakes):
         _, fake = fakes.start(mute=True)

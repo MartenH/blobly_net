@@ -925,6 +925,78 @@ int bb_record_counts(int h, bb_record_report *out);
 int bb_record_stop(int h, bb_record_report *out);
 #endif /* BB_FROM_V */
 
+/* Raw ISO-TP, UDS timing and the DoIP retarget (isotp.v, udstiming.v).
+ *
+ * A raw ISO-TP channel (ISO 15765-2) carries whole messages on a CAN row's request / response id
+ * pair with no UDS on top — a proprietary protocol over ISO-TP, or a malformed UDS request and the
+ * bytes that come back: the engine's software ISO-TP (blobly/isotp), the channel a UDS handle rides,
+ * opened by the same rule (blobly/udsconn) on a CAN row of the run (BB_ERR_STATE before bb_start).
+ * Both ids are given (no default pair), either past 0x7FF makes both 29-bit, and `out` (unless NULL)
+ * gets them. Classic addressing in 8-byte frames (sent FD on a row the project declares CAN-FD): a
+ * message is 1 .. 4095 bytes. As a receiver it asks for no pacing (Flow Control CTS, block size 0,
+ * STmin 0); as a sender it honours the receiver's.
+ * Handles as a UDS handle's: one thread uses one at a time, bb_isotp_close may come from another and
+ * ends a send or receive in progress there (BB_ERR_HANDLE) within 20 ms of the wait it is in; a
+ * handle outlives bb_stop. Open one handle per id pair: two on one rx (a UDS handle's included) each
+ * answer a First Frame with a Flow Control of their own.
+ *
+ * bb_isotp_send returns once the message is on the wire: a Single Frame at once, a longer one after
+ * the receiver's Flow Control, each awaited for 1000 ms (N_Bs) and the transfer 120 s in all —
+ * BB_ERR_TIMEOUT when none came, BB_ERR for a message it cannot carry (empty, past 4095 bytes) or a
+ * listen-only row, BB_ERR_CARRIER for the bus or the transfer failing (the receiver's overflow, too
+ * many waits). bb_isotp_recv waits at most timeout_ms (0: one look at what is queued; less than 0 is
+ * refused) for the next whole message on rx and answers its length, its bytes into the buffer as
+ * bb_uds_data's (bb_isotp_data copies them again, whole, until the next receive); BB_ERR_TIMEOUT when
+ * nothing whole came — a transfer begun is kept, and the next receive goes on with it, given up after
+ * 1000 ms with no Consecutive Frame (N_Cr: BB_ERR_CARRIER, as for a frame lost or not ISO-TP).
+ *
+ * A UDS handle's timing (blobly/uds Client) is the waits above bb_uds_open's: the first answer's
+ * (timeout_ms, 1000), the ECU's P2* after each responsePending (p2_star_ms, 5000 until a 0x10 answer
+ * names one) plus margin_ms (1000), and one request's whole allowance from its send
+ * (pending_budget_ms, 120000). bb_uds_get_timing reads them as they stand (a 0x10 answer adopts its
+ * P2*, and lengthens timeout_ms where its P2 needs more); bb_uds_set_wait states one of them, `which`
+ * an enum bb_uds_wait, from the next request on — refused with BB_ERR, nothing changed, for
+ * timeout_ms or pending_budget_ms outside 1 .. 3600000, or p2_star_ms or margin_ms outside
+ * 0 .. 3600000; bb_uds_check_wait answers the same of no handle (any thread), so a host refuses a
+ * wait before it opens a connection to state it on. They hold across the library's own reopen of a lost DoIP connection (P2* only where
+ * it loosens the new one's). Every call above is then bounded by them in place of the 1000 / P2* +
+ * 1000 / 120 s bb_uds_open states.
+ *
+ * bb_uds_retarget moves a DoIP handle's requests, and the answers it takes, to logical address
+ * *address (0 .. 0xFFFF; NULL: the row's ecu_address): a node behind the gateway the row's entity is
+ * (ISO 13400-2), on the one connection, so what the tester unlocked on the gateway there holds for
+ * the node. The target holds across a reopen of a lost connection, whose new routing activation
+ * carries no unlock: a gateway that routes only an unlocked tester refuses the node's requests again
+ * (a negative acknowledgement, BB_ERR_CARRIER) until it is unlocked on the new one. Another target is
+ * another ECU: the handle's waits go back to what was stated with bb_uds_set_wait (the rest to
+ * bb_uds_open's), and the snapshot DID sizes it learned are forgotten (bb_uds_did_size's are kept).
+ * On a connection
+ * that replaces another (bb_uds_replaces, or the library's reopen), a 0x27 key goes only to a target
+ * whose seed of its level was answered on it. BB_ERR on a CAN handle, whose target is its ids. */
+typedef struct bb_uds_timing {
+	int32_t timeout_ms;
+	int32_t p2_star_ms;
+	int32_t margin_ms;
+	int32_t pending_budget_ms;
+} bb_uds_timing;
+enum bb_uds_wait {
+	BB_WAIT_TIMEOUT = 0,         /* timeout_ms */
+	BB_WAIT_P2_STAR = 1,         /* p2_star_ms */
+	BB_WAIT_MARGIN = 2,          /* margin_ms */
+	BB_WAIT_PENDING_BUDGET = 3   /* pending_budget_ms */
+};
+#ifndef BB_FROM_V
+int bb_isotp_open(int row, int64_t tx, int64_t rx, bb_uds_target *out); /* >= 0: the handle */
+int bb_isotp_send(int h, const uint8_t *data, int n);
+int bb_isotp_recv(int h, int timeout_ms, uint8_t *buf, int cap);        /* >= 0: the length */
+int bb_isotp_data(int h, uint8_t *buf, int cap);
+int bb_isotp_close(int h);
+int bb_uds_get_timing(int u, bb_uds_timing *out);
+int bb_uds_set_wait(int u, int which, int ms);
+int bb_uds_check_wait(int which, int ms);
+int bb_uds_retarget(int u, const int64_t *address);
+#endif /* BB_FROM_V */
+
 #ifdef __cplusplus
 }
 #endif

@@ -22,6 +22,7 @@ SCRIPTS = {
     "bus_metrics.py": ["--seconds", "2"],
     "uds_diag.py": [],
     "doip_diag.py": [],
+    "isotp_raw.py": [],
     "fault_injection.py": [],
     "e2e_check.py": [],
     "flash_ecu.py": [],
