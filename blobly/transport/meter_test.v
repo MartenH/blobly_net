@@ -92,3 +92,54 @@ fn test_a_send_is_priced_as_the_wire_carries_it() {
 	b.send(f)!
 	assert b.load().bits == frame_bits(CanFrame{ ...f, data: []u8{len: 12} }, 500000, 500000)
 }
+
+// a verbatim bus keeps its caller's format through the meter
+fn test_a_verbatim_bus_is_not_framed_by_the_meter() {
+	name := 'inproc:meter_verbatim'
+	mut raw := open(name)!
+	mut b := metered(verbatim(mut raw), name, 500000, 0)
+	mut other := open(name)!
+	defer {
+		b.close()
+		other.close()
+	}
+	replace_wire_policy([], {
+		name: Framing{
+			fd: true
+		}
+	})
+	defer {
+		replace_wire_policy([], map[string]Framing{})
+	}
+	b.send(std8())!
+	got := other.recv(1000)!
+	assert !got.fd && !got.format_stated
+	assert b.load().bits == 135.0
+}
+
+// on an FD wire a send is promoted and priced as FD, and a stated classic one stays classic
+fn test_a_framed_wire_prices_what_it_sends() {
+	name := 'inproc:meter_fd'
+	mut b := metered(open(name)!, name, 500000, 0)
+	mut other := open(name)!
+	defer {
+		b.close()
+		other.close()
+	}
+	replace_wire_policy([], {
+		name: Framing{
+			fd: true
+		}
+	})
+	defer {
+		replace_wire_policy([], map[string]Framing{})
+	}
+	b.send(std8())!
+	promoted := other.recv(1000)!
+	assert promoted.fd && !promoted.format_stated
+	assert b.load().bits == frame_bits(promoted, 500000, 500000)
+	b.send(FrameFormat.classic.stamp(std8())!)!
+	kept := other.recv(1000)!
+	assert !kept.fd && !kept.format_stated
+	assert b.load().bits == frame_bits(promoted, 500000, 500000) + 135.0
+}

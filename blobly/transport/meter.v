@@ -102,11 +102,24 @@ pub fn metered(b Bus, iface string, nominal int, data int) &MeteredBus {
 }
 
 pub fn (mut m MeteredBus) send(f CanFrame) ! {
-	// framed HERE, once, and sent stated so nothing beneath frames it again: the frame priced is
-	// the frame sent, padded or clamped by the backend as wire_frame says (the GUI tap's shape)
-	framed := framed_for_wire(m.iface, f)
-	m.inner.send(CanFrame{ ...framed, format_stated: true })!
-	m.meter.note(wire_frame(m.iface, framed), i64(time.sys_mono_now()))
+	// priced as it goes out: framed as the wire declares, then padded or clamped by the backend
+	// as wire_frame says (the GUI tap's shape)
+	mut out := framed_for_wire(m.iface, f)
+	mut inner := m.inner
+	if mut inner is SilentBus {
+		if inner.verbatim {
+			// its caller owns the format: nothing is framed
+			out = f.unstated()
+			inner.send(f)!
+		} else {
+			// framed once, here, and sent stated, so the frame priced is the frame sent
+			inner.send(CanFrame{ ...out, format_stated: true })!
+		}
+	} else {
+		// a host's own bus (the GUI tap) frames it as open's buses do
+		inner.send(f)!
+	}
+	m.meter.note(wire_frame(m.iface, out), i64(time.sys_mono_now()))
 }
 
 pub fn (mut m MeteredBus) recv(timeout_ms int) !CanFrame {
