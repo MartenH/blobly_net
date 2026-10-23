@@ -35,14 +35,21 @@ fn gens_nul_refusal(proj project.Project) ! {
 
 // gen_run is the started run, or BB_ERR_STATE's refusal.
 fn gen_run() !&headless.Run {
+	r, _ := gen_run_numbered()!
+	return r
+}
+
+// gen_run_numbered is the started run and its number (bb_run_gen), read together.
+fn gen_run_numbered() !(&headless.Run, u64) {
 	bb_mu.lock()
 	r := bb_gen_run
+	n := bb_run_gen
 	bb_mu.unlock()
 	if isnil(r) {
 		return error_with_code("not started: the generators are the run's, from bb_start until bb_stop",
 			int(bb_err_state))
 	}
-	return r
+	return r, n
 }
 
 // gen_failed is a generator call's failure as its bb.h code.
@@ -114,9 +121,24 @@ pub fn bb_gen_text(g i32, which i32, buf &char, cap i32) i32 {
 	return put(s, buf, cap)
 }
 
+@[export: 'bb_gen_run']
+pub fn bb_gen_run(out &i64) i32 {
+	if isnil(out) {
+		return fail(bb_err, 'gen_run: nowhere to put it')
+	}
+	_, n := gen_run_numbered() or { return refused(err) }
+	unsafe {
+		*out = i64(n)
+	}
+	return ok()
+}
+
 @[export: 'bb_gen_fire']
-pub fn bb_gen_fire(g i32, until_ns i64) i32 {
-	mut r := gen_run() or { return refused(err) }
+pub fn bb_gen_fire(g i32, run i64, until_ns i64) i32 {
+	mut r, n := gen_run_numbered() or { return refused(err) }
+	if run != 0 && u64(run) != n {
+		return fail(bb_err_state, 'generator ${g} is of an earlier run: list the generators again')
+	}
 	r.gen_fire(int(g), if until_ns > 0 { u64(until_ns) } else { u64(0) }) or {
 		return gen_failed(err)
 	}

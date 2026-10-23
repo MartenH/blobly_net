@@ -762,7 +762,10 @@ int bb_bus_diagnostics(int h, bb_diagnostics *out);
  * overtook); any (attached) thread. Each generator has a loop of its own that holds its bus: a
  * cyclic one's starts with the run, any other's at its first fire or start.
  *
- * bb_gen_fire sends its current frame once and returns once the bus took it: BB_ERR for a bus
+ * bb_gen_fire sends its current frame once and returns once the bus took it — generator g of run
+ * `run` (bb_gen_run's number, 0 for whichever is started: BB_ERR_STATE when another run is, so a
+ * host need hold no lock of its own across the wait for a stop and start not to move the index):
+ * BB_ERR for a bus
  * that refused it (a listen-only row) or a generator with nothing to send on, BB_ERR_TIMEOUT when
  * its bus did not take it by until_ns (bb_now_ns's clock: an absolute deadline, so time spent
  * reaching the call counts; 0 or less, or past 5 s from now: 5 s from now; a first fire opens the
@@ -784,7 +787,8 @@ int bb_gen_find(const char *name);                       /* >= 0: the generator 
 int bb_gen_info(int g, bb_generator *out);
 int bb_gen_text(int g, int which, char *buf, int cap);   /* >= 0: the length; which is an enum
                                                             bb_gen_text */
-int bb_gen_fire(int g, int64_t until_ns);
+int bb_gen_run(int64_t *run);                            /* the run's number: a fire names it */
+int bb_gen_fire(int g, int64_t run, int64_t until_ns);
 int bb_gen_start(int g, int cycle_ms);
 int bb_gen_stop(int g);
 int bb_gen_cycle(int g, int cycle_ms);

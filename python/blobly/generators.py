@@ -110,19 +110,22 @@ class Generator:
         until = lib.bb_now_ns() + int(timeout_ms * 1_000_000)  # one deadline for all of it
 
         def call():
-            # the state lock (a stop and start cannot move this index) is waited for within it too
+            # the state lock is waited for within the deadline too, and held only to read which
+            # run this generator is of: the fire names that run, which the engine refuses once
+            # another is started, so a stop waits for nothing here
             left = (until - lib.bb_now_ns()) / 1e9
             if left <= 0 or not _lib.state_lock.acquire(timeout=left):
                 raise _lib.Timeout(f"generator {self.name!r}: the project was busy on another thread "
                                    "past the wait; nothing was sent")
             try:
                 self._live()
-                rc = lib.bb_gen_fire(self._index, until)
-                if rc == _lib.BB_ERR:
-                    raise GeneratorRefused(_lib.text(lib.bb_last_error()), rc)
-                _lib.check(rc)
+                run = self._engine_run
             finally:
                 _lib.state_lock.release()
+            rc = lib.bb_gen_fire(self._index, run, until)
+            if rc == _lib.BB_ERR:
+                raise GeneratorRefused(_lib.text(lib.bb_last_error()), rc)
+            _lib.check(rc)
         _on_thread(call, "blobly-fire")
 
     def start(self, cycle_ms: int | None = None) -> None:
@@ -198,18 +201,22 @@ def listed(project, old):
     channel; the caller holds the state lock."""
     lib = _lib.lib()
     run = _lib.state["run"]
+    engine_run = ctypes.c_int64()
+    _lib.check(lib.bb_gen_run(ctypes.byref(engine_run)))  # what a fire names, so it holds no lock
     out = []
     for i in range(_lib.check(lib.bb_gen_count())):
         name = _lib.string(lib.bb_gen_text, i, _lib.GEN_NAME)
         channel = _lib.string(lib.bb_gen_text, i, _lib.GEN_CHANNEL)
         keep = old[i] if old is not None and i < len(old) else None
         if keep is not None and (keep.name, keep.channel) == (name, channel):
-            keep._run = run
+            keep._run, keep._engine_run = run, engine_run.value
             keep.message = _lib.string(lib.bb_gen_text, i, _lib.GEN_MESSAGE)  # the project may be edited
             keep.trigger = _lib.string(lib.bb_gen_text, i, _lib.GEN_TRIGGER)
             out.append(keep)
         else:
-            out.append(Generator(project, i, name, channel, run))
+            g = Generator(project, i, name, channel, run)
+            g._engine_run = engine_run.value
+            out.append(g)
     return Generators(out, run)
 
 

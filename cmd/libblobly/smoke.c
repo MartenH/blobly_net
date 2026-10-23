@@ -89,9 +89,10 @@ static gen_text_fn bb_gen_text_p;
 static gen_cycle_fn bb_gen_start_p, bb_gen_cycle_p;
 static gen_set_fn bb_gen_set_p;
 static gen_source_fn bb_gen_source_p;
-static int (*bb_gen_fire_p)(int, int64_t);
+static int (*bb_gen_fire_p)(int, int64_t, int64_t);
 static int (*bb_gen_stop_p)(int);
 static int (*bb_gen_count_p)(void);
+static int (*bb_gen_run_p)(int64_t *);
 static int_int_fn bb_message_count_p;
 static msg_info_fn bb_message_info_p;
 static msg_str_fn bb_message_name_p;
@@ -320,7 +321,10 @@ static int gen_steps(void) {
 	CHECK(hb >= 0, "find a generator by channel and name");
 	char msg[32];
 	CHECK(bb_gen_text_p(hb, BB_GEN_MESSAGE, msg, sizeof msg) == 9 && strcmp(msg, "Heartbeat") == 0, "its message");
-	CHECK(bb_gen_set_p(hb, "Counter", 42) == 0 && bb_gen_fire_p(hb, 0) == 0, "set and fire");
+	CHECK(bb_gen_set_p(hb, "Counter", 42) == 0 && bb_gen_fire_p(hb, 0, 0) == 0, "set and fire");
+	int64_t run;
+	CHECK(bb_gen_run_p(&run) == 0 && bb_gen_fire_p(hb, run, 0) == 0 && bb_gen_fire_p(hb, run + 1, 0) == BB_ERR_STATE,
+		"a fire names its run, and another run's is refused");
 	bb_wave w = {.kind = "counter", .step = 1, .modulo = 256};
 	CHECK(bb_gen_source_p(hb, "Counter", &w) == 0 && bb_gen_start_p(hb, 20) == 0, "a source, then a cycle");
 	bb_generator g;
@@ -411,7 +415,7 @@ int main(int argc, char **argv) {
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
 	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
-	SYM(bb_gen_count); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
+	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
 
 	if (bb_init_p() != 0) FAIL("init");

@@ -87,6 +87,16 @@ class TestSimDemo:
                 hb.fire(timeout_ms=50)
         assert hb.sent == sent
 
+    def test_a_fire_names_its_run(self, sim_demo):
+        hb = sim_demo.generators["Heartbeat pulse"]
+        hb._engine_run += 1  # as a fire of an earlier run would name it
+        try:
+            with pytest.raises(blobly.BloblyError, match="earlier run") as e:
+                hb.fire()
+            assert e.value.code == -3
+        finally:
+            hb._engine_run -= 1
+
     def test_refusals_are_typed(self, sim_demo):
         gens = sim_demo.generators
         hb, wake = gens["Heartbeat pulse"], gens["Cyclic wake (0x123)"]

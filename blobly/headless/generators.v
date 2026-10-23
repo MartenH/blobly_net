@@ -247,23 +247,25 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 			fresh = false
 			g.send(mut bus, run_t0)
 		}
-		// a fire is served between cyclic frames, however far behind the cycle is
+		// one fire per pass, between cyclic frames: however far behind the cycle is, a fire is
+		// served, and however full the queue is kept, the cycle is; one taken after a stop began
+		// is not sent
+		if mut fire := g.next_fire() {
+			if fire.take(time.sys_mono_now()) {
+				fire.reply <- answered(if r.ctl.running { g.send(mut bus, run_t0) } else { run_stopped })
+			}
+			continue
+		}
 		after := time.sys_mono_now() / 1_000_000
 		mut wait := u64(20)
 		if cyc {
 			due := last + period
 			wait = if due <= after { 0 } else if due - after < wait { due - after } else { wait }
 		}
+		// woken early by a fire queued, a start or a cycle changed
 		select {
 			_ := <-g.wake {}
 			i64(wait) * time.millisecond {}
-		}
-		// every fire waiting, in order; one taken after a stop began is not sent
-		for {
-			mut fire := g.next_fire() or { break }
-			if fire.take(time.sys_mono_now()) {
-				fire.reply <- answered(if r.ctl.running { g.send(mut bus, run_t0) } else { run_stopped })
-			}
 		}
 	}
 	bus.close()
@@ -497,8 +499,9 @@ pub fn (mut r Run) gen_start(i int, cycle_ms int) ! {
 	g.mu.lock()
 	ms := if cycle_ms != 0 { cycle_ms } else { g.s.cycle_ms }
 	if ms <= 0 {
+		why := if g.cycle_note != '' { ' (${g.cycle_note})' } else { '' }
 		g.mu.unlock()
-		return sim.gen_error(.refused, 'generator "${g.s.name}" has no cycle: give it one')
+		return sim.gen_error(.refused, 'generator "${g.s.name}" has no cycle${why}: give it one')
 	}
 	if g.open == '' || g.ended {
 		g.mu.unlock()
@@ -508,6 +511,7 @@ pub fn (mut r Run) gen_start(i int, cycle_ms int) ! {
 	g.cyclic = true
 	g.restart = true
 	g.mu.unlock()
+	g.wake.try_push(true)
 	if !r.spawn_gen(mut g, r.run_t0) {
 		g.mu.lock()
 		g.cyclic = false
@@ -531,6 +535,7 @@ pub fn (mut r Run) gen_cycle(i int, ms int) ! {
 	g.mu.lock()
 	g.s.cycle_ms = ms
 	g.mu.unlock()
+	g.wake.try_push(true)
 }
 
 // gen_value sends `signal` of generator g at the static `value` from its next frame.

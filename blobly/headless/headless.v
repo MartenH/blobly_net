@@ -479,11 +479,11 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		}
 	}
 	for mut g in r.gens {
-		if g.s.trigger != 'cyclic' {
+		if g.cycle_note != '' {
+			o.err('${g.channel}: generator "${g.s.name}": ${g.cycle_note} — it has none in this run')
 			continue
 		}
-		if g.cycle_note != '' {
-			o.err('${g.channel}: generator "${g.s.name}": ${g.cycle_note} — not sent on a cycle')
+		if g.s.trigger != 'cyclic' {
 			continue
 		}
 		if g.s.cycle_ms <= 0 {
