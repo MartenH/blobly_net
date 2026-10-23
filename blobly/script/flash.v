@@ -103,7 +103,17 @@ fn l_flash_program(l lua.State) i32 {
 		quiet:    l.arg_bool(9)
 	}
 	sink.note('${full} -> ${c.chan} 0x${ch.tx_id:X}/0x${ch.rx_id:X} @0x${opts.base.hex()}, sw_version ${opts.sw_version}')
-	rep := flash.program(mut ch, image, opts, mut sink) or { return l.fail('${what}: ${err}') }
+	if env.deadline != 0 {
+		opts.stop = fn [env] () bool {
+			return env.expired()
+		}
+	}
+	rep := flash.program(mut ch, image, opts, mut sink) or {
+		if env.expired() {
+			return timeout_at(l) // stopped by the run deadline
+		}
+		return l.fail('${what}: ${err}')
+	}
 	l.new_table()
 	l.set_int('bytes', rep.bytes)
 	l.set_int('blocks', rep.blocks)

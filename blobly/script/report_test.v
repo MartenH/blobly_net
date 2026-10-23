@@ -77,6 +77,14 @@ fn test_report_counts_and_names_the_timed_out_test() {
 	assert r.tests[1].line == 4
 	t := r.timeout or { panic('no timeout record') }
 	assert t.test == 'three' && t.script == 'a.lua' && t.after_s == 2
+	assert Outcome{
+		script:  'b.lua'
+		results: [TestResult{
+			name:      'begun in a'
+			script:    'a.lua'
+			timed_out: true
+		}]
+	}.timeout_script() == 'a.lua'
 	// the first timed-out verdict is the test the deadline ended: an inner one reports first
 	assert Outcome{
 		timed_out: true
@@ -168,8 +176,8 @@ fn test_a_caught_timeout_is_still_one() {
 }
 
 fn test_report_text_is_utf8() {
-	assert text('Grüße') == 'Grüße'
-	assert text('a\xffb') == 'a\\xFFb'
+	assert json_text('Grüße') == 'Grüße'
+	assert json_text('a\xffb') == 'a\\xFFb'
 }
 
 // A loop that catches every error still ends at the deadline.

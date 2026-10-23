@@ -33,7 +33,8 @@ for a in "$@"; do
     --project|-p) next=path; args+=("$a") ;;
     --timeout)    next=value; args+=("$a") ;;
     --report)     next=report ;;
-    -*)           args+=("$a") ;;
+    --project-ports) args+=("$a") ;;
+    -*)           named=1; args+=("$a") ;;  # one invocation, which refuses it
     *)            named=1; args+=("$(abs "$a")") ;;
   esac
 done

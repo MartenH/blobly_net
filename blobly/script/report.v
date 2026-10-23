@@ -120,10 +120,10 @@ pub fn (o Outcome) report() Report {
 			else { timed_out++ }
 		}
 		tests << ReportTest{
-			name:        text(r.name)
-			script:      text(r.script)
+			name:        json_text(r.name)
+			script:      json_text(r.script)
 			status:      status
-			message:     text(r.msg)
+			message:     json_text(r.msg)
 			line:        r.line
 			duration_ms: round_ms(r.ms)
 		}
@@ -132,8 +132,8 @@ pub fn (o Outcome) report() Report {
 	if o.timed_out {
 		if o.test != '' && !o.results.any(it.timed_out) {
 			tests << ReportTest{
-				name:    text(o.test)
-				script:  text(o.script)
+				name:    json_text(o.test)
+				script:  json_text(o.script)
 				status:  'timeout'
 				message: timeout_note
 			}
@@ -141,13 +141,13 @@ pub fn (o Outcome) report() Report {
 		}
 		timeout = ReportTimeout{
 			after_s: o.timeout_s
-			script:  text(o.script)
-			test:    text(o.timeout_test())
+			script:  json_text(o.timeout_script())
+			test:    json_text(o.timeout_test())
 		}
 	}
 	mut diags := map[string]ReportDiag{}
 	for k, d in o.diagnostics {
-		diags[text(k)] = ReportDiag{
+		diags[json_text(k)] = ReportDiag{
 			dropped:       d.dropped
 			bus_errors:    d.bus_errors
 			decode_errors: d.decode_errors
@@ -163,8 +163,8 @@ pub fn (o Outcome) report() Report {
 			else { 'error' }
 		}
 		exit_code:     code
-		message:       text(if o.refused != '' { o.refused } else { o.note })
-		project:       text(o.project)
+		message:       json_text(if o.refused != '' { o.refused } else { o.note })
+		project:       json_text(o.project)
 		duration_ms:   round_ms(o.ms)
 		counts:        ReportCounts{
 			passed:        passed
@@ -174,8 +174,8 @@ pub fn (o Outcome) report() Report {
 		}
 		tests:         tests
 		script_errors: o.errors.map(ReportError{
-			script:  text(it.script)
-			message: text(it.message)
+			script:  json_text(it.script)
+			message: json_text(it.message)
 		})
 		timeout:       timeout
 		diagnostics:   diags
@@ -193,14 +193,25 @@ pub fn (o Outcome) timeout_test() string {
 	return o.test
 }
 
+// timeout_script is the script of the test timeout_test names, which a coroutine may have begun
+// in an earlier script than the one running; else the one running.
+pub fn (o Outcome) timeout_script() string {
+	for r in o.results {
+		if r.timed_out {
+			return r.script
+		}
+	}
+	return o.script
+}
+
 // json is the report as the --report file holds it.
 pub fn (r Report) json() string {
 	return json2.encode(r, prettify: true) + '\n'
 }
 
-// text is `s` as JSON can carry it: a Lua string may hold any bytes, and one that is not UTF-8
+// json_text is `s` as JSON can carry it: a Lua string may hold any bytes, and one that is not UTF-8
 // has each byte above 0x7F written as \xNN.
-fn text(s string) string {
+fn json_text(s string) string {
 	if utf8.validate_str(s) {
 		return s
 	}

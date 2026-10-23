@@ -133,9 +133,8 @@ same verdict and the detail behind it, schema 1 (a field is only ever added):
 **How a timeout ends a run.** Lua code is stopped between instructions, so a loop that never
 yields ends at the deadline, and `pcall` cannot catch it for good; no `test()` starts after it; a wait — `sleep_ms`, `bus.recv`, `expect`, `run()`, a `doip.listen`,
 `someip.listen` or `uds.functional` window, a `someip.call` or `doip.discover` — is cut to what is left (a wait for ever included);
-a UDS request is abandoned, in its carrier's wait or between its answers. One host call in
-progress (a DoIP connection being opened, at most 7 s; a `flash.program` without a `progress`
-callback) finishes its own bounded wait first. Then the project is stopped
+a UDS request, `flash.program` included, is abandoned in its carrier's wait or between its
+answers. A DoIP connection being opened (at most 7 s) finishes its own bounded wait first. Then the project is stopped
 and every bus closed as on any other exit, and the report is written. What the deadline cannot
 reach — a Lua finalizer, a script that replaced the debug hook — is ended by a watchdog 10 s after
 the deadline (longer than a DoIP open): exit 4 again, with a report that has no tests and says so in `message`.

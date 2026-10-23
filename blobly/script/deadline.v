@@ -40,9 +40,8 @@ struct Running {
 // set_deadline ends what this env runs `after_ms` from now. Lua code is stopped between
 // instructions (a count hook raising timeout_note, which pcall, xpcall and coroutine.resume raise
 // again); a sleep, a frame wait or a listening window is
-// cut to what is left; a UDS request is abandoned, in its carrier's wait or between its answers. A
-// host call that waits on its own (a DoIP connection being opened, a flash without a progress
-// callback) finishes that wait first. Set before anything runs: a coroutine or a UDS connection
+// cut to what is left; a UDS request (a flash's too) is abandoned, in its carrier's wait or between
+// its answers. A DoIP connection being opened finishes its own bounded wait first. Set before anything runs: a coroutine or a UDS connection
 // that exists already is not bound.
 pub fn (mut env Env) set_deadline(after_ms i64) {
 	env.deadline = time.sys_mono_now() + u64(after_ms) * 1_000_000
