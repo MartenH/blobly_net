@@ -1,31 +1,17 @@
 """SOME/IP from Python: someip.send, someip.call and someip.listen against a static peer on
 loopback (a plain UDP socket answering from its own port, as a blobly_emb node does) — the coverage
 of blobly/script's someip tests and blobly/someip's tester_test.v, through the C ABI."""
-import os
 import socket
 import struct
-import sys
 import threading
 import time
 
 import pytest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-# the source tree, unless the run is of an installed wheel (BLOBLY_TEST_INSTALLED)
-if not os.environ.get("BLOBLY_TEST_INSTALLED"):
-    sys.path.insert(0, os.path.join(HERE, ".."))
-import blobly  # noqa: E402
-from blobly import SomeipMessage, _lib, someip  # noqa: E402
+import blobly
+from blobly import SomeipMessage, someip
 
-
-@pytest.fixture(scope="module", autouse=True)
-def engine():
-    try:
-        _lib.lib()
-    except blobly.BloblyError as e:
-        if os.environ.get("BLOBLY_LIB") or os.environ.get("BLOBLY_TEST_INSTALLED"):
-            raise
-        pytest.skip(str(e))
+pytestmark = pytest.mark.usefixtures("engine")
 
 
 def free_port():
