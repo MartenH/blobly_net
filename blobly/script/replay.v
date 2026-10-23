@@ -101,6 +101,10 @@ fn l_replay_start(l lua.State) i32 {
 		}
 	}
 	env.replays << s
+	if env.expired() {
+		s.stop() // a start that outlasted the run's deadline plays nothing past it
+		return timeout_at(l)
+	}
 	l.push_int(env.replays.len - 1)
 	return 1
 }
@@ -215,6 +219,10 @@ fn l_record_start(l lua.State) i32 {
 		}
 	}
 	env.records << rec
+	if env.expired() {
+		rec.stop() or {} // a start that outlasted the run's deadline records nothing past it
+		return timeout_at(l)
+	}
 	l.push_int(env.records.len - 1)
 	return 1
 }

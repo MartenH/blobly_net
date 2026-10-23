@@ -62,7 +62,8 @@ class RecordCounts:
 
 def _rows(project: "Project", channels: Targets) -> "tuple[list[Channel], ctypes.Array[ctypes.c_int]]":
     """The Channels `channels` names (a Channel, a name, or a list of them) and their row indexes."""
-    many = channels if isinstance(channels, (list, tuple)) else [channels]
+    from .project import Channel
+    many = [channels] if isinstance(channels, (str, Channel)) else list(channels)
     if not many:
         raise ValueError("no channel")
     chans = [project._resolve(c) for c in many]
@@ -76,12 +77,14 @@ def _absolute(path: Path) -> str:
     return p if os.path.isabs(p) else os.path.join(os.getcwd(), p)
 
 
-def _text(name: str, v: "Path | None") -> bytes | None:
+def _text(name: str, v: "Path | None", path: bool = False) -> bytes | None:
+    """`v` as C takes it: a path in the filesystem's encoding (its bytes, undecodable ones too),
+    any other text as UTF-8."""
     if v is None:
         return None
     if not isinstance(v, (str, os.PathLike)):
         raise TypeError(f"{name} must be a string, not {v!r}")
-    b = os.fsencode(v) if isinstance(v, os.PathLike) else v.encode()
+    b = os.fsencode(v) if path or isinstance(v, os.PathLike) else v.encode()
     if b"\0" in b:
         raise ValueError(f"{name} cannot carry a NUL: C would read it cut short")
     return b
@@ -108,7 +111,7 @@ class Replay:
         o = _lib.BbReplayOpts()
         lib = _lib.lib()
         _lib.check(lib.bb_replay_defaults(ctypes.byref(o)))
-        o.source = None if source is None else _text("source", _absolute(source))
+        o.source = None if source is None else _text("source", _absolute(source), path=True)
         if speed is not None:
             o.speed = _rate(speed)
         if loop is not None:
@@ -204,7 +207,7 @@ class Recording:
         with _lib.state_lock:
             for c in self.channels:
                 c._current()
-            self._h = _lib.check(lib.bb_record_start(rows, len(rows), _text("path", self.path)))
+            self._h = _lib.check(lib.bb_record_start(rows, len(rows), _text("path", self.path, path=True)))
         self._last = None
 
     @staticmethod
@@ -228,8 +231,12 @@ class Recording:
                 return self._last
             r = _lib.BbRecordReport()
             rc = _lib.lib().bb_record_stop(self._h, ctypes.byref(r))  # the handle stays readable
-            self._last, self._h = self._counts(r), None
+            self._last = self._counts(r)
             self._project.__dict__.get("_recordings", set()).discard(self)
+            if rc >= 0:
+                self._h = None
+            # else kept: a writer that outlived the stop still adds to its counts, which counts()
+            # and another stop() then read
             _lib.check(rc)
         return self._last
 
