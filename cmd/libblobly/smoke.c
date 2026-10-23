@@ -120,6 +120,7 @@ static int (*bb_isotp_recv_p)(int, int, uint8_t *, int);
 static int_int_fn bb_isotp_close_p, bb_uds_tester_present_p;
 static int (*bb_uds_get_timing_p)(int, bb_uds_timing *);
 static int (*bb_uds_set_wait_p)(int, int, int);
+static int (*bb_uds_check_wait_p)(int, int);
 static int (*bb_uds_retarget_p)(int, const int64_t *);
 
 typedef int (*load_fn)(int, bb_busload *);
@@ -320,6 +321,8 @@ static int isotp_steps(int row, int doip) {
 	CHECK(bb_isotp_send_p(h, msg, 0) == BB_ERR && bb_isotp_recv_p(h, -1, msg, sizeof msg) == BB_ERR, "an empty message and a negative wait refused");
 	CHECK(bb_isotp_close_p(h) == 0 && bb_isotp_close_p(h) == BB_ERR_HANDLE, "a closed ISO-TP handle is gone");
 
+	CHECK(bb_uds_check_wait_p(BB_WAIT_MARGIN, 0) == 0 && bb_uds_check_wait_p(BB_WAIT_PENDING_BUDGET, 0) == BB_ERR,
+		"a wait checked of no handle");
 	int64_t tx = 0x6F0, rx = 0x6F8;  /* nothing answers there */
 	int u = bb_uds_open_p(row, &tx, &rx, &t);
 	bb_uds_timing tm;
@@ -472,7 +475,7 @@ int main(int argc, char **argv) {
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
 	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present);
-	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_retarget);
+	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_check_wait); SYM(bb_uds_retarget);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");

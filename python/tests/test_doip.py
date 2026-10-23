@@ -372,6 +372,12 @@ class TestFakeEntity:
         assert "does not accept tester 0x0E80" in x.hint
         assert "routing activation denied" in str(x)
 
+    def test_a_wait_out_of_range_is_refused_before_anything_opens(self, fakes):
+        entity, fake = fakes.start(deny=0x00)
+        with pytest.raises(blobly.Refused, match="timeout_ms 0"):
+            fake.uds(timeout_ms=0)
+        assert entity.connections == 0, "a refused wait dialled the entity"
+
     def test_a_lost_connection_is_typed_and_the_next_call_opens_another(self, fakes):
         entity, fake = fakes.start(drop=1)
         with fake.uds() as diag:

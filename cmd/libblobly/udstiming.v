@@ -22,10 +22,9 @@ pub fn bb_uds_get_timing(u i32, out &C.bb_uds_timing) i32 {
 	})
 }
 
-// bb_uds_set_wait: one of the handle's waits stated (uds.Client.state), `which` an enum bb_uds_wait.
-@[export: 'bb_uds_set_wait']
-pub fn bb_uds_set_wait(u i32, which i32, ms i32) i32 {
-	w := match which {
+// waits_of is wait `which` (an enum bb_uds_wait) at `ms`, as uds.Waits.
+fn waits_of(which i32, ms i32) !uds.Waits {
+	return match which {
 		i32(C.BB_WAIT_TIMEOUT) { uds.Waits{
 				timeout_ms: int(ms)
 			} }
@@ -38,12 +37,28 @@ pub fn bb_uds_set_wait(u i32, which i32, ms i32) i32 {
 		i32(C.BB_WAIT_PENDING_BUDGET) { uds.Waits{
 				pending_budget_ms: int(ms)
 			} }
-		else { return fail(bb_err, 'set_wait: ${which} is not an enum bb_uds_wait') }
+		else { error('set_wait: ${which} is not an enum bb_uds_wait') }
 	}
+}
+
+// bb_uds_set_wait: one of the handle's waits stated (uds.Client.state).
+@[export: 'bb_uds_set_wait']
+pub fn bb_uds_set_wait(u i32, which i32, ms i32) i32 {
+	w := waits_of(which, ms) or { return fail(bb_err, err.msg()) }
 	return with_uds(u, fn [w] (mut hd UdsHandle) !i32 {
 		hd.conn.cli.state(w)!
 		return ok()
 	})
+}
+
+// bb_uds_check_wait: whether bb_uds_set_wait would take the wait, asked of no handle, so a host
+// refuses a wait before it opens a connection to state it on.
+@[export: 'bb_uds_check_wait']
+pub fn bb_uds_check_wait(which i32, ms i32) i32 {
+	w := waits_of(which, ms) or { return fail(bb_err, err.msg()) }
+	mut probe := uds.Client{}
+	probe.state(w) or { return fail(bb_err, err.msg()) }
+	return ok()
 }
 
 // bb_uds_retarget: a DoIP handle's requests, and the answers it takes, to logical address

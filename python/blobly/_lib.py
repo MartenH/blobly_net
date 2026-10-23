@@ -424,6 +424,7 @@ def _declare(lib):
         "bb_isotp_close": ([c_int], c_int),
         "bb_uds_get_timing": ([c_int, P(BbUdsTiming)], c_int),
         "bb_uds_set_wait": ([c_int, c_int, c_int], c_int),
+        "bb_uds_check_wait": ([c_int, c_int], c_int),
         "bb_uds_retarget": ([c_int, P(ctypes.c_int64)], c_int),
     }
     for name, (args, res) in sigs.items():

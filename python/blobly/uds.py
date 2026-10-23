@@ -243,6 +243,8 @@ class UdsClient:
         stated = (("timeout_ms", timeout_ms), ("p2_star_ms", p2_star_ms), ("margin_ms", margin_ms),
                   ("pending_budget_ms", pending_budget_ms))
         self._timing = {name: _int(name, ms) for name, ms in stated if ms is not None}
+        for name, ms in self._timing.items():  # refused before anything opens
+            _lib.check(_lib.lib().bb_uds_check_wait(_lib.WAITS[name], ms))
         self._target: int | None = None  # retarget's address, named again on each DoIP connection
         self._entity: int | None = None  # the DoIP channel's ecu_address
         self.tx = self.rx = None

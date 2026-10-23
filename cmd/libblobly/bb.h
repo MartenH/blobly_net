@@ -828,7 +828,8 @@ int bb_gen_source(int g, const char *signal, const bb_wave *w);
  * P2*, and lengthens timeout_ms where its P2 needs more); bb_uds_set_wait states one of them, `which`
  * an enum bb_uds_wait, from the next request on — refused with BB_ERR, nothing changed, for
  * timeout_ms or pending_budget_ms outside 1 .. 3600000, or p2_star_ms or margin_ms outside
- * 0 .. 3600000. They hold across the library's own reopen of a lost DoIP connection (P2* only where
+ * 0 .. 3600000; bb_uds_check_wait answers the same of no handle (any thread), so a host refuses a
+ * wait before it opens a connection to state it on. They hold across the library's own reopen of a lost DoIP connection (P2* only where
  * it loosens the new one's). Every call above is then bounded by them in place of the 1000 / P2* +
  * 1000 / 120 s bb_uds_open states.
  *
@@ -863,6 +864,7 @@ int bb_isotp_data(int h, uint8_t *buf, int cap);
 int bb_isotp_close(int h);
 int bb_uds_get_timing(int u, bb_uds_timing *out);
 int bb_uds_set_wait(int u, int which, int ms);
+int bb_uds_check_wait(int which, int ms);
 int bb_uds_retarget(int u, const int64_t *address);
 #endif /* BB_FROM_V */
 

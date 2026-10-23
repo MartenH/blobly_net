@@ -18,8 +18,14 @@ fn test_a_negative_response_is_not_a_dead_connection() {
 // a connection retargeted to a node the gateway does not route is negatively acknowledged by the
 // entity: alive, and replacing it would lose what was unlocked on the gateway over it
 fn test_a_negative_acknowledgement_is_not_a_dead_connection() {
-	assert !probe_says_dead(uds.CarrierFailed{
-		text: '${doip.nack_note} (0x06)'
+	for code in ['0x03', '0x06'] {
+		assert !probe_says_dead(uds.CarrierFailed{
+			text: '${doip.nack_note} (${code})'
+		})
+	}
+	// invalid source address: the entity closes the connection after it (ISO 13400-2)
+	assert probe_says_dead(uds.CarrierFailed{
+		text: '${doip.nack_note} (0x02)'
 	})
 	assert probe_says_dead(uds.CarrierFailed{
 		text: 'DoIP connection lost: connection reset'

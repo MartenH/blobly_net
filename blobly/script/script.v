@@ -646,9 +646,9 @@ fn l_doip_discover(l lua.State) i32 {
 // can reach this from a Lua suite: it fires against a real ECU on a bench, where it cannot be
 // caught by CI. The distinction is at least pinned by a unit test.
 fn probe_says_dead(err IError) bool {
-	// a DoIP negative acknowledgement is the entity answering too: a target it does not route (a
-	// node behind a gateway the probe was retargeted to) is no dead connection
-	return err !is uds.NegativeResponse && !err.msg().contains(doip.nack_note)
+	// a DoIP negative acknowledgement the entity keeps the connection after is it answering too: a
+	// target it does not route (a node behind a gateway the probe was retargeted to)
+	return err !is uds.NegativeResponse && !doip.nack_alive(err.msg())
 }
 
 // l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,

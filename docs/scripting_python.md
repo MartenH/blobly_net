@@ -774,7 +774,8 @@ queued when a request goes out is drained first, so it cannot be taken for the a
 stands, a 0x10 answer's adoption included; a read is a call like any other, so after a stop and
 start it opens the connection. Set, it holds from the next request on. `ch.uds()`
 takes them as keywords too. `timeout_ms` and `pending_budget_ms` are 1 to 3600000, `p2_star_ms` and
-`margin_ms` 0 to 3600000; anything else is `Refused`, and nothing changes. A 0x10 answer still
+`margin_ms` 0 to 3600000; anything else is `Refused`, and nothing changes (a keyword to `ch.uds()`
+is refused before anything opens). A 0x10 answer still
 adopts its P2* over one you set, and lengthens `timeout_ms` where its P2 needs more, so set P2*
 after the session change if the ECU announces the wrong one. What a script set holds on every
 connection the client opens. A connection opened after a stop and start begins from it again,
