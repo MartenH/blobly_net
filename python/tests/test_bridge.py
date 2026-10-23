@@ -37,6 +37,9 @@ def test_a_distribution_is_a_name():
     for bad in ("", None, 3):
         with pytest.raises(TypeError):
             bridge.state(bad)
+    for call in (bridge.start, bridge.state, bridge.rows, bridge.stop):
+        with pytest.raises(ValueError, match="NUL"):
+            call("Ubuntu\0other")
 
 
 def test_the_distributions_are_names():

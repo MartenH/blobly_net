@@ -332,6 +332,18 @@ pub fn bridge_program() ?string {
 	return canbridge_in(bridge_program_dirs(), os.is_file)
 }
 
+// BridgeStopTimeout is bridge_stop's answer when the cut connection did not end within the wait;
+// every other refusal is a plain error about the bridge's state.
+pub struct BridgeStopTimeout {
+	Error
+	name       string
+	timeout_ms int
+}
+
+pub fn (e BridgeStopTimeout) msg() string {
+	return 'bridge "${e.name}" did not let go of its connection within ${e.timeout_ms} ms'
+}
+
 // bridge_stop disconnects the connected bridge of that name, which ends it (a bridge exits when
 // its connection closes; every channel open on it fails), and returns once its session has left
 // the registry, so a bridge_start after it launches a new one. A bridge that is not connected is
@@ -346,7 +358,10 @@ pub fn bridge_stop(name string, timeout_ms int) ! {
 			return error('bridge "${name}" dialled in again while it was being stopped')
 		}
 		if time.ticks() >= deadline {
-			return error('bridge "${name}" did not let go of its connection within ${timeout_ms} ms')
+			return BridgeStopTimeout{
+				name:       name
+				timeout_ms: timeout_ms
+			}
 		}
 		time.sleep(10 * time.millisecond)
 	}

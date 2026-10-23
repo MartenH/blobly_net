@@ -66,11 +66,10 @@ pub fn bb_bridge_stop(distro &char) i32 {
 	if !isnil(bb_run) {
 		return fail(bb_err_state, 'a run is active; stop it before stopping a bridge its channels may use')
 	}
-	st, _ := transport.bridge_state(name)
-	if st != .connected {
-		return fail(bb_err_state, 'no bridge named "${name}" is connected')
+	transport.bridge_stop(name, bridge_stop_ms) or {
+		// cut, but its session did not end within the wait; anything else is about its state
+		code := if err is transport.BridgeStopTimeout { i32(C.BB_ERR_TIMEOUT) } else { bb_err_state }
+		return fail(code, err.msg())
 	}
-	// cut, but its session did not end within the wait
-	transport.bridge_stop(name, bridge_stop_ms) or { return fail(i32(C.BB_ERR_TIMEOUT), err.msg()) }
 	return ok()
 }

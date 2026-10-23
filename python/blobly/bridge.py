@@ -30,6 +30,8 @@ def _lines(s: str) -> list[str]:
 def _name(distro: str) -> bytes:
     if not isinstance(distro, str) or not distro:
         raise TypeError(f"a WSL distribution is a non-empty name, not {distro!r}")
+    if "\0" in distro:  # a C string would end there and name another distribution
+        raise ValueError(f"a WSL distribution name has no NUL: {distro!r}")
     return distro.encode()
 
 
