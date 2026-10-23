@@ -69,13 +69,8 @@ pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
 // frame_index is lookup_frame's answer as a position in `messages`, for a caller that names
 // messages by position (libblobly's bb_decode).
 pub fn (db Database) frame_index(id u32, ext bool) ?int {
-	// exact match must respect the frame KIND: a standard and an extended
-	// frame may share the numeric id, and decoding std traffic against the
-	// ext definition (or vice versa) is silent corruption
-	for i, m in db.messages {
-		if m.id == id && m.ext == ext {
-			return i
-		}
+	if i := db.message_index(id, ext) {
+		return i
 	}
 	if !ext {
 		return none
@@ -83,6 +78,18 @@ pub fn (db Database) frame_index(id u32, ext bool) ?int {
 	pgn := j1939_pgn(id)
 	for i, m in db.messages {
 		if m.ext && j1939_pgn(m.id) == pgn {
+			return i
+		}
+	}
+	return none
+}
+
+// message_index is the position of the message the database defines at `id` of that KIND, with
+// no J1939 PGN match: a standard and an extended frame may share the numeric id, and decoding std
+// traffic against the ext definition (or vice versa) is silent corruption.
+pub fn (db Database) message_index(id u32, ext bool) ?int {
+	for i, m in db.messages {
+		if m.id == id && m.ext == ext {
 			return i
 		}
 	}

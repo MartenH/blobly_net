@@ -45,13 +45,13 @@ fn push_signal(l lua.State, s candb.Signal) {
 		l.set_int('mux_value', s.multiplexor_value)
 	}
 	l.new_table()
-	mut seen := []f64{}
+	mut seen := map[f64]bool{}
 	for raw, text in s.values {
-		v := s.phys_from_raw(raw)
+		v := s.phys_from_raw(raw) + 0.0 // -0.0 is the key 0.0, as Lua keys it
 		if v != v || v in seen {
 			continue
 		}
-		seen << v
+		seen[v] = true
 		l.push_str(text)
 		l.set_numkey(v)
 	}
@@ -76,22 +76,43 @@ fn l_dbc_messages(l lua.State) i32 {
 	return 1
 }
 
-// __dbc_message(channel, by_id, key, ext): one message, by name or by id as decode finds it; nil
-// for none.
+// message_arg is the message arguments 2..4 name: (by_id, key, ext), a name or an id of that kind
+// exactly as the database defines it (no J1939 PGN match: this answers what the database
+// defines, not how a frame decodes).
+fn (env &Env) message_arg(l lua.State, ci int) ?candb.Message {
+	db := env.chans[ci].db
+	if l.arg_bool(2) {
+		i := db.message_index(u32(l.arg_int(3)), l.arg_bool(4))?
+		return db.messages[i]
+	}
+	return db.message_named(l.arg_str(3))
+}
+
+// __dbc_message(channel, by_id, key, ext): one message, described; nil for none.
 fn l_dbc_message(l lua.State) i32 {
 	env := env_of(l)
 	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
-	db := env.chans[ci].db
-	found := if l.arg_bool(2) {
-		db.lookup_frame(u32(l.arg_int(3)), l.arg_bool(4))
-	} else {
-		db.message_named(l.arg_str(3))
-	}
-	m := found or {
+	m := env.message_arg(l, ci) or {
 		l.push_nil()
 		return 1
 	}
 	push_message(l, m)
+	return 1
+}
+
+// __dbc_signal(channel, by_id, key, ext, name): one signal of a message, described; nil for none.
+fn l_dbc_signal(l lua.State) i32 {
+	env := env_of(l)
+	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
+	m := env.message_arg(l, ci) or {
+		l.push_nil()
+		return 1
+	}
+	s := m.signal_named(l.arg_str(5)) or {
+		l.push_nil()
+		return 1
+	}
+	push_signal(l, s)
 	return 1
 }
 
@@ -132,10 +153,8 @@ fn l_decode(l lua.State) i32 {
 				l.set_int(s.name, i64(s.raw_value(data)))
 			}
 			.label {
-				raw := s.raw_value(data)
-				if raw in s.values {
-					l.set_str(s.name, s.values[raw])
-				}
+				text := s.values[s.raw_value(data)] or { continue }
+				l.set_str(s.name, text)
 			}
 		}
 	}

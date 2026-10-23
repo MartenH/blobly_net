@@ -364,8 +364,8 @@ What a channel's databases (its `databases:`) define, read from the same model `
 | Call | Returns |
 |---|---|
 | `dbc.messages(channel)` | every message, in the database's order: `{ name, id, ext, dlc, j1939, signals }` (`dlc` the length an encoding has, `j1939` whether the database declares it), `signals` in their order |
-| `dbc.message(channel, name_or_id [, ext])` | one message, or `nil`. An integer is an id, found as `decode` finds it (an extended id may match its J1939 PGN); `ext` defaults `false` |
-| `dbc.signal(channel, message, name)` | one signal of a message (by name or id), or `nil` |
+| `dbc.message(channel, name_or_id [, ext])` | one message, or `nil`. An integer is an id (0..0x1FFFFFFF, else it raises) of the kind `ext` names (default `false`, standard), matched exactly as the database defines it — not by J1939 PGN, as `decode` may match a received frame |
+| `dbc.signal(channel, message, name [, ext])` | one signal of a message (a name, or an id with `ext` as for `dbc.message`), or `nil` |
 
 A signal is:
 
@@ -378,7 +378,7 @@ A signal is:
 | `factor`, `offset` | physical = raw × factor + offset |
 | `minimum`, `maximum` | the DBC's range, both `0` where it states none; nothing applies it |
 | `multiplexor`, `multiplexed`, `mux_value` | the mux role: the switch, or a signal present only when the switch reads `mux_value` (set on a multiplexed signal only) |
-| `labels` | the value table by the physical value `decode` returns: `labels[3] == "Third"` |
+| `labels` | the value table by the physical value `decode` returns for each key: `labels[3] == "Third"`. Keyed by that computed value, so with a factor such as 0.1 a literal written in the script (`0.3`) can miss it (`0.30000000000000004`); look up what `decode` returned, or use `raw_labels` |
 | `raw_labels` | the value table by raw key, the value `decode(..., "raw")` returns. Lossless where `labels` is not: two keys whose physical values one double cannot tell apart are one entry there, the first |
 
 ```lua

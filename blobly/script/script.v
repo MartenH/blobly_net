@@ -285,6 +285,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__decode', l_decode)
 	env.st.register('__dbc_messages', l_dbc_messages)
 	env.st.register('__dbc_message', l_dbc_message)
+	env.st.register('__dbc_signal', l_dbc_signal)
 	env.st.register('__now_ms', l_now_ms)
 	env.st.register('now_ms', l_clock_ms)
 	env.st.register('__uds_write_did', l_uds_write_did)

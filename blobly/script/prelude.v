@@ -551,24 +551,29 @@ end
 -- byte_order = "little"|"big", signed, factor, offset, minimum, maximum, unit, multiplexor,
 -- multiplexed, mux_value (multiplexed only), labels = { [physical] = text },
 -- raw_labels = { [raw] = text } }.
--- dbc.message(channel, name_or_id [, ext]): one message, a number found as decode finds it; nil
--- for none. dbc.signal(channel, message, name): one signal of it; nil for none.
+-- dbc.message(channel, name_or_id [, ext]): one message, an id of that kind (ext defaults
+-- false) exactly as the database defines it; nil for none.
+-- dbc.signal(channel, message, name [, ext]): one signal of a message (a name or an id); nil for none.
 dbc = {}
 function dbc.messages(channel) return __dbc_messages(channel) end
-function dbc.message(channel, key, ext)
+-- the (by_id, key, ext) a message argument is, or an error raised at the caller of the caller
+local function __dbc_key(fname, key, ext)
   if type(key) == "number" then
-    if math.type(key) ~= "integer" then error("dbc.message: an id is an integer, not " .. key, 2) end
-    return __dbc_message(channel, true, key, ext or false)
+    if math.type(key) ~= "integer" or key < 0 or key > 0x1FFFFFFF then
+      error(fname .. ": an id is an integer 0..0x1FFFFFFF, not " .. key, 3)
+    end
+    return true, key, ext or false
   end
-  return __dbc_message(channel, false, key, false)
+  if type(key) ~= "string" then error(fname .. ": a message is a name or an id", 3) end
+  return false, key, false
 end
-function dbc.signal(channel, message, name)
-  local m = dbc.message(channel, message)
-  if m == nil then return nil end
-  for _, s in ipairs(m.signals) do
-    if s.name == name then return s end
-  end
-  return nil
+function dbc.message(channel, key, ext)
+  local by_id, k, x = __dbc_key("dbc.message", key, ext)
+  return __dbc_message(channel, by_id, k, x)
+end
+function dbc.signal(channel, message, name, ext)
+  local by_id, k, x = __dbc_key("dbc.signal", message, ext)
+  return __dbc_signal(channel, by_id, k, x, name)
 end
 
 -- ============================ sequences (wait / expect) ============================
