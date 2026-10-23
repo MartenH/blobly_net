@@ -198,6 +198,85 @@ typedef struct bb_doip_announcement {
 	                                        longer one is cut at a byte */
 } bb_doip_announcement;
 
+/* A SOME/IP message to send (bb_someip_send, bb_someip_call). A field of -1 takes its default:
+ * `msg_type` a notification (0x02) for an event id (bit 15 of `method`), a request (0x00)
+ * otherwise — only those two are sent; `iface` (the interface version) 1; `client` 0x1234 for a
+ * request (a blobly_emb node refuses client 0), 0 for a notification; `session` the run's next for
+ * a request (0 too), 0 for a notification. A request's session, given or not, goes out once per
+ * run (bb_start begins one): a late reply to one request can never complete another. */
+typedef struct bb_someip_out {
+	uint16_t       service;
+	uint16_t       method;
+	int32_t        msg_type;
+	int32_t        iface;
+	int32_t        client;
+	int32_t        session;
+	const uint8_t *payload;
+	int32_t        payload_len;
+} bb_someip_out;
+
+/* A SOME/IP message a capture holds (bb_someip_msg): heard on a port, or a call's answer. */
+#define BB_SOMEIP_FROM_MAX 64
+typedef struct bb_someip_msg {
+	uint16_t service;
+	uint16_t method;       /* an event id has bit 15 set */
+	uint16_t client;
+	uint16_t session;
+	uint8_t  iface;        /* the interface version */
+	uint8_t  msg_type;     /* 0x00 request, 0x02 notification, 0x80 response, 0x81 error */
+	uint8_t  return_code;
+	int32_t  payload_len;
+	int64_t  at_ms;        /* ms into the window it was heard in; a call's answer, ms after the send */
+	char     from[BB_SOMEIP_FROM_MAX]; /* where it came from, "host:port"; a longer one is cut */
+} bb_someip_msg;
+
+/* How a flash's 0x29 authentication went (bb_flash_report.auth). */
+enum bb_flash_auth {
+	BB_FLASH_SKIPPED = 0,        /* auth 0: no seed */
+	BB_FLASH_AUTHENTICATED = 1,
+	BB_FLASH_NOT_REQUIRED = 2    /* a keyless boot refused the challenge (0x22 / 0x11) */
+};
+
+/* A flash's options (bb_flash_program); bb_flash_defaults fills every field. `base` is where the
+ * image goes (0x08020000, the app slot), `sw_version` the version a raw image's header states
+ * (1). With `auth` (1) the session signs the bootloader's 0x29 challenge with the tester seed:
+ * `seed` (64 hex characters), else the file `seed_file` names, else $BLOBLY_FLASH_SEED, else the
+ * dev tester seed; both, or either with auth 0, is refused. `note` is called with each milestone
+ * line, and — without `progress` — a line per tenth of the transfer; `progress` with the blocks
+ * done and the total, at each whole percent and the last block; `quiet` 1 calls `note` never.
+ * Either may be NULL; both are called on the thread calling bb_flash_program, with `ctx`. */
+typedef struct bb_flash_opts {
+	uint32_t    base;
+	uint32_t    sw_version;
+	int32_t     auth;
+	const char *seed;
+	const char *seed_file;
+	int32_t     quiet;
+	void (*note)(void *ctx, const char *line);
+	void (*progress)(void *ctx, int32_t done, int32_t total);
+	void       *ctx;
+} bb_flash_opts;
+
+/* What a completed flash did (bb_flash_program). */
+typedef struct bb_flash_report {
+	int32_t bytes;               /* header + image, as transferred */
+	int32_t blocks;              /* 0x36 requests */
+	uint8_t wrapped;             /* the image was a pre-wrapped BLBT .img, transferred as is */
+	uint8_t reset_acknowledged;  /* the 0x11 reset was answered (0: its answer lost to the reset) */
+	int32_t auth;                /* an enum bb_flash_auth */
+} bb_flash_report;
+
+/* What a simulated bootloader was asked to do (bb_boot_sim_stop). */
+typedef struct bb_boot_report {
+	uint8_t authenticated;  /* the last 0x29 proof verified against the dev tester key */
+	uint8_t verified;       /* the last check routine passed: the CRC the image header states */
+	int32_t erases;         /* 0x31 FF00 answered */
+	int32_t blocks;         /* 0x36 blocks taken */
+	int32_t bytes;          /* what the last download was sent, header included */
+	int32_t checks;         /* 0x31 FF01 answered */
+	int32_t resets;         /* 0x11 answered */
+} bb_boot_report;
+
 /* Error codes. The message (bb_last_error) says what; the code says which kind. */
 #define BB_ERR         (-1)  /* refused, with a reason in bb_last_error */
 #define BB_ERR_HANDLE  (-2)  /* no such bus or UDS handle, or a closed one */
@@ -218,6 +297,11 @@ typedef struct bb_doip_announcement {
 #define BB_ERR_LOST         (-10) /* the DoIP connection is gone (closed by the entity, reset, or
                                      stalled inside a message): nothing more goes over it — close
                                      the handle, and a new one opens a new connection */
+#define BB_ERR_FLASH        (-11) /* bb_flash_program: the session ran and the bootloader's own
+                                     answers say the flash did not happen (an erase or check
+                                     routine's result, a malformed download answer), or it was
+                                     cancelled; a step the bootloader refused or did not answer is
+                                     that step's UDS failure (BB_ERR_NEGATIVE, BB_ERR_TIMEOUT ...) */
 
 /* Answers that are neither success nor an error. */
 #define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
@@ -521,6 +605,58 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
                        int counter, const char *mode);           /* in place: `counter` (0..14)
                                                                     into counter_pos's low nibble,
                                                                     then the CRC at crc_pos */
+/* SOME/IP, as the Lua someip.send, someip.call and someip.listen (blobly/someip). None needs a
+ * started project but listening on a row's endpoint; each blocks for its window or wait, touches
+ * no state, and may come from any (attached) thread. A destination is an IPv4 "host:port"; the
+ * local `port` is bound on the IPv4 wildcard, claimed like every listener of this process (one
+ * held by a SOME/IP row, a script or another call is refused, since two sockets on one UDP port
+ * split its stream).
+ *
+ * bb_someip_send sends msgs[0..n-1] to `to` FROM local `port` (0: 30491, for a call too; one
+ * socket both ways: a node with a static peer endpoint answers only the port it was addressed
+ * from), then hears that port for window_ms. bb_someip_call sends one request and waits at most timeout_ms (0: 1000) for the
+ * RESPONSE or ERROR mirroring its Request ID from `to` — an ERROR is an answer, its return code in
+ * the message; events, other senders and stale replies are skipped; BB_ERR_TIMEOUT when none came.
+ * A call refuses an event id, client 0 and any type but a request. bb_someip_listen hears for
+ * window_ms what the network already carries on `port` (0: 30490), joining `group` (NULL or "":
+ * none) — or, for row >= 0, on SOME/IP row `row`'s bind host, port and group (a port or a group
+ * that contradicts the row's is refused; BB_ERR_STATE before bb_start). Nothing is sent or
+ * subscribed to.
+ *
+ * Each answers a CAPTURE (>= 0): bb_someip_count says how many messages it holds (and, into
+ * *malformed, how many datagrams could not be read to the end), bb_someip_message copies message
+ * i out (its payload into buf, as bb_uds_data's: answers its length), and bb_someip_free lets it
+ * go. A call's capture holds its answer. */
+int bb_someip_send(int port, const char *to, const bb_someip_out *msgs, int n, int window_ms);
+int bb_someip_call(int port, const char *to, const bb_someip_out *req, int timeout_ms);
+int bb_someip_listen(int row, int port, const char *group, int window_ms);
+int bb_someip_count(int capture, int *malformed);                 /* >= 0: the messages */
+int bb_someip_message(int capture, int i, bb_someip_msg *out, uint8_t *buf, int cap);
+int bb_someip_free(int capture);
+
+/* Flashing a blobly_emb bootloader (blobly/flash: 0x10 02, 0x29, erase, 0x34/0x36/0x37, check,
+ * 0x11 — the session cmd/flash and the Lua flash.program run), on a UDS handle.
+ *
+ * bb_flash_open is bb_uds_open with the bootloader's default ids, 0x7B0 / 0x7B8. bb_flash_program
+ * runs the session over handle `u` — the image's `n` bytes (a raw image gets its header here, a
+ * BLBT .img goes as it is) — and fills *out; a failed step answers its UDS failure, named, and the
+ * session's own verdicts BB_ERR_FLASH. It holds the handle for the whole transfer: another call
+ * on it waits. bb_flash_cancel, from another thread, stops a flash in progress on `u` before its
+ * next block, its waits ended within 20 ms, and the image is never checked or marked valid.
+ *
+ * bb_boot_sim starts a simulated blobly_emb bootloader on CAN row `row` of the run, to rehearse a
+ * flash with no board: it hears requests on `tx` and answers on `rx` (the tester's ids, NULL for
+ * 0x7B0 / 0x7B8), strict where a real one is — 0x29 verifies the proof against the dev tester key,
+ * erase is refused before it, the check routine answers from the CRC the image header states.
+ * Answers a handle; bb_boot_sim_stop stops it and says what it was asked. It outlives bb_stop: stop
+ * it first. */
+int bb_flash_defaults(bb_flash_opts *opts);
+int bb_flash_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *out);
+int bb_flash_program(int u, const uint8_t *image, int n, const bb_flash_opts *opts,
+                     bb_flash_report *out);
+int bb_flash_cancel(int u);
+int bb_boot_sim(int row, const int64_t *tx, const int64_t *rx);
+int bb_boot_sim_stop(int sim, bb_boot_report *out);
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus

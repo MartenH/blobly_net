@@ -19,7 +19,7 @@ mut:
 	quiet    bool
 	callback bool
 	tenths   flash.Tenths
-	last_cb  int = -1
+	percent  flash.Percent
 }
 
 fn (mut s LuaFlashSink) note(msg string) {
@@ -30,9 +30,7 @@ fn (mut s LuaFlashSink) note(msg string) {
 
 fn (mut s LuaFlashSink) block(done int, total int) ! {
 	if s.callback {
-		pct := if total > 0 { done * 100 / total } else { 100 }
-		if pct != s.last_cb || done == total {
-			s.last_cb = pct
+		if _ := s.percent.due(done, total) {
 			s.l.call_global_ints('__flash_progress', [i64(done), i64(total)]) or {
 				return error('progress callback: ${err}')
 			}
@@ -58,7 +56,7 @@ fn (env &Env) script_relative(p string) string {
 
 fn l_flash_open(l lua.State) i32 {
 	// cmd/flash's default pair: a blobly_emb bootloader answers on 0x7B0/0x7B8
-	return open_conn(l, 'flash.program', 0x7B0, 0x7B8, true)
+	return open_conn(l, 'flash.program', flash.tester_tx, flash.boot_tx, true)
 }
 
 // u32_arg reads an optional u32 argument: `dflt` when nil, an error when it is not one.
@@ -93,33 +91,10 @@ fn l_flash_program(l lua.State) i32 {
 	opts.sw_version = u32_arg(l, 4, 'sw_version', opts.sw_version) or {
 		return l.fail('${what}: ${err}')
 	}
-	auth := l.arg_bool(5)
-	has_seed := !l.arg_is_nil(6)
-	has_file := !l.arg_is_nil(7)
-	if has_seed && has_file {
-		return l.fail('${what}: seed and seed_file both given; name one')
-	}
-	if !auth && (has_seed || has_file) {
-		return l.fail('${what}: auth = false with a seed; drop one')
-	}
-	if auth {
-		// The same resolution cmd/flash makes, plus the two a script can state: a malformed seed
-		// is an error, never a silent fall-through to the dev key.
-		opts.auth_seed = if has_seed {
-			seed := l.arg_str(6)
-			if seed.trim_space() == '' {
-				return l.fail('${what}: seed is empty')
-			}
-			flash.tester_seed(seed) or { return l.fail('${what}: seed: ${err}') }
-		} else if has_file {
-			flash.tester_seed_file(env.script_relative(l.arg_str(7))) or {
-				return l.fail('${what}: ${err}')
-			}
-		} else {
-			flash.tester_seed(os.getenv('BLOBLY_FLASH_SEED')) or {
-				return l.fail('${what}: BLOBLY_FLASH_SEED: ${err}')
-			}
-		}
+	seed := if l.arg_is_nil(6) { ?string(none) } else { ?string(l.arg_str(6)) }
+	seed_file := if l.arg_is_nil(7) { ?string(none) } else { ?string(env.script_relative(l.arg_str(7))) }
+	opts.auth_seed = flash.auth_seed(l.arg_bool(5), seed, seed_file) or {
+		return l.fail('${what}: ${err}')
 	}
 	mut sink := LuaFlashSink{
 		env:      env

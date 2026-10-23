@@ -125,3 +125,38 @@ fn test_a_secured_boot_refusing_the_challenge_stops_the_flash() {
 	assert msg == 'request challenge: NRC 0x31', 'a refused challenge was flashed through'
 	assert boot.blocks == 0
 }
+
+fn test_the_auth_seed_rule() {
+	assert auth_seed(false, none, none)!.len == 0
+	assert auth_seed(true, '11'.repeat(32), none)! == []u8{len: 32, init: 0x11}
+	for args in [[true, true, true], [false, true, false], [true, false, false]] {
+		seed := if args[1] { ?string('11'.repeat(32)) } else { ?string(none) }
+		file := if args[2] { ?string('x.seed') } else { ?string(none) }
+		if args[0] && !args[1] && !args[2] {
+			continue
+		}
+		if _ := auth_seed(args[0], seed, file) {
+			assert false, '${args}'
+		}
+	}
+	if _ := auth_seed(true, ' ', none) {
+		assert false, 'an empty seed'
+	}
+	if _ := auth_seed(true, '0x1234', none) {
+		assert false, 'a malformed seed'
+	}
+}
+
+fn test_progress_is_a_call_per_whole_percent_and_the_last_block() {
+	mut p := Percent{}
+	mut calls := 0
+	for done in 1 .. 1001 {
+		if _ := p.due(done, 1000) {
+			calls++
+		}
+	}
+	assert calls == 101, 'every whole percent from 0 to 100'
+	mut q := Percent{}
+	assert q.due(1, 3)? == 33
+	assert q.due(3, 3)? == 100
+}

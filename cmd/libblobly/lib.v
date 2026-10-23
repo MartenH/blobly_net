@@ -135,6 +135,65 @@ pub mut:
 	source          [96]u8
 }
 
+pub struct C.bb_someip_out {
+pub mut:
+	service     u16
+	method      u16
+	msg_type    i32
+	iface       i32
+	client      i32
+	session     i32
+	payload     &u8
+	payload_len i32
+}
+
+pub struct C.bb_someip_msg {
+pub mut:
+	service     u16
+	method      u16
+	client      u16
+	session     u16
+	iface       u8
+	msg_type    u8
+	return_code u8
+	payload_len i32
+	at_ms       i64
+	from        [64]u8
+}
+
+pub struct C.bb_flash_opts {
+pub mut:
+	base       u32
+	sw_version u32
+	auth       i32
+	seed       &char
+	seed_file  &char
+	quiet      i32
+	note       voidptr
+	progress   voidptr
+	ctx        voidptr
+}
+
+pub struct C.bb_flash_report {
+pub mut:
+	bytes              i32
+	blocks             i32
+	wrapped            u8
+	reset_acknowledged u8
+	auth               i32
+}
+
+pub struct C.bb_boot_report {
+pub mut:
+	authenticated u8
+	verified      u8
+	erases        i32
+	blocks        i32
+	bytes         i32
+	checks        i32
+	resets        i32
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
@@ -339,6 +398,7 @@ pub fn bb_start() i32 {
 		return fail(bb_err, err.msg())
 	}
 	bb_run = r
+	bb_someip_sessions.reset() // a session goes out once per run
 	// as the RUN has them: start moves a hosted DoIP row onto a port this process could bind, and
 	// the address a host dials must be that one (self-review: the smoke printed 13400 while the
 	// entity listened on 30342). The rows and their databases from one array, so a row's index

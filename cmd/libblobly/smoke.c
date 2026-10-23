@@ -2,7 +2,8 @@
  * its simulated ECUs on inproc:CAN1, sends a frame, and does the same from a thread the HOST
  * created — the one the V runtime's collector did not see born — encodes and decodes through
  * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS, arms and clears a
- * fault and stamps an E2E Profile 1 frame, then stops and starts again.
+ * fault and stamps an E2E Profile 1 frame, flashes a simulated bootloader on CAN1 with C
+ * callbacks, then stops and starts again.
  *
  *   gcc -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread   (Linux)
  *   build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
@@ -67,6 +68,15 @@ static int_fn bb_sim_clear_faults_p;
 static p01_crc_fn bb_e2e_p01_crc_p;
 static p01_protect_fn bb_e2e_p01_protect_p;
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
+typedef int (*flash_defaults_fn)(bb_flash_opts *);
+typedef int (*flash_program_fn)(int, const uint8_t *, int, const bb_flash_opts *, bb_flash_report *);
+typedef int (*boot_sim_fn)(int, const int64_t *, const int64_t *);
+typedef int (*boot_stop_fn)(int, bb_boot_report *);
+static flash_defaults_fn bb_flash_defaults_p;
+static uds_open_fn bb_flash_open_p;
+static flash_program_fn bb_flash_program_p;
+static boot_sim_fn bb_boot_sim_p;
+static boot_stop_fn bb_boot_sim_stop_p;
 static int_int_fn bb_message_count_p;
 static msg_info_fn bb_message_info_p;
 static msg_str_fn bb_message_name_p;
@@ -278,6 +288,31 @@ static int fault_steps(int row, int doip) {
 	return 0;
 }
 
+/* a flash of a simulated bootloader on CAN1, its milestones and progress through C callbacks */
+static int notes, progress_calls, last_done;
+static void on_note(void *ctx, const char *line) { (void)ctx; (void)line; notes++; }
+static void on_progress(void *ctx, int32_t done, int32_t total) { (void)ctx; (void)total; progress_calls++; last_done = done; }
+static int flash_steps(int row) {
+	int sim = bb_boot_sim_p(row, NULL, NULL);
+	CHECK(sim >= 0, "boot sim");
+	bb_uds_target t;
+	int u = bb_flash_open_p(row, NULL, NULL, &t);
+	CHECK(u >= 0 && t.tx == 0x7B0 && t.rx == 0x7B8, "flash open on the bootloader's ids");
+	bb_flash_opts o;
+	CHECK(bb_flash_defaults_p(&o) == 0 && o.base == 0x08020000 && o.auth == 1, "flash defaults");
+	o.note = on_note;
+	o.progress = on_progress;
+	static uint8_t image[3000];
+	bb_flash_report r;
+	CHECK(bb_flash_program_p(u, image, sizeof image, &o, &r) == 0 && r.auth == BB_FLASH_AUTHENTICATED && r.reset_acknowledged,
+		"flash");
+	CHECK(notes > 3 && progress_calls > 0 && last_done == r.blocks, "the callbacks: %d notes, %d progress", notes, progress_calls);
+	bb_boot_report b;
+	CHECK(bb_uds_close_p(u) == 0 && bb_boot_sim_stop_p(sim, &b) == 0 && b.verified && b.bytes == r.bytes, "boot sim report");
+	printf("ok   flashed %d bytes in %d blocks; %d notes, %d progress calls\n", r.bytes, r.blocks, notes, progress_calls);
+	return 0;
+}
+
 static int can1_row = -1; /* CAN1's row, for the host thread's database read */
 
 #ifndef _WIN32
@@ -327,6 +362,7 @@ int main(int argc, char **argv) {
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
 	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
+	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -380,6 +416,7 @@ int main(int argc, char **argv) {
 	if (uds_steps(can1)) return 1;
 	if (doip_steps(doip)) return 1;
 	if (fault_steps(can1, doip)) return 1;
+	if (flash_steps(can1)) return 1;
 	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32

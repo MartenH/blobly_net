@@ -9,8 +9,8 @@ project's buses directly.
 **Python is the primary scripting interface** ([#507](https://github.com/MartenH/blobly_net/issues/507)).
 Each capability is written once in the engine and exposed through the C ABI to Python first. Lua
 ([scripting.md](scripting.md)) stays for the GUI's Script panel, quick bench work and the
-existing suites. Today Lua also has what Python does not have yet: SOME/IP and flashing.
-[What is not there yet](#16-what-is-not-there-yet) lists those, with #507's phases.
+existing suites. [What is not there yet](#18-what-is-not-there-yet) lists what Python does not
+have yet, with #507's phases.
 
 An AI agent driving Blobly Net should start at [agents.md](agents.md). Complete, runnable
 scripts are in [python/examples](../python/examples/README.md).
@@ -26,11 +26,13 @@ scripts are in [python/examples](../python/examples/README.md).
 9. [Fault injection and E2E](#9-fault-injection-and-e2e)
 10. [UDS diagnostics](#10-uds-diagnostics)
 11. [DoIP](#11-doip)
-12. [Testing with pytest](#12-testing-with-pytest)
-13. [Threads](#13-threads)
-14. [Errors](#14-errors)
-15. [Reference](#15-reference)
-16. [What is not there yet](#16-what-is-not-there-yet)
+12. [SOME/IP](#12-someip)
+13. [Flashing](#13-flashing)
+14. [Testing with pytest](#14-testing-with-pytest)
+15. [Threads](#15-threads)
+16. [Errors](#16-errors)
+17. [Reference](#17-reference)
+18. [What is not there yet](#18-what-is-not-there-yet)
 
 Every Python block in this guide runs as written from the root of a repository checkout:
 `python/tests/test_docs.py` runs each one against sim-demo, in CI.
@@ -91,7 +93,7 @@ version.
 **Call `blobly.init()` on the main thread first.** Importing does not load the engine, and the
 first call that needs it loads it. bb.h requires that load to happen on the process's main thread,
 and the package refuses it anywhere else. Any later call may come from any thread (see
-[Threads](#13-threads)).
+[Threads](#15-threads)).
 
 ---
 
@@ -755,7 +757,115 @@ runs over both carriers, as `test_the_sut_reports_its_vin` in
 
 ---
 
-## 12. Testing with pytest
+## 12. SOME/IP
+
+`blobly.someip` is the Lua `someip.send`, `someip.call` and `someip.listen`, by the same rules
+(`blobly/someip`): messages sent from a local port and what that port heard back, one request
+answered, and what a port already carries. None of them needs a project, and none needs a
+SOME/IP row: a destination is an IPv4 `"host:port"`. A message is a `SomeipMessage`, its header's
+fields and the payload, raw bytes (the layout belongs to the deployment, not to the tester).
+
+```python
+from blobly import SomeipMessage, Timeout, someip
+
+try:   # blobly_emb's examples/host_someip: the node on 30490, its peer port 30491
+    answer = someip.call("127.0.0.1:30490", SomeipMessage(0x0100, 0x0001, b"\x01"), timeout_ms=300)
+    print(answer.type, answer.return_code, answer.payload)   # response 0 b'...'
+except Timeout:
+    print("no node on 127.0.0.1:30490")                       # what this prints with none running
+heard, malformed = someip.listen(300, port=30491)             # what the node publishes to its peer
+print(len(heard), malformed)
+```
+
+[someip_node.py](../python/examples/someip_node.py) is a complete script.
+
+**Sending.** A blobly_emb node accepts datagrams only from its configured peer endpoint and
+answers that endpoint, so `send` and `call` go out FROM a local `port` (`None`: 30491) and hear
+the answers on that same socket. Give `service`, `method` and `payload`; a field left `None` takes
+its default: `type` a notification for an event id (bit 15 of `method`) and a request otherwise,
+`iface` 1, `client` 0x1234 for a request (the node refuses client 0) and 0 for a notification,
+`session` the run's next for a request. A request's session goes out once per run, given or not,
+so a late reply to one request can never complete another; a session already sent is refused.
+Only requests and notifications are sent.
+
+**`someip.call(to, request, *, port=None, timeout_ms=1000)`** returns the RESPONSE or ERROR
+mirroring the request's Request ID as soon as it arrives from `to`, a `SomeipMessage`: an ERROR is
+an answer, with `type` `"error"` and its `return_code`. Events, other senders and stale replies to
+an earlier session are skipped. `Timeout` when nothing answered; `Refused` for an event id, client
+0 or another type.
+
+**`someip.send(to, msgs, *, port=None, window_ms=1000)`** sends one message or a list of them,
+then returns what the port heard for `window_ms`, a `SomeipHeard`: `messages` in the order heard
+(a datagram packing several gives each) and how many datagrams were `malformed`, not SOME/IP to
+their end. It unpacks as `messages, malformed`.
+
+**`someip.listen(window_ms=1000, *, port=None, group=None, channel=None)`** hears what the
+network already carries on `port` (`None`: 30490): a node's events to its peer (listen on the peer
+port), a service's events on a multicast `group`, SD offers (join the SD group). Nothing is sent
+and nothing is subscribed to, so an event a service sends only to subscribers is not heard
+([ethernet_architecture.md](ethernet_architecture.md)). `channel`, a SOME/IP row of the started
+project, listens on its bind host, port and group; a `port` or `group` contradicting it is
+refused.
+
+A port another listener of this process holds is refused, whichever call holds it: two sockets
+on one UDP port split its stream rather than share it. Every wait is its window or timeout, and
+Ctrl-C ends it within 100 ms (the exchange then finishes on its own).
+
+---
+
+## 13. Flashing
+
+`blobly.flash.program` is the Lua `flash.program`: the download session against a blobly_emb
+bootloader (0x10 02, 0x29 authentication, erase, 0x34 / 0x36 / 0x37, the check routine, 0x11),
+the session `cmd/flash` and the GUI's Flash panel run (`blobly/flash`). `flash.BootSim` is a
+simulated bootloader, to rehearse a flash with no board.
+
+```python
+import blobly
+from blobly import flash
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can1 = net.channels.CAN1
+    with flash.BootSim(can1) as boot:        # stands in for the board; drop it for a real one
+        report = flash.program(can1, bytes(4096), progress=lambda done, total: None, quiet=True)
+    print(report)                 # FlashReport(bytes=4160, blocks=65, ..., auth='authenticated', ...)
+    print(boot.report.verified)   # True: the CRC the image header states matched
+```
+
+[flash_ecu.py](../python/examples/flash_ecu.py) is a complete script.
+
+**`flash.program(target, image, *, base=None, sw_version=None, auth=True, seed=None,
+seed_file=None, progress=None, quiet=False, tx=None, rx=None)`** returns a `FlashReport`.
+`target` is a `Channel` of the started project, opened on `tx` / `rx` (`None`: 0x7B0 / 0x7B8, as
+`cmd/flash`) and closed after, or a `UdsClient` — its ids, and the connection a handoff to the
+bootloader was made on (`tx` and `rx` are refused then). `image` is `bytes`, or the path of a raw
+`.bin`, which gets its header here, or of a BLBT `.img`, sent as it is. `base` is where it goes
+(0x08020000, the app slot), `sw_version` a raw image's header version (1).
+
+With `auth` the session signs the bootloader's 0x29 challenge with the tester seed: `seed` (64
+hex characters), else the file `seed_file` names, else `$BLOBLY_FLASH_SEED`, else the dev tester
+seed. Both, a malformed seed, or a seed with `auth=False`, are refused before anything is sent.
+`progress(done, total)`, in blocks, is called at each whole percent and the last block, on the
+calling thread; without it a `flash: transfer ...` line is printed per tenth. Each milestone
+prints a `flash: ...` line; `quiet` prints none.
+
+**What goes wrong.** A step the bootloader refused raises `NegativeResponse` with its NRC (a wrong
+key is 0x35 at `send proof`, and nothing is erased); one it did not answer `Timeout`.
+`blobly.FlashFailed` (code -11) is the session's own verdict: an erase or check routine that
+failed (the image is not marked valid), a malformed download answer. A `progress` that raises
+stops the transfer before the check, so the image is never marked valid, and its exception is
+raised; Ctrl-C does the same within 100 ms. The client is usable again after either.
+
+**`flash.BootSim(channel, tx=None, rx=None)`** serves a CAN row of the started project as a
+blobly_emb bootloader, hearing requests on `tx` and answering on `rx` (the tester's ids, 0x7B0 /
+0x7B8 by default), strict where a real one is: the 0x29 proof is verified against the dev tester
+key, erase is refused before it, and the check routine answers from the CRC the image header
+states over the bytes it was sent. `boot.stop()` (or the end of its `with` block) stops it and
+returns a `BootReport`, kept as `boot.report`. Stop it before the project.
+
+---
+
+## 14. Testing with pytest
 
 Tests run on [pytest](https://docs.pytest.org/): plain `assert`, fixtures and pytest's own
 reports. `blobly` brings a pytest plugin, `blobly.pytest_plugin`, whose fixtures start the
@@ -836,7 +946,7 @@ The complete suite is [test_sim_demo.py](../python/examples/test_sim_demo.py), w
 
 ---
 
-## 13. Threads
+## 15. Threads
 
 - **Load the engine on the main thread** (`blobly.init()`). After that any thread may call in. A
   thread is attached to the engine on its first call and detached when it ends, without you
@@ -874,13 +984,14 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 14. Errors
+## 16. Errors
 
 | exception | when |
 |---|---|
 | `blobly.BloblyError` | The engine refused, or a call failed (its subclasses say how: `Refused`, `FaultRefused`, and the ways a UDS call fails): a project that does not load, a channel that will not open, a send the transport refuses, a listen-only row, a channel of an earlier load, an ambiguous name, an unknown signal in `encode`. Also: no engine found, a first load off the main thread, a Python that is not CPython. `str(e)` is the engine's message; `e.code` says which kind. |
 | `blobly.FaultRefused` | A `Refused` (code -1): the engine refused a fault that could not take effect, and armed nothing (see [Fault injection and E2E](#9-fault-injection-and-e2e)). |
-| `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), or a UDS request nothing answered. A `BloblyError`, code -5. |
+| `blobly.Timeout` | Nothing came within the wait: an `expect` or `expect_signal` saw no match (the message says what was expected and what came instead), a UDS request or a SOME/IP call nothing answered. A `BloblyError`, code -5. |
+| `blobly.FlashFailed` | A flash's own verdict: the bootloader's answers say the flash did not happen (see [Flashing](#13-flashing)). A `BloblyError`, code -11. |
 | `ValueError` | An argument no CAN frame or wait can have: an id that is not an integer of at most 29 bits, more than 64 bytes of data, a NUL in a path or signal name, a timeout past 2^31 - 1 ms, a timer period that is not a number of at least 1 ms, a `run()` duration that is not a finite number, zero or more. A fault's `ms` that is not more than 0 (or past 2^31 - 1), a fault's `Message` of another channel or of a name its channel shares. An `on_message` id past the width its `ext` names (29 bits when `None`). What Profile 1 cannot be, in `blobly.e2e`, with the engine's reason. |
 | `TypeError` | A timeout that is not a finite number (or `None`, which `expect` refuses too), a signal value that is not a number, an `on_message` id that is not an int, `None` or a `Message`, or an `ext` that is not a bool or is given beside a `Message` or `None`. A fault's or an `e2e` call's argument of the wrong type. |
 | `AttributeError` | An unknown name as an attribute: `net.channels.NOPE`, `msgs.NOPE`, `signals.NOPE`. The message lists the names there are; `hasattr` and `getattr(c, name, default)` read it as absent. |
@@ -909,6 +1020,7 @@ A UDS call's failures are subclasses, each with a code of its own: see
 | -8 | `blobly.CarrierFailed` | the carrier failed under the request |
 | -9 | `blobly.RoutingDenied` | a DoIP entity denied the routing activation |
 | -10 | `blobly.ConnectionLost` | the DoIP connection is gone (a `CarrierFailed`) |
+| -11 | `blobly.FlashFailed` | a flash ran, and the bootloader's answers say it did not happen |
 
 ```python
 import blobly
@@ -926,11 +1038,11 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 15. Reference
+## 17. Reference
 
-Import everything from `blobly`, and the E2E helpers from `blobly.e2e`. The submodules
-`blobly.project`, `blobly.events` and `blobly.faults` are the implementation, and their other
-names are not part of the interface.
+Import everything from `blobly`, and the E2E helpers, SOME/IP and flashing from `blobly.e2e`,
+`blobly.someip` and `blobly.flash`. The submodules `blobly.project`, `blobly.events` and
+`blobly.faults` are the implementation, and their other names are not part of the interface.
 `python/tests/test_docs.py` checks that every public class, method, property and attribute of
 the package is named in this section.
 
@@ -946,6 +1058,8 @@ the package is named in this section.
 | `blobly.doip_listen(window_ms=1000, *, port=None, ip6=False, channel=None)` | The DoIP announcements heard for `window_ms`, each a `DoipAnnouncement`: on `port` (13400), or on the port of DoIP `channel`'s entity. |
 | `blobly.__version__` | The package's version (`"2026.10.1"`); `"0+source"` in a source checkout. |
 | `blobly.e2e` | The E2E Profile 1 helpers: see Module `blobly.e2e`. |
+| `blobly.someip` | SOME/IP send, call and listen: see Module `blobly.someip`. |
+| `blobly.flash` | Flashing a blobly_emb bootloader: see Module `blobly.flash`. |
 
 ### Module `blobly.e2e`
 
@@ -953,6 +1067,75 @@ the package is named in this section.
 |---|---|
 | `blobly.e2e.p01_crc(data, data_id, crc_pos, counter_pos, mode="both")` | The Profile 1 CRC byte for `data` as it stands, an `int`. |
 | `blobly.e2e.p01_protect(data, data_id, crc_pos, counter_pos, counter, mode="both")` | `data` with `counter` (0..14) written and the CRC stamped, as `bytes`; the input is not changed. |
+
+### Module `blobly.someip`
+
+| name | what |
+|---|---|
+| `blobly.someip.call(to, request, *, port=None, timeout_ms=1000)` | One request from local `port` (30491) to `to`, an IPv4 `"host:port"`: the RESPONSE or ERROR mirroring it, a `SomeipMessage`. `Timeout` when none came. |
+| `blobly.someip.send(to, msgs, *, port=None, window_ms=1000)` | One `SomeipMessage` or a list sent from local `port` (30491); what the port heard for `window_ms` after, a `SomeipHeard`. |
+| `blobly.someip.listen(window_ms=1000, *, port=None, group=None, channel=None)` | What `port` (30490) heard for `window_ms`, joining `group`, or on SOME/IP `channel`'s endpoint: a `SomeipHeard`. |
+
+### Module `blobly.flash`
+
+| name | what |
+|---|---|
+| `blobly.flash.program(target, image, *, base=None, sw_version=None, auth=True, seed=None, seed_file=None, progress=None, quiet=False, tx=None, rx=None)` | Flashes `image` into a blobly_emb bootloader on `target`, a `Channel` (0x7B0 / 0x7B8) or a `UdsClient`: a `FlashReport`. |
+| `blobly.flash.BootSim`, `blobly.flash.FlashReport`, `blobly.flash.BootReport` | The same classes as `blobly.BootSim`, `blobly.FlashReport` and `blobly.BootReport`. |
+
+### `SomeipMessage`
+
+`blobly.SomeipMessage(service, method, payload=b"", type=None, iface=None, client=None,
+session=None, return_code=0, at_ms=None, source=None)`: a SOME/IP message, its header's fields and
+its payload. A value: frozen, compared field by field.
+
+| member | what |
+|---|---|
+| `m.service`, `m.method` | The service id, and the method or event id. |
+| `m.payload` | The payload, `bytes`. |
+| `m.type` | `"request"`, `"notification"`, `"response"`, `"error"`, or `"type nn"` for another code heard. `None` to send: a notification for an event id, a request otherwise. |
+| `m.iface` | The interface version (`None` to send: 1). |
+| `m.client`, `m.session` | The Request ID (`None` to send: 0x1234 and the run's next session for a request, 0 for a notification). |
+| `m.return_code` | The return code (an ERROR's says why). |
+| `m.at_ms` | Heard: ms into the window; a call's answer, ms after the send. `None` on one not heard. |
+| `m.source` | Heard: the `"host:port"` it came from. |
+| `m.event` | Whether `method` is an event id (bit 15 set). |
+
+### `SomeipHeard`
+
+What a window heard (`someip.send`, `someip.listen`), a named tuple: `messages, malformed = heard`.
+
+| member | what |
+|---|---|
+| `heard.messages` | The `SomeipMessage`s in the order heard. |
+| `heard.malformed` | How many datagrams were not SOME/IP to their end: counted, never hidden. |
+
+### `FlashReport`
+
+What a completed flash did (`flash.program`).
+
+| member | what |
+|---|---|
+| `r.bytes`, `r.blocks` | Header and image as transferred, and the 0x36 requests. |
+| `r.wrapped` | The image was a BLBT `.img`, sent as it is. |
+| `r.auth` | `"authenticated"`, `"not required"` (a keyless boot refused the challenge) or `"skipped"` (`auth=False`). |
+| `r.reset_acknowledged` | The 0x11 reset was answered; `False` when its answer was lost to the reset, which is normal. |
+
+### `BootSim`, `BootReport`
+
+`blobly.BootSim(channel, tx=None, rx=None)`: a simulated blobly_emb bootloader on a CAN row of the
+started project (see [Flashing](#13-flashing)). `with BootSim(ch) as boot:` stops it at the end of
+the block.
+
+| member | what |
+|---|---|
+| `boot.channel` | The `Channel` it serves. |
+| `boot.stop()` | Stops it, once; returns the `BootReport`. |
+| `boot.report` | The `BootReport` once stopped, else `None`. |
+| `BootReport.authenticated` | The last 0x29 proof verified against the dev tester key. |
+| `BootReport.erases`, `BootReport.blocks`, `BootReport.checks`, `BootReport.resets` | How many erases, 0x36 blocks, check routines and resets it answered. |
+| `BootReport.bytes` | What the last download was sent, header included. |
+| `BootReport.verified` | The last check routine passed: the CRC the image header states. |
 
 ### `Project`
 
@@ -1174,23 +1357,23 @@ and armed nothing.
 | `str(e)` | Why, in the engine's words. |
 | `e.code` | -1. |
 
-### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`, `ConnectionLost`, `RoutingDenied`
+### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`, `ConnectionLost`, `RoutingDenied`, `FlashFailed`
 
 `blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused, or a call failed. The
-others are its subclasses (see [Errors](#14-errors) and
+others are its subclasses (see [Errors](#16-errors) and
 [UDS diagnostics](#10-uds-diagnostics)).
 
 | member | what |
 |---|---|
 | `str(e)` | The engine's message; for an expectation's `Timeout`, what was expected and what came instead. |
-| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -10 the ways a UDS call fails. |
+| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -10 the ways a UDS call fails; -11 a flash's own verdict. |
 | `e.nrc`, `e.nrc_name` | `NegativeResponse` only: the code, and ISO 14229-1's name for it. |
 | `e.exchange` | `NegativeResponse` and `ConnectionLost`: the `Exchange` it ended. |
 | `e.routing_code`, `e.routing_name`, `e.hint`, `e.tester` | `RoutingDenied` only: the routing activation response code, ISO 13400-2's meaning, what to do about it, and the tester address asked for. |
 
 ### `blobly.pytest_plugin`
 
-The pytest plugin ([Testing with pytest](#12-testing-with-pytest)). Not imported by `blobly`: a
+The pytest plugin ([Testing with pytest](#14-testing-with-pytest)). Not imported by `blobly`: a
 suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.pytest_plugin`.
 
 | name | what |
@@ -1203,11 +1386,11 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 
 ---
 
-## 16. What is not there yet
+## 18. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
 loop, bus health, fault injection, the E2E Profile 1 helpers, UDS over CAN and DoIP, DoIP
-discovery, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+discovery, SOME/IP send, call and listen, flashing, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
 - UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
@@ -1218,7 +1401,8 @@ discovery, `expect` and a pytest plugin. The rest is planned in [#507](https://g
   typed.
 
 **Phase 2: the rest of Lua's surface, and gaps both languages share.**
-- SOME/IP send, call and listen; `flash.program`.
+- SOME/IP send, call and listen are here ([SOME/IP](#12-someip)), and so is `flash.program`
+  ([Flashing](#13-flashing)), with a simulated bootloader to rehearse it against.
 - Stating a frame's format (a classic frame on a CAN-FD wire).
 - Replay control and recording to a file; generator control (fire, start, stop, cycle).
 - E2E verify on receive, and E2E declared in the DBC applied on send.

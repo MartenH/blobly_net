@@ -7,9 +7,12 @@ pytest is not a dependency of the package: its example is skipped where pytest i
 scripts/python_tests.py, which CI runs, installs pytest and checks that it imports first, so
 there it runs."""
 import os
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from importlib.util import find_spec
 
@@ -28,7 +31,43 @@ SCRIPTS = {
     "uds_diag.py": [],
     "doip_diag.py": [],
     "fault_injection.py": [],
+    "flash_ecu.py": [],
+    "someip_node.py": None,  # against a node: SomeipNode's
 }
+
+
+class SomeipNode:
+    """A static-peer SOME/IP node on loopback for someip_node.py: each request answered from its
+    own port with the RESPONSE mirroring it, preceded by an event."""
+
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(0.05)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]  # the peer port the example sends from, free now
+        self.args = ["--to", f"127.0.0.1:{self.sock.getsockname()[1]}", "--port", str(port)]
+        self.done = threading.Event()
+        self.t = threading.Thread(target=self.serve, daemon=True)
+        self.t.start()
+
+    def serve(self):
+        while not self.done.is_set():
+            try:
+                data, src = self.sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            svc, mth, _, client, session, _, iface, mtype, _ = struct.unpack(">HHIHHBBBB", data[:16])
+            if mtype == 0x00:
+                self.sock.sendto(struct.pack(">HHIHHBBBB", svc, 0x8001, 8, 0, 0, 1, iface, 0x02, 0), src)
+                self.sock.sendto(struct.pack(">HHIHHBBBB", svc, mth, 8 + 2, client, session, 1, iface, 0x80, 0)
+                                 + data[16:][::-1], src)
+
+    def close(self):
+        self.done.set()
+        self.t.join()
+        self.sock.close()
 
 
 def run(*args, timeout=120):
@@ -54,7 +93,12 @@ class TestExamples(unittest.TestCase):
     def test_each_script_runs_clean(self):
         for name, args in SCRIPTS.items():
             with self.subTest(name):
-                r = run(os.path.join(EXAMPLES, name), *args)
+                node = SomeipNode() if args is None else None
+                try:
+                    r = run(os.path.join(EXAMPLES, name), *(node.args if node else args))
+                finally:
+                    if node:
+                        node.close()
                 self.assertEqual(r.returncode, 0, f"{name}:\n{r.stdout}\n{r.stderr}")
                 self.assertIn("engine ", r.stdout)
                 self.assert_package(r.stdout, name)

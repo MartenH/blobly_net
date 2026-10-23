@@ -8,6 +8,7 @@ import sync
 import sync.stdatomic
 import time
 import blobly.doip
+import blobly.flash
 import blobly.isotp
 import blobly.transport
 import blobly.uds
@@ -31,6 +32,11 @@ mut:
 	conn     udsconn.Conn
 	users    i64
 	closing  i64
+	// a flash in progress on the handle (bb_flash_program), and its cancellation (bb_flash_cancel),
+	// which ends its waits as `closing` does; both under `fmu`
+	flashing bool
+	cancel   i64
+	fmu      &sync.Mutex = sync.new_mutex()
 	// asks `closing`: the client's and its channel's stop_requested, put back after a functional
 	// request has them ask every target's
 	stop     fn () bool = unsafe { nil }
@@ -69,6 +75,13 @@ __global (
 
 @[export: 'bb_uds_open']
 pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
+	return uds_open(r, tx, rx, out, udsconn.Ask{
+		what: 'uds'
+	})
+}
+
+// uds_open opens a UDS handle on row `r`, an omitted id `dflt`'s.
+fn uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target, dflt udsconn.Ask) i32 {
 	// a row's carrier is the run's (a hosted DoIP row listens on the port the run moved it to), and
 	// a handle is its run's, which a functional request takes this run's of (bb_run_gen)
 	if isnil(bb_run) {
@@ -76,7 +89,7 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 	}
 	ch := row(r) or { return fail(bb_err, 'no channel ${r}') }
 	ask := udsconn.Ask{
-		what:   'uds'
+		...dflt
 		has_tx: !isnil(tx)
 		tx:     if isnil(tx) { i64(0) } else { unsafe { *tx } }
 		has_rx: !isnil(rx)
@@ -112,8 +125,9 @@ pub fn bb_uds_open(r i32, tx &i64, rx &i64, out &C.bb_uds_target) i32 {
 		car:      car
 	}
 	closing := &hd.closing
-	stop := fn [closing] () bool {
-		return stdatomic.load_i64(closing) != 0
+	cancel := &hd.cancel
+	stop := fn [closing, cancel] () bool {
+		return stdatomic.load_i64(closing) != 0 || stdatomic.load_i64(cancel) != 0
 	}
 	hd.stop = stop
 	hd.conn.cli.stop_requested = stop
@@ -382,6 +396,9 @@ fn (mut hd UdsHandle) cli() !&uds.Client {
 
 // uds_failed is bb.h's code for the way a client call failed (uds.failure_of).
 fn uds_failed(err IError) i32 {
+	if err is flash.Failed {
+		return fail(bb_err_flash, err.msg())
+	}
 	if err is doip.RoutingDenied {
 		rc := fail(bb_err_routing, err.msg())
 		C.bb_routing_set(i32(err.code), i32(err.tester))
@@ -403,8 +420,9 @@ fn uds_failed(err IError) i32 {
 // negative is a negative response's failure, its NRC the thread's for bb_last_nrc.
 fn negative(err IError) i32 {
 	rc := fail(bb_err_negative, err.msg())
-	if err is uds.NegativeResponse {
-		C.bb_nrc_set(i32(err.nrc))
+	cause := if err is uds.ContextError { err.cause } else { err }
+	if cause is uds.NegativeResponse {
+		C.bb_nrc_set(i32(cause.nrc))
 	}
 	return rc
 }
