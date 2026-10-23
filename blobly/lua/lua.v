@@ -30,6 +30,7 @@ fn C.ctlua_dofile(&C.lua_State, &char) int
 fn C.ctlua_loadstring(&C.lua_State, &char) int
 fn C.ctlua_pcall(&C.lua_State, int, int) int
 fn C.ctlua_set_ctx(&C.lua_State, voidptr)
+fn C.ctlua_set_count_hook(&C.lua_State, CFn, int)
 fn C.ctlua_get_ctx(&C.lua_State) voidptr
 fn C.ctlua_register(&C.lua_State, &char, CFn)
 fn C.ctlua_push_int(&C.lua_State, i64)
@@ -126,6 +127,17 @@ pub fn (l State) call_global_ints(name string, args []i64) ! {
 	if C.ctlua_pcall(l, args.len, 0) != 0 {
 		return error(l.pop_error())
 	}
+}
+
+// set_count_hook calls `f` every `every` VM instructions; an error `f` raises (`fail`) unwinds the
+// running script. Host functions are not interrupted: it runs between instructions only.
+pub fn (l State) set_count_hook(f CFn, every int) {
+	C.ctlua_set_count_hook(l, f, every)
+}
+
+// clear_hook removes the count hook.
+pub fn (l State) clear_hook() {
+	C.ctlua_set_count_hook(l, unsafe { nil }, 0)
 }
 
 // pop_error reads and pops the error string left on the stack top.

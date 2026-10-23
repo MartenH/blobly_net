@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Run Lua test scripts headlessly against a project's simulation (no GUI).
-#   scripts/runtests.sh [--project projects/sim-demo.blobnet] tests/diag_basic.lua [more.lua ...]
-# Defaults to projects/sim-demo.blobnet when --project is omitted. Exits non-zero if
-# any test fails (CI-friendly). -enable-globals is needed for the in-process bus.
+#   scripts/runtests.sh [--project projects/sim-demo.blobnet] [--report run.json] [--timeout 60] \
+#                       tests/diag_basic.lua [more.lua ...]
+# Defaults to projects/sim-demo.blobnet when --project is omitted. Exits with the runner's status
+# (0 passed, 1 a test failed, 2 refused, 3 a script error, 4 timeout; docs/scripting.md). With no
+# script named, every suite in tests/ runs, one invocation each, and this exits 1 when any did
+# not pass (the summary gives each one's status); --report then names a DIRECTORY that gets one
+# <suite>.json per suite, and --timeout bounds each suite. -enable-globals is needed
+# for the in-process bus.
 set -euo pipefail
 
 # Absolutise caller-relative paths BEFORE changing directory. The cd below is what lets the
@@ -10,25 +15,33 @@ set -euo pipefail
 # argument the caller wrote — so `--project my.blobnet` from another directory looked for that
 # file inside the repository and failed before any asset resolution ran. Scripts have the same
 # problem, so both are resolved here.
+abs() { # an existing $1 made absolute; any other left alone (repo-relative, as CI passes)
+  if [ -e "$1" ]; then echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; else echo "$1"; fi
+}
 args=()
-next_is_project=0
+named=0
+report=""
+next=""
 for a in "$@"; do
-  if [ "$next_is_project" = 1 ]; then
-    next_is_project=0
-    [ -e "$a" ] && a="$(cd "$(dirname "$a")" && pwd)/$(basename "$a")"
-    args+=("$a")
-    continue
-  fi
+  case "$next" in
+    path)   next=""; args+=("$(abs "$a")"); continue ;;
+    value)  next=""; args+=("$a"); continue ;;
+    report) next=""; [ -n "$a" ] || { echo "runtests: --report names no file" >&2; exit 2; }
+            case "$a" in /*|[A-Za-z]:[/\\]*) report="$a" ;; *) report="$PWD/$a" ;; esac; continue ;;
+  esac
   case "$a" in
-    --project) next_is_project=1; args+=("$a") ;;
-    -*)        args+=("$a") ;;
-    *)         if [ -e "$a" ]; then
-                 args+=("$(cd "$(dirname "$a")" && pwd)/$(basename "$a")")
-               else
-                 args+=("$a")   # leave it alone: repo-relative, as CI passes
-               fi ;;
+    --project|-p) next=path; args+=("$a") ;;
+    --timeout)    next=value; args+=("$a") ;;
+    --report)     next=report ;;
+    --project-ports) args+=("$a") ;;
+    -*)           named=1; args+=("$a") ;;  # one invocation, which refuses it
+    *)            named=1; args+=("$(abs "$a")") ;;
   esac
 done
+case "$next" in
+  report)    echo "runtests: --report needs a value" >&2; exit 2 ;;
+  path|value) named=1 ;;  # the runner refuses the missing value, into the report
+esac
 
 cd "$(dirname "$0")/.."
 
@@ -49,12 +62,12 @@ run_one() {
 
 # Named scripts run as one invocation, in one environment — the fast path, and what --project is
 # for. Anything the caller passes is honoured exactly as written.
-for a in "${args[@]}"; do
-  case "$a" in
-    -*) ;;
-    *)  run_one "${args[@]}"; exit $? ;;
-  esac
-done
+if [ "$named" = 1 ]; then
+  set +e
+  run_one ${report:+--report "$report"} "${args[@]}"
+  exit $?
+fi
+[ -z "$report" ] || mkdir -p "$report"
 
 # NOTHING named: run the whole suite, which is the case CI has.
 #
@@ -74,7 +87,7 @@ for f in tests/*.lua; do
   [ -e "$f" ] || continue
   total=$((total + 1))
   echo "== $f"
-  run_one "${args[@]}" "$f" || failed+=("$f")
+  run_one ${report:+--report "$report/$(basename "$f" .lua).json"} "${args[@]}" "$f" || failed+=("$f (exit $?)")
 done
 set -e
 
