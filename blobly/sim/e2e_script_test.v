@@ -55,14 +55,29 @@ fn test_a_send_by_name_is_stamped_as_declared() {
 	mut st := E2eStamper{}
 	for n in 0 .. 17 {
 		mut d := brake_payload()
-		assert st.stamp(m, mut d)
+		assert st.stamp(m, mut d) or { panic(err) }
 		assert d[5] & 0x0F == u8(n % 15), 'send ${n}'
 		assert d[4] == ref_both[n % 15], 'send ${n}'
 		assert d[..4] == brake_payload()[..4], 'a signal was overwritten'
 	}
 	plain := db.message_named('Plain') or { panic('no Plain') }
 	mut d := [u8(1), 2]
-	assert !st.stamp(plain, mut d) && d == [u8(1), 2], 'a message with no declaration was stamped'
+	assert !(st.stamp(plain, mut d) or { panic(err) }) && d == [u8(1), 2], 'a message with no declaration was stamped'
+	// a declaration that cannot be applied is refused, not sent unprotected
+	broken := candb.Message{
+		...m
+		e2e: candb.E2eDecl{
+			...m.e2e
+			profile: 'P02'
+		}
+	}
+	mut b := brake_payload()
+	if _ := st.stamp(broken, mut b) {
+		assert false, 'an unknown profile was stamped'
+	} else {
+		assert err.msg().contains('BrakeStatus declares E2E that cannot be stamped'), err.msg()
+	}
+	assert b == brake_payload()
 }
 
 // what a script reads is judged by the declaration: the stamper's frames pass, and the faults a
@@ -77,7 +92,7 @@ fn test_a_reader_judges_by_the_declaration() {
 	mut sent := [][]u8{}
 	for _ in 0 .. 4 {
 		mut d := brake_payload()
-		st.stamp(m, mut d)
+		st.stamp(m, mut d) or { panic(err) }
 		sent << d
 		t += 10
 		f, at := brake_frame(d, t, true)
@@ -108,7 +123,7 @@ fn test_a_late_frame_is_a_timeout_by_the_bus_time() {
 	mut st := E2eStamper{}
 	mut next := fn [m] (mut st E2eStamper) []u8 {
 		mut d := brake_payload()
-		st.stamp(m, mut d)
+		st.stamp(m, mut d) or { panic(err) }
 		return d
 	}
 	f0, t0 := brake_frame(next(mut st), 0, true)
@@ -142,7 +157,7 @@ fn test_a_frame_timed_by_its_reading_is_never_late() {
 	mut st := E2eStamper{}
 	for i, at in [i64(0), 500, 1000, 5000] {
 		mut d := brake_payload()
-		st.stamp(m, mut d)
+		st.stamp(m, mut d) or { panic(err) }
 		f, t := brake_frame(d, at, false)
 		assert r.judge(f, t) or { panic('') } == .ok, 'frame ${i}'
 	}
@@ -174,9 +189,16 @@ fn test_receive_checks_take_the_contract_in_order() {
 	assert s.by_key.len == 2
 	brake := s.by_key[vkey(0x301, false)] or { panic('no BrakeStatus') }
 	assert brake.e2e.profile == p01, 'a protect: entry overrode the declaration'
-	assert brake.timeout_ms == 100
 	level := s.by_key[vkey(0x303, false)] or { panic('no Stamped') }
-	assert level.e2e.profile == 'crc8_j1850' && level.timeout_ms == 0
+	assert level.e2e.profile == 'crc8_j1850'
+	// an entry that protects nothing stamps nothing, so there is nothing to judge
+	idle := project.NodeCfg{
+		name:    'Chassis'
+		protect: [project.ProtectCfg{
+			message: 'Stamped'
+		}]
+	}
+	assert receive_checks(db, [idle], []).by_key.len == 1, 'an inactive protect: entry was judged'
 	verify := [
 		project.ProtectCfg{
 			message: 'BrakeStatus'
@@ -186,9 +208,14 @@ fn test_receive_checks_take_the_contract_in_order() {
 		},
 	]
 	v := receive_checks(db, [node], verify)
-	brake2 := v.by_key[vkey(0x301, false)] or { panic('no BrakeStatus') }
+	mut brake2 := v.by_key[vkey(0x301, false)] or { panic('no BrakeStatus') }
 	assert brake2.e2e.profile == 'xor8', 'the verify: entry did not win'
-	assert brake2.timeout_ms == 100, 'the verify: entry lost the message timeout'
+	// judged by the message's E2ETimeout all the same
+	mut d := brake_payload()
+	brake2.e2e.apply(brake2.msg, mut d, 0)
+	assert brake2.check_at(d, 0, true) == .ok
+	brake2.e2e.apply(brake2.msg, mut d, 1)
+	assert brake2.check_at(d, 101_000_000, true) == .timeout, 'the verify: entry lost the message timeout'
 	assert receive_checks(candb.Database{}, [], []).by_key.len == 0
 }
 

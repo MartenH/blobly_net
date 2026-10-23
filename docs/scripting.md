@@ -355,9 +355,14 @@ else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`, `E2EProfile`, `E
   as a sender that stopped.
 - **`bus.send_message` stamps the declared E2E**: the counter the next of this run's sends of that
   message, from 0, then the CRC — over whatever `sigs` gave those two signals — as a simulated
-  sender stamps it. `bus.send_message(channel, name, sigs, { e2e = false })` sends it as encoded,
-  its counter and CRC as `sigs` gave them (raw 0 otherwise); `sim.fault` breaks a simulated
-  sender's protection instead.
+  sender stamps it. A declaration that cannot be applied (an unknown profile, a CRC signal that is
+  not one byte) raises rather than go out unprotected, and a send that fails after its stamp has
+  used its counter, as a frame lost on the wire does.
+  `bus.send_message(channel, name, sigs, { e2e = false })` sends it as encoded, its counter and
+  CRC as `sigs` gave them (raw 0 otherwise); `sim.fault` breaks a simulated sender's protection
+  instead.
+- A simulated node's `protect:` entry that deviates from the declaration on purpose (a wrong Data
+  ID, to test a receiver's rejection path) reads as a receiver would read it: `bad_crc`.
 
 ```lua
 check.e2e(expect("CAN1", 0x301, 500))                    -- passes, or fails naming the verdict

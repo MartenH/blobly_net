@@ -94,6 +94,10 @@ pub fn bb_e2e_stamp(row i32, m i32, f &C.bb_frame) i32 {
 	if n > 64 {
 		return fail(bb_err, 'e2e_stamp: a payload is at most 64 bytes, not ${n}')
 	}
+	msg := message(row, m) or { return refused(err) }
+	if n < msg.payload_len() {
+		return fail(bb_err, 'e2e_stamp: a frame of ${n} bytes is shorter than ${msg.name} (${msg.payload_len()})')
+	}
 	mut data := []u8{len: n}
 	for i in 0 .. n {
 		data[i] = f.data[i]
@@ -101,21 +105,7 @@ pub fn bb_e2e_stamp(row i32, m i32, f &C.bb_frame) i32 {
 	bb_mu.lock()
 	if !bb_dbs_live {
 		bb_mu.unlock()
-		return fail(bb_err_state, "not started: a row's E2E is the run's, from bb_start until bb_stop")
-	}
-	if row < 0 || int(row) >= bb_dbs.len {
-		bb_mu.unlock()
-		return fail(bb_err, 'no channel ${row}')
-	}
-	msgs := bb_dbs[int(row)].messages
-	if m < 0 || int(m) >= msgs.len {
-		bb_mu.unlock()
-		return fail(bb_err, 'channel ${row} has no message ${m} (it has ${msgs.len})')
-	}
-	msg := msgs[int(m)]
-	if n < msg.payload_len() {
-		bb_mu.unlock()
-		return fail(bb_err, 'e2e_stamp: a frame of ${n} bytes is shorter than ${msg.name} (${msg.payload_len()})')
+		return fail(bb_err_state, 'not started: a stop came while the frame was stamped')
 	}
 	if bb_e2e_gen != bb_run_gen {
 		bb_e2e_stampers = map[int]&sim.E2eStamper{}
@@ -126,7 +116,10 @@ pub fn bb_e2e_stamp(row i32, m i32, f &C.bb_frame) i32 {
 		bb_e2e_stampers[int(row)] = s
 		s
 	}
-	stamped := st.stamp(msg, mut data)
+	stamped := st.stamp(msg, mut data) or {
+		bb_mu.unlock()
+		return fail(bb_err, err.msg())
+	}
 	bb_mu.unlock()
 	if !stamped {
 		ok()

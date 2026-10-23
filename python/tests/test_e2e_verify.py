@@ -154,6 +154,50 @@ class TestSend:
         assert f == ch.messages.WheelSpeed.encode(Speed=12.5)
 
 
+# a message whose E2E declaration names a profile this engine does not implement
+BROKEN_DBC = """VERSION ""
+
+BU_: Tester Chassis
+
+BO_ 772 Broken: 2 Tester
+ SG_ BrokenCrc : 0|8@1+ (1,0) [0|255] "" Chassis
+ SG_ BrokenCounter : 8|4@1+ (1,0) [0|15] "" Chassis
+
+BA_ "E2ECounterSignal" BO_ 772 "BrokenCounter";
+BA_ "E2ECrcSignal" BO_ 772 "BrokenCrc";
+BA_ "E2EProfile" BO_ 772 "P02";
+"""
+
+BROKEN = """project:
+  name: e2e-broken
+  version: 8
+channels:
+  - name: TX
+    type: can
+    interface: inproc:PY_E2E_BROKEN
+    databases: [broken.dbc]
+  - name: RX
+    type: can
+    interface: inproc:PY_E2E_BROKEN
+    databases: [broken.dbc]
+"""
+
+
+class TestUnappliable:
+    def test_a_declaration_that_cannot_be_applied_is_refused_not_sent_unprotected(self, tmp_path):
+        write(tmp_path, "broken.dbc", BROKEN_DBC)
+        with blobly.Project(write(tmp_path, "broken.blobnet", BROKEN)) as net:
+            tx, rx = net.channels.TX, net.channels.RX
+            rx.recv(0)
+            broken = tx.messages.Broken
+            with pytest.raises(blobly.Refused, match="Broken declares E2E that cannot be stamped"):
+                broken.send()
+            assert rx.recv(50) is None, "the refused frame went out"
+            f = broken.encode()
+            tx.send(f.id, f.data, ext=f.ext)
+            assert rx.expect(broken.id, 500).e2e is None  # nothing judges it either
+
+
 class TestFrame:
     def test_the_verdict_is_not_part_of_the_value(self):
         judged = blobly.Frame(0x301, b"\x01", e2e="bad_crc")

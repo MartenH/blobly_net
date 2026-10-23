@@ -705,8 +705,11 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
  *
  * bb_e2e_stamp writes message m's DECLARED E2E (its database's, as a simulated sender stamps it)
  * into f, m's frame from bb_encode: the counter the next of the run's sends of m by name on the row,
- * from 0, then the CRC over f's bytes; BB_NONE, f unchanged, where m declares none. A frame shorter
- * than m's payload is refused. Any thread. */
+ * from 0, then the CRC over f's bytes; BB_NONE, f unchanged, where m declares none. A declaration
+ * that cannot be applied (an unknown profile, a CRC signal that is not one byte ...) is refused with
+ * BB_ERR rather than left unstamped, and so is a frame shorter than m's payload. A send that fails
+ * after its stamp has still used its counter, as AUTOSAR's protect counts each frame it protects.
+ * Any thread. */
 int bb_e2e_attach(int h, int row);               /* >= 0: how many messages are judged */
 int bb_e2e_stamp(int row, int m, bb_frame *f);
 

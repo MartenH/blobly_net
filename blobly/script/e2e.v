@@ -36,7 +36,7 @@ fn push_e2e(l lua.State, verdict ?string) {
 }
 
 // __e2e_stamp(channel, message, data) -> data with the message's declared E2E stamped (its next
-// counter), or as it was where it declares none
+// counter), or as it was where it declares none; an error where its declaration cannot be applied
 fn l_e2e_stamp(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
@@ -50,7 +50,9 @@ fn l_e2e_stamp(l lua.State) i32 {
 		env.e2e_tx[name] = st
 		st
 	}
-	st.stamp(msg, mut data)
+	st.stamp(msg, mut data) or {
+		return l.fail('${err.msg()} (bus.send_message with { e2e = false })')
+	}
 	l.push_bytes(data)
 	return 1
 }

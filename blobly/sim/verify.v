@@ -52,8 +52,6 @@ pub struct Verifier {
 pub:
 	msg candb.Message
 	e2e E2e
-	// the message's E2ETimeout (its receiver's sender-loss timeout), judged by check_at; 0 is none
-	timeout_ms u32
 pub mut:
 	// u64 with an explicit "nothing yet" flag rather than a signed sentinel: a counter may be
 	// wide, and narrowing it into an int made a high-bit value look negative — which read as
@@ -152,16 +150,18 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 }
 
 // check_at judges a received payload as check does, and its time `t_ns` (host monotonic ns)
-// against the message's E2ETimeout: a frame whose CRC passes more than timeout_ms after the last
-// valid frame — its CRC right, its counter not a repeat — is `.timeout`, ahead of its counter's
-// verdict, and the counter is judged against it from there. `timed` false is a frame whose time
-// is when it was read rather than the bus's: its lateness says nothing, so none is judged.
+// against the message's E2ETimeout (its receiver's sender-loss timeout, 0 or absent for none): a
+// frame whose CRC passes more than that after the last valid frame — its CRC right, its counter
+// not a repeat — is `.timeout`, ahead of its counter's verdict, and the counter is judged against
+// it from there. `timed` false is a frame whose time is when it was read rather than the bus's:
+// its lateness says nothing, so none is judged.
 pub fn (mut v Verifier) check_at(data []u8, t_ns i64, timed bool) Violation {
 	got := v.check(data)
-	if !timed || v.timeout_ms == 0 || got in [.truncated, .bad_crc] {
+	limit_ms := if v.msg.e2e.has_timeout { i64(v.msg.e2e.timeout_ms) } else { 0 }
+	if !timed || limit_ms == 0 || got in [.truncated, .bad_crc] {
 		return got
 	}
-	late := v.have_valid && t_ns - v.last_valid_ns > i64(v.timeout_ms) * 1_000_000
+	late := v.have_valid && t_ns - v.last_valid_ns > limit_ms * 1_000_000
 	if got != .stalled_ctr {
 		v.last_valid_ns = t_ns
 		v.have_valid = true
@@ -388,9 +388,8 @@ pub fn (mut s VerifySet) resolve(dbs []candb.Database, id u32, ext bool) ?string
 		}
 		proto := s.by_key[src] or { continue }
 		s.by_key[k] = Verifier{
-			msg:        proto.msg
-			e2e:        proto.e2e
-			timeout_ms: proto.timeout_ms
+			msg: proto.msg
+			e2e: proto.e2e
 		}
 		// DELIBERATELY NOT marking the adopted key as verify:-sourced (#95). It was, briefly,
 		// to reach the J1939 case — but verify_covers' own PGN walk already resolves a live

@@ -738,7 +738,9 @@ class Message:
         """Encodes this message (encode), stamps the E2E its database declares — the counter its
         next of this run's sends by name on the channel, from 0, then the CRC, over what the
         signals gave them, as a simulated sender stamps it — and sends it on its channel; returns
-        the Frame sent. Its fd/brs are unset, so what goes out takes the wire's declared format.
+        the Frame sent. A declaration that cannot be applied raises Refused rather than go out
+        unprotected; a send that fails after its stamp has used its counter, as a frame lost on
+        the wire does. Its fd/brs are unset, so what goes out takes the wire's declared format.
         To send it unstamped (a corrupted frame on purpose), encode it and send the frame:
         channel.send(f.id, f.data, ext=f.ext). Encoded, stamped and the channel's handle taken
         under one hold of the state lock, so a stop and start on another thread cannot put this
@@ -746,8 +748,8 @@ class Message:
         lib = _lib.lib()
         with _lib.state_lock:
             f = self._encoded(signals)
+            h = self.channel._handle()  # first: a channel that will not open uses no counter
             _lib.check(lib.bb_e2e_stamp(self.channel._index, self._index, ctypes.byref(f)))
-            h = self.channel._handle()
         self.channel._send_on(h, f)
         return frame_of(f)
 

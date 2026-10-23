@@ -8,8 +8,9 @@ import blobly.project
 import blobly.transport
 
 // receive_checks is what a frame received on a row is judged by, per message: the row's verify:
-// entry for it, else its database's declaration (declared_e2e), else a protect: entry of a node
-// simulated on the row — each with its message's E2ETimeout.
+// entry for it, else its database's declaration (declared_e2e) — the contract a receiver holds a
+// sender to, which a protect: entry may deviate from on purpose — else what a node simulated on
+// the row stamps (protection_for).
 pub fn receive_checks(db candb.Database, nodes []project.NodeCfg, verify []project.ProtectCfg) VerifySet {
 	mut s := verifiers_for(db, [], verify)
 	for m in db.messages {
@@ -24,17 +25,18 @@ pub fn receive_checks(db candb.Database, nodes []project.NodeCfg, verify []proje
 			}
 		}
 	}
-	for k, v in verifiers_for(db, nodes, []).by_key {
-		if k !in s.by_key {
-			s.by_key[k] = v
-		}
-	}
-	for k in s.by_key.keys() {
-		v := s.by_key[k] or { continue }
-		s.by_key[k] = Verifier{
-			msg:        v.msg
-			e2e:        v.e2e
-			timeout_ms: if v.msg.e2e.has_timeout { v.msg.e2e.timeout_ms } else { u32(0) }
+	for n in nodes {
+		for m in db.messages_from(n.name) {
+			k := vkey(m.id, m.ext)
+			if k in s.by_key {
+				continue
+			}
+			if e := protection_for(n, m) {
+				s.by_key[k] = Verifier{
+					msg: m
+					e2e: e
+				}
+			}
 		}
 	}
 	return s
@@ -102,9 +104,17 @@ mut:
 }
 
 // stamp writes `m`'s declared counter and checksum into `data`, its encoded payload, and counts
-// the send; false, `data` unchanged, when m declares no E2E that can be stamped.
-pub fn (mut s E2eStamper) stamp(m candb.Message, mut data []u8) bool {
-	e := declared_e2e(m) or { return false }
+// the send; false, `data` unchanged, when m declares no E2E, and an error when it declares one that
+// cannot be applied (declared_problem), which sent unstamped would go out unprotected unsaid.
+pub fn (mut s E2eStamper) stamp(m candb.Message, mut data []u8) !bool {
+	if !m.e2e.declared() {
+		return false
+	}
+	e := e2e_of_decl(m.e2e)
+	why := declared_problem(m, e)
+	if why != '' {
+		return error('${m.name} declares E2E that cannot be stamped: ${why}; send it as encoded instead')
+	}
 	k := vkey(m.id, m.ext)
 	n := s.sent[k] or { u64(0) }
 	e.apply(m, mut data, int(n))

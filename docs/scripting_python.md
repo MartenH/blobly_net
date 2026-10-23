@@ -672,6 +672,10 @@ node simulated on the row stamps (`protect:`). The check is the engine's, the on
 | `E2eStatus.TIMEOUT`, `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter not a repeat) |
 | `None` | its message has no E2E on the channel, or it is a remote frame |
 
+- **Which contract, when two say different things**: the `verify:` entry is the row's own word for
+  what the ECU under test must send, and the declaration is the contract a receiver holds any
+  sender to, so a simulated node's `protect:` entry that deviates on purpose (a wrong Data ID to
+  test a receiver's rejection path) reads as the receiver would read it: `bad_crc`.
 - The counter is judged against the frame of that id the channel read before it, on the same
   handle: the first frame after the handle opens (each test, under the pytest plugin) is judged on
   its CRC alone. A frame lost before the channel read it makes the next one a skip, as it would
@@ -685,9 +689,12 @@ node simulated on the row stamps (`protect:`). The check is the engine's, the on
 - **`msg.send(**signals)` stamps the E2E the message's DBC declares**: the counter the next of
   the run's sends of that message by name on the channel (0 after each start), then the CRC, over
   whatever `signals` gave those two, as a simulated sender stamps them. The declaration alone: a
-  `verify:` or `protect:` entry is not the script's to send by. To send the message unstamped on
-  purpose, encode it and send the frame: `f = msg.encode(...)`, then
-  `ch.send(f.id, f.data, ext=f.ext)`. `net.fault` breaks a simulated sender's protection instead.
+  `verify:` or `protect:` entry is not the script's to send by. A declaration that cannot be
+  applied (an unknown profile, a CRC signal that is not one byte) raises `Refused` rather than go
+  out unprotected. A send that fails after its stamp has used its counter, as a frame lost on the
+  wire does. To send the message unstamped on purpose, encode it and send the frame:
+  `f = msg.encode(...)`, then `ch.send(f.id, f.data, ext=f.ext)`. `net.fault` breaks a simulated
+  sender's protection instead.
 
 `projects/e2e-demo.blobnet` declares two protected messages: BrakeStatus, which its simulated
 Chassis sends, and BrakeCommand, which nothing simulated sends. Its rows E2E and E2E_TAP are one
