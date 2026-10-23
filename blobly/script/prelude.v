@@ -537,9 +537,43 @@ function bus.send_message(channel, name, sigs)
   __bus_send(channel, id, ext, data)
   return { id = id, ext = ext, data = data }
 end
--- decode raw bytes against the channel`s DBC -> { SignalName = physical_value }
-function decode(channel, id, data, ext)
-  return __decode(channel, id, ext or false, data)
+-- decode raw bytes against the channel`s DBC -> { SignalName = value } for each signal the frame
+-- carries: physical values, or with as = "raw" the field bits, or "label" the value table text
+-- (a signal with no text for its value left out)
+function decode(channel, id, data, ext, as)
+  if as ~= nil and type(as) ~= "string" then error("decode: as is a string (physical, raw or label)", 2) end
+  return __decode(channel, id, ext or false, data, as or "physical")
+end
+
+-- ============================ the DBC catalog ============================
+-- dbc.messages(channel): every message of the channel`s databases, in their order, each
+-- { name, id, ext, dlc, j1939, signals = { ... } }; a signal is { name, start_bit, length,
+-- byte_order = "little"|"big", signed, factor, offset, minimum, maximum, unit, multiplexor,
+-- multiplexed, mux_value (multiplexed only), labels = { [physical] = text },
+-- raw_labels = { [raw] = text } }.
+-- dbc.message(channel, name_or_id [, ext]): one message, an id of that kind (ext defaults
+-- false) exactly as the database defines it; nil for none.
+-- dbc.signal(channel, message, name [, ext]): one signal of a message (a name or an id); nil for none.
+dbc = {}
+function dbc.messages(channel) return __dbc_messages(channel) end
+-- the (by_id, key, ext) a message argument is, or an error raised at the caller of the caller
+local function __dbc_key(fname, key, ext)
+  if type(key) == "number" then
+    if math.type(key) ~= "integer" or key < 0 or key > 0x1FFFFFFF then
+      error(fname .. ": an id is an integer 0..0x1FFFFFFF, not " .. key, 3)
+    end
+    return true, key, ext or false
+  end
+  if type(key) ~= "string" then error(fname .. ": a message is a name or an id", 3) end
+  return false, key, false
+end
+function dbc.message(channel, key, ext)
+  local by_id, k, x = __dbc_key("dbc.message", key, ext)
+  return __dbc_message(channel, by_id, k, x)
+end
+function dbc.signal(channel, message, name, ext)
+  local by_id, k, x = __dbc_key("dbc.signal", message, ext)
+  return __dbc_signal(channel, by_id, k, x, name)
 end
 
 -- ============================ sequences (wait / expect) ============================
