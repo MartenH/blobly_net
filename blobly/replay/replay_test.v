@@ -198,6 +198,11 @@ fn test_a_burst_of_our_frames_is_ours_to_the_last() {
 		tx.send(transport.CanFrame{ id: 0x100, data: [u8(k), u8(k >> 8)] }) or { panic(err) }
 	}
 	tx.close()
+	// written before the stop, so its 2 s bound is not what a loaded runner is measured against
+	until := time.sys_mono_now() + 30 * u64(time.second)
+	for r.counts().frames < 8000 && time.sys_mono_now() < until {
+		time.sleep(5 * time.millisecond)
+	}
 	c := r.stop() or { panic(err) }
 	assert c.frames == 8000 && c.ours == 8000 && c.missed == 0, c.str()
 }

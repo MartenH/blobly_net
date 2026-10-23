@@ -15,6 +15,11 @@ const rec_slice_ms = 50
 // as sent, so a stalled driver cannot grow the backlog without bound
 const max_backlog = 65536
 
+// the most lines held while the writer is behind (its queue full): below it they wait and go in
+// one chunk at the next flush, so a writer starved for a moment loses nothing; past it, a file
+// that is not keeping up loses lines and says so
+const max_pending = 1 << 20
+
 // the files recorders are writing now, by absolute path: a second recorder on one would truncate
 // it under the first
 __global (
@@ -291,6 +296,9 @@ fn (mut r Recorder) missed(n int) {
 
 // flush writes the settled lines at the front, counted; the caller holds `mu`.
 fn (mut r Recorder) flush() {
+	if r.open && r.out.len >= r.out.cap && r.lines.len < max_pending {
+		return
+	}
 	mut n := 0
 	mut text := strings.new_builder(256)
 	mut ch := Chunk{}
@@ -501,6 +509,7 @@ pub fn (mut r Recorder) stop() !Counts {
 	mut settled := false
 	for {
 		r.mu.lock()
+		r.flush() // what waited for the writer
 		settled = r.readers == 0 && r.lines.len == 0
 		r.mu.unlock()
 		if settled || time.sys_mono_now() >= until || (!isnil(r.give_up) && r.give_up()) {
