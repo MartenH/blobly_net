@@ -192,6 +192,7 @@ fn test_decode_reports_raw_values_and_labels_for_what_a_frame_carries() {
 		end)
 		test("an unknown mode is refused", function()
 			check.equal(pcall(function() decode("CAN1", 0x100, f, false, "labels") end), false)
+			check.equal(pcall(function() decode("CAN1", 0x100, f, false, "") end), false)
 			check.equal(pcall(function() decode("CAN1", 0x100, f, false, { labels = true }) end), false)
 		end)
 	')!

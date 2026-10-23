@@ -542,7 +542,7 @@ end
 -- (a signal with no text for its value left out)
 function decode(channel, id, data, ext, as)
   if as ~= nil and type(as) ~= "string" then error("decode: as is a string (physical, raw or label)", 2) end
-  return __decode(channel, id, ext or false, data, as)
+  return __decode(channel, id, ext or false, data, as or "physical")
 end
 
 -- ============================ the DBC catalog ============================

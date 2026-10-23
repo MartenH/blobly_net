@@ -125,7 +125,7 @@ enum DecodeAs {
 
 fn decode_as(mode string) !DecodeAs {
 	return match mode {
-		'', 'physical' { .physical }
+		'physical' { .physical }
 		'raw' { .raw }
 		'label' { .label }
 		else { error('decode: no mode "${mode}" (physical, raw or label)') }
