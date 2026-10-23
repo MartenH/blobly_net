@@ -771,7 +771,8 @@ queued when a request goes out is drained first, so it cannot be taken for the a
 **Timing.** Those waits are the client's attributes, in ms: `timeout_ms` (the first answer, 1000),
 `p2_star_ms` (the ECU's P2*, 5000 until a 0x10 answer names its own), `margin_ms` (added to P2*,
 1000) and `pending_budget_ms` (one request from its send, 120000). Read, each is the wait as it
-stands, a 0x10 answer's adoption included. Set, it holds from the next request on. `ch.uds()`
+stands, a 0x10 answer's adoption included; a read is a call like any other, so after a stop and
+start it opens the connection. Set, it holds from the next request on. `ch.uds()`
 takes them as keywords too. `timeout_ms` and `pending_budget_ms` are 1 to 3600000, `p2_star_ms` and
 `margin_ms` 0 to 3600000; anything else is `Refused`, and nothing changes. A 0x10 answer still
 adopts its P2* over one you set, and lengthens `timeout_ms` where its P2 needs more, so set P2*
@@ -861,8 +862,9 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   listen-only row; `CarrierFailed` for the bus or the transfer failing (a frame lost, a frame that
   is not ISO-TP, the receiver reporting overflow).
 - **Lifecycle and threads** are a `UdsClient`'s: `with` closes it, a stop and a start let its
-  handle go and the next call opens another, calls are serialised, and `close()` from another
-  thread ends a call in progress within 20 ms.
+  handle go and the next call opens another, calls are serialised (a `send` from another thread
+  waits for a `recv` in progress), and `close()` from another thread ends a call in progress within
+  20 ms.
 - **One per id pair.** Two channels on one `rx`, a `UdsClient` on it included, each answer a First
   Frame with a Flow Control of their own.
 
@@ -916,8 +918,9 @@ gateway may route only for a tester that unlocked it on that connection (blobly_
 does), so unlock the gateway first and retarget after. A new connection (a lost one reopened, a
 stop and start) keeps the target, but not the gateway's unlock: a gateway that routes only an
 unlocked tester then refuses the node's requests with a negative acknowledgement
-(`CarrierFailed`) until it is unlocked again. A 0x27 key goes only to the target that gave its
-seed. On a CAN row a client's target is its ids, and `retarget` is refused.
+(`CarrierFailed`) until it is unlocked again. On such a new connection a 0x27 key goes only to a
+target that answered its seed there: the gateway's seed is not the node's. On a CAN row a client's
+target is its ids, and `retarget` is refused.
 
 ```python
 import blobly

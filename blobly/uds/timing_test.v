@@ -147,7 +147,7 @@ fn test_carry_timing_loosens_p2_star_only() {
 		pending_budget_ms: 9000
 	})!
 	mut fresh := Client{}
-	fresh.carry_timing(old)
+	fresh.carry_timing(&old)
 	assert fresh.timing() == Timing{
 		timeout_ms:        300
 		p2_star_ms:        default_p2_star_ms
@@ -155,6 +155,6 @@ fn test_carry_timing_loosens_p2_star_only() {
 		pending_budget_ms: 9000
 	}
 	old.p2_star_ms = 20_000
-	fresh.carry_timing(old)
+	fresh.carry_timing(&old)
 	assert fresh.p2_star_ms == 20_000
 }

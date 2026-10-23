@@ -47,11 +47,8 @@ fn l_isotp_open(l lua.State) i32 {
 	info := env.chans[ci]
 	t := udsconn.resolve_isotp(ask, name, info.carrier) or { return l.fail(err.msg()) }
 	mut ch := udsconn.open_isotp(t, name, info.iface, env.opener) or { return l.fail(err.msg()) }
-	if env.deadline != 0 {
-		e := env_of(l)
-		ch.stop_requested = fn [e] () bool {
-			return e.expired()
-		}
+	if stop := env.deadline_stop() {
+		ch.stop_requested = stop
 	}
 	env.isotps << IsotpConn{
 		ch:   ch

@@ -314,7 +314,7 @@ fn (mut hd UdsHandle) reconnect() ! {
 	cli.ext_lens = hd.conn.cli.ext_lens.clone()
 	cli.stop_requested = hd.conn.cli.stop_requested
 	cli.on_exchange = hd.conn.cli.on_exchange
-	cli.carry_timing(hd.conn.cli)
+	cli.carry_timing(&hd.conn.cli)
 	hd.conn = udsconn.Conn{
 		ch:  link
 		cli: cli

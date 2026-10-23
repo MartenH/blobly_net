@@ -38,7 +38,9 @@ fn test_each_way_a_raw_send_or_receive_ends() {
 	peer.send(transport.CanFrame{ id: 0x708, data: [u8(0x40), 0, 0, 0, 0, 0, 0, 0] })!
 	assert ending_of_recv(mut c, 200) == .failed
 
-	// a First Frame of ours answered with overflow (an earlier send's is still queued for the peer)
+	// a First Frame of ours answered with overflow (an earlier send's is still queued for the peer),
+	// in a window wide enough for the peer's thread to be scheduled
+	c.fc_window_ms = 2000
 	spawn fn (mut peer transport.Bus) {
 		for {
 			f := peer.recv(500) or { return }
@@ -55,6 +57,9 @@ fn test_each_way_a_raw_send_or_receive_ends() {
 	}
 	assert ending_of_recv(mut c, 200) == .abandoned
 	assert ending_of_send(mut c, []u8{len: 20, init: 0x33}) == .abandoned
+	// a stop after an orphan Flow Control was skipped is still the stop
+	assert c.ending_of(error(orphan_note(abandoned_recv_note, 1, 0x30)), false) == .abandoned
+	assert c.ending_of(error(orphan_note('timeout', 1, 0x30)), false) == .waited_out
 }
 
 // on a listen-only wire a send is refused, a Single Frame and a First Frame alike

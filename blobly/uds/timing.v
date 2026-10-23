@@ -63,7 +63,7 @@ pub fn (mut c Client) set_timing(t Timing) ! {
 // carry_timing takes `from`'s waits into a client on a new connection to the same ECU: the first
 // answer's wait, the margin and the allowance as they were, P2* only where it loosens this one's
 // (loosen_p2_star: the session that announced it may have ended with the old connection).
-pub fn (mut c Client) carry_timing(from Client) {
+pub fn (mut c Client) carry_timing(from &Client) {
 	c.timeout_ms = from.timeout_ms
 	c.loosen_p2_star(from.p2_star_ms)
 	c.margin_ms = from.margin_ms

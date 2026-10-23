@@ -834,11 +834,11 @@ int bb_gen_source(int g, const char *signal, const bb_wave *w);
  * bb_uds_retarget moves a DoIP handle's requests, and the answers it takes, to logical address
  * *address (0 .. 0xFFFF; NULL: the row's ecu_address): a node behind the gateway the row's entity is
  * (ISO 13400-2), on the one connection, so what the tester unlocked on the gateway there holds for
- * the node. bb_uds_target's rx is then that address. The target holds across a reopen of a lost
- * connection, whose new routing activation carries no unlock: a gateway that routes only an unlocked
- * tester refuses the node's requests again (a negative acknowledgement, BB_ERR_CARRIER) until it is
- * unlocked on the new one. A 0x27 key goes only to the target that gave its seed on the connection.
- * BB_ERR on a CAN handle, whose target is its ids. */
+ * the node. The target holds across a reopen of a lost connection, whose new routing activation
+ * carries no unlock: a gateway that routes only an unlocked tester refuses the node's requests again
+ * (a negative acknowledgement, BB_ERR_CARRIER) until it is unlocked on the new one. On a connection
+ * that replaces another (bb_uds_replaces, or the library's reopen), a 0x27 key goes only to a target
+ * whose seed of its level was answered on it. BB_ERR on a CAN handle, whose target is its ids. */
 typedef struct bb_uds_timing {
 	int32_t timeout_ms;
 	int32_t p2_star_ms;

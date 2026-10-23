@@ -24,7 +24,8 @@ pub enum Ending {
 // Flow Control's, and the message says so.
 pub fn (c &SoftChannel) ending_of(err IError, sending bool) Ending {
 	m := err.msg()
-	if m == abandoned_note || m == abandoned_recv_note {
+	// prefixes: a receive that skipped an orphan Flow Control says so after the note (orphan_note)
+	if m.starts_with(abandoned_note) || m.starts_with(abandoned_recv_note) {
 		return .abandoned
 	}
 	if m.starts_with('timeout') || m == stall_note || m == exhausted_note(c.total_wait_ms) {

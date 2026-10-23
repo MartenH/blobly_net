@@ -513,7 +513,7 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 				fresh.retarget(target)
 				mut fresh_ch := isotp.Channel(fresh)
 				mut fresh_cli := uds.new_client(fresh_ch)
-				fresh_cli.carry_timing(c.cli)
+				fresh_cli.carry_timing(&c.cli)
 				env.conns[i] = UdsConn{
 					ch:   fresh_ch
 					cli:  env.bound_client(mut fresh_ch, fresh_cli)

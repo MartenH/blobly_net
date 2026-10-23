@@ -31,8 +31,9 @@ class IsoTp:
 
     `with ch.isotp(tx, rx) as tp:` closes it at the end of the block. A stop and a start of the
     project let its handle go and the next call opens another on the same ids. Calls on one channel
-    are serialised, so threads may share it; close() from another thread ends a call in progress
-    there within 20 ms. Open one per id pair: two on one rx (a UdsClient on it included) each answer
+    are serialised, so threads may share it, a send waiting for a receive in progress (one ISO-TP
+    channel cannot do both at once); close() from another thread ends a call in progress there
+    within 20 ms. Open one per id pair: two on one rx (a UdsClient on it included) each answer
     a First Frame with a Flow Control of their own."""
     channel: "Channel"
     tx: int
