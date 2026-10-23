@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from . import _lib
-from ._lib import Refused
+from ._lib import ByteData, Refused
 from .events import _sliced
 from .uds import UdsClient, _data, _int
 
@@ -74,7 +74,7 @@ def _text(name: str, v) -> bytes | None:
     return v.encode()
 
 
-def program(target: "Channel | UdsClient", image: "bytes | str | os.PathLike[str]", *, base: int | None = None,
+def program(target: "Channel | UdsClient", image: "ByteData | str | os.PathLike[str]", *, base: int | None = None,
             sw_version: int | None = None, auth: bool = True, seed: str | None = None,
             seed_file: "str | os.PathLike[str] | None" = None,
             progress: Callable[[int, int], None] | None = None, quiet: bool = False,

@@ -20,12 +20,15 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from ._lib import BB_ERR_STATE, BloblyError
 
 if TYPE_CHECKING:
-    from .project import Channel, Frame, Message
+    from .project import Frame, Message
+
+# what names a channel to on_message and on_health: a Project takes a Channel or its name
+_C = TypeVar("_C")
 
 HEALTH_POLL_MS = 100
 # how long a wait on several channels sleeps between looks: Windows' default timer granularity
@@ -62,7 +65,7 @@ class _Health:
         self.channel, self.fn, self.said = channel, fn, None
 
 
-class EventLoop:
+class EventLoop(Generic[_C]):
     """on_message / on_health / on_timer, and run(). Subclasses supply _resolve(channel) -> key,
     _listen(key) (open and validate a channel where a handler names it), _now (ms, monotonic),
     _wait_frame(keys, timeout_ms) -> (key, frame) | None and _health(key) -> str."""
@@ -117,7 +120,7 @@ class EventLoop:
                 read.append(h.channel)
         return read
 
-    def on_message(self, channel: "Channel | str", id: "int | Message | None", fn: "Callable[[Frame], object]",
+    def on_message(self, channel: _C, id: "int | Message | None", fn: "Callable[[Frame], object]",
                    *, ext: bool | None = None) -> None:
         """fn(frame) for each frame on `channel` received during run() — what other nodes sent —
         whose id is `id`: an int, of the kind `ext` names (None: either kind, False: 11-bit, True:
@@ -127,7 +130,7 @@ class EventLoop:
         want = _want(id, ext)  # refused before the channel is read: a bad filter subscribes nothing
         self._on_msg.append((self._listen_key(channel), want, fn))
 
-    def on_health(self, channel: "Channel | str", fn: Callable[[str], object]) -> None:
+    def on_health(self, channel: _C, fn: Callable[[str], object]) -> None:
         """fn(state) during run() when the controller's ladder has moved — "ok", "error warning",
         "ERROR-PASSIVE", "BUS-OFF" — and at its first sample with the state then. Sampled every
         100 ms: a state held for less than that can be missed. A software bus never fires."""

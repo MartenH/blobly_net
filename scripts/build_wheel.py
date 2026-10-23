@@ -137,12 +137,15 @@ def linux_platform_tag(lib):
     return f"manylinux_{major}_{minor}_x86_64"
 
 
-def check_contents(wheel, lib):
-    """Refuses a wheel missing what the package promises: the library it loads, its version file,
-    and py.typed, PEP 561's marker that its annotations are complete (mypy ignores them without it)."""
+def check_contents(wheel, natives, canbridge):
+    """Refuses a wheel missing what it was built to carry: every --native file, canbridge when
+    given, its version file, and py.typed, PEP 561's marker that the package's annotations are
+    complete (mypy ignores them without it)."""
     with zipfile.ZipFile(wheel) as z:
         names = set(z.namelist())
-    want = {f"blobly/_native/{os.path.basename(lib)}", "blobly/_version.py", "blobly/py.typed"}
+    want = {f"blobly/_native/{os.path.basename(f)}" for f in natives} | {"blobly/_version.py", "blobly/py.typed"}
+    if canbridge:
+        want.add("blobly/_native/canbridge")
     if want - names:
         sys.exit(f"build_wheel: {os.path.basename(wheel)} lacks {', '.join(sorted(want - names))}")
 
@@ -216,7 +219,7 @@ def main():
                        check=True, capture_output=True)
         os.makedirs(args.out, exist_ok=True)
         for w in os.listdir(dist):
-            check_contents(os.path.join(dist, w), lib)
+            check_contents(os.path.join(dist, w), args.native, args.canbridge)
             shutil.copy(os.path.join(dist, w), args.out)
             print(os.path.join(args.out, w))
 

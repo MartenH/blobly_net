@@ -8,17 +8,17 @@ import os
 import sys
 import warnings
 import weakref
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Generic, Literal, Protocol, Self, TypeVar
 
 from . import _lib
-from ._lib import BloblyError, Timeout
+from ._lib import BloblyError, ByteData, Timeout
 from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
 from .doip import DoipAnnouncement, discover
 from .uds import FunctionalReply, UdsClient, _close_orphans, functional
 from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
-from .generators import listed as _listed_generators
+from .generators import Generators, listed as _listed_generators
 
 
 class Frame:
@@ -40,7 +40,7 @@ class Frame:
     esi: bool
     t_ms: float | None
 
-    def __init__(self, id: int, data: bytes | Iterable[int] = b"", ext: bool = False, fd: bool = False,
+    def __init__(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
                  brs: bool = False, rtr: bool = False, esi: bool = False, length: int | None = None,
                  t_ms: float | None = None) -> None:
         data = bytes(data)
@@ -208,7 +208,7 @@ class Channel:
                 self._h = _lib.check(lib.bb_bus_open(lib.bb_channel_iface(self._index)))
             return self._h
 
-    def send(self, id: int, data: bytes | Iterable[int] = b"", ext: bool = False, fd: bool = False,
+    def send(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
              brs: bool = False) -> None:
         """Puts a frame on the wire. fd/brs left False let the wire's declared format decide."""
         self._send_on(self._handle(), _bb_frame(self.name, id, data, ext, fd, brs))
@@ -483,7 +483,7 @@ class Channel:
         (ISO 13400-2: one tester address, one connection) — a second is refused while it is open."""
         return UdsClient(self, tx, rx)
 
-    def uds_functional(self, functional_id: int | None, clients: Sequence[UdsClient], request: bytes,
+    def uds_functional(self, functional_id: int | None, clients: Sequence[UdsClient], request: ByteData,
                        window_ms: int = 1000) -> list[FunctionalReply]:
         """UDS functional addressing (ISO 14229-2) on this row, as the Lua uds.functional. On a
         CAN row `request` goes out ONCE, a Single Frame (7 bytes at most) on CAN id
@@ -736,7 +736,7 @@ def _say_dropped(path, gone):
                   + ", ".join(gone) + "); register them again", RuntimeWarning, stacklevel=level)
 
 
-class Project(EventLoop, Faults):
+class Project(EventLoop[Channel | str], Faults):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
     process, and one thread drives load, start and stop (bb.h); send and recv may run on others.
@@ -860,7 +860,7 @@ class Project(EventLoop, Faults):
         return self._channels
 
     @property
-    def generators(self):
+    def generators(self) -> Generators:
         """The run's generators (blobly.Generators): `net.generators["Heartbeat pulse"].fire()`.
         BloblyError (code -3) when the project is not started."""
         with _lib.state_lock:

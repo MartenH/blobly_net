@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from . import _lib
-from ._lib import BloblyError, ConnectionLost, NegativeResponse
+from ._lib import BloblyError, ByteData, ConnectionLost, NegativeResponse
 
 if TYPE_CHECKING:
     from .project import Channel
@@ -188,7 +188,7 @@ def _close_orphans() -> None:
         lib.bb_uds_close(_orphans.pop())
 
 
-def reference_key(seed: bytes) -> bytes:
+def reference_key(seed: ByteData) -> bytes:
     """blobly_net's reference key for a 0x27 seed (each byte XOR 0xFF): the key the simulated
     ECUs accept, and a blobly_emb node whose description names it (docs/security_access.md)."""
     s = _data("seed", seed)
@@ -376,7 +376,7 @@ class UdsClient:
         with self._lock, _lib.state_lock:  # a stop on another thread cannot close it under the read
             return None if self._h is None else self._last(self._h)
 
-    def raw(self, request: bytes) -> bytes:
+    def raw(self, request: ByteData) -> bytes:
         """Sends `request` and returns the positive answer, its SID included. An answer that names
         another request (a late or repeated one) is skipped and the wait goes on."""
         r = _data("request", request)
@@ -391,7 +391,7 @@ class UdsClient:
         if self._in_key_fn and r[:1] == b"\x27" and len(r) > 1 and r[1] & 1:
             raise BloblyError(f"{self!r}: a 0x27 seed request inside a security_access key_fn", _lib.BB_ERR_STATE)
 
-    def raw_suppressed(self, request: bytes) -> bool:
+    def raw_suppressed(self, request: ByteData) -> bool:
         """Sends `request` with suppress-positive-response set on its sub-function: silence is
         success, a refusal raises. Returns whether a positive answer came anyway (the ECU ignored
         the bit); one owed after responsePending is waited for and does not count."""
@@ -413,12 +413,12 @@ class UdsClient:
         """0x22 ReadDataByIdentifier: the DID's value."""
         return self._bytes(_lib.lib().bb_uds_read_did, _int("did", did))
 
-    def write_did(self, did: int, data: bytes) -> None:
+    def write_did(self, did: int, data: ByteData) -> None:
         """0x2E WriteDataByIdentifier."""
         d = _data("data", data)
         self._call(_lib.lib().bb_uds_write_did, _int("did", did), d, len(d))
 
-    def security_access(self, level: int, key_fn: Callable[[bytes], bytes] | None = None) -> bytes:
+    def security_access(self, level: int, key_fn: Callable[[bytes], ByteData] | None = None) -> bytes:
         """0x27 SecurityAccess: requests the seed for `level` (odd), computes the key with
         `key_fn(seed)` — blobly_net's reference key when None — and sends it at level + 1. Returns
         the seed. An all-zero seed is ISO 14229-1's "already unlocked": no key is sent. A wrong key
@@ -571,7 +571,7 @@ class UdsClient:
         return f"<UdsClient {self.channel.name} {ids}{state}>"
 
 
-def functional(channel: "Channel", functional_id: int | None, clients: Sequence[UdsClient], request: bytes,
+def functional(channel: "Channel", functional_id: int | None, clients: Sequence[UdsClient], request: ByteData,
                window_ms: int = 1000) -> list[FunctionalReply]:
     """`request` once on `channel`'s functional id, each client answering on its own response id;
     on a DoIP channel to the functional logical address (None: 0xE400) on its one client's

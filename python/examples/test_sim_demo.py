@@ -55,7 +55,9 @@ def test_the_gear_steps_each_second(can1: Channel):
 
 def test_powertrain_stays_in_its_dbc_range(can1: Channel):
     pt = can1.messages.Powertrain
-    for name, value in can1.decode(can1.expect(pt, timeout_ms=500)).items():
+    values = can1.decode(can1.expect(pt, timeout_ms=500))
+    assert values is not None  # decode answers None for a frame of no message
+    for name, value in values.items():
         assert pt.signals[name].minimum <= value <= pt.signals[name].maximum, name
 
 
@@ -65,7 +67,8 @@ def test_body_status_comes_on_can2(can2: Channel):
 
 @pytest.mark.parametrize("rpm", [0, 1500, 16383.75])
 def test_engine_speed_encodes_and_decodes(can1: Channel, rpm: float):
-    assert can1.decode(can1.messages.Powertrain.encode(EngineSpeed=rpm))["EngineSpeed"] == rpm
+    values = can1.decode(can1.messages.Powertrain.encode(EngineSpeed=rpm))
+    assert values is not None and values["EngineSpeed"] == rpm
 
 
 def test_requests_are_answered_during_run(project: Project, can1: Channel):
@@ -76,7 +79,7 @@ def test_requests_are_answered_during_run(project: Project, can1: Channel):
     assert len(answers) >= 3
 
 
-def test_a_fired_generator_is_answered(project, can1):
+def test_a_fired_generator_is_answered(project: Project, can1: Channel):
     ping = project.generators["Ping ECU (Request)"]  # the project's own generator, edited for the run
     ping.set("ReqCode", 9)
     ping.fire()

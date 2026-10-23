@@ -17,11 +17,11 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "pytest: the selected test",
+            "name": "pytest: the selected test, or the file",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
-            "args": ["${file}::${selectedText}", "-q"],
+            "args": ["${file}", "-q", "-k", "${selectedText}"],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal"
         }

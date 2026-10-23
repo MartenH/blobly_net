@@ -22,7 +22,8 @@ from .uds import (Dtc, Exchange, Extended, FunctionalReply, Snapshot, SnapshotId
 
 __version__: str
 try:
-    from ._version import __version__  # written into a wheel by scripts/build_wheel.py, from v.mod
+    # written into a wheel by scripts/build_wheel.py, from v.mod; `as` re-exports it to a type checker
+    from ._version import __version__ as __version__
 except ImportError:  # a source checkout: version() says which engine it loaded
     __version__ = "0+source"
 

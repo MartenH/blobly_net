@@ -11,11 +11,12 @@ import ctypes
 import numbers
 
 from . import _lib
+from ._lib import ByteData
 
 __all__ = ["p01_crc", "p01_protect"]
 
 
-def p01_crc(data: bytes, data_id: int, crc_pos: int, counter_pos: int, mode: str = "both") -> int:
+def p01_crc(data: ByteData, data_id: int, crc_pos: int, counter_pos: int, mode: str = "both") -> int:
     """The Profile 1 CRC byte for `data` as it stands: CRC-8 (poly 0x1D, start 0, no final XOR)
     over the Data ID bytes `mode` names, then every byte but the CRC's own; the counter is read
     from the low nibble of `counter_pos` (alt mode's byte choice depends on it). It answers the
@@ -29,7 +30,7 @@ def p01_crc(data: bytes, data_id: int, crc_pos: int, counter_pos: int, mode: str
     return _answer(lib, rc)
 
 
-def p01_protect(data: bytes, data_id: int, crc_pos: int, counter_pos: int, counter: int,
+def p01_protect(data: ByteData, data_id: int, crc_pos: int, counter_pos: int, counter: int,
                 mode: str = "both") -> bytes:
     """`data` with `counter` (0..14) in the low nibble of `counter_pos` (its high nibble kept) and
     then the CRC of p01_crc stamped at `crc_pos`. Raises ValueError as p01_crc does, and for a

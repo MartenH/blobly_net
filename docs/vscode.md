@@ -37,7 +37,8 @@ nothing when you open the whole repository.
 - [`settings.json`](../python/examples/.vscode/settings.json) turns on pytest discovery in the
   folder.
 - [`launch.json`](../python/examples/.vscode/launch.json) runs and debugs the current file, the
-  current file with arguments you type, or the test whose name you have selected.
+  current file with arguments you type, or the tests of the current file whose name you have
+  selected.
 
 The examples find `projects/sim-demo.blobnet` relative to themselves. In a copy outside the
 repository, give the project as an argument (**Example: current file, with arguments**), and
@@ -72,8 +73,9 @@ Set a breakpoint inside a test and choose **Debug Test** from the panel, or from
 icon beside it. The test stops with its fixtures in the frame: `can1`, `diag` and `project` are
 variables you can look at in the Variables view, and use in the Debug Console.
 
-**pytest: the selected test** in `launch.json` does the same from the editor: select a test
-function's name, then press F5.
+**pytest: the selected test, or the file** in `launch.json` does the same from the editor:
+double-click a test's name to select it, then press F5. It runs the file's tests whose names
+contain the selection (pytest's `-k`), or all of them when nothing is selected.
 
 ## The Debug Console
 
@@ -82,7 +84,8 @@ runs Python in the paused frame. The project is up and its simulated ECUs are ru
 console is a live tester. Completion there asks the live objects, so the project's own names
 complete: `can1.messages.` lists `BatteryStatus`, `BodyStatus`, `BrakeStatus`, and the rest.
 
-Stopped at the first line of `test_the_sut_answers_a_request`:
+Stopped at the first line of `test_a_fired_generator_is_answered`, whose frame holds `project`
+and `can1`:
 
 ```text
 > can1.messages.Request.encode(ReqCode=5)
@@ -97,6 +100,12 @@ Frame(0x102 [06])
 b'BLOBLYNETV0SUT001'
 > [d.name for d in diag.dtcs()]
 ['P1234-56', 'B2BCD-EF']
+> ping = project.generators["Ping ECU (Request)"]
+> ping.fire()
+> can1.expect(can1.messages.Response, timeout_ms=500)
+Frame(0x102 [02 00 00 00 00 00 00 00])
+> can1.diagnostics()
+BusDiagnostics(dropped=0, bus_errors=0, decode_errors=0)
 ```
 
 **The simulation does not pause with you.** The debugger stops your Python code, but the

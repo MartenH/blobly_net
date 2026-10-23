@@ -7,10 +7,15 @@ import ctypes
 import os
 import sys
 import threading
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:
     from .uds import Exchange
+
+# what a parameter that takes bytes accepts, as bytes() reads it: bytes, bytearray, memoryview, or
+# a sequence of byte values
+ByteData: TypeAlias = bytes | Iterable[int]
 
 
 class BloblyError(Exception):
