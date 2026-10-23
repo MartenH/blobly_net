@@ -18,11 +18,13 @@ import time
 import blobly.headless
 import blobly.player
 import blobly.script
+import blobly.udsconn
 
 const usage = 'usage: run [--project <file.blobnet>] [--project-ports] [--report <file.json>] [--timeout <s>] <script.lua> [more.lua ...]'
 
-// how long after its deadline a run that has not ended is exited by the watchdog
-const watchdog_grace = 5 * time.second
+// how long after its deadline a run that has not ended is exited by the watchdog: past the
+// longest host call the deadline does not cut, a DoIP connection being opened
+const watchdog_grace = udsconn.doip_open_ms * time.millisecond + 3 * time.second
 
 // Watch is what the watchdog reads: the script running, and whether the run has ended.
 struct Watch {
@@ -136,6 +138,10 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 				project_ports = true
 			}
 			else {
+				if a.starts_with('-') {
+					o.refused = 'unknown option ${a}\n${usage}'
+					return report_path
+				}
 				scripts << a
 			}
 		}

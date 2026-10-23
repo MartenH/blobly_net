@@ -137,8 +137,8 @@ a UDS request is abandoned, in its carrier's wait or between its answers. One ho
 progress (a DoIP connection being opened, at most 7 s; a `flash.program` without a `progress`
 callback) finishes its own bounded wait first. Then the project is stopped
 and every bus closed as on any other exit, and the report is written. What the deadline cannot
-reach — a Lua finalizer, a script that replaced the debug hook — is ended by a watchdog 5 s after
-the deadline: exit 4 again, with a report that has no tests and says so in `message`.
+reach — a Lua finalizer, a script that replaced the debug hook — is ended by a watchdog 10 s after
+the deadline (longer than a DoIP open): exit 4 again, with a report that has no tests and says so in `message`.
 
 ### What the runner does for you
 

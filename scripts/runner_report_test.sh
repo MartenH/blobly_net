@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The headless Lua runner's exit statuses and --report file, end to end: a passing, a failing, an
-# erroring and three hanging suites (tests/runner/), a refused project and a bad argument.
+# erroring and three hanging suites (tests/runner/), a refused project and bad arguments.
 #   scripts/runner_report_test.sh            (RUN=<built cmd/script> to skip the build)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -67,10 +67,10 @@ expect wait 4 "
 assert r['timeout']['test'] == 'waits' and r['duration_ms'] < 10000" \
   -- --timeout 2 tests/runner/wait.lua
 
-# what the deadline cannot end, the watchdog does, 5 s later
+# what the deadline cannot end, the watchdog does, 10 s later
 expect stuck 4 "
 assert r['status'] == 'timeout' and r['timeout']['script'] == 'tests/runner/stuck.lua'
-assert 'without closing' in r['message'] and r['duration_ms'] < 15000" \
+assert 'without closing' in r['message'] and r['duration_ms'] < 20000" \
   -- --timeout 1 tests/runner/stuck.lua
 
 # the suites after a timed-out one do not run
@@ -82,6 +82,10 @@ assert all(t['script'] != 'tests/runner/fail.lua' for t in r['tests'])" \
 expect refused 2 "
 assert r['status'] == 'refused' and 'cannot load project' in r['message']" \
   -- --project "$work/none.blobnet" tests/runner/pass.lua
+
+expect unknown 2 "
+assert r['status'] == 'refused' and 'unknown option --timeot' in r['message']" \
+  -- --timeot 5 tests/runner/pass.lua
 
 expect badarg 2 "
 assert r['status'] == 'refused' and '--timeout' in r['message']" \
