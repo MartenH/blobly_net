@@ -26,8 +26,8 @@ __all__ = ["p01_crc", "p01_protect"]
 
 class E2eStatus(enum.StrEnum):
     """A received frame's E2E verdict (Frame.e2e), by its message's E2E on its channel: the
-    channel's verify: entry for it, else what its database declares, else what a simulated node
-    stamps (protect:). Its plain string ("ok", ...) works as well."""
+    channel's verify: entry for it, else what its database declares. Its plain string ("ok", ...)
+    works as well."""
     OK = "ok"                # the CRC matches, and the counter is the next one
     BAD_CRC = "bad_crc"      # the CRC does not match the frame's bytes
     REPEATED = "repeated"    # the counter repeated the previous frame's: no new data
@@ -72,8 +72,8 @@ def _passed(who: str, f: "Frame") -> None:
     if f.e2e is E2eStatus.OK:
         return
     if f.e2e is None:
-        raise E2eError(f"{who}: {f!r} has no E2E to check: no verify: entry, database declaration or "
-                       "protect: entry describes its message", frame=f)
+        raise E2eError(f"{who}: {f!r} has no E2E to check: no verify: entry or database declaration "
+                       "describes its message", frame=f)
     raise E2eError(f"{who}: {f!r} failed its E2E check: {f.e2e.value} ({_MEANING[f.e2e]})",
                    status=f.e2e, frame=f)
 

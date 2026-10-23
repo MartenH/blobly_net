@@ -93,9 +93,9 @@ fn test_a_send_by_name_is_stamped_and_judged_where_it_is_heard() {
 	assert env.passed() == 4, '${env.results}'
 }
 
-// a node simulated on the wire protects what it sends wherever the wire is read: B simulates the
-// sender of Guarded (protect: only, no declaration), and A, on the same wire, judges it by that
-fn test_a_protect_entry_on_the_wire_judges_every_channel_of_it() {
+// a protect: entry is a simulated sender's own word, not a contract a receiver holds anyone to:
+// Guarded, which only B's node protects, carries no verdict on either channel
+fn test_a_protect_entry_alone_is_not_judged() {
 	mut env := e2e_env_nodes('inproc:UTE2EW', [], [
 		project.NodeCfg{
 			name:    'Tester'
@@ -109,10 +109,10 @@ fn test_a_protect_entry_on_the_wire_judges_every_channel_of_it() {
 	])
 	defer { env.close() }
 	env.run_source('
-		test("judged on A by the node B simulates", function()
+		test("no verdict without a verify: entry or a declaration", function()
 			bus.recv("A", 0)
 			bus.send_message("B", "Guarded", { Level = 9 })
-			check.equal(bus.recv("A", 500).e2e, "bad_crc")
+			check.equal(bus.recv("A", 500).e2e, nil)
 		end)
 	')!
 	assert env.passed() == 1, '${env.results}'

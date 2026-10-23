@@ -198,7 +198,8 @@ class TestUnappliable:
             assert rx.expect(broken.id, 500).e2e is None  # nothing judges it either
 
 
-# a message protected only by the simulated node's protect: entry, on a wire two rows share
+# a message protected only by the simulated node's protect: entry, on a wire two rows share: the
+# sender's own word, which judges nothing
 GUARDED_DBC = """VERSION ""
 
 BU_: Chassis Tester
@@ -233,12 +234,13 @@ channels:
 """
 
 
-class TestProtectOnTheWire:
-    def test_a_node_simulated_on_the_wire_protects_what_every_row_of_it_reads(self, tmp_path):
+class TestProtectIsTheSendersWord:
+    def test_a_message_only_a_protect_entry_describes_is_not_judged(self, tmp_path):
         write(tmp_path, "guarded.dbc", GUARDED_DBC)
         with blobly.Project(write(tmp_path, "guarded.blobnet", GUARDED)) as net:
             for ch in net.channels:  # the row that simulates it, and the one that only listens
-                assert [f.e2e for f in frames(ch, 773, 5)] == ["ok"] * 5, ch.name
+                got = frames(ch, 773, 3)
+                assert len(got) == 3 and [f.e2e for f in got] == [None] * 3, ch.name
 
 
 class TestFrame:

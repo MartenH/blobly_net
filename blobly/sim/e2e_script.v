@@ -8,10 +8,10 @@ import blobly.project
 import blobly.transport
 
 // receive_checks is what a frame received on a row is judged by, per message: the row's verify:
-// entry for it, else its database's declaration (declared_e2e) — the contract a receiver holds a
-// sender to, which a protect: entry may deviate from on purpose — else what a node simulated on
-// the row stamps (protection_for).
-pub fn receive_checks(db candb.Database, nodes []project.NodeCfg, verify []project.ProtectCfg) VerifySet {
+// entry for it, else its database's declaration (declared_e2e). Both are contracts a receiver
+// holds a sender to; a node's protect: entry is not, being the simulated sender's own word, which
+// may deviate from the declaration on purpose.
+pub fn receive_checks(db candb.Database, verify []project.ProtectCfg) VerifySet {
 	mut s := verifiers_for(db, [], verify)
 	for m in db.messages {
 		k := vkey(m.id, m.ext)
@@ -22,20 +22,6 @@ pub fn receive_checks(db candb.Database, nodes []project.NodeCfg, verify []proje
 			s.by_key[k] = Verifier{
 				msg: m
 				e2e: e
-			}
-		}
-	}
-	for n in nodes {
-		for m in db.messages_from(n.name) {
-			k := vkey(m.id, m.ext)
-			if k in s.by_key {
-				continue
-			}
-			if e := protection_for(n, m) {
-				s.by_key[k] = Verifier{
-					msg: m
-					e2e: e
-				}
 			}
 		}
 	}
@@ -57,11 +43,10 @@ mut:
 	unjudged map[string]bool // ids that resolve to no checked message
 }
 
-// new_e2e_reader is a reader of a row whose database is `db`, its simulated nodes `nodes` and its
-// verify: entries `verify`.
-pub fn new_e2e_reader(db candb.Database, nodes []project.NodeCfg, verify []project.ProtectCfg) &E2eReader {
+// new_e2e_reader is a reader of a row whose database is `db` and its verify: entries `verify`.
+pub fn new_e2e_reader(db candb.Database, verify []project.ProtectCfg) &E2eReader {
 	return &E2eReader{
-		set: receive_checks(db, nodes, verify)
+		set: receive_checks(db, verify)
 		dbs: [db]
 	}
 }
@@ -106,10 +91,14 @@ mut:
 
 // stamp writes `m`'s declared counter and checksum into `data`, its encoded payload, and counts
 // the send; false, `data` unchanged, when m declares no E2E, and an error when it declares one that
-// cannot be applied (declared_problem), which sent unstamped would go out unprotected unsaid.
+// cannot be applied (declared_problem), which sent unstamped would go out unprotected unsaid, or
+// when `data` is shorter than m's payload, which holds no field to stamp.
 pub fn (mut s E2eStamper) stamp(m candb.Message, mut data []u8) !bool {
 	if !m.e2e.declared() {
 		return false
+	}
+	if data.len < m.payload_len() {
+		return error('a frame of ${data.len} bytes is shorter than ${m.name} (${m.payload_len()})')
 	}
 	e := e2e_of_decl(m.e2e)
 	why := declared_problem(m, e)

@@ -332,9 +332,8 @@ answers 0xE400 (`tests/diag_doip_functional.lua`); see `docs/doip.md`.
 Every frame a script reads (`bus.recv`, `expect`, an `on_message` handler) carries **`e2e`**, its
 E2E verdict, wherever its message has E2E on the channel: the channel's `verify:` entry for it,
 else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`, `E2EProfile`, `E2EDataId`:
-[dbc_attributes.md](dbc_attributes.md)), else what a node simulated on the channel's wire stamps
-(`protect:`, whichever channel of that wire simulates it). The check is the one the trace's
-`verify:` runs (`sim.Verifier`).
+[dbc_attributes.md](dbc_attributes.md)). The check is the one the trace's `verify:` runs
+(`sim.Verifier`).
 
 | `f.e2e` | the frame |
 |---|---|
@@ -362,8 +361,10 @@ else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`, `E2EProfile`, `E
   `bus.send_message(channel, name, sigs, { e2e = false })` sends it as encoded, its counter and
   CRC as `sigs` gave them (raw 0 otherwise); `sim.fault` breaks a simulated sender's protection
   instead.
-- A simulated node's `protect:` entry that deviates from the declaration on purpose (a wrong Data
-  ID, to test a receiver's rejection path) reads as a receiver would read it: `bad_crc`.
+- A simulated node's `protect:` entry is that sender's own word, not a contract a receiver holds it
+  to: a message only a `protect:` entry protects is not judged (a `verify:` entry judges it), and
+  one that deviates from the declaration on purpose (a wrong Data ID, to test a receiver's
+  rejection path) reads as a receiver would read it: `bad_crc`.
 
 ```lua
 check.e2e(expect("CAN1", 0x301, 500))                    -- passes, or fails naming the verdict

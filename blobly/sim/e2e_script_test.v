@@ -87,7 +87,7 @@ fn test_a_send_by_name_is_stamped_as_declared() {
 fn test_a_reader_judges_by_the_declaration() {
 	db := script_db()
 	m := db.message_named('BrakeStatus') or { panic('no BrakeStatus') }
-	mut r := new_e2e_reader(db, [], [])
+	mut r := new_e2e_reader(db, [])
 	assert r.judges() == 1
 	mut st := E2eStamper{}
 	mut t := i64(0)
@@ -121,7 +121,7 @@ fn test_a_reader_judges_by_the_declaration() {
 fn test_a_late_frame_is_a_timeout_by_the_bus_time() {
 	db := script_db()
 	m := db.message_named('BrakeStatus') or { panic('no BrakeStatus') }
-	mut r := new_e2e_reader(db, [], [])
+	mut r := new_e2e_reader(db, [])
 	mut st := E2eStamper{}
 	mut next := fn [m] (mut st E2eStamper) []u8 {
 		mut d := brake_payload()
@@ -161,12 +161,12 @@ fn test_a_frame_without_a_stamp_is_never_late_and_ends_the_gap() {
 		st.stamp(m, mut d) or { panic(err) }
 		return d
 	}
-	mut r := new_e2e_reader(db, [], [])
+	mut r := new_e2e_reader(db, [])
 	for i, at in [i64(0), 500, 1000, 5000] {
 		assert r.judge(brake_frame(next(mut st), at, '')) or { panic('') } == .ok, 'frame ${i}'
 	}
 	// stamped, unstamped, stamped 120 ms after the first: the gap is not measured across it
-	mut q := new_e2e_reader(db, [], [])
+	mut q := new_e2e_reader(db, [])
 	assert q.judge(brake_frame(next(mut st), 0, kernel)) or { panic('') } == .ok
 	assert q.judge(brake_frame(next(mut st), 60, '')) or { panic('') } == .ok
 	assert q.judge(brake_frame(next(mut st), 120, kernel)) or { panic('') } == .ok
@@ -180,7 +180,7 @@ fn test_a_reserved_counter_does_not_restart_the_gap() {
 	db := script_db()
 	m := db.message_named('BrakeStatus') or { panic('no BrakeStatus') }
 	mut st := E2eStamper{}
-	mut r := new_e2e_reader(db, [], [])
+	mut r := new_e2e_reader(db, [])
 	mut first := brake_payload()
 	st.stamp(m, mut first) or { panic(err) }
 	assert r.judge(brake_frame(first, 0, kernel)) or { panic('') } == .ok
@@ -199,7 +199,7 @@ fn test_the_gap_is_measured_between_raw_stamps() {
 	db := script_db()
 	m := db.message_named('BrakeStatus') or { panic('no BrakeStatus') }
 	mut st := E2eStamper{}
-	mut r := new_e2e_reader(db, [], [])
+	mut r := new_e2e_reader(db, [])
 	mut a := brake_payload()
 	st.stamp(m, mut a) or { panic(err) }
 	mut b := brake_payload()
@@ -232,7 +232,7 @@ BA_ "E2EProfile" BO_ 800 "crc8_j1850";
 	}
 	m := db.messages[0]
 	mut st := E2eStamper{}
-	mut r := new_e2e_reader(db, [], [])
+	mut r := new_e2e_reader(db, [])
 	for n in 0 .. 3 {
 		mut d := m.template()
 		d[2] = u8(0x40 + n)
@@ -242,42 +242,13 @@ BA_ "E2EProfile" BO_ 800 "crc8_j1850";
 	}
 }
 
-// verify: entry, then the declaration, then a simulated node's protect: — one contract per
-// message, each with its message's E2ETimeout
-fn test_receive_checks_take_the_contract_in_order() {
+// the verify: entry, else the declaration — the contracts a receiver holds a sender to
+fn test_receive_checks_take_the_verify_entry_then_the_declaration() {
 	db := script_db()
-	stamped := project.ProtectCfg{
-		message: 'Stamped'
-		counter: 'LevelCounter'
-		crc:     'LevelCrc'
-		profile: 'crc8_j1850'
-	}
-	node := project.NodeCfg{
-		name:    'Chassis'
-		protect: [
-			stamped,
-			project.ProtectCfg{
-				message: 'BrakeStatus'
-				counter: 'BrakeCounter'
-				crc:     'BrakeCrc'
-				profile: 'sum8'
-			},
-		]
-	}
-	s := receive_checks(db, [node], [])
-	assert s.by_key.len == 2
+	s := receive_checks(db, [])
+	assert s.by_key.len == 1, 'only BrakeStatus declares E2E'
 	brake := s.by_key[vkey(0x301, false)] or { panic('no BrakeStatus') }
-	assert brake.e2e.profile == p01, 'a protect: entry overrode the declaration'
-	level := s.by_key[vkey(0x303, false)] or { panic('no Stamped') }
-	assert level.e2e.profile == 'crc8_j1850'
-	// an entry that protects nothing stamps nothing, so there is nothing to judge
-	idle := project.NodeCfg{
-		name:    'Chassis'
-		protect: [project.ProtectCfg{
-			message: 'Stamped'
-		}]
-	}
-	assert receive_checks(db, [idle], []).by_key.len == 1, 'an inactive protect: entry was judged'
+	assert brake.e2e.profile == p01
 	verify := [
 		project.ProtectCfg{
 			message: 'BrakeStatus'
@@ -285,17 +256,41 @@ fn test_receive_checks_take_the_contract_in_order() {
 			crc:     'BrakeCrc'
 			profile: 'xor8'
 		},
+		project.ProtectCfg{
+			message: 'Stamped'
+			counter: 'LevelCounter'
+			crc:     'LevelCrc'
+			profile: 'crc8_j1850'
+		},
 	]
-	v := receive_checks(db, [node], verify)
+	v := receive_checks(db, verify)
+	assert v.by_key.len == 2
 	mut brake2 := v.by_key[vkey(0x301, false)] or { panic('no BrakeStatus') }
 	assert brake2.e2e.profile == 'xor8', 'the verify: entry did not win'
+	level := v.by_key[vkey(0x303, false)] or { panic('no Stamped') }
+	assert level.e2e.profile == 'crc8_j1850'
 	// judged by the message's E2ETimeout all the same
 	mut d := brake_payload()
 	brake2.e2e.apply(brake2.msg, mut d, 0)
 	assert brake2.check_at(d, kernel, 0) == .ok
 	brake2.e2e.apply(brake2.msg, mut d, 1)
 	assert brake2.check_at(d, kernel, 101_000_000) == .timeout, 'the verify: entry lost the message timeout'
-	assert receive_checks(candb.Database{}, [], []).by_key.len == 0
+	assert receive_checks(candb.Database{}, []).by_key.len == 0
+}
+
+// a short payload holds no field to stamp: refused, and no counter used
+fn test_a_short_payload_is_refused_not_stamped() {
+	db := script_db()
+	m := db.message_named('BrakeStatus') or { panic('no BrakeStatus') }
+	mut st := E2eStamper{}
+	mut short := [u8(0x12), 0x34]
+	if _ := st.stamp(m, mut short) {
+		assert false, 'a 2-byte frame of a 6-byte message was stamped'
+	}
+	assert short == [u8(0x12), 0x34]
+	mut d := brake_payload()
+	st.stamp(m, mut d) or { panic(err) }
+	assert d[5] & 0x0F == 0, 'the refused stamp used a counter'
 }
 
 // the names a script reads, one per verdict

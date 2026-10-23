@@ -658,10 +658,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 Every frame a channel reads (`recv`, `expect`, a handler) carries **`f.e2e`**, its E2E verdict, a
 `blobly.E2eStatus` (equal to its string), wherever its message has E2E on the channel: the row's
 `verify:` entry for it, else what its DBC declares (`E2ECounterSignal`, `E2ECrcSignal`,
-`E2EProfile`, `E2EDataId`, `E2ETimeout`: [dbc_attributes.md](dbc_attributes.md)), else what a
-node simulated on the row's wire stamps (`protect:`, whichever row of that wire simulates it). The
-check is the engine's, the one the trace's
-`verify:` runs, and Lua's `frame.e2e` is the same.
+`E2EProfile`, `E2EDataId`, `E2ETimeout`: [dbc_attributes.md](dbc_attributes.md)). The check is
+the engine's, the one the trace's `verify:` runs, and Lua's `frame.e2e` is the same.
 
 | `f.e2e` | the frame |
 |---|---|
@@ -673,10 +671,12 @@ check is the engine's, the one the trace's
 | `E2eStatus.TIMEOUT`, `"timeout"` | it came later than its message's `E2ETimeout` after the last valid frame (its CRC right, its counter new: not a repeat, nor a value the profile never sends) |
 | `None` | its message has no E2E on the channel, or it is a remote frame |
 
-- **Which contract, when two say different things**: the `verify:` entry is the row's own word for
-  what the ECU under test must send, and the declaration is the contract a receiver holds any
-  sender to, so a simulated node's `protect:` entry that deviates on purpose (a wrong Data ID to
-  test a receiver's rejection path) reads as the receiver would read it: `bad_crc`.
+- **Both are contracts a receiver holds a sender to**: the `verify:` entry is the row's own word for
+  what the ECU under test must send, the declaration the network's. A simulated node's `protect:`
+  entry is not: it is that sender's own word. A message only a `protect:` entry protects is not
+  judged (add a `verify:` entry to judge it), and one that deviates from the declaration on
+  purpose (a wrong Data ID to test a receiver's rejection path) reads as a receiver would read it:
+  `bad_crc`.
 - The counter is judged against the frame of that id the channel read before it, on the same
   handle: the first frame after the handle opens (each test, under the pytest plugin) is judged on
   its CRC alone. A frame lost before the channel read it makes the next one a skip, as it would

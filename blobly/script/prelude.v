@@ -67,7 +67,7 @@ function check.e2e(f, msg)
   local what = msg or "check.e2e"
   if type(f) ~= "table" then error(what .. ": no frame", 2) end
   if f.e2e == nil then
-    error(string.format("%s: frame 0x%X has no E2E to check (no verify: entry, DBC declaration or protect: entry describes its message)", what, f.id), 2)
+    error(string.format("%s: frame 0x%X has no E2E to check (no verify: entry or DBC declaration describes its message)", what, f.id), 2)
   end
   if f.e2e ~= "ok" then
     error(string.format("%s: frame 0x%X failed its E2E check: %s", what, f.id, f.e2e), 2)
@@ -614,8 +614,7 @@ function bus.diagnostics(channel)
 end
 -- a received frame: fd/brs/esi/rtr as the wire carried it, t_ms when it was received (now_ms clock),
 -- e2e its E2E verdict ("ok", "bad_crc", "repeated", "skipped", "truncated", "timeout"), nil where
--- its message has none: the verify: entry of the channel for it, else what its DBC declares, else
--- what a simulated node stamps (protect:)
+-- its message has none: the verify: entry of the channel for it, else what its DBC declares
 function __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e)
   return { id = id, ext = ext, data = data, fd = fd, brs = brs, esi = esi, rtr = rtr, t_ms = t_ms,
     e2e = e2e }
