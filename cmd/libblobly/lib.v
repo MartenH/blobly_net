@@ -240,8 +240,7 @@ const recv_slice_ms = 20
 @[heap]
 struct BusHandle {
 mut:
-	bus     transport.Bus
-	meter   &transport.MeteredBus = unsafe { nil } // `bus` itself, for its load (metrics.v)
+	bus     &transport.MeteredBus // counts its load (metrics.v)
 	users   i64 // calls inside `bus` now
 	closing i64 // bb_bus_close has begun: a receive in progress ends at its next slice
 	// asks `closing`, for transport.recv_sliced: built once at open, not per receive
@@ -540,12 +539,12 @@ pub fn bb_bus_open(iface &char) i32 {
 		&& it.iface_with_bitrate() == name)) {
 		return fail(bb_err, 'open: ${name} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
 	}
-	nominal, data := if bb_loaded { project.wire_rates(bb_rows, name) } else { project.default_bitrate, 0 }
-	meter := transport.metered(transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') },
-		name, nominal, data)
+	nominal, data := project.wire_rates(if bb_loaded { bb_rows } else { [] }, name) or {
+		project.address_rates(name)
+	}
 	mut hd := &BusHandle{
-		bus:   meter
-		meter: meter
+		bus: transport.metered(transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') },
+			name, nominal, data)
 	}
 	closing := &hd.closing
 	hd.stop = fn [closing] () bool {

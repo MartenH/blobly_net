@@ -76,3 +76,19 @@ fn test_a_metered_bus_counts_its_sends_and_receives_once() {
 	assert l.bits == 270.0
 	assert b.diagnostics().is_empty()
 }
+
+// a send is priced as it goes out: an FD payload padded to a length a DLC expresses
+fn test_a_send_is_priced_as_the_wire_carries_it() {
+	name := 'inproc:meter_pad'
+	mut b := metered(open(name)!, name, 500000, 0)
+	defer {
+		b.close()
+	}
+	f := CanFrame{
+		id:   0x100
+		fd:   true
+		data: []u8{len: 9}
+	}
+	b.send(f)!
+	assert b.load().bits == frame_bits(CanFrame{ ...f, data: []u8{len: 12} }, 500000, 500000)
+}

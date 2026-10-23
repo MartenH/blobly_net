@@ -184,7 +184,9 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 	mut chans := []script.ChanInfo{}
 	rows := hrun.chans.map(it.cfg)
 	for c in hrun.chans {
-		nominal, data_rate := project.wire_rates(rows, c.cfg.iface)
+		nominal, data_rate := project.wire_rates(rows, c.cfg.iface_with_bitrate()) or {
+			c.cfg.nominal_bitrate(), 0
+		}
 		chans << script.ChanInfo{
 			name:      c.cfg.name
 			// what a script OPENS with — carries the vendor bitrate

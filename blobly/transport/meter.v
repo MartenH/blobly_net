@@ -103,8 +103,10 @@ pub fn metered(b Bus, iface string, nominal int, data int) &MeteredBus {
 
 pub fn (mut m MeteredBus) send(f CanFrame) ! {
 	m.inner.send(f)!
-	// priced as the wire framed it: open's SilentBus stamps an FD wire's frames
-	m.meter.note(wire_policy(m.iface).framing.apply(f), i64(time.sys_mono_now()))
+	// priced as it went out: framed as open's SilentBus frames it (the policy read beside that
+	// send's own, which moves only when a project is applied), then padded or clamped by the
+	// backend (wire_frame), as the GUI's tap records it
+	m.meter.note(wire_frame(m.iface, wire_policy(m.iface).framing.apply(f)), i64(time.sys_mono_now()))
 }
 
 pub fn (mut m MeteredBus) recv(timeout_ms int) !CanFrame {

@@ -284,8 +284,8 @@ typedef struct bb_boot_report {
  * the driver accepted it. Error frames, retransmissions and overrun drops occupied the wire and
  * are not in it: in an error storm it under-reads, and the health ladder and the diagnostics
  * counts are what say so. A frame costs its bit-times with worst-case stuffing (the GUI's bus
- * load), priced at the rates of the wire's first enabled row (`nominal`; a raw interface no row
- * names: 500 kbit/s classic). */
+ * load), priced at the rates of the wire's first enabled row (`nominal`); an interface no row
+ * names at the rate its address states (`pcan:...@250000`), else 500 kbit/s classic. */
 typedef struct bb_busload {
 	double   percent;   /* over the last whole second; < 0 until one second has passed */
 	double   average;   /* since the handle opened; < 0 until one second has passed */

@@ -11,7 +11,7 @@ pub fn bb_bus_load(h i32, out &C.bb_busload) i32 {
 	defer {
 		hd.leave()
 	}
-	r := hd.meter.load()
+	r := hd.bus.load()
 	unsafe {
 		out.percent = f64(r.percent)
 		out.average = f64(r.average)

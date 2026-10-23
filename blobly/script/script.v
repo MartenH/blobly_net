@@ -260,7 +260,7 @@ fn (env &Env) find_chan(name string) !int {
 
 // bus_for returns (opening once, lazily) a persistent monitor bus for the named
 // channel, so bus.recv sees traffic from sims/other nodes on the same interface.
-fn (mut env Env) bus_for(name string) !transport.Bus {
+fn (mut env Env) bus_for(name string) !&transport.MeteredBus {
 	ci := env.find_chan(name) or { return err }
 	// EVERY CAN primitive enters here (can.send, can.recv, the taps), so the "not a CAN wire"
 	// refusal belongs here rather than on each of them. Without it the opener is handed

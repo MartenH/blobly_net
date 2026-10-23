@@ -24,11 +24,25 @@ fn test_a_wire_is_priced_by_its_first_row_and_first_declared_data_rate() {
 			bitrate: 125000
 		},
 	]
-	n, d := wire_rates(rows, 'inproc:A')
+	n, d := wire_rates(rows, 'inproc:A') or { panic('no row on inproc:A') }
 	assert n == default_bitrate, 'the first CAN row, its unset rate the default'
 	assert d == 2000000
-	bn, bd := wire_rates(rows, 'inproc:B')
+	bn, bd := wire_rates(rows, 'inproc:B') or { panic('no row on inproc:B') }
 	assert bn == 125000 && bd == 0
-	cn, cd := wire_rates(rows, 'inproc:C')
-	assert cn == default_bitrate && cd == 0, 'no row on the wire'
+	if _, _ := wire_rates(rows, 'inproc:C') {
+		assert false, 'no row is on inproc:C'
+	}
+}
+
+fn test_an_address_states_its_own_rates() {
+	an, ad := address_rates('kvaser:0@250000/2000000')
+	assert an == 250000 && ad == 2000000
+	pn, pd := address_rates('pcan:PCAN_USBBUS1@125000')
+	assert pn == 125000 && pd == 0
+	vn, _ := address_rates('vector:1@1000000,silent')
+	assert vn == 1000000
+	sn, sd := address_rates('inproc:bench@250000')
+	assert sn == default_bitrate && sd == 0, 'a software bus name carries no rate'
+	xn, _ := address_rates('pcan:X@fast')
+	assert xn == default_bitrate, 'a rate that is not one'
 }

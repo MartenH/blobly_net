@@ -1549,7 +1549,7 @@ fn script_worker(app &App, path string) {
 			pch = a.proj.channels[ch.proj_idx]
 		}
 		a.mu.lock()
-		nominal, data_rate := a.wire_rates_locked(ci)
+		nominal, data_rate := a.wire_rates_now_locked(ci) // kept only by a run
 		a.mu.unlock()
 		chans << script.ChanInfo{
 			name:      ch.name

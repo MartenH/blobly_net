@@ -531,23 +531,26 @@ fn (app &App) load_owner_locked(key string) int {
 // origination_framing already share (project.Channel.nominal_bitrate); the raw zero the row
 // keeps would make load_percent answer 0 % for every interval on a live wire (r5).
 fn (mut app App) wire_rates_locked(i int) (int, int) {
+	nominal, data := app.wire_rates_now_locked(i)
+	app.chans[i].load_nominal = nominal
+	app.chans[i].load_data = data
+	return nominal, data
+}
+
+// wire_rates_now_locked is wire_rates_locked's answer without keeping it: the run's, once kept,
+// else the engine's rule (project.wire_rates) over the rows that read a wire, a wire none reads
+// priced at row `i`'s own rate.
+fn (app &App) wire_rates_now_locked(i int) (int, int) {
 	if app.chans[i].load_nominal > 0 {
 		return app.chans[i].load_nominal, app.chans[i].load_data
 	}
-	// the engine's rule (project.wire_rates) over the rows that read a wire
 	rows := app.chans.filter(it.monitorable()).map(project.Channel{
 		iface:        it.iface
 		bitrate:      it.bitrate
 		data_bitrate: it.data_bitrate
 	})
-	mut nominal, data := project.wire_rates(rows, app.chans[i].iface)
-	key := transport.wire_key(app.chans[i].iface)
-	if !rows.any(transport.wire_key(it.iface) == key) {
-		nominal = if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
-	}
-	app.chans[i].load_nominal = nominal
-	app.chans[i].load_data = data
-	return nominal, data
+	own := if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
+	return project.wire_rates(rows, app.chans[i].iface) or { own, 0 }
 }
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame
