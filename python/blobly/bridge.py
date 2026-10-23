@@ -76,7 +76,11 @@ def start(distro: str, wait: bool = True) -> list[str] | None:
     while True:
         st, why = state(distro)
         if st == "connected":
-            return rows(distro)
+            # a connected bridge offers a channel at least, so none means it has gone since
+            got = rows(distro)
+            if got:
+                return got
+            continue
         if st == "failed":
             raise BloblyError(f'bridge "{distro}": {why}')
         if st == "idle":  # dialled in and went again between two looks, or stopped elsewhere
