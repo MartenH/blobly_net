@@ -22,6 +22,7 @@ import blobly.uds
 import blobly.candb
 import blobly.project
 import blobly.udsconn
+import blobly.replay
 
 // ChanInfo is one channel a script may address by name: its bus interface and
 // the DBC catalog used for decode/encode on it.
@@ -47,6 +48,9 @@ pub:
 	// 0 is project.default_bitrate, and no data rate is the nominal one
 	nominal   int
 	data_rate int
+	// the row's `replay:` block, its source resolved against the project: what replay.start
+	// plays when the script names no source
+	replay ?project.Replay
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
@@ -120,12 +124,18 @@ mut:
 	deadline u64
 	// the coroutine (its lua_State) the deadline was first raised in; 0 before
 	timeout_co u64
+	// the replays and recordings the script started, stopped by close (replay.v)
+	replays []&replay.Session
+	records []&replay.Recorder
 pub mut:
 	// The run's generators, which gen.* controls (generators.v): cmd/script's headless run; none in
 	// the GUI, whose generators are its panel's.
 	gens sim.GenControl = sim.NoGens{}
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
+	// How a replay's buses are opened (replay.start): they REPRODUCE a recording, framed as it was
+	// recorded. Unset, `opener`; the GUI supplies a tap that files them as its simulation's.
+	reproducer BusOpener = unsafe { nil }
 	results   []TestResult
 	on_output fn (string) = fn (s string) {
 		println(s)
@@ -195,6 +205,9 @@ pub fn (env &Env) total() int {
 // close, the loss booked by the close itself was never reported.
 pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 	mut out := map[string]transport.BusDiagnostics{}
+	for e in env.stop_replays() {
+		env.emit('record: ${e}')
+	}
 	for i, mut c in env.conns {
 		if !c.closed {
 			c.ch.close()
@@ -342,6 +355,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__bus_health', l_bus_health)
 	env.register_metrics()
 	env.register_gens()
+	env.register_replay()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.

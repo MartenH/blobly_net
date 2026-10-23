@@ -254,3 +254,20 @@ fn test_rtr_dlc_roundtrip() {
 		assert false, 'R9 must be rejected'
 	}
 }
+
+// A line's direction, as candump -x and python-can end it: read back, written back, and absent
+// where the file says none.
+fn test_direction_roundtrip() {
+	for line in ['(1.000000) vcan0 123#01 R', '(1.000000) vcan0 123#01 T',
+		'(1.000000) vcan0 123##1AABB T', '(1.000000) vcan0 123#01'] {
+		e := parse_line(line) or { panic('${line} must parse') }
+		assert format_line(e) == line
+	}
+	assert (parse_line('(1.0) can0 1#R T') or { panic('') }).dir == .tx
+	assert (parse_line('(1.0) can0 1# R') or { panic('') }).dir == .rx
+	assert (parse_line('(1.0) can0 1# X') or { panic('') }).dir == .unknown
+	assert (parse_line('(1.0)  can0\t1#AA  \tT') or { panic('') }).dir == .tx
+	// a label with a line break stays one line, and reads back as written
+	tok := iface_token('A\nB\r')
+	assert !tok.contains('\n') && !tok.contains('\r') && iface_from_token(tok) == 'A\nB\r'
+}

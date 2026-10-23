@@ -254,7 +254,28 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	// NOT ON A VERBATIM BUS, whose caller has already decided — the GUI's tap frames before it
 	// records, and replay reproduces a recording rather than originating anything.
 	out := if s.verbatim { frame.unstated() } else { p.framing.apply(frame) }
-	s.inner.send(out)!
+	// unwatched: nothing records it, or this wire's tier refuses it (noted, its normalised form
+	// could claim somebody else's frame before the refusal came back)
+	mut unwatched := !sends_watched()
+	if !unwatched {
+		if _ := tier_refusal(s.iface, out) {
+			unwatched = true
+		}
+	}
+	if unwatched {
+		s.inner.send(out)!
+		s.sent = out
+		return
+	}
+	// as the driver will carry it: padded or clamped, so the frame noted is the frame that returns
+	ws, toks := watch_before(s.iface, wire_frame(s.iface, out))
+	s.inner.send(out) or {
+		// refused for certain by its type or a full queue; any other failure may have gone out
+		definite := err is NotWritten || is_backpressure(err)
+		watch_after(ws, toks, if definite { Sent.refused } else { Sent.unknown })
+		return err
+	}
+	watch_after(ws, toks, .taken)
 	s.sent = out
 }
 

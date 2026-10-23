@@ -377,6 +377,53 @@ boot refuses an unmarked image, and a re-run recovers. A progress callback that 
 transfer there, before the check — the image is not marked valid — and `flash.program` raises with
 its error. Flashing a channel by name twice on the same ids reuses the first call's connection.
 
+### Replay and recording
+
+```lua
+local r = replay.start("REPLAY1", { speed = 4, loop = false })   -- the row's replay: block decides the rest
+r:wait_done(5000)                                -- true once it ran out
+local rec = record.start("CAN1", "capture.log")   -- relative to the script
+-- ... traffic ...
+local c = rec:stop()                              -- { frames, ours, theirs, missed, dropped }
+```
+
+`replay.start(channels, opts)` plays a recording onto one channel, or a list of them on one clock,
+through `blobly/player` — the player, rest-bus subtraction and command protocol the GUI's Replay
+panel uses. What `opts` leave out, the rows' `replay:` blocks say:
+
+| option | meaning |
+|---|---|
+| `source` | the recording, a candump `.log` or an `.mf4`, **relative to the script** |
+| `speed` | the rate, above 0 |
+| `loop` | whether the end starts it again |
+| `paused` | `true`: start paused at the beginning |
+| `exclude` | a list of nodes subtracted by DBC sender, in place of each row's own |
+| `bus` | the recorded bus, for one channel, where the recording holds several |
+
+A request that would play something other than asked raises: no source, a recorded bus that does
+not resolve, an exclusion no channel's database declares, two channels on one wire, nothing left
+after the subtraction, rows disagreeing about a source, speed or loop the options do not settle.
+`r.notes` says what the plan kept and withheld per channel. `r:pause()`, `r:resume()`, `r:seek(s)`
+(seconds into the recording), `r:speed(x)` and `r:loop(on)` are applied before they return.
+`r:status()` is `{ state, position, duration, speed, loop, passes, sent, failed, error, ended }`,
+`state` one of `playing`, `paused` and `finished` (a non-looping replay ran out), `ended` true once
+it is stopped. `r:wait_done(ms)` (default 10000, negative for ever) is true once it finished or was
+stopped. `r:stop()` stops it and returns its last status; its controls then raise and `r:status()`
+still says what it did. A replay sends through handles of its own, not the channel's: its frames
+reach the channel's handle as any other node's do, so `bus.load` counts them as they are read. The end of each script stops whatever it left playing or recording. In the
+GUI a script's replay is filed `TX-S` like Start's, and plays beside it: a row Start already
+replays is then played twice.
+
+`record.start(channels, path)` writes what the channels (one per wire, no two of one name) carry to
+a candump `.log`, created or truncated once their buses are open, a line per frame: `(t) <channel>
+<id>#<data> T`, `t` the host monotonic clock in seconds. The last token is the origin, as `candump
+-x` and python-can write a direction: `T` for a frame this process sent (tester, simulated ECU or
+replay alike: the format has no third value), `R` for the rest. The file replays as it is, and is
+what the GUI's Record writes. `rec:counts()` and `rec:stop()` answer `{ frames, ours, theirs,
+missed, dropped }` (`missed`: sent here but never seen back, so not written; `dropped`: lost by the
+recorder's own handles, behind); `rec:stop()` writes what is queued, lets the sends in flight
+settle (2 s at most) and raises when a write failed on the way, or that did not finish in time.
+
 ### Raw frames & signals
 
 ```lua

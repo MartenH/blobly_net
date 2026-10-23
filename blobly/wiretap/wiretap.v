@@ -385,6 +385,12 @@ fn (mut r Ring) drop_expired(now_ms f64) {
 }
 
 // outstanding is how many emissions are still unaccounted for.
+// unclaimed is how many records still wait for their echo: what a reader about to stop would
+// miss.
+pub fn (r &Ring) unclaimed() int {
+	return r.items.count(it.reportable())
+}
+
 pub fn (r Ring) outstanding() int {
 	return r.items.len
 }

@@ -133,7 +133,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   nothing answered is `Timeout`; a flash the bootloader's own answers say did not happen is
   `FlashFailed` (code -11).
   Bad arguments are `ValueError` or `TypeError`, unknown names `AttributeError` or `KeyError`.
-  [scripting_python.md](scripting_python.md#16-errors) has the full table.
+  [scripting_python.md](scripting_python.md#17-errors) has the full table.
 - **Exit codes.** Make a script exit non-zero when a check fails, with one line that says what
   was expected (`sys.exit("FAIL: ...")` exits 1). The examples exit 0 when every check held, 1
   on a failed check or an error, and 2 on a bad argument. pytest exits 0 when every test passed
@@ -159,7 +159,7 @@ Tests are pytest files on blobly's plugin. Start from
 [conftest.py](../python/examples/conftest.py) loads the plugin
 (`pytest_plugins = ["blobly.pytest_plugin"]`) and [pytest.ini](../python/examples/pytest.ini)
 names the project. The rules are in
-[Testing with pytest](scripting_python.md#14-testing-with-pytest).
+[Testing with pytest](scripting_python.md#15-testing-with-pytest).
 
 - The `project` fixture is the started project, and `can1` its channel `CAN1`: a fixture per
   channel, named after it; `diag` is a UDS client on the first CAN channel, or on the one a test
@@ -202,7 +202,7 @@ Complete scripts, each bounded and with a clear exit status, in
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, the E2E Profile 1 helpers; UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests); DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#18-what-is-not-there-yet)). |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, the E2E Profile 1 helpers; UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests); DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#19-what-is-not-there-yet)). |
 | Tests under pytest, and anything that needs the Python ecosystem. | A script in the GUI's Script panel, against a live measurement. |
 | An agent's own process: no V toolchain, a `pip install`. | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 

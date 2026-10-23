@@ -75,6 +75,9 @@ __all__ += ["ConnectionLost", "DoipAnnouncement", "RoutingDenied", "doip_listen"
 # SOME/IP (someip.py) and flashing (flash.py)
 __all__ += ["SomeipHeard", "SomeipMessage", "someip"]
 __all__ += ["BootReport", "BootSim", "FlashFailed", "FlashReport", "flash"]
+# replay and recording (replay.py)
+from .replay import RecordCounts, Recording, Replay, ReplayStatus  # noqa: E402
+__all__ += ["RecordCounts", "Recording", "Replay", "ReplayStatus"]
 # the CAN bridge into WSL (bridge.py)
 from . import bridge  # noqa: E402
 __all__ += ["bridge"]

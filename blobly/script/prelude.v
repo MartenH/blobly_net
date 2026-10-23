@@ -574,6 +574,69 @@ function flash.program(target, opts)
   return r
 end
 
+-- ============================ replay and recording ============================
+-- replay.start(channels, opts): a recording played onto one channel, or several on one clock (a
+-- name or a list of names), by blobly/player -- the rest-bus subtraction and the command protocol
+-- the GUI Replay panel uses. What opts leave out the rows replay: blocks say. opts: source (the
+-- recording, .log or .mf4, relative to the script), speed (above 0), loop, paused (start paused at
+-- the beginning), exclude (a list of nodes subtracted by DBC sender, in place of each row own),
+-- bus (the recorded bus, for one channel). Returns a replay: r:pause(), r:resume(), r:seek(s),
+-- r:speed(x), r:loop(on) -- each applied before it returns --, r:status(), r:wait_done(ms) (true
+-- once a non-looping replay ran out or it was stopped; default 10000), r:stop(), and r.notes, what
+-- the plan kept and withheld per channel.
+replay = {}
+local Replay = {}
+Replay.__index = Replay
+function Replay:pause() __replay_ctl(self.handle, "pause") end
+function Replay:resume() __replay_ctl(self.handle, "resume") end
+function Replay:seek(s) __replay_ctl(self.handle, "seek", s) end
+function Replay:speed(x) __replay_ctl(self.handle, "speed", x) end
+function Replay:loop(on) __replay_ctl(self.handle, "loop", on == true) end
+function Replay:status() return __replay_status(self.handle) end
+function Replay:wait_done(ms) return __replay_wait(self.handle, ms or 10000) end
+function Replay:stop() return __replay_stop(self.handle) end
+local function names_of(what, channels)
+  if type(channels) == "string" then return { channels } end
+  if type(channels) ~= "table" or #channels == 0 then
+    error(what .. ": channels must be a channel name or a list of names", 3)
+  end
+  for _, c in ipairs(channels) do
+    if type(c) ~= "string" then error(what .. ": channels must be names", 3) end
+  end
+  return channels
+end
+function replay.start(channels, opts)
+  opts = opts or {}
+  local names = names_of("replay.start", channels)
+  local exclude = nil
+  if opts.exclude ~= nil then
+    if type(opts.exclude) ~= "table" then error("replay.start: exclude must be a list of node names", 2) end
+    for _, n in ipairs(opts.exclude) do
+      if type(n) ~= "string" or n == "" or n:find("\n", 1, true) then
+        error("replay.start: exclude must be node names, each on one line", 2)
+      end
+    end
+    exclude = table.concat(opts.exclude, "\n")
+  end
+  local h = __replay_start(opts.source, opts.speed, opts.loop, opts.paused == true, exclude, opts.bus,
+    table.unpack(names))
+  return setmetatable({ handle = h, notes = __replay_notes(h) }, Replay)
+end
+-- record.start(channels, path): what the channels carry written to a candump .log (relative to the
+-- script), a line per frame, ending T for a frame this process sent (tester, simulated ECU or
+-- replay alike) and R for the rest. Returns a recording: rec:counts() and rec:stop(), each
+-- { frames, ours, theirs, missed, dropped }.
+record = {}
+local Recording = {}
+Recording.__index = Recording
+function Recording:counts() return __record_counts(self.handle) end
+function Recording:stop() return __record_stop(self.handle) end
+function record.start(channels, path)
+  if type(path) ~= "string" or path == "" then error("record.start: path must be a file name", 2) end
+  return setmetatable({ handle = __record_start(path, table.unpack(names_of("record.start", channels))) },
+    Recording)
+end
+
 -- ============================ raw bus + signals ============================
 bus = {}
 function bus.send(channel, id, data, opts)
