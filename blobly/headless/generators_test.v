@@ -216,3 +216,25 @@ fn test_a_start_after_a_failed_open_is_refused() {
 	assert why.len == 2 && why[0].contains('no such device') && why[1].contains('cannot send'), why.str()
 	assert !r.generators()[ping].running
 }
+
+// what a fire's caller is told, in order: a stop that overtook it (whatever became of the frame),
+// a refusal, an answer past the deadline, else success
+fn test_a_fire_outcome_is_decided_in_one_order() {
+	cases := [
+		// why, answered at, stopping -> kind ('' success)
+		['', '50', 'false', ''],
+		['', '150', 'false', 'timeout'],
+		['', '50', 'true', 'stopped'],
+		['not sent: listen-only', '50', 'false', 'refused'],
+		['not sent: listen-only', '50', 'true', 'stopped'],
+		[run_stopped, '50', 'false', 'stopped'],
+		['', '100', 'false', ''],
+	]
+	for c in cases {
+		mut got := ''
+		fire_outcome('g', Answer{ why: c[0], at: c[1].u64() }, 100, c[2] == 'true') or {
+			got = '${kind_of(err)}'
+		}
+		assert got == c[3], '${c}: ${got}'
+	}
+}

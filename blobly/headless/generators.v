@@ -47,7 +47,22 @@ mut:
 	mu      sync.Mutex
 	taken   bool // the loop took it: its frame is being sent
 	dropped bool // given up before the loop took it: it is never sent
-	reply   chan string = chan string{cap: 1}
+	reply   chan Answer = chan Answer{cap: 1}
+}
+
+// Answer is the loop's answer to a fire: why it was not sent ('' when the bus took it), and when
+// the loop answered (the monotonic clock, ns).
+struct Answer {
+	why string
+	at  u64
+}
+
+// answered is the loop's answer of `why`, now.
+fn answered(why string) Answer {
+	return Answer{
+		why: why
+		at:  time.sys_mono_now()
+	}
 }
 
 // take is true when the loop may send it now: not given up on, and not past its time — which a
@@ -217,7 +232,7 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 			fire = <-g.fires {
 				// one taken after a stop began is not sent
 				if fire.take(time.sys_mono_now()) {
-					fire.reply <- if r.ctl.running { g.send(mut bus, run_t0) } else { run_stopped }
+					fire.reply <- answered(if r.ctl.running { g.send(mut bus, run_t0) } else { run_stopped })
 				}
 			}
 			i64(wait) * time.millisecond {
@@ -269,7 +284,7 @@ fn (mut g Gen) end(why string) {
 		select {
 			f = <-g.fires {
 				if f.take(0) {
-					f.reply <- why
+					f.reply <- answered(why)
 				}
 			}
 			else {
@@ -293,6 +308,13 @@ fn (mut r Run) gen(i int) !&Gen {
 	return r.gens[i]
 }
 
+// payload_cap is the most a frame on `iface` carries of a payload: a classic wire SocketCAN clamps
+// takes 8 bytes, any other frame 64 (a vendor backend refuses what its wire cannot carry, a
+// software bus carries it).
+fn payload_cap(iface string) int {
+	return if transport.clamps_to_classic(iface) && !transport.wire_framing(iface).fd { 8 } else { 64 }
+}
+
 // sendable is g's refusal when it has nothing to send on.
 fn (mut g Gen) sendable() ! {
 	g.mu.lock()
@@ -309,9 +331,10 @@ fn (mut g Gen) sendable() ! {
 }
 
 pub fn (mut r Run) generators() []sim.GenInfo {
+	stopping := r.is_stopping()
 	mut out := []sim.GenInfo{}
 	for mut g in r.gens {
-		out << g.info()
+		out << g.info(stopping)
 	}
 	return out
 }
@@ -319,10 +342,11 @@ pub fn (mut r Run) generators() []sim.GenInfo {
 // gen_info is generator i as it is now; refused once the run is stopping.
 pub fn (mut r Run) gen_info(i int) !sim.GenInfo {
 	mut g := r.gen(i)!
-	return g.info()
+	return g.info(false)
 }
 
-fn (mut g Gen) info() sim.GenInfo {
+// info is g as it is now; nothing of a run that is stopping runs, whatever a loop still out says.
+fn (mut g Gen) info(stopping bool) sim.GenInfo {
 	g.mu.lock()
 	defer {
 		g.mu.unlock()
@@ -335,7 +359,7 @@ fn (mut g Gen) info() sim.GenInfo {
 		ext:      g.ext
 		trigger:  g.s.trigger
 		cycle_ms: if g.s.cycle_ms > 0 { g.s.cycle_ms } else { 0 }
-		running:  g.cyclic
+		running:  g.cyclic && !stopping
 		sent:     g.sent
 		target:   g.open
 		note:     g.note
@@ -358,8 +382,10 @@ pub fn (mut r Run) gen_fire(i int, until u64) ! {
 	}
 	g.mu.lock()
 	if g.ended {
+		note := g.note
 		g.mu.unlock()
-		return sim.gen_error(.refused, 'generator "${g.s.name}" cannot send: ${g.note}')
+		return fire_outcome(g.s.name, answered(if note != '' { note } else { run_stopped }), due,
+			r.is_stopping())
 	}
 	queued := g.fires.try_push(f) == .success
 	g.mu.unlock()
@@ -380,19 +406,28 @@ pub fn (mut r Run) gen_fire(i int, until u64) ! {
 		}
 		left := i64((f.until - now) / 1_000_000) + 1
 		select {
-			why := <-f.reply {
-				if why == '' {
-					return
-				}
-				// a stop that overtook the fire is the answer, whatever ended the loop
-				return sim.gen_error(if why == run_stopped || r.is_stopping() {
-					.stopped
-				} else {
-					.refused
-				}, 'generator "${g.s.name}": ${why}')
+			a := <-f.reply {
+				return fire_outcome(g.s.name, a, f.until, r.is_stopping())
 			}
 			i64(if left < 20 { left } else { 20 }) * time.millisecond {}
 		}
+	}
+}
+
+// fire_outcome is what a fire's caller is told of the loop's answer `a`, its deadline `until`,
+// and whether a stop has begun: a stop that overtook the fire is the answer whatever became of
+// the frame; then a refusal; then an answer past the deadline, which is a timeout though the frame
+// went out.
+fn fire_outcome(name string, a Answer, until u64, stopping bool) ! {
+	if stopping || a.why == run_stopped {
+		fate := if a.why == '' { 'its frame was sent' } else { a.why }
+		return sim.gen_error(.stopped, 'generator "${name}": the run stopped; ${fate}')
+	}
+	if a.why != '' {
+		return sim.gen_error(.refused, 'generator "${name}": ${a.why}')
+	}
+	if a.at > until {
+		return sim.gen_error(.timeout, 'generator "${name}": its bus took the frame ${(a.at - until) / 1_000_000} ms past the wait; it went out')
 	}
 }
 
@@ -458,7 +493,7 @@ pub fn (mut r Run) gen_value(i int, signal string, value f64) ! {
 	defer {
 		g.mu.unlock()
 	}
-	sim.gen_set_value(mut g.s, g.dbs, signal, value)!
+	sim.gen_set_value(mut g.s, g.dbs, payload_cap(g.open), signal, value)!
 }
 
 // gen_source gives `signal` of generator g the value source `w` from its next frame.
@@ -468,5 +503,5 @@ pub fn (mut r Run) gen_source(i int, signal string, w project.GenCfg) ! {
 	defer {
 		g.mu.unlock()
 	}
-	sim.gen_set_source(mut g.s, g.dbs, signal, w)!
+	sim.gen_set_source(mut g.s, g.dbs, payload_cap(g.open), signal, w)!
 }

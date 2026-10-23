@@ -167,14 +167,15 @@ fn gen_message(s project.Sender, dbs []candb.Database) !candb.Message {
 
 // gen_signal_slot is the index of `signal` in the generator's signals — its last entry, the one
 // the frame takes — appended at its static 0 when the message has it and the generator did not
-// list it yet. A signal the message's payload does not hold is refused: it would never be sent.
-fn gen_signal_slot(mut s project.Sender, dbs []candb.Database, signal string) !int {
+// list it yet. A signal the message's payload does not hold, within the `cap` bytes a frame on the
+// generator's wire carries, is refused: it would never be sent.
+fn gen_signal_slot(mut s project.Sender, dbs []candb.Database, cap int, signal string) !int {
 	m := gen_message(s, dbs)!
 	sig := m.signal_named(signal) or {
 		return gen_error(.refused, '${m.name} has no signal "${signal}"')
 	}
-	// what a frame can carry of the message: no CAN frame carries more than 64 bytes
-	n := if m.payload_len() > 64 { 64 } else { m.payload_len() }
+	// what a frame on the generator's wire carries of the message
+	n := if m.payload_len() > cap { cap } else { m.payload_len() }
 	if !m.holds(sig, n) {
 		return gen_error(.refused, '${m.name} sends ${n} bytes, which do not hold ${signal}: it is never sent')
 	}
@@ -196,11 +197,11 @@ fn gen_signal_slot(mut s project.Sender, dbs []candb.Database, signal string) !i
 
 // gen_set_value sends `signal` at the static `value` from the next frame on, its value source
 // (if it had one) dropped — the GUI's `value` pick.
-pub fn gen_set_value(mut s project.Sender, dbs []candb.Database, signal string, value f64) ! {
+pub fn gen_set_value(mut s project.Sender, dbs []candb.Database, cap int, signal string, value f64) ! {
 	if math.is_nan(value) || math.is_inf(value, 0) {
 		return gen_error(.refused, '${signal}: ${value} is not a value a signal can carry')
 	}
-	i := gen_signal_slot(mut s, dbs, signal)!
+	i := gen_signal_slot(mut s, dbs, cap, signal)!
 	s.signals[i].value = value
 	s.signals[i].wave = project.GenCfg{
 		typ: ''
@@ -210,7 +211,7 @@ pub fn gen_set_value(mut s project.Sender, dbs []candb.Database, signal string, 
 // gen_set_source gives `signal` the value source `w` from the next frame on: one of
 // project.wave_kinds, refused where project.gen_source_invalid finds it cannot be evaluated. The
 // static value stays, as the fallback the GUI keeps.
-pub fn gen_set_source(mut s project.Sender, dbs []candb.Database, signal string, w project.GenCfg) ! {
+pub fn gen_set_source(mut s project.Sender, dbs []candb.Database, cap int, signal string, w project.GenCfg) ! {
 	if w.typ == '' {
 		return gen_error(.refused, '${signal}: a source names its type (${project.wave_kinds.join(', ')}); a static value is gen_set_value')
 	}
@@ -224,7 +225,7 @@ pub fn gen_set_source(mut s project.Sender, dbs []candb.Database, signal string,
 			return gen_error(.refused, '${signal}: a ${w.typ} source of non-finite parameters')
 		}
 	}
-	i := gen_signal_slot(mut s, dbs, signal)!
+	i := gen_signal_slot(mut s, dbs, cap, signal)!
 	mut src := w
 	src.signal = signal
 	s.signals[i].wave = src
