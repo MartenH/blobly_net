@@ -790,6 +790,9 @@ def watch(argv: list[str]) -> int:
         print(result_lines(result), end="", flush=True)
         if rc in {EXIT_CLEAN, EXIT_FINDINGS, EXIT_FAILED, EXIT_STALE_HEAD}:
             return rc
+        # Once the marker has left the `failed` it held at the request, a `failed` is new.
+        if result.get("MARKER_STATUS", "failed") != "failed":
+            config.baseline_summary_status = str(result["MARKER_STATUS"])
         if config.once:
             return EXIT_PENDING
         remaining = deadline - time.monotonic()
@@ -868,6 +871,8 @@ def check_remote_pending(repo: str, pr: str, sha: str, requester: str, review_ac
         sha=sha,
         baseline_issue_comment_id=marker_id,
         baseline_failure_comment_id=marker_id,
+        # Unknown what the marker said at that request: a `failed` marker alone proves nothing.
+        baseline_summary_status="failed",
         request_comment_id=str(marker_id),
         requested_at=str(marker.get("created_at") or ""),
         once=True,

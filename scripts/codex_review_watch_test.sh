@@ -23,6 +23,7 @@ trap 'rm -rf "$stub"' EXIT
 
 # A fixed clock for the stale-request rule: ten minutes after every fixture's request.
 export CODEX_REVIEW_NOW=2026-01-01T00:10:00Z
+export CODEX_REVIEW_STALE_MINUTES=60
 
 cat >"$stub/git" <<'GIT'
 #!/usr/bin/env bash
@@ -326,6 +327,18 @@ case "${FAKE_GH_CASE:-}:$endpoint" in
 		;;
 	marker_running:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:03Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"status\\":\\"running\\"}} -->"}]\n' "$bot"
+		;;
+	marker_rearm:repos/MartenH/blobly_net/issues/123/comments)
+		# running on the first poll, failed on every later one
+		if [ -e "${FAKE_GH_POLLS:?}" ]; then
+			printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:04Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"status\\":\\"failed\\"}} -->"}]\n' "$bot"
+		else
+			: >"$FAKE_GH_POLLS"
+			printf '[{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:03Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"status\\":\\"running\\"}} -->"}]\n' "$bot"
+		fi
+		;;
+	remote_marker_failed:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[{"id":998,"created_at":"2026-01-01T00:00:02Z","user":{"login":"MartenH"},"body":"@codex review\\n\\ncodex-review-state: abcdef1234567890abcdef1234567890abcdef12"},{"id":5,"created_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-01T00:00:03Z","user":%s,"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"abcdef1234567890abcdef1234567890abcdef12\\",\\"status\\":\\"failed\\"}} -->"}]\n' "$bot"
 		;;
 	remote_stale:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[{"id":998,"created_at":"2026-01-01T00:00:02Z","user":{"login":"MartenH"},"body":"@codex review\\n\\ncodex-review-state: abcdef1234567890abcdef1234567890abcdef12"}]\n'
@@ -647,6 +660,16 @@ echo "BASELINE_SUMMARY_STATUS=failed" >>"$prior_failed/pr-123.env"
 FAKE_GH_CASE=marker_failed PATH="$stub:/usr/bin:/bin" \
 	bash scripts/codex_review_watch.sh --state "$prior_failed/pr-123.env" --once >"$out" 2>&1
 ok "a marker failed before the request and still failed is pending" "$?" "1"
+rearm_polls=$(mktemp -u)
+FAKE_GH_POLLS=$rearm_polls FAKE_GH_CASE=marker_rearm PATH="$stub:/usr/bin:/bin" \
+	bash scripts/codex_review_watch.sh --state "$prior_failed/pr-123.env" --interval 1 --timeout 5 >"$out" 2>&1
+ok "a marker failed again after running is this round's failure" "$?" "30"
+rm -f "$rearm_polls"
+
+remote_failed_state=$(mktemp -d)
+FAKE_GH_CASE=remote_marker_failed PATH="$stub:/usr/bin:/bin" \
+	bash scripts/request_codex_review.sh 123 --repo MartenH/blobly_net --post --state-dir "$remote_failed_state" >"$out" 2>&1
+ok "a remote request with only a failed marker stays pending" "$?" "64"
 
 remote_stale_state=$(mktemp -d)
 CODEX_REVIEW_NOW=2026-01-01T01:30:00 FAKE_GH_CASE=remote_stale PATH="$stub:/usr/bin:/bin" \
