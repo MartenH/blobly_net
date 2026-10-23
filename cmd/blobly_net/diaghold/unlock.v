@@ -1,11 +1,9 @@
 module diaghold
 
-// unlock.v — the General tab's explicit security access: which level it offers, which session it
-// switches to first, how a seed is read, and how a refusal is said. The 0x27 exchange itself is
-// the one the DID write path runs (cmd/blobly_net diag_unlock).
-
-// extended_session is DiagnosticSessionControl's extendedDiagnosticSession.
-pub const extended_session = u8(0x03)
+// unlock.v — the General tab's explicit security access: which level it offers, when its 0x27 may
+// go, how a seed is read, and how a refusal is said. Which session it leaves first and what a
+// refusal forgets are uds.unlock_session's and uds.unlock_refusal_forgets'; the 0x27 exchange
+// itself is the one the DID write path runs (cmd/blobly_net diag_unlock).
 
 // unlock_level_default is the level the selector starts at: the lowest one the description's
 // gates name (`levels`, sysview.EcuDesc.security_levels) that the selector offers (1..`max`,
@@ -18,56 +16,6 @@ pub fn unlock_level_default(levels []int, max int) u8 {
 		}
 	}
 	return if best == 0 { u8(1) } else { u8(best) }
-}
-
-// unlock_session is the session to switch to before a 0x27 (0 = stay). ISO 14229-1 serves
-// SecurityAccess only outside the default session, so the default one — or one nothing has
-// answered 0x10 for on this connection (0) — is left for the extended session, the one a
-// blobly_emb application unlocks in. Any other known session is kept: a programming session's
-// bootloader unlocks in its own.
-pub fn unlock_session(session u8) u8 {
-	if session == 0 || session == default_session {
-		return extended_session
-	}
-	return 0
-}
-
-// Security is what a connection knows of the ECU's security state: unknown (a fresh connection, or
-// after a 0x27 the ECU did not grant — it may have relocked, or not), locked (a session transition
-// was answered: ISO 14229-1 relocks on every one), or `level` unlocked (a 0x27 granted it since).
-pub struct Security {
-pub:
-	known bool
-	level u8 // known: 0 = locked, else the level unlocked
-}
-
-// security_locked is the state a positive 0x10 answer establishes.
-pub fn security_locked() Security {
-	return Security{
-		known: true
-	}
-}
-
-// security_unlocked is the state a granted 0x27 (or an all-zero seed) establishes.
-pub fn security_unlocked(level u8) Security {
-	return Security{
-		known: true
-		level: level
-	}
-}
-
-// unlocked is the level known to be unlocked, 0 when none is — locked or unknown alike, since
-// either way a gated request must unlock first (write_plan's `unlocked`).
-pub fn (s Security) unlocked() u8 {
-	return if s.known { s.level } else { u8(0) }
-}
-
-// words is the state as the strip says it.
-pub fn (s Security) words() string {
-	if !s.known {
-		return 'security unknown'
-	}
-	return if s.level == 0 { 'locked' } else { 'level ${s.level} unlocked' }
 }
 
 // unlock_refusal is why an Unlock is not sent ('' = send it). The panel computes only blobly_net's
@@ -103,9 +51,10 @@ pub:
 // press's own verdict on the reference key (unlock_refusal for its target and description; '' =
 // it may be sent), `req_ident` the system that verdict was reached under and `now_ident` the one
 // loaded now: the verdict holds only while they are one, since a reload may have taken
-// `security_key = "reference"` or `allow_bench_key` away. Then the session: the default one, or none
-// known, is left first (unlock_session) — also for a write gate that names a level and no session.
-pub fn unlock_step(req_ident string, now_ident string, policy string, session u8) UnlockStep {
+// `security_key = "reference"` or `allow_bench_key` away. Then `to`, the session to leave for first
+// (uds.unlock_session of the connection's: the default one, or none known, is left — also for a
+// write gate that names a level and no session).
+pub fn unlock_step(req_ident string, now_ident string, policy string, to u8) UnlockStep {
 	if policy != '' {
 		return UnlockStep{
 			refusal: policy
@@ -118,7 +67,7 @@ pub fn unlock_step(req_ident string, now_ident string, policy string, session u8
 		}
 	}
 	return UnlockStep{
-		session: unlock_session(session)
+		session: to
 	}
 }
 
@@ -131,17 +80,6 @@ pub fn unlock_still_current(req_ident string, now_ident string) string {
 		return ''
 	}
 	return 'no 0x27 sent: the system description was reloaded since this was pressed — press it again'
-}
-
-// unlock_refusal_forgets: what a 0x27 the ECU ANSWERED without granting says the connection no
-// longer has — `nrc` its negative response's code, 0 for an answer that was not one (malformed, or
-// with no seed). 0x7F (the service not served in this session): the session is not the one the
-// panel believed (an S3 timeout, a reset), so the next Unlock switches again. Anything else, 0x7E
-// and a malformed answer included: the level is no longer known (a seed request for another level,
-// or a key the ECU may have processed, may have changed it), so the next write unlocks again. A
-// carrier that failed is not here: that connection is let go.
-pub fn unlock_refusal_forgets(nrc u8) Forget {
-	return if nrc == 0x7F { Forget.session } else { Forget.security }
 }
 
 // Seed is what a 0x27 requestSeed answer says.

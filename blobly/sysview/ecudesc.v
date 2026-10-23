@@ -229,6 +229,7 @@ pub fn (d &EcuDesc) iso_dids() []DidDesc {
 		}
 		out << DidDesc{
 			id:   id
+			kind: .unknown // the description says nothing of its layout
 			name: uds.standard_did_name(id)
 		}
 	}
@@ -384,7 +385,7 @@ fn gate_level_refusal(m map[string]toml.Any, key string) string {
 // contradiction: why the gate cannot be met — a security level in a gate that names only the
 // default session, where ISO 14229-1 serves no 0x27, so the level cannot be unlocked there and a
 // tester that unlocks it has left the gate's sessions. none = it can be met. The DIDs tab's write
-// plan (cmd/blobly_net diaghold.write_plan) refuses the same gate; this says it at load.
+// plan (uds.write_plan, via DidDesc.plan_write) refuses the same gate; this says it at load.
 pub fn (g Gate) contradiction() ?string {
 	if g.level > 0 && g.sessions.len > 0 && g.sessions.all(it == 'default') {
 		return 'gate needs security level ${g.level} but names only the default session, where 0x27 is not served'

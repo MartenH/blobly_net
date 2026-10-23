@@ -10,6 +10,7 @@ import taprule
 import blobly.telem
 import blobly.isotp
 import blobly.uds
+import blobly.sysview
 import blobly.flash
 import blobly.sim
 import blobly.script
@@ -1487,7 +1488,9 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 	}
 }
 
-fn script_worker(app &App, path string) {
+// script_worker runs the script at `path`; `sys_path` is the system.toml its uds.node reaches nodes
+// by (App.described_path, read on the GUI thread), loaded here.
+fn script_worker(app &App, path string, sys_path string) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.script_busy {
@@ -1588,6 +1591,12 @@ fn script_worker(app &App, path string) {
 	env.on_output = fn [a] (s string) {
 		mut ap := unsafe { a }
 		ap.script_push(s)
+	}
+	if sys_path != '' {
+		env.sys = sysview.load(sys_path) or {
+			a.script_push('${sys_path} could not be read (${err}); uds.node names no nodes')
+			sysview.System{}
+		}
 	}
 	// A script IS the tester. Left on the default opener it would be the one emitter the trace
 	// could not account for, and its frames would come back labelled as the device under test's.

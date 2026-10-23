@@ -1,0 +1,306 @@
+module sysview
+
+import os
+import blobly.uds
+
+// tester.v — a script's tester by NODE and by DID NAME: which row of the project reaches a node of
+// the system and at which ids, the DIDs a tester lists for it, and a DID's value read and written
+// through its description (the codec, didcodec.v, and the write gate's plan, uds.write_plan). The
+// Lua uds.node and the C ABI's bb_node_* / bb_did_* (which Python's Project.nodes is over) both
+// answer by these; the Diagnostics panel reaches its targets by the same rules (can_server,
+// node_for).
+
+// node_named is the index of the node called `name`: refused for a name no node has (naming those
+// there are) or two share, and when no system.toml describes the project.
+pub fn (sys &System) node_named(name string) !int {
+	if sys.path == '' {
+		return error("no system.toml describes this project (none beside it, beside one of its databases, or in its folder's parent), so it names no nodes")
+	}
+	mut found := -1
+	for i, n in sys.nodes {
+		if n.name != name {
+			continue
+		}
+		if found >= 0 {
+			return error('two nodes of ${sys.path} are named "${name}"; nothing here can tell which you mean')
+		}
+		found = i
+	}
+	if found < 0 {
+		names := sys.nodes.map(it.name)
+		there := if names.len > 0 { '; there are: ${names.join(', ')}' } else { '' }
+		return error('no node "${name}" in ${sys.path}${there}')
+	}
+	return found
+}
+
+// RowRef is one of a project's rows a node may be reached on: its name, its carrier's kind, and on
+// a DoIP row the entity it reaches (its endpoint's host, its ecu_address).
+pub struct RowRef {
+pub:
+	name    string
+	doip    bool
+	eth     bool // an Ethernet row that carries no diagnostics (SOME/IP)
+	host    string
+	logical u16
+}
+
+// RowTarget is node's diagnostic server on one row: a CAN row's request and response ids (29-bit
+// past 0x7FF, the convention can_targets uses), or a DoIP row's own connection, whose entity is
+// the node.
+pub struct RowTarget {
+pub:
+	row  int
+	doip bool
+	req  u32
+	rsp  u32
+	ext  bool
+}
+
+// targets: every row of `rows` that reaches node `n`, in their order — a CAN row named after a bus
+// its server is on, at its diagnostic ids (can_server, can_targets' rule), and a DoIP row whose
+// entity is the node (node_for by the row's logical address and host, the rule the Diagnostics
+// panel describes a DoIP target by).
+pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
+	if n < 0 || n >= sys.nodes.len {
+		return []RowTarget{}
+	}
+	server := sys.can_server(sys.nodes[n])
+	mut out := []RowTarget{}
+	for i, r in rows {
+		if r.doip {
+			link := sys.node_for(TargetAddr{
+				doip:    true
+				logical: r.logical
+				host:    r.host
+				bus:     r.name
+			})
+			if link.node == n {
+				out << RowTarget{
+					row:  i
+					doip: true
+				}
+			}
+		} else if !r.eth {
+			if s := server {
+				if r.name in s.buses {
+					out << RowTarget{
+						row: i
+						req: s.req
+						rsp: s.rsp
+						ext: s.req > 0x7FF || s.rsp > 0x7FF
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// reach is the one target a tester opens on for node `n`: the one on row `row` when it names one
+// (-1 = wherever the node is reached). Refused when the node is reached on no row — saying how it is
+// reached, so the project can be given that row — on another row than the one named, or on several
+// with none named.
+pub fn (sys &System) reach(n int, rows []RowRef, row int) !RowTarget {
+	if n < 0 || n >= sys.nodes.len {
+		return error('no node ${n}')
+	}
+	ts := sys.targets(n, rows)
+	name := sys.nodes[n].name
+	if row >= 0 {
+		for t in ts {
+			if t.row == row {
+				return t
+			}
+		}
+		on := if row < rows.len { rows[row].name } else { 'row ${row}' }
+		if ts.len == 0 {
+			return error('${name} is not reached on ${on}: ${sys.reached_by(n)}')
+		}
+		return error('${name} is not reached on ${on}; it is on: ${ts.map(rows[it.row].name).join(', ')}')
+	}
+	if ts.len == 1 {
+		return ts[0]
+	}
+	if ts.len == 0 {
+		return error('${name} is reached on no enabled row of the project: ${sys.reached_by(n)}')
+	}
+	return error('${name} is reached on ${ts.len} rows (${ts.map(rows[it.row].name).join(', ')}); name the channel to use')
+}
+
+// reached_by says how node `n`'s diagnostic server is reached, for a refusal that found no row.
+fn (sys &System) reached_by(n int) string {
+	node := sys.nodes[n]
+	if node.ecu_err == '' && !node.desc.server {
+		return 'its ecu.toml (${node.ecu}) declares no diagnostic server ([uds], [isotp] or [doip])'
+	}
+	mut ways := []string{}
+	if s := sys.can_server(node) {
+		on := if s.buses.len > 0 {
+			'on a CAN row named ${s.buses.join(' or ')}'
+		} else {
+			'on the CAN bus its [isotp] bus names, which system.toml does not declare'
+		}
+		ways << 'at 0x${s.req:X}/0x${s.rsp:X} ${on}'
+	}
+	if node.doip != 0 {
+		ways << 'over DoIP on a row whose ecu_address is its logical address 0x${node.doip:04X}'
+	}
+	if ways.len == 0 {
+		return 'neither ${os.file_name(sys.path)} (diag = { req, rsp }) nor its ecu.toml ([isotp] rx_id / tx_id) gives it CAN ids, and it has no DoIP entity (doip = { logical })'
+	}
+	return 'it is reached ${ways.join(', or ')}'
+}
+
+// listed_dids: the DIDs a tester lists for a node — its description's own, then the ISO
+// identification DIDs it does not declare (iso_dids).
+pub fn (d &EcuDesc) listed_dids() []DidDesc {
+	mut out := d.dids.clone()
+	out << d.iso_dids()
+	return out
+}
+
+// listed_did is the listed DID `key` names: its identifier in hex (`0x0110`) or decimal, else its
+// name (a signal's or parameter's, or ISO's for a standard identifier). Refused for a name no
+// listed DID has or two share; an identifier the description does not list is a DID of no layout,
+// read and written as its bytes.
+pub fn (d &EcuDesc) listed_did(key string) !DidDesc {
+	listed := d.listed_dids()
+	mut hits := listed.filter(it.name == key)
+	if hits.len == 1 {
+		return hits[0]
+	}
+	if hits.len > 1 {
+		return error('${hits.len} DIDs are called "${key}" (${hits.map('0x${it.id:04X}').join(', ')}); name it by its identifier')
+	}
+	if id := did_number(key) {
+		return d.listed_id(id)
+	}
+	names := listed.filter(it.name != '').map('"${it.name}"')
+	return error('no DID "${key}" in the description; there are: ${names.join(', ')}')
+}
+
+// listed_id is DID `id` as the description lists it, or one of no layout when it does not.
+pub fn (d &EcuDesc) listed_id(id u16) DidDesc {
+	for x in d.listed_dids() {
+		if x.id == id {
+			return x
+		}
+	}
+	return DidDesc{
+		id:   id
+		kind: .unknown
+		name: uds.standard_did_name(id)
+	}
+}
+
+// did_number reads a DID's identifier: `0x` and one to four hex digits, or a decimal 0..65535.
+fn did_number(t string) ?u16 {
+	if t.starts_with('0x') || t.starts_with('0X') {
+		h := t[2..]
+		if h.len < 1 || h.len > 4 || !h.bytes().all(it.is_hex_digit()) {
+			return none
+		}
+		return u16(h.parse_uint(16, 16) or { return none })
+	}
+	if t.len < 1 || t.len > 5 || !t.bytes().all(it.is_digit()) {
+		return none
+	}
+	v := t.parse_uint(10, 32) or { return none }
+	return if v <= 0xFFFF { u16(v) } else { none }
+}
+
+// by_label: a value of this DID is read part by part, each under its label — it has several parts,
+// or is a parameter status, whose parts are its parameters; else it is read as its one part's value.
+pub fn (x DidDesc) by_label() bool {
+	return x.kind == .param_status || x.parts().len > 1
+}
+
+// label is how a refusal names the DID: its identifier and its name.
+pub fn (x DidDesc) label() string {
+	return if x.name == '' { '0x${x.id:04X}' } else { '0x${x.id:04X} ${x.name}' }
+}
+
+// write_sessions is the write gate's sessions as 0x10 sub-functions (session_id); refused for one
+// no tester here knows.
+pub fn (x DidDesc) write_sessions() ![]u8 {
+	mut out := []u8{}
+	for s in x.write_gate.sessions {
+		out << session_id(s) or { return error('written in the "${s}" session, which no tester here knows') }
+	}
+	return out
+}
+
+// plan_write is what a 0x2E of this DID needs first on a connection in state `st` (uds.write_plan
+// over the CURRENT description's write gate): `can_unlock` whether the tester can compute the
+// node's key.
+pub fn (x DidDesc) plan_write(st uds.ConnState, can_unlock bool) uds.WritePlan {
+	if !x.write_gate.declared {
+		return uds.write_plan(false, 0, [], 0, 0, false)
+	}
+	sessions := x.write_sessions() or {
+		return uds.WritePlan{
+			refusal: 'not writable: ${err.msg()}'
+		}
+	}
+	return uds.write_plan(true, st.session, sessions, u8(x.write_gate.level), st.security.unlocked(),
+		can_unlock)
+}
+
+// WriteGated is a write not sent because the connection has not established what the DID's write
+// gate needs: `session` the session to switch to (0 = the one it is in will do), `level` the
+// security level to unlock (0 = none), `state` what the connection has.
+pub struct WriteGated {
+	Error
+pub:
+	did     u16
+	name    string
+	session u8
+	level   u8
+	state   uds.ConnState
+}
+
+pub fn (e WriteGated) msg() string {
+	steps := uds.WritePlan{
+		session: e.session
+		unlock:  e.level
+	}.steps()
+	what := if e.name == '' { '0x${e.did:04X}' } else { '0x${e.did:04X} ${e.name}' }
+	return '0x2E ${what}: not written — this connection has ${e.state.words()}, and its write gate needs it to ${steps.join(', then ')} first'
+}
+
+// write_described writes `texts` (one per part, DidDesc.parts) to DID `x` as its description lays
+// out and gates it: refused before anything is sent when the codec refuses a part, the description
+// gives the DID no write gate (or one that cannot be met), or the connection has not established
+// the session and level the gate needs (WriteGated — this connection's own exchanges are what say
+// so, Client.state). A script may unlock with a key of its own, so the level is always the
+// script's to unlock: nothing is switched or unlocked here.
+pub fn write_described(mut cli uds.Client, x DidDesc, texts []string) ! {
+	data := x.encode(texts) or { return error('0x2E ${x.label()}: not written — ${err.msg()}') }
+	plan := x.plan_write(cli.state, true)
+	if plan.refusal != '' {
+		return error('0x2E ${x.label()}: ${plan.refusal}')
+	}
+	if plan.session != 0 || plan.unlock != 0 {
+		return WriteGated{
+			did:     x.id
+			name:    x.name
+			session: plan.session
+			level:   plan.unlock
+			state:   cli.state
+		}
+	}
+	cli.write_data_by_identifier(x.id, data)!
+}
+
+// read_texts decodes a value read from the DID into one text per part: an answer the description
+// cannot lay out (not its declared size) is uds.UndecodableAnswer — the ECU answered, and its answer
+// is not what its description says.
+pub fn (x DidDesc) read_texts(data []u8) ![]string {
+	return x.texts(data) or {
+		return uds.UndecodableAnswer{
+			why:  'DID ${x.label()}: ${err.msg()}'
+			resp: data.clone()
+		}
+	}
+}

@@ -326,6 +326,51 @@ does not answer is `"failed"` (a DoIP negative ack), not `"silent"`; the connect
 request raises, as a bus failing while listening does. A simulated DoIP entity
 answers 0xE400 (`tests/diag_doip_functional.lua`); see `docs/doip.md`.
 
+### Nodes — a target by name, its DIDs by name
+
+A project described by blobly_emb's `system.toml` (beside the project, beside one of its
+databases, or in its folder's parent — the one the Diagnostics panel and the simulated servers
+read) names its **nodes**, and each node's `ecu.toml` lays out its DIDs. A script then names the
+node and the DID, and the model supplies the rest:
+
+```lua
+local names = uds.nodes()                    -- { "zone_a" }: the system model's nodes, in order
+local d = uds.node("zone_a" [, { channel = "edge" }])
+d:session(0x03)
+d:security_access(1)                         -- what SteerLimit's write gate needs
+d:write("SteerLimit", 300)                   -- encoded by its layout: a u16, 0..360
+check.equal(d:read("SteerLimit"), 300)
+check.equal(d:read("parameter status").SteerLimit, 1)   -- coded
+```
+
+`uds.node(name [, opts])` opens a `uds.open` connection on the channel and at the ids the system
+gives the node: a CAN channel **named after the bus its diagnostic server is on**, at its `diag =
+{ req, rsp }` ids (else its ecu.toml's `[isotp]`), or a DoIP channel whose `ecu_address` is its
+entity's logical address. `opts.channel` names the channel when the node is reached on several.
+A node the project reaches nowhere is refused with how it is reached (`zone_a is reached on no
+enabled row of the project: it is reached at 0x7C0/0x7C8 on a CAN row named edge`). Everything a
+`uds.open` connection has is there, plus:
+
+| Method | What | Returns |
+|---|---|---|
+| `d.node` | the node's name | string |
+| `d:dids()` | its DIDs: those its ecu.toml declares, then the ISO identification DIDs it does not | array of `{id, name, kind, size, by_label, parts = { {label, kind, hint} }, read, write}` — `kind` `"ascii"`, `"bytes"`, `"signal"`, `"param"`, `"param_status"`, `"tx_saturations"` or `"unknown"` (no layout: bytes); `size` nil when not known; a part's `kind` `"int"`, `"bool"`, `"text"` or `"bytes"` and its `hint` what it accepts (`"u16 0..360"`); `read` / `write` the gate `{sessions, level}`, nil where none is declared (`write` nil: not writable) |
+| `d:did(did)` | one DID: `did` its name (`"SteerLimit"`, ISO's `"ECU serial number"`) or its identifier (a number, or `"0x0110"`) | as `dids` |
+| `d:read(did)` | `0x22`, decoded by the layout | its one part's value (an integer, a boolean, a string for a text, bytes), or a table by part label when `by_label` (several fields, or a parameter status, whose parts are its parameters) |
+| `d:write(did, value)` | `0x2E`, encoded by the layout; `value` as `read` returns it | — |
+| `d:dtcs()`, `d:supported_dtcs()`, `d:snapshot_ids()`, `d:snapshot(...)`, `d:extended(...)` | as on `uds.open`, each record also carrying `fault`, the name of its `[[fault]]` (nil for a DTC the description does not declare) | |
+
+**A write is refused, nothing sent,** when the layout does not hold the value (`deg: 400 is
+outside 0..360`), when the DID has no write gate (`not writable`), and when this connection has
+not established what the gate needs — the session it is written in and the security level —
+which **its own exchanges** say: a positive `0x10` sets the session and relocks, a granted `0x27`
+unlocks its level, a `0x2E` refused with `0x7F` / `0x33` forgets them. The error says what is
+missing (`... needs it to switch to the extended session (0x10 03), then unlock level 1 (0x27
+01/02) first`); `d:session()` and `d:security_access()` establish it — nothing switches or
+unlocks on its own. A snapshot DID's size is the description's, so `d:snapshot` does not read the
+DID to learn it. `tests/diag_nodes.lua` runs all of it against the described zone_a of
+`projects/described-ecu-demo`.
+
 ### End-to-end protection for frames you build (AUTOSAR E2E Profile 1)
 
 ```lua

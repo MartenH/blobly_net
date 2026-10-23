@@ -8,7 +8,7 @@ import blobly.transport
 import watchrule
 import vgui
 import panerule
-import diaghold
+import blobly.uds
 
 // examples lists the shipped projects for the File > Open Example menu.
 const examples = [
@@ -1359,7 +1359,7 @@ fn draw_diag_strip(mut app App, st DiagHoldStatus, sel_key string) {
 	if !app.running {
 		vgui.text_dim_wrapped('the measurement is stopped — what is shown is from the last run; Start to send requests')
 	} else if st.conn == .held {
-		mut line := 'session ${diaghold.session_name(st.session)}'
+		mut line := 'session ${uds.session_name(st.session)}'
 		// locked only once a 0x10 answered on this connection says so (a session change relocks);
 		// a fresh connection, or one after a 0x27 the ECU did not grant, does not know
 		line += ' · ${st.security.words()}'
@@ -1543,7 +1543,7 @@ fn draw_script(mut app App) {
 		// may run for minutes, and stop() waiting for one would hang on the operator's own
 		// script (see App.run_workers).
 		app.reserve_tool_reader()
-		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
+		spawn script_worker(app, vgui.buf_str(app.script_path_buf), app.described_path())
 	}
 	vgui.same_line()
 	// Closing keeps a dirty buffer (TextFile: load returns .cached while dirty), Run stays

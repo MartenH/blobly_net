@@ -84,3 +84,8 @@ __all__ += ["BusDiagnostics", "BusLoad"]
 # generator control (generators.py)
 from .generators import Generator, GeneratorRefused, Generators  # noqa: E402
 __all__ += ["Generator", "GeneratorRefused", "Generators"]
+# the system model: nodes, their DIDs by name (nodes.py)
+from ._lib import WriteGated  # noqa: E402
+from .nodes import Did, DidPart, Dids, Fault, Gate, Node, NodeClient, NodeFaults, Nodes, NodeTarget  # noqa: E402
+__all__ += ["Did", "DidPart", "Dids", "Fault", "Gate", "Node", "NodeClient", "NodeFaults", "NodeTarget", "Nodes",
+            "WriteGated"]

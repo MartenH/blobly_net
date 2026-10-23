@@ -209,6 +209,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		return report_path
 	}
 	env.gens = hrun
+	env.sys = hrun.sys
 	if timeout_s > 0 {
 		after_ms := i64(math.ceil(timeout_s * 1000))
 		env.set_deadline(after_ms)

@@ -342,6 +342,72 @@ typedef struct bb_wave {
 	double value, offset, amplitude, freq, phase, min, max, period, start, step, modulo, count, base;
 } bb_wave;
 
+/* The system model: a node of the run's system.toml (bb_node_info). Its name is bb_node_name's. */
+typedef struct bb_node {
+	int32_t dids;           /* the DIDs it lists, bb_did_*'s d 0 .. dids - 1: its description's own,
+	                           then the ISO identification DIDs it does not declare */
+	int32_t faults;         /* its ecu.toml's [[fault]]s: bb_node_fault's k */
+	int32_t targets;        /* the run's rows it is reached on: bb_node_target's k */
+	uint8_t described;      /* its ecu.toml was read; else bb_node_problem says why, and it lists
+	                           only the ISO DIDs */
+	uint8_t server;         /* its ecu.toml declares a diagnostic server ([uds], [isotp] or [doip]) */
+	uint8_t reference_key;  /* [uds] security_key = "reference": blobly_net's reference key
+	                           (bb_reference_key) unlocks it */
+} bb_node;
+
+/* Where a node is reached on a row of the run (bb_node_target, bb_node_reach): a CAN row named
+ * after a bus its server is on, at its diagnostic ids — what bb_uds_open's tx and rx are — or a
+ * DoIP row whose entity is the node, opened with NULL ids. */
+typedef struct bb_reach {
+	int32_t  row;   /* a bb_channel_* index */
+	uint8_t  doip;  /* the DoIP row's own connection: tx and rx 0 */
+	uint8_t  ext;   /* 29-bit ids: either is past 0x7FF */
+	uint32_t tx;    /* the node's request id */
+	uint32_t rx;    /* its response id */
+} bb_reach;
+
+/* Where a DID's value comes from (bb_did.kind), as the ecu.toml declares it. */
+enum bb_did_kind {
+	BB_DID_ASCII = 0,           /* a fixed text */
+	BB_DID_BYTES = 1,           /* fixed bytes */
+	BB_DID_SIGNAL = 2,          /* a live signal's value */
+	BB_DID_PARAM = 3,           /* a coded parameter */
+	BB_DID_PARAM_STATUS = 4,    /* one status byte per parameter: 0 default, 1 coded, 2 reverted */
+	BB_DID_TX_SATURATIONS = 5,  /* how many sent values were held to their DBC range */
+	BB_DID_UNKNOWN = 6          /* none of these, or not declared: its bytes, of no known layout */
+};
+
+/* A DID a node lists (bb_did_info). Its name is bb_did_name's, a gate's sessions bb_did_session's. */
+typedef struct bb_did {
+	uint16_t id;
+	int32_t  kind;            /* an enum bb_did_kind */
+	int32_t  size;            /* its value's bytes; -1: the description does not say */
+	int32_t  parts;           /* what its value is read and written as: bb_did_part's p */
+	uint8_t  by_label;        /* its value is its parts by label (several, or a parameter
+	                             status, whose parts are its parameters); else its one part's */
+	uint8_t  read_gated;      /* a read gate is declared (else it reads in any session, unlocked) */
+	int32_t  read_sessions;   /* the sessions it reads in, by name: none = any */
+	int32_t  read_level;      /* the security level it reads at; 0 = none */
+	uint8_t  writable;        /* a write gate is declared; without one it is not writable */
+	int32_t  write_sessions;
+	int32_t  write_level;
+} bb_did;
+
+/* What one part of a DID's value holds (bb_did_part): its text is an integer in decimal, true or
+ * false, a text, or bytes in hex. */
+enum bb_part_kind {
+	BB_PART_INTEGER = 0,
+	BB_PART_BOOLEAN = 1,
+	BB_PART_TEXT = 2,
+	BB_PART_BYTES = 3
+};
+
+/* What a gated write needs first (bb_uds_write_described, BB_ERR_GATED). */
+typedef struct bb_write_needs {
+	uint8_t session;  /* the session to switch to (0x10); 0 = the one the connection is in */
+	uint8_t level;    /* the security level to unlock (0x27 2L-1 / 2L); 0 = none */
+} bb_write_needs;
+
 /* Error codes. The message (bb_last_error) says what; the code says which kind. */
 #define BB_ERR         (-1)  /* refused, with a reason in bb_last_error */
 #define BB_ERR_HANDLE  (-2)  /* no such bus or UDS handle, or a closed one */
@@ -367,6 +433,9 @@ typedef struct bb_wave {
                                      routine's result, a malformed download answer), or it was
                                      cancelled; a step the bootloader refused or did not answer is
                                      that step's UDS failure (BB_ERR_NEGATIVE, BB_ERR_TIMEOUT ...) */
+#define BB_ERR_GATED        (-12) /* bb_uds_write_described: not sent, since the connection has not
+                                     established the session or the security level the DID's
+                                     write gate needs; bb_write_needs says which */
 
 /* Answers that are neither success nor an error. */
 #define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
@@ -794,6 +863,44 @@ int bb_gen_stop(int g);
 int bb_gen_cycle(int g, int cycle_ms);
 int bb_gen_set(int g, const char *signal, double value);
 int bb_gen_source(int g, const char *signal, const bb_wave *w);
+/* The system model (docs/scripting.md, "Nodes"): blobly_emb's system.toml beside the project (or
+ * beside one of its databases, or in its folder's parent) and each node's ecu.toml, as the RUN read
+ * them — the description its simulated diagnostic servers answer by — from bb_start until bb_stop
+ * (BB_ERR_STATE otherwise). A tester reaches a node by its name, the model supplying the row and the
+ * ids, and reads and writes its DIDs by name, through the node's layout. Every call here but
+ * bb_uds_write_described only reads, and may come from any (attached) thread. Strings go into the
+ * caller's buffer as bb_message_name's. `n` is 0 .. bb_node_count - 1, `d` 0 .. its dids - 1.
+ *
+ * bb_node_reach is the target a UDS handle opens on: the node's one target, or the one on `row`
+ * (-1: wherever it is); refused, saying how the node is reached, when that is no row of the run,
+ * and when it is several and none is named. A DID's value is its parts' texts (bb_did_part's kind:
+ * an integer in decimal, true / false, a text, bytes in hex): bb_did_text reads part p of a value
+ * read with bb_uds_read_did — BB_ERR_UNDECODABLE when the bytes are not the size the description
+ * lays out — and bb_uds_write_described writes the k texts of every part, encoded by the same
+ * layout: refused (BB_ERR, nothing sent) for a text the layout does not hold or a DID with no write
+ * gate; BB_ERR_GATED, nothing sent and *needs filled, when the handle's connection has not
+ * established what the write gate needs — the session (a positive 0x10 on it) and the level (a
+ * granted 0x27), as its own exchanges say. It never switches or unlocks itself. */
+int bb_system_path(char *buf, int cap);              /* >= 0: the length of the system.toml's path;
+                                                        "" when none describes the project */
+int bb_node_count(void);                             /* >= 0 */
+int bb_node_info(int n, bb_node *out);
+int bb_node_name(int n, char *buf, int cap);         /* >= 0: the length */
+int bb_node_problem(int n, char *buf, int cap);      /* >= 0: why its ecu.toml was not read, "" */
+int bb_node_target(int n, int k, bb_reach *out);
+int bb_node_reach(int n, int row, bb_reach *out);
+int bb_node_fault(int n, int k, uint32_t *dtc, char *buf, int cap); /* >= 0: the fault's name's
+                                                        length; *dtc its 24-bit DTC */
+int bb_did_info(int n, int d, bb_did *out);
+int bb_did_name(int n, int d, char *buf, int cap);   /* >= 0: the length; "" for a DID of no name */
+int bb_did_session(int n, int d, int write, int k, char *buf, int cap); /* the k-th session of its
+                                                        read (write 0) or write gate, as named */
+int bb_did_part(int n, int d, int p, int *kind, char *buf, int cap); /* >= 0: the length of its
+                                                        label; *kind an enum bb_part_kind */
+int bb_did_hint(int n, int d, int p, char *buf, int cap); /* what the part accepts: "u16 0..360" */
+int bb_did_text(int n, int d, const uint8_t *data, int len, int p, char *buf, int cap);
+int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
+                           bb_write_needs *needs);
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus

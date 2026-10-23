@@ -51,20 +51,23 @@ class Dtc:
     testNotCompletedThisOperationCycle, warningIndicatorRequested): a bit outside `availability`
     is left out, since the ECU says nothing about it, so ask `bits.get(name)` of an ECU that may not
     report every bit (None: not reported). A 0x19 04 / 06 answer carries no mask: every bit is
-    read as it gives it."""
+    read as it gives it. `fault` is the name a node's description gives the DTC (a NodeClient's;
+    None for a plain UdsClient, or a DTC the description does not declare)."""
     code: int
     name: str
     status: int
     availability: int
     bits: dict[str, bool]
+    fault: str | None = None
 
 
 @dataclass(frozen=True)
 class SnapshotId:
-    """A DTC holding a snapshot (0x19 03), and the snapshot record's number."""
+    """A DTC holding a snapshot (0x19 03), and the snapshot record's number; `fault` as Dtc's."""
     code: int
     name: str
     record: int
+    fault: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,10 +129,11 @@ def _status_bits() -> tuple[tuple[int, str], ...]:
     return _bits
 
 
-def _dtc(d) -> Dtc:
-    """A Dtc from a bb_dtc."""
+def _dtc(d, faults: dict[int, str]) -> Dtc:
+    """A Dtc from a bb_dtc, named by `faults` (a node's, by DTC)."""
     bits = {name: bool(d.status & mask) for mask, name in _status_bits() if d.availability & mask}
-    return Dtc(d.code, _lib.string(_lib.lib().bb_dtc_name, d.code), d.status, d.availability, bits)
+    return Dtc(d.code, _lib.string(_lib.lib().bb_dtc_name, d.code), d.status, d.availability, bits,
+               faults.get(d.code))
 
 
 def _dtc_code(dtc: int | str) -> int:
@@ -235,6 +239,7 @@ class UdsClient:
         self.tester = self.ecu = None  # a DoIP channel's logical addresses
         self._h = None
         self._closed = False
+        self._faults: dict[int, str] = {}  # the fault names a node's description gives its DTCs
         self._did_sizes: dict[int, int] = {}  # what did_size / ext_record_size stated, for a reopen
         self._ext_sizes: dict[int, int] = {}
         self._lock = threading.RLock()  # re-entered: security_access holds it across two calls
@@ -478,7 +483,7 @@ class UdsClient:
             for i in range(n):
                 d = _lib.BbDtc()
                 _lib.check(lib.bb_uds_dtc(h, i, ctypes.byref(d)))
-                out.append(_dtc(d))
+                out.append(_dtc(d, self._faults))
             return out
 
     def _checked(self, h: int, rc: int) -> int:
@@ -507,7 +512,8 @@ class UdsClient:
             out, code, record = [], ctypes.c_uint32(), ctypes.c_uint8()
             for i in range(n):
                 _lib.check(lib.bb_uds_snapshot_id(h, i, ctypes.byref(code), ctypes.byref(record)))
-                out.append(SnapshotId(code.value, _lib.string(lib.bb_dtc_name, code.value), record.value))
+                out.append(SnapshotId(code.value, _lib.string(lib.bb_dtc_name, code.value), record.value,
+                                      self._faults.get(code.value)))
             return out
 
     def snapshot(self, dtc: int | str, record: int = 0xFF) -> Snapshot:
@@ -528,7 +534,7 @@ class UdsClient:
                     value = _lib.bytes_of(lib.bb_uds_snapshot_did, h, r, k, ctypes.byref(did))
                     dids.setdefault(did.value, value)
                 records.append(SnapshotRecord(number.value, dids))
-            return Snapshot(_dtc(d), records)
+            return Snapshot(_dtc(d, self._faults), records)
 
     def extended(self, dtc: int | str, record: int = 0xFF) -> Extended:
         """0x19 06: DTC `dtc`'s extended data record `record` (0xFF: every one), sized as
@@ -544,7 +550,7 @@ class UdsClient:
                 value = _lib.bytes_of(lib.bb_uds_extended_record, h, k, ctypes.byref(number))
                 records.setdefault(number.value, value)  # a record listed twice keeps its first
             has = c.has
-            return Extended(_dtc(d), records, c.occurrences if has & 1 else None, c.aging if has & 2 else None,
+            return Extended(_dtc(d, self._faults), records, c.occurrences if has & 1 else None, c.aging if has & 2 else None,
                             c.failed_cycles if has & 4 else None)
 
     def did_size(self, did: int, size: int) -> None:

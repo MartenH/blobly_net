@@ -9,7 +9,7 @@ import sys
 import warnings
 import weakref
 from collections.abc import Callable, Iterator, Sequence
-from typing import Generic, Literal, Protocol, Self, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, Self, TypeVar
 
 from . import _lib
 from ._lib import BloblyError, ByteData, Timeout
@@ -19,6 +19,9 @@ from .uds import FunctionalReply, UdsClient, _close_orphans, functional
 from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import Generators, listed as _listed_generators
+
+if TYPE_CHECKING:
+    from .nodes import Nodes
 
 
 class Frame:
@@ -756,6 +759,7 @@ class Project(EventLoop[Channel | str], Faults):
         self._gen = None  # which load of the library is this project's
         self._rr = 0
         self._gens, self._gens_run = None, None  # the generators, as the run of _gens_run lists them
+        self._nodes, self._nodes_run = None, None  # the system model's nodes, as the run of _nodes_run has them
 
     def load(self) -> Self:
         """Reads the project into the library, which holds one load at a time: another project's
@@ -870,6 +874,31 @@ class Project(EventLoop[Channel | str], Faults):
                 self._gens = _listed_generators(self, list(self._gens) if self._gens is not None else None)
                 self._gens_run = _lib.state["run"]
             return self._gens
+
+    @property
+    def system(self) -> str | None:
+        """The system.toml the run read — beside the project, beside one of its databases, or in
+        its folder's parent — and its nodes' ecu.toml with it; None when none describes the project.
+        BloblyError (code -3) when the project is not started."""
+        with _lib.state_lock:
+            if not self.started:
+                raise BloblyError("the project is not started: its system model is the run's", _lib.BB_ERR_STATE)
+            return _lib.string(_lib.lib().bb_system_path) or None
+
+    @property
+    def nodes(self) -> "Nodes":
+        """The nodes of the run's system model (blobly.Nodes): `net.nodes.zone_a.uds()` is a
+        NodeClient on zone_a, its DIDs `net.nodes.zone_a.dids`. Empty when no system.toml
+        describes the project (system is None). BloblyError (code -3) when the project is not
+        started."""
+        with _lib.state_lock:
+            if not self.started:
+                raise BloblyError("the project is not started: its system model is the run's", _lib.BB_ERR_STATE)
+            if self._nodes_run != _lib.state["run"]:
+                from .nodes import listed  # nodes.py builds on this module's Named
+                self._nodes = listed(self, list(self._nodes) if self._nodes is not None else None)
+                self._nodes_run = _lib.state["run"]
+            return self._nodes
 
     # the event loop's hooks, over libblobly
     def _resolve(self, channel):

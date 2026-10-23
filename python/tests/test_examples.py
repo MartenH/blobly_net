@@ -24,6 +24,7 @@ SCRIPTS = {
     "doip_diag.py": [],
     "fault_injection.py": [],
     "flash_ecu.py": [],
+    "described_node.py": [],
     "someip_node.py": None,  # against a node: SomeipNode's
 }
 

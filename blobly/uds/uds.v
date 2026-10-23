@@ -80,6 +80,9 @@ pub mut:
 	// `raw_suppressed` (every helper goes through them) once it has ended, answered or not: the
 	// bytes both ways and its timing — what an exchange log is made of (exchlog.v).
 	on_exchange fn (Exchange) = unsafe { nil }
+	// the session and security state this client's own exchanges have established (connstate.v),
+	// observed on every request it puts through, whatever made it
+	state ConnState
 }
 
 // abandoned_note is the error a request ends with when `stop_requested` answered true.
@@ -335,42 +338,46 @@ pub fn (mut c Client) raw_suppressed(req []u8) !bool {
 }
 
 // exchange is one request and its answer (empty: none, which only a suppressed request accepts —
-// a quiet P2 is its success), and whether the server said responsePending on the way. Reported to
-// `on_exchange` once it has ended.
+// a quiet P2 is its success), and whether the server said responsePending on the way. Observed into
+// `state` and reported to `on_exchange` once it has ended.
 fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 	c.last = ExchangeTiming{} // a request refused before exchange_once times it was not sent
 	resp, owed := c.exchange_once(req, suppressed) or {
-		if c.on_exchange != unsafe { nil } {
-			mut x := Exchange{
-				req:    req.clone()
-				err:    err.msg()
-				timing: c.last
-			}
-			if err is NegativeResponse {
-				x = Exchange{
-					...x
-					resp:     [negative_response_sid, err.sid, err.nrc]
-					negative: true
-				}
-			} else if err is UndecodableAnswer {
-				x = Exchange{
-					...x
-					resp:      err.resp.clone()
-					malformed: true
-				}
-			}
-			c.on_exchange(x)
+		mut x := Exchange{
+			req:    req.clone()
+			err:    err.msg()
+			timing: c.last
 		}
+		if err is NegativeResponse {
+			x = Exchange{
+				...x
+				resp:     [negative_response_sid, err.sid, err.nrc]
+				negative: true
+			}
+		} else if err is UndecodableAnswer {
+			x = Exchange{
+				...x
+				resp:      err.resp.clone()
+				malformed: true
+			}
+		}
+		c.ended(x)
 		return err
 	}
-	if c.on_exchange != unsafe { nil } {
-		c.on_exchange(Exchange{
-			req:    req.clone()
-			resp:   resp.clone()
-			timing: c.last
-		})
-	}
+	c.ended(Exchange{
+		req:    req.clone()
+		resp:   resp.clone()
+		timing: c.last
+	})
 	return resp, owed
+}
+
+// ended is what an exchange establishes (state) and who is told of it (on_exchange).
+fn (mut c Client) ended(x Exchange) {
+	c.state.observe(x)
+	if c.on_exchange != unsafe { nil } {
+		c.on_exchange(x)
+	}
 }
 
 // request_refusal is why `req` is no request to send (suppressed: with suppress-positive-response

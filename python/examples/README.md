@@ -3,7 +3,9 @@
 Complete scripts for the `blobly` package, each runnable as it is. They default to the
 repository's [`projects/sim-demo.blobnet`](../../projects/sim-demo.blobnet), whose simulated ECUs
 run inside the script's own process, so no hardware and no drivers are needed. A project path on
-the command line overrides it. `someip_node.py` needs no project: it talks to a SOME/IP node.
+the command line overrides it. `described_node.py` defaults to
+[`projects/described-ecu-demo`](../../projects/described-ecu-demo), a simulated ECU its system
+model describes, and `someip_node.py` needs no project: it talks to a SOME/IP node.
 
 | example | what it shows |
 |---|---|
@@ -14,6 +16,7 @@ the command line overrides it. `someip_node.py` needs no project: it talks to a 
 | [bus_metrics.py](bus_metrics.py) | A channel's bus load and its dropped / error / undecodable counts, once a second for N seconds. |
 | [uds_diag.py](uds_diag.py) | UDS over CAN: the default session, the VIN (a multi-frame answer) and other DIDs with the exchange's timing, a negative response caught with its NRC, a security unlock with the reference key, and the DTCs with their status bits, a snapshot and extended data. |
 | [doip_diag.py](doip_diag.py) | UDS over DoIP: the entity's announcements heard, the entity asked who it is, then over its connection the default session, the VIN it serves beside the one it announced, the DTCs, and a request to the functional address 0xE400. |
+| [described_node.py](described_node.py) | A node of the system model by its name (`projects/described-ecu-demo`'s zone_a): its DIDs listed with their layout and gates, read by name and decoded, a gated parameter refused with what it needs (`WriteGated`), then written once the session and level are established, and the DTCs named by the node's faults. |
 | [fault_injection.py](fault_injection.py) | Faults on sim-demo's simulated ECUs, seen on the bus: Powertrain dropped for a second and back by itself, BrakePedal forced past its declared range until cleared, and `bad_crc` refused where nothing is protected. |
 | [flash_ecu.py](flash_ecu.py) | Flashing a blobly_emb bootloader with a progress bar and the session's report, against a simulated bootloader on CAN1 that verifies the 0x29 proof and the image's CRC; `--board` for a real one. |
 | [someip_node.py](someip_node.py) | SOME/IP against a node with a static peer endpoint (blobly_emb's `host_someip` by default): a method called and answered, a request sent with everything heard after it, and the node's events. CI runs it against a stand-in node on loopback. |

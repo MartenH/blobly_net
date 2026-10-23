@@ -77,6 +77,11 @@ static uds_open_fn bb_flash_open_p;
 static flash_program_fn bb_flash_program_p;
 static boot_sim_fn bb_boot_sim_p;
 static boot_stop_fn bb_boot_sim_stop_p;
+typedef int (*node_info_fn)(int, bb_node *);
+typedef int (*str_out_fn)(char *, int);
+static int_fn bb_node_count_p;
+static node_info_fn bb_node_info_p;
+static str_out_fn bb_system_path_p;
 typedef int (*gen_find_fn)(const char *);
 typedef int (*gen_info_fn)(int, bb_generator *);
 typedef int (*gen_text_fn)(int, int, char *, int);
@@ -315,6 +320,18 @@ static int fault_steps(int row, int doip) {
 
 /* sim-demo's generators: a manual one fired with a value set, its cycle started and stopped, a
  * cyclic one's cycle changed, and the refusals typed */
+/* the system model: sim-demo has no system.toml, so a started run names no nodes; a stopped one
+ * none at all */
+static int node_steps(void) {
+	char path[64];
+	if (bb_system_path_p(path, sizeof path) != 0 || path[0] != 0) { fprintf(stderr, "FAIL sim-demo has no system.toml: %s\n", bb_last_error_p()); return 1; }
+	if (bb_node_count_p() != 0) { fprintf(stderr, "FAIL nodes without a system.toml\n"); return 1; }
+	bb_node node;
+	if (bb_node_info_p(0, &node) != BB_ERR) { fprintf(stderr, "FAIL a node past the end\n"); return 1; }
+	printf("ok   no system.toml: no nodes\n");
+	return 0;
+}
+
 static int gen_steps(void) {
 	CHECK(bb_gen_count_p() == 4, "sim-demo writes four generators");
 	int hb = bb_gen_find_p("CAN1/Heartbeat pulse");
@@ -417,6 +434,7 @@ int main(int argc, char **argv) {
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
+	SYM(bb_node_count); SYM(bb_node_info); SYM(bb_system_path);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -462,6 +480,7 @@ int main(int argc, char **argv) {
 	/* a UDS connection opens on the run's rows: before start no listen-only mark is published */
 	if (bb_uds_open_p(can1, NULL, NULL, NULL) != BB_ERR_STATE) { fprintf(stderr, "FAIL a UDS open before start must refuse\n"); return 1; }
 	if (bb_sim_fault_p(can1, "SUT", "Powertrain", "drop", 0, NULL) != BB_ERR_STATE) { fprintf(stderr, "FAIL a fault before start must refuse\n"); return 1; }
+	if (bb_node_count_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL the system model is the run's: none before start\n"); return 1; }
 	if (bb_start_p() != 0) FAIL("start");
 	if (bb_start_p() != BB_ERR_STATE) { fprintf(stderr, "FAIL a second start must refuse\n"); return 1; }
 
@@ -472,6 +491,7 @@ int main(int argc, char **argv) {
 	if (fault_steps(can1, doip)) return 1;
 	if (flash_steps(can1)) return 1;
 	if (gen_steps()) return 1;
+	if (node_steps()) return 1;
 	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32

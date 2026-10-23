@@ -17,7 +17,7 @@ fn param_did() DidDesc {
 
 fn test_a_parameter_encodes_and_decodes_by_its_layout() {
 	x := param_did()
-	assert x.parts() == [Part{'deg', 'u16 0..360'}]
+	assert x.parts() == [Part{'deg', .integer, 'u16 0..360'}]
 	assert x.texts([u8(0x01), 0x68])! == ['360']
 	assert x.encode(['300'])! == [u8(0x01), 0x2C]
 	assert x.encode(['0x64'])! == [u8(0x00), 0x64]
@@ -168,7 +168,7 @@ fn test_text_and_bytes() {
 		kind: .ascii
 		size: 6
 	}
-	assert vin.parts() == [Part{'text', 'up to 6 characters'}]
+	assert vin.parts() == [Part{'text', .text, 'up to 6 characters'}]
 	assert vin.texts('ABC123'.bytes())! == ['ABC123']
 	assert vin.encode(['ABC123'])! == 'ABC123'.bytes()
 	// shorter: NUL-padded to the size, and a padded text reads back without its NULs

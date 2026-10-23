@@ -114,15 +114,9 @@ pub:
 pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 	mut out := []NodeTarget{}
 	for i, n in sys.nodes {
-		if n.ecu_err == '' && !n.desc.server {
-			continue
-		}
-		req, rsp := n.can_ids()
-		if req == 0 && rsp == 0 {
-			continue
-		}
-		buses := if b := sys.diag_bus(n) { [b] } else { sys.can_buses(n) }
-		for b in buses {
+		srv := sys.can_server(n) or { continue }
+		req, rsp := srv.req, srv.rsp
+		for b in srv.buses {
 			on := chans.filter(it.name == b)
 			for c in on {
 				out << NodeTarget{
@@ -138,6 +132,32 @@ pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 		}
 	}
 	return out
+}
+
+// can_server is where `n`'s diagnostic server is reached over CAN: its request and response ids
+// (`can_ids`) and the buses it serves on (`diag_bus`; every CAN bus it sits on where that cannot be
+// told). none for a node with no CAN ids, or whose ecu.toml declares no server (the tester's own
+// declaration) — one whose ecu.toml could not be read keeps its system.toml ids.
+fn (sys &System) can_server(n &SysNode) ?CanServer {
+	if n.ecu_err == '' && !n.desc.server {
+		return none
+	}
+	req, rsp := n.can_ids()
+	if req == 0 && rsp == 0 {
+		return none
+	}
+	return CanServer{
+		req:   req
+		rsp:   rsp
+		buses: if b := sys.diag_bus(n) { [b] } else { sys.can_buses(n) }
+	}
+}
+
+// CanServer is a node's diagnostic server over CAN: its ids and the buses it serves on.
+struct CanServer {
+	req   u32
+	rsp   u32
+	buses []string
 }
 
 // can_buses is the buses `n` sits on that are not declared as another kind (a someip segment), in

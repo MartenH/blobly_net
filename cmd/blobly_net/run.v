@@ -1334,11 +1334,7 @@ fn (app &App) can_sims() []project.NodeCfg {
 // one the Diagnostics panel reads (the System panel's when one is loaded there, else the one
 // sysview.find_system finds for the project); an empty model, which describes nothing, without one.
 fn (mut app App) described_system() sysview.System {
-	path := if app.sys_loaded {
-		app.sys.path
-	} else {
-		sysview.find_system(app.proj_path, app.proj_db_refs()) or { '' }
-	}
+	path := app.described_path()
 	if path == '' {
 		app.adopt_diag_sys(sysview.System{}, false, 'none')
 		return sysview.System{}
@@ -1353,6 +1349,15 @@ fn (mut app App) described_system() sysview.System {
 	}
 	app.adopt_diag_sys(sy, true, sy.identity())
 	return sy
+}
+
+// described_path is the system.toml described_system reads: the System panel's when one is loaded
+// there, else the one sysview.find_system finds for the project; '' for none. GUI thread.
+fn (app &App) described_path() string {
+	if app.sys_loaded {
+		return app.sys.path
+	}
+	return sysview.find_system(app.proj_path, app.proj_db_refs()) or { '' }
 }
 
 // adopt_diag_sys hands the Diagnostics panel the model this run reads (or its absence), so the
