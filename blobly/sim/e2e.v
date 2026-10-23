@@ -245,7 +245,9 @@ fn (e E2e) checksum(msg candb.Message, sig candb.Signal, data []u8) u8 {
 	if e.profile == p01 {
 		return e.p01_crc(msg, sig, data)
 	}
-	mut input := data.clone()
+	// the message's payload, never padding past it: an FD length rounded up is the wire's
+	n := if data.len < msg.payload_len() { data.len } else { msg.payload_len() }
+	mut input := data[..n].clone()
 	sig.set_raw(mut input, 0) // a checksum cannot cover itself: computed with its field zeroed
 	if id := e.data_id {
 		// ALL FOUR bytes, little-endian. Appending only the low byte made 0x012A and 0x022A

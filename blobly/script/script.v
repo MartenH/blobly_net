@@ -39,6 +39,8 @@ pub:
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
 	nodes []project.NodeCfg
+	// the row's verify: entries: what a received frame's E2E is judged by first (e2e.v)
+	verify []project.ProtectCfg
 	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
 	// channel whatever its type, so a DoIP channel failed with "No such device" from the CAN
 	// layer: the tool could simulate a DoIP ECU it could not then test.
@@ -118,6 +120,10 @@ mut:
 	running []Running
 	// sys_mono_now when the run ends (set_deadline); 0 is none
 	deadline u64
+	// per channel: the E2E verdicts on what its handle reads, and the declared E2E counters of
+	// what the script sends by name (e2e.v)
+	e2e_rx map[string]&sim.E2eReader
+	e2e_tx map[string]&sim.E2eStamper
 	// the coroutine (its lua_State) the deadline was first raised in; 0 before
 	timeout_co u64
 pub mut:
@@ -342,6 +348,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__bus_health', l_bus_health)
 	env.register_metrics()
 	env.register_gens()
+	env.register_e2e()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -1293,7 +1300,8 @@ fn l_bus_recv(l lua.State) i32 {
 	l.push_bool(frame.extended)
 	l.push_bytes(frame.data)
 	push_received(l, frame)
-	return 8
+	push_e2e(l, env.e2e_verdict(name, frame))
+	return 9
 }
 
 fn l_msg_template(l lua.State) i32 {

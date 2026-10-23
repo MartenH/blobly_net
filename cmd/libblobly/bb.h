@@ -55,9 +55,11 @@ extern "C" {
  * truncated. `t_ns` is when a received frame arrived, on the host's monotonic clock (bb_now_ns), in
  * nanoseconds: the frame's own receive stamp where the backend reads one (SocketCAN's kernel stamp;
  * a foreign device clock mapped onto the host's) — the time the GUI's trace gives that frame —
- * else its receipt, when this call read it. Ignored on a send; 0 from bb_encode. The layout may grow between versions until
- * the ABI has a stability policy (#507 Phase 3): a host is built against the bb.h of the library
- * it loads, as the Python package ships with its own. */
+ * else its receipt, when this call read it. Ignored on a send; 0 from bb_encode. `e2e` is a
+ * received frame's E2E verdict, an enum bb_e2e: BB_E2E_NONE (0) unless the handle that read it was
+ * bound to a row by bb_e2e_attach and the frame's message has E2E there; ignored on a send. The
+ * layout may grow between versions until the ABI has a stability policy (#507 Phase 3): a host is
+ * built against the bb.h of the library it loads, as the Python package ships with its own. */
 typedef struct bb_frame {
 	uint32_t id;
 	uint8_t  len;
@@ -67,8 +69,21 @@ typedef struct bb_frame {
 	uint8_t  rtr;
 	uint8_t  esi;
 	uint8_t  data[64];
+	uint8_t  e2e;
 	int64_t  t_ns;
 } bb_frame;
+
+/* A received frame's E2E verdict (bb_frame.e2e, "E2E on a row's frames" below). */
+enum bb_e2e {
+	BB_E2E_NONE = 0,       /* not judged: no E2E for its message on the row, or a remote frame */
+	BB_E2E_OK = 1,
+	BB_E2E_BAD_CRC = 2,    /* the CRC does not match the frame's bytes */
+	BB_E2E_REPEATED = 3,   /* the counter repeated the previous frame's: no new data */
+	BB_E2E_SKIPPED = 4,    /* the counter jumped (frames lost, or the sender restarted), or holds a
+	                          value the profile never sends (Profile 1's 15) */
+	BB_E2E_TRUNCATED = 5,  /* shorter than its message: its E2E fields are not all there */
+	BB_E2E_TIMEOUT = 6     /* later than its message's E2ETimeout after the last valid frame */
+};
 
 /* The controller's fault ladder (transport.BusHealth), as bb_bus_health returns it. */
 enum bb_health {
@@ -367,6 +382,9 @@ typedef struct bb_wave {
                                      routine's result, a malformed download answer), or it was
                                      cancelled; a step the bootloader refused or did not answer is
                                      that step's UDS failure (BB_ERR_NEGATIVE, BB_ERR_TIMEOUT ...) */
+#define BB_ERR_E2E          (-12) /* returned by no call: the code a host gives a received frame
+                                     that failed its E2E check (bb_frame.e2e) where it required it to
+                                     pass, so every host's codes are one list */
 
 /* Answers that are neither success nor an error. */
 #define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
@@ -670,6 +688,33 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
                        int counter, const char *mode);           /* in place: `counter` (0..14)
                                                                     into counter_pos's low nibble,
                                                                     then the CRC at crc_pos */
+/* E2E on a row's frames (cmd/libblobly/e2e.v), the rules the Lua prelude's frame.e2e and
+ * bus.send_message follow (blobly/sim e2e_script.v). From bb_start until bb_stop (BB_ERR_STATE
+ * otherwise).
+ *
+ * bb_e2e_attach binds handle h to row `row` of the run: each frame bb_bus_recv reads on it from then
+ * on carries its verdict in bb_frame.e2e, by its message's E2E on the row — the row's verify: entry
+ * for it, else what its database declares (E2ECounterSignal, E2ECrcSignal, E2EProfile, E2EDataId);
+ * a simulated node's protect: entry is its own word as a sender, not a receiver's contract. The
+ * CRC; the counter against the frame of that id the handle read before it (so one it missed makes
+ * the next a skip); and the time since the last valid frame (its CRC right, its counter new: not a
+ * repeat, nor Profile 1's 15) against the message's E2ETimeout, measured between the frames' own
+ * receive stamps in one clock domain (SocketCAN's kernel stamp, the CAN bridge's clock), never
+ * their placement on the host's clock — a frame with no stamp (a software bus, an adapter that
+ * reads none) is never late, and a valid one ends the gap being measured. Answers how many of the
+ * row's messages are judged; 0 binds nothing. On the thread that uses the handle; the binding is
+ * the run's, and a handle kept past bb_stop reads BB_E2E_NONE until it is attached again.
+ *
+ * bb_e2e_stamp writes message m's DECLARED E2E (its database's, as a simulated sender stamps it)
+ * into f, m's frame from bb_encode: the counter the next of the run's sends of m by name on the row,
+ * from 0, then the CRC over f's bytes; BB_NONE, f unchanged, where m declares none. A declaration
+ * that cannot be applied (an unknown profile, a CRC signal that is not one byte ...) is refused with
+ * BB_ERR rather than left unstamped, and so is a frame shorter than m's payload. A send that fails
+ * after its stamp has still used its counter, as AUTOSAR's protect counts each frame it protects.
+ * Any thread. */
+int bb_e2e_attach(int h, int row);               /* >= 0: how many messages are judged */
+int bb_e2e_stamp(int row, int m, bb_frame *f);
+
 /* SOME/IP, as the Lua someip.send, someip.call and someip.listen (blobly/someip). None needs a
  * started project but listening on a row's endpoint; each blocks for its window or wait, touches
  * no state, and may come from any (attached) thread. A destination is an IPv4 "host:port"; the

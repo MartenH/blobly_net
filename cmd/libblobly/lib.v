@@ -83,6 +83,7 @@ pub mut:
 	rtr  u8
 	esi  u8
 	data [64]u8
+	e2e  u8
 	t_ns i64
 }
 
@@ -274,6 +275,8 @@ mut:
 	closing i64 // bb_bus_close has begun: a receive in progress ends at its next slice
 	// asks `closing`, for transport.recv_sliced: built once at open, not per receive
 	stop fn () bool = unsafe { nil }
+	// the row bb_e2e_attach bound its frames' E2E verdicts to (e2e.v)
+	judge E2eJudge
 }
 
 __global (
@@ -675,6 +678,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 			out.data[i] = if i < fr.data.len { fr.data[i] } else { u8(0) }
 		}
 		out.t_ns = transport.received_now(fr)
+		out.e2e = hd.e2e_verdict(fr)
 	}
 	return ok()
 }
@@ -917,6 +921,7 @@ pub fn bb_encode(row i32, m i32, n i32, signals &&char, values &f64, out &C.bb_f
 		for i in 0 .. 64 {
 			out.data[i] = if i < data.len { data[i] } else { u8(0) }
 		}
+		out.e2e = 0
 		out.t_ns = 0
 	}
 	return ok()

@@ -14,7 +14,8 @@ import threading
 class Frame(ctypes.Structure):
     _fields_ = [("id", ctypes.c_uint32), ("len", ctypes.c_uint8), ("ext", ctypes.c_uint8),
                 ("fd", ctypes.c_uint8), ("brs", ctypes.c_uint8), ("rtr", ctypes.c_uint8),
-                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("t_ns", ctypes.c_int64)]
+                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("e2e", ctypes.c_uint8),
+                ("t_ns", ctypes.c_int64)]
 
 
 class Busload(ctypes.Structure):
@@ -86,6 +87,8 @@ def bind(lib):
     lib.bb_doip_discover.argtypes = [buf, i, i, ctypes.POINTER(DoipAnnouncement)]
     lib.bb_decode.argtypes = [i, ctypes.POINTER(Frame), ctypes.POINTER(ctypes.c_int),
                               ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint8), i]
+    lib.bb_e2e_attach.argtypes = [i, i]
+    lib.bb_e2e_stamp.argtypes = [i, i, ctypes.POINTER(Frame)]
 
 
 def err(lib):
@@ -154,6 +157,7 @@ def dbc_steps(lib, row):
     vals = (ctypes.c_double * 2)(1500, 3)
     assert lib.bb_encode(row, pt, 2, keys, vals, ctypes.byref(f)) == 0, err(lib)
     assert (f.id, f.len) == (0x100, 8) and bytes(f.data[:8]) == bytes([0x70, 0x17, 0, 0, 0, 0x18, 0, 0])
+    assert lib.bb_e2e_stamp(row, pt, ctypes.byref(f)) == BB_NONE, "sim-demo declares no E2E to stamp"
     m = ctypes.c_int(-1)
     got = (ctypes.c_double * 16)()
     on = (ctypes.c_uint8 * 16)()
@@ -161,9 +165,10 @@ def dbc_steps(lib, row):
     assert m.value == pt and got[s] == 1500 and got[g] == 3 and on[s] and on[g]
     assert lib.bb_decode(row, ctypes.byref(Frame(id=0x7FF, len=1)), ctypes.byref(m), got, on, 16) == BB_NONE
     h = lib.bb_bus_open(b"inproc:CAN1")
+    assert lib.bb_e2e_attach(h, row) == 0, "sim-demo's CAN1 has no message with E2E to judge"
     decoded = False
     for _ in range(20):
-        assert lib.bb_bus_recv(h, 1000, ctypes.byref(f)) == 0, err(lib)
+        assert lib.bb_bus_recv(h, 1000, ctypes.byref(f)) == 0 and f.e2e == 0, err(lib)
         if lib.bb_decode(row, ctypes.byref(f), ctypes.byref(m), got, on, 16) == 0:
             decoded = True
             break

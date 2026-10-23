@@ -119,7 +119,9 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   returns after its duration. Never call `recv(None)`: on a quiet bus it waits for ever, and
   nobody presses Ctrl-C for an agent. A wait for one frame is `ch.expect(id, timeout_ms)`, and for one signal
   value `ch.expect_signal(message, signal, want, timeout_ms)`: one deadline for the whole wait,
-  and `blobly.Timeout` when nothing matched, its message saying what came instead.
+  and `blobly.Timeout` when nothing matched, its message saying what came instead. Add `e2e=True`
+  to either and a frame of the message that fails its E2E check raises `blobly.E2eError` (code
+  -12, `.status` the verdict); every received frame carries that verdict as `f.e2e`.
 - **A frame read is consumed.** `recv` and `expect` drop what else they read on the way.
 - **One run per process.** A second `start()` raises `BloblyError` with code -3. Use one
   `Project` per process, or stop the first one.
@@ -194,6 +196,7 @@ Complete scripts, each bounded and with a clear exit status, in
 | [uds_diag.py](../python/examples/uds_diag.py) | UDS over CAN: a session, DID reads, a negative response caught, a security unlock, DTCs with a snapshot. |
 | [doip_diag.py](../python/examples/doip_diag.py) | UDS over DoIP: announcements heard, the entity discovered, a session, the VIN, DTCs, a functional request. |
 | [fault_injection.py](../python/examples/fault_injection.py) | Faults on simulated ECUs seen on the bus: a timed drop, a signal out of range, a refusal. |
+| [e2e_check.py](../python/examples/e2e_check.py) | E2E Profile 1 as a DBC declares it: each received frame's verdict, a broken sender caught by `expect(..., e2e=True)`, a send by name stamped. |
 | [flash_ecu.py](../python/examples/flash_ecu.py) | Flashing a blobly_emb bootloader with progress and a report, against a simulated one (`--board` for a real one). |
 | [someip_node.py](../python/examples/someip_node.py) | SOME/IP against a static-peer node: a method called, a request with what was heard after it, the node's events. |
 | [test_sim_demo.py](../python/examples/test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel, `expect`, `expect_signal`, `diag` over CAN and DoIP. |
@@ -202,7 +205,7 @@ Complete scripts, each bounded and with a clear exit status, in
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, the E2E Profile 1 helpers; UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests); DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#18-what-is-not-there-yet)). |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 helpers); UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests); DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#18-what-is-not-there-yet)). |
 | Tests under pytest, and anything that needs the Python ecosystem. | A script in the GUI's Script panel, against a live measurement. |
 | An agent's own process: no V toolchain, a `pip install`. | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 
