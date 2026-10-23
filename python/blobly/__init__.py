@@ -75,6 +75,9 @@ __all__ += ["ConnectionLost", "DoipAnnouncement", "RoutingDenied", "doip_listen"
 # SOME/IP (someip.py) and flashing (flash.py)
 __all__ += ["SomeipHeard", "SomeipMessage", "someip"]
 __all__ += ["BootReport", "BootSim", "FlashFailed", "FlashReport", "flash"]
+# replay and recording (replay.py)
+from .replay import RecordCounts, Recording, Replay, ReplayStatus  # noqa: E402
+__all__ += ["RecordCounts", "Recording", "Replay", "ReplayStatus"]
 # the CAN bridge into WSL (bridge.py)
 from . import bridge  # noqa: E402
 __all__ += ["bridge"]
@@ -87,3 +90,6 @@ __all__ += ["Generator", "GeneratorRefused", "Generators"]
 # raw ISO-TP (isotp.py; Channel.isotp)
 from .isotp import IsoTp  # noqa: E402
 __all__ += ["IsoTp"]
+# E2E verdicts on received frames (e2e.py; Frame.e2e, expect(..., e2e=True))
+from .e2e import E2eError, E2eStatus  # noqa: E402
+__all__ += ["E2eError", "E2eStatus"]

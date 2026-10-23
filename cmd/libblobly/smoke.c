@@ -11,6 +11,7 @@
  *
  * Exit 0 only when every step held; each failure names the step and bb_last_error. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "bb.h"
 
@@ -22,6 +23,7 @@ static void *lib_sym(lib_t l, const char *n) { return (void *)GetProcAddress(l, 
 #else
 #include <dlfcn.h>
 #include <pthread.h>
+#include <unistd.h>
 typedef void *lib_t;
 static lib_t lib_open(const char *p) { return dlopen(p, RTLD_NOW); }
 static void *lib_sym(lib_t l, const char *n) { return dlsym(l, n); }
@@ -68,6 +70,10 @@ static fault_fn bb_sim_fault_p;
 static int_fn bb_sim_clear_faults_p;
 static p01_crc_fn bb_e2e_p01_crc_p;
 static p01_protect_fn bb_e2e_p01_protect_p;
+typedef int (*e2e_attach_fn)(int, int);
+typedef int (*e2e_stamp_fn)(int, int, bb_frame *);
+static e2e_attach_fn bb_e2e_attach_p;
+static e2e_stamp_fn bb_e2e_stamp_p;
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
 typedef int (*flash_defaults_fn)(bb_flash_opts *);
 typedef int (*flash_program_fn)(int, const uint8_t *, int, const bb_flash_opts *, bb_flash_report *);
@@ -94,6 +100,18 @@ static int (*bb_gen_fire_p)(int, int64_t, int64_t);
 static int (*bb_gen_stop_p)(int);
 static int (*bb_gen_count_p)(void);
 static int (*bb_gen_run_p)(int64_t *);
+typedef int (*replay_defaults_fn)(bb_replay_opts *);
+typedef int (*replay_start_fn)(const int *, int, const bb_replay_opts *);
+typedef int (*replay_info_fn)(int, bb_replay_info *);
+typedef int (*record_start_fn)(const int *, int, const char *);
+typedef int (*record_report_fn)(int, bb_record_report *);
+typedef int (*int2_fn)(int, int);
+static replay_defaults_fn bb_replay_defaults_p;
+static replay_start_fn bb_replay_start_p;
+static replay_info_fn bb_replay_status_p, bb_replay_stop_p;
+static int2_fn bb_replay_wait_p;
+static record_start_fn bb_record_start_p;
+static record_report_fn bb_record_stop_p;
 static int_int_fn bb_message_count_p;
 static msg_info_fn bb_message_info_p;
 static msg_str_fn bb_message_name_p;
@@ -219,6 +237,11 @@ static int dbc_steps(int row) {
 	const char *bad[] = {"Nope"};
 	CHECK(bb_encode_p(row, pt, 1, bad, values, &f) == BB_ERR && strstr(bb_last_error_p(), "unknown signal \"Nope\" in Powertrain"),
 		"an unknown signal must refuse by name");
+	/* sim-demo declares no E2E: a stamp leaves the frame as encoded, and a short one is refused */
+	bb_encode_p(row, pt, 2, names, values, &f);
+	CHECK(bb_e2e_stamp_p(row, pt, &f) == BB_NONE && memcmp(f.data, want, 8) == 0, "Powertrain declares no E2E to stamp");
+	f.len = 4;
+	CHECK(bb_e2e_stamp_p(row, pt, &f) == BB_ERR && strstr(bb_last_error_p(), "shorter than Powertrain"), "a short frame must refuse");
 
 	/* decode it back: the message, each signal's physical value, every one carried */
 	bb_encode_p(row, pt, 2, names, values, &f);
@@ -237,9 +260,10 @@ static int dbc_steps(int row) {
 	/* what the simulated SUT sends decodes too */
 	int h = bb_bus_open_p("inproc:CAN1");
 	CHECK(h >= 0, "open for decode");
+	CHECK(bb_e2e_attach_p(h, row) == 0, "sim-demo's CAN1 has no message with E2E to judge");
 	int decoded = 0;
 	for (int i = 0; i < 20 && !decoded; i++) {
-		CHECK(bb_bus_recv_p(h, 1000, &f) == 0, "recv for decode");
+		CHECK(bb_bus_recv_p(h, 1000, &f) == 0 && f.e2e == BB_E2E_NONE, "recv for decode");
 		decoded = bb_decode_p(row, &f, &m, got, on, 16) == 0;
 	}
 	bb_bus_close_p(h);
@@ -396,6 +420,43 @@ static int gen_steps(void) {
 	return 0;
 }
 
+/* samples/demo.log replayed onto CAN1 at 50x while CAN1 is recorded: every frame the replay sent
+ * is in the file as ours */
+static int replay_steps(int row, const char *project) {
+	static char source[4096], out[4096];
+	const char *slash = strrchr(project, '/'), *back = strrchr(project, '\\');
+	if (back > slash) slash = back;
+	if (slash) snprintf(source, sizeof source, "%.*s/../samples/demo.log", (int)(slash - project), project);
+	else snprintf(source, sizeof source, "../samples/demo.log");
+	const char *tmp = getenv("TMPDIR") ? getenv("TMPDIR") : getenv("TEMP") ? getenv("TEMP") : ".";
+#ifdef _WIN32
+	long pid = (long)GetCurrentProcessId();
+#else
+	long pid = (long)getpid();
+#endif
+	snprintf(out, sizeof out, "%s/bb_smoke_replay_%ld.log", tmp, pid);
+	int rows[1] = {row};
+	int rec = bb_record_start_p(rows, 1, out);
+	CHECK(rec >= 0, "record start");
+	bb_replay_opts o;
+	CHECK(bb_replay_defaults_p(&o) == 0 && o.loop == -1 && o.source == NULL, "replay defaults");
+	o.source = source;
+	o.speed = 50;
+	o.loop = 0;
+	int r = bb_replay_start_p(rows, 1, &o);
+	CHECK(r >= 0, "replay start");
+	CHECK(bb_replay_wait_p(r, 5000) == 0, "replay runs out");
+	bb_replay_info st;
+	CHECK(bb_replay_stop_p(r, &st) == 0 && st.state == BB_REPLAY_FINISHED && st.sent == 60 && st.ended, "replay status");
+	CHECK(bb_replay_status_p(r, &st) == 0 && st.ended && st.sent == 60, "a stopped replay's handle stays readable");
+	bb_record_report c;
+	CHECK(bb_record_stop_p(rec, &c) == 0 && c.ours >= 60 && c.frames == c.ours + c.theirs, "record report");
+	remove(out);
+	printf("ok   a replay of %lld frames recorded, %lld of %lld lines ours\n", (long long)st.sent, (long long)c.ours,
+	       (long long)c.frames);
+	return 0;
+}
+
 /* a flash of a simulated bootloader on CAN1, its milestones and progress through C callbacks */
 static int notes, progress_calls, last_done;
 static void on_note(void *ctx, const char *line) { (void)ctx; (void)line; notes++; }
@@ -470,12 +531,15 @@ int main(int argc, char **argv) {
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
+	SYM(bb_e2e_attach); SYM(bb_e2e_stamp);
 	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
 	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present);
 	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_check_wait); SYM(bb_uds_retarget);
+	SYM(bb_replay_defaults); SYM(bb_replay_start); SYM(bb_replay_wait); SYM(bb_replay_status); SYM(bb_replay_stop);
+	SYM(bb_record_start); SYM(bb_record_stop);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -532,6 +596,7 @@ int main(int argc, char **argv) {
 	if (fault_steps(can1, doip)) return 1;
 	if (flash_steps(can1)) return 1;
 	if (gen_steps()) return 1;
+	if (replay_steps(can1, argv[2])) return 1;
 	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32

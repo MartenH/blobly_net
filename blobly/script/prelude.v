@@ -60,6 +60,20 @@ function check.between(v, lo, hi, msg)
     error((msg or "out of range") .. ": " .. tostring(v) .. " not in [" .. tostring(lo) .. ".." .. tostring(hi) .. "]", 2)
   end
 end
+-- check.e2e(frame [, msg]): the received frame passed its E2E check (frame.e2e == "ok"); an error
+-- naming the verdict otherwise, and one saying so for a frame whose message has no E2E. Returns
+-- the frame, so check.e2e(expect(channel, id)) reads as one step.
+function check.e2e(f, msg)
+  local what = msg or "check.e2e"
+  if type(f) ~= "table" then error(what .. ": no frame", 2) end
+  if f.e2e == nil then
+    error(string.format("%s: frame 0x%X has no E2E to check (no verify: entry or DBC declaration describes its message)", what, f.id), 2)
+  end
+  if f.e2e ~= "ok" then
+    error(string.format("%s: frame 0x%X failed its E2E check: %s", what, f.id, f.e2e), 2)
+  end
+  return f
+end
 -- check.dtc(diag, name [, want]): the server holds DTC `name` ("U0121-00", or "U0121" for failure
 -- type 00), and each status bit `want` names has the value it gives, e.g.
 -- { confirmedDTC = true, testFailed = false }. Read with 0x19 0A, so every status bit is as the
@@ -616,6 +630,69 @@ function flash.program(target, opts)
   return r
 end
 
+-- ============================ replay and recording ============================
+-- replay.start(channels, opts): a recording played onto one channel, or several on one clock (a
+-- name or a list of names), by blobly/player -- the rest-bus subtraction and the command protocol
+-- the GUI Replay panel uses. What opts leave out the rows replay: blocks say. opts: source (the
+-- recording, .log or .mf4, relative to the script), speed (above 0), loop, paused (start paused at
+-- the beginning), exclude (a list of nodes subtracted by DBC sender, in place of each row own),
+-- bus (the recorded bus, for one channel). Returns a replay: r:pause(), r:resume(), r:seek(s),
+-- r:speed(x), r:loop(on) -- each applied before it returns --, r:status(), r:wait_done(ms) (true
+-- once a non-looping replay ran out or it was stopped; default 10000), r:stop(), and r.notes, what
+-- the plan kept and withheld per channel.
+replay = {}
+local Replay = {}
+Replay.__index = Replay
+function Replay:pause() __replay_ctl(self.handle, "pause") end
+function Replay:resume() __replay_ctl(self.handle, "resume") end
+function Replay:seek(s) __replay_ctl(self.handle, "seek", s) end
+function Replay:speed(x) __replay_ctl(self.handle, "speed", x) end
+function Replay:loop(on) __replay_ctl(self.handle, "loop", on == true) end
+function Replay:status() return __replay_status(self.handle) end
+function Replay:wait_done(ms) return __replay_wait(self.handle, ms or 10000) end
+function Replay:stop() return __replay_stop(self.handle) end
+local function names_of(what, channels)
+  if type(channels) == "string" then return { channels } end
+  if type(channels) ~= "table" or #channels == 0 then
+    error(what .. ": channels must be a channel name or a list of names", 3)
+  end
+  for _, c in ipairs(channels) do
+    if type(c) ~= "string" then error(what .. ": channels must be names", 3) end
+  end
+  return channels
+end
+function replay.start(channels, opts)
+  opts = opts or {}
+  local names = names_of("replay.start", channels)
+  local exclude = nil
+  if opts.exclude ~= nil then
+    if type(opts.exclude) ~= "table" then error("replay.start: exclude must be a list of node names", 2) end
+    for _, n in ipairs(opts.exclude) do
+      if type(n) ~= "string" or n == "" or n:find("\n", 1, true) then
+        error("replay.start: exclude must be node names, each on one line", 2)
+      end
+    end
+    exclude = table.concat(opts.exclude, "\n")
+  end
+  local h = __replay_start(opts.source, opts.speed, opts.loop, opts.paused == true, exclude, opts.bus,
+    table.unpack(names))
+  return setmetatable({ handle = h, notes = __replay_notes(h) }, Replay)
+end
+-- record.start(channels, path): what the channels carry written to a candump .log (relative to the
+-- script), a line per frame, ending T for a frame this process sent (tester, simulated ECU or
+-- replay alike) and R for the rest. Returns a recording: rec:counts() and rec:stop(), each
+-- { frames, ours, theirs, missed, dropped }.
+record = {}
+local Recording = {}
+Recording.__index = Recording
+function Recording:counts() return __record_counts(self.handle) end
+function Recording:stop() return __record_stop(self.handle) end
+function record.start(channels, path)
+  if type(path) ~= "string" or path == "" then error("record.start: path must be a file name", 2) end
+  return setmetatable({ handle = __record_start(path, table.unpack(names_of("record.start", channels))) },
+    Recording)
+end
+
 -- ============================ raw bus + signals ============================
 bus = {}
 function bus.send(channel, id, data, opts)
@@ -640,21 +717,27 @@ function bus.diagnostics(channel)
   local dropped, bus_errors, decode_errors = __bus_diagnostics(channel)
   return { dropped = dropped, bus_errors = bus_errors, decode_errors = decode_errors }
 end
--- a received frame: fd/brs/esi/rtr as the wire carried it, t_ms when it was received (now_ms clock)
-function __frame(id, ext, data, fd, brs, esi, rtr, t_ms)
-  return { id = id, ext = ext, data = data, fd = fd, brs = brs, esi = esi, rtr = rtr, t_ms = t_ms }
+-- a received frame: fd/brs/esi/rtr as the wire carried it, t_ms when it was received (now_ms clock),
+-- e2e its E2E verdict ("ok", "bad_crc", "repeated", "skipped", "truncated", "timeout"), nil where
+-- its message has none: the verify: entry of the channel for it, else what its DBC declares
+function __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e)
+  return { id = id, ext = ext, data = data, fd = fd, brs = brs, esi = esi, rtr = rtr, t_ms = t_ms,
+    e2e = e2e }
 end
 function bus.recv(channel, timeout_ms)
-  local id, ext, data, fd, brs, esi, rtr, t_ms = __bus_recv(channel, timeout_ms or 1000)
+  local id, ext, data, fd, brs, esi, rtr, t_ms, e2e = __bus_recv(channel, timeout_ms or 1000)
   if id == nil then return nil end
-  return __frame(id, ext, data, fd, brs, esi, rtr, t_ms)
+  return __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e)
 end
--- encode a DBC message by name from a {Signal = value} table and send it
-function bus.send_message(channel, name, sigs)
+-- encode a DBC message by name from a {Signal = value} table and send it, its declared E2E
+-- (counter and CRC) stamped over what sigs gave them; opts.e2e = false sends it as encoded
+function bus.send_message(channel, name, sigs, opts)
+  if opts ~= nil and type(opts) ~= "table" then error("bus.send_message: opts is a table", 2) end
   local id, ext, data = __msg_template(channel, name)
   for k, v in pairs(sigs or {}) do
     data = __encode_signal(channel, name, k, v, data)
   end
+  if not (opts and opts.e2e == false) then data = __e2e_stamp(channel, name, data) end
   __bus_send(channel, id, ext, data)
   return { id = id, ext = ext, data = data }
 end
@@ -911,10 +994,10 @@ function run(duration_ms)
     local wait = math.ceil(wake - now)
     if wait < 0 then wait = 0 end
     if wait > 1000 then wait = 1000 end -- the loop goes on; a run(math.huge) is not one wait
-    local ch, id, ext, data, fd, brs, esi, rtr, t_ms = __wait_frame(wait, table.unpack(__listened))
+    local ch, id, ext, data, fd, brs, esi, rtr, t_ms, e2e = __wait_frame(wait, table.unpack(__listened))
     if ch then
       taken = taken + 1
-      inflight[#inflight + 1] = { ch = ch, f = __frame(id, ext, data, fd, brs, esi, rtr, t_ms), i = 1, n = taken,
+      inflight[#inflight + 1] = { ch = ch, f = __frame(id, ext, data, fd, brs, esi, rtr, t_ms, e2e), i = 1, n = taken,
         callers = {} }
       deliver_inflight()
     end

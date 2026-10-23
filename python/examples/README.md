@@ -3,7 +3,10 @@
 Complete scripts for the `blobly` package, each runnable as it is. They default to the
 repository's [`projects/sim-demo.blobnet`](../../projects/sim-demo.blobnet), whose simulated ECUs
 run inside the script's own process, so no hardware and no drivers are needed. A project path on
-the command line overrides it. `someip_node.py` needs no project: it talks to a SOME/IP node.
+the command line overrides it. `replay_record.py` defaults to
+[`projects/replay-demo.blobnet`](../../projects/replay-demo.blobnet), `e2e_check.py` to
+[`projects/e2e-demo.blobnet`](../../projects/e2e-demo.blobnet) for its E2E declarations, and
+`someip_node.py` needs no project: it talks to a SOME/IP node.
 
 | example | what it shows |
 |---|---|
@@ -16,7 +19,9 @@ the command line overrides it. `someip_node.py` needs no project: it talks to a 
 | [doip_diag.py](doip_diag.py) | UDS over DoIP: the entity's announcements heard, the entity asked who it is, then over its connection the default session, the VIN it serves beside the one it announced, the DTCs, and a request to the functional address 0xE400. |
 | [isotp_raw.py](isotp_raw.py) | Raw ISO-TP on the SUT's id pair with no UDS on top: a multi-frame answer reassembled, a request no UDS helper builds and its refusal as bytes; then a UDS client's waits, a short first wait on ids nothing answers and the timing a session answer adopted. |
 | [fault_injection.py](fault_injection.py) | Faults on sim-demo's simulated ECUs, seen on the bus: Powertrain dropped for a second and back by itself, BrakePedal forced past its declared range until cleared, and `bad_crc` refused where nothing is protected. |
+| [e2e_check.py](e2e_check.py) | E2E Profile 1 as a DBC declares it, on [`projects/e2e-demo.blobnet`](../../projects/e2e-demo.blobnet): each received frame's verdict (`Frame.e2e`), a broken checksum and a frozen counter caught by `expect(..., e2e=True)`, and a message sent by name stamped with its declared counter and CRC, beside the same message sent unstamped. |
 | [flash_ecu.py](flash_ecu.py) | Flashing a blobly_emb bootloader with a progress bar and the session's report, against a simulated bootloader on CAN1 that verifies the 0x29 proof and the image's CRC; `--board` for a real one. |
+| [replay_record.py](replay_record.py) | Replay and recording, on `projects/replay-demo.blobnet`: the wire recorded to a candump `.log` while a recording is replayed onto it — started paused, moved to 1.5 s, played at 4x to its end — and the file read back, every line ending in `T` (sent by this process). |
 | [someip_node.py](someip_node.py) | SOME/IP against a node with a static peer endpoint (blobly_emb's `host_someip` by default): a method called and answered, a request sent with everything heard after it, and the node's events. CI runs it against a stand-in node on loopback. |
 | [test_sim_demo.py](test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel (`can1`), `expect` and `expect_signal`, `diag` over CAN and DoIP, and a project generator fired and answered. [conftest.py](conftest.py) loads the plugin and [pytest.ini](pytest.ini) names the project, which is all a suite of your own needs. |
 

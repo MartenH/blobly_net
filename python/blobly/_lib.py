@@ -115,6 +115,7 @@ BB_ERR_CARRIER = -8
 BB_ERR_ROUTING = -9
 BB_ERR_LOST = -10
 BB_ERR_FLASH = -11
+BB_ERR_E2E = -12  # returned by no call: E2eError's code
 # the exception each code raises; a code not here (BB_ERR_HANDLE, BB_ERR_STATE, a newer library's)
 # raises BloblyError itself
 ERRORS = {BB_ERR: Refused, BB_ERR_NEGATIVE: NegativeResponse, BB_ERR_TIMEOUT: Timeout,
@@ -139,7 +140,8 @@ class BbFrame(ctypes.Structure):
     """bb_frame, field for field."""
     _fields_ = [("id", ctypes.c_uint32), ("len", ctypes.c_uint8), ("ext", ctypes.c_uint8),
                 ("fd", ctypes.c_uint8), ("brs", ctypes.c_uint8), ("rtr", ctypes.c_uint8),
-                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("t_ns", ctypes.c_int64)]
+                ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("e2e", ctypes.c_uint8),
+                ("t_ns", ctypes.c_int64)]
 
 
 class BbMessage(ctypes.Structure):
@@ -250,6 +252,29 @@ class BbBusload(ctypes.Structure):
 class BbDiagnostics(ctypes.Structure):
     """bb_diagnostics, field for field."""
     _fields_ = [("dropped", ctypes.c_uint64), ("bus_errors", ctypes.c_uint64), ("decode_errors", ctypes.c_uint64)]
+
+
+class BbReplayOpts(ctypes.Structure):
+    """bb_replay_opts, field for field."""
+    _fields_ = [("source", ctypes.c_char_p), ("speed", ctypes.c_double), ("loop", ctypes.c_int32),
+                ("paused", ctypes.c_int32), ("exclude", ctypes.c_char_p), ("bus", ctypes.c_char_p)]
+
+
+class BbReplayInfo(ctypes.Structure):
+    """bb_replay_info, field for field."""
+    _fields_ = [("state", ctypes.c_int32), ("loop", ctypes.c_uint8), ("ended", ctypes.c_uint8),
+                ("passes", ctypes.c_int32), ("position_s", ctypes.c_double), ("duration_s", ctypes.c_double),
+                ("speed", ctypes.c_double), ("sent", ctypes.c_int64), ("failed", ctypes.c_int64)]
+
+
+class BbRecordReport(ctypes.Structure):
+    """bb_record_report, field for field."""
+    _fields_ = [("frames", ctypes.c_int64), ("ours", ctypes.c_int64), ("theirs", ctypes.c_int64),
+                ("missed", ctypes.c_int64), ("dropped", ctypes.c_int64)]
+
+
+# enum bb_replay_state, as the Lua replay status names it
+REPLAY_STATES = {0: "stopped", 1: "playing", 2: "paused", 3: "finished"}
 
 
 # enum bb_flash_auth, as the Lua flash.program's report names it
@@ -394,6 +419,21 @@ def _declare(lib):
         "bb_flash_cancel": ([c_int], c_int),
         "bb_boot_sim": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64)], c_int),
         "bb_boot_sim_stop": ([c_int, P(BbBootReport)], c_int),
+        # replay and recording (replay.py)
+        "bb_replay_defaults": ([P(BbReplayOpts)], c_int),
+        "bb_replay_start": ([P(c_int), c_int, P(BbReplayOpts)], c_int),
+        "bb_replay_notes": ([c_int, c_char_p, c_int], c_int),
+        "bb_replay_pause": ([c_int, c_int], c_int),
+        "bb_replay_seek": ([c_int, ctypes.c_double], c_int),
+        "bb_replay_speed": ([c_int, ctypes.c_double], c_int),
+        "bb_replay_loop": ([c_int, c_int], c_int),
+        "bb_replay_status": ([c_int, P(BbReplayInfo)], c_int),
+        "bb_replay_error": ([c_int, c_char_p, c_int], c_int),
+        "bb_replay_wait": ([c_int, c_int], c_int),
+        "bb_replay_stop": ([c_int, P(BbReplayInfo)], c_int),
+        "bb_record_start": ([P(c_int), c_int, c_char_p], c_int),
+        "bb_record_counts": ([c_int, P(BbRecordReport)], c_int),
+        "bb_record_stop": ([c_int, P(BbRecordReport)], c_int),
         # the CAN bridge into WSL (bridge.py)
         "bb_wsl_distros": ([c_char_p, c_int], c_int),
         "bb_bridge_program": ([c_char_p, c_int], c_int),
@@ -426,6 +466,9 @@ def _declare(lib):
         "bb_uds_set_wait": ([c_int, c_int, c_int], c_int),
         "bb_uds_check_wait": ([c_int, c_int], c_int),
         "bb_uds_retarget": ([c_int, P(ctypes.c_int64)], c_int),
+        # E2E on a row's frames (project.py, e2e.py)
+        "bb_e2e_attach": ([c_int, c_int], c_int),
+        "bb_e2e_stamp": ([c_int, c_int, P(BbFrame)], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

@@ -22,6 +22,7 @@ import blobly.uds
 import blobly.candb
 import blobly.project
 import blobly.udsconn
+import blobly.replay
 
 // ChanInfo is one channel a script may address by name: its bus interface and
 // the DBC catalog used for decode/encode on it.
@@ -39,6 +40,8 @@ pub:
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
 	nodes []project.NodeCfg
+	// the row's verify: entries: what a received frame's E2E is judged by first (e2e.v)
+	verify []project.ProtectCfg
 	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
 	// channel whatever its type, so a DoIP channel failed with "No such device" from the CAN
 	// layer: the tool could simulate a DoIP ECU it could not then test.
@@ -47,6 +50,9 @@ pub:
 	// 0 is project.default_bitrate, and no data rate is the nominal one
 	nominal   int
 	data_rate int
+	// the row's `replay:` block, its source resolved against the project: what replay.start
+	// plays when the script names no source
+	replay ?project.Replay
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
@@ -120,14 +126,24 @@ mut:
 	running []Running
 	// sys_mono_now when the run ends (set_deadline); 0 is none
 	deadline u64
+	// per channel: the E2E verdicts on what its handle reads, and the declared E2E counters of
+	// what the script sends by name (e2e.v)
+	e2e_rx map[string]&sim.E2eReader
+	e2e_tx map[string]&sim.E2eStamper
 	// the coroutine (its lua_State) the deadline was first raised in; 0 before
 	timeout_co u64
+	// the replays and recordings the script started, stopped by close (replay.v)
+	replays []&replay.Session
+	records []&replay.Recorder
 pub mut:
 	// The run's generators, which gen.* controls (generators.v): cmd/script's headless run; none in
 	// the GUI, whose generators are its panel's.
 	gens sim.GenControl = sim.NoGens{}
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
+	// How a replay's buses are opened (replay.start): they REPRODUCE a recording, framed as it was
+	// recorded. Unset, `opener`; the GUI supplies a tap that files them as its simulation's.
+	reproducer BusOpener = unsafe { nil }
 	results   []TestResult
 	on_output fn (string) = fn (s string) {
 		println(s)
@@ -197,6 +213,9 @@ pub fn (env &Env) total() int {
 // close, the loss booked by the close itself was never reported.
 pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 	mut out := map[string]transport.BusDiagnostics{}
+	for e in env.stop_replays() {
+		env.emit('record: ${e}')
+	}
 	for i, mut c in env.conns {
 		if !c.closed {
 			c.ch.close()
@@ -354,6 +373,8 @@ fn (mut env Env) register_all() {
 	env.register_metrics()
 	env.register_gens()
 	env.register_isotp()
+	env.register_replay()
+	env.register_e2e()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -1312,7 +1333,8 @@ fn l_bus_recv(l lua.State) i32 {
 	l.push_bool(frame.extended)
 	l.push_bytes(frame.data)
 	push_received(l, frame)
-	return 8
+	push_e2e(l, env.e2e_verdict(name, frame))
+	return 9
 }
 
 fn l_msg_template(l lua.State) i32 {

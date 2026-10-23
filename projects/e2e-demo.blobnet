@@ -1,0 +1,31 @@
+# E2E demo — AUTOSAR E2E Profile 1 declared in the DBC, zero drivers, no hardware.
+#
+# dbc/e2e_demo.dbc declares two protected messages with its E2E* attributes
+# (docs/dbc_attributes.md): BrakeStatus, which the simulated Chassis sends every 10 ms and stamps
+# by that declaration, and BrakeCommand, which nothing simulated sends — a script sends it by name
+# and gets it stamped the same way. WheelSpeed is unprotected.
+#
+# Two rows on ONE in-process wire: a script's handle never hears its own sends, so what it sends
+# on E2E is heard on E2E_TAP, with the verdict a receiver would give it. Faults (sim.fault,
+# net.fault) on Chassis's BrakeStatus show the verdicts that a broken sender earns.
+# tests/e2e_verify.lua and python/examples/e2e_check.py run against it.
+project:
+  name: E2E demo
+  version: 8
+
+channels:
+  - name: E2E
+    type: can
+    interface: inproc:E2E_DEMO
+    databases:
+      - ../dbc/e2e_demo.dbc
+    simulation:
+      - name: Chassis
+        signals:
+          - { name: BrakePressure, type: sine, offset: 1000, amplitude: 500, freq: 1 }
+          - { name: Speed, type: sine, offset: 60, amplitude: 20, freq: 0.5 }
+  - name: E2E_TAP
+    type: can
+    interface: inproc:E2E_DEMO
+    databases:
+      - ../dbc/e2e_demo.dbc
