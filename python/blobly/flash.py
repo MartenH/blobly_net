@@ -74,10 +74,10 @@ def _text(name: str, v) -> bytes | None:
     return v.encode()
 
 
-def program(target: "Channel | UdsClient", image: "ByteData | str | os.PathLike[str]", *, base: int | None = None,
-            sw_version: int | None = None, auth: bool = True, seed: str | None = None,
-            seed_file: "str | os.PathLike[str] | None" = None,
-            progress: Callable[[int, int], None] | None = None, quiet: bool = False,
+def program(target: "Channel | UdsClient", image: "ByteData | str | os.PathLike[str] | os.PathLike[bytes]", *,
+            base: int | None = None, sw_version: int | None = None, auth: bool = True, seed: str | None = None,
+            seed_file: "str | bytes | os.PathLike[str] | os.PathLike[bytes] | None" = None,
+            progress: Callable[[int, int], object] | None = None, quiet: bool = False,
             tx: int | None = None, rx: int | None = None) -> FlashReport:
     """Flashes `image` (bytes, or the path of a raw .bin, which gets its header here, or a BLBT
     .img, sent as it is) into a blobly_emb bootloader and returns a FlashReport.
