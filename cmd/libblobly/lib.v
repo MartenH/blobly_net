@@ -195,6 +195,23 @@ pub mut:
 	resets        i32
 }
 
+// bus metrics (metrics.v)
+pub struct C.bb_busload {
+pub mut:
+	percent f64
+	average f64
+	bits    f64
+	frames  u64
+	nominal i32
+}
+
+pub struct C.bb_diagnostics {
+pub mut:
+	dropped       u64
+	bus_errors    u64
+	decode_errors u64
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
@@ -224,6 +241,7 @@ const recv_slice_ms = 20
 struct BusHandle {
 mut:
 	bus     transport.Bus
+	meter   &transport.MeteredBus = unsafe { nil } // `bus` itself, for its load (metrics.v)
 	users   i64 // calls inside `bus` now
 	closing i64 // bb_bus_close has begun: a receive in progress ends at its next slice
 	// asks `closing`, for transport.recv_sliced: built once at open, not per receive
@@ -522,9 +540,12 @@ pub fn bb_bus_open(iface &char) i32 {
 		&& it.iface_with_bitrate() == name)) {
 		return fail(bb_err, 'open: ${name} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
 	}
-	bus := transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') }
+	nominal, data := if bb_loaded { project.wire_rates(bb_rows, name) } else { project.default_bitrate, 0 }
+	meter := transport.metered(transport.open(name) or { return fail(bb_err, '${name}: ${err.msg()}') },
+		name, nominal, data)
 	mut hd := &BusHandle{
-		bus: bus
+		bus:   meter
+		meter: meter
 	}
 	closing := &hd.closing
 	hd.stop = fn [closing] () bool {

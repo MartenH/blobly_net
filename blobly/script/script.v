@@ -43,6 +43,10 @@ pub:
 	// channel whatever its type, so a DoIP channel failed with "No such device" from the CAN
 	// layer: the tool could simulate a DoIP ECU it could not then test.
 	carrier Carrier
+	// what a frame on this channel's wire is priced at for bus.load, bit/s (project.wire_rates);
+	// 0 is project.default_bitrate, and no data rate is the nominal one
+	nominal   int
+	data_rate int
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
@@ -99,7 +103,7 @@ mut:
 	st    lua.State
 	chans []ChanInfo
 	conns []UdsConn
-	buses map[string]transport.Bus
+	buses map[string]&transport.MeteredBus
 	// every SOME/IP request session this run has sent: none is sent twice, so a late reply to a
 	// timed-out call cannot complete a later one
 	someip_sessions someip.Sessions
@@ -270,7 +274,9 @@ fn (mut env Env) bus_for(name string) !transport.Bus {
 	if b := env.buses[name] {
 		return b
 	}
-	b := env.opener(env.chans[ci].iface, name)!
+	ch := env.chans[ci]
+	nominal := if ch.nominal > 0 { ch.nominal } else { project.default_bitrate }
+	b := transport.metered(env.opener(ch.iface, name)!, ch.iface, nominal, ch.data_rate)
 	env.buses[name] = b
 	return b
 }
@@ -331,6 +337,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__wait_frame', l_wait_frame)
 	env.st.register('__listen', l_listen)
 	env.st.register('__bus_health', l_bus_health)
+	env.register_metrics()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.

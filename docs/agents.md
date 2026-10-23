@@ -186,6 +186,7 @@ Complete scripts, each bounded and with a clear exit status, in
 | [dbc_messages.py](../python/examples/dbc_messages.py) | Messages and signals with units, ranges and labels; encode, decode, send by signal name. |
 | [event_loop.py](../python/examples/event_loop.py) | `on_message` by id and by message, `on_timer`, `on_health`, `run()`. |
 | [signal_monitor.py](../python/examples/signal_monitor.py) | Decoded values of chosen messages over N seconds. |
+| [bus_metrics.py](../python/examples/bus_metrics.py) | A channel's bus load and diagnostics counts over N seconds. |
 | [uds_diag.py](../python/examples/uds_diag.py) | UDS over CAN: a session, DID reads, a negative response caught, a security unlock, DTCs with a snapshot. |
 | [doip_diag.py](../python/examples/doip_diag.py) | UDS over DoIP: announcements heard, the entity discovered, a session, the VIN, DTCs, a functional request. |
 | [fault_injection.py](../python/examples/fault_injection.py) | Faults on simulated ECUs seen on the bus: a timed drop, a signal out of range, a refusal. |
@@ -197,7 +198,7 @@ Complete scripts, each bounded and with a clear exit status, in
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health, fault injection, the E2E Profile 1 helpers; UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests); DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#18-what-is-not-there-yet)). |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, the E2E Profile 1 helpers; UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests); DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#18-what-is-not-there-yet)). |
 | Tests under pytest, and anything that needs the Python ecosystem. | A script in the GUI's Script panel, against a live measurement. |
 | An agent's own process: no V toolchain, a `pip install`. | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 

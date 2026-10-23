@@ -1515,7 +1515,7 @@ fn script_worker(app &App, path string) {
 		a.diag_tool_end()
 	}
 	mut chans := []script.ChanInfo{}
-	for ch in a.chans {
+	for ci, ch in a.chans {
 		// Disabled channels are NOT scriptable. The headless runner skips them when building
 		// its channel list, so leaving them here meant the same script could reach an ECU the
 		// project had explicitly switched off from the GUI, and report "unknown channel" for
@@ -1548,6 +1548,9 @@ fn script_worker(app &App, path string) {
 		if ch.proj_idx >= 0 && ch.proj_idx < a.proj.channels.len {
 			pch = a.proj.channels[ch.proj_idx]
 		}
+		a.mu.lock()
+		nominal, data_rate := a.wire_rates_locked(ci)
+		a.mu.unlock()
 		chans << script.ChanInfo{
 			name:      ch.name
 			iface:     a.bitrate_iface(ch.iface) // pcan/kvaser: @<bitrate> so scripts open right
@@ -1563,6 +1566,9 @@ fn script_worker(app &App, path string) {
 			db:      a.script_db(ch)
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
 			carrier: script.carrier_of(pch)
+			// priced as the Buses row prices the wire
+			nominal:   nominal
+			data_rate: data_rate
 		}
 	}
 	mut env := script.new_env(chans) or {

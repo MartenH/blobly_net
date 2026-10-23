@@ -132,6 +132,7 @@ pytest python/examples/test_sim_demo.py
 | [dbc_messages.py](../python/examples/dbc_messages.py) | Messages and signals with units, ranges and labels; encode, decode, send by signal name. |
 | [event_loop.py](../python/examples/event_loop.py) | `on_message` by id and by message, `on_timer`, `on_health`, `run()`. |
 | [signal_monitor.py](../python/examples/signal_monitor.py) | Decoded values of chosen messages over N seconds. |
+| [bus_metrics.py](../python/examples/bus_metrics.py) | A channel's bus load and diagnostics counts over N seconds. |
 | [test_sim_demo.py](../python/examples/test_sim_demo.py) | pytest on blobly's plugin: the `project` fixture and one per channel, `expect`, `expect_signal`. |
 
 **What the engine prints.** The engine writes its progress and warnings (`project: ...`,
@@ -491,6 +492,39 @@ import blobly
 
 with blobly.Project("projects/sim-demo.blobnet") as net:
     print(repr(net.channels.CAN1.health()))   # '': inproc: is a software bus, with no controller
+```
+
+### Bus metrics
+
+`ch.load()` is a `BusLoad`: the load of the frames this channel's handle carried since it opened,
+priced at the wire's rates (those of the first enabled row on it; unset is 500 kbit/s).
+`percent` is the last whole second, `average` the whole time since the handle opened (both `None`
+until one second has passed), `frames` and `bits` the counts behind them. It is the GUI's bus
+load, computed by the same code, with two things to know:
+
+- **Decoded frames only.** An error frame, a retransmission and a frame lost in an overrun
+  occupied the wire and are not in it, so in an error storm it under-reads; `health()` and
+  `diagnostics()` are what say so. A frame costs its bit-times with worst-case stuffing.
+- **Both directions, through this handle.** What the channel sends counts once the driver took
+  it (the GUI counts our own frames as wire load too), and what it receives counts when it is
+  READ (`recv`, `expect`, `run()`): a channel nobody reads sees only its own sends, and a frame
+  left queued lands in the second it is read.
+
+`ch.diagnostics()` is a `BusDiagnostics`: what the backend counted since the handle opened that no
+frame carried. `dropped` is frames lost before delivery (this handle's queue full, a driver
+overrun, a shared ring overwritten), `bus_errors` controller error records, `decode_errors`
+records the backend could not decode. Counts only grow while the handle is open; `ch.close()`
+starts both again at zero.
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can2 = net.channels.CAN2
+    for _ in range(100):
+        can2.send(0x555, bytes(8))
+    print(can2.load().frames)       # 100: this handle's own sends (135 bit-times each)
+    print(can2.diagnostics())       # BusDiagnostics(dropped=0, bus_errors=0, decode_errors=0)
 ```
 
 ---
@@ -1250,12 +1284,29 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.expect(id, timeout_ms=1000, *, ext=None)` | The first frame another node sends with this id and kind (an int and `ext`, or a `Message`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
 | `ch.expect_signal(message, signal, want, timeout_ms=1000)` | `(frame, value)`: the first frame of `message` whose `signal` matches `want` (a predicate, or a value compared with `==`), within one deadline; `Timeout` otherwise. Frames read meanwhile are consumed. |
 | `ch.health()` | The controller's ladder now: `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"`, or `""`. |
+| `ch.load()` | A `BusLoad`: the load of the decoded frames this channel's handle sent and read since it opened ([Bus metrics](#bus-metrics)). |
+| `ch.diagnostics()` | A `BusDiagnostics`: the backend's dropped, controller-error and undecodable counts since the handle opened. |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
 | `ch.uds(tx=None, rx=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. |
 | `ch.uds_functional(functional_id, clients, request, window_ms=1000)` | `request` once on the functional id, each of `clients` (one or more `UdsClient`s of this channel) answering on its own id: a `FunctionalReply` each, in their order. On a DoIP row the functional logical address (`None`: 0xE400) and the row's one client. `window_ms` bounds each first answer. |
 | `ch.discover(timeout_ms=1200)` | A DoIP row's entity asked who it is: a `DoipAnnouncement`; `Timeout` when none came. |
 | `ch.close()` | Lets the bus handle go, and the connections of its UDS clients; the next use opens another. |
+
+### `BusLoad`, `BusDiagnostics`
+
+What `ch.load()` and `ch.diagnostics()` return: named tuples ([Bus metrics](#bus-metrics)).
+
+| field | what |
+|---|---|
+| `BusLoad.percent` | The load over the last whole second, in percent; `None` until one has passed. |
+| `BusLoad.average` | The load since the handle opened; `None` until one second has passed. |
+| `BusLoad.frames` | The frames counted since open, both directions. |
+| `BusLoad.bits` | Their nominal bit-times, worst-case stuffing. |
+| `BusLoad.nominal` | The arbitration rate they are priced at, bit/s. |
+| `BusDiagnostics.dropped` | Frames lost before delivery: a full queue, a driver overrun, a shared ring overwritten. |
+| `BusDiagnostics.bus_errors` | Controller error records the device reported. |
+| `BusDiagnostics.decode_errors` | Records the backend could not decode. |
 
 ### `Frame`
 
@@ -1443,7 +1494,7 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 ## 18. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
-loop, bus health, fault injection, the E2E Profile 1 helpers, UDS over CAN and DoIP, DoIP
+loop, bus health and metrics, fault injection, the E2E Profile 1 helpers, UDS over CAN and DoIP, DoIP
 discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
@@ -1461,7 +1512,8 @@ discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and
 - Replay control and recording to a file; generator control (fire, start, stop, cycle).
 - E2E verify on receive, and E2E declared in the DBC applied on send.
 - Background cyclic senders and a session keep-alive (one owner thread per channel).
-- Bus metrics: load, and dropped or error counters during a run.
+- Bus metrics are here ([Bus metrics](#bus-metrics)): load, and the dropped, error and
+  undecodable counters, during a run.
 - Raw ISO-TP; UDS timing and P2 configuration; the DoIP gateway retarget.
 - Targets by node name from `system.toml`, and the DID codec from `ecu.toml`.
 - Opening an interface that is not a project row, interface discovery, Vector channel

@@ -17,6 +17,11 @@ class Frame(ctypes.Structure):
                 ("esi", ctypes.c_uint8), ("data", ctypes.c_uint8 * 64), ("t_ns", ctypes.c_int64)]
 
 
+class Busload(ctypes.Structure):
+    _fields_ = [("percent", ctypes.c_double), ("average", ctypes.c_double), ("bits", ctypes.c_double),
+                ("frames", ctypes.c_uint64), ("nominal", ctypes.c_int32)]
+
+
 class Message(ctypes.Structure):
     _fields_ = [("id", ctypes.c_uint32), ("ext", ctypes.c_uint8), ("j1939", ctypes.c_uint8),
                 ("dlc", ctypes.c_int32), ("signals", ctypes.c_int32)]
@@ -59,6 +64,8 @@ def bind(lib):
     lib.bb_bus_send.argtypes = [ctypes.c_int, ctypes.POINTER(Frame)]
     lib.bb_bus_recv.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(Frame)]
     lib.bb_bus_health.argtypes = [ctypes.c_int]
+    lib.bb_bus_load.argtypes = [ctypes.c_int, ctypes.POINTER(Busload)]
+    lib.bb_bus_diagnostics.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint64 * 3)]
     lib.bb_now_ns.restype = ctypes.c_int64
     lib.bb_bus_close.argtypes = [ctypes.c_int]
     lib.bb_channel_kind.argtypes = [ctypes.c_int]
@@ -100,6 +107,9 @@ def exchange(lib, who, n):
     f.data[0], f.data[1], f.data[2] = 1, 2, 3
     assert lib.bb_bus_send(h, ctypes.byref(f)) == 0, f"{who} send: {err(lib)}"
     assert lib.bb_bus_health(h) == BB_HEALTH_UNKNOWN, f"{who}: a software bus has no ladder"
+    load, diag = Busload(), (ctypes.c_uint64 * 3)()
+    assert lib.bb_bus_load(h, ctypes.byref(load)) == 0 and load.frames == n + 1, f"{who} load: {err(lib)}"
+    assert lib.bb_bus_diagnostics(h, ctypes.byref(diag)) == 0, f"{who} diagnostics: {err(lib)}"
     assert lib.bb_bus_close(h) == 0, f"{who} close: {err(lib)}"
     assert lib.bb_bus_recv(h, 0, ctypes.byref(f)) == BB_ERR_HANDLE, f"{who}: a closed handle must refuse"
     print(f"ok   {who}: {n} frames heard, one sent")

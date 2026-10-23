@@ -534,28 +534,16 @@ fn (mut app App) wire_rates_locked(i int) (int, int) {
 	if app.chans[i].load_nominal > 0 {
 		return app.chans[i].load_nominal, app.chans[i].load_data
 	}
-	key := transport.destination_key(app.chans[i].iface)
-	mut nominal := 0
-	mut data := 0
-	for c in app.chans {
-		if c.eth() || !c.monitorable() || transport.destination_key(c.iface) != key {
-			continue
-		}
-		if nominal == 0 {
-			// normalised HERE: an unset rate on the first row is 500 kbit/s, not "no answer
-			// yet" for a later row to overwrite (codex #263 r9)
-			nominal = if c.bitrate > 0 { c.bitrate } else { project.default_bitrate }
-		}
-		if data == 0 && c.data_bitrate > 0 {
-			data = c.data_bitrate
-		}
-	}
-	if nominal == 0 {
-		nominal = if app.chans[i].bitrate > 0 {
-			app.chans[i].bitrate
-		} else {
-			project.default_bitrate
-		}
+	// the engine's rule (project.wire_rates) over the rows that read a wire
+	rows := app.chans.filter(it.monitorable()).map(project.Channel{
+		iface:        it.iface
+		bitrate:      it.bitrate
+		data_bitrate: it.data_bitrate
+	})
+	mut nominal, data := project.wire_rates(rows, app.chans[i].iface)
+	key := transport.wire_key(app.chans[i].iface)
+	if !rows.any(transport.wire_key(it.iface) == key) {
+		nominal = if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
 	}
 	app.chans[i].load_nominal = nominal
 	app.chans[i].load_data = data

@@ -417,6 +417,33 @@ local sig = decode(channel, id, data [, ext [, as]])       -- DBC-decode -> { Na
   channel's declaration decides (`type: canfd` frames as FD). It is how a classic frame reaches
   a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
 
+### Bus metrics — bus.load / bus.diagnostics
+
+```lua
+local l = bus.load(channel)
+-- l = { percent = <last whole second, or nil>, average = <since open, or nil>,
+--       frames = <counted>, bits = <their bit-times>, nominal = <bit/s they are priced at> }
+local d = bus.diagnostics(channel)
+-- d = { dropped = <n>, bus_errors = <n>, decode_errors = <n> }
+```
+
+- Both are of the script's own handle on the channel, since it opened (its first use).
+- `bus.load` is the GUI's bus load, computed by the same code: each frame's bit-times with
+  worst-case stuffing over the wire's nominal rate — the rate of the first enabled row on the
+  wire, 500 kbit/s when unset. `percent` is the last whole second and `average` the time since
+  open, both `nil` until one second has passed.
+- **Decoded frames only**: an error frame, a retransmission and a frame lost in an overrun
+  occupied the wire and are not in it, so in an error storm it under-reads; `bus.health` and
+  `bus.diagnostics` are what say so.
+- **Both directions**: the script's own sends count once the driver took them (the GUI counts
+  ours as wire load too); what it receives counts when it is READ (`bus.recv`, `expect`,
+  `run()`). A channel the script never reads sees only its own sends, and a frame left queued
+  lands in the second it is read.
+- `bus.diagnostics` is what the backend counted that no frame carried: `dropped` frames lost
+  before delivery (the handle's queue full, a driver overrun, a shared ring overwritten),
+  `bus_errors` controller error records, `decode_errors` records it could not decode. The
+  runner prints the non-empty ones at close, as before.
+
 ### The DBC catalog
 
 What a channel's databases (its `databases:`) define, read from the same model `decode` and

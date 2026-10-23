@@ -15,6 +15,7 @@ from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_m
 from .doip import discover
 from .uds import UdsClient, _close_orphans, functional
 from .faults import Faults
+from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 
 
 class Frame:
@@ -387,6 +388,17 @@ class Channel:
         where the backend cannot say (the software buses)."""
         lib = _lib.lib()
         return _lib.HEALTH_NAMES.get(_lib.check(lib.bb_bus_health(self._handle())), "")
+
+    def load(self) -> BusLoad:
+        """This channel's bus load as its handle counted it since it opened: the frames it received
+        (when read) and sent, priced at the wire's first enabled row's rates. From the thread that
+        uses the channel."""
+        return load_of(self._handle())
+
+    def diagnostics(self) -> BusDiagnostics:
+        """What the backend counted since this channel's handle opened: dropped, controller-error
+        and undecodable records. From the thread that uses the channel."""
+        return diagnostics_of(self._handle())
 
     @property
     def messages(self):

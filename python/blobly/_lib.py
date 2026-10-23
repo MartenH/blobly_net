@@ -220,6 +220,18 @@ class BbBootReport(ctypes.Structure):
                 ("resets", ctypes.c_int32)]
 
 
+# bus metrics (project.py's Channel.load / Channel.diagnostics)
+class BbBusload(ctypes.Structure):
+    """bb_busload, field for field."""
+    _fields_ = [("percent", ctypes.c_double), ("average", ctypes.c_double), ("bits", ctypes.c_double),
+                ("frames", ctypes.c_uint64), ("nominal", ctypes.c_int32)]
+
+
+class BbDiagnostics(ctypes.Structure):
+    """bb_diagnostics, field for field."""
+    _fields_ = [("dropped", ctypes.c_uint64), ("bus_errors", ctypes.c_uint64), ("decode_errors", ctypes.c_uint64)]
+
+
 # enum bb_flash_auth, as the Lua flash.program's report names it
 FLASH_AUTH = {0: "skipped", 1: "authenticated", 2: "not required"}
 
@@ -338,6 +350,9 @@ def _declare(lib):
         "bb_bridge_state": ([c_char_p, P(c_int), c_char_p, c_int], c_int),
         "bb_bridge_rows": ([c_char_p, c_char_p, c_int], c_int),
         "bb_bridge_stop": ([c_char_p], c_int),
+        # bus metrics (project.py)
+        "bb_bus_load": ([c_int, P(BbBusload)], c_int),
+        "bb_bus_diagnostics": ([c_int, P(BbDiagnostics)], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)

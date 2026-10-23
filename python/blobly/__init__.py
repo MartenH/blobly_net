@@ -76,3 +76,6 @@ __all__ += ["BootReport", "BootSim", "FlashFailed", "FlashReport", "flash"]
 # the CAN bridge into WSL (bridge.py)
 from . import bridge  # noqa: E402
 __all__ += ["bridge"]
+# bus metrics (metrics.py; Channel.load, Channel.diagnostics)
+from .metrics import BusDiagnostics, BusLoad  # noqa: E402
+__all__ += ["BusDiagnostics", "BusLoad"]
