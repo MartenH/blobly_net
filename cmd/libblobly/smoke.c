@@ -3,7 +3,7 @@
  * created — the one the V runtime's collector did not see born — encodes and decodes through
  * CAN1's database (dbc/blobly_net.dbc), reads a DID of CAN1's SUT over UDS, arms and clears a
  * fault and stamps an E2E Profile 1 frame, flashes a simulated bootloader on CAN1 with C
- * callbacks, then stops and starts again.
+ * callbacks, fires and cycles a generator, then stops and starts again.
  *
  *   gcc -o build/bb_smoke cmd/libblobly/smoke.c -ldl -lpthread   (Linux)
  *   build/bb_smoke build/libblobly.so projects/sim-demo.blobnet
@@ -77,6 +77,22 @@ static uds_open_fn bb_flash_open_p;
 static flash_program_fn bb_flash_program_p;
 static boot_sim_fn bb_boot_sim_p;
 static boot_stop_fn bb_boot_sim_stop_p;
+typedef int (*gen_find_fn)(const char *);
+typedef int (*gen_info_fn)(int, bb_generator *);
+typedef int (*gen_text_fn)(int, int, char *, int);
+typedef int (*gen_cycle_fn)(int, int);
+typedef int (*gen_set_fn)(int, const char *, double);
+typedef int (*gen_source_fn)(int, const char *, const bb_wave *);
+static gen_find_fn bb_gen_find_p;
+static gen_info_fn bb_gen_info_p;
+static gen_text_fn bb_gen_text_p;
+static gen_cycle_fn bb_gen_start_p, bb_gen_cycle_p;
+static gen_set_fn bb_gen_set_p;
+static gen_source_fn bb_gen_source_p;
+static int (*bb_gen_fire_p)(int, int64_t, int64_t);
+static int (*bb_gen_stop_p)(int);
+static int (*bb_gen_count_p)(void);
+static int (*bb_gen_run_p)(int64_t *);
 static int_int_fn bb_message_count_p;
 static msg_info_fn bb_message_info_p;
 static msg_str_fn bb_message_name_p;
@@ -297,6 +313,32 @@ static int fault_steps(int row, int doip) {
 	return 0;
 }
 
+/* sim-demo's generators: a manual one fired with a value set, its cycle started and stopped, a
+ * cyclic one's cycle changed, and the refusals typed */
+static int gen_steps(void) {
+	CHECK(bb_gen_count_p() == 4, "sim-demo writes four generators");
+	int hb = bb_gen_find_p("CAN1/Heartbeat pulse");
+	CHECK(hb >= 0, "find a generator by channel and name");
+	char msg[32];
+	CHECK(bb_gen_text_p(hb, BB_GEN_MESSAGE, msg, sizeof msg) == 9 && strcmp(msg, "Heartbeat") == 0, "its message");
+	CHECK(bb_gen_set_p(hb, "Counter", 42) == 0 && bb_gen_fire_p(hb, 0, 0) == 0, "set and fire");
+	int64_t run;
+	CHECK(bb_gen_run_p(&run) == 0 && bb_gen_fire_p(hb, run, 0) == 0 && bb_gen_fire_p(hb, run + 1, 0) == BB_ERR_STATE,
+		"a fire names its run, and another run's is refused");
+	bb_wave w = {.kind = "counter", .step = 1, .modulo = 256};
+	CHECK(bb_gen_source_p(hb, "Counter", &w) == 0 && bb_gen_start_p(hb, 20) == 0, "a source, then a cycle");
+	bb_generator g;
+	CHECK(bb_gen_info_p(hb, &g) == 0 && g.running && g.cycle_ms == 20 && g.id == 0x700 && g.sent >= 1, "its state");
+	CHECK(bb_gen_stop_p(hb) == 0 && bb_gen_info_p(hb, &g) == 0 && !g.running, "stop");
+	int wake = bb_gen_find_p("Cyclic wake (0x123)");
+	CHECK(wake >= 0 && bb_gen_cycle_p(wake, 250) == 0, "a cyclic generator's cycle");
+	CHECK(bb_gen_cycle_p(wake, 0) == BB_ERR && strstr(bb_last_error_p(), "a cycle is 1"), "cycle 0 must refuse");
+	CHECK(bb_gen_set_p(wake, "Counter", 1) == BB_ERR && strstr(bb_last_error_p(), "raw frame"), "a raw frame has no signals");
+	CHECK(bb_gen_find_p("nope") == BB_ERR, "an unknown generator must refuse");
+	printf("ok   generators fired, cycled and refused by name\n");
+	return 0;
+}
+
 /* a flash of a simulated bootloader on CAN1, its milestones and progress through C callbacks */
 static int notes, progress_calls, last_done;
 static void on_note(void *ctx, const char *line) { (void)ctx; (void)line; notes++; }
@@ -373,6 +415,8 @@ int main(int argc, char **argv) {
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
 	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
+	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
+	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -427,6 +471,7 @@ int main(int argc, char **argv) {
 	if (doip_steps(doip)) return 1;
 	if (fault_steps(can1, doip)) return 1;
 	if (flash_steps(can1)) return 1;
+	if (gen_steps()) return 1;
 	can1_row = can1;
 	if (bb_message_count_p(n) != BB_ERR) { fprintf(stderr, "FAIL the databases of a row past the end\n"); return 1; }
 #ifndef _WIN32

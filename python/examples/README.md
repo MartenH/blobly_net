@@ -17,7 +17,7 @@ the command line overrides it. `someip_node.py` needs no project: it talks to a 
 | [fault_injection.py](fault_injection.py) | Faults on sim-demo's simulated ECUs, seen on the bus: Powertrain dropped for a second and back by itself, BrakePedal forced past its declared range until cleared, and `bad_crc` refused where nothing is protected. |
 | [flash_ecu.py](flash_ecu.py) | Flashing a blobly_emb bootloader with a progress bar and the session's report, against a simulated bootloader on CAN1 that verifies the 0x29 proof and the image's CRC; `--board` for a real one. |
 | [someip_node.py](someip_node.py) | SOME/IP against a node with a static peer endpoint (blobly_emb's `host_someip` by default): a method called and answered, a request sent with everything heard after it, and the node's events. CI runs it against a stand-in node on loopback. |
-| [test_sim_demo.py](test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel (`can1`), `expect` and `expect_signal`, and `diag` over CAN and DoIP. [conftest.py](conftest.py) loads the plugin and [pytest.ini](pytest.ini) names the project, which is all a suite of your own needs. |
+| [test_sim_demo.py](test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel (`can1`), `expect` and `expect_signal`, `diag` over CAN and DoIP, and a project generator fired and answered. [conftest.py](conftest.py) loads the plugin and [pytest.ini](pytest.ini) names the project, which is all a suite of your own needs. |
 
 ## Running them
 

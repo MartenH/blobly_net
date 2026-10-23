@@ -16,6 +16,7 @@ from .doip import discover
 from .uds import UdsClient, _close_orphans, functional
 from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
+from .generators import listed as _listed_generators
 
 
 class Frame:
@@ -694,7 +695,8 @@ class Project(EventLoop, Faults):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
     process, and one thread drives load, start and stop (bb.h); send and recv may run on others.
-    Faults (fault, clear_fault) make its simulated ECUs misbehave on purpose."""
+    Faults (fault, clear_fault) make its simulated ECUs misbehave on purpose; `generators` fires and
+    cycles its generators."""
 
     def __init__(self, path):
         super().__init__()
@@ -706,6 +708,7 @@ class Project(EventLoop, Faults):
         self._channels = None
         self._gen = None  # which load of the library is this project's
         self._rr = 0
+        self._gens, self._gens_run = None, None  # the generators, as the run of _gens_run lists them
 
     def load(self):
         """Reads the project into the library, which holds one load at a time: another project's
@@ -807,6 +810,18 @@ class Project(EventLoop, Faults):
         if self._channels is None:
             raise BloblyError("the project is not loaded", _lib.BB_ERR_STATE)
         return self._channels
+
+    @property
+    def generators(self):
+        """The run's generators (blobly.Generators): `net.generators["Heartbeat pulse"].fire()`.
+        BloblyError (code -3) when the project is not started."""
+        with _lib.state_lock:
+            if not self.started:
+                raise BloblyError("the project is not started: its generators are the run's", _lib.BB_ERR_STATE)
+            if self._gens_run != _lib.state["run"]:
+                self._gens = _listed_generators(self, list(self._gens) if self._gens is not None else None)
+                self._gens_run = _lib.state["run"]
+            return self._gens
 
     # the event loop's hooks, over libblobly
     def _resolve(self, channel):

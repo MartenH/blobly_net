@@ -313,6 +313,35 @@ enum bb_bridge_state {
 	BB_BRIDGE_FAILED = 3      /* could not start, or did not dial in within 20 s: the reason says why */
 };
 
+/* A generator of the run (bb_gen_info); its name and the rest are bb_gen_text's. */
+typedef struct bb_generator {
+	uint32_t id;        /* the frame's id: its message's, for one with a message */
+	uint8_t  ext;       /* a 29-bit identifier */
+	uint8_t  running;   /* sending on its cycle now */
+	uint8_t  sendable;  /* it has a bus to send on; BB_GEN_NOTE says why not */
+	int32_t  cycle_ms;  /* its cycle, 0 for none */
+	int64_t  sent;      /* frames its bus took, fired and cyclic alike */
+} bb_generator;
+
+/* What bb_gen_text copies out. */
+enum bb_gen_text {
+	BB_GEN_NAME = 0,
+	BB_GEN_CHANNEL = 1,  /* the channel it is written under (a disabled row's too) */
+	BB_GEN_MESSAGE = 2,  /* its DBC message, "" for a raw frame */
+	BB_GEN_TRIGGER = 3,  /* as the project writes it: "manual", "key" or "cyclic" */
+	BB_GEN_TARGET = 4,   /* the interface it sends on, "" for none */
+	BB_GEN_NOTE = 5      /* why it cannot send, "" when it can */
+};
+
+/* A signal's value source (bb_gen_source), the parameters a project's `senders:` signal writes:
+ * `kind` is "const", "sine", "sawtooth", "counter" or "stepmod", and each reads its own (const:
+ * value; sine: offset, amplitude, freq, phase; sawtooth: min, max, period; counter: start, step,
+ * modulo; stepmod: period, count, base). */
+typedef struct bb_wave {
+	const char *kind;
+	double value, offset, amplitude, freq, phase, min, max, period, start, step, modulo, count, base;
+} bb_wave;
+
 /* Error codes. The message (bb_last_error) says what; the code says which kind. */
 #define BB_ERR         (-1)  /* refused, with a reason in bb_last_error */
 #define BB_ERR_HANDLE  (-2)  /* no such bus or UDS handle, or a closed one */
@@ -727,6 +756,44 @@ int bb_bridge_stop(const char *distro);
 /* Bus metrics (bb_busload, bb_diagnostics above): from the thread that uses the handle. */
 int bb_bus_load(int h, bb_busload *out);
 int bb_bus_diagnostics(int h, bb_diagnostics *out);
+/* Generators: the project's `senders:` in the run (blobly/headless generators.v), as the Lua
+ * gen.* has them — every CAN row's, a disabled row's included, in project order, `g` 0 ..
+ * bb_gen_count - 1. From bb_start until bb_stop (BB_ERR_STATE otherwise, and for a call a stop
+ * overtook); any (attached) thread. Each generator has a loop of its own that holds its bus: a
+ * cyclic one's starts with the run, any other's at its first fire or start.
+ *
+ * bb_gen_fire sends its current frame once and returns once the bus took it — generator g of run
+ * `run` (bb_gen_run's number, 0 for whichever is started: BB_ERR_STATE when another run is, so a
+ * host need hold no lock of its own across the wait for a stop and start not to move the index):
+ * BB_ERR for a bus
+ * that refused it (a listen-only row) or a generator with nothing to send on, BB_ERR_TIMEOUT when
+ * its bus did not take it by until_ns (bb_now_ns's clock: an absolute deadline, so time spent
+ * reaching the call counts; 0 or less, or past 5 s from now: 5 s from now; a first fire opens the
+ * bus) — the message says whether it went out: a fire its loop had not taken by the deadline is
+ * never sent, one it answered past it did go out. A stop that overtakes a fire is BB_ERR_STATE,
+ * whatever became of the frame. bb_gen_start sends it on its
+ * cycle from now — `cycle_ms`, or its own when 0 (refused when it has none) — and bb_gen_stop ends
+ * that. bb_gen_cycle sets the cycle (1 .. 3600000 ms), from its next frame. bb_gen_set sends
+ * `signal` at the static `value` from its next frame (its value source dropped), bb_gen_source
+ * from the value source *w; a signal its message does not have (or whose payload does not hold
+ * it), a raw frame's, a non-finite value
+ * and a source that cannot be evaluated (an unknown type, a zero period or count) are refused. A
+ * signal the generator did not list is added. */
+int bb_gen_count(void);                                  /* >= 0: how many */
+int bb_gen_find(const char *name);                       /* >= 0: the generator `name` names —
+                                                            its name or "channel/name"; BB_ERR for
+                                                            none, or one two answer to (then by
+                                                            index) */
+int bb_gen_info(int g, bb_generator *out);
+int bb_gen_text(int g, int which, char *buf, int cap);   /* >= 0: the length; which is an enum
+                                                            bb_gen_text */
+int bb_gen_run(int64_t *run);                            /* the run's number: a fire names it */
+int bb_gen_fire(int g, int64_t run, int64_t until_ns);
+int bb_gen_start(int g, int cycle_ms);
+int bb_gen_stop(int g);
+int bb_gen_cycle(int g, int cycle_ms);
+int bb_gen_set(int g, const char *signal, double value);
+int bb_gen_source(int g, const char *signal, const bb_wave *w);
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus
