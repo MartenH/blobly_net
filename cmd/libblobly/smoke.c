@@ -69,6 +69,10 @@ static fault_fn bb_sim_fault_p;
 static int_fn bb_sim_clear_faults_p;
 static p01_crc_fn bb_e2e_p01_crc_p;
 static p01_protect_fn bb_e2e_p01_protect_p;
+typedef int (*e2e_attach_fn)(int, int);
+typedef int (*e2e_stamp_fn)(int, int, bb_frame *);
+static e2e_attach_fn bb_e2e_attach_p;
+static e2e_stamp_fn bb_e2e_stamp_p;
 static int_fn bb_thread_attach_p, bb_thread_detach_p;
 typedef int (*flash_defaults_fn)(bb_flash_opts *);
 typedef int (*flash_program_fn)(int, const uint8_t *, int, const bb_flash_opts *, bb_flash_report *);
@@ -222,6 +226,11 @@ static int dbc_steps(int row) {
 	const char *bad[] = {"Nope"};
 	CHECK(bb_encode_p(row, pt, 1, bad, values, &f) == BB_ERR && strstr(bb_last_error_p(), "unknown signal \"Nope\" in Powertrain"),
 		"an unknown signal must refuse by name");
+	/* sim-demo declares no E2E: a stamp leaves the frame as encoded, and a short one is refused */
+	bb_encode_p(row, pt, 2, names, values, &f);
+	CHECK(bb_e2e_stamp_p(row, pt, &f) == BB_NONE && memcmp(f.data, want, 8) == 0, "Powertrain declares no E2E to stamp");
+	f.len = 4;
+	CHECK(bb_e2e_stamp_p(row, pt, &f) == BB_ERR && strstr(bb_last_error_p(), "shorter than Powertrain"), "a short frame must refuse");
 
 	/* decode it back: the message, each signal's physical value, every one carried */
 	bb_encode_p(row, pt, 2, names, values, &f);
@@ -240,9 +249,10 @@ static int dbc_steps(int row) {
 	/* what the simulated SUT sends decodes too */
 	int h = bb_bus_open_p("inproc:CAN1");
 	CHECK(h >= 0, "open for decode");
+	CHECK(bb_e2e_attach_p(h, row) == 0, "sim-demo's CAN1 has no message with E2E to judge");
 	int decoded = 0;
 	for (int i = 0; i < 20 && !decoded; i++) {
-		CHECK(bb_bus_recv_p(h, 1000, &f) == 0, "recv for decode");
+		CHECK(bb_bus_recv_p(h, 1000, &f) == 0 && f.e2e == BB_E2E_NONE, "recv for decode");
 		decoded = bb_decode_p(row, &f, &m, got, on, 16) == 0;
 	}
 	bb_bus_close_p(h);
@@ -464,6 +474,7 @@ int main(int argc, char **argv) {
 	SYM(bb_signal_name); SYM(bb_signal_unit); SYM(bb_signal_label); SYM(bb_encode); SYM(bb_decode);
 	SYM(bb_uds_open); SYM(bb_uds_read_did); SYM(bb_uds_last); SYM(bb_uds_data); SYM(bb_uds_close); SYM(bb_last_nrc);
 	SYM(bb_sim_fault); SYM(bb_sim_clear_faults); SYM(bb_e2e_p01_crc); SYM(bb_e2e_p01_protect);
+	SYM(bb_e2e_attach); SYM(bb_e2e_stamp);
 	SYM(bb_uds_supported_dtcs); SYM(bb_uds_dtc); SYM(bb_dtc_name); SYM(bb_doip_discover); SYM(bb_doip_endpoint);
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);

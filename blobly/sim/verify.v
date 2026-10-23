@@ -19,6 +19,7 @@ pub enum Violation {
 	bad_crc     // the checksum does not match the payload
 	stalled_ctr // the alive counter repeated
 	skipped_ctr // the counter jumped — frames were lost, or the sender restarted
+	timeout     // later than its message's E2ETimeout after the last valid frame (check_at)
 }
 
 // str is the short form used in the trace, where space is scarce and the reader is scanning.
@@ -29,6 +30,20 @@ pub fn (v Violation) str() string {
 		.bad_crc { '!CRC' }
 		.stalled_ctr { '!CNT stalled' }
 		.skipped_ctr { '!CNT skipped' }
+		.timeout { '!TIMEOUT' }
+	}
+}
+
+// name is the verdict as a script reads it: Lua's frame.e2e, and what the C ABI's enum bb_e2e
+// names (cmd/libblobly e2e.v maps it by variant).
+pub fn (v Violation) name() string {
+	return match v {
+		.ok { 'ok' }
+		.truncated { 'truncated' }
+		.bad_crc { 'bad_crc' }
+		.stalled_ctr { 'repeated' }
+		.skipped_ctr { 'skipped' }
+		.timeout { 'timeout' }
 	}
 }
 
@@ -45,6 +60,10 @@ pub mut:
 	have_ctr bool
 	seen     u64 // frames checked
 	bad      u64 // frames that failed
+	// when the last valid frame came (check_at): its raw stamp, in the clock domain `valid_clock`
+	last_valid_ns i64
+	valid_clock   string
+	have_valid    bool
 }
 
 // holds is whether `data` holds the protection field `name` whole (and its multiplexor), if the
@@ -129,6 +148,38 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 		break
 	}
 	return .ok
+}
+
+// check_at judges a received payload as check does, and its receive stamp `t_ns` in the clock
+// domain `clock` (CanFrame.hw_ns / hw_domain: raw stamps of one domain are exactly comparable)
+// against the message's E2ETimeout, its receiver's sender-loss timeout (0 or absent for none): a
+// frame whose CRC passes more than that after the last valid frame — its CRC right, its counter
+// not a repeat — is `.timeout`, ahead of its counter's verdict, and the counter is judged against
+// it from there. `clock` '' is a frame with no stamp, whose time is only when it was read: valid,
+// it ends the baseline rather than moving it, and a frame of another domain starts a new one, so
+// no gap is measured across a time that is not the bus's.
+pub fn (mut v Verifier) check_at(data []u8, clock string, t_ns i64) Violation {
+	got := v.check(data)
+	limit_ms := if v.msg.e2e.has_timeout { i64(v.msg.e2e.timeout_ms) } else { 0 }
+	if limit_ms == 0 || got in [.truncated, .bad_crc] {
+		return got
+	}
+	late := clock != '' && v.have_valid && v.valid_clock == clock
+		&& t_ns - v.last_valid_ns > limit_ms * 1_000_000
+	// new data: neither a repeat nor a value the counter never holds (check forgets the counter
+	// for one of those, where a jump keeps it)
+	if got != .stalled_ctr && !(got == .skipped_ctr && !v.have_ctr) {
+		v.have_valid = clock != ''
+		v.valid_clock = clock
+		v.last_valid_ns = t_ns
+	}
+	if !late {
+		return got
+	}
+	if got == .ok {
+		v.bad++
+	}
+	return .timeout
 }
 
 fn mask_of_bits(bits int) u64 {

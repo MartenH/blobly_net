@@ -1573,6 +1573,7 @@ fn script_worker(app &App, path string) {
 			// is what makes app.dbs safe to read here without app.mu.
 			db:      a.script_db(ch)
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
+			verify:  pch.verify // what a received frame's E2E is judged by first
 			carrier: script.carrier_of(pch)
 			// priced as the Buses row prices the wire
 			nominal:   nominal

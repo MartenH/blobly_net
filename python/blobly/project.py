@@ -20,6 +20,7 @@ from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import Generators, listed as _listed_generators
 from .replay import Replays
+from .e2e import E2eStatus, _passed, status_of
 
 
 class Frame:
@@ -27,10 +28,11 @@ class Frame:
     payload) the length it asks for; `fd`/`brs` CAN-FD and its bit-rate switch; `esi` CAN-FD's
     error-state indicator. `t_ms` is when a received frame arrived, in ms on the host's monotonic
     clock (`blobly.now_ms()`), the time the GUI's trace gives it: its receive stamp where the
-    backend reads one, else its receipt. None on a frame not received. A value: equal frames hash
-    alike, and none is changed once made; `t_ms` is not part of the value, so a received frame
-    equals the frame built from its content."""
-    __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi", "t_ms")
+    backend reads one, else its receipt. None on a frame not received. `e2e` is a received frame's
+    E2E verdict (an E2eStatus), None where its message has no E2E on its channel or the frame was
+    not received. A value: equal frames hash alike, and none is changed once made; `t_ms` and `e2e`
+    are not part of the value, so a received frame equals the frame built from its content."""
+    __slots__ = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi", "t_ms", "e2e")
     id: int
     data: bytes
     length: int
@@ -40,12 +42,14 @@ class Frame:
     rtr: bool
     esi: bool
     t_ms: float | None
+    e2e: E2eStatus | None
 
     def __init__(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
                  brs: bool = False, rtr: bool = False, esi: bool = False, length: int | None = None,
-                 t_ms: float | None = None) -> None:
+                 t_ms: float | None = None, e2e: E2eStatus | str | None = None) -> None:
         data = bytes(data)
-        _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi, t_ms))
+        _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi, t_ms,
+                     None if e2e is None else E2eStatus(e2e)))
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError(f"a Frame is a value: make another rather than set {name}")
@@ -57,6 +61,7 @@ class Frame:
         """copy and pickle restore a frame's slots (a subclass's too) past __setattr__."""
         attrs, slots = state if isinstance(state, tuple) else (state, None)
         object.__setattr__(self, "t_ms", None)  # a frame pickled before frames carried a time
+        object.__setattr__(self, "e2e", None)  # or a verdict
         for k, v in {**(attrs or {}), **(slots or {})}.items():
             object.__setattr__(self, k, v)
 
@@ -74,7 +79,7 @@ class Frame:
         return f"Frame(0x{self.id:X} [{self.data.hex(' ').upper()}]{flags})"
 
 
-# what a frame is: every field but when it was received
+# what a frame is: every field but when it was received and its E2E verdict
 _IDENTITY = ("id", "data", "length", "ext", "fd", "brs", "rtr", "esi")
 
 
@@ -85,10 +90,10 @@ def _fill(frame, fields):
 
 def frame_of(f: _lib.BbFrame, received: bool = False) -> Frame:
     """A Frame from a bb_frame: a remote frame's len is the length it asks for, with no payload;
-    a received one carries its t_ns as t_ms."""
+    a received one carries its t_ns as t_ms, and its E2E verdict."""
     data = b"" if f.rtr else bytes(f.data[:f.len])
     return Frame(f.id, data, bool(f.ext), bool(f.fd), bool(f.brs), bool(f.rtr), bool(f.esi), f.len,
-                 _lib.ms_of(f.t_ns) if received else None)
+                 _lib.ms_of(f.t_ns) if received else None, status_of(f.e2e) if received else None)
 
 
 def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
@@ -206,7 +211,13 @@ class Channel:
                 if not self._project.started:
                     raise BloblyError(f"{self.name}: the project is not started", _lib.BB_ERR_STATE)
                 # the library's own bytes: what it named, not a re-encoding of it
-                self._h = _lib.check(lib.bb_bus_open(lib.bb_channel_iface(self._index)))
+                h = _lib.check(lib.bb_bus_open(lib.bb_channel_iface(self._index)))
+                try:  # its frames judged by this row's E2E (Frame.e2e)
+                    _lib.check(lib.bb_e2e_attach(h, self._index))
+                except BloblyError:
+                    lib.bb_bus_close(h)
+                    raise
+                self._h = h
             return self._h
 
     def send(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
@@ -240,7 +251,8 @@ class Channel:
             return None, rc == _lib.BB_SPENT
         return frame_of(f, received=True), False
 
-    def expect(self, id: "int | Message", timeout_ms: float = 1000, *, ext: bool | None = None) -> Frame:
+    def expect(self, id: "int | Message", timeout_ms: float = 1000, *, ext: bool | None = None,
+               e2e: bool = False) -> Frame:
         """The first frame another node sends with this id AND kind, waited for at most timeout_ms
         in all; blobly.Timeout when none came, its message saying what came instead.
 
@@ -248,6 +260,9 @@ class Channel:
         channel, whose id and kind it is (ext left out). timeout_ms is one deadline for the whole
         wait however many other frames arrive: a finite number of milliseconds, and nothing read
         once it has passed but the first look (a wait of 0 reads at most one queued frame).
+
+        With e2e=True the frame must pass its E2E check (Frame.e2e is "ok"): blobly.E2eError
+        otherwise, its status the verdict, None where the frame's message has no E2E.
 
         Every frame read while waiting is consumed, the ones that did not match included: a later
         recv or expect gets the frame after it."""
@@ -260,13 +275,15 @@ class Channel:
         for f in self._frames_until(deadline, run):
             if (f.id, f.ext) == want:
                 self._same_run(run)
+                if e2e:
+                    _passed(self.name, f)
                 return f
             others[(f.id, f.ext)] += 1
         raise Timeout(f"{self.name}: expected a frame {_id_text(*want)} within {_num(timeout_ms)} ms; "
                       + _came(others, want[0]), _lib.BB_ERR_TIMEOUT)
 
     def expect_signal(self, message: "Message | str", signal: "Signal | str", want: object,
-                      timeout_ms: float = 1000) -> tuple[Frame, float]:
+                      timeout_ms: float = 1000, *, e2e: bool = False) -> tuple[Frame, float]:
         """The first frame of `message` whose decoded `signal` matches `want`, and that value,
         waited for at most timeout_ms in all; blobly.Timeout when none came, its message saying
         what the signal was instead.
@@ -276,7 +293,8 @@ class Channel:
         decoded physical value, or a value compared with ==: decoded values are floats carrying
         the rounding of raw x factor + offset, so a value a binary fraction cannot hold (0.1 steps)
         wants pytest.approx(0.3) or a predicate. timeout_ms is one deadline for the whole wait, as
-        expect's.
+        expect's. With e2e=True every frame of `message` read while waiting must pass its E2E
+        check: blobly.E2eError at the first that does not, as expect's.
 
         Every frame read while waiting is consumed, the ones that did not match included: a later
         recv or expect gets the frame after it."""
@@ -309,6 +327,8 @@ class Channel:
                 others[(f.id, f.ext)] += 1
                 continue
             frames += 1
+            if e2e:
+                _passed(self.name, f)
             got = self._decode(f, run)
             v = next((v for s, v in got[1] if s is sig), None) if got is not None and got[0] is msg else None
             if v is None:
@@ -691,7 +711,12 @@ class Message:
         """The Frame this message sends with the named signals at these physical values and every
         other at raw 0, as a Lua script's bus.send_message encodes it: a name the message does not
         have is refused; a value past what the signal's width holds is clamped to the nearer end.
-        fd/brs are left unset, so a send takes the wire's declared format."""
+        fd/brs are left unset, so a send takes the wire's declared format. Its E2E is not stamped:
+        send() stamps it, and channel.send(f.id, f.data, ext=f.ext) sends an encoded frame as it is."""
+        return frame_of(self._encoded(signals))
+
+    def _encoded(self, signals):
+        """encode's bb_frame."""
         names = []
         values = []
         for k, v in signals.items():
@@ -708,18 +733,26 @@ class Message:
             self._live()
             _lib.check(lib.bb_encode(self.channel._index, self._index, n, (ctypes.c_char_p * n)(*names),
                                      (ctypes.c_double * n)(*values), ctypes.byref(f)))
-        return frame_of(f)
+        return f
 
     def send(self, /, **signals: float) -> Frame:
-        """Encodes this message (encode) and sends it on its channel; returns the encoded Frame. Its
-        fd/brs are unset, so what goes out takes the wire's declared format. Encoded and the
-        channel's handle taken under one hold of the state lock, so a stop and start on another
-        thread cannot put this run's encoding on the next run's wire."""
+        """Encodes this message (encode), stamps the E2E its database declares — the counter its
+        next of this run's sends by name on the channel, from 0, then the CRC, over what the
+        signals gave them, as a simulated sender stamps it — and sends it on its channel; returns
+        the Frame sent. A declaration that cannot be applied raises Refused rather than go out
+        unprotected; a send that fails after its stamp has used its counter, as a frame lost on
+        the wire does. Its fd/brs are unset, so what goes out takes the wire's declared format.
+        To send it unstamped (a corrupted frame on purpose), encode it and send the frame:
+        channel.send(f.id, f.data, ext=f.ext). Encoded, stamped and the channel's handle taken
+        under one hold of the state lock, so a stop and start on another thread cannot put this
+        run's encoding on the next run's wire."""
+        lib = _lib.lib()
         with _lib.state_lock:
-            f = self.encode(**signals)
-            h = self.channel._handle()
-        self.channel._send_on(h, _bb_frame(self.channel.name, f.id, f.data, f.ext))
-        return f
+            f = self._encoded(signals)
+            h = self.channel._handle()  # first: a channel that will not open uses no counter
+            _lib.check(lib.bb_e2e_stamp(self.channel._index, self._index, ctypes.byref(f)))
+        self.channel._send_on(h, f)
+        return frame_of(f)
 
     def __repr__(self) -> str:
         return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"

@@ -1,0 +1,46 @@
+VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: Chassis Tester
+
+BO_ 769 BrakeStatus: 6 Chassis
+ SG_ BrakePressure : 0|16@1+ (1,0) [0|65535] "kPa" Tester
+ SG_ Pad : 16|8@1+ (1,0) [0|255] "" Tester
+ SG_ BrakeCrc : 32|8@1+ (1,0) [0|255] "" Tester
+ SG_ BrakeCounter : 40|4@1+ (1,0) [0|15] "" Tester
+
+BO_ 770 BrakeCommand: 4 Tester
+ SG_ Demand : 0|16@1+ (1,0) [0|65535] "kPa" Chassis
+ SG_ CommandCrc : 16|8@1+ (1,0) [0|255] "" Chassis
+ SG_ CommandCounter : 24|4@1+ (1,0) [0|15] "" Chassis
+
+BO_ 771 WheelSpeed: 2 Chassis
+ SG_ Speed : 0|16@1+ (0.01,0) [0|655.35] "km/h" Tester
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ BO_ "E2ECounterSignal" STRING;
+BA_DEF_ BO_ "E2ECrcSignal" STRING;
+BA_DEF_ BO_ "E2EProfile" STRING;
+BA_DEF_ BO_ "E2EDataId" INT 0 65535;
+BA_DEF_ BO_ "E2ETimeout" INT 0 65535;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "E2ECounterSignal" "";
+BA_DEF_DEF_ "E2ECrcSignal" "";
+BA_DEF_DEF_ "E2EProfile" "";
+BA_DEF_DEF_ "E2EDataId" 0;
+BA_DEF_DEF_ "E2ETimeout" 0;
+BA_ "GenMsgCycleTime" BO_ 769 10;
+BA_ "GenMsgCycleTime" BO_ 771 20;
+BA_ "E2ECounterSignal" BO_ 769 "BrakeCounter";
+BA_ "E2ECrcSignal" BO_ 769 "BrakeCrc";
+BA_ "E2EProfile" BO_ 769 "P01";
+BA_ "E2EDataId" BO_ 769 4676;
+BA_ "E2ETimeout" BO_ 769 100;
+BA_ "E2ECounterSignal" BO_ 770 "CommandCounter";
+BA_ "E2ECrcSignal" BO_ 770 "CommandCrc";
+BA_ "E2EProfile" BO_ 770 "P01";
+BA_ "E2EDataId" BO_ 770 8705;
+BA_ "E2ETimeout" BO_ 770 100;
