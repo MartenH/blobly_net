@@ -19,6 +19,7 @@ from .uds import FunctionalReply, UdsClient, _close_orphans, functional
 from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import Generators, listed as _listed_generators
+from .replay import Replays
 from .e2e import E2eStatus, _passed, status_of
 
 
@@ -769,12 +770,13 @@ def _say_dropped(path, gone):
                   + ", ".join(gone) + "); register them again", RuntimeWarning, stacklevel=level)
 
 
-class Project(EventLoop[Channel | str], Faults):
+class Project(EventLoop[Channel | str], Faults, Replays):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
     process, and one thread drives load, start and stop (bb.h); send and recv may run on others.
     Faults (fault, clear_fault) make its simulated ECUs misbehave on purpose; `generators` fires and
-    cycles its generators."""
+    cycles its generators; replay and record play a recording onto its channels and record them to a
+    file."""
     path: str | bytes
     started: bool
 
@@ -869,11 +871,15 @@ class Project(EventLoop[Channel | str], Faults):
                     c.close()
                 except BloblyError:
                     pass  # a handle already gone is closed enough
+            failed = self._stop_recordings()  # said once the project is stopped
             self.started = False
             _lib.state["run"] += 1  # the run's databases end with it
             # False: a loop outlived the stop's bound and still holds the process; a start refuses
             # until blobly.wait_released says it has let go
-            return _lib.check(lib.bb_stop()) != _lib.BB_RELEASING
+            free = _lib.check(lib.bb_stop()) != _lib.BB_RELEASING
+        for e in failed:
+            warnings.warn(f"a recording left running failed: {e}", RuntimeWarning, stacklevel=2)
+        return free
 
     def __enter__(self) -> Self:
         return self.start()

@@ -9,7 +9,7 @@ project's buses directly.
 **Python is the primary scripting interface** ([#507](https://github.com/MartenH/blobly_net/issues/507)).
 Each capability is written once in the engine and exposed through the C ABI to Python first. Lua
 ([scripting.md](scripting.md)) stays for the GUI's Script panel, quick bench work and the
-existing suites. [What is not there yet](#18-what-is-not-there-yet) lists what Python does not
+existing suites. [What is not there yet](#19-what-is-not-there-yet) lists what Python does not
 have yet, with #507's phases.
 
 An AI agent driving Blobly Net should start at [agents.md](agents.md). Complete, runnable
@@ -31,11 +31,12 @@ it ([vscode.md](vscode.md)): completion from the package's type annotations (it 
 11. [DoIP](#11-doip)
 12. [SOME/IP](#12-someip)
 13. [Flashing](#13-flashing)
-14. [Testing with pytest](#14-testing-with-pytest)
-15. [Threads](#15-threads)
-16. [Errors](#16-errors)
-17. [Reference](#17-reference)
-18. [What is not there yet](#18-what-is-not-there-yet)
+14. [Replay and recording](#14-replay-and-recording)
+15. [Testing with pytest](#15-testing-with-pytest)
+16. [Threads](#16-threads)
+17. [Errors](#17-errors)
+18. [Reference](#18-reference)
+19. [What is not there yet](#19-what-is-not-there-yet)
 
 Every Python block in this guide runs as written from the root of a repository checkout:
 `python/tests/test_docs.py` runs each one against sim-demo, in CI.
@@ -97,7 +98,7 @@ version.
 **Call `blobly.init()` on the main thread first.** Importing does not load the engine, and the
 first call that needs it loads it. bb.h requires that load to happen on the process's main thread,
 and the package refuses it anywhere else. Any later call may come from any thread (see
-[Threads](#15-threads)).
+[Threads](#16-threads)).
 
 ---
 
@@ -1075,7 +1076,65 @@ returns a `BootReport`, kept as `boot.report`. Stop it before the project.
 
 ---
 
-## 14. Testing with pytest
+## 14. Replay and recording
+
+`net.replay` plays a recording onto channels of the started project, and `net.record` writes what
+channels carry to a file, as the Lua `replay.start` and `record.start` do (`blobly/replay`). A
+replay is the engine's player, the one the GUI's Replay panel drives: one clock over every channel
+it plays onto, and the ECU under test subtracted by DBC sender, as each row's `replay:` block says.
+
+```python
+import os, tempfile
+import blobly
+
+with blobly.Project("projects/replay-demo.blobnet") as net:
+    ch = net.channels.REPLAY1
+    path = os.path.join(tempfile.mkdtemp(), "capture.log")
+    with net.record(path, ch) as rec:
+        with net.replay(ch, paused=True, loop=False) as r:
+            print(r.notes)          # ['REPLAY1: 60 frames, 0 withheld']
+            r.seek(1.5)             # seconds into the recording
+            r.set_speed(4)
+            r.resume()
+            assert r.wait_done(5000)
+            print(r.status())       # ReplayStatus(state='finished', ..., sent=30, ...)
+    print(rec.stop())               # RecordCounts(frames=30, ours=30, theirs=0, missed=0, dropped=0)
+    print(open(path).readline())    # (113709.238217) REPLAY1 100#512FE77397100000 T
+```
+
+[replay_record.py](../python/examples/replay_record.py) is a complete script.
+
+**`net.replay(channels, source=None, *, speed=None, loop=None, paused=False, exclude=None,
+bus=None)`** returns a `Replay`. `channels` is a `Channel` or its name, or a list of them on one
+clock. What is left `None` the rows' `replay:` blocks say: `source` (a candump `.log` or an `.mf4`),
+`speed`, `loop`, and `exclude`, the nodes subtracted by DBC sender; `bus` names the recorded bus,
+for one channel, where the recording holds several. `paused` starts it paused at its beginning.
+It is refused (`Refused`) where it would play something other than asked: no source, a recorded
+bus that does not resolve, an exclusion no channel's database declares, two channels on one wire,
+nothing left to play after the subtraction, or rows disagreeing about what was left `None`.
+
+`pause()`, `resume()`, `seek(position_s)`, `set_speed(speed)` and `set_loop(on)` are applied before
+they return, so `status()` then says so; a finished replay resumes from the start, and a seek
+leaves it paused where it was moved. They may come from any thread. `wait_done(timeout_ms=10000)`
+waits for a non-looping replay to run out, or for it to be stopped: `True` when it did, `False`
+when the time ran out (`None` waits for ever; Ctrl-C ends it within 100 ms). `stop()`, or the end
+of its `with` block, stops it and lets its buses go; a stop of the project stops every replay and
+recording too (a recording that failed is then a `RuntimeWarning`). `status()` still answers after a stop, `ended` true. A replay sends through handles of its own, not
+the channel's: its frames reach the channel's handle as any other node's do, so `ch.load()` counts
+them as they are read.
+
+**`net.record(path, channels)`** writes what `channels` (one per wire, and no two of one name)
+carry to the candump `.log` at `path`, created or truncated once their buses are open, until
+`stop()` or the end of its `with` block. A line per frame as
+it is read: `(t) <channel> <id>#<data> T`, `t` the host's monotonic clock in seconds
+(`blobly.now_ms() / 1000`). The last token is the origin, as `candump -x` and python-can write a
+direction: `T` for a frame this process sent — the tester, a simulated ECU or a replay alike, which
+the format cannot tell apart — and `R` for the rest. The file replays as it is, and the GUI's
+Record writes the same lines.
+
+---
+
+## 15. Testing with pytest
 
 Tests run on [pytest](https://docs.pytest.org/): plain `assert`, fixtures and pytest's own
 reports. `blobly` brings a pytest plugin, `blobly.pytest_plugin`, whose fixtures start the
@@ -1167,7 +1226,7 @@ plugin makes the fixtures at run time, so annotate a test's parameters (`can1: C
 
 ---
 
-## 15. Threads
+## 16. Threads
 
 - **Load the engine on the main thread** (`blobly.init()`). After that any thread may call in. A
   thread is attached to the engine on its first call and detached when it ends, without you
@@ -1205,7 +1264,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 16. Errors
+## 17. Errors
 
 | exception | when |
 |---|---|
@@ -1262,7 +1321,7 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ---
 
-## 17. Reference
+## 18. Reference
 
 Import everything from `blobly`, and the E2E helpers, SOME/IP, flashing and the WSL bridge from
 `blobly.e2e`, `blobly.someip`, `blobly.flash` and `blobly.bridge`. The submodules
@@ -1374,6 +1433,43 @@ the block.
 | `blobly.bridge.stop(distro)` | Disconnects a connected bridge, which ends it, and returns once it has gone. `BloblyError` (code -3) when it is not connected, or while a project is started; `Timeout` when it was cut but had not gone within 2 s. |
 | `blobly.bridge.program()` | The `canbridge` a start runs: beside the engine (the Windows wheel's), else beside the executable; `None` when there is none (a start then runs the distribution's own) and on Linux. |
 
+### `Replay`, `ReplayStatus`
+
+`net.replay(...)`: a recording playing onto channels of the started project (see
+[Replay and recording](#14-replay-and-recording)). `with net.replay(ch) as r:` stops it at the end
+of the block.
+
+| member | what |
+|---|---|
+| `r.channels` | The `Channel`s it plays onto. |
+| `r.notes` | What the plan kept and withheld, a line per channel. |
+| `r.pause()`, `r.resume()` | Holds it; plays on (a finished replay from the start). |
+| `r.seek(position_s)` | Moves to that many seconds into the recording, clamped to it. |
+| `r.set_speed(speed)`, `r.set_loop(on)` | The rate, the position kept; whether the end starts it again. |
+| `r.status()` | A `ReplayStatus`, as of its last tick (at most 20 ms ago). |
+| `r.wait_done(timeout_ms=10000)` | `True` once a non-looping replay ran out or it was stopped; `False` when the time ran out. |
+| `r.stop()` | Stops it; returns its last `ReplayStatus`. Its controls are refused after, and `status()` still says what it did. |
+| `ReplayStatus.state` | `"playing"`, `"paused"` or `"finished"` (a non-looping replay ran out). |
+| `ReplayStatus.position_s`, `ReplayStatus.duration_s`, `ReplayStatus.speed`, `ReplayStatus.loop` | Where it is in the recording, how long that is, its rate and loop. |
+| `ReplayStatus.passes` | Complete passes, the last of a non-looping replay included. |
+| `ReplayStatus.sent`, `ReplayStatus.failed`, `ReplayStatus.error` | Frames the drivers took and refused since it last started, and the first refusal (`""` without one). |
+| `ReplayStatus.ended` | Stopped: its buses are let go. |
+
+### `Recording`, `RecordCounts`
+
+`net.record(path, channels)`: channels recorded to a candump `.log` (see
+[Replay and recording](#14-replay-and-recording)). `with net.record(path, ch) as rec:` stops it at
+the end of the block.
+
+| member | what |
+|---|---|
+| `rec.path`, `rec.channels` | The file's absolute path, and the `Channel`s it records. |
+| `rec.counts()` | A `RecordCounts` of what it holds so far. |
+| `rec.stop()` | Ends it, once: its readers write what is queued, the sends in flight settle (2 s at most), the file is closed. Returns its `RecordCounts`; `Refused` when a write or a receive failed on the way, or that did not finish in time (the file keeps what was written). |
+| `RecordCounts.frames`, `RecordCounts.ours`, `RecordCounts.theirs` | Lines written, and of them the frames this process sent (`T`) and the rest (`R`). |
+| `RecordCounts.missed` | Frames this process sent that never came back to the recorder: not written. |
+| `RecordCounts.dropped` | Frames the recorder's own handles lost before it read them: it fell behind. |
+
 ### `Project`
 
 `blobly.Project(path)`: a `.blobnet` project. `path` is a `str`, `bytes` or path-like; a NUL in it
@@ -1393,6 +1489,8 @@ raises `ValueError`. It is also an `EventLoop`.
 | `net.clear_fault(channel, node, message)` | Lifts that message's fault. |
 | `net.clear_faults()` | Lifts every fault. |
 | `net.generators` | The run's generators, a `Generators` ([Generators](#generators)). `BloblyError` (code -3) when not started. |
+| `net.replay(channels, source=None, *, speed=None, loop=None, paused=False, exclude=None, bus=None)` | Plays a recording onto channels of the started project: a `Replay`. |
+| `net.record(path, channels)` | Records channels of the started project to a candump `.log`: a `Recording`. |
 
 ### `EventLoop`
 
@@ -1671,7 +1769,7 @@ effect, and nothing changed.
 ### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`, `ConnectionLost`, `RoutingDenied`, `FlashFailed`
 
 `blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused, or a call failed. The
-others are its subclasses (see [Errors](#16-errors) and
+others are its subclasses (see [Errors](#17-errors) and
 [UDS diagnostics](#10-uds-diagnostics)).
 
 | member | what |
@@ -1684,7 +1782,7 @@ others are its subclasses (see [Errors](#16-errors) and
 
 ### `blobly.pytest_plugin`
 
-The pytest plugin ([Testing with pytest](#14-testing-with-pytest)). Not imported by `blobly`: a
+The pytest plugin ([Testing with pytest](#15-testing-with-pytest)). Not imported by `blobly`: a
 suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.pytest_plugin`.
 
 | name | what |
@@ -1697,12 +1795,12 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 
 ---
 
-## 18. What is not there yet
+## 19. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
 loop, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
 the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP, DoIP
-discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
 - UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
@@ -1718,7 +1816,7 @@ discovery, SOME/IP send, call and listen, flashing, the WSL bridge, `expect` and
 - Stating a frame's format (a classic frame on a CAN-FD wire).
 - Generator control is here ([Generators](#generators)): fire, start, stop, the cycle, a signal's
   value or source.
-- Replay control and recording to a file.
+- Replay control and recording to a file are here ([Replay and recording](#14-replay-and-recording)).
 - E2E verify on receive, and E2E declared in the DBC applied on send, are here
   ([E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)).
 - Background cyclic senders and a session keep-alive (one owner thread per channel).

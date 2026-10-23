@@ -1,7 +1,7 @@
 // canlog — parse and format candump `.log` files (the `candump -l` line format).
 //
 // Format (one frame per line):
-//   (<timestamp>) <iface> <id>#<hexdata>
+//   (<timestamp>) <iface> <id>#<hexdata> [R|T]
 // e.g.  (1764507600.123456) vcan0 100#AABBCCDD
 //       (12.345678) can0 18FEF100#0102030405060708
 //       (2.000000) vcan0 700#            (empty payload)
@@ -50,8 +50,7 @@ pub fn parse_line(line string) ?LogEntry {
 	}
 	close := s.index(')') or { return none }
 	t_s := s[1..close].trim_space().f64()
-	rest := s[close + 1..].trim_space()
-	parts := rest.split(' ')
+	parts := s[close + 1..].fields() // any run of spaces or tabs between fields
 	if parts.len < 2 {
 		return none
 	}
@@ -101,8 +100,19 @@ pub fn parse_line(line string) ?LogEntry {
 			return none // longer than any CAN frame: a corrupt or hand-edited line, refused whole
 		}
 	}
+	// candump -x and python-can end a line with the recorder's direction: R received, T sent
+	dir := if parts.len > 2 {
+		match parts[2] {
+			'R' { Dir.rx }
+			'T' { Dir.tx }
+			else { Dir.unknown }
+		}
+	} else {
+		Dir.unknown
+	}
 	return LogEntry{
 		t_s:   t_s
+		dir:   dir
 		iface: iface_from_token(iface) // reverses the writer's escaping; a plain name is unchanged
 		frame: transport.CanFrame{
 			id:       id
@@ -151,8 +161,17 @@ pub fn load_file(path string) ![]LogEntry {
 }
 
 // format_line renders an entry back to candump `.log` form. Inverse of
-// parse_line (modulo timestamp precision and id zero-padding).
+// parse_line (modulo timestamp precision and id zero-padding). A known direction ends the line,
+// as candump -x and python-can write it: ` R` received, ` T` sent by the recorder.
 pub fn format_line(e LogEntry) string {
+	return match e.dir {
+		.rx { format_frame(e) + ' R' }
+		.tx { format_frame(e) + ' T' }
+		.unknown { format_frame(e) }
+	}
+}
+
+fn format_frame(e LogEntry) string {
 	idhex := if e.frame.extended { '${e.frame.id:08X}' } else { '${e.frame.id:03X}' }
 	// CAN-FD takes candump's second '#' plus a flags digit, so the FD and BRS bits survive the
 	// file. Writing an FD frame in classic syntax produced a line that parsed back as a classic
@@ -187,7 +206,7 @@ pub fn iface_token(s string) string {
 	mut out := ''
 	for c in s {
 		out += match c {
-			` `, `\t`, `#`, `(`, `)`, `%` { '%${c:02X}' }
+			` `, `\t`, `\n`, `\r`, `#`, `(`, `)`, `%` { '%${c:02X}' }
 			else { c.ascii_str() }
 		}
 	}
@@ -219,7 +238,7 @@ pub fn iface_from_token(s string) string {
 			// `CAN%31`, and decoding that to `CAN1` would silently rename somebody else's
 			// channel — while `%20` cannot appear in a real interface name, because the token
 			// it decodes to (a space) is not allowed in one.
-			if c !in [u8(` `), `\t`, `#`, `(`, `)`, `%`] {
+			if c !in [u8(` `), `\t`, `\n`, `\r`, `#`, `(`, `)`, `%`] {
 				out << s[i]
 				i++
 				continue

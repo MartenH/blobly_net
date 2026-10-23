@@ -957,6 +957,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 						t_s:   a.since_s()
 						iface: ch_own
 						frame: f
+						dir:   .tx
 					})
 				}
 			}
@@ -1063,6 +1064,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				t_s:   a.since_s()
 				iface: chname
 				frame: f
+				dir:   .rx
 			})
 		}
 		// Our own echo is not received traffic. The trace has not called it RX since the origin
@@ -1576,6 +1578,14 @@ fn script_worker(app &App, path string) {
 			// priced as the Buses row prices the wire
 			nominal:   nominal
 			data_rate: data_rate
+			replay:  if r := pch.replay {
+				?project.Replay(project.Replay{
+					...r
+					source: a.resolve_asset(r.source)
+				})
+			} else {
+				none
+			}
 		}
 	}
 	mut env := script.new_env(chans) or {
@@ -1598,6 +1608,10 @@ fn script_worker(app &App, path string) {
 		// to the first.
 		return a.open_tap_on(iface, org_tx, chan_name)
 	}
+	// a script's replay reproduces a recording, as Start's does: framed as recorded, filed TX-S
+	env.reproducer = fn [a] (iface string, chan_name string) !transport.Bus {
+		return a.open_tap_full(iface, org_tx_sim, chan_name, 0, true)
+	}
 	env.run_file(path) or { a.script_push('error: ${err}') }
 	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')
 	// What the script's own wires counted (#213): a suite run from here while the measurement
@@ -1605,6 +1619,11 @@ fn script_worker(app &App, path string) {
 	// round 5 on #231).
 	for name, d in env.close_reporting() {
 		a.script_push('${name}: ${d.str()}')
+	}
+	// this worker's reservation covers the script's replays: one a driver call held past its
+	// stop still sends through an App tap, so it is waited for before the reservation goes
+	for !env.replays_ended() {
+		time.sleep(20 * time.millisecond)
 	}
 	a.script_done()
 }

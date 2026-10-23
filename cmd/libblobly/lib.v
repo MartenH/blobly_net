@@ -30,6 +30,7 @@ import time
 import v.vmod
 import blobly.candb
 import blobly.headless
+import blobly.player
 import blobly.project
 import blobly.transport
 
@@ -242,6 +243,39 @@ pub mut:
 	decode_errors u64
 }
 
+// bb.h's replay and recording structs (replay.v)
+pub struct C.bb_replay_opts {
+pub mut:
+	source  &char
+	speed   f64
+	loop    i32
+	paused  i32
+	exclude &char
+	bus     &char
+}
+
+pub struct C.bb_replay_info {
+pub mut:
+	state      i32
+	loop       u8
+	ended      u8
+	passes     i32
+	position_s f64
+	duration_s f64
+	speed      f64
+	sent       i64
+	failed     i64
+}
+
+pub struct C.bb_record_report {
+pub mut:
+	frames  i64
+	ours    i64
+	theirs  i64
+	missed  i64
+	dropped i64
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
@@ -333,6 +367,8 @@ pub fn bb_now_ns() i64 {
 // Here so a host-side requirement has a place without changing the ABI.
 @[export: 'bb_init']
 pub fn bb_init() i32 {
+	// a replay paces itself by sleeps below a millisecond: on Windows they need the 1 ms period
+	player.raise_timer_resolution()
 	return ok()
 }
 
@@ -397,7 +433,7 @@ pub fn bb_load(path &char) i32 {
 		return fail(bb_err_state, 'a run is active; stop it before loading another project')
 	}
 	// a stopped run's loop still out sends under that run's policy, which the load would replace
-	if !headless.released() {
+	if !released() {
 		return fail(bb_err_state, 'a previous run is still releasing its wires, under its own wire policy; wait until it has (bb_wait_released)')
 	}
 	p := unsafe { cstring_to_vstring(path) }
@@ -440,6 +476,9 @@ pub fn bb_start() i32 {
 	if !isnil(bb_run) {
 		return fail(bb_err_state, 'already started; stop first')
 	}
+	if !replays_released() {
+		return fail(bb_err_state, 'a previous run is still releasing its wires; wait until it has (bb_wait_released), then start')
+	}
 	r := headless.start(bb_proj, bb_path, headless.Options{}) or {
 		// headless's own state refusal: with no run of ours, a previous run's loop is still out
 		// past its stop's bound
@@ -480,24 +519,40 @@ pub fn bb_stop() i32 {
 	gens_retire()
 	bb_dbs_live = false
 	bb_mu.unlock()
+	replays_stop()
 	r.stop()
 	boot_sims_stop()
 	// the rows as the project says again: a moved DoIP port was the stopped run's
 	name_rows(bb_proj.channels.filter(it.enabled))
-	if !headless.released() {
+	if !released() {
 		ok()
 		return bb_releasing
 	}
 	return ok()
 }
 
+// released is whether the process is free for the next run: no run's loop, replay or recording
+// still letting go of its wires.
+fn released() bool {
+	return headless.released() && replays_released()
+}
+
 @[export: 'bb_wait_released']
 pub fn bb_wait_released(timeout_ms i32) i32 {
-	if headless.wait_released(int(timeout_ms)) {
-		return ok()
+	until := time.sys_mono_now() + u64(if timeout_ms > 0 { timeout_ms } else { 0 }) * 1_000_000
+	for !released() {
+		now := time.sys_mono_now()
+		if timeout_ms >= 0 && now >= until {
+			ok()
+			return bb_releasing
+		}
+		time.sleep(if timeout_ms >= 0 && until - now < 10_000_000 {
+			i64(until - now) * time.nanosecond
+		} else {
+			10 * time.millisecond
+		})
 	}
-	ok()
-	return bb_releasing
+	return ok()
 }
 
 @[export: 'bb_channel_count']
