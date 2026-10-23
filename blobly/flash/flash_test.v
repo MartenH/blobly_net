@@ -1,6 +1,7 @@
 module flash
 
 import blobly.isotp
+import blobly.uds
 
 // A fake blobly bootloader on the in-process bus, doing the two things a real one does that the
 // flasher's old request loop could not take: it answers the erase with responsePending (0x78)
@@ -159,4 +160,26 @@ fn test_progress_is_a_call_per_whole_percent_and_the_last_block() {
 	mut q := Percent{}
 	assert q.due(1, 3)? == 33
 	assert q.due(3, 3)? == 100
+}
+
+fn test_the_simulated_bootloader_holds_the_session_to_its_order() {
+	mut sim := start_boot_sim(isotp.open_software('inproc:BOOTSIM_ORDER', boot_tx, tester_tx, false)!)
+	mut ch := isotp.open_software('inproc:BOOTSIM_ORDER', tester_tx, boot_tx, false)!
+	defer {
+		ch.close()
+	}
+	ask := fn [mut ch] (req []u8) []u8 {
+		ch.send(req) or { panic(err) }
+		return ch.recv(1000) or { panic(err) }
+	}
+	assert ask([u8(0x34), 0x00, 0x44, 0, 0, 0, 0, 0, 0, 0, 0]) == [u8(0x7F), 0x34, 0x33], 'a download before 0x29'
+	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x7F), 0x36, 0x24], 'a block with no download'
+	mut c := uds.new_client(ch)
+	authenticate(mut c, tester_seed('')!, mut Notes{})!
+	assert ask([u8(0x31), 0x01, 0x02, 0x03]) == [u8(0x7F), 0x31, 0x31], 'a routine it does not have'
+	assert ask([u8(0x34), 0x00, 0x44, 0, 0, 0, 0, 0, 0, 0, 0])[0] == 0x74
+	assert ask([u8(0x36), 0x02, 0xAA]) == [u8(0x7F), 0x36, 0x73], 'a block out of sequence'
+	assert ask([u8(0x36), 0x01, 0xAA]) == [u8(0x76), 0x01]
+	rep := sim.stop()
+	assert rep.authenticated && rep.blocks == 1 && rep.image == [u8(0xAA)]
 }

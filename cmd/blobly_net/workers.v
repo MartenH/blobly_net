@@ -1475,8 +1475,8 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 	}
 	// 0x29 tester seed: $BLOBLY_FLASH_SEED or the dev seed — same as cmd/flash, so
 	// the panel authenticates against a secured boot instead of skipping 0x29.
-	seed := flash.tester_seed(os.getenv('BLOBLY_FLASH_SEED')) or {
-		a.flash_append('(BLOBLY_FLASH_SEED: ${err})')
+	seed := flash.auth_seed(true, none, none) or {
+		a.flash_append('(${err})')
 		return
 	}
 	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: ver, auth_seed: seed }, mut

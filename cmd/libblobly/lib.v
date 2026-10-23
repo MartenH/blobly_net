@@ -428,6 +428,7 @@ pub fn bb_stop() i32 {
 	bb_dbs_live = false
 	bb_mu.unlock()
 	r.stop()
+	boot_sims_stop()
 	// the rows as the project says again: a moved DoIP port was the stopped run's
 	name_rows(bb_proj.channels.filter(it.enabled))
 	if !headless.released() {

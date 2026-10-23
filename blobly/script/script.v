@@ -721,7 +721,7 @@ fn l_someip_call(l lua.State) i32 {
 		payload: payload
 	}
 	a := env.someip_sessions.call_once(port, to, m, timeout, 'a script') or {
-		return l.fail('someip.call: ${err}')
+		return l.fail('someip.call(${to}): ${err}')
 	}
 	l.push_str(if a.timed_out {
 		'timeout'

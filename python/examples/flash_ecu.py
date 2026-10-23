@@ -65,6 +65,8 @@ def main(argv: list[str]) -> int:
         boot = None if args.board else flash.BootSim(ch)  # stands in for the board
         try:
             report = flash.program(ch, image, sw_version=2, progress=quarters())
+        except blobly.BloblyError as e:  # a step refused or unanswered, or the session's own verdict
+            fail(f"the flash: {e}")
         finally:
             asked = boot.stop() if boot else None
         print(f"flashed {report.bytes} bytes in {report.blocks} blocks, 0x29 {report.auth}, "

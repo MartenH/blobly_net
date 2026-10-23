@@ -77,6 +77,8 @@ def _out(m: SomeipMessage, keep: list) -> _lib.BbSomeipOut:
     """A bb_someip_out for `m`; its payload kept alive in `keep` for the call."""
     if not isinstance(m, SomeipMessage):
         raise TypeError(f"a SomeipMessage, not {m!r}")
+    if m.service is None or m.method is None:
+        raise TypeError(f"a message needs its service and method: {m!r}")
     if m.type is not None and m.type not in _TYPES:
         raise ValueError(f"type {m.type!r}: one of {', '.join(_TYPES)}")
     if isinstance(m.payload, (str, int)):
@@ -147,8 +149,8 @@ def call(to: str, request: SomeipMessage, *, port: int | None = None, timeout_ms
     `port` (None: 30491) and returns the RESPONSE or ERROR mirroring its Request ID as soon as it
     arrives from `to` — an ERROR is an answer (`type` "error", its `return_code`). Events, other
     senders and stale replies to an earlier session are skipped. Raises Timeout when nothing
-    answered within `timeout_ms`, Refused for what is no request (an event id, client 0, another
-    type) and for a session this run already sent."""
+    answered within `timeout_ms` (more than 0), Refused for what is no request (an event id,
+    client 0, another type) and for a session this run already sent."""
     wait = _ms("someip.call", timeout_ms)
     p = _port("someip.call", port)
     dest = _to("someip.call", to)

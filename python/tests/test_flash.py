@@ -119,6 +119,14 @@ class TestFlash(unittest.TestCase):
         b = self.boot.stop()
         self.assertEqual((b.erases, b.checks), (2, 1), "the stopped transfer was never checked")
 
+    def test_a_progress_that_calls_the_flashing_client_is_refused(self):
+        with self.can1.uds(0x7B0, 0x7B8) as diag:
+            with self.assertRaises(blobly.BloblyError) as e:
+                flash.program(diag, bytes(3000), progress=lambda done, total: diag.tester_present(), quiet=True)
+            self.assertIn("is flashing", str(e.exception))
+            self.assertEqual(flash.program(diag, bytes(100), quiet=True).auth, "authenticated")
+        self.assertEqual(self.boot.stop().checks, 1, "the refused one stopped before its check")
+
     def test_bad_arguments_are_named(self):
         with self.can1.uds(0x7B0, 0x7B8) as diag:
             with self.assertRaises(blobly.Refused):

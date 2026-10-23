@@ -210,6 +210,17 @@ pub fn bb_boot_sim(r i32, tx &i64, rx &i64) i32 {
 	return i32(id)
 }
 
+// boot_sims_stop stops every simulated bootloader (bb_stop), so none answers into the next run; each
+// stays in the table until bb_boot_sim_stop reads its report.
+fn boot_sims_stop() {
+	bb_mu.lock()
+	mut sims := bb_boots.values()
+	bb_mu.unlock()
+	for mut s in sims {
+		s.stop()
+	}
+}
+
 @[export: 'bb_boot_sim_stop']
 pub fn bb_boot_sim_stop(b i32, out &C.bb_boot_report) i32 {
 	bb_mu.lock()

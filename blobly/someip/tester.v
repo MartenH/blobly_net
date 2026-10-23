@@ -139,6 +139,9 @@ pub:
 pub fn (mut s Sessions) call_once(port int, to string, m Outgoing, timeout_ms int, owner string) !Answer {
 	check_port(port)!
 	check_to(to)!
+	if timeout_ms <= 0 {
+		return error('a call waits for its answer: a timeout of ${timeout_ms} ms')
+	}
 	t := m.msg_type or { mt_request }
 	if t != mt_request {
 		return error('a call sends a request, not a ${msg_type_name(t).to_lower()}')
@@ -157,7 +160,7 @@ pub fn (mut s Sessions) call_once(port int, to string, m Outgoing, timeout_ms in
 		method:     m.method
 		iface:      m.iface or { u8(1) }
 		client_id:  cid
-		timeout_us: u64(if timeout_ms > 0 { timeout_ms } else { 1000 }) * 1000
+		timeout_us: u64(timeout_ms) * 1000
 		session:    if want == 1 { u16(0xFFFF) } else { want - 1 }
 	}
 	sw := time.new_stopwatch()

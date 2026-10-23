@@ -90,9 +90,6 @@ pub fn bb_someip_call(port i32, to &char, req &C.bb_someip_out, timeout_ms i32) 
 	if isnil(req) {
 		return fail(bb_err, 'someip call: no request')
 	}
-	if timeout_ms < 0 {
-		return fail(bb_err, 'someip call: a wait of ${timeout_ms} ms')
-	}
 	dest := to_arg(to) or { return fail(bb_err, 'someip call: ${err}') }
 	m := outgoing(req) or { return fail(bb_err, 'someip call: ${err}') }
 	a := bb_someip_sessions.call_once(local_port(port), dest, m, int(timeout_ms), 'a host') or {

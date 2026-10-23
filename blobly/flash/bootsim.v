@@ -7,7 +7,8 @@ import crypto.ed25519 as ed
 // `program` runs, answered on an ISO-TP channel and strict where a real one is — 0x29 verifies
 // the proof against the dev tester key, erase is refused until it has, the download gives 64-byte
 // blocks and the check routine answers from the CRC the image header states over the bytes it was
-// sent. Nothing is written anywhere; what it was sent is counted (BootReport).
+// sent, a download taking its blocks in sequence after 0x34. Nothing is written anywhere; what it
+// was sent is counted (BootReport).
 
 // BootReport is what a simulated bootloader was asked to do, read once it is stopped.
 pub struct BootReport {
@@ -29,9 +30,10 @@ mut:
 	stop   chan bool
 	t      thread
 	rep    BootReport
-	got    []u8
+	got     []u8
 	authed  bool
 	stopped bool
+	next    int = -1 // the block counter the download in progress expects; -1: none in progress
 }
 
 // boot_challenge is the challenge the simulated bootloader signs against.
@@ -54,6 +56,7 @@ pub fn (mut b BootSim) stop() BootReport {
 		b.stopped = true
 		b.stop <- true
 		b.t.wait()
+		b.rep.image = b.got.clone()
 	}
 	return b.rep
 }
@@ -112,6 +115,9 @@ fn (mut b BootSim) answer(req []u8, public ed.PublicKey) []u8 {
 			if !b.authed {
 				return nrc(0x33)
 			}
+			if req[2] != 0xFF || req[3] > 0x01 {
+				return nrc(0x31) // erase (FF00) and check (FF01) are its routines
+			}
 			mut result := u8(0)
 			if req[3] == 0x00 {
 				b.rep.erases++
@@ -129,19 +135,33 @@ fn (mut b BootSim) answer(req []u8, public ed.PublicKey) []u8 {
 			return [u8(0x71), 0x01, req[2], req[3], result]
 		}
 		0x34 {
+			if !b.authed {
+				return nrc(0x33)
+			}
 			b.got = []u8{} // a download starts the slot over
+			b.next = 1
 			return [u8(0x74), 0x20, 0x00, 0x42] // 64-byte blocks
 		}
 		0x36 {
+			if b.next < 0 {
+				return nrc(0x24) // requestSequenceError: no download in progress
+			}
 			if req.len < 2 {
 				return nrc(0x13)
 			}
+			if int(req[1]) != b.next {
+				return nrc(0x73) // wrongBlockSequenceCounter
+			}
+			b.next = (b.next + 1) & 0xFF
 			b.got << req[2..]
 			b.rep.blocks++
-			b.rep.image = b.got.clone()
 			return [u8(0x76), req[1]]
 		}
 		0x37 {
+			if b.next < 0 {
+				return nrc(0x24)
+			}
+			b.next = -1
 			return [u8(0x77)]
 		}
 		0x11 {

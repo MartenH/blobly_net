@@ -169,15 +169,18 @@ def _program(client, image, base, sw_version, auth, seed, seed_file, progress, q
                 box["error"] = e
             events.put(("end",))
         t = threading.Thread(target=run, name="blobly-flash", daemon=True)
-        t.start()
-
         try:
+            client._flashing = True  # a call on it from `progress` would wait for the session: refused
+            t.start()
             _sliced(report, -1)
         except BaseException:  # Ctrl-C, or progress raising: stop before the check, then say it
-            lib.bb_flash_cancel(h)
             released.set()
-            t.join()
+            while t.is_alive():  # asked again until it lands: the session may not have begun yet
+                lib.bb_flash_cancel(h)
+                t.join(0.02)
             raise
+        finally:
+            client._flashing = False
         t.join()
     if "error" in box:
         raise box["error"]

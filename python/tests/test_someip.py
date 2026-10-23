@@ -140,6 +140,12 @@ class TestSendAndCall(unittest.TestCase):
         with self.assertRaises(ValueError):
             someip.call(self.peer.to, SomeipMessage(1, 1), port=0)
 
+    def test_a_call_waits(self):
+        with self.assertRaises(blobly.Refused):
+            someip.call(self.peer.to, SomeipMessage(0x0100, 0x0001), port=self.port, timeout_ms=0)
+        with self.assertRaises(TypeError):
+            someip.send(self.peer.to, SomeipMessage(None, 1), port=self.port)
+
     def test_no_answer_is_a_timeout(self):
         start = time.monotonic()
         with self.assertRaises(blobly.Timeout):

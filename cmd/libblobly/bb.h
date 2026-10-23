@@ -614,9 +614,10 @@ int bb_e2e_p01_protect(uint8_t *data, int n, int data_id, int crc_pos, int count
  *
  * bb_someip_send sends msgs[0..n-1] to `to` FROM local `port` (0: 30491, for a call too; one
  * socket both ways: a node with a static peer endpoint answers only the port it was addressed
- * from), then hears that port for window_ms. bb_someip_call sends one request and waits at most timeout_ms (0: 1000) for the
- * RESPONSE or ERROR mirroring its Request ID from `to` — an ERROR is an answer, its return code in
- * the message; events, other senders and stale replies are skipped; BB_ERR_TIMEOUT when none came.
+ * from), then hears that port for window_ms. bb_someip_call sends one request and waits at most
+ * timeout_ms (more than 0) for the RESPONSE or ERROR mirroring its Request ID from `to` — an ERROR
+ * is an answer, its return code in the message; events, other senders and stale replies are
+ * skipped; BB_ERR_TIMEOUT when none came.
  * A call refuses an event id, client 0 and any type but a request. bb_someip_listen hears for
  * window_ms what the network already carries on `port` (0: 30490), joining `group` (NULL or "":
  * none) — or, for row >= 0, on SOME/IP row `row`'s bind host, port and group (a port or a group
@@ -648,8 +649,8 @@ int bb_someip_free(int capture);
  * flash with no board: it hears requests on `tx` and answers on `rx` (the tester's ids, NULL for
  * 0x7B0 / 0x7B8), strict where a real one is — 0x29 verifies the proof against the dev tester key,
  * erase is refused before it, the check routine answers from the CRC the image header states.
- * Answers a handle; bb_boot_sim_stop stops it and says what it was asked. It outlives bb_stop: stop
- * it first. */
+ * Answers a handle; bb_boot_sim_stop stops it and says what it was asked. bb_stop stops it too (its
+ * report is still bb_boot_sim_stop's), so none answers into the next run. */
 int bb_flash_defaults(bb_flash_opts *opts);
 int bb_flash_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *out);
 int bb_flash_program(int u, const uint8_t *image, int n, const bb_flash_opts *opts,
