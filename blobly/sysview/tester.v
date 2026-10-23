@@ -120,9 +120,15 @@ fn canonical_host(h string) string {
 	s := h.trim('[]')
 	addr, zone := if i := s.index('%') { s[..i], s[i..] } else { s, '' }
 	if b := ip_bytes(addr) {
-		return b.hex() + zone
+		// an IPv4-mapped IPv6 address is that IPv4 address
+		v := if b.len == 16 && b[..10].all(it == 0) && b[10] == 0xFF && b[11] == 0xFF {
+			b[12..]
+		} else {
+			b
+		}
+		return 'ip:' + v.hex() + zone
 	}
-	return s.to_lower()
+	return 'name:' + s.to_lower()
 }
 
 // ip_bytes is a numeric IPv4 or IPv6 address's bytes (4 or 16), none for anything else.
@@ -134,7 +140,9 @@ fn ip_bytes(s string) ?[]u8 {
 		}
 		mut out := []u8{}
 		for p in parts {
-			if p.len < 1 || p.len > 3 || !p.bytes().all(it.is_digit()) || p.int() > 255 {
+			// a leading zero is octal to a resolver: no address of ours
+			if p.len < 1 || p.len > 3 || !p.bytes().all(it.is_digit()) || p.int() > 255
+				|| (p.len > 1 && p[0] == `0`) {
 				return none
 			}
 			out << u8(p.int())
@@ -186,8 +194,8 @@ fn loopback(host string) bool {
 	if s.to_lower() == 'localhost' {
 		return true
 	}
-	b := ip_bytes(s) or { return false }
-	return (b.len == 4 && b[0] == 127) || (b.len == 16 && b[..15].all(it == 0) && b[15] == 1)
+	c := canonical_host(s)
+	return (c.starts_with('ip:7f') && c.len == 11) || c == 'ip:' + '0'.repeat(30) + '01'
 }
 
 // reach is the one target a tester opens on for node `n`: the one on row `row` when it names one
