@@ -17,6 +17,7 @@ import sync
 import time
 import blobly.headless
 import blobly.player
+import blobly.project
 import blobly.script
 import blobly.udsconn
 
@@ -181,7 +182,11 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 	}
 
 	mut chans := []script.ChanInfo{}
+	rows := hrun.chans.map(it.cfg)
 	for c in hrun.chans {
+		nominal, data_rate := project.wire_rates(rows, c.cfg.iface_with_bitrate()) or {
+			c.cfg.nominal_bitrate(), 0
+		}
 		chans << script.ChanInfo{
 			name:      c.cfg.name
 			// what a script OPENS with — carries the vendor bitrate
@@ -191,6 +196,8 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 			db:        c.db
 			nodes:     c.cfg.all_nodes() // so a fault that cannot take effect can be refused
 			carrier:   script.carrier_of(c.cfg)
+			nominal:   nominal
+			data_rate: data_rate
 		}
 	}
 	mut env := script.new_env(chans) or {

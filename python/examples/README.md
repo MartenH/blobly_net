@@ -11,6 +11,7 @@ the command line overrides it. `someip_node.py` needs no project: it talks to a 
 | [dbc_messages.py](dbc_messages.py) | A channel's database: messages and signals with units, ranges and value labels; encode and decode; send a message by signal name and decode the answer. |
 | [event_loop.py](event_loop.py) | `on_message` by id and by message, `on_timer` for a periodic send, `on_health`, and `run()`. |
 | [signal_monitor.py](signal_monitor.py) | The decoded values of chosen messages, printed twice a second for N seconds. |
+| [bus_metrics.py](bus_metrics.py) | A channel's bus load and its dropped / error / undecodable counts, once a second for N seconds. |
 | [uds_diag.py](uds_diag.py) | UDS over CAN: the default session, the VIN (a multi-frame answer) and other DIDs with the exchange's timing, a negative response caught with its NRC, a security unlock with the reference key, and the DTCs with their status bits, a snapshot and extended data. |
 | [doip_diag.py](doip_diag.py) | UDS over DoIP: the entity's announcements heard, the entity asked who it is, then over its connection the default session, the VIN it serves beside the one it announced, the DTCs, and a request to the functional address 0xE400. |
 | [fault_injection.py](fault_injection.py) | Faults on sim-demo's simulated ECUs, seen on the bus: Powertrain dropped for a second and back by itself, BrakePedal forced past its declared range until cleared, and `bad_crc` refused where nothing is protected. |

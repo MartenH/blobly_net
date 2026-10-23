@@ -541,6 +541,18 @@ end
 -- the controller`s ladder now: "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF", or "" where the
 -- backend cannot say (the software buses)
 function bus.health(channel) return __bus_health(channel) end
+-- bus metrics of this script`s handle on the channel since it opened. load: percent over the last
+-- whole second and average since open (both nil before one), frames and bits (nominal bit-times) counted,
+-- the nominal rate they are priced at. DECODED frames only, both directions: what the handle
+-- receives (counted when read) and what it sends. diagnostics: the backend`s counts since open.
+function bus.load(channel)
+  local percent, average, frames, bits, nominal = __bus_load(channel)
+  return { percent = percent, average = average, frames = frames, bits = bits, nominal = nominal }
+end
+function bus.diagnostics(channel)
+  local dropped, bus_errors, decode_errors = __bus_diagnostics(channel)
+  return { dropped = dropped, bus_errors = bus_errors, decode_errors = decode_errors }
+end
 -- a received frame: fd/brs/esi/rtr as the wire carried it, t_ms when it was received (now_ms clock)
 function __frame(id, ext, data, fd, brs, esi, rtr, t_ms)
   return { id = id, ext = ext, data = data, fd = fd, brs = brs, esi = esi, rtr = rtr, t_ms = t_ms }

@@ -25,8 +25,8 @@
  *   - bb_last_error is PER THREAD: the calling thread's last error, "" after its last success.
  *   - ONE HOST THREAD drives the library's STATE in this version: open, close, load, start and
  *     stop are not synchronised against each other.
- *   - ONE THREAD USES A BUS HANDLE: its send, recv and health calls come from one thread at a
- *     time — which may be an attached thread of its own, not the driver's. The backends are not
+ *   - ONE THREAD USES A BUS HANDLE: its send, recv, health, load and diagnostics calls come from
+ *     one thread at a time — which may be an attached thread of its own, not the driver's. The backends are not
  *     safe for more (Kvaser's canlib forbids two threads on one handle; SocketCAN's ladder state
  *     is written by recv and read by health), so open a handle per thread instead. The one
  *     call that may come from ANOTHER thread is bb_bus_close, which ends a recv in progress.
@@ -277,6 +277,33 @@ typedef struct bb_boot_report {
 	int32_t checks;         /* 0x31 FF01 answered */
 	int32_t resets;         /* 0x11 answered */
 } bb_boot_report;
+
+/* Bus metrics of a bus handle (bb_bus_load, bb_bus_diagnostics), from the call on the handle's
+ * thread. The load is of DECODED frames only, both directions: what the handle receives (counted
+ * when it is read, so a frame left queued lands in the second it is read) and what it sends once
+ * the driver accepted it. Error frames, retransmissions and overrun drops occupied the wire and
+ * are not in it: in an error storm it under-reads, and the health ladder and the diagnostics
+ * counts are what say so. A frame costs its bit-times with worst-case stuffing (the GUI's bus
+ * load), priced at the rates of the wire's first enabled row (`nominal`); an interface no row
+ * names at the rate its address states (`pcan:...@250000`), else 500 kbit/s classic. */
+typedef struct bb_busload {
+	double   percent;   /* over the last whole second; < 0 until one second has passed */
+	double   average;   /* since the handle opened; < 0 until one second has passed */
+	double   bits;      /* nominal bit-times counted since open */
+	uint64_t frames;    /* frames counted since open */
+	int32_t  nominal;   /* the arbitration rate they are priced at, bit/s */
+} bb_busload;
+
+/* What the backend counted since the handle opened that no frame carried (transport.BusDiagnostics):
+ * records dropped before delivery (a receiver that fell behind, a driver overrun, a shared ring
+ * overwritten), controller error records, records it could not decode. On a wire shared through
+ * one driver handle (PCAN, CANsub, the CAN bridge) they are the wire's since it opened, its other
+ * handles' ring gaps included. */
+typedef struct bb_diagnostics {
+	uint64_t dropped;
+	uint64_t bus_errors;
+	uint64_t decode_errors;
+} bb_diagnostics;
 
 /* Where the CAN bridge of a WSL distribution stands (bb_bridge_state). */
 enum bb_bridge_state {
@@ -697,6 +724,9 @@ int bb_bridge_state(const char *distro, int *state, char *why, int cap); /* >= 0
 int bb_bridge_rows(const char *distro, char *buf, int cap); /* >= 0: the length; the connected
                                                      bridge's interfaces, "bridge:<distro>/vcan0" */
 int bb_bridge_stop(const char *distro);
+/* Bus metrics (bb_busload, bb_diagnostics above): from the thread that uses the handle. */
+int bb_bus_load(int h, bb_busload *out);
+int bb_bus_diagnostics(int h, bb_diagnostics *out);
 #endif /* BB_FROM_V */
 
 #ifdef __cplusplus

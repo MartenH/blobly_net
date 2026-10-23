@@ -531,35 +531,31 @@ fn (app &App) load_owner_locked(key string) int {
 // origination_framing already share (project.Channel.nominal_bitrate); the raw zero the row
 // keeps would make load_percent answer 0 % for every interval on a live wire (r5).
 fn (mut app App) wire_rates_locked(i int) (int, int) {
-	if app.chans[i].load_nominal > 0 {
-		return app.chans[i].load_nominal, app.chans[i].load_data
-	}
-	key := transport.destination_key(app.chans[i].iface)
-	mut nominal := 0
-	mut data := 0
-	for c in app.chans {
-		if c.eth() || !c.monitorable() || transport.destination_key(c.iface) != key {
-			continue
-		}
-		if nominal == 0 {
-			// normalised HERE: an unset rate on the first row is 500 kbit/s, not "no answer
-			// yet" for a later row to overwrite (codex #263 r9)
-			nominal = if c.bitrate > 0 { c.bitrate } else { project.default_bitrate }
-		}
-		if data == 0 && c.data_bitrate > 0 {
-			data = c.data_bitrate
-		}
-	}
-	if nominal == 0 {
-		nominal = if app.chans[i].bitrate > 0 {
-			app.chans[i].bitrate
-		} else {
-			project.default_bitrate
-		}
-	}
+	nominal, data := app.wire_rates_now_locked(i)
 	app.chans[i].load_nominal = nominal
 	app.chans[i].load_data = data
 	return nominal, data
+}
+
+// wire_rates_now_locked is wire_rates_locked's answer without keeping it: the run's, once kept,
+// else wire_rates_rule_locked's.
+fn (app &App) wire_rates_now_locked(i int) (int, int) {
+	if app.chans[i].load_nominal > 0 {
+		return app.chans[i].load_nominal, app.chans[i].load_data
+	}
+	return app.wire_rates_rule_locked(i)
+}
+
+// wire_rates_rule_locked is the engine's rule (project.wire_rates) over the rows that read a wire
+// now, a wire none reads priced at row `i`'s own rate.
+fn (app &App) wire_rates_rule_locked(i int) (int, int) {
+	rows := app.chans.filter(it.monitorable()).map(project.Channel{
+		iface:        it.iface
+		bitrate:      it.bitrate
+		data_bitrate: it.data_bitrate
+	})
+	own := if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
+	return project.wire_rates(rows, app.chans[i].iface) or { own, 0 }
 }
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame

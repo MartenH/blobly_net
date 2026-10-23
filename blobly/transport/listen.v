@@ -214,6 +214,8 @@ mut:
 	// Whether this bus ORIGINATES frames. False for a bus whose caller has already decided the
 	// format — see open_verbatim.
 	verbatim bool
+	// the frame the last accepted send handed the backend, for a wrapper that prices it (meter.v)
+	sent CanFrame
 }
 
 fn (mut s SilentBus) send(frame CanFrame) ! {
@@ -251,11 +253,13 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	//
 	// NOT ON A VERBATIM BUS, whose caller has already decided — the GUI's tap frames before it
 	// records, and replay reproduces a recording rather than originating anything.
-	if s.verbatim {
-		s.inner.send(frame.unstated())!
-		return
-	}
-	s.inner.send(p.framing.apply(frame))!
+	out := if s.verbatim { frame.unstated() } else { p.framing.apply(frame) }
+	s.inner.send(out)!
+	s.sent = out
+}
+
+fn (s &SilentBus) sent_frame() CanFrame {
+	return s.sent
 }
 
 fn (mut s SilentBus) recv(timeout_ms int) !CanFrame {

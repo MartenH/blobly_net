@@ -19,6 +19,7 @@ SCRIPTS = {
     "dbc_messages.py": [],
     "event_loop.py": ["--ms", "1000"],
     "signal_monitor.py": ["--seconds", "1.2"],
+    "bus_metrics.py": ["--seconds", "2"],
     "uds_diag.py": [],
     "doip_diag.py": [],
     "fault_injection.py": [],
