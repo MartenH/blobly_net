@@ -293,3 +293,55 @@ fn test_shipped_projects_resolve_from_their_own_directory() {
 	}
 	assert seen > 0, 'no shipped project references were checked'
 }
+
+// A reference that misses from the project's directory and names a file only from the working
+// directory is said, with the spelling that names it from the project (#494); nothing is said
+// for one that resolves from the project, resolves nowhere, or is absolute.
+fn test_a_reference_resolving_only_from_the_working_directory_is_said() {
+	root := asset_tree()!
+	was := os.getwd()
+	defer {
+		os.chdir(was) or {}
+		os.rmdir_all(root) or {}
+	}
+	os.chdir(root)!
+	proj := os.join_path(root, 'proj')
+	note := cwd_only_note(proj, 'dbc/x.dbc') or { panic('no note') }
+	assert note.starts_with('`dbc/x.dbc` resolves only from the folder the program was started in')
+	assert note.ends_with('write it relative to the project file (`../dbc/x.dbc`)')
+	// the suggestion names the file from the project
+	assert same_file(resolve_asset(proj, '../dbc/x.dbc'), os.join_path(root, 'dbc', 'x.dbc'))
+	// a fragment rides along
+	n2 := cwd_only_note(proj, 'net.arxml#Body') or { panic('no note') }
+	assert n2.ends_with('(`../net.arxml#Body`)')
+	assert cwd_only_note(proj, 'sub/m.csv') == none // resolves from the project
+	assert cwd_only_note(proj, 'dbc/missing.dbc') == none // resolves nowhere
+	assert cwd_only_note(proj, os.join_path(root, 'dbc', 'x.dbc')) == none
+	assert cwd_only_note('', 'dbc/x.dbc') == none // an unsaved project
+	// once per reference, every kind of reference, the first channel naming it
+	p := Project{
+		channels: [
+			Channel{
+				name:      'CAN1'
+				databases: ['dbc/x.dbc', 'sub/m.csv']
+			},
+			Channel{
+				name:      'CAN2'
+				databases: ['dbc/x.dbc']
+				manifest:  'proj/sub/m.csv'
+			},
+		]
+	}
+	notes := p.reference_notes(proj)
+	assert notes.len == 2
+	assert notes[0].starts_with('CAN1: `dbc/x.dbc`')
+	assert notes[1].starts_with('CAN2: `proj/sub/m.csv`')
+	assert notes[1].ends_with('(`sub/m.csv`)')
+	// project.load says them; started from the project's own folder nothing is said
+	pf := os.join_path(proj, 'p.blobnet')
+	os.write_file(pf, 'project:\n  name: t\nchannels:\n  - name: CAN1\n    interface: inproc:CAN1\n    databases: [dbc/x.dbc]\n')!
+	loaded := load(pf)!
+	assert loaded.notes.len == 1 && loaded.notes[0].contains('`dbc/x.dbc` resolves only from')
+	os.chdir(proj)!
+	assert load(pf)!.notes == []
+}

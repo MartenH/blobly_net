@@ -1,6 +1,7 @@
 module project
 
 import os
+import blobly.candb
 
 // What a project file SAYS about the files it uses (#440): a database, a telemetry manifest, a
 // replay recording. resolve_asset reads a reference against the project's directory first; these
@@ -197,4 +198,49 @@ pub fn (mut p Project) restore_assets(was []AssetRefs) {
 			}
 		}
 	}
+}
+
+// cwd_only_note says when `ref`, written in a project in `dir`, misses from `dir` and names a
+// file only from the working directory — where the loader then opens it, so the same project
+// loads an empty database when the program is started anywhere else (#494). None otherwise:
+// for a reference that resolves from the project, an absolute one, one that resolves nowhere
+// (the loader says that itself), and an unsaved project's (`dir` == ''), whose references are
+// relative to the working directory by design. Advisory only: the reference still loads.
+pub fn cwd_only_note(dir string, ref string) ?string {
+	if dir == '' || ref == '' || absolute_anywhere(ref) || resolve_asset(dir, ref) != ref {
+		return none
+	}
+	// what the loader opens from the working directory: the reference whole, else the file a
+	// database fragment names
+	file, _ := candb.split_database_ref(ref)
+	if !os.exists(ref) && !os.exists(file) {
+		return none
+	}
+	fix := asset_ref(dir, os.join_path(os.getwd(), ref))
+	how := if absolute_anywhere(fix) { 'write it as' } else { 'write it relative to the project file' }
+	return '`${ref}` resolves only from the folder the program was started in (${os.getwd()}); ${how} (`${fix}`)'
+}
+
+// reference_notes is cwd_only_note over every file reference in the project, once per reference
+// however many channels name it, each prefixed with the first channel that does.
+pub fn (p Project) reference_notes(dir string) []string {
+	mut said := map[string]bool{}
+	mut notes := []string{}
+	for ch in p.channels {
+		mut refs := ch.databases.clone()
+		refs << ch.manifest
+		if r := ch.replay {
+			refs << r.source
+		}
+		for ref in refs {
+			if ref in said {
+				continue
+			}
+			said[ref] = true
+			if n := cwd_only_note(dir, ref) {
+				notes << '${ch.name}: ${n}'
+			}
+		}
+	}
+	return notes
 }

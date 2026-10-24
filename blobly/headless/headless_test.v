@@ -168,6 +168,30 @@ fn test_load_names_an_unreadable_project() {
 	}
 }
 
+// A database reference that resolves only from the working directory is said on the error sink
+// at load, with the spelling that names it from the project (#494).
+fn test_load_says_a_reference_resolving_only_from_the_working_directory() {
+	root := os.join_path(os.vtmp_dir(), 'headless_cwd_${os.getpid()}')
+	os.mkdir_all(os.join_path(root, 'proj'))!
+	os.mkdir_all(os.join_path(root, 'dbc'))!
+	was := os.getwd()
+	defer {
+		os.chdir(was) or {}
+		os.rmdir_all(root) or {}
+	}
+	os.write_file(os.join_path(root, 'dbc', 'x.dbc'), '')!
+	path := os.join_path(root, 'proj', 'p.blobnet')
+	os.write_file(path, 'project:\n  name: t\nchannels:\n  - name: CAN1\n    interface: inproc:CAN1\n    databases: [dbc/x.dbc]\n')!
+	os.chdir(root)!
+	mut lines := &Lines{}
+	load(path, lines.options())!
+	lines.mu.lock()
+	err_lines := lines.err.clone()
+	lines.mu.unlock()
+	assert err_lines.len == 1
+	assert err_lines[0] == '${path}: CAN1: `dbc/x.dbc` resolves only from the folder the program was started in (${os.getwd()}); write it relative to the project file (`../dbc/x.dbc`)'
+}
+
 // A second stop of an older run does nothing: it cannot free the slot a newer run holds.
 fn test_stop_twice_is_harmless() {
 	path := os.join_path(@VMODROOT, 'projects', 'sim-demo.blobnet')

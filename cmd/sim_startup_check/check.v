@@ -16,6 +16,11 @@ fn main() {
 		exit(2)
 	}
 	println('project: ${p.name}, channels=${p.channels.len}')
+	// what reading the project had to say, a reference that resolves only from the working
+	// directory among it
+	for n in p.notes {
+		eprintln('${path}: ${n}')
+	}
 	// os.dir(path), exactly as cmd/script/run.v and the GUI do — NOT real_path, which
 	// dereferences a symlink and would resolve relative DBCs beside the target instead of
 	// beside the link. A symlinked project could then pass this check while the runner it is

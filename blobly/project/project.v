@@ -896,9 +896,12 @@ pub fn parse(text string) !Project {
 	return p
 }
 
-// load reads and parses a project file.
+// load reads and parses a project file; its notes include every reference that resolves only
+// from the working directory (reference_notes), said once here rather than at every rebuild.
 pub fn load(path string) !Project {
-	return parse(os.read_file(path)!)
+	mut p := parse(os.read_file(path)!)!
+	p.notes << p.reference_notes(os.dir(path))
+	return p
 }
 
 // default_project is the built-in fallback when no project file is available:
