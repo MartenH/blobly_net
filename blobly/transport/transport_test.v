@@ -1,5 +1,7 @@
 module transport
 
+import time
+
 // What the caller asked for is not always what goes out: SocketCAN masks the id to its declared
 // width and truncates a classic payload to 8 bytes. Recording the request rather than the
 // transmission records a frame that never existed — and, for echo matching, one that can never
@@ -338,4 +340,47 @@ fn test_wire_key_is_the_destination_without_its_rate() {
 	assert wire_key('inproc:bench@A') != wire_key('inproc:bench@B')
 	// ...and the canonical spellings still collapse, exactly as destination_key has them.
 	assert wire_key('inproc') == wire_key('inproc:')
+}
+
+fn test_a_classic_payload_past_255_bytes_is_clamped_to_8_not_wrapped() {
+	f := CanFrame{
+		id:   0x111
+		data: []u8{len: 256, init: u8(index + 1)}
+	}
+	assert socketcan_payload(f) == f.data[..8]
+	assert wire_frame('vcan0', f).data == f.data[..8]
+	assert socketcan_payload(CanFrame{ ...f, fd: true }) == f.data[..64]
+}
+
+fn test_a_classic_payload_past_255_bytes_arrives_clamped_to_8_on_vcan0() {
+	// LIVE, on vcan0 (#533): the length once narrowed to u8 first, so 256 bytes went out empty.
+	// Nothing to check where vcan0 cannot be opened or is down.
+	$if !linux {
+		return
+	}
+	mut rx := open('vcan0') or { return }
+	defer {
+		rx.close()
+	}
+	mut tx := open('vcan0') or { return }
+	defer {
+		tx.close()
+	}
+	f := CanFrame{
+		id:   0x533
+		data: []u8{len: 256, init: u8(index + 1)}
+	}
+	tx.send(f) or { return }
+	want := wire_frame('vcan0', f)
+	// a deadline rather than a count: another session's traffic on vcan0 must not crowd it out
+	until := time.ticks() + 1000
+	for time.ticks() < until {
+		got := rx.recv(200) or { continue }
+		if got.id == 0x533 {
+			assert got.data == want.data
+			assert got.data.len == 8
+			return
+		}
+	}
+	assert false, 'the frame never arrived'
 }

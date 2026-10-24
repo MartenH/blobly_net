@@ -61,9 +61,9 @@ pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
 	} else {
 		frame.id & can_sff_mask
 	}
-	// Padded HERE, by the one table in transport.v, so every backend puts the same bytes on the
-	// wire. The C side keeps only a defensive clamp.
-	payload := if frame.fd { fd_pad(frame.data) } else { frame.data }
+	// The bytes wire_frame records: padded or clamped HERE, before the length narrows to the
+	// shim's u8. The C side keeps only a defensive clamp.
+	payload := socketcan_payload(frame)
 	rc := C.ct_can_send(b.fd, cid, &u8(payload.data), u8(payload.len), if frame.fd {
 		1
 	} else {
