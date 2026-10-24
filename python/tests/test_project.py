@@ -556,7 +556,7 @@ class TestRun:
             net.on_message(can1, 0x102, answers.append)
             net.on_message("CAN1", 0x101, own.append)
             net.on_timer(50, lambda: can1.send(0x101, b"\x05"))
-            net.run(400)
+            run_until(net, lambda: len(answers) >= 3)
             assert len(answers) >= 3, answers
             assert answers[0].data[:1] == b"\x06"
             assert own == [], "the script heard its own frames"
