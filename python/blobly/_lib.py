@@ -104,6 +104,20 @@ class FlashFailed(BloblyError):
     NegativeResponse instead, and one it did not answer Timeout."""
 
 
+class WriteGated(Refused):
+    """A described write (NodeClient.write) not sent, since the client's connection has not
+    established what the DID's write gate needs: `session` the session to switch to first (0: the
+    one it is in will do), `level` the security level to unlock (0: none), whose seed request is
+    security_access(2 * level - 1). The message says what the connection has and what it needs;
+    session() and security_access() establish it, and this client's own exchanges are what tell."""
+    session: int
+    level: int
+
+    def __init__(self, message: str, code: int = -13, session: int = 0, level: int = 0) -> None:
+        super().__init__(message, code)
+        self.session, self.level = session, level
+
+
 BB_ERR = -1
 BB_ERR_HANDLE = -2
 BB_ERR_STATE = -3
@@ -116,12 +130,13 @@ BB_ERR_ROUTING = -9
 BB_ERR_LOST = -10
 BB_ERR_FLASH = -11
 BB_ERR_E2E = -12  # returned by no call: E2eError's code
+BB_ERR_GATED = -13
 # the exception each code raises; a code not here (BB_ERR_HANDLE, BB_ERR_STATE, a newer library's)
 # raises BloblyError itself
 ERRORS = {BB_ERR: Refused, BB_ERR_NEGATIVE: NegativeResponse, BB_ERR_TIMEOUT: Timeout,
           BB_ERR_PENDING: PendingExpired, BB_ERR_UNDECODABLE: UndecodableAnswer,
           BB_ERR_CARRIER: CarrierFailed, BB_ERR_ROUTING: RoutingDenied, BB_ERR_LOST: ConnectionLost,
-          BB_ERR_FLASH: FlashFailed}
+          BB_ERR_FLASH: FlashFailed, BB_ERR_GATED: WriteGated}
 # answers that are neither success nor an error (bb.h)
 BB_NONE = 1        # bb_bus_recv: no frame in time; bb_decode: no message
 BB_SPENT = 2       # bb_bus_recv(h, 0): no frame yet, records still queued behind the look's bound
@@ -300,6 +315,32 @@ class BbWave(ctypes.Structure):
 GEN_NAME, GEN_CHANNEL, GEN_MESSAGE, GEN_TRIGGER, GEN_TARGET, GEN_NOTE = range(6)
 
 
+# the system model (nodes.py)
+class BbNode(ctypes.Structure):
+    """bb_node, field for field."""
+    _fields_ = [("dids", ctypes.c_int32), ("faults", ctypes.c_int32), ("targets", ctypes.c_int32),
+                ("described", ctypes.c_uint8), ("server", ctypes.c_uint8), ("reference_key", ctypes.c_uint8)]
+
+
+class BbReach(ctypes.Structure):
+    """bb_reach, field for field."""
+    _fields_ = [("row", ctypes.c_int32), ("doip", ctypes.c_uint8), ("ext", ctypes.c_uint8),
+                ("tx", ctypes.c_uint32), ("rx", ctypes.c_uint32)]
+
+
+class BbDid(ctypes.Structure):
+    """bb_did, field for field."""
+    _fields_ = [("id", ctypes.c_uint16), ("kind", ctypes.c_int32), ("size", ctypes.c_int32),
+                ("parts", ctypes.c_int32), ("by_label", ctypes.c_uint8), ("read_gated", ctypes.c_uint8), ("read_sessions", ctypes.c_int32),
+                ("read_level", ctypes.c_int32), ("writable", ctypes.c_uint8), ("write_sessions", ctypes.c_int32),
+                ("write_level", ctypes.c_int32)]
+
+
+class BbWriteNeeds(ctypes.Structure):
+    """bb_write_needs, field for field."""
+    _fields_ = [("session", ctypes.c_uint8), ("level", ctypes.c_uint8)]
+
+
 # enum bb_functional_outcome, as the Lua uds.functional names the outcomes
 OUTCOMES = {0: "positive", 1: "negative", 2: "silent", 3: "pending", 4: "failed"}
 
@@ -456,6 +497,22 @@ def _declare(lib):
         "bb_gen_cycle": ([c_int, c_int], c_int),
         "bb_gen_set": ([c_int, c_char_p, ctypes.c_double], c_int),
         "bb_gen_source": ([c_int, c_char_p, P(BbWave)], c_int),
+        # the system model (nodes.py); a const uint8_t * is declared c_char_p, its length beside it
+        "bb_system_path": ([c_char_p, c_int], c_int),
+        "bb_node_count": ([], c_int),
+        "bb_node_info": ([c_int, P(BbNode)], c_int),
+        "bb_node_name": ([c_int, c_char_p, c_int], c_int),
+        "bb_node_problem": ([c_int, c_char_p, c_int], c_int),
+        "bb_node_target": ([c_int, c_int, P(BbReach)], c_int),
+        "bb_node_reach": ([c_int, c_int, P(BbReach)], c_int),
+        "bb_node_fault": ([c_int, c_int, P(ctypes.c_uint32), c_char_p, c_int], c_int),
+        "bb_did_info": ([c_int, c_int, P(BbDid)], c_int),
+        "bb_did_name": ([c_int, c_int, c_char_p, c_int], c_int),
+        "bb_did_session": ([c_int, c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_did_part": ([c_int, c_int, c_int, P(c_int), c_char_p, c_int], c_int),
+        "bb_did_hint": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_did_text": ([c_int, c_int, c_char_p, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_uds_write_described": ([c_int, c_int, c_int, P(c_char_p), c_int, P(BbWriteNeeds)], c_int),
         # raw ISO-TP (isotp.py), UDS timing and the DoIP retarget (uds.py)
         "bb_isotp_open": ([c_int, ctypes.c_int64, ctypes.c_int64, P(BbUdsTarget)], c_int),
         "bb_isotp_send": ([c_int, c_char_p, c_int], c_int),

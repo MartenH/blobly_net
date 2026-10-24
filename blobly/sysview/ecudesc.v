@@ -229,6 +229,7 @@ pub fn (d &EcuDesc) iso_dids() []DidDesc {
 		}
 		out << DidDesc{
 			id:   id
+			kind: .unknown // the description says nothing of its layout
 			name: uds.standard_did_name(id)
 		}
 	}
@@ -384,7 +385,7 @@ fn gate_level_refusal(m map[string]toml.Any, key string) string {
 // contradiction: why the gate cannot be met — a security level in a gate that names only the
 // default session, where ISO 14229-1 serves no 0x27, so the level cannot be unlocked there and a
 // tester that unlocks it has left the gate's sessions. none = it can be met. The DIDs tab's write
-// plan (cmd/blobly_net diaghold.write_plan) refuses the same gate; this says it at load.
+// plan (uds.write_plan, via DidDesc.plan_write) refuses the same gate; this says it at load.
 pub fn (g Gate) contradiction() ?string {
 	if g.level > 0 && g.sessions.len > 0 && g.sessions.all(it == 'default') {
 		return 'gate needs security level ${g.level} but names only the default session, where 0x27 is not served'
@@ -503,6 +504,11 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 	}
 	for p in tarr(doc, 'param') {
 		pm := p.as_map()
+		if d.params.any(it.name == tstr(pm, 'name')) {
+			// a parameter is its name: the status DID's parts and a tester's lookup both key on it
+			d.errs << 'param ${tstr(pm, 'name')}: declared twice; the second not read'
+			continue
+		}
 		d.params << ParamDesc{
 			name:   tstr(pm, 'name')
 			fields: fields_of(pm)
@@ -543,6 +549,12 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		id := tint(xm, 'id')
 		if id < 0 || id > 0xFFFF {
 			d.errs << 'did ${id}: not a 16-bit identifier; not read'
+			continue
+		}
+		if d.dids.any(it.id == u16(id)) {
+			// one identifier, one value: a server serves the first, and a tester must not name a
+			// second layout for the same bytes
+			d.errs << 'did 0x${id:04X}: declared twice; the second not read'
 			continue
 		}
 		gate_err := ['read', 'write'].map(gate_level_refusal(xm, it)).filter(it != '')

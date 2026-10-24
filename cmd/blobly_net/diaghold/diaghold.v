@@ -145,19 +145,6 @@ pub fn keepalive_due(held bool, session u8, last_ms i64, now_ms i64) bool {
 	return now_ms - last_ms >= keepalive_ms
 }
 
-// session_name is a DiagnosticSessionControl session as the strip names it; 0 is unknown (no
-// 0x10 answered on this connection).
-pub fn session_name(s u8) string {
-	return match s {
-		0 { '—' }
-		0x01 { 'default' }
-		0x02 { 'programming' }
-		0x03 { 'extended' }
-		0x04 { 'safety' }
-		else { '0x${s:02X}' }
-	}
-}
-
 // Timing is one request's time, as the uds and doip modules measured it.
 pub struct Timing {
 pub:

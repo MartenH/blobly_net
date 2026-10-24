@@ -176,7 +176,7 @@ fn (mut app App) diag_autopress_step(targets []DiagTarget) {
 	if step.starts_with('script:') {
 		au.script_ns = time.sys_mono_now()
 		app.reserve_tool_reader()
-		spawn script_worker(app, step.all_after(':'))
+		spawn script_worker(app, step.all_after(':'), app.script_system())
 		return
 	}
 	if step == 'tab:dtc' {

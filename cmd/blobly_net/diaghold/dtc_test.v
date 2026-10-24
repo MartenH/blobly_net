@@ -16,16 +16,14 @@ fn test_an_unchanged_autorefresh_is_not_said() {
 	assert autorefresh_logged(false, false, 'x', 'x') // a press is always said
 }
 
-fn test_dtc_setting_off_switches_out_of_the_default_session_only() {
-	assert dtc_setting_session(0, false) == 0x03 // unknown: establish one
-	assert dtc_setting_session(0x01, false) == 0x03
-	assert dtc_setting_session(0x03, false) == 0
-	assert dtc_setting_session(0x02, false) == 0 // a non-default session serves it already
+fn test_dtc_setting_off_leaves_as_a_0x27_does() {
+	assert dtc_setting_session(0x03, false) == 0x03 // the session the caller leaves for
+	assert dtc_setting_session(0, false) == 0 // a non-default session serves it already
 }
 
 fn test_dtc_setting_on_never_switches() {
-	for s in [u8(0), 0x01, 0x02, 0x03] {
-		assert dtc_setting_session(s, true) == 0
+	for leave in [u8(0), 0x03] {
+		assert dtc_setting_session(leave, true) == 0
 	}
 }
 

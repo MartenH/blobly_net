@@ -243,6 +243,47 @@ pub mut:
 	decode_errors u64
 }
 
+// the system model's (nodes.v)
+pub struct C.bb_node {
+pub mut:
+	dids          i32
+	faults        i32
+	targets       i32
+	described     u8
+	server        u8
+	reference_key u8
+}
+
+pub struct C.bb_reach {
+pub mut:
+	row  i32
+	doip u8
+	ext  u8
+	tx   u32
+	rx   u32
+}
+
+pub struct C.bb_did {
+pub mut:
+	id             u16
+	kind           i32
+	size           i32
+	parts          i32
+	by_label       u8
+	read_gated     u8
+	read_sessions  i32
+	read_level     i32
+	writable       u8
+	write_sessions i32
+	write_level    i32
+}
+
+pub struct C.bb_write_needs {
+pub mut:
+	session u8
+	level   u8
+}
+
 // a UDS handle's timing (udstiming.v)
 pub struct C.bb_uds_timing {
 pub mut:
@@ -508,6 +549,7 @@ pub fn bb_start() i32 {
 	bb_run_rows = r.chans.map(it.cfg)
 	fault_rows_publish(r.chans)
 	gens_publish(r)
+	sys_publish(r)
 	bb_dbs_live = true
 	bb_run_gen++
 	bb_mu.unlock()
@@ -526,6 +568,7 @@ pub fn bb_stop() i32 {
 	bb_run_rows = []project.Channel{}
 	fault_rows_retire()
 	gens_retire()
+	sys_retire()
 	bb_dbs_live = false
 	bb_mu.unlock()
 	replays_stop()

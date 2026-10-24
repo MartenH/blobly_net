@@ -410,8 +410,9 @@ fn uds_failed(err IError) i32 {
 		.carrier { fail(bb_err_carrier, err.msg()) }
 		.lost { fail(bb_err_lost, err.msg()) }
 		.abandoned { fail(bb_err_handle, 'the UDS handle was closed') }
-		// a state refusal of this library's own keeps its code (bb_uds_functional_doip's run check)
-		.refused { fail(if err.code() == int(bb_err_state) { bb_err_state } else { bb_err }, err.msg()) }
+		// a refusal of this library's own keeps its code (bb_uds_functional_doip's run check, a gated
+		// write)
+		.refused { fail(if err.code() in [int(bb_err_state), int(bb_err_gated)] { i32(err.code()) } else { bb_err }, err.msg()) }
 	}
 }
 

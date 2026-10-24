@@ -5,8 +5,9 @@ repository's [`projects/sim-demo.blobnet`](../../projects/sim-demo.blobnet), who
 run inside the script's own process, so no hardware and no drivers are needed. A project path on
 the command line overrides it. `replay_record.py` defaults to
 [`projects/replay-demo.blobnet`](../../projects/replay-demo.blobnet), `e2e_check.py` to
-[`projects/e2e-demo.blobnet`](../../projects/e2e-demo.blobnet) for its E2E declarations, and
-`someip_node.py` needs no project: it talks to a SOME/IP node.
+[`projects/e2e-demo.blobnet`](../../projects/e2e-demo.blobnet) for its E2E declarations, `described_node.py` to
+[`projects/described-ecu-demo`](../../projects/described-ecu-demo), a simulated ECU its system
+model describes, and `someip_node.py` needs no project: it talks to a SOME/IP node.
 
 | example | what it shows |
 |---|---|
@@ -17,6 +18,8 @@ the command line overrides it. `replay_record.py` defaults to
 | [bus_metrics.py](bus_metrics.py) | A channel's bus load and its dropped / error / undecodable counts, once a second for N seconds. |
 | [uds_diag.py](uds_diag.py) | UDS over CAN: the default session, the VIN (a multi-frame answer) and other DIDs with the exchange's timing, a negative response caught with its NRC, a security unlock with the reference key, and the DTCs with their status bits, a snapshot and extended data. |
 | [doip_diag.py](doip_diag.py) | UDS over DoIP: the entity's announcements heard, the entity asked who it is, then over its connection the default session, the VIN it serves beside the one it announced, the DTCs, and a request to the functional address 0xE400. |
+| [described_node.py](described_node.py) | A node of the system model by its name (`projects/described-ecu-demo`'s zone_a): its DIDs listed with their layout and gates, read by name and decoded, a gated parameter refused with what it needs (`WriteGated`), then written once the session and level are established, and the DTCs named by the node's faults. |
+
 | [isotp_raw.py](isotp_raw.py) | Raw ISO-TP on the SUT's id pair with no UDS on top: a multi-frame answer reassembled, a request no UDS helper builds and its refusal as bytes; then a UDS client's waits, a short first wait on ids nothing answers and the timing a session answer adopted. |
 | [fault_injection.py](fault_injection.py) | Faults on sim-demo's simulated ECUs, seen on the bus: Powertrain dropped for a second and back by itself, BrakePedal forced past its declared range until cleared, and `bad_crc` refused where nothing is protected. |
 | [e2e_check.py](e2e_check.py) | E2E Profile 1 as a DBC declares it, on [`projects/e2e-demo.blobnet`](../../projects/e2e-demo.blobnet): each received frame's verdict (`Frame.e2e`), a broken checksum and a frozen counter caught by `expect(..., e2e=True)`, and a message sent by name stamped with its declared counter and CRC, beside the same message sent unstamped. |

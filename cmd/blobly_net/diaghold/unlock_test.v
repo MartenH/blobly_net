@@ -8,19 +8,6 @@ fn test_the_selector_starts_at_the_lowest_level_the_gates_name() {
 	assert unlock_level_default([9], 8) == 1
 }
 
-fn test_an_unlock_leaves_the_default_session_and_keeps_any_other() {
-	assert unlock_session(0) == extended_session // nothing answered 0x10 yet
-	assert unlock_session(default_session) == extended_session
-	assert unlock_session(0x03) == 0
-	assert unlock_session(0x02) == 0 // a bootloader unlocks in its own session
-}
-
-fn test_a_level_maps_to_its_seed_and_key_sub_functions() {
-	assert seed_sub(1) == 0x01
-	assert seed_sub(2) == 0x03
-	assert seed_sub(8) == 0x0F
-}
-
 fn test_an_all_zero_seed_is_already_unlocked() {
 	assert seed_state([u8(0), 0, 0, 0]) == .unlocked
 	assert seed_state([u8(0), 1]) == .locked
@@ -48,24 +35,6 @@ fn test_an_unlock_is_refused_only_where_the_description_names_another_key() {
 	assert unlock_refusal(true, true, false, false) == ''
 }
 
-fn test_a_refused_unlock_forgets_what_it_may_have_taken_back() {
-	assert unlock_refusal_forgets(0x7F) == .session
-	assert unlock_refusal_forgets(0x7E) == .security // the session is still the one it was
-	assert unlock_refusal_forgets(0x35) == .security
-	assert unlock_refusal_forgets(0x12) == .security
-	assert unlock_refusal_forgets(0) == .security // a malformed answer
-}
-
-fn test_security_is_unknown_locked_or_a_level() {
-	fresh := Security{}
-	assert !fresh.known && fresh.unlocked() == 0 && fresh.words() == 'security unknown'
-	assert security_locked().words() == 'locked' && security_locked().unlocked() == 0
-	assert security_unlocked(2).words() == 'level 2 unlocked' && security_unlocked(2).unlocked() == 2
-	// a write gated at a level asks the connection's unlocked level: unknown plans the unlock
-	assert write_plan(true, 0x03, [u8(0x03)], 1, Security{}.unlocked(), true).unlock == 1
-	assert write_plan(true, 0x03, [u8(0x03)], 1, security_unlocked(1).unlocked(), true).unlock == 0
-}
-
 fn test_a_queued_unlock_is_not_sent_after_a_reload() {
 	assert unlock_still_current('a', 'a') == ''
 	assert unlock_still_current('', '') == ''
@@ -74,17 +43,12 @@ fn test_a_queued_unlock_is_not_sent_after_a_reload() {
 
 fn test_every_0x27_passes_one_gate() {
 	// the press's verdict holds while its description is the loaded one
-	assert unlock_step('a', 'a', '', 0x03) == UnlockStep{}
+	assert unlock_step('a', 'a', '', 0) == UnlockStep{}
 	// a reload since the press (it may have dropped the reference key or the DoIP opt-in): no 0x27
-	assert unlock_step('a', 'b', '', 0x03).refusal.contains('reloaded')
+	assert unlock_step('a', 'b', '', 0).refusal.contains('reloaded')
 	// a description that refuses the key on this carrier: no 0x27, whatever the session
-	r := unlock_step('a', 'a', unlock_refusal(true, true, true, false), 0x01)
+	r := unlock_step('a', 'a', unlock_refusal(true, true, true, false), 0x03)
 	assert r.refusal.contains('allow_bench_key') && r.session == 0
-	// a write gate naming a level and no session, on a default-session connection: the plan
-	// switches by the gate's own rule, so the dialog says it, and the gate then stays
-	p := write_plan(true, default_session, [], 1, 0, true)
-	assert p.session == unlock_session(default_session) && p.unlock == 1
-	assert unlock_step('a', 'a', '', p.session).session == 0
-	assert unlock_step('a', 'a', '', default_session).session == extended_session
-	assert unlock_step('a', 'a', '', 0).session == extended_session
+	// otherwise the session the caller leaves for first is the step's
+	assert unlock_step('a', 'a', '', 0x03).session == 0x03
 }

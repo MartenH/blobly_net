@@ -13,17 +13,28 @@ import encoding.hex
 // a text DID has one, the text; fixed bytes and a DID the description cannot lay out have one,
 // the bytes in hex.
 
-// Part is one editable part of a DID's value: its label and what it holds.
+// Part is one editable part of a DID's value: its label, what its text holds, and what it accepts.
 pub struct Part {
 pub:
 	label string
+	kind  PartKind
 	hint  string // what it accepts: `u16 0..360`, `18 characters`, `hex bytes`
 }
 
+// PartKind is what a part's text holds: an integer in decimal, `true`/`false`, a text, or bytes in
+// hex.
+pub enum PartKind {
+	integer
+	boolean
+	text
+	bytes
+}
+
 // laid_out: the value is its fields, back to back.
+// A parameter status of no parameters is laid out too: zero fields, zero bytes.
 fn (x DidDesc) laid_out() bool {
-	return x.kind in [.signal, .param, .param_status, .tx_saturations] && x.fields.len > 0
-		&& x.fields.all(it.width() > 0)
+	return (x.kind == .param_status || (x.kind in [.signal, .param, .tx_saturations]
+		&& x.fields.len > 0)) && x.fields.all(it.width() > 0)
 }
 
 // parts are the value's editable parts, in order.
@@ -31,18 +42,21 @@ pub fn (x DidDesc) parts() []Part {
 	if x.laid_out() {
 		return x.fields.map(Part{
 			label: it.name
+			kind:  if it.typ == 'bool' { PartKind.boolean } else { PartKind.integer }
 			hint:  field_hint(it, x.limit(it), it.name in x.ranges)
 		})
 	}
 	if x.kind == .ascii {
 		return [Part{
 			label: 'text'
+			kind:  .text
 			hint:  if x.size >= 0 { 'up to ${x.size} characters' } else { 'text' }
 		}]
 	}
 	return [
 		Part{
 			label: 'bytes'
+			kind:  .bytes
 			hint:  if x.size >= 0 { '${x.size} bytes, hex' } else { 'hex' }
 		},
 	]
