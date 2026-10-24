@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 from . import _lib
 from ._lib import BloblyError, Refused, WriteGated
 from .project import Named
-from .uds import UdsClient, _data, _int
+from .uds import UdsClient, _cancellable, _data, _int
 
 if TYPE_CHECKING:
     from .project import Channel, Project
@@ -413,13 +413,16 @@ class NodeClient(UdsClient):
                 raise Refused(f"0x2E 0x{_int('did', did):04X}: not writable: {self.node.name} does not list it")
             # a DID with no write gate is the engine's to refuse, in its words, whatever the value
             texts = [] if d.write_gate is None else [t.encode() for t in _texts(d, value, fields)]
-            rc = lib.bb_uds_write_described(h, n, d.index, (ctypes.c_char_p * len(texts))(*texts), len(texts),
-                                            ctypes.byref(needs))
-            if rc < 0:
-                e = self._enrich(h, _lib.error(rc))
-                if isinstance(e, WriteGated):
-                    e.session, e.level = needs.session, needs.level
-                raise e
+            parts = (ctypes.c_char_p * len(texts))(*texts)
+
+            def work() -> None:
+                rc = lib.bb_uds_write_described(h, n, d.index, parts, len(texts), ctypes.byref(needs))
+                if rc < 0:
+                    e = self._enrich(h, _lib.error(rc))
+                    if isinstance(e, WriteGated):
+                        e.session, e.level = needs.session, needs.level
+                    raise e
+            _cancellable([h], work)
 
     def retarget(self, address: int | None = None) -> None:
         """Refused: a NodeClient addresses its node, whose description its reads and writes are

@@ -38,7 +38,7 @@ fn (mut s AbiSink) note(msg string) {
 
 fn (mut s AbiSink) block(done int, total int) ! {
 	if stdatomic.load_i64(s.cancel) != 0 {
-		return error('cancelled (bb_flash_cancel)')
+		return error('cancelled (bb_flash_cancel or bb_uds_cancel)')
 	}
 	if !isnil(s.progress) {
 		if _ := s.percent.due(done, total) {
@@ -46,7 +46,7 @@ fn (mut s AbiSink) block(done int, total int) ! {
 			f(s.ctx, i32(done), i32(total))
 			// a host that cancels from its callback stops the transfer here
 			if stdatomic.load_i64(s.cancel) != 0 {
-				return error('cancelled (bb_flash_cancel)')
+				return error('cancelled (bb_flash_cancel or bb_uds_cancel)')
 			}
 		}
 		return
@@ -119,7 +119,7 @@ pub fn bb_flash_program(u i32, image &u8, n i32, opts &C.bb_flash_opts, out &C.b
 		cancelled := fn [cancel] (err IError) IError {
 			if stdatomic.load_i64(cancel) != 0 {
 				return flash.Failed{
-					text: 'flash cancelled (bb_flash_cancel): ${err}'
+					text: 'flash cancelled (bb_flash_cancel or bb_uds_cancel): ${err}'
 				}
 			}
 			return err

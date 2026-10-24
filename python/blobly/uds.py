@@ -193,6 +193,23 @@ def _int(name: str, v: object, bits: int = 32) -> int:
 _data = _lib.byte_data  # the one rule for a byte-string argument
 
 
+def _cancellable(handles: Sequence[int], work: Callable[[], object]):
+    """work()'s answer: a call on `handles` that asks the ECU, its errors read where it ran. On the
+    main thread it runs on a thread of its own (events._on_thread), so Ctrl-C ends the wait: the
+    call is cancelled (bb_uds_cancel, asked again until it has returned, since a cancel before the
+    call began is not its) and KeyboardInterrupt raised. Elsewhere, where Python raises no
+    interrupt, it runs in place."""
+    lib = _lib.lib()  # on this thread: its rules (a flash's progress callback) are this thread's
+    if threading.current_thread() is not threading.main_thread():
+        return work()
+    from .events import _on_thread
+
+    def cancel() -> None:
+        for h in handles:
+            lib.bb_uds_cancel(h)
+    return _on_thread(work, "blobly-uds", cancel)
+
+
 def _put(fn, *args) -> bytes:
     """The bytes a library call copies into a buffer (bb.h: one past cap is fetched whole again
     with bb_uds_data's handle, args[0]). Raises the call's error."""
@@ -403,9 +420,9 @@ class UdsClient:
                 e.exchange = None
         return e
 
-    def _call(self, fn, *args) -> int:
+    def _call(self, fn, *args, asks: bool = True) -> int:
         with self._lock:
-            return self._call_on(self._handle(), fn, *args)
+            return self._call_on(self._handle(), fn, *args, asks=asks)
 
     def _say_keep_alive(self, h: int) -> None:
         """A keep-alive failure since the previous call, said once (KeepAliveWarning)."""
@@ -444,12 +461,25 @@ class UdsClient:
             _lib.check(_lib.lib().bb_uds_keep_alive_status(self._h, ctypes.byref(k)))
             return KeepAliveStatus(k.period_ms, k.sent, k.failures, bool(k.running))
 
-    def _call_on(self, h: int, fn, *args) -> int:
+    def _call_on(self, h: int, fn, *args, asks: bool = True) -> int:
+        """fn(h, *args); `asks` False for a call that only reads or states the handle's own settings,
+        made in place."""
         self._say_keep_alive(h)
-        rc = fn(h, *args)
-        if rc < 0:
-            raise self._enrich(h, _lib.error(rc))
-        return rc
+        if not asks:
+            rc = fn(h, *args)
+            if rc < 0:
+                raise self._enrich(h, _lib.error(rc))
+            return rc
+        return self._exchange(h, fn, *args)
+
+    def _exchange(self, h: int, fn, *args) -> int:
+        """fn(h, *args), a call that asks the ECU, its failure raised enriched (_cancellable)."""
+        def work() -> int:
+            rc = fn(h, *args)
+            if rc < 0:
+                raise self._enrich(h, _lib.error(rc))
+            return rc
+        return _cancellable([h], work)
 
     def _bytes(self, fn, *args) -> bytes:
         with self._lock:
@@ -457,10 +487,13 @@ class UdsClient:
 
     def _bytes_on(self, h: int, fn, *args) -> bytes:
         self._say_keep_alive(h)
-        try:
-            return _put(fn, h, *args)
-        except BloblyError as e:
-            raise self._enrich(h, e)
+
+        def work() -> bytes:
+            try:
+                return _put(fn, h, *args)
+            except BloblyError as e:
+                raise self._enrich(h, e)
+        return _cancellable([h], work)
 
     def _last(self, h: int) -> Exchange | None:
         lib = _lib.lib()
@@ -579,18 +612,13 @@ class UdsClient:
         lib = _lib.lib()
         with self._lock:
             h = self._handle()
-            n = self._checked(h, fn(h, *args))
+            n = self._exchange(h, fn, *args)
             out = []
             for i in range(n):
                 d = _lib.BbDtc()
                 _lib.check(lib.bb_uds_dtc(h, i, ctypes.byref(d)))
                 out.append(_dtc(d, self._faults))
             return out
-
-    def _checked(self, h: int, rc: int) -> int:
-        if rc < 0:
-            raise self._enrich(h, _lib.error(rc))
-        return rc
 
     def dtcs(self, mask: int = 0xFF) -> list[Dtc]:
         """0x19 02 ReadDTCInformation: the DTCs with any of `mask`'s status bits (0xFF: any)."""
@@ -609,7 +637,7 @@ class UdsClient:
         lib = _lib.lib()
         with self._lock:
             h = self._handle()
-            n = self._checked(h, lib.bb_uds_snapshot_ids(h))
+            n = self._exchange(h, lib.bb_uds_snapshot_ids)
             out, code, record = [], ctypes.c_uint32(), ctypes.c_uint8()
             for i in range(n):
                 _lib.check(lib.bb_uds_snapshot_id(h, i, ctypes.byref(code), ctypes.byref(record)))
@@ -626,7 +654,7 @@ class UdsClient:
         with self._lock:
             h = self._handle()
             d = _lib.BbDtc()
-            n = self._checked(h, lib.bb_uds_snapshot(h, code, rec, ctypes.byref(d)))
+            n = self._exchange(h, lib.bb_uds_snapshot, code, rec, ctypes.byref(d))
             records, number, did = [], ctypes.c_uint8(), ctypes.c_uint16()
             for r in range(n):
                 count = _lib.check(lib.bb_uds_snapshot_record(h, r, ctypes.byref(number)))
@@ -645,7 +673,7 @@ class UdsClient:
         with self._lock:
             h = self._handle()
             d, c = _lib.BbDtc(), _lib.BbCounters()
-            n = self._checked(h, lib.bb_uds_extended(h, code, rec, ctypes.byref(d), ctypes.byref(c)))
+            n = self._exchange(h, lib.bb_uds_extended, code, rec, ctypes.byref(d), ctypes.byref(c))
             records, number = {}, ctypes.c_uint8()
             for k in range(n):
                 value = _lib.bytes_of(lib.bb_uds_extended_record, h, k, ctypes.byref(number))
@@ -659,25 +687,25 @@ class UdsClient:
         size varies)."""
         did, size = _int("did", did), _int("size", size)
         with self._lock:
-            self._call(_lib.lib().bb_uds_did_size, did, size)
+            self._call(_lib.lib().bb_uds_did_size, did, size, asks=False)
             self._did_sizes[did] = size  # kept for the next connection
 
     def ext_record_size(self, record: int, size: int) -> None:
         """States an extended data record's size (blobly_emb's 0x01..0x03 are known)."""
         record, size = _int("record", record), _int("size", size)
         with self._lock:
-            self._call(_lib.lib().bb_uds_ext_record_size, record, size)
+            self._call(_lib.lib().bb_uds_ext_record_size, record, size, asks=False)
             self._ext_sizes[record] = size  # kept for the next connection
 
     def _state_waits(self, h: int, stated: dict[str, int]) -> None:
         """States the waits `stated` names on handle h, one by one."""
         lib = _lib.lib()
         for name, ms in stated.items():
-            self._call_on(h, lib.bb_uds_set_wait, _lib.WAITS[name], ms)
+            self._call_on(h, lib.bb_uds_set_wait, _lib.WAITS[name], ms, asks=False)
 
     def _get_timing(self, name: str) -> int:
         t = _lib.BbUdsTiming()
-        self._call(_lib.lib().bb_uds_get_timing, ctypes.byref(t))
+        self._call(_lib.lib().bb_uds_get_timing, ctypes.byref(t), asks=False)
         return getattr(t, name)
 
     def _set_timing(self, name: str, ms: int) -> None:
@@ -743,7 +771,8 @@ class UdsClient:
                 # the key would go to the new target, answering the old one's seed
                 raise BloblyError(f"{self!r}: retarget inside a security_access key_fn", _lib.BB_ERR_STATE)
             h = self._handle()
-            self._call_on(h, _lib.lib().bb_uds_retarget, None if a is None else ctypes.byref(ctypes.c_int64(a)))
+            self._call_on(h, _lib.lib().bb_uds_retarget, None if a is None else ctypes.byref(ctypes.c_int64(a)),
+                          asks=False)
             self._target = a
             self.ecu = self._entity if a is None else a
 
@@ -818,8 +847,9 @@ def functional(channel: "Channel", functional_id: int | None, clients: Sequence[
             c._say_keep_alive(h)
         n = len(handles)
         out = (_lib.BbFunctionalReply * n)()
-        _lib.check(lib.bb_uds_functional(channel._index, fid, (ctypes.c_int * n)(*handles), n, req, len(req),
-                                         window, out))
+        targets = (ctypes.c_int * n)(*handles)
+        _cancellable(handles, lambda: _lib.check(lib.bb_uds_functional(channel._index, fid, targets, n, req, len(req),
+                                                                       window, out)))
         return [_reply(lib, h, out[i]) for i, h in enumerate(handles)]
     finally:
         for c in held:

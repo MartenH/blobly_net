@@ -132,6 +132,7 @@ BB_ERR_LOST = -10
 BB_ERR_FLASH = -11
 BB_ERR_E2E = -12  # returned by no call: E2eError's code
 BB_ERR_GATED = -13
+BB_ERR_CANCELLED = -14  # a UDS call bb_uds_cancel ended: what Ctrl-C asks, then raising KeyboardInterrupt
 # the exception each code raises; a code not here (BB_ERR_HANDLE, BB_ERR_STATE, a newer library's)
 # raises BloblyError itself
 ERRORS = {BB_ERR: Refused, BB_ERR_NEGATIVE: NegativeResponse, BB_ERR_TIMEOUT: Timeout,
@@ -453,6 +454,7 @@ def _declare(lib):
         # a const uint8_t * is declared c_char_p: bytes pass as they are, their length beside them
         "bb_uds_open": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64), P(BbUdsTarget)], c_int),
         "bb_uds_close": ([c_int], c_int),
+        "bb_uds_cancel": ([c_int], c_int),
         "bb_uds_replaces": ([c_int], c_int),
         "bb_uds_last": ([c_int, P(BbUdsExchange), c_char_p, c_int, c_char_p, c_int], c_int),
         "bb_uds_data": ([c_int, c_char_p, c_int], c_int),

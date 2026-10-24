@@ -462,21 +462,43 @@ INTERRUPTED = textwrap.dedent("""
             signal.raise_signal(signal.SIGINT)  # the console's Ctrl-C handler runs on a thread too
         else:
             os.kill(os.getpid(), signal.SIGINT)
+
+    def pending_ecu(q, stop):  # answers every UDS request on 0x7E0 with responsePending, for ever
+        asked = None
+        while not stop.is_set():
+            try:
+                f = q.recv(50)
+            except blobly.BloblyError:
+                return
+            if f is not None and f.id == 0x7E0:
+                asked = f.data[1]
+            if asked is not None:
+                q.send(0x7E8, bytes([0x03, 0x7F, asked, 0x78]))
+                time.sleep(0.15)
     with blobly.Project(sys.argv[2]) as net:
         q = net.channels.Q
-        net.on_message(q, None, print)
+        stop = threading.Event()
+        if sys.argv[3] == "uds":
+            threading.Thread(target=pending_ecu, args=(q, stop), daemon=True).start()
+        else:
+            net.on_message(q, None, print)
+        client = q.uds() if sys.argv[3] == "uds" else None
         threading.Timer(0.3, ctrl_c).start()
         try:
             {"recv": lambda: q.recv(None), "expect": lambda: q.expect(1, 3_600_000),
              "run": lambda: net.run(3_600_000), "someip": lambda: blobly.someip.listen(3_600_000, port=int(sys.argv[4])),
-             "flash": lambda: blobly.flash.program(q, bytes(64), quiet=True)}[sys.argv[3]]()
+             "flash": lambda: blobly.flash.program(q, bytes(64), quiet=True),
+             "uds": lambda: client and client.read_did(0xF190)}[sys.argv[3]]()
         except KeyboardInterrupt:
             print(f"interrupted {time.monotonic() - sent[0]:.3f} s after Ctrl-C")
+        stop.set()
+        if client is not None:
+            client.close()
 """)
 
 
 class TestInterrupt:
-    @pytest.mark.parametrize("wait", ["recv", "expect", "run", "someip", "flash"])
+    @pytest.mark.parametrize("wait", ["recv", "expect", "run", "someip", "flash", "uds"])
     def test_ctrl_c_ends_a_long_wait(self, tmp_path, wait):
         pkg = os.path.dirname(os.path.dirname(os.path.abspath(blobly.__file__)))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:

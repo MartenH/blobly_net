@@ -21,6 +21,7 @@ const bb_err_undecodable = i32(C.BB_ERR_UNDECODABLE)
 const bb_err_carrier = i32(C.BB_ERR_CARRIER)
 const bb_err_routing = i32(C.BB_ERR_ROUTING)
 const bb_err_lost = i32(C.BB_ERR_LOST)
+const bb_err_cancelled = i32(C.BB_ERR_CANCELLED)
 const bb_answered = i32(C.BB_ANSWERED)
 
 // UdsHandle is one UDS client the host opened. Used outside bb_mu, counted (`users`), closed only
@@ -32,8 +33,10 @@ mut:
 	conn     udsconn.Conn
 	users    i64
 	closing  i64
-	// a flash in progress on the handle (bb_flash_program), and its cancellation (bb_flash_cancel),
-	// which ends its waits as `closing` does; both under `fmu`
+	// a call in progress on the handle (`calling`), a flash among them (`flashing`), and their
+	// cancellation (bb_uds_cancel, bb_flash_cancel), which ends its waits as `closing` does; all
+	// three written under `fmu`
+	calling  bool
 	flashing bool
 	cancel   i64
 	fmu      &sync.Mutex = sync.new_mutex()
@@ -370,20 +373,75 @@ fn with_uds(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 	if stdatomic.load_i64(&hd.closing) != 0 {
 		return fail(bb_err_handle, 'the UDS handle was closed')
 	}
+	// cancellable from here: the idle service a cancel ends may hold the lock inside a message
+	hd.begin_call()
+	defer {
+		hd.end_call()
+	}
 	hd.mu.lock()
 	defer {
 		hd.mu.unlock()
 	}
-	// a close while this call waited for the idle service ends it before it starts
+	// a close or a cancel while this call waited for the idle service ends it before it starts
 	if stdatomic.load_i64(&hd.closing) != 0 {
 		return fail(bb_err_handle, 'the UDS handle was closed')
 	}
+	if hd.cancelled() {
+		hd.mark_lost() // the idle service's read it cut may have left the stream mid-message
+		return cancelled_call()
+	}
 	return call(mut hd) or {
-		if uds.failure_of(err) == .lost {
+		kind := uds.failure_of(err)
+		if kind == .lost {
 			hd.mark_lost()
+		}
+		if kind == .abandoned && hd.cancelled() {
+			hd.mark_lost() // a DoIP read it cut may have left the stream mid-message
+			return cancelled_call()
 		}
 		uds_failed(err)
 	}
+}
+
+// begin_call marks a call in progress, which bb_uds_cancel may cancel; a cancel asked before it is
+// not this call's.
+fn (mut hd UdsHandle) begin_call() {
+	hd.fmu.lock()
+	stdatomic.store_i64(&hd.cancel, 0)
+	hd.calling = true
+	hd.fmu.unlock()
+}
+
+fn (mut hd UdsHandle) end_call() {
+	hd.fmu.lock()
+	hd.calling = false
+	stdatomic.store_i64(&hd.cancel, 0)
+	hd.fmu.unlock()
+}
+
+// cancelled: the call in progress was ended by bb_uds_cancel, not by a close of the handle.
+fn (hd &UdsHandle) cancelled() bool {
+	return stdatomic.load_i64(&hd.closing) == 0 && stdatomic.load_i64(&hd.cancel) != 0
+}
+
+fn cancelled_call() i32 {
+	return fail(bb_err_cancelled, 'UDS: request cancelled (bb_uds_cancel); its answer, if any, is not waited for')
+}
+
+// bb_uds_cancel: the call in progress on handle u ends within a stop poll of the wait it is in, with
+// BB_ERR_CANCELLED (a flash: BB_ERR_FLASH). Nothing when none is in progress. From any thread.
+@[export: 'bb_uds_cancel']
+pub fn bb_uds_cancel(u i32) i32 {
+	mut hd := uds_enter(u) or { return fail(bb_err_handle, 'no open UDS handle ${u}') }
+	defer {
+		stdatomic.add_i64(&hd.users, -1)
+	}
+	hd.fmu.lock()
+	if hd.calling {
+		stdatomic.store_i64(&hd.cancel, 1)
+	}
+	hd.fmu.unlock()
+	return ok()
 }
 
 // exchange is with_uds for a call that asks the ECU: the bytes an earlier call answered are not
@@ -1079,12 +1137,20 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 	for mut h in hds {
 		h.forget()
 		h.has_last = false
+		h.begin_call()
 	}
-	// a close of any target ends the request, whichever target's transfer is in progress then: each
-	// client and its channel ask every target's closing for the call, their own again after
+	defer {
+		for mut h in hds {
+			h.end_call()
+		}
+	}
+	// a close or a cancel of any target ends the request, whichever target's transfer is in
+	// progress then: each client and its channel ask every target's flags for the call, their own
+	// again after
 	mut flags := []&i64{}
 	for h in hds {
 		flags << &h.closing
+		flags << &h.cancel
 	}
 	any_closing := fn [flags] () bool {
 		return flags.any(stdatomic.load_i64(it) != 0)
@@ -1108,17 +1174,22 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 	opener := fn [iface] () !transport.Bus {
 		return transport.open(iface)
 	}
-	mut tap := transport.open_stoppable(opener, any_closing) or { return functional_open_failed(err) }
+	mut tap := transport.open_stoppable(opener, any_closing) or {
+		return functional_open_failed(err, hds)
+	}
 	defer {
 		tap.close()
 	}
 	mut fch := isotp.Channel(isotp.on_bus(transport.open_stoppable(opener, any_closing) or {
-		return functional_open_failed(err)
+		return functional_open_failed(err, hds)
 	}, iface, u32(id), u32(id), u32(id) > 0x7FF) or { return fail(bb_err, 'functional: ${err.msg()}') })
 	defer {
 		fch.close()
 	}
 	replies := uds.functional(mut fch, mut tap, targets, request, window_or_default(window_ms)) or {
+		if uds.failure_of(err) == .abandoned && any_cancelled(hds) {
+			return cancelled_call()
+		}
 		return uds_failed(err)
 	}
 	for i, rep in replies {
@@ -1182,10 +1253,18 @@ pub fn bb_uds_functional_doip(u i32, address &i64, req &u8, len i32, window_ms i
 	})
 }
 
+// any_cancelled: a functional request's targets were cancelled, and none closed.
+fn any_cancelled(hds []&UdsHandle) bool {
+	return hds.all(stdatomic.load_i64(&it.closing) == 0) && hds.any(stdatomic.load_i64(&it.cancel) != 0)
+}
+
 // functional_open_failed answers an open of a functional request's taps that failed: a close of a
-// target that ended it is the handle's.
-fn functional_open_failed(err IError) i32 {
+// target that ended it is the handle's, a cancel a cancel.
+fn functional_open_failed(err IError, hds []&UdsHandle) i32 {
 	if err.msg() == transport.open_stopped_note {
+		if any_cancelled(hds) {
+			return cancelled_call()
+		}
 		return fail(bb_err_handle, 'the UDS handle was closed')
 	}
 	return fail(bb_err, 'functional: ${err.msg()}')

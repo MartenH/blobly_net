@@ -152,8 +152,13 @@ with its traceback.
 call returns. So the package asks for a wait in slices of at most 100 ms: `recv` (`None`
 included), `expect`, `expect_signal`, `run()`, `blobly.wait_released`, a DoIP `discover` and
 `blobly.doip_listen` (one exchange each, on a thread of its own that finishes it) all end within
-about 100 ms of Ctrl-C. A UDS request is one call into the engine, bounded by its own timing (120 s at
-most), and Ctrl-C lands when it returns. A `with` block stops the project on the way out, an
+about 100 ms of Ctrl-C. A UDS request made on the main thread runs on a thread of its own: Ctrl-C
+cancels it (the engine's waits end within 20 ms) and raises `KeyboardInterrupt` at once, even on an
+ECU that answers responsePending (0x78) for ever. The request may have gone out; on DoIP the
+connection is let go, and the client's next call opens another. The hop costs about 0.15 ms a
+request; on any other thread, where Python raises no interrupt, a request is made in place.
+Opening a client's connection (`ch.uds()`, or the first call after a start, up to 7 s on DoIP) is
+one call still, and Ctrl-C lands when it returns. A `with` block stops the project on the way out, an
 interrupt included.
 
 ---
@@ -973,7 +978,8 @@ bits) is refused. `diag.tx`, `diag.rx` and `diag.ext` are the ids it opened on.
 - **Threads.** Calls on one client are serialised, so threads may share one; `security_access`
   is one call, seed, key function and key together. `close()` from another thread ends a call in
   progress there within 20 ms of the wait it is in, with `BloblyError` (code -2); a frame already
-  handed to the driver is written first. A client nobody closes lets its connection go once it is
+  handed to the driver is written first. Ctrl-C ends a call made on the main thread the same way,
+  as `KeyboardInterrupt` (see [Running](#2-running)). A client nobody closes lets its connection go once it is
   collected, at the next UDS call.
 
 **Security access.** `security_access(level, key_fn=None)` requests the seed for `level` (odd),
