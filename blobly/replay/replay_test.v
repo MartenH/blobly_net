@@ -336,3 +336,67 @@ fn test_two_channels_on_one_wire_are_refused() {
 	}
 	assert false
 }
+
+fn test_a_refused_send_whose_note_an_identical_echo_took_leaves_no_note_behind() {
+	path := os.join_path(os.temp_dir(), 'replay_stall_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	t := Target{
+		name:  'S'
+		iface: 'inproc:RPT535'
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	w := r.send_watch(0, t)
+	f := transport.CanFrame{
+		id:   0x321
+		data: [u8(7), 7]
+	}
+	// A is noted and stalls in its driver; B, identical, is sent and comes back
+	a := w.before(f)
+	b := w.before(f)
+	w.after(b, .taken)
+	r.take(0, t, f)
+	// A is refused: B's echo is still ours, and nothing of ours is left to take another's frame
+	w.after(a, .refused)
+	r.take(0, t, f)
+	c := r.stop() or { panic(err) }
+	assert c.frames == 2 && c.ours == 1 && c.theirs == 1 && c.missed == 0, c.str()
+	es := canlog.load_file(path) or { panic(err) }
+	assert es.map(it.dir) == [canlog.Dir.tx, .rx]
+}
+
+fn test_an_echo_that_took_a_stalled_send_note_is_ours_only_if_that_send_was() {
+	path := os.join_path(os.temp_dir(), 'replay_stall2_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	t := Target{
+		name:  'S'
+		iface: 'inproc:RPT536'
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	w := r.send_watch(0, t)
+	f := transport.CanFrame{
+		id:   0x322
+		data: [u8(1)]
+	}
+	// another node's identical frame arrives while A and C are in their drivers: held behind them
+	a := w.before(f)
+	r.take(0, t, f)
+	g := transport.CanFrame{
+		id:   0x323
+		data: [u8(2)]
+	}
+	r.take(0, t, g)
+	assert r.counts().frames == 0
+	w.after(a, .refused)
+	cc := w.before(f)
+	r.take(0, t, f)
+	w.after(cc, .taken)
+	c := r.stop() or { panic(err) }
+	assert c.frames == 3 && c.ours == 1 && c.theirs == 2 && c.missed == 0, c.str()
+	es := canlog.load_file(path) or { panic(err) }
+	assert es.map(it.frame.id) == [u32(0x322), 0x323, 0x322]
+	assert es.map(it.dir) == [canlog.Dir.rx, .rx, .tx]
+}
