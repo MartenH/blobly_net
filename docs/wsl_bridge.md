@@ -71,10 +71,10 @@ requirements below:
 
 ## Requirements
 
-- **Any x86-64 distribution with iproute2 4.13 or later** (2017; `ip -json`). `canbridge` is
-  linked statically (against musl), so it needs no particular glibc and no library of the
-  distribution's; it uses the distribution's `ip` to list the CAN interfaces and create the
-  vcans. Being musl, it resolves a `--connect` host name through `/etc/hosts` and DNS only (no
+- **Ubuntu 24.04 or later in WSL, x86-64**: the supported floor, as for the Linux build itself.
+  `canbridge` is linked statically (against musl), so it needs no library of the distribution's
+  (a minimal 24.04 has no `libatomic`, which the old dynamic build needed); it uses the
+  distribution's `ip` to list the CAN interfaces and create the vcans. Being musl, it resolves a `--connect` host name through `/etc/hosts` and DNS only (no
   NSS, so no mDNS `.local` names); the app always passes `127.0.0.1`. Built from a checkout with
   `scripts/build_canbridge.sh` (it needs `musl-tools`); a plain `v cmd/canbridge` builds a
   dynamic one, which runs only where the build host's glibc does.
