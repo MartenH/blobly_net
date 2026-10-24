@@ -8,6 +8,7 @@ import json2
 // `can0` also carries linkinfo.info_data.bittiming.bitrate (vcan has none → 0).
 pub struct IpLink {
 	ifname   string
+	mtu      int
 	linkinfo IpLinkInfo
 }
 
@@ -43,10 +44,52 @@ pub fn list_interfaces() ![]Iface {
 				kind:    kind
 				bitrate: l.linkinfo.info_data.bittiming.bitrate
 				virtual: false
+				fd:      fd_of_mtu(l.mtu)
 			}
 		}
 	}
 	out << virtual_ifaces()
+	return out
+}
+
+// sysfs_can_ifaces is every CAN link in /sys/class/net, the down ones too (`ip -json` leaves
+// some out), each with a description: a real adapter's USB product, bus path and link state, so
+// the two channels of a dual adapter read as "PCAN-USB Pro FD [1-1]" and its sibling.
+fn sysfs_can_ifaces() []Interface {
+	mut out := []Interface{}
+	names := os.ls('/sys/class/net') or { return out }
+	for name in names {
+		base := '/sys/class/net/${name}'
+		typ := os.read_file('${base}/type') or { continue }
+		if typ.trim_space() != '280' { // ARPHRD_CAN
+			continue
+		}
+		is_vcan := name.starts_with('vcan')
+		mut desc := 'virtual CAN'
+		if !is_vcan {
+			product := (os.read_file('${base}/device/../product') or { '' }).trim_space()
+			state := (os.read_file('${base}/operstate') or { '' }).trim_space()
+			busnum := (os.read_file('${base}/device/../busnum') or { '' }).trim_space()
+			devpath := (os.read_file('${base}/device/../devpath') or { '' }).trim_space()
+			mut parts := [if product != '' { product } else { 'CAN' }]
+			if busnum != '' && devpath != '' {
+				parts << '[${busnum}-${devpath}]'
+			}
+			if state != '' {
+				parts << '· ${state}'
+			}
+			desc = parts.join(' ')
+		}
+		mtu := (os.read_file('${base}/mtu') or { '' }).trim_space().int()
+		out << Interface{
+			address: name
+			kind:    if is_vcan { 'vcan' } else { 'socketcan' }
+			desc:    desc
+			fd:      fd_of_mtu(mtu)
+			virtual: is_vcan
+		}
+	}
+	out.sort(a.address < b.address)
 	return out
 }
 

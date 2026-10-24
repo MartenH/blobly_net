@@ -6,13 +6,14 @@ import blobly.transport
 // wire, whichever row asks — the nominal rate of the first of `rows` on the wire (unset is
 // default_bitrate) and the data rate of the first that declares one (0: none). `rows` is the
 // caller's enabled rows in project order; none when no CAN row of them is on the wire, for the
-// caller's own fallback.
+// caller's own fallback. The wire is the address without its rate (transport.wire_key), so a
+// bare vendor address finds the row that states one.
 pub fn wire_rates(rows []Channel, iface string) ?(int, int) {
-	key := transport.destination_key(iface)
+	key := transport.wire_key(iface)
 	mut nominal := 0
 	mut data := 0
 	for c in rows {
-		if c.is_eth() || transport.destination_key(c.iface_with_bitrate()) != key {
+		if c.is_eth() || transport.wire_key(c.iface_with_bitrate()) != key {
 			continue
 		}
 		if nominal == 0 {

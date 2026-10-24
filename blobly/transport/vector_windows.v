@@ -931,6 +931,21 @@ pub fn vector_driver_path() string {
 	return unsafe { cstring_to_vstring(p) }
 }
 
+// vector_fd_of is whether application channel `app` reaches a channel with ISO CAN-FD: the
+// hardware it is assigned to, as the driver describes it in `hw`; unknown where either is unread.
+fn vector_fd_of(app int, hw []VectorChannel) FdSupport {
+	a, assigned := vector_assignment(app) or { return .unknown }
+	if !assigned {
+		return .unknown
+	}
+	for c in hw {
+		if c.hw_type == a.hw_type && c.hw_index == a.hw_index && c.hw_channel == a.hw_channel {
+			return if c.fd_capable() { .yes } else { .no }
+		}
+	}
+	return .unknown
+}
+
 fn vector_list() []Iface {
 	mut out := []Iface{}
 	if C.ct_vector_load() != 0 {
@@ -941,6 +956,7 @@ fn vector_list() []Iface {
 	// nothing was assigned at all — the same mistake as sizing the configuration table by what
 	// a bench plausibly has. Probing does not register anything, so sweeping 64 costs nothing
 	// but the lookups.
+	hw := vector_channels()
 	for ch in 1 .. 65 {
 		state := C.ct_vector_present(u32(ch - 1))
 		if state == 0 {
@@ -955,6 +971,8 @@ fn vector_list() []Iface {
 			iface:   'vector:${ch}'
 			kind:    'can'
 			virtual: false
+			fd:      vector_fd_of(ch, hw)
+			state:   if state == 2 { 'hardware not present' } else { 'assigned' }
 		}
 	}
 	return out

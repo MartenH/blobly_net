@@ -361,7 +361,7 @@ pub fn assign_refusal(app int, slot AppSlot, create_ok bool) ?string {
 		return 'the Vector driver would not say what vector:${app} points at — refusing rather than overwriting a mapping that may be there. Try again in a moment.'
 	}
 	if slot == .absent && !create_ok {
-		return 'vector:${app} is not registered under "blobly_net". Assigning it CREATES it, which is how a channel is added — but the driver reports that with a generic error, which is also what a momentary read failure on an occupied channel looks like. Tick "create unregistered channel" to say that is what you mean, or pick one of the channels listed as free.'
+		return 'vector:${app} is not registered under "blobly_net". Assigning it CREATES it, which is how a channel is added — but the driver reports that with a generic error, which is also what a momentary read failure on an occupied channel looks like. Tick "create unregistered channel" in Discover (create = true from a script) to say that is what you mean, or pick one of the channels listed as free.'
 	}
 	return none
 }
@@ -438,4 +438,53 @@ fn parse_vector_spec(spec string) !VectorSpec {
 		fd:           fd
 		data_bitrate: dbr
 	}
+}
+
+// driver_refusal_of is why the Vector XL driver cannot be used, from vector_driver_status's code
+// on Windows; none when it can.
+pub fn driver_refusal_of(status int) ?string {
+	return match status {
+		0 { none }
+		-1 { 'vxlapi64.dll was not found: it is the Vector XL Driver Library, a separate download from the hardware drivers' }
+		-2 { 'vxlapi64.dll is missing functions this backend needs; update the Vector Driver Setup' }
+		else { 'vxlapi64.dll loaded, but xlOpenDriver failed (XL status ${-status}): no Vector hardware connected, or another application holds it exclusively' }
+	}
+}
+
+// vector_driver_refusal is why the Vector driver cannot be used on this machine; none when it can.
+pub fn vector_driver_refusal() ?string {
+	$if windows {
+		return driver_refusal_of(vector_driver_status())
+	} $else {
+		return 'the Vector XL backend is Windows-only'
+	}
+}
+
+// vector_channel_of is the channel `hw` lists at (hw_type, hw_index, hw_channel).
+pub fn vector_channel_of(hw []VectorChannel, hw_type int, hw_index int, hw_channel int) ?VectorChannel {
+	for c in hw {
+		if c.hw_type == hw_type && c.hw_index == hw_index && c.hw_channel == hw_channel {
+			return c
+		}
+	}
+	return none
+}
+
+// hw_owner_refusal is why physical channel `hw` must not be given a(nother) application channel,
+// by `mappings` (vector_mappings): one already points at it, or a channel that would not answer
+// may — a second would alias one wire under two addresses (#167). None when it is free.
+pub fn hw_owner_refusal(hw VectorChannel, mappings []VectorMapping) ?string {
+	for m in mappings {
+		if m.hw.hw_type == hw.hw_type && m.hw.hw_index == hw.hw_index
+			&& m.hw.hw_channel == hw.hw_channel {
+			if m.app > 0 {
+				return '${hw.name} is already assigned to vector:${m.app}'
+			}
+			if !m.owner_known {
+				break
+			}
+			return none
+		}
+	}
+	return 'could not confirm whether ${hw.name} is already assigned — the Vector driver did not answer for every application channel. Try again.'
 }

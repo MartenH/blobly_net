@@ -563,3 +563,53 @@ fn xl_status_of(rc int) ?int {
 	}
 	return -rc - 1000
 }
+
+fn test_the_driver_refusal_names_the_cause() {
+	assert driver_refusal_of(0) == none
+	assert driver_refusal_of(-1) or { '' }.contains('vxlapi64.dll was not found')
+	assert driver_refusal_of(-2) or { '' }.contains('missing functions')
+	assert driver_refusal_of(-255) or { '' }.contains('XL status 255')
+	$if !windows {
+		assert vector_driver_refusal() or { '' } == 'the Vector XL backend is Windows-only'
+		vector_assign_checked(1, 57, 0, 0, true) or {
+			assert err.msg().contains('Windows-only')
+			return
+		}
+		assert false, 'assigned on a machine with no XL driver'
+	}
+}
+
+fn vn(ch int) VectorChannel {
+	return VectorChannel{
+		name:        'VN1630A Channel ${ch + 1}'
+		hw_type:     57
+		hw_channel:  ch
+		can_capable: true
+	}
+}
+
+fn test_a_channel_is_found_by_the_drivers_identity() {
+	hw := [vn(0), vn(1)]
+	assert vector_channel_of(hw, 57, 0, 1) or { VectorChannel{} }.name == 'VN1630A Channel 2'
+	assert vector_channel_of(hw, 57, 1, 1) == none
+}
+
+fn test_hardware_with_an_owner_or_an_unknown_one_is_refused() {
+	free := [VectorMapping{
+		hw:          vn(0)
+		owner_known: true
+	}]
+	assert hw_owner_refusal(vn(0), free) == none
+	owned := [VectorMapping{
+		hw:          vn(0)
+		app:         3
+		owner_known: true
+	}]
+	assert hw_owner_refusal(vn(0), owned) or { '' }.contains('already assigned to vector:3')
+	unknown := [VectorMapping{
+		hw: vn(0)
+	}]
+	assert hw_owner_refusal(vn(0), unknown) or { '' }.contains('could not confirm')
+	// hardware the mappings do not list cannot be shown to be free
+	assert hw_owner_refusal(vn(1), free) or { '' }.contains('could not confirm')
+}

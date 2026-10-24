@@ -160,6 +160,8 @@ mut:
 	// the replays and recordings the script started, stopped by close (replay.v)
 	replays []&replay.Session
 	records []&replay.Recorder
+	// the channels bus.open_iface made of addresses (ifaces.v)
+	by_address map[string]bool
 	// the background senders the script started, by handle, stopped by close (cyclic.v)
 	senders []&cyclic.Sender
 pub mut:
@@ -411,6 +413,7 @@ fn (mut env Env) register_all() {
 	env.register_isotp()
 	env.register_replay()
 	env.register_e2e()
+	env.register_ifaces()
 	env.register_cyclic()
 	env.register_j1939()
 }
