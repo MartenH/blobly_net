@@ -323,6 +323,16 @@ fn (mut app App) runtime_census() drainrule.Census {
 	return c
 }
 
+// run_holds_wires is whether a run has its wires: started, or stopped with its workers still
+// letting go of them (the drain) — what a Vector assignment is refused during
+// (transport.assign_run_refusal).
+fn (mut app App) run_holds_wires() bool {
+	app.mu.lock()
+	held := app.running || app.run_workers > 0
+	app.mu.unlock()
+	return held
+}
+
 // runtime_busy answers drainrule for this app: '' when the runtime view may be replaced,
 // otherwise the reason, worded for the operator.
 //

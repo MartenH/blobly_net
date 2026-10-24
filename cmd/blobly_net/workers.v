@@ -1620,7 +1620,8 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 		ap.script_push(s)
 	}
 	env.run_active = fn [a] () bool {
-		return a.running
+		mut ap := unsafe { a }
+		return ap.run_holds_wires()
 	}
 	env.sys = ss.sys
 	if ss.path != '' {

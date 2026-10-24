@@ -627,7 +627,9 @@ fn test_an_assignment_is_refused_while_a_run_is_started() {
 }
 
 fn test_an_unregistered_channel_names_the_remedy_on_open() {
-	assert lookup_refusal(5, -1013) or { '' } == 'vector:5 is not registered in application blobly_net — map it in Discover → Assign'
+	unregistered := lookup_refusal(5, -1013) or { '' }
+	assert unregistered.starts_with('vector:5 is not registered in application blobly_net — map it in Discover → Assign')
+	assert unregistered.contains('create'), 'the remedy names the create opt-in an absent channel needs'
 	assert lookup_refusal(5, -1007) or { '' }.contains('would not report what it is assigned to')
 	assert lookup_refusal(5, -1000) == none
 	assert lookup_refusal(5, 0) == none

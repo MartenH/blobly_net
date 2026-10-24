@@ -666,7 +666,7 @@ fn draw_discover_dialog(mut app App) {
 					// NOT WHILE RUNNING (transport.assign_run_refusal, the rule scripts go by too):
 					// an Assign rewrites the driver's persistent mapping under ports the run may
 					// hold open.
-					if _ := transport.assign_run_refusal(app.running) {
+					if _ := transport.assign_run_refusal(app.run_holds_wires()) {
 						vgui.text_dim('(stop the measurement to assign)')
 					} else if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
 						n := vgui.buf_str(app.disc_vector_ch_buf).trim_space()

@@ -360,7 +360,7 @@ fn (mut app App) refresh_discovery() {
 // refusals are transport.vector_assign_checked, which scripts use too.
 fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
 	got := transport.vector_assign_checked(app_channel, hw.hw_type, hw.hw_index, hw.hw_channel,
-		app.disc_vector_create, app.running) or {
+		app.disc_vector_create, app.run_holds_wires()) or {
 		app.notify('could not assign ${hw.name}: ${err}')
 		return
 	}

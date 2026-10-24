@@ -397,7 +397,7 @@ const vector_not_registered = -1013
 pub fn lookup_refusal(channel int, rc int) ?string {
 	return match rc {
 		vector_not_registered {
-			'vector:${channel} is not registered in application blobly_net — map it in Discover → Assign'
+			'vector:${channel} is not registered in application blobly_net — map it in Discover → Assign (ticking "create unregistered channel"; from a script, vector.assign with create). The driver says this with its generic error, so if vector:${channel} is mapped already, try again.'
 		}
 		-1007 {
 			'Vector application channel ${channel}: the driver would not report what it is assigned to. Nothing was changed; try again, and check that no other XL application is mid-restart.'

@@ -174,8 +174,9 @@ pub mut:
 	// The system model uds.node reaches a node by (nodes.v): the run's (headless.Run.sys), or the
 	// one the GUI's Diagnostics panel reads; empty when no system.toml describes the project.
 	sys sysview.System
-	// Whether a run is started in this process: cmd/script's headless run, or the GUI's
-	// measurement. vector.assign is refused while it is (transport.assign_run_refusal).
+	// Whether a run has its wires in this process — cmd/script's headless run, or the GUI's
+	// measurement, started or still letting go of them. vector.assign is refused while it does
+	// (transport.assign_run_refusal).
 	run_active fn () bool = fn () bool {
 		return false
 	}
