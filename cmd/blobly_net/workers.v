@@ -1605,9 +1605,10 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 	}
 	env.sys = ss.sys
 	if ss.path != '' {
-		env.sys = sysview.load(ss.path) or {
+		if loaded := sysview.load(ss.path) {
+			env.sys = loaded
+		} else {
 			a.script_push('${ss.path} could not be read (${err}); uds.node names no nodes')
-			sysview.System{}
 		}
 	}
 	// A script IS the tester. Left on the default opener it would be the one emitter the trace
