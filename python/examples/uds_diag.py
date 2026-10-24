@@ -16,6 +16,7 @@ every check held, and 1 with a FAIL line otherwise."""
 import argparse
 import os
 import sys
+from typing import NoReturn
 from importlib.util import find_spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -30,7 +31,7 @@ VIN, SERIAL, SW_VERSION = 0xF190, 0xF18C, 0xF195
 NO_SUCH_DID = 0xABCD
 
 
-def fail(why: str) -> None:
+def fail(why: str) -> NoReturn:
     sys.exit(f"FAIL: {why}")
 
 

@@ -16,6 +16,7 @@ otherwise."""
 import argparse
 import os
 import sys
+from typing import NoReturn
 from dataclasses import dataclass, field
 from importlib.util import find_spec
 
@@ -29,7 +30,7 @@ import blobly  # noqa: E402
 SIM_DEMO = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, "projects", "sim-demo.blobnet"))
 
 
-def fail(why: str) -> None:
+def fail(why: str) -> NoReturn:
     sys.exit(f"FAIL: {why}")
 
 

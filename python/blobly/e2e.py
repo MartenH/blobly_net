@@ -114,13 +114,7 @@ def _answer(lib, rc):
 
 
 def _bytes(data):
-    """A frame: bytes, bytearray, memoryview, or a sequence of byte values."""
-    if isinstance(data, (str, numbers.Integral)):
-        raise TypeError(f"data must be bytes, not {type(data).__name__}")
-    try:
-        return bytes(data)
-    except (TypeError, ValueError) as e:
-        raise TypeError(f"data must be bytes: {e}") from None
+    return _lib.byte_data("data", data)
 
 
 def _int(name, v):

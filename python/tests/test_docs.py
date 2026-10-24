@@ -53,8 +53,8 @@ def package_classes():
 
 
 def members(node, classes):
-    """A class's public names: methods and properties, __slots__, and what its methods assign to
-    self, with those of its base classes that the package defines."""
+    """A class's public names: methods and properties, annotated fields (a dataclass's), __slots__,
+    and what its methods assign to self, with those of its base classes that the package defines."""
     names = set()
     for base in node.bases:
         if isinstance(base, ast.Subscript):  # a generic base: Named[Channel] is Named
@@ -64,6 +64,8 @@ def members(node, classes):
     for item in node.body:
         if isinstance(item, ast.FunctionDef):
             names.add(item.name)
+        elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+            names.add(item.target.id)
         elif isinstance(item, ast.Assign) and any(getattr(t, "id", None) == "__slots__" for t in item.targets):
             names |= {e.value for e in item.value.elts}
     for n in ast.walk(node):

@@ -159,14 +159,7 @@ def _int(name: str, v: object, bits: int = 32) -> int:
     return v
 
 
-def _data(name: str, v: object) -> bytes:
-    """A byte-string argument: bytes, bytearray, memoryview, or a sequence of byte values."""
-    if isinstance(v, (str, int)):
-        raise TypeError(f"{name} must be bytes, not {type(v).__name__}")
-    try:
-        return bytes(v)
-    except (TypeError, ValueError) as e:
-        raise TypeError(f"{name} must be bytes: {e}") from None
+_data = _lib.byte_data  # the one rule for a byte-string argument
 
 
 def _put(fn, *args) -> bytes:
