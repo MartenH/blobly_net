@@ -79,7 +79,7 @@ class CyclicSender:
             if self.message is None:
                 if signals or data is None:
                     raise TypeError(f"{self!r}: a raw sender takes the payload's bytes, not signals")
-                d = bytes(data)
+                d = _lib.byte_data("data", data)
                 _lib.check(lib.bb_cyclic_data(h, d, len(d)))
             else:
                 if data is not None:

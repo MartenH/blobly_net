@@ -17,6 +17,7 @@ at level 1). Exits 0 when every check held, and 1 with a FAIL line otherwise."""
 import argparse
 import os
 import sys
+from typing import NoReturn
 from importlib.util import find_spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -30,7 +31,7 @@ DESCRIBED = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, "projects"
                                           "described-ecu-demo.blobnet"))
 
 
-def fail(why: str) -> None:
+def fail(why: str) -> NoReturn:
     sys.exit(f"FAIL: {why}")
 
 

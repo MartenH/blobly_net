@@ -20,6 +20,7 @@ from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import Generators, listed as _listed_generators
 from .isotp import IsoTp
+from .j1939 import J1939Listener
 from .replay import Replays
 from .e2e import E2eStatus, _passed, status_of
 from .cyclic import CyclicSender, _period, _start_message, _start_raw
@@ -52,7 +53,7 @@ class Frame:
     def __init__(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
                  brs: bool = False, rtr: bool = False, esi: bool = False, length: int | None = None,
                  t_ms: float | None = None, e2e: E2eStatus | str | None = None) -> None:
-        data = bytes(data)
+        data = _lib.byte_data("data", data)
         _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi, t_ms,
                      None if e2e is None else E2eStatus(e2e)))
 
@@ -105,7 +106,7 @@ def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
     """A bb_frame from a frame's parts, refusing what no CAN frame is."""
     if isinstance(id, bool) or not isinstance(id, int) or not 0 <= id <= 0x1FFF_FFFF:
         raise ValueError(f"{who}: a CAN id is an integer of at most 29 bits, not {id!r}")
-    data = bytes(data)
+    data = _lib.byte_data(f"{who}: data", data)
     if len(data) > 64:
         raise ValueError(f"{who}: {len(data)} bytes is more than a CAN-FD frame carries")
     f = _lib.BbFrame(id=id, len=len(data), ext=int(bool(ext)), fd=int(bool(fd)), brs=int(bool(brs)),
@@ -172,6 +173,7 @@ class Channel:
         self._h = None
         self._messages, self._messages_run = None, None
         self._uds = weakref.WeakSet()  # the UDS clients and ISO-TP channels on this row, let go with its handle
+        self._j1939 = None  # its J1939Listener, once asked for: every handle it opens then listens
 
     def _current(self):
         st = _lib.state
@@ -217,8 +219,10 @@ class Channel:
                     raise BloblyError(f"{self.name}: the project is not started", _lib.BB_ERR_STATE)
                 # the library's own bytes: what it named, not a re-encoding of it
                 h = _lib.check(lib.bb_bus_open(lib.bb_channel_iface(self._index)))
-                try:  # its frames judged by this row's E2E (Frame.e2e)
+                try:  # its frames judged by this row's E2E (Frame.e2e), and read as J1939 where the
+                    # row's wire says so (a j1939: tick, a database declaring it) or a listener was asked for
                     _lib.check(lib.bb_e2e_attach(h, self._index))
+                    _lib.check(lib.bb_j1939_attach(h, self._index, int(self._j1939 is not None)))
                 except BloblyError:
                     lib.bb_bus_close(h)
                     raise
@@ -508,6 +512,21 @@ class Channel:
                 return None
             msg = msgs[m.value]
             return msg, [(s, values[i] if active[i] else None) for i, s in enumerate(msg.signals)]
+
+    def j1939(self) -> J1939Listener:
+        """This channel's J1939 reading (J1939Listener): multi-packet messages rejoined from the
+        transport protocol (BAM, RTS/CTS) and decoded by PGN, their faults, and the address
+        directory, from the frames this channel's handle reads. Nothing decides a bus IS J1939, so
+        a row reads it from its handle's first frame where its wire says so — a row on it ticked
+        `j1939:`, or with a database declaring J1939 (VFrameFormat J1939PG) — and any other CAN row
+        from this call on.
+        It sends nothing: no CTS, no acknowledgement, no address claim."""
+        with _lib.state_lock:
+            if self._j1939 is None:
+                self._j1939 = J1939Listener(self)
+            if self._h is not None:  # the handle already open listens from now on
+                self._j1939._handle()
+        return self._j1939
 
     def uds(self, tx: int | None = None, rx: int | None = None, *, timeout_ms: int | None = None,
             p2_star_ms: int | None = None, margin_ms: int | None = None,

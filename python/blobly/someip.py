@@ -86,11 +86,9 @@ def _out(m: SomeipMessage, keep: list) -> _lib.BbSomeipOut:
         raise TypeError(f"a message needs its service and method: {m!r}")
     if m.type is not None and m.type not in _TYPES:
         raise ValueError(f"type {m.type!r}: one of {', '.join(_TYPES)}")
-    if isinstance(m.payload, (str, int)):
-        raise TypeError(f"payload must be bytes, not {type(m.payload).__name__}")
     if m.return_code:
         raise ValueError(f"return_code {m.return_code}: a request or a notification is sent with 0")
-    payload = bytes(m.payload)
+    payload = _lib.byte_data("payload", m.payload)
     if len(payload) > 65507 - 16:
         raise ValueError(f"a payload of {len(payload)} bytes does not fit one UDP datagram")
     keep.append(payload)

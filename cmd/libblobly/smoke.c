@@ -156,6 +156,13 @@ typedef int (*diag_fn)(int, bb_diagnostics *);
 static load_fn bb_bus_load_p;
 static diag_fn bb_bus_diagnostics_p;
 
+/* J1939 on a row's frames */
+static int (*bb_j1939_attach_p)(int, int, int);
+static int (*bb_j1939_take_message_p)(int, bb_j1939_message *, double *, uint8_t *, int);
+static int (*bb_j1939_address_count_p)(int);
+static int (*bb_j1939_address_info_p)(int, int, bb_j1939_address *);
+static int (*bb_j1939_function_name_p)(int, char *, int);
+
 #define FAIL(step) do { fprintf(stderr, "FAIL %s: %s\n", step, bb_last_error_p()); return 1; } while (0)
 
 /* hear n frames and send one, on a handle of this thread's own */
@@ -279,6 +286,49 @@ static int dbc_steps(int row) {
 	bb_bus_close_p(h);
 	CHECK(decoded, "nothing the simulation sent decoded");
 	printf("ok   CAN1's database: Powertrain listed, encoded, decoded; a frame the simulation sent decoded\n");
+	return 0;
+}
+
+/* J1939 on CAN1, whose row says nothing of it: a BAM another handle sends rejoined once asked, and
+ * an address claim in the directory; the structs' layout as bb.h states it */
+static int j1939_steps(int row) {
+	int h = bb_bus_open_p("inproc:CAN1"), peer = bb_bus_open_p("inproc:CAN1");
+	CHECK(h >= 0 && peer >= 0, "open for J1939");
+	CHECK(bb_j1939_attach_p(h, row, 0) == 0, "CAN1 does not say J1939: nothing attached unasked");
+	CHECK(bb_j1939_attach_p(h, row, 1) == 1, "asked, it listens");
+	bb_frame f = {.id = 0x1CECFF21, .len = 8, .ext = 1, .data = {32, 20, 0, 3, 0xFF, 0x10, 0xFF, 0x00}};
+	CHECK(bb_bus_send_p(peer, &f) == 0, "send the BAM");
+	for (int seq = 1; seq <= 3; seq++) {
+		f.id = 0x1CEBFF21;
+		f.data[0] = (uint8_t)seq;
+		for (int k = 1; k < 8; k++) f.data[k] = (seq - 1) * 7 + k - 1 < 20 ? (uint8_t)((seq - 1) * 7 + k - 1) : 0xFF;
+		CHECK(bb_bus_send_p(peer, &f) == 0, "send packet %d", seq);
+	}
+	uint64_t raw = 7 | (uint64_t)1 << 63; /* identity 7, the Engine function (0) */
+	f.id = 0x18EEFF00;
+	for (int k = 0; k < 8; k++) f.data[k] = (uint8_t)(raw >> (8 * k));
+	CHECK(bb_bus_send_p(peer, &f) == 0, "send the claim");
+	static bb_j1939_message m;
+	double v[1];
+	uint8_t on[1];
+	int got = BB_NONE;
+	for (int i = 0; i < 500 && got == BB_NONE; i++) { /* the simulated ECUs talk on CAN1 too */
+		CHECK(bb_bus_recv_p(h, 1000, &f) == 0, "recv for J1939");
+		got = bb_j1939_take_message_p(h, &m, v, on, 1);
+	}
+	CHECK(got == 0 && m.pgn == 0xFF10 && m.sa == 0x21 && m.da == 0xFF && m.bam && m.len == 20 && m.data[19] == 19
+		&& m.message == -1 && m.note[0] == 0 && m.t_start_ns <= m.t_end_ns, "the BAM rejoined: PGN 0x%X, %d bytes", m.pgn, m.len);
+	for (int i = 0; i < 500 && bb_j1939_address_count_p(h) == 0; i++)
+		CHECK(bb_bus_recv_p(h, 1000, &f) == 0, "recv for the claim");
+	CHECK(bb_j1939_address_count_p(h) == 1, "the claim read");
+	bb_j1939_address a;
+	CHECK(bb_j1939_address_info_p(h, 0, &a) == 0 && a.sa == 0x00 && a.name == raw && a.identity == 7 && a.function == 0
+		&& a.arbitrary_address_capable, "the directory holds SA 0x%02X", a.sa);
+	char fname[64];
+	CHECK(bb_j1939_function_name_p(0, fname, sizeof fname) == 6 && strcmp(fname, "Engine") == 0, "function 0 is the Engine");
+	bb_bus_close_p(peer);
+	bb_bus_close_p(h);
+	printf("ok   J1939 on CAN1: a BAM rejoined, an address claim in the directory\n");
 	return 0;
 }
 
@@ -590,6 +640,8 @@ int main(int argc, char **argv) {
 	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_check_wait); SYM(bb_uds_retarget);
 	SYM(bb_replay_defaults); SYM(bb_replay_start); SYM(bb_replay_wait); SYM(bb_replay_status); SYM(bb_replay_stop);
 	SYM(bb_record_start); SYM(bb_record_stop);
+	SYM(bb_j1939_attach); SYM(bb_j1939_take_message); SYM(bb_j1939_address_count); SYM(bb_j1939_address_info);
+	SYM(bb_j1939_function_name);
 
 	if (bb_init_p() != 0) FAIL("init");
 	if (bb_thread_attach_p() != 0) FAIL("attach on the loading thread must be harmless");
@@ -642,6 +694,7 @@ int main(int argc, char **argv) {
 	if (exchange("main thread", 20)) return 1;
 	if (dbc_steps(can1)) return 1;
 	if (uds_steps(can1)) return 1;
+	if (j1939_steps(can1)) return 1;
 	if (doip_steps(doip)) return 1;
 	if (isotp_steps(can1, doip)) return 1;
 	if (fault_steps(can1, doip)) return 1;

@@ -33,6 +33,14 @@ pub type DatabaseOpener = fn (ref string) !Loaded
 // reference once and must see that one parse everywhere it asks (the headless runner's rate
 // check and its row databases).
 pub fn merge_files_report_with(paths []string, open DatabaseOpener) (Database, []string) {
+	db, _, notes := merge_with_sources(paths, open)
+	return db, notes
+}
+
+// merge_with_sources is merge_files_report_with that also answers each file's database as it was
+// opened, in order: what a lookup judging definitions per file asks (pgn_message_in_catalog).
+pub fn merge_with_sources(paths []string, open DatabaseOpener) (Database, []Database, []string) {
+	mut sources := []Database{}
 	mut msgs := []Message{}
 	mut nodes := []string{}
 	mut seen := map[string]bool{}
@@ -45,6 +53,7 @@ pub fn merge_files_report_with(paths []string, open DatabaseOpener) (Database, [
 		}
 		notes << loaded.notes
 		db := loaded.db
+		sources << db
 		for m in db.messages {
 			key := '${m.id}|${m.ext}'
 			if key in seen {
@@ -64,5 +73,5 @@ pub fn merge_files_report_with(paths []string, open DatabaseOpener) (Database, [
 	return Database{
 		messages: msgs
 		nodes:    nodes
-	}, notes
+	}, sources, notes
 }
