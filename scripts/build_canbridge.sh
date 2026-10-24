@@ -4,8 +4,8 @@
 # musl, so it runs in a distribution of any age and package set (#503), and <out-dir>/musl-LICENSE.txt,
 # the notice of the libc compiled into it. musl rather than a static glibc: glibc is LGPL, and a
 # static link would ask of the distributor what the Windows bundle's dynamic DLLs do not (#318).
-# canbridge does no name lookups (SocketCAN, and TCP to the address it is given), so no NSS is
-# missed. Needs musl-gcc (Debian/Ubuntu: musl-tools) and the kernel headers (linux-libc-dev).
+# musl has no NSS: a --connect host resolves through /etc/hosts and DNS only, which is all the app's
+# 127.0.0.1 needs. Needs musl-gcc (Debian/Ubuntu: musl-tools) and the kernel headers (linux-libc-dev).
 #
 #   V=/path/to/v   the compiler (default: `v` on PATH)
 set -e
@@ -18,7 +18,8 @@ case "$V" in */*) V="$(cd "$(dirname "$V")" && pwd)/$(basename "$V")" ;; esac
 cd "$(dirname "$0")/.."
 command -v musl-gcc >/dev/null || { echo "build_canbridge: no musl-gcc (apt-get install musl-tools)" >&2; exit 1; }
 # musl's include path has no kernel headers; linux/can.h and its asm come from the system's.
-hdr="$(mktemp -d)"
+# Under /tmp, not $TMPDIR: the path is spliced into -cflags, which V splits at spaces.
+hdr="$(mktemp -d /tmp/canbridge-hdr.XXXXXX)"
 trap 'rm -rf "$hdr"' EXIT
 asm="/usr/include/$(gcc -print-multiarch)/asm"
 for d in /usr/include/linux /usr/include/asm-generic "$asm"; do
