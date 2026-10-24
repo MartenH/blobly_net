@@ -3,8 +3,11 @@ channel's bus, or over a DoIP channel's connection to its entity, opened by the 
 uds.open opens by, each call one of the engine's helpers. Answers come back decoded and failures
 typed, so nothing here reads a UDS payload."""
 import ctypes
+import os
+import sys
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Literal, Self
@@ -113,6 +116,34 @@ class FunctionalReply:
     error: str
 
 
+@dataclass(frozen=True)
+class KeepAliveStatus:
+    """A UdsClient's keep-alive as it is now (UdsClient.keep_alive_status): `period_ms` (0: none),
+    how many TesterPresent it `sent` and how many `failures` on the current connection, and whether
+    it is `running`."""
+    period_ms: int
+    sent: int
+    failures: int
+    running: bool
+
+
+class KeepAliveWarning(RuntimeWarning):
+    """A keep-alive failed since the client's previous call: the ECU refused it (the session is
+    then not kept until a session is answered again), answered responsePending past its window, or
+    the carrier failed. Said at the client's next call, from the line that made it."""
+
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _warn_from_caller(message: str, category: type[Warning]) -> None:
+    """A warning said from the first frame outside this package."""
+    level, f = 2, sys._getframe(1)
+    while f.f_back is not None and os.path.dirname(os.path.abspath(f.f_code.co_filename)) == _HERE:
+        f, level = f.f_back, level + 1
+    warnings.warn(message, category, stacklevel=level)
+
+
 _bits: tuple[tuple[int, str], ...] | None = None
 
 
@@ -196,6 +227,17 @@ def reference_key(seed: ByteData) -> bytes:
     return buf.raw[:n]
 
 
+def _keep_alive_period(ms: object) -> int | None:
+    """A keep-alive period: None (none), or 250 .. 60000 ms."""
+    if ms is None or ms == 0:
+        return None
+    if isinstance(ms, bool) or not isinstance(ms, int):
+        raise TypeError(f"keep_alive_ms must be an integer, not {ms!r}")
+    if not 250 <= ms <= 60_000:
+        raise ValueError(f"a keep-alive period of {ms} ms: give 250 .. 60000")
+    return ms
+
+
 def _nrc_name(nrc: int) -> str:
     return _lib.string(_lib.lib().bb_nrc_name, nrc)
 
@@ -233,8 +275,10 @@ class UdsClient:
 
     def __init__(self, channel: "Channel", tx: int | None = None, rx: int | None = None, *,
                  timeout_ms: int | None = None, p2_star_ms: int | None = None, margin_ms: int | None = None,
-                 pending_budget_ms: int | None = None) -> None:
+                 pending_budget_ms: int | None = None, keep_alive_ms: int | None = None) -> None:
         self.channel = channel
+        self._keep_alive_ms = _keep_alive_period(keep_alive_ms)
+        self._keep_alive_used = self._keep_alive_ms is not None  # its failures are said, even once stopped
         self._ask = (None if tx is None else _int("tx", tx, 64), None if rx is None else _int("rx", rx, 64))
         # the waits a script stated, stated again on each connection the client opens
         stated = (("timeout_ms", timeout_ms), ("p2_star_ms", p2_star_ms), ("margin_ms", margin_ms),
@@ -289,6 +333,8 @@ class UdsClient:
                 _lib.check(lib.bb_uds_did_size(self._h, did, size))
             for record, size in self._ext_sizes.items():
                 _lib.check(lib.bb_uds_ext_record_size(self._h, record, size))
+            if self._keep_alive_ms:
+                _lib.check(lib.bb_uds_keep_alive(self._h, self._keep_alive_ms))
         except BloblyError:
             self._let_go()
             raise
@@ -301,6 +347,7 @@ class UdsClient:
                 raise BloblyError(f"{self!r} is closed", _lib.BB_ERR_HANDLE)
             if self._h is None:
                 self._open()
+            self._say_keep_alive(self._h)  # every call that asks the ECU comes through here
             return self._h
 
     def _let_go(self):
@@ -360,7 +407,45 @@ class UdsClient:
         with self._lock:
             return self._call_on(self._handle(), fn, *args)
 
+    def _say_keep_alive(self, h: int) -> None:
+        """A keep-alive failure since the previous call, said once (KeepAliveWarning)."""
+        if self._keep_alive_used:
+            try:
+                why = _lib.string(_lib.lib().bb_uds_keep_alive_failure, h)
+            except BloblyError:
+                return  # the handle is gone: the call meets that itself
+            if why:
+                _warn_from_caller(f"{self!r}: {why}", KeepAliveWarning)
+
+    def keep_alive(self, period_ms: int | None = 2000) -> None:
+        """Keeps a non-default session alive between this client's calls: TesterPresent with the
+        positive response suppressed (3E 80) every period_ms (250 .. 60000) from a thread of the
+        engine's, while a session a 0x10 answer established on this client is not the default one
+        and nothing else went to the ECU for that long — never inside a call. Each listens 200 ms
+        for a refusal; a refusal stops it until a session is answered again; a failure is said at
+        the client's next call as a KeepAliveWarning. None stops it. It holds on every connection
+        the client opens (ch.uds(keep_alive_ms=...) starts it with the client)."""
+        ms = _keep_alive_period(period_ms)
+        with self._lock, _lib.state_lock:
+            if self._closed:
+                raise BloblyError(f"{self!r} is closed", _lib.BB_ERR_HANDLE)
+            self._keep_alive_ms = ms
+            self._keep_alive_used = self._keep_alive_used or ms is not None
+            if self._h is not None:
+                _lib.check(_lib.lib().bb_uds_keep_alive(self._h, ms or 0))
+
+    @property
+    def keep_alive_status(self) -> KeepAliveStatus:
+        """The keep-alive on the current connection (KeepAliveStatus); counts start again on each."""
+        with self._lock, _lib.state_lock:
+            if self._h is None:
+                return KeepAliveStatus(self._keep_alive_ms or 0, 0, 0, False)
+            k = _lib.BbKeepAlive()
+            _lib.check(_lib.lib().bb_uds_keep_alive_status(self._h, ctypes.byref(k)))
+            return KeepAliveStatus(k.period_ms, k.sent, k.failures, bool(k.running))
+
     def _call_on(self, h: int, fn, *args) -> int:
+        self._say_keep_alive(h)
         rc = fn(h, *args)
         if rc < 0:
             raise self._enrich(h, _lib.error(rc))
@@ -371,6 +456,7 @@ class UdsClient:
             return self._bytes_on(self._handle(), fn, *args)
 
     def _bytes_on(self, h: int, fn, *args) -> bytes:
+        self._say_keep_alive(h)
         try:
             return _put(fn, h, *args)
         except BloblyError as e:
@@ -728,6 +814,8 @@ def functional(channel: "Channel", functional_id: int | None, clients: Sequence[
             clients[0]._call_on(handles[0], lib.bb_uds_functional_doip, address, req, len(req), window,
                                 ctypes.byref(out))
             return [_reply(lib, handles[0], out)]
+        for c, h in zip(clients, handles):
+            c._say_keep_alive(h)
         n = len(handles)
         out = (_lib.BbFunctionalReply * n)()
         _lib.check(lib.bb_uds_functional(channel._index, fid, (ctypes.c_int * n)(*handles), n, req, len(req),

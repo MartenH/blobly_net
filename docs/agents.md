@@ -184,6 +184,11 @@ with blobly.Project("projects/described-ecu-demo/described-ecu-demo.blobnet") as
   to either and a frame of the message that fails its E2E check raises `blobly.E2eError` (code
   -12, `.status` the verdict); every received frame carries that verdict as `f.e2e`.
 - **A frame read is consumed.** `recv` and `expect` drop what else they read on the way.
+- **Send in the background, not from a loop.** A frame the SUT must keep receiving while the
+  script waits (a heartbeat, a polled request) is `ch.send_cyclic(id, data, period_ms=...)` or
+  `msg.send_cyclic(period_ms, **signals)` in a `with` block; it stops at the block's end, or at
+  the project's stop. A non-default UDS session is kept with `ch.uds(keep_alive_ms=2000)`; a
+  keep-alive that failed is a `blobly.KeepAliveWarning` at the client's next call.
 - **One run per process.** A second `start()` raises `BloblyError` with code -3. Use one
   `Project` per process, or stop the first one.
 - **Errors.** The engine's refusals are `blobly.BloblyError`, its message the reason and `.code`
@@ -254,6 +259,7 @@ Complete scripts, each bounded and with a clear exit status, in
 | [dbc_messages.py](../python/examples/dbc_messages.py) | Messages and signals with units, ranges and labels; encode, decode, send by signal name. |
 | [event_loop.py](../python/examples/event_loop.py) | `on_message` by id and by message, `on_timer`, `on_health`, `run()`. |
 | [signal_monitor.py](../python/examples/signal_monitor.py) | Decoded values of chosen messages over N seconds. |
+| [background_send.py](../python/examples/background_send.py) | A message sent on a period in the background while the script waits, and a UDS session kept alive. |
 | [bus_metrics.py](../python/examples/bus_metrics.py) | A channel's bus load and diagnostics counts over N seconds. |
 | [uds_diag.py](../python/examples/uds_diag.py) | UDS over CAN: a session, DID reads, a negative response caught, a security unlock, DTCs with a snapshot. |
 | [doip_diag.py](../python/examples/doip_diag.py) | UDS over DoIP: announcements heard, the entity discovered, a session, the VIN, DTCs, a functional request. |

@@ -211,6 +211,7 @@ outside a `test` aborts the script (and the runner reports it).
 local diag = uds.open(channel [, { tx = 0x7E0, rx = 0x7E8 }])   -- CAN / CAN-FD
 local diag = uds.open(channel)                                   -- DoIP
 local diag = uds.open(channel, { timeout_ms = 300 })            -- with its waits stated
+local diag = uds.open(channel, { keep_alive_ms = 2000 })        -- its session kept alive
 ```
 
 Opens a UDS tester on `channel`. **The carrier follows the channel**, so the same
@@ -296,6 +297,20 @@ The returned object has:
 | `diag:raw_suppressed(req)` | send a sub-function request with suppress-positive-response set: no positive answer is expected, a refusal raises, and a server that said `0x78` owes its final answer | `true` if a positive answer came anyway |
 | `diag:timing()` / `diag:set_timing(t)` | the connection's waits (`timeout_ms`, `p2_star_ms`, `margin_ms`, `pending_budget_ms`), read as they stand / stated where `t` names them | a table / — |
 | `diag:retarget([address])` | DoIP: the requests go to logical address `address`, a node behind the gateway (`nil`: the channel's `ecu_address`) | — |
+| `diag:keep_alive(period_ms)` | keep a non-default session alive: `0x3E 80` every `period_ms` (250 .. 60000; `nil` or `0` stops it) between the connection's requests — see below | — |
+| `diag:keep_alive_status()` | the keep-alive now | `{period_ms, sent, failures, running, failure}` |
+
+**Keeping a session alive.** An ECU returns to its default session when nothing reaches it for its
+S3 (5 s by default). `diag:keep_alive(period_ms)` (or `keep_alive_ms` in `uds.open`) sends
+TesterPresent with the positive response suppressed (`3E 80`) from a thread of its own, every
+`period_ms` while a session a `0x10` answer established on this connection is not the default one
+and nothing else went to the ECU for that long, and never inside one of the connection's requests,
+which it waits for — so it keeps the session through a `sleep_ms`, an `expect` or a `run()`. Each
+listens 200 ms for a refusal, as the Diagnostics panel's does: a refusal forgets the session (nothing
+more is sent until a session is answered again), and a `0x78` with nothing after it in that window,
+or a failed carrier, is a failure. A failure is logged at the connection's next call. `flash.program`
+on the connection stops it. `tests/keep_alive.lua` holds zone_a's extended session through a pause
+past its S3.
 
 A negative response **raises a Lua error** (so it aborts the `test`, or is caught by
 `check.nrc` — e.g. `check.nrc(0x35, …)` for an invalid security key). Multi-frame
@@ -577,6 +592,10 @@ local t = now_ms()                                  -- the clock f.t_ms is on
 
 bus.send_message(channel, "MsgName", { Sig = value, ... } [, { e2e = false }])  -- DBC-encode + send
 local sig = decode(channel, id, data [, ext [, as]])       -- DBC-decode -> { Name = value, ... }
+
+local s = bus.send_cyclic(channel, id, data, period_ms [, { ext = false, format = "classic" }])
+local s = bus.send_message_cyclic(channel, "MsgName", { Sig = value }, period_ms [, { e2e = false }])
+s:update(data)  s:update({ Sig = value })  s:period(ms)  s:status()  s:stop()
 ```
 
 - `data` is a **byte string** (see helpers below), not a list of numbers.
@@ -608,6 +627,19 @@ local sig = decode(channel, id, data [, ext [, as]])       -- DBC-decode -> { Na
 - `format` states the frame's CAN format: `"classic"`, `"fd"` or `"fd_brs"`. Absent, the
   channel's declaration decides (`type: canfd` frames as FD). It is how a classic frame reaches
   a CAN-FD wire; a classic frame with more than 8 bytes, or an unknown name, raises.
+- **Background senders.** `bus.send_cyclic` sends a frame every `period_ms` (1 .. 3600000),
+  the first at once, and `bus.send_message_cyclic` a DBC message encoded from `sigs`, its declared
+  E2E stamped on every frame (the sender's own counter, from 0) unless `e2e = false` — from a
+  thread of its own, so the frame keeps going while the script waits in `expect`, a UDS exchange
+  or `sleep_ms`. `s:update(data)` / `s:update(sigs)` (the other signals keep theirs) and
+  `s:period(ms)` apply from the next frame; `s:status()` is `{sent, failed, error, period_ms,
+  running}` (`failed` the sends refused, `error` the last refusal: a listen-only row refuses every
+  one); `s:stop()` stops it (true once its loop is out). A sender runs until then, the end of the
+  script, or the end of the run (cmd/script). It sends on a **bus handle of its own**, never the
+  script's (no handle is touched from a second thread), so the script's handle hears its frames as
+  it hears another node's and `bus.load` counts them only as received. `tests/cyclic_send.lua` is
+  the suite. A frame computed afresh each period is `on_timer` + `bus.send` inside `run()`; there
+  is no `on_send` callback, since a Lua function cannot run on the sender's thread.
 
 ### Bus metrics — bus.load / bus.diagnostics
 
@@ -817,7 +849,8 @@ run(3000)
 ```
 
 A frame sent periodically from `on_timer` goes out only while `run()` runs; one that must keep
-going while the script waits in `expect` or a diagnostic exchange belongs in the project's
+going while the script waits in `expect` or a diagnostic exchange is a background sender
+(`bus.send_cyclic`, [Raw frames & signals](#raw-frames--signals)), or one of the project's
 generators (`senders:`, docs/simulation.md), which a script drives with [`gen.*`](#generators).
 
 (Lua's own coroutines are available too if you want to hand-roll more elaborate

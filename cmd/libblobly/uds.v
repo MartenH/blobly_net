@@ -68,6 +68,15 @@ mut:
 	extended uds.DtcExtended
 	// why the handle's last functional reply failed, for bb_uds_reply_error
 	reply_err string
+	// the session keep-alive (keepalive.v), under `kmu` — not `mu`, which its thread takes for
+	// each keep-alive and so a stop must not hold; nil when none runs
+	ka  &uds.KeepAlive = unsafe { nil }
+	kmu &sync.Mutex    = sync.new_mutex()
+	// a keep-alive's failure taken and not yet copied out whole (bb_uds_keep_alive_failure), and
+	// the lock that makes a stop and a start of the keep-alive one step
+	ka_said string
+	kset    &sync.Mutex = sync.new_mutex()
+	ka_late []&uds.KeepAlive // stopped while inside a keep-alive: asked for a failure later
 }
 
 __global (
@@ -231,6 +240,7 @@ pub fn bb_uds_close(u i32) i32 {
 	for stdatomic.load_i64(&hd.users) > 0 {
 		time.sleep(time.millisecond)
 	}
+	hd.stop_keep_alive()
 	hd.mu.lock() // the idle service out of the connection; it sees `closing` and ends
 	if !hd.lost {
 		hd.conn.ch.close()
@@ -1048,6 +1058,21 @@ pub fn bb_uds_functional(r i32, id i64, handles &i32, n i32, req &u8, len i32, w
 	}
 	if why := uds.functional_refusal(targets, request) {
 		return fail(bb_err, why)
+	}
+	// every target's lock held for the call, so no keep-alive sends inside it: taken in handle
+	// order, so two requests over the same targets cannot wait on each other
+	mut order := []int{len: hds.len, init: index}
+	order.sort_with_compare(fn [handles] (a &int, b &int) int {
+		ua, ub := unsafe { handles[*a] }, unsafe { handles[*b] }
+		return if ua < ub { -1 } else if ua > ub { 1 } else { 0 }
+	})
+	for k in order {
+		hds[k].mu.lock()
+	}
+	defer {
+		for k in order {
+			hds[k].mu.unlock()
+		}
 	}
 	// what the targets held is an earlier call's from here; and their last exchange is not this
 	// request's (uds.functional reports none): the reply says

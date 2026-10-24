@@ -106,6 +106,10 @@ from .discovery import open as open  # noqa: E402
 from . import vector  # noqa: E402
 from .vector import VectorHardware  # noqa: E402
 __all__ += ["Bus", "Interface", "VectorHardware", "discover_cansub", "interfaces", "vector"]
+# background cyclic senders (cyclic.py; Channel.send_cyclic, Message.send_cyclic) and the UDS keep-alive
+from .cyclic import CyclicSender, CyclicStatus  # noqa: E402
+from .uds import KeepAliveStatus, KeepAliveWarning  # noqa: E402
+__all__ += ["CyclicSender", "CyclicStatus", "KeepAliveStatus", "KeepAliveWarning"]
 # J1939: the transport protocol rejoined and the address directory (j1939.py; Channel.j1939)
 from .j1939 import J1939Address, J1939Fault, J1939Listener, J1939Message, J1939Name  # noqa: E402
 __all__ += ["J1939Address", "J1939Fault", "J1939Listener", "J1939Message", "J1939Name"]

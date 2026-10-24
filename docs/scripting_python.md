@@ -544,6 +544,49 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     print("in gear", engaged)                                   # 1.0 to 6.0: sim-demo steps it each second
 ```
 
+### Sending in the background
+
+A frame a script must keep sending — a heartbeat, a request the SUT polices the cadence of —
+goes to a **background sender**, which sends it on a period from a thread of the engine's while
+the script does something else: waits in an `expect`, blocks in a UDS request, sleeps.
+
+- `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False)` sends a raw
+  frame every `period_ms` (1 .. 3600000), the first at once, and returns a **`CyclicSender`**.
+  `fd`/`brs` are read as `send` reads them.
+- `msg.send_cyclic(period_ms, /, *, e2e=True, **signals)` sends a DBC message encoded from the
+  named signals (`encode`'s rule: the rest at raw 0), with the E2E its database declares stamped
+  on every frame — the counter the sender's own, from 0 — unless `e2e=False`.
+- `sender.update(data)` replaces a raw sender's payload; `sender.update(**signals)` sets a message
+  sender's signals, the others keeping theirs. `sender.period_ms = 50` changes the period. Each
+  applies from the next frame.
+- `sender.status()` is a **`CyclicStatus`**: `sent` (frames the bus took), `failed` (sends it
+  refused — a listen-only row refuses every one — and `error`, the last refusal's words),
+  `period_ms` and `running`.
+- `sender.stop()` stops it, and `with ch.send_cyclic(...) as s:` stops it at the end of the block.
+  Otherwise it runs until the **project stops**, which ends it within the stop's bound as it ends
+  the generators; the pytest plugin stops a test's senders after the test.
+
+A sender sends on a **bus handle of its own**, opened for it and only sent on, so the channel's own
+handle is never used from a second thread ([Threads](#16-threads)). The channel's handle therefore
+hears the sender's frames as it hears another node's, and `ch.load()` counts them only as frames it
+received. A frame grid that a stall puts a whole period behind starts again from now, rather than
+bursting the frames it missed. A frame computed afresh each period (a counter the script steps
+itself) is the event loop's: `on_timer` and `send` ([The event loop](#7-the-event-loop)).
+
+```python
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    can1 = net.channels.CAN1
+    with can1.messages.Request.send_cyclic(50, ReqCode=5) as req:   # a Request every 50 ms
+        frame, code = can1.expect_signal("Response", "RespCode", 6, timeout_ms=1000)
+        req.update(ReqCode=9)                                       # from its next frame
+        frame, code = can1.expect_signal("Response", "RespCode", 10, timeout_ms=1000)
+        print(req.status())         # CyclicStatus(sent=..., failed=0, error='', period_ms=50, running=True)
+    with can1.send_cyclic(0x321, b"\x01\x02", period_ms=20) as raw:
+        print(can1.expect(0x321, timeout_ms=200).data)               # b'\x01\x02'
+```
+
 ### J1939
 
 `ch.j1939()` is the channel's J1939 reading, a `J1939Listener` (`blobly/j1939`, the reading the
@@ -1014,6 +1057,35 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
         diag.session(0x01)                            # P2 50 ms and P2* 5000 ms, adopted
         print(diag.timeout_ms, diag.p2_star_ms)       # 1050 5000: P2 plus the margin
         diag.pending_budget_ms = 10_000               # no request past 10 s, however often 0x78 comes
+```
+
+**Keeping a session alive.** An ECU returns to its default session when nothing reaches it for
+its S3 (5 s by default, ISO 14229-2). `diag.keep_alive(period_ms=2000)` sends TesterPresent with
+the positive response suppressed (3E 80) every `period_ms` (250 .. 60000) from a thread of the
+engine's, while a session a 0x10 answer established on this client is not the default one and
+nothing else went to the ECU for that long — never inside one of the client's calls, which it waits
+for. `ch.uds(..., keep_alive_ms=2000)` starts it with the client, and it holds on every connection
+the client opens. `diag.keep_alive(None)` stops it.
+
+- Each one listens 200 ms for a refusal, as the Diagnostics panel's does. A refusal says the
+  session is no longer known: nothing more is sent until a session is answered again. A
+  responsePending (0x78) with nothing after it inside that window, or a failed carrier, is a
+  failure. Either is said once, at the client's next call, as a **`blobly.KeepAliveWarning`**.
+- `diag.keep_alive_status` is a **`KeepAliveStatus`**: `period_ms`, how many it `sent` and how many
+  `failures` on the current connection, and whether it is `running`.
+- None of its TesterPresents is `diag.last`, which stays the script's own last exchange.
+- A call made while one is in its 200 ms window waits for it, as a Diagnostics panel press does.
+
+```python
+import time
+
+import blobly
+
+with blobly.Project("projects/sim-demo.blobnet") as net:
+    with net.channels.CAN1.uds(keep_alive_ms=250) as diag:
+        diag.session(0x03)                       # extended: kept from here
+        time.sleep(0.6)                          # the script does something else
+        print(diag.keep_alive_status)            # KeepAliveStatus(period_ms=250, sent=2, failures=0, running=True)
 ```
 
 **What went wrong.** A failed call raises one of these, each a `BloblyError` with the engine's
@@ -1543,6 +1615,9 @@ plugin makes the fixtures at run time, so annotate a test's parameters (`can1: C
   (Kvaser's canlib), and others keep state that a receive updates and a send or a health check
   reads (SocketCAN). Give each thread its own channel. A Python `Channel` is one handle.
 - **`run()` runs on the thread that calls it**, and its handlers run there too.
+- **A background sender and a keep-alive have threads of their own** in the engine. A sender
+  sends on a bus handle of its own ([Sending in the background](#sending-in-the-background)); a
+  keep-alive waits for the client's call in progress and sends between calls.
 
 ```python
 import threading
@@ -1874,6 +1949,7 @@ after `start()`.
 | `ch.kind` | `"can"`, `"doip"` or `"someip"`. Only a CAN row carries frames. |
 | `ch.iface` | The interface the row opens: as the project composes it, and while started, as the run has it. |
 | `ch.send(id, data=b"", ext=False, fd=False, brs=False)` | Puts a frame on the wire. `fd`/`brs` left `False` take the wire's declared format. |
+| `ch.send_cyclic(id, data=b"", period_ms=100, *, ext=False, fd=False, brs=False)` | Sends the frame every `period_ms` in the background, the first at once: a `CyclicSender` ([Sending in the background](#sending-in-the-background)). |
 | `ch.recv(timeout_ms=1000)` | The next frame another node sent, or `None` after `timeout_ms` (rounded down to whole ms; `0` only looks; `None` waits for ever). Ctrl-C ends the wait within 100 ms. |
 | `ch.look()` | `(frame or None, spent)`: one look at what is queued, without waiting. |
 | `ch.expect(id, timeout_ms=1000, *, ext=None, e2e=False)` | The first frame another node sends with this id and kind (an int and `ext`, or a `Message`), within one deadline; `Timeout` otherwise. With `e2e=True` it must pass its E2E check, else `E2eError`. Frames read meanwhile are consumed. |
@@ -1883,6 +1959,7 @@ after `start()`.
 | `ch.diagnostics()` | A `BusDiagnostics`: the backend's dropped, controller-error and undecodable counts since the handle opened (on PCAN, CANsub and the CAN bridge, the shared wire's). |
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
+| `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None, keep_alive_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)); `keep_alive_ms` starts its keep-alive. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)). |
 | `ch.j1939()` | The row's `J1939Listener`: multi-packet messages rejoined and decoded by PGN, transfer faults, the address directory ([J1939](#j1939)). |
 | `ch.isotp(tx, rx)` | An `IsoTp` on this CAN row: whole messages on `tx` and `rx`, with no UDS on top ([Raw ISO-TP](#raw-iso-tp)). |
@@ -1964,6 +2041,21 @@ A message of a row's databases (`ch.messages.Powertrain`).
 | `msg.signals` | Its signals, a `Signals`. |
 | `msg.encode(**signals)` | The `Frame` with these signals at these physical values, every other at raw 0; its E2E not stamped. |
 | `msg.send(**signals)` | Encodes, stamps the E2E its DBC declares (the run's next counter, then the CRC) and sends on its channel; returns the `Frame` sent. |
+| `msg.send_cyclic(period_ms, /, *, e2e=True, **signals)` | Sends it every `period_ms` in the background, encoded from `signals`, its declared E2E stamped on every frame unless `e2e=False`: a `CyclicSender`. |
+
+### `CyclicSender`, `CyclicStatus`
+
+A background sender (`ch.send_cyclic`, `msg.send_cyclic`). See
+[Sending in the background](#sending-in-the-background).
+
+| member | what |
+|---|---|
+| `sender.channel` | The `Channel` it sends on. |
+| `sender.message` | The `Message` it sends, `None` for a raw frame. |
+| `sender.update(data)`, `sender.update(**signals)` | A raw sender's payload, or a message sender's signals (the rest keep theirs), from its next frame. `Refused` once it is stopped. |
+| `sender.period_ms` | Its period; set it to change the period from the next frame. |
+| `sender.status()` | A `CyclicStatus`: `sent`, `failed`, `error` (the last refusal's words, `""` when none), `period_ms`, `running`. After a stop, what it had done when it ended. |
+| `sender.stop()`, `with sender:` | Stops it: `True` once its loop is out, `False` while it is still inside a send past the bound (it sends nothing more; `stop()` again asks again). A stopped sender stops again quietly. |
 
 ### `Signal`
 
@@ -2016,6 +2108,8 @@ with the three rows at the end ([Nodes and their DIDs](#nodes-and-their-dids)).
 | `diag.last` | The last exchange, an `Exchange`, or `None` before the first, after a stop let the connection go, and after a functional request (its `FunctionalReply` is the answer). |
 | `diag.timeout_ms`, `diag.p2_star_ms`, `diag.margin_ms`, `diag.pending_budget_ms` | Its waits in ms, as they stand (1000, 5000, 1000, 120000 until set or a 0x10 answer adopts): the first answer, the ECU's P2* after each 0x78 plus the margin, one request from its send. Settable, from the next request on, and held on every connection the client opens ([UDS diagnostics](#10-uds-diagnostics)). |
 | `diag.retarget(address=None)` | DoIP: requests go to logical address `address`, a node behind the gateway the entity is, on the same connection; `None` goes back to the row's `ecu_address`. Another target starts again from the waits and sizes the script set. Refused on a CAN row, and inside a `security_access` key function ([DoIP](#11-doip)). |
+| `diag.keep_alive(period_ms=2000)` | Keeps a non-default session alive: 3E 80 every `period_ms` (250 .. 60000) between the client's calls; `None` stops it ([UDS diagnostics](#10-uds-diagnostics)). |
+| `diag.keep_alive_status` | A `KeepAliveStatus`: `period_ms` (0: none), `sent`, `failures` on the current connection, `running`. |
 | `diag.close()`, `with diag:` | Lets the connection go for good; a later call refuses. |
 | `diag.node` | `NodeClient` only: the `Node` it is on. |
 | `diag.read(did)` | `NodeClient` only: 0x22 of `did` (its name or its identifier), decoded by the node's layout — one part's `int`, `bool`, `str` or `bytes`, or `{label: value}` where `by_label`. |
@@ -2045,6 +2139,13 @@ One request a `UdsClient` put through, answered or not (`diag.last`).
 | `x.sent` | Whether the request went out whole. `False`: the ECU never had all of it, so repeating it does not ask twice. |
 | `x.rtt_us` | From the send to the final answer, or to the failure, in microseconds. |
 | `x.pending`, `x.pending_us` | How many responsePending (0x78) came, and the time from the first to the end. |
+
+### `KeepAliveStatus`, `KeepAliveWarning`
+
+`diag.keep_alive_status` is a `KeepAliveStatus`, a frozen dataclass: `period_ms`, `sent`,
+`failures`, `running`. A `KeepAliveWarning` (a `RuntimeWarning`) is a keep-alive that failed since
+the client's previous call, said at that call: refused (the session then not kept until one is
+answered again), responsePending past its window, or the carrier failed.
 
 ### `Dtc`, `SnapshotId`, `SnapshotRecord`, `Snapshot`, `Extended`
 
@@ -2236,7 +2337,7 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 ## 19. What is not there yet
 
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
-loop, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
+loop, background senders, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
 the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP
 (its timing, and a node behind a DoIP gateway), nodes of the system model with their DIDs by name, raw ISO-TP, DoIP
 discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, J1939 transport-protocol messages and address claims, a bus opened by address,
@@ -2259,7 +2360,10 @@ interface discovery and Vector channel assignment, `expect` and a pytest plugin.
 - Replay control and recording to a file are here ([Replay and recording](#14-replay-and-recording)).
 - E2E verify on receive, and E2E declared in the DBC applied on send, are here
   ([E2E on what a script reads and sends](#e2e-on-what-a-script-reads-and-sends)).
-- Background cyclic senders and a session keep-alive (one owner thread per channel).
+- Background cyclic senders and a session keep-alive are here
+  ([Sending in the background](#sending-in-the-background),
+  [UDS diagnostics](#10-uds-diagnostics)). An `on_send` callback that computes each frame is
+  not: a frame computed afresh each period is the event loop's `on_timer` and `send`.
 - Bus metrics are here ([Bus metrics](#bus-metrics)): load, and the dropped, error and
   undecodable counters, during a run.
 - Raw ISO-TP; UDS timing and P2 configuration; the DoIP gateway retarget.

@@ -200,10 +200,13 @@ fn l_uds_retarget(l lua.State) i32 {
 			}
 			target = u16(a)
 		}
+		// under the connection's lock: a keep-alive is never in the middle of it
+		c.mu.lock()
 		if u32(target) != c.ch.rx_id {
 			c.cli.another_ecu() // what it learned of the ECU before is that ECU's
 		}
 		c.ch.retarget(target)
+		c.mu.unlock()
 		return 0
 	}
 	return l.fail('retarget: a CAN connection reaches its ECU by its ids; retarget is a DoIP connection\'s')

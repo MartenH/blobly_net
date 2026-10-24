@@ -556,6 +556,16 @@ local function connection(h, channel)
   -- DoIP: requests go to logical address `address` (nil: the channel ecu_address), a node behind
   -- the gateway the entity is, on the same connection
   function self:retarget(address) __uds_retarget(self.handle, address) end
+  -- keep a non-default session alive: 3E 80 every period_ms (250 .. 60000; nil or 0 stops it),
+  -- from a thread of its own and never inside a request, while a session a 0x10 answer
+  -- established on this connection is not the default one and nothing else went for that long.
+  -- A refusal stops it until a session is answered again; a failure is logged at the next call.
+  function self:keep_alive(period_ms) __uds_keep_alive(self.handle, period_ms or 0) end
+  -- { period_ms, sent, failures, running, failure } -- failure the last one, "" when none
+  function self:keep_alive_status()
+    local period, sent, failures, running, failure = __uds_keep_alive_status(self.handle)
+    return { period_ms = period, sent = sent, failures = failures, running = running, failure = failure }
+  end
   return self
 end
 function uds.open(channel, opts)
@@ -567,9 +577,14 @@ function uds.open(channel, opts)
   -- negative one is a mistake that must be reported rather than read as "omitted".
   local timed = opts.timeout_ms ~= nil or opts.p2_star_ms ~= nil or opts.margin_ms ~= nil or opts.pending_budget_ms ~= nil
   if timed then __uds_timing_check(opts.timeout_ms, opts.p2_star_ms, opts.margin_ms, opts.pending_budget_ms) end
+  local ka = opts.keep_alive_ms
+  if ka ~= nil and ka ~= 0 and (math.type(ka) ~= "integer" or ka < 250 or ka > 60000) then
+    error("uds.open: keep_alive_ms " .. tostring(ka) .. ": give 250 .. 60000", 2)
+  end
   local h = __uds_open(channel, opts.tx, opts.rx)
   local self = connection(h, channel)
   if timed then self:set_timing(opts) end
+  if opts.keep_alive_ms ~= nil then self:keep_alive(opts.keep_alive_ms) end
   return self
 end
 
@@ -840,6 +855,56 @@ function bus.send_message(channel, name, sigs, opts)
   if not (opts and opts.e2e == false) then data = __e2e_stamp(channel, name, data) end
   __bus_send(channel, id, ext, data)
   return { id = id, ext = ext, data = data }
+end
+-- ============================ background senders ============================
+-- bus.send_cyclic(channel, id, data, period_ms, opts): the frame every period_ms (1 .. 3600000),
+-- the first at once, from a thread of its own on a bus of its own (this script`s handle hears it
+-- as another node`s frame), until sender:stop(), the script ends or its run stops. opts.ext,
+-- opts.format as bus.send. bus.send_message_cyclic(channel, name, sigs, period_ms, opts): a DBC
+-- message encoded from sigs, its declared E2E stamped on every frame (its own counter from 0)
+-- unless opts.e2e = false. A sender: sender:update(data) or sender:update(sigs) from its next
+-- frame, sender:period(ms), sender:status() -> { sent, failed, error, period_ms, running },
+-- sender:stop() -> true once its loop is out.
+local Sender = {}
+Sender.__index = Sender
+local function flat(sigs)
+  local out = {}
+  for k, v in pairs(sigs or {}) do
+    if type(k) ~= "string" then error("signal names are strings", 3) end
+    out[#out + 1] = k
+    out[#out + 1] = v
+  end
+  return out
+end
+function Sender:update(x)
+  if type(x) == "table" then __cyclic_signals(self.handle, table.unpack(flat(x)))
+  elseif type(x) == "string" then __cyclic_data(self.handle, x)
+  else error("sender:update: bytes (a string) or a table of signals", 2) end
+end
+function Sender:period(ms) __cyclic_period(self.handle, ms) end
+function Sender:status()
+  local sent, failed, err, period, running = __cyclic_status(self.handle)
+  return { sent = sent, failed = failed, error = err, period_ms = period, running = running }
+end
+function Sender:stop() return __cyclic_stop(self.handle) end
+function bus.send_cyclic(channel, id, data, period_ms, opts)
+  opts = opts or {}
+  if opts.format ~= nil and type(opts.format) ~= "string" then
+    error("bus.send_cyclic: format must be a string (classic, fd or fd_brs)", 2)
+  end
+  if math.type(period_ms) ~= "integer" then error("bus.send_cyclic: period_ms is a whole number of ms", 2) end
+  if data ~= nil and type(data) ~= "string" then error("bus.send_cyclic: data is bytes (a string)", 2) end
+  if math.type(id) ~= "integer" then error("bus.send_cyclic: an id is an integer", 2) end
+  return setmetatable({ handle = __cyclic_start(channel, id, opts.ext or false, data or "", opts.format,
+    period_ms) }, Sender)
+end
+function bus.send_message_cyclic(channel, name, sigs, period_ms, opts)
+  opts = opts or {}
+  if math.type(period_ms) ~= "integer" then
+    error("bus.send_message_cyclic: period_ms is a whole number of ms", 2)
+  end
+  return setmetatable({ handle = __cyclic_start_msg(channel, name, opts.e2e ~= false, period_ms,
+    table.unpack(flat(sigs))) }, Sender)
 end
 -- decode raw bytes against the channel`s DBC -> { SignalName = value } for each signal the frame
 -- carries: physical values, or with as = "raw" the field bits, or "label" the value table text

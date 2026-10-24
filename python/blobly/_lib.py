@@ -370,6 +370,17 @@ class BbUdsTiming(ctypes.Structure):
 WAITS = {"timeout_ms": 0, "p2_star_ms": 1, "margin_ms": 2, "pending_budget_ms": 3}
 
 
+# background senders and the keep-alive (cyclic.py, uds.py)
+class BbCyclicInfo(ctypes.Structure):
+    """bb_cyclic_info, field for field."""
+    _fields_ = [("sent", ctypes.c_uint64), ("failed", ctypes.c_uint64), ("period_ms", ctypes.c_int32),
+                ("running", ctypes.c_uint8)]
+
+
+class BbKeepAlive(ctypes.Structure):
+    """bb_keep_alive, field for field."""
+    _fields_ = [("period_ms", ctypes.c_int32), ("sent", ctypes.c_uint64), ("failures", ctypes.c_uint64),
+                ("running", ctypes.c_uint8)]
 # J1939 on a row's frames (j1939.py)
 BB_J1939_MAX = 1785
 BB_J1939_TEXT = 256
@@ -589,6 +600,19 @@ def _declare(lib):
         # E2E on a row's frames (project.py, e2e.py)
         "bb_e2e_attach": ([c_int, c_int], c_int),
         "bb_e2e_stamp": ([c_int, c_int, P(BbFrame)], c_int),
+        # background senders (cyclic.py) and the keep-alive (uds.py)
+        "bb_cyclic_start": ([c_int, P(BbFrame), c_int], c_int),
+        "bb_cyclic_start_message": ([c_int, c_int, c_int, P(c_char_p), P(ctypes.c_double), c_int, c_int], c_int),
+        "bb_cyclic_data": ([c_int, c_char_p, c_int], c_int),
+        "bb_cyclic_signals": ([c_int, c_int, P(c_char_p), P(ctypes.c_double)], c_int),
+        "bb_cyclic_period": ([c_int, c_int], c_int),
+        "bb_cyclic_status": ([c_int, P(BbCyclicInfo)], c_int),
+        "bb_cyclic_error": ([c_int, c_char_p, c_int], c_int),
+        "bb_cyclic_stop": ([c_int], c_int),
+        "bb_cyclic_free": ([c_int], c_int),
+        "bb_uds_keep_alive": ([c_int, c_int], c_int),
+        "bb_uds_keep_alive_status": ([c_int, P(BbKeepAlive)], c_int),
+        "bb_uds_keep_alive_failure": ([c_int, c_char_p, c_int], c_int),
         # J1939 on a row's frames (j1939.py)
         "bb_j1939_attach": ([c_int, c_int, c_int], c_int),
         "bb_j1939_take_message": ([c_int, P(BbJ1939Message), P(ctypes.c_double), P(ctypes.c_uint8), c_int],
