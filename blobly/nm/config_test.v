@@ -106,6 +106,9 @@ fn test_else_the_arxml_nm_frames() {
 	assert c.lo == 0x601 && c.hi == 0x60F
 	assert c.origin == 'ARXML cluster Body'
 	assert c.timeout_ms == arxml_timeout_ms && c.timeout_default, 'the description states no CanNm timeout'
+	assert c.covers(0x601, false) && c.covers(0x60F, false)
+	assert !c.covers(0x605, false), 'an id between two NM frames is not NM'
+	assert c.describe() == 'NM frames 0x601, 0x60F'
 	assert c.declared.len == 1, 'a frame with no sender names nobody'
 	assert c.declared[0].name == 'ECU_A' && c.declared[0].id == 0x601 && c.declared[0].nid == -1
 }
@@ -195,4 +198,38 @@ nm    = 0x13
 	mut t := new_tracker(c)
 	t.note(0x513, false, [u8(0x13), 0], 0)
 	assert t.name_of(0) == 'domain'
+}
+
+fn test_arxml_frames_of_both_kinds_at_their_pdu_byte_read_once() {
+	db := candb.Database{
+		arxml: candb.ArxmlBus{
+			name: 'Body'
+			nm:   [candb.ArxmlNmFrame{
+				id:  0x511
+				ecu: 'A'
+			}, candb.ArxmlNmFrame{
+				id:   0x1511
+				ext:  true
+				ecu:  'B'
+				byte: 2
+			}]
+		}
+	}
+	sys := sysview.System{}
+	// the same file through two rows of one wire
+	c := configure(&sys, [row('body')], [db, db]) or { panic('') }
+	assert c.declared.map(it.name) == ['A', 'B'], 'read once'
+	assert c.covers(0x511, false) && c.covers(0x1511, true)
+	assert !c.covers(0x1511, false) && !c.covers(0x511, true)
+	assert c.describe() == 'NM frames 0x511, 0x1511 (29-bit) at byte 2'
+	mut t := new_tracker(c)
+	t.note(0x511, false, [u8(0x05), 0x00], 0)
+	t.note(0x1511, true, [u8(0), 0, 0x07, 0x08], 0) // the PDU starts at byte 2
+	assert t.nodes.len == 2
+	assert t.name_of(0) == 'A' && t.name_of(1) == 'B'
+	assert t.nodes[1].nid == 0x07 && t.nodes[1].ready_to_sleep()
+	assert t.missing().len == 0
+	// a frame too short to reach its PDU is malformed
+	t.note(0x1511, true, [u8(0), 0], 10)
+	assert t.malformed == 1
 }

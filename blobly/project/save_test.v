@@ -680,7 +680,8 @@ channels:
 fn test_nm_channel_setting_is_checked() {
 	for bad in ['{ lo: 0x500 }', '{ lo: 0x53F, hi: 0x500 }', '{ lo: zz, hi: 0x53F }',
 		'{ lo: 0x500, hi: 0x20000000 }', '{ lo: 0x500, hi: 0x53F, timeout_ms: 0 }',
-		'{ lo: 0x500, hi: 0x53F, timeout_ms: soon }'] {
+		'{ lo: 0x500, hi: 0x53F, timeout_ms: soon }', '{ lo: "1280junk", hi: 0x53F }',
+		'{ lo: 1280.5, hi: 0x53F }', '{ lo: 1e3, hi: 0x53F }'] {
 		if _ := parse('project:
   name: t
 channels:
@@ -692,5 +693,20 @@ channels:
 		} else {
 			assert err.msg().contains('nm'), err.msg()
 		}
+	}
+}
+
+fn test_nm_on_an_ethernet_channel_is_refused() {
+	if _ := parse('project:
+  name: t
+channels:
+  - name: DoIP1
+    adapter: doip
+    address: 127.0.0.1:13400
+    nm: { lo: 0x500, hi: 0x53F }
+') {
+		assert false, 'an NM cluster on a DoIP row can never be read'
+	} else {
+		assert err.msg().contains('Ethernet'), err.msg()
 	}
 }

@@ -256,6 +256,9 @@ fn test_timeline_segments_are_dropped_past_the_window_and_capped() {
 	}
 	assert f.nodes[0].segs.len == max_segments
 	assert f.nodes[0].segs.last().from_ms == f64(max_segments + 99)
+	assert f.nodes[0].segs[0].from_ms == 0, 'the oldest are folded, not dropped'
+	assert f.nodes[0].segs[0].phase == .requesting
+	assert f.nodes[0].segs[1].from_ms - f.nodes[0].segs[0].last_ms == 1, 'no fabricated silence: the folded history reaches the next segment'
 }
 
 fn test_a_silence_shorter_than_the_timeout_continues_a_segment() {
@@ -294,4 +297,33 @@ fn test_view_header() {
 	assert late.rows[0].stale, 'sysnode is past the timeout'
 	assert !late.rows[1].stale
 	assert late.keepers == ['domain']
+}
+
+fn test_an_older_frame_does_not_rewind_a_node() {
+	mut t := new_tracker(cfg_declaring())
+	t.note(0x511, false, frame(0x11, cbv_ready_to_sleep), 1000)
+	t.note(0x511, false, frame(0x11, 0), 500)
+	n := t.nodes[0]
+	assert n.count == 2
+	assert n.last_ms == 1000
+	assert n.ready_to_sleep(), "the newer frame's state stands"
+	assert n.segs.len == 1 && n.segs[0].last_ms == 1000
+	assert t.state(1100) == .releasing
+}
+
+fn test_a_29_bit_reporter_is_its_own_node() {
+	mut t := new_tracker(Config{
+		lo:       0x500
+		hi:       0x53F
+		ext:      true
+		declared: [Declared{
+			name: 'X'
+			nid:  0x11
+			id:   0x511
+			ext:  true
+		}]
+	})
+	t.note(0x511, true, frame(0x11, 0), 0)
+	assert t.nodes[0].ext && t.name_of(0) == 'X'
+	assert !t.note(0x511, false, frame(0x11, 0), 0)
 }

@@ -47,8 +47,11 @@ while it is silent. A node keeps its state for the timeout after its last frame.
   members (a system model or an ARXML naming its senders) makes anyone unknown.
 
 The trackers start over at every Start. A replayed recording reads like live traffic, since its
-frames are on the wire. An imported recording (Trace ▸ Open Recording) gets a reading of its
-own, per recorded bus, shown as at its last frame while it is on screen.
+frames are on the wire, except on PCAN, which does not echo this process's own sends: there the
+panel shows what the bus brought, as the J1939 reading does. A wire with an NM configuration
+that no enabled row reads during a run is marked as not read, rather than shown asleep. An
+imported recording (Trace ▸ Open Recording) gets a reading of its own, per recorded bus, shown
+as at its last frame while it is on screen, and never mixed with the live wires.
 
 ## Where the NM configuration comes from
 
@@ -59,8 +62,9 @@ Per bus, the first of these that has one:
    (the bus `body` to the channel `body`). Every node on that bus with an `nm` offset is
    declared, and the offset is its NID (`nm = 0x11` announces on `0x511` and is named in the
    table).
-2. **The ARXML** loaded for the channel: frames whose PDU is an NM-PDU. Their ids give the
-   range, and a frame whose sender the file names declares that ECU at that id.
+2. **The ARXML** loaded for the channel: frames whose PDU is an NM-PDU. Exactly those frames
+   are NM, of either kind, never the ids between them, each read from the byte its PDU starts
+   at. A frame whose sender the file names declares that ECU on it.
 3. **The channel's own setting** in the project, which gives a range and a timeout and no
    names. It comes last, so a system model or an ARXML for the same bus replaces it (the
    header names the source):

@@ -6,7 +6,8 @@ pub struct Row {
 pub:
 	name       string
 	id         u32
-	has_id     bool // a missing ARXML-free declaration may state no id
+	ext        bool
+	has_id     bool // a missing declaration may state no id
 	nid        int  // -1 when not known (a missing node declared by id)
 	missing    bool // declared, never reported
 	unknown    bool // reports, and the configuration declares its members and not it
@@ -49,6 +50,7 @@ pub fn (t &Tracker) view(now f64, cols int) View {
 		rows << Row{
 			name:       t.name_of(i)
 			id:         n.id
+			ext:        n.ext
 			has_id:     true
 			nid:        int(n.nid)
 			unknown:    t.unknown(i)
@@ -68,6 +70,7 @@ pub fn (t &Tracker) view(now f64, cols int) View {
 		rows << Row{
 			name:     if decl.name != '' { decl.name } else { 'NID 0x${decl.nid:02X}' }
 			id:       if decl.id >= 0 { u32(decl.id) } else { 0 }
+			ext:      decl.ext
 			has_id:   decl.id >= 0
 			nid:      decl.nid
 			missing:  true

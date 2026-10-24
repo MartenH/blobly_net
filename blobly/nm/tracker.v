@@ -22,6 +22,7 @@ pub mut:
 pub struct Node {
 pub mut:
 	id         u32
+	ext        bool
 	nid        u8
 	decl       int = -1 // its entry in Config.declared; -1 when nothing declares it
 	first_ms   f64
@@ -102,12 +103,20 @@ pub fn (mut t Tracker) note(id u32, ext bool, data []u8, t_ms f64) bool {
 	if !t.cfg.covers(id, ext) {
 		return false
 	}
-	p := parse(data) or {
+	at := t.cfg.pdu_byte(id, ext)
+	pdu := if at <= 0 {
+		data
+	} else if at < data.len {
+		data[at..]
+	} else {
+		[]u8{}
+	}
+	p := parse(pdu) or {
 		t.malformed++
 		t.last_error = 'id 0x${id:X}: ${err.msg()}'
 		return true
 	}
-	key := (u64(id) << 8) | u64(p.nid)
+	key := (frame_key(id, ext) << 8) | u64(p.nid)
 	mut i := t.index[key] or { -1 }
 	if i < 0 {
 		if t.nodes.len >= max_nodes {
@@ -117,8 +126,9 @@ pub fn (mut t Tracker) note(id u32, ext bool, data []u8, t_ms f64) bool {
 		i = t.nodes.len
 		t.nodes << Node{
 			id:       id
+			ext:      ext
 			nid:      p.nid
-			decl:     t.cfg.declared_index(p.nid, id)
+			decl:     t.cfg.declared_index(p.nid, id, ext)
 			first_ms: t_ms
 			last_ms:  t_ms
 		}
@@ -139,19 +149,21 @@ pub fn (mut t Tracker) note(id u32, ext bool, data []u8, t_ms f64) bool {
 	}
 	t.frames++
 	mut n := &t.nodes[i]
+	if n.count > 0 && t_ms < n.last_ms {
+		// older than what this node already said (an unsorted recording): counted, and its
+		// state is not taken back to it
+		n.count++
+		return true
+	}
 	if n.count > 0 {
 		iv := t_ms - n.last_ms
-		if iv >= 0 {
-			n.last_iv_ms = iv
-			if iv <= timeout {
-				n.iv_sum_ms += iv
-				n.iv_n++
-			}
+		n.last_iv_ms = iv
+		if iv <= timeout {
+			n.iv_sum_ms += iv
+			n.iv_n++
 		}
 	}
-	if n.count == 0 || t_ms > n.last_ms {
-		n.last_ms = t_ms
-	}
+	n.last_ms = t_ms
 	n.count++
 	n.cbv = p.cbv
 	n.pn = p.pn
@@ -166,16 +178,25 @@ pub fn (mut t Tracker) note(id u32, ext bool, data []u8, t_ms f64) bool {
 			phase:   ph
 		}
 	}
-	// what ended before the window is dropped; the cap bounds a node that flips every frame
+	// what ended before the window is dropped
 	mut drop := 0
 	for drop < n.segs.len - 1 && n.segs[drop].last_ms + timeout < t_ms - window_ms {
 		drop++
 	}
-	if n.segs.len - drop > max_segments {
-		drop = n.segs.len - max_segments
-	}
 	if drop > 0 {
 		n.segs.delete_many(0, drop)
+	}
+	// a node that flips every frame is held to the cap by folding its two oldest segments into
+	// one of the greater phase — what a timeline column shows anyway — never by dropping them
+	for n.segs.len > max_segments {
+		a := n.segs[0]
+		b := n.segs[1]
+		n.segs[1] = Seg{
+			from_ms: a.from_ms
+			last_ms: b.last_ms
+			phase:   if int(a.phase) > int(b.phase) { a.phase } else { b.phase }
+		}
+		n.segs.delete(0)
 	}
 	return true
 }

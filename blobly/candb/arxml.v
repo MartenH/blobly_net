@@ -126,6 +126,7 @@ pub struct ArxmlFrame {
 pub mut:
 	pdu           string // the I-SIGNAL-I-PDU short name behind the frame (or the secured PDU's)
 	pdu_kind      string // DEST of the PDU behind the frame: I-SIGNAL-I-PDU, SECURED-I-PDU, N-PDU, NM-PDU …
+	pdu_byte      int    // the byte that PDU starts at in the frame
 	tx_mode       string // 'cyclic' | 'event' | 'mixed' | '' — from the transmission-mode timing
 	cycle_ms      int
 	min_delay_ms  int
@@ -197,9 +198,10 @@ pub fn (c ArxmlCluster) nm_frames() []ArxmlNmFrame {
 		}
 		senders := m.senders()
 		out << ArxmlNmFrame{
-			id:  m.id
-			ext: m.ext
-			ecu: if senders.len > 0 { senders[0] } else { '' }
+			id:   m.id
+			ext:  m.ext
+			ecu:  if senders.len > 0 { senders[0] } else { '' }
+			byte: f.pdu_byte
 		}
 	}
 	out.sort_with_compare(fn (a &ArxmlNmFrame, b &ArxmlNmFrame) int {
@@ -1559,6 +1561,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			} else {
 				info.pdu = child_text(pdu, 'SHORT-NAME')
 				info.pdu_kind = attr_or(pref, 'DEST', lname(pdu))
+				info.pdu_byte = pdu_off / 8
 			}
 			mut sig_pdu := pdu
 			mut sig_pdu_path := pdu_path

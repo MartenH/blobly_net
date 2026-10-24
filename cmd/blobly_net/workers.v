@@ -1023,14 +1023,14 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			}
 		}
 		// Network management, of the same frames J1939 listens to: the bus's, and ours once. At
-		// the row's time, the frame's own stamp where it has one, so a batching adapter's
-		// delivery does not read as the nodes' cadence.
+		// the frame's placed time (its own stamp where it has one, ours included), so a batching
+		// adapter's delivery does not read as the nodes' cadence.
 		mut nm_fed := !ours
 		if c := claimed {
 			nm_fed = nm_fed || c.first
 		}
 		if nm_fed {
-			a.nm_note_locked(want_dest, f, row_t_ms)
+			a.nm_note_locked(want_dest, f, f64(placed - i64(a.t0_ns)) / 1_000_000.0)
 		}
 		if !a.paused && !ours {
 			rx_key := gkey_frame(org_rx, chname, want_dest, f)

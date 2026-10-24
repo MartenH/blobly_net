@@ -39,13 +39,14 @@ pub:
 	nm          []ArxmlNmFrame // its frames carrying an NM-PDU, by id
 }
 
-// ArxmlNmFrame is a frame of the cluster whose PDU is an NM-PDU, and the ECU sending it when the
-// file names one.
+// ArxmlNmFrame is a frame of the cluster whose (first) PDU is an NM-PDU, the byte that PDU starts
+// at, and the ECU sending it when the file names one.
 pub struct ArxmlNmFrame {
 pub:
-	id  u32
-	ext bool
-	ecu string
+	id   u32
+	ext  bool
+	ecu  string
+	byte int // where the NM-PDU starts in the frame
 }
 
 // lookup returns the message defined for `id`, if any (exact id match).

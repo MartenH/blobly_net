@@ -114,6 +114,10 @@ fn (mut app App) nm_note_locked(wire string, f transport.CanFrame, t_ms f64) {
 // nm_import_note_locked feeds an imported frame of recorded bus `label`, placed on the wire
 // `gate` names, to that bus's own tracker. Caller holds app.mu.
 fn (mut app App) nm_import_note_locked(label string, gate string, f transport.CanFrame, t_ms f64) {
+	// the recording's clock runs on every frame, whichever bus carries it
+	if t_ms > app.nm_rec_end {
+		app.nm_rec_end = t_ms
+	}
 	if app.nm_cfg.len == 0 || f.rtr {
 		return
 	}
@@ -126,9 +130,6 @@ fn (mut app App) nm_import_note_locked(label string, gate string, f transport.Ca
 		n
 	}
 	t.note(f.id, f.extended, f.data, t_ms)
-	if t_ms > app.nm_rec_end {
-		app.nm_rec_end = t_ms
-	}
 }
 
 // NmSection is one wire's reading, as the panel draws it.
@@ -145,7 +146,8 @@ fn (mut app App) nm_sections() ([]NmSection, string) {
 	defer {
 		app.mu.unlock()
 	}
-	if app.viewing_rec != '' && app.nm_rec.len > 0 {
+	if app.viewing_rec != '' {
+		// a recording on screen is read on its own, never with the live wires behind it
 		mut labels := app.nm_rec.keys()
 		labels.sort()
 		for l in labels {
@@ -155,6 +157,9 @@ fn (mut app App) nm_sections() ([]NmSection, string) {
 				view:  t.view(app.nm_rec_end, nm_strip_cols)
 			}
 		}
+		if out.len == 0 {
+			return out, 'from ${app.viewing_rec}: no recorded bus is placed on a wire with an NM configuration'
+		}
 		return out, 'from ${app.viewing_rec}, as at its last frame'
 	}
 	now := app.since_ms()
@@ -163,13 +168,23 @@ fn (mut app App) nm_sections() ([]NmSection, string) {
 	for w in wires {
 		t := app.nm_trk[w] or { continue }
 		mut names := []string{}
+		mut read := false
 		for c in app.chans {
-			if !c.eth() && transport.destination_key_for(c.adapter, c.iface) == w && c.name !in names {
-				names << c.name
+			if !c.eth() && transport.destination_key_for(c.adapter, c.iface) == w {
+				if c.name !in names {
+					names << c.name
+				}
+				read = read || (c.monitorable() && !app.rx_open_failed[transport.wire_key(c.iface)])
 			}
 		}
+		// a wire with no reader this run is said to be unread, not shown asleep
+		unread := if app.running && !read {
+			' — NOT READ this run (no enabled row reads it)'
+		} else {
+			''
+		}
 		out << NmSection{
-			title: '${names.join(' / ')}  (${w})'
+			title: '${names.join(' / ')}  (${w})${unread}'
 			view:  t.view(now, nm_strip_cols)
 		}
 	}
@@ -223,11 +238,8 @@ fn draw_nm(mut app App) {
 	for si, s in sections {
 		v := s.view
 		vgui.separator_text(s.title)
-		vgui.text_dim('NM ids 0x${v.cfg.lo:X}..0x${v.cfg.hi:X}${if v.cfg.ext {
-			' (29-bit)'
-		} else {
-			''
-		}}, timeout ${v.cfg.timeout_ms} ms — from ${v.cfg.origin}')
+		dflt := if v.cfg.timeout_default { ' (not stated; a default)' } else { '' }
+		vgui.text_dim('${v.cfg.describe()}, timeout ${v.cfg.timeout_ms} ms${dflt} — from ${v.cfg.origin}')
 		// the header: the state, who keeps it awake, who woke it, how long since the last frame
 		match v.state {
 			.awake { vgui.text_colored(80, 190, 100, 'awake') }
@@ -284,7 +296,7 @@ fn draw_nm(mut app App) {
 				}
 				vgui.table_set_col(1)
 				if r.has_id {
-					vgui.text('0x${r.id:X}')
+					vgui.text(if r.ext { '0x${r.id:X} (29-bit)' } else { '0x${r.id:X}' })
 				}
 				vgui.table_set_col(2)
 				if r.missing {

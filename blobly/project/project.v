@@ -1208,6 +1208,9 @@ fn parse_channel(c yaml.Any) !Channel {
 		}
 	}
 	if v := c.value_opt('nm') {
+		if ch.is_eth() {
+			return error('nm: an NM cluster is a CAN bus property; ${ch.name} is an Ethernet channel')
+		}
 		ch.nm = parse_nm(v)!
 	}
 	if t := c.value_opt('timing') {
@@ -1586,13 +1589,22 @@ pub:
 
 // parse_nm reads `nm: { lo, hi, ext, timeout_ms }`, checked: a range of CAN ids (29-bit at most, lo
 // at or below hi), a timeout of 1 ms to a minute.
+// nm_id_is_clean: a whole id literal, `0x`-prefixed hex or plain decimal digits and nothing else.
+fn nm_id_is_clean(s string) bool {
+	t := s.trim_space().trim('"')
+	if t.starts_with('0x') || t.starts_with('0X') {
+		return hex_id_is_clean(t)
+	}
+	return t.len > 0 && t.bytes().all(it >= `0` && it <= `9`)
+}
+
 fn parse_nm(v yaml.Any) !NmCfg {
 	lo_raw := v.value('lo').default_to('').str()
 	hi_raw := v.value('hi').default_to('').str()
 	if lo_raw == '' || hi_raw == '' {
 		return error('nm: needs lo and hi, the NM id range')
 	}
-	if !hex_id_is_clean(lo_raw) || !hex_id_is_clean(hi_raw) {
+	if !nm_id_is_clean(lo_raw) || !nm_id_is_clean(hi_raw) {
 		return error('nm: lo "${lo_raw}" / hi "${hi_raw}" must be CAN ids')
 	}
 	lo := parse_id_wide(lo_raw)
