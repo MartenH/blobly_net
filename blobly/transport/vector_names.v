@@ -325,7 +325,7 @@ fn reconcile_absent(first AppSlot, second AppSlot) AppSlot {
 //   absent     -> permit ONLY IF the operator asked to create. See below.
 //
 // That `app_present` argument is deliberately gone. It existed to guess which reading of `unknown`
-// applied, it was derived from vector_application_seen(), and that function's own contract says its
+// applied, it was derived from whether the application was seen (application_seen_in), whose
 // `false` is not proof of absence — so the guess turned "nothing answered" into "safe to create",
 // which is exactly the P1 r6 reported. A question the driver can answer directly is not one to
 // infer from a sweep of other channels.
@@ -364,6 +364,92 @@ pub fn assign_refusal(app int, slot AppSlot, create_ok bool) ?string {
 		return 'vector:${app} is not registered under "blobly_net". Assigning it CREATES it, which is how a channel is added — but the driver reports that with a generic error, which is also what a momentary read failure on an occupied channel looks like. Tick "create unregistered channel" in Discover (create = true from a script) to say that is what you mean, or pick one of the channels listed as free.'
 	}
 	return none
+}
+
+// AssignWhileRunning is why an application channel is not assigned while a run is started (#288):
+// the mapping is the driver's, persistent and machine-wide, and the run may hold ports open on the
+// very channel it would retarget. Typed, so a host answers it as its own state refusal (the C
+// ABI's BB_ERR_STATE) rather than as a refused argument.
+pub struct AssignWhileRunning {
+	Error
+}
+
+pub fn (e AssignWhileRunning) msg() string {
+	return 'not while a run is started: an assignment rewrites the Vector driver\'s persistent channel mapping under ports the run may hold open — stop the run first'
+}
+
+// assign_run_refusal is the one rule for assigning during a run, which the GUI's Discover dialog,
+// Lua's vector.assign and the C ABI's bb_vector_assign all go by (vector_assign_checked asks it
+// first): refused while `running`, none otherwise.
+pub fn assign_run_refusal(running bool) ?AssignWhileRunning {
+	return if running { AssignWhileRunning{} } else { none }
+}
+
+// vector_not_registered is the shim's open-path code for a channel the application does not have:
+// xlGetApplConfig answered CT_XL_ERR_NO_SUCH_CHANNEL (255) for it.
+const vector_not_registered = -1013
+
+// lookup_refusal is why application channel `channel` did not open, from the shim's answer to the
+// application-config lookup ct_vector_mask_why makes; none for a code that is not that lookup's.
+// 255 is XL's generic error too, so the not-registered message names the remedy — an explicit
+// Assign, which refuses an `absent` channel unless creating it is asked for — and never a retry
+// that registers on its own.
+pub fn lookup_refusal(channel int, rc int) ?string {
+	return match rc {
+		vector_not_registered {
+			'vector:${channel} is not registered in application blobly_net — map it in Discover → Assign (ticking "create unregistered channel"; from a script, vector.assign with create). The driver says this with its generic error, so if vector:${channel} is mapped already, try again.'
+		}
+		-1007 {
+			'Vector application channel ${channel}: the driver would not report what it is assigned to. Nothing was changed; try again, and check that no other XL application is mid-restart.'
+		}
+		else {
+			none
+		}
+	}
+}
+
+// vector_mappings_of pairs every physical channel in `hw` with the application channel — if any —
+// pointing at it, from ONE sweep's `slots` (index i is vector:<i+1>). `assignment_of` reads what a
+// `taken` channel points at. A channel that is `unreadable`, or `taken` and then not read, may own
+// any row, so every row without a found owner is marked `owner_known: false`: reported as free,
+// an Assign would map a second application channel onto one physical wire (#167).
+pub fn vector_mappings_of(hw []VectorChannel, slots []AppSlot, assignment_of fn (int) !(VectorChannel, bool)) []VectorMapping {
+	mut owner := map[string]int{}
+	mut known := true
+	for i, s in slots {
+		if s == .unreadable {
+			known = false
+			continue
+		}
+		if s != .taken {
+			continue
+		}
+		a, ok := assignment_of(i + 1) or {
+			known = false
+			continue
+		}
+		if ok {
+			owner['${a.hw_type}:${a.hw_index}:${a.hw_channel}'] = i + 1
+		}
+	}
+	mut out := []VectorMapping{cap: hw.len}
+	for c in hw {
+		app := owner['${c.hw_type}:${c.hw_index}:${c.hw_channel}'] or { 0 }
+		out << VectorMapping{
+			hw:  c
+			app: app
+			// a found owner is positive evidence, which no unreadable channel takes away
+			owner_known: known || app > 0
+		}
+	}
+	return out
+}
+
+// application_seen_in is whether `slots` show the application registered: some channel answered
+// `empty` or `taken`, which only a registered application's channels can. `false` is not proof of
+// absence — `absent` is also what XL's generic error reads as, and `unreadable` is silence.
+pub fn application_seen_in(slots []AppSlot) bool {
+	return slots.any(it == .empty || it == .taken)
 }
 
 // VectorSpec is the parsed interface string.

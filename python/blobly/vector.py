@@ -91,7 +91,8 @@ def assign(app: int, hw: VectorHardware, *, create: bool = False) -> None:
     assigned (or may be: an application channel would not answer), `app` is taken or unreadable,
     or `app` is absent — not registered — unless create=True says creating it is what you mean:
     the driver reports "not registered" with the same generic error a momentary read failure on an
-    occupied channel gives, so creating is never assumed."""
+    occupied channel gives, so creating is never assumed. While a project is started it raises
+    BloblyError with code BB_ERR_STATE (-3), nothing written."""
     if not isinstance(hw, VectorHardware):
         raise TypeError(f"assign: hw is a VectorHardware from vector.assignments(), not {hw!r}")
     _lib.check(_lib.lib().bb_vector_assign(_app(app), hw.hw_type, hw.hw_index, hw.hw_channel, int(bool(create))))

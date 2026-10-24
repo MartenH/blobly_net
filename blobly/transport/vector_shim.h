@@ -621,6 +621,10 @@ static const char *ct_vector_err(int st) {
 	return ct_xl_errstr((ct_xlstatus)st);
 }
 
+/* What xlGetApplConfig answers for a channel outside the application's list: XL_ERROR, the
+ * generic status (ct_vector_appl_get says what that does and does not prove). */
+#define CT_XL_ERR_NO_SUCH_CHANNEL 255
+
 /* Resolve an application channel (0-based here) to a channel mask.
  * Returns 0 when the application channel has no hardware assigned, having REGISTERED the
  * application first so it appears in Vector Hardware Configuration for the operator to
@@ -639,9 +643,14 @@ static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why, int regis
 	 * below REGISTERS, which writes an all-zero mapping. Merged with a transient read failure
 	 * that meant an already-configured channel had its assignment cleared — by the very call
 	 * that was about to report it as unassigned. Asked separately, answered separately. */
-	if (ct_xl_getappl("blobly_net", app_channel, &hw_type, &hw_index, &hw_channel,
-	                  CT_XL_BUS_TYPE_CAN) != 0) {
-		if (why) *why = -1007;
+	st = ct_xl_getappl("blobly_net", app_channel, &hw_type, &hw_index, &hw_channel,
+	                   CT_XL_BUS_TYPE_CAN);
+	if (st != 0) {
+		/* 255 is what the driver answers for a channel the application does not have (and for a
+		 * deleted application, every channel): -1013, told apart so the open names the remedy.
+		 * It is also XL's generic error, so nothing is registered on it — see
+		 * ct_vector_appl_get. Any other status is a failed read. */
+		if (why) *why = (st == CT_XL_ERR_NO_SUCH_CHANNEL) ? -1013 : -1007;
 		return 0;
 	}
 	if (hw_type == 0) {
@@ -1471,7 +1480,6 @@ static int ct_vector_appl_seen_UNUSED(void) {
  * that the other two guards do not depend on it: `taken` refuses whenever the driver describes the
  * channel at all, and the physical-wire check (owner_known in vector_mappings) is what stands
  * between a misread and a second application channel on one wire. */
-#define CT_XL_ERR_NO_SUCH_CHANNEL 255
 
 static int ct_vector_appl_get(unsigned int app_channel, int *hw_type, int *hw_index, int *hw_channel) {
 	unsigned int t = 0, i = 0, c = 0;

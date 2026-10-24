@@ -663,10 +663,10 @@ fn draw_discover_dialog(mut app App) {
 					// the application's channel list" from "failed this time". The operator knows
 					// which number they want; asking is both safer and shorter than any inference
 					// (#192, option 3).
-					// NOT WHILE RUNNING: the dialog is reachable mid-run now (for looking), and an
-					// Assign rewrites the driver's persistent mapping under ports the run may hold
-					// open — #288's option 1, so opening the dialog mid-run does not widen it.
-					if app.running {
+					// NOT WHILE RUNNING (transport.assign_run_refusal, the rule scripts go by too):
+					// an Assign rewrites the driver's persistent mapping under ports the run may
+					// hold open.
+					if _ := transport.assign_run_refusal(app.run_holds_wires()) {
 						vgui.text_dim('(stop the measurement to assign)')
 					} else if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
 						n := vgui.buf_str(app.disc_vector_ch_buf).trim_space()

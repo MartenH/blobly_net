@@ -1136,7 +1136,8 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
  * written): the driver unusable (on Linux, always), the hardware not a CAN channel or already
  * assigned, the application channel taken or unreadable, or ABSENT — not registered, which
  * writing it creates — unless `create` is nonzero, the caller saying creating it is meant. The
- * mapping persists across reboots. */
+ * mapping persists across reboots. While a run is started it is BB_ERR_STATE, nothing written:
+ * the mapping is the driver's, under ports the run may hold open. */
 enum bb_fd {
 	BB_FD_UNKNOWN = -1,  /* nothing asked could say */
 	BB_FD_NO = 0,        /* classic only (a SocketCAN link at mtu 16) */

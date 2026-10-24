@@ -700,8 +700,10 @@ local found, note = bus.discover_cansub(700) -- the CANsub channels an mDNS brow
   fd_iso, fd_bosch, on_bus }`, `app` the application channel on it (0 none). `vector.slot(app)` is
   `"taken"`, `"empty"`, `"absent"` or `"unreadable"`. `vector.assign(app, hw, { create = true })`
   points `vector:<app>` at a row of `assignments()` with the Discover dialog's refusals: an
-  `"absent"` (unregistered) channel only when `create` says creating it is meant. The mapping
-  persists across reboots. `tests/interfaces.lua` is the suite.
+  `"absent"` (unregistered) channel only when `create` says creating it is meant, and never while a
+  run is started (`cmd/script`'s run, for the whole script, or the GUI's measurement) — the mapping
+  is the driver's, under ports the run may hold open. The mapping persists across reboots.
+  `tests/interfaces.lua` is the suite.
 
 ### The DBC catalog
 

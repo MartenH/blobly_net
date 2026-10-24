@@ -320,14 +320,18 @@ fn (mut app App) refresh_discovery() {
 	app.rebuild_discover_list()
 	// Empty on any machine without the XL driver, which is the honest answer rather than a
 	// placeholder — the Linux stub returns nothing and the section below draws nothing.
-	app.disc_vector = transport.vector_mappings()
+	// ONE sweep of the application channels, which the mappings, the free list and whether the
+	// application was seen are all read from, so the three describe one instant (#206).
+	slots := transport.vector_app_slots()
+	app.disc_vector = transport.vector_mappings_of(transport.vector_channels(), slots,
+		transport.vector_assignment)
 	// WHAT THE DRIVER CONFIRMED, in the two ways a channel can be usable. `empty` is registered and
 	// pointing at nothing; `absent` is not registered at all, which is equally free — writing it
 	// creates it. Listing only `empty` named the 5 channels this application happens to have and hid
 	// the other 57 an operator may legitimately type (codex #192 r6).
 	mut free_slots := []string{}
 	mut absent := 0
-	for i, s in transport.vector_app_slots() {
+	for i, s in slots {
 		match s {
 			.empty { free_slots << '${i + 1}' }
 			.absent { absent++ }
@@ -343,12 +347,7 @@ fn (mut app App) refresh_discovery() {
 	} else {
 		free_slots.join(', ')
 	}
-	app.disc_vector_app_seen = transport.vector_application_seen() or {
-		if app.disc_vector.len > 0 {
-			app.notify('${err}')
-		}
-		true
-	}
+	app.disc_vector_app_seen = transport.application_seen_in(slots)
 	// CLEARED EVERY TIME, including after the assign that used it — assign_vector_hw ends by calling
 	// this. It authorizes the one write the driver cannot vouch for, so it has to be stated for that
 	// write rather than left ticked from an earlier one (codex #192 r9).
@@ -361,7 +360,7 @@ fn (mut app App) refresh_discovery() {
 // refusals are transport.vector_assign_checked, which scripts use too.
 fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
 	got := transport.vector_assign_checked(app_channel, hw.hw_type, hw.hw_index, hw.hw_channel,
-		app.disc_vector_create) or {
+		app.disc_vector_create, app.run_holds_wires()) or {
 		app.notify('could not assign ${hw.name}: ${err}')
 		return
 	}
