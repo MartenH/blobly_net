@@ -572,6 +572,26 @@ void vgui_sparkline(const char* id, const float* ys, int n, float y_max, float w
     ImPlot::PopStyleVar();
 }
 
+// vgui_cells: `n` equal cells across `w` x `h` pixels, cell k filled with cols[k] (a packed
+// IM_COL32; 0 leaves the strip's faint background). A state timeline, nothing to click.
+void vgui_cells(const unsigned int* cols, int n, float w, float h) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ImGui::GetColorU32(ImGuiCol_FrameBg));
+    if (n > 0) {
+        float cw = w / (float)n;
+        int k = 0;
+        while (k < n) {
+            int j = k;
+            while (j + 1 < n && cols[j + 1] == cols[k]) j++; // one rectangle per run
+            if (cols[k] != 0)
+                dl->AddRectFilled(ImVec2(p.x + k * cw, p.y), ImVec2(p.x + (j + 1) * cw, p.y + h), cols[k]);
+            k = j + 1;
+        }
+    }
+    ImGui::Dummy(ImVec2(w, h));
+}
+
 int vgui_plot_begin(const char* title, float height) {
     if (ImPlot::BeginPlot(title, ImVec2(-1, height))) {
         ImPlot::SetupAxes("t (s)", NULL, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);

@@ -23,6 +23,7 @@ import blobly.sim
 import blobly.canlog
 import blobly.doip
 import blobly.j1939
+import blobly.nm
 import vgui
 import blobly.uds
 
@@ -257,6 +258,15 @@ mut:
 	// loops under app.mu at every push, written by the GUI thread under it.
 	j1939_dbs      map[string]bool
 	j1939_any      bool
+	// Network management (nm.v): each CAN wire's NM configuration and its tracker, keyed by
+	// transport.destination_key — published at Start and, while stopped, by the open panel;
+	// fed by the RX loops under app.mu. `nm_rec` is an imported recording's, per recorded bus,
+	// on the recording's clock up to `nm_rec_end`.
+	nm_cfg     map[string]nm.Config
+	nm_trk     map[string]&nm.Tracker
+	nm_rec     map[string]&nm.Tracker
+	nm_rec_end f64
+	nm_cfg_at  f64 // when the stopped panel last re-read the configuration (host ms)
 	j1939_override J1939Gate
 	// Who holds which J1939 address, per wire (keyed by transport.destination_key for a live
 	// bus, by the recording's own label for an import). Filled from Address Claimed frames by
@@ -312,6 +322,7 @@ mut:
 	show_network  bool
 	show_stats    bool
 	show_perf     bool
+	show_nm       bool
 	perf          PerfView // the Performance panel's samples (panel_perf.v)
 	show_log      bool = true
 	show_replay   bool

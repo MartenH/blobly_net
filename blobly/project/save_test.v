@@ -630,3 +630,55 @@ channels:
 ')!
 	assert win.channels[0].databases == ['C:\\net.arxml#Body']
 }
+
+// `nm:` is a wire's own NM cluster; it survives a save and raises the version to v10, since a
+// build without it drops the key on its next structured save.
+fn test_nm_channel_setting_round_trips_and_raises_the_version() {
+	p := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    nm: { lo: 0x500, hi: 0x53F, timeout_ms: 250 }
+  - name: CAN2
+    interface: vcan1
+')!
+	n := p.channels[0].nm or { panic('no nm') }
+	assert n.lo == 0x500 && n.hi == 0x53F && n.timeout_ms == 250
+	assert p.channels[1].nm == none
+	assert version_for(p) == 10
+	out := p.to_yaml()
+	assert out.contains('    nm: { lo: 0x500, hi: 0x53F, timeout_ms: 250 }'), out
+	assert out.count('nm:') == 1
+	back := parse(out)!
+	b := back.channels[0].nm or { panic('lost on save') }
+	assert b.lo == 0x500 && b.hi == 0x53F && b.timeout_ms == 250
+	// the timeout defaults; decimal ids read too
+	d := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    nm: { lo: 1280, hi: 1343 }
+')!
+	dn := d.channels[0].nm or { panic('no nm') }
+	assert dn.lo == 0x500 && dn.hi == 0x53F && dn.timeout_ms == 300
+}
+
+fn test_nm_channel_setting_is_checked() {
+	for bad in ['{ lo: 0x500 }', '{ lo: 0x53F, hi: 0x500 }', '{ lo: zz, hi: 0x53F }',
+		'{ lo: 0x500, hi: 0x20000000 }', '{ lo: 0x500, hi: 0x53F, timeout_ms: 0 }',
+		'{ lo: 0x500, hi: 0x53F, timeout_ms: soon }'] {
+		if _ := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    nm: ${bad}
+') {
+			assert false, '${bad} must be refused'
+		} else {
+			assert err.msg().contains('nm'), err.msg()
+		}
+	}
+}

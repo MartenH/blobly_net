@@ -1,0 +1,23 @@
+VERSION "nm-demo"
+
+
+NS_ :
+
+BS_:
+
+BU_: sysnode domain zone_a
+
+BO_ 1297 NM_sysnode: 8 sysnode
+ SG_ NM_NodeId : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ NM_CBV : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ NM_PN : 16|48@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1299 NM_domain: 8 domain
+ SG_ NM_NodeId : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ NM_CBV : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ NM_PN : 16|48@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1301 NM_zone_a: 8 zone_a
+ SG_ NM_NodeId : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ NM_CBV : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ NM_PN : 16|48@1+ (1,0) [0|0] "" Vector__XXX

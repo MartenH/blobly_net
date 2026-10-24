@@ -182,7 +182,33 @@ pub fn (c ArxmlCluster) bus_facts(file string) ArxmlBus {
 		baudrate:    c.baudrate
 		fd_baudrate: c.fd_baudrate
 		fd:          c.carries_fd()
+		nm:          c.nm_frames()
 	}
+}
+
+// nm_frames are the cluster's frames whose PDU is an NM-PDU, by id: what network management
+// reads the cluster's NM range and its members from.
+pub fn (c ArxmlCluster) nm_frames() []ArxmlNmFrame {
+	mut out := []ArxmlNmFrame{}
+	for m in c.db.messages {
+		f := c.frame_of(m) or { continue }
+		if f.pdu_kind != 'NM-PDU' {
+			continue
+		}
+		senders := m.senders()
+		out << ArxmlNmFrame{
+			id:  m.id
+			ext: m.ext
+			ecu: if senders.len > 0 { senders[0] } else { '' }
+		}
+	}
+	out.sort_with_compare(fn (a &ArxmlNmFrame, b &ArxmlNmFrame) int {
+		if a.ext != b.ext {
+			return if a.ext { 1 } else { -1 }
+		}
+		return if a.id < b.id { -1 } else if a.id > b.id { 1 } else { 0 }
+	})
+	return out
 }
 
 // frame_of returns the extras for a message of this cluster, if the file said anything.

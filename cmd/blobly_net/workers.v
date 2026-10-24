@@ -1022,6 +1022,14 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				}
 			}
 		}
+		// Network management, of the same frames J1939 listens to: the bus's, and ours once
+		mut nm_fed := !ours
+		if c := claimed {
+			nm_fed = nm_fed || c.first
+		}
+		if nm_fed {
+			a.nm_note_locked(want_dest, f, t_ms)
+		}
 		if !a.paused && !ours {
 			rx_key := gkey_frame(org_rx, chname, want_dest, f)
 			disp, reading := a.j1939_frame_locked(want_dest, want_dest, f, name)

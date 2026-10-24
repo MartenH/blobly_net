@@ -59,6 +59,9 @@ pub fn (p Project) to_yaml() string {
 		if ch.j1939 {
 			b.writeln('    j1939: true')
 		}
+		if n := ch.nm {
+			b.writeln('    nm: { lo: 0x${n.lo:X}, hi: 0x${n.hi:X}, timeout_ms: ${n.timeout_ms} }')
+		}
 		b.writeln('    enabled: ${ch.enabled}')
 		if ch.timing.brp != 0 || ch.timing.tseg1 != 0 || ch.timing.tseg2 != 0 {
 			b.writeln('    timing: { brp: ${ch.timing.brp}, tseg1: ${ch.timing.tseg1}, tseg2: ${ch.timing.tseg2}, sjw: ${ch.timing.sjw} }')

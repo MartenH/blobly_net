@@ -36,6 +36,16 @@ pub:
 	baudrate    int    // 0: not stated
 	fd_baudrate int    // 0: not stated
 	fd          bool   // carries a CAN-FD frame (ArxmlCluster.carries_fd)
+	nm          []ArxmlNmFrame // its frames carrying an NM-PDU, by id
+}
+
+// ArxmlNmFrame is a frame of the cluster whose PDU is an NM-PDU, and the ECU sending it when the
+// file names one.
+pub struct ArxmlNmFrame {
+pub:
+	id  u32
+	ext bool
+	ecu string
 }
 
 // lookup returns the message defined for `id`, if any (exact id match).

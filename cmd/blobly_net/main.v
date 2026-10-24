@@ -270,6 +270,10 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_PERF') != '' {
 		app.show_perf = true
 	}
+	// And the Network Management panel.
+	if os.getenv('BLOBLY_SHOW_NM') != '' {
+		app.show_nm = true
+	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
 	// Open Import ARXML on a file, and (BLOBLY_IMPORT_ARXML_GO) press Import with its defaults,
@@ -469,6 +473,9 @@ fn main() {
 		}
 		if app.show_network {
 			draw_network(mut app, chans)
+		}
+		if app.show_nm {
+			draw_nm(mut app)
 		}
 		if app.show_gen {
 			draw_gen(mut app)

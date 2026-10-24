@@ -9,6 +9,7 @@ import blobly.canlog
 import blobly.project
 import blobly.sim
 import blobly.j1939
+import blobly.nm
 import vgui
 
 struct TraceRow {
@@ -192,6 +193,8 @@ fn (mut app App) reset_trace_locked() {
 	app.j1939_obs = map[string]&J1939Obs{}
 	app.j1939_labels = map[string]&LabelCache{}
 	app.j1939_undecoded = map[string]bool{}
+	app.nm_rec = map[string]&nm.Tracker{} // an imported recording's NM reading goes with its rows
+	app.nm_rec_end = 0
 	app.trace_run_base = app.trace_seq // idx restarts at 0 for the new measurement's rows
 	// The pending records STAY. An echo already in flight is still ours, and dropping the record
 	// would turn the next few of our own frames into RX rows, recording entries and verifier

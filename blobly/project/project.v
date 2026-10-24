@@ -26,7 +26,7 @@ import blobly.player
 // Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
 // project needs. A project using no v3 feature still says v2 and stays openable by older builds
 // with no note, and only one that would actually lose something is labelled v3.
-pub const schema_version = 9
+pub const schema_version = 10
 
 // version_for is the version a PARTICULAR project must declare — the HIGHEST of the features it
 // uses. A generator `bus:` holding a channel NAME is v4 (#97); generator value sources (v3) are
@@ -40,6 +40,13 @@ pub const schema_version = 9
 // cannot be helped retroactively by anything written in the file — the label is for the ones that
 // look, which from here on is all of them.
 pub fn version_for(p Project) int {
+	// v10 — a channel's own NM cluster (`nm:`). An older build drops the unknown key on its next
+	// structured save, and the wire loses its network-management reading with nothing said.
+	for c in p.channels {
+		if c.nm != none {
+			return 10
+		}
+	}
 	// v9 — a CAN bridge channel (#451). An older build has no `bridge` adapter, so compose_iface
 	// makes the address the interface name and the row becomes a CAN channel on an interface
 	// called `Ubuntu-24.04/vcan0` that fails at Start — v5's loss, for the same reason.
@@ -433,6 +440,9 @@ pub mut:
 	// key, so the declaration is lost on a rewrite rather than ignored on a read, which is the
 	// loss v3 already announces for a generator's value source (codex on #344).
 	j1939        bool
+	// nm is the wire's NM cluster when neither a system model nor an ARXML states one
+	// (`nm: { lo: 0x500, hi: 0x53F, timeout_ms: 300 }`; blobly/nm's configure is the rule)
+	nm           ?NmCfg
 	enabled      bool = true
 	databases    []string
 	manifest     string // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
@@ -1197,6 +1207,9 @@ fn parse_channel(c yaml.Any) !Channel {
 			ch.senders << parse_sender(s)
 		}
 	}
+	if v := c.value_opt('nm') {
+		ch.nm = parse_nm(v)!
+	}
 	if t := c.value_opt('timing') {
 		ch.timing = Timing{
 			brp:   t.value('brp').int()
@@ -1564,6 +1577,45 @@ fn parse_eid(s string) ![]u8 {
 // parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
 // checked_int parses a plain decimal in [lo, hi], refusing anything else by name. Not i64(),
 // which turns a typo into 0 and changes what the ECU does without saying so.
+// NmCfg is a channel's own NM cluster: the inclusive id range its nodes announce in, and the
+// timeout past which a silent node, or bus, has stopped asking for the network.
+pub struct NmCfg {
+pub:
+	lo         u32
+	hi         u32
+	timeout_ms int = 300
+}
+
+// parse_nm reads `nm: { lo, hi, timeout_ms }`, checked: a range of CAN ids (29-bit at most, lo
+// at or below hi), a timeout of 1 ms to a minute.
+fn parse_nm(v yaml.Any) !NmCfg {
+	lo_raw := v.value('lo').default_to('').str()
+	hi_raw := v.value('hi').default_to('').str()
+	if lo_raw == '' || hi_raw == '' {
+		return error('nm: needs lo and hi, the NM id range')
+	}
+	if !hex_id_is_clean(lo_raw) || !hex_id_is_clean(hi_raw) {
+		return error('nm: lo "${lo_raw}" / hi "${hi_raw}" must be CAN ids')
+	}
+	lo := parse_id_wide(lo_raw)
+	hi := parse_id_wide(hi_raw)
+	if lo > 0x1FFFFFFF || hi > 0x1FFFFFFF {
+		return error('nm: lo/hi past 0x1FFFFFFF, the widest CAN id')
+	}
+	if lo > hi {
+		return error('nm: lo 0x${lo:X} is above hi 0x${hi:X}')
+	}
+	mut timeout := i64(300)
+	if t := v.value_opt('timeout_ms') {
+		timeout = checked_int(t.str(), 'nm: timeout_ms', 1, 60000)!
+	}
+	return NmCfg{
+		lo:         u32(lo)
+		hi:         u32(hi)
+		timeout_ms: int(timeout)
+	}
+}
+
 fn checked_int(raw string, field string, lo i64, hi i64) !i64 {
 	t := raw.trim_space().trim('"')
 	if t == '' {
