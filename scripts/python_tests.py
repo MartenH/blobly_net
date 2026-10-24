@@ -12,7 +12,8 @@ environment: from the source tree against a built engine, then from the installe
          and the engine it loads are the wheel's.
 
 pytest (pinned below) is not a dependency of the package: the suite is written for it, so each
-environment installs it. A virtual environment because a system Python may refuse a pip install
+environment installs it, with pytest-xdist: the run is spread over WORKERS processes, each loading
+its own engine (one project per process), which takes it from about 100 s to 30 s. A virtual environment because a system Python may refuse a pip install
 (PEP 668). Exits 1 if any run failed, after reporting all of them."""
 import argparse
 import os
@@ -23,7 +24,8 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PYTEST = "pytest==9.1.1"
+PYTEST = ["pytest==9.1.1", "pytest-xdist==3.8.0"]
+WORKERS = "4"  # the CI runners' cores
 STEP_TIMEOUT_S = 900
 
 
@@ -60,18 +62,18 @@ def run(interpreter, lib, wheel):
         pip = [py, "-I", "-m", "pip", "install", "-q", "--disable-pip-version-check"]
         if not (step("venv", [exe, "-I", "-m", "venv", env_dir], base)
                 and step("version", [py, "-I", "-c", "import sys; print(sys.version)"], base)
-                and step("pytest", pip + [PYTEST], base)
+                and step("pytest", pip + PYTEST, base)
                 and step("pytest imports", [py, "-I", "-c", "import pytest"], base)):
             return False
         ok = True
         if lib:
             env = dict(base, BLOBLY_LIB=os.path.abspath(lib))
-            ok &= step("source tree", [py, "-I", "-m", "pytest", "-v", "python/tests"], env)
+            ok &= step("source tree", [py, "-I", "-m", "pytest", "-v", "-n", WORKERS, "python/tests"], env)
         if wheel:
             if not step("install the wheel", pip + [os.path.abspath(wheel)], base):
                 return False
             env = dict(base, BLOBLY_TEST_INSTALLED="1")
-            ok &= step("installed wheel", [py, "-I", "-m", "pytest", "-v", "python/tests"], env)
+            ok &= step("installed wheel", [py, "-I", "-m", "pytest", "-v", "-n", WORKERS, "python/tests"], env)
     return ok
 
 
