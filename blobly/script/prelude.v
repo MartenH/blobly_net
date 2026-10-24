@@ -472,6 +472,7 @@ function uds.functional(channel, id, diags, req, window_ms)
     if type(d) ~= "table" or type(d.handle) ~= "number" then
       error("uds.functional: diags[" .. i .. "] is not a uds.open connection", 2)
     end
+    if d.__node ~= nil then __node_on(d.handle, d.__node) end -- a node connection addresses its node
     hs[i] = d.handle
   end
   return __uds_functional(channel, id, req, window_ms or 0, table.unpack(hs))
@@ -612,6 +613,7 @@ function uds.node(name, opts)
   local h, n, channel = __uds_node(name, opts.channel)
   local self = connection(h, channel)
   self.node = name
+  self.__node = n -- what uds.functional and flash.program check a node connection by (__node_on)
   -- its reads and writes are laid out by its node: it does not move to another ECU
   function self:retarget() error("uds.node: a node connection addresses its node; retarget a uds.open connection instead", 2) end
   -- a DID is its identifier when a number (one that is not an integer is refused), else its name
@@ -713,6 +715,7 @@ function flash.program(target, opts)
     if opts.tx ~= nil or opts.rx ~= nil then
       error("flash.program: a uds.open connection brings its own ids; drop tx/rx", 2)
     end
+    if target.__node ~= nil then __node_on(target.handle, target.__node) end -- as uds.functional
     h = target.handle
   elseif type(target) == "string" then
     h = __flash_open(target, opts.tx, opts.rx)
