@@ -38,7 +38,9 @@ function test(name, fn)
   __tests_total = __tests_total + 1
   __test_begin(name)
   local line = 0
+  local mark = __handler_mark()
   local ok, err = test_xpcall(fn, function(e) line = failure_line() return e end)
+  __handler_restore(mark) -- what the body registered is the test`s own, passed or failed
   if not ok then __tests_failed = __tests_failed + 1 end
   __report(name, ok, ok and "" or tostring(err), line)
   -- past the run deadline the script ends here rather than starting its next test
@@ -1053,30 +1055,62 @@ function dbc.signal(channel, message, name, ext)
 end
 
 -- ============================ sequences (wait / expect) ============================
--- Block up to timeout_ms for a frame with CAN id `id` on `channel`; return it or error.
-function expect(channel, id, timeout_ms)
+-- the kind an id filter narrows to: opts.ext true (29-bit), false (11-bit) or nil (either), as
+-- Python`s ext; refused at the caller of `fname`s caller, before anything is read
+local function id_kind(fname, id, opts)
+  if opts ~= nil and type(opts) ~= "table" then
+    error(fname .. ": options are a table, like { ext = true }, not " .. tostring(opts), 3)
+  end
+  local ext = opts and opts.ext
+  if ext ~= nil and type(ext) ~= "boolean" then
+    error(fname .. ": ext is true, false or nil, not " .. tostring(ext), 3)
+  end
+  if id == nil then
+    if ext ~= nil then error(fname .. ": ext goes with an id", 3) end
+    return nil
+  end
+  local top = ext == false and 0x7FF or 0x1FFFFFFF
+  if math.type(id) ~= "integer" or id < 0 or id > top then
+    error(fname .. ": " .. tostring(id) .. " is not " .. (ext == false and "an 11" or "a 29") .. "-bit id", 3)
+  end
+  return ext
+end
+local function kind_text(ext)
+  if ext == nil then return "" end
+  return ext and " (29-bit)" or " (11-bit)"
+end
+local function is_frame(f, id, ext)
+  return f.id == id and (ext == nil or f.ext == ext)
+end
+
+-- expect(channel, id, timeout_ms [, opts]): block up to timeout_ms for a frame with CAN id `id`
+-- on `channel`, of the kind opts.ext names (nil: either); return it or error.
+function expect(channel, id, timeout_ms, opts)
+  local ext = id_kind("expect", id, opts)
   timeout_ms = timeout_ms or 1000
   local deadline = __now_ms() + timeout_ms
   repeat
     local left = deadline - __now_ms()
     local f = bus.recv(channel, left > 0 and left or 0)
-    if f and f.id == id then return f end
+    if f and is_frame(f, id, ext) then return f end
   until __now_ms() >= deadline
-  error(string.format("expect: no frame id=0x%X on %s within %dms", id, channel, timeout_ms), 2)
+  error(string.format("expect: no frame id=0x%X%s on %s within %dms", id, kind_text(ext), channel, timeout_ms), 2)
 end
 
--- Block until a decoded signal of message `id` matches `want` (a value, or a
--- predicate function), or timeout. Returns the matching value.
-function expect_signal(channel, id, signal, want, timeout_ms)
+-- expect_signal(channel, id, signal, want, timeout_ms [, opts]): block until a decoded signal of
+-- message `id` (of the kind opts.ext names) matches `want` (a value, or a predicate function), or
+-- timeout. Returns the matching value.
+function expect_signal(channel, id, signal, want, timeout_ms, opts)
+  local ext = id_kind("expect_signal", id, opts)
   timeout_ms = timeout_ms or 1000
   local deadline = __now_ms() + timeout_ms
   local frames, carried = 0, 0
   repeat
     local left = deadline - __now_ms()
     local f = bus.recv(channel, left > 0 and left or 0)
-    if f and f.id == id then
+    if f and is_frame(f, id, ext) then
       frames = frames + 1
-      local s = decode(channel, f.id, f.data)
+      local s = decode(channel, f.id, f.data, f.ext)
       local v = s and s[signal]
       if v ~= nil then
         carried = carried + 1
@@ -1095,9 +1129,10 @@ function expect_signal(channel, id, signal, want, timeout_ms)
 end
 
 -- ============================ reactive callbacks ============================
--- on_message(channel, id, fn): fn(frame) fires for each matching frame received during run() —
--- what other nodes sent; the script`s own sends are never heard back. id may be nil to match
--- every frame on the channel.
+-- on_message(channel, id, fn [, opts]): fn(frame) fires for each matching frame received during
+-- run() — what other nodes sent; the script`s own sends are never heard back. id may be nil to
+-- match every frame on the channel; a number matches that id of either kind, and opts.ext = true
+-- or false only its 29-bit or 11-bit frame.
 -- on_health(channel, fn): fn(state) fires during run() when the controller`s ladder has moved —
 -- "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF" — sampled every 100 ms, and at its first
 -- sample with the state then, however late it was registered. A software bus never fires.
@@ -1107,6 +1142,9 @@ end
 -- is consumed — a later expect gets the next one — whether or not a handler matched it. No event
 -- (a frame, a timer, a health sample) is taken up once the deadline has passed; a frame taken up
 -- before it reaches every handler it matches.
+-- Inside a test(), what its body registers — directly, inside a nested run(), or in a coroutine
+-- resumed while the body runs — is dropped when the test ends, passed or failed, with the frames
+-- taken up during it that are still in flight; what is registered outside any test stays.
 __on_msg = {}
 __on_health = {}
 __timers = {}
@@ -1121,9 +1159,10 @@ local function listen(channel, for_health)
   end
   __listened[#__listened + 1] = channel
 end
-function on_message(channel, id, fn)
+function on_message(channel, id, fn, opts)
+  local ext = id_kind("on_message", id, opts) -- refused before the channel is read
   listen(channel, false)
-  __on_msg[#__on_msg + 1] = { channel = channel, id = id, fn = fn }
+  __on_msg[#__on_msg + 1] = { channel = channel, id = id, ext = ext, fn = fn }
 end
 function on_health(channel, fn)
   listen(channel, true)
@@ -1227,7 +1266,7 @@ local function deliver_inflight()
     while q[1] == d and d.i <= #__on_msg and not died_on(d) do
       local h = __on_msg[d.i]
       d.i = d.i + 1
-      if h.channel == d.ch and (h.id == nil or h.id == d.f.id) then
+      if h.channel == d.ch and (h.id == nil or is_frame(d.f, h.id, h.ext)) then
         s.calling[level] = d
         d.callers[co] = (d.callers[co] or 0) + 1
         h.fn(d.f)
@@ -1236,6 +1275,25 @@ local function deliver_inflight()
       end
     end
     if q[1] == d then table.remove(q, 1) end
+  end
+end
+
+-- __handler_mark(): how much is registered, and how many frames taken up, now;
+-- __handler_restore(m) drops what was registered since, and the frames taken up since that are
+-- still in flight, whose handlers those may have been
+function __handler_mark()
+  return { msg = #__on_msg, health = #__on_health, timers = #__timers, listened = #__listened, taken = taken }
+end
+local function truncate(t, n)
+  for i = #t, n + 1, -1 do t[i] = nil end
+end
+function __handler_restore(m)
+  truncate(__on_msg, m.msg)
+  truncate(__on_health, m.health)
+  truncate(__timers, m.timers)
+  truncate(__listened, m.listened)
+  for k = #inflight, 1, -1 do
+    if inflight[k].n > m.taken then table.remove(inflight, k) end
   end
 end
 

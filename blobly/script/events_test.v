@@ -72,7 +72,11 @@ fn send_n(iface string, id u32, n int, gap_ms int) {
 //      earlier frame was being delivered from that frame on, and nothing before it — except that
 //      a frame whose handler raised reaches none of the handlers after that one;
 //   A10 when a nested run() returns into a handler, the handlers after it already have the frame
-//      that handler is handling (the inner run() finished it first, frame or no frame to take).
+//      that handler is handling (the inner run() finished it first, frame or no frame to take);
+//   A11 a handler for an id gets the frames of that id, of the kind its ext names (nil: either);
+//   A12 when the first run() is inside a test(), what was registered during it — at any depth,
+//      in a coroutine or not — is gone after the test, and hears nothing of a later run(), while
+//      what was registered before the test goes on hearing it.
 // A2 is asked of EVERY run(), the nested ones included, and nested runs are sometimes in a
 // coroutine and sometimes interrupted by a handler that raises, which their caller catches.
 const model_src = r'
@@ -86,14 +90,16 @@ __listen = function(ch) end
 local chans = { "A", "B" }
 local arrivals = { A = {}, B = {} }
 local all = {}
+local ext_of = {} -- frame -> its kind
 local seq = 0
 local horizon = 300
 for _, ch in ipairs(chans) do
   local at = rnd(20)
   while at < horizon do
     seq = seq + 1
-    local a = { at = at, seq = seq, ch = ch }
+    local a = { at = at, seq = seq, ch = ch, ext = rnd(2) == 0 }
     arrivals[ch][#arrivals[ch] + 1] = a
+    ext_of[seq] = a.ext
     all[#all + 1] = a
     at = at + 1 + rnd(25)
   end
@@ -165,7 +171,7 @@ __wait_frame = function(ms, ...)
   local a = take(bch, t + ms)
   dispatched[#dispatched + 1] = a
   index_of[a.seq] = #dispatched
-  return bch, a.seq, false, tostring(a.seq)
+  return bch, a.seq, a.ext, tostring(a.seq)
 end
 __bus_recv = function(ch, timeout)
   local a = take(ch, t + timeout)
@@ -173,7 +179,7 @@ __bus_recv = function(ch, timeout)
     t = t + timeout
     return nil
   end
-  return a.seq, false, tostring(a.seq)
+  return a.seq, a.ext, tostring(a.seq)
 end
 
 local spans = {}
@@ -225,9 +231,13 @@ local function add_health(ch)
 end
 local late = 0
 local handlers = {}
+-- whether a handler for an id wants frame sq (A11)
+local function wants(rec, sq)
+  return rec.want == nil or (sq == rec.want.id and (rec.want.ext == nil or rec.want.ext == ext_of[sq]))
+end
 local function others_have(ch, me, sq)
   for _, rec in ipairs(handlers) do
-    local should = rec.pos > me.pos and not rec.late and not (aborted[sq] and rec.pos > aborted[sq])
+    local should = rec.pos > me.pos and not rec.late and not (aborted[sq] and rec.pos > aborted[sq]) and wants(rec, sq)
     if rec.ch == ch and should and rec.got[sq] ~= 1 then
       error("A10: a nested run() returned with frame " .. sq .. " not yet given to a later handler")
     end
@@ -258,9 +268,11 @@ local function seen_by(rec, ch, sq)
   rec.last[ch] = sq
   rec.got[sq] = (rec.got[sq] or 0) + 1
 end
+local in_test = false
 local function handler(rec)
   handlers[#handlers + 1] = rec
   rec.last, rec.got = {}, {}
+  rec.scoped = in_test
   rec.pos = #__on_msg + 1
   return rec
 end
@@ -290,6 +302,20 @@ for _, ch in ipairs(chans) do
       end
       spans[#spans + 1] = { event_start[f.id], t }
     end)
+  end
+  if rnd(2) == 0 and #arrivals[ch] > 0 then
+    -- one id, of a kind or of either (A11)
+    local id = arrivals[ch][rnd(#arrivals[ch]) + 1].seq
+    local k = rnd(3)
+    local ext = nil
+    if k == 1 then ext = true elseif k == 2 then ext = false end
+    local kinded = handler({ ch = ch, want = { id = id, ext = ext } })
+    on_message(ch, id, function(f)
+      if f.id ~= id or (ext ~= nil and f.ext ~= ext) then
+        error("A11: a handler for " .. id .. " ext " .. tostring(ext) .. " got " .. f.id .. " ext " .. tostring(f.ext))
+      end
+      seen_by(kinded, ch, f.id)
+    end, ext ~= nil and { ext = ext } or nil)
   end
   if rnd(3) == 0 then
     -- raises inside nested runs only, which their callers catch: ends the frame for the rest
@@ -339,29 +365,51 @@ end
 
 local t0 = t
 local d = 50 + rnd(200)
-run(d)
+if rnd(2) == 0 then
+  local before = { #__on_msg, #__on_health, #__timers, #__listened }
+  local err
+  in_test = true
+  test("model", function()
+    local ok, e = pcall(run, d)
+    if not ok then err = e end
+  end)
+  in_test = false
+  if err then error(err, 0) end
+  if #__on_msg ~= before[1] or #__on_health ~= before[2] or #__timers ~= before[3] or #__listened ~= before[4] then
+    error("A12: a test left what it registered behind")
+  end
+  for _, rec in ipairs(handlers) do
+    if rec.scoped then rec.upto = #dispatched end
+  end
+else
+  run(d)
+end
 local bound, reached = t0 + d, false
 for _, sp in ipairs(spans) do
   if sp[1] <= t0 + d and sp[2] > bound then bound = sp[2] end
   if sp[1] <= t0 + d and sp[2] >= t0 + d then reached = true end
 end
 if t > bound then error("A2: run(" .. d .. ") from " .. t0 .. " returned at " .. t .. ", bound " .. bound) end
+-- a callback that ran to the deadline leaves what arrived during it queued, for the next reader
+if not reached then
+  for _, a in ipairs(all) do
+    if a.at <= t0 + d and not delivered[a.seq] then error("A1: frame " .. a.seq .. " at " .. a.at .. " never delivered") end
+  end
+end
+-- a later run(), outside any test: what a test registered hears none of it (A12, through A9)
+run(10 + rnd(60))
 if popped ~= ndelivered then error("A1: " .. popped .. " frames taken, " .. ndelivered .. " delivered") end
 for k, a in ipairs(dispatched) do
   for _, rec in ipairs(handlers) do
     if rec.ch == a.ch then
       local owed = (not rec.late or k >= rec.from) and not (aborted[a.seq] and rec.pos > aborted[a.seq])
+        and (rec.upto == nil or k <= rec.upto)
+        and wants(rec, a.seq)
       local want = owed and 1 or nil
       if rec.got[a.seq] ~= want then
         error("A9: frame " .. a.seq .. " reached a handler " .. tostring(rec.got[a.seq] or 0) .. " times, owed " .. tostring(want or 0))
       end
     end
-  end
-end
--- a callback that ran to the deadline leaves what arrived during it queued, for the next reader
-if not reached then
-  for _, a in ipairs(all) do
-    if a.at <= t0 + d and not delivered[a.seq] then error("A1: frame " .. a.seq .. " at " .. a.at .. " never delivered") end
   end
 end
 '
@@ -1305,4 +1353,146 @@ fn test_a_received_frame_carries_its_format_and_its_receive_time() {
 // One frame time reads the same in both languages: Lua divides the ns as Python's ms_of does.
 fn test_the_receive_time_in_ms_is_the_ns_divided_once() {
 	assert clock_ms(1_234_567_890_123_456) == 1234567890.123456
+}
+
+// A number matches its id of either kind, as Python's ext=None; { ext = true } or false only that
+// kind — in on_message, expect and expect_signal alike.
+fn test_an_id_matches_the_kind_ext_names() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_K1'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	mut tx := transport.open('inproc:EV_K1')!
+	defer { tx.close() }
+	for ext in [false, true, false, true] {
+		tx.send(transport.CanFrame{ id: 0x100, extended: ext, data: [u8(1)] })!
+	}
+	tx.send(transport.CanFrame{ id: 0x100, extended: true, data: [u8(2)] })!
+	tx.send(transport.CanFrame{ id: 0x100, data: [u8(3)] })!
+	env.run_source('
+		local either, wide, narrow = 0, 0, 0
+		on_message("CAN1", 0x100, function(f) either = either + 1 end)
+		on_message("CAN1", 0x100, function(f) wide = wide + 1 end, { ext = true })
+		on_message("CAN1", 0x100, function(f) narrow = narrow + 1 end, { ext = false })
+		run(100)
+		log("either " .. either)
+		log("wide " .. wide)
+		log("narrow " .. narrow)
+	')!
+	assert said.num('either') == 6, said.lines.str()
+	assert said.num('wide') == 3, said.lines.str()
+	assert said.num('narrow') == 3, said.lines.str()
+	tx.send(transport.CanFrame{ id: 0x100, data: [u8(4)] })!
+	tx.send(transport.CanFrame{ id: 0x100, extended: true, data: [u8(5)] })!
+	tx.send(transport.CanFrame{ id: 0x100, data: [u8(6)] })!
+	env.run_source('
+		__on_msg = {}
+		local f = expect("CAN1", 0x100, 200, { ext = true })
+		log("wide " .. string.byte(f.data, 1))
+		f = expect("CAN1", 0x100, 200)
+		log("either " .. string.byte(f.data, 1))
+		local ok, e = pcall(expect, "CAN1", 0x100, 50, { ext = true })
+		log("none " .. tostring(ok) .. " " .. tostring(string.find(e, "0x100 (29-bit)", 1, true) ~= nil))
+	')!
+	assert said.lines.contains('wide 5'), said.lines.str()
+	assert said.lines.contains('either 6'), said.lines.str()
+	assert said.lines.contains('none false true'), said.lines.str()
+}
+
+// An id filter that cannot match is refused at the call, naming it, and subscribes nothing.
+fn test_an_id_filter_is_refused_where_no_frame_can_carry_it() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_K2'])
+	defer { env.close() }
+	env.run_source('
+		local function refused(fn, ...)
+			local ok, e = pcall(fn, ...)
+			log(tostring(ok) .. ": " .. tostring(e))
+		end
+		local h = function(f) end
+		refused(on_message, "CAN1", 0x100, h, { ext = 1 })
+		refused(on_message, "CAN1", nil, h, { ext = true })
+		refused(on_message, "CAN1", 0x800, h, { ext = false })
+		refused(on_message, "CAN1", 0x20000000, h)
+		refused(on_message, "CAN1", 0x100, h, true)
+		refused(expect, "CAN1", 0x1.8p8, 10)
+		refused(expect_signal, "CAN1", 0x800, "S", 1, 10, { ext = false })
+		log("handlers " .. #__on_msg .. " listened " .. #__listened)
+	')!
+	for l in ['ext is true, false or nil, not 1', 'ext goes with an id',
+		'2048 is not an 11-bit id', '536870912 is not a 29-bit id', 'options are a table',
+		'expect: 384.0 is not a 29-bit id', 'expect_signal: 2048 is not an 11-bit id'] {
+		assert said.lines.any(it.starts_with('false: ') && it.contains(l)), '${l}: ${said.lines}'
+	}
+	assert said.lines.contains('handlers 0 listened 0'), said.lines.str()
+}
+
+// What a test() registers ends with it, passed or failed — a handler, a timer, a health handler
+// and the channel only it listened to — while what was registered outside any test stays.
+fn test_handlers_registered_in_a_test_end_with_it() {
+	mut env, said := events_env(['CAN1', 'CAN2'], ['inproc:EV_K3', 'inproc:EV_K4'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	env.bus_for('CAN2')!
+	mut tx1 := transport.open('inproc:EV_K3')!
+	defer { tx1.close() }
+	mut tx2 := transport.open('inproc:EV_K4')!
+	defer { tx2.close() }
+	tx1.send(transport.CanFrame{ id: 0x10, data: [u8(1)] })!
+	env.run_source('
+		top, inner, ticks, healths = 0, 0, 0, 0
+		on_message("CAN1", nil, function(f) top = top + 1 end)
+		test("registers", function()
+			on_message("CAN1", nil, function(f) inner = inner + 1 end)
+			on_message("CAN2", nil, function(f) inner = inner + 1 end)
+			on_timer(5, function() ticks = ticks + 1 end)
+			on_health("CAN2", function(s) healths = healths + 1 end)
+			-- inside a coroutine and a nested run(), still the test`s own
+			coroutine.wrap(function() on_message("CAN1", nil, function(f) inner = inner + 1 end) end)()
+			run(50)
+		end)
+		test("fails", function()
+			on_message("CAN1", nil, function(f) inner = inner + 1 end)
+			error("on purpose")
+		end)
+		log("tables " .. #__on_msg .. " " .. #__timers .. " " .. #__on_health .. " " .. #__listened)
+		log("inner " .. inner)
+		ticks = 0
+	')!
+	assert said.lines.contains('tables 1 0 0 1'), said.lines.str()
+	assert said.num('inner') == 2, said.lines.str()
+	tx1.send(transport.CanFrame{ id: 0x11, data: [u8(2)] })!
+	tx2.send(transport.CanFrame{ id: 0x12, data: [u8(3)] })!
+	env.run_source('
+		run(50)
+		log("after " .. top .. " " .. inner .. " " .. ticks)
+		local f = bus.recv("CAN2", 100)
+		log("left " .. (f and f.id or -1))
+	')!
+	assert said.lines.contains('after 2 2 0'), said.lines.str()
+	assert said.lines.contains('left 18'), said.lines.str()
+}
+
+// A frame a test left in flight — its handler suspended in a coroutine — goes with the test: the
+// handlers a later test registers at the same places never see it.
+fn test_a_frame_a_test_left_in_flight_ends_with_it() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_K5'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	mut tx := transport.open('inproc:EV_K5')!
+	defer { tx.close() }
+	tx.send(transport.CanFrame{ id: 0x20, data: [u8(1)] })!
+	env.run_source('
+		test("suspends", function()
+			on_message("CAN1", nil, function(f) coroutine.yield() end)
+			local co = coroutine.create(function() run(100) end)
+			coroutine.resume(co)
+		end)
+		local got = {}
+		test("later", function()
+			on_message("CAN1", nil, function(f) got[#got + 1] = string.byte(f.data, 1) end)
+			on_message("CAN1", nil, function(f) got[#got + 1] = string.byte(f.data, 1) end)
+			run(30)
+		end)
+		log("got " .. #got)
+	')!
+	assert said.num('got') == 0, said.lines.str()
 }

@@ -192,7 +192,7 @@ scripts/runtests.sh hello.lua
 
 | Call | Meaning |
 |---|---|
-| `test(name, fn)` | Run `fn` as one test; records pass/fail. Wrap each check in its own `test`. |
+| `test(name, fn)` | Run `fn` as one test; records pass/fail. Wrap each check in its own `test`. What `fn` registers — `on_message`, `on_health`, `on_timer` handlers, at any depth: inside a nested `run()` or a coroutine resumed while `fn` runs — is dropped when the test ends, passed or failed, with the frames taken up during it that are still in flight, so a later test's `run()` neither calls it nor reads a channel only it named. What the script registers outside any test stays. |
 | `check.equal(got, want [, msg])` | Fail unless `got == want`. |
 | `check.truthy(v [, msg])` | Fail unless `v` is truthy. |
 | `check.between(v, lo, hi [, msg])` | Fail unless `lo <= v <= hi`. |
@@ -796,8 +796,22 @@ the script until the condition or the timeout, then return or raise.
 
 | Call | Meaning |
 |---|---|
-| `expect(channel, id, timeout_ms)` | Wait for a frame with CAN `id`; returns the frame (`{id, ext, data, fd, brs, esi, rtr, t_ms, e2e}`, as `bus.recv`), or raises on timeout. |
-| `expect_signal(channel, id, signal, want, timeout_ms)` | Wait until decoded `signal` of message `id` matches `want` (a value, or a `function(v)->bool` predicate); returns the matching value, or raises. |
+| `expect(channel, id, timeout_ms [, opts])` | Wait for a frame with CAN `id`; returns the frame (`{id, ext, data, fd, brs, esi, rtr, t_ms, e2e}`, as `bus.recv`), or raises on timeout. `id` alone matches either kind; `opts.ext = true` only the 29-bit frame, `false` only the 11-bit one (see [an id and its kind](#an-id-and-its-kind)). |
+| `expect_signal(channel, id, signal, want, timeout_ms [, opts])` | Wait until decoded `signal` of message `id` matches `want` (a value, or a `function(v)->bool` predicate); returns the matching value, or raises. `opts.ext` as `expect`'s. |
+
+#### An id and its kind
+
+A standard (11-bit) and an extended (29-bit) frame with the same number are different frames.
+`on_message`, `expect` and `expect_signal` take a trailing `{ ext = true }` (29-bit only) or
+`{ ext = false }` (11-bit only); a bare number matches that id of either kind, as Python's
+`ext=None` does in `on_message`. An id no frame of that kind can carry (past 0x7FF with
+`ext = false`, past 0x1FFFFFFF, or not an integer), an `ext` that is not a boolean, or an `ext`
+with no id is refused at the call.
+
+```lua
+on_message("CAN1", 0x100, function(f) end, { ext = true })  -- the 29-bit 0x100 only
+local f = expect("CAN1", 0x100, 500, { ext = false })        -- the 11-bit 0x100 only
+```
 
 ### Reactive callbacks — on_message / on_health / on_timer / run
 
@@ -833,7 +847,7 @@ it to them.
 
 | Call | Meaning |
 |---|---|
-| `on_message(channel, id, fn)` | `fn(frame)` fires for each matching frame received during `run()`. `id` may be `nil` to match every frame on the channel. |
+| `on_message(channel, id, fn [, opts])` | `fn(frame)` fires for each matching frame received during `run()`. `id` may be `nil` to match every frame on the channel; a number matches that id of either kind, and `opts.ext` narrows it to one ([an id and its kind](#an-id-and-its-kind)). Registered inside a `test()`, it ends with the test. |
 | `on_health(channel, fn)` | On SocketCAN and Vector the ladder moves only while the channel is read, so `run()` reads it — and consumes its frames — as it does for `on_message`. `fn(state)` fires during `run()` when the controller's fault ladder has moved — `"ok"`, `"error warning"`, `"ERROR-PASSIVE"`, `"BUS-OFF"` — and at its first sample with the state then, however late the handler was registered. Sampled every 100 ms: a state held for less than that between two samples can be missed. A software bus (`inproc:`, `udp:`) has no ladder and never fires. |
 | `on_timer(period_ms, fn)` | `fn()` fires every `period_ms` during `run()`, on its own grid: a late fire does not delay the next one, and periods missed while the script was busy are skipped, not sent in a burst. A timer is never fired again inside its own callback; one whose callback yields stays paused until that coroutine resumes or is closed. The period is a number of milliseconds, at least 1; a fraction is honoured to within a millisecond. |
 | `run(duration_ms)` | Run the event loop for `duration_ms`. |
