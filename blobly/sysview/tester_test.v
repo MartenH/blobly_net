@@ -271,6 +271,7 @@ fn test_a_can_target_is_its_wire_and_ids() {
 		[0x7C0, 0x7C9, 1, 0], // the request shared
 		[0x7C1, 0x7C8, 1, 0], // the response shared
 		[0x7C1, 0x7C9, 1, 1], // nothing shared
+		[0x7C8, 0x7C0, 1, 0], // the ids crossed: each answer a request to the other
 		[0x18DA00C0, 0x7C8, 1, 1], // a 29-bit pair: its 0x7C8 is another identifier
 	]
 	for c in cases {

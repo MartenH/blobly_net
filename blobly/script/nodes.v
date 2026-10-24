@@ -66,8 +66,10 @@ fn l_uds_node(l lua.State) i32 {
 	}
 	// the description's DID sizes: a snapshot (0x19 04) need not read a DID to learn one
 	for id, size in env.sys.nodes[n].desc.did_sizes() {
-		if id !in env.conns[h].cli.did_lens { // a size stated on a reused connection wins
-			env.conns[h].cli.set_did_size(id, size)
+		// learned, not stated (set_did_size): a retarget to another ECU forgets it, as it forgets
+		// what was read; a size stated on a reused connection wins
+		if id !in env.conns[h].cli.did_lens {
+			env.conns[h].cli.did_lens[id] = size
 		}
 	}
 	l.push_int(h)

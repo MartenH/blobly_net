@@ -129,7 +129,8 @@ fn (sys &System) contested(n int, t RowTarget, rows []RowRef) bool {
 				continue
 			}
 			o := sys.can_target(m, r, j) or { continue }
-			if o.ext == t.ext && (o.req == t.req || o.rsp == t.rsp) {
+			// either id against either: a response on another's request id is a request to it
+			if o.ext == t.ext && (o.req in [t.req, t.rsp] || o.rsp in [t.req, t.rsp]) {
 				return true
 			}
 		}
