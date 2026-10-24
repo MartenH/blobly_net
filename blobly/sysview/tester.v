@@ -43,6 +43,10 @@ pub:
 	eth     bool // an Ethernet row that carries no diagnostics (SOME/IP)
 	host    string
 	logical u16
+	// a CAN row's wire (transport.destination_key): two rows on one wire are one bus to an ECU
+	wire string
+	// a DoIP row that hosts its entity in this run (project.Channel.hosts_doip_entity): a simulation
+	hosts bool
 }
 
 // RowTarget is node's diagnostic server on one row: a CAN row's request and response ids (29-bit
@@ -57,55 +61,98 @@ pub:
 	ext  bool
 }
 
-// targets: every row of `rows` that reaches node `n`, in their order — a CAN row named after a bus
-// its server is on, at its diagnostic ids (can_server, can_targets' rule), and a DoIP row whose
-// entity is the node (node_for by the row's logical address and host, the rule the Diagnostics
-// panel describes a DoIP target by) at the node's address where both state one (a loopback row
-// excepted: a simulated entity). None for a node whose ecu.toml declares no server, nor on a CAN
-// bus where another node answers to its ids.
+// targets: every row of `rows` that reaches node `n`, in their order, by ONE identity rule. A CAN
+// target is (the row's wire, request id, response id, 29-bit): a row named after a bus the node's
+// server is on (can_target), on a wire where no other node's CAN target shares either id of the
+// same width (contested). A DoIP target is (endpoint, logical address): a row whose entity node_for
+// says is the node, at the node's address where both state one — relaxed only for a row that
+// hosts the entity, a simulation of the node (doip_reaches). None for a node whose ecu.toml
+// declares no server.
 pub fn (sys &System) targets(n int, rows []RowRef) []RowTarget {
 	if n < 0 || n >= sys.nodes.len {
 		return []RowTarget{}
 	}
-	node := sys.nodes[n]
-	server := sys.can_server(node)
-	// one whose ecu.toml declares no server (the tester's own declaration) is reached nowhere, on
-	// either carrier; one whose ecu.toml could not be read keeps what system.toml says
-	serves := node.ecu_err != '' || node.desc.server
 	mut out := []RowTarget{}
 	for i, r in rows {
-		if r.doip && serves {
-			link := sys.node_for(TargetAddr{
-				doip:    true
-				logical: r.logical
-				// a loopback row simulates an entity whose address in the model is the real one: told
-				// apart by its bus, never by the host
-				host:    if loopback(r.host) { '' } else { r.host }
-				bus:     r.name
-			})
-			if link.node == n && (node.address == '' || r.host == '' || loopback(r.host)
-				|| same_host(node.address, r.host)) {
+		if r.doip {
+			if sys.doip_reaches(n, r) {
 				out << RowTarget{
 					row:  i
 					doip: true
 				}
 			}
-		} else if !r.eth {
-			if s := server {
-				// and on that bus no other node uses either id: a request another node hears too
-				// would be acted on by both, an answer on another's id taken for this one's
-				if r.name in s.buses && !sys.can_collides(n, s, r.name) {
-					out << RowTarget{
-						row: i
-						req: s.req
-						rsp: s.rsp
-						ext: s.req > 0x7FF || s.rsp > 0x7FF
-					}
-				}
+		} else if t := sys.can_target(n, r, i) {
+			if !sys.contested(n, t, rows) {
+				out << t
 			}
 		}
 	}
 	return out
+}
+
+// serves: n's ecu.toml declares a diagnostic server (the tester's own declaration declares none);
+// one whose ecu.toml could not be read keeps what system.toml says.
+fn (sys &System) serves(n int) bool {
+	node := sys.nodes[n]
+	return node.ecu_err != '' || node.desc.server
+}
+
+// can_target is node n's CAN target on row r (index i): a row named after a bus its server is on,
+// at its ids.
+fn (sys &System) can_target(n int, r RowRef, i int) ?RowTarget {
+	if r.doip || r.eth || !sys.serves(n) {
+		return none
+	}
+	s := sys.can_server(sys.nodes[n])?
+	if r.name !in s.buses {
+		return none
+	}
+	return RowTarget{
+		row: i
+		req: s.req
+		rsp: s.rsp
+		ext: s.req > 0x7FF || s.rsp > 0x7FF
+	}
+}
+
+// contested: another node's CAN target on t's wire — on any row of it, whatever the row is named —
+// shares an id of t's width: a request both servers would act on, or an answer of one taken for
+// the other's.
+fn (sys &System) contested(n int, t RowTarget, rows []RowRef) bool {
+	wire := rows[t.row].wire
+	for m in 0 .. sys.nodes.len {
+		if m == n {
+			continue
+		}
+		for j, r in rows {
+			if r.wire != wire {
+				continue
+			}
+			o := sys.can_target(m, r, j) or { continue }
+			if o.ext == t.ext && (o.req == t.req || o.rsp == t.rsp) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// doip_reaches: row r's entity is node n — node_for by its logical address and, where the model
+// states one, its endpoint; a row hosting the entity simulates the node at an address of its own,
+// and is told apart from another node's simulation by its bus.
+fn (sys &System) doip_reaches(n int, r RowRef) bool {
+	if !sys.serves(n) {
+		return false
+	}
+	node := sys.nodes[n]
+	link := sys.node_for(TargetAddr{
+		doip:    true
+		logical: r.logical
+		host:    if r.hosts { '' } else { r.host }
+		bus:     r.name
+	})
+	return link.node == n && (r.hosts || node.address == '' || r.host == ''
+		|| same_host(node.address, r.host))
 }
 
 // same_host: two spellings of one endpoint address — numeric addresses by their bytes (`2001:db8::1`
@@ -185,30 +232,6 @@ fn groups_of(s string, last bool) ?[]u8 {
 		out << u8(v)
 	}
 	return out
-}
-
-// can_collides: another node serving on `bus` (can_server) shares node n's request or response id.
-fn (sys &System) can_collides(n int, s CanServer, bus string) bool {
-	for i, m in sys.nodes {
-		if i == n {
-			continue
-		}
-		o := sys.can_server(m) or { continue }
-		if bus in o.buses && (o.req == s.req || o.rsp == s.rsp) {
-			return true
-		}
-	}
-	return false
-}
-
-// loopback: `host` is this machine — an entity a project hosts for a node in simulation, whose
-// system.toml address is the real ECU's.
-fn loopback(host string) bool {
-	if host.to_lower() == 'localhost' {
-		return true
-	}
-	c := canonical_host(host).all_before('%')
-	return (c.starts_with('ip:7f') && c.len == 11) || c == 'ip:' + '0'.repeat(30) + '01'
 }
 
 // reach is the one target a tester opens on for node `n`: the one on row `row` when it names one

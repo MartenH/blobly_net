@@ -19,6 +19,7 @@ fn (mut env Env) register_nodes() {
 	env.st.register('__node_faults', l_node_faults)
 	env.st.register('__node_read', l_node_read)
 	env.st.register('__node_write', l_node_write)
+	env.st.register('__node_on', l_node_on)
 }
 
 fn l_uds_nodes(l lua.State) i32 {
@@ -41,7 +42,7 @@ fn l_uds_node(l lua.State) i32 {
 	if !l.arg_is_nil(2) {
 		row = env.find_chan(l.arg_str(2)) or { return l.fail('uds.node("${name}"): ${err.msg()}') }
 	}
-	rows := env.chans.map(udsconn.row_ref(it.name, it.carrier))
+	rows := env.chans.map(udsconn.row_ref(it.name, it.iface, it.carrier, it.hosts))
 	t := env.sys.reach(n, rows, row) or { return l.fail('uds.node: ${err.msg()}') }
 	ask := if t.doip {
 		udsconn.Ask{
@@ -244,6 +245,15 @@ fn l_node_write(l lua.State) i32 {
 fn lua_int(text string) ?i64 {
 	v := strconv.parse_int(text, 10, 64) or { return none }
 	return if '${v}' == text { v } else { none }
+}
+
+// l_node_on (handle, node): raises unless the connection addresses the node (on_node).
+fn l_node_on(l lua.State) i32 {
+	mut env := env_of(l)
+	node := node_arg(l, 2) or { return l.fail(err.msg()) }
+	c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	env.on_node(c, node.name) or { return l.fail(err.msg()) }
+	return 0
 }
 
 // on_node refuses a DoIP connection retargeted away from its channel's entity (a uds.open one that

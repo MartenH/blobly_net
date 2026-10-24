@@ -72,26 +72,31 @@ def main(argv: list[str]) -> int:
             print(f"{args.param} = {was}")
 
             try:
-                diag.write(args.param, args.value)  # refused before anything is sent
-                fail(f"{args.param} was written in the default session, unlocked")
-            except blobly.WriteGated as e:  # a typed error: what the gate needs
-                print(f"not written: needs session 0x{e.session:02X}, level {e.level}")
-                if e.session:
-                    diag.session(e.session)
-                if e.level:
-                    diag.security_access(2 * e.level - 1)  # 0x27 with blobly_net's reference key
+                try:
+                    diag.write(args.param, args.value)  # refused before anything is sent
+                    fail(f"{args.param} was written in the default session, unlocked")
+                except blobly.WriteGated as e:  # a typed error: what the gate needs
+                    print(f"not written: needs session 0x{e.session:02X}, level {e.level}")
+                    if e.session:
+                        diag.session(e.session)
+                    if e.level:
+                        diag.security_access(2 * e.level - 1)  # 0x27 with blobly_net's reference key
 
-            diag.write(args.param, args.value)
-            now = diag.read(args.param)
-            if now != args.value:
-                fail(f"{args.param} reads {now} after a write of {args.value}")
-            print(f"{args.param} = {now}, written; parameter status {diag.read('parameter status')}")
-            try:
-                diag.write(args.param, 100_000)
-                fail(f"{args.param} took 100000, past its range")
-            except blobly.Refused as e:  # the description's range: nothing was sent
-                print(f"refused: {e}")
-            diag.write(args.param, was)  # put back
+                diag.write(args.param, args.value)
+                now = diag.read(args.param)
+                if now != args.value:
+                    fail(f"{args.param} reads {now} after a write of {args.value}")
+                print(f"{args.param} = {now}, written; parameter status {diag.read('parameter status')}")
+                try:
+                    diag.write(args.param, 100_000)
+                    fail(f"{args.param} took 100000, past its range")
+                except blobly.Refused as e:  # the description's range: nothing was sent
+                    print(f"refused: {e}")
+            finally:
+                try:
+                    diag.write(args.param, was)  # put back, whatever happened above
+                except blobly.BloblyError as e:  # said, not raised: a failure above is the one to report
+                    print(f"{args.param} not put back: {e}")
             diag.session(0x01)  # relocks
 
             for d in diag.dtcs():  # 0x19 02, each named by the description's [[fault]]

@@ -277,9 +277,9 @@ def _text(did: Did, part: DidPart, v: object) -> str:
     """A part's Python value as the text the codec reads; its range is the engine's to refuse."""
     where = f"{did.name or hex(did.id)}.{part.label}"
     if part.kind in ("int", "bool"):
-        if isinstance(v, bool):
+        if isinstance(v, bool) and part.kind == "bool":
             return "true" if v else "false"
-        if isinstance(v, int):
+        if isinstance(v, int) and not isinstance(v, bool):
             return str(v)
         raise TypeError(f"{where} is {'an integer' if part.kind == 'int' else 'True or False'}, not {v!r}")
     if part.kind == "text":

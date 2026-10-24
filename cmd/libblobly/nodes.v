@@ -64,7 +64,8 @@ fn run_sys() !SysView {
 
 // refs are the run's rows as the system model reaches a node on them.
 fn (v SysView) refs() []sysview.RowRef {
-	return v.rows.map(udsconn.row_ref(it.name, udsconn.carrier_of(it)))
+	return v.rows.map(udsconn.row_ref(it.name, it.iface_with_bitrate(), udsconn.carrier_of(it),
+		it.hosts_doip_entity()))
 }
 
 fn (v SysView) node(n i32) !sysview.SysNode {

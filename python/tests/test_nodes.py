@@ -101,6 +101,8 @@ class TestDescribedNode:
         assert not isinstance(e.value, blobly.WriteGated)
         with pytest.raises(TypeError, match="an integer"):
             diag.write("SteerLimit", "300")
+        with pytest.raises(TypeError, match="an integer"):
+            diag.write("SteerLimit", True)
         with pytest.raises(TypeError, match="its parts are deg"):
             diag.write("SteerLimit", angle=1)
         with pytest.raises(blobly.Refused, match="not writable"):

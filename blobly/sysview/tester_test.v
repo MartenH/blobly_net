@@ -63,6 +63,7 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 		doip:    true
 		host:    '127.0.0.1'
 		logical: 0x0710
+		hosts:   true
 	}, RowRef{
 		name:    'DoIP2'
 		doip:    true
@@ -72,14 +73,17 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 		row:  0
 		doip: true
 	}]
-	// a row dialing another address than the node's is another entity; a loopback one simulates it
+	// a row dialing another address than the node's is another entity — a loopback one too,
+	// unless it hosts the entity, a simulation of the node
 	sys.nodes[0].address = '192.0.2.1'
-	assert sys.targets(0, [RowRef{
-		name:    'D'
-		doip:    true
-		host:    '192.0.2.2'
-		logical: 0x0710
-	}]) == []
+	for host in ['192.0.2.2', '127.0.0.1'] {
+		assert sys.targets(0, [RowRef{
+			name:    'D'
+			doip:    true
+			host:    host
+			logical: 0x0710
+		}]) == []
+	}
 	assert sys.targets(0, rows).len == 1
 	sys.nodes[0].address = '2001:db8::1'
 	assert sys.targets(0, [RowRef{
@@ -90,11 +94,9 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 	}]).len == 1
 	assert same_host('::ffff:192.0.2.1', '::ffff:c000:201') && same_host('::ffff:192.0.2.1', '192.0.2.1')
 	assert !same_host('192.0.2.1', 'c0000201') && !same_host('010.0.0.1', '10.0.0.1')
-	assert loopback('::ffff:127.0.0.1')
 	assert !same_host('192.0.2.1::', 'c000:201::') && !same_host('[2001:db8::1', '2001:db8::1')
 	assert !same_host('fe80::1%eth0', 'fe80::1%ETH0')
 	assert same_host('Board.local', 'board.local') && !same_host('10.0.0.1', '10.0.0.2')
-	assert loopback('[0:0:0:0:0:0:0:1]') && loopback('127.0.0.2') && !loopback('::2')
 	sys.nodes[0].doip = 0
 	sys.reach(0, rows, -1) or { assert !err.msg().contains('DoIP'), err.msg() }
 	// two simulated entities of one logical address, told apart by their bus, not their real hosts
@@ -112,11 +114,13 @@ fn test_a_node_is_reached_on_the_doip_row_addressing_its_entity() {
 		doip:    true
 		host:    '127.0.0.1'
 		logical: 0x0710
+		hosts:   true
 	}, RowRef{
 		name:    'rear'
 		doip:    true
 		host:    '127.0.0.1'
 		logical: 0x0710
+		hosts:   true
 	}]
 	assert sim.targets(0, lo).map(it.row) == [0] && sim.targets(1, lo).map(it.row) == [1]
 	// two nodes at one pair of ids on one bus: neither is reached there
@@ -246,4 +250,51 @@ fn test_a_gated_write_says_what_the_connection_lacks_until_it_has_it() {
 	// back to the default session: relocked, so the next write is gated again
 	cli.diagnostic_session(uds.default_session) or { panic(err) }
 	write_described(mut cli, x, ['360']) or { assert err is WriteGated }
+}
+
+// A CAN target's identity is (wire, request id, response id, width): every way two nodes can meet
+// on one wire, whatever the rows are named, and every way they cannot.
+fn test_a_can_target_is_its_wire_and_ids() {
+	mut sys := demo_system()
+	sys.nodes << SysNode{
+		...sys.nodes[0]
+		name:  'zone_b'
+		buses: ['rear']
+	}
+	sys.buses << SysBus{
+		name: 'rear'
+	}
+	cases := [
+		// (zone_b's request, response, the two rows' wires, both reached)
+		[0x7C0, 0x7C8, 0, 1], // same ids, two wires: two ECUs
+		[0x7C0, 0x7C8, 1, 0], // same ids, one wire under two names: neither
+		[0x7C0, 0x7C9, 1, 0], // the request shared
+		[0x7C1, 0x7C8, 1, 0], // the response shared
+		[0x7C1, 0x7C9, 1, 1], // nothing shared
+		[0x18DA00C0, 0x7C8, 1, 1], // a 29-bit pair: its 0x7C8 is another identifier
+	]
+	for c in cases {
+		sys.nodes[1].diag_req = u32(c[0])
+		sys.nodes[1].diag_rsp = u32(c[1])
+		rows := [RowRef{
+			name: 'edge'
+			wire: 'inproc:EDGE'
+		}, RowRef{
+			name: 'rear'
+			wire: if c[2] == 1 { 'inproc:EDGE' } else { 'inproc:REAR' }
+		}]
+		want := c[3] == 1
+		assert (sys.targets(0, rows).len == 1) == want, '${c}'
+		assert (sys.targets(1, rows).len == 1) == want, '${c}'
+	}
+	// one width each: 0x7C0 standard and 0x7C0 in a 29-bit pair are two identifiers
+	sys.nodes[1].diag_req = 0x7C0
+	sys.nodes[1].diag_rsp = 0x18DA00C8
+	assert sys.targets(0, [RowRef{
+		name: 'edge'
+		wire: 'w'
+	}, RowRef{
+		name: 'rear'
+		wire: 'w'
+	}]).len == 1
 }

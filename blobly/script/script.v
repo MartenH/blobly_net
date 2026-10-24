@@ -54,6 +54,9 @@ pub:
 	// the row's `replay:` block, its source resolved against the project: what replay.start
 	// plays when the script names no source
 	replay ?project.Replay
+	// a DoIP row hosting its entity in the run (project.Channel.hosts_doip_entity): uds.node takes
+	// it for a simulation of the node, at an address of its own
+	hosts bool
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
