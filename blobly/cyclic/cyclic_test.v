@@ -125,6 +125,12 @@ fn test_a_spec_no_sender_could_send_is_refused() {
 		period_ms: 10
 		data:      []u8{len: 9}
 		format:    .classic
+	}, Spec{
+		period_ms: 10
+		id:        0x800 // past an 11-bit id
+	}, Spec{
+		period_ms: 10
+		brs:       true // without fd
 	}] {
 		start(transport.open('inproc:CYC4')!, sp, Life{}) or { continue }
 		assert false, 'started ${sp}'

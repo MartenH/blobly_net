@@ -366,7 +366,7 @@ fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
 // exchange_held is exchange with `serial` held, or none to hold.
 fn (mut c Client) exchange_held(req []u8, suppressed bool) !([]u8, bool) {
 	c.last = ExchangeTiming{} // a request refused before exchange_once times it was not sent
-	resp, owed := c.exchange_once(req, suppressed) or {
+	resp, owed := c.exchange_once(req, suppressed, 0) or {
 		mut x := Exchange{
 			req:    req.clone()
 			err:    err.msg()
@@ -422,23 +422,30 @@ pub fn request_refusal(req []u8, suppressed bool) ?string {
 	return none
 }
 
-fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
+// exchange_once is one request and its answer. `bound` > 0 is an exchange of the client's own
+// (a keep-alive): that many ms for the first answer and from the send in all, whatever 0x78 says,
+// and none of it the caller's `last` or `sent_count`.
+fn (mut c Client) exchange_once(req []u8, suppressed bool, bound int) !([]u8, bool) {
 	if why := request_refusal(req, false) {
 		return error(why)
 	}
-	c.last = ExchangeTiming{}
+	if bound == 0 {
+		c.last = ExchangeTiming{}
+	}
 	mut discarded := c.drain_queued(req[0])!
 	sent_ns := time.sys_mono_now()
 	mut pendings := 0
 	mut first_pending_ns := u64(0)
 	mut sent := false
 	defer {
-		end_ns := time.sys_mono_now()
-		c.last = ExchangeTiming{
-			sent:       sent
-			rtt_us:     i64(end_ns - sent_ns) / 1000
-			pending:    pendings
-			pending_us: if pendings > 0 { i64(end_ns - first_pending_ns) / 1000 } else { 0 }
+		if bound == 0 {
+			end_ns := time.sys_mono_now()
+			c.last = ExchangeTiming{
+				sent:       sent
+				rtt_us:     i64(end_ns - sent_ns) / 1000
+				pending:    pendings
+				pending_us: if pendings > 0 { i64(end_ns - first_pending_ns) / 1000 } else { 0 }
+			}
 		}
 	}
 	if c.stopping() {
@@ -446,10 +453,18 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 	}
 	c.ch.send(req) or { return send_failure(err, c.ch, c.stopping(), req[0], discarded) }
 	sent = true
-	c.sent_count++
+	if bound == 0 {
+		c.sent_count++
+	}
 	c.last_tx_ns = time.sys_mono_now()
 	sw := time.new_stopwatch()
-	mut deadline := if c.timeout_ms < c.pending_budget_ms { i64(c.timeout_ms) } else { i64(c.pending_budget_ms) }
+	mut deadline := if bound > 0 {
+		i64(bound)
+	} else if c.timeout_ms < c.pending_budget_ms {
+		i64(c.timeout_ms)
+	} else {
+		i64(c.pending_budget_ms)
+	}
 	mut pending := false
 	for {
 		if c.stopping() {
@@ -535,7 +550,7 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 					first_pending_ns = time.sys_mono_now()
 				}
 				pendings++
-				deadline = c.pending_deadline(sw.elapsed().milliseconds())
+				deadline = if bound > 0 { i64(bound) } else { c.pending_deadline(sw.elapsed().milliseconds()) }
 			}
 			.stale {
 				discarded++

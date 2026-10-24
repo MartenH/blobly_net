@@ -7,6 +7,15 @@ import blobly.uds
 
 // stop_keep_alive ends the handle's keep-alive, if one runs; never with `mu` held.
 fn (mut hd UdsHandle) stop_keep_alive() {
+	hd.kset.lock()
+	defer {
+		hd.kset.unlock()
+	}
+	hd.stop_keep_alive_held()
+}
+
+// stop_keep_alive_held is stop_keep_alive with `kset` held.
+fn (mut hd UdsHandle) stop_keep_alive_held() {
 	hd.kmu.lock()
 	ka := hd.ka
 	hd.ka = unsafe { nil }
@@ -58,7 +67,12 @@ pub fn bb_uds_keep_alive(u i32, period_ms i32) i32 {
 	if stdatomic.load_i64(&hd.closing) != 0 {
 		return fail(bb_err_handle, 'the UDS handle was closed')
 	}
-	hd.stop_keep_alive()
+	// the stop and the start one step: two calls at once leave one keep-alive, never an orphan
+	hd.kset.lock()
+	defer {
+		hd.kset.unlock()
+	}
+	hd.stop_keep_alive_held()
 	if period_ms == 0 {
 		return ok()
 	}
@@ -102,12 +116,25 @@ pub fn bb_uds_keep_alive_status(u i32, out &C.bb_keep_alive) i32 {
 	return ok()
 }
 
+// bb_uds_keep_alive_failure: a failure taken is kept until a call copies it out whole, so a host
+// that asks again with room for a cut one gets it.
 @[export: 'bb_uds_keep_alive_failure']
 pub fn bb_uds_keep_alive_failure(u i32, buf &char, cap i32) i32 {
-	ka := keep_alive_of(u) or { return refused(err) }
-	if isnil(ka) {
-		return put('', buf, cap)
+	mut hd := uds_enter(u) or { return fail(bb_err_handle, 'no open UDS handle ${u}') }
+	defer {
+		stdatomic.add_i64(&hd.users, -1)
 	}
-	mut k := unsafe { ka }
-	return put(k.take_failure() or { '' }, buf, cap)
+	hd.kmu.lock()
+	defer {
+		hd.kmu.unlock()
+	}
+	if hd.ka_said == '' && !isnil(hd.ka) {
+		mut k := hd.ka
+		hd.ka_said = k.take_failure() or { '' }
+	}
+	n := put(hd.ka_said, buf, cap)
+	if n >= 0 && n < cap {
+		hd.ka_said = ''
+	}
+	return n
 }

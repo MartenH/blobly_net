@@ -47,23 +47,18 @@ pub fn keepalive_due(session u8, last_tx_ns u64, now_ns u64, period_ms int) bool
 }
 
 // keep_alive_once sends one bounded 3E 80, its lock held by the caller: none when it went well,
-// else its error (keepalive_outcome reads it). Nothing of it is the client's `last` exchange, its
-// count of requests or its exchange hook, which belong to the caller's requests. A refusal forgets
-// the session (ConnState.forget).
+// else its error (keepalive_outcome reads it). keepalive_wait_ms bounds its first answer and, a
+// 0x78 come, the whole exchange; nothing of it is the client's `last` exchange, its count of
+// requests or its exchange hook, which belong to the caller's requests, and none of the caller's
+// waits is touched. A refusal forgets the session (ConnState.forget).
 pub fn (mut c Client) keep_alive_once() ?IError {
-	saved_wait, saved_budget := c.timeout_ms, c.pending_budget_ms
-	saved_last, saved_count, saved_hook := c.last, c.sent_count, c.on_exchange
-	c.timeout_ms = keepalive_wait_ms
-	c.pending_budget_ms = keepalive_wait_ms
-	c.on_exchange = unsafe { nil }
-	mut failure := ?IError(none)
-	c.exchange_held([sid_tester_present, suppress_positive], true) or { failure = err }
-	c.timeout_ms, c.pending_budget_ms = saved_wait, saved_budget
-	c.last, c.sent_count, c.on_exchange = saved_last, saved_count, saved_hook
-	if keepalive_outcome(failure) == .refused {
-		c.state.forget(.session)
+	c.exchange_once([sid_tester_present, suppress_positive], true, keepalive_wait_ms) or {
+		if keepalive_outcome(err) == .refused {
+			c.state.forget(.session)
+		}
+		return err
 	}
-	return failure
+	return none
 }
 
 // on_heap is the client at an address of its own, which a keep-alive's thread can hold.

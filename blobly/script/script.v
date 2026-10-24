@@ -568,6 +568,7 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 				// holding keeps working rather than being orphaned by the repair; its requests go
 				// where they went (a retarget) and the client keeps what it knew of the ECU.
 				target := u16(c.ch.rx_id)
+				ka_ms := c.stop_keep_alive() // out of the connection before it is closed
 				c.ch.close()
 				mut fresh := udsconn.open_doip(info.carrier) or {
 					return error('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
@@ -578,7 +579,6 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 				// holds on the new one; what it established does not
 				mut fresh_cli := uds.new_client(fresh_ch)
 				fresh_cli.carry_from(c.cli)
-				ka_ms := c.stop_keep_alive()
 				env.conns[i] = new_conn(UdsConn{
 					ch:   fresh_ch
 					cli:  env.bound_client(mut fresh_ch, fresh_cli).on_heap()

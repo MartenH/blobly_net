@@ -25,14 +25,17 @@ pub const stop_bound_ms = 2000
 // poll_ms is how often a waiting loop asks whether it is to stop.
 const poll_ms = 20
 
-// Spec is what a sender sends: a raw frame (`id`, `ext`, `data`, its `format`), or — `by_message`
-// — a DBC message encoded from `values` (physical, by signal name; the rest at raw 0), its declared
+// Spec is what a sender sends: a raw frame (`id`, `ext`, `data`; `fd`/`brs` as a C host's flags,
+// unstated, which the wire's declaration may raise; `format` a stated one), or — `by_message` — a
+// DBC message encoded from `values` (physical, by signal name; the rest at raw 0), its declared
 // E2E stamped unless `e2e` is false.
 pub struct Spec {
 pub:
 	id         u32
 	ext        bool
 	data       []u8
+	fd         bool
+	brs        bool
 	format     transport.FrameFormat
 	by_message bool
 	message    candb.Message
@@ -60,7 +63,7 @@ pub fn (s Spec) check() ! {
 		}
 		return
 	}
-	check_data(s.format, s.id, s.ext, s.data)!
+	raw_frame(s, s.data)!
 }
 
 // check_period refuses a period outside 1 ms .. max_period_ms.
@@ -76,11 +79,22 @@ fn check_values(m candb.Message, values map[string]f64) ! {
 	}
 }
 
-fn check_data(ff transport.FrameFormat, id u32, ext bool, data []u8) ! {
+// raw_frame is a raw spec's frame with payload `data`, or why no controller could send it.
+fn raw_frame(s Spec, data []u8) !transport.CanFrame {
 	if data.len > 64 {
 		return error('a payload is at most 64 bytes, not ${data.len}')
 	}
-	ff.stamp(transport.CanFrame{ id: id, extended: ext, data: data })!
+	f := s.format.stamp(transport.CanFrame{
+		id:       s.id
+		extended: s.ext
+		fd:       s.fd
+		brs:      s.brs
+		data:     data
+	})!
+	if why := transport.frame_send_refusal(f) {
+		return error(why)
+	}
+	return f
 }
 
 // Life ties a sender to whatever owns it: `running` false ends it as a stop does (a run's stop),
@@ -110,6 +124,7 @@ mut:
 	bus     transport.Bus
 	life    Life
 	stamper sim.E2eStamper // the loop's alone
+	frame   transport.CanFrame // what the spec sends now, encoded when it changes
 	asked   bool           // stop was asked
 	out     bool           // the loop runs
 	sent    u64
@@ -136,6 +151,11 @@ pub fn start(bus transport.Bus, spec Spec, life Life) !&Sender {
 		bus:  bus
 		life: life
 		out:  true
+	}
+	s.frame = encoded(s.spec) or {
+		mut b := bus
+		b.close()
+		return err
 	}
 	spawn s.run()
 	return s
@@ -181,15 +201,18 @@ fn (mut s Sender) run() {
 // send_once puts the frame on the bus as the spec has it now, counting what became of it.
 fn (mut s Sender) send_once() {
 	s.mu.lock()
-	sp := Spec{
-		...s.spec
-		data:   s.spec.data.clone()
-		values: s.spec.values.clone()
+	sp := s.spec
+	mut frame := transport.CanFrame{
+		...s.frame
+		data: s.frame.data.clone()
 	}
 	s.mu.unlock()
-	frame := s.frame(sp) or {
-		s.note_failure(err.msg())
-		return
+	// a message's E2E counter moves on each frame
+	if sp.by_message && sp.e2e {
+		s.stamper.stamp(sp.message, mut frame.data) or {
+			s.note_failure(err.msg())
+			return
+		}
 	}
 	s.bus.send(frame) or {
 		s.note_failure(err.msg())
@@ -200,23 +223,16 @@ fn (mut s Sender) send_once() {
 	s.mu.unlock()
 }
 
-// frame is the frame `sp` sends now: a message's E2E counter moves on each one.
-fn (mut s Sender) frame(sp Spec) !transport.CanFrame {
+// encoded is the frame `sp` sends, its E2E not stamped yet.
+fn encoded(sp Spec) !transport.CanFrame {
 	if !sp.by_message {
-		return sp.format.stamp(transport.CanFrame{
-			id:       sp.id
-			extended: sp.ext
-			data:     sp.data
-		})
+		return raw_frame(sp, sp.data.clone())
 	}
 	mut data := sp.message.template()
 	for name, v in sp.values {
 		if sig := sp.message.signal_named(name) {
 			sig.encode(mut data, v)
 		}
-	}
-	if sp.e2e {
-		s.stamper.stamp(sp.message, mut data)!
 	}
 	return transport.CanFrame{
 		id:       sp.message.id
@@ -253,11 +269,12 @@ pub fn (mut s Sender) set_data(data []u8) ! {
 	if s.spec.by_message {
 		return error('${s.spec.message.name}: a message sender takes signal values, not bytes')
 	}
-	check_data(s.spec.format, s.spec.id, s.spec.ext, data)!
-	s.spec = Spec{
+	sp := Spec{
 		...s.spec
 		data: data.clone()
 	}
+	s.frame = raw_frame(sp, sp.data)!
+	s.spec = sp
 }
 
 // set_values sets a message sender's signals from its next frame; the others keep theirs.
@@ -274,10 +291,12 @@ pub fn (mut s Sender) set_values(values map[string]f64) ! {
 	for k, v in values {
 		vs[k] = v
 	}
-	s.spec = Spec{
+	sp := Spec{
 		...s.spec
 		values: vs
 	}
+	s.frame = encoded(sp)!
+	s.spec = sp
 }
 
 // info is the sender as it is now.

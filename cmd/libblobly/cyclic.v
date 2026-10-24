@@ -19,10 +19,14 @@ __global (
 // cyclic_retire lets go of the handles of earlier runs, whose loops their run's stop ended; the
 // caller holds bb_mu.
 fn cyclic_retire(run u64) {
+	mut gone := []int{}
 	for k, h in bb_cyclic {
 		if h.run != run {
-			bb_cyclic.delete(k)
+			gone << k
 		}
+	}
+	for k in gone {
+		bb_cyclic.delete(k)
 	}
 }
 
@@ -75,22 +79,13 @@ pub fn bb_cyclic_start(row i32, f &C.bb_frame, period_ms i32) i32 {
 	for i in 0 .. n {
 		data[i] = f.data[i]
 	}
-	// stated as bb_bus_send reads the flags: fd unset takes the wire's declared format
-	format := if f.fd == 0 {
-		transport.FrameFormat.wire
-	} else if f.brs != 0 {
-		transport.FrameFormat.fd_brs
-	} else {
-		transport.FrameFormat.fd
-	}
-	if f.fd == 0 && f.brs != 0 {
-		return fail(bb_err, 'cyclic_start: brs without fd is no frame a controller sends')
-	}
+	// the flags as bb_bus_send reads them: unstated, so the wire's declaration may raise them
 	return cyclic_start(row, cyclic.Spec{
 		id:        f.id
 		ext:       f.ext != 0
+		fd:        f.fd != 0
+		brs:       f.brs != 0
 		data:      data
-		format:    format
 		period_ms: int(period_ms)
 	})
 }
