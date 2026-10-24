@@ -1413,16 +1413,22 @@ fn test_an_id_filter_is_refused_where_no_frame_can_carry_it() {
 		refused(on_message, "CAN1", 0x800, h, { ext = false })
 		refused(on_message, "CAN1", 0x20000000, h)
 		refused(on_message, "CAN1", 0x100, h, true)
-		refused(expect, "CAN1", 0x1.8p8, 10)
+		refused(expect, "CAN1", 256.5, 10)
+		refused(expect, "CAN1", nil, 10)
+		refused(expect_signal, "CAN1", nil, "S", 1, 10)
 		refused(expect_signal, "CAN1", 0x800, "S", 1, 10, { ext = false })
 		log("handlers " .. #__on_msg .. " listened " .. #__listened)
+		on_message("CAN1", 0x1p8, h) -- an integral float is its integer
+		log("kept " .. math.type(__on_msg[1].id) .. " " .. __on_msg[1].id)
 	')!
 	for l in ['ext is true, false or nil, not 1', 'ext goes with an id',
 		'2048 is not an 11-bit id', '536870912 is not a 29-bit id', 'options are a table',
-		'expect: 384.0 is not a 29-bit id', 'expect_signal: 2048 is not an 11-bit id'] {
+		'expect: 256.5 is not a 29-bit id', 'expect: nil is not a 29-bit id',
+		'expect_signal: nil is not a 29-bit id', 'expect_signal: 2048 is not an 11-bit id'] {
 		assert said.lines.any(it.starts_with('false: ') && it.contains(l)), '${l}: ${said.lines}'
 	}
 	assert said.lines.contains('handlers 0 listened 0'), said.lines.str()
+	assert said.lines.contains('kept integer 256'), said.lines.str()
 }
 
 // What a test() registers ends with it, passed or failed — a handler, a timer, a health handler
@@ -1471,8 +1477,8 @@ fn test_handlers_registered_in_a_test_end_with_it() {
 	assert said.lines.contains('left 18'), said.lines.str()
 }
 
-// A frame a test left in flight — its handler suspended in a coroutine — goes with the test: the
-// handlers a later test registers at the same places never see it.
+// A frame a test left in flight — a handler suspended in a coroutine — goes on to the handlers
+// registered before the test, and never to the ones a later test registers.
 fn test_a_frame_a_test_left_in_flight_ends_with_it() {
 	mut env, said := events_env(['CAN1'], ['inproc:EV_K5'])
 	defer { env.close() }
@@ -1481,8 +1487,11 @@ fn test_a_frame_a_test_left_in_flight_ends_with_it() {
 	defer { tx.close() }
 	tx.send(transport.CanFrame{ id: 0x20, data: [u8(1)] })!
 	env.run_source('
+		local outside = 0
+		on_message("CAN1", nil, function(f) coroutine.yield() end)
+		on_message("CAN1", nil, function(f) outside = outside + 1 end)
 		test("suspends", function()
-			on_message("CAN1", nil, function(f) coroutine.yield() end)
+			on_message("CAN1", nil, function(f) error("a handler of the test") end)
 			local co = coroutine.create(function() run(100) end)
 			coroutine.resume(co)
 		end)
@@ -1493,6 +1502,8 @@ fn test_a_frame_a_test_left_in_flight_ends_with_it() {
 			run(30)
 		end)
 		log("got " .. #got)
+		log("outside " .. outside)
 	')!
 	assert said.num('got') == 0, said.lines.str()
+	assert said.num('outside') == 1, said.lines.str()
 }

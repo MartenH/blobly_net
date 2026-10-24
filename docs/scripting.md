@@ -192,7 +192,7 @@ scripts/runtests.sh hello.lua
 
 | Call | Meaning |
 |---|---|
-| `test(name, fn)` | Run `fn` as one test; records pass/fail. Wrap each check in its own `test`. What `fn` registers — `on_message`, `on_health`, `on_timer` handlers, at any depth: inside a nested `run()` or a coroutine resumed while `fn` runs — is dropped when the test ends, passed or failed, with the frames taken up during it that are still in flight, so a later test's `run()` neither calls it nor reads a channel only it named. What the script registers outside any test stays. |
+| `test(name, fn)` | Run `fn` as one test; records pass/fail. Wrap each check in its own `test`. What `fn` registers — `on_message`, `on_health`, `on_timer` handlers, at any depth: inside a nested `run()` or a coroutine resumed while `fn` runs — is dropped when the test ends, passed or failed, so a later test's `run()` neither calls it nor reads a channel only it named. What the script registers outside any test stays; a frame the test left in flight (a handler suspended in a coroutine) goes on to the handlers registered before the test, never to a later test's. |
 | `check.equal(got, want [, msg])` | Fail unless `got == want`. |
 | `check.truthy(v [, msg])` | Fail unless `v` is truthy. |
 | `check.between(v, lo, hi [, msg])` | Fail unless `lo <= v <= hi`. |
@@ -804,9 +804,11 @@ the script until the condition or the timeout, then return or raise.
 A standard (11-bit) and an extended (29-bit) frame with the same number are different frames.
 `on_message`, `expect` and `expect_signal` take a trailing `{ ext = true }` (29-bit only) or
 `{ ext = false }` (11-bit only); a bare number matches that id of either kind, as Python's
-`ext=None` does in `on_message`. An id no frame of that kind can carry (past 0x7FF with
-`ext = false`, past 0x1FFFFFFF, or not an integer), an `ext` that is not a boolean, or an `ext`
-with no id is refused at the call.
+`on_message` does with `ext=None`. (Python's `expect` reads a bare int as the 11-bit id; Lua's
+keeps either kind, so an existing `expect` of a 29-bit id needs no option.) An id no frame of
+that kind can carry (past 0x7FF with `ext = false`, past 0x1FFFFFFF, or not a whole number), an
+`ext` that is not a boolean, an `ext` with no id, or no id at all for `expect`/`expect_signal`
+is refused at the call.
 
 ```lua
 on_message("CAN1", 0x100, function(f) end, { ext = true })  -- the 29-bit 0x100 only

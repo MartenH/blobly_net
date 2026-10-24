@@ -1055,9 +1055,10 @@ function dbc.signal(channel, message, name, ext)
 end
 
 -- ============================ sequences (wait / expect) ============================
--- the kind an id filter narrows to: opts.ext true (29-bit), false (11-bit) or nil (either), as
--- Python`s ext; refused at the caller of `fname`s caller, before anything is read
-local function id_kind(fname, id, opts)
+-- the id and the kind a filter narrows to: opts.ext true (29-bit), false (11-bit) or nil (either,
+-- as Python`s on_message ext=None); an id may be nil only where `any` says nil matches every
+-- frame. Refused at the caller of `fname`s caller, before anything is read
+local function id_kind(fname, id, opts, any)
   if opts ~= nil and type(opts) ~= "table" then
     error(fname .. ": options are a table, like { ext = true }, not " .. tostring(opts), 3)
   end
@@ -1065,15 +1066,16 @@ local function id_kind(fname, id, opts)
   if ext ~= nil and type(ext) ~= "boolean" then
     error(fname .. ": ext is true, false or nil, not " .. tostring(ext), 3)
   end
-  if id == nil then
+  if id == nil and any then
     if ext ~= nil then error(fname .. ": ext goes with an id", 3) end
-    return nil
+    return nil, nil
   end
+  local n = math.tointeger(id)
   local top = ext == false and 0x7FF or 0x1FFFFFFF
-  if math.type(id) ~= "integer" or id < 0 or id > top then
+  if n == nil or n < 0 or n > top then
     error(fname .. ": " .. tostring(id) .. " is not " .. (ext == false and "an 11" or "a 29") .. "-bit id", 3)
   end
-  return ext
+  return n, ext
 end
 local function kind_text(ext)
   if ext == nil then return "" end
@@ -1086,7 +1088,8 @@ end
 -- expect(channel, id, timeout_ms [, opts]): block up to timeout_ms for a frame with CAN id `id`
 -- on `channel`, of the kind opts.ext names (nil: either); return it or error.
 function expect(channel, id, timeout_ms, opts)
-  local ext = id_kind("expect", id, opts)
+  local ext
+  id, ext = id_kind("expect", id, opts)
   timeout_ms = timeout_ms or 1000
   local deadline = __now_ms() + timeout_ms
   repeat
@@ -1101,7 +1104,8 @@ end
 -- message `id` (of the kind opts.ext names) matches `want` (a value, or a predicate function), or
 -- timeout. Returns the matching value.
 function expect_signal(channel, id, signal, want, timeout_ms, opts)
-  local ext = id_kind("expect_signal", id, opts)
+  local ext
+  id, ext = id_kind("expect_signal", id, opts)
   timeout_ms = timeout_ms or 1000
   local deadline = __now_ms() + timeout_ms
   local frames, carried = 0, 0
@@ -1125,6 +1129,9 @@ function expect_signal(channel, id, signal, want, timeout_ms, opts)
   if frames > 0 and carried == 0 then
     error("expect_signal: " .. frames .. " frame(s) came within " .. timeout_ms .. "ms, none carrying " .. signal, 2)
   end
+  if frames == 0 then
+    error(string.format("expect_signal: no frame id=0x%X%s on %s within %dms", id, kind_text(ext), channel, timeout_ms), 2)
+  end
   error("expect_signal: " .. signal .. " did not match within " .. timeout_ms .. "ms", 2)
 end
 
@@ -1143,8 +1150,8 @@ end
 -- (a frame, a timer, a health sample) is taken up once the deadline has passed; a frame taken up
 -- before it reaches every handler it matches.
 -- Inside a test(), what its body registers — directly, inside a nested run(), or in a coroutine
--- resumed while the body runs — is dropped when the test ends, passed or failed, with the frames
--- taken up during it that are still in flight; what is registered outside any test stays.
+-- resumed while the body runs — is dropped when the test ends, passed or failed; what is
+-- registered outside any test stays, and a frame the test left in flight goes on to it alone.
 __on_msg = {}
 __on_health = {}
 __timers = {}
@@ -1160,7 +1167,8 @@ local function listen(channel, for_health)
   __listened[#__listened + 1] = channel
 end
 function on_message(channel, id, fn, opts)
-  local ext = id_kind("on_message", id, opts) -- refused before the channel is read
+  local ext
+  id, ext = id_kind("on_message", id, opts, true) -- refused before the channel is read
   listen(channel, false)
   __on_msg[#__on_msg + 1] = { channel = channel, id = id, ext = ext, fn = fn }
 end
@@ -1263,7 +1271,7 @@ local function deliver_inflight()
     local d = q[1]
     -- stops as soon as an inner run() has finished this frame (what it delivered came after), or
     -- a coroutine died on it
-    while q[1] == d and d.i <= #__on_msg and not died_on(d) do
+    while q[1] == d and d.i <= (d.upto or #__on_msg) and not died_on(d) do
       local h = __on_msg[d.i]
       d.i = d.i + 1
       if h.channel == d.ch and (h.id == nil or is_frame(d.f, h.id, h.ext)) then
@@ -1279,8 +1287,9 @@ local function deliver_inflight()
 end
 
 -- __handler_mark(): how much is registered, and how many frames taken up, now;
--- __handler_restore(m) drops what was registered since, and the frames taken up since that are
--- still in flight, whose handlers those may have been
+-- __handler_restore(m) drops what was registered since. A frame still in flight goes on from the
+-- first dropped place, where a handler registered later reaches it; one taken up since the mark
+-- reaches only the handlers registered before it
 function __handler_mark()
   return { msg = #__on_msg, health = #__on_health, timers = #__timers, listened = #__listened, taken = taken }
 end
@@ -1292,8 +1301,9 @@ function __handler_restore(m)
   truncate(__on_health, m.health)
   truncate(__timers, m.timers)
   truncate(__listened, m.listened)
-  for k = #inflight, 1, -1 do
-    if inflight[k].n > m.taken then table.remove(inflight, k) end
+  for _, d in ipairs(inflight) do
+    if d.i > m.msg + 1 then d.i = m.msg + 1 end
+    if d.n > m.taken and (d.upto == nil or d.upto > m.msg) then d.upto = m.msg end
   end
 end
 

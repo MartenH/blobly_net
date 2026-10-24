@@ -52,19 +52,21 @@ test("an id matches the kind ext names", function()
 end)
 
 -- what a test registers ends with it; what the script registers outside any test stays
-heard_in_test, heard_outside = 0, 0
+heard_in_test, ticked_in_test, heard_outside = 0, 0, 0
 test("a handler registered in a test", function()
   on_message("CAN1", 0x700, function(_) heard_in_test = heard_in_test + 1 end)
-  on_timer(50, function() heard_in_test = heard_in_test + 1 end)
+  on_timer(50, function() ticked_in_test = ticked_in_test + 1 end)
   run(300)
-  check.truthy(heard_in_test >= 2, "the test`s own handlers fire during its run()")
+  check.truthy(heard_in_test >= 1, "the test's handler fires during its run(): " .. heard_in_test)
+  check.truthy(ticked_in_test >= 2, "the test's timer fires during its run(): " .. ticked_in_test)
 end)
 
 on_message("CAN1", 0x700, function(_) heard_outside = heard_outside + 1 end)
 
 test("is gone after it, and one registered outside any test is not", function()
-  local before = heard_in_test
+  local heard, ticked = heard_in_test, ticked_in_test
   run(500)
-  check.equal(heard_in_test, before, "a handler of an earlier test fired")
+  check.equal(heard_in_test, heard, "a handler of an earlier test fired")
+  check.equal(ticked_in_test, ticked, "a timer of an earlier test fired")
   check.truthy(heard_outside >= 2, "the handler registered outside any test: " .. heard_outside)
 end)
