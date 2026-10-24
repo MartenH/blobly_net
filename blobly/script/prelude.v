@@ -849,6 +849,43 @@ function decode(channel, id, data, ext, as)
   return __decode(channel, id, ext or false, data, as or "physical")
 end
 
+-- ============================ interfaces ============================
+-- bus.open_iface(address): a bus by its address ("vcan0", "inproc:X", "pcan:PCAN_USBBUS1@500000")
+-- with no project row; returns the name every bus.* call, run() and uds.open then take (the
+-- address). Its sends obey the loaded project wire policy, as a row does.
+function bus.open_iface(address)
+  if type(address) ~= "string" then error("bus.open_iface: address is a string", 2) end
+  return __bus_open_iface(address)
+end
+-- bus.interfaces(): every interface known without a network wait, each { address, kind,
+-- description, fd (true, false, or nil where nothing could say), bitrate, virtual, state }
+function bus.interfaces() return __interfaces() end
+-- bus.discover_cansub(window_ms): the CANsub channels an mDNS browse finds, waiting its whole
+-- window (default 700, at most 10000); and a note naming the interfaces it could not ask, or nil
+function bus.discover_cansub(window_ms)
+  local rows, note = __discover_cansub(window_ms or 700)
+  if note == "" then note = nil end
+  return rows, note
+end
+-- Vector application channels (Windows): vector.driver() is nil, or why the driver cannot be used;
+-- vector.assignments() the physical channels with the application channel (app, 0 none) pointing
+-- at each; vector.slot(app) "taken", "empty", "absent" or "unreadable"; vector.assign(app, hw,
+-- { create = true }) points vector:<app> at a row of assignments(), as the Discover dialog does,
+-- an absent (unregistered) app refused unless create says creating it is meant.
+vector = {}
+function vector.driver()
+  local why = __vector_driver()
+  if why == "" then return nil end
+  return why
+end
+function vector.assignments() return __vector_assignments() end
+function vector.slot(app) return __vector_slot(app) end
+function vector.assign(app, hw, opts)
+  if type(hw) ~= "table" then error("vector.assign: hw is a row of vector.assignments()", 2) end
+  if opts ~= nil and type(opts) ~= "table" then error("vector.assign: opts is a table", 2) end
+  __vector_assign(app, hw.hw_type, hw.hw_index, hw.hw_channel, (opts and opts.create) or false)
+end
+
 -- ============================ the DBC catalog ============================
 -- dbc.messages(channel): every message of the channel`s databases, in their order, each
 -- { name, id, ext, dlc, j1939, signals = { ... } }; a signal is { name, start_bit, length,

@@ -139,6 +139,8 @@ mut:
 	// the replays and recordings the script started, stopped by close (replay.v)
 	replays []&replay.Session
 	records []&replay.Recorder
+	// the channels bus.open_iface made of addresses (ifaces.v)
+	by_address map[string]bool
 pub mut:
 	// The run's generators, which gen.* controls (generators.v): cmd/script's headless run; none in
 	// the GUI, whose generators are its panel's.
@@ -383,6 +385,7 @@ fn (mut env Env) register_all() {
 	env.register_isotp()
 	env.register_replay()
 	env.register_e2e()
+	env.register_ifaces()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.

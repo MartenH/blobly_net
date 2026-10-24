@@ -7,7 +7,7 @@ the command line overrides it. `replay_record.py` defaults to
 [`projects/replay-demo.blobnet`](../../projects/replay-demo.blobnet), `e2e_check.py` to
 [`projects/e2e-demo.blobnet`](../../projects/e2e-demo.blobnet) for its E2E declarations, `described_node.py` to
 [`projects/described-ecu-demo`](../../projects/described-ecu-demo), a simulated ECU its system
-model describes, and `someip_node.py` needs no project: it talks to a SOME/IP node.
+model describes. `someip_node.py` needs no project (it talks to a SOME/IP node), and neither does `interfaces.py`, which opens buses by address.
 
 | example | what it shows |
 |---|---|
@@ -26,6 +26,7 @@ model describes, and `someip_node.py` needs no project: it talks to a SOME/IP no
 | [flash_ecu.py](flash_ecu.py) | Flashing a blobly_emb bootloader with a progress bar and the session's report, against a simulated bootloader on CAN1 that verifies the 0x29 proof and the image's CRC; `--board` for a real one. |
 | [replay_record.py](replay_record.py) | Replay and recording, on `projects/replay-demo.blobnet`: the wire recorded to a candump `.log` while a recording is replayed onto it — started paused, moved to 1.5 s, played at 4x to its end — and the file read back, every line ending in `T` (sent by this process). |
 | [someip_node.py](someip_node.py) | SOME/IP against a node with a static peer endpoint (blobly_emb's `host_someip` by default): a method called and answered, a request sent with everything heard after it, and the node's events. CI runs it against a stand-in node on loopback. |
+| [interfaces.py](interfaces.py) | No project: the interfaces present with their kind and CAN-FD support (`--cansub` adds an mDNS browse), the Vector channels and their assignments, then a frame exchanged between two buses opened by address (`--open vcan0` for a real wire). |
 | [test_sim_demo.py](test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel (`can1`), `expect` and `expect_signal`, `diag` over CAN and DoIP, and a project generator fired and answered. [conftest.py](conftest.py) loads the plugin and [pytest.ini](pytest.ini) names the project, which is all a suite of your own needs. |
 
 ## Running them

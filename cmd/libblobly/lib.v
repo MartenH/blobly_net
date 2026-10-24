@@ -113,6 +113,29 @@ pub mut:
 	maximum     f64
 }
 
+// bb.h's interface and Vector rows (ifaces.v)
+pub struct C.bb_iface {
+pub mut:
+	fd         i32
+	bitrate    i32
+	is_virtual u8
+}
+
+pub struct C.bb_vector_hw {
+pub mut:
+	hw_type     i32
+	hw_index    i32
+	hw_channel  i32
+	serial      u32
+	bitrate     u32
+	app         i32
+	owner_known u8
+	can         u8
+	fd_iso      u8
+	fd_bosch    u8
+	on_bus      u8
+}
+
 // bb.h's UDS structs, used by uds.v but declared here: in a file without the #include, V emits a
 // definition of its own, which the header's then redefines
 pub struct C.bb_uds_target {

@@ -289,21 +289,23 @@ hardware is described in [can_hardware.md](can_hardware.md) and
 
 - **PCAN, Kvaser and Vector are Windows only.** On Linux such an interface is taken for a
   SocketCAN name, and the open fails.
-- **Vector: assign the channel first.** The XL library opens *application* channels, and Python
-  has no call that maps a physical channel to one. Do it in the GUI's Discover dialog or with
-  `cmd/vectorcheck`, then name the application channel in the project.
+- **Vector: assign the channel first.** The XL library opens *application* channels, so a
+  physical channel must be mapped to one first: `blobly.vector.assign`
+  ([Vector channel assignment](#vector-channel-assignment)), the GUI's Discover dialog or
+  `cmd/vectorcheck`. Then name the application channel in the project, or open it by address.
 - **The vendor DLLs are the drivers' own.** The engine loads `PCANBasic.dll`, `canlib32.dll` and
   `vxlapi64.dll` by name when a channel first opens, and the wheel ships none of them. Under
   Python the "application directory" in Windows' DLL search is `python.exe`'s, not
   `blobly_net.exe`'s. Loading them from a CPython host is untested.
 - **The WSL bridge starts by itself.** Opening a `bridge:` channel starts `canbridge` in the
   distribution and waits for it, up to 20 s ([The WSL bridge](#the-wsl-bridge)).
-- **CANsub: name the device.** The row must carry the device id: Python cannot discover one.
+- **CANsub: name the device.** The row must carry the device id, which `blobly.discover_cansub()`
+  finds ([Interfaces](#interfaces-by-address-and-discovery)).
 - **Listen-only rows** (`listen_only: true` on a CAN row) refuse every send on their wire with
   `BloblyError`, and PCAN, Kvaser, Vector and CANsub also silence the controller, so the adapter
   does not acknowledge frames either. On SocketCAN the controller still acknowledges unless the
   interface itself is listen-only. The flag does nothing for a DoIP or SOME/IP row.
-- **What CI exercises from Python is `inproc:` only.** Every other backend is the same code the
+- **What CI exercises from Python is `inproc:` and `vcan0`.** Every other backend is the same code the
   app runs and is verified on hardware there ([windows_can_hardware.md](windows_can_hardware.md)),
   but not from a Python host.
 
@@ -346,6 +348,75 @@ if sys.platform == "win32" and "Ubuntu-24.04" in bridge.distributions():
   so: use the CAN interface directly.
 - **Not verified by CI**: no runner has WSL. A start, its channels and a stop are checked by hand
   on a Windows machine with WSL ([wsl_bridge.md](wsl_bridge.md#from-python)).
+
+### Interfaces by address and discovery
+
+A script can open a bus by its address, with no project row and with no project at all, and ask
+which interfaces are present — the GUI's Discover dialog's answer, as data. This is how an agent
+finds out what hardware is attached ([agents.md](agents.md)).
+
+```python
+import blobly
+
+for i in blobly.interfaces():  # SocketCAN links, vendor channels, software buses, a bridge's
+    print(i.address, i.kind, i.fd, i.description)
+
+with blobly.open("inproc:CHECK") as a, blobly.open("inproc:CHECK") as b:
+    a.send(0x123, b"\x01\x02")
+    print(b.expect(0x123, 1000))  # two handles on one wire: one hears the other
+```
+
+- **`blobly.open(address)`** takes any interface a project row could name (the table above):
+  `"vcan0"`, `"pcan:PCAN_USBBUS1@500000"`, `"vector:1@500000/2000000"`, `"cansub:<id>/<ch>"`. It
+  returns a `Bus`, the type a `Channel` is too: `send`, `recv`, `look`, `expect`, `health`,
+  `load`, `diagnostics`, and `close` or a `with` block. It opens at once, so an address that will
+  not open raises `BloblyError` there; a DoIP or SOME/IP endpoint is refused by name.
+- **The loaded project's policy holds**: every send is checked against the wire policy of the
+  project loaded now, so an address on a `listen_only` wire refuses sends as its row does (and is
+  silenced on the vendor adapters), and an FD wire frames as declared. With no project loaded
+  nothing is silenced. The load is priced at the rates of the project's first enabled row on that
+  wire, else the address's own (`@<arb>[/<data>]`), else 500 kbit/s.
+- **`blobly.interfaces()`** is every interface known without a network wait: SocketCAN links
+  (down ones too, described from `/sys`), what the installed vendor drivers report (PCAN, Kvaser,
+  Vector application channels with hardware assigned: Windows), the software buses, and the
+  channels of a connected WSL bridge. Each is an `Interface`: `address` to open, `kind`
+  (`"socketcan"`, `"vcan"`, `"pcan"`, `"kvaser"`, `"vector"`, `"cansub"`, `"bridge"`, `"udp"`,
+  `"inproc"`), `description`, `fd` (`True`, `False`, or `None` where nothing asked could say: a
+  SocketCAN link says by its MTU, a Vector channel by its hardware), `bitrate` where the system
+  says, `virtual`, and a Vector application channel's `state`.
+- **`blobly.discover_cansub(window_ms=700)`** browses mDNS for attached CANsub devices, a row per
+  channel. It waits its whole window (1 to 10000 ms), so it is a call of its own; `Refused` means
+  no browse was possible, which is not "nothing attached", and a `RuntimeWarning` names the
+  network interfaces it could not ask.
+- **Not verified by CI**: the vendor rows and a CANsub browse need hardware no runner has.
+
+### Vector channel assignment
+
+`blobly.vector` reads the Vector driver's channels and maps an application channel to a physical
+one, as the Discover dialog's Assign does, with its refusals. Windows only: on Linux `driver()`
+says why, `assignments()` is `[]`, and `slot()` and `assign()` raise `Refused` by name.
+
+```python
+from blobly import vector
+
+if vector.driver() is None:  # None: the XL driver can be used here
+    for hw in vector.assignments():
+        print(hw.name, hw.transceiver, f"vector:{hw.app}" if hw.app else "unassigned")
+    free = next((hw for hw in vector.assignments() if hw.can and hw.app == 0 and hw.owner_known), None)
+    if free is not None and vector.slot(8) == "empty":
+        vector.assign(8, free)  # vector:8 now reaches it
+else:
+    print(vector.driver())  # on Linux: the Vector XL backend is Windows-only
+```
+
+- **`assign(app, hw, *, create=False)`** refuses, writing nothing, when the driver cannot be used,
+  `hw` is not a CAN channel or already has an application channel (or may have: one would not
+  answer), or `app` is `"taken"` or `"unreadable"`. An `"absent"` application channel — not
+  registered, which writing creates — is refused unless `create=True`: the driver reports "not
+  registered" with the same generic error a momentary read failure on an occupied channel gives,
+  so creating is never assumed. The mapping persists across reboots.
+- **Not verified by CI**: no runner has a Vector adapter. The rules are V tests
+  (`blobly/transport/vector_names_test.v`); assigning on hardware is checked by hand on a VN1630A.
 
 ---
 
@@ -1494,8 +1565,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 ## 18. Reference
 
-Import everything from `blobly`, and the E2E helpers, SOME/IP, flashing and the WSL bridge from
-`blobly.e2e`, `blobly.someip`, `blobly.flash` and `blobly.bridge`. The submodules
+Import everything from `blobly`, and the E2E helpers, SOME/IP, flashing, the WSL bridge and Vector
+assignment from `blobly.e2e`, `blobly.someip`, `blobly.flash`, `blobly.bridge` and `blobly.vector`. The submodules
 `blobly.project`, `blobly.events` and `blobly.faults` are the implementation, and their other
 names are not part of the interface.
 `python/tests/test_docs.py` checks that every public class, method, property and attribute of
@@ -1516,6 +1587,10 @@ the package is named in this section.
 | `blobly.someip` | SOME/IP send, call and listen: see Module `blobly.someip`. |
 | `blobly.flash` | Flashing a blobly_emb bootloader: see Module `blobly.flash`. |
 | `blobly.bridge` | The CAN bridge into WSL: see Module `blobly.bridge`. |
+| `blobly.open(address)` | A `Bus` on `address`, any interface a row could name, with or without a project loaded ([Interfaces](#interfaces-by-address-and-discovery)). |
+| `blobly.interfaces()` | The interfaces present now, each an `Interface`, without a network wait. |
+| `blobly.discover_cansub(window_ms=700)` | The CANsub channels an mDNS browse of `window_ms` (1 to 10000) finds, each an `Interface`; `Refused` when no browse was possible. |
+| `blobly.vector` | Vector application-channel assignment: see Module `blobly.vector`. |
 
 ### Module `blobly.e2e`
 
@@ -1603,6 +1678,39 @@ the block.
 | `blobly.bridge.rows(distro)` | A connected bridge's channels as interfaces (`"bridge:Ubuntu-24.04/vcan0"`); `[]` when it is not connected. |
 | `blobly.bridge.stop(distro)` | Disconnects a connected bridge, which ends it, and returns once it has gone. `BloblyError` (code -3) when it is not connected, or while a project is started; `Timeout` when it was cut but had not gone within 2 s. |
 | `blobly.bridge.program()` | The `canbridge` a start runs: beside the engine (the Windows wheel's), else beside the executable; `None` when there is none (a start then runs the distribution's own) and on Linux. |
+
+### Module `blobly.vector`
+
+| name | what |
+|---|---|
+| `blobly.vector.driver()` | `None` when the Vector XL driver can be used; otherwise why not. |
+| `blobly.vector.assignments()` | Every physical channel the driver lists, each a `blobly.vector.VectorHardware`; `[]` where the driver cannot be used. |
+| `blobly.vector.slot(app)` | Application channel `app` (1..64): `"taken"`, `"empty"`, `"absent"` or `"unreadable"`. `Refused` where the driver cannot be used. |
+| `blobly.vector.assign(app, hw, *, create=False)` | Points `vector:<app>` at `hw`, with the Discover dialog's refusals; an `"absent"` channel only with `create=True` ([Vector channel assignment](#vector-channel-assignment)). |
+| `blobly.vector.VectorHardware` | One physical channel (also `blobly.VectorHardware`): see `VectorHardware`. |
+
+### `VectorHardware`
+
+A frozen dataclass, one physical channel of `blobly.vector.assignments()`: `name`, `transceiver`,
+`hw_type`, `hw_index`, `hw_channel` (the driver's identity of it), `serial`, `bitrate`, `app` (the
+application channel on it, 0 none), `owner_known` (`False`: `app` 0 is no proof it is free), `can`
+(only a CAN channel can be assigned), `fd_iso` (ISO CAN-FD, which this backend speaks),
+`fd_bosch`, `on_bus`.
+
+### `Bus`, `Interface`
+
+`blobly.open(address)` returns a `Bus`; a `Channel` is one too. `with blobly.open("vcan0") as bus:`
+closes it at the end of the block.
+
+| member | what |
+|---|---|
+| `bus.name`, `bus.iface` | The address it was opened with. |
+| `bus.send`, `bus.recv`, `bus.look`, `bus.expect`, `bus.health`, `bus.load`, `bus.diagnostics` | As `Channel`'s; `expect` takes an int id and `ext` (a `Message` is a row's). |
+| `bus.close()` | Lets the handle go; a wait in progress on another thread ends within 20 ms. Twice is nothing. |
+
+An `Interface` (`blobly.interfaces()`, `blobly.discover_cansub()`) is a frozen dataclass:
+`address`, `kind`, `description`, `fd` (`True`, `False` or `None`), `bitrate` (0 unknown),
+`virtual`, `state` (a Vector application channel's `"assigned"` or `"hardware not present"`).
 
 ### `Replay`, `ReplayStatus`
 
@@ -1692,7 +1800,8 @@ The collections of `net.channels`, `ch.messages` and `msg.signals`. All three re
 
 ### `Channel`
 
-One enabled row of the project (`net.channels.CAN1`).
+One enabled row of the project (`net.channels.CAN1`), a `Bus` whose handle opens at its first use
+after `start()`.
 
 | member | what |
 |---|---|
@@ -2037,7 +2146,8 @@ Python covers bringing a project up, its channels, raw CAN, DBC messages and sig
 loop, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
 the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP
 (its timing, and a node behind a DoIP gateway), nodes of the system model with their DIDs by name, raw ISO-TP, DoIP
-discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, a bus opened by address,
+interface discovery and Vector channel assignment, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
 - UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
@@ -2066,8 +2176,6 @@ discovery, SOME/IP send, call and listen, flashing, replay and recording to a fi
 
 - Raw ISO-TP, UDS timing and the DoIP gateway retarget are here ([Raw ISO-TP](#raw-iso-tp),
   [UDS diagnostics](#10-uds-diagnostics), [DoIP](#11-doip)).
-- Opening an interface that is not a project row, interface discovery, Vector channel
-  assignment.
 - J1939 transport-protocol reassembly and the address directory.
 
 **Phase 3: hardening for AI.** A JSON run report and an overall run timeout, an API stability

@@ -1104,6 +1104,83 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
                            bb_write_needs *needs);
 #endif /* BB_FROM_V */
 
+/* Interfaces (docs/scripting_python.md "Interfaces"): what is present to open, as the GUI's
+ * Discover dialog lists it, and Vector application-channel assignment. None of these touches a
+ * project or a run; each may come from any (attached) thread.
+ *
+ * bb_ifaces lists every interface known without a network wait — SocketCAN links (down ones
+ * too), the vendor channels the installed drivers report, the software buses, the channels of a
+ * connected CAN bridge. bb_ifaces_cansub browses mDNS for window_ms (1 to 10000; it waits the
+ * whole window) for attached CANsub devices, a row per channel; BB_ERR when a browse was not
+ * possible, and bb_listing_note says which network interfaces could not be asked ("" when all
+ * were). bb_vector_hardware lists the physical channels the Vector driver reports, each with the
+ * application channel pointing at it; empty where the driver cannot be used (bb_vector_driver
+ * says why). Each answers a LISTING (>= 0), read row by row and let go with bb_listing_free;
+ * strings go into the caller's buffer as bb_message_name's.
+ *
+ * bb_vector_slot is what the driver says of application channel `app` (1..64, vector:<app>).
+ * bb_vector_assign points it at the physical channel (hw_type, hw_index, hw_channel) of a
+ * bb_vector_hardware row, as the Discover dialog's Assign does, with its refusals (BB_ERR, nothing
+ * written): the driver unusable (on Linux, always), the hardware not a CAN channel or already
+ * assigned, the application channel taken or unreadable, or ABSENT — not registered, which
+ * writing it creates — unless `create` is nonzero, the caller saying creating it is meant. The
+ * mapping persists across reboots. */
+enum bb_fd {
+	BB_FD_UNKNOWN = -1,  /* nothing asked could say */
+	BB_FD_NO = 0,        /* classic only (a SocketCAN link at mtu 16) */
+	BB_FD_YES = 1        /* CAN-FD (mtu 72, a software bus, a Vector channel with ISO CAN-FD) */
+};
+typedef struct bb_iface {
+	int32_t fd;          /* an enum bb_fd */
+	int32_t bitrate;     /* the nominal rate it is configured for where the system says, else 0 */
+	uint8_t is_virtual;  /* a software bus, or a vendor's virtual channel */
+} bb_iface;
+enum bb_iface_text {
+	BB_IFACE_ADDRESS = 0,  /* what bb_bus_open takes: "vcan0", "pcan:PCAN_USBBUS1", "inproc:SIM" */
+	BB_IFACE_KIND = 1,     /* socketcan, vcan, pcan, kvaser, vector, cansub, bridge, udp or inproc */
+	BB_IFACE_DESC = 2,     /* for a person: "PCAN-USB Pro FD [1-1] · up" */
+	BB_IFACE_STATE = 3     /* a vector: row's: "assigned" or "hardware not present"; else "" */
+};
+enum bb_vector_slot {
+	BB_VECTOR_UNREADABLE = 0,  /* the driver would not say; never written */
+	BB_VECTOR_ABSENT = 1,      /* not registered: writing creates it (bb_vector_assign's create) */
+	BB_VECTOR_EMPTY = 2,       /* registered, pointing at nothing */
+	BB_VECTOR_TAKEN = 3        /* pointing at hardware */
+};
+typedef struct bb_vector_hw {
+	int32_t  hw_type;
+	int32_t  hw_index;
+	int32_t  hw_channel;
+	uint32_t serial;
+	uint32_t bitrate;      /* the rate it is configured for now */
+	int32_t  app;          /* the application channel pointing at it (vector:<app>), 0 none */
+	uint8_t  owner_known;  /* 0: some application channel would not answer, so app 0 is no proof */
+	uint8_t  can;          /* it is a CAN channel (only those can be assigned) */
+	uint8_t  fd_iso;       /* ISO CAN-FD, which this backend speaks */
+	uint8_t  fd_bosch;     /* Bosch CAN-FD */
+	uint8_t  on_bus;
+} bb_vector_hw;
+enum bb_vector_text {
+	BB_VECTOR_NAME = 0,         /* "VN1630A Channel 1" */
+	BB_VECTOR_TRANSCEIVER = 1   /* "On board CAN 1051cap" */
+};
+#ifndef BB_FROM_V
+int bb_ifaces(void);                                /* >= 0: a listing */
+int bb_ifaces_cansub(int window_ms);                /* >= 0: a listing */
+int bb_vector_hardware(void);                       /* >= 0: a listing */
+int bb_listing_count(int list);                     /* >= 0: its rows */
+int bb_listing_note(int list, char *buf, int cap);  /* >= 0: the length */
+int bb_iface_info(int list, int i, bb_iface *out);
+int bb_iface_text(int list, int i, int which, char *buf, int cap);   /* which: enum bb_iface_text */
+int bb_vector_info(int list, int i, bb_vector_hw *out);
+int bb_vector_text(int list, int i, int which, char *buf, int cap);  /* which: enum bb_vector_text */
+int bb_listing_free(int list);
+int bb_vector_driver(char *buf, int cap);           /* >= 0: the length of why the Vector driver
+                                                       cannot be used; "" when it can */
+int bb_vector_slot(int app);                        /* >= 0: an enum bb_vector_slot */
+int bb_vector_assign(int app, int hw_type, int hw_index, int hw_channel, int create);
+#endif /* BB_FROM_V */
+
 #ifdef __cplusplus
 }
 #endif

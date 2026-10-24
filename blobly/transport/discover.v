@@ -15,6 +15,8 @@ pub:
 	kind    string // "can" | "vcan" | "udp" | "inproc"
 	bitrate int    // nominal bitrate if known (a configured real can0), else 0
 	virtual bool   // driver-free software bus (udp/inproc) vs. a real netdev
+	fd      FdSupport // CAN-FD support where the backend's enumeration says
+	state   string    // a Vector application channel's: Interface.state
 }
 
 // virtual_ifaces returns the always-available, driver-free software buses. Both platforms

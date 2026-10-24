@@ -113,6 +113,29 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   messages, signals): only the running project does
   ([vscode.md](vscode.md#what-completion-knows)).
 
+### Find out what hardware is attached
+
+No project is needed to ask what is present, or to open a bus by its address:
+
+```python
+import blobly
+
+for i in blobly.interfaces():                # SocketCAN links, vendor channels, software buses
+    print(i.address, i.kind, i.fd, i.description)
+print(blobly.vector.driver() or blobly.vector.assignments())   # Vector, Windows only
+with blobly.open("inproc:PROBE") as bus:     # any address a row could name, e.g. "vcan0"
+    print(bus.load())
+```
+
+- `i.address` is what `blobly.open` and a project row's `interface:` take; `i.kind` the backend
+  (`"socketcan"`, `"vcan"`, `"pcan"`, `"kvaser"`, `"vector"`, `"cansub"`, `"bridge"`, `"udp"`,
+  `"inproc"`); `i.fd` `True`, `False` or `None` (unknown).
+- A CANsub is found by `blobly.discover_cansub(700)`, which waits its window; a Vector physical
+  channel is mapped to an application channel by `blobly.vector.assign`
+  ([scripting_python.md](scripting_python.md#vector-channel-assignment)).
+- A bus opened by address obeys the loaded project's `listen_only` rows: nothing is transmitted on
+  a wire the project silences.
+
 ### Nodes and their DIDs
 
 A project that blobly_emb's `system.toml` describes (beside the project, beside one of its
@@ -238,6 +261,7 @@ Complete scripts, each bounded and with a clear exit status, in
 | [fault_injection.py](../python/examples/fault_injection.py) | Faults on simulated ECUs seen on the bus: a timed drop, a signal out of range, a refusal. |
 | [e2e_check.py](../python/examples/e2e_check.py) | E2E Profile 1 as a DBC declares it: each received frame's verdict, a broken sender caught by `expect(..., e2e=True)`, a send by name stamped. |
 | [flash_ecu.py](../python/examples/flash_ecu.py) | Flashing a blobly_emb bootloader with progress and a report, against a simulated one (`--board` for a real one). |
+| [interfaces.py](../python/examples/interfaces.py) | No project: the interfaces present, the Vector channels, a frame exchanged on a bus opened by address. |
 | [someip_node.py](../python/examples/someip_node.py) | SOME/IP against a static-peer node: a method called, a request with what was heard after it, the node's events. |
 | [test_sim_demo.py](../python/examples/test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel, `expect`, `expect_signal`, `diag` over CAN and DoIP. |
 
@@ -245,7 +269,7 @@ Complete scripts, each bounded and with a clear exit status, in
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 helpers); UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests, the waits, a node behind a DoIP gateway); raw ISO-TP; DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#19-what-is-not-there-yet)). |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 helpers); UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests, the waits, a node behind a DoIP gateway); raw ISO-TP; DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file; the interfaces present, a bus by address, Vector assignment. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#19-what-is-not-there-yet)). |
 | Tests under pytest, and anything that needs the Python ecosystem. | A script in the GUI's Script panel, against a live measurement. |
 | An agent's own process: no V toolchain, a `pip install`. | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 
