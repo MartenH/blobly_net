@@ -256,9 +256,10 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
 
 `net.channels` is the project's **enabled** rows, in project order:
 `net.channels.CAN1`, `net.channels["CAN-1"]` for a name that is not an identifier,
-`net.channels[0]` by position, iteration, `len()`, `keys()`, and `dir()` for completion in a
-REPL. Two rows may share a name: that name is refused as ambiguous, and the rows are reached by
-position. `on_message` and `on_health` also take a channel's name as a string.
+`net.channels[0]` by position, iteration, `len()`, `keys()`, `"CAN1" in net.channels`, and
+`dir()` for completion in a REPL. Two rows may share a name: that name is refused as ambiguous,
+and the rows are reached by position. A row named like a member of the collection (`keys`) is
+reached by `net.channels["keys"]`. `on_message` and `on_health` also take a channel's name as a string.
 
 - `ch.kind` is `"can"` (a CAN-FD row too), `"doip"` or `"someip"`. Only a CAN row carries
   frames. Sending, receiving or registering a handler on another kind raises `BloblyError`, by
@@ -1942,7 +1943,8 @@ The collections of `net.channels`, `ch.messages` and `msg.signals`. All three re
 | `c["Name"]`, `c[i]` | By name (`KeyError` when there is none), or by position (`IndexError` past the end). |
 | `for x in c`, `len(c)` | In project or database order. |
 | `c.keys()` | The names, in order, each once. |
-| `dir(c)` | The names that are identifiers and unique: what a REPL completes. |
+| `"Name" in c`, `x in c` | Whether an item has that name, or is that item. |
+| `dir(c)` | The names that are identifiers, unique and not a member of the collection (`keys`): what a REPL completes. |
 
 ### `Channel`
 
