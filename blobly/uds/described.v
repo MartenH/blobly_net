@@ -299,9 +299,14 @@ fn (s &Server) did_spec(id u16) ?DidSpec {
 }
 
 // written_size: the size a 0x2E to DID `id` must carry on this described server; none when the
-// DID is not writable (or the server is not described).
+// DID is not writable, 0x2E is not served or its table leaves it out (or the server is not
+// described).
 pub fn (s &Server) written_size(id u16) ?int {
-	if !s.described {
+	if !s.described || !s.supported(0x2E) {
+		return none
+	}
+	_, listed := s.row(0x2E)
+	if !listed {
 		return none
 	}
 	d := s.did_spec(id) or { return none }
