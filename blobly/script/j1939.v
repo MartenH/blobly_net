@@ -95,6 +95,7 @@ fn (mut env Env) j1939_read(name string, lis &j1939.Listener, deadline u64, unti
 			continue
 		}
 		env.j1939_saw(name, f)
+		_ = env.e2e_verdict(name, f) or { '' } // its message's E2E reader sees every frame the script reads
 	}
 }
 
@@ -112,22 +113,32 @@ fn l_j1939_listen(l lua.State) i32 {
 fn l_j1939_wait(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
+	ms := env.bounded(l.arg_int(2))
+	deadline := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
 	mut lis := env.j1939_of(name) or { return l.fail(err.msg()) }
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	db := env.chans[ci].db
 	pgn := l.arg_int(3)
 	sa := l.arg_int(4)
 	any_one := pgn < 0 && sa < 0
-	ms := env.bounded(l.arg_int(2))
-	deadline := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
 	mut got := []j1939.Assembled{}
+	mut others := map[string]int{} // what came instead of a match: counted, not kept
+	mut order := []string{}
 	mut matched := false
 	mut first := true
 	for {
 		for !matched {
 			a := lis.next_message() or { break }
-			got << a
 			matched = !any_one && (pgn < 0 || i64(a.pgn) == pgn) && (sa < 0 || i64(a.sa) == sa)
+			if any_one || matched {
+				got << a
+			} else {
+				k := 'PGN 0x${a.pgn:04X} from SA 0x${a.sa:02X}'
+				if k !in others {
+					order << k
+				}
+				others[k]++
+			}
 		}
 		if matched || (any_one && got.len > 0) || (!first && time.sys_mono_now() >= deadline) {
 			break
@@ -145,7 +156,8 @@ fn l_j1939_wait(l lua.State) i32 {
 		push_assembled(l, db, a)
 		l.set_index(i + 1)
 	}
-	return 1
+	l.push_str(order.map(if others[it] > 1 { '${it} (x${others[it]})' } else { it }).join(', '))
+	return 2
 }
 
 // push_assembled pushes one completed message as a table: pgn, sa, da, priority, bam, data,
@@ -205,10 +217,11 @@ fn l_j1939_faults(l lua.State) i32 {
 fn l_j1939_addresses(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	lis := env.j1939_of(name) or { return l.fail(err.msg()) }
 	ms := env.bounded_window(l.arg_int(2))
+	deadline := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
+	lis := env.j1939_of(name) or { return l.fail(err.msg()) }
 	if ms > 0 {
-		env.j1939_read(name, lis, time.sys_mono_now() + u64(ms) * 1_000_000, false) or {
+		env.j1939_read(name, lis, deadline, false) or {
 			if err.msg() == timeout_note {
 				return timeout_at(l)
 			}

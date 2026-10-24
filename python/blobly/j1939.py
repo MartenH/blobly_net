@@ -163,29 +163,36 @@ class J1939Listener:
 
     def _until(self, who, timeout_ms, match):
         """Reads the channel until a message is taken (with `match`, one it matches) or timeout_ms
-        has passed (one deadline, as Channel.expect's); what it took, in order."""
+        has passed (one deadline, as Channel.expect's): what it took, in order — with `match` only
+        the one it matched, the others counted by (pgn, sa) — and those counts."""
         from .project import _deadline
         deadline = _deadline(who, timeout_ms)
         with _lib.state_lock:
             run = _lib.state["run"]
             h = self._handle()
+        others = collections.Counter()
 
-        def done(new):  # asked of what was just taken: the earlier ones were asked already
-            return any(match(m) for m in new) if match is not None else bool(new)
-        got = self._take(h, run, match)
-        if done(got):
-            return got
+        def sift(new):  # the match, or every message without one; the others counted, not kept
+            if match is None:
+                return new
+            for m in new:
+                if match(m):
+                    return [m]
+                others[(m.pgn, m.sa)] += 1
+            return []
+        got = sift(self._take(h, run, match))
+        if got:
+            return got, others
         for _ in self.channel._frames_until(deadline, run):
-            new = self._take(h, run, match)
-            got += new
-            if done(new):
-                return got
-        return got + self._take(h, run, match)
+            got = sift(self._take(h, run, match))
+            if got:
+                return got, others
+        return sift(self._take(h, run, match)), others
 
     def messages(self, timeout_ms: float = 0) -> list[J1939Message]:
         """Every completed message waiting, oldest first; when none waits, the channel is read until
         one completes or timeout_ms has passed ([] then). 0 takes what is complete, after one look."""
-        return self._until("messages", timeout_ms, None)
+        return self._until("messages", timeout_ms, None)[0]
 
     def expect_pgn(self, pgn: int, timeout_ms: float = 1000, *, sa: int | None = None) -> J1939Message:
         """The first completed message of parameter group `pgn` (from source address `sa`, when
@@ -203,12 +210,10 @@ class J1939Listener:
 
         def match(m):
             return m.pgn == pgn and (sa is None or m.sa == sa)
-        got = self._until("expect_pgn", timeout_ms, match)
-        for m in got:
-            if match(m):
-                return m
+        got, others = self._until("expect_pgn", timeout_ms, match)
+        if got:
+            return got[0]
         want = f"PGN 0x{pgn:04X}" + (f" from SA 0x{sa:02X}" if sa is not None else "")
-        others = collections.Counter((m.pgn, m.sa) for m in got)
         came = ", ".join(f"PGN 0x{p:04X} from SA 0x{s:02X}" + (f" (x{n})" if n > 1 else "")
                          for (p, s), n in others.most_common(5)) or "no multi-packet message came"
         text = f"{self.channel.name}: expected a J1939 {want} within {timeout_ms:g} ms; {came}"

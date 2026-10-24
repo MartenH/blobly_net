@@ -889,7 +889,8 @@ local function jint(fname, what, v, top)
 end
 function j1939.listen(channel) __j1939_listen(channel) end
 function j1939.messages(channel, timeout_ms)
-  return __j1939_wait(channel, jms("j1939.messages", timeout_ms, 0), -1, -1)
+  local got = __j1939_wait(channel, jms("j1939.messages", timeout_ms, 0), -1, -1)
+  return got
 end
 function j1939.expect(channel, pgn, timeout_ms, sa)
   jint("j1939.expect", "a PGN", pgn, 0x3FFFF)
@@ -900,14 +901,10 @@ function j1939.expect(channel, pgn, timeout_ms, sa)
   -- 0xFE and 0xFF send no transfer
   if sa ~= nil then jint("j1939.expect", "a source address", sa, 0xFD) end
   local ms = jms("j1939.expect", timeout_ms, 1000)
-  local got = __j1939_wait(channel, ms, pgn, sa or -1)
-  local came = {}
-  for _, m in ipairs(got) do
-    if m.pgn == pgn and (sa == nil or m.sa == sa) then return m end
-    came[#came + 1] = string.format("PGN 0x%04X from SA 0x%02X", m.pgn, m.sa)
-  end
+  local got, came = __j1939_wait(channel, ms, pgn, sa or -1)
+  if got[1] then return got[1] end
   local want = string.format("PGN 0x%04X", pgn) .. (sa and string.format(" from SA 0x%02X", sa) or "")
-  local instead = #came > 0 and ("came instead: " .. table.concat(came, ", ")) or "no multi-packet message came"
+  local instead = came ~= "" and ("came instead: " .. came) or "no multi-packet message came"
   error(string.format("j1939.expect: %s: no %s within %d ms; %s", channel, want, ms, instead), 2)
 end
 function j1939.faults(channel) return __j1939_faults(channel) end
