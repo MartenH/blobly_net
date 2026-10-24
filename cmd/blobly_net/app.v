@@ -1081,7 +1081,7 @@ fn (mut app App) load_project(path string) {
 		app.notify('load failed: ${err}')
 		return
 	}
-	proj := project.parse(disk) or {
+	proj := project.parse_at(disk, os.dir(path)) or {
 		app.elog('load ${path}: ${err}')
 		app.notify('load failed: ${err}')
 		return

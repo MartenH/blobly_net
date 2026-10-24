@@ -341,6 +341,21 @@ that resolves only from the working directory too (a `dbc/…` written against t
 resolves nowhere today keeps naming where it would be looked for first. A saved project's
 absolute reference is left as written. A Save As that does not write puts the references back.
 
+**A reference that resolves only from the working directory is said** (#494). A relative
+reference is read against the project's directory first; when that misses, the loader opens it
+as written, from the folder the program was started in — so the same project loads an empty
+database when started anywhere else. It still loads, and the load says so once per reference
+(`project.cwd_only_note`, collected by `project.load` and `project.parse_at`):
+
+```
+CAN1: `dbc/x.dbc` resolves only from the folder the program was started in (/home/me/work); write it relative to the project file (`../dbc/x.dbc`)
+```
+
+The GUI puts it in the Log when the
+project is opened (and when the Configuration panel's File tab applies text naming a new one),
+the headless runner, `bb_load` and Python's `Project` on stderr, and `sim_startup_check` on
+stderr. A Save As writes the suggested spelling itself.
+
 ## Configuration editor — the Bus fields
 
 Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):

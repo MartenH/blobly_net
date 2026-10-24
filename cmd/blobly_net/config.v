@@ -1299,6 +1299,13 @@ fn (mut app App) apply_parsed_text(txt string) bool {
 	// index-bound UI (pending picker, Scan results) goes stale with it. This was the one
 	// replacement path the invalidation missed (self-review of the Scan work).
 	app.drop_index_bound_ui()
+	// a reference that resolves only from the working directory, said once: the ones this text
+	// newly names, not again for the ones the project already had
+	dir := if app.proj_path == '' { '' } else { os.dir(app.proj_path) }
+	for n in p.reference_notes(dir, app.proj.references()) {
+		app.elog('${app.proj_path}: ${n}')
+		app.notify(n)
+	}
 	app.mu.lock()
 	app.proj = p
 	app.proj_name = p.name

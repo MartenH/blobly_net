@@ -1,6 +1,7 @@
 module project
 
 import os
+import blobly.candb
 
 // What a project file SAYS about the files it uses (#440): a database, a telemetry manifest, a
 // replay recording. resolve_asset reads a reference against the project's directory first; these
@@ -137,13 +138,7 @@ pub fn rebase_ref(old_dir string, new_dir string, ref string) string {
 	if from_dir != ref {
 		return asset_ref(new_dir, from_dir)
 	}
-	// what the loader does with a reference resolve_asset returned unchanged: open it from the
-	// working directory, as written (a literal `\\` in a Unix name included)
-	if os.exists(ref) {
-		return asset_ref(new_dir, ref)
-	}
-	from_cwd := resolve_asset(os.getwd(), ref)
-	if from_cwd != ref {
+	if from_cwd := cwd_target(ref) {
 		return asset_ref(new_dir, from_cwd)
 	}
 	return asset_ref(new_dir, if old_dir == '' { ref } else { old_dir + os.path_separator + ref })
@@ -197,4 +192,82 @@ pub fn (mut p Project) restore_assets(was []AssetRefs) {
 			}
 		}
 	}
+}
+
+// cwd_target is the file the loader opens for a relative reference resolve_asset returned
+// unchanged: the reference from the working directory, as written (a literal `\\` in a Unix name
+// included), else with a database fragment split off; none where neither exists.
+fn cwd_target(ref string) ?string {
+	if os.exists(ref) {
+		return ref
+	}
+	from_cwd := resolve_asset(os.getwd(), ref)
+	return if from_cwd != ref { from_cwd } else { none }
+}
+
+// cwd_only_note says when `ref`, written in a project in `dir`, misses from `dir` and names a
+// file only from the working directory — where the loader then opens it, so the same project
+// loads an empty database when the program is started anywhere else (#494). None otherwise:
+// for a reference that resolves from the project, an absolute one, one that resolves nowhere
+// (the loader says that itself), and an unsaved project's (`dir` == ''), whose references are
+// relative to the working directory by design. Advisory only: the reference still loads.
+pub fn cwd_only_note(dir string, ref string) ?string {
+	if dir == '' || ref == '' || absolute_anywhere(ref) || resolve_asset(dir, ref) != ref {
+		return none
+	}
+	target := cwd_target(ref)?
+	rel := asset_ref(dir, target)
+	// a spelling the project-relative lookup cannot read back (a `\\` in a Unix name, which
+	// os.join_path rewrites) is given absolute instead
+	fix := if resolve_asset(dir, rel) != rel || absolute_anywhere(rel) {
+		rel
+	} else {
+		os.getwd() + os.path_separator + target
+	}
+	how := if absolute_anywhere(fix) { 'write it as' } else { 'write it relative to the project file' }
+	return '`${ref}` resolves only from the folder the program was started in (${os.getwd()}); ${how} (`${fix}`)'
+}
+
+// references is every file reference in the project, in order: each channel's databases, its
+// manifest and its replay source.
+pub fn (p Project) references() []string {
+	mut refs := []string{}
+	for ch in p.channels {
+		refs << ch.databases
+		if ch.manifest != '' {
+			refs << ch.manifest
+		}
+		if r := ch.replay {
+			if r.source != '' {
+				refs << r.source
+			}
+		}
+	}
+	return refs
+}
+
+// reference_notes is cwd_only_note over every file reference in the project but those in
+// `known` (what the caller already said), once per reference however many channels name it,
+// each prefixed with the first channel that does.
+pub fn (p Project) reference_notes(dir string, known []string) []string {
+	mut said := map[string]bool{}
+	for k in known {
+		said[k] = true
+	}
+	mut notes := []string{}
+	for ch in p.channels {
+		refs := Project{
+			channels: [ch]
+		}.references()
+		for ref in refs {
+			if ref in said {
+				continue
+			}
+			said[ref] = true
+			if n := cwd_only_note(dir, ref) {
+				notes << '${ch.name}: ${n}'
+			}
+		}
+	}
+	return notes
 }
