@@ -1,0 +1,4 @@
+# domain, as far as the NM demo describes it: its NM node on the body cluster.
+[nm]
+node  = 0x13
+peers = [0x500, 0x53F]

@@ -1,0 +1,4 @@
+# sysnode, as far as the NM demo describes it: its NM node on the body cluster.
+[nm]
+node  = 0x11
+peers = [0x500, 0x53F]

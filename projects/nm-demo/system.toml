@@ -1,0 +1,26 @@
+# The system the NM demo describes (nm-demo.blobnet beside it): one CAN bus with an NM cluster
+# in blobly_emb's form, and the nodes declared on it. The Network Management panel names each
+# reporter by its NM offset (its node id), and lists zone_a — declared, never heard — as missing.
+[bus.body]
+interface = "can0"
+bitrate   = 500000
+dbc       = "nm-demo.dbc"
+nm        = { peers = [0x500, 0x53F], timeout_ms = 300, repeat_ms = 200 }
+
+[[node]]
+name  = "sysnode"
+ecu   = "nodes/sysnode.toml"
+buses = ["body"]
+nm    = 0x11
+
+[[node]]
+name  = "domain"
+ecu   = "nodes/domain.toml"
+buses = ["body"]
+nm    = 0x13
+
+[[node]]
+name  = "zone_a"
+ecu   = "nodes/zone_a.toml"
+buses = ["body"]
+nm    = 0x15

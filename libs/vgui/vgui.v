@@ -136,6 +136,7 @@ fn C.vgui_separator()
 fn C.vgui_quit()
 fn C.vgui_plot_begin(&char, f32) int
 fn C.vgui_sparkline(&char, &f32, int, f32, f32, f32)
+fn C.vgui_cells(&u32, i32, f32, f32)
 fn C.vgui_plot_line(&char, &f32, &f32, int)
 fn C.vgui_plot_begin2(&char, f32, f64, f64, int) int
 fn C.vgui_plot_line_axis(&char, &f32, &f32, int, int)
@@ -586,6 +587,15 @@ pub fn sparkline(id string, ys []f32, y_max f32, w f32, h f32) {
 		return
 	}
 	C.vgui_sparkline(id.str, &ys[0], ys.len, y_max, w, h)
+}
+
+// cells draws `cols` as equal cells across a `w` x `h` strip, each a packed RGBA color (rgba()),
+// 0 leaving the strip's background: a state timeline, nothing to click.
+pub fn cells(cols []u32, w f32, h f32) {
+	if cols.len == 0 {
+		return
+	}
+	C.vgui_cells(&cols[0], i32(cols.len), w, h)
 }
 
 pub fn plot_begin(title string, height f32) bool {

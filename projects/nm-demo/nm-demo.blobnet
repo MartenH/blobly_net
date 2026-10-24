@@ -1,0 +1,32 @@
+# Blobly Net project — network management demo, zero drivers, no hardware.
+#
+# Replays nm-demo.log (40 s of NM traffic, looping) onto an in-process bus. The cluster is read
+# from system.toml beside this file: the channel is named after its bus, `body`.
+#
+#   BLOBLY_PROJECT=projects/nm-demo/nm-demo.blobnet ./scripts/run_gui.sh
+#   → ▶ Start, then View ▸ Network Management
+#
+# sysnode wakes the bus (active wake-up, a repeat request) and domain joins; a node nothing
+# declares reports for a few seconds and reads as unknown; domain, then sysnode, become ready to
+# sleep, the bus goes from awake to releasing to asleep; at 30 s domain wakes it again, asking
+# for partial networks 0 and 2. zone_a is declared and never reports: missing.
+#
+# Without the system.toml, the channel's own `nm: { lo: 0x500, hi: 0x53F, timeout_ms: 300 }`
+# would give the range and timeout, and the reporters would be named by node id.
+project:
+  name: nm-demo
+  version: 1
+
+channels:
+  - name: body
+    type: can
+    interface: inproc:NM   # driver-free in-process bus
+    bitrate: 500000
+    mode: replay
+    enabled: true
+    databases:
+      - nm-demo.dbc
+    replay:
+      source: nm-demo.log
+      speed: 1.0
+      loop: true

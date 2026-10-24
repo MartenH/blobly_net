@@ -29,8 +29,11 @@ philosophy. They are two halves of one world.
    multi-frame and all. Keep both — they validate each other.
 
 4. **Features emb has that blobly_net could grow tester-side support for:**
-   **SecOC** (freshness/MAC) and **NM** (network management states) — blobly_net has neither,
-   and emb is a ready oracle for each. **E2E** is no longer on this list: blobly_net stamps
+   **SecOC** (freshness/MAC) — blobly_net has none of it, and emb is a ready oracle.
+   **NM** is read-side now: `blobly/nm` decodes emb's NM PDU (NID, control bit vector, PN mask)
+   and the Network Management panel shows who reports in on each cluster and who keeps it awake,
+   the cluster read from the same `system.toml` (`nm = { peers, timeout_ms }`, a node's `nm`
+   offset) ([`nm.md`](nm.md)); nothing here sends NM yet. **E2E** is no longer on this list: blobly_net stamps
    and verifies AUTOSAR E2E Profile 1 (`blobly/sim/e2e.v`, `verify.v`), reads the contract from
    the DBC attributes both repos share ([`dbc_attributes.md`](dbc_attributes.md)) and injects
    `bad_crc`/`freeze_counter` from a script; emb's integration suites already stamp and check

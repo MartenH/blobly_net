@@ -126,6 +126,10 @@ pub struct ArxmlFrame {
 pub mut:
 	pdu           string // the I-SIGNAL-I-PDU short name behind the frame (or the secured PDU's)
 	pdu_kind      string // DEST of the PDU behind the frame: I-SIGNAL-I-PDU, SECURED-I-PDU, N-PDU, NM-PDU …
+	// the frame's NM-PDU, whichever of its mappings carries it: the byte it starts at (-1: none)
+	// and its declared length in bytes (0: not stated)
+	nm_byte int = -1
+	nm_len  int
 	tx_mode       string // 'cyclic' | 'event' | 'mixed' | '' — from the transmission-mode timing
 	cycle_ms      int
 	min_delay_ms  int
@@ -182,7 +186,35 @@ pub fn (c ArxmlCluster) bus_facts(file string) ArxmlBus {
 		baudrate:    c.baudrate
 		fd_baudrate: c.fd_baudrate
 		fd:          c.carries_fd()
+		nm:          c.nm_frames()
 	}
+}
+
+// nm_frames are the cluster's frames that map an NM-PDU, by id: what network management
+// reads the cluster's NM range and its members from.
+pub fn (c ArxmlCluster) nm_frames() []ArxmlNmFrame {
+	mut out := []ArxmlNmFrame{}
+	for m in c.db.messages {
+		f := c.frame_of(m) or { continue }
+		if f.nm_byte < 0 {
+			continue
+		}
+		senders := m.senders()
+		out << ArxmlNmFrame{
+			id:   m.id
+			ext:  m.ext
+			ecu:  if senders.len > 0 { senders[0] } else { '' }
+			byte: f.nm_byte
+			len:  f.nm_len
+		}
+	}
+	out.sort_with_compare(fn (a &ArxmlNmFrame, b &ArxmlNmFrame) int {
+		if a.ext != b.ext {
+			return if a.ext { 1 } else { -1 }
+		}
+		return if a.id < b.id { -1 } else if a.id > b.id { 1 } else { 0 }
+	})
+	return out
 }
 
 // frame_of returns the extras for a message of this cluster, if the file said anything.
@@ -1533,6 +1565,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			} else {
 				info.pdu = child_text(pdu, 'SHORT-NAME')
 				info.pdu_kind = attr_or(pref, 'DEST', lname(pdu))
+			}
+			// network management reads the NM-PDU wherever the frame maps it, to its own end
+			if info.nm_byte < 0 && attr_or(pref, 'DEST', lname(pdu)) == 'NM-PDU' {
+				info.nm_byte = pdu_off / 8
+				info.nm_len = int(int_in(pdu, 'LENGTH') or { 0 })
 			}
 			mut sig_pdu := pdu
 			mut sig_pdu_path := pdu_path
