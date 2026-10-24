@@ -97,7 +97,7 @@ def _fill(frame, fields):
 def frame_of(f: _lib.BbFrame, received: bool = False) -> Frame:
     """A Frame from a bb_frame: a remote frame's len is the length it asks for, with no payload;
     a received one carries its t_ns as t_ms, and its E2E verdict."""
-    data = b"" if f.rtr else bytes(f.data[:f.len])
+    data = b"" if f.rtr else bytes(memoryview(f.data)[:f.len])
     return Frame(f.id, data, bool(f.ext), bool(f.fd), bool(f.brs), bool(f.rtr), bool(f.esi), f.len,
                  _lib.ms_of(f.t_ns) if received else None, status_of(f.e2e) if received else None)
 
@@ -676,8 +676,10 @@ _T = TypeVar("_T", bound=_HasName)
 
 
 class Named(Generic[_T]):
-    """Items by name: `c.X`, `c["X-1"]`, `c[0]` (by position), iteration in order, and dir() for
-    completion. A name two items answer to is refused, and such items are reached by position."""
+    """Items by name: `c.X`, `c["X-1"]`, `c[0]` (by position), `"X" in c`, iteration in order, and
+    dir() for completion. A name two items answer to is refused, and such items are reached by
+    position. A name the collection itself has (`keys`, `_order`) is not an
+    attribute of it: `c["keys"]` reaches that item."""
     _noun = "item"
 
     def __init__(self, items: list[_T]) -> None:
@@ -711,7 +713,15 @@ class Named(Generic[_T]):
         return c
 
     def __dir__(self) -> list[str]:
-        return [n for n, rows in self._by_name.items() if n.isidentifier() and len(rows) == 1] + ["keys"]
+        own = set(dir(type(self))) | set(self.__dict__)  # what an attribute of that name reaches instead
+        return [n for n, rows in self._by_name.items()
+                if n.isidentifier() and len(rows) == 1 and n not in own] + ["keys"]
+
+    def __contains__(self, key: object) -> bool:
+        """A name an item has, or one of the items."""
+        if isinstance(key, str):
+            return key in self._by_name
+        return any(c is key for c in self._order)
 
     def __iter__(self) -> Iterator[_T]:
         return iter(self._order)
@@ -911,7 +921,8 @@ def _say_dropped(path, gone):
 class Project(EventLoop[Channel | str], Faults, Replays):
     """A .blobnet project in this process. `with Project(path) as net:` loads and starts it — its
     simulated ECUs, UDS servers, generators and DoIP entities run until the block ends. One run per
-    process, and one thread drives load, start and stop (bb.h); send and recv may run on others.
+    process. Load, start and stop are serialised (_lib.state_lock), so threads may share a project;
+    a channel is used from one thread at a time.
     Faults (fault, clear_fault) make its simulated ECUs misbehave on purpose; `generators` fires and
     cycles its generators; replay and record play a recording onto its channels and record them to a
     file."""

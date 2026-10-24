@@ -13,12 +13,14 @@ import textwrap
 import threading
 import time
 import warnings
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 import blobly
 from blobly import _lib, project
+from blobly.project import Named
 from conftest import DEMO, INSTALLED, REPO, SIM_DEMO, run_python, write
 
 pytestmark = pytest.mark.usefixtures("engine")
@@ -136,8 +138,22 @@ class TestChannels:
 
     def test_a_channel_needs_a_started_project(self):
         net = blobly.Project(SIM_DEMO).load()
-        with pytest.raises(blobly.BloblyError):
+        with pytest.raises(blobly.BloblyError, match="not started"):
             net.channels.CAN1.recv(0)
+        with pytest.raises(blobly.BloblyError, match="not started"):
+            net.channels.DoIP1.send(0x100, b"")  # an Ethernet row too
+
+    def test_in_asks_for_a_name_or_a_channel(self):
+        chans = blobly.Project(SIM_DEMO).load().channels
+        assert "CAN1" in chans and "NOPE" not in chans
+        assert chans.CAN1 in chans and object() not in chans
+
+    def test_a_name_the_collection_has_is_reached_by_item(self):
+        rows = [SimpleNamespace(name=n) for n in ("keys", "_order", "A")]
+        named = Named(rows)
+        assert named["keys"] is rows[0] and named["_order"] is rows[1]
+        assert callable(named.keys), "the method, not the row"
+        assert sorted(dir(named)) == ["A", "keys"], "listed once, and only what an attribute reaches"
 
     def test_a_load_polices_every_handle_on_its_listen_only_wire(self, tmp_path):
         # the native handles, not the package's own: the policy is the loaded project's from the
@@ -189,6 +205,18 @@ class TestChannels:
         finally:
             close_bus(early)
             blobly.Project(SIM_DEMO).load()  # its policy, for the tests after this one
+
+
+class TestHealthNames:
+    def test_each_rung_is_spelled_as_transport_spells_it(self):
+        # bb.h's enum bb_health by value, and transport.health_name's text for each rung
+        with open(os.path.join(REPO, "cmd", "libblobly", "bb.h")) as f:
+            enum = re.search(r"enum bb_health \{(.*?)\};", f.read(), re.S).group(1)
+        values = {name: int(v) for name, v in re.findall(r"BB_HEALTH_(\w+) = (\d+)", enum)}
+        with open(os.path.join(REPO, "blobly", "transport", "health.v")) as f:
+            body = re.search(r"pub fn health_name\(.*?\{(.*?)\n\}", f.read(), re.S).group(1)
+        spelled = dict(re.findall(r"\.(\w+) \{ '([^']*)' \}", body))
+        assert {values[k.upper()]: v for k, v in spelled.items()} == _lib.HEALTH_NAMES
 
 
 class TestLoads:
