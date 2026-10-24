@@ -61,3 +61,24 @@ fn test_sender_message_frame_encodes_the_selected_branch_only() {
 	s.signals[1].value = 2
 	assert (sender_message_frame(s, [db], 0, 0.0) or { panic('M') }).data == [u8(2), 20]
 }
+
+// the grid is kept, and a slot a slow write covered is skipped rather than sent late
+fn test_next_due_keeps_the_grid_and_skips_what_a_slow_write_covered() {
+	assert next_due(0, 10, 1) == 10
+	assert next_due(0, 10, 9) == 10
+	assert next_due(0, 10, 10) == 20, 'a slot reached as the write returns is not sent back to back'
+	assert next_due(0, 10, 35) == 40
+	assert next_due(100, 10, 135) == 140
+	assert next_due(0, 10, 0) == 10
+	assert next_due(5, 0, 7) == 7
+	// a 10 ms grid whose second write takes 35 ms: every frame due after the write before it
+	mut slot := u64(0)
+	mut sent := [u64(0)]
+	for write in [u64(1), 35, 1, 1] {
+		done := sent.last() + write
+		slot = next_due(slot, 10, done)
+		assert slot > done, 'a frame due at ${slot}, before the write at ${sent.last()} returned at ${done}'
+		sent << slot
+	}
+	assert sent == [u64(0), 10, 50, 60, 70]
+}

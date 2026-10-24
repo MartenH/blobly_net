@@ -276,3 +276,37 @@ fn test_fires_given_up_on_free_their_place() {
 	assert f.data[0] == 1
 	assert next_of(mut bus, 0x101, 100) == none, 'a fire given up on went out'
 }
+
+// a cyclic frame the wire refuses is said once and kept as the generator's note
+fn test_a_cyclic_generator_whose_frames_are_refused_says_why() {
+	dir := os.join_path(os.vtmp_dir(), 'headless_gen_long_${os.getpid()}')
+	os.mkdir_all(dir)!
+	path := os.join_path(dir, 'long.blobnet')
+	os.write_file(path, 'project:
+  name: long
+  version: 8
+channels:
+  - name: G1
+    type: can
+    interface: inproc:HGENLONG
+    senders:
+      - name: Long
+        id: "0x321"
+        data: 01 02 03 04 05 06 07 08 09
+        trigger: cyclic
+        cycle_ms: 10
+')!
+	mut said := &[]string{}
+	proj := load(path, Options{})!
+	mut r := start(proj, path, Options{
+		err: fn [mut said] (s string) {
+			said << s
+		}
+	})!
+	time.sleep(100 * time.millisecond)
+	g := r.generators()[0]
+	r.stop()
+	assert g.sent == 0
+	assert g.note.contains('not a classic CAN frame'), g.note
+	assert said.filter(it.contains('generator "Long"')).len == 1, said.str()
+}

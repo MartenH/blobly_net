@@ -223,7 +223,12 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 	}
 	mut was := false
 	mut fresh := true // the cycle sends at once: started, or started again
-	mut last := u64(0) // when the cycle last sent
+	g.mu.lock()
+	base_note := g.note
+	g.mu.unlock()
+	mut failed := '' // why the cycle's last send failed, said once while it repeats
+	mut slot := u64(0) // the grid slot the cycle last sent in
+	mut done := u64(0) // when that send returned
 	for r.ctl.running {
 		g.mu.lock()
 		cyc := g.cyclic
@@ -240,12 +245,22 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 		// the handle is never read: on a shared-hub wire it is then no subscriber, and has no
 		// cursor to fall behind the ring and book as the wire's loss
 		now := time.sys_mono_now() / 1_000_000
-		// due by the cycle as it is now, so a shorter one applies at once
-		if cyc && (fresh || now >= last + period) {
-			// on its grid, unless a stall put it a cycle behind: no burst of catch-up frames
-			last = if fresh || now >= last + 2 * period { now } else { last + period }
+		// due by the cycle as it is now, so a shorter one applies at once; on its grid, from the
+		// time the send returned, so a slow write is not followed by a catch-up frame
+		if cyc && (fresh || now >= sim.next_due(slot, period, done)) {
+			slot = if fresh { now } else { sim.next_due(slot, period, done) }
 			fresh = false
-			g.send(mut bus, run_t0)
+			why := g.send(mut bus, run_t0)
+			done = time.sys_mono_now() / 1_000_000
+			if why != failed {
+				failed = why
+				g.mu.lock()
+				g.note = if why != '' { why } else { base_note }
+				g.mu.unlock()
+				if why != '' {
+					r.say('generator "${g.s.name}": ${why}')
+				}
+			}
 		}
 		// one fire per pass, between cyclic frames: however far behind the cycle is, a fire is
 		// served, and however full the queue is kept, the cycle is; one taken after a stop began
@@ -253,13 +268,15 @@ fn (mut r Run) gen_loop(mut g Gen, run_t0 u64) {
 		if mut fire := g.next_fire() {
 			if fire.take(time.sys_mono_now()) {
 				fire.reply <- answered(if r.ctl.running { g.send(mut bus, run_t0) } else { run_stopped })
+				// a slot the fire's write covered is skipped too
+				done = time.sys_mono_now() / 1_000_000
 			}
 			continue
 		}
 		after := time.sys_mono_now() / 1_000_000
 		mut wait := u64(20)
 		if cyc {
-			due := last + period
+			due := sim.next_due(slot, period, done)
 			wait = if due <= after { 0 } else if due - after < wait { due - after } else { wait }
 		}
 		// woken early by a fire queued, a start or a cycle changed

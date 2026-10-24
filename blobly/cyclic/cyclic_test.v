@@ -41,6 +41,9 @@ fn test_a_raw_sender_is_heard_at_its_period_and_takes_an_update() {
 	assert s.stop()
 	i := s.info()
 	assert !i.running && i.sent >= 6 && i.failed == 0
+	for {
+		rx.recv(0) or { break } // what went out before the stop
+	}
 	// stopped: nothing more
 	assert frames_within(mut rx, 0x123, 60).len == 0
 }

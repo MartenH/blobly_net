@@ -267,6 +267,12 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	bus.close()
 }
 
+// GenSlot is a cyclic generator's grid slot last fired in, and when that fire returned.
+struct GenSlot {
+	slot u64
+	done u64
+}
+
 // gen_loop fires cyclic senders at their cycle_ms while the measurement runs.
 fn gen_loop(app &App) {
 	// Reads app.senders and app.chans lock-free every pass, and rebuild_from_proj replaces both.
@@ -274,10 +280,11 @@ fn gen_loop(app &App) {
 		release_run_worker(app)
 	}
 	mut a := unsafe { app }
-	mut last := map[int]i64{}
+	mut slots := map[u64]GenSlot{} // by SenderRT.uid
 	for a.running {
-		now := time.ticks()
+		now := u64(time.ticks())
 		mut fire := []int{}
+		mut fire_uids := []u64{}
 		a.mu.lock()
 		// ONE snapshot of the taps per pass, not one per sender: this loop runs every 8 ms
 		// with app.mu held, and rebuilding the key lists per sender made it O(senders × taps)
@@ -314,16 +321,36 @@ fn gen_loop(app &App) {
 					&& !taprule.ready(taps, tx_bus_key(sr.chan, tgt), tx_bus_key('', tgt), sr.chan != '') {
 					continue
 				}
-				lf := last[i] or { i64(0) }
-				if now - lf >= i64(sr.sender.cycle_ms) {
-					last[i] = now
+				// on its grid, from the time its last send returned (sim.next_due)
+				if g := slots[sr.uid] {
+					due := sim.next_due(g.slot, u64(sr.sender.cycle_ms), g.done)
+					if now >= due {
+						slots[sr.uid] = GenSlot{
+							slot: due
+						}
+						fire << i
+						fire_uids << sr.uid
+					}
+				} else {
+					slots[sr.uid] = GenSlot{
+						slot: now
+					}
 					fire << i
+					fire_uids << sr.uid
 				}
+			} else {
+				slots.delete(sr.uid) // not cyclic: made cyclic again, it starts a new grid
 			}
 		}
 		a.mu.unlock()
-		for i in fire {
-			a.fire_index(i)
+		for i, uid in fire_uids {
+			a.fire_index(fire[i])
+			if g := slots[uid] {
+				slots[uid] = GenSlot{
+					...g
+					done: u64(time.ticks())
+				}
+			}
 		}
 		// Resolve emissions whose echo never came. Expiry is otherwise driven only by the next
 		// emission or the next received frame, so on a bus that falls silent — a disconnected

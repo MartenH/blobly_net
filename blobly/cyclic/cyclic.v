@@ -150,7 +150,7 @@ mut:
 
 // start sends `spec` on `bus`, which the sender owns from here (closed when its loop ends, and on
 // a refusal): its first frame at once, then one per period on that grid. A stall never bursts
-// catch-up frames: a sender a whole period late starts its grid again from now.
+// catch-up frames: the slots it covered are skipped (sim.next_due).
 pub fn start(bus transport.Bus, spec Spec, life Life) !&Sender {
 	spec.check() or {
 		mut b := bus
@@ -187,7 +187,8 @@ fn (mut s Sender) run() {
 		}
 	}
 	mut first := true
-	mut last := u64(0) // when the grid last sent, ms on the monotonic clock
+	mut slot := u64(0) // the grid slot last sent in, ms on the monotonic clock
+	mut done := u64(0) // when that send returned
 	for {
 		s.mu.lock()
 		asked := s.asked
@@ -198,13 +199,14 @@ fn (mut s Sender) run() {
 		}
 		now := time.sys_mono_now() / 1_000_000
 		// due by the period as it is now, so a changed one applies from the next frame
-		if first || now >= last + period {
-			last = if first || now >= last + 2 * period { now } else { last + period }
+		if first || now >= sim.next_due(slot, period, done) {
+			slot = if first { now } else { sim.next_due(slot, period, done) }
 			first = false
 			s.send_once()
+			done = time.sys_mono_now() / 1_000_000
 		}
 		after := time.sys_mono_now() / 1_000_000
-		due := last + period
+		due := sim.next_due(slot, period, done)
 		wait := if due <= after { u64(0) } else if due - after < poll_ms { due - after } else { u64(poll_ms) }
 		select {
 			_ := <-s.wake {}
