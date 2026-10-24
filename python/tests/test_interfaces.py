@@ -41,6 +41,25 @@ def test_an_expect_on_a_bus_says_what_came_instead():
             b.expect(0x201, 100)
 
 
+def test_an_e2e_expectation_needs_a_row():
+    with blobly.open("inproc:PY_IFACE_E") as bus:
+        with pytest.raises(ValueError, match="opened by address"):
+            bus.expect(0x100, 10, e2e=True)
+
+
+def test_a_bus_dropped_unclosed_lets_its_handle_go():
+    lib = _lib.lib()
+    bus = blobly.open("inproc:PY_IFACE_F")
+    h = bus._h
+    del bus
+    with blobly.open("inproc:PY_IFACE_F"):  # the next open lets it go
+        assert lib.bb_bus_health(h) == _lib.BB_ERR_HANDLE
+
+
+def test_open_is_not_in_the_star_import():
+    assert "open" not in blobly.__all__ and blobly.open is blobly.discovery.open
+
+
 def test_a_closed_bus_refuses_and_a_close_from_another_thread_ends_a_wait():
     bus = blobly.open("inproc:PY_IFACE_C")
     threading.Timer(0.1, bus.close).start()

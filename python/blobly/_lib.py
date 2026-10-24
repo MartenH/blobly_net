@@ -536,7 +536,7 @@ def _declare(lib):
         "bb_uds_set_wait": ([c_int, c_int, c_int], c_int),
         "bb_uds_check_wait": ([c_int, c_int], c_int),
         "bb_uds_retarget": ([c_int, P(ctypes.c_int64)], c_int),
-        # interfaces present and Vector assignment (interfaces.py)
+        # interfaces present and Vector assignment (discovery.py, vector.py)
         "bb_ifaces": ([], c_int),
         "bb_ifaces_cansub": ([c_int], c_int),
         "bb_vector_hardware": ([], c_int),

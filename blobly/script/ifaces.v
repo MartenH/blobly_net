@@ -99,7 +99,7 @@ fn l_interfaces(l lua.State) i32 {
 // __discover_cansub(window_ms) -> the CANsub channels an mDNS browse found, and its note
 fn l_discover_cansub(l lua.State) i32 {
 	env := env_of(l)
-	window := env.bounded(l.arg_int(1))
+	window := env.bounded_window(l.arg_int(1))
 	if env.expired() {
 		return timeout_at(l)
 	}

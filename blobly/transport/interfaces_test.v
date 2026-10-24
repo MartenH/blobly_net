@@ -11,6 +11,9 @@ fn test_an_address_kind_is_its_scheme() {
 	assert iface_kind('udp:239.63.42.1:20000') == 'udp'
 	assert iface_kind('inproc:SIM') == 'inproc'
 	assert iface_kind('inproc') == 'inproc'
+	// as the dispatcher reads them: only cansub: in any case
+	assert iface_kind('PCAN:PCAN_USBBUS1') == 'socketcan'
+	assert iface_kind('udpx') == 'socketcan'
 }
 
 fn test_a_listed_iface_is_described() {

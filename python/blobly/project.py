@@ -15,7 +15,7 @@ from . import _lib
 from ._lib import BloblyError, ByteData, Timeout
 from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
 from .doip import DoipAnnouncement, discover
-from .uds import FunctionalReply, UdsClient, _close_orphans, functional
+from .uds import FunctionalReply, UdsClient, _close_orphans, _orphans, functional
 from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import Generators, listed as _listed_generators
@@ -174,8 +174,10 @@ class Bus:
         if "\0" in address:  # a C string would end there and name another bus
             raise ValueError(f"an interface address has no NUL: {address!r}")
         self.name = address
+        self._h = None
         lib = _lib.lib()
         with _lib.state_lock:  # bb_bus_open reads the loaded project's rows
+            _close_orphans()
             self._h = _lib.check(lib.bb_bus_open(address.encode()))
 
     @property
@@ -259,6 +261,9 @@ class Bus:
         Every frame read while waiting is consumed, the ones that did not match included: a later
         recv or expect gets the frame after it."""
         __tracebackhide__ = True  # a pytest failure points at the test's line, not this one
+        if e2e and not isinstance(self, Channel):
+            raise ValueError(f"expect: {self.name} is a bus opened by address, whose frames no row's E2E "
+                             "judges; e2e=True needs the project's channel")
         deadline = _deadline("expect", timeout_ms)
         with _lib.state_lock:
             want = self._frame_key("expect", id, ext)
@@ -340,6 +345,15 @@ class Bus:
     def __exit__(self, *exc: object) -> Literal[False]:
         self.close()
         return False
+
+    def __del__(self) -> None:
+        # an unclosed bus lets its handle go at the next open (_orphans): nothing is called into
+        # here, since this may run between another call and its error
+        try:
+            if self._h is not None:
+                _orphans.append(("bb_bus_close", self._h))
+        except Exception:
+            pass
 
     def __repr__(self) -> str:
         return f"<Bus {self.name}>"

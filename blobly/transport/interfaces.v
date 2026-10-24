@@ -39,14 +39,16 @@ fn fd_of_mtu(mtu int) FdSupport {
 	}
 }
 
-// iface_kind is an address's kind, by its scheme; a bare name is a SocketCAN interface.
+// iface_kind is an address's kind, by its scheme as the dispatcher reads it (case-sensitive but
+// for cansub:); a bare name is a SocketCAN interface.
 pub fn iface_kind(address string) string {
-	scheme := address.all_before(':').to_lower()
-	if address.contains(':') && scheme in ['pcan', 'kvaser', 'vector', 'cansub', 'bridge', 'udp', 'inproc'] {
-		return scheme
+	if address.to_lower().starts_with('cansub:') {
+		return 'cansub'
 	}
-	if address == 'inproc' || address == 'udp' {
-		return address
+	for scheme in ['pcan', 'kvaser', 'vector', 'bridge', 'udp', 'inproc'] {
+		if address.starts_with('${scheme}:') || address == scheme {
+			return scheme
+		}
 	}
 	return if address.starts_with('vcan') { 'vcan' } else { 'socketcan' }
 }
@@ -141,6 +143,6 @@ pub fn discover_cansub_within(window_ms int) !([]Interface, string) {
 	if window_ms < 1 || window_ms > cansub_window_max_ms {
 		return error('a CANsub browse window is 1 to ${cansub_window_max_ms} ms, not ${window_ms}')
 	}
-	b := cansub_browse(window_ms * time.millisecond)!
-	return cansub_rows(b.devices).map(describe(it)), b.note
+	rows, note := cansub_discovery(window_ms * time.millisecond)!
+	return rows.map(describe(it)), note
 }

@@ -595,6 +595,11 @@ pub fn cansub_rows(devices []CansubService) []Iface {
 // default window, as rows, with the browse's note. An error is the browse not having been
 // possible, never "nothing attached".
 pub fn discover_cansub() !([]Iface, string) {
-	b := cansub_browse(cansub_mdns_window)!
+	return cansub_discovery(cansub_mdns_window)
+}
+
+// cansub_discovery is a browse of `window`, as rows, with the browse's note.
+fn cansub_discovery(window time.Duration) !([]Iface, string) {
+	b := cansub_browse(window)!
 	return cansub_rows(b.devices), b.note
 }
