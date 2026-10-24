@@ -195,7 +195,11 @@ pub fn bb_vector_slot(app i32) i32 {
 
 @[export: 'bb_vector_assign']
 pub fn bb_vector_assign(app i32, hw_type i32, hw_index i32, hw_channel i32, create i32) i32 {
+	// refused while a run is started (BB_ERR_STATE), by the rule the GUI and Lua go by
 	transport.vector_assign_checked(int(app), int(hw_type), int(hw_index), int(hw_channel),
-		create != 0) or { return fail(bb_err, 'vector assign: ${err.msg()}') }
+		create != 0, !isnil(bb_run)) or {
+		code := if err is transport.AssignWhileRunning { bb_err_state } else { bb_err }
+		return fail(code, 'vector assign: ${err.msg()}')
+	}
 	return ok()
 }

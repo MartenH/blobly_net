@@ -369,13 +369,15 @@ whatever assigned them — `--assign` followed by `--release`, or a `--pair` run
 **Opening a channel does not create one.** It is worth being exact, because the two look similar:
 opening a channel the application already has but has not mapped rewrites the zeroes already there,
 which is how the application first becomes visible in the Hardware Manager. Opening a channel the
-application does *not* have fails instead (`-1007`) and registers nothing. So rows appear by being
+application does *not* have fails instead — *"vector:N is not registered in application
+blobly_net — map it in Discover → Assign"* (`-1013`, the driver's status 255) — and registers
+nothing. So rows appear by being
 **assigned**, never by being opened, and the section below is the only way to add one.
 
 That registration **extends an application that already exists** — *opening* a channel does not
 create one. Delete `blobly_net` in the Hardware Manager and no amount of opening brings it back;
-the driver has nothing to add the channel to, and every `vector:<n>` fails with the same code an
-unmapped channel gives.
+the driver has nothing to add the channel to, and every `vector:<n>` fails with that same
+not-registered message.
 
 **Assigning is the other half, and it does create.** `xlSetApplConfig` — what the Discover dialog's
 Assign button and `vectorcheck --assign` both call — writes the application into existence if it is

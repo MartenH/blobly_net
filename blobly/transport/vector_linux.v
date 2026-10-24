@@ -86,12 +86,6 @@ pub fn vector_mappings() []VectorMapping {
 	return []VectorMapping{}
 }
 
-// No XL driver here, so nothing can answer. False means "nothing answered", which is exactly
-// true on this platform — see the Windows side for why that is evidence rather than a verdict.
-pub fn vector_application_seen() !bool {
-	return false
-}
-
 // No channels to sweep here, so nothing is known about any of them. `.unreadable` rather than
 // `.absent`: absent is the driver ANSWERING that it has no such channel, and no driver answered.
 pub fn vector_app_slot(app int) AppSlot {

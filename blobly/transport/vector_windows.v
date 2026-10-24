@@ -166,8 +166,8 @@ pub fn open_vector(spec string) !&VectorBus {
 	if rc == -1008 {
 		return error('Vector application channel ${s.channel} has no hardware assigned, and registering the application "blobly_net" failed — so it will NOT appear in Vector Hardware Manager to be assigned. Check the XL Driver Library version.')
 	}
-	if rc == -1007 {
-		return error('Vector application channel ${s.channel}: the driver would not report what it is assigned to. Nothing was changed; try again, and check that no other XL application is mid-restart.')
+	if why := lookup_refusal(s.channel, rc) {
+		return error(why)
 	}
 	if rc == -1001 {
 		return error('Vector application channel ${s.channel} is assigned to hardware that is not present — the adapter it names is unplugged, powered off, or claimed by another application. The assignment itself is fine.')
@@ -808,90 +808,11 @@ pub fn vector_app_slots() []AppSlot {
 }
 
 // vector_mappings lists every channel the driver reports, each with the application channel — if
-// any — pointing at it, and what is actually KNOWN about that.
-//
-// THE PHYSICAL CHANNEL IS THE ROW, which is the whole difference from `vector_list`. That function
-// answers "which of our application channels are usable", which is right for opening and useless
-// for ASSIGNING: it cannot show hardware nobody has mapped yet, and it names channels without
-// saying what they are. Choosing hardware means seeing the hardware.
-//
-// A CHANNEL WE COULD NOT READ POISONS THE WHOLE SWEEP, deliberately. An unreadable channel may
-// have been the owner of any of this hardware, and nothing in the answers says which — so every
-// otherwise-unowned row is marked `owner_known: false` rather than reported as free. Folding the
-// failure into "no owner" offers an Assign button for hardware that already has one, and taking it
-// maps a SECOND application channel onto one physical wire: the alias destination_conflicts refuses
-// a whole project for (#167), manufactured by the dialog meant to set the bench up.
-//
-// THE FLAG IS NEW IN R6 AND SO IS THE ABILITY TO CARRY IT. Until the shim separated "cannot answer"
-// from "no such channel", 57 of 64 channels on an ordinary bench read as unreadable — poisoning
-// every row, every time, which is unusable and is why this comment described a behaviour the code
-// did not implement (codex #192 r6). Now only a genuine driver failure poisons, so the rule the
-// comment always claimed can actually be enforced. `absent` and `empty` channels are known NOT to
-// be owners, and cost nothing.
+// any — pointing at it, from one sweep of the application channels (vector_mappings_of has the
+// rule). A caller that also wants the slots sweeps once and calls vector_mappings_of itself, so its
+// answers describe one instant.
 pub fn vector_mappings() []VectorMapping {
-	hw := vector_channels()
-	slots := vector_app_slots()
-	mut owner := map[string]int{}
-	mut known := true
-	for i, s in slots {
-		if s == .unreadable {
-			// This one may own any row, and we cannot ask which.
-			known = false
-			continue
-		}
-		if s != .taken {
-			continue
-		}
-		a, ok := vector_assignment(i + 1) or {
-			// It said `taken` a moment ago and will not say what it points at now. Same problem.
-			known = false
-			continue
-		}
-		if ok {
-			owner['${a.hw_type}:${a.hw_index}:${a.hw_channel}'] = i + 1
-		}
-	}
-	mut out := []VectorMapping{}
-	for c in hw {
-		app := owner['${c.hw_type}:${c.hw_index}:${c.hw_channel}'] or { 0 }
-		out << VectorMapping{
-			hw:  c
-			app: app
-			// A row we DID find an owner for is known regardless: that owner is positive evidence,
-			// and no unreadable channel can take it away.
-			owner_known: known || app > 0
-		}
-	}
-	return out
-}
-
-// vector_application_seen reports whether ANY application channel answered — evidence that the
-// application exists, not proof that it does not.
-//
-// EVIDENCE, NOT A VERDICT, and the name carries the difference. `true` is proof: a channel
-// answered, so the application is there. `false` is only "nothing answered" — which is what an
-// absent application looks like AND what a driver that has stopped answering looks like. vxlapi
-// documents no status that proves absence, and this will not invent one, so a caller must not turn
-// `false` into "the application does not exist" (codex #192 r2).
-//
-// From the SAME sweep the rest uses, so it can no longer disagree with them about the range it
-// covered (codex #192 r3).
-//
-// ONLY `empty` AND `taken` ARE EVIDENCE. Both mean the driver described a channel that belongs to
-// this application, which cannot happen unless the application is registered. `absent` is the
-// driver saying it has no such channel — true of 57 of 64 on a bench that is perfectly well set up,
-// so it proves nothing either way. `unreadable` is silence. Since r6 this is informational only:
-// nothing decides whether to WRITE from it any more (see assign_refusal).
-pub fn vector_application_seen() !bool {
-	if C.ct_vector_load() != 0 {
-		return error('the Vector driver could not be asked about the application "blobly_net"')
-	}
-	for s in vector_app_slots() {
-		if s == .empty || s == .taken {
-			return true
-		}
-	}
-	return false
+	return vector_mappings_of(vector_channels(), vector_app_slots(), vector_assignment)
 }
 
 // vector_list reports the application channels that have hardware assigned, for discovery.

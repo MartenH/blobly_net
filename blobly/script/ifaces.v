@@ -178,7 +178,10 @@ fn l_vector_slot(l lua.State) i32 {
 
 // __vector_assign(app, hw_type, hw_index, hw_channel, create)
 fn l_vector_assign(l lua.State) i32 {
+	env := env_of(l)
 	transport.vector_assign_checked(int(l.arg_int(1)), int(l.arg_int(2)), int(l.arg_int(3)),
-		int(l.arg_int(4)), l.arg_bool(5)) or { return l.fail('vector.assign: ${err.msg()}') }
+		int(l.arg_int(4)), l.arg_bool(5), env.run_active()) or {
+		return l.fail('vector.assign: ${err.msg()}')
+	}
 	return 0
 }

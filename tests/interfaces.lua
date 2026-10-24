@@ -58,6 +58,9 @@ test("Vector assignment says why it cannot be used", function()
   if why == nil then return end -- a Windows bench with the XL driver: nothing to refuse here
   check.equal(#vector.assignments(), 0)
   check.truthy(not pcall(vector.slot, 1), "a slot was read without a driver")
+end)
+
+test("Vector assignment is refused while the run is started", function()
   local ok, err = pcall(vector.assign, 1, { hw_type = 57, hw_index = 0, hw_channel = 0 }, { create = true })
-  check.truthy(not ok and tostring(err):find(why, 1, true), "the refusal names the cause: " .. tostring(err))
+  check.truthy(not ok and tostring(err):find("not while a run is started", 1, true), "assigned during the run: " .. tostring(err))
 end)

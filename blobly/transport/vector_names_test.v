@@ -571,7 +571,7 @@ fn test_the_driver_refusal_names_the_cause() {
 	assert driver_refusal_of(-255) or { '' }.contains('XL status 255')
 	$if !windows {
 		assert vector_driver_refusal() or { '' } == 'the Vector XL backend is Windows-only'
-		vector_assign_checked(1, 57, 0, 0, true) or {
+		vector_assign_checked(1, 57, 0, 0, true, false) or {
 			assert err.msg().contains('Windows-only')
 			return
 		}
@@ -612,4 +612,55 @@ fn test_hardware_with_an_owner_or_an_unknown_one_is_refused() {
 	assert hw_owner_refusal(vn(0), unknown) or { '' }.contains('could not confirm')
 	// hardware the mappings do not list cannot be shown to be free
 	assert hw_owner_refusal(vn(1), free) or { '' }.contains('could not confirm')
+}
+
+fn test_an_assignment_is_refused_while_a_run_is_started() {
+	assert assign_run_refusal(false) == none
+	e := assign_run_refusal(true) or { panic('no refusal while running') }
+	assert e.msg().contains('not while a run is started')
+	// asked first, so a started run is the answer whatever the driver would say
+	vector_assign_checked(1, 57, 0, 0, true, true) or {
+		assert err is AssignWhileRunning, err.msg()
+		return
+	}
+	assert false, 'assigned while a run was started'
+}
+
+fn test_an_unregistered_channel_names_the_remedy_on_open() {
+	assert lookup_refusal(5, -1013) or { '' } == 'vector:5 is not registered in application blobly_net — map it in Discover → Assign'
+	assert lookup_refusal(5, -1007) or { '' }.contains('would not report what it is assigned to')
+	assert lookup_refusal(5, -1000) == none
+	assert lookup_refusal(5, 0) == none
+}
+
+fn mapped_to(hw VectorChannel) fn (int) !(VectorChannel, bool) {
+	return fn [hw] (app int) !(VectorChannel, bool) {
+		if app == 2 {
+			return hw, true
+		}
+		return error('no answer for vector:${app}')
+	}
+}
+
+fn test_mappings_come_from_one_sweep() {
+	hw := [vn(0), vn(1)]
+	// vector:2 points at channel 2; the rest are free or unregistered
+	m := vector_mappings_of(hw, [AppSlot.empty, .taken, .absent], mapped_to(vn(1)))
+	assert m.len == 2
+	assert m[0].app == 0 && m[0].owner_known
+	assert m[1].app == 2 && m[1].owner_known
+	// an unreadable channel may own any row: the unowned one is no longer known to be free
+	u := vector_mappings_of(hw, [AppSlot.unreadable, .taken], mapped_to(vn(1)))
+	assert !u[0].owner_known
+	assert u[1].app == 2 && u[1].owner_known
+	// a channel that said taken and then would not say what it points at is the same
+	t := vector_mappings_of(hw, [AppSlot.taken], mapped_to(vn(1)))
+	assert !t[0].owner_known && !t[1].owner_known
+}
+
+fn test_the_application_is_seen_only_where_a_channel_described_it() {
+	assert application_seen_in([AppSlot.absent, .empty])
+	assert application_seen_in([AppSlot.taken])
+	assert !application_seen_in([AppSlot.absent, .unreadable])
+	assert !application_seen_in([]AppSlot{})
 }

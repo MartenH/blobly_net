@@ -420,7 +420,9 @@ else:
   answer), or `app` is `"taken"` or `"unreadable"`. An `"absent"` application channel — not
   registered, which writing creates — is refused unless `create=True`: the driver reports "not
   registered" with the same generic error a momentary read failure on an occupied channel gives,
-  so creating is never assumed. The mapping persists across reboots.
+  so creating is never assumed. The mapping persists across reboots. While a project is started it
+  raises `BloblyError` with code `-3` (the wrong state), whatever the arguments: the mapping is the
+  driver's, persistent, under ports the run may hold open — stop the project first.
 - **Not verified by CI**: no runner has a Vector adapter. The rules are V tests
   (`blobly/transport/vector_names_test.v`); assigning on hardware is checked by hand on a VN1630A.
 

@@ -1619,6 +1619,9 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 		mut ap := unsafe { a }
 		ap.script_push(s)
 	}
+	env.run_active = fn [a] () bool {
+		return a.running
+	}
 	env.sys = ss.sys
 	if ss.path != '' {
 		if loaded := sysview.load(ss.path) {
