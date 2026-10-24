@@ -612,6 +612,10 @@ fn (mut c Client) drain_queued(sid u8) !int {
 			if err.msg().contains('timeout') {
 				break
 			}
+			// a stop ends the drain, and what it cut is the caller's to dispose of
+			if abandoned(err.msg()) {
+				return err
+			}
 			// but a carrier that failed has nothing more to drain, and is the caller's news
 			if carrier_failed(err.msg()) {
 				return CarrierFailed{

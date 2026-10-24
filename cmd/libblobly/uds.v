@@ -373,17 +373,22 @@ fn with_uds(u i32, call fn (mut hd UdsHandle) !i32) i32 {
 	if stdatomic.load_i64(&hd.closing) != 0 {
 		return fail(bb_err_handle, 'the UDS handle was closed')
 	}
+	// cancellable from here: the idle service a cancel ends may hold the lock inside a message
+	hd.begin_call()
+	defer {
+		hd.end_call()
+	}
 	hd.mu.lock()
 	defer {
 		hd.mu.unlock()
 	}
-	// a close while this call waited for the idle service ends it before it starts
+	// a close or a cancel while this call waited for the idle service ends it before it starts
 	if stdatomic.load_i64(&hd.closing) != 0 {
 		return fail(bb_err_handle, 'the UDS handle was closed')
 	}
-	hd.begin_call()
-	defer {
-		hd.end_call()
+	if hd.cancelled() {
+		hd.mark_lost() // the idle service's read it cut may have left the stream mid-message
+		return cancelled_call()
 	}
 	return call(mut hd) or {
 		kind := uds.failure_of(err)

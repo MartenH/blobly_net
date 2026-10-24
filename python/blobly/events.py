@@ -278,26 +278,35 @@ def _sliced(wait, ms):
 def _on_thread(call, name="blobly", on_interrupt=None):
     """call()'s answer, the call made on a thread of its own and waited for in slices (_sliced),
     so Ctrl-C ends the wait; the call itself is one native exchange, bounded by its own wait. An
-    interrupted one finishes on its thread with its answer dropped; with `on_interrupt`, that is
-    asked every 20 ms until it has, a further interrupt meanwhile held back, and the first raised."""
+    interrupted one finishes on its thread with its answer dropped, or is never made when the
+    interrupt came first; with `on_interrupt`, that is asked every 20 ms until the call has
+    returned, a further interrupt meanwhile held back, and the first raised."""
     from . import _lib  # this module's rules need no library; the call does
     box = {}
+    began, abandoned, done = threading.Event(), threading.Event(), threading.Event()
 
     def run():
+        began.set()  # before asking `abandoned`: the caller sets that first, then asks this
         try:
-            _lib.lib()  # attaches this thread
-            box["answer"] = call()
+            if not abandoned.is_set():
+                _lib.lib()  # attaches this thread
+                box["answer"] = call()
         except BaseException as e:  # carried to the caller's thread
             box["error"] = e
+        finally:  # the thread's own word: an interrupted join can say a running thread ended
+            done.set()
     t = threading.Thread(target=run, name=name, daemon=True)
-    t.start()
     try:
-        _sliced(lambda part: None if (t.join(part / 1000) or t.is_alive()) else True, -1)
+        t.start()
+        _sliced(lambda part: True if done.wait(part / 1000) else None, -1)
     except BaseException:
-        while on_interrupt is not None and t.is_alive():
+        abandoned.set()
+        given_up = time.monotonic() + 1  # a thread start() was interrupted in may never run
+        while on_interrupt is not None and not done.is_set() and (began.is_set() or time.monotonic() < given_up):
             try:
-                on_interrupt()
-                t.join(0.02)
+                if began.is_set():
+                    on_interrupt()
+                done.wait(0.02)
             except KeyboardInterrupt:
                 pass
         raise

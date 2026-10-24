@@ -195,3 +195,38 @@ fn test_a_send_failing_under_a_stop_is_abandoned() {
 	}
 	assert false
 }
+
+// StoppedDrain is a carrier whose stop ends a read of what was queued before the request.
+struct StoppedDrain {
+pub:
+	iface string = 'mock'
+	tx_id u32
+	rx_id u32
+mut:
+	sent int
+}
+
+fn (mut m StoppedDrain) send(_ []u8) ! {
+	m.sent++
+}
+
+fn (mut m StoppedDrain) recv(_ int) ![]u8 {
+	return error(doip.stopped_note)
+}
+
+fn (mut m StoppedDrain) close() {}
+
+fn (mut m StoppedDrain) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
+
+fn test_a_stop_during_the_pre_send_drain_is_the_stop() {
+	mut ch := &StoppedDrain{}
+	mut c := new_client(ch)
+	c.raw([u8(0x22), 0xF1, 0x90]) or {
+		assert failure_of(err) == .abandoned, err.msg()
+		assert ch.sent == 0
+		return
+	}
+	assert false, 'answered'
+}
