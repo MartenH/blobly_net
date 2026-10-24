@@ -250,6 +250,32 @@ pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
 	return judge_candidates(by_pgn, false, 'PGN 0x${pgn:04X} (not spelled at SA 0x${sa:02X})')
 }
 
+// pgn_message_in_catalog is pgn_message_in over a row's SOURCE databases (`sources`, each file as
+// it was opened, so the per-file rules see the files' boundaries), the match mapped to its
+// position in the row's merged catalog `merged` (merge_with_sources: the first definition of each
+// id wins there). Found only where the catalog holds the chosen definition's layout at its id, so
+// what a message is decoded by is what the catalog lists; with no sources, `merged` alone is asked.
+pub fn pgn_message_in_catalog(sources []Database, merged Database, pgn u32, sa u8) PgnMatch {
+	if sources.len == 0 {
+		return pgn_message_in([merged], pgn, sa)
+	}
+	pm := pgn_message_in(sources, pgn, sa)
+	if !pm.found {
+		return pm
+	}
+	k := merged.message_index(pm.msg.id, pm.msg.ext) or { -1 }
+	if k < 0 || merged.messages[k].layout_key() != pm.msg.layout_key() {
+		return PgnMatch{
+			refused: 'PGN 0x${pgn:04X} from SA 0x${sa:02X} decodes as ${pm.msg.name} 0x${pm.msg.id:08X}, which the merged catalog holds another definition of; not decoded'
+		}
+	}
+	return PgnMatch{
+		found: true
+		msg:   merged.messages[k]
+		index: k
+	}
+}
+
 // PgnCandidate is one definition and the database (by index) that holds it.
 struct PgnCandidate {
 	msg   Message

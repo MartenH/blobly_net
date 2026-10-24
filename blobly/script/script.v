@@ -58,9 +58,13 @@ pub:
 	// a DoIP row hosting its entity in the run (project.Channel.hosts_doip_entity): uds.node takes
 	// it for a simulation of the node, at an address of its own
 	hosts bool
-	// the row's `j1939:` tick: its frames are read as J1939 (j1939.v), as where a database
-	// declares it
+	// the row's wire reads as J1939 (j1939.v): a row on it — enabled or not, which only the host
+	// knows — ticked `j1939:` or with a database declaring it (headless.Run.reads_j1939, the
+	// GUI's census); the channels here are asked too
 	j1939 bool
+	// each of the row's databases as it was opened, the files `db` merges: what a rejoined J1939
+	// message is judged by per file (candb.pgn_message_in_catalog); empty asks `db` alone
+	sources []candb.Database
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project

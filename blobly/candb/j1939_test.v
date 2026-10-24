@@ -269,3 +269,35 @@ fn test_pgn_message_in_one_rule_over_the_wire() {
 		}
 	}
 }
+
+// A row's merged catalog keeps the first definition of an id, so a rejoined message is judged over
+// the SOURCE files and mapped back into the catalog: two files disagreeing about one id decode
+// nothing, and one layout at two priorities in two files decodes as the catalog's entry.
+fn test_pgn_message_in_catalog_judges_the_files_and_answers_the_catalog() {
+	p6 := u32(2566834688) // 0x98FECA00
+	p7 := u32(2633943552) // 0x9CFECA00, the same PGN and SA at priority 7
+	a := pdb([Def{p6, 'A', 0, true}])
+	b_other := pdb([Def{p6, 'B', 1, true}])
+	b_prio := pdb([Def{p7, 'A', 0, true}])
+	open := fn [a, b_other, b_prio] (ref string) !Loaded {
+		return Loaded{
+			db: match ref {
+				'a' { a }
+				'b_other' { b_other }
+				else { b_prio }
+			}
+		}
+	}
+	// the merge keeps A's definition of p6 and drops B's
+	merged, sources, _ := merge_with_sources(['a', 'b_other'], open)
+	assert merged.messages.len == 1 && sources.len == 2
+	clash := pgn_message_in_catalog(sources, merged, 0xFECA, 0)
+	assert !clash.found && clash.refused.contains('different layouts'), clash.refused
+	assert pgn_message_in([merged], 0xFECA, 0).found, 'the merged catalog alone cannot see it'
+	both, both_src, _ := merge_with_sources(['a', 'b_prio'], open)
+	twice := pgn_message_in_catalog(both_src, both, 0xFECA, 0)
+	assert twice.found && twice.index == 0, twice.refused
+	assert pgn_message_in([both], 0xFECA, 0).refused.contains('more than once'), 'merged, they look like one file'
+	// no sources: the catalog alone
+	assert pgn_message_in_catalog([], merged, 0xFECA, 0).found
+}

@@ -675,7 +675,7 @@ followed as a listener) and decoded through the channel's database by PGN, the t
 wrong, and the address directory. The reading is fed by the frames the script reads on the channel
 — `bus.recv`, `expect`, `run()` and the waits below — so a frame is consumed once, and the script's
 own sends are never in it. Nothing decides a bus is J1939, so a channel reads it from its first
-frame where its wire says so (a row on it ticked `j1939:`, or with a database declaring J1939 with
+frame where its wire says so (a row of the project on it, a disabled one too, ticked `j1939:`, or with a database declaring J1939 with
 `VFrameFormat` `J1939PG`: the GUI's per-wire reading), and any other CAN channel from its first
 `j1939` call. Nothing is sent: no CTS, no
 acknowledgement, no address claim — a script that is a node on the bench sends those itself.

@@ -1,8 +1,8 @@
 // J1939 on a script's frames: every frame its handle on a channel reads goes through that
 // channel's j1939.Listener — the transport protocol rejoined and the address directory — where the
 // wire reads as J1939 (a row on it ticked `j1939:`, a database declaring it) or the script asked
-// (any j1939.* call). Completed messages decode through the channel's merged database by
-// candb.pgn_message_in, the trace's rule. Nothing is sent.
+// (any j1939.* call). Completed messages decode by candb.pgn_message_in, the trace's rule, over the
+// row's database files, mapped into its merged catalog (pgn_message_in_catalog). Nothing is sent.
 module script
 
 import time
@@ -27,8 +27,8 @@ fn l_j1939_dropped(l lua.State) i32 {
 	return 1
 }
 
-// j1939_says is whether channel `ci`'s wire reads as J1939: a channel on it whose row is ticked
-// `j1939:` or whose database declares it (j1939.on_wire, the GUI's per-wire gate).
+// j1939_says is whether channel `ci`'s wire reads as J1939: the host says so (ChanInfo.j1939, every
+// project row on the wire counted), or a channel here on it declares it (j1939.on_wire).
 fn (env &Env) j1939_says(ci int) bool {
 	keys := env.chans.map(transport.destination_key(it.fault_iface()))
 	says := env.chans.map(it.j1939 || it.db.j1939_declared())
@@ -131,7 +131,7 @@ fn l_j1939_wait(l lua.State) i32 {
 	deadline := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
 	mut lis := env.j1939_of(name) or { return l.fail(err.msg()) }
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
-	db := env.chans[ci].db
+	ch := env.chans[ci]
 	pgn := l.arg_int(3)
 	sa := l.arg_int(4)
 	any_one := pgn < 0 && sa < 0
@@ -167,7 +167,7 @@ fn l_j1939_wait(l lua.State) i32 {
 	}
 	l.new_table()
 	for i, a in got {
-		push_assembled(l, db, a)
+		push_assembled(l, ch, a)
 		l.set_index(i + 1)
 	}
 	l.push_str(order.map(if others[it] > 1 { '${it} (x${others[it]})' } else { it }).join(', '))
@@ -177,7 +177,7 @@ fn l_j1939_wait(l lua.State) i32 {
 // push_assembled pushes one completed message as a table: pgn, sa, da, priority, bam, data,
 // packets, t_ms (its last packet) and t_start_ms, and where the database decodes it name and
 // signals, else note (why definitions that disagree decode nothing)
-fn push_assembled(l lua.State, db candb.Database, a j1939.Assembled) {
+fn push_assembled(l lua.State, ch ChanInfo, a j1939.Assembled) {
 	l.new_table()
 	l.set_int('pgn', a.pgn)
 	l.set_int('sa', a.sa)
@@ -189,7 +189,7 @@ fn push_assembled(l lua.State, db candb.Database, a j1939.Assembled) {
 	l.set_int('packets', a.packets())
 	l.set_num('t_ms', a.t_end_ms)
 	l.set_num('t_start_ms', a.t_start_ms)
-	pm := candb.pgn_message_in([db], a.pgn, a.sa)
+	pm := candb.pgn_message_in_catalog(ch.sources, ch.db, a.pgn, a.sa)
 	if pm.found {
 		l.set_str('name', pm.msg.name)
 		l.new_table()

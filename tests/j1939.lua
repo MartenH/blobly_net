@@ -142,6 +142,17 @@ test("a channel reads J1939 where its wire says so, any other once asked", funct
   check.equal(j1939.expect("Plain", 0xFF10, 1000).data, BODY)
 end)
 
+test("a disabled alias row ticked j1939 makes its wire J1939", function()
+  -- AliasOff is disabled and ticked; Alias, on its wire, reads J1939 from its first frame
+  bus.recv("Alias", 0)
+  cm("AliasPeer", 0x21, 0xFF, announce(32, BODY, 0xFF10))
+  packets("AliasPeer", 0x21, 0xFF, BODY)
+  for _ = 1, 4 do check.truthy(bus.recv("Alias", 200), "a frame went missing") end
+  local got = j1939.messages("Alias")
+  check.equal(#got, 1)
+  check.equal(got[1].data, BODY)
+end)
+
 test("j1939.expect leaves what follows its match queued", function()
   drain("J1939")
   for counter = 1, 3 do

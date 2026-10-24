@@ -5,21 +5,44 @@ module main
 
 import time
 import blobly.candb
+import blobly.headless
 import blobly.j1939
 import blobly.transport
 
-// J1939Tap is what bb_j1939_attach bound a handle to: the listener and the row's databases in run
-// `gen`, nil for none. Used by the handle's own thread (bb.h), so it needs no lock of its own.
+// J1939Tap is what bb_j1939_attach bound a handle to: the listener, the row's merged catalog and
+// the source databases it merges, in run `gen`; nil for none. Used by the handle's own thread
+// (bb.h), so it needs no lock of its own.
 struct J1939Tap {
 mut:
-	l   &j1939.Listener = unsafe { nil }
-	db  candb.Database
-	gen u64
+	l       &j1939.Listener = unsafe { nil }
+	db      candb.Database
+	sources []candb.Database
+	gen     u64
 }
 
-// j1939_row is row `row`'s databases as the run has them, whether its wire reads as J1939 (a row
-// on it ticked `j1939:`, or with a database that declares it: j1939.on_wire), and the run's number.
-fn j1939_row(row i32) !(candb.Database, bool, u64) {
+__global (
+	// the run's rows, aligned with bb_dbs and under bb_mu: each one's source databases, and
+	// whether its wire reads as J1939 (headless.Run.reads_j1939: every project row on it counts,
+	// a disabled alias included)
+	bb_j1939_sources [][]candb.Database
+	bb_j1939_on      []bool
+)
+
+// j1939_publish records the run's per-row J1939 facts; under bb_mu.
+fn j1939_publish(r &headless.Run) {
+	bb_j1939_sources = r.chans.map(it.sources)
+	bb_j1939_on = r.chans.map(r.reads_j1939(it.cfg))
+}
+
+// j1939_retire forgets them at a stop; under bb_mu.
+fn j1939_retire() {
+	bb_j1939_sources = [][]candb.Database{}
+	bb_j1939_on = []bool{}
+}
+
+// j1939_row is row `row`'s merged catalog and source databases as the run has them, whether its
+// wire reads as J1939, and the run's number.
+fn j1939_row(row i32) !(candb.Database, []candb.Database, bool, u64) {
 	bb_mu.lock()
 	defer {
 		bb_mu.unlock()
@@ -31,12 +54,7 @@ fn j1939_row(row i32) !(candb.Database, bool, u64) {
 	if row < 0 || int(row) >= bb_dbs.len {
 		return error('no channel ${row}')
 	}
-	keys := bb_run_rows.map(transport.destination_key_for(it.adapter, it.iface))
-	mut says := []bool{len: bb_run_rows.len}
-	for i, r in bb_run_rows {
-		says[i] = r.j1939 || bb_dbs[i].j1939_declared()
-	}
-	return bb_dbs[int(row)], j1939.on_wire(keys, says, int(row)), bb_run_gen
+	return bb_dbs[int(row)], bb_j1939_sources[int(row)], bb_j1939_on[int(row)], bb_run_gen
 }
 
 @[export: 'bb_j1939_attach']
@@ -45,7 +63,7 @@ pub fn bb_j1939_attach(h i32, row i32, force i32) i32 {
 	defer {
 		hd.leave()
 	}
-	db, says, gen := j1939_row(row) or { return refused(err) }
+	db, sources, says, gen := j1939_row(row) or { return refused(err) }
 	if !isnil(hd.j1939.l) && hd.j1939.gen == gen {
 		ok()
 		return 1
@@ -56,9 +74,10 @@ pub fn bb_j1939_attach(h i32, row i32, force i32) i32 {
 		return 0
 	}
 	hd.j1939 = J1939Tap{
-		l:   &j1939.Listener{}
-		db:  db
-		gen: gen
+		l:       &j1939.Listener{}
+		db:      db
+		sources: sources
+		gen:     gen
 	}
 	ok()
 	return 1
@@ -123,7 +142,7 @@ pub fn bb_j1939_take_message(h i32, out &C.bb_j1939_message, values &f64, active
 	bb_mu.unlock()
 	mut pm := candb.PgnMatch{}
 	if current {
-		pm = candb.pgn_message_in([hd.j1939.db], head.pgn, head.sa)
+		pm = candb.pgn_message_in_catalog(hd.j1939.sources, hd.j1939.db, head.pgn, head.sa)
 		if pm.found && pm.msg.signals.len > int(cap) {
 			return fail(bb_err, 'j1939_take_message: ${pm.msg.name} has ${pm.msg.signals.len} signals, and the arrays hold ${cap}')
 		}

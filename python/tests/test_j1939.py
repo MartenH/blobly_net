@@ -167,6 +167,18 @@ def test_a_wire_that_does_not_say_j1939_reads_it_only_once_asked(net):
     assert len(listener.messages(0)) == 1
 
 
+def test_a_disabled_alias_tick_makes_its_wire_j1939(net):
+    alias, peer = net.channels.Alias, net.channels.AliasPeer  # AliasOff: disabled, ticked j1939
+    assert "AliasOff" not in net.channels.keys(), "a disabled row is not the script's"
+    for c in (alias, peer):
+        c.close()
+        c.look()
+    cm(peer, 0x21, 0xFF, announce(32, BODY, 0xFF10))
+    packets(peer, 0x21, 0xFF, BODY)
+    assert all(alias.recv(200) is not None for _ in range(4))  # read before anything asked
+    assert [m.data for m in alias.j1939().messages(0)] == [BODY]
+
+
 def test_expect_pgn_leaves_what_follows_its_match_queued(rows):
     j, peer, _ = rows
     for counter in (1, 2, 3):

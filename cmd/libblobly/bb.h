@@ -1113,15 +1113,17 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
  * frame bb_bus_recv reads on it from then on is fed to the listener, and a receive that finds
  * nothing queued (BB_NONE) times the stalled transfers out (T1 750 ms for a BAM, T3 1250 ms for a
  * connection). Nothing decides a bus IS J1939, so it is opt-in: with force 0 it attaches only where
- * the row's wire says so — a row on it ticked `j1939:`, or with a database that declares J1939
- * (VFrameFormat J1939PG), the GUI's per-wire gate — and answers 0 elsewhere; with force 1 it
+ * the row's wire says so — a row of the project on it, enabled or not, ticked `j1939:` or with a
+ * database that declares J1939 (VFrameFormat J1939PG), the GUI's per-wire census — and answers 0
+ * elsewhere; with force 1 it
  * attaches on any CAN row. 1: listening. Attaching a handle already listening in this run keeps
  * what it has.
  *
  * bb_j1939_take_message takes the oldest completed message (BB_NONE when none waits): its parameter
- * group, addresses and data, and its decode through the row's merged databases by the trace's rule
+ * group, addresses and data, and its decode by the trace's rule over the row's database FILES
  * (candb.pgn_message_in: the message at exactly that PGN and source address, else by PGN alone,
- * nothing where definitions disagree — `note` says why) — `message` its position (bb_message_info),
+ * nothing where definitions disagree — `note` says why), mapped into the row's merged catalog —
+ * `message` its position there (bb_message_info), none where the catalog holds another layout,
  * values[k] / active[k] its signals as bb_decode gives them (cap at least its signal count, else
  * BB_ERR with the message kept). bb_j1939_take_fault takes the oldest fault. A listener keeps 1024 of
  * each untaken; past that the oldest is dropped, and bb_j1939_dropped counts them.

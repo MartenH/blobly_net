@@ -12,11 +12,17 @@
 #
 #   Plain, PlainPeer
 #
+# and a third wire whose only declaration is a DISABLED alias's tick, which still counts (the
+# wire reads as J1939, as in the GUI's census) while the disabled row stays out of the run:
+#
+#   Alias, AliasPeer, AliasOff (disabled, j1939: true)
+#
 #   ./scripts/runtests.sh tests/j1939.lua
 #   python3 python/examples/j1939_listen.py
 project:
   name: j1939-script
-  version: 2
+  # v6: a channel's `j1939:` tick
+  version: 6
 
 channels:
   - name: J1939
@@ -41,3 +47,17 @@ channels:
     type: can
     interface: inproc:J1939P
     bitrate: 250000
+  - name: Alias
+    type: can
+    interface: inproc:J1939A
+    bitrate: 250000
+  - name: AliasPeer
+    type: can
+    interface: inproc:J1939A
+    bitrate: 250000
+  - name: AliasOff
+    type: can
+    interface: inproc:J1939A
+    bitrate: 250000
+    enabled: false
+    j1939: true

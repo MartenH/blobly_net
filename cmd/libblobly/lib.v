@@ -595,6 +595,7 @@ pub fn bb_start() i32 {
 	fault_rows_publish(r.chans)
 	gens_publish(r)
 	sys_publish(r)
+	j1939_publish(r)
 	bb_dbs_live = true
 	bb_run_gen++
 	bb_mu.unlock()
@@ -614,6 +615,7 @@ pub fn bb_stop() i32 {
 	fault_rows_retire()
 	gens_retire()
 	sys_retire()
+	j1939_retire()
 	bb_dbs_live = false
 	bb_mu.unlock()
 	replays_stop()

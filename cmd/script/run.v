@@ -201,7 +201,8 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 			nominal:   nominal
 			data_rate: data_rate
 			replay:    c.replay_cfg(os.dir(hrun.path))
-			j1939:     c.cfg.j1939
+			j1939:     hrun.reads_j1939(c.cfg)
+			sources:   c.sources
 		}
 	}
 	mut env := script.new_env(chans) or {

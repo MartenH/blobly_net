@@ -481,7 +481,7 @@ followed as a listener), decoded through the row's databases by PGN, the transfe
 complete, and the address directory. It reads the frames the channel's own handle reads — by
 `recv`, `expect`, the event loop or its own waits — so a frame is still consumed once, and what the
 channel sends is never in it. Nothing decides a bus is J1939, so a row reads it from its first
-frame where its wire says so — a row on it ticked `j1939:`, or with a database declaring J1939
+frame where its wire says so — a row of the project on it (a disabled one too) ticked `j1939:`, or with a database declaring J1939
 (`VFrameFormat` `J1939PG`, [j1939.md](j1939.md)): the GUI's per-wire reading — and any other CAN
 row from the call on. It sends nothing: no
 CTS, no acknowledgement, no address claim; on a bench where the script is a node, it sends those
