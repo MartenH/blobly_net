@@ -481,8 +481,9 @@ followed as a listener), decoded through the row's databases by PGN, the transfe
 complete, and the address directory. It reads the frames the channel's own handle reads — by
 `recv`, `expect`, the event loop or its own waits — so a frame is still consumed once, and what the
 channel sends is never in it. Nothing decides a bus is J1939, so a row reads it from its first
-frame where it says so — its `j1939:` tick, or a database declaring J1939 (`VFrameFormat`
-`J1939PG`, [j1939.md](j1939.md)) — and any other CAN row from the call on. It sends nothing: no
+frame where its wire says so — a row on it ticked `j1939:`, or with a database declaring J1939
+(`VFrameFormat` `J1939PG`, [j1939.md](j1939.md)): the GUI's per-wire reading — and any other CAN
+row from the call on. It sends nothing: no
 CTS, no acknowledgement, no address claim; on a bench where the script is a node, it sends those
 frames itself.
 
@@ -509,7 +510,7 @@ with blobly.Project("projects/j1939-script.blobnet") as net:
   `J1939Message` of parameter group `pgn` (from source address `sa`, when given) within one
   deadline, as `expect`'s, and raises `blobly.Timeout` otherwise, its message naming the groups
   that came instead and the last transfer fault. Messages of other groups taken while waiting are
-  consumed.
+  consumed; those after it stay queued.
 - **`listener.messages(timeout_ms=0)`** returns every completed message waiting, oldest first;
   when none waits, the channel is read until one completes or the time is up (`[]`).
 - A **`J1939Message`** has `pgn`, `sa`, `da` (0xFF for a BAM), `priority`, `bam`, `data` (the
@@ -521,7 +522,7 @@ with blobly.Project("projects/j1939-script.blobnet") as net:
   `J1939Fault`: `kind` (`"sequence"` for a dropped or repeated packet, `"aborted"`, `"timeout"`
   — T1 750 ms for a BAM, T3 1250 ms for a connection, found once a read finds nothing queued —
   `"malformed"`, `"orphan"`, …), `sa`, `da`, `pgn` (`None` where nothing was announced) and
-  `detail`; `str(fault)` is the line the GUI's Log writes.
+  `detail`; `text` (and `str(fault)`) is the line the GUI's Log writes.
 - **`listener.addresses(window_ms=0)`** returns who holds which source address, by address, each a
   `J1939Address` (`sa`, `name`, `t_ms`), after reading the channel for `window_ms` (0 reads
   nothing): contention settled by J1939-81 (the lower NAME keeps the address, and has left its
@@ -1786,7 +1787,7 @@ One enabled row of the project (`net.channels.CAN1`).
 | member | what |
 |---|---|
 | `listener.channel` | The channel it reads. |
-| `listener.expect_pgn(pgn, timeout_ms=1000, *, sa=None)` | The first completed `J1939Message` of `pgn` (from `sa`), within one deadline; `Timeout` otherwise. Messages of other groups read meanwhile are consumed. |
+| `listener.expect_pgn(pgn, timeout_ms=1000, *, sa=None)` | The first completed `J1939Message` of `pgn` (from `sa`), within one deadline; `Timeout` otherwise. Messages of other groups ahead of it are consumed, those after it stay queued. |
 | `listener.messages(timeout_ms=0)` | Every completed message waiting; none waiting, the channel read until one completes or the time is up. |
 | `listener.faults()` | The `J1939Fault`s since the last call. Reads nothing. |
 | `listener.addresses(window_ms=0)` | The directory by address, a `J1939Address` each, after reading the channel for `window_ms`. |
@@ -1802,7 +1803,7 @@ Frozen dataclasses ([J1939](#j1939)).
 | `J1939Message.data`, `.packets` | The message, exactly its announced size, and how many data frames carried it. |
 | `J1939Message.message`, `.signals`, `.note` | The `Message` it decodes as and `{signal: value}`; `None`, `{}` and why (`note`) where it does not. |
 | `J1939Message.t_ms`, `.t_start_ms` | Its last packet and its announcement, on a `Frame`'s clock. |
-| `J1939Fault.kind`, `.sa`, `.da`, `.pgn`, `.detail` | What went wrong (`"sequence"`, `"aborted"`, `"timeout"`, `"malformed"`, `"orphan"`, `"restarted"`, `"overflow"`, `"padding"`, `"off_spec"`, `"truncated"`), with whom, the group (`None` where none was announced), and in words. |
+| `J1939Fault.kind`, `.sa`, `.da`, `.pgn`, `.detail`, `.text` | What went wrong (`"sequence"`, `"aborted"`, `"timeout"`, `"malformed"`, `"orphan"`, `"restarted"`, `"overflow"`, `"padding"`, `"off_spec"`, `"truncated"`), with whom, the group (`None` where none was announced), the detail and the whole line the GUI's Log writes. |
 | `J1939Address.sa`, `.name`, `.t_ms` | A held source address, the `J1939Name` holding it, when that claim was read. |
 | `J1939Name.raw`, `.identity`, `.manufacturer`, `.ecu_instance`, `.function_instance`, `.function`, `.function_name`, `.vehicle_system`, `.vehicle_system_instance`, `.industry_group`, `.arbitrary_address_capable` | The NAME as claimed and its J1939-81 fields; `function_name` for the 32 global functions, else `None`. |
 

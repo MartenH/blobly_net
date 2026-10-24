@@ -373,7 +373,7 @@ class BbJ1939Fault(ctypes.Structure):
     """bb_j1939_fault, field for field."""
     _fields_ = [("kind", ctypes.c_int32), ("sa", ctypes.c_uint8), ("da", ctypes.c_uint8),
                 ("announced", ctypes.c_uint8), ("pgn", ctypes.c_uint32),
-                ("detail", ctypes.c_char * BB_J1939_TEXT)]
+                ("detail", ctypes.c_char * BB_J1939_TEXT), ("text", ctypes.c_char * BB_J1939_TEXT)]
 
 
 class BbJ1939Address(ctypes.Structure):

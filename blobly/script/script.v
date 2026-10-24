@@ -140,6 +140,8 @@ mut:
 	e2e_tx map[string]&sim.E2eStamper
 	// per channel: the J1939 reading of what its handle reads (j1939.v)
 	j1939_rx map[string]&j1939.Listener
+	// the channels whose wire does not read as J1939, asked once
+	j1939_off map[string]bool
 	// the coroutine (its lua_State) the deadline was first raised in; 0 before
 	timeout_co u64
 	// the replays and recordings the script started, stopped by close (replay.v)
@@ -1323,13 +1325,13 @@ fn clock_ms(ns i64) f64 {
 }
 
 // push_received pushes what a received frame carries after its id, ext and data: fd, brs, esi,
-// rtr and t_ms, when it was received (transport.received_now)
-fn push_received(l lua.State, f transport.CanFrame) {
+// rtr and t_ms, when it was received (`t_ns`, its transport.received_now)
+fn push_received(l lua.State, f transport.CanFrame, t_ns i64) {
 	l.push_bool(f.fd)
 	l.push_bool(f.brs)
 	l.push_bool(f.esi)
 	l.push_bool(f.rtr)
-	l.push_num(clock_ms(transport.received_now(f)))
+	l.push_num(clock_ms(t_ns))
 }
 
 fn l_bus_send(l lua.State) i32 {
@@ -1361,11 +1363,12 @@ fn l_bus_recv(l lua.State) i32 {
 		l.push_nil()
 		return 1
 	}
-	env.j1939_saw(name, frame)
+	t_ns := transport.received_now(frame)
+	env.j1939_saw(name, frame, t_ns)
 	l.push_int(frame.id)
 	l.push_bool(frame.extended)
 	l.push_bytes(frame.data)
-	push_received(l, frame)
+	push_received(l, frame, t_ns)
 	push_e2e(l, env.e2e_verdict(name, frame))
 	return 9
 }

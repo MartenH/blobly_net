@@ -1,8 +1,8 @@
 // J1939 on a script's frames: every frame its handle on a channel reads goes through that
 // channel's j1939.Listener — the transport protocol rejoined and the address directory — where the
-// row says the bus is J1939 (its `j1939:` tick, a database declaring it) or the script asked
-// (any j1939.* call). Completed messages decode through the channel's database by
-// candb.pgn_message_in, the rule the trace decodes them by. Nothing is sent.
+// wire reads as J1939 (a row on it ticked `j1939:`, a database declaring it) or the script asked
+// (any j1939.* call). Completed messages decode through the channel's merged database by
+// candb.pgn_message_in, the trace's rule. Nothing is sent.
 module script
 
 import time
@@ -18,25 +18,31 @@ fn (mut env Env) register_j1939() {
 	env.st.register('__j1939_addresses', l_j1939_addresses)
 }
 
-// j1939_says is whether channel `ci`'s row says its bus is J1939.
+// j1939_says is whether channel `ci`'s wire reads as J1939: a channel on it whose row is ticked
+// `j1939:` or whose database declares it (j1939.on_wire, the GUI's per-wire gate).
 fn (env &Env) j1939_says(ci int) bool {
-	c := env.chans[ci]
-	return c.j1939 || c.db.j1939_declared()
+	keys := env.chans.map(transport.destination_key(it.key_iface))
+	says := env.chans.map(it.j1939 || it.db.j1939_declared())
+	return j1939.on_wire(keys, says, ci)
 }
 
-// j1939_saw feeds a frame the script's handle on `name` read to the channel's listener, made at
-// its first frame where the row says J1939.
-fn (mut env Env) j1939_saw(name string, f transport.CanFrame) {
+// j1939_saw feeds a frame the script's handle on `name` read at `t_ns` to the channel's listener,
+// made at its first frame where the wire reads as J1939; a channel that does not is remembered.
+fn (mut env Env) j1939_saw(name string, f transport.CanFrame, t_ns i64) {
 	mut l := env.j1939_rx[name] or {
+		if name in env.j1939_off {
+			return
+		}
 		ci := env.find_chan(name) or { return }
 		if !env.j1939_says(ci) {
+			env.j1939_off[name] = true
 			return
 		}
 		l := &j1939.Listener{}
 		env.j1939_rx[name] = l
 		l
 	}
-	l.feed(f, f64(transport.received_now(f)) / 1_000_000.0)
+	l.feed(f, f64(t_ns) / 1_000_000.0)
 }
 
 // j1939_idle times the stalled transfers of `name`'s listener out: its handle had nothing queued.
@@ -57,6 +63,39 @@ fn (mut env Env) j1939_of(name string) !&j1939.Listener {
 	return l
 }
 
+// j1939_read reads channel `name` into its listener `lis` until `deadline` (sys_mono_now), or with
+// `until_message` until a completed message waits; a deadline already past is one look. A wait the
+// run's deadline cuts is an error (timeout_note).
+fn (mut env Env) j1939_read(name string, lis &j1939.Listener, deadline u64, until_message bool) ! {
+	mut bus := env.bus_for(name)!
+	mut first := true
+	for !(until_message && lis.queued() > 0) {
+		now := time.sys_mono_now()
+		if now >= deadline && !first {
+			return
+		}
+		first = false
+		left := if now >= deadline { 0 } else { int((deadline - now) / 1_000_000) }
+		f := bus.recv(if left < 100 { left } else { 100 }) or {
+			if env.expired() {
+				return error(timeout_note)
+			}
+			if transport.look_was_spent(err) {
+				continue
+			}
+			if err.msg() != 'timeout' {
+				return error('j1939: ${name}: ${err.msg()}')
+			}
+			env.j1939_idle(name)
+			if left == 0 {
+				return
+			}
+			continue
+		}
+		env.j1939_saw(name, f, transport.received_now(f))
+	}
+}
+
 // __j1939_listen(channel): the channel read as J1939 from now on
 fn l_j1939_listen(l lua.State) i32 {
 	mut env := env_of(l)
@@ -64,53 +103,40 @@ fn l_j1939_listen(l lua.State) i32 {
 	return 0
 }
 
-// __j1939_wait(channel, timeout_ms, pgn, sa) -> { message, ... }: every completed message taken,
-// oldest first, the channel read until one of `pgn` (any, below 0) from `sa` (any, below 0) is
-// among them or the wait has passed; a wait of 0 is one look
+// __j1939_wait(channel, timeout_ms, pgn, sa) -> { message, ... }: the completed messages taken,
+// oldest first — every one waiting, or up to the first of `pgn` (any, below 0) from `sa` (any,
+// below 0), the rest left queued — the channel read until one is taken or the wait has passed; a
+// wait of 0 is one look
 fn l_j1939_wait(l lua.State) i32 {
 	mut env := env_of(l)
 	name := l.arg_str(1)
 	mut lis := env.j1939_of(name) or { return l.fail(err.msg()) }
-	mut bus := env.bus_for(name) or { return l.fail(err.msg()) }
 	ci := env.find_chan(name) or { return l.fail(err.msg()) }
 	db := env.chans[ci].db
 	pgn := l.arg_int(3)
 	sa := l.arg_int(4)
+	any_one := pgn < 0 && sa < 0
 	ms := env.bounded(l.arg_int(2))
 	deadline := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
 	mut got := []j1939.Assembled{}
+	mut matched := false
 	mut first := true
 	for {
-		for {
+		for !matched {
 			a := lis.next_message() or { break }
 			got << a
+			matched = !any_one && (pgn < 0 || i64(a.pgn) == pgn) && (sa < 0 || i64(a.sa) == sa)
 		}
-		if got.any((pgn < 0 || i64(it.pgn) == pgn) && (sa < 0 || i64(it.sa) == sa)) {
-			break
-		}
-		now := time.sys_mono_now()
-		if now >= deadline && !first {
+		if matched || (any_one && got.len > 0) || (!first && time.sys_mono_now() >= deadline) {
 			break
 		}
 		first = false
-		left := if now >= deadline { 0 } else { int((deadline - now) / 1_000_000) }
-		f := bus.recv(if left < 100 { left } else { 100 }) or {
-			if env.expired() {
+		env.j1939_read(name, lis, deadline, true) or {
+			if err.msg() == timeout_note {
 				return timeout_at(l)
 			}
-			if transport.look_was_spent(err) {
-				continue
-			}
-			if err.msg() != 'timeout' {
-				return l.fail('j1939: ${name}: ${err.msg()}')
-			}
-			env.j1939_idle(name)
-			if left == 0 {
-				break
-			}
-			continue
+			return l.fail(err.msg())
 		}
-		env.j1939_saw(name, f)
 	}
 	l.new_table()
 	for i, a in got {
@@ -180,28 +206,11 @@ fn l_j1939_addresses(l lua.State) i32 {
 	lis := env.j1939_of(name) or { return l.fail(err.msg()) }
 	ms := env.bounded_window(l.arg_int(2))
 	if ms > 0 {
-		mut bus := env.bus_for(name) or { return l.fail(err.msg()) }
-		deadline := time.sys_mono_now() + u64(ms) * 1_000_000
-		for {
-			now := time.sys_mono_now()
-			if now >= deadline {
-				break
+		env.j1939_read(name, lis, time.sys_mono_now() + u64(ms) * 1_000_000, false) or {
+			if err.msg() == timeout_note {
+				return timeout_at(l)
 			}
-			left := int((deadline - now) / 1_000_000)
-			f := bus.recv(if left < 100 { left } else { 100 }) or {
-				if env.expired() {
-					return timeout_at(l)
-				}
-				if transport.look_was_spent(err) {
-					continue
-				}
-				if err.msg() != 'timeout' {
-					return l.fail('j1939: ${name}: ${err.msg()}')
-				}
-				env.j1939_idle(name)
-				continue
-			}
-			env.j1939_saw(name, f)
+			return l.fail(err.msg())
 		}
 	}
 	l.new_table()
@@ -211,7 +220,7 @@ fn l_j1939_addresses(l lua.State) i32 {
 		l.set_int('sa', nd.sa)
 		l.set_num('t_ms', nd.t_ms)
 		l.new_table()
-		l.set_int('raw', i64(n.raw))
+		l.set_int('raw', i64(n.raw)) // its 64 bits: negative where bit 63 is set
 		l.set_int('identity', n.identity)
 		l.set_int('manufacturer', n.manufacturer)
 		l.set_int('ecu_instance', n.ecu_instance)

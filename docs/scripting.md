@@ -675,17 +675,18 @@ followed as a listener) and decoded through the channel's database by PGN, the t
 wrong, and the address directory. The reading is fed by the frames the script reads on the channel
 — `bus.recv`, `expect`, `run()` and the waits below — so a frame is consumed once, and the script's
 own sends are never in it. Nothing decides a bus is J1939, so a channel reads it from its first
-frame where its row says so (its `j1939:` tick, or a database declaring J1939 with `VFrameFormat`
-`J1939PG`), and any other CAN channel from its first `j1939` call. Nothing is sent: no CTS, no
+frame where its wire says so (a row on it ticked `j1939:`, or with a database declaring J1939 with
+`VFrameFormat` `J1939PG`: the GUI's per-wire reading), and any other CAN channel from its first
+`j1939` call. Nothing is sent: no CTS, no
 acknowledgement, no address claim — a script that is a node on the bench sends those itself.
 
 | Call | Returns |
 |---|---|
 | `j1939.listen(channel)` | nothing: the channel is read as J1939 from now on |
 | `j1939.messages(channel [, timeout_ms])` | every completed message waiting, oldest first; none waiting, the channel is read until one completes or `timeout_ms` (default 0: one look) has passed, `{}` then |
-| `j1939.expect(channel, pgn [, timeout_ms [, sa]])` | the first completed message of `pgn` (from `sa`), waited for at most `timeout_ms` (default 1000); an error naming what came instead otherwise. Messages of other groups taken meanwhile are consumed |
+| `j1939.expect(channel, pgn [, timeout_ms [, sa]])` | the first completed message of `pgn` (from `sa`), waited for at most `timeout_ms` (default 1000); an error naming what came instead otherwise. Messages of other groups ahead of it are consumed, those after it stay queued |
 | `j1939.faults(channel)` | the faults since the last call: `{ kind, sa, da, pgn, detail, text }` each (`pgn` nil where nothing was announced, `text` the line the GUI's Log writes); `kind` is `sequence` (a packet dropped or repeated), `aborted`, `timeout` (T1 750 ms for a BAM, T3 1250 ms for a connection, found once a read finds nothing queued), `malformed`, `orphan`, `restarted`, `overflow`, `padding`, `off_spec` or `truncated` |
-| `j1939.addresses(channel [, window_ms])` | who holds which source address, by address, after reading the channel for `window_ms` (default 0: nothing read): `{ sa, t_ms, name = { raw, identity, manufacturer, ecu_instance, function_instance, function, function_name, vehicle_system, vehicle_system_instance, industry_group, arbitrary_address_capable } }`. The lower NAME keeps a contested address, a Cannot Claim releases one; `function_name` names the 32 global functions, nil for others; `raw` is the NAME's 64 bits as a Lua integer |
+| `j1939.addresses(channel [, window_ms])` | who holds which source address, by address, after reading the channel for `window_ms` (default 0: nothing read): `{ sa, t_ms, name = { raw, identity, manufacturer, ecu_instance, function_instance, function, function_name, vehicle_system, vehicle_system_instance, industry_group, arbitrary_address_capable } }`. The lower NAME keeps a contested address, a Cannot Claim releases one; `function_name` names the 32 global functions, nil for others; `raw` is the NAME's 64 bits as a Lua integer, negative where bit 63 (arbitrary address capable) is set: `string.format("%016X", raw)` prints it |
 
 A message is `{ pgn, sa, da, priority, bam, data, packets, t_ms, t_start_ms, name, signals,
 note }`: `da` 0xFF for a BAM, `data` exactly the announced size, `t_ms` its last packet and

@@ -350,6 +350,7 @@ pub mut:
 	announced u8
 	pgn       u32
 	detail    [256]char
+	text      [256]char
 }
 
 pub struct C.bb_j1939_address {

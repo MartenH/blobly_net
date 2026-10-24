@@ -1113,12 +1113,13 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
  * frame bb_bus_recv reads on it from then on is fed to the listener, and a receive that finds
  * nothing queued (BB_NONE) times the stalled transfers out (T1 750 ms for a BAM, T3 1250 ms for a
  * connection). Nothing decides a bus IS J1939, so it is opt-in: with force 0 it attaches only where
- * the row says so — its `j1939:` tick, or a database that declares J1939 (VFrameFormat J1939PG) —
- * and answers 0 elsewhere; with force 1 it attaches on any CAN row. 1: listening. Attaching a
- * handle already listening in this run keeps what it has.
+ * the row's wire says so — a row on it ticked `j1939:`, or with a database that declares J1939
+ * (VFrameFormat J1939PG), the GUI's per-wire gate — and answers 0 elsewhere; with force 1 it
+ * attaches on any CAN row. 1: listening. Attaching a handle already listening in this run keeps
+ * what it has.
  *
  * bb_j1939_take_message takes the oldest completed message (BB_NONE when none waits): its parameter
- * group, addresses and data, and its decode through the row's databases by the rule the trace uses
+ * group, addresses and data, and its decode through the row's merged databases by the trace's rule
  * (candb.pgn_message_in: the message at exactly that PGN and source address, else by PGN alone,
  * nothing where definitions disagree — `note` says why) — `message` its position (bb_message_info),
  * values[k] / active[k] its signals as bb_decode gives them (cap at least its signal count, else
@@ -1128,7 +1129,7 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
  * claimed which source address with which NAME, contention settled by J1939-81 (the lower NAME
  * keeps it), a Cannot Claim releasing it. All on the thread that uses the handle. */
 #define BB_J1939_MAX 1785      /* the longest transport-protocol message, in bytes */
-#define BB_J1939_TEXT 256      /* bb_j1939_fault.detail and bb_j1939_message.note, NUL included */
+#define BB_J1939_TEXT 256      /* bb_j1939_fault's texts and bb_j1939_message.note, NUL included */
 typedef struct bb_j1939_message {
 	uint32_t pgn;
 	uint8_t  sa;
@@ -1162,6 +1163,7 @@ typedef struct bb_j1939_fault {
 	uint8_t  announced;   /* the transfer announced its parameter group: pgn is it */
 	uint32_t pgn;
 	char     detail[BB_J1939_TEXT];
+	char     text[BB_J1939_TEXT]; /* the whole fault in words, the line the GUI's Log writes */
 } bb_j1939_fault;
 /* A held source address and the NAME that claimed it (j1939.Name, J1939-81's fields). */
 typedef struct bb_j1939_address {

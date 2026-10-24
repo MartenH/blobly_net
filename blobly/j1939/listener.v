@@ -16,11 +16,58 @@ pub mut:
 	tp  Reassembler
 	dir Directory
 mut:
-	done   []Assembled
-	faults []Fault
+	done   Queue[Assembled]
+	faults Queue[Fault]
 pub mut:
 	// messages and faults dropped untaken because the queue was full
 	dropped int
+}
+
+// Queue is a bounded first-in first-out queue, taken from a head index and compacted once half of
+// it is taken, so each take is O(1) amortised.
+struct Queue[T] {
+mut:
+	items []T
+	head  int
+}
+
+fn (q Queue[T]) len() int {
+	return q.items.len - q.head
+}
+
+// push appends `x`, dropping the oldest when the queue holds listener_queue; true when it dropped.
+fn (mut q Queue[T]) push(x T) bool {
+	dropped := q.len() >= listener_queue
+	if dropped {
+		q.head++
+	}
+	q.items << x
+	q.compact()
+	return dropped
+}
+
+fn (q Queue[T]) peek() ?T {
+	if q.len() == 0 {
+		return none
+	}
+	return q.items[q.head]
+}
+
+fn (mut q Queue[T]) take() ?T {
+	if q.len() == 0 {
+		return none
+	}
+	x := q.items[q.head]
+	q.head++
+	q.compact()
+	return x
+}
+
+fn (mut q Queue[T]) compact() {
+	if q.head > 0 && q.head * 2 >= q.items.len {
+		q.items = q.items[q.head..].clone()
+		q.head = 0
+	}
 }
 
 // feed observes one frame the handle read at `t_ms` (host monotonic milliseconds): an Address
@@ -37,7 +84,9 @@ pub fn (mut l Listener) feed(f transport.CanFrame, t_ms f64) {
 	}
 	ev := l.tp.feed(f, t_ms)
 	for a in ev.done {
-		l.push_done(a)
+		if l.done.push(a) {
+			l.dropped++
+		}
 	}
 	for fl in ev.faults {
 		l.push_fault(fl)
@@ -55,51 +104,40 @@ pub fn (mut l Listener) idle(t_ms f64) {
 	}
 }
 
-fn (mut l Listener) push_done(a Assembled) {
-	if l.done.len >= listener_queue {
-		l.done.delete(0)
-		l.dropped++
-	}
-	l.done << a
-}
-
 fn (mut l Listener) push_fault(f Fault) {
-	if l.faults.len >= listener_queue {
-		l.faults.delete(0)
+	if l.faults.push(f) {
 		l.dropped++
 	}
-	l.faults << f
-}
-
-// next_message takes the oldest completed message.
-pub fn (mut l Listener) next_message() ?Assembled {
-	if l.done.len == 0 {
-		return none
-	}
-	a := l.done[0]
-	l.done.delete(0)
-	return a
 }
 
 // peek_message is the oldest completed message, left queued.
 pub fn (l Listener) peek_message() ?Assembled {
-	if l.done.len == 0 {
-		return none
-	}
-	return l.done[0]
+	return l.done.peek()
 }
 
-// next_fault takes the oldest fault.
-pub fn (mut l Listener) next_fault() ?Fault {
-	if l.faults.len == 0 {
-		return none
-	}
-	f := l.faults[0]
-	l.faults.delete(0)
-	return f
+// next_message takes the oldest completed message.
+pub fn (mut l Listener) next_message() ?Assembled {
+	return l.done.take()
 }
 
 // queued is how many completed messages wait to be taken.
 pub fn (l Listener) queued() int {
-	return l.done.len
+	return l.done.len()
+}
+
+// next_fault takes the oldest fault.
+pub fn (mut l Listener) next_fault() ?Fault {
+	return l.faults.take()
+}
+
+// on_wire is whether row `i` of a run reads as J1939: a row on its wire (`keys`, each row's
+// destination key) says so (`says`: its `j1939:` tick, or a database declaring J1939) — the GUI's
+// per-wire gate, since aliasing rows carry one wire's frames.
+pub fn on_wire(keys []string, says []bool, i int) bool {
+	for k, key in keys {
+		if key == keys[i] && says[k] {
+			return true
+		}
+	}
+	return false
 }

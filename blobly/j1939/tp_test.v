@@ -1178,6 +1178,16 @@ fn test_listener_queue_is_bounded_and_counts_what_it_dropped() {
 		})
 	}
 	assert l.dropped == 3
-	f := l.next_fault() or { panic('none') }
-	assert f.sa == 3, 'the oldest went first'
+	for i in 3 .. listener_queue + 3 {
+		f := l.next_fault() or { panic('none at ${i}') }
+		assert f.sa == u8(i), 'in order, the oldest gone'
+	}
+	assert l.next_fault() == none
+}
+
+fn test_on_wire_asks_every_row_of_the_wire() {
+	keys := ['vcan0', 'vcan0', 'vcan1']
+	assert on_wire(keys, [false, true, false], 0), 'an alias row ticked'
+	assert !on_wire(keys, [false, false, true], 0), 'another wire'
+	assert on_wire(keys, [false, false, true], 2)
 }

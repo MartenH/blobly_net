@@ -98,12 +98,13 @@ fn l_wait_frame(l lua.State) i32 {
 		l.push_nil()
 		return 1
 	}
-	env.j1939_saw(name, f)
+	t_ns := transport.received_now(f)
+	env.j1939_saw(name, f, t_ns)
 	l.push_str(name)
 	l.push_int(f.id)
 	l.push_bool(f.extended)
 	l.push_bytes(f.data)
-	push_received(l, f)
+	push_received(l, f, t_ns)
 	push_e2e(l, env.e2e_verdict(name, f))
 	return 10
 }

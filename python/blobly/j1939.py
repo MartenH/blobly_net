@@ -48,17 +48,17 @@ class J1939Fault:
     "aborted" (a Connection Abort; the reason in `detail`), "timeout" (nothing within T1 750 ms for a
     BAM, T3 1250 ms for a connection), "malformed" (a control frame J1939-21 does not permit),
     "overflow", "padding" or "off_spec" (said, the message kept), or "truncated". `pgn` is the
-    group the transfer announced, None where nothing was announced."""
+    group the transfer announced, None where nothing was announced. `text` (and str()) is the
+    whole fault in words, the line the GUI's Log writes."""
     kind: str
     sa: int
     da: int
     pgn: int | None
     detail: str
+    text: str = ""
 
     def __str__(self) -> str:
-        who = f"SA 0x{self.sa:02X} broadcast" if self.da == 0xFF else f"SA 0x{self.sa:02X} to 0x{self.da:02X}"
-        what = f" PGN 0x{self.pgn:04X}" if self.pgn is not None else ""
-        return f"TP {who}{what}: {self.detail}"
+        return self.text
 
 
 @dataclass(frozen=True)
@@ -86,6 +86,7 @@ class J1939Address:
     t_ms: float
 
 
+_QUEUE = 1024  # a listener's queues, bb.h's (j1939.listener_queue)
 _names: dict[int, str | None] = {}
 
 
@@ -114,7 +115,9 @@ class J1939Listener:
 
     def __init__(self, channel: "Channel") -> None:
         self.channel = channel
-        self._faults: collections.deque[J1939Fault] = collections.deque()
+        # the faults taken from the handle and not yet from faults(), as bounded as the engine's
+        self._faults: collections.deque[J1939Fault] = collections.deque(maxlen=_QUEUE)
+        self._lost = 0
         self._h = None
 
     def _handle(self):
@@ -123,6 +126,7 @@ class J1939Listener:
         if h != self._h:
             _lib.check(_lib.lib().bb_j1939_attach(h, self.channel._index, 1))
             self._faults.clear()
+            self._lost = 0
             self._h = h
         return h
 
@@ -130,11 +134,14 @@ class J1939Listener:
         lib = _lib.lib()
         f = _lib.BbJ1939Fault()
         while _lib.check(lib.bb_j1939_take_fault(h, ctypes.byref(f))) != _lib.BB_NONE:
+            if len(self._faults) == self._faults.maxlen:
+                self._lost += 1  # the oldest goes, as in the engine
             self._faults.append(J1939Fault(_lib.J1939_FAULTS.get(f.kind, f"unknown ({f.kind})"), f.sa, f.da,
-                                           f.pgn if f.announced else None, _lib.text(f.detail)))
+                                           f.pgn if f.announced else None, _lib.text(f.detail), _lib.text(f.text)))
 
-    def _take(self, h, run):
-        """Every completed message the handle's listener holds, decoded."""
+    def _take(self, h, run, match):
+        """The completed messages the handle's listener holds, oldest first and decoded: every one,
+        or with `match` up to the first it matches, the rest left queued."""
         lib = _lib.lib()
         out = []
         m = _lib.BbJ1939Message()
@@ -149,36 +156,42 @@ class J1939Listener:
                 out.append(J1939Message(m.pgn, m.sa, m.da, m.priority, bool(m.bam), bytes(m.data[:m.len]), msg,
                                         sigs, _lib.text(m.note), _lib.ms_of(m.t_end_ns),
                                         _lib.ms_of(m.t_start_ns)))
+                if match is not None and match(out[-1]):
+                    break
         self._pull_faults(h)
         return out
 
-    def _until(self, who, timeout_ms, done):
-        """Reads the channel until done(messages taken so far) is true or timeout_ms has passed (one
-        deadline, as Channel.expect's); what it took, in order."""
+    def _until(self, who, timeout_ms, match):
+        """Reads the channel until a message is taken (with `match`, one it matches) or timeout_ms
+        has passed (one deadline, as Channel.expect's); what it took, in order."""
         from .project import _deadline
         deadline = _deadline(who, timeout_ms)
         with _lib.state_lock:
             run = _lib.state["run"]
             h = self._handle()
-        got = self._take(h, run)
+
+        def done(got):
+            return any(match(m) for m in got) if match is not None else bool(got)
+        got = self._take(h, run, match)
         if done(got):
             return got
         for _ in self.channel._frames_until(deadline, run):
-            got += self._take(h, run)
+            got += self._take(h, run, match)
             if done(got):
                 return got
-        return got + self._take(h, run)
+        return got + self._take(h, run, match)
 
     def messages(self, timeout_ms: float = 0) -> list[J1939Message]:
         """Every completed message waiting, oldest first; when none waits, the channel is read until
         one completes or timeout_ms has passed ([] then). 0 takes what is complete, after one look."""
-        return self._until("messages", timeout_ms, bool)
+        return self._until("messages", timeout_ms, None)
 
     def expect_pgn(self, pgn: int, timeout_ms: float = 1000, *, sa: int | None = None) -> J1939Message:
         """The first completed message of parameter group `pgn` (from source address `sa`, when
         given), waited for at most timeout_ms in all; blobly.Timeout when none came, its message
-        saying what came instead and the transfer faults seen. Messages of other groups taken while
-        waiting are consumed, as Channel.expect consumes other frames; faults stay for faults()."""
+        saying what came instead and the transfer faults seen. Messages of other groups ahead of it
+        are consumed, as Channel.expect consumes other frames, and those after it stay queued;
+        faults stay for faults()."""
         __tracebackhide__ = True  # a pytest failure points at the test's line, not this one
         _int("expect_pgn", "a PGN", pgn, 0x3FFFF)
         if sa is not None:
@@ -186,7 +199,7 @@ class J1939Listener:
 
         def match(m):
             return m.pgn == pgn and (sa is None or m.sa == sa)
-        got = self._until("expect_pgn", timeout_ms, lambda ms: any(match(m) for m in ms))
+        got = self._until("expect_pgn", timeout_ms, match)
         for m in got:
             if match(m):
                 return m
@@ -240,7 +253,7 @@ class J1939Listener:
         """Messages and faults dropped untaken since the reading began, the queue being full."""
         with _lib.state_lock:
             h = self._handle()
-        return _lib.check(_lib.lib().bb_j1939_dropped(h))
+        return _lib.check(_lib.lib().bb_j1939_dropped(h)) + self._lost
 
     def __repr__(self) -> str:
         return f"<J1939Listener {self.channel.name}>"

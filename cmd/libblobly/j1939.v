@@ -17,8 +17,8 @@ mut:
 	gen u64
 }
 
-// j1939_row is row `row`'s databases as the run has them, whether the row says it is J1939 (its
-// tick, or a database that declares it), and the run's number.
+// j1939_row is row `row`'s databases as the run has them, whether its wire reads as J1939 (a row
+// on it ticked `j1939:`, or with a database that declares it: j1939.on_wire), and the run's number.
 fn j1939_row(row i32) !(candb.Database, bool, u64) {
 	bb_mu.lock()
 	defer {
@@ -31,8 +31,12 @@ fn j1939_row(row i32) !(candb.Database, bool, u64) {
 	if row < 0 || int(row) >= bb_dbs.len {
 		return error('no channel ${row}')
 	}
-	db := bb_dbs[int(row)]
-	return db, bb_run_rows[int(row)].j1939 || db.j1939_declared(), bb_run_gen
+	keys := bb_run_rows.map(transport.destination_key_for(it.adapter, it.iface))
+	mut says := []bool{len: bb_run_rows.len}
+	for i, r in bb_run_rows {
+		says[i] = r.j1939 || bb_dbs[i].j1939_declared()
+	}
+	return bb_dbs[int(row)], j1939.on_wire(keys, says, int(row)), bb_run_gen
 }
 
 @[export: 'bb_j1939_attach']
@@ -170,6 +174,7 @@ pub fn bb_j1939_take_fault(h i32, out &C.bb_j1939_fault) i32 {
 		out.announced = u8(f.announced)
 		out.pgn = f.pgn
 		put_text(f.detail, &out.detail[0], 256)
+		put_text(f.str(), &out.text[0], 256)
 	}
 	return ok()
 }

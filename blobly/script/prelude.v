@@ -853,8 +853,8 @@ end
 -- j1939: SAE J1939 on a channel, read from the frames the script reads there (bus.recv, run(),
 -- the waits below): multi-packet messages rejoined from the transport protocol (BAM, RTS/CTS)
 -- and decoded through the channel`s database by PGN, their faults, and the address directory.
--- A channel reads it from its first frame where its row says J1939 (its j1939: tick, a database
--- declaring it), any other CAN channel from its first j1939 call. Nothing is sent: no CTS, no
+-- A channel reads it from its first frame where its wire says J1939 (a row on it ticked j1939:,
+-- a database declaring it), any other CAN channel from its first j1939 call. Nothing is sent: no CTS, no
 -- acknowledgement, no address claim.
 --   j1939.listen(ch)                          read ch as J1939 from now on
 --   j1939.messages(ch [, timeout_ms])         -> { msg, ... }: every completed message waiting;
@@ -862,7 +862,7 @@ end
 --                                             timeout_ms (default 0: one look) has passed
 --   j1939.expect(ch, pgn [, timeout_ms [, sa]]) -> msg: the first of pgn (from sa), waited for
 --                                             at most timeout_ms (default 1000); an error else.
---                                             Messages of other groups taken meanwhile are consumed
+--                                             Messages of other groups ahead of it are consumed
 --   j1939.faults(ch)                          -> { { kind, sa, da, pgn, detail, text }, ... }: the
 --                                             faults since the last call (pgn nil where none was
 --                                             announced); kind as blobly/j1939 names it

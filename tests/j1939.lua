@@ -123,14 +123,36 @@ test("address claims, and a contested one", function()
   check.equal(a[1].name.identity, 1)
 end)
 
-test("a channel its row does not say is J1939 reads it once asked", function()
-  while bus.recv("Other", 20) do end
-  j1939.listen("Other")
+test("a channel reads J1939 where its wire says so, any other once asked", function()
+  while bus.recv("Other", 20) do end  -- Other has no database; J1939, on its wire, declares it
   cm("Peer", 0x21, 0xFF, announce(32, BODY, 0xFF10))
   packets("Peer", 0x21, 0xFF, BODY)
   local m = j1939.expect("Other", 0xFF10, 1000)
   check.equal(m.name, nil)
   check.equal(m.data, BODY)
+  -- Plain: a wire nothing declares J1939; what it read before the ask is not in the reading
+  bus.recv("Plain", 0)
+  cm("PlainPeer", 0x21, 0xFF, announce(32, BODY, 0xFF10))
+  packets("PlainPeer", 0x21, 0xFF, BODY)
+  for _ = 1, 4 do check.truthy(bus.recv("Plain", 200), "a frame went missing") end
+  check.equal(#j1939.messages("Plain"), 0)
+  cm("PlainPeer", 0x21, 0xFF, announce(32, BODY, 0xFF10))
+  packets("PlainPeer", 0x21, 0xFF, BODY)
+  check.equal(j1939.expect("Plain", 0xFF10, 1000).data, BODY)
+end)
+
+test("j1939.expect leaves what follows its match queued", function()
+  drain("J1939")
+  for counter = 1, 3 do
+    cm("Peer", 0x21, 0xFF, announce(32, BODY, 0xFF10))
+    packets("Peer", 0x21, 0xFF, string.char(counter) .. BODY:sub(2))
+  end
+  for _ = 1, 12 do check.truthy(bus.recv("J1939", 200), "a frame went missing") end
+  check.equal(j1939.expect("J1939", 0xFF10, 0).signals.Counter, 1)
+  local rest = j1939.messages("J1939")
+  check.equal(#rest, 2)
+  check.equal(rest[1].signals.Counter, 2)
+  check.equal(rest[2].signals.Counter, 3)
 end)
 
 test("frames read by bus.recv feed the reading", function()

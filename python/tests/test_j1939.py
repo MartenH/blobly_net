@@ -131,19 +131,46 @@ def test_claims_and_a_contested_claim(rows):
     assert [a.sa for a in j.j1939().addresses(200)] == [0x80]
 
 
-def test_a_row_that_does_not_say_j1939_reads_it_only_when_asked(rows):
-    _, peer, other = rows
+def test_a_row_reads_j1939_where_its_wire_says_so(rows):
+    _, peer, other = rows  # Other has no database and no tick; J1939, on its wire, declares it
     cm(peer, 0x21, 0xFF, announce(32, BODY, 0xFF10))
     packets(peer, 0x21, 0xFF, BODY)
-    assert other.recv(200) is not None  # read before anything asked: not J1939 on this row
-    listener = other.j1939()
-    while other.recv(50) is not None:
-        pass
+    assert all(other.recv(200) is not None for _ in range(4))
+    m, = other.j1939().messages(0)
+    assert m.data == BODY and m.message is None, "Other has no database to decode it by"
+
+
+def test_a_wire_that_does_not_say_j1939_reads_it_only_once_asked(net):
+    plain, peer = net.channels.Plain, net.channels.PlainPeer
+    for c in (plain, peer):
+        c.close()
+        c.look()
+    cm(peer, 0x21, 0xFF, announce(32, BODY, 0xFF10))
+    packets(peer, 0x21, 0xFF, BODY)
+    assert all(plain.recv(200) is not None for _ in range(4))  # read before anything asked
+    listener = plain.j1939()
     assert listener.messages(0) == []
     cm(peer, 0x21, 0xFF, announce(32, BODY, 0xFF10))
     packets(peer, 0x21, 0xFF, BODY)
-    m = listener.expect_pgn(0xFF10, 1000)
-    assert m.message is None and m.signals == {}, "Other has no database"
+    assert listener.expect_pgn(0xFF10, 1000).data == BODY
+    plain.close()  # a new handle listens too, now that it was asked
+    plain.look()
+    cm(peer, 0x21, 0xFF, announce(32, BODY, 0xFF10))
+    packets(peer, 0x21, 0xFF, BODY)
+    assert all(plain.recv(200) is not None for _ in range(4))
+    assert len(listener.messages(0)) == 1
+
+
+def test_expect_pgn_leaves_what_follows_its_match_queued(rows):
+    j, peer, _ = rows
+    for counter in (1, 2, 3):
+        cm(peer, 0x21, 0xFF, announce(32, BODY, 0xFF10))
+        packets(peer, 0x21, 0xFF, bytes([counter]) + BODY[1:])
+    for _ in range(12):
+        assert j.recv(200) is not None
+    listener = j.j1939()
+    assert listener.expect_pgn(0xFF10, 0).signals["Counter"] == 1
+    assert [m.signals["Counter"] for m in listener.messages(0)] == [2, 3]
 
 
 def test_frames_read_by_recv_feed_the_listener(rows):

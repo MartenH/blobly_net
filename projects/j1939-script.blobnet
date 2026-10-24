@@ -3,11 +3,14 @@
 # Three rows on ONE in-process wire, so a script plays every node itself: nothing here
 # simulates J1939 (the engine reads it, it answers nothing).
 #
-#   J1939  the listener: its database declares J1939 (VFrameFormat J1939PG), so its handle
-#          rejoins transport-protocol messages from its first read
+#   J1939  the listener: its database declares J1939 (VFrameFormat J1939PG), so every row on
+#          its wire rejoins transport-protocol messages from its handle's first read
 #   Peer   a node the script sends as (SA 0x21: a BAM, an RTS, address claims)
-#   Other  the other end of a connection (SA 0x00: the CTS and the acknowledgement); neither
-#          ticked nor declared, so it reads J1939 only when the script asks
+#   Other  the other end of a connection (SA 0x00: the CTS and the acknowledgement)
+#
+# and two on a second wire nothing declares J1939, which reads it only when the script asks:
+#
+#   Plain, PlainPeer
 #
 #   ./scripts/runtests.sh tests/j1939.lua
 #   python3 python/examples/j1939_listen.py
@@ -29,4 +32,12 @@ channels:
   - name: Other
     type: can
     interface: inproc:J1939S
+    bitrate: 250000
+  - name: Plain
+    type: can
+    interface: inproc:J1939P
+    bitrate: 250000
+  - name: PlainPeer
+    type: can
+    interface: inproc:J1939P
     bitrate: 250000

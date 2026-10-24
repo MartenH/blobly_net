@@ -219,7 +219,7 @@ class Channel:
                 # the library's own bytes: what it named, not a re-encoding of it
                 h = _lib.check(lib.bb_bus_open(lib.bb_channel_iface(self._index)))
                 try:  # its frames judged by this row's E2E (Frame.e2e), and read as J1939 where the
-                    # row says so (its j1939: tick, a database declaring it) or a listener was asked for
+                    # row's wire says so (a j1939: tick, a database declaring it) or a listener was asked for
                     _lib.check(lib.bb_e2e_attach(h, self._index))
                     _lib.check(lib.bb_j1939_attach(h, self._index, int(self._j1939 is not None)))
                 except BloblyError:
@@ -506,8 +506,9 @@ class Channel:
         """This channel's J1939 reading (J1939Listener): multi-packet messages rejoined from the
         transport protocol (BAM, RTS/CTS) and decoded by PGN, their faults, and the address
         directory, from the frames this channel's handle reads. Nothing decides a bus IS J1939, so
-        a row reads it from its handle's first frame where it says so — its `j1939:` tick, or a
-        database declaring J1939 (VFrameFormat J1939PG) — and any other CAN row from this call on.
+        a row reads it from its handle's first frame where its wire says so — a row on it ticked
+        `j1939:`, or with a database declaring J1939 (VFrameFormat J1939PG) — and any other CAN row
+        from this call on.
         It sends nothing: no CTS, no acknowledgement, no address claim."""
         if self._j1939 is None:
             self._j1939 = J1939Listener(self)
