@@ -21,14 +21,16 @@ fn (mut env Env) register_j1939() {
 // j1939_says is whether channel `ci`'s wire reads as J1939: a channel on it whose row is ticked
 // `j1939:` or whose database declares it (j1939.on_wire, the GUI's per-wire gate).
 fn (env &Env) j1939_says(ci int) bool {
-	keys := env.chans.map(transport.destination_key(it.key_iface))
+	keys := env.chans.map(transport.destination_key(it.fault_iface()))
 	says := env.chans.map(it.j1939 || it.db.j1939_declared())
 	return j1939.on_wire(keys, says, ci)
 }
 
-// j1939_saw feeds a frame the script's handle on `name` read at `t_ns` to the channel's listener,
-// made at its first frame where the wire reads as J1939; a channel that does not is remembered.
-fn (mut env Env) j1939_saw(name string, f transport.CanFrame, t_ns i64) {
+// j1939_saw feeds a frame the script's handle on `name` read to the channel's listener, made at its
+// first frame where the wire reads as J1939 (a channel that does not is remembered). On the host's
+// clock as it is read, never the frame's placed stamp: the transfer timeouts are this process's
+// bookkeeping, as the trace's are, and an empty look expires them by the same clock.
+fn (mut env Env) j1939_saw(name string, f transport.CanFrame) {
 	mut l := env.j1939_rx[name] or {
 		if name in env.j1939_off {
 			return
@@ -42,7 +44,7 @@ fn (mut env Env) j1939_saw(name string, f transport.CanFrame, t_ns i64) {
 		env.j1939_rx[name] = l
 		l
 	}
-	l.feed(f, f64(t_ns) / 1_000_000.0)
+	l.feed(f, f64(time.sys_mono_now()) / 1_000_000.0)
 }
 
 // j1939_idle times the stalled transfers of `name`'s listener out: its handle had nothing queued.
@@ -92,7 +94,7 @@ fn (mut env Env) j1939_read(name string, lis &j1939.Listener, deadline u64, unti
 			}
 			continue
 		}
-		env.j1939_saw(name, f, transport.received_now(f))
+		env.j1939_saw(name, f)
 	}
 }
 

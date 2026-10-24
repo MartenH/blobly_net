@@ -836,7 +836,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 		out.t_ns = transport.received_now(fr)
 		out.e2e = hd.e2e_verdict(fr)
 	}
-	hd.j1939_feed(fr, out.t_ns)
+	hd.j1939_feed(fr)
 	return ok()
 }
 

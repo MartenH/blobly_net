@@ -51,6 +51,7 @@ pub fn bb_j1939_attach(h i32, row i32, force i32) i32 {
 		return 1
 	}
 	if force == 0 && !says {
+		hd.j1939 = J1939Tap{} // an earlier run's listener does not go on reading
 		ok()
 		return 0
 	}
@@ -63,10 +64,12 @@ pub fn bb_j1939_attach(h i32, row i32, force i32) i32 {
 	return 1
 }
 
-// j1939_feed gives a frame the handle read to its listener, at its placed time.
-fn (mut hd BusHandle) j1939_feed(fr transport.CanFrame, t_ns i64) {
+// j1939_feed gives a frame the handle read to its listener, on the host's clock as it is read,
+// never the frame's placed stamp: the transfer timeouts are this process's bookkeeping, as the
+// trace's are, and an empty receive expires them by the same clock.
+fn (mut hd BusHandle) j1939_feed(fr transport.CanFrame) {
 	if !isnil(hd.j1939.l) {
-		hd.j1939.l.feed(fr, f64(t_ns) / 1_000_000.0)
+		hd.j1939.l.feed(fr, f64(time.sys_mono_now()) / 1_000_000.0)
 	}
 }
 

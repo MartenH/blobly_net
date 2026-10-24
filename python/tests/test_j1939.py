@@ -153,6 +153,12 @@ def test_a_wire_that_does_not_say_j1939_reads_it_only_once_asked(net):
     cm(peer, 0x21, 0xFF, announce(32, BODY, 0xFF10))
     packets(peer, 0x21, 0xFF, BODY)
     assert listener.expect_pgn(0xFF10, 1000).data == BODY
+    other = net.channels.PlainPeer  # a handle already open listens from the ask on
+    late = other.j1939()
+    cm(plain, 0x22, 0xFF, announce(32, BODY, 0xFF10))
+    packets(plain, 0x22, 0xFF, BODY)
+    assert all(other.recv(200) is not None for _ in range(4))
+    assert [m.sa for m in late.messages(0)] == [0x22]
     plain.close()  # a new handle listens too, now that it was asked
     plain.look()
     cm(peer, 0x21, 0xFF, announce(32, BODY, 0xFF10))
@@ -188,5 +194,9 @@ def test_expect_pgn_refuses_what_is_no_pgn(rows):
         j.j1939().expect_pgn(0x40000, 10)
     with pytest.raises(TypeError):
         j.j1939().expect_pgn("0xFF10", 10)
+    with pytest.raises(ValueError, match="PDU1"):
+        j.j1939().expect_pgn(0xEF21, 10)  # the destination is not part of a PDU1 PGN
+    with pytest.raises(ValueError):
+        j.j1939().expect_pgn(0xFF10, 10, sa=0xFE)
     with pytest.raises(blobly.Timeout, match="no multi-packet message came"):
         j.j1939().expect_pgn(0xFF10, 50)

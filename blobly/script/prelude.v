@@ -877,8 +877,8 @@ end
 j1939 = {}
 local function jms(fname, ms, default)
   if ms == nil then return default end
-  if type(ms) ~= "number" or ms < 0 or ms ~= ms then
-    error(fname .. ": a wait is a number of ms, not " .. tostring(ms), 3)
+  if type(ms) ~= "number" or ms < 0 or ms ~= ms or ms == math.huge then
+    error(fname .. ": a wait is a finite number of ms, not " .. tostring(ms), 3)
   end
   return math.floor(ms)
 end
@@ -893,7 +893,12 @@ function j1939.messages(channel, timeout_ms)
 end
 function j1939.expect(channel, pgn, timeout_ms, sa)
   jint("j1939.expect", "a PGN", pgn, 0x3FFFF)
-  if sa ~= nil then jint("j1939.expect", "a source address", sa, 0xFF) end
+  if ((pgn >> 8) & 0xFF) < 0xF0 and (pgn & 0xFF) ~= 0 then
+    error(string.format("j1939.expect: 0x%04X is a PDU1 group, whose PGN has a zero low byte: 0x%04X",
+      pgn, pgn & 0x3FF00), 2)
+  end
+  -- 0xFE and 0xFF send no transfer
+  if sa ~= nil then jint("j1939.expect", "a source address", sa, 0xFD) end
   local ms = jms("j1939.expect", timeout_ms, 1000)
   local got = __j1939_wait(channel, ms, pgn, sa or -1)
   local came = {}

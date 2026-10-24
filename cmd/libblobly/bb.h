@@ -1138,7 +1138,7 @@ typedef struct bb_j1939_message {
 	uint8_t  bam;         /* 1 a BAM, 0 an RTS/CTS connection */
 	int32_t  len;
 	int32_t  message;     /* its position in the row's databases (bb_message_info), -1 none */
-	int64_t  t_start_ns;  /* the announcement and the last packet, on bb_now_ns's clock */
+	int64_t  t_start_ns;  /* when the announcement and the last packet were read (bb_now_ns) */
 	int64_t  t_end_ns;
 	uint8_t  data[BB_J1939_MAX];
 	char     note[BB_J1939_TEXT]; /* why it is not decoded where definitions disagree, else "" */
@@ -1178,7 +1178,7 @@ typedef struct bb_j1939_address {
 	uint8_t  vehicle_system_instance;
 	uint8_t  industry_group;
 	uint8_t  arbitrary_address_capable;
-	int64_t  t_ns;        /* when the claim was read, on bb_now_ns's clock */
+	int64_t  t_ns;        /* when the claim was read (bb_now_ns) */
 } bb_j1939_address;
 #ifndef BB_FROM_V
 int bb_j1939_attach(int h, int row, int force);    /* 1 listening, 0 not (force 0, a row that

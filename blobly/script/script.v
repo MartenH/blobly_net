@@ -1364,7 +1364,7 @@ fn l_bus_recv(l lua.State) i32 {
 		return 1
 	}
 	t_ns := transport.received_now(frame)
-	env.j1939_saw(name, frame, t_ns)
+	env.j1939_saw(name, frame)
 	l.push_int(frame.id)
 	l.push_bool(frame.extended)
 	l.push_bytes(frame.data)

@@ -689,8 +689,8 @@ acknowledgement, no address claim — a script that is a node on the bench sends
 | `j1939.addresses(channel [, window_ms])` | who holds which source address, by address, after reading the channel for `window_ms` (default 0: nothing read): `{ sa, t_ms, name = { raw, identity, manufacturer, ecu_instance, function_instance, function, function_name, vehicle_system, vehicle_system_instance, industry_group, arbitrary_address_capable } }`. The lower NAME keeps a contested address, a Cannot Claim releases one; `function_name` names the 32 global functions, nil for others; `raw` is the NAME's 64 bits as a Lua integer, negative where bit 63 (arbitrary address capable) is set: `string.format("%016X", raw)` prints it |
 
 A message is `{ pgn, sa, da, priority, bam, data, packets, t_ms, t_start_ms, name, signals,
-note }`: `da` 0xFF for a BAM, `data` exactly the announced size, `t_ms` its last packet and
-`t_start_ms` its announcement (`now_ms()`'s clock). `name` and `signals` (physical values) are its
+note }`: `da` 0xFF for a BAM, `data` exactly the announced size, `t_ms` and `t_start_ms` when its
+last packet and its announcement were read (`now_ms()`'s clock). `name` and `signals` (physical values) are its
 decode — the message defined at exactly that PGN and source address, else by PGN alone — and both
 are nil where nothing defines the group, or where definitions disagree about its layout, when
 `note` says why. A listener keeps 1024 messages and 1024 faults untaken; past that the oldest go.

@@ -510,8 +510,11 @@ class Channel:
         `j1939:`, or with a database declaring J1939 (VFrameFormat J1939PG) — and any other CAN row
         from this call on.
         It sends nothing: no CTS, no acknowledgement, no address claim."""
-        if self._j1939 is None:
-            self._j1939 = J1939Listener(self)
+        with _lib.state_lock:
+            if self._j1939 is None:
+                self._j1939 = J1939Listener(self)
+            if self._h is not None:  # the handle already open listens from now on
+                self._j1939._handle()
         return self._j1939
 
     def uds(self, tx: int | None = None, rx: int | None = None, *, timeout_ms: int | None = None,

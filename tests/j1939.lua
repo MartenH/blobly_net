@@ -167,5 +167,7 @@ end)
 
 test("j1939 refuses what is no PGN and what is no CAN channel", function()
   check.truthy(not pcall(j1939.expect, "J1939", 0x40000, 10), "a PGN past 18 bits")
+  check.truthy(not pcall(j1939.expect, "J1939", 0xEF21, 10), "a PDU1 PGN with its destination")
+  check.truthy(not pcall(j1939.messages, "J1939", math.huge), "an endless wait")
   check.truthy(not pcall(j1939.messages, "NoSuch"), "an unknown channel")
 end)

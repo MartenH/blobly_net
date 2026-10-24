@@ -40,6 +40,8 @@ fn (mut env Env) wait_frame(names []string, timeout_ms int, slice time.Duration)
 				if rest > 0 {
 					time.sleep(rest * time.millisecond)
 				}
+			} else {
+				env.j1939_idle(names[0])
 			}
 			return none
 		}
@@ -59,7 +61,11 @@ fn (mut env Env) wait_frame(names []string, timeout_ms int, slice time.Duration)
 			}
 			i := (env.rr + k) % names.len
 			f := buses[i].recv(0) or {
-				spent = spent || transport.look_was_spent(err)
+				if transport.look_was_spent(err) {
+					spent = true
+				} else if err.msg() == 'timeout' {
+					env.j1939_idle(names[i]) // nothing queued on it
+				}
 				continue
 			}
 			env.rr = i + 1
@@ -92,14 +98,11 @@ fn l_wait_frame(l lua.State) i32 {
 		if env.expired() {
 			return timeout_at(l) // the wait was cut
 		}
-		for n in names {
-			env.j1939_idle(n)
-		}
 		l.push_nil()
 		return 1
 	}
 	t_ns := transport.received_now(f)
-	env.j1939_saw(name, f, t_ns)
+	env.j1939_saw(name, f)
 	l.push_str(name)
 	l.push_int(f.id)
 	l.push_bool(f.extended)

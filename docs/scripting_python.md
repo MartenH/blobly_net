@@ -514,7 +514,8 @@ with blobly.Project("projects/j1939-script.blobnet") as net:
 - **`listener.messages(timeout_ms=0)`** returns every completed message waiting, oldest first;
   when none waits, the channel is read until one completes or the time is up (`[]`).
 - A **`J1939Message`** has `pgn`, `sa`, `da` (0xFF for a BAM), `priority`, `bam`, `data` (the
-  announced size), `packets`, `t_ms` (its last packet, on a `Frame`'s clock) and `t_start_ms`.
+  announced size), `packets`, `t_ms` (when its last packet was read, on `blobly.now_ms()`'s
+  clock) and `t_start_ms` (its announcement).
   `message` and `signals` are its decode: the message the databases define at exactly that PGN and
   source address, else by PGN alone, and `{signal: physical value}`; `None` and `{}` where nothing
   defines the group, or where definitions disagree about its layout, and then `note` says why.
@@ -1802,7 +1803,7 @@ Frozen dataclasses ([J1939](#j1939)).
 | `J1939Message.pgn`, `.sa`, `.da`, `.priority`, `.bam` | The group, its sender, its destination (0xFF for a BAM), the announcement's priority, BAM or RTS/CTS. |
 | `J1939Message.data`, `.packets` | The message, exactly its announced size, and how many data frames carried it. |
 | `J1939Message.message`, `.signals`, `.note` | The `Message` it decodes as and `{signal: value}`; `None`, `{}` and why (`note`) where it does not. |
-| `J1939Message.t_ms`, `.t_start_ms` | Its last packet and its announcement, on a `Frame`'s clock. |
+| `J1939Message.t_ms`, `.t_start_ms` | When its last packet and its announcement were read, on `blobly.now_ms()`'s clock. |
 | `J1939Fault.kind`, `.sa`, `.da`, `.pgn`, `.detail`, `.text` | What went wrong (`"sequence"`, `"aborted"`, `"timeout"`, `"malformed"`, `"orphan"`, `"restarted"`, `"overflow"`, `"padding"`, `"off_spec"`, `"truncated"`), with whom, the group (`None` where none was announced), the detail and the whole line the GUI's Log writes. |
 | `J1939Address.sa`, `.name`, `.t_ms` | A held source address, the `J1939Name` holding it, when that claim was read. |
 | `J1939Name.raw`, `.identity`, `.manufacturer`, `.ecu_instance`, `.function_instance`, `.function`, `.function_name`, `.vehicle_system`, `.vehicle_system_instance`, `.industry_group`, `.arbitrary_address_capable` | The NAME as claimed and its J1939-81 fields; `function_name` for the 32 global functions, else `None`. |

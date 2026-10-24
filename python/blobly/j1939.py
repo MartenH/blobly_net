@@ -22,7 +22,7 @@ class J1939Message:
     message defined at exactly that PGN and source address, else by PGN alone, and {signal: physical
     value} for each signal it carries; None and {} where nothing defines the group, or where
     definitions disagree about its layout — then `note` says why. `t_ms` is when its last packet
-    arrived and `t_start_ms` its announcement, on the clock of a Frame's t_ms."""
+    was read and `t_start_ms` its announcement, on the host's monotonic clock (blobly.now_ms)."""
     pgn: int
     sa: int
     da: int
@@ -80,7 +80,7 @@ class J1939Name:
 
 @dataclass(frozen=True)
 class J1939Address:
-    """A source address and the NAME holding it, and `t_ms` when that claim was read."""
+    """A source address and the NAME holding it, and `t_ms` when that claim was read (blobly.now_ms)."""
     sa: int
     name: J1939Name
     t_ms: float
@@ -170,14 +170,15 @@ class J1939Listener:
             run = _lib.state["run"]
             h = self._handle()
 
-        def done(got):
-            return any(match(m) for m in got) if match is not None else bool(got)
+        def done(new):  # asked of what was just taken: the earlier ones were asked already
+            return any(match(m) for m in new) if match is not None else bool(new)
         got = self._take(h, run, match)
         if done(got):
             return got
         for _ in self.channel._frames_until(deadline, run):
-            got += self._take(h, run, match)
-            if done(got):
+            new = self._take(h, run, match)
+            got += new
+            if done(new):
                 return got
         return got + self._take(h, run, match)
 
@@ -194,8 +195,11 @@ class J1939Listener:
         faults stay for faults()."""
         __tracebackhide__ = True  # a pytest failure points at the test's line, not this one
         _int("expect_pgn", "a PGN", pgn, 0x3FFFF)
+        if (pgn >> 8) & 0xFF < 0xF0 and pgn & 0xFF:
+            raise ValueError(f"expect_pgn: 0x{pgn:04X} is a PDU1 group, whose PGN has a zero low byte "
+                             f"(the destination is not part of it): 0x{pgn & 0x3FF00:04X}")
         if sa is not None:
-            _int("expect_pgn", "a source address", sa, 0xFF)
+            _int("expect_pgn", "a source address", sa, 0xFD)  # 0xFE and 0xFF send no transfer
 
         def match(m):
             return m.pgn == pgn and (sa is None or m.sa == sa)
@@ -237,6 +241,8 @@ class J1939Listener:
             for _ in self.channel._frames_until(deadline, run):
                 pass
         with _lib.state_lock:
+            if window_ms:
+                self.channel._same_run(run)  # the window's reading, not the next run's
             h = self._handle()
         out = []
         a = _lib.BbJ1939Address()
