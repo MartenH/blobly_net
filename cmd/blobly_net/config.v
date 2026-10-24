@@ -1302,14 +1302,9 @@ fn (mut app App) apply_parsed_text(txt string) bool {
 	// a reference that resolves only from the working directory, said once: the ones this text
 	// newly names, not again for the ones the project already had
 	dir := if app.proj_path == '' { '' } else { os.dir(app.proj_path) }
-	app.mu.lock()
-	had := app.proj.reference_notes(dir)
-	app.mu.unlock()
-	for n in p.reference_notes(dir) {
-		if n !in had {
-			app.elog('${app.proj_path}: ${n}')
-			app.notify(n)
-		}
+	for n in p.reference_notes(dir, app.proj.references()) {
+		app.elog('${app.proj_path}: ${n}')
+		app.notify(n)
 	}
 	app.mu.lock()
 	app.proj = p

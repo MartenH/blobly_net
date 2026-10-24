@@ -896,11 +896,17 @@ pub fn parse(text string) !Project {
 	return p
 }
 
-// load reads and parses a project file; its notes include every reference that resolves only
-// from the working directory (reference_notes), said once here rather than at every rebuild.
+// load reads and parses a project file.
 pub fn load(path string) !Project {
-	mut p := parse(os.read_file(path)!)!
-	p.notes << p.reference_notes(os.dir(path))
+	return parse_at(os.read_file(path)!, os.dir(path))
+}
+
+// parse_at is parse for a project kept in `dir`: its notes include every reference that resolves
+// only from the working directory (reference_notes), said once at the read rather than at every
+// rebuild.
+pub fn parse_at(text string, dir string) !Project {
+	mut p := parse(text)!
+	p.notes << p.reference_notes(dir, [])
 	return p
 }
 

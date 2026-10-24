@@ -345,7 +345,7 @@ absolute reference is left as written. A Save As that does not write puts the re
 reference is read against the project's directory first; when that misses, the loader opens it
 as written, from the folder the program was started in — so the same project loads an empty
 database when started anywhere else. It still loads, and the load says so once per reference
-(`project.cwd_only_note`, collected by `project.load`):
+(`project.cwd_only_note`, collected by `project.load` and `project.parse_at`):
 
 ```
 CAN1: `dbc/x.dbc` resolves only from the folder the program was started in (/home/me/work); write it relative to the project file (`../dbc/x.dbc`)

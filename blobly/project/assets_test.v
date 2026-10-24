@@ -318,6 +318,13 @@ fn test_a_reference_resolving_only_from_the_working_directory_is_said() {
 	assert cwd_only_note(proj, 'dbc/missing.dbc') == none // resolves nowhere
 	assert cwd_only_note(proj, os.join_path(root, 'dbc', 'x.dbc')) == none
 	assert cwd_only_note('', 'dbc/x.dbc') == none // an unsaved project
+	// the spelling Save As would write, a backslash in a Unix name kept
+	$if !windows {
+		os.write_file(root + '/dbc/a\\b.dbc', '')!
+		n3 := cwd_only_note(proj, 'dbc/a\\b.dbc') or { panic('no note') }
+		assert n3.ends_with('(`../dbc/a\\b.dbc`)')
+		assert n3.ends_with('(`${rebase_ref(proj, proj, 'dbc/a\\b.dbc')}`)')
+	}
 	// once per reference, every kind of reference, the first channel naming it
 	p := Project{
 		channels: [
@@ -332,11 +339,12 @@ fn test_a_reference_resolving_only_from_the_working_directory_is_said() {
 			},
 		]
 	}
-	notes := p.reference_notes(proj)
+	notes := p.reference_notes(proj, [])
 	assert notes.len == 2
 	assert notes[0].starts_with('CAN1: `dbc/x.dbc`')
 	assert notes[1].starts_with('CAN2: `proj/sub/m.csv`')
 	assert notes[1].ends_with('(`sub/m.csv`)')
+	assert p.reference_notes(proj, ['dbc/x.dbc']).len == 1 // what the caller already said
 	// project.load says them; started from the project's own folder nothing is said
 	pf := os.join_path(proj, 'p.blobnet')
 	os.write_file(pf, 'project:\n  name: t\nchannels:\n  - name: CAN1\n    interface: inproc:CAN1\n    databases: [dbc/x.dbc]\n')!
