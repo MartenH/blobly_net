@@ -721,7 +721,7 @@ class Named(Generic[_T]):
         """A name an item has, or one of the items."""
         if isinstance(key, str):
             return key in self._by_name
-        return any(c is key for c in self._order)
+        return key in self._order
 
     def __iter__(self) -> Iterator[_T]:
         return iter(self._order)
