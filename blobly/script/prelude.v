@@ -849,7 +849,7 @@ function decode(channel, id, data, ext, as)
   return __decode(channel, id, ext or false, data, as or "physical")
 end
 
--- ============================ interfaces =====================end
+-- ============================ interfaces ============================
 -- bus.open_iface(address): a bus by its address ("vcan0", "inproc:X", "pcan:PCAN_USBBUS1@500000")
 -- with no project row; returns the name every bus.* call, run() and uds.open then take (the
 -- address). Its sends obey the loaded project wire policy, as a row does.
@@ -888,7 +888,8 @@ function vector.assign(app, hw, opts)
   end
   if math.type(app) ~= "integer" then error("vector.assign: app is an integer 1..64", 2) end
   __vector_assign(app, hw.hw_type, hw.hw_index, hw.hw_channel, (opts and opts.create) or false)
-=======
+end
+
 -- ============================ J1939 ============================
 -- j1939: SAE J1939 on a channel, read from the frames the script reads there (bus.recv, run(),
 -- the waits below): multi-packet messages rejoined from the transport protocol (BAM, RTS/CTS)
