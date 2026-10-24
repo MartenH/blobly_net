@@ -1,5 +1,7 @@
 module transport
 
+import time
+
 fn test_ip_json_yields_every_inet_address_but_loopback_by_name() {
 	text :=
 		'[{"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1"},{"family":"inet","local":"10.255.255.254"}]},' +
@@ -20,4 +22,14 @@ fn test_ipconfig_is_read_in_any_locale() {
 		'   IPv4 Address. . . . . . . . . . . : 127.0.0.1\r\n' +
 		'   Link-local IPv6 Address . . . . . : fe80::1%3\r\n'
 	assert ipv4_addrs_from_ipconfig(text) == ['10.165.125.100', '192.168.0.190']
+}
+
+fn test_the_interface_enumeration_keeps_to_its_deadline() {
+	assert ipv4_enum_skipped(1000, 1000)
+	assert !ipv4_enum_skipped(999, 1000)
+	assert !ipv4_enum_skipped(5000, 0)
+	// a deadline already passed asks nothing and waits for nothing
+	t0 := time.ticks()
+	assert local_ipv4_addrs_until(t0 - 1) == none
+	assert time.ticks() - t0 < 50
 }
