@@ -4,6 +4,7 @@ attaches before its first call and detaches before it ends. A thread that calls 
 on its first call and detached when it ends, so a user never has to."""
 import collections
 import ctypes
+import numbers
 import os
 import sys
 import threading
@@ -369,6 +370,41 @@ class BbUdsTiming(ctypes.Structure):
 WAITS = {"timeout_ms": 0, "p2_star_ms": 1, "margin_ms": 2, "pending_budget_ms": 3}
 
 
+# J1939 on a row's frames (j1939.py)
+BB_J1939_MAX = 1785
+BB_J1939_TEXT = 256
+
+
+class BbJ1939Message(ctypes.Structure):
+    """bb_j1939_message, field for field."""
+    _fields_ = [("pgn", ctypes.c_uint32), ("sa", ctypes.c_uint8), ("da", ctypes.c_uint8),
+                ("priority", ctypes.c_uint8), ("bam", ctypes.c_uint8), ("len", ctypes.c_int32),
+                ("message", ctypes.c_int32), ("t_start_ns", ctypes.c_int64), ("t_end_ns", ctypes.c_int64),
+                ("data", ctypes.c_uint8 * BB_J1939_MAX), ("note", ctypes.c_char * BB_J1939_TEXT)]
+
+
+class BbJ1939Fault(ctypes.Structure):
+    """bb_j1939_fault, field for field."""
+    _fields_ = [("kind", ctypes.c_int32), ("sa", ctypes.c_uint8), ("da", ctypes.c_uint8),
+                ("announced", ctypes.c_uint8), ("pgn", ctypes.c_uint32),
+                ("detail", ctypes.c_char * BB_J1939_TEXT), ("text", ctypes.c_char * BB_J1939_TEXT)]
+
+
+class BbJ1939Address(ctypes.Structure):
+    """bb_j1939_address, field for field."""
+    _fields_ = [("sa", ctypes.c_uint8), ("name", ctypes.c_uint64), ("identity", ctypes.c_uint32),
+                ("manufacturer", ctypes.c_uint16), ("ecu_instance", ctypes.c_uint8),
+                ("function_instance", ctypes.c_uint8), ("function", ctypes.c_uint8),
+                ("vehicle_system", ctypes.c_uint8), ("vehicle_system_instance", ctypes.c_uint8),
+                ("industry_group", ctypes.c_uint8), ("arbitrary_address_capable", ctypes.c_uint8),
+                ("t_ns", ctypes.c_int64)]
+
+
+# enum bb_j1939_fault_kind, as j1939.FaultKind names the kinds
+J1939_FAULTS = {0: "orphan", 1: "sequence", 2: "restarted", 3: "aborted", 4: "timeout", 5: "malformed",
+                6: "overflow", 7: "padding", 8: "off_spec", 9: "truncated"}
+
+
 def _declare(lib):
     """Every bb.h prototype, argtypes and restype. An int-returning call keeps ctypes' default."""
     c_int, c_char_p, P = ctypes.c_int, ctypes.c_char_p, ctypes.POINTER
@@ -553,6 +589,15 @@ def _declare(lib):
         # E2E on a row's frames (project.py, e2e.py)
         "bb_e2e_attach": ([c_int, c_int], c_int),
         "bb_e2e_stamp": ([c_int, c_int, P(BbFrame)], c_int),
+        # J1939 on a row's frames (j1939.py)
+        "bb_j1939_attach": ([c_int, c_int, c_int], c_int),
+        "bb_j1939_take_message": ([c_int, P(BbJ1939Message), P(ctypes.c_double), P(ctypes.c_uint8), c_int],
+                                  c_int),
+        "bb_j1939_take_fault": ([c_int, P(BbJ1939Fault)], c_int),
+        "bb_j1939_dropped": ([c_int], c_int),
+        "bb_j1939_address_count": ([c_int], c_int),
+        "bb_j1939_address_info": ([c_int, c_int, P(BbJ1939Address)], c_int),
+        "bb_j1939_function_name": ([c_int, c_char_p, c_int], c_int),
     }
     for name, (args, res) in sigs.items():
         fn = getattr(lib, name)
@@ -653,6 +698,17 @@ def attach():
     if _lib.bb_thread_attach() != 0:
         raise BloblyError(text(_lib.bb_last_error()))
     _tls.held = _Attachment(_lib)
+
+
+def byte_data(name, v):
+    """A byte-string argument: bytes, bytearray, memoryview, or a sequence of byte values. An integer
+    is refused, where bytes() would read it as a count of zero bytes."""
+    if isinstance(v, (str, numbers.Integral)):
+        raise TypeError(f"{name} must be bytes, not {type(v).__name__}")
+    try:
+        return bytes(v)
+    except (TypeError, ValueError) as e:
+        raise TypeError(f"{name} must be bytes: {e}") from None
 
 
 def ms_of(ns):

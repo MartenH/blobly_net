@@ -615,7 +615,7 @@ fn (a &App) current_db_paths_locked(ch Chan) []string {
 // so no reader-side lock can make a snapshot of it whole (codex on #273 rounds 22–23). A loader
 // that needs no shared array needs no lock; the script sees the saved file, as the headless
 // runner does. Only the project path is read under the lock.
-fn (a &App) script_db(ch Chan) candb.Database {
+fn (a &App) script_db(ch Chan) (candb.Database, []candb.Database) {
 	mut al := unsafe { a }
 	al.mu.lock()
 	paths := a.current_db_paths_locked(ch)
@@ -623,11 +623,11 @@ fn (a &App) script_db(ch Chan) candb.Database {
 	// WITH THE REPORT: a file deleted or broken since the project was loaded, or a reader note,
 	// would otherwise hand the script an empty or partial database and let it fail on "unknown
 	// message" with nothing in the Log to say the reload was the cause (round 24)
-	db, notes := candb.merge_files_report(paths)
+	db, sources, notes := candb.merge_with_sources(paths, candb.open_database)
 	for n in notes {
 		al.notify('script: ${ch.name}: ${n}')
 	}
-	return db
+	return db, sources
 }
 
 // row_is_mine_locked: may a worker spawned for run `gen` into row `ci` of `iface` write to
@@ -1561,7 +1561,10 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 		} else {
 			a.wire_rates_rule_locked(ci)
 		}
+		// the wire's J1939 reading as the trace's census has it (every row, a disabled one too)
+		wire_j1939 := a.j1939_dbs[transport.destination_key_for(ch.adapter, ch.iface)] or { false }
 		a.mu.unlock()
+		db, sources := a.script_db(ch)
 		chans << script.ChanInfo{
 			name:      ch.name
 			iface:     a.bitrate_iface(ch.iface) // pcan/kvaser: @<bitrate> so scripts open right
@@ -1574,11 +1577,13 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			// gave the script an empty database while the trace and the simulator had loaded
 			// the same file resolved (codex on #273 round 13). The reader slot reserved above
 			// is what makes app.dbs safe to read here without app.mu.
-			db:      a.script_db(ch)
+			db:      db
+			sources: sources
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
 			hosts:   pch.hosts_doip_entity()
 			verify:  pch.verify // what a received frame's E2E is judged by first
 			carrier: script.carrier_of(pch)
+			j1939:   wire_j1939
 			// priced as the Buses row prices the wire
 			nominal:   nominal
 			data_rate: data_rate

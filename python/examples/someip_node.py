@@ -12,6 +12,7 @@ or an ERROR naming its return code), and 1 with a FAIL line otherwise."""
 import argparse
 import os
 import sys
+from typing import NoReturn
 from importlib.util import find_spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,7 +24,7 @@ import blobly  # noqa: E402
 from blobly import SomeipMessage, someip  # noqa: E402
 
 
-def fail(why: str) -> None:
+def fail(why: str) -> NoReturn:
     sys.exit(f"FAIL: {why}")
 
 

@@ -7,7 +7,7 @@ the command line overrides it. `replay_record.py` defaults to
 [`projects/replay-demo.blobnet`](../../projects/replay-demo.blobnet), `e2e_check.py` to
 [`projects/e2e-demo.blobnet`](../../projects/e2e-demo.blobnet) for its E2E declarations, `described_node.py` to
 [`projects/described-ecu-demo`](../../projects/described-ecu-demo), a simulated ECU its system
-model describes. `someip_node.py` needs no project (it talks to a SOME/IP node), and neither does `interfaces.py`, which opens buses by address.
+model describes, `j1939_listen.py` to [`projects/j1939-script.blobnet`](../../projects/j1939-script.blobnet), and `someip_node.py` needs no project (it talks to a SOME/IP node), and neither does `interfaces.py`, which opens buses by address.
 
 | example | what it shows |
 |---|---|
@@ -25,6 +25,7 @@ model describes. `someip_node.py` needs no project (it talks to a SOME/IP node),
 | [e2e_check.py](e2e_check.py) | E2E Profile 1 as a DBC declares it, on [`projects/e2e-demo.blobnet`](../../projects/e2e-demo.blobnet): each received frame's verdict (`Frame.e2e`), a broken checksum and a frozen counter caught by `expect(..., e2e=True)`, and a message sent by name stamped with its declared counter and CRC, beside the same message sent unstamped. |
 | [flash_ecu.py](flash_ecu.py) | Flashing a blobly_emb bootloader with a progress bar and the session's report, against a simulated bootloader on CAN1 that verifies the 0x29 proof and the image's CRC; `--board` for a real one. |
 | [replay_record.py](replay_record.py) | Replay and recording, on `projects/replay-demo.blobnet`: the wire recorded to a candump `.log` while a recording is replayed onto it — started paused, moved to 1.5 s, played at 4x to its end — and the file read back, every line ending in `T` (sent by this process). |
+| [j1939_listen.py](j1939_listen.py) | J1939 on [`projects/j1939-script.blobnet`](../../projects/j1939-script.blobnet), the script playing every node: a BAM rejoined and decoded by PGN, an RTS/CTS connection followed as a listener, a dropped packet seen as a `sequence` fault, and the address directory after a contested claim. |
 | [someip_node.py](someip_node.py) | SOME/IP against a node with a static peer endpoint (blobly_emb's `host_someip` by default): a method called and answered, a request sent with everything heard after it, and the node's events. CI runs it against a stand-in node on loopback. |
 | [interfaces.py](interfaces.py) | No project: the interfaces present with their kind and CAN-FD support (`--cansub` adds an mDNS browse), the Vector channels and their assignments, then a frame exchanged between two buses opened by address (`--open vcan0` for a real wire). |
 | [test_sim_demo.py](test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel (`can1`), `expect` and `expect_signal`, `diag` over CAN and DoIP, and a project generator fired and answered. [conftest.py](conftest.py) loads the plugin and [pytest.ini](pytest.ini) names the project, which is all a suite of your own needs. |
