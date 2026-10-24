@@ -145,7 +145,7 @@ static int_int_fn bb_bus_health_p, bb_bus_close_p, bb_channel_kind_p, bb_channel
 static int (*bb_isotp_open_p)(int, int64_t, int64_t, bb_uds_target *);
 static int (*bb_isotp_send_p)(int, const uint8_t *, int);
 static int (*bb_isotp_recv_p)(int, int, uint8_t *, int);
-static int_int_fn bb_isotp_close_p, bb_uds_tester_present_p;
+static int_int_fn bb_isotp_close_p, bb_uds_tester_present_p, bb_uds_cancel_p;
 static int (*bb_uds_get_timing_p)(int, bb_uds_timing *);
 static int (*bb_uds_set_wait_p)(int, int, int);
 static int (*bb_uds_check_wait_p)(int, int);
@@ -596,6 +596,18 @@ static void *blocked_recv(void *arg) {
 	return &rc;
 }
 
+/* waits in a UDS request nothing answers until the main thread cancels it */
+static int pending_uds, pending_done;
+static void *pending_request(void *arg) {
+	(void)arg;
+	static int rc;
+	if (bb_thread_attach_p() != 0) { rc = 99; return &rc; }
+	rc = bb_uds_tester_present_p(pending_uds);
+	__atomic_store_n(&pending_done, 1, __ATOMIC_SEQ_CST);
+	bb_thread_detach_p();
+	return &rc;
+}
+
 /* A thread the host created: the V runtime's collector did not see it born. Short-lived handles
  * first, so that a COLLECTION happens on this thread (an unregistered thread collecting is
  * Boehm's "Collecting from unknown thread" abort: measured at 10 churns, 3 of 3 runs, and
@@ -636,7 +648,7 @@ int main(int argc, char **argv) {
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
 	SYM(bb_cyclic_start); SYM(bb_cyclic_data); SYM(bb_cyclic_status); SYM(bb_cyclic_stop); SYM(bb_cyclic_free);
 	SYM(bb_node_count); SYM(bb_node_info); SYM(bb_system_path);
-	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present);
+	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present); SYM(bb_uds_cancel);
 	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_check_wait); SYM(bb_uds_retarget);
 	SYM(bb_replay_defaults); SYM(bb_replay_start); SYM(bb_replay_wait); SYM(bb_replay_status); SYM(bb_replay_stop);
 	SYM(bb_record_start); SYM(bb_record_stop);
@@ -723,6 +735,32 @@ int main(int argc, char **argv) {
 	pthread_join(q, (void **)&qrc);
 	if (*qrc != BB_ERR_HANDLE) { fprintf(stderr, "FAIL a closed handle's blocked recv: rc=%d\n", *qrc); return 1; }
 	printf("ok   a close ended a blocked recv on another thread\n");
+	/* a cancel on this thread ends a UDS request waiting on another, and the next call is its own */
+	int64_t silent_tx = 0x6F0, silent_rx = 0x6F8;  /* nothing answers there */
+	bb_uds_target st;
+	pending_uds = bb_uds_open_p(can1, &silent_tx, &silent_rx, &st);
+	if (pending_uds < 0 || bb_uds_set_wait_p(pending_uds, BB_WAIT_TIMEOUT, 10000) != 0) FAIL("open a silent UDS handle");
+	if (bb_uds_cancel_p(pending_uds) != 0) FAIL("a cancel with no call in progress");
+	pthread_t p;
+	pthread_create(&p, NULL, pending_request, NULL);
+	nanosleep(&ts, NULL);
+	int64_t c0 = bb_now_ns_p();
+	/* asked again until it lands, as a host does: a cancel before the call began is not its */
+	struct timespec poll = {0, 20 * 1000 * 1000};
+	while (!__atomic_load_n(&pending_done, __ATOMIC_SEQ_CST) && bb_now_ns_p() - c0 < 2000000000LL) {
+		if (bb_uds_cancel_p(pending_uds) != 0) FAIL("cancel a pending request");
+		nanosleep(&poll, NULL);
+	}
+	int *prc;
+	pthread_join(p, (void **)&prc);
+	int64_t took = bb_now_ns_p() - c0;
+	if (*prc != BB_ERR_CANCELLED || took > 500000000LL) {
+		fprintf(stderr, "FAIL a cancelled request: rc=%d after %lld ms\n", *prc, (long long)(took / 1000000));
+		return 1;
+	}
+	if (bb_uds_set_wait_p(pending_uds, BB_WAIT_TIMEOUT, 100) != 0 || bb_uds_tester_present_p(pending_uds) != BB_ERR_TIMEOUT
+		|| bb_uds_close_p(pending_uds) != 0) FAIL("the call after a cancel");
+	printf("ok   a cancel ended a pending UDS request on another thread in %lld ms\n", (long long)(took / 1000000));
 #endif
 	/* -1 is a handle no open returned: refused and named, not read as 4294967295 (V3's int is
 	 * 64 bits, C's 32) */

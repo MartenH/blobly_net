@@ -494,6 +494,9 @@ typedef struct bb_write_needs {
 #define BB_ERR_GATED        (-13) /* bb_uds_write_described: not sent, since the connection has not
                                      established the session or the security level the DID's
                                      write gate needs; bb_write_needs says which */
+#define BB_ERR_CANCELLED    (-14) /* a UDS call ended by bb_uds_cancel from another thread: the
+                                     request may have gone out, and its answer is not waited for;
+                                     on DoIP the connection is let go (the next call opens another) */
 
 /* Answers that are neither success nor an error. */
 #define BB_NONE        1     /* bb_bus_recv: no frame in time; bb_decode: no message */
@@ -646,6 +649,12 @@ int bb_doip_routing_hint(int code, int tester, char *buf, int cap); /* what a te
                                    `tester` can do about a denial with `code`; "" where there is
                                    nothing to add to its name */
 int bb_uds_close(int u);
+int bb_uds_cancel(int u);  /* from any thread: the call in progress on u ends within 20 ms of the
+                              wait it is in — a frame already handed to the driver is written first —
+                              with BB_ERR_CANCELLED (bb_flash_program: BB_ERR_FLASH, as
+                              bb_flash_cancel's). Nothing when no call is in progress: a cancel asked
+                              just before a call begins is not seen by it, so a host asks again until
+                              the call has returned */
 int bb_uds_replaces(int u);  /* u's connection replaces an earlier one the host had (a client
                                 reopened after a stop): on DoIP a 0x27 key is then refused until
                                 its level's seed is answered on this connection, as after the

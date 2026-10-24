@@ -105,6 +105,15 @@ class FlashFailed(BloblyError):
     NegativeResponse instead, and one it did not answer Timeout."""
 
 
+class Cancelled(BloblyError):
+    """A UDS request ended by a cancel (bb_uds_cancel) before its answer: what Ctrl-C does to a
+    request in progress, which then raises KeyboardInterrupt in its place. The request may have
+    gone out; on DoIP the connection is let go, and the client's next call opens another."""
+
+    def __init__(self, message: str, code: int = -14) -> None:  # BB_ERR_CANCELLED
+        super().__init__(message, code)
+
+
 class WriteGated(Refused):
     """A described write (NodeClient.write) not sent, since the client's connection has not
     established what the DID's write gate needs: `session` the session to switch to first (0: the
@@ -132,12 +141,13 @@ BB_ERR_LOST = -10
 BB_ERR_FLASH = -11
 BB_ERR_E2E = -12  # returned by no call: E2eError's code
 BB_ERR_GATED = -13
+BB_ERR_CANCELLED = -14
 # the exception each code raises; a code not here (BB_ERR_HANDLE, BB_ERR_STATE, a newer library's)
 # raises BloblyError itself
 ERRORS = {BB_ERR: Refused, BB_ERR_NEGATIVE: NegativeResponse, BB_ERR_TIMEOUT: Timeout,
           BB_ERR_PENDING: PendingExpired, BB_ERR_UNDECODABLE: UndecodableAnswer,
           BB_ERR_CARRIER: CarrierFailed, BB_ERR_ROUTING: RoutingDenied, BB_ERR_LOST: ConnectionLost,
-          BB_ERR_FLASH: FlashFailed, BB_ERR_GATED: WriteGated}
+          BB_ERR_FLASH: FlashFailed, BB_ERR_GATED: WriteGated, BB_ERR_CANCELLED: Cancelled}
 # answers that are neither success nor an error (bb.h)
 BB_NONE = 1        # bb_bus_recv: no frame in time; bb_decode: no message
 BB_SPENT = 2       # bb_bus_recv(h, 0): no frame yet, records still queued behind the look's bound
@@ -453,6 +463,7 @@ def _declare(lib):
         # a const uint8_t * is declared c_char_p: bytes pass as they are, their length beside them
         "bb_uds_open": ([c_int, P(ctypes.c_int64), P(ctypes.c_int64), P(BbUdsTarget)], c_int),
         "bb_uds_close": ([c_int], c_int),
+        "bb_uds_cancel": ([c_int], c_int),
         "bb_uds_replaces": ([c_int], c_int),
         "bb_uds_last": ([c_int, P(BbUdsExchange), c_char_p, c_int, c_char_p, c_int], c_int),
         "bb_uds_data": ([c_int, c_char_p, c_int], c_int),
