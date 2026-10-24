@@ -325,7 +325,9 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 		if ch.is_eth() {
 			continue
 		}
-		if ch.j1939 || row_db(mut row_dbs, proj.channels, ci, os.dir(proj_path), db_files).j1939_declared() {
+		// each FILE asked, as the GUI asks: the merge keeps an id's first definition, which may be
+		// an undeclared copy of the one a later file declares
+		if ch.j1939 || row_sources(ch, os.dir(proj_path), db_files).any(it.j1939_declared()) {
 			r.j1939_wires[j1939_wire_key(ch)] = true
 		}
 	}

@@ -31,7 +31,8 @@ fn l_j1939_dropped(l lua.State) i32 {
 // project row on the wire counted), or a channel here on it declares it (j1939.on_wire).
 fn (env &Env) j1939_says(ci int) bool {
 	keys := env.chans.map(transport.destination_key(it.fault_iface()))
-	says := env.chans.map(it.j1939 || it.db.j1939_declared())
+	// each file asked where the host kept them: the merge may hold an undeclared copy of an id
+	says := env.chans.map(it.j1939 || it.db.j1939_declared() || it.sources.any(it.j1939_declared()))
 	return j1939.on_wire(keys, says, ci)
 }
 
