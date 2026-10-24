@@ -111,7 +111,7 @@ def test_a_listen_only_wire_of_the_loaded_project_refuses_a_by_address_send(tmp_
 
 @pytest.mark.skipif(not os.path.exists("/sys/class/net/vcan0"), reason="no vcan0 here")
 def test_vcan0_opens_by_address_and_is_listed():
-    assert any(i.address == "vcan0" and i.kind == "vcan" for i in blobly.interfaces())
+    assert any(i.address == "vcan0" and i.kind == "vcan" and i.virtual for i in blobly.interfaces())
     with blobly.open("vcan0") as a, blobly.open("vcan0") as b:
         a.send(0x321, b"\xAA")
         assert b.expect(0x321, 1000).data == b"\xAA"

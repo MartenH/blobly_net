@@ -8,9 +8,10 @@ it. Then opens two buses on one address, sends a frame on one and expects it on 
 
     python interfaces.py [--open ADDRESS] [--cansub] [--seconds N]
 
-ADDRESS defaults to an in-process bus, which needs nothing; give vcan0 (or pcan:PCAN_USBBUS1@500000,
+ADDRESS defaults to an in-process bus, which needs nothing; give vcan0 (or kvaser:0@500000,
 vector:1@500000, ...) to exchange the frame there, and --seconds to also print what else arrives
-on it for N seconds. Exits 0 when the frame came back, and 1 with a FAIL line otherwise."""
+on it for N seconds. Two handles on one PCAN or CANsub channel share one driver connection, which
+does not hand one handle's sends to the other, so the exchange needs another node there. Exits 0 when the frame came back, and 1 with a FAIL line otherwise."""
 import argparse
 import os
 import sys

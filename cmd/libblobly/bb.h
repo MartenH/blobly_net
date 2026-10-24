@@ -1133,7 +1133,7 @@ enum bb_fd {
 typedef struct bb_iface {
 	int32_t fd;          /* an enum bb_fd */
 	int32_t bitrate;     /* the nominal rate it is configured for where the system says, else 0 */
-	uint8_t is_virtual;  /* a software bus, or a vendor's virtual channel */
+	uint8_t is_virtual;  /* a software bus (a vcan too), or a vendor's virtual channel */
 } bb_iface;
 enum bb_iface_text {
 	BB_IFACE_ADDRESS = 0,  /* what bb_bus_open takes: "vcan0", "pcan:PCAN_USBBUS1", "inproc:SIM" */

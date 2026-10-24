@@ -30,7 +30,7 @@ class Interface:
     takes; `kind` is "socketcan", "vcan", "pcan", "kvaser", "vector", "cansub", "bridge", "udp" or
     "inproc"; `description` is for a person; `fd` whether it carries CAN-FD, None where nothing
     asked could say; `bitrate` the nominal rate it is configured for where the system says (a
-    SocketCAN link that is up), else 0; `virtual` a software bus or a vendor's virtual channel;
+    SocketCAN link that is up), else 0; `virtual` a software bus (a vcan too) or a vendor's virtual channel;
     `state` a Vector application channel's, "assigned" or "hardware not present", else ""."""
     address: str
     kind: str

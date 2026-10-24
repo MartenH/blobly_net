@@ -469,6 +469,12 @@ pub fn cansub_mdns_resolve(host string, window time.Duration) ?string {
 }
 
 pub fn cansub_browse(window time.Duration) !CansubBrowse {
+	return cansub_browse_until(window, 0)
+}
+
+// cansub_browse_until is cansub_browse that also ends by `until` (time.ticks(); 0: no bound), the
+// interface enumeration and the queries before the window included.
+fn cansub_browse_until(window time.Duration, until i64) !CansubBrowse {
 	// See mdns_medium: shared with other mDNS readers, refused to an exclusive one.
 	canon := claim_endpoint('', cansub_mdns_port, 'an mDNS browse window', .shared, mdns_medium)!
 	defer {
@@ -522,7 +528,10 @@ pub fn cansub_browse(window time.Duration) !CansubBrowse {
 	// datagram reads as n == 0 and is stepped over, since a browse ended by one would be "nothing
 	// attached" with nothing to say why. Any other error is waited out rather than spun on -- the
 	// window bounds it.
-	deadline := time.ticks() + window.milliseconds()
+	mut deadline := time.ticks() + window.milliseconds()
+	if until > 0 && until < deadline {
+		deadline = until
+	}
 	mut buf := []u8{len: 9000}
 	mut found := []CansubService{}
 	for {
@@ -595,11 +604,11 @@ pub fn cansub_rows(devices []CansubService) []Iface {
 // default window, as rows, with the browse's note. An error is the browse not having been
 // possible, never "nothing attached".
 pub fn discover_cansub() !([]Iface, string) {
-	return cansub_discovery(cansub_mdns_window)
+	return cansub_discovery(cansub_mdns_window, 0)
 }
 
 // cansub_discovery is a browse of `window`, as rows, with the browse's note.
-fn cansub_discovery(window time.Duration) !([]Iface, string) {
-	b := cansub_browse(window)!
+fn cansub_discovery(window time.Duration, until i64) !([]Iface, string) {
+	b := cansub_browse_until(window, until)!
 	return cansub_rows(b.devices), b.note
 }

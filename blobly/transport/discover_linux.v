@@ -86,6 +86,7 @@ fn sysfs_can_ifaces() []Interface {
 			kind:    if is_vcan { 'vcan' } else { 'socketcan' }
 			desc:    desc
 			fd:      fd_of_mtu(mtu)
+			virtual: is_vcan
 		}
 	}
 	out.sort(a.address < b.address)

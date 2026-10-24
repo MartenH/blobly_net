@@ -22,7 +22,7 @@ pub:
 	desc    string // for a person: "PCAN-USB Pro FD [1-1] · up", "virtual CAN"
 	fd      FdSupport
 	bitrate int  // the nominal rate it is configured for, where the system says (a SocketCAN can0); else 0
-	virtual bool // a software bus, or a vendor's virtual channel, rather than hardware
+	virtual bool // a software bus (a vcan too), or a vendor's virtual channel, rather than hardware
 	// for a vector: row, its application channel's state: "assigned", or "hardware not present"
 	// (assigned to an adapter that is unplugged); '' for every other kind
 	state string
@@ -85,7 +85,7 @@ pub fn describe(f Iface) Interface {
 		desc:    d
 		fd:      if f.fd == .unknown && kind in ['udp', 'inproc'] { FdSupport.yes } else { f.fd }
 		bitrate: f.bitrate
-		virtual: f.virtual
+		virtual: f.virtual || kind == 'vcan'
 		state:   f.state
 	}
 }
@@ -137,12 +137,13 @@ pub fn interfaces() []Interface {
 pub const cansub_window_max_ms = 10_000
 
 // discover_cansub_within browses mDNS for attached CANsub devices for window_ms (1 to
-// cansub_window_max_ms), one row per channel, with the browse's note ('' when every interface
+// cansub_window_max_ms), ending window_ms after the call however long finding the network
+// interfaces to ask took; one row per channel, with the browse's note ('' when every interface
 // was asked). An error is the browse not having been possible, never "nothing attached".
 pub fn discover_cansub_within(window_ms int) !([]Interface, string) {
 	if window_ms < 1 || window_ms > cansub_window_max_ms {
 		return error('a CANsub browse window is 1 to ${cansub_window_max_ms} ms, not ${window_ms}')
 	}
-	rows, note := cansub_discovery(window_ms * time.millisecond)!
+	rows, note := cansub_discovery(window_ms * time.millisecond, time.ticks() + window_ms)!
 	return rows.map(describe(it)), note
 }
