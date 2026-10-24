@@ -499,6 +499,18 @@ pub fn destination_key_for(adapter string, iface string) string {
 	return destination_key(iface)
 }
 
+// socketcan_payload is the payload SocketCanBus.send hands the kernel and wire_frame records: an
+// FD one padded to a length a DLC can express (at most 64), a classic one clamped to 8.
+pub fn socketcan_payload(f CanFrame) []u8 {
+	if f.fd {
+		return fd_pad(f.data)
+	}
+	if f.data.len > 8 {
+		return f.data[..8].clone()
+	}
+	return f.data
+}
+
 // wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,
 // that means a classic id masked to its declared width and at most 8 bytes: a caller that records
 // what it ASKED for records something that never existed — and, for echo matching, something that
@@ -527,16 +539,9 @@ pub fn wire_frame(iface string, f CanFrame) CanFrame {
 	// refuse it outright rather than sending a short version — so truncating here would record a
 	// frame that never goes out either way, which is the mistake this function exists to avoid.
 	// It is still padded to a length a DLC can express, because that is what reaches the wire.
-	max := if f.fd { 64 } else { 8 }
-	if id == f.id && f.data.len <= max && (!f.fd || fd_padded_len(f.data.len) == f.data.len) {
+	data := socketcan_payload(f)
+	if id == f.id && data.len == f.data.len {
 		return f
-	}
-	mut data := f.data.clone()
-	if data.len > max {
-		data = data[..max].clone()
-	}
-	if f.fd {
-		data = fd_pad(data)
 	}
 	return CanFrame{
 		...f

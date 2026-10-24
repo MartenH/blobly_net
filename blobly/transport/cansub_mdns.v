@@ -468,6 +468,10 @@ pub fn cansub_mdns_resolve(host string, window time.Duration) ?string {
 	return none
 }
 
+// cansub_setup_spent is a bounded browse whose setup (the interfaces enumerated, the group joined,
+// the query sent) used its whole window.
+const cansub_setup_spent = 'finding the network interfaces to ask took the whole browse window; nothing was heard'
+
 pub fn cansub_browse(window time.Duration) !CansubBrowse {
 	return cansub_browse_until(window, 0)
 }
@@ -486,7 +490,7 @@ fn cansub_browse_until(window time.Duration, until i64) !CansubBrowse {
 	defer {
 		conn.close() or {}
 	}
-	addrs := local_ipv4_addrs()
+	addrs := local_ipv4_addrs_until(until) or { return error(cansub_setup_spent) }
 	if addrs.len == 0 {
 		return error('no IPv4 interface could be enumerated (is `ip` / `ipconfig` available?)')
 	}
@@ -505,6 +509,9 @@ fn cansub_browse_until(window time.Duration, until i64) !CansubBrowse {
 	group := cansub_mdns_group.split('.').map(u8(it.int()))
 	dst := net.new_ip(u16(cansub_mdns_port), [group[0], group[1], group[2], group[3]]!)
 	q := cansub_mdns_query()
+	if until > 0 && time.ticks() >= until {
+		return error(cansub_setup_spent)
+	}
 	// Joined is not asked: an interface that went away after the join, or a send the stack
 	// refuses, would otherwise count as an interface that answered "nothing" (codex on #236).
 	mut asked := 0
@@ -534,7 +541,7 @@ fn cansub_browse_until(window time.Duration, until i64) !CansubBrowse {
 	}
 	// a window the setup used up heard nothing: said, not passed off as nothing attached
 	if until > 0 && time.ticks() >= until {
-		return error('finding the network interfaces to ask took the whole browse window; nothing was heard')
+		return error(cansub_setup_spent)
 	}
 	mut buf := []u8{len: 9000}
 	mut found := []CansubService{}

@@ -708,3 +708,75 @@ fn test_the_bench_key_opt_in_is_carried() {
 		map[string][]Field{})
 	assert !bad.allow_bench_key
 }
+
+// A label no binding can carry — a NUL in a parameter's or a signal's field name, or in a
+// parameter's name — is refused at load, as a duplicate parameter is (#542).
+fn test_a_field_name_holding_a_nul_is_refused() {
+	doc := toml.parse_text('
+[[signal]]
+name = "Speed"
+fields = { "v\\u0000a" = "u16" }
+
+[[param]]
+name = "Limit"
+fields = { "x\\u0000a" = "u16", "x\\u0000b" = "u16" }
+
+[[param]]
+name = "Lim\\u0000it"
+fields = { deg = "u16" }
+
+[[param]]
+name = "Limit"
+fields = { deg = "u16" }
+
+[[param]]
+name = "Trim"
+fields = { deg = "u16" }
+
+[[signal]]
+name = "Sp\\u0000eed"
+fields = { v = "u16" }
+
+[[signal]]
+name = "Pair"
+fields = { "a\\u0000" = "u8", b = "u8" }
+
+[[did]]
+id = 0x0203
+signal = "Sp\\u0000eed"
+
+[[did]]
+id = 0x0204
+signal = "Pair"
+
+[[did]]
+id = 0x0205
+param_status = true
+
+[[did]]
+id = 0x0200
+signal = "Speed"
+
+[[did]]
+id = 0x0201
+param = "Limit"
+
+[[did]]
+id = 0x0202
+param = "Trim"
+') or { panic(err) }
+	d := parse_ecu_desc(doc, map[string][]Field{})
+	assert d.params.map(it.name) == ['Trim']
+	// a two-field signal's fields are not carried by a DID, so its NUL drops nothing
+	assert d.dids.map(it.id) == [u16(0x0204), 0x0205, 0x0201, 0x0202]
+	assert d.dids[1].fields.len == 0 && d.param_status_did() == none
+	assert d.errs.len == 8, d.errs.str()
+	assert d.errs[0] == 'param Limit: field "x\\0a" holds a NUL; not read'
+	assert d.errs[1] == 'param Lim\\0it: the name holds a NUL; not read'
+	assert d.errs[2] == 'param Limit: declared twice; the second not read'
+	assert d.errs[3] == 'did 0x0203: signal Sp\\0eed: the name holds a NUL; not read'
+	assert d.errs[4].starts_with('did 0x0204: signal Pair has no single integer field')
+	assert d.errs[5] == 'did 0x0205: parameter status: a [[param]] was not read, so its byte positions are not known'
+	assert d.errs[6] == 'did 0x0200: signal Speed: field "v\\0a" holds a NUL; not read'
+	assert d.errs[7] == 'did 0x0201: [[param]] Limit was not read'
+}
