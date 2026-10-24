@@ -10,7 +10,8 @@ it (blobly/_native/), versioned from v.mod, tagged py3-none-<platform>.
 --canbridge: (Windows, required there) the Linux canbridge the library starts inside WSL for a
      `bridge:` channel, beside the library in _native/, where transport.bridge_program finds it.
      A V program like the library, built by the same pinned V, so the V stdlib and Boehm GC
-     notices below cover it; it links nothing else but the distribution's own glibc.
+     notices below cover it; linked statically against musl (scripts/build_canbridge.sh), whose
+     notice, musl-LICENSE.txt beside it, goes into the wheel's licences.
 --v: the V that built the library (default $V, else `v` on PATH): V's standard library and the
      Boehm GC are compiled into it, and their notices come from that toolchain, as the app
      bundle's do (scripts/stage_bundle.sh). arxmodel's and flatxml's (the ARXML reader) are this
@@ -112,13 +113,29 @@ def check_pe_x86_64(dll):
         sys.exit(f"build_wheel: {dll} is not an x86-64 DLL")
 
 
+def canbridge_notice(path):
+    """The notice of the libc linked into canbridge, which scripts/build_canbridge.sh writes beside it."""
+    return os.path.join(os.path.dirname(path), "musl-LICENSE.txt")
+
+
 def check_canbridge(path):
-    """Refuses a canbridge WSL cannot run: not an x86-64 ELF64 program. Read by its header, so
-    the check runs on Windows, where there is no readelf."""
+    """Refuses a canbridge WSL cannot run in every distribution: not an x86-64 ELF64 program, or
+    one with a program interpreter (dynamically linked, so it needs the build host's libc; #503),
+    or one without its libc's notice beside it. Read by its headers, so the check runs on Windows,
+    where there is no readelf."""
     with open(path, "rb") as f:
-        head = f.read(20)
-    if head[:4] != b"\x7fELF" or head[4] != 2 or head[5] != 1 or head[18:20] != b"\x3e\x00":
+        data = f.read()
+    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1 or data[18:20] != b"\x3e\x00":
         sys.exit(f"build_wheel: {path} is not an x86-64 ELF64 program")
+    phoff = int.from_bytes(data[32:40], "little")
+    phentsize = int.from_bytes(data[54:56], "little")
+    phnum = int.from_bytes(data[56:58], "little")
+    for i in range(phnum):
+        at = phoff + i * phentsize
+        if int.from_bytes(data[at:at + 4], "little") == 3:  # PT_INTERP
+            sys.exit(f"build_wheel: {path} is dynamically linked; build it with scripts/build_canbridge.sh")
+    if not os.path.isfile(canbridge_notice(path)):
+        sys.exit(f"build_wheel: no {canbridge_notice(path)} beside canbridge")
 
 
 def linux_platform_tag(lib):
@@ -205,6 +222,8 @@ def main():
         if not args.v:
             sys.exit("build_wheel: no V to take its notices from; pass --v or set V")
         stage_notices(os.path.join(native, "licenses"), args.v)
+        if args.canbridge:
+            shutil.copy(canbridge_notice(args.canbridge), os.path.join(native, "licenses", "musl-LICENSE.txt"))
         with open(os.path.join(pkg, "_version.py"), "w", encoding="utf-8") as f:
             f.write(f'__version__ = "{version}"\n')
         dist = os.path.join(stage, "dist")

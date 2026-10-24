@@ -71,8 +71,11 @@ requirements below:
 
 ## Requirements
 
-- **A distribution at least as new as Ubuntu 24.04** (its glibc, precisely): `canbridge` is a
-  Linux program built on Ubuntu 24.04 and runs inside the distribution.
+- **Any x86-64 distribution, of any age.** `canbridge` is linked statically (against musl), so it
+  needs no particular glibc and no library of the distribution's. It does use the distribution's
+  `ip` (iproute2) to list the CAN interfaces and create the vcans. Built from a checkout with
+  `scripts/build_canbridge.sh` (it needs `musl-tools`); a plain `v cmd/canbridge` builds a
+  dynamic one, which runs only where the build host's glibc does.
 - **WSL 2 with `networkingMode=mirrored`** in `%UserProfile%\.wslconfig`:
 
   ```

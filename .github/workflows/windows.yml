@@ -61,8 +61,9 @@ env:
 jobs:
   # THE BUNDLE CARRIES A LINUX PROGRAM (#451): canbridge, which the Windows app starts inside a WSL
   # distribution through wsl.exe to reach its vcans. It is a Linux ELF, so it is built on Linux —
-  # on 24.04, the supported floor, for the reason release.yml's Linux build is — and handed to
-  # the bundle and wheel jobs below as a short-lived artifact, never published on its own. Built IN PARALLEL
+  # statically against musl (scripts/build_canbridge.sh, #503), so it runs in a distribution of
+  # any age, and with the notice of that libc beside it — and handed to the bundle and wheel jobs
+  # below as a short-lived artifact, never published on its own. Built IN PARALLEL
   # with the mingw job, not ahead of it: a cold V cache makes this job the long one.
   canbridge-linux:
     name: canbridge (Linux, for the WSL bridge)
@@ -72,14 +73,18 @@ jobs:
       - uses: actions/checkout@v7
       - name: Set up pinned V (cached)
         uses: ./.github/actions/setup-v
-      - name: Build canbridge
+      - name: Build canbridge (static, musl)
         run: |
-          v -enable-globals -o canbridge cmd/canbridge
-          ./canbridge --help
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends musl-tools
+          sh scripts/build_canbridge.sh build/canbridge-linux
+          file build/canbridge-linux/canbridge
       - uses: actions/upload-artifact@v7
         with:
           name: canbridge-linux
-          path: canbridge
+          path: |
+            build/canbridge-linux/canbridge
+            build/canbridge-linux/musl-LICENSE.txt
           retention-days: 1
           if-no-files-found: error
 
@@ -397,6 +402,7 @@ jobs:
         run: |
           test -f dist/blobly_net.exe
           cp canbridge-linux/canbridge dist/canbridge
+          cp canbridge-linux/musl-LICENSE.txt dist/licenses/musl-LICENSE.txt
 
       # Publishes from reviewed history ONLY: a push to main, or a call from release.yml
       # carrying publish_bundle=true — which it sets only after its guard proves the
