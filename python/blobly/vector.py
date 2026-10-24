@@ -72,6 +72,8 @@ def assignments() -> list[VectorHardware]:
 def _app(app):
     if isinstance(app, bool) or not isinstance(app, int):
         raise TypeError(f"a Vector application channel is an int 1..64, not {app!r}")
+    if not -2**31 <= app < 2**31:  # a C int: wider would wrap into the range
+        raise ValueError(f"Vector application channels are numbered 1 to 64, not {app}")
     return app
 
 

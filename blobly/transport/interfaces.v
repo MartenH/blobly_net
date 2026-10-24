@@ -46,7 +46,7 @@ pub fn iface_kind(address string) string {
 		return 'cansub'
 	}
 	for scheme in ['pcan', 'kvaser', 'vector', 'bridge', 'udp', 'inproc'] {
-		if address.starts_with('${scheme}:') || address == scheme {
+		if address.starts_with('${scheme}:') || (address == scheme && scheme in ['udp', 'inproc']) {
 			return scheme
 		}
 	}

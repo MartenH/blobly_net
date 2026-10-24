@@ -20,9 +20,9 @@ fn (mut env Env) register_ifaces() {
 // rates_for is what a bus on `address` is priced at: the rates of a CAN channel of the script on
 // that wire (the project's first enabled row's), else the address's own.
 fn (env &Env) rates_for(address string) (int, int) {
-	key := transport.destination_key(address)
+	key := transport.wire_key(address)
 	for c in env.chans {
-		if c.carrier.eth_kind() == none && c.nominal > 0 && transport.destination_key(c.iface) == key {
+		if c.carrier.eth_kind() == none && c.nominal > 0 && transport.wire_key(c.iface) == key {
 			return c.nominal, c.data_rate
 		}
 	}
@@ -35,6 +35,10 @@ fn (env &Env) rates_for(address string) (int, int) {
 fn (mut env Env) open_iface(address string) !string {
 	if address == '' {
 		return error('bus.open_iface: no address')
+	}
+	if address.contains_u8(0) {
+		// a C string would end there and reach another wire than the one the policy is asked about
+		return error('bus.open_iface: an address has no NUL')
 	}
 	if project.iface_is_eth(address) {
 		return error('bus.open_iface: ${address} is a DoIP or SOME/IP endpoint, which carries no CAN frames')
@@ -99,12 +103,22 @@ fn l_interfaces(l lua.State) i32 {
 // __discover_cansub(window_ms) -> the CANsub channels an mDNS browse found, and its note
 fn l_discover_cansub(l lua.State) i32 {
 	env := env_of(l)
-	window := env.bounded_window(l.arg_int(1))
+	asked := l.arg_int(1)
+	if asked < 1 || asked > transport.cansub_window_max_ms {
+		return l.fail('bus.discover_cansub: a window is 1 to ${transport.cansub_window_max_ms} ms, not ${asked}')
+	}
+	window := env.bounded_window(asked)
 	if env.expired() {
 		return timeout_at(l)
 	}
 	rows, note := transport.discover_cansub_within(int(window)) or {
+		if env.expired() {
+			return timeout_at(l)
+		}
 		return l.fail('bus.discover_cansub: ${err.msg()}')
+	}
+	if env.expired() {
+		return timeout_at(l)
 	}
 	push_interfaces(l, rows)
 	l.push_str(note)

@@ -883,6 +883,10 @@ function vector.slot(app) return __vector_slot(app) end
 function vector.assign(app, hw, opts)
   if type(hw) ~= "table" then error("vector.assign: hw is a row of vector.assignments()", 2) end
   if opts ~= nil and type(opts) ~= "table" then error("vector.assign: opts is a table", 2) end
+  for _, k in ipairs({ "hw_type", "hw_index", "hw_channel" }) do
+    if math.type(hw[k]) ~= "integer" then error("vector.assign: hw." .. k .. " is an integer, as vector.assignments() gives it", 2) end
+  end
+  if math.type(app) ~= "integer" then error("vector.assign: app is an integer 1..64", 2) end
   __vector_assign(app, hw.hw_type, hw.hw_index, hw.hw_channel, (opts and opts.create) or false)
 end
 

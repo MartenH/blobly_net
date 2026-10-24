@@ -14,6 +14,8 @@ fn test_an_address_kind_is_its_scheme() {
 	// as the dispatcher reads them: only cansub: in any case
 	assert iface_kind('PCAN:PCAN_USBBUS1') == 'socketcan'
 	assert iface_kind('udpx') == 'socketcan'
+	assert iface_kind('pcan') == 'socketcan', 'a bare vendor name is a SocketCAN interface'
+	assert iface_kind('udp') == 'udp'
 }
 
 fn test_a_listed_iface_is_described() {

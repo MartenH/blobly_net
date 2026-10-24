@@ -72,6 +72,8 @@ def discover_cansub(window_ms: int = 700) -> list[Interface]:
     not be asked when some could. Ctrl-C ends the wait (the browse finishes on its thread)."""
     if isinstance(window_ms, bool) or not isinstance(window_ms, int):
         raise TypeError(f"discover_cansub: window_ms is a whole number of milliseconds, not {window_ms!r}")
+    if not -2**31 <= window_ms < 2**31:  # a C int: wider would wrap into the range
+        raise ValueError(f"discover_cansub: a window is 1 to 10000 ms, not {window_ms}")
     lib = _lib.lib()
     rows, note = _on_thread(lambda: _read(_lib.check(lib.bb_ifaces_cansub(window_ms))), "blobly-cansub")
     if note:

@@ -139,6 +139,8 @@ def test_the_listing_is_well_formed_rows():
 def test_a_cansub_browse_window_is_bounded(window):
     with pytest.raises(blobly.Refused, match="1 to 10000 ms"):
         blobly.discover_cansub(window)
+    with pytest.raises(ValueError, match="1 to 10000 ms"):
+        blobly.discover_cansub(2**32 + 700)  # not wrapped into the range
 
 
 def test_a_cansub_browse_waits_its_window_and_lists_rows():
