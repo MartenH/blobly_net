@@ -577,6 +577,10 @@ function uds.open(channel, opts)
   -- negative one is a mistake that must be reported rather than read as "omitted".
   local timed = opts.timeout_ms ~= nil or opts.p2_star_ms ~= nil or opts.margin_ms ~= nil or opts.pending_budget_ms ~= nil
   if timed then __uds_timing_check(opts.timeout_ms, opts.p2_star_ms, opts.margin_ms, opts.pending_budget_ms) end
+  local ka = opts.keep_alive_ms
+  if ka ~= nil and ka ~= 0 and (math.type(ka) ~= "integer" or ka < 250 or ka > 60000) then
+    error("uds.open: keep_alive_ms " .. tostring(ka) .. ": give 250 .. 60000", 2)
+  end
   local h = __uds_open(channel, opts.tx, opts.rx)
   local self = connection(h, channel)
   if timed then self:set_timing(opts) end

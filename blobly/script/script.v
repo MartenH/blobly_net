@@ -99,6 +99,7 @@ mut:
 	ka    &uds.KeepAlive = unsafe { nil }
 	ka_ms int    // its period, 0 when none runs
 	ka_said string // a failure of a keep-alive stopped before it was said
+	ka_late []&uds.KeepAlive // stopped while inside a keep-alive: asked for a failure later
 	chan  string // the channel this connection belongs to (DoIP reuse; see l_uds_open)
 	// the CAN response id, for a functional request to recognise this connection's answers;
 	// DoIP addresses by logical address and has none (`can` false)

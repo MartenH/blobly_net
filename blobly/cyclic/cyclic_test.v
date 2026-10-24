@@ -217,3 +217,41 @@ mut:
 	running bool
 	ended   int
 }
+
+fn test_a_message_sender_encodes_only_the_branch_its_switch_selects() {
+	db := candb.parse_dbc('VERSION ""
+BU_: A
+BO_ 300 X: 2 A
+ SG_ Mux M : 0|8@1+ (1,0) [0|255] "" A
+ SG_ A m0 : 8|8@1+ (1,0) [0|255] "" A
+ SG_ B m1 : 8|8@1+ (1,0) [0|255] "" A
+')!
+	m := db.message_named('X') or { panic('no X') }
+	mut rx := transport.open('inproc:CYC7')!
+	defer {
+		rx.close()
+	}
+	mut s := start(transport.open('inproc:CYC7')!, Spec{
+		by_message: true
+		message:    m
+		values:     {
+			'Mux': 0.0
+			'A':   5.0
+		}
+		period_ms:  10
+	}, Life{})!
+	s.set_values({
+		'Mux': 1.0
+		'B':   9.0
+	})!
+	s.set_values({
+		'Mux': 0.0
+	})!
+	time.sleep(30 * time.millisecond)
+	for {
+		rx.recv(0) or { break }
+	}
+	got := frames_within(mut rx, 300, 40)
+	assert got.len > 0 && got.all(it.data == [u8(0), 5]), '${got.map(it.data)}'
+	assert s.stop()
+}

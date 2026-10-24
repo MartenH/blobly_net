@@ -354,6 +354,7 @@ class UdsClient:
                 raise BloblyError(f"{self!r} is closed", _lib.BB_ERR_HANDLE)
             if self._h is None:
                 self._open()
+            self._say_keep_alive(self._h)  # every call that asks the ECU comes through here
             return self._h
 
     def _let_go(self):
@@ -433,6 +434,8 @@ class UdsClient:
         the client opens (ch.uds(keep_alive_ms=...) starts it with the client)."""
         ms = _keep_alive_period(period_ms)
         with self._lock, _lib.state_lock:
+            if self._closed:
+                raise BloblyError(f"{self!r} is closed", _lib.BB_ERR_HANDLE)
             self._keep_alive_ms = ms
             self._keep_alive_used = self._keep_alive_used or ms is not None
             if self._h is not None:

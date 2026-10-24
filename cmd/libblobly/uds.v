@@ -76,6 +76,7 @@ mut:
 	// the lock that makes a stop and a start of the keep-alive one step
 	ka_said string
 	kset    &sync.Mutex = sync.new_mutex()
+	ka_late []&uds.KeepAlive // stopped while inside a keep-alive: asked for a failure later
 }
 
 __global (

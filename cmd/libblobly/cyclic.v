@@ -31,12 +31,15 @@ fn cyclic_retire(run u64) {
 }
 
 // cyclic_start opens a bus of its own on CAN row `row` of the started run and starts `spec` on it.
-fn cyclic_start(row i32, spec cyclic.Spec) i32 {
+fn cyclic_start(row i32, spec cyclic.Spec, want u64) i32 {
 	bb_mu.lock()
 	mut r := bb_gen_run
 	run := bb_run_gen
 	rows := bb_run_rows
 	bb_mu.unlock()
+	if want != 0 && want != run {
+		return fail(bb_err_state, 'the run was stopped and started again during the call: take the message from the run again')
+	}
 	if isnil(r) {
 		return fail(bb_err_state, "not started: a background sender is one of the run's loops, from bb_start")
 	}
@@ -87,7 +90,7 @@ pub fn bb_cyclic_start(row i32, f &C.bb_frame, period_ms i32) i32 {
 		brs:       f.brs != 0
 		data:      data
 		period_ms: int(period_ms)
-	})
+	}, 0)
 }
 
 // values_of is the host's n signal names and values.
@@ -108,6 +111,11 @@ fn values_of(n i32, signals &&char, values &f64) !map[string]f64 {
 
 @[export: 'bb_cyclic_start_message']
 pub fn bb_cyclic_start_message(row i32, m i32, n i32, signals &&char, values &f64, e2e i32, period_ms i32) i32 {
+	// the message and the run it is read from, together: a restart between the two would send
+	// the earlier run's message on this run's bus
+	bb_mu.lock()
+	read_in := bb_run_gen
+	bb_mu.unlock()
 	msg := message(row, m) or { return refused(err) }
 	vs := values_of(n, signals, values) or { return fail(bb_err, 'cyclic_start_message: ${err.msg()}') }
 	return cyclic_start(row, cyclic.Spec{
@@ -116,7 +124,7 @@ pub fn bb_cyclic_start_message(row i32, m i32, n i32, signals &&char, values &f6
 		values:     vs
 		e2e:        e2e != 0
 		period_ms:  int(period_ms)
-	})
+	}, read_in)
 }
 
 // with_cyclic is background sender c, or why there is none.

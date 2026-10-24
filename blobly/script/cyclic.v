@@ -35,8 +35,9 @@ fn (mut env Env) start_sender(name string, spec cyclic.Spec) !int {
 	return env.senders.len - 1
 }
 
-// stop_senders stops every background sender the script started (close).
-fn (mut env Env) stop_senders() {
+// stop_senders stops every background sender the script started: at close, and by a host after
+// each script it runs, whose senders end with it.
+pub fn (mut env Env) stop_senders() {
 	left := cyclic.stop_all(mut env.senders)
 	if left > 0 {
 		env.emit('${left} background sender(s) still inside a send at close; they send nothing more')
@@ -185,7 +186,9 @@ fn (mut c UdsConn) stop_keep_alive() int {
 	ms := c.ka_ms
 	if !isnil(c.ka) {
 		mut k := c.ka
-		k.stop()
+		if !k.stop() {
+			c.ka_late << k // still inside a keep-alive: its failure, if it fails, is said later
+		}
 		if why := k.take_failure() {
 			c.ka_said = why
 		}
@@ -208,6 +211,17 @@ fn (mut env Env) say_keep_alive(mut c UdsConn) {
 		env.emit('${c.chan}: ${c.ka_said}')
 		c.ka_said = ''
 	}
+	mut still := []&uds.KeepAlive{}
+	for mut late in c.ka_late {
+		out := late.is_out() // asked first: a failure recorded before it left is taken below
+		if why := late.take_failure() {
+			env.emit('${c.chan}: ${why}')
+		}
+		if !out {
+			still << late
+		}
+	}
+	c.ka_late = still
 	if isnil(c.ka) {
 		return
 	}

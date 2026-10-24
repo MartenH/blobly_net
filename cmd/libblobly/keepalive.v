@@ -22,7 +22,11 @@ fn (mut hd UdsHandle) stop_keep_alive_held() {
 	hd.kmu.unlock()
 	if !isnil(ka) {
 		mut k := unsafe { ka }
-		k.stop()
+		if !k.stop() {
+			hd.kmu.lock()
+			hd.ka_late << k // still inside a keep-alive: its failure, if it fails, is said later
+			hd.kmu.unlock()
+		}
 		// a failure it had not said is said by the next bb_uds_keep_alive_failure
 		if why := k.take_failure() {
 			hd.kmu.lock()
@@ -134,9 +138,26 @@ pub fn bb_uds_keep_alive_failure(u i32, buf &char, cap i32) i32 {
 	defer {
 		hd.kmu.unlock()
 	}
-	if hd.ka_said == '' && !isnil(hd.ka) {
-		mut k := hd.ka
-		hd.ka_said = k.take_failure() or { '' }
+	if hd.ka_said == '' {
+		mut still := []&uds.KeepAlive{}
+		mut said := []string{}
+		for mut late in hd.ka_late {
+			out := late.is_out() // asked first: a failure recorded before it left is taken below
+			if why := late.take_failure() {
+				said << why
+			}
+			if !out {
+				still << late
+			}
+		}
+		hd.ka_late = still
+		if !isnil(hd.ka) {
+			mut k := hd.ka
+			if why := k.take_failure() {
+				said << why
+			}
+		}
+		hd.ka_said = said.join('; ')
 	}
 	n := put(hd.ka_said, buf, cap)
 	if n >= 0 && n < cap {

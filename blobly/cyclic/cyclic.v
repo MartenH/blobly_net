@@ -244,9 +244,24 @@ fn encoded(sp Spec) !transport.CanFrame {
 		return raw_frame(sp, sp.data.clone())
 	}
 	mut data := sp.message.template()
-	for name, v in sp.values {
-		if sig := sp.message.signal_named(name) {
-			sig.encode(mut data, v)
+	// the switch and the plain signals first, then only the branch they select: a value kept for
+	// another branch shares its bits and would overwrite the selected one (two passes reach a
+	// switch that is itself multiplexed)
+	for sig in sp.message.signals {
+		if !sig.is_multiplexed {
+			if v := sp.values[sig.name] {
+				sig.encode(mut data, v)
+			}
+		}
+	}
+	for _ in 0 .. 2 {
+		carried := sp.message.carried(data)
+		for i, sig in sp.message.signals {
+			if sig.is_multiplexed && carried[i] {
+				if v := sp.values[sig.name] {
+					sig.encode(mut data, v)
+				}
+			}
 		}
 	}
 	return transport.CanFrame{

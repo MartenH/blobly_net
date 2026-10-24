@@ -184,6 +184,15 @@ pub fn (mut k KeepAlive) status() KeepAliveStatus {
 	}
 }
 
+// is_out is whether its thread has ended.
+pub fn (mut k KeepAlive) is_out() bool {
+	k.mu.lock()
+	defer {
+		k.mu.unlock()
+	}
+	return !k.out
+}
+
 // take_failure is the last failure when one happened since the previous take: what a binding says
 // at the client's next call, so a failure is reported once and never swallowed.
 pub fn (mut k KeepAlive) take_failure() ?string {

@@ -888,6 +888,11 @@ class Project(EventLoop[Channel | str], Faults, Replays):
             st = _lib.state
             if st["owner"] is not self or st["gen"] != self._gen:
                 _say_dropped(self.path, self._load())  # before bb_start: a failed start still says it
+            # a sender an earlier stop left inside a send: its final status, read before bb_start
+            # lets its handle go (bb_start refuses until it is out)
+            if self._senders and lib.bb_wait_released(0) == 0:
+                for c in list(self._senders):
+                    c.stop()
             _lib.check(lib.bb_start())
             st["run"] += 1  # the rows' databases are this run's from here
             self.started = True
