@@ -15,7 +15,7 @@ from . import _lib
 from ._lib import BloblyError, ByteData, Timeout
 from .events import SLICE_MS, EventLoop, _finite, _sliced, monotonic_ms, sleep_ms, wait_on
 from .doip import DoipAnnouncement, discover
-from .uds import FunctionalReply, UdsClient, _close_orphans, functional
+from .uds import FunctionalReply, UdsClient, _close_orphans, _orphans, functional
 from .faults import Faults
 from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import Generators, listed as _listed_generators
@@ -160,7 +160,208 @@ def _ms(timeout_ms):
     return ms
 
 
-class Channel:
+class Bus:
+    """A CAN bus by its address (blobly.open): send, recv, look, expect, health, load and
+    diagnostics on one handle of its own, opened at once and let go by close (or the end of a
+    `with`). A project row's Channel is a Bus too. Every send is checked against the wire policy
+    of the loaded project, if any — a wire it marks listen-only refuses here as on its row — and
+    the handle's load is priced at the rates of the project's first enabled row on that wire, else
+    the address's own (`@<arb>[/<data>]`), else 500 kbit/s. One thread at a time uses it; close may
+    come from another and ends a wait in progress."""
+    name: str
+
+    def __init__(self, address: str) -> None:
+        if not isinstance(address, str) or not address:
+            raise TypeError(f"an interface address is a non-empty string, not {address!r}")
+        if "\0" in address:  # a C string would end there and name another bus
+            raise ValueError(f"an interface address has no NUL: {address!r}")
+        self.name = address
+        self._h = None
+        lib = _lib.lib()
+        with _lib.state_lock:  # bb_bus_open reads the loaded project's rows
+            _close_orphans()
+            self._h = _lib.check(lib.bb_bus_open(address.encode()))
+
+    @property
+    def iface(self) -> str:
+        """The address it was opened with."""
+        return self.name
+
+    def _handle(self):
+        h = self._h
+        if h is None:
+            raise BloblyError(f"{self.name}: closed", _lib.BB_ERR_HANDLE)
+        return h
+
+    def _run(self):
+        """What a wait holds to: nothing for a bus of its own (a Channel: its project's run)."""
+        return None
+
+    def _same_run(self, run):
+        pass
+
+    def _frame_key(self, who, id, ext, hint=None):
+        """(id, ext) a wait matches: an int and the kind ext names, refused where no frame can carry
+        it; `hint` what to add to that refusal (default: that a 29-bit id is ext=True)."""
+        if isinstance(id, bool) or not isinstance(id, int):
+            raise TypeError(f"{who}: an id is an int{self._message_note()}, not {id!r}")
+        if hint is None:
+            hint = "; a 29-bit id is ext=True" if not ext and 0 <= id <= 0x1FFF_FFFF else ""
+        wide = bool(ext)
+        if not 0 <= id <= (0x1FFF_FFFF if wide else 0x7FF):
+            shown = f"0x{id:X}" if id >= 0 else str(id)
+            raise ValueError(f"{who}: {shown} is not {'a 29' if wide else 'an 11'}-bit id{hint}")
+        return id, wide
+
+    def _message_note(self):
+        return ""
+
+    def send(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
+             brs: bool = False) -> None:
+        """Puts a frame on the wire. fd/brs left False let the wire's declared format decide."""
+        self._send_on(self._handle(), _bb_frame(self.name, id, data, ext, fd, brs))
+
+    def _send_on(self, h, f):
+        lib = _lib.lib()
+        _lib.check(lib.bb_bus_send(h, ctypes.byref(f)))
+
+    def recv(self, timeout_ms: float | None = 1000) -> Frame | None:
+        """The next frame other nodes sent, waiting at most timeout_ms (None: forever); None when
+        nothing came. Ctrl-C ends the wait within 100 ms (SLICE_MS)."""
+        ms = _ms(timeout_ms)
+        h = self._handle()  # one handle for the whole wait: a close or stop meanwhile ends it
+        return _sliced(lambda part: self._receive(part, h)[0], ms)
+
+    def look(self) -> tuple[Frame | None, bool]:
+        """One look at what is already queued: (frame or None, spent). `spent` says the look
+        stopped at its bound with records still queued behind it, so a poller looks again at once
+        rather than sleeping."""
+        return self._receive(0)
+
+    def _receive(self, ms, h=None):
+        """(frame or None, spent) from the channel's handle, or from `h`, one it had."""
+        f = _lib.BbFrame()
+        lib = _lib.lib()
+        rc = _lib.check(lib.bb_bus_recv(self._handle() if h is None else h, ms, ctypes.byref(f)))
+        if rc in (_lib.BB_NONE, _lib.BB_SPENT):
+            return None, rc == _lib.BB_SPENT
+        return frame_of(f, received=True), False
+
+    def expect(self, id: "int | Message", timeout_ms: float = 1000, *, ext: bool | None = None,
+               e2e: bool = False) -> Frame:
+        """The first frame another node sends with this id AND kind, waited for at most timeout_ms
+        in all; blobly.Timeout when none came, its message saying what came instead.
+
+        `id` is an int, its kind `ext` (False or None: 11-bit, True: 29-bit), or on a Channel a
+        Message of it, whose id and kind it is (ext left out). timeout_ms is one deadline for the whole
+        wait however many other frames arrive: a finite number of milliseconds, and nothing read
+        once it has passed but the first look (a wait of 0 reads at most one queued frame).
+
+        With e2e=True the frame must pass its E2E check (Frame.e2e is "ok"): blobly.E2eError
+        otherwise, its status the verdict, None where the frame's message has no E2E.
+
+        Every frame read while waiting is consumed, the ones that did not match included: a later
+        recv or expect gets the frame after it."""
+        __tracebackhide__ = True  # a pytest failure points at the test's line, not this one
+        if e2e and not isinstance(self, Channel):
+            raise ValueError(f"expect: {self.name} is a bus opened by address, whose frames no row's E2E "
+                             "judges; e2e=True needs the project's channel")
+        deadline = _deadline("expect", timeout_ms)
+        with _lib.state_lock:
+            want = self._frame_key("expect", id, ext)
+            run = self._run()
+        others = collections.Counter()
+        for f in self._frames_until(deadline, run):
+            if (f.id, f.ext) == want:
+                self._same_run(run)
+                if e2e:
+                    _passed(self.name, f)
+                return f
+            others[(f.id, f.ext)] += 1
+        raise Timeout(f"{self.name}: expected a frame {_id_text(*want)} within {_num(timeout_ms)} ms; "
+                      + _came(others, want[0]), _lib.BB_ERR_TIMEOUT)
+
+    def _frames_until(self, deadline, run):
+        """The frames read from now until `deadline` (monotonic_ms) has passed: each read waits
+        whole milliseconds, at most SLICE_MS (so Ctrl-C lands), and never past it, the fraction of
+        one the driver cannot be asked for is slept rather than read, and nothing is read once it
+        has passed but the first look (so a wait of 0 reads at most one queued frame). A look that stopped at its bound with records
+        still queued (look's `spent`) looks again at once, within it. All of it in the project's
+        run `run`, on the handle the channel had in it: a stop closes that handle, and a stop or
+        a start during the wait is refused, never waited through on the next run's handle."""
+        with _lib.state_lock:
+            self._same_run(run)
+            h = self._handle()  # opened inside the wait, not before it: a slow open spends its time
+        first = True
+        while True:
+            self._same_run(run)
+            left = deadline - monotonic_ms()
+            if left <= 0 and not first:
+                return
+            first = False
+            try:
+                f, spent = self._receive(min(max(0, math.floor(left)), SLICE_MS), h)
+            except BloblyError:
+                with _lib.state_lock:  # a stop closed the handle: said as the stop, once it is done
+                    self._same_run(run)
+                raise
+            self._same_run(run)
+            if f is not None:
+                yield f
+            elif not spent and left < 1:
+                rest = deadline - monotonic_ms()
+                if rest > 0:
+                    sleep_ms(rest)
+                self._same_run(run)
+                return
+
+    def health(self) -> str:
+        """The controller's ladder now: "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF", or ""
+        where the backend cannot say (the software buses)."""
+        lib = _lib.lib()
+        return _lib.HEALTH_NAMES.get(_lib.check(lib.bb_bus_health(self._handle())), "")
+
+    def load(self) -> BusLoad:
+        """This channel's bus load as its handle counted it since it opened: the frames it received
+        (when read) and sent, priced at the wire's first enabled row's rates. From the thread that
+        uses the channel."""
+        return load_of(self._handle())
+
+    def diagnostics(self) -> BusDiagnostics:
+        """What the backend counted since this channel's handle opened: dropped, controller-error
+        and undecodable records. From the thread that uses the channel."""
+        return diagnostics_of(self._handle())
+
+    def close(self) -> None:
+        """Lets the handle go; a wait in progress on another thread ends within 20 ms. Closing
+        twice is nothing."""
+        lib = _lib.lib()
+        with _lib.state_lock:
+            if self._h is not None:
+                h, self._h = self._h, None
+                _lib.check(lib.bb_bus_close(h))
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> Literal[False]:
+        self.close()
+        return False
+
+    def __del__(self) -> None:
+        # an unclosed bus lets its handle go at the next open (_orphans): nothing is called into
+        # here, since this may run between another call and its error
+        try:
+            if self._h is not None:
+                _orphans.append(("bb_bus_close", self._h))
+        except Exception:
+            pass
+
+    def __repr__(self) -> str:
+        return f"<Bus {self.name}>"
+
+
+class Channel(Bus):
     """One enabled row of the project. Its bus handle is opened on first use and is the one send,
     recv, health and the event loop all use, so what this channel sends is never heard back. It
     belongs to its project: after another project's load it refuses, rather than reach whatever
@@ -229,15 +430,6 @@ class Channel:
                 self._h = h
             return self._h
 
-    def send(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
-             brs: bool = False) -> None:
-        """Puts a frame on the wire. fd/brs left False let the wire's declared format decide."""
-        self._send_on(self._handle(), _bb_frame(self.name, id, data, ext, fd, brs))
-
-    def _send_on(self, h, f):
-        lib = _lib.lib()
-        _lib.check(lib.bb_bus_send(h, ctypes.byref(f)))
-
     def send_cyclic(self, id: int, data: ByteData = b"", period_ms: int = 100, *, ext: bool = False,
                     fd: bool = False, brs: bool = False) -> CyclicSender:
         """Sends a frame every period_ms in the background, the first at once, until the sender's
@@ -247,59 +439,6 @@ class Channel:
         f = _bb_frame(self.name, id, data, ext, fd, brs)
         with _lib.state_lock:
             return _start_raw(self, f, _period(period_ms))
-
-    def recv(self, timeout_ms: float | None = 1000) -> Frame | None:
-        """The next frame other nodes sent, waiting at most timeout_ms (None: forever); None when
-        nothing came. Ctrl-C ends the wait within 100 ms (SLICE_MS)."""
-        ms = _ms(timeout_ms)
-        h = self._handle()  # one handle for the whole wait: a close or stop meanwhile ends it
-        return _sliced(lambda part: self._receive(part, h)[0], ms)
-
-    def look(self) -> tuple[Frame | None, bool]:
-        """One look at what is already queued: (frame or None, spent). `spent` says the look
-        stopped at its bound with records still queued behind it, so a poller looks again at once
-        rather than sleeping."""
-        return self._receive(0)
-
-    def _receive(self, ms, h=None):
-        """(frame or None, spent) from the channel's handle, or from `h`, one it had."""
-        f = _lib.BbFrame()
-        lib = _lib.lib()
-        rc = _lib.check(lib.bb_bus_recv(self._handle() if h is None else h, ms, ctypes.byref(f)))
-        if rc in (_lib.BB_NONE, _lib.BB_SPENT):
-            return None, rc == _lib.BB_SPENT
-        return frame_of(f, received=True), False
-
-    def expect(self, id: "int | Message", timeout_ms: float = 1000, *, ext: bool | None = None,
-               e2e: bool = False) -> Frame:
-        """The first frame another node sends with this id AND kind, waited for at most timeout_ms
-        in all; blobly.Timeout when none came, its message saying what came instead.
-
-        `id` is an int, its kind `ext` (False or None: 11-bit, True: 29-bit), or a Message of this
-        channel, whose id and kind it is (ext left out). timeout_ms is one deadline for the whole
-        wait however many other frames arrive: a finite number of milliseconds, and nothing read
-        once it has passed but the first look (a wait of 0 reads at most one queued frame).
-
-        With e2e=True the frame must pass its E2E check (Frame.e2e is "ok"): blobly.E2eError
-        otherwise, its status the verdict, None where the frame's message has no E2E.
-
-        Every frame read while waiting is consumed, the ones that did not match included: a later
-        recv or expect gets the frame after it."""
-        __tracebackhide__ = True  # a pytest failure points at the test's line, not this one
-        deadline = _deadline("expect", timeout_ms)
-        with _lib.state_lock:
-            want = self._frame_key("expect", id, ext)
-            run = _lib.state["run"]
-        others = collections.Counter()
-        for f in self._frames_until(deadline, run):
-            if (f.id, f.ext) == want:
-                self._same_run(run)
-                if e2e:
-                    _passed(self.name, f)
-                return f
-            others[(f.id, f.ext)] += 1
-        raise Timeout(f"{self.name}: expected a frame {_id_text(*want)} within {_num(timeout_ms)} ms; "
-                      + _came(others, want[0]), _lib.BB_ERR_TIMEOUT)
 
     def expect_signal(self, message: "Message | str", signal: "Signal | str", want: object,
                       timeout_ms: float = 1000, *, e2e: bool = False) -> tuple[Frame, float]:
@@ -371,22 +510,19 @@ class Channel:
         raise Timeout(text, _lib.BB_ERR_TIMEOUT)
 
     def _frame_key(self, who, id, ext):
-        """(id, ext) a wait matches: an int and the kind ext names, or a Message's own; either
-        refused where no frame can carry it."""
+        """(id, ext) a wait matches: Bus's, or a Message's own."""
         if isinstance(id, Message):
             if ext is not None:
                 raise TypeError(f"{who}: a Message carries its own kind; leave ext out")
             msg = self._own(who, id)
-            id, ext, hint = msg.id, msg.ext, f" (its database's {msg.name})"
-        elif isinstance(id, bool) or not isinstance(id, int):
-            raise TypeError(f"{who}: an id is an int or a Message of {self.name}, not {id!r}")
-        else:
-            hint = "; a 29-bit id is ext=True" if not ext and 0 <= id <= 0x1FFF_FFFF else ""
-        wide = bool(ext)
-        if not 0 <= id <= (0x1FFF_FFFF if wide else 0x7FF):
-            shown = f"0x{id:X}" if id >= 0 else str(id)
-            raise ValueError(f"{who}: {shown} is not {'a 29' if wide else 'an 11'}-bit id{hint}")
-        return id, wide
+            return super()._frame_key(who, msg.id, msg.ext, f" (its database's {msg.name})")
+        return super()._frame_key(who, id, ext)
+
+    def _message_note(self):
+        return f" or a Message of {self.name}"
+
+    def _run(self):
+        return _lib.state["run"]
 
     def _own(self, who, message):
         """A Message of this row's databases in this run: one of this channel's, or its name."""
@@ -399,61 +535,10 @@ class Channel:
         message._live()
         return message
 
-    def _frames_until(self, deadline, run):
-        """The frames read from now until `deadline` (monotonic_ms) has passed: each read waits
-        whole milliseconds, at most SLICE_MS (so Ctrl-C lands), and never past it, the fraction of
-        one the driver cannot be asked for is slept rather than read, and nothing is read once it
-        has passed but the first look (so a wait of 0 reads at most one queued frame). A look that stopped at its bound with records
-        still queued (look's `spent`) looks again at once, within it. All of it in the project's
-        run `run`, on the handle the channel had in it: a stop closes that handle, and a stop or
-        a start during the wait is refused, never waited through on the next run's handle."""
-        with _lib.state_lock:
-            self._same_run(run)
-            h = self._handle()  # opened inside the wait, not before it: a slow open spends its time
-        first = True
-        while True:
-            self._same_run(run)
-            left = deadline - monotonic_ms()
-            if left <= 0 and not first:
-                return
-            first = False
-            try:
-                f, spent = self._receive(min(max(0, math.floor(left)), SLICE_MS), h)
-            except BloblyError:
-                with _lib.state_lock:  # a stop closed the handle: said as the stop, once it is done
-                    self._same_run(run)
-                raise
-            self._same_run(run)
-            if f is not None:
-                yield f
-            elif not spent and left < 1:
-                rest = deadline - monotonic_ms()
-                if rest > 0:
-                    sleep_ms(rest)
-                self._same_run(run)
-                return
-
     def _same_run(self, run):
         if _lib.state["run"] != run:
             raise BloblyError(f"{self.name}: the project was stopped or restarted during the wait",
                               _lib.BB_ERR_STATE)
-
-    def health(self) -> str:
-        """The controller's ladder now: "ok", "error warning", "ERROR-PASSIVE", "BUS-OFF", or ""
-        where the backend cannot say (the software buses)."""
-        lib = _lib.lib()
-        return _lib.HEALTH_NAMES.get(_lib.check(lib.bb_bus_health(self._handle())), "")
-
-    def load(self) -> BusLoad:
-        """This channel's bus load as its handle counted it since it opened: the frames it received
-        (when read) and sent, priced at the wire's first enabled row's rates. From the thread that
-        uses the channel."""
-        return load_of(self._handle())
-
-    def diagnostics(self) -> BusDiagnostics:
-        """What the backend counted since this channel's handle opened: dropped, controller-error
-        and undecodable records. From the thread that uses the channel."""
-        return diagnostics_of(self._handle())
 
     @property
     def messages(self) -> "Messages":

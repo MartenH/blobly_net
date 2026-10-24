@@ -234,6 +234,19 @@ class BbSomeipMsg(ctypes.Structure):
                 ("source", ctypes.c_char * BB_SOMEIP_FROM_MAX)]
 
 
+class BbIface(ctypes.Structure):
+    """bb_iface, field for field."""
+    _fields_ = [("fd", ctypes.c_int32), ("bitrate", ctypes.c_int32), ("is_virtual", ctypes.c_uint8)]
+
+
+class BbVectorHw(ctypes.Structure):
+    """bb_vector_hw, field for field."""
+    _fields_ = [("hw_type", ctypes.c_int32), ("hw_index", ctypes.c_int32), ("hw_channel", ctypes.c_int32),
+                ("serial", ctypes.c_uint32), ("bitrate", ctypes.c_uint32), ("app", ctypes.c_int32),
+                ("owner_known", ctypes.c_uint8), ("can", ctypes.c_uint8), ("fd_iso", ctypes.c_uint8),
+                ("fd_bosch", ctypes.c_uint8), ("on_bus", ctypes.c_uint8)]
+
+
 FLASH_NOTE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p)
 FLASH_PROGRESS = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32)
 
@@ -570,6 +583,20 @@ def _declare(lib):
         "bb_uds_set_wait": ([c_int, c_int, c_int], c_int),
         "bb_uds_check_wait": ([c_int, c_int], c_int),
         "bb_uds_retarget": ([c_int, P(ctypes.c_int64)], c_int),
+        # interfaces present and Vector assignment (discovery.py, vector.py)
+        "bb_ifaces": ([], c_int),
+        "bb_ifaces_cansub": ([c_int], c_int),
+        "bb_vector_hardware": ([], c_int),
+        "bb_listing_count": ([c_int], c_int),
+        "bb_listing_note": ([c_int, c_char_p, c_int], c_int),
+        "bb_iface_info": ([c_int, c_int, P(BbIface)], c_int),
+        "bb_iface_text": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_vector_info": ([c_int, c_int, P(BbVectorHw)], c_int),
+        "bb_vector_text": ([c_int, c_int, c_int, c_char_p, c_int], c_int),
+        "bb_listing_free": ([c_int], c_int),
+        "bb_vector_driver": ([c_char_p, c_int], c_int),
+        "bb_vector_slot": ([c_int], c_int),
+        "bb_vector_assign": ([c_int, c_int, c_int, c_int, c_int], c_int),
         # E2E on a row's frames (project.py, e2e.py)
         "bb_e2e_attach": ([c_int, c_int], c_int),
         "bb_e2e_stamp": ([c_int, c_int, P(BbFrame)], c_int),

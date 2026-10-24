@@ -613,51 +613,6 @@ fn adapter_tip(a string) string {
 	}
 }
 
-// CanIface is one CAN interface found on the machine (Linux /sys/class/net).
-struct CanIface {
-	name    string
-	is_vcan bool
-	desc    string // e.g. "PCAN-USB Pro FD [1-1] · down" (real) or "virtual CAN" (vcan)
-}
-
-// read_can_ifaces enumerates the machine's CAN interfaces with a human description: for
-// real hardware, the USB product name + bus path + link state (so the two channels of a
-// dual PCAN read as "can0 … PCAN-USB Pro FD [1-1]" / "can1 …"). Linux-only (/sys); [] else.
-fn read_can_ifaces() []CanIface {
-	mut out := []CanIface{}
-	names := os.ls('/sys/class/net') or { return out }
-	for name in names {
-		typ := os.read_file('/sys/class/net/${name}/type') or { continue }
-		if typ.trim_space() != '280' { // ARPHRD_CAN
-			continue
-		}
-		is_vcan := name.starts_with('vcan')
-		mut desc := 'virtual CAN'
-		if !is_vcan {
-			base := '/sys/class/net/${name}'
-			product := (os.read_file('${base}/device/../product') or { '' }).trim_space()
-			state := (os.read_file('${base}/operstate') or { '' }).trim_space()
-			busnum := (os.read_file('${base}/device/../busnum') or { '' }).trim_space()
-			devpath := (os.read_file('${base}/device/../devpath') or { '' }).trim_space()
-			mut parts := [if product != '' { product } else { 'CAN' }]
-			if busnum != '' && devpath != '' {
-				parts << '[${busnum}-${devpath}]'
-			}
-			if state != '' {
-				parts << '· ${state}'
-			}
-			desc = parts.join(' ')
-		}
-		out << CanIface{
-			name:    name
-			is_vcan: is_vcan
-			desc:    desc
-		}
-	}
-	out.sort(a.name < b.name)
-	return out
-}
-
 // DiscoveredIface is one transport the Discover dialog offers to add as a bus.
 struct DiscoveredIface {
 	adapter string
@@ -684,39 +639,6 @@ fn pick_items(list []DiscoveredIface) []string {
 	return items
 }
 
-// iface_desc renders a short description for a transport-discovered interface (used for the
-// vendor/virtual entries that don't come with the rich /sys hardware label).
-fn iface_desc(f transport.Iface) string {
-	mut d := match f.kind {
-		'vcan' {
-			'virtual CAN'
-		}
-		'udp' {
-			'software bus'
-		}
-		'inproc' {
-			'in-process simulation'
-		}
-		'can' {
-			if f.name != '' && f.name != f.iface { f.name } else { 'CAN' }
-		}
-		'cansub' {
-			f.name
-		}
-		'bridge' {
-			'through canbridge on ${f.iface.all_after('bridge:').all_before_last('/')}'
-		}
-		else {
-			f.kind
-		}
-	}
-
-	if f.bitrate > 0 {
-		d += ' · ${f.bitrate}'
-	}
-	return d
-}
-
 // discover_all builds the Discover list, marking entries already in the project. Three sources
 // are merged and de-duplicated by (adapter,address):
 //   1. Linux /sys CAN interfaces — finds interfaces that are DOWN (which `ip -json`, and thus
@@ -734,31 +656,16 @@ fn (app &App) discover_all() []DiscoveredIface {
 	return app.merge_discovered(app.scan_local(), found)
 }
 
-// scan_local is sources 1 and 2: what this host can enumerate without waiting on a network.
+// scan_local is sources 1 and 2: what this host can enumerate without waiting on a network
+// (transport.local_interfaces, which scripts list too).
 fn (app &App) scan_local() []DiscoveredIface {
 	mut out := []DiscoveredIface{}
-	mut seen := map[string]bool{}
-	for ci in read_can_ifaces() {
-		adapter := if ci.is_vcan { 'vcan' } else { 'socketcan' }
-		seen[project.compose_iface(adapter, ci.name)] = true
-		out << DiscoveredIface{
-			adapter: adapter
-			address: ci.name
-			desc:    ci.desc
-			added:   app.iface_added(adapter, ci.name)
-		}
-	}
-	for f in transport.list_interfaces() or { transport.virtual_ifaces() } {
-		adapter, address := project.decompose_iface(f.iface)
-		key := project.compose_iface(adapter, address)
-		if key in seen {
-			continue
-		}
-		seen[key] = true
+	for f in transport.local_interfaces() {
+		adapter, address := project.decompose_iface(f.address)
 		out << DiscoveredIface{
 			adapter: adapter
 			address: address
-			desc:    iface_desc(f)
+			desc:    f.desc
 			added:   app.iface_added(adapter, address)
 		}
 	}
@@ -792,7 +699,7 @@ fn (app &App) merge_discovered(scan []DiscoveredIface, cansub []transport.Iface)
 		out << DiscoveredIface{
 			adapter: adapter
 			address: address
-			desc:    iface_desc(f)
+			desc:    transport.describe(f).desc
 			added:   app.iface_added(adapter, address)
 		}
 	}

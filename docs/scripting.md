@@ -667,6 +667,42 @@ local d = bus.diagnostics(channel)
   before delivery (the handle's queue full, a driver overrun, a shared ring overwritten),
   `bus_errors` controller error records, `decode_errors` records it could not decode — on a wire shared through one driver handle (PCAN, CANsub, the CAN bridge) they are the wire's since it opened, its other handles' ring gaps included. The runner prints the non-empty ones at close, as before.
 
+### Interfaces — bus.open_iface / bus.interfaces / vector
+
+```lua
+local b = bus.open_iface("vcan0")          -- any address a project row could name; returns its name
+bus.send(b, 0x123, "\1\2")                 -- every bus.* call, run() and uds.open take that name
+for _, i in ipairs(bus.interfaces()) do    -- what is present, without a network wait
+  log(i.address .. " " .. i.kind .. " " .. i.description)
+end
+local found, note = bus.discover_cansub(700) -- the CANsub channels an mDNS browse finds
+```
+
+- **`bus.open_iface(address)`** makes a bus by its address a channel of the script, named by the
+  address (`"inproc:X"`, `"vcan0"`, `"pcan:PCAN_USBBUS1@500000"`), and opens it at once, so an
+  address that will not open raises there. Opened once per script: a second call returns the same
+  name. A DoIP or SOME/IP endpoint is refused, and so is an address spelled like a channel of the
+  project, since the name would be two channels. Its sends obey the loaded project's wire policy
+  (a `listen_only` wire refuses), and its load is priced at the rates of the project's first
+  enabled row on that wire, else the address's own (`@<arb>[/<data>]`), else 500 kbit/s.
+- **`bus.interfaces()`** is the GUI's Discover answer as rows: `{ address, kind, description, fd,
+  bitrate, virtual, state }` — `kind` one of `socketcan`, `vcan`, `pcan`, `kvaser`, `vector`,
+  `cansub`, `bridge`, `udp`, `inproc`; `fd` `true`, `false` or `nil` where nothing asked could say
+  (a SocketCAN link says by its MTU); `state` a Vector application channel's (`"assigned"`,
+  `"hardware not present"`).
+- **`bus.discover_cansub(window_ms)`** browses mDNS for CANsub devices, waiting its whole window
+  (default 700 ms, at most 10000), a row per channel; the second answer names the network
+  interfaces it could not ask (`nil` when it asked all). An error means no browse was possible,
+  not that nothing is attached.
+- **Vector application channels** (Windows): `vector.driver()` is `nil`, or why the XL driver
+  cannot be used (on Linux: Windows-only). `vector.assignments()` lists the physical channels
+  `{ name, transceiver, hw_type, hw_index, hw_channel, serial, bitrate, app, owner_known, can,
+  fd_iso, fd_bosch, on_bus }`, `app` the application channel on it (0 none). `vector.slot(app)` is
+  `"taken"`, `"empty"`, `"absent"` or `"unreadable"`. `vector.assign(app, hw, { create = true })`
+  points `vector:<app>` at a row of `assignments()` with the Discover dialog's refusals: an
+  `"absent"` (unregistered) channel only when `create` says creating it is meant. The mapping
+  persists across reboots. `tests/interfaces.lua` is the suite.
+
 ### The DBC catalog
 
 What a channel's databases (its `databases:`) define, read from the same model `decode` and

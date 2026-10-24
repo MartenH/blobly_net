@@ -46,3 +46,18 @@ fn test_an_address_states_its_own_rates() {
 	xn, _ := address_rates('pcan:X@fast')
 	assert xn == default_bitrate, 'a rate that is not one'
 }
+
+fn test_a_bare_vendor_address_finds_the_row_that_states_its_rate() {
+	rows := [
+		Channel{
+			name:    'c'
+			adapter: 'cansub'
+			iface:   'cansub:12345678/1'
+			bitrate: 250000
+		},
+	]
+	n, _ := wire_rates(rows, 'cansub:12345678/1') or { panic('the bare address found no row') }
+	assert n == 250000
+	m, _ := wire_rates(rows, rows[0].iface_with_bitrate()) or { panic('the row found no row') }
+	assert m == 250000
+}

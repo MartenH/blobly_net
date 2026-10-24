@@ -98,6 +98,14 @@ __all__ += ["IsoTp"]
 # E2E verdicts on received frames (e2e.py; Frame.e2e, expect(..., e2e=True))
 from .e2e import E2eError, E2eStatus  # noqa: E402
 __all__ += ["E2eError", "E2eStatus"]
+# interfaces present, a bus by its address, Vector assignment (discovery.py, vector.py)
+from .project import Bus  # noqa: E402
+from .discovery import Interface, discover_cansub, interfaces  # noqa: E402
+# blobly.open, re-exported but not in __all__: `from blobly import *` must not replace the builtin
+from .discovery import open as open  # noqa: E402
+from . import vector  # noqa: E402
+from .vector import VectorHardware  # noqa: E402
+__all__ += ["Bus", "Interface", "VectorHardware", "discover_cansub", "interfaces", "vector"]
 # background cyclic senders (cyclic.py; Channel.send_cyclic, Message.send_cyclic) and the UDS keep-alive
 from .cyclic import CyclicSender, CyclicStatus  # noqa: E402
 from .uds import KeepAliveStatus, KeepAliveWarning  # noqa: E402

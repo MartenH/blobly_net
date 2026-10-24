@@ -15,6 +15,11 @@ pub fn list_interfaces() ![]Iface {
 	return out
 }
 
+// sysfs_can_ifaces: no SocketCAN here.
+fn sysfs_can_ifaces() []Interface {
+	return []
+}
+
 // local_ipv4_addrs is every IPv4 address this host has, loopback excluded -- the interfaces an
 // mDNS query has to leave through (cansub_mdns.v). `ipconfig` lists a USB network adapter's
 // subnet where resolving the host's own name may not; the parsing is in local_addrs.v, tested
