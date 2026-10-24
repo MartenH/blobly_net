@@ -51,7 +51,7 @@ class Frame:
     def __init__(self, id: int, data: ByteData = b"", ext: bool = False, fd: bool = False,
                  brs: bool = False, rtr: bool = False, esi: bool = False, length: int | None = None,
                  t_ms: float | None = None, e2e: E2eStatus | str | None = None) -> None:
-        data = bytes(data)
+        data = _lib.byte_data("data", data)
         _fill(self, (id, data, len(data) if length is None else length, ext, fd, brs, rtr, esi, t_ms,
                      None if e2e is None else E2eStatus(e2e)))
 
@@ -104,7 +104,7 @@ def _bb_frame(who, id, data, ext=False, fd=False, brs=False, rtr=False):
     """A bb_frame from a frame's parts, refusing what no CAN frame is."""
     if isinstance(id, bool) or not isinstance(id, int) or not 0 <= id <= 0x1FFF_FFFF:
         raise ValueError(f"{who}: a CAN id is an integer of at most 29 bits, not {id!r}")
-    data = bytes(data)
+    data = _lib.byte_data(f"{who}: data", data)
     if len(data) > 64:
         raise ValueError(f"{who}: {len(data)} bytes is more than a CAN-FD frame carries")
     f = _lib.BbFrame(id=id, len=len(data), ext=int(bool(ext)), fd=int(bool(fd)), brs=int(bool(brs)),

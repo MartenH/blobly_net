@@ -4,6 +4,7 @@ attaches before its first call and detaches before it ends. A thread that calls 
 on its first call and detached when it ends, so a user never has to."""
 import collections
 import ctypes
+import numbers
 import os
 import sys
 import threading
@@ -626,6 +627,17 @@ def attach():
     if _lib.bb_thread_attach() != 0:
         raise BloblyError(text(_lib.bb_last_error()))
     _tls.held = _Attachment(_lib)
+
+
+def byte_data(name, v):
+    """A byte-string argument: bytes, bytearray, memoryview, or a sequence of byte values. An integer
+    is refused, where bytes() would read it as a count of zero bytes."""
+    if isinstance(v, (str, numbers.Integral)):
+        raise TypeError(f"{name} must be bytes, not {type(v).__name__}")
+    try:
+        return bytes(v)
+    except (TypeError, ValueError) as e:
+        raise TypeError(f"{name} must be bytes: {e}") from None
 
 
 def ms_of(ns):

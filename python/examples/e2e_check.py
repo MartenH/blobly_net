@@ -16,6 +16,7 @@ import argparse
 import os
 import sys
 import time
+from typing import NoReturn
 from importlib.util import find_spec
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,7 +30,7 @@ from blobly import E2eError, E2eStatus, FaultKind  # noqa: E402
 E2E_DEMO = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, "projects", "e2e-demo.blobnet"))
 
 
-def fail(why: str) -> None:
+def fail(why: str) -> NoReturn:
     sys.exit(f"FAIL: {why}")
 
 

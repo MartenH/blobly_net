@@ -18,7 +18,7 @@ from unittest import mock
 import pytest
 
 import blobly
-from blobly import _lib
+from blobly import _lib, project
 from conftest import DEMO, INSTALLED, REPO, SIM_DEMO, run_python, write
 
 pytestmark = pytest.mark.usefixtures("engine")
@@ -375,6 +375,14 @@ class TestFrame:
         assert hash(received) == hash(blobly.Frame(0x100, b"\x01", t_ms=99.0))
         assert pickle.loads(pickle.dumps(received)).t_ms == 12.5
         assert blobly.Frame(0x100).t_ms is None
+
+    def test_an_integer_is_not_data(self):
+        # bytes(3) is three zero bytes: an integer given as data is refused, not read as a length
+        with pytest.raises(TypeError):
+            blobly.Frame(0x100, 3)
+        with pytest.raises(TypeError):
+            project._bb_frame("send", 0x100, 3)
+        assert blobly.Frame(0x100, [3]).data == b"\x03"
 
     def test_the_receive_time_in_ms_is_the_ns_divided_once(self):
         # the Lua binding's clock_ms makes the same division (events_test.v pins the same value)
