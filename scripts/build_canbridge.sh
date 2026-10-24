@@ -9,11 +9,14 @@
 #
 #   V=/path/to/v   the compiler (default: `v` on PATH)
 set -e
-cd "$(dirname "$0")/.."
 out="${1:-build}"
 V="${V:-v}"
-command -v musl-gcc >/dev/null || { echo "build_canbridge: no musl-gcc (apt-get install musl-tools)" >&2; exit 1; }
+# Both as the caller named them, before the cd to the repository.
 mkdir -p "$out"
+out="$(cd "$out" && pwd)"
+case "$V" in */*) V="$(cd "$(dirname "$V")" && pwd)/$(basename "$V")" ;; esac
+cd "$(dirname "$0")/.."
+command -v musl-gcc >/dev/null || { echo "build_canbridge: no musl-gcc (apt-get install musl-tools)" >&2; exit 1; }
 # musl's include path has no kernel headers; linux/can.h and its asm come from the system's.
 hdr="$(mktemp -d)"
 trap 'rm -rf "$hdr"' EXIT
@@ -26,10 +29,11 @@ ln -s /usr/include/asm-generic "$hdr/asm-generic"
 ln -s "$asm" "$hdr/asm"
 # V's prebuilt collector is glibc's, so the bundled one is compiled; musl has no getcontext.
 "$V" -enable-globals -cc musl-gcc -d use_bundled_libgc \
-	-cflags "-static -isystem $hdr -DNO_GETCONTEXT" -o "$out/canbridge" cmd/canbridge
-if ldd "$out/canbridge" >/dev/null 2>&1; then
+	-cflags "-static -s -isystem $hdr -DNO_GETCONTEXT" -o "$out/canbridge" cmd/canbridge
+# A program interpreter is a dynamic link (ldd cannot say so of a musl one).
+if readelf -lW "$out/canbridge" | grep -q 'INTERP'; then
 	echo "build_canbridge: $out/canbridge is dynamically linked" >&2
-	ldd "$out/canbridge" >&2
+	readelf -lW "$out/canbridge" | grep -A1 INTERP >&2
 	exit 1
 fi
 lic=/usr/share/doc/musl/copyright

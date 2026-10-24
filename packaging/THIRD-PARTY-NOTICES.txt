@@ -37,7 +37,6 @@ linked statically, so its libc is compiled into it:
   Boehm-Demers-Weiser GC            https://github.com/ivmai/bdwgc
                      notice-retention, see licenses/boehm-gc-LICENSE.txt
   musl libc          MIT            https://musl.libc.org/  see licenses/musl-LICENSE.txt
-  GCC libatomic      GPL-3 + GCC Runtime Library Exception
 
 Bundled runtime libraries (the *.dll files next to the executable)
 ------------------------------------------------------------------

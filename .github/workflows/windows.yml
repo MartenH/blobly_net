@@ -401,6 +401,9 @@ jobs:
       - name: Add canbridge
         run: |
           test -f dist/blobly_net.exe
+          if readelf -lW canbridge-linux/canbridge | grep -q INTERP; then
+            echo "canbridge is dynamically linked (#503)" >&2; exit 1
+          fi
           cp canbridge-linux/canbridge dist/canbridge
           cp canbridge-linux/musl-LICENSE.txt dist/licenses/musl-LICENSE.txt
 

@@ -71,9 +71,10 @@ requirements below:
 
 ## Requirements
 
-- **Any x86-64 distribution, of any age.** `canbridge` is linked statically (against musl), so it
-  needs no particular glibc and no library of the distribution's. It does use the distribution's
-  `ip` (iproute2) to list the CAN interfaces and create the vcans. Built from a checkout with
+- **Any x86-64 distribution with iproute2 4.13 or later** (2017; `ip -json`). `canbridge` is
+  linked statically (against musl), so it needs no particular glibc and no library of the
+  distribution's; it uses the distribution's `ip` to list the CAN interfaces and create the
+  vcans. Built from a checkout with
   `scripts/build_canbridge.sh` (it needs `musl-tools`); a plain `v cmd/canbridge` builds a
   dynamic one, which runs only where the build host's glibc does.
 - **WSL 2 with `networkingMode=mirrored`** in `%UserProfile%\.wslconfig`:
