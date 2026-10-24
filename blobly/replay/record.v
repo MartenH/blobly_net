@@ -80,11 +80,13 @@ pub:
 // Line is one line waiting for the file: `seq` is a send its place waits on (0: settled) — on a
 // wire that does not echo, the line's own send, not yet taken by its driver, so a reply read
 // meanwhile is written after its request; on one that does, the send whose note the line's echo
-// took, so the line is ours only if that send was not refused. `at` is when the echo arrived.
+// took, so the line is ours only if that send was not refused. `at` is when the echo arrived, as
+// its stamp places it; `seen` when it was read, on the clock the notes are made by.
 struct Line {
-	e   canlog.LogEntry
-	seq u64
-	at  f64
+	e    canlog.LogEntry
+	seq  u64
+	at   f64
+	seen f64
 }
 
 // record starts recording `targets` (a name and an interface each; one per wire) to `path`,
@@ -303,11 +305,13 @@ fn (mut r Recorder) send_watch(i int, t Target) transport.SendWatch {
 }
 
 // settle_echo is what a send on target `i`'s echoing wire, whose note an echo took, came to:
-// refused, the echo is taken again by what is left (an identical send's note made before it
-// arrived, else nobody's); otherwise the echo is ours (a write that failed may have gone out).
+// refused, the echo is taken again by what is left (an identical send's note made before it was
+// read, else nobody's); otherwise the echo is ours (a write that failed may have gone out).
 // The caller holds `mu`.
 fn (mut r Recorder) settle_echo(i int, t Target, tok u64, refused bool) {
-	for k, l in r.lines {
+	// from the end: the line is most often the echo just read
+	for k := r.lines.len - 1; k >= 0; k-- {
+		l := r.lines[k]
 		if l.seq != tok {
 			continue
 		}
@@ -319,7 +323,7 @@ fn (mut r Recorder) settle_echo(i int, t Target, tok u64, refused bool) {
 		}
 		mut seq := u64(0)
 		mut dir := canlog.Dir.rx
-		if c := r.rings[i].claim_noted_by(i, t.iface, l.e.frame, l.at, l.at) {
+		if c := r.rings[i].claim_noted_by(i, t.iface, l.e.frame, l.at, l.seen) {
 			r.rings[i].forget(c.seq)
 			dir = .tx
 			if c.seq in r.unsettled {
@@ -332,8 +336,9 @@ fn (mut r Recorder) settle_echo(i int, t Target, tok u64, refused bool) {
 				...l.e
 				dir: dir
 			}
-			seq: seq
-			at:  l.at
+			seq:  seq
+			at:   l.at
+			seen: l.seen
 		}
 		return
 	}
@@ -537,8 +542,9 @@ fn (mut r Recorder) take(i int, t Target, f transport.CanFrame) {
 			frame: f
 			dir:   if ours { canlog.Dir.tx } else { canlog.Dir.rx }
 		}
-		seq: wait
-		at:  at
+		seq:  wait
+		at:   at
+		seen: host_ms()
 	}
 	r.flush()
 }

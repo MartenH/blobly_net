@@ -459,3 +459,29 @@ fn test_a_line_held_behind_a_send_that_never_answers_is_written_at_the_stop() {
 	es := canlog.load_file(path) or { panic(err) }
 	assert es.map(it.dir) == [canlog.Dir.tx]
 }
+
+fn test_an_echo_stamped_before_its_send_was_noted_is_still_that_send() {
+	path := os.join_path(os.temp_dir(), 'replay_stall5_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	t := Target{
+		name:  'S'
+		iface: 'inproc:RPT539'
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	w := r.send_watch(0, t)
+	f := transport.CanFrame{
+		id:   0x326
+		data: [u8(5)]
+	}
+	// B's echo is placed by a foreign clock's estimate a millisecond before B was noted
+	a := w.before(f)
+	early := i64(time.sys_mono_now()) - 1_000_000
+	b := w.before(f)
+	w.after(b, .taken)
+	r.take(0, t, transport.CanFrame{ ...f, placed_ns: early })
+	w.after(a, .refused)
+	c := r.stop() or { panic(err) }
+	assert c.frames == 1 && c.ours == 1 && c.missed == 0, c.str()
+}
