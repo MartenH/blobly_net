@@ -14,6 +14,7 @@ import blobly.sim
 import blobly.script
 import blobly.doip
 import blobly.j1939
+import blobly.nm
 import blobly.sysview
 
 // open_transport opens `iface`, appending the vendor bitrate (`@<rate>`) for pcan/kvaser
@@ -856,6 +857,10 @@ fn (mut app App) start() {
 			return
 		}
 	}
+	// the description the simulated diagnostic servers answer by (sim.describe), and each
+	// wire's NM configuration read with it — before the locks, since both read files
+	desc_sys := app.described_system()
+	nm_cfgs := app.nm_configs(&desc_sys)
 	// Pending echoes belong to the run that is ending: an emission from just before the last
 	// Stop would otherwise sit at the front of this run's ring, where an identical healthy frame
 	// claims it and the new run's own record then expires as never sent. Done HERE, not in
@@ -918,6 +923,11 @@ fn (mut app App) start() {
 	app.j1939_obs = map[string]&J1939Obs{}
 	app.j1939_labels = map[string]&LabelCache{}
 	app.j1939_undecoded = map[string]bool{}
+	// And network management: this run's configuration, every tracker from nothing, and no
+	// recording's reading in view.
+	app.nm_publish_locked(nm_cfgs, true)
+	app.nm_rec = map[string]&nm.Tracker{}
+	app.nm_rec_end = 0
 	// The load starts over HERE, under app.mu and before the transmit locks below are
 	// released: a guardless tap a script kept from the previous run may send the instant
 	// they are, and count_tx_load writes these fields under the lock this reset would
@@ -1123,9 +1133,7 @@ fn (mut app App) start() {
 	app.tap_failed = map[string]bool{}
 	app.mu.unlock()
 	spawn open_taps_for_run(app, plan, start_gen)
-	// the description the simulated diagnostic servers answer by (sim.describe), and the signal
-	// values their live DIDs read, which this run's simulation publishes afresh
-	desc_sys := app.described_system()
+	// the signal values the simulated servers' live DIDs read, which this run publishes afresh
 	sim.clear_live()
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {

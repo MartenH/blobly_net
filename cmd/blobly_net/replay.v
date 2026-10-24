@@ -274,6 +274,7 @@ fn (mut app App) load_recording(path string) {
 		gate_by_bus[lbl] = bus_gate(lbl)
 		wire_by_bus[lbl] = trace_wire(gate_by_bus[lbl], rec_wire(lbl))
 	}
+	app.nm_follow(true) // stopped, the NM configuration an import is read by is the current one
 	app.mu.lock()
 	app.reset_trace_locked()
 	// Claim the view HERE, inside the same locked region that reset it, and PAUSE the capture:
@@ -358,6 +359,7 @@ fn (mut app App) load_recording(path string) {
 			n
 		}
 		tp_done := app.j1939_note_locked(mut obs, e.iface, gate, rk, f, t_row)
+		app.nm_import_note_locked(e.iface, gate, f, t_row)
 		rec_gates[e.iface] = gate
 		t_last = t_row
 		// The OTHER buses' listeners see this frame's time too: a transfer on a bus that went

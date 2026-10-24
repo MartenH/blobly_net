@@ -1,0 +1,4 @@
+# zone_a, as far as the NM demo describes it: its NM node on the body cluster.
+[nm]
+node  = 0x15
+peers = [0x500, 0x53F]

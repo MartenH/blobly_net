@@ -2451,3 +2451,55 @@ fn test_the_schemas_a_description_is_merged_by_are_its_inputs() {
 	os.write_file(mf, 'paths = ["net/"]\n')!
 	assert arxml_inputs([mf])!.deps.map(os.file_name(it)) == ['sys.arxmodel.toml', 'config.toml', 'LAX.Xsd']
 }
+
+// A frame carrying an NM-PDU is what network management reads a cluster's NM range from.
+fn test_nm_pdu_frames_are_listed_in_the_bus_facts() {
+	nm_pdu := '<AR-PACKAGE><SHORT-NAME>Frames</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>F</SHORT-NAME>
+<FRAME-LENGTH>8</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME>
+<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER>
+<PDU-REF DEST="NM-PDU">/PDUs/Nm</PDU-REF><START-POSITION>0</START-POSITION>
+</PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>
+<AR-PACKAGE><SHORT-NAME>PDUs</SHORT-NAME><ELEMENTS><NM-PDU><SHORT-NAME>Nm</SHORT-NAME><LENGTH>8</LENGTH></NM-PDU></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 0x511, '/Frames/F') + nm_pdu + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	m := c.db.lookup(0x511) or { panic('no NM frame') }
+	f := c.frame_of(m) or { panic('no frame info') }
+	assert f.pdu_kind == 'NM-PDU'
+	facts := c.bus_facts('t.arxml')
+	assert facts.nm.len == 1
+	assert facts.nm[0].id == 0x511 && !facts.nm[0].ext
+	assert facts.nm[0].ecu == '', 'the file names no sender'
+	assert facts.nm[0].byte == 0 && facts.nm[0].len == 8
+	// a cluster without one lists none
+	plain := example_arxml().cluster('Body') or { panic(err) }
+	assert plain.bus_facts('example.arxml').nm.len == 0
+}
+
+// A frame that maps an I-SIGNAL-I-PDU first and its NM-PDU after it is still an NM frame, read at
+// the NM-PDU's byte and to its declared length.
+fn test_an_nm_pdu_behind_another_pdu_is_found_with_its_offset_and_length() {
+	two := '<AR-PACKAGE><SHORT-NAME>Frames</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>F</SHORT-NAME>
+<FRAME-LENGTH>8</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS>
+<PDU-TO-FRAME-MAPPING><SHORT-NAME>M1</SHORT-NAME>
+<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER>
+<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/App</PDU-REF><START-POSITION>0</START-POSITION>
+</PDU-TO-FRAME-MAPPING>
+<PDU-TO-FRAME-MAPPING><SHORT-NAME>M2</SHORT-NAME>
+<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER>
+<PDU-REF DEST="NM-PDU">/PDUs/Nm</PDU-REF><START-POSITION>32</START-POSITION>
+</PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>
+<AR-PACKAGE><SHORT-NAME>PDUs</SHORT-NAME><ELEMENTS>
+<I-SIGNAL-I-PDU><SHORT-NAME>App</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL-I-PDU>
+<NM-PDU><SHORT-NAME>Nm</SHORT-NAME><LENGTH>3</LENGTH></NM-PDU></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 0x511, '/Frames/F') + two + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	nm := c.bus_facts('t.arxml').nm
+	assert nm.len == 1, 'the NM-PDU is the second mapping and still found'
+	assert nm[0].id == 0x511
+	assert nm[0].byte == 4
+	assert nm[0].len == 3
+}
