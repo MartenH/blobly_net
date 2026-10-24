@@ -212,13 +212,13 @@ fn test_a_frame_no_candump_line_carries_is_said() {
 	defer {
 		os.rm(path) or {}
 	}
-	mut r := record(path, [Target{
+	t := Target{
 		name:  'L'
 		iface: 'inproc:RPT15'
-	}]) or { panic(err) }
-	mut tx := transport.open('inproc:RPT15') or { panic(err) }
-	tx.send(transport.CanFrame{ id: 0x123, data: []u8{len: 65} }) or { panic(err) }
-	tx.close()
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	// no bus delivers a payload past 64 bytes, so the reader's step is handed one directly
+	r.take(0, t, transport.CanFrame{ id: 0x123, fd: true, data: []u8{len: 65} })
 	r.stop() or {
 		assert err.msg().contains('65 bytes')
 		return

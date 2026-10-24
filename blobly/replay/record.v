@@ -518,7 +518,8 @@ fn (mut r Recorder) take(i int, t Target, f transport.CanFrame) {
 	t_s := f64(time.sys_mono_now()) / 1e9
 	r.missed(r.rings[i].expire(at).len)
 	if f.data.len > canlog.max_row_payload {
-		// no candump line can carry it (a software bus carries what it is handed): said, not written
+		// no candump line can carry it (no backend delivers one; a frame past 64 bytes would be its
+		// defect): said, not written
 		if r.err == '' {
 			r.err = 'record ${t.name}: a frame of ${f.data.len} bytes (id 0x${f.id:X}) cannot be written to a candump line'
 		}

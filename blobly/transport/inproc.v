@@ -87,10 +87,9 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	// every headless test and the whole simulation run on, so carrying an `rtr` FD frame, a classic
 	// frame with `brs`, or an id too wide for the width it declares makes the simulation a model of
 	// something that cannot happen — and a test that passes here and fails on a bench (codex round
-	// 2 on #204). LENGTHS are deliberately not refused: padding an FD payload to a length a DLC can
-	// express is what a controller genuinely does, and this bus is in the tier that pads. See
-	// frame_rules.v and clamps_to_classic.
-	if why := frame_send_refusal(frame) {
+	// 2 on #204). So is a payload no frame carries; an FD payload of a length a DLC cannot express
+	// is padded, which is what a controller genuinely does. See frame_rules.v and clamps_to_classic.
+	if why := software_frame_refusal(frame) {
 		return error('inproc: ${why}')
 	}
 	// Padded like every other backend: an in-process bus that carried a 9-byte FD payload

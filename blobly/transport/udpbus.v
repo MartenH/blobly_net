@@ -120,9 +120,9 @@ pub fn open_udp(group string, port int) !&UdpBus {
 
 pub fn (mut b UdpBus) send(frame CanFrame) ! {
 	// Same rule as the in-process bus, and for the same reason: this is a software wire, so the
-	// only thing keeping impossible frames off it is this check. Lengths are left to the padding
-	// tier — see frame_rules.v.
-	if why := frame_send_refusal(frame) {
+	// only thing keeping impossible frames off it is this check. An FD length a DLC cannot express
+	// is padded — see frame_rules.v.
+	if why := software_frame_refusal(frame) {
 		return error('udp: ${why}')
 	}
 	// Same padding as the hardware path: a software bus that carries a 9-byte FD payload
