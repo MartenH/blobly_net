@@ -198,6 +198,16 @@ fn (mut c UdsConn) stop_keep_alive() int {
 	return ms
 }
 
+// succeeded_by is `next`, the connection that replaces c in its slot, with what c's keep-alive has
+// not said yet: its failure and the keep-alives still inside a send, said at the next call.
+fn (c &UdsConn) succeeded_by(next UdsConn) UdsConn {
+	return UdsConn{
+		...next
+		ka_said: c.ka_said
+		ka_late: c.ka_late.clone()
+	}
+}
+
 // close_held closes the connection's channel under its lock, never inside a keep-alive.
 fn (mut c UdsConn) close_held() {
 	c.mu.lock()

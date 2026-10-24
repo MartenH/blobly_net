@@ -581,11 +581,11 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 				// holds on the new one; what it established does not
 				mut fresh_cli := uds.new_client(fresh_ch)
 				fresh_cli.carry_from(c.cli)
-				env.conns[i] = new_conn(UdsConn{
+				env.conns[i] = c.succeeded_by(new_conn(UdsConn{
 					ch:   fresh_ch
 					cli:  env.bound_client(mut fresh_ch, fresh_cli).on_heap()
 					chan: name
-				})
+				}))
 				env.conns[i].keep_alive(ka_ms) or {}
 				return i
 			}
