@@ -46,14 +46,31 @@ pub:
 	lo  u32
 	hi  u32
 	ext bool
-	// the exact NM frames (frame_key) and the byte their PDU starts at in the frame; when given,
-	// these are the cluster's frames and lo/hi only bound them
-	frames          map[u64]int
+	// the exact NM frames (frame_key) and where their PDU lies in the frame; when given, these
+	// are the cluster's frames and lo/hi only bound them
+	frames          map[u64]PduAt
 	timeout_ms      int = default_timeout_ms
 	timeout_default bool // the configuration states no timeout; timeout_ms is this module's
 	source          Source
 	origin          string // what it was read from, for the panel: `system.toml bus body`
 	declared        []Declared
+}
+
+// PduAt is where an NM PDU lies in its frame: the byte it starts at, and its length in bytes
+// (0: to the frame's end).
+pub struct PduAt {
+pub:
+	byte int
+	len  int
+}
+
+// pdu_of is the NM PDU inside a frame's payload: from its byte to its end, never into padding.
+pub fn (a PduAt) pdu_of(data []u8) []u8 {
+	if a.byte >= data.len {
+		return []u8{}
+	}
+	end := if a.len > 0 && a.byte + a.len < data.len { a.byte + a.len } else { data.len }
+	return data[a.byte..end]
 }
 
 // frame_key is one frame's identity in Config.frames: the id and its kind.
@@ -69,9 +86,10 @@ pub fn (c Config) covers(id u32, ext bool) bool {
 	return ext == c.ext && id >= c.lo && id <= c.hi
 }
 
-// pdu_byte is where the NM PDU starts in a frame of this id and kind.
-pub fn (c Config) pdu_byte(id u32, ext bool) int {
-	return c.frames[frame_key(id, ext)] or { 0 }
+// pdu_at is where the NM PDU lies in a frame of this id and kind: the whole frame unless an
+// ARXML says otherwise.
+pub fn (c Config) pdu_at(id u32, ext bool) PduAt {
+	return c.frames[frame_key(id, ext)] or { PduAt{} }
 }
 
 // declared_index is the declaration a reporter is: one whose NID and CAN id, each where it states
@@ -94,8 +112,8 @@ pub fn (c Config) describe() string {
 		mut parts := []string{}
 		for k in keys {
 			kind := if k >> 32 != 0 { ' (29-bit)' } else { '' }
-			at := c.frames[k] or { 0 }
-			off := if at > 0 { ' at byte ${at}' } else { '' }
+			at := c.frames[k] or { PduAt{} }
+			off := if at.byte > 0 { ' at byte ${at.byte}' } else { '' }
 			parts << '0x${u32(k & 0xFFFFFFFF):X}${kind}${off}'
 		}
 		return 'NM frames ${parts.join(', ')}'
@@ -191,7 +209,7 @@ fn from_system(sys &sysview.System, rows []project.Channel) ?Config {
 // byte its PDU starts at; a frame whose sender the file names declares that ECU on it. A file
 // attached through two rows of one wire is read once.
 fn from_arxml(dbs []candb.Database) ?Config {
-	mut frames := map[u64]int{}
+	mut frames := map[u64]PduAt{}
 	mut decl := []Declared{}
 	mut origin := ''
 	mut lo := u32(0xFFFFFFFF)
@@ -205,7 +223,10 @@ fn from_arxml(dbs []candb.Database) ?Config {
 			if origin == '' {
 				origin = 'ARXML cluster ${db.arxml.name}'
 			}
-			frames[k] = f.byte
+			frames[k] = PduAt{
+				byte: f.byte
+				len:  f.len
+			}
 			if f.id < lo {
 				lo = f.id
 			}

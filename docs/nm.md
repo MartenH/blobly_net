@@ -62,9 +62,10 @@ Per bus, the first of these that has one:
    (the bus `body` to the channel `body`). Every node on that bus with an `nm` offset is
    declared, and the offset is its NID (`nm = 0x11` announces on `0x511` and is named in the
    table).
-2. **The ARXML** loaded for the channel: frames whose PDU is an NM-PDU. Exactly those frames
-   are NM, of either kind, never the ids between them, each read from the byte its PDU starts
-   at. A frame whose sender the file names declares that ECU on it.
+2. **The ARXML** loaded for the channel: frames that map an NM-PDU, as their only PDU or
+   beside others. Exactly those frames are NM, of either kind, never the ids between them,
+   each read from the byte the NM-PDU starts at to its declared length, so padding after it is
+   never read as a PN mask. A frame whose sender the file names declares that ECU on it.
 3. **The channel's own setting** in the project, which gives a range and a timeout and no
    names. It comes last, so a system model or an ARXML for the same bus replaces it (the
    header names the source):

@@ -233,3 +233,36 @@ fn test_arxml_frames_of_both_kinds_at_their_pdu_byte_read_once() {
 	t.note(0x1511, true, [u8(0), 0], 10)
 	assert t.malformed == 1
 }
+
+fn test_an_nm_pdu_is_read_to_its_declared_end_never_into_padding() {
+	db := candb.Database{
+		arxml: candb.ArxmlBus{
+			name: 'Body'
+			nm:   [candb.ArxmlNmFrame{
+				id:  0x513
+				len: 4
+			}, candb.ArxmlNmFrame{
+				id:   0x514
+				byte: 4
+				len:  3
+			}]
+		}
+	}
+	sys := sysview.System{}
+	c := configure(&sys, [row('body')], [db]) or { panic('') }
+	mut t := new_tracker(c)
+	// a 4-byte PDU in an 8-byte frame padded with 0xFF: the PN mask is the PDU's two bytes
+	t.note(0x513, false, [u8(0x13), 0x40, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0)
+	assert t.nodes[0].has_pn && t.nodes[0].pn == 0x1
+	// a 3-byte PDU at byte 4, padding before and after it
+	t.note(0x514, false, [u8(0xFF), 0xFF, 0xFF, 0xFF, 0x14, 0x40, 0x02, 0xFF], 0)
+	assert t.nodes[1].nid == 0x14 && t.nodes[1].pn == 0x2
+	// a length the frame does not reach is read to the frame's end
+	assert PduAt{
+		byte: 1
+		len:  9
+	}.pdu_of([u8(1), 2, 3]) == [u8(2), 3]
+	assert PduAt{
+		byte: 4
+	}.pdu_of([u8(1), 2]) == []u8{}
+}

@@ -103,14 +103,7 @@ pub fn (mut t Tracker) note(id u32, ext bool, data []u8, t_ms f64) bool {
 	if !t.cfg.covers(id, ext) {
 		return false
 	}
-	at := t.cfg.pdu_byte(id, ext)
-	pdu := if at <= 0 {
-		data
-	} else if at < data.len {
-		data[at..]
-	} else {
-		[]u8{}
-	}
+	pdu := t.cfg.pdu_at(id, ext).pdu_of(data)
 	p := parse(pdu) or {
 		t.malformed++
 		t.last_error = 'id 0x${id:X}: ${err.msg()}'
