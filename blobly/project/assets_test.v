@@ -318,12 +318,11 @@ fn test_a_reference_resolving_only_from_the_working_directory_is_said() {
 	assert cwd_only_note(proj, 'dbc/missing.dbc') == none // resolves nowhere
 	assert cwd_only_note(proj, os.join_path(root, 'dbc', 'x.dbc')) == none
 	assert cwd_only_note('', 'dbc/x.dbc') == none // an unsaved project
-	// the spelling Save As would write, a backslash in a Unix name kept
+	// a spelling the project-relative lookup cannot read back is given absolute
 	$if !windows {
 		os.write_file(root + '/dbc/a\\b.dbc', '')!
 		n3 := cwd_only_note(proj, 'dbc/a\\b.dbc') or { panic('no note') }
-		assert n3.ends_with('(`../dbc/a\\b.dbc`)')
-		assert n3.ends_with('(`${rebase_ref(proj, proj, 'dbc/a\\b.dbc')}`)')
+		assert n3.ends_with('(`${root}/dbc/a\\b.dbc`)')
 	}
 	// once per reference, every kind of reference, the first channel naming it
 	p := Project{
