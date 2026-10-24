@@ -336,3 +336,152 @@ fn test_two_channels_on_one_wire_are_refused() {
 	}
 	assert false
 }
+
+fn test_a_refused_send_whose_note_an_identical_echo_took_leaves_no_note_behind() {
+	path := os.join_path(os.temp_dir(), 'replay_stall_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	t := Target{
+		name:  'S'
+		iface: 'inproc:RPT535'
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	w := r.send_watch(0, t)
+	f := transport.CanFrame{
+		id:   0x321
+		data: [u8(7), 7]
+	}
+	// A is noted and stalls in its driver; B, identical, is sent and comes back
+	a := w.before(f)
+	b := w.before(f)
+	w.after(b, .taken)
+	r.take(0, t, f)
+	// A is refused: B's echo is still ours, and nothing of ours is left to take another's frame
+	w.after(a, .refused)
+	r.take(0, t, f)
+	c := r.stop() or { panic(err) }
+	assert c.frames == 2 && c.ours == 1 && c.theirs == 1 && c.missed == 0, c.str()
+	es := canlog.load_file(path) or { panic(err) }
+	assert es.map(it.dir) == [canlog.Dir.tx, .rx]
+}
+
+fn test_an_echo_that_took_a_stalled_send_note_is_ours_only_if_that_send_was() {
+	path := os.join_path(os.temp_dir(), 'replay_stall2_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	t := Target{
+		name:  'S'
+		iface: 'inproc:RPT536'
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	w := r.send_watch(0, t)
+	f := transport.CanFrame{
+		id:   0x322
+		data: [u8(1)]
+	}
+	// another node's identical frame arrives while A and C are in their drivers: held behind them
+	a := w.before(f)
+	r.take(0, t, f)
+	g := transport.CanFrame{
+		id:   0x323
+		data: [u8(2)]
+	}
+	r.take(0, t, g)
+	assert r.counts().frames == 0
+	w.after(a, .refused)
+	cc := w.before(f)
+	r.take(0, t, f)
+	w.after(cc, .taken)
+	c := r.stop() or { panic(err) }
+	assert c.frames == 3 && c.ours == 1 && c.theirs == 2 && c.missed == 0, c.str()
+	es := canlog.load_file(path) or { panic(err) }
+	assert es.map(it.frame.id) == [u32(0x322), 0x323, 0x322]
+	assert es.map(it.dir) == [canlog.Dir.rx, .rx, .tx]
+}
+
+fn test_a_frame_taken_again_is_not_the_echo_of_a_send_noted_after_it() {
+	path := os.join_path(os.temp_dir(), 'replay_stall3_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	t := Target{
+		name:  'S'
+		iface: 'inproc:RPT537'
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	w := r.send_watch(0, t)
+	f := transport.CanFrame{
+		id:   0x324
+		data: [u8(3)]
+	}
+	// another node's frame takes stalled A's note; C, identical, is noted after it arrived
+	a := w.before(f)
+	r.take(0, t, f)
+	cc := w.before(f)
+	w.after(cc, .taken)
+	w.after(a, .refused)
+	r.take(0, t, f)
+	c := r.stop() or { panic(err) }
+	assert c.frames == 2 && c.ours == 1 && c.theirs == 1 && c.missed == 0, c.str()
+	es := canlog.load_file(path) or { panic(err) }
+	assert es.map(it.dir) == [canlog.Dir.rx, .tx]
+}
+
+fn test_a_line_held_behind_a_send_that_never_answers_is_written_at_the_stop() {
+	path := os.join_path(os.temp_dir(), 'replay_stall4_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	t := Target{
+		name:  'S'
+		iface: 'inproc:RPT538'
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	w := r.send_watch(0, t)
+	f := transport.CanFrame{
+		id:   0x325
+		data: [u8(4)]
+	}
+	w.before(f)
+	r.take(0, t, f)
+	r.give_up = fn () bool {
+		return true
+	}
+	r.stop() or { assert err.msg().contains('did not finish') }
+	// the writer closes the file on its own once it has written what the stop handed it
+	until := time.sys_mono_now() + 10 * u64(time.second)
+	for !r.ended() || os.file_size(path) == 0 {
+		assert time.sys_mono_now() < until
+		time.sleep(time.millisecond)
+	}
+	es := canlog.load_file(path) or { panic(err) }
+	assert es.map(it.dir) == [canlog.Dir.tx]
+}
+
+fn test_an_echo_stamped_before_its_send_was_noted_is_still_that_send() {
+	path := os.join_path(os.temp_dir(), 'replay_stall5_${os.getpid()}.log')
+	defer {
+		os.rm(path) or {}
+	}
+	t := Target{
+		name:  'S'
+		iface: 'inproc:RPT539'
+	}
+	mut r := record(path, [t]) or { panic(err) }
+	w := r.send_watch(0, t)
+	f := transport.CanFrame{
+		id:   0x326
+		data: [u8(5)]
+	}
+	// B's echo is placed by a foreign clock's estimate a millisecond before B was noted
+	a := w.before(f)
+	early := i64(time.sys_mono_now()) - 1_000_000
+	b := w.before(f)
+	w.after(b, .taken)
+	r.take(0, t, transport.CanFrame{ ...f, placed_ns: early })
+	w.after(a, .refused)
+	c := r.stop() or { panic(err) }
+	assert c.frames == 1 && c.ours == 1 && c.missed == 0, c.str()
+}

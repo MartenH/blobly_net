@@ -56,6 +56,10 @@ mut:
 	writing  bool // the writer runs: it closes the file when it ends
 	rings    []wiretap.Ring // per target: its sends noted, waiting to come back
 	seq      u64
+	// the sends noted on a wire that echoes whose driver has not answered, and whether a line
+	// waits on one: an echo that took its note, held for the answer, since a refused send's note
+	// was another's to take
+	unsettled map[u64]bool
 	lines    []Line // in file order; written from the front while settled
 	c        Counts
 	err      string // the first write or receive that failed
@@ -73,11 +77,16 @@ pub:
 	path string
 }
 
-// Line is one line waiting for the file: `seq` is a send on a wire that does not echo, not yet
-// taken by its driver (0: settled), so a reply read meanwhile is written after its request.
+// Line is one line waiting for the file: `seq` is a send its place waits on (0: settled) — on a
+// wire that does not echo, the line's own send, not yet taken by its driver, so a reply read
+// meanwhile is written after its request; on one that does, the send whose note the line's echo
+// took, so the line is ours only if that send was not refused. `at` is when the echo arrived, as
+// its stamp places it; `seen` when it was read, on the clock the notes are made by.
 struct Line {
-	e   canlog.LogEntry
-	seq u64
+	e    canlog.LogEntry
+	seq  u64
+	at   f64
+	seen f64
 }
 
 // record starts recording `targets` (a name and an interface each; one per wire) to `path`,
@@ -223,11 +232,17 @@ fn host_ms() f64 {
 
 // watch registers what target `i`'s wire is sent by this process, as the driver is handed it: on
 // a wire whose sends come back to another handle, noted before the driver has it and written when
-// it comes back, in the order the wire carried it; elsewhere written in its place as it is sent,
-// once the driver took it.
+// it comes back, in the order the wire carried it — held in its place until that send's driver
+// answers, and taken again by what is left if it refused; elsewhere written in its place as it is
+// sent, once the driver took it.
 fn (mut r Recorder) watch(i int, t Target) int {
+	return transport.watch_sends(t.iface, r.send_watch(i, t))
+}
+
+// send_watch is target `i`'s watch: what watch registers.
+fn (mut r Recorder) send_watch(i int, t Target) transport.SendWatch {
 	echoes := transport.echoes_own_sends(t.iface)
-	return transport.watch_sends(t.iface, transport.SendWatch{
+	return transport.SendWatch{
 		before: fn [mut r, i, t, echoes] (f transport.CanFrame) u64 {
 			r.mu.lock()
 			defer {
@@ -235,6 +250,7 @@ fn (mut r Recorder) watch(i int, t Target) int {
 			}
 			r.seq++
 			if echoes {
+				r.unsettled[r.seq] = false
 				r.missed(r.rings[i].note(r.seq, t.iface, f, host_ms(), [i], t.name, false).len)
 			} else {
 				r.lines << Line{
@@ -254,14 +270,18 @@ fn (mut r Recorder) watch(i int, t Target) int {
 			}
 			return r.seq
 		}
-		after:  fn [mut r, i, echoes] (tok u64, out transport.Sent) {
+		after:  fn [mut r, i, t, echoes] (tok u64, out transport.Sent) {
 			r.mu.lock()
 			defer {
 				r.mu.unlock()
 			}
 			if echoes {
-				// a write that failed may still come back, as ours: its note waits out the window
-				if out == .refused {
+				held := r.unsettled[tok]
+				r.unsettled.delete(tok)
+				if held {
+					r.settle_echo(i, t, tok, out == .refused)
+					r.flush()
+				} else if out == .refused {
 					r.rings[i].forget(tok)
 				}
 				return
@@ -281,7 +301,47 @@ fn (mut r Recorder) watch(i int, t Target) int {
 			}
 			r.flush()
 		}
-	})
+	}
+}
+
+// settle_echo is what a send on target `i`'s echoing wire, whose note an echo took, came to:
+// refused, the echo is taken again by what is left (an identical send's note made before it was
+// read, else nobody's); otherwise the echo is ours (a write that failed may have gone out).
+// The caller holds `mu`.
+fn (mut r Recorder) settle_echo(i int, t Target, tok u64, refused bool) {
+	// from the end: the line is most often the echo just read
+	for k := r.lines.len - 1; k >= 0; k-- {
+		l := r.lines[k]
+		if l.seq != tok {
+			continue
+		}
+		if !refused {
+			r.lines[k] = Line{
+				e: l.e
+			}
+			return
+		}
+		mut seq := u64(0)
+		mut dir := canlog.Dir.rx
+		if c := r.rings[i].claim_noted_by(i, t.iface, l.e.frame, l.at, l.seen) {
+			r.rings[i].forget(c.seq)
+			dir = .tx
+			if c.seq in r.unsettled {
+				r.unsettled[c.seq] = true
+				seq = c.seq
+			}
+		}
+		r.lines[k] = Line{
+			e:   canlog.LogEntry{
+				...l.e
+				dir: dir
+			}
+			seq:  seq
+			at:   l.at
+			seen: l.seen
+		}
+		return
+	}
 }
 
 // missed counts sends that will not come back; the caller holds `mu`.
@@ -466,17 +526,25 @@ fn (mut r Recorder) take(i int, t Target, f transport.CanFrame) {
 		return
 	}
 	mut ours := false
+	mut wait := u64(0)
 	if c := r.rings[i].claim(i, t.iface, f, at) {
 		ours = true
 		r.rings[i].forget(c.seq) // one reader per ring: a claimed note is done, and kept it is scanned
+		if c.seq in r.unsettled {
+			r.unsettled[c.seq] = true
+			wait = c.seq
+		}
 	}
 	r.lines << Line{
-		e: canlog.LogEntry{
+		e:   canlog.LogEntry{
 			t_s:   t_s
 			iface: t.name
 			frame: f
 			dir:   if ours { canlog.Dir.tx } else { canlog.Dir.rx }
 		}
+		seq:  wait
+		at:   at
+		seen: host_ms()
 	}
 	r.flush()
 }
@@ -512,7 +580,9 @@ pub fn (mut r Recorder) stop() !Counts {
 		r.flush() // what waited for the writer
 		settled = r.readers == 0 && r.lines.len == 0
 		r.mu.unlock()
-		if settled || time.sys_mono_now() >= until || (!isnil(r.give_up) && r.give_up()) {
+		// 50 ms before the end, so the writer has time to write what is still held
+		if settled || time.sys_mono_now() >= until - 50_000_000
+			|| (!isnil(r.give_up) && r.give_up()) {
 			break
 		}
 		time.sleep(time.millisecond)
@@ -521,6 +591,13 @@ pub fn (mut r Recorder) stop() !Counts {
 	// as somebody else's
 	r.mu.lock()
 	if r.open {
+		// a line still held behind a send its driver never answered is written as it stands
+		for k in 0 .. r.lines.len {
+			r.lines[k] = Line{
+				e: r.lines[k].e
+			}
+		}
+		r.flush()
 		r.open = false
 		r.out.close() // the writer writes what it was handed, then closes the file
 		if !settled && r.err == '' {
@@ -533,6 +610,7 @@ pub fn (mut r Recorder) stop() !Counts {
 		}
 		r.rings = []wiretap.Ring{len: r.rings.len, init: wiretap.Ring{}} // let go: nothing is noted now
 		r.lines = []
+		r.unsettled = map[u64]bool{}
 	}
 	watches := r.watches
 	r.watches = []
