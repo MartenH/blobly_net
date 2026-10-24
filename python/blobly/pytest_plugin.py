@@ -152,6 +152,7 @@ def project(_blobly_run: Project) -> Iterator[Project]:
     yield net
     net._forget()
     if net.started:
+        net._stop_senders()
         net.clear_faults()
 
 

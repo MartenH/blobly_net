@@ -326,6 +326,23 @@ pub mut:
 	dropped i64
 }
 
+// background senders and the keep-alive (cyclic.v, keepalive.v)
+pub struct C.bb_cyclic_info {
+pub mut:
+	sent      u64
+	failed    u64
+	period_ms i32
+	running   u8
+}
+
+pub struct C.bb_keep_alive {
+pub mut:
+	period_ms i32
+	sent      u64
+	failures  u64
+	running   u8
+}
+
 // J1939 on a row's frames (j1939.v)
 pub struct C.bb_j1939_message {
 pub mut:
@@ -598,6 +615,7 @@ pub fn bb_start() i32 {
 	j1939_publish(r)
 	bb_dbs_live = true
 	bb_run_gen++
+	cyclic_retire(bb_run_gen)
 	bb_mu.unlock()
 	return ok()
 }

@@ -1,6 +1,7 @@
 module uds
 
 import blobly.isotp
+import sync
 import time
 import blobly.transport
 
@@ -56,6 +57,34 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 	if why := functional_refusal(targets, req) {
 		return error(why)
 	}
+	// every target's serial held for the request, so no keep-alive sends inside it: each once,
+	// by address, so two requests over the same targets cannot wait on each other
+	mut serials := []&sync.Mutex{}
+	for t in targets {
+		if t.client.serial != unsafe { nil } && !serials.any(voidptr(it) == voidptr(t.client.serial)) {
+			serials << t.client.serial
+		}
+	}
+	serials.sort_with_compare(fn (a &&sync.Mutex, b &&sync.Mutex) int {
+		pa, pb := u64(voidptr(*a)), u64(voidptr(*b))
+		return if pa < pb { -1 } else if pa > pb { 1 } else { 0 }
+	})
+	for mut m in serials {
+		m.lock()
+	}
+	replies := functional_held(mut fch, mut tap, targets, req, window_ms) or {
+		for mut m in serials {
+			m.unlock()
+		}
+		return err
+	}
+	for mut m in serials {
+		m.unlock()
+	}
+	return replies
+}
+
+fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []FunctionalTarget, req []u8, window_ms int) ![]FunctionalReply {
 	// what is already queued is no answer to this request: the same drain a physical exchange runs.
 	// The tap FIRST: a frame arriving between the two drains then still has its trigger, and a
 	// trigger whose PDU the channel drain took finds the channel empty — read as silence below.
@@ -77,6 +106,11 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 		return error(abandoned_note)
 	}
 	fch.send(req) or { return send_failure(err, fch, stop_asked(targets), req[0], 0) }
+	sent_ns := time.sys_mono_now()
+	for t in targets {
+		mut c := t.client
+		c.last_tx_ns = sent_ns // a request restarts S3, physical or functional
+	}
 	// a target's client a stop can be asked of: its waits are sliced, and a stop ends the request
 	stoppable := targets.any(it.client.stop_requested != unsafe { nil })
 	sw := time.new_stopwatch()
@@ -342,12 +376,26 @@ pub fn functional_addressed(mut c Client, mut via AddressedSend, target u32, req
 	if req.len == 0 {
 		return error('empty UDS request')
 	}
+	if c.serial == unsafe { nil } {
+		return functional_addressed_held(mut c, mut via, target, req, window_ms)
+	}
+	c.serial.lock()
+	r := functional_addressed_held(mut c, mut via, target, req, window_ms) or {
+		c.serial.unlock()
+		return err
+	}
+	c.serial.unlock()
+	return r
+}
+
+fn functional_addressed_held(mut c Client, mut via AddressedSend, target u32, req []u8, window_ms int) !FunctionalReply {
 	c.drain_queued(req[0])!
 	// a stop asked during the drain sends nothing
 	if c.stopping() {
 		return error(abandoned_note)
 	}
 	via.send_to(target, req) or { return send_failure(err, c.ch, c.stopping(), req[0], 0) }
+	c.last_tx_ns = time.sys_mono_now()
 	// what the client's state takes from the request (observe_functional), however this ends
 	mut reply := FunctionalReply{
 		outcome: .failed
