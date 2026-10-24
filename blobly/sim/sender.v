@@ -60,3 +60,17 @@ pub fn sender_message_frame(s project.Sender, dbs []candb.Database, n int, el f6
 	}
 	return none
 }
+
+// next_due is when a frame on a `period` grid is next due, the last one sent in grid slot `slot`
+// and its write returned at `done` (all in one clock's units): the first slot after `done`, so a
+// write that outlasted a period skips the slots it covered rather than being followed by frames
+// sent back to back. A zero period is due at `done`.
+pub fn next_due(slot u64, period u64, done u64) u64 {
+	if period == 0 {
+		return done
+	}
+	if slot + period > done {
+		return slot + period
+	}
+	return slot + ((done - slot) / period + 1) * period
+}

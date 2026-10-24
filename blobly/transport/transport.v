@@ -336,11 +336,11 @@ pub fn echoes_own_sends(iface string) bool {
 
 // clamps_to_classic reports whether this backend rewrites a frame on the way out. The kernel and
 // vendor drivers take a classic CAN frame — 11/29-bit id, at most 8 bytes — and silently clamp
-// both (ct_can_send). The SOFTWARE buses carry whatever they are handed, which is what makes
-// in-process CAN-FD payloads work (docs/simulation.md), so normalising there would not describe
-// the wire, it would damage it.
+// both (ct_can_send). The SOFTWARE buses carry what they are handed or refuse it
+// (software_frame_refusal), which is what makes in-process CAN-FD payloads work
+// (docs/simulation.md), so normalising there would not describe the wire, it would damage it.
 pub fn clamps_to_classic(iface string) bool {
-	// SocketCAN only. The software buses carry what they are given, and the VENDOR drivers
+	// SocketCAN only. The software buses carry what they are given or refuse it, and the VENDOR drivers
 	// REJECT an out-of-range id or length rather than truncating it — CAN_Write and canWrite
 	// return an error, which PcanBus.send/KvaserBus.send surface. Masking before handing them
 	// the frame would turn that rejection into a valid-but-different transmission (0x800 sent as
@@ -523,7 +523,8 @@ pub fn wire_frame(iface string, f CanFrame) CanFrame {
 		// to an encodable length on its way out — so it is padded HERE too. Otherwise the record
 		// holds 9 bytes while 12 go on the wire, the echo never matches its own record, and the
 		// frame shows up as somebody else's traffic plus one of ours that never came back.
-		if f.fd && fd_padded_len(f.data.len) != f.data.len {
+		// (past 64 bytes it is left whole: the bus refuses it)
+		if f.fd && f.data.len <= 64 && fd_padded_len(f.data.len) != f.data.len {
 			return CanFrame{
 				...f
 				data: fd_pad(f.data)

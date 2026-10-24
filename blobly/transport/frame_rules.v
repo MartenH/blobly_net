@@ -56,7 +56,8 @@ pub fn not_written(msg string) IError {
 // SEPARATE FROM THE LENGTH RULES because this repo has three tiers and only two of them agree
 // about length. SocketCAN CLAMPS (the kernel masks an over-wide id, and `wire_frame` records the
 // clamp so the record matches the wire); the software buses PAD an FD payload to a length a DLC
-// can express; the vendor backends REFUSE. That is a deliberate design, documented at
+// can express and refuse a payload no frame carries (software_frame_refusal); the vendor backends
+// REFUSE. That is a deliberate design, documented at
 // `clamps_to_classic`, and not something to overturn in a review round.
 //
 // None of the rules below is a length or a clamp, though. An `rtr` FD frame, a classic frame with
@@ -112,13 +113,33 @@ pub fn frame_send_refusal(f CanFrame) ?string {
 	return none
 }
 
+// software_frame_refusal is the rule the software buses (`inproc:`, `udp:`) send by: what no
+// controller could send, and a payload no controller could carry — a classic frame past 8 bytes,
+// an FD one past 64. An FD payload of a length no DLC expresses is padded, not refused, as a
+// controller pads it.
+pub fn software_frame_refusal(f CanFrame) ?string {
+	if why := frame_send_refusal(f) {
+		return why
+	}
+	if f.fd && f.data.len > 64 {
+		return '${f.data.len} bytes is past a CAN-FD frame (id 0x${f.id:X}) — 64 is the maximum'
+	}
+	if !f.fd && f.data.len > 8 {
+		return '${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD'
+	}
+	return none
+}
+
 // tier_refusal is the refusal `iface`'s own tier makes before its driver is asked: the vendor
-// backends and the CAN bridge refuse a length (frame_shape_error), the rest clamp it and refuse
-// only what no controller could send (frame_send_refusal). `vendor_iface` is $if windows, and
-// rightly: on Linux `vector:1` opens as SocketCAN, which clamps.
+// backends and the CAN bridge refuse a length (frame_shape_error), the software buses a length no
+// controller could carry (software_frame_refusal), and SocketCAN clamps it and refuses only what
+// no controller could send (frame_send_refusal). `vendor_iface` is $if windows, and rightly: on
+// Linux `vector:1` opens as SocketCAN, which clamps.
 pub fn tier_refusal(iface string, f CanFrame) ?string {
 	return if vendor_iface(iface) || iface.starts_with('bridge:') {
 		frame_shape_error(f)
+	} else if software_iface(iface) {
+		software_frame_refusal(f)
 	} else {
 		frame_send_refusal(f)
 	}
@@ -131,19 +152,13 @@ pub fn tier_refusal(iface string, f CanFrame) ?string {
 // present, whether the wire is silenced — none of that is here; those are properties of the
 // channel and each backend answers them with its own address in the message.
 pub fn frame_shape_error(f CanFrame) ?string {
-	if why := frame_send_refusal(f) {
+	if why := software_frame_refusal(f) {
 		return why
 	}
-	if f.fd {
-		// A DLC CANNOT EXPRESS EVERY LENGTH above eight, so a 9-byte payload can only go out
-		// padded to 12 — deliberately, by the caller, or the trace records nine against twelve.
-		if f.data.len !in fd_lengths {
-			return '${f.data.len} bytes is not a CAN-FD payload size (id 0x${f.id:X}) — a DLC can only express ${fd_lengths}'
-		}
-		return none
-	}
-	if f.data.len > 8 {
-		return '${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD'
+	// A DLC CANNOT EXPRESS EVERY LENGTH above eight, so a 9-byte payload can only go out padded to
+	// 12 — deliberately, by the caller, or the trace records nine against twelve.
+	if f.fd && f.data.len !in fd_lengths {
+		return '${f.data.len} bytes is not a CAN-FD payload size (id 0x${f.id:X}) — a DLC can only express ${fd_lengths}'
 	}
 	return none
 }

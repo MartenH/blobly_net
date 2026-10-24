@@ -681,12 +681,15 @@ fn test_a_described_vin_write_takes_the_servers_size_check() {
 	assert host.server.dids[u16(0xF190)].bytestr() == 'BLOBLYSYSNODE0001'
 }
 
-// a VIN written at the declared size must be one discovery can announce
-fn test_an_entity_whose_vin_is_writable_at_another_size_is_refused() {
-	mut sys := dx_load('vin18')
+// sysnode's 0xF190 declared writable at 18 bytes, and its `[uds] services` table stated as
+// `rows` when `table` is set
+fn vin18_system(name string, table bool, rows []sysview.ServiceRow) sysview.System {
+	mut sys := dx_load(name)
 	for i, n in sys.nodes {
 		if n.name == 'sysnode' {
 			mut desc := n.desc
+			desc.services_table = table
+			desc.services = rows
 			desc.dids = desc.dids.map(if it.id == 0xF190 {
 				sysview.DidDesc{
 					...it
@@ -707,15 +710,55 @@ fn test_an_entity_whose_vin_is_writable_at_another_size_is_refused() {
 			}
 		}
 	}
-	ch := project.Channel{
-		name:     'DoIP1'
-		typ:      'doip'
-		iface:    'doip:127.0.0.1:13400'
-		ecu_addr: 0x07A0
-	}
-	doip_entity_described(ch, [], &sys, []) or {
+	return sys
+}
+
+const vin18_channel = project.Channel{
+	name:     'DoIP1'
+	typ:      'doip'
+	iface:    'doip:127.0.0.1:13400'
+	ecu_addr: 0x07A0
+}
+
+// a VIN written at the declared size must be one discovery can announce
+fn test_an_entity_whose_vin_is_writable_at_another_size_is_refused() {
+	sys := vin18_system('vin18', false, [])
+	doip_entity_described(vin18_channel, [], &sys, []) or {
 		assert err.msg().contains('writable at 18 bytes'), err.msg()
 		return
 	}
 	assert false, 'an entity whose VIN write would split served from announced was started'
+}
+
+// a server that does not serve 0x2E answers every write 0x11, so its write size cannot split
+// served from announced
+fn test_a_vin_writable_at_another_size_is_no_refusal_where_0x2e_is_not_served() {
+	sys := vin18_system('vin18_no2e', true, [
+		sysview.ServiceRow{
+			sid: 0x10
+		},
+		sysview.ServiceRow{
+			sid: 0x22
+		},
+	])
+	vin := 'BLOBLYSYSNODE0001'
+	nodes := [
+		project.NodeCfg{
+			name: 'sysnode'
+			uds:  project.UdsCfg{
+				dids: [project.DidCfg{
+					id:   0xF190
+					text: vin
+				}]
+			}
+		},
+	]
+	e := doip_entity_described(vin18_channel, nodes, &sys, []) or { panic(err) }
+	assert e.announce == vin
+	mut host := DoipHost{
+		server: e.server
+	}
+	mut write := [u8(0x2E), 0xF1, 0x90]
+	write << 'BLOBLYSYSNODEH7350'.bytes()
+	assert host.handle(write) == [u8(0x7F), 0x2E, 0x11]
 }

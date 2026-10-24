@@ -133,6 +133,37 @@ fn test_the_impossible_rules_do_not_include_lengths() {
 	assert frame_shape_error(long_classic) != none
 }
 
+// The software buses pad an FD length a DLC cannot express, and refuse a payload no frame carries.
+fn test_the_software_buses_refuse_a_payload_no_frame_carries() {
+	assert software_frame_refusal(CanFrame{ id: 0x123, data: []u8{len: 8} }) == none
+	assert software_frame_refusal(CanFrame{ id: 0x123, data: []u8{len: 9} }) != none, 'a classic frame carries at most 8 bytes'
+	assert software_frame_refusal(CanFrame{ id: 0x123, fd: true, data: []u8{len: 9} }) == none, 'padded to 12, as a controller pads it'
+	assert software_frame_refusal(CanFrame{ id: 0x123, fd: true, data: []u8{len: 64} }) == none
+	assert software_frame_refusal(CanFrame{ id: 0x123, fd: true, data: []u8{len: 65} }) != none, 'a CAN-FD frame carries at most 64 bytes'
+	assert software_frame_refusal(CanFrame{ id: 0x123, brs: true }) != none, 'and what no controller could send'
+	assert tier_refusal('inproc:X', CanFrame{ id: 0x123, data: []u8{len: 9} }) != none
+	assert tier_refusal('udp', CanFrame{ id: 0x123, data: []u8{len: 9} }) != none
+	// what is recorded of one is the frame refused, not a truncated one
+	assert wire_frame('inproc:X', CanFrame{ id: 0x123, fd: true, data: []u8{len: 65} }).data.len == 65
+}
+
+fn test_a_long_classic_frame_is_refused_on_inproc() {
+	mut tx := open('inproc:LONGCLASSIC') or { panic(err) }
+	mut rx := open('inproc:LONGCLASSIC') or { panic(err) }
+	defer {
+		tx.close()
+		rx.close()
+	}
+	tx.send(CanFrame{ id: 0x123, data: []u8{len: 9} }) or {
+		assert err.msg().contains('not a classic CAN frame'), err.msg()
+		tx.send(CanFrame{ id: 0x123, fd: true, data: []u8{len: 9} }) or { panic(err) }
+		got := rx.recv(1000) or { panic(err) }
+		assert got.fd && got.data.len == 12
+		return
+	}
+	assert false, 'a 9-byte classic frame was delivered'
+}
+
 // Every contradiction, on the other hand, is in both.
 fn test_every_impossible_frame_is_also_refused_by_the_full_rules() {
 	bad := [
