@@ -111,6 +111,9 @@ BA_ "E2EDataId" BO_ 256 66;
 	}) or { assert err.msg().contains('unknown signal "Nope"') }
 	s.set_data([u8(1)]) or { assert err.msg().contains('takes signal values') }
 	assert s.stop()
+	// stopped, it takes no change
+	s.set_period(999) or { assert err.msg() == stopped_note }
+	assert s.info().period_ms == 10
 }
 
 fn test_a_spec_no_sender_could_send_is_refused() {
@@ -130,7 +133,8 @@ fn test_a_spec_no_sender_could_send_is_refused() {
 		id:        0x800 // past an 11-bit id
 	}, Spec{
 		period_ms: 10
-		brs:       true // without fd
+		id:        0x2000_0000 // past a 29-bit id
+		ext:       true
 	}] {
 		start(transport.open('inproc:CYC4')!, sp, Life{}) or { continue }
 		assert false, 'started ${sp}'

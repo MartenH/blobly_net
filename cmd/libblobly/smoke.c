@@ -109,6 +109,7 @@ static int (*bb_cyclic_start_p)(int, const bb_frame *, int);
 static int (*bb_cyclic_data_p)(int, const uint8_t *, int);
 static int (*bb_cyclic_status_p)(int, bb_cyclic_info *);
 static int (*bb_cyclic_stop_p)(int);
+static int (*bb_cyclic_free_p)(int);
 typedef int (*replay_defaults_fn)(bb_replay_opts *);
 typedef int (*replay_start_fn)(const int *, int, const bb_replay_opts *);
 typedef int (*replay_info_fn)(int, bb_replay_info *);
@@ -460,7 +461,8 @@ static int cyclic_steps(int can1) {
 	bb_cyclic_info i;
 	CHECK(bb_cyclic_status_p(c, &i) == 0 && i.running && i.sent >= 5 && i.failed == 0 && i.period_ms == 10, "its state");
 	CHECK(bb_cyclic_start_p(can1, &f, 0) == BB_ERR && strstr(bb_last_error_p(), "a period of 0 ms"), "period 0 must refuse");
-	CHECK(bb_cyclic_stop_p(c) == 0 && bb_cyclic_stop_p(c) == BB_ERR_HANDLE, "stop, and a stopped one is gone");
+	CHECK(bb_cyclic_stop_p(c) == 0 && bb_cyclic_status_p(c, &i) == 0 && !i.running && i.sent >= 5, "stop, its final state kept");
+	CHECK(bb_cyclic_free_p(c) == 0 && bb_cyclic_stop_p(c) == BB_ERR_HANDLE, "freed, it is gone");
 	bb_bus_close_p(h);
 	printf("ok   a background sender heard at its period, and stopped\n");
 	return 0;
@@ -582,7 +584,7 @@ int main(int argc, char **argv) {
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
-	SYM(bb_cyclic_start); SYM(bb_cyclic_data); SYM(bb_cyclic_status); SYM(bb_cyclic_stop);
+	SYM(bb_cyclic_start); SYM(bb_cyclic_data); SYM(bb_cyclic_status); SYM(bb_cyclic_stop); SYM(bb_cyclic_free);
 	SYM(bb_node_count); SYM(bb_node_info); SYM(bb_system_path);
 	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present);
 	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_check_wait); SYM(bb_uds_retarget);

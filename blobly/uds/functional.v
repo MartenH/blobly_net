@@ -1,6 +1,7 @@
 module uds
 
 import blobly.isotp
+import sync
 import time
 import blobly.transport
 
@@ -56,26 +57,31 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 	if why := functional_refusal(targets, req) {
 		return error(why)
 	}
-	// every target's serial held for the request, so no keep-alive sends inside it
+	// every target's serial held for the request, so no keep-alive sends inside it: each once,
+	// by address, so two requests over the same targets cannot wait on each other
+	mut serials := []&sync.Mutex{}
 	for t in targets {
-		if t.client.serial != unsafe { nil } {
-			t.client.serial.lock()
+		if t.client.serial != unsafe { nil } && !serials.any(voidptr(it) == voidptr(t.client.serial)) {
+			serials << t.client.serial
 		}
+	}
+	serials.sort_with_compare(fn (a &&sync.Mutex, b &&sync.Mutex) int {
+		pa, pb := u64(voidptr(*a)), u64(voidptr(*b))
+		return if pa < pb { -1 } else if pa > pb { 1 } else { 0 }
+	})
+	for mut m in serials {
+		m.lock()
 	}
 	replies := functional_held(mut fch, mut tap, targets, req, window_ms) or {
-		unlock_serials(targets)
+		for mut m in serials {
+			m.unlock()
+		}
 		return err
 	}
-	unlock_serials(targets)
-	return replies
-}
-
-fn unlock_serials(targets []FunctionalTarget) {
-	for t in targets {
-		if t.client.serial != unsafe { nil } {
-			t.client.serial.unlock()
-		}
+	for mut m in serials {
+		m.unlock()
 	}
+	return replies
 }
 
 fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []FunctionalTarget, req []u8, window_ms int) ![]FunctionalReply {
@@ -100,6 +106,11 @@ fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []Funct
 		return error(abandoned_note)
 	}
 	fch.send(req) or { return send_failure(err, fch, stop_asked(targets), req[0], 0) }
+	sent_ns := time.sys_mono_now()
+	for t in targets {
+		mut c := t.client
+		c.last_tx_ns = sent_ns // a request restarts S3, physical or functional
+	}
 	// a target's client a stop can be asked of: its waits are sliced, and a stop ends the request
 	stoppable := targets.any(it.client.stop_requested != unsafe { nil })
 	sw := time.new_stopwatch()
@@ -384,6 +395,7 @@ fn functional_addressed_held(mut c Client, mut via AddressedSend, target u32, re
 		return error(abandoned_note)
 	}
 	via.send_to(target, req) or { return send_failure(err, c.ch, c.stopping(), req[0], 0) }
+	c.last_tx_ns = time.sys_mono_now()
 	// what the client's state takes from the request (observe_functional), however this ends
 	mut reply := FunctionalReply{
 		outcome: .failed

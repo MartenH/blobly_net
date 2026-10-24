@@ -69,8 +69,12 @@ fn pairs_from(l lua.State, i int) !map[string]f64 {
 fn l_cyclic_start(l lua.State) i32 {
 	mut env := env_of(l)
 	ff := transport.parse_frame_format(l.arg_str(5)) or { return l.fail('bus.send_cyclic: ${err}') }
+	id := l.arg_int_exact(2) or { return l.fail('bus.send_cyclic: an id is an integer') }
+	if id < 0 || id > 0x1FFF_FFFF {
+		return l.fail('bus.send_cyclic: ${id} is not a CAN identifier')
+	}
 	h := env.start_sender(l.arg_str(1), cyclic.Spec{
-		id:        u32(l.arg_int(2))
+		id:        u32(id)
 		ext:       l.arg_bool(3)
 		data:      l.arg_bytes(4)
 		format:    ff
@@ -173,20 +177,37 @@ fn (mut c UdsConn) keep_alive(ms int) ! {
 	c.ka_ms = ms
 }
 
-// stop_keep_alive ends the connection's keep-alive; the period it had (0: none).
+// stop_keep_alive ends the connection's keep-alive, a failure it had not said kept to be said;
+// the period it had (0: none). A keep-alive still waiting for the lock when the stop's bound
+// passes takes nothing once it gets it, and one inside a keep-alive holds the lock: close_held
+// waits for that.
 fn (mut c UdsConn) stop_keep_alive() int {
 	ms := c.ka_ms
 	if !isnil(c.ka) {
 		mut k := c.ka
 		k.stop()
+		if why := k.take_failure() {
+			c.ka_said = why
+		}
 		c.ka = unsafe { nil }
 	}
 	c.ka_ms = 0
 	return ms
 }
 
+// close_held closes the connection's channel under its lock, never inside a keep-alive.
+fn (mut c UdsConn) close_held() {
+	c.mu.lock()
+	c.ch.close()
+	c.mu.unlock()
+}
+
 // say_keep_alive says, once, a keep-alive failure since the connection's previous call.
 fn (mut env Env) say_keep_alive(mut c UdsConn) {
+	if c.ka_said != '' {
+		env.emit('${c.chan}: ${c.ka_said}')
+		c.ka_said = ''
+	}
 	if isnil(c.ka) {
 		return
 	}

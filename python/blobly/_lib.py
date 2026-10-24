@@ -548,6 +548,7 @@ def _declare(lib):
         "bb_cyclic_status": ([c_int, P(BbCyclicInfo)], c_int),
         "bb_cyclic_error": ([c_int, c_char_p, c_int], c_int),
         "bb_cyclic_stop": ([c_int], c_int),
+        "bb_cyclic_free": ([c_int], c_int),
         "bb_uds_keep_alive": ([c_int, c_int], c_int),
         "bb_uds_keep_alive_status": ([c_int, P(BbKeepAlive)], c_int),
         "bb_uds_keep_alive_failure": ([c_int, c_char_p, c_int], c_int),

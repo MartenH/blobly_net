@@ -23,6 +23,12 @@ fn (mut hd UdsHandle) stop_keep_alive_held() {
 	if !isnil(ka) {
 		mut k := unsafe { ka }
 		k.stop()
+		// a failure it had not said is said by the next bb_uds_keep_alive_failure
+		if why := k.take_failure() {
+			hd.kmu.lock()
+			hd.ka_said = if hd.ka_said == '' { why } else { '${hd.ka_said}; ${why}' }
+			hd.kmu.unlock()
+		}
 	}
 }
 

@@ -1852,7 +1852,7 @@ A background sender (`ch.send_cyclic`, `msg.send_cyclic`). See
 | `sender.update(data)`, `sender.update(**signals)` | A raw sender's payload, or a message sender's signals (the rest keep theirs), from its next frame. `Refused` once it is stopped. |
 | `sender.period_ms` | Its period; set it to change the period from the next frame. |
 | `sender.status()` | A `CyclicStatus`: `sent`, `failed`, `error` (the last refusal's words, `""` when none), `period_ms`, `running`. After a stop, what it had done when it ended. |
-| `sender.stop()`, `with sender:` | Stops it: `True` once its loop is out, `False` when it was still inside a send past the bound (it sends nothing more). A stopped sender stops again quietly. |
+| `sender.stop()`, `with sender:` | Stops it: `True` once its loop is out, `False` while it is still inside a send past the bound (it sends nothing more; `stop()` again asks again). A stopped sender stops again quietly. |
 
 ### `Signal`
 

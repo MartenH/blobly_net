@@ -874,7 +874,8 @@ local function flat(sigs)
 end
 function Sender:update(x)
   if type(x) == "table" then __cyclic_signals(self.handle, table.unpack(flat(x)))
-  else __cyclic_data(self.handle, x or "") end
+  elseif type(x) == "string" then __cyclic_data(self.handle, x)
+  else error("sender:update: bytes (a string) or a table of signals", 2) end
 end
 function Sender:period(ms) __cyclic_period(self.handle, ms) end
 function Sender:status()
@@ -888,6 +889,8 @@ function bus.send_cyclic(channel, id, data, period_ms, opts)
     error("bus.send_cyclic: format must be a string (classic, fd or fd_brs)", 2)
   end
   if math.type(period_ms) ~= "integer" then error("bus.send_cyclic: period_ms is a whole number of ms", 2) end
+  if data ~= nil and type(data) ~= "string" then error("bus.send_cyclic: data is bytes (a string)", 2) end
+  if math.type(id) ~= "integer" then error("bus.send_cyclic: an id is an integer", 2) end
   return setmetatable({ handle = __cyclic_start(channel, id, opts.ext or false, data or "", opts.format,
     period_ms) }, Sender)
 end

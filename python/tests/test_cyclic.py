@@ -94,11 +94,11 @@ class TestSenders:
     def test_a_keep_alive_never_sends_inside_a_functional_request(self, can1):
         with can1.uds(keep_alive_ms=250) as d:
             d.session(0x03)
-            for _ in range(12):  # past several keep-alive periods
+            for _ in range(6):  # a keep-alive due between each, and none inside one
                 (reply,) = can1.uds_functional(0x7DF, [d], b"\x22\xf1\x90")
                 assert reply.outcome == "positive" and reply.answer.startswith(b"\x62\xf1\x90"), reply
-                time.sleep(0.05)
-            assert d.keep_alive_status.sent >= 1
+                time.sleep(0.3)
+            assert d.keep_alive_status.sent >= 3
 
     def test_a_bad_keep_alive_period_is_refused(self, can1):
         with pytest.raises(ValueError, match="250 .. 60000"):
@@ -188,3 +188,9 @@ class TestKeepAlive:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
                 d.read_did(0xF190)  # said once
+            time.sleep(0.4)  # refused again once a session is answered: and then stopped unsaid
+            d.session(0x03)
+            time.sleep(0.5)
+            d.keep_alive(None)
+            with pytest.warns(KeepAliveWarning, match="refused"):
+                d.read_did(0xF190)  # a stopped keep-alive's failure is said all the same

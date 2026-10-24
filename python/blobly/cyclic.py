@@ -60,12 +60,12 @@ class CyclicSender:
 
     def __init__(self, channel: "Channel", h: int, message: "Message | None") -> None:
         self.channel, self.message, self._h = channel, message, h
-        self._run = _lib.state["run"]
-        self._final: CyclicStatus | None = None  # the status it ended with, once let go
+        self._final: CyclicStatus | None = None  # the status it ended with, once its loop is out
+        self._seen = CyclicStatus(0, 0, "", 0, True)  # the last status read
 
     def _live(self) -> int:
-        """The handle while its run lasts; Refused once the sender is stopped."""
-        if self._h is None or self._run != _lib.state["run"]:
+        """The handle; Refused once the sender is stopped."""
+        if self._final is not None:
             raise _lib.Refused(f"{self!r} is stopped", _lib.BB_ERR)
         return self._h
 
@@ -103,39 +103,51 @@ class CyclicSender:
         with _lib.state_lock:
             if self._final is not None:
                 return self._final
-            return self._read(self._live())
+            try:
+                return self._read(self._h)
+            except BloblyError as e:
+                if e.code != _lib.BB_ERR_HANDLE:
+                    raise
+                # let go by a later start, its loop long out: what was last read of it
+                return self._ended(self._seen)
 
     def _read(self, h: int) -> CyclicStatus:
         lib = _lib.lib()
         i = _lib.BbCyclicInfo()
         _lib.check(lib.bb_cyclic_status(h, ctypes.byref(i)))
-        return CyclicStatus(i.sent, i.failed, _lib.string(lib.bb_cyclic_error, h), i.period_ms, bool(i.running))
+        self._seen = CyclicStatus(i.sent, i.failed, _lib.string(lib.bb_cyclic_error, h), i.period_ms, bool(i.running))
+        return self._seen
+
+    def _ended(self, st: CyclicStatus) -> CyclicStatus:
+        """`st` as the sender's final status, its handle let go."""
+        self._final = CyclicStatus(st.sent, st.failed, st.error, st.period_ms, False)
+        h, self._h = self._h, None
+        try:
+            _lib.lib().bb_cyclic_free(h)
+        except BloblyError:
+            pass
+        try:
+            self.channel._project._senders.remove(self)
+        except ValueError:
+            pass
+        return self._final
 
     def stop(self) -> bool:
-        """Stops it: True once its loop is out, False when it was still inside a send past the
-        bound (it sends nothing more). Stopping a stopped sender does nothing."""
+        """Stops it: True once its loop is out, False while it is still inside a send past the
+        bound (it sends nothing more; stop() again asks again). Stopping a stopped sender does
+        nothing. A sender of a stopped project is out already."""
         with _lib.state_lock:
-            if self._h is None:
+            if self._final is not None:
                 return True
-            if self._run != _lib.state["run"]:  # its run's stop ended it
-                self._h = None
+            lib = _lib.lib()
+            rc = lib.bb_cyclic_stop(self._h)
+            if rc == _lib.BB_ERR_HANDLE:  # let go by a later start
+                self._ended(self._seen)
                 return True
-            try:
-                self.channel._project._senders.remove(self)
-            except ValueError:
-                pass
-            return self._let_go()
-
-    def _let_go(self) -> bool:
-        """Its final status kept, its handle let go (under _lib.state_lock)."""
-        h, self._h = self._h, None
-        lib = _lib.lib()
-        try:
-            st = self._read(h)
-            self._final = CyclicStatus(st.sent, st.failed, st.error, st.period_ms, False)
-        except BloblyError:
-            self._final = CyclicStatus(0, 0, "", 0, False)
-        return _lib.check(lib.bb_cyclic_stop(h)) != _lib.BB_RELEASING
+            if _lib.check(rc) == _lib.BB_RELEASING:
+                return False
+            self._ended(self._read(self._h))  # read once the loop is out: its last frame counted
+            return True
 
     def __enter__(self) -> Self:
         return self

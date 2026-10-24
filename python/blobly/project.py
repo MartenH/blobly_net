@@ -913,10 +913,8 @@ class Project(EventLoop[Channel | str], Faults, Replays):
             # False: a loop outlived the stop's bound and still holds the process; a start refuses
             # until blobly.wait_released says it has let go
             free = _lib.check(lib.bb_stop()) != _lib.BB_RELEASING
-            senders, self._senders = self._senders, []
-            for c in senders:  # ended by the run's stop: what each did is kept, its handle let go
-                if c._h is not None:
-                    c._let_go()
+            for c in list(self._senders):  # ended by the run's stop: what each did is kept
+                c.stop()  # answered at once: the run's stop waited for them
         for e in failed:
             warnings.warn(f"a recording left running failed: {e}", RuntimeWarning, stacklevel=2)
         return free
@@ -978,8 +976,7 @@ class Project(EventLoop[Channel | str], Faults, Replays):
     def _stop_senders(self) -> None:
         """Stops every background sender the run started (the pytest plugin, after a test)."""
         with _lib.state_lock:
-            senders, self._senders = self._senders, []
-            for c in senders:
+            for c in list(self._senders):
                 c.stop()
 
     # the event loop's hooks, over libblobly

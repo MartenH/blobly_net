@@ -22,6 +22,9 @@ pub const max_period_ms = sim.gen_cycle_max_ms
 // stop_bound_ms is how long a stop waits for a sender's loop to end: a send in a driver's budget.
 pub const stop_bound_ms = 2000
 
+// stopped_note is what a change to a stopped sender is refused with.
+pub const stopped_note = 'the sender is stopped: it sends nothing more'
+
 // poll_ms is how often a waiting loop asks whether it is to stop.
 const poll_ms = 20
 
@@ -53,6 +56,12 @@ pub fn (s Spec) check() ! {
 		check_values(s.message, s.values)!
 		if s.message.payload_len() > 64 {
 			return error('${s.message.name}: a payload of ${s.message.payload_len()} bytes is past what a CAN frame carries (64)')
+		}
+		if why := transport.frame_send_refusal(transport.CanFrame{
+			id:       s.message.id
+			extended: s.message.ext
+		}) {
+			return error('${s.message.name}: ${why}')
 		}
 		if s.e2e {
 			mut st := sim.E2eStamper{}
@@ -91,7 +100,13 @@ fn raw_frame(s Spec, data []u8) !transport.CanFrame {
 		brs:      s.brs
 		data:     data
 	})!
-	if why := transport.frame_send_refusal(f) {
+	// unstated flags are judged as a CAN-FD wire's declaration would raise them: brs alone is
+	// what such a wire sends as FD with the rate switch
+	judged := if f.format_stated { f } else { transport.CanFrame{
+			...f
+			fd: f.fd || f.brs
+		} }
+	if why := transport.frame_send_refusal(judged) {
 		return error(why)
 	}
 	return f
@@ -252,6 +267,10 @@ fn (mut s Sender) note_failure(why string) {
 pub fn (mut s Sender) set_period(ms int) ! {
 	check_period(ms)!
 	s.mu.lock()
+	if s.asked || !s.out {
+		s.mu.unlock()
+		return error(stopped_note)
+	}
 	s.spec = Spec{
 		...s.spec
 		period_ms: ms
@@ -265,6 +284,9 @@ pub fn (mut s Sender) set_data(data []u8) ! {
 	s.mu.lock()
 	defer {
 		s.mu.unlock()
+	}
+	if s.asked || !s.out {
+		return error(stopped_note)
 	}
 	if s.spec.by_message {
 		return error('${s.spec.message.name}: a message sender takes signal values, not bytes')
@@ -282,6 +304,9 @@ pub fn (mut s Sender) set_values(values map[string]f64) ! {
 	s.mu.lock()
 	defer {
 		s.mu.unlock()
+	}
+	if s.asked || !s.out {
+		return error(stopped_note)
 	}
 	if !s.spec.by_message {
 		return error('a raw sender takes bytes, not signal values')
@@ -312,6 +337,15 @@ pub fn (mut s Sender) info() Info {
 		period_ms: s.spec.period_ms
 		running:   s.out && !s.asked
 	}
+}
+
+// is_out is whether its loop has ended (its bus closed).
+pub fn (mut s Sender) is_out() bool {
+	s.mu.lock()
+	defer {
+		s.mu.unlock()
+	}
+	return !s.out
 }
 
 // ask_stop asks the loop to end, without waiting.

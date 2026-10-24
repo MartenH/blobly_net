@@ -97,7 +97,8 @@ mut:
 	cli  &uds.Client
 	mu   &sync.Mutex = sync.new_mutex()
 	ka    &uds.KeepAlive = unsafe { nil }
-	ka_ms int // its period, 0 when none runs
+	ka_ms int    // its period, 0 when none runs
+	ka_said string // a failure of a keep-alive stopped before it was said
 	chan  string // the channel this connection belongs to (DoIP reuse; see l_uds_open)
 	// the CAN response id, for a functional request to recognise this connection's answers;
 	// DoIP addresses by logical address and has none (`can` false)
@@ -239,7 +240,7 @@ pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 	for i, mut c in env.conns {
 		if !c.closed {
 			c.stop_keep_alive()
-			c.ch.close()
+			c.close_held()
 		}
 		d := c.ch.diagnostics()
 		if !d.is_empty() {
@@ -569,7 +570,7 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 				// where they went (a retarget) and the client keeps what it knew of the ECU.
 				target := u16(c.ch.rx_id)
 				ka_ms := c.stop_keep_alive() // out of the connection before it is closed
-				c.ch.close()
+				c.close_held()
 				mut fresh := udsconn.open_doip(info.carrier) or {
 					return error('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 				}
@@ -631,7 +632,7 @@ fn l_uds_close(l lua.State) i32 {
 	}
 	if !env.conns[h].closed {
 		env.conns[h].stop_keep_alive()
-		env.conns[h].ch.close()
+		env.conns[h].close_held()
 		env.conns[h].closed = true
 	}
 	return 0

@@ -285,6 +285,7 @@ class UdsClient:
                  pending_budget_ms: int | None = None, keep_alive_ms: int | None = None) -> None:
         self.channel = channel
         self._keep_alive_ms = _keep_alive_period(keep_alive_ms)
+        self._keep_alive_used = self._keep_alive_ms is not None  # its failures are said, even once stopped
         self._ask = (None if tx is None else _int("tx", tx, 64), None if rx is None else _int("rx", rx, 64))
         # the waits a script stated, stated again on each connection the client opens
         stated = (("timeout_ms", timeout_ms), ("p2_star_ms", p2_star_ms), ("margin_ms", margin_ms),
@@ -414,7 +415,7 @@ class UdsClient:
 
     def _say_keep_alive(self, h: int) -> None:
         """A keep-alive failure since the previous call, said once (KeepAliveWarning)."""
-        if self._keep_alive_ms:
+        if self._keep_alive_used:
             try:
                 why = _lib.string(_lib.lib().bb_uds_keep_alive_failure, h)
             except BloblyError:
@@ -433,6 +434,7 @@ class UdsClient:
         ms = _keep_alive_period(period_ms)
         with self._lock, _lib.state_lock:
             self._keep_alive_ms = ms
+            self._keep_alive_used = self._keep_alive_used or ms is not None
             if self._h is not None:
                 _lib.check(_lib.lib().bb_uds_keep_alive(self._h, ms or 0))
 
@@ -816,6 +818,8 @@ def functional(channel: "Channel", functional_id: int | None, clients: Sequence[
             clients[0]._call_on(handles[0], lib.bb_uds_functional_doip, address, req, len(req), window,
                                 ctypes.byref(out))
             return [_reply(lib, handles[0], out)]
+        for c, h in zip(clients, handles):
+            c._say_keep_alive(h)
         n = len(handles)
         out = (_lib.BbFunctionalReply * n)()
         _lib.check(lib.bb_uds_functional(channel._index, fid, (ctypes.c_int * n)(*handles), n, req, len(req),

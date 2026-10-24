@@ -38,9 +38,15 @@ pub fn (mut env Env) stop_replays() []string {
 }
 
 // rows_named is the CAN rows Lua arguments first.. name, as blobly/replay takes them.
-// replays_ended is whether every replay and recording the scripts started has let go of its
-// buses: a stop that ran out of time leaves one letting go, and a host whose taps it uses waits.
+// replays_ended is whether every replay, recording and background sender the scripts started has
+// let go of its buses: a stop that ran out of time leaves one letting go, and a host whose taps it
+// uses waits.
 pub fn (mut env Env) replays_ended() bool {
+	for mut c in env.senders {
+		if !c.is_out() {
+			return false
+		}
+	}
 	for mut s in env.replays {
 		if !s.ended() {
 			return false

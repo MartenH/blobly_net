@@ -1109,7 +1109,7 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
  * handle of its own on the row, opened for it and only sent on — never a host's handle, which stays
  * one thread's — so a background send never touches a handle the host reads. From bb_start: a
  * sender is one of the run's loops, ended by bb_stop within its bound (a handle of a stopped run
- * still answers bb_cyclic_status, until bb_cyclic_stop or the next bb_start). Every send goes
+ * still answers bb_cyclic_status, until bb_cyclic_free or the next bb_start). Every send goes
  * through the wire policy (a listen-only row refuses it, counted in `failed`); a message's declared
  * E2E is stamped per frame, its counter the sender's own from 0. Its frames are counted by the
  * row's handles only as they receive them (a second handle's traffic), not as their own sends.
@@ -1119,8 +1119,10 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
  * databases with signals[i] at values[i] (the rest at raw 0), its E2E stamped unless `e2e` is 0.
  * bb_cyclic_data replaces a raw sender's payload, bb_cyclic_signals sets a message sender's
  * signals (the rest keep theirs), bb_cyclic_period its period — each from its next frame.
- * bb_cyclic_stop ends it and lets the handle go: 0 once its loop is out, BB_RELEASING when it is
- * still inside a send past the bound (it sends nothing more). Any thread may call these. */
+ * bb_cyclic_stop ends it: 0 once its loop is out, BB_RELEASING when it is still inside a send past
+ * the bound (it sends nothing more; ask again) — answered at once for a sender of a stopped run,
+ * whose stop already waited for it. Its handle stays, for bb_cyclic_status, until bb_cyclic_free.
+ * Any thread may call these. */
 typedef struct bb_cyclic_info {
 	uint64_t sent;       /* frames the bus took */
 	uint64_t failed;     /* sends refused; the last one's words are bb_cyclic_error's */
@@ -1135,7 +1137,8 @@ typedef struct bb_cyclic_info {
  * refusal: a negative answer forgets the session (nothing more is sent until a 0x10 is answered),
  * a 0x78 or a carrier failure is a failure; none is the handle's bb_uds_last. period_ms 0 stops
  * it. bb_uds_keep_alive_failure copies the failure since the previous one it copied (its length;
- * 0 when there is none new), which the Python client says at its next call. */
+ * 0 when there is none new; one cut short by `cap` is kept for the next call), which the Python
+ * client says at its next call — a failure of a keep-alive stopped since included. */
 typedef struct bb_keep_alive {
 	int32_t  period_ms;  /* 0: none */
 	uint64_t sent;
@@ -1152,6 +1155,7 @@ int bb_cyclic_period(int c, int period_ms);
 int bb_cyclic_status(int c, bb_cyclic_info *out);
 int bb_cyclic_error(int c, char *buf, int cap);  /* >= 0: the length of the last refusal's words */
 int bb_cyclic_stop(int c);
+int bb_cyclic_free(int c);
 int bb_uds_keep_alive(int u, int period_ms);
 int bb_uds_keep_alive_status(int u, bb_keep_alive *out);
 int bb_uds_keep_alive_failure(int u, char *buf, int cap);

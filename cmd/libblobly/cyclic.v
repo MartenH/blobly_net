@@ -178,6 +178,9 @@ pub fn bb_cyclic_error(c i32, buf &char, cap i32) i32 {
 	return put(s.info().error, buf, cap)
 }
 
+// bb_cyclic_stop: the sender ends, waited for within its bound while its run lasts; a sender of a
+// stopped run, whose stop has ended it already, is answered at once. The handle stays, for its
+// status, until bb_cyclic_free.
 @[export: 'bb_cyclic_stop']
 pub fn bb_cyclic_stop(c i32) i32 {
 	bb_mu.lock()
@@ -185,12 +188,34 @@ pub fn bb_cyclic_stop(c i32) i32 {
 		bb_mu.unlock()
 		return fail(bb_err_handle, 'no background sender ${c}')
 	}
-	bb_cyclic.delete(int(c))
+	live := !isnil(bb_gen_run) && h.run == bb_run_gen
 	bb_mu.unlock()
 	mut s := h.s
-	if !s.stop() {
+	if live {
+		if !s.stop() {
+			ok()
+			return bb_releasing
+		}
+		return ok()
+	}
+	s.ask_stop()
+	if !s.is_out() {
 		ok()
 		return bb_releasing
 	}
+	return ok()
+}
+
+// bb_cyclic_free lets handle c go; a sender still running goes on until it is stopped or its run is.
+@[export: 'bb_cyclic_free']
+pub fn bb_cyclic_free(c i32) i32 {
+	bb_mu.lock()
+	defer {
+		bb_mu.unlock()
+	}
+	if int(c) !in bb_cyclic {
+		return fail(bb_err_handle, 'no background sender ${c}')
+	}
+	bb_cyclic.delete(int(c))
 	return ok()
 }
