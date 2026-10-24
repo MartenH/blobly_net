@@ -56,6 +56,29 @@ pub fn functional(mut fch isotp.Channel, mut tap transport.Bus, targets []Functi
 	if why := functional_refusal(targets, req) {
 		return error(why)
 	}
+	// every target's serial held for the request, so no keep-alive sends inside it
+	for t in targets {
+		if t.client.serial != unsafe { nil } {
+			t.client.serial.lock()
+		}
+	}
+	replies := functional_held(mut fch, mut tap, targets, req, window_ms) or {
+		unlock_serials(targets)
+		return err
+	}
+	unlock_serials(targets)
+	return replies
+}
+
+fn unlock_serials(targets []FunctionalTarget) {
+	for t in targets {
+		if t.client.serial != unsafe { nil } {
+			t.client.serial.unlock()
+		}
+	}
+}
+
+fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []FunctionalTarget, req []u8, window_ms int) ![]FunctionalReply {
 	// what is already queued is no answer to this request: the same drain a physical exchange runs.
 	// The tap FIRST: a frame arriving between the two drains then still has its trigger, and a
 	// trigger whose PDU the channel drain took finds the channel empty — read as silence below.
@@ -342,6 +365,19 @@ pub fn functional_addressed(mut c Client, mut via AddressedSend, target u32, req
 	if req.len == 0 {
 		return error('empty UDS request')
 	}
+	if c.serial == unsafe { nil } {
+		return functional_addressed_held(mut c, mut via, target, req, window_ms)
+	}
+	c.serial.lock()
+	r := functional_addressed_held(mut c, mut via, target, req, window_ms) or {
+		c.serial.unlock()
+		return err
+	}
+	c.serial.unlock()
+	return r
+}
+
+fn functional_addressed_held(mut c Client, mut via AddressedSend, target u32, req []u8, window_ms int) !FunctionalReply {
 	c.drain_queued(req[0])!
 	// a stop asked during the drain sends nothing
 	if c.stopping() {

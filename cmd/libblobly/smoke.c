@@ -105,6 +105,10 @@ static int (*bb_gen_fire_p)(int, int64_t, int64_t);
 static int (*bb_gen_stop_p)(int);
 static int (*bb_gen_count_p)(void);
 static int (*bb_gen_run_p)(int64_t *);
+static int (*bb_cyclic_start_p)(int, const bb_frame *, int);
+static int (*bb_cyclic_data_p)(int, const uint8_t *, int);
+static int (*bb_cyclic_status_p)(int, bb_cyclic_info *);
+static int (*bb_cyclic_stop_p)(int);
 typedef int (*replay_defaults_fn)(bb_replay_opts *);
 typedef int (*replay_start_fn)(const int *, int, const bb_replay_opts *);
 typedef int (*replay_info_fn)(int, bb_replay_info *);
@@ -437,6 +441,31 @@ static int gen_steps(void) {
 	return 0;
 }
 
+/* a background sender on CAN1, heard by a bus handle of the host's own at its period */
+static int cyclic_steps(int can1) {
+	int h = bb_bus_open_p("inproc:CAN1");
+	CHECK(h >= 0, "open a handle to hear the sender on");
+	bb_frame f = {.id = 0x3A1, .len = 1, .data = {7}};
+	int c = bb_cyclic_start_p(can1, &f, 10);
+	CHECK(c >= 0, "start a background sender");
+	int heard = 0;
+	bb_frame r;
+	int64_t until = bb_now_ns_p() + 200000000;
+	while (bb_now_ns_p() < until) {
+		if (bb_bus_recv_p(h, 20, &r) == 0 && r.id == 0x3A1 && r.data[0] == 7) heard++;
+	}
+	CHECK(heard >= 5, "heard %d frames at 10 ms in 200 ms", heard);
+	uint8_t nine = 9;
+	CHECK(bb_cyclic_data_p(c, &nine, 1) == 0, "update its payload");
+	bb_cyclic_info i;
+	CHECK(bb_cyclic_status_p(c, &i) == 0 && i.running && i.sent >= 5 && i.failed == 0 && i.period_ms == 10, "its state");
+	CHECK(bb_cyclic_start_p(can1, &f, 0) == BB_ERR && strstr(bb_last_error_p(), "a period of 0 ms"), "period 0 must refuse");
+	CHECK(bb_cyclic_stop_p(c) == 0 && bb_cyclic_stop_p(c) == BB_ERR_HANDLE, "stop, and a stopped one is gone");
+	bb_bus_close_p(h);
+	printf("ok   a background sender heard at its period, and stopped\n");
+	return 0;
+}
+
 /* samples/demo.log replayed onto CAN1 at 50x while CAN1 is recorded: every frame the replay sent
  * is in the file as ours */
 static int replay_steps(int row, const char *project) {
@@ -553,6 +582,7 @@ int main(int argc, char **argv) {
 	SYM(bb_flash_defaults); SYM(bb_flash_open); SYM(bb_flash_program); SYM(bb_boot_sim); SYM(bb_boot_sim_stop);
 	SYM(bb_gen_count); SYM(bb_gen_run); SYM(bb_gen_find); SYM(bb_gen_info); SYM(bb_gen_text); SYM(bb_gen_fire); SYM(bb_gen_start);
 	SYM(bb_gen_stop); SYM(bb_gen_cycle); SYM(bb_gen_set); SYM(bb_gen_source);
+	SYM(bb_cyclic_start); SYM(bb_cyclic_data); SYM(bb_cyclic_status); SYM(bb_cyclic_stop);
 	SYM(bb_node_count); SYM(bb_node_info); SYM(bb_system_path);
 	SYM(bb_isotp_open); SYM(bb_isotp_send); SYM(bb_isotp_recv); SYM(bb_isotp_close); SYM(bb_uds_tester_present);
 	SYM(bb_uds_get_timing); SYM(bb_uds_set_wait); SYM(bb_uds_check_wait); SYM(bb_uds_retarget);
@@ -615,6 +645,7 @@ int main(int argc, char **argv) {
 	if (fault_steps(can1, doip)) return 1;
 	if (flash_steps(can1)) return 1;
 	if (gen_steps()) return 1;
+	if (cyclic_steps(can1)) return 1;
 	if (node_steps()) return 1;
 	if (replay_steps(can1, argv[2])) return 1;
 	can1_row = can1;

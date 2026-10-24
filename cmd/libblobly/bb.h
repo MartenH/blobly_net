@@ -1104,6 +1104,59 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
                            bb_write_needs *needs);
 #endif /* BB_FROM_V */
 
+/* Background cyclic senders (blobly/cyclic, cmd/libblobly/cyclic.v), as the Lua bus.send_cyclic: a
+ * frame sent on a period by a thread of its own while the host does something else. Each owns a bus
+ * handle of its own on the row, opened for it and only sent on — never a host's handle, which stays
+ * one thread's — so a background send never touches a handle the host reads. From bb_start: a
+ * sender is one of the run's loops, ended by bb_stop within its bound (a handle of a stopped run
+ * still answers bb_cyclic_status, until bb_cyclic_stop or the next bb_start). Every send goes
+ * through the wire policy (a listen-only row refuses it, counted in `failed`); a message's declared
+ * E2E is stamped per frame, its counter the sender's own from 0. Its frames are counted by the
+ * row's handles only as they receive them (a second handle's traffic), not as their own sends.
+ *
+ * bb_cyclic_start sends frame `f` (its fd/brs as bb_bus_send reads them) every `period_ms`
+ * (1 .. 3600000), the first at once; bb_cyclic_start_message sends message m of the row's
+ * databases with signals[i] at values[i] (the rest at raw 0), its E2E stamped unless `e2e` is 0.
+ * bb_cyclic_data replaces a raw sender's payload, bb_cyclic_signals sets a message sender's
+ * signals (the rest keep theirs), bb_cyclic_period its period — each from its next frame.
+ * bb_cyclic_stop ends it and lets the handle go: 0 once its loop is out, BB_RELEASING when it is
+ * still inside a send past the bound (it sends nothing more). Any thread may call these. */
+typedef struct bb_cyclic_info {
+	uint64_t sent;       /* frames the bus took */
+	uint64_t failed;     /* sends refused; the last one's words are bb_cyclic_error's */
+	int32_t  period_ms;
+	uint8_t  running;    /* its loop runs: not stopped, and its run not stopped */
+} bb_cyclic_info;
+
+/* A UDS session kept alive (blobly/uds keepalive.v): TesterPresent with the positive response
+ * suppressed (3E 80) every `period_ms` (250 .. 60000) from a thread of its own, while handle u
+ * holds a session a 0x10 answer established on it that is not the default one, and nothing else
+ * went to the ECU for that long — never inside a call on the handle. Each one listens 200 ms for a
+ * refusal: a negative answer forgets the session (nothing more is sent until a 0x10 is answered),
+ * a 0x78 or a carrier failure is a failure; none is the handle's bb_uds_last. period_ms 0 stops
+ * it. bb_uds_keep_alive_failure copies the failure since the previous one it copied (its length;
+ * 0 when there is none new), which the Python client says at its next call. */
+typedef struct bb_keep_alive {
+	int32_t  period_ms;  /* 0: none */
+	uint64_t sent;
+	uint64_t failures;
+	uint8_t  running;
+} bb_keep_alive;
+#ifndef BB_FROM_V
+int bb_cyclic_start(int row, const bb_frame *f, int period_ms);           /* >= 0: the handle */
+int bb_cyclic_start_message(int row, int m, int n, const char *const *signals,
+                            const double *values, int e2e, int period_ms); /* >= 0: the handle */
+int bb_cyclic_data(int c, const uint8_t *data, int len);
+int bb_cyclic_signals(int c, int n, const char *const *signals, const double *values);
+int bb_cyclic_period(int c, int period_ms);
+int bb_cyclic_status(int c, bb_cyclic_info *out);
+int bb_cyclic_error(int c, char *buf, int cap);  /* >= 0: the length of the last refusal's words */
+int bb_cyclic_stop(int c);
+int bb_uds_keep_alive(int u, int period_ms);
+int bb_uds_keep_alive_status(int u, bb_keep_alive *out);
+int bb_uds_keep_alive_failure(int u, char *buf, int cap);
+#endif /* BB_FROM_V */
+
 #ifdef __cplusplus
 }
 #endif

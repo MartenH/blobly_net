@@ -326,6 +326,23 @@ pub mut:
 	dropped i64
 }
 
+// background senders and the keep-alive (cyclic.v, keepalive.v)
+pub struct C.bb_cyclic_info {
+pub mut:
+	sent      u64
+	failed    u64
+	period_ms i32
+	running   u8
+}
+
+pub struct C.bb_keep_alive {
+pub mut:
+	period_ms i32
+	sent      u64
+	failures  u64
+	running   u8
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
@@ -552,6 +569,7 @@ pub fn bb_start() i32 {
 	sys_publish(r)
 	bb_dbs_live = true
 	bb_run_gen++
+	cyclic_retire(bb_run_gen)
 	bb_mu.unlock()
 	return ok()
 }

@@ -22,6 +22,7 @@ from .generators import Generators, listed as _listed_generators
 from .isotp import IsoTp
 from .replay import Replays
 from .e2e import E2eStatus, _passed, status_of
+from .cyclic import CyclicSender, _period, _start_message, _start_raw
 
 if TYPE_CHECKING:
     from .nodes import Nodes
@@ -232,6 +233,16 @@ class Channel:
     def _send_on(self, h, f):
         lib = _lib.lib()
         _lib.check(lib.bb_bus_send(h, ctypes.byref(f)))
+
+    def send_cyclic(self, id: int, data: ByteData = b"", period_ms: int = 100, *, ext: bool = False,
+                    fd: bool = False, brs: bool = False) -> CyclicSender:
+        """Sends a frame every period_ms in the background, the first at once, until the sender's
+        stop() or the project's (a CyclicSender; `with` stops it at the end of the block). It goes
+        out on a bus handle of the sender's own, so this channel's handle hears it as another
+        node's frame. fd/brs as send() reads them. While the project is started."""
+        f = _bb_frame(self.name, id, data, ext, fd, brs)
+        with _lib.state_lock:
+            return _start_raw(self, f, _period(period_ms))
 
     def recv(self, timeout_ms: float | None = 1000) -> Frame | None:
         """The next frame other nodes sent, waiting at most timeout_ms (None: forever); None when
@@ -500,7 +511,7 @@ class Channel:
 
     def uds(self, tx: int | None = None, rx: int | None = None, *, timeout_ms: int | None = None,
             p2_star_ms: int | None = None, margin_ms: int | None = None,
-            pending_budget_ms: int | None = None) -> UdsClient:
+            pending_budget_ms: int | None = None, keep_alive_ms: int | None = None) -> UdsClient:
         """A UdsClient on this row, by the rule the Lua uds.open opens by, while the project is
         started. On a CAN row UDS requests go out on CAN id `tx` and answers come back on `rx`:
         None is the default pair 0x7E0 / 0x7E8, 0 is an id like any other, and either id past
@@ -509,9 +520,9 @@ class Channel:
         entity will not route the tester, and one client at a time holds the row's connection
         (ISO 13400-2: one tester address, one connection) — a second is refused while it is open.
         The timing keywords state the client's waits (UdsClient.timeout_ms ...); None keeps the
-        engine's."""
+        engine's. keep_alive_ms starts its keep-alive (UdsClient.keep_alive)."""
         return UdsClient(self, tx, rx, timeout_ms=timeout_ms, p2_star_ms=p2_star_ms, margin_ms=margin_ms,
-                         pending_budget_ms=pending_budget_ms)
+                         pending_budget_ms=pending_budget_ms, keep_alive_ms=keep_alive_ms)
 
     def isotp(self, tx: int, rx: int) -> IsoTp:
         """A raw ISO-TP channel on this CAN row while the project is started: whole messages sent on
@@ -769,6 +780,14 @@ class Message:
         self.channel._send_on(h, f)
         return frame_of(f)
 
+    def send_cyclic(self, period_ms: int, /, *, e2e: bool = True, **signals: float) -> CyclicSender:
+        """Sends this message every period_ms in the background, the first at once, encoded from
+        the named signals (encode's rule) and its declared E2E stamped on every frame unless `e2e`
+        is False — the counter the sender's own, from 0: a CyclicSender, which update(**signals)
+        changes. Until its stop() or the project's; `with` stops it at the end of the block."""
+        with _lib.state_lock:
+            return _start_message(self, _period(period_ms), e2e, signals)
+
     def __repr__(self) -> str:
         return f"<Message {self.name} 0x{self.id:X}{' ext' if self.ext else ''} [{self.dlc}] on {self.channel.name}>"
 
@@ -807,6 +826,7 @@ class Project(EventLoop[Channel | str], Faults, Replays):
         self._rr = 0
         self._gens, self._gens_run = None, None  # the generators, as the run of _gens_run lists them
         self._nodes, self._nodes_run = None, None  # the system model's nodes, as the run of _nodes_run has them
+        self._senders: list[CyclicSender] = []  # the background senders this run started
 
     def load(self) -> Self:
         """Reads the project into the library, which holds one load at a time: another project's
@@ -893,6 +913,10 @@ class Project(EventLoop[Channel | str], Faults, Replays):
             # False: a loop outlived the stop's bound and still holds the process; a start refuses
             # until blobly.wait_released says it has let go
             free = _lib.check(lib.bb_stop()) != _lib.BB_RELEASING
+            senders, self._senders = self._senders, []
+            for c in senders:  # ended by the run's stop: what each did is kept, its handle let go
+                if c._h is not None:
+                    c._let_go()
         for e in failed:
             warnings.warn(f"a recording left running failed: {e}", RuntimeWarning, stacklevel=2)
         return free
@@ -950,6 +974,13 @@ class Project(EventLoop[Channel | str], Faults, Replays):
                 self._nodes = listed(self, list(self._nodes) if self._nodes is not None else None)
                 self._nodes_run = _lib.state["run"]
             return self._nodes
+
+    def _stop_senders(self) -> None:
+        """Stops every background sender the run started (the pytest plugin, after a test)."""
+        with _lib.state_lock:
+            senders, self._senders = self._senders, []
+            for c in senders:
+                c.stop()
 
     # the event loop's hooks, over libblobly
     def _resolve(self, channel):

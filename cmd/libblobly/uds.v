@@ -68,6 +68,10 @@ mut:
 	extended uds.DtcExtended
 	// why the handle's last functional reply failed, for bb_uds_reply_error
 	reply_err string
+	// the session keep-alive (keepalive.v), under `kmu` — not `mu`, which its thread takes for
+	// each keep-alive and so a stop must not hold; nil when none runs
+	ka  &uds.KeepAlive = unsafe { nil }
+	kmu &sync.Mutex    = sync.new_mutex()
 }
 
 __global (
@@ -231,6 +235,7 @@ pub fn bb_uds_close(u i32) i32 {
 	for stdatomic.load_i64(&hd.users) > 0 {
 		time.sleep(time.millisecond)
 	}
+	hd.stop_keep_alive()
 	hd.mu.lock() // the idle service out of the connection; it sees `closing` and ends
 	if !hd.lost {
 		hd.conn.ch.close()

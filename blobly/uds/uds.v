@@ -9,6 +9,7 @@ module uds
 
 import blobly.isotp
 import blobly.transport
+import sync
 import time
 
 // Request service ids.
@@ -87,6 +88,11 @@ pub mut:
 	// the session and security state this client's own exchanges have established (connstate.v),
 	// observed on every request it puts through, whatever made it
 	state ConnState
+	// serial, when set, is held for every exchange, so a keep-alive on another thread
+	// (keepalive.v) never sends inside one; unset, the caller serialises the client's use
+	serial &sync.Mutex = unsafe { nil }
+	// when a request last went out (its send), on the monotonic clock (ns); 0 before the first
+	last_tx_ns u64
 }
 
 // abandoned_note is the error a request ends with when `stop_requested` answered true.
@@ -345,6 +351,20 @@ pub fn (mut c Client) raw_suppressed(req []u8) !bool {
 // a quiet P2 is its success), and whether the server said responsePending on the way. Observed into
 // `state` and reported to `on_exchange` once it has ended.
 fn (mut c Client) exchange(req []u8, suppressed bool) !([]u8, bool) {
+	if c.serial == unsafe { nil } {
+		return c.exchange_held(req, suppressed)
+	}
+	c.serial.lock()
+	resp, owed := c.exchange_held(req, suppressed) or {
+		c.serial.unlock()
+		return err
+	}
+	c.serial.unlock()
+	return resp, owed
+}
+
+// exchange_held is exchange with `serial` held, or none to hold.
+fn (mut c Client) exchange_held(req []u8, suppressed bool) !([]u8, bool) {
 	c.last = ExchangeTiming{} // a request refused before exchange_once times it was not sent
 	resp, owed := c.exchange_once(req, suppressed) or {
 		mut x := Exchange{
@@ -427,6 +447,7 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool) !([]u8, bool) {
 	c.ch.send(req) or { return send_failure(err, c.ch, c.stopping(), req[0], discarded) }
 	sent = true
 	c.sent_count++
+	c.last_tx_ns = time.sys_mono_now()
 	sw := time.new_stopwatch()
 	mut deadline := if c.timeout_ms < c.pending_budget_ms { i64(c.timeout_ms) } else { i64(c.pending_budget_ms) }
 	mut pending := false

@@ -11,6 +11,7 @@
 module script
 
 import os
+import sync
 import time
 import blobly.lua
 import blobly.transport
@@ -22,6 +23,7 @@ import blobly.uds
 import blobly.candb
 import blobly.project
 import blobly.udsconn
+import blobly.cyclic
 import blobly.sysview
 import blobly.replay
 
@@ -89,9 +91,14 @@ struct UdsConn {
 mut:
 	// The INTERFACE, not the CAN implementation: a connection may ride ISO-TP or DoIP, and
 	// uds.Client already accepts either (cmd/doip_smoke hands it a DoipClient directly).
-	ch   isotp.Channel
-	cli  uds.Client
-	chan string // the channel this connection belongs to (DoIP reuse; see l_uds_open)
+	ch isotp.Channel
+	// at an address of its own, held for every exchange by `mu`, so its keep-alive (cyclic.v)
+	// never sends inside one
+	cli  &uds.Client
+	mu   &sync.Mutex = sync.new_mutex()
+	ka    &uds.KeepAlive = unsafe { nil }
+	ka_ms int // its period, 0 when none runs
+	chan  string // the channel this connection belongs to (DoIP reuse; see l_uds_open)
 	// the CAN response id, for a functional request to recognise this connection's answers;
 	// DoIP addresses by logical address and has none (`can` false)
 	can bool
@@ -139,10 +146,15 @@ mut:
 	// the replays and recordings the script started, stopped by close (replay.v)
 	replays []&replay.Session
 	records []&replay.Recorder
+	// the background senders the script started, by handle, stopped by close (cyclic.v)
+	senders []&cyclic.Sender
 pub mut:
 	// The run's generators, which gen.* controls (generators.v): cmd/script's headless run; none in
 	// the GUI, whose generators are its panel's.
 	gens sim.GenControl = sim.NoGens{}
+	// Who a background sender belongs to (cyclic.v): cmd/script's headless run, whose stop ends
+	// it; nobody in the GUI, where the script's close stops it.
+	cyclic_host cyclic.Host = cyclic.Free{}
 	// The system model uds.node reaches a node by (nodes.v): the run's (headless.Run.sys), or the
 	// one the GUI's Diagnostics panel reads; empty when no system.toml describes the project.
 	sys sysview.System
@@ -223,8 +235,10 @@ pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
 	for e in env.stop_replays() {
 		env.emit('record: ${e}')
 	}
+	env.stop_senders()
 	for i, mut c in env.conns {
 		if !c.closed {
+			c.stop_keep_alive()
 			c.ch.close()
 		}
 		d := c.ch.diagnostics()
@@ -383,6 +397,7 @@ fn (mut env Env) register_all() {
 	env.register_isotp()
 	env.register_replay()
 	env.register_e2e()
+	env.register_cyclic()
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -562,12 +577,14 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 				// what was stated on the old connection (its sizes, a node's description, its timing)
 				// holds on the new one; what it established does not
 				mut fresh_cli := uds.new_client(fresh_ch)
-				fresh_cli.carry_from(&c.cli)
-				env.conns[i] = UdsConn{
+				fresh_cli.carry_from(c.cli)
+				ka_ms := c.stop_keep_alive()
+				env.conns[i] = new_conn(UdsConn{
 					ch:   fresh_ch
-					cli:  env.bound_client(mut fresh_ch, fresh_cli)
+					cli:  env.bound_client(mut fresh_ch, fresh_cli).on_heap()
 					chan: name
-				}
+				})
+				env.conns[i].keep_alive(ka_ms) or {}
 				return i
 			}
 			return i
@@ -582,22 +599,24 @@ fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 		}
 	}
 	mut conn := udsconn.open(t, name, info.iface, info.carrier, env.opener)!
-	env.conns << UdsConn{
+	env.conns << new_conn(UdsConn{
 		ch:       conn.ch
-		cli:      env.bound_client(mut conn.ch, conn.cli)
+		cli:      env.bound_client(mut conn.ch, conn.cli).on_heap()
 		chan:     name
 		can:      !t.doip
 		rx:       t.rx
 		ext:      t.ext
 		flashing: for_flash && !t.doip
-	}
+	})
 	return env.conns.len - 1
 }
 
+// conn is connection h, a keep-alive failure since its previous call said first.
 fn (mut env Env) conn(h int) ?&UdsConn {
 	if h < 0 || h >= env.conns.len || env.conns[h].closed {
 		return none
 	}
+	env.say_keep_alive(mut env.conns[h])
 	return unsafe { &env.conns[h] }
 }
 
@@ -611,6 +630,7 @@ fn l_uds_close(l lua.State) i32 {
 		return l.fail('bad uds handle')
 	}
 	if !env.conns[h].closed {
+		env.conns[h].stop_keep_alive()
 		env.conns[h].ch.close()
 		env.conns[h].closed = true
 	}
@@ -994,7 +1014,7 @@ fn l_uds_functional(l lua.State) i32 {
 			return l.fail('uds.functional("${name}"): a connection opened on "${c.chan}" is not a CAN target here')
 		}
 		targets << uds.FunctionalTarget{
-			client: &c.cli
+			client: c.cli
 			rsp_id: c.rx
 			ext:    c.ext
 		}
