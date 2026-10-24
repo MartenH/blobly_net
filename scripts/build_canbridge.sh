@@ -1,7 +1,8 @@
 #!/bin/sh
 # build_canbridge.sh [out-dir] — build the canbridge the Windows app and wheel carry into WSL
 # (cmd/canbridge, docs/wsl_bridge.md): <out-dir>/canbridge, a STATIC x86-64 Linux program against
-# musl, so it runs in a distribution of any age and package set (#503), and <out-dir>/musl-LICENSE.txt,
+# musl, so it needs no library of the distribution's (#503; a minimal Ubuntu 24.04, the supported
+# floor, lacks the libatomic the dynamic build needed), and <out-dir>/musl-LICENSE.txt,
 # the notice of the libc compiled into it. musl rather than a static glibc: glibc is LGPL, and a
 # static link would ask of the distributor what the Windows bundle's dynamic DLLs do not (#318).
 # musl has no NSS: a --connect host resolves through /etc/hosts and DNS only, which is all the app's
