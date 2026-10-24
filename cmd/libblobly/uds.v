@@ -282,6 +282,7 @@ fn (mut hd UdsHandle) reconnect() ! {
 	if !hd.doip {
 		return
 	}
+	hd.of_this_run('uds')!
 	if hd.idle_lost != '' {
 		why := hd.idle_lost
 		hd.idle_lost = ''
@@ -328,6 +329,18 @@ fn (mut hd UdsHandle) reconnect() ! {
 		cli: cli
 	}
 	hd.lost = false
+}
+
+// of_this_run refuses `call` on a DoIP handle of a stopped or earlier run: its carrier was that
+// run's (a hosted row's moved port), so neither its connection nor a reopen at it is this run's.
+fn (hd &UdsHandle) of_this_run(call string) ! {
+	bb_mu.lock()
+	live, run := bb_dbs_live, bb_run_gen
+	bb_mu.unlock()
+	if !live || hd.run != run {
+		return error_with_code('${call}("${hd.row_name}"): the DoIP handle was opened in ${if live { 'an earlier' } else { 'a stopped' }} run; open one in this run',
+			int(bb_err_state))
+	}
 }
 
 // refuse_before_reopen refuses a request no client would send, when sending it would first open a
@@ -1157,13 +1170,7 @@ pub fn bb_uds_functional_doip(u i32, address &i64, req &u8, len i32, window_ms i
 		if !hd.doip {
 			return error('functional("${hd.row_name}"): a CAN channel — its functional request is bb_uds_functional, on a functional CAN id')
 		}
-		bb_mu.lock()
-		live, run := bb_dbs_live, bb_run_gen
-		bb_mu.unlock()
-		if !live || hd.run != run {
-			return error_with_code('functional("${hd.row_name}"): the handle was opened in an earlier run',
-				int(bb_err_state))
-		}
+		hd.of_this_run('functional')!
 		if fa < 0 || fa > 0xFFFF {
 			return error('functional("${hd.row_name}"): ${fa} is not a DoIP logical address')
 		}

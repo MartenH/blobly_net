@@ -733,7 +733,13 @@ int main(int argc, char **argv) {
 	printf("ok   handle -1 refused by name; a success clears the error\n");
 	/* the run moved the hosted DoIP entity onto a port it could bind; a stop gives the project's back */
 	if (strcmp(bb_channel_iface_p(doip), doip_iface) == 0) { fprintf(stderr, "FAIL the run did not move %s\n", doip_iface); return 1; }
+	/* a DoIP handle kept across the stop: its carrier was the run's moved port, so it refuses */
+	bb_uds_target kt;
+	int kept = bb_uds_open_p(doip, NULL, NULL, &kt);
+	if (kept < 0) { fprintf(stderr, "FAIL open the kept DoIP handle: %s\n", bb_last_error_p()); return 1; }
 	if (bb_stop_p() != 0) FAIL("stop");
+	uint8_t kvin[32];
+	if (bb_uds_read_did_p(kept, 0xF190, kvin, sizeof kvin) != BB_ERR_STATE) { fprintf(stderr, "FAIL a DoIP handle of a stopped run must refuse: %s\n", bb_last_error_p()); return 1; }
 	if (bb_message_count_p(can1) != BB_ERR_STATE) { fprintf(stderr, "FAIL the databases outlived the run\n"); return 1; }
 	if (strcmp(bb_channel_iface_p(doip), doip_iface) != 0) { fprintf(stderr, "FAIL after stop the DoIP row is %s, not %s\n", bb_channel_iface_p(doip), doip_iface); return 1; }
 	if (bb_wait_released_p(0) != 0) { fprintf(stderr, "FAIL a clean stop must leave the process released\n"); return 1; }
@@ -742,6 +748,9 @@ int main(int argc, char **argv) {
 	/* the process is free again: the same project starts a second time */
 	if (bb_start_p() != 0) FAIL("start again");
 	if (exchange("second run", 5)) return 1;
+	if (bb_uds_read_did_p(kept, 0xF190, kvin, sizeof kvin) != BB_ERR_STATE) { fprintf(stderr, "FAIL a DoIP handle of an earlier run must refuse: %s\n", bb_last_error_p()); return 1; }
+	if (bb_uds_close_p(kept) != 0) FAIL("close the kept DoIP handle");
+	printf("ok   a DoIP handle kept across a stop refuses as BB_ERR_STATE\n");
 	if (bb_stop_p() != 0) FAIL("stop again");
 	printf("ok   libblobly smoke\n");
 	return 0;

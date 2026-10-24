@@ -632,7 +632,9 @@ int bb_decode(int row, const bb_frame *f, int *message, double *values, uint8_t 
  * alone. */
 int bb_uds_open(int row, const int64_t *tx, const int64_t *rx, bb_uds_target *out);
                                        /* >= 0: the handle; BB_ERR_STATE outside a run, whose
-                                          rows it opens on (a hosted DoIP row's moved port) */
+                                          rows it opens on (a hosted DoIP row's moved port);
+                                          a DoIP handle's calls refuse with it once its run has
+                                          stopped */
 int bb_last_nrc(uint8_t *nrc);  /* 0 with *nrc the NRC when the calling thread's last call failed
                                    with BB_ERR_NEGATIVE, BB_NONE otherwise; like bb_last_error it
                                    changes nothing, so it answers after the handle is gone */
