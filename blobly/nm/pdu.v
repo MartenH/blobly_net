@@ -1,13 +1,18 @@
 // nm — CAN network management, the READ side: who reports in on a bus's NM cluster and who
 // keeps the network awake. It listens and sends nothing.
 //
-// The PDU is AUTOSAR CanNm's default layout, which blobly_emb's comm/nm implements (its
-// docs/nm.md is the reference):
+// The PDU is blobly_emb's comm/nm frame (its docs/nm.md is the reference), which keeps AUTOSAR
+// CanNm's default byte positions:
 //
 //   byte 0     the source node id (NID)
 //   byte 1     the Control Bit Vector (CBV): bit 0 repeat-message request, bit 3 ready-to-sleep
 //              (the sender has released the network), bit 4 active wake-up, bit 6 PN info
 //   bytes 2..7 the partial-network request mask, little-endian, meaningful only with PN info
+//
+// Bit 3 is read as blobly_emb sends it: a node that has released the network says so and goes
+// on announcing. In AUTOSAR CanNm that bit is the coordinator's sleep-ready bit, and a node
+// releases by falling silent — which reads here as silence past the timeout, so an AUTOSAR
+// cluster goes from awake to asleep without passing through releasing.
 //
 // A node announces on its own CAN id in the cluster's NM range. Nothing here decides that a
 // frame IS an NM PDU: the range comes from a configuration (config.v), and a wire with none has

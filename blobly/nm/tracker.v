@@ -125,8 +125,9 @@ pub fn (mut t Tracker) note(id u32, ext bool, data []u8, t_ms f64) bool {
 		t.index[key] = i
 	}
 	timeout := f64(t.cfg.timeout_ms)
-	// a frame after a silence longer than the timeout woke the network
-	if t.last_ms < 0 || t_ms - t.last_ms > timeout {
+	// a frame after a silence longer than the timeout woke the network; the first frame heard
+	// did only if it says so (active wake-up), since the bus may have been awake before listening began
+	if (t.last_ms < 0 && p.cbv & cbv_active_wakeup != 0) || (t.last_ms >= 0 && t_ms - t.last_ms > timeout) {
 		t.woke = Wake{
 			node:   i
 			t_ms:   t_ms

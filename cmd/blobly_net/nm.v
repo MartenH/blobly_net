@@ -25,6 +25,7 @@ import gaterule
 
 const nm_strip_cols = 120 // half-second columns over the 60 s window
 const nm_refresh_ms = 1000.0
+const nm_view_ms = 250.0 // how often the open panel rebuilds its views under app.mu
 const nm_strip_w = f32(240) // the timeline's width, unscaled px
 
 // nm_configs is every CAN wire's NM configuration, from `sys` and the rows and databases on
@@ -72,10 +73,9 @@ fn (mut app App) nm_publish_locked(cfgs map[string]nm.Config, fresh bool) {
 				}
 			}
 		}
-		t := &nm.Tracker{
-			cfg: cfg
+		trk[dk] = &nm.Tracker{
+			...nm.new_tracker(cfg)
 		}
-		trk[dk] = t
 	}
 	app.nm_cfg = cfgs.clone()
 	app.nm_trk = trk.clone()
@@ -120,7 +120,7 @@ fn (mut app App) nm_import_note_locked(label string, gate string, f transport.Ca
 	mut t := app.nm_rec[label] or {
 		cfg := app.nm_cfg[gaterule.placement(gate)] or { return }
 		n := &nm.Tracker{
-			cfg: cfg
+			...nm.new_tracker(cfg)
 		}
 		app.nm_rec[label] = n
 		n
@@ -203,7 +203,15 @@ fn draw_nm(mut app App) {
 	}
 	app.nm_follow(false)
 	sc := app.prefs.ui_scale
-	sections, note := app.nm_sections()
+	// the views are rebuilt a few times a second, not every frame: each walks every node's
+	// timeline under app.mu, which every RX loop waits on
+	now_ms := f64(time.sys_mono_now()) / 1_000_000.0
+	if app.nm_view_at == 0 || now_ms - app.nm_view_at >= nm_view_ms {
+		app.nm_view_at = now_ms
+		app.nm_views, app.nm_view_note = app.nm_sections()
+	}
+	sections := app.nm_views
+	note := app.nm_view_note
 	if note != '' {
 		vgui.text_dim(note)
 	}

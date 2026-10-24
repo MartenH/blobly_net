@@ -663,6 +663,18 @@ channels:
 ')!
 	dn := d.channels[0].nm or { panic('no nm') }
 	assert dn.lo == 0x500 && dn.hi == 0x53F && dn.timeout_ms == 300
+	assert !dn.ext
+	// a 29-bit cluster on low ids says so, and keeps saying so through a save
+	e := parse('project:
+  name: t
+channels:
+  - name: CAN1
+    interface: vcan0
+    nm: { lo: 0x500, hi: 0x53F, ext: true }
+')!
+	assert (e.channels[0].nm or { panic('') }).ext
+	assert e.to_yaml().contains('nm: { lo: 0x500, hi: 0x53F, ext: true, timeout_ms: 300 }'), e.to_yaml()
+	assert (parse(e.to_yaml())!.channels[0].nm or { panic('') }).ext
 }
 
 fn test_nm_channel_setting_is_checked() {

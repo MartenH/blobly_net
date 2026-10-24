@@ -14,6 +14,11 @@ The frame is AUTOSAR CanNm's default layout, the one blobly_emb's `comm/nm` send
 A node announces on its own CAN id in the cluster's NM range (blobly_emb: `base + NID`). A
 frame shorter than 2 bytes, or one saying PN info with no mask byte, is counted as malformed.
 
+Bit 3 is read as blobly_emb uses it: a node that has released the network says so and keeps
+announcing. In AUTOSAR CanNm, bit 3 is the coordinator's sleep-ready bit, and a node releases
+the network by falling silent. The panel reads that silence past the timeout, so an AUTOSAR
+cluster goes from awake to asleep without passing through releasing.
+
 ## What the panel shows
 
 One section per bus, headed by:
@@ -22,7 +27,9 @@ One section per bus, headed by:
   sleep clear), **releasing** when every node heard within the timeout is ready to sleep,
   **asleep** when nothing has been heard for longer than the timeout;
 - **kept awake by**: the nodes heard within the timeout with ready to sleep clear;
-- **woken by**: the node whose frame ended the last silence, and whether it said active wake-up;
+- **woken by**: the node whose frame ended the last silence, and whether it said active wake-up.
+  The first frame heard counts only if it says active wake-up, since the bus may have been
+  awake before listening began;
 - who asks for a repeat, and how long since the last NM frame.
 
 Then a table, one row per node: its name (from the system model or the ARXML, else `NID 0x13`),
@@ -34,7 +41,9 @@ sleep, active wake-up, repeat request) and its PN request when it makes one. The
 while it is silent. A node keeps its state for the timeout after its last frame.
 
 - **missing**: a node the configuration declares on the cluster that has never reported.
-- **unknown**: a reporter the configuration does not declare. Only a configuration that declares
+- **unknown**: a reporter the configuration does not declare. A declaration states a NID, a
+  CAN id or both, and a reporter must match every one it states, so a node announcing on
+  another node's id or with another node's NID is unknown. Only a configuration that declares
   members (a system model or an ARXML naming its senders) makes anyone unknown.
 
 The trackers start over at every Start. A replayed recording reads like live traffic, since its
@@ -52,7 +61,9 @@ Per bus, the first of these that has one:
    table).
 2. **The ARXML** loaded for the channel: frames whose PDU is an NM-PDU. Their ids give the
    range, and a frame whose sender the file names declares that ECU at that id.
-3. **The channel's own setting** in the project, which gives a range and a timeout and no names:
+3. **The channel's own setting** in the project, which gives a range and a timeout and no
+   names. It comes last, so a system model or an ARXML for the same bus replaces it (the
+   header names the source):
 
    ```yaml
    channels:
@@ -61,10 +72,13 @@ Per bus, the first of these that has one:
        nm: { lo: 0x500, hi: 0x53F, timeout_ms: 300 }
    ```
 
-   It needs schema v10: an older build drops the key on its next save.
+   A range above 0x7FF is read as 29-bit frames; `ext: true` says so for a 29-bit cluster on
+   lower ids. It needs schema v10: an older build drops the key on its next save.
 
 A bus with none of these has no NM reading. Nothing guesses that a frame is NM from its id or its
-bytes. A range above 0x7FF is read as 29-bit frames. Without a stated timeout, 300 ms is used.
+bytes. A range above 0x7FF is read as 29-bit frames. A system model without a stated timeout
+gets 300 ms. An ARXML cluster gets 2 s, since the system description does not carry CanNm's
+timeout. The header says when the timeout is a default.
 
 While stopped, the open panel follows the configuration once a second, so a `system.toml`
 loaded in the System panel shows its declared nodes, all missing, before anything is heard.

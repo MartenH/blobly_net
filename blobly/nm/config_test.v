@@ -79,8 +79,7 @@ fn test_the_system_model_names_the_cluster_of_the_bus_a_row_is_named_after() {
 	c := configure(&sys, [row('body')], []) or { panic('no configuration') }
 	assert c.source == .system
 	assert c.lo == 0x500 && c.hi == 0x53F && !c.ext
-	assert c.timeout_ms == 250
-	assert c.repeat_ms == 200
+	assert c.timeout_ms == 250 && !c.timeout_default
 	assert c.origin == 'system.toml bus body'
 	assert c.declared.map(it.name) == ['sysnode', 'domain']
 	assert c.declared[0].nid == 0x11 && c.declared[0].id == 0x511
@@ -97,7 +96,7 @@ fn test_a_system_bus_without_a_timeout_takes_the_default() {
 	mut sys := system_with_nm()
 	sys.buses[0].nm_timeout_ms = 0
 	c := configure(&sys, [row('body')], []) or { panic('') }
-	assert c.timeout_ms == default_timeout_ms
+	assert c.timeout_ms == default_timeout_ms && c.timeout_default
 }
 
 fn test_else_the_arxml_nm_frames() {
@@ -106,6 +105,7 @@ fn test_else_the_arxml_nm_frames() {
 	assert c.source == .arxml
 	assert c.lo == 0x601 && c.hi == 0x60F
 	assert c.origin == 'ARXML cluster Body'
+	assert c.timeout_ms == arxml_timeout_ms && c.timeout_default, 'the description states no CanNm timeout'
 	assert c.declared.len == 1, 'a frame with no sender names nobody'
 	assert c.declared[0].name == 'ECU_A' && c.declared[0].id == 0x601 && c.declared[0].nid == -1
 }
@@ -149,6 +149,18 @@ fn test_an_extended_range_reads_29_bit_frames() {
 	assert c.ext
 	assert c.covers(0x18FF0011, true)
 	assert !c.covers(0x18FF0011, false)
+	// a 29-bit cluster on low ids says so
+	low := configure(&sys, [
+		project.Channel{
+			name: 'X'
+			nm:   project.NmCfg{
+				lo:  0x500
+				hi:  0x53F
+				ext: true
+			}
+		},
+	], []) or { panic('') }
+	assert low.covers(0x511, true) && !low.covers(0x511, false)
 }
 
 fn test_a_system_toml_the_way_blobly_emb_writes_it() {

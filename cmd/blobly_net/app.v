@@ -267,6 +267,10 @@ mut:
 	nm_rec     map[string]&nm.Tracker
 	nm_rec_end f64
 	nm_cfg_at  f64 // when the stopped panel last re-read the configuration (host ms)
+	// the panel's views, rebuilt a few times a second (draw_nm), and when (host ms)
+	nm_views     []NmSection
+	nm_view_note string
+	nm_view_at   f64
 	j1939_override J1939Gate
 	// Who holds which J1939 address, per wire (keyed by transport.destination_key for a live
 	// bus, by the recording's own label for an import). Filled from Address Claimed frames by

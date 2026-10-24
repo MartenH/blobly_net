@@ -4,9 +4,14 @@ import blobly.candb
 import blobly.project
 import blobly.sysview
 
-// default_timeout_ms is the timeout of a configuration that states none (blobly_emb's example
-// value).
+// default_timeout_ms is the timeout of a system model or project that states none
+// (blobly_emb's example value).
 pub const default_timeout_ms = 300
+
+// arxml_timeout_ms is the timeout an ARXML-read cluster is given: the system description does not
+// carry CanNm's network timeout, and AUTOSAR clusters commonly run a 2 s timeout over a cycle up
+// to a second — 300 ms would read every gap between two frames as the network asleep.
+pub const arxml_timeout_ms = 2000
 
 // Source is where a wire's NM configuration came from.
 pub enum Source {
@@ -36,14 +41,14 @@ pub:
 // which a node or the bus has stopped asking, and who is declared on it.
 pub struct Config {
 pub:
-	lo         u32
-	hi         u32
-	ext        bool
-	timeout_ms int = default_timeout_ms
-	repeat_ms  int // 0: not stated
-	source     Source
-	origin     string // what it was read from, for the panel: `system.toml bus body`
-	declared   []Declared
+	lo              u32
+	hi              u32
+	ext             bool
+	timeout_ms      int = default_timeout_ms
+	timeout_default bool // the configuration states no timeout; timeout_ms is this module's
+	source          Source
+	origin          string // what it was read from, for the panel: `system.toml bus body`
+	declared        []Declared
 }
 
 // covers: a frame of this id and kind is in the cluster's NM range.
@@ -51,16 +56,12 @@ pub fn (c Config) covers(id u32, ext bool) bool {
 	return ext == c.ext && id >= c.lo && id <= c.hi
 }
 
-// declared_index is the declaration a reporter is: by NID where a declaration states one, else
-// by CAN id; -1 when none is.
+// declared_index is the declaration a reporter is: one whose NID and CAN id, each where it states
+// one, are the reporter's; -1 when none is. A node announcing on another node's id, or with
+// another node's NID, is unknown rather than named.
 pub fn (c Config) declared_index(nid u8, id u32) int {
 	for i, d in c.declared {
-		if d.nid >= 0 && d.nid == int(nid) {
-			return i
-		}
-	}
-	for i, d in c.declared {
-		if d.nid < 0 && d.id >= 0 && d.id == i64(id) {
+		if (d.nid < 0 || d.nid == int(nid)) && (d.id < 0 || d.id == i64(id)) {
 			return i
 		}
 	}
@@ -69,7 +70,7 @@ pub fn (c Config) declared_index(nid u8, id u32) int {
 
 // key is the configuration's identity: two configurations with one key read a wire alike.
 pub fn (c Config) key() string {
-	mut s := '${c.lo}|${c.hi}|${c.ext}|${c.timeout_ms}|${c.repeat_ms}|${c.source}|${c.origin}'
+	mut s := '${c.lo}|${c.hi}|${c.ext}|${c.timeout_ms}|${c.source}|${c.origin}'
 	for d in c.declared {
 		s += '|${d.name}/${d.nid}/${d.id}'
 	}
@@ -99,7 +100,7 @@ pub fn configure(sys &sysview.System, rows []project.Channel, dbs []candb.Databa
 			return Config{
 				lo:         own.lo
 				hi:         own.hi
-				ext:        extended_range(own.hi)
+				ext:        own.ext || extended_range(own.hi)
 				timeout_ms: own.timeout_ms
 				source:     .project
 				origin:     'channel ${r.name}'
@@ -130,14 +131,18 @@ fn from_system(sys &sysview.System, rows []project.Channel) ?Config {
 				}
 			}
 			return Config{
-				lo:         b.nm_lo
-				hi:         b.nm_hi
-				ext:        extended_range(b.nm_hi)
-				timeout_ms: if b.nm_timeout_ms > 0 { b.nm_timeout_ms } else { default_timeout_ms }
-				repeat_ms:  b.nm_repeat_ms
-				source:     .system
-				origin:     'system.toml bus ${b.name}'
-				declared:   decl
+				lo:              b.nm_lo
+				hi:              b.nm_hi
+				ext:             extended_range(b.nm_hi)
+				timeout_ms:      if b.nm_timeout_ms > 0 {
+					b.nm_timeout_ms
+				} else {
+					default_timeout_ms
+				}
+				timeout_default: b.nm_timeout_ms <= 0
+				source:          .system
+				origin:          'system.toml bus ${b.name}'
+				declared:        decl
 			}
 		}
 	}
@@ -181,11 +186,13 @@ fn from_arxml(dbs []candb.Database) ?Config {
 		}
 	}
 	return Config{
-		lo:       lo
-		hi:       hi
-		ext:      ext
-		source:   .arxml
-		origin:   origin
-		declared: decl
+		lo:              lo
+		hi:              hi
+		ext:             ext
+		timeout_ms:      arxml_timeout_ms
+		timeout_default: true
+		source:          .arxml
+		origin:          origin
+		declared:        decl
 	}
 }

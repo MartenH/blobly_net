@@ -1574,19 +1574,17 @@ fn parse_eid(s string) ![]u8 {
 	return out
 }
 
-// parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
-// checked_int parses a plain decimal in [lo, hi], refusing anything else by name. Not i64(),
-// which turns a typo into 0 and changes what the ECU does without saying so.
 // NmCfg is a channel's own NM cluster: the inclusive id range its nodes announce in, and the
 // timeout past which a silent node, or bus, has stopped asking for the network.
 pub struct NmCfg {
 pub:
 	lo         u32
 	hi         u32
+	ext        bool // 29-bit frames; a range above 0x7FF is 29-bit whether or not it says so
 	timeout_ms int = 300
 }
 
-// parse_nm reads `nm: { lo, hi, timeout_ms }`, checked: a range of CAN ids (29-bit at most, lo
+// parse_nm reads `nm: { lo, hi, ext, timeout_ms }`, checked: a range of CAN ids (29-bit at most, lo
 // at or below hi), a timeout of 1 ms to a minute.
 fn parse_nm(v yaml.Any) !NmCfg {
 	lo_raw := v.value('lo').default_to('').str()
@@ -1609,13 +1607,18 @@ fn parse_nm(v yaml.Any) !NmCfg {
 	if t := v.value_opt('timeout_ms') {
 		timeout = checked_int(t.str(), 'nm: timeout_ms', 1, 60000)!
 	}
+	ext := v.value('ext').default_to(false).bool() || hi > 0x7FF
 	return NmCfg{
 		lo:         u32(lo)
 		hi:         u32(hi)
+		ext:        ext
 		timeout_ms: int(timeout)
 	}
 }
 
+// parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
+// checked_int parses a plain decimal in [lo, hi], refusing anything else by name. Not i64(),
+// which turns a typo into 0 and changes what the ECU does without saying so.
 fn checked_int(raw string, field string, lo i64, hi i64) !i64 {
 	t := raw.trim_space().trim('"')
 	if t == '' {

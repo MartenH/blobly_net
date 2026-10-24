@@ -121,8 +121,10 @@ fn test_a_frame_after_a_silence_is_the_wake() {
 	mut t := new_tracker(cfg_declaring())
 	t.note(0x513, false, frame(0x13, 0), 0)
 	t.note(0x511, false, frame(0x11, 0), 100)
+	assert t.woke == none, 'listening began on an awake bus: nobody was seen waking it'
+	t.note(0x513, false, frame(0x13, 0), 1000)
 	w1 := t.woke or { panic('') }
-	assert t.name_of(w1.node) == 'domain', 'the first frame woke it'
+	assert t.name_of(w1.node) == 'domain', 'the frame after a silence woke it'
 	assert !w1.active
 	t.note(0x511, false, frame(0x11, cbv_active_wakeup), 5000)
 	w2 := t.woke or { panic('') }
@@ -180,6 +182,17 @@ fn test_missing_and_unknown() {
 	own.note(0x522, false, frame(0x22, 0), 0)
 	assert !own.unknown(0)
 	assert own.missing().len == 0
+}
+
+fn test_a_declaration_matches_by_nid_and_id_both() {
+	mut t := new_tracker(cfg_declaring())
+	t.note(0x511, false, frame(0x11, 0), 0)
+	t.note(0x520, false, frame(0x11, 0), 0) // sysnode's NID on another id
+	t.note(0x513, false, frame(0x14, 0), 0) // domain's id with another NID
+	assert t.name_of(0) == 'sysnode'
+	assert t.unknown(1) && t.name_of(1) == 'NID 0x11'
+	assert t.unknown(2)
+	assert t.missing().map(t.cfg.declared[it].name) == ['domain', 'zone_a']
 }
 
 fn test_a_declaration_without_a_nid_matches_by_id() {
