@@ -1148,3 +1148,36 @@ fn test_a_cts_from_packet_zero_is_refused() {
 	hold[1] = 0
 	assert parse_cm(hold)?.control_refusal() == none
 }
+
+fn test_listener_queues_a_bam_and_says_a_stalled_one_when_idle() {
+	mut l := Listener{}
+	msg := []u8{len: 20, init: u8(index)}
+	l.feed(bam_frame(0x21, msg.len, 0xFF10), 0)
+	for i, f in packets(0x21, addr_global, msg) {
+		l.feed(f, f64(10 * (i + 1)))
+	}
+	a := l.next_message() or { panic('no message') }
+	assert a.pgn == 0xFF10 && a.sa == 0x21 && a.data == msg
+	assert l.next_message() == none
+	// announced, one packet, then nothing: said once the reader finds the queue empty
+	l.feed(bam_frame(0x22, msg.len, 0xFF11), 100)
+	l.feed(packets(0x22, addr_global, msg)[0], 110)
+	l.idle(500)
+	assert l.next_fault() == none, 'within T1'
+	l.idle(900)
+	f := l.next_fault() or { panic('no fault') }
+	assert f.kind == .timeout && f.sa == 0x22 && f.pgn == 0xFF11
+}
+
+fn test_listener_queue_is_bounded_and_counts_what_it_dropped() {
+	mut l := Listener{}
+	for i in 0 .. listener_queue + 3 {
+		l.push_fault(Fault{
+			kind: .orphan
+			sa:   u8(i)
+		})
+	}
+	assert l.dropped == 3
+	f := l.next_fault() or { panic('none') }
+	assert f.sa == 3, 'the oldest went first'
+}

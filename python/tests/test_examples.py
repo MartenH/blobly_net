@@ -28,6 +28,7 @@ SCRIPTS = {
     "flash_ecu.py": [],
     "described_node.py": [],
     "replay_record.py": [],
+    "j1939_listen.py": [],
     "someip_node.py": None,  # against a node: SomeipNode's
 }
 

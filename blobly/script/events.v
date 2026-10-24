@@ -92,9 +92,13 @@ fn l_wait_frame(l lua.State) i32 {
 		if env.expired() {
 			return timeout_at(l) // the wait was cut
 		}
+		for n in names {
+			env.j1939_idle(n)
+		}
 		l.push_nil()
 		return 1
 	}
+	env.j1939_saw(name, f)
 	l.push_str(name)
 	l.push_int(f.id)
 	l.push_bool(f.extended)

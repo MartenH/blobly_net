@@ -1,0 +1,27 @@
+VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: Engine Body Tester
+
+BO_ 2364539904 EEC1: 8 Engine
+ SG_ EngSpeed : 24|16@1+ (0.125,0) [0|8031.875] "rpm" Tester
+
+BO_ 2566852641 BodyStatus: 20 Body
+ SG_ Counter : 0|8@1+ (1,0) [0|255] "" Tester
+ SG_ Odometer : 8|32@1+ (0.1,0) [0|429496729.5] "km" Tester
+ SG_ CabTemp : 40|8@1+ (1,-40) [-40|215] "degC" Tester
+ SG_ DoorState : 48|2@1+ (1,0) [0|3] "" Tester
+ SG_ Tail : 152|8@1+ (1,0) [0|255] "" Tester
+
+BO_ 2565799969 PropA_Cfg: 16 Body
+ SG_ Mode : 0|8@1+ (1,0) [0|255] "" Engine
+ SG_ Setpoint : 8|16@1+ (0.5,0) [0|32767.5] "" Engine
+ SG_ Last : 120|8@1+ (1,0) [0|255] "" Engine
+
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+
+VAL_ 2566852641 DoorState 0 "closed" 1 "open" 2 "ajar" 3 "unknown" ;

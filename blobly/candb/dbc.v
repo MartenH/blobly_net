@@ -224,6 +224,9 @@ pub:
 	found   bool
 	msg     Message
 	refused string
+	// where `msg` is: the database's position among those asked, and the message's in it
+	db    int
+	index int
 }
 
 // pgn_message_in is THE lookup for a rejoined transport-protocol message (#331): over every
@@ -249,8 +252,9 @@ pub fn pgn_message_in(dbs []Database, pgn u32, sa u8) PgnMatch {
 
 // PgnCandidate is one definition and the database (by index) that holds it.
 struct PgnCandidate {
-	msg Message
-	db  int
+	msg   Message
+	db    int
+	index int
 }
 
 // pgn_candidates is every extended message over ALL the wire's databases defining `pgn` —
@@ -260,9 +264,9 @@ struct PgnCandidate {
 fn pgn_candidates(dbs []Database, pgn u32, sa int) []PgnCandidate {
 	mut all := []PgnCandidate{}
 	for i, db in dbs {
-		for m in db.messages {
+		for k, m in db.messages {
 			if m.ext && j1939_pgn(m.id) == pgn && (sa < 0 || int(m.id & 0xFF) == sa) {
-				all << PgnCandidate{m, i}
+				all << PgnCandidate{m, i, k}
 			}
 		}
 	}
@@ -297,6 +301,8 @@ fn judge_candidates(cs []PgnCandidate, one_per_file bool, what string) PgnMatch 
 	return PgnMatch{
 		found: true
 		msg:   ms[0]
+		db:    cs[0].db
+		index: cs[0].index
 	}
 }
 

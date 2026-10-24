@@ -1,0 +1,32 @@
+# Blobly Net project — J1939 from a script (#507), zero drivers, no hardware.
+#
+# Three rows on ONE in-process wire, so a script plays every node itself: nothing here
+# simulates J1939 (the engine reads it, it answers nothing).
+#
+#   J1939  the listener: its database declares J1939 (VFrameFormat J1939PG), so its handle
+#          rejoins transport-protocol messages from its first read
+#   Peer   a node the script sends as (SA 0x21: a BAM, an RTS, address claims)
+#   Other  the other end of a connection (SA 0x00: the CTS and the acknowledgement); neither
+#          ticked nor declared, so it reads J1939 only when the script asks
+#
+#   ./scripts/runtests.sh tests/j1939.lua
+#   python3 python/examples/j1939_listen.py
+project:
+  name: j1939-script
+  version: 2
+
+channels:
+  - name: J1939
+    type: can
+    interface: inproc:J1939S
+    bitrate: 250000
+    databases:
+      - ../dbc/j1939_demo.dbc
+  - name: Peer
+    type: can
+    interface: inproc:J1939S
+    bitrate: 250000
+  - name: Other
+    type: can
+    interface: inproc:J1939S
+    bitrate: 250000

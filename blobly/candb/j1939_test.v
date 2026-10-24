@@ -252,6 +252,8 @@ fn test_pgn_message_in_one_rule_over_the_wire() {
 			pm := pgn_message_in(o, 0xFECA, c.sa)
 			if c.want != '' {
 				assert pm.found && pm.msg.name == c.want && pm.refused == '', '${c.what}: ${pm}'
+				// the match says where it is
+				assert o[pm.db].messages[pm.index].name == c.want, c.what
 			} else {
 				assert !pm.found, '${c.what}: found ${pm.msg.name}'
 				if c.why == '' {

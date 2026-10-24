@@ -1579,6 +1579,7 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			hosts:   pch.hosts_doip_entity()
 			verify:  pch.verify // what a received frame's E2E is judged by first
 			carrier: script.carrier_of(pch)
+			j1939:   pch.j1939 // read as J1939 as its tick says (a database declaring it, too)
 			// priced as the Buses row prices the wire
 			nominal:   nominal
 			data_rate: data_rate
