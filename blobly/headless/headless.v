@@ -136,6 +136,9 @@ pub:
 pub mut:
 	// the enabled rows, in project order; filled by start, read after
 	chans []Channel
+	// the system model the run's simulated diagnostic servers are described by (described_system):
+	// what a script names a node by (sysview.System.node_named); empty when none describes it
+	sys sysview.System
 }
 
 // load reads the project a run starts from, its notes said — the pre-v4 `bus:` migration says
@@ -311,6 +314,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	// the description the simulated diagnostic servers answer by (sim.describe): the system.toml
 	// the GUI's Diagnostics panel would read for this project
 	desc_sys := described_system(proj_path, proj, o)
+	r.sys = desc_sys
 	for ci, ch in proj.channels {
 		if !ch.enabled {
 			continue

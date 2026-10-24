@@ -22,6 +22,7 @@ import blobly.uds
 import blobly.candb
 import blobly.project
 import blobly.udsconn
+import blobly.sysview
 import blobly.replay
 
 // ChanInfo is one channel a script may address by name: its bus interface and
@@ -53,6 +54,9 @@ pub:
 	// the row's `replay:` block, its source resolved against the project: what replay.start
 	// plays when the script names no source
 	replay ?project.Replay
+	// a DoIP row hosting its entity in the run (project.Channel.hosts_doip_entity): uds.node takes
+	// it for a simulation of the node, at an address of its own
+	hosts bool
 }
 
 // Carrier is the transport UDS rides on this channel (udsconn.Carrier). Derived from the project
@@ -139,6 +143,9 @@ pub mut:
 	// The run's generators, which gen.* controls (generators.v): cmd/script's headless run; none in
 	// the GUI, whose generators are its panel's.
 	gens sim.GenControl = sim.NoGens{}
+	// The system model uds.node reaches a node by (nodes.v): the run's (headless.Run.sys), or the
+	// one the GUI's Diagnostics panel reads; empty when no system.toml describes the project.
+	sys sysview.System
 	// How every bus this engine touches is opened. See BusOpener.
 	opener    BusOpener = default_opener
 	// How a replay's buses are opened (replay.start): they REPRODUCE a recording, framed as it was
@@ -372,6 +379,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__bus_health', l_bus_health)
 	env.register_metrics()
 	env.register_gens()
+	env.register_nodes()
 	env.register_isotp()
 	env.register_replay()
 	env.register_e2e()
@@ -488,13 +496,32 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 		dtx:    dtx
 		drx:    drx
 	}
+	h := env.open_uds(name, ask, for_flash) or {
+		if err is Expired {
+			return timeout_at(l)
+		}
+		return l.fail(err.msg())
+	}
+	l.push_int(h)
+	return 1
+}
+
+// Expired is an open the run's deadline ended (set_deadline): the caller raises the timeout.
+struct Expired {
+	Error
+}
+
+// open_uds is a connection on the channel `name` by `ask` (open_conn's rule), its handle: the
+// channel's live DoIP connection where it has one, or (`for_flash`) the CAN connection a flash
+// opened before on the same ids.
+fn (mut env Env) open_uds(name string, ask udsconn.Ask, for_flash bool) !int {
 	// a bad id is refused before a bad name; resolve asks it again, for callers that have the row
-	udsconn.check_ids(ask, name) or { return l.fail(err.msg()) }
-	ci := env.find_chan(name) or { return l.fail(err.msg()) }
+	udsconn.check_ids(ask, name)!
+	ci := env.find_chan(name)!
 	info := env.chans[ci]
 	// the connection's carrier and ids, by the one rule the C ABI's bb_uds_open uses too
 	t := udsconn.resolve(ask, name, info.carrier) or {
-		return l.fail(if info.carrier.someip { '${err.msg()}; use someip.listen' } else { err.msg() })
+		return error(if info.carrier.someip { '${err.msg()}; use someip.listen' } else { err.msg() })
 	}
 	// A DoIP entity serves ONE TCP connection at a time — accept_and_serve stays inside the
 	// accepted connection until the peer disconnects, and nothing here closes a connection
@@ -516,12 +543,11 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 				// every handle sharing this slot, turning a legitimate refusal into a silently
 				// unauthenticated retry. ONLY a transport failure means death.
 				if !probe_says_dead(err) {
-					l.push_int(i)
-					return 1
+					return i
 				}
 				// Past the run's deadline the probe was abandoned, not refused: no reconnect.
 				if env.expired() {
-					return timeout_at(l)
+					return Expired{}
 				}
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
 				// holding keeps working rather than being orphaned by the repair; its requests go
@@ -529,10 +555,12 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 				target := u16(c.ch.rx_id)
 				c.ch.close()
 				mut fresh := udsconn.open_doip(info.carrier) or {
-					return l.fail('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
+					return error('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 				}
 				fresh.retarget(target)
 				mut fresh_ch := isotp.Channel(fresh)
+				// what was stated on the old connection (its sizes, a node's description, its timing)
+				// holds on the new one; what it established does not
 				mut fresh_cli := uds.new_client(fresh_ch)
 				fresh_cli.carry_from(&c.cli)
 				env.conns[i] = UdsConn{
@@ -540,25 +568,20 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 					cli:  env.bound_client(mut fresh_ch, fresh_cli)
 					chan: name
 				}
-				l.push_int(i)
-				return 1
+				return i
 			}
-			l.push_int(i)
-			return 1
+			return i
 		}
 	}
 	if for_flash && !t.doip {
 		for i, c in env.conns {
 			if c.flashing && !c.closed && c.chan == name && c.rx == t.rx && c.ch.tx_id == t.tx
 				&& c.ext == t.ext {
-				l.push_int(i)
-				return 1
+				return i
 			}
 		}
 	}
-	mut conn := udsconn.open(t, name, info.iface, info.carrier, env.opener) or {
-		return l.fail(err.msg())
-	}
+	mut conn := udsconn.open(t, name, info.iface, info.carrier, env.opener)!
 	env.conns << UdsConn{
 		ch:       conn.ch
 		cli:      env.bound_client(mut conn.ch, conn.cli)
@@ -568,8 +591,7 @@ fn open_conn(l lua.State, what string, dtx u32, drx u32, for_flash bool) i32 {
 		ext:      t.ext
 		flashing: for_flash && !t.doip
 	}
-	l.push_int(env.conns.len - 1)
-	return 1
+	return env.conns.len - 1
 }
 
 fn (mut env Env) conn(h int) ?&UdsConn {

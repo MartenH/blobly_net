@@ -3,7 +3,8 @@ as their own process, as a user runs them. They check that the project comes fro
 (relative to it) or from --blobly-project (which wins), that a test hears what arrives from its
 start and neither the frames an earlier test left queued nor its handlers or faults, that a test which
 stopped the run leaves it started for the next, that the run ends with its module, that a failed expectation is a clean failure in
-pytest's output and in its --junitxml report, and that a run from the repository's root collects."""
+pytest's output and in its --junitxml report, that `diag` takes a node of the system model by its
+name, and that a run from the repository's root collects."""
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -97,6 +98,28 @@ def test_is_not_the_next_tests(can1):
 '''
 
 
+NODE_SUITE = '''import pytest
+
+import blobly
+
+
+@pytest.mark.parametrize("diag", ["zone_a"], indirect=True)
+def test_a_node_by_its_name(diag):
+    assert isinstance(diag, blobly.NodeClient) and diag.node.name == "zone_a"
+    assert diag.read("SteerLimit") == 360
+
+
+@pytest.mark.parametrize("diag", ["edge"], indirect=True)
+def test_a_channel_by_its_name(diag):
+    assert not isinstance(diag, blobly.NodeClient)
+
+
+@pytest.mark.parametrize("diag", ["zone_b"], indirect=True)
+def test_neither(diag):
+    pass
+'''
+
+
 def write_all(d, files):
     for name, text in files.items():
         write(d, name, text)
@@ -169,6 +192,15 @@ class TestPlugin:
         # one warning names every channel that got no fixture, and why
         assert ("blobly: no fixture for 'Body Bus', 'body-bus' (as 'body_bus'); 'class' (as 'class'); "
                 "'project' (as 'project'); '_blobly_run' (as '_blobly_run'); 'tmp_path' (as 'tmp_path')") in out
+
+    def test_diag_on_a_node_of_the_system_model(self, tmp_path):
+        write_all(tmp_path, {"conftest.py": CONFTEST, "test_node.py": NODE_SUITE})
+        described = os.path.join(REPO, "projects", "described-ecu-demo", "described-ecu-demo.blobnet")
+        r = pytest_run(tmp_path, f"--blobly-project={described}")
+        out = r.stdout + r.stderr
+        assert r.returncode == 1, out
+        assert "1 error, 2 passed" in out or "2 passed, 1 error" in out, out
+        assert "the nodes: zone_a" in out
 
     def test_a_run_from_the_repository_root_leaves_the_examples_suite_out(self):
         # its conftest's pytest_plugins is refused below a run's root, so python/conftest.py

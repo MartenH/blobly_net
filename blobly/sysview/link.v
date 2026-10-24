@@ -38,7 +38,7 @@ pub fn (sys &System) node_for(t TargetAddr) NodeLink {
 	if hits.len > 1 && t.doip && t.host != '' {
 		// the node at that endpoint; else one whose endpoint is unknown may still be it, while a
 		// node at another endpoint is not
-		exact := hits.filter(sys.nodes[it].address.to_lower() == t.host.to_lower())
+		exact := hits.filter(same_host(sys.nodes[it].address, t.host))
 		hits = if exact.len > 0 { exact } else { hits.filter(sys.nodes[it].address == '') }
 	}
 	addr := if t.doip { 'DoIP 0x${t.logical:04X}' } else { '0x${t.req:X}/0x${t.rsp:X}' }
@@ -114,15 +114,9 @@ pub:
 pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 	mut out := []NodeTarget{}
 	for i, n in sys.nodes {
-		if n.ecu_err == '' && !n.desc.server {
-			continue
-		}
-		req, rsp := n.can_ids()
-		if req == 0 && rsp == 0 {
-			continue
-		}
-		buses := if b := sys.diag_bus(n) { [b] } else { sys.can_buses(n) }
-		for b in buses {
+		srv := sys.can_server(n) or { continue }
+		req, rsp := srv.req, srv.rsp
+		for b in srv.buses {
 			on := chans.filter(it.name == b)
 			for c in on {
 				out << NodeTarget{
@@ -138,6 +132,32 @@ pub fn (sys &System) can_targets(chans []ChanRef) []NodeTarget {
 		}
 	}
 	return out
+}
+
+// can_server is where `n`'s diagnostic server is reached over CAN: its request and response ids
+// (`can_ids`) and the buses it serves on (`diag_bus`; every CAN bus it sits on where that cannot be
+// told). none for a node with no CAN ids, or whose ecu.toml declares no server (the tester's own
+// declaration) — one whose ecu.toml could not be read keeps its system.toml ids.
+fn (sys &System) can_server(n &SysNode) ?CanServer {
+	if n.ecu_err == '' && !n.desc.server {
+		return none
+	}
+	req, rsp := n.can_ids()
+	if req == 0 && rsp == 0 {
+		return none
+	}
+	return CanServer{
+		req:   req
+		rsp:   rsp
+		buses: if b := sys.diag_bus(n) { [b] } else { sys.can_buses(n) }
+	}
+}
+
+// CanServer is a node's diagnostic server over CAN: its ids and the buses it serves on.
+struct CanServer {
+	req   u32
+	rsp   u32
+	buses []string
 }
 
 // can_buses is the buses `n` sits on that are not declared as another kind (a someip segment), in
@@ -273,7 +293,7 @@ pub fn (sys &System) doip_tester_for(logical u16, host string) ?u16 {
 	})
 	if hits.len > 1 && host != '' {
 		hits = hits.filter(sys.nodes[it].address != ''
-			&& sys.nodes[it].address.to_lower() == host.to_lower())
+			&& same_host(sys.nodes[it].address, host))
 	}
 	if hits.len != 1 {
 		return none
@@ -282,7 +302,7 @@ pub fn (sys &System) doip_tester_for(logical u16, host string) ?u16 {
 	if n.has_host && n.address == '' {
 		return none // its address could not be derived: nothing says the entity found is this one
 	}
-	if n.address != '' && host != '' && n.address.to_lower() != host.to_lower() {
+	if n.address != '' && host != '' && !same_host(n.address, host) {
 		return none // the description's entity is at another address: not this one
 	}
 	return n.testers[0] or { return none }

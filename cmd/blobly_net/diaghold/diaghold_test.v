@@ -84,14 +84,6 @@ fn test_keepalive_period_is_well_inside_s3() {
 	assert keepalive_ms * 2 <= 5000
 }
 
-fn test_session_names() {
-	assert session_name(0) == '—'
-	assert session_name(0x01) == 'default'
-	assert session_name(0x02) == 'programming'
-	assert session_name(0x03) == 'extended'
-	assert session_name(0x60) == '0x60'
-}
-
 // --- timing text ---
 fn test_a_plain_request_prints_its_round_trip() {
 	assert Timing{ sent: true, rtt_us: 3149 }.prefix() == '[   3.1 ms]'

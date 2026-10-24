@@ -113,6 +113,44 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   messages, signals): only the running project does
   ([vscode.md](vscode.md#what-completion-knows)).
 
+### Nodes and their DIDs
+
+A project that blobly_emb's `system.toml` describes (beside the project, beside one of its
+databases, or in its folder's parent) has **nodes**, each with a diagnostic description from its
+`ecu.toml`. Ask the model rather than spelling CAN ids, DID numbers or byte layouts:
+
+```python
+import blobly
+
+with blobly.Project("projects/described-ecu-demo/described-ecu-demo.blobnet") as net:
+    print(net.system, net.nodes.keys())                # .../system.toml ['zone_a']
+    node = net.nodes.zone_a
+    for t in node.targets:                             # where the run reaches it
+        print(t.channel.name, t.tx, t.rx)              # edge 1984 1992
+    for d in node.dids:                                # its DIDs, then the ISO ones it does not declare
+        print(hex(d.id), d.name, d.kind, [p.hint for p in d.parts], d.write_gate)
+    with node.uds() as diag:                           # the channel and ids come from the model
+        print(diag.read("SteerLimit"))                 # 360: decoded by the node's layout
+        try:
+            diag.write("SteerLimit", 300)
+        except blobly.WriteGated as e:                 # nothing sent: the gate's session and level
+            print(e)
+            diag.session(e.session)
+            diag.security_access(2 * e.level - 1)
+        diag.write("SteerLimit", 300)
+        print([d.fault for d in diag.dtcs()])          # the DTCs by the description's fault names
+        diag.write("SteerLimit", 360)
+```
+
+- `net.system` is `None` and `net.nodes` empty when no system.toml describes the project.
+- A `Did`'s `parts` say what a value is made of and what each accepts (`hint`, `"u16 0..360"`);
+  `read` returns that, and `write` takes it. `write_gate` is `None` for a DID that is not writable.
+- A write the description refuses (out of range, not writable) is `Refused` and sends nothing; one
+  the connection has not unlocked yet is `WriteGated` (`.session`, `.level`) and sends nothing.
+  Nothing unlocks on its own: an agent decides to switch and unlock.
+- A node reached on no channel of the project is refused with how it is reached; give the
+  project that row.
+
 ## Bounded waits, errors and exit codes
 
 - **Bound every wait.** `ch.recv(timeout_ms)` returns `None` when nothing came; `run(duration_ms)`
@@ -131,7 +169,8 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
   call's failures are subclasses an agent can act on: `NegativeResponse` (with `.nrc`),
   `Timeout` (code -5, also an expectation that ran out), `PendingExpired`, `UndecodableAnswer`,
   `CarrierFailed` and `Refused`; on DoIP also `RoutingDenied` (with `.routing_code` and `.hint`)
-  and `ConnectionLost` (a `CarrierFailed`: the next call opens a new connection). A SOME/IP call
+  and `ConnectionLost` (a `CarrierFailed`: the next call opens a new connection); a described
+  write its gate does not allow yet is `WriteGated` (code -13, a `Refused`). A SOME/IP call
   nothing answered is `Timeout`; a flash the bootloader's own answers say did not happen is
   `FlashFailed` (code -11).
   Bad arguments are `ValueError` or `TypeError`, unknown names `AttributeError` or `KeyError`.

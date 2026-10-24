@@ -6,6 +6,7 @@ module script
 import os
 import blobly.lua
 import blobly.flash
+import blobly.uds
 
 // LuaFlashSink is where a script's flash reports: milestones as `flash: …` lines through the
 // host's sink, transfer progress either as a line per tenth of the image (as cmd/flash prints)
@@ -108,12 +109,18 @@ fn l_flash_program(l lua.State) i32 {
 			return env.expired()
 		}
 	}
+	h := int(l.arg_int(1))
+	// unknown from the start: a progress callback that uses the connection meets the session the
+	// flash put it in, not what it had before
+	env.flashed(h)
 	rep := flash.program(mut ch, image, opts, mut sink) or {
+		env.flashed(h)
 		if env.expired() {
 			return timeout_at(l) // stopped by the run deadline
 		}
 		return l.fail('${what}: ${err}')
 	}
+	env.flashed(h)
 	l.new_table()
 	l.set_int('bytes', rep.bytes)
 	l.set_int('blocks', rep.blocks)
@@ -121,4 +128,12 @@ fn l_flash_program(l lua.State) i32 {
 	l.set_str('auth', rep.auth)
 	l.set_bool('reset_acknowledged', rep.reset_acknowledged)
 	return 1
+}
+
+// flashed forgets what connection `h` had established: a flash ran its own session on it (the
+// programming session, a reset), whatever it got to.
+fn (mut env Env) flashed(h int) {
+	if h >= 0 && h < env.conns.len {
+		env.conns[h].cli.state = uds.ConnState{}
+	}
 }

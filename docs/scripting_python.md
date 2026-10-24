@@ -891,6 +891,7 @@ message and its code:
 | `blobly.UndecodableAnswer` | An answer arrived that cannot be read as one (too short, a DTC list that is not whole records, a negative response that is not `7F <sid> <nrc>`, a snapshot DID whose size cannot be learned). The ECU answered, so the connection is not at fault. |
 | `blobly.CarrierFailed` | The carrier failed under the request: the bus (a failed write), or the ISO-TP channel (a frame lost mid-transfer). On DoIP: a negative acknowledgement, or a connection that could not be opened; `blobly.ConnectionLost`, its subclass, is the connection gone ([DoIP](#11-doip)). |
 | `blobly.RoutingDenied` | DoIP only, when the client opens: the entity denied the routing activation ([DoIP](#11-doip)). |
+| `blobly.WriteGated` | A `NodeClient.write` the DID's write gate does not allow yet: nothing was sent ([Nodes and their DIDs](#nodes-and-their-dids)). A `Refused`, code -13. |
 | `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
 
 `diag.last` is the last exchange, whichever call made it and however it ended: the request as it
@@ -907,6 +908,71 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
             print(e)                                            # UDS: no answer to 0x3E (timeout)
         print(nobody.last.sent, nobody.last.answer)             # True b''
 ```
+
+### Nodes and their DIDs
+
+A project that blobly_emb's `system.toml` describes names its **nodes**, and each node's
+`ecu.toml` lays out its DIDs, its parameters and its faults. The system.toml is the one beside the
+project, beside one of its databases, or in its folder's parent: what the Diagnostics panel and
+the simulated servers read, and `net.system` says which (`None` without one). A script names the
+node and the DID; the model supplies the channel and the ids, and the description the bytes.
+
+```python
+import blobly
+
+with blobly.Project("projects/described-ecu-demo/described-ecu-demo.blobnet") as net:
+    zone_a = net.nodes.zone_a                         # a Node; net.nodes.keys() == ["zone_a"]
+    print(zone_a.dids.SteerLimit)                     # <Did 0x0110 'SteerLimit' param, 2 bytes, written in extended, level 1>
+    with zone_a.uds() as diag:                        # a NodeClient: edge, 0x7C0 / 0x7C8
+        print(diag.read("VIN"), diag.read("SteerLimit"))   # BLOBLY-ZONE_A-H723 360
+        try:
+            diag.write("SteerLimit", 300)
+        except blobly.WriteGated as e:                # nothing sent: what the gate needs
+            print(e.session, e.level)                 # 3 1
+        diag.session(0x03)
+        diag.security_access(0x01)                    # level 1, the reference key
+        diag.write("SteerLimit", 300)                 # encoded: a u16 of 0..360
+        print(diag.read("parameter status"))          # {'SteerLimit': 1}: coded
+        print([(d.name, d.fault) for d in diag.dtcs()][0])  # ('U0401-00', 'SpeedImplausible')
+        diag.write("SteerLimit", 360)
+```
+
+[described_node.py](../python/examples/described_node.py) is a complete script.
+
+**Reaching a node.** `node.uds(channel=None)` is a `NodeClient` on the channel of the run that
+reaches it: a CAN channel named after the bus its diagnostic server is on, at its `diag = { req,
+rsp }` ids from system.toml (else its ecu.toml's `[isotp]`), or a DoIP channel whose
+`ecu_address` is its entity's logical address. A node reached on several channels needs one named
+(`channel=`, a `Channel` or its name). One reached on none is refused (`Refused`), saying how it is
+reached, so the project can be given that row. `node.targets` lists where it is reached.
+
+**DIDs by name.** `node.dids` lists a node's DIDs: those its ecu.toml declares, then the ISO
+identification DIDs it does not (`kind` `"unknown"`, read as bytes). Each `Did` has its `id`,
+`name`, `kind`, `size`, its `parts` with what each accepts (`hint`, `"u16 0..360"`), and its
+`read_gate` and `write_gate` (`None` where none is declared: a DID with no write gate is not
+writable). `diag.read(did)` and `diag.write(did, value)` take the name or the identifier:
+
+- `read` is `0x22` decoded by the layout: an `int` or a `bool` for a value of one field, a `str`
+  for a text, `bytes` for fixed bytes or a DID of no known layout, and `{label: value}` where
+  `did.by_label` (several fields, or a parameter status, whose parts are its parameters). An
+  answer that is not the size the description lays out is `UndecodableAnswer`.
+- `write` takes a value as `read` returns it, or the parts as keywords (`write("X", a=1, b=2)`),
+  encoded by the same layout. Nothing is sent, and `Refused` raised, for a value the layout does
+  not hold (`deg: 400 is outside 0..360`) or a DID with no write gate; a value of the wrong type
+  is a `TypeError`.
+
+**Write gates.** A described write is planned on what this client's connection has established,
+as its own exchanges say: a positive `0x10` sets the session and relocks, a granted `0x27` unlocks
+its level, a `0x2E` refused with `0x7F` or `0x33` forgets them. When the gate's session or level is
+missing, `write` raises `WriteGated` and sends nothing: `e.session` the session to switch to (0:
+none) and `e.level` the security level, whose seed request is `security_access(2 * level - 1)`.
+Nothing switches or unlocks on its own; `session()` and `security_access()` (its reference key, or
+your `key_fn`) establish it. A real ECU that left its session on its own (an S3 timeout) answers
+the write with `0x7F`, which is `NegativeResponse`, and the next write is gated again.
+
+**DTC names.** A `NodeClient`'s DTCs carry `fault`, the name of the node's `[[fault]]` with that
+DTC (`node.faults`), and a snapshot DID's size is the description's, so a `0x19 04` does not read
+the DID to learn it.
 
 ### Raw ISO-TP
 
@@ -1273,7 +1339,7 @@ added the option.
 |---|---|
 | `project` | The started `blobly.Project`. Its run is the test module's: started at the module's first test that asks for it and stopped after the module's last test, so a module may also bring up a project of its own. Each test starts with the CAN channels' handles opened fresh as its setup ends: it hears every frame that arrives from then on, one that comes before its first `expect` included, and nothing an earlier test left queued. After each test, the handlers it registered are dropped and the faults it armed cleared. A test that stopped the run finds it started again in the next one. |
 | `can1`, `can2`, ... | One per enabled channel of the project, named after it: the started project's `Channel` of that name. |
-| `diag` | A `UdsClient`, closed after the test: on the project's first enabled CAN channel at the default ids (0x7E0 out, 0x7E8 back), else its first DoIP one, or on the channel a test names with `@pytest.mark.parametrize("diag", ["DoIP1"], indirect=True)` ([DoIP](#11-doip)). Other ids are `can2.uds(tx, rx)` in the test. |
+| `diag` | A `UdsClient`, closed after the test: on the project's first enabled CAN channel at the default ids (0x7E0 out, 0x7E8 back), else its first DoIP one, or on the channel a test names with `@pytest.mark.parametrize("diag", ["DoIP1"], indirect=True)` ([DoIP](#11-doip)). A name no channel has is a node of the system model, and the fixture a `NodeClient` on it (`["zone_a"]`, [Nodes and their DIDs](#nodes-and-their-dids)). Other ids are `can2.uds(tx, rx)` in the test. |
 
 **The channel fixtures' names** are the channels' names lowercased, every character that cannot be
 in a Python name made `_`, and `_` put before a leading digit: `CAN1` is `can1`, `CAN-1` is `can_1`,
@@ -1408,6 +1474,7 @@ A UDS call's failures are subclasses, each with a code of its own: see
 | -10 | `blobly.ConnectionLost` | the DoIP connection is gone (a `CarrierFailed`) |
 | -11 | `blobly.FlashFailed` | a flash ran, and the bootloader's answers say it did not happen |
 | -12 | `blobly.E2eError` | a frame an expectation required to pass its E2E check did not |
+| -13 | `blobly.WriteGated` | a described write not sent: the connection lacks the session or level its gate needs (a `Refused`) |
 
 ```python
 import blobly
@@ -1593,6 +1660,8 @@ raises `ValueError`. It is also an `EventLoop`.
 | `net.clear_fault(channel, node, message)` | Lifts that message's fault. |
 | `net.clear_faults()` | Lifts every fault. |
 | `net.generators` | The run's generators, a `Generators` ([Generators](#generators)). `BloblyError` (code -3) when not started. |
+| `net.nodes` | The nodes of the run's system model, a `Nodes` ([Nodes and their DIDs](#nodes-and-their-dids)); empty without a system.toml. `BloblyError` (code -3) when not started. |
+| `net.system` | The system.toml the run read, or `None` when none describes the project. `BloblyError` (code -3) when not started. |
 | `net.replay(channels, source=None, *, speed=None, loop=None, paused=False, exclude=None, bus=None)` | Plays a recording onto channels of the started project: a `Replay`. |
 | `net.record(path, channels)` | Records channels of the started project to a candump `.log`: a `Recording`. |
 
@@ -1712,10 +1781,11 @@ A signal of a message (`msg.signals.EngineSpeed`). physical = raw × `factor` + 
 | `sig.labels` | The value table as `{physical value: text}`. |
 | `sig.raw_labels` | The value table as `{raw key: text}`, every entry. |
 
-### `UdsClient`
+### `UdsClient`, `NodeClient`
 
 A UDS client on a CAN or DoIP row (`ch.uds()`). See [UDS diagnostics](#10-uds-diagnostics) and
-[DoIP](#11-doip).
+[DoIP](#11-doip). A `NodeClient` (`node.uds()`) is a `UdsClient` on a node of the system model,
+with the three rows at the end ([Nodes and their DIDs](#nodes-and-their-dids)).
 
 | member | what |
 |---|---|
@@ -1745,6 +1815,9 @@ A UDS client on a CAN or DoIP row (`ch.uds()`). See [UDS diagnostics](#10-uds-di
 | `diag.timeout_ms`, `diag.p2_star_ms`, `diag.margin_ms`, `diag.pending_budget_ms` | Its waits in ms, as they stand (1000, 5000, 1000, 120000 until set or a 0x10 answer adopts): the first answer, the ECU's P2* after each 0x78 plus the margin, one request from its send. Settable, from the next request on, and held on every connection the client opens ([UDS diagnostics](#10-uds-diagnostics)). |
 | `diag.retarget(address=None)` | DoIP: requests go to logical address `address`, a node behind the gateway the entity is, on the same connection; `None` goes back to the row's `ecu_address`. Another target starts again from the waits and sizes the script set. Refused on a CAN row, and inside a `security_access` key function ([DoIP](#11-doip)). |
 | `diag.close()`, `with diag:` | Lets the connection go for good; a later call refuses. |
+| `diag.node` | `NodeClient` only: the `Node` it is on. |
+| `diag.read(did)` | `NodeClient` only: 0x22 of `did` (its name or its identifier), decoded by the node's layout — one part's `int`, `bool`, `str` or `bytes`, or `{label: value}` where `by_label`. |
+| `diag.write(did, value)`, `diag.write(did, **parts)` | `NodeClient` only: 0x2E of `did`, encoded by the node's layout. `Refused` (nothing sent) for a value the layout does not hold or a DID with no write gate; `WriteGated` when the connection lacks the gate's session or level. |
 
 ### `IsoTp`
 
@@ -1780,11 +1853,54 @@ The fault memory as the ECU reported it.
 | `Dtc.code`, `Dtc.name` | The 24-bit DTC and failure-type byte, and SAE J2012's display (`U0121-00`). |
 | `Dtc.status`, `Dtc.availability` | The status byte, and the bits the ECU reports (0xFF where its answer carries no mask). |
 | `Dtc.bits` | `{name: bool}` for each ISO 14229-1 status bit the ECU reports. |
+| `Dtc.fault`, `SnapshotId.fault` | A `NodeClient`'s: the name of the node's `[[fault]]` with that DTC; `None` otherwise. |
 | `SnapshotId.code`, `SnapshotId.name`, `SnapshotId.record` | A DTC holding a snapshot, and the record's number. |
 | `SnapshotRecord.number`, `SnapshotRecord.dids` | A snapshot record's number, and `{did: value}` in the ECU's order. |
 | `Snapshot.dtc`, `Snapshot.records` | The DTC with its status, and its records (none: nothing stored). |
 | `Extended.dtc`, `Extended.records` | The DTC with its status, and `{record number: bytes}`. |
 | `Extended.occurrence`, `Extended.aging`, `Extended.failed_cycles` | blobly_emb's counters (records 0x01, 0x02, 0x03), `None` where the answer does not carry one. |
+
+### `Nodes`, `Node`, `NodeTarget`, `NodeFaults`, `Fault`
+
+`net.nodes` is a `Nodes`: the nodes of the run's system model, in system.toml's order, read like
+`Channels` (`net.nodes.zone_a`, `net.nodes["zone-a"]`, `net.nodes[0]`, `net.nodes.keys()`). A
+`Node` belongs to the run that listed it: after a stop and a start it goes on working while the
+run's model has a node of its name at its position, and refuses otherwise.
+
+| member | what |
+|---|---|
+| `node.name` | Its name in system.toml. |
+| `node.described` | Its ecu.toml was read; else `node.problem` says why, and it lists only the ISO DIDs. |
+| `node.problem` | Why its ecu.toml was not read, `""` when it was. |
+| `node.server` | Its ecu.toml declares a diagnostic server (`[uds]`, `[isotp]` or `[doip]`). |
+| `node.reference_key` | Its `[uds] security_key` is blobly_net's reference key, which `security_access` computes without a `key_fn`. |
+| `node.dids` | Its DIDs, a `Dids`: its own, then the ISO identification DIDs it does not declare. |
+| `node.faults` | Its `[[fault]]`s, a `NodeFaults` (`node.faults.SpeedImplausible`), each a `Fault`. |
+| `node.targets` | Where the run reaches it, each a `NodeTarget`. |
+| `node.did(key)` | The listed `Did` that `key` names (its name, or its identifier); `None` for an identifier it does not list; `KeyError` for a name none has. |
+| `node.uds(channel=None)` | A `NodeClient` on it, on `channel` when it is reached on several. `Refused`, saying how it is reached, when no channel of the run reaches it. |
+| `NodeTarget.channel`, `NodeTarget.tx`, `NodeTarget.rx`, `NodeTarget.ext` | The `Channel`, and on CAN the request and response ids and whether they are 29-bit (`None`, `None`, `False` on DoIP). |
+| `Fault.name`, `Fault.dtc`, `Fault.dtc_name` | The fault's name, its 24-bit DTC and SAE J2012's display of it (`U0401-00`). |
+| `nodes.keys()`, `node.faults.keys()` | The names, in order, each once. |
+
+### `Dids`, `Did`, `DidPart`, `Gate`
+
+`node.dids` is a `Dids`, read like `Channels` (`node.dids.SteerLimit`, `node.dids["ECU serial
+number"]`, by position, `node.dids.keys()`). A DID of no name is reached by position or
+`node.did(identifier)`.
+
+| member | what |
+|---|---|
+| `Did.id`, `Did.name` | The identifier, and its name: its signal's or parameter's, ISO's for a standard identifier, else `""`. |
+| `Did.kind` | Where its value comes from: `"ascii"`, `"bytes"`, `"signal"`, `"param"`, `"param_status"`, `"tx_saturations"`, or `"unknown"` (no layout known: bytes). |
+| `Did.size` | Its value's bytes, `None` where the description does not say. |
+| `Did.parts` | What a value is made of, each a `DidPart`. |
+| `Did.by_label` | `read` answers `{label: value}`: several parts, or a parameter status. |
+| `Did.read_gate`, `Did.write_gate` | A `Gate`, or `None` where none is declared: read in any session; not writable. |
+| `Did.index` | Its position in the node's listing. |
+| `DidPart.label`, `DidPart.kind`, `DidPart.hint` | A field's name (else `"text"` or `"bytes"`), `"int"`, `"bool"`, `"text"` or `"bytes"`, and what it accepts as the engine says it (`"u16 0..360"`). |
+| `Gate.sessions`, `Gate.level` | The sessions it is served in by their ecu.toml names (none: any), and the security level it needs (0: none). `str(gate)` is `"extended, level 1"`. |
+| `dids.keys()` | The names, in order, each once. |
 
 ### `FunctionalReply`
 
@@ -1885,7 +2001,7 @@ effect, and nothing changed.
 | `str(e)` | Why, in the engine's words. |
 | `e.code` | -1. |
 
-### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`, `ConnectionLost`, `RoutingDenied`, `FlashFailed`
+### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`, `ConnectionLost`, `RoutingDenied`, `FlashFailed`, `WriteGated`
 
 `blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused, or a call failed. The
 others are its subclasses (see [Errors](#17-errors) and
@@ -1894,10 +2010,11 @@ others are its subclasses (see [Errors](#17-errors) and
 | member | what |
 |---|---|
 | `str(e)` | The engine's message; for an expectation's `Timeout`, what was expected and what came instead. |
-| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -10 the ways a UDS call fails; -11 a flash's own verdict; -12 a frame that failed its E2E check (`E2eError`). |
+| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -10 the ways a UDS call fails; -11 a flash's own verdict; -12 a frame that failed its E2E check (`E2eError`); -13 a described write its gate does not allow yet. |
 | `e.nrc`, `e.nrc_name` | `NegativeResponse` only: the code, and ISO 14229-1's name for it. |
 | `e.exchange` | `NegativeResponse` and `ConnectionLost`: the `Exchange` it ended. |
 | `e.routing_code`, `e.routing_name`, `e.hint`, `e.tester` | `RoutingDenied` only: the routing activation response code, ISO 13400-2's meaning, what to do about it, and the tester address asked for. |
+| `e.session`, `e.level` | `WriteGated` only: the session to switch to (0: none) and the security level to unlock (0: none; its seed request is `security_access(2 * level - 1)`). |
 
 ### `blobly.pytest_plugin`
 
@@ -1908,7 +2025,7 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 |---|---|
 | `project` | Fixture: the started `Project`, its run the test module's; each test hears what arrives from its start, and its handlers and faults go with it. |
 | `can1`, ... | Fixtures: one per enabled channel, named after it (lowercased, `_` for what a Python name cannot hold). |
-| `diag` | Fixture: a `UdsClient` on the first enabled CAN channel (at 0x7E0 / 0x7E8), else the first DoIP one, or on the one named by parametrizing it indirectly; closed after the test. |
+| `diag` | Fixture: a `UdsClient` on the first enabled CAN channel (at 0x7E0 / 0x7E8), else the first DoIP one, or on the one named by parametrizing it indirectly — a `NodeClient` when the name is a node's of the system model; closed after the test. |
 | `blobly_project` | Ini value: the project, relative to the ini file. |
 | `--blobly-project=PATH` | Command line: the project, relative to the working directory; overrides the ini value. |
 
@@ -1919,7 +2036,7 @@ suite loads it with `pytest_plugins = ["blobly.pytest_plugin"]` or `-p blobly.py
 Python covers bringing a project up, its channels, raw CAN, DBC messages and signals, the event
 loop, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
 the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP
-(its timing, and a node behind a DoIP gateway), raw ISO-TP, DoIP
+(its timing, and a node behind a DoIP gateway), nodes of the system model with their DIDs by name, raw ISO-TP, DoIP
 discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
@@ -1942,9 +2059,13 @@ discovery, SOME/IP send, call and listen, flashing, replay and recording to a fi
 - Background cyclic senders and a session keep-alive (one owner thread per channel).
 - Bus metrics are here ([Bus metrics](#bus-metrics)): load, and the dropped, error and
   undecodable counters, during a run.
+- Raw ISO-TP; UDS timing and P2 configuration; the DoIP gateway retarget.
+- Targets by node name from `system.toml`, and the DID codec from `ecu.toml`, are here
+  ([Nodes and their DIDs](#nodes-and-their-dids)): a node reached by its name, its DIDs read and
+  written by name through its layout, a gated write refused with what it needs, and its DTCs named.
+
 - Raw ISO-TP, UDS timing and the DoIP gateway retarget are here ([Raw ISO-TP](#raw-iso-tp),
   [UDS diagnostics](#10-uds-diagnostics), [DoIP](#11-doip)).
-- Targets by node name from `system.toml`, and the DID codec from `ecu.toml`.
 - Opening an interface that is not a project row, interface discovery, Vector channel
   assignment.
 - J1939 transport-protocol reassembly and the address directory.

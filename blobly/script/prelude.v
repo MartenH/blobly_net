@@ -472,20 +472,13 @@ function uds.functional(channel, id, diags, req, window_ms)
     if type(d) ~= "table" or type(d.handle) ~= "number" then
       error("uds.functional: diags[" .. i .. "] is not a uds.open connection", 2)
     end
+    if d.__node ~= nil then __node_on(d.handle, d.__node) end -- a node connection addresses its node
     hs[i] = d.handle
   end
   return __uds_functional(channel, id, req, window_ms or 0, table.unpack(hs))
 end
-function uds.open(channel, opts)
-  opts = opts or {}
-  -- Passed through AS GIVEN, nil included. The CAN default (0x7E0/0x7E8) is applied on the V
-  -- side, once the carrier of the channel is known: defaulting here would hand every DoIP open
-  -- a pair of CAN ids that DoIP has no use for. No sentinel value is used, because every
-  -- sentinel is also a number a script might mean -- 0 is a valid arbitration id, and a
-  -- negative one is a mistake that must be reported rather than read as "omitted".
-  local timed = opts.timeout_ms ~= nil or opts.p2_star_ms ~= nil or opts.margin_ms ~= nil or opts.pending_budget_ms ~= nil
-  if timed then __uds_timing_check(opts.timeout_ms, opts.p2_star_ms, opts.margin_ms, opts.pending_budget_ms) end
-  local h = __uds_open(channel, opts.tx, opts.rx)
+-- connection(h, channel): the object uds.open and uds.node answer, over the uds handle h
+local function connection(h, channel)
   local self = { handle = h, channel = channel }
   function self:session(sub) return __uds_session(self.handle, sub or 0x01) end
   -- let the connection go: the next uds.open on the channel opens a new one
@@ -563,7 +556,113 @@ function uds.open(channel, opts)
   -- DoIP: requests go to logical address `address` (nil: the channel ecu_address), a node behind
   -- the gateway the entity is, on the same connection
   function self:retarget(address) __uds_retarget(self.handle, address) end
+  return self
+end
+function uds.open(channel, opts)
+  opts = opts or {}
+  -- Passed through AS GIVEN, nil included. The CAN default (0x7E0/0x7E8) is applied on the V
+  -- side, once the carrier of the channel is known: defaulting here would hand every DoIP open
+  -- a pair of CAN ids that DoIP has no use for. No sentinel value is used, because every
+  -- sentinel is also a number a script might mean -- 0 is a valid arbitration id, and a
+  -- negative one is a mistake that must be reported rather than read as "omitted".
+  local timed = opts.timeout_ms ~= nil or opts.p2_star_ms ~= nil or opts.margin_ms ~= nil or opts.pending_budget_ms ~= nil
+  if timed then __uds_timing_check(opts.timeout_ms, opts.p2_star_ms, opts.margin_ms, opts.pending_budget_ms) end
+  local h = __uds_open(channel, opts.tx, opts.rx)
+  local self = connection(h, channel)
   if timed then self:set_timing(opts) end
+  return self
+end
+
+-- uds.nodes(): the names of the nodes of the system model (the system.toml beside the project, or
+-- beside one of its databases, or in the parent of its folder), in its order; empty without one.
+function uds.nodes() return __uds_nodes() end
+
+-- a part of a DID value as the text the codec of the description reads (sysview.DidDesc.encode)
+local function part_text(did, part, v)
+  local where = (did.name ~= "" and did.name or string.format("0x%04X", did.id)) .. "." .. part.label
+  if part.kind == "int" or part.kind == "bool" then
+    if type(v) == "boolean" then return v and "true" or "false" end
+    if math.type(v) == "integer" then return string.format("%d", v) end
+    error(where .. " is " .. (part.kind == "int" and "an integer" or "true or false") .. ", not " .. tostring(v), 3)
+  end
+  if type(v) ~= "string" then
+    error(where .. " is a " .. (part.kind == "text" and "string" or "byte string") .. ", not " .. tostring(v), 3)
+  end
+  if part.kind == "text" then return v end
+  return tohex(v)
+end
+
+-- uds.node(name [, opts]): a uds.open connection on the node `name` of the system model, on the
+-- channel and at the ids its system.toml (else its ecu.toml) gives it -- opts.channel names the
+-- channel when the node is reached on several -- with, beside every uds.open method:
+--   d.node                the name of the node
+--   d:dids()              its DIDs (those of its description, then the ISO identification DIDs it
+--                         does not declare): {id, name, kind, size (nil: not known), by_label,
+--                         parts = {{label, kind ("int", "bool", "text", "bytes"), hint}},
+--                         read, write = {sessions, level} or nil (write nil: not writable)}
+--   d:did(did)            one of them: did is its name, or its identifier
+--   d:read(did)           0x22 decoded by its layout: the value of its one part (an integer, a
+--                         boolean, a string, bytes), or a table by part label (by_label)
+--   d:write(did, value)   0x2E encoded by its layout, value as read answers it; raises, nothing
+--                         sent, when the layout refuses it, the DID has no write gate, or this
+--                         connection has not established the session and level the gate needs
+--                         ("... not written -- ... needs it to switch ..., then unlock ...")
+--   d:dtcs() and the other 0x19 calls: each record carries fault, the name of its [[fault]]
+function uds.node(name, opts)
+  opts = opts or {}
+  local h, n, channel = __uds_node(name, opts.channel)
+  local self = connection(h, channel)
+  self.node = name
+  self.__node = n -- what uds.functional and flash.program check a node connection by (__node_on)
+  -- its reads and writes are laid out by its node: it does not move to another ECU
+  function self:retarget() error("uds.node: a node connection addresses its node; retarget a uds.open connection instead", 2) end
+  -- a DID is its identifier when a number (one that is not an integer is refused), else its name
+  -- (a numeric string is a name)
+  local function by_id(did)
+    if type(did) ~= "number" and type(did) ~= "string" then
+      error("a DID is its name (a string) or its identifier (a number), not " .. tostring(did), 3)
+    end
+    return type(did) == "number"
+  end
+  function self:dids() return __node_dids(n) end
+  function self:did(did) return __node_did(n, did, by_id(did)) end
+  function self:read(did) return __node_read(self.handle, n, did, by_id(did)) end
+  function self:write(did, value)
+    local d = __node_did(n, did, by_id(did))
+    local texts = {}
+    if d.by_label or type(value) == "table" then
+      if type(value) ~= "table" then error("write(" .. tostring(did) .. "): its parts go in a table by label", 2) end
+      for k in pairs(value) do
+        local known = false
+        for _, p in ipairs(d.parts) do if p.label == k then known = true end end
+        if not known then error("write(" .. tostring(did) .. "): no part " .. tostring(k), 2) end
+      end
+      for _, p in ipairs(d.parts) do
+        if value[p.label] == nil then error("write(" .. tostring(did) .. "): part " .. p.label .. " not given", 2) end
+        texts[#texts + 1] = part_text(d, p, value[p.label])
+      end
+    else
+      texts[1] = part_text(d, d.parts[1], value)
+    end
+    __node_write(self.handle, n, did, by_id(did), table.unpack(texts))
+  end
+  local faults = __node_faults(n)
+  local function named(r) if r ~= nil and r.code ~= nil then r.fault = faults[r.code] end return r end
+  local function each(rs) for _, r in ipairs(rs) do named(r) end return rs end
+  local dtcs, supported, ids = self.dtcs, self.supported_dtcs, self.snapshot_ids
+  local snapshot, extended = self.snapshot, self.extended
+  function self:dtcs(mask) return each(dtcs(self, mask)) end
+  function self:supported_dtcs() return each(supported(self)) end
+  function self:snapshot_ids() return each(ids(self)) end
+  function self:snapshot(dtc, record) return named(snapshot(self, dtc, record)) end
+  function self:extended(dtc, record) return named(extended(self, dtc, record)) end
+  -- every call that asks the ECU, only while the connection addresses this node: a DoIP connection
+  -- is shared with uds.open, which may retarget it (__node_on also puts the description back)
+  for k, f in pairs(self) do
+    if type(f) == "function" and k ~= "close" and k ~= "retarget" and k ~= "dids" and k ~= "did" then
+      self[k] = function(s, ...) __node_on(s.handle, n) return f(s, ...) end
+    end
+  end
   return self
 end
 
@@ -616,6 +715,7 @@ function flash.program(target, opts)
     if opts.tx ~= nil or opts.rx ~= nil then
       error("flash.program: a uds.open connection brings its own ids; drop tx/rx", 2)
     end
+    if target.__node ~= nil then __node_on(target.handle, target.__node) end -- as uds.functional
     h = target.handle
   elseif type(target) == "string" then
     h = __flash_open(target, opts.tx, opts.rx)

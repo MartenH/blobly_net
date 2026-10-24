@@ -14,7 +14,7 @@ import diaghold
 // decoded by the description's layout beside its bytes. A writable DID is written (0x2E) from an
 // editor that encodes through the SAME layout (sysview.DidDesc.encode, the inverse of the decode),
 // behind a confirmation that states what the write will do first: the session it switches to and
-// the level it unlocks (diaghold.write_plan), or why the panel cannot. A node's R7 parameters
+// the level it unlocks (uds.write_plan), or why the panel cannot. A node's R7 parameters
 // (`[[param]]`, each coded through a DID) are listed by name with their default and, where the
 // ECU exposes a status DID, whether each is coded.
 
@@ -144,12 +144,12 @@ fn (mut app App) did_read_all(mut h HeldConn, req DiagReq) (DiagOut, bool) {
 }
 
 // did_write writes one DID as the description gates it: the session it is written in and the
-// level it needs established first (diaghold.write_plan, asked HERE, of what this connection has
+// level it needs established first (uds.write_plan, asked HERE, of what this connection has
 // established, not of what the panel last showed), then 0x2E, then 0x22 of it and of anything the
 // write changes (a parameter's status DID). Each step is its own timed line.
 fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool) {
 	name := did_label(req.desc, req.did)
-	plan := diaghold.write_plan(req.writable, h.session, req.sessions, req.level, h.security.unlocked(),
+	plan := uds.write_plan(req.writable, h.session(), req.sessions, req.level, h.security().unlocked(),
 		req.ref_key)
 	if plan.refusal != '' {
 		// nothing sent: the connection is as it was
@@ -187,7 +187,7 @@ fn (mut app App) did_write(gen u64, mut h HeldConn, req DiagReq) (DiagOut, bool)
 		if err is uds.NegativeResponse {
 			// the ECU left the session or relocked on its own: what that took back is forgotten,
 			// so the next write plans it again
-			match diaghold.write_refusal_forgets(err.nrc) {
+			match uds.write_refusal_forgets(err.nrc) {
 				.session {
 					app.diag_forget(gen, mut h, true)
 					line += ' — the session is no longer known; the next write switches and unlocks again'
@@ -591,19 +591,14 @@ fn did_edit_room(x sysview.DidDesc, text string) int {
 }
 
 // did_write_req is the press the editor's Write sends — the bytes and the gate, the rest decided by
-// the holder (diaghold.write_plan) — or why there is none.
+// the holder (uds.write_plan) — or why there is none.
 fn did_write_req(x sysview.DidDesc, texts []string, t DiagTarget, desc DiagDesc) !DiagReq {
-	// the CURRENT description's gate: absent is not writable (diaghold.write_plan says why)
+	// the CURRENT description's gate: absent is not writable (uds.write_plan says why)
 	if !x.write_gate.declared {
-		return error(diaghold.write_plan(false, 0, [], 0, 0, false).refusal)
+		return error(uds.write_plan(false, 0, [], 0, 0, false).refusal)
 	}
 	data := x.encode(texts)!
-	mut sessions := []u8{}
-	for s in x.write_gate.sessions {
-		sessions << sysview.session_id(s) or {
-			return error('written in the "${s}" session, which the panel does not know')
-		}
-	}
+	sessions := x.write_sessions()!
 	mut follow := []u16{}
 	if x.kind == .param && desc.ok {
 		if sd := desc.desc.param_status_did() {
@@ -686,7 +681,7 @@ fn draw_did_editor(mut app App, t DiagTarget, view DidView, desc DiagDesc, busy 
 		// what the connection has established, only if it is to THIS target: another target's
 		// session says nothing about this one, and the holder opens a fresh connection for it
 		mine := st.conn == .held && st.key == t.key
-		plan := diaghold.write_plan(r.writable, if mine { st.session } else { u8(0) }, r.sessions, r.level,
+		plan := uds.write_plan(r.writable, if mine { st.session } else { u8(0) }, r.sessions, r.level,
 			if mine { st.security.unlocked() } else { u8(0) }, r.ref_key)
 		if plan.refusal != '' {
 			why = plan.refusal

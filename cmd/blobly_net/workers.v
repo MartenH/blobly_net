@@ -10,6 +10,7 @@ import taprule
 import blobly.telem
 import blobly.isotp
 import blobly.uds
+import blobly.sysview
 import blobly.flash
 import blobly.sim
 import blobly.script
@@ -1489,7 +1490,9 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 	}
 }
 
-fn script_worker(app &App, path string) {
+// script_worker runs the script at `path`; `ss` is the system model its uds.node reaches nodes by
+// (App.script_system, read on the GUI thread): the run's, else a file loaded here.
+fn script_worker(app &App, path string, ss ScriptSys) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.script_busy {
@@ -1573,6 +1576,7 @@ fn script_worker(app &App, path string) {
 			// is what makes app.dbs safe to read here without app.mu.
 			db:      a.script_db(ch)
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
+			hosts:   pch.hosts_doip_entity()
 			verify:  pch.verify // what a received frame's E2E is judged by first
 			carrier: script.carrier_of(pch)
 			// priced as the Buses row prices the wire
@@ -1599,6 +1603,14 @@ fn script_worker(app &App, path string) {
 	env.on_output = fn [a] (s string) {
 		mut ap := unsafe { a }
 		ap.script_push(s)
+	}
+	env.sys = ss.sys
+	if ss.path != '' {
+		if loaded := sysview.load(ss.path) {
+			env.sys = loaded
+		} else {
+			a.script_push('${ss.path} could not be read (${err}); uds.node names no nodes')
+		}
 	}
 	// A script IS the tester. Left on the default opener it would be the one emitter the trace
 	// could not account for, and its frames would come back labelled as the device under test's.

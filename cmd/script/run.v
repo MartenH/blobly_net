@@ -195,6 +195,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 			key_iface: c.cfg.iface
 			db:        c.db
 			nodes:     c.cfg.all_nodes() // so a fault that cannot take effect can be refused
+			hosts:     c.cfg.hosts_doip_entity()
 			verify:    c.cfg.verify // what a received frame's E2E is judged by first
 			carrier:   script.carrier_of(c.cfg)
 			nominal:   nominal
@@ -211,6 +212,7 @@ fn run(mut o script.Outcome, mut w Watch, t0 u64) string {
 		return report_path
 	}
 	env.gens = hrun
+	env.sys = hrun.sys
 	if timeout_s > 0 {
 		after_ms := i64(math.ceil(timeout_s * 1000))
 		env.set_deadline(after_ms)
