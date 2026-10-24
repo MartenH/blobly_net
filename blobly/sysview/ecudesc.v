@@ -349,6 +349,25 @@ fn fields_of(m map[string]toml.Any) []Field {
 	return out
 }
 
+// nul_label says which of a parameter's name or its fields' names holds a NUL, which no binding
+// can carry as a label (a C string ends there, so two such fields read as one).
+fn nul_label(name string, fields []Field) ?string {
+	if name.contains_u8(0) {
+		return 'the name holds a NUL'
+	}
+	for f in fields {
+		if f.name.contains_u8(0) {
+			return 'field "${shown_nul(f.name)}" holds a NUL'
+		}
+	}
+	return none
+}
+
+// shown_nul is a label with its NULs written as `\0`, for a message.
+fn shown_nul(s string) string {
+	return s.replace('\0', '\\0')
+}
+
 // access_words renders a `{ session = [...], security = N }` gate.
 fn access_words(m map[string]toml.Any, key string) string {
 	v := m[key] or { return '' }
@@ -502,11 +521,18 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 		d.isotp_rsp = u32(tint(im, 'tx_id'))
 		d.isotp_bus = tstr(im, 'bus')
 	}
+	// the parameters refused for a label no binding carries, so a DID naming one says so
+	mut nul_params := []string{}
 	for p in tarr(doc, 'param') {
 		pm := p.as_map()
-		if d.params.any(it.name == tstr(pm, 'name')) {
+		if d.params.any(it.name == tstr(pm, 'name')) || tstr(pm, 'name') in nul_params {
 			// a parameter is its name: the status DID's parts and a tester's lookup both key on it
-			d.errs << 'param ${tstr(pm, 'name')}: declared twice; the second not read'
+			d.errs << 'param ${shown_nul(tstr(pm, 'name'))}: declared twice; the second not read'
+			continue
+		}
+		if bad := nul_label(tstr(pm, 'name'), fields_of(pm)) {
+			d.errs << 'param ${shown_nul(tstr(pm, 'name'))}: ${bad}; not read'
+			nul_params << tstr(pm, 'name')
 			continue
 		}
 		d.params << ParamDesc{
@@ -613,6 +639,11 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 			kind = .signal
 			name = s.string()
 			sf := sigs[name] or { []Field{} }
+			// only a one-field signal's field is carried, so only its label is asked
+			if bad := nul_label(name, if sf.len == 1 { sf } else { []Field{} }) {
+				d.errs << 'did 0x${id:04X}: signal ${shown_nul(name)}: ${bad}; not read'
+				continue
+			}
 			// a live DID carries the signal's one value field (blobly_emb's loom2v refuses others)
 			if sf.len == 1 && sf[0].width() > 0 {
 				fields = sf.clone()
@@ -635,15 +666,23 @@ pub fn parse_ecu_desc(doc toml.Doc, signals map[string][]Field) EcuDesc {
 				} else {
 					fields = []
 				}
+			} else if name in nul_params {
+				d.errs << 'did 0x${id:04X}: [[param]] ${shown_nul(name)} was not read'
 			} else {
 				d.errs << 'did 0x${id:04X}: no [[param]] ${name}'
 			}
 		} else if ps := xm['param_status'] {
 			if ps.bool() {
-				kind = .param_status
 				name = 'parameter status'
-				fields = d.params.map(Field{it.name, 'u8'})
-				size = fields.len
+				if nul_params.len > 0 {
+					// one byte per declared parameter: a refused one leaves the positions unknown,
+					// so the DID is not read as the parameters' status
+					d.errs << 'did 0x${id:04X}: parameter status: a [[param]] was not read, so its byte positions are not known'
+				} else {
+					kind = .param_status
+					fields = d.params.map(Field{it.name, 'u8'})
+					size = fields.len
+				}
 			}
 		}
 		if name == '' {
