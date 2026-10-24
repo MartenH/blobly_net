@@ -313,7 +313,9 @@ jobs:
       # exactly this tag's two wheels: a local version label (a CI build) or a third file stops it
       - name: The wheels are this tag's
         run: |
-          ver="${GITHUB_REF_NAME#v}"
+          # the tag in PEP 440's spelling, each part an integer (build_wheel.py's vmod_version rule):
+          # v2026.10.01 is 2026.10.1
+          ver="$(python3 -c "import sys; print('.'.join(str(int(p)) for p in sys.argv[1].split('.')))" "${GITHUB_REF_NAME#v}")"
           ls -l dist
           n=$(ls dist/*.whl | wc -l)
           [ "$n" -eq 2 ] || { echo "expected 2 wheels, found $n"; exit 1; }
@@ -321,6 +323,8 @@ jobs:
             case "$(basename "$w")" in
               *+*) echo "$w carries a local version label"; exit 1 ;;
             esac
+            have="$(basename "$w" | cut -d- -f2)"
+            [ "$have" = "$ver" ] || { echo "$(basename "$w") is version $have, the tag is $ver"; exit 1; }
           done
           ls dist/*manylinux*_x86_64.whl dist/*win_amd64.whl >/dev/null
       # A RE-RUN AFTER A PARTIAL UPLOAD must finish the release, so the upload skips a file PyPI
