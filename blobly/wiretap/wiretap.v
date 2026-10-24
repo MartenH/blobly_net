@@ -252,6 +252,13 @@ fn frame_key(iface string, f transport.CanFrame) u64 {
 // record and the second finds nothing left, so it is attributed to the bus. Matching without
 // consuming would attribute both to us and hide the collision this exists to surface.
 pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms f64) ?Claim {
+	return r.claim_noted_by(monitor, iface, f, t_ms, 1e300)
+}
+
+// claim_noted_by is claim over the emissions noted at or before `noted_ms` only, for a caller
+// that notes them in time order: a frame taken again after the emission it first claimed came to
+// nothing cannot be the echo of a send noted after it arrived.
+pub fn (mut r Ring) claim_noted_by(monitor int, iface string, f transport.CanFrame, t_ms f64, noted_ms f64) ?Claim {
 	r.drop_expired(t_ms)
 	// Resolved the same way `note` resolved it, or an emitter and its monitor that spell one
 	// wire differently never meet. See the comment there.
@@ -265,6 +272,9 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 			continue // cheap reject before touching anything heap-allocated
 		}
 		p := r.items[i]
+		if p.t_ms > noted_ms {
+			break // noted in time order: every later record was noted later still
+		}
 		if monitor in p.claimed {
 			continue // this monitor already accounted for that emission
 		}

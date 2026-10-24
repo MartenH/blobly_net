@@ -56,8 +56,9 @@ mut:
 	writing  bool // the writer runs: it closes the file when it ends
 	rings    []wiretap.Ring // per target: its sends noted, waiting to come back
 	seq      u64
-	// the sends noted on a wire that echoes whose driver has not answered: an echo that takes one
-	// of their notes waits for the answer, since a refused send's note was another's to take
+	// the sends noted on a wire that echoes whose driver has not answered, and whether a line
+	// waits on one: an echo that took its note, held for the answer, since a refused send's note
+	// was another's to take
 	unsettled map[u64]bool
 	lines    []Line // in file order; written from the front while settled
 	c        Counts
@@ -229,8 +230,9 @@ fn host_ms() f64 {
 
 // watch registers what target `i`'s wire is sent by this process, as the driver is handed it: on
 // a wire whose sends come back to another handle, noted before the driver has it and written when
-// it comes back, in the order the wire carried it; elsewhere written in its place as it is sent,
-// once the driver took it.
+// it comes back, in the order the wire carried it — held in its place until that send's driver
+// answers, and taken again by what is left if it refused; elsewhere written in its place as it is
+// sent, once the driver took it.
 fn (mut r Recorder) watch(i int, t Target) int {
 	return transport.watch_sends(t.iface, r.send_watch(i, t))
 }
@@ -246,7 +248,7 @@ fn (mut r Recorder) send_watch(i int, t Target) transport.SendWatch {
 			}
 			r.seq++
 			if echoes {
-				r.unsettled[r.seq] = true
+				r.unsettled[r.seq] = false
 				r.missed(r.rings[i].note(r.seq, t.iface, f, host_ms(), [i], t.name, false).len)
 			} else {
 				r.lines << Line{
@@ -272,9 +274,14 @@ fn (mut r Recorder) send_watch(i int, t Target) transport.SendWatch {
 				r.mu.unlock()
 			}
 			if echoes {
+				held := r.unsettled[tok]
 				r.unsettled.delete(tok)
-				r.settle_echo(i, t, tok, out == .refused)
-				r.flush()
+				if held {
+					r.settle_echo(i, t, tok, out == .refused)
+					r.flush()
+				} else if out == .refused {
+					r.rings[i].forget(tok)
+				}
 				return
 			}
 			for k, l in r.lines {
@@ -295,10 +302,10 @@ fn (mut r Recorder) send_watch(i int, t Target) transport.SendWatch {
 	}
 }
 
-// settle_echo is what a send on target `i`'s echoing wire came to: refused, its note goes, and an
-// echo that took it is taken again by what is left (an identical send's note, else nobody's);
-// otherwise the echo that took it is ours. A write that failed may still come back, as ours: its
-// note waits out the window. The caller holds `mu`.
+// settle_echo is what a send on target `i`'s echoing wire, whose note an echo took, came to:
+// refused, the echo is taken again by what is left (an identical send's note made before it
+// arrived, else nobody's); otherwise the echo is ours (a write that failed may have gone out).
+// The caller holds `mu`.
 fn (mut r Recorder) settle_echo(i int, t Target, tok u64, refused bool) {
 	for k, l in r.lines {
 		if l.seq != tok {
@@ -312,10 +319,11 @@ fn (mut r Recorder) settle_echo(i int, t Target, tok u64, refused bool) {
 		}
 		mut seq := u64(0)
 		mut dir := canlog.Dir.rx
-		if c := r.rings[i].claim(i, t.iface, l.e.frame, l.at) {
+		if c := r.rings[i].claim_noted_by(i, t.iface, l.e.frame, l.at, l.at) {
 			r.rings[i].forget(c.seq)
 			dir = .tx
 			if c.seq in r.unsettled {
+				r.unsettled[c.seq] = true
 				seq = c.seq
 			}
 		}
@@ -328,9 +336,6 @@ fn (mut r Recorder) settle_echo(i int, t Target, tok u64, refused bool) {
 			at:  l.at
 		}
 		return
-	}
-	if refused {
-		r.rings[i].forget(tok)
 	}
 }
 
@@ -521,6 +526,7 @@ fn (mut r Recorder) take(i int, t Target, f transport.CanFrame) {
 		ours = true
 		r.rings[i].forget(c.seq) // one reader per ring: a claimed note is done, and kept it is scanned
 		if c.seq in r.unsettled {
+			r.unsettled[c.seq] = true
 			wait = c.seq
 		}
 	}
@@ -568,7 +574,9 @@ pub fn (mut r Recorder) stop() !Counts {
 		r.flush() // what waited for the writer
 		settled = r.readers == 0 && r.lines.len == 0
 		r.mu.unlock()
-		if settled || time.sys_mono_now() >= until || (!isnil(r.give_up) && r.give_up()) {
+		// 50 ms before the end, so the writer has time to write what is still held
+		if settled || time.sys_mono_now() >= until - 50_000_000
+			|| (!isnil(r.give_up) && r.give_up()) {
 			break
 		}
 		time.sleep(time.millisecond)
@@ -577,6 +585,13 @@ pub fn (mut r Recorder) stop() !Counts {
 	// as somebody else's
 	r.mu.lock()
 	if r.open {
+		// a line still held behind a send its driver never answered is written as it stands
+		for k in 0 .. r.lines.len {
+			r.lines[k] = Line{
+				e: r.lines[k].e
+			}
+		}
+		r.flush()
 		r.open = false
 		r.out.close() // the writer writes what it was handed, then closes the file
 		if !settled && r.err == '' {

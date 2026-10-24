@@ -493,3 +493,17 @@ fn test_a_different_wire_still_cannot_claim() {
 		assert false, 'a different bus claimed an emission that was never on it'
 	}
 }
+
+fn test_a_claim_noted_by_a_time_skips_what_was_noted_after_it() {
+	mut r := Ring{}
+	f := transport.CanFrame{
+		id:   0x10
+		data: [u8(1)]
+	}
+	r.note(1, 'vcan0', f, 100, [0], '', false)
+	r.note(2, 'vcan0', f, 200, [0], '', false)
+	assert r.claim_noted_by(0, 'vcan0', f, 150, 50) == none
+	c := r.claim_noted_by(0, 'vcan0', f, 150, 150) or { panic('noted before') }
+	assert c.seq == 1
+	assert r.claim_noted_by(0, 'vcan0', f, 150, 150) == none
+}
