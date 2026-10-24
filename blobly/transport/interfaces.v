@@ -95,19 +95,35 @@ pub fn describe(f Iface) Interface {
 // report, and the software buses; one row per address, the first source's, with a configured
 // bitrate taken from a later one where the first had none.
 pub fn local_interfaces() []Interface {
-	mut out := sysfs_can_ifaces()
-	for f in list_interfaces() or { virtual_ifaces() } {
-		d := describe(f)
+	return merge_interfaces(sysfs_can_ifaces(), (list_interfaces() or { virtual_ifaces() }).map(describe(it)))
+}
+
+// merge_interfaces is `first` with each of `later` it does not have appended; of one it has, the
+// bitrate where `first` had none, and the link kind where `later` read it from the kernel (a vcan
+// not named vcan*, which /sys alone cannot tell from an adapter).
+fn merge_interfaces(first []Interface, later []Interface) []Interface {
+	mut out := first.clone()
+	for d in later {
 		mut seen := false
 		for i, o in out {
 			if canonical_iface(o.address) == canonical_iface(d.address) {
-				if o.bitrate == 0 && d.bitrate > 0 {
-					out[i] = Interface{
-						...o
-						bitrate: d.bitrate
-						desc:    '${o.desc} · ${d.bitrate}'
+				mut m := o
+				if d.kind == 'vcan' && o.kind == 'socketcan' {
+					m = Interface{
+						...m
+						kind:    'vcan'
+						desc:    'virtual CAN'
+						virtual: true
 					}
 				}
+				if m.bitrate == 0 && d.bitrate > 0 {
+					m = Interface{
+						...m
+						bitrate: d.bitrate
+						desc:    '${m.desc} · ${d.bitrate}'
+					}
+				}
+				out[i] = m
 				seen = true
 				break
 			}

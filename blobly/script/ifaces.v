@@ -22,8 +22,9 @@ fn (mut env Env) register_ifaces() {
 fn (env &Env) rates_for(address string) (int, int) {
 	key := transport.wire_key(address)
 	for c in env.chans {
-		if c.carrier.eth_kind() == none && c.nominal > 0 && transport.wire_key(c.iface) == key {
-			return c.nominal, c.data_rate
+		if c.carrier.eth_kind() == none && transport.wire_key(c.iface) == key {
+			// as bus_for prices the row: an unset nominal rate is the default
+			return if c.nominal > 0 { c.nominal } else { project.default_bitrate }, c.data_rate
 		}
 	}
 	return project.address_rates(address)

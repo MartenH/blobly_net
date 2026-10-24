@@ -81,3 +81,30 @@ fn test_a_cansub_browse_window_is_bounded() {
 		assert false, 'window ${w} browsed'
 	}
 }
+
+fn test_the_kernel_kind_of_a_link_wins_the_merge() {
+	sys := [Interface{
+		address: 'bench0'
+		kind:    'socketcan'
+		desc:    'CAN'
+	}, Interface{
+		address: 'can0'
+		kind:    'socketcan'
+		desc:    'PCAN-USB · up'
+	}]
+	ip := [describe(Iface{
+		name:  'bench0'
+		iface: 'bench0'
+		kind:  'vcan'
+	}), describe(Iface{
+		name:    'can0'
+		iface:   'can0'
+		kind:    'can'
+		bitrate: 250000
+	}), describe(virtual_ifaces()[1])]
+	got := merge_interfaces(sys, ip)
+	assert got.len == 3
+	assert got[0].kind == 'vcan' && got[0].virtual && got[0].desc == 'virtual CAN'
+	assert got[1].kind == 'socketcan' && got[1].bitrate == 250000 && got[1].desc == 'PCAN-USB · up · 250000'
+	assert got[2].kind == 'inproc'
+}
