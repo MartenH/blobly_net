@@ -8,8 +8,8 @@
         net.run(1000)
 
 See docs/scripting_python.md."""
-from ._lib import (BloblyError, Cancelled, CarrierFailed, ConnectionLost, FlashFailed, NegativeResponse,
-                   PendingExpired, Refused, RoutingDenied, Timeout, UndecodableAnswer)
+from ._lib import (BloblyError, CarrierFailed, ConnectionLost, FlashFailed, NegativeResponse, PendingExpired,
+                   Refused, RoutingDenied, Timeout, UndecodableAnswer)
 from . import e2e, flash, someip
 from .doip import DoipAnnouncement, doip_listen
 from .flash import BootReport, BootSim, FlashReport
@@ -64,8 +64,8 @@ def wait_released(timeout_ms: float | None = None) -> bool:
     return _sliced(free, ms) is True or free(0) is True
 
 
-__all__ = ["BloblyError", "Cancelled", "CarrierFailed", "Channel", "Channels", "Dtc", "EventLoop", "Exchange",
-           "Extended", "Frame", "FunctionalReply", "Message", "Messages", "NegativeResponse", "PendingExpired", "Project",
+__all__ = ["BloblyError", "CarrierFailed", "Channel", "Channels", "Dtc", "EventLoop", "Exchange", "Extended",
+           "Frame", "FunctionalReply", "Message", "Messages", "NegativeResponse", "PendingExpired", "Project",
            "Refused", "Signal", "Signals", "Snapshot", "SnapshotId", "SnapshotRecord", "Timeout", "UdsClient",
            "UndecodableAnswer", "init", "now_ms", "reference_key", "version", "wait_released"]
 # fault injection and E2E Profile 1 (faults.py, e2e.py)

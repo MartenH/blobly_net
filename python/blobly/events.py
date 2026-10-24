@@ -275,10 +275,11 @@ def _sliced(wait, ms):
             part = min(math.floor(left), SLICE_MS)
 
 
-def _on_thread(call, name="blobly"):
+def _on_thread(call, name="blobly", on_interrupt=None):
     """call()'s answer, the call made on a thread of its own and waited for in slices (_sliced),
-    so Ctrl-C ends the wait; the call itself is one native exchange, bounded by its own wait, and
-    an interrupted one finishes on its thread with its answer dropped."""
+    so Ctrl-C ends the wait; the call itself is one native exchange, bounded by its own wait. An
+    interrupted one finishes on its thread with its answer dropped; with `on_interrupt`, that is
+    asked every 20 ms until it has, a further interrupt meanwhile held back, and the first raised."""
     from . import _lib  # this module's rules need no library; the call does
     box = {}
 
@@ -290,7 +291,16 @@ def _on_thread(call, name="blobly"):
             box["error"] = e
     t = threading.Thread(target=run, name=name, daemon=True)
     t.start()
-    _sliced(lambda part: None if (t.join(part / 1000) or t.is_alive()) else True, -1)
+    try:
+        _sliced(lambda part: None if (t.join(part / 1000) or t.is_alive()) else True, -1)
+    except BaseException:
+        while on_interrupt is not None and t.is_alive():
+            try:
+                on_interrupt()
+                t.join(0.02)
+            except KeyboardInterrupt:
+                pass
+        raise
     if "error" in box:
         raise box["error"]
     return box["answer"]

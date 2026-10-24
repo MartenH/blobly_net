@@ -654,7 +654,8 @@ int bb_uds_cancel(int u);  /* from any thread: the call in progress on u ends wi
                               with BB_ERR_CANCELLED (bb_flash_program: BB_ERR_FLASH, as
                               bb_flash_cancel's). Nothing when no call is in progress: a cancel asked
                               just before a call begins is not seen by it, so a host asks again until
-                              the call has returned */
+                              the call has returned — and starts no other call on u meanwhile, which
+                              a cancel still being asked would end too */
 int bb_uds_replaces(int u);  /* u's connection replaces an earlier one the host had (a client
                                 reopened after a stop): on DoIP a 0x27 key is then refused until
                                 its level's seed is answered on this connection, as after the

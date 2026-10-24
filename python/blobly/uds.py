@@ -194,38 +194,20 @@ _data = _lib.byte_data  # the one rule for a byte-string argument
 
 
 def _cancellable(handles: Sequence[int], work: Callable[[], object]):
-    """work()'s answer: a UDS call on `handles`, its errors read where it ran. On the main thread
-    it runs on a thread of its own, waited for in slices (events._sliced), so Ctrl-C ends the
-    wait: the call is cancelled (bb_uds_cancel, asked again until it has returned, since a cancel
-    before the call began is not its) and KeyboardInterrupt raised. Elsewhere, where Python raises
-    no interrupt, it runs in place."""
+    """work()'s answer: a call on `handles` that asks the ECU, its errors read where it ran. On the
+    main thread it runs on a thread of its own (events._on_thread), so Ctrl-C ends the wait: the
+    call is cancelled (bb_uds_cancel, asked again until it has returned, since a cancel before the
+    call began is not its) and KeyboardInterrupt raised. Elsewhere, where Python raises no
+    interrupt, it runs in place."""
     lib = _lib.lib()  # on this thread: its rules (a flash's progress callback) are this thread's
     if threading.current_thread() is not threading.main_thread():
         return work()
-    from .events import _sliced
-    box: dict = {}
-    done = threading.Event()
+    from .events import _on_thread
 
-    def run():
-        try:
-            _lib.lib()  # attaches this thread
-            box["answer"] = work()
-        except BaseException as e:  # carried to the caller's thread
-            box["error"] = e
-        done.set()
-    t = threading.Thread(target=run, name="blobly-uds", daemon=True)
-    t.start()
-    try:
-        _sliced(lambda part: True if done.wait(part / 1000) else None, -1)
-    except BaseException:
-        while not done.is_set():
-            for h in handles:
-                lib.bb_uds_cancel(h)
-            done.wait(0.02)
-        raise
-    if "error" in box:
-        raise box["error"]
-    return box["answer"]
+    def cancel() -> None:
+        for h in handles:
+            lib.bb_uds_cancel(h)
+    return _on_thread(work, "blobly-uds", cancel)
 
 
 def _put(fn, *args) -> bytes:
@@ -438,9 +420,9 @@ class UdsClient:
                 e.exchange = None
         return e
 
-    def _call(self, fn, *args) -> int:
+    def _call(self, fn, *args, asks: bool = True) -> int:
         with self._lock:
-            return self._call_on(self._handle(), fn, *args)
+            return self._call_on(self._handle(), fn, *args, asks=asks)
 
     def _say_keep_alive(self, h: int) -> None:
         """A keep-alive failure since the previous call, said once (KeepAliveWarning)."""
@@ -479,8 +461,15 @@ class UdsClient:
             _lib.check(_lib.lib().bb_uds_keep_alive_status(self._h, ctypes.byref(k)))
             return KeepAliveStatus(k.period_ms, k.sent, k.failures, bool(k.running))
 
-    def _call_on(self, h: int, fn, *args) -> int:
+    def _call_on(self, h: int, fn, *args, asks: bool = True) -> int:
+        """fn(h, *args); `asks` False for a call that only reads or states the handle's own settings,
+        made in place."""
         self._say_keep_alive(h)
+        if not asks:
+            rc = fn(h, *args)
+            if rc < 0:
+                raise self._enrich(h, _lib.error(rc))
+            return rc
         return self._exchange(h, fn, *args)
 
     def _exchange(self, h: int, fn, *args) -> int:
@@ -698,25 +687,25 @@ class UdsClient:
         size varies)."""
         did, size = _int("did", did), _int("size", size)
         with self._lock:
-            self._call(_lib.lib().bb_uds_did_size, did, size)
+            self._call(_lib.lib().bb_uds_did_size, did, size, asks=False)
             self._did_sizes[did] = size  # kept for the next connection
 
     def ext_record_size(self, record: int, size: int) -> None:
         """States an extended data record's size (blobly_emb's 0x01..0x03 are known)."""
         record, size = _int("record", record), _int("size", size)
         with self._lock:
-            self._call(_lib.lib().bb_uds_ext_record_size, record, size)
+            self._call(_lib.lib().bb_uds_ext_record_size, record, size, asks=False)
             self._ext_sizes[record] = size  # kept for the next connection
 
     def _state_waits(self, h: int, stated: dict[str, int]) -> None:
         """States the waits `stated` names on handle h, one by one."""
         lib = _lib.lib()
         for name, ms in stated.items():
-            self._call_on(h, lib.bb_uds_set_wait, _lib.WAITS[name], ms)
+            self._call_on(h, lib.bb_uds_set_wait, _lib.WAITS[name], ms, asks=False)
 
     def _get_timing(self, name: str) -> int:
         t = _lib.BbUdsTiming()
-        self._call(_lib.lib().bb_uds_get_timing, ctypes.byref(t))
+        self._call(_lib.lib().bb_uds_get_timing, ctypes.byref(t), asks=False)
         return getattr(t, name)
 
     def _set_timing(self, name: str, ms: int) -> None:
@@ -782,7 +771,8 @@ class UdsClient:
                 # the key would go to the new target, answering the old one's seed
                 raise BloblyError(f"{self!r}: retarget inside a security_access key_fn", _lib.BB_ERR_STATE)
             h = self._handle()
-            self._call_on(h, _lib.lib().bb_uds_retarget, None if a is None else ctypes.byref(ctypes.c_int64(a)))
+            self._call_on(h, _lib.lib().bb_uds_retarget, None if a is None else ctypes.byref(ctypes.c_int64(a)),
+                          asks=False)
             self._target = a
             self.ecu = self._entity if a is None else a
 

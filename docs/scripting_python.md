@@ -156,7 +156,9 @@ about 100 ms of Ctrl-C. A UDS request made on the main thread runs on a thread o
 cancels it (the engine's waits end within 20 ms) and raises `KeyboardInterrupt` at once, even on an
 ECU that answers responsePending (0x78) for ever. The request may have gone out; on DoIP the
 connection is let go, and the client's next call opens another. The hop costs about 0.15 ms a
-request; on any other thread, where Python raises no interrupt, a request is made in place. A `with` block stops the project on the way out, an
+request; on any other thread, where Python raises no interrupt, a request is made in place.
+Opening a client's connection (`ch.uds()`, or the first call after a start, up to 7 s on DoIP) is
+one call still, and Ctrl-C lands when it returns. A `with` block stops the project on the way out, an
 interrupt included.
 
 ---
@@ -1104,7 +1106,6 @@ message and its code:
 | `blobly.CarrierFailed` | The carrier failed under the request: the bus (a failed write), or the ISO-TP channel (a frame lost mid-transfer). On DoIP: a negative acknowledgement, or a connection that could not be opened; `blobly.ConnectionLost`, its subclass, is the connection gone ([DoIP](#11-doip)). |
 | `blobly.RoutingDenied` | DoIP only, when the client opens: the entity denied the routing activation ([DoIP](#11-doip)). |
 | `blobly.WriteGated` | A `NodeClient.write` the DID's write gate does not allow yet: nothing was sent ([Nodes and their DIDs](#nodes-and-their-dids)). A `Refused`, code -13. |
-| `blobly.Cancelled` | The request was cancelled before its answer: what Ctrl-C does to a request in progress, which raises `KeyboardInterrupt` in its place. The request may have gone out; on DoIP the connection is let go and the next call opens another. Code -14. |
 | `blobly.Refused` | The request did not go out whole, so the ECU was not asked: an argument out of range (a byte, a DID, a 24-bit group), a sub-function with the suppress bit (0x80) given to a call that waits for its answer (that is `raw_suppressed`), an even level to `security_access`, a request longer than ISO-TP carries (4095 bytes), a listen-only row. |
 
 `diag.last` is the last exchange, whichever call made it and however it ended: the request as it
@@ -1691,7 +1692,6 @@ A UDS call's failures are subclasses, each with a code of its own: see
 | -11 | `blobly.FlashFailed` | a flash ran, and the bootloader's answers say it did not happen |
 | -12 | `blobly.E2eError` | a frame an expectation required to pass its E2E check did not |
 | -13 | `blobly.WriteGated` | a described write not sent: the connection lacks the session or level its gate needs (a `Refused`) |
-| -14 | `blobly.Cancelled` | a UDS request cancelled before its answer (Ctrl-C raises `KeyboardInterrupt` in its place) |
 
 ```python
 import blobly
@@ -2310,7 +2310,7 @@ effect, and nothing changed.
 | `str(e)` | Why, in the engine's words. |
 | `e.code` | -1. |
 
-### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`, `ConnectionLost`, `RoutingDenied`, `FlashFailed`, `WriteGated`, `Cancelled`
+### `BloblyError`, `Refused`, `NegativeResponse`, `Timeout`, `PendingExpired`, `UndecodableAnswer`, `CarrierFailed`, `ConnectionLost`, `RoutingDenied`, `FlashFailed`, `WriteGated`
 
 `blobly.BloblyError(message, code=-1)`, an `Exception`: the engine refused, or a call failed. The
 others are its subclasses (see [Errors](#17-errors) and
@@ -2319,7 +2319,7 @@ others are its subclasses (see [Errors](#17-errors) and
 | member | what |
 |---|---|
 | `str(e)` | The engine's message; for an expectation's `Timeout`, what was expected and what came instead. |
-| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -10 the ways a UDS call fails; -11 a flash's own verdict; -12 a frame that failed its E2E check (`E2eError`); -13 a described write its gate does not allow yet; -14 a UDS request cancelled (`Cancelled`). |
+| `e.code` | -1 refused, -2 no such handle, -3 the wrong state; -4 to -10 the ways a UDS call fails; -11 a flash's own verdict; -12 a frame that failed its E2E check (`E2eError`); -13 a described write its gate does not allow yet. |
 | `e.nrc`, `e.nrc_name` | `NegativeResponse` only: the code, and ISO 14229-1's name for it. |
 | `e.exchange` | `NegativeResponse` and `ConnectionLost`: the `Exchange` it ended. |
 | `e.routing_code`, `e.routing_name`, `e.hint`, `e.tester` | `RoutingDenied` only: the routing activation response code, ISO 13400-2's meaning, what to do about it, and the tester address asked for. |
