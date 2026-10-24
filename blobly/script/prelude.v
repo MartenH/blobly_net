@@ -1097,7 +1097,7 @@ function expect(channel, id, timeout_ms, opts)
     local f = bus.recv(channel, left > 0 and left or 0)
     if f and is_frame(f, id, ext) then return f end
   until __now_ms() >= deadline
-  error(string.format("expect: no frame id=0x%X%s on %s within %dms", id, kind_text(ext), channel, timeout_ms), 2)
+  error(string.format("expect: no frame id=0x%X%s on %s within ", id, kind_text(ext), channel) .. timeout_ms .. "ms", 2)
 end
 
 -- expect_signal(channel, id, signal, want, timeout_ms [, opts]): block until a decoded signal of
@@ -1130,7 +1130,7 @@ function expect_signal(channel, id, signal, want, timeout_ms, opts)
     error("expect_signal: " .. frames .. " frame(s) came within " .. timeout_ms .. "ms, none carrying " .. signal, 2)
   end
   if frames == 0 then
-    error(string.format("expect_signal: no frame id=0x%X%s on %s within %dms", id, kind_text(ext), channel, timeout_ms), 2)
+    error(string.format("expect_signal: no frame id=0x%X%s on %s within ", id, kind_text(ext), channel) .. timeout_ms .. "ms", 2)
   end
   error("expect_signal: " .. signal .. " did not match within " .. timeout_ms .. "ms", 2)
 end
@@ -1271,7 +1271,7 @@ local function deliver_inflight()
     local d = q[1]
     -- stops as soon as an inner run() has finished this frame (what it delivered came after), or
     -- a coroutine died on it
-    while q[1] == d and d.i <= (d.upto or #__on_msg) and not died_on(d) do
+    while q[1] == d and d.i <= math.min(d.upto or #__on_msg, #__on_msg) and not died_on(d) do
       local h = __on_msg[d.i]
       d.i = d.i + 1
       if h.channel == d.ch and (h.id == nil or is_frame(d.f, h.id, h.ext)) then
@@ -1289,9 +1289,14 @@ end
 -- __handler_mark(): how much is registered, and how many frames taken up, now;
 -- __handler_restore(m) drops what was registered since. A frame still in flight goes on from the
 -- first dropped place, where a handler registered later reaches it; one taken up since the mark
--- reaches only the handlers registered before it
+-- reaches only the handlers registered before it. A test that ends while another begun after it
+-- is still open (the later one suspended in a coroutine) lowers that one`s mark with it, so what
+-- the later test registers after that is still its own
+local open_marks = {}
 function __handler_mark()
-  return { msg = #__on_msg, health = #__on_health, timers = #__timers, listened = #__listened, taken = taken }
+  local m = { msg = #__on_msg, health = #__on_health, timers = #__timers, listened = #__listened, taken = taken }
+  open_marks[#open_marks + 1] = m
+  return m
 end
 local function truncate(t, n)
   for i = #t, n + 1, -1 do t[i] = nil end
@@ -1301,6 +1306,17 @@ function __handler_restore(m)
   truncate(__on_health, m.health)
   truncate(__timers, m.timers)
   truncate(__listened, m.listened)
+  for k = #open_marks, 1, -1 do
+    local o = open_marks[k]
+    if o == m then
+      table.remove(open_marks, k)
+    else
+      o.msg = math.min(o.msg, m.msg)
+      o.health = math.min(o.health, m.health)
+      o.timers = math.min(o.timers, m.timers)
+      o.listened = math.min(o.listened, m.listened)
+    end
+  end
   for _, d in ipairs(inflight) do
     if d.i > m.msg + 1 then d.i = m.msg + 1 end
     if d.n > m.taken and (d.upto == nil or d.upto > m.msg) then d.upto = m.msg end

@@ -1507,3 +1507,41 @@ fn test_a_frame_a_test_left_in_flight_ends_with_it() {
 	assert said.num('got') == 0, said.lines.str()
 	assert said.num('outside') == 1, said.lines.str()
 }
+
+// A test that ends while a test begun inside it is suspended in a coroutine lowers that one's
+// mark: what the later test registers after it is resumed is still its own, and a frame it
+// leaves in flight is delivered without reaching past the handlers there are.
+fn test_tests_that_end_out_of_order_keep_their_scopes() {
+	mut env, said := events_env(['CAN1'], ['inproc:EV_K6'])
+	defer { env.close() }
+	env.bus_for('CAN1')!
+	mut tx := transport.open('inproc:EV_K6')!
+	defer { tx.close() }
+	tx.send(transport.CanFrame{ id: 0x30, data: [u8(1)] })!
+	env.run_source('
+		local inner
+		test("outer", function()
+			on_message("CAN1", nil, function(f) end)
+			inner = coroutine.create(function()
+				test("inner", function()
+					coroutine.yield()
+					on_message("CAN1", nil, function(f) coroutine.yield() end)
+					on_message("CAN1", nil, function(f) end)
+					coroutine.wrap(function() run(100) end)()
+				end)
+			end)
+			coroutine.resume(inner)
+		end)
+		log("between " .. #__on_msg)
+		coroutine.resume(inner)
+		log("after " .. #__on_msg)
+		local ok, e = pcall(run, 30)
+		log("run " .. tostring(ok) .. " " .. tostring(e))
+		local ok2, e2 = pcall(expect_signal, "CAN1", 0x7FE, "S", 1, 1.5)
+		log("timeout " .. tostring(string.find(e2, "within 1.5ms", 1, true) ~= nil))
+	')!
+	assert said.lines.contains('between 0'), said.lines.str()
+	assert said.lines.contains('after 0'), said.lines.str()
+	assert said.lines.contains('run true nil'), said.lines.str()
+	assert said.lines.contains('timeout true'), said.lines.str()
+}
