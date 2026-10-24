@@ -532,6 +532,10 @@ fn cansub_browse_until(window time.Duration, until i64) !CansubBrowse {
 	if until > 0 && until < deadline {
 		deadline = until
 	}
+	// a window the setup used up heard nothing: said, not passed off as nothing attached
+	if until > 0 && time.ticks() >= until {
+		return error('finding the network interfaces to ask took the whole browse window; nothing was heard')
+	}
 	mut buf := []u8{len: 9000}
 	mut found := []CansubService{}
 	for {
