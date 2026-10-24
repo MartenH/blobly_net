@@ -866,6 +866,8 @@ end
 --   j1939.faults(ch)                          -> { { kind, sa, da, pgn, detail, text }, ... }: the
 --                                             faults since the last call (pgn nil where none was
 --                                             announced); kind as blobly/j1939 names it
+--   j1939.dropped(ch)                         -> how many messages and faults were dropped untaken
+--                                             (1024 of each are kept)
 --   j1939.addresses(ch [, window_ms])         -> { { sa, t_ms, name = { raw, identity,
 --                                             manufacturer, ecu_instance, function_instance,
 --                                             function, function_name, vehicle_system,
@@ -908,6 +910,7 @@ function j1939.expect(channel, pgn, timeout_ms, sa)
   error(string.format("j1939.expect: %s: no %s within %d ms; %s", channel, want, ms, instead), 2)
 end
 function j1939.faults(channel) return __j1939_faults(channel) end
+function j1939.dropped(channel) return __j1939_dropped(channel) end
 function j1939.addresses(channel, window_ms)
   return __j1939_addresses(channel, jms("j1939.addresses", window_ms, 0))
 end

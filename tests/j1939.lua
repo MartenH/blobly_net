@@ -63,6 +63,7 @@ test("a BAM is one message, decoded by PGN", function()
   check.equal(m.signals.Tail, 0x2A)
   check.truthy(m.t_start_ms <= m.t_ms, "the announcement before the last packet")
   check.equal(#j1939.faults("J1939"), 0)
+  check.equal(j1939.dropped("J1939"), 0)
 end)
 
 test("an RTS/CTS connection, played from both sides", function()

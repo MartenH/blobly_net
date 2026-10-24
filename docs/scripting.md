@@ -686,6 +686,7 @@ acknowledgement, no address claim — a script that is a node on the bench sends
 | `j1939.messages(channel [, timeout_ms])` | every completed message waiting, oldest first; none waiting, the channel is read until one completes or `timeout_ms` (default 0: one look) has passed, `{}` then |
 | `j1939.expect(channel, pgn [, timeout_ms [, sa]])` | the first completed message of `pgn` (from `sa`), waited for at most `timeout_ms` (default 1000); an error naming what came instead otherwise. Messages of other groups ahead of it are consumed, those after it stay queued |
 | `j1939.faults(channel)` | the faults since the last call: `{ kind, sa, da, pgn, detail, text }` each (`pgn` nil where nothing was announced, `text` the line the GUI's Log writes); `kind` is `sequence` (a packet dropped or repeated), `aborted`, `timeout` (T1 750 ms for a BAM, T3 1250 ms for a connection, found once a read finds nothing queued), `malformed`, `orphan`, `restarted`, `overflow`, `padding`, `off_spec` or `truncated` |
+| `j1939.dropped(channel)` | how many messages and faults were dropped untaken, the queues (1024 of each) being full |
 | `j1939.addresses(channel [, window_ms])` | who holds which source address, by address, after reading the channel for `window_ms` (default 0: nothing read): `{ sa, t_ms, name = { raw, identity, manufacturer, ecu_instance, function_instance, function, function_name, vehicle_system, vehicle_system_instance, industry_group, arbitrary_address_capable } }`. The lower NAME keeps a contested address, a Cannot Claim releases one; `function_name` names the 32 global functions, nil for others; `raw` is the NAME's 64 bits as a Lua integer, negative where bit 63 (arbitrary address capable) is set: `string.format("%016X", raw)` prints it |
 
 A message is `{ pgn, sa, da, priority, bam, data, packets, t_ms, t_start_ms, name, signals,
@@ -693,7 +694,8 @@ note }`: `da` 0xFF for a BAM, `data` exactly the announced size, `t_ms` and `t_s
 last packet and its announcement were read (`now_ms()`'s clock). `name` and `signals` (physical values) are its
 decode — the message defined at exactly that PGN and source address, else by PGN alone — and both
 are nil where nothing defines the group, or where definitions disagree about its layout, when
-`note` says why. A listener keeps 1024 messages and 1024 faults untaken; past that the oldest go.
+`note` says why. A listener keeps 1024 messages and 1024 faults untaken; past that the oldest go,
+and `j1939.dropped` counts them.
 
 ```lua
 -- projects/j1939-script.blobnet: Peer sends a 20-byte BAM of PGN 0xFF10, J1939 reads it

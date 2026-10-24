@@ -16,6 +16,15 @@ fn (mut env Env) register_j1939() {
 	env.st.register('__j1939_wait', l_j1939_wait)
 	env.st.register('__j1939_faults', l_j1939_faults)
 	env.st.register('__j1939_addresses', l_j1939_addresses)
+	env.st.register('__j1939_dropped', l_j1939_dropped)
+}
+
+// __j1939_dropped(channel) -> the messages and faults dropped untaken, the queues being full
+fn l_j1939_dropped(l lua.State) i32 {
+	mut env := env_of(l)
+	lis := env.j1939_of(l.arg_str(1)) or { return l.fail(err.msg()) }
+	l.push_int(lis.dropped)
+	return 1
 }
 
 // j1939_says is whether channel `ci`'s wire reads as J1939: a channel on it whose row is ticked
@@ -90,6 +99,11 @@ fn (mut env Env) j1939_read(name string, lis &j1939.Listener, deadline u64, unti
 			}
 			env.j1939_idle(name)
 			if left == 0 {
+				// what a whole-millisecond wait cannot ask for is slept, not skipped
+				rest := i64(deadline) - i64(time.sys_mono_now())
+				if rest > 0 {
+					time.sleep(rest * time.nanosecond)
+				}
 				return
 			}
 			continue
