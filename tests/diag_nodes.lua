@@ -48,6 +48,7 @@ test("a DID is read by name, decoded by its layout", function()
   check.equal(d:read("SteerLimit"), 360)
   check.equal(d:read(0x0110), 360)
   check.equal(d:read(272.0), 360) -- a number is an identifier, an integral float too
+  check.truthy(not pcall(d.read, d, nil), "a DID that is neither a name nor an identifier")
   local ok, err = pcall(d.read, d, "0x0110") -- a string is a name, whatever it spells
   check.truthy(not ok and string.find(tostring(err), "no DID \"0x0110\"", 1, true), tostring(err))
   check.equal(d:read("parameter status").SteerLimit, 0) -- by parameter: uncoded

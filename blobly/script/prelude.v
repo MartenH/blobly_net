@@ -616,7 +616,12 @@ function uds.node(name, opts)
   function self:retarget() error("uds.node: a node connection addresses its node; retarget a uds.open connection instead", 2) end
   -- a DID is its identifier when a number (one that is not an integer is refused), else its name
   -- (a numeric string is a name)
-  local function by_id(did) return type(did) == "number" end
+  local function by_id(did)
+    if type(did) ~= "number" and type(did) ~= "string" then
+      error("a DID is its name (a string) or its identifier (a number), not " .. tostring(did), 3)
+    end
+    return type(did) == "number"
+  end
   function self:dids() return __node_dids(n) end
   function self:did(did) return __node_did(n, did, by_id(did)) end
   function self:read(did) return __node_read(self.handle, n, did, by_id(did)) end
@@ -644,12 +649,18 @@ function uds.node(name, opts)
   local function each(rs) for _, r in ipairs(rs) do named(r) end return rs end
   local dtcs, supported, ids = self.dtcs, self.supported_dtcs, self.snapshot_ids
   local snapshot, extended = self.snapshot, self.extended
-  -- named by this node only while the connection addresses it (a shared one may be retargeted)
-  function self:dtcs(mask) __node_on(self.handle, n) return each(dtcs(self, mask)) end
-  function self:supported_dtcs() __node_on(self.handle, n) return each(supported(self)) end
-  function self:snapshot_ids() __node_on(self.handle, n) return each(ids(self)) end
-  function self:snapshot(dtc, record) __node_on(self.handle, n) return named(snapshot(self, dtc, record)) end
-  function self:extended(dtc, record) __node_on(self.handle, n) return named(extended(self, dtc, record)) end
+  function self:dtcs(mask) return each(dtcs(self, mask)) end
+  function self:supported_dtcs() return each(supported(self)) end
+  function self:snapshot_ids() return each(ids(self)) end
+  function self:snapshot(dtc, record) return named(snapshot(self, dtc, record)) end
+  function self:extended(dtc, record) return named(extended(self, dtc, record)) end
+  -- every call that asks the ECU, only while the connection addresses this node: a DoIP connection
+  -- is shared with uds.open, which may retarget it (__node_on also puts the description back)
+  for k, f in pairs(self) do
+    if type(f) == "function" and k ~= "close" and k ~= "retarget" and k ~= "dids" and k ~= "did" then
+      self[k] = function(s, ...) __node_on(s.handle, n) return f(s, ...) end
+    end
+  end
   return self
 end
 

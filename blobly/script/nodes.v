@@ -64,14 +64,9 @@ fn l_uds_node(l lua.State) i32 {
 		}
 		return l.fail(err.msg())
 	}
-	// the description's DID sizes: a snapshot (0x19 04) need not read a DID to learn one
-	for id, size in env.sys.nodes[n].desc.did_sizes() {
-		// learned, not stated (set_did_size): a retarget to another ECU forgets it, as it forgets
-		// what was read; a size stated on a reused connection wins
-		if id !in env.conns[h].cli.did_lens {
-			env.conns[h].cli.did_lens[id] = size
-		}
-	}
+	// a reused DoIP connection retargeted elsewhere addresses another ECU, not this node
+	env.on_node(&env.conns[h], env.sys.nodes[n].name) or { return l.fail(err.msg()) }
+	env.seed_sizes(h, n)
 	l.push_int(h)
 	l.push_int(n)
 	l.push_str(channel)
@@ -255,7 +250,20 @@ fn l_node_on(l lua.State) i32 {
 	node := node_arg(l, 2) or { return l.fail(err.msg()) }
 	c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
 	env.on_node(c, node.name) or { return l.fail(err.msg()) }
+	env.seed_sizes(int(l.arg_int(1)), int(l.arg_int(2)))
 	return 0
+}
+
+// seed_sizes puts node n's description sizes on connection h: a snapshot (0x19 04) need not read a
+// DID to learn one. Learned, not stated (set_did_size), so a retarget to another ECU forgets them as
+// it forgets what was read, and they are put back while the connection addresses the node again; a
+// size stated or read on the connection wins.
+fn (mut env Env) seed_sizes(h int, n int) {
+	for id, size in env.sys.nodes[n].desc.did_sizes() {
+		if id !in env.conns[h].cli.did_lens {
+			env.conns[h].cli.did_lens[id] = size
+		}
+	}
 }
 
 // on_node refuses a DoIP connection retargeted away from its channel's entity (a uds.open one that
