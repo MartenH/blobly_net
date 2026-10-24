@@ -801,6 +801,24 @@ fn no_read_tx(mut peer transport.Bus, tx_id u32) ?transport.CanFrame {
 	return read_tx(mut peer, tx_id, tx_silence_ms)
 }
 
+// missing_tx says why a frame `must_read_tx` waited for did not come: what the sender thread's
+// `send` returned, if it has, and whether a frame was queued on the peer after the deadline.
+fn missing_tx(mut peer transport.Bus, done chan string, what string) string {
+	mut sender := 'the send is still running'
+	select {
+		msg := <-done {
+			sender = 'the send ended: ${msg}'
+		}
+		else {}
+	}
+	late := if f := peer.recv(0) {
+		'a frame 0x${f.id:03X} [${f.data.hex()}] was queued after the deadline'
+	} else {
+		'nothing queued after the deadline'
+	}
+	return '${what} (${sender}; ${late}; ${peer.diagnostics().dropped} dropped)'
+}
+
 fn read_tx(mut peer transport.Bus, tx_id u32, timeout_ms int) ?transport.CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
@@ -840,7 +858,7 @@ fn test_block_size_stops_the_sender_until_the_next_flow_control() {
 		done <- 'sent'
 	}()
 	ff := must_read_tx(mut peer, 0x7E0) or {
-		assert false, 'no First Frame'
+		assert false, missing_tx(mut peer, done, 'no First Frame')
 		return
 	}
 	assert (ff.data[0] & 0xF0) == 0x10, 'expected a First Frame'
@@ -848,7 +866,7 @@ fn test_block_size_stops_the_sender_until_the_next_flow_control() {
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 2, 0] }) or { assert false, err.msg() }
 	for i in 0 .. 2 {
 		cf := must_read_tx(mut peer, 0x7E0) or {
-			assert false, 'Consecutive Frame ${i + 1} of the first block did not arrive'
+			assert false, missing_tx(mut peer, done, 'Consecutive Frame ${i + 1} of the first block did not arrive')
 			return
 		}
 		assert (cf.data[0] & 0xF0) == 0x20
@@ -861,7 +879,7 @@ fn test_block_size_stops_the_sender_until_the_next_flow_control() {
 	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
 	for i in 0 .. 2 {
 		cf := must_read_tx(mut peer, 0x7E0) or {
-			assert false, 'Consecutive Frame ${i + 3} did not arrive after the second Flow Control'
+			assert false, missing_tx(mut peer, done, 'Consecutive Frame ${i + 3} did not arrive after the second Flow Control')
 			return
 		}
 		assert (cf.data[0] & 0xF0) == 0x20

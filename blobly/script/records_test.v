@@ -29,9 +29,12 @@ fn test_snapshot_and_extended_data_helpers() {
 	defer { env.close() }
 	mut stop := false
 	mut ch := isotp.open_software('inproc:RECS', 0x7E8, 0x7E0, false) or { panic(err) }
+	// the client's Flow Control and the answers wait on two threads a loaded runner may stall;
+	// both waits end at once when the frame comes, so only a failure waits them out
+	ch.fc_window_ms = 10_000
 	t := spawn serve_default(mut ch, &stop)
 	env.run_source('
-		local diag = uds.open("CAN1")
+		local diag = uds.open("CAN1", { timeout_ms = 10000 })
 				test("snapshots and extended data (0x19 03 / 04 / 06)", function()
 		  local ids = diag:snapshot_ids()
 		  check.equal(#ids, 1)

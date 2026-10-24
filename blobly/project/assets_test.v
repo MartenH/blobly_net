@@ -217,9 +217,17 @@ fn test_unc_stays_absolute() {
 }
 
 // A Windows project opened on Linux: its drive and UNC references are absolute whatever this
-// host's grammar says, and a Save As leaves them as written.
+// host's grammar says, and a Save As leaves them as written. On Windows a drive path is NATIVE,
+// so an unsaved project's one is given a relative spelling instead, which a POSIX target
+// directory makes meaningless to assert here.
 fn test_foreign_absolute_references_are_left_alone() {
-	for ref in ['C:/bench/net.arxml#Body', 'C:\\bench\\x.dbc', '\\\\srv\\share\\x.dbc', '//srv/share/x.dbc'] {
+	for ref in ['C:/bench/net.arxml#Body', 'C:\\bench\\x.dbc'] {
+		assert rebase_ref('/home/u/old', '/home/u/new', ref) == ref
+		$if !windows {
+			assert rebase_ref('', '/home/u/new', ref) == ref
+		}
+	}
+	for ref in ['\\\\srv\\share\\x.dbc', '//srv/share/x.dbc'] {
 		assert rebase_ref('/home/u/old', '/home/u/new', ref) == ref
 		assert rebase_ref('', '/home/u/new', ref) == ref
 	}
