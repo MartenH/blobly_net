@@ -1104,6 +1104,97 @@ int bb_uds_write_described(int u, int n, int d, const char *const *texts, int k,
                            bb_write_needs *needs);
 #endif /* BB_FROM_V */
 
+/* J1939 on a row's frames (cmd/libblobly/j1939.v, blobly/j1939): the transport protocol (BAM and
+ * RTS/CTS) rejoined and the address directory, read from the frames a bus handle reads — a frame
+ * is still consumed once, by whoever reads it, and what the handle sends is never in it. A
+ * LISTENER: nothing is sent, no CTS, no acknowledgement, no address claim.
+ *
+ * bb_j1939_attach binds handle h to row `row` of the run (BB_ERR_STATE before bb_start): every
+ * frame bb_bus_recv reads on it from then on is fed to the listener, and a receive that finds
+ * nothing queued (BB_NONE) times the stalled transfers out (T1 750 ms for a BAM, T3 1250 ms for a
+ * connection). Nothing decides a bus IS J1939, so it is opt-in: with force 0 it attaches only where
+ * the row's wire says so — a row of the project on it, enabled or not, ticked `j1939:` or with a
+ * database that declares J1939 (VFrameFormat J1939PG), the GUI's per-wire census — and answers 0
+ * elsewhere; with force 1 it
+ * attaches on any CAN row. 1: listening. Attaching a handle already listening in this run keeps
+ * what it has.
+ *
+ * bb_j1939_take_message takes the oldest completed message (BB_NONE when none waits): its parameter
+ * group, addresses and data, and its decode by the trace's rule over the row's database FILES
+ * (candb.pgn_message_in: the message at exactly that PGN and source address, else by PGN alone,
+ * nothing where definitions disagree — `note` says why), mapped into the row's merged catalog —
+ * `message` its position there (bb_message_info), none where the catalog holds another layout,
+ * values[k] / active[k] its signals as bb_decode gives them (cap at least its signal count, else
+ * BB_ERR with the message kept). bb_j1939_take_fault takes the oldest fault. A listener keeps 1024 of
+ * each untaken; past that the oldest is dropped, and bb_j1939_dropped counts them.
+ * bb_j1939_address_count / bb_j1939_address_info are the directory as it stands, by address: who
+ * claimed which source address with which NAME, contention settled by J1939-81 (the lower NAME
+ * keeps it), a Cannot Claim releasing it. All on the thread that uses the handle. */
+#define BB_J1939_MAX 1785      /* the longest transport-protocol message, in bytes */
+#define BB_J1939_TEXT 256      /* bb_j1939_fault's texts and bb_j1939_message.note, NUL included */
+typedef struct bb_j1939_message {
+	uint32_t pgn;
+	uint8_t  sa;
+	uint8_t  da;          /* 0xFF for a BAM */
+	uint8_t  priority;    /* the announcement's */
+	uint8_t  bam;         /* 1 a BAM, 0 an RTS/CTS connection */
+	int32_t  len;
+	int32_t  message;     /* its position in the row's databases (bb_message_info), -1 none */
+	int64_t  t_start_ns;  /* when the announcement and the last packet were read (bb_now_ns) */
+	int64_t  t_end_ns;
+	uint8_t  data[BB_J1939_MAX];
+	char     note[BB_J1939_TEXT]; /* why it is not decoded where definitions disagree, else "" */
+} bb_j1939_message;
+/* What went wrong with a transfer (j1939.FaultKind). */
+enum bb_j1939_fault_kind {
+	BB_J1939_ORPHAN = 0,     /* a data frame with no transfer to belong to */
+	BB_J1939_SEQUENCE = 1,   /* a packet out of sequence (dropped or repeated): transfer abandoned */
+	BB_J1939_RESTARTED = 2,  /* a new announcement on a pair still mid-transfer */
+	BB_J1939_ABORTED = 3,    /* a Connection Abort, its reason in the detail */
+	BB_J1939_TIMEOUT = 4,    /* nothing within T1 / T3 */
+	BB_J1939_MALFORMED = 5,  /* a control frame J1939-21 does not permit */
+	BB_J1939_OVERFLOW = 6,   /* more transfers open than the listener keeps (64) */
+	BB_J1939_PADDING = 7,    /* the last packet not padded with 0xFF (the message is kept) */
+	BB_J1939_OFF_SPEC = 8,   /* a reserved control byte not 0xFF (the frame is read as ever) */
+	BB_J1939_TRUNCATED = 9   /* still open when the observation ended */
+};
+typedef struct bb_j1939_fault {
+	int32_t  kind;        /* an enum bb_j1939_fault_kind */
+	uint8_t  sa;
+	uint8_t  da;
+	uint8_t  announced;   /* the transfer announced its parameter group: pgn is it */
+	uint32_t pgn;
+	char     detail[BB_J1939_TEXT];
+	char     text[BB_J1939_TEXT]; /* the whole fault in words, the line the GUI's Log writes */
+} bb_j1939_fault;
+/* A held source address and the NAME that claimed it (j1939.Name, J1939-81's fields). */
+typedef struct bb_j1939_address {
+	uint8_t  sa;
+	uint64_t name;        /* the 64-bit NAME as claimed */
+	uint32_t identity;
+	uint16_t manufacturer;
+	uint8_t  ecu_instance;
+	uint8_t  function_instance;
+	uint8_t  function;
+	uint8_t  vehicle_system;
+	uint8_t  vehicle_system_instance;
+	uint8_t  industry_group;
+	uint8_t  arbitrary_address_capable;
+	int64_t  t_ns;        /* when the claim was read (bb_now_ns) */
+} bb_j1939_address;
+#ifndef BB_FROM_V
+int bb_j1939_attach(int h, int row, int force);    /* 1 listening, 0 not (force 0, a row that
+                                                      does not say J1939) */
+int bb_j1939_take_message(int h, bb_j1939_message *out, double *values, uint8_t *active, int cap);
+int bb_j1939_take_fault(int h, bb_j1939_fault *out);
+int bb_j1939_dropped(int h);                       /* >= 0 */
+int bb_j1939_address_count(int h);                 /* >= 0 */
+int bb_j1939_address_info(int h, int k, bb_j1939_address *out);
+int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the length of the global
+                                                      function's name; "" for one J1939 names
+                                                      per industry, or past the 32 global ones */
+#endif /* BB_FROM_V */
+
 #ifdef __cplusplus
 }
 #endif

@@ -849,6 +849,72 @@ function decode(channel, id, data, ext, as)
   return __decode(channel, id, ext or false, data, as or "physical")
 end
 
+-- ============================ J1939 ============================
+-- j1939: SAE J1939 on a channel, read from the frames the script reads there (bus.recv, run(),
+-- the waits below): multi-packet messages rejoined from the transport protocol (BAM, RTS/CTS)
+-- and decoded through the channel`s database by PGN, their faults, and the address directory.
+-- A channel reads it from its first frame where its wire says J1939 (a row on it ticked j1939:,
+-- a database declaring it), any other CAN channel from its first j1939 call. Nothing is sent: no CTS, no
+-- acknowledgement, no address claim.
+--   j1939.listen(ch)                          read ch as J1939 from now on
+--   j1939.messages(ch [, timeout_ms])         -> { msg, ... }: every completed message waiting;
+--                                             none waiting, ch is read until one completes or
+--                                             timeout_ms (default 0: one look) has passed
+--   j1939.expect(ch, pgn [, timeout_ms [, sa]]) -> msg: the first of pgn (from sa), waited for
+--                                             at most timeout_ms (default 1000); an error else.
+--                                             Messages of other groups ahead of it are consumed
+--   j1939.faults(ch)                          -> { { kind, sa, da, pgn, detail, text }, ... }: the
+--                                             faults since the last call (pgn nil where none was
+--                                             announced); kind as blobly/j1939 names it
+--   j1939.dropped(ch)                         -> how many messages and faults were dropped untaken
+--                                             (1024 of each are kept)
+--   j1939.addresses(ch [, window_ms])         -> { { sa, t_ms, name = { raw, identity,
+--                                             manufacturer, ecu_instance, function_instance,
+--                                             function, function_name, vehicle_system,
+--                                             vehicle_system_instance, industry_group,
+--                                             arbitrary_address_capable } }, ... } by address,
+--                                             after reading ch for window_ms (default 0: nothing)
+-- msg = { pgn, sa, da, priority, bam, data, packets, t_ms, t_start_ms, name, signals, note }:
+-- name and signals where the database decodes it, note where definitions disagree
+j1939 = {}
+local function jms(fname, ms, default)
+  if ms == nil then return default end
+  if type(ms) ~= "number" or ms < 0 or ms ~= ms or ms == math.huge then
+    error(fname .. ": a wait is a finite number of ms, not " .. tostring(ms), 3)
+  end
+  return math.floor(ms)
+end
+local function jint(fname, what, v, top)
+  if math.type(v) ~= "integer" or v < 0 or v > top then
+    error(string.format("%s: %s is an integer 0..0x%X, not %s", fname, what, top, tostring(v)), 3)
+  end
+end
+function j1939.listen(channel) __j1939_listen(channel) end
+function j1939.messages(channel, timeout_ms)
+  local got = __j1939_wait(channel, jms("j1939.messages", timeout_ms, 0), -1, -1)
+  return got
+end
+function j1939.expect(channel, pgn, timeout_ms, sa)
+  jint("j1939.expect", "a PGN", pgn, 0x3FFFF)
+  if ((pgn >> 8) & 0xFF) < 0xF0 and (pgn & 0xFF) ~= 0 then
+    error(string.format("j1939.expect: 0x%04X is a PDU1 group, whose PGN has a zero low byte: 0x%04X",
+      pgn, pgn & 0x3FF00), 2)
+  end
+  -- 0xFE and 0xFF send no transfer
+  if sa ~= nil then jint("j1939.expect", "a source address", sa, 0xFD) end
+  local ms = jms("j1939.expect", timeout_ms, 1000)
+  local got, came = __j1939_wait(channel, ms, pgn, sa or -1)
+  if got[1] then return got[1] end
+  local want = string.format("PGN 0x%04X", pgn) .. (sa and string.format(" from SA 0x%02X", sa) or "")
+  local instead = came ~= "" and ("came instead: " .. came) or "no multi-packet message came"
+  error(string.format("j1939.expect: %s: no %s within %d ms; %s", channel, want, ms, instead), 2)
+end
+function j1939.faults(channel) return __j1939_faults(channel) end
+function j1939.dropped(channel) return __j1939_dropped(channel) end
+function j1939.addresses(channel, window_ms)
+  return __j1939_addresses(channel, jms("j1939.addresses", window_ms, 0))
+end
+
 -- ============================ the DBC catalog ============================
 -- dbc.messages(channel): every message of the channel`s databases, in their order, each
 -- { name, id, ext, dlc, j1939, signals = { ... } }; a signal is { name, start_bit, length,

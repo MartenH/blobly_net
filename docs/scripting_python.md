@@ -473,6 +473,71 @@ with blobly.Project("projects/sim-demo.blobnet") as net:
     print("in gear", engaged)                                   # 1.0 to 6.0: sim-demo steps it each second
 ```
 
+### J1939
+
+`ch.j1939()` is the channel's J1939 reading, a `J1939Listener` (`blobly/j1939`, the reading the
+GUI's trace has): multi-packet messages rejoined from the transport protocol (BAM, and RTS/CTS
+followed as a listener), decoded through the row's databases by PGN, the transfers that did not
+complete, and the address directory. It reads the frames the channel's own handle reads — by
+`recv`, `expect`, the event loop or its own waits — so a frame is still consumed once, and what the
+channel sends is never in it. Nothing decides a bus is J1939, so a row reads it from its first
+frame where its wire says so — a row of the project on it (a disabled one too) ticked `j1939:`, or with a database declaring J1939
+(`VFrameFormat` `J1939PG`, [j1939.md](j1939.md)): the GUI's per-wire reading — and any other CAN
+row from the call on. It sends nothing: no
+CTS, no acknowledgement, no address claim; on a bench where the script is a node, it sends those
+frames itself.
+
+```python
+import blobly
+
+with blobly.Project("projects/j1939-script.blobnet") as net:
+    j, peer = net.channels.J1939, net.channels.Peer
+    listener = j.j1939()
+    j.look()                                        # open the handle before the frames are sent
+    body = bytes([7]) + (123456).to_bytes(4, "little") + bytes([65, 1]) + bytes(13)
+    peer.send(0x1CECFF21, bytes([32, 20, 0, 3, 0xFF, 0x10, 0xFF, 0x00]), ext=True)  # BAM, PGN 0xFF10
+    for seq in range(1, 4):                         # three TP.DT packets, the last padded
+        part = body[(seq - 1) * 7:seq * 7]
+        peer.send(0x1CEBFF21, bytes([seq]) + part + b"\xff" * (7 - len(part)), ext=True)
+    m = listener.expect_pgn(0xFF10, timeout_ms=1000)
+    print(m.message.name, m.packets, m.signals["Odometer"])   # BodyStatus 3 12345.6
+    peer.send(0x18EEFF80, (1 << 63 | 26 << 40 | 500).to_bytes(8, "little"), ext=True)  # address claim
+    print(listener.addresses(200))                  # [J1939Address(sa=128, name=J1939Name(... 'Body Controller' ...
+    print(listener.faults())                        # []
+```
+
+- **`listener.expect_pgn(pgn, timeout_ms=1000, *, sa=None)`** returns the first completed
+  `J1939Message` of parameter group `pgn` (from source address `sa`, when given) within one
+  deadline, as `expect`'s, and raises `blobly.Timeout` otherwise, its message naming the groups
+  that came instead and the last transfer fault. Messages of other groups taken while waiting are
+  consumed; those after it stay queued.
+- **`listener.messages(timeout_ms=0)`** returns every completed message waiting, oldest first;
+  when none waits, the channel is read until one completes or the time is up (`[]`).
+- A **`J1939Message`** has `pgn`, `sa`, `da` (0xFF for a BAM), `priority`, `bam`, `data` (the
+  announced size), `packets`, `t_ms` (when its last packet was read, on `blobly.now_ms()`'s
+  clock) and `t_start_ms` (its announcement).
+  `message` and `signals` are its decode: the message the databases define at exactly that PGN and
+  source address, else by PGN alone, and `{signal: physical value}`; `None` and `{}` where nothing
+  defines the group, or where definitions disagree about its layout, and then `note` says why.
+- **`listener.faults()`** returns the transfers that went wrong since the last call, each a
+  `J1939Fault`: `kind` (`"sequence"` for a dropped or repeated packet, `"aborted"`, `"timeout"`
+  — T1 750 ms for a BAM, T3 1250 ms for a connection, found once a read finds nothing queued —
+  `"malformed"`, `"orphan"`, …), `sa`, `da`, `pgn` (`None` where nothing was announced) and
+  `detail`; `text` (and `str(fault)`) is the line the GUI's Log writes.
+- **`listener.addresses(window_ms=0)`** returns who holds which source address, by address, each a
+  `J1939Address` (`sa`, `name`, `t_ms`), after reading the channel for `window_ms` (0 reads
+  nothing): contention settled by J1939-81 (the lower NAME keeps the address, and has left its
+  old one), a Cannot Claim releasing it. A `J1939Name` is the 64-bit NAME taken apart: `raw`,
+  `identity`, `manufacturer`, `ecu_instance`, `function_instance`, `function`, `function_name` (the
+  32 global functions, `None` for any other), `vehicle_system`, `vehicle_system_instance`,
+  `industry_group`, `arbitrary_address_capable`. Nodes claim at power-up, and nothing here sends
+  a Request for Address Claimed.
+- A listener keeps 1024 messages and 1024 faults untaken; past that the oldest go, and
+  `listener.dropped` counts them. A stop and a start of the project, or `ch.close()`, begin a new
+  reading.
+
+[j1939_listen.py](../python/examples/j1939_listen.py) is a complete script.
+
 ---
 
 ## 7. The event loop
@@ -1710,10 +1775,38 @@ One enabled row of the project (`net.channels.CAN1`).
 | `ch.messages` | The row's database messages, a `Messages`, while the project is started. |
 | `ch.decode(frame)` | `{signal: physical value}`, or `None` for a frame of no message or a remote frame. |
 | `ch.uds(tx=None, rx=None, *, timeout_ms=None, p2_star_ms=None, margin_ms=None, pending_budget_ms=None)` | A `UdsClient` on this row: on a CAN row requests on `tx`, answers on `rx` (default 0x7E0 / 0x7E8); on a DoIP row over its connection, `tx` and `rx` refused. The keywords state its waits ([Timing](#10-uds-diagnostics)). |
+| `ch.j1939()` | The row's `J1939Listener`: multi-packet messages rejoined and decoded by PGN, transfer faults, the address directory ([J1939](#j1939)). |
 | `ch.isotp(tx, rx)` | An `IsoTp` on this CAN row: whole messages on `tx` and `rx`, with no UDS on top ([Raw ISO-TP](#raw-iso-tp)). |
 | `ch.uds_functional(functional_id, clients, request, window_ms=1000)` | `request` once on the functional id, each of `clients` (one or more `UdsClient`s of this channel) answering on its own id: a `FunctionalReply` each, in their order. On a DoIP row the functional logical address (`None`: 0xE400) and the row's one client. `window_ms` bounds each first answer. |
 | `ch.discover(timeout_ms=1200)` | A DoIP row's entity asked who it is: a `DoipAnnouncement`; `Timeout` when none came. |
 | `ch.close()` | Lets the bus handle go, and the connections of its UDS clients; the next use opens another. |
+
+### `J1939Listener`
+
+`ch.j1939()`: the channel's J1939 reading ([J1939](#j1939)).
+
+| member | what |
+|---|---|
+| `listener.channel` | The channel it reads. |
+| `listener.expect_pgn(pgn, timeout_ms=1000, *, sa=None)` | The first completed `J1939Message` of `pgn` (from `sa`), within one deadline; `Timeout` otherwise. Messages of other groups ahead of it are consumed, those after it stay queued. |
+| `listener.messages(timeout_ms=0)` | Every completed message waiting; none waiting, the channel read until one completes or the time is up. |
+| `listener.faults()` | The `J1939Fault`s since the last call. Reads nothing. |
+| `listener.addresses(window_ms=0)` | The directory by address, a `J1939Address` each, after reading the channel for `window_ms`. |
+| `listener.dropped` | Messages and faults dropped untaken, the queues (1024 each) being full. |
+
+### `J1939Message`, `J1939Fault`, `J1939Address`, `J1939Name`
+
+Frozen dataclasses ([J1939](#j1939)).
+
+| field | what |
+|---|---|
+| `J1939Message.pgn`, `.sa`, `.da`, `.priority`, `.bam` | The group, its sender, its destination (0xFF for a BAM), the announcement's priority, BAM or RTS/CTS. |
+| `J1939Message.data`, `.packets` | The message, exactly its announced size, and how many data frames carried it. |
+| `J1939Message.message`, `.signals`, `.note` | The `Message` it decodes as and `{signal: value}`; `None`, `{}` and why (`note`) where it does not. |
+| `J1939Message.t_ms`, `.t_start_ms` | When its last packet and its announcement were read, on `blobly.now_ms()`'s clock. |
+| `J1939Fault.kind`, `.sa`, `.da`, `.pgn`, `.detail`, `.text` | What went wrong (`"sequence"`, `"aborted"`, `"timeout"`, `"malformed"`, `"orphan"`, `"restarted"`, `"overflow"`, `"padding"`, `"off_spec"`, `"truncated"`), with whom, the group (`None` where none was announced), the detail and the whole line the GUI's Log writes. |
+| `J1939Address.sa`, `.name`, `.t_ms` | A held source address, the `J1939Name` holding it, when that claim was read. |
+| `J1939Name.raw`, `.identity`, `.manufacturer`, `.ecu_instance`, `.function_instance`, `.function`, `.function_name`, `.vehicle_system`, `.vehicle_system_instance`, `.industry_group`, `.arbitrary_address_capable` | The NAME as claimed and its J1939-81 fields; `function_name` for the 32 global functions, else `None`. |
 
 ### `BusLoad`, `BusDiagnostics`
 
@@ -2037,7 +2130,7 @@ Python covers bringing a project up, its channels, raw CAN, DBC messages and sig
 loop, bus health and metrics, fault injection, generator control, E2E (verdicts on received frames,
 the declared E2E stamped on sends, the Profile 1 helpers), UDS over CAN and DoIP
 (its timing, and a node behind a DoIP gateway), nodes of the system model with their DIDs by name, raw ISO-TP, DoIP
-discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
+discovery, SOME/IP send, call and listen, flashing, replay and recording to a file, the WSL bridge, J1939 transport-protocol messages and address claims, `expect` and a pytest plugin. The rest is planned in [#507](https://github.com/MartenH/blobly_net/issues/507):
 
 **Phase 1: diagnostics from Python.**
 - UDS over CAN is here ([UDS diagnostics](#10-uds-diagnostics)): sessions, DIDs, 0x27, resets,
@@ -2068,7 +2161,7 @@ discovery, SOME/IP send, call and listen, flashing, replay and recording to a fi
   [UDS diagnostics](#10-uds-diagnostics), [DoIP](#11-doip)).
 - Opening an interface that is not a project row, interface discovery, Vector channel
   assignment.
-- J1939 transport-protocol reassembly and the address directory.
+- J1939 transport-protocol reassembly and the address directory are here ([J1939](#j1939)).
 
 **Phase 3: hardening for AI.** A JSON run report and an overall run timeout, an API stability
 policy for this package, and possibly an MCP server.

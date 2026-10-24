@@ -178,3 +178,20 @@ fn test_an_fd_frame_claims_no_address() {
 	short.data = name[..4]
 	assert !claim_frame(short, id)
 }
+
+fn claim(sa u8, name []u8) transport.CanFrame {
+	return transport.CanFrame{
+		id:       compose(6, pgn_address_claimed, addr_global, sa)
+		extended: true
+		data:     name
+	}
+}
+
+fn test_listener_fills_its_directory_from_claims_and_keeps_the_lower_name() {
+	mut l := Listener{}
+	l.feed(claim(0x80, build(2, 100, 0, 0, 26, 0, 0, 0, true)), 0)
+	l.feed(claim(0x80, build(1, 100, 0, 0, 0, 0, 0, 0, true)), 1)
+	ns := l.dir.nodes()
+	assert ns.len == 1
+	assert ns[0].sa == 0x80 && ns[0].name.function == 0, 'the lower NAME holds the address'
+}

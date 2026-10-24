@@ -61,6 +61,9 @@ pub struct Channel {
 pub:
 	cfg project.Channel
 	db  candb.Database
+	// each of the row's databases as it was opened, the files `db` merges: what a lookup judging
+	// definitions per file asks (candb.pgn_message_in_catalog)
+	sources []candb.Database
 }
 
 // fault_target is this row as sim.FaultTarget.arm judges a fault on it.
@@ -136,6 +139,9 @@ pub:
 pub mut:
 	// the enabled rows, in project order; filled by start, read after
 	chans []Channel
+	// the wires that read as J1939, by destination key: a row on it, enabled or not, ticked
+	// `j1939:` or with a database declaring it (the GUI's per-wire census); filled by start
+	j1939_wires map[string]bool
 	// the system model the run's simulated diagnostic servers are described by (described_system):
 	// what a script names a node by (sysview.System.node_named); empty when none describes it
 	sys sysview.System
@@ -316,14 +322,25 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 	desc_sys := described_system(proj_path, proj, o)
 	r.sys = desc_sys
 	for ci, ch in proj.channels {
+		if ch.is_eth() {
+			continue
+		}
+		// each FILE asked, as the GUI asks: the merge keeps an id's first definition, which may be
+		// an undeclared copy of the one a later file declares
+		if ch.j1939 || row_sources(ch, os.dir(proj_path), db_files).any(it.j1939_declared()) {
+			r.j1939_wires[j1939_wire_key(ch)] = true
+		}
+	}
+	for ci, ch in proj.channels {
 		if !ch.enabled {
 			continue
 		}
 		db := row_db(mut row_dbs, proj.channels, ci, os.dir(proj_path), db_files)
 		nodes := ch.all_nodes()
 		r.chans << Channel{
-			cfg: ch
-			db:  db
+			cfg:     ch
+			db:      db
+			sources: row_sources(ch, os.dir(proj_path), db_files)
 		}
 		// DoIP is a different carrier, not a CAN bus: no frames, no ISO-TP, and the entity is
 		// reached by logical address over TCP. Nothing outside blobly/doip ever started one,
@@ -824,6 +841,26 @@ fn row_db(mut cache map[int]candb.Database, chs []project.Channel, i int, proj_d
 	db := load_channel_db(chs[i], proj_dir, files)
 	cache[i] = db
 	return db
+}
+
+// row_sources is each of a row's databases as the run opened it (DbFiles opens a file once).
+fn row_sources(ch project.Channel, proj_dir string, files &DbFiles) []candb.Database {
+	_, sources, _ := candb.merge_with_sources(ch.databases.map(project.resolve_asset(proj_dir, it)),
+		fn [files] (ref string) !candb.Loaded {
+			mut f := unsafe { files }
+			return f.open(ref)
+		})
+	return sources
+}
+
+// j1939_wire_key is the wire a row's J1939 reading is decided for: its destination.
+fn j1939_wire_key(ch project.Channel) string {
+	return transport.destination_key_for(ch.adapter, ch.iface)
+}
+
+// reads_j1939 is whether row `ch`'s wire reads as J1939 in this run (j1939_wires).
+pub fn (r &Run) reads_j1939(ch project.Channel) bool {
+	return r.j1939_wires[j1939_wire_key(ch)] or { false }
 }
 
 // load_channel_db merges every DBC attached to a channel into one catalog (first definition of

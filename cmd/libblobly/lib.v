@@ -326,6 +326,49 @@ pub mut:
 	dropped i64
 }
 
+// J1939 on a row's frames (j1939.v)
+pub struct C.bb_j1939_message {
+pub mut:
+	pgn        u32
+	sa         u8
+	da         u8
+	priority   u8
+	bam        u8
+	len        i32
+	message    i32
+	t_start_ns i64
+	t_end_ns   i64
+	data       [1785]u8
+	note       [256]char
+}
+
+pub struct C.bb_j1939_fault {
+pub mut:
+	kind      i32
+	sa        u8
+	da        u8
+	announced u8
+	pgn       u32
+	detail    [256]char
+	text      [256]char
+}
+
+pub struct C.bb_j1939_address {
+pub mut:
+	sa                        u8
+	name                      u64
+	identity                  u32
+	manufacturer              u16
+	ecu_instance              u8
+	function_instance         u8
+	function                  u8
+	vehicle_system            u8
+	vehicle_system_instance   u8
+	industry_group            u8
+	arbitrary_address_capable u8
+	t_ns                      i64
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
@@ -361,6 +404,8 @@ mut:
 	stop fn () bool = unsafe { nil }
 	// the row bb_e2e_attach bound its frames' E2E verdicts to (e2e.v)
 	judge E2eJudge
+	// the J1939 listener bb_j1939_attach bound to the handle's frames (j1939.v)
+	j1939 J1939Tap
 }
 
 __global (
@@ -550,6 +595,7 @@ pub fn bb_start() i32 {
 	fault_rows_publish(r.chans)
 	gens_publish(r)
 	sys_publish(r)
+	j1939_publish(r)
 	bb_dbs_live = true
 	bb_run_gen++
 	bb_mu.unlock()
@@ -569,6 +615,7 @@ pub fn bb_stop() i32 {
 	fault_rows_retire()
 	gens_retire()
 	sys_retire()
+	j1939_retire()
 	bb_dbs_live = false
 	bb_mu.unlock()
 	replays_stop()
@@ -766,7 +813,11 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 		return fail(bb_err_handle, 'recv: the handle was closed')
 	}
 	fr := transport.recv_sliced(mut hd.bus, int(timeout_ms), recv_slice_ms, hd.stop) or {
-		return recv_nothing(err)
+		code := recv_nothing(err)
+		if code == bb_none {
+			hd.j1939_idle()
+		}
+		return code
 	}
 	// a frame bb_frame cannot carry is refused whole: a truncated payload published with its
 	// real length is one a C host reads past the end of
@@ -787,6 +838,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 		out.t_ns = transport.received_now(fr)
 		out.e2e = hd.e2e_verdict(fr)
 	}
+	hd.j1939_feed(fr)
 	return ok()
 }
 
