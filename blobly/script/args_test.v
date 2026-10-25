@@ -52,6 +52,7 @@ fn test_an_id_that_is_not_an_integer_is_refused_by_name() {
 			refused([[bus.send: the id is "abc", not an integer]], bus.send, "CAN1", "abc", "")
 			refused("bus.send: the id is a table, not an integer", bus.send, "CAN1", {}, "")
 			refused([[bus.send: the id is "256", not an integer]], bus.send, "CAN1", "256", "")
+			refused([[bus.send: the id is "12\\0ab", not an integer]], bus.send, "CAN1", "12\\0ab", "")
 			refused("bus.send: the id 0x20000000 is outside 0x0..0x1FFFFFFF", bus.send, "CAN1", 0x20000000, "")
 			bus.send("CAN1", 256.0, "\\1")
 		end)

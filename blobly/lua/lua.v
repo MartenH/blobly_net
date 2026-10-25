@@ -168,7 +168,7 @@ pub fn (l State) arg_int_exact(i int) ?i64 {
 }
 
 // arg_given is argument i as a refusal quotes it: nil, a boolean or a number as Lua writes them,
-// a string in quotes (cut at 40 bytes), else its type (a table).
+// a string in quotes (cut at 40 bytes, a NUL written \0), else its type (a table).
 pub fn (l State) arg_given(i int) string {
 	t := C.ctlua_type(l, i)
 	match t {
@@ -185,7 +185,7 @@ pub fn (l State) arg_given(i int) string {
 			return l.arg_num(i).str()
 		}
 		4 {
-			s := l.arg_str(i)
+			s := l.arg_str(i).replace(u8(0).ascii_str(), '\\0') // a NUL would end the message
 			if s.len <= 40 {
 				return '"${s}"'
 			}
