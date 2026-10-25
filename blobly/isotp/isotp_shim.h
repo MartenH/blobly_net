@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <poll.h>
+#include <time.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -46,17 +47,26 @@ static inline int ct_isotp_send(int fd, const uint8_t *data, int len) {
 
 // Receive one reassembled ISO-TP PDU into buf (up to cap bytes). timeout_ms < 0
 // blocks; >= 0 waits at most that long. Returns byte count (>=0), -1 on timeout,
-// -(1000 + errno) on error; an interrupted wait or read is retried.
+// -(1000 + errno) on error; an interrupted wait is resumed for what is left of it, and an
+// interrupted read retried.
 static inline int ct_isotp_recv(int fd, uint8_t *buf, int cap, int timeout_ms) {
 	if (timeout_ms >= 0) {
+		struct timespec t0;
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		int wait = timeout_ms;
 		for (;;) {
 			struct pollfd p;
 			p.fd = fd;
 			p.events = POLLIN;
-			int r = poll(&p, 1, timeout_ms);
+			int r = poll(&p, 1, wait);
 			if (r == 0) return -1;
 			if (r > 0) break;
 			if (errno != EINTR) return -(1000 + errno);
+			struct timespec t1;
+			clock_gettime(CLOCK_MONOTONIC, &t1);
+			long long spent = (long long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+			if (spent >= timeout_ms) return -1;
+			wait = timeout_ms - (int)spent;
 		}
 	}
 	for (;;) {
