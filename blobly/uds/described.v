@@ -20,6 +20,7 @@
 // there is no bootloader to hand the ECU to.
 module uds
 
+import math
 import time
 
 // Session masks, one bit per 0x10 session value (bit n-1 for session n); 0 = every session.
@@ -520,19 +521,45 @@ fn (mut s Server) d_read(req []u8) []u8 {
 	return resp
 }
 
-// refresh_live puts a live DID's signal value into the table, big-endian at its width; a server
-// with no signal source, or a signal it does not have, keeps what is there (zeros at first).
+// refresh_live puts a live DID's signal value into the table (live_field_bytes); a server with no
+// signal source, or a signal it does not have, keeps what is there (zeros at first).
 fn (mut s Server) refresh_live(d DidSpec) {
 	if s.signal_value == unsafe { nil } || d.fields.len != 1 {
 		return
 	}
 	v := s.signal_value(d.signal) or { return }
-	w := d.fields[0].width
+	s.dids[d.id] = live_field_bytes(v, d.fields[0])
+}
+
+// live_field_bytes is a signal's value in its DID field, big-endian at the field's width: the
+// field's integer type cast from the value, as blobly_emb's generated code fills the field
+// (`T(phys)`, toward zero), held to what the width holds; NaN is 0.
+pub fn live_field_bytes(v f64, f FieldSpec) []u8 {
+	w := f.width // 1, 2, 4 or 8 (sysview.Field.width)
+	bits := 8 * w
+	t := math.trunc(v)
+	mut raw := u64(0)
+	if f.signed && !math.is_nan(t) {
+		half := math.pow(2, f64(bits - 1))
+		raw = u64(if t < -half {
+			if bits == 64 { min_i64 } else { -(i64(1) << (bits - 1)) }
+		} else if t >= half {
+			if bits == 64 { max_i64 } else { (i64(1) << (bits - 1)) - 1 }
+		} else {
+			i64(t)
+		})
+	} else if t > 0 {
+		raw = if t >= math.pow(2, f64(bits)) {
+			if bits == 64 { max_u64 } else { (u64(1) << bits) - 1 }
+		} else {
+			u64(t)
+		}
+	}
 	mut out := []u8{len: w}
 	for i in 0 .. w {
-		out[w - 1 - i] = u8(u64(v) >> (8 * i))
+		out[w - 1 - i] = u8(raw >> (8 * i))
 	}
-	s.dids[d.id] = out
+	return out
 }
 
 fn (mut s Server) d_write(req []u8) []u8 {

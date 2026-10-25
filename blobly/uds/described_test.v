@@ -229,3 +229,65 @@ fn test_a_writable_did_past_the_cell_takes_no_record() {
 	req << []u8{len: 33, init: 0x41}
 	assert s.handle(req) == [u8(0x7F), 0x2E, 0x13]
 }
+
+fn test_a_live_value_is_its_field_cast_as_blobly_emb_casts_it() {
+	u8f := FieldSpec{
+		width: 1
+	}
+	i16f := FieldSpec{
+		width:  2
+		signed: true
+	}
+	u64f := FieldSpec{
+		width: 8
+	}
+	i64f := FieldSpec{
+		width:  8
+		signed: true
+	}
+	// a fraction goes toward zero, as `T(phys)` does
+	assert live_field_bytes(12.75, u8f) == [u8(12)]
+	assert live_field_bytes(-2.5, i16f) == [u8(0xFF), 0xFE]
+	// past i64's range, an unsigned 64-bit field keeps the value
+	assert live_field_bytes(9223372036854779904.0, u64f) == [u8(0x80), 0, 0, 0, 0, 0, 0x10, 0]
+	assert live_field_bytes(-1.0, i64f) == [u8(0xFF)].repeat(8)
+	// held to what the width holds
+	assert live_field_bytes(300, u8f) == [u8(0xFF)]
+	assert live_field_bytes(-1, u8f) == [u8(0)]
+	assert live_field_bytes(1e30, u64f) == [u8(0xFF)].repeat(8)
+	assert live_field_bytes(1e30, i64f) == [u8(0x7F), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+	assert live_field_bytes(-1e30, i64f) == [u8(0x80), 0, 0, 0, 0, 0, 0, 0]
+	assert live_field_bytes(-40000, i16f) == [u8(0x80), 0]
+}
+
+fn test_a_live_did_answers_a_value_past_i64_and_a_fraction() {
+	mut s := server_from(ServerSpec{
+		dids: [
+			DidSpec{
+				id:     0x0101
+				source: .live
+				data:   []u8{len: 8}
+				signal: 'Odo'
+				fields: [FieldSpec{
+					width: 8
+				}]
+			},
+			DidSpec{
+				id:     0x0102
+				source: .live
+				data:   []u8{len: 2}
+				signal: 'Temp'
+				fields: [FieldSpec{
+					width:  2
+					signed: true
+				}]
+			},
+		]
+	})
+	s.signal_value = fn (name string) ?f64 {
+		return if name == 'Odo' { 18446744073709549568.0 } else { -40.9 }
+	}
+	assert s.handle([u8(0x22), 0x01, 0x01]) == [u8(0x62), 0x01, 0x01, 0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xF8, 0x00]
+	assert s.handle([u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0xFF, 0xD8]
+}

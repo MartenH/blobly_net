@@ -11,7 +11,6 @@
 // a server keeps what the project gives it, today's content.
 module sim
 
-import math
 import os
 import blobly.project
 import sync
@@ -174,7 +173,7 @@ pub struct LiveTable {
 mut:
 	mu   sync.RwMutex
 	want map[string]bool
-	vals map[string]i64
+	vals map[string]f64 // physical, as the frame encoded it
 }
 
 // keyed by wire, channel and node: node names are not unique across the channels of one wire
@@ -197,13 +196,13 @@ pub fn want_live(iface string, chan_name string, node string, signal string) {
 
 // live_value_of_node is node `node`'s published value of `signal` on whichever wire simulates it;
 // none when no wire does, or when two do (which of them the ECU is cannot be said).
-pub fn live_value_of_node(node string, signal string) ?i64 {
+pub fn live_value_of_node(node string, signal string) ?f64 {
 	suffix := '|${node}|${signal}'
 	live_table.mu.rlock()
 	defer {
 		live_table.mu.runlock()
 	}
-	mut found := []i64{}
+	mut found := []f64{}
 	for k, v in live_table.vals {
 		if k.ends_with(suffix) {
 			found << v
@@ -221,7 +220,7 @@ pub fn clear_live() {
 }
 
 // live_value is a published signal's value, none before its node has sent it.
-pub fn live_value(iface string, chan_name string, node string, signal string) ?i64 {
+pub fn live_value(iface string, chan_name string, node string, signal string) ?f64 {
 	live_table.mu.rlock()
 	defer {
 		live_table.mu.runlock()
@@ -258,9 +257,8 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 						break
 					}
 				}
-				v := i64(math.round(phys))
 				live_table.mu.lock()
-				live_table.vals[k] = v
+				live_table.vals[k] = phys
 				live_table.mu.unlock()
 			}
 		}
@@ -280,7 +278,7 @@ pub fn wire_live_node(mut srv uds.Server, node string) {
 		}
 	}
 	if any {
-		srv.signal_value = fn [node] (signal string) ?i64 {
+		srv.signal_value = fn [node] (signal string) ?f64 {
 			return live_value_of_node(node, signal)
 		}
 	}
@@ -312,7 +310,7 @@ pub fn wire_live(mut srv uds.Server, iface string, chan_name string, node string
 		}
 	}
 	if any {
-		srv.signal_value = fn [iface, chan_name, node] (signal string) ?i64 {
+		srv.signal_value = fn [iface, chan_name, node] (signal string) ?f64 {
 			return live_value(iface, chan_name, node, signal)
 		}
 	}

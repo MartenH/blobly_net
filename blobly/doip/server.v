@@ -112,7 +112,7 @@ mut:
 // new_server builds an entity with the given identity + UDS handler. Returns a
 // heap pointer so it can be shared with serving threads (spawn needs a reference).
 // announced_vin returns the VIN discovery should advertise right now.
-fn (mut s DoipServer) announced_vin() string {
+pub fn (mut s DoipServer) announced_vin() string {
 	s.vin_mu.lock()
 	v := s.vin
 	s.vin_mu.unlock()

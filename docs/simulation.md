@@ -477,7 +477,9 @@ From the node's `ecu.toml` it serves, as blobly_emb's own server does (`comm/uds
 - **its DIDs at their real sizes** — `ascii` and `bytes` as written, a parameter at its
   `default`, the parameter status DID at 0 (uncoded), a `signal` DID with the value the
   simulation is sending for that signal now (a generator on the node of that name; zeros of the
-  signal's width before it has sent, or without one; a dropped frame changes nothing). A DoIP
+  signal's width before it has sent, or without one; a dropped frame changes nothing) — the
+  value as the frame encodes it, cast to the DID field's type as blobly_emb's generated code
+  casts it (a fraction toward zero, the whole width of a `u64`). A DoIP
   entity's live DIDs read the node of that name as a CAN channel of the project simulates it,
   and say so at Start when none does. A `bytes` DID whose bytes are not hex is not served at all.
   Several DIDs per `0x22`, as ISO allows. A live value is what the transport TOOK: a frame a
@@ -554,7 +556,8 @@ as `doip-network-demo.blobnet` does on `127.0.0.1/.2/.3`.
 
 An entity has **two identity surfaces**: what discovery announces and what DID `0xF190` serves.
 They are resolved to one string at startup — a disagreement between `vin:` and a node's DID is
-refused rather than picked — and a write to `0xF190` moves the announcement with it. Both are
+refused rather than picked — and a write to `0xF190` moves the announcement with it, physical or
+functional (a 17-byte VIN only, either way). Both are
 observable:
 
 ```lua

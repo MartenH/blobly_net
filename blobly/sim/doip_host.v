@@ -17,7 +17,21 @@ pub mut:
 	entity &doip.DoipServer = unsafe { nil }
 }
 
-// handle serves one request, keeping the entity's two identity surfaces in step.
+// handle serves one physically addressed request (serve).
+pub fn (mut h DoipHost) handle(req []u8) []u8 {
+	return h.serve(req, false)
+}
+
+// handle_functional serves a request that arrived on the functional address (serve), through the
+// server's own functional entry (uds.Server.handle_functional): one rule on CAN and DoIP for what
+// a broadcast may not do, S3 kept either way.
+pub fn (mut h DoipHost) handle_functional(req []u8) []u8 {
+	return h.serve(req, true)
+}
+
+// serve answers a request either way it was addressed, keeping the entity's two identity surfaces
+// in step. A functional 0x2E is served like a physical one (ISO 14229-1 does not restrict it, and
+// blobly_emb's comm/uds dispatches it), so the F190 rule is applied here, on both paths.
 //
 // A write to DID 0xF190 changes the SERVED identity, so the ANNOUNCED one has to move with it
 // or the entity spends the rest of the run advertising a VIN it no longer reports. A VIN of
@@ -25,27 +39,23 @@ pub mut:
 // truncates to 17 while the server would return it whole, which is the same split created at
 // runtime instead of from configuration. A described server judges the write itself (its
 // gates, then the declared size), and the announcement follows only a 17-byte VIN it accepted.
-pub fn (mut h DoipHost) handle(req []u8) []u8 {
-	if w := uds.written_did(req) {
-		if w.did == 0xF190 {
-			if w.data.len != 17 && !h.server.described {
-				return [u8(0x7F), uds.sid_write_data_by_identifier, 0x31] // requestOutOfRange
-			}
-			resp := h.server.handle(req)
-			if resp.len > 0 && resp[0] == 0x6E && w.data.len == 17 && h.entity != unsafe { nil } {
-				h.entity.set_vin(w.data.bytestr())
-			}
-			return resp
-		}
+fn (mut h DoipHost) serve(req []u8, functional bool) []u8 {
+	w := uds.written_did(req) or { return h.answer(req, functional) }
+	if w.did != 0xF190 {
+		return h.answer(req, functional)
 	}
-	return h.server.handle(req)
+	if w.data.len != 17 && !h.server.described {
+		return [u8(0x7F), uds.sid_write_data_by_identifier, 0x31] // requestOutOfRange
+	}
+	resp := h.answer(req, functional)
+	if resp.len > 0 && resp[0] == 0x6E && w.data.len == 17 && h.entity != unsafe { nil } {
+		h.entity.set_vin(w.data.bytestr())
+	}
+	return resp
 }
 
-// handle_functional serves a request that arrived on the functional address through the server's
-// own functional entry (uds.Server.handle_functional): one rule on CAN and DoIP for what a
-// broadcast may not do, S3 kept either way.
-pub fn (mut h DoipHost) handle_functional(req []u8) []u8 {
-	return h.server.handle_functional(req)
+fn (mut h DoipHost) answer(req []u8, functional bool) []u8 {
+	return if functional { h.server.handle_functional(req) } else { h.server.handle(req) }
 }
 
 // bind_functional hands an entity's functional requests to its host.

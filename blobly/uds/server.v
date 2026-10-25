@@ -32,9 +32,9 @@ pub mut:
 	// parameters as the description states them. false = the fixture, which gates nothing.
 	described bool
 	spec      ServerSpec
-	// a live DID's signal value, for a described server whose owner simulates the signal; nil or
-	// none = the DID keeps its zeros
-	signal_value fn (name string) ?i64 = unsafe { nil }
+	// a live DID's signal value (physical, as its frame encodes it), for a described server whose
+	// owner simulates the signal; nil or none = the DID keeps its zeros
+	signal_value fn (name string) ?f64 = unsafe { nil }
 	// the described server's clock in ms (S3, the 0x27 lockout); nil = time.ticks()
 	clock          fn () i64 = unsafe { nil }
 	last_rx_ms     i64
