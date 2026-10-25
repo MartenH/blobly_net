@@ -98,7 +98,7 @@ fn (mut env Env) j1939_read(name string, lis &j1939.Listener, deadline u64, unti
 			if err.msg() != 'timeout' {
 				return error('j1939: ${name}: ${err.msg()}')
 			}
-			env.j1939_idle(name)
+			env.read_idle(name)
 			if left == 0 {
 				// what a whole-millisecond wait cannot ask for is slept, not skipped
 				rest := i64(deadline) - i64(time.sys_mono_now())
@@ -109,7 +109,7 @@ fn (mut env Env) j1939_read(name string, lis &j1939.Listener, deadline u64, unti
 			}
 			continue
 		}
-		env.j1939_saw(name, f)
+		env.frame_read(name, f, transport.received_now(f))
 		_ = env.e2e_verdict(name, f) or { '' } // its message's E2E reader sees every frame the script reads
 	}
 }

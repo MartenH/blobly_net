@@ -18,6 +18,7 @@ import blobly.canlog
 import blobly.doip
 import blobly.someip
 import blobly.j1939
+import blobly.nm
 import vgui
 
 // doip_watch owns one entity's socket for the life of a run: it binds while the channel and
@@ -1613,6 +1614,11 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 		}
 		// the wire's J1939 reading as the trace's census has it (every row, a disabled one too)
 		wire_j1939 := a.j1939_dbs[transport.destination_key_for(ch.adapter, ch.iface)] or { false }
+		// the wire's NM configuration as the Network Management panel has it (published at Start)
+		mut wire_nm := ?nm.Config(none)
+		if c := a.nm_cfg[transport.destination_key_for(ch.adapter, ch.iface)] {
+			wire_nm = c
+		}
 		a.mu.unlock()
 		db, sources := a.script_db(ch)
 		chans << script.ChanInfo{
@@ -1634,6 +1640,7 @@ fn script_worker(app &App, path string, ss ScriptSys) {
 			verify:  pch.verify // what a received frame's E2E is judged by first
 			carrier: script.carrier_of(pch)
 			j1939:   wire_j1939
+			nm:      wire_nm
 			// priced as the Buses row prices the wire
 			nominal:   nominal
 			data_rate: data_rate
