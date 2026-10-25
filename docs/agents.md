@@ -269,6 +269,7 @@ Complete scripts, each bounded and with a clear exit status, in
 | [flash_ecu.py](../python/examples/flash_ecu.py) | Flashing a blobly_emb bootloader with progress and a report, against a simulated one (`--board` for a real one). |
 | [interfaces.py](../python/examples/interfaces.py) | No project: the interfaces present, the Vector channels, a frame exchanged on a bus opened by address. |
 | [j1939_listen.py](../python/examples/j1939_listen.py) | J1939 with the script as every node: a BAM rejoined and decoded by PGN, an RTS/CTS connection followed, a dropped packet as a fault, the address directory after a contested claim. |
+| [nm_monitor.py](../python/examples/nm_monitor.py) | Network management: who keeps the bus awake, who woke it, and the wait for releasing and asleep, on the NM demo's replayed recording. |
 | [someip_node.py](../python/examples/someip_node.py) | SOME/IP against a static-peer node: a method called, a request with what was heard after it, the node's events. |
 | [test_sim_demo.py](../python/examples/test_sim_demo.py) | A pytest suite on blobly's plugin: the `project` fixture and one per channel, `expect`, `expect_signal`, `diag` over CAN and DoIP. |
 
@@ -276,7 +277,7 @@ Complete scripts, each bounded and with a clear exit status, in
 
 | use Python for | use Lua for |
 |---|---|
-| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 helpers); UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests, the waits, a node behind a DoIP gateway); raw ISO-TP; DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file; J1939 multi-packet messages, their faults and the address directory (`ch.j1939()`); the interfaces present, a bus by address, Vector assignment. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#19-what-is-not-there-yet)). |
+| Raw CAN and CAN-FD frames, DBC messages and signals, the event loop, bus health and metrics (load, dropped and error counts), fault injection, E2E (each received frame's verdict, the declared E2E stamped on a send by name, the Profile 1 helpers); UDS over CAN and DoIP (sessions, DIDs, security access, DTCs with snapshots, functional addressing, raw requests, the waits, a node behind a DoIP gateway); raw ISO-TP; DoIP discovery; SOME/IP send, call and listen; flashing a blobly_emb bootloader; replaying a recording and recording to a file; J1939 multi-packet messages, their faults and the address directory (`ch.j1939()`); the NM reading, who keeps the bus awake and the wait for asleep (`ch.nm()`); the interfaces present, a bus by address, Vector assignment. | What #507 Phase 2 has not brought to Python yet ([What is not there yet](scripting_python.md#19-what-is-not-there-yet)). |
 | Tests under pytest, and anything that needs the Python ecosystem. | A script in the GUI's Script panel, against a live measurement. |
 | An agent's own process: no V toolchain, a `pip install`. | The existing Lua suites in `tests/`, run by `scripts/runtests.sh` from a checkout with the V toolchain. |
 

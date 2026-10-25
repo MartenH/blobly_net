@@ -89,6 +89,25 @@ While stopped, the open panel follows the configuration once a second, so a `sys
 loaded in the System panel shows its declared nodes, all missing, before anything is heard.
 At Start the configuration is fixed for the run.
 
+## From a script
+
+Python's `ch.nm()` and Lua's `nm.*` read a channel's cluster the way the panel does, from the frames
+the script's own handle reads (a frame is consumed once, by whoever reads it, and the script's own
+sends are not in it), configured for the channel's wire by the same rule as above, or by a range
+the script states. A reading is as of the script's latest read on the channel, and the waits
+(`expect_state`, `expect_asleep`) read until the cluster is in a state, kept awake by the nodes
+named:
+
+```python
+nm = net.channels.body.nm()
+nm.expect_state("awake", 3000, kept_awake_by=["sysnode", "domain"])
+nm.expect_asleep(30000)
+```
+
+[scripting_python.md](scripting_python.md#network-management) and
+[scripting.md](scripting.md#network-management--nm) are the references. In the GUI a script's
+reading is its own, beside the panel's.
+
 ## Demo
 
 ```sh

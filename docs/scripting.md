@@ -779,6 +779,47 @@ for _, a in ipairs(j1939.addresses("J1939", 200)) do log(a.sa, a.name.function_n
 `tests/j1939.lua` is the suite: a BAM, an RTS/CTS connection played from both sides, a sequence
 gap and a stall, address claims and a contested one.
 
+### Network management — nm.*
+
+CAN network management read from a channel's frames ([nm.md](nm.md) is the PDU and the GUI's
+Network Management panel): who reports in on its NM cluster, who keeps the network awake, who woke
+it, and the declared nodes that never report. Like J1939 it reads what the script's own handle
+reads (`bus.recv`, `run()`, `expect`, the waits below), so a frame is still consumed once and the
+script's own sends are never in it. A channel reads it from its first frame where its wire has an
+NM configuration, the panel's rule: the system model's bus named like a row on the wire, else the
+wire's ARXML NM-PDU frames, else a row's own `nm:`. A wire with none has no reading unless the
+script states a range. Nothing is sent.
+
+| function | returns |
+|---|---|
+| `nm.listen(channel [, { lo, hi, ext, timeout_ms }])` | nothing: the channel is read as NM from now on, by its wire's configuration (an error where it has none), or by the range given (29-bit where `hi` is past 0x7FF, or with `ext`; `timeout_ms` 1..60000, default 300; no node named) as a new reading |
+| `nm.reading(channel [, window_ms])` | the reading, after reading the channel for `window_ms` (default 0: nothing read) |
+| `nm.state(channel)` | `"awake"`, `"releasing"` or `"asleep"` |
+| `nm.expect_state(channel, state [, timeout_ms [, kept_awake_by]])` | the reading, the channel read until it is in `state` (and kept awake by exactly the names in `kept_awake_by`, in any order) within `timeout_ms` (default 1000), asked after every read so a state reached by silence is seen; an error saying what the reading was otherwise |
+| `nm.expect_asleep(channel [, timeout_ms])` | `nm.expect_state(channel, "asleep", timeout_ms)` |
+
+A reading is `{ state, kept_awake_by, woken_by, woken_active, woken_ms, repeat_requested_by,
+nodes, missing, unknown, heard, last_heard_ms, frames, malformed, last_error, dropped, timeout_ms,
+timeout_default, source, origin, cluster, t_ms }`, the fields Python's `NmReading` has: it is AS OF
+THE CHANNEL'S LATEST READ (`t_ms`), never the wall clock's now, so a channel nobody has read for a
+while reads as it was then rather than as asleep. `kept_awake_by` lists the declared nodes in
+declaration order, then the others as first heard. A node is `{ name, nid, can_id, ext, missing,
+unknown, live, keeps_awake, count, last_heard_ms, cadence_ms, last_interval_ms, bits = { raw,
+repeat_request, ready_to_sleep, active_wakeup, pn_info }, pn }`, a field it does not have left nil.
+
+```lua
+-- projects/nm-demo: its recording replayed at 4x
+local r = replay.start("body", { speed = 4, loop = false })
+local w = nm.expect_state("body", "awake", 3000, { "sysnode", "domain" })
+log(w.woken_by, table.concat(w.missing, ","))   -- sysnode  zone_a
+nm.expect_state("body", "releasing", 8000)
+nm.expect_asleep("body", 4000)
+r:stop()
+```
+
+`tests/nm.lua` is the suite: the demo's wake-up, release and sleep, a wait not met, a stated
+range.
+
 ### Byte payloads & helpers
 
 CAN/UDS payloads are Lua **byte strings** (8-bit clean). Helpers:
