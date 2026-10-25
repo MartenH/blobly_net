@@ -534,3 +534,17 @@ fn test_a_channel_over_an_unopened_bus_fails_the_request_as_the_bus() {
 	}
 	assert false, 'an unopened bus answered'
 }
+
+// a late answer to an earlier multi-DID read begins with this one's first DID too: with the sizes
+// known it is told apart and discarded, and the right answer taken
+fn test_a_stale_multi_did_answer_is_discarded() {
+	mut c, m := client_with([
+		[u8(0x62), 0xF1, 0x90, 0x41, 0x42, 0xF1, 0x91, 0x01], // the answer to 22 F190 F191
+		[u8(0x62), 0xF1, 0x90, 0x41, 0x42, 0xF1, 0x92, 0x0A, 0x0B, 0x0C],
+	])
+	c.set_did_size(0xF190, 2)
+	c.set_did_size(0xF191, 1)
+	resp := c.raw([u8(0x22), 0xF1, 0x90, 0xF1, 0x92]) or { panic(err) }
+	assert resp == [u8(0x62), 0xF1, 0x90, 0x41, 0x42, 0xF1, 0x92, 0x0A, 0x0B, 0x0C]
+	assert m.idx == 2
+}
