@@ -65,6 +65,9 @@ fn correlate_rdbi(req []u8, resp []u8, sizes map[u16]int) Verdict {
 		}
 		next = at + 2
 		size := sizes[u16(resp[pos]) << 8 | u16(resp[pos + 1])] or { return .answers }
+		if size < 0 {
+			return .undecidable
+		}
 		pos += 2 + size
 	}
 	return if pos == resp.len { Verdict.answers } else { Verdict.undecidable }
@@ -81,4 +84,23 @@ fn correlate_periodic(req []u8, resp []u8) Verdict {
 		return .undecidable
 	}
 	return if resp[1] in req[2..] { Verdict.answers } else { Verdict.another }
+}
+
+// read_sizes: the DID sizes a 0x22 answer to `req` is correlated by — those learned by reading the
+// DID or put on the client from a description, never one stated with set_did_size, which may be a
+// variable DID's captured snapshot size rather than its value's now. Empty for any other request.
+fn (c &Client) read_sizes(req []u8) map[u16]int {
+	if req.len < 5 || req[0] != 0x22 {
+		return map[u16]int{}
+	}
+	if c.stated_did_lens.len == 0 {
+		return c.did_lens
+	}
+	mut sizes := map[u16]int{}
+	for id, n in c.did_lens {
+		if id !in c.stated_did_lens {
+			sizes[id] = n
+		}
+	}
+	return sizes
 }

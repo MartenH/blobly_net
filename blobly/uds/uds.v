@@ -532,7 +532,7 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool, bound int) !([]u8, bo
 				text: if discarded > 0 { '${err.msg()} (${no_answer(req[0], discarded)})' } else { err.msg() }
 			}
 		}
-		match answer_to_sized(req, resp, c.did_lens) {
+		match answer_to_sized(req, resp, c.read_sizes(req)) {
 			.positive {
 				if req[0] == sid_diagnostic_session_control {
 					c.adopt(resp)
