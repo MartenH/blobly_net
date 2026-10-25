@@ -437,7 +437,7 @@ class BbNmNode(ctypes.Structure):
     _fields_ = [("name", ctypes.c_char * BB_NM_TEXT), ("id", ctypes.c_uint32), ("ext", ctypes.c_uint8),
                 ("has_id", ctypes.c_uint8), ("nid", ctypes.c_int32), ("missing", ctypes.c_uint8),
                 ("unknown", ctypes.c_uint8), ("live", ctypes.c_uint8), ("keeper", ctypes.c_int32),
-                ("cbv", ctypes.c_uint8), ("has_pn", ctypes.c_uint8), ("pn", ctypes.c_uint64),
+                ("repeater", ctypes.c_uint8), ("cbv", ctypes.c_uint8), ("has_pn", ctypes.c_uint8), ("pn", ctypes.c_uint64),
                 ("count", ctypes.c_uint64), ("last_ns", ctypes.c_int64), ("cadence_ms", ctypes.c_double),
                 ("last_interval_ms", ctypes.c_double)]
 

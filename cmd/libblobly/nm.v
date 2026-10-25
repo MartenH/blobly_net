@@ -15,6 +15,7 @@ mut:
 	l    &nm.Listener = unsafe { nil }
 	gen  u64
 	view nm.View
+	at   f64 // the moment `view` is of
 }
 
 __global (
@@ -77,8 +78,10 @@ pub fn bb_nm_attach(h i32, row i32) i32 {
 		return 1
 	}
 	if !has {
-		hd.nm = NmTap{} // an earlier run's listener does not go on reading
-		ok()
+		if isnil(hd.nm.l) || hd.nm.gen != gen {
+			hd.nm = NmTap{} // an earlier run's listener does not go on reading
+		}
+		ok() // a stated range this run keeps reading: a refused return to the wire's changes nothing
 		return 0
 	}
 	hd.nm = NmTap{
@@ -157,8 +160,9 @@ pub fn bb_nm_read_view(h i32, out &C.bb_nm_view) i32 {
 		return fail(bb_err_state, 'bus handle ${h} is not reading NM: bb_nm_attach it first')
 	}
 	v := hd.nm.l.reading()
-	hd.nm.view = v
 	at := hd.nm.l.at_ms
+	hd.nm.view = v
+	hd.nm.at = at
 	unsafe {
 		out.state = nm_state_code(v.state)
 		out.nodes = i32(v.rows.len)
@@ -199,7 +203,7 @@ pub fn bb_nm_node_info(h i32, k i32, out &C.bb_nm_node) i32 {
 		return fail(bb_err, 'the NM reading holds no node ${k} (it holds ${v.rows.len}; bb_nm_read_view takes it)')
 	}
 	r := v.rows[int(k)]
-	at := hd.nm.l.at_ms
+	at := hd.nm.at
 	unsafe {
 		put_text(r.name, &out.name[0], 256)
 		out.id = r.id
@@ -210,6 +214,7 @@ pub fn bb_nm_node_info(h i32, k i32, out &C.bb_nm_node) i32 {
 		out.unknown = u8(r.unknown)
 		out.live = u8(!r.missing && !r.stale)
 		out.keeper = i32(v.keeper_rows.index(int(k)))
+		out.repeater = u8(int(k) in v.repeater_rows)
 		out.cbv = r.cbv
 		out.has_pn = u8(r.has_pn)
 		out.pn = r.pn

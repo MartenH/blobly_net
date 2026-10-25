@@ -76,42 +76,12 @@ fn (mut env Env) j1939_of(name string) !&j1939.Listener {
 }
 
 // j1939_read reads channel `name` into its listener `lis` until `deadline` (sys_mono_now), or with
-// `until_message` until a completed message waits; a deadline already past is one look. A wait the
-// run's deadline cuts is an error (timeout_note).
+// `until_message` until a completed message waits (read_until); a deadline already past is one
+// look. A wait the run's deadline cuts is an error (timeout_note).
 fn (mut env Env) j1939_read(name string, lis &j1939.Listener, deadline u64, until_message bool) ! {
-	mut bus := env.bus_for(name)!
-	mut first := true
-	for !(until_message && lis.queued() > 0) {
-		now := time.sys_mono_now()
-		if now >= deadline && !first {
-			return
-		}
-		first = false
-		left := if now >= deadline { 0 } else { int((deadline - now) / 1_000_000) }
-		f := bus.recv(if left < 100 { left } else { 100 }) or {
-			if env.expired() {
-				return error(timeout_note)
-			}
-			if transport.look_was_spent(err) {
-				continue
-			}
-			if err.msg() != 'timeout' {
-				return error('j1939: ${name}: ${err.msg()}')
-			}
-			env.read_idle(name)
-			if left == 0 {
-				// what a whole-millisecond wait cannot ask for is slept, not skipped
-				rest := i64(deadline) - i64(time.sys_mono_now())
-				if rest > 0 {
-					time.sleep(rest * time.nanosecond)
-				}
-				return
-			}
-			continue
-		}
-		env.frame_read(name, f, transport.received_now(f))
-		_ = env.e2e_verdict(name, f) or { '' } // its message's E2E reader sees every frame the script reads
-	}
+	env.read_until(name, deadline, false, fn [lis, until_message] () bool {
+		return until_message && lis.queued() > 0
+	})!
 }
 
 // __j1939_listen(channel): the channel read as J1939 from now on

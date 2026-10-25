@@ -71,13 +71,19 @@ fn (mut env Env) nm_of(name string) !&nm.Listener {
 	return l
 }
 
-// nm_read reads channel `name` into `lis` until `deadline` (sys_mono_now) has passed, or `done`
-// holds for the reading — asked after every read, a frame or one that found nothing, so a state
-// reached by silence is seen; a deadline already past is one look. Answers whether `done` held.
-fn (mut env Env) nm_read(name string, lis &nm.Listener, deadline u64, done fn (nm.View) bool) !bool {
+// read_until reads channel `name` until `deadline` (sys_mono_now) has passed or `done` holds —
+// asked before each read, and with `read_first` not before the first, so a reading already
+// satisfied by what an earlier read left is looked past once; after every read, a frame or one
+// that found nothing, it is asked again at the next turn. Every frame read goes to the
+// channel's readings (frame_read) and its E2E reader. A deadline already past is one look. A wait
+// the run's deadline cuts is an error (timeout_note). Answers whether `done` held.
+fn (mut env Env) read_until(name string, deadline u64, read_first bool, done fn () bool) !bool {
 	mut bus := env.bus_for(name)!
 	mut first := true
 	for {
+		if !(first && read_first) && done() {
+			return true
+		}
 		now := time.sys_mono_now()
 		if now >= deadline && !first {
 			return false
@@ -92,28 +98,34 @@ fn (mut env Env) nm_read(name string, lis &nm.Listener, deadline u64, done fn (n
 				continue
 			}
 			if err.msg() != 'timeout' {
-				return error('nm: ${name}: ${err.msg()}')
+				return error('${name}: ${err.msg()}')
 			}
 			env.read_idle(name)
-			if done(lis.reading()) {
-				return true
-			}
 			if left == 0 {
 				// what a whole-millisecond wait cannot ask for is slept, not skipped
 				rest := i64(deadline) - i64(time.sys_mono_now())
 				if rest > 0 {
 					time.sleep(rest * time.nanosecond)
 				}
-				return false
+				return done()
 			}
 			continue
 		}
 		env.frame_read(name, f, transport.received_now(f))
-		if done(lis.reading()) {
-			return true
-		}
+		_ = env.e2e_verdict(name, f) or { '' } // its message's E2E reader sees every frame the script reads
 	}
 	return false
+}
+
+// nm_read reads channel `name` into `lis` until `deadline` or `done` holds for its reading, asked
+// once an NM frame came or the reading's moment moved on (nm.Listener.moved). Answers whether it held.
+fn (mut env Env) nm_read(name string, lis &nm.Listener, deadline u64, done fn (nm.View) bool) !bool {
+	mut fresh := unsafe { lis }
+	fresh.asked_ms = -1.0 // a new wait asks at its first turn
+	return env.read_until(name, deadline, true, fn [lis, done] () bool {
+		mut l := unsafe { lis }
+		return l.moved() && done(l.reading())
+	})!
 }
 
 // __nm_listen(channel, lo, hi, ext, timeout_ms): read the channel as NM from now on, by its own
@@ -125,7 +137,13 @@ fn l_nm_listen(l lua.State) i32 {
 	if lo < 0 {
 		if cur := env.nm_rx[name] {
 			if cur.trk.cfg.source == .script {
-				env.nm_rx.delete(name) // back to the wire's own, a new reading
+				// back to the wire's own, a new reading; refused, the stated range reads on
+				ci := env.find_chan(name) or { return l.fail(err.msg()) }
+				if _ := env.chans[ci].nm {
+				} else {
+					return l.fail('${name}: its wire has no NM configuration to go back to; the stated range reads on')
+				}
+				env.nm_rx.delete(name)
 			}
 		}
 		env.nm_of(name) or { return l.fail(err.msg()) }

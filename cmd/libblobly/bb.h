@@ -1406,6 +1406,7 @@ typedef struct bb_nm_node {
 	uint8_t  live;             /* heard within the timeout */
 	int32_t  keeper;           /* its place among those keeping the network awake (declared order,
 	                              then first heard), -1 not one */
+	uint8_t  repeater;         /* live, and its latest frame asks for a repeat message */
 	uint8_t  cbv;              /* its latest control bit vector: 0x01 repeat-message request, 0x08
 	                              ready to sleep, 0x10 active wake-up, 0x40 PN info */
 	uint8_t  has_pn;           /* its latest frame requests partial networks: pn is the mask */

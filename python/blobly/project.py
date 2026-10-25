@@ -437,11 +437,14 @@ class Channel(Bus):
                     # row's wire says so (a j1939: tick, a database declaring it) or a listener was asked for
                     _lib.check(lib.bb_e2e_attach(h, self._index))
                     _lib.check(lib.bb_j1939_attach(h, self._index, int(self._j1939 is not None)))
-                    # and its NM reading from its first frame: the one asked for, else the wire's own
-                    if self._nm is not None:
+                    # and its NM reading from its first frame: a stated range, else the wire's own
+                    # (none is no reading: NM is a reader beside the channel, never a refusal of it)
+                    if self._nm is not None and self._nm.explicit is not None:
                         self._nm._attach(h)
                     else:
                         _lib.check(lib.bb_nm_attach(h, self._index))
+                        if self._nm is not None:
+                            self._nm._h = h
                 except BloblyError:
                     lib.bb_bus_close(h)
                     raise

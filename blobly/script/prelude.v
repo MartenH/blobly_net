@@ -1070,7 +1070,13 @@ local function nm_expect(fname, level, channel, state, timeout_ms, kept_awake_by
   if not nm_states[state] then
     error(fname .. ": a state is awake, releasing or asleep, not " .. tostring(state), level)
   end
-  local ms = jms(fname, timeout_ms, 1000)
+  local ms = 1000
+  if timeout_ms ~= nil then
+    if type(timeout_ms) ~= "number" or timeout_ms < 0 or timeout_ms ~= timeout_ms or timeout_ms == math.huge then
+      error(fname .. ": a wait is a finite number of ms, not " .. tostring(timeout_ms), level)
+    end
+    ms = math.floor(timeout_ms)
+  end
   local r, ok
   local want = ""
   if kept_awake_by ~= nil then

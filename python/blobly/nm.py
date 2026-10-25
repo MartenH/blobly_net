@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .project import Channel
 
 STATES = ("awake", "releasing", "asleep")
+_ASK_NS = 5_000_000  # how far a wait lets the reading's moment move before it asks again
 
 
 @dataclass(frozen=True)
@@ -169,19 +170,21 @@ class NmListener:
         lib = _lib.lib()
         if v is None:
             v = self._view(h)
-        nodes, ranks = [], []
+        nodes, ranks, repeaters = [], [], []
         n = _lib.BbNmNode()
         for k in range(v.nodes):
             _lib.check(lib.bb_nm_node_info(h, k, ctypes.byref(n)))
             nodes.append(_node(n))
             ranks.append(n.keeper)
+            if n.repeater:
+                repeaters.append(nodes[-1].name)
         keepers = [nodes[i].name for i in sorted((i for i in range(len(nodes)) if ranks[i] >= 0),
                                                  key=lambda i: ranks[i])]
         woken = nodes[v.woke].name if 0 <= v.woke < len(nodes) else None
         return NmReading(
             _lib.NM_STATES.get(v.state, f"unknown ({v.state})"), keepers, woken, bool(v.woke_active),
             _ms_or_none(v.woke_ns) if woken else None,
-            [nd.name for nd in nodes if nd.live and nd.bits is not None and nd.bits.repeat_request],
+            repeaters,
             nodes, [nd.name for nd in nodes if nd.missing], [nd.name for nd in nodes if nd.unknown],
             bool(v.heard), _ms_or_none(v.last_ns), v.frames, v.malformed, _lib.text(v.last_error), v.dropped,
             v.timeout_ms, bool(v.timeout_default), _lib.NM_SOURCES.get(v.source, f"unknown ({v.source})"),
@@ -246,9 +249,15 @@ class NmListener:
         with _lib.state_lock:
             run = _lib.state["run"]
         h = self._handle()
-        last = None
+        asked = None  # what the last reading asked was of: its NM frames and its moment, coarsely
         for _ in self.channel._frames_until(deadline, run, idle=True):
             v = self._view(h)
+            # asked again once an NM frame came or time moved on: a frame of another id moves
+            # the reading only by its time
+            mark = (v.frames, v.t_ns // _ASK_NS)
+            if mark == asked:
+                continue
+            asked = mark
             if state_only is not False and _lib.NM_STATES.get(v.state) != state_only:
                 continue
             last = self._reading(h, v)

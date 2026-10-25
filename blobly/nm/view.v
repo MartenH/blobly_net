@@ -36,6 +36,7 @@ pub:
 	woke_active bool // that frame said active wake-up
 	woke_row    int = -1 // the row of `woke`; -1 before any
 	repeaters   []string
+	repeater_rows []int // the rows of `repeaters`
 	heard       bool
 	last_ago    f64 // since the last NM frame on the wire
 	rows        []Row
@@ -92,6 +93,7 @@ pub fn (t &Tracker) view(now f64, cols int) View {
 		woke_row = w.node // the reporters are the first rows, in node order
 	}
 	keepers := t.keepers(now)
+	repeaters := t.with_bit(now, cbv_repeat_request)
 	return View{
 		cfg:         t.cfg
 		state:       t.state(now)
@@ -101,7 +103,8 @@ pub fn (t &Tracker) view(now f64, cols int) View {
 		woke_ago:    woke_ago
 		woke_active: woke_active
 		woke_row:    woke_row
-		repeaters:   t.with_bit(now, cbv_repeat_request).map(t.name_of(it))
+		repeaters:   repeaters.map(t.name_of(it))
+		repeater_rows: repeaters
 		heard:       t.last_ms >= 0
 		last_ago:    if t.last_ms >= 0 { now - t.last_ms } else { 0.0 }
 		rows:        rows

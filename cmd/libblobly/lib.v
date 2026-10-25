@@ -443,6 +443,7 @@ pub mut:
 	unknown          u8
 	live             u8
 	keeper           i32
+	repeater         u8
 	cbv              u8
 	has_pn           u8
 	pn               u64

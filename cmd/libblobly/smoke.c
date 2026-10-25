@@ -359,6 +359,8 @@ static int nm_steps(int row) {
 	CHECK(bb_nm_node_info_p(h, 0, &n) == 0 && n.nid == 0x11 && n.id == 0x511 && n.has_id && n.keeper == 0 && n.live
 		&& n.cbv == 0x11 && !n.missing && !n.unknown && strcmp(n.name, "NID 0x11") == 0, "the node: %s", n.name);
 	CHECK(bb_nm_node_info_p(h, 1, &n) == BB_ERR, "no second node");
+	CHECK(bb_nm_attach_p(h, row) == 0 && bb_nm_read_view_p(h, &v) == 0 && v.nodes == 1,
+		"a refused return to the wire's configuration keeps the stated range");
 	bb_bus_close_p(peer);
 	bb_bus_close_p(h);
 	printf("ok   NM on CAN1: a stated range read, its node awake\n");
