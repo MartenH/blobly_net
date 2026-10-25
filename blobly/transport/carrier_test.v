@@ -22,6 +22,16 @@ fn test_a_receive_whose_carrier_is_gone_is_typed() {
 			assert false, 'a receive on a gone carrier delivered a frame'
 		}
 	}
+	$if linux {
+		// the socket gone (EBADF, ENODEV, ENETDOWN) is; a short read (EIO) or one reception the
+		// kernel gave up (ETIMEDOUT, ECOMM, EILSEQ) is not
+		for e in [9, 19, 100] {
+			assert carrier_errno(e), 'errno ${e}'
+		}
+		for e in [5, 110, 70, 84, 4] {
+			assert !carrier_errno(e), 'errno ${e}'
+		}
+	}
 	// and a timeout is not one
 	mut quiet := open_inproc('T-gone-quiet') or { panic(err) }
 	defer {

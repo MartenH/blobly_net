@@ -1396,7 +1396,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 						}
 						_ := <-e.done
 						h.mu.unlock()
-						return err
+						return carrier_gone(err.msg()) // the wire is failed now, as below
 					}
 					if !established {
 						e.drain_mu.unlock()

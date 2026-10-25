@@ -204,7 +204,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 				continue // a slice ended without a frame; forever means forever
 			}
 			if timeout_ms < 0 {
-				return err // not a timeout: the socket is gone
+				return carrier_gone(err.msg()) // not a timeout: the socket is gone
 			}
 			return error('timeout')
 		}

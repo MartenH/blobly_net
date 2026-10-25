@@ -69,7 +69,11 @@ fn (mut c KernelChannel) recv(timeout_ms int) ![]u8 {
 		return error('timeout')
 	}
 	if n < 0 {
-		return transport.carrier_gone('isotp recv failed on ${c.iface}')
+		// a reception the kernel gave up (N_Cr, a sequence gap) is reported once and is not the
+		// socket gone; a socket not open or its interface gone or down is
+		e := -(n + 1000)
+		msg := 'isotp recv failed on ${c.iface}: ${cerr(e)}'
+		return if transport.carrier_errno(e) { transport.carrier_gone(msg) } else { error(msg) }
 	}
 	return buf[..n].clone()
 }

@@ -99,6 +99,9 @@ fn functional_held(mut fch isotp.Channel, mut tap transport.Bus, targets []Funct
 			if is_silence(err.msg()) {
 				break
 			}
+			if stop_asked(targets) {
+				return error(abandoned_note)
+			}
 			return CarrierFailed{
 				text: 'UDS: the functional listener failed: ${err.msg()}'
 			}

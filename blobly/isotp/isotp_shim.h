@@ -46,19 +46,24 @@ static inline int ct_isotp_send(int fd, const uint8_t *data, int len) {
 
 // Receive one reassembled ISO-TP PDU into buf (up to cap bytes). timeout_ms < 0
 // blocks; >= 0 waits at most that long. Returns byte count (>=0), -1 on timeout,
-// -2 on error.
+// -(1000 + errno) on error; an interrupted wait or read is retried.
 static inline int ct_isotp_recv(int fd, uint8_t *buf, int cap, int timeout_ms) {
 	if (timeout_ms >= 0) {
-		struct pollfd p;
-		p.fd = fd;
-		p.events = POLLIN;
-		int r = poll(&p, 1, timeout_ms);
-		if (r == 0) return -1;
-		if (r < 0) return -2;
+		for (;;) {
+			struct pollfd p;
+			p.fd = fd;
+			p.events = POLLIN;
+			int r = poll(&p, 1, timeout_ms);
+			if (r == 0) return -1;
+			if (r > 0) break;
+			if (errno != EINTR) return -(1000 + errno);
+		}
 	}
-	ssize_t n = read(fd, buf, cap);
-	if (n < 0) return -2;
-	return (int)n;
+	for (;;) {
+		ssize_t n = read(fd, buf, cap);
+		if (n >= 0) return (int)n;
+		if (errno != EINTR) return -(1000 + errno);
+	}
 }
 
 static inline void ct_isotp_close(int fd) { if (fd >= 0) close(fd); }
