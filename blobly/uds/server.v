@@ -34,7 +34,7 @@ pub mut:
 	spec      ServerSpec
 	// a live DID's signal value, for a described server whose owner simulates the signal; nil or
 	// none = the DID keeps its zeros
-	signal_value fn (name string) ?i64 = unsafe { nil }
+	signal_value fn (name string) ?LiveValue = unsafe { nil }
 	// the described server's clock in ms (S3, the 0x27 lockout); nil = time.ticks()
 	clock          fn () i64 = unsafe { nil }
 	last_rx_ms     i64

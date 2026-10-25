@@ -762,3 +762,70 @@ fn test_a_vin_writable_at_another_size_is_no_refusal_where_0x2e_is_not_served() 
 	write << 'BLOBLYSYSNODEH7350'.bytes()
 	assert host.handle(write) == [u8(0x7F), 0x2E, 0x11]
 }
+
+fn live_did(id u16, signal string, f uds.FieldSpec) uds.DidSpec {
+	return uds.DidSpec{
+		id:     id
+		source: .live
+		data:   []u8{len: f.width}
+		signal: signal
+		fields: [f]
+	}
+}
+
+fn live_msg(id u32, sig candb.Signal, value f64) SimMessage {
+	return SimMessage{
+		msg:       candb.Message{
+			name:    sig.name
+			id:      id
+			dlc:     8
+			signals: [sig]
+		}
+		period_ms: 50
+		signals:   [SimSignal{
+			name: sig.name
+			gen:  gen_const(value)
+		}]
+	}
+}
+
+fn test_a_published_live_value_keeps_a_u64_past_i64_and_rounds_a_fraction() {
+	mut s := uds.server_from(uds.ServerSpec{
+		dids: [
+			live_did(0x0101, 'Odo', uds.FieldSpec{ width: 8 }),
+			live_did(0x0102, 'Temp', uds.FieldSpec{ width: 2, signed: true }),
+			live_did(0x0103, 'Speed', uds.FieldSpec{ width: 1 }),
+			live_did(0x0104, 'Delta', uds.FieldSpec{ width: 8, signed: true }),
+		]
+	})
+	clear_live()
+	wire_live(mut s, 'inproc:EDGE', 'edge', 'big')
+	mut e := Engine{
+		ecus: [
+			SimEcu{
+				name:     'big'
+				messages: [
+					live_msg(0x140, candb.Signal{ name: 'Odo', length: 64 }, 9223372036854779904.0), // 2^63 + 4096
+					live_msg(0x141, candb.Signal{
+						name:      'Temp'
+						length:    16
+						is_signed: true
+						factor:    0.5
+					}, -40.5),
+					// 90 * 0.7 is 62.99999999999999 in f64: the frame carries 63
+					live_msg(0x142, candb.Signal{ name: 'Speed', length: 8, factor: 0.7 }, 63),
+					live_msg(0x143, candb.Signal{ name: 'Delta', length: 64, is_signed: true }, -5),
+				]
+			},
+		]
+	}
+	assert e.due_frames(0).len == 4
+	publish_live('inproc:EDGE', 'edge', &e)
+	assert h(mut s, [u8(0x22), 0x01, 0x01]) == [u8(0x62), 0x01, 0x01, 0x80, 0, 0, 0, 0, 0, 0x10,
+		0]
+	assert h(mut s, [u8(0x22), 0x01, 0x02]) == [u8(0x62), 0x01, 0x02, 0xFF, 0xD7] // -41
+	assert h(mut s, [u8(0x22), 0x01, 0x03]) == [u8(0x62), 0x01, 0x03, 63]
+	assert h(mut s, [u8(0x22), 0x01, 0x04]) == [u8(0x62), 0x01, 0x04, 0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFB]
+	clear_live()
+}

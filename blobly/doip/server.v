@@ -109,16 +109,16 @@ mut:
 	active_mu sync.Mutex
 }
 
-// new_server builds an entity with the given identity + UDS handler. Returns a
-// heap pointer so it can be shared with serving threads (spawn needs a reference).
 // announced_vin returns the VIN discovery should advertise right now.
-fn (mut s DoipServer) announced_vin() string {
+pub fn (mut s DoipServer) announced_vin() string {
 	s.vin_mu.lock()
 	v := s.vin
 	s.vin_mu.unlock()
 	return v
 }
 
+// new_server builds an entity with the given identity + UDS handler. Returns a
+// heap pointer so it can be shared with serving threads (spawn needs a reference).
 pub fn new_server(cfg ServerCfg, handler DiagHandler) &DoipServer {
 	// the announced VIN starts as the configured one and only moves if set_vin is called
 	return &DoipServer{

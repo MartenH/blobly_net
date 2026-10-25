@@ -11,6 +11,7 @@
 // a server keeps what the project gives it, today's content.
 module sim
 
+import blobly.candb
 import math
 import os
 import blobly.project
@@ -174,7 +175,7 @@ pub struct LiveTable {
 mut:
 	mu   sync.RwMutex
 	want map[string]bool
-	vals map[string]i64
+	vals map[string]uds.LiveValue
 }
 
 // keyed by wire, channel and node: node names are not unique across the channels of one wire
@@ -197,13 +198,13 @@ pub fn want_live(iface string, chan_name string, node string, signal string) {
 
 // live_value_of_node is node `node`'s published value of `signal` on whichever wire simulates it;
 // none when no wire does, or when two do (which of them the ECU is cannot be said).
-pub fn live_value_of_node(node string, signal string) ?i64 {
+pub fn live_value_of_node(node string, signal string) ?uds.LiveValue {
 	suffix := '|${node}|${signal}'
 	live_table.mu.rlock()
 	defer {
 		live_table.mu.runlock()
 	}
-	mut found := []i64{}
+	mut found := []uds.LiveValue{}
 	for k, v in live_table.vals {
 		if k.ends_with(suffix) {
 			found << v
@@ -221,7 +222,7 @@ pub fn clear_live() {
 }
 
 // live_value is a published signal's value, none before its node has sent it.
-pub fn live_value(iface string, chan_name string, node string, signal string) ?i64 {
+pub fn live_value(iface string, chan_name string, node string, signal string) ?uds.LiveValue {
 	live_table.mu.rlock()
 	defer {
 		live_table.mu.runlock()
@@ -251,19 +252,51 @@ pub fn publish_live(iface string, chan_name string, e &Engine) {
 				if !wanted {
 					continue
 				}
-				mut phys := s.gen.value(m.last_t, m.last_n)
+				phys := s.gen.value(m.last_t, m.last_n)
+				mut v := live_rounded(phys)
 				for sig in m.msg.signals {
 					if sig.name == s.name {
-						phys = sig.phys_from_raw(sig.raw_from_phys(phys)) // as encoded: clamped
+						v = live_encoded(sig, phys)
 						break
 					}
 				}
-				v := i64(math.round(phys))
 				live_table.mu.lock()
 				live_table.vals[k] = v
 				live_table.mu.unlock()
 			}
 		}
+	}
+}
+
+// live_encoded is a generator's value as `sig` encodes it, as an exact integer: by its raw bits at
+// factor 1 and offset 0 (the whole 64-bit range), else its physical value rounded.
+fn live_encoded(sig candb.Signal, phys f64) uds.LiveValue {
+	raw := sig.raw_from_phys(phys) // clamped to the signal's width
+	if sig.factor != 1 || sig.offset != 0 {
+		return live_rounded(sig.phys_from_raw(raw))
+	}
+	if !sig.is_signed || sig.length <= 0 {
+		return uds.LiveValue{
+			bits: raw
+		}
+	}
+	if sig.length < 64 && raw & (u64(1) << (sig.length - 1)) != 0 {
+		return uds.live_int(i64(raw) - (i64(1) << sig.length)) // two's-complement negative
+	}
+	return uds.live_int(i64(raw))
+}
+
+// live_rounded is a physical value rounded to the nearest integer, held to the 64-bit ranges.
+fn live_rounded(phys f64) uds.LiveValue {
+	p := math.round(phys)
+	if math.is_nan(p) {
+		return uds.LiveValue{}
+	}
+	if p < 0 {
+		return uds.live_int(if p <= -9.223372036854775808e18 { min_i64 } else { i64(p) })
+	}
+	return uds.LiveValue{
+		bits: if p >= 1.8446744073709551616e19 { max_u64 } else { u64(p) }
 	}
 }
 
@@ -280,7 +313,7 @@ pub fn wire_live_node(mut srv uds.Server, node string) {
 		}
 	}
 	if any {
-		srv.signal_value = fn [node] (signal string) ?i64 {
+		srv.signal_value = fn [node] (signal string) ?uds.LiveValue {
 			return live_value_of_node(node, signal)
 		}
 	}
@@ -312,7 +345,7 @@ pub fn wire_live(mut srv uds.Server, iface string, chan_name string, node string
 		}
 	}
 	if any {
-		srv.signal_value = fn [iface, chan_name, node] (signal string) ?i64 {
+		srv.signal_value = fn [iface, chan_name, node] (signal string) ?uds.LiveValue {
 			return live_value(iface, chan_name, node, signal)
 		}
 	}

@@ -229,3 +229,63 @@ fn test_a_writable_did_past_the_cell_takes_no_record() {
 	req << []u8{len: 33, init: 0x41}
 	assert s.handle(req) == [u8(0x7F), 0x2E, 0x13]
 }
+
+fn test_a_live_value_is_held_to_its_field() {
+	u8f := FieldSpec{
+		width: 1
+	}
+	i16f := FieldSpec{
+		width:  2
+		signed: true
+	}
+	u64f := FieldSpec{
+		width: 8
+	}
+	i64f := FieldSpec{
+		width:  8
+		signed: true
+	}
+	boolf := FieldSpec{
+		width:   1
+		boolean: true
+	}
+	// past i64's range, an unsigned 64-bit field keeps every bit
+	assert live_field_bytes(LiveValue{ bits: max_u64 - 1 }, u64f) == [u8(0xFF), 0xFF, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFE]
+	assert live_field_bytes(live_int(-1), i64f) == [u8(0xFF), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+		0xFF]
+	assert live_field_bytes(live_int(min_i64), i64f) == [u8(0x80), 0, 0, 0, 0, 0, 0, 0]
+	assert live_field_bytes(live_int(-2), i16f) == [u8(0xFF), 0xFE]
+	// held to what the width holds
+	assert live_field_bytes(live_int(300), u8f) == [u8(0xFF)]
+	assert live_field_bytes(live_int(-1), u8f) == [u8(0)]
+	assert live_field_bytes(LiveValue{ bits: max_u64 }, i64f) == [u8(0x7F), 0xFF, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFF]
+	assert live_field_bytes(live_int(-40000), i16f) == [u8(0x80), 0]
+	assert live_field_bytes(live_int(40000), i16f) == [u8(0x7F), 0xFF]
+	// a bool is 1 for any nonzero value
+	assert live_field_bytes(live_int(2), boolf) == [u8(1)]
+	assert live_field_bytes(live_int(0), boolf) == [u8(0)]
+}
+
+fn test_a_live_did_answers_a_value_past_i64() {
+	mut s := server_from(ServerSpec{
+		dids: [
+			DidSpec{
+				id:     0x0101
+				source: .live
+				data:   []u8{len: 8}
+				signal: 'Odo'
+				fields: [FieldSpec{
+					width: 8
+				}]
+			},
+		]
+	})
+	s.signal_value = fn (name string) ?LiveValue {
+		return LiveValue{
+			bits: 0x8000_0000_0000_0001
+		}
+	}
+	assert s.handle([u8(0x22), 0x01, 0x01]) == [u8(0x62), 0x01, 0x01, 0x80, 0, 0, 0, 0, 0, 0, 1]
+}
