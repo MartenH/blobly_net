@@ -327,3 +327,47 @@ fn test_a_29_bit_reporter_is_its_own_node() {
 	assert t.nodes[0].ext && t.name_of(0) == 'X'
 	assert !t.note(0x511, false, frame(0x11, 0), 0)
 }
+
+fn test_keepers_are_in_declared_order_whoever_was_heard_first() {
+	mut t := new_tracker(cfg_declaring())
+	t.note(0x522, false, frame(0x22, 0), 0) // nothing declares it
+	t.note(0x513, false, frame(0x13, 0), 10)
+	t.note(0x511, false, frame(0x11, 0), 20)
+	v := t.view(30, 0)
+	assert v.keepers == ['sysnode', 'domain', 'NID 0x22']
+	assert v.keeper_rows == [2, 1, 0], 'rows stay in the order first heard'
+	assert v.woke_row == -1, 'the first frame woke nothing without active wake-up'
+	assert v.rows[2].cbv == 0
+}
+
+fn test_a_listener_reads_as_of_its_latest_read() {
+	mut l := new_listener(cfg_declaring())
+	assert l.reading().state == .asleep && !l.reading().heard
+	l.feed(0x511, false, false, frame(0x11, cbv_active_wakeup), 1000)
+	assert l.reading().state == .awake
+	assert l.reading().woke_row == 0
+	// another frame on the wire moves the reading on; a remote frame carries no PDU
+	l.feed(0x100, false, false, [u8(1)], 1200)
+	l.feed(0x513, false, true, []u8{}, 1250)
+	assert l.trk.nodes.len == 1
+	assert l.reading().state == .awake, 'as of 1250, within the timeout'
+	l.idle(1400)
+	assert l.reading().state == .asleep, 'a read that found nothing at 1400'
+	l.idle(1300)
+	assert l.at_ms == 1400, 'the reading never moves back'
+}
+
+fn test_a_script_states_a_range_as_a_row_nm_is_read() {
+	c := explicit(0x500, 0x53F, false, 300) or { panic(err) }
+	assert c.source == .script && !c.ext && c.declared.len == 0
+	wide := explicit(0x500, 0x18FF, false, 300) or { panic(err) }
+	assert wide.ext, 'a range above 0x7FF is 29-bit'
+	low := explicit(0x10, 0x20, true, 300) or { panic(err) }
+	assert low.ext
+	for bad in [[i64(0x600), 0x500, 300], [i64(-1), 0x500, 300], [i64(0), 0x2000_0000, 300],
+		[i64(0), 1, 0], [i64(0), 1, 60001]] {
+		if _ := explicit(bad[0], bad[1], false, bad[2]) {
+			assert false, '${bad} is refused'
+		}
+	}
+}
