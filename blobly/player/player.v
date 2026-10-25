@@ -253,14 +253,14 @@ fn (mut p Player) restart_at(pos_s f64) {
 	}
 }
 
-// pull loads a chunked player's next chunk; false at the end of the pass, or (when not `wait`)
-// if the chunk is not ready yet.
-fn (mut p Player) pull(wait bool) bool {
+// pull loads a chunked player's next chunk, waiting up to `wait_ms` for it (-1: until it comes);
+// false at the end of the pass, or if the chunk is not ready in time.
+fn (mut p Player) pull(wait_ms int) bool {
 	if isnil(p.chunks) || !p.open {
 		return false
 	}
 	mut c := p.chunks
-	ck := c.take(wait) or { return false }
+	ck := if wait_ms < 0 { c.take(true) } else { c.take_within(wait_ms) } or { return false }
 	p.idx = 0
 	p.before = ck.before
 	if ck.end {
@@ -280,7 +280,7 @@ fn (mut p Player) pull(wait bool) bool {
 // would rather block than have the clock held.
 pub fn (mut p Player) wait_ready() {
 	if p.idx >= p.sel.len {
-		p.pull(true)
+		p.pull(-1)
 	}
 }
 
@@ -418,11 +418,18 @@ fn (mut p Player) release(now_ms f64, mut out []canlog.LogEntry, mut due []f64, 
 	}
 	for {
 		if p.idx >= p.sel.len && p.open {
-			if p.pull(!p.anchor) {
+			if !isnil(p.chunks) && out.len >= chunk_batch_max {
+				break // the rest is due at the next release
+			}
+			if p.pull(if p.anchor { 0 } else { chunk_wait_ms }) {
 				continue
 			}
-			if p.open { // first chunk of a new read not ready: hold the clock
-				p.base_ms = now_ms - p.elapsed_ms
+			if p.open {
+				// the first chunk of a new read is not ready: hold the clock; a later chunk is
+				// not: the frames it brings go out late, at a later release
+				if p.anchor {
+					p.base_ms = now_ms - p.elapsed_ms
+				}
 				break
 			}
 		}

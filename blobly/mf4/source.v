@@ -57,6 +57,15 @@ mut:
 	err string
 }
 
+// open_file_source is open_source on the heap: a Stream keeps a reference to its source, so a
+// source that outlives the function it was opened in must not live in that function's frame.
+pub fn open_file_source(path string) !&FileSource {
+	s := open_source(path)!
+	return &FileSource{
+		...s
+	}
+}
+
 pub fn open_source(path string) !FileSource {
 	mut f := os.open(path)!
 	// the size of the HANDLE, not of the path: a path replaced between the open and a lookup by

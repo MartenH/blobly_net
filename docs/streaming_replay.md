@@ -1,19 +1,21 @@
 # Streaming replay — design
 
-> Status: steps 1–3 of the PR sequence are built — `mf4.Stream` (`stream.v`, `chain.v`) reproduces
-> `parse_log`'s order from the file a chunk at a time, pinned by the golden test over the images
-> in its golden list (sorted MLSD and VLSD, DLC and DataLength, 32- and 64-bit offsets, remote
-> and invalidated frames, a DL chain with a straddling record, DZ both types, an unsorted group
-> with skew, an unsorted group's VLSD channel group, a DL-of-DZ signal-data chain, UnFinMF) and
-> the tracked samples; `cmd/mf4_dump --stream` reads through it and prints the heap
+> Status: built — all four steps of the PR sequence. `mf4.Stream` (`stream.v`, `chain.v`)
+> reproduces `parse_log`'s order from the file a chunk at a time, pinned by the golden test over
+> the images in its golden list (sorted MLSD and VLSD, DLC and DataLength, 32- and 64-bit
+> offsets, remote and invalidated frames, a DL chain with a straddling record, DZ both types, an
+> unsorted group with skew, an unsorted group's VLSD channel group, a DL-of-DZ signal-data chain,
+> UnFinMF) and the tracked samples; `cmd/mf4_dump --stream` reads through it and prints the heap
 > high-water mark of either path; `mf4.survey()` is the one-pass survey; `player.Chunker` plays a
-> recording a chunk at a time. Step 4 — the GUI and the CLI switching to the chunker — is not
-> built: a replay still loads the whole file. **This shipped differently from *The shape* below**:
-> no window ring, no decoder thread filling one and no cursor interface (items 3–8); step 3's
-> reader thread queuing chunks replaced them. Written after
-> #299/#300 took the replay's allocation rate from 1,140 MB/s to ~28 and the arena took the
-> collector's pause length down with it; what remains is a recording that does not fit in memory
-> at all. Each step below is measured with `cmd/blobly_net/probe.v` before and after.
+> recording a chunk at a time; and (step 4) every replay — the GUI's Replay panel and Scan,
+> `cmd/restbus`, Lua's `replay.*`, the C ABI and Python's `net.replays` — opens its recording
+> through `replay.open_recording`, which streams an `.mf4` from `BLOBLY_MF4_STREAM_MB` (64 MiB)
+> up. **This shipped differently from *The shape* below**: no window ring, no decoder thread
+> filling one and no cursor interface (items 3–8); step 3's reader thread queuing chunks replaced
+> them. Written after #299/#300 took the replay's allocation rate from 1,140 MB/s to ~28 and the
+> arena took the collector's pause length down with it; what remained was a recording that does
+> not fit in memory at all. Each step below is measured with `cmd/blobly_net/probe.v` before and
+> after.
 
 ## Why
 
@@ -230,8 +232,10 @@ import (whole-file by design, 2000-row cap).
      arrives. A compressed block inflated right after that still lands on the tick once, since
      the reader reads ~50× faster than playback and is ahead from then on. (2) While a seek's
      read is pending, `sent()` counts from the last chunk taken; nothing but the tests reads
-     it. (3) No test has a J1939 transfer straddling a chunk: there is no J1939 MF4 and no MF4
-     writer. (4) The clock hold itself is exercised by the real-time harness, not by
+     it. (3) Since step 4, `replay/source_test.v` writes a J1939 MF4 (the
+     `j1939-bam.log` pattern, 16 k frames) whose BAM transfers straddle chunk boundaries at
+     every offset, and holds the streamed subtraction by PGN and by announcement to the loaded
+     one. (4) The clock hold itself is exercised by the real-time harness, not by
      `chunked_test.v`, which waits for every chunk (`wait_ready`) so that the reader's timing
      never decides its output.
    - **Why a thread.** A read of the stream measured up to 60 ms, because a compressed block
@@ -254,6 +258,67 @@ import (whole-file by design, 2000-row cap).
 
    The committed test is the same comparison over the tracked samples (`chunked_test.v`). It
    uses `wait_ready`, so the reader's timing never decides the output.
-4. The GUI and the CLI switch to the chunker by file size, and the Replay panel takes its
-   census from the open pass. Background reading, a seek index and a survey cache wait for a
-   measured stall on a file that needs them.
+4. **Built** (#172): the front ends switch to the chunker by file size. `blobly/replay`'s
+   `source.v` is the ONE door: `open_recording(path)` answers the recording's buses — from
+   `mf4.survey()` when it streams, from the loader otherwise — and `Source.prepare(specs)`
+   plans it, as `build_multi_log` in memory or as a `Chunker` whose open pass runs the same
+   `Planner`, so both decide the same rest-bus subtraction (`Prepared.buses`); `Prepared.player`
+   is the one player either way, so pause, seek, speed and loop go through `control.v` as before.
+   The GUI's replay group, the Configure row's Scan (`replay.scan`: the census taken per bus as
+   the survey reads, through `mf4.survey_into` and `player.Census`, the body `census_sel` runs
+   too — one pass, nothing kept), `cmd/restbus` (whose single-bus path is now the one-mapping
+   plan) and `replay.plan_for`/`start` (Lua, the C ABI, Python) all go through it.
+   - **The switch**: an `.mf4` of at least `BLOBLY_MF4_STREAM_MB` MiB (default 64; `0` streams
+     every `.mf4`) streams; below it, and for every candump `.log`, the whole file loads. A file
+     whose stream would differ from the loader's rows (`replay.stream_differs`: rows out of time
+     order, or frames whose payload the stream could not hold — `unresolved`, `evicted`) loads
+     whole and says so. The Replay panel marks a streamed group. Both reads before the first
+     frame (the survey and the chunker's open pass) ask a stop every 4096 rows — the GUI's run
+     ending, a script's deadline (`give_up`) — so a Stop during a long open does not wait it out.
+   - **Why 64 and not 0.** Measured with a scratch harness (open + plan + release every frame
+     as fast as the player gives it; output hashed and identical in both paths on every file):
+
+     | recording | size | in memory: first frame / peak RSS | streamed: first frame / peak RSS |
+     |---|---|---|---|
+     | six private 13–15-bus recordings | 11–17 MB | 0.5–1.2 s / 131–282 MB | 1.7–3.5 s / 22–31 MB |
+     | CANedge `parked.mf4` (unsorted) | 3 MB | 0.07 s / 48 MB | 0.76 s / 19 MB |
+     | CANedge `driving.mf4` | 5 MB | 0.08 s / 52 MB | 0.13 s / 26 MB |
+     | synthetic, 4 buses, sorted | 48 MB | 0.76 s / 352 MB | 0.57 s / 26 MB |
+     | synthetic, 4 buses, sorted | 397 MB | 5.8 s / 2,866 MB | 4.7 s / 34 MB |
+
+     Streaming reads the file twice before the first frame (the survey, then the chunker's open
+     pass) and replans from the top on every seek; in memory a seek is a binary search. On the
+     dense real recordings that is two to three times slower to start, for memory the bench does
+     not miss at that size. Past ~64 MB the in-memory path costs a gigabyte and more (about
+     seven to seventeen times the file), and the streamed one stays flat.
+   - **The bound.** A streamed replay holds the label table, the planner's state (J1939
+     sessions, tallies) and at most `chunk_ahead` (64) chunks of `chunk_rows` (256) rows of
+     80 bytes queued ahead of the player — about 1.3 MB — plus the stream's own caps per data
+     group (`max_dz_block`, one inflated DZ block of up to 16 MiB; `ring_budget`;
+     `max_deferred_bytes`). Measured: 34 MB peak RSS for the whole process on the 397 MB file,
+     against 26 MB on 48 MB — it does not grow with the file.
+   - **Probe** (40 s, Linux/WSLg, a 15-bus replay of one 17 MB private recording onto 15
+     `inproc:` rows at 1×, looping): frames within 1 ms 69.1 % in memory, 69.4 % streamed;
+     none later than 100 ms either way (worst 21.8 / 33.4 ms); live set after a collection
+     247–249 MB in memory, 80–130 MB streamed. The cadence does not change with the source; the
+     69 % is this bench at fifteen buses (the 99 % above was measured on Windows).
+   - **What playing from a reader asks of the player.** A release waits at most
+     `chunk_wait_ms` (20) for a chunk that is not ready — the frames it brings go out late at a
+     later release, the clock not held — so a worker still asks for its stop while the reader
+     reads through a long excluded stretch; only a new read (a seek, a restart) holds the clock.
+     And one release hands out at most `chunk_batch_max` (`chunk_rows` × `chunk_ahead`) entries,
+     since each pins its chunk: a run of equal timestamps would otherwise drain the reader into
+     one batch. A streamed file is planned only while its size and modification time are the
+     survey's. Whether a file is MDF is read from its identification block (`replay.is_mdf`),
+     as `mf4.load_recording` reads it, not from its name.
+   - **Found on the way**: the chunker's reader read through a `FileSource` left in the frame
+     of the function that opened it, since a `Stream` keeps a reference to its source; every pass
+     past the first MiB of a file ended in `file not opened`. The samples `chunked_test.v` plays
+     are 8 KB, which is how it survived. `mf4.open_file_source` puts the source on the heap, and
+     `replay/source_test.v` streams a 2 MB recording it writes.
+   - **Not handled**: a candump `.log` loads whole (a 96 MB file measured 931 MB); streaming one
+     needs a line reader with the loader's time-order rule, which `.log` files do not promise.
+     The opening reads ask for a stop per 4096 rows YIELDED, so a long run of records that
+     yield none (invalidated frames) is read through before a stop is seen, about a second per
+     100 MB. No sidecar cache for the survey and no seek index: a seek in a streamed file costs a read
+     up to its target (~1 M rows/s), the clock held meanwhile.

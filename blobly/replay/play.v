@@ -98,7 +98,7 @@ pub:
 // load decodes a `.mf4` or candump `.log` recording, with its buses: an .mf4's own table, a .log's
 // synthesized from the interface names its lines carry. The GUI's replay and Scan read it too.
 pub fn load(source string) !(canlog.Log, []mf4.BusInfo) {
-	if source.to_lower().ends_with('.mf4') {
+	if is_mdf(source) {
 		rec := mf4.load_recording(source)!
 		if rec.log.len() == 0 {
 			return error('${os.base(source)} holds no frames')
@@ -166,21 +166,29 @@ pub fn resolve_bus(buses []mf4.BusInfo, want string) !string {
 	return player.resolve_bus(names, labels, want)
 }
 
-// Plan is a recording made ready for targets: what start plays.
+// Plan is a recording made ready for targets: what start plays. A streamed one holds a reader
+// (Prepared.close).
 pub struct Plan {
 pub:
-	plan  player.MultiPlan
 	notes []string
+pub mut:
+	prep Prepared
 }
 
 // plan_for subtracts what the targets' `exclude` names from `source`, refusing what would play
 // something other than asked: a recorded bus that does not resolve, an exclusion no target's
 // database declares, two targets on one recorded or live bus, and nothing left to play.
 pub fn plan_for(source string, targets []Target) !Plan {
+	return plan_until(source, targets, unsafe { nil })
+}
+
+// plan_until is plan_for, a streamed recording's reads given up once `stop` answers true.
+pub fn plan_until(source string, targets []Target, stop fn () bool) !Plan {
 	if targets.len == 0 {
 		return error('replay: no channel to play onto')
 	}
-	log, buses := load(source)!
+	rec := open_recording_until(source, stop)!
+	buses := rec.buses
 	mut specs := []player.BusSpec{}
 	mut dbs := []candb.Database{}
 	mut excluded := []string{}
@@ -220,26 +228,30 @@ pub fn plan_for(source string, targets []Target) !Plan {
 			notes << '${targets[i].name}: ${silent.join(', ')} not declared by its database — nothing is subtracted there'
 		}
 	}
-	plan := player.build_multi_log(log, specs)
+	if rec.note != '' {
+		notes << rec.note
+	}
+	mut prep := rec.prepare(specs)!
 	mut total := 0
-	for i, b in plan.buses {
+	for i, b in prep.buses {
 		r := b.report
 		total += r.kept
 		gone := r.withheld_excluded + r.withheld_unattributed + r.remote
 		notes << '${targets[i].name}: ${r.kept} frames, ${gone} withheld${if r.remote > 0 { ' (${r.remote} remote request(s), never replayed)' } else { '' }}'
 	}
 	if total == 0 {
+		prep.close()
 		return error('replay: nothing to play from ${os.base(source)} — ${notes.join('; ')}')
 	}
 	return Plan{
-		plan:  plan
+		prep:  prep
 		notes: notes
 	}
 }
 
 // Job is the worker's input in one struct: spawn passes it whole.
 struct Job {
-	plan   player.MultiPlan
+	prep   Prepared
 	buses  map[string]transport.Bus
 	speed  f64
 	repeat bool
@@ -253,13 +265,14 @@ pub fn start(source string, targets []Target, o Options) !&Session {
 	if !player.speed_ok(o.speed) {
 		return error('replay: speed ${o.speed} — a rate of at least ${player.min_speed}, finite')
 	}
-	pl := plan_for(source, targets)!
+	mut pl := plan_until(source, targets, o.give_up)!
 	mut buses := map[string]transport.Bus{}
 	for t in targets { // plan_for refused two targets on one wire
 		mut b := o.open(t.iface, t.name) or {
 			for _, mut ob in buses {
 				ob.close()
 			}
+			pl.prep.close()
 			return error('replay ${t.name}: cannot open ${t.iface}: ${err}')
 		}
 		// it reproduces the recording's framing rather than originating any
@@ -271,13 +284,13 @@ pub fn start(source string, targets []Target, o Options) !&Session {
 		notes:   pl.notes
 		st:     Status{
 			state:  if o.paused { player.State.paused } else { player.State.playing }
-			dur_s:  pl.plan.end_s - pl.plan.t0_s
+			dur_s:  pl.prep.end_s - pl.prep.t0_s
 			speed:  o.speed
 			repeat: o.repeat
 		}
 	}
 	spawn s.run(Job{
-		plan:   pl.plan
+		prep:   pl.prep
 		buses:  buses
 		speed:  o.speed
 		repeat: o.repeat
@@ -294,7 +307,9 @@ fn ms_of(sw time.StopWatch) f64 {
 // next one, at most a tick.
 fn (mut s Session) run(j Job) {
 	mut buses := j.buses.clone()
+	mut prep := j.prep
 	defer {
+		prep.close()
 		for _, mut b in buses {
 			b.close()
 		}
@@ -306,8 +321,7 @@ fn (mut s Session) run(j Job) {
 		s.ended = true
 		s.mu.unlock()
 	}
-	mut p := player.new_player_log(j.plan.log, j.plan.sel, j.speed, j.repeat, j.plan.t0_s,
-		j.plan.end_s)
+	mut p := prep.player(j.speed, j.repeat)
 	mut sw := time.new_stopwatch()
 	p.play(0)
 	if j.paused {
@@ -320,6 +334,7 @@ fn (mut s Session) run(j Job) {
 	mut sent := u64(0)
 	mut failed := u64(0)
 	mut first_err := ''
+	mut read_err := ''
 	for {
 		s.mu.lock()
 		stop := s.stopping || (!isnil(s.give_up) && s.give_up())
@@ -337,6 +352,9 @@ fn (mut s Session) run(j Job) {
 			first_err = ''
 		}
 		p.due_into(now, mut batch)
+		if read_err == '' && prep.read_error() != '' {
+			read_err = '${os.base(s.source)}: ${prep.read_error()}'
+		}
 		mut cut := false
 		for e in batch {
 			if s.is_stopping() {
@@ -360,7 +378,7 @@ fn (mut s Session) run(j Job) {
 				...s.st
 				sent:   sent
 				failed: failed
-				error:  first_err
+				error:  joined(first_err, read_err)
 			}
 			s.mu.unlock()
 			break
@@ -376,7 +394,7 @@ fn (mut s Session) run(j Job) {
 			passes: st.loops
 			sent:   sent
 			failed: failed
-			error:  first_err
+			error:  joined(first_err, read_err)
 		}
 		s.taken = asked
 		s.mu.unlock()
@@ -390,6 +408,11 @@ fn (mut s Session) run(j Job) {
 		}
 		player.wait_until_ms(mut sw, until)
 	}
+}
+
+// joined is a send failure and a read failure, either or both.
+fn joined(send string, read string) string {
+	return if send == '' || read == '' { send + read } else { '${send}; ${read}' }
 }
 
 fn (mut s Session) is_stopping() bool {

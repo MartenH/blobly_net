@@ -278,6 +278,10 @@ fn main() {
 	if os.getenv('BLOBLY_SHOW_NM') != '' {
 		app.show_nm = true
 	}
+	// And the Replay panel.
+	if os.getenv('BLOBLY_SHOW_REPLAY') != '' {
+		app.show_replay = true
+	}
 	app.diag_autopress_init() // BLOBLY_DIAG_PRESS (diag_auto.v)
 	app.plot_auto_init() // BLOBLY_PLOT (plot_auto.v)
 	// Open Import ARXML on a file, and (BLOBLY_IMPORT_ARXML_GO) press Import with its defaults,

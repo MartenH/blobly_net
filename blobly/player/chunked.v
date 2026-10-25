@@ -3,6 +3,7 @@ module player
 import blobly.canlog
 import blobly.mf4
 import os
+import time
 
 // Chunker plays an MF4 recording a chunk at a time instead of loading it whole, so memory no
 // longer grows with the file (a loaded recording costs about fifteen times its size).
@@ -15,6 +16,12 @@ import os
 // starts a new reader that plans from the top of the file and skips rows before the target.
 pub const chunk_rows = 256
 pub const chunk_ahead = 64
+
+// The most a playing chunked player waits for its next chunk in one release, so a worker that
+// releases on its tick still asks for its stop; and the most entries one release hands out, since
+// each pins its chunk and a run of equal timestamps would otherwise drain the reader into one batch.
+pub const chunk_wait_ms = 20
+pub const chunk_batch_max = chunk_rows * chunk_ahead
 
 // Chunk is a block of rows and the ones among them to play. Its rows are never written again,
 // because entries the player hands out are views into them. An `end` chunk marks the end of a
@@ -49,6 +56,12 @@ mut:
 // open_chunker reads the file once for the census and time span, then starts the reader.
 // A file whose rows the stream cannot put in time order is refused; replay it from memory.
 pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
+	return open_chunker_until(path, specs, rows, unsafe { nil })
+}
+
+// open_chunker_until is open_chunker, its pass given up (an error, `stopped`) once `stop`,
+// asked every few thousand rows, answers true; nil asks nothing.
+pub fn open_chunker_until(path string, specs []BusSpec, rows int, stop fn () bool) !&Chunker {
 	if rows <= 0 {
 		return error('chunk size must be positive, not ${rows}')
 	}
@@ -63,7 +76,10 @@ pub fn open_chunker(path string, specs []BusSpec, rows int) !&Chunker {
 	mut raw := canlog.Log{}
 	mut kept := 0
 	// Plan every row, keeping only the counts.
-	for {
+	for n := 0; true; n++ {
+		if n % 4096 == 0 && !isnil(stop) && stop() {
+			return error('stopped')
+		}
 		r := s.next(mut raw) or { break }
 		raw.rows.clear()
 		raw.rows << r
@@ -133,6 +149,20 @@ fn (c &Chunker) job(skip f64) ReadJob {
 		size:  c.size
 		mtime: c.mtime
 	}
+}
+
+// take_within is take, waiting at most `ms` for the chunk.
+fn (mut c Chunker) take_within(ms int) ?Chunk {
+	for i := 0; true; i++ {
+		if ck := c.take(false) {
+			return ck
+		}
+		if i >= ms {
+			return none
+		}
+		time.sleep(time.millisecond)
+	}
+	return none
 }
 
 // take returns the next chunk, waiting for it when `wait`; none if it is not ready. A closed
@@ -217,7 +247,7 @@ struct Pass {
 	t0   f64
 	skip f64 // rows earlier than this many seconds into the recording are planned, not played
 mut:
-	src     mf4.FileSource
+	src     &mf4.FileSource // on the heap: `stream` reads through it
 	stream  mf4.Stream
 	raw     canlog.Log // the stream's labels, kept across chunks; the rows of the chunk being read
 	planner Planner
@@ -227,7 +257,7 @@ mut:
 
 // open_pass opens the file for one pass; a file changed since the census is refused.
 fn open_pass(job ReadJob, skip f64) !Pass {
-	mut src := mf4.open_source(job.path)!
+	mut src := mf4.open_file_source(job.path)!
 	if src.size() != job.size || os.file_last_mod_unix(job.path) != job.mtime {
 		src.close()
 		return error('${job.path} changed since it was opened')
