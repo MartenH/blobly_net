@@ -127,17 +127,17 @@ fn l_replay_start(l lua.State) i32 {
 	return 1
 }
 
-fn (env &Env) session(l lua.State) ?&replay.Session {
-	h := int(l.arg_int(1))
-	if h < 0 || h >= env.replays.len {
-		return none
+fn (env &Env) session(l lua.State) !&replay.Session {
+	h := handle_arg(l, 1, 'the replay handle')!
+	if h >= env.replays.len {
+		return error('the replay handle ${h} names no replay')
 	}
 	return env.replays[h]
 }
 
 fn l_replay_ctl(l lua.State) i32 {
 	mut env := env_of(l)
-	mut s := env.session(l) or { return l.fail('replay: bad handle') }
+	mut s := env.session(l) or { return l.fail('replay: ${err}') }
 	what := l.arg_str(2)
 	match what {
 		'pause' { s.pause() or { return l.fail(err.msg()) } }
@@ -168,7 +168,7 @@ fn push_replay_status(l lua.State, st replay.Status) {
 }
 
 fn l_replay_status(l lua.State) i32 {
-	mut s := env_of(l).session(l) or { return l.fail('replay: bad handle') }
+	mut s := env_of(l).session(l) or { return l.fail('replay: ${err}') }
 	push_replay_status(l, s.status())
 	return 1
 }
@@ -177,8 +177,8 @@ fn l_replay_status(l lua.State) i32 {
 // the run's deadline cuts it.
 fn l_replay_wait(l lua.State) i32 {
 	mut env := env_of(l)
-	mut s := env.session(l) or { return l.fail('replay: bad handle') }
-	ms := l.arg_int(2)
+	mut s := env.session(l) or { return l.fail('replay: ${err}') }
+	ms := ms_up(l, 2)
 	until := time.sys_mono_now() + u64(if ms > 0 { ms } else { 0 }) * 1_000_000
 	for {
 		left := if ms < 0 { i64(100) } else { i64(until - time.sys_mono_now()) / 1_000_000 }
@@ -201,7 +201,7 @@ fn l_replay_wait(l lua.State) i32 {
 
 fn l_replay_stop(l lua.State) i32 {
 	mut env := env_of(l)
-	mut s := env.session(l) or { return l.fail('replay: bad handle') }
+	mut s := env.session(l) or { return l.fail('replay: ${err}') }
 	st := s.stop()
 	if env.expired() {
 		return timeout_at(l) // the stop waited past the run's deadline; the worker still ends
@@ -211,7 +211,7 @@ fn l_replay_stop(l lua.State) i32 {
 }
 
 fn l_replay_notes(l lua.State) i32 {
-	s := env_of(l).session(l) or { return l.fail('replay: bad handle') }
+	s := env_of(l).session(l) or { return l.fail('replay: ${err}') }
 	l.new_table()
 	for i, n in s.notes {
 		l.push_str(n)
@@ -246,10 +246,10 @@ fn l_record_start(l lua.State) i32 {
 	return 1
 }
 
-fn (env &Env) recorder(l lua.State) ?&replay.Recorder {
-	h := int(l.arg_int(1))
-	if h < 0 || h >= env.records.len {
-		return none
+fn (env &Env) recorder(l lua.State) !&replay.Recorder {
+	h := handle_arg(l, 1, 'the recording handle')!
+	if h >= env.records.len {
+		return error('the recording handle ${h} names no recording')
 	}
 	return env.records[h]
 }
@@ -264,14 +264,14 @@ fn push_counts(l lua.State, c replay.Counts) {
 }
 
 fn l_record_counts(l lua.State) i32 {
-	mut r := env_of(l).recorder(l) or { return l.fail('record: bad handle') }
+	mut r := env_of(l).recorder(l) or { return l.fail('record: ${err}') }
 	push_counts(l, r.counts())
 	return 1
 }
 
 fn l_record_stop(l lua.State) i32 {
 	mut env := env_of(l)
-	mut r := env.recorder(l) or { return l.fail('record: bad handle') }
+	mut r := env.recorder(l) or { return l.fail('record: ${err}') }
 	c := r.stop() or {
 		if env.expired() {
 			return timeout_at(l)

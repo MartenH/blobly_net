@@ -65,11 +65,7 @@ fn u32_arg(l lua.State, i int, what string, dflt u32) !u32 {
 	if l.arg_is_nil(i) {
 		return dflt
 	}
-	v := l.arg_int_exact(i) or { return error('${what} is not an integer') }
-	if v < 0 || v > 0xFFFF_FFFF {
-		return error('${what} = ${v} is not a 32-bit value')
-	}
-	return u32(v)
+	return u32(id_arg(l, i, what, 0, 0xFFFF_FFFF)!)
 }
 
 // l_flash_program(handle, image, base, sw_version, auth, seed, seed_file, progress, quiet) runs the
@@ -77,7 +73,7 @@ fn u32_arg(l lua.State, i int, what string, dflt u32) !u32 {
 // raises with the step named (`erase: NRC 0x22`, `image check FAILED …`).
 fn l_flash_program(l lua.State) i32 {
 	mut env := env_of(l)
-	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('flash.program: bad uds handle') }
+	mut c, h := env.conn_arg(l, 1) or { return l.fail('flash.program: ${err}') }
 	// copied out: the progress callback runs Lua, and a uds.open there grows env.conns under `c`
 	mut ch := c.ch
 	what := 'flash.program("${c.chan}")'
@@ -109,7 +105,6 @@ fn l_flash_program(l lua.State) i32 {
 			return env.expired()
 		}
 	}
-	h := int(l.arg_int(1))
 	// the flash runs its own client on the channel: a keep-alive there would send inside it, and
 	// one still inside a keep-alive is waited for
 	c.stop_keep_alive()

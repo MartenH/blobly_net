@@ -82,7 +82,8 @@ fn l_dbc_messages(l lua.State) i32 {
 fn (env &Env) message_arg(l lua.State, ci int) ?candb.Message {
 	db := env.chans[ci].db
 	if l.arg_bool(2) {
-		i := db.message_index(u32(l.arg_int(3)), l.arg_bool(4))?
+		id := l.arg_int_exact(3) or { return none } // the prelude checked it (__dbc_key)
+		i := db.message_index(u32(id), l.arg_bool(4))?
 		return db.messages[i]
 	}
 	return db.message_named(l.arg_str(3))
@@ -139,7 +140,8 @@ fn l_decode(l lua.State) i32 {
 	ci := env.find_chan(l.arg_str(1)) or { return l.fail(err.msg()) }
 	mode := decode_as(l.arg_str(5)) or { return l.fail(err.msg()) }
 	data := l.arg_bytes(4)
-	msg := env.chans[ci].db.lookup_frame(u32(l.arg_int(2)), l.arg_bool(3)) or {
+	id := can_id_arg(l, 2) or { return l.fail('decode: ${err}') }
+	msg := env.chans[ci].db.lookup_frame(id, l.arg_bool(3)) or {
 		l.push_nil()
 		return 1
 	}

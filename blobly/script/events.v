@@ -94,7 +94,7 @@ fn l_wait_frame(l lua.State) i32 {
 	for i in 2 .. l.nargs() + 1 {
 		names << l.arg_str(i)
 	}
-	name, f := env.wait_frame(names, int(env.bounded(l.arg_int(1))), wait_slice) or {
+	name, f := env.wait_frame(names, int(env.bounded(ms_up(l, 1))), wait_slice) or {
 		if env.expired() {
 			return timeout_at(l) // the wait was cut
 		}

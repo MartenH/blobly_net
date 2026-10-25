@@ -78,7 +78,8 @@ test("ClearDiagnosticInformation refuses what it cannot clear (0x14)", function(
   -- and a group that does not fit is refused before anything is sent, never truncated to "all"
   for _, g in ipairs({ -1, 0x1FFFFFF }) do
     local ok, err = pcall(function() diag:clear_dtcs(g) end)
-    check.truthy(not ok and tostring(err):find("24%-bit"), "clear_dtcs(" .. g .. "): " .. tostring(err))
+    check.truthy(not ok and tostring(err):find(" is outside 0x0..0xFFFFFF", 1, true),
+      "clear_dtcs(" .. g .. "): " .. tostring(err))
   end
   -- and one Lua cannot convert exactly is refused too, not read as group 0
   for _, g in ipairs({ 1e30, 1.5 }) do

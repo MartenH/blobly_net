@@ -104,9 +104,9 @@ fn l_interfaces(l lua.State) i32 {
 // __discover_cansub(window_ms) -> the CANsub channels an mDNS browse found, and its note
 fn l_discover_cansub(l lua.State) i32 {
 	env := env_of(l)
-	asked := l.arg_int(1)
+	asked := ms_up(l, 1)
 	if asked < 1 || asked > transport.cansub_window_max_ms {
-		return l.fail('bus.discover_cansub: a window is 1 to ${transport.cansub_window_max_ms} ms, not ${asked}')
+		return l.fail('bus.discover_cansub: a window is 1 to ${transport.cansub_window_max_ms} ms, not ${l.arg_given(1)}')
 	}
 	window := env.bounded_window(asked)
 	if env.expired() {
@@ -163,9 +163,8 @@ fn l_vector_slot(l lua.State) i32 {
 	if why := transport.vector_driver_refusal() {
 		return l.fail('vector.slot: ${why}')
 	}
-	app := l.arg_int(1)
-	if app < 1 || app > 64 {
-		return l.fail('vector.slot: Vector application channels are numbered 1 to 64, not ${app}')
+	app := int_arg(l, 1, 'the application channel', 1, 64) or {
+		return l.fail('vector.slot: ${err}')
 	}
 	l.push_str(match transport.vector_app_slot(int(app)) {
 		.unreadable { 'unreadable' }
@@ -179,8 +178,13 @@ fn l_vector_slot(l lua.State) i32 {
 // __vector_assign(app, hw_type, hw_index, hw_channel, create)
 fn l_vector_assign(l lua.State) i32 {
 	env := env_of(l)
-	transport.vector_assign_checked(int(l.arg_int(1)), int(l.arg_int(2)), int(l.arg_int(3)),
-		int(l.arg_int(4)), l.arg_bool(5), env.run_active()) or {
+	mut v := []int{}
+	for i, what in ['app', 'hw_type', 'hw_index', 'hw_channel'] {
+		v << int(int_arg(l, i + 1, what, min_i32, max_i32) or {
+			return l.fail('vector.assign: ${err}')
+		})
+	}
+	transport.vector_assign_checked(v[0], v[1], v[2], v[3], l.arg_bool(5), env.run_active()) or {
 		return l.fail('vector.assign: ${err.msg()}')
 	}
 	return 0

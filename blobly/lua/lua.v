@@ -49,6 +49,8 @@ fn C.ctlua_to_bool(&C.lua_State, int) int
 fn C.ctlua_is_num(&C.lua_State, int) int
 fn C.ctlua_is_str(&C.lua_State, int) int
 fn C.ctlua_is_nil(&C.lua_State, int) int
+fn C.ctlua_type(&C.lua_State, int) int
+fn C.ctlua_typename(&C.lua_State, int) &char
 fn C.ctlua_to_lstr(&C.lua_State, int, &i32) &char
 fn C.ctlua_error(&C.lua_State, &char) int
 fn C.ctlua_newtable(&C.lua_State)
@@ -154,7 +156,7 @@ pub fn (l State) arg_int(i int) i64 {
 }
 
 // arg_int_exact is arg_int for an argument that must BE an integer: none for a value Lua cannot
-// convert exactly (a string, 1.5, 1e30), where arg_int answers 0 — for a caller to whom 0 means
+// convert exactly (a non-numeric string, 1.5, 1e30; a numeric string converts), where arg_int answers 0 — for a caller to whom 0 means
 // something (a DTC group, a request byte).
 pub fn (l State) arg_int_exact(i int) ?i64 {
 	mut ok := i32(0)
@@ -163,6 +165,40 @@ pub fn (l State) arg_int_exact(i int) ?i64 {
 		return none
 	}
 	return v
+}
+
+// arg_given is argument i as a refusal quotes it: nil, a boolean or a number as Lua writes them,
+// a string in quotes (cut at 40 bytes, a NUL written \0), else its type (a table).
+pub fn (l State) arg_given(i int) string {
+	t := C.ctlua_type(l, i)
+	match t {
+		-1, 0 {
+			return 'nil'
+		}
+		1 {
+			return l.arg_bool(i).str()
+		}
+		3 {
+			if v := l.arg_int_exact(i) {
+				return v.str()
+			}
+			return l.arg_num(i).str()
+		}
+		4 {
+			s := l.arg_str(i).replace(u8(0).ascii_str(), '\\0') // a NUL would end the message
+			if s.len <= 40 {
+				return '"${s}"'
+			}
+			mut n := 40
+			for n > 0 && s[n] & 0xC0 == 0x80 {
+				n-- // not inside a UTF-8 character
+			}
+			return '"${s[..n]}..."'
+		}
+		else {
+			return 'a ' + unsafe { cstring_to_vstring(C.ctlua_typename(l, t)) }
+		}
+	}
 }
 
 pub fn (l State) arg_num(i int) f64 {
@@ -175,6 +211,11 @@ pub fn (l State) arg_bool(i int) bool {
 
 pub fn (l State) arg_is_nil(i int) bool {
 	return C.ctlua_is_nil(l, i) != 0
+}
+
+// arg_is_number is whether argument i is a number, not a string that converts to one.
+pub fn (l State) arg_is_number(i int) bool {
+	return C.ctlua_type(l, i) == 3
 }
 
 pub fn (l State) arg_is_num(i int) bool {
