@@ -288,7 +288,7 @@ class Bus:
         raise Timeout(f"{self.name}: expected a frame {_id_text(*want)} within {_num(timeout_ms)} ms; "
                       + _came(others, want[0]), _lib.BB_ERR_TIMEOUT)
 
-    def _frames_until(self, deadline, run, idle=False, slice_ms=SLICE_MS):
+    def _frames_until(self, deadline, run, idle=False, slice_ms=SLICE_MS, look_first=False):
         """The frames read from now until `deadline` (monotonic_ms) has passed: each read waits
         whole milliseconds, at most SLICE_MS (so Ctrl-C lands), and never past it, the fraction of
         one the driver cannot be asked for is slept rather than read, and nothing is read once it
@@ -298,7 +298,8 @@ class Bus:
         a start during the wait is refused, never waited through on the next run's handle. With
         `idle`, a read that found nothing yields None too, so a wait on a reading that moves with
         time (the NM state going to sleep) is asked after it; `slice_ms` (at most SLICE_MS) bounds
-        each read."""
+        each read; with `look_first` the first read waits for nothing, so what it brings up to
+        now is asked before any wait (and a wait of 0 is still that one look)."""
         with _lib.state_lock:
             self._same_run(run)
             h = self._handle()  # opened inside the wait, not before it: a slow open spends its time
@@ -308,9 +309,10 @@ class Bus:
             left = deadline - monotonic_ms()
             if left <= 0 and not first:
                 return
+            look = first and look_first
             first = False
             try:
-                f, spent = self._receive(min(max(0, math.floor(left)), slice_ms), h)
+                f, spent = self._receive(0 if look else min(max(0, math.floor(left)), slice_ms), h)
             except BloblyError:
                 with _lib.state_lock:  # a stop closed the handle: said as the stop, once it is done
                     self._same_run(run)
@@ -321,7 +323,7 @@ class Bus:
                 continue
             if idle and not spent:
                 yield None
-            if not spent and left < 1:
+            if not spent and left < 1 and not look:
                 rest = deadline - monotonic_ms()
                 if rest > 0:
                     sleep_ms(rest)

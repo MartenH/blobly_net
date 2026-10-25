@@ -384,3 +384,16 @@ fn test_a_wait_is_asked_again_once_the_cluster_or_the_moment_moved() {
 	l.idle(1002 + ask_ms)
 	assert l.moved(), 'the moment moved on'
 }
+
+fn test_a_state_reached_by_a_timeout_is_asked_within_one_moment() {
+	mut l := new_listener(Config{
+		lo:         0x500
+		hi:         0x53F
+		timeout_ms: 2
+	})
+	l.feed(0x511, false, false, frame(0x11, 0), 1000)
+	assert l.moved() && l.reading().state == .awake
+	l.idle(1003) // past the 2 ms timeout, within ask_ms
+	assert l.reading().state == .asleep
+	assert l.moved(), 'the state changed, though nothing was counted and the moment barely moved'
+}

@@ -64,3 +64,18 @@ def test_a_range_the_script_states_reads_without_names(net):
     with pytest.raises(TypeError, match="lo and hi"):
         body.nm(0x500)
     assert body.nm().reading().source == "system.toml"  # the wire's own again
+
+
+def test_a_wait_of_zero_reads_one_frame(net):
+    body = net.channels.body
+    nm = body.nm()
+    nm.reading(50)  # what earlier tests left, read away
+    with blobly.open("inproc:NM") as peer:
+        for _ in range(3):
+            peer.send(0x511, bytes([0x11, 0x00]))
+        with pytest.raises(blobly.Timeout):
+            nm.expect_state("releasing", 0)
+        left = 0
+        while body.look()[0] is not None:
+            left += 1
+    assert left == 2, "a wait of 0 is one look"

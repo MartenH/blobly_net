@@ -250,19 +250,15 @@ class NmListener:
         with _lib.state_lock:
             run = _lib.state["run"]
         h = self._handle()
-        self.channel._receive(0, h)  # a look first: the reading brought up to now, waiting for nothing
-        v = self._view(h)
-        last = self._reading(h, v)
-        if predicate(last):
-            return last
-        asked = (v.frames, v.malformed, v.dropped, v.t_ns // _ASK_NS)
-        # each read waits at most the cluster's timeout, so a node going silent is read at once
-        slice_ms = max(1, min(SLICE_MS, v.timeout_ms))
-        for _ in self.channel._frames_until(deadline, run, idle=True, slice_ms=slice_ms):
+        # each read waits at most the cluster's timeout, so a node going silent is read at once;
+        # the first is a look, so a reading already true is not waited past
+        slice_ms = max(1, min(SLICE_MS, self._view(h).timeout_ms))
+        asked = None
+        for _ in self.channel._frames_until(deadline, run, idle=True, slice_ms=slice_ms, look_first=True):
             v = self._view(h)
-            # asked again once an NM frame came or time moved on: a frame of another id moves
-            # the reading only by its time
-            mark = (v.frames, v.malformed, v.dropped, v.t_ns // _ASK_NS)
+            # asked again once the state changed, a frame in the cluster came or time moved on: a
+            # frame of another id moves the reading only by its time
+            mark = (v.state, v.frames, v.malformed, v.dropped, v.t_ns // _ASK_NS)
             if mark == asked:
                 continue
             asked = mark

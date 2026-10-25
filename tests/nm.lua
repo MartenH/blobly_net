@@ -62,3 +62,14 @@ test("nm.listen with no range goes back to the wire configuration", function()
   nm.listen("body")
   check.equal(nm.reading("body").source, "system.toml")
 end)
+
+test("a wait of 0 reads one frame", function()
+  nm.reading("body", 50)
+  local peer = bus.open_iface("inproc:NM")
+  for _ = 1, 3 do bus.send(peer, 0x511, string.char(0x11, 0x00)) end
+  local ok = pcall(nm.expect_state, "body", "releasing", 0)
+  check.truthy(not ok, "not releasing")
+  local left = 0
+  while bus.recv("body", 0) do left = left + 1 end
+  check.equal(left, 2, "a wait of 0 is one look")
+end)
