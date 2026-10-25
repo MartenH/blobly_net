@@ -293,7 +293,7 @@ def _said(r):
     return text
 
 
-def explicit(who, lo, hi, ext, timeout_ms):
+def _explicit(who, lo, hi, ext, timeout_ms):
     """A range a script states, checked before the library is asked."""
     _int(who, "lo", lo, 0, 0x1FFF_FFFF)
     _int(who, "hi", hi, 0, 0x1FFF_FFFF)

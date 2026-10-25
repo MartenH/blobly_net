@@ -641,12 +641,12 @@ class Channel(Bus):
         is NM. With `lo` and `hi`, the inclusive id range the script states (29-bit where hi is
         past 0x7FF, or with ext) and its timeout_ms, naming no node, and a new reading from this
         call. While the project is started. It sends nothing."""
-        from .nm import explicit
+        from .nm import _explicit
         cfg = None
         if lo is not None or hi is not None:
             if lo is None or hi is None:
                 raise TypeError("nm: a range is lo and hi together")
-            cfg = explicit("nm", lo, hi, ext, timeout_ms)
+            cfg = _explicit("nm", lo, hi, ext, timeout_ms)
         with _lib.state_lock:
             if cfg is None and self._nm is not None and self._nm.explicit is None:
                 listener = self._nm
