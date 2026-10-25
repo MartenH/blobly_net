@@ -460,9 +460,10 @@ else:
   of its value either; `None` on a frame not received.
 - `ch.expect(id, timeout_ms=1000, *, ext=None, e2e=False)` waits for the first frame another node sends
   with this id **and** kind, and returns it. When none came it raises `blobly.Timeout`, whose
-  message says what came instead. `id` is an int with `ext` its kind (`False` or `None` for 11-bit,
-  `True` for 29-bit: an 11-bit id past 0x7FF is refused, naming `ext=True`), or a `Message` of the
-  channel, which carries its own. `timeout_ms` is one deadline for the whole wait, however many
+  message says what came instead. `id` is an int with `ext` its kind (`None`, the default, for
+  either kind, as `on_message` and Lua's `expect` take it; `False` for 11-bit, refusing an id past
+  0x7FF and naming `ext=True`; `True` for 29-bit), or a `Message` of the channel, which carries its
+  own. `timeout_ms` is one deadline for the whole wait, however many
   other frames arrive: a finite number of milliseconds (`None` is refused), and nothing is read
   once it has passed but the first look, so a wait of `0` reads at most one queued frame. A stop or
   a start of the project during the wait raises `BloblyError` (code -3). With `e2e=True` the frame
