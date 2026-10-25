@@ -239,6 +239,12 @@ pub enum Answer {
 // The echo asked for is only what the request carries (0x2C's clear-all has no identifier to
 // echo), so a well-formed short request is answered by a well-formed short response.
 pub fn answer_to(req []u8, resp []u8) Answer {
+	return answer_to_sized(req, resp, map[u16]int{})
+}
+
+// answer_to_sized is answer_to knowing the data length of every DID in `sizes`, which lets a
+// multi-DID read be correlated past its first record (correlate.v).
+pub fn answer_to_sized(req []u8, resp []u8, sizes map[u16]int) Answer {
 	if req.len == 0 {
 		return .stale
 	}
@@ -256,6 +262,11 @@ pub fn answer_to(req []u8, resp []u8) Answer {
 	}
 	if resp[0] != req[0] + positive_response_offset {
 		return .stale
+	}
+	match correlate(req, resp, sizes) {
+		.answers { return .positive }
+		.another { return .stale }
+		.undecidable {}
 	}
 	n, subfn := echo_of(req)
 	echo := if n < req.len { n } else { req.len }
@@ -292,9 +303,8 @@ fn sub_mask(sid u8) u8 {
 // or a WriteMemoryByAddress's format byte, address and size (their widths are in that byte), or
 // a 0x19 04 / 06's sub-function and DTC.
 // Every other ISO 14229-1 service's positive response echoes nothing beyond its SID (0x14, 0x23,
-// 0x34, 0x35, 0x37, 0x84), so the SID is all there is to match there. ReadDataByPeriodicIdentifier
-// (0x2A) is matched by SID too: its data arrives asynchronously, naming an identifier the request
-// lists anywhere, which is correlation of another kind (#361).
+// 0x34, 0x35, 0x37, 0x84), so the SID is all there is to match there. A multi-DID 0x22 answer's
+// records and 0x2A's identifiers are correlate's (correlate.v), asked first.
 fn echo_of(req []u8) (int, bool) {
 	wmba := if req.len > 1 { 2 + int(req[1] & 0x0F) + int(req[1] >> 4) } else { 1 }
 	// 0x19 04 / 06 answer one DTC, named after the sub-function: the DTC is echoed too, so a late
@@ -522,7 +532,7 @@ fn (mut c Client) exchange_once(req []u8, suppressed bool, bound int) !([]u8, bo
 				text: if discarded > 0 { '${err.msg()} (${no_answer(req[0], discarded)})' } else { err.msg() }
 			}
 		}
-		match answer_to(req, resp) {
+		match answer_to_sized(req, resp, c.read_sizes(req)) {
 			.positive {
 				if req[0] == sid_diagnostic_session_control {
 					c.adopt(resp)
