@@ -307,10 +307,12 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		probe_alloc_note(.inner, pb)
 		// refused for certain by its type or a full queue; any other failure may have gone out
 		definite := err is transport.NotWritten || transport.is_backpressure(err)
-		t.app.retract_emit(seq, t.origin, epoch, noted, definite)
+		kept := t.app.retract_emit(seq, t.origin, epoch, noted, definite, rec_id)
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
-		// from the backend
-		t.app.unrecord(rec_id)
+		// from the backend — unless it now stands for an echo another send or the bus put there
+		if !kept {
+			t.app.unrecord(rec_id)
+		}
 		// WHY DID IT FAIL? A refused send is the moment the fault ladder is worth asking for, and
 		// on a wire nobody reads nothing else ever asks (#142). Last, after the trace bookkeeping
 		// above, so a status call through a vendor DLL never delays retracting the row this send

@@ -118,6 +118,10 @@ mut:
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
 	// buffer is trimmed by re-slicing, so a plain index does not survive.
 	rec_seq u64
+	// what each provisional echo claim saw when it was read (EchoObs), by the id the wiretap
+	// keeps for it: a fixed ring, so an id it no longer holds reads as unknown
+	echo_obs   []EchoObs
+	echo_obs_n u64
 	rec_ids []u64 // one per app.rec entry, so an entry is found by IDENTITY not by offset
 	// Guards tx_mutexes ALONE, deliberately not app.mu: open_tap is called with app.mu held
 	// (set_sender_bus retargets a generator mid-run under the lock), and app.mu is not

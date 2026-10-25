@@ -562,11 +562,16 @@ fn (app &App) wire_rates_rule_locked(i int) (int, int) {
 // expiry does not report it a second time, and any echo it had claimed is claimed again
 // (settle_echo_locked).
 // A write that failed but may have gone out (`definite` false) keeps the echoes it claimed.
-fn (mut app App) retract_emit(seq u64, origin string, epoch u64, noted bool, definite bool) {
+// Answers whether recording entry `rec_id`, the one this send wrote at note(), now stands for an
+// echo and must stay (settle_echo_locked).
+fn (mut app App) retract_emit(seq u64, origin string, epoch u64, noted bool, definite bool, rec_id u64) bool {
 	app.mu.lock()
+	mut kept := false
 	if noted && definite {
 		for rc in app.taps.refuse(seq) {
-			app.settle_echo_locked(rc)
+			if app.settle_echo_locked(rc, rec_id) {
+				kept = true
+			}
 		}
 	} else if noted {
 		app.taps.unsure(seq)
@@ -604,6 +609,42 @@ fn (mut app App) retract_emit(seq u64, origin string, epoch u64, noted bool, def
 		}
 	}
 	app.mu.unlock()
+	return kept
+}
+
+// EchoObs is what the trace did with an echo claimed while its send was still open, kept for a
+// refusal that gives the echo back (settle_echo_locked): its recording entry (found only in the
+// capture that wrote it), the trace's epoch (a Clear moves it) and whether the trace was paused.
+struct EchoObs {
+	id     u64
+	rec_id u64 = rec_none
+	epoch  u64
+	paused bool
+}
+
+const echo_obs_cap = 4096
+
+// keep_echo_obs files `o` and returns the id the wiretap holds for it. Caller holds app.mu.
+fn (mut app App) keep_echo_obs(o EchoObs) u64 {
+	if app.echo_obs.len == 0 {
+		app.echo_obs = []EchoObs{len: echo_obs_cap}
+	}
+	app.echo_obs_n++
+	id := app.echo_obs_n
+	app.echo_obs[int(id % echo_obs_cap)] = EchoObs{
+		...o
+		id: id
+	}
+	return id
+}
+
+// echo_obs_of is the observation `id` names, or none once the ring has reused its slot.
+fn (app &App) echo_obs_of(id u64) ?EchoObs {
+	if id == wiretap.none_ctx || app.echo_obs.len == 0 {
+		return none
+	}
+	o := app.echo_obs[int(id % echo_obs_cap)]
+	return if o.id == id { o } else { none }
 }
 
 // settle_emit is a send the driver took: the echoes it claimed are its own. Caller holds app.mu.
@@ -611,14 +652,24 @@ fn (mut app App) settle_emit_locked(seq u64) {
 	app.taps.sent(seq)
 }
 
-// settle_echo_locked is what becomes of an echo a refused send had claimed. Moved to another of
-// our sends, the recording entry it wrote stays, under that send's channel; already accounted for
-// by that send, the entry goes; nobody's send, the frame was somebody else's — an RX row and an
-// RX entry, as rx_loop would have written. Limits, stated: the E2E verifier never saw that frame,
-// its row is at its receipt time on the host clock, and it lands after the rows written while the
-// send was stalled. Caller holds app.mu.
-fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
-	ri := if rc.ctx == wiretap.none_ctx { -1 } else { app.rec_index_locked(rc.ctx) }
+// settle_echo_locked is what becomes of an echo a refused send had claimed, judged by what the
+// trace did when it read it (EchoObs). Moved to another of our sends, its recording entry stays,
+// under that send's channel; already accounted for by that send, the entry goes; nobody's send,
+// the frame was somebody else's — the entry becomes RX, and an RX row is filed as rx_loop would
+// have, unless the trace was paused or cleared since. `emit_rec` is the refused send's own entry,
+// written at note() when nobody was ready to read its echo: with no entry of the echo's own it is
+// the one that stands for the frame, in its place in the file, and it is kept (the answer) rather
+// than unrecorded. Limits, stated: the E2E verifier never saw a foreign frame, its row is at its
+// receipt time on the host clock, and it lands after the rows written while the send was stalled.
+// Caller holds app.mu.
+fn (mut app App) settle_echo_locked(rc wiretap.Reclaim, emit_rec u64) bool {
+	obs := app.echo_obs_of(rc.ctx) or { EchoObs{} }
+	mut ri := app.rec_index_locked(obs.rec_id)
+	mut kept := false
+	if ri < 0 && rc.first && rc.done {
+		ri = app.rec_index_locked(emit_rec)
+		kept = ri >= 0
+	}
 	// The monitor's row, if it is still the one that read the echo: the ring outlives Stop, and a
 	// project load replaces the rows under it.
 	row := if rc.monitor >= 0 && rc.monitor < app.chans.len
@@ -627,60 +678,45 @@ fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
 	} else {
 		-1
 	}
-	// the refused send was recorded at note() and its entry is about to go (unrecord): the
-	// frame the echo was is written here, if this claim was the one that accounted for it
-	write_lost := ri < 0 && rc.first && rc.done && app.recording
 	match rc.fate() {
 		.moved {
-			if ri >= 0 && rc.to.tag != '' {
+			if ri >= 0 {
 				app.rec[ri] = canlog.LogEntry{
 					...app.rec[ri]
-					iface: rc.to.tag
-				}
-			}
-			if ri >= 0 && rc.to.open {
-				app.taps.attach(rc.to.seq, rc.monitor, rc.ctx)
-			}
-			if write_lost {
-				id := app.rec_append_locked(canlog.LogEntry{
-					t_s:   rc.t_ms / 1000.0
-					iface: if rc.to.tag != '' { rc.to.tag } else { app.chan_name_for(rc.iface) }
-					frame: rc.frame
+					iface: if rc.to.tag != '' { rc.to.tag } else { app.rec[ri].iface }
 					dir:   .tx
-				})
+				}
 				if rc.to.open {
+					id := app.keep_echo_obs(EchoObs{
+						...obs
+						rec_id: app.rec_ids[ri]
+					})
 					app.taps.attach(rc.to.seq, rc.monitor, id)
 				}
 			}
 		}
 		.duplicate {
-			if ri >= 0 {
+			if ri >= 0 && !kept {
 				app.rec.delete(ri)
 				app.rec_ids.delete(ri)
 			}
+			kept = false
 		}
 		.foreign {
-			name := if row >= 0 { app.chans[row].name } else { app.chan_name_for(rc.iface) }
 			if ri >= 0 {
 				app.rec[ri] = canlog.LogEntry{
 					...app.rec[ri]
-					iface: name
+					iface: if row >= 0 { app.chans[row].name } else { app.chan_name_for(rc.iface) }
 					dir:   .rx
-				}
-			} else if app.recording && (row >= 0 || write_lost) {
-				app.rec_append_locked(canlog.LogEntry{
-					t_s:   rc.t_ms / 1000.0
-					iface: name
 					frame: rc.frame
-					dir:   .rx
-				})
+				}
 			}
-			if row < 0 || !app.running {
-				return
+			if row < 0 || !app.running || obs.id == 0 || obs.epoch != app.tx_epoch {
+				return kept
 			}
 			c := app.chans[row]
 			dest := transport.destination_key(c.iface)
-			if !app.paused {
+			if !obs.paused {
 				k := gkey_frame(org_rx, c.name, dest, rc.frame)
 				disp, reading := app.j1939_frame_locked(dest, dest, rc.frame, app.lookup_name_on(dest,
 					rc.frame.id, rc.frame.extended))
@@ -692,6 +728,7 @@ fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
 					ext:     rc.frame.extended
 					fd:      rc.frame.fd
 					brs:     rc.frame.brs
+					esi:     rc.frame.esi
 					rtr:     rc.frame.rtr
 					name:    disp
 					reading: reading
@@ -711,6 +748,7 @@ fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
 			app.chans[row].rx_seen++
 		}
 	}
+	return kept
 }
 
 // rec_index_locked is the position of recording entry `rec_id`, or -1. Caller holds app.mu.

@@ -663,3 +663,20 @@ fn test_at_the_cap_an_answered_open_record_goes_before_a_verdict() {
 	assert evicted == []u64{}, 'an unanswered record was evicted with a verdict'
 	assert r.refuse(2) == []Reclaim{}
 }
+
+// A frame given back to the bus is the frame as received: ESI is no part of echo identity, so it
+// comes from the reading, not from our record.
+fn test_a_foreign_reclaim_keeps_the_received_esi() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := transport.CanFrame{
+		id:   0x120
+		fd:   true
+		data: [u8(5)]
+	}
+	r.note(1, 'vcan0', f, 0, [0], '', false)
+	r.claim(0, 'vcan0', transport.CanFrame{ ...f, esi: true }, 1) or { assert false }
+	got := r.refuse(1)
+	assert got.len == 1 && got[0].fate() == .foreign && got[0].frame.esi
+}

@@ -63,6 +63,7 @@ struct Provisional {
 	monitor int
 	t_ms    f64  // when the echo was read
 	first   bool // this claim was the first on the record
+	esi     bool // the received frame's, which echo identity leaves out
 mut:
 	ctx u64 // the caller's identity for what it did with the echo (attach)
 }
@@ -74,11 +75,11 @@ pub struct Reclaim {
 pub:
 	monitor int
 	t_ms    f64
-	iface   string // the wire, as wire_key spells it
-	frame   transport.CanFrame
-	ctx     u64  // as attached to the refused send's claim, else none_ctx
-	first   bool // the refused send's claim was the first on it
-	done    bool // the refused send was accounted for at note() (Claim.done)
+	iface   string             // the wire, as wire_key spells it
+	frame   transport.CanFrame // as received, ESI included
+	ctx     u64                // as attached to the refused send's claim, else none_ctx
+	first   bool               // the refused send's claim was the first on it
+	done    bool               // the refused send was accounted for at note() (Claim.done)
 	found   bool
 	to      Claim
 }
@@ -371,6 +372,7 @@ pub fn (mut r Ring) claim_noted_by(monitor int, iface string, f transport.CanFra
 					monitor: monitor
 					t_ms:    t_ms
 					first:   first
+					esi:     f.esi
 					ctx:     none_ctx
 				}
 				if !p.has_prov0 {
@@ -544,7 +546,10 @@ pub fn (mut r Ring) refuse(seq u64) []Reclaim {
 			monitor: pv.monitor
 			t_ms:    pv.t_ms
 			iface:   p.iface
-			frame:   f
+			frame:   transport.CanFrame{
+				...f
+				esi: pv.esi
+			}
 			ctx:     pv.ctx
 			first:   pv.first
 			done:    p.done
