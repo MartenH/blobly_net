@@ -41,7 +41,7 @@ pub fn is_mdf(path string) bool {
 	}
 	mut id := []u8{len: 8}
 	n := f.read(mut id) or { 0 }
-	return n == 8 && id.bytestr() == 'MDF     '
+	return n == 8 && mf4.is_mdf_id(id)
 }
 
 // Source is a recording opened for a replay: its buses, and either the recording itself (`log`)

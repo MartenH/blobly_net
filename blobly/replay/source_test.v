@@ -4,6 +4,7 @@ import math
 import os
 import blobly.candb
 import blobly.canlog
+import blobly.mf4
 import blobly.player
 import blobly.transport
 
@@ -41,6 +42,18 @@ fn test_the_switch_streams_an_mf4_from_the_threshold_and_never_a_log() {
 		os.rm(renamed) or {}
 	}
 	assert is_mdf(renamed), 'an MDF file by its content, not its name'
+	unfin := os.join_path(os.temp_dir(), 'replay_unfin_${os.getpid()}.bin')
+	defer {
+		os.rm(unfin) or {}
+	}
+	mut b := os.read_bytes(sample('demo.mf4')) or { panic(err) }
+	for k, c in 'UnFinMF '.bytes() {
+		b[k] = c
+	}
+	os.write_file_array(unfin, b) or { panic(err) }
+	assert is_mdf(unfin), 'an unfinalized MDF file (a CANedge logger that powered off) is MDF'
+	assert !mf4.is_mdf_id('# cando'.bytes()), 'a candump log is not'
+
 	_, buses := load(renamed) or { panic(err) }
 	assert buses.len == 2
 	assert stream_mb_of('') == stream_mb_default

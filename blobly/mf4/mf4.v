@@ -201,12 +201,19 @@ fn read_id_block(mut src ByteSource) !bool {
 	if src.size() < 64 {
 		return error('not an MDF file (bad id block)')
 	}
-	magic := bytes_at(mut src, 0, 8).bytestr()
-	unfin := magic.starts_with('UnFinMF')
-	if !magic.starts_with('MDF') && !unfin {
+	magic := bytes_at(mut src, 0, 8)
+	if !is_mdf_id(magic) {
 		return error('not an MDF file (bad id block)')
 	}
-	return unfin
+	return magic.bytestr().starts_with('UnFinMF')
+}
+
+// is_mdf_id says whether `id`, a file's first bytes, is an MDF identification block: finalized
+// (`MDF`) or unfinalized (`UnFinMF`, a logger that powered off before finalizing). The one rule
+// for the loader, the stream and a replay's choice of reader.
+pub fn is_mdf_id(id []u8) bool {
+	magic := id.bytestr()
+	return magic.starts_with('MDF') || magic.starts_with('UnFinMF')
 }
 
 fn parse_recording(mut src ByteSource) !Recording {
