@@ -1351,7 +1351,8 @@ int bb_j1939_function_name(int function, char *buf, int cap); /* >= 0: the lengt
  * wire's NM configuration, nm.configure's rule, the Network Management panel's: the system model's
  * bus named like a row on the wire, else the wire's ARXML NM-PDU frames, else a row's own `nm:`.
  * 1: listening; 0: the wire has none, and nothing guesses a frame is NM. Attaching a handle already
- * listening in this run keeps what it has. bb_nm_attach_range binds it to a range the host states
+ * listening in this run by that configuration keeps what it has; one reading a stated range goes
+ * back to the wire's, a new reading. bb_nm_attach_range binds it to a range the host states
  * instead (lo..hi inclusive, 29-bit where hi > 0x7FF or ext; a timeout of 1..60000 ms), declaring no
  * node, and begins a new reading. Every frame bb_bus_recv reads from then on is fed to it at its
  * receive time (bb_frame.t_ns), and a receive that finds nothing queued (BB_NONE) moves the reading

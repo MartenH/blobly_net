@@ -72,7 +72,7 @@ pub fn bb_nm_attach(h i32, row i32) i32 {
 		hd.leave()
 	}
 	cfg, has, gen := nm_row(row) or { return refused(err) }
-	if !isnil(hd.nm.l) && hd.nm.gen == gen {
+	if !isnil(hd.nm.l) && hd.nm.gen == gen && hd.nm.l.trk.cfg.source != .script {
 		ok()
 		return 1
 	}

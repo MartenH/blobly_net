@@ -123,6 +123,11 @@ fn l_nm_listen(l lua.State) i32 {
 	name := l.arg_str(1)
 	lo := l.arg_int(2)
 	if lo < 0 {
+		if cur := env.nm_rx[name] {
+			if cur.trk.cfg.source == .script {
+				env.nm_rx.delete(name) // back to the wire's own, a new reading
+			}
+		}
 		env.nm_of(name) or { return l.fail(err.msg()) }
 		return 0
 	}

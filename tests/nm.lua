@@ -57,3 +57,8 @@ test("a range the script states reads without names", function()
   raises(function() nm.listen("body", { lo = 0x600, hi = 0x500 }) end, "above hi")
   raises(function() nm.listen("body", { lo = 1 }) end, "a range is")
 end)
+
+test("nm.listen with no range goes back to the wire configuration", function()
+  nm.listen("body")
+  check.equal(nm.reading("body").source, "system.toml")
+end)
