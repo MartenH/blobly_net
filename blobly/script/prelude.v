@@ -1066,15 +1066,15 @@ function nm.reading(channel, window_ms)
   return __nm_reading(channel, jms("nm.reading", window_ms, 0))
 end
 function nm.state(channel) return __nm_reading(channel, 0).state end
-function nm.expect_state(channel, state, timeout_ms, kept_awake_by)
+local function nm_expect(fname, level, channel, state, timeout_ms, kept_awake_by)
   if not nm_states[state] then
-    error("nm.expect_state: a state is awake, releasing or asleep, not " .. tostring(state), 2)
+    error(fname .. ": a state is awake, releasing or asleep, not " .. tostring(state), level)
   end
-  local ms = jms("nm.expect_state", timeout_ms, 1000)
+  local ms = jms(fname, timeout_ms, 1000)
   local r, ok
   local want = ""
   if kept_awake_by ~= nil then
-    if type(kept_awake_by) ~= "table" then error("nm.expect_state: kept_awake_by is a list of names", 2) end
+    if type(kept_awake_by) ~= "table" then error(fname .. ": kept_awake_by is a list of names", level) end
     r, ok = __nm_wait(channel, ms, state, true, table.unpack(kept_awake_by))
     local sorted = { table.unpack(kept_awake_by) }
     table.sort(sorted)
@@ -1086,10 +1086,15 @@ function nm.expect_state(channel, state, timeout_ms, kept_awake_by)
   local was = "it was " .. r.state
   if #r.kept_awake_by > 0 then was = was .. ", kept awake by " .. table.concat(r.kept_awake_by, ", ") end
   if not r.heard then was = was .. ", no NM frame read (" .. r.cluster .. ", from " .. r.origin .. ")" end
-  error(string.format("nm.expect_state: %s: no NM state %s%s within %d ms; %s", channel, state, want, ms, was), 2)
+  error(string.format("%s: %s: no NM state %s%s within %d ms; %s", fname, channel, state, want, ms, was), level)
+end
+function nm.expect_state(channel, state, timeout_ms, kept_awake_by)
+  local r = nm_expect("nm.expect_state", 3, channel, state, timeout_ms, kept_awake_by)
+  return r -- not a tail call: the error level counts this frame
 end
 function nm.expect_asleep(channel, timeout_ms)
-  return nm.expect_state(channel, "asleep", timeout_ms)
+  local r = nm_expect("nm.expect_asleep", 3, channel, "asleep", timeout_ms)
+  return r
 end
 
 -- ============================ the DBC catalog ============================
