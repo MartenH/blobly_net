@@ -428,11 +428,11 @@ fn (mut c DoipClient) write(msg []u8) ! {
 				break
 			}
 			if time.ticks() >= deadline {
-				return error('${doip_connection_lost}DoIP: the entity took nothing written for ${write_timeout_ms} ms')
+				return connection_lost('DoIP: the entity took nothing written for ${write_timeout_ms} ms')
 			}
 		}
 		end := if msg.len - sent > write_chunk { sent + write_chunk } else { msg.len }
-		c.conn.write(msg[sent..end]) or { return error('${doip_connection_lost}${err.msg()}') }
+		c.conn.write(msg[sent..end]) or { return connection_lost(err.msg()) }
 		sent = end
 	}
 }
@@ -484,7 +484,7 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 				if err.msg() == stopped_note {
 					return err
 				}
-				return error('${doip_connection_lost}${err.msg()}')
+				return connection_lost(err.msg())
 			}
 			data, mine := c.own_answer(msg)!
 			if mine {
@@ -514,7 +514,7 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 				return err
 			}
 			// closed, reset, or stalled inside a message: the stream cannot be read any further
-			return error('${doip_connection_lost}${err.msg()}')
+			return connection_lost(err.msg())
 		}
 		data, mine := c.own_answer(msg)!
 		if mine {
@@ -584,7 +584,7 @@ pub fn (mut c DoipClient) idle() ! {
 			if err.msg() == stopped_note {
 				return err
 			}
-			return error('${doip_connection_lost}${err.msg()}')
+			return connection_lost(err.msg())
 		}
 		c.serve_control(msg)!
 	}
@@ -594,6 +594,12 @@ pub fn (mut c DoipClient) idle() ! {
 // used any further (closed, reset, or stalled inside a message) — a failure of the carrier, which a
 // pre-send drain must pass on, not count as an answer, and which a new connection is the answer to.
 pub const doip_connection_lost = 'DoIP connection lost: '
+
+// connection_lost is that error, typed as the carrier gone (transport.CarrierGone) for a caller
+// that asks the type, its text prefixed for one that hands it on.
+fn connection_lost(why string) IError {
+	return transport.carrier_gone('${doip_connection_lost}${why}')
+}
 
 // poll_read_ms: how long a zero-timeout recv waits for the REST of a message whose first bytes
 // have arrived — TCP delivers it promptly, so this bounds a peer that stalls mid-message.

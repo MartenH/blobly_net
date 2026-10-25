@@ -172,7 +172,7 @@ fn (mut d SharedNoDriver) send(_ CanFrame, _ fn ()) ! {
 }
 
 fn (mut d SharedNoDriver) recv_shared(_ int) !SharedIngress {
-	return error('${bus_not_open} yet')
+	return carrier_gone('${bus_not_open} yet')
 }
 
 fn (mut d SharedNoDriver) close() {}
@@ -1352,7 +1352,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 		h.mu.lock()
 		if h.closed {
 			h.mu.unlock()
-			return error('${h.key}: bus is closed')
+			return carrier_gone('${h.key}: bus is closed')
 		}
 		mut e := h.entry
 		// THE FIRST RECEIVE ON AN UNREAD WIRE DRAINS THE DRIVER ITSELF, under drain_mu, BEFORE it
@@ -1453,7 +1453,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 			return frame
 		}
 		if terminal != '' {
-			return error(terminal)
+			return carrier_gone(terminal)
 		}
 		if timeout_ms >= 0 {
 			remaining := deadline - time.ticks()

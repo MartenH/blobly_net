@@ -922,7 +922,7 @@ fn (mut b BridgeBus) recv_shared(timeout_ms int) !SharedIngress {
 			return g
 		}
 		if e := b.failure() {
-			return error(e)
+			return carrier_gone(e)
 		}
 	}
 	return error('timeout')

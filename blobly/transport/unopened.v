@@ -14,7 +14,7 @@ pub fn (mut b UnopenedBus) send(_ CanFrame) ! {
 }
 
 pub fn (mut b UnopenedBus) recv(_ int) !CanFrame {
-	return error(bus_not_open)
+	return carrier_gone(bus_not_open)
 }
 
 pub fn (mut b UnopenedBus) close() {}

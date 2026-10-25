@@ -69,7 +69,7 @@ fn (mut c KernelChannel) recv(timeout_ms int) ![]u8 {
 		return error('timeout')
 	}
 	if n < 0 {
-		return error('isotp recv failed on ${c.iface}')
+		return transport.carrier_gone('isotp recv failed on ${c.iface}')
 	}
 	return buf[..n].clone()
 }

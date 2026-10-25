@@ -607,6 +607,12 @@ fn (mut c Client) drain_queued(sid u8) !int {
 	}
 	for {
 		c.ch.recv(0) or {
+			// a carrier that failed has nothing more to drain, and is the caller's news
+			if err is transport.CarrierGone {
+				return CarrierFailed{
+					text: err.msg()
+				}
+			}
 			// only an empty channel ends the drain: a PDU that failed to parse was still taken
 			// off it, and what is behind it may be an old answer
 			if err.msg().contains('timeout') {
@@ -615,12 +621,6 @@ fn (mut c Client) drain_queued(sid u8) !int {
 			// a stop ends the drain, and what it cut is the caller's to dispose of
 			if abandoned(err.msg()) {
 				return err
-			}
-			// but a carrier that failed has nothing more to drain, and is the caller's news
-			if carrier_failed(err.msg()) {
-				return CarrierFailed{
-					text: err.msg()
-				}
 			}
 			// anything else was a PDU taken off the channel: count it like one
 			[]u8{}
@@ -632,14 +632,6 @@ fn (mut c Client) drain_queued(sid u8) !int {
 		}
 	}
 	return discarded
-}
-
-// carrier_failed is whether a receive error is the CARRIER's rather than one PDU's: a DoIP
-// connection closed or out of step after a stalled message, a CAN bus closed under a held
-// channel, or a bus or channel that was never opened.
-fn carrier_failed(msg string) bool {
-	return connection_lost(msg) || msg.contains('bus is closed')
-		|| msg.contains(transport.bus_not_open) || msg.contains(isotp.channel_not_open)
 }
 
 // max_drain bounds the pre-send drain: a peer flooding the response id must not hold a request

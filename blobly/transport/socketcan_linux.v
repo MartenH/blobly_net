@@ -115,10 +115,10 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			return error('timeout')
 		}
 		if dlc <= -1000 {
-			return error('recv on ${b.iface}: ${cerr(-(dlc + 1000))}') // the errno names the culprit
+			return carrier_gone('recv on ${b.iface}: ${cerr(-(dlc + 1000))}') // the errno names the culprit
 		}
 		if dlc < 0 {
-			return error('recv failed on ${b.iface}')
+			return carrier_gone('recv failed on ${b.iface}')
 		}
 		// A kernel ERROR frame (CAN_RAW_ERR_FILTER subscribed at open): the bus's health
 		// talking, not traffic — fold it into the ladder, never surface it as data. The

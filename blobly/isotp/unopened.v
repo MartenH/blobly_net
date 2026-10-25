@@ -20,7 +20,7 @@ pub fn (mut c UnopenedChannel) send(_ []u8) ! {
 }
 
 pub fn (mut c UnopenedChannel) recv(_ int) ![]u8 {
-	return error(channel_not_open)
+	return transport.carrier_gone(channel_not_open)
 }
 
 pub fn (mut c UnopenedChannel) close() {}

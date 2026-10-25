@@ -431,7 +431,12 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			// THE TIMEOUT USUALLY COMES FROM HERE, not from the deadline check above: a caller
 			// with time left blocks inside rx_raw and that call is what expires. Decorating only
 			// the check left the diagnostic unreachable on the ordinary path (#296).
-			first = c.rx_raw(rem) or { return error(orphan_note(err.msg(), orphan_fc, orphan_pci)) }
+			first = c.rx_raw(rem) or {
+				if err is transport.CarrierGone {
+					return err // the carrier's failure, by its type, whatever was skipped before it
+				}
+				return error(orphan_note(err.msg(), orphan_fc, orphan_pci))
+			}
 		}
 		if first.len < 1 {
 			return error('ISO-TP: empty frame')
