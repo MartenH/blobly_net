@@ -98,7 +98,7 @@ pub:
 // load decodes a `.mf4` or candump `.log` recording, with its buses: an .mf4's own table, a .log's
 // synthesized from the interface names its lines carry. The GUI's replay and Scan read it too.
 pub fn load(source string) !(canlog.Log, []mf4.BusInfo) {
-	if source.to_lower().ends_with('.mf4') {
+	if is_mdf(source) {
 		rec := mf4.load_recording(source)!
 		if rec.log.len() == 0 {
 			return error('${os.base(source)} holds no frames')

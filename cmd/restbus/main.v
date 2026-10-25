@@ -62,7 +62,19 @@ fn main() {
 		// Through the SURVEY, not the loader: one pass over the stream, nothing of the recording
 		// retained, so a file that does not fit in memory can still say what buses it has —
 		// which is the question a bench asks first. The survey's buses are the loader's
-		// (pinned by test); what it adds is what the stream had to do to read the file.
+		// (pinned by test); what it adds is what the stream had to do to read the file. A candump
+		// .log has no survey: it is read whole, as it is replayed.
+		if !replay.is_mdf(o.source) {
+			_, buses := replay.load(o.source) or {
+				eprintln('restbus: ${o.source}: ${err}')
+				exit(1)
+			}
+			println('${'bus':-14} frames')
+			for b in buses {
+				println('${b.iface:-14} ${b.frames}')
+			}
+			return
+		}
 		sv := mf4.survey_file(o.source) or {
 			eprintln('restbus: ${o.source}: ${err}')
 			exit(1)

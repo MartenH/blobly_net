@@ -298,10 +298,19 @@ import (whole-file by design, 2000-row cap).
      `max_deferred_bytes`). Measured: 34 MB peak RSS for the whole process on the 397 MB file,
      against 26 MB on 48 MB — it does not grow with the file.
    - **Probe** (40 s, Linux/WSLg, a 15-bus replay of one 17 MB private recording onto 15
-     `inproc:` rows at 1×, looping): frames within 1 ms 69.1 % in memory, 68.0 % streamed;
-     none later than 100 ms either way (worst 21.8 / 28.2 ms); live set after a collection
+     `inproc:` rows at 1×, looping): frames within 1 ms 69.1 % in memory, 69.4 % streamed;
+     none later than 100 ms either way (worst 21.8 / 33.4 ms); live set after a collection
      247–249 MB in memory, 80–130 MB streamed. The cadence does not change with the source; the
      69 % is this bench at fifteen buses (the 99 % above was measured on Windows).
+   - **What playing from a reader asks of the player.** A release waits at most
+     `chunk_wait_ms` (20) for a chunk that is not ready — the frames it brings go out late at a
+     later release, the clock not held — so a worker still asks for its stop while the reader
+     reads through a long excluded stretch; only a new read (a seek, a restart) holds the clock.
+     And one release hands out at most `chunk_batch_max` (`chunk_rows` × `chunk_ahead`) entries,
+     since each pins its chunk: a run of equal timestamps would otherwise drain the reader into
+     one batch. A streamed file is planned only while its size and modification time are the
+     survey's. Whether a file is MDF is read from its identification block (`replay.is_mdf`),
+     as `mf4.load_recording` reads it, not from its name.
    - **Found on the way**: the chunker's reader read through a `FileSource` left in the frame
      of the function that opened it, since a `Stream` keeps a reference to its source; every pass
      past the first MiB of a file ended in `file not opened`. The samples `chunked_test.v` plays
@@ -309,5 +318,7 @@ import (whole-file by design, 2000-row cap).
      `replay/source_test.v` streams a 2 MB recording it writes.
    - **Not handled**: a candump `.log` loads whole (a 96 MB file measured 931 MB); streaming one
      needs a line reader with the loader's time-order rule, which `.log` files do not promise.
-     No sidecar cache for the survey and no seek index: a seek in a streamed file costs a read
+     The opening reads ask for a stop per 4096 rows YIELDED, so a long run of records that
+     yield none (invalidated frames) is read through before a stop is seen, about a second per
+     100 MB. No sidecar cache for the survey and no seek index: a seek in a streamed file costs a read
      up to its target (~1 M rows/s), the clock held meanwhile.

@@ -3,6 +3,7 @@ module player
 import blobly.canlog
 import blobly.mf4
 import os
+import time
 
 // Chunker plays an MF4 recording a chunk at a time instead of loading it whole, so memory no
 // longer grows with the file (a loaded recording costs about fifteen times its size).
@@ -15,6 +16,12 @@ import os
 // starts a new reader that plans from the top of the file and skips rows before the target.
 pub const chunk_rows = 256
 pub const chunk_ahead = 64
+
+// The most a playing chunked player waits for its next chunk in one release, so a worker that
+// releases on its tick still asks for its stop; and the most entries one release hands out, since
+// each pins its chunk and a run of equal timestamps would otherwise drain the reader into one batch.
+pub const chunk_wait_ms = 20
+pub const chunk_batch_max = chunk_rows * chunk_ahead
 
 // Chunk is a block of rows and the ones among them to play. Its rows are never written again,
 // because entries the player hands out are views into them. An `end` chunk marks the end of a
@@ -142,6 +149,20 @@ fn (c &Chunker) job(skip f64) ReadJob {
 		size:  c.size
 		mtime: c.mtime
 	}
+}
+
+// take_within is take, waiting at most `ms` for the chunk.
+fn (mut c Chunker) take_within(ms int) ?Chunk {
+	for i := 0; true; i++ {
+		if ck := c.take(false) {
+			return ck
+		}
+		if i >= ms {
+			return none
+		}
+		time.sleep(time.millisecond)
+	}
+	return none
 }
 
 // take returns the next chunk, waiting for it when `wait`; none if it is not ready. A closed

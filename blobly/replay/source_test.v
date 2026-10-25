@@ -30,11 +30,19 @@ fn frames_on(mut b transport.Bus, quiet_ms int) int {
 }
 
 fn test_the_switch_streams_an_mf4_from_the_threshold_and_never_a_log() {
-	assert streams('a.mf4', 64 << 20, 64)
-	assert streams('A.MF4', 65 << 20, 64)
-	assert !streams('a.mf4', (64 << 20) - 1, 64)
-	assert streams('a.mf4', 0, 0), '0 streams every .mf4'
-	assert !streams('a.log', 1 << 40, 0), 'a candump .log always loads'
+	assert streams(true, 64 << 20, 64)
+	assert !streams(true, (64 << 20) - 1, 64)
+	assert streams(true, 0, 0), '0 streams every .mf4'
+	assert !streams(false, 1 << 40, 0), 'a candump .log always loads'
+	assert is_mdf(sample('demo.mf4')) && !is_mdf(sample('demo.log'))
+	renamed := os.join_path(os.temp_dir(), 'replay_mdf_${os.getpid()}.dat')
+	os.cp(sample('two_buses.mf4'), renamed) or { panic(err) }
+	defer {
+		os.rm(renamed) or {}
+	}
+	assert is_mdf(renamed), 'an MDF file by its content, not its name'
+	_, buses := load(renamed) or { panic(err) }
+	assert buses.len == 2
 	assert stream_mb_of('') == stream_mb_default
 	assert stream_mb_of(' 0 ') == 0
 	assert stream_mb_of('128') == 128
@@ -406,4 +414,55 @@ fn test_a_streamed_open_and_plan_are_given_up_when_asked() {
 		return
 	}
 	assert false, 'a plan asked to stop is given up'
+}
+
+fn test_a_streamed_file_changed_before_it_is_planned_is_refused() {
+	path := os.join_path(os.temp_dir(), 'replay_changed_${os.getpid()}.mf4')
+	big_mf4(path, 4000)
+	defer {
+		os.rm(path) or {}
+	}
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
+	big_mf4(path, 9000)
+	str.prepare(specs_for(&str, [])) or {
+		assert err.msg().contains('changed since it was opened')
+		return
+	}
+	assert false, 'a file that is not the one surveyed is not planned'
+}
+
+fn test_a_streamed_release_is_bounded_where_every_frame_is_due_at_once() {
+	path := os.join_path(os.temp_dir(), 'replay_burst_${os.getpid()}.mf4')
+	mut pats := []Pat{}
+	for id in [u32(0x200), 0x300, 0x400] {
+		pats << Pat{
+			id:   id
+			data: [u8(1)]
+		}
+	}
+	write_mf4(path, 3 * player.chunk_batch_max, pats, 1, 0.0)
+	defer {
+		os.rm(path) or {}
+	}
+	mem := open_recording_at(path, 1 << 20, unsafe { nil }) or { panic(err) }
+	str := open_recording_at(path, 0, unsafe { nil }) or { panic(err) }
+	mut a := mem.prepare(specs_for(&mem, [])) or { panic(err) }
+	mut b := str.prepare(specs_for(&str, [])) or { panic(err) }
+	mut pa := a.player(1.0, false)
+	mut pb := b.player(1.0, false)
+	pa.play(0)
+	pb.play(0)
+	want := pa.due(0).map(it.frame.id)
+	mut got := []u32{}
+	mut batches := 0
+	for pb.state() != .finished && batches < 100 {
+		pb.wait_ready()
+		es := pb.due(0)
+		assert es.len <= player.chunk_batch_max + player.chunk_rows
+		got << es.map(it.frame.id)
+		batches++
+	}
+	b.close()
+	assert want.len == 3 * player.chunk_batch_max && batches > 3
+	assert got == want
 }

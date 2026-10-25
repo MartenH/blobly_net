@@ -26,10 +26,22 @@ pub fn stream_mb_of(v string) i64 {
 	return t.i64()
 }
 
-// streams says whether a recording of `size` bytes at `path` replays in chunks under a threshold
-// of `mb` MiB: an `.mf4` at or above it.
-pub fn streams(path string, size u64, mb i64) bool {
-	return path.to_lower().ends_with('.mf4') && size >= u64(mb) << 20
+// streams says whether a recording of `size` bytes replays in chunks under a threshold of `mb`
+// MiB: an MDF file (`is_mdf`) at or above it.
+pub fn streams(mdf bool, size u64, mb i64) bool {
+	return mdf && size >= u64(mb) << 20
+}
+
+// is_mdf says whether `path` is an MDF file — by its identification block, whatever it is
+// called, as mf4.load_recording reads it; a file that cannot be read by its name.
+pub fn is_mdf(path string) bool {
+	mut f := os.open(path) or { return path.to_lower().ends_with('.mf4') }
+	defer {
+		f.close()
+	}
+	mut id := []u8{len: 8}
+	n := f.read(mut id) or { 0 }
+	return n == 8 && id.bytestr() == 'MDF     '
 }
 
 // Source is a recording opened for a replay: its buses, and either the recording itself (`log`)
@@ -41,6 +53,8 @@ pub:
 	streamed bool
 	log      canlog.Log // the whole recording; empty when streamed
 	note     string     // why a file above the threshold plays from memory, if it does
+	size     u64 // a streamed file's size and modification time at the survey: prepare
+	mtime    i64 // refuses a file that no longer matches both
 	// asked while a streamed source is read before it plays (open and prepare); true gives the
 	// read up with `stopped`
 	stop fn () bool = unsafe { nil }
@@ -61,7 +75,9 @@ pub fn open_recording_until(path string, stop fn () bool) !Source {
 // loader's rows (stream_differs).
 pub fn open_recording_at(path string, mb i64, stop fn () bool) !Source {
 	mut note := ''
-	if streams(path, u64(os.file_size(path)), mb) {
+	size := os.file_size(path)
+	mtime := os.file_last_mod_unix(path)
+	if streams(is_mdf(path), size, mb) {
 		mut sink := StopSink{
 			stop: stop
 		}
@@ -76,6 +92,8 @@ pub fn open_recording_at(path string, mb i64, stop fn () bool) !Source {
 				buses:    sv.buses
 				streamed: true
 				stop:     stop
+				size:     size
+				mtime:    mtime
 			}
 		}
 		note = '${os.base(path)}: ${why} — replayed from memory'
@@ -132,7 +150,11 @@ mut:
 // the same Planner over the same rows, so both decide the same.
 pub fn (s &Source) prepare(specs []player.BusSpec) !Prepared {
 	if s.streamed {
-		c := player.open_chunker_until(s.path, specs, player.chunk_rows, s.stop)!
+		mut c := player.open_chunker_until(s.path, specs, player.chunk_rows, s.stop)!
+		if c.size != s.size || c.mtime != s.mtime {
+			c.close()
+			return error('${s.path} changed since it was opened')
+		}
 		return Prepared{
 			buses:    c.buses
 			t0_s:     c.t0_s
@@ -185,7 +207,7 @@ pub fn scan(path string, db candb.Database) !([]mf4.BusInfo, map[string]player.N
 // scan_at is scan under a threshold of `mb` MiB.
 pub fn scan_at(path string, db candb.Database, mb i64) !([]mf4.BusInfo, map[string]player.NodeCensus) {
 	mut cens := map[string]player.NodeCensus{}
-	if streams(path, u64(os.file_size(path)), mb) {
+	if streams(is_mdf(path), os.file_size(path), mb) {
 		mut sink := CensusSink{
 			db: db
 		}
