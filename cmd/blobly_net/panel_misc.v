@@ -1544,6 +1544,7 @@ fn draw_script(mut app App) {
 		// Its OWN counter, not run_workers: a script is not part of a run, may outlive Stop and
 		// may run for minutes, and stop() waiting for one would hang on the operator's own
 		// script (see App.run_workers).
+		app.nm_follow(true) // the NM configuration the script reads by, as the project is now
 		app.reserve_tool_reader()
 		spawn script_worker(app, vgui.buf_str(app.script_path_buf), app.script_system())
 	}

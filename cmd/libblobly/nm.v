@@ -73,16 +73,18 @@ pub fn bb_nm_attach(h i32, row i32) i32 {
 		hd.leave()
 	}
 	cfg, has, gen := nm_row(row) or { return refused(err) }
-	if !isnil(hd.nm.l) && hd.nm.gen == gen && hd.nm.l.trk.cfg.source != .script {
+	current := !isnil(hd.nm.l) && hd.nm.gen == gen
+	if !has {
+		// a stated range this run keeps reading: a refused return to the wire's changes nothing
+		if !(current && hd.nm.l.trk.cfg.source == .script) {
+			hd.nm = NmTap{} // nor does an earlier run's, or another row's, reading go on
+		}
+		ok()
+		return 0
+	}
+	if current && hd.nm.l.trk.cfg.key() == cfg.key() {
 		ok()
 		return 1
-	}
-	if !has {
-		if isnil(hd.nm.l) || hd.nm.gen != gen {
-			hd.nm = NmTap{} // an earlier run's listener does not go on reading
-		}
-		ok() // a stated range this run keeps reading: a refused return to the wire's changes nothing
-		return 0
 	}
 	hd.nm = NmTap{
 		l:   nm.new_listener(cfg)

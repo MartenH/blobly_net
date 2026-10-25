@@ -288,7 +288,7 @@ class Bus:
         raise Timeout(f"{self.name}: expected a frame {_id_text(*want)} within {_num(timeout_ms)} ms; "
                       + _came(others, want[0]), _lib.BB_ERR_TIMEOUT)
 
-    def _frames_until(self, deadline, run, idle=False):
+    def _frames_until(self, deadline, run, idle=False, slice_ms=SLICE_MS):
         """The frames read from now until `deadline` (monotonic_ms) has passed: each read waits
         whole milliseconds, at most SLICE_MS (so Ctrl-C lands), and never past it, the fraction of
         one the driver cannot be asked for is slept rather than read, and nothing is read once it
@@ -297,7 +297,8 @@ class Bus:
         run `run`, on the handle the channel had in it: a stop closes that handle, and a stop or
         a start during the wait is refused, never waited through on the next run's handle. With
         `idle`, a read that found nothing yields None too, so a wait on a reading that moves with
-        time (the NM state going to sleep) is asked after it."""
+        time (the NM state going to sleep) is asked after it; `slice_ms` (at most SLICE_MS) bounds
+        each read."""
         with _lib.state_lock:
             self._same_run(run)
             h = self._handle()  # opened inside the wait, not before it: a slow open spends its time
@@ -309,7 +310,7 @@ class Bus:
                 return
             first = False
             try:
-                f, spent = self._receive(min(max(0, math.floor(left)), SLICE_MS), h)
+                f, spent = self._receive(min(max(0, math.floor(left)), slice_ms), h)
             except BloblyError:
                 with _lib.state_lock:  # a stop closed the handle: said as the stop, once it is done
                     self._same_run(run)

@@ -8,7 +8,7 @@ pub struct Listener {
 pub mut:
 	trk   Tracker
 	at_ms f64 // the handle's latest read: a frame's receive time, or a read that found nothing
-	// what moved() last answered for: the NM frames and the moment
+	// what moved() last answered for: the cluster's frames (parsed, malformed, dropped) and the moment
 	asked_frames u64
 	asked_ms     f64 = -1.0
 }
@@ -40,14 +40,16 @@ pub fn (mut l Listener) idle(now_ms f64) {
 	}
 }
 
-// moved: the reading may have changed since the last moved() said so — an NM frame came, or its
+// moved: the reading may have changed since the last moved() said so — a frame in the cluster
+// came (parsed or not), or its
 // moment moved on by ask_ms. A frame of another id moves the reading only by its time, so a wait
 // on a busy wire need not build a reading per frame.
 pub fn (mut l Listener) moved() bool {
-	if l.trk.frames == l.asked_frames && l.asked_ms >= 0 && l.at_ms - l.asked_ms < ask_ms {
+	seen := l.trk.frames + l.trk.malformed + l.trk.dropped
+	if seen == l.asked_frames && l.asked_ms >= 0 && l.at_ms - l.asked_ms < ask_ms {
 		return false
 	}
-	l.asked_frames = l.trk.frames
+	l.asked_frames = seen
 	l.asked_ms = l.at_ms
 	return true
 }

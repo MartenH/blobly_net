@@ -79,7 +79,7 @@ fn (mut env Env) j1939_of(name string) !&j1939.Listener {
 // `until_message` until a completed message waits (read_until); a deadline already past is one
 // look. A wait the run's deadline cuts is an error (timeout_note).
 fn (mut env Env) j1939_read(name string, lis &j1939.Listener, deadline u64, until_message bool) ! {
-	env.read_until(name, deadline, false, fn [lis, until_message] () bool {
+	env.read_until(name, deadline, false, 100, fn [lis, until_message] () bool {
 		return until_message && lis.queued() > 0
 	})!
 }

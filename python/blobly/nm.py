@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from . import _lib
 from ._lib import Refused, Timeout
+from .events import SLICE_MS
 
 if TYPE_CHECKING:
     from .project import Channel
@@ -249,12 +250,19 @@ class NmListener:
         with _lib.state_lock:
             run = _lib.state["run"]
         h = self._handle()
-        asked = None  # what the last reading asked was of: its NM frames and its moment, coarsely
-        for _ in self.channel._frames_until(deadline, run, idle=True):
+        self.channel._receive(0, h)  # a look first: the reading brought up to now, waiting for nothing
+        v = self._view(h)
+        last = self._reading(h, v)
+        if predicate(last):
+            return last
+        asked = (v.frames, v.malformed, v.dropped, v.t_ns // _ASK_NS)
+        # each read waits at most the cluster's timeout, so a node going silent is read at once
+        slice_ms = max(1, min(SLICE_MS, v.timeout_ms))
+        for _ in self.channel._frames_until(deadline, run, idle=True, slice_ms=slice_ms):
             v = self._view(h)
             # asked again once an NM frame came or time moved on: a frame of another id moves
             # the reading only by its time
-            mark = (v.frames, v.t_ns // _ASK_NS)
+            mark = (v.frames, v.malformed, v.dropped, v.t_ns // _ASK_NS)
             if mark == asked:
                 continue
             asked = mark

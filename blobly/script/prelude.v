@@ -1063,7 +1063,10 @@ function nm.listen(channel, opts)
   __nm_listen(channel, opts.lo, opts.hi, opts.ext == true, t)
 end
 function nm.reading(channel, window_ms)
-  return __nm_reading(channel, jms("nm.reading", window_ms, 0))
+  if window_ms ~= nil and (type(window_ms) ~= "number" or window_ms < 0 or window_ms ~= window_ms or window_ms == math.huge) then
+    error("nm.reading: a window is a finite number of ms, not " .. tostring(window_ms), 2)
+  end
+  return __nm_reading(channel, window_ms or 0) -- a fraction is rounded up (ms_up)
 end
 function nm.state(channel) return __nm_reading(channel, 0).state end
 local function nm_expect(fname, level, channel, state, timeout_ms, kept_awake_by)
@@ -1075,7 +1078,7 @@ local function nm_expect(fname, level, channel, state, timeout_ms, kept_awake_by
     if type(timeout_ms) ~= "number" or timeout_ms < 0 or timeout_ms ~= timeout_ms or timeout_ms == math.huge then
       error(fname .. ": a wait is a finite number of ms, not " .. tostring(timeout_ms), level)
     end
-    ms = math.floor(timeout_ms)
+    ms = timeout_ms -- a fraction is rounded up where it is waited (ms_up)
   end
   local r, ok
   local want = ""
@@ -1092,7 +1095,7 @@ local function nm_expect(fname, level, channel, state, timeout_ms, kept_awake_by
   local was = "it was " .. r.state
   if #r.kept_awake_by > 0 then was = was .. ", kept awake by " .. table.concat(r.kept_awake_by, ", ") end
   if not r.heard then was = was .. ", no NM frame read (" .. r.cluster .. ", from " .. r.origin .. ")" end
-  error(string.format("%s: %s: no NM state %s%s within %d ms; %s", fname, channel, state, want, ms, was), level)
+  error(string.format("%s: %s: no NM state %s%s within %g ms; %s", fname, channel, state, want, ms, was), level)
 end
 function nm.expect_state(channel, state, timeout_ms, kept_awake_by)
   local r = nm_expect("nm.expect_state", 3, channel, state, timeout_ms, kept_awake_by)

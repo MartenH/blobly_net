@@ -72,12 +72,13 @@ fn (mut env Env) nm_of(name string) !&nm.Listener {
 }
 
 // read_until reads channel `name` until `deadline` (sys_mono_now) has passed or `done` holds —
-// asked before each read, and with `read_first` not before the first, so a reading already
-// satisfied by what an earlier read left is looked past once; after every read, a frame or one
-// that found nothing, it is asked again at the next turn. Every frame read goes to the
+// asked before each read, and with `read_first` only after a first read that is a look (it waits
+// for nothing), so a reading is brought up to now before it is first asked; after every read, a
+// frame or one that found nothing, it is asked again at the next turn. A read waits at most
+// `slice_ms`. Every frame read goes to the
 // channel's readings (frame_read) and its E2E reader. A deadline already past is one look. A wait
 // the run's deadline cuts is an error (timeout_note). Answers whether `done` held.
-fn (mut env Env) read_until(name string, deadline u64, read_first bool, done fn () bool) !bool {
+fn (mut env Env) read_until(name string, deadline u64, read_first bool, slice_ms int, done fn () bool) !bool {
 	mut bus := env.bus_for(name)!
 	mut first := true
 	for {
@@ -88,9 +89,10 @@ fn (mut env Env) read_until(name string, deadline u64, read_first bool, done fn 
 		if now >= deadline && !first {
 			return false
 		}
+		look := first && read_first
 		first = false
-		left := if now >= deadline { 0 } else { int((deadline - now) / 1_000_000) }
-		f := bus.recv(if left < 100 { left } else { 100 }) or {
+		left := if now >= deadline || look { 0 } else { int((deadline - now) / 1_000_000) }
+		f := bus.recv(if left < slice_ms { left } else { slice_ms }) or {
 			if env.expired() {
 				return error(timeout_note)
 			}
@@ -101,7 +103,7 @@ fn (mut env Env) read_until(name string, deadline u64, read_first bool, done fn 
 				return error('${name}: ${err.msg()}')
 			}
 			env.read_idle(name)
-			if left == 0 {
+			if left == 0 && !look {
 				// what a whole-millisecond wait cannot ask for is slept, not skipped
 				rest := i64(deadline) - i64(time.sys_mono_now())
 				if rest > 0 {
@@ -118,14 +120,20 @@ fn (mut env Env) read_until(name string, deadline u64, read_first bool, done fn 
 }
 
 // nm_read reads channel `name` into `lis` until `deadline` or `done` holds for its reading, asked
-// once an NM frame came or the reading's moment moved on (nm.Listener.moved). Answers whether it held.
+// once a frame in the cluster came or the reading's moment moved on (nm.Listener.moved), and once
+// more at the end whatever moved; each read waits at most the cluster's timeout, so a node going
+// silent is read as soon as it can be. Answers whether it held.
 fn (mut env Env) nm_read(name string, lis &nm.Listener, deadline u64, done fn (nm.View) bool) !bool {
 	mut fresh := unsafe { lis }
 	fresh.asked_ms = -1.0 // a new wait asks at its first turn
-	return env.read_until(name, deadline, true, fn [lis, done] () bool {
+	slice := if lis.trk.cfg.timeout_ms < 100 { lis.trk.cfg.timeout_ms } else { 100 }
+	if env.read_until(name, deadline, true, slice, fn [lis, done] () bool {
 		mut l := unsafe { lis }
 		return l.moved() && done(l.reading())
-	})!
+	})! {
+		return true
+	}
+	return done(lis.reading())
 }
 
 // __nm_listen(channel, lo, hi, ext, timeout_ms): read the channel as NM from now on, by its own
