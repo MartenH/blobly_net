@@ -113,3 +113,6 @@ __all__ += ["CyclicSender", "CyclicStatus", "KeepAliveStatus", "KeepAliveWarning
 # J1939: the transport protocol rejoined and the address directory (j1939.py; Channel.j1939)
 from .j1939 import J1939Address, J1939Fault, J1939Listener, J1939Message, J1939Name  # noqa: E402
 __all__ += ["J1939Address", "J1939Fault", "J1939Listener", "J1939Message", "J1939Name"]
+# network management: who reports in on a channel's NM cluster and who keeps it awake (nm.py; Channel.nm)
+from .nm import NmBits, NmListener, NmNode, NmReading  # noqa: E402
+__all__ += ["NmBits", "NmListener", "NmNode", "NmReading"]

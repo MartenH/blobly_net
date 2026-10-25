@@ -21,6 +21,7 @@ from .metrics import BusDiagnostics, BusLoad, diagnostics_of, load_of
 from .generators import Generators, listed as _listed_generators
 from .isotp import IsoTp
 from .j1939 import J1939Listener
+from .nm import NmListener
 from .replay import Replays
 from .e2e import E2eStatus, _passed, status_of
 from .cyclic import CyclicSender, _period, _start_message, _start_raw
@@ -287,14 +288,16 @@ class Bus:
         raise Timeout(f"{self.name}: expected a frame {_id_text(*want)} within {_num(timeout_ms)} ms; "
                       + _came(others, want[0]), _lib.BB_ERR_TIMEOUT)
 
-    def _frames_until(self, deadline, run):
+    def _frames_until(self, deadline, run, idle=False):
         """The frames read from now until `deadline` (monotonic_ms) has passed: each read waits
         whole milliseconds, at most SLICE_MS (so Ctrl-C lands), and never past it, the fraction of
         one the driver cannot be asked for is slept rather than read, and nothing is read once it
         has passed but the first look (so a wait of 0 reads at most one queued frame). A look that stopped at its bound with records
         still queued (look's `spent`) looks again at once, within it. All of it in the project's
         run `run`, on the handle the channel had in it: a stop closes that handle, and a stop or
-        a start during the wait is refused, never waited through on the next run's handle."""
+        a start during the wait is refused, never waited through on the next run's handle. With
+        `idle`, a read that found nothing yields None too, so a wait on a reading that moves with
+        time (the NM state going to sleep) is asked after it."""
         with _lib.state_lock:
             self._same_run(run)
             h = self._handle()  # opened inside the wait, not before it: a slow open spends its time
@@ -314,7 +317,10 @@ class Bus:
             self._same_run(run)
             if f is not None:
                 yield f
-            elif not spent and left < 1:
+                continue
+            if idle and not spent:
+                yield None
+            if not spent and left < 1:
                 rest = deadline - monotonic_ms()
                 if rest > 0:
                     sleep_ms(rest)
@@ -381,6 +387,7 @@ class Channel(Bus):
         self._messages, self._messages_run = None, None
         self._uds = weakref.WeakSet()  # the UDS clients and ISO-TP channels on this row, let go with its handle
         self._j1939 = None  # its J1939Listener, once asked for: every handle it opens then listens
+        self._nm = None  # its NmListener, once asked for: every handle it opens then reads by it
 
     def _current(self):
         st = _lib.state
@@ -430,6 +437,11 @@ class Channel(Bus):
                     # row's wire says so (a j1939: tick, a database declaring it) or a listener was asked for
                     _lib.check(lib.bb_e2e_attach(h, self._index))
                     _lib.check(lib.bb_j1939_attach(h, self._index, int(self._j1939 is not None)))
+                    # and its NM reading from its first frame: the one asked for, else the wire's own
+                    if self._nm is not None:
+                        self._nm._attach(h)
+                    else:
+                        _lib.check(lib.bb_nm_attach(h, self._index))
                 except BloblyError:
                     lib.bb_bus_close(h)
                     raise
@@ -618,6 +630,32 @@ class Channel(Bus):
             if self._h is not None:  # the handle already open listens from now on
                 self._j1939._handle()
         return self._j1939
+
+    def nm(self, lo: int | None = None, hi: int | None = None, *, ext: bool = False,
+           timeout_ms: int = 300) -> NmListener:
+        """This channel's NM reading (NmListener): who reports in on its NM cluster and who keeps
+        the network awake, from the frames this channel's handle reads. With no range, by its
+        wire's configuration, the Network Management panel's rule (a system.toml bus named like a
+        row on the wire, else the wire's ARXML NM-PDU frames, else a row's own `nm:`), read from
+        the handle's first frame; Refused where the wire has none, since nothing guesses a frame
+        is NM. With `lo` and `hi`, the inclusive id range the script states (29-bit where hi is
+        past 0x7FF, or with ext) and its timeout_ms, naming no node, and a new reading from this
+        call. While the project is started. It sends nothing."""
+        from .nm import explicit
+        cfg = None
+        if lo is not None or hi is not None:
+            if lo is None or hi is None:
+                raise TypeError("nm: a range is lo and hi together")
+            cfg = explicit("nm", lo, hi, ext, timeout_ms)
+        with _lib.state_lock:
+            if cfg is None and self._nm is not None and self._nm.explicit is None:
+                listener = self._nm
+            else:
+                listener = NmListener(self, cfg)
+            h = self._handle()
+            listener._attach(h)
+            self._nm = listener
+        return listener
 
     def uds(self, tx: int | None = None, rx: int | None = None, *, timeout_ms: int | None = None,
             p2_star_ms: int | None = None, margin_ms: int | None = None,
