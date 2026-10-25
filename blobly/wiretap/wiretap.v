@@ -61,7 +61,8 @@ pub:
 // to take the echo again.
 struct Provisional {
 	monitor int
-	t_ms    f64 // when the echo was read
+	t_ms    f64  // when the echo was read
+	first   bool // this claim was the first on the record
 mut:
 	ctx u64 // the caller's identity for what it did with the echo (attach)
 }
@@ -73,8 +74,11 @@ pub struct Reclaim {
 pub:
 	monitor int
 	t_ms    f64
+	iface   string // the wire, as wire_key spells it
 	frame   transport.CanFrame
-	ctx     u64 // as attached to the refused send's claim, else none_ctx
+	ctx     u64  // as attached to the refused send's claim, else none_ctx
+	first   bool // the refused send's claim was the first on it
+	done    bool // the refused send was accounted for at note() (Claim.done)
 	found   bool
 	to      Claim
 }
@@ -145,7 +149,11 @@ mut:
 	claimed []int
 	// The send has not been reported sent or refused (Ring.sends_settle only), and the claims
 	// made meanwhile, which refuse() takes back.
+	// The first provisional claim inline, the rest beside it: nearly every send has one
+	// monitor, and the claim path must not allocate per frame.
 	open        bool
+	prov0       Provisional
+	has_prov0   bool
 	provisional []Provisional
 }
 
@@ -249,7 +257,8 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 
 // victim_index is which record eviction gives up next. Cost order, not arrival order: a settled
 // record (every allowed monitor has answered — nothing can ever ask about it again) goes first,
-// else a verdictless one (never claimable, never reportable), else the oldest. Plain arrival
+// else a verdictless one (never claimable, never reportable), else a claimed one whose send is
+// still open, else the oldest. Plain arrival
 // order would drop an unwatched record — still claimable, and the startup window depends on
 // that — before a settled one it happens to precede, and a watched record before a verdictless
 // one, accusing a healthy bus of a miss. ONE pass: the first settled record wins outright, the
@@ -258,6 +267,7 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 // not to pay.
 fn (r &Ring) victim_index() int {
 	mut verdictless := -1
+	mut answered := -1
 	for i in 0 .. r.items.len {
 		if r.items[i].settled() {
 			return i
@@ -265,9 +275,16 @@ fn (r &Ring) victim_index() int {
 		if verdictless < 0 && (r.items[i].allowed.len == 0 || r.items[i].watched_gone) {
 			verdictless = i
 		}
+		if answered < 0 && r.items[i].open && !r.items[i].reportable() {
+			answered = i
+		}
 	}
 	if verdictless >= 0 {
 		return verdictless
+	}
+	// a claimed record whose send is open costs only a refusal's reclaim, never a verdict
+	if answered >= 0 {
+		return answered
 	}
 	return 0
 }
@@ -350,10 +367,17 @@ pub fn (mut r Ring) claim_noted_by(monitor int, iface string, f transport.CanFra
 			first := p.claimed.len == 0
 			r.items[i].claimed << monitor
 			if p.open {
-				r.items[i].provisional << Provisional{
+				pv := Provisional{
 					monitor: monitor
 					t_ms:    t_ms
+					first:   first
 					ctx:     none_ctx
+				}
+				if !p.has_prov0 {
+					r.items[i].prov0 = pv
+					r.items[i].has_prov0 = true
+				} else {
+					r.items[i].provisional << pv
 				}
 			}
 			return Claim{
@@ -452,6 +476,9 @@ pub fn (mut r Ring) attach(seq u64, monitor int, ctx u64) {
 	if i < 0 {
 		return
 	}
+	if r.items[i].has_prov0 && r.items[i].prov0.monitor == monitor {
+		r.items[i].prov0.ctx = ctx
+	}
 	for k in 0 .. r.items[i].provisional.len {
 		if r.items[i].provisional[k].monitor == monitor {
 			r.items[i].provisional[k].ctx = ctx
@@ -466,7 +493,25 @@ pub fn (mut r Ring) sent(seq u64) {
 		return
 	}
 	r.items[i].open = false
-	r.items[i].provisional = []
+	r.items[i].has_prov0 = false
+	if r.items[i].provisional.len > 0 {
+		r.items[i].provisional = []
+	}
+}
+
+// unsure settles emission `seq` whose write failed and may still have gone out: the echoes it
+// claimed stay its own, and with none its record goes without a verdict, since the caller has
+// already said the send failed.
+pub fn (mut r Ring) unsure(seq u64) {
+	i := r.index_of(seq)
+	if i < 0 {
+		return
+	}
+	if r.items[i].claimed.len == 0 {
+		r.items.delete(i)
+		return
+	}
+	r.sent(seq)
 }
 
 // refuse settles emission `seq` as refused: its record goes without a verdict, and each echo it
@@ -481,7 +526,7 @@ pub fn (mut r Ring) refuse(seq u64) []Reclaim {
 	p := r.items[i]
 	r.items.delete(i)
 	mut out := []Reclaim{}
-	if p.provisional.len == 0 {
+	if !p.has_prov0 {
 		return out
 	}
 	f := transport.CanFrame{
@@ -492,12 +537,17 @@ pub fn (mut r Ring) refuse(seq u64) []Reclaim {
 		brs:      p.brs
 		data:     p.data
 	}
-	for pv in p.provisional {
+	mut provs := [p.prov0]
+	provs << p.provisional
+	for pv in provs {
 		mut rc := Reclaim{
 			monitor: pv.monitor
 			t_ms:    pv.t_ms
+			iface:   p.iface
 			frame:   f
 			ctx:     pv.ctx
+			first:   pv.first
+			done:    p.done
 		}
 		if c := r.claim_noted_by(pv.monitor, p.iface, f, pv.t_ms, pv.t_ms) {
 			rc = Reclaim{

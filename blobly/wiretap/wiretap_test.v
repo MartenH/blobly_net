@@ -615,3 +615,51 @@ fn test_without_sends_settle_a_refusal_reclaims_nothing() {
 	assert r.refuse(1) == []Reclaim{}
 	assert r.outstanding() == 0
 }
+
+// A write that failed and may have gone out keeps the echo it claimed; with none, its record goes.
+fn test_an_unsure_send_keeps_its_echo() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(5)])
+	r.note(1, 'vcan0', f, 0, [0], '', false)
+	r.note(2, 'vcan0', f, 1, [0], '', false)
+	r.claim(0, 'vcan0', f, 2) or { assert false }
+	r.unsure(1)
+	r.unsure(2)
+	assert r.outstanding() == 1, 'the claimed record stays, the unclaimed one goes'
+	assert r.refuse(1) == []Reclaim{}, 'settled by unsure: nothing is provisional'
+}
+
+// The refused send's own accounting travels with each reclaim: which claim was first, and
+// whether the send was recorded at note().
+fn test_a_reclaim_carries_the_refused_claim() {
+	mut r := Ring{
+		sends_settle: true
+	}
+	f := frame(0x120, [u8(5)])
+	r.note(1, 'can:a', f, 0, [0, 1], 'A', true)
+	r.claim(0, 'can:a', f, 1) or { assert false }
+	r.claim(1, 'can:a', f, 2) or { assert false }
+	got := r.refuse(1)
+	assert got.len == 2
+	assert got[0].first && !got[1].first
+	assert got.all(it.done && it.iface == got[0].iface && it.iface != '')
+}
+
+// At the cap with nothing settled, a claimed open record goes before a watched, unanswered one,
+// whose eviction would be reported as missing.
+fn test_at_the_cap_an_answered_open_record_goes_before_a_verdict() {
+	mut r := Ring{
+		sends_settle: true
+		cap:          2
+	}
+	f := frame(0x120, [u8(5)])
+	g := frame(0x121, [u8(6)])
+	r.note(1, 'vcan0', g, 0, [0], '', false)
+	r.note(2, 'vcan0', f, 1, [0], '', false)
+	r.claim(0, 'vcan0', f, 2) or { assert false }
+	evicted := r.note(3, 'vcan0', g, 3, [0], '', false)
+	assert evicted == []u64{}, 'an unanswered record was evicted with a verdict'
+	assert r.refuse(2) == []Reclaim{}
+}

@@ -917,6 +917,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				for cj, other in a.chans {
 					if transport.destination_key(other.iface) == dead {
 						a.chans[cj].enabled = false
+						a.chans[cj].retired = true
 					}
 				}
 				// Same rule as every other writer of chans[].enabled: republish the wire list

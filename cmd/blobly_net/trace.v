@@ -270,8 +270,9 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // Returns the row identity and the RECORDING identity of the entry this call wrote, or rec_none
 // when it wrote none. The retract path must not guess that from the backend (a bus that normally
 // echoes also records at emit whenever no monitor is running) and must not search for it either:
-// a scan can be outrun by traffic on a busy bus.
-fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, u64, u64) {
+// a scan can be outrun by traffic on a busy bus. And the run's tx epoch, and whether the echo was
+// noted in the wiretap (a backend that echoes), which the send then settles.
+fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, u64, u64, bool) {
 	pe := probe_alloc_mark()
 	defer {
 		probe_alloc_note(.emit, pe)
@@ -390,7 +391,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		rec_id
 	} else {
 		rec_none
-	}, epoch
+	}, epoch, echoes
 }
 
 // rec_append_locked appends to the recording and returns that entry's stable identity.
@@ -462,8 +463,8 @@ fn (app &App) tx_counts_locked() string {
 // that is RUNNING for the wire rather than the row named by the tap — two enabled rows on one
 // destination share one reader and one running flag, and the load is the wire's, so the
 // alias's frames would otherwise land on a row the panel and the toolbar skip (r1).
-// It settles the send's echo too (settle_emit_locked), under the same lock.
-fn (mut app App) count_tx_load(seq u64, iface string, f transport.CanFrame) {
+// It settles the send's echo too (settle_emit_locked) when note_emit noted one, under the same lock.
+fn (mut app App) count_tx_load(seq u64, noted bool, iface string, f transport.CanFrame) {
 	key := transport.destination_key(iface)
 	pt := probe_lock_begin()
 	app.mu.lock()
@@ -471,7 +472,9 @@ fn (mut app App) count_tx_load(seq u64, iface string, f transport.CanFrame) {
 	defer {
 		app.mu.unlock()
 	}
-	app.settle_emit_locked(seq)
+	if noted {
+		app.settle_emit_locked(seq)
+	}
 	i := app.load_owner_locked(key)
 	if i < 0 {
 		return
@@ -558,10 +561,15 @@ fn (app &App) wire_rates_rule_locked(i int) (int, int) {
 // did not reach the wire, which is exactly what the mark says — but the pending record goes, so
 // expiry does not report it a second time, and any echo it had claimed is claimed again
 // (settle_echo_locked).
-fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
+// A write that failed but may have gone out (`definite` false) keeps the echoes it claimed.
+fn (mut app App) retract_emit(seq u64, origin string, epoch u64, noted bool, definite bool) {
 	app.mu.lock()
-	for rc in app.taps.refuse(seq) {
-		app.settle_echo_locked(rc)
+	if noted && definite {
+		for rc in app.taps.refuse(seq) {
+			app.settle_echo_locked(rc)
+		}
+	} else if noted {
+		app.taps.unsure(seq)
 	}
 	// note_emit counted it before the driver was asked, because the echo can arrive first. The
 	// driver refused, so it never reached the wire and the count must come back — but only to
@@ -606,10 +614,22 @@ fn (mut app App) settle_emit_locked(seq u64) {
 // settle_echo_locked is what becomes of an echo a refused send had claimed. Moved to another of
 // our sends, the recording entry it wrote stays, under that send's channel; already accounted for
 // by that send, the entry goes; nobody's send, the frame was somebody else's — an RX row and an
-// RX entry, as rx_loop would have written. The E2E verifier never saw it (stated, not handled).
-// Caller holds app.mu.
+// RX entry, as rx_loop would have written. Limits, stated: the E2E verifier never saw that frame,
+// its row is at its receipt time on the host clock, and it lands after the rows written while the
+// send was stalled. Caller holds app.mu.
 fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
-	ri := app.rec_index_locked(rc.ctx)
+	ri := if rc.ctx == wiretap.none_ctx { -1 } else { app.rec_index_locked(rc.ctx) }
+	// The monitor's row, if it is still the one that read the echo: the ring outlives Stop, and a
+	// project load replaces the rows under it.
+	row := if rc.monitor >= 0 && rc.monitor < app.chans.len
+		&& transport.wire_key(app.chans[rc.monitor].iface) == rc.iface {
+		rc.monitor
+	} else {
+		-1
+	}
+	// the refused send was recorded at note() and its entry is about to go (unrecord): the
+	// frame the echo was is written here, if this claim was the one that accounted for it
+	write_lost := ri < 0 && rc.first && rc.done && app.recording
 	match rc.fate() {
 		.moved {
 			if ri >= 0 && rc.to.tag != '' {
@@ -621,6 +641,17 @@ fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
 			if ri >= 0 && rc.to.open {
 				app.taps.attach(rc.to.seq, rc.monitor, rc.ctx)
 			}
+			if write_lost {
+				id := app.rec_append_locked(canlog.LogEntry{
+					t_s:   rc.t_ms / 1000.0
+					iface: if rc.to.tag != '' { rc.to.tag } else { app.chan_name_for(rc.iface) }
+					frame: rc.frame
+					dir:   .tx
+				})
+				if rc.to.open {
+					app.taps.attach(rc.to.seq, rc.monitor, id)
+				}
+			}
 		}
 		.duplicate {
 			if ri >= 0 {
@@ -629,25 +660,26 @@ fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
 			}
 		}
 		.foreign {
-			if rc.monitor < 0 || rc.monitor >= app.chans.len {
-				return
-			}
-			c := app.chans[rc.monitor]
-			dest := transport.destination_key(c.iface)
+			name := if row >= 0 { app.chans[row].name } else { app.chan_name_for(rc.iface) }
 			if ri >= 0 {
 				app.rec[ri] = canlog.LogEntry{
 					...app.rec[ri]
-					iface: c.name
+					iface: name
 					dir:   .rx
 				}
-			} else if app.recording {
+			} else if app.recording && (row >= 0 || write_lost) {
 				app.rec_append_locked(canlog.LogEntry{
-					t_s:   app.since_s()
-					iface: c.name
+					t_s:   rc.t_ms / 1000.0
+					iface: name
 					frame: rc.frame
 					dir:   .rx
 				})
 			}
+			if row < 0 || !app.running {
+				return
+			}
+			c := app.chans[row]
+			dest := transport.destination_key(c.iface)
 			if !app.paused {
 				k := gkey_frame(org_rx, c.name, dest, rc.frame)
 				disp, reading := app.j1939_frame_locked(dest, dest, rc.frame, app.lookup_name_on(dest,
@@ -669,12 +701,14 @@ fn (mut app App) settle_echo_locked(rc wiretap.Reclaim) {
 				})
 				app.gcount[k]++
 			}
-			nominal, data := app.wire_rates_locked(rc.monitor)
-			app.chans[rc.monitor].load_bits += transport.frame_bits(rc.frame, nominal, data)
-			app.chans[rc.monitor].rx++
+			nominal, data := app.wire_rates_locked(row)
+			app.chans[row].load_bits += transport.frame_bits(rc.frame, nominal, data)
+			app.chans[row].rx++
 			app.rx++
-			app.chans[rc.monitor].rx_last = rc.t_ms
-			app.chans[rc.monitor].rx_seen++
+			if rc.t_ms > app.chans[row].rx_last {
+				app.chans[row].rx_last = rc.t_ms
+			}
+			app.chans[row].rx_seen++
 		}
 	}
 }

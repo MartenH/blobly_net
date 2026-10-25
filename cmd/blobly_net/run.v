@@ -723,6 +723,7 @@ fn (mut app App) start() {
 	for ci in 0 .. app.chans.len {
 		if ci < app.proj.channels.len {
 			app.chans[ci].enabled = app.proj.channels[ci].enabled
+			app.chans[ci].retired = false
 		}
 	}
 	app.push_listen_only_locked()
@@ -1037,6 +1038,7 @@ fn (mut app App) start() {
 	for ci in 0 .. app.chans.len {
 		if ci < app.proj.channels.len {
 			app.chans[ci].enabled = app.proj.channels[ci].enabled
+			app.chans[ci].retired = false
 		}
 	}
 	app.push_listen_only_locked()

@@ -177,3 +177,28 @@ fn test_claim_cost_when_records_age_out() {
 	println('claim age-out cost @ ${held} pending: ${per:.0f} bytes allocated per step (claim + note)')
 	assert per < 4096, 'dropping one aged record on the claim path allocates ${per:.0f} bytes -- the ring is being copied to drop a prefix'
 }
+
+// The settling path's allocation, where the GUI runs it (sends_settle): every emitted frame is
+// noted, its echo claimed while the send is still open, then sent. A provisional claim per frame
+// must not cost an allocation of its own.
+fn test_settle_cost_when_the_ring_is_full() {
+	$if !gcboehm ? {
+		println('settle cost: skipped, no Boehm allocation counter in this build')
+		return
+	}
+	mut r := full_ring()
+	r.sends_settle = true
+	n := 2000
+	before := allocated_bytes()
+	for i in 0 .. n {
+		seq := u64(default_cap + i)
+		f := bench_frame(u32(0x100 + (i % 0x400)), u8(i % 256))
+		r.note(seq, 'vcan1', f, 0, [0], '', false)
+		r.claim(0, 'vcan1', f, 0) or { assert false }
+		r.sent(seq)
+	}
+	after := allocated_bytes()
+	per := f64(after - before) / f64(n)
+	println('settle cost @ ${default_cap} pending: ${per:.0f} bytes allocated per note, claim and send')
+	assert per < 4096, 'the settling path allocates ${per:.0f} bytes per frame'
+}

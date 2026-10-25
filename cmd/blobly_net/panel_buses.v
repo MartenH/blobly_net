@@ -228,8 +228,9 @@ fn draw_buses(mut app App, chans []Chan, model_en []bool) {
 		}
 		for i in idxs {
 			c := chans[i]
-			tk := tickrule.tick(if i < model_en.len { model_en[i] } else { c.enabled }, c.enabled,
-				app.running)
+			// the project's bit where the snapshot lines up with the rows (a rebuild realigns them)
+			tk := tickrule.tick(if model_en.len == chans.len { model_en[i] } else { c.enabled },
+				c.retired, app.running)
 			new := vgui.checkbox('##en${i}', tk.ticked)
 			if new != tk.ticked {
 				// TOPOLOGY IS FIXED AT START; WORKLOAD STAYS LIVE (#120). This tick decides
@@ -279,6 +280,7 @@ fn draw_buses(mut app App, chans []Chan, model_en []bool) {
 				}
 				if refusal == '' {
 					app.chans[i].enabled = new
+					app.chans[i].retired = false
 					// THE TICK IS A PROJECT EDIT, like the Replay panel's
 					// set_chan_enabled_stopped already is. It used to move only the runtime
 					// copy: Configure went on showing the row ticked, and Save wrote it
