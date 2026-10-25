@@ -409,6 +409,49 @@ pub mut:
 	t_ns                      i64
 }
 
+// Network management on a row's frames (nm.v)
+pub struct C.bb_nm_view {
+pub mut:
+	state           i32
+	nodes           i32
+	keepers         i32
+	woke            i32
+	woke_active     u8
+	heard           u8
+	timeout_default u8
+	timeout_ms      i32
+	source          i32
+	t_ns            i64
+	woke_ns         i64
+	last_ns         i64
+	frames          u64
+	malformed       u64
+	dropped         u64
+	origin          [256]char
+	frames_text     [256]char
+	last_error      [256]char
+}
+
+pub struct C.bb_nm_node {
+pub mut:
+	name             [256]char
+	id               u32
+	ext              u8
+	has_id           u8
+	nid              i32
+	missing          u8
+	unknown          u8
+	live             u8
+	keeper           i32
+	cbv              u8
+	has_pn           u8
+	pn               u64
+	count            u64
+	last_ns          i64
+	cadence_ms       f64
+	last_interval_ms f64
+}
+
 // the library calls itself what v.mod says, as the app does (cmd/blobly_net/version.v)
 const lib_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 
@@ -446,6 +489,8 @@ mut:
 	judge E2eJudge
 	// the J1939 listener bb_j1939_attach bound to the handle's frames (j1939.v)
 	j1939 J1939Tap
+	// the NM listener bb_nm_attach bound to the handle's frames (nm.v)
+	nm NmTap
 }
 
 __global (
@@ -636,6 +681,7 @@ pub fn bb_start() i32 {
 	gens_publish(r)
 	sys_publish(r)
 	j1939_publish(r)
+	nm_publish(r)
 	bb_dbs_live = true
 	bb_run_gen++
 	cyclic_retire(bb_run_gen)
@@ -657,6 +703,7 @@ pub fn bb_stop() i32 {
 	gens_retire()
 	sys_retire()
 	j1939_retire()
+	nm_retire()
 	bb_dbs_live = false
 	bb_mu.unlock()
 	replays_stop()
@@ -857,6 +904,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 		code := recv_nothing(err)
 		if code == bb_none {
 			hd.j1939_idle()
+			hd.nm_idle(i64(time.sys_mono_now()))
 		}
 		return code
 	}
@@ -880,6 +928,7 @@ pub fn bb_bus_recv(h i32, timeout_ms i32, out &C.bb_frame) i32 {
 		out.e2e = hd.e2e_verdict(fr)
 	}
 	hd.j1939_feed(fr)
+	hd.nm_feed(fr, out.t_ns)
 	return ok()
 }
 

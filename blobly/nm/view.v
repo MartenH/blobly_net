@@ -17,6 +17,7 @@ pub:
 	mean_ms    f64
 	last_iv_ms f64 // the latest interval
 	bits       []string
+	cbv        u8 // its latest control bit vector; 0 for a missing node
 	pn         u64
 	has_pn     bool
 	timeline   []Phase
@@ -29,9 +30,11 @@ pub:
 	cfg         Config
 	state       BusState
 	keepers     []string
+	keeper_rows []int // the rows of `keepers`, in its order
 	woke        string // the node whose frame ended the last silence; '' before any
 	woke_ago    f64
 	woke_active bool // that frame said active wake-up
+	woke_row    int = -1 // the row of `woke`; -1 before any
 	repeaters   []string
 	heard       bool
 	last_ago    f64 // since the last NM frame on the wire
@@ -60,6 +63,7 @@ pub fn (t &Tracker) view(now f64, cols int) View {
 			mean_ms:    n.mean_ms()
 			last_iv_ms: n.last_iv_ms
 			bits:       bit_words(n.cbv)
+			cbv:        n.cbv
 			pn:         n.pn
 			has_pn:     n.has_pn && n.pn != 0
 			timeline:   t.strip(i, now, cols)
@@ -80,18 +84,23 @@ pub fn (t &Tracker) view(now f64, cols int) View {
 	mut woke := ''
 	mut woke_ago := 0.0
 	mut woke_active := false
+	mut woke_row := -1
 	if w := t.woke {
 		woke = t.name_of(w.node)
 		woke_ago = now - w.t_ms
 		woke_active = w.active
+		woke_row = w.node // the reporters are the first rows, in node order
 	}
+	keepers := t.keepers(now)
 	return View{
 		cfg:         t.cfg
 		state:       t.state(now)
-		keepers:     t.keepers(now).map(t.name_of(it))
+		keepers:     keepers.map(t.name_of(it))
+		keeper_rows: keepers
 		woke:        woke
 		woke_ago:    woke_ago
 		woke_active: woke_active
+		woke_row:    woke_row
 		repeaters:   t.with_bit(now, cbv_repeat_request).map(t.name_of(it))
 		heard:       t.last_ms >= 0
 		last_ago:    if t.last_ms >= 0 { now - t.last_ms } else { 0.0 }

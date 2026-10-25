@@ -18,6 +18,7 @@ import blobly.isotp
 import blobly.uds
 import blobly.sim
 import blobly.sysview
+import blobly.nm
 import blobly.doip
 import blobly.testports
 import sync
@@ -142,6 +143,9 @@ pub mut:
 	// the wires that read as J1939, by destination key: a row on it, enabled or not, ticked
 	// `j1939:` or with a database declaring it (the GUI's per-wire census); filled by start
 	j1939_wires map[string]bool
+	// each CAN wire's NM configuration, by destination key, by nm.configure over the run's system
+	// model and every project row on the wire with its databases (the GUI's rule); filled by start
+	nm_wires map[string]nm.Config
 	// the system model the run's simulated diagnostic servers are described by (described_system):
 	// what a script names a node by (sysview.System.node_named); empty when none describes it
 	sys sysview.System
@@ -331,6 +335,7 @@ fn (mut r Run) bring_up(o Options, mut probes testports.Holder) ! {
 			r.j1939_wires[j1939_wire_key(ch)] = true
 		}
 	}
+	r.nm_wires = nm_wires(&desc_sys, proj.channels, os.dir(proj_path), db_files)
 	for ci, ch in proj.channels {
 		if !ch.enabled {
 			continue
@@ -861,6 +866,40 @@ fn j1939_wire_key(ch project.Channel) string {
 // reads_j1939 is whether row `ch`'s wire reads as J1939 in this run (j1939_wires).
 pub fn (r &Run) reads_j1939(ch project.Channel) bool {
 	return r.j1939_wires[j1939_wire_key(ch)] or { false }
+}
+
+// nm_wires is every CAN wire's NM configuration (nm.configure): the rows on it, enabled or not,
+// and each one's database files.
+fn nm_wires(sys &sysview.System, chans []project.Channel, proj_dir string, files &DbFiles) map[string]nm.Config {
+	mut rows := map[string][]project.Channel{}
+	mut order := []string{}
+	for ch in chans {
+		if ch.is_eth() {
+			continue
+		}
+		k := j1939_wire_key(ch)
+		if k !in rows {
+			order << k
+		}
+		rows[k] << ch
+	}
+	mut out := map[string]nm.Config{}
+	for k in order {
+		rs := rows[k] or { continue }
+		mut dbs := []candb.Database{}
+		for ch in rs {
+			dbs << row_sources(ch, proj_dir, files)
+		}
+		if cfg := nm.configure(sys, rs, dbs) {
+			out[k] = cfg
+		}
+	}
+	return out
+}
+
+// nm_config is row `ch`'s wire's NM configuration in this run (nm_wires); none where it has none.
+pub fn (r &Run) nm_config(ch project.Channel) ?nm.Config {
+	return r.nm_wires[j1939_wire_key(ch)] or { return none }
 }
 
 // load_channel_db merges every DBC attached to a channel into one catalog (first definition of

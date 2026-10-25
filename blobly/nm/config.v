@@ -18,6 +18,7 @@ pub enum Source {
 	system  // the system model (system.toml): range, timeout and node names
 	arxml   // the wire's ARXML NM-PDU frames: their ids, and their senders' names
 	project // the channel's own `nm:` setting: a range and a timeout, no names
+	script  // a range and a timeout a script gave (explicit), no names
 }
 
 pub fn (s Source) str() string {
@@ -25,6 +26,7 @@ pub fn (s Source) str() string {
 		.system { 'system.toml' }
 		.arxml { 'ARXML' }
 		.project { 'project' }
+		.script { 'script' }
 	}
 }
 
